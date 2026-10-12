@@ -40,7 +40,7 @@ import sys
 
 from aurora_common import (TRUSTED, Card as BaseCard, aliases as card_aliases, body, card_sources, decision_slice, frontmatter,
                            is_decision_card, is_meeting, is_placeholder, link_targets, read_card_text, related_targets,
-                           status_rank, trust_header, walk_md)
+                           status_rank, trust_header, untrusted, walk_md, UNTRUSTED_RULE)
 
 ROOT = "AuroraKnowledgeDB"
 USAGE = os.path.join(ROOT, "meta", "usage.log")
@@ -116,6 +116,7 @@ PREAMBLE = (
     "Пометка «🎙 Из встречи» — сказанное на встрече, а не записанное в документе: опираясь\n"
     "на такую карточку, так и называй это в ответе.\n"
     "Противоречие двух knowledge-карточек — это ошибка базы, о которой надо сообщить.\n"
+    + UNTRUSTED_RULE
 )
 
 
@@ -1015,9 +1016,9 @@ def render_block(c: "Card", collapsed: bool = False) -> str:
     name = f"{c.stem}" + (f" — {c.title}" if c.title and c.title != c.stem else "")
     if not collapsed:
         text = decision_slice(c.text) if is_decision(c) else body(c.text).strip()
-        return f"\n---\n\n## {name}\n\n{c.header()}\n\n{text}\n"
+        return f"\n---\n\n## {name}\n\n{c.header()}\n\n{untrusted(text, 'карточка ' + c.stem)}\n"
     gist = c.summary or first_sentence(c.text)
-    return (f"\n---\n\n## {name}\n\n{c.header()}\n\n{gist}\n\n"
+    return (f"\n---\n\n## {name}\n\n{c.header()}\n\n{untrusted(gist, 'карточка ' + c.stem)}\n\n"
             f"_Сосед темы по ссылке; полный текст — в карточке [[{c.stem}]]._\n")
 
 

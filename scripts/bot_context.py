@@ -28,6 +28,9 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from aurora_common import UNTRUSTED_RULE, untrusted  # noqa: E402 — граница данных и инструкций
+
 MODES = ("generate", "evaluate", "off")
 MAX_LINKS = 8
 LINK_TEXT = 3000             # знаков с одной ссылки — для понятий, не для работы
@@ -51,6 +54,7 @@ PROMPT = """Ниже — задание бота и материалы по сс
 
 Ответь строго JSON-объектом: {{"concepts": ["...", "..."]}}
 
+{rule}
 ## Задание бота
 
 {body}
@@ -124,9 +128,19 @@ def concepts_by_rule(body: str, links: list) -> list:
 
 def concepts_by_model(cfg: dict, call, body: str, links: list) -> list:
     """Понятия моделью роли «Планировщик». Не ответила или ответила не JSON — пусто."""
-    text = "\n\n".join(f"### {x['kind']} {x['ref']}: {x['title']}\n{x['text']}" for x in links) \
-        or "(ссылок нет)"
-    prompt = PROMPT.format(n=MAX_CONCEPTS, body=(body or "")[:8000], links=text[:16000])
+    # Страницы и задачи по ссылкам писал кто угодно: в промпт они идут данными в ограждении.
+    # Обрезка идёт по целым блокам: резать посреди ограждения нельзя — оно осталось бы открытым.
+    parts, size = [], 0
+    for x in links:
+        part = (f"### {x['kind']} {x['ref']}\n"
+                + untrusted(f"{x['title']}\n{x['text']}", f"{x['kind']} {x['ref']}"))
+        if parts and size + len(part) > 16000:
+            break
+        parts.append(part)
+        size += len(part) + 2
+    text = "\n\n".join(parts) or "(ссылок нет)"
+    prompt = PROMPT.format(n=MAX_CONCEPTS, body=(body or "")[:8000], links=text,
+                           rule=UNTRUSTED_RULE)
     try:
         r = call(cfg, "planner", [{"role": "user", "content": prompt}], thinking=False,
                  max_tokens=800)

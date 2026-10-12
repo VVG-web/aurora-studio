@@ -402,7 +402,8 @@ def test_mcp_servers_start_only_when_needed(tmp: Path):
     assert d["seen"][0] == [["mcp_connect"], False], f"сервер поднят до нужды: {d['seen'][0]}"
     # Инструменты сервера — с приставкой его имени: `demo` → `demo_echo` (1.143.1).
     assert "demo_echo" in d["seen"][1][0] and d["seen"][1][1], f"подключённый сервер не дал инструментов: {d['seen'][1]}"
-    assert "эхо: привет" in d["returns"], d["returns"]
+    # ответ внешнего сервера идёт моделью как данные: в ограждении <untrusted> (BL-SEC-06)
+    assert '<untrusted source="demo echo">\nэхо: привет\n</untrusted>' in d["returns"], d["returns"]
     assert any("не запустился" in r for r in d["returns"]), f"сломанный сервер без объяснения: {d['returns']}"
 
 

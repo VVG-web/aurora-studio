@@ -324,15 +324,38 @@ def call_hook(name: str, spec: dict, guard: dict, root: str):
     """
     guard_hook = outbound_hook(name, guard or {}, root) if (spec or {}).get("outbound") else None
     drop = set((spec or {}).get("drop_args") or [])
-    if not drop:
-        return guard_hook
 
     async def hook(ctx, call_tool, tool, args):
-        args = {k: v for k, v in (args or {}).items() if k not in drop}
+        if drop:
+            args = {k: v for k, v in (args or {}).items() if k not in drop}
+
+        async def fenced(t, a):
+            # Ответ внешней системы — данные, а не указания: всегда в ограждении (BL-SEC-06).
+            # Отказ сторожа идёт мимо него: это слово движка, а не чужой текст.
+            return fence_result(await call_tool(t, a), f"{name} {tool}")
         if guard_hook:
-            return await guard_hook(ctx, call_tool, tool, args)
-        return await call_tool(tool, args)
+            return await guard_hook(ctx, fenced, tool, args)
+        return await fenced(tool, args)
     return hook
+
+
+def fence_result(value, source: str):
+    """Результат инструмента внешнего сервера → текст в ограждении `<untrusted>`.
+
+    Строка и JSON-совместимые значения (словарь, список) ограждаются; остальное (файлы,
+    картинки) возвращается как есть: текста для инъекции в нём нет."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from aurora_common import untrusted
+    if isinstance(value, str):
+        return untrusted(value, source)
+    if isinstance(value, (dict, list, tuple)):
+        try:
+            return untrusted(json.dumps(value, ensure_ascii=False, default=str), source)
+        except (TypeError, ValueError):
+            return value
+    return value
 
 
 def hide_args(tools: dict, drop: set) -> dict:
@@ -555,6 +578,22 @@ def text_of(content) -> str:
         return "\n".join(str(p.get("text") or "") for p in content
                          if isinstance(p, dict) and p.get("type") == "text")
     return str(content or "")
+
+
+def with_untrusted_rule(instructions: str, task: dict) -> str:
+    """Вызов с инструментами или MCP получает правило «ограждённое — данные» в инструкциях.
+
+    Правило одно на все вызовы (`aurora_common.UNTRUSTED_RULE`); вызов без инструментов
+    его не получает: чужой текст в нём идёт только в промпте пака, а там правило своё."""
+    if not (task.get("tools") or (task.get("mcp") or {}).get("mcpServers")):
+        return instructions
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from aurora_common import UNTRUSTED_RULE
+    if UNTRUSTED_RULE.strip() in (instructions or ""):
+        return instructions
+    return ((instructions or "") + "\n\n" + UNTRUSTED_RULE).strip()
 
 
 def split_messages(messages: list) -> tuple:
@@ -934,6 +973,7 @@ def runtime():
         allowed = set(servers_for_role(task.get("mcp") or {}, task.get("role") or ""))
         state["active"] = {n for n in (task.get("mcp_active") or []) if n in allowed}
         instructions, turns, prompt = split_messages(task.get("messages") or [])
+        instructions = with_untrusted_rule(instructions, task)
         if not prompt:
             return {"ok": False, "where": "adapter", "error": "в задании нет реплики пользователя"}
         history = [ModelResponse(parts=[TextPart(content=t["content"])])
