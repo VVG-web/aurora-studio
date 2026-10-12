@@ -38,6 +38,7 @@
     "kb:code-graph": "The project's code and SQL in the graph without a model: tables from SQL on pages and in `*.sql`, table pairs of one query, cards naming a table; code from `graphify: code_dirs`.",
     "kb:reset": "Wipe the base and rebuild: removes what will be rebuilt (a card with a live `source:` or `built: machine`), touches nothing outside `AuroraKnowledgeDB/`; cards of unknown origin stay (`--list-unknown`, `--drop-unknown`); rollback from git.",
     "kb:lint": "Mechanical errors of the base: links, frontmatter, card kinds, artifacts in knowledge, secrets, cards without links.",
+    "kb:cards": "Card types of the base: the registry built from the `akdb_*` templates (`--list`, `--show`), a check of cards against the template of their type by V-NN codes (`--check`: advice only for now, `--strict` for strict), a summary by template versions and pre-template cards (`--stats`); writes nothing.",
     "kb:question": "Open a question to the customer (Q-NNN): to whom, what it blocks, the deadline.",
     "kb:answer": "Record an answer: close the question and carry the knowledge into a REQ / spec / DR.",
     "kb:decide": "Draw up a Decision Record (+ supersede an old DR).",
@@ -835,7 +836,15 @@
     "одна страница: итог JSON-ом (вердикт, оценка, сводка, отчёт) и отчёт в .aurora/state/reviews/ — для MCP Авроры и ботов": "one page: the outcome as JSON (verdict, score, summary, report) and the report in .aurora/state/reviews/ — for the Aurora MCP and bots",
     "ответить ровно этой моделью провайдера, без запасных (для --task ask)": "answer with exactly this provider model, no spares (for --task ask)",
     "ответить ролью из раздела «Модели» (для --task ask; по умолчанию worker)": "answer with a role from the «Models» section (for --task ask; worker by default)",
-    "оценить готовые ответы на чек-лист: JSON на входе, итог JSON-ом": "score ready checklist answers: JSON in, the outcome as JSON"
+    "оценить готовые ответы на чек-лист: JSON на входе, итог JSON-ом": "score ready checklist answers: JSON in, the outcome as JSON",
+    "таблица эффективного реестра типов: название, класс, раздел, шаблон, откуда взят": "table of the effective type registry: name, class, section, template, where it comes from",
+    "паспорт одного типа, имя файла шаблона и выжимка для модели": "passport of one type, the template file name and the digest for the model",
+    "проверить карточки базы по шаблонам их типов (коды V-NN); по умолчанию нарушения только советуют": "check the base cards against the templates of their types (V-NN codes); by default violations are only advice",
+    "сводка: карточек всего, по версиям шаблонов, без шаблона, с нарушениями по кодам": "summary: cards in total, by template version, without a template, with violations by code",
+    "с --check и --stats: включить архив базы (_archive/)": "with --check and --stats: include the archive of the base (_archive/)",
+    "с --check: только итоговая строка": "with --check: the summary line only",
+    "с --check: строгий уровень, ошибки шаблона остаются ошибками и дают код возврата 1": "with --check: the strict level, template errors stay errors and give exit code 1",
+    "корень проекта (по умолчанию — текущая папка)": "project root (the current folder by default)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",
