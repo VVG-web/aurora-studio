@@ -10,7 +10,8 @@
 Профили:
   us    — пользовательская история (`Artifacts/us/`): вопросы US-01, 03, 04, 05, 06, 07,
           18, 22, 23 чек-листа;
-  ac    — критерии приёмки (`Artifacts/ac/`): разделы, непустые критерии, остатки шаблона;
+  ac    — критерии приёмки (`Artifacts/ac/`): разделы «Описание» и «Критерии приёмки»,
+          непустые критерии, остатки шаблона (AC-03);
   spec  — спецификация (`AuroraKnowledgeDB/Specs/`): сценарий ↔ строка критериев,
           «Дано / Когда / Тогда», формулировка «должна», числа в НФТ, пустые открытые
           вопросы, основания `based_on`.
@@ -53,18 +54,27 @@ _COMMENT = re.compile(r"(?s)<!--.*?-->")
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
 _HEAD = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 _ITEM = re.compile(r"^\s*(?:[*\-+]|\d+[.)])\s+(\S.*)$")
-# Служебные комментарии шаблона: правила для модели, примеры, пометки необязательности.
-_TEMPLATE_COMMENT = re.compile(r"<!--\s*(?:ИНСТРУКЦИЯ|ПРИМЕР|ОПЦИОНАЛЬНО|ШАБЛОН|ГЛОБАЛЬНЫЕ)", re.I)
-_NOTE = re.compile(r"\?\?\?|\bTODO\b|\bTBD\b")
+# Служебные комментарии шаблона: правила для модели, примеры, пометки необязательности и
+# «УДАЛИТЬ ПЕРЕД ПУБЛИКАЦИЕЙ» (так помечены блоки шаблона истории `user_story_template.md`).
+_TEMPLATE_COMMENT = re.compile(
+    r"<!--\s*(?:ИНСТРУКЦИЯ|ПРИМЕР|ОПЦИОНАЛЬНО|ШАБЛОН|ГЛОБАЛЬНЫЕ|УДАЛИТЬ)", re.I)
+# Рабочие пометки — тот же перечень, что «Рабочие пометки» словаря `review_v2.0`.
+_NOTE = re.compile(r"\?\?\?|\bTODO\b|\bTBD\b|(?i:\bуточнить у\b)")
 
 
 def _f(fid: str, msg: str) -> dict:
     return {"id": fid, "level": LEVEL, "msg": msg}
 
 
-def _visible(text: str) -> str:
-    """Текст без блоков кода, HTML-комментариев и кода в строке: то, что читает человек."""
-    return _INLINE_CODE.sub("", _COMMENT.sub("", _FENCE.sub("", text)))
+def _visible(text: str, code: bool = True) -> str:
+    """Текст без блоков кода и HTML-комментариев: то, что читает человек.
+
+    Код в строке (`как в обратных кавычках`) остаётся: шаблон велит писать в кавычках
+    технические имена, так что ячейка «`RU.PRJ.REQ-010`» не пуста. Только поиск остатков
+    шаблона (`code=False`) его отбрасывает: артефакт вправе показывать `{{…}}` как пример.
+    """
+    text = _COMMENT.sub("", _FENCE.sub("", text))
+    return _INLINE_CODE.sub("" if not code else (lambda m: m.group(0)[1:-1]), text)
 
 
 class Doc:
@@ -109,16 +119,18 @@ def _filled(value: str) -> bool:
     return bool(value.strip().strip("*|").strip()) and value.strip() not in ("—", "–", "-")
 
 
-def _residue(text: str, spec: bool) -> list:
-    """US-23 / остатки шаблона: `{{…}}`, `[ПРИМЕР]`, служебные комментарии, рабочие пометки."""
+def _residue(text: str, fid: str) -> list:
+    """Остатки шаблона: `{{…}}`, `[ПРИМЕР]`, служебные комментарии, рабочие пометки.
+
+    Номер вопроса свой у каждого профиля: US-23 у истории, AC-03 у критериев, SPEC-01 у спеки.
+    """
     out = []
     # Блоки кода не судим: артефакт про саму шаблонизацию вправе их показывать.
     plain = _FENCE.sub("", text)
-    fid = "SPEC-01" if spec else "US-23"
     if _TEMPLATE_COMMENT.search(_INLINE_CODE.sub("", plain)):
         out.append(_f(fid, "остался служебный комментарий шаблона (ИНСТРУКЦИЯ / ПРИМЕР / "
-                           "ОПЦИОНАЛЬНО): в сданном документе его быть не должно"))
-    seen = _visible(text)
+                           "ОПЦИОНАЛЬНО / УДАЛИТЬ): в сданном документе его быть не должно"))
+    seen = _visible(text, code=False)
     left = re.findall(r"\{\{[^}\n]*\}\}?", seen)
     if left:
         out.append(_f(fid, f"не заполнен плейсхолдер шаблона: {left[0][:60]}"
@@ -169,7 +181,7 @@ def _field(text: str, name: str):
 
 
 def lint_us(text: str) -> list:
-    out = _residue(text, False)
+    out = _residue(text, "US-23")
     doc = Doc(text)
     vis = "\n".join(doc.lines)
 
@@ -276,10 +288,11 @@ def lint_us(text: str) -> list:
 # ------------------------------------------------------------------ критерии приёмки
 
 def lint_ac(text: str) -> list:
-    out = _residue(text, False)
+    out = _residue(text, "AC-03")
     doc = Doc(text)
-    need = (("свойства (История изменений)", r"^(история изменений|свойства)"),
-            ("Описание", r"^описание"),
+    # «История изменений» не требуем: её нет в шаблоне `AC_template.md`, на который по
+    # умолчанию указывает реестр `artifacts:` (она есть только в `ac_v1.0.md`).
+    need = (("Описание", r"^описание"),
             ("Критерии приемки", r"^критерии при[её]"))
     missing = [label for label, rx in need if not doc.find(rx)]
     if missing:
@@ -293,17 +306,38 @@ def lint_ac(text: str) -> list:
 
 # ------------------------------------------------------------------ спецификация
 
+_SPEC_KEYS = r"(?:Дано|Когда|Тогда)"
+# EARS в одну фразу: «Когда <триггер>, система должна <реакция>» (так шаблон спеки её рекламирует).
+_EARS = re.compile(r"(?i)\b(?:когда|если|пока|при)\b[^\n]{1,200}?,\s*(?:то\s+)?система\s+долж")
+
+
 def _spec_value(lines: list, key: str):
-    """Текст после «Дано / Когда / Тогда» в строке сценария или None, если строки нет."""
-    for ln in lines:
-        m = re.match(rf"^\s*(?:[*\-+]\s*)?\*{{0,2}}{key}\*{{0,2}}\s*:?\s*\*{{0,2}}\s*(.*)$", ln)
-        if m:
-            return m.group(1).strip()
+    """Текст после «Дано / Когда / Тогда» в строке сценария или None, если строки нет.
+
+    Значение — остаток строки и вложенные строки под ней (до пустой строки, если текст уже
+    есть, и до следующего ключа): реакцию часто пишут пунктом под «Тогда:».
+    """
+    rx = rf"^\s*(?:[*\-+]\s*)?\*{{0,2}}{key}\*{{0,2}}\s*:?\s*\*{{0,2}}\s*(.*)$"
+    nxt = rf"^\s*(?:[*\-+]\s*)?\*{{0,2}}{_SPEC_KEYS}\*{{0,2}}\s*:"
+    for i, ln in enumerate(lines):
+        m = re.match(rx, ln)
+        if not m:
+            continue
+        parts = [m.group(1).strip()]
+        for tail in lines[i + 1:]:
+            if re.match(nxt, tail):
+                break
+            if not tail.strip():
+                if any(p.strip("*") for p in parts):
+                    break
+                continue
+            parts.append(tail.strip().lstrip("*-+ ").strip())
+        return " ".join(p for p in parts if p).strip()
     return None
 
 
 def lint_spec(text: str) -> list:
-    out = _residue(text, True)
+    out = _residue(text, "SPEC-01")
     fm = frontmatter(text)
     doc = Doc(text)
 
@@ -311,12 +345,15 @@ def lint_spec(text: str) -> list:
     if "based_on" in fm and not based:
         out.append(_f("SPEC-02", "`based_on` пуст: спека без оснований-знаний передаче не подлежит"))
 
-    # Сценарии «Дано / Когда / Тогда» и формулировка «система должна».
+    # Сценарии «Дано / Когда / Тогда» и формулировка «система должна». Сценарий одной
+    # EARS-фразой («Когда …, система должна …») тоже полный: в тест он переводится так же.
     scen = {}
     for k in doc.find(r"^сценарий\s*\d+"):
         num = re.search(r"\d+", doc.heads[k][1]).group(0)
         body = doc.body(k)
         scen[num] = doc.heads[k][1]
+        if _EARS.search("\n".join(body)):
+            continue
         for key in ("Дано", "Когда", "Тогда"):
             val = _spec_value(body, key)
             if val is None or not val.strip("*"):
@@ -388,10 +425,16 @@ def project_dirs(root: str = ".") -> dict:
 
 
 def lint_project(root: str = ".") -> tuple:
-    """→ (число проверенных файлов, [(путь, [замечания])]) по артефактам проекта."""
-    checked, found = 0, []
-    for profile, rel_dir in project_dirs(root).items():
-        base = os.path.join(root, rel_dir)
+    """→ (число проверенных файлов, [(путь, [замечания])]) по артефактам проекта.
+
+    Каждый файл судит один профиль. Если папки видов совпадают или одна вложена в другую,
+    файл достаётся профилю с самой глубокой папкой (при равенстве — первому в `PROFILES`):
+    иначе критерии приёмки получали бы замечания истории, а счёт файлов рос бы вдвое.
+    """
+    dirs = {p: os.path.realpath(os.path.join(root, d)) for p, d in project_dirs(root).items()}
+    checked, found, seen = 0, [], set()
+    for profile in PROFILES:
+        base = dirs[profile]
         if not os.path.isdir(base):
             continue
         for dirpath, dirnames, files in os.walk(base):
@@ -400,6 +443,12 @@ def lint_project(root: str = ".") -> tuple:
                 if not name.endswith(".md") or name.startswith("_") or name == "README.md":
                     continue
                 path = os.path.join(dirpath, name)
+                real = os.path.realpath(path)
+                owner = max((p for p in PROFILES if real.startswith(dirs[p] + os.sep)),
+                            key=lambda p: (len(dirs[p]), -PROFILES.index(p)))
+                if owner != profile or real in seen:
+                    continue
+                seen.add(real)
                 try:
                     with open(path, encoding="utf-8") as fh:
                         text = fh.read()

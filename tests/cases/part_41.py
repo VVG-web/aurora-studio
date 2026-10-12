@@ -8,10 +8,12 @@
 from __future__ import annotations
 
 import importlib
+import os
+import re
 import sys
 from pathlib import Path
 
-from harness import SCRIPTS, make_project, run, test  # noqa: F401
+from harness import KIT, SCRIPTS, make_project, run, test  # noqa: F401
 
 GOOD_US = """\
 # Задача на разработку истории
@@ -198,7 +200,9 @@ def test_artifact_lint_spec_and_ac_rules(_t):
              "# Критерии приемки\n\n1. Система делает.\n")
     assert AL.lint_text(ac_ok, "ac") == []
     ids = _ids(AL.lint_text("# Описание\n\nТекст.\n\n# Критерии приёмки\n\nпусто\n", "ac"))
-    assert ids == ["AC-01", "AC-02"], ids
+    assert ids == ["AC-02"], ids
+    ids = _ids(AL.lint_text("# Критерии приёмки\n\n1. Система делает.\n", "ac"))
+    assert ids == ["AC-01"], ids
 
 
 @test
@@ -237,3 +241,154 @@ def test_artifact_lint_in_kb_lint_is_a_warning_only(tmp: Path):
     assert "Deliverables/work" not in cp.stdout and "артефактов 2," in cp.stdout, cp.stdout
     cli = run("artifact_lint.py", cwd=root, expect_rc=1)
     assert "Deliverables/work/Моя.md" in cli.stdout and "US-23" in cli.stdout, cli.stdout
+
+
+# ------------------------------------------------------------------ доработка после ревью
+
+def _filled(path: str, edits=()) -> str:
+    """Шаблон вида → «заполненный» документ: комментарии сняты, `{{…}}` заменены значением.
+
+    Так проверяется, что линтер и поставляемые шаблоны не разошлись: сменят заголовок в
+    шаблоне — тест упадёт, а не заведёт молча ложные замечания на каждом новом артефакте.
+    Плейсхолдер с тире («код — название — что меняется») получает значение с теми же тире.
+    """
+    text = (KIT / path).read_text(encoding="utf-8")
+    text = re.sub(r"(?s)<!--.*?-->", "", text)
+    rx = re.compile(r"\{\{(?:[^{}]|\{[^{}]*\})*\}\}")
+    while rx.search(text):
+        text = rx.sub(lambda m: " — ".join(["Значение 5"] * (m.group(0).count("—") + 1)), text)
+    for old, new in edits:
+        assert old in text, old
+        text = text.replace(old, new)
+    return text
+
+
+@test
+def test_artifact_lint_shipped_templates_give_no_structure_findings(_t):
+    """Шаблон → заполненный документ → линтер без замечаний: правила привязаны к шаблонам."""
+    AL = _lint()
+    for path, profile, edits in (
+        ("scaffold/Templates/user_story_template.md", "us", ()),
+        ("scaffold/TemplatesCommon/us_v1.0.md", "us", ()),
+        ("scaffold/Templates/AC_template.md", "ac", ()),
+        ("scaffold/TemplatesCommon/ac_v1.0.md", "ac", ()),
+        # Основания спеки и открытые вопросы автор заполняет и опустошает сам.
+        ("scaffold/Templates/spec_template.md", "spec",
+         (("based_on: []", 'based_on: ["[[Основание]]"]'),
+          ("## Открытые вопросы\nЗначение 5", "## Открытые вопросы\n"))),
+    ):
+        found = AL.lint_text(_filled(path, edits), profile)
+        assert found == [], (path, found)
+
+
+@test
+def test_artifact_lint_code_spans_are_values_not_emptiness(_t):
+    """Значение в обратных кавычках — значение: шаблон сам велит писать так технические имена."""
+    AL = _lint()
+    coded = (GOOD_US.replace("| Реализует | RU.PRJ.REQ-010 |", "| Реализует | `RU.PRJ.REQ-010` |")
+             .replace("Реакция системы: принимает документ", "Реакция системы: `принимает`")
+             .replace("| **Как** | Оператор системы |", "| **Как** | `Оператор` |")
+             .replace("Система отказывает в приёме повреждённого документа.",
+                      "См. алгоритм `RU.PRJ.ALG-010`."))
+    assert AL.lint_text(coded, "us") == [], AL.lint_text(coded, "us")
+    # А `{{…}}` в обратных кавычках — пример, а не остаток шаблона.
+    shown = GOOD_US.replace("Система принимает документ.", "Плейсхолдеры пишут как `{{имя}}`.")
+    assert AL.lint_text(shown, "us") == []
+
+
+@test
+def test_artifact_lint_template_leftovers_and_ac_numbering(_t):
+    """«УДАЛИТЬ ПЕРЕД ПУБЛИКАЦИЕЙ» и «уточнить у» — остатки; у критериев свой номер вопроса."""
+    AL = _lint()
+    only_delete = GOOD_US.replace("## Описание", "<!-- УДАЛИТЬ ПЕРЕД ПУБЛИКАЦИЕЙ: название -->\n\n## Описание")
+    assert "US-23" in _ids(AL.lint_text(only_delete, "us"))
+    note = GOOD_US.replace("Нет требований.\n\n## How", "Уточнить у аналитика.\n\n## How")
+    assert "US-23" in _ids(AL.lint_text(note, "us")), AL.lint_text(note, "us")
+    ac = "# Описание\n\nТекст.\n\n# Критерии приемки\n\n1. Система делает. {{срок}}\n"
+    assert _ids(AL.lint_text(ac, "ac")) == ["AC-03"], AL.lint_text(ac, "ac")
+
+
+@test
+def test_artifact_lint_ac_history_is_optional(_t):
+    """AC в форме `AC_template.md` (без «Истории изменений») чист: шаблон по умолчанию её не содержит."""
+    AL = _lint()
+    ok = ("# Описание\n\n|   |   |\n| --- | --- |\n| **Как** | Оператор |\n\n"
+          "## Критерии приемки\n\n### Приём\n\n1. Система принимает документ.\n")
+    assert AL.lint_text(ok, "ac") == []
+
+
+@test
+def test_artifact_lint_spec_accepts_ears_and_nested_then(_t):
+    """EARS одной фразой и «Тогда:» с реакцией вложенным пунктом — не дефект формы."""
+    AL = _lint()
+    one_line = GOOD_SPEC.replace(
+        "- **Дано:** документ в очереди\n- **Когда:** приходит запрос на приём\n"
+        "- **Тогда:** система должна сохранить документ\n",
+        "Когда приходит запрос на приём, система должна сохранить документ.\n")
+    assert AL.lint_text(one_line, "spec") == [], AL.lint_text(one_line, "spec")
+    nested = GOOD_SPEC.replace("- **Тогда:** система должна отказать в приёме",
+                               "- **Тогда:**\n  - система должна отказать в приёме")
+    assert AL.lint_text(nested, "spec") == [], AL.lint_text(nested, "spec")
+    # Без «должна» и во вложенном пункте замечание остаётся.
+    bad = GOOD_SPEC.replace("- **Тогда:** система должна отказать в приёме",
+                            "- **Тогда:**\n  - отказ")
+    assert _ids(AL.lint_text(bad, "spec")) == ["SPEC-04"], AL.lint_text(bad, "spec")
+    # Нет ни ключей, ни EARS — прежние замечания.
+    none = GOOD_SPEC.replace("- **Дано:** документ повреждён\n", "")
+    assert _ids(AL.lint_text(none, "spec")) == ["SPEC-03"]
+
+
+@test
+def test_artifact_lint_project_judges_a_file_by_one_profile(tmp: Path):
+    """Виды `us` и `ac` с общей или вложенной папкой: файл судит один профиль и считается раз."""
+    AL = _lint()
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8")
+                   + "artifacts:\n  us:\n    template: T/us.md\n    out: Deliverables/work\n"
+                   "  ac:\n    template: T/ac.md\n    out: Deliverables/work\n", encoding="utf-8")
+    work = root / "Deliverables/work"
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "A.md").write_text(GOOD_US, encoding="utf-8")
+    cwd = os.getcwd()
+    os.chdir(root)
+    try:
+        checked, found = AL.lint_project(".")
+        assert checked == 1 and found == [], (checked, found)        # один файл — один раз, как история
+        # Вложенная папка отдаётся профилю с более глубокой папкой.
+        cfg.write_text(cfg.read_text(encoding="utf-8").replace(
+            "  ac:\n    template: T/ac.md\n    out: Deliverables/work\n",
+            "  ac:\n    template: T/ac.md\n    out: Deliverables/work/ac\n"), encoding="utf-8")
+        (work / "ac").mkdir(exist_ok=True)
+        (work / "ac/B.md").write_text("# Описание\n\nТекст.\n\n# Критерии приемки\n\n1. Система делает.\n",
+                                      encoding="utf-8")
+        checked, found = AL.lint_project(".")
+        assert checked == 2 and found == [], (checked, found)
+    finally:
+        os.chdir(cwd)
+
+
+@test
+def test_artifact_lint_warnings_are_not_counted_as_base_errors(tmp: Path):
+    """Предупреждения о форме не попадают в виды ошибок `ops:todo` и «Здоровья» панели."""
+    root = make_project(tmp)
+    (root / "Artifacts/us").mkdir(parents=True, exist_ok=True)
+    (root / "Artifacts/us/US-1.md").write_text("# История\n\nВольный текст.\n", encoding="utf-8")
+    full = run("kb_lint.py", "--full", cwd=root).stdout
+    assert "форма артефактов" in full and "замечаний по форме" in full, full
+    errs = re.search(r"ошибок (\d+)", full)
+    assert errs and errs.group(1) == "0", full
+    # ops:todo разбирает вывод линтера по разделам «## вид: N»
+    sys.path.insert(0, str(SCRIPTS))
+    todo = importlib.import_module("aurora_todo")
+    assert todo.lint_sections(full) == {}, todo.lint_sections(full)
+    out = run("aurora_todo.py", cwd=root).stdout
+    assert "ошибок базы" not in out and "после последней починки" not in out, out
+    run("kb_lint.py", "--residue", cwd=root)
+    out = run("aurora_todo.py", cwd=root).stdout
+    assert "ошибок базы" not in out and "после последней починки" not in out, out
+    # «Здоровье» панели берёт виды ошибок тем же образом
+    sys.path.insert(0, str(KIT / "cockpit"))
+    ck = importlib.import_module("aurora_cockpit")
+    info = ck._health_lint(str(root), "ru")["lint"]
+    assert info.get("errors") == 0 and info.get("kinds") == {}, info
