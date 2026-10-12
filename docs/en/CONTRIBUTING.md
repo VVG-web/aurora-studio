@@ -37,11 +37,14 @@ modules, panel sections and skins, and how to release versions. Русская �
   the script (hooks v2–v4 do not name a version — that is the sign), and `kit:doctor` and "Health" show a warning about an outdated kit hook;
 - one scanner of secrets and internal names for doctor, pre-commit, pre-push and CI. The secret rules live in one place —
   `aurora_common.scan_secret_text` (Aurora's own token names such as `JIRA_PAT` and `CONFLUENCE_PERSONAL_TOKEN`, vendor formats
-  `ghp_…`, `glpat-…`, `xox…-`, `AKIA…`, `sk-…`, private keys, URLs with a password; placeholders such as `<token>`, `${…}` and
-  `xxxx` do not count as secrets) — and are wired in three places. `kit:doctor` and `kb:lint` look at what will reach the
-  project's git: the config, `AGENTS.md`, skills (`.claude/skills`, `.agents/skills`), bots (`bots/`) and `mcp.json`; what
-  `.gitignore` closes, `.aurora/` and knowledge cards are not read. The project's pre-commit checks the added lines of the index
-  in the same places — always, and with the ratchet off (code 1 stops the commit, any other non-zero code means the check itself
+  `ghp_…`, `glpat-…`, `xox…-`, `AKIA…`, `sk-…`, private keys, URLs with a password, the `Authorization: Bearer …` header, bare
+  `api_key:`/`secret:`/`token:` with a value of 16+ characters including a digit; placeholders such as `<token>`, `${…}`, `$JIRA_PAT`,
+  `xxxx` and `your-token` do not count as secrets, while a password with brackets or a start such as `Password2024` does; in
+  `mcp.json` the JSON is parsed too: any non-placeholder value of a secret key in `env`/`headers`/`auth`) — and are wired in three places. `kit:doctor` and `kb:lint` look at what will reach the
+  project's git: the config, `AGENTS.md`, skills (`.claude/skills`, `.agents/skills`), bots (`bots/`), `mcp.json`, and `.env*` / `aurora.env.local` in the root (git lists them only when the `.gitignore` entry
+  was lost or the file was added with `add -f` — that is exactly the leak path); what `.gitignore` closes, `.aurora/` and
+  knowledge cards are not read. The project's pre-commit checks the added lines of the index
+  in the same places (the diff is limited to them: attachments of the base are not read) — always, and with the ratchet off (code 1 stops the commit, any other non-zero code means the check itself
   broke and the commit is not blocked). The kit's pre-push looks for vendor formats in the added lines of any file — even without
   a names list. The value of a secret is never printed: only the file, the line, the rule and the first character. The `secrets`
   job in engine-tests (`.github/scripts/scan_pushed.py`) runs the same `--scan-push` over the commits that arrived: the list of

@@ -16,7 +16,7 @@
   "install.engine_ok": "Движок актуален",
   "install.engine_what": "в проекте {engine}, в kit {kit}",
   "install.ratchet": "Храповик линтера",
-  "install.ratchet_what": "git-хук не даёт числу ошибок расти",
+  "install.ratchet_what": "git-хук не даёт числу ошибок расти и останавливает коммит с секретом в настройках, навыках, ботах и mcp.json",
   "install.structure": "Структура и конфиг",
   "install.structure_ok": "схема папок совпадает с движком",
   "install.extras": "Надстройки движка",

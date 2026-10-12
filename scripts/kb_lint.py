@@ -491,9 +491,12 @@ def main():
 
     # Секреты, случайно попавшие в git (находка считается ошибкой — для CI). Правила и список
     # мест общие с доктором и хуками (`aurora_common.scan_secret_files`): своей копии шаблонов здесь нет.
-    for rel, rule, _line in scan_secret_files("."):
-        errors.append(f"{rel}: возможный секрет в git ({rule}) — уберите токен/пароль "
-                      f"(токены только в .env.aurora.local)")
+    # В коммите (`--only`) места настроек проверяет `aurora_hooks --scan-secrets`: здесь находки
+    # всё равно отсекал бы фильтр ниже, а `git ls-files` по всему проекту — лишняя работа на каждый коммит.
+    if not only:
+        for rel, rule, _line in scan_secret_files("."):
+            errors.append(f"{rel}: возможный секрет в git ({rule}) — уберите токен/пароль "
+                          f"(токены только в .env.aurora.local)")
 
     n = len(cards)
     if only:

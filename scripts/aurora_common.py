@@ -3488,37 +3488,59 @@ SECRET_RULES = (
     ("slack-token", True, re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}"), 0, 0),
     ("aws-key", True, re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), 0, 0),
     # ключ вида `sk-…`: цифра внутри обязательна — длинный слаг через дефис ключом не является
-    ("api-key", True, re.compile(r"\bsk-(?:ant-|proj-)?(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{32,}"), 0, 0),
+    ("api-key", True, re.compile(r"\bsk-(?:ant-|proj-)?(?=[A-Za-z0-9_\-]{0,200}\d)[A-Za-z0-9_\-]{32,}"), 0, 0),
     ("url-credentials", False,
-     re.compile(r"\b[a-z][a-z0-9+.\-]*://[^/\s:@'\"<>]+:([^/\s@'\"<>]{3,})@[A-Za-z0-9.\-]+", re.I), 1, 3),
+     re.compile(r"\b[a-z][a-z0-9+.\-]{0,15}://[^/\s:@'\"<>]{1,128}:([^/\s@'\"<>]{3,256})@[A-Za-z0-9.\-]+", re.I), 1, 3),
     # имена токенов Авроры и ключей вообще: `JIRA_PAT=…`, `CONFLUENCE_PERSONAL_TOKEN: …`
     ("token-name", False,
-     re.compile(r"\b[A-Za-z][A-Za-z0-9_]*(?:_TOKEN|_PAT|_SECRET|_API_KEY)[\"']?\s*[:=]\s*(\"[^\"]*\"|'[^']*'|\S+)", re.I), 1, 6),
+     re.compile(r"\b[A-Za-z][A-Za-z0-9_]*(?:_TOKEN|_PAT|_SECRET|_API_KEY|_APIKEY|_ACCESS_KEY|_SECRET_KEY|_PASSPHRASE)[\"']?\s*[:=]\s*(\"[^\"]*\"|'[^']*'|\S+)", re.I), 1, 6),
     ("api-token", False,
      re.compile(r"\bapi[_-]?token[\"']?\s*[:=]\s*['\"]?([A-Za-z0-9_\-]{20,})", re.I), 1, 20),
     ("password", False, re.compile(r"password[\"']?\s*[:=]\s*(\"[^\"]*\"|'[^']*'|\S+)", re.I), 1, 4),
+    # заголовок `Authorization: Bearer …` (в mcp.json, навыках, ботах): схема + значение от 8 знаков
+    ("auth-header", False,
+     re.compile(r"\bauthorization[\"']?\s*[:=]\s*[\"']?(?:bearer|basic|token)\s+([A-Za-z0-9._~+/=\-]{8,})", re.I), 1, 8),
+    # голые имена без приставки (`api_key: …`, `"secret": …`, `token: …`): значение от 16 знаков и с цифрой —
+    # так слово «token: authentication» в тексте навыка секретом не считается
+    ("bare-key", False,
+     re.compile(r"\b(?:api[_-]?key|secret(?:[_-]?key)?|access[_-]?key|client[_-]?secret|passphrase"
+                r"|(?:(?:access|auth|refresh|bot)[_-]?)?token)[\"']?\s*[:=]\s*[\"']?"
+                r"((?=[^\s\"']{0,200}\d)[A-Za-z0-9._~+/=\-]{16,512})", re.I), 1, 16),
 )
 # Слова-заглушки: значение, которое написано «для примера», секретом не считается.
 _SECRET_FILLER = frozenset((
     "token", "secret", "password", "pass", "pwd", "key", "none", "null", "true", "false", "empty", "todo",
     "changeme", "change-me", "change_me", "placeholder", "example", "sample", "dummy", "fake",
     "токен", "секрет", "пароль", "ключ", "пусто", "нет"))
+# Приставка-заглушка — только целым словом (до разделителя или конца): `your-token`, `example_key`,
+# `replace_me`; а `yourself123`, `Пароль2024` — настоящие значения, которым не повезло с началом.
 _SECRET_FILLER_START = re.compile(
     r"(?i)^(?:your|example|sample|dummy|fake|changeme|change[-_]me|placeholder|replace|insert|"
-    r"секрет|токен|пароль|ключ)")
+    r"секрет|токен|пароль|ключ)(?![^\W_])")
+# Шаблон или вызов, а не значение: `<токен>`, `${PAT}`/`${{ secrets.X }}`, `{{x}}`, `$(cmd)`, `$JIRA_PAT`,
+# `%JIRA_PAT%`, `getpass()`, `os.environ["X"]`, `args[0]`. Режем по пробелам, поэтому `${{` и `<ваш`
+# узнаём по началу; скобка внутри обычного пароля (`Zx9(Cv8w!`) шаблоном не считается.
+_SECRET_TEMPLATE = re.compile(
+    r"^(?:<|\$\{|\{\{|\$\(|\$[A-Z_][A-Z0-9_]*$|%[A-Za-z_]\w*%$|\[[^\]]*\]$"
+    r"|[A-Za-z_][\w.]*\((?:[\"'$)]|.*\)$)|[A-Za-z_][\w.]*\[(?:[\"']|\d+\]$))")
 # Где искать (пути от корня проекта, через «/»; папка — с «/» на конце). Только то, что способно
 # попасть в git проекта и читается как текст настроек: база знаний сюда не входит — в её
 # карточках «password: …» — это пересказ чужой документации, а не секрет проекта.
 SECRET_SCAN_PLACES = ("aurora.config.yaml", "AGENTS.md", "mcp.json", ".mcp.json",
                       ".claude/skills/", ".agents/skills/", "bots/")
 SECRET_SCAN_SUFFIXES = (".md", ".json", ".mdc", ".yml", ".yaml")
+# Файлы с настоящими токенами Авроры лежат в корне проекта и закрыты `.gitignore`; сюда они попадают
+# только если закрытие потеряно или файл добавлен через `git add -f` — как раз этот путь утечки и ловим.
+# Суффикс `.md/.json` им не нужен; образцы (`.env.example`) — заглушки, их не смотрим.
+SECRET_ENV_GLOB = ".env*"
+SECRET_ENV_SAMPLE = (".example", ".sample", ".template", ".dist")
 SECRET_SCAN_MAX = 1024 * 1024        # больше мегабайта — не настройки, а данные
 
 
 def secret_placeholder(value: str) -> bool:
     """Значение — заглушка (`<токен>`, `${PAT}`, `xxxx`, `your-token`, вызов функции), а не секрет."""
     v = value.strip().strip("`'\"*,;.")
-    if not v or v[0] in "<$%{[(" or "..." in v or "…" in v or any(c in v for c in "<>([]\"'"):
+    if not v or "..." in v or "…" in v or _SECRET_TEMPLATE.match(v):
         return True              # заглушка или код (`os.environ["X"]`, `getpass()`), а не значение
     if re.match(r"^[xX*•.\-_#]+$", v):
         return True
@@ -3554,7 +3576,10 @@ def is_secret_place(rel: str) -> bool:
     rel = rel.replace("\\", "/")
     if rel.startswith("./"):
         rel = rel[2:]
-    if not rel.lower().endswith(SECRET_SCAN_SUFFIXES):
+    base = rel.lower()
+    if "/" not in rel and (base in (".env", "aurora.env.local") or base.startswith(".env.")):
+        return not base.endswith(SECRET_ENV_SAMPLE)
+    if not base.endswith(SECRET_SCAN_SUFFIXES):
         return False
     return any(rel == p or (p.endswith("/") and rel.startswith(p)) for p in SECRET_SCAN_PLACES)
 
@@ -3587,6 +3612,58 @@ def secret_scan_files(root: str = ".") -> list:
     return sorted(set(r for r in rels if is_secret_place(r) and os.path.isfile(os.path.join(root, r))))
 
 
+def _secret_json_value(key: str, value) -> str:
+    """Значение из `env`/`headers`/`auth` mcp.json, которое похоже на секрет, иначе пустая строка."""
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    v = re.sub(r"(?i)^(?:bearer|basic|token)\s+", "", value.strip())
+    if secret_placeholder(v) or len(v) < 4:
+        return ""
+    if _mcp_arg_secret_named(key):
+        return v
+    # имя не выдаёт секрет (`X-Custom`, `CONF`), но длинная строка с цифрами и без пробелов — выдаёт
+    return v if re.fullmatch(r"(?=[^\s]*\d)(?=[^\s]*[A-Za-z])[A-Za-z0-9._~+/=\-]{24,}", v) else ""
+
+
+def scan_mcp_json(text: str) -> list:
+    """[(правило, номер строки, маска)] по тексту `mcp.json`: любое не-заглушечное значение в `env`,
+    `headers` и `auth` секретных ключей. Текстовые правила видят только знакомые имена; продукт же знает,
+    что эти карты секретные целиком (`MCP_SECRET_MAPS`), и `"MY_KEY": "…"` под них не подпадает."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    servers = data.get("mcpServers", data) if isinstance(data, dict) else None
+    if not isinstance(servers, dict):
+        return []
+    lines = text.split("\n")
+
+    def at(key: str, value: str) -> int:
+        want = json.dumps(value, ensure_ascii=False)
+        for n, row in enumerate(lines, 1):
+            if want in row:
+                return n
+        for n, row in enumerate(lines, 1):
+            if json.dumps(key, ensure_ascii=False) in row:
+                return n
+        return 1
+    found = []
+    for spec in servers.values():
+        if not isinstance(spec, dict):
+            continue
+        pairs = []
+        for mp in MCP_SECRET_MAPS:
+            if isinstance(spec.get(mp), dict):
+                pairs.extend(spec[mp].items())
+        if isinstance(spec.get("auth"), str):
+            pairs.append(("auth", spec["auth"]))
+        for k, v in pairs:
+            val = "" if k == "auth" and v == "oauth" else _secret_json_value(str(k), v)
+            if val:
+                found.append(("mcp-secret", at(str(k), v), val[:1] + "…"))
+    return found
+
+
 def scan_secret_files(root: str = ".", rels=None) -> list:
     """[(путь, правило, номер строки)] по файлам проекта. `rels` — свой список (иначе secret_scan_files)."""
     out = []
@@ -3599,6 +3676,9 @@ def scan_secret_files(root: str = ".", rels=None) -> list:
                 text = f.read()
         except OSError:
             continue
-        for name, line, _shown in scan_secret_text(text):
+        hits = scan_secret_text(text)
+        if os.path.basename(rel) in ("mcp.json", ".mcp.json"):
+            hits += scan_mcp_json(text)
+        for name, line, _shown in hits:
             out.append((rel, name, line))
     return out

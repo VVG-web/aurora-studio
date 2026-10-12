@@ -16,7 +16,7 @@
   "install.engine_ok": "Engine is up to date",
   "install.engine_what": "in the project {engine}, in the kit {kit}",
   "install.ratchet": "Lint ratchet",
-  "install.ratchet_what": "the git hook keeps the error count from growing",
+  "install.ratchet_what": "the git hook keeps the error count from growing and stops a commit with a secret in settings, skills, bots and mcp.json",
   "install.structure": "Structure and config",
   "install.structure_ok": "the folder schema matches the engine",
   "install.extras": "Engine add-ons",

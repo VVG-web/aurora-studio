@@ -31,6 +31,19 @@ jobs:
         run: python3 tests/check_release.py
       - name: Smoke (source-scan invariants)
         run: python3 tests/run_tests.py --smoke
+      # Проверки «внутренних названий нет в отслеживаемых файлах и в сообщениях коммитов» (part_01) без
+      # `local/private_terms.txt` тихо выходят, а в чистом клоне его нет. Список — из секрета репозитория
+      # PRIVATE_TERMS (у форка секрета нет: тогда в журнале предупреждение, а не молчание).
+      - name: Private names list for the full-tree checks
+        env:
+          PRIVATE_TERMS: ${{ secrets.PRIVATE_TERMS }}
+        run: |
+          if [ -n "$PRIVATE_TERMS" ]; then
+            mkdir -p local
+            [ -f local/private_terms.txt ] || printf '%s\n' "$PRIVATE_TERMS" > local/private_terms.txt
+          else
+            echo "::warning::PRIVATE_TERMS не задан: проверки внутренних названий по всему дереву и истории пропущены"
+          fi
       - name: Full suite
         run: python3 tests/run_tests.py
       # Неиспользуемые импорты и переменные и замыкания в цикле: мёртвый код не копится. F821 —

@@ -1228,3 +1228,186 @@ def test_ci_gate_takes_the_names_list_from_a_repository_secret(tmp: Path):
     job = wf[wf.index("  secrets:"):wf.index("  floor:")]
     assert ".github/scripts/scan_pushed.py" in job and "PRIVATE_TERMS: ${{ secrets.PRIVATE_TERMS }}" in job \
         and "fetch-depth: 0" in job and "continue-on-error" not in job, job
+
+
+
+@test
+def test_secret_scanner_sees_headers_bare_keys_and_real_passwords_but_not_templates(tmp: Path):
+    """BL-SEC-18 (проход 2): заголовок `Authorization: Bearer …`, голые `api_key:`/`token:` и пароль со скобками или
+    началом вроде `Пароль2024` находятся, а шаблоны (`<…>`, `${…}`, `$ИМЯ`, `os.environ[...]`, `your-token`) — нет.
+    Фильтр заглушек прежде считал заглушкой любое значение со скобкой или с началом `your`/`пароль`."""
+    sys.path.insert(0, str(SCRIPTS))
+    C = importlib.import_module("aurora_common")
+    key = "a1b2c3d4" * 3
+    bad = ['"Authorization": "Bearer ' + key + '"', "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abcdefghijk",
+           "Authorization: Basic dXNlcjpzZWNyZXQxMjM0", '"apiKey": "' + key + '"', "api_key: " + key,
+           "API_KEY=" + key, "SECRET_KEY=" + key, "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIk7", "token: " + key,
+           "secret: " + key, "password: Zx9(Cv8w!", 'password: "Zx9[Cv8w!k"', "password: $ecretPw99",
+           "password: %Secret99", "https://svc:p(ss1w0rd@git.example.com/x.git", "JIRA_PAT=yourself123456",
+           "password: Пароль2024"]
+    for text in bad:
+        assert C.scan_secret_text(text), f"секрет не найден: {text!r}"
+    safe = ["Authorization: Bearer ${TOKEN}", "Authorization: Bearer <token>", '"Authorization": "Bearer YOUR_TOKEN"',
+            "token: authentication", "secret: configuration-value", "JIRA_PAT=$JIRA_PAT", "JIRA_PAT=%JIRA_PAT%",
+            'JIRA_PAT=os.environ.get("X", "y")', "password: getpass()", "password: your-password",
+            "password: example_pw", "password: replace_me", "password: <ваш пароль>", "password: [REDACTED]",
+            "token: ${{ secrets.X }}", "password: пароль"]
+    for text in safe:
+        assert not C.scan_secret_text(text), f"шаблон принят за секрет: {text!r} → {C.scan_secret_text(text)}"
+    # то, что кит отдаёт проектам (навыки, документация), красным не краснеет
+    leaked = []
+    for rel in subprocess.run(["git", "ls-files", "skills", "docs", "wiki"], cwd=str(KIT), capture_output=True,
+                              text=True, encoding="utf-8", errors="replace").stdout.split("\n"):
+        if rel.endswith(C.SECRET_SCAN_SUFFIXES) and (KIT / rel).is_file():
+            leaked += [(rel, r) for r in C.scan_secret_text((KIT / rel).read_text(encoding="utf-8", errors="ignore"))]
+    assert not leaked, leaked[:5]
+
+
+@test
+def test_secret_scanner_is_linear_on_long_lines(tmp: Path):
+    """BL-SEC-18 (проход 2): правило адреса с паролем было квадратичным на строках без пробелов (`"a-"*40000` — 5,7 с,
+    мегабайт — часы), а pre-commit и kb:lint читают строки любой длины. Теперь схема и вид вперёд ограничены."""
+    import time
+    sys.path.insert(0, str(SCRIPTS))
+    C = importlib.import_module("aurora_common")
+    for text in ("a-" * 40000, "ab.cd." * 14000, "sk-" * 40000, "token:" * 40000, "x://" * 30000, "a_" * 100000 + "TOKEN"):
+        t0 = time.time()
+        C.scan_secret_text(text)
+        spent = time.time() - t0
+        assert spent < 1.5, f"{text[:12]!r}…: {spent:.1f} с на {len(text)} знаков — рост не линейный"
+    assert C.scan_secret_text("sk-" + "a1b2c3d4" * 5) and C.scan_secret_text("git clone https://svc:s3cretpw@git.example.com/x")
+
+
+@test
+def test_mcp_json_secret_in_env_or_headers_is_found_under_any_key_name(tmp: Path):
+    """BL-SEC-18 (проход 2): продукт считает `env` и `headers` секретными картами (`MCP_SECRET_MAPS`), а сканер знал
+    только суффиксы `_TOKEN`/`_PAT`. Теперь `mcp.json` разбирается как JSON: значение секретного по имени ключа
+    (`MY_KEY`, `Cookie`) находится, `${…}` и обычные настройки — нет."""
+    sys.path.insert(0, str(SCRIPTS))
+    C = importlib.import_module("aurora_common")
+    bad = ('{"mcpServers": {"a": {"command": "x", "env": {"LOG": "debug", "MY_KEY": "abc12345xyz"},\n'
+           ' "headers": {"Cookie": "sid=abc123def"}}, "b": {"url": "https://example.com/m", "auth": "tok4en99"}}}')
+    hits = C.scan_mcp_json(bad)
+    assert sorted(n for _r, n, _s in hits) == [1, 2, 2], hits
+    assert all(len(shown) <= 2 for _r, _n, shown in hits), hits
+    ok = ('{"mcpServers": {"a": {"command": "x", "env": {"LOG": "debug", "MY_KEY": "${MY_KEY}", "T": "<токен>"},\n'
+          ' "headers": {"Authorization": "Bearer ${JIRA_PAT}"}, "auth": "oauth"}}}')
+    assert not C.scan_mcp_json(ok), C.scan_mcp_json(ok)
+    assert C.scan_mcp_json("не json") == []
+    root = make_project(tmp, git=True)
+    (root / "mcp.json").write_text(bad, encoding="utf-8")
+    got = {(r, rule) for r, rule, _n in C.scan_secret_files(str(root))}
+    assert ("mcp.json", "mcp-secret") in got, got
+
+
+@test
+def test_env_files_of_aurora_are_a_scanned_place_when_git_would_take_them(tmp: Path):
+    """BL-SEC-18 (проход 2): файл настроек Авроры с токеном (`.env.aurora` + `.local`), не закрытый `.gitignore`
+    или добавленный через `add -f`, находят doctor, kb:lint и pre-commit (раньше его не было среди мест);
+    закрытый — не краснеет, образец `.env.example` не смотрят."""
+    sys.path.insert(0, str(SCRIPTS))
+    C = importlib.import_module("aurora_common")
+    env_name = ".env.aurora" + ".local"
+    assert C.is_secret_place(env_name) and C.is_secret_place(".env") and C.is_secret_place("aurora.env.local") \
+        and not C.is_secret_place(".env.example") and not C.is_secret_place("sub/.env")
+    root = make_project(tmp, git=True)
+    run("aurora_hooks.py", "--install", "--mode", "warn", cwd=root, expect_rc=0)
+    (root / env_name).write_text("JIRA_PAT=q9w8e7r6t5y4\n", encoding="utf-8")
+    doctor = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, '.aurora/scripts'); import aurora_doctor as D;"
+                             "print('\\n'.join(D.scan_secrets()))"], cwd=str(root), capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+    assert f"{env_name}: возможный секрет (" in doctor.stdout, doctor.stdout + doctor.stderr
+    assert "q9w8e7r6t5y4" not in doctor.stdout
+    lint = run("kb_lint.py", cwd=root)
+    assert f"{env_name}: возможный секрет в git (" in lint.stdout, lint.stdout[-800:]
+    _git_in(root, "add", "-A")
+    cp = _git_in(root, "commit", "-qm", "токен", check=False)
+    assert cp.returncode != 0 and f"{env_name}:1 → token-name" in cp.stderr, cp.stdout + cp.stderr
+    assert "q9w8e7r6t5y4" not in cp.stdout + cp.stderr
+    (root / ".gitignore").write_text(env_name + "\n", encoding="utf-8")       # закрыт — git его не отдаёт
+    _git_in(root, "reset", "-q", env_name)
+    assert env_name not in C.secret_scan_files(str(root))
+    _git_in(root, "add", "-A")
+    cp = _git_in(root, "commit", "-qm", "закрыт", check=False)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+
+
+@test
+def test_pre_commit_secret_check_reads_only_settings_places_and_sees_mcp_and_header_forms(tmp: Path):
+    """BL-SEC-18 (проход 2): проверка секретов в pre-commit просит у git diff только мест настроек — большой файл
+    базы в индексе не читается (раньше один файл в 200 МБ давал 7 с и 1,5 ГБ памяти на каждый коммит); при этом
+    `Authorization: Bearer …` в навыке и `"MY_KEY": "…"` в mcp.json коммит останавливают, а `kb_lint --only`
+    не обходит проект в поисках секретов (их ищет pre-commit)."""
+    root = make_project(tmp, git=True)
+    run("aurora_hooks.py", "--install", "--mode", "warn", cwd=root, expect_rc=0)
+    big = root / "AuroraKnowledgeDB" / "assets" / "dump.md"
+    big.parent.mkdir(parents=True, exist_ok=True)
+    big.write_text("строка вложения с password: hunter22\n" * 120000, encoding="utf-8")      # ≈ 4,5 МБ
+    _git_in(root, "add", "-A")
+    code = ("import sys; sys.path.insert(0, '.aurora/scripts'); import aurora_hooks as H\n"
+            "seen = []\n"
+            "orig = H._git_run\n"
+            "def spy(args, binary=False):\n"
+            "    rc, out, err = orig(args, binary)\n"
+            "    seen.append((args, len(out)))\n"
+            "    return rc, out, err\n"
+            "H._git_run = spy\n"
+            "rc = H.scan_secrets_staged()\n"
+            "diff = [s for s in seen if 'diff' in s[0]][0]\n"
+            "print(rc, diff[1], '--' in diff[0], any('AuroraKnowledgeDB' in a for a in diff[0]))\n")
+    cp = subprocess.run([sys.executable, "-c", code], cwd=str(root), capture_output=True, text=True,
+                        encoding="utf-8", errors="replace")
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    rc, size, has_paths, names_kb = cp.stdout.split()
+    assert (rc, has_paths, names_kb) == ("0", "True", "False"), cp.stdout
+    assert int(size) < 20000, f"git отдал {size} байт: diff не ограничен местами настроек"
+    _git_in(root, "commit", "-qm", "вложение")
+    # формы, которые прежний сканер пропускал
+    (root / ".claude/skills/x").mkdir(parents=True)
+    (root / ".claude/skills/x/SKILL.md").write_text(
+        'curl -H "Authorization: Bearer ' + "a1b2c3d4" * 3 + '" https://example.com\n', encoding="utf-8")
+    _git_in(root, "add", "-A")
+    cp = _git_in(root, "commit", "-qm", "заголовок", check=False)
+    assert cp.returncode != 0 and ".claude/skills/x/SKILL.md:1 → auth-header" in cp.stderr, cp.stdout + cp.stderr
+    assert "a1b2c3d4" not in cp.stdout + cp.stderr
+    _git_in(root, "reset", "-q")
+    (root / "mcp.json").write_text('{"mcpServers": {"a": {"command": "x",\n "env": {"MY_KEY": "abc12345xyz"}}}}\n',
+                                   encoding="utf-8")
+    (root / ".claude/skills/x/SKILL.md").unlink()
+    _git_in(root, "add", "-A")
+    cp = _git_in(root, "commit", "-qm", "ключ", check=False)
+    assert cp.returncode != 0 and "mcp.json:2 → mcp-secret" in cp.stderr, cp.stdout + cp.stderr
+    assert "abc12345xyz" not in cp.stdout + cp.stderr
+    # старый секрет в mcp.json и правка соседней строки коммит не останавливают
+    _git_in(root, "commit", "--no-verify", "-qm", "старое")
+    (root / "mcp.json").write_text('{"mcpServers": {"a": {"command": "y",\n "env": {"MY_KEY": "abc12345xyz"}}}}\n',
+                                   encoding="utf-8")
+    _git_in(root, "add", "-A")
+    cp = _git_in(root, "commit", "-qm", "соседняя", check=False)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    # kb_lint --only не ходит за секретами по всему проекту
+    probe = ("import sys, runpy; sys.path.insert(0, '.aurora/scripts'); import aurora_common as C\n"
+             "def boom(*a, **k): raise SystemExit(99)\n"
+             "C.scan_secret_files = boom\n"
+             "sys.argv = ['kb_lint.py', '--only', 'AuroraKnowledgeDB/assets/dump.md']\n"
+             "runpy.run_path('.aurora/scripts/kb_lint.py', run_name='__main__')\n")
+    cp = subprocess.run([sys.executable, "-c", probe], cwd=str(root), capture_output=True, text=True,
+                        encoding="utf-8", errors="replace")
+    assert cp.returncode != 99, "kb_lint --only снова обходит проект в поисках секретов"
+
+
+@test
+def test_ci_writes_the_private_names_list_before_the_full_suite_and_hook_texts_mention_secrets(tmp: Path):
+    """BL-SEC-18 (проход 2): задание tests пишет `local/private_terms.txt` из секрета PRIVATE_TERMS до полного набора
+    (иначе проверки части 01 тихо выходят) или предупреждает; описание хука в панели и страница wiki про хуки
+    говорят про остановку коммита с секретом и про коды выхода проверки секретов."""
+    wf = (KIT / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8")
+    job = wf[wf.index("  tests:"):wf.index("  authors:")]
+    assert job.index("PRIVATE_TERMS") < job.index("name: Full suite") and "private_terms.txt" in job \
+        and "::warning::" in job, job
+    import json
+    for lang, word in (("ru", "секрет"), ("en", "secret")):
+        cat = json.loads((KIT / "cockpit/modules/install/i18n" / f"{lang}.json").read_text(encoding="utf-8"))
+        assert word in cat["install.ratchet_what"] and "mcp.json" in cat["install.ratchet_what"], cat["install.ratchet_what"]
+    for rel in ("wiki/Windows-and-macOS.md", "wiki/ru/Windows-and-macOS.md"):
+        assert "--scan-secrets" in (KIT / rel).read_text(encoding="utf-8"), rel

@@ -28,7 +28,8 @@
 """
 from __future__ import annotations
 import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
-from aurora_common import is_secret_place, scan_secret_text
+from aurora_common import (SECRET_ENV_GLOB, SECRET_SCAN_PLACES, is_secret_place, scan_mcp_json,
+                           scan_secret_text)
 
 import argparse
 import html
@@ -530,13 +531,17 @@ def scan_secrets_staged() -> int:
     линтером (`aurora_common`): конфиг, AGENTS.md, навыки, боты, mcp.json. Значение секрета не
     печатается: только файл, строка, правило и первый знак.
     """
+    # Только места настроек: без списка путей git отдавал бы diff всего индекса (вложения, зеркала),
+    # и коммит базы читал бы сотни мегабайт ради проверки пары файлов. `:(top)` — от корня репозитория.
+    places = [f":(top){p.rstrip('/')}" for p in SECRET_SCAN_PLACES] + [f":(top,glob){SECRET_ENV_GLOB}"]
     rc, raw, err = _git_run(["diff", "--cached", "--unified=0", "--no-color", "--text", "--no-ext-diff",
-                             "--no-renames", "--diff-filter=ACM", "--src-prefix=a/", "--dst-prefix=b/"],
-                            binary=True)
+                             "--no-textconv", "--no-renames", "--diff-filter=ACM", "--src-prefix=a/",
+                             "--dst-prefix=b/", "--", *places], binary=True)
     if rc != 0:
         print(f"aurora: не удалось прочитать индекс для проверки секретов: {err or rc}", file=sys.stderr)
         return 2
     found = []
+    added = {}                    # mcp.json: путь → номера добавленных строк (разбор JSON идёт по всему файлу)
     path, in_hunk, line = "?", False, 0
     for row in raw.decode("utf-8", "replace").split("\n"):
         if row.startswith("diff --git "):
@@ -551,7 +556,16 @@ def scan_secrets_staged() -> int:
             if is_secret_place(path):
                 for rule, _n, shown in scan_secret_text(row[1:]):
                     found.append((path, line, rule, shown))
+                if path.rsplit("/", 1)[-1] in ("mcp.json", ".mcp.json"):
+                    added.setdefault(path, set()).add(line)
             line += 1
+    for path, lines in added.items():
+        # значение под именем, которого текстовые правила не знают (`"MY_KEY": "…"`), видно лишь по разбору JSON
+        rc, blob, _e = _git_run(["show", f":{path}"], binary=True)
+        if rc == 0:
+            for rule, n, shown in scan_mcp_json(blob.decode("utf-8", "replace")):
+                if n in lines:
+                    found.append((path, n, rule, shown))
     if not found:
         return 0
     print("aurora: в коммите похоже на секрет — коммит остановлен:", file=sys.stderr)
