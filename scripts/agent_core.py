@@ -562,6 +562,9 @@ ADAPTER_DEATHS = 3                  # столько падений за про�
 # Приставка поломки самого адаптера. По ней транспорт отличает «сервер отказал» (решает
 # кольцо, как при HTTP) от «адаптер не смог» (тот же вызов уходит прямым HTTP).
 ADAPTER_FAIL = "адаптер Pydantic AI: "
+# Начало причины, с которой адаптер сообщает «до сервера не дошли» (`where=adapter`); то же
+# слово пишет сам адаптер (scripts/agents/pydantic_ai_adapter.py) — тест сверяет оба.
+ADAPTER_NO_CONNECT = "нет соединения"
 
 
 def _adapter_argv() -> list:
@@ -957,19 +960,34 @@ def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -
     # не разобран). Фолбэк не молчаливый: `_call_role` видит путь ответа (`aurora.via`) и
     # поднимает тревогу (`note_bypass`), а вызов с инструментами без адаптера не принимает.
     want = (payload or {}).get("adapter") or ADAPTER.get("name")
+    soft_why = ""
     if want == "pydantic_ai" and payload:
         st, body, err, dt = pydantic_transport(backend, payload, timeout)
         if not str(err or "").startswith(ADAPTER_FAIL):
+            if st is not None:
+                # Адаптер сам довёл вызов до сервера (ответом или отказом): обхода нет, и
+                # причина прежнего обхода — уже не причина.
+                ADAPTER["fallback_why"] = ""
             return st, body, err, dt
-        ADAPTER["fallback_why"] = err[len(ADAPTER_FAIL):]
+        why = err[len(ADAPTER_FAIL):]
+        if why.startswith(ADAPTER_NO_CONNECT):
+            # «Не дошли» — не поломка адаптера: упала сеть или выключен шлюз. Причину обхода
+            # записываем, только если прямой запрос ответил (обход и правда был); иначе итог
+            # прогона грозил бы «Проверьте venv» после любого обрыва связи.
+            soft_why = why
+        else:
+            ADAPTER["fallback_why"] = why
     # В шлюз уходит запрос по стандарту. Внутренние поля адресованы адаптеру, а не
     # серверу: `guard`/`role`/`tools_root`/`mcp` — сторожу и инструментам. Строгий шлюз
     # на неизвестное поле отвечает `400 Unrecognized request argument`, а движок объявлял
     # его недоступным на пятнадцать минут и показывал «не отвечал» — при живом сервере,
     # которым другие клиенты пользовались без помех.
-    return http_json(backend["url"] + "/chat/completions",
-                     {k: v for k, v in (payload or {}).items() if k not in ADAPTER_ONLY},
-                     backend["key"], timeout)
+    res = http_json(backend["url"] + "/chat/completions",
+                    {k: v for k, v in (payload or {}).items() if k not in ADAPTER_ONLY},
+                    backend["key"], timeout)
+    if soft_why and res[0] is not None:
+        ADAPTER["fallback_why"] = soft_why
+    return res
 
 
 def answer_of(body: dict) -> tuple:

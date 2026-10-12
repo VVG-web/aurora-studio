@@ -238,7 +238,8 @@ The Pydantic AI path takes the proxy from the same variables as direct HTTP (`HT
 `NO_PROXY`; a value without a scheme, `proxy.example.com:3128`, is read as an http proxy; gateways on this very
 machine — `localhost`, `127.0.0.1`, `::1` — bypass the proxy). If the adapter failed to reach the gateway (port
 refused, DNS, certificate, proxy), the call is repeated once over direct HTTP, and the reason is shown in the bypass
-alarm; a connection dropped after the request was sent is not repeated that way — the server got the request.
+alarm (if the direct request did not get through either, there was no bypass and no alarm; a successful call
+through the adapter clears the earlier reason); a connection dropped after the request was sent is not repeated that way — the server got the request.
 
 Shared by all roles: the cap of simultaneous requests ("auto" — the sum of provider widths), the request
 timeout, the agent's steps and budget, the call method (`pydantic_ai` or direct HTTP). A failure on one card

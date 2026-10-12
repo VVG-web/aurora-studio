@@ -1838,6 +1838,65 @@ def test_adapter_connect_failure_makes_exactly_one_direct_request(tmp: Path):
             d.clear()
 
 
+@test
+def test_no_connection_bypass_is_recorded_only_when_direct_request_answered(tmp: Path):
+    """Адаптер сказал «нет соединения», а прямой запрос тоже не дошёл (шлюз выключен, сеть упала):
+    обхода не было, причина не записывается — итог прогона не зовёт проверять venv. Ответил
+    прямой путь — причина записана; успешный вызов через адаптер её снимает."""
+    import socket
+    _path()
+    import agent_core as AG
+    hub = {"proc": object(), "pending": {}, "out": None}
+
+    class Pipe:
+        def write(self, line):
+            task = json.loads(line)
+            slot = hub["pending"][task["id"]]
+            slot["out"] = hub["out"]
+            slot["done"].set()
+
+        def flush(self):
+            pass
+    proc = type("P", (), {"stdin": Pipe()})()
+    saved = (AG.adapter_hub, dict(AG.ADAPTER))
+    AG.adapter_hub = lambda: (proc, hub["pending"])
+    payload = {"model": "m", "adapter": "pydantic_ai",
+               "messages": [{"role": "user", "content": "?"}]}
+    down = {"ok": False, "where": "adapter", "error": AG.ADAPTER_NO_CONNECT + ": Connection error."}
+    dead = socket.socket()
+    dead.bind(("127.0.0.1", 0))
+    dead_url = f"http://127.0.0.1:{dead.getsockname()[1]}/v1"
+    dead.close()
+    try:
+        with _Env():
+            AG.ADAPTER.update(name="pydantic_ai", fallback_why="")
+            hub["out"] = down
+            st, _b, _e, _t = AG._transport("chat", {"url": dead_url, "key": ""}, payload, 5)
+            assert st is None and AG.ADAPTER["fallback_why"] == "", \
+                f"обхода не было, а причина записана: {AG.ADAPTER['fallback_why']!r}"
+            gw = _Gateway([_OK])
+            try:
+                st, *_ = AG._transport("chat", {"url": gw.url, "key": ""}, payload, 5)
+            finally:
+                gw.close()
+            assert st == 200 and AG.ADAPTER["fallback_why"].startswith(AG.ADAPTER_NO_CONNECT), \
+                AG.ADAPTER["fallback_why"]
+            # адаптер снова дошёл до сервера — прежняя причина снята
+            hub["out"] = {"ok": True, "text": "да", "usage": {}}
+            st, *_ = AG._transport("chat", {"url": dead_url, "key": ""}, payload, 5)
+            assert st == 200 and AG.ADAPTER["fallback_why"] == "", AG.ADAPTER["fallback_why"]
+            # другая поломка адаптера (не «нет соединения») пишется как раньше
+            hub["out"] = {"ok": False, "where": "adapter", "error": "ответ не разобран"}
+            AG._transport("chat", {"url": dead_url, "key": ""}, payload, 5)
+            assert "не разобран" in AG.ADAPTER["fallback_why"], AG.ADAPTER["fallback_why"]
+        src = (KIT / "scripts" / "agents" / "pydantic_ai_adapter.py").read_text(encoding="utf-8")
+        assert f'f"{AG.ADAPTER_NO_CONNECT}: ' in src, "адаптер и движок называют причину по-разному"
+    finally:
+        AG.adapter_hub = saved[0]
+        AG.ADAPTER.clear()
+        AG.ADAPTER.update(saved[1])
+
+
 def _clear_cool(AG):
     for d in (AG.DOWN, AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
         d.clear()
