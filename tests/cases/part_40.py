@@ -97,7 +97,10 @@ def _tree_without_install_report(root: Path) -> dict:
 
 
 def _git_commit_all(root: Path) -> None:
-    for args in (["init", "-q"], ["add", "-A"],
+    # Без фонового обслуживания: `git commit` запускает `maintenance run --auto` отдельным
+    # процессом, и он перебирает `.git/objects`, пока проверка копирует проект (ENOENT).
+    for args in (["init", "-q"], ["config", "gc.auto", "0"], ["config", "maintenance.auto", "false"],
+                 ["add", "-A"],
                  ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"]):
         subprocess.run(["git", *args], cwd=str(root), check=True, capture_output=True)
 
