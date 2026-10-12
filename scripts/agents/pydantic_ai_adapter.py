@@ -479,7 +479,8 @@ def register_tools(agent, allowed: list) -> None:
 
     @agent.tool_plain
     def kb_context(topic: str) -> str:
-        """Собрать пак знаний по теме: только доверенные карточки."""
+        """Собрать пак знаний по теме: доверенные карточки (пока база не молода — bootstrap —
+        и помеченные черновики; пометки «Слабая опора» и «Скрыто по доверию» не игнорировать)."""
         return engine("ctx_pack.py", [topic, "--mode", "generate", "--no-log"])
 
     @agent.tool_plain

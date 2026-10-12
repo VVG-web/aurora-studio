@@ -5070,6 +5070,17 @@ def pack_budget_args(cfg: dict, template: str, extra: str, idea: str, name: str)
 MIN_PACK = 3000                # меньше этого пак бесполезен: пусть лучше уступит шаблону
 
 
+def pack_refusal(out: str) -> str:
+    """Текст отказа сборки пака для человека: ответ `ctx_pack` — с начала, прочее — хвост.
+
+    Отказ движка («в базе этого нет: …») говорит главное в первых словах, а длинный хвост с
+    «Скрыто по доверию» срезал именно их. У сбоя запуска (трассировка) важен, наоборот, конец."""
+    out = (out or "").strip()
+    if not out:
+        return "пак не собран"
+    return out[:600] if out.startswith("ctx_pack:") else out[-300:]
+
+
 def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
              force_plan: bool, call=None, momus: bool = True, context=None) -> dict:
     """Производство артефакта: обогащение → план с вопросами → воркер → критик → Момус.
@@ -5125,11 +5136,14 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
 
     # --- 1. обогащение: тот же механизм, что отвечает в «Спросить»
     if not stages.get("enriched"):
+        # Идея — постановка нового, а не вопрос к базе: она опирается на известную сущность
+        # и просит то, чего в базе ещё нет, поэтому доля найденных слов тут не повод для
+        # отказа (`abstain=0`). Пометка «Слабая опора» в паке остаётся.
         r = run_command(cwd, "ctx_pack.py",
-                        [st["idea"], "--mode", "generate", "--no-log"] + pack_args)
+                        [st["idea"], "--mode", "generate", "--no-log",
+                         "--retrieval", "abstain=0"] + pack_args)
         if not r["ok"] or "## " not in r["out"]:
-            return {"ok": False, "sid": sid,
-                    "why": (r["out"] or "пак не собран")[-300:]}
+            return {"ok": False, "sid": sid, "why": pack_refusal(r["out"])}
         st["pack"] = r["out"]
         stages["enriched"] = TODAY_STR
         st.setdefault("draft", "")
@@ -5588,7 +5602,7 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
     r = run_command(cwd, "ctx_pack.py", args)
     if not r["ok"] or "## " not in r["out"]:
         return {"ok": False, "answer": "", "cards": [], "seconds": 0.0,
-                "why": (r["out"] or "пак не собран")[-300:]}
+                "why": pack_refusal(r["out"])}
     pack = r["out"]
     # В паке заголовки второго уровня есть и внутри тел карточек: считать их значит
     # обещать человеку контекст втрое больше настоящего. Число даёт сам пак.
@@ -5617,7 +5631,9 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
            "outside": links["outside"], "backend": a["backend"], "model": a["model"]}
     # Слабая опора (пометка в паке, её ставит `ctx_pack.confidence`): ответ дан по неполной
     # выдаче — потребителю (панель, бот) это видно без разбора текста пака.
-    if "Слабая опора" in pack:
+    # Якорь — строка-пометка пака, а не слова в теле карточки: в wiki-базе фраза встречается.
+    import ctx_pack as CP
+    if re.search(r"^> ⚠️ " + re.escape(CP.WEAK_MARK), pack, re.M):
         out["weak_basis"] = True
     if momus:
         out["momus"] = run_momus(cfg, pack, question, text, call,
@@ -5849,6 +5865,10 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
           f"_Карточек в контексте: {res.get('total') or len(res['cards'])} · "
           f"модель: {res['model']} "
           f"(бэкенд №{res['backend']}) · {res['seconds']} с_"]
+    if res.get("weak_basis"):
+        # Пометку видно человеку, а не только если её повторит модель в тексте ответа.
+        L += ["", "⚠️ **Слабая опора:** база нашла не всё, что спрошено, — ответ неполон, "
+              "ненайденное названо в тексте выше (`kb:question`, если нужно закрыть пробел)."]
     mo = res.get("momus") or {}
     if mo:
         if not mo.get("ok"):

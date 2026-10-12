@@ -489,7 +489,7 @@ bot's "MCP" card.
 
 The pack goes into the task before work; during work the bot searches the same base itself (`kb_search`,
 `kb_context`, the `aurora` server). Mode (`context`):
-- `generate` — trusted knowledge only;
+- `generate` — trusted knowledge (while the base is young — bootstrap — labelled drafts too);
 - `evaluate` — everything, with trust marks;
 - `off` — no pack.
 

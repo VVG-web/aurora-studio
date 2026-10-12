@@ -741,16 +741,29 @@ def fuse(cards: dict, topic: str, close: dict | None = None,
 QWORDS = {norm(w) for w in (
     "какой", "какая", "какое", "какие", "каков", "какова", "каким", "какую", "какого",
     "сколько", "почему", "зачем", "куда", "откуда", "кто", "кому", "чем", "расскажи",
-    "объясни", "опиши", "покажи", "подскажи", "скажи")}
+    "объясни", "опиши", "покажи", "подскажи", "скажи",
+    # шаблоны «что такое X», «что значит X», «что можно…»: в базе их нет, и это не пробел
+    "такое", "такой", "такая", "такие", "значит", "означает", "можно", "представляет")}
 ASK_MAX_TERMS = 12      # длиннее — это постановка задачи, а не вопрос: уверенность не считаем
 
 
 def _surface(topic: str, key: str) -> str:
-    """Слово запроса так, как его написал человек (по ключу поиска)."""
-    for raw in re.findall(r"[\w\-.]+", topic.lower().replace("ё", "е"), re.U):
-        if raw.strip(".") and (norm(raw.strip(".")) == key or raw.strip(".") == key):
-            return raw.strip(".")
+    """Слово запроса в том написании, в каком его набрал человек (регистр и «ё» целы)."""
+    for raw in re.findall(r"[\w\-.]+", topic, re.U):
+        raw = raw.strip(".")
+        if raw and (norm(raw) == key or raw.lower().replace("ё", "е") == key):
+            return raw
     return key
+
+
+def _shares_prefix(key: str) -> bool:
+    """В базе есть слово с тем же началом из четырёх знаков — это словоформа, а не новое слово.
+
+    `key` — ключ поиска (`norm`), он же ключи `RARITY`."""
+    head = key[:4]
+    if re.search(r"[\d.]", key):         # номер и код: «US-4.7.9» — не словоформа «US-4.7.2»
+        return False
+    return len(head) >= 4 and any(w.startswith(head) for w in RARITY if w != "__total__")
 
 
 def confidence(seeds: list, topic: str, close: dict | None = None) -> dict | None:
@@ -768,27 +781,40 @@ def confidence(seeds: list, topic: str, close: dict | None = None) -> dict | Non
     terms = [w for w in dict.fromkeys(query_words(topic)) if w not in QWORDS]
     if not terms or len(terms) > ASK_MAX_TERMS or not seeds:
         return None
-    have = set()
+    have, starts = set(), set()
     for c in seeds:
         head, brief, alias, tag, seen, _ids = _word_profile(c)
         have |= {w for w in terms if w in head or w in brief or w in alias or w in tag
                  or w in seen}
+        starts |= {v[:5] for v in (*head, *brief, *alias, *tag, *seen) if len(v) >= 5}
+    # Другая форма слова («установить» против «установка») находит карточку только вполовину:
+    # общее начало из пяти знаков у слова запроса и слова этих карточек. Целого балла не даём —
+    # это не то же слово, — но и «не найдено» не пишем: ответ в карточке есть.
+    near = {w for w in terms if w not in have and len(w) >= 6 and w[:5] in starts
+            and not re.search(r"[\d.]", w)}
     total = sum(weight(w) for w in terms)
-    cover = sum(weight(w) for w in have) / total if total else 1.0
-    missing = [w for w in terms if w not in have]
+    cover = ((sum(weight(w) for w in have) + 0.5 * sum(weight(w) for w in near)) / total
+             if total else 1.0)
+    missing = [w for w in terms if w not in have and w not in near]
     absent = [w for w in missing if not RARITY.get(w, 0)]
     exact = any(_has_exact_id(c, terms) for c in seeds)
     sem = any((close or {}).get(c.stem, 0.0) > SEM_FLOOR for c in seeds)
     weak_at, abstain_at = float(RETRIEVAL["weak"]), float(RETRIEVAL["abstain"])
-    if exact or cover >= weak_at:
+    # Отказ и пометка независимы: `abstain=0` выключает отказ, `weak=0` — пометку, но не
+    # наоборот (раньше при weak=0 условие порога было всегда истинным и глушило отказ).
+    if exact:
         level = "high"
-    elif cover >= abstain_at or sem or not abstain_at:
-        level = "weak"
-    else:
+    elif abstain_at and cover < abstain_at and not sem:
         level = "none"
-    # Слова, которых нет в базе вовсе (имя, код, номер) — «одно общее слово» не повод
-    # считать вопрос отвеченным: уверенность выше слабой не бывает.
-    if level == "high" and absent and weak_at:
+    elif cover >= weak_at:
+        level = "high"
+    else:
+        level = "weak"
+    # Слова, которых нет в базе вовсе — ни в какой форме (имя, код, номер, новый термин), —
+    # «одно общее слово» не повод считать вопрос отвеченным: уверенность выше слабой не
+    # бывает. Слово другой формы («установить» против «установка») так не считается: у него
+    # в базе есть слова с тем же началом из четырёх знаков.
+    if level == "high" and weak_at and any(not _shares_prefix(w) for w in absent):
         level = "weak"
     return {"level": level, "cover": round(cover, 2), "terms": len(terms),
             "missing": [_surface(topic, w) for w in missing],
@@ -799,8 +825,12 @@ def trust_hidden(c: "Card") -> bool:
     """Карточку скрыл фильтр доверия (а не заготовка и не состояние решения).
 
     Decision Record скрывает его состояние (отклонённое и заменённое видны только в `ask`),
-    это не «недоверенное знание»: имя такого решения в паке `generate` не появляется."""
-    return not is_placeholder(c.fm, c.text) and not is_decision(c)
+    это не «недоверенное знание»: имя такого решения в паке `generate` не появляется.
+    Замещённая (`deprecated`) карточка — история, а не непроверенное знание: её видно только
+    в `ask`, режим `evaluate` её тоже не пропускает, и совет «повторите в evaluate» был бы
+    невыполним."""
+    return (not is_placeholder(c.fm, c.text) and not is_decision(c)
+            and c.status != "deprecated")
 
 
 def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
@@ -1010,9 +1040,32 @@ WEAK_MARK = "**Слабая опора:**"
 
 
 def unverified_names(pack: str) -> list:
-    """Имена непроверенных карточек, вошедших в пак (строка в конце пака)."""
+    """Имена непроверенных карточек, вошедших в пак (строка в конце пака).
+
+    Имя может содержать запятую («Заявка, версия 2»), поэтому строку не режем по запятой
+    вслепую: сначала сверяем её с заголовками блоков пака (`## имя — …`), самыми длинными
+    вперёд, и только остаток делим по «, »."""
     m = re.search(r"^> " + re.escape(UNVERIFIED_MARK) + r"(.+)$", pack, re.M)
-    return [x.strip() for x in m.group(1).split(",") if x.strip()] if m else []
+    if not m:
+        return []
+    line = m.group(1).strip()
+    heads = sorted({h.split(" — ")[0].strip() for h in re.findall(r"^## (.+)$", pack, re.M)
+                    if "," in h.split(" — ")[0]}, key=len, reverse=True)
+    out, pos = [], 0
+    while pos < len(line):
+        for name in heads:
+            end = pos + len(name)
+            if line.startswith(name, pos) and (end == len(line) or line.startswith(", ", end)):
+                out.append(name)
+                pos = end + 2
+                break
+        else:
+            cut = line.find(", ", pos)
+            cut = len(line) if cut < 0 else cut
+            if line[pos:cut].strip():
+                out.append(line[pos:cut].strip())
+            pos = cut + 2
+    return out
 
 
 def hidden_note(hidden: list, mode: str, short: bool = False) -> str:
@@ -1027,6 +1080,10 @@ def hidden_note(hidden: list, mode: str, short: bool = False) -> str:
     best = hidden[0]
     note = (f"Скрыто по доверию (режим {mode}): {len(hidden)} из лучших кандидатов ({kinds}); "
             f"лучший скрытый — `{best.stem}` ({best.status or 'без статуса'})")
+    # Подсказка про evaluate — только там, где она выполнима: в самом evaluate её нет, и
+    # статусы, которых evaluate не пропускает, он тоже не покажет.
+    if mode == "evaluate" or not any(c.status in MODE_STATUSES["evaluate"] for c in hidden):
+        return note + "."
     return note + (". Материал есть, но непроверен: повторите в режиме evaluate."
                    if short else "; тело не показано — режим evaluate покажет такие карточки.")
 
@@ -1116,9 +1173,12 @@ def main() -> int:
     jira = jira_state(a.topic)
     hidden = info.get("hidden") or []
     conf = info.get("confidence")
-    # Справочник аббревиатур входит в `chosen` всегда, поэтому «нашлись только скрытые»
-    # узнаём по числу карточек, прошедших по запросу.
-    if (not chosen or (hidden and not info.get("seeded"))) and not jira:
+    # Справочник аббревиатур входит в `chosen` всегда, поэтому «по запросу не нашлось
+    # ничего» узнаём по числу карточек, прошедших по запросу, а не по `chosen`: пак из
+    # одного глоссария — не выдача. С `abstain=0` (производство документа, бот) пак из
+    # глоссария остаётся, как прежде; найденное только скрытым фильтром — отказ всегда.
+    nothing = not info.get("seeded") and (hidden or float(RETRIEVAL["abstain"]) > 0)
+    if (not chosen or nothing) and not jira:
         print(f"ctx_pack: по теме «{a.topic}» ничего {'доверенного ' if hidden else ''}не найдено. "
               + (hidden_note(hidden, a.mode, short=True) + " " if hidden else "")
               + "База не знает — не выдумывайте: заведите вопрос (kb:question) или карточку.",

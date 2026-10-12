@@ -12,7 +12,9 @@
    правилом: коды, аббревиатуры, «кавычки», заголовки ссылок.
 3. **Поиск.** Гибридный поиск Авроры (`ctx_pack`: слова и смысл по индексу `kb:embed`) по
    базе **проекта знаний** бота — своего или выбранного в поле «Проект знаний». Режим
-   `generate` — только доверенное знание; `evaluate` — всё, с пометками доверия.
+   `generate` — доверенное знание (пока база не молода — bootstrap — и помеченные черновики);
+   `evaluate` — всё, с пометками доверия. Бот ищет по понятиям задачи, а не по вопросу, поэтому
+   отказ «в базе этого нет» здесь выключен (`abstain=0`): пак из частично совпавшего лучше пустого.
 
 Пак идёт в задание бота перед самой работой; по ходу работы бот ищет в той же базе сам —
 `kb_search`, `kb_context` и инструментами сервера `aurora`.
@@ -157,7 +159,7 @@ def search(kb_root: str, concepts: list, mode: str, budget: int = PACK_BUDGET) -
     topic = "; ".join(concepts)
     try:
         p = subprocess.run([sys.executable, script, "--mode", mode, "--no-log",
-                            "--budget", str(budget), "--", topic], cwd=kb_root,
+                            "--budget", str(budget), "--retrieval", "abstain=0", "--", topic], cwd=kb_root,
                            capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=300)
     except (OSError, subprocess.TimeoutExpired):

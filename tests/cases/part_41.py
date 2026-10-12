@@ -1630,3 +1630,222 @@ def test_make_not_ready_on_unverified_basis(tmp: Path):
     assert "status: draft" in lean and "status: ready" not in lean, lean[:300]
     assert 'basis_unverified: ["[[Черновик-2]]"]' in lean, lean[:400]
     assert "опора на непроверенное" in lean.split("## Допущения")[1], "нет строки в «Допущениях»"
+
+
+# --- Доработка BL-KBA-14 (проход 2) ------------------------------------------------------------
+
+def _ctx(root: Path, topic: str, *extra: str):
+    return run("ctx_pack.py", topic, "--no-log", *extra, cwd=root)
+
+
+@test
+def test_make_idea_is_not_refused_by_abstain_but_question_is(tmp: Path):
+    """Идея для `agent:make` — постановка, а не вопрос: отказ «в базе этого нет» её не судит.
+
+    Новая функциональность, опирающаяся на известную сущность («оповещение курьера о новой
+    накладной»), находит в базе 10–15 % слов — для вопроса это отказ, для постановки —
+    нормальный пак с пометкой «Слабая опора». `run_make` зовёт поиск с `abstain=0`, прямой
+    вопрос без него по-прежнему получает отказ.
+    """
+    root = _answerability_base(tmp)
+    idea = "Сделать US: оповещение курьера о новой накладной через мобильное приложение"
+    assert _ctx(root, idea).returncode == 1, "вопрос с покрытием ниже порога не отказан"
+    off = _ctx(root, idea, "--retrieval", "abstain=0")
+    assert off.returncode == 0 and "Накладная" in off.stdout, off.stderr
+    assert "Слабая опора" in off.stdout, "пометка при abstain=0 пропала"
+
+    # настоящий путь производства: пак собирается движком проекта, отказа нет
+    sys.path.insert(0, str(SCRIPTS))
+    R = importlib.import_module("agent_runner")
+    A = importlib.import_module("agent_core")
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/US.md").write_text("# US\n\n## Описание\n", encoding="utf-8")
+    cfg_path = root / "aurora.config.yaml"
+    cfg_path.write_text(cfg_path.read_text(encoding="utf-8").rstrip()
+                        + '\nartifacts:\n  us:\n    title: "US"\n'
+                          '    template: "Templates/US.md"\n    out: "Artifacts/us"\n',
+                        encoding="utf-8")
+
+    def fake(cfg_, role, messages, **kw):
+        text = {"planner": json.dumps({"questions": [], "assumptions": [], "plan": "1. Описание"},
+                                      ensure_ascii=False),
+                "critic": json.dumps({"ok": True, "issues": [], "coverage": {}}),
+                "qa": "ВЕРДИКТ: чисто"}.get(role, "# US\n\nтекст")
+        return {"ok": True, "backend": 1, "model": "m", "tps": 9, "log": [], "text": text}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    r1 = R.run_make(cfg, str(root), "us", idea, "", "", False, call=fake)
+    assert r1.get("ok"), f"идея отказана как вопрос: {r1.get('why')}"
+    assert "Слабая опора" in R.load_session(str(root), r1["sid"])["pack"]
+
+
+@test
+def test_glossary_only_pack_is_refused_and_weak_does_not_switch_abstain_off(tmp: Path):
+    """Справочник аббревиатур — не выдача; `weak=0` не выключает отказ (проход 2, BL-KBA-14).
+
+    Глоссарий всегда входит в пак, поэтому вопрос без единого совпадения на базе с ним
+    получал пак из одной карточки «Аббревиатуры» и уходил модели. Отказ и пометка — два
+    ключа, и каждый выключается сам: `abstain=0` — без отказа, `weak=0` — без пометки.
+    """
+    root = _answerability_base(tmp)
+    from harness import card
+    card(root, "Reference/Аббревиатуры.md", "ЭСФ — электронная счёт-фактура.",
+         status="verified", type="reference")
+
+    far = _ctx(root, "рецепт борща")
+    assert far.returncode == 1 and "Context pack" not in far.stdout, \
+        f"пак из одного глоссария ушёл как выдача:\n{far.stdout[:300]}"
+    # с abstain=0 (производство, бот) поведение прежнее
+    assert _ctx(root, "рецепт борща", "--retrieval", "abstain=0").returncode == 0
+
+    topic = "рецепт борща курс биткоина заявка"
+    assert _ctx(root, topic).returncode == 1
+    assert _ctx(root, topic, "--retrieval", "weak=0").returncode == 1, \
+        "weak=0 молча выключил и отказ"
+    half = _ctx(root, "какой статус у заявки на отпуск", "--retrieval", "weak=0")
+    assert half.returncode == 0 and "Слабая опора" not in half.stdout, "weak=0 не снял пометку"
+
+
+@test
+def test_weak_mark_is_not_put_on_answerable_questions(tmp: Path):
+    """Шаблоны «что такое X» и другая словоформа не делают отвечаемый вопрос слабым.
+
+    «такое» и «значит» не входят в запрос как слова, а правило «слова нет в базе — выше
+    слабой опоры не пускает» не касается другой формы слова («оформить» против «оформляется»:
+    общее начало из четырёх знаков). Имя и новое слово без опоры в базе по-прежнему слабо.
+    """
+    root = _answerability_base(tmp)
+    for q in ("Что такое накладная?", "Что значит заявка на поставку?",
+              "Как оформить заявку на поставку?", "Как подтвердить поставку товара?",
+              "Как оформить заявку на поставку товара?"):
+        got = _ctx(root, q)
+        assert got.returncode == 0 and "Слабая опора" not in got.stdout, \
+            f"отвечаемый вопрос «{q}» помечен слабым:\n{got.stdout[:400]}"
+    # другая форма слова засчитывается вполовину: ответ в карточке есть, и пометка не нужна
+    form = _ctx(root, "Как формировать накладные?")
+    assert "Слабая опора" not in form.stdout, form.stdout[:400]
+    assert form.returncode == 0, form.stderr
+    named = _ctx(root, "Как оформить заявку на поставку Зарнитц?")
+    assert "Слабая опора" in named.stdout and "Зарнитц" in named.stdout.split("Слабая опора")[1][:200], \
+        "имя без опоры в базе не названо"
+
+    sys.path.insert(0, str(SCRIPTS))
+    C = importlib.import_module("ctx_pack")
+    cwd0 = os.getcwd()
+    try:
+        os.chdir(root)
+        C.measure_rarity(C.load_cards())
+        assert C._shares_prefix(C.norm("оформить")), "словоформа «оформляется» не узнана"
+        assert not C._shares_prefix(C.norm("Зарнитц")), "новое слово принято за словоформу"
+        assert not C._shares_prefix("us-4.7.9"), "номер принят за словоформу"
+    finally:
+        os.chdir(cwd0)
+    assert C._surface("Старый тариф по объёму Груза", C.norm("Груза")) == "Груза", \
+        "регистр написания потерян"
+    assert C._surface("тариф по объёму", C.norm("объёму")) == "объёму", "ё потеряна"
+
+
+@test
+def test_deprecated_is_not_reported_as_hidden_by_trust_and_hint_is_doable(tmp: Path):
+    """Замещённая карточка — история, а не «непроверенное»: совета про evaluate для неё нет.
+
+    `evaluate` deprecated не пропускает (они видны только в `ask`), поэтому «повторите в
+    режиме evaluate» невыполним, а в самом `evaluate` такой совет вообще бессмыслен.
+    """
+    root = _answerability_base(tmp)
+    from harness import card
+    card(root, "Concepts/Старый-тариф.md", "Старый тариф считался по объёму груза.",
+         status="deprecated", type="concept")
+    card(root, "Concepts/Тариф-архив.md", "Архивный тариф по весу перевозки груза.",
+         status="rejected", type="concept")
+
+    for mode in ("generate", "evaluate"):
+        got = _ctx(root, "старый тариф по объёму груза и тариф перевозки", "--mode", mode)
+        note = [ln for ln in got.stdout.splitlines() if "Скрыто по доверию" in ln]
+        assert not any("deprecated" in ln for ln in note), \
+            f"замещённая карточка названа скрытой по доверию ({mode}): {note}"
+        # подсказка про evaluate — только там и про то, что evaluate способен показать
+        assert not any("evaluate покажет" in ln or "повторите в режиме evaluate" in ln
+                       for ln in note), f"невыполнимый совет ({mode}): {note}"
+    ask = _ctx(root, "старый тариф по объёму груза", "--mode", "ask")
+    assert "Старый-тариф" in ask.stdout, "в ask замещённая карточка должна быть видна"
+    only = _ctx(root, "старый тариф по объёму груза")
+    assert only.returncode == 1 and "evaluate" not in only.stderr, only.stderr
+
+
+@test
+def test_ask_report_shows_weak_basis_and_anchor_is_the_mark_line(tmp: Path):
+    """`weak_basis` доходит до человека, а ставится по строке-пометке пака, не по телу карточки."""
+    sys.path.insert(0, str(SCRIPTS))
+    R = importlib.import_module("agent_runner")
+    C = importlib.import_module("ctx_pack")
+    root = make_project(tmp)
+
+    def ask(pack: str) -> dict:
+        def fake_pack(cwd, script, args):
+            return {"ok": True, "out": pack}
+
+        def fake_call(cfg, role, messages, deadline=None, history=None, **kw):
+            return {"ok": True, "text": "Ответ [[Заявка]].", "backend": 1, "model": "m", "log": []}
+
+        real = R.run_command
+        R.run_command = fake_pack
+        try:
+            return R.run_ask({"request_timeout": 60}, str(root), "вопрос", "generate", 40,
+                             call=fake_call, momus=False)
+        finally:
+            R.run_command = real
+
+    marked = ask(f"# Пак (карточек 1)\n\n> ⚠️ {C.WEAK_MARK} из слов вопроса найдено 40%; "
+                 "в базе нет: отпуск. Отвечайте.\n\n## Заявка\nтекст")
+    assert marked["ok"] and marked.get("weak_basis") is True, marked
+    assert "Слабая опора" in R.report_ask(marked, "вопрос", {"request_timeout": 60}), \
+        "пометка есть в результате, но человек её в отчёте не видит"
+
+    body = ask("# Пак (карточек 1)\n\n## Заявка\nВ описании встречается фраза: Слабая опора.")
+    assert body["ok"] and not body.get("weak_basis"), "флаг поставлен по телу карточки"
+    assert "Слабая опора" not in R.report_ask(body, "вопрос", {"request_timeout": 60})
+
+
+@test
+def test_refusal_text_keeps_its_head_and_unverified_names_keep_commas(tmp: Path):
+    """Отказ движка читается с начала («в базе этого нет»), а имя с запятой не рвётся."""
+    sys.path.insert(0, str(SCRIPTS))
+    R = importlib.import_module("agent_runner")
+    C = importlib.import_module("ctx_pack")
+    long = "ctx_pack: по теме «x» в базе этого нет: найдено 25%. " + "Скрыто по доверию " * 30
+    assert R.pack_refusal(long).startswith("ctx_pack: по теме «x» в базе этого нет"), \
+        "начало отказа срезано"
+    trace = "Traceback (most recent call last):\n" + "  File x\n" * 100 + "ValueError: итог"
+    assert R.pack_refusal(trace).endswith("ValueError: итог"), "у трассировки важен хвост"
+    assert R.pack_refusal("") == "пак не собран"
+
+    pack = ("# Context pack\n\n## Заявка, версия 2 — Заявка\n\n## Черновик — Ч\n\n"
+            f"---\n\n> {C.UNVERIFIED_MARK}Заявка, версия 2, Черновик\n")
+    assert C.unverified_names(pack) == ["Заявка, версия 2", "Черновик"], C.unverified_names(pack)
+
+
+@test
+def test_confidence_with_semantic_closeness_does_not_refuse(tmp: Path):
+    """Поведение отказа при индексе смысла закреплено (KB2-04): близость выше SEM_FLOOR отказ снимает.
+
+    Порог SEM_FLOOR=0.35 кластер сам называет слабым, поэтому на живой базе с индексом отказ
+    может не срабатывать — это условие приёмки калибровки, а не случайность. Тест фиксирует
+    текущее поведение подставленным `close`: близости 0.4 у лишних карточек дают «слабо», 0.2 — отказ.
+    """
+    root = _answerability_base(tmp)
+    sys.path.insert(0, str(SCRIPTS))
+    C = importlib.import_module("ctx_pack")
+    cwd0 = os.getcwd()
+    try:
+        os.chdir(root)
+        cards = C.load_cards()
+        C.measure_rarity(cards)
+        seeds = [cards["Заявка-на-поставку"], cards["Накладная"]]
+        topic = "рецепт борща курс биткоина заявка"
+        far = C.confidence(seeds, topic, {"Накладная": 0.2})
+        near = C.confidence(seeds, topic, {"Накладная": 0.4})
+    finally:
+        os.chdir(cwd0)
+    assert far["level"] == "none", far
+    assert near["level"] == "weak", near

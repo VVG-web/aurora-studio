@@ -30,7 +30,7 @@ conversation that exposed a gap in the base is a reason to write a card.
 
 `ctx:context <topic>` selects cards and prints them with a **trust header and a basis** each — not "draft" but "PRJ-123
 in progress". Useful flags: `--mode generate|review|ask|evaluate|meetings|trusted_meetings`, `--max-cards`, `--budget`,
-`--save` (to `Artifacts/drafts/`). In `generate` mode only trusted knowledge and accepted Decision Records go in — build requirements on that; `ask` adds rejected and replaced ones.
+`--save` (to `Artifacts/drafts/`). In `generate` mode trusted knowledge and accepted Decision Records go in (and, while the base is young — bootstrap — labelled drafts too) — build requirements only on the trusted ones; `ask` adds rejected and replaced ones.
 
 The rule for any manual path: **assemble the context first**, do not feed an assistant Confluence pages as truth. The
 difference between "a card with status `knowledge` and a basis" and "a page from the wiki" is the difference between a
@@ -43,9 +43,11 @@ rarity) the best five trusted cards find **together** — an absolute figure, no
 
 - **Enough** — a normal pack.
 - **Partly** — the pack opens with **"Weak basis"** and names the words the base does not have; answer only from what
-  was found and say what is missing (`kb:question`). `agent:ask` also marks the answer `weak_basis`.
+  was found and say what is missing (`kb:question`). `agent:ask` also marks the answer `weak_basis` and prints a "Weak basis" line in the report.
 - **Almost nothing, no match by meaning or by exact ID** — no pack: "the base does not have this", with the missing
-  words. Long task statements are not judged this way; only questions.
+  words. Long task statements are not judged this way; only questions, and `agent:make` and the bot context call the
+  search with `abstain=0`: they need a pack of the partly matching cards. A pack of the abbreviations glossary alone does
+  not count as a result.
 
 If the best candidates were **hidden by the trust filter** (a `draft` card in `generate` mode), the pack or the refusal
 says so: how many, their statuses and the best name — never the body. Repeat in `evaluate` to read them. Thresholds are
