@@ -11,8 +11,10 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import importlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -48,7 +50,7 @@ CATALOGUE = (
 NAMES = {"concept": "Понятие", "glossary": "Термин", "process": "Процесс", "system": "Система", "role": "Роль",
          "status-model": "Статусная модель", "requirement": "Требование", "reference": "Справочник",
          "cited-document": "Цитируемый документ", "decision": "Решение", "question": "Вопрос",
-         "correction": "Исправление", "moc": "Карта", "policy": "Политика", "atlas": "Атлас"}
+         "correction": "Исправление", "moc": "Карта", "policy": "Политика", "atlas": "Атлас", "x": "Икс"}
 
 
 def _C():
@@ -182,12 +184,14 @@ def test_template_file_name_roundtrip(_t):
         name = C.template_file_name(row[0], "1.0")
         m = C.TEMPLATE_NAME_RE.match(name)
         assert m and m.group("type") == row[0] and m.group("version") == "1.0", name
-    assert C.template_file_name("status-model", "1.10") == "akdb_status-model_v1.10.md"
-    assert C.template_file_name("cited-document", "2") == "akdb_cited-document_v2.md"
+    assert C.template_file_name("status-model", "1.10") == "akdb_status-model_v1.10.md", 'не выполнено: C.template_file_name("status-model", "1.10") == "akdb_status-model_v1.10.md"'
+    assert C.template_file_name("cited-document", "2") == "akdb_cited-document_v2.md", 'не выполнено: C.template_file_name("cited-document", "2") == "akdb_cited-document_v2.md"'
     for bad in ("akdb_concept_v1.0.md.new", "akdb_Concept_v1.0.md", "akdb_concept_1.0.md", "akdb__v1.0.md",
-                "akdb_concept_v1.0.txt", "akdb_concept_vX.md"):
+                "akdb_concept_v1.0.txt", "akdb_concept_vX.md", "akdb_concept_v١.٠.md"):
         assert not C.TEMPLATE_NAME_RE.match(bad), bad
-    for bad in (("Concept", "1.0"), ("a_b", "1.0"), ("concept", "1.x"), ("", "1.0"), ("concept", "")):
+    assert C.template_file_name("a" * 31, "1.0").startswith("akdb_aaaa"), "идентификатор из 31 знака — предел §6.2, он допустим"
+    for bad in (("Concept", "1.0"), ("a_b", "1.0"), ("concept", "1.x"), ("", "1.0"), ("concept", ""), ("x", "1.0"),
+                ("a" * 32, "1.0"), ("concept", "١.٠")):
         try:
             C.template_file_name(*bad)
         except ValueError:
@@ -201,7 +205,7 @@ def test_passport_parses_all_templates(tmp: Path):
     C = _C()
     folder = _fixture_kit(tmp / "kit")
     files = sorted(folder.glob("akdb_*_v1.0.md")) + _kit_templates()
-    assert len(files) >= len(CATALOGUE)
+    assert len(files) >= len(CATALOGUE), 'не выполнено: len(files) >= len(CATALOGUE)'
     for path in files:
         p = C.parse_passport(path.read_text(encoding="utf-8"))
         for key in ("artifact", "template", "version", "file", "author", "created", "card_type", "card_class",
@@ -212,7 +216,7 @@ def test_passport_parses_all_templates(tmp: Path):
         assert isinstance(p["min_links"], int) and isinstance(p["prompt_chars"], int), path.name
     p = C.parse_passport(_template_text(CATALOGUE[0]).replace("migration: none", "migration: none\nown_key: свой"))
     assert p["own_key"] == "свой" and p["sections"] == ["Свойства", "Правила"] and p["kinds"][0] == "knowledge", p
-    assert "card_type" not in C.parse_passport("без шапки")
+    assert "card_type" not in C.parse_passport("без шапки"), 'не выполнено: "card_type" not in C.parse_passport("без шапки")'
     blocks = C.parse_passport("---\ncard_type: concept\nkinds:\n  - knowledge\n  - document\nmin_links: много\n---\n")
     assert blocks["kinds"] == ["knowledge", "document"] and blocks["min_links"] == "много", blocks
 
@@ -225,10 +229,10 @@ def test_load_template_zones(tmp: Path):
     path = _put(tmp / "akdb_concept_v1.0.md", _template_text(row))
     tpl = C.load_template(str(path))
     assert not tpl.problems, tpl.problems
-    assert tpl.common == C.COMMON_HEADING + "\n\n" + C.COMMON_RULES
-    assert tpl.example.startswith("---\ntitle:") and tpl.prompt.startswith("Тип: concept")
-    assert tpl.body_skeleton == "Определение." and tpl.fm_skeleton.startswith("---")
-    assert tpl.fm_raw == ""
+    assert tpl.common == C.COMMON_HEADING + "\n\n" + C.COMMON_RULES, 'не выполнено: tpl.common == C.COMMON_HEADING + "\\n\\n" + C.COMMON_RULES'
+    assert tpl.example.startswith("---\ntitle:") and tpl.prompt.startswith("Тип: concept"), 'не выполнено: tpl.example.startswith("---\\ntitle:") and tpl.prompt.startswith("Тип: concept")'
+    assert tpl.body_skeleton == "Определение." and tpl.fm_skeleton.startswith("---"), 'не выполнено: tpl.body_skeleton == "Определение." and tpl.fm_skeleton.startswith("---")'
+    assert tpl.fm_raw == "", 'не выполнено: tpl.fm_raw == ""'
     ref = C.load_template(str(_put(tmp / "akdb_reference_v1.0.md", _template_text(CATALOGUE[7]))))
     assert ref.fm_raw.startswith("---") and not ref.problems, ref.problems
     cut = _template_text(row).replace("<!-- AKDB:PROMPT:BEGIN -->", "").replace("````markdown akdb-example", "````markdown x")
@@ -237,7 +241,7 @@ def test_load_template_zones(tmp: Path):
     over = C.load_template(str(_put(tmp / "akdb_concept_v1.2.md", _template_text(row, prompt_chars="5"))))
     assert any("prompt_chars" in p for p in over.problems), over.problems
     gone = C.load_template(str(tmp / "нет-такого.md"))
-    assert gone.problems and not gone.passport
+    assert gone.problems and not gone.passport, 'не выполнено: gone.problems and not gone.passport'
 
 
 @test
@@ -245,8 +249,8 @@ def test_common_block_identical_in_all_templates(tmp: Path):
     """Блок AKDB:COMMON — заголовок, пустая строка и `COMMON_RULES` — один и тот же во всех шаблонах."""
     C = _C()
     want = C.COMMON_HEADING + "\n\n" + C.COMMON_RULES
-    assert C.COMMON_RULES.count("\n") == 11 and C.COMMON_RULES.startswith("1. **Карточка — сущность")
-    assert C.COMMON_RULES.rstrip().endswith("придумывать тип нельзя.")
+    assert C.COMMON_RULES.count("\n") == 11 and C.COMMON_RULES.startswith("1. **Карточка — сущность"), 'не выполнено: C.COMMON_RULES.count("\\n") == 11 and C.COMMON_RULES.startswith("1. **Карточка —…'
+    assert C.COMMON_RULES.rstrip().endswith("придумывать тип нельзя."), 'не выполнено: C.COMMON_RULES.rstrip().endswith("придумывать тип нельзя.")'
     for path in sorted(_fixture_kit(tmp / "kit").glob("*.md")) + _kit_templates():
         assert C.load_template(str(path)).common == want, f"{path.name}: общий блок разошёлся с COMMON_RULES"
 
@@ -263,7 +267,7 @@ def test_prompt_block_within_limit(tmp: Path):
     own = C.prompt_extract("concept", reg, common=False)
     both = C.prompt_extract("concept", reg)
     assert own.startswith("Тип: concept") and both == own + "\n\n" + C.COMMON_RULES, both[:80]
-    assert C.prompt_extract("нет-такого", reg) == ""
+    assert C.prompt_extract("нет-такого", reg) == "", 'не выполнено: C.prompt_extract("нет-такого", reg) == ""'
 
 
 # ------------------------------------------------------------------ реестр
@@ -276,26 +280,26 @@ def test_registry_one_type_per_section(tmp: Path):
     reg = _reg(root)
     assert list(reg.types) == list(C.KIT_TYPE_ORDER) and len(reg.types) == 13 and not reg.problems, reg.problems
     sections = [t.section for t in reg.types.values() if t.section]
-    assert len(sections) == len(set(sections)) == 12 and len(reg.by_section) == 12
-    assert reg.by_section["Documents"] == "cited-document" and reg.by_section["Statuses"] == "status-model"
-    assert reg.section_type()["Specs"] == "spec" and reg.section_type()["Concepts"] == "concept"
-    assert len(reg.section_type()) == 13
-    assert all(t.origin == "kit" for t in reg.types.values())
-    assert reg.get("concept").cls == "entity" and reg.get("нет") is None
+    assert len(sections) == len(set(sections)) == 12 and len(reg.by_section) == 12, 'не выполнено: len(sections) == len(set(sections)) == 12 and len(reg.by_section) == 12'
+    assert reg.by_section["Documents"] == "cited-document" and reg.by_section["Statuses"] == "status-model", 'не выполнено: reg.by_section["Documents"] == "cited-document" and reg.by_section["Statuses"] …'
+    assert reg.section_type()["Specs"] == "spec" and reg.section_type()["Concepts"] == "concept", 'не выполнено: reg.section_type()["Specs"] == "spec" and reg.section_type()["Concepts"] == "co…'
+    assert len(reg.section_type()) == 13, 'не выполнено: len(reg.section_type()) == 13'
+    assert all(t.origin == "kit" for t in reg.types.values()), 'не выполнено: all(t.origin == "kit" for t in reg.types.values())'
+    assert reg.get("concept").cls == "entity" and reg.get("нет") is None, 'не выполнено: reg.get("concept").cls == "entity" and reg.get("нет") is None'
     # свой тип в чужом разделе: оба типа выключены до исправления шаблонов
     _put(root / "Templates" / "akdb_policy_v1.0.md",
          _template_text(("policy", "entity", "Concepts", "", "", "knowledge", _ENT, "Свойства", "", 1)))
     bad = _reg(root)
     assert any(p.startswith("V-REG-1") and "Concepts" in p for p in bad.problems), bad.problems
-    assert not bad.types["concept"].enabled and not bad.types["policy"].enabled
-    assert "Concepts" not in bad.by_section and bad.section_type()["Concepts"] == "concept"
-    assert [t.id for t in bad.allowed_for_build() if t.id in ("concept", "policy")] == []
+    assert not bad.types["concept"].enabled and not bad.types["policy"].enabled, 'не выполнено: not bad.types["concept"].enabled and not bad.types["policy"].enabled'
+    assert "Concepts" not in bad.by_section and bad.section_type()["Concepts"] == "concept", 'не выполнено: "Concepts" not in bad.by_section and bad.section_type()["Concepts"] == "concept"'
+    assert [t.id for t in bad.allowed_for_build() if t.id in ("concept", "policy")] == [], 'не выполнено: [t.id for t in bad.allowed_for_build() if t.id in ("concept", "policy")] == []'
     # собственный тип в собственной папке
     _put(root / "Templates" / "akdb_policy_v1.0.md",
          _template_text(("policy", "entity", "Policies", "", "", "knowledge", _ENT, "Свойства", "", 1)))
     ok = _reg(root)
     assert ok.types["policy"].enabled and ok.types["policy"].origin == "project", ok.problems
-    assert ok.by_section["Policies"] == "policy" and ok.section_type()["Policies"] == "policy"
+    assert ok.by_section["Policies"] == "policy" and ok.section_type()["Policies"] == "policy", 'не выполнено: ok.by_section["Policies"] == "policy" and ok.section_type()["Policies"] == "pol…'
 
 
 @test
@@ -310,28 +314,28 @@ def test_registry_project_overrides_kit(tmp: Path):
     t = reg.types["concept"]
     assert t.version == "1.10" and t.versions == ("1.0", "1.9", "1.10"), (t.version, t.versions)
     assert set(f for f in reg.files if f.startswith("akdb_concept")) == {
-        "akdb_concept_v1.0.md", "akdb_concept_v1.9.md", "akdb_concept_v1.10.md"}
+        "akdb_concept_v1.0.md", "akdb_concept_v1.9.md", "akdb_concept_v1.10.md"}, 'не выполнено: set(f for f in reg.files if f.startswith("akdb_concept")) == { "akdb_concept_v1…'
     # проектная редакция с меньшей версией всё равно сильнее; предупреждение о том, что она старее
     _put(root / "Templates" / "akdb_concept_v1.0.md",
          _template_text(row, "1.0", name='"Понятие проекта"', kinds="[knowledge]"))
     reg = _reg(root)
     t = reg.types["concept"]
-    assert t.origin == "project" and t.version == "1.0" and t.name == "Понятие проекта" and t.kinds == ("knowledge",)
+    assert t.origin == "project" and t.version == "1.0" and t.name == "Понятие проекта" and t.kinds == ("knowledge",), 'не выполнено: t.origin == "project" and t.version == "1.0" and t.name == "Понятие проекта" an…'
     assert any("старее шаблона кита" in p for p in reg.problems), reg.problems
     assert reg.files["akdb_concept_v1.0.md"].origin == "project", "одноимённый файл проекта должен перекрывать файл кита"
-    assert reg.files["akdb_concept_v1.10.md"].origin == "kit"
+    assert reg.files["akdb_concept_v1.10.md"].origin == "kit", 'не выполнено: reg.files["akdb_concept_v1.10.md"].origin == "kit"'
     # проектная редакция, меняющая раздел или класс типа кита, отвергается (V-REG-2)
     _put(root / "Templates" / "akdb_glossary_v1.0.md", _template_text(CATALOGUE[1], section="Terms"))
     _put(root / "Templates" / "akdb_role_v1.0.md", _template_text(CATALOGUE[4], card_class="source"))
     reg = _reg(root)
     assert sum(1 for p in reg.problems if p.startswith("V-REG-2")) == 2, reg.problems
-    assert reg.types["glossary"].origin == "kit" and reg.types["glossary"].section == "Glossary"
-    assert reg.types["role"].cls == "entity"
+    assert reg.types["glossary"].origin == "kit" and reg.types["glossary"].section == "Glossary", 'не выполнено: reg.types["glossary"].origin == "kit" and reg.types["glossary"].section == "Glo…'
+    assert reg.types["role"].cls == "entity", 'не выполнено: reg.types["role"].cls == "entity"'
     # свой тип не может быть картой: карты создаёт только кит
     _put(root / "Templates" / "akdb_atlas_v1.0.md", _template_text(("atlas", "map", "Atlases", "", "", "document", "index", "", "", 0)))
-    assert "atlas" not in _reg(root).types
-    assert any("карты создаёт только кит" in p for p in _reg(root).problems)
-    assert C.version_key("1.10") > C.version_key("1.9") > C.version_key("1.0")
+    assert "atlas" not in _reg(root).types, 'не выполнено: "atlas" not in _reg(root).types'
+    assert any("карты создаёт только кит" in p for p in _reg(root).problems), 'не выполнено: any("карты создаёт только кит" in p for p in _reg(root).problems)'
+    assert C.version_key("1.10") > C.version_key("1.9") > C.version_key("1.0"), 'не выполнено: C.version_key("1.10") > C.version_key("1.9") > C.version_key("1.0")'
 
 
 @test
@@ -344,17 +348,17 @@ def test_registry_fallback_to_kit(tmp: Path):
     (root / "AuroraKnowledgeDB").mkdir(parents=True)
     reg = C.registry(str(root), kit_root=str(kit))
     assert len(reg.types) == 13 and all(t.origin == "fallback" for t in reg.types.values()), reg.problems
-    assert reg.kit_root == str(kit)
+    assert reg.kit_root == str(kit), 'не выполнено: reg.kit_root == str(kit)'
     # доставлено частично: недостающие типы — из кита, доставленные — из проекта
     _put(root / "TemplatesCommon" / "akdb_concept_v1.0.md", _template_text(CATALOGUE[0]))
     mixed = C.registry(str(root), kit_root=str(kit))
-    assert mixed.types["concept"].origin == "kit" and mixed.types["glossary"].origin == "fallback"
+    assert mixed.types["concept"].origin == "kit" and mixed.types["glossary"].origin == "fallback", 'не выполнено: mixed.types["concept"].origin == "kit" and mixed.types["glossary"].origin == "f…'
     # нет нигде: реестр пуст, а таблица «раздел → тип» — прежняя, ровно 12 пар
     none = C.registry(str(tmp / "empty"), kit_root=str(tmp / "no-kit"))
-    assert not none.types and not none.by_section and not none.problems
-    assert none.section_type() == C.LEGACY_SECTION_TYPE and len(C.LEGACY_SECTION_TYPE) == 12
-    assert C.UNMANAGED_SECTION_TYPES == {"Specs": "spec"} and C.LEGACY_KINDS == ("template",)
-    assert none.allowed_for_build() == []
+    assert not none.types and not none.by_section and not none.problems, 'не выполнено: not none.types and not none.by_section and not none.problems'
+    assert none.section_type() == C.LEGACY_SECTION_TYPE and len(C.LEGACY_SECTION_TYPE) == 12, 'не выполнено: none.section_type() == C.LEGACY_SECTION_TYPE and len(C.LEGACY_SECTION_TYPE) == …'
+    assert C.UNMANAGED_SECTION_TYPES == {"Specs": "spec"} and C.LEGACY_KINDS == ("template",), 'не выполнено: C.UNMANAGED_SECTION_TYPES == {"Specs": "spec"} and C.LEGACY_KINDS == ("template…'
+    assert none.allowed_for_build() == [], 'не выполнено: none.allowed_for_build() == []'
 
 
 @test
@@ -372,15 +376,15 @@ def test_registry_skips_incomplete_passports(tmp: Path):
     _put(root / "TemplatesCommon" / "akdb_concept_v1.1.md.new", "не шаблон\n")
     reg = _reg(root)
     assert len(reg.types) == 13 and reg.types["glossary"].version == "1.0", "негодный файл не должен вытеснять исправный"
-    assert reg.types["system"].version == "1.0" and reg.types["role"].version == "1.0"
-    assert reg.types["process"].version == "1.0"
+    assert reg.types["system"].version == "1.0" and reg.types["role"].version == "1.0", 'не выполнено: reg.types["system"].version == "1.0" and reg.types["role"].version == "1.0"'
+    assert reg.types["process"].version == "1.0", 'не выполнено: reg.types["process"].version == "1.0"'
     why = " | ".join(reg.problems)
     for name in ("akdb_glossary_v1.1.md", "akdb_system_v1.1.md", "akdb_role_v1.1.md", "akdb_process_v1.1.md"):
         assert name in why, (name, reg.problems)
-    assert "akdb_concept_v1.1.md.new" not in why
+    assert "akdb_concept_v1.1.md.new" not in why, 'не выполнено: "akdb_concept_v1.1.md.new" not in why'
     # kinds пуст, но ключ есть: у записи-исправления видов нет по каталогу, паспорт принимается
-    assert reg.types["requirement"].kinds == () and reg.types["requirement"].version == "1.1"
-    assert not C.registry(str(tmp / "empty"), kit_root=str(tmp / "k")).problems
+    assert reg.types["requirement"].kinds == () and reg.types["requirement"].version == "1.1", 'не выполнено: reg.types["requirement"].kinds == () and reg.types["requirement"].version == "1…'
+    assert not C.registry(str(tmp / "empty"), kit_root=str(tmp / "k")).problems, 'не выполнено: not C.registry(str(tmp / "empty"), kit_root=str(tmp / "k")).problems'
 
 
 @test
@@ -390,9 +394,9 @@ def test_registry_allowed_for_build(tmp: Path):
     reg = _reg(_project(tmp))
     got = [t.id for t in reg.allowed_for_build()]
     assert got == ["concept", "glossary", "process", "system", "role", "status-model", "requirement", "reference"], got
-    assert "cited-document" in reg.types and "cited-document" in C.SCRIPT_ONLY_TYPES
+    assert "cited-document" in reg.types and "cited-document" in C.SCRIPT_ONLY_TYPES, 'не выполнено: "cited-document" in reg.types and "cited-document" in C.SCRIPT_ONLY_TYPES'
     reg.types["glossary"] = dataclasses.replace(reg.types["glossary"], enabled=False)
-    assert "glossary" not in [t.id for t in reg.allowed_for_build()] and "glossary" in reg.types
+    assert "glossary" not in [t.id for t in reg.allowed_for_build()] and "glossary" in reg.types, 'не выполнено: "glossary" not in [t.id for t in reg.allowed_for_build()] and "glossary" in reg…'
 
 
 # ------------------------------------------------------------------ валидатор: коды V-NN
@@ -545,7 +549,10 @@ _pair("V-18",
       lambda: [(mk(template="akdb_concept_v1.1.md"), _versioned), mk()],
       "Сведение: карточка составлена по прежней версии шаблона.")
 _pair("V-19",
-      lambda: [_meeting(False)],
+      lambda: [_meeting(False),
+               _meeting(False).replace("Реплика.", "> 🎙 Из встречи: 01.10.2026 12:00 — строка внутри дословного текста источника."),
+               _meeting(True).replace("> 🎙 Из встречи: 01.10.2026 12:00 — сказано в разговоре, а не записано в документе.\n\n", "")
+               + "\n> 🎙 Из встречи: 01.10.2026 12:00 — пометка ниже «Источника»: это уже не собственная часть.\n"],
       lambda: [_meeting(True), mk(),
                _meeting(True).replace("\n> 🎙", "\n## Под вопросом\n\n- вопрос\n\n> 🎙", 1)])
 _pair("V-20",
@@ -559,9 +566,18 @@ _pair("V-22",
       lambda: [_moc(False)],
       lambda: [_moc(True), mk()])
 _pair("V-23",
-      lambda: [mk(body="# Другое имя\n\n" + LEAD), mk(body="# Заявка на поставку (старая)\n\n" + LEAD)],
+      lambda: [mk(body="# Другое имя\n\n" + LEAD), mk(body="# Заявка на поставку (старая)\n\n" + LEAD),
+               mk(status="placeholder", body="# Другое имя\n\n_Заготовка: имя занято ссылкой._\n"),
+               _example(CATALOGUE[9]).replace("\n# DR-0001: Пример\n", "\n# DR-0001: Другое\n"),
+               _moc(True).replace("\n# Термины и определения\n", "\n# Другие термины\n")],
       lambda: [mk(), mk(body="# Заявка на поставку\n\n" + LEAD), mk(body="#   Заявка   на  поставку  \n\n" + LEAD),
-               mk(kind="dictionary", body="Перенос.\n\n# Заголовок внутри чужого текста\n\nТекст.\n")])
+               mk(kind="dictionary", body="Перенос.\n\n# Заголовок внутри чужого текста\n\nТекст.\n"),
+               mk(kind="dictionary", body="# Заголовок источника\n\n| а | б |\n|---|---|\n| 1 | 2 |\n"),
+               mk(kind="document", body="# Другое имя\n\nПеренос дословно.\n"),
+               mk(type="cited-document", template="akdb_cited-document_v1.0.md", kind="document",
+                  body="# Закон о поставках — ст. 5. Заголовок источника\n\nТекст.\n"),
+               _example(CATALOGUE[9])],
+      "Тело `document` и `dictionary` классов entity и source — перенос чужого текста, его заголовок не сверяется с title.")
 _pair("V-24",
       lambda: [mk(body=LEAD + "\n## Не путать\n\n[[Другая]] — другая сущность.\n\n" + CLOSED),
                mk(body=LEAD + "\n## Что относится к теме\n\nСписок.\n")],
@@ -596,8 +612,8 @@ def test_validate_levels_advisory_and_strict(tmp: Path):
     assert _codes(strict) == _codes(soft), "уровень меняет серьёзность, а не набор нарушений"
     sev = {v.code: v.severity for v in strict}
     assert sev["V-06"] == "error" and sev["V-07"] == "warn" and sev["V-02"] == "info", sev
-    assert {v.code: v.severity for v in soft} == {"V-06": "warn", "V-07": "warn", "V-02": "info"}
-    assert not [v for v in soft if v.severity == "error"]
+    assert {v.code: v.severity for v in soft} == {"V-06": "warn", "V-07": "warn", "V-02": "info"}, 'не выполнено: {v.code: v.severity for v in soft} == {"V-06": "warn", "V-07": "warn", "V-02": …'
+    assert not [v for v in soft if v.severity == "error"], 'не выполнено: not [v for v in soft if v.severity == "error"]'
     try:
         _check(text, reg, "careless")
     except ValueError:
@@ -611,8 +627,8 @@ def test_validate_levels_advisory_and_strict(tmp: Path):
     # без реестра типов судить нечем: проверяется одна шапка
     C = _C()
     empty = C.registry(str(tmp / "empty"), kit_root=str(tmp / "no-kit"))
-    assert _codes(C.validate_card(text, reg=empty)) == []
-    assert _codes(C.validate_card("без шапки", reg=empty)) == ["V-01"]
+    assert _codes(C.validate_card(text, reg=empty)) == [], 'не выполнено: _codes(C.validate_card(text, reg=empty)) == []'
+    assert _codes(C.validate_card("без шапки", reg=empty)) == ["V-01"], 'не выполнено: _codes(C.validate_card("без шапки", reg=empty)) == ["V-01"]'
 
 
 @test
@@ -621,9 +637,9 @@ def test_validate_correction_format(_t):
     C = _C()
     reg = _shared()
     good = _example(CATALOGUE[11])
-    assert _check(good, reg, "strict", "Raw/corrections/2026-10-01-аналитик.md") == []
+    assert _check(good, reg, "strict", "Raw/corrections/2026-10-01-аналитик.md") == [], 'не выполнено: _check(good, reg, "strict", "Raw/corrections/2026-10-01-аналитик.md") == []'
     old = _head({"corrects": '"[[Заявка на поставку]]"', "created": "2026-10-01", "status": "active"}) + "\n# Исправление: X\n\nТекст.\n"
-    assert _codes(_check(old, reg, "strict", "Raw/corrections/a.md")) == ["V-02"]
+    assert _codes(_check(old, reg, "strict", "Raw/corrections/a.md")) == ["V-02"], 'не выполнено: _codes(_check(old, reg, "strict", "Raw/corrections/a.md")) == ["V-02"]'
     assert _check(old, reg, "strict", "Raw/corrections/a.md")[0].severity == "info", "прежнее исправление без template — сведение"
     for text, code in ((good.replace("corrects:", "about:"), "V-02"), (good.replace("status: active", "status: done"), "V-06"),
                        (good.replace("status: active", "status: active\nkind: essay"), "V-05"),
@@ -634,7 +650,7 @@ def test_validate_correction_format(_t):
     # kind исправления — слово человека о виде ДРУГОЙ карточки: допустим любой общий вид (замечание Г-22 сверки)
     for kind in C.KIND_VALUES:
         assert "V-05" not in _codes(_check(good.replace("status: active", f"status: active\nkind: {kind}"), reg, "strict",
-                                           "Raw/corrections/a.md"))
+                                           "Raw/corrections/a.md")), 'не выполнено: "V-05" not in _codes(_check(good.replace("status: active", f"status: active\\nki…'
 
 
 @test
@@ -661,7 +677,7 @@ def test_validate_ignores_unmanaged_and_reads_header_only_by_shared_parser(_t):
     """Тип вне набора (`spec`) не проверяется; своих регулярных выражений для шапки в модуле нет."""
     import ast
     reg = _shared()
-    assert _check("---\ntitle: Спека\ntype: spec\nstatus: weird\ncreated: вчера\n---\n\n# Что угодно\n", reg) == []
+    assert _check("---\ntitle: Спека\ntype: spec\nstatus: weird\ncreated: вчера\n---\n\n# Что угодно\n", reg) == [], 'не выполнено: _check("---\\ntitle: Спека\\ntype: spec\\nstatus: weird\\ncreated: вчера\\n---\\n\\n# …'
     src = (SCRIPTS / "card_types.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "aurora_common" for a in n.names}
@@ -675,17 +691,104 @@ def test_validate_ignores_unmanaged_and_reads_header_only_by_shared_parser(_t):
                 f"в card_types появился свой разбор шапки: {pattern}"
 
 
+def _naive_lines(text: str, heading: str) -> list:
+    """Номера строк (с единицы), где стоит заголовок: пересчёт напрямую, для сверки бегущего счётчика."""
+    return [i for i, line in enumerate(text.split("\n"), 1) if line.startswith(heading)]
+
+
 @test
 def test_validate_is_linear_on_hostile_text(_t):
-    """Серии пробелов и незакрытых скобок в шапке и теле не вешают проверку (нет вложенных квантификаторов)."""
+    """Серии пробелов, незакрытых скобок и повторов заголовков не вешают проверку: счёт строк идёт приращением.
+
+    Повторы служебных заголовков ВНЕ «Источника» и «## Не путать» в собственной части давали по подсчёту
+    строк с начала текста на каждое нарушение: 50 000 повторов — 14–18 с, 100 000 — больше минуты.
+    """
     reg = _shared()
     pad = " " * 200000
-    for text in (mk(title='"' + pad + '"'), mk(body=pad + "\n" + LEAD), mk(body=LEAD + "\n## " + pad + "\n- а\n"),
-                 mk(body="{{" * 100000), mk(body="## Источник (перенесено дословно)\n" + "## Источник (перенесено дословно)\n" * 20000),
-                 "---\n" + "a: b\n" * 50000 + "---\n\n" + LEAD):
+    head = mk(body="")
+    cases = [mk(title='"' + pad + '"'), mk(body=pad + "\n" + LEAD), mk(body=LEAD + "\n## " + pad + "\n- а\n"),
+             mk(body="{{" * 100000), mk(body="## Источник (перенесено дословно)\n" + "## Источник (перенесено дословно)\n" * 20000),
+             "---\n" + "a: b\n" * 50000 + "---\n\n" + LEAD,
+             head + "## История изменений\n" * 50000,
+             head + LEAD + "\n" + "## Не путать\n\nx\n" * 50000,
+             head + "## Под вопросом\n" * 100000,
+             head + LEAD + "\n" + "## Что относится к теме\n- x\n" * 50000,
+             head + LEAD + "\n" + "## Другой раздел\n- x\n" * 50000,
+             head + LEAD + "\n## Свойства\n- а\n\n## Правила\n- б\n" * 25000]
+    for text in cases:
         t0 = time.time()
         _check(text, reg)
-        assert time.time() - t0 < 3, f"проверка зависла на {text[:30]!r}"
+        assert time.time() - t0 < 2, f"проверка зависла на {text[-40:]!r}: {time.time() - t0:.1f} с"
+    # номера строк те же, что при пересчёте напрямую
+    for text, code, heading in ((cases[6], "V-10", "## История изменений"), (cases[7], "V-24", "## Не путать"),
+                                (cases[8], "V-10", "## Под вопросом"), (cases[10], "V-09", "## Другой раздел")):
+        got = [v.line for v in _check(text, reg) if v.code == code]
+        want = _naive_lines(text, heading)
+        want = want[1:] if code == "V-10" else want
+        assert got == want, f"{code}: номера строк разошлись с пересчётом ({got[:3]}… и {want[:3]}…)"
+
+
+@test
+def test_validate_comment_only_dates_are_empty_not_wrong(_t):
+    """Дата с одним комментарием (`asked:   # дата…`, как в шаблоне вопроса) — пустое поле, а не неверная дата."""
+    reg = _shared()
+    fields = {**BASE, "title": '"Q-001: Пример"', "type": "question", "template": "akdb_question_v1.0.md",
+              "kind": "document", "status": "draft", "q_id": "Q-001", "q_status": "open",
+              "asked": "                   # дата, когда вопрос реально задан", "due": "# к какой дате нужен ответ",
+              "answered": "  # дата получения ответа", "sources": '\n  - "Raw/questions/Q-001-Пример.md"'}
+    question = _head(fields) + "\n# Q-001: Пример\n\n## Вопрос\nТекст.\n"
+    assert _check(question, reg) == [], f"штатная форма вопроса даёт нарушения: {_check(question, reg)}"
+    assert "V-08" in _codes(_check(question.replace("# к какой дате нужен ответ", "когда-нибудь"), reg)), \
+        "настоящая неверная дата рядом с комментарием должна ловиться"
+    # обязательная дата, в которой один комментарий, — пустая: поля нет
+    for text in (mk(created="# дата заведения"), mk(updated="   # дата"), mk(source_synced="# дата сверки")):
+        found = [v for v in _check(text, reg) if v.severity != "info"]
+        assert [v.code for v in found] == ["V-02"], f"обязательная дата с одним комментарием: ждали V-02, нашли {found}"
+
+
+@test
+def test_validate_service_lists_in_own_part_are_allowed(_t):
+    """`## Упоминается в` и `## Названо в карточках` допустимы в собственной части: ни V-09, ни V-10, ни V-24."""
+    reg = _shared()
+    cards = [mk(body=LEAD + "\n## Упоминается в\n\n- [[А]]\n\n## Свойства\n- а\n\n## Названо в карточках\n\n- [[Б]]\n"),
+             mk(status="placeholder", body="# Заявка на поставку\n\n_Заготовка: имя занято ссылкой._\n\n## Упоминается в\n\n- [[А]]\n"
+                "\n## Названо в карточках\n\n- [[Б]]\n")]
+    for text in cards:
+        bad = [c for c in _codes(_check(text, reg)) if c in ("V-09", "V-10", "V-24")]
+        assert not bad, f"служебные списки в собственной части приняты за нарушение {bad}:\n{text[-260:]}"
+
+
+@test
+def test_validate_digits_are_ascii_only(_t):
+    """Не-ASCII цифры не принимаются ни за дату, ни за версию, и `int()` на них не падает."""
+    C = _C()
+    reg = _shared()
+    assert "V-08" in _codes(_check(mk(created="٢٠٢٦-١٠-٠١"), reg)), "арабско-индийские цифры приняты за дату"
+    assert C.version_key("1.²") == (1,), "надстрочная цифра сломала разбор версии"
+    assert C.parse_passport("---\ncard_type: concept\nmin_links: ²\n---\n")["min_links"] == "²", 'не выполнено: C.parse_passport("---\\ncard_type: concept\\nmin_links: ²\\n---\\n")["min_links"] =…'
+    assert not C.VERSION_RE.match("١.٠") and not C.DATE_RE.match("٢٠٢٦-١٠-٠١"), "регулярные выражения без re.ASCII"
+
+
+@test
+def test_registry_names_bare_passport_lists_and_bad_type_ids(tmp: Path):
+    """Список паспорта без скобок и негодный идентификатор типа — запись в problems, а не молча пустой тип."""
+    C = _C()
+    root = _project(tmp)
+    _put(root / "TemplatesCommon" / "akdb_glossary_v1.1.md", _template_text(CATALOGUE[1], "1.1", kinds="knowledge, dictionary"))
+    _put(root / "TemplatesCommon" / "akdb_concept_v1.1.md", _template_text(CATALOGUE[0], "1.1", sections="Свойства, Правила"))
+    _put(root / "TemplatesCommon" / "akdb_role_v1.1.md",
+         _template_text(CATALOGUE[4], "1.1", kinds="\n  - knowledge\n  - dictionary"))
+    _put(root / "TemplatesCommon" / "akdb_x_v1.0.md", _template_text(("x", "entity", "Xs", "", "", "knowledge", _ENT, "", "", 0)).replace(
+        "Карточка базы знаний: ", "Карточка базы знаний: Х"))
+    reg = _reg(root)
+    why = "\n".join(reg.problems)
+    assert reg.types["glossary"].version == "1.0" and "akdb_glossary_v1.1.md" in why and "без квадратных скобок" in why, reg.problems
+    assert reg.types["concept"].version == "1.0" and "akdb_concept_v1.1.md" in why, "список sections без скобок принят"
+    assert reg.types["role"].version == "1.1" and reg.types["role"].kinds == ("knowledge", "dictionary"), \
+        f"блочная запись списка отвергнута: {reg.problems}"
+    assert "x" not in reg.types and "akdb_x_v1.0.md" in why and "2–31" in why, f"идентификатор из одного знака принят: {reg.problems}"
+    tpl = C.load_template(str(root / "TemplatesCommon" / "akdb_glossary_v1.1.md"))
+    assert any("без квадратных скобок" in p for p in tpl.problems), tpl.problems
 
 
 # ------------------------------------------------------------------ команда kb:cards
@@ -701,7 +804,8 @@ def _cli_project(base: Path, templates: bool = True) -> Path:
 
 def _cli(root: Path, *args, expect=None) -> subprocess.CompletedProcess:
     cp = subprocess.run([sys.executable, str(root / ".aurora" / "scripts" / "card_types.py"), *args], cwd=str(root),
-                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+                        capture_output=True, text=True, encoding="utf-8", errors="replace",
+                        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
     if expect is not None:
         assert cp.returncode == expect, f"kb:cards {' '.join(args)}: rc={cp.returncode}, ждали {expect}\n{cp.stdout}\n{cp.stderr}"
     return cp
@@ -729,21 +833,30 @@ def test_cli_check_exit_codes(tmp: Path):
     assert summary.strip().count("\n") == 0 and summary.startswith("kb:cards: проверено 2"), summary
     data = json.loads(_cli(root, "--check", "--json", expect=0).stdout)
     assert data["checked"] == 2 and data["stamped"] == 1 and data["legacy"] == 1 and data["errors"] == 0, data
-    assert [f["path"] for f in data["files"]] == ["AuroraKnowledgeDB/Concepts/Плохая.md"]
-    assert {v["code"] for v in data["files"][0]["violations"]} == {"V-02", "V-06", "V-07"}
+    assert [f["path"] for f in data["files"]] == ["AuroraKnowledgeDB/Concepts/Плохая.md"], 'не выполнено: [f["path"] for f in data["files"]] == ["AuroraKnowledgeDB/Concepts/Плохая.md"]'
+    assert {v["code"] for v in data["files"][0]["violations"]} == {"V-02", "V-06", "V-07"}, 'не выполнено: {v["code"] for v in data["files"][0]["violations"]} == {"V-02", "V-06", "V-07"}'
     # сбой: нет такого файла, нет базы, нет шаблонов
-    assert "нет такого файла" in _cli(root, "--check", "AuroraKnowledgeDB/Concepts/нет.md", expect=2).stderr
+    assert "нет такого файла" in _cli(root, "--check", "AuroraKnowledgeDB/Concepts/нет.md", expect=2).stderr, 'не выполнено: "нет такого файла" in _cli(root, "--check", "AuroraKnowledgeDB/Concepts/нет.md"…'
     no_base = _cli_project(tmp / "no-base")
     (no_base / "AuroraKnowledgeDB").rename(no_base / "База")
-    assert "нет папки" in _cli(no_base, "--check", expect=2).stderr
+    assert "нет папки" in _cli(no_base, "--check", expect=2).stderr, 'не выполнено: "нет папки" in _cli(no_base, "--check", expect=2).stderr'
     no_templates = _cli_project(tmp / "no-templates", templates=False)
-    assert "реестр пуст" in _cli(no_templates, "--check", expect=2).stderr
-    assert "реестр пуст" in _cli(no_templates, "--list", expect=2).stdout
-    assert "реестр пуст" in _cli(no_templates, "--stats", expect=2).stderr
+    for cp in (_cli(no_templates, "--check", expect=2), _cli(no_templates, "--list", expect=2),
+               _cli(no_templates, "--stats", expect=2)):
+        text = cp.stdout + cp.stderr
+        assert "реестр пуст" in text, f"нет объяснения, почему судить нечем: {text[:200]}"
+        assert "kit:update" in text and "aurora.py" not in text, f"совет называет не команду панели: {text[:300]}"
     # архив не проверяется, пока не попросили
     _put(kb / "_archive" / "Старая.md", mk(status="imported", title='"Старая"'))
-    assert "проверено 2" in _cli(root, "--check", "--summary", expect=0).stdout
-    assert "проверено 3" in _cli(root, "--check", "--summary", "--all", expect=0).stdout
+    assert "проверено 2" in _cli(root, "--check", "--summary", expect=0).stdout, "архив попал в проверку без --all"
+    assert "проверено 3" in _cli(root, "--check", "--summary", "--all", expect=0).stdout, "--all не добавил архив"
+    # папка внутри архива: без --all она архив и есть, с --all — проверяется; файл, названный прямо, проверяется всегда
+    assert "проверено 0" in _cli(root, "--check", "--summary", "AuroraKnowledgeDB/_archive", expect=0).stdout, \
+        "папка архива проверена без --all"
+    assert "проверено 1" in _cli(root, "--check", "--summary", "--all", "AuroraKnowledgeDB/_archive", expect=0).stdout, \
+        "--all не проверил названную папку архива"
+    assert "проверено 1" in _cli(root, "--check", "--summary", "AuroraKnowledgeDB/_archive/Старая.md", expect=0).stdout, \
+        "названный файл архива не проверен"
 
 
 @test
@@ -756,21 +869,24 @@ def test_cli_list_show_and_stats(tmp: Path):
         assert f"akdb_{row[0]}_v1.0.md" in out, row[0]
     assert "Типов: 13" in out and "кит (в проекте)" in out, out
     data = json.loads(_cli(root, "--list", "--json", expect=0).stdout)
-    assert [t["id"] for t in data["types"]] == [r[0] for r in CATALOGUE] and data["by_section"]["Documents"] == "cited-document"
+    assert [t["id"] for t in data["types"]] == [r[0] for r in CATALOGUE] and data["by_section"]["Documents"] == "cited-document", 'не выполнено: [t["id"] for t in data["types"]] == [r[0] for r in CATALOGUE] and data["by_sect…'
     shown = _cli(root, "--show", "process", expect=0).stdout
     assert "Шаги" in shown and "Тип: process" in shown and "минимум связей: 2" in shown, shown
     as_json = json.loads(_cli(root, "--show", "role", "--json", expect=0).stdout)
-    assert as_json["template"] == "akdb_role_v1.0.md" and as_json["sections"] == ["Ответственность", "Права и ограничения"]
+    assert as_json["template"] == "akdb_role_v1.0.md" and as_json["sections"] == ["Ответственность", "Права и ограничения"], 'не выполнено: as_json["template"] == "akdb_role_v1.0.md" and as_json["sections"] == ["Ответст…'
     cp = _cli(root, "--show", "нет-такого", expect=2)
-    assert "нет в реестре" in cp.stderr and "concept" in cp.stderr
+    assert "нет в реестре" in cp.stderr and "concept" in cp.stderr, 'не выполнено: "нет в реестре" in cp.stderr and "concept" in cp.stderr'
     _put(kb / "Concepts" / "А.md", _example(CATALOGUE[0]))
     _put(kb / "Concepts" / "Б.md", mk(title='"Б"', template=None, pdated="1"))
     _put(kb / "Concepts" / "В.md", mk(title='"В"', template="akdb_concept_v1.0.md"))
+    _put(kb / "Concepts" / "Г.md", mk(title=None, template="akdb_concept_v1.0.md"))
     st = json.loads(_cli(root, "--stats", "--json", expect=0).stdout)
-    assert st["cards"] == 3 and st["stamped"] == 2 and st["legacy"] == 1 and st["by_template"] == {"akdb_concept_v1.0.md": 2}, st
-    assert st["by_code"] == {"V-02": 1, "V-07": 1} and st["with_violations"] == 1 and st["types"] == 13, st
+    assert st["cards"] == 4 and st["stamped"] == 3 and st["legacy"] == 1 and st["by_template"] == {"akdb_concept_v1.0.md": 3}, st
+    assert st["pre_template"] == 1, f"«нет template» посчитано не отдельно: {st}"
+    assert st["by_code"] == {"V-02": 1, "V-07": 1}, f"V-02 в разбивке — только настоящая ошибка «нет поля» (Г.md), не сведение (Б.md): {st}"
+    assert st["with_violations"] == 2 and st["types"] == 13, st
     text = _cli(root, "--stats", expect=0).stdout
-    assert "карточек всего 3" in text and "akdb_concept_v1.0.md — 2" in text and "до-шаблонных (без template:): 1" in text, text
+    assert "карточек всего 4" in text and "akdb_concept_v1.0.md — 3" in text and "до-шаблонных (без template:): 1" in text, text
 
 
 @test
@@ -806,10 +922,36 @@ def test_kb_cards_is_registered_everywhere(_t):
     assert len(parts) == 7 and parts[3] == "скрипт" and parts[4] == "card_types.py", row
     assert re.search(r"(?m)^scripts/card_types\.py\s*=>\s*\.aurora/scripts/card_types\.py$",
                      (KIT / "engine_manifest.txt").read_text(encoding="utf-8")), "скрипта нет в манифесте движка"
-    assert "`kb:cards`" in (KIT / "skills/aurora-vault/SKILL.md").read_text(encoding="utf-8")
-    assert "`kb:cards`" in (KIT / "docs/commands.md").read_text(encoding="utf-8")
-    assert "`kb:cards`" in (KIT / "docs/en/commands.md").read_text(encoding="utf-8")
+    assert "`kb:cards`" in (KIT / "skills/aurora-vault/SKILL.md").read_text(encoding="utf-8"), 'не выполнено: "`kb:cards`" in (KIT / "skills/aurora-vault/SKILL.md").read_text(encoding="utf-…'
+    assert "`kb:cards`" in (KIT / "docs/commands.md").read_text(encoding="utf-8"), 'не выполнено: "`kb:cards`" in (KIT / "docs/commands.md").read_text(encoding="utf-8")'
+    assert "`kb:cards`" in (KIT / "docs/en/commands.md").read_text(encoding="utf-8"), 'не выполнено: "`kb:cards`" in (KIT / "docs/en/commands.md").read_text(encoding="utf-8")'
     data = json.loads((KIT / "cockpit/i18n/data/en.json").read_text(encoding="utf-8"))
-    assert data["commands"]["kb:cards"].strip() and not re.search("[а-яА-ЯёЁ]", data["commands"]["kb:cards"])
+    assert data["commands"]["kb:cards"].strip() and not re.search("[а-яА-ЯёЁ]", data["commands"]["kb:cards"]), 'не выполнено: data["commands"]["kb:cards"].strip() and not re.search("[а-яА-ЯёЁ]", data["comm…'
     head = (SCRIPTS / "card_types.py").read_text(encoding="utf-8").split('"""')[1]
-    assert "Панель: `kb:cards`" in head
+    assert "Панель: `kb:cards`" in head, 'не выполнено: "Панель: `kb:cards`" in head'
+
+
+def _snapshot(root: Path) -> dict:
+    """Дерево проекта: путь → отпечаток содержимого (папки — отдельными записями)."""
+    out = {}
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        out[rel] = hashlib.sha1(path.read_bytes()).hexdigest() if path.is_file() else "dir"
+    return out
+
+
+@test
+def test_kb_cards_writes_nothing(tmp: Path):
+    """`kb:cards` только читает: после `--list`, `--show`, `--check`, `--strict`, `--stats` и `--json` дерево проекта то же."""
+    root = _cli_project(tmp)
+    kb = root / "AuroraKnowledgeDB"
+    _put(kb / "Concepts" / "А.md", _example(CATALOGUE[0]))
+    _put(kb / "Concepts" / "Б.md", mk(title='"Б"', template=None, pdated="1", status="imported"))
+    _put(kb / "_archive" / "В.md", mk(title='"В"'))
+    before = _snapshot(root)
+    for args in ((), ("--list",), ("--list", "--json"), ("--show", "concept"), ("--show", "moc", "--json"),
+                 ("--check",), ("--check", "--strict"), ("--check", "--json"), ("--check", "--all", "--summary"),
+                 ("--stats",), ("--stats", "--json", "--all")):
+        _cli(root, *args)
+        assert _snapshot(root) == before, f"kb:cards {' '.join(args)} изменил проект"
+

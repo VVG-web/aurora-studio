@@ -53,8 +53,8 @@ from dataclasses import dataclass, field, replace
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (  # noqa: E402
     HEAD_KEY_RE, KB_ROOT, MEETING_MARK, OWN_LIFECYCLE, STATUSES, body, card_sources, frontmatter,
-    head_broken, head_lines, head_text, is_meeting, list_field, read_card_text, split_frontmatter,
-    walk_md,
+    head_blank, head_broken, head_lines, head_text, is_meeting, list_field, read_card_text,
+    split_frontmatter, walk_md,
 )
 from aurora_common import kit_root as _kit_root  # noqa: E402
 
@@ -104,10 +104,11 @@ SCRIPT_ONLY_TYPES = ("cited-document",)
 LEVELS = ("advisory", "strict")
 
 # C-2: имя файла шаблона. Класс символов типа не содержит «_», поэтому «_v» делит имя однозначно.
-TEMPLATE_NAME_RE = re.compile(r"^akdb_(?P<type>[a-z][a-z0-9\-]*)_v(?P<version>\d+(?:\.\d+)*)\.md$")
-TYPE_ID_RE = re.compile(r"^[a-z][a-z0-9\-]{1,30}$")
-VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# Цифры — только ASCII (`re.ASCII`): `\d` без флага принимает и арабско-индийские, и другие, а `int()` потом падает.
+TEMPLATE_NAME_RE = re.compile(r"^akdb_(?P<type>[a-z][a-z0-9\-]*)_v(?P<version>\d+(?:\.\d+)*)\.md$", re.ASCII)
+TYPE_ID_RE = re.compile(r"^[a-z][a-z0-9\-]{1,30}$", re.ASCII)       # §6.2: 2…31 знак
+VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$", re.ASCII)
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$", re.ASCII)
 
 PASSPORT_LISTS = ("tags", "kinds", "statuses", "sections", "fields_extra")
 PASSPORT_INTS = ("min_links", "prompt_chars")
@@ -183,13 +184,13 @@ TITLES = {
 
 def version_key(version: str) -> tuple:
     """«1.10» → (1, 10): версии сравниваются числами, а не строками."""
-    return tuple(int(x) for x in str(version).split(".") if x.isdigit())
+    return tuple(int(x) for x in str(version).split(".") if x.isascii() and x.isdigit())
 
 
 def template_file_name(card_type: str, version: str) -> str:
     """`akdb_<тип>_v<версия>.md` — единственное место, где имя шаблона собирается."""
-    if not re.fullmatch(r"[a-z][a-z0-9\-]*", str(card_type)):
-        raise ValueError(f"идентификатор типа «{card_type}» не подходит для имени шаблона")
+    if not TYPE_ID_RE.match(str(card_type)):
+        raise ValueError(f"идентификатор типа «{card_type}» не подходит для имени шаблона: 2–31 знак, a-z, 0-9 и «-»")
     if not VERSION_RE.match(str(version)):
         raise ValueError(f"версия «{version}» не похожа на версию (1.0, 1.10)")
     return f"akdb_{card_type}_v{version}.md"
@@ -211,7 +212,7 @@ def parse_passport(text: str) -> dict:
             out[key] = list_field(text, key)
     for key in PASSPORT_INTS:
         raw = (fm.get(key) or "").strip()
-        if raw.isdigit():
+        if raw.isascii() and raw.isdigit():
             out[key] = int(raw)
     return out
 
@@ -274,6 +275,8 @@ def load_template(path: str) -> Template:
     tpl.example = _fenced(lines, "markdown akdb-example")
     if not tpl.passport.get("card_type"):
         tpl.problems.append("в паспорте нет card_type")
+    for key in _bare_lists(text):
+        tpl.problems.append(f"список {key} записан без квадратных скобок: [a, b]")
     for name, got in (("AKDB:COMMON", tpl.common), ("AKDB:PROMPT", tpl.prompt),
                       ("akdb-body", tpl.body_skeleton), ("akdb-example", tpl.example)):
         if not got.strip():
@@ -370,11 +373,24 @@ def _scan(folder, origin: str) -> list:
     return out
 
 
+def _bare_lists(text: str) -> list:
+    """Списочные поля паспорта, записанные без скобок (`kinds: a, b`): единый разбор списков читает
+    такую запись пустой, и тип молча остался бы без видов или статусов."""
+    fm = frontmatter(text)
+    return [key for key in PASSPORT_LISTS if key in fm and not head_blank(fm[key])
+            and not fm[key].lstrip().startswith("[") and not list_field(text, key)]
+
+
 def _passport_type(entry, problems: list):
     """Файл шаблона → CardType либо None (и запись в problems), если паспорт неполон."""
     origin, name, path, tid, version = entry
-    p = parse_passport(head_text(path))
+    text = head_text(path)
+    p = parse_passport(text)
     why = []
+    if not TYPE_ID_RE.match(tid):
+        why.append(f"идентификатор типа «{tid}» не из 2–31 знака a-z, 0-9 и «-»")
+    for key in _bare_lists(text):
+        why.append(f"список {key} записан без квадратных скобок: [a, b]")
     declared = (p.get("card_type") or "").strip()
     if not declared:
         why.append("в паспорте нет card_type")
@@ -587,6 +603,20 @@ def _date_ok(value: str) -> bool:
     return True
 
 
+def _line_counter(text: str, first: int = 1):
+    """Смещение → номер строки. Считает приращение от прошлого вопроса, а не от начала текста:
+    на сотне тысяч одинаковых заголовков подсчёт с нуля на каждое нарушение растёт квадратом."""
+    state = [0, first]
+
+    def at(offset: int) -> int:
+        if offset < state[0]:
+            state[0], state[1] = 0, first
+        state[1] += text.count("\n", state[0], offset)
+        state[0] = offset
+        return state[1]
+    return at
+
+
 def _norm_title(s: str) -> str:
     return " ".join((s or "").split())
 
@@ -645,15 +675,20 @@ def _check_own(own: str, line0: int, fm: dict, ct: CardType, eff_kind: str, add)
     placeholder = fm.get("status") == "placeholder"
     knowledge = eff_kind == "knowledge" and not placeholder and ct.cls != "map"
     # V-23: заголовок «# Имя» в начале собственной части равен title (глубже — текст переноса).
-    for i, line in enumerate(own[:3000].split("\n")[:40]):
-        if line.strip():
+    # Тело `document` и `dictionary` классов entity и source — перенос чужого текста (§7.4 п.4): его
+    # заголовок принадлежит источнику, и сверять его с title нельзя.
+    # Однострочный комментарий в начале (метка генерации карты) заголовок не заслоняет.
+    h1_checked = placeholder or eff_kind == "knowledge" or ct.cls in ("record", "map")
+    for i, line in enumerate(own[:3000].split("\n")[:40] if h1_checked else ()):
+        if line.strip() and not (line.startswith("<!--") and line.rstrip().endswith("-->")):
             if line.startswith("# ") and _norm_title(line[2:]) != _norm_title(fm.get("title", "")):
                 add("V-23", line0 + i, f"заголовок «{line[2:].strip()[:60]}» не равен title «{fm.get('title', '')[:60]}»",
                     "заголовок «# …» либо убирают, либо делают равным title")
             break
     # V-24: служебные разделы, которые принадлежат области дословного текста.
+    line_at = _line_counter(own, line0)
     for m in ODD_IN_OWN_RE.finditer(own):
-        add("V-24", line0 + own.count("\n", 0, m.start()),
+        add("V-24", line_at(m.start()),
             f"раздел «{m.group(0)[3:]}» стоит в собственной части", "служебный раздел — ниже «## Источник…»")
     # V-13: остатки шаблона. Тело `document` и `dictionary` — перенос чужого текста: в нём
     # `{{…}}` и `TODO:` законны (разметка Jira и Confluence), поэтому там ищется только комментарий
@@ -716,7 +751,7 @@ def _check_own(own: str, line0: int, fm: dict, ct: CardType, eff_kind: str, add)
 
 def _check_tail(rest: str, line_of, add) -> None:
     """V-10 для служебных заголовков хвоста: порядок и повторы вне области дословного текста."""
-    seq, verbatim = [], False
+    seen, last, verbatim = set(), "", False
     for m in TAIL_RE.finditer(rest):
         name = m.group(0)[3:]
         if verbatim and name not in (HEAD_CORRECTIONS, HEAD_FOOTER, HEAD_MERGE):
@@ -725,12 +760,13 @@ def _check_tail(rest: str, line_of, add) -> None:
             verbatim = True
         elif verbatim:
             verbatim = False
-        if name in seq:
+        if name in seen:
             add("V-10", line_of(m.start()), f"служебный раздел «{name}» повторяется", "хвост: каждый раздел один раз")
-        elif seq and TAIL_ORDER.index(name) < TAIL_ORDER.index(seq[-1]):
+        elif last and TAIL_ORDER.index(name) < TAIL_ORDER.index(last):
             add("V-10", line_of(m.start()), f"служебный раздел «{name}» стоит не по порядку хвоста",
                 "порядок: " + " → ".join(TAIL_ORDER))
-        seq.append(name)
+        seen.add(name)
+        last = name
         if name == HEAD_MERGE:
             break                                   # дальше — тело карточки-донора
 
@@ -842,12 +878,12 @@ def _validate(text: str, path: str, reg: Registry, add, seen: dict) -> None:
     if ct.cls != "map" and ct.kinds:
         need.append("kind")
     for key in need:
-        if not (fm.get(key) or "").strip():
+        if _blank(fm, key):
             add("V-02", kline(key), f"нет обязательного поля {key}", "поле обязательно для класса «" + ct.cls + "»")
     if machine and status != "placeholder" and ct.cls != "map":
         if not sources:
             add("V-02", kline("sources"), "нет sources у карточки, собранной машиной", "sources — блок путей источников")
-        if not (fm.get("source_synced") or "").strip():
+        if _blank(fm, "source_synced"):
             add("V-02", kline("source_synced"), "нет source_synced у карточки, собранной машиной", "дата сверки с источником")
     if not tpl:
         add("V-02", kline("template"), "нет поля template: карточка до-шаблонная", "template: " + ct.template_file,
@@ -902,14 +938,21 @@ def _validate(text: str, path: str, reg: Registry, add, seen: dict) -> None:
     # --- тело
     _check_own(own, line0, fm, ct, eff_kind, add)
     if has_tail:
-        base = len(text) - len(rest)
-        _check_tail(rest, lambda off: text.count("\n", 0, base + off) + 1, add)
+        base, at = len(text) - len(rest), _line_counter(text)
+        _check_tail(rest, lambda off: at(base + off), add)
+
+
+def _blank(fm: dict, key: str) -> bool:
+    """Поля нет или оно пусто: значение — один комментарий `# …` (так шаблон записи оставляет `asked:   # дата`).
+    `frontmatter` режет такой хвост только у `status`; у даты значение «# …» — это пустое поле, а не дата."""
+    value = (fm.get(key) or "").strip()
+    return not value or (key in DATE_FIELDS and head_blank(value))
 
 
 def _check_dates(fm: dict, kline, add) -> None:
     for key in DATE_FIELDS:
         value = (fm.get(key) or "").strip()
-        if value and not _date_ok(value):
+        if value and not head_blank(value) and not _date_ok(value):
             add("V-08", kline(key), f"{key}: «{value[:30]}» — не дата ГГГГ-ММ-ДД", "формат даты: 2026-10-12")
 
 
@@ -929,7 +972,7 @@ def _validate_correction(fm: dict, tpl: str, tpl_ct, reg: Registry, kline, add) 
     statuses = ct.statuses if ct else CORRECTION_STATUSES
     extra = (ct.fields_extra if ct else CORRECTION_FIELDS)
     for key in ("corrects", "created", "status"):
-        if not (fm.get(key) or "").strip():
+        if _blank(fm, key):
             add("V-02", kline(key), f"нет обязательного поля {key}", "исправление: corrects, created, status")
     if not tpl:
         add("V-02", kline("corrects"), "нет поля template: исправление до-шаблонное", "template: akdb_correction_v1.0.md",
@@ -988,19 +1031,22 @@ def check_cards(project_root: str, reg: Registry, paths=(), level: str = "adviso
 def stats_of(results: list, reg: Registry) -> dict:
     """Сводка по результатам `check_cards`: сколько карточек по шаблонам, до-шаблонных, с нарушениями."""
     by_template, codes = {}, {}
-    legacy = outdated = with_issues = 0
+    legacy = outdated = with_issues = pre_template = 0
     for _rel, tpl, found in results:
         if tpl:
             by_template[tpl] = by_template.get(tpl, 0) + 1
         else:
             legacy += 1
         mine = {v.code for v in found if v.severity != "info"}
-        for code in {v.code for v in found}:
+        # «нет template» — сведение под кодом V-02: в разбивку по кодам оно не входит, иначе
+        # смешалось бы с настоящей ошибкой «нет обязательного поля»
+        pre_template += any(v.code == "V-02" and v.severity == "info" for v in found)
+        for code in {v.code for v in found if not (v.code == "V-02" and v.severity == "info")}:
             codes[code] = codes.get(code, 0) + 1
         outdated += any(v.code == "V-18" for v in found)
         with_issues += bool(mine)
     return {"cards": len(results), "stamped": len(results) - legacy, "legacy": legacy,
-            "by_template": dict(sorted(by_template.items())), "outdated": outdated,
+            "pre_template": pre_template, "by_template": dict(sorted(by_template.items())), "outdated": outdated,
             "with_violations": with_issues, "by_code": dict(sorted(codes.items())),
             "types": len(reg.types)}
 
@@ -1030,7 +1076,7 @@ def _cmd_list(reg: Registry, as_json: bool) -> int:
         return 0
     if not reg.types:
         print("kb:cards: реестр пуст — шаблонов akdb_*_v*.md нет ни в проекте (Templates/, TemplatesCommon/), "
-              "ни в ките. Обновите проект: python3 aurora.py update <проект> --apply")
+              "ни в ките. Обновите проект командой kit:update")
         for p in reg.problems:
             print(f"  проблема реестра: {p}")
         return 2
@@ -1085,7 +1131,7 @@ def _cmd_check(root: str, reg: Registry, args) -> int:
     level = "strict" if args.strict else "advisory"
     if not reg.types:
         print("kb:cards: реестр пуст — шаблонов akdb_*_v*.md нет ни в проекте, ни в ките, судить нечем. "
-              "Обновите проект: python3 aurora.py update <проект> --apply", file=sys.stderr)
+              "Обновите проект командой kit:update", file=sys.stderr)
         return 2
     if not args.paths and not os.path.isdir(os.path.join(root, KB_ROOT)):
         print(f"kb:cards: нет папки {KB_ROOT}/ — запускайте из корня проекта", file=sys.stderr)
@@ -1101,7 +1147,7 @@ def _cmd_check(root: str, reg: Registry, args) -> int:
     infos = sum(1 for _r, _t, f in results for v in f if v.severity == "info")
     if args.json:
         print(json.dumps({"level": level, "checked": st["cards"], "stamped": st["stamped"], "legacy": st["legacy"],
-                          "errors": errors, "warnings": warns, "info": infos, "by_code": st["by_code"],
+                          "pre_template": st["pre_template"], "errors": errors, "warnings": warns, "info": infos, "by_code": st["by_code"],
                           "problems": reg.problems,
                           "files": [{"path": r, "template": t, "violations": [v.as_dict() for v in f]}
                                     for r, t, f in results if f]},
@@ -1129,7 +1175,7 @@ def _cmd_check(root: str, reg: Registry, args) -> int:
 def _cmd_stats(root: str, reg: Registry, args) -> int:
     if not reg.types:
         print("kb:cards: реестр пуст — шаблонов нет ни в проекте, ни в ките. "
-              "Обновите проект: python3 aurora.py update <проект> --apply", file=sys.stderr)
+              "Обновите проект командой kit:update", file=sys.stderr)
         return 2
     if not os.path.isdir(os.path.join(root, KB_ROOT)):
         print(f"kb:cards: нет папки {KB_ROOT}/ — запускайте из корня проекта", file=sys.stderr)
