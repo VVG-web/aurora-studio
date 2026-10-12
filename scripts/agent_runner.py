@@ -230,6 +230,18 @@ def _lock_pause(n: int) -> None:
     time.sleep(LOCK_PAUSE * n)
 
 
+def _git_why(err: str, lock: bool) -> str:
+    """Причина отказа git одной строкой для человека; полный вывод остаётся в журнале сбоев.
+
+    Замок: первая строка без абсолютного пути (остальное — совет git «убейте процесс»). Хук: до трёх строк,
+    они и несут причину (какой файл, какой секрет)."""
+    lines = [l.strip() for l in err.splitlines() if l.strip()]
+    if lock:
+        return re.sub(r"'[^']*index\.lock'", "index.lock", lines[0] if lines else err)[:200]
+    text = " | ".join(lines[:3])
+    return text if len(text) <= 200 else text[:199] + "…"
+
+
 def git_retry(*args: str, cwd: str = ".", env: dict | None = None) -> tuple:
     """`git`, повторённый с паузой, пока ему мешает `index.lock`; любой другой отказ — сразу."""
     for n in range(LOCK_RETRIES + 1):
@@ -272,22 +284,17 @@ def checkpoint(cwd: str, task: str, enabled: bool) -> dict:
         # Индекс человека — его: запоминаем до `add -A`, чтобы при отказе вернуть именно его, а не пустой.
         rc, saved, err = git_retry("write-tree", cwd=cwd)
         if rc != 0:
-            kind = "lock" if "index.lock" in err else "refused"
-            return {"ok": False, "kind": kind, "sha": "",
-                    "why": ("замок индекса занят: " if kind == "lock" else
-                            "индекс не читается (конфликт слияния?), чекпойнт не создан: ") + err[:200]}
-
-        def undo() -> str:
-            # Файлы на диске не трогаем: только индекс, и в то состояние, что было до нас.
-            rc2, _o, err2 = git_retry("read-tree", saved, cwd=cwd)
-            return "" if rc2 == 0 else f" · индекс не возвращён: {err2[:120]}"
+            lock = "index.lock" in err
+            return {"ok": False, "kind": "lock" if lock else "refused", "sha": "", "detail": err[:2000],
+                    "why": ("замок индекса занят: " if lock else
+                            "индекс не читается (конфликт слияния?), чекпойнт не создан: ") + _git_why(err, lock)}
 
         rc, _o, err = git_retry("add", "-A", cwd=cwd)
         if rc != 0:
-            # Не проверенный `add` оставлял в индексе часть дерева, а коммит по нему всё равно проходил.
-            tail = undo()
-            return {"ok": False, "kind": "lock" if "index.lock" in err else "refused", "sha": "",
-                    "why": f"чекпойнт не создан: add не прошёл: {err[:200]}{tail}"}
+            # `add` атомарен: при отказе индекс не записан, возвращать нечего (откат лишь ждал бы замок ещё ~10 с).
+            lock = "index.lock" in err
+            return {"ok": False, "kind": "lock" if lock else "refused", "sha": "", "detail": err[:2000],
+                    "why": f"чекпойнт не создан: add не прошёл: {_git_why(err, lock)}"}
         stamp = utc_label()
         # Без `--no-verify`: он снял бы и проверку секретов pre-commit, а её храповик не отключает.
         # Храповик (ошибки базы — долг человека, агенту он не помеха) снимаем его же переменной.
@@ -295,10 +302,14 @@ def checkpoint(cwd: str, task: str, enabled: bool) -> dict:
                                 env={"AURORA_SKIP_RATCHET": "1"})
         if rc != 0:
             # Хук отказал (секрет, храповик): `add -A` уже положил в индекс всё дерево. Оставить его там значит
-            # отдать чужой файл следующему коммиту — индекс возвращаем, файлы на диске не трогаем.
-            tail = undo()
-            return {"ok": False, "kind": "lock" if "index.lock" in err else "refused", "sha": "",
-                    "why": f"чекпойнт не создан: {err[:200]}{tail}"}
+            # отдать чужой файл следующему коммиту — индекс возвращаем, файлы на диске не трогаем. Не вернулся
+            # (замок держится и тут) — об этом говорит `index_restored`: строка остановки не должна обещать
+            # «работа человека не тронута», когда в индексе осталось всё дерево.
+            rc2, _o2, err2 = git_retry("read-tree", saved, cwd=cwd)
+            lock = "index.lock" in err
+            return {"ok": False, "kind": "lock" if lock else "refused", "sha": "", "index_restored": rc2 == 0, "saved_tree": saved,
+                    "detail": err[:2000] + ("" if rc2 == 0 else "\n[read-tree] " + err2[:500]),
+                    "why": f"чекпойнт не создан: {_git_why(err, lock)}"}
     sha = git("rev-parse", "HEAD", cwd=cwd)[1]
     return {"ok": True, "sha": sha, "committed": len(dirty.splitlines()),
             "why": "работа человека зафиксирована" if dirty else "дерево было чистым"}
@@ -310,10 +321,17 @@ def checkpoint_stop_line(cwd: str, cp: dict) -> str:
     Замок индекса (kind=lock) и отказ хука (секрет, храповик) — разные причины: первая проходит
     сама, вторая требует человека, и строка не должна звать разбирать замок.
     """
-    AG.record_failure("checkpoint", cp.get("why", ""), stage="чекпойнт", cwd=cwd, kind=cp.get("kind", ""))
+    AG.record_failure("checkpoint", cp.get("why", ""), stage="чекпойнт", cwd=cwd, kind=cp.get("kind", ""),
+                      detail=cp.get("detail", ""))
+    if cp.get("index_restored") is False:
+        # Замок (или хук) не дал вернуть индекс: в нём всё дерево, включая то, что человек не индексировал.
+        # Обещать «работа не тронута» нельзя — файлы на диске целы, но индекс не прежний.
+        return f"{cp['why']}: индекс не возвращён — в нём осталось всё дерево (файлы на диске целы); " \
+               f"`git read-tree {cp.get('saved_tree', '')}` вернёт ваш индекс. Останавливаюсь"
     if cp.get("kind") == "lock":
         return f"{cp['why']}: замок не отпустили за ~{int(LOCK_PAUSE * LOCK_RETRIES * (LOCK_RETRIES + 1) / 2)} с, " \
-               "останавливаюсь; повторите запуск — работа человека не тронута"
+               "останавливаюсь; повторите запуск — работа человека не тронута " \
+               "(если git не запущен, удалите .git/index.lock)"
     return f"{cp['why']}: останавливаюсь, разбираться человеку"
 
 
@@ -332,19 +350,13 @@ def commit_result(cwd: str, task: str, headline: str, enabled: bool) -> dict:
     # обязан содержать ровно то, что менял агент.
     if not git("status", "--porcelain", "--", "AuroraKnowledgeDB", cwd=cwd)[1]:
         return {"ok": True, "sha": "", "why": "агент ничего не изменил"}
-    git("add", "--", "AuroraKnowledgeDB", cwd=cwd)
+    # Замок индекса мигает от параллельного `git status` (панель, редактор): повтор с паузой, как у чекпойнта, —
+    # иначе остановленный прогон оставит сделанное без коммита агента, и следующий чекпойнт запишет это на человека.
+    git_retry("add", "--", "AuroraKnowledgeDB", cwd=cwd)
     # Путь в конце обязателен: без него в коммит агента (а он идёт с `--no-verify`) уехало бы всё, что лежит в
     # индексе, — в том числе файл с секретом, который хук pre-commit как раз не пустил в чекпойнт.
-    rc, _o, err = git("commit", "--no-verify", "-m", f"agent: {task} — {headline}", "--", "AuroraKnowledgeDB",
-                      cwd=cwd)
-    if rc != 0 and "index.lock" in err:
-        # Параллельный `git status` (панель, редактор) мигает замком индекса: один повтор через
-        # паузу, иначе остановленный прогон оставит сделанное без коммита агента.
-        import time as _time
-        _time.sleep(0.5)
-        git("add", "--", "AuroraKnowledgeDB", cwd=cwd)
-        rc, _o, err = git("commit", "--no-verify", "-m", f"agent: {task} — {headline}", "--",
-                          "AuroraKnowledgeDB", cwd=cwd)
+    rc, _o, err = git_retry("commit", "--no-verify", "-m", f"agent: {task} — {headline}", "--",
+                            "AuroraKnowledgeDB", cwd=cwd)
     if rc != 0:
         return {"ok": False, "why": f"коммит результата не сделан: {err[:200]}"}
     return {"ok": True, "sha": git("rev-parse", "HEAD", cwd=cwd)[1], "why": "работа агента зафиксирована"}
@@ -3230,6 +3242,7 @@ def until_done(cwd: str, a, task: str, run_batch, report, headline, passed,
 
     deadline = time.time() + a.hours * 3600
     batch, texts, waits, results = 0, [], 0, []
+    stopped = ""          # "checkpoint" — цикл остановил отказ чекпойнта: код возврата ненулевой
     while True:
         batch += 1
         say(f"\n=== заход {batch} · до конца окна "
@@ -3273,8 +3286,9 @@ def until_done(cwd: str, a, task: str, run_batch, report, headline, passed,
         if not cp["ok"]:
             # Без чекпойнта следующий заход писал бы по несохранённой работе человека: откат её бы снёс.
             say("\n=== " + checkpoint_stop_line(cwd, cp))
+            stopped = "checkpoint"
             break
-    return {"res": res, "results": results, "batches": batch, "texts": texts}
+    return {"res": res, "results": results, "batches": batch, "texts": texts, "stopped": stopped}
 
 
 def lap_steps(cfg: dict) -> int:
@@ -7704,6 +7718,7 @@ def main() -> int:
     if a.apply:
         arm_stop(cwd, a.task, not a.no_checkpoint)
 
+    cp_stopped = False            # цикл остановил отказ чекпойнта: Cron и боты видят это по коду возврата
     relink_loop = (0, 0)          # заходов и связей за прогон: пусто — петли не было
     distill_loop = 0              # заходов переосмысления: 0 — петли не было
     if a.task == "build" and a.until_done:
@@ -7759,6 +7774,7 @@ def main() -> int:
             cp = checkpoint(cwd, "agent:build", a.apply and not a.no_checkpoint)
             if not cp["ok"]:
                 say("\n=== " + checkpoint_stop_line(cwd, cp))
+                cp_stopped = True
                 break
         text = "\n\n---\n\n".join(texts[-3:])      # в журнал — последние партии
     elif a.task == "distill" and a.recheck:
@@ -7821,6 +7837,7 @@ def main() -> int:
                "left": len(distill_queue(cfg, cwd, a.defer_refresh)),
                "seconds": round(sum(r["seconds"] for r in loop["results"]), 1)}
         distill_loop = loop["batches"]
+        cp_stopped = bool(loop["stopped"])
         text = report_distill(res, True)
     elif a.task == "distill":
         if a.until_done and not a.apply:
@@ -7872,6 +7889,7 @@ def main() -> int:
         res = loop["res"]
         steps_all += [s for r in loop["results"] for s in r.get("steps", [])]
         relink_loop = (loop["batches"], sum(r["added"] for r in loop["results"]))
+        cp_stopped = bool(loop["stopped"])
         text = "\n\n---\n\n".join(loop["texts"][-3:])
     elif a.task == "relink":
         if a.until_done and not a.apply:
@@ -7921,7 +7939,7 @@ def main() -> int:
         if a.apply and (relink_loop[0] or res["added"]):
             done = commit_result(cwd, "agent:relink", head, not a.no_checkpoint)
             print(f"Результат агента: {done.get('why')}")
-        return 0
+        return 1 if cp_stopped else 0
     if a.task == "clashes":
         return 0          # находки — не провал: их разбирает человек
     if a.task == "tasks":
@@ -7978,7 +7996,7 @@ def main() -> int:
         # в `meta/unsupported.md` и перепроверяются `--recheck`: до 1.146.0 и то и другое
         # давало код 1, и каждый оборот маршрута PRJ-C красил шаг упавшим (4 из 4).
         failed = sum(1 for s in res["steps"] if s["status"] == "сбой")
-        return 1 if failed else 0
+        return 1 if failed or cp_stopped else 0
     # Сборка со своей петлёй коммитит каждую партию сама — итоговый коммит был бы вторым.
     self_looped = a.until_done and a.task == "build"
     if a.apply and not self_looped:
@@ -7987,7 +8005,7 @@ def main() -> int:
         print(f"Результат агента: {done.get('why')}"
               + (f" ({done['sha'][:8]})" if done.get("sha") else ""))
     ok = (verdict_build if a.task == "build" else verdict)(res, a.apply)[0]
-    return 0 if ok else 1
+    return 0 if ok and not cp_stopped else 1
 
 
 def guarded_main(entry=None) -> int:

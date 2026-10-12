@@ -68,7 +68,7 @@ providers of the setup: if your perimeter forbids sending materials out, do not 
   pid and start time. The lock is taken atomically (two runs starting at once cannot both become owners), and one engine
   function answers "is the holder alive" everywhere — on Windows it never terminates a foreign process. A run killed with
   Ctrl+C does not lock the base.
-- **A checkpoint first.** Before a writing run the agent commits the current state; no git → it refuses to write. A blinking `index.lock` (the panel or an editor polling `git status`) is retried for ~10 s; a real refusal by the commit hook (a secret) stops the run, and your own staged files stay staged.
+- **A checkpoint first.** Before a writing run the agent commits the current state; no git → it refuses to write. A blinking `index.lock` (the panel or an editor polling `git status`) is retried for ~10 s; the same goes for the agent's own commits. A real refusal by the commit hook (a secret) stops the run with a non-zero exit code, and your own staged files stay staged; if the lock also blocks restoring the index, the stop line says so and gives the `git read-tree <tree>` command that puts your index back. A lock left by a crashed git: delete `.git/index.lock`.
 - **A failure on one card does not stop the run;** three in a row do. This holds for an exception too, not only a model
   refusal: a unit of work that crashes (a card that cannot be read, a model answer of the wrong shape) becomes a failed
   step with its traceback in `failures.jsonl`, and a command that overruns its time limit is a failed result, not a crash.

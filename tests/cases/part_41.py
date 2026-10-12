@@ -1631,6 +1631,149 @@ def test_checkpoint_retries_a_blinking_index_lock_and_restores_the_humans_own_in
     assert value not in _git_in(root, "log", "-p", "--all", "--format=").stdout, "секрет попал в историю"
 
 
+@test
+def test_checkpoint_lock_after_write_tree_retries_add_and_commit_and_restores_only_when_needed(tmp: Path):
+    """BL-SEC-18 (проход 6): замок, появившийся ПОСЛЕ `write-tree`, повторяют и `add -A`, и `commit`; отказ `add` индекс
+    не меняет — откат не нужен (не ждёт замок ещё ~10 с); замок, державшийся и на `commit`, и на откате, честно
+    сообщает `index_restored: False` с деревом индекса человека, а строка остановки не врёт «работа не тронута»;
+    `commit_result` повторяет так же; причина — одной строкой без абсолютного пути; цикл помечает остановку."""
+    from unittest.mock import patch
+    sys.path.insert(0, str(SCRIPTS))
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp, git=True)
+    run("aurora_hooks.py", "--install", "--mode", "block", cwd=root, expect_rc=0)
+    _git_in(root, "add", "-A")
+    _git_in(root, "commit", "-qm", "база", env={"AURORA_SKIP_RATCHET": "1"}, check=False)
+    lock = root / ".git" / "index.lock"
+    real_git = R.git
+    staged = lambda: sorted(_git_in(root, "diff", "--cached", "--name-only").stdout.split())  # noqa: E731
+
+    def with_lock(before: dict):
+        """`git`, перед которым создаётся замок: `before` — {подкоманда: сколько раз его создавать подряд}."""
+        todo = dict(before)
+
+        def fake(*args, cwd=".", env=None):
+            if todo.get(args[0], 0) > 0:
+                todo[args[0]] -= 1
+                lock.write_text("", encoding="utf-8")
+            return real_git(*args, cwd=cwd, env=env)
+        return fake
+
+    rounds = [0]
+
+    def fresh_state():
+        """Проиндексированный человеком mine.md и не проиндексированный other.md — каждый раз с новым текстом."""
+        lock.unlink(missing_ok=True)
+        rounds[0] += 1
+        (root / "mine.md").write_text(f"staged {rounds[0]}\n", encoding="utf-8")
+        _git_in(root, "add", "mine.md")
+        (root / "other.md").write_text(f"не в индексе {rounds[0]}\n", encoding="utf-8")
+
+    pauses: list = []
+
+    def release(n):
+        pauses.append(n)
+        lock.unlink(missing_ok=True)
+
+    # 1. замок мигнул перед `add -A`, потом снова перед `commit`: оба повторены, чекпойнт создан
+    fresh_state()
+    with patch.object(R, "git", with_lock({"add": 1, "commit": 1})), patch.object(R, "_lock_pause", release):
+        got = R.checkpoint(str(root), "agent:distill", True)
+    assert got["ok"] is True and pauses == [1, 1], (got, pauses)
+    assert sorted(_git_in(root, "show", "--name-only", "--format=", "HEAD").stdout.split()) \
+        == ["mine.md", "other.md"], "чекпойнт не взял всё дерево"
+    assert staged() == [], "после удачного чекпойнта в индексе осталось лишнее"
+
+    # 2. замок держится на `add -A`: kind=lock, откат не нужен и не ждёт замок, индекс человека цел,
+    #    причина — одна строка без пути проекта
+    fresh_state()
+    head = _git_in(root, "rev-parse", "HEAD").stdout.strip()
+    seen: list = []
+    with patch.object(R, "git", with_lock({"add": 99})), patch.object(R, "_lock_pause", lambda n: seen.append(n)):
+        got = R.checkpoint(str(root), "agent:distill", True)
+    lock.unlink(missing_ok=True)
+    assert got["ok"] is False and got["kind"] == "lock", got
+    assert seen == list(range(1, R.LOCK_RETRIES + 1)), ("откат ждал замок лишний раз", seen)
+    assert "index_restored" not in got and "индекс не возвращён" not in got["why"], got
+    assert "\n" not in got["why"] and str(root) not in got["why"] and "index.lock" in got["why"], got["why"]
+    assert "File exists" in got["detail"], "полный вывод git не сохранён для журнала сбоев"
+    assert staged() == ["mine.md"] and _git_in(root, "rev-parse", "HEAD").stdout.strip() == head
+
+    # 3. замок держится на `commit` до конца повторов и ещё мигает на первой попытке отката: откат тоже повторяется,
+    #    индекс возвращён ровно к индексу человека
+    fresh_state()
+    seen.clear()
+
+    def lock_on_commit(*args, cwd=".", env=None):
+        if args[0] == "commit":
+            lock.write_text("", encoding="utf-8")
+        return real_git(*args, cwd=cwd, env=env)
+
+    def pause_then_free_for_undo(n):
+        seen.append(n)
+        if len(seen) == R.LOCK_RETRIES + 1:      # повторы `commit` кончились, первая пауза — уже у `read-tree`
+            lock.unlink(missing_ok=True)
+
+    with patch.object(R, "git", lock_on_commit), patch.object(R, "_lock_pause", pause_then_free_for_undo):
+        got = R.checkpoint(str(root), "agent:distill", True)
+    assert len(seen) == R.LOCK_RETRIES + 1, seen
+    lock.unlink(missing_ok=True)
+    assert got["ok"] is False and got["kind"] == "lock" and got["index_restored"] is True, got
+    assert staged() == ["mine.md"], "откат снял индекс человека или оставил чужой файл"
+    with patch.object(R.AG, "record_failure", lambda *a, **k: None):
+        line = R.checkpoint_stop_line(str(root), got)
+    assert "работа человека не тронута" in line and "index.lock" in line and "\n" not in line, line
+
+    # 4. замок держится и на `commit`, и на откате: в индексе всё дерево — признак, дерево индекса человека
+    #    и честная строка (без «работа не тронута»); `git read-tree <дерево>` по подсказке индекс возвращает
+    fresh_state()
+    with patch.object(R, "git", with_lock({"commit": 99, "read-tree": 99})), \
+            patch.object(R, "_lock_pause", lambda n: None):
+        got = R.checkpoint(str(root), "agent:distill", True)
+    lock.unlink(missing_ok=True)
+    assert got["ok"] is False and got["kind"] == "lock" and got["index_restored"] is False, got
+    assert staged() == ["mine.md", "other.md"], "ожидали сбой отката: в индексе всё дерево"
+    fails: list = []
+    with patch.object(R.AG, "record_failure", lambda *a, **k: fails.append(k)):
+        line = R.checkpoint_stop_line(str(root), got)
+    assert "работа человека не тронута" not in line and "индекс не возвращён" in line, line
+    assert f"git read-tree {got['saved_tree']}" in line, line
+    assert fails and "[read-tree]" in fails[0]["detail"], "причина сбоя отката не дошла до журнала"
+    _git_in(root, "read-tree", got["saved_tree"])
+    assert staged() == ["mine.md"], "подсказка из строки остановки не вернула индекс человека"
+
+    # 5. `commit_result` повторяет замок на `add` и `commit` так же, как чекпойнт
+    lock.unlink(missing_ok=True)
+    _git_in(root, "reset", "-q")
+    _git_in(root, "add", "mine.md", "other.md")
+    _git_in(root, "commit", "-qm", "фиксируем", env={"AURORA_SKIP_RATCHET": "1"})
+    kb = root / "AuroraKnowledgeDB"
+    kb.mkdir(exist_ok=True)
+    (kb / "agent-made.md").write_text("# сделано агентом\n", encoding="utf-8")
+    pauses.clear()
+    with patch.object(R, "git", with_lock({"add": 1, "commit": 2})), patch.object(R, "_lock_pause", release):
+        done = R.commit_result(str(root), "agent:distill", "заход", True)
+    assert done["ok"] is True and done["sha"] and pauses == [1, 1, 2], (done, pauses)
+    assert "agent-made.md" in _git_in(root, "show", "--name-only", "--format=", "HEAD").stdout
+
+    # 6. остановка по чекпойнту отмечена в результате цикла (из него `main` берёт ненулевой код), а не только строкой
+    import types
+    (root / "again.md").write_text("ещё работа человека\n", encoding="utf-8")
+    lock.write_text("", encoding="utf-8")
+    a = types.SimpleNamespace(hours=1, no_checkpoint=False)
+    with patch.object(R, "_lock_pause", lambda n: None), patch.object(R, "say", lambda t: None), \
+            patch.object(R.AG, "record_failure", lambda *a_, **k: None):
+        out = R.until_done(str(root), a, "distill", lambda: {"left": 5, "steps": []}, lambda r: "",
+                           lambda r: "h", lambda r: 1)
+    lock.unlink(missing_ok=True)
+    assert out["stopped"] == "checkpoint", out
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    main_src = src[src.index("\ndef main("):src.index("\ndef guarded_main(")]
+    assert main_src.count("cp_stopped") >= 7 and "return 0 if ok and not cp_stopped else 1" in main_src \
+        and "return 1 if failed or cp_stopped else 0" in main_src and "return 1 if cp_stopped else 0" in main_src, \
+        "остановка цикла по чекпойнту не доходит до кода возврата distill/relink/build"
+
+
 # --- Уверенность выдачи, честный отказ и прозрачный фильтр доверия (BL-KBA-14) ---------------
 
 def _answerability_base(tmp: Path):
