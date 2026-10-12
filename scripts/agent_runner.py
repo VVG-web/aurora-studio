@@ -479,10 +479,10 @@ def commit_partial(reason: str) -> dict:
     return commit_result(_RUN["cwd"], f"agent:{_RUN['task']}", reason, True)
 
 
-def _say_safe(text: str) -> None:
+def _say_safe(text: str, stream=None) -> None:
     """Строка в консоль прогона; труба панели могла закрыться — остановке это не мешает."""
     try:
-        print(text, flush=True)
+        print(text, file=stream, flush=True)
     except Exception:                # noqa: BLE001 — и RuntimeError «reentrant call» посреди print главного потока
         pass
 
@@ -2082,6 +2082,8 @@ def safe_unit(fn, subject: str, base: dict, *args, **kw) -> dict:
     остальные идут дальше. Тот же закон, что у пулов (`guard_each`)."""
     try:
         return fn(*args, **kw)
+    except BrokenPipeError:
+        raise                       # труба панели закрыта: прогон брошен — это конец, а не сбой единицы
     except Exception as e:                                  # noqa: BLE001 — граница единицы работы
         step = crash_step(subject, e, **base)
         step["why"] = step["note"]
@@ -2094,6 +2096,8 @@ def guard_each(fn, describe):
     def run(item):
         try:
             return fn(item)
+        except BrokenPipeError:
+            raise                   # труба панели закрыта: прогон брошен — это конец, а не сбой единицы
         except Exception as e:                              # noqa: BLE001 — граница единицы работы
             subject, base = describe(item)
             return crash_step(subject, e, **base)
@@ -2863,7 +2867,8 @@ def lint_conflicts(cwd: str) -> int:
 
 
 def shown_errors(n: int) -> str:
-    """Число ошибок базы для отчёта; не измеренное (-1, `LINT_DEAD`) — «н/д», а не «-2»."""
+    """Число из счёта движка для отчёта (ошибки базы, источники плана, конфликты); не измеренное
+    (-1, `LINT_DEAD`) — «н/д», а не «-2» и не «-1 → 3»."""
     return str(n) if n >= 0 else "н/д"
 
 
@@ -2995,6 +3000,8 @@ def solve_conflict_safe(cfg: dict, cwd: str, alias: str, cards: list, *args, **k
     """`solve_conflict` с границей исключений: конфликт, на котором разбор упал, — шаг «сбой»."""
     try:
         return solve_conflict(cfg, cwd, alias, cards, *args, **kw)
+    except BrokenPipeError:
+        raise                       # труба панели закрыта: прогон брошен — это конец, а не сбой единицы
     except Exception as e:                                  # noqa: BLE001 — граница единицы работы
         return crash_step(alias, e, alias=alias, cards=cards, degraded=False)
 
@@ -4070,6 +4077,8 @@ def solve_source_safe(cfg: dict, cwd: str, group: str, source: str, *args, **kw)
     нечитаемый файл не должны уносить ночной `--until-done` без отчёта и коммита."""
     try:
         return solve_source(cfg, cwd, group, source, *args, **kw)
+    except BrokenPipeError:
+        raise                       # труба панели закрыта: прогон брошен — это конец, а не сбой единицы
     except Exception as e:                                  # noqa: BLE001 — граница единицы работы
         step = crash_step(source, e, alias=source.rsplit("/", 1)[-1], source=source,
                           group=group, degraded=False)
@@ -4077,6 +4086,12 @@ def solve_source_safe(cfg: dict, cwd: str, group: str, source: str, *args, **kw)
         # учитываем как сбой по содержанию (план отложит после двух). Сбой ввода-вывода — не про него.
         step["content_fail"] = not isinstance(e, OSError)
         return step
+
+
+# Доля текста источника (по знакам абзацев из описи), которую обязаны покрыть принятые части
+# планировщика, чтобы источник считался разобранным. Ниже — это не разбор, а один кусок
+# из десятков абзацев: отметка «разобрано» убрала бы остальное из плана навсегда.
+PLAN_COVER_MIN = 0.6
 
 
 def plan_source(cfg: dict, cwd: str, source: str, whole: str, step: dict, apply: bool,
@@ -4092,16 +4107,18 @@ def plan_source(cfg: dict, cwd: str, source: str, whole: str, step: dict, apply:
         raw = (Path(cwd) / source).read_text(encoding="utf-8", errors="ignore")
         blocks = template_blocks(cwd)
         paras = [p for p in re.split(r"\n\s*\n", raw) if p.strip()]
-        rows = []
+        rows, weight = [], {}
         for i, para in enumerate(paras, 1):
             seen = hide_template(para, source, cwd, blocks=blocks)
             if seen.strip():
                 rows.append(f"  {i}. ({len(seen)} симв.) {' '.join(seen.split())[:90]}")
+                weight[i] = len(seen)
         listing = "\n".join(rows)
         shown = len(rows)
     except OSError:
         listing, paras = outline(whole)
         shown = len(paras)
+        weight = {i: max(1, len(str(p_))) for i, p_ in enumerate(paras, 1)}
     if shown < 4:
         return 0
     r = call(cfg, "planner", [{"role": "user", "content": PROMPT_PLAN_SOURCE.format(
@@ -4149,6 +4166,17 @@ def plan_source(cfg: dict, cwd: str, source: str, whole: str, step: dict, apply:
         # Срок и запуск (rc None) — не про источник: их откладывать нельзя.
         if refused_by_engine:
             step["content_fail"] = True
+        return made
+    # Охват: планировщик мог вернуть один маленький диапазон из десятков абзацев, а некорректные
+    # и пересекающиеся строки отбрасываются молча. Отметка «разобрано» убрала бы остальное из плана
+    # навсегда — поэтому при малом охвате источник остаётся в плане, а шаг — сбой по содержанию.
+    total_w = sum(weight.values())
+    cover = (sum(w for i, w in weight.items() if i in used) / total_w) if total_w else 1.0
+    if made and cover < PLAN_COVER_MIN:
+        fail_step(step, f"охват {round(cover * 100)} % текста: планировщик назвал границы не для "
+                        f"всего источника (нужно от {round(PLAN_COVER_MIN * 100)} %) — "
+                        "отметка «разобрано» не ставится", subject=source, stage="охват")
+        step["content_fail"] = True
         return made
     if made and apply:
         run_command(cwd, "build_plan.py", ["--done", source])
@@ -4686,13 +4714,19 @@ def verdict_build(res: dict, apply: bool) -> tuple:
                                                       "отклонено проверкой", "стоп")]
     grew = apply and res["before"]["errors"] >= 0 and res["after"]["errors"] > res["before"]["errors"]
     moved = res["after"]["done"] - res["before"]["done"]
+    # Счёт плана не получен (`build_plan --status` не отработал): разницу «до/после» из -1 судить
+    # нельзя — она читалась как ложь агента («засчитал 13, объявил 2»), а это незнание.
+    blind_plan = apply and (res["before"]["done"] < 0 or res["after"]["done"] < 0)
     # Отложенный человеку источник (`defer`) уходит из плана той же отметкой `--done --empty`,
     # что и пустой: движок считает его обработанным, и агент объявляет его так же.
     declared = len(done) + len(human)
-    lied = apply and moved != declared
+    lied = apply and not blind_plan and moved != declared
     blind_after = oracle_blind(res, apply)
-    ok = not bad and not grew and not lied and not blind_after
+    ok = not bad and not grew and not lied and not blind_after and not blind_plan
     why = []
+    if blind_plan:
+        why.append("счёт плана не получен (build_plan --status не отработал) — "
+                   "разобранное движком не сверено")
     if blind_after:
         why.append("линтер не ответил (срок или запуск) — ошибки базы не сверены")
     if lied:
@@ -6997,13 +7031,23 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
         return path, {"status": "чисто" if mo.get("clean") else "без опоры",
                       "count": mo.get("unsupported", 0), "claims": momus_claims(mo.get("text"))}
 
+    def safe_one(path: str) -> tuple:
+        """`one` с границей исключений: нечитаемая карточка — шаг «сбой», а не конец прогона
+        (в записи часть карточек к этому моменту уже переписана)."""
+        try:
+            return one(path)
+        except BrokenPipeError:
+            raise                   # труба панели закрыта: прогон брошен — это конец, а не сбой единицы
+        except Exception as e:                              # noqa: BLE001 — граница единицы работы
+            return path, crash_step(path, e)
+
     width = max(1, parallel_width(cfg, len(todo), "qa")[1]) if todo else 1
     steps = []
     from concurrent.futures import as_completed
     with ThreadPoolExecutor(max_workers=width) as pool:
         # По мере готовности, а не по порядку: большая первая карточка держала весь отчёт
         # о ходе, и 142 проверки PRJ-C семь минут выглядели зависшими.
-        for i, fut in enumerate(as_completed([pool.submit(one, p_) for p_ in todo]), 1):
+        for i, fut in enumerate(as_completed([pool.submit(safe_one, p_) for p_ in todo]), 1):
             path, st = fut.result()
             st["card"] = os.path.basename(path)
             steps.append(st)
@@ -7317,7 +7361,8 @@ def report_build(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) 
         L += [f"- {s['alias']}" for s in human]
 
     L += ["", f"**Оракул:** {'✅ ' if ok else '✗ '}{why}",
-          f"Источников в плане: {res['before']['left']} → {res['after']['left']} · "
+          f"Источников в плане: {shown_errors(res['before']['left'])} → "
+          f"{shown_errors(res['after']['left'])} · "
           f"ошибок базы: {shown_errors(res['before']['errors'])} → "
           f"{shown_errors(res['after']['errors'])}"]
     if made:
@@ -7385,7 +7430,8 @@ def report(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str
         L += [f"- «{s['alias']}» → {s['note']}" for s in clarified]
 
     L += ["", f"**Оракул:** {'✅ ' if ok else '✗ '}{why}",
-          f"Конфликтов по линтеру: {res['before']['conflicts']} → {res['after']['conflicts']} · "
+          f"Конфликтов по линтеру: {shown_errors(res['before']['conflicts'])} → "
+          f"{shown_errors(res['after']['conflicts'])} · "
           f"ошибок базы: {shown_errors(res['before']['errors'])} → "
           f"{shown_errors(res['after']['errors'])}"]
     L += adapter_lines(cfg, res)
@@ -7900,7 +7946,7 @@ def guarded_main(entry=None) -> int:
     except CommandDead as e:
         # Команда-читатель не отработала (срок, запуск): говорим причину прямо — без трассировки,
         # она не про дефект кода, — и фиксируем сделанное. Код 1: «пусто» о таком прогоне не скажешь.
-        print(f"agent_runner: {e}", file=sys.stderr, flush=True)
+        _say_safe(f"agent_runner: {e}", sys.stderr)
         AG.record_failure(AG.RUN_TASK.get("name") or "agent_runner", str(e)[:300], stage="команда")
         try:
             done = commit_partial("команда не отработала: " + str(e)[:80])
@@ -7911,7 +7957,7 @@ def guarded_main(entry=None) -> int:
         return 1
     except Exception as e:                                  # noqa: BLE001 — последний рубеж
         import traceback
-        traceback.print_exc()
+        _say_safe(traceback.format_exc(), sys.stderr)
         AG.record_failure(AG.RUN_TASK.get("name") or "agent_runner",
                           f"{type(e).__name__}: {e}"[:300], stage="исключение",
                           traceback=traceback.format_exc()[-4000:])

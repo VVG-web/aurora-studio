@@ -2782,8 +2782,14 @@ def test_the_stop_message_promises_a_commit_only_when_the_agent_reported_one(tmp
     assert "зафиксировано его коммитом" in said, said
     plain = stop(["синхронизация…"])
     assert "коммит" not in plain and plain.startswith("■ Прогон прерван"), plain
-    en = stop(["Результат агента: x"], "en")
+    # строка «Результат агента:» без хеша коммита — не обещание: писать было нечего или коммит не удался
+    for line in ("Результат агента: прогон ещё ничего не писал",
+                 "Результат агента: агент ничего не изменил",
+                 "Результат агента: коммит результата не сделан: index.lock"):
+        assert stop([line]) == plain, line
+    en = stop(["Результат агента: работа агента зафиксирована (abcd1234)"], "en")
     assert "committed" in en and "Agent result" in en, en
+    assert "committed" not in stop(["Результат агента: x"], "en")
     ru_cat = json.loads((KIT / "cockpit" / "i18n" / "ru.json").read_text(encoding="utf-8"))
     en_cat = json.loads((KIT / "cockpit" / "i18n" / "en.json").read_text(encoding="utf-8"))
     for k in ("job.stopped", "job.stopped_agent"):
@@ -3010,3 +3016,312 @@ def test_the_runner_arms_the_stop_and_installs_the_handlers_before_main(tmp: Pat
     assert "install_stop_handlers" in calls and "guarded_main" in calls, calls
     assert calls.index("install_stop_handlers") < calls.index("guarded_main"), calls
     assert "main" not in calls, "__main__ вызывает main() мимо последнего рубежа"
+
+
+# ------------------------------------------------------------------ доработка BL-SEC-07, проход 3
+
+@test
+def test_the_stop_message_follows_what_a_stopped_runner_really_printed(tmp: Path):
+    """Настоящий вывод раннера на SIGTERM: без записи — нейтральное сообщение, с коммитом — обещание."""
+    if os.name == "nt":
+        return
+    import signal
+    sys.path.insert(0, str(SCRIPTS))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_cockpit as ck
+
+    def runner_output(name: str, arm: bool) -> list:
+        root = make_project(_sub(tmp, name), git=True)
+        script = tmp / f"{name}.py"
+        script.write_text(
+            "import os, sys, time\n"
+            f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+            "import agent_runner as R\n"
+            + ("R.arm_stop(os.getcwd(), 'build', True)\n"
+               "os.makedirs('AuroraKnowledgeDB/Concepts', exist_ok=True)\n"
+               "open('AuroraKnowledgeDB/Concepts/Х.md', 'w', encoding='utf-8').write("
+               "'---\\ntitle: \"Х\"\\ntype: concept\\n---\\n\\n# Х\\n\\nтекст\\n')\n" if arm else "")
+            + "R.install_stop_handlers()\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(120)\n", encoding="utf-8")
+        p = subprocess.Popen([sys.executable, str(script)], cwd=str(root), stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True, encoding="utf-8")
+        try:
+            assert p.stdout.readline().strip() == "ready"
+            p.send_signal(signal.SIGTERM)
+            out, _ = p.communicate(timeout=30)
+        finally:
+            if p.poll() is None:
+                p.kill()
+        return out.splitlines()
+
+    def panel_says(lines: list) -> str:
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        job = {"id": "j-real", "done": False, "proc": p, "out": list(lines), "base": 0}
+        with ck.JOBS_LOCK:
+            ck.JOBS["j-real"] = job
+        try:
+            assert ck.stop_job("j-real", "ru").get("ok")
+        finally:
+            with ck.JOBS_LOCK:
+                ck.JOBS.pop("j-real", None)
+            if p.poll() is None:
+                p.kill()
+        return job["out"][-1]
+
+    idle = runner_output("idle", False)
+    assert any(l.startswith("Результат агента: прогон ещё ничего не писал") for l in idle), idle
+    assert "коммит" not in panel_says(idle), "панель обещает коммит, которого не было"
+    wrote = runner_output("wrote", True)
+    assert any(re.match(r"Результат агента: .*\([0-9a-f]{7,}\)$", l) for l in wrote), wrote
+    assert "зафиксировано его коммитом" in panel_says(wrote)
+
+
+@test
+def test_the_panel_releases_the_port_first_stops_jobs_together_and_waits_for_the_old_pid(tmp: Path):
+    """Выход панели: порт отпущен до снятия заданий, задания снимаются одновременно, `--restart`
+    ждёт смерти старого процесса, а не молчания по адресу."""
+    import socket
+    import threading
+    import time as _t
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    sys.path.insert(0, str(SCRIPTS))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_cockpit as ck
+
+    # порядок: сокет закрыт раньше, чем начато снятие заданий
+    order = []
+
+    class Srv:
+        def server_close(self):
+            order.append("close")
+    real_stop = ck.stop_jobs_on_exit
+    ck.stop_jobs_on_exit = lambda: (order.append("stop") or 7)
+    try:
+        assert ck.finish_panel(Srv()) == 7
+    finally:
+        ck.stop_jobs_on_exit = real_stop
+    assert order == ["close", "stop"], order
+
+    # настоящий сокет: после finish_panel тот же порт принимает нового хозяина
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    srv.shutdown()                      # выход из serve_forever, как после SIGTERM; сокет ещё слушает
+    t.join(5)
+    ck.finish_panel(srv)
+    probe = socket.socket()
+    try:
+        probe.bind(("127.0.0.1", port))
+    finally:
+        probe.close()
+
+    # задания снимаются одновременно: три по ~1 с — не три секунды
+    class Live:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def poll(self):
+            return None
+    seen = []
+
+    def slow_stop(pid):
+        _t.sleep(1.0)
+        seen.append(pid)
+    real_tree = ck.WD.stop_tree
+    ck.WD.stop_tree = slow_stop
+    with ck.JOBS_LOCK:
+        for i in range(3):
+            ck.JOBS[f"j-par{i}"] = {"id": f"j-par{i}", "done": False, "proc": Live(900 + i)}
+    try:
+        began = _t.time()
+        n = ck.stop_jobs_on_exit()
+        spent = _t.time() - began
+    finally:
+        ck.WD.stop_tree = real_tree
+        with ck.JOBS_LOCK:
+            for i in range(3):
+                ck.JOBS.pop(f"j-par{i}", None)
+    assert n == 3 and sorted(seen) == [900, 901, 902], (n, seen)
+    assert spent < 2.2, f"задания снимаются по очереди: {spent:.1f} с"
+
+    # ожидание смерти старой панели: мёртвый — сразу, живой — до срока, уходящий — дожидаемся
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1.5)"])
+    threading.Thread(target=p.wait, daemon=True).start()        # прибрать, чтобы не остался зомби
+    try:
+        assert ck.wait_panel_exit(p.pid, 0.3, step=0.05) is False
+        assert ck.wait_panel_exit(p.pid, 20, step=0.05) is True
+        assert ck.wait_panel_exit(p.pid, 0.3, step=0.05) is True
+    finally:
+        if p.poll() is None:
+            p.kill()
+    src = (KIT / "cockpit" / "aurora_cockpit.py").read_text(encoding="utf-8")
+    assert "wait_panel_exit(prev[\"pid\"]" in src and "finish_panel(srv)" in src, \
+        "main() не зовёт ожидание старой панели и закрытие порта"
+
+
+@test
+def test_a_closed_panel_pipe_ends_the_run_and_the_last_line_still_commits(tmp: Path):
+    """BrokenPipeError — не сбой единицы работы, а конец прогона; последний рубеж пишет коммит
+    даже при закрытых stdout и stderr."""
+    from unittest.mock import patch
+    R = _runner()
+    import agent_core as A
+    root = make_project(tmp, git=True)
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+
+    def pipe_gone(*a, **k):
+        raise BrokenPipeError(32, "Broken pipe")
+    boundaries = [
+        lambda: R.guard_each(pipe_gone, lambda i: ("x", {}))("x"),
+        lambda: R.safe_unit(pipe_gone, "x", {}),
+        lambda: R.solve_conflict_safe(cfg, str(root), "а", [], True, False),
+        lambda: R.solve_source_safe(cfg, str(root), "g", "Raw/x.md", True, True),
+    ]
+    with _RunDir(tmp / "run"), patch.object(R, "solve_conflict", pipe_gone), \
+            patch.object(R, "solve_source", pipe_gone):
+        for call in boundaries:
+            try:
+                call()
+            except BrokenPipeError:
+                continue
+            raise AssertionError("закрытая труба стала шагом «сбой» и прогон пошёл дальше")
+        # а прочие исключения по-прежнему только шаг
+        st = R.safe_unit(lambda: (_ for _ in ()).throw(KeyError("k")), "x", {})
+        assert st["status"] == "сбой"
+
+    # закрытые stdout/stderr: guarded_main всё равно коммитит сделанное
+    done = tmp / "rc.txt"
+    script = tmp / "pipe_probe.py"
+    script.write_text(
+        "import os, sys\n"
+        f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+        f"os.environ['AURORA_RUN_DIR'] = {str(tmp / 'run2')!r}\n"
+        "import agent_runner as R\n"
+        "cwd = os.getcwd()\n"
+        "R.arm_stop(cwd, 'build', True)\n"
+        "os.makedirs('AuroraKnowledgeDB/Concepts', exist_ok=True)\n"
+        "open('AuroraKnowledgeDB/Concepts/От-агента.md', 'w', encoding='utf-8').write("
+        "'---\\ntitle: \"От агента\"\\ntype: concept\\n---\\n\\n# От агента\\n\\nтекст\\n')\n"
+        "r, w = os.pipe()\n"
+        "os.close(r)\n"
+        "sys.stdout = sys.stderr = os.fdopen(w, 'w')\n"
+        "def entry():\n"
+        "    print('строка в закрытую трубу', flush=True)\n"
+        "    return 0\n"
+        "rc = R.guarded_main(entry)\n"
+        f"open({str(done)!r}, 'w').write(str(rc))\n"
+        "os._exit(rc)\n", encoding="utf-8")
+    p = subprocess.run([sys.executable, str(script)], cwd=str(root), capture_output=True, text=True,
+                       encoding="utf-8", timeout=60)
+    assert done.is_file() and done.read_text() == "1", (p.returncode, p.stdout, p.stderr)
+    last = subprocess.run(["git", "log", "-1", "--format=%s"], cwd=str(root),
+                          capture_output=True, text=True, encoding="utf-8").stdout
+    assert "agent:build — оборвано исключением BrokenPipeError" in last, last
+
+
+@test
+def test_a_blind_plan_counter_is_not_read_as_the_agent_lying(tmp: Path):
+    """`build_plan --status` не отработал (-1): оракул говорит «счёт не получен», а не «агент солгал»."""
+    R = _runner()
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import route_runner as rr
+
+    def res(before, after):
+        return {"steps": [{"alias": "а", "status": "разобран", "note": ""},
+                          {"alias": "б", "status": "разобран", "note": ""}],
+                "before": {"left": before[0], "done": before[1], "errors": 0},
+                "after": {"left": after[0], "done": after[1], "errors": 0},
+                "total": 2, "partition": "", "limited": False, "stopped": "", "left": 0,
+                "seconds": 1.0, "task": "build"}
+    ok, why = R.verdict_build(res((-1, -1), (3, 12)), True)
+    assert not ok and "счёт плана не получен" in why and "засчитал" not in why, why
+    ok, why = R.verdict_build(res((5, 10), (-1, -1)), True)
+    assert not ok and "счёт плана не получен" in why and "засчитал" not in why, why
+    ok, why = R.verdict_build(res((5, 10), (3, 12)), True)       # знаем счёт и он сходится
+    assert ok, why
+    ok, why = R.verdict_build(res((5, 10), (4, 11)), True)       # знаем счёт и агент соврал
+    assert not ok and "засчитал разобранными 1, а агент объявил 2" in why, why
+    ok, why = R.verdict_build(res((-1, -1), (-1, -1)), False)    # предпросмотр счёта не судит
+    assert "счёт плана" not in why, why
+
+    import agent_core as A
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    cp = {"ok": True, "sha": "abc", "why": "", "committed": 0}
+    text = R.report_build(res((-1, -1), (3, 12)), cp, True, False, cfg)
+    assert "Источников в плане: н/д → 3" in text and "-1" not in text.split("Оракул")[1], text
+    # маршрут читает остаток из этой строки и при слепом «до»
+    assert rr.left_by_kind(["Источников в плане: н/д → 3 · ошибок базы: 0 → 0"]) == {"источники": 3}
+    assert rr.left_by_kind(["Источников в плане: 5 → н/д"]) == {}
+    assert rr.left_by_kind(["Источников в плане: 9 → 4"]) == {"источники": 4}
+
+
+@test
+def test_a_recheck_of_unsupported_claims_survives_one_unreadable_card(tmp: Path):
+    """`agent:distill --recheck`: упавшая карточка — шаг «сбой», остальные проверяются и пишутся."""
+    import importlib
+    A = importlib.import_module("agent_core")
+    R = _runner()
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB/Concepts"
+    kb.mkdir(parents=True, exist_ok=True)
+    for name in ("Отчёт", "Реестр"):
+        (kb / f"{name}.md").write_text(
+            f'---\ntitle: "{name}"\nkind: knowledge\nstatus: draft\ntype: concept\n'
+            f'unsupported: 1\n---\n\n{name} подаётся ежемесячно.\n\n{R.QUOTES}\n'
+            'Отчёт подаётся ежемесячно.\n', encoding="utf-8")
+
+    def fake(cfg, role, messages, **kw):
+        if "«Реестр»" in messages[0]["content"]:
+            raise KeyError("choices")
+        return {"ok": True, "text": "ОПОРА «ежемесячно»\nВЕРДИКТ: ЧИСТО", "backend": 1,
+                "model": "qa", "log": []}
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    with _RunDir(tmp / "run"):
+        res = R.recheck_unsupported(cfg, str(root), True, call=fake)
+    by = {s["card"]: s["status"] for s in res["steps"]}
+    assert by == {"Отчёт.md": "чисто", "Реестр.md": "сбой"}, by
+    assert res["failed"] == 1 and res["clean"] == 1, res
+    fm = lambda n: (kb / f"{n}.md").read_text(encoding="utf-8").split("\n---", 1)[0]
+    assert "unsupported:" not in fm("Отчёт") and "unsupported: 1" in fm("Реестр")
+
+
+@test
+def test_a_plan_covering_a_small_part_of_the_source_does_not_mark_it_done(tmp: Path):
+    """Планировщик назвал один диапазон из многих абзацев (или строки с ошибками) — источник
+    остаётся в плане, шаг — сбой по содержанию; полный охват и умеренная потеря — как прежде."""
+    from unittest.mock import patch
+    R = _runner()
+    import agent_core as A
+    root = make_project(tmp, git=True)
+    (root / "Raw/project").mkdir(parents=True, exist_ok=True)
+    paras = "\n\n".join(f"Абзац {i} про процесс согласования заявки и сроки. " * 3 for i in range(1, 11))
+    (root / "Raw/project/Лента.md").write_text(paras, encoding="utf-8")
+    whole = (root / "Raw/project/Лента.md").read_text(encoding="utf-8")
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+
+    def run_plan(parts, apply=True):
+        def fake(cfg_, role, messages, **kw):
+            return {"ok": True, "text": json.dumps({"parts": parts}, ensure_ascii=False), "backend": 1,
+                    "model": "m", "tps": 9, "log": []}
+        calls = []
+        step = {"alias": "Лента.md", "status": "", "note": "", "backends": [], "degraded": False}
+        with _RunDir(tmp / "run"), patch.object(
+                R, "run_command", lambda cwd, s, a, timeout=300: (calls.append(a) or
+                                                                  {"ok": True, "rc": 0, "out": "", "refused": ""})):
+            made = R.plan_source(cfg, str(root), "Raw/project/Лента.md", whole, step, apply, fake, 0.0)
+        return made, step, calls
+
+    # один маленький диапазон из десяти абзацев + мусорная строка
+    made, step, calls = run_plan([{"title": "Часть", "from": 1, "to": 2},
+                                  {"title": "Битая", "from": "x", "to": 3}])
+    assert made == 1 and step["status"] == "сбой" and step.get("content_fail") is True, (made, step)
+    assert "охват 20 %" in step["note"], step
+    assert not any("--done" in a for a in calls), "малый охват отмечен разобранным"
+    made, step, _ = run_plan([{"title": "Часть", "from": 1, "to": 2}], apply=False)
+    assert step["status"] == "сбой" and "охват" in step["note"], step
+
+    # охват 70 % — отметка ставится
+    made, step, calls = run_plan([{"title": "А", "from": 1, "to": 4}, {"title": "Б", "from": 5, "to": 7}])
+    assert made == 2 and step["status"] == "" and any("--done" in a for a in calls), (made, step, calls)

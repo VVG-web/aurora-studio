@@ -6075,19 +6075,62 @@ def stop_jobs_on_exit() -> int:
     → сколько заданий снято."""
     with JOBS_LOCK:
         procs = [j.get("proc") for j in JOBS.values() if not j.get("done") and j.get("proc")]
-    n = 0
+    live = []
     for proc in procs:
         try:
             if proc.poll() is None:
-                WD.stop_tree(proc.pid)
-                n += 1
+                live.append(proc.pid)
         except Exception:  # noqa: BLE001 — уходящая панель не падает на чужом процессе
             pass
-    return n
+
+    def one(pid):
+        try:
+            WD.stop_tree(pid)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Каждому заданию — свои STOP_GRACE секунд на коммит; снимаем их одновременно, иначе время
+    # выхода панели растёт с числом заданий, а новая панель при `--restart` ждёт старую ограниченно.
+    workers = [threading.Thread(target=one, args=(pid,), daemon=True, name="aurora-stop")
+               for pid in live]
+    for t in workers:
+        t.start()
+    for t in workers:
+        t.join()
+    return len(live)
+
+
+def finish_panel(srv) -> int:
+    """Панель уходит: сперва отпустить порт, потом снять задания.
+
+    Снятие заданий занимает до `STOP_GRACE` секунд (раннер фиксирует сделанное). Пока слушающий
+    сокет не закрыт, порт занят, и новая панель из `--restart` получала бы «порт занят другой
+    программой», а старая после этого уходила — человек оставался без панели.
+    → сколько заданий снято."""
+    try:
+        srv.server_close()
+    except Exception:  # noqa: BLE001 — выход не должен падать на сокете
+        pass
+    return stop_jobs_on_exit()
+
+
+def wait_panel_exit(pid: int, timeout: float, step: float = 0.25) -> bool:
+    """Ждать, пока прежняя панель (`--restart`) не умрёт. Её окно выхода — до `STOP_GRACE`
+    секунд на задание, а не мгновение; опрос по адресу (`alive`) этого не видит: панель отвечает
+    ещё до конца выхода, а потом перестаёт отвечать, пока держит порт. → умерла ли за срок."""
+    from aurora_common import pid_alive
+    end = time.time() + timeout
+    while pid_alive(pid):
+        if time.time() >= end:
+            return False
+        time.sleep(step)
+    return True
 
 
 # Сколько секунд раннер получает на фиксацию сделанного после SIGTERM, прежде чем снимут дерево.
 STOP_GRACE = WD.STOP_GRACE
+# Строка раннера о состоявшемся коммите агента: «Результат агента: … (abcd1234)».
+AGENT_COMMIT_LINE = re.compile(r"^Результат агента:.*\([0-9a-f]{7,40}\)\s*$")
 
 
 def stop_job(job_id: str, lang: str = "") -> dict:
@@ -6120,9 +6163,11 @@ def stop_job(job_id: str, lang: str = "") -> dict:
     except OSError as e:
         return {"error": f"не удалось остановить: {e}"}
     with JOBS_LOCK:
-        # Обещать коммит агента можно, только если он действительно отчитался: на Windows сигнал
-        # не доставляется, раннер старого проекта обработчика не имеет, а sync и kb:* — не агент.
-        said = any(str(x).startswith("Результат агента:") for x in job["out"])
+        # Обещать коммит агента можно, только если он назвал его хеш: строку «Результат агента:»
+        # раннер печатает и когда писать было нечего («прогон ещё ничего не писал»), и когда коммит
+        # не удался. На Windows сигнал не доставляется, раннер старого проекта обработчика не имеет,
+        # а sync и kb:* — не агент.
+        said = any(AGENT_COMMIT_LINE.match(str(x)) for x in job["out"])
     strings = i18n_catalogue(lang or DEFAULT_LANG).get("strings") or {}
     key = "job.stopped_agent" if said else "job.stopped"
     with JOBS_LOCK:
@@ -6415,11 +6460,13 @@ def main() -> int:
             return 2
         try:
             os.kill(prev["pid"], signal.SIGTERM)
-            for _ in range(20):
-                if not alive(prev["url"], session_token(prev)):
-                    break
-                time.sleep(0.25)
-            print(f"Прежняя панель остановлена (pid {prev['pid']}).")
+            # Уходя, панель до STOP_GRACE секунд ждёт коммитов заданий: ждём смерти процесса,
+            # а не молчания по адресу — иначе порт ещё занят, и новая панель в него не встанет.
+            if wait_panel_exit(prev["pid"], STOP_GRACE + 10):
+                print(f"Прежняя панель остановлена (pid {prev['pid']}).")
+            else:
+                print(f"Прежняя панель (pid {prev['pid']}) не ушла за {int(STOP_GRACE + 10)} с.",
+                      file=sys.stderr)
         except OSError as e:
             print(f"Не удалось остановить прежнюю панель: {e}", file=sys.stderr)
 
@@ -6497,7 +6544,7 @@ def main() -> int:
     except (KeyboardInterrupt, SystemExit):
         print("\nОстановлено.")
     finally:
-        stopped = stop_jobs_on_exit()
+        stopped = finish_panel(srv)
         if stopped:
             print(f"Сняты задания панели: {stopped} — продолженная цепочка повторит их шаги.")
         if read_session().get("pid") == os.getpid():
