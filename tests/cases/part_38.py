@@ -1552,8 +1552,8 @@ def test_web_token_binding_is_made_of_the_origins_that_answered(tmp: Path):
         lines = [ln for ln in out.splitlines() if "токен привязан" in ln]
         assert len(lines) == 1 and "https://dead.example.org" in lines[0] \
             and "AURORA_WEB_TOKEN_HOSTS=https://dead.example.org,https://wiki.example.com" in lines[0], out
-        out = go(pages + ["https://new.example.net/c"])      # привязка держится и дальше
-        assert dict(sent)["https://new.example.net/c"] == "" and "токен привязан" not in out
+        out = go(pages + ["https://new.example.com/c"])      # привязка держится и дальше
+        assert dict(sent)["https://new.example.com/c"] == "" and "токен привязан" not in out
         # (3) HTTP-отказ — ответ; свой компьютер не запоминается и токен получает всегда
         state.unlink()
         out = go(["http://127.0.0.1:9/a", "https://denied.example.com/x"])
