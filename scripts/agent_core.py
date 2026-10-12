@@ -960,7 +960,7 @@ def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -
     # не разобран). Фолбэк не молчаливый: `_call_role` видит путь ответа (`aurora.via`) и
     # поднимает тревогу (`note_bypass`), а вызов с инструментами без адаптера не принимает.
     want = (payload or {}).get("adapter") or ADAPTER.get("name")
-    soft_why = ""
+    soft_why = hard_why = ""
     if want == "pydantic_ai" and payload:
         st, body, err, dt = pydantic_transport(backend, payload, timeout)
         if not str(err or "").startswith(ADAPTER_FAIL):
@@ -976,7 +976,7 @@ def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -
             # прогона грозил бы «Проверьте venv» после любого обрыва связи.
             soft_why = why
         else:
-            ADAPTER["fallback_why"] = why
+            ADAPTER["fallback_why"] = hard_why = why
     # В шлюз уходит запрос по стандарту. Внутренние поля адресованы адаптеру, а не
     # серверу: `guard`/`role`/`tools_root`/`mcp` — сторожу и инструментам. Строгий шлюз
     # на неизвестное поле отвечает `400 Unrecognized request argument`, а движок объявлял
@@ -985,8 +985,15 @@ def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -
     res = http_json(backend["url"] + "/chat/completions",
                     {k: v for k, v in (payload or {}).items() if k not in ADAPTER_ONLY},
                     backend["key"], timeout)
-    if soft_why and res[0] is not None:
-        ADAPTER["fallback_why"] = soft_why
+    if res[0] is not None and (soft_why or hard_why):
+        if soft_why:
+            ADAPTER["fallback_why"] = soft_why
+        # Причину обхода несёт сам ответ: общее поле перетирает любой параллельный вызов,
+        # дошедший через адаптер, а прямой запрос идёт минуты — к чтению оно уже пустое.
+        if isinstance(res[1], dict):
+            if not isinstance(res[1].get("aurora"), dict):
+                res[1]["aurora"] = {}
+            res[1]["aurora"]["bypass_why"] = soft_why or hard_why
     return res
 
 
@@ -2308,7 +2315,9 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     # адаптера упал, новая версия не прошла проверку — причина в
                     # `fallback_why`. Пусто — переключатель не включён вовсе (так было
                     # с 1.153.0 по 1.160.0).
-                    bypass = (ADAPTER.get("fallback_why")
+                    aur = body.get("aurora")
+                    bypass = ((aur.get("bypass_why") if isinstance(aur, dict) else "")
+                              or ADAPTER.get("fallback_why")
                               or "адаптер не включён в этом процессе — ошибка движка")
                     note_bypass(bypass, needs_adapter)
                     if needs_adapter:

@@ -1897,6 +1897,59 @@ def test_no_connection_bypass_is_recorded_only_when_direct_request_answered(tmp:
         AG.ADAPTER.update(saved[1])
 
 
+@test
+def test_bypass_reason_travels_with_the_call_not_the_global_field(tmp: Path):
+    """Прямой запрос идёт минуты, а общее поле причины обхода снимает любой параллельный вызов,
+    дошедший через адаптер: первый вызов не должен остаться с пустой причиной («ошибка движка»).
+    Причина едет в ответе (`aurora.bypass_why`); чужой `aurora` без словаря не мешает."""
+    import threading
+    import time as _t
+    _path()
+    import agent_core as AG
+    ok = {"choices": [{"message": {"content": "ок"}, "finish_reason": "stop"}], "usage": {}}
+
+    def adapter(backend, payload, timeout):
+        if payload["messages"][0]["content"] == "A":
+            return None, None, AG.ADAPTER_FAIL + "ответ не разобран", 0.0
+        return 200, dict(ok, aurora={"via": "pydantic_ai"}), "", 0.0
+
+    direct = {"aurora": "строка"}
+
+    def slow_direct(url, payload, key, timeout):
+        _t.sleep(0.5)
+        return 200, dict(ok, **direct), "", 0.5
+    saved = (AG.pydantic_transport, AG.http_json, dict(AG.ADAPTER))
+    AG.pydantic_transport, AG.http_json = adapter, slow_direct
+    be = {"url": "http://example.com/v1", "key": "", "n": 1}
+
+    def ask(text):
+        return AG._transport("chat", be, {"model": "m", "adapter": "pydantic_ai",
+                                          "messages": [{"role": "user", "content": text}]}, 5)
+    got = {}
+    try:
+        AG.ADAPTER.update(name="pydantic_ai", fallback_why="")
+        first = threading.Thread(target=lambda: got.update(a=ask("A")))
+        first.start()
+        _t.sleep(0.15)
+        st, *_ = ask("B")        # пока первый ждёт прямой ответ, второй дошёл через адаптер
+        first.join()
+        assert st == 200 and AG.ADAPTER["fallback_why"] == "", AG.ADAPTER["fallback_why"]
+        aur = got["a"][1]["aurora"]
+        assert isinstance(aur, dict) and aur.get("bypass_why") == "ответ не разобран", aur
+        # причина «нет соединения» едет так же, а ответ адаптера её не получает
+        AG.pydantic_transport = lambda b, p, t: (None, None, AG.ADAPTER_FAIL
+                                                 + AG.ADAPTER_NO_CONNECT + ": обрыв", 0.0)
+        _st, body, *_ = ask("C")
+        assert body["aurora"]["bypass_why"].startswith(AG.ADAPTER_NO_CONNECT), body["aurora"]
+        AG.pydantic_transport = adapter
+        _st, body, *_ = ask("B")
+        assert "bypass_why" not in body["aurora"], body["aurora"]
+    finally:
+        AG.pydantic_transport, AG.http_json = saved[0], saved[1]
+        AG.ADAPTER.clear()
+        AG.ADAPTER.update(saved[2])
+
+
 def _clear_cool(AG):
     for d in (AG.DOWN, AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
         d.clear()
