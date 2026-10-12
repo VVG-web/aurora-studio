@@ -157,9 +157,15 @@ def search(kb_root: str, concepts: list, mode: str, budget: int = PACK_BUDGET) -
     if not os.path.isfile(script):
         script = os.path.join(HERE, "ctx_pack.py")
     topic = "; ".join(concepts)
+    # Контекст бота — постановка, а не вопрос к базе: отказ «в базе этого нет» ему не нужен
+    # (`abstain=0`). Передаём окружением, а не флагом: движок проекта знаний лежит в другом
+    # проекте и мог быть выпущен раньше — старый `--retrieval abstain=0` не знает и падает
+    # с кодом 1, а старая переменная только предупреждает и отдаёт пак.
+    spec = ",".join(x for x in (os.environ.get("AURORA_RETRIEVAL", ""), "abstain=0") if x)
     try:
         p = subprocess.run([sys.executable, script, "--mode", mode, "--no-log",
-                            "--budget", str(budget), "--retrieval", "abstain=0", "--", topic], cwd=kb_root,
+                            "--budget", str(budget), "--", topic], cwd=kb_root,
+                           env={**os.environ, "AURORA_RETRIEVAL": spec},
                            capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=300)
     except (OSError, subprocess.TimeoutExpired):

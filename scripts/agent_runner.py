@@ -5139,9 +5139,12 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         # Идея — постановка нового, а не вопрос к базе: она опирается на известную сущность
         # и просит то, чего в базе ещё нет, поэтому доля найденных слов тут не повод для
         # отказа (`abstain=0`). Пометка «Слабая опора» в паке остаётся.
-        r = run_command(cwd, "ctx_pack.py",
-                        [st["idea"], "--mode", "generate", "--no-log",
-                         "--retrieval", "abstain=0"] + pack_args)
+        pack_cmd = [st["idea"], "--mode", "generate", "--no-log"]
+        r = run_command(cwd, "ctx_pack.py", pack_cmd + ["--retrieval", "abstain=0"] + pack_args)
+        if not r["ok"] and "неизвестные ключи --retrieval" in r["out"]:
+            # Движок проекта старше этой правки и ключа `abstain` не знает: отказа «в базе
+            # этого нет» в нём тоже нет, так что повтор без флага — то же поведение.
+            r = run_command(cwd, "ctx_pack.py", pack_cmd + pack_args)
         if not r["ok"] or "## " not in r["out"]:
             return {"ok": False, "sid": sid, "why": pack_refusal(r["out"])}
         st["pack"] = r["out"]

@@ -1729,17 +1729,21 @@ def test_weak_mark_is_not_put_on_answerable_questions(tmp: Path):
     assert "Слабая опора" in named.stdout and "Зарнитц" in named.stdout.split("Слабая опора")[1][:200], \
         "имя без опоры в базе не названо"
 
+    # Общее начало с любым словом базы словоформой не считается: «отпуск» и «отпущено»,
+    # «командировка» и «команда» — разные слова, и потолок «слова нет в базе» их не пускает.
+    from harness import card
+    card(root, "Concepts/Деньги-отпущены.md",
+         "Деньги отпущены банком, команда смены и командир подтверждают платёж.",
+         status="verified", type="concept")
+    for q, word in (("какой статус у заявки на отпуск", "отпуск"),
+                    ("какой статус у заявки на командировку", "командировку")):
+        coll = _ctx(root, q)
+        assert coll.returncode == 0 and "Слабая опора" in coll.stdout \
+            and word in coll.stdout.split("Слабая опора")[1][:200], \
+            f"слово без опоры в базе ушло без пометки из-за созвучного «{word}»:\n{coll.stdout[:500]}"
     sys.path.insert(0, str(SCRIPTS))
     C = importlib.import_module("ctx_pack")
-    cwd0 = os.getcwd()
-    try:
-        os.chdir(root)
-        C.measure_rarity(C.load_cards())
-        assert C._shares_prefix(C.norm("оформить")), "словоформа «оформляется» не узнана"
-        assert not C._shares_prefix(C.norm("Зарнитц")), "новое слово принято за словоформу"
-        assert not C._shares_prefix("us-4.7.9"), "номер принят за словоформу"
-    finally:
-        os.chdir(cwd0)
+    assert not hasattr(C, "_shares_prefix"), "проверка общего начала по всей базе вернулась"
     assert C._surface("Старый тариф по объёму Груза", C.norm("Груза")) == "Груза", \
         "регистр написания потерян"
     assert C._surface("тариф по объёму", C.norm("объёму")) == "объёму", "ё потеряна"
@@ -1849,3 +1853,93 @@ def test_confidence_with_semantic_closeness_does_not_refuse(tmp: Path):
         os.chdir(cwd0)
     assert far["level"] == "none", far
     assert near["level"] == "weak", near
+
+
+@test
+def test_refusal_names_release_and_replaced_cards_not_only_trust(tmp: Path):
+    """Отказ «в базе нет» не ложен, если совпадение отсеял релиз или замена (проход 3, BL-KBA-14).
+
+    Раньше такой запрос получал пак со строкой «Исключено по релизу…», а после отказа по числу
+    карточек, прошедших по запросу, говорил «База не знает» — хотя карточка есть, только не для
+    текущего релиза. Замещённую карточку отказ не называл вовсе, а `ask` её показывает.
+    """
+    root = _answerability_base(tmp)
+    from harness import card
+    card(root, "Reference/Аббревиатуры.md", "ЭСФ — электронная счёт-фактура.",
+         status="verified", type="reference")
+    (root / "AuroraKnowledgeDB/meta").mkdir(parents=True, exist_ok=True)
+    (root / "AuroraKnowledgeDB/meta/releases.md").write_text(
+        "| Релиз | Состояние |\n| R1 | current |\n| R2 | — |\n", encoding="utf-8")
+    card(root, "Concepts/Тариф-таможни.md", "Таможенный экспорт облагается тарифом таможни.",
+         status="verified", type="concept", applies_to="[R2]")
+    card(root, "Concepts/Устаревший-лифт.md", "Грузовой лифт модели Зета обслуживается раз в год.",
+         status="deprecated", type="concept")
+
+    rel = _ctx(root, "таможенный экспорт")
+    assert rel.returncode == 1 and "Context pack" not in rel.stdout, rel.stdout[:300]
+    assert "Тариф-таможни" in rel.stderr and "другого релиза" in rel.stderr \
+        and "R1" in rel.stderr, f"отказ не назвал карточку другого релиза: {rel.stderr}"
+    assert "таможенном" not in rel.stderr + rel.stdout, "тело карточки раскрыто"
+
+    old = _ctx(root, "лифт Зета обслуживание")
+    assert old.returncode == 1 and "Устаревший-лифт" in old.stderr \
+        and "замещённые" in old.stderr and "ask" in old.stderr, old.stderr
+    assert "по доверию" not in old.stderr, "замещённая названа скрытой по доверию"
+    ask = _ctx(root, "лифт Зета обслуживание", "--mode", "ask")
+    assert ask.returncode == 0 and "Устаревший-лифт" in ask.stdout, ask.stderr
+
+
+_OLD_CTX_PACK = (
+    "import os, sys\n"
+    "if '--retrieval' in sys.argv:\n"
+    "    print('ctx_pack: неизвестные ключи --retrieval: abstain (есть: weak)', file=sys.stderr)\n"
+    "    sys.exit(1)\n"
+    "if 'abstain' in os.environ.get('AURORA_RETRIEVAL', ''):\n"
+    "    print('ctx_pack: AURORA_RETRIEVAL — неизвестные ключи: abstain', file=sys.stderr)\n"
+    "print('# Context pack: x\\n\\n_карточек 1_\\n\\n## Заявка — Заявка\\n\\nтекст')\n")
+
+
+@test
+def test_abstain_off_works_with_engine_released_before_it(tmp: Path):
+    """`abstain=0` не ломает проект с движком старше правки (проход 3, BL-KBA-14).
+
+    Движок проекта знаний бота лежит в другом проекте и обновляется отдельно; старый ctx_pack
+    не знает ключа `abstain`, и флаг `--retrieval` он отвергает кодом 1 — бот оставался без
+    контекста, производство падало. Бот передаёт ключ окружением (старый движок только
+    предупреждает), производство повторяет вызов без флага. Новый движок тем же путём получает
+    ключ: идея с покрытием ниже порога даёт пак, а не отказ.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    BC = importlib.import_module("bot_context")
+    R = importlib.import_module("agent_runner")
+    A = importlib.import_module("agent_core")
+    root = _answerability_base(tmp)
+
+    idea = ["оповещение курьера о новой накладной через мобильное приложение"]
+    pack, n = BC.search(str(root), idea, "generate")
+    assert n > 0 and "Слабая опора" in pack, f"бот с новым движком остался без пака: {pack[:200]!r}"
+
+    (root / ".aurora/scripts/ctx_pack.py").write_text(_OLD_CTX_PACK, encoding="utf-8")
+    pack, n = BC.search(str(root), idea, "generate")
+    assert "Context pack: x" in pack and n == 1, f"бот со старым движком без контекста: {pack!r}"
+    assert "неизвестные ключи" not in pack, "предупреждение движка попало в пак бота"
+
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/US.md").write_text("# US\n\n## Описание\n", encoding="utf-8")
+    cfg_path = root / "aurora.config.yaml"
+    cfg_path.write_text(cfg_path.read_text(encoding="utf-8").rstrip()
+                        + '\nartifacts:\n  us:\n    title: "US"\n'
+                          '    template: "Templates/US.md"\n    out: "Artifacts/us"\n',
+                        encoding="utf-8")
+
+    def fake(cfg_, role, messages, **kw):
+        text = {"planner": json.dumps({"questions": [], "assumptions": [], "plan": "1. Описание"},
+                                      ensure_ascii=False),
+                "critic": json.dumps({"ok": True, "issues": [], "coverage": {}}),
+                "qa": "ВЕРДИКТ: чисто"}.get(role, "# US\n\nтекст")
+        return {"ok": True, "backend": 1, "model": "m", "tps": 9, "log": [], "text": text}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    r1 = R.run_make(cfg, str(root), "us", idea[0], "", "", False, call=fake)
+    assert r1.get("ok"), f"производство упало на движке старше правки: {r1.get('why')}"
+    assert "Context pack: x" in R.load_session(str(root), r1["sid"])["pack"]

@@ -446,6 +446,9 @@ aurora_stats.py --queue           # что верифицировать перв
 режим добавляет `deprecated`-карточки и отклонённые DR как историю). Собирать контекст
 вручную не нужно — правила уже в скрипте. «Почему/почему не» questions MUST pull `Decisions/` including
 rejected/superseded DRs (labeled as history). Every claim in the answer cites `[[card]]`.
+`ctx_pack` itself may refuse (exit 1, «в базе этого нет»: too few question words found, or
+only cards hidden by trust/release) and may put a «Слабая опора» line in the pack — answer
+only from what was found and name what is missing; never turn a refusal into an answer.
 If the base has no answer — say so explicitly, never fill gaps silently; suggest which
 card is missing and offer to draft it into `_inbox` state. Если ответа нет **и знать его
 может только заказчик** — предложить оформить вопрос (`question`), а не гадать: так

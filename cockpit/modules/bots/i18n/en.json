@@ -135,7 +135,7 @@
   "bots.knowledge_own": "Its own project",
   "bots.p.knowledge_unknown": "There is no such knowledge project",
   "bots.fix.knowledge_unknown": "Pick a project in the “Project context” card — from the panel's projects — or keep its own.",
-  "bots.context.generate": "Pack: trusted knowledge only",
+  "bots.context.generate": "Pack: trusted knowledge (plus labelled drafts during bootstrap)",
   "bots.context.evaluate": "Pack: all knowledge, with trust marks",
   "bots.context.off": "No pack — the bot searches itself",
   "bots.coach.open": "Improve with AI",

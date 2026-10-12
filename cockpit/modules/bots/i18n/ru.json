@@ -135,7 +135,7 @@
   "bots.knowledge_own": "Свой проект",
   "bots.p.knowledge_unknown": "Проекта знаний нет",
   "bots.fix.knowledge_unknown": "Выберите проект в карточке «Контекст проекта» — из проектов панели — или оставьте свой.",
-  "bots.context.generate": "Пак: только доверенное знание",
+  "bots.context.generate": "Пак: доверенное знание (при bootstrap — и помеченные черновики)",
   "bots.context.evaluate": "Пак: всё знание, с пометками доверия",
   "bots.context.off": "Без пака — бот ищет сам",
   "bots.coach.open": "Улучшить с ИИ",

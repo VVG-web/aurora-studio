@@ -12,7 +12,8 @@
   python3 .aurora/scripts/ctx_pack.py "Заявка" --save          # + файл в Artifacts/drafts/
 
 Режимы (`--mode`) по таблице retrieval.md:
-  generate (по умолчанию), review — только knowledge (доверенный источник) и принятые DR
+  generate (по умолчанию), review — knowledge (доверенный источник) и принятые DR; при
+                                    bootstrap (см. ниже) — ещё и помеченные черновики
   ask                             — плюс deprecated и отклонённые/заменённые DR как история
   evaluate                        — плюс draft: знание из недоказанных источников, и DR proposed
 
@@ -756,16 +757,6 @@ def _surface(topic: str, key: str) -> str:
     return key
 
 
-def _shares_prefix(key: str) -> bool:
-    """В базе есть слово с тем же началом из четырёх знаков — это словоформа, а не новое слово.
-
-    `key` — ключ поиска (`norm`), он же ключи `RARITY`."""
-    head = key[:4]
-    if re.search(r"[\d.]", key):         # номер и код: «US-4.7.9» — не словоформа «US-4.7.2»
-        return False
-    return len(head) >= 4 and any(w.startswith(head) for w in RARITY if w != "__total__")
-
-
 def confidence(seeds: list, topic: str, close: dict | None = None) -> dict | None:
     """Абсолютная уверенность выдачи по лучшим карточкам, прошедшим фильтр доверия.
 
@@ -810,11 +801,13 @@ def confidence(seeds: list, topic: str, close: dict | None = None) -> dict | Non
         level = "high"
     else:
         level = "weak"
-    # Слова, которых нет в базе вовсе — ни в какой форме (имя, код, номер, новый термин), —
-    # «одно общее слово» не повод считать вопрос отвеченным: уверенность выше слабой не
-    # бывает. Слово другой формы («установить» против «установка») так не считается: у него
-    # в базе есть слова с тем же началом из четырёх знаков.
-    if level == "high" and weak_at and any(not _shares_prefix(w) for w in absent):
+    # Слова, которых нет в базе вовсе (имя, код, номер, новый термин), — «одно общее слово» не
+    # повод считать вопрос отвеченным: уверенность выше слабой не бывает. Другая форма слова
+    # («установить» против «установка») сюда не попадает сама: она в `near`, если в найденных
+    # карточках есть слово с тем же началом из пяти знаков. Общее начало с любым словом
+    # базы формой не считаем: четыре знака для русского — не словоформа («отпуск» и
+    # «отпущено», «квартира» и «квартал»), и чем больше база, тем чаще коллизия.
+    if level == "high" and weak_at and absent:
         level = "weak"
     return {"level": level, "cover": round(cover, 2), "terms": len(terms),
             "missing": [_surface(topic, w) for w in missing],
@@ -843,7 +836,8 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
 
     `info` (если передан) наполняется диагностикой, которая не меняет выбор: `hidden` —
     карточки среди десяти лучших по запросу, которых фильтр доверия не пропустил (имя и
-    статус; тело в пак не идёт), `confidence` — оценка `confidence()` по принятым карточкам.
+    статус; тело в пак не идёт), `released` — отсеянные релизом, `replaced` — замещённые
+    (`deprecated`; их показывает только `ask`), `confidence` — оценка `confidence()` по принятым карточкам.
     """
     _retrieval_env()
 
@@ -864,7 +858,7 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
         close = semantic(topic, max_cards * 2)      # то же, что `fuse` делал сам при None
     seeds = fuse(cards, topic, close, limit=max_cards * 2)
     chosen, seen, dropped = [], set(), []
-    hidden = []
+    hidden, released, replaced = [], [], []
     seed_cap = max(1, max_cards - int(RETRIEVAL.get("graph_slots") or 0))
     for rank_no, (_, c) in enumerate(seeds):
         if len(chosen) >= seed_cap:
@@ -872,16 +866,23 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
         if c.stem in seen:
             continue
         if not allowed(c):
-            if rank_no < HIDDEN_TOP and mode not in MEETING_RULE and trust_hidden(c):
-                hidden.append(c)
+            if rank_no < HIDDEN_TOP and mode not in MEETING_RULE:
+                if trust_hidden(c):
+                    hidden.append(c)
+                elif c.status == "deprecated":
+                    replaced.append(c)
             continue
         if release and c.applies_to and release not in c.applies_to:
             dropped.append(c)
+            if rank_no < HIDDEN_TOP:
+                released.append(c)
             continue
         seen.add(c.stem)
         chosen.append(c)
     if info is not None:
         info["hidden"] = hidden
+        info["released"] = released
+        info["replaced"] = replaced
         info["seeded"] = len(chosen)
         info["confidence"] = confidence(list(chosen[:5]), topic, close)
 
@@ -1088,11 +1089,31 @@ def hidden_note(hidden: list, mode: str, short: bool = False) -> str:
                    if short else "; тело не показано — режим evaluate покажет такие карточки.")
 
 
+def refusal_notes(info: dict, mode: str, release: str) -> str:
+    """Что нашлось по теме, но в выдачу не вошло: доверие, релиз, замещённые.
+
+    Отказ «в базе нет» без этого был бы ложным (KB2-07): карточка есть, её отсеял не вопрос, а
+    фильтр. Только имена и причины, без тела."""
+    parts = []
+    if info.get("hidden"):
+        parts.append(hidden_note(info["hidden"], mode, short=True))
+    if info.get("released"):
+        rel = info["released"]
+        parts.append(f"Есть {len(rel)} карточек для другого релиза (текущий {release}): "
+                     f"{', '.join(c.stem for c in rel[:5])}.")
+    if info.get("replaced"):
+        rep_ = info["replaced"]
+        parts.append(f"Есть только замещённые карточки ({len(rep_)}): "
+                     f"{', '.join(c.stem for c in rep_[:5])} — их показывает режим ask.")
+    return " ".join(parts) + " " if parts else ""
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Детерминированная сборка context pack")
     ap.add_argument("topic", help="тема запроса")
     ap.add_argument("--mode", default="generate", choices=sorted(MODE_STATUSES),
-                    help="режим отбора: generate и review — только доверенное и принятые DR; "
+                    help="режим отбора: generate и review — доверенное знание и принятые DR "
+                         "(при bootstrap — и помеченные черновики); "
                          "ask — плюс история (в т.ч. отклонённые и заменённые DR); "
                          "evaluate — всё; meetings — только встречи; "
                          "trusted_meetings — доверенное и встречи")
@@ -1172,6 +1193,7 @@ def main() -> int:
                                          release, a.max_cards, close, a.mode, info)
     jira = jira_state(a.topic)
     hidden = info.get("hidden") or []
+    notes = refusal_notes(info, a.mode, release)
     conf = info.get("confidence")
     # Справочник аббревиатур входит в `chosen` всегда, поэтому «по запросу не нашлось
     # ничего» узнаём по числу карточек, прошедших по запросу, а не по `chosen`: пак из
@@ -1180,8 +1202,7 @@ def main() -> int:
     nothing = not info.get("seeded") and (hidden or float(RETRIEVAL["abstain"]) > 0)
     if (not chosen or nothing) and not jira:
         print(f"ctx_pack: по теме «{a.topic}» ничего {'доверенного ' if hidden else ''}не найдено. "
-              + (hidden_note(hidden, a.mode, short=True) + " " if hidden else "")
-              + "База не знает — не выдумывайте: заведите вопрос (kb:question) или карточку.",
+              + notes + "База не знает — не выдумывайте: заведите вопрос (kb:question) или карточку.",
               file=sys.stderr)
         return 1
     if conf and conf["level"] == "none" and not jira:
@@ -1189,8 +1210,7 @@ def main() -> int:
         # честное «этого в базе нет». Модель не зовём — отказ детерминирован и стоит ноль.
         print(f"ctx_pack: по теме «{a.topic}» в базе этого нет: из слов вопроса найдено "
               f"{conf['cover']:.0%}, не хватает: {', '.join(conf['missing'][:8])}. "
-              + (hidden_note(hidden, a.mode, short=True) + " " if hidden else "")
-              + "Не выдумывайте: заведите вопрос (kb:question) или карточку.",
+              + notes + "Не выдумывайте: заведите вопрос (kb:question) или карточку.",
               file=sys.stderr)
         return 1
     if not chosen:
