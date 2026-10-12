@@ -342,19 +342,24 @@ def call_hook(name: str, spec: dict, guard: dict, root: str):
 def fence_result(value, source: str):
     """Результат инструмента внешнего сервера → текст в ограждении `<untrusted>`.
 
-    Строка и JSON-совместимые значения (словарь, список) ограждаются; остальное (файлы,
-    картинки) возвращается как есть: текста для инъекции в нём нет."""
+    Строка и словарь (JSON) ограждаются; список и кортеж — поэлементно: ответ «текст +
+    скриншот» приходит как `[str, BinaryImage]`, и картинка должна дойти до модели картинкой,
+    а не строкой с байтами. Остальное (числа, файлы, картинки) возвращается как есть: текста
+    для инъекции в нём нет."""
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if here not in sys.path:
         sys.path.insert(0, here)
     from aurora_common import untrusted
     if isinstance(value, str):
         return untrusted(value, source)
-    if isinstance(value, (dict, list, tuple)):
+    if isinstance(value, dict):
         try:
-            return untrusted(json.dumps(value, ensure_ascii=False, default=str), source)
+            # нестроковые листья (байты, объекты) — короткой строкой: репр картинки вчетверо больше её самой
+            return untrusted(json.dumps(value, ensure_ascii=False, default=lambda o: str(o)[:200]), source)
         except (TypeError, ValueError):
-            return value
+            return untrusted(str(value)[:20_000], source)
+    if isinstance(value, (list, tuple)):
+        return [fence_result(v, source) for v in value]
     return value
 
 
@@ -464,8 +469,16 @@ def register_tools(agent, allowed: list) -> None:
     def read_file(path: str) -> str:
         """Прочитать файл проекта: шаблон, промпт, ранее созданный артефакт."""
         try:
-            with open(inside(path), encoding="utf-8", errors="ignore") as f:
-                return f.read(60_000)
+            real = inside(path)
+            with open(real, encoding="utf-8", errors="ignore") as f:
+                text = f.read(60_000)
+            # Зеркала источников, сырьё и карточки базы — дословный чужой текст: данные в
+            # ограждении. Шаблоны, промпты и код проекта — указания владельца, их не ограждают.
+            top = os.path.relpath(real, os.path.realpath(root)).split(os.sep)[0].lower()
+            if top in ("sources", "raw", "auroraknowledgedb"):
+                from aurora_common import untrusted
+                return untrusted(text, os.path.relpath(real, os.path.realpath(root)))
+            return text
         except (OSError, ValueError) as e:
             return f"не прочитан: {e}"
 

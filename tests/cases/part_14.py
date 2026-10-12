@@ -1021,7 +1021,9 @@ def test_agent_file_tools_read_ordinary_cards_and_code_named_like_service_folder
             return fn
 
     AD.register_tools(FakeAgent(), [str(root)])
-    assert tools["read_file"]("AuroraKnowledgeDB/Glossary/Credentials.md") == "учётные данные — термин"
+    # карточка базы — дословный чужой текст: читается данными, в ограждении (BL-SEC-06)
+    assert tools["read_file"]("AuroraKnowledgeDB/Glossary/Credentials.md") == \
+        '<untrusted source="AuroraKnowledgeDB/Glossary/Credentials.md">\nучётные данные — термин\n</untrusted>'
     assert tools["read_file"]("src/state/store.py") == "x = 1"
     assert tools["read_file"]("local/models.json").startswith("не прочитан")
     assert set(tools["list_dir"]("src").split("\n")) == {"state", "runs"}, "list_dir прячет обычные имена"

@@ -188,7 +188,16 @@ def search(kb_root: str, concepts: list, mode: str, budget: int = PACK_BUDGET) -
     if "## " not in pack:
         return "", 0
     m = re.search(r"карточек (\d+)", pack)
-    return pack, int(m.group(1)) if m else pack.count("\n## ")
+    n = int(m.group(1)) if m else pack.count("\n## ")
+    return fence_pack(pack), n
+
+
+def fence_pack(pack: str) -> str:
+    """Пак без ограждений (движок проекта знаний выпущен раньше этой правки) — целиком данные.
+
+    Бот получает правило про `<untrusted>` вместе с паком; у старого пака блоков нет, и без
+    этой обёртки правило оставалось бы без дела, а дословный текст источников — голым."""
+    return pack if "<untrusted" in pack else untrusted(pack, "пак базы знаний")
 
 
 def gather(kb_root: str, body: str, cfg: dict, call, mode: str = "generate",
@@ -211,11 +220,12 @@ def gather(kb_root: str, body: str, cfg: dict, call, mode: str = "generate",
             "", "Собран до начала работы: ссылки задания, понятия, гибридный поиск по базе. "
             "Опирайся на него; не хватит — ищи сам (`kb_search`, `kb_context`, сервер `aurora`).",
             ""]
+    # Заголовки страниц и задач и понятия из них написал кто угодно: данные, в ограждении.
     if concepts:
-        head += ["Понятия поиска: " + "; ".join(concepts), ""]
+        head += ["Понятия поиска:", untrusted("; ".join(concepts), "понятия поиска"), ""]
     if links:
         head += ["### Ссылки из задания", ""]
-        head += [f"- {x['kind']} {x['ref']}: {x['title']}" for x in links]
-        head += [""]
+        head += [untrusted("\n".join(f"- {x['kind']} {x['ref']}: {x['title']}" for x in links),
+                           "ссылки задания"), ""]
     return {"block": "\n".join(head) + (pack + "\n\n" if pack else ""), "concepts": concepts,
             "links": links, "cards": cards, "mode": mode}
