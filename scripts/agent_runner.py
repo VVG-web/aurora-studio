@@ -64,7 +64,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
-from aurora_common import QUOTES, body as body_of, fold, link_escapes, replace_file  # noqa: E402
+from aurora_common import (QUOTES, aliases, body as body_of, fold, head_text,  # noqa: E402
+                           link_escapes, replace_file)
 
 RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
 
@@ -5620,15 +5621,10 @@ def base_names(cwd: str) -> set:
         if "/meta/" in path.as_posix() or path.name.startswith("_"):
             continue
         names.add(path.stem)
-        head = ""
-        try:
-            with open(path, encoding="utf-8", errors="ignore") as f:
-                head = f.read(600)
-        except OSError:
-            continue
-        m = re.search(r"^aliases:\s*\[(.*?)\]", head, re.M)
-        if m:
-            names |= {x.strip().strip('"\'') for x in m.group(1).split(",") if x.strip()}
+        # Синонимы читает тот же разбор шапки, что и везде (`aurora_common.aliases`): блочная
+        # запись, которую пишет переименование, и шапка длиннее окна в 600 знаков иначе
+        # терялись, а ссылка `[[прежнее имя]]` из ответа попадала в «выдумано».
+        names |= set(aliases(head_text(str(path))))
     return names
 
 

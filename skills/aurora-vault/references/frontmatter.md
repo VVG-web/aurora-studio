@@ -47,7 +47,7 @@ related: []
 One parser (`aurora_common.frontmatter`, lists via `list_field`/`aliases`/`related_names`, body
 via `body`) for every reader. A list field is valid inline (`aliases: ["A", "B"]`) and as a
 block (`aliases:` then `  - "A"` lines): the engine itself writes `related:` and `aliases:` as
-blocks. The body starts after the closing `---` line, so `---` inside a value is harmless.
+blocks; a blank line or a `# …` comment inside a block does not close it. The body starts after the closing `---` line, so `---` inside a value is harmless.
 Do not split a card by hand with `text.split("---")`.
 
 ## Status semantics

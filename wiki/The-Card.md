@@ -45,7 +45,7 @@ A refund returns money to the payer within ten days of a request. …   ← the 
 | `related`, `[[links]]` | The card's links: a card without any is a lint error |
 | thesis + "Source" + history | The thesis is a short claim; the verbatim source sits under it; the history footer is never overwritten |
 
-One parser reads the head (`aurora_common.frontmatter`): a list may be written inline (`aliases: ["A", "B"]`) or as a block (`aliases:` with `  - "A"` items below) — the graph, search, embeddings and maps of content see both forms the same way. The body starts after the closing `---` line; a triple dash inside a value (`title: "Retro --- results"`) does not end the head.
+One parser reads the head (`aurora_common.frontmatter`): a list may be written inline (`aliases: ["A", "B"]`) or as a block (`aliases:` with `  - "A"` items below) — the graph, search, embeddings and maps of content see both forms the same way. A blank line or a `# …` comment inside a block does not close it. The body starts after the closing `---` line; a triple dash inside a value (`title: "Retro --- results"`) does not end the head.
 
 ## Three kinds — the kind decides who edits the body
 

@@ -555,36 +555,63 @@ def frontmatter(text: str, unique: bool = False) -> dict:
     # `aliases: ["…", "…"]`: движок сам пишет `related:`/`aliases:` блоком, а читатель по
     # одной строке видел пустоту (граф без связей, синонимы мимо поиска). Значение отдаём в
     # строчной форме списка, чтобы все плоские читатели видели обе записи одинаково.
-    for key, items in head_blocks(head).items():
-        if items and key in fm and not fm[key]:
-            fm[key] = head_list_text(items)
+    # Блоки разбираем, только если у какого-то поля значение пусто или одни комментарии:
+    # `frontmatter` зовут в каждом обходе базы, лишний проход по шапке стоит заметно.
+    if any(head_blank(v) for v in fm.values()):
+        for key, items in head_blocks(head).items():
+            if items and key in fm and head_blank(fm[key]):
+                fm[key] = head_list_text(items)
     if unique:
         fm = {k: v for k, v in fm.items() if seen[k] == 1}
     return fm
 
 
-# Пункт блочного списка: `  - значение`, `- "значение"`; кавычки по краям снимаются.
-HEAD_ITEM_RE = re.compile(r"^[ \t]*-[ \t]*[\"']?(.+?)[\"']?[ \t]*$")
+HEAD_COMMENT_RE = re.compile(r"\s+#.*$|^#.*$")
+
+
+def head_blank(value: str) -> bool:
+    """Значение поля пусто, если после него идёт блок: ничего или один комментарий `# …`."""
+    return not HEAD_COMMENT_RE.sub("", value or "").strip()
+
+
+def head_item(line: str) -> "str | None":
+    """Пункт блочного списка: `  - значение`, `- "значение"` → значение без кавычек по краям.
+
+    Без регулярного выражения с откатом: на строке «-», тысячах пробелов и двух словах оно
+    откатывалось квадратично, а шапку читают на каждом обходе базы.
+    """
+    s = line.strip(" \t")
+    if not s.startswith("-"):
+        return None
+    s = s[1:].strip(" \t")
+    t = s[1:] if s[:1] in "\"'" and s else s
+    if t[-1:] in ("\"", "'") and t:
+        t = t[:-1]
+    return t or s or None
 
 
 def head_blocks(head: str) -> dict:
     """Блочные списки шапки: {ключ: [пункты]} — поле без значения и пункты `- …` под ним.
 
     Единый разбор блоков для `frontmatter` и `list_field`: строки — только настоящие
-    (`head_lines`), поэтому знак U+2028 в значении не рождает ни поля, ни пункта. Любая
-    другая строка (в том числе пустая) закрывает блок.
+    (`head_lines`), поэтому знак U+2028 в значении не рождает ни поля, ни пункта. Пустая
+    строка и комментарий `# …` внутри блока его не закрывают, как и в YAML; любая другая
+    строка закрывает. Поле с комментарием вместо значения (`aliases: # синонимы`) — тоже
+    начало блока.
     """
     out, key = {}, None
     for line in head_lines(head):
         m = HEAD_KEY_RE.match(line)
         if m:
-            key = m.group(1) if not re.sub(r"\s+#.*$|^#.*$", "", m.group(2)).strip() else None
+            key = m.group(1) if head_blank(m.group(2)) else None
             if key:
                 out.setdefault(key, [])
             continue
-        am = HEAD_ITEM_RE.match(line) if key else None
-        if am:
-            out[key].append(am.group(1))
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        item = head_item(line) if key else None
+        if item is not None:
+            out[key].append(item)
         else:
             key = None
     return out
@@ -1476,9 +1503,15 @@ def related_targets(text: str) -> list:
     `link_targets` читает только `[[wiki]]`. На живом проекте это стоило правилу доверия
     по связям всей работы: связей в базе 2386, а правило видело 4 — и молчало, будто база
     не связана вовсе. Читатели разные, источник один, поэтому функция отдельная.
+
+    Читает ВЕСЬ текст, а не одну шапку: пункты-ссылки `- [Имя](Имя.md)` в теле («Связанные»)
+    — такая же навигация, и граф ранжирования их считает. К ним добавлены имена из поля
+    `related` шапки в обеих записях (`related_names`): строчная `related: [...]` раньше
+    не попадала в граф вовсе.
     """
-    return [leaf_name(m.group(1).strip()) for m in RELATED_MD.finditer(text)
-            if leaf_name(m.group(1).strip())]
+    out = [leaf_name(m.group(1).strip()) for m in RELATED_MD.finditer(text)
+           if leaf_name(m.group(1).strip())]
+    return out + [n for n in related_names(text) if n not in out]
 
 
 def related_names(text: str) -> list:

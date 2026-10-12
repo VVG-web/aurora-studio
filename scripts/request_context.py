@@ -241,7 +241,9 @@ def skill_dirs(cwd: str, kit: str = "") -> list:
 def find_skill(name: str, cwd: str, kit: str = "") -> tuple:
     """(путь к SKILL.md, тело без шапки) или ("", "") — навык по имени или псевдониму."""
     import sys
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
     from aurora_common import body as body_of
     for want in (name, SKILL_ALIASES.get(name.lower(), "")):
         if not want or not re.fullmatch(r"[\w.\-]{1,64}", want):

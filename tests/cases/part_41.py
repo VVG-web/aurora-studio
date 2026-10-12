@@ -538,7 +538,7 @@ def test_cards_graph_sees_block_related_and_aliases(tmp: Path):
 def test_card_body_ignores_dashes_inside_head_values(tmp: Path):
     """«---» внутри значения шапки не обрывает её: тело берётся после закрывающей черты.
 
-    Срез `text.split("---", 2)[-1]` в восьми местах отдавал телом хвост заголовка
+    Срез `text.split("---", 2)[-1]` в шести местах отдавал телом хвост заголовка
     «Ретро --- итоги» вместе с остатком шапки.
     """
     sys.path.insert(0, str(SCRIPTS))
@@ -581,3 +581,118 @@ def test_jira_mirror_head_longer_than_the_old_window_is_read(tmp: Path):
     G.Graph.read_jira(g, str(jira))
     assert g.issues.get("PRJ-7", {}).get("summary", "").endswith("Заявление"), g.issues
     assert g.issues["PRJ-7"]["status"] == "Закрыто", g.issues
+
+
+@test
+def test_base_names_reads_block_aliases_and_long_heads(tmp: Path):
+    """Имена базы для «Спросить» включают синонимы блоком и из шапки длиннее 600 знаков.
+
+    `base_names` брал синонимы регуляркой по первым 600 знакам: блочная запись (так пишет
+    переименование) и длинная шапка были невидимы, и `[[прежнее имя]]` из ответа
+    попадало в «выдумано» вместо «есть в базе».
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    AR = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    _head_card(root, "Concepts/Счёт.md",
+               'title: "Счёт"\ntype: concept\naliases:\n  - "Фактура"\n  - \'Invoice\'\nstatus: knowledge\n')
+    _head_card(root, "Concepts/Платёж.md",
+               'title: "Платёж"\ntype: concept\naliases: ["Оплата"]\nstatus: knowledge\n')
+    pad = "".join(f'  - "метка-{i:04d}"\n' for i in range(120))
+    _head_card(root, "Concepts/Длинная.md",
+               f'title: "Длинная"\nlabels:\n{pad}aliases:\n  - "Далёкий синоним"\nstatus: knowledge\n')
+    names = AR.base_names(str(root))
+    assert {"Счёт", "Фактура", "Invoice", "Платёж", "Оплата", "Далёкий синоним"} <= names, names
+    res = AR.classify_links("См. [[Фактура]] и [[Далёкий синоним]].", [], "", str(root))
+    assert not res.get("invented"), res
+
+
+@test
+def test_card_head_blocks_tolerate_comments_and_blank_lines(tmp: Path):
+    """Пустая строка и комментарий внутри блока его не закрывают; `frontmatter` и `list_field` согласны.
+
+    Раньше `aliases:\\n  - A\\n\\n  - B` терял B, а для `aliases: # синонимы` с пунктами
+    `list_field` отдавал пункты, `frontmatter` — строку «# синонимы».
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
+    text = '---\ntitle: "Т"\naliases: # синонимы\n  - A\n\n  # пояснение\n  - "B"\nstatus: draft\n---\n\nx\n'
+    assert AC.list_field(text, "aliases") == ["A", "B"], AC.list_field(text, "aliases")
+    assert AC.frontmatter(text)["aliases"] == '["A", "B"]', AC.frontmatter(text)
+    assert AC.frontmatter(text)["status"] == "draft"
+    # поле только с комментарием и без пунктов остаётся как было
+    lone = '---\naliases: # синонимы\nstatus: draft\n---\n\nx\n'
+    assert AC.list_field(lone, "aliases") == [] and AC.frontmatter(lone)["status"] == "draft"
+    # блок закрывает любая другая строка, а не пустая
+    shut = '---\naliases:\n  - A\ntitle: "Т"\n  - не мой\n---\n\nx\n'
+    assert AC.list_field(shut, "aliases") == ["A"], AC.list_field(shut, "aliases")
+
+
+@test
+def test_card_head_item_has_no_quadratic_backtracking(tmp: Path):
+    """Пункт списка со множеством пробелов разбирается за линейное время.
+
+    Регулярка пункта на `-`, 60000 пробелов, слово, 60000 пробелов и второе слово
+    откатывалась квадратично (секунды на одной строке шапки).
+    """
+    import time
+    sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
+    line = "-" + " " * 60000 + "a" + " " * 60000 + "b"
+    t0 = time.time()
+    assert AC.head_item(line) == "a" + " " * 60000 + "b", len(AC.head_item(line) or "")
+    assert len(AC.head_blocks("aliases:\n" + line + "\n")["aliases"]) == 1
+    assert time.time() - t0 < 1.0, time.time() - t0
+    assert AC.head_item('- "x"') == "x" and AC.head_item("-y") == "y" and AC.head_item("-") is None
+    assert AC.head_item("text") is None
+
+
+@test
+def test_card_head_block_and_inline_agree_in_every_reader(tmp: Path):
+    """Одна карточка в блочной и в строчной записи одинаково читается картами, эмбеддингом и ретривом.
+
+    Читатели держатся на `frontmatter()`: kb_moc (теги), kb_embed (синонимы в голове куска),
+    ctx_pack (синонимы карточки, связи `related`). Тест ловит разъезд, если разбор шапки
+    тихо изменится.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
+    MOC = importlib.import_module("kb_moc")
+    EMB = importlib.import_module("kb_embed")
+    CP = importlib.import_module("ctx_pack")
+    block = ('title: "Счёт"\ntype: concept\nstatus: knowledge\naliases:\n  - "Фактура"\n'
+             'tags:\n  - платежи\n  - учёт\nrelated:\n  - "[ЭСФ](ЭСФ.md)"\n')
+    inline = ('title: "Счёт"\ntype: concept\nstatus: knowledge\naliases: ["Фактура"]\n'
+              'tags: [платежи, учёт]\nrelated: ["[ЭСФ](ЭСФ.md)"]\n')
+    got = {}
+    cwd = os.getcwd()
+    for label, head in (("block", block), ("inline", inline)):
+        sub = tmp / label
+        sub.mkdir()
+        root = make_project(sub)
+        card = _head_card(root, "Concepts/Счёт.md", head, "Ведётся по документам.\n")
+        _head_card(root, "Concepts/ЭСФ.md", 'title: "ЭСФ"\ntype: concept\nstatus: knowledge\n')
+        try:
+            os.chdir(root)
+            moc = MOC.read_cards()["Счёт"]
+            texts = EMB.card_texts("AuroraKnowledgeDB")["Счёт"]
+            c = CP.Card("AuroraKnowledgeDB/Concepts/Счёт.md", card.read_text(encoding="utf-8"))
+            rel = AC.related_targets(card.read_text(encoding="utf-8"))
+        finally:
+            os.chdir(cwd)
+        got[label] = (moc["tags"], "Фактура" in texts, c.aliases, rel)
+    assert got["block"] == got["inline"], got
+    assert got["block"] == (["платежи", "учёт"], True, ["Фактура"], ["ЭСФ"]), got["block"]
+
+
+@test
+def test_find_skill_does_not_grow_sys_path(tmp: Path):
+    """`find_skill` не вставляет путь движка в `sys.path` заново на каждый вызов."""
+    sys.path.insert(0, str(SCRIPTS))
+    RC = importlib.import_module("request_context")
+    RC.find_skill("нет-такого", str(tmp), kit=str(tmp / "nokit"))     # первый вызов может вставить путь
+    before = list(sys.path)
+    for _ in range(3):
+        RC.find_skill("нет-такого", str(tmp), kit=str(tmp / "nokit"))
+    assert sys.path.count(str(SCRIPTS)) == before.count(str(SCRIPTS)), sys.path[:6]
+    assert len(sys.path) == len(before), (len(before), len(sys.path))
