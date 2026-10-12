@@ -255,11 +255,14 @@ def _row(line: str, name: str, sep: str, ci: bool = False):
     return val
 
 
-def _field(text: str, name: str):
-    """Значение поля свойств («| Реализует | … |» или «Реализует: …») или None, если поля нет."""
+def _field(text: str, name: str, ci: bool = False):
+    """Значение поля свойств («| Реализует | … |» или «Реализует: …») или None, если поля нет.
+
+    `ci` — без учёта регистра: так читают ключи формулы истории («как», «я хочу», «чтобы»).
+    """
     for line in text.splitlines():
         for sep in ("|", ":"):
-            val = _row(line, name, sep)
+            val = _row(line, name, sep, ci)
             if val is not None:
                 return val
     return None
@@ -291,12 +294,15 @@ def lint_us(text: str) -> list:
     # US-01: формула «Как / Я хочу / Чтобы».
     for k in doc.find(r"^описание"):
         body = "\n".join(doc.body(k))
+        # Ключевая строка «| Как | … |» или «Как: …» — форма с полями, а не фраза: ключи в
+        # тексте идут по порядку и у неё, поэтому короткий путь её не засчитывает.
         if _one_phrase_formula(body) and not any(
-                _row(ln, "Как", "|", ci=True) is not None for ln in body.splitlines()):
+                _row(ln, "Как", sep, ci=True) is not None
+                for ln in body.splitlines() for sep in ("|", ":")):
             break               # формула одной фразой
         lost = []
         for key in ("Как", "Я хочу", "Чтобы"):
-            val = _field(body, key)
+            val = _field(body, key, ci=True)
             if val is None or not _filled(val):
                 lost.append(f"«{key}»")
         if lost:
