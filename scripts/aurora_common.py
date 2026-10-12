@@ -2031,6 +2031,60 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
+def kill_tree(pid: int, root: bool = True) -> None:
+    """Снять процесс и всех его потомков: адаптер модели и git живут дочерними процессами,
+    и снятый без них шаг оставил бы их держать слоты шлюза и `index.lock`.
+
+    Единый путь: панель (`watchdog.kill_tree`) и раннер агента, уходящий по сигналу остановки
+    (`root=False` — потомков снять, самого себя оставить доделать выход). На Windows
+    `taskkill /T` снимает и корень — флаг там не действует. Сначала просим мягко (SIGTERM),
+    через секунду — жёстко (SIGKILL); все ушли раньше — не ждём.
+    """
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
+                       timeout=30)
+        return
+    import signal
+    import time
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True,
+                             timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    kids: dict = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+    tree, todo = [], [pid]
+    while todo:
+        p = todo.pop()
+        tree.append(p)
+        todo += kids.get(p, [])
+    if not root:
+        tree = [p for p in tree if p != pid]
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for p in reversed(tree):          # сначала листья: родитель не успеет плодить новых
+            try:
+                os.kill(p, sig)
+            except OSError:
+                pass
+        for _ in range(10):               # до секунды: ушли все — второй сигнал не нужен
+            if not any(pid_alive(p) and not _is_zombie(p) for p in tree):
+                return
+            time.sleep(0.1)
+
+
+def _is_zombie(pid: int) -> bool:
+    """Завершённый, но не прибранный родителем процесс: `kill(pid, 0)` считает его живым."""
+    try:
+        out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True,
+                             text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.strip().startswith("Z")
+
+
 # ---------------------------------------------------------------------------------
 # Файловые замки процессов (BL-LCY-05). Один примитив на всех: замок git-действий проекта,
 # замок пишущего прогона агента, замок бота, проверка «идёт ли прогон» при обновлении.

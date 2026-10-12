@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import os
 import re
-import signal
 import subprocess
 import sys
 import threading
@@ -40,33 +39,10 @@ PROBE_TIMEOUT = 10
 
 def kill_tree(pid: int) -> None:
     """Снять процесс и всех его потомков: адаптер модели и git живут дочерними процессами,
-    и снятый без них шаг оставил бы их держать слоты шлюза и `index.lock`."""
-    if sys.platform == "win32":
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
-                       timeout=30)
-        return
-    try:
-        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True,
-                             timeout=10).stdout
-    except (OSError, subprocess.SubprocessError):
-        out = ""
-    kids: dict = {}
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
-    tree, todo = [], [pid]
-    while todo:
-        p = todo.pop()
-        tree.append(p)
-        todo += kids.get(p, [])
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        for p in reversed(tree):          # сначала листья: родитель не успеет плодить новых
-            try:
-                os.kill(p, sig)
-            except OSError:
-                pass
-        time.sleep(1.0)
+    и снятый без них шаг оставил бы их держать слоты шлюза и `index.lock`.
+    Путь один на панель и раннер агента — `aurora_common.kill_tree`."""
+    from aurora_common import kill_tree as _kill_tree
+    _kill_tree(pid)
 
 
 # Метка панели в окружении процессов, которые она запускает (`aurora_cockpit.main`).

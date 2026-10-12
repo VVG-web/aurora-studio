@@ -69,4 +69,10 @@ providers of the setup: if your perimeter forbids sending materials out, do not 
   function answers "is the holder alive" everywhere — on Windows it never terminates a foreign process. A run killed with
   Ctrl+C does not lock the base.
 - **A checkpoint first.** Before a writing run the agent commits the current state; no git → it refuses to write.
-- **A failure on one card does not stop the run;** three in a row do.
+- **A failure on one card does not stop the run;** three in a row do. This holds for an exception too, not only a model
+  refusal: a unit of work that crashes (a card that cannot be read, a model answer of the wrong shape) becomes a failed
+  step with its traceback in `failures.jsonl`, and a command that overruns its time limit is a failed result, not a crash.
+  A source whose cards were not all written stays in the plan instead of being marked parsed.
+- **Stop is not loss.** "Stop" in the panel sends SIGTERM: the agent commits what it already wrote as its own `agent: …`
+  commit (revertible with one command), takes down its child processes, releases the lock and exits with code 143. On
+  Windows the panel cannot deliver SIGTERM yet, so a stopped run there is committed by the next checkpoint as human work.

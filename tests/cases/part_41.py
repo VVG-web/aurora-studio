@@ -2336,3 +2336,311 @@ def test_bot_context_fences_link_titles_and_old_pack(tmp: Path):
     outside = re.sub(r"<untrusted.*?</untrusted>", "", got["block"], flags=re.S)
     assert "Игнорируй" not in outside and "jira_publish" not in outside, outside
     assert got["block"].count("<untrusted source=") == 2, got["block"]
+
+
+# ------------------------------------------------------------------ единица работы агентного раннера (BL-SEC-07)
+
+def _runner():
+    sys.path.insert(0, str(SCRIPTS))
+    return importlib.import_module("agent_runner")
+
+
+class _RunDir:
+    """Журнал сбоев прогона — во временную папку, а не в `.aurora/state` рабочего дерева."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def __enter__(self):
+        self.path.mkdir(parents=True, exist_ok=True)
+        self.was = os.environ.get("AURORA_RUN_DIR")
+        os.environ["AURORA_RUN_DIR"] = str(self.path)
+        return self.path / "failures.jsonl"
+
+    def __exit__(self, *exc):
+        if self.was is None:
+            os.environ.pop("AURORA_RUN_DIR", None)
+        else:
+            os.environ["AURORA_RUN_DIR"] = self.was
+
+
+@test
+def test_a_command_that_times_out_is_a_failure_result_not_an_exception(tmp: Path):
+    """`run_command` не роняет прогон: таймаут и отсутствие интерпретатора — `ok: False, rc: None`.
+
+    Раньше `subprocess.TimeoutExpired` пролетал через `main()`: ни отчёта, ни оракула, ни
+    коммита. Оракулы при этом не должны называть недоступный линтер «ошибок 0»."""
+    from unittest.mock import patch
+    R = _runner()
+    root = make_project(tmp)
+    (root / ".aurora" / "scripts" / "kb_lint.py").write_text(
+        "import time\nprint('ошибок 0')\ntime.sleep(30)\n", encoding="utf-8")
+    res = R.run_command(str(root), "kb_lint.py", [], timeout=1)
+    assert res["ok"] is False and res["rc"] is None and res.get("timeout") is True, res
+    assert "не уложился" in res["why"] and R.fail_why(res) == res["why"], res
+    with patch.object(sys, "executable", str(tmp / "нет-такого-python")):
+        gone = R.run_command(str(root), "kb_lint.py", [], timeout=1)
+    assert gone["ok"] is False and gone["rc"] is None and "не запустился" in gone["why"], gone
+
+    # оракулы: частичный вывод умершего линтера в счёт не идёт
+    real = R.run_command
+    with patch.object(R, "run_command", lambda cwd, s, a, timeout=300: real(cwd, s, a, timeout=1)):
+        assert R.lint_errors(str(root)) == -1, "таймаут линтера назван «ошибок 0»"
+        assert R.lint_conflicts(str(root)) == -1
+    res = {"before": {"errors": 3}, "after": {"errors": -1}}
+    assert R.oracle_blind(res, True) and not R.oracle_blind(res, False)
+    assert not R.oracle_blind({"before": {"errors": -1}, "after": {"errors": -1}}, True), \
+        "старый движок без линтера не должен краснить каждый прогон"
+    ok, why = R.verdict_build({"steps": [], "before": {"errors": 3, "done": 5, "left": 1},
+                               "after": {"errors": -1, "done": 5, "left": 1},
+                               "total": 0, "left": 0, "stopped": ""}, True)
+    assert not ok and "не ответил" in why, (ok, why)
+
+
+@test
+def test_an_exception_in_one_unit_becomes_a_failed_step_in_every_pool(tmp: Path):
+    """Выделение, связывание и разбор источников: упавшая единица — шаг «сбой», остальные идут.
+
+    Исключение (OSError чтения, AssertionError, ответ модели не той формы) прерывало
+    `pool.map`, выход из `with` дорабатывал очередь, а отчёт, итог и коммит не писались.
+    Трассировка при этом не теряется: она в `failures.jsonl`."""
+    from unittest.mock import patch
+    R = _runner()
+    sys.path.insert(0, str(KIT / "tests"))
+    from harness import card
+    import agent_core as A
+    root = make_project(tmp, git=True)
+    thesis = "Реестр хранит сведения о плательщике и его статусе. " * 4
+    for i in range(3):
+        card(root, f"Concepts/К{i}.md", status="draft", kind="knowledge",
+             distilled="2026-09-01", body=thesis)
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+
+    def pick(kind, key):
+        def fake(cfg_, path, call, apply, deadline=0.0, prefer=0):
+            if os.path.basename(path) == "К1.md":
+                raise AttributeError("'str' object has no attribute 'get'")
+            return {"card": os.path.basename(path)[:-3], "status": "пропущена", "note": "",
+                    key: [] if kind == "extract" else 0, "backends": []}
+        return fake
+
+    with _RunDir(tmp / "run") as failures:
+        with patch.object(R, "extract_card", pick("extract", "made")):
+            res = R.run_extract(cfg, str(root), False)
+        with patch.object(R, "relink_card", pick("relink", "added")):
+            res2 = R.run_relink(cfg, str(root), False)
+        for r, key in ((res, "made"), (res2, "added")):
+            by = {s["card"]: s for s in r["steps"]}
+            assert set(by) == {"К0", "К1", "К2"}, by
+            assert by["К1"]["status"] == "сбой" and "AttributeError" in by["К1"]["note"], by["К1"]
+            assert by["К0"]["status"] == "пропущена" and by["К2"]["status"] == "пропущена", by
+        assert R.report_extract(res, False) and R.report_relink(res2, False)
+        lines = [json.loads(x) for x in failures.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 2 and all(x["stage"] == "исключение" and "AttributeError" in x["traceback"]
+                                   for x in lines), lines
+
+    # разбор источника и конфликта: те же обёртки
+    with _RunDir(tmp / "run2"):
+        def boom(*a, **k):
+            raise KeyError("cards")
+        with patch.object(R, "solve_source", boom):
+            st = R.solve_source_safe(cfg, str(root), "g", "Raw/x/Страница.md", True, True)
+        assert st["status"] == "сбой" and st["alias"] == "Страница.md" and "KeyError" in st["note"], st
+        with patch.object(R, "solve_conflict", boom):
+            st = R.solve_conflict_safe(cfg, str(root), "алиас", ["А", "Б"], True, True)
+        assert st["status"] == "сбой" and st["alias"] == "алиас" and st["cards"] == ["А", "Б"], st
+
+
+@test
+def test_a_model_answer_with_cards_of_the_wrong_shape_is_a_failed_step(tmp: Path):
+    """`{"cards": ["A", "B"]}` и `{"cards": {...}}` — не AttributeError на `c.get`, а шаг «сбой»."""
+    R = _runner()
+    import agent_core as A
+    root = make_project(tmp, git=True)
+    (root / "Raw/project").mkdir(parents=True, exist_ok=True)
+    (root / "Raw/project/Страница.md").write_text(
+        "## Тема\n\n" + "Содержательный текст про процесс согласования заявки. " * 10
+        + "\n\n## Ещё\n\n" + "Дальше правила и сроки. " * 10, encoding="utf-8")
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    with _RunDir(tmp / "run"):
+        for answer in ('{"cards": ["A", "B"]}', '{"cards": {"title": "x", "sections": "1"}}'):
+            def fake(cfg_, role, messages, **kw):
+                return {"ok": True, "text": answer, "backend": 1, "model": "m", "tps": 9, "log": []}
+            step = R.solve_source_safe(cfg, str(root), "g", "Raw/project/Страница.md", False, False,
+                                       call=fake)
+            assert step["status"] == "сбой", (answer, step)
+            assert "AttributeError" not in step["note"], (answer, step)
+
+
+@test
+def test_sources_already_running_when_the_pool_stops_are_in_the_report(tmp: Path):
+    """Остановка пула не теряет начатые источники: их карточки записаны, их шаги — в отчёте.
+
+    Начатый `solve_source` доходит до записи, а главный поток, выйдя из `as_completed`, их шаги
+    не собирал: оракул видел приращение «обработано» больше заявленного и объявлял ложью
+    исправную работу."""
+    import time as _time
+    from unittest.mock import patch
+    R = _runner()
+    import agent_core as A
+    root = make_project(tmp, git=True)
+    (root / "Raw/project").mkdir(parents=True, exist_ok=True)
+    for name in ("Быстрая", "Медленная"):
+        (root / "Raw/project" / f"{name}.md").write_text(
+            f"## Тема\n\n{name} " + "Содержательный текст про процесс. " * 10, encoding="utf-8")
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_1_WIDTH": "2", "AURORA_AGENT_PARALLEL": "2",
+                          "AURORA_AGENT_DEBUG": "1"})
+
+    import threading
+    slow_started = threading.Event()
+
+    def fake_solve(cfg_, cwd, group, source, apply, use_critic, call=None, deadline=None, step_end=0.0):
+        step = {"alias": source.rsplit("/", 1)[-1], "source": source, "group": group,
+                "status": "", "note": "", "backends": [], "degraded": False}
+        if "Быстрая" in source:
+            slow_started.wait(10)                  # остановка — когда медленная уже в работе
+            step.update(status="сбой", note="модель не ответила")      # отладка: стоп на первой ошибке
+        else:
+            slow_started.set()
+            _time.sleep(1.0)                                            # начата до остановки
+            step.update(status="разобран", note="записано")
+        return step
+
+    with _RunDir(tmp / "run"), patch.object(R, "solve_source", fake_solve):
+        res = R.run_build(cfg, str(root), False, False, 0, 0)
+    got = {s["alias"]: s["status"] for s in res["steps"]}
+    assert got.get("Быстрая.md") == "сбой" and got.get("Медленная.md") == "разобран", \
+        f"начатый источник пропал из отчёта после остановки: {got}"
+
+
+@test
+def test_a_failed_card_write_keeps_the_source_in_the_plan(tmp: Path):
+    """Источник без заголовков: не записалась карточка — отметки «разобрано» нет, шаг — сбой.
+
+    Раньше неудача `build_plan --card` молча пропускалась, а запись хотя бы одной карточки
+    ставила `--done`: оставшиеся абзацы выпадали из плана навсегда."""
+    from unittest.mock import patch
+    R = _runner()
+    import agent_core as A
+    root = make_project(tmp, git=True)
+    (root / "Raw/project").mkdir(parents=True, exist_ok=True)
+    paras = "\n\n".join(f"Абзац {i} про процесс согласования заявки и сроки. " * 3 for i in range(1, 7))
+    (root / "Raw/project/Лента.md").write_text(paras, encoding="utf-8")
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    plan = {"parts": [{"title": "Первая", "from": 1, "to": 3}, {"title": "Вторая", "from": 4, "to": 6}]}
+
+    def fake(cfg_, role, messages, **kw):
+        return {"ok": True, "text": json.dumps(plan, ensure_ascii=False), "backend": 1,
+                "model": "m", "tps": 9, "log": []}
+
+    calls = []
+
+    def fake_cmd(cwd, script, args, timeout=300):
+        calls.append(args)
+        if "--card" in args and "Вторая" in args:
+            return {"ok": False, "rc": 1, "out": "build_plan: запись не удалась", "refused": ""}
+        return {"ok": True, "rc": 0, "out": "", "refused": ""}
+
+    whole = (root / "Raw/project/Лента.md").read_text(encoding="utf-8")
+    step = {"alias": "Лента.md", "status": "", "note": "", "backends": [], "degraded": False}
+    with _RunDir(tmp / "run"), patch.object(R, "run_command", fake_cmd):
+        made = R.plan_source(cfg, str(root), "Raw/project/Лента.md", whole, step, True, fake, 0.0)
+    assert made == 1 and step["status"] == "сбой", (made, step)
+    assert "Вторая" in step["note"] and "не записано 1" in step["note"], step
+    assert not any("--done" in a for a in calls), "источник отмечен разобранным при потере карточки"
+
+    # все карточки записаны — отметка ставится, как прежде
+    calls.clear()
+    step = {"alias": "Лента.md", "status": "", "note": "", "backends": [], "degraded": False}
+    with _RunDir(tmp / "run3"), patch.object(R, "run_command",
+                                             lambda cwd, s, a, timeout=300: (calls.append(a) or
+                                                                             {"ok": True, "rc": 0, "out": "", "refused": ""})):
+        made = R.plan_source(cfg, str(root), "Raw/project/Лента.md", whole, step, True, fake, 0.0)
+    assert made == 2 and step["status"] == "" and any("--done" in a for a in calls), (made, step, calls)
+
+
+@test
+def test_sigterm_commits_what_the_agent_wrote_and_takes_the_children_down(tmp: Path):
+    """«Остановить» = SIGTERM: карточки, записанные до сигнала, фиксируются коммитом агента.
+
+    Раньше раннер умирал на месте: работа оставалась в дереве без коммита, следующий
+    чекпойнт записывал её на человека, а откат «одной строкой» не снимал ничего."""
+    if os.name == "nt":
+        return                      # на Windows SIGTERM не доставляется: там CTRL_BREAK (см. docs)
+    import signal
+    import time as _time
+    _runner()
+    from aurora_common import pid_alive
+    root = make_project(tmp, git=True)
+    child_pid = tmp / "child.pid"
+    script = tmp / "runner_probe.py"
+    script.write_text(
+        "import os, subprocess, sys, time\n"
+        f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+        "import agent_runner as R\n"
+        "cwd = os.getcwd()\n"
+        "got, why = R.writing_lock(cwd, 'build')\n"
+        "assert got, why\n"
+        "R.arm_stop(cwd, 'build', True)\n"
+        "R.install_stop_handlers()\n"
+        "kid = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"open({str(child_pid)!r}, 'w').write(str(kid.pid))\n"
+        "os.makedirs('AuroraKnowledgeDB/Concepts', exist_ok=True)\n"
+        "open('AuroraKnowledgeDB/Concepts/От-агента.md', 'w', encoding='utf-8').write("
+        "'---\\ntitle: \"От агента\"\\ntype: concept\\n---\\n\\n# От агента\\n\\nзаписано до сигнала\\n')\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(120)\n", encoding="utf-8")
+    p = subprocess.Popen([sys.executable, str(script)], cwd=str(root), stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, encoding="utf-8")
+    try:
+        assert p.stdout.readline().strip() == "ready"
+        kid = int(child_pid.read_text())
+        p.send_signal(signal.SIGTERM)
+        out, _ = p.communicate(timeout=30)
+    finally:
+        if p.poll() is None:
+            p.kill()
+    assert p.returncode == 128 + signal.SIGTERM, (p.returncode, out)
+    assert "Результат агента: работа агента зафиксирована" in out, out
+    last = subprocess.run(["git", "-c", "core.quotepath=off", "log", "-1", "--format=%s", "--name-only"],
+                          cwd=str(root),
+                          capture_output=True, text=True, encoding="utf-8").stdout
+    assert "agent:build — прервано сигналом SIGTERM" in last and "От-агента.md" in last, last
+    dirty = subprocess.run(["git", "status", "--porcelain", "--", "AuroraKnowledgeDB"], cwd=str(root),
+                           capture_output=True, text=True, encoding="utf-8").stdout
+    assert not dirty.strip(), f"сделанное осталось в дереве без коммита: {dirty}"
+    assert not (root / ".aurora" / "state" / "agent.lock").exists(), "замок базы не отдан"
+    for _ in range(50):
+        if not pid_alive(kid):
+            break
+        _time.sleep(0.1)
+    assert not pid_alive(kid), "потомок остановленного прогона пережил его"
+
+
+@test
+def test_an_uncaught_exception_still_commits_the_agents_work(tmp: Path):
+    """Исключение за границей единицы работы: сделанное — коммитом агента, код 1, замок снят."""
+    from harness import card
+    R = _runner()
+    root = make_project(tmp, git=True)
+    cwd = os.getcwd()
+    saved = dict(R._RUN)
+    os.chdir(root)
+    try:
+        with _RunDir(tmp / "run"):
+            assert R.writing_lock(str(root), "build")[0]
+            R.arm_stop(str(root), "build", True)
+            card(root, "Concepts/От-агента.md", "записано до сбоя", type="concept")
+
+            def boom():
+                raise RuntimeError("сбой вне единицы работы")
+            rc = R.guarded_main(boom)
+    finally:
+        os.chdir(cwd)
+        R._RUN.update(saved)
+    assert rc == 1
+    last = subprocess.run(["git", "log", "-1", "--format=%s"], cwd=str(root),
+                          capture_output=True, text=True, encoding="utf-8").stdout
+    assert "agent:build — оборвано исключением RuntimeError" in last, last
+    assert not (root / ".aurora" / "state" / "agent.lock").exists(), "замок базы остался"

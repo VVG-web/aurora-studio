@@ -150,7 +150,7 @@ Scripts write into hundreds of files at once, so protection is built into the en
 |---|---|
 | **Preview by default** | A writing command without `--apply` shows what will change and writes nothing |
 | **git-guard** | A dozen scripts refuse to work over an uncommitted tree (`--allow-dirty` lifts the refusal); rollback is from git |
-| **The agent's checkpoint** | Before an agent run the human's work is committed separately: whatever the agent does is rolled back with one line |
+| **The agent's checkpoint** | Before an agent run the human's work is committed separately: whatever the agent does is rolled back with one line; a run stopped by a signal commits what it already wrote as its own `agent: …` commit first |
 | **The agent's write whitelist** | The agent writes into the base only through engine commands (`ALLOWED_WRITES`): they have a preview, a guard and a journal. Direct file editing by a model is forbidden by construction |
 | **The oracle** | Reaching the goal is checked not by the model but by an engine command (e.g. `kb:lint` recounts the conflicts) |
 | **The pre-commit ratchet** | `kit:hooks` installs a hook with the linter: a commit fails only if errors became more than the baseline; the baseline lowers itself and never rises. The hook judges what is committed, not the whole base |
