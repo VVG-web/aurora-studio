@@ -294,11 +294,14 @@ def lint_us(text: str) -> list:
     # US-01: формула «Как / Я хочу / Чтобы».
     for k in doc.find(r"^описание"):
         body = "\n".join(doc.body(k))
-        # Ключевая строка «| Как | … |» или «Как: …» — форма с полями, а не фраза: ключи в
-        # тексте идут по порядку и у неё, поэтому короткий путь её не засчитывает.
-        if _one_phrase_formula(body) and not any(
-                _row(ln, "Как", sep, ci=True) is not None
-                for ln in body.splitlines() for sep in ("|", ":")):
+        # Форма с полями — когда «Как» и ещё хотя бы один из «Я хочу» / «Чтобы» открывают
+        # СВОИ строки («| Как | … |», «Как: …»): ключи в тексте идут по порядку и у неё,
+        # поэтому короткий путь её не засчитывает. Одна строка «Как: …, я хочу …, чтобы …» —
+        # фраза: ключом строки открыта только «Как».
+        keyed = [any(_row(ln, key, sep, ci=True) is not None
+                     for ln in body.splitlines() for sep in ("|", ":"))
+                 for key in ("Как", "Я хочу", "Чтобы")]
+        if _one_phrase_formula(body) and not (keyed[0] and (keyed[1] or keyed[2])):
             break               # формула одной фразой
         lost = []
         for key in ("Как", "Я хочу", "Чтобы"):
