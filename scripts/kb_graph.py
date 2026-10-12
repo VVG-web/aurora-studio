@@ -200,6 +200,18 @@ KB_DIR = "AuroraKnowledgeDB"
 SKIP_DIRS = ("meta", "_archive", "MOC")
 REL_RE = re.compile(r"^related:\s*(.*)$", re.M)
 
+# Рёбра по полям шапки (политика связей карточек): поле → подпись ребра. Без этого просмотр `[[…]]` по всему
+# тексту, шапка включена, назвал бы такое ребро «упоминает». Добавляются только эти три поля: остальные
+# типизированные поля (`supersedes`, `blocks`, `decisions`, `corrects` …) по-прежнему дают «упоминает».
+# Таблица `RELATION` ниже — подписи типов артефактов Requirement Yogi, к этим рёбрам отношения не имеет.
+HEADER_EDGES = (("part_of", "часть документа"), ("prev", "следующая"), ("next", "следующая"))
+
+try:
+    from card_types import typed_link_names
+except ImportError:         # движок проекта обновлён не целиком: граф строится без рёбер по полям шапки
+    def typed_link_names(fm: dict, key: str) -> list:
+        return []
+
 
 def write_cards_graph(path: str, typed: dict | None = None) -> dict:
     """Граф базы знаний для панели: узлы — карточки, рёбра — ссылки между ними.
@@ -208,6 +220,10 @@ def write_cards_graph(path: str, typed: dict | None = None) -> dict:
     выведенные правилами связи (RY-ключи, номера историй) — их считает `--cards` и
     кладёт в те же `related:`, так что попадут они сюда только после того, как человек
     их принял. Граф должен показывать базу, а не догадку о ней.
+
+    Поля шапки `part_of`, `prev` и `next` (`HEADER_EDGES`) называют ребро: «часть документа» и
+    «следующая» вместо общего «упоминает». Новых пар карточек это не добавляет — ссылка в шапке и
+    так давала ребро при просмотре всего текста, — и рёбер базы без этих полей не меняет.
 
     Аналитика (сообщества, мосты, острова) остаётся за `kb:map`: граф здесь — способ
     дойти до карточки, а не отчёт о её месте в мире.
@@ -267,6 +283,12 @@ def write_cards_graph(path: str, typed: dict | None = None) -> dict:
                           else "INFERRED", n["path"]))
         for x in related_names(text):
             found.append((x, "связана", "EXTRACTED", n["path"]))
+        # Поле шапки читает единый разбор (`frontmatter` уже свёл блок к строке); ссылку из него берёт
+        # `typed_link_names`. Ребро с подписью сильнее общего «упоминает» и «связана» (см. `score` ниже),
+        # а пара остаётся одна: новых связей между карточками это не добавляет, только называет их.
+        for field, label in HEADER_EDGES:
+            for x in typed_link_names(fm, field):
+                found.append((x, label, "EXTRACTED", n["path"]))
         for tgt, rel, conf, why in found:
             tgt = tgt.strip()
             if not tgt or tgt == n["id"] or tgt not in by_stem:

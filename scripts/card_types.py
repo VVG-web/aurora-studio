@@ -12,9 +12,9 @@
   — `registry(project_root)` — эффективный реестр: шаблоны проекта (`Templates/`), шаблоны кита,
     доставленные в проект (`TemplatesCommon/`), запасной путь — шаблоны самого кита;
   — `parse_passport`, `load_template`, `template_file_name`, `prompt_extract`;
-  — `validate_card` — коды V-01…V-10, V-12, V-13, V-18, V-19, V-20, V-22…V-25. Остальные коды
-    принадлежат своим пакетам: V-14 (расхождения), V-15 и V-16 (связи), V-17 (записи в `Raw/`),
-    V-21 (цитируемые документы); V-11 зарезервирован;
+  — `validate_card` — коды V-01…V-10, V-12, V-13, V-18, V-19, V-20, V-22…V-25 и (пакет CT-05, политика
+    связей) V-15 и V-16. Остальные коды принадлежат своим пакетам: V-14 (расхождения), V-17 (записи
+    в `Raw/`), V-21 (цитируемые документы); V-11 зарезервирован;
   — команда `kb:cards`: `--list`, `--show`, `--check`, `--stats`.
 Конструктор шапки и входа записи (`render_header`, `render_card`, `write_card_text`), каталог типов,
 блок `cards:` конфига, инструкция выбора типа и `classify_answer` добавляют следующие пакеты:
@@ -58,9 +58,10 @@ from dataclasses import dataclass, field, replace
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (  # noqa: E402
-    HEAD_KEY_RE, KB_ROOT, MEETING_MARK, OWN_LIFECYCLE, STATUSES, body, card_sources, frontmatter,
-    head_blank, head_broken, head_lines, head_text, is_meeting, list_field, read_card_text,
-    split_frontmatter, walk_md,
+    HEAD_KEY_RE, KB_ROOT, MEETING_MARK, OWN_LIFECYCLE, STATUSES, body, card_sources, card_stem,
+    frontmatter, head_blank, head_broken, head_cut_comment, head_lines, head_text, is_meeting,
+    leaf_name, list_field, not_a_card_link, read_card_text, split_frontmatter, split_inline_items,
+    walk_md,
 )
 from aurora_common import kit_root as _kit_root  # noqa: E402
 
@@ -162,8 +163,8 @@ DATE_FIELDS = ("created", "updated", "source_synced", "trust_checked", "distille
 SEVERITY = {
     "V-01": "error", "V-02": "error", "V-03": "error", "V-04": "error", "V-05": "error",
     "V-06": "error", "V-07": "warn", "V-08": "error", "V-09": "error", "V-10": "error",
-    "V-12": "error", "V-13": "error", "V-18": "info", "V-19": "error", "V-20": "warn",
-    "V-22": "error", "V-23": "error", "V-24": "warn", "V-25": "error",
+    "V-12": "error", "V-13": "error", "V-15": "warn", "V-16": "error", "V-18": "info", "V-19": "error",
+    "V-20": "warn", "V-22": "error", "V-23": "error", "V-24": "warn", "V-25": "error",
 }
 TITLES = {
     "V-01": "шапка не найдена или не разбирается",
@@ -178,6 +179,8 @@ TITLES = {
     "V-10": "разделы не в порядке или повторяются",
     "V-12": "первая строка собственной части — не определение",
     "V-13": "остатки шаблона в собственной части",
+    "V-15": "исходящих ссылок меньше минимума типа",
+    "V-16": "типизированное поле не на месте или значение — не ссылка",
     "V-18": "шаблон старее наибольшей версии типа",
     "V-19": "источник — встреча, а пометки встречи нет",
     "V-20": "происхождение неизвестно",
@@ -844,6 +847,210 @@ def _check_tail(rest: str, line_of, add) -> None:
             break                                   # дальше — тело карточки-донора
 
 
+# ----------------------------------------------------------------------------- связи: V-15, V-16
+
+# Типизированные поля шапки — закрытый список политики связей (§9.4 плана): отношение с машинным смыслом.
+# Другого поля-отношения «по месту» нет: новое отношение — это новая версия шаблонов и запись здесь.
+# `related` в список не входит: его ведёт движок, руками оно не заполняется (правило L-7).
+LINK_TARGET_MAX = 300      # имя карточки длиннее — не имя: такую «цель» не разбирают (защита от враждебного текста)
+
+
+@dataclass(frozen=True)
+class TypedField:
+    """Где допустимо типизированное поле и что в его значении.
+
+    `classes` и `types` — у каких карточек поле допустимо (по классу или по типу); `but` — типы, у которых
+    поле недопустимо, хотя класс подходит. `value`: `links` — ссылки `[[Имя]]` (одна или список),
+    `names` — имена файлов исправлений (так пишет `kb:correct`), `text` — свободная строка (путь, письмо).
+    """
+    classes: tuple = ()
+    types: tuple = ()
+    value: str = "links"
+    but: tuple = ()
+
+    def allows(self, type_id: str, cls: str) -> bool:
+        return type_id not in self.but and (cls in self.classes or type_id in self.types)
+
+    def where(self) -> str:
+        parts = [f"класса {c}" for c in self.classes] + [f"типа {t}" for t in self.types]
+        return " и ".join(parts) + (f", кроме типа {', '.join(self.but)}" if self.but else "")
+
+
+TYPED_FIELDS = {
+    "supersedes": TypedField(classes=("entity",), types=("decision",)),
+    "superseded_by": TypedField(classes=("entity",), types=("decision",)),
+    "same_subject": TypedField(classes=("entity",)),
+    "blocks": TypedField(types=("question",)),
+    "corrects": TypedField(types=("correction",)),
+    "corrected_by": TypedField(classes=("entity", "source"), value="names"),
+    "decisions": TypedField(types=("requirement",)),
+    "prev": TypedField(types=("cited-document",)),
+    "next": TypedField(types=("cited-document",)),
+    "part_of": TypedField(classes=("entity", "source"), but=("cited-document",)),
+    "answer_source": TypedField(types=("question",), value="text"),
+}
+
+
+def _link_name(inner: str) -> str:
+    """Имя карточки из содержимого `[[…]]` (между скобками): без якоря, подписи, пути и расширения.
+
+    Пусто — это не ссылка на карточку: образец имени в шаблоне, литерал данных, адрес, слишком длинная «цель».
+    """
+    cut = len(inner)
+    for ch in "|#":
+        at = inner.find(ch)
+        if at != -1 and at < cut:
+            cut = at
+    target = inner[:cut].rstrip("\\").strip()
+    if not target or len(target) > LINK_TARGET_MAX or target.startswith("http") or not_a_card_link(target):
+        return ""
+    return leaf_name(target)
+
+
+def _wikilinks(text: str) -> list:
+    """Имена карточек из ссылок `[[…]]` в тексте — один проход без регулярных выражений.
+
+    `aurora_common.LINK_RE` на серии «[[» без закрытия растёт быстрее квадрата (40 КБ — минуты), а проверку
+    карточки зовут на каждой карточке базы: здесь позиция ближайшей «]» запоминается, и каждый знак
+    просматривается не больше двух раз. Правила те же, что у `LINK_RE`: цель — до «|» и «#»; сразу за «]]»
+    скобка «(» — это markdown-ссылка, а не карточка; встраивание `![[…]]` связью между сущностями не считается.
+    """
+    out, at, close = [], 0, -1
+    while True:
+        at = text.find("[[", at)
+        if at < 0:
+            break
+        if close < at + 2:
+            close = text.find("]", at + 2)
+            if close < 0:
+                break
+        if text.startswith("]]", close) and text[close + 2:close + 3] != "(" and not (at and text[at - 1] == "!"):
+            name = _link_name(text[at + 2:close])
+            if name:
+                out.append(name)
+            at = close + 2
+        else:
+            at += 1
+    return out
+
+
+def _as_wikilink(item: str) -> str:
+    """Пункт значения — ровно одна ссылка `[[Имя]]` (в кавычках или без) → имя; иначе пусто."""
+    s = item.strip().strip('"').strip("'").strip()
+    if len(s) < 5 or not (s.startswith("[[") and s.endswith("]]")):
+        return ""
+    inner = s[2:-2]
+    if "[" in inner or "]" in inner:
+        return ""
+    return _link_name(inner)
+
+
+def _typed_items(value: str) -> list:
+    """Пункты значения поля шапки: одно значение либо список, записанный строкой `["a", "b"]`.
+
+    Блочный список (`- "a"` ниже ключа) единый разбор шапки (`frontmatter`) уже свёл к такой же строке.
+    Хвостовой комментарий `# …` не часть значения; поле с одним комментарием — пустое.
+    """
+    raw = head_cut_comment(value or "").strip()
+    if not raw or head_blank(raw):
+        return []
+    if _as_wikilink(raw):
+        return [raw]
+    if raw.startswith("[") and raw.endswith("]"):
+        items = (x.strip().strip('"').strip("'").strip() for x in split_inline_items(raw[1:-1]))
+        return list(dict.fromkeys(x for x in items if x))
+    return [raw]
+
+
+def typed_link_names(fm: dict, key: str) -> list:
+    """Имена карточек, на которые указывает поле шапки `key`: одна ссылка, список или блок.
+
+    `fm` — `aurora_common.frontmatter(text)`: шапку читает единый разбор, здесь только значение поля.
+    Граф базы (`kb_graph`) берёт рёбра по `part_of`, `prev` и `next` отсюда же, где поля проверяет V-16.
+    """
+    out = []
+    for item in _typed_items((fm or {}).get(key, "")):
+        name = _as_wikilink(item)
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _check_typed(fm: dict, type_id: str, cls: str, kline, add) -> set:
+    """V-16: типизированное поле — только там, где допустимо, и со ссылками в значении. → имена из верных полей.
+
+    Пустое поле не нарушение: шаблоны оставляют `supersedes: []` и `superseded_by:` пустыми.
+    """
+    names = set()
+    for key, spec in TYPED_FIELDS.items():
+        if key not in fm:
+            continue
+        items = _typed_items(fm[key])
+        if not items:
+            continue
+        if not spec.allows(type_id, cls):
+            add("V-16", kline(key), f"типизированное поле «{key}» не для типа «{type_id}» (класс {cls}): "
+                f"допустимо у карточек {spec.where()}",
+                "список типизированных полей закрыт; новое отношение — новая версия шаблонов")
+            continue
+        if spec.value == "links":
+            bad = [x for x in items if not _as_wikilink(x)]
+            if bad:
+                add("V-16", kline(key), f"значение поля «{key}» — не ссылка [[Имя]]: «{bad[0][:60]}»",
+                    "значение — ссылка или список ссылок: [\"[[Имя]]\", …]")
+            names.update(n for n in map(_as_wikilink, items) if n)
+    return names
+
+
+def _own_link_names(own: str) -> set:
+    """Имена карточек, на которые ссылается собственная часть, — кроме кода и служебных списков.
+
+    Служебные списки (`## Упоминается в`, `## Названо в карточках`, `## Не путать`, `## Что относится к теме`)
+    и `## Расхождения` пишет код, а не автор: они не связи мысли и минимум не закрывают.
+    """
+    names, fenced, skip = set(), False, False
+    for line in own.split("\n"):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if line.startswith("## "):
+            name = line[3:].strip()
+            skip = name in EXTRA_SERVICE or name == DISPUTES_HEAD
+            continue
+        if not skip and "[[" in line:
+            names.update(_wikilinks(line))
+    return names
+
+
+def _fold_name(name: str) -> str:
+    return " ".join(str(name).replace("-", " ").replace("_", " ").split()).casefold()
+
+
+def _check_min_links(own: str, line0: int, fm: dict, type_id: str, cls: str, need: int, eff_kind: str,
+                     status: str, typed: set, path: str, add) -> None:
+    """V-15: исходящих ссылок меньше `min_links` типа. Считаются разные карточки: ссылки `[[…]]` собственной
+    части плюс ссылки типизированных полей; ссылка на себя и повтор в счёт не идут.
+
+    Минимум не проверяется у заготовок (`placeholder`) и у переноса дословного текста (`kind: dictionary`
+    и `document` классов entity и source): тело там не писал автор. Запись (`record`) пишет человек, её
+    связь с карточками (`blocks`, `corrects`, ссылки решения) — правило политики связей, поэтому вид
+    записи (он всегда `document`) проверку не отключает. Карты ссылками не меряются.
+    """
+    if need <= 0 or cls == "map":
+        return
+    if cls != "record" and (status == "placeholder" or eff_kind != "knowledge"):
+        return
+    names = typed | _own_link_names(own)
+    if len(names) >= need:
+        mine = {_fold_name(x) for x in (card_stem(path) if path else "", fm.get("title", ""))} - {""}
+        names = {x for x in names if _fold_name(x) not in mine}
+    if len(names) < need:
+        add("V-15", line0, f"исходящих ссылок {len(names)}, а типу «{type_id}» нужно не меньше {need}",
+            "ссылка [[Имя]] на другую карточку в тексте или типизированное поле шапки; ссылки на себя и повторы не считаются")
+
+
 def validate_card(text: str, *, path: str = "", reg: "Registry | None" = None,
                   level: str = "advisory") -> list:
     """Карточка → список `Violation` (код V-NN, серьёзность, строка, сообщение, подсказка).
@@ -904,7 +1111,7 @@ def _validate(text: str, path: str, reg: Registry, add, seen: dict) -> None:
     tpl_ct = reg.files.get(tpl) if tpl_m else None
 
     if _is_correction(fm, tpl_m.group("type") if tpl_m else "", path):
-        _validate_correction(fm, tpl, tpl_ct, reg, kline, add)
+        _validate_correction(text, path, fm, tpl, tpl_ct, reg, kline, add)
         return
     if tid and tid not in reg.types and tid in reg.unmanaged.values():
         return                                     # `spec`: движок такие карточки не проверяет
@@ -1010,6 +1217,9 @@ def _validate(text: str, path: str, reg: Registry, add, seen: dict) -> None:
 
     # --- тело
     _check_own(own, line0, fm, ct, eff_kind, add)
+    # --- связи (V-15, V-16): типизированные поля и минимум исходящих ссылок
+    typed = _check_typed(fm, ct.id, ct.cls, kline, add)
+    _check_min_links(own, line0, fm, ct.id, ct.cls, ct.min_links, eff_kind, status, typed, path, add)
     if has_tail:
         base, at = len(text) - len(rest), _line_counter(text)
         _check_tail(rest, lambda off: at(base + off), add)
@@ -1033,7 +1243,7 @@ CORRECTION_STATUSES = ("active", "archived")
 CORRECTION_FIELDS = ("corrects", "corrects_found", "kind", "archived", "archived_reason")
 
 
-def _validate_correction(fm: dict, tpl: str, tpl_ct, reg: Registry, kline, add) -> None:
+def _validate_correction(text: str, path: str, fm: dict, tpl: str, tpl_ct, reg: Registry, kline, add) -> None:
     """Исправление человека (файл в `Raw/corrections/`): формат, который читает `kb_corrections.py`.
 
     Обязательны `corrects`, `created`, `status`; `template` желателен (его ставит `kb:correct --new`),
@@ -1065,6 +1275,10 @@ def _validate_correction(fm: dict, tpl: str, tpl_ct, reg: Registry, kline, add) 
         if key not in ok:
             add("V-07", kline(key), f"поле «{key}» вне формата исправления", "corrects, created, status, kind, archived, archived_reason")
     _check_dates(fm, kline, add)
+    # связи: `corrects` — ссылка на исправляемую карточку; исправление ссылается хотя бы на одну (min_links типа)
+    typed = _check_typed(fm, "correction", "record", kline, add)
+    _check_min_links(body(text), kline("corrects"), fm, "correction", "record", ct.min_links if ct else 1, "", status,
+                     typed, path, add)
 
 
 # ----------------------------------------------------------------------------- проверка базы

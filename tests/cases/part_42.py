@@ -10,6 +10,9 @@
 проекты (`aurora.py new`, путь панели, `aurora_update.py`).
 Пакет CT-04 (в конце части): «раздел → тип» живёт в одном месте — реестре; линтер читает типы и статусы из
 него и печатает раздел «шаблоны карточек» (предупреждения) после итоговой строки; доктор называет шаблоны.
+Пакет CT-05 (в самом конце части): политика связей — коды V-15 (минимум исходящих ссылок типа, `min_links`) и V-16
+(типизированное поле шапки не на месте или со значением, которое не ссылка) и рёбра графа базы по полям шапки
+`part_of`, `prev`, `next` (`kb_graph.write_cards_graph`). Графу ничего не отнимается: у базы без этих полей вывод тот же.
 Модель и сеть не используются; проекты — только во временных папках, запуски, которые пишут, — под
 временным HOME прогона.
 """
@@ -59,7 +62,8 @@ CATALOGUE = (
 NAMES = {"concept": "Понятие", "glossary": "Термин", "process": "Процесс", "system": "Система", "role": "Роль",
          "status-model": "Статусная модель", "requirement": "Требование", "reference": "Справочник",
          "cited-document": "Цитируемый документ", "decision": "Решение", "question": "Вопрос",
-         "correction": "Исправление", "moc": "Карта", "policy": "Политика", "atlas": "Атлас", "x": "Икс"}
+         "correction": "Исправление", "moc": "Карта", "policy": "Политика", "atlas": "Атлас", "x": "Икс",
+         "memo": "Памятка"}
 
 
 def _C():
@@ -89,7 +93,7 @@ BASE = {"title": '"Заявка на поставку"', "aliases": "[]", "tags"
         "template": "akdb_concept_v1.0.md", "kind": "knowledge", "status": "knowledge", "sources": SOURCE,
         "source_synced": "2026-10-01", "created": "2026-07-12", "updated": "2026-10-01", "built": "machine",
         "related": "[]"}
-LEAD = "Заявка на поставку — документ, которым заказчик поручает поставщику передать товар в срок.\n"
+LEAD = "Заявка на поставку — документ, которым [[Заказчик]] поручает поставщику передать товар в срок.\n"
 BODY = (LEAD + "\n## Свойства\n- Срок подтверждения — 3 рабочих дня.\n\n## Правила\n- Отмена возможна до подтверждения.\n"
         "\n## Источник (перенесено дословно)\n\n### Sources/Confluence/Процессы/Заявка на поставку.md\n\nТекст источника.\n"
         "\n## История изменений\n\n- 2026-10-01: тезис написан.\n")
@@ -109,7 +113,9 @@ def _example(row: tuple) -> str:
     if cls == "entity":
         sec = row[7].split(",")[0].strip()
         fields = {**BASE, "title": f'"Пример {NAMES[tid]}"', "type": tid, "template": tfile}
-        return _head(fields) + f"\nПример {NAMES[tid]} — одно предложение-определение на нейтральных данных.\n\n## {sec}\n- строка раздела\n"
+        # столько ссылок на другие карточки, сколько требует min_links типа (политика связей)
+        links = "".join(f", связан с [[Связь {i}]]" for i in range(1, row[9] + 1))
+        return _head(fields) + f"\nПример {NAMES[tid]} — одно предложение-определение на нейтральных данных{links}.\n\n## {sec}\n- строка раздела\n"
     if tid == "reference":
         fields = {**BASE, "title": '"Коды причин отказа"', "type": tid, "template": tfile, "kind": "dictionary"}
         return _head(fields) + "\n# Коды причин отказа\n\n| Код | Причина |\n|---|---|\n| 01 | Не заполнены позиции |\n"
@@ -121,7 +127,7 @@ def _example(row: tuple) -> str:
         fields = {**BASE, "title": f'"{row[4]}0001: Пример"', "type": tid, "template": tfile, "kind": "document",
                   "status": "accepted" if tid == "decision" else "draft",
                   "sources": f'\n  - "{row[3]}/{row[4]}0001-Пример.md"'}
-        return _head(fields) + f"\n# {row[4]}0001: Пример\n\n## Контекст\nПример записи.\n"
+        return _head(fields) + f"\n# {row[4]}0001: Пример\n\n## Контекст\nПример записи о [[Заявка на поставку]].\n"
     if tid == "correction":
         return _head({"corrects": '"[[Заявка на поставку]]"', "template": tfile, "created": "2026-10-01",
                       "status": "active"}) + "\n# Исправление: Заявка на поставку\n\nСрок — три рабочих дня.\n"
@@ -744,7 +750,8 @@ def test_validate_comment_only_dates_are_empty_not_wrong(_t):
     fields = {**BASE, "title": '"Q-001: Пример"', "type": "question", "template": "akdb_question_v1.0.md",
               "kind": "document", "status": "draft", "q_id": "Q-001", "q_status": "open",
               "asked": "                   # дата, когда вопрос реально задан", "due": "# к какой дате нужен ответ",
-              "answered": "  # дата получения ответа", "sources": '\n  - "Raw/questions/Q-001-Пример.md"'}
+              "answered": "  # дата получения ответа", "blocks": '["[[Заявка на поставку]]"]',
+              "sources": '\n  - "Raw/questions/Q-001-Пример.md"'}
     question = _head(fields) + "\n# Q-001: Пример\n\n## Вопрос\nТекст.\n"
     assert _check(question, reg) == [], f"штатная форма вопроса даёт нарушения: {_check(question, reg)}"
     assert "V-08" in _codes(_check(question.replace("# к какой дате нужен ответ", "когда-нибудь"), reg)), \
@@ -1900,3 +1907,472 @@ def test_doctor_card_template_lines(tmp: Path):
     assert len(mine_sk) == 5, sorted(mine_sk)
     for sk in mine_sk:
         assert en.get(sk) and en[sk].count("{}") == sk.count("{}") and not re.search("[а-яА-ЯёЁ]", en[sk]), sk
+
+
+# ================================================================== пакет CT-05: связи — проверки V-15, V-16 и рёбра графа
+#
+# Политика связей карточек: у каждого типа есть минимум исходящих ссылок (`min_links` паспорта), а отношения с машинным
+# смыслом живут в закрытом списке типизированных полей шапки. Проверки только советуют (предупреждения); граф получает
+# подписи «часть документа» и «следующая» для рёбер, которые раньше назывались «упоминает».
+
+ENTITY_TYPES = ("concept", "glossary", "process", "system", "role", "status-model", "requirement")
+# Список типизированных полей — независимая запись политики связей: тест не берёт её из `card_types.TYPED_FIELDS`.
+TYPED_WHERE = {
+    "supersedes": ENTITY_TYPES + ("decision",),
+    "superseded_by": ENTITY_TYPES + ("decision",),
+    "same_subject": ENTITY_TYPES,
+    "blocks": ("question",),
+    "corrects": ("correction",),
+    "corrected_by": ENTITY_TYPES + ("reference", "cited-document"),
+    "decisions": ("requirement",),
+    "prev": ("cited-document",),
+    "next": ("cited-document",),
+    "part_of": ENTITY_TYPES + ("reference",),
+    "answer_source": ("question",),
+}
+TYPED_VALUE = {"corrected_by": '"2026-10-01-аналитик.md"', "answer_source": '"Raw/questions/Ответ.md"'}
+
+
+def _links(n: int, first: int = 1) -> str:
+    return " ".join(f"[[Цель {i}]]" for i in range(first, first + n))
+
+
+def _typed_card(tid: str, **over) -> str:
+    """Карточка типа `tid` с полем (или полями) `over`: проверяют только V-15 и V-16, остальные коды не важны."""
+    kind = {"decision": "document", "question": "document", "cited-document": "document", "moc": "document"}.get(tid, "knowledge")
+    status = {"decision": "accepted", "question": "draft", "moc": "index"}.get(tid, "knowledge")
+    fields = {"type": tid, "template": f"akdb_{tid}_v1.0.md", "kind": kind, "status": status}
+    if tid == "correction":
+        fields = {"type": "correction", "template": "akdb_correction_v1.0.md", "kind": None, "status": "active",
+                  "corrects": '"[[Цель 1]]"'}
+    body = over.pop("body", "Определение. [[Цель 1]] [[Цель 2]] [[Цель 3]]\n")
+    fields.update(over)
+    return mk(body=body, **fields)
+
+
+_pair("V-15",
+      lambda: [mk(body="Определение без единой ссылки.\n"),
+               mk(type="process", template="akdb_process_v1.0.md", body="Процесс. Участвует [[Склад]].\n"),
+               # повтор одной цели — одна ссылка
+               mk(type="process", template="akdb_process_v1.0.md", body="Процесс. [[Склад]] принимает, затем [[Склад|склад]] отдаёт.\n"),
+               # ссылка на себя (по названию карточки) не в счёт
+               mk(body="Заявка на поставку — это то же, что [[Заявка на поставку]].\n"),
+               # в тексте источника и в служебных списках ссылки не считаются: они не мысль автора
+               mk(body="Определение.\n\n## Источник (перенесено дословно)\n\n### Sources/x.md\n\nСм. [[Поставщик]].\n"),
+               mk(body="Определение.\n\n## Упоминается в\n\n- [[Поставщик]]\n"),
+               mk(body="Определение.\n\n## Расхождения\n\n- срок — А: «3 дня» (`Sources/a.md`, класс raw) · Б: «5 дней» ([[Поставщик]], класс draft)\n"),
+               # код, встраивание и markdown-ссылка — не связь между сущностями
+               mk(body="Определение.\n\n```\n[[Поставщик]]\n```\n"),
+               mk(body="Определение, схема ![[схема.png]] и [[Поставщик]](http://example.org/x).\n"),
+               # записи тоже обязаны ссылаться на карточки, а вид `document` у записи есть всегда
+               _typed_card("decision", body="Решение принято.\n"),
+               mk(type="decision", template="akdb_decision_v1.0.md", kind="document", status="accepted", body="# Решение\n\nБез ссылок.\n"),
+               mk(type="question", template="akdb_question_v1.0.md", kind="document", status="draft", body="# Вопрос\n\nБез ссылок.\n"),
+               _head({"corrects": "[]", "template": "akdb_correction_v1.0.md", "created": "2026-10-01", "status": "active"})
+               + "\n# Исправление\n\nТекст без ссылок.\n"],
+      lambda: [mk(),
+               mk(type="process", template="akdb_process_v1.0.md", body="Процесс. [[Склад]] отдаёт, [[Кладовщик|кладовщик]] принимает.\n"),
+               mk(body="Определение, якорь [[Поставщик#Адрес]].\n"),
+               # типизированные поля — тоже связи: вопрос ссылается через `blocks`, решение — через `supersedes`
+               mk(type="question", template="akdb_question_v1.0.md", kind="document", status="draft",
+                  blocks='["[[Поставщик]]"]', body="# Вопрос\n\nБез ссылок в тексте.\n"),
+               mk(type="decision", template="akdb_decision_v1.0.md", kind="document", status="accepted",
+                  supersedes='["[[DR-0001-Прежнее]]"]', body="# Решение\n\nБез ссылок в тексте.\n"),
+               mk(type="process", template="akdb_process_v1.0.md", supersedes='["[[Прежний процесс]]"]',
+                  body="Процесс. [[Склад]] отдаёт.\n"),
+               _example(CATALOGUE[11]),
+               # минимум не проверяется там, где тело не писала модель, и у типов с нулевым минимумом
+               mk(kind="dictionary", body="Перенос таблицы.\n"), mk(kind="document", body="Перенос текста.\n"),
+               mk(status="placeholder", body="# Заявка на поставку\n\n_Заготовка: имя занято ссылкой._\n"),
+               mk(type="glossary", template="akdb_glossary_v1.0.md", body="Термин — слово без ссылок.\n"),
+               _example(CATALOGUE[7]), _example(CATALOGUE[8]), _example(CATALOGUE[12])],
+      "Минимум — число разных карточек: ссылки собственной части и типизированных полей; на себя и повторы не считаются.")
+_pair("V-16",
+      lambda: [mk(blocks='["[[Заявка на поставку]]"]'), mk(decisions='["[[DR-0001-Срок]]"]'), mk(prev='"[[А]]"'),
+               mk(corrects='"[[А]]"'), mk(answer_source='"Raw/x.md"'),
+               mk(type="decision", template="akdb_decision_v1.0.md", kind="document", status="accepted", corrected_by='"a.md"'),
+               mk(type="cited-document", template="akdb_cited-document_v1.0.md", kind="document", part_of='"[[Родитель]]"'),
+               mk(type="reference", template="akdb_reference_v1.0.md", kind="dictionary", supersedes='["[[А]]"]'),
+               mk(type="decision", template="akdb_decision_v1.0.md", kind="document", status="accepted", same_subject='["[[А]]"]'),
+               # значение — не ссылка
+               mk(part_of="Родитель"), mk(part_of='"[Родитель](Родитель.md)"'), mk(supersedes='["[[А]]", "Б"]'),
+               mk(status="deprecated", superseded_by='"Новая версия"'), mk(same_subject="[[А]], [[Б]]"),
+               mk(type="question", template="akdb_question_v1.0.md", kind="document", status="draft", blocks="REQ-12"),
+               mk(type="correction", template="akdb_correction_v1.0.md", kind=None, status="active", corrects="Заявка")],
+      lambda: [mk(), mk(supersedes="[]", superseded_by="", same_subject=None),
+               mk(superseded_by='  # Только у status: deprecated — "[[Преемник]]".'),
+               mk(part_of='"[[Родитель]]"'), mk(part_of='"[[Родитель|родитель]]"'), mk(part_of="[[Родитель]]"),
+               mk(part_of='"[[Родитель]]"   # родитель разреза'),
+               mk(supersedes='["[[А]]", "[[Б]]"]'), mk(supersedes='\n  - "[[А]]"\n  - "[[Б]]"'),
+               mk(status="deprecated", superseded_by='"[[Преемник]]"'),
+               mk(corrected_by='"2026-10-01-аналитик.md, 2026-10-02-аналитик.md"'),
+               mk(type="reference", template="akdb_reference_v1.0.md", kind="dictionary", part_of='"[[Родитель]]"',
+                  corrected_by='"a.md"'),
+               mk(type="requirement", template="akdb_requirement_v1.0.md", decisions='["[[DR-0001-Срок]]"]'),
+               mk(type="cited-document", template="akdb_cited-document_v1.0.md", kind="document",
+                  prev='"[[Закон-ст-4]]"', next='"[[Закон-ст-6]]"'),
+               mk(type="question", template="akdb_question_v1.0.md", kind="document", status="draft",
+                  blocks='["[[Заявка на поставку]]"]', answer_source='"письмо заказчика от 01.10.2026"'),
+               mk(type="decision", template="akdb_decision_v1.0.md", kind="document", status="accepted",
+                  supersedes='["[[DR-0001-Прежнее]]"]', superseded_by=""),
+               _example(CATALOGUE[11]), _example(CATALOGUE[10])],
+      "Пустое поле — не нарушение; значение допускает одну ссылку, список и блок; `corrected_by` и `answer_source` — не ссылки.")
+
+
+@test
+def test_min_links_per_type(_t):
+    """AC-CT-05.2: минимум исходящих ссылок по таблице политики связей — для каждого типа каталога, с запасом на оба случая.
+
+    Меньше минимума — V-15 (предупреждение и в `advisory`, и в `strict`); ровно минимум и больше — кода нет. Типам с нулевым
+    минимумом ссылки не нужны вовсе. Запись (`decision`, `question`, `correction`) тоже ссылается, хотя вид у неё `document`.
+    """
+    reg = _shared()
+    want = {"concept": 1, "glossary": 0, "process": 2, "system": 1, "role": 1, "status-model": 1, "requirement": 1,
+            "reference": 0, "cited-document": 0, "decision": 1, "question": 1, "correction": 1, "moc": 0}
+    assert {row[0]: row[9] for row in CATALOGUE} == want, "каталог теста разошёлся с таблицей политики связей"
+    for tid, need in want.items():
+        for n in range(0, need + 2):
+            if tid == "correction":
+                text = _typed_card(tid, corrects="[" + ", ".join(f'"[[Цель {i}]]"' for i in range(1, n + 1)) + "]")
+                text = text.replace("Определение. [[Цель 1]] [[Цель 2]] [[Цель 3]]\n", "Текст исправления.\n")
+            else:
+                text = _typed_card(tid)
+                text = text.replace("[[Цель 1]] [[Цель 2]] [[Цель 3]]", _links(n))
+            for level in ("advisory", "strict"):
+                got = [v for v in _check(text, reg, level, "Raw/corrections/a.md" if tid == "correction" else "AuroraKnowledgeDB/Concepts/x.md")
+                       if v.code == "V-15"]
+                assert bool(got) == (n < need), f"{tid}: ссылок {n}, минимум {need}, V-15 {'есть' if got else 'нет'} ({level})"
+                if got:
+                    assert got[0].severity == "warn" and f"ссылок {n}" in got[0].message and f"не меньше {need}" in got[0].message \
+                        and got[0].hint, got
+    # минимум называет паспорт типа: у типа с другим числом проверяется оно
+    reg2 = _fixture_registry(rows=tuple(row[:9] + (3 if row[0] == "concept" else row[9],) for row in CATALOGUE))
+    assert [v.code for v in _check(mk(), reg2) if v.code == "V-15"] == ["V-15"], "min_links читается не из паспорта типа"
+    assert not [v for v in _check(mk(body="Определение, [[А]] и [[Б]] и [[В]].\n"), reg2) if v.code == "V-15"]
+
+
+@test
+def test_min_links_count_what_the_author_wrote(_t):
+    """Считаются разные карточки в собственной части и в типизированных полях — не повторы, не ссылка на себя, не служебное."""
+    reg = _shared()
+    two = lambda body, **over: [v.code for v in _check(mk(type="process", template="akdb_process_v1.0.md", body=body, **over), reg)  # noqa: E731
+                                if v.code == "V-15"]
+    assert two("[[А]] и [[Б]]\n") == [] and two("[[А]] и [[А]]\n") == ["V-15"]
+    # одна ссылка в тексте и одна в поле — две
+    assert two("[[А]]\n", supersedes='["[[Б]]"]') == [] and two("[[А]]\n", supersedes='["[[А]]"]') == ["V-15"]
+    # поле, которое стоит не на своём месте, ссылкой не считается (оно — V-16)
+    assert two("[[А]]\n", blocks='["[[Б]]"]') == ["V-15"]
+    # ссылка на себя: по названию, по имени файла, любой разделитель
+    assert two("[[А]] и [[Заявка-на-поставку]]\n") == ["V-15"]
+    assert [v.code for v in _check(mk(type="process", template="akdb_process_v1.0.md", body="[[А]] и [[Мой-файл]]\n"), reg, "strict",
+                                   "AuroraKnowledgeDB/Processes/Мой файл.md") if v.code == "V-15"] == ["V-15"]
+    # служебные разделы и дословный текст
+    assert two("[[А]]\n\n## Шаги\n1. [[Б]]\n") == []
+    assert two("[[А]]\n\n## Не путать\n\n[[Б]]\n") == ["V-15"] and two("[[А]]\n\n## Что относится к теме\n\n[[Б]]\n") == ["V-15"]
+    assert two("[[А]]\n\n## Названо в карточках\n\n[[Б]]\n") == ["V-15"]
+    assert two("[[А]]\n\n## Расхождения\n\n[[Б]]\n") == ["V-15"]
+    # раздел, который идёт после служебного списка, снова считается
+    assert two("[[А]]\n\n## Упоминается в\n\n[[Х]]\n\n## Шаги\n1. [[Б]]\n") == []
+    # образец имени из шаблона и литерал данных — не ссылки на карточки
+    assert two("[[{{карточка}}]] и [[<имя>]] и [[...]] и [[01804201710137, 1, 0.5]]\n") == ["V-15"]
+    # ссылка из таблицы с экранированной чертой читается как ссылка
+    assert two("| а | б |\n|---|---|\n| [[А\\|подпись]] | [[Б\\|подпись]] |\n") == []
+
+
+@test
+def test_typed_fields_whitelist(_t):
+    """AC-CT-05: типизированное поле — V-16 везде, где его нет в списке типов политики связей; на своём месте — чисто."""
+    reg = _shared()
+    own_types = tuple(row[0] for row in CATALOGUE)
+    for field, where in TYPED_WHERE.items():
+        assert set(where) <= set(own_types), field
+        value = TYPED_VALUE.get(field, '"[[Цель]]"')
+        for tid in own_types:
+            if tid == "moc":
+                text = _typed_card("moc", **{field: value})
+            elif tid == "correction":
+                text = _typed_card("correction", **({field: value} if field != "corrects" else {}))
+            else:
+                text = _typed_card(tid, **{field: value})
+            for level in ("advisory", "strict"):
+                got = [v for v in _check(text, reg, level, "Raw/corrections/a.md" if tid == "correction" else "AuroraKnowledgeDB/X/x.md")
+                       if v.code == "V-16"]
+                assert bool(got) == (tid not in where), f"{field} у типа {tid}: V-16 {'есть' if got else 'нет'}, допустимо у {where} ({level})"
+                if got:
+                    assert got[0].severity == ("error" if level == "strict" else "warn") and field in got[0].message and got[0].hint, got
+    # тип проекта подчиняется классу: у своего типа класса entity допустимы поля сущностей, у класса record — нет
+    own = ("policy", "entity", "Policies", "", "", "knowledge", "knowledge, draft", "Правила", "", 0)
+    memo = ("memo", "record", "Memos", "Raw/memos", "M-", "document", "draft", "", "", 1)
+    reg2 = _fixture_registry(rows=CATALOGUE + (own, memo))
+    for tid, field, ok in (("policy", "supersedes", True), ("policy", "part_of", True), ("policy", "blocks", False),
+                           ("memo", "supersedes", False), ("memo", "blocks", False), ("memo", "part_of", False)):
+        text = mk(type=tid, template=f"akdb_{tid}_v1.0.md", kind="knowledge" if tid == "policy" else "document",
+                  status="knowledge" if tid == "policy" else "draft", **{field: '"[[Цель]]"'})
+        got = [v for v in _check(text, reg2) if v.code == "V-16"]
+        assert bool(got) == (not ok), f"{tid}.{field}: {got}"
+
+
+@test
+def test_typed_field_value_forms(_t):
+    """Значение типизированного поля: одна ссылка, список в строку, блок, подпись и якорь — верно; остальное — V-16 с названием поля."""
+    reg = _shared()
+    good = ['"[[А]]"', "[[А]]", '"[[А|подпись]]"', '"[[А#Раздел]]"', '["[[А]]"]', '["[[А]]", "[[Б]]"]', "[[[А]], [[Б]]]", "[]", "",
+            '  # комментарий вместо значения', '["[[А]]"]   # хвостовой комментарий', '\n  - "[[А]]"\n  - "[[Б]]"', '\n  - [[А]]']
+    bad = ["А", '"А"', '"[А](А.md)"', '["[[А]]", "Б"]', "[[А]], [[Б]]", '"[[А]] и ещё"', '"[[А]]" и "[[Б]]"', '"[[]]"', '"[[ ]]"',
+           '"[[https://example.org/x]]"', '["[А](А.md)"]', "0"]
+    for value in good:
+        found = [v for v in _check(mk(supersedes=value), reg) if v.code == "V-16"]
+        assert not found, f"верное значение отвергнуто: {value!r}: {found}"
+    for value in bad:
+        found = [v for v in _check(mk(supersedes=value), reg) if v.code == "V-16"]
+        assert len(found) == 1 and "supersedes" in found[0].message and "не ссылка" in found[0].message, f"{value!r}: {found}"
+    # номер строки — строка самого поля
+    text = mk(supersedes="Прежняя")
+    at = next(i for i, line in enumerate(text.split("\n"), 1) if line.startswith("supersedes:"))
+    assert [v.line for v in _check(text, reg) if v.code == "V-16"] == [at]
+    # поля `corrected_by` (имена файлов) и `answer_source` (путь или слова) ссылками не проверяются
+    assert not [v for v in _check(mk(corrected_by="a.md, b.md"), reg) if v.code == "V-16"]
+    assert not [v for v in _check(_typed_card("question", answer_source="письмо"), reg) if v.code == "V-16"]
+
+
+@test
+def test_typed_fields_in_kit_skeletons_are_allowed(_t):
+    """Политика связей и шаблоны кита не расходятся: каждое типизированное поле в скелете шапки шаблона допустимо его типу."""
+    C = _C()
+    reg = C.registry(str(Path("/nonexistent-project")), kit_root=str(KIT))
+    assert list(reg.types) == list(KIT_IDS), reg.problems
+    seen = set()
+    for tid, t in reg.types.items():
+        tpl = C.load_template(t.path)
+        for label, skeleton in (("akdb-frontmatter", tpl.fm_skeleton), ("akdb-frontmatter-raw", tpl.fm_raw), ("akdb-example", tpl.example)):
+            if not skeleton.strip():
+                continue
+            for key in importlib.import_module("aurora_common").frontmatter(skeleton if skeleton.startswith("---") else "---\n" + skeleton + "\n---\n"):
+                if key in C.TYPED_FIELDS:
+                    seen.add(key)
+                    assert C.TYPED_FIELDS[key].allows(t.id, t.cls), f"{t.template_file} ({label}): поле {key} не допустимо типу {t.id}"
+                    assert t.id in TYPED_WHERE[key], f"{t.template_file} ({label}): поле {key} вне независимого списка теста"
+    assert set(C.TYPED_FIELDS) == set(TYPED_WHERE), "список типизированных полей кода разошёлся со списком политики связей"
+    assert {"supersedes", "superseded_by", "corrected_by", "decisions", "prev", "next", "blocks", "answer_source", "corrects"} <= seen, seen
+
+
+@test
+def test_links_checks_are_linear_on_hostile_text(_t):
+    """Враждебный текст не вешает проверку связей: серии «[[» и «]]», длинные цели и значения полей — не дольше двух секунд."""
+    reg = _shared()
+    pad = " " * 200000
+    long_target = "а" * 200000
+    cases = [mk(body="[[" * 100000), mk(body="[[a]" * 60000), mk(body="]]" * 100000), mk(body=("![[" * 50000)),
+             mk(body="[[[[[[[[" * 20000 + "]"), mk(body="[[" + long_target + "]]"), mk(body="[[" + "<" * 100000 + "]]"),
+             mk(body=("[[а]](x) " * 30000)), mk(body="```\n" + "[[а]]\n" * 50000),
+             mk(body="## Упоминается в\n" + "[[а]]\n" * 50000), mk(body=pad + "[[а]]"),
+             mk(part_of='"' + "[[" * 100000 + '"'), mk(supersedes="[" + ", ".join(['"[[а]]"'] * 50000) + "]"),
+             mk(supersedes='"' + pad + '"'), mk(blocks="[" * 100000), mk(prev="]]" * 100000),
+             mk(supersedes="[" + '"[[' * 50000 + "]"), mk(corrected_by="x" * 200000),
+             mk(type="process", template="akdb_process_v1.0.md", body="[[а]] " * 100000)]
+    for text in cases:
+        t0 = time.time()
+        _check(text, reg)
+        assert time.time() - t0 < 2, f"проверка связей зависла: {time.time() - t0:.1f} с на {text[-60:]!r}"
+    # враждебная цель не сходит за карточку: длиннее предела имени она — не ссылка
+    C = _C()
+    assert C._wikilinks("[[" + long_target + "]]") == [] and C._wikilinks("[[Имя]] [[Другое#якорь]]") == ["Имя", "Другое"]
+    assert C._wikilinks("![[схема.png]] [[а]](x) [[ ]] [[|подпись]] [[#якорь]]") == []
+    assert C._wikilinks("[[A]]\n[[B]]") == ["A", "B"] and C._wikilinks("[[a\\|b]]") == ["a"]
+    # те же правила, что у общего `LINK_RE` (тот самый разбор, но без квадратичного отката) — на обычных текстах
+    A = _mod("aurora_common")
+    for sample in ("Текст [[Имя|метка]], [[Имя#якорь]], [[X\\|подпись]] и [[Кон-3.6.2]].", "[[a]] [[b|c]] [[d#e|f]] [[ g ]]",
+                   "Список:\n- [[А]]\n- [[Б]] — и [[В]]\n", "[[a]]b]] [[c]]]]"):
+        want = [t for t in A.link_targets(sample) if not A.not_a_card_link(t)]
+        assert C._wikilinks(sample) == want, (sample, C._wikilinks(sample), want)
+
+
+def _graph_fixture(root: Path, typed: bool = True) -> None:
+    """База с разрезанным документом и цитируемыми статьями: у частей `part_of`, у статей `prev` и `next` — если `typed`."""
+    kb = root / "AuroraKnowledgeDB"
+
+    def put(rel: str, head: str, body: str) -> None:
+        _put(kb / rel, "---\n" + head + "---\n\n" + body)
+    t = lambda s: s if typed else ""  # noqa: E731
+    put("Concepts/Заявка.md", 'title: "Заявка"\ntype: concept\nstatus: knowledge\nrelated: ["[Поставщик](Поставщик.md)"]\n',
+        "Заявка передаётся [[Поставщик|поставщику]] и подтверждается по [[Накладная]].\n")
+    put("Concepts/Поставщик.md", 'title: "Поставщик"\ntype: concept\nstatus: knowledge\nrelated:\n  - "[Склад](Склад.md)"\n  - "[Заявка](Заявка.md)"\n',
+        "Поставщик отгружает товар.\n")
+    put("Concepts/Склад.md", 'title: "Склад"\ntype: concept\nstatus: knowledge\n',
+        "Склад принимает товар, см. [[Поставщик]] и [[Договор-поставки|договор]].\n")
+    put("Concepts/Договор-поставки.md", 'title: "Договор поставки"\ntype: concept\nstatus: knowledge\naliases: ["Контракт"]\n', "Договор.\n")
+    put("Concepts/Отчёт.md", 'title: "Отчёт"\ntype: concept\nstatus: knowledge\n', "Отчёт строится по [[Контракт]] и по [[Нет-такой-карточки]].\n")
+    put("Concepts/Регламент.md", 'title: "Регламент"\ntype: concept\nstatus: index\n',
+        "Карточка была разрезана.\n\n- [[Регламент-часть-1|Часть 1]]\n- [[Регламент-часть-2|Часть 2]]\n")
+    put("Concepts/Регламент-часть-1.md",
+        'title: "Регламент: часть 1"\ntype: concept\nstatus: draft\n' + t('part_of: "[[Регламент]]"\n') + 'related: ["[[Регламент-часть-2]]"]\n',
+        "Первая часть.\n")
+    put("Concepts/Регламент-часть-2.md",
+        'title: "Регламент: часть 2"\ntype: concept\nstatus: draft\n' + t('part_of: "[[Регламент]]"\n') + 'related: ["[[Регламент-часть-1]]"]\n',
+        "Вторая часть.\n")
+    put("Documents/Закон-ст-4.md", 'title: "Закон — ст. 4"\ntype: cited-document\nstatus: knowledge\n' + t('next: "[[Закон-ст-5]]"\n'), "Статья 4.\n")
+    put("Documents/Закон-ст-5.md",
+        'title: "Закон — ст. 5"\ntype: cited-document\nstatus: knowledge\n' + t('prev: "[[Закон-ст-4]]"\nnext: "[[Закон-ст-6]]"\n'), "Статья 5.\n")
+    put("Documents/Закон-ст-6.md",
+        'title: "Закон — ст. 6"\ntype: cited-document\nstatus: knowledge\n' + t('prev: "[[Закон-ст-5]]"\n'),
+        "Статья 6. Ссылка в тексте на [[Закон-ст-4]].\n")
+
+
+def _graph_edges(root: Path, header_edges=None) -> list:
+    """[(от, к, подпись, уверенность)] графа базы проекта; `header_edges=()` выключает рёбра по полям шапки — как было до CT-05."""
+    G = _mod("kb_graph")
+    here, was = os.getcwd(), G.HEADER_EDGES
+    try:
+        os.chdir(root)
+        if header_edges is not None:
+            G.HEADER_EDGES = header_edges
+        data = G.write_cards_graph("AuroraKnowledgeDB/meta/graph.json")
+    finally:
+        G.HEADER_EDGES = was
+        os.chdir(here)
+    return [(e["from"], e["to"], e["rel"], e["conf"]) for e in data["edges"]]
+
+
+# Граф базы без полей `part_of`, `prev`, `next` — снят с движка до пакета CT-05 и с тех пор не меняется.
+GRAPH_GOLDEN = [
+    ("Договор-поставки", "Склад", "упоминает", "INFERRED"),
+    ("Закон-ст-4", "Закон-ст-6", "упоминает", "EXTRACTED"),
+    ("Заявка", "Поставщик", "упоминает", "EXTRACTED"),
+    ("Поставщик", "Склад", "связана", "EXTRACTED"),
+    ("Регламент", "Регламент-часть-1", "упоминает", "INFERRED"),
+    ("Регламент", "Регламент-часть-2", "упоминает", "INFERRED"),
+    ("Регламент-часть-1", "Регламент-часть-2", "упоминает", "EXTRACTED"),
+]
+
+
+@test
+def test_graph_without_typed_header_fields_is_unchanged(tmp: Path):
+    """Golden: база без `part_of`, `prev`, `next` даёт тот же граф, что до пакета, — рёбра, подписи и уверенность байт в байт."""
+    root = make_project(tmp)
+    _graph_fixture(root, typed=False)
+    got = _graph_edges(root)
+    assert got == GRAPH_GOLDEN, got
+    assert got == _graph_edges(root, header_edges=()), "рёбра по полям шапки изменили граф базы, где этих полей нет"
+    stored = json.loads((root / "AuroraKnowledgeDB" / "meta" / "graph.json").read_text(encoding="utf-8"))
+    assert [(e["from"], e["to"], e["rel"], e["conf"]) for e in stored["edges"]] == GRAPH_GOLDEN
+
+
+@test
+def test_graph_reads_block_related(tmp: Path):
+    """AC-CT-05.1: `related` блоком и строкой даёт ребро «связана» и без ссылки в теле (закрепление BL-SEC-16)."""
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB" / "Concepts"
+    for name, extra in (("ЭСФ", ""), ("Реестр", 'related:\n  - "[ЭСФ](ЭСФ.md)"\n'), ("Журнал", 'related: ["[ЭСФ](ЭСФ.md)"]\n'),
+                        ("Архив", 'related:\n  # комментарий внутри блока\n  - "[Реестр](Реестр.md)"\n\n  - "[Журнал](Журнал.md)"\n')):
+        _put(kb / f"{name}.md", f'---\ntitle: "{name}"\ntype: concept\nstatus: knowledge\n{extra}---\n\nТекст без ссылок.\n')
+    got = {(a, b): rel for a, b, rel, _c in _graph_edges(root)}
+    assert got == {("Реестр", "ЭСФ"): "связана", ("Журнал", "ЭСФ"): "связана", ("Архив", "Реестр"): "связана",
+                   ("Архив", "Журнал"): "связана"}, got
+
+
+@test
+def test_graph_typed_header_edges(tmp: Path):
+    """AC-CT-05.3: `prev`/`next`/`part_of` — одно ребро на пару с подписью «следующая»/«часть документа», а не «упоминает»;
+    набор пар тот же, что без этих рёбер, остальные рёбра не тронуты."""
+    root = make_project(tmp)
+    _graph_fixture(root, typed=True)
+    got = _graph_edges(root)
+    old = _graph_edges(root, header_edges=())
+    # рёбер по полям шапки не прибавилось: те же пары, по одному ребру на пару
+    assert [(a, b) for a, b, *_ in got] == [(a, b) for a, b, *_ in old], (got, old)
+    assert len({(a, b) for a, b, *_ in got}) == len(got)
+    by = {(a, b): (rel, conf) for a, b, rel, conf in got}
+    # `next` статьи 4 и `prev` статьи 5 — одна пара, одно ребро
+    assert by[("Закон-ст-4", "Закон-ст-5")] == ("следующая", "EXTRACTED") and by[("Закон-ст-5", "Закон-ст-6")] == ("следующая", "EXTRACTED")
+    assert by[("Регламент", "Регламент-часть-1")] == ("часть документа", "EXTRACTED")
+    assert by[("Регламент", "Регламент-часть-2")] == ("часть документа", "EXTRACTED")
+    assert not [e for e in got if e[2] == "упоминает" and (e[0], e[1]) in {("Закон-ст-4", "Закон-ст-5"), ("Закон-ст-5", "Закон-ст-6"),
+                                                                            ("Регламент", "Регламент-часть-1"), ("Регламент", "Регламент-часть-2")}]
+    # остальные рёбра — как до пакета: ссылка в тексте статьи 6 на статью 4, соседство частей по `related`
+    plain = {(a, b): (rel, conf) for a, b, rel, conf in GRAPH_GOLDEN}
+    for pair in (("Договор-поставки", "Склад"), ("Заявка", "Поставщик"), ("Поставщик", "Склад"), ("Закон-ст-4", "Закон-ст-6"),
+                 ("Регламент-часть-1", "Регламент-часть-2")):
+        assert by[pair] == plain[pair], (pair, by[pair], plain[pair])
+    # поле шапки сильнее общего «упоминает» и «связана» в любом порядке карточек
+    _put(root / "AuroraKnowledgeDB" / "Documents" / "Закон-ст-3.md",
+         '---\ntitle: "Закон — ст. 3"\ntype: cited-document\nstatus: knowledge\nnext: "[[Закон-ст-4]]"\nrelated: ["[[Закон-ст-4]]"]\n---\n\nСтатья 3.\n')
+    _put(root / "AuroraKnowledgeDB" / "Documents" / "Закон-ст-7.md",
+         '---\ntitle: "Закон — ст. 7"\ntype: cited-document\nstatus: knowledge\nrelated: ["[Закон-ст-6](Закон-ст-6.md)"]\nprev: "[[Закон-ст-6]]"\n---\n\nСтатья 7.\n')
+    again = {(a, b): rel for a, b, rel, _c in _graph_edges(root)}
+    assert again[("Закон-ст-3", "Закон-ст-4")] == "следующая" and again[("Закон-ст-6", "Закон-ст-7")] == "следующая", again
+    # другие типизированные поля подписи не получают: они по-прежнему «упоминает» (рёбра для них — отдельное решение)
+    _put(root / "AuroraKnowledgeDB" / "Questions" / "Q-001-Срок.md",
+         '---\ntitle: "Q-001: Срок"\ntype: question\nstatus: draft\nblocks: ["[[Заявка]]"]\n---\n\nВопрос.\n')
+    assert {(a, b): rel for a, b, rel, _c in _graph_edges(root)}[("Q-001-Срок", "Заявка")] == "упоминает"
+    # шапку читает единый разбор: в графе нет ни одного своего регулярного выражения по полям `part_of`, `prev`, `next`
+    src = (SCRIPTS / "kb_graph.py").read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) \
+                and node.func.value.id == "re" and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+            assert not re.search(r"part_of|prev|next", node.args[0].value), f"свой разбор шапки в графе: {node.args[0].value}"
+    assert "typed_link_names" in src and "HEADER_EDGES" in src
+
+
+@test
+def test_graph_header_edges_survive_a_missing_card_types_module(tmp: Path):
+    """Движок проекта обновлён не целиком (нет `card_types.py`): граф строится, как до пакета, без рёбер по полям шапки."""
+    root = make_project(tmp)
+    _graph_fixture(root, typed=True)
+    (root / ".aurora" / "scripts" / "card_types.py").unlink()
+    script = root / ".aurora" / "scripts" / "kb_graph.py"
+    cp = subprocess.run([sys.executable, str(script), "--cards-json", "AuroraKnowledgeDB/meta/graph.json", "--allow-dirty"], cwd=str(root),
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
+                        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    data = json.loads((root / "AuroraKnowledgeDB" / "meta" / "graph.json").read_text(encoding="utf-8"))
+    rels = {(e["from"], e["to"]): e["rel"] for e in data["edges"]}
+    assert rels[("Закон-ст-4", "Закон-ст-5")] == "упоминает" and rels[("Регламент", "Регламент-часть-1")] == "упоминает", rels
+
+
+@test
+def test_typed_link_names_reads_every_form(_t):
+    """`typed_link_names` берёт имена из значения поля шапки в любой записи, которую читает единый разбор."""
+    C, A = _C(), _mod("aurora_common")
+
+    def names(value: str, key: str = "part_of") -> list:
+        return C.typed_link_names(A.frontmatter(f"---\ntitle: x\n{key}: {value}\n---\n\nТекст\n"), key)
+    assert names('"[[А]]"') == ["А"] and names("[[А]]") == ["А"] and names('"[[А|подпись]]"') == ["А"]
+    assert names('["[[А]]", "[[Б]]"]') == ["А", "Б"] and names('\n  - "[[А]]"\n  - "[[Б]]"') == ["А", "Б"]
+    assert names('["[[А]]", "[[А]]"]') == ["А"] and names("[]") == [] and names("") == [] and names('  # комментарий') == []
+    assert names("Родитель") == [] and names('"[Родитель](Родитель.md)"') == [] and names('["[[А]]", "Б"]') == ["А"]
+    assert C.typed_link_names({}, "part_of") == [] and C.typed_link_names(None, "part_of") == []
+    assert names('"[[Закон-3.6.2]]"', "next") == ["Закон-3.6.2"]
+
+
+@test
+def test_kb_cards_links_are_advisory(tmp: Path):
+    """`kb:cards`: V-15 — предупреждение даже на строгом уровне; V-16 — ошибка строгого уровня и предупреждение в советах;
+    `kb:lint` называет оба кода в разделе о шаблонах, не трогая итоговую строку."""
+    root = _cli_project(tmp / "a")
+    kb = root / "AuroraKnowledgeDB"
+    _put(kb / "Concepts" / "Без-связей.md", mk(title='"Без связей"', body="Определение без единой ссылки.\n"))
+    out = _cli(root, "--check", expect=0).stdout
+    assert "V-15" in out and "исходящих ссылок 0" in out and "ошибок 0 · предупреждений 1" in out, out
+    out = _cli(root, "--check", "--strict", expect=0).stdout
+    assert "V-15" in out and "ошибок 0" in out and "предупреждений 1" in out, "V-15 стала ошибкой в фазе советов"
+    data = json.loads(_cli(root, "--check", "--json", expect=0).stdout)
+    assert data["by_code"] == {"V-15": 1} and data["errors"] == 0 and data["warnings"] == 1, data
+    _put(kb / "Concepts" / "Не-там.md", mk(title='"Не там"', blocks='["[[Заявка на поставку]]"]'))
+    soft = _cli(root, "--check", expect=0).stdout
+    assert "V-16" in soft and "поле «blocks»" in soft and "ошибок 0" in soft, soft
+    hard = _cli(root, "--check", "--strict", expect=1).stdout
+    assert "V-16" in hard and "ошибок 1" in hard, hard
+    stats = json.loads(_cli(root, "--stats", "--json", expect=0).stdout)
+    assert stats["by_code"].get("V-15") == 1 and stats["by_code"].get("V-16") == 1, stats
+    # kb:lint: раздел о шаблонах называет коды, итоговая строка та же, что без шаблонов
+    bare = _cli_project(tmp / "b", templates=False)
+    for base in (root, bare):
+        _put(base / "AuroraKnowledgeDB" / "Concepts" / "Без-связей.md", mk(title='"Без связей"', body="Определение без единой ссылки.\n"))
+        _put(base / "AuroraKnowledgeDB" / "Concepts" / "Не-там.md", mk(title='"Не там"', blocks='["[[Заявка на поставку]]"]'))
+    full, plain = _lint(root, "--full"), _lint(bare, "--full")
+    assert full.returncode == plain.returncode and _summary_line(full.stdout) == _summary_line(plain.stdout)
+    section = [l for l in _section_of(full.stdout) if l]
+    assert any(l.startswith("   V-15 — исходящих ссылок меньше минимума типа: 1") for l in section), section
+    assert any(l.startswith("   V-16 — типизированное поле не на месте или значение — не ссылка: 1") for l in section), section
+    for line in section:
+        assert not re.search(r"ошибок\s+\d|карточек\s+\d", line), f"строка раздела читается как итоговая: {line}"
