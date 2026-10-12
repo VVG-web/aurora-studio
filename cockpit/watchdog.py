@@ -37,12 +37,24 @@ TICK = 30              # шаг сторожа
 PROBE_TIMEOUT = 10
 
 
-def kill_tree(pid: int) -> None:
+# Сколько секунд раннер агента получает на фиксацию сделанного (SIGTERM → `git commit`), прежде
+# чем снимут дерево. SIGKILL посреди git оставляет `.git/index.lock` — следующий шаг не запишет.
+STOP_GRACE = 15.0
+
+
+def kill_tree(pid: int, grace: float = 0.0) -> None:
     """Снять процесс и всех его потомков: адаптер модели и git живут дочерними процессами,
     и снятый без них шаг оставил бы их держать слоты шлюза и `index.lock`.
-    Путь один на панель и раннер агента — `aurora_common.kill_tree`."""
+    Путь один на панель и раннер агента — `aurora_common.kill_tree`. `grace` — дать самому
+    процессу столько секунд на мягкий уход (раннер фиксирует сделанное), потом снять дерево."""
     from aurora_common import kill_tree as _kill_tree
-    _kill_tree(pid)
+    _kill_tree(pid, grace=grace)
+
+
+def stop_tree(pid: int) -> None:
+    """Остановка процесса движка по решению панели (выход, зависший шаг, брошенный процесс):
+    мягко, с окном `STOP_GRACE` на коммит сделанного, потом дерево целиком."""
+    kill_tree(pid, grace=STOP_GRACE)
 
 
 # Метка панели в окружении процессов, которые она запускает (`aurora_cockpit.main`).
@@ -112,7 +124,7 @@ def reap_orphans(kit: str, own: int = 0, rows=None, kill=None, alive=None) -> li
     панель, всё без метки — прогоны из терминала, MCP-серверы чужих ассистентов, браузер."""
     own = own or os.getpid()
     rows = marked_processes() if rows is None else rows
-    kill = kill or kill_tree
+    kill = kill or stop_tree
     if alive is None:
         from aurora_common import pid_alive as alive
     # Пути сравниваем без разницы между «/» и «\\»: на Windows командная строка бывает и такой,
@@ -284,7 +296,7 @@ class Watchdog:
                        "шаг заново.")
         proc = job.get("proc")
         if proc is not None and proc.poll() is None:
-            kill_tree(proc.pid)
+            stop_tree(proc.pid)
         lock = stale_git_lock(job.get("project", ""))
         if lock:
             self._say(job, f"■ сторож: снят брошенный {lock}")

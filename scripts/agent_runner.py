@@ -286,6 +286,14 @@ def commit_result(cwd: str, task: str, headline: str, enabled: bool) -> dict:
     # индексе, — в том числе файл с секретом, который хук pre-commit как раз не пустил в чекпойнт.
     rc, _o, err = git("commit", "--no-verify", "-m", f"agent: {task} — {headline}", "--", "AuroraKnowledgeDB",
                       cwd=cwd)
+    if rc != 0 and "index.lock" in err:
+        # Параллельный `git status` (панель, редактор) мигает замком индекса: один повтор через
+        # паузу, иначе остановленный прогон оставит сделанное без коммита агента.
+        import time as _time
+        _time.sleep(0.5)
+        git("add", "--", "AuroraKnowledgeDB", cwd=cwd)
+        rc, _o, err = git("commit", "--no-verify", "-m", f"agent: {task} — {headline}", "--",
+                          "AuroraKnowledgeDB", cwd=cwd)
     if rc != 0:
         return {"ok": False, "why": f"коммит результата не сделан: {err[:200]}"}
     return {"ok": True, "sha": git("rev-parse", "HEAD", cwd=cwd)[1], "why": "работа агента зафиксирована"}
@@ -301,6 +309,10 @@ def run_command(cwd: str, script: str, args: list, timeout: int = 300) -> dict:
     allowed, why = AG.write_allowed(script, args)
     if not allowed:
         return {"ok": False, "refused": why, "rc": None, "out": ""}
+    if _RUN["finishing"]:
+        # Остановка идёт: рабочие потоки не начинают новых команд, пока обработчик делает
+        # `git add`/`commit` — запись после `add` осталась бы вне коммита агента.
+        return {"ok": False, "refused": "остановка", "rc": None, "out": ""}
     path = os.path.join(cwd, ".aurora", "scripts", script)
     if not os.path.isfile(path):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script)
@@ -310,13 +322,30 @@ def run_command(cwd: str, script: str, args: list, timeout: int = 300) -> dict:
                            timeout=timeout)
     except subprocess.TimeoutExpired as e:
         got = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
+        why = f"{script} не уложился в {timeout} с"
+        AG.record_failure(script, why, stage="команда", cwd=cwd, args=[str(a) for a in args][:6])
         return {"ok": False, "rc": None, "timeout": True, "refused": "", "out": got.strip(),
-                "why": f"{script} не уложился в {timeout} с"}
+                "why": why}
     except OSError as e:
-        return {"ok": False, "rc": None, "refused": "", "out": "",
-                "why": f"{script} не запустился: {type(e).__name__}: {e}"[:200]}
+        why = f"{script} не запустился: {type(e).__name__}: {e}"[:200]
+        AG.record_failure(script, why, stage="команда", cwd=cwd, args=[str(a) for a in args][:6])
+        return {"ok": False, "rc": None, "refused": "", "out": "", "why": why}
     return {"ok": p.returncode == 0, "rc": p.returncode,
             "out": ((p.stdout or "") + (p.stderr or "")).strip(), "refused": ""}
+
+class CommandDead(RuntimeError):
+    """Команда, чей вывод читают как данные, не отработала (срок, запуск): «пусто» о ней не скажешь."""
+
+
+def need_ran(res: dict, what: str) -> dict:
+    """Ответ команды-читателя; не отработавшая команда — `CommandDead`, а не пустой список.
+
+    Раньше таймаут `kb_fix --aliases` читался как «конфликтов 0 · разводить нечего», а таймаут
+    `kb_twins` — как «групп: 0»: отчёт утверждал то, чего никто не измерил."""
+    if res.get("rc") is None and res.get("why"):
+        raise CommandDead(f"{what}: {res['why']}")
+    return res
+
 
 # ------------------------------------------------------------------ in-process build_plan
 #
@@ -454,7 +483,7 @@ def _say_safe(text: str) -> None:
     """Строка в консоль прогона; труба панели могла закрыться — остановке это не мешает."""
     try:
         print(text, flush=True)
-    except (OSError, ValueError):
+    except Exception:                # noqa: BLE001 — и RuntimeError «reentrant call» посреди print главного потока
         pass
 
 
@@ -468,13 +497,19 @@ def _on_stop(signum, _frame) -> None:
         name = signal.Signals(signum).name
     except (ImportError, ValueError):
         name = str(signum)
+    _say_safe(f"\n■ Прогон остановлен сигналом {name}: фиксирую сделанное.")
+    # Запись карточки, начатая другим потоком, доходит до конца до коммита (новых не начнут:
+    # `finishing`). Замок не отпускаем — процесс уходит. Если его держит сам главный поток,
+    # на который пришёл сигнал, — ждём недолго и идём дальше, а не встаём в тупик.
+    _BP_LOCK.acquire(timeout=2)
+    done = {}
     try:
-        _say_safe(f"\n■ Прогон остановлен сигналом {name}: фиксирую сделанное.")
         done = commit_partial(f"прервано сигналом {name}: сделанное до остановки")
-        _say_safe("Результат агента: " + str(done.get("why"))
-                  + (f" ({done['sha'][:8]})" if done.get("sha") else ""))
     except BaseException:            # noqa: BLE001 — остановка доводится до выхода при любом сбое
         pass
+    if done:
+        _say_safe("Результат агента: " + str(done.get("why"))
+                  + (f" ({done['sha'][:8]})" if done.get("sha") else ""))
     try:
         release_lock(os.getcwd())
     except BaseException:            # noqa: BLE001
@@ -559,6 +594,8 @@ def run_build_plan(cwd: str, args: list, timeout: int = 300) -> dict:
     allowed, why = AG.write_allowed("build_plan.py", args)
     if not allowed:
         return {"ok": False, "refused": why, "rc": None, "out": ""}
+    if _RUN["finishing"]:
+        return {"ok": False, "refused": "остановка", "rc": None, "out": ""}
 
     # Сеть безопасности — только на импорт. Раньше `except Exception` накрывал и сборку,
     # а фолбэк перезапускал ту же команду подпроцессом: падение ПОСЛЕ частичной записи
@@ -1745,7 +1782,8 @@ def read_twin_groups(cwd: str, min_score: float) -> list:
     `--limit 0` обязателен: отчёт по умолчанию печатает сорок групп, а читаем мы именно
     печатное. Без него ход молча брал бы сорок из пятисот и выглядел бы завершённым.
     """
-    r = run_command(cwd, "kb_twins.py", ["--min", str(min_score), "--limit", "0"])
+    r = need_ran(run_command(cwd, "kb_twins.py", ["--min", str(min_score), "--limit", "0"]),
+                 "группы двойников не прочитаны")
     if not r["ok"]:
         return []
     groups, cur = [], []
@@ -1857,7 +1895,8 @@ def run_clashes(cfg: dict, cwd: str, limit: int = 0, call=None) -> dict:
                           "why": f"бюджет исчерпан, осталось {len(groups) - i + 1}",
                           "backends": []})
             break
-        s = solve_clash(cfg, cwd, g, call, deadline=budget)
+        s = safe_unit(solve_clash, ", ".join(str(x) for x in g)[:200],
+                      {"group": g, "clashes": []}, cfg, cwd, g, call, deadline=budget)
         steps.append(s)
         done = s["status"] not in ("сбой", "стоп")
         if len(g) == 2 and g in behind:
@@ -2035,6 +2074,18 @@ def crash_step(subject: str, e: BaseException, **base) -> dict:
     step = {"backends": [], **base}
     step.update(status="сбой", note=why[:160])
     return step
+
+
+def safe_unit(fn, subject: str, base: dict, *args, **kw) -> dict:
+    """Вызов единицы последовательного цикла (`solve_twins`, `solve_golden`, …) с границей
+    исключений: упавшая единица — шаг «сбой» с причиной в `why` и трассировкой в журнале сбоев,
+    остальные идут дальше. Тот же закон, что у пулов (`guard_each`)."""
+    try:
+        return fn(*args, **kw)
+    except Exception as e:                                  # noqa: BLE001 — граница единицы работы
+        step = crash_step(subject, e, **base)
+        step["why"] = step["note"]
+        return step
 
 
 def guard_each(fn, describe):
@@ -2253,7 +2304,9 @@ def run_tasks(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> di
             break
         if not os.path.exists(path):
             continue          # предыдущий шаг увёл её в архив слиянием
-        st = solve_task_card(cfg, cwd, path, apply, call, deadline=budget)
+        st = safe_unit(solve_task_card, rel_or_abs(path),
+                       {"card": os.path.basename(path)[:-3], "into": ""},
+                       cfg, cwd, path, apply, call, deadline=budget)
         steps.append(st)
         print(f"  [{i}/{len(todo)}] {st['card']} → {st['status']}"
               + (f" в «{st['into']}»" if st["into"] else "")
@@ -2395,7 +2448,9 @@ def run_translit(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) ->
             steps.append({"stem": "", "cyrillic": "", "status": "стоп",
                           "why": f"бюджет {cfg['budget_min']} мин исчерпан", "backends": []})
             break
-        st = solve_translit(cfg, path, call, deadline=budget)
+        st = safe_unit(solve_translit, rel_or_abs(path),
+                       {"stem": os.path.basename(path)[:-3], "cyrillic": ""},
+                       cfg, path, call, deadline=budget)
         steps.append(st)
         say(f"  {progress(i, total, started)} · {st['stem']} → "
             + (st["cyrillic"] or st["status"]) + where(st))
@@ -2595,7 +2650,8 @@ def run_twins(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> di
                           f"бюджет {cfg['budget_min']} мин исчерпан, осталось "
                           f"{len(groups) - i + 1}", "backends": []})
             break
-        steps.append(solve_twins(cfg, cwd, g, apply, call, deadline=budget))
+        steps.append(safe_unit(solve_twins, ", ".join(str(x) for x in g)[:200],
+                               {"group": g, "keep": ""}, cfg, cwd, g, apply, call, deadline=budget))
     merged = sum(1 for s in steps if s["status"] in ("слито", "слил бы"))
     return {"steps": steps, "groups": len(groups), "merged": merged,
             "apart": sum(s.get("apart") or 0 for s in steps),
@@ -2718,7 +2774,8 @@ def run_golden(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> d
     followed = run_command(cwd, "kb_search_quality.py",
                            ["--golden-remap", "--follow"] + (["--apply"] if apply else []))
     moved = len(re.findall(r"^- строка \d+:", followed.get("out") or "", re.M))
-    got = run_command(cwd, "kb_search_quality.py", ["--golden-remap", "--json"], timeout=900)
+    got = need_ran(run_command(cwd, "kb_search_quality.py", ["--golden-remap", "--json"], timeout=900),
+                   "строки эталона не прочитаны")
     # Вывод — stdout вместе с stderr: предупреждение «индекса нет» может встать после JSON.
     rows = []
     for line in reversed((got.get("out") or "").splitlines()):
@@ -2737,7 +2794,9 @@ def run_golden(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> d
                           f"бюджет {cfg['budget_min']} мин исчерпан, осталось "
                           f"{len(rows) - i + 1}", "backends": []})
             break
-        steps.append(solve_golden(cfg, cwd, row, apply, call, deadline=budget))
+        steps.append(safe_unit(solve_golden, f"эталон {row.get('num')}",
+                               {"num": row.get("num"), "card": "", "lost": row.get("lost") or []},
+                               cfg, cwd, row, apply, call, deadline=budget))
     done = sum(1 for s in steps if s["status"] in ("переведено", "перевёл бы"))
     return {"steps": steps, "rows": len(rows), "moved": moved, "remapped": done,
             "failed": "" if got["ok"] else (got.get("refused")
@@ -2776,7 +2835,8 @@ def read_conflicts(cwd: str) -> list:
     Берём машинный список: человеческий отчёт режется до 15 строк, и агент, читая его,
     отчитывался бы обо всех увиденных, не зная, что остальные ему не показали.
     """
-    r = run_command(cwd, "kb_fix.py", ["--aliases", "--json"])
+    r = need_ran(run_command(cwd, "kb_fix.py", ["--aliases", "--json"]),
+                 "конфликты синонимов не прочитаны")
     try:
         data = json.loads(r["out"].strip() or "[]")
         return [(d["alias"], d["cards"]) for d in data]
@@ -2785,6 +2845,11 @@ def read_conflicts(cwd: str) -> list:
         for alias, cards in CONFLICT_RE.findall(r["out"]):
             out.append((alias, [c.strip() for c in cards.split(",") if c.strip()]))
         return out
+
+
+# Линтер не отработал (срок, запуск). Не путать с -1: так линтер отвечает, когда ошибок в выводе
+# нет вовсе (старый движок без него) — тот случай прогон не краснит.
+LINT_DEAD = -2
 
 
 def lint_conflicts(cwd: str) -> int:
@@ -2797,10 +2862,17 @@ def lint_conflicts(cwd: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+def shown_errors(n: int) -> str:
+    """Число ошибок базы для отчёта; не измеренное (-1, `LINT_DEAD`) — «н/д», а не «-2»."""
+    return str(n) if n >= 0 else "н/д"
+
+
 def oracle_blind(res: dict, apply: bool) -> bool:
-    """Оракул ослеп посреди прогона: до работы линтер отвечал, после — нет (срок вышел).
-    «Ошибок не прибавилось» тут не вывод, а незнание — прогон успехом не называем."""
-    return bool(apply and res["before"]["errors"] >= 0 > res["after"]["errors"])
+    """Оракул ослеп: линтер не отработал (срок, запуск) до или после работы, либо до неё отвечал,
+    а после — нет. «Ошибок не прибавилось» тут не вывод, а незнание — прогон успехом не называем.
+    Старый движок без линтера (-1 и до, и после) слепым не считается: он не отвечал и прежде."""
+    before, after = res["before"]["errors"], res["after"]["errors"]
+    return bool(apply and (before >= 0 > after or LINT_DEAD in (before, after)))
 
 
 def lint_errors(cwd: str, orphans: bool = True) -> int:  # noqa: C901
@@ -2813,7 +2885,7 @@ def lint_errors(cwd: str, orphans: bool = True) -> int:  # noqa: C901
     """
     r = run_command(cwd, "kb_lint.py", ["--summary"] if orphans else [])
     if r.get("rc") is None and r.get("why"):
-        return -1                                 # не отработал: частичный вывод не в счёт
+        return LINT_DEAD                          # не отработал: частичный вывод не в счёт
     m = re.search(r"ошибок (\d+)", r["out"])
     if not m:
         return -1
@@ -3999,8 +4071,12 @@ def solve_source_safe(cfg: dict, cwd: str, group: str, source: str, *args, **kw)
     try:
         return solve_source(cfg, cwd, group, source, *args, **kw)
     except Exception as e:                                  # noqa: BLE001 — граница единицы работы
-        return crash_step(source, e, alias=source.rsplit("/", 1)[-1], source=source,
+        step = crash_step(source, e, alias=source.rsplit("/", 1)[-1], source=source,
                           group=group, degraded=False)
+        # Исключение от содержимого источника или кэшированного ответа повторяется на каждом обороте:
+        # учитываем как сбой по содержанию (план отложит после двух). Сбой ввода-вывода — не про него.
+        step["content_fail"] = not isinstance(e, OSError)
+        return step
 
 
 def plan_source(cfg: dict, cwd: str, source: str, whole: str, step: dict, apply: bool,
@@ -4036,7 +4112,7 @@ def plan_source(cfg: dict, cwd: str, source: str, whole: str, step: dict, apply:
     rows = (parse_json(r["text"]) or {}).get("parts")
     if not isinstance(rows, list) or not rows:
         return 0
-    made, used, lost = 0, set(), []
+    made, used, lost, refused_by_engine = 0, set(), [], True
     for row in rows:
         try:
             a, b, name = int(row["from"]), int(row["to"]), str(row["title"]).strip()
@@ -4060,12 +4136,19 @@ def plan_source(cfg: dict, cwd: str, source: str, whole: str, step: dict, apply:
             made += 1
         else:
             lost.append(f"{name} (абзацы {a}-{b}): {fail_why(res)}")
+            refused_by_engine = refused_by_engine and res.get("rc") is not None
     if lost:
         # Неудавшаяся запись — не «молча пропущено»: отметка «разобрано» убрала бы источник из
         # плана навсегда вместе с абзацами, которых в картотеке нет. Источник остаётся в плане
         # (записанные части при повторе заменяются блоком источника), а шаг — сбой с причиной.
         fail_step(step, f"записано карточек {made}, не записано {len(lost)}: " + "; ".join(lost)[:300],
                   subject=source, stage="запись")
+        # Отказ движка (раздел вне схемы, абзацы вне источника) детерминирован ответом планировщика,
+        # а тот лежит в кэше: повтор даст тот же отказ. Источник считаем сбоем по содержанию —
+        # после двух подряд `build_plan --failed` отложит его, а не оставит в плане навсегда.
+        # Срок и запуск (rc None) — не про источник: их откладывать нельзя.
+        if refused_by_engine:
+            step["content_fail"] = True
         return made
     if made and apply:
         run_command(cwd, "build_plan.py", ["--done", source])
@@ -4601,7 +4684,7 @@ def verdict_build(res: dict, apply: bool) -> tuple:
     human = [s for s in res["steps"] if s["status"] == "без секций — человеку"]
     bad = [s for s in res["steps"] if s["status"] in ("сбой", "отклонено критиком",
                                                       "отклонено проверкой", "стоп")]
-    grew = apply and res["after"]["errors"] > res["before"]["errors"]
+    grew = apply and res["before"]["errors"] >= 0 and res["after"]["errors"] > res["before"]["errors"]
     moved = res["after"]["done"] - res["before"]["done"]
     # Отложенный человеку источник (`defer`) уходит из плана той же отметкой `--done --empty`,
     # что и пустой: движок считает его обработанным, и агент объявляет его так же.
@@ -4611,7 +4694,7 @@ def verdict_build(res: dict, apply: bool) -> tuple:
     ok = not bad and not grew and not lied and not blind_after
     why = []
     if blind_after:
-        why.append("линтер после прогона не ответил (срок) — ошибки базы не сверены")
+        why.append("линтер не ответил (срок или запуск) — ошибки базы не сверены")
     if lied:
         why.append(f"движок засчитал разобранными {moved}, а агент объявил {declared}")
     if grew:
@@ -7146,7 +7229,7 @@ def verdict(res: dict, apply: bool) -> tuple:
                                                       "слито", "слил бы")]
     bad = [s for s in res["steps"] if s["status"] in ("сбой", "отклонено критиком", "стоп",
                                                       "не начат")]
-    grew = apply and res["after"]["errors"] > res["before"]["errors"]
+    grew = apply and res["before"]["errors"] >= 0 and res["after"]["errors"] > res["before"]["errors"]
     # Сколько конфликтов агенту вообще показали. Если меньше, чем видит линтер, — это не
     # успех, а слепое пятно: отчёт «каждый разобран» о неполном списке хуже, чем провал.
     blind = 0 if res.get("limited") else max(0, res["before"]["conflicts"] - res["total_conflicts"])
@@ -7156,7 +7239,7 @@ def verdict(res: dict, apply: bool) -> tuple:
           and len(done) == res["total_conflicts"] - left)
     why = []
     if blind_after:
-        why.append("линтер после прогона не ответил (срок) — ошибки базы не сверены")
+        why.append("линтер не ответил (срок или запуск) — ошибки базы не сверены")
     if left and res.get("stopped"):
         why.append(f"разобрано {len(done)} из {res['total_conflicts']}, "
                    f"{res['stopped']}")
@@ -7235,7 +7318,8 @@ def report_build(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) 
 
     L += ["", f"**Оракул:** {'✅ ' if ok else '✗ '}{why}",
           f"Источников в плане: {res['before']['left']} → {res['after']['left']} · "
-          f"ошибок базы: {res['before']['errors']} → {res['after']['errors']}"]
+          f"ошибок базы: {shown_errors(res['before']['errors'])} → "
+          f"{shown_errors(res['after']['errors'])}"]
     if made:
         # Граница работы разбора: он выбирает границы тем и имена, тело переносит движок
         # дословно. Тезис напишет `agent:distill`, связи — `agent:relink`: оба идут в том же
@@ -7302,7 +7386,8 @@ def report(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str
 
     L += ["", f"**Оракул:** {'✅ ' if ok else '✗ '}{why}",
           f"Конфликтов по линтеру: {res['before']['conflicts']} → {res['after']['conflicts']} · "
-          f"ошибок базы: {res['before']['errors']} → {res['after']['errors']}"]
+          f"ошибок базы: {shown_errors(res['before']['errors'])} → "
+          f"{shown_errors(res['after']['errors'])}"]
     L += adapter_lines(cfg, res)
     # Эти два раздела жили в `verdict()` — функции, которая возвращает пару «успех,
     # почему» и никакого `L` не имеет. Ветки срабатывают на любом непустом прогоне живой
@@ -7812,6 +7897,18 @@ def guarded_main(entry=None) -> int:
     а замок базы снимается всегда."""
     try:
         return (entry or main)()
+    except CommandDead as e:
+        # Команда-читатель не отработала (срок, запуск): говорим причину прямо — без трассировки,
+        # она не про дефект кода, — и фиксируем сделанное. Код 1: «пусто» о таком прогоне не скажешь.
+        print(f"agent_runner: {e}", file=sys.stderr, flush=True)
+        AG.record_failure(AG.RUN_TASK.get("name") or "agent_runner", str(e)[:300], stage="команда")
+        try:
+            done = commit_partial("команда не отработала: " + str(e)[:80])
+            _say_safe("Результат агента: " + str(done.get("why"))
+                      + (f" ({done['sha'][:8]})" if done.get("sha") else ""))
+        except Exception:                                   # noqa: BLE001
+            pass
+        return 1
     except Exception as e:                                  # noqa: BLE001 — последний рубеж
         import traceback
         traceback.print_exc()

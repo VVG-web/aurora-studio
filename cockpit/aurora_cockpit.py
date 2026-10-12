@@ -5288,7 +5288,7 @@ class Handler(BaseHTTPRequestHandler):
                                       payload.get("text", ""), payload.get("expect", "")))
             return
         if u.path == "/api/job/stop":
-            self.send_json(stop_job(payload.get("id", "")))
+            self.send_json(stop_job(payload.get("id", ""), request_lang(parse_qs(u.query))))
             return
         if u.path == "/api/run/steps":
             # Шаги маршрута сохраняем на диск для позднего разбора: прогон идёт часами, и
@@ -6079,7 +6079,7 @@ def stop_jobs_on_exit() -> int:
     for proc in procs:
         try:
             if proc.poll() is None:
-                WD.kill_tree(proc.pid)
+                WD.stop_tree(proc.pid)
                 n += 1
         except Exception:  # noqa: BLE001 — уходящая панель не падает на чужом процессе
             pass
@@ -6087,10 +6087,10 @@ def stop_jobs_on_exit() -> int:
 
 
 # Сколько секунд раннер получает на фиксацию сделанного после SIGTERM, прежде чем снимут дерево.
-STOP_GRACE = 15.0
+STOP_GRACE = WD.STOP_GRACE
 
 
-def stop_job(job_id: str) -> dict:
+def stop_job(job_id: str, lang: str = "") -> dict:
     """Прервать прогон. Мягко, потом жёстко.
 
     Запрет на перезапуск панели при работающем прогоне без кнопки «прервать» — это
@@ -6120,8 +6120,13 @@ def stop_job(job_id: str) -> dict:
     except OSError as e:
         return {"error": f"не удалось остановить: {e}"}
     with JOBS_LOCK:
-        job_push(job, "■ Прогон прерван человеком. Карточки записаны по одной; сделанное "
-                      "агентом фиксируется его коммитом — итог в строке «Результат агента» выше.")
+        # Обещать коммит агента можно, только если он действительно отчитался: на Windows сигнал
+        # не доставляется, раннер старого проекта обработчика не имеет, а sync и kb:* — не агент.
+        said = any(str(x).startswith("Результат агента:") for x in job["out"])
+    strings = i18n_catalogue(lang or DEFAULT_LANG).get("strings") or {}
+    key = "job.stopped_agent" if said else "job.stopped"
+    with JOBS_LOCK:
+        job_push(job, strings.get(key, key))
     return {"ok": True}
 
 

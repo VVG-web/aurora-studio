@@ -772,6 +772,8 @@
   "alarm.adapter_tail": "The bar goes away by itself once this path goes through the adapter again.",
   "alarm.adapter_open": "Install → Pydantic AI",
   "route.hung_restart": "⚠ The step hung: {why}. Starting it again (attempt {n}).",
+  "job.stopped_agent": "■ The run was stopped by a person. What the agent did is committed under its own commit — see the “Agent result” line above.",
+  "job.stopped": "■ The run was stopped by a person.",
   "llm.k": "Models",
   "llm.no_models": "no models — the “Models” section",
   "llm.direct": "a direct request",

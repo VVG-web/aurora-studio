@@ -2031,7 +2031,7 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
-def kill_tree(pid: int, root: bool = True) -> None:
+def kill_tree(pid: int, root: bool = True, grace: float = 0.0) -> None:
     """Снять процесс и всех его потомков: адаптер модели и git живут дочерними процессами,
     и снятый без них шаг оставил бы их держать слоты шлюза и `index.lock`.
 
@@ -2039,6 +2039,11 @@ def kill_tree(pid: int, root: bool = True) -> None:
     (`root=False` — потомков снять, самого себя оставить доделать выход). На Windows
     `taskkill /T` снимает и корень — флаг там не действует. Сначала просим мягко (SIGTERM),
     через секунду — жёстко (SIGKILL); все ушли раньше — не ждём.
+
+    `grace` — сколько секунд дать корню (раннеру агента) на уход самому, прежде чем снимать
+    дерево: получив SIGTERM, он фиксирует сделанное `git commit`, а SIGKILL посреди git оставляет
+    `.git/index.lock`, и следующий чекпойнт падает. Потомки до этого не трогаются; дерево
+    собрано заранее, поэтому ушедший корень не теряет детей из виду. 0 — как прежде.
     """
     if sys.platform == "win32":
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
@@ -2046,6 +2051,8 @@ def kill_tree(pid: int, root: bool = True) -> None:
         return
     import signal
     import time
+    if pid <= 1:
+        return                            # kill(-1) — это «всем процессам»; init тоже не наш
     try:
         out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True,
                              timeout=10).stdout
@@ -2063,6 +2070,16 @@ def kill_tree(pid: int, root: bool = True) -> None:
         todo += kids.get(p, [])
     if not root:
         tree = [p for p in tree if p != pid]
+    if root and grace > 0:
+        try:
+            os.kill(pid, signal.SIGTERM)          # только корню: он сам снимет потомков и выйдет
+        except OSError:
+            pass
+        end = time.time() + grace
+        while time.time() < end and pid_alive(pid) and not _is_zombie(pid):
+            time.sleep(0.05)
+        if not (pid_alive(pid) and not _is_zombie(pid)):
+            tree = [p for p in tree if p != pid]  # корень ушёл мягко: его номер уже мог уйти другому
     for sig in (signal.SIGTERM, signal.SIGKILL):
         for p in reversed(tree):          # сначала листья: родитель не успеет плодить новых
             try:

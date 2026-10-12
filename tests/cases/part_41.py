@@ -2385,12 +2385,14 @@ def test_a_command_that_times_out_is_a_failure_result_not_an_exception(tmp: Path
     # оракулы: частичный вывод умершего линтера в счёт не идёт
     real = R.run_command
     with patch.object(R, "run_command", lambda cwd, s, a, timeout=300: real(cwd, s, a, timeout=1)):
-        assert R.lint_errors(str(root)) == -1, "таймаут линтера назван «ошибок 0»"
+        assert R.lint_errors(str(root)) == R.LINT_DEAD, "таймаут линтера назван «ошибок 0»"
         assert R.lint_conflicts(str(root)) == -1
     res = {"before": {"errors": 3}, "after": {"errors": -1}}
     assert R.oracle_blind(res, True) and not R.oracle_blind(res, False)
     assert not R.oracle_blind({"before": {"errors": -1}, "after": {"errors": -1}}, True), \
         "старый движок без линтера не должен краснить каждый прогон"
+    assert R.oracle_blind({"before": {"errors": R.LINT_DEAD}, "after": {"errors": R.LINT_DEAD}}, True), \
+        "линтер не отработал ни до, ни после — оракул ничего не измерил"
     ok, why = R.verdict_build({"steps": [], "before": {"errors": 3, "done": 5, "left": 1},
                                "after": {"errors": -1, "done": 5, "left": 1},
                                "total": 0, "left": 0, "stopped": ""}, True)
@@ -2644,3 +2646,367 @@ def test_an_uncaught_exception_still_commits_the_agents_work(tmp: Path):
                           capture_output=True, text=True, encoding="utf-8").stdout
     assert "agent:build — оборвано исключением RuntimeError" in last, last
     assert not (root / ".aurora" / "state" / "agent.lock").exists(), "замок базы остался"
+
+
+# ------------------------------------------------------------------ доработка BL-SEC-07, проход 2
+
+def _sub(tmp: Path, name: str) -> Path:
+    """Вложенная папка проекта: `make_project` каталог не создаёт."""
+    (tmp / name).mkdir(parents=True, exist_ok=True)
+    return tmp / name
+
+
+def _slow_stop_child(tmp: Path, name: str, pause: float):
+    """Процесс, принимающий SIGTERM как раннер: «фиксирует сделанное» `pause` секунд, пишет метку
+    и уходит; рядом живёт потомок. → (Popen, файл метки, файл номера потомка)."""
+    mark, kid = tmp / f"{name}.mark", tmp / f"{name}.kid"
+    code = (
+        "import signal, subprocess, sys, time\n"
+        f"kid = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"open({str(kid)!r}, 'w').write(str(kid.pid))\n"
+        "def on_term(*a):\n"
+        f"    time.sleep({pause})\n"
+        f"    open({str(mark)!r}, 'w').write('committed')\n"
+        "    sys.exit(143)\n"
+        "signal.signal(signal.SIGTERM, on_term)\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(120)\n")
+    p = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    assert p.stdout.readline().strip() == "ready"
+    for _ in range(100):
+        if kid.is_file() and kid.read_text().strip():
+            break
+        import time as _t
+        _t.sleep(0.05)
+    return p, mark, kid
+
+
+@test
+def test_kill_tree_with_grace_lets_the_root_finish_what_its_sigterm_handler_does(tmp: Path):
+    """Окно мягкой остановки: корень, фиксирующий сделанное дольше секунды, не добивается SIGKILL.
+
+    Раннер агента по SIGTERM делает `git add`/`commit`; SIGKILL посреди git оставляет
+    `.git/index.lock`. У кнопки «Остановить» окно было 15 с, а у выхода панели, сторожа и уборки
+    брошенных процессов — 1 с до SIGKILL: на большой базе коммит не успевал."""
+    if os.name == "nt":
+        return                      # на Windows SIGTERM не доставляется: taskkill снимает сразу
+    import time as _t
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import kill_tree, pid_alive
+    # без окна — по-старому: через секунду SIGKILL, метки нет (медленный обработчик не дожил)
+    p, mark, kid = _slow_stop_child(tmp, "hard", 3.0)
+    t0 = _t.time()
+    kill_tree(p.pid)
+    p.wait(timeout=10)
+    assert not mark.exists() and p.returncode == -9, (p.returncode, mark.exists())
+    assert _t.time() - t0 < 2.9
+    # с окном — обработчик доработал, корень ушёл сам, потомок снят
+    p, mark, kid = _slow_stop_child(tmp, "soft", 2.0)
+    child = int(kid.read_text())
+    kill_tree(p.pid, grace=10.0)
+    p.wait(timeout=10)
+    assert mark.exists() and p.returncode == 143, (p.returncode, mark.exists())
+    for _ in range(50):
+        if not pid_alive(child):
+            break
+        _t.sleep(0.1)
+    assert not pid_alive(child), "потомок пережил мягкую остановку"
+    # зависший, не реагирующий на SIGTERM корень снимается по истечении окна
+    hang = subprocess.Popen([sys.executable, "-c",
+                             "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+                             "print('r',flush=True); time.sleep(120)"], stdout=subprocess.PIPE, text=True)
+    hang.stdout.readline()
+    t0 = _t.time()
+    kill_tree(hang.pid, grace=1.0)
+    hang.wait(timeout=10)
+    assert hang.returncode == -9 and _t.time() - t0 < 6, hang.returncode
+    kill_tree(-1, grace=1.0)        # не «всем процессам»: номера ≤ 1 отвергаются
+
+
+@test
+def test_every_panel_path_that_removes_an_engine_process_gives_it_the_stop_grace(tmp: Path):
+    """Выход панели, сторож зависшего шага и уборка брошенных процессов — с окном `STOP_GRACE`."""
+    import types
+    from unittest.mock import patch
+    sys.path.insert(0, str(SCRIPTS))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_common as C
+    import watchdog as WD
+    import aurora_cockpit as ck
+    got = []
+    with patch.object(C, "kill_tree", lambda pid, root=True, grace=0.0: got.append((pid, grace))):
+        class Live:
+            pid = 4242
+            def poll(self):
+                return None
+        job = {"id": "j-grace", "done": False, "proc": Live(), "project": "/p", "cmd": "agent:build"}
+        with ck.JOBS_LOCK:
+            ck.JOBS["j-grace"] = job
+        try:
+            assert ck.stop_jobs_on_exit() == 1
+        finally:
+            with ck.JOBS_LOCK:
+                ck.JOBS.pop("j-grace", None)
+        dog = WD.Watchdog(ck=types.SimpleNamespace(JOBS_LOCK=ck.JOBS_LOCK, JOBS={}), probe_fn=lambda p: {"ok": True, "down": []})
+        dog.kill({"id": "j2", "out": [], "proc": Live(), "project": str(tmp)}, "завис")
+        rows = [{"pid": 4343, "panel": 1, "command": "python /k/scripts/agent_runner.py",
+                 "ppid": 1}]
+        WD.reap_orphans("/k", own=700, rows=rows, alive=lambda pid: pid == 4343)
+    assert got == [(4242, WD.STOP_GRACE), (4242, WD.STOP_GRACE), (4343, WD.STOP_GRACE)], got
+    assert ck.STOP_GRACE == WD.STOP_GRACE >= 10
+
+
+@test
+def test_the_stop_message_promises_a_commit_only_when_the_agent_reported_one(tmp: Path):
+    """«Остановить»: обещание коммита — только если в выводе задания есть «Результат агента:»."""
+    import subprocess as sp
+    sys.path.insert(0, str(SCRIPTS))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_cockpit as ck
+
+    def stop(out, lang=""):
+        p = sp.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        job = {"id": "j-stop", "done": False, "proc": p, "out": list(out), "base": 0}
+        with ck.JOBS_LOCK:
+            ck.JOBS["j-stop"] = job
+        try:
+            assert ck.stop_job("j-stop", lang).get("ok")
+        finally:
+            with ck.JOBS_LOCK:
+                ck.JOBS.pop("j-stop", None)
+            if p.poll() is None:
+                p.kill()
+        return job["out"][-1]
+
+    said = stop(["Результат агента: работа агента зафиксирована (abcd1234)"])
+    assert "зафиксировано его коммитом" in said, said
+    plain = stop(["синхронизация…"])
+    assert "коммит" not in plain and plain.startswith("■ Прогон прерван"), plain
+    en = stop(["Результат агента: x"], "en")
+    assert "committed" in en and "Agent result" in en, en
+    ru_cat = json.loads((KIT / "cockpit" / "i18n" / "ru.json").read_text(encoding="utf-8"))
+    en_cat = json.loads((KIT / "cockpit" / "i18n" / "en.json").read_text(encoding="utf-8"))
+    for k in ("job.stopped", "job.stopped_agent"):
+        assert k in ru_cat and k in en_cat, k
+
+
+@test
+def test_a_dead_linter_is_not_a_clean_base_and_a_dead_reader_is_not_an_empty_list(tmp: Path):
+    """Таймаут команды не превращается в «ноль»: оракул, читатели и журнал сбоев (AR1-03)."""
+    from unittest.mock import patch
+    R = _runner()
+    import agent_core as A
+    root = make_project(tmp)
+
+    def verdict(before, after):
+        return R.verdict_build({"steps": [], "before": {"errors": before, "done": 5, "left": 1},
+                                "after": {"errors": after, "done": 5, "left": 1},
+                                "total": 0, "left": 0, "stopped": ""}, True)
+    ok, why = verdict(R.LINT_DEAD, R.LINT_DEAD)
+    assert not ok and "линтер" in why and "не прибавилось" not in why, (ok, why)
+    ok, why = verdict(R.LINT_DEAD, 3)
+    assert not ok and "линтер" in why and "стало больше" not in why, (ok, why)
+    ok, why = verdict(-1, 3)
+    assert ok and "стало больше" not in why, (ok, why)        # линтера в старом движке не было — не рост
+    ok, why = verdict(3, 3)
+    assert ok, why
+    assert R.shown_errors(R.LINT_DEAD) == "н/д" and R.shown_errors(4) == "4"
+
+    dead = {"ok": False, "rc": None, "timeout": True, "refused": "", "out": "", "why": "kb_fix.py не уложился в 300 с"}
+    with patch.object(R, "run_command", lambda *a, **k: dead):
+        for call in (lambda: R.read_conflicts(str(root)), lambda: R.read_twin_groups(str(root), 0.6),
+                     lambda: R.run_golden({"budget_min": 1}, str(root), False)):
+            try:
+                call()
+            except R.CommandDead as e:
+                assert "не уложился" in str(e), e
+            else:
+                raise AssertionError("не отработавшая команда прочитана как пустой список")
+    # настоящая команда: причина попадает в журнал сбоев
+    (root / ".aurora" / "scripts" / "kb_lint.py").write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    with _RunDir(tmp / "run") as failures:
+        res = R.run_command(str(root), "kb_lint.py", [], timeout=1)
+        assert res["timeout"] is True
+        rows = [json.loads(x) for x in failures.read_text(encoding="utf-8").splitlines()]
+    assert rows and rows[-1]["stage"] == "команда" and "не уложился" in rows[-1]["why"], rows
+
+    # читатель упал — прогон сообщает причину прямо и фиксирует сделанное, код 1, замок снят
+    from harness import card
+    cwd = os.getcwd()
+    gitroot = make_project(_sub(tmp, "g"), git=True)
+    saved = dict(R._RUN)
+    os.chdir(gitroot)
+    try:
+        with _RunDir(tmp / "run2"):
+            assert R.writing_lock(str(gitroot), "twins")[0]
+            R.arm_stop(str(gitroot), "twins", True)
+            card(gitroot, "Concepts/Записано.md", "до сбоя", type="concept")
+
+            def entry():
+                raise R.CommandDead("группы двойников не прочитаны: kb_twins.py не уложился в 300 с")
+            rc = R.guarded_main(entry)
+    finally:
+        os.chdir(cwd)
+        R._RUN.update(saved)
+    assert rc == 1
+    last = subprocess.run(["git", "log", "-1", "--format=%s"], cwd=str(gitroot), capture_output=True,
+                          text=True, encoding="utf-8").stdout
+    assert "agent:twins — команда не отработала" in last, last
+    assert not (gitroot / ".aurora" / "state" / "agent.lock").exists()
+
+
+@test
+def test_a_card_write_the_engine_refused_is_a_content_failure_the_plan_defers(tmp: Path):
+    """Отказ записи карточки детерминирован ответом планировщика — источник не застревает в плане.
+
+    `content_fail` включает `build_plan --failed` (две встречи → «отложен»); срок и запуск (rc None)
+    и сбой ввода-вывода источником не объясняются — их откладывать нельзя."""
+    from unittest.mock import patch
+    R = _runner()
+    import agent_core as A
+    root = make_project(tmp, git=True)
+    (root / "Raw/project").mkdir(parents=True, exist_ok=True)
+    paras = "\n\n".join(f"Абзац {i} про процесс согласования заявки и сроки. " * 3 for i in range(1, 7))
+    (root / "Raw/project/Лента.md").write_text(paras, encoding="utf-8")
+    whole = (root / "Raw/project/Лента.md").read_text(encoding="utf-8")
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    plan = {"parts": [{"title": "Первая", "from": 1, "to": 3}, {"title": "Вторая", "from": 4, "to": 6}]}
+
+    def fake(cfg_, role, messages, **kw):
+        return {"ok": True, "text": json.dumps(plan, ensure_ascii=False), "backend": 1,
+                "model": "m", "tps": 9, "log": []}
+
+    def run_with(card_res):
+        def fake_cmd(cwd, script, args, timeout=300):
+            if "--card" in args and "Вторая" in args:
+                return card_res
+            return {"ok": True, "rc": 0, "out": "", "refused": ""}
+        step = {"alias": "Лента.md", "status": "", "note": "", "backends": [], "degraded": False}
+        with _RunDir(tmp / "run"), patch.object(R, "run_command", fake_cmd):
+            R.plan_source(cfg, str(root), "Raw/project/Лента.md", whole, step, True, fake, 0.0)
+        return step
+    refused = run_with({"ok": False, "rc": 1, "out": "build_plan: раздела «Х» нет в схеме базы", "refused": ""})
+    assert refused["status"] == "сбой" and refused.get("content_fail") is True, refused
+    timed_out = run_with({"ok": False, "rc": None, "timeout": True, "out": "", "refused": "",
+                          "why": "build_plan.py не уложился в 300 с"})
+    assert timed_out["status"] == "сбой" and not timed_out.get("content_fail"), timed_out
+
+    # исключение на источнике: от содержимого — в план как сбой по содержанию, ввод-вывод — нет
+    for exc, flag in ((KeyError("cards"), True), (OSError("диск"), False)):
+        def boom(*a, **k):
+            raise exc
+        with _RunDir(tmp / "run3"), patch.object(R, "solve_source", boom):
+            st = R.solve_source_safe(cfg, str(root), "g", "Raw/project/Лента.md", True, True)
+        assert st["status"] == "сбой" and st["content_fail"] is flag, (exc, st)
+
+    # и второй встречей с тем же отказом источник уходит из плана (отложен)
+    (root / ".aurora" / "scripts").mkdir(parents=True, exist_ok=True)
+    src = "Raw/project/Лента.md"
+    for _ in range(2):
+        r = run("build_plan.py", "--failed", src, "--note", "записано 1, не записано 1", cwd=root)
+    status = run("build_plan.py", "--status", cwd=root)
+    assert "отложен" in (status.stdout + r.stdout) or "отложен" in status.stdout, (status.stdout, r.stdout)
+
+
+@test
+def test_stop_hygiene_unsafe_print_no_new_commands_and_one_retry_on_the_index_lock(tmp: Path):
+    """Обработчик остановки: печать не отнимает коммит, новые команды не стартуют, замок индекса — повтор."""
+    import builtins
+    from unittest.mock import patch
+    R = _runner()
+    # печать посреди print главного потока — RuntimeError, а не OSError
+    def reentrant(*a, **k):
+        raise RuntimeError("reentrant call inside <_io.BufferedWriter name='<stdout>'>")
+    with patch.object(builtins, "print", reentrant):
+        R._say_safe("строка")                        # не бросает
+    # команды, начатые после сигнала, отклоняются (запись после `git add` осталась бы вне коммита)
+    root = make_project(tmp, git=True)
+    saved = dict(R._RUN)
+    try:
+        R._RUN["finishing"] = True
+        res = R.run_command(str(root), "kb_lint.py", [])
+        assert res["ok"] is False and res["refused"] == "остановка" and res["rc"] is None, res
+        res = R.run_build_plan(str(root), ["--status"])
+        assert res["ok"] is False and res["refused"] == "остановка", res
+    finally:
+        R._RUN.update(saved)
+    # замок индекса: один повтор коммита
+    from harness import card
+    gitroot = make_project(_sub(tmp, "g"), git=True)
+    card(gitroot, "Concepts/От-агента.md", "записано", type="concept")
+    real = R.git
+    seen = {"commits": 0}
+
+    def flaky(*args, cwd=".", env=None):
+        if args and args[0] == "commit":
+            seen["commits"] += 1
+            if seen["commits"] == 1:
+                return 128, "", "fatal: Unable to create '.git/index.lock': File exists."
+        return real(*args, cwd=cwd, env=env)
+    with patch.object(R, "git", flaky):
+        done = R.commit_result(str(gitroot), "agent:build", "прервано", True)
+    assert done["ok"] and done["sha"] and seen["commits"] == 2, (done, seen)
+
+
+@test
+def test_a_crash_in_one_unit_of_a_sequential_loop_is_a_failed_step(tmp: Path):
+    """Двойники, эталон, задачи, транслит, противоречия: упавшая единица — шаг «сбой», цикл идёт."""
+    from unittest.mock import patch
+    R = _runner()
+    import agent_core as A
+    root = make_project(tmp, git=True)
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+
+    def boom_on_first(real_step):
+        n = {"i": 0}
+
+        def fake(*a, **k):
+            n["i"] += 1
+            if n["i"] == 1:
+                raise KeyError("candidates")
+            return real_step
+        return fake
+    with _RunDir(tmp / "run") as failures:
+        ok_twin = {"group": ["Б", "В"], "status": "оставлено", "keep": "", "why": "", "backends": []}
+        with patch.object(R, "twin_groups", lambda cwd, limit=0: [["А", "Б"], ["Б", "В"]]), \
+                patch.object(R, "solve_twins", boom_on_first(ok_twin)):
+            res = R.run_twins(cfg, str(root), False)
+        assert [s["status"] for s in res["steps"]] == ["сбой", "оставлено"], res["steps"]
+        assert "KeyError" in res["steps"][0]["why"] and res["steps"][0]["group"] == ["А", "Б"]
+        assert R.report_twins(res, False)
+
+        rows = json.dumps([{"num": 1, "lost": ["x"], "candidates": ["К"]},
+                           {"num": 2, "lost": ["y"], "candidates": ["К"]}])
+        ok_gold = {"num": 2, "status": "оставлено", "card": "", "lost": ["y"], "why": "", "backends": []}
+        fake_cmd = lambda cwd, script, args, timeout=300: {"ok": True, "rc": 0, "out": rows if "--json" in args else "", "refused": ""}
+        with patch.object(R, "run_command", fake_cmd), patch.object(R, "solve_golden", boom_on_first(ok_gold)):
+            res = R.run_golden(cfg, str(root), False)
+        assert [s["status"] for s in res["steps"]] == ["сбой", "оставлено"], res["steps"]
+        assert res["steps"][0]["num"] == 1
+        assert R.report_golden(res, False)
+        lines = [json.loads(x) for x in failures.read_text(encoding="utf-8").splitlines()]
+    assert sum(1 for x in lines if x["stage"] == "исключение" and "KeyError" in x["traceback"]) == 2, lines
+    # все пять последовательных циклов вызывают единицу через границу, а не напрямую
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    for fn in ("solve_clash", "solve_task_card", "solve_translit", "solve_twins", "solve_golden"):
+        assert re.search(rf"safe_unit\(\s*{fn}\b", src), f"{fn}: цикл зовёт единицу без границы исключений"
+
+
+@test
+def test_the_runner_arms_the_stop_and_installs_the_handlers_before_main(tmp: Path):
+    """Проводка остановки: `arm_stop` в `main()` при `--apply`, обработчики — до `guarded_main()`.
+
+    Тесты сигнала зовут `arm_stop`/`install_stop_handlers` сами; убрать вызов из `main()` или
+    заменить `__main__` на `sys.exit(main())` они не заметили бы."""
+    import ast
+    tree = ast.parse((SCRIPTS / "agent_runner.py").read_text(encoding="utf-8"))
+    main_fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    armed = [n for n in ast.walk(main_fn) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", "") == "arm_stop"]
+    assert armed, "main() не взводит остановку: сигнал снова оставит сделанное без коммита агента"
+    guard = next(n for n in tree.body if isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+                 and getattr(n.test.left, "id", "") == "__name__")
+    calls = [getattr(c.func, "id", "") for c in ast.walk(guard) if isinstance(c, ast.Call)]
+    assert "install_stop_handlers" in calls and "guarded_main" in calls, calls
+    assert calls.index("install_stop_handlers") < calls.index("guarded_main"), calls
+    assert "main" not in calls, "__main__ вызывает main() мимо последнего рубежа"
