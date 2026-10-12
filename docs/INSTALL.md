@@ -579,7 +579,7 @@ git -C /path/to/your-project add -A && git -C /path/to/your-project commit -m "U
 | Агент не видит `AGENTS.md` | откройте **папку проекта** как корень рабочей области |
 | Sync-навык смотрит не в то пространство или JQL | перезапустите `aurora_setup.py` или поправьте `aurora.config.yaml` (не тело навыка) |
 | Имя папки sync-навыка ≠ slug | `aurora_setup.py` приведёт имена папок к slug |
-| `doctor`: секрет в git | уберите токен; только `.env.aurora.local` |
+| `doctor`: секрет в git | уберите токен из конфига, навыка, бота или `mcp.json` (это заглушка — запишите `<токен>`); только `.env.aurora.local` |
 | `/aurora-vault` не находится в диалоге | `kit:skills --apply` положит навыки в `~/.claude/skills` |
 | Скрипт отказывается работать: «незакоммиченные файлы» | зафиксируйте работу или `--allow-dirty` |
 | Имя файла не проходит на Windows/macOS | `kb:names` (предпросмотр, затем `--apply`) |

@@ -1011,3 +1011,220 @@ def test_find_skill_does_not_grow_sys_path(tmp: Path):
         RC.find_skill("нет-такого", str(tmp), kit=str(tmp / "nokit"))
     assert sys.path.count(str(SCRIPTS)) == before.count(str(SCRIPTS)), sys.path[:6]
     assert len(sys.path) == len(before), (len(before), len(sys.path))
+
+
+# ------------------------------------------------------------------ один сканер секретов (BL-SEC-18)
+# Образцы собираем из кусков: в тексте этого файла настоящего на вид токена нет, поэтому сканер
+# пуша и CI (он смотрит и тесты) не принимает сам тест за утечку.
+
+def _gh() -> str:
+    return "gh" + "p_" + "aB3dE5gH7k" * 4
+
+
+def _samples() -> dict:
+    """{правило: строка с секретом} — по одному образцу на каждое правило сканера."""
+    return {
+        "github-token": "token " + _gh(),
+        "gitlab-token": "gl" + "pat-" + "Ab1Cd2Ef3Gh4Ij5Kl6Mn",
+        "slack-token": "xo" + "xb-" + "1234567890-abcdefghij",
+        "aws-key": "AK" + "IA" + "QWERTY12345ASDFG",
+        "api-key": "sk-" + "a1b2c3d4" * 5,
+        "private-key": "-----BEGIN " + "RSA PRIVATE KEY-----",
+        "url-credentials": "git clone https://svc:s3cretpw@git.example.com/x.git",
+        "token-name": "JIRA_PAT=" + "q9w8e7r6t5y4",
+        "api-token": "api_token: " + "Zx9Cv8Bn7Mm6Lk5Jh4Gf3",
+        "password": "password: hunter22",
+    }
+
+
+def _git_in(repo: Path, *args, env=None, check=True):
+    return subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@example.com", "-c", "user.name=t",
+                           *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          env={**os.environ, **(env or {})}, check=check)
+
+
+@test
+def test_one_secret_scanner_knows_provider_formats_aurora_names_and_placeholders(tmp: Path):
+    """BL-SEC-18: общий сканер (`aurora_common.scan_secret_text`) узнаёт собственные имена токенов
+    Авроры (`JIRA_PAT`, `CONFLUENCE_PERSONAL_TOKEN`) и форматы поставщиков, а заглушки пропускает.
+
+    Раньше у доктора было три шаблона, ловивших 2 образца из 11, а у линтера — копия из двух.
+    Десять образцов — каждое правило по разу; десять заглушек и обычных слов не срабатывают;
+    значение секрета в находку не попадает (в журнал CI уходит только маска).
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    C = importlib.import_module("aurora_common")
+    for rule, text in _samples().items():
+        got = C.scan_secret_text(text)
+        assert rule in [g[0] for g in got], f"{rule}: образец не найден: {got}"
+        assert all(len(shown) <= 5 for _r, _n, shown in got), f"{rule}: в маске больше первых знаков: {got}"
+    assert C.scan_secret_text('{"env": {"JIRA_PAT": "q9w8e7r6t5y4"}}') and C.scan_secret_text('"password": "hunter22"'), \
+        "значение в JSON (имя в кавычках) не найдено — так лежит mcp.json"
+    for name in ("CONFLUENCE_PERSONAL_TOKEN", "WEB_PERSONAL_TOKEN", "CONFLUENCE_PAT", "ATLASSIAN_API_TOKEN"):
+        assert C.scan_secret_text(f"{name}=" + "k8j7h6g5f4d3"), f"{name}: имя токена Авроры не узнано"
+    safe = ["JIRA_PAT=<токен>", "JIRA_PERSONAL_TOKEN=${JIRA_PERSONAL_TOKEN}", "password: <пароль>",
+            "ATLASSIAN_API_TOKEN=xxxxxxxx", "token: your-token-here", "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+            "https://user:password@host.example.com/x", "gh" + "p_" + "x" * 36, "AK" + "IAIOSFODNN7EXAMPLE",
+            "JIRA_PAT=os.environ[\"JIRA_PAT\"]", "sk-assessment-and-mitigation-plan-for-the-quarter",
+            "Пароль хранится в менеджере паролей.", "PAT = None", '{"env": {"JIRA_PAT": "<токен>"}}',
+            '"github_token": ""', '"password": true']
+    for text in safe:
+        assert not C.scan_secret_text(text), f"заглушка принята за секрет: {text!r} → {C.scan_secret_text(text)}"
+    only_formats = {r for text in _samples().values() for r, _n, _s in C.scan_secret_text(text, formats_only=True)}
+    assert only_formats == {"github-token", "gitlab-token", "slack-token", "aws-key", "api-key"}, only_formats
+    assert C.is_secret_place("bots/ревью/бот.md") and C.is_secret_place("mcp.json") \
+        and C.is_secret_place(".claude/skills/x/SKILL.md") and C.is_secret_place("aurora.config.yaml")
+    assert not C.is_secret_place("AuroraKnowledgeDB/Concepts/a.md") and not C.is_secret_place(".aurora/skills/x.md") \
+        and not C.is_secret_place("bots/readme.png")
+
+
+@test
+def test_doctor_and_lint_scan_the_same_places_that_reach_git(tmp: Path):
+    """BL-SEC-18: доктор и линтер базы ищут секреты в одних местах — конфиг, навыки проекта, боты, `mcp.json`
+    — и только в том, что уедет в git: `.aurora/skills` (вне git), закрытый `.gitignore` `.mcp.json` и карточки
+    базы (там «password: …» — пересказ чужой документации) не считаются."""
+    root = make_project(tmp, git=True)
+    (root / ".gitignore").write_text(".mcp.json\n", encoding="utf-8")
+    plant = {
+        ".claude/skills/jira/SKILL.md": _samples()["token-name"] + "\n",
+        "bots/ревью.md": "Токен: " + _gh() + "\n",
+        "mcp.json": '{"url": "https://svc:s3cretpw@git.example.com/x.git"}\n',
+        ".mcp.json": '{"env": {"JIRA_PAT": "q9w8e7r6t5y4"}}\n',
+        ".aurora/skills/aurora-vault/SKILL.md": _gh() + "\n",
+        "AuroraKnowledgeDB/Concepts/Доступ.md": "password: hunter22\n",
+        ".claude/skills/ok/SKILL.md": "JIRA_PAT=<токен>\npassword: <пароль>\n",
+    }
+    for rel, text in plant.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    want = {".claude/skills/jira/SKILL.md", "bots/ревью.md", "mcp.json"}
+    code = ("import os, sys; sys.path.insert(0, '.aurora/scripts'); import aurora_common as C, aurora_doctor as D;"
+            "print('\\n'.join(r for r, _, _ in C.scan_secret_files('.'))); print('==='); print('\\n'.join(D.scan_secrets()))")
+    cp = subprocess.run([sys.executable, "-c", code], cwd=str(root), capture_output=True, text=True,
+                        encoding="utf-8", errors="replace")
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    scanned, _, doctor = cp.stdout.partition("===\n")
+    assert set(scanned.split()) == want, f"сканируется не то, что уедет в git: {scanned!r}"
+    assert all(f"{rel}: возможный секрет (" in doctor for rel in want), doctor
+    assert _gh() not in cp.stdout and "hunter22" not in cp.stdout, "доктор напечатал значение секрета"
+    lint = run("kb_lint.py", cwd=root)
+    assert all(f"{rel}: возможный секрет в git (" in lint.stdout for rel in want), lint.stdout[-1500:]
+    assert ".mcp.json:" not in lint.stdout and "Доступ.md: возможный секрет" not in lint.stdout, lint.stdout[-1500:]
+    assert _gh() not in lint.stdout
+
+
+@test
+def test_pre_commit_stops_a_secret_even_when_the_ratchet_is_off(tmp: Path):
+    """BL-SEC-18: pre-commit проекта останавливает коммит с секретом в добавленных строках — и при снятом
+    храповике (он снимает проверку базы, а не защиту от утечки); заглушка, карточка базы и старый секрет
+    в соседней строке коммит не останавливают; сломавшаяся проверка коммит не блокирует."""
+    root = make_project(tmp, git=True)
+    run("aurora_hooks.py", "--install", "--mode", "warn", cwd=root, expect_rc=0)
+    commit = lambda msg, env=None: _git_in(root, "commit", "-qm", msg, env=env, check=False)  # noqa: E731
+
+    (root / "mcp.json").write_text('{"env": {"JIRA_PAT": "q9w8e7r6t5y4"}}\n', encoding="utf-8")
+    _git_in(root, "add", "-A")
+    for env in (None, {"AURORA_SKIP_RATCHET": "1"}):
+        cp = commit("секрет", env)
+        assert cp.returncode != 0, f"коммит с секретом прошёл (env={env})"
+        assert "mcp.json:1 → token-name" in cp.stderr, cp.stderr
+        assert "q9w8e7r6t5y4" not in cp.stdout + cp.stderr, "хук напечатал значение секрета"
+
+    (root / "mcp.json").write_text('{"env": {"JIRA_PAT": "<токен>"}}\n', encoding="utf-8")
+    (root / "AuroraKnowledgeDB/Concepts").mkdir(parents=True, exist_ok=True)
+    (root / "AuroraKnowledgeDB/Concepts/Доступ.md").write_text("password: hunter22\n", encoding="utf-8")
+    _git_in(root, "add", "-A")
+    cp = commit("заглушка и карточка")
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+
+    # старый секрет уже в истории: коммит соседней строки за него не отвечает (его найдёт doctor)
+    (root / "bots").mkdir(exist_ok=True)
+    (root / "bots/б.md").write_text("пароль\npassword: hunter22\n", encoding="utf-8")
+    _git_in(root, "add", "-A", "-f")
+    _git_in(root, "commit", "--no-verify", "-qm", "старое")
+    (root / "bots/б.md").write_text("пароль\npassword: hunter22\nещё строка\n", encoding="utf-8")
+    _git_in(root, "add", "-A")
+    cp = commit("соседняя строка")
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+
+    # проверка сама сломалась (код 2): коммит не блокируем, но говорим
+    (root / ".aurora/scripts/aurora_hooks.py").write_text("import sys\nsys.exit(2)\n", encoding="utf-8")
+    (root / "bots/б.md").write_text("пароль\nещё строка\n", encoding="utf-8")
+    _git_in(root, "add", "-A")
+    cp = commit("сбой проверки")
+    assert cp.returncode == 0 and "проверка секретов завершилась кодом 2" in cp.stderr, cp.stdout + cp.stderr
+
+
+@test
+def test_push_scan_finds_provider_tokens_without_a_names_list_and_never_prints_them(tmp: Path):
+    """BL-SEC-18: pre-push кита ищет в добавленных строках форматы токенов поставщиков тем же сканером — и
+    без списка внутренних названий; значение не печатает; образцы-заглушки, закрытый ключ-образец и адрес
+    с `user:pass@` в тестах кита не мешают пушу."""
+    repo = tmp / "kit"
+    repo.mkdir()
+    _git_in(repo, "init", "-q")
+    (repo / "a.txt").write_text("начало\n", encoding="utf-8")
+    _git_in(repo, "add", "-A")
+    _git_in(repo, "commit", "-qm", "начало")
+    base = _git_in(repo, "rev-parse", "HEAD").stdout.strip()
+
+    def push(msg: str, text: str):
+        (repo / "b.txt").write_text(text, encoding="utf-8")
+        _git_in(repo, "add", "-A")
+        _git_in(repo, "commit", "-qm", msg)
+        head = _git_in(repo, "rev-parse", "HEAD").stdout.strip()
+        return subprocess.run([sys.executable, str(SCRIPTS / "aurora_hooks.py"), "--scan-push", "--hook", "v7"],
+                              cwd=str(repo), input=f"refs/heads/main {head} refs/heads/main {base}\n",
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+    ok = push("образцы", "\n".join(["gh" + "p_" + "x" * 36, _samples()["private-key"], _samples()["url-credentials"],
+                                    "password: hunter22", "AK" + "IAIOSFODNN7EXAMPLE"]) + "\n")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert "внутренние названия в пуше НЕ проверены" in ok.stderr, "молчание о том, что списка названий нет"
+    bad = push("утечка", f"ключ {_gh()}\n")
+    assert bad.returncode == 1, bad.stdout + bad.stderr
+    assert "b.txt → github-token (ghp_…)" in bad.stderr, bad.stderr
+    assert _gh() not in bad.stdout + bad.stderr, "пуш напечатал значение токена"
+
+
+@test
+def test_ci_gate_takes_the_names_list_from_a_repository_secret(tmp: Path):
+    """BL-SEC-18: CI кита гоняет тот же сканер, что pre-push (`.github/scripts/scan_pushed.py`): список названий
+    берётся из секрета PRIVATE_TERMS и пишется в `local/private_terms.txt`, а без секрета в журнале предупреждение
+    (раньше проверка названий в чистом клоне молча выходила); секреты проверяются в любом случае;
+    существующий список не перезаписывается."""
+    script = KIT / ".github" / "scripts" / "scan_pushed.py"
+    repo = tmp / "ci"
+    repo.mkdir()
+    _git_in(repo, "init", "-q")
+    (repo / "a.txt").write_text("начало\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("local/\n", encoding="utf-8")       # как в ките: список вне git
+    _git_in(repo, "add", "-A")
+    _git_in(repo, "commit", "-qm", "начало")
+    base = _git_in(repo, "rev-parse", "HEAD").stdout.strip()
+    term = "Синтетика-Икс"
+
+    def ci(text: str, msg: str, **env):
+        (repo / "b.txt").write_text(text, encoding="utf-8")
+        _git_in(repo, "add", "-A")
+        _git_in(repo, "commit", "-qm", msg)
+        head = _git_in(repo, "rev-parse", "HEAD").stdout.strip()
+        clean = {k: v for k, v in os.environ.items() if k != "PRIVATE_TERMS"}
+        return subprocess.run([sys.executable, str(script), base, head], cwd=str(repo), capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", env={**clean, **env})
+    cp = ci(f"в тексте {term}\n", "правка", PRIVATE_TERMS=term + "\n")
+    assert cp.returncode == 1 and term in cp.stderr, cp.stdout + cp.stderr
+    assert (repo / "local/private_terms.txt").read_text(encoding="utf-8").strip() == term
+    (repo / "local/private_terms.txt").write_text("Другое\n", encoding="utf-8")     # уже есть — не затирается
+    cp = ci(f"снова {term}\n", "ещё", PRIVATE_TERMS=term)
+    assert cp.returncode == 0 and "уже есть" in cp.stdout, cp.stdout + cp.stderr
+    assert (repo / "local/private_terms.txt").read_text(encoding="utf-8").strip() == "Другое"
+    (repo / "local/private_terms.txt").unlink()
+    cp = ci(f"{term} без секрета\n", "без секрета")
+    assert cp.returncode == 0 and "::warning::" in cp.stdout and "PRIVATE_TERMS" in cp.stdout, cp.stdout + cp.stderr
+    cp = ci(f"{_gh()}\n", "токен")
+    assert cp.returncode == 1 and "github-token" in cp.stderr and _gh() not in cp.stdout + cp.stderr, \
+        cp.stdout + cp.stderr
+    wf = (KIT / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8")
+    job = wf[wf.index("  secrets:"):wf.index("  floor:")]
+    assert ".github/scripts/scan_pushed.py" in job and "PRIVATE_TERMS: ${{ secrets.PRIVATE_TERMS }}" in job \
+        and "fetch-depth: 0" in job and "continue-on-error" not in job, job

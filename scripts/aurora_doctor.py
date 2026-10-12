@@ -24,7 +24,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import RETIRED_FIELDS, config_list, python_status, root_link_escapes
+from aurora_common import RETIRED_FIELDS, config_list, python_status, root_link_escapes, scan_secret_files
 from pathlib import Path
 
 ROOT = Path.cwd()
@@ -33,20 +33,6 @@ ENV_LOCAL = ROOT / ".env.aurora.local"
 ENV_EXAMPLE = ROOT / "aurora.env.local.example"
 SKILL = ROOT / ".aurora" / "skills" / "aurora-vault" / "SKILL.md"
 AGENTS = ROOT / "AGENTS.md"
-
-SECRET_PATTERNS = [
-    re.compile(r"(?i)ATLASSIAN_API_TOKEN\s*=\s*\S+"),
-    re.compile(r"(?i)api[_-]?token\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{20,}"),
-    re.compile(r"(?i)password\s*[:=]\s*\S+"),
-]
-
-TRACKED_SCAN_GLOBS = [
-    "aurora.config.yaml",
-    "AGENTS.md",
-    ".claude/skills/**/*.md",
-    ".claude/skills/**/*.json",
-]
-
 
 def load_yaml_lite(path: Path) -> dict:
     """Minimal YAML subset reader (no PyYAML dependency): enough for doctor checks."""
@@ -72,28 +58,14 @@ def load_yaml_lite(path: Path) -> dict:
 
 
 def scan_secrets() -> list[str]:
-    hits = []
-    for pattern in ("aurora.config.yaml", "AGENTS.md"):
-        p = ROOT / pattern
-        if not p.is_file():
-            continue
-        text = p.read_text(encoding="utf-8", errors="ignore")
-        for rx in SECRET_PATTERNS:
-            if rx.search(text):
-                hits.append(f"{pattern}: возможный секрет ({rx.pattern[:40]}…)")
-    skills = ROOT / ".aurora" / "skills"
-    if skills.is_dir():
-        for p in skills.rglob("*"):
-            if p.suffix.lower() not in {".md", ".json", ".mdc", ".yml", ".yaml"}:
-                continue
-            try:
-                text = p.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                continue
-            for rx in SECRET_PATTERNS:
-                if rx.search(text):
-                    hits.append(f"{p.relative_to(ROOT)}: возможный секрет")
-                    break
+    """Секреты в том, что уедет в git: конфиг, AGENTS.md, навыки, mcp.json, боты.
+
+    Правила и список мест — общие с линтером базы и хуками (`aurora_common.scan_secret_files`):
+    раньше здесь было три своих шаблона и папка `.aurora/skills`, которой в git нет.
+    """
+    hits = []   # через .append: реестр переводов kit_i18n собирает сообщения доктора именно по вызовам append
+    for rel, rule, _line in scan_secret_files(str(ROOT)):
+        hits.append(f"{rel}: возможный секрет ({rule})")
     return hits
 
 

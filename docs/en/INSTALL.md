@@ -572,7 +572,7 @@ In detail — `skills/aurora-vault/references/migration.md` (in Russian). In sho
 | The agent does not see `AGENTS.md` | open the **project folder** as the workspace root |
 | A sync skill looks at the wrong space or JQL | re-run `aurora_setup.py` or edit `aurora.config.yaml` (not the skill's body) |
 | A sync skill's folder name ≠ the slug | `aurora_setup.py` reconciles folder names to the slug |
-| `doctor`: a secret in git | remove the token; only `.env.aurora.local` |
+| `doctor`: a secret in git | remove the token from the config, a skill, a bot or `mcp.json` (if it is a placeholder, write `<token>`); only `.env.aurora.local` |
 | `/aurora-vault` is not found in a conversation | `kit:skills --apply` puts the skills into `~/.claude/skills` |
 | A script refuses: "uncommitted files" | commit your work or use `--allow-dirty` |
 | A file name does not pass on Windows/macOS | `kb:names` (preview, then `--apply`) |

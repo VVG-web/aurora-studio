@@ -60,6 +60,26 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           OWNER_ID: ${{ github.repository_owner_id }}
         run: python3 .github/scripts/check_authors.py "$BASE" "$HEAD_SHA"
+  secrets:
+    # Внутренние названия и секреты в пришедших коммитах (BL-SEC-18). Защита публикации держалась на
+    # локальных хуках, которых нет на чужой машине и в веб-интерфейсе GitHub, а тесты проверки
+    # названий без `local/private_terms.txt` молча выходили — в чистом клоне CI его никогда нет.
+    # Сканер тот же, что у pre-push кита (`scripts/aurora_hooks.py --scan-push`); список названий
+    # берётся из секрета репозитория PRIVATE_TERMS (один термин на строку), без него в журнале
+    # предупреждение, а секреты проверяются всё равно. Блокирующее: красная проверка не даёт выпуску собраться.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Private names and secrets in pushed commits
+        env:
+          PRIVATE_TERMS: ${{ secrets.PRIVATE_TERMS }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python3 .github/scripts/scan_pushed.py "$BASE" "$HEAD_SHA"
   floor:
     # Нижняя поддерживаемая версия — Python 3.11 (политика версий, BL-DEC-01). Строка, понятная
     # только 3.12+ (кавычки того же вида внутри f-строки), роняла kb_lint на старом Python целиком

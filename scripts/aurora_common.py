@@ -3463,3 +3463,142 @@ def safe_urlopen(req, timeout: float | None = None, context=None):
         handlers.append(_rq.HTTPSHandler(context=context))
     opener = _rq.build_opener(*handlers)
     return opener.open(req) if timeout is None else opener.open(req, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------------
+# Секреты в файлах, которые уезжают в git (BL-SEC-18). ОДНО место для правил и для списка
+# мест: их читают `kit:doctor`, линтер базы (`kb_lint`), хук pre-commit проекта и хук/CI
+# пуша кита (`aurora_hooks`). Раньше у доктора было три шаблона, у линтера — копия из двух,
+# и обе искали токен только в двух файлах: собственные имена токенов Авроры (`JIRA_PAT`,
+# `CONFLUENCE_PERSONAL_TOKEN`), ключи поставщиков (`ghp_…`, `AKIA…`), закрытый ключ и адрес с
+# паролем не узнавал никто, а `mcp.json` и `bots/` не смотрел никто вообще.
+#
+# Правило — `(имя, формат, шаблон, группа значения, минимальная длина значения)`. «Формат» —
+# токен одного поставщика (`ghp_…`, `AKIA…`): ложных срабатываний у него почти нет, и его ищут в
+# любом файле пуша кита. Остальное (закрытый ключ, адрес с паролем, «имя = значение») годится
+# только для мест, где токену взяться не от чего (конфиг, навыки, боты, mcp.json): в коде и
+# тестах кита заголовок ключа и `https://me:secret@host` — законные образцы. Заглушки (`<токен>`, `${JIRA_PAT}`, `xxx`, `your-token`)
+# секретом не считаются: иначе документация краснела бы на каждом образце.
+# ВАЖНО: этот файл читает и старый Python — без `:=` и `match` (см. шапку модуля).
+SECRET_RULES = (
+    ("private-key", False, re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----"), 0, 0),
+    ("github-token", True,
+     re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{36,})"), 0, 0),
+    ("gitlab-token", True, re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}"), 0, 0),
+    ("slack-token", True, re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}"), 0, 0),
+    ("aws-key", True, re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), 0, 0),
+    # ключ вида `sk-…`: цифра внутри обязательна — длинный слаг через дефис ключом не является
+    ("api-key", True, re.compile(r"\bsk-(?:ant-|proj-)?(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{32,}"), 0, 0),
+    ("url-credentials", False,
+     re.compile(r"\b[a-z][a-z0-9+.\-]*://[^/\s:@'\"<>]+:([^/\s@'\"<>]{3,})@[A-Za-z0-9.\-]+", re.I), 1, 3),
+    # имена токенов Авроры и ключей вообще: `JIRA_PAT=…`, `CONFLUENCE_PERSONAL_TOKEN: …`
+    ("token-name", False,
+     re.compile(r"\b[A-Za-z][A-Za-z0-9_]*(?:_TOKEN|_PAT|_SECRET|_API_KEY)[\"']?\s*[:=]\s*(\"[^\"]*\"|'[^']*'|\S+)", re.I), 1, 6),
+    ("api-token", False,
+     re.compile(r"\bapi[_-]?token[\"']?\s*[:=]\s*['\"]?([A-Za-z0-9_\-]{20,})", re.I), 1, 20),
+    ("password", False, re.compile(r"password[\"']?\s*[:=]\s*(\"[^\"]*\"|'[^']*'|\S+)", re.I), 1, 4),
+)
+# Слова-заглушки: значение, которое написано «для примера», секретом не считается.
+_SECRET_FILLER = frozenset((
+    "token", "secret", "password", "pass", "pwd", "key", "none", "null", "true", "false", "empty", "todo",
+    "changeme", "change-me", "change_me", "placeholder", "example", "sample", "dummy", "fake",
+    "токен", "секрет", "пароль", "ключ", "пусто", "нет"))
+_SECRET_FILLER_START = re.compile(
+    r"(?i)^(?:your|example|sample|dummy|fake|changeme|change[-_]me|placeholder|replace|insert|"
+    r"секрет|токен|пароль|ключ)")
+# Где искать (пути от корня проекта, через «/»; папка — с «/» на конце). Только то, что способно
+# попасть в git проекта и читается как текст настроек: база знаний сюда не входит — в её
+# карточках «password: …» — это пересказ чужой документации, а не секрет проекта.
+SECRET_SCAN_PLACES = ("aurora.config.yaml", "AGENTS.md", "mcp.json", ".mcp.json",
+                      ".claude/skills/", ".agents/skills/", "bots/")
+SECRET_SCAN_SUFFIXES = (".md", ".json", ".mdc", ".yml", ".yaml")
+SECRET_SCAN_MAX = 1024 * 1024        # больше мегабайта — не настройки, а данные
+
+
+def secret_placeholder(value: str) -> bool:
+    """Значение — заглушка (`<токен>`, `${PAT}`, `xxxx`, `your-token`, вызов функции), а не секрет."""
+    v = value.strip().strip("`'\"*,;.")
+    if not v or v[0] in "<$%{[(" or "..." in v or "…" in v or any(c in v for c in "<>([]\"'"):
+        return True              # заглушка или код (`os.environ["X"]`, `getpass()`), а не значение
+    if re.match(r"^[xX*•.\-_#]+$", v):
+        return True
+    return v.lower() in _SECRET_FILLER or bool(_SECRET_FILLER_START.match(v))
+
+
+def scan_secret_text(text: str, formats_only: bool = False) -> list:
+    """[(правило, номер строки, маска)] — по одной находке на правило. Сам секрет не возвращается.
+
+    `formats_only` — только форматы поставщиков (для пуша кита, где нет «мест» настроек).
+    Маска — первые знаки совпадения и многоточие: достаточно, чтобы найти место, и мало, чтобы
+    унести значение в журнал CI.
+    """
+    found = []
+    for name, fmt, rx, grp, min_len in SECRET_RULES:
+        if formats_only and not fmt:
+            continue
+        for m in rx.finditer(text):
+            val = m.group(grp) if grp else m.group(0)
+            if grp and (secret_placeholder(val) or len(val.strip("'\"")) < min_len):
+                continue
+            if fmt and not grp and (secret_placeholder(val[-12:]) or "example" in val.lower()):
+                continue                  # `ghp_xxxxxxxx…`, `AKIA…EXAMPLE`: образец, а не токен
+            # у формата поставщика видна приставка (`ghp_`, `AKIA`), у пароля и значения — один знак
+            shown = val[:4] if not grp else val.strip("'\"")[:1]
+            found.append((name, text.count("\n", 0, m.start()) + 1, shown + "…"))
+            break
+    return found
+
+
+def is_secret_place(rel: str) -> bool:
+    """Путь от корня проекта — одно из мест, где ищем секреты (см. SECRET_SCAN_PLACES)."""
+    rel = rel.replace("\\", "/")
+    if rel.startswith("./"):
+        rel = rel[2:]
+    if not rel.lower().endswith(SECRET_SCAN_SUFFIXES):
+        return False
+    return any(rel == p or (p.endswith("/") and rel.startswith(p)) for p in SECRET_SCAN_PLACES)
+
+
+def secret_scan_files(root: str = ".") -> list:
+    """Файлы проекта, которые стоит проверить: те, что уедут в git (`git add -A` их возьмёт).
+
+    Закрытое `.gitignore` не смотрим — оно в git не попадёт (так `.mcp.json`, закрытый установщиком,
+    не краснеет). Нет git — обходим список мест на диске.
+    """
+    rels = None
+    try:
+        cp = subprocess.run(["git", "-C", root, "-c", "core.quotepath=false", "ls-files", "-z",
+                             "--cached", "--others", "--exclude-standard"],
+                            capture_output=True, timeout=60)
+        if cp.returncode == 0:
+            rels = [r for r in cp.stdout.decode("utf-8", "replace").split("\0") if r]
+    except (OSError, subprocess.SubprocessError):
+        rels = None
+    if rels is None:
+        rels = []
+        for place in SECRET_SCAN_PLACES:
+            if place == ".mcp.json":
+                continue                  # локальный файл установщика: без git он нигде не уезжает
+            p = os.path.join(root, place.rstrip("/"))
+            if os.path.isfile(p):
+                rels.append(place)
+            for d, _dirs, files in os.walk(p) if os.path.isdir(p) else ():
+                rels.extend(os.path.relpath(os.path.join(d, f), root).replace(os.sep, "/") for f in files)
+    return sorted(set(r for r in rels if is_secret_place(r) and os.path.isfile(os.path.join(root, r))))
+
+
+def scan_secret_files(root: str = ".", rels=None) -> list:
+    """[(путь, правило, номер строки)] по файлам проекта. `rels` — свой список (иначе secret_scan_files)."""
+    out = []
+    for rel in (secret_scan_files(root) if rels is None else rels):
+        p = os.path.join(root, rel)
+        try:
+            if os.path.getsize(p) > SECRET_SCAN_MAX:
+                continue
+            with open(p, encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+        except OSError:
+            continue
+        for name, line, _shown in scan_secret_text(text):
+            out.append((rel, name, line))
+    return out

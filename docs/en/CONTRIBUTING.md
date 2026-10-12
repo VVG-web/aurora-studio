@@ -35,6 +35,19 @@ modules, panel sections and skins, and how to release versions. Русская �
   knowingly: `AURORA_PUSH_UNVERIFIED=1 git push`. "Update the kit" in the panel, when a new version is out, reinstalls an outdated **own** pre-push by itself (`kit:hooks --refresh`: a foreign or current hook is left alone);
   otherwise reinstall by hand: `kit:hooks --install`. The status calls an older hook outdated, the scan warns when the hook is older than
   the script (hooks v2–v4 do not name a version — that is the sign), and `kit:doctor` and "Health" show a warning about an outdated kit hook;
+- one scanner of secrets and internal names for doctor, pre-commit, pre-push and CI. The secret rules live in one place —
+  `aurora_common.scan_secret_text` (Aurora's own token names such as `JIRA_PAT` and `CONFLUENCE_PERSONAL_TOKEN`, vendor formats
+  `ghp_…`, `glpat-…`, `xox…-`, `AKIA…`, `sk-…`, private keys, URLs with a password; placeholders such as `<token>`, `${…}` and
+  `xxxx` do not count as secrets) — and are wired in three places. `kit:doctor` and `kb:lint` look at what will reach the
+  project's git: the config, `AGENTS.md`, skills (`.claude/skills`, `.agents/skills`), bots (`bots/`) and `mcp.json`; what
+  `.gitignore` closes, `.aurora/` and knowledge cards are not read. The project's pre-commit checks the added lines of the index
+  in the same places — always, and with the ratchet off (code 1 stops the commit, any other non-zero code means the check itself
+  broke and the commit is not blocked). The kit's pre-push looks for vendor formats in the added lines of any file — even without
+  a names list. The value of a secret is never printed: only the file, the line, the rule and the first character. The `secrets`
+  job in engine-tests (`.github/scripts/scan_pushed.py`) runs the same `--scan-push` over the commits that arrived: the list of
+  internal names comes from the repository secret `PRIVATE_TERMS` (one term per line; the owner creates it in the repository
+  settings), without it the log carries a warning and secrets are still checked. A red job keeps the release from being built.
+  Build token samples in tests from pieces (`"gh" + "p_" + …`), otherwise the scanner takes the test itself for a leak.
 - a commit's author and committer are people: no model or model vendor name, no bot, no `Co-Authored-By` trailer or
   "Generated with …" line naming them. The `authors` check in engine-tests (`.github/scripts/check_authors.py`) turns red on
   such a commit in a PR and keeps the release from being built; its output has a ready command that rewrites the author.

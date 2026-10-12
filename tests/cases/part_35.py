@@ -143,7 +143,7 @@ def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Pa
             jobs[cur] = []
         elif cur is not None:
             jobs[cur].append(ln)
-    assert list(jobs) == ["tests", "authors", "floor", "newer-python", "legacy-310", "adapter-live", "windows", "windows-314", "macos"], list(jobs)
+    assert list(jobs) == ["tests", "authors", "secrets", "floor", "newer-python", "legacy-310", "adapter-live", "windows", "windows-314", "macos"], list(jobs)
     body = {k: "\n".join(v) for k, v in jobs.items()}
     for name, py in (("tests", "3.14"), ("floor", "3.11"), ("legacy-310", "3.10"),
                      ("windows", "3.12"), ("windows-314", "3.14"), ("macos", "3.14")):
@@ -155,7 +155,7 @@ def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Pa
     assert "tests/run_tests.py" in body["newer-python"] and "compileall" in body["newer-python"]
     for name in ("newer-python", "legacy-310", "adapter-live", "windows-314", "macos"):
         assert re.search(r"^    continue-on-error: true$", body[name], re.M), f"{name}: должен быть неблокирующим"
-    for name in ("tests", "authors", "floor", "windows"):
+    for name in ("tests", "authors", "secrets", "floor", "windows"):
         assert not re.search(r"^\s*continue-on-error:", body[name], re.M), f"{name}: блокирует выпуск, его нельзя ослаблять"
     assert "tests/check_release.py" in body["tests"] and "tests/run_tests.py --smoke" in body["tests"]
     assert "ruff check --select F401,F841,B023" in body["tests"]

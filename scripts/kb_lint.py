@@ -25,7 +25,7 @@ import argparse
 import json, os, re, sys
 
 from aurora_common import QUOTES, looks_like_expansion  # noqa: F401
-from aurora_common import link_escapes, root_link_escapes
+from aurora_common import link_escapes, root_link_escapes, scan_secret_files
 from aurora_common import (OWN_LIFECYCLE, STATUSES, aliases, body_hash, card_body, card_stem, card_type,
                            card_sources, config_list, config_value, frontmatter, is_service, not_a_card_link,
                            leaf_name, link_refs, project_terms)
@@ -489,33 +489,11 @@ def main():
             if f not in referenced and os.path.splitext(f)[0] not in referenced:
                 errors.append(f"{assets}/{f}: бинарник без карточки-обёртки")
 
-    # secrets accidentally committed (WARN → treated as errors for CI)
-    secret_re = [
-        re.compile(r"(?i)ATLASSIAN_API_TOKEN\s*=\s*\S+"),
-        re.compile(r"(?i)password\s*[:=]\s*[^\s#]+"),
-    ]
-    for scan_root in (".claude/skills", ".agents/skills"):
-        if not os.path.isdir(scan_root):
-            continue
-        for dirpath, _, files in os.walk(scan_root):
-            for f in files:
-                if not f.endswith((".md", ".json", ".mdc", ".yml", ".yaml")):
-                    continue
-                rel = os.path.join(dirpath, f).replace("\\", "/")
-                try:
-                    t = open(rel, encoding="utf-8", errors="ignore").read()
-                except Exception:
-                    continue
-                for rx in secret_re:
-                    if rx.search(t):
-                        errors.append(f"{rel}: возможный секрет в git (уберите токен/пароль)")
-                        break
-    if os.path.isfile("aurora.config.yaml"):
-        t = open("aurora.config.yaml", encoding="utf-8", errors="ignore").read()
-        for rx in secret_re:
-            if rx.search(t):
-                errors.append("aurora.config.yaml: возможный секрет (токены только в .env.aurora.local)")
-                break
+    # Секреты, случайно попавшие в git (находка считается ошибкой — для CI). Правила и список
+    # мест общие с доктором и хуками (`aurora_common.scan_secret_files`): своей копии шаблонов здесь нет.
+    for rel, rule, _line in scan_secret_files("."):
+        errors.append(f"{rel}: возможный секрет в git ({rule}) — уберите токен/пароль "
+                      f"(токены только в .env.aurora.local)")
 
     n = len(cards)
     if only:

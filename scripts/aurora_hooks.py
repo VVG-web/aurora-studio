@@ -4,6 +4,12 @@
 Ставит pre-commit, который прогоняет `kb_lint.py` перед каждым коммитом. Без хука
 ошибки копятся молча: в живом проекте так накопилось больше тысячи.
 
+Тот же pre-commit перед линтером проверяет добавленные строки на секреты (токены, пароли,
+закрытые ключи в настройках, навыках, ботах и `mcp.json`) — теми же правилами, что `kit:doctor` и
+линтер базы (`aurora_common.scan_secret_text`). Проверка секретов не зависит от храповика.
+Пуш кита (`--scan-push`) ищет в добавленных строках форматы поставщиков (`ghp_…`, `AKIA…`,
+закрытые ключи) тем же сканером, а в CI кита тот же `--scan-push` гоняет задание secrets.
+
 Режим по умолчанию — **храповик (ratchet)**: текущее число ошибок фиксируется как
 базовая линия в `AuroraKnowledgeDB/meta/lint_baseline.txt`. Коммит падает, только если
 ошибок стало БОЛЬШЕ базовой линии. Стало меньше — линия автоматически опускается (и
@@ -22,6 +28,7 @@
 """
 from __future__ import annotations
 import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
+from aurora_common import is_secret_place, scan_secret_text
 
 import argparse
 import html
@@ -251,6 +258,18 @@ done
 if [ -z "$PY" ]; then
   echo "aurora: нет Python 3.10+ — проверка базы пропущена" >&2
   exit 0
+fi
+
+# Секреты в добавленных строках (токены, пароли, закрытые ключи в настройках, навыках, ботах,
+# mcp.json) проверяются всегда, и при снятом храповике тоже: он снимает проверку базы, а не
+# защиту от утечки. Код 1 — найдено, коммит остановлен; другой ненулевой — сама проверка не
+# отработала (причина выше), коммит не блокируем.
+SCAN=".aurora/scripts/aurora_hooks.py"
+if [ -f "$SCAN" ]; then
+  $PY "$SCAN" --scan-secrets
+  SCAN_RC=$?
+  [ "$SCAN_RC" -eq 1 ] && exit 1
+  [ "$SCAN_RC" -ne 0 ] && echo "aurora: проверка секретов завершилась кодом $SCAN_RC — см. вывод выше; коммит не блокируется" >&2
 fi
 
 # Храповик снят — кнопкой панели или коммитом оборота маршрута. Обе проверки ниже тогда
@@ -499,6 +518,49 @@ def scan_msg(path: str) -> int:
     print(f"        найдено: {' '.join(hits)}", file=sys.stderr)
     print("        Сообщение уходит в историю навсегда и не чинится линтером.", file=sys.stderr)
     print("        Перепишите текст либо: git commit --no-verify", file=sys.stderr)
+    return 1
+
+
+def scan_secrets_staged() -> int:
+    """pre-commit проекта: нет ли секрета в добавленных строках индекса. → 1 — найден, 0 — чисто.
+
+    Смотрим то, что коммитят (`git diff --cached`), а не весь файл: старый секрет в уже
+    закоммиченном файле этот коммит не создаёт, и отвечать за него тому, кто правит соседнюю
+    строку, нечестно (его найдёт `kit:doctor`). Правила и список мест — общие с доктором и
+    линтером (`aurora_common`): конфиг, AGENTS.md, навыки, боты, mcp.json. Значение секрета не
+    печатается: только файл, строка, правило и первый знак.
+    """
+    rc, raw, err = _git_run(["diff", "--cached", "--unified=0", "--no-color", "--text", "--no-ext-diff",
+                             "--no-renames", "--diff-filter=ACM", "--src-prefix=a/", "--dst-prefix=b/"],
+                            binary=True)
+    if rc != 0:
+        print(f"aurora: не удалось прочитать индекс для проверки секретов: {err or rc}", file=sys.stderr)
+        return 2
+    found = []
+    path, in_hunk, line = "?", False, 0
+    for row in raw.decode("utf-8", "replace").split("\n"):
+        if row.startswith("diff --git "):
+            path, in_hunk = "?", False
+        elif not in_hunk and row.startswith("+++ b/"):
+            path = row[6:].strip('"').rstrip("\t")
+        elif row.startswith("@@"):
+            in_hunk = True
+            m = re.search(r"\+(\d+)", row)
+            line = int(m.group(1)) if m else 0
+        elif in_hunk and row.startswith("+"):
+            if is_secret_place(path):
+                for rule, _n, shown in scan_secret_text(row[1:]):
+                    found.append((path, line, rule, shown))
+            line += 1
+    if not found:
+        return 0
+    print("aurora: в коммите похоже на секрет — коммит остановлен:", file=sys.stderr)
+    for path, n, rule, shown in found:
+        print(f"  {path}:{n} → {rule} ({shown})", file=sys.stderr)
+    print("  Значение не печатаем. Уберите его из файла (секреты — только в .env.aurora.local)"
+          " и смените ключ, если он уже где-то использовался.", file=sys.stderr)
+    print("  Это заглушка, а не секрет: запишите её как `<токен>` или `xxxx`, либо осознанно:"
+          " git commit --no-verify", file=sys.stderr)
     return 1
 
 
@@ -869,10 +931,12 @@ def scan_push(remote: str = "", hook: str = "") -> int:
     if not pats:
         # Участников без списка не блокируем, но и молчать нельзя: хук стоит, а содержимое
         # пуша не проверяется ни словом — свежий клон, `git worktree add`, второй клон.
-        print(f"aurora: {TERMS} нет или пуст — содержимое пуша НЕ проверено", file=sys.stderr)
-        return 0
+        # Секреты ищутся и без списка (форматы поставщиков не зависят от машины), но сбой такой
+        # проверки пуш не останавливает: без списка он и раньше не останавливал ничего.
+        print(f"aurora: {TERMS} нет или пуст — внутренние названия в пуше НЕ проверены", file=sys.stderr)
 
     hits: dict[tuple[str, str], str] = {}
+    leaks: dict[tuple[str, str], str] = {}      # (файл, правило) → маска: секреты в добавленных строках
     errors: list[str] = []
     for line in sys.stdin.read().splitlines():
         parts = line.split()
@@ -884,7 +948,8 @@ def scan_push(remote: str = "", hook: str = "") -> int:
         # Имя ветки или тега на сервере — тоже публикация: `fix-<название>` уедет, даже когда
         # содержимое чистое. Локальное имя наружу не идёт (`local:remote`), его не смотрим.
         _scan_text(pats, parts[2], f"имя ссылки {parts[2]}", hits)
-        _scan_tags(pats, parts[0], local_sha, hits, errors)
+        if pats:
+            _scan_tags(pats, parts[0], local_sha, hits, errors)
         if not remote_sha.strip("0"):
             rng = [local_sha]
         elif _git_run(["cat-file", "-e", remote_sha + "^{commit}"])[0] == 0:
@@ -935,11 +1000,17 @@ def scan_push(remote: str = "", hook: str = "") -> int:
             elif in_hunk and row[:cols] == "+" * cols:
                 if _skipped(path):
                     continue
+                # Секреты: тот же сканер, что у доктора и pre-commit (aurora_common), только форматы
+                # поставщиков — у кита нет «мест настроек», токен в любом файле пуша — утечка.
+                for rule, _n, shown in scan_secret_text(row[cols:], formats_only=True):
+                    leaks.setdefault((path, rule), shown)
                 forms = _forms(row)
                 for term, pat in pats:
                     if (path, term) not in hits and any(pat.search(f) for f in forms):
                         hits[(path, term)] = row.strip()[:100]
 
+        if not pats:
+            continue           # дальше — только проверки по списку названий
         rc, out, err = _git_run(["log", *LOG_PIN, "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e", *rng])
         if rc != 0:
             errors.append(f"git log {' '.join(rng)}: {err or rc}")
@@ -951,7 +1022,11 @@ def scan_push(remote: str = "", hook: str = "") -> int:
         _scan_commits(pats, rng, hits, errors)
         _scan_blobs(pats, rng, hits, errors)
 
-    if errors:
+    if errors and not pats:
+        # Списка названий нет, остались одни секреты: непрочитанный диапазон — предупреждение, а не отказ.
+        for e in errors:
+            print(f"aurora: не удалось проверить пуш на секреты: {e}", file=sys.stderr)
+    elif errors:
         for e in errors:
             print(f"aurora: не удалось проверить пуш: {e}", file=sys.stderr)
         if os.environ.get("AURORA_PUSH_UNVERIFIED") == "1":
@@ -961,8 +1036,21 @@ def scan_push(remote: str = "", hook: str = "") -> int:
             print("  Подтяните remote: git fetch. Осознанно: AURORA_PUSH_UNVERIFIED=1 git push",
                   file=sys.stderr)
             return 2
-    if not hits:
+    if not hits and not leaks:
         return 0
+    if leaks:
+        print("", file=sys.stderr)
+        print("push отклонён: в добавленных строках похоже на секрет (токен, ключ, пароль в адресе).",
+              file=sys.stderr)
+        for (path, rule), shown in sorted(leaks.items()):
+            print(f"  {path} → {rule} ({shown})", file=sys.stderr)
+        print("  Значение не печатаем. Опубликованный секрет не чинится удалением: его надо сменить, а коммит "
+              "переписать до пуша.", file=sys.stderr)
+        print("  Это образец, а не токен: сделайте его заглушкой (`<токен>`, `xxxx`, `…EXAMPLE`)"
+              " либо осознанно: git push --no-verify", file=sys.stderr)
+    if not hits:
+        print("", file=sys.stderr)
+        return 1
     print("", file=sys.stderr)
     print("push отклонён: в содержимом коммитов внутренние названия.", file=sys.stderr)
     for (path, term), sample in sorted(hits.items()):
@@ -1058,6 +1146,8 @@ def main() -> int:
     ap.add_argument("--scan-push", action="store_true",
                     help="служебный режим pre-push: прочитать refs со stdin и проверить "
                          "содержимое уезжающих коммитов по " + TERMS)
+    ap.add_argument("--scan-secrets", action="store_true",
+                    help="служебный режим pre-commit: проверить добавленные строки индекса на секреты")
     a = ap.parse_args()
 
     # Служебный режим зовётся хуком, а не человеком: решение принимается до всего
@@ -1066,6 +1156,12 @@ def main() -> int:
         return scan_push(a.remote, a.hook)
     if a.scan_msg:
         return scan_msg(a.scan_msg)
+    if a.scan_secrets:
+        try:
+            return scan_secrets_staged()
+        except Exception as e:  # noqa: BLE001 — сбой самой проверки не должен останавливать коммит
+            print(f"aurora: проверка секретов не отработала ({type(e).__name__}: {e})", file=sys.stderr)
+            return 2
 
     gd = git_dir()
     if not gd:
