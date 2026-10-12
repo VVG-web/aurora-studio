@@ -339,6 +339,72 @@ def test_artifact_lint_spec_accepts_ears_and_nested_then(_t):
 
 
 @test
+def test_artifact_lint_template_hint_is_not_a_scenario(_t):
+    """Подсказка шаблона спеки про EARS не заменяет «Когда / Тогда» и не служит значением."""
+    AL = _lint()
+    hint = ("_Формулировки — в EARS-стиле: «Когда <триггер>, система должна <реакция>» — "
+            "однозначно и переводимо в тест._")
+    only_given = GOOD_SPEC.replace(
+        "- **Когда:** приходит запрос на приём\n- **Тогда:** система должна сохранить документ\n",
+        "\n" + hint + "\n", 1)
+    got = AL.lint_text(only_given, "spec")
+    assert _ids(got) == ["SPEC-03"] and len(got) == 2, got            # нет «Когда» и «Тогда»
+    then_hint = GOOD_SPEC.replace("- **Тогда:** система должна сохранить документ\n",
+                                  "- **Тогда:**\n\n" + hint + "\n", 1)
+    assert "SPEC-03" in _ids(AL.lint_text(then_hint, "spec")), AL.lint_text(then_hint, "spec")
+    bad_then = GOOD_SPEC.replace("- **Тогда:** система должна сохранить документ\n",
+                                 "- **Тогда:** отказ\n\n" + hint + "\n", 1)
+    assert _ids(AL.lint_text(bad_then, "spec")) == ["SPEC-04"], AL.lint_text(bad_then, "spec")
+    # Полный сценарий с подсказкой под ним по-прежнему чист.
+    full = GOOD_SPEC.replace("- **Тогда:** система должна сохранить документ\n",
+                             "- **Тогда:** система должна сохранить документ\n\n" + hint + "\n", 1)
+    assert AL.lint_text(full, "spec") == [], AL.lint_text(full, "spec")
+
+
+@test
+def test_artifact_lint_todo_mark_in_code_is_residue(_t):
+    """`TODO: {{…}}` — метка неизвестного из шаблона истории: в кавычках она тоже остаток."""
+    AL = _lint()
+    mark = "`TODO: {{чего не хватает}}`"
+    us = GOOD_US.replace("Система принимает документ.", "Система принимает документ. " + mark)
+    assert "US-23" in _ids(AL.lint_text(us, "us")), AL.lint_text(us, "us")
+    ac = "# Описание\n\nТекст " + mark + ".\n\n# Критерии приемки\n\n1. Система делает.\n"
+    assert _ids(AL.lint_text(ac, "ac")) == ["AC-03"], AL.lint_text(ac, "ac")
+    spec = GOOD_SPEC.replace("- **Тогда:** система должна отказать в приёме",
+                             "- **Тогда:** система должна отказать в приёме " + mark)
+    assert "SPEC-01" in _ids(AL.lint_text(spec, "spec")), AL.lint_text(spec, "spec")
+    # Пример плейсхолдера в кавычках остаётся примером.
+    shown = GOOD_US.replace("Система принимает документ.", "Плейсхолдеры пишут как `{{имя}}`.")
+    assert AL.lint_text(shown, "us") == []
+
+
+@test
+def test_artifact_lint_project_follows_symlinks_without_crash(tmp: Path):
+    """Файл-ссылка за пределами папок видов не роняет проверку, а путь в отчёте — проектный."""
+    AL = _lint()
+    root = make_project(tmp)
+    us = root / "Artifacts/us"
+    us.mkdir(parents=True, exist_ok=True)
+    shared = root / "outside"
+    shared.mkdir()
+    (shared / "US-9.md").write_text("# История\n\nВольный текст.\n", encoding="utf-8")
+    try:
+        os.symlink(shared / "US-9.md", us / "US-9.md")
+    except (OSError, NotImplementedError):
+        return                                                      # ссылки недоступны (Windows без прав)
+    checked, found = AL.lint_project(str(root))
+    assert checked == 1 and [f[0] for f in found] == ["Artifacts/us/US-9.md"], (checked, found)
+    # Папка вида — ссылка на общий каталог: путь остаётся «Artifacts/us/…», а не «../shared/…».
+    (us / "US-9.md").unlink()
+    (root / "Artifacts/us").rmdir()
+    (root / "shared_us").mkdir()
+    (root / "shared_us/US-1.md").write_text("# История\n\nВольный текст.\n", encoding="utf-8")
+    os.symlink(root / "shared_us", root / "Artifacts/us")
+    checked, found = AL.lint_project(str(root))
+    assert checked == 1 and [f[0] for f in found] == ["Artifacts/us/US-1.md"], (checked, found)
+
+
+@test
 def test_artifact_lint_project_judges_a_file_by_one_profile(tmp: Path):
     """Виды `us` и `ac` с общей или вложенной папкой: файл судит один профиль и считается раз."""
     AL = _lint()

@@ -137,7 +137,9 @@ def _residue(text: str, fid: str) -> list:
                            + (f" (и ещё {len(left) - 1})" if len(left) > 1 else "")))
     if "[ПРИМЕР]" in seen:
         out.append(_f(fid, "остался блок-пример «[ПРИМЕР]»"))
-    mark = _NOTE.search(seen)
+    # Метку неизвестного шаблон велит писать кодом: `TODO: {{чего не хватает}}` — поэтому
+    # рабочие пометки ищем и внутри кавычек (как слой 0 ревью), а `{{…}}` в них — пример.
+    mark = _NOTE.search(_visible(text, code=True))
     if mark:
         out.append(_f(fid, f"в видимом тексте рабочая пометка «{mark.group(0)}»"))
     return out
@@ -336,6 +338,10 @@ def _spec_value(lines: list, key: str):
     return None
 
 
+# Строка-подсказка шаблона: целиком курсивом (`_…_`) или с плейсхолдером «<триггер>».
+_HINT = re.compile(r"^\s*_[^_].*_\s*$|<[А-Яа-яЁё][^<>\n]*>")
+
+
 def lint_spec(text: str) -> list:
     out = _residue(text, "SPEC-01")
     fm = frontmatter(text)
@@ -350,7 +356,8 @@ def lint_spec(text: str) -> list:
     scen = {}
     for k in doc.find(r"^сценарий\s*\d+"):
         num = re.search(r"\d+", doc.heads[k][1]).group(0)
-        body = doc.body(k)
+        # Подсказки шаблона («_Формулировки — в EARS-стиле: «Когда <триггер>, …»_») — не сценарий.
+        body = [ln for ln in doc.body(k) if not _HINT.search(ln)]
         scen[num] = doc.heads[k][1]
         if _EARS.search("\n".join(body)):
             continue
@@ -431,22 +438,28 @@ def lint_project(root: str = ".") -> tuple:
     файл достаётся профилю с самой глубокой папкой (при равенстве — первому в `PROFILES`):
     иначе критерии приёмки получали бы замечания истории, а счёт файлов рос бы вдвое.
     """
-    dirs = {p: os.path.realpath(os.path.join(root, d)) for p, d in project_dirs(root).items()}
+    rel = project_dirs(root)
+    dirs = {p: os.path.realpath(os.path.join(root, d)) for p, d in rel.items()}
     checked, found, seen = 0, [], set()
     for profile in PROFILES:
-        base = dirs[profile]
+        base = os.path.join(root, rel[profile])
         if not os.path.isdir(base):
             continue
+        # Обходим по пути проекта, а не по realpath: в отчёте остаётся «Artifacts/us/…», даже
+        # если папка вида — ссылка на общий каталог; realpath нужен только владельцу и дедупликации.
         for dirpath, dirnames, files in os.walk(base):
             dirnames[:] = sorted(d for d in dirnames if not d.startswith((".", "_")))
+            here = os.path.realpath(dirpath)
+            owner = max((p for p in PROFILES if here == dirs[p] or here.startswith(dirs[p] + os.sep)),
+                        key=lambda p: (len(dirs[p]), -PROFILES.index(p)), default=profile)
+            if owner != profile:
+                continue
             for name in sorted(files):
                 if not name.endswith(".md") or name.startswith("_") or name == "README.md":
                     continue
                 path = os.path.join(dirpath, name)
                 real = os.path.realpath(path)
-                owner = max((p for p in PROFILES if real.startswith(dirs[p] + os.sep)),
-                            key=lambda p: (len(dirs[p]), -PROFILES.index(p)))
-                if owner != profile or real in seen:
+                if real in seen:
                     continue
                 seen.add(real)
                 try:
