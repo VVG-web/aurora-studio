@@ -1555,6 +1555,82 @@ def test_refused_checkpoint_leaves_no_index_and_the_agent_commit_takes_only_the_
     assert len(batches) == 1 and out["batches"] == 1, "цикл пошёл дальше, хотя чекпойнт отказал"
 
 
+@test
+def test_checkpoint_retries_a_blinking_index_lock_and_restores_the_humans_own_index(tmp: Path):
+    """BL-SEC-18 (проход 5): замок индекса мигает от параллельного `git status` — чекпойнт повторяет и проходит;
+    замок, не отпущенный за все повторы, — отказ вида `lock` (человеческий индекс цел, работа не зафиксирована
+    наполовину); отказ хука — вид `refused`, без повторов, и возвращает индекс человека, а не пустой."""
+    import types
+    from unittest.mock import patch
+    sys.path.insert(0, str(SCRIPTS))
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp, git=True)
+    run("aurora_hooks.py", "--install", "--mode", "block", cwd=root, expect_rc=0)
+    _git_in(root, "add", "-A")
+    _git_in(root, "commit", "-qm", "база", env={"AURORA_SKIP_RATCHET": "1"}, check=False)
+    lock = root / ".git" / "index.lock"
+    pauses: list = []
+
+    def release(n):
+        pauses.append(n)
+        lock.unlink(missing_ok=True)
+
+    # 1. замок мигнул один раз: повтор проходит, чекпойнт создан, человек ничего не заметил
+    (root / "notes.md").write_text("# заметка человека\n", encoding="utf-8")
+    lock.write_text("", encoding="utf-8")
+    with patch.object(R, "_lock_pause", release):
+        got = R.checkpoint(str(root), "agent:distill", True)
+    assert got["ok"] is True and got["committed"] == 1 and pauses == [1], (got, pauses)
+    assert _git_in(root, "show", "--name-only", "--format=", "HEAD").stdout.split() == ["notes.md"]
+
+    # 2. замок не отпущен: после всех повторов — kind=lock, ничего не закоммичено, индекс человека цел
+    (root / "mine.md").write_text("staged\n", encoding="utf-8")
+    _git_in(root, "add", "mine.md")
+    (root / "other.md").write_text("не в индексе\n", encoding="utf-8")
+    head = _git_in(root, "rev-parse", "HEAD").stdout.strip()
+    lock.write_text("", encoding="utf-8")
+    seen: list = []
+    with patch.object(R, "_lock_pause", lambda n: seen.append(n)):
+        got = R.checkpoint(str(root), "agent:distill", True)
+    lock.unlink()
+    assert got["ok"] is False and got["kind"] == "lock", got
+    assert seen == list(range(1, R.LOCK_RETRIES + 1)), seen
+    assert _git_in(root, "rev-parse", "HEAD").stdout.strip() == head, "коммит прошёл мимо замка"
+    assert _git_in(root, "diff", "--cached", "--name-only").stdout.split() == ["mine.md"]
+    # цикл заходов при замке останавливается, но строка зовёт повторить запуск, а не «разбираться человеку»,
+    # и сбой записан в журнал прогона
+    batches: list = []
+
+    def run_batch():
+        batches.append(1)
+        return {"left": 5, "steps": []}
+
+    lines: list = []
+    lock.write_text("", encoding="utf-8")
+    import agent_core as A
+    fails0 = A.FAILS["n"]
+    a = types.SimpleNamespace(hours=1, no_checkpoint=False)
+    with patch.object(R, "_lock_pause", lambda n: None), patch.object(R, "say", lambda t: lines.append(t)):
+        R.until_done(str(root), a, "distill", run_batch, lambda r: "", lambda r: "h", lambda r: 1)
+    lock.unlink(missing_ok=True)
+    stop = [t for t in lines if "останавливаюсь" in t]
+    assert len(batches) == 1 and stop and "повторите запуск" in stop[0] and "разбираться человеку" not in stop[0], lines
+    assert A.FAILS["n"] == fails0 + 1, "остановка по чекпойнту не записана в журнал сбоев"
+
+    # 3. отказ хука (секрет): без повторов, kind=refused, в индексе остаётся ровно то, что поставил человек
+    value = "q9w8" + "e7r6" + "t5y4"
+    (root / "mcp.json").write_text('{"env": {"JIRA_PAT": "%s"}}\n' % value, encoding="utf-8")
+    seen.clear()
+    with patch.object(R, "_lock_pause", lambda n: seen.append(n)):
+        got = R.checkpoint(str(root), "agent:distill", True)
+    assert got["ok"] is False and got["kind"] == "refused" and seen == [], (got, seen)
+    assert _git_in(root, "diff", "--cached", "--name-only").stdout.split() == ["mine.md"], \
+        "откат снял индекс человека или оставил чужой файл"
+    assert (root / "other.md").exists() and value in (root / "mcp.json").read_text(encoding="utf-8")
+    assert _git_in(root, "rev-parse", "HEAD").stdout.strip() == head
+    assert value not in _git_in(root, "log", "-p", "--all", "--format=").stdout, "секрет попал в историю"
+
+
 # --- Уверенность выдачи, честный отказ и прозрачный фильтр доверия (BL-KBA-14) ---------------
 
 def _answerability_base(tmp: Path):
