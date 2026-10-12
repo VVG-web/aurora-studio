@@ -49,7 +49,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (card_body, card_sources, card_stem,  # noqa: E402
-                           walk_md,
+                           walk_md, head_text, related_names,
                            frontmatter, git_guard)
 
 CONF_DIR = "Sources/Confluence"
@@ -127,7 +127,9 @@ class Graph:
         for f in sorted(os.listdir(root)):
             if not f.endswith(".md") or SERVICE_RE.search(f):
                 continue
-            head = open(os.path.join(root, f), encoding="utf-8", errors="ignore").read(2000)
+            # Шапка целиком, а не первые 2000 знаков: длинная шапка в окно не закрывалась,
+            # и заголовок задачи терялся (то же окно, что у остальных читателей — head_text).
+            head = head_text(os.path.join(root, f), window=2000)
             # Заголовок задачи: сначала шапка зеркала (`title:`), потом строка таблицы
             # прежнего синк-скилла, потом первый заголовок markdown. Первая строка файла —
             # это «---», и брать её за summary значит потерять номер истории целиком.
@@ -263,8 +265,8 @@ def write_cards_graph(path: str, typed: dict | None = None) -> dict:
             found.append((tgt, "упоминает",
                           "EXTRACTED" if names_the_card(label, forms_of.get(tgt, set()))
                           else "INFERRED", n["path"]))
-        for x in lst(fm.get("related")):
-            found.append((x.strip().strip('[]"'), "связана", "EXTRACTED", n["path"]))
+        for x in related_names(text):
+            found.append((x, "связана", "EXTRACTED", n["path"]))
         for tgt, rel, conf, why in found:
             tgt = tgt.strip()
             if not tgt or tgt == n["id"] or tgt not in by_stem:

@@ -551,9 +551,48 @@ def frontmatter(text: str, unique: bool = False) -> dict:
             if m.group(1) == "status":
                 val = re.sub(r"\s+#.*$", "", val)
             fm[m.group(1)] = val.strip().strip('"').strip("'")
+    # Список в блочной записи (`aliases:` и пункты `  - …` ниже) — то же поле, что и
+    # `aliases: ["…", "…"]`: движок сам пишет `related:`/`aliases:` блоком, а читатель по
+    # одной строке видел пустоту (граф без связей, синонимы мимо поиска). Значение отдаём в
+    # строчной форме списка, чтобы все плоские читатели видели обе записи одинаково.
+    for key, items in head_blocks(head).items():
+        if items and key in fm and not fm[key]:
+            fm[key] = head_list_text(items)
     if unique:
         fm = {k: v for k, v in fm.items() if seen[k] == 1}
     return fm
+
+
+# Пункт блочного списка: `  - значение`, `- "значение"`; кавычки по краям снимаются.
+HEAD_ITEM_RE = re.compile(r"^[ \t]*-[ \t]*[\"']?(.+?)[\"']?[ \t]*$")
+
+
+def head_blocks(head: str) -> dict:
+    """Блочные списки шапки: {ключ: [пункты]} — поле без значения и пункты `- …` под ним.
+
+    Единый разбор блоков для `frontmatter` и `list_field`: строки — только настоящие
+    (`head_lines`), поэтому знак U+2028 в значении не рождает ни поля, ни пункта. Любая
+    другая строка (в том числе пустая) закрывает блок.
+    """
+    out, key = {}, None
+    for line in head_lines(head):
+        m = HEAD_KEY_RE.match(line)
+        if m:
+            key = m.group(1) if not re.sub(r"\s+#.*$|^#.*$", "", m.group(2)).strip() else None
+            if key:
+                out.setdefault(key, [])
+            continue
+        am = HEAD_ITEM_RE.match(line) if key else None
+        if am:
+            out[key].append(am.group(1))
+        else:
+            key = None
+    return out
+
+
+def head_list_text(items: list) -> str:
+    """Пункты списка → строка `["a", "b"]`, как пишут список в одну строку."""
+    return "[" + ", ".join('"' + str(i).replace('"', "'") + '"' for i in items) + "]"
 
 
 def head_value(value, limit: "int | None" = None) -> str:
@@ -718,27 +757,18 @@ def list_field(text: str, field: str) -> list:
 
     Один разбор на все списочные поля. Написан он был под `aliases`, а когда у карточки
     появилось второе такое поле (`sources`), копировать его значило завести второй способ
-    читать одно и то же — и разойтись на первой же правке.
+    читать одно и то же — и разойтись на первой же правке. Блоки читает `head_blocks`
+    (тот же разбор строк, что у `frontmatter`).
     """
     head, _ = split_frontmatter(text)
     if head is None:
         return []
-    m = re.search(rf"^{re.escape(field)}:\s*\[(.*)\]", head, re.M)
-    if m:
-        inline = [a.strip().strip('"').strip("'") for a in m.group(1).split(",") if a.strip()]
-        return list(dict.fromkeys(inline))
-    out, inside = [], False
-    for line in head.splitlines():
-        if line.startswith(field + ":"):
-            inside = True
-            continue
-        if inside:
-            am = re.match(r'^\s+-\s*["\']?(.+?)["\']?\s*$', line)
-            if am:
-                out.append(am.group(1))
-            else:
-                inside = False
-    return list(dict.fromkeys(out))
+    for line in head_lines(head):
+        m = re.match(rf"^{re.escape(field)}:[ \t]*\[(.*)\]", line)
+        if m:
+            inline = [a.strip().strip('"').strip("'") for a in m.group(1).split(",") if a.strip()]
+            return list(dict.fromkeys(inline))
+    return list(dict.fromkeys(head_blocks(head).get(field, [])))
 
 
 def aliases(text: str) -> list:
@@ -1449,6 +1479,22 @@ def related_targets(text: str) -> list:
     """
     return [leaf_name(m.group(1).strip()) for m in RELATED_MD.finditer(text)
             if leaf_name(m.group(1).strip())]
+
+
+def related_names(text: str) -> list:
+    """Имена карточек из поля `related` шапки — в блочной и в строчной записи.
+
+    Пункт — `[Имя](Имя.md)` (так пишет `kb:links --cards`), `[[Имя]]` или просто имя.
+    Граф связей читает поле через эту функцию, а не плоским `frontmatter`: блок
+    для него пуст, и связи, записанные движком, в графе пропадали.
+    """
+    out = []
+    for item in list_field(text, "related"):
+        m = re.match(r"^\[[^\]]*\]\(([^)]+)\)", item)
+        name = card_stem(m.group(1)) if m else card_stem(item.strip().strip("[]\"' ").split("|")[0])
+        if name and name not in out:
+            out.append(name)
+    return out
 
 
 def link_refs(text: str) -> list:

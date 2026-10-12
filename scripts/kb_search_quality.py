@@ -59,8 +59,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import agent_core as AG                                           # noqa: E402
 import kb_embed as EMB                                            # noqa: E402
-from aurora_common import (KB_ROOT, frontmatter, is_placeholder,  # noqa: E402
-                           walk_md)
+from aurora_common import (KB_ROOT, body as body_of, frontmatter,  # noqa: E402
+                           is_placeholder, walk_md)
 
 HISTORY = os.path.join(KB_ROOT, "meta", "search-quality.json")
 GOLDEN = os.path.join(KB_ROOT, "meta", "golden_questions.md")
@@ -76,7 +76,7 @@ def thesis(text: str, limit: int = 400) -> str:
     мерить совпадение строки с самой собой. Нужен именно пересказ смысла своими словами,
     который написал `agent:distill`.
     """
-    body = text.split("---", 2)[-1]
+    body = body_of(text)
     for para in re.split(r"\n\s*\n", body):
         s = " ".join(para.split())
         if not s or s.startswith(("#", ">", "|", "-", "*", "`", "<", "_")):

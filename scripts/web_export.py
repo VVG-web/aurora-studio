@@ -37,6 +37,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 
+from aurora_common import body as body_of
 from aurora_common import (allow_cleartext, cleartext_secret_problem, file_head, head_scalar,
                            head_trust, head_value, is_loopback_host, safe_urlopen, same_origin,
                            url_origin, utc_today)
@@ -685,7 +686,7 @@ def promote_documents(out_dir: str, apply: bool) -> int:
             else:
                 trusted, page_url = False, ""
         src = open(os.path.join(files_dir, name), encoding="utf-8", errors="ignore").read()
-        body = src.split("---", 2)[2].strip() if src.startswith("---") else src.strip()
+        body = body_of(src).strip()
         title = re.sub(r"-[0-9a-f]{8}$", "", stem).replace("-", " ").strip()
         text = ("---\n"
                 f'title: "{title}"\n'

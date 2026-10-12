@@ -40,6 +40,7 @@ import re
 import sys
 
 from aurora_common import KB_ROOT, frontmatter, status_rank, undated, walk_md, write_if_changed
+from aurora_common import body as body_of
 
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 MARK = "<!-- generated: kb_index.py — правки будут потеряны -->"
@@ -81,7 +82,7 @@ def collect(section_dir: str) -> list:
             continue
         fm = frontmatter(text)
         stem = os.path.splitext(os.path.basename(path))[0]
-        body_start = text.split("---", 2)[-1] if text.startswith("---") else text
+        body_start = body_of(text)
         rows.append({
             "stem": stem,
             "title": fm.get("title", stem),

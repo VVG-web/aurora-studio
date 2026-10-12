@@ -64,7 +64,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
-from aurora_common import QUOTES, fold, link_escapes, replace_file  # noqa: E402
+from aurora_common import QUOTES, body as body_of, fold, link_escapes, replace_file  # noqa: E402
 
 RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
 
@@ -2770,7 +2770,7 @@ def card_excerpt(cwd: str, rel: str, chars: int = 700) -> str:
     except OSError:
         return ""
     kind = re.search(r"^type:\s*(.+)$", text, re.M)
-    body = text.split("\n---", 2)[-1] if text.startswith("---") else text
+    body = body_of(text)
     body = re.sub(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]", r"\1", body)      # ссылки мешают читать
     body = "\n".join(l for l in body.splitlines() if l.strip())[:chars]
     return (f"  тип: {kind.group(1).strip()}\n" if kind else "") + \
@@ -4902,7 +4902,7 @@ def grill_method(cwd: str = "") -> str:
         if os.path.isfile(path):
             text = read_text_file(path, 12_000)
             # Шапку навыка модели читать незачем: она про то, как навык находят.
-            body = text.split("---", 2)[-1].strip() if text.startswith("---") else text
+            body = body_of(text).strip()
             return body + "\n\n---\n\n"
     return ""
 

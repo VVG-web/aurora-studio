@@ -458,3 +458,126 @@ def test_artifact_lint_warnings_are_not_counted_as_base_errors(tmp: Path):
     ck = importlib.import_module("aurora_cockpit")
     info = ck._health_lint(str(root), "ru")["lint"]
     assert info.get("errors") == 0 and info.get("kinds") == {}, info
+
+
+# ----------------------------------------------------------------------------------------
+# BL-SEC-16: один разбор шапки карточки — блочные списки и «---» внутри значений.
+
+def _head_card(root: Path, rel: str, head: str, body: str = "Тело.\n") -> Path:
+    p = root / "AuroraKnowledgeDB" / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f"---\n{head}---\n\n{body}", encoding="utf-8")
+    return p
+
+
+@test
+def test_card_head_reads_block_lists_like_inline_ones(tmp: Path):
+    """`aliases`, `tags`, `related` в блочной записи читаются так же, как в строчной.
+
+    Движок сам пишет `related:` (`kb:links --cards`) и `aliases:` (переименование) блоком, а
+    `frontmatter` видел в таком поле пустую строку: граф без связей, синонимы мимо поиска,
+    теги мимо карт содержания. Старая строчная запись читается как раньше.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
+    block = ('title: "Заявление"\ntype: concept\naliases:\n  - "Заявление"\n  - \'Request\'\n'
+             'tags:\n  - тема\n  - "платежи"\nrelated:\n  - "[ЭСФ](ЭСФ.md)"\n  - "[Декларация](Декларация.md)"\n'
+             'status: draft\n')
+    inline = ('title: "Заявление"\ntype: concept\naliases: ["Заявление", "Request"]\n'
+              'tags: ["тема", "платежи"]\nrelated: ["[ЭСФ](ЭСФ.md)", "[Декларация](Декларация.md)"]\n'
+              'status: draft\n')
+    fb, fi = AC.frontmatter(f"---\n{block}---\n\nТело.\n"), AC.frontmatter(f"---\n{inline}---\n\nТело.\n")
+    assert fb == fi, (fb, fi)
+    assert re.findall(r'"([^"]+)"', fb["aliases"]) == ["Заявление", "Request"], fb["aliases"]
+    assert fb["status"] == "draft" and fb["type"] == "concept", fb
+    for head in (block, inline):
+        text = f"---\n{head}---\n\nТело.\n"
+        assert AC.aliases(text) == ["Заявление", "Request"], head
+        assert AC.list_field(text, "tags") == ["тема", "платежи"], head
+        assert AC.related_names(text) == ["ЭСФ", "Декларация"], (head, AC.related_names(text))
+    # прежние записи: список без кавычек в строку, одиночное значение, пустое поле
+    old = '---\ntitle: "Т"\ntags: [тема, платежи]\naliases:\nrelated: [А, Б]\nstatus: index\n---\n\nx\n'
+    assert AC.frontmatter(old)["tags"] == "[тема, платежи]" and AC.frontmatter(old)["aliases"] == ""
+    assert AC.related_names(old) == ["А", "Б"], AC.related_names(old)
+    # знак конца строки внутри значения не рождает пункта списка: строки шапки — настоящие
+    forged = '---\ntitle: "Блог   - подложный"\naliases:\n  - "Настоящий"\n---\n\nx\n'
+    assert AC.aliases(forged) == ["Настоящий"], AC.aliases(forged)
+    assert AC.frontmatter(forged)["aliases"] == '["Настоящий"]', AC.frontmatter(forged)
+    # читалки доверия: повтор и подделка шапки видны по-прежнему
+    dup = '---\nstatus: draft\nstatus:\n  - knowledge\n---\n\nx\n'
+    assert AC.frontmatter(dup, unique=True).get("status") is None
+
+
+@test
+def test_cards_graph_sees_block_related_and_aliases(tmp: Path):
+    """Граф базы видит `related:` блоком и синонимы блоком: связь есть и без ссылки в теле."""
+    sys.path.insert(0, str(SCRIPTS))
+    G = importlib.import_module("kb_graph")
+    root = make_project(tmp)
+    _head_card(root, "Concepts/ЭСФ.md", 'title: "ЭСФ"\ntype: concept\nstatus: knowledge\n')
+    _head_card(root, "Concepts/Декларация.md", 'title: "Декларация"\ntype: concept\nstatus: knowledge\n')
+    _head_card(root, "Concepts/Реестр.md",
+               'title: "Реестр"\ntype: concept\nstatus: knowledge\nrelated:\n  - "[ЭСФ](ЭСФ.md)"\n')
+    # ссылка по прежнему имени: оно записано блоком aliases и раньше терялось
+    _head_card(root, "Concepts/Счёт.md",
+               'title: "Счёт"\ntype: concept\nstatus: knowledge\naliases:\n  - "Фактура"\n')
+    _head_card(root, "Concepts/Учёт.md", 'title: "Учёт"\ntype: concept\nstatus: knowledge\n',
+               "Ведётся по [[Декларация|декларации]] и по [[Счёт|Фактура]].\n")
+    cwd = os.getcwd()
+    try:
+        os.chdir(root)
+        data = G.write_cards_graph("AuroraKnowledgeDB/meta/graph.json")
+    finally:
+        os.chdir(cwd)
+    pairs = {(e["from"], e["to"]): e for e in data["edges"]}
+    assert pairs.get(("Реестр", "ЭСФ"), {}).get("rel") == "связана", pairs
+    assert pairs[("Счёт", "Учёт")]["conf"] == "EXTRACTED", pairs[("Счёт", "Учёт")]
+
+
+@test
+def test_card_body_ignores_dashes_inside_head_values(tmp: Path):
+    """«---» внутри значения шапки не обрывает её: тело берётся после закрывающей черты.
+
+    Срез `text.split("---", 2)[-1]` в восьми местах отдавал телом хвост заголовка
+    «Ретро --- итоги» вместе с остатком шапки.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
+    KSQ = importlib.import_module("kb_search_quality")
+    IDX = importlib.import_module("kb_index")
+    text = '---\ntitle: "Ретро --- итоги"\nstatus: draft\n---\n\nТезис про ретроспективу команды.\n'
+    assert AC.body(text).strip() == "Тезис про ретроспективу команды.", repr(AC.body(text))
+    assert KSQ.thesis(text) == "Тезис про ретроспективу команды.", KSQ.thesis(text)
+    root = tmp / "kb"
+    (root / "Concepts").mkdir(parents=True)
+    (root / "Concepts" / "Ретро.md").write_text(text, encoding="utf-8")
+    rows = IDX.collect(str(root / "Concepts"))
+    assert rows and "Тезис про ретроспективу" in rows[0]["desc"], rows
+    # навык: тело без шапки, в шапке — «---» в описании
+    skill = tmp / "p" / ".claude" / "skills" / "ретро" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text('---\nname: ретро\ndescription: "Итоги --- и выводы"\n---\n\nДелай так.\n',
+                     encoding="utf-8")
+    RC = importlib.import_module("request_context")
+    path, body = RC.find_skill("ретро", str(tmp / "p"), kit=str(tmp / "nokit"))
+    assert path and body == "Делай так.", (path, body)
+    # файл без закрывающей черты не падает (раньше web_export брал [2] и ловил IndexError)
+    assert AC.body("---\ntitle: x\nбез закрытия") == "---\ntitle: x\nбез закрытия"
+
+
+@test
+def test_jira_mirror_head_longer_than_the_old_window_is_read(tmp: Path):
+    """Шапка зеркала Jira длиннее 2000 знаков читается целиком: заголовок задачи не теряется."""
+    sys.path.insert(0, str(SCRIPTS))
+    G = importlib.import_module("kb_graph")
+    jira = tmp / "JIRA"
+    jira.mkdir()
+    pad = "".join(f'  - "метка-{i:04d}"\n' for i in range(250))
+    (jira / "PRJ-7.md").write_text(
+        f'---\nlabels:\n{pad}title: "PRJ-7 US 1.2.3 Заявление"\nstatus: "Закрыто"\n---\n\nx\n',
+        encoding="utf-8")
+    g = G.Graph.__new__(G.Graph)
+    g.issues = {}
+    G.Graph.read_jira(g, str(jira))
+    assert g.issues.get("PRJ-7", {}).get("summary", "").endswith("Заявление"), g.issues
+    assert g.issues["PRJ-7"]["status"] == "Закрыто", g.issues
