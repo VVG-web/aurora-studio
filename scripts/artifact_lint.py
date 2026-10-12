@@ -52,7 +52,10 @@ DEFAULT_DIRS = {"us": "Artifacts/us", "ac": "Artifacts/ac", "spec": "AuroraKnowl
 _FENCE = re.compile(r"(?ms)^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$")
 _COMMENT = re.compile(r"(?s)<!--.*?-->")
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
-_HEAD = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+# Регулярные выражения линтера не держат рядом два квантификатора над одним символом
+# (`\s*#*\s*$`, `\s*\|?\s*`): на строке из тысяч пробелов откат растёт кубом. Хвосты строк
+# («закрывающие» `#`, `|`) снимаются кодом (`_head_title`, `_row`), а не шаблоном.
+_HEAD = re.compile(r"^(#{1,6})\s+(.*)$")
 _ITEM = re.compile(r"^\s*(?:[*\-+]|\d+[.)])\s+(\S.*)$")
 # Служебные комментарии шаблона: правила для модели, примеры, пометки необязательности и
 # «УДАЛИТЬ ПЕРЕД ПУБЛИКАЦИЕЙ» (так помечены блоки шаблона истории `user_story_template.md`).
@@ -64,6 +67,11 @@ _NOTE = re.compile(r"\?\?\?|\bTODO\b|\bTBD\b|(?i:\bуточнить у\b)")
 
 def _f(fid: str, msg: str) -> dict:
     return {"id": fid, "level": LEVEL, "msg": msg}
+
+
+def _head_title(rest: str) -> str:
+    """Название заголовка без «закрывающих» `#` и пробелов (`## Название ##` → «Название»)."""
+    return rest.rstrip().rstrip("#").rstrip()
 
 
 def _visible(text: str, code: bool = True) -> str:
@@ -86,7 +94,7 @@ class Doc:
         for i, line in enumerate(self.lines):
             m = _HEAD.match(line)
             if m:
-                self.heads.append((len(m.group(1)), m.group(2).strip(), i))
+                self.heads.append((len(m.group(1)), _head_title(m.group(2)).strip(), i))
 
     def find(self, rx: str) -> list:
         """Индексы заголовков, чьё название подходит под регулярное выражение."""
@@ -170,16 +178,44 @@ def _status_of(line: str):
     return None
 
 
+def _row(line: str, name: str, sep: str):
+    """Значение строки «| Имя | … |» (`sep` — «|») или «Имя: …» (`sep` — «:») либо None.
+
+    Строку сначала обрезают, потом ищут «Имя» и разделитель одним проходом: без соседних
+    `\\s*` откат на длинной серии пробелов линеен.
+    """
+    s = line.strip()
+    if sep == "|" and s.startswith("|"):
+        s = s[1:].lstrip()
+    m = re.match(rf"\*{{0,2}}{name}\*{{0,2}}\s*{re.escape(sep)}", s)
+    if not m:
+        return None
+    val = s[m.end():].strip()
+    if sep == "|" and val.endswith("|"):
+        val = val[:-1].rstrip()
+    return val
+
+
 def _field(text: str, name: str):
     """Значение поля свойств («| Реализует | … |» или «Реализует: …») или None, если поля нет."""
     for line in text.splitlines():
-        m = re.match(rf"^\s*\|?\s*\*{{0,2}}{name}\*{{0,2}}\s*\|\s*(.*?)\s*\|?\s*$", line)
-        if m:
-            return m.group(1)
-        m = re.match(rf"^\s*\*{{0,2}}{name}\*{{0,2}}\s*:\s*(.*?)\s*$", line)
-        if m:
-            return m.group(1)
+        for sep in ("|", ":"):
+            val = _row(line, name, sep)
+            if val is not None:
+                return val
     return None
+
+
+def _one_phrase_formula(body: str) -> bool:
+    """«Как … я хочу … чтобы» в одной фразе: три слова по порядку, самые ранние вхождения.
+
+    Было одно выражение `как.+я хочу.+чтобы`: на тексте из многих «как» без «я хочу» откат
+    квадратичный. Жадному `.+` равно «берём первое вхождение каждого слова после предыдущего».
+    """
+    m = re.search(r"(?i)\bкак\b", body)
+    m = m and re.compile(r"(?i)\bя хочу\b").search(body, m.end() + 1)
+    m = m and re.compile(r"(?i)\bчтобы\b").search(body, m.end() + 1)
+    return bool(m)
 
 
 def lint_us(text: str) -> list:
@@ -196,8 +232,8 @@ def lint_us(text: str) -> list:
     # US-01: формула «Как / Я хочу / Чтобы».
     for k in doc.find(r"^описание"):
         body = "\n".join(doc.body(k))
-        if re.search(r"(?is)\bкак\b.+\bя хочу\b.+\bчтобы\b", body) and not re.search(
-                r"(?im)^\s*\|?\s*\*{0,2}Как\*{0,2}\s*\|", body):
+        if _one_phrase_formula(body) and not any(
+                _row(ln, "Как", "|") is not None for ln in body.splitlines()):
             break               # формула одной фразой
         lost = []
         for key in ("Как", "Я хочу", "Чтобы"):
@@ -264,7 +300,7 @@ def lint_us(text: str) -> list:
         for n, chunk in enumerate(steps, 1):
             block = "\n".join(chunk)
             for what in ("Действие пользователя", "Реакция системы"):
-                if not re.search(rf"{what}\s*\**\s*[:—–-]\s*\**\s*[^\s*]", block):
+                if not re.search(rf"{what}[\s*]*[:—–-][\s*]*[^\s*]", block):
                     out.append(_f("US-07", f"«{title}», шаг {n}: не заполнено «{what}» "
                                            "(для машинного обмена пишут «не выполняет»)"))
         if len(steps) > 10:
@@ -338,8 +374,9 @@ def _spec_value(lines: list, key: str):
     return None
 
 
-# Строка-подсказка шаблона: целиком курсивом (`_…_`) или с плейсхолдером «<триггер>».
-_HINT = re.compile(r"^\s*_[^_].*_\s*$|<[А-Яа-яЁё][^<>\n]*>")
+# Строка-подсказка шаблона: целиком курсивом (`_…_`) или с двумя плейсхолдерами подряд
+# («<триггер> … <реакция>»). Одно «<имя>» — часть обычной фразы: «Файл <имя> не найден».
+_HINT = re.compile(r"^\s*_[^_].*_\s*$|<[А-Яа-яЁё][^<>\n]*>[^<>\n]*<[А-Яа-яЁё][^<>\n]*>")
 
 
 def lint_spec(text: str) -> list:
@@ -347,7 +384,7 @@ def lint_spec(text: str) -> list:
     fm = frontmatter(text)
     doc = Doc(text)
 
-    based = re.sub(r"\s+#.*$", "", fm.get("based_on", "")).strip("[] \"'")
+    based = re.sub(r"\s#.*$", "", fm.get("based_on", "")).strip("[] \"'")
     if "based_on" in fm and not based:
         out.append(_f("SPEC-02", "`based_on` пуст: спека без оснований-знаний передаче не подлежит"))
 

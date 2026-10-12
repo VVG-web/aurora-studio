@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -376,6 +377,96 @@ def test_artifact_lint_todo_mark_in_code_is_residue(_t):
     # Пример плейсхолдера в кавычках остаётся примером.
     shown = GOOD_US.replace("Система принимает документ.", "Плейсхолдеры пишут как `{{имя}}`.")
     assert AL.lint_text(shown, "us") == []
+
+
+@test
+def test_artifact_lint_hint_filter_keeps_lines_with_one_placeholder(_t):
+    """Подсказка шаблона — курсивная строка или два «<…>» подряд; одно «<имя>» — обычная фраза."""
+    AL = _lint()
+    then = GOOD_SPEC.replace("- **Тогда:** система должна сохранить документ",
+                             "- **Тогда:** система должна вернуть сообщение «Файл <имя> не найден»")
+    assert AL.lint_text(then, "spec") == [], AL.lint_text(then, "spec")
+    when = GOOD_SPEC.replace("- **Когда:** приходит запрос на приём",
+                             "- **Когда:** оператор нажимает кнопку <Сохранить>")
+    assert AL.lint_text(when, "spec") == [], AL.lint_text(when, "spec")
+    nested = GOOD_SPEC.replace("- **Тогда:** система должна отказать в приёме",
+                               "- **Тогда:**\n  - система должна показать <причина отказа>")
+    assert AL.lint_text(nested, "spec") == [], AL.lint_text(nested, "spec")
+    # Два плейсхолдера в одной строке без курсива — по-прежнему подсказка, а не сценарий.
+    two = ("\n«Когда <триггер>, система должна <реакция>»\n")
+    only_given = GOOD_SPEC.replace(
+        "- **Когда:** приходит запрос на приём\n- **Тогда:** система должна сохранить документ\n",
+        two, 1)
+    got = AL.lint_text(only_given, "spec")
+    assert _ids(got) == ["SPEC-03"] and len(got) == 2, got
+
+
+@test
+def test_artifact_lint_closing_hashes_and_formula_forms_still_read(_t):
+    """Разбор заголовка и поля кодом, а не `\\s*#*\\s*$`, читает те же формы, что и раньше."""
+    AL = _lint()
+    closed = GOOD_US.replace("## Описание", "## Описание ##", 1)
+    assert AL.lint_text(closed, "us") == [], AL.lint_text(closed, "us")
+    colon = GOOD_US.replace("| **Как** | Оператор системы |\n| **Я хочу** | получить документ из смежной системы |\n"
+                            "| **Чтобы** | документ был сохранён и доступен для обработки |",
+                            "**Как**: Оператор системы\n**Я хочу**: получить документ\n**Чтобы**: он был сохранён")
+    assert AL.lint_text(colon, "us") == [], AL.lint_text(colon, "us")
+    one = GOOD_US.replace("| **Как** | Оператор системы |\n| **Я хочу** | получить документ из смежной системы |\n"
+                          "| **Чтобы** | документ был сохранён и доступен для обработки |",
+                          "Как оператор, я хочу получить документ, чтобы он был сохранён.")
+    assert AL.lint_text(one, "us") == [], AL.lint_text(one, "us")
+    empty = GOOD_US.replace("| **Я хочу** | получить документ из смежной системы |", "| **Я хочу** |  |")
+    assert _ids(AL.lint_text(empty, "us")) == ["US-01"], AL.lint_text(empty, "us")
+
+
+@test
+def test_artifact_lint_long_whitespace_runs_are_linear(_t):
+    """Строка из 200000 пробелов (или nbsp, табов) не вешает линтер: регулярные выражения без отката.
+
+    Артефакт приходит от модели или из вики, а `kb:lint` идёт шагом маршрута без потолка по
+    времени. Счёт — в дочернем процессе с пределом: на старых выражениях заголовок с 1600
+    пробелами разбирался десять секунд, 200000 не кончились бы никогда.
+    """
+    import json
+    cases = []
+    for ch in (" ", "\u00a0", "\t"):
+        sp = ch * 200000
+        cases += [
+            ("head", GOOD_US.replace("## Описание", "## Описание" + sp + "x", 1), "us"),
+            ("head-closed", GOOD_US + "\n## x" + sp + "##" + sp + "\n", "us"),
+            ("head-empty", GOOD_US + "\n##" + sp + "\n", "us"),
+            ("row", GOOD_US.replace("| Реализует | RU.PRJ.REQ-010 |",
+                                    "| Реализует |" + sp + "a" + sp + "b |", 1), "us"),
+            ("formula-row", GOOD_US.replace("| **Как** | Оператор системы |",
+                                            "|" + sp + "**Как**" + sp + "|" + sp, 1), "us"),
+            ("step", GOOD_US.replace("Действие пользователя: не выполняет",
+                                     "Действие пользователя" + sp + "x", 1), "us"),
+            ("step-stars", GOOD_US.replace("Реакция системы: принимает документ",
+                                           "Реакция системы" + sp + "*" + sp + "x", 1), "us"),
+            ("blank", GOOD_US + "\n" + sp + "\n" + sp + "- x" + sp + "\n", "us"),
+            ("vague", GOOD_US + "\nсм." + sp + "алгоритм" + sp + "x\n", "us"),
+            ("ac", "# Описание" + sp + "\n\n# Критерии приемки" + sp + "\n\n1." + sp + "x\n", "ac"),
+            ("spec-key", GOOD_SPEC.replace("- **Когда:** приходит запрос на приём",
+                                           "-" + sp + "**Когда:**" + sp + "*" + sp, 1), "spec"),
+            ("spec-then", GOOD_SPEC.replace("- **Тогда:** система должна сохранить документ",
+                                            "- **Тогда:**" + sp + "\n" + sp, 1), "spec"),
+            ("spec-ears", GOOD_SPEC + "\n### Сценарий 3\nесли ," + sp + "x\n", "spec"),
+            ("based-on", "---\nbased_on: [a]" + sp + "x\n---\n" + GOOD_SPEC, "spec"),
+        ]
+    # И не только пробелы: много «как» без «я хочу» — тот же откат у формулы одной фразой.
+    cases.append(("formula-words", GOOD_US.replace("## Описание", "## Описание\n" + "как " * 50000, 1), "us"))
+    child = ("import json, sys, time\nsys.path.insert(0, sys.argv[1])\nimport artifact_lint as AL\n"
+             "out = []\nfor name, text, prof in json.load(sys.stdin):\n"
+             "    t = time.time(); AL.lint_text(text, prof); out.append((name, time.time() - t))\n"
+             "print(json.dumps(out))\n")
+    try:
+        cp = subprocess.run([sys.executable, "-I", "-c", child, str(SCRIPTS)], input=json.dumps(cases),
+                            capture_output=True, text=True, encoding="utf-8", timeout=90)
+    except subprocess.TimeoutExpired:
+        raise AssertionError("линтер не уложился в 90 с на длинных сериях пробелов: откат в регулярном выражении")
+    assert cp.returncode == 0, cp.stderr[-500:]
+    slow = [(n, round(t, 2)) for n, t in json.loads(cp.stdout.strip().splitlines()[-1]) if t > 1.0]
+    assert not slow, f"дольше секунды: {slow}"
 
 
 @test
