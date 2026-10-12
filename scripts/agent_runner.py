@@ -5425,6 +5425,17 @@ def write_artifact(cwd: str, st: dict) -> str:
     # документ не по форме. Найдено на живом прогоне: `status: ready` при `unsupported: 6`.
     unsupported = int(((st.get("momus") or {}).get("unsupported") or 0))
     done = bool(stages.get("checked")) and not st.get("issues") and not unsupported
+    # Документ, который сослался на непроверенную карточку (режим bootstrap пускает draft в
+    # пак), по статусу неотличим от построенного на знании — поэтому `ready` ему закрыт, а
+    # опора названа в шапке и в «Допущениях». Выход — довести карточки до доверия или
+    # снять bootstrap (`verified_threshold_pct`): тогда непроверенного в паке нет.
+    import ctx_pack as CP
+    from aurora_common import card_stem, link_refs
+    unver = set(CP.unverified_names(st.get("pack") or ""))
+    lean = [c for c in dict.fromkeys(
+        card_stem(x) for x in link_refs(st.get("draft") or "") if x.strip()) if c in unver]
+    if lean:
+        done = False
     head = ["---", f'title: "{title.replace(chr(34), "")}"',
             f"type: {st['kind']}", f"status: {'ready' if done else 'draft'}",
             f"created: {TODAY_STR}", f"updated: {TODAY_STR}", "built: machine",
@@ -5443,7 +5454,6 @@ def write_artifact(cwd: str, st: dict) -> str:
     # Разбор ссылок — общий на движок: своя регулярка не знала про якоря, и
     # «[[Заявка-1#Статусы]]» не сходилась с карточкой «Заявка-1» — настоящее основание
     # объявлялось выдумкой. Найдено критиком после реализации.
-    from aurora_common import card_stem, link_refs
     cited = list(dict.fromkeys(
         card_stem(x) for x in link_refs(st.get("draft") or "") if x.strip()))
     in_pack = {h.split(" — ")[0].strip()
@@ -5454,6 +5464,8 @@ def write_artifact(cwd: str, st: dict) -> str:
     invented = [c for c in cited if c not in in_pack]
     if grounded:
         head.append("based_on: [" + ", ".join(f'"[[{c}]]"' for c in grounded) + "]")
+    if lean:
+        head.append("basis_unverified: [" + ", ".join(f'"[[{c}]]"' for c in lean) + "]")
     cov = st.get("coverage") or {}
     if cov:
         head.append("coverage: " + ", ".join(f"{k}={v}" for k, v in cov.items()))
@@ -5493,13 +5505,16 @@ def write_artifact(cwd: str, st: dict) -> str:
         for c in st["clarifications"]:
             made.append(f"- **{c.get('q', '')}** → {c.get('a', '')}")
         made.append("")
-    if st.get("assumptions"):
+    if st.get("assumptions") or lean:
         made += ["## Допущения", "",
                  "Решения, принятые без ответа человека. Источник у каждого свой: "
                  "«не спросили» — недоработка опроса, «решила модель» — обычная работа "
                  "с умолчанием.", ""]
-        for a in st["assumptions"]:
+        for a in st.get("assumptions") or []:
             made.append(f"- {a.get('text', '')} · _{a.get('by', 'решила модель')}_")
+        if lean:
+            made.append("- опора на непроверенное: " + ", ".join(f"`[[{c}]]`" for c in lean)
+                        + " · _карточки не прошли доверие, документ не может быть `ready`_")
         made.append("")
     if st.get("issues"):
         made += ["## Замечания критика", ""] + [f"- {x}" for x in st["issues"]] + [""]
@@ -5600,6 +5615,10 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
     out = {"ok": True, "answer": text, "cards": cards, "total": total,
            "ghosts": links["invented"], "mentioned": links["mentioned"],
            "outside": links["outside"], "backend": a["backend"], "model": a["model"]}
+    # Слабая опора (пометка в паке, её ставит `ctx_pack.confidence`): ответ дан по неполной
+    # выдаче — потребителю (панель, бот) это видно без разбора текста пака.
+    if "Слабая опора" in pack:
+        out["weak_basis"] = True
     if momus:
         out["momus"] = run_momus(cfg, pack, question, text, call,
                                  answered_in=float(a.get("seconds") or 0))

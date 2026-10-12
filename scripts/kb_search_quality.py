@@ -473,6 +473,9 @@ def pack_measure(pairs: list, closes: dict, max_cards: int = 40) -> dict:
       символов   средний объём собранного пака
       соседей    среднее число карточек, вошедших переходом, а не совпадением
       цель телом цель в паке полным текстом, а не свёрнутым соседом
+      промах: статус / релиз   доля вопросов, где цели нет в паке ТОЛЬКО из-за фильтра
+                         доверия или релиза (в режиме evaluate без релиза она нашлась бы):
+                         остальное — «не найдено», то есть собственно качество поиска
     """
     import ctx_pack as P
     global _CARDS
@@ -485,11 +488,24 @@ def pack_measure(pairs: list, closes: dict, max_cards: int = 40) -> dict:
     release = P.current_release()
     statuses = P.MODE_STATUSES["generate"]
     hits, chars, neighs, full = [], [], [], 0
+    by_status = by_release = 0
     for names, q in pairs:
         ok = {names} if isinstance(names, str) else set(names)
         chosen, _dropped, neighbors = P.collect(cards, q, statuses, bootstrap, release,
                                                 max_cards, closes.get(q))
         hits.append(bool(ok & {c.stem for c in chosen}))
+        if not hits[-1]:
+            # Разложение промаха: без фильтров цель находится? Тогда виноват фильтр, и
+            # если она находится при тех же статусах, но без релиза, — релиз, иначе статус.
+            wide = P.collect(cards, q, P.MODE_STATUSES["evaluate"], True, "", max_cards,
+                             closes.get(q))[0]
+            if ok & {c.stem for c in wide}:
+                no_rel = P.collect(cards, q, statuses, bootstrap, "", max_cards,
+                                   closes.get(q))[0]
+                if ok & {c.stem for c in no_rel}:
+                    by_release += 1
+                else:
+                    by_status += 1
         if ok & {c.stem for c in chosen if c.stem not in neighbors}:
             full += 1
         chars.append(sum(len(P.render_block(
@@ -500,7 +516,9 @@ def pack_measure(pairs: list, closes: dict, max_cards: int = 40) -> dict:
     return {"находка": round(sum(hits) / n, 3),
             "символов": int(statistics.mean(chars)) if chars else 0,
             "соседей": round(statistics.mean(neighs), 1) if neighs else 0,
-            "цель телом": round(full / n, 3)}
+            "цель телом": round(full / n, 3),
+            "промах: статус": round(by_status / n, 3),
+            "промах: релиз": round(by_release / n, 3)}
 
 
 def compare(specs: list, pairs: list, golden: list, cfg: dict, model: str) -> int:
@@ -542,7 +560,8 @@ def compare(specs: list, pairs: list, golden: list, cfg: dict, model: str) -> in
         P.RETRIEVAL.clear()
         P.RETRIEVAL.update(saved)
 
-    keys = ["R@1", "R@5", "MRR", "запас", "находка", "цель телом", "символов", "соседей"]
+    keys = ["R@1", "R@5", "MRR", "запас", "находка", "цель телом", "символов", "соседей",
+            "промах: статус", "промах: релиз"]
     if golden:
         keys += ["эталон R@1", "эталон в паке"]
     print("\n| Вариант | " + " | ".join(keys) + " |")

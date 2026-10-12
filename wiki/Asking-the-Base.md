@@ -36,6 +36,25 @@ The rule for any manual path: **assemble the context first**, do not feed an ass
 difference between "a card with status `knowledge` and a basis" and "a page from the wiki" is the difference between a
 fact and a rumour.
 
+## When the base does not know
+
+The engine decides this itself, without calling a model. It counts how many of the question's words (weighted by
+rarity) the best five trusted cards find **together** — an absolute figure, not a share of the best hit:
+
+- **Enough** — a normal pack.
+- **Partly** — the pack opens with **"Weak basis"** and names the words the base does not have; answer only from what
+  was found and say what is missing (`kb:question`). `agent:ask` also marks the answer `weak_basis`.
+- **Almost nothing, no match by meaning or by exact ID** — no pack: "the base does not have this", with the missing
+  words. Long task statements are not judged this way; only questions.
+
+If the best candidates were **hidden by the trust filter** (a `draft` card in `generate` mode), the pack or the refusal
+says so: how many, their statuses and the best name — never the body. Repeat in `evaluate` to read them. Thresholds are
+the `weak` and `abstain` keys of `RETRIEVAL` (`abstain=0` turns the refusal off); `ops:search-quality --compare` reports
+what share of misses is the status or release filter rather than the search itself.
+
+A document built by `agent:make` that cites an unverified card (young base, bootstrap) stays `status: draft`, with
+`basis_unverified` in the header and a line under "Assumptions".
+
 ## How the search works
 
 Search combines **words** with **meaning**: the semantic index (`kb:embed`) holds a vector per card and lives outside

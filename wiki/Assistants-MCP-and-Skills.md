@@ -16,7 +16,7 @@ into the chat by hand.
 |---|---|
 | `kb_search` | find cards by meaning and words — name, trust status, gist |
 | `kb_card` | read a card whole |
-| `kb_context` | assemble a context pack by topic (`generate` mode = trusted knowledge only) |
+| `kb_context` | assemble a context pack by topic (`generate` mode = trusted knowledge; while the base is young, bootstrap, marked drafts join the pack) |
 | `kb_index` | the table of contents of the base: a line per card, grouped by section |
 | `artifact_spec` | how to produce an artifact of this project: template, folder, prompt, the final-text boundary |
 | `kb_ask` | ask the base: the project's model answers from the cards with links (slow — tens of seconds) |

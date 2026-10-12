@@ -301,7 +301,9 @@ def test_ctx_pack_filters_by_status_and_logs_usage(tmp: Path):
     # Шапка теперь говорит о классе источника и основании, а не о том, кто и когда
     # поставил отметку: доверие больше не чьё-то решение.
     assert "[verified | доверенный источник" in cp.stdout, "нет шапки доверия"
-    assert "Черновик-Заявка" not in cp.stdout, "draft попал в generate-пак"
+    # Имя черновика пак может назвать как «скрыто по доверию», а вот блока и тела — нет.
+    assert "## Черновик-Заявка" not in cp.stdout and "сырой набросок" not in cp.stdout, \
+        "draft попал в generate-пак"
     assert "Проверка-Заявка" in cp.stdout, "связанная карточка не подтянулась переходом"
     usage = (root / "AuroraKnowledgeDB/meta/usage.log").read_text(encoding="utf-8")
     assert "Заявка" in usage, "употребление не записано в usage.log"

@@ -1487,3 +1487,146 @@ def test_git_section_names_a_secret_stop_and_the_checkpoint_does_not_skip_the_se
     got = R.checkpoint(str(root), "agent:distill", True)
     assert got["ok"] is True and got["committed"] >= 1, got
     assert _git_in(root, "rev-parse", "HEAD").stdout.strip() != before
+
+
+# --- Уверенность выдачи, честный отказ и прозрачный фильтр доверия (BL-KBA-14) ---------------
+
+def _answerability_base(tmp: Path):
+    """База из доверенных карточек про заявки и поставки + черновик про совсем другое."""
+    root = make_project(tmp)
+    for i, body in enumerate((
+            "Заявка на поставку оформляется заявителем; статус заявки виден в реестре.",
+            "Заявка на возврат платежа проходит проверку оператором.",
+            "Поставка товара подтверждается накладной и актом приёмки.",
+            "Реестр договоров ведёт юрист, карточка договора содержит стороны и сроки.",
+            "Накладная формируется после отгрузки и хранится три года.",
+            "Тариф на перевозку считается по весу и расстоянию.")):
+        stem = ("Заявка-на-поставку", "Заявка-на-возврат", "Поставка-товара",
+                "Реестр-договоров", "Накладная", "Тариф-перевозки")[i]
+        from harness import card
+        card(root, f"Concepts/{stem}.md", body, status="verified", type="concept")
+    from harness import card
+    card(root, "Concepts/Квантовый-насос.md",
+         "Квантовый насос Хаксли работает на криогенном сверхпроводнике.",
+         status="draft", type="concept")
+    return root
+
+
+@test
+def test_pack_refuses_when_question_is_not_in_base(tmp: Path):
+    """Вопрос вне базы с одним общим словом не получает пак «как точный» (KB2-04, KB3-21).
+
+    `fuse` нормирует вес к лучшему в запросе, и «рецепт борща курс биткоина заявка» набирал
+    1,0 на карточках «Заявка…» из-за одного слова. Теперь доля слов вопроса, найденных
+    пятью лучшими карточками, считается без нормировки: ниже порога движок отказывает сам
+    (код 1, без модели) и называет, чего не хватает; на полпути — пак с пометкой «Слабая
+    опора»; точный вопрос идёт как раньше. Порог выключается (`abstain=0`).
+    """
+    root = _answerability_base(tmp)
+
+    far = run("ctx_pack.py", "рецепт борща курс биткоина заявка", "--no-log", cwd=root)
+    assert far.returncode == 1, f"вопрос вне базы получил пак:\n{far.stdout[:300]}"
+    assert "в базе этого нет" in far.stderr and "борщ" in far.stderr, far.stderr
+    assert "Context pack" not in far.stdout, "при отказе пак всё равно напечатан"
+
+    # отказ можно выключить: старое поведение — пак из любых совпавших карточек
+    off = run("ctx_pack.py", "рецепт борща курс биткоина заявка", "--no-log",
+              "--retrieval", "abstain=0", cwd=root)
+    assert off.returncode == 0 and "Context pack" in off.stdout, off.stderr
+
+    # половина вопроса найдена, половины нет в базе: пак есть, но с названным пробелом
+    half = run("ctx_pack.py", "какой статус у заявки на отпуск", "--no-log", cwd=root,
+               expect_rc=0)
+    assert "Слабая опора" in half.stdout and "отпуск" in half.stdout.split("Слабая опора")[1][:200], \
+        half.stdout[:600]
+
+    # точный вопрос — без пометок
+    exact = run("ctx_pack.py", "заявка на поставку", "--no-log", cwd=root, expect_rc=0)
+    assert "Слабая опора" not in exact.stdout, "точный вопрос помечен слабым"
+    assert "Заявка-на-поставку" in exact.stdout
+
+    # постановка задачи (длиннее вопроса) по доле слов не судится
+    sys.path.insert(0, str(SCRIPTS))
+    C = importlib.import_module("ctx_pack")
+    long_topic = " ".join(f"слово{n}" for n in range(20))
+    assert C.confidence([object()], long_topic) is None, "длинную постановку судят как вопрос"
+
+
+@test
+def test_pack_names_cards_hidden_by_trust_filter(tmp: Path):
+    """Фильтр доверия не отбрасывает молча: пак называет скрытое и его статус (KB2-07).
+
+    Ответ лежал только в черновике, а agent:ask в режиме generate говорил «в базе этого
+    нет». Теперь пак печатает «Скрыто по доверию: N (статусы), лучший скрытый — `имя`»
+    (имя и статус, без тела и без [[ссылки]]), а когда доверенного нет совсем — отказ
+    подсказывает режим evaluate. kb:eval раскладывает промах на статус и релиз.
+    """
+    root = _answerability_base(tmp)
+
+    only = run("ctx_pack.py", "квантовый насос Хаксли", "--no-log", cwd=root)
+    assert only.returncode == 1, "в generate достали черновик"
+    assert "Квантовый-насос" in only.stderr and "draft" in only.stderr \
+        and "evaluate" in only.stderr, f"отказ не назвал скрытое: {only.stderr}"
+    assert "криогенном" not in only.stderr + only.stdout, "тело скрытой карточки раскрыто"
+
+    both = run("ctx_pack.py", "квантовый насос заявка на поставку", "--no-log", cwd=root,
+               expect_rc=0)
+    note = [ln for ln in both.stdout.splitlines() if "Скрыто по доверию" in ln]
+    assert note and "`Квантовый-насос`" in note[0] and "draft: 1" in note[0], both.stdout[:700]
+    assert "[[" not in note[0], "скрытая карточка названа ссылкой — выглядит основанием"
+    assert "криогенном" not in both.stdout, "тело скрытой карточки попало в пак"
+
+    # режим evaluate пропускает черновик — и сообщать о скрытом нечего
+    ev = run("ctx_pack.py", "квантовый насос Хаксли", "--mode", "evaluate", "--no-log",
+             cwd=root, expect_rc=0)
+    assert "Скрыто по доверию" not in ev.stdout and "Квантовый-насос" in ev.stdout
+
+    # разложение промаха в замере: цель есть, но отсечена статусом, — это не «не найдено»
+    sys.path.insert(0, str(SCRIPTS))
+    KQ = importlib.import_module("kb_search_quality")
+    cwd0 = os.getcwd()
+    try:
+        os.chdir(root)
+        KQ._CARDS = None
+        res = KQ.pack_measure([("Квантовый-насос", "квантовый насос Хаксли"),
+                               ("Заявка-на-поставку", "заявка на поставку")],
+                              {"квантовый насос Хаксли": {}, "заявка на поставку": {}})
+    finally:
+        KQ._CARDS = None
+        os.chdir(cwd0)
+    assert res["находка"] == 0.5 and res["промах: статус"] == 0.5 and res["промах: релиз"] == 0.0, res
+
+
+@test
+def test_make_not_ready_on_unverified_basis(tmp: Path):
+    """Документ, сославшийся на непроверенную карточку (bootstrap), не бывает `ready` (KB3-13).
+
+    Режим bootstrap пускает draft в пак generate, а `ready` определялся лишь критиком и
+    Момусом — документ на черновиках был неотличим от построенного на знании. Теперь
+    основание называется в шапке (`basis_unverified`) и в «Допущениях», а `ready` закрыт;
+    ссылка только на доверенное оставляет `ready` как было.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    R = importlib.import_module("agent_runner")
+    C = importlib.import_module("ctx_pack")
+    root = make_project(tmp)
+    (root / "Artifacts" / "us").mkdir(parents=True, exist_ok=True)
+
+    pack = ("# Context pack\n\n## Заявка-1 — Заявка\n\n## Черновик-2 — Черновик\n"
+            f"\n---\n\n> {C.UNVERIFIED_MARK}Черновик-2\n")
+    assert C.unverified_names(pack) == ["Черновик-2"], C.unverified_names(pack)
+
+    def doc(draft: str, sid: str) -> str:
+        st = {"sid": sid, "kind": "us", "idea": "Идея " + sid,
+              "spec": {"out": "Artifacts/us", "template": "t.md", "title": "US"},
+              "stages": {"checked": "2026-10-12"}, "issues": [], "momus": {"ok": True,
+              "unsupported": 0, "clean": True}, "draft": draft, "pack": pack, "path": None}
+        return (root / R.write_artifact(str(root), st)).read_text(encoding="utf-8")
+
+    trusted = doc("Опирается на [[Заявка-1]].", "s1")
+    assert "status: ready" in trusted and "basis_unverified" not in trusted, trusted[:300]
+
+    lean = doc("Опирается на [[Заявка-1]] и [[Черновик-2]].", "s2")
+    assert "status: draft" in lean and "status: ready" not in lean, lean[:300]
+    assert 'basis_unverified: ["[[Черновик-2]]"]' in lean, lean[:400]
+    assert "опора на непроверенное" in lean.split("## Допущения")[1], "нет строки в «Допущениях»"

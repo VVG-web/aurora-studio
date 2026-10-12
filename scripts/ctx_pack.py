@@ -148,6 +148,15 @@ RETRIEVAL = {
     # целиком, и до переходов очередь не доходит (PRJ-A 28.09.2026: соседей 0 при любых
     # флагах). С восемью местами пак на 13 % меньше, но ответ эталона PRJ-C выпадает чаще.
     "graph_slots": 0,
+    # Уверенность выдачи (абсолютная, без нормировки к лучшему в запросе): доля слов вопроса,
+    # которые вместе нашли пять лучших карточек (с весом по редкости слова). Ниже `weak` —
+    # в пак идёт пометка «слабая опора» с перечнем ненайденного; ниже `abstain` и без
+    # поддержки смыслом и точным номером — движок отказывает сам, без обращения к модели.
+    # Пороги стартовые: калибровать на эталоне с неотвечаемыми вопросами
+    # (`ops:search-quality --compare "base,abstain=0.4"`); `abstain=0` выключает отказ,
+    # `weak=0` — пометку.
+    "weak": 0.6,
+    "abstain": 0.3,
 }
 _RETRIEVAL_ENV_DONE = False
 
@@ -650,6 +659,7 @@ def score(card: Card, topic: str, close: dict | None = None,
 
 # Насколько близость по смыслу считается совпадением. Ниже — случайность.
 SEM_FLOOR = 0.35
+HIDDEN_TOP = 10         # среди скольких лучших кандидатов искать скрытых фильтром доверия
 # Премия за согласие двух способов: они сошлись — карточка вернее, но премия мала,
 # иначе находка одного способа снова тонула бы под парами середняков.
 AGREE = 0.15
@@ -726,14 +736,84 @@ def fuse(cards: dict, topic: str, close: dict | None = None,
     return sorted(((w, at[n]) for n, w in got.items()),
                   key=lambda x: (-x[0], x[1].stem))
 
+# Вопросительные и служебные слова: они есть в любом вопросе и не говорят, о чём он, так
+# что «не найдено» о них — шум, а не признак отсутствия знания.
+QWORDS = {norm(w) for w in (
+    "какой", "какая", "какое", "какие", "каков", "какова", "каким", "какую", "какого",
+    "сколько", "почему", "зачем", "куда", "откуда", "кто", "кому", "чем", "расскажи",
+    "объясни", "опиши", "покажи", "подскажи", "скажи")}
+ASK_MAX_TERMS = 12      # длиннее — это постановка задачи, а не вопрос: уверенность не считаем
+
+
+def _surface(topic: str, key: str) -> str:
+    """Слово запроса так, как его написал человек (по ключу поиска)."""
+    for raw in re.findall(r"[\w\-.]+", topic.lower().replace("ё", "е"), re.U):
+        if raw.strip(".") and (norm(raw.strip(".")) == key or raw.strip(".") == key):
+            return raw.strip(".")
+    return key
+
+
+def confidence(seeds: list, topic: str, close: dict | None = None) -> dict | None:
+    """Абсолютная уверенность выдачи по лучшим карточкам, прошедшим фильтр доверия.
+
+    `fuse` приводит вес к доле от лучшего в запросе, и верхняя карточка любого вопроса весит
+    ≈1,0, найди она хоть одно общее слово. Здесь считается другое — ненормированное:
+      cover    доля слов вопроса (с весом по редкости), найденных в этих карточках вместе
+      missing  слова вопроса, которых в них нет; absent — которых нет в базе вообще
+      level    high / weak / none (см. RETRIEVAL «weak» и «abstain»)
+    «none» — только когда не сошлись ни слова, ни смысл (`close` выше SEM_FLOOR), ни точный
+    номер; без индекса смысла опираться остаётся на слова. Не вопрос (пусто или длиннее
+    ASK_MAX_TERMS слов) — None: постановку задачи по доле слов не судим.
+    """
+    terms = [w for w in dict.fromkeys(query_words(topic)) if w not in QWORDS]
+    if not terms or len(terms) > ASK_MAX_TERMS or not seeds:
+        return None
+    have = set()
+    for c in seeds:
+        head, brief, alias, tag, seen, _ids = _word_profile(c)
+        have |= {w for w in terms if w in head or w in brief or w in alias or w in tag
+                 or w in seen}
+    total = sum(weight(w) for w in terms)
+    cover = sum(weight(w) for w in have) / total if total else 1.0
+    missing = [w for w in terms if w not in have]
+    absent = [w for w in missing if not RARITY.get(w, 0)]
+    exact = any(_has_exact_id(c, terms) for c in seeds)
+    sem = any((close or {}).get(c.stem, 0.0) > SEM_FLOOR for c in seeds)
+    weak_at, abstain_at = float(RETRIEVAL["weak"]), float(RETRIEVAL["abstain"])
+    if exact or cover >= weak_at:
+        level = "high"
+    elif cover >= abstain_at or sem or not abstain_at:
+        level = "weak"
+    else:
+        level = "none"
+    # Слова, которых нет в базе вовсе (имя, код, номер) — «одно общее слово» не повод
+    # считать вопрос отвеченным: уверенность выше слабой не бывает.
+    if level == "high" and absent and weak_at:
+        level = "weak"
+    return {"level": level, "cover": round(cover, 2), "terms": len(terms),
+            "missing": [_surface(topic, w) for w in missing],
+            "absent": [_surface(topic, w) for w in absent]}
+
+
+def trust_hidden(c: "Card") -> bool:
+    """Карточку скрыл фильтр доверия (а не заготовка и не состояние решения).
+
+    Decision Record скрывает его состояние (отклонённое и заменённое видны только в `ask`),
+    это не «недоверенное знание»: имя такого решения в паке `generate` не появляется."""
+    return not is_placeholder(c.fm, c.text) and not is_decision(c)
+
 
 def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
             release: str, max_cards: int, close: dict | None = None,
-            mode: str = "") -> tuple:
+            mode: str = "", info: dict | None = None) -> tuple:
     """Seed по теме → один переход по ссылкам. → (карточки, исключено по релизу, соседи).
 
     «Соседи» — имена карточек, вошедших переходом, а не совпадением с запросом: при
     свёрнутом режиме (`neighbor_full=0`) они попадают в пак сутью, а не телом.
+
+    `info` (если передан) наполняется диагностикой, которая не меняет выбор: `hidden` —
+    карточки среди десяти лучших по запросу, которых фильтр доверия не пропустил (имя и
+    статус; тело в пак не идёт), `confidence` — оценка `confidence()` по принятым карточкам.
     """
     _retrieval_env()
 
@@ -750,19 +830,30 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
             return True
         return bootstrap and c.status in ("", "imported", "draft", "in-review")
 
+    if close is None:
+        close = semantic(topic, max_cards * 2)      # то же, что `fuse` делал сам при None
     seeds = fuse(cards, topic, close, limit=max_cards * 2)
     chosen, seen, dropped = [], set(), []
+    hidden = []
     seed_cap = max(1, max_cards - int(RETRIEVAL.get("graph_slots") or 0))
-    for _, c in seeds:
+    for rank_no, (_, c) in enumerate(seeds):
         if len(chosen) >= seed_cap:
             break
-        if c.stem in seen or not allowed(c):
+        if c.stem in seen:
+            continue
+        if not allowed(c):
+            if rank_no < HIDDEN_TOP and mode not in MEETING_RULE and trust_hidden(c):
+                hidden.append(c)
             continue
         if release and c.applies_to and release not in c.applies_to:
             dropped.append(c)
             continue
         seen.add(c.stem)
         chosen.append(c)
+    if info is not None:
+        info["hidden"] = hidden
+        info["seeded"] = len(chosen)
+        info["confidence"] = confidence(list(chosen[:5]), topic, close)
 
     # Один переход по связям — так пак получает термины и соседей темы. Источников
     # перехода три, и порядок не случаен: ссылка в теле — авторская и точечная;
@@ -914,6 +1005,32 @@ def log_usage(stems: list, command: str) -> None:
             f.write(f"{TODAY}\t{command}\t{s}\n")
 
 
+UNVERIFIED_MARK = "Эти карточки ждут верификации — примите с дефолтами после беглой проверки: "
+WEAK_MARK = "**Слабая опора:**"
+
+
+def unverified_names(pack: str) -> list:
+    """Имена непроверенных карточек, вошедших в пак (строка в конце пака)."""
+    m = re.search(r"^> " + re.escape(UNVERIFIED_MARK) + r"(.+)$", pack, re.M)
+    return [x.strip() for x in m.group(1).split(",") if x.strip()] if m else []
+
+
+def hidden_note(hidden: list, mode: str, short: bool = False) -> str:
+    """Что отсеял фильтр доверия среди лучших кандидатов: число, статусы и лучшее имя.
+
+    Только имя и статус, без тела и без `[[ссылки]]`: подсказка, где искать, а не источник
+    для ответа (ссылка в паке выглядела бы основанием, а карточка в контекст не вошла)."""
+    by: dict = {}
+    for c in hidden:
+        by[c.status or "без статуса"] = by.get(c.status or "без статуса", 0) + 1
+    kinds = ", ".join(f"{k}: {n}" for k, n in sorted(by.items()))
+    best = hidden[0]
+    note = (f"Скрыто по доверию (режим {mode}): {len(hidden)} из лучших кандидатов ({kinds}); "
+            f"лучший скрытый — `{best.stem}` ({best.status or 'без статуса'})")
+    return note + (". Материал есть, но непроверен: повторите в режиме evaluate."
+                   if short else "; тело не показано — режим evaluate покажет такие карточки.")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Детерминированная сборка context pack")
     ap.add_argument("topic", help="тема запроса")
@@ -993,12 +1110,27 @@ def main() -> int:
     # Близость считает `fuse` — после расширения запроса словарём. Считать её здесь
     # значило бы искать векторами по исходному запросу, а словами по расширенному.
     close = {} if a.no_semantic else None
+    info: dict = {}
     chosen, dropped, neighbors = collect(cards, a.topic, MODE_STATUSES[a.mode], bootstrap,
-                                         release, a.max_cards, close, a.mode)
+                                         release, a.max_cards, close, a.mode, info)
     jira = jira_state(a.topic)
-    if not chosen and not jira:
-        print(f"ctx_pack: по теме «{a.topic}» ничего не найдено. "
-              "База не знает — не выдумывайте: заведите вопрос (kb:question) или карточку.",
+    hidden = info.get("hidden") or []
+    conf = info.get("confidence")
+    # Справочник аббревиатур входит в `chosen` всегда, поэтому «нашлись только скрытые»
+    # узнаём по числу карточек, прошедших по запросу.
+    if (not chosen or (hidden and not info.get("seeded"))) and not jira:
+        print(f"ctx_pack: по теме «{a.topic}» ничего {'доверенного ' if hidden else ''}не найдено. "
+              + (hidden_note(hidden, a.mode, short=True) + " " if hidden else "")
+              + "База не знает — не выдумывайте: заведите вопрос (kb:question) или карточку.",
+              file=sys.stderr)
+        return 1
+    if conf and conf["level"] == "none" and not jira:
+        # Выдача слабее порога и без поддержки смыслом: пак из случайных совпадений хуже, чем
+        # честное «этого в базе нет». Модель не зовём — отказ детерминирован и стоит ноль.
+        print(f"ctx_pack: по теме «{a.topic}» в базе этого нет: из слов вопроса найдено "
+              f"{conf['cover']:.0%}, не хватает: {', '.join(conf['missing'][:8])}. "
+              + (hidden_note(hidden, a.mode, short=True) + " " if hidden else "")
+              + "Не выдумывайте: заведите вопрос (kb:question) или карточку.",
               file=sys.stderr)
         return 1
     if not chosen:
@@ -1020,6 +1152,13 @@ def main() -> int:
     if bootstrap:
         out += [f"> ⚠️ **BOOTSTRAP:** проверено {pct:.1f}% базы (порог {threshold()}%). "
                 "Ниже есть непроверенные карточки — они помечены и фактами не являются.\n"]
+    if conf and conf["level"] == "weak":
+        out += [f"> ⚠️ {WEAK_MARK} из слов вопроса найдено "
+                f"{conf['cover']:.0%}; в базе нет: {', '.join(conf['missing'][:8]) or '—'}. "
+                "Отвечайте только по найденному и прямо назовите, чего не хватило "
+                "(`kb:question`).\n"]
+    if hidden:
+        out += ["> " + hidden_note(hidden, a.mode) + "\n"]
     if dropped:
         out += [f"> Исключено по релизу {release}: {len(dropped)} карточек "
                 f"({', '.join(c.stem for c in dropped[:5])}…)\n"]
@@ -1055,8 +1194,7 @@ def main() -> int:
     unverified = [c.stem for c in used if c.status not in TRUSTED and c.status != "deprecated"
                   and not is_decision(c)]
     if unverified:
-        out += ["\n---\n", f"> Эти карточки ждут верификации — примите с дефолтами после беглой "
-                f"проверки: {', '.join(unverified)}"]
+        out += ["\n---\n", f"> {UNVERIFIED_MARK}{', '.join(unverified)}"]
 
     text = "\n".join(out)
     print(text)
