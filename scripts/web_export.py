@@ -246,11 +246,15 @@ def host_allowed(o: tuple, hosts: list) -> bool:
     return False
 
 
-def bind_report(tried: set, answered: set, stored) -> str:
+def bind_report(tried: set, answered: set, stored, bound=()) -> str:
     """Одна строка итога привязки токена; `stored`: записано ли (None — привязывать нечего,
-    никто не ответил)."""
+    никто не ответил). `bound` — что записано на диске, когда запись не вышла: привязку уже
+    успел записать параллельный запуск (кнопка и Cron), и причину про папку называть нельзя."""
     miss = ", ".join(sorted(tried - answered))
     line = ",".join(sorted(tried))
+    if stored is False and bound:
+        return (f"🔐 токен привязан к: {', '.join(sorted(bound))} "
+                "(привязку записал параллельный запуск)")
     if stored:
         out = f"🔐 токен привязан к: {', '.join(sorted(answered))}"
         if miss:
@@ -872,8 +876,9 @@ def run(a) -> int:
     # не лишает защиты. Не ответившие в привязку не входят и токена больше не получат, пока
     # человек не впишет их строкой; итог — одна строка в выводе, молчания нет.
     if learn and tried:
-        print(bind_report(tried, answered,
-                          remember_hosts("WEB", answered) if answered else None))
+        stored = remember_hosts("WEB", answered) if answered else None
+        print(bind_report(tried, answered, stored,
+                          trusted_hosts("WEB") if stored is False else ()))
     # Расшифровки скачанных документов поднимаем в корень зеркала: их текст — источник
     # знания наравне со страницей, а из `_files/` разбор его не увидит.
     converted = convert_documents(mirror.out, a.apply)

@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 
-from harness import KIT, SCRIPTS, test  # noqa: F401
+from harness import KIT, SCRIPTS, run, test  # noqa: F401
 
 COCKPIT = KIT / "cockpit"
 ENV_LOCAL = ".env.aurora" + ".local"
@@ -1618,9 +1618,30 @@ def test_web_token_binding_checks_scheme_and_port(tmp: Path):
     assert refused("https://wiki.example.com:8443/a", plain)
     assert refused("https://other.example.com/a", plain)
     assert refused("http://wiki.example.com/a", ["https://wiki.example.com"])   # обратного хода нет
+    # привязку проверяем без отказа за открытый http: он дал бы отказ и при ошибке в привязке
+    AC0 = importlib.import_module("aurora_common")
+    assert not WE.host_allowed(AC0.url_origin("http://wiki.example.com/a"), ["https://wiki.example.com"])
+    assert not WE.host_allowed(AC0.url_origin("http://wiki.example.com/a"), bound)
+    assert WE.host_allowed(AC0.url_origin("https://wiki.example.com/a"), ["http://wiki.example.com"])
+    assert WE.token_refusal("http://wiki.example.com/a", "http://wiki.example.com/a", "T", bound,
+                            {"AURORA_ALLOW_HTTP": "1"}), "http-страница на хосте, доверенном по https"
     # свой компьютер: ответ не зависит от привязки (в запомненный список он не попадает)
     for u in ("http://127.0.0.1:9/a", "http://localhost/a"):
         assert WE.token_refusal(u, u, "T", bound, {"AURORA_ALLOW_HTTP": ""}) == "", u
+
+
+@test
+def test_web_token_bind_report_does_not_blame_the_folder_when_bound(tmp: Path):
+    """Привязку уже записал параллельный запуск (кнопка и Cron): итог называет её, а не «нет папки
+    .aurora»; при настоящей неудаче причина прежняя."""
+    _path()
+    WE = importlib.import_module("web_export")
+    one = {"https://wiki.example.com"}
+    got = WE.bind_report(one, one, False, ["https://wiki.example.com"])
+    assert "токен привязан к: https://wiki.example.com" in got and ".aurora" not in got, got
+    got = WE.bind_report(one, one, False, [])
+    assert "токен не привязан" in got and "нет папки .aurora" in got, got
+    assert "токен привязан" in WE.bind_report(one, one, True)
 
 
 @test
@@ -1646,6 +1667,17 @@ def test_doctor_names_a_web_token_without_host_binding(tmp: Path):
     (root / ".aurora" / "state" / "trusted-hosts.json").write_text(
         '{"WEB": ["https://wiki.example.com"]}', encoding="utf-8")
     assert D.check_web_token_binding(root, {}) == []                       # запомненные хосты
+    # подключение: предупреждение выводит сам `kit:doctor`, а не только функция
+    (root / ".aurora" / "state" / "trusted-hosts.json").unlink()
+    out = run("aurora_doctor.py", cwd=root, expect_rc=None).stdout
+    assert "привязки к хостам нет" in out, out
+    env_file.write_text("WEB_PERSONAL_TOKEN=SECRET\nAURORA_WEB_TOKEN_HOSTS=wiki.example.com\n",
+                        encoding="utf-8")
+    assert "привязки к хостам нет" not in run("aurora_doctor.py", cwd=root, expect_rc=None).stdout
+    env_file.write_text("WEB_PERSONAL_TOKEN=SECRET\n", encoding="utf-8")
+    (root / ".aurora" / "state" / "trusted-hosts.json").write_text(
+        '{"WEB": ["https://wiki.example.com"]}', encoding="utf-8")
+    assert "привязки к хостам нет" not in run("aurora_doctor.py", cwd=root, expect_rc=None).stdout
 
 
 @test
