@@ -39,14 +39,16 @@ skills/aurora-vault/references/maintenance.md  => .aurora/skills/aurora-vault/re
 # --- скрипты движка ---
 # общий модуль примитивов: его импортируют остальные скрипты
 scripts/aurora_common.py => .aurora/scripts/aurora_common.py
+# реестр типов карточек, паспорт шаблона и проверка карточки по шаблону (`kb:cards`); его жёстко импортируют
+# kb_lint, kb_fix, build_plan и kb_schema — поэтому сразу за общим модулем: обрыв обновления между записями не
+# должен оставить хуку pre-commit ImportError
+scripts/card_types.py    => .aurora/scripts/card_types.py
 # общая часть синка и реестр модулей источников
 scripts/sources_core.py     => .aurora/scripts/sources_core.py
 scripts/sources_registry.py => .aurora/scripts/sources_registry.py
 scripts/kb_lint.py       => .aurora/scripts/kb_lint.py
 # детерминированный линтер артефактов (истории, критерии, спеки): его зовёт kb_lint
 scripts/artifact_lint.py => .aurora/scripts/artifact_lint.py
-# реестр типов карточек, паспорт шаблона и проверка карточки по шаблону (`kb:cards`)
-scripts/card_types.py    => .aurora/scripts/card_types.py
 # Эти три ставились установкой, но в манифест не попали — и потому не обновлялись
 # никогда: проект годами держал версию времён своего создания, при том что
 # `aurora_version.txt` исправно показывал свежую. Один прогон двумя версиями движка,

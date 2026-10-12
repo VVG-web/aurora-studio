@@ -303,8 +303,10 @@ def ensure_frontmatter(card: Card, section: str = "") -> str:
     add = ""
     if not card.fm.get("status"):
         add += "status: draft\n"
-    want = section_type().get(section)
-    if not card.fm.get("type") and want:
+    # таблицу спрашиваем только у карточки без типа: у остальных она не нужна, а на тысячах карточек
+    # каждый вопрос — это проверка папок шаблонов
+    want = "" if card.fm.get("type") else section_type().get(section)
+    if want:
         add += f"type: {want}\n"
     if not add:
         return head + rest if head != card.text[:card.fm_end] else card.text

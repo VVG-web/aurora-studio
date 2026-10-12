@@ -37,7 +37,7 @@ from aurora_common import link_escapes, root_link_escapes, scan_secret_files
 from aurora_common import (OWN_LIFECYCLE, STATUSES, aliases, body_hash, card_body, card_stem, card_type,
                            card_sources, config_list, config_value, frontmatter, is_service, not_a_card_link,
                            leaf_name, link_refs, project_terms)
-from card_types import lint_section, registry
+from card_types import lint_section, safe_registry
 
 ROOT = "AuroraKnowledgeDB"
 
@@ -266,7 +266,7 @@ def main():
     resolvable = names | set(alias_owner.keys())
     key = config_value("project_key")
     jira_re = re.compile(rf"(?i)^{re.escape(key)}-\d+") if key else None
-    reg = registry(".")
+    reg = safe_registry(".")        # реестр не бросает: сбой — пустой реестр с проблемой и прежняя таблица разделов
     section_type = reg.section_type()
     known_types = reg.known_types()
 

@@ -464,6 +464,20 @@ def _passport_type(entry, problems: list):
         path=path, origin=origin, passport=p)
 
 
+def _find_kit() -> tuple:
+    """(путь к киту или "", причина, если указатель на кит не читается). Исключений не бросает.
+
+    `aurora_common.kit_root` читает `.aurora/kit_path.txt` как UTF-8 и на обрезке файла (байты не в UTF-8) падает:
+    одна битая строка указателя не должна ронять линтер, ремонт и разбор — шаблоны проекта работают и без кита.
+    """
+    try:
+        found = _kit_root()
+    except Exception as e:  # noqa: BLE001 — битый указатель, нет прав: кита «нет», а не сбой скрипта
+        return "", (f"кит не найден: указатель .aurora/kit_path.txt не читается ({type(e).__name__}) — "
+                    "запасной путь шаблонов кита недоступен; пересоздайте указатель обновлением проекта")
+    return (str(found) if found else ""), ""
+
+
 def registry(project_root: str = ".", kit_root: "str | None" = None) -> Registry:
     """Эффективный реестр типов проекта (алгоритм §6.3 плана).
 
@@ -482,8 +496,9 @@ def registry(project_root: str = ".", kit_root: "str | None" = None) -> Registry
     reg = Registry(project_root=str(project_root))
     kit_dir = kit_root
     if kit_dir is None:
-        found = _kit_root()
-        kit_dir = str(found) if found else ""
+        kit_dir, why = _find_kit()
+        if why:
+            reg.problems.append(why)
     reg.kit_root = str(kit_dir or "")
     project = _scan(os.path.join(project_root, "Templates"), "project")
     common = _scan(os.path.join(project_root, "TemplatesCommon"), "kit")
@@ -580,9 +595,24 @@ _TABLE_CACHE: dict = {}
 
 
 def _stamp(path: str):
-    """Отпечаток папки шаблонов: время изменения и имена файлов (создание и удаление видны и в одну долю секунды)."""
+    """Отпечаток папки шаблонов: время изменения папки и у каждого файла `akdb_*` — имя, время, размер.
+
+    Новый, удалённый и переписанный «на месте» шаблон меняют отпечаток (создание и удаление видны и в одну долю
+    секунды — по именам). Читаются только файлы шаблонов типов: остальное в `Templates/` на таблицу не влияет.
+    """
     try:
-        return (os.stat(path).st_mtime_ns, tuple(sorted(os.listdir(path))))
+        folder = os.stat(path).st_mtime_ns
+        files = []
+        with os.scandir(path) as entries:
+            for entry in entries:
+                if not TEMPLATE_NAME_RE.match(entry.name):
+                    continue
+                try:
+                    st = entry.stat()
+                    files.append((entry.name, st.st_mtime_ns, st.st_size))
+                except OSError:
+                    files.append((entry.name, None, None))
+        return folder, tuple(sorted(files, key=lambda f: f[0]))
     except OSError:
         return None
 
@@ -595,6 +625,12 @@ def section_type_table(project_root: str = ".", kit_root: "str | None" = None, *
     Реестр не собрался (сбой чтения) — тоже прежняя таблица: скрипт, которому нужен только тип по разделу,
     не должен падать из-за шаблонов.
 
+    Две конфигурации, обе задуманы. Шаблонов нет ни в проекте, ни в ките (копия движка без указателя на кит):
+    таблица — прежние двенадцать пар, `Documents` линтеру и ремонту неизвестен. Шаблоны есть (доставлены в проект
+    или кит доступен через `.aurora/kit_path.txt`): тринадцать пар, к прежним добавлено `Documents` → `cited-document`,
+    и карточка такого типа в своём разделе — не «тип вне схемы», а `kb:repair --sections` переносит её в `Documents/`.
+    Различие — не сбой, а следствие того, что шаблоны доставлены (тест `part_42`: «две конфигурации»).
+
     `for_build=True` — разделы, куда разбор источников вправе класть карточки: без тех, что ведёт только свой
     скрипт (`SCRIPT_ONLY_TYPES`, цитируемые документы). Раздел вне этой таблицы `build_plan --to` отвергал и раньше.
 
@@ -606,8 +642,7 @@ def section_type_table(project_root: str = ".", kit_root: "str | None" = None, *
     try:
         kit = kit_root
         if kit is None:
-            found = _kit_root()
-            kit = str(found) if found else ""
+            kit, _why = _find_kit()
         stamp = (_stamp(os.path.join(root, "Templates")), _stamp(os.path.join(root, "TemplatesCommon")),
                  _stamp(os.path.join(kit, "scaffold", "TemplatesCommon")) if kit else None)
         key = (os.path.realpath(root), str(kit or ""))
@@ -626,6 +661,20 @@ def section_type_table(project_root: str = ".", kit_root: "str | None" = None, *
         out = dict(LEGACY_SECTION_TYPE)
         out.update(UNMANAGED_SECTION_TYPES)
         return out
+
+
+def safe_registry(project_root: str = ".", kit_root: "str | None" = None) -> Registry:
+    """`registry()`, который не бросает исключений: сбой сборки — пустой реестр с проблемой.
+
+    Пустой реестр отдаёт прежнюю таблицу «раздел → тип» (`LEGACY_SECTION_TYPE`) и никаких типов сверх неё, так что
+    скрипт, которому реестр нужен для чтения (линтер базы), судит как до реестра, а причина видна в `problems`.
+    """
+    try:
+        return registry(project_root, kit_root)
+    except Exception as e:  # noqa: BLE001 — реестр не вправе уронить линтер
+        reg = Registry(project_root=str(project_root))
+        reg.problems.append(f"реестр типов не собрался ({type(e).__name__}): пока читается прежняя таблица разделов")
+        return reg
 
 
 def prompt_extract(card_type: str, reg: Registry, *, common: bool = True) -> str:
@@ -862,11 +911,13 @@ class TypedField:
     `classes` и `types` — у каких карточек поле допустимо (по классу или по типу); `but` — типы, у которых
     поле недопустимо, хотя класс подходит. `value`: `links` — ссылки `[[Имя]]` (одна или список),
     `names` — имена файлов исправлений (так пишет `kb:correct`), `text` — свободная строка (путь, письмо).
+    `bare` — вместо ссылки принимается и имя карточки без скобок: так читает `corrects:` `kb_corrections`.
     """
     classes: tuple = ()
     types: tuple = ()
     value: str = "links"
     but: tuple = ()
+    bare: bool = False
 
     def allows(self, type_id: str, cls: str) -> bool:
         return type_id not in self.but and (cls in self.classes or type_id in self.types)
@@ -881,7 +932,7 @@ TYPED_FIELDS = {
     "superseded_by": TypedField(classes=("entity",), types=("decision",)),
     "same_subject": TypedField(classes=("entity",)),
     "blocks": TypedField(types=("question",)),
-    "corrects": TypedField(types=("correction",)),
+    "corrects": TypedField(types=("correction",), bare=True),
     "corrected_by": TypedField(classes=("entity", "source"), value="names"),
     "decisions": TypedField(types=("requirement",)),
     "prev": TypedField(types=("cited-document",)),
@@ -945,19 +996,78 @@ def _as_wikilink(item: str) -> str:
     return _link_name(inner)
 
 
+def _bare_name(item: str) -> str:
+    """Пункт значения — имя карточки без скобок (`corrects: Имя`, в кавычках или без) → имя; иначе пусто."""
+    s = item.strip().strip('"').strip("'").strip()
+    if not s or "[" in s or "]" in s:
+        return ""
+    return _link_name(s)
+
+
+def _item_name(item: str, spec: "TypedField | None" = None) -> str:
+    """Пункт значения типизированного поля → имя карточки: ссылка `[[Имя]]`, а у поля с `bare` — и имя без скобок."""
+    return _as_wikilink(item) or (_bare_name(item) if spec is not None and spec.bare else "")
+
+
+def _wikilink_list(raw: str) -> list:
+    """`[[A]], [[B]]` (так записан список в шаблоне вопроса: `blocks: [[REQ-042]], [[SPEC-012]]`) → пункты;
+    значение другой формы — пусто. Один проход: каждая ссылка закрывается ближайшим `]]`, между ссылками — запятая."""
+    out, pos, n = [], 0, len(raw)
+    while pos < n:
+        while pos < n and raw[pos] in " \t,\"'":
+            pos += 1
+        if pos >= n:
+            break
+        if not raw.startswith("[[", pos):
+            return []
+        close = raw.find("]]", pos + 2)
+        if close < 0:
+            return []
+        out.append(raw[pos:close + 2])
+        pos = close + 2
+        while pos < n and raw[pos] in " \t\"'":
+            pos += 1
+        if pos < n:
+            if raw[pos] != ",":
+                return []
+            pos += 1
+    return out
+
+
+def _is_bracketed(raw: str) -> bool:
+    """Первая «[» значения закрывается последней «]» — это список `[…]`, а не обрывок вида `[A]] и [[B]`."""
+    if not (raw.startswith("[") and raw.endswith("]")):
+        return False
+    depth = 0
+    for i, ch in enumerate(raw):
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return i == len(raw) - 1
+    return False
+
+
 def _typed_items(value: str) -> list:
-    """Пункты значения поля шапки: одно значение либо список, записанный строкой `["a", "b"]`.
+    """Пункты значения поля шапки: одно значение, список ссылок через запятую (`[[A]], [[B]]`) либо список,
+    записанный строкой `["a", "b"]`.
 
     Блочный список (`- "a"` ниже ключа) единый разбор шапки (`frontmatter`) уже свёл к такой же строке.
-    Хвостовой комментарий `# …` не часть значения; поле с одним комментарием — пустое.
+    Хвостовой комментарий `# …` не часть значения; поле с одним комментарием — пустое. Значение, чьи скобки не
+    сходятся (`[[A]`, `[A]]`), остаётся одним пунктом как есть: сообщение называет то, что написано в шапке.
     """
     raw = head_cut_comment(value or "").strip()
     if not raw or head_blank(raw):
         return []
     if _as_wikilink(raw):
         return [raw]
-    if raw.startswith("[") and raw.endswith("]"):
-        items = (x.strip().strip('"').strip("'").strip() for x in split_inline_items(raw[1:-1]))
+    links = _wikilink_list(raw)
+    if links:
+        return list(dict.fromkeys(links))
+    if _is_bracketed(raw):
+        inner = raw[1:-1]
+        items = (x.strip().strip('"').strip("'").strip() for x in split_inline_items(inner))
         return list(dict.fromkeys(x for x in items if x))
     return [raw]
 
@@ -967,11 +1077,14 @@ def typed_link_names(fm: dict, key: str) -> list:
 
     `fm` — `aurora_common.frontmatter(text)`: шапку читает единый разбор, здесь только значение поля.
     Граф базы (`kb_graph`) берёт рёбра по `part_of`, `prev` и `next` отсюда же, где поля проверяет V-16.
+    Порядок — как в шапке, повторы сняты множеством (на длинном списке проверка «уже есть в списке» — квадрат).
     """
-    out = []
+    out, seen = [], set()
+    spec = TYPED_FIELDS.get(key)
     for item in _typed_items((fm or {}).get(key, "")):
-        name = _as_wikilink(item)
-        if name and name not in out:
+        name = _item_name(item, spec)
+        if name and name not in seen:
+            seen.add(name)
             out.append(name)
     return out
 
@@ -994,11 +1107,13 @@ def _check_typed(fm: dict, type_id: str, cls: str, kline, add) -> set:
                 "список типизированных полей закрыт; новое отношение — новая версия шаблонов")
             continue
         if spec.value == "links":
-            bad = [x for x in items if not _as_wikilink(x)]
+            bad = [x for x in items if not _item_name(x, spec)]
             if bad:
-                add("V-16", kline(key), f"значение поля «{key}» — не ссылка [[Имя]]: «{bad[0][:60]}»",
-                    "значение — ссылка или список ссылок: [\"[[Имя]]\", …]")
-            names.update(n for n in map(_as_wikilink, items) if n)
+                what = "ни ссылка [[Имя]], ни имя карточки" if spec.bare else "не ссылка [[Имя]]"
+                add("V-16", kline(key), f"значение поля «{key}» — {what}: «{bad[0][:60]}»",
+                    "значение — ссылка, список ссылок [[Имя]], [[Имя]] или [\"[[Имя]]\", …]"
+                    + (", а у corrects: и имя карточки без скобок" if spec.bare else ""))
+            names.update(n for n in (_item_name(x, spec) for x in items) if n)
     return names
 
 
@@ -1354,10 +1469,11 @@ def _calm(text: str, limit: int = 200) -> str:
 
 def lint_section(project_root: str = ".", reg: "Registry | None" = None) -> list:
     """Строки раздела «шаблоны карточек» вывода `kb:lint`: сколько проверено, сколько с `template:`, нарушения
-    по кодам V-NN (советы, `advisory`). Пусто — сказать нечего: шаблонов нет или база пуста."""
-    reg = reg if reg is not None else registry(project_root)
+    по кодам V-NN (советы, `advisory`). Пусто — сказать нечего: шаблонов и проблем реестра нет либо база пуста."""
+    reg = reg if reg is not None else safe_registry(project_root)
     if not reg.types:
-        return []
+        # шаблонов нет, но реестр собрался с проблемой (битый указатель на кит, сбой чтения): одна строка о ней
+        return ([LINT_HEADING] + [f"   проблема реестра: {_calm(p)}" for p in reg.problems[:3]]) if reg.problems else []
     results = check_cards(project_root, reg, (), "advisory")
     if not results:
         return []
@@ -1405,7 +1521,7 @@ def _print_registry(reg: Registry) -> None:
         print("  ".join(c.ljust(widths[k]) for k, c in enumerate(r)).rstrip())
         if i == 0:
             print("  ".join("-" * w for w in widths))
-    print(f"\nТипов: {len(reg.types)}. Карточку можно создавать только по этим типам; тип вне списка не существует.")
+    print(f"\nТипов: {len(reg.types)}. Проверка пока только советует: карточку типа вне списка она замечает, но не отвергает.")
     for p in reg.problems:
         print(f"  проблема реестра: {p}")
 
