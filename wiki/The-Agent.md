@@ -72,8 +72,10 @@ providers of the setup: if your perimeter forbids sending materials out, do not 
 - **A failure on one card does not stop the run;** three in a row do. This holds for an exception too, not only a model
   refusal: a unit of work that crashes (a card that cannot be read, a model answer of the wrong shape) becomes a failed
   step with its traceback in `failures.jsonl`, and a command that overruns its time limit is a failed result, not a crash.
-  A source whose cards were not all written stays in the plan instead of being marked parsed; if the engine refuses the
-  same write twice in a row, the plan defers that source instead of retrying forever. A command that did not run at
+  A source whose cards were not all written, or whose planner boundaries cover less than 60 % of the text, stays in the
+  plan instead of being marked parsed; a closed panel pipe (BrokenPipeError) ends the run instead of counting as a
+  failure of one unit; if the engine refuses the same write twice in a row, the plan defers that source instead of
+  retrying forever. A command that did not run at
   all (time limit, launch failure) is never read as "zero": the linter oracle fails the run ("linter did not answer"),
   and a reader such as the synonym-conflict or twin list stops the run with the reason instead of reporting "nothing to do".
 - **Stop is not loss.** "Stop" in the panel sends SIGTERM: the agent commits what it already wrote as its own `agent: …`
@@ -81,5 +83,7 @@ providers of the setup: if your perimeter forbids sending materials out, do not 
   Windows the panel cannot deliver SIGTERM yet, so a stopped run there is committed by the next checkpoint as human work.
   Every path that stops an engine process (the Stop button, a panel exit or restart, the hang watchdog, the sweep of
   abandoned processes) first sends SIGTERM to the runner alone and waits up to 15 seconds for that commit, and only then
-  takes down the whole process tree. The "stopped" line in the console promises the commit only if the run printed its
-  "Agent result" line.
+  takes down the whole process tree; on a panel exit the jobs are taken down simultaneously, the panel socket is closed
+  before that, and `--restart` waits until the previous process has really gone. The "stopped" line in the console
+  promises the commit only if the run named its hash in the "Agent result: … (abcd1234)" line; "wrote nothing yet" and
+  "commit not made" give no such promise.

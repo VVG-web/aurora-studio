@@ -3951,8 +3951,10 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         # карточке N», объявлялся сбойным. На живой пересборке так упала целая партия:
         # индекс собрался, модель начала отвечать `into`, и приняли это за пустой ответ.
         # Ответ модели — данные, а не код: `cards` бывает строкой, словом или списком строк.
-        cards = [c for c in (plan["cards"] if isinstance(plan["cards"], list) else [])
-                 if isinstance(c, dict) and (c.get("title") or c.get("into")) and c.get("sections")]
+        named = [c for c in (plan["cards"] if isinstance(plan["cards"], list) else [])
+                 if isinstance(c, dict)]
+        cards = [c for c in named
+                 if (c.get("title") or c.get("into")) and c.get("sections")]
         if not cards:
             fail_step(step, "карточки предложены без имени или секций", r, key="note")
             step["content_fail"] = True
@@ -4677,7 +4679,7 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
             source = source_info[1]
             say(f"  дописан после остановки: {source.rsplit('/', 1)[-1][:60]} → {step['status']}"
                 + (f": {step['note'][:110]}" if step["note"] else ""))
-            defer_if_content_fail(cwd, source, step, apply)
+            defer_if_content_fail(cwd, source_info[1], step, apply)
 
     after_left, after_done = build_left(cwd) if apply else (before_left, before_done)
     if apply and any(s.get("status") in ("разобран", "разобран по абзацам") for s in steps):
