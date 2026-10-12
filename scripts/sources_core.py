@@ -150,8 +150,10 @@ def _store_trusted(prefix: str, value, root: str = "") -> bool:
 
 
 def origin_text(o: tuple) -> str:
-    """`схема://хост[:порт]` по `url_origin(...)`: стандартный порт схемы не пишется."""
-    return f"{o[0]}://{o[1]}" + ("" if o[2] in (80, 443) else f":{o[2]}")
+    """`схема://хост[:порт]` по `url_origin(...)`: стандартный порт схемы не пишется, адрес
+    IPv6 берётся в квадратные скобки (иначе `url_origin` записанную строку не разберёт)."""
+    host = f"[{o[1]}]" if ":" in o[1] else o[1]
+    return f"{o[0]}://{host}" + ("" if o[2] == {"http": 80, "https": 443}.get(o[0]) else f":{o[2]}")
 
 
 def remember_origin(prefix: str, base: str, root: str = "") -> None:

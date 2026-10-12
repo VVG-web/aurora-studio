@@ -571,12 +571,13 @@ def check_linked_roots() -> list:
     return out
 
 
-def check_web_token_binding(root: Path | None = None, environ: dict | None = None) -> str:
+def check_web_token_binding(root: Path | None = None, environ: dict | None = None) -> list:
     """Токен обхода сайтов есть, а привязки к хостам нет — предупреждение (пусто — всё в
     порядке). Привязка — строка `AURORA_WEB_TOKEN_HOSTS` в файле машины или запомненные хосты
     первого прогона (`.aurora/state/trusted-hosts.json`); без неё токен уходит на каждый хост
     общего списка страниц, и страница, добавленная туда чужим PR, его получила бы."""
     root = root or ROOT
+    out = []   # через .append: реестр переводов kit_i18n собирает сообщения доктора именно по вызовам append
     try:
         from aurora_common import ENV_FILE, load_env
         from sources_core import trusted_hosts
@@ -585,12 +586,13 @@ def check_web_token_binding(root: Path | None = None, environ: dict | None = Non
         if not (env.get("WEB_PERSONAL_TOKEN") or env.get("WEB_PAT")) \
                 or str(env.get("AURORA_WEB_TOKEN_HOSTS", "")).strip() \
                 or trusted_hosts("WEB", str(root)):
-            return ""
+            return out
     except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
-        return ""
-    return ("токен обхода сайтов есть, привязки к хостам нет: он уходит на каждый хост общего "
-            "списка страниц → впишите в файл машины AURORA_WEB_TOKEN_HOSTS=wiki.example.com,… "
-            "или запустите выгрузку сайтов: движок запомнит хосты, которые ответили")
+        return out
+    out.append("токен обхода сайтов есть, привязки к хостам нет: он уходит на каждый хост общего "
+               "списка страниц → впишите в файл машины AURORA_WEB_TOKEN_HOSTS=wiki.example.com,… "
+               "или запустите выгрузку сайтов: движок запомнит хосты, которые ответили")
+    return out
 
 
 def check_python(errors: list, warns: list, vi=None, platform=None) -> None:
@@ -699,9 +701,7 @@ def main() -> int:
     warns += check_kit_hooks()
     warns += check_mirror_heads()
     warns += check_linked_roots()
-    _bind = check_web_token_binding()
-    if _bind:
-        warns.append(_bind)
+    warns += check_web_token_binding()
 
     s_err, s_warn, s_lines = check_structure(structure_verbose)
     errors += s_err

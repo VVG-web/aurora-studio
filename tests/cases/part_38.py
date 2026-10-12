@@ -1603,6 +1603,21 @@ def test_web_token_binding_checks_scheme_and_port(tmp: Path):
     assert refused("https://wiki.example.com/a", ["wiki.example.com:9443"])
     assert WE.token_hosts({"AURORA_WEB_TOKEN_HOSTS": "Wiki.example.com:9443, https://a.example.org"}) \
         == ["wiki.example.com:9443", "https://a.example.org"]
+    # адрес IPv6: записанное `origin_text` читается обратно, и токен уходит на свой же хост
+    SC = importlib.import_module("sources_core")
+    AC = importlib.import_module("aurora_common")
+    for u in ("https://[2001:db8::1]:8443/a", "https://[2001:db8::1]/a", "https://wiki.example.com:8080/a"):
+        t = SC.origin_text(AC.url_origin(u))
+        assert AC.url_origin(t) == AC.url_origin(u), (u, t)
+        assert not refused(u, [t]), (u, t)
+    assert SC.origin_text(AC.url_origin("https://[2001:db8::1]:8443/a")) == "https://[2001:db8::1]:8443"
+    assert SC.origin_text(AC.url_origin("http://h.example.com:443/a")) == "http://h.example.com:443"
+    # как в `same_origin`: источник `http://хост` пускает и `https://хост`, но не чужой порт и не чужой хост
+    plain = ["http://wiki.example.com"]
+    assert not WE.token_refusal("https://wiki.example.com/a", "http://wiki.example.com/", "T", plain)
+    assert refused("https://wiki.example.com:8443/a", plain)
+    assert refused("https://other.example.com/a", plain)
+    assert refused("http://wiki.example.com/a", ["https://wiki.example.com"])   # обратного хода нет
     # свой компьютер: ответ не зависит от привязки (в запомненный список он не попадает)
     for u in ("http://127.0.0.1:9/a", "http://localhost/a"):
         assert WE.token_refusal(u, u, "T", bound, {"AURORA_ALLOW_HTTP": ""}) == "", u
@@ -1617,16 +1632,20 @@ def test_doctor_names_a_web_token_without_host_binding(tmp: Path):
     root = tmp / "p"
     (root / ".aurora" / "state").mkdir(parents=True)
     env_file = root / ENV_LOCAL
-    assert D.check_web_token_binding(root, {}) == ""                       # токена нет
+    assert D.check_web_token_binding(root, {}) == []                       # токена нет
     env_file.write_text("WEB_PERSONAL_TOKEN=SECRET\n", encoding="utf-8")
-    assert "привязки к хостам нет" in D.check_web_token_binding(root, {})
+    got = D.check_web_token_binding(root, {})
+    assert len(got) == 1 and "привязки к хостам нет" in got[0], got
+    # текст — в реестре переводов (их собирают по `.append` в доктора) и переведён на английский
+    KI = importlib.import_module("kit_i18n")
+    assert any(sk.startswith("токен обхода сайтов есть") for sk in KI.message_skeletons())
     env_file.write_text("WEB_PERSONAL_TOKEN=SECRET\nAURORA_WEB_TOKEN_HOSTS=wiki.example.com\n",
                         encoding="utf-8")
-    assert D.check_web_token_binding(root, {}) == ""                       # строка машины
+    assert D.check_web_token_binding(root, {}) == []                       # строка машины
     env_file.write_text("WEB_PERSONAL_TOKEN=SECRET\n", encoding="utf-8")
     (root / ".aurora" / "state" / "trusted-hosts.json").write_text(
         '{"WEB": ["https://wiki.example.com"]}', encoding="utf-8")
-    assert D.check_web_token_binding(root, {}) == ""                       # запомненные хосты
+    assert D.check_web_token_binding(root, {}) == []                       # запомненные хосты
 
 
 @test

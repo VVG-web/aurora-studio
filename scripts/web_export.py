@@ -227,10 +227,14 @@ def token_hosts(env=None) -> list:
 
 def host_allowed(o: tuple, hosts: list) -> bool:
     """Источник `o` (`url_origin`) назван в списке хостов токена (запомненном или из строки
-    машины): запись целиком — схема, хост и порт; `хост:порт` — хост и порт; `хост` — хост."""
+    машины): запись целиком — схема, хост и порт; `хост:порт` — хост и порт; `хост` — хост.
+    Единственное послабление то же, что у `same_origin`: `http://хост` пускает и `https://хост`."""
     for h in hosts:
         if "://" in h:
-            if url_origin(h) == o:
+            e = url_origin(h)
+            # как в `same_origin`: источник `http://хост` (порт 80) пускает и `https://хост` (443)
+            if e == o or (e and e[:2] == ("http", o[1]) and e[2] == 80
+                          and o[0] == "https" and o[2] == 443):
                 return True
             continue
         host, _, port = h.rpartition(":")
