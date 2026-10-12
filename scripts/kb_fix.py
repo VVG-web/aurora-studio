@@ -41,7 +41,7 @@ import re
 import shutil
 import sys
 
-from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
+from aurora_common import (FOOTER, HEAD_BLOCK_TAIL, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            card_title_safe, corrections_of, cut_corrections, put_corrections,
                            split_tail, part_stem, ARCHIVE_SUFFIX,
                            is_meeting,
@@ -404,7 +404,7 @@ def plan_names(cards: dict, plan: "Plan") -> tuple:
         keep = [c for c in free_codes + [title, stem] if c and c not in card.aliases]
         lines = "\n".join(f'  - "{c}"' for c in dict.fromkeys(list(card.aliases) + keep))
         new_head = set_field(head[3:], "title", f'"{clean}"')
-        new_head = re.sub(r"^aliases:.*(?:\n  - .*)*", "aliases:\n" + lines,
+        new_head = re.sub(r"^aliases:.*" + HEAD_BLOCK_TAIL, "aliases:\n" + lines,
                           new_head, count=1, flags=re.M)
         if "aliases:" not in new_head:
             new_head = new_head.rstrip("\n") + "\naliases:\n" + lines
@@ -489,7 +489,7 @@ def plan_rename(cards: dict, plan: "Plan", old: str, new: str) -> tuple:
     keep = [c for c in (title, stem) if c and c not in card.aliases and fold_hard(c) != fold_hard(new)]
     lines = "\n".join(f'  - "{c}"' for c in dict.fromkeys(list(card.aliases) + keep))
     new_head = set_field(head[3:], "title", f'"{new}"')
-    new_head = re.sub(r"^aliases:.*(?:\n  - .*)*", "aliases:\n" + lines,
+    new_head = re.sub(r"^aliases:.*" + HEAD_BLOCK_TAIL, "aliases:\n" + lines,
                       new_head, count=1, flags=re.M)
     if "aliases:" not in new_head:
         new_head = new_head.rstrip("\n") + "\naliases:\n" + lines
@@ -2849,8 +2849,8 @@ def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
         head, rest = (text[:now.fm_end], text[now.fm_end:]) if now.has_frontmatter else ("", text)
         if head:
             new_block = sources_block(both).rstrip("\n")
-            if re.search(r"^sources:.*(?:\n  - .*)*", head, re.M):
-                head = re.sub(r"^sources:.*(?:\n  - .*)*", new_block, head, count=1, flags=re.M)
+            if re.search(r"^sources:.*" + HEAD_BLOCK_TAIL, head, re.M):
+                head = re.sub(r"^sources:.*" + HEAD_BLOCK_TAIL, new_block, head, count=1, flags=re.M)
             else:
                 # `rest` начинается с «\n---»: лишний перевод строки дал бы пустую строку
                 # внутри шапки.

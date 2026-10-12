@@ -549,7 +549,7 @@ def frontmatter(text: str, unique: bool = False) -> dict:
             # YAML (шаблон DR когда-то нёс его на этой строке). Остальные поля комментарий
             # не режут: в заголовке `#` законен.
             if m.group(1) == "status":
-                val = re.sub(r"\s+#.*$", "", val)
+                val = head_cut_comment(val)
             fm[m.group(1)] = val.strip().strip('"').strip("'")
     # Список в блочной записи (`aliases:` и пункты `  - …` ниже) — то же поле, что и
     # `aliases: ["…", "…"]`: движок сам пишет `related:`/`aliases:` блоком, а читатель по
@@ -566,12 +566,37 @@ def frontmatter(text: str, unique: bool = False) -> dict:
     return fm
 
 
-HEAD_COMMENT_RE = re.compile(r"\s+#.*$|^#.*$")
+def head_cut_comment(value: str) -> str:
+    """Значение без хвоста-комментария YAML ` # …` (знак `#` после пробела); без регулярки.
+
+    Шаблон `\\s+#.*$` на длинной серии пробелов откатывался квадратично (секунды на одном
+    значении), а `frontmatter` зовут на каждом поле каждой карточки при любом обходе базы.
+    """
+    i = value.find("#")
+    while i != -1:
+        if i and value[i - 1].isspace():
+            return value[:i].rstrip()
+        i = value.find("#", i + 1)
+    return value
 
 
 def head_blank(value: str) -> bool:
-    """Значение поля пусто, если после него идёт блок: ничего или один комментарий `# …`."""
-    return not HEAD_COMMENT_RE.sub("", value or "").strip()
+    """Значение поля пусто, если после него идёт блок: ничего или один комментарий `# …`.
+
+    Без регулярного выражения: серия пробелов в заголовке страницы (title зеркала берётся
+    из `<title>` без ограничения длины) откатывала прежний шаблон квадратично.
+    """
+    s = (value or "").lstrip()
+    return not s or s.startswith("#")
+
+
+# Хвост блочного списка в шапке: пункты `- …` с любым отступом (в том числе в нулевой
+# колонке, так список пишет YAML по умолчанию), пустые строки и комментарии `# …` между
+# ними. Тот же разбор, что у `head_blocks`: читатель блока и писатели блока обязаны
+# считать один и тот же кусок шапки блоком, иначе остаток прежнего блока подклеивается
+# читателем к соседнему полю. Пустые строки и комментарии берутся только перед пунктом,
+# хвост блока после последнего пункта остаётся на месте.
+HEAD_BLOCK_TAIL = r"(?:(?:\n[ \t]*(?:#[^\n]*)?)*\n[ \t]*-[^\n]*)*"
 
 
 def head_item(line: str) -> "str | None":
@@ -891,7 +916,7 @@ def with_sources(text: str, paths: list) -> str:
     head, rest = split_frontmatter(text)
     if head is None:
         raise ValueError("карточка без шапки: источники писать некуда")
-    head = re.sub(r"(?m)^sources:[^\n]*\n(?:[ \t]+-[^\n]*\n?)*", "", head + "\n")
+    head = re.sub(r"(?m)^sources:[^\n]*" + HEAD_BLOCK_TAIL + r"\n?", "", head + "\n")
     head = re.sub(r"(?m)^source:[^\n]*\n?", "", head)
     head = head.rstrip("\n") + "\n" + sources_block(want).rstrip("\n")
     out = "---" + head + rest

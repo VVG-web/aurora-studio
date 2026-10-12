@@ -39,7 +39,7 @@ import os
 import re
 import sys
 
-from aurora_common import KB_ROOT, frontmatter, status_rank, undated, walk_md, write_if_changed
+from aurora_common import KB_ROOT, aliases as card_aliases, frontmatter, status_rank, undated, walk_md, write_if_changed
 from aurora_common import body as body_of
 
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
@@ -93,8 +93,7 @@ def collect(section_dir: str) -> list:
             "desc": first_sentence(body_start),
             # Оглавление ссылается на карточку и по имени файла, и по синониму:
             # `[[DR-0001]]` — это ссылка на `DR-0001-Единственный-источник…`.
-            "names": {stem} | {a.strip().strip('"\'') for a in
-                               (fm.get("aliases") or "").strip("[]").split(",") if a.strip()},
+            "names": {stem} | set(card_aliases(text)),
         })
     rows.sort(key=lambda r: (-status_rank(r["status"]), r["stem"]))
     return rows

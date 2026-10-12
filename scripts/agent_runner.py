@@ -1293,7 +1293,7 @@ def _mech_forms(cwd: str) -> list:
                     or (fm.get("type") or "").strip() == "moc"):
                 continue
             forms = {stem.replace("-", " "), (fm.get("title") or "").strip().strip('"')}
-            forms |= set(re.findall(r'"([^"]+)"', fm.get("aliases") or ""))
+            forms |= set(aliases(text))
             for f in forms:
                 f = " ".join(f.split())
                 # Короче пяти знаков — только аббревиатура («ФЦОД», «НДС»): её ищем по

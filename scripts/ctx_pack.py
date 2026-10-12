@@ -37,7 +37,7 @@ import os
 import re
 import sys
 
-from aurora_common import (TRUSTED, Card as BaseCard, body, card_sources, decision_slice, frontmatter,
+from aurora_common import (TRUSTED, Card as BaseCard, aliases as card_aliases, body, card_sources, decision_slice, frontmatter,
                            is_decision_card, is_meeting, is_placeholder, link_targets, read_card_text, related_targets,
                            status_rank, trust_header, walk_md)
 
@@ -296,7 +296,7 @@ class Card(BaseCard):
     def __init__(self, path: str, text: str):
         super().__init__(path, text, ROOT)
         self.title = self.fm.get("title", self.stem)
-        self.aliases = re.findall(r'"([^"]+)"', self.fm.get("aliases", "")) or []
+        self.aliases = card_aliases(text)
         self.applies_to = [x.strip().strip('"[]') for x in self.fm.get("applies_to", "").split(",")
                            if x.strip()]
         self.summary = (self.fm.get("summary") or "").strip().strip('"')

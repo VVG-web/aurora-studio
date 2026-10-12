@@ -33,7 +33,7 @@ import re
 import sys
 
 from sources_core import SERVICE_RE  # noqa: E402
-from aurora_common import (KB_ROOT, aliases as card_aliases, card_filename,
+from aurora_common import (HEAD_BLOCK_TAIL, KB_ROOT, aliases as card_aliases, card_filename,
                            head_text,
                            card_sources, fold_hard, sources_block,
                            quote_safe, split_frontmatter, split_tail, translit_names, walk_md,
@@ -1077,7 +1077,7 @@ def with_sources(head: str, srcs: list) -> str:
     """Шапка карточки с этим списком источников вместо прежнего."""
     block_txt = sources_block(srcs).rstrip("\n")
     if re.search(r"^sources:", head, re.M):
-        return re.sub(r"^sources:[ \t]*(?:\[.*\])?[ \t]*(?:\n[ \t]+-.*)*$",
+        return re.sub(r"^sources:[ \t]*(?:\[.*\])?[ \t]*" + HEAD_BLOCK_TAIL + "$",
                       lambda _m: block_txt, head, count=1, flags=re.M)
     if re.search(r"^source:", head, re.M):
         return re.sub(r"^source:.*$", lambda _m: block_txt, head, count=1, flags=re.M)

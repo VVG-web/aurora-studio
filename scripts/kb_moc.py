@@ -38,7 +38,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (TRUSTED, card_sources, frontmatter, git_guard,  # noqa: E402
-                           is_placeholder,
+                           is_placeholder, list_field,
                            is_service, undated, write_if_changed)
 
 ROOT = "AuroraKnowledgeDB"
@@ -116,8 +116,7 @@ def read_cards() -> dict:
             section = rel.split("/")[0] if "/" in rel else ""
             if section == "MOC":
                 continue                     # карты не описывают сами себя
-            tags = [x.strip().strip("'\"") for x in
-                    (fm.get("tags") or "").strip("[]").split(",") if x.strip()]
+            tags = list_field(text, "tags")
             cards[f[:-3]] = {
                 "stem": f[:-3], "path": rel, "section": section,
                 "title": (fm.get("title") or f[:-3]).strip('"'),

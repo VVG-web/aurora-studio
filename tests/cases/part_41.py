@@ -648,6 +648,92 @@ def test_card_head_item_has_no_quadratic_backtracking(tmp: Path):
 
 
 @test
+def test_card_frontmatter_has_no_quadratic_backtracking(tmp: Path):
+    """`frontmatter()` на заголовке с огромной серией пробелов укладывается в секунду.
+
+    `title` зеркала берётся из `<title>` страницы без ограничения длины, а проверка «значение
+    пусто» шла регуляркой с квадратичным откатом: каждый обход базы (граф, индекс, доверие)
+    вис на 60000 пробелах между словами на десятки секунд. То же — хвост-комментарий поля
+    `status`.
+    """
+    import time
+    sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
+    gap = "a" + " " * 60000 + "b"
+    text = f'---\ntitle: "{gap}"\nurl: {gap}\nstatus: draft{" " * 60000}x\naliases:\n  - "A"\n---\n\nx\n'
+    t0 = time.time()
+    fm = AC.frontmatter(text)
+    fu = AC.frontmatter(text, unique=True)
+    assert time.time() - t0 < 1.0, time.time() - t0
+    assert fm["title"] == gap and fm["aliases"] == '["A"]', fm["aliases"]
+    assert fu["title"] == gap
+    # смысл прежних шаблонов сохранён
+    assert AC.head_blank("") and AC.head_blank("   ") and AC.head_blank("# c") and AC.head_blank("  # c")
+    assert not AC.head_blank("x # c") and not AC.head_blank("#x".replace("#", "x"))
+    assert AC.frontmatter("---\nstatus: draft # note\n---\n")["status"] == "draft"
+    assert AC.frontmatter("---\nstatus:   knowledge   #x # y\n---\n")["status"] == "knowledge"
+    assert AC.frontmatter("---\nstatus: dr#aft\n---\n")["status"] == "dr#aft"
+    assert AC.frontmatter("---\ntitle: A #1\n---\n")["title"] == "A #1"
+
+
+@test
+def test_card_block_writers_drop_the_whole_block_like_the_reader(tmp: Path):
+    """Писатели блочных списков снимают блок целиком: комментарий, пустая строка и пункт в нулевой колонке.
+
+    Читатель (`head_blocks`) блок с такими вставками читает целиком, а писатель по прежнему
+    шаблону останавливался на первой же вставке; остаток старого блока читался как пункты
+    соседнего пустого поля `aliases:` — ложный синоним-путь источника.
+    """
+    import re
+    sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
+    BP = importlib.import_module("build_plan")
+    KF = importlib.import_module("kb_fix")
+    KG = importlib.import_module("kb_graph")
+    variants = {
+        "comment": '  # imported\n  - "a.md"',
+        "blank": '\n  - "a.md"',
+        "column0": '- "a.md"',
+        "mixed": '  - "z.md"\n\n  # c\n- "a.md"',
+    }
+    for name, tail in variants.items():
+        head = f'title: "Т"\naliases:\nsources:\n{tail}\nstatus: draft\n'
+        assert AC.head_blocks(head)["sources"][-1] == "a.md", (name, AC.head_blocks(head))
+        # build_plan.with_sources: шапка без разделителей
+        got = BP.with_sources(head, ["b.md"])
+        assert AC.head_blocks(got)["sources"] == ["b.md"], (name, got)
+        assert AC.head_blocks(got)["aliases"] == [], (name, got)
+        # aurora_common.with_sources: карточка целиком
+        out = AC.with_sources(f"---\n{head}---\n\nx\n", ["b.md"])
+        assert AC.aliases(out) == [], (name, out)
+        assert AC.card_sources(out)[-1] == "b.md" and "status: draft" in out, (name, out)
+        # kb_graph: `related:` с такими вставками заменяется целиком
+        rel_head = head.replace("sources:", "related:").replace("a.md", "[A](A.md)")
+        m = KG.REL_BLOCK_RE.search(rel_head)
+        assert m and rel_head[m.end():].lstrip("\n").startswith("status:"), (name, m and m.group(0))
+        # kb_fix.plan_rename: прежние синонимы сохранены, а остаток блока не остаётся
+        card = KF.Card("K/Concepts/Старое.md", f"---\ntitle: \"Старое\"\naliases:\n{tail}\nstatus: draft\n---\n\n# Старое\n")
+        plan = KF.Plan()
+        res, err = KF.plan_rename({"K/Concepts/Старое.md": card}, plan, "Старое", "Новое")
+        assert res and not err, (name, res, err)
+        new_text = plan.file_writes[next(iter(plan.file_writes))]
+        assert "a.md" in AC.aliases(new_text) and new_text.count("a.md") == 1, (name, new_text)
+        assert "status: draft" in new_text and AC.frontmatter(new_text)["status"] == "draft", new_text
+    # пункты без вставок, как раньше: блок кончается там, где кончаются пункты
+    pat = re.compile(r"^aliases:.*" + AC.HEAD_BLOCK_TAIL, re.M)
+    plain = 'aliases:\n  - "x"\n  - "y"\nstatus: draft\n'
+    assert plain[pat.search(plain).end():] == "\nstatus: draft\n"
+    # хвост после последнего пункта (пустая строка, комментарий) блоку не принадлежит
+    tailed = 'aliases:\n  - "x"\n\n# конец\nstatus: draft\n'
+    assert tailed[pat.search(tailed).end():] == "\n\n# конец\nstatus: draft\n"
+    # тысячи пустых строк без пункта не вешают шаблон
+    import time
+    t0 = time.time()
+    assert pat.search("aliases:" + "\n" + (" " * 50 + "\n") * 2000 + "status: draft\n")
+    assert time.time() - t0 < 1.0, time.time() - t0
+
+
+@test
 def test_card_head_block_and_inline_agree_in_every_reader(tmp: Path):
     """Одна карточка в блочной и в строчной записи одинаково читается картами, эмбеддингом и ретривом.
 
@@ -683,6 +769,47 @@ def test_card_head_block_and_inline_agree_in_every_reader(tmp: Path):
         got[label] = (moc["tags"], "Фактура" in texts, c.aliases, rel)
     assert got["block"] == got["inline"], got
     assert got["block"] == (["платежи", "учёт"], True, ["Фактура"], ["ЭСФ"]), got["block"]
+
+
+@test
+def test_card_head_readers_take_lists_from_one_parser(tmp: Path):
+    """Синонимы и теги читаются одним разбором: строчная запись без кавычек и пункт с запятой.
+
+    kb_index и kb_moc рвали пункт `- "Заявление, форма 2"` по запятой, а ctx_pack, kb_graph и
+    механическое связывание агента видели только значения в кавычках: `aliases: [Оплата]`
+    для них было пустым, блочная запись — нет.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    IDX = importlib.import_module("kb_index")
+    MOC = importlib.import_module("kb_moc")
+    CP = importlib.import_module("ctx_pack")
+    KG = importlib.import_module("kb_graph")
+    cwd = os.getcwd()
+    heads = {
+        "comma": ('title: "Заявление"\ntype: concept\nstatus: knowledge\naliases:\n'
+                  '  - "Заявление, форма 2"\ntags:\n  - "налог, учёт"\n'),
+        "bare": 'title: "Платёж"\ntype: concept\nstatus: knowledge\naliases: [Оплата]\ntags: [платежи, учёт]\n',
+    }
+    want = {"comma": ({"Заявление, форма 2"}, ["налог, учёт"]), "bare": ({"Оплата"}, ["платежи", "учёт"])}
+    for label, head in heads.items():
+        sub = tmp / label
+        sub.mkdir()
+        root = make_project(sub)
+        stem = "Заявление" if label == "comma" else "Платёж"
+        card = _head_card(root, f"Concepts/{stem}.md", head, "Текст.\n")
+        try:
+            os.chdir(root)
+            names = IDX.collect("AuroraKnowledgeDB/Concepts")[0]["names"]
+            moc = MOC.read_cards()[stem]
+            c = CP.Card(f"AuroraKnowledgeDB/Concepts/{stem}.md", card.read_text(encoding="utf-8"))
+            graph = KG.write_cards_graph(str(sub / "graph.json"))
+        finally:
+            os.chdir(cwd)
+        aliases, tags = want[label]
+        assert names == {stem} | aliases, (label, names)
+        assert moc["tags"] == tags, (label, moc["tags"])
+        assert set(c.aliases) == aliases, (label, c.aliases)
+        assert graph is not None
 
 
 @test

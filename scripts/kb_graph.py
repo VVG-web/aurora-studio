@@ -48,8 +48,8 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (card_body, card_sources, card_stem,  # noqa: E402
-                           walk_md, head_text, related_names,
+from aurora_common import (HEAD_BLOCK_TAIL, aliases as card_aliases, card_body, card_sources,  # noqa: E402
+                           card_stem, walk_md, head_text, related_names,
                            frontmatter, git_guard)
 
 CONF_DIR = "Sources/Confluence"
@@ -234,7 +234,7 @@ def write_cards_graph(path: str, typed: dict | None = None) -> dict:
             stem = os.path.splitext(f)[0]
             by_stem[stem] = rel
             forms = {stem.replace("-", " "), (fm.get("title") or "").strip().strip('"')}
-            forms |= set(re.findall(r'"([^"]+)"', fm.get("aliases") or ""))
+            forms |= set(card_aliases(text))
             srcs = card_sources(text)
             nodes.append({"id": stem, "path": rel,
                           "title": (fm.get("title") or stem).strip('"'),
@@ -393,7 +393,7 @@ def glossary_links(root: str = KB_DIR) -> list:
                 continue
             fm = frontmatter(text)
             names = [f[:-3], (fm.get("title") or "").strip().strip('"')]
-            names += re.findall(r'"([^"]+)"', fm.get("aliases", "") or "")
+            names += card_aliases(text)
             for name in names:
                 clean = name.replace("-", " ").strip()
                 if len(clean) >= 4:
@@ -634,7 +634,7 @@ def apply_card_links(pairs: dict, apply: bool, cap: int) -> dict:
 
 # `related:` бывает пустым (`related: []`), однострочным и блоком со списком — забираем
 # его целиком, чтобы не оставить в шапке два поля с одним именем.
-REL_BLOCK_RE = re.compile(r"^related:.*(?:\n[ \t]+-.*)*", re.M)
+REL_BLOCK_RE = re.compile(r"^related:.*" + HEAD_BLOCK_TAIL, re.M)
 
 
 # --------------------------------------------------------------------- отчёт
