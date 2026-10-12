@@ -189,7 +189,19 @@ def search(kb_root: str, concepts: list, mode: str, budget: int = PACK_BUDGET) -
         return "", 0
     m = re.search(r"карточек (\d+)", pack)
     n = int(m.group(1)) if m else pack.count("\n## ")
-    return fence_pack(pack), n
+    return fence_pack(strip_topic(pack)), n
+
+
+def strip_topic(pack: str) -> str:
+    """Из пака убирается текст темы: шапка «# Context pack: …» и «в базе нет: …» у слабой опоры.
+
+    Тема бота собрана из заголовков ссылок задания (название задачи, страницы) — чужой текст,
+    а движок печатает её в паке голой строкой, вне ограждений. Понятия поиска бот и так
+    кладёт в ограждение отдельно. Работает и на старом движке проекта знаний: на нём пак
+    пришёл бы вообще без правки движка."""
+    pack = re.sub(r"\A# Context pack:[^\n]*", "# Context pack", pack)
+    return re.sub(r"(\*\*Слабая опора:\*\*[^\n]*?в базе нет:)[^\n]*(\. Отвечайте только по найденному)",
+                  r"\1 —\2", pack)
 
 
 def fence_pack(pack: str) -> str:

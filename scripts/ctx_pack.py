@@ -1016,12 +1016,17 @@ def render_block(c: "Card", collapsed: bool = False) -> str:
     заголовке стоял title, ссылка «[[Заявка-0]]» не сходилась с блоком «## Заявка 0»,
     и всякое настоящее основание выглядело выдумкой.
     """
-    name = f"{c.stem}" + (f" — {c.title}" if c.title and c.title != c.stem else "")
+    # Заголовок блока — только имя карточки: title у карточек из источников — название страницы
+    # или задачи, чужой текст (BL-SEC-06). Он идёт первой строкой внутри ограждения; потребители
+    # паков берут из заголовка лишь имя до « — ».
+    title = f"Название: {c.title}\n\n" if c.title and c.title != c.stem else ""
     if not collapsed:
         text = decision_slice(c.text) if is_decision(c) else body(c.text).strip()
-        return f"\n---\n\n## {name}\n\n{c.header()}\n\n{untrusted(text, 'карточка ' + c.stem)}\n"
+        return (f"\n---\n\n## {c.stem}\n\n{c.header()}\n\n"
+                f"{untrusted(title + text, 'карточка ' + c.stem)}\n")
     gist = c.summary or first_sentence(c.text)
-    return (f"\n---\n\n## {name}\n\n{c.header()}\n\n{untrusted(gist, 'карточка ' + c.stem)}\n\n"
+    return (f"\n---\n\n## {c.stem}\n\n{c.header()}\n\n"
+            f"{untrusted(title + gist, 'карточка ' + c.stem)}\n\n"
             f"_Сосед темы по ссылке; полный текст — в карточке [[{c.stem}]]._\n")
 
 
