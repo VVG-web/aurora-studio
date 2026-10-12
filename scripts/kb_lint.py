@@ -9,6 +9,9 @@
   5. Дубликаты aliases (один alias у двух карточек).
   6. Артефакты, осевшие в знаниях (US, AC, Epic, задачи Jira), и `type:` не по разделу —
      с 1.44.0 здесь, а не в отдельном `kb:classify`: проверка карточек живёт в одном месте.
+  7. Форма артефактов (`Artifacts/us`, `Artifacts/ac`, `Specs/`) — модуль `artifact_lint.py`:
+     разделы шаблона, формула истории, шаги, остатки `{{…}}`. Только предупреждения: в код
+     возврата они не входят.
 
 Легаси-карточки без status валидны (= imported) и не флагуются за отсутствие полей.
 Запуск из корня репозитория: python3 .aurora/scripts/kb_lint.py [--summary]
@@ -551,6 +554,33 @@ def main():
             print("AURORA-SUMMARY " + json.dumps(
                 {"errors": {"база хуже, чем после прошлой починки — новых ошибок линтера":
                             fresh}}, ensure_ascii=False))
+    # Форма артефактов (BL-TEAM-05): истории, критерии приёмки и спеки проверяются счётом и
+    # разбором заголовков, а не моделью. Пока это предупреждения: ни в код возврата, ни в
+    # остаток починки они не входят — правила привязаны к текущим шаблонам, и старый проект
+    # не должен краснеть от того, что его историю написали вольно. Хук коммита (`--only`)
+    # артефакты не судит: он проверяет карточки, которых коснулся коммит.
+    if not only:
+        try:
+            from artifact_lint import lint_project
+            checked, found = lint_project()
+        except Exception:  # noqa: BLE001 — линтер артефактов не должен ронять линтер базы
+            checked, found = 0, []
+        total = sum(len(items) for _, items in found)
+        if total:
+            print(f"kb_lint: артефактов {checked}, замечаний по форме {total} — это "
+                  "предупреждения, на код возврата они не влияют (python3 "
+                  ".aurora/scripts/artifact_lint.py — полный список)")
+            if not summary:
+                print("\n## форма артефактов: " + str(total))
+                print("   счётные признаки чек-листа ревью (разделы шаблона, формула, шаги, "
+                      "остатки `{{…}}`) проверены кодом; правьте артефакт, а не линтер")
+                shown = len(found) if full else 8
+                for path, items in found[:shown]:
+                    print(f"   - {path}")
+                    for it in items[:None if full else 4]:
+                        print(f"       {it['id']}: {it['msg']}")
+                if len(found) > shown:
+                    print(f"   … ещё артефактов: {len(found) - shown}")
     if summary or not errors:
         return 1 if errors else 0
 

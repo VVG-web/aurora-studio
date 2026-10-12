@@ -249,7 +249,12 @@ def _aged_project(tmp: Path, name: str = "Old", old_world: bool = False) -> Path
     (root / "AGENTS.md").write_text("старый AGENTS\n", encoding="utf-8")
     (root / ".aurora/structure_dirs.txt").unlink()
     # половина движка пропала или стоит старой копией: обновлению есть что записывать
+    # Выведенный скрипт, установщик хука и общий модуль остаются как поставлены: кому из
+    # скриптов выпадет чёт, зависит от числа и имён скриптов движка, и новый модуль по алфавиту
+    # раньше них стирал именно их (тесты хука и выведенного скрипта падали от чужого нового файла).
     for i, f in enumerate(sorted(scripts.glob("*.py"))):
+        if f.name in ("kb_queue.py", "aurora_hooks.py", "aurora_common.py"):
+            continue
         if i % 2:
             f.unlink() if i % 4 == 1 else f.write_text("# старая копия\n", encoding="utf-8")
     for folder in ("docs", "skills", "connectors"):

@@ -43,6 +43,8 @@ scripts/aurora_common.py => .aurora/scripts/aurora_common.py
 scripts/sources_core.py     => .aurora/scripts/sources_core.py
 scripts/sources_registry.py => .aurora/scripts/sources_registry.py
 scripts/kb_lint.py       => .aurora/scripts/kb_lint.py
+# детерминированный линтер артефактов (истории, критерии, спеки): его зовёт kb_lint
+scripts/artifact_lint.py => .aurora/scripts/artifact_lint.py
 # Эти три ставились установкой, но в манифест не попали — и потому не обновлялись
 # никогда: проект годами держал версию времён своего создания, при том что
 # `aurora_version.txt` исправно показывал свежую. Один прогон двумя версиями движка,
