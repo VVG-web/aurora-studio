@@ -387,6 +387,36 @@ def test_common_templates_folder_is_part_of_the_schema(tmp: Path):
 
 
 @test
+def test_common_templates_list_the_thirteen_card_templates(tmp: Path):
+    """Шаблоны карточек базы знаний (`akdb_*`) лежат рядом с прочими общими, и README называет каждый.
+
+    Они едут в проекты теми же двумя путями (установка и обновление правилом seed), поэтому условия
+    предыдущей проверки — паспорт с шестью полями, версия в имени, поле `file` — действуют и для них.
+    Здесь закреплено то, чего она не видит: состав набора и строка каждого файла в таблице README.
+    Без строки модель, открывшая папку, о шаблоне не узнает: README — единственное, что она читает первым.
+    """
+    folder = KIT / "scaffold/TemplatesCommon"
+    types = ("concept", "glossary", "process", "system", "role", "status-model", "requirement",
+             "reference", "cited-document", "decision", "question", "correction", "moc")
+    files = sorted(p.name for p in folder.glob("akdb_*"))
+    assert files == sorted(f"akdb_{t}_v1.0.md" for t in types), f"набор шаблонов карточек: {files}"
+    readme = (folder / "README.md").read_text(encoding="utf-8")
+    table = [line for line in readme.splitlines() if line.startswith("| `akdb_")]
+    assert len(table) == 13, f"в таблице «Что здесь лежит» строк akdb_*: {len(table)}"
+    def field(head: str, key: str) -> str:
+        m = re.search(r'^' + key + r':\s*"?([^"\n]*)"?\s*$', head, re.M)
+        assert m, f"в паспорте нет {key}"
+        return m.group(1)
+    for t in types:
+        name = f"akdb_{t}_v1.0.md"
+        head = (folder / name).read_text(encoding="utf-8").split("---")[1]
+        row = f"| `{name}` | {field(head, 'artifact')} | {field(head, 'version')} | {field(head, 'author')} |"
+        assert row in table, f"в таблице README нет строки {row}"
+        assert field(head, "author") == "Вадим Герасимов", f"{name}: автор паспорта"
+    assert "## Карточки базы знаний (`akdb_*`)\n" in readme, "в README нет раздела про карточки базы знаний"
+
+
+@test
 def test_related_and_backlinks_join_the_hop_only_when_asked(tmp: Path):
     """Переход за соседом идёт по трём источникам, и каждый включается явно.
 

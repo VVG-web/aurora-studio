@@ -3,19 +3,25 @@
 Шаблоны карточек базы знаний, пакет CT-02: `scripts/card_types.py` — реестр типов (шаблоны
 `akdb_<тип>_v<версия>.md` проекта и кита), паспорт шаблона, проверка карточки кодами V-NN и
 команда `kb:cards`. Проверка только советует: поведение разбора, ремонта и маршрутов не меняется.
-Шаблоны для проверок собираются здесь же, во временных проектах, по каталогу типов v1.0:
-сами тринадцать файлов `scaffold/TemplatesCommon/akdb_*` кладёт следующий пакет, и как только они
-появятся, проверки паспортов, примеров, общего блока и выжимки пройдут и по ним (`_kit_templates`).
-Модель и сеть не используются; проекты — только во временных папках.
+Шаблоны для проверок реестра и валидатора собираются здесь же, во временных проектах, по каталогу
+типов v1.0. Сами тринадцать файлов `scaffold/TemplatesCommon/akdb_*` кладёт пакет CT-03: проверки
+паспортов, примеров, общего блока и выжимки идут и по ним (`_kit_templates`), а в конце части —
+проверки самих файлов (сборка по формуле, общий блок побайтно, примеры, README) и их доставки в
+проекты (`aurora.py new`, путь панели, `aurora_update.py`).
+Модель и сеть не используются; проекты — только во временных папках, запуски, которые пишут, — под
+временным HOME прогона.
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
 import importlib
+import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -170,7 +176,7 @@ def _check(text: str, reg, level: str = "strict", path: str = "AuroraKnowledgeDB
 
 
 def _kit_templates() -> list:
-    """Файлы `akdb_*_v*.md` самого кита (их кладёт следующий пакет): пока их нет, список пуст."""
+    """Файлы `akdb_*_v*.md` самого кита (`scaffold/TemplatesCommon/`)."""
     return sorted((KIT / "scaffold" / "TemplatesCommon").glob("akdb_*_v*.md"))
 
 
@@ -955,3 +961,484 @@ def test_kb_cards_writes_nothing(tmp: Path):
         _cli(root, *args)
         assert _snapshot(root) == before, f"kb:cards {' '.join(args)} изменил проект"
 
+
+# ================================================================== пакет CT-03: тринадцать шаблонов кита
+#
+# Файлы `scaffold/TemplatesCommon/akdb_*_v1.0.md` — настоящие, не фикстурные: проверки ниже читают их
+# из кита, а доставку в проект гоняют настоящими `aurora.py new` и `aurora_update.py` под временным HOME.
+
+KIT_DIR = KIT / "scaffold" / "TemplatesCommon"
+KIT_IDS = tuple(row[0] for row in CATALOGUE)
+BEGIN_COMMON, END_COMMON = "<!-- AKDB:COMMON:BEGIN -->", "<!-- AKDB:COMMON:END -->"
+BEGIN_PROMPT, END_PROMPT = "<!-- AKDB:PROMPT:BEGIN -->", "<!-- AKDB:PROMPT:END -->"
+# Общий фрагмент шапки (FM-COMMON): одинаков в шапках семи типов класса entity.
+FM_COMMON_KEYS = ("sources", "source_synced", "created", "updated", "built", "built_by", "related", "supersedes",
+                  "superseded_by", "trust", "trust_basis", "trust_checked", "distilled", "distilled_by", "extracted",
+                  "relinked", "neighbours", "summary", "unsupported", "corrected_by")
+# Названия и описания типов кита (по ним строится каталог типов `meta/card_types.md` и панель):
+# тип → (name_en, description, description_en, предел выжимки prompt_chars).
+KIT_TEXTS = {
+    "concept": ('Concept',
+        'Предметное понятие: что это, из чего состоит, какие у него свойства и правила. Основной тип знания; сомневаетесь — берите его.',
+        'Domain concept: what it is, what it consists of, its properties and rules. The default type of knowledge; when in doubt, use it.', 900),
+    "glossary": ('Term',
+        'Термин или аббревиатура: расшифровка и определение в одной–двух фразах, без собственных свойств и правил.',
+        'Term or abbreviation: expansion and a one- or two-sentence definition, with no properties or rules of its own.', 700),
+    "process": ('Process',
+        'Последовательность действий ради результата: алгоритм, процедура, поток данных, обмен, расписание запуска.',
+        'A sequence of actions toward a result: algorithm, procedure, data flow, exchange, run schedule.', 1000),
+    "system": ('System',
+        'Программная система, подсистема, модуль, сервис, интеграция или источник данных: назначение, интерфейсы, данные.',
+        'A software system, subsystem, module, service, integration or data source: purpose, interfaces, data.', 900),
+    "role": ('Role',
+        'Роль участника: обязанности, права и ограничения. Не конкретный человек.',
+        'A participant role: responsibilities, rights and limits. Not a specific person.', 800),
+    "status-model": ('Status model',
+        'Жизненный цикл объекта: состояния, допустимые переходы, условия и исполнители переходов.',
+        'An object lifecycle: states, allowed transitions, conditions and actors of transitions.', 800),
+    "requirement": ('Requirement',
+        'Требование заказчика или задание на разработку: формулировка и условия; прослеживается до источника.',
+        'A customer requirement or a development task: wording and conditions; traceable to its source.', 900),
+    "reference": ('Reference list',
+        'Справочник или перечень значений (таблица кодов, классификатор, сопоставление полей): переносится целиком.',
+        'A reference list or set of values (code table, classifier, field mapping): transferred whole.', 500),
+    "cited-document": ('Cited document',
+        'Единица нормативного или юридического документа (статья закона, пункт контракта): дословный текст, на который ссылаются по номеру.',
+        'A unit of a normative or legal document (a law article, a contract clause): verbatim text referred to by number.', 700),
+    "decision": ('Decision',
+        'Решение команды с вариантами и обоснованием («почему так и почему не иначе»). Запись человека: файл в Raw/decisions/.',
+        'A team decision with options and rationale (why this, not that). A human record: a file in Raw/decisions/.', 600),
+    "question": ('Question',
+        'Одно неизвестное, которое нужно выяснить у заказчика или смежника. Запись: файл в Raw/questions/.',
+        'One unknown to be clarified with the customer or a neighbour system. A record: a file in Raw/questions/.', 600),
+    "correction": ('Correction',
+        'Поправка человека к карточке, неверной из-за ошибки источника; побеждает любой источник. Файл в Raw/corrections/.',
+        'A human correction to a card that is wrong because of a source error; it overrides any source. A file in Raw/corrections/.', 500),
+    "moc": ('Map',
+        'Карта содержания: список карточек по теме, типу, документу или коду. Собирается движком, руками не пишется.',
+        'A map of content: a list of cards by theme, type, document or code. Built by the engine, never by hand.', 400),
+}
+
+
+def _words(s: str) -> list:
+    return [x.strip() for x in s.split(",") if x.strip()]
+
+
+def _kit_file(tid: str) -> Path:
+    return KIT_DIR / _C().template_file_name(tid, "1.0")
+
+
+def _kit_text(tid: str) -> str:
+    return _kit_file(tid).read_text(encoding="utf-8")
+
+
+def _split_blocks(text: str) -> tuple:
+    """(проза, {информационная строка: [текст блока]}).
+
+    Проза — файл без ограждённых блоков (ограда — четыре обратные кавычки) и без HTML-комментариев:
+    то, что в ней осталось, человек и ассистент читают как обычный текст.
+    """
+    outside, blocks, cur, info = [], {}, None, ""
+    for line in text.split("\n"):
+        if cur is None:
+            if line.startswith("````") and line.strip() != "````":
+                cur, info = [], line[4:].strip()
+            else:
+                outside.append(line)
+        elif line.rstrip() == "````":
+            blocks.setdefault(info, []).append("\n".join(cur))
+            cur = None
+        else:
+            cur.append(line)
+    assert cur is None, "ограждённый блок не закрыт"
+    prose, pos, parts = "\n".join(outside), 0, []
+    while True:
+        a = prose.find("<!--", pos)
+        if a < 0:
+            parts.append(prose[pos:])
+            break
+        parts.append(prose[pos:a])
+        b = prose.find("-->", a + 4)
+        assert b >= 0, "HTML-комментарий не закрыт"
+        pos = b + 3
+    return "".join(parts), blocks
+
+
+@test
+def test_kit_templates_thirteen_files_with_catalogue_passports(_t):
+    """Тринадцать файлов `akdb_*_v1.0.md` на месте, паспорт каждого сходится с каталогом типов v1.0.
+
+    Паспорт читается и существующим тестом общих шаблонов (`split("---")[1]`, `part_11.py`): ключ
+    `migration` — последний в паспорте, поэтому его присутствие в этом куске говорит, что внутри
+    паспорта нет «---» и кусок не обрезан.
+    """
+    C = _C()
+    got = sorted(p.name for p in KIT_DIR.glob("akdb_*"))
+    assert got == sorted(C.template_file_name(t, "1.0") for t in KIT_IDS) and len(got) == 13, \
+        f"в TemplatesCommon кита не те файлы akdb_*: {got}"
+    assert set(KIT_TEXTS) == set(KIT_IDS)
+    keys = {"artifact", "template", "version", "file", "author", "created", "updated", "status", "title", "tags",
+            "card_type", "card_class", "name", "name_en", "description", "description_en", "section", "home",
+            "id_prefix", "kinds", "statuses", "sections", "fields_extra", "min_links", "prompt_chars", "migration"}
+    for tid, cls, section, home, prefix, kinds, statuses, sections, extra, links in CATALOGUE:
+        name = C.template_file_name(tid, "1.0")
+        text = _kit_text(tid)
+        head = text.split("---")[1]
+        assert "card_type:" in head and "migration:" in head, f"{name}: паспорт обрезан: в нём есть «---»"
+        p = C.parse_passport(text)
+        assert set(p) == keys, f"{name}: ключи паспорта не те: лишние {sorted(set(p) - keys)}, нет {sorted(keys - set(p))}"
+        kind_word = "записи" if cls == "record" else "карточки базы знаний"
+        want = {"artifact": ("Запись: " if cls == "record" else "Карточка базы знаний: ") + NAMES[tid],
+                "template": f"akdb_{tid}", "version": "1.0", "file": name, "author": "Вадим Герасимов",
+                "status": "template", "title": f"Шаблон {kind_word}: {NAMES[tid]} ({tid})", "card_type": tid,
+                "card_class": cls, "name": NAMES[tid], "name_en": KIT_TEXTS[tid][0],
+                "description": KIT_TEXTS[tid][1], "description_en": KIT_TEXTS[tid][2], "section": section,
+                "home": home, "id_prefix": prefix, "migration": "none"}
+        for key, value in want.items():
+            assert p.get(key, "") == value, f"{name}: {key} = {p.get(key)!r}, по каталогу {value!r}"
+        assert p["tags"] == ["template", "akdb", "record" if cls == "record" else "knowledge-card", tid], (name, p["tags"])
+        for key, value in (("kinds", kinds), ("statuses", statuses), ("sections", sections), ("fields_extra", extra)):
+            assert p[key] == _words(value), f"{name}: {key} = {p[key]}, по каталогу {_words(value)}"
+        assert p["min_links"] == links and p["prompt_chars"] == KIT_TEXTS[tid][3], (name, p["min_links"], p["prompt_chars"])
+        assert C.DATE_RE.match(p["created"]) and C.DATE_RE.match(p["updated"]), name
+        assert len(p["description"]) <= 220 and "aliases" not in p, f"{name}: описание длиннее 220 или в паспорте aliases"
+
+
+@test
+def test_kit_templates_follow_the_assembly_formula(_t):
+    """Каждый файл собран по формуле: паспорт → шапка-комментарий → правила для ИИ → общий блок → три блока скелетов → чек-лист → выжимка."""
+    C = _C()
+    headings = ["## Общие правила для всех карточек базы знаний", "## Шапка карточки", "## Тело карточки",
+                "## Пример", "## Чек-лист самопроверки"]
+    fm_tails = {}
+    for tid, cls, _section, home, *_rest in CATALOGUE:
+        name = C.template_file_name(tid, "1.0")
+        text = _kit_text(tid)
+        p = C.parse_passport(text)
+        assert text.startswith("---\n") and not text.startswith("\ufeff"), f"{name}: файл начинается не с паспорта"
+        assert text.endswith(END_PROMPT + "\n") and not text.endswith("\n\n"), f"{name}: файл кончается не выжимкой для модели"
+        for left in ("<AKDB:COMMON>", "<FM-COMMON>", "<ШАПКА-КОММЕНТАРИЙ"):
+            assert left not in text, f"{name}: в файл попал указатель сборки {left}"
+        top = ("<!--\nШАБЛОН: " + name + " — «" + p["artifact"] + "»\nВерсия шаблона: 1.0 — версия входит в имя файла, "
+               "старые версии остаются рядом\nАвтор: Вадим Герасимов\nНазначение: ")
+        order = [text.index("\n---\n", 3), text.index(top), text.index("\nКласс: " + cls + " · раздел базы: "),
+                 text.index("\nКАК ПОЛЬЗОВАТЬСЯ:\n"), text.index(f"этот шаблон — только если выбран `{tid}`."),
+                 text.index(f"ПРАВИЛА ДЛЯ ИИ: тип {tid}"), text.index(BEGIN_COMMON), text.index(END_COMMON)]
+        order += [text.index("\n" + h + "\n") for h in headings[1:]] + [text.index(BEGIN_PROMPT), text.index(END_PROMPT)]
+        assert order == sorted(order) and len(set(order)) == len(order), f"{name}: зоны идут не в порядке формулы"
+        for marker in (BEGIN_COMMON, END_COMMON, BEGIN_PROMPT, END_PROMPT, "\nКАК ПОЛЬЗОВАТЬСЯ:\n",
+                       *("\n" + h + "\n" for h in headings)):
+            assert text.count(marker) == 1, f"{name}: {marker.strip()!r} встречается {text.count(marker)} раз"
+        start = text.index("\nКАК ПОЛЬЗОВАТЬСЯ:\n")
+        howto = text[start:text.index("\n-->\n", start)]
+        assert all(f"\n  {n}. " in howto for n in range(1, 6)) and "`kb:cards --check`" in howto, name
+        prose, blocks = _split_blocks(text)
+        want = {"markdown akdb-body", "markdown akdb-example"}
+        if tid != "correction":
+            want.add("yaml akdb-frontmatter")
+        if home:
+            want.add("yaml akdb-frontmatter-raw")
+        assert set(blocks) == want and all(len(v) == 1 for v in blocks.values()), f"{name}: блоки скелетов {sorted(blocks)}"
+        tpl = C.load_template(str(KIT_DIR / name))
+        assert tpl.problems == [], f"{name}: {tpl.problems}"
+        assert tpl.example == blocks["markdown akdb-example"][0] and tpl.body_skeleton == blocks["markdown akdb-body"][0], name
+        real = [line for line in prose.split("\n") if re.match(r"#{1,6} ", line)]
+        assert real == headings and len(real) >= 3, f"{name}: настоящие заголовки {real}"
+        if cls == "entity":
+            lines = blocks["yaml akdb-frontmatter"][0].split("\n")
+            first = next(i for i, line in enumerate(lines) if line.startswith("sources:"))
+            assert lines[-1] == "---", name
+            tail = lines[first:-1]
+            assert tuple(line.split(":")[0] for line in tail if line and not line.startswith(" ")) == FM_COMMON_KEYS, name
+            fm_tails[tid] = "\n".join(tail)
+    assert len(fm_tails) == 7 and len(set(fm_tails.values())) == 1, "общий фрагмент шапки (FM-COMMON) разошёлся между шаблонами entity"
+
+
+@test
+def test_kit_common_block_is_one_text_in_all_thirteen_files(_t):
+    """Блок AKDB:COMMON — один и тот же текст во всех файлах побайтно и совпадает с `COMMON_RULES` кода."""
+    C = _C()
+    want = (BEGIN_COMMON + "\n" + C.COMMON_HEADING + "\n\n" + C.COMMON_RULES + "\n" + END_COMMON).encode("utf-8")
+    begin, end = BEGIN_COMMON.encode("utf-8"), END_COMMON.encode("utf-8")
+    for tid in KIT_IDS:
+        raw = _kit_file(tid).read_bytes().replace(b"\r\n", b"\n")      # клон на Windows вправе нести CRLF: сравниваем текст
+        assert raw.count(begin) == 1 and raw.count(end) == 1, tid
+        got = raw[raw.index(begin):raw.index(end) + len(end)]
+        assert got == want, f"{tid}: общий блок отличается от COMMON_RULES (первое расхождение на байте " \
+                            f"{next((i for i, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))})"
+    assert len({_kit_file(t).read_bytes().replace(b"\r\n", b"\n").split(begin)[1].split(end)[0] for t in KIT_IDS}) == 1
+
+
+@test
+def test_kit_templates_have_no_foreign_names_or_leftovers(_t):
+    """В шаблонах нет остатков плана, посторонних имён, адресов и ссылок на несуществующие пути и скрипты.
+
+    Названия клиентов и проектов ловит общая проверка «private terms» по списку машины (он лежит вне
+    кита и в тесте не читается); здесь — всё, что можно проверить без него.
+    """
+    C = _C()
+    structure = [line.strip() for line in (KIT / "structure_dirs.txt").read_text(encoding="utf-8").splitlines()
+                 if line.strip() and not line.startswith("#")]
+    # три папки записей (`Raw/decisions|questions|reference`) в схему добавит пакет записей; шаблоны называют их уже сейчас
+    raw_dirs = {x.split("/", 1)[1] for x in structure if x.startswith("Raw/")} | {"decisions", "questions", "reference"}
+    kb_dirs = {x.split("/", 1)[1] for x in structure if x.startswith("AuroraKnowledgeDB/")} | \
+        {C.parse_passport(_kit_text(t)).get("section") for t in KIT_IDS}
+    scripts = {p.name for p in SCRIPTS.glob("*.py")}
+    for tid in KIT_IDS:
+        name = C.template_file_name(tid, "1.0")
+        text = _kit_text(tid)
+        prose, blocks = _split_blocks(text)
+        # `{{…}}` — только в скелетах и в комментариях (они показывают, что подставить); проза и примеры без них
+        assert "{{" not in prose.replace("`{{…}}`", ""), f"{name}: плейсхолдер в прозе"
+        example = blocks["markdown akdb-example"][0]
+        assert "{{" not in example and "[ПРИМЕР]" not in example and "<!-- ИНСТРУКЦИЯ" not in example, \
+            f"{name}: пример не законченная карточка"
+        for word in ("§", "CT-", "Development", "ADR-", "docs/decisions", "Co-Authored", "Generated with"):
+            assert word not in text, f"{name}: «{word}» — ссылка на план или служебное слово"
+        assert not re.search(r"\bплана\b", text), f"{name}: слово «плана» — ссылка на план"
+        assert not re.search(r"https?://", text), f"{name}: адрес в шаблоне"
+        assert not re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text), f"{name}: почтовый адрес"
+        assert not re.search(r"\b(?:sk-[A-Za-z0-9]{8,}|ghp_[A-Za-z0-9]{8,}|AKIA[0-9A-Z]{8,})", text), f"{name}: похоже на ключ"
+        assert not re.search(r"(?:^|[\s`\"(])(?:/Users/|/home/|[A-Za-z]:\\|~/)", text, re.M), f"{name}: путь вне проекта"
+        for m in re.finditer(r"\bRaw/([A-Za-z_]+)", text):
+            assert m.group(1) in raw_dirs, f"{name}: Raw/{m.group(1)} — папки нет в схеме"
+        for m in re.finditer(r"AuroraKnowledgeDB/([A-Za-z_]+)", text):
+            assert m.group(1) in kb_dirs, f"{name}: AuroraKnowledgeDB/{m.group(1)} — раздела нет в схеме"
+        called = set(re.findall(r"\b([a-z][a-z0-9_]*\.py)\b", text))
+        assert called <= scripts, f"{name}: названы скрипты, которых нет в ките: {sorted(called - scripts)}"
+
+
+@test
+def test_kit_template_examples_and_skeletons_are_clean(tmp: Path):
+    """Пример каждого шаблона проходит проверку без единого нарушения, скелеты шапок не называют полей вне словаря."""
+    C = _C()
+    A = importlib.import_module("aurora_common")
+    reg = C.registry(str(tmp / "no-project"), kit_root=str(KIT))
+    assert reg.problems == [] and list(reg.types) == list(KIT_IDS), reg.problems
+    for tid in KIT_IDS:
+        t = reg.types[tid]
+        tpl = C.load_template(t.path)
+        path = "Raw/corrections/x.md" if tid == "correction" else f"AuroraKnowledgeDB/{t.section}/x.md"
+        for level in C.LEVELS:
+            found = C.validate_card(tpl.example, path=path, reg=reg, level=level)
+            assert found == [], f"{t.template_file} ({level}): {[(v.code, v.severity, v.message) for v in found]}"
+        head = A.frontmatter(tpl.example)
+        assert head.get("template") == t.template_file and "schema_version" not in head, (tid, head.get("template"))
+        if tid != "correction":
+            assert head.get("type") == tid, (tid, head.get("type"))
+        allowed = set(C.GENERAL_FIELDS) | set(t.fields_extra)
+        for label, skeleton in (("akdb-frontmatter", tpl.fm_skeleton), ("akdb-frontmatter-raw", tpl.fm_raw)):
+            if not skeleton.strip():
+                continue
+            keys = A.frontmatter(skeleton)
+            assert set(keys) <= allowed, f"{t.template_file} ({label}): поля вне словаря и fields_extra: {sorted(set(keys) - allowed)}"
+            assert "schema_version" not in keys, f"{t.template_file} ({label}): schema_version в скелете"
+            assert keys.get("template", "").split("#")[0].strip() == t.template_file, f"{t.template_file} ({label}): template"
+            if tid != "correction":
+                assert keys.get("type", "").split("#")[0].strip() == tid, f"{t.template_file} ({label}): type"
+
+
+@test
+def test_kit_registry_reads_the_real_templates(tmp: Path):
+    """Реестр из настоящих файлов кита: тринадцать типов без проблем, по одному на раздел; из проекта и из кита — одно и то же."""
+    C = _C()
+    reg = C.registry(str(tmp / "empty"), kit_root=str(KIT))
+    assert reg.problems == [], reg.problems
+    assert list(reg.types) == list(KIT_IDS) and {t.origin for t in reg.types.values()} == {"fallback"}
+    assert reg.by_section == {row[2]: row[0] for row in CATALOGUE if row[2]} and len(reg.by_section) == 12, reg.by_section
+    assert reg.section_type()["Documents"] == "cited-document" and reg.section_type()["Specs"] == "spec"
+    assert [t.id for t in reg.allowed_for_build()] == ["concept", "glossary", "process", "system", "role",
+                                                       "status-model", "requirement", "reference"], \
+        "разбор источников моделью вправе предлагать восемь типов; цитируемые документы, записи и карты — нет"
+    for tid, cls, section, home, prefix, kinds, statuses, sections, extra, links in CATALOGUE:
+        t = reg.types[tid]
+        assert (t.cls, t.section, t.home, t.id_prefix) == (cls, section, home, prefix), tid
+        assert t.kinds == tuple(_words(kinds)) and t.statuses == tuple(_words(statuses)), tid
+        assert t.sections == tuple(_words(sections)) and t.fields_extra == tuple(_words(extra)), tid
+        assert (t.version, t.versions, t.enabled, t.min_links) == ("1.0", ("1.0",), True, links), tid
+        assert t.template_file == C.template_file_name(tid, "1.0") and t.migration == "none", tid
+    # те же файлы, доставленные в проект: те же типы, но источник — «кит (в проекте)»
+    root = tmp / "proj"
+    shutil.copytree(KIT_DIR, root / "TemplatesCommon")
+    delivered = C.registry(str(root), kit_root=str(tmp / "no-kit"))
+    assert delivered.problems == [] and list(delivered.types) == list(KIT_IDS), delivered.problems
+    assert {t.origin for t in delivered.types.values()} == {"kit"}
+    assert delivered.by_section == reg.by_section
+    assert {k: (t.template_file, t.section, t.kinds) for k, t in delivered.types.items()} == \
+           {k: (t.template_file, t.section, t.kinds) for k, t in reg.types.items()}
+
+
+@test
+def test_kb_cards_check_on_the_kit_templates(tmp: Path):
+    """`kb:cards` на проекте с настоящими шаблонами кита: реестр без проблем, примеры шаблонов как карточки — без нарушений."""
+    C = _C()
+    root = _cli_project(tmp, templates=False)
+    shutil.copytree(KIT_DIR, root / "TemplatesCommon", dirs_exist_ok=True)
+    listed = json.loads(_cli(root, "--list", "--json", expect=0).stdout)
+    assert listed["problems"] == [] and [t["id"] for t in listed["types"]] == list(KIT_IDS), listed["problems"]
+    assert {t["origin"] for t in listed["types"]} == {"kit"} and len(listed["by_section"]) == 12
+    for t in listed["types"]:
+        if t["id"] != "correction":          # исправление — запись в Raw/, в базе карточкой не бывает
+            _put(root / "AuroraKnowledgeDB" / t["section"] / f"Пример-{t['id']}.md", C.load_template(str(root / t["path"])).example + "\n")
+    out = _cli(root, "--check", "--strict", expect=0).stdout
+    assert "проверено 12 · с шаблоном 12 · до-шаблонных 0 · ошибок 0 · предупреждений 0 · сведений 0" in out \
+        and "проблема реестра" not in out, out
+    checked = json.loads(_cli(root, "--check", "--json", expect=0).stdout)
+    assert checked["problems"] == [] and checked["files"] == [] and checked["errors"] == 0, checked
+    stats = json.loads(_cli(root, "--stats", "--json", expect=0).stdout)
+    assert stats["cards"] == 12 and stats["types"] == 13 and stats["legacy"] == 0 and stats["with_violations"] == 0, stats
+    assert stats["by_template"] == {C.template_file_name(t, "1.0"): 1 for t in KIT_IDS if t != "correction"}, stats
+
+
+@test
+def test_templates_readme_has_the_card_templates_section(_t):
+    """README общих шаблонов: раздел про карточки базы знаний на своём месте, текст и таблица классов сходятся с паспортами."""
+    C = _C()
+    readme = (KIT_DIR / "README.md").read_text(encoding="utf-8")
+    sec = "## Карточки базы знаний (`akdb_*`)"
+    subs = ("### Как выбрать шаблон", "### Куда сохраняется результат", "### Версии", "### Свой тип или своя редакция")
+    anchors = ["## Инструкция для ИИ", sec, *subs, "## Чем отличается от `Templates/`"]
+    for a in anchors:
+        assert readme.count(a + "\n") == 1, f"в README заголовок {a!r} встречается {readme.count(a + chr(10))} раз"
+    at = [readme.index(a + "\n") for a in anchors]
+    assert at == sorted(at), "разделы README идут не в порядке: раздел про карточки — после инструкции для ИИ и перед «Чем отличается от `Templates/`»"
+    body = readme[at[1]:at[-1]]
+    for phrase in ("Файлы `akdb_<тип>_v<версия>.md` — шаблоны **карточек базы знаний** (`AuroraKnowledgeDB/`), а не документов-артефактов.",
+                   "**Главное правило.** Карточку нельзя создать или изменить в обход шаблона:",
+                   "(`template: akdb_concept_v1.0.md`). Нет шаблона для типа — нет и карточек этого типа.",
+                   "Не открывайте все шаблоны подряд. Прочитайте `Prompts/KB_classify.md` («Как определить тип карточки»), "
+                   "выберите **один** тип и откройте **только его** шаблон.",
+                   "Список типов с описаниями — `AuroraKnowledgeDB/meta/card_types.md`.",
+                   "Карточка, составленная по `v1.0`, проверяется по `v1.0`, пока её не переведут на новую версию.",
+                   "Выпущенный файл не правят: исправление — новая версия.",
+                   "Положите шаблон с таким же паспортом в `Templates/` проекта. Правила — в `docs/card-templates.md`."):
+        assert phrase in body, f"в разделе README нет фразы: {phrase}"
+    # таблица «Куда сохраняется результат»: у каждого из тринадцати типов — строка его класса, и только она
+    table = readme[at[3]:at[4]]
+    rows = {"entity": "| сущность |", "source": "| дословный носитель |", "record": "| запись |", "map": "| карта |"}
+    lines = {cls: next(line for line in table.split("\n") if line.startswith(label)) for cls, label in rows.items()}
+    for tid, cls, *_rest in CATALOGUE:
+        for other, line in lines.items():
+            assert (f"`{tid}`" in line) == (other == cls), f"README: тип {tid} (класс {cls}) в строке класса {other}"
+    # пункт 7 «Инструкции для ИИ»: исключение для шаблонов akdb_*
+    seven = readme[readme.index("7. **Сохраните результат**"):readme.index("8. **Шаблон не редактируйте**")]
+    assert "Исключение — шаблоны `akdb_*`: карточка\n   знаний сохраняется в раздел базы или в `Raw/` по правилам раздела ниже." in seven, seven
+    # в таблице «Что здесь лежит» — строка каждого из тринадцати файлов (подробнее — в `part_11.py`)
+    for tid in KIT_IDS:
+        assert f"| `{C.template_file_name(tid, '1.0')}` |" in readme, tid
+
+
+# ------------------------------------------------------------------ доставка шаблонов в проекты
+
+def _py(script: Path, *args, cwd: Path, expect=0) -> subprocess.CompletedProcess:
+    """Запуск скрипта, который пишет: только под временным HOME прогона, настоящий `~` владельца неприкосновенен."""
+    real = os.environ.get("AURORA_TESTS_REAL_HOME")
+    assert os.environ.get("AURORA_TESTS_HOME"), "прогон без временной домашней папки"
+    assert not real or Path.home().resolve() != Path(real).resolve(), f"HOME указывает на настоящую домашнюю папку: {Path.home()}"
+    cp = subprocess.run([sys.executable, str(script), *args], cwd=str(cwd), stdin=subprocess.DEVNULL,
+                        capture_output=True, text=True, encoding="utf-8", errors="replace",
+                        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    if expect is not None:
+        assert cp.returncode == expect, \
+            f"{script.name} {' '.join(args)}: rc={cp.returncode}, ждали {expect}\n{cp.stdout[-900:]}\n{cp.stderr[-600:]}"
+    return cp
+
+
+def _new_kit_project(root: Path, name: str = "Fresh") -> Path:
+    """Проект настоящей командой `aurora.py new` (без терминала: вопросов нет)."""
+    root.parent.mkdir(parents=True, exist_ok=True)
+    _py(KIT / "aurora.py", "new", str(root), "--name", name, "--slug", name, cwd=root.parent)
+    return root
+
+
+def _update(root: Path, *, apply: bool = True) -> subprocess.CompletedProcess:
+    return _py(KIT / "scripts" / "aurora_update.py", str(root), *(["--apply"] if apply else []), cwd=root)
+
+
+def _tree(root: Path) -> dict:
+    """Содержимое проекта: путь → отпечаток; кэш байт-кода и git — не содержимое."""
+    out = {}
+    for p in sorted(root.rglob("*")):
+        rel = p.relative_to(root).as_posix()
+        if p.is_file() and ".git/" not in rel + "/" and "__pycache__" not in rel and not rel.endswith(".pyc"):
+            out[rel] = hashlib.sha1(p.read_bytes()).hexdigest()
+    return out
+
+
+def _same_text(a: Path, b: Path) -> bool:
+    return a.read_text(encoding="utf-8") == b.read_text(encoding="utf-8")
+
+
+@test
+def test_new_project_gets_the_thirteen_templates(tmp: Path):
+    """Новый проект получает тринадцать шаблонов карточек: командой `aurora.py new` и путём панели (один установщик)."""
+    C = _C()
+    kit_files = sorted(KIT_DIR.glob("akdb_*_v1.0.md"))
+    assert len(kit_files) == 13
+    cli = _new_kit_project(tmp / "cli")
+    sys.path.insert(0, str(SCRIPTS))
+    inst = importlib.import_module("install_aurora")
+    panel = tmp / "panel"
+    panel.mkdir()
+    with contextlib.redirect_stdout(io.StringIO()):
+        # проект, созданный кнопкой панели, получает только установщик: без настройки и обновления
+        inst.Installer(panel, "Demo", None, None, None, False, False).install_templates_prompts()
+    for root in (cli, panel):
+        folder = root / "TemplatesCommon"
+        assert sorted(p.name for p in folder.glob("akdb_*")) == [f.name for f in kit_files], f"{root.name}: набор шаблонов"
+        for f in kit_files:
+            assert _same_text(folder / f.name, f), f"{root.name}: {f.name} отличается от файла кита"
+        assert _same_text(folder / "README.md", KIT_DIR / "README.md"), f"{root.name}: README общих шаблонов"
+        reg = C.registry(str(root), kit_root=str(tmp / "no-kit"))
+        assert reg.problems == [] and list(reg.types) == list(KIT_IDS), f"{root.name}: реестр проекта {reg.problems}"
+        assert {t.origin for t in reg.types.values()} == {"kit"}, f"{root.name}: типы взяты не из доставленных файлов"
+    # `kit:doctor --structure` не называет новые файлы лишними (проверяется схема папок, а не состав общих шаблонов)
+    cp = _py(cli / ".aurora" / "scripts" / "aurora_doctor.py", "--structure", cwd=cli, expect=None)
+    assert re.search(r"не хватает 0, лишних 0", cp.stdout) and "akdb" not in cp.stdout, cp.stdout[-600:]
+
+
+@test
+def test_update_delivers_the_templates_once(tmp: Path):
+    """Проект, поставленный до шаблонов карточек, получает их при `update --apply`; второй `update` ничего не меняет;
+    изменённая проектом копия остаётся, рядом ложится `.new`."""
+    kit_files = sorted(KIT_DIR.glob("akdb_*_v1.0.md"))
+    root = _new_kit_project(tmp / "old")
+    folder = root / "TemplatesCommon"
+    for f in kit_files:
+        (folder / f.name).unlink()                   # так выглядит проект до этого выпуска
+    own = root / "Templates" / "akdb_policy_v1.0.md"
+    own.write_text("# свой тип проекта\n", encoding="utf-8")
+    before = _tree(root)
+    dry = _update(root, apply=False)
+    assert "Ничего не записано" in dry.stdout and _tree(root) == before, "сухой прогон записал файлы"
+    for f in kit_files:
+        assert f"TemplatesCommon/{f.name}" in dry.stdout, f"сухой прогон не назвал {f.name}"
+    _update(root)
+    for f in kit_files:
+        assert _same_text(folder / f.name, f), f"{f.name}: после обновления не тот файл"
+    assert not list(folder.glob("*.new")), f"новые файлы получили .new: {sorted(p.name for p in folder.glob('*.new'))}"
+    assert own.read_text(encoding="utf-8") == "# свой тип проекта\n", "обновление тронуло свой шаблон проекта"
+    fresh = _new_kit_project(tmp / "fresh")
+    assert sorted(p.name for p in folder.iterdir()) == sorted(p.name for p in (fresh / "TemplatesCommon").iterdir()), \
+        "после обновления папка общих шаблонов не такая, как у свежего проекта"
+    after = _tree(root)
+    again = _update(root)
+    assert "уже актуальны" in again.stdout and _tree(root) == after, f"второй update что-то изменил:\n{again.stdout[-500:]}"
+
+    # правка проекта: файл остаётся, версия кита ложится рядом
+    glossary = folder / "akdb_glossary_v1.0.md"
+    mine = glossary.read_text(encoding="utf-8") + "\n<!-- правка проекта -->\n"
+    glossary.write_text(mine, encoding="utf-8")
+    old_readme = "# TemplatesCommon\n\nREADME, как его оставил проект до этого выпуска.\n"
+    (folder / "README.md").write_text(old_readme, encoding="utf-8")
+    _update(root)
+    assert glossary.read_text(encoding="utf-8") == mine, "правка проекта затёрта"
+    assert _same_text(folder / "akdb_glossary_v1.0.md.new", KIT_DIR / "akdb_glossary_v1.0.md"), "рядом не лёг текст кита"
+    assert (folder / "README.md").read_text(encoding="utf-8") == old_readme and _same_text(folder / "README.md.new", KIT_DIR / "README.md")
+    assert sorted(p.name for p in folder.glob("*.new")) == ["README.md.new", "akdb_glossary_v1.0.md.new"], "лишние .new"
+    for f in kit_files:
+        if f.name != glossary.name:
+            assert _same_text(folder / f.name, f), f"{f.name}: тронут без причины"
+    snap = _tree(root)
+    _update(root)
+    assert _tree(root) == snap, "повторный update изменил проект (.new пишется тем же текстом)"
