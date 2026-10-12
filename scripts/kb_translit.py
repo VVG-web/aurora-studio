@@ -37,7 +37,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from aurora_common import (KB_ROOT, card_filename, git_guard, rewrite_links, walk_md)
+from aurora_common import (KB_ROOT, card_filename, git_guard, rewrite_links, split_inline_items,
+                            walk_md)
 
 DICT_PATH = os.path.join(KB_ROOT, "meta", "translit.md")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
@@ -344,7 +345,7 @@ def add_alias(text: str, name: str) -> str:
         return text[:m.start()] + f'aliases:\n  - "{name}"' + text[m.end():]
     inner = m.group(1).strip()[1:-1].strip()
     return text[:m.start()] + "aliases:\n" + "".join(
-        f'  - {x.strip()}\n' for x in inner.split(",") if x.strip()
+        f'  - {x}\n' for x in split_inline_items(inner)
     ) + f'  - "{name}"' + text[m.end():]
 
 

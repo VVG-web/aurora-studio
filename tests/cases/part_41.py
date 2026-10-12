@@ -960,6 +960,47 @@ def test_card_head_readers_take_lists_from_one_parser(tmp: Path):
 
 
 @test
+def test_inline_alias_list_keeps_quoted_commas(tmp: Path):
+    """Строчный `aliases: ["Заявление, форма 2", "ЗФ2"]` читается по кавычкам, а не по каждой запятой.
+
+    Прежние читатели (ctx_pack, граф, механическое связывание) брали пункты по кавычкам, и
+    единый разбор обязан давать то же: ложные куски «Заявление» и «форма 2» шли в ранжирование
+    и в формы имён. Писатели синонимов (`kb_fix`, `kb_translit`) режут пункты так же, иначе
+    переименование разрывало такую запись.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
+    CP = importlib.import_module("ctx_pack")
+    IDX = importlib.import_module("kb_index")
+    KF = importlib.import_module("kb_fix")
+    TR = importlib.import_module("kb_translit")
+    want = ["Заявление, форма 2", "ЗФ2"]
+    head = 'title: "Заявление"\ntype: concept\nstatus: knowledge\naliases: ["Заявление, форма 2", "ЗФ2"]\n'
+    text = f"---\n{head}---\n\nТекст.\n"
+    assert AC.aliases(text) == want, AC.aliases(text)
+    assert CP.Card("AuroraKnowledgeDB/Concepts/Заявление.md", text).aliases == want
+    # пункт с апострофом внутри слова и кавычка без пары — обычные знаки, не граница пункта
+    assert AC.split_inline_items("l'avion, z") == ["l'avion", "z"]
+    assert AC.split_inline_items("'a, b', c") == ["'a, b'", "c"]
+    assert AC.split_inline_items('a, "b') == ["a", '"b']
+    cwd = os.getcwd()
+    root = make_project(tmp)
+    _head_card(root, "Concepts/Заявление.md", head, "Текст.\n")
+    try:
+        os.chdir(root)
+        names = IDX.collect("AuroraKnowledgeDB/Concepts")[0]["names"]
+    finally:
+        os.chdir(cwd)
+    assert names == {"Заявление"} | set(want), names
+    card = KF.Card("x.md", text)
+    assert card.aliases == want
+    assert 'aliases: ["Заявление, форма 2", "ЗФ2", "Новый"]' in KF.add_alias(card, "Новый")
+    assert "aliases: [\"ЗФ2\"]" in KF.drop_alias(card, "Заявление, форма 2")
+    out = TR.add_alias(text, "Latin")
+    assert AC.aliases(out) == want + ["Latin"], (AC.aliases(out), out)
+
+
+@test
 def test_find_skill_does_not_grow_sys_path(tmp: Path):
     """`find_skill` не вставляет путь движка в `sys.path` заново на каждый вызов."""
     sys.path.insert(0, str(SCRIPTS))

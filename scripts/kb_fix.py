@@ -43,7 +43,7 @@ import sys
 
 from aurora_common import (FOOTER, HEAD_BLOCK_TAIL, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            card_title_safe, corrections_of, cut_corrections, put_corrections,
-                           split_tail, part_stem, ARCHIVE_SUFFIX,
+                           split_tail, split_inline_items, part_stem, ARCHIVE_SUFFIX,
                            is_meeting,
                            sources_block,
                            RETIRED_STATUS, STUB_MARK,
@@ -233,7 +233,7 @@ def add_alias(card: Card, alias: str) -> str:
     head, rest = card.text[:card.fm_end], card.text[card.fm_end:]
     m = re.search(r"^aliases:\s*\[(.*)\]\s*$", head, re.M)
     if m:
-        items = [x.strip() for x in m.group(1).split(",") if x.strip()]
+        items = split_inline_items(m.group(1))
         items.append(f'"{alias}"')
         return head[:m.start()] + "aliases: [" + ", ".join(items) + "]" + head[m.end():] + rest
     m = re.search(r"^aliases:\s*$", head, re.M)
@@ -2248,7 +2248,7 @@ def drop_alias(card: Card, alias: str) -> str:
     head, rest = card.text[:card.fm_end], card.text[card.fm_end:]
     inline = re.search(r"^aliases:\s*\[([^\]]*)\]\s*$", head, re.M)
     if inline:
-        items = [x.strip() for x in inline.group(1).split(",") if x.strip()]
+        items = split_inline_items(inline.group(1))
         items = [x for x in items if x.strip('"\'') != alias]
         line = "aliases: [" + ", ".join(items) + "]" if items else "aliases: []"
         return head[:inline.start()] + line + head[inline.end():] + rest

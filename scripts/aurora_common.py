@@ -804,6 +804,33 @@ def file_head(path: str) -> tuple:
     return head, "ok"
 
 
+def split_inline_items(inner: str) -> list:
+    """Пункты строчного списка `[a, "b, c", d]` (без скобок): сырые, с кавычками, без пустых.
+
+    Запятая делит пункты только вне кавычек, а кавычка открывает пункт только в его начале и
+    только если закрывающая такая же есть дальше: `l'avion` и `"a` без пары — обычные знаки.
+    Прежние читатели синонимов брали пункты по кавычкам, и `["Заявление, форма 2", "ЗФ2"]`
+    читалась верно; делить такую запись по каждой запятой значит родить ложные синонимы.
+    Один проход без регулярок: шапку читают на каждом обходе базы.
+    """
+    items, start, i, n, fresh = [], 0, 0, len(inner), True
+    while i < n:
+        ch = inner[i]
+        if ch == ",":
+            items.append(inner[start:i])
+            start, fresh = i + 1, True
+        elif ch in "\"'" and fresh:
+            end = inner.find(ch, i + 1)
+            if end != -1:
+                i = end
+            fresh = False
+        elif not ch.isspace():
+            fresh = False
+        i += 1
+    items.append(inner[start:])
+    return [x.strip() for x in items if x.strip()]
+
+
 def list_field(text: str, field: str) -> list:
     """Список из шапки: поддерживаются и inline-запись, и блочная.
 
@@ -818,7 +845,7 @@ def list_field(text: str, field: str) -> list:
     for line in head_lines(head):
         m = re.match(rf"^{re.escape(field)}:[ \t]*\[(.*)\]", line)
         if m:
-            inline = [a.strip().strip('"').strip("'") for a in m.group(1).split(",") if a.strip()]
+            inline = [a.strip('"').strip("'") for a in split_inline_items(m.group(1))]
             return list(dict.fromkeys(inline))
     return list(dict.fromkeys(head_blocks(head).get(field, [])))
 
