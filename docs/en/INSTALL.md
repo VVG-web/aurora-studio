@@ -107,7 +107,7 @@ aurora.env.local.example      a sample → .env.aurora.local (outside git)
   scripts/                    engine scripts
   skills/aurora-vault/ · aurora-grill/    kit skills and the procedure references
   connectors/                 manifests of connected source modules
-  docs/                       the knowledge rules (they travel with the engine)
+  docs/                       the knowledge rules and the card-templates guide (they travel with the engine)
   reports/analyst/            the analyst-efficiency dashboard
   vendor/                     the offline graph library
   state/ · runs/ · context/ · cache/      state, runs, attachments, cache
@@ -126,7 +126,9 @@ Deliverables/{work,work/spec-packs,released,_archive}/
 Workspaces/_archive/
 Scripts/                      the project's own scripts (handlers, one-off migrations)
 bots/                         the project's bots: prompt, MCP, skills, attachments, schedule ("Bots")
-Templates/ · TemplatesCommon/ · Prompts/ · Settings/
+Templates/ · Prompts/ · Settings/
+TemplatesCommon/              the kit's common templates (the seed rule); akdb_*_v1.0.md — 13 knowledge-card
+                              templates: they come from the kit, a copy the project changed stays, .new lands next to it
 start-aurora.command · start-aurora.bat      launch files
 ```
 

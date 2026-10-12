@@ -51,7 +51,10 @@ What follows from this:
 - **`update` overwrites only the paths in `engine_manifest.txt`.** The config, knowledge, `Raw/`, `Sources/`,
   `Deliverables/`, `Artifacts/`, `Workspaces/` are never touched.
 - Templates (`Templates/`, `Prompts/`, `TemplatesCommon/`) follow the **seed** rule: the project's file is not
-  overwritten, the new kit version lands next to it as `<file>.new` for manual comparison.
+  overwritten, the new kit version lands next to it as `<file>.new` for manual comparison. The 13 knowledge-card
+  templates `TemplatesCommon/akdb_<type>_v1.0.md` travel the same way: a card's type, section, kinds and statuses
+  are described by their passports, and the type registry and the check against them are the `card_types.py`
+  module (the `kb:cards` command; details — [card templates](card-templates.md)).
 - Individual paths can be opted out of updates in `aurora.update_ignore.txt` in the project root (glob patterns).
 - The engine version in a project is recorded in `AuroraKnowledgeDB/meta/aurora_version.txt`; the path to the
   kit is in `.aurora/kit_path.txt`. The project's copy of `aurora_update.py` finds the kit through it.
@@ -131,7 +134,7 @@ Command names are `<set>:<action>`; there are nine sets.
 |---|---|---|
 | `kit:` | the engine's life in a project | `doctor`, `update`, `hooks`, `mcp`, `skills`, `list` |
 | `sync:` | mirrors of external systems | `confluence`, `jira`, `web`, `audit`, `diff`, `jira-status` |
-| `kb:` | extraction and the life of knowledge | `build`, `repair`, `dedupe`, `trust`, `links`, `moc`, `supersede` |
+| `kb:` | extraction and the life of knowledge | `build`, `repair`, `dedupe`, `trust`, `links`, `moc`, `supersede`, `cards` |
 | `ctx:` | using knowledge | `context`, `ask`, `eval`, `retro` |
 | `make:` | producing artifacts | `create`, `review`, `review-auto`, `spec`, `spec-pack`, `assemble` |
 | `ship:` | outward | `publish`, `export`, `release`, `acceptance` |

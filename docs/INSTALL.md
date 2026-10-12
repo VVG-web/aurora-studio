@@ -107,7 +107,7 @@ aurora.env.local.example      образец → .env.aurora.local (вне git)
   scripts/                    скрипты движка
   skills/aurora-vault/ · aurora-grill/    навыки кита и справочники процедур
   connectors/                 манифесты подключённых модулей источников
-  docs/                       правила базы знаний (едут с движком)
+  docs/                       правила базы знаний и руководство по шаблонам карточек (едут с движком)
   reports/analyst/            дашборд эффективности аналитиков
   vendor/                     библиотека графа без сети
   state/ · runs/ · context/ · cache/      состояние, прогоны, вложения, кэш
@@ -126,7 +126,9 @@ Deliverables/{work,work/spec-packs,released,_archive}/
 Workspaces/_archive/
 Scripts/                      скрипты проекта (свои обработчики, разовые миграции)
 bots/                         боты проекта: промпт, MCP, навыки, вложения, расписание (раздел «Боты»)
-Templates/ · TemplatesCommon/ · Prompts/ · Settings/
+Templates/ · Prompts/ · Settings/
+TemplatesCommon/              общие шаблоны кита (правило seed); akdb_*_v1.0.md — 13 шаблонов карточек базы
+                              знаний: едут из кита, изменённая проектом копия остаётся, рядом ложится .new
 start-aurora.command · start-aurora.bat      пусковые файлы
 ```
 

@@ -52,6 +52,13 @@ Every artifact carries **`based_on`** — the cards it stands on — so you can 
 delivered. Drafts live in `Deliverables/work/`; delivery packages and versions taken off work — in
 `Deliverables/_archive/`.
 
+## `akdb_*` templates are not artifacts
+
+Next to the story and criteria templates, `TemplatesCommon/` holds thirteen `akdb_<type>_v1.0.md` templates. They
+describe **knowledge cards** in `AuroraKnowledgeDB/`, not documents in `Artifacts/`: an artifact is never a card,
+and a card is never an artifact. They are not listed in the registry of artifact kinds (`make:kinds`) and are not
+chosen for producing documents. → [The card](The-Card.md#type-template-and-the-template-field)
+
 ## Tracing
 
 `ops:trace` follows a chain from the customer's spec item → requirement → specification → Jira issue → criteria →

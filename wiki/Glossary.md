@@ -7,6 +7,8 @@
 | **Aurora Studio / the kit** | This repository: the engine, skills, templates and the panel. Deployed into a project, which then carries its own copy |
 | **Project** | A folder with `aurora.config.yaml` and the fixed layout. Holds its own engine copy in `.aurora/` and its own knowledge |
 | **Card** | A Markdown file with the knowledge about one entity. [The card](The-Card.md) |
+| **Type** (`type`) | What a card is about and by which template it is made: `concept`, `process`, `glossary` … (thirteen types); written by the section folder. [Card templates](../docs/en/card-templates.md) |
+| **Card template** | A file `TemplatesCommon/akdb_<type>_v<version>.md`: the type's passport, a head and body skeleton, an example, a self-check list. Its name is written in the card's `template:` field; `kb:cards` checks cards against it (for now it only advises) |
 | **Kind** (`kind`) | `dictionary`, `document` or `knowledge` — decides who may edit the body |
 | **Status** | `knowledge`, `draft`, `placeholder`, `index`, `deprecated` — the trust class |
 | **Trust** | Computed from Jira statuses and where the source lives; never assigned. [Trust](Trust.md) |

@@ -2595,3 +2595,70 @@ def test_kb_cards_list_does_not_claim_enforcement(tmp: Path):
     """Первая фаза только советует: `kb:cards --list` не обещает, что тип вне списка «не существует»."""
     out = _cli(_cli_project(tmp), "--list", expect=0).stdout
     assert "Проверка пока только советует" in out and "не существует" not in out, out[-300:]
+
+
+# ------------------------------------------------------------------ документация первой фазы
+
+@test
+def test_card_templates_guide_matches_the_code_and_ships_with_the_engine(_t):
+    """Руководство по шаблонам карточек на месте, едет в проекты, и его таблица кодов сходится с кодом.
+
+    Документ, отставший от движка, хуже отсутствующего: таблица кодов V-NN называет «работает» ровно у тех
+    кодов, которые модуль умеет ставить (`SEVERITY`), а у остальных — «позже»; серьёзность та же; флаги
+    `kb:cards` в тексте — те, что принимает команда.
+    """
+    C = _C()
+    manifest = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
+    assert re.search(r"(?m)^docs/card-templates\.md\s*=>\s*\.aurora/docs/card-templates\.md$", manifest), \
+        "руководство по шаблонам карточек не едет в проекты: нет строки в манифесте движка"
+    index = (KIT / "docs/README.md").read_text(encoding="utf-8")
+    assert "](card-templates.md)" in index and "](en/card-templates.md)" in index, "руководства нет в указателе документации"
+    helped = _py(KIT / "scripts" / "card_types.py", "--help", cwd=KIT).stdout
+    flags = ("--list", "--show", "--check", "--stats", "--all", "--summary", "--json", "--strict", "--root")
+    for flag in flags:
+        assert flag in helped, f"команда не принимает {flag}"
+    for rel, works, later in (("docs/card-templates.md", "работает", "позже"), ("docs/en/card-templates.md", "works", "later")):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert text.count("\n") <= 400, f"{rel}: длиннее 400 строк"
+        for tid in KIT_IDS:
+            assert f"`{tid}`" in text and f"`{C.template_file_name(tid, '1.0')}`" in text, f"{rel}: нет типа {tid}"
+        for flag in flags:
+            assert flag in text, f"{rel}: не описан флаг {flag}"
+        rows = {}
+        for line in text.splitlines():
+            if line.startswith("| V-"):
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                rows[cells[0]] = (cells[1], cells[-1])
+        assert set(rows) == {f"V-{n:02d}" for n in range(1, 26)}, f"{rel}: коды в таблице: {sorted(rows)}"
+        done = {code for code, (_sev, rel_) in rows.items() if rel_ == works}
+        assert done == set(C.SEVERITY), f"{rel}: «{works}» у {sorted(done)}, а код ставит {sorted(C.SEVERITY)}"
+        for code in done:
+            assert rows[code][0] == C.SEVERITY[code], f"{rel}: {code} — серьёзность {rows[code][0]}, в коде {C.SEVERITY[code]}"
+        assert {c for c, (_s, r) in rows.items() if r.startswith(later)} == {"V-14", "V-17", "V-21"}, rel
+        assert rows["V-11"] == ("—", "—"), f"{rel}: V-11 зарезервирован"
+        assert "kb:lint" in text and "kit:doctor" in text and ".new" in text, f"{rel}: нет связи с линтером, доктором или доставкой"
+
+
+@test
+def test_phase_one_docs_name_the_card_templates(_t):
+    """Справка, проводник, навык, вики и документы называют шаблоны карточек и не отсылают команду в пустоту."""
+    reading = (KIT / "templates/meta/READING.md").read_text(encoding="utf-8")
+    row = next(line for line in reading.splitlines() if line.startswith("| `type` |"))
+    for tid in KIT_IDS:
+        assert f"`{tid}`" in row, f"проводник: в строке type нет типа {tid}"
+    assert "десять" not in row and "card-templates.md" in reading
+    skill = (KIT / "skills/aurora-vault/SKILL.md").read_text(encoding="utf-8")
+    cards_row = next(line for line in skill.splitlines() if line.startswith("| `kb:cards` |"))
+    assert cards_row.rstrip().endswith("`references/maintenance.md` |"), "строка kb:cards отсылает не в maintenance.md"
+    assert "## Шаблоны карточек (`kb:cards`; в составе `kb:lint`, только предупреждения)" in \
+        (KIT / "skills/aurora-vault/references/maintenance.md").read_text(encoding="utf-8")
+    for rel in ("docs/lifecycle.md", "docs/en/lifecycle.md"):
+        assert "card_types.py" in (KIT / rel).read_text(encoding="utf-8"), f"{rel}: линтер шаблонов карточек не назван"
+    for rel in ("docs/knowledge-rules-tldr.md", "docs/en/knowledge-rules-tldr.md", "wiki/The-Card.md",
+                "wiki/ru/The-Card.md"):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert "kb:cards" in text and ("template:" in text or "TemplatesCommon/akdb_" in text), f"{rel}: про шаблоны карточек ни слова"
+    for rel in ("wiki/Glossary.md", "wiki/ru/Glossary.md", "wiki/Artifacts-and-Deliverables.md",
+                "wiki/ru/Artifacts-and-Deliverables.md", "docs/INSTALL.md", "docs/en/INSTALL.md",
+                "docs/architecture.md", "docs/en/architecture.md"):
+        assert "akdb_" in (KIT / rel).read_text(encoding="utf-8"), f"{rel}: шаблоны akdb_* не названы"

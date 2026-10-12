@@ -57,6 +57,27 @@ One parser reads the head (`aurora_common.frontmatter`): a list may be written i
 
 The kind is stronger than the status: a trusted dictionary still must not be retold.
 
+## Type, template and the `template:` field
+
+The type (`type`) is **what** the card is about and **by which template** it is made; the kind (`kind`) answers a
+different question — "who edits the body". Every type has a template — a file `TemplatesCommon/akdb_<type>_v1.0.md`:
+the type's passport (name, base section, allowed kinds and statuses, body sections), a head and body skeleton, an
+example and a self-check list. It is read by a human, an assistant and the engine itself. There are thirteen types:
+
+| Class | Types |
+|---|---|
+| entity | `concept`, `glossary`, `process`, `system`, `role`, `status-model`, `requirement` |
+| verbatim carrier | `reference`, `cited-document` |
+| record | `decision`, `question`, `correction` |
+| map | `moc` |
+
+Unsure which type to choose — take `concept`; the borders of neighbouring types are worked out in the templates
+themselves. The `template:` field in the head names the file the card was made by (`template: akdb_concept_v1.0.md`);
+older cards do not have it — that is a "pre-template" card, not an error. The list of types and sections is
+`kb:cards --list`, the check is `kb:cards --check` (and the "card templates" section of `kb:lint`). For now the check
+**only advises**: it rewrites nothing and forbids nothing. A released template is not edited — a fix comes as a new
+version (`v1.1`).
+
 ## Five statuses
 
 | `status` | Meaning |
@@ -89,4 +110,4 @@ stateDiagram-v2
   check is `kit:doctor`; the fix is `kb:names`. → [Windows and macOS](Windows-and-macOS.md)
 
 Deeper: [knowledge rules](../docs/en/knowledge-rules.md) · [one-page summary](../docs/en/knowledge-rules-tldr.md) ·
-[the path of one card](../docs/en/lifecycle.md#3-the-path-of-one-card).
+[card templates](../docs/en/card-templates.md) · [the path of one card](../docs/en/lifecycle.md#3-the-path-of-one-card).

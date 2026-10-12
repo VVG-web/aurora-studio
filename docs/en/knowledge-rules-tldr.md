@@ -36,6 +36,17 @@ is cured by tracing, not by statuses.
 
 The kind is stronger than the status: a trusted dictionary still must not be retold.
 
+## Every card has a type and a template
+
+The type (`type`) says what the card is about: a concept, a process, a system, a role, a term, a requirement,
+a reference list and others (thirteen in all); it is written by the section folder. Every
+type has a template `TemplatesCommon/akdb_<type>_v1.0.md`: the type's allowed kinds, statuses and body sections,
+and what the head looks like. The list of types and sections is `kb:cards --list`, the guide is `card-templates.md`.
+Do not confuse the type with the kind (`kind`): the kind answers "who edits the body", the type "what the card
+is about and by which template". **For now the check only advises:** `kb:cards --check` and the "card templates"
+section of `kb:lint` name deviations as warnings, rewrite nothing and forbid nothing; a card without `template:` in
+its head is "pre-template", not faulty.
+
 ## Links are mandatory
 
 A card without links is found neither by a human nor by retrieval: it is on disk and not in the base. It is a lint

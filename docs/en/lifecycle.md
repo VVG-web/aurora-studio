@@ -236,7 +236,7 @@ flowchart TD
 | 6 | The parse mark | the parse itself (`kb:build --done`) | an entry in `manifest.json` | the mark is accepted — otherwise an error, it is checked against the base | **yes** |
 | 7 | Kind and thesis | `kb:kind`, `agent:distill` | `kind:`, a thesis above "Source", `distilled:` | a thesis is written, Momus checked | **yes** for `knowledge` |
 | 8 | Links and maps | `kb:links --cards`, `kb:moc` | `related:`, `MOC/` files | no abandoned cards | **yes**: a card without links is a lint error |
-| 9 | Mechanics | `kb:lint`, `kb:repair` | a report, edits; warnings about artifact form (`artifact_lint.py`: template sections, the story formula, steps, leftover `{{…}}`) | no broken links, headers complete | yes before delivery |
+| 9 | Mechanics | `kb:lint`, `kb:repair` | a report, edits; warnings about artifact form (`artifact_lint.py`: template sections, the story formula, steps, leftover `{{…}}`) and a "card templates" section (`card_types.py`: checked against the template, whether `template:` is set, V-NN codes; details — `kb:cards`) | no broken links, headers complete | yes before delivery |
 | 10 | Trust | `ops:trace-table`, `kb:trust` | `status`, `trust`, `trust_basis`, `trust_checked` | you can see what to believe and why | **yes**: without it `knowledge` will not appear |
 | 11 | Use | `ctx:context`, `agent:ask` | a pack with trust headers, `usage.log` | headers in place | **yes** for the model's work |
 | 12 | Artifact | `agent:make`, `make:*` | a file in `Artifacts/`, `based_on` | `based_on` is filled in | **yes** |

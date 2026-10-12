@@ -51,7 +51,10 @@ flowchart LR
 - **`update` перезаписывает только пути из `engine_manifest.txt`.** Конфиг, знания, `Raw/`,
   `Sources/`, `Deliverables/`, `Artifacts/`, `Workspaces/` не трогаются никогда.
 - Шаблоны (`Templates/`, `Prompts/`, `TemplatesCommon/`) идут правилом **seed**: файл проекта не
-  затирается, новая версия кита ложится рядом как `<файл>.new` для ручного сравнения.
+  затирается, новая версия кита ложится рядом как `<файл>.new` для ручного сравнения. Так же едут и 13 шаблонов
+  карточек базы знаний `TemplatesCommon/akdb_<тип>_v1.0.md`: тип карточки, её раздел, виды и статусы описаны их
+  паспортами, а реестр типов и проверка по ним — модуль `card_types.py` (команда `kb:cards`; подробнее —
+  [шаблоны карточек](card-templates.md)).
 - Отказаться от обновления отдельных путей можно в `aurora.update_ignore.txt` в корне проекта (glob-шаблоны).
 - Версия движка в проекте записана в `AuroraKnowledgeDB/meta/aurora_version.txt`; путь к ките —
   в `.aurora/kit_path.txt`. Копия `aurora_update.py` в проекте находит кит по нему.
@@ -131,7 +134,7 @@ flowchart TB
 |---|---|---|
 | `kit:` | жизнь движка в проекте | `doctor`, `update`, `hooks`, `mcp`, `skills`, `list` |
 | `sync:` | зеркала внешних систем | `confluence`, `jira`, `web`, `audit`, `diff`, `jira-status` |
-| `kb:` | извлечение и жизнь знания | `build`, `repair`, `dedupe`, `trust`, `links`, `moc`, `supersede` |
+| `kb:` | извлечение и жизнь знания | `build`, `repair`, `dedupe`, `trust`, `links`, `moc`, `supersede`, `cards` |
 | `ctx:` | использование знаний | `context`, `ask`, `eval`, `retro` |
 | `make:` | производство артефактов | `create`, `review`, `review-auto`, `spec`, `spec-pack`, `assemble` |
 | `ship:` | наружу | `publish`, `export`, `release`, `acceptance` |
