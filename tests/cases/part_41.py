@@ -1489,6 +1489,52 @@ def test_git_section_names_a_secret_stop_and_the_checkpoint_does_not_skip_the_se
     assert _git_in(root, "rev-parse", "HEAD").stdout.strip() != before
 
 
+@test
+def test_refused_checkpoint_leaves_no_index_and_the_agent_commit_takes_only_the_knowledge_base(tmp: Path):
+    """BL-SEC-18 (проход 4): отказ pre-commit при чекпойнте не оставляет дерево в индексе, а коммит результата
+    агента (он идёт с `--no-verify`) берёт только базу знаний — иначе секрет из соседнего файла уезжал в историю
+    коммитом «agent:»; цикл заходов при отказе чекпойнта останавливается, а не пишет дальше."""
+    import types
+    sys.path.insert(0, str(SCRIPTS))
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp, git=True)
+    run("aurora_hooks.py", "--install", "--mode", "block", cwd=root, expect_rc=0)
+    _git_in(root, "add", "-A")
+    _git_in(root, "commit", "-qm", "база", env={"AURORA_SKIP_RATCHET": "1"}, check=False)
+    before = _git_in(root, "rev-parse", "HEAD").stdout.strip()
+    # человек правит mcp.json, пока идёт прогон; значение собрано из кусков, чтобы файл теста сам не краснел
+    value = "q9w8" + "e7r6" + "t5y4"
+    (root / "mcp.json").write_text('{"env": {"JIRA_PAT": "%s"}}\n' % value, encoding="utf-8")
+    got = R.checkpoint(str(root), "agent:distill", True)
+    assert got["ok"] is False, got
+    assert _git_in(root, "diff", "--cached", "--name-only").stdout.strip() == "", "отказ оставил дерево в индексе"
+    assert (root / "mcp.json").read_text(encoding="utf-8").count(value) == 1, "чекпойнт тронул файл на диске"
+    # агент между тем написал карточку
+    card = root / "AuroraKnowledgeDB" / "Concepts" / "x.md"
+    card.parent.mkdir(parents=True, exist_ok=True)
+    card.write_text("---\ntype: concept\n---\n# X\n", encoding="utf-8")
+    done = R.commit_result(str(root), "agent:distill", "заход", True)
+    assert done["ok"] is True, done
+    files = _git_in(root, "show", "--name-only", "--format=", "HEAD").stdout.split()
+    assert files == ["AuroraKnowledgeDB/Concepts/x.md"], files
+    assert value not in _git_in(root, "log", "-p", "--all", "--format=").stdout, "секрет попал в историю"
+    # даже если индекс уже собран с чужим файлом (отказ был раньше, чем появился этот сброс)
+    (root / "AuroraKnowledgeDB" / "Concepts" / "y.md").write_text("---\ntype: concept\n---\n# Y\n", encoding="utf-8")
+    _git_in(root, "add", "-A")
+    done = R.commit_result(str(root), "agent:distill", "заход 2", True)
+    assert done["ok"] is True and "mcp.json" not in _git_in(root, "show", "--name-only", "--format=", "HEAD").stdout
+    # цикл заходов: чекпойнт не прошёл — второго захода нет
+    batches = []
+
+    def run_batch():
+        batches.append(1)
+        return {"left": 5, "steps": []}
+
+    a = types.SimpleNamespace(hours=1, no_checkpoint=False)
+    out = R.until_done(str(root), a, "distill", run_batch, lambda r: "", lambda r: "h", lambda r: 1)
+    assert len(batches) == 1 and out["batches"] == 1, "цикл пошёл дальше, хотя чекпойнт отказал"
+
+
 # --- Уверенность выдачи, честный отказ и прозрачный фильтр доверия (BL-KBA-14) ---------------
 
 def _answerability_base(tmp: Path):

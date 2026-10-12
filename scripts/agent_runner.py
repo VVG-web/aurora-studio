@@ -257,6 +257,9 @@ def checkpoint(cwd: str, task: str, enabled: bool) -> dict:
         rc, _o, err = git("commit", "-m", f"checkpoint: перед агентом {task} · {stamp}", cwd=cwd,
                           env={"AURORA_SKIP_RATCHET": "1"})
         if rc != 0:
+            # Хук отказал (секрет, храповик): `add -A` уже положил в индекс всё дерево. Оставить его там значит
+            # отдать чужой файл следующему коммиту — индекс возвращаем, файлы на диске не трогаем.
+            git("reset", "-q", cwd=cwd)
             return {"ok": False, "why": f"чекпойнт не создан: {err[:200]}", "sha": ""}
     sha = git("rev-parse", "HEAD", cwd=cwd)[1]
     return {"ok": True, "sha": sha, "committed": len(dirty.splitlines()),
@@ -279,7 +282,10 @@ def commit_result(cwd: str, task: str, headline: str, enabled: bool) -> dict:
     if not git("status", "--porcelain", "--", "AuroraKnowledgeDB", cwd=cwd)[1]:
         return {"ok": True, "sha": "", "why": "агент ничего не изменил"}
     git("add", "--", "AuroraKnowledgeDB", cwd=cwd)
-    rc, _o, err = git("commit", "--no-verify", "-m", f"agent: {task} — {headline}", cwd=cwd)
+    # Путь в конце обязателен: без него в коммит агента (а он идёт с `--no-verify`) уехало бы всё, что лежит в
+    # индексе, — в том числе файл с секретом, который хук pre-commit как раз не пустил в чекпойнт.
+    rc, _o, err = git("commit", "--no-verify", "-m", f"agent: {task} — {headline}", "--", "AuroraKnowledgeDB",
+                      cwd=cwd)
     if rc != 0:
         return {"ok": False, "why": f"коммит результата не сделан: {err[:200]}"}
     return {"ok": True, "sha": git("rev-parse", "HEAD", cwd=cwd)[1], "why": "работа агента зафиксирована"}
@@ -2993,7 +2999,11 @@ def until_done(cwd: str, a, task: str, run_batch, report, headline, passed,
             say(f"\n=== окно {a.hours} ч закрылось: заходов {batch}, "
                 f"осталось карточек {left_now(res)}")
             break
-        checkpoint(cwd, f"agent:{task}", not a.no_checkpoint)
+        cp = checkpoint(cwd, f"agent:{task}", not a.no_checkpoint)
+        if not cp["ok"]:
+            # Без чекпойнта следующий заход писал бы по несохранённой работе человека: откат её бы снёс.
+            say(f"\n=== {cp['why']}: останавливаюсь, разбираться человеку")
+            break
     return {"res": res, "results": results, "batches": batch, "texts": texts}
 
 
@@ -7378,6 +7388,9 @@ def main() -> int:
                     f"осталось источников {left_after}")
                 break
             cp = checkpoint(cwd, "agent:build", a.apply and not a.no_checkpoint)
+            if not cp["ok"]:
+                say(f"\n=== {cp['why']}: останавливаюсь, разбираться человеку")
+                break
         text = "\n\n---\n\n".join(texts[-3:])      # в журнал — последние партии
     elif a.task == "distill" and a.recheck:
         res = recheck_unsupported(cfg, cwd, a.apply, a.limit)
