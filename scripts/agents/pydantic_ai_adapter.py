@@ -664,15 +664,22 @@ def proxy_for(url, proxies=None, bypass=None):
     """
     import urllib.parse
     import urllib.request
+    import ipaddress
     parts = urllib.parse.urlsplit(str(url))
     host = (parts.hostname or "").lower()
-    if not host or host == "localhost" or host.endswith(".localhost") or host == "::1" \
-            or host.startswith("127."):
+    if not host or host == "localhost" or host.endswith(".localhost"):
         return None
+    try:
+        if ipaddress.ip_address(host).is_loopback:     # 127.0.0.0/8 и ::1; «127.example.com» — имя
+            return None
+    except ValueError:
+        pass
     table = urllib.request.getproxies() if proxies is None else proxies
     proxy = table.get(parts.scheme)
     if not proxy:
         return None
+    if "://" not in proxy:
+        proxy = "http://" + proxy      # `urllib` берёт «host:port» как http-прокси, `httpx` — нет
     skip = urllib.request.proxy_bypass if bypass is None else bypass
     try:
         if skip(host + (":%d" % parts.port if parts.port else "")):
@@ -703,8 +710,12 @@ def http_client():
             if proxy not in self.proxied:
                 try:
                     self.proxied[proxy] = httpx.AsyncHTTPTransport(proxy=proxy)
-                except Exception:  # noqa: BLE001 — например, socks без пакета: ходим напрямую
+                except Exception as e:  # noqa: BLE001 — например, socks без пакета: ходим напрямую
                     self.proxied[proxy] = self.inner
+                    # Молча не уходим: за таким прокси путь модели мёртв, и причина нужна.
+                    # Текст ошибки не печатаем: в нём может быть адрес прокси с логином.
+                    print(f"адаптер: прокси окружения не подошёл клиенту ({type(e).__name__}) "
+                          "— хожу напрямую", file=sys.stderr, flush=True)
             return self.proxied[proxy]
 
         async def handle_async_request(self, request):
@@ -754,22 +765,48 @@ def answer(payload: dict) -> None:
 # упёрся бы в то же. Имена классов, а не импорт: у разных версий клиента OpenAI и Pydantic
 # AI они лежат в разных модулях, а называются одинаково.
 SERVER_SILENT = {"ModelAPIError", "APIConnectionError", "APITimeoutError", "ConnectError",
-                 "ConnectTimeout", "ReadTimeout", "TimeoutException", "RemoteProtocolError"}
+                 "ConnectTimeout", "ReadTimeout", "TimeoutException", "RemoteProtocolError",
+                 "ReadError", "WriteError", "ConnectionResetError"}
 # Соединения не было вовсе — не «сервер молчит», а «не дошли». Такой отказ адаптера (прокси,
 # сертификат, своя сеть процесса) прямой HTTP движка может и не повторить, поэтому он
 # уходит движку как поломка адаптера: тот сделает одну контрольную попытку напрямую. Срок
 # сюда не относится: прямой запрос уткнулся бы в тот же срок.
-CONNECT_FAILED = {"ConnectError", "APIConnectionError"}
+# Смотрим на КОРЕНЬ цепочки, а не на обёртку: клиент OpenAI заворачивает в `APIConnectionError`
+# любую транспортную ошибку, и по нему отказ порта («не дошли») не отличить от обрыва уже
+# после отправки запроса (`RemoteProtocolError`: сервер принял запрос и оборвал связь —
+# повтор прямым HTTP был бы вторым запросом к шлюзу, который только что оборвал первый).
+CONNECT_FAILED = {"ConnectError", "ProxyError", "gaierror", "ConnectionRefusedError",
+                  "SSLError", "SSLCertVerificationError"}
 TIMED_OUT = {"ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "TimeoutException",
              "APITimeoutError"}
+# Связь рвалась после того, как соединение было: сервер запрос мог получить.
+LINK_DROPPED = {"RemoteProtocolError", "ReadError", "WriteError", "ConnectionResetError",
+                "ConnectionAbortedError", "BrokenPipeError"}
 # Заголовки шлюза, по которым движок решает, сколько ждать после 429/503.
 RATE_HEADERS = ("retry-after", "retry-after-ms", "x-ratelimit-reset-requests",
-                "x-ratelimit-reset-tokens")
+                "x-ratelimit-reset-tokens", "x-ratelimit-remaining-requests",
+                "x-ratelimit-remaining-tokens")
+
+
+def exc_chain(e, limit: int = 40) -> set:
+    """Имена классов всей цепочки исключения: `__cause__`, `__context__` и члены группы
+    (`ExceptionGroup`) — до корня, с защитой от циклов."""
+    names, seen, todo = set(), set(), [e]
+    while todo and len(seen) < limit:
+        x = todo.pop()
+        if x is None or id(x) in seen:
+            continue
+        seen.add(id(x))
+        names.add(type(x).__name__)
+        todo += [x.__cause__, x.__context__, *(getattr(x, "exceptions", None) or ())]
+    return names
 
 
 def connect_failed(chain) -> bool:
-    """Соединение не установлено (а не истёк срок) — по именам классов цепочки исключений."""
-    return bool(set(chain) & CONNECT_FAILED) and not set(chain) & TIMED_OUT
+    """Соединение не установлено (а не истёк срок и не оборвалось после отправки) — по именам
+    классов цепочки исключений."""
+    chain = set(chain)
+    return bool(chain & CONNECT_FAILED) and not chain & (TIMED_OUT | LINK_DROPPED)
 
 
 def rate_headers(e) -> dict:
@@ -939,8 +976,8 @@ def runtime():
                             "finish": "length", "usage": usage_of(last.usage)}
                 return {"ok": False, "where": "adapter", "error": f"{type(e).__name__}: {e}"[:300]}
             except Exception as e:  # noqa: BLE001
-                chain = {type(x).__name__ for x in (e, e.__cause__, e.__context__) if x}
-                if chain & SERVER_SILENT:
+                chain = exc_chain(e)
+                if chain & (SERVER_SILENT | CONNECT_FAILED):
                     msg = getattr(e, "message", "") or str(e)
                     if connect_failed(chain):
                         # Не дошли до сервера: прокси, сертификат, сеть процесса. Прямой путь

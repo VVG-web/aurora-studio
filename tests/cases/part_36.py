@@ -1281,7 +1281,13 @@ def test_retry_after_is_read_from_every_spelling(tmp: Path):
     assert AG.retry_hint({"Retry-After": date}, now=now) == 70.0, "дата HTTP не разобрана"
     assert AG.retry_hint({"x-ratelimit-reset-requests": "1.5s"}) == 1.5
     assert AG.retry_hint({"x-ratelimit-reset-requests": "6m0s",
-                          "x-ratelimit-reset-tokens": "20ms"}) == 0.02, "берём ближайший сброс"
+                          "x-ratelimit-reset-tokens": "20ms"}) == 360.0, \
+        "исчерпанный ресурс не назван — берём самый дальний сброс, а не ближайший"
+    # Лимит по токенам: у нетронутых запросов сброс малый, у исчерпанных токенов — большой.
+    assert AG.retry_hint({"x-ratelimit-reset-requests": "1s", "x-ratelimit-remaining-requests": "59",
+                          "x-ratelimit-reset-tokens": "30s",
+                          "x-ratelimit-remaining-tokens": "0"}) == 30.0, "взят сброс неисчерпанного"
+    assert AG.retry_hint({"retry-after": "nan"}) is None and AG.retry_hint({"retry-after": "-5"}) == 0.0
     assert AG.retry_hint({"x-ratelimit-reset-requests": "1m30s"}) == 90.0
     assert AG.retry_hint({"Retry-After": "скоро"}) is None and AG.retry_hint({}) is None
     assert AG.retry_hint(None) is None
@@ -1597,3 +1603,236 @@ def test_adapter_rate_limit_reaches_the_ring_with_its_hint(tmp: Path):
     finally:
         AG.adapter_hub = saved[0]
     assert st == 429 and err == "слишком часто" and err.retry_after == 11.0, (st, err)
+
+
+@test
+def test_a_call_that_cannot_wait_does_not_spin_the_ring(tmp: Path):
+    """Проверка связи и замер ширины зовут вызов с пустым ожиданием. Пауза пары им не пройдёт,
+    поэтому 429 и 5xx для них — отказ с причиной в журнале, и вызов возвращается сразу, а не
+    крутит кольцо вхолостую до срока (на 4 с срока это были миллионы кругов и строк журнала).
+    То же — для любой другой заглушки ожидания: круг, после которого время не сдвинулось, а
+    пары всё ещё на паузе, ничего не изменит."""
+    _path()
+    import agent_core as AG
+    cases = [("429 с Retry-After", [_limit("3")], "просит подождать"),
+             ("502 без подсказки", [(502, {}, {"error": {"message": "bad gateway"}})], "пауза")]
+    for name, script, word in cases:
+        for sleep in (AG.NO_WAIT, lambda s: None):
+            gw = _Gateway(script)
+            try:
+                with _Env():
+                    cfg = _channel_cfg(AG, gw.url)
+                    t0 = time.time()
+                    r = AG.call_role(cfg, "worker", [{"role": "user", "content": "?"}],
+                                     deadline=time.time() + 5, sleep=sleep)
+                    took = time.time() - t0
+            finally:
+                gw.close()
+            label = f"{name}, {'NO_WAIT' if sleep is AG.NO_WAIT else 'пустая заглушка'}"
+            assert not r["ok"] and took < 2.0, (label, took)
+            assert len(r["log"]) < 20, (label, len(r["log"]))
+            assert gw.hits == 1, (label, "шлюз спрошен повторно", gw.hits)
+            assert 1 not in AG.DOWN, label
+            assert any(word in x for x in r["log"]), (label, r["log"])
+            for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+                d.clear()
+
+
+@test
+def test_a_patient_call_still_waits_out_a_rate_limit(tmp: Path):
+    """Нетерпеливость — только у заглушки `NO_WAIT`: обычный вызов, чей `sleep` ждёт по-настоящему,
+    пережидает паузу, как и раньше (проверка, что починка не лишила терпения всех)."""
+    _path()
+    import agent_core as AG
+    gw = _Gateway([_limit("0.4"), _OK])
+    try:
+        with _Env():
+            cfg = _channel_cfg(AG, gw.url)
+            r = AG.call_role(cfg, "worker", [{"role": "user", "content": "?"}],
+                             deadline=time.time() + 20, sleep=lambda s: time.sleep(min(s, 0.6)))
+    finally:
+        gw.close()
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+            d.clear()
+    assert r["ok"] and gw.hits == 2, (gw.hits, r["log"])
+
+
+@test
+def test_503_with_retry_after_pauses_the_pair_without_quarantine(tmp: Path):
+    """503 «перегружен» с `Retry-After` — та же просьба подождать, что и 429: пауза пары на срок
+    шлюза, без карантина провайдеру."""
+    _path()
+    import agent_core as AG
+    gw = _Gateway([(503, {"Retry-After": "2"}, {"error": {"message": "overloaded"}}), _OK])
+    sleeps = []
+    try:
+        with _Env():
+            cfg = _channel_cfg(AG, gw.url)
+            r = _ask(AG, cfg, sleeps)
+    finally:
+        gw.close()
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+            d.clear()
+    assert r["ok"] and gw.hits == 2 and 1 not in AG.DOWN, (gw.hits, r["log"])
+    assert len(sleeps) == 1 and 2.0 <= sleeps[0] <= 2.4, sleeps
+    assert any("карантин не ставлю" in x for x in r["log"]), r["log"]
+
+
+@test
+def test_a_small_or_zero_hint_does_not_pin_the_pause(tmp: Path):
+    """«Retry-After: 0» — не подсказка (повтор сразу был бы боем в лимит), а малый срок, который
+    шлюз повторяет снова и снова, с третьего отказа подряд — лишь нижняя планка: пауза растёт."""
+    _path()
+    import agent_core as AG
+    saved = AG.random
+    try:
+        AG.random = type("R", (), {"random": staticmethod(lambda: 0.0)})
+        for d in (AG.COOL, AG.COOL_HITS):
+            d.clear()
+        zero, _ = AG.cool_down((1, "m"), 0.0)
+        assert zero == AG.RATE_BASE / 2, f"подсказка 0 с оставила паузу пустой: {zero}"
+        for d in (AG.COOL, AG.COOL_HITS):
+            d.clear()
+        row = []
+        for _ in range(5):
+            AG.COOL.clear()                      # пауза вышла — следующий отказ растит счёт
+            row.append(AG.cool_down((1, "m"), 1.0)[0])
+        assert row[:2] == [1.0, 1.0], row        # пока подсказка шлюза — она и есть пауза
+        assert row[2] == 10.0 and row[3] == 20.0 and row[4] == 40.0, \
+            f"малая подсказка держит паузу на месте: {row}"
+    finally:
+        AG.random = saved
+        for d in (AG.COOL, AG.COOL_HITS):
+            d.clear()
+
+
+@test
+def test_adapter_proxy_without_scheme_and_loopback_names(tmp: Path):
+    """Прокси без схемы (`host:port`) `urllib` читает как http-прокси, и адаптер читает так же —
+    иначе клиент отвергал значение и путь модели молча шёл мимо прокси. Петля — по адресу
+    (`127.0.0.0/8`), а не по тексту: имя `127.example.com` — обычное имя и идёт через прокси."""
+    AD = _adapter()
+    no = lambda host: False  # noqa: E731
+    table = {"http": "proxy.example.com:3128"}
+    assert AD.proxy_for("http://gw.example.com/v1", table, no) == "http://proxy.example.com:3128"
+    assert AD.proxy_for("http://127.example.com/v1", table, no) == "http://proxy.example.com:3128"
+    for local in ("http://127.0.0.1:81/v1", "http://[::1]/v1"):
+        assert AD.proxy_for(local, table, no) is None, local
+
+
+@test
+def test_adapter_tells_a_refused_port_from_a_drop_after_the_request(tmp: Path):
+    """Клиент OpenAI заворачивает в `APIConnectionError` любую транспортную ошибку, поэтому
+    различать надо по корню цепочки: отказ порта — «не дошли» (движок повторит прямым HTTP), обрыв
+    после отправки запроса — «сервер не ответил» (шлюз запрос получил, второй раз его не шлём)."""
+    AD = _adapter()
+
+    def chain(*names):
+        """Цепочка исключений: первое имя — внешнее, остальные — причины одна за другой."""
+        err = None
+        for name in reversed(names):
+            e = type(name, (Exception,), {})("x")
+            e.__cause__ = err
+            err = e
+        return err
+    refused = AD.exc_chain(chain("ModelAPIError", "APIConnectionError", "ConnectError"))
+    dropped = AD.exc_chain(chain("ModelAPIError", "APIConnectionError", "RemoteProtocolError"))
+    assert AD.connect_failed(refused) and not AD.connect_failed(dropped), (refused, dropped)
+    assert AD.exc_chain(chain("ModelAPIError", "APIConnectionError")) \
+        and not AD.connect_failed(AD.exc_chain(chain("ModelAPIError", "APIConnectionError"))), \
+        "обёртка без корня принята за «не дошли»"
+    # Корень, спрятанный в `__context__` и в группе исключений; цикл не зацикливает обход.
+    inner = chain("ConnectError")
+    outer = type("ExceptionGroup", (Exception,), {"exceptions": (inner,)})("g")
+    loop = chain("A", "B")
+    loop.__cause__.__cause__ = loop
+    assert "ConnectError" in AD.exc_chain(outer) and AD.exc_chain(loop) == {"A", "B"}
+    # Живой клиент OpenAI из venv адаптера (нет venv — пропуск; в CI он обязателен).
+    import subprocess
+    import socket
+    from harness import live_adapter_python
+    vpy = live_adapter_python()
+    if vpy is None:
+        return
+    code = (
+        "import asyncio, socket, sys\n"
+        "sys.dont_write_bytecode = True\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import pydantic_ai_adapter as AD\n"
+        "run_task, _ = AD.runtime()\n"
+        "async def go():\n"
+        "    base = {'key': '', 'model': 'm', 'timeout': 10,\n"
+        "            'messages': [{'role': 'user', 'content': 'привет'}]}\n"
+        "    out = await run_task(dict(base, url=sys.argv[2]))\n"
+        "    print(out.get('where'), out.get('error', '')[:40])\n"
+        "asyncio.run(go())\n")
+    gw = _Gateway(["drop"])
+    dead = socket.socket()
+    dead.bind(("127.0.0.1", 0))
+    dead_url = f"http://127.0.0.1:{dead.getsockname()[1]}/v1"
+    dead.close()
+    env = {k: v for k, v in os.environ.items()
+           if k.lower() not in ("http_proxy", "https_proxy", "all_proxy")}
+    env["NO_PROXY"] = "127.0.0.1"
+    outs = []
+    try:
+        for url in (gw.url, dead_url):
+            cp = subprocess.run([str(vpy), "-c", code, str(KIT / "scripts" / "agents"), url],
+                                env=env, capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=90, stdin=subprocess.DEVNULL)
+            assert cp.returncode == 0, cp.stderr[-400:]
+            outs.append(cp.stdout.strip())
+    finally:
+        gw.close()
+    assert outs[0].startswith("server"), f"обрыв после запроса принят за «не дошли»: {outs[0]}"
+    assert outs[1].startswith("adapter") and "нет соединения" in outs[1], outs[1]
+    assert gw.hits == 1, f"запрос ушёл на шлюз {gw.hits} раз"
+
+
+@test
+def test_adapter_connect_failure_makes_exactly_one_direct_request(tmp: Path):
+    """Адаптер сообщил «нет соединения» — движок делает ровно одну контрольную попытку прямым HTTP,
+    получает ответ и называет причину обхода; вызов с инструментами такой ответ не принимает."""
+    _path()
+    import agent_core as AG
+    hub = {"proc": object(), "pending": {}}
+
+    class Pipe:
+        def write(self, line):
+            task = json.loads(line)
+            slot = hub["pending"][task["id"]]
+            slot["out"] = {"ok": False, "where": "adapter",
+                           "error": "нет соединения: Connection error."}
+            slot["done"].set()
+
+        def flush(self):
+            pass
+    proc = type("P", (), {"stdin": Pipe()})()
+    saved = (AG.adapter_hub, AG.note_bypass, dict(AG.ADAPTER))
+    AG.adapter_hub = lambda: (proc, hub["pending"])
+    said = []
+    AG.note_bypass = lambda why, needs_tools=False: said.append((why, needs_tools))
+    try:
+        for tools in (False, True):
+            gw = _Gateway([_OK])
+            try:
+                with _Env():
+                    cfg = _channel_cfg(AG, gw.url)
+                    cfg["adapter"] = "pydantic_ai"
+                    del said[:]
+                    r = AG.call_role(cfg, "worker", [{"role": "user", "content": "?"}],
+                                     deadline=time.time() + 20, sleep=AG.NO_WAIT, tools=tools)
+            finally:
+                gw.close()
+            assert gw.hits == 1, (tools, "прямых запросов", gw.hits)
+            assert said and "нет соединения" in said[0][0], (tools, said)
+            if tools:
+                assert not r["ok"] and "нет соединения" in r.get("bypass", ""), r["log"]
+            else:
+                assert r["ok"] and "нет соединения" in r["bypass"], r["log"]
+    finally:
+        AG.adapter_hub, AG.note_bypass = saved[0], saved[1]
+        AG.ADAPTER.clear()
+        AG.ADAPTER.update(saved[2])
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+            d.clear()

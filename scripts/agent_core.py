@@ -54,6 +54,13 @@ ROLES = ("worker", "planner", "critic", "qa")
 CONNECT_TIMEOUT = 3          # секунд на установку соединения: мёртвый бэкенд не держит кольцо
 
 RING_PAUSE = 10              # пауза между полными кругами по цепочке
+
+
+def NO_WAIT(seconds) -> None:
+    """Заглушка ожидания «не ждать»: проверки и замеры (`agent:ping`, `agent:width`) передают её
+    как `sleep`. Вызов с ней нетерпеливый: лимит или сбой сервера для него — отказ с причиной
+    в журнале, а не повод крутить кольцо до срока (пауза пары ничего не ждёт и не пройдёт)."""
+    return None
 VENV = Path.home() / ".aurora" / "venv"
 # Какой адаптер выбран и почему пришлось откатиться: заполняется при разборе конфига,
 # читается отчётом прогона. Глобальное состояние здесь честнее, чем протаскивать флаг
@@ -475,8 +482,10 @@ def parse_duration(text) -> float | None:
 
 def retry_hint(headers, now: float | None = None) -> float | None:
     """Через сколько секунд шлюз просит повторить: `Retry-After` (секунды или дата),
-    `retry-after-ms`, а при их отсутствии — ближайший из `x-ratelimit-reset-*`.
-    Нет подсказки — None (тогда пауза растёт сама)."""
+    `retry-after-ms`, а при их отсутствии — срок `x-ratelimit-reset-*` у исчерпанного ресурса
+    (`x-ratelimit-remaining-*` равен нулю), а если исчерпанный не назван — самый дальний:
+    при лимите по токенам шлюз часто отдаёт малый сброс у нетронутого ресурса, и по нему
+    повтор снова упирался бы в лимит. Нет подсказки — None (тогда пауза растёт сама)."""
     if not headers:
         return None
     wait = None
@@ -493,11 +502,16 @@ def retry_hint(headers, now: float | None = None) -> float | None:
             except (TypeError, ValueError, IndexError):
                 wait = None
     if wait is None:
-        resets = [parse_duration(_header(headers, h)) for h in
-                  ("x-ratelimit-reset-requests", "x-ratelimit-reset-tokens")]
-        resets = [r for r in resets if r is not None]
-        wait = min(resets) if resets else None
-    if wait is None:
+        resets = {}
+        for res in ("requests", "tokens"):
+            r = parse_duration(_header(headers, "x-ratelimit-reset-" + res))
+            if r is not None and r == r:
+                resets[res] = r
+        spent = [r for res, r in resets.items()
+                 if parse_duration(_header(headers, "x-ratelimit-remaining-" + res)) == 0]
+        pool = spent or list(resets.values())
+        wait = max(pool) if pool else None
+    if wait is None or wait != wait:      # нет подсказки или «nan»
         return None
     return max(0.0, min(wait, RATE_MAX_WAIT))
 
@@ -1006,16 +1020,22 @@ SERVER_ERR_DOWN = 3    # столько 5xx подряд на одной пар�
 
 def cool_down(key: tuple, hint: float | None = None) -> tuple:
     """Поставить пару на паузу → (секунд, отказов подряд). Отказы, пришедшие, пока пауза уже
-    идёт (запросы, ушедшие до неё), счётчик не растят и паузу не сокращают."""
+    идёт (запросы, ушедшие до неё), счётчик не растят и паузу не сокращают.
+    Подсказка «0 с» подсказкой не считается: повторять сразу — это и есть бесконечный бой в
+    лимит. А с третьего отказа подряд подсказка шлюза — лишь нижняя планка роста: малый
+    срок, который шлюз называет снова и снова, не удерживает паузу на месте."""
     with _COOL_LOCK:
         now = time.time()
         hits = COOL_HITS.get(key, 0) + (0 if COOL.get(key, 0) > now else 1)
         COOL_HITS[key] = hits
-        if hint is not None:
+        top = min(RATE_CAP, RATE_BASE * 2 ** (hits - 1))
+        grown = top / 2 + top / 2 * random.random()
+        if hint is not None and hint > 0:
             wait = hint * (1 + 0.2 * random.random())
+            if hits >= 3:
+                wait = max(wait, grown)
         else:
-            top = min(RATE_CAP, RATE_BASE * 2 ** (hits - 1))
-            wait = top / 2 + top / 2 * random.random()
+            wait = grown
         wait = min(wait, RATE_MAX_WAIT)
         COOL[key] = max(COOL.get(key, 0), now + wait)
         return wait, hits
@@ -1943,6 +1963,9 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     """
     transport = transport or default_transport
     persist = bool(cfg.get("persist")) or persist_mode()
+    # Умеет ли вызов ждать: проверка связи, подставившая `NO_WAIT`, паузы пары не переждёт, и
+    # «шлюз просил подождать» для неё — итог, а не надежда на следующий круг.
+    patient = sleep is not NO_WAIT
     think = role_thinks(cfg, role) if thinking is None else thinking
     # Предел на ОДИН запрос. Обычно общий из настройки, но вызывающий вправе поднять его
     # там, где уже знает цену работы: Момус читает тот же пак плюс ответ, и на модели,
@@ -1991,10 +2014,12 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             # вызова не растёт без конца: начало и свежий хвост.
             now = time.time()
             order = sorted(order, key=lambda b: SLOW.get(b["n"], 0) > now)
-            if len(log) > 200:
-                log[:] = log[:20] + ["…"] + log[-150:]
+        if len(log) > 200:
+            # Журнал не растёт без конца ни в каком режиме: начало и свежий хвост.
+            log[:] = log[:20] + ["…"] + log[-150:]
         answered_empty, other = 0, 0
         cool_waits: list = []   # сколько ещё стоят на паузе пары, отказавшие лимитом или 5xx
+        cool_keys: list = []    # какие это пары
         # Может ли следующий круг дать другой ответ. Внятный отказ (400/401/404), запрос
         # длиннее окна, роль без модели ожиданием не лечатся — а движок круг за кругом
         # спрашивал живой сервер о том, на что тот уже ответил «нет», до конца срока и
@@ -2023,7 +2048,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 log.append(f"№{b['n']} {model}: шлюз просил подождать — ещё "
                            f"{int(cool_until - time.time())} с (это пауза, не карантин)")
                 cool_waits.append(cool_until - time.time())
-                can_recover = can_recover or cool_until < deadline
+                cool_keys.append((b["n"], model))
+                can_recover = can_recover or (patient and cool_until < deadline)
                 other += 1
                 continue
             if busy(b, transport):
@@ -2156,14 +2182,16 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         wait, hits = cool_down((b["n"], model), getattr(err, "retry_after", None))
                         other += 1
                         cool_waits.append(wait)
-                        can_recover = can_recover or time.time() + wait < deadline
+                        cool_keys.append((b["n"], model))
+                        can_recover = can_recover or (patient and time.time() + wait < deadline)
                         why = (f"просит подождать {human_secs(err.retry_after)}"
                                if getattr(err, "retry_after", None) is not None
                                else "лимит скорости")
                         log.append(f"№{b['n']} {model}: HTTP {st} — {why}; пауза {int(wait)} с "
                                    f"(отказ {hits} подряд), карантин не ставлю")
-                        say_live("⏳", role, f"№{b['n']} {model}: HTTP {st} — {why}; жду "
-                                             f"{human_secs(wait)}")
+                        say_live("⏳", role, f"№{b['n']} {model}: HTTP {st} — {why}; "
+                                             + (f"жду {human_secs(wait)}" if patient
+                                                else "эта проверка не ждёт"))
                     elif st is not None and 500 <= st < 600:
                         # Сервер ответил, но с ошибкой: один сбой — не смерть. Короткая пауза
                         # с ростом; карантин провайдеру — когда подряд отказывает и дальше.
@@ -2176,7 +2204,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                                        f"подряд, провайдер в карантин")
                         else:
                             cool_waits.append(wait)
-                            can_recover = can_recover or time.time() + wait < deadline
+                            cool_keys.append((b["n"], model))
+                            can_recover = can_recover or (patient and time.time() + wait < deadline)
                             log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'} — пауза "
                                        f"{int(wait)} с (отказ {hits} из {SERVER_ERR_DOWN})")
                         say_live("⚠", role, f"№{b['n']} {model}: {str(err or f'HTTP {st}')[:120]}"
@@ -2304,8 +2333,17 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
         log.append(f"круг {ring} неудачен — пауза {int(pause)} с, снова с первого")
         if persist and ring % 6 == 0:
             say_live("…", role, f"круг {ring}: ответа пока нет — иду по кольцу дальше, пока не будет")
+        slept_from = time.time()
         sleep(pause)
         waited += pause
+        if (cool_keys and time.time() - slept_from < pause / 2
+                and all(COOL.get(k, 0) > time.time() for k in cool_keys)):
+            # Ожидание ничего не ждёт (подменённый `sleep`), а надежда была только в паузах
+            # пар: без этой остановки круг крутился бы вхолостую до срока, по два сообщения
+            # в журнал за оборот.
+            log.append("ожидание не продвинуло время, а пары всё ещё на паузе — "
+                       "круг не изменит ничего")
+            break
     if attempts and slow == attempts:
         log.append(f"никто не уложился в срок: {int(req_timeout)} с на запрос. "
                    "Это медленно, а не мёртво — модель отвечает, но дольше отпущенного. "
@@ -2385,7 +2423,7 @@ def probe_width(cfg: dict, b: dict, steps=PROBE_STEPS, heavy: bool = False) -> d
                       [{"role": "user", "content": "Одним абзацем в три предложения: "
                                                    "зачем нужна единица измерения."}],
                       thinking=False, max_tokens=120, deadline=time.time() + 90,
-                      sleep=lambda s: None, history=hist)
+                      sleep=NO_WAIT, history=hist)
         return bool(r["ok"]), r["seconds"]
 
     # Прогрев. Первый запрос платит за установку соединения и загрузку модели: на живом
@@ -2547,7 +2585,7 @@ def cmd_ping(as_json: bool) -> int:
         r = call_role(one, "worker",
                       [{"role": "user", "content": "Повтори одно слово: готов"}],
                       thinking=False, max_tokens=60,
-                      deadline=time.time() + 45, sleep=lambda s: None)
+                      deadline=time.time() + 45, sleep=NO_WAIT)
         if r["ok"]:
             row.update(status="ок", ok=True, seconds=r["seconds"], answer=r["text"][:60])
         else:
