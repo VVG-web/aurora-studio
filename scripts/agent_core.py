@@ -36,6 +36,8 @@ import argparse
 import atexit
 import json
 import os
+import random
+import re
 import subprocess
 import threading
 import sys
@@ -424,6 +426,82 @@ def write_allowed(script: str, args: list) -> tuple:
 
 # ------------------------------------------------------------------ транспорт
 
+class Refusal(str):
+    """Текст отказа сервера и то, через сколько он просит повторить (`retry_after`, секунды).
+
+    Транспорт возвращает ошибку строкой, и весь движок читает её как строку; подсказка
+    шлюза едет на том же объекте, чтобы не менять форму кортежа `(статус, тело, ошибка,
+    секунд)`, которую знают транспорты тестов и замеров.
+    """
+    retry_after = None
+
+    def __new__(cls, text, retry_after=None):
+        self = super().__new__(cls, text)
+        self.retry_after = retry_after
+        return self
+
+
+RATE_MAX_WAIT = 3600.0   # дольше часа по просьбе шлюза не ждём: это уже суточный лимит, не пауза
+
+
+def _header(headers, name: str):
+    """Заголовок без учёта регистра: из `HTTPError` приходит `Message`, из адаптера — словарь."""
+    if not headers:
+        return None
+    try:
+        value = headers.get(name)
+        if value is not None:
+            return value
+        return {str(k).lower(): v for k, v in headers.items()}.get(name)
+    except (AttributeError, TypeError):
+        return None
+
+
+def parse_duration(text) -> float | None:
+    """«30», «1.5s», «20ms», «6m0s» → секунды; не разобрано — None."""
+    text = str(text or "").strip().lower()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    parts = re.findall(r"(\d+(?:\.\d+)?)(ms|s|m|h)", text)
+    if not parts or "".join(n + u for n, u in parts) != text.replace(" ", ""):
+        return None
+    scale = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+    return sum(float(n) * scale[u] for n, u in parts)
+
+
+def retry_hint(headers, now: float | None = None) -> float | None:
+    """Через сколько секунд шлюз просит повторить: `Retry-After` (секунды или дата),
+    `retry-after-ms`, а при их отсутствии — ближайший из `x-ratelimit-reset-*`.
+    Нет подсказки — None (тогда пауза растёт сама)."""
+    if not headers:
+        return None
+    wait = None
+    ms = parse_duration(_header(headers, "retry-after-ms"))
+    if ms is not None:
+        wait = ms / 1000.0
+    raw = _header(headers, "retry-after")
+    if wait is None and raw is not None:
+        wait = parse_duration(raw)
+        if wait is None:
+            try:
+                from email.utils import parsedate_to_datetime
+                wait = parsedate_to_datetime(str(raw)).timestamp() - (now or time.time())
+            except (TypeError, ValueError, IndexError):
+                wait = None
+    if wait is None:
+        resets = [parse_duration(_header(headers, h)) for h in
+                  ("x-ratelimit-reset-requests", "x-ratelimit-reset-tokens")]
+        resets = [r for r in resets if r is not None]
+        wait = min(resets) if resets else None
+    if wait is None:
+        return None
+    return max(0.0, min(wait, RATE_MAX_WAIT))
+
+
 def http_json(url: str, payload: dict | None, key: str, timeout: float) -> tuple:
     """→ (status|None, body|None, ошибка-строкой, секунд)."""
     headers = {"Content-Type": "application/json"}
@@ -445,7 +523,9 @@ def http_json(url: str, payload: dict | None, key: str, timeout: float) -> tuple
         if isinstance(body, dict):
             msg = (body.get("error") or {}).get("message") if isinstance(body.get("error"), dict) \
                 else body.get("message") or ""
-        return e.code, body, msg or f"HTTP {e.code}", time.time() - t0
+        # Сколько просит подождать сам шлюз (429/503): кольцо решает по этому, а не гадает.
+        return (e.code, body, Refusal(msg or f"HTTP {e.code}", retry_hint(e.headers)),
+                time.time() - t0)
     except Exception as e:  # noqa: BLE001
         return None, None, f"{type(e).__name__}: {e}", time.time() - t0
 
@@ -682,7 +762,9 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     if not out.get("ok"):
         err = str(out.get("error") or "ошибка без описания")
         if out.get("where") == "server":
-            return out.get("status"), out.get("body"), err, dt
+            # Заголовки лимита адаптер присылает как есть: разбирает их тот же `retry_hint`,
+            # что и на прямом пути.
+            return out.get("status"), out.get("body"), Refusal(err, retry_hint(out.get("headers"))), dt
         return None, None, ADAPTER_FAIL + err, dt
     body = {"choices": [{"message": {"content": out.get("text") or "",
                                      "reasoning_content": out.get("reasoning") or ""},
@@ -907,6 +989,55 @@ DOWN_FOR = 900        # столько не трогаем провайдера,
 # «не отвечал», и человек пойдёт искать обрыв связи вместо строки в настройках.
 SPEAKS_CLEARLY = frozenset({400, 401, 403, 404, 422})
 DOWN: dict = {}       # {номер бэкенда: когда пробовать снова} — живёт в процессе прогона
+
+# Лимит скорости и сбой сервера — не смерть провайдера. 429 говорит «подожди», а не «меня нет»:
+# карантин на 15 минут для всего провайдера (на все роли и модели) превращал минутный лимит
+# облачного шлюза в ложное «основной недоступен» и тихий уход на запасную, более слабую модель.
+# Поэтому такой отказ даёт короткую паузу ТОЛЬКО паре «шлюз + модель»: срок называет сам шлюз
+# (`Retry-After`), а без подсказки пауза растёт вдвое с каждым подряд отказом и размывается
+# случайной долей, чтобы потоки не вернулись к шлюзу в один миг.
+COOL: dict = {}        # {(№ бэкенда, модель): когда пробовать снова}
+COOL_HITS: dict = {}   # {(№ бэкенда, модель): отказов подряд}
+_COOL_LOCK = threading.Lock()
+RATE_BASE = 5.0        # первая пауза без подсказки шлюза, с
+RATE_CAP = 120.0       # потолок такой паузы, с
+SERVER_ERR_DOWN = 3    # столько 5xx подряд на одной паре — и это уже болезнь, карантин провайдеру
+
+
+def cool_down(key: tuple, hint: float | None = None) -> tuple:
+    """Поставить пару на паузу → (секунд, отказов подряд). Отказы, пришедшие, пока пауза уже
+    идёт (запросы, ушедшие до неё), счётчик не растят и паузу не сокращают."""
+    with _COOL_LOCK:
+        now = time.time()
+        hits = COOL_HITS.get(key, 0) + (0 if COOL.get(key, 0) > now else 1)
+        COOL_HITS[key] = hits
+        if hint is not None:
+            wait = hint * (1 + 0.2 * random.random())
+        else:
+            top = min(RATE_CAP, RATE_BASE * 2 ** (hits - 1))
+            wait = top / 2 + top / 2 * random.random()
+        wait = min(wait, RATE_MAX_WAIT)
+        COOL[key] = max(COOL.get(key, 0), now + wait)
+        return wait, hits
+
+
+def cool_clear(key: tuple | None = None, n: int | None = None) -> None:
+    """Снять паузу и счётчик: пара ответила (`key`), либо все пары бэкенда `n`, либо всё."""
+    with _COOL_LOCK:
+        for d in (COOL, COOL_HITS):
+            for k in [k for k in d if key is None and n is None or k == key or (n is not None and k[0] == n)]:
+                d.pop(k, None)
+
+
+def quota_spent(st, err, body) -> bool:
+    """429 «деньги кончились» (`insufficient_quota`): ожиданием не лечится, как 401."""
+    if st != 429:
+        return False
+    try:
+        blob = json.dumps(body, ensure_ascii=False) if body else ""
+    except (TypeError, ValueError):
+        blob = ""
+    return "insufficient_quota" in (blob + str(err or ""))
 
 # Обращения к модели за процесс — для итога прогона (`run_summary`): сколько токенов ушло, с
 # какой скоростью шла генерация и сколько вызовов не удалось — по видам. Вызовы идут из
@@ -1159,6 +1290,7 @@ def retry_primary_asked() -> bool:
         if RETRY_FLAG.exists():
             RETRY_FLAG.unlink()
             DOWN.clear()
+            cool_clear()
             return True
     except OSError:
         pass
@@ -1862,6 +1994,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             if len(log) > 200:
                 log[:] = log[:20] + ["…"] + log[-150:]
         answered_empty, other = 0, 0
+        cool_waits: list = []   # сколько ещё стоят на паузе пары, отказавшие лимитом или 5xx
         # Может ли следующий круг дать другой ответ. Внятный отказ (400/401/404), запрос
         # длиннее окна, роль без модели ожиданием не лечатся — а движок круг за кругом
         # спрашивал живой сервер о том, на что тот уже ответил «нет», до конца срока и
@@ -1882,6 +2015,16 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 log.append(f"№{b['n']}: не отвечал, вернёмся через "
                            f"{int(until - time.time())} с (кнопка снимает сразу)")
                 can_recover = can_recover or until < deadline
+                continue
+            cool_until = COOL.get((b["n"], model), 0)
+            if cool_until > time.time():
+                # Лимит скорости или сбой сервера: пауза у пары «шлюз + модель», провайдер
+                # в целом не в карантине — другая модель того же шлюза идёт своим чередом.
+                log.append(f"№{b['n']} {model}: шлюз просил подождать — ещё "
+                           f"{int(cool_until - time.time())} с (это пауза, не карантин)")
+                cool_waits.append(cool_until - time.time())
+                can_recover = can_recover or cool_until < deadline
+                other += 1
                 continue
             if busy(b, transport):
                 log.append(f"№{b['n']}: слот занят (/slots) — дальше по кольцу")
@@ -1997,7 +2140,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         log.append(f"№{b['n']} {model}: запрос длиннее окна модели "
                                    f"(объявите AURORA_AGENT_BACKEND_{b['n']}_CONTEXT — "
                                    f"движок не будет отправлять заведомо большие)")
-                    elif st in SPEAKS_CLEARLY:
+                    elif st in SPEAKS_CLEARLY or quota_spent(st, err, body):
                         # Живой сервер отказал внятно: 400 — запрос не по вкусу, 401/403 —
                         # ключ, 404 — нет такой модели. Ожиданием это не лечится, а карантин
                         # прячет причину за «не отвечал»: человек ищет обрыв связи вместо
@@ -2006,6 +2149,38 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         log.append(f"№{b['n']} {model}: HTTP {st} — сервер ответил и отказал"
                                    + (f": {str(err)[:120]}" if err else "")
                                    + ". Это настройка, а не связь: карантин не ставлю")
+                    elif st == 429 or (st == 503 and getattr(err, "retry_after", None) is not None):
+                        # Лимит скорости или «перегружен»: шлюз жив и просит подождать. Пауза
+                        # у пары «шлюз + модель» (срок называет сам шлюз), без карантина:
+                        # провайдер остаётся основным, когда пауза кончится.
+                        wait, hits = cool_down((b["n"], model), getattr(err, "retry_after", None))
+                        other += 1
+                        cool_waits.append(wait)
+                        can_recover = can_recover or time.time() + wait < deadline
+                        why = (f"просит подождать {human_secs(err.retry_after)}"
+                               if getattr(err, "retry_after", None) is not None
+                               else "лимит скорости")
+                        log.append(f"№{b['n']} {model}: HTTP {st} — {why}; пауза {int(wait)} с "
+                                   f"(отказ {hits} подряд), карантин не ставлю")
+                        say_live("⏳", role, f"№{b['n']} {model}: HTTP {st} — {why}; жду "
+                                             f"{human_secs(wait)}")
+                    elif st is not None and 500 <= st < 600:
+                        # Сервер ответил, но с ошибкой: один сбой — не смерть. Короткая пауза
+                        # с ростом; карантин провайдеру — когда подряд отказывает и дальше.
+                        wait, hits = cool_down((b["n"], model), getattr(err, "retry_after", None))
+                        other += 1
+                        if hits >= SERVER_ERR_DOWN:
+                            DOWN[b["n"]] = time.time() + DOWN_FOR
+                            can_recover = can_recover or persist
+                            log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'} — {hits} раза "
+                                       f"подряд, провайдер в карантин")
+                        else:
+                            cool_waits.append(wait)
+                            can_recover = can_recover or time.time() + wait < deadline
+                            log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'} — пауза "
+                                       f"{int(wait)} с (отказ {hits} из {SERVER_ERR_DOWN})")
+                        say_live("⚠", role, f"№{b['n']} {model}: {str(err or f'HTTP {st}')[:120]}"
+                                            + (" — подожду и повторю" if persist else ""))
                     elif looks_like_timeout(err):
                         other += 1
                         if persist:
@@ -2062,6 +2237,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     say_live("⚠", role, f"№{b['n']} {model}: {why}")
                     continue
                 DOWN.pop(b["n"], None)
+                cool_clear((b["n"], model))
                 SLOW.pop(b["n"], None)
                 LAST_OK[b["n"]] = time.time()
                 via = (body.get("aurora") or {}).get("via", "http")
@@ -2120,13 +2296,16 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 log.append(f"{PERSIST_EMPTY_RINGS} круга подряд модели отвечают пусто — "
                            "повтор этого не изменит")
                 break
-        if time.time() + RING_PAUSE >= deadline:
+        # Шлюз просил подождать три секунды — незачем стоять десять. А дольше обычной паузы
+        # не ждём и ради него: остальные шлюзы кольца ждать не обязаны.
+        pause = max(1.0, min(RING_PAUSE, min(cool_waits))) if cool_waits else RING_PAUSE
+        if time.time() + pause >= deadline:
             break
-        log.append(f"круг {ring} неудачен — пауза {RING_PAUSE} с, снова с первого")
+        log.append(f"круг {ring} неудачен — пауза {int(pause)} с, снова с первого")
         if persist and ring % 6 == 0:
             say_live("…", role, f"круг {ring}: ответа пока нет — иду по кольцу дальше, пока не будет")
-        sleep(RING_PAUSE)
-        waited += RING_PAUSE
+        sleep(pause)
+        waited += pause
     if attempts and slow == attempts:
         log.append(f"никто не уложился в срок: {int(req_timeout)} с на запрос. "
                    "Это медленно, а не мёртво — модель отвечает, но дольше отпущенного. "
@@ -2361,6 +2540,7 @@ def cmd_ping(as_json: bool) -> int:
         # же минуту пользуются другие программы, и каждая следующая проверка повторяет ту
         # же строку: сама проверка и была причиной, по которой отметку не снимали.
         DOWN.pop(b["n"], None)
+        cool_clear(n=b["n"])
         one = {**cfg, "backends": [b], "request_timeout": 45}
         if cfg.get("chains") is not None:
             one["chains"] = {"llm": {"worker": [b]}}

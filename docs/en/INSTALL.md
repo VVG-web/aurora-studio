@@ -221,7 +221,14 @@ follows the need:
    added right from the backend's dropdown, a model picked from the list the provider itself returned.
 
 When the primary does not answer, the call goes to the next in the chain, with its own model; an unavailable
-provider is left alone for 15 minutes. An embeddings fallback uses the same model as the primary: vectors of
+provider is left alone for 15 minutes. "Unavailable" means a dropped connection or three 5xx errors in a row; a
+rate limit (429, `Retry-After`, 503 "overloaded") does not put it in quarantine: only the gateway+model pair is
+paused, for as long as the gateway said (with no hint — 5, 10, 20 s and so on up to two minutes, with some
+randomness), and after that the primary is first again. An exhausted quota (`insufficient_quota`) is not cured by
+waiting, so the engine does not wait for it. The Pydantic AI path takes the proxy from the same variables as
+direct HTTP (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`; gateways on this very machine — `localhost`, `127.0.0.1` —
+bypass the proxy); if only the adapter failed to reach the gateway, the call is repeated once over direct HTTP,
+and the reason is shown in the bypass alarm. An embeddings fallback uses the same model as the primary: vectors of
 different models do not compare. An OCR fallback may be another model. Scans have no defaults: a guessed
 model name gives not a refusal but a coherent fabrication in the primary source's transcript.
 

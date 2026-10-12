@@ -149,8 +149,10 @@ but the panel itself must be running. Rules:
 - **a route sees the job through to the end.** Route and chain steps run with no time caps. A single command started
   by its button lives as before: it has the step budget and the request time limit from the Models section.
   - A step has no budget: it runs until its queue is done.
-  - A model call does not give up on a time limit, a busy slot, a dropped connection or a 5xx error; it goes around
-    the gateway ring until it gets an answer.
+  - A model call does not give up on a time limit, a busy slot, a dropped connection, a rate limit (429) or a 5xx
+    error; it goes around the gateway ring until it gets an answer. After a 429 the gateway is left alone for as long
+    as it asked (`Retry-After`), with no hint — for longer each time, with some randomness; only a dropped connection
+    and three 5xx in a row put a provider in quarantine.
   - The request time limit only guards against a hung connection. A gateway that did not make it in time gets twice
     the time on the next attempt and moves to the end of the ring, not into quarantine.
   - The route waits for the network until it is back and restarts a hung step with no limit.

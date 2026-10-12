@@ -23,9 +23,12 @@
 Задание: {"id", "url", "key", "model", "messages", "template", "max_tokens", "timeout",
           "tools", "mcp", "mcp_active", "guard", "role", "tool_calls"}
 Ответ:   {"id", "ok": true, "text", "reasoning", "finish", "usage"}
-         либо {"id", "ok": false, "where": "server"|"adapter", "status", "error", "body"}
+         либо {"id", "ok": false, "where": "server"|"adapter", "status", "error", "body",
+               "headers"}
 `where` отделяет отказ сервера (движок решает по нему, как по HTTP) от поломки адаптера
-(движок повторяет вызов прямым HTTP и пишет причину в отчёт).
+(движок повторяет вызов прямым HTTP и пишет причину в отчёт). `headers` — заголовки лимита
+(`retry-after` и др.), по которым движок решает, сколько ждать после 429. Нет соединения с
+сервером — тоже `adapter`: у процесса своя сеть (прокси), и прямой путь может дойти.
 
 Зачем фреймворк, если есть прямой HTTP: Pydantic AI валидирует ответ и умеет заставить
 модель переписать невалидный — а в фазе 2 агент возвращает не текст, а решение в JSON,
@@ -649,6 +652,36 @@ def http_lib():
     raise ImportError("нет ни httpx2, ни httpx — клиент OpenAI не установлен")
 
 
+def proxy_for(url, proxies=None, bypass=None):
+    """Прокси для адреса — так же, как выбирает `urllib` прямого пути движка: переменные
+    `HTTP(S)_PROXY`/`NO_PROXY` (на macOS и Windows — системные настройки). Нет прокси — None.
+
+    Клиент с явно заданным транспортом переменных окружения не читает вовсе (`httpx`:
+    `allow_env_proxies = trust_env and transport is None`), поэтому за корпоративным прокси
+    путь через адаптер был мёртв при живом прямом пути. Петлю (`localhost`, `127.0.0.1`,
+    `::1`) не проксируем: шлюз на этой же машине через чужой прокси недостижим, а проверка
+    совместимости ходит именно к такому. `proxies` и `bypass` — для тестов.
+    """
+    import urllib.parse
+    import urllib.request
+    parts = urllib.parse.urlsplit(str(url))
+    host = (parts.hostname or "").lower()
+    if not host or host == "localhost" or host.endswith(".localhost") or host == "::1" \
+            or host.startswith("127."):
+        return None
+    table = urllib.request.getproxies() if proxies is None else proxies
+    proxy = table.get(parts.scheme)
+    if not proxy:
+        return None
+    skip = urllib.request.proxy_bypass if bypass is None else bypass
+    try:
+        if skip(host + (":%d" % parts.port if parts.port else "")):
+            return None
+    except Exception:  # noqa: BLE001 — не смогли прочесть исключения: ходим через прокси
+        pass
+    return proxy
+
+
 def http_client():
     """HTTP-клиент адаптера: один на процесс, терпимый в обе стороны."""
     httpx = http_lib()
@@ -660,6 +693,19 @@ def http_client():
 
         def __init__(self):
             self.inner = httpx.AsyncHTTPTransport()
+            self.proxied = {}           # адрес прокси → транспорт через него
+
+        def route(self, url):
+            """Транспорт для адреса: через прокси окружения, если он положен, иначе прямой."""
+            proxy = proxy_for(url)
+            if not proxy:
+                return self.inner
+            if proxy not in self.proxied:
+                try:
+                    self.proxied[proxy] = httpx.AsyncHTTPTransport(proxy=proxy)
+                except Exception:  # noqa: BLE001 — например, socks без пакета: ходим напрямую
+                    self.proxied[proxy] = self.inner
+            return self.proxied[proxy]
 
         async def handle_async_request(self, request):
             if request.method == "POST" and request.url.path.endswith("/chat/completions"):
@@ -670,7 +716,7 @@ def http_client():
                                if k.lower() != "content-length"]
                     request = httpx.Request(request.method, request.url, headers=headers,
                                             content=fixed, extensions=request.extensions)
-            resp = await self.inner.handle_async_request(request)
+            resp = await self.route(request.url).handle_async_request(request)
             if "json" not in resp.headers.get("content-type", ""):
                 return resp
             raw = await resp.aread()
@@ -685,6 +731,9 @@ def http_client():
 
         async def aclose(self):
             await self.inner.aclose()
+            for t in self.proxied.values():
+                if t is not self.inner:
+                    await t.aclose()
 
     # Срок задаёт движок на каждый запрос (`timeout` в настройках модели), свой не нужен.
     return httpx.AsyncClient(transport=Tolerant(), timeout=None)
@@ -706,6 +755,35 @@ def answer(payload: dict) -> None:
 # AI они лежат в разных модулях, а называются одинаково.
 SERVER_SILENT = {"ModelAPIError", "APIConnectionError", "APITimeoutError", "ConnectError",
                  "ConnectTimeout", "ReadTimeout", "TimeoutException", "RemoteProtocolError"}
+# Соединения не было вовсе — не «сервер молчит», а «не дошли». Такой отказ адаптера (прокси,
+# сертификат, своя сеть процесса) прямой HTTP движка может и не повторить, поэтому он
+# уходит движку как поломка адаптера: тот сделает одну контрольную попытку напрямую. Срок
+# сюда не относится: прямой запрос уткнулся бы в тот же срок.
+CONNECT_FAILED = {"ConnectError", "APIConnectionError"}
+TIMED_OUT = {"ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "TimeoutException",
+             "APITimeoutError"}
+# Заголовки шлюза, по которым движок решает, сколько ждать после 429/503.
+RATE_HEADERS = ("retry-after", "retry-after-ms", "x-ratelimit-reset-requests",
+                "x-ratelimit-reset-tokens")
+
+
+def connect_failed(chain) -> bool:
+    """Соединение не установлено (а не истёк срок) — по именам классов цепочки исключений."""
+    return bool(set(chain) & CONNECT_FAILED) and not set(chain) & TIMED_OUT
+
+
+def rate_headers(e) -> dict:
+    """Заголовки лимита из ответа сервера (в нижнем регистре) — у ошибки или её причины."""
+    for x in (e, getattr(e, "__cause__", None)):
+        h = getattr(x, "headers", None) or getattr(getattr(x, "response", None), "headers", None)
+        if not h:
+            continue
+        try:
+            low = {str(k).lower(): str(v) for k, v in h.items()}
+        except (AttributeError, TypeError):
+            continue
+        return {k: low[k] for k in RATE_HEADERS if k in low}
+    return {}
 
 
 def runtime():
@@ -804,7 +882,7 @@ def runtime():
             err = body.get("error")
             msg = err.get("message", "") if isinstance(err, dict) else str(err or body.get("message") or "")
         return {"ok": False, "where": "server", "status": e.status_code, "body": body,
-                "error": msg or f"HTTP {e.status_code}"}
+                "error": msg or f"HTTP {e.status_code}", "headers": rate_headers(e)}
 
     async def run_task(task: dict) -> dict:
         agent, state = agent_for(task)
@@ -863,8 +941,13 @@ def runtime():
             except Exception as e:  # noqa: BLE001
                 chain = {type(x).__name__ for x in (e, e.__cause__, e.__context__) if x}
                 if chain & SERVER_SILENT:
-                    # Связь или срок: сервер не ответил. Повтор прямым HTTP упрётся в то же.
                     msg = getattr(e, "message", "") or str(e)
+                    if connect_failed(chain):
+                        # Не дошли до сервера: прокси, сертификат, сеть процесса. Прямой путь
+                        # движка может дойти — пусть сделает одну контрольную попытку.
+                        return {"ok": False, "where": "adapter",
+                                "error": f"нет соединения: {msg}"[:300]}
+                    # Срок: сервер не ответил. Повтор прямым HTTP упрётся в то же.
                     return {"ok": False, "where": "server", "error": str(msg)[:300]}
                 raise
         last = last_response(result.all_messages())
@@ -899,6 +982,8 @@ def selfcheck() -> dict:
         q = text_of(users[-1].get("content")) if users else ""
         if "отказ" in q:
             return 400, {"error": {"message": "плохой запрос"}}
+        if "лимит скорости" in q:
+            return 429, {"error": {"message": "слишком часто"}}
         if "цикл" in q:                     # модель, которая зовёт инструмент без конца
             return 200, {
                 "id": "1", "object": "chat.completion", "created": 1, "model": "m",
@@ -925,6 +1010,8 @@ def selfcheck() -> dict:
             code, body = reply(req)
             out = json.dumps(body, ensure_ascii=False).encode("utf-8")
             self.send_response(code)
+            if code == 429:
+                self.send_header("Retry-After", "7")
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(out)))
             self.end_headers()
@@ -1010,9 +1097,30 @@ def selfcheck() -> dict:
                                   messages=[{"role": "user", "content": "цикл"}]))
         check("потолок вызовов инструментов", out.get("ok") and out.get("finish") == "tool_limit",
               out)
-        # 7. обрыв связи — «сервер не ответил», не поломка адаптера
+        # 7. нет соединения — отказ адаптера: прямой путь движка делает контрольную попытку
         out = await run_task(dict(base, url=dead, messages=[{"role": "user", "content": "есть?"}]))
-        check("обрыв связи", out.get("where") == "server" and not out.get("ok"), out)
+        check("нет соединения", out.get("where") == "adapter" and not out.get("ok"), out)
+        # 8. лимит скорости: статус и подсказка шлюза доходят до движка
+        out = await run_task(dict(base, messages=[{"role": "user", "content": "лимит скорости"}]))
+        check("лимит скорости", out.get("where") == "server" and out.get("status") == 429
+              and (out.get("headers") or {}).get("retry-after") == "7", out)
+        # 9. прокси окружения: адрес не с этой машины идёт через него (поддельный шлюз тут же
+        #    играет прокси — он отвечает на любой путь), а не мимо, как делал голый клиент
+        keep = {k: os.environ.get(k) for k in ("http_proxy", "HTTP_PROXY", "no_proxy", "NO_PROXY")}
+        try:
+            os.environ["http_proxy"] = os.environ["HTTP_PROXY"] = url.rsplit("/v1", 1)[0]
+            os.environ.pop("no_proxy", None)
+            os.environ.pop("NO_PROXY", None)
+            before = len(seen)
+            out = await run_task(dict(base, url="http://gw.example.com/v1",
+                                      messages=[{"role": "user", "content": "через прокси"}]))
+            check("прокси окружения", out.get("ok") and len(seen) == before + 1, out)
+        finally:
+            for k, v in keep.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
     try:
         asyncio.run(go())

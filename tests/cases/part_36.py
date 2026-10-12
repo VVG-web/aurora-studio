@@ -1173,3 +1173,427 @@ def test_cron_tick_runs_the_watchdog_and_starts_the_next_chain(tmp: Path):
         assert saved_run["error"] == "run_thread_lost", saved_run
     finally:
         restore()
+
+
+# ---------------------------------------------------------------------------------
+# Канал к провайдерам моделей (BL-SEC-19): 429/Retry-After, 5xx, прокси, откат на прямой HTTP.
+# Шлюзы — подставные обработчики на 127.0.0.1 внутри теста; время ожидания подменено
+# (`sleep` сам снимает паузы), настоящих провайдеров и сети нет.
+
+class _Gateway:
+    """Шлюз на 127.0.0.1: ответы берутся из очереди `script` по порядку, последний повторяется.
+    Элемент — (код, заголовки, тело) либо "drop" (оборвать соединение без ответа)."""
+
+    def __init__(self, script):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        self.script, self.hits = list(script), 0
+        gw = self
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                step = gw.script[min(gw.hits, len(gw.script) - 1)]
+                gw.hits += 1
+                if step == "drop":
+                    self.connection.close()
+                    return
+                code, headers, body = step
+                out = json.dumps(body, ensure_ascii=False).encode("utf-8")
+                self.send_response(code)
+                for k, v in headers.items():
+                    self.send_header(k, v)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def log_message(self, *a):
+                pass
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.srv.server_port}/v1"
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+_OK = (200, {}, {"choices": [{"message": {"content": "ответ"}, "finish_reason": "stop"}],
+                 "usage": {"completion_tokens": 3}})
+
+
+def _limit(wait="2"):
+    return (429, {"Retry-After": wait}, {"error": {"message": "слишком часто"}})
+
+
+def _channel_cfg(AG, *urls):
+    env = {}
+    for i, u in enumerate(urls, 1):
+        env[f"AURORA_AGENT_BACKEND_{i}_URL"] = u
+        env[f"AURORA_AGENT_BACKEND_{i}_MODEL"] = "m"
+    cfg = AG.parse_config(env)
+    cfg["adapter"] = "openai_compat"          # прямой HTTP: адаптер Pydantic AI здесь не нужен
+    for d in (AG.DOWN, AG.SLOW, AG.LAST_OK, AG.COOL, AG.COOL_HITS):
+        d.clear()
+    return cfg
+
+
+class _Env:
+    """Шлюзы идут мимо прокси окружения владельца; всё возвращается на место."""
+
+    def __enter__(self):
+        self.keep = {k: os.environ.get(k) for k in ("NO_PROXY", "no_proxy")}
+        os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,localhost"
+        return self
+
+    def __exit__(self, *a):
+        for k, v in self.keep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _ask(AG, cfg, sleeps, deadline=60, **kw):
+    def sleep(s):
+        sleeps.append(s)
+        AG.COOL.clear()                       # прошедшее ожидание: паузы вышли
+    return AG.call_role(cfg, "worker", [{"role": "user", "content": "?"}],
+                        deadline=time.time() + deadline, sleep=sleep, **kw)
+
+
+@test
+def test_retry_after_is_read_from_every_spelling(tmp: Path):
+    """Сколько просит подождать шлюз: секунды, дата HTTP, миллисекунды, `x-ratelimit-reset-*`
+    (`1.5s`, `6m0s`); мусор — подсказки нет; потолок — час."""
+    _path()
+    import agent_core as AG
+    now = 1_700_000_000.0
+    assert AG.retry_hint({"Retry-After": "7"}) == 7.0
+    assert AG.retry_hint({"retry-after": "0"}) == 0.0
+    assert AG.retry_hint({"retry-after-ms": "1500"}) == 1.5
+    date = "Tue, 14 Nov 2023 22:14:30 GMT"       # 1_700_000_070 с
+    assert AG.retry_hint({"Retry-After": date}, now=now) == 70.0, "дата HTTP не разобрана"
+    assert AG.retry_hint({"x-ratelimit-reset-requests": "1.5s"}) == 1.5
+    assert AG.retry_hint({"x-ratelimit-reset-requests": "6m0s",
+                          "x-ratelimit-reset-tokens": "20ms"}) == 0.02, "берём ближайший сброс"
+    assert AG.retry_hint({"x-ratelimit-reset-requests": "1m30s"}) == 90.0
+    assert AG.retry_hint({"Retry-After": "скоро"}) is None and AG.retry_hint({}) is None
+    assert AG.retry_hint(None) is None
+    assert AG.retry_hint({"Retry-After": "999999"}) == AG.RATE_MAX_WAIT
+
+
+@test
+def test_direct_http_keeps_retry_after_on_a_429(tmp: Path):
+    """Прямой HTTP не теряет заголовок: текст отказа остаётся строкой, а `retry_after` едет на
+    нём же — форма кортежа транспорта прежняя."""
+    _path()
+    import agent_core as AG
+    gw = _Gateway([_limit("3")])
+    try:
+        with _Env():
+            st, body, err, _ = AG.http_json(gw.url + "/chat/completions", {"model": "m"}, "", 5)
+    finally:
+        gw.close()
+    assert st == 429 and isinstance(err, str) and "слишком часто" in err, (st, err)
+    assert err.retry_after == 3.0, f"Retry-After потерян: {getattr(err, 'retry_after', '—')}"
+
+
+@test
+def test_rate_limit_pauses_the_pair_and_the_call_goes_on(tmp: Path):
+    """429 с Retry-After не сажает провайдера в карантин на 15 минут: вызов ждёт столько, сколько
+    просил шлюз, и получает ответ на том же основном шлюзе."""
+    _path()
+    import agent_core as AG
+    gw = _Gateway([_limit("2"), _limit("2"), _OK])
+    sleeps = []
+    try:
+        with _Env():
+            cfg = _channel_cfg(AG, gw.url)
+            r = _ask(AG, cfg, sleeps)
+    finally:
+        gw.close()
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+            d.clear()
+    assert r["ok"] and gw.hits == 3, (gw.hits, r["log"])
+    assert 1 not in AG.DOWN, "429 посадил провайдера в карантин"
+    assert len(sleeps) == 2 and all(2.0 <= s <= 2.4 for s in sleeps), \
+        f"пауза не по просьбе шлюза (2 с + доля): {sleeps}"
+    assert any("карантин не ставлю" in x for x in r["log"]), r["log"]
+
+
+@test
+def test_a_long_retry_after_gives_up_without_hammering_or_quarantine(tmp: Path):
+    """Шлюз просит подождать дольше, чем есть у вызова: один запрос, внятная строка в журнале,
+    провайдер не в карантине (следующий вызов, у которого время есть, спросит его снова)."""
+    _path()
+    import agent_core as AG
+    gw = _Gateway([_limit("600")])
+    sleeps = []
+    try:
+        with _Env():
+            cfg = _channel_cfg(AG, gw.url)
+            r = _ask(AG, cfg, sleeps, deadline=20, request_timeout=10)
+            assert not r["ok"] and gw.hits == 1, f"шлюз долбят, пока он просит подождать: {gw.hits}"
+            assert 1 not in AG.DOWN and AG.COOL.get((1, "m")), (AG.DOWN, AG.COOL)
+            assert "повторять незачем" in " ".join(r["log"]) and "429" in " ".join(r["log"]), r["log"]
+            assert not sleeps, f"ждали впустую, зная, что не дождёмся: {sleeps}"
+    finally:
+        gw.close()
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+            d.clear()
+
+
+@test
+def test_a_rate_limited_primary_does_not_hide_behind_the_fallback(tmp: Path):
+    """Основной шлюз отвечает 429, запасной жив: этот вызов уходит запасному, но основной не
+    «мёртв» — пока идёт его пауза, его не спрашивают, а после неё он снова первый."""
+    _path()
+    import agent_core as AG
+    primary, spare = _Gateway([_limit("30"), _OK]), _Gateway([_OK])
+    try:
+        with _Env():
+            cfg = _channel_cfg(AG, primary.url, spare.url)
+            r = _ask(AG, cfg, [])
+            assert r["ok"] and r["backend"] == 2 and primary.hits == 1, (r["log"], primary.hits)
+            assert 1 not in AG.DOWN, "основной посажен в карантин за минутный лимит"
+            r = _ask(AG, cfg, [])
+            assert r["backend"] == 2 and primary.hits == 1, "основного спрашивают во время его паузы"
+            AG.COOL.clear()                                   # пауза вышла
+            r = _ask(AG, cfg, [])
+            assert r["ok"] and r["backend"] == 1, f"основной не вернулся первым: {r['log']}"
+    finally:
+        primary.close()
+        spare.close()
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+            d.clear()
+
+
+@test
+def test_a_spent_quota_is_not_waited_out(tmp: Path):
+    """429 «деньги кончились» (`insufficient_quota`) ожиданием не лечится: как 401 — один запрос,
+    никаких пауз."""
+    _path()
+    import agent_core as AG
+    gw = _Gateway([(429, {}, {"error": {"message": "You exceeded your current quota",
+                                        "code": "insufficient_quota"}})])
+    sleeps = []
+    try:
+        with _Env():
+            cfg = _channel_cfg(AG, gw.url)
+            r = _ask(AG, cfg, sleeps, deadline=30)
+    finally:
+        gw.close()
+    assert not r["ok"] and gw.hits == 1 and not sleeps, (gw.hits, sleeps, r["log"])
+    assert not AG.COOL and 1 not in AG.DOWN, "исчерпанная квота названа паузой или карантином"
+
+
+@test
+def test_server_errors_back_off_and_only_repeated_ones_quarantine(tmp: Path):
+    """5xx — сбой сервера, а не его смерть: две первые ошибки дают короткую паузу, третья подряд
+    уже карантин; обрыв соединения — карантин сразу, как раньше. Ответ сбрасывает счёт."""
+    _path()
+    import agent_core as AG
+    gw = _Gateway([(502, {}, {"error": {"message": "bad gateway"}}), (503, {}, {}), _OK])
+    sleeps = []
+    try:
+        with _Env():
+            cfg = _channel_cfg(AG, gw.url)
+            r = _ask(AG, cfg, sleeps)
+            assert r["ok"] and gw.hits == 3 and 1 not in AG.DOWN, (gw.hits, r["log"])
+            assert len(sleeps) == 2 and all(1.0 <= s <= 10.0 for s in sleeps), sleeps
+            assert not AG.COOL_HITS, "ответ не сбросил счёт сбоев"
+            gw.script, gw.hits = [(500, {}, {"error": {"message": "boom"}})], 0
+            r = _ask(AG, cfg, sleeps)
+            assert not r["ok"] and gw.hits == AG.SERVER_ERR_DOWN, (gw.hits, r["log"])
+            assert 1 in AG.DOWN, "три 5xx подряд не посадили провайдера в карантин"
+            AG.DOWN.clear()
+            AG.COOL_HITS.clear()
+            gw.script, gw.hits = ["drop"], 0
+            r = _ask(AG, cfg, sleeps, deadline=20)
+            assert not r["ok"] and 1 in AG.DOWN and gw.hits == 1, \
+                f"обрыв соединения перестал быть карантином: {r['log']}"
+    finally:
+        gw.close()
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+            d.clear()
+
+
+@test
+def test_pause_without_a_hint_grows_and_is_jittered(tmp: Path):
+    """Без подсказки шлюза пауза растёт вдвое с каждым отказом подряд до потолка и размыта
+    случайной долей; отказы, пришедшие во время уже идущей паузы, счёт не растят."""
+    _path()
+    import agent_core as AG
+    saved = AG.random
+    try:
+        for d in (AG.COOL, AG.COOL_HITS):
+            d.clear()
+        rows = []
+        for roll in (0.0, 1.0):
+            AG.random = type("R", (), {"random": staticmethod(lambda r=roll: r)})
+            AG.COOL.clear()
+            AG.COOL_HITS.clear()
+            row = []
+            for _ in range(8):
+                AG.COOL.clear()                  # пауза вышла — следующий отказ растит счёт
+                row.append(AG.cool_down((1, "m"))[0])
+            rows.append(row)
+        low, high = rows
+        assert low[:3] == [2.5, 5.0, 10.0] and low[-1] == AG.RATE_CAP / 2, low
+        assert high[:3] == [5.0, 10.0, 20.0] and high[-1] == AG.RATE_CAP, high
+        # во время идущей паузы счёт не растёт, а пауза не сокращается
+        AG.COOL.clear()
+        AG.COOL_HITS.clear()
+        AG.random = type("R", (), {"random": staticmethod(lambda: 0.0)})
+        first, h1 = AG.cool_down((1, "m"))
+        again, h2 = AG.cool_down((1, "m"))
+        assert h1 == h2 == 1 and AG.COOL[(1, "m")] >= time.time() + first - 1, (h1, h2)
+    finally:
+        AG.random = saved
+        for d in (AG.COOL, AG.COOL_HITS):
+            d.clear()
+
+
+def _adapter():
+    for p in (str(SCRIPTS), str(KIT / "scripts" / "agents")):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    import importlib
+    AD = importlib.import_module("pydantic_ai_adapter")
+    return importlib.reload(AD)
+
+
+@test
+def test_adapter_follows_the_environment_proxy_like_urllib(tmp: Path):
+    """Прокси для адаптера выбирается так же, как у прямого пути (`urllib`): по схеме адреса и
+    `NO_PROXY`; свою машину (петлю) не проксируем."""
+    AD = _adapter()
+    table = {"http": "http://proxy.example.com:3128", "https": "http://proxy.example.com:3129"}
+    no = lambda host: False  # noqa: E731
+    assert AD.proxy_for("http://gw.example.com/v1", table, no) == table["http"]
+    assert AD.proxy_for("https://gw.example.com:8443/v1", table, no) == table["https"]
+    assert AD.proxy_for("ftp://gw.example.com/", table, no) is None, "схемы без прокси"
+    assert AD.proxy_for("http://gw.example.com/v1", {}, no) is None
+    for local in ("http://127.0.0.1:8000/v1", "http://localhost/v1", "http://[::1]:80/v1",
+                  "http://gw.localhost/v1"):
+        assert AD.proxy_for(local, table, no) is None, f"{local} ушёл на прокси"
+    seen = []
+    assert AD.proxy_for("http://gw.example.com:8080/v1", table,
+                        lambda h: seen.append(h) or True) is None, "NO_PROXY не учтён"
+    assert seen == ["gw.example.com:8080"], seen
+    # Настоящий `urllib`: переменные окружения, исключение через no_proxy.
+    keep = {k: os.environ.get(k) for k in ("http_proxy", "HTTP_PROXY", "no_proxy", "NO_PROXY")}
+    try:
+        for k in keep:
+            os.environ.pop(k, None)
+        os.environ["http_proxy"] = "http://proxy.example.com:3128"
+        os.environ["no_proxy"] = "internal.example.com"
+        assert AD.proxy_for("http://gw.example.com/v1") == "http://proxy.example.com:3128"
+        assert AD.proxy_for("http://internal.example.com/v1") is None
+    finally:
+        for k, v in keep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+@test
+def test_adapter_client_really_goes_through_the_proxy(tmp: Path):
+    """Клиент адаптера с переменной прокси в окружении доходит до шлюза через прокси: раньше
+    явный транспорт не читал переменные, и за корпоративным прокси путь модели был мёртв, а
+    прямой — жив. Прокси здесь — подставной 127.0.0.1, отвечающий на любой абсолютный адрес;
+    клиент HTTP живёт в venv адаптера, поэтому проверка идёт его питоном (нет venv — пропуск,
+    в CI `AURORA_REQUIRE_VENV=1` пропуск запрещает)."""
+    import subprocess
+    from harness import live_adapter_python
+    vpy = live_adapter_python()
+    if vpy is None:
+        return
+    code = (
+        "import asyncio, sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import pydantic_ai_adapter as AD\n"
+        "async def go():\n"
+        "    c = AD.http_client()\n"
+        "    try:\n"
+        "        r = await c.post('http://gw.example.com/v1/chat/completions',\n"
+        "                         json={'model': 'm', 'messages': []})\n"
+        "        return r.status_code, r.json()['choices'][0]['message']['content']\n"
+        "    finally:\n"
+        "        await c.aclose()\n"
+        "print(asyncio.run(go()))\n")
+    proxy = _Gateway([_OK])
+    env = {k: v for k, v in os.environ.items()
+           if k.lower() not in ("http_proxy", "https_proxy", "no_proxy", "all_proxy")}
+    env["http_proxy"] = proxy.url.rsplit("/v1", 1)[0]
+    try:
+        cp = subprocess.run([str(vpy), "-c", code, str(KIT / "scripts" / "agents")], env=env,
+                            capture_output=True, text=True, encoding="utf-8", errors="replace",
+                            timeout=60, stdin=subprocess.DEVNULL)
+    finally:
+        proxy.close()
+    assert cp.returncode == 0 and "(200, 'ответ')" in cp.stdout, (cp.stdout, cp.stderr[-400:])
+    assert proxy.hits == 1, "запрос не прошёл через прокси"
+
+
+@test
+def test_adapter_hands_over_rate_headers_and_connection_failures(tmp: Path):
+    """Адаптер отдаёт движку заголовки лимита из ответа сервера (нижним регистром, только
+    нужные) и отличает «не дошли» (ConnectError: прямой путь может дойти) от «срок вышел»
+    (повтор упрётся в то же)."""
+    AD = _adapter()
+
+    class Err(Exception):
+        def __init__(self, headers=None, response=None):
+            self.headers, self.response = headers, response
+    assert AD.rate_headers(Err({"Retry-After": "7", "Set-Cookie": "x", "X-RateLimit-Reset-Tokens": "1s"})) \
+        == {"retry-after": "7", "x-ratelimit-reset-tokens": "1s"}
+
+    class Resp:
+        headers = {"Retry-After": "9"}
+    cause = Err(response=Resp())
+    wrapper = Err()
+    wrapper.__cause__ = cause
+    assert AD.rate_headers(wrapper) == {"retry-after": "9"}, "заголовки причины потеряны"
+    assert AD.rate_headers(Err()) == {}
+    assert AD.connect_failed({"ModelAPIError", "APIConnectionError", "ConnectError"})
+    assert not AD.connect_failed({"ModelAPIError", "APITimeoutError", "APIConnectionError"}), \
+        "срок принят за обрыв соединения"
+    assert not AD.connect_failed({"ModelAPIError", "ConnectTimeout"})
+    assert not AD.connect_failed({"ModelAPIError", "RemoteProtocolError"})
+
+
+@test
+def test_adapter_rate_limit_reaches_the_ring_with_its_hint(tmp: Path):
+    """Отказ 429 через адаптер приходит в кольцо с тем же `retry_after`, что и по прямому HTTP."""
+    _path()
+    import agent_core as AG
+    hub = {"proc": object(), "pending": {}}
+    saved = (AG.adapter_hub, AG._HUB.get("seq"))
+
+    class Pipe:
+        def write(self, line):
+            task = json.loads(line)
+            slot = hub["pending"][task["id"]]
+            slot["out"] = {"ok": False, "where": "server", "status": 429, "body": None,
+                           "error": "слишком часто", "headers": {"retry-after": "11"}}
+            slot["done"].set()
+
+        def flush(self):
+            pass
+    proc = type("P", (), {"stdin": Pipe()})()
+    AG.adapter_hub = lambda: (proc, hub["pending"])
+    try:
+        st, body, err, _ = AG.pydantic_transport({"n": 1, "url": "http://gw.example.com/v1", "key": ""},
+                                                 {"model": "m", "messages": [
+                                                     {"role": "user", "content": "?"}]}, 5)
+    finally:
+        AG.adapter_hub = saved[0]
+    assert st == 429 and err == "слишком часто" and err.retry_after == 11.0, (st, err)
