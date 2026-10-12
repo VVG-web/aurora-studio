@@ -1238,7 +1238,7 @@ def _channel_cfg(AG, *urls):
         env[f"AURORA_AGENT_BACKEND_{i}_MODEL"] = "m"
     cfg = AG.parse_config(env)
     cfg["adapter"] = "openai_compat"          # прямой HTTP: адаптер Pydantic AI здесь не нужен
-    for d in (AG.DOWN, AG.SLOW, AG.LAST_OK, AG.COOL, AG.COOL_HITS):
+    for d in (AG.DOWN, AG.SLOW, AG.LAST_OK, AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
         d.clear()
     return cfg
 
@@ -1324,7 +1324,7 @@ def test_rate_limit_pauses_the_pair_and_the_call_goes_on(tmp: Path):
             r = _ask(AG, cfg, sleeps)
     finally:
         gw.close()
-        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
             d.clear()
     assert r["ok"] and gw.hits == 3, (gw.hits, r["log"])
     assert 1 not in AG.DOWN, "429 посадил провайдера в карантин"
@@ -1351,7 +1351,7 @@ def test_a_long_retry_after_gives_up_without_hammering_or_quarantine(tmp: Path):
             assert not sleeps, f"ждали впустую, зная, что не дождёмся: {sleeps}"
     finally:
         gw.close()
-        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
             d.clear()
 
 
@@ -1376,7 +1376,7 @@ def test_a_rate_limited_primary_does_not_hide_behind_the_fallback(tmp: Path):
     finally:
         primary.close()
         spare.close()
-        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
             d.clear()
 
 
@@ -1426,7 +1426,7 @@ def test_server_errors_back_off_and_only_repeated_ones_quarantine(tmp: Path):
                 f"обрыв соединения перестал быть карантином: {r['log']}"
     finally:
         gw.close()
-        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
             d.clear()
 
 
@@ -1438,7 +1438,7 @@ def test_pause_without_a_hint_grows_and_is_jittered(tmp: Path):
     import agent_core as AG
     saved = AG.random
     try:
-        for d in (AG.COOL, AG.COOL_HITS):
+        for d in (AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
             d.clear()
         rows = []
         for roll in (0.0, 1.0):
@@ -1462,7 +1462,7 @@ def test_pause_without_a_hint_grows_and_is_jittered(tmp: Path):
         assert h1 == h2 == 1 and AG.COOL[(1, "m")] >= time.time() + first - 1, (h1, h2)
     finally:
         AG.random = saved
-        for d in (AG.COOL, AG.COOL_HITS):
+        for d in (AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
             d.clear()
 
 
@@ -1634,7 +1634,7 @@ def test_a_call_that_cannot_wait_does_not_spin_the_ring(tmp: Path):
             assert gw.hits == 1, (label, "шлюз спрошен повторно", gw.hits)
             assert 1 not in AG.DOWN, label
             assert any(word in x for x in r["log"]), (label, r["log"])
-            for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+            for d in (AG.DOWN, AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
                 d.clear()
 
 
@@ -1652,7 +1652,7 @@ def test_a_patient_call_still_waits_out_a_rate_limit(tmp: Path):
                              deadline=time.time() + 20, sleep=lambda s: time.sleep(min(s, 0.6)))
     finally:
         gw.close()
-        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
             d.clear()
     assert r["ok"] and gw.hits == 2, (gw.hits, r["log"])
 
@@ -1671,7 +1671,7 @@ def test_503_with_retry_after_pauses_the_pair_without_quarantine(tmp: Path):
             r = _ask(AG, cfg, sleeps)
     finally:
         gw.close()
-        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
             d.clear()
     assert r["ok"] and gw.hits == 2 and 1 not in AG.DOWN, (gw.hits, r["log"])
     assert len(sleeps) == 1 and 2.0 <= sleeps[0] <= 2.4, sleeps
@@ -1687,11 +1687,11 @@ def test_a_small_or_zero_hint_does_not_pin_the_pause(tmp: Path):
     saved = AG.random
     try:
         AG.random = type("R", (), {"random": staticmethod(lambda: 0.0)})
-        for d in (AG.COOL, AG.COOL_HITS):
+        for d in (AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
             d.clear()
         zero, _ = AG.cool_down((1, "m"), 0.0)
         assert zero == AG.RATE_BASE / 2, f"подсказка 0 с оставила паузу пустой: {zero}"
-        for d in (AG.COOL, AG.COOL_HITS):
+        for d in (AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
             d.clear()
         row = []
         for _ in range(5):
@@ -1702,7 +1702,7 @@ def test_a_small_or_zero_hint_does_not_pin_the_pause(tmp: Path):
             f"малая подсказка держит паузу на месте: {row}"
     finally:
         AG.random = saved
-        for d in (AG.COOL, AG.COOL_HITS):
+        for d in (AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
             d.clear()
 
 
@@ -1834,7 +1834,7 @@ def test_adapter_connect_failure_makes_exactly_one_direct_request(tmp: Path):
         AG.adapter_hub, AG.note_bypass = saved[0], saved[1]
         AG.ADAPTER.clear()
         AG.ADAPTER.update(saved[2])
-        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
             d.clear()
 
 
@@ -1915,7 +1915,10 @@ def test_bypass_reason_travels_with_the_call_not_the_global_field(tmp: Path):
 
     direct = {"aurora": "строка"}
 
+    entered = threading.Event()
+
     def slow_direct(url, payload, key, timeout):
+        entered.set()            # первый вызов дошёл до прямого запроса — дальше он «идёт минуты»
         _t.sleep(0.5)
         return 200, dict(ok, **direct), "", 0.5
     saved = (AG.pydantic_transport, AG.http_json, dict(AG.ADAPTER))
@@ -1930,7 +1933,7 @@ def test_bypass_reason_travels_with_the_call_not_the_global_field(tmp: Path):
         AG.ADAPTER.update(name="pydantic_ai", fallback_why="")
         first = threading.Thread(target=lambda: got.update(a=ask("A")))
         first.start()
-        _t.sleep(0.15)
+        assert entered.wait(5), "первый вызов не дошёл до прямого запроса"
         st, *_ = ask("B")        # пока первый ждёт прямой ответ, второй дошёл через адаптер
         first.join()
         assert st == 200 and AG.ADAPTER["fallback_why"] == "", AG.ADAPTER["fallback_why"]
@@ -1948,6 +1951,40 @@ def test_bypass_reason_travels_with_the_call_not_the_global_field(tmp: Path):
         AG.pydantic_transport, AG.http_json = saved[0], saved[1]
         AG.ADAPTER.clear()
         AG.ADAPTER.update(saved[2])
+
+
+@test
+def test_bypass_reason_reaches_the_call_role_when_global_field_was_cleared(tmp: Path):
+    """Сквозная проверка: пока прямой запрос идёт, соседний вызов через адаптер снимает общее поле
+    причины. ⛔-строка, тревога панели и итог прогона берут причину из ответа (`_call_role`
+    читает `aurora.bypass_why` раньше общего поля), а не «ошибку движка»."""
+    _path()
+    import agent_core as AG
+    gw = _Gateway([_OK])
+    real_http = AG.http_json
+    saved = (AG.pydantic_transport, AG.http_json, AG.note_bypass, dict(AG.ADAPTER))
+    said = []
+
+    def wiped_http(url, payload, key, timeout):
+        AG.ADAPTER["fallback_why"] = ""      # соседний поток дошёл через адаптер и снял поле
+        return real_http(url, payload, key, timeout)
+    AG.pydantic_transport = lambda b, p, t: (None, None, AG.ADAPTER_FAIL + "ответ не разобран", 0.0)
+    AG.http_json = wiped_http
+    AG.note_bypass = lambda why, needs_tools=False: said.append(why)
+    try:
+        with _Env():
+            cfg = _channel_cfg(AG, gw.url)
+            cfg["adapter"] = "pydantic_ai"
+            AG.ADAPTER.update(name="pydantic_ai", fallback_why="")
+            r = _ask(AG, cfg, [])
+            assert r["ok"] and r["bypass"] == "ответ не разобран", r
+            assert said == ["ответ не разобран"], said
+    finally:
+        gw.close()
+        AG.pydantic_transport, AG.http_json, AG.note_bypass = saved[0], saved[1], saved[2]
+        AG.ADAPTER.clear()
+        AG.ADAPTER.update(saved[3])
+        _clear_cool(AG)
 
 
 def _clear_cool(AG):
