@@ -162,7 +162,7 @@ but the panel itself must be running. Rules:
   and the run goes on.
 
   Progress is visible by stages: "▸ taken", "↗ request → gateway, model, time limit", "… waiting for a slot", "⟳ no
-  answer — retrying with twice the time", "✓ answer in N min, tokens, speed" — with the source name and the stage
+  answer — retrying with twice the time", "⏳ rate limit — waiting out the pause", "✓ answer in N min, tokens, speed" — with the source name and the stage
   (parsing, critic check, plan, Momus check);
 - **what runs — in the Console.** Above it are the chain, the routes and the commands of all projects; "Show"
   switches the output. The chain stream — a header for every item with its project, the output of its steps, waits and

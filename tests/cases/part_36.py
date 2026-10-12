@@ -1836,3 +1836,156 @@ def test_adapter_connect_failure_makes_exactly_one_direct_request(tmp: Path):
         AG.ADAPTER.update(saved[2])
         for d in (AG.DOWN, AG.COOL, AG.COOL_HITS):
             d.clear()
+
+
+def _clear_cool(AG):
+    for d in (AG.DOWN, AG.COOL, AG.COOL_HITS, AG.ERR_HITS):
+        d.clear()
+
+
+@test
+def test_rate_limit_storm_does_not_make_one_5xx_a_quarantine(tmp: Path):
+    """Три 429 подряд и один 502: «три 5xx подряд» не набралось, провайдер в карантин не идёт.
+    Счёт 5xx ведётся отдельно от счёта лимита, а 429 обнуляет серию 5xx."""
+    _path()
+    import agent_core as AG
+    gw = _Gateway([_limit("1"), _limit("1"), _limit("1"),
+                   (502, {}, {"error": {"message": "bad gw"}}), _OK])
+    sleeps = []
+    try:
+        with _Env():
+            cfg = _channel_cfg(AG, gw.url)
+            r = _ask(AG, cfg, sleeps)
+            assert r["ok"] and gw.hits == 5, (gw.hits, r["log"])
+            assert 1 not in AG.DOWN, f"один 502 после шторма 429 посадил провайдера: {r['log']}"
+            assert not any("карантин," in x or "в карантин" in x for x in r["log"]), r["log"]
+        # то же на счётчиках: серии разных видов не склеиваются
+        _clear_cool(AG)
+        for _ in range(3):
+            AG.COOL.clear()
+            AG.cool_down((1, "m"), 1.0)
+        AG.COOL.clear()
+        assert AG.cool_down((1, "m"), None, server=True)[1] == 1, "счёт 5xx взят из счёта 429"
+        AG.COOL.clear()
+        AG.cool_down((1, "m"), 1.0)              # 429 между 5xx обнуляет серию
+        AG.COOL.clear()
+        assert AG.cool_down((1, "m"), None, server=True)[1] == 1
+        for want in (2, 3):
+            AG.COOL.clear()
+            assert AG.cool_down((1, "m"), None, server=True)[1] == want
+        AG.cool_clear((1, "m"))
+        assert not AG.ERR_HITS and not AG.COOL_HITS, "ответ не сбросил счёт 5xx"
+    finally:
+        gw.close()
+        _clear_cool(AG)
+
+
+@test
+def test_cool_down_survives_thousands_of_refusals(tmp: Path):
+    """За сутки сплошных 429 счёт переваливает за тысячу: `2 ** 1025` не помещается во float и
+    раньше ронял вызов `OverflowError`. Пауза остаётся в пределах потолка."""
+    _path()
+    import agent_core as AG
+    try:
+        _clear_cool(AG)
+        for _ in range(2100):
+            AG.COOL.clear()
+            wait, hits = AG.cool_down((1, "m"))
+            assert 0 < wait <= AG.RATE_CAP, wait
+        assert hits == 2100
+        AG.COOL.clear()
+        wait, _ = AG.cool_down((1, "m"), 3.0)
+        assert 0 < wait <= AG.RATE_MAX_WAIT
+        AG.COOL.clear()
+        assert AG.cool_down((1, "m"), None, server=True)[0] <= AG.RATE_CAP
+    finally:
+        _clear_cool(AG)
+
+
+@test
+def test_429_with_too_many_tokens_text_is_a_rate_limit_not_an_overflow(tmp: Path):
+    """«Too many tokens, please wait» у шлюзов — лимит скорости: 429 ставит паузу паре и вызов
+    повторяется, а не сдаётся как «запрос длиннее окна модели»."""
+    _path()
+    import agent_core as AG
+    gw = _Gateway([(429, {"Retry-After": "2"},
+                    {"error": {"message": "Too many tokens, please wait before trying again"}}),
+                   _OK])
+    sleeps = []
+    try:
+        with _Env():
+            cfg = _channel_cfg(AG, gw.url)
+            r = _ask(AG, cfg, sleeps)
+    finally:
+        gw.close()
+        _clear_cool(AG)
+    assert r["ok"] and gw.hits == 2 and len(sleeps) == 1, (gw.hits, sleeps, r["log"])
+    assert not any("длиннее окна" in x for x in r["log"]), r["log"]
+    # настоящее переполнение (400) по-прежнему распознаётся
+    assert AG.looks_like_overflow("maximum context length is 8192 tokens", None)
+
+
+@test
+def test_every_live_mark_is_a_progress_line_of_the_route(tmp: Path):
+    """Каждый знак строк хода (`say_live`) опознаётся маршрутом как строка хода: по ним сеть
+    упавшей не считается, даже если текст шлюза в строке упоминает ssl или timeout."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    rr = importlib.import_module("route_runner")
+    src = (SCRIPTS / "agent_core.py").read_text(encoding="utf-8")
+    marks = set(re.findall(r'say_live\("(.)"', src))
+    assert "⏳" in marks and len(marks) >= 5, marks
+    for m in sorted(marks):
+        line = f"    {m} источник · разбор: №1 m: ssl timeout"
+        assert rr.LIVE_LINE.match(line), f"знак {m} не входит в LIVE_LINE"
+        assert not rr.looks_offline([line]), f"строка хода {m} сочтена обрывом сети"
+
+
+@test
+def test_probe_tail_does_not_promise_a_quarantine_for_a_rate_limit(tmp: Path):
+    """Хвост отчёта `agent:ping` не говорит, что любой отказ шлюза — карантин на 15 минут."""
+    src = (SCRIPTS / "agent_probe.py").read_text(encoding="utf-8")
+    assert "сажает такой шлюз" not in src, "подсказка устарела: 401/404/429 карантина не дают"
+    assert "при HTTP 429 карантина нет" in src and "три 5xx подряд" in src
+
+
+@test
+def test_adapter_remembers_why_the_proxy_did_not_fit(tmp: Path):
+    """Причина отката адаптера на прямой путь (класс ошибки, без текста) запоминается и едет
+    движку в тексте «нет соединения» — stderr адаптера движок гасит."""
+    AD = _adapter()
+
+    class Base:
+        pass
+
+    class Plain(Base):
+        def __init__(self, proxy=None, **kw):
+            if proxy:
+                raise ImportError("socks5://user:secret@proxy.example.com — нет пакета socksio")
+
+    fake = type("httpx", (), {"AsyncBaseTransport": Base, "AsyncHTTPTransport": Plain,
+                              "AsyncClient": staticmethod(lambda transport=None, **kw: transport)})
+    keep = {k: os.environ.get(k) for k in ("http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY",
+                                           "no_proxy", "NO_PROXY")}
+    saved = AD.http_lib
+    try:
+        for k in keep:
+            os.environ.pop(k, None)
+        os.environ["http_proxy"] = "socks5://proxy.example.com:1080"
+        os.environ["no_proxy"] = "internal.example.com"
+        AD.http_lib = lambda: fake
+        AD.PROXY_FELL["why"] = ""
+        transport = AD.http_client()
+        transport.route("http://gw.example.com/v1")
+        assert AD.PROXY_FELL["why"] == "ImportError", AD.PROXY_FELL
+        assert "secret" not in AD.PROXY_FELL["why"]
+    finally:
+        AD.http_lib = saved
+        AD.PROXY_FELL["why"] = ""
+        for k, v in keep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    src = (KIT / "scripts" / "agents" / "pydantic_ai_adapter.py").read_text(encoding="utf-8")
+    assert "прокси окружения не подошёл клиенту: {PROXY_FELL" in src, "причина не добавлена в отказ"

@@ -689,6 +689,12 @@ def proxy_for(url, proxies=None, bypass=None):
     return proxy
 
 
+# Почему путь через прокси окружения не подошёл клиенту (класс ошибки, без текста: в нём бывает
+# адрес прокси с логином). Процесс адаптера пишет в никуда (движок гасит его stderr), поэтому
+# причина уходит движку в тексте отказа «нет соединения» и доезжает до тревоги обхода.
+PROXY_FELL: dict = {"why": ""}
+
+
 def http_client():
     """HTTP-клиент адаптера: один на процесс, терпимый в обе стороны."""
     httpx = http_lib()
@@ -713,9 +719,8 @@ def http_client():
                 except Exception as e:  # noqa: BLE001 — например, socks без пакета: ходим напрямую
                     self.proxied[proxy] = self.inner
                     # Молча не уходим: за таким прокси путь модели мёртв, и причина нужна.
-                    # Текст ошибки не печатаем: в нём может быть адрес прокси с логином.
-                    print(f"адаптер: прокси окружения не подошёл клиенту ({type(e).__name__}) "
-                          "— хожу напрямую", file=sys.stderr, flush=True)
+                    # Текст ошибки не берём: в нём может быть адрес прокси с логином.
+                    PROXY_FELL["why"] = type(e).__name__
             return self.proxied[proxy]
 
         async def handle_async_request(self, request):
@@ -982,8 +987,10 @@ def runtime():
                     if connect_failed(chain):
                         # Не дошли до сервера: прокси, сертификат, сеть процесса. Прямой путь
                         # движка может дойти — пусть сделает одну контрольную попытку.
+                        note = (f" (прокси окружения не подошёл клиенту: {PROXY_FELL['why']})"
+                                if PROXY_FELL["why"] else "")
                         return {"ok": False, "where": "adapter",
-                                "error": f"нет соединения: {msg}"[:300]}
+                                "error": f"нет соединения: {str(msg)[:200]}{note}"[:300]}
                     # Срок: сервер не ответил. Повтор прямым HTTP упрётся в то же.
                     return {"ok": False, "where": "server", "error": str(msg)[:300]}
                 raise

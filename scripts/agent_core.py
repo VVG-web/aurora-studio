@@ -1011,16 +1011,21 @@ DOWN: dict = {}       # {номер бэкенда: когда пробоват�
 # (`Retry-After`), а без подсказки пауза растёт вдвое с каждым подряд отказом и размывается
 # случайной долей, чтобы потоки не вернулись к шлюзу в один миг.
 COOL: dict = {}        # {(№ бэкенда, модель): когда пробовать снова}
-COOL_HITS: dict = {}   # {(№ бэкенда, модель): отказов подряд}
+COOL_HITS: dict = {}   # {(№ бэкенда, модель): отказов подряд — рост паузы, любые причины}
+ERR_HITS: dict = {}    # {(№ бэкенда, модель): 5xx подряд — только они ведут к карантину}
 _COOL_LOCK = threading.Lock()
 RATE_BASE = 5.0        # первая пауза без подсказки шлюза, с
 RATE_CAP = 120.0       # потолок такой паузы, с
 SERVER_ERR_DOWN = 3    # столько 5xx подряд на одной паре — и это уже болезнь, карантин провайдеру
 
 
-def cool_down(key: tuple, hint: float | None = None) -> tuple:
+def cool_down(key: tuple, hint: float | None = None, server: bool = False) -> tuple:
     """Поставить пару на паузу → (секунд, отказов подряд). Отказы, пришедшие, пока пауза уже
     идёт (запросы, ушедшие до неё), счётчик не растят и паузу не сокращают.
+    Счёта два: пауза растёт по всем отказам пары (`COOL_HITS`), а число 5xx подряд
+    (`server=True`, `ERR_HITS`) считается отдельно — лимит скорости его обнуляет. Иначе после
+    шторма 429 один «перегружен» сажал бы провайдера в карантин. Возвращается счёт того вида,
+    которым вызвали.
     Подсказка «0 с» подсказкой не считается: повторять сразу — это и есть бесконечный бой в
     лимит. А с третьего отказа подряд подсказка шлюза — лишь нижняя планка роста: малый
     срок, который шлюз называет снова и снова, не удерживает паузу на месте."""
@@ -1028,7 +1033,14 @@ def cool_down(key: tuple, hint: float | None = None) -> tuple:
         now = time.time()
         hits = COOL_HITS.get(key, 0) + (0 if COOL.get(key, 0) > now else 1)
         COOL_HITS[key] = hits
-        top = min(RATE_CAP, RATE_BASE * 2 ** (hits - 1))
+        if server:
+            errs = ERR_HITS.get(key, 0) + (0 if COOL.get(key, 0) > now else 1)
+            ERR_HITS[key] = errs
+        else:
+            ERR_HITS.pop(key, None)
+        # Показатель ограничен: за сутки сплошных 429 счёт переваливает за тысячу, а 2 ** 1025
+        # в число с плавающей точкой уже не помещается.
+        top = min(RATE_CAP, RATE_BASE * 2 ** min(hits - 1, 16))
         grown = top / 2 + top / 2 * random.random()
         if hint is not None and hint > 0:
             wait = hint * (1 + 0.2 * random.random())
@@ -1038,13 +1050,13 @@ def cool_down(key: tuple, hint: float | None = None) -> tuple:
             wait = grown
         wait = min(wait, RATE_MAX_WAIT)
         COOL[key] = max(COOL.get(key, 0), now + wait)
-        return wait, hits
+        return wait, (errs if server else hits)
 
 
 def cool_clear(key: tuple | None = None, n: int | None = None) -> None:
     """Снять паузу и счётчик: пара ответила (`key`), либо все пары бэкенда `n`, либо всё."""
     with _COOL_LOCK:
-        for d in (COOL, COOL_HITS):
+        for d in (COOL, COOL_HITS, ERR_HITS):
             for k in [k for k in d if key is None and n is None or k == key or (n is not None and k[0] == n)]:
                 d.pop(k, None)
 
@@ -2159,7 +2171,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     st, body, err, dt = transport("chat", b, payload,
                                                   max(5.0, deadline - time.time()))
                 if st != 200 or not isinstance(body, dict):
-                    if looks_like_overflow(err, body):
+                    if st != 429 and looks_like_overflow(err, body):
+                        # (429 — всегда лимит скорости: «too many tokens» шлюзы пишут и про него.)
                         # Провайдер жив и отказал по делу: запрос длиннее его окна. Гасить
                         # его на 15 минут — значит потерять рабочего провайдера из-за одной
                         # большой карточки, а следом по той же причине и всех остальных.
@@ -2195,12 +2208,13 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     elif st is not None and 500 <= st < 600:
                         # Сервер ответил, но с ошибкой: один сбой — не смерть. Короткая пауза
                         # с ростом; карантин провайдеру — когда подряд отказывает и дальше.
-                        wait, hits = cool_down((b["n"], model), getattr(err, "retry_after", None))
+                        wait, hits = cool_down((b["n"], model), getattr(err, "retry_after", None),
+                                               server=True)
                         other += 1
                         if hits >= SERVER_ERR_DOWN:
                             DOWN[b["n"]] = time.time() + DOWN_FOR
                             can_recover = can_recover or persist
-                            log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'} — {hits} раза "
+                            log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'} — {hits} раз "
                                        f"подряд, провайдер в карантин")
                         else:
                             cool_waits.append(wait)

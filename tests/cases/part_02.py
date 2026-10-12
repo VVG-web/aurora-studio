@@ -1466,7 +1466,7 @@ def test_oversized_request_does_not_kill_the_provider(tmp: Path):
     assert not A.looks_like_overflow("unknown field chat_template_kwargs", None), \
         "обычная 400 принята за переполнение — повтор без chat_template_kwargs пропадёт"
     src = (KIT / "scripts/agent_core.py").read_text(encoding="utf-8")
-    place = src[src.index("if looks_like_overflow(err, body):"):][:400]
+    place = src[src.index("if st != 429 and looks_like_overflow(err, body):"):][:400]
     assert "DOWN[" not in place, "переполнение по-прежнему метит провайдера мёртвым"
 
 
