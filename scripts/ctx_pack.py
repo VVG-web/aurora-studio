@@ -858,7 +858,7 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
         close = semantic(topic, max_cards * 2)      # то же, что `fuse` делал сам при None
     seeds = fuse(cards, topic, close, limit=max_cards * 2)
     chosen, seen, dropped = [], set(), []
-    hidden, released, replaced = [], [], []
+    hidden, released, replaced, decided = [], [], [], []
     seed_cap = max(1, max_cards - int(RETRIEVAL.get("graph_slots") or 0))
     for rank_no, (_, c) in enumerate(seeds):
         if len(chosen) >= seed_cap:
@@ -871,6 +871,11 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
                     hidden.append(c)
                 elif c.status == "deprecated":
                     replaced.append(c)
+                elif (is_decision(c) and mode in DECISION_STATUSES
+                      and c.status in (DECISION_STATUSES["ask"] | DECISION_STATUSES["evaluate"])):
+                    # Решение в другом состоянии (отклонённое, заменённое, предложенное):
+                    # режим его не пропустил, но это не «в базе нет». Имя и состояние, без тела.
+                    decided.append(c)
             continue
         if release and c.applies_to and release not in c.applies_to:
             dropped.append(c)
@@ -883,6 +888,7 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
         info["hidden"] = hidden
         info["released"] = released
         info["replaced"] = replaced
+        info["decided"] = decided
         info["seeded"] = len(chosen)
         info["confidence"] = confidence(list(chosen[:5]), topic, close)
 
@@ -1090,7 +1096,7 @@ def hidden_note(hidden: list, mode: str, short: bool = False) -> str:
 
 
 def refusal_notes(info: dict, mode: str, release: str) -> str:
-    """Что нашлось по теме, но в выдачу не вошло: доверие, релиз, замещённые.
+    """Что нашлось по теме, но в выдачу не вошло: доверие, релиз, замещённые, решения.
 
     Отказ «в базе нет» без этого был бы ложным (KB2-07): карточка есть, её отсеял не вопрос, а
     фильтр. Только имена и причины, без тела."""
@@ -1105,6 +1111,14 @@ def refusal_notes(info: dict, mode: str, release: str) -> str:
         rep_ = info["replaced"]
         parts.append(f"Есть только замещённые карточки ({len(rep_)}): "
                      f"{', '.join(c.stem for c in rep_[:5])} — их показывает режим ask.")
+    if info.get("decided"):
+        # Режим, который покажет решение, зависит от его состояния: отклонённое и заменённое
+        # видит `ask`, предложенное — `evaluate`.
+        dec = info["decided"]
+        where = {"rejected": "ask", "superseded": "ask", "proposed": "evaluate"}
+        parts.append(f"Есть решения в другом состоянии ({len(dec)}): "
+                     + ", ".join(f"{c.stem} ({c.status}, режим {where.get(c.status, 'ask')})"
+                                 for c in dec[:5]) + ".")
     return " ".join(parts) + " " if parts else ""
 
 

@@ -1935,6 +1935,33 @@ def test_refusal_names_release_and_replaced_cards_not_only_trust(tmp: Path):
     assert ask.returncode == 0 and "Устаревший-лифт" in ask.stdout, ask.stderr
 
 
+@test
+def test_refusal_names_decisions_in_other_state(tmp: Path):
+    """Отказ не говорит «База не знает» о решении, которое режим лишь не пропустил (BL-KBA-14).
+
+    `generate` не пропускает Decision Record со статусами rejected, superseded и proposed. Они
+    не «скрыты по доверию» и не «замещены», но «в базе нет» о них так же ложно (KB2-07).
+    Отказ называет имя и состояние, тело не раскрывает; режим ask решение показывает.
+    """
+    root = _answerability_base(tmp)
+    from harness import card
+    card(root, "Decisions/DR-0001-Шина.md", "Отклонили шину Фазан: слишком дорого в поддержке.",
+         type="decision", status="rejected")
+    card(root, "Decisions/DR-0002-Кэш.md", "Предложили кэш Барсук для справочников.",
+         type="decision", status="proposed")
+
+    rej = _ctx(root, "почему отклонили шину Фазан")
+    assert rej.returncode == 1 and "Context pack" not in rej.stdout, rej.stdout[:300]
+    assert "DR-0001-Шина" in rej.stderr and "rejected" in rej.stderr \
+        and "другом состоянии" in rej.stderr and "ask" in rej.stderr, rej.stderr
+    assert "слишком дорого" not in rej.stderr + rej.stdout, "тело решения раскрыто"
+    prop = _ctx(root, "предложили кэш Барсук")
+    assert prop.returncode == 1 and "DR-0002-Кэш" in prop.stderr \
+        and "proposed" in prop.stderr and "evaluate" in prop.stderr, prop.stderr
+    ask = _ctx(root, "почему отклонили шину Фазан", "--mode", "ask")
+    assert ask.returncode == 0 and "DR-0001-Шина" in ask.stdout, ask.stderr
+
+
 _OLD_CTX_PACK = (
     "import os, sys\n"
     "if '--retrieval' in sys.argv:\n"
