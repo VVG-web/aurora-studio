@@ -29,7 +29,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from aurora_common import UNTRUSTED_RULE, untrusted  # noqa: E402 — граница данных и инструкций
+from aurora_common import UNTRUSTED_RULE, engine_fenced_pack, untrusted  # noqa: E402 — граница данных и инструкций
 
 MODES = ("generate", "evaluate", "off")
 MAX_LINKS = 8
@@ -196,8 +196,10 @@ def fence_pack(pack: str) -> str:
     """Пак без ограждений (движок проекта знаний выпущен раньше этой правки) — целиком данные.
 
     Бот получает правило про `<untrusted>` вместе с паком; у старого пака блоков нет, и без
-    этой обёртки правило оставалось бы без дела, а дословный текст источников — голым."""
-    return pack if "<untrusted" in pack else untrusted(pack, "пак базы знаний")
+    этой обёртки правило оставалось бы без дела, а дословный текст источников — голым.
+    Признак нового пака — правило в его преамбуле, а не подстрока `<untrusted` где угодно:
+    её может написать враждебная карточка."""
+    return pack if engine_fenced_pack(pack) else untrusted(pack, "пак базы знаний")
 
 
 def gather(kb_root: str, body: str, cfg: dict, call, mode: str = "generate",

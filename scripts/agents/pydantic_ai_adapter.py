@@ -332,25 +332,33 @@ def call_hook(name: str, spec: dict, guard: dict, root: str):
         async def fenced(t, a):
             # Ответ внешней системы — данные, а не указания: всегда в ограждении (BL-SEC-06).
             # Отказ сторожа идёт мимо него: это слово движка, а не чужой текст.
-            return fence_result(await call_tool(t, a), f"{name} {tool}")
+            # Пак `kb_context` встроенного сервера уже ограждён движком (карточки в блоках, правило
+            # в преамбуле): повторная обёртка заменила бы в нём каждое «<» на «&lt;».
+            return fence_result(await call_tool(t, a), f"{name} {tool}",
+                                own_pack=(name == "aurora" and t == "kb_context"))
         if guard_hook:
             return await guard_hook(ctx, fenced, tool, args)
         return await fenced(tool, args)
     return hook
 
 
-def fence_result(value, source: str):
+def fence_result(value, source: str, own_pack: bool = False):
     """Результат инструмента внешнего сервера → текст в ограждении `<untrusted>`.
 
-    Строка и словарь (JSON) ограждаются; список и кортеж — поэлементно: ответ «текст +
-    скриншот» приходит как `[str, BinaryImage]`, и картинка должна дойти до модели картинкой,
-    а не строкой с байтами. Остальное (числа, файлы, картинки) возвращается как есть: текста
-    для инъекции в нём нет."""
+    Строка и словарь (JSON) ограждаются; список без бинарных частей — одним блоком (иначе
+    сотня задач из поиска давала бы сотню шапок); список с картинкой (`[str, BinaryImage]`) —
+    поэлементно: картинка должна дойти до модели картинкой, а не строкой с байтами.
+    Остальное (числа, файлы, картинки) возвращается как есть: текста для инъекции в нём нет.
+    `own_pack` — ответ может быть паком самого движка: такой, уже ограждённый, отдаётся как есть."""
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if here not in sys.path:
         sys.path.insert(0, here)
     from aurora_common import untrusted
     if isinstance(value, str):
+        if own_pack:
+            from aurora_common import engine_fenced_pack
+            if engine_fenced_pack(value):
+                return value
         return untrusted(value, source)
     if isinstance(value, dict):
         try:
@@ -359,8 +367,21 @@ def fence_result(value, source: str):
         except (TypeError, ValueError):
             return untrusted(str(value)[:20_000], source)
     if isinstance(value, (list, tuple)):
+        if all(isinstance(v, str) for v in value):
+            return untrusted("\n".join(value), source)
+        if _plain_json(value):
+            return untrusted(json.dumps(list(value), ensure_ascii=False), source)
         return [fence_result(v, source) for v in value]
     return value
+
+
+def _plain_json(value) -> bool:
+    """Только то, что кладётся в JSON как есть: строки, числа, None, списки и словари таких."""
+    if isinstance(value, (list, tuple)):
+        return all(_plain_json(v) for v in value)
+    if isinstance(value, dict):
+        return all(isinstance(k, str) and _plain_json(v) for k, v in value.items())
+    return value is None or isinstance(value, (str, int, float, bool))
 
 
 def hide_args(tools: dict, drop: set) -> dict:
@@ -474,10 +495,10 @@ def register_tools(agent, allowed: list) -> None:
                 text = f.read(60_000)
             # Зеркала источников, сырьё и карточки базы — дословный чужой текст: данные в
             # ограждении. Шаблоны, промпты и код проекта — указания владельца, их не ограждают.
-            top = os.path.relpath(real, os.path.realpath(root)).split(os.sep)[0].lower()
-            if top in ("sources", "raw", "auroraknowledgedb"):
+            rel = os.path.relpath(real, os.path.realpath(root)).replace(os.sep, "/")
+            if rel.split("/")[0].lower() in ("sources", "raw", "auroraknowledgedb"):
                 from aurora_common import untrusted
-                return untrusted(text, os.path.relpath(real, os.path.realpath(root)))
+                return untrusted(text, rel)
             return text
         except (OSError, ValueError) as e:
             return f"не прочитан: {e}"

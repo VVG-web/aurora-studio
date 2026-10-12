@@ -414,22 +414,44 @@ UNTRUSTED_RULE = (
 # Открывающая скобка тега в любом написании: обычная, полной ширины и «похожие» знаки.
 _ANGLES = "<\uff1c\ufe64\u226e\u2039\u3008\u27e8\u276e\u276c"
 _ANGLE_RX = re.compile("[" + _ANGLES + "]")
-# Свёрнутый вид текста: невидимые знаки (Cf: нулевая ширина, мягкий перенос, bidi), комбинирующие
-# метки (Mn/Me) и управляющие (кроме пробельных) убраны. После NFKD полная ширина, «≮» и прочие
-# родственники уже обычные знаки. Так подделка тега видна в любом написании без перечня знаков.
+# Невидимые знаки (Cf: нулевая ширина, мягкий перенос, bidi), комбинирующие (Mn/Me) и управляющие
+# (кроме пробельных) при сворачивании убираются.
 _FOLD_DROP = frozenset(("Cf", "Mn", "Me", "Cc"))
-# Одно \s* между «<» и именем: соседние необязательные части дали бы квадратичный разбор
-# на длинном пробельном пробеге в тексте источника (ReDoS).
-_FENCE_FORGERY = re.compile(r"<\s*(?:/\s*)?" + UNTRUSTED_TAG, re.I)
+_UNTRUSTED_OPEN = "<" + UNTRUSTED_TAG
+# Заполнители, которые выглядят буквами, но пусты (хангыль-филлеры), и любые буквы-цифры вне ASCII.
+_FILLER_RX = re.compile("[\u115f\u1160\u3164\uffa0]")
+_NONASCII_WORD_RX = re.compile(r"[^\x00-\x7f\W]+")
+
+
+def _keep(c: str) -> bool:
+    """Знак остаётся в свёрнутом виде: пробельный, либо не невидимый и не комбинирующий."""
+    return c.isspace() or (unicodedata.category(c) not in _FOLD_DROP and not unicodedata.combining(c))
 
 
 def _forges_fence(text: str) -> bool:
-    """Есть ли в тексте открытие или закрытие ограждения в каком-либо написании (за линейное время)."""
+    """Есть ли в тексте открытие или закрытие ограждения в каком-либо написании (линейно).
+
+    Знаки убираются ДО NFKD: цепочка комбинирующих знаков с разными классами переупорядочивается
+    в `normalize` пузырьком, это квадрат от длины (Mn и Mc вроде U+1D16D). После NFKD знаки
+    убираются ещё раз (разложение даёт новые). Свёрнутый до скелета вид («<», ASCII-буквы и
+    цифры, «?» вместо настоящих букв других письменностей) даёт подделку в любом написании:
+    «похожие» скобки, заполнители вроде U+3164, пробелы, слэш, полная ширина — всё, что не буква,
+    не цифра и не «<», в скелет не попадает, а чужая буква между ними тег рвёт."""
     if not _ANGLE_RX.search(text):
         return False
-    folded = "".join(c for c in unicodedata.normalize("NFKD", text)
-                     if c.isspace() or unicodedata.category(c) not in _FOLD_DROP)
-    return bool(_FENCE_FORGERY.search(folded))
+    pre = "".join(c for c in text if _keep(c))
+    folded = "".join(c for c in unicodedata.normalize("NFKD", pre) if _keep(c))
+    skeleton = _FILLER_RX.sub("", _ANGLE_RX.sub("<", folded).lower())
+    skeleton = _NONASCII_WORD_RX.sub("?", skeleton)         # настоящая буква чужого письма рвёт имя тега
+    return _UNTRUSTED_OPEN in re.sub(r"[^a-z0-9<?]+", "", skeleton)
+
+
+def engine_fenced_pack(text: str) -> bool:
+    """Пак движка с правилом «ограждённое — данные»: карточки внутри него уже в ограждениях.
+
+    Правило стоит в преамбуле, до первой карточки (`\\n## `); текст карточки старого движка
+    идёт позже, так что подделать этот признак им нельзя."""
+    return UNTRUSTED_RULE in str(text).split("\n## ", 1)[0]
 
 
 def untrusted(text, source: str = "") -> str:
