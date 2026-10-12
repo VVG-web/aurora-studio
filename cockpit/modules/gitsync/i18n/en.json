@@ -255,6 +255,8 @@
   "gitsync.fix.busy": "Wait until it ends.",
   "gitsync.p.ratchet": "The ratchet stopped the commit: the changes add new base errors",
   "gitsync.fix.ratchet": "Fix the errors (kb:lint) or commit anyway — your call.",
+  "gitsync.p.secret_hook": "The changes look like a secret — the check stopped the commit",
+  "gitsync.fix.secret_hook": "Remove the token or password from the file (secrets live in Aurora's settings file, not in git) and rotate the key if it was ever used. If it is a placeholder, write it as <token>.",
   "gitsync.p.msg_hook": "The commit message has an internal name",
   "gitsync.fix.msg_hook": "Rewrite the message template: internal names do not go into history.",
   "gitsync.p.unrelated": "The server's history is unrelated to the project's",

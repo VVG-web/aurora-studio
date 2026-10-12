@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import re
 import subprocess
@@ -1179,7 +1180,7 @@ def test_push_scan_finds_provider_tokens_without_a_names_list_and_never_prints_t
     ok = push("образцы", "\n".join(["gh" + "p_" + "x" * 36, _samples()["private-key"], _samples()["url-credentials"],
                                     "password: hunter22", "AK" + "IAIOSFODNN7EXAMPLE"]) + "\n")
     assert ok.returncode == 0, ok.stdout + ok.stderr
-    assert "внутренние названия в пуше НЕ проверены" in ok.stderr, "молчание о том, что списка названий нет"
+    assert "НЕ проверено на внутренние названия" in ok.stderr, "молчание о том, что списка названий нет"
     bad = push("утечка", f"ключ {_gh()}\n")
     assert bad.returncode == 1, bad.stdout + bad.stderr
     assert "b.txt → github-token (ghp_…)" in bad.stderr, bad.stderr
@@ -1244,14 +1245,17 @@ def test_secret_scanner_sees_headers_bare_keys_and_real_passwords_but_not_templa
            "API_KEY=" + key, "SECRET_KEY=" + key, "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIk7", "token: " + key,
            "secret: " + key, "password: Zx9(Cv8w!", 'password: "Zx9[Cv8w!k"', "password: $ecretPw99",
            "password: %Secret99", "https://svc:p(ss1w0rd@git.example.com/x.git", "JIRA_PAT=yourself123456",
-           "password: Пароль2024"]
+           "password: Пароль2024", "password: yourself123", "Authorization: Bearer Zx9Cv8Bn7Mm6"]
     for text in bad:
         assert C.scan_secret_text(text), f"секрет не найден: {text!r}"
     safe = ["Authorization: Bearer ${TOKEN}", "Authorization: Bearer <token>", '"Authorization": "Bearer YOUR_TOKEN"',
             "token: authentication", "secret: configuration-value", "JIRA_PAT=$JIRA_PAT", "JIRA_PAT=%JIRA_PAT%",
             'JIRA_PAT=os.environ.get("X", "y")', "password: getpass()", "password: your-password",
             "password: example_pw", "password: replace_me", "password: <ваш пароль>", "password: [REDACTED]",
-            "token: ${{ secrets.X }}", "password: пароль"]
+            "token: ${{ secrets.X }}", "password: пароль",
+            # проход 3: заглушки в camelCase (заглавная буква начинает следующее слово) и проза после `Authorization:`
+            "password: yourPassword", "JIRA_PAT=YourTokenHere", "password: replaceWithPassword",
+            "token: insertYourTokenHere1", "Authorization: Bearer authentication", "Authorization: Token required"]
     for text in safe:
         assert not C.scan_secret_text(text), f"шаблон принят за секрет: {text!r} → {C.scan_secret_text(text)}"
     # то, что кит отдаёт проектам (навыки, документация), красным не краснеет
@@ -1290,6 +1294,16 @@ def test_mcp_json_secret_in_env_or_headers_is_found_under_any_key_name(tmp: Path
     hits = C.scan_mcp_json(bad)
     assert sorted(n for _r, n, _s in hits) == [1, 2, 2], hits
     assert all(len(shown) <= 2 for _r, _n, shown in hits), hits
+    # проход 3: пути, UUID и хеши — настройки, а не секреты (даже под секретным именем и длинные)
+    for k, v in (("DATA_DIR", "/home/analyst/projects/kb2/data"), ("CONFIG", "./config/server1/settings.json"),
+                 ("PYTHONPATH", "/Users/me/aurora/scripts2/lib"), ("WORKSPACE_ID", "123e4567-e89b-12d3-a456-426614174000"),
+                 ("BUILD", "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b"), ("TOKEN_FILE", "/run/secrets/jira_token2"),
+                 ("API_KEY_FILE", "~/.config/aurora/key1"), ("SECRET_PATH", "file:///etc/aurora/secret2"),
+                 ("PASSWORD_FILE", "C:\\secrets\\pass1.txt")):
+        doc = json.dumps({"mcpServers": {"a": {"command": "x", "env": {k: v}}}})
+        assert not C.scan_mcp_json(doc), f"{k}={v!r} принято за секрет"
+    assert C.scan_mcp_json(json.dumps({"mcpServers": {"a": {"env": {"JIRA_PAT": "q9w8e7r6t5y4"}}}})), \
+        "значение под секретным именем перестали находить"
     ok = ('{"mcpServers": {"a": {"command": "x", "env": {"LOG": "debug", "MY_KEY": "${MY_KEY}", "T": "<токен>"},\n'
           ' "headers": {"Authorization": "Bearer ${JIRA_PAT}"}, "auth": "oauth"}}}')
     assert not C.scan_mcp_json(ok), C.scan_mcp_json(ok)
@@ -1330,6 +1344,12 @@ def test_env_files_of_aurora_are_a_scanned_place_when_git_would_take_them(tmp: P
     _git_in(root, "add", "-A")
     cp = _git_in(root, "commit", "-qm", "закрыт", check=False)
     assert cp.returncode == 0, cp.stdout + cp.stderr
+    # проход 3: `aurora.env.local` (образец без ведущей точки) — тоже место pre-commit, а не только доктора и линтера
+    (root / "aurora.env.local").write_text("JIRA_PAT=q9w8e7r6t5y4\n", encoding="utf-8")
+    _git_in(root, "add", "-f", "aurora.env.local")
+    cp = _git_in(root, "commit", "-qm", "без точки", check=False)
+    assert cp.returncode != 0 and "aurora.env.local:1 → token-name" in cp.stderr, cp.stdout + cp.stderr
+    assert "q9w8e7r6t5y4" not in cp.stdout + cp.stderr
 
 
 @test
@@ -1411,3 +1431,59 @@ def test_ci_writes_the_private_names_list_before_the_full_suite_and_hook_texts_m
         assert word in cat["install.ratchet_what"] and "mcp.json" in cat["install.ratchet_what"], cat["install.ratchet_what"]
     for rel in ("wiki/Windows-and-macOS.md", "wiki/ru/Windows-and-macOS.md"):
         assert "--scan-secrets" in (KIT / rel).read_text(encoding="utf-8"), rel
+
+
+@test
+def test_secret_scan_sees_utf16_env_and_bom_mcp_json_and_pre_push_names_its_limits(tmp: Path):
+    """BL-SEC-18 (проход 3): `.env`, записанный PowerShell 5.1 в UTF-16 (`>`), и `mcp.json` с BOM раньше не видел никто
+    (BOM ломал разбор JSON, UTF-16 — каждое правило); теперь их находят doctor/kb:lint и pre-commit. Закрытый ключ
+    пуш кита не ищет — и docstring хука этого больше не обещает."""
+    sys.path.insert(0, str(SCRIPTS))
+    C = importlib.import_module("aurora_common")
+    mcp = '{"mcpServers": {"a": {"command": "x", "env": {"MY_KEY": "abc12345xyz"}}}}'
+    assert C.scan_mcp_json("\ufeff" + mcp), "mcp.json с BOM выпал из проверки"
+    assert C.decode_secret_bytes("JIRA_PAT=q9w8e7r6t5y4\n".encode("utf-16")) == "JIRA_PAT=q9w8e7r6t5y4\n"
+    assert C.decode_secret_bytes(b"\xef\xbb\xbfa=1") == "a=1"
+    root = make_project(tmp, git=True)
+    run("aurora_hooks.py", "--install", "--mode", "warn", cwd=root, expect_rc=0)
+    (root / ".env").write_bytes("JIRA_PAT=q9w8e7r6t5y4\r\n".encode("utf-16"))
+    (root / "mcp.json").write_bytes(b"\xef\xbb\xbf" + mcp.encode("utf-8"))
+    got = {(r, rule) for r, rule, _n in C.scan_secret_files(str(root))}
+    assert (".env", "token-name") in got and ("mcp.json", "mcp-secret") in got, got
+    _git_in(root, "add", "-f", ".env")
+    cp = _git_in(root, "commit", "-qm", "utf16", check=False)
+    assert cp.returncode != 0 and ".env:1 → token-name" in cp.stderr, cp.stdout + cp.stderr
+    _git_in(root, "reset", "-q", ".env")
+    _git_in(root, "add", "mcp.json")
+    cp = _git_in(root, "commit", "-qm", "bom", check=False)
+    assert cp.returncode != 0 and "mcp.json:1 → mcp-secret" in cp.stderr, cp.stdout + cp.stderr
+    assert "q9w8e7r6t5y4" not in cp.stdout + cp.stderr and "abc12345xyz" not in cp.stdout + cp.stderr
+    assert not C.scan_secret_text(_samples()["private-key"], formats_only=True)
+    head = (SCRIPTS / "aurora_hooks.py").read_text(encoding="utf-8").split('"""')[1]
+    assert "закрытый ключ" in head and "только форматы поставщиков" in head and "(`ghp_…`, `AKIA…`, закрытые" not in head
+
+
+@test
+def test_git_section_names_a_secret_stop_and_the_checkpoint_does_not_skip_the_secret_check(tmp: Path):
+    """BL-SEC-18 (проход 3): раздел «Git» узнаёт отказ pre-commit из-за секрета (раньше — «Git сообщил об ошибке»
+    с бессмысленным «повторить»), а чекпойнт перед агентом больше не коммитит с `--no-verify`: храповик он снимает
+    своей переменной, проверку секретов — нет; чистое дерево по-прежнему фиксируется."""
+    sys.path.insert(0, str(SCRIPTS))
+    GS = importlib.import_module("git_sync")
+    R = importlib.import_module("agent_runner")
+    tail = "aurora: в коммите похоже на секрет — коммит остановлен:\n  mcp.json:1 → token-name (q…)"
+    assert GS.commit_code(tail) == "secret_hook"
+    assert GS.PROBLEMS["secret_hook"][2] == [] and GS.commit_code("aurora: храповик\nAURORA_SKIP_RATCHET=1") == "ratchet"
+    root = make_project(tmp, git=True)
+    run("aurora_hooks.py", "--install", "--mode", "block", cwd=root, expect_rc=0)
+    _git_in(root, "add", "-A")
+    _git_in(root, "commit", "-qm", "база", env={"AURORA_SKIP_RATCHET": "1"}, check=False)
+    before = _git_in(root, "rev-parse", "HEAD").stdout.strip()
+    (root / "mcp.json").write_text('{"env": {"JIRA_PAT": "q9w8e7r6t5y4"}}\n', encoding="utf-8")
+    got = R.checkpoint(str(root), "agent:distill", True)
+    assert got["ok"] is False and "секрет" in got["why"] and "q9w8e7r6t5y4" not in got["why"], got
+    assert _git_in(root, "rev-parse", "HEAD").stdout.strip() == before, "чекпойнт закоммитил секрет"
+    (root / "mcp.json").write_text('{"env": {"JIRA_PAT": "<токен>"}}\n', encoding="utf-8")
+    got = R.checkpoint(str(root), "agent:distill", True)
+    assert got["ok"] is True and got["committed"] >= 1, got
+    assert _git_in(root, "rev-parse", "HEAD").stdout.strip() != before

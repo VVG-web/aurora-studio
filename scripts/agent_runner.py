@@ -215,8 +215,9 @@ SAME_FAIL_LIMIT = 3      # одна и та же команда с теми же
 
 # ------------------------------------------------------------------ git-чекпойнт
 
-def git(*args: str, cwd: str = ".") -> tuple:
-    p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+def git(*args: str, cwd: str = ".", env: dict | None = None) -> tuple:
+    p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env={**os.environ, **env} if env else None)
     return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
 
 
@@ -251,8 +252,10 @@ def checkpoint(cwd: str, task: str, enabled: bool) -> dict:
     if dirty:
         git("add", "-A", cwd=cwd)
         stamp = utc_label()
-        rc, _o, err = git("commit", "--no-verify", "-m",
-                          f"checkpoint: перед агентом {task} · {stamp}", cwd=cwd)
+        # Без `--no-verify`: он снял бы и проверку секретов pre-commit, а её храповик не отключает.
+        # Храповик (ошибки базы — долг человека, агенту он не помеха) снимаем его же переменной.
+        rc, _o, err = git("commit", "-m", f"checkpoint: перед агентом {task} · {stamp}", cwd=cwd,
+                          env={"AURORA_SKIP_RATCHET": "1"})
         if rc != 0:
             return {"ok": False, "why": f"чекпойнт не создан: {err[:200]}", "sha": ""}
     sha = git("rev-parse", "HEAD", cwd=cwd)[1]

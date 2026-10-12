@@ -3497,9 +3497,10 @@ SECRET_RULES = (
     ("api-token", False,
      re.compile(r"\bapi[_-]?token[\"']?\s*[:=]\s*['\"]?([A-Za-z0-9_\-]{20,})", re.I), 1, 20),
     ("password", False, re.compile(r"password[\"']?\s*[:=]\s*(\"[^\"]*\"|'[^']*'|\S+)", re.I), 1, 4),
-    # заголовок `Authorization: Bearer …` (в mcp.json, навыках, ботах): схема + значение от 8 знаков
+    # заголовок `Authorization: Bearer …` (в mcp.json, навыках, ботах): схема + значение от 8 знаков и с цифрой —
+    # так проза «Authorization: Token required» секретом не считается
     ("auth-header", False,
-     re.compile(r"\bauthorization[\"']?\s*[:=]\s*[\"']?(?:bearer|basic|token)\s+([A-Za-z0-9._~+/=\-]{8,})", re.I), 1, 8),
+     re.compile(r"\bauthorization[\"']?\s*[:=]\s*[\"']?(?:bearer|basic|token)\s+((?=[^\s\"']{0,200}\d)[A-Za-z0-9._~+/=\-]{8,})", re.I), 1, 8),
     # голые имена без приставки (`api_key: …`, `"secret": …`, `token: …`): значение от 16 знаков и с цифрой —
     # так слово «token: authentication» в тексте навыка секретом не считается
     ("bare-key", False,
@@ -3514,9 +3515,11 @@ _SECRET_FILLER = frozenset((
     "токен", "секрет", "пароль", "ключ", "пусто", "нет"))
 # Приставка-заглушка — только целым словом (до разделителя или конца): `your-token`, `example_key`,
 # `replace_me`; а `yourself123`, `Пароль2024` — настоящие значения, которым не повезло с началом.
+# Приставка ищется без учёта регистра, а граница слова — с учётом: заглавная буква после неё начинает
+# следующее слово (`yourPassword`, `replaceWithToken`), строчная или цифра — продолжение (`yourself123`).
 _SECRET_FILLER_START = re.compile(
-    r"(?i)^(?:your|example|sample|dummy|fake|changeme|change[-_]me|placeholder|replace|insert|"
-    r"секрет|токен|пароль|ключ)(?![^\W_])")
+    r"^(?i:your|example|sample|dummy|fake|changeme|change[-_]me|placeholder|replace|insert|"
+    r"секрет|токен|пароль|ключ)(?![a-z0-9а-яё])")
 # Шаблон или вызов, а не значение: `<токен>`, `${PAT}`/`${{ secrets.X }}`, `{{x}}`, `$(cmd)`, `$JIRA_PAT`,
 # `%JIRA_PAT%`, `getpass()`, `os.environ["X"]`, `args[0]`. Режем по пробелам, поэтому `${{` и `<ваш`
 # узнаём по началу; скобка внутри обычного пароля (`Zx9(Cv8w!`) шаблоном не считается.
@@ -3532,7 +3535,7 @@ SECRET_SCAN_SUFFIXES = (".md", ".json", ".mdc", ".yml", ".yaml")
 # Файлы с настоящими токенами Авроры лежат в корне проекта и закрыты `.gitignore`; сюда они попадают
 # только если закрытие потеряно или файл добавлен через `git add -f` — как раз этот путь утечки и ловим.
 # Суффикс `.md/.json` им не нужен; образцы (`.env.example`) — заглушки, их не смотрим.
-SECRET_ENV_GLOB = ".env*"
+SECRET_ENV_FILES = (".env*", "aurora.env.local")    # образцы pathspec для git diff (от корня, без вложенных папок)
 SECRET_ENV_SAMPLE = (".example", ".sample", ".template", ".dist")
 SECRET_SCAN_MAX = 1024 * 1024        # больше мегабайта — не настройки, а данные
 
@@ -3545,6 +3548,17 @@ def secret_placeholder(value: str) -> bool:
     if re.match(r"^[xX*•.\-_#]+$", v):
         return True
     return v.lower() in _SECRET_FILLER or bool(_SECRET_FILLER_START.match(v))
+
+
+def decode_secret_bytes(data: bytes) -> str:
+    """Байты файла настроек → текст для сканера: UTF-8 или UTF-16 (с меткой порядка — так пишет PowerShell 5.1
+    редирект `>`), без метки BOM и без нулевых знаков. Иначе `.env` в UTF-16 (`J\\0I\\0R\\0A…`) не узнают
+    никакие правила, а `mcp.json` с BOM не разбирается как JSON."""
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = data.decode("utf-16", "ignore")
+    else:
+        text = data.decode("utf-8", "ignore")
+    return text.replace("\x00", "").replace("\ufeff", "")
 
 
 def scan_secret_text(text: str, formats_only: bool = False) -> list:
@@ -3612,16 +3626,26 @@ def secret_scan_files(root: str = ".") -> list:
     return sorted(set(r for r in rels if is_secret_place(r) and os.path.isfile(os.path.join(root, r))))
 
 
+# Путь, а не значение: `/run/secrets/x`, `./config/a.json`, `../x`, `~/.x`, `file:///…`, `C:\data`. Под секретным
+# именем (`TOKEN_FILE`) путь к файлу с секретом — не сам секрет; в mcp.json такие настройки обычны.
+_SECRET_PATH_LIKE = re.compile(r"^(?:file:|\.{1,2}[/\\]|~(?:[/\\]|$)|/|[A-Za-z]:[/\\])")
+# Идентификатор, а не секрет: UUID и чисто шестнадцатеричная строка (хеш, id рабочего пространства).
+_SECRET_ID_LIKE = re.compile(r"^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]+)$")
+
+
 def _secret_json_value(key: str, value) -> str:
     """Значение из `env`/`headers`/`auth` mcp.json, которое похоже на секрет, иначе пустая строка."""
     if not isinstance(value, str) or not value.strip():
         return ""
     v = re.sub(r"(?i)^(?:bearer|basic|token)\s+", "", value.strip())
-    if secret_placeholder(v) or len(v) < 4:
+    if secret_placeholder(v) or len(v) < 4 or _SECRET_PATH_LIKE.match(v):
         return ""
     if _mcp_arg_secret_named(key):
         return v
     # имя не выдаёт секрет (`X-Custom`, `CONF`), но длинная строка с цифрами и без пробелов — выдаёт
+    # (кроме UUID и хешей: так выглядят идентификаторы, а не ключи)
+    if _SECRET_ID_LIKE.match(v):
+        return ""
     return v if re.fullmatch(r"(?=[^\s]*\d)(?=[^\s]*[A-Za-z])[A-Za-z0-9._~+/=\-]{24,}", v) else ""
 
 
@@ -3629,6 +3653,7 @@ def scan_mcp_json(text: str) -> list:
     """[(правило, номер строки, маска)] по тексту `mcp.json`: любое не-заглушечное значение в `env`,
     `headers` и `auth` секретных ключей. Текстовые правила видят только знакомые имена; продукт же знает,
     что эти карты секретные целиком (`MCP_SECRET_MAPS`), и `"MY_KEY": "…"` под них не подпадает."""
+    text = text.replace("\x00", "").replace("\ufeff", "")
     try:
         data = json.loads(text)
     except ValueError:
@@ -3672,8 +3697,8 @@ def scan_secret_files(root: str = ".", rels=None) -> list:
         try:
             if os.path.getsize(p) > SECRET_SCAN_MAX:
                 continue
-            with open(p, encoding="utf-8", errors="ignore") as f:
-                text = f.read()
+            with open(p, "rb") as f:
+                text = decode_secret_bytes(f.read())
         except OSError:
             continue
         hits = scan_secret_text(text)

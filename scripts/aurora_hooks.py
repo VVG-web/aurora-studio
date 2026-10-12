@@ -7,8 +7,9 @@
 Тот же pre-commit перед линтером проверяет добавленные строки на секреты (токены, пароли,
 закрытые ключи в настройках, навыках, ботах и `mcp.json`) — теми же правилами, что `kit:doctor` и
 линтер базы (`aurora_common.scan_secret_text`). Проверка секретов не зависит от храповика.
-Пуш кита (`--scan-push`) ищет в добавленных строках форматы поставщиков (`ghp_…`, `AKIA…`,
-закрытые ключи) тем же сканером, а в CI кита тот же `--scan-push` гоняет задание secrets.
+Пуш кита (`--scan-push`) ищет в добавленных строках только форматы поставщиков (`ghp_…`, `AKIA…`, `sk-…`)
+тем же сканером — закрытый ключ, адрес с паролем и «имя = значение» в коде и тестах кита законные образцы,
+их ищут лишь в проектах; в CI кита тот же `--scan-push` гоняет задание secrets.
 
 Режим по умолчанию — **храповик (ratchet)**: текущее число ошибок фиксируется как
 базовая линия в `AuroraKnowledgeDB/meta/lint_baseline.txt`. Коммит падает, только если
@@ -28,8 +29,8 @@
 """
 from __future__ import annotations
 import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
-from aurora_common import (SECRET_ENV_GLOB, SECRET_SCAN_PLACES, is_secret_place, scan_mcp_json,
-                           scan_secret_text)
+from aurora_common import (SECRET_ENV_FILES, SECRET_SCAN_PLACES, decode_secret_bytes, is_secret_place,
+                           scan_mcp_json, scan_secret_text)
 
 import argparse
 import html
@@ -533,7 +534,8 @@ def scan_secrets_staged() -> int:
     """
     # Только места настроек: без списка путей git отдавал бы diff всего индекса (вложения, зеркала),
     # и коммит базы читал бы сотни мегабайт ради проверки пары файлов. `:(top)` — от корня репозитория.
-    places = [f":(top){p.rstrip('/')}" for p in SECRET_SCAN_PLACES] + [f":(top,glob){SECRET_ENV_GLOB}"]
+    places = ([f":(top){p.rstrip('/')}" for p in SECRET_SCAN_PLACES]
+              + [f":(top,glob){p}" for p in SECRET_ENV_FILES])
     rc, raw, err = _git_run(["diff", "--cached", "--unified=0", "--no-color", "--text", "--no-ext-diff",
                              "--no-textconv", "--no-renames", "--diff-filter=ACM", "--src-prefix=a/",
                              "--dst-prefix=b/", "--", *places], binary=True)
@@ -543,7 +545,7 @@ def scan_secrets_staged() -> int:
     found = []
     added = {}                    # mcp.json: путь → номера добавленных строк (разбор JSON идёт по всему файлу)
     path, in_hunk, line = "?", False, 0
-    for row in raw.decode("utf-8", "replace").split("\n"):
+    for row in decode_secret_bytes(raw).split("\n"):      # без NUL и BOM: файл в UTF-16 иначе невидим
         if row.startswith("diff --git "):
             path, in_hunk = "?", False
         elif not in_hunk and row.startswith("+++ b/"):
@@ -563,7 +565,7 @@ def scan_secrets_staged() -> int:
         # значение под именем, которого текстовые правила не знают (`"MY_KEY": "…"`), видно лишь по разбору JSON
         rc, blob, _e = _git_run(["show", f":{path}"], binary=True)
         if rc == 0:
-            for rule, n, shown in scan_mcp_json(blob.decode("utf-8", "replace")):
+            for rule, n, shown in scan_mcp_json(decode_secret_bytes(blob)):
                 if n in lines:
                     found.append((path, n, rule, shown))
     if not found:
@@ -947,7 +949,8 @@ def scan_push(remote: str = "", hook: str = "") -> int:
         # пуша не проверяется ни словом — свежий клон, `git worktree add`, второй клон.
         # Секреты ищутся и без списка (форматы поставщиков не зависят от машины), но сбой такой
         # проверки пуш не останавливает: без списка он и раньше не останавливал ничего.
-        print(f"aurora: {TERMS} нет или пуст — внутренние названия в пуше НЕ проверены", file=sys.stderr)
+        print(f"aurora: {TERMS} нет или пуст — содержимое пуша НЕ проверено на внутренние названия "
+              "(токены проверяются)", file=sys.stderr)
 
     hits: dict[tuple[str, str], str] = {}
     leaks: dict[tuple[str, str], str] = {}      # (файл, правило) → маска: секреты в добавленных строках
