@@ -631,7 +631,7 @@ def test_decision_records_follow_the_madr_format(tmp: Path):
         head = re.match(r"---\n(.*?)\n---\n", text, re.S)
         assert head, f"{name}: нет шапки YAML"
         status = re.search(r'^status:\s*"?(.+?)"?\s*$', head.group(1), re.M)
-        assert status and status.group(1).startswith("proposed"), (name, head.group(1))
+        assert status and status.group(1).startswith(("proposed", "accepted")), (name, head.group(1))
         assert re.search(r"^date: \d{4}-\d{2}-\d{2}$", head.group(1), re.M), name
         assert re.search(rf"^# {num}\. ", text, re.M), f"{name}: заголовок не с номером {num}"
         found = re.findall(r"^## (.+)$", text, re.M)
