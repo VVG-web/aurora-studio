@@ -483,7 +483,9 @@
     "каталог типов карточек: отстал от шаблонов или настроек — пересоберите его обновлением проекта: `kit:update`": "card types catalogue: out of date with the templates or settings — rebuild it by updating the project: `kit:update`",
     "типы карточек: выключены в блоке cards:, но карточки в базе остались — {}": "card types: turned off in the cards: block, but their cards remain in the base — {}",
     "aurora.config.yaml: {} → поправьте блок cards: или уберите строку": "aurora.config.yaml: {} → fix the cards: block or remove the line",
-    "aurora.config.yaml: в блоке cards: ещё замечаний: {}": "aurora.config.yaml: more remarks in the cards: block: {}"
+    "aurora.config.yaml: в блоке cards: ещё замечаний: {}": "aurora.config.yaml: more remarks in the cards: block: {}",
+    "каталог типов карточек: нет, а проект оставил его себе (aurora.update_ignore.txt) — обновление его не соберёт, соберите командой `kb:cards --write --apply`": "card types catalogue: missing, and the project keeps it for itself (aurora.update_ignore.txt) — the update will not build it, build it with `kb:cards --write --apply`",
+    "каталог типов карточек: отстал, а проект оставил его себе (aurora.update_ignore.txt) — обновление его не пересоберёт, пересоберите командой `kb:cards --write --apply`": "card types catalogue: out of date, and the project keeps it for itself (aurora.update_ignore.txt) — the update will not rebuild it, rebuild it with `kb:cards --write --apply`"
   },
   "connectors": {
     "confluence-dc": {
@@ -857,7 +859,8 @@
     "с --check: строгий уровень, ошибки шаблона остаются ошибками и дают код возврата 1": "with --check: the strict level, template errors stay errors and give exit code 1",
     "корень проекта (по умолчанию — текущая папка)": "project root (the current folder by default)",
     "собрать каталог типов AuroraKnowledgeDB/meta/card_types.md (без --apply — только план)": "build the type catalogue AuroraKnowledgeDB/meta/card_types.md (without --apply — the plan only)",
-    "эффективный текст инструкции «Как определить тип карточки»: Prompts/KB_classify.md проекта, иначе кита": "the effective text of the instruction \"How to determine the card type\": the project's Prompts/KB_classify.md, otherwise the kit's"
+    "эффективный текст инструкции «Как определить тип карточки»: Prompts/KB_classify.md проекта, иначе кита": "the effective text of the instruction \"How to determine the card type\": the project's Prompts/KB_classify.md, otherwise the kit's",
+    "с --write --apply: перезаписать каталог типов, даже если его правили руками и не закоммитили": "with --write --apply: overwrite the type catalogue even if it was edited by hand and not committed"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

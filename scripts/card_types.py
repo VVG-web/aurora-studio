@@ -68,9 +68,9 @@ from dataclasses import dataclass, field, replace
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (  # noqa: E402
     HEAD_KEY_RE, KB_ROOT, MEETING_MARK, OWN_LIFECYCLE, STATUSES, body, card_sources, card_stem,
-    frontmatter, git_guard, head_blank, head_broken, head_cut_comment, head_lines, head_text, head_value,
+    frontmatter, git_dirty, head_blank, head_broken, head_cut_comment, head_lines, head_text, head_value,
     is_meeting, leaf_name, list_field, not_a_card_link, read_card_text, split_frontmatter, split_inline_items,
-    utc_today, walk_md, write_text_atomic,
+    replace_file, utc_today, walk_md, write_text_atomic,
 )
 from aurora_common import kit_root as _kit_root  # noqa: E402
 
@@ -456,6 +456,8 @@ def _passport_type(entry, problems: list):
         soft.append(f"вид «{bad}» вне {', '.join(KIND_VALUES)}")
     for bad in [x for x in p["statuses"] if x not in STATUS_VOCAB]:
         soft.append(f"статус «{bad}» вне общих значений")
+    if len(" ".join(p["name"].split())) > TITLE_LIMIT:
+        soft.append(f"name длиннее {TITLE_LIMIT} знаков — в каталоге типов подпись обрезается")
     if (p.get("migration") or "none") not in MIGRATIONS:
         soft.append(f"migration «{p.get('migration')}» — не none, auto или llm")
     if isinstance(p.get("prompt_chars"), int) and p["prompt_chars"] > 900 and tid not in KIT_TYPE_ORDER:
@@ -613,6 +615,8 @@ CONFIG_FILE = "aurora.config.yaml"
 CARDS_KEY = "cards"
 OVERRIDE_FIELDS = ("title", "description", "enabled")    # больше проект не меняет ничего
 DESCRIPTION_LIMIT = 220                                   # описание — одна строка, до 220 знаков
+TITLE_LIMIT = 80                                          # подпись типа — одна строка, до 80 знаков
+BOM = "\ufeff"
 # Раздел, класс, шаблон, виды и статусы принадлежат шаблону: подмени их проект, реестр разошёлся бы с проверками.
 TEMPLATE_OWNED_FIELDS = ("section", "template", "card_type", "card_class", "class", "kinds", "statuses", "sections",
                          "file", "version", "home")
@@ -692,6 +696,8 @@ def _unquote(raw: str) -> str:
             out.append(ch)
             i += 1
         return "".join(out)
+    if v[0] == "#":
+        return ""                                             # `glossary:  # заметка` — значения нет, есть комментарий
     cut = v.find(" #")
     return (v[:cut] if cut >= 0 else v).strip()
 
@@ -711,7 +717,7 @@ def parse_cards_block(config_text: str) -> tuple:
     поле шаблона, непонятное значение, неверное имя типа) — строка проблемы, а сама строка пропускается:
     разбор не падает на ручной правке.
     """
-    lines = str(config_text).replace("\r\n", "\n").split("\n")
+    lines = str(config_text).removeprefix(BOM).replace("\r\n", "\n").split("\n")
     span = _cards_span(lines)
     if span is None:
         return {}, []
@@ -754,6 +760,9 @@ def parse_cards_block(config_text: str) -> tuple:
             elif key == "description" and len(text) > DESCRIPTION_LIMIT:
                 problems.append(f"cards: у типа «{tid}» description длиннее {DESCRIPTION_LIMIT} знаков — обрезано")
                 rec[key] = text[:DESCRIPTION_LIMIT].rstrip()
+            elif key == "title" and len(text) > TITLE_LIMIT:
+                problems.append(f"cards: у типа «{tid}» title длиннее {TITLE_LIMIT} знаков — обрезано")
+                rec[key] = text[:TITLE_LIMIT].rstrip()
             else:
                 rec[key] = text
         elif key == "enabled":
@@ -810,6 +819,8 @@ def _clean_overrides(overrides, known) -> dict:
             text = " ".join(head_value(rec.get(key) or "").split())
             if text:
                 row[key] = text
+        if len(row.get("title", "")) > TITLE_LIMIT:
+            raise ValueError(f"у типа «{tid}» title длиннее {TITLE_LIMIT} знаков")
         if len(row.get("description", "")) > DESCRIPTION_LIMIT:
             raise ValueError(f"у типа «{tid}» description длиннее {DESCRIPTION_LIMIT} знаков")
         if rec.get("enabled") is not None and str(rec["enabled"]).strip() != "":
@@ -836,30 +847,39 @@ def _block_lines(clean: dict) -> list:
 
 
 def write_overrides(config_text: str, overrides: dict, *, known=None) -> str:
-    """Текст конфига с переписанным блоком `cards:`; всё остальное — как было.
+    """Текст конфига с переписанным блоком `cards:`; всё остальное — как было, байт в байт.
 
     Нет блока — он добавляется в конец; пустые переопределения убирают блок; комментарии внутри блока теряются
-    (комментарии вне блока остаются). `known` — множество идентификаторов реестра: тип вне него отклоняется
-    (`ValueError`), как и чужое поле, и слишком длинное описание. Запись идемпотентна.
+    (комментарии вне блока остаются). Окончания строк (LF, CRLF, смесь) и метка порядка байтов в начале файла
+    сохраняются: новые строки блока пишутся в стиле строки `cards:` (или последней строки файла). `known` —
+    множество идентификаторов реестра: тип вне него отклоняется (`ValueError`), как и чужое поле, слишком длинные
+    подпись и описание. Запись идемпотентна.
     """
     clean = _clean_overrides(overrides, known)
-    nl = "\r\n" if "\r\n" in config_text else "\n"
-    lines = config_text.replace("\r\n", "\n").split("\n")
+    bom = BOM if config_text.startswith(BOM) else ""
+    lines = config_text[len(bom):].split("\n")           # у строки CRLF «\r» остаётся на месте: её не трогаем
     span = _cards_span(lines)
     block = _block_lines(clean)
     if span is None:
         if not block:
             return config_text
-        body = "\n".join(lines).rstrip("\n")
-        text = (body + "\n\n" if body else "") + "\n".join(block) + "\n"
+        last = next((ln for ln in reversed(lines) if ln.strip()), "")
+        cr = "\r" if last.endswith("\r") else ""
+        body = "\n".join(lines).rstrip("\r\n")
+        text = (body + (cr + "\n") * 2 if body else "") + "\n".join(ln + cr for ln in block) + "\n"
     else:
         a, b = span
-        new = lines[:a] + block + lines[b:]
+        cr = "\r" if lines[a].endswith("\r") else ""
+        new = lines[:a] + [ln + cr for ln in block] + lines[b:]
         if not block:                                         # блок убран: пустые строки вокруг не удваиваются
             while 0 < a < len(new) and not new[a - 1].strip() and not new[a].strip():
-                del new[a]
+                if a == len(new) - 1:                         # new[a] — конец файла: лишняя пустая строка — предыдущая
+                    del new[a - 1]
+                    a -= 1
+                else:
+                    del new[a]
         text = "\n".join(new)
-    return text.replace("\n", nl) if nl != "\n" else text
+    return bom + text
 
 
 def read_config_overrides(project_root: str) -> tuple:
@@ -871,14 +891,34 @@ def read_config_overrides(project_root: str) -> tuple:
         return {}, []
 
 
+def _write_text_exact(path: str, text: str) -> None:
+    """Записать текст целиком или не трогать файл — и без перевода строк: «\r\n» остаётся «\r\n», «\n» — «\n» на любой
+    системе (`write_text_atomic` на Windows превратил бы «\n» в «\r\n»). Права прежнего файла сохраняются."""
+    import shutil
+    from pathlib import Path
+    real = Path(os.path.realpath(path))
+    tmp = real.with_name(f"{real.name}.{os.getpid()}.aurora-tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+        try:
+            shutil.copymode(real, tmp)
+        except OSError:
+            pass
+        replace_file(tmp, real)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def save_overrides(project_root: str, overrides: dict, *, known=None) -> str:
-    """Записать блок `cards:` в конфиг проекта (атомарно); → новый текст конфига. Конфига нет — `FileNotFoundError`."""
+    """Записать блок `cards:` в конфиг проекта (атомарно, чужие разделы и окончания строк — байт в байт); → новый
+    текст конфига. Конфига нет — `FileNotFoundError`; не UTF-8 — `UnicodeDecodeError`, файл не тронут."""
     path = os.path.join(project_root or ".", CONFIG_FILE)
-    with open(path, encoding="utf-8") as fh:
+    with open(path, encoding="utf-8", newline="") as fh:
         old = fh.read()
     new = write_overrides(old, overrides, known=known)
     if new != old:
-        write_text_atomic(path, new)
+        _write_text_exact(path, new)
     return new
 
 
@@ -1870,11 +1910,30 @@ def catalog_path(project_root: str = ".") -> str:
 
 
 def _cell(text, limit: "int | None" = None) -> str:
-    """Ячейка таблицы: одна строка, без «|» (он делил бы столбцы); `limit` — обрезка с многоточием."""
+    """Ячейка таблицы каталога: одна строка, которую нельзя разорвать и которой нельзя съесть остаток файла.
+
+    Текст пишет человек (паспорт шаблона, блок `cards:`), поэтому: «|» экранируется (иначе делит столбцы), обратная
+    черта перед «|» заменяется на `&#92;` (иначе `\\|` экранировал бы уже её, а не черту), «<!--» теряет первую «<»
+    (незакрытый комментарий скрыл бы всё ниже). `limit` — обрезка с многоточием до экранирования."""
     s = " ".join(str(text).split())
     if limit and len(s) > limit:
         s = s[:limit - 1].rstrip() + "…"
-    return s.replace("|", "\\|")
+    out = []
+    for ch in s:
+        if ch == "|":
+            slashes = 0
+            while out and out[-1] == "\\":
+                out.pop()
+                slashes += 1
+            out.append("&#92;" * slashes + "\\|")
+        else:
+            out.append(ch)
+    return "".join(out).replace("<!--", "&lt;!--")
+
+
+def _code(text) -> str:
+    """Текст внутри `обратных кавычек` каталога: одна строка без кавычек и без начала комментария."""
+    return " ".join(str(text).split()).replace("`", "'").replace("<!--", "&lt;!--")
 
 
 def _catalog_types(reg: Registry) -> list:
@@ -1886,8 +1945,8 @@ def _catalog_types(reg: Registry) -> list:
 
 def _homes_line(types: list) -> str:
     """Абзац о записях в `Raw/`: записи (класс `record`) — «тип → папка», остальные типы с домом — «рукописный»."""
-    items = [f"`{t.id}` → `{t.home.rstrip('/')}/`" for t in types if t.home and t.cls == "record"]
-    items += [f"рукописный `{t.id}` → `{t.home.rstrip('/')}/`" for t in types if t.home and t.cls != "record"]
+    items = [f"`{t.id}` → `{_code(t.home).rstrip('/')}/`" for t in types if t.home and t.cls == "record"]
+    items += [f"рукописный `{t.id}` → `{_code(t.home).rstrip('/')}/`" for t in types if t.home and t.cls != "record"]
     if not items:
         return ""
     lines, cur = [], "Записи пишет человек в `Raw/` ("
@@ -1908,8 +1967,8 @@ def render_catalog(reg: Registry, *, today: str = "") -> str:
     on = sum(1 for t in types if t.enabled)
 
     def build(limit: "int | None") -> str:
-        rows = [f"| `{t.id}` | {_cell(t.name)} | {_cell(t.description, limit)} | `{t.template_file}` | "
-                f"{('`' + t.section + '`') if t.section else '—'} | {t.cls} | {', '.join(t.kinds) or '—'} | "
+        rows = [f"| `{t.id}` | {_cell(t.name, TITLE_LIMIT)} | {_cell(t.description, limit)} | `{t.template_file}` | "
+                f"{('`' + t.section + '`') if t.section else '—'} | {_cell(t.cls)} | {_cell(', '.join(t.kinds)) or '—'} | "
                 f"{'да' if t.enabled else 'нет'} |" for t in types]
         return (CATALOG_HEAD + "\n".join(rows) + "\n\n" + _homes_line(types)
                 + f"{CATALOG_BUILT}{today or utc_today()} · типов: {len(types)} · включено: {on}\n")
@@ -1960,6 +2019,24 @@ def write_catalog(project_root: str = ".", reg: "Registry | None" = None, *, kit
         os.makedirs(os.path.dirname(path), exist_ok=True)
         write_text_atomic(path, render_catalog(reg))
     return True
+
+
+def catalog_pinned(project_root: str = ".") -> bool:
+    """Проект оставил каталог себе: путь каталога назван в `aurora.update_ignore.txt` — обновление его не пересобирает
+    (то же чтение, что у `aurora_update.load_ignore`: glob по строке, `#` — комментарий)."""
+    from fnmatch import fnmatch
+    root = project_root or "."
+    for name in ("aurora.update_ignore.txt", os.path.join(".opencode", "update_ignore.txt")):
+        path = os.path.join(root, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                rows = [ln.strip() for ln in fh.read().splitlines()]
+        except OSError:
+            return False
+        return any(fnmatch(CATALOG_REL, ln) for ln in rows if ln and not ln.startswith("#"))
+    return False
 
 
 def type_counts(project_root: str = ".") -> dict:
@@ -2248,6 +2325,21 @@ def _cmd_stats(root: str, reg: Registry, args) -> int:
     return 0
 
 
+def _catalog_guard(root: str, allow_dirty: bool) -> bool:
+    """git-guard для одного файла: каталог типов, который правили руками и не закоммитили, перезапись затрёт. Чужие
+    незакоммиченные правки в проекте (конфиг, карточки) каталогу не мешают: пишется только он. → можно ли писать."""
+    path = catalog_path(root)
+    dirty = git_dirty(path)
+    if not dirty or allow_dirty:
+        if dirty:
+            print(f"⚠️  git-guard отключён: в {CATALOG_REL} есть незакоммиченные правки — запись их затрёт.")
+        return True
+    print(f"❌ git-guard: в {CATALOG_REL} есть незакоммиченные правки (рукой правили?) — запись их затрёт.", file=sys.stderr)
+    print("   Файл генерируется. Сначала закоммитьте его: git add <файл> && git commit", file=sys.stderr)
+    print("   Осознанно перезаписать: --allow-dirty", file=sys.stderr)
+    return False
+
+
 def _cmd_write(root: str, reg: Registry, args) -> int:
     """`--write [--apply]`: каталог типов `AuroraKnowledgeDB/meta/card_types.md`. Без `--apply` — только план."""
     if not os.path.isdir(os.path.join(root, KB_ROOT)):
@@ -2269,7 +2361,7 @@ def _cmd_write(root: str, reg: Registry, args) -> int:
               f"{'создан' if state == 'missing' else 'пересобран'} (типов {len(reg.types)}, включено {on}). "
               "Ничего не записано (dry-run): запись — с --apply")
         return 0
-    if not git_guard(root, args.allow_dirty, "сборка каталога типов"):
+    if not _catalog_guard(root, args.allow_dirty):
         return 2        # отказ писать — не находка, а несделанная работа: маршрут стоит
     write_catalog(root, reg)
     print(f"kb:cards --write: каталог типов {CATALOG_REL} записан (типов {len(reg.types)}, включено {on})")
@@ -2319,7 +2411,7 @@ def main(argv=None) -> int:
                     help="эффективный текст инструкции «Как определить тип карточки»: Prompts/KB_classify.md проекта, иначе кита")
     ap.add_argument("--apply", action="store_true", help="записать изменения (иначе dry-run)")
     ap.add_argument("--allow-dirty", action="store_true",
-                    help="писать по незакоммиченному дереву (откат станет невозможным)")
+                    help="с --write --apply: перезаписать каталог типов, даже если его правили руками и не закоммитили")
     ap.add_argument("--all", action="store_true", help="с --check и --stats: включить архив базы (_archive/)")
     ap.add_argument("--summary", action="store_true", help="с --check: только итоговая строка")
     ap.add_argument("--json", action="store_true", help="машинный вывод")

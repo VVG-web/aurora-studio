@@ -2736,6 +2736,35 @@ def test_cards_block_roundtrip(_t):
     got = C.write_overrides(crlf, OVERRIDES)
     assert got.count("\r\n") == got.count("\n") and C.read_overrides(got) == OVERRIDES
     assert C.read_overrides(C.CARDS_CONFIG_EXAMPLE) == {} and C.write_overrides(C.CARDS_CONFIG_EXAMPLE, {}) == C.CARDS_CONFIG_EXAMPLE
+    # окончания строк и метка порядка байтов: добавление блока и откат дают исходные байты; смесь LF и CRLF не выравнивается
+    for original in (CFG_BASE, crlf, "\ufeff" + CFG_BASE, "\ufeff" + crlf, "a: 1\nb: 2\r\nc: 3\n", "a: 1\r\nb: 2\nc: 3\r\n"):
+        added = C.write_overrides(original, OVERRIDES)
+        assert added.startswith(original.rstrip("\r\n")) and C.read_overrides(added) == OVERRIDES, repr(added[:80])
+        assert added.count("\ufeff") == original.count("\ufeff"), "метка порядка байтов размножилась или пропала"
+        assert C.write_overrides(added, {}) == original, f"откат блока не вернул исходные байты: {original!r}"
+        assert C.write_overrides(added, OVERRIDES) == added and C.write_overrides(added, {"role": {"title": "Р"}}).startswith(original.rstrip("\r\n"))
+    mixed = C.write_overrides("a: 1\nb: 2\r\n", OVERRIDES)
+    assert mixed.startswith("a: 1\nb: 2\r\n\r\ncards:\r\n") and mixed.endswith('enabled: "false"\r\n'), repr(mixed)
+    assert all(ln.endswith("\r") for ln in C.write_overrides(crlf, OVERRIDES).split("\n")[:-1]), "строки блока не в стиле CRLF файла"
+    # строка `cards:` первой строкой файла с меткой порядка байтов — блок, а не пустое место; новый блок не размножается
+    bom_head = "\ufeffcards:\n  glossary:\n    title: \"Х\"\nx: 1\n"
+    assert C.read_overrides(bom_head) == {"glossary": {"title": "Х"}}
+    rewritten_bom = C.write_overrides(bom_head, {"role": {"title": "Р"}})
+    assert rewritten_bom == "\ufeffcards:\n  role:\n    title: \"Р\"\nx: 1\n" and C.write_overrides(rewritten_bom, {}) == "\ufeffx: 1\n"
+    # комментарий после двоеточия у строки типа — комментарий, а не значение: тип не пропускается
+    assert C.parse_cards_block('cards:\n  glossary: # заметка\n    title: "Х"\n  role:   # ещё\n    enabled: "false"\n') \
+        == ({"glossary": {"title": "Х"}, "role": {"enabled": False}}, [])
+    assert C.read_overrides('cards:\n  glossary:\n    title: # без значения\n') == {}
+    # подпись типа — до 80 знаков: запись отклоняет длиннее, чтение обрезает и называет это
+    assert C.read_overrides(C.write_overrides("", {"glossary": {"title": "я" * 80}})) == {"glossary": {"title": "я" * 80}}
+    try:
+        C.write_overrides("", {"glossary": {"title": "я" * 81}})
+    except ValueError as e:
+        assert "title длиннее 80" in str(e), e
+    else:
+        raise AssertionError("записана подпись длиннее 80 знаков")
+    cut, why = C.parse_cards_block('cards:\n  glossary:\n    title: "' + "я" * 200 + '"\n')
+    assert cut == {"glossary": {"title": "я" * 80}} and "title длиннее 80 знаков — обрезано" in why[0], (cut, why)
     # значения с кавычками, обратной чертой, «#», «|» и двоеточием переживают круг
     odd = {"glossary": {"title": 'Термин "Х" \\ # | : \'Y\'', "description": "Строка с «ёлочками»: и # решёткой."}}
     assert C.read_overrides(C.write_overrides(CFG_BASE, odd)) == odd
@@ -2786,6 +2815,7 @@ def test_cards_block_is_read_in_linear_time(_t):
     C.write_overrides(hostile, {"glossary": {"title": " " * 100000 + "x"}})
     C.parse_cards_block("cards:" + " " * 200000 + "# хвост\n  glossary:\n    title: " + "\\" * 100000)
     C.parse_cards_block("x: 1\n" * 100000 + "cards:\n  glossary:\n    title: \"y\"\n")
+    C._cell("|\\" * 200000 + "<!--" * 50000)
     assert time.time() - t0 < 5, f"разбор блока cards: на враждебном тексте — {time.time() - t0:.1f} с"
 
 
@@ -2970,6 +3000,42 @@ def test_cards_block_is_saved_and_changes_the_registry(tmp: Path):
         raise AssertionError("конфиг создан из ничего")
 
 
+@test
+def test_save_overrides_keeps_every_other_byte(tmp: Path):
+    """`save_overrides` не меняет в конфиге ничего, кроме блока `cards:`: окончания строк CRLF и LF, смесь, метка порядка
+    байтов остаются; откат блока возвращает исходные байты; не UTF-8 не трогается."""
+    C = _C()
+    cases = {"crlf": CFG_BASE.replace("\n", "\r\n"), "lf": CFG_BASE, "bom-crlf": "\ufeff" + CFG_BASE.replace("\n", "\r\n"),
+             "mixed": CFG_BASE.replace("\n", "\r\n", 6)}
+    assert len(cases["crlf"].splitlines()) >= 10 and cases["mixed"].count("\r\n") == 6 and "\n" in cases["mixed"].replace("\r\n", "")
+    for name, text in cases.items():
+        root = tmp / name
+        root.mkdir()
+        raw = text.encode("utf-8")
+        (root / "aurora.config.yaml").write_bytes(raw)
+        C.save_overrides(str(root), {"glossary": {"title": "T"}}, known=set(KIT_IDS))
+        data = (root / "aurora.config.yaml").read_bytes()
+        assert data.startswith(raw.rstrip(b"\r\n")), f"{name}: прежние байты изменены"
+        if name != "mixed":
+            style = b"\r\n" if b"\r\n" in raw else b"\n"
+            assert data.count(b"\n") == data.count(style), f"{name}: окончания строк выровнены"
+            assert data.count(b"\r\n") == (data.count(b"\n") if style == b"\r\n" else 0), f"{name}: в файле смесь окончаний"
+        assert C.read_overrides(data.decode("utf-8")) == {"glossary": {"title": "T"}}
+        C.save_overrides(str(root), {})
+        assert (root / "aurora.config.yaml").read_bytes() == raw, f"{name}: откат блока не вернул исходные байты"
+    # не UTF-8: ничего не пишется, файл цел
+    odd = tmp / "cp1251"
+    odd.mkdir()
+    (odd / "aurora.config.yaml").write_bytes("name: Проект\n".encode("cp1251"))
+    try:
+        C.save_overrides(str(odd), {"glossary": {"title": "T"}})
+    except UnicodeDecodeError:
+        pass
+    else:
+        raise AssertionError("конфиг не в UTF-8 переписан")
+    assert (odd / "aurora.config.yaml").read_bytes() == "name: Проект\n".encode("cp1251") and not list(odd.glob("*.aurora-tmp"))
+
+
 def _catalog_rows(text: str) -> list:
     """Строки таблицы каталога: [[ячейки]]."""
     return [[c.strip() for c in l.strip().strip("|").split(" | ")] for l in text.splitlines()
@@ -3049,19 +3115,50 @@ def test_catalog_generated_idempotent(tmp: Path):
     assert path.read_text(encoding="utf-8") == before, "пустой реестр затёр каталог"
 
 
+def _cells(line: str) -> list:
+    """Ячейки строки таблицы так, как их делит разметка: «\\x» — один знак, неэкранированный «|» — граница."""
+    cells, cur, i = [], [], 1
+    while i < len(line):
+        ch = line[i]
+        if ch == "\\" and i + 1 < len(line):
+            cur.append(line[i:i + 2])
+            i += 2
+            continue
+        if ch == "|":
+            cells.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    return cells
+
+
 @test
 def test_catalog_survives_hostile_cell_text(_t):
-    """Каталог: «|», переводы строк и длинные описания в паспорте не ломают таблицу (одна строка на тип, 8 ячеек)."""
+    """Каталог: «|», обратная черта перед «|», незакрытый «<!--», переводы строк и длинные подписи в паспорте не ломают
+    таблицу (одна строка на тип, 8 ячеек), не съедают остаток файла и не удлиняют подпись больше 80 знаков."""
     C = _C()
+    hostile = {"description": r'"Первая | строка и путь a\|b, и c\\|d, и <!-- не закрыт"',
+               "name": '"Имя | с чертой <!-- и ' + "я" * 200 + '"', "kinds": "[knowledge | dictionary, <!-- x]"}
     with tempfile.TemporaryDirectory(prefix="aurora-ct06-") as folder:
         root = _project(Path(folder))
-        bad = _template_text(CATALOGUE[0], description='"Первая | строка"', name='"Имя | с чертой"')
-        _put(root / "TemplatesCommon" / "akdb_concept_v1.0.md", bad)
+        _put(root / "TemplatesCommon" / "akdb_concept_v1.0.md", _template_text(CATALOGUE[0], **hostile))
+        _put(root / "TemplatesCommon" / "akdb_decision_v1.0.md", _template_text(CATALOGUE[9], home="Raw/de`c<!--s"))
         reg = _reg(root)
         text = C.render_catalog(reg, today="2026-10-13")
+    assert reg.types["concept"].kinds == ("knowledge | dictionary", "<!-- x"), reg.types["concept"].kinds
+    assert any("name длиннее 80" in p for p in reg.problems), reg.problems
     lines = [l for l in text.splitlines() if l.startswith("| `")]
-    assert len(lines) == 13 and all(len(re.split(r"(?<!\\) \| ", l.strip().strip("|").strip())) == 8 for l in lines), lines[0]
-    assert "Имя \\| с чертой" in lines[0] and "Собрано: 2026-10-13 · типов: 13 · включено: 13\n" in text
+    assert len(lines) == 13 and all(len(_cells(l)) == 8 for l in lines), [len(_cells(l)) for l in lines]
+    first = _cells(lines[0])
+    assert first[1].startswith(r"Имя \| с чертой &lt;!-- и яя") and first[1].endswith("…") and len(first[1]) <= 90, first[1]
+    assert first[2] == r"Первая \| строка и путь a&#92;\|b, и c&#92;&#92;\|d, и &lt;!-- не закрыт", first[2]
+    assert first[6] == r"knowledge \| dictionary, &lt;!-- x", first[6]
+    assert text.count("<!--") == 1 and text.startswith("<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ"), "в каталоге остался незакрытый комментарий"
+    assert text.endswith("Собрано: 2026-10-13 · типов: 13 · включено: 13\n") and "\n# Типы карточек базы знаний\n" in text
+    homes = "\n".join(l for l in text.splitlines() if "рукописный" in l or "→ `Raw/" in l)
+    assert homes.count("`") % 2 == 0 and "<!--" not in homes and "Raw/de'c&lt;!--s/" in homes, homes
+    assert all(len(_cells(l)[1]) <= 90 for l in lines), "подпись длиннее 80 знаков попала в каталог целиком"
 
 
 @test
@@ -3197,18 +3294,29 @@ def test_kb_cards_write_plans_then_applies(tmp: Path):
     assert "нет папки" in _cli(nobase, "--write", "--apply", expect=2).stderr
     empty = _cli_project(tmp / "c", templates=False)
     assert "реестр пуст" in _cli(empty, "--write", "--apply", expect=2).stderr and not (empty / "AuroraKnowledgeDB" / "meta" / "card_types.md").exists()
-    # git-guard: по грязному дереву пишет только с --allow-dirty, отказ — код 2, а не 1
+    # git-guard сужен до файла каталога: чужие незакоммиченные правки (конфиг, карточки) ему не мешают, а каталог,
+    # который правили руками и не закоммитили, без --allow-dirty не перезаписывается; отказ — код 2, а не 1
     (tmp / "g").mkdir()
     gitted = make_project(tmp / "g", git=True)
     _fixture_kit(gitted / "TemplatesCommon")
+    cat = gitted / "AuroraKnowledgeDB" / "meta" / "card_types.md"
     (gitted / "aurora.config.yaml").write_text((gitted / "aurora.config.yaml").read_text(encoding="utf-8") + "# правка\n", encoding="utf-8")
+    out = _cli(gitted, "--write", "--apply", expect=0).stdout
+    assert cat.is_file() and "записан" in out and "git-guard" not in out, "незакоммиченный конфиг остановил запись каталога\n" + out
+    subprocess.run(["git", "add", "-A"], cwd=str(gitted), check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "каталог"], cwd=str(gitted), check=True)
+    good = cat.read_text(encoding="utf-8")
+    cat.write_text(good + "\nправка руками\n", encoding="utf-8")
     cp = _cli(gitted, "--write", "--apply", expect=2)
-    assert "git-guard" in cp.stdout + cp.stderr and not (gitted / "AuroraKnowledgeDB" / "meta" / "card_types.md").exists(), cp.stdout + cp.stderr
-    _cli(gitted, "--write", "--apply", "--allow-dirty", expect=0)
-    assert (gitted / "AuroraKnowledgeDB" / "meta" / "card_types.md").is_file()
+    said = cp.stdout + cp.stderr
+    assert "git-guard" in said and "card_types.md" in said and "--allow-dirty" in said and "во много файлов" not in said, said
+    assert cat.read_text(encoding="utf-8").endswith("\nправка руками\n"), "отказ git-guard, а файл переписан"
+    out = _cli(gitted, "--write", "--apply", "--allow-dirty", expect=0).stdout
+    assert "git-guard отключён" in out and _catalog_core(cat.read_text(encoding="utf-8")) == _catalog_core(good), out
     code = (SCRIPTS / "card_types.py").read_text(encoding="utf-8")
-    tail = code[code.index("git_guard(root"):][:200]
+    tail = code[code.index("if not _catalog_guard(root"):][:200]
     assert "return 2" in tail and "return 1" not in tail, "отказ писать должен возвращать 2"
+    assert "git_guard(" not in code, "каталог снова охраняется git-guard всего проекта"
 
 
 @test
@@ -3243,11 +3351,25 @@ def test_doctor_cards_block_and_catalog_lines(tmp: Path):
     assert len(warns) == 2 and all("→ поправьте блок cards: или уберите строку" in w for w in warns), cp.stdout[-900:]
     assert any("типа «ghost» нет в реестре" in w for w in warns) and any("«section» не переопределяется" in w for w in warns)
     assert not [l for l in cp.stdout.splitlines() if l.startswith("типы: проблемы реестра") and "cards:" in l], "замечания блока попали в строку проблем реестра"
+    # проект держит каталог сам (aurora.update_ignore.txt): обновление его не соберёт — доктор советует другую команду
+    (root / "aurora.update_ignore.txt").write_text("# мой каталог\nAuroraKnowledgeDB/meta/card_types.md\n", encoding="utf-8")
+    cat.unlink()
+    out = _doctor_lines(root)[1]
+    assert ("каталог типов карточек: нет, а проект оставил его себе (aurora.update_ignore.txt) — обновление его не соберёт, "
+            "соберите командой `kb:cards --write --apply`") in out.splitlines(), out[-900:]
+    assert "соберите его обновлением проекта" not in out
+    wrote = _py(root / ".aurora" / "scripts" / "card_types.py", "--write", "--apply", cwd=root).stdout
+    assert cat.is_file() and "записан" in wrote and "каталог типов карточек: актуален" in _doctor_lines(root)[1]
+    cat.write_text(cat.read_text(encoding="utf-8") + "\nправка\n", encoding="utf-8")
+    assert ("каталог типов карточек: отстал, а проект оставил его себе (aurora.update_ignore.txt) — обновление его не пересоберёт, "
+            "пересоберите командой `kb:cards --write --apply`") in _doctor_lines(root)[1].splitlines()
+    (root / "aurora.update_ignore.txt").write_text("# только шаблоны\nTemplates/*\n", encoding="utf-8")
+    assert "каталог типов карточек: отстал от шаблонов или настроек — пересоберите его обновлением проекта: `kit:update`" in _doctor_lines(root)[1]
     # переводы сообщений доктора
     K = _mod("kit_i18n")
     mine = {s for s in K.message_skeletons() if s.startswith(("каталог типов карточек:", "типы карточек:")) or "блок" in s and "cards:" in s}
     en = json.loads((KIT / "cockpit" / "i18n" / "data" / "en.json").read_text(encoding="utf-8"))["messages"]
-    assert len(mine) == 6, sorted(mine)
+    assert len(mine) == 8, sorted(mine)
     for sk in mine:
         assert en.get(sk) and en[sk].count("{}") == sk.count("{}") and not re.search("[а-яА-ЯёЁ]", en[sk]), sk
 
@@ -3650,9 +3772,9 @@ def test_guide_is_documented(_t):
     выпусках»; дерево проекта и справочник команд называют файл и флаг."""
     for rel, heading, later, other in (
             ("docs/card-templates.md", "\n### Как выбрать тип: `Prompts/KB_classify.md`\n", "## 10. Что будет в следующих выпусках",
-             "каталог типов\n`AuroraKnowledgeDB/meta/card_types.md`"),
+             "настройки типов в панели"),
             ("docs/en/card-templates.md", "\n### How to pick a type: `Prompts/KB_classify.md`\n", "## 10. What the next releases bring",
-             "type catalogue `AuroraKnowledgeDB/meta/card_types.md`")):
+             "type settings in the panel")):
         text = (KIT / rel).read_text(encoding="utf-8")
         assert text.count("\n") <= 400, f"{rel}: длиннее 400 строк"
         assert "`kb:cards --guide`" in text and "`card_types.classify_answer`" in text and "KB_classify.md.new" in text, rel
@@ -3664,6 +3786,7 @@ def test_guide_is_documented(_t):
         tail = text.split(later)[1]
         assert "KB_classify" not in tail, f"{rel}: инструкция всё ещё в списке «чего нет»"
         assert other in tail, f"{rel}: из списка «чего нет» ушло лишнее"
+        assert "`cards:`" not in tail and "card_types.md" not in tail, f"{rel}: блок cards: и каталог типов выпущены, а в списке «чего нет»"
     for rel in ("docs/INSTALL.md", "docs/en/INSTALL.md"):
         text = (KIT / rel).read_text(encoding="utf-8")
         assert "Prompts/KB_classify.md" in text.split("## 2.")[1].split("## 3.")[0], f"{rel}: файла нет в дереве проекта"

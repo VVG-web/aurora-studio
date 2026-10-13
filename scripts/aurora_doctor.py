@@ -554,12 +554,13 @@ def check_card_templates(root: Path | None = None) -> list:
     root = root or ROOT
     out = []   # через .append: реестр переводов kit_i18n собирает сообщения доктора именно по вызовам append
     try:
-        from card_types import catalog_state, delivered_kit_types, registry, template_stamps, type_counts
+        from card_types import catalog_pinned, catalog_state, delivered_kit_types, registry, template_stamps, type_counts
         reg = registry(str(root))
         got, total = delivered_kit_types(reg)
         has_base = (root / "AuroraKnowledgeDB").is_dir()
         cards, stamped = template_stamps(str(root)) if has_base else (None, 0)
         catalog = catalog_state(str(root), reg)
+        pinned = catalog != "ok" and catalog_pinned(str(root))
         off = sorted(t for t, rec in reg.overrides.items() if rec.get("enabled") is False)
         counts = type_counts(str(root)) if off and has_base else {}
     except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
@@ -580,6 +581,12 @@ def check_card_templates(root: Path | None = None) -> list:
         out.append(f"карточек без шаблона: {cards - stamped}")
     if catalog == "ok":
         out.append("каталог типов карточек: актуален")
+    elif catalog == "missing" and pinned:
+        out.append("каталог типов карточек: нет, а проект оставил его себе (aurora.update_ignore.txt) — обновление его не соберёт, "
+                   "соберите командой `kb:cards --write --apply`")
+    elif catalog == "stale" and pinned:
+        out.append("каталог типов карточек: отстал, а проект оставил его себе (aurora.update_ignore.txt) — обновление его не пересоберёт, "
+                   "пересоберите командой `kb:cards --write --apply`")
     elif catalog == "missing":
         out.append("каталог типов карточек: нет — соберите его обновлением проекта: `kit:update`")
     elif catalog == "stale":

@@ -297,7 +297,7 @@ Run in the project root (in the panel — the `kb:cards` command; in a terminal 
 | `--check [PATH…]` | check the base's cards (or only the named files and folders) against the templates of their types |
 | `--check --strict` | the same, but errors stay errors and give exit code 1 |
 | `--stats` | cards in total, by template versions, without a template, with violations by code |
-| `--write` | the type catalogue `AuroraKnowledgeDB/meta/card_types.md`: without `--apply` — the plan only, with `--apply` — the write (on a dirty git tree — with `--allow-dirty`) |
+| `--write` | the type catalogue `AuroraKnowledgeDB/meta/card_types.md`: without `--apply` — the plan only, with `--apply` — the write (if the catalogue file was edited by hand and not committed — with `--allow-dirty`) |
 | `--guide` | the effective text of the instruction "How to determine the card type": the project's `Prompts/KB_classify.md`, or the kit's file if there is none or it is empty |
 | `--all` | with `--check` and `--stats`: include the base archive (`_archive/`) |
 | `--summary` | with `--check`: the summary line only |
@@ -364,11 +364,10 @@ in the next releases.
 
 ## 10. What the next releases bring
 
-Not here yet and not described as ready: type settings in the panel and the `cards:` block in the config; the
-type catalogue `AuroraKnowledgeDB/meta/card_types.md`; a mandatory template when cards are created and changed
-(writing `template:` into the head, refusing to create a card of a type outside the registry, putting the steps
-of the type-choosing instruction into the built-in agent's requests); records in `Raw/decisions`, `Raw/questions`,
-`Raw/reference` and the `kb:record` command; cited documents (the `Documents` section, the `kb:cite` command);
-migration of the base to templates (`kb:conform`); the `## Расхождения` section and the ladder "trust → question →
-correction". Until those releases the check remains advice, and the rule "a card only by a template" is a goal, not
-a rule in force.
+Not here yet and not described as ready: type settings in the panel; a mandatory template when cards are created
+and changed (writing `template:` into the head, refusing to create a card of a type outside the registry, putting
+the steps of the type-choosing instruction into the built-in agent's requests); records in `Raw/decisions`,
+`Raw/questions`, `Raw/reference` and the `kb:record` command; cited documents (the `Documents` section, the
+`kb:cite` command); migration of the base to templates (`kb:conform`); the `## Расхождения` section and the ladder
+"trust → question → correction". Until those releases the check remains advice, and the rule "a card only by a
+template" is a goal, not a rule in force.
