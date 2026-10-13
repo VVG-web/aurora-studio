@@ -237,6 +237,7 @@ def test_a_clear_refusal_is_not_a_dead_provider(tmp: Path):
     assert 1 in A.DOWN, "молчащий провайдер обязан попадать в карантин"
     assert time.time() - started < 3 and "повторять незачем" in " ".join(r["log"]), \
         "шлюз в карантине дольше вызова всё равно ждут до конца срока"
+    A.DOWN.clear()      # отметка карантина живёт в процессе: не оставляем её следующим проверкам доли
 
 
 @test

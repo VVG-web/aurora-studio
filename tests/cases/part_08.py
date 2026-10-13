@@ -280,6 +280,10 @@ def test_agent_ring_config_and_whitelist(tmp: Path):
     sys.path.insert(0, str(KIT / "scripts"))
     import importlib
     A = importlib.import_module("agent_core")
+    # Карантин и паузы живут в процессе: проверка, прошедшая раньше в той же доле (`--shard`), могла оставить
+    # бэкенд №1 «не отвечавшим» на 15 минут, и кольцо крутилось бы вхолостую до дедлайна. Начинаем с чистого.
+    for state in (A.DOWN, A.SLOW, A.LAST_OK, A.COOL, A.COOL_HITS, A.ERR_HITS):
+        state.clear()
 
     env = {"AURORA_AGENT_BACKEND_1_URL": "https://one.example.com/v1/",
            "AURORA_AGENT_BACKEND_1_KEY": "k1",
