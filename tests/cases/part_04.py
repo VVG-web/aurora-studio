@@ -1060,7 +1060,8 @@ def test_settings_form_keeps_what_it_does_not_manage(tmp: Path):
 
     Живой случай: форма собирала конфиг заново по шаблону, и при добавлении веб-страницы
     пропали реестр из десяти видов документов (`artifacts:`) и настройки отчёта (`reports:`).
-    Объявленная папка проекта (`paths → extra_structure_dirs`) ушла бы следующей.
+    Объявленная папка проекта (`paths → extra_structure_dirs`) ушла бы следующей. Правила типов карточек
+    (`cards:`) — такой же раздел, которого шаблон формы не знает: он обязан пережить сохранение (CT-06).
     """
     import contextlib
     import io
@@ -1075,6 +1076,8 @@ def test_settings_form_keeps_what_it_does_not_manage(tmp: Path):
         '  owner: "Отдел анализа"\n\npaths:\n  knowledge_db: AuroraKnowledgeDB\n'
         "  extra_structure_dirs: [AuroraKnowledgeDB/media]\n\n# Виды документов проекта\n"
         'artifacts:\n  opz:\n    title: "ОПЗ"\n    out: "Deliverables/work"\n\n'
+        "# Типы карточек проекта\n"
+        'cards:\n  glossary:\n    title: "Термин (словарь заказчика)"\n    enabled: "false"\n\n'
         "reports:\n  analyst:\n    year: 2026\n", encoding="utf-8")
     with contextlib.redirect_stdout(io.StringIO()):
         A.run_answers(root, {"name": "Новое имя"})
@@ -1082,9 +1085,10 @@ def test_settings_form_keeps_what_it_does_not_manage(tmp: Path):
     assert 'name: "Новое имя"' in text, "форма не записала то, что правила"
     for need in ("extra_structure_dirs: [AuroraKnowledgeDB/media]", "# Виды документов проекта",
                  "artifacts:", "  opz:", 'out: "Deliverables/work"', "reports:", "year: 2026",
-                 'owner: "Отдел анализа"'):
+                 'owner: "Отдел анализа"', "# Типы карточек проекта", "cards:", "  glossary:",
+                 'title: "Термин (словарь заказчика)"', 'enabled: "false"'):
         assert need in text, f"сохранение формы стёрло «{need}»:\n{text}"
-    for section in ("artifacts:", "paths:", "reports:", "project:"):
+    for section in ("artifacts:", "paths:", "reports:", "project:", "cards:"):
         assert text.count("\n" + section) == 1, f"раздел {section} удвоился:\n{text}"
     with contextlib.redirect_stdout(io.StringIO()):
         A.run_answers(root, {})

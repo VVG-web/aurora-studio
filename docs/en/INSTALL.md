@@ -119,6 +119,7 @@ Raw/{laws,contract,customer,project,meetings,examples,corrections}/
 AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Statuses, Reference,
                               Requirements, Specs, Questions, Decisions, MOC, _archive, _assets,
                               _inbox, meta (kb_updated.json — the base update date, in git;
+                              card_types.md — the catalogue of card types, built by the engine;
                               run_log.md — this machine's run journal, outside git)
 Artifacts/{us,ac,algorithms,dictionaries,screens,contracts,mappings,role-model,diagrams,
            acceptance,tests,reviews,reports,drafts,meetings}/
@@ -171,6 +172,7 @@ scripts read them from here, not from their own bodies.
 | `privacy` | `scrub`: `off` · `report` (default) · `mask`; `mask_contacts`, `include_raw` |
 | `reports.analyst` | the year, roster, events, the folder of exports and the dashboard's output file |
 | `artifacts` | the registry of the project's artifact kinds: `title`, `template`, `out`, prompt, `tech_agnostic` (`make:kinds`) |
+| `cards` | the rules of the knowledge-card types, per type: `title` (the label), `description` (up to 220 characters), `enabled` (`"false"` turns the type off); the section, class, template, kinds and statuses stay with the template. There is no block by default — an example is commented at the end of the file; the types are listed by `kb:cards --list`, the catalogue is `AuroraKnowledgeDB/meta/card_types.md` (built by the install and `kit:update`, manual edits are lost) |
 | `graphify` | `code_dirs` — folders with code for `kb:code-graph` |
 | `bootstrap` | the `knowledge` share threshold below which drafts are admitted into packs with a loud header |
 

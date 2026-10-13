@@ -11,7 +11,8 @@ What it does:
   3. Writes aurora.config.yaml (project settings) + aurora.env.local.example
   4. Writes AGENTS.md from template (Karpathy + Aurora rules)
   5. Seeds meta (conventions, golden_questions, metrics, releases, manifest, index)
-  6. Copies Templates/ and Prompts/; docs stay in the kit (pointer in meta/)
+  6. Copies Templates/ and Prompts/ and builds the card types catalogue (meta/card_types.md);
+     docs stay in the kit (pointer in meta/)
   7. Scaffolds Confluence/Jira sync skills (read config, not hardcode JQL)
   8. Writes .gitignore entries (the engine and harness folders stay out of git)
 
@@ -483,6 +484,28 @@ _Мета-вопросы:_
         self.copy_tree_files(KIT_ROOT / "scaffold/Prompts", "Prompts")
         self.copy_tree_files(KIT_ROOT / "scaffold/TemplatesCommon", "TemplatesCommon")
 
+    def install_card_catalog(self):
+        """Каталог типов карточек `AuroraKnowledgeDB/meta/card_types.md` — по шаблонам, которые только что легли в проект.
+
+        Проект, созданный кнопкой панели, получает только этот установщик (без `setup` и `update`), поэтому каталог
+        собирается здесь же. Файл генерируется; уже стоящий не затирается без `--force` — его обновляет `kit:update`.
+        """
+        self.log("== Card types catalogue ==")
+        rel = "AuroraKnowledgeDB/meta/card_types.md"
+        if (self.target / rel).exists() and not self.force:
+            self.log(f"  skip (exists): {rel}")
+            return
+        if self.dry_run:
+            self.log(f"  would write: {rel}")
+            return
+        try:
+            import card_types
+            done = card_types.write_catalog(str(self.target), kit_root=str(KIT_ROOT))
+        except Exception as e:  # noqa: BLE001 — каталог не повод ронять установку: его соберёт `kit:update`
+            self.log(f"  skip (not built: {type(e).__name__}): {rel}")
+            return
+        self.log(f"  wrote: {rel}" if done else f"  skip (nothing to build): {rel}")
+
     def install_launchers(self):
         """Пусковые файлы в корне проекта: не всем удобно ходить в терминал.
 
@@ -627,6 +650,7 @@ created: {TODAY}
         self.install_agents()
         self.install_meta()
         self.install_templates_prompts()
+        self.install_card_catalog()
         self.install_launchers()
         self.install_docs()
         self.install_connectors()

@@ -13,6 +13,10 @@
 Пакет CT-05 (в самом конце части): политика связей — коды V-15 (минимум исходящих ссылок типа, `min_links`) и V-16
 (типизированное поле шапки не на месте или со значением, которое не ссылка) и рёбра графа базы по полям шапки
 `part_of`, `prev`, `next` (`kb_graph.write_cards_graph`). Графу ничего не отнимается: у базы без этих полей вывод тот же.
+Пакет CT-06 (в самом конце части): правила проекта — блок `cards:` конфига (подпись, описание, выключатель типа; раздел,
+класс, шаблон, виды и статусы принадлежат шаблону), его наложение в `registry()`, каталог типов `meta/card_types.md`
+(установка, обновление проекта, `kb:cards --write`), строки `kit:doctor`; форма настроек блок не стирает. Без блока
+реестр тот же, что после первой фазы.
 Модель и сеть не используются; проекты — только во временных папках, запуски, которые пишут, — под
 временным HOME прогона.
 """
@@ -2662,3 +2666,605 @@ def test_phase_one_docs_name_the_card_templates(_t):
                 "wiki/ru/Artifacts-and-Deliverables.md", "docs/INSTALL.md", "docs/en/INSTALL.md",
                 "docs/architecture.md", "docs/en/architecture.md"):
         assert "akdb_" in (KIT / rel).read_text(encoding="utf-8"), f"{rel}: шаблоны akdb_* не названы"
+
+
+# ================================================================== пакет CT-06: правила проекта — блок cards:, каталог типов
+#
+# Проект подменяет подпись и описание типа и выключает тип блоком `cards:` конфига; эффективный реестр накладывает его на
+# типы из шаблонов, а `AuroraKnowledgeDB/meta/card_types.md` — каталог типов — собирается по этому реестру установкой,
+# обновлением проекта и командой `kb:cards --write --apply`. Без блока проект ведёт себя ровно как после первой фазы.
+
+CFG_BASE = ('aurora:\n  version: 1\n\nproject:\n  name: "Проект"\n  slug: "P"\n\n'
+            'artifacts:\n  opz:\n    title: "ОПЗ"\n    out: "Deliverables/work"\n\nreports:\n  analyst:\n    year: 2026\n')
+OVERRIDES = {"glossary": {"title": "Термин (словарь заказчика)", "description": "Определение термина; без свойств.",
+                          "enabled": False},
+             "status-model": {"enabled": False}}
+
+
+def _cfg_project(tmp: Path, config: str = "", rows=CATALOGUE) -> Path:
+    """Проект с доставленными шаблонами (`_project`) и конфигом `aurora.config.yaml`; кита рядом нет."""
+    root = _project(tmp, rows)
+    if config:
+        _put(root / "aurora.config.yaml", config)
+    return root
+
+
+@test
+def test_cards_block_roundtrip(_t):
+    """AC-CT-06.1: `write_overrides` → `read_overrides` на пустом конфиге, на конфиге с `artifacts:` и на конфиге с
+    блоком; остальное в файле не затронуто, запись идемпотентна, чужое отклоняется."""
+    C = _C()
+    # пустой конфиг: блок добавляется, читается тем же словарём
+    text = C.write_overrides("", OVERRIDES, known=set(KIT_IDS))
+    assert text.startswith("cards:\n  glossary:\n    title: \"Термин (словарь заказчика)\"\n") and text.endswith("\n"), text
+    assert C.read_overrides(text) == OVERRIDES, C.read_overrides(text)
+    assert C.write_overrides(text, OVERRIDES) == text, "повторная запись меняет текст"
+    assert C.write_overrides("", {}) == "" and C.read_overrides("") == {}
+
+    # конфиг с артефактами: блок в конце, всё остальное — байт в байт, реестр видов читается тем же
+    MK = _mod("make_kinds")
+    with_block = C.write_overrides(CFG_BASE, OVERRIDES)
+    assert with_block.startswith(CFG_BASE.rstrip("\n") + "\n\ncards:\n"), with_block
+    assert C.read_overrides(with_block) == OVERRIDES
+    assert C.write_overrides(with_block, OVERRIDES) == with_block
+    folder = Path(tempfile.mkdtemp(prefix="aurora-ct06-"))
+    try:
+        (folder / "aurora.config.yaml").write_text(CFG_BASE, encoding="utf-8")
+        before = MK.read_kinds(str(folder))
+        (folder / "aurora.config.yaml").write_text(with_block, encoding="utf-8")
+        assert MK.read_kinds(str(folder)) == before and "opz" in before, "блок cards: задел реестр видов артефактов"
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+    # конфиг с существующим блоком (в середине, с комментариями, одинарными кавычками и лишними полями)
+    mid = ('a: 1\n\n# про типы\ncards:\n  concept:\n    title: \'Свой "заголовок"\'   # подпись\n    section: "X"\n'
+           '  # внутри блока\n  role:\n    enabled: "false"\n\n# после блока\nb:\n  c: 2\n')
+    assert C.read_overrides(mid) == {"concept": {"title": 'Свой "заголовок"'}, "role": {"enabled": False}}
+    rewritten = C.write_overrides(mid, {"role": {"description": "Роль без людей."}, "concept": {"enabled": True}})
+    assert rewritten.startswith("a: 1\n\n# про типы\ncards:\n") and rewritten.endswith("\n\n# после блока\nb:\n  c: 2\n"), rewritten
+    assert C.read_overrides(rewritten) == {"role": {"description": "Роль без людей."}, "concept": {"enabled": True}}
+    assert "внутри блока" not in rewritten and "section" not in rewritten, "старое содержимое блока осталось"
+    # пустые переопределения убирают блок, соседние пустые строки не удваиваются
+    assert C.write_overrides(mid, {}) == 'a: 1\n\n# про типы\n\n# после блока\nb:\n  c: 2\n'
+    assert C.write_overrides(with_block, {}) == CFG_BASE
+    assert C.write_overrides(CFG_BASE, {}) == CFG_BASE, "пустая запись изменила конфиг без блока"
+    # окончания строк CRLF сохраняются; закомментированный пример блоком не считается
+    crlf = CFG_BASE.replace("\n", "\r\n")
+    got = C.write_overrides(crlf, OVERRIDES)
+    assert got.count("\r\n") == got.count("\n") and C.read_overrides(got) == OVERRIDES
+    assert C.read_overrides(C.CARDS_CONFIG_EXAMPLE) == {} and C.write_overrides(C.CARDS_CONFIG_EXAMPLE, {}) == C.CARDS_CONFIG_EXAMPLE
+    # значения с кавычками, обратной чертой, «#», «|» и двоеточием переживают круг
+    odd = {"glossary": {"title": 'Термин "Х" \\ # | : \'Y\'', "description": "Строка с «ёлочками»: и # решёткой."}}
+    assert C.read_overrides(C.write_overrides(CFG_BASE, odd)) == odd
+    flat = C.write_overrides("", {"glossary": {"title": "Две\nстроки", "description": "  много   пробелов  "}})
+    assert C.read_overrides(flat) == {"glossary": {"title": "Две строки", "description": "много пробелов"}}
+    # пустое значение — «не переопределено»; пустая запись типа блока не порождает
+    assert C.write_overrides("", {"glossary": {"title": " ", "enabled": ""}, "role": {}}) == ""
+    # короткие формы пустого блока читаются
+    for empty in ("cards: {}\n", "cards: []\nx: 1\n", "cards:   # пока пусто\n"):
+        assert C.read_overrides(empty) == {} and C.parse_cards_block(empty)[1] == [], empty
+    assert C.read_overrides(C.write_overrides("cards: {}\nx: 1\n", OVERRIDES)) == OVERRIDES
+    # `cards:` со значением в строке — не блок: названо замечанием и заменено, а не продублировано вторым ключом
+    assert "в строке блока" in C.parse_cards_block('cards: "x"\nb: 1\n')[1][0] and C.read_overrides('cards: "x"\n') == {}
+    replaced = C.write_overrides('a: 1\ncards: "x"\nb: 1\n', {"glossary": {"title": "Т"}})
+    assert replaced.count("cards:") == 1 and replaced.startswith("a: 1\ncards:\n") and replaced.endswith("\nb: 1\n"), replaced
+    assert C.read_overrides("cards_x: 1\n  cards: 1\n") == {} and C.parse_cards_block("cards_x: 1\n  cards: 1\n") == ({}, [])
+    assert C.write_overrides("cards: {}\nx: 1\n", OVERRIDES).endswith("x: 1\n")
+    # запись отклоняет чужое: тип вне реестра и неверное имя, поле шаблона, длинное описание, непонятное enabled
+    for bad, why in ((({"ghost": {"title": "Х"}}), "нет в реестре"), ({"Bad_Id": {"title": "Х"}}, "не подходит"),
+                     ({"a": {"title": "Х"}}, "не подходит"), ({"glossary": {"section": "Foo"}}, "нельзя переопределять"),
+                     ({"glossary": {"template": "x.md"}}, "нельзя переопределять"),
+                     ({"glossary": {"description": "я" * 221}}, "длиннее 220"), ({"glossary": {"enabled": "maybe"}}, "true или false"),
+                     (["glossary"], "словарь")):
+        try:
+            C.write_overrides("", bad, known=set(KIT_IDS))
+        except ValueError as e:
+            assert why in str(e), f"{bad}: причина «{e}»"
+        else:
+            raise AssertionError(f"запись приняла {bad}")
+    assert C.write_overrides("", {"glossary": {"description": "я" * 220}}, known=None).count("я") == 220
+    assert C.write_overrides("", {"anything-goes": {"title": "Х"}}), "без known тип проверяется только по форме имени"
+    # `enabled` — и булево, и строка «true»/«false»
+    assert C.read_overrides(C.write_overrides("", {"glossary": {"enabled": "false"}, "role": {"enabled": True}})) \
+        == {"glossary": {"enabled": False}, "role": {"enabled": True}}
+    # ручные записи: значения без кавычек, да/нет, лишнее называется проблемой, а не падением
+    hand = "cards:\n  glossary:\n    title: Термин  # без кавычек\n    enabled: нет\n  role:\n    enabled: \"yes\"\n"
+    assert C.read_overrides(hand) == {"glossary": {"title": "Термин", "enabled": False}, "role": {"enabled": True}}
+
+
+@test
+def test_cards_block_is_read_in_linear_time(_t):
+    """Разбор блока не зависит от длины строки: нет вложенных повторов (ReDoS), длинные значения и много строк — быстро."""
+    C = _C()
+    t0 = time.time()
+    hostile = "cards:\n  glossary:\n    title: \"" + " " * 200000 + "\"\n    description: '" + "''" * 50000 + "'\n"
+    hostile += "".join(f"  t{i % 9}x:\n    title: \"{'a' * 50}\"\n" for i in range(3000))
+    C.parse_cards_block(hostile)
+    C.write_overrides(hostile, {"glossary": {"title": " " * 100000 + "x"}})
+    C.parse_cards_block("cards:" + " " * 200000 + "# хвост\n  glossary:\n    title: " + "\\" * 100000)
+    C.parse_cards_block("x: 1\n" * 100000 + "cards:\n  glossary:\n    title: \"y\"\n")
+    assert time.time() - t0 < 5, f"разбор блока cards: на враждебном тексте — {time.time() - t0:.1f} с"
+
+
+@test
+def test_cards_block_survives_setup_form(tmp: Path):
+    """AC-CT-06.2: форма настроек (`aurora_setup.write_config`) сохраняет блок `cards:` и не размножает пример;
+    блок переживает и запись реестра видов артефактов панелью (`kinds_write`)."""
+    C = _C()
+    A = _mod("aurora_setup")
+    root = tmp / "проект"
+    root.mkdir()
+    cfg = root / "aurora.config.yaml"
+    block = ('# Типы карточек проекта\ncards:\n  glossary:\n    title: "Термин (словарь заказчика)"\n'
+             '    description: "Определение термина; без свойств."\n    enabled: "false"\n  status-model:\n    enabled: "false"\n')
+    cfg.write_text(CFG_BASE + "\n" + block, encoding="utf-8")
+
+    def save(**answers):
+        with contextlib.redirect_stdout(io.StringIO()):
+            A.run_answers(root, answers)
+        return cfg.read_text(encoding="utf-8")
+
+    text = save(name="Новое имя")
+    assert 'name: "Новое имя"' in text, "форма не записала то, что правила"
+    assert block in text and text.count("\ncards:") == 1, f"форма стёрла или удвоила блок cards:\n{text}"
+    assert C.read_overrides(text) == OVERRIDES
+    for need in ("artifacts:", "  opz:", "reports:", "year: 2026"):
+        assert need in text, f"форма стёрла «{need}»"
+    assert C.CARDS_CONFIG_EXAMPLE not in text, "пример блока стоит рядом с настоящим блоком"
+    assert save() == text, "повторное сохранение формы меняет конфиг"
+
+    # блока нет: форма пишет ровно один закомментированный пример и не плодит его при каждом сохранении
+    cfg.write_text(CFG_BASE, encoding="utf-8")
+    first = save(name="Имя")
+    assert first.count(C.CARDS_CONFIG_EXAMPLE) == 1 and first.count("# cards:") == 1 and C.read_overrides(first) == {}, first
+    assert save() == first and save(name="Имя") == first, "пример блока размножается"
+    # блок добавлен руками под примером: пример уходит, блок остаётся
+    cfg.write_text(first + "\ncards:\n  concept:\n    title: \"Идея\"\n", encoding="utf-8")
+    third = save()
+    assert C.read_overrides(third) == {"concept": {"title": "Идея"}} and C.CARDS_CONFIG_EXAMPLE not in third and save() == third
+    # шаблон конфига панели: пример лежит в конце и совпадает с кодом; настоящего блока в шаблоне нет
+    tpl = (KIT / "templates" / "aurora.config.yaml.template").read_text(encoding="utf-8")
+    assert tpl.endswith("\n" + C.CARDS_CONFIG_EXAMPLE) and C.read_overrides(tpl) == {} and "\ncards:" not in tpl
+    assert "(docs/card-templates.md)" in tpl and (KIT / "docs" / "card-templates.md").is_file()
+
+    # панель пишет реестр видов артефактов: блок `cards:` после него остаётся на месте
+    sys.path.insert(0, str(KIT / "cockpit"))
+    ck = importlib.import_module("aurora_cockpit")
+    kinds = tmp / "kinds"
+    kinds.mkdir()
+    (kinds / "Templates").mkdir()
+    (kinds / "Templates" / "b.md").write_text("шаблон", encoding="utf-8")
+    (kinds / "aurora.config.yaml").write_text(CFG_BASE + "\n" + block, encoding="utf-8")
+    assert ck.kinds_write(str(kinds), {"pr": {"title": "ПР", "template": "Templates/b.md", "out": "Deliverables/work"}}).get("ok")
+    after = (kinds / "aurora.config.yaml").read_text(encoding="utf-8")
+    assert block in after and C.read_overrides(after) == OVERRIDES and "  pr:" in after, f"запись видов задела cards:\n{after}"
+
+
+@test
+def test_registry_without_cards_block_is_unchanged(tmp: Path):
+    """Эффект по умолчанию: проект без блока `cards:` — тот же реестр, что был до него (шаблон конфига тоже без блока)."""
+    C = _C()
+    plain = _reg(_cfg_project(tmp / "a"))
+    tpl = (KIT / "templates" / "aurora.config.yaml.template").read_text(encoding="utf-8")
+    with_tpl = _reg(_cfg_project(tmp / "b", tpl))
+    with_other = _reg(_cfg_project(tmp / "c", CFG_BASE))
+    def sig(reg):
+        """Реестр без путей к файлам (проекты лежат в разных папках)."""
+        return ({t.id: (t.name, t.name_en, t.description, t.description_en, t.enabled, t.overridden, t.template_file, t.version,
+                        t.section, t.cls, t.kinds, t.statuses, t.versions, t.origin) for t in reg.types.values()},
+                {n: (t.id, t.enabled, t.overridden) for n, t in reg.files.items()}, reg.by_section, reg.unmanaged)
+    for other in (with_tpl, with_other):
+        assert sig(other) == sig(plain), "блока cards: нет, а реестр изменился"
+        assert other.problems == plain.problems == [] and other.overrides == {} and other.config_problems == []
+        assert all(t.overridden == () for t in other.types.values())
+    assert [t.id for t in plain.allowed_for_build()] == [t.id for t in with_tpl.allowed_for_build()]
+    # конфиг, который не читается, реестр не роняет
+    broken = _cfg_project(tmp / "d")
+    (broken / "aurora.config.yaml").write_bytes(b"\xff\xfe cards:\n  glossary:\n    title: \xd0")
+    assert sig(_reg(broken)) == sig(plain)
+    assert C.read_config_overrides(str(tmp / "нет-такого-проекта")) == ({}, [])
+
+
+@test
+def test_cards_override_disable_type(tmp: Path):
+    """AC-CT-06.3: `enabled: "false"` убирает тип из `allowed_for_build()`, но не из `types`; подпись и описание
+    накладываются, раздел остаётся в таблице «раздел → тип»; выключатель не включает тип, отключённый реестром."""
+    cfg = ('cards:\n  glossary:\n    title: "Термин (словарь заказчика)"\n    description: "Определение термина; без свойств."\n'
+           '    enabled: "false"\n  concept:\n    title: "Идея"\n')
+    reg = _reg(_cfg_project(tmp / "p", cfg))
+    assert reg.problems == [] and set(reg.types) == set(KIT_IDS), reg.problems
+    g, c = reg.types["glossary"], reg.types["concept"]
+    assert g.enabled is False and reg.get("glossary") is g, "выключенный тип пропал из реестра"
+    assert "glossary" not in [t.id for t in reg.allowed_for_build()] and "concept" in [t.id for t in reg.allowed_for_build()]
+    assert (g.name, g.description) == ("Термин (словарь заказчика)", "Определение термина; без свойств.")
+    assert g.name_en == "Glossary" and g.description_en.startswith("Description of the glossary") and g.overridden == ("title", "description", "enabled")
+    assert c.name == "Идея" and c.description == "Описание типа concept для проверок." and c.enabled and c.overridden == ("title",)
+    assert reg.overrides == {"glossary": {"title": "Термин (словарь заказчика)", "description": "Определение термина; без свойств.",
+                                          "enabled": False}, "concept": {"title": "Идея"}}
+    assert reg.by_section["Glossary"] == "glossary" and reg.section_type()["Glossary"] == "glossary", "раздел выключенного типа ушёл из таблицы"
+    assert all(reg.files[name].enabled is False for name in reg.files if reg.files[name].id == "glossary")
+    assert reg.types["role"].overridden == () and reg.types["role"].name == "Роль", "тип без переопределения изменился"
+    # карточки выключенного типа валидируются и показываются; новое в реестре не создаётся
+    card = mk(type="glossary", template="akdb_glossary_v1.0.md", title='"Накладная"', body="Накладная — документ о передаче товара. [[Поставщик]]\n")
+    found = _check(card, reg, level="advisory")
+    assert "V-03" in _codes(found) and any("выключен" in v.message for v in found), _codes(found)
+    assert [v.code for v in _check(card, _reg(_cfg_project(tmp / "q")), level="advisory") if v.code == "V-03"] == []
+    # тип, отключённый самим реестром (два шаблона на один раздел), настройкой не включается
+    root = _cfg_project(tmp / "r", 'cards:\n  concept:\n    enabled: "true"\n')
+    _put(root / "TemplatesCommon" / "akdb_memo_v1.0.md", _template_text(("memo", "entity", "Concepts", "", "", "knowledge", _ENT, "", "", 0)))
+    twice = _reg(root)
+    assert any("V-REG-1" in p for p in twice.problems) and twice.types["concept"].enabled is False \
+        and twice.types["memo"].enabled is False, twice.problems
+    # `kb:cards --list` показывает выключенный тип строкой «нет»
+    cli = _cli_project(tmp / "s")
+    _put(cli / "aurora.config.yaml", cfg)
+    out = _cli(cli, "--list", expect=0).stdout
+    row = next(l for l in out.splitlines() if l.startswith("glossary"))
+    assert row.split()[-1] == "нет", out
+    shown = json.loads(_cli(cli, "--list", "--json", expect=0).stdout)["types"]
+    assert next(t for t in shown if t["id"] == "glossary")["overridden"] == ["title", "description", "enabled"]
+
+
+@test
+def test_cards_block_ignores_what_the_template_owns(tmp: Path):
+    """AC-CT-06.5: раздел, класс, шаблон, виды и статусы в блоке не меняют реестр — строка пропущена с предупреждением;
+    тип вне реестра и непонятные значения названы, а не применены; допустимые поля того же типа действуют."""
+    cfg = ('cards:\n  glossary:\n    section: "Foo"\n    template: "akdb_glossary_v9.9.md"\n    card_class: "map"\n'
+           '    kinds: "[document]"\n    statuses: "[index]"\n    title: "Свой термин"\n    colour: "red"\n    enabled: "возможно"\n'
+           '  ghost:\n    title: "Призрак"\n  Bad_Id:\n    title: "Х"\n  concept: "строкой"\n')
+    clean = _reg(_cfg_project(tmp / "clean"))
+    reg = _reg(_cfg_project(tmp / "p", cfg))
+    g = reg.types["glossary"]
+    assert (g.section, g.template_file, g.cls, g.kinds, g.statuses, g.version) == \
+        (clean.types["glossary"].section, clean.types["glossary"].template_file, clean.types["glossary"].cls,
+         clean.types["glossary"].kinds, clean.types["glossary"].statuses, clean.types["glossary"].version), "блок подменил поле шаблона"
+    assert reg.by_section == clean.by_section and g.name == "Свой термин" and g.enabled, "допустимое поле того же типа не применено"
+    assert "ghost" not in reg.types and set(reg.types) == set(clean.types)
+    joined = "\n".join(reg.config_problems)
+    for need in ("«section» не переопределяется", "«template» не переопределяется", "«card_class» не переопределяется",
+                 "«kinds» не переопределяется", "«statuses» не переопределяется", "поле «colour» не из title, description, enabled",
+                 "enabled «возможно»", "типа «ghost» нет в реестре", "«Bad_Id» — не идентификатор типа", "значение в одной строке"):
+        assert need in joined, f"нет замечания «{need}»:\n{joined}"
+    assert all(p in reg.problems for p in reg.config_problems) and all(p.startswith("cards:") for p in reg.config_problems)
+    # замечания видны в `kb:cards --list` и в `kb:cards --check`
+    cli = _cli_project(tmp / "cli")
+    _put(cli / "aurora.config.yaml", cfg)
+    assert "проблема реестра: cards: типа «ghost» нет в реестре" in _cli(cli, "--list", expect=0).stdout
+    assert "проблема реестра: cards: у типа «glossary» поле «section» не переопределяется" in _cli(cli, "--check", expect=0).stdout
+    # описание длиннее предела читается обрезанным и с замечанием
+    long = _reg(_cfg_project(tmp / "long", 'cards:\n  glossary:\n    description: "' + "я" * 300 + '"\n'))
+    assert len(long.types["glossary"].description) == 220 and any("длиннее 220" in p for p in long.config_problems)
+
+
+@test
+def test_cards_block_is_saved_and_changes_the_registry(tmp: Path):
+    """`save_overrides` пишет блок в конфиг проекта атомарно; реестр сразу видит правку; чужой тип не пишется."""
+    C = _C()
+    root = _cfg_project(tmp / "p", CFG_BASE)
+    new = C.save_overrides(str(root), {"glossary": {"title": "Термин проекта", "enabled": False}}, known=set(KIT_IDS))
+    cfg = (root / "aurora.config.yaml").read_text(encoding="utf-8")
+    assert cfg == new and cfg.startswith(CFG_BASE) and C.read_overrides(cfg) == {"glossary": {"title": "Термин проекта", "enabled": False}}
+    reg = _reg(root)
+    assert reg.types["glossary"].name == "Термин проекта" and not reg.types["glossary"].enabled
+    stamp = (root / "aurora.config.yaml").stat().st_mtime_ns
+    C.save_overrides(str(root), {"glossary": {"title": "Термин проекта", "enabled": False}})
+    assert (root / "aurora.config.yaml").stat().st_mtime_ns == stamp, "та же запись переписала файл"
+    before = (root / "aurora.config.yaml").read_text(encoding="utf-8")
+    try:
+        C.save_overrides(str(root), {"ghost": {"title": "Х"}}, known=set(KIT_IDS))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("записан тип вне реестра")
+    assert (root / "aurora.config.yaml").read_text(encoding="utf-8") == before, "отклонённая запись изменила конфиг"
+    C.save_overrides(str(root), {})
+    assert (root / "aurora.config.yaml").read_text(encoding="utf-8") == CFG_BASE and not list(root.glob("*.aurora-tmp"))
+    try:
+        C.save_overrides(str(tmp / "нет-проекта"), {"glossary": {"title": "Х"}})
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("конфиг создан из ничего")
+
+
+def _catalog_rows(text: str) -> list:
+    """Строки таблицы каталога: [[ячейки]]."""
+    return [[c.strip() for c in l.strip().strip("|").split(" | ")] for l in text.splitlines()
+            if l.startswith("| `")]
+
+
+def _catalog_expected(rows=CATALOGUE, **off) -> list:
+    """Таблица каталога, собранная независимо от кода: из каталога типов v1.0 и текстов §6.5 плана."""
+    out = []
+    for row in rows:
+        tid = row[0]
+        out.append([f"`{tid}`", NAMES[tid], KIT_TEXTS[tid][1], f"`akdb_{tid}_v1.0.md`", f"`{row[2]}`" if row[2] else "—", row[1],
+                    row[5] or "—", "нет" if tid in off else "да"])
+    return out
+
+
+@test
+def test_catalog_generated_idempotent(tmp: Path):
+    """AC-CT-06: `meta/card_types.md` собирается по формату §6.4; второй прогон ничего не пишет; дата сборки в
+    сравнении не участвует; правка блока `cards:` пересобирает; пустой реестр каталог не затирает."""
+    C = _C()
+    root = tmp / "p"
+    (root / "AuroraKnowledgeDB").mkdir(parents=True)
+    _put(root / "aurora.config.yaml", CFG_BASE)
+    kit = tmp / "kit-copy"
+    shutil.copytree(KIT_DIR, kit / "scaffold" / "TemplatesCommon")
+    path = root / "AuroraKnowledgeDB" / "meta" / "card_types.md"
+    assert C.catalog_state(str(root), kit_root=str(kit)) == "missing" and not path.exists()
+    assert C.write_catalog(str(root), kit_root=str(kit), dry_run=True) is True and not path.exists(), "сухой прогон записал файл"
+    assert C.write_catalog(str(root), kit_root=str(kit)) is True and path.is_file()
+    text = path.read_text(encoding="utf-8")
+    # формат: служебная метка, заголовок, пояснение, таблица в порядке каталога, записи, итог
+    assert text.startswith("<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb:cards — ручные правки будут потеряны. Подписи и описания можно изменить\n"
+                           "     в «Настройки проекта → Типы карточек». -->\n\n# Типы карточек базы знаний\n\n")
+    assert "Шаблоны: `TemplatesCommon/` (кит) и `Templates/` (проект). Как выбрать тип — `Prompts/KB_classify.md`.\n" in text
+    assert "Карточку можно создавать **только** по типам из этой таблицы; тип вне таблицы не существует.\n\n| Тип | Название | Описание | Шаблон | Раздел | Класс | Виды | Включён |\n|---|---|---|---|---|---|---|---|\n" in text
+    rows = _catalog_rows(text)
+    assert rows == _catalog_expected(), "таблица каталога не сходится с каталогом типов v1.0 и текстами §6.5"
+    assert ("\n\nЗаписи пишет человек в `Raw/` (`decision` → `Raw/decisions/`, `question` → `Raw/questions/`,\n"
+            "`correction` → `Raw/corrections/`, рукописный `reference` → `Raw/reference/`); в базе остаётся зеркало.\n"
+            "Собрано: ") in text
+    assert re.search(r"\nСобрано: \d{4}-\d{2}-\d{2} · типов: 13 · включено: 13\n$", text), text[-120:]
+    assert len(text) <= 6000 and "\r" not in text
+    # идемпотентность: второй прогон не пишет (ни файла, ни времени изменения); другая дата сборки — не изменение
+    stamp = path.stat().st_mtime_ns
+    assert C.catalog_state(str(root), kit_root=str(kit)) == "ok" and C.write_catalog(str(root), kit_root=str(kit)) is False
+    assert path.stat().st_mtime_ns == stamp and path.read_text(encoding="utf-8") == text
+    path.write_text(re.sub(r"Собрано: \S+", "Собрано: 2020-01-01", text), encoding="utf-8")
+    assert C.write_catalog(str(root), kit_root=str(kit)) is False and "Собрано: 2020-01-01" in path.read_text(encoding="utf-8"), \
+        "дата сборки считается изменением каталога"
+    # ручная правка и правка настроек — отставание: файл пересобирается
+    path.write_text(text + "\nправка руками\n", encoding="utf-8")
+    assert C.catalog_state(str(root), kit_root=str(kit)) == "stale" and C.write_catalog(str(root), kit_root=str(kit)) is True
+    assert "правка руками" not in path.read_text(encoding="utf-8")
+    C.save_overrides(str(root), {"glossary": {"title": "Термин проекта", "description": "Описание | с чертой", "enabled": False}})
+    assert C.catalog_state(str(root), kit_root=str(kit)) == "stale"
+    assert C.write_catalog(str(root), kit_root=str(kit)) is True
+    new = path.read_text(encoding="utf-8")
+    assert _catalog_rows(new)[1][1:3] == ["Термин проекта", "Описание \\| с чертой"] and _catalog_rows(new)[1][7] == "нет"
+    assert re.search(r"типов: 13 · включено: 12\n$", new) and C.write_catalog(str(root), kit_root=str(kit)) is False
+    # свой тип проекта идёт после типов кита; запись «рукописный» — и у его дома; описания длиннее предела обрезаются
+    own = ("policy", "entity", "Policies", "", "", "knowledge", _ENT, "", "", 0)
+    _put(root / "Templates" / "akdb_policy_v1.0.md", _template_text(own, description='"' + "Длинное описание. " * 400 + '"'))
+    assert C.write_catalog(str(root), kit_root=str(kit)) is True
+    short = path.read_text(encoding="utf-8")
+    shown = _catalog_rows(short)
+    assert [r[0] for r in shown][-2:] == ["`moc`", "`policy`"] and len(short) <= 6000 and len(shown) == 14
+    assert all(len(r[2]) <= 120 for r in shown) and shown[-1][2].endswith("…"), "описания не обрезаны до 120 знаков"
+    # проект без базы и пустой реестр: ничего не пишется, прежний каталог цел
+    bare = tmp / "bare"
+    bare.mkdir()
+    assert C.write_catalog(str(bare), kit_root=str(kit)) is False and not (bare / "AuroraKnowledgeDB").exists()
+    assert C.catalog_state(str(bare), kit_root=str(kit)) == ""
+    before = path.read_text(encoding="utf-8")
+    (root / "Templates" / "akdb_policy_v1.0.md").unlink()          # шаблонов нет ни в проекте, ни в ките
+    assert C.catalog_state(str(root), kit_root=str(tmp / "no-kit")) == "" and C.write_catalog(str(root), kit_root=str(tmp / "no-kit")) is False
+    assert path.read_text(encoding="utf-8") == before, "пустой реестр затёр каталог"
+
+
+@test
+def test_catalog_survives_hostile_cell_text(_t):
+    """Каталог: «|», переводы строк и длинные описания в паспорте не ломают таблицу (одна строка на тип, 8 ячеек)."""
+    C = _C()
+    with tempfile.TemporaryDirectory(prefix="aurora-ct06-") as folder:
+        root = _project(Path(folder))
+        bad = _template_text(CATALOGUE[0], description='"Первая | строка"', name='"Имя | с чертой"')
+        _put(root / "TemplatesCommon" / "akdb_concept_v1.0.md", bad)
+        reg = _reg(root)
+        text = C.render_catalog(reg, today="2026-10-13")
+    lines = [l for l in text.splitlines() if l.startswith("| `")]
+    assert len(lines) == 13 and all(len(re.split(r"(?<!\\) \| ", l.strip().strip("|").strip())) == 8 for l in lines), lines[0]
+    assert "Имя \\| с чертой" in lines[0] and "Собрано: 2026-10-13 · типов: 13 · включено: 13\n" in text
+
+
+@test
+def test_update_builds_the_catalog_once(tmp: Path):
+    """AC-CT-06.4: `aurora.py update --apply` на состарившемся проекте создаёт каталог типов, сухой прогон только говорит
+    об этом, второй `update` ничего не меняет; правка блока `cards:` пересобирает его; `aurora.update_ignore.txt` его бережёт."""
+    C = _C()
+    root = _new_kit_project(tmp / "old")
+    path = root / "AuroraKnowledgeDB" / "meta" / "card_types.md"
+    fresh_text = path.read_text(encoding="utf-8")
+    assert _catalog_rows(fresh_text) == _catalog_expected(), "новый проект родился без каталога типов"
+    path.unlink()                                        # так выглядит проект до этого выпуска
+    before = _tree(root)
+    dry = _update(root, apply=False)
+    assert "каталог типов будет пересобран" in dry.stdout and "Ничего не записано" in dry.stdout and _tree(root) == before, dry.stdout[-500:]
+    done = _update(root)
+    assert path.is_file() and "каталог типов карточек пересобран" in done.stdout, done.stdout[-600:]
+    assert _catalog_core(path.read_text(encoding="utf-8")) == _catalog_core(fresh_text), "после обновления каталог не такой, как у свежего проекта"
+    after = _tree(root)
+    again = _update(root)
+    assert "уже актуальны" in again.stdout and "каталог типов" not in again.stdout and _tree(root) == after, f"второй update что-то изменил:\n{again.stdout[-500:]}"
+    # проект поменял подпись типа — обновление пересобирает каталог
+    C.save_overrides(str(root), {"role": {"title": "Роль проекта"}}, known=set(KIT_IDS))
+    dry = _update(root, apply=False)
+    assert "каталог типов будет пересобран" in dry.stdout, dry.stdout[-400:]
+    _update(root)
+    assert "Роль проекта" in path.read_text(encoding="utf-8")
+    assert "уже актуальны" in _update(root).stdout
+    # проект, который ведёт каталог сам, обновление не трогает
+    (root / "aurora.update_ignore.txt").write_text("AuroraKnowledgeDB/meta/card_types.md\n", encoding="utf-8")
+    path.write_text("# свой каталог\n", encoding="utf-8")
+    out = _update(root).stdout
+    assert path.read_text(encoding="utf-8") == "# свой каталог\n" and "каталог типов" not in out, out[-400:]
+    # режим «только структура» движок и каталог не трогает
+    path.unlink()
+    (root / "aurora.update_ignore.txt").unlink()
+    _py(KIT / "scripts" / "aurora_update.py", str(root), "--apply", "--structure-only", cwd=root)
+    assert not path.exists(), "--structure-only собрал каталог"
+
+
+def _catalog_core(text: str) -> str:
+    return _C()._catalog_core(text)
+
+
+@test
+def test_update_names_a_catalog_rebuild_only_when_it_is_needed(tmp: Path):
+    """Сухой прогон обновления не обещает пересборки каталога там, где её не будет: шаблоны, которые реестр и так видит
+    (запасной путь — шаблоны кита), каталога не меняют; новый тип, версия новее или отставший каталог — меняют."""
+    root = _new_kit_project(tmp / "p")
+    path = root / "AuroraKnowledgeDB" / "meta" / "card_types.md"
+    mark = path.read_bytes()
+    for f in (root / "TemplatesCommon").glob("akdb_*"):
+        f.unlink()                                   # шаблоны не доставлены, а каталог собран по шаблонам кита
+    dry = _update(root, apply=False)
+    assert "TemplatesCommon/akdb_concept_v1.0.md" in dry.stdout and "каталог типов будет пересобран" not in dry.stdout, dry.stdout[-600:]
+    done = _update(root)
+    assert "каталог типов карточек пересобран" not in done.stdout and path.read_bytes() == mark, done.stdout[-500:]
+    U = _mod("aurora_update")
+
+    class Seed:
+        def __init__(self, rel):
+            self.path = rel
+
+    def pending(*rels, ignore=()):
+        return U.catalog_pending(root, list(ignore), [Seed(r) for r in rels])
+
+    assert pending() is False and pending("TemplatesCommon/akdb_concept_v1.0.md", "TemplatesCommon/README.md") is False
+    assert pending("TemplatesCommon/akdb_concept_v1.1.md") is True, "версия новее не пересобирает каталог"
+    assert pending("TemplatesCommon/akdb_policy_v1.0.md") is True, "новый тип не пересобирает каталог"
+    assert pending("TemplatesCommon/akdb_concept_v1.1.md", ignore=["AuroraKnowledgeDB/meta/card_types.md"]) is False
+    path.write_text(path.read_text(encoding="utf-8") + "\nправка\n", encoding="utf-8")
+    assert pending() is True and pending(ignore=["AuroraKnowledgeDB/meta/*"]) is False
+    path.unlink()
+    assert pending() is True
+    shutil.rmtree(root / "AuroraKnowledgeDB")
+    assert pending() is False, "нет базы — каталог собирать негде"
+
+
+@test
+def test_install_builds_the_catalog(tmp: Path):
+    """Проект, созданный кнопкой панели, получает каталог типов от установщика (без `setup` и `update`)."""
+    sys.path.insert(0, str(SCRIPTS))
+    inst = importlib.import_module("install_aurora")
+    panel = tmp / "panel"
+    panel.mkdir()
+    with contextlib.redirect_stdout(io.StringIO()):
+        inst.Installer(panel, "Demo", None, None, None, False, False).run()
+    path = panel / "AuroraKnowledgeDB" / "meta" / "card_types.md"
+    assert path.is_file() and _catalog_rows(path.read_text(encoding="utf-8")) == _catalog_expected(), "установщик не собрал каталог типов"
+    mark = path.read_text(encoding="utf-8")
+    path.write_text(mark + "\nправка\n", encoding="utf-8")
+    with contextlib.redirect_stdout(io.StringIO()):
+        inst.Installer(panel, "Demo", None, None, None, False, False).install_card_catalog()
+    assert path.read_text(encoding="utf-8").endswith("\nправка\n"), "повторная установка затёрла файл без --force"
+    with contextlib.redirect_stdout(io.StringIO()):
+        inst.Installer(panel, "Demo", None, None, None, True, False).install_card_catalog()
+    assert path.read_text(encoding="utf-8") == mark or _catalog_core(path.read_text(encoding="utf-8")) == _catalog_core(mark)
+    dry = tmp / "dry"
+    dry.mkdir()
+    with contextlib.redirect_stdout(io.StringIO()):
+        inst.Installer(dry, "Demo", None, None, None, False, True).install_card_catalog()
+    assert not (dry / "AuroraKnowledgeDB").exists(), "сухой прогон установки собрал каталог"
+    # проект, созданный `aurora.py new`, получает его тем же установщиком и не расходится с обновлением
+    cli = _new_kit_project(tmp / "cli")
+    assert _catalog_core((cli / "AuroraKnowledgeDB" / "meta" / "card_types.md").read_text(encoding="utf-8")) == _catalog_core(mark)
+    assert "уже актуальны" in _update(cli).stdout
+
+
+@test
+def test_kb_cards_write_plans_then_applies(tmp: Path):
+    """`kb:cards --write`: без `--apply` — только план, с `--apply` — запись; повтор — «актуален»; отказ git-guard — код 2."""
+    root = _cli_project(tmp / "a")
+    path = root / "AuroraKnowledgeDB" / "meta" / "card_types.md"
+    before = _snapshot(root)
+    out = _cli(root, "--write", expect=0).stdout
+    assert "будет создан" in out and "dry-run" in out and "--apply" in out and _snapshot(root) == before and not path.exists(), out
+    out = _cli(root, "--write", "--apply", expect=0).stdout
+    assert "записан" in out and path.is_file() and len(_catalog_rows(path.read_text(encoding="utf-8"))) == 13, out
+    out = _cli(root, "--write", expect=0).stdout
+    assert "актуален" in out and "писать нечего" in out
+    snap = _snapshot(root)
+    assert "актуален" in _cli(root, "--write", "--apply", expect=0).stdout and _snapshot(root) == snap
+    _C().save_overrides(str(root), {"role": {"title": "Роль проекта"}})
+    snap = _snapshot(root)
+    assert "будет пересобран" in _cli(root, "--write", expect=0).stdout and _snapshot(root) == snap
+    # остальные режимы по-прежнему ничего не пишут
+    for args in (("--list",), ("--check",), ("--stats",), ("--show", "concept")):
+        _cli(root, *args)
+        assert _snapshot(root) == snap, f"kb:cards {' '.join(args)} изменил проект"
+    # сбои: нет базы, пустой реестр
+    nobase = _cli_project(tmp / "b")
+    shutil.rmtree(nobase / "AuroraKnowledgeDB")
+    assert "нет папки" in _cli(nobase, "--write", "--apply", expect=2).stderr
+    empty = _cli_project(tmp / "c", templates=False)
+    assert "реестр пуст" in _cli(empty, "--write", "--apply", expect=2).stderr and not (empty / "AuroraKnowledgeDB" / "meta" / "card_types.md").exists()
+    # git-guard: по грязному дереву пишет только с --allow-dirty, отказ — код 2, а не 1
+    (tmp / "g").mkdir()
+    gitted = make_project(tmp / "g", git=True)
+    _fixture_kit(gitted / "TemplatesCommon")
+    (gitted / "aurora.config.yaml").write_text((gitted / "aurora.config.yaml").read_text(encoding="utf-8") + "# правка\n", encoding="utf-8")
+    cp = _cli(gitted, "--write", "--apply", expect=2)
+    assert "git-guard" in cp.stdout + cp.stderr and not (gitted / "AuroraKnowledgeDB" / "meta" / "card_types.md").exists(), cp.stdout + cp.stderr
+    _cli(gitted, "--write", "--apply", "--allow-dirty", expect=0)
+    assert (gitted / "AuroraKnowledgeDB" / "meta" / "card_types.md").is_file()
+    code = (SCRIPTS / "card_types.py").read_text(encoding="utf-8")
+    tail = code[code.index("git_guard(root"):][:200]
+    assert "return 2" in tail and "return 1" not in tail, "отказ писать должен возвращать 2"
+
+
+@test
+def test_doctor_cards_block_and_catalog_lines(tmp: Path):
+    """`kit:doctor`: блок `cards:` с непринятыми строками — предупреждения; выключенный тип с карточками и состояние
+    каталога — сведения; у каждой новой строки есть английский перевод."""
+    root = _new_kit_project(tmp / "p")
+    _mine, out = _doctor_lines(root)
+    assert "каталог типов карточек: актуален" in out.splitlines(), out[-800:]
+    assert not [l for l in out.splitlines() if l.startswith(("WARN:", "ERROR:")) and "cards:" in l], "блока нет, а доктор предупреждает"
+    cat = root / "AuroraKnowledgeDB" / "meta" / "card_types.md"
+    cat.unlink()
+    assert "каталог типов карточек: нет — соберите его обновлением проекта: `kit:update`" in _doctor_lines(root)[1]
+    _update(root)
+    cfg = root / "aurora.config.yaml"
+    _C().save_overrides(str(root), {"glossary": {"enabled": False}})
+    out = _doctor_lines(root)[1]
+    assert "каталог типов карточек: отстал от шаблонов или настроек — пересоберите его обновлением проекта: `kit:update`" in out
+    assert not [l for l in out.splitlines() if l.startswith("типы карточек:")], "карточек выключенного типа нет, а доктор о них говорит"
+    _update(root)
+    _put(root / "AuroraKnowledgeDB" / "Glossary" / "Накладная.md",
+         mk(type="glossary", template="akdb_glossary_v1.0.md", title='"Накладная"', body="Накладная — документ. [[Поставщик]]\n"))
+    _put(root / "AuroraKnowledgeDB" / "Glossary" / "Заявка.md",
+         mk(type="glossary", template="akdb_glossary_v1.0.md", title='"Заявка"', body="Заявка — просьба. [[Поставщик]]\n"))
+    out = _doctor_lines(root)[1]
+    assert "типы карточек: выключены в блоке cards:, но карточки в базе остались — glossary — 2" in out.splitlines(), out[-800:]
+    assert "каталог типов карточек: актуален" in out and not [l for l in out.splitlines() if l.startswith(("WARN:", "ERROR:")) and "cards:" in l]
+    # непринятые строки блока — предупреждения, итог меняется на «OK with warnings»
+    cfg.write_text(cfg.read_text(encoding="utf-8") + '  ghost:\n    title: "Призрак"\n  role:\n    section: "X"\n', encoding="utf-8")
+    cp = _py(root / ".aurora" / "scripts" / "aurora_doctor.py", cwd=root, expect=None)
+    warns = [l for l in cp.stdout.splitlines() if l.startswith("WARN: aurora.config.yaml: cards:")]
+    assert len(warns) == 2 and all("→ поправьте блок cards: или уберите строку" in w for w in warns), cp.stdout[-900:]
+    assert any("типа «ghost» нет в реестре" in w for w in warns) and any("«section» не переопределяется" in w for w in warns)
+    assert not [l for l in cp.stdout.splitlines() if l.startswith("типы: проблемы реестра") and "cards:" in l], "замечания блока попали в строку проблем реестра"
+    # переводы сообщений доктора
+    K = _mod("kit_i18n")
+    mine = {s for s in K.message_skeletons() if s.startswith(("каталог типов карточек:", "типы карточек:")) or "блок" in s and "cards:" in s}
+    en = json.loads((KIT / "cockpit" / "i18n" / "data" / "en.json").read_text(encoding="utf-8"))["messages"]
+    assert len(mine) == 6, sorted(mine)
+    for sk in mine:
+        assert en.get(sk) and en[sk].count("{}") == sk.count("{}") and not re.search("[а-яА-ЯёЁ]", en[sk]), sk
+
+
+@test
+def test_cards_block_is_documented_in_the_install_guide_and_the_command_row(_t):
+    """Блок `cards:` и каталог названы в таблице конфига и в дереве проекта (оба языка); строка `kb:cards` называет `--write`."""
+    for rel, key in (("docs/INSTALL.md", "правила типов карточек"), ("docs/en/INSTALL.md", "rules of the knowledge-card types")):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        row = next(l for l in text.splitlines() if l.startswith("| `cards` |"))
+        assert key in row and "title" in row and "enabled" in row and "card_types.md" in row, f"{rel}: строка cards"
+        assert "card_types.md" in text.split("## 2.")[1].split("## 3.")[0], f"{rel}: каталога нет в дереве проекта"
+    reg = (KIT / "commands.txt").read_text(encoding="utf-8")
+    row = next(l for l in reg.splitlines() if l.startswith("kb | kb:cards |"))
+    assert "`--write`" in row and "`--apply`" in row and "(`--write`: план, с `--apply` — запись); больше ничего не пишет" in row, row
+    data = json.loads((KIT / "cockpit" / "i18n" / "data" / "en.json").read_text(encoding="utf-8"))
+    assert "`--write`" in data["commands"]["kb:cards"] and "writes nothing else" in data["commands"]["kb:cards"]
+    for rel in ("docs/commands.md", "docs/en/commands.md", "skills/aurora-vault/SKILL.md"):
+        line = next(l for l in (KIT / rel).read_text(encoding="utf-8").splitlines() if l.startswith("| `kb:cards` |"))
+        assert "`--write`" in line, f"{rel}: строка kb:cards не называет --write"
+    helped = _py(KIT / "scripts" / "card_types.py", "--help", cwd=KIT).stdout
+    for flag in ("--write", "--apply", "--allow-dirty"):
+        assert flag in helped, f"команда не принимает {flag}"

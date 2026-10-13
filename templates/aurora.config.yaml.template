@@ -114,3 +114,13 @@ reports:
 
 bootstrap:
   verified_threshold_pct: 20
+
+# Типы карточек базы знаний — переопределения проекта (необязательно).
+# Подпись и описание берутся из шаблонов TemplatesCommon/akdb_*_v*.md; здесь их можно подменить
+# или выключить тип. Свой тип — это шаблон Templates/akdb_<тип>_v1.0.md (docs/card-templates.md).
+# cards:
+#   glossary:
+#     title: "Термин (словарь заказчика)"
+#     description: "Определение термина из словаря заказчика; без собственных свойств."
+#   status-model:
+#     enabled: "false"

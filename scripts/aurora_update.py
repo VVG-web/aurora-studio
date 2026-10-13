@@ -671,6 +671,53 @@ def config_defaults(target: Path, ignore: list) -> tuple:
     return (new, done) if new != text else ("", [])
 
 
+CATALOG_REL = "AuroraKnowledgeDB/meta/card_types.md"      # каталог типов карточек: генерируется (card_types.write_catalog)
+
+
+def catalog_ignored(ignore: list) -> bool:
+    from fnmatch import fnmatch
+    return any(fnmatch(CATALOG_REL, p) for p in ignore)
+
+
+def catalog_pending(target: Path, ignore: list, seeds: list) -> bool:
+    """Нужно ли пересобрать каталог типов карточек: файла нет, он отстал от шаблонов или от блока `cards:` конфига,
+    либо обновление доставит шаблон, которого реестр проекта ещё не видит (новый тип или версия новее). Каталог — не
+    чужой файл, а сборка движка: пересобирает его обновление (вместе с `kb:cards --write --apply`), если проект не
+    оставил его себе в `aurora.update_ignore.txt`. Шаблон, который реестр и так видит (запасной путь — шаблоны кита),
+    каталога не меняет."""
+    if catalog_ignored(ignore):
+        return False
+    sys.path.insert(0, str(KIT / "scripts"))
+    try:
+        import card_types as CT
+        reg = CT.safe_registry(str(target), kit_root=str(KIT))
+        if CT.catalog_state(str(target), reg, kit_root=str(KIT)) in ("missing", "stale"):
+            return True
+        for c in seeds:
+            m = CT.TEMPLATE_NAME_RE.match(Path(c.path).name)
+            if not (m and c.path.startswith(("TemplatesCommon/", "Templates/"))):
+                continue
+            seen = reg.types.get(m.group("type"))
+            if seen is None or CT.version_key(m.group("version")) > CT.version_key(seen.version):
+                return (target / "AuroraKnowledgeDB").is_dir()
+        return False
+    except Exception:  # noqa: BLE001 — каталог не повод ронять обновление движка
+        return False
+
+
+def rebuild_catalog(target: Path, ignore: list) -> bool:
+    """Собрать каталог типов карточек после того, как шаблоны и конфиг на месте. → записан ли."""
+    if catalog_ignored(ignore):
+        return False
+    sys.path.insert(0, str(KIT / "scripts"))
+    try:
+        import card_types as CT
+        return CT.write_catalog(str(target), kit_root=str(KIT))
+    except Exception as e:  # noqa: BLE001 — каталог не повод ронять обновление движка
+        print(f"   ⚠️ каталог типов карточек не собран: {type(e).__name__}: {e}", file=sys.stderr)
+        return False
+
+
 def run(target: Path, apply: bool, structure_only: bool = False):
     if not (target / "AuroraKnowledgeDB").is_dir():
         print(f"⚠️  {target} не похоже на проект Aurora (нет AuroraKnowledgeDB/).", file=sys.stderr)
@@ -720,8 +767,9 @@ def run(target: Path, apply: bool, structure_only: bool = False):
     # Файлы OpenCode и чужое остаются в `.opencode/` навсегда — это не переезд.
     moving = bool(rp["moves"] or rp["drop"] or rp["clash"])
     guides = FG.plan(target, KIT)
+    catalog = catalog_pending(target, ignored, seeds)
 
-    if not changes and not new_dirs and not retired and not cfg_done and not moving and not guides:
+    if not changes and not new_dirs and not retired and not cfg_done and not moving and not guides and not catalog:
         print("✅ Движок и структура уже актуальны — изменений нет.")
         if apply:
             # Правила .gitignore/.gitattributes кит дописывает в конце прогона «по возможности»
@@ -775,6 +823,8 @@ def run(target: Path, apply: bool, structure_only: bool = False):
     if cfg_done:
         print(f"\nКонфиг проекта — значения доверия по умолчанию: {', '.join(cfg_done)}")
     print_guides(guides)
+    if catalog:
+        print(f"\nКарточки базы — каталог типов будет пересобран: {CATALOG_REL}")
 
     if not apply:
         print("\n(dry-run) Ничего не записано. Повторите с --apply, чтобы применить.")
@@ -813,6 +863,7 @@ def run(target: Path, apply: bool, structure_only: bool = False):
         failed += relayout_cleanup(target, rp)
     guides = FG.plan(target, KIT)        # после папок схемы и переезда: им тоже описания
     FG.apply(target, guides)
+    catalog_done = rebuild_catalog(target, ignored)        # после шаблонов и конфига: каталог собирается по ним
     refreshed = refresh_hooks(target)
     ignored = refresh_gitignore(target)
     untracked = untrack_runlog(target)
@@ -828,6 +879,7 @@ def run(target: Path, apply: bool, structure_only: bool = False):
           + (f", в .gitattributes дописано правил: {len(attrs)}" if attrs else "")
           + (f", конфиг: {', '.join(cfg_done)}" if cfg_done else "")
           + (f", описаний папок: {len(guides)}" if guides else "")
+          + (", каталог типов карточек пересобран" if catalog_done else "")
           + (f", пути движка поправлены в {len(rewritten)} файлах проекта" if rewritten else "")
           + (f", переезд в .aurora/: перенесено {len(rp['moves'])}, "
              f"убрано копий кита {len(rp['drop'])}" if moving else "")

@@ -554,24 +554,57 @@ def check_card_templates(root: Path | None = None) -> list:
     root = root or ROOT
     out = []   # через .append: реестр переводов kit_i18n собирает сообщения доктора именно по вызовам append
     try:
-        from card_types import delivered_kit_types, registry, template_stamps
+        from card_types import catalog_state, delivered_kit_types, registry, template_stamps, type_counts
         reg = registry(str(root))
         got, total = delivered_kit_types(reg)
-        cards, stamped = template_stamps(str(root)) if (root / "AuroraKnowledgeDB").is_dir() else (None, 0)
+        has_base = (root / "AuroraKnowledgeDB").is_dir()
+        cards, stamped = template_stamps(str(root)) if has_base else (None, 0)
+        catalog = catalog_state(str(root), reg)
+        off = sorted(t for t, rec in reg.overrides.items() if rec.get("enabled") is False)
+        counts = type_counts(str(root)) if off and has_base else {}
     except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
         return out
     if got == total:
         out.append(f"шаблоны карточек: {got} из {total} доставлены")
     else:
         out.append(f"шаблоны карточек: {got} из {total} доставлены — доставьте остальные обновлением проекта: `kit:update`")
-    if reg.problems:
+    # замечания к блоку `cards:` конфига — предупреждения (`check_cards_block`); здесь только проблемы шаблонов и реестра
+    problems = [p for p in reg.problems if p not in reg.config_problems]
+    if problems:
         # паспорт шаблона пишет человек: в одну строку, чтобы чужой текст не стал строкой `WARN:` или `ERROR:`
-        shown = "; ".join(" ".join(p.split())[:140] for p in reg.problems[:2]) + (" …" if len(reg.problems) > 2 else "")
-        out.append(f"типы: проблемы реестра — {len(reg.problems)}: {shown}")
+        shown = "; ".join(" ".join(p.split())[:140] for p in problems[:2]) + (" …" if len(problems) > 2 else "")
+        out.append(f"типы: проблемы реестра — {len(problems)}: {shown}")
     else:
         out.append("типы: проблемы реестра — нет")
     if cards is not None:
         out.append(f"карточек без шаблона: {cards - stamped}")
+    if catalog == "ok":
+        out.append("каталог типов карточек: актуален")
+    elif catalog == "missing":
+        out.append("каталог типов карточек: нет — соберите его обновлением проекта: `kit:update`")
+    elif catalog == "stale":
+        out.append("каталог типов карточек: отстал от шаблонов или настроек — пересоберите его обновлением проекта: `kit:update`")
+    left = ", ".join(f"{t} — {counts[t]}" for t in off if counts.get(t))
+    if left:
+        out.append(f"типы карточек: выключены в блоке cards:, но карточки в базе остались — {left}")
+    return out
+
+
+def check_cards_block(root: Path | None = None) -> list:
+    """Блок `cards:` конфига проекта: что реестр типов не принял (тип вне реестра, поле шаблона, непонятное значение).
+    → предупреждения; пусто — блока нет или он в порядке. Строка блока при этом пропущена, а не применена."""
+    root = root or ROOT
+    out = []   # через .append: реестр переводов kit_i18n собирает сообщения доктора именно по вызовам append
+    try:
+        from card_types import registry
+        problems = list(registry(str(root)).config_problems)
+    except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
+        return out
+    for problem in problems[:5]:
+        # строку блока пишет человек: в одну строку, чтобы чужой текст не стал строкой `WARN:` или `ERROR:`
+        out.append(f"aurora.config.yaml: {' '.join(problem.split())[:200]} → поправьте блок cards: или уберите строку")
+    if len(problems) > 5:
+        out.append(f"aurora.config.yaml: в блоке cards: ещё замечаний: {len(problems) - 5}")
     return out
 
 
@@ -706,6 +739,7 @@ def main() -> int:
     warns += check_mirror_heads()
     warns += check_linked_roots()
     warns += check_web_token_binding()
+    warns += check_cards_block()
 
     s_err, s_warn, s_lines = check_structure(structure_verbose)
     errors += s_err

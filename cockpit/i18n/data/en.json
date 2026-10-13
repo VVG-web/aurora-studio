@@ -38,7 +38,7 @@
     "kb:code-graph": "The project's code and SQL in the graph without a model: tables from SQL on pages and in `*.sql`, table pairs of one query, cards naming a table; code from `graphify: code_dirs`.",
     "kb:reset": "Wipe the base and rebuild: removes what will be rebuilt (a card with a live `source:` or `built: machine`), touches nothing outside `AuroraKnowledgeDB/`; cards of unknown origin stay (`--list-unknown`, `--drop-unknown`); rollback from git.",
     "kb:lint": "Mechanical errors of the base: links, frontmatter, card kinds, artifacts in knowledge, secrets, cards without links.",
-    "kb:cards": "Card types of the base: the registry built from the `akdb_*` templates (`--list`, `--show`), a check of cards against the template of their type by V-NN codes (`--check`: advice only for now, `--strict` for strict), a summary by template versions and pre-template cards (`--stats`); writes nothing.",
+    "kb:cards": "Card types of the base: the registry built from the `akdb_*` templates and the `cards:` block of the config (`--list`, `--show`), a check of cards against the template of their type by V-NN codes (`--check`: advice only for now, `--strict` for strict), a summary by template versions and pre-template cards (`--stats`), the type catalogue `meta/card_types.md` (`--write`: the plan, with `--apply` — the write); writes nothing else.",
     "kb:question": "Open a question to the customer (Q-NNN): to whom, what it blocks, the deadline.",
     "kb:answer": "Record an answer: close the question and carry the knowledge into a REQ / spec / DR.",
     "kb:decide": "Draw up a Decision Record (+ supersede an old DR).",
@@ -477,7 +477,13 @@
     "шаблоны карточек: {} из {} доставлены — доставьте остальные обновлением проекта: `kit:update`": "card templates: {} of {} delivered — deliver the rest by updating the project: `kit:update`",
     "типы: проблемы реестра — {}: {}": "types: registry problems — {}: {}",
     "типы: проблемы реестра — нет": "types: no registry problems",
-    "карточек без шаблона: {}": "cards without a template: {}"
+    "карточек без шаблона: {}": "cards without a template: {}",
+    "каталог типов карточек: актуален": "card types catalogue: up to date",
+    "каталог типов карточек: нет — соберите его обновлением проекта: `kit:update`": "card types catalogue: missing — build it by updating the project: `kit:update`",
+    "каталог типов карточек: отстал от шаблонов или настроек — пересоберите его обновлением проекта: `kit:update`": "card types catalogue: out of date with the templates or settings — rebuild it by updating the project: `kit:update`",
+    "типы карточек: выключены в блоке cards:, но карточки в базе остались — {}": "card types: turned off in the cards: block, but their cards remain in the base — {}",
+    "aurora.config.yaml: {} → поправьте блок cards: или уберите строку": "aurora.config.yaml: {} → fix the cards: block or remove the line",
+    "aurora.config.yaml: в блоке cards: ещё замечаний: {}": "aurora.config.yaml: more remarks in the cards: block: {}"
   },
   "connectors": {
     "confluence-dc": {
@@ -849,7 +855,8 @@
     "с --check и --stats: включить архив базы (_archive/)": "with --check and --stats: include the archive of the base (_archive/)",
     "с --check: только итоговая строка": "with --check: the summary line only",
     "с --check: строгий уровень, ошибки шаблона остаются ошибками и дают код возврата 1": "with --check: the strict level, template errors stay errors and give exit code 1",
-    "корень проекта (по умолчанию — текущая папка)": "project root (the current folder by default)"
+    "корень проекта (по умолчанию — текущая папка)": "project root (the current folder by default)",
+    "собрать каталог типов AuroraKnowledgeDB/meta/card_types.md (без --apply — только план)": "build the type catalogue AuroraKnowledgeDB/meta/card_types.md (without --apply — the plan only)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

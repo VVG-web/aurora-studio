@@ -16,9 +16,12 @@
     связей) V-15 и V-16. Остальные коды принадлежат своим пакетам: V-14 (расхождения), V-17 (записи
     в `Raw/`), V-21 (цитируемые документы); V-11 зарезервирован;
   — команда `kb:cards`: `--list`, `--show`, `--check`, `--stats`.
-Конструктор шапки и входа записи (`render_header`, `render_card`, `write_card_text`), каталог типов,
-блок `cards:` конфига, инструкция выбора типа и `classify_answer` добавляют следующие пакеты:
-в этом модуле они появятся рядом, под теми же именами.
+Правила проекта (пакет CT-06): блок `cards:` конфига (`read_overrides`, `write_overrides`, `save_overrides`) —
+подпись, описание и выключатель типа для этого проекта, их `registry()` накладывает на реестр; каталог типов
+`AuroraKnowledgeDB/meta/card_types.md` (`render_catalog`, `write_catalog`) — генерируется и пересобирается при
+установке и обновлении проекта.
+Конструктор шапки и входа записи (`render_header`, `render_card`, `write_card_text`), инструкция выбора типа и
+`classify_answer` добавляют следующие пакеты: в этом модуле они появятся рядом, под теми же именами.
 
 Единый источник «раздел → тип» (CT-04): таблица записана здесь один раз (`LEGACY_SECTION_TYPE`), а разбор
 (`build_plan`), ремонт (`kb_fix`), линтер, схема и заготовки тестов читают её через `section_type_table` и
@@ -39,6 +42,8 @@
   python3 .aurora/scripts/card_types.py --check           # проверить карточки базы (советы)
   python3 .aurora/scripts/card_types.py --check --strict  # то же, но ошибки шаблона — ошибки
   python3 .aurora/scripts/card_types.py --stats           # сколько карточек по шаблонам
+  python3 .aurora/scripts/card_types.py --write           # каталог типов: показать, что будет пересобрано
+  python3 .aurora/scripts/card_types.py --write --apply   # и записать AuroraKnowledgeDB/meta/card_types.md
 Код возврата: 0 — ошибок нет, 1 — есть (`--check --strict`), 2 — сбой (нет базы, нет шаблонов,
 нет такого файла или типа).
 
@@ -59,9 +64,9 @@ from dataclasses import dataclass, field, replace
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (  # noqa: E402
     HEAD_KEY_RE, KB_ROOT, MEETING_MARK, OWN_LIFECYCLE, STATUSES, body, card_sources, card_stem,
-    frontmatter, head_blank, head_broken, head_cut_comment, head_lines, head_text, is_meeting,
-    leaf_name, list_field, not_a_card_link, read_card_text, split_frontmatter, split_inline_items,
-    walk_md,
+    frontmatter, git_guard, head_blank, head_broken, head_cut_comment, head_lines, head_text, head_value,
+    is_meeting, leaf_name, list_field, not_a_card_link, read_card_text, split_frontmatter, split_inline_items,
+    utc_today, walk_md, write_text_atomic,
 )
 from aurora_common import kit_root as _kit_root  # noqa: E402
 
@@ -327,6 +332,7 @@ class CardType:
     origin: str               # "project" (Templates/) | "kit" (TemplatesCommon/ проекта) | "fallback" (кит)
     enabled: bool = True
     versions: tuple = ()      # все найденные версии типа, от старой к новой
+    overridden: tuple = ()    # поля, заданные проектом в блоке `cards:` конфига (title, description, enabled)
     passport: dict = field(default_factory=dict, compare=False, repr=False)
 
 
@@ -340,6 +346,8 @@ class Registry:
     files: dict = field(default_factory=dict)         # {имя файла: CardType этой версии} — для проверки по старой версии
     project_root: str = ""
     kit_root: str = ""
+    overrides: dict = field(default_factory=dict)     # {тип: {title, description, enabled}} — наложено из блока `cards:`
+    config_problems: list = field(default_factory=list)   # проблемы блока `cards:` (они же — в `problems`)
 
     def section_type(self) -> dict:
         """{раздел: тип}, включая неуправляемые; без шаблонов — прежняя таблица.
@@ -491,7 +499,9 @@ def registry(project_root: str = ".", kit_root: "str | None" = None) -> Registry
        старой версии, проверяется по её паспорту.
     Два типа с одним разделом — `V-REG-1` (оба выключены до исправления); проектный шаблон,
     меняющий `card_type`, `section` или `card_class` типа кита, — `V-REG-2` (шаблон отвергнут).
-    Переопределения блока `cards:` конфига накладывает следующий пакет.
+    4. Блок `cards:` конфига проекта накладывает подпись, описание и выключатель типа
+       (`_apply_overrides`); раздел, класс, шаблон, виды и статусы принадлежат шаблону и не меняются.
+       Нет блока — реестр тот же, что был без него.
     """
     reg = Registry(project_root=str(project_root))
     kit_dir = kit_root
@@ -562,6 +572,7 @@ def registry(project_root: str = ".", kit_root: "str | None" = None) -> Registry
         reg.files[latest.template_file] = latest
 
     _close_sections(reg)
+    _apply_overrides(reg)
     return reg
 
 
@@ -585,6 +596,322 @@ def _close_sections(reg: Registry) -> None:
         if t.id in broken:
             reg.files[name] = replace(t, enabled=False)
     reg.by_section = {t.section: t.id for t in reg.types.values() if t.section and t.id not in broken}
+
+
+# ----------------------------------------------------------------------------- блок cards: конфига проекта
+#
+# Проект подменяет подпись и описание типа и выключает тип блоком `cards:` в `aurora.config.yaml` (§6.2 плана),
+# по образцу блока `artifacts:`: двухуровневый, значения — строки «ключ: "значение"». Читает и пишет его только этот
+# модуль; остальной конфиг при записи не трогается. Разбор — построчный, без YAML-библиотеки (ядро движка живёт без
+# зависимостей), регулярных выражений здесь нет: каждая строка читается за один проход.
+
+CONFIG_FILE = "aurora.config.yaml"
+CARDS_KEY = "cards"
+OVERRIDE_FIELDS = ("title", "description", "enabled")    # больше проект не меняет ничего
+DESCRIPTION_LIMIT = 220                                   # описание — одна строка, до 220 знаков
+# Раздел, класс, шаблон, виды и статусы принадлежат шаблону: подмени их проект, реестр разошёлся бы с проверками.
+TEMPLATE_OWNED_FIELDS = ("section", "template", "card_type", "card_class", "class", "kinds", "statuses", "sections",
+                         "file", "version", "home")
+_TRUE_WORDS = ("true", "yes", "да", "1", "on")
+_FALSE_WORDS = ("false", "no", "нет", "0", "off")
+
+# Закомментированный пример блока: он лежит в `templates/aurora.config.yaml.template` и в конфиге, который пишет форма
+# настроек (`aurora_setup.write_config`); настоящего блока в конфиге по умолчанию нет, как и у `artifacts:`.
+CARDS_CONFIG_EXAMPLE = """\
+# Типы карточек базы знаний — переопределения проекта (необязательно).
+# Подпись и описание берутся из шаблонов TemplatesCommon/akdb_*_v*.md; здесь их можно подменить
+# или выключить тип. Свой тип — это шаблон Templates/akdb_<тип>_v1.0.md (docs/card-templates.md).
+# cards:
+#   glossary:
+#     title: "Термин (словарь заказчика)"
+#     description: "Определение термина из словаря заказчика; без собственных свойств."
+#   status-model:
+#     enabled: "false"
+"""
+
+
+def _cards_span(lines: list):
+    """(первая строка, строка после последней) блока `cards:` верхнего уровня; None — блока нет.
+
+    Блок — строка `cards:` и всё вложенное под ней. Пустые строки и комментарии без отступа в конце блока ему не
+    принадлежат: при переписывании они остаются на месте. Закомментированный пример (`# cards:`) блоком не считается.
+    """
+    start = None
+    for i, line in enumerate(lines):
+        if line[:1] in ("", " ", "\t", "#"):
+            continue
+        if line.split("#", 1)[0].startswith("cards:"):
+            start = i
+            break
+    if start is None:
+        return None
+    last = start
+    for j in range(start + 1, len(lines)):
+        line = lines[j]
+        if not line.strip() or line[0] == "#":
+            continue
+        if line[0] in (" ", "\t"):
+            last = j
+        else:
+            break
+    return start, last + 1
+
+
+def _unquote(raw: str) -> str:
+    """Скаляр справа от «ключ:»: "в двойных" (с \\" и \\\\), 'в одинарных' (с '') или голый до « #»."""
+    v = raw.strip()
+    if not v:
+        return ""
+    if v[0] == '"':
+        out, i = [], 1
+        while i < len(v):
+            ch = v[i]
+            if ch == "\\" and v[i + 1:i + 2] in ('"', "\\"):
+                out.append(v[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                break
+            out.append(ch)
+            i += 1
+        return "".join(out)
+    if v[0] == "'":
+        out, i = [], 1
+        while i < len(v):
+            ch = v[i]
+            if ch == "'":
+                if v[i + 1:i + 2] == "'":
+                    out.append("'")
+                    i += 2
+                    continue
+                break
+            out.append(ch)
+            i += 1
+        return "".join(out)
+    cut = v.find(" #")
+    return (v[:cut] if cut >= 0 else v).strip()
+
+
+def _quote(value: str) -> str:
+    """Скаляр для записи: в двойных кавычках; с `"` или `\\` внутри — в одинарных (там они обычные знаки)."""
+    if '"' in value or "\\" in value:
+        return "'" + value.replace("'", "''") + "'"
+    return '"' + value + '"'
+
+
+def parse_cards_block(config_text: str) -> tuple:
+    """(переопределения, проблемы) из блока `cards:` текста конфига.
+
+    Переопределения — {тип: {title, description, enabled}} (`enabled` — bool); тип без единого годного поля
+    остаётся пустым словарём, чтобы реестр мог назвать неизвестный тип. Что блок не принимает (чужое поле,
+    поле шаблона, непонятное значение, неверное имя типа) — строка проблемы, а сама строка пропускается:
+    разбор не падает на ручной правке.
+    """
+    lines = str(config_text).replace("\r\n", "\n").split("\n")
+    span = _cards_span(lines)
+    if span is None:
+        return {}, []
+    found, problems = {}, []
+    inline = lines[span[0]].split("#", 1)[0].strip()[len(CARDS_KEY) + 1:].strip()
+    if inline and inline not in ("{}", "[]", "~", "null"):
+        problems.append(f"cards: значение «{inline[:40]}» в строке блока — типы пишутся вложенными строками; пропущено")
+    base = tid = None
+    for raw in lines[span[0] + 1:span[1]]:
+        s = raw.strip()
+        if not s or s.startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip())
+        key, sep, rest = s.partition(":")
+        key = key.strip().strip("\"'")
+        if not sep:
+            problems.append(f"cards: строка «{s[:60]}» — не «ключ: значение»; пропущена")
+            continue
+        value = _unquote(rest)
+        if base is None:
+            base = indent
+        if indent <= base:                                    # строка типа
+            tid = None
+            if not TYPE_ID_RE.match(key):
+                problems.append(f"cards: «{key[:40]}» — не идентификатор типа (2–31 знак: a-z, 0-9 и «-»); блок пропущен")
+            elif value:
+                problems.append(f"cards: у типа «{key}» значение в одной строке — поля title, description, enabled "
+                                "пишутся вложенными строками; пропущено")
+            else:
+                tid = key
+                found.setdefault(tid, {})
+            continue
+        if tid is None:
+            continue                                          # поле пропущенного типа: причина названа выше
+        rec = found[tid]
+        if key in ("title", "description"):
+            text = " ".join(value.split())
+            if not text:
+                rec.pop(key, None)                            # пустое значение — «не переопределено»
+            elif key == "description" and len(text) > DESCRIPTION_LIMIT:
+                problems.append(f"cards: у типа «{tid}» description длиннее {DESCRIPTION_LIMIT} знаков — обрезано")
+                rec[key] = text[:DESCRIPTION_LIMIT].rstrip()
+            else:
+                rec[key] = text
+        elif key == "enabled":
+            word = value.strip().lower()
+            if word in _TRUE_WORDS:
+                rec["enabled"] = True
+            elif word in _FALSE_WORDS:
+                rec["enabled"] = False
+            elif word:
+                problems.append(f'cards: у типа «{tid}» enabled «{value[:20]}» — ожидается "true" или "false"; строка пропущена')
+        elif key in TEMPLATE_OWNED_FIELDS:
+            problems.append(f"cards: у типа «{tid}» поле «{key}» не переопределяется — раздел, класс, шаблон, виды и "
+                            "статусы принадлежат шаблону; строка пропущена")
+        else:
+            problems.append(f"cards: у типа «{tid}» поле «{key[:40]}» не из title, description, enabled; строка пропущена")
+    return found, problems
+
+
+def read_overrides(config_text: str) -> dict:
+    """{тип: {title?, description?, enabled?}} из блока `cards:`; пусто — блока нет или в нём нет годных полей."""
+    return {tid: dict(rec) for tid, rec in parse_cards_block(config_text)[0].items() if rec}
+
+
+def _as_flag(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    word = str(value).strip().lower()
+    if word in _TRUE_WORDS:
+        return True
+    if word in _FALSE_WORDS:
+        return False
+    raise ValueError(f"enabled «{value}» — ожидается true или false")
+
+
+def _clean_overrides(overrides, known) -> dict:
+    """Переопределения к записи: проверены, пустое выброшено, строки в одну строку. Негодное — `ValueError`."""
+    if not isinstance(overrides, dict):
+        raise ValueError("переопределения — словарь {тип: {title, description, enabled}}")
+    out = {}
+    for tid in sorted(overrides):
+        if not isinstance(tid, str) or not TYPE_ID_RE.match(tid):
+            raise ValueError(f"имя типа «{tid}» не подходит: 2–31 знак, a-z, 0-9 и «-»")
+        if known is not None and tid not in known:
+            raise ValueError(f"типа «{tid}» нет в реестре: типы — kb:cards --list")
+        rec = overrides[tid] or {}
+        if not isinstance(rec, dict):
+            raise ValueError(f"у типа «{tid}» нужен словарь полей title, description, enabled")
+        bad = [str(k) for k in rec if k not in OVERRIDE_FIELDS]
+        if bad:
+            raise ValueError(f"у типа «{tid}» нельзя переопределять: {', '.join(bad)} — допустимы только "
+                             f"{', '.join(OVERRIDE_FIELDS)}; раздел, класс, шаблон, виды и статусы принадлежат шаблону")
+        row = {}
+        for key in ("title", "description"):
+            text = " ".join(head_value(rec.get(key) or "").split())
+            if text:
+                row[key] = text
+        if len(row.get("description", "")) > DESCRIPTION_LIMIT:
+            raise ValueError(f"у типа «{tid}» description длиннее {DESCRIPTION_LIMIT} знаков")
+        if rec.get("enabled") is not None and str(rec["enabled"]).strip() != "":
+            row["enabled"] = _as_flag(rec["enabled"])
+        if row:
+            out[tid] = row
+    return out
+
+
+def _block_lines(clean: dict) -> list:
+    """Строки блока `cards:` по очищенным переопределениям; пусто — писать нечего."""
+    if not clean:
+        return []
+    out = ["cards:"]
+    for tid in sorted(clean):
+        out.append(f"  {tid}:")
+        row = clean[tid]
+        for key in ("title", "description"):
+            if key in row:
+                out.append(f"    {key}: {_quote(row[key])}")
+        if "enabled" in row:
+            out.append(f'    enabled: "{"true" if row["enabled"] else "false"}"')
+    return out
+
+
+def write_overrides(config_text: str, overrides: dict, *, known=None) -> str:
+    """Текст конфига с переписанным блоком `cards:`; всё остальное — как было.
+
+    Нет блока — он добавляется в конец; пустые переопределения убирают блок; комментарии внутри блока теряются
+    (комментарии вне блока остаются). `known` — множество идентификаторов реестра: тип вне него отклоняется
+    (`ValueError`), как и чужое поле, и слишком длинное описание. Запись идемпотентна.
+    """
+    clean = _clean_overrides(overrides, known)
+    nl = "\r\n" if "\r\n" in config_text else "\n"
+    lines = config_text.replace("\r\n", "\n").split("\n")
+    span = _cards_span(lines)
+    block = _block_lines(clean)
+    if span is None:
+        if not block:
+            return config_text
+        body = "\n".join(lines).rstrip("\n")
+        text = (body + "\n\n" if body else "") + "\n".join(block) + "\n"
+    else:
+        a, b = span
+        new = lines[:a] + block + lines[b:]
+        if not block:                                         # блок убран: пустые строки вокруг не удваиваются
+            while 0 < a < len(new) and not new[a - 1].strip() and not new[a].strip():
+                del new[a]
+        text = "\n".join(new)
+    return text.replace("\n", nl) if nl != "\n" else text
+
+
+def read_config_overrides(project_root: str) -> tuple:
+    """(переопределения, проблемы) блока `cards:` в `aurora.config.yaml` проекта; нет файла — пусто."""
+    try:
+        with open(os.path.join(project_root or ".", CONFIG_FILE), encoding="utf-8", errors="replace") as fh:
+            return parse_cards_block(fh.read())
+    except OSError:
+        return {}, []
+
+
+def save_overrides(project_root: str, overrides: dict, *, known=None) -> str:
+    """Записать блок `cards:` в конфиг проекта (атомарно); → новый текст конфига. Конфига нет — `FileNotFoundError`."""
+    path = os.path.join(project_root or ".", CONFIG_FILE)
+    with open(path, encoding="utf-8") as fh:
+        old = fh.read()
+    new = write_overrides(old, overrides, known=known)
+    if new != old:
+        write_text_atomic(path, new)
+    return new
+
+
+def _with_override(t: CardType, rec: dict) -> CardType:
+    """Тип с наложенными подписью, описанием и выключателем проекта. Тип, уже выключенный реестром
+    (`V-REG-1`), настройкой не включается."""
+    kw = {"overridden": tuple(f for f in OVERRIDE_FIELDS if f in rec)}
+    if rec.get("title"):
+        kw["name"] = rec["title"]
+    if rec.get("description"):
+        kw["description"] = rec["description"]
+    if rec.get("enabled") is False:
+        kw["enabled"] = False
+    return replace(t, **kw)
+
+
+def _apply_overrides(reg: Registry) -> None:
+    """Шаг 4 алгоритма §6.3: наложить блок `cards:` проекта. Разделы типов (`by_section`) не меняются: выключенный
+    тип остаётся в таблице «раздел → тип», а его карточки — в базе и в проверках."""
+    if not reg.project_root:
+        return
+    found, problems = read_config_overrides(reg.project_root)
+    for text in problems:
+        reg.config_problems.append(text)
+        reg.problems.append(text)
+    for tid, rec in found.items():
+        if tid not in reg.types:
+            text = f"cards: типа «{tid}» нет в реестре — строка блока пропущена (типы — kb:cards --list)"
+            reg.config_problems.append(text)
+            reg.problems.append(text)
+            continue
+        if rec:
+            reg.overrides[tid] = rec
+            reg.types[tid] = _with_override(reg.types[tid], rec)
+    for name, t in list(reg.files.items()):
+        if t.id in reg.overrides:
+            reg.files[name] = _with_override(t, reg.overrides[t.id])
 
 
 # Таблица «раздел → тип» для скриптов, которым нужна она, а не весь реестр (разбор, ремонт, линтер, схема,
@@ -1508,6 +1835,139 @@ def template_stamps(project_root: str = ".") -> tuple:
     return total, stamped
 
 
+# ----------------------------------------------------------------------------- каталог типов карточек
+#
+# `AuroraKnowledgeDB/meta/card_types.md` — единый короткий список типов с описаниями для ассистентов и запросов (§6.4
+# плана). Файл генерируется: его пересобирают установка и обновление проекта (`install_aurora.py`, `aurora_update.py`)
+# и команда `kb:cards --write --apply`; ручные правки теряются. Он лежит в `meta/`, поэтому карточкой не считается.
+
+CATALOG_NAME = "card_types.md"
+CATALOG_REL = f"{KB_ROOT}/meta/{CATALOG_NAME}"
+CATALOG_LIMIT = 6000          # знаков в файле; больше — описания обрезаются
+CATALOG_SHORT = 120           # …до стольких знаков
+CATALOG_BUILT = "Собрано: "   # строка с датой: в сравнении «изменилось ли» дата не участвует
+CATALOG_WRAP = 110            # длина строки абзаца о записях в `Raw/`
+CATALOG_HEAD = """\
+<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb:cards — ручные правки будут потеряны. Подписи и описания можно изменить
+     в «Настройки проекта → Типы карточек». -->
+
+# Типы карточек базы знаний
+
+Шаблоны: `TemplatesCommon/` (кит) и `Templates/` (проект). Как выбрать тип — `Prompts/KB_classify.md`.
+Карточку можно создавать **только** по типам из этой таблицы; тип вне таблицы не существует.
+
+| Тип | Название | Описание | Шаблон | Раздел | Класс | Виды | Включён |
+|---|---|---|---|---|---|---|---|
+"""
+
+
+def catalog_path(project_root: str = ".") -> str:
+    return os.path.join(project_root or ".", KB_ROOT, "meta", CATALOG_NAME)
+
+
+def _cell(text, limit: "int | None" = None) -> str:
+    """Ячейка таблицы: одна строка, без «|» (он делил бы столбцы); `limit` — обрезка с многоточием."""
+    s = " ".join(str(text).split())
+    if limit and len(s) > limit:
+        s = s[:limit - 1].rstrip() + "…"
+    return s.replace("|", "\\|")
+
+
+def _catalog_types(reg: Registry) -> list:
+    """Типы в порядке каталога: типы кита как в таблице §4.1, затем проектные по алфавиту идентификатора."""
+    def key(t):
+        return (0, KIT_TYPE_ORDER.index(t.id), "") if t.id in KIT_TYPE_ORDER else (1, 0, t.id)
+    return sorted(reg.types.values(), key=key)
+
+
+def _homes_line(types: list) -> str:
+    """Абзац о записях в `Raw/`: записи (класс `record`) — «тип → папка», остальные типы с домом — «рукописный»."""
+    items = [f"`{t.id}` → `{t.home.rstrip('/')}/`" for t in types if t.home and t.cls == "record"]
+    items += [f"рукописный `{t.id}` → `{t.home.rstrip('/')}/`" for t in types if t.home and t.cls != "record"]
+    if not items:
+        return ""
+    lines, cur = [], "Записи пишет человек в `Raw/` ("
+    for i, item in enumerate(items):
+        piece = item + ("," if i < len(items) - 1 else "); в базе остаётся зеркало.")
+        if cur.endswith("(") or len(cur) + 1 + len(piece) <= CATALOG_WRAP:
+            cur += ("" if cur.endswith("(") else " ") + piece
+        else:
+            lines.append(cur)
+            cur = piece
+    lines.append(cur)
+    return "\n".join(lines) + "\n"
+
+
+def render_catalog(reg: Registry, *, today: str = "") -> str:
+    """Текст каталога типов по эффективному реестру (формат §6.4). Длиннее `CATALOG_LIMIT` — описания короче."""
+    types = _catalog_types(reg)
+    on = sum(1 for t in types if t.enabled)
+
+    def build(limit: "int | None") -> str:
+        rows = [f"| `{t.id}` | {_cell(t.name)} | {_cell(t.description, limit)} | `{t.template_file}` | "
+                f"{('`' + t.section + '`') if t.section else '—'} | {t.cls} | {', '.join(t.kinds) or '—'} | "
+                f"{'да' if t.enabled else 'нет'} |" for t in types]
+        return (CATALOG_HEAD + "\n".join(rows) + "\n\n" + _homes_line(types)
+                + f"{CATALOG_BUILT}{today or utc_today()} · типов: {len(types)} · включено: {on}\n")
+
+    text = build(None)
+    return text if len(text) <= CATALOG_LIMIT else build(CATALOG_SHORT)
+
+
+def _catalog_core(text: str) -> str:
+    """Каталог без даты сборки: день пересборки — не изменение файла (так же, как `aurora_common.undated`)."""
+    out = []
+    for line in str(text).replace("\r\n", "\n").split("\n"):
+        if line.startswith(CATALOG_BUILT):
+            _date, sep, rest = line[len(CATALOG_BUILT):].partition(" · ")
+            line = CATALOG_BUILT.rstrip() + sep + rest
+        out.append(line)
+    return "\n".join(out)
+
+
+def catalog_state(project_root: str = ".", reg: "Registry | None" = None, kit_root: "str | None" = None) -> str:
+    """Каталог типов проекта: "ok" — на месте и сходится с реестром; "missing" — файла нет; "stale" — отстал от
+    шаблонов или от блока `cards:`; "" — собирать нечего (нет базы или реестр пуст)."""
+    if not os.path.isdir(os.path.join(project_root or ".", KB_ROOT)):
+        return ""
+    reg = reg if reg is not None else safe_registry(project_root, kit_root)
+    if not reg.types:
+        return ""
+    try:
+        with open(catalog_path(project_root), encoding="utf-8", errors="replace") as fh:
+            have = fh.read()
+    except OSError:
+        return "missing"
+    return "ok" if _catalog_core(have) == _catalog_core(render_catalog(reg)) else "stale"
+
+
+def write_catalog(project_root: str = ".", reg: "Registry | None" = None, *, kit_root: "str | None" = None,
+                  dry_run: bool = False) -> bool:
+    """Собрать `AuroraKnowledgeDB/meta/card_types.md`. → True, если файл записан (при `dry_run` — был бы записан).
+
+    Идемпотентно: каталог, равный новому без даты сборки, не переписывается (иначе файл менялся бы каждый день). Нет
+    базы или реестр пуст (шаблоны не доставлены) — не пишется ничего: пустой каталог затёр бы годный.
+    """
+    reg = reg if reg is not None else safe_registry(project_root, kit_root)
+    if catalog_state(project_root, reg, kit_root) in ("", "ok"):
+        return False
+    if not dry_run:
+        path = catalog_path(project_root)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_text_atomic(path, render_catalog(reg))
+    return True
+
+
+def type_counts(project_root: str = ".") -> dict:
+    """{тип: сколько карточек} по базе без архива. Читаются только шапки."""
+    out = {}
+    for path in walk_md(os.path.join(project_root or ".", KB_ROOT), skip_service=True, skip_archive=True):
+        tid = (frontmatter(head_text(path)).get("type") or "").strip()
+        if tid:
+            out[tid] = out.get(tid, 0) + 1
+    return out
+
+
 # ----------------------------------------------------------------------------- команда kb:cards
 
 def _print_registry(reg: Registry) -> None:
@@ -1548,7 +2008,7 @@ def _type_dict(t: CardType) -> dict:
             "sections": list(t.sections), "fields_extra": list(t.fields_extra), "min_links": t.min_links,
             "prompt_chars": t.prompt_chars, "migration": t.migration, "template": t.template_file,
             "version": t.version, "versions": list(t.versions), "path": t.path, "origin": t.origin,
-            "enabled": t.enabled}
+            "enabled": t.enabled, "overridden": list(t.overridden)}
 
 
 def _cmd_show(reg: Registry, type_id: str, as_json: bool) -> int:
@@ -1653,6 +2113,34 @@ def _cmd_stats(root: str, reg: Registry, args) -> int:
     return 0
 
 
+def _cmd_write(root: str, reg: Registry, args) -> int:
+    """`--write [--apply]`: каталог типов `AuroraKnowledgeDB/meta/card_types.md`. Без `--apply` — только план."""
+    if not os.path.isdir(os.path.join(root, KB_ROOT)):
+        print(f"kb:cards: нет папки {KB_ROOT}/ — запускайте из корня проекта", file=sys.stderr)
+        return 2
+    if not reg.types:
+        print("kb:cards: реестр пуст — шаблонов akdb_*_v*.md нет ни в проекте, ни в ките, каталог собрать не из чего. "
+              "Обновите проект командой kit:update", file=sys.stderr)
+        return 2
+    for p in reg.problems:
+        print(f"  проблема реестра: {p}")
+    state = catalog_state(root, reg)
+    on = sum(1 for t in reg.types.values() if t.enabled)
+    if state == "ok":
+        print(f"kb:cards --write: каталог типов {CATALOG_REL} актуален — писать нечего (типов {len(reg.types)}, включено {on})")
+        return 0
+    if not args.apply:
+        print(f"kb:cards --write: каталог типов {CATALOG_REL} будет "
+              f"{'создан' if state == 'missing' else 'пересобран'} (типов {len(reg.types)}, включено {on}). "
+              "Ничего не записано (dry-run): запись — с --apply")
+        return 0
+    if not git_guard(root, args.allow_dirty, "сборка каталога типов"):
+        return 2        # отказ писать — не находка, а несделанная работа: маршрут стоит
+    write_catalog(root, reg)
+    print(f"kb:cards --write: каталог типов {CATALOG_REL} записан (типов {len(reg.types)}, включено {on})")
+    return 0
+
+
 def main(argv=None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -1670,6 +2158,11 @@ def main(argv=None) -> int:
                     help="проверить карточки базы по шаблонам их типов (коды V-NN); по умолчанию нарушения только советуют")
     ap.add_argument("--stats", action="store_true",
                     help="сводка: карточек всего, по версиям шаблонов, без шаблона, с нарушениями по кодам")
+    ap.add_argument("--write", action="store_true",
+                    help="собрать каталог типов AuroraKnowledgeDB/meta/card_types.md (без --apply — только план)")
+    ap.add_argument("--apply", action="store_true", help="записать изменения (иначе dry-run)")
+    ap.add_argument("--allow-dirty", action="store_true",
+                    help="писать по незакоммиченному дереву (откат станет невозможным)")
     ap.add_argument("--all", action="store_true", help="с --check и --stats: включить архив базы (_archive/)")
     ap.add_argument("--summary", action="store_true", help="с --check: только итоговая строка")
     ap.add_argument("--json", action="store_true", help="машинный вывод")
@@ -1680,6 +2173,8 @@ def main(argv=None) -> int:
     root = args.root
     reg = registry(root)
     try:
+        if args.write:
+            return _cmd_write(root, reg, args)
         if args.show:
             return _cmd_show(reg, args.show, args.json)
         if args.stats:

@@ -119,6 +119,7 @@ Raw/{laws,contract,customer,project,meetings,examples,corrections}/
 AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Statuses, Reference,
                               Requirements, Specs, Questions, Decisions, MOC, _archive, _assets,
                               _inbox, meta (kb_updated.json — дата обновления базы, в git;
+                              card_types.md — каталог типов карточек, собирает движок;
                               run_log.md — журнал запусков этой машины, вне git)
 Artifacts/{us,ac,algorithms,dictionaries,screens,contracts,mappings,role-model,diagrams,
            acceptance,tests,reviews,reports,drafts,meetings}/
@@ -170,6 +171,7 @@ start-aurora.command · start-aurora.bat      пусковые файлы
 | `privacy` | `scrub`: `off` · `report` (по умолчанию) · `mask`; `mask_contacts`, `include_raw` |
 | `reports.analyst` | год, ростер, события, папка выгрузок и итоговый файл дашборда |
 | `artifacts` | реестр видов артефактов проекта: `title`, `template`, `out`, промпт, `tech_agnostic` (`make:kinds`) |
+| `cards` | правила типов карточек базы знаний, по типу: `title` (подпись), `description` (описание, до 220 знаков), `enabled` (`"false"` выключает тип); раздел, класс, шаблон, виды и статусы остаются за шаблоном. Блока по умолчанию нет — пример закомментирован в конце файла; список типов — `kb:cards --list`, каталог — `AuroraKnowledgeDB/meta/card_types.md` (его собирают установка и `kit:update`, ручные правки теряются) |
 | `graphify` | `code_dirs` — папки с кодом для `kb:code-graph` |
 | `bootstrap` | порог доли `knowledge`, до которого в пакеты допускаются черновики с громкой шапкой |
 

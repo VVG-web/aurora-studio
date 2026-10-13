@@ -272,6 +272,26 @@ def carry_unmanaged(old: str, new: str) -> str:
     return out
 
 
+def cards_example(old: str) -> tuple:
+    """(прежний конфиг без примера, пример для нового) — закомментированный пример блока `cards:` (типы карточек).
+
+    Настоящего блока форма не пишет: его ведёт панель («Типы карточек») или человек, а при сохранении формы его
+    переносит `carry_unmanaged`, как любой раздел, которого шаблон не знает. Пока блока нет, пример напоминает,
+    что он бывает, и стоит в конце нового конфига; блок есть — пример не повторяется рядом с ним. Пример прежнего
+    конфига снимается до переноса: иначе его комментарии прилипли бы к следующему разделу и удваивались при
+    каждом сохранении. Пример живёт в `card_types.py`: тот же текст лежит в `templates/aurora.config.yaml.template`,
+    и тест сверяет их.
+    """
+    try:
+        from card_types import CARDS_CONFIG_EXAMPLE
+    except Exception:  # noqa: BLE001 — подсказка в конфиге не повод ронять сохранение формы
+        return old, ""
+    old = old.replace(CARDS_CONFIG_EXAMPLE, "")
+    if any(key == "cards" for key, _block in top_blocks(old)):
+        return old, ""
+    return old, "\n" + CARDS_CONFIG_EXAMPLE
+
+
 def write_config(path: Path, c: dict):
     # Поля доверия пустыми не пишутся: пустое поле — значения по умолчанию, и в конфиг они
     # попадают явно, чтобы настройку было видно и её правили, а не угадывали.
@@ -378,7 +398,8 @@ bootstrap:
   verified_threshold_pct: {c['threshold']}
 """
     old_text = path.read_text(encoding="utf-8") if path.is_file() else ""
-    path.write_text(carry_unmanaged(old_text, text), encoding="utf-8")
+    old_text, example = cards_example(old_text)
+    path.write_text(carry_unmanaged(old_text, text + example), encoding="utf-8")
 
 
 # ---------- интерактив ----------

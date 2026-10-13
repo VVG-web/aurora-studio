@@ -266,6 +266,7 @@ Run in the project root (in the panel — the `kb:cards` command; in a terminal 
 | `--check [PATH…]` | check the base's cards (or only the named files and folders) against the templates of their types |
 | `--check --strict` | the same, but errors stay errors and give exit code 1 |
 | `--stats` | cards in total, by template versions, without a template, with violations by code |
+| `--write` | the type catalogue `AuroraKnowledgeDB/meta/card_types.md`: without `--apply` — the plan only, with `--apply` — the write (on a dirty git tree — with `--allow-dirty`) |
 | `--all` | with `--check` and `--stats`: include the base archive (`_archive/`) |
 | `--summary` | with `--check`: the summary line only |
 | `--json` | machine output |
@@ -273,7 +274,7 @@ Run in the project root (in the panel — the `kb:cards` command; in a terminal 
 
 Exit code: **0** — no errors (in the ordinary mode always, if the check took place), **1** — errors in strict
 mode, **2** — a failure: no base folder, no templates (the registry is empty — update the project with
-`kit:update`), no such file or type. The command **writes nothing**: no cards, no catalogues.
+`kit:update`), no such file or type. The command writes no cards; the only thing it writes is the type catalogue, by `--write --apply`.
 
 How to read the `--check` output:
 
