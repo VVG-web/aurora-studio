@@ -3925,7 +3925,10 @@ def test_restart_self_does_not_promise_a_panel_that_cannot_start(tmp: Path):
     (kit / "scripts").mkdir(parents=True)
     (kit / "aurora.py").write_text("print('панель')\n", encoding="utf-8")
     common = kit / "scripts" / "aurora_common.py"
-    common.write_text("import sys\nsys.stderr.write('aurora: Python слишком старый\\n')\nraise SystemExit(2)\n",
+    # как настоящий aurora_common, заглушка переключает stderr на UTF-8 сама: на Windows труба в cp1252, и русская
+    # строка доходила бы до панели как «\\u0441\\u043b…»
+    utf8 = "import sys\nsys.stderr.reconfigure(encoding='utf-8')\n"
+    common.write_text(utf8 + "sys.stderr.write('aurora: Python слишком старый\\n')\nraise SystemExit(2)\n",
                       encoding="utf-8")
     ck, restore = _cockpit_on(kit)
     started = []
@@ -3944,7 +3947,7 @@ def test_restart_self_does_not_promise_a_panel_that_cannot_start(tmp: Path):
         assert "error" in r and "слишком старый" in r["error"] and "wait" not in r, r
         assert not started, "новая панель запущена вопреки провалившейся пробе"
         # любой ненулевой код пробы — тоже отказ: 1 (синтаксис) и 3 (падение при импорте)
-        for body, code in (("raise SystemExit(1)\n", 1), ("import sys\nsys.stderr.write('Traceback: ошибка импорта')\nraise SystemExit(3)\n", 3)):
+        for body, code in (("raise SystemExit(1)\n", 1), (utf8 + "sys.stderr.write('Traceback: ошибка импорта')\nraise SystemExit(3)\n", 3)):
             common.write_text(body, encoding="utf-8")
             r = ck.restart_self(8765)
             assert "error" in r and "wait" not in r and not started, (code, r)

@@ -2219,6 +2219,8 @@ def test_refusal_names_decisions_in_other_state(tmp: Path):
 
 _OLD_CTX_PACK = (
     "import os, sys\n"
+    "sys.stdout.reconfigure(encoding='utf-8')\n"       # как у настоящего скрипта: на Windows труба в cp1252
+    "sys.stderr.reconfigure(encoding='utf-8')\n"
     "if '--retrieval' in sys.argv:\n"
     "    print('ctx_pack: неизвестные ключи --retrieval: abstain (есть: weak)', file=sys.stderr)\n"
     "    sys.exit(1)\n"
@@ -2588,7 +2590,10 @@ def test_bot_context_fences_link_titles_and_old_pack(tmp: Path):
     # движок «проекта знаний», выпущенный раньше: печатает пак без ограждений
     sdir = root / ".aurora" / "scripts"
     sdir.mkdir(parents=True, exist_ok=True)
+    # кириллица в трубу: настоящий скрипт движка переключает вывод на UTF-8 сам (aurora_common), а заглушка — нет,
+    # и на Windows (труба в cp1252) она падала до первой строки
     (sdir / "ctx_pack.py").write_text(
+        'import sys\nsys.stdout.reconfigure(encoding="utf-8")\n'
         'print("# Пакет\\n\\nкарточек 1\\n\\n## Карточка\\n\\nдословный текст источника")\n', encoding="utf-8")
     pack, n = BC.search(str(root), ["Заявка"], "generate")
     assert n == 1 and pack.startswith('<untrusted source="пак базы знаний">') and pack.endswith("</untrusted>"), pack
@@ -2696,7 +2701,8 @@ def test_a_command_that_times_out_is_a_failure_result_not_an_exception(tmp: Path
     R = _runner()
     root = make_project(tmp)
     (root / ".aurora" / "scripts" / "kb_lint.py").write_text(
-        "import time\nprint('ошибок 0')\ntime.sleep(30)\n", encoding="utf-8")
+        "import sys, time\nsys.stdout.reconfigure(encoding='utf-8')\n"     # на Windows труба в cp1252
+        "print('ошибок 0')\ntime.sleep(30)\n", encoding="utf-8")
     res = R.run_command(str(root), "kb_lint.py", [], timeout=1)
     assert res["ok"] is False and res["rc"] is None and res.get("timeout") is True, res
     assert "не уложился" in res["why"] and R.fail_why(res) == res["why"], res
@@ -3528,7 +3534,9 @@ def test_a_closed_panel_pipe_ends_the_run_and_the_last_line_still_commits(tmp: P
         "'---\\ntitle: \"От агента\"\\ntype: concept\\n---\\n\\n# От агента\\n\\nтекст\\n')\n"
         "r, w = os.pipe()\n"
         "os.close(r)\n"
-        "sys.stdout = sys.stderr = os.fdopen(w, 'w')\n"
+        # кодировка явная: на Windows `fdopen` берёт cp1252, и кириллица падала на кодировании (UnicodeEncodeError),
+        # не дойдя до закрытой трубы
+        "sys.stdout = sys.stderr = os.fdopen(w, 'w', encoding='utf-8')\n"
         "def entry():\n"
         "    print('строка в закрытую трубу', flush=True)\n"
         "    return 0\n"
@@ -3540,7 +3548,10 @@ def test_a_closed_panel_pipe_ends_the_run_and_the_last_line_still_commits(tmp: P
     assert done.is_file() and done.read_text() == "1", (p.returncode, p.stdout, p.stderr)
     last = subprocess.run(["git", "log", "-1", "--format=%s"], cwd=str(root),
                           capture_output=True, text=True, encoding="utf-8").stdout
-    assert "agent:build — оборвано исключением BrokenPipeError" in last, last
+    # Запись в закрытую трубу на POSIX — BrokenPipeError; на Windows CRT отдаёт для неё EINVAL (так и в `subprocess`
+    # самого Python, bpo-19612), и это `OSError`. Важно, что прогон кончился коммитом сделанного, а не названием класса.
+    kinds = ("BrokenPipeError", "OSError") if os.name == "nt" else ("BrokenPipeError",)
+    assert any(f"agent:build — оборвано исключением {k}" in last for k in kinds), last
 
 
 @test

@@ -27,6 +27,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+for _s in (sys.stdout, sys.stderr):
+    # Сообщения по-русски: труба Windows (и консоль) в cp1251/cp1252 падала на первой же строке (UnicodeEncodeError)
+    # ещё до импорта сканера, который переключает вывод на UTF-8 сам.
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
