@@ -584,8 +584,11 @@ def _skipped(path: str) -> bool:
     return path.startswith(SKIP_PREFIXES) and path.endswith(SKIP_SUFFIXES)
 
 
-# Параметры `git log`, не зависящие от настроек пользователя (см. scan_push).
-LOG_PIN = ("--encoding=UTF-8", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff")
+# Параметры `git log`, не зависящие от настроек пользователя (см. scan_push). `--no-textconv`: драйвер
+# текстового вида (git для Windows ставит `astextplain` на *.docx) подменил бы дифф преобразованным
+# текстом или отказал на вложенном архиве («unable to read files to diff») и остановил бы пуш чистого
+# файла; содержимое сканер читает из объектов (`_scan_blobs`), а не из диффа.
+LOG_PIN = ("--encoding=UTF-8", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff", "--no-textconv")
 
 
 def _git_run(args: list, binary: bool = False):

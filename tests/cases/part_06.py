@@ -1724,6 +1724,11 @@ def test_push_guard_reads_content_by_signature_and_normalizes_unicode(tmp: Path)
     (root / "local").mkdir(parents=True)
     (root / "local" / "private_terms.txt").write_text(term + "\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+    # git для Windows ставит на *.docx драйвер текстового вида `astextplain` (на вложенном архиве он отказывал,
+    # и скан останавливал пуш): содержимое сканер читает из объектов, дифф с драйвером ему не нужен
+    subprocess.run(["git", "config", "diff.broken.textconv", "false"], cwd=root, check=True)
+    (root / ".git" / "info").mkdir(exist_ok=True)
+    (root / ".git" / "info" / "attributes").write_text("*.docx diff=broken\n", encoding="utf-8")
     git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
     (root / "чисто.md").write_text("ничего\n", encoding="utf-8")
     subprocess.run(["git", "add", "-A"], cwd=root, check=True)
@@ -2134,6 +2139,18 @@ def test_push_guard_survives_split_runs_escapes_and_user_git_config(tmp: Path):
     vend = commit("библиотека")
     cp = scan(base, vend)
     assert cp.returncode == 0, f"при diff.noprefix путь потерян, исключение vendor не сработало:\n{cp.stderr}"
+    # Драйвер текстового вида из настроек git: git для Windows ставит `astextplain` на *.docx, и на вложенном
+    # архиве он отказывал («unable to read files to diff») — скан останавливал пуш с чистым docx. Содержимое
+    # читается из объектов по сигнатуре, а не из преобразованного диффа: драйвер, даже отказывающий, не мешает.
+    subprocess.run(["git", "config", "diff.broken.textconv", "false"], cwd=root, check=True)
+    (root / ".git" / "info").mkdir(exist_ok=True)
+    (root / ".git" / "info" / "attributes").write_text("*.docx diff=broken\n", encoding="utf-8")
+    (root / "doc.docx").write_bytes(docx(f"<w:p>{run_('ничего лишнего')}</w:p>"))
+    plain = commit("документ с драйвером")
+    cp = scan(vend, plain)
+    assert cp.returncode == 0 and "unable to read files to diff" not in cp.stderr, \
+        f"драйвер textconv из настроек git остановил скан чистого docx:\n{cp.returncode} {cp.stderr}"
+    vend = plain
     (root / "заметка.txt").write_text(f"для {term}\n", encoding="utf-8")
     note = commit("заметка")
     cp = scan(vend, note)
