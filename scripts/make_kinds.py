@@ -119,7 +119,9 @@ def out_problem(out: str) -> str:
     out = (out or "").strip().strip('"').replace("\\", "/").rstrip("/")
     if not out:
         return ""
-    if os.path.isabs(out) or re.match(r"^[A-Za-z]:", out):
+    # `out` уже с «/»: путь с корня без диска (`/abs`, `\\сервер\папка`) на Windows с Python 3.13+ `isabs` абсолютным не
+    # считает, а `os.path.join(проект, "/abs")` уводит из проекта на корень текущего диска — поэтому «/» проверяем сами.
+    if os.path.isabs(out) or out.startswith("/") or re.match(r"^[A-Za-z]:", out):
         return "путь абсолютный, а папка результата лежит внутри проекта"
     if ".." in out.split("/"):
         return "путь выходит за пределы проекта"

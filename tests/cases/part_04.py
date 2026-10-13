@@ -1105,8 +1105,16 @@ def test_result_folder_is_a_folder_not_a_file_path(tmp: Path):
     MK = importlib.import_module("make_kinds")
     ck = importlib.import_module("aurora_cockpit")
     R = importlib.import_module("agent_runner")
-    assert "путь к файлу" in MK.out_problem("Artifacts/Activity_Epic_US.md")
-    assert MK.out_problem("/abs/Deliverables") and MK.out_problem("../чужое")
+    assert "путь к файлу" in MK.out_problem("Artifacts/Activity_Epic_US.md"), "путь к файлу принят за папку"
+    assert MK.out_problem("/abs/Deliverables") and MK.out_problem("../чужое"), "абсолютный путь или выход из проекта принят"
+    # Windows с Python 3.13+: `ntpath.isabs("/abs")` — уже ложь (путь с корня без диска), а `join(проект, "/abs")`
+    # уводит из проекта. Правило не должно зависеть от версии: проверяем на `ntpath` с любой ОС.
+    import ntpath
+    import types
+    from unittest.mock import patch
+    with patch.object(MK, "os", types.SimpleNamespace(path=ntpath)):
+        for bad_out in ("/abs/Deliverables", "\\\\srv\\share\\out", "C:/out", "\\out"):
+            assert "абсолютный" in MK.out_problem(bad_out), f"{bad_out!r} принят за папку внутри проекта (Windows)"
     assert not MK.out_problem("Deliverables/work") and not MK.out_problem("Artifacts/us/v1.2"), \
         "обычная папка названа файлом"
 
