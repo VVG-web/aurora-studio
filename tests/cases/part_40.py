@@ -81,13 +81,17 @@ def _new_project(kit: Path, root: Path, name: str = "Old", slug: str = "") -> Pa
 
 
 def _tree(root: Path) -> dict:
-    """Содержимое проекта: путь → хеш. Кэш байт-кода и сам git — не содержимое."""
+    """Содержимое проекта: путь → хеш. Кэш байт-кода и сам git — не содержимое.
+
+    Концы строк не в счёт: клон кита на Windows (`core.autocrlf`) отдаёт файлы с CRLF, установка копирует их
+    байтами, а обновление пишет текст, прочитанный с переводом строк в `\\n` — разница только в `\\r`, и сравнивать
+    «свежий» проект с «обновлённым» по ней значило бы проверять настройку git, а не движок."""
     out = {}
     for p in sorted(root.rglob("*")):
         rel = p.relative_to(root).as_posix()
         if ".git/" in rel + "/" or "__pycache__" in rel or rel.endswith(".pyc") or not p.is_file():
             continue
-        out[rel] = hashlib.sha1(p.read_bytes()).hexdigest()
+        out[rel] = hashlib.sha1(p.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
     return out
 
 
