@@ -44,10 +44,17 @@ def _own_home() -> None:
         f"HOME указывает на настоящую домашнюю папку: {Path.home()}"
 
 
-def _py(script: Path, *args, cwd: Path, expect_rc=0) -> subprocess.CompletedProcess:
+# Прежний выпуск кита печатал русские строки в трубу как есть: на Windows (cp1252 в трубе) `aurora.py new`
+# выпуска 1.140.0 падал на первой же строке. Выпуск менять нельзя, а проверяется обновление, а не его консоль:
+# прежний кит запускается в UTF-8 — так его и запускает панель (`child_env`). Текущий кит — как есть.
+OLD_KIT_ENV = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
+
+def _py(script: Path, *args, cwd: Path, expect_rc=0, env=None) -> subprocess.CompletedProcess:
     _own_home()
     cp = subprocess.run([sys.executable, str(script), *args], cwd=str(cwd), stdin=subprocess.DEVNULL,
-                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+                        capture_output=True, text=True, encoding="utf-8", errors="replace",
+                        env={**os.environ, **env} if env else None)
     if expect_rc is not None:
         assert cp.returncode == expect_rc, \
             f"{script.name} {' '.join(args)}: rc={cp.returncode}, ждали {expect_rc}\n" \
@@ -76,7 +83,8 @@ def _tagged_kit(tag: str, dest: Path) -> Path:
 
 def _new_project(kit: Path, root: Path, name: str = "Old", slug: str = "") -> Path:
     """Проект, заведённый китом `kit` настоящей командой `new` (без терминала)."""
-    _py(kit / "aurora.py", "new", str(root), "--name", name, "--slug", slug or name, cwd=root.parent)
+    _py(kit / "aurora.py", "new", str(root), "--name", name, "--slug", slug or name, cwd=root.parent,
+        env=None if kit == KIT else OLD_KIT_ENV)
     return root
 
 
@@ -116,7 +124,7 @@ def _git_status(root: Path) -> str:
 
 def _update(kit: Path, root: Path, *, apply: bool = True, expect_rc=0) -> subprocess.CompletedProcess:
     return _py(kit / "scripts" / "aurora_update.py", str(root), *(["--apply"] if apply else []),
-               cwd=root, expect_rc=expect_rc)
+               cwd=root, expect_rc=expect_rc, env=None if kit == KIT else OLD_KIT_ENV)
 
 
 def _stamp(root: Path) -> str:
