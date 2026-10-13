@@ -228,7 +228,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 
 | Role | What it does | Prompt |
 |---|---|---|
-| Momus (qa) | Answers to the closed checklist from the review_v2.0.md template — several runs (3 by default) with a vote on every question. | `build_prompt` (review_run.py) |
+| Momus (qa) | Answers to the closed checklist from the review_v2.1.md template — several runs (3 by default) with a vote on every question. | `build_prompt` (review_run.py) |
 | Momus (qa) | Free recommendations on what to fix. | `free_recs` (review_run.py) |
 
 - **Tools:** none: the engine reads the page and the linked ones.

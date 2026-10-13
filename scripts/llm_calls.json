@@ -540,8 +540,8 @@
           "role": "qa",
           "prompt": "review_run.py:build_prompt",
           "what": {
-            "ru": "Ответы на закрытый чек-лист из шаблона review_v2.0.md — несколько прогонов (по умолчанию 3) с голосованием по каждому вопросу.",
-            "en": "Answers to the closed checklist from the review_v2.0.md template — several runs (3 by default) with a vote on every question."
+            "ru": "Ответы на закрытый чек-лист из шаблона review_v2.1.md — несколько прогонов (по умолчанию 3) с голосованием по каждому вопросу.",
+            "en": "Answers to the closed checklist from the review_v2.1.md template — several runs (3 by default) with a vote on every question."
           }
         },
         {

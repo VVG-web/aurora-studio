@@ -497,7 +497,7 @@ def test_review_checklist_lives_in_the_template(tmp: Path):
     """
     rr = _review_module()
     cl = _review_checklist(rr)
-    assert cl["version"] == "2.0", cl["version"]
+    assert cl["version"] == "2.1", cl["version"]
     assert len(cl["profiles"]["us"]) >= 20 and len(cl["profiles"]["alg"]) >= 20
     for prof in cl["profiles"].values():
         ids = [c["id"] for c in prof]
@@ -509,6 +509,45 @@ def test_review_checklist_lives_in_the_template(tmp: Path):
                 "ссылка на условие не раскрыта — модель не поймёт, о чём речь"
     assert {"Оценочные без критерия", "Рабочие пометки"} <= set(cl["lexicon"]), cl["lexicon"]
     assert "Одинаковый текст" in cl["rules"] and "JSON" in cl["rules"], "правила не прочитаны"
+
+
+@test
+def test_review_alg_profile_follows_the_algorithm_template(tmp: Path):
+    """Профиль «alg» сверяется с шаблоном алгоритма, а запрещённые в нём отсылки ищет код.
+
+    «Который», «текущая запись», «аналогично» в алгоритме приходится разгадывать при
+    переносе в запрос — шаблон алгоритма их запрещает. В истории те же слова обычны:
+    искать их там значило бы забить список кандидатов шумом и вытеснить настоящие находки.
+    """
+    rr = _review_module()
+    cl = _review_checklist(rr)
+    tpl = (KIT / "scaffold/TemplatesCommon" / cl["file"]).read_text(encoding="utf-8")
+    assert "algorythm_v1.0.md" in tpl, "профиль алгоритма не называет свой шаблон оформления"
+    assert (KIT / "scaffold/TemplatesCommon/algorythm_v1.0.md").is_file(), "шаблона алгоритма нет в поставке"
+    alg = {c["id"]: c for c in cl["profiles"]["alg"]}
+    for cid in ("ALG-23", "ALG-24", "ALG-25", "ALG-27", "ALG-30"):
+        assert cid in alg, f"нет вопроса {cid} — правило шаблона алгоритма не проверяется"
+    assert len(cl["profiles"]["us"]) == 23, "профиль историй менять было нельзя: оценки перестанут сравниваться"
+
+    text = ("1. Отобрать записи, в которых код заполнен. Для этого связать множества. "
+            "Для текущей записи рассчитать сумму аналогично шагу 2. Входящие данные заданы.")
+    words = lambda prof: {c["word"] for c in rr.layer0(text, cl["lexicon"], [], prof)["candidates"]}  # noqa: E731
+    assert {"которых", "текущей", "аналогично"} <= words("alg"), words("alg")
+    assert not {"которых", "текущей", "аналогично"} & words("us"), "отсылки ищутся и в историях"
+    assert not {"этого", "данные"} & words("alg"), "связка «Для этого» и слово «данные» — не отсылки"
+    groups = {c["group"] for c in rr.layer0(text, cl["lexicon"], [], "alg")["candidates"]}
+    assert "Расплывчатые отсылки" in groups, f"пометка профиля осталась в названии группы: {groups}"
+
+    # одна частая группа не вытесняет остальные: потолок — на группу
+    flood = "который " * 100 + "корректно"
+    got = rr.layer0(flood, cl["lexicon"], [], "alg")["candidates"]
+    assert any(c["word"] == "корректно" for c in got), "частое слово вытеснило находку другой группы"
+
+    # шаблон алгоритма соблюдает собственный запрет в образце «как надо»
+    a = (KIT / "scaffold/TemplatesCommon/algorythm_v1.0.md").read_text(encoding="utf-8")
+    good = a[a.index("---------- КАК НАДО ----------"):a.index("Что изменилось:")]
+    assert not rr.layer0(good, {k: v for k, v in cl["lexicon"].items() if "[alg]" in k}, [], "alg")["candidates"], \
+        "образец в шаблоне алгоритма сам содержит запрещённую отсылку"
 
 
 @test
@@ -616,7 +655,7 @@ def test_review_page_runs_without_a_human(tmp: Path):
     assert not rec["incomplete"], "будущая страница посчитана пробелом в чтении"
     assert rec["code"] == "US-1.2.3" and rec["profile"] == "us"
     report = rr.render(rec, cl)
-    assert "| Версия шаблона ревью | 2.0 (`review_v2.0.md`) |" in report, "версия шаблона не в итоге"
+    assert "| Версия шаблона ревью | 2.1 (`review_v2.1.md`) |" in report, "версия шаблона не в итоге"
     assert report.startswith("---\ntype: review"), "у отчёта не одна шапка"
 
     # обязательная форма закрыта правами → неполное ревью, ворота закрыты
@@ -663,7 +702,7 @@ def test_review_engine_is_wired_into_the_kit(tmp: Path):
     assert "make:review-auto" in reg and "review_run.py" in reg, "команды нет в реестре"
     man = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
     assert "scripts/review_run.py" in man, "движок ревью не едет в проекты"
-    assert (KIT / "scaffold/TemplatesCommon/review_v2.0.md").is_file()
+    assert (KIT / "scaffold/TemplatesCommon/review_v2.1.md").is_file()
 
 @test
 def test_cockpit_modules_are_folders(tmp: Path):

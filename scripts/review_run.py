@@ -3,7 +3,7 @@
 
 Оценка выносится без человека. Модель не ставит баллы и не выбирает тяжесть дефекта: она
 отвечает «да / нет / н/п / не определить» на вопросы чек-листа из шаблона
-`review_v2.0.md`, а оценку и вердикт считает этот скрипт. Разброс LLM-оценщика
+`review_v2.1.md`, а оценку и вердикт считает этот скрипт. Разброс LLM-оценщика
 сидит в открытых суждениях; закрытые вопросы и голосование по нескольким прогонам его
 снимают (CheckEval, Rating Roulette).
 
@@ -51,7 +51,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import UNTRUSTED_RULE, UNTRUSTED_TAG, untrusted, utc_label, utc_slug  # noqa: E402 — время одно на движок; граница данных
 
-TEMPLATE = "review_v2.0.md"
+TEMPLATE = "review_v2.1.md"
 REVIEWS = "Artifacts/reviews"
 CACHE = ".aurora/state/review_cache"   # служебное: закрыто .gitignore, в историю проекта не идёт
 WEIGHT = {"критичный": 5, "важный": 3, "мелкий": 1}
@@ -309,10 +309,24 @@ def gather(reader: Reader, root: dict, profile: str, depth: int, max_pages: int)
 
 # ------------------------------------------------------------------ слой 0
 
-def layer0(text: str, lexicon: dict, linked: list) -> dict:
-    """Механика кодом: кандидаты в неоднозначность, рабочие пометки, удалённые страницы."""
+GROUP_CAP, CAND_CAP = 20, 60       # кандидатов на группу и всего: одна группа не забивает прочие
+
+
+def layer0(text: str, lexicon: dict, linked: list, profile: str = "") -> dict:
+    """Механика кодом: кандидаты слоя 0 и рабочие пометки.
+
+    Группа словаря с пометкой профиля — «Расплывчатые отсылки [alg]» — ищется только в
+    артефактах этого профиля: «который» и «текущий» запрещены в алгоритме, а в истории
+    обычны, и там они забили бы список кандидатов шумом. Потолок — на группу, а не общий:
+    иначе частые слова одной группы вытеснили бы редкие находки остальных.
+    """
     cands, marks = [], []
     for group, words in lexicon.items():
+        scope = re.search(r"\[(\w+)\]\s*$", group)
+        if scope and scope.group(1) != profile:
+            continue
+        group = re.sub(r"\s*\[\w+\]\s*$", "", group)
+        taken = 0
         for w in words:
             if w in ("{{", "}}", "???"):
                 rx = re.compile(re.escape(w))
@@ -320,9 +334,12 @@ def layer0(text: str, lexicon: dict, linked: list) -> dict:
                 rx = re.compile(r"(?<![\w])" + re.escape(w) + r"(?![\w])", re.I)
             for m in rx.finditer(text):
                 snip = text[max(0, m.start() - 60): m.end() + 60].replace("\n", " ")
-                (marks if group == "Рабочие пометки" else cands).append(
-                    {"group": group, "word": w, "snippet": snip.strip()})
-    return {"candidates": cands[:40], "marks": marks[:10]}
+                if group == "Рабочие пометки":
+                    marks.append({"group": group, "word": w, "snippet": snip.strip()})
+                elif taken < GROUP_CAP:
+                    cands.append({"group": group, "word": w, "snippet": snip.strip()})
+                    taken += 1
+    return {"candidates": cands[:CAND_CAP], "marks": marks[:10]}
 
 
 # ------------------------------------------------------------------ модель
@@ -339,8 +356,9 @@ def build_prompt(cl: dict, profile: str, page: dict, linked: list, l0: dict) -> 
     parts = []
     if l0["candidates"]:
         # Сниппеты — дословные куски проверяемой страницы: данные, как и она сама.
-        parts.append("СЛОЙ 0 — кандидаты в неоднозначность (решай сам, меняют ли они поведение):\n"
-                     + untrusted("\n".join(f"- «{c['word']}»: …{c['snippet']}…"
+        parts.append("СЛОЙ 0 — кандидаты, найденные кодом (в скобках — группа словаря; дефект ли "
+                     "это, решай сам по правилам вопроса):\n"
+                     + untrusted("\n".join(f"- [{c['group']}] «{c['word']}»: …{c['snippet']}…"
                                            for c in l0["candidates"]), "слой 0, фрагменты страницы"))
     # Заголовок, адрес и версия приходят из системы-источника: внутрь ограждения, вместе с текстом.
     parts.append("ПРОВЕРЯЕМЫЙ АРТЕФАКТ:\n"
@@ -613,7 +631,7 @@ def review_page(cfg: dict, cl: dict, reader: Reader, page_id: str, *, profile: s
     linked = gather(reader, page, prof, depth, max_pages)
     incomplete = any(ln.get("mandatory") and ln.get("status") not in ("ok", "planned")
                      for ln in linked)
-    l0 = layer0(page["text"], cl["lexicon"], linked)
+    l0 = layer0(page["text"], cl["lexicon"], linked, prof)
     system, body = build_prompt(cl, prof, page, linked, l0)
     deadline = lambda: time.time() + (request_timeout or cfg["request_timeout"])  # noqa: E731
     main_len = main_end(body, len(page["text"]))

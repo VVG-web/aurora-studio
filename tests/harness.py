@@ -574,7 +574,7 @@ def _review_module():
 
 
 def _review_checklist(rr):
-    return rr.load_checklist(str(KIT / "scaffold/TemplatesCommon/review_v2.0.md"))
+    return rr.load_checklist(str(KIT / "scaffold/TemplatesCommon/review_v2.1.md"))
 
 
 class _FakeReader:

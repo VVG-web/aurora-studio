@@ -165,7 +165,7 @@ def test_review_tools_score_by_the_template_and_one_run_counts(tmp: Path):
     _path()
     import review_run as R
     import shutil
-    shutil.copy(KIT / "scaffold/TemplatesCommon/review_v2.0.md", root / "TemplatesCommon" / "review_v2.0.md")
+    shutil.copy(KIT / "scaffold/TemplatesCommon/review_v2.1.md", root / "TemplatesCommon" / "review_v2.1.md")
     (root / "AuroraKnowledgeDB/meta/aurora_version.txt").write_text("1.162.0\n", encoding="utf-8")
     out, err = _mcp(root, "review_checklist", {"profile": "us"})
     assert not err and json.loads(out)["questions"][0]["id"] == "US-01", out[:200]
@@ -173,7 +173,7 @@ def test_review_tools_score_by_the_template_and_one_run_counts(tmp: Path):
         "US-01": {"v": "yes"}, "US-02": {"v": "no", "evidence": "цитата", "fix": "так"}}})
     data = json.loads(out)
     assert not err and data["summary"].startswith("AI review result") and "US-02" in data["failed_questions"]
-    cl = R.load_checklist(str(root / "TemplatesCommon" / "review_v2.0.md"))
+    cl = R.load_checklist(str(root / "TemplatesCommon" / "review_v2.1.md"))
     ids = [c["id"] for c in cl["profiles"]["us"] if c["decider"] != "код"]
     run = {"ok": True, "checks": {i: {"v": "yes", "evidence": "", "fix": ""} for i in ids}}
     votes = R.vote(cl, "us", [run], {"marks": [], "candidates": []})

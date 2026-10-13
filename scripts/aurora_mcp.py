@@ -173,7 +173,7 @@ TOOLS = [
      "inputSchema": {"type": "object", "required": ["name"], "properties": {
          "name": {"type": "string"}}}},
     {"name": "review_checklist",
-     "description": "Чек-лист ревью проекта (шаблон review_v2.0): вопросы профиля us "
+     "description": "Чек-лист ревью проекта (шаблон review_v2.1): вопросы профиля us "
                     "(история) или alg (алгоритм), их критичность и что исправить. Нужен, "
                     "если отвечаете на вопросы сами; иначе зовите review_page.",
      "inputSchema": {"type": "object", "properties": {

@@ -313,7 +313,7 @@ The engine does the mechanics; the model spends tokens only on judgement:
 | `time_now` | the current time, UTC and local: the model has no clock of its own |
 | `state_get` / `state_put` / `state_list` / `state_delete` | memory between runs: key → value in a space of its own (`.aurora/state/mcp/`, outside git) |
 | `lock_acquire` / `lock_release` | a lock on a job: a second run of the same job will not start |
-| `review_checklist` | the review checklist for a story or an algorithm (`review_v2.0`) |
+| `review_checklist` | the review checklist for a story or an algorithm (`review_v2.1`) |
 | `review_page` | a whole review of a page by the engine: linked pages, the checklist over several runs, score and verdict by code; the report as a file in `.aurora/state/reviews/` |
 | `review_score` | scoring ready checklist answers by the template's formula |
 | `atlassian_check` | whether the project's Jira and Confluence are reachable, as whom, whether writing is allowed |

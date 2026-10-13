@@ -88,7 +88,7 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 | `make:kinds` (`kinds`) | The project's artifact registry: template, result folder, project prompt, the "no technologies" rule per kind and the final-text boundary. | script | 1.69.0 |
 | `make:create` (`create`) | An artifact in `Artifacts/<type>/` — only a standard type from conventions.md. The manual path; the main one is `agent:make`. | model | 1.1.0 |
 | `make:review` (`review`) | Check an artifact's quality against the base. | model | 1.0.0 |
-| `make:review-auto` (`review-auto`) | Review of a story or algorithm without a human: a closed checklist from `review_v2.0.md`, three model runs vote on each question, a script computes the score and verdict; `--page`, `--cql`, `--as-of`. | script + model | 1.119.0 |
+| `make:review-auto` (`review-auto`) | Review of a story or algorithm without a human: a closed checklist from `review_v2.1.md`, three model runs vote on each question, a script computes the score and verdict; `--page`, `--cql`, `--as-of`. | script + model | 1.119.0 |
 | `make:spec` (`spec`) | A feature specification from REQ and `knowledge` cards (SDD). | model | 1.0.0 |
 | `make:spec-pack` (`spec-pack`) | A spec bundle: grounds, DRs, abbreviations, DoR risks — one self-contained file. | script | 1.9.4 |
 | `make:validate` (`validate`) | Compare a contractor's implementation and tests with the spec's scenarios. | model | 1.0.0 |

@@ -49,7 +49,7 @@
     "make:kinds": "The project's artifact registry: template, result folder, project prompt, the \"no technologies\" rule per kind and the final-text boundary.",
     "make:create": "An artifact in `Artifacts/<type>/` — only a standard type from conventions.md. The manual path; the main one is `agent:make`.",
     "make:review": "Check an artifact's quality against the base.",
-    "make:review-auto": "Review of a story or algorithm without a human: a closed checklist from `review_v2.0.md`, three model runs vote on each question, a script computes the score and verdict; `--page`, `--cql`, `--as-of`.",
+    "make:review-auto": "Review of a story or algorithm without a human: a closed checklist from `review_v2.1.md`, three model runs vote on each question, a script computes the score and verdict; `--page`, `--cql`, `--as-of`.",
     "make:spec": "A feature specification from REQ and `knowledge` cards (SDD).",
     "make:spec-pack": "A spec bundle: grounds, DRs, abbreviations, DoR risks — one self-contained file.",
     "make:validate": "Compare a contractor's implementation and tests with the spec's scenarios.",
