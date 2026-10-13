@@ -504,9 +504,12 @@ def _outside_project(tmp: Path, root: Path) -> Path:
 
 
 def _link(target, name) -> bool:
-    """Ссылка `name` → `target`; False, если система ссылок не даёт (Windows без прав)."""
+    """Ссылка `name` → `target`; False, если система ссылок не даёт (Windows без прав).
+
+    Цель пишется с разделителем системы: Windows не разбирает «/» в цели ссылки, и относительная
+    `../Glossary/y.md` оставалась «битой» (git для Windows пишет «\\» по той же причине)."""
     try:
-        os.symlink(target, name)
+        os.symlink(os.fspath(target).replace("/", os.sep), name)
         return True
     except (OSError, NotImplementedError):
         return False
