@@ -104,6 +104,11 @@ def used_in(module: str = "") -> set:
         runner = os.path.join(os.path.dirname(MODULES), "route_runner.py")
         if os.path.isfile(runner):
             files.append(runner)
+        # Сервер панели сам пишет в консоль задания строки каталога ядра («прогон прерван»):
+        # ключи в нём названы целиком, как `t("…")`.
+        server = os.path.join(os.path.dirname(MODULES), "aurora_cockpit.py")
+        if os.path.isfile(server):
+            files.append(server)
     keys = set()
     for path in files:
         if not os.path.isfile(path):

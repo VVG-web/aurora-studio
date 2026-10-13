@@ -6169,9 +6169,11 @@ def stop_job(job_id: str, lang: str = "") -> dict:
         # а sync и kb:* — не агент.
         said = any(AGENT_COMMIT_LINE.match(str(x)) for x in job["out"])
     strings = i18n_catalogue(lang or DEFAULT_LANG).get("strings") or {}
-    key = "job.stopped_agent" if said else "job.stopped"
+
+    def t(key):                    # ключи пишутся целиком: проверка каталога (kit_i18n) ищет их как t("…")
+        return strings.get(key, key)
     with JOBS_LOCK:
-        job_push(job, strings.get(key, key))
+        job_push(job, t("job.stopped_agent") if said else t("job.stopped"))
     return {"ok": True}
 
 
