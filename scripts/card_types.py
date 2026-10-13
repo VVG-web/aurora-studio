@@ -20,8 +20,11 @@
 подпись, описание и выключатель типа для этого проекта, их `registry()` накладывает на реестр; каталог типов
 `AuroraKnowledgeDB/meta/card_types.md` (`render_catalog`, `write_catalog`) — генерируется и пересобирается при
 установке и обновлении проекта.
-Конструктор шапки и входа записи (`render_header`, `render_card`, `write_card_text`), инструкция выбора типа и
-`classify_answer` добавляют следующие пакеты: в этом модуле они появятся рядом, под теми же именами.
+Инструкция «Как определить тип карточки» (пакет CT-07): файл проекта `Prompts/KB_classify.md` (умолчание кита —
+`scaffold/Prompts/KB_classify.md`), его эффективный текст (`guide_text`, `kit_guide_text`) и разбор ответа по шагу 7
+(`classify_answer`: тип, шаблон и раздел сверяются с реестром, ничего не «угадывается»). Модель не вызывается.
+Конструктор шапки и входа записи (`render_header`, `render_card`, `write_card_text`) добавляет следующий пакет: в этом
+модуле они появятся рядом, под теми же именами.
 
 Единый источник «раздел → тип» (CT-04): таблица записана здесь один раз (`LEGACY_SECTION_TYPE`), а разбор
 (`build_plan`), ремонт (`kb_fix`), линтер, схема и заготовки тестов читают её через `section_type_table` и
@@ -42,10 +45,11 @@
   python3 .aurora/scripts/card_types.py --check           # проверить карточки базы (советы)
   python3 .aurora/scripts/card_types.py --check --strict  # то же, но ошибки шаблона — ошибки
   python3 .aurora/scripts/card_types.py --stats           # сколько карточек по шаблонам
+  python3 .aurora/scripts/card_types.py --guide           # эффективный текст инструкции «Как определить тип карточки»
   python3 .aurora/scripts/card_types.py --write           # каталог типов: показать, что будет пересобрано
   python3 .aurora/scripts/card_types.py --write --apply   # и записать AuroraKnowledgeDB/meta/card_types.md
 Код возврата: 0 — ошибок нет, 1 — есть (`--check --strict`), 2 — сбой (нет базы, нет шаблонов,
-нет такого файла или типа).
+нет такого файла или типа, нет инструкции).
 
 Панель: `kb:cards`
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
@@ -1968,6 +1972,137 @@ def type_counts(project_root: str = ".") -> dict:
     return out
 
 
+# ----------------------------------------------------------------------------- инструкция «Как определить тип карточки»
+#
+# Файл `Prompts/KB_classify.md` — инструкция, по которой выбирают ОДИН тип карточки, не открывая все шаблоны. Кит кладёт её
+# в проект при установке и обновлении по правилу `seed` (файл проекта не затирается, новая версия ложится рядом как `.new`);
+# проект правит её сам. Читают её встроенный агент (шаги подставляются в запросы разбора), ассистент в IDE и человек.
+# Здесь — чтение эффективного текста и разбор ответа по шагу 7. Модель не вызывается.
+
+GUIDE_REL = "Prompts/KB_classify.md"                  # файл проекта
+KIT_GUIDE_REL = "scaffold/Prompts/KB_classify.md"     # умолчание кита, относительно кита
+
+# C-6: строка ответа шага 7. Применяется к одной строке (так же, как `re.M` к тексту: якоря `^` и `$` — границы строки).
+ANSWER_RE = re.compile(r"^type:\s*(?P<type>[a-z][a-z0-9\-]*);\s*template:\s*(?P<template>\S+?);\s*"
+                       r"section:\s*(?P<section>\S+?);\s*why:\s*(?P<why>.+)$")
+NONE_RE = re.compile(r"^type:\s*none;\s*why:\s*(?P<why>.+)$")
+
+_GUIDE_WARNED: set = set()
+
+
+def _read_guide(path: str) -> str:
+    """Текст файла инструкции или "": нет файла, он пуст (одни пробелы) или это ссылка за пределы проекта
+    (`read_card_text` — та же граница чтения, что у карточек: чужой файл не уйдёт в запрос модели)."""
+    text = read_card_text(path)
+    return text if text and text.strip() else ""
+
+
+def kit_guide_text(kit_root: "str | None" = None) -> str:
+    """Инструкция по умолчанию — файл кита `scaffold/Prompts/KB_classify.md`. Кита или файла нет — пустая строка.
+
+    `kit_root` — как у `registry()`: явный кит или тот, что называет указатель проекта `.aurora/kit_path.txt`.
+    """
+    kit_dir = kit_root if kit_root is not None else _find_kit()[0]
+    return _read_guide(os.path.join(kit_dir, KIT_GUIDE_REL)) if kit_dir else ""
+
+
+def guide_source(project_root: str = ".", kit_root: "str | None" = None) -> tuple:
+    """Эффективная инструкция: (текст, откуда, путь). «Откуда» — "project", "kit" или "" (текста нет нигде).
+
+    Файл проекта `Prompts/KB_classify.md` сильнее кита, и слияния текстов нет: правка проекта остаётся как есть. Пустой
+    файл проекта считается отсутствующим (инструкция из одних пробелов оставила бы модель без шагов).
+    """
+    path = os.path.join(project_root or ".", GUIDE_REL)
+    text = _read_guide(path)
+    if text:
+        return text, "project", path
+    kit_dir = kit_root if kit_root is not None else _find_kit()[0]
+    if kit_dir:
+        kit_path = os.path.join(kit_dir, KIT_GUIDE_REL)
+        text = _read_guide(kit_path)
+        if text:
+            return text, "kit", kit_path
+    return "", "", ""
+
+
+def guide_text(project_root: str = ".", kit_root: "str | None" = None) -> str:
+    """Текст инструкции «Как определить тип карточки»: файл проекта, иначе файл кита, иначе пустая строка.
+
+    Пустой результат — сбой установки (проект и кит без файла): один раз за процесс на проект об этом пишется в stderr, а
+    не в stdout, чтобы не попасть в запрос модели или вывод команды.
+    """
+    text, _origin, _path = guide_source(project_root, kit_root)
+    if not text:
+        key = os.path.abspath(project_root or ".")
+        if key not in _GUIDE_WARNED:
+            _GUIDE_WARNED.add(key)
+            print(f"card_types: инструкции «Как определить тип карточки» нет ни в проекте ({GUIDE_REL}), ни в ките — "
+                  "обновите проект командой kit:update", file=sys.stderr)
+    return text
+
+
+def _answer_lines(text) -> list:
+    """Строки ответа в тексте: совпадения `NONE_RE` или `ANSWER_RE`. Остальные строки (пояснения) не читаются."""
+    found = []
+    for line in str(text or "").splitlines():
+        s = line.strip()
+        m = NONE_RE.match(s) or ANSWER_RE.match(s)
+        if m:
+            found.append(m)
+    return found
+
+
+def classify_answer(text: str, reg: Registry) -> dict:
+    """Разобрать ответ классификатора (шаг 7 инструкции): одну строку `type: …; template: …; section: …; why: …`.
+
+    Читается только эта строка (C-6) — ни тип, ни шаблон, ни раздел не «угадываются». Отклоняется ответ, где нет строки
+    формата, строк несколько (ответ неоднозначен), тип вне реестра или выключен, шаблон не тот, что у типа (наибольшая
+    версия, `CardType.template_file`), раздел не тот, что у типа (`section`; у записи — ещё и папка `home` в `Raw/`, у
+    типа без раздела, исправления, — она одна).
+
+    Результат — словарь:
+      `{"ok": True, "none": False, "type", "template", "section", "why"}` — ответ принят;
+      `{"ok": True, "none": True, "type": "none", "why"}` — «ни один тип не подходит» (`type: none; why: …`);
+      `{"ok": False, "error": <код>, "message": <текст>, …разобранные поля}` — отклонён. Коды: `format`, `ambiguous`,
+      `unknown-type`, `disabled`, `template`, `section`.
+    Годен ли принятый тип для разбора источников, решает вызывающий (`Registry.allowed_for_build()`).
+    """
+    found = _answer_lines(text)
+    if not found:
+        return {"ok": False, "error": "format",
+                "message": "нет строки ответа «type: <тип>; template: <шаблон>; section: <раздел>; why: <причина>» "
+                           "или «type: none; why: <причина>» (шаг 7 инструкции)"}
+    if len(found) > 1:
+        return {"ok": False, "error": "ambiguous",
+                "message": f"строк ответа {len(found)}, а нужна одна: ответ неоднозначен"}
+    m = found[0]
+    why = m.group("why").strip()
+    if m.re is NONE_RE:
+        return {"ok": True, "none": True, "type": "none", "why": why}
+    given = {"type": m.group("type"), "template": m.group("template"), "section": m.group("section").rstrip("/"),
+             "why": why}
+
+    def reject(code: str, message: str) -> dict:
+        return {"ok": False, "error": code, "message": message, **given}
+
+    tid = given["type"]
+    t = reg.get(tid)
+    if t is None:
+        if tid == "none":
+            return reject("unknown-type", "отказ пишется без шаблона и раздела: «type: none; why: <причина>»")
+        return reject("unknown-type", f"типа «{tid}» нет в реестре ({', '.join(reg.types) or 'реестр пуст'}): "
+                                      "придумывать тип и подбирать «похожий» нельзя")
+    if not t.enabled:
+        return reject("disabled", f"тип «{tid}» выключен в настройках проекта")
+    if given["template"] != t.template_file:
+        return reject("template", f"шаблон «{given['template']}» — не файл типа «{tid}» (нужен {t.template_file})")
+    places = [p.rstrip("/") for p in (t.section, t.home) if p]
+    if given["section"] not in places:
+        return reject("section", f"«{given['section']}» — не раздел типа «{tid}» "
+                                 f"(нужен {' или '.join(places) or 'раздел из шаблона'})")
+    return {"ok": True, "none": False, **given}
+
+
 # ----------------------------------------------------------------------------- команда kb:cards
 
 def _print_registry(reg: Registry) -> None:
@@ -2141,6 +2276,26 @@ def _cmd_write(root: str, reg: Registry, args) -> int:
     return 0
 
 
+def _cmd_guide(root: str, reg: Registry, args) -> int:
+    """`--guide`: эффективный текст инструкции «Как определить тип карточки» — файл проекта, иначе файл кита.
+
+    Текст печатается как есть (stdout), пояснение «откуда» — в stderr, чтобы вывод можно было передать дальше без примесей.
+    """
+    text, origin, path = guide_source(root, reg.kit_root or None)
+    if not text:
+        print(f"kb:cards --guide: инструкции «Как определить тип карточки» нет ни в проекте ({GUIDE_REL}), ни в ките — "
+              "обновите проект командой kit:update", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps({"origin": origin, "path": path, "chars": len(text), "text": text}, ensure_ascii=False, indent=1))
+        return 0
+    if origin == "kit":
+        print(f"kb:cards --guide: в проекте нет {GUIDE_REL} (или он пуст) — показан текст кита; "
+              "обновление проекта (kit:update) положит файл", file=sys.stderr)
+    print(text, end="" if text.endswith("\n") else "\n")
+    return 0
+
+
 def main(argv=None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -2160,6 +2315,8 @@ def main(argv=None) -> int:
                     help="сводка: карточек всего, по версиям шаблонов, без шаблона, с нарушениями по кодам")
     ap.add_argument("--write", action="store_true",
                     help="собрать каталог типов AuroraKnowledgeDB/meta/card_types.md (без --apply — только план)")
+    ap.add_argument("--guide", action="store_true",
+                    help="эффективный текст инструкции «Как определить тип карточки»: Prompts/KB_classify.md проекта, иначе кита")
     ap.add_argument("--apply", action="store_true", help="записать изменения (иначе dry-run)")
     ap.add_argument("--allow-dirty", action="store_true",
                     help="писать по незакоммиченному дереву (откат станет невозможным)")
@@ -2175,6 +2332,8 @@ def main(argv=None) -> int:
     try:
         if args.write:
             return _cmd_write(root, reg, args)
+        if args.guide:
+            return _cmd_guide(root, reg, args)
         if args.show:
             return _cmd_show(reg, args.show, args.json)
         if args.stats:

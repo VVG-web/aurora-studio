@@ -17,6 +17,9 @@
 класс, шаблон, виды и статусы принадлежат шаблону), его наложение в `registry()`, каталог типов `meta/card_types.md`
 (установка, обновление проекта, `kb:cards --write`), строки `kit:doctor`; форма настроек блок не стирает. Без блока
 реестр тот же, что после первой фазы.
+Пакет CT-07 (в самом конце части): инструкция «Как определить тип карточки» — файл `scaffold/Prompts/KB_classify.md`, его
+доставка в проекты (`aurora.py new`, путь панели, `aurora_update.py`), эффективный текст (`guide_text`, `kit_guide_text`,
+`kb:cards --guide`) и разбор ответа по шагу 7 (`classify_answer`).
 Модель и сеть не используются; проекты — только во временных папках, запуски, которые пишут, — под
 временным HOME прогона.
 """
@@ -2618,7 +2621,7 @@ def test_card_templates_guide_matches_the_code_and_ships_with_the_engine(_t):
     index = (KIT / "docs/README.md").read_text(encoding="utf-8")
     assert "](card-templates.md)" in index and "](en/card-templates.md)" in index, "руководства нет в указателе документации"
     helped = _py(KIT / "scripts" / "card_types.py", "--help", cwd=KIT).stdout
-    flags = ("--list", "--show", "--check", "--stats", "--all", "--summary", "--json", "--strict", "--root")
+    flags = ("--list", "--show", "--check", "--stats", "--guide", "--all", "--summary", "--json", "--strict", "--root")
     for flag in flags:
         assert flag in helped, f"команда не принимает {flag}"
     for rel, works, later in (("docs/card-templates.md", "работает", "позже"), ("docs/en/card-templates.md", "works", "later")):
@@ -3268,3 +3271,407 @@ def test_cards_block_is_documented_in_the_install_guide_and_the_command_row(_t):
     helped = _py(KIT / "scripts" / "card_types.py", "--help", cwd=KIT).stdout
     for flag in ("--write", "--apply", "--allow-dirty"):
         assert flag in helped, f"команда не принимает {flag}"
+
+
+# ================================================================== пакет CT-07: инструкция «Как определить тип карточки»
+#
+# Файл `scaffold/Prompts/KB_classify.md` — текст плана дословно (при подготовке пакета сверен с планом побайтно). Кит кладёт
+# его в проект правилом `seed` (установка, `aurora.py update --apply`), проект правит его сам, а модуль читает эффективный
+# текст (`guide_text`) и разбирает ответ по шагу 7 (`classify_answer`). Ниже — свойства файла кита, его доставка, чтение
+# и разбор ответа. Модель не вызывается.
+
+GUIDE_KIT = KIT / "scaffold" / "Prompts" / "KB_classify.md"
+GUIDE_REL = "Prompts/KB_classify.md"
+GUIDE_CHARS = 9000
+# Типы, которые создают из источника: каждый обязан стоять в таблице шага 2 (остальные — записи шага 4 и карты шага 5).
+FROM_SOURCE = ("concept", "glossary", "process", "system", "role", "status-model", "requirement", "reference",
+               "cited-document")
+ANSWER_FORMAT = ("`type: <идентификатор типа>; template: <имя файла шаблона>; section: <папка раздела>; "
+                 "why: <одна фраза — какой пункт шага 2 сработал>`")
+NONE_FORMAT = "`type: none; why: <причина>`"
+
+
+def _guide_steps(text: str) -> dict:
+    """{номер шага: текст шага} по заголовкам «## Шаг N. …»."""
+    marks = list(re.finditer(r"(?m)^## Шаг (\d+)\. .*$", text))
+    return {int(m.group(1)): text[m.end():(marks[i + 1].start() if i + 1 < len(marks) else len(text))]
+            for i, m in enumerate(marks)}
+
+
+def _guide_table(step: str) -> list:
+    """Строки таблицы шага: [[ячейки]], без шапки и без разделителя."""
+    rows = [[c.strip() for c in line.strip().strip("|").split(" | ")] for line in step.splitlines()
+            if line.startswith("| ")]
+    return rows[1:]
+
+
+def _kit_registry(tmp: Path):
+    """Реестр из шаблонов самого кита: у проекта без шаблонов типы берутся запасным путём (`scaffold/TemplatesCommon/`)."""
+    return _C().registry(str(tmp / "no-project"), kit_root=str(KIT))
+
+
+@test
+def test_guide_constraints(tmp: Path):
+    """Файл кита держит свойства, которые обязан сохранить любой редактор инструкции: длина до 9000 знаков, шаги 0–7,
+    таблица шага 2 со всеми типами, которые создают из источника, и формат ответа шага 7; таблицы называют те же шаблоны
+    и разделы, что реестр, а в тексте нет ссылок на план работ."""
+    text = GUIDE_KIT.read_bytes().decode("utf-8")
+    assert text.endswith("\n") and not text.endswith("\n\n") and "\r" not in text and "\t" not in text, "оформление файла"
+    assert 0 < len(text) <= GUIDE_CHARS, f"{len(text)} знаков при пределе {GUIDE_CHARS}"
+    head = _mod("aurora_common").frontmatter(text)
+    assert head.get("title") == "Как определить тип карточки" and head.get("version") == "1.0", head
+    for key in ("purpose", "read_by", "edited_in"):
+        assert head.get(key), f"в паспорте нет {key}"
+    assert text.count("\n# Как определить тип карточки\n") == 1 and "<!-- ФАЙЛ ПРОЕКТА." in text
+    assert re.findall(r"(?m)^## Шаг (\d+)\.", text) == [str(i) for i in range(8)], "шаги 0–7 не по порядку или не все"
+    steps = _guide_steps(text)
+    assert sorted(steps) == list(range(8))
+    reg = _kit_registry(tmp)
+    assert len(reg.types) == 13 and not reg.problems, reg.problems
+    # шаг 2: все типы, которые создают из источника, по одному разу, в нумерованных строках; запасной — `concept`
+    rows = _guide_table(steps[2])
+    ids = [r[2].strip("`") for r in rows]
+    assert [r[0] for r in rows] == [str(i) for i in range(1, len(rows) + 1)], "строки шага 2 не пронумерованы подряд"
+    assert sorted(ids) == sorted(FROM_SOURCE), f"в таблице шага 2: {ids}"
+    assert ids[-1] == "concept" and "во всех остальных случаях" in rows[-1][1], "последняя строка — запасной тип"
+    assert {t.id for t in reg.allowed_for_build()} | {"cited-document"} == set(ids), "тип реестра не назван в таблице шага 2"
+    for r in rows:
+        tid = r[2].strip("`")
+        assert r[3] == f"`akdb_{tid}`" and r[4] == f"`{reg.types[tid].section}`", f"шаг 2, {tid}: {r[3]} / {r[4]}"
+    # шаг 3: пары называют только типы реестра
+    named = set(re.findall(r"`([a-z][a-z0-9\-]*)`", steps[3]))
+    assert named and named <= set(reg.types), f"шаг 3 называет типы вне реестра: {sorted(named - set(reg.types))}"
+    assert len(_guide_table(steps[3])) == 8
+    # шаг 4: записи, и папка каждой совпадает с домом типа; шаг 5: карты
+    records = {r[1].strip("`"): r for r in _guide_table(steps[4])}
+    assert sorted(records) == ["correction", "decision", "question", "reference"], sorted(records)
+    for tid, r in records.items():
+        assert f"`{reg.types[tid].home}/" in r[2], f"шаг 4, {tid}: «{r[2]}» не в {reg.types[tid].home}/"
+    assert "`moc`" in steps[5] and "kb:moc" in steps[5]
+    # шаг 7: формат ответа и отказ
+    assert ANSWER_FORMAT in steps[7] and NONE_FORMAT in steps[7], steps[7]
+    assert steps[7].count("type:") == 2, "в шаге 7 две строки формата: ответ и отказ"
+    # ссылок на план работ и остатков шаблона нет
+    for bad in ("§", "CT-", "плана", "{{", "TODO", "[ПРИМЕР]"):
+        assert bad not in text, f"в инструкции осталось «{bad}»"
+
+
+@test
+def test_guide_table_answers_pass_the_parser(tmp: Path):
+    """Ответ, составленный по таблицам инструкции, парсер принимает: для каждой строки шага 2 и каждой записи шага 4 —
+    тип, файл шаблона и раздел из таблицы совпадают с реестром (так инструкция не расходится с кодом)."""
+    C = _C()
+    reg = _kit_registry(tmp)
+    steps = _guide_steps(GUIDE_KIT.read_text(encoding="utf-8"))
+    for r in _guide_table(steps[2]):
+        tid, section = r[2].strip("`"), r[4].strip("`")
+        line = f"type: {tid}; template: {r[3].strip('`')}_v1.0.md; section: {section}; why: пункт {r[0]} шага 2"
+        got = C.classify_answer(line, reg)
+        assert got["ok"] and got["type"] == tid and got["section"] == section, (line, got)
+    for r in _guide_table(steps[4]):
+        tid = r[1].strip("`")
+        t = reg.types[tid]
+        for place in {t.section, t.home} - {""}:                    # раздел базы и папка записи в Raw/ — оба годятся
+            got = C.classify_answer(f"type: {tid}; template: {t.template_file}; section: {place}; why: запись", reg)
+            assert got["ok"] and got["type"] == tid, (tid, place, got)
+    # формат ответа из шага 7 с подстановкой значений
+    fmt = ANSWER_FORMAT.strip("`")
+    filled = re.sub(r"type: <[^>]*>", "type: process", fmt)
+    filled = re.sub(r"template: <[^>]*>", "template: akdb_process_v1.0.md", filled)
+    filled = re.sub(r"section: <[^>]*>", "section: Processes", filled)
+    filled = re.sub(r"why: <[^>]*>", "why: пункт 5 шага 2", filled)
+    assert C.classify_answer(filled, reg)["ok"] and not C.classify_answer(fmt, reg)["ok"], \
+        "формат ответа без подстановки (с «<…>») не должен приниматься"
+    assert C.classify_answer(NONE_FORMAT.strip("`").replace("<причина>", "это задача трекера"), reg)["none"]
+
+
+@test
+def test_guide_seeded_everywhere(tmp: Path):
+    """AC-CT-07.1 и AC-CT-07.2: новый проект получает файл `Prompts/KB_classify.md` обоими путями установки; проект,
+    поставленный до выпуска, — при `update --apply` (второй `update` ничего не меняет); изменённая проектом копия
+    остаётся на месте, версия кита ложится рядом как `.new`, а читается как инструкция только файл проекта."""
+    C = _C()
+    kit_text = GUIDE_KIT.read_text(encoding="utf-8")
+    cli = _new_kit_project(tmp / "cli")
+    sys.path.insert(0, str(SCRIPTS))
+    inst = importlib.import_module("install_aurora")
+    panel = tmp / "panel"
+    panel.mkdir()
+    with contextlib.redirect_stdout(io.StringIO()):
+        # проект, созданный кнопкой панели, получает только установщик: без настройки и обновления
+        inst.Installer(panel, "Demo", None, None, None, False, False).install_templates_prompts()
+    for root in (cli, panel):
+        assert _same_text(root / GUIDE_REL, GUIDE_KIT), f"{root.name}: нет файла инструкции или он не такой, как в ките"
+        assert C.guide_text(str(root), kit_root=str(tmp / "no-kit")) == kit_text, f"{root.name}: эффективный текст"
+    # состарившийся проект: файла нет — сухой прогон называет его и ничего не пишет, `--apply` кладёт под своим именем
+    old = _new_kit_project(tmp / "old")
+    (old / GUIDE_REL).unlink()
+    before = _tree(old)
+    dry = _update(old, apply=False)
+    assert "Ничего не записано" in dry.stdout and GUIDE_REL in dry.stdout and _tree(old) == before, dry.stdout[-500:]
+    _update(old)
+    assert _same_text(old / GUIDE_REL, GUIDE_KIT) and not list((old / "Prompts").glob("*.new")), "файл не доставлен или получил .new"
+    fresh = _new_kit_project(tmp / "fresh")
+    assert sorted(p.name for p in (old / "Prompts").iterdir()) == sorted(p.name for p in (fresh / "Prompts").iterdir()), \
+        "после обновления папка Prompts не такая, как у свежего проекта"
+    after = _tree(old)
+    again = _update(old)
+    assert "уже актуальны" in again.stdout and _tree(old) == after, f"второй update что-то изменил:\n{again.stdout[-500:]}"
+    # правка проекта остаётся, версия кита — рядом; повторное обновление записывает тот же `.new` и ничего не меняет
+    mine = kit_text + "\n| 10 | свой источник | `policy` | `akdb_policy` | `Policies` |\n"
+    (old / GUIDE_REL).write_bytes(mine.encode("utf-8"))
+    _update(old)
+    assert (old / GUIDE_REL).read_bytes() == mine.encode("utf-8"), "правка проекта затёрта"
+    assert _same_text(old / "Prompts" / "KB_classify.md.new", GUIDE_KIT), "рядом не лёг текст кита"
+    assert sorted(p.name for p in (old / "Prompts").glob("*.new")) == ["KB_classify.md.new"], "лишние .new"
+    snap = _tree(old)
+    _update(old)
+    assert _tree(old) == snap, "повторный update изменил проект"
+    assert C.guide_text(str(old), kit_root=str(tmp / "no-kit")) == mine, "инструкцией стал не файл проекта"
+    # проект, удаливший файл и внёсший его в список игнорируемых, файла назад не получает (правило всех файлов seed)
+    (old / GUIDE_REL).unlink()
+    (old / "Prompts" / "KB_classify.md.new").unlink()
+    (old / "aurora.update_ignore.txt").write_text(GUIDE_REL + "\n", encoding="utf-8")
+    _update(old)
+    assert not (old / GUIDE_REL).exists(), "update вернул файл, который проект исключил"
+
+
+@test
+def test_guide_text_prefers_the_project_file(tmp: Path):
+    """`guide_text`: файл проекта, иначе файл кита, иначе пустая строка с предупреждением в stderr (один раз на проект);
+    пустой файл проекта и ссылка за пределы проекта файлом не считаются; `kit_guide_text` читает только кит."""
+    C = _C()
+    kit = tmp / "kit"
+    _put(kit / "scaffold" / "Prompts" / "KB_classify.md", "# Инструкция кита\n\nШаг кита.\n")
+    root = tmp / "proj"
+    (root / "AuroraKnowledgeDB").mkdir(parents=True)
+    kit_dir = str(kit)
+    # проекта нет — берётся кит
+    assert C.guide_text(str(root), kit_root=kit_dir) == "# Инструкция кита\n\nШаг кита.\n"
+    assert C.guide_source(str(root), kit_root=kit_dir) == ("# Инструкция кита\n\nШаг кита.\n", "kit",
+                                                           os.path.join(kit_dir, "scaffold/Prompts/KB_classify.md"))
+    # файл проекта сильнее кита; слияния нет
+    _put(root / "Prompts" / "KB_classify.md", "# Моя инструкция\n\nШаг проекта.\n")
+    got = C.guide_source(str(root), kit_root=kit_dir)
+    assert got[0] == "# Моя инструкция\n\nШаг проекта.\n" and got[1] == "project" and got[2].endswith("Prompts/KB_classify.md"), got
+    assert C.guide_text(str(root), kit_root=kit_dir) == "# Моя инструкция\n\nШаг проекта.\n"
+    # окончания строк CRLF читаются как LF (текст один на всех платформах)
+    _put(root / "Prompts" / "KB_classify.md", "# CRLF\r\nстрока\r\n")
+    assert C.guide_text(str(root), kit_root=kit_dir) == "# CRLF\nстрока\n"
+    # пустой файл проекта — как отсутствующий
+    for blank in ("", "   \n\n \t\n"):
+        _put(root / "Prompts" / "KB_classify.md", blank)
+        assert C.guide_source(str(root), kit_root=kit_dir)[1] == "kit", repr(blank)
+    # ссылка на файл вне проекта проектным текстом не считается: чужой файл не попадёт в запрос модели
+    outside = _put(tmp / "outside" / "секрет.md", "Чужой текст, которого в проекте быть не должно.\n")
+    link = root / "Prompts" / "KB_classify.md"
+    link.unlink()
+    try:
+        os.symlink(outside, link)
+    except (OSError, NotImplementedError, AttributeError):
+        pass                                              # платформа без ссылок: остальное проверено
+    else:
+        assert C.guide_text(str(root), kit_root=kit_dir) == "# Инструкция кита\n\nШаг кита.\n", "прочитана ссылка за пределы проекта"
+        link.unlink()
+    # кит
+    assert C.kit_guide_text(kit_dir) == "# Инструкция кита\n\nШаг кита.\n"
+    assert C.kit_guide_text(str(tmp / "no-kit")) == ""
+    assert C.kit_guide_text(str(KIT)) == GUIDE_KIT.read_text(encoding="utf-8")
+    # нигде нет — пустая строка и одно предупреждение в stderr на проект
+    bare = tmp / "bare"
+    (bare / "AuroraKnowledgeDB").mkdir(parents=True)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()) as out:
+        assert C.guide_text(str(bare), kit_root=str(tmp / "no-kit")) == ""
+        assert C.guide_text(str(bare), kit_root=str(tmp / "no-kit")) == ""
+    assert err.getvalue().count("инструкции «Как определить тип карточки» нет") == 1 and "kit:update" in err.getvalue(), err.getvalue()
+    assert out.getvalue() == "", "предупреждение попало в stdout"
+    assert C.guide_source(str(bare), kit_root=str(tmp / "no-kit")) == ("", "", "")
+
+
+@test
+def test_kb_cards_guide_prints_the_effective_text(tmp: Path):
+    """AC-CT-07.3: `kb:cards --guide` печатает эффективный текст — файл проекта, иначе файл кита; поясняет «откуда» в
+    stderr; `--json` отдаёт источник и текст; нет нигде — код 2; команда ничего не пишет."""
+    root = _cli_project(tmp / "p")
+    assert "--guide" in _cli(root, "--help", expect=0).stdout
+    # ни в проекте, ни в ките (указателя на кит нет) — сбой с советом, stdout пуст
+    cp = _cli(root, "--guide", expect=2)
+    assert cp.stdout == "" and "kit:update" in cp.stderr and GUIDE_REL in cp.stderr, cp.stderr
+    # файл проекта печатается как есть, без пояснений
+    mine = "# Моя инструкция\n\n## Шаг 7. Как ответить\n\nОтветьте строкой.\n"
+    _put(root / GUIDE_REL, mine)
+    before = _snapshot(root)
+    cp = _cli(root, "--guide", expect=0)
+    assert cp.stdout == mine and cp.stderr == "", (cp.stdout, cp.stderr)
+    data = json.loads(_cli(root, "--guide", "--json", expect=0).stdout)
+    assert data["origin"] == "project" and data["text"] == mine and data["chars"] == len(mine) and data["path"].endswith(GUIDE_REL), data
+    # проектного файла нет, но кит известен (указатель проекта) — текст кита и пояснение в stderr
+    (root / GUIDE_REL).unlink()
+    _put(root / ".aurora" / "kit_path.txt", str(KIT) + "\n")
+    cp = _cli(root, "--guide", expect=0)
+    assert cp.stdout == GUIDE_KIT.read_text(encoding="utf-8") and "показан текст кита" in cp.stderr, cp.stderr
+    assert json.loads(_cli(root, "--guide", "--json", expect=0).stdout)["origin"] == "kit"
+    (root / ".aurora" / "kit_path.txt").unlink()
+    _put(root / GUIDE_REL, mine)
+    assert _snapshot(root) == before, "kb:cards --guide изменил проект"
+    # запуск из кита (корень проекта — --root): текст кита
+    bare = tmp / "bare"
+    (bare / "AuroraKnowledgeDB").mkdir(parents=True)
+    cp = _py(KIT / "scripts" / "card_types.py", "--guide", "--root", str(bare), cwd=bare)
+    assert cp.stdout == GUIDE_KIT.read_text(encoding="utf-8"), "из кита напечатан не текст кита"
+
+
+# C-6: ответ классификатора. Выражения проверяются на примерах, которые подходят и не подходят.
+ANSWER_OK = "type: concept; template: akdb_concept_v1.0.md; section: Concepts; why: пункт 9 шага 2"
+
+
+@test
+def test_classify_answer_regexes(_t):
+    """C-6: выражения строки ответа и отказа принимают формат шага 7 и отвергают всё остальное."""
+    C = _C()
+    good = (ANSWER_OK, "type: status-model; template: akdb_status-model_v1.0.md; section: Statuses; why: п. 3",
+            "type:concept;template:x;section:y;why:z", "type:  a1;  template:  b;  section:  c;  why:  d e f; g")
+    for line in good:
+        assert C.ANSWER_RE.match(line), line
+        assert not C.NONE_RE.match(line), line
+    m = C.ANSWER_RE.match(ANSWER_OK)
+    assert m.groupdict() == {"type": "concept", "template": "akdb_concept_v1.0.md", "section": "Concepts",
+                             "why": "пункт 9 шага 2"}, m.groupdict()
+    for line in ("type: Concept; template: a; section: b; why: c",              # тип — строчные буквы, цифры и «-»
+                 "type: 1abc; template: a; section: b; why: c",
+                 "type: concept; section: b; template: a; why: c",              # порядок полей зафиксирован
+                 "type: concept; template: a; section: b; why:",                # причина обязательна
+                 "type: concept; template: a; section: b",
+                 "type: concept, template: a, section: b, why: c",
+                 " type: concept; template: a; section: b; why: c",             # якорь: строка начинается с «type:»
+                 "`" + ANSWER_OK + "`", "тип: concept; template: a; section: b; why: c",
+                 "type: <идентификатор типа>; template: <имя>; section: <папка>; why: <фраза>"):
+        assert not C.ANSWER_RE.match(line), line
+    for line in ("type: none; why: это задача трекера", "type:none;why:x"):
+        assert C.NONE_RE.match(line) and C.NONE_RE.match(line).group("why"), line
+    for line in ("type: none; why:", "type: none", "type: none; template: a; section: b; why: c", "type: concept; why: x",
+                 " type: none; why: x", "type: None; why: x"):
+        assert not C.NONE_RE.match(line), line
+
+
+@test
+def test_classify_answer_accepts_the_registry_types(tmp: Path):
+    """Ответ по каждому из тринадцати типов реестра принимается: тип, файл шаблона (наибольшая версия) и раздел — как в
+    реестре; у записей раздел — раздел базы или папка в `Raw/`, у исправления (раздела нет) — папка; отказ принимается."""
+    C = _C()
+    reg = _kit_registry(tmp)
+    for t in reg.types.values():
+        places = [p for p in (t.section, t.home) if p]
+        assert places, t.id
+        for place in places:
+            got = C.classify_answer(f"type: {t.id}; template: {t.template_file}; section: {place}; why: пункт шага 2", reg)
+            assert got == {"ok": True, "none": False, "type": t.id, "template": t.template_file, "section": place,
+                           "why": "пункт шага 2"}, (t.id, got)
+    corr = reg.types["correction"]
+    assert corr.section == "" and corr.home == "Raw/corrections"
+    got = C.classify_answer(f"type: correction; template: {corr.template_file}; section: Raw/corrections/; why: слово человека", reg)
+    assert got["ok"] and got["section"] == "Raw/corrections", "косая черта в конце папки терпится"
+    assert C.classify_answer("type: none; why: это задача трекера", reg) == {"ok": True, "none": True, "type": "none",
+                                                                          "why": "это задача трекера"}
+    # пояснения вокруг строки и отступ не мешают: читается только строка ответа
+    wrapped = f"Шаг 2, пункт 9.\n\n   {ANSWER_OK}   \n\nПодробнее — в шаге 3.\n"
+    assert C.classify_answer(wrapped, reg)["type"] == "concept"
+    assert C.classify_answer(ANSWER_OK.replace("\n", "\r\n") + "\r\n", reg)["ok"]
+    # после наложения блока `cards:` тип остаётся годным, пока включён
+    assert C.classify_answer(ANSWER_OK, reg)["ok"]
+
+
+@test
+def test_classify_answer_rejects_what_does_not_match_the_registry(tmp: Path):
+    """Ответ вне формата или называющий тип, шаблон и раздел вопреки реестру отклоняется с кодом и пояснением; ничего не
+    «угадывается»: ни похожий тип, ни другая версия шаблона, ни регистр, ни ответ из двух строк."""
+    C = _C()
+    reg = _kit_registry(tmp)
+
+    def code(text) -> str:
+        got = C.classify_answer(text, reg)
+        assert got["ok"] is False and got["message"], (text, got)
+        return got["error"]
+
+    for text in ("", None, "   \n\n", "Это понятие «Заявка».", "type: concept", 42,
+                 "`" + ANSWER_OK + "`",                                         # обёртка в кавычки — не формат шага 7
+                 "type: <идентификатор типа>; template: <имя файла шаблона>; section: <папка раздела>; why: <фраза>",
+                 "type: concept; template: akdb_concept_v1.0.md; section: Concepts; why:"):
+        assert code(text) == "format", repr(text)
+    assert code(ANSWER_OK + "\n" + ANSWER_OK) == "ambiguous", "две одинаковые строки ответа — неоднозначно"
+    assert code(ANSWER_OK + "\ntype: none; why: передумал") == "ambiguous"
+    assert code(ANSWER_OK + "\n" + ANSWER_OK.replace("concept", "glossary").replace("Concepts", "Glossary")) == "ambiguous"
+    assert code("type: person; template: akdb_person_v1.0.md; section: People; why: человек") == "unknown-type"
+    assert "нельзя" in C.classify_answer("type: person; template: a; section: b; why: c", reg)["message"]
+    assert code("type: none; template: akdb_x_v1.0.md; section: X; why: нет") == "unknown-type", "отказ пишется короче"
+    assert code(ANSWER_OK.replace("akdb_concept_v1.0.md", "akdb_process_v1.0.md")) == "template", "шаблон другого типа"
+    assert code(ANSWER_OK.replace("v1.0", "v0.9")) == "template", "чужая версия: годится файл, который назван в реестре"
+    assert code(ANSWER_OK.replace("akdb_concept_v1.0.md", "TemplatesCommon/akdb_concept_v1.0.md")) == "template"
+    assert code(ANSWER_OK.replace("akdb_concept_v1.0.md", "concept")) == "template"
+    assert code(ANSWER_OK.replace("Concepts", "Processes")) == "section", "раздел другого типа"
+    assert code(ANSWER_OK.replace("Concepts", "concepts")) == "section", "регистр имён папок различается"
+    assert code(ANSWER_OK.replace("Concepts", "AuroraKnowledgeDB/Concepts")) == "section"
+    assert code("type: correction; template: akdb_correction_v1.0.md; section: Corrections; why: x") == "section"
+    got = C.classify_answer(ANSWER_OK.replace("Concepts", "Processes"), reg)
+    assert (got["type"], got["section"]) == ("concept", "Processes") and "Concepts" in got["message"], got
+    # выключенный проектом тип отклоняется, остальные принимаются
+    root = _cfg_project(tmp / "off", CFG_BASE)
+    C.save_overrides(str(root), {"glossary": {"enabled": False}}, known=set(KIT_IDS))
+    off = _reg(root)
+    bad = C.classify_answer("type: glossary; template: akdb_glossary_v1.0.md; section: Glossary; why: расшифровка", off)
+    assert bad["ok"] is False and bad["error"] == "disabled" and "выключен" in bad["message"], bad
+    assert C.classify_answer(ANSWER_OK, off)["ok"]
+    # пустой реестр (шаблонов нет нигде): любой тип — вне реестра, отказ по-прежнему принимается
+    empty = C.registry(str(tmp / "nowhere"), kit_root=str(tmp / "no-kit"))
+    assert not empty.types and C.classify_answer(ANSWER_OK, empty)["error"] == "unknown-type"
+    assert C.classify_answer("type: none; why: некуда", empty)["none"] is True
+
+
+@test
+def test_classify_answer_is_linear_on_hostile_text(_t):
+    """Разбор ответа линеен: 200000 пробелов, переводов строк, «;» и «type:» не задерживают его (регулярные выражения без
+    вложенных повторов, строки читаются по одной)."""
+    C = _C()
+    reg = C.Registry()
+    hostile = ("type:" + " " * 200000, "\n" * 200000, "type: a; template: " + ";" * 200000, "type: a; template: " + "x;" * 100000,
+               "type:" + " \n" * 100000, ("type: a; template: x; section: y; why:" + " " * 20 + "\n") * 5000,
+               "type: none; why:" + " " * 200000, ANSWER_OK + " " * 200000)
+    t0 = time.time()
+    for text in hostile:
+        C.classify_answer(text, reg)
+    assert time.time() - t0 <= 5, f"разбор ответа на враждебном тексте: {time.time() - t0:.1f} с"
+    assert C.classify_answer(ANSWER_OK + " " * 200000, _kit_registry(Path(tempfile.gettempdir()) / "no-such-project"))["ok"]
+
+
+@test
+def test_guide_is_documented(_t):
+    """Руководство (оба языка) описывает инструкцию и `--guide` и больше не относит саму инструкцию к «будет в следующих
+    выпусках»; дерево проекта и справочник команд называют файл и флаг."""
+    for rel, heading, later, other in (
+            ("docs/card-templates.md", "\n### Как выбрать тип: `Prompts/KB_classify.md`\n", "## 10. Что будет в следующих выпусках",
+             "каталог типов\n`AuroraKnowledgeDB/meta/card_types.md`"),
+            ("docs/en/card-templates.md", "\n### How to pick a type: `Prompts/KB_classify.md`\n", "## 10. What the next releases bring",
+             "type catalogue `AuroraKnowledgeDB/meta/card_types.md`")):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert text.count("\n") <= 400, f"{rel}: длиннее 400 строк"
+        assert "`kb:cards --guide`" in text and "`card_types.classify_answer`" in text and "KB_classify.md.new" in text, rel
+        assert re.search(r"(?m)^\| `--guide` \| ", text), f"{rel}: флаг --guide не в таблице"
+        assert text.count(heading) == 1, f"{rel}: подраздела про выбор типа нет"
+        section = text.split(heading)[1].split("\n## ")[0]
+        for step in range(8):
+            assert f"\n| {step} | " in section, f"{rel}: в таблице шагов нет шага {step}"
+        tail = text.split(later)[1]
+        assert "KB_classify" not in tail, f"{rel}: инструкция всё ещё в списке «чего нет»"
+        assert other in tail, f"{rel}: из списка «чего нет» ушло лишнее"
+    for rel in ("docs/INSTALL.md", "docs/en/INSTALL.md"):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert "Prompts/KB_classify.md" in text.split("## 2.")[1].split("## 3.")[0], f"{rel}: файла нет в дереве проекта"
+        assert "kb:cards --guide" in next(l for l in text.splitlines() if l.startswith("| `cards` |")), rel
+    reg = (KIT / "commands.txt").read_text(encoding="utf-8")
+    assert "(`--guide`)" in next(l for l in reg.splitlines() if l.startswith("kb | kb:cards |"))
+    data = json.loads((KIT / "cockpit" / "i18n" / "data" / "en.json").read_text(encoding="utf-8"))
+    assert "`--guide`" in data["commands"]["kb:cards"]
+    for rel in ("docs/commands.md", "docs/en/commands.md", "skills/aurora-vault/SKILL.md"):
+        line = next(l for l in (KIT / rel).read_text(encoding="utf-8").splitlines() if l.startswith("| `kb:cards` |"))
+        assert "`--guide`" in line, f"{rel}: строка kb:cards не называет --guide"

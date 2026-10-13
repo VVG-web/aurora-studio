@@ -23,6 +23,10 @@ This page describes what works in the kit today. What is not there yet is named 
   old one and behaviour does not change.
 - The **`kb:cards`** command shows the registry and checks cards against the templates of their types
   (section 7).
+- The instruction **"How to determine the card type"** is the file `Prompts/KB_classify.md`: steps 0–7 that pick
+  one type without opening all the templates (section 3). A new project gets it on creation, an existing one on
+  `aurora.py update <project> --apply` by the same **seed** rule; `kb:cards --guide` prints the text the project
+  uses.
 - After its summary line `kb:lint` prints a "card templates" section (section 8), and `kit:doctor` adds three
   lines about the delivered templates.
 - The check **only advises.** Source parsing, repair and routes behave as before; a card without `template:` in
@@ -116,6 +120,33 @@ Worth knowing about the table:
   entity, the "Interfaces" section of a system, a concept with a "Properties" section), nor specifications,
   deliveries and acceptance. Person, organisation, place and project are not introduced: there is not a single
   such card in the bases, and personal data is a risk.
+
+### How to pick a type: `Prompts/KB_classify.md`
+
+Reading thirteen templates in a row to pick one takes long. For this there is a short instruction, "How to
+determine the card type" (up to 9000 characters): first pick the type by its steps, and only then open the one
+template of that type. The instruction is in Russian, like the templates.
+
+| Step | What it is about |
+|---|---|
+| 0 | this is knowledge about a subject, not a task, not our own artifact, not a work status, not an opinion and not a table of contents |
+| 1 | the knowledge is extracted from a source or belongs to a human (then it is a record, step 4) |
+| 2 | the table "if the source is… → type, template, section": the **first match from the top** is taken |
+| 3 | borders of neighbouring pairs: `concept` and `glossary`, `requirement` and `process`, `reference` and `concept` … |
+| 4 | records — a decision, a question, a correction, a reference: a human writes them, the file lies in `Raw/` |
+| 5 | maps are created by the engine only |
+| 6 | one entity — one card: find the existing one and extend it first, do not start a second |
+| 7 | the answer format |
+
+The answer is one line: `type: <type>; template: <template file>; section: <section>; why: <reason>`; if no type
+fits — `type: none; why: <reason>`. Inventing a type or picking a "similar" one is forbidden. The module has
+`card_types.classify_answer` to check such an answer: the type, the template and the section are compared with
+the registry, and an answer that does not fit is rejected, not "guessed".
+
+The file belongs to the project: edit it in any editor, keeping steps 0–7 and the answer line of step 7. A kit
+update does not overwrite your file: the new version of the text lands next to it as `KB_classify.md.new`. The
+kit does not add a project's own type to the tables of steps 2 and 3 — the project adds the row. The built-in
+agent does not put these steps into its requests yet (section 10).
 
 ## 4. Type, kind and status — three different axes
 
@@ -267,6 +298,7 @@ Run in the project root (in the panel — the `kb:cards` command; in a terminal 
 | `--check --strict` | the same, but errors stay errors and give exit code 1 |
 | `--stats` | cards in total, by template versions, without a template, with violations by code |
 | `--write` | the type catalogue `AuroraKnowledgeDB/meta/card_types.md`: without `--apply` — the plan only, with `--apply` — the write (on a dirty git tree — with `--allow-dirty`) |
+| `--guide` | the effective text of the instruction "How to determine the card type": the project's `Prompts/KB_classify.md`, or the kit's file if there is none or it is empty |
 | `--all` | with `--check` and `--stats`: include the base archive (`_archive/`) |
 | `--summary` | with `--check`: the summary line only |
 | `--json` | machine output |
@@ -274,7 +306,7 @@ Run in the project root (in the panel — the `kb:cards` command; in a terminal 
 
 Exit code: **0** — no errors (in the ordinary mode always, if the check took place), **1** — errors in strict
 mode, **2** — a failure: no base folder, no templates (the registry is empty — update the project with
-`kit:update`), no such file or type. The command writes no cards; the only thing it writes is the type catalogue, by `--write --apply`.
+`kit:update`), no such file or type, no instruction. The command writes no cards; the only thing it writes is the type catalogue, by `--write --apply`.
 
 How to read the `--check` output:
 
@@ -333,9 +365,10 @@ in the next releases.
 ## 10. What the next releases bring
 
 Not here yet and not described as ready: type settings in the panel and the `cards:` block in the config; the
-type-choosing instruction `Prompts/KB_classify.md` and the type catalogue `AuroraKnowledgeDB/meta/card_types.md`;
-a mandatory template when cards are created and changed (writing `template:` into the head, refusing to create
-a card of a type outside the registry); records in `Raw/decisions`, `Raw/questions`, `Raw/reference` and the
-`kb:record` command; cited documents (the `Documents` section, the `kb:cite` command); migration of the base to
-templates (`kb:conform`); the `## Расхождения` section and the ladder "trust → question → correction". Until
-those releases the check remains advice, and the rule "a card only by a template" is a goal, not a rule in force.
+type catalogue `AuroraKnowledgeDB/meta/card_types.md`; a mandatory template when cards are created and changed
+(writing `template:` into the head, refusing to create a card of a type outside the registry, putting the steps
+of the type-choosing instruction into the built-in agent's requests); records in `Raw/decisions`, `Raw/questions`,
+`Raw/reference` and the `kb:record` command; cited documents (the `Documents` section, the `kb:cite` command);
+migration of the base to templates (`kb:conform`); the `## Расхождения` section and the ladder "trust → question →
+correction". Until those releases the check remains advice, and the rule "a card only by a template" is a goal, not
+a rule in force.

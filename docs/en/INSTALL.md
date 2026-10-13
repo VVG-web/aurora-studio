@@ -128,6 +128,8 @@ Workspaces/_archive/
 Scripts/                      the project's own scripts (handlers, one-off migrations)
 bots/                         the project's bots: prompt, MCP, skills, attachments, schedule ("Bots")
 Templates/ · Prompts/ · Settings/
+                              Prompts/KB_classify.md — the instruction "How to determine the card type" (the seed
+                              rule: your edit stays, the kit's version lands next to it as .new; text — `kb:cards --guide`)
 TemplatesCommon/              the kit's common templates (the seed rule); akdb_*_v1.0.md — 13 knowledge-card
                               templates: they come from the kit, a copy the project changed stays, .new lands next to it
 start-aurora.command · start-aurora.bat      launch files
@@ -172,7 +174,7 @@ scripts read them from here, not from their own bodies.
 | `privacy` | `scrub`: `off` · `report` (default) · `mask`; `mask_contacts`, `include_raw` |
 | `reports.analyst` | the year, roster, events, the folder of exports and the dashboard's output file |
 | `artifacts` | the registry of the project's artifact kinds: `title`, `template`, `out`, prompt, `tech_agnostic` (`make:kinds`) |
-| `cards` | the rules of the knowledge-card types, per type: `title` (the label), `description` (up to 220 characters), `enabled` (`"false"` turns the type off); the section, class, template, kinds and statuses stay with the template. There is no block by default — an example is commented at the end of the file; the types are listed by `kb:cards --list`, the catalogue is `AuroraKnowledgeDB/meta/card_types.md` (built by the install and `kit:update`, manual edits are lost) |
+| `cards` | the rules of the knowledge-card types, per type: `title` (the label), `description` (up to 220 characters), `enabled` (`"false"` turns the type off); the section, class, template, kinds and statuses stay with the template. There is no block by default — an example is commented at the end of the file; the types are listed by `kb:cards --list`, the catalogue is `AuroraKnowledgeDB/meta/card_types.md` (built by the install and `kit:update`, manual edits are lost); how to pick a type — `Prompts/KB_classify.md` (`kb:cards --guide`) |
 | `graphify` | `code_dirs` — folders with code for `kb:code-graph` |
 | `bootstrap` | the `knowledge` share threshold below which drafts are admitted into packs with a loud header |
 
