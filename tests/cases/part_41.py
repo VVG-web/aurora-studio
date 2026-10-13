@@ -1563,6 +1563,20 @@ def test_refused_checkpoint_leaves_no_index_and_the_agent_commit_takes_only_the_
     assert len(batches) == 1 and out["batches"] == 1, "цикл пошёл дальше, хотя чекпойнт отказал"
 
 
+def _hooked_project(tmp: Path) -> Path:
+    """Проект под git с pre-commit (режим block) и закоммиченной основой — как у аналитика.
+
+    `.gitignore` с `__pycache__/` — как у настоящего проекта (его пишет установка): хук запускает Python из
+    `.aurora/scripts`, и без `PYTHONDONTWRITEBYTECODE` (он стоит в оболочке разработчика, но не в CI) рядом
+    с модулями ложился `__pycache__/*.pyc` — лишний «файл человека» в чекпойнте, а проверки считали файлы."""
+    root = make_project(tmp, git=True)
+    run("aurora_hooks.py", "--install", "--mode", "block", cwd=root, expect_rc=0)
+    (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    _git_in(root, "add", "-A")
+    _git_in(root, "commit", "-qm", "база", env={"AURORA_SKIP_RATCHET": "1"}, check=False)
+    return root
+
+
 @test
 def test_checkpoint_retries_a_blinking_index_lock_and_restores_the_humans_own_index(tmp: Path):
     """BL-SEC-18 (проход 5): замок индекса мигает от параллельного `git status` — чекпойнт повторяет и проходит;
@@ -1572,10 +1586,7 @@ def test_checkpoint_retries_a_blinking_index_lock_and_restores_the_humans_own_in
     from unittest.mock import patch
     sys.path.insert(0, str(SCRIPTS))
     R = importlib.import_module("agent_runner")
-    root = make_project(tmp, git=True)
-    run("aurora_hooks.py", "--install", "--mode", "block", cwd=root, expect_rc=0)
-    _git_in(root, "add", "-A")
-    _git_in(root, "commit", "-qm", "база", env={"AURORA_SKIP_RATCHET": "1"}, check=False)
+    root = _hooked_project(tmp)
     lock = root / ".git" / "index.lock"
     pauses: list = []
 
@@ -1648,10 +1659,7 @@ def test_checkpoint_lock_after_write_tree_retries_add_and_commit_and_restores_on
     from unittest.mock import patch
     sys.path.insert(0, str(SCRIPTS))
     R = importlib.import_module("agent_runner")
-    root = make_project(tmp, git=True)
-    run("aurora_hooks.py", "--install", "--mode", "block", cwd=root, expect_rc=0)
-    _git_in(root, "add", "-A")
-    _git_in(root, "commit", "-qm", "база", env={"AURORA_SKIP_RATCHET": "1"}, check=False)
+    root = _hooked_project(tmp)
     lock = root / ".git" / "index.lock"
     real_git = R.git
     staged = lambda: sorted(_git_in(root, "diff", "--cached", "--name-only").stdout.split())  # noqa: E731
