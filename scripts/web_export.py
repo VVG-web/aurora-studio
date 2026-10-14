@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -208,14 +209,24 @@ def _read_body(r, limit: int, deadline: float) -> bytes:
         declared = int(r.headers.get("Content-Length") or -1)
     except (TypeError, ValueError):
         declared = -1
+    if "chunked" in (r.headers.get("Transfer-Encoding") or "").lower():
+        declared = -1                   # при chunked длину задают куски, Content-Length не в счёт
     if declared > limit:
         raise too_big()                 # отказ до чтения тела
+    # `read1`, а не `read`: `read(n)` держится, пока не наберёт n байт или не придёт конец,
+    # и сервер, отдающий байт за раз, не пускал бы к проверке срока часами. `read1` отдаёт
+    # то, что пришло одним приёмом из сокета, — срок проверяется после каждой порции.
+    rd = getattr(r, "read1", None) or r.read
     parts, got = [], 0
     while True:
         if _now() > deadline:
             raise _BodyRefused("истёк общий срок")
-        chunk = r.read(min(_CHUNK, limit - got + 1))
+        chunk = rd(min(_CHUNK, limit - got + 1))
         if not chunk:
+            # Недолитое тело `read(n)` с Content-Length молча принимает за конец: без этой
+            # проверки обрыв давал бы усечённую страницу и обрезанный файл вложения.
+            if declared >= 0 and got != declared:
+                raise http.client.IncompleteRead(b"".join(parts), declared - got)
             return b"".join(parts)
         got += len(chunk)
         if got > limit:
@@ -561,6 +572,8 @@ def fetch_asset(url: str, out_dir: str, apply: bool, label: str = "") -> tuple:
         return name, ""
     if not apply:
         return name, ""
+    # `max_bytes` — ключевой аргумент: подменный `_get` в тестах, до которых доходят вложения,
+    # обязан его принимать (`max_bytes=None`).
     data, _enc, err = _get(url, "", ASSET_TIMEOUT, max_bytes=ASSET_MAX_BYTES)
     if err:
         return "", err

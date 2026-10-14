@@ -1568,7 +1568,7 @@ def test_web_connector_limits_body_size_and_total_time(tmp: Path):
             route = self.path.split("/doc")[0]            # «/chunked/doc.pdf» — то же тело, что у «/chunked»
             if route == "/small":
                 body = b"<p>ok \xd1\x82</p>" * 10
-            elif route in ("/declared", "/chunked", "/exact"):
+            elif route in ("/chunked", "/exact"):          # «/declared» тела не отдаёт вовсе
                 body = big if route != "/exact" else big[:1000]
             else:
                 body = b""
@@ -1614,9 +1614,27 @@ def test_web_connector_limits_body_size_and_total_time(tmp: Path):
         WE.PAGE_MAX_BYTES = 1000
         raw, _e, err = WE._get(base + "/chunked", "", 5, max_bytes=10_000)
         assert raw == big and not err, "явный предел не применён"
-        # Content-Length больше предела: тело не читают (клиент закрывает соединение)
-        raw, _e, err = WE._get(base + "/declared", "", 5)
-        assert raw == b"" and "слишком большой ответ" in err
+        # Content-Length больше предела: тело не читают — подменный ответ бросает на любом чтении
+        class NoRead:
+            headers = type("Hd", (), {"get": lambda self, k, d=None: "10000000" if k == "Content-Length" else "",
+                                      "get_content_charset": lambda self: None})()
+
+            def read(self, *a):
+                raise AssertionError("тело читали при Content-Length больше предела")
+            read1 = read
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+        real_open = WE.guarded_urlopen
+        WE.guarded_urlopen = lambda req, timeout=None, allow_private=(): NoRead()
+        try:
+            raw, _e, err = WE._get("https://example.com/declared", "", 5)
+        finally:
+            WE.guarded_urlopen = real_open
+        assert raw == b"" and err.startswith("слишком большой ответ"), err
     finally:
         WE.ALLOW_PRIVATE, WE.PAGE_MAX_BYTES, WE.ASSET_MAX_BYTES, WE.RETRIES, WE.time.sleep = real
         srv.shutdown()
@@ -1632,6 +1650,7 @@ def test_web_connector_limits_body_size_and_total_time(tmp: Path):
             clock[0] += 1.0
             Slow.n += 1
             return b"a" if Slow.n < 1000 else b""
+        read1 = read
 
         def __enter__(self):
             return self
@@ -1657,6 +1676,78 @@ def test_web_connector_limits_body_size_and_total_time(tmp: Path):
         assert raw == b"a" * 9 and not err, (raw, err)
     finally:
         WE.guarded_urlopen, WE._now, WE.time.sleep = real_open, real_now, real_sleep
+
+
+
+@test
+def test_web_connector_real_slow_server_and_truncated_body(tmp: Path):
+    """BL-SEC-17: настоящий сервер-капельник (байт за 0,05 с, ответ на часы вперёд) отсекается общим сроком
+    2×timeout, а не ждёт конца ответа — и с Content-Length, и с chunked. Оборванное соединение
+    (Content-Length 1000, отдано 500) — не успех: IncompleteRead, повторы, строка в отчёте, а вложение
+    не пишется на диск."""
+    _path()
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    WE = importlib.import_module("web_export")
+    stop, nap = threading.Event(), time.sleep      # `time.sleep` модуля подменяется ниже — серверу нужен настоящий
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            if self.path.startswith("/short"):
+                self.send_header("Content-Length", "1000")
+                self.end_headers()
+                self.wfile.write(b"y" * 500)
+                return                                   # соединение закрывается раньше обещанного
+            chunked = self.path.startswith("/drip-chunked")
+            if chunked:
+                self.send_header("Transfer-Encoding", "chunked")
+            else:
+                self.send_header("Content-Length", "100000")
+            self.end_headers()
+            try:
+                for _ in range(100000):
+                    if stop.is_set():
+                        return
+                    self.wfile.write(b"1\r\nx\r\n" if chunked else b"x")
+                    self.wfile.flush()
+                    nap(0.05)
+            except OSError:
+                pass
+
+        def log_message(self, *a):
+            pass
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    real = (WE.ALLOW_PRIVATE, WE.RETRIES, WE.time.sleep)
+    slept = []
+    try:
+        WE.ALLOW_PRIVATE = ["127.0.0.1"]
+        WE.RETRIES = 3
+        WE.time.sleep = slept.append
+        for path in ("/drip", "/drip-chunked"):
+            t0 = time.monotonic()
+            raw, _e, err = WE._get(base + path, "", 1)        # срок 2 с; ответ сервера длился бы 5000 с
+            took = time.monotonic() - t0
+            assert raw == b"" and err == "истёк общий срок", (path, err)
+            assert took < 30, f"{path}: ждали конца ответа ({took:.1f} с)"
+        assert not slept, "отказ по сроку повторялся"
+        # обрыв: не успех, а ошибка с повторами
+        raw, _e, err = WE._get(base + "/short", "", 5)
+        assert raw == b"" and err.startswith("IncompleteRead"), (raw[:20], err)
+        assert len(slept) == WE.RETRIES - 1, slept
+        html, err = WE.fetch(base + "/short")
+        assert html == "" and err.startswith("IncompleteRead"), (html[:20], err)
+        out = tmp / "mirror"
+        name, err = WE.fetch_asset(base + "/short/doc.pdf", str(out), True, "Акт")
+        assert name == "" and err.startswith("IncompleteRead"), (name, err)
+        assert not (out / WE.ASSET_DIR).exists() or not list((out / WE.ASSET_DIR).iterdir()), "обрезанный файл на диске"
+    finally:
+        WE.ALLOW_PRIVATE, WE.RETRIES, WE.time.sleep = real
+        stop.set()
+        srv.shutdown()
+        srv.server_close()
 
 
 @test
