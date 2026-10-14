@@ -1568,8 +1568,8 @@ def test_web_connector_limits_body_size_and_total_time(tmp: Path):
             route = self.path.split("/doc")[0]            # «/chunked/doc.pdf» — то же тело, что у «/chunked»
             if route == "/small":
                 body = b"<p>ok \xd1\x82</p>" * 10
-            elif route in ("/chunked", "/exact"):          # «/declared» тела не отдаёт вовсе
-                body = big if route != "/exact" else big[:1000]
+            elif route in ("/chunked", "/exact", "/mid"):  # «/declared» тела не отдаёт вовсе
+                body = {"/chunked": big, "/exact": big[:1000], "/mid": big[:3000]}[route]
             else:
                 body = b""
             self.send_response(200)
@@ -1608,9 +1608,13 @@ def test_web_connector_limits_body_size_and_total_time(tmp: Path):
         name, err = WE.fetch_asset(base + "/chunked/doc.pdf", str(out), True, "Акт")
         assert name == "" and "слишком большой ответ" in err, (name, err)
         assert not (out / WE.ASSET_DIR).exists() or not list((out / WE.ASSET_DIR).iterdir()), "частичный файл"
-        WE.ASSET_MAX_BYTES = 10_000                               # вложение выше предела страницы проходит
-        name, err = WE.fetch_asset(base + "/exact/doc.pdf", str(out), True, "Акт")
-        assert not err and (out / WE.ASSET_DIR / name).read_bytes() == big[:1000], err
+        # тело между пределами (1000 < 3000 < 4000): вложение проходит байт в байт, а страница на
+        # тот же адрес без своего предела отказывает — так пределы страницы и вложения различимы
+        name, err = WE.fetch_asset(base + "/mid/doc.pdf", str(out), True, "Акт")
+        assert not err and (out / WE.ASSET_DIR / name).read_bytes() == big[:3000], err
+        raw, _e, err = WE._get(base + "/mid/doc.pdf", "", 5)
+        assert raw == b"" and err.startswith("слишком большой ответ (> "), err
+        WE.ASSET_MAX_BYTES = 10_000
         WE.PAGE_MAX_BYTES = 1000
         raw, _e, err = WE._get(base + "/chunked", "", 5, max_bytes=10_000)
         assert raw == big and not err, "явный предел не применён"
@@ -1635,6 +1639,23 @@ def test_web_connector_limits_body_size_and_total_time(tmp: Path):
         finally:
             WE.guarded_urlopen = real_open
         assert raw == b"" and err.startswith("слишком большой ответ"), err
+
+        # chunked вместе с Content-Length: длину задают куски, заголовок не в счёт — отказа нет
+        class Chunked(NoRead):
+            headers = type("Hd", (), {"get": lambda self, k, d=None: {"Content-Length": "10000000",
+                                                                     "Transfer-Encoding": "chunked"}.get(k, ""),
+                                      "get_content_charset": lambda self: None})()
+            parts = [b"abc", b"def", b""]
+
+            def read(self, *a):
+                return self.parts.pop(0)
+            read1 = read
+        WE.guarded_urlopen = lambda req, timeout=None, allow_private=(): Chunked()
+        try:
+            raw, _e, err = WE._get("https://example.com/chunked-cl", "", 5)
+        finally:
+            WE.guarded_urlopen = real_open
+        assert raw == b"abcdef" and not err, (raw, err)
     finally:
         WE.ALLOW_PRIVATE, WE.PAGE_MAX_BYTES, WE.ASSET_MAX_BYTES, WE.RETRIES, WE.time.sleep = real
         srv.shutdown()
@@ -2094,6 +2115,10 @@ def test_web_token_binding_is_made_of_the_origins_that_answered(tmp: Path):
             return b"", "", "URLError: сеть недоступна (попыток: 3)"
         if "denied" in url:
             return b"", "", "HTTP 403"
+        if "toobig" in url:
+            return b"", "", "слишком большой ответ (> 5 МБ)"
+        if "slowbody" in url:
+            return b"", "", "истёк общий срок"
         return b"<html><body>x</body></html>", "utf-8", ""
 
     real_get, real_argv, cwd = WE._get, sys.argv, os.getcwd()
@@ -2132,6 +2157,14 @@ def test_web_token_binding_is_made_of_the_origins_that_answered(tmp: Path):
         assert SC.trusted_hosts("WEB") == ["https://denied.example.com"], SC.trusted_hosts("WEB")
         go(["http://127.0.0.1:9/a", "https://denied.example.com/x"])
         assert dict(sent)["http://127.0.0.1:9/a"] == "SECRET", sent
+        # отказ по размеру или сроку тела — тоже ответ: хост привязывается, а не «не ответил»
+        state.unlink()
+        out = go(["https://toobig.example.com/x", "https://slowbody.example.com/y"])
+        assert SC.trusted_hosts("WEB") == ["https://slowbody.example.com", "https://toobig.example.com"], \
+            SC.trusted_hosts("WEB")
+        assert "не ответили" not in out, out
+        assert WE.host_answered("слишком большой ответ (> 5 МБ)") and WE.host_answered("истёк общий срок")
+        assert not WE.host_answered("URLError: сеть недоступна (попыток: 3)")
         # (4) ни один хост не ответил: привязки нет, и об этом сказано одной строкой
         state.unlink()
         down.add("wiki.example.com")

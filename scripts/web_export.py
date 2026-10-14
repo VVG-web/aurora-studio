@@ -201,10 +201,20 @@ class _BodyRefused(Exception):
     """Тело ответа не принято: слишком большое или не уложилось в общий срок."""
 
 
+# Начала сообщений об отказе по телу: хост при этом ответил, и токен-привязка его учитывает.
+BODY_REFUSED_PREFIXES = ("слишком большой ответ", "истёк общий срок")
+
+
+def host_answered(err: str) -> bool:
+    """Ответил ли хост: успех, 304, любой HTTP-статус или отказ по размеру/сроку тела."""
+    return (not err or err == NOT_MODIFIED or err.startswith("HTTP ")
+            or err.startswith(BODY_REFUSED_PREFIXES))
+
+
 def _read_body(r, limit: int, deadline: float) -> bytes:
     """Тело ответа кусками: не больше `limit` байт и не позже `deadline` (по `_now`)."""
     def too_big():
-        return _BodyRefused(f"слишком большой ответ (> {limit / 1048576:g} МБ)")
+        return _BodyRefused(f"{BODY_REFUSED_PREFIXES[0]} (> {limit / 1048576:g} МБ)")
     try:
         declared = int(r.headers.get("Content-Length") or -1)
     except (TypeError, ValueError):
@@ -220,7 +230,7 @@ def _read_body(r, limit: int, deadline: float) -> bytes:
     parts, got = [], 0
     while True:
         if _now() > deadline:
-            raise _BodyRefused("истёк общий срок")
+            raise _BodyRefused(BODY_REFUSED_PREFIXES[1])
         chunk = rd(min(_CHUNK, limit - got + 1))
         if not chunk:
             # Недолитое тело `read(n)` с Content-Length молча принимает за конец: без этой
@@ -849,7 +859,7 @@ def run(a) -> int:
             o = url_origin(url) if learn and sent else ()
             if o and not is_loopback_host(o[1]):
                 tried.add(origin_text(o))
-                if not err or err == NOT_MODIFIED or err.startswith("HTTP "):
+                if host_answered(err):
                     answered.add(origin_text(o))
             if err == NOT_MODIFIED and known:
                 rel = known["rel"]
