@@ -252,6 +252,34 @@ def git_retry(*args: str, cwd: str = ".", env: dict | None = None) -> tuple:
     return rc, out, err  # недостижимо; для читателя
 
 
+def _index_flags(cwd: str) -> dict:
+    """Флаги индекса человека, которые `read-tree` не переносит: skip-worktree, assume-unchanged, intent-to-add.
+
+    `git ls-files -v`: «S» — skip-worktree, «h» — assume-unchanged, «s» — оба; intent-to-add (`git add -N`)
+    виден как «добавлен» в `git diff` дерева против индекса. Сбой чтения — пустые списки: откат пойдёт без флагов."""
+    rc, out, _e = git("ls-files", "-v", "-z", cwd=cwd)
+    skip, assume = [], []
+    for rec in (out.split("\0") if rc == 0 else []):
+        tag, path = rec[:1], rec[2:]
+        if path and tag in "Ss":
+            skip.append(path)
+        if path and tag in "hs":
+            assume.append(path)
+    rc, out, _e = git("diff", "--name-only", "--diff-filter=A", "-z", cwd=cwd)
+    return {"skip": skip, "assume": assume, "ita": [p for p in out.split("\0") if p] if rc == 0 else []}
+
+
+def _restore_index_flags(cwd: str, flags: dict) -> bool:
+    """Вернуть флаги после `read-tree`; False — хоть одна команда не прошла (замок держится)."""
+    ok = True
+    for opts, key in ((["update-index", "--skip-worktree"], "skip"), (["update-index", "--assume-unchanged"], "assume"),
+                      (["add", "-N"], "ita")):
+        paths = flags.get(key) or []
+        for i in range(0, len(paths), 100):
+            ok = git_retry(*opts, "--", *paths[i:i + 100], cwd=cwd)[0] == 0 and ok
+    return ok
+
+
 # Журнал запусков пишет панель; до 1.158.0 он лежал в папке движка.
 ENGINE_JOURNALS = {"AuroraKnowledgeDB/meta/run_log.md", ".opencode/run_log.md"}
 
@@ -282,6 +310,7 @@ def checkpoint(cwd: str, task: str, enabled: bool) -> dict:
                                               if dirty else "")}
     if dirty:
         # Индекс человека — его: запоминаем до `add -A`, чтобы при отказе вернуть именно его, а не пустой.
+        flags = _index_flags(cwd)
         rc, saved, err = git_retry("write-tree", cwd=cwd)
         if rc != 0:
             lock = "index.lock" in err
@@ -306,9 +335,13 @@ def checkpoint(cwd: str, task: str, enabled: bool) -> dict:
             # (замок держится и тут) — об этом говорит `index_restored`: строка остановки не должна обещать
             # «работа человека не тронута», когда в индексе осталось всё дерево.
             rc2, _o2, err2 = git_retry("read-tree", saved, cwd=cwd)
+            # `read-tree` сбрасывает флаги skip-worktree / assume-unchanged / intent-to-add — возвращаем их по записи.
+            flags_ok = rc2 != 0 or _restore_index_flags(cwd, flags)
             lock = "index.lock" in err
             return {"ok": False, "kind": "lock" if lock else "refused", "sha": "", "index_restored": rc2 == 0, "saved_tree": saved,
-                    "detail": err[:2000] + ("" if rc2 == 0 else "\n[read-tree] " + err2[:500]),
+                    "flags_restored": flags_ok,
+                    "detail": err[:2000] + ("" if rc2 == 0 else "\n[read-tree] " + err2[:500])
+                    + ("" if flags_ok else "\n[флаги индекса не возвращены]"),
                     "why": f"чекпойнт не создан: {_git_why(err, lock)}"}
     sha = git("rev-parse", "HEAD", cwd=cwd)[1]
     return {"ok": True, "sha": sha, "committed": len(dirty.splitlines()),
@@ -328,6 +361,9 @@ def checkpoint_stop_line(cwd: str, cp: dict) -> str:
         # Обещать «работа не тронута» нельзя — файлы на диске целы, но индекс не прежний.
         return f"{cp['why']}: индекс не возвращён — в нём осталось всё дерево (файлы на диске целы); " \
                f"`git read-tree {cp.get('saved_tree', '')}` вернёт ваш индекс. Останавливаюсь"
+    if cp.get("flags_restored") is False:
+        return f"{cp['why']}: индекс возвращён, но флаги skip-worktree/assume-unchanged/intent-to-add не вернулись " \
+               "(замок не отпустили); верните их вручную `git update-index`. Останавливаюсь"
     if cp.get("kind") == "lock":
         return f"{cp['why']}: замок не отпустили за ~{int(LOCK_PAUSE * LOCK_RETRIES * (LOCK_RETRIES + 1) / 2)} с, " \
                "останавливаюсь; повторите запуск — работа человека не тронута " \
@@ -352,7 +388,10 @@ def commit_result(cwd: str, task: str, headline: str, enabled: bool) -> dict:
         return {"ok": True, "sha": "", "why": "агент ничего не изменил"}
     # Замок индекса мигает от параллельного `git status` (панель, редактор): повтор с паузой, как у чекпойнта, —
     # иначе остановленный прогон оставит сделанное без коммита агента, и следующий чекпойнт запишет это на человека.
-    git_retry("add", "--", "AuroraKnowledgeDB", cwd=cwd)
+    rc, _o, err = git_retry("add", "--", "AuroraKnowledgeDB", cwd=cwd)
+    if rc != 0:
+        # Без этой проверки новые карточки не попадали в коммит, а ответ был ok=True по старым, уже в индексе.
+        return {"ok": False, "why": f"коммит результата не сделан: add не прошёл: {_git_why(err, 'index.lock' in err)}"}
     # Путь в конце обязателен: без него в коммит агента (а он идёт с `--no-verify`) уехало бы всё, что лежит в
     # индексе, — в том числе файл с секретом, который хук pre-commit как раз не пустил в чекпойнт.
     rc, _o, err = git_retry("commit", "--no-verify", "-m", f"agent: {task} — {headline}", "--",

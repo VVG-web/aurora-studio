@@ -1790,6 +1790,59 @@ def test_checkpoint_lock_after_write_tree_retries_add_and_commit_and_restores_on
         "остановка цикла по чекпойнту не доходит до кода возврата distill/relink/build"
 
 
+@test
+def test_refused_checkpoint_gives_back_index_flags_and_commit_result_stops_on_a_failed_add(tmp: Path):
+    """BL-SEC-18 (проход 7): откат индекса после отказа хука возвращает флаги человека — skip-worktree,
+    assume-unchanged (и оба сразу) и intent-to-add, которые `read-tree` сбрасывает; `commit_result`, у которого
+    `git add` не прошёл, не отвечает ok=True (иначе новые карточки остаются вне коммита агента)."""
+    from unittest.mock import patch
+    sys.path.insert(0, str(SCRIPTS))
+    R = importlib.import_module("agent_runner")
+    root = _hooked_project(tmp)
+    for name in ("skip.md", "assume.md", "both.md"):
+        (root / name).write_text(name + "\n", encoding="utf-8")
+    _git_in(root, "add", "-A")
+    _git_in(root, "commit", "-qm", "файлы", env={"AURORA_SKIP_RATCHET": "1"})
+    _git_in(root, "update-index", "--skip-worktree", "skip.md", "both.md")
+    _git_in(root, "update-index", "--assume-unchanged", "assume.md", "both.md")
+    (root / "ita.md").write_text("ita\n", encoding="utf-8")
+    _git_in(root, "add", "-N", "ita.md")
+    (root / "mine.md").write_text("staged\n", encoding="utf-8")
+    _git_in(root, "add", "mine.md")
+    tags = lambda: sorted(l for l in _git_in(root, "ls-files", "-v").stdout.splitlines()  # noqa: E731
+                          if l[:1] != "H" or l[2:] == "ita.md")
+    before = (tags(), sorted(_git_in(root, "diff", "--name-only", "--diff-filter=A").stdout.split()),
+              _git_in(root, "diff", "--cached", "--name-only").stdout.split())
+    assert before[0] == sorted(["S skip.md", "h assume.md", "s both.md", "H ita.md"]) and before[1] == ["ita.md"], before
+    # отказ хука: секрет в mcp.json
+    (root / "mcp.json").write_text('{"env": {"JIRA_PAT": "%s"}}\n' % ("q9w8" + "e7r6" + "t5y4"), encoding="utf-8")
+    got = R.checkpoint(str(root), "agent:distill", True)
+    assert got["ok"] is False and got["kind"] == "refused" and got["index_restored"] is True, got
+    assert got["flags_restored"] is True, got
+    after = (tags(), sorted(_git_in(root, "diff", "--name-only", "--diff-filter=A").stdout.split()),
+             _git_in(root, "diff", "--cached", "--name-only").stdout.split())
+    assert after == before, ("откат потерял флаги индекса человека", before, after)
+
+    # `add` у commit_result не прошёл (замок до конца): не ok=True, коммита нет
+    kb = root / "AuroraKnowledgeDB"
+    kb.mkdir(exist_ok=True)
+    (kb / "new-card.md").write_text("# карточка\n", encoding="utf-8")
+    head = _git_in(root, "rev-parse", "HEAD").stdout.strip()
+    real_git = R.git
+    lock = root / ".git" / "index.lock"
+
+    def lock_on_add(*args, cwd=".", env=None):
+        if args[0] == "add":
+            lock.write_text("", encoding="utf-8")
+        return real_git(*args, cwd=cwd, env=env)
+
+    with patch.object(R, "git", lock_on_add), patch.object(R, "_lock_pause", lambda n: None):
+        done = R.commit_result(str(root), "agent:distill", "заход", True)
+    lock.unlink(missing_ok=True)
+    assert done["ok"] is False and "add не прошёл" in done["why"] and "index.lock" in done["why"], done
+    assert _git_in(root, "rev-parse", "HEAD").stdout.strip() == head, "коммит сделан поверх неудавшегося add"
+
+
 # --- Уверенность выдачи, честный отказ и прозрачный фильтр доверия (BL-KBA-14) ---------------
 
 def _answerability_base(tmp: Path):
