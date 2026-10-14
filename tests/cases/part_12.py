@@ -1576,6 +1576,7 @@ def test_web_sync_without_pages_says_one_line(tmp: Path):
     assert len(out.splitlines()) == 1 and "нечего" in out, f"шаг без страниц шумит:\n{out}"
     helptext = run("web_export.py", "--help", cwd=root).stdout
     assert "pages:" in helptext and "trusted: true" in helptext, "образец блока пропал из --help"
+    assert "allow_private" in helptext, "в образце блока нет ключа allow_private (BL-SEC-17)"
 
 
 @test

@@ -70,7 +70,7 @@ every hop, redirects included (at most 5), the host name is resolved and the cra
 (`127.x`, `::1`), private networks (`10.x`, `172.16–31.x`, `192.168.x`, `100.64.x`), link-local (`169.254.x`, the cloud metadata address) and `::ffff:`
 forms of those. A refusal is one line in the report (`запрещено границами коннектора: …`) and is not retried. An internal wiki is allowed explicitly in the
 `web:` block of `aurora.config.yaml`: `allow_private: [wiki.example.com, localhost:8080]` (a bare host matches any port, `wiki.example.com:8080` only that port, subdomains
-are not included). The list only lifts the address check; it does not add the host to the token binding above, and the scheme is checked always.
+are not included). The list only lifts the address check; it does not add the host to the token binding above, and the scheme is checked always. The address is checked again at connect time, and the socket goes to the address that was checked (so a name that answers with a public address first and `127.0.0.1` second, DNS rebinding, is refused). A proxy from the environment or the system settings (`HTTP_PROXY`/`HTTPS_PROXY`, `NO_PROXY`) is honoured: for a request that goes through the proxy the name is not resolved locally (the proxy resolves it, so the address check cannot see it; the scheme and literal addresses, `10.0.0.5` or `2130706433`, are still refused), and a host in `NO_PROXY` takes the direct path with the full check.
 
 ## Checking a mirror
 

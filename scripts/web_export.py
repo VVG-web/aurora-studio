@@ -941,6 +941,8 @@ def main() -> int:
         epilog="Блок в aurora.config.yaml:\n\n"
                "  web:\n    depth: 2          # идти ли по внутренним ссылкам\n"
                "    assets: true      # скачивать картинки и документы\n"
+               "    allow_private: [wiki.example.com]   # внутренние адреса, разрешённые обходу "
+               "(по умолчанию запрещены)\n"
                "    pages:\n      - url: https://example.org/razdel/\n"
                "        trusted: true\n\n"
                "Правится в панели: «Настройки проекта» → «Веб-страницы».")

@@ -1335,6 +1335,140 @@ def test_web_connector_checks_every_redirect_and_stops_loops(tmp: Path):
 
 
 @test
+def test_web_connector_checks_the_address_at_connect_time_against_dns_rebinding(tmp: Path):
+    """BL-SEC-17: хост с TTL=0 отдаёт публичный адрес первому лукапу (предпроверка) и петлю второму
+    (соединение): запрос не уходит, тело не читается. Подмена — `socket.getaddrinfo`, а не
+    `EGRESS_RESOLVE`: проверяется настоящий путь соединения. Сервер на 127.0.0.1 — свидетель."""
+    _path()
+    import socket
+    AC = importlib.import_module("aurora_common")
+    WE = importlib.import_module("web_export")
+    h = _Hosts()
+    real_gai, calls = socket.getaddrinfo, []
+    port = h.port["a"]
+
+    def rebinding(host, p, *a, **kw):
+        if host == "rebind.example.com":
+            calls.append(host)
+            ip = "93.184.216.34" if len(calls) == 1 else "127.0.0.1"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, p))]
+        return real_gai(host, p, *a, **kw)
+    real_proxies, real_allow = AC.EGRESS_PROXIES, WE.ALLOW_PRIVATE
+    AC.EGRESS_PROXIES, WE.ALLOW_PRIVATE = {}, []
+    socket.getaddrinfo = rebinding
+    try:
+        try:
+            AC.guarded_urlopen(f"http://rebind.example.com:{port}/secret", timeout=5)
+            raise AssertionError("адрес, подменённый между проверкой и соединением, прошёл")
+        except AC.EgressRefused as e:
+            assert "127.0.0.1" in str(e), e
+        assert not h.seen["a"], "запрос дошёл до внутреннего сервера"
+        assert len(calls) >= 2, "проверка не повторилась в момент соединения"
+        calls.clear()
+        slept = []
+        real_sleep, WE.time.sleep = WE.time.sleep, slept.append
+        try:
+            raw, _enc, err = WE._get(f"http://rebind.example.com:{port}/secret", "", 5)
+        finally:
+            WE.time.sleep = real_sleep
+        assert raw == b"" and err.startswith("запрещено границами коннектора"), (raw, err)
+        assert not slept and not h.seen["a"], "отказ повторялся или запрос ушёл"
+        # явное разрешение хоста снимает и проверку при соединении (имя — человеком названное)
+        calls.clear()
+        WE.ALLOW_PRIVATE = ["rebind.example.com"]
+        raw, _enc, err = WE._get(f"http://rebind.example.com:{port}/ok", "", 5)
+        assert not err and h.seen["a"], (raw, err)
+    finally:
+        socket.getaddrinfo = real_gai
+        AC.EGRESS_PROXIES, WE.ALLOW_PRIVATE = real_proxies, real_allow
+        h.close()
+
+
+@test
+def test_web_connector_works_through_a_proxy_without_resolving_the_name(tmp: Path):
+    """BL-SEC-17 (доработка): прокси из окружения работает, как у `safe_urlopen`: запрос на публичное
+    имя уходит на прокси, имя локально не разрешается (в сети «только через прокси» оно и не
+    разрешится); адреса-литералы, в том числе числовая форма `2130706433`, всё равно отказ;
+    `no_proxy` возвращает прямой путь с проверкой адреса; CONNECT для https идёт на прокси."""
+    _path()
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    AC = importlib.import_module("aurora_common")
+    seen = []
+
+    class Proxy(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(("GET", self.path, self.headers.get("Host")))
+            body = b"via-proxy"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_CONNECT(self):
+            seen.append(("CONNECT", self.path, ""))
+            self.send_response(502)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    proxy = f"http://127.0.0.1:{srv.server_address[1]}"
+    boom = []
+
+    def no_lookup(host, _port):
+        boom.append(host)
+        raise OSError("имя не разрешается без прокси")
+    real_proxies, real_resolve = AC.EGRESS_PROXIES, AC.EGRESS_RESOLVE
+    AC.EGRESS_PROXIES, AC.EGRESS_RESOLVE = {"http": proxy, "https": proxy}, no_lookup
+    env_keys = ("no_proxy", "NO_PROXY")
+    saved_env = {k: os.environ.pop(k, None) for k in env_keys}
+    try:
+        with AC.guarded_urlopen("http://wiki.example.com/page", timeout=5) as r:
+            assert r.read() == b"via-proxy"
+        assert seen[-1][:2] == ("GET", "http://wiki.example.com/page"), seen
+        assert not boom, "имя разрешалось локально, хотя запрос идёт через прокси"
+        try:
+            AC.guarded_urlopen("https://wiki.example.com/page", timeout=5)
+            raise AssertionError("ответ 502 на CONNECT принят за успех")
+        except AC.EgressRefused:
+            raise AssertionError("через прокси сработала адресная проверка")
+        except OSError:
+            pass
+        assert seen[-1][:2] == ("CONNECT", "wiki.example.com:443"), seen
+        for bad in ("http" + "://" + "10.0.0.5/", "http" + "://" + "2130706433/", "http" + "://" + "[::1]/",
+                    "http" + "://" + "0x7f.1/", "file:///etc/hosts"):
+            n = len(seen)
+            try:
+                AC.guarded_urlopen(bad, timeout=5)
+                raise AssertionError(f"через прокси прошло: {bad}")
+            except AC.EgressRefused:
+                pass
+            assert len(seen) == n, f"запрос на {bad} ушёл на прокси"
+        # хост в no_proxy — прямой путь: имя разрешается и проверяется как обычно
+        os.environ["no_proxy"] = "wiki.example.com"
+        assert not AC._proxied("http://wiki.example.com/x", AC.EGRESS_PROXIES)
+        assert AC._proxied("http://other.example.com/x", AC.EGRESS_PROXIES)
+        n = len(seen)
+        try:
+            AC.guarded_urlopen("http://wiki.example.com/page", timeout=5)
+            raise AssertionError("прямой путь пошёл без разрешения имени")
+        except OSError:
+            pass
+        assert boom == ["wiki.example.com"] and len(seen) == n, (boom, seen)
+    finally:
+        AC.EGRESS_PROXIES, AC.EGRESS_RESOLVE = real_proxies, real_resolve
+        for k, v in saved_env.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+        srv.shutdown()
+        srv.server_close()
+
+
+@test
 def test_web_allow_private_is_read_from_config_and_survives_the_settings_form(tmp: Path):
     """BL-SEC-17: `allow_private` читается из блока `web:` строкой и списком пунктов; форма настроек
     (`aurora_setup`) при сохранении не стирает ключ."""

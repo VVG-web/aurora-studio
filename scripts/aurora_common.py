@@ -3664,9 +3664,22 @@ def _non_global(addr: str) -> str:
     return ""
 
 
-def _egress_check(url: str, allow_private=(), resolve=None) -> tuple:
+def _addr_refusal(host: str, addrs) -> str:
+    """Причина отказа по списку адресов имени (пусто — все глобальные). Один и тот же текст
+    у проверки до запроса и у проверки в момент соединения."""
+    for a in addrs:
+        why = _non_global(a)
+        if why:
+            return (f"{host} → {a}: {why}; внутренний адрес разрешается явно, "
+                    f"allow_private: [{host}] в блоке web: конфига")
+    return ""
+
+
+def _egress_check(url: str, allow_private=(), resolve=None, proxied=False) -> tuple:
     """(причина отказа, временная ли). Временная — имя не разрешилось: это сбой сети, а не
-    политика, и повтор имеет смысл."""
+    политика, и повтор имеет смысл. `proxied` — запрос уйдёт через прокси: имя разрешит он, у
+    нас его не разрешают (в сети «только через прокси» это и невозможно); проверяются схема и
+    адреса-литералы, в том числе «числовые» формы вроде `2130706433`."""
     import ipaddress
     from urllib.parse import urlsplit
     u = str(url or "")
@@ -3688,6 +3701,13 @@ def _egress_check(url: str, allow_private=(), resolve=None) -> tuple:
     try:
         addrs = [host] if ipaddress.ip_address(host) else []
     except ValueError:
+        if proxied:
+            import socket
+            try:
+                addrs = [socket.inet_ntoa(socket.inet_aton(host))]   # `2130706433`, `0x7f.1`
+            except (OSError, ValueError):
+                return "", False
+            return _addr_refusal(host, addrs), False
         fn = resolve or EGRESS_RESOLVE
         try:
             if fn is not None:
@@ -3699,12 +3719,7 @@ def _egress_check(url: str, allow_private=(), resolve=None) -> tuple:
             return f"имя {host} не разрешилось: {e}", True
     if not addrs:
         return f"имя {host} не разрешилось", True
-    for a in addrs:
-        why = _non_global(a)
-        if why:
-            return (f"{host} → {a}: {why}; внутренний адрес разрешается явно, "
-                    f"allow_private: [{host}] в блоке web: конфига"), False
-    return "", False
+    return _addr_refusal(host, addrs), False
 
 
 def egress_problem(url: str, allow_private=(), resolve=None) -> str:
@@ -3740,20 +3755,124 @@ def config_hosts(body: str, key: str = "allow_private") -> list:
 
 
 _GUARDED_REDIRECT = None
+_GUARDED_HANDLERS = None
+# Подмена словаря прокси в тестах (`{}` — «прокси нет»); None — настоящее окружение и настройки системы.
+EGRESS_PROXIES = None
 
 
-def _guard(url: str, allow_private, resolve=None) -> None:
-    why, transient = _egress_check(url, allow_private, resolve)
+def _proxied(url: str, proxies) -> bool:
+    """Уйдёт ли запрос на адрес через прокси: то же правило, что у `ProxyHandler` (прокси для
+    схемы задан и хост не в `no_proxy`/исключениях системы)."""
+    import urllib.request as _rq
+    from urllib.parse import urlsplit
+    try:
+        p = urlsplit(str(url or ""))
+        scheme, host = (p.scheme or "").lower(), (p.hostname or "")
+        hostport = host + (":%d" % p.port if p.port else "")
+    except ValueError:
+        return False
+    if not proxies or not proxies.get(scheme) or not host:
+        return False
+    return not _rq.proxy_bypass(hostport)
+
+
+def _guard(url: str, allow_private, resolve=None, proxies=None) -> None:
+    why, transient = _egress_check(url, allow_private, resolve, _proxied(url, proxies))
     if why:
         import urllib.error as _er
         raise (_er.URLError(why) if transient else EgressRefused(why))
 
 
-def guarded_urlopen(req, timeout: float | None = None, allow_private=(), resolve=None):
-    """`safe_urlopen` для веб-коннектора: проверка границ до запроса и на каждом редиректе.
+def _guarded_create_connection(allow, resolve):
+    """Замена `socket.create_connection` для соединения веб-коннектора: имя разрешается ОДИН раз,
+    адреса проверяются, и соединение идёт на проверенный адрес, а не на имя. Проверка «до
+    запроса» этого не заменяет: хост с TTL=0 отдаёт публичный адрес первому лукапу и
+    `127.0.0.1` второму (DNS-rebinding). Имя в `Host` и SNI остаётся прежним."""
+    import ipaddress
+    import socket
 
-    Опенер собирается без `FileHandler`, `FTPHandler` и `DataHandler` и без прокси из окружения;
-    переходов не больше `EGRESS_MAX_REDIRECTS`. Отказ политики — `EgressRefused`."""
+    def create(address, *args, **kw):
+        host, port = address[0], address[1]
+        h = str(host).lower()
+        for eh, pt in _allow_private_entries(allow):
+            if eh == h and pt in (0, port):
+                return socket.create_connection(address, *args, **kw)
+        try:
+            addrs = [h] if ipaddress.ip_address(h) else []
+        except ValueError:
+            fn = resolve or EGRESS_RESOLVE
+            if fn is not None:
+                addrs = list(fn(host, port))
+            else:
+                addrs = [i[4][0] for i in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
+        why = _addr_refusal(h, addrs)
+        if why:
+            raise EgressRefused(why)
+        last = None
+        for a in addrs:
+            try:
+                return socket.create_connection((a, port), *args, **kw)
+            except OSError as e:
+                last = e
+        raise last or OSError(f"имя {host} не разрешилось")
+    return create
+
+
+def _guarded_handlers():
+    """(HTTPHandler, HTTPSHandler) с проверкой адреса в момент соединения; запрос через прокси
+    идёт обычным соединением: к самому прокси ходит человек-администратор сети."""
+    global _GUARDED_HANDLERS
+    if _GUARDED_HANDLERS is None:
+        import http.client as _hc
+        import urllib.request as _rq
+
+        def conn(base):
+            class Conn(base):
+                def __init__(self, *a, guard=None, **kw):
+                    super().__init__(*a, **kw)
+                    if guard is not None:
+                        self._create_connection = _guarded_create_connection(*guard)
+            return Conn
+
+        http_conn, https_conn = conn(_hc.HTTPConnection), conn(_hc.HTTPSConnection)
+
+        def direct(req):
+            return not (req.has_proxy() or getattr(req, "_tunnel_host", None))
+
+        class _H(_rq.HTTPHandler):
+            def __init__(self, allow=(), resolve=None):
+                super().__init__()
+                self._guard_args = (allow, resolve)
+
+            def http_open(self, req):
+                if direct(req):
+                    return self.do_open(http_conn, req, guard=self._guard_args)
+                return self.do_open(_hc.HTTPConnection, req)
+
+        class _S(_rq.HTTPSHandler):
+            def __init__(self, allow=(), resolve=None):
+                super().__init__()
+                self._guard_args = (allow, resolve)
+
+            def https_open(self, req):
+                ctx = getattr(self, "_context", None)
+                if direct(req):
+                    return self.do_open(https_conn, req, context=ctx, guard=self._guard_args)
+                return self.do_open(_hc.HTTPSConnection, req, context=ctx)
+
+        _GUARDED_HANDLERS = (_H, _S)
+    return _GUARDED_HANDLERS
+
+
+def guarded_urlopen(req, timeout: float | None = None, allow_private=(), resolve=None):
+    """`safe_urlopen` для веб-коннектора: проверка границ до запроса, на каждом редиректе и в
+    момент соединения (адрес, на который реально идёт сокет, а не тот, что видела предпроверка).
+
+    Опенер собирается без `FileHandler`, `FTPHandler` и `DataHandler`; переходов не больше
+    `EGRESS_MAX_REDIRECTS`. Прокси из окружения и настроек системы работают, как у `safe_urlopen`:
+    для запроса через прокси имя локально не разрешается (его разрешает прокси), проверяются
+    схема и адреса-литералы. Отказ политики — `EgressRefused`."""
+    import urllib.error as _er
     import urllib.request as _rq
     global _GUARDED_REDIRECT
     if _GUARDED_REDIRECT is None:
@@ -3762,23 +3881,31 @@ def guarded_urlopen(req, timeout: float | None = None, allow_private=(), resolve
         class _GuardedRedirect(base):
             max_redirections = EGRESS_MAX_REDIRECTS
 
-            def __init__(self, allow=(), resolve=None):
-                self._allow, self._resolve = allow, resolve
+            def __init__(self, allow=(), resolve=None, proxies=None):
+                self._allow, self._resolve, self._proxies = allow, resolve, proxies
 
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 # newurl `urllib` уже сделал абсолютным относительно запроса
-                _guard(newurl, self._allow, self._resolve)
+                _guard(newurl, self._allow, self._resolve, self._proxies)
                 return super().redirect_request(req, fp, code, msg, headers, newurl)
 
         _GUARDED_REDIRECT = _GuardedRedirect
+    proxies = _rq.getproxies() if EGRESS_PROXIES is None else dict(EGRESS_PROXIES)
     url = req if isinstance(req, str) else req.full_url
-    _guard(url, allow_private, resolve)
+    _guard(url, allow_private, resolve, proxies)
+    http_h, https_h = _guarded_handlers()
     op = _rq.OpenerDirector()
-    for h in (_rq.HTTPHandler(), _rq.HTTPSHandler(), _rq.HTTPDefaultErrorHandler(),
+    for h in (_rq.ProxyHandler(proxies), http_h(allow_private, resolve),
+              https_h(allow_private, resolve), _rq.HTTPDefaultErrorHandler(),
               _rq.HTTPErrorProcessor(), _rq.UnknownHandler(),
-              _GUARDED_REDIRECT(allow_private, resolve)):
+              _GUARDED_REDIRECT(allow_private, resolve, proxies)):
         op.add_handler(h)
-    return op.open(req) if timeout is None else op.open(req, timeout=timeout)
+    try:
+        return op.open(req) if timeout is None else op.open(req, timeout=timeout)
+    except _er.URLError as e:
+        if isinstance(getattr(e, "reason", None), EgressRefused):
+            raise e.reason from None        # отказ при соединении — политика, а не сбой сети
+        raise
 
 
 # ---------------------------------------------------------------------------------
