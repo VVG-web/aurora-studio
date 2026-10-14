@@ -1344,18 +1344,29 @@ def test_web_connector_checks_the_address_at_connect_time_against_dns_rebinding(
     AC = importlib.import_module("aurora_common")
     WE = importlib.import_module("web_export")
     h = _Hosts()
-    real_gai, calls = socket.getaddrinfo, []
+    real_gai, real_cc, calls, leaks, mode = socket.getaddrinfo, socket.create_connection, [], [], ["rebind"]
     port = h.port["a"]
 
     def rebinding(host, p, *a, **kw):
         if host == "rebind.example.com":
             calls.append(host)
-            ip = "93.184.216.34" if len(calls) == 1 else "127.0.0.1"
+            # режим «rebind»: первый лукап публичный, остальные петля; «loopback»: всегда петля
+            ip = "93.184.216.34" if mode[0] == "rebind" and len(calls) == 1 else "127.0.0.1"
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, p))]
         return real_gai(host, p, *a, **kw)
+
+    def no_network(address, *a, **kw):
+        # тест без сети: сокет — только на петлю; любой другой адрес — утечка, а не таймаут
+        ip = address[0]
+        if ip != "127.0.0.1":                    # имя разрешается подменой (`rebinding`), как в настоящем
+            ip = socket.getaddrinfo(ip, address[1], type=socket.SOCK_STREAM)[0][4][0]
+        if ip != "127.0.0.1":
+            leaks.append((address, ip))
+            raise OSError("тест не ходит в сеть")
+        return real_cc(("127.0.0.1", address[1]), *a, **kw)
     real_proxies, real_allow = AC.EGRESS_PROXIES, WE.ALLOW_PRIVATE
     AC.EGRESS_PROXIES, WE.ALLOW_PRIVATE = {}, []
-    socket.getaddrinfo = rebinding
+    socket.getaddrinfo, socket.create_connection = rebinding, no_network
     try:
         try:
             AC.guarded_urlopen(f"http://rebind.example.com:{port}/secret", timeout=5)
@@ -1375,11 +1386,13 @@ def test_web_connector_checks_the_address_at_connect_time_against_dns_rebinding(
         assert not slept and not h.seen["a"], "отказ повторялся или запрос ушёл"
         # явное разрешение хоста снимает и проверку при соединении (имя — человеком названное)
         calls.clear()
+        mode[0] = "loopback"
         WE.ALLOW_PRIVATE = ["rebind.example.com"]
         raw, _enc, err = WE._get(f"http://rebind.example.com:{port}/ok", "", 5)
         assert not err and h.seen["a"], (raw, err)
+        assert not leaks, f"тест вышел в сеть: {leaks}"
     finally:
-        socket.getaddrinfo = real_gai
+        socket.getaddrinfo, socket.create_connection = real_gai, real_cc
         AC.EGRESS_PROXIES, WE.ALLOW_PRIVATE = real_proxies, real_allow
         h.close()
 
@@ -1439,7 +1452,8 @@ def test_web_connector_works_through_a_proxy_without_resolving_the_name(tmp: Pat
             pass
         assert seen[-1][:2] == ("CONNECT", "wiki.example.com:443"), seen
         for bad in ("http" + "://" + "10.0.0.5/", "http" + "://" + "2130706433/", "http" + "://" + "[::1]/",
-                    "http" + "://" + "0x7f.1/", "file:///etc/hosts"):
+                    "http" + "://" + "0x7f.1/", "file:///etc/hosts",
+                    "http" + "://" + "localhost:9222/json", "http" + "://" + "app.localhost/"):
             n = len(seen)
             try:
                 AC.guarded_urlopen(bad, timeout=5)
@@ -1496,6 +1510,45 @@ def test_web_allow_private_is_read_from_config_and_survives_the_settings_form(tm
         with contextlib.redirect_stdout(io.StringIO()):
             A.run_answers(root, {})
         assert cfg.read_text(encoding="utf-8") == saved, "повторное сохранение меняет конфиг"
+
+
+@test
+def test_web_allow_private_accepts_ipv6_literals_and_the_form_keeps_them(tmp: Path):
+    """BL-SEC-17 (доработка): IPv6-хост можно внести в `allow_private` (`[::1]`, `::1`,
+    `[fd00::5]:8080`); подсказка отказа ведёт к рабочей записи; форма настроек не портит `[::1]`."""
+    _path()
+    import contextlib
+    import io
+    AC = importlib.import_module("aurora_common")
+    WE = importlib.import_module("web_export")
+    A = importlib.import_module("aurora_setup")
+    url, other = "http" + "://" + "[::1]:8080/", "http" + "://" + "[fd00::5]:8080/"
+    assert AC.egress_problem(url), "IPv6-петля по умолчанию должна отказывать"
+    for entry in ("[::1]", "::1", '"[::1]"', "[::1]:8080"):
+        assert not AC.egress_problem(url, allow_private=[entry]), entry
+    assert AC.egress_problem("http" + "://" + "[::1]:9090/", allow_private=["[::1]:8080"]), "порт записи не учтён"
+    assert not AC.egress_problem(other, allow_private=["fd00::5"])
+    assert AC.egress_problem(other, allow_private=["::1"]), "чужой IPv6-адрес разрешён"
+    # подсказка из текста отказа, записанная в конфиг, снимает отказ
+    hint = AC.egress_problem(url).split("allow_private: ", 1)[1].split(" в блоке", 1)[0]
+    assert hint == '["[::1]"]', hint
+    text = "web:\n  allow_private: " + hint + "\n  pages: []\n"
+    assert WE.settings_from_config(text)["allow_private"] == ["[::1]"]
+    assert not AC.egress_problem(url, allow_private=WE.settings_from_config(text)["allow_private"])
+    # `[::1]` внутри списка и сохранение формой
+    inline = "web:\n  allow_private: [[::1], wiki.example.com]\n  pages: []\n"
+    assert AC.config_hosts(inline) == ["[::1]", "wiki.example.com"], AC.config_hosts(inline)
+    assert AC.config_hosts("allow_private: [::1]") == ["::1"]
+    root = tmp / "проект"
+    root.mkdir()
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text('name: "Проект"\nslug: "proj"\n' + inline, encoding="utf-8")
+    for _ in range(2):
+        with contextlib.redirect_stdout(io.StringIO()):
+            A.run_answers(root, {})
+        saved = cfg.read_text(encoding="utf-8")
+        assert "  allow_private: [[::1], wiki.example.com]" in saved, saved
+        assert WE.settings_from_config(saved)["allow_private"] == ["[::1]", "wiki.example.com"]
 
 
 @test

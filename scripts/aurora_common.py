@@ -3626,13 +3626,15 @@ class EgressRefused(OSError):
 
 def _allow_private_entries(allow_private) -> list:
     """[(хост, порт или 0)] из списка `allow_private`: `wiki.example.com`, `host:8080`,
-    `[::1]`. Схема и хвост пути отбрасываются; поддомены в запись не входят."""
+    `[::1]` (и `::1` без скобок). Схема и хвост пути отбрасываются; поддомены в запись не входят."""
     from urllib.parse import urlsplit
     out = []
     for raw in allow_private or ():
         s = str(raw or "").strip().strip("\"'").lower()
         if not s:
             continue
+        if s.count(":") > 1 and "[" not in s:
+            s = "[" + s + "]"           # `::1`, `fd00::5`: голый IPv6 без скобок `urlsplit` не читает
         try:
             p = urlsplit(s if "//" in s else "//" + s)
             host, port = (p.hostname or ""), (p.port or 0)
@@ -3670,8 +3672,9 @@ def _addr_refusal(host: str, addrs) -> str:
     for a in addrs:
         why = _non_global(a)
         if why:
+            hint = f'["[{host}]"]' if ":" in host else f"[{host}]"      # IPv6 пишут в скобках
             return (f"{host} → {a}: {why}; внутренний адрес разрешается явно, "
-                    f"allow_private: [{host}] в блоке web: конфига")
+                    f"allow_private: {hint} в блоке web: конфига")
     return ""
 
 
@@ -3702,6 +3705,8 @@ def _egress_check(url: str, allow_private=(), resolve=None, proxied=False) -> tu
         addrs = [host] if ipaddress.ip_address(host) else []
     except ValueError:
         if proxied:
+            if is_loopback_host(host):      # `localhost` и `*.localhost` по спецификации всегда петля
+                return _addr_refusal(host, ["127.0.0.1"]), False
             import socket
             try:
                 addrs = [socket.inet_ntoa(socket.inet_aton(host))]   # `2130706433`, `0x7f.1`
@@ -3740,7 +3745,8 @@ def config_hosts(body: str, key: str = "allow_private") -> list:
             continue
         val = re.sub(r"\s+#.*$", "", m.group(2)).strip()
         if val.startswith("["):
-            return split_inline_items(val.strip("[]"))
+            # снимается одна внешняя пара: `[[::1], x]` — это список с IPv6-пунктом `[::1]`
+            return split_inline_items(val[1:val.rfind("]")] if "]" in val else val[1:])
         if val:
             return [val]
         out, indent = [], len(m.group(1))
