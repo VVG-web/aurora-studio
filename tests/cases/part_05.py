@@ -1275,15 +1275,20 @@ def test_a_pydantic_update_is_checked_before_it_works(tmp: Path):
         if any(str(c).startswith("pydantic-ai==") for c in cmd):
             have[0] = str(next(c for c in cmd if str(c).startswith("pydantic-ai=="))).split("==")[1]
         return subprocess.CompletedProcess(cmd, 0, "", "")
-    EX._run = fake_run
-    EX.venv_python = lambda _id: Path(sys.executable)
-    EX.installed_version = lambda _id: have[0]
-    EX.check_compat = lambda v: {"ok": v != "9.0.0", "version": v,
-                                 "problems": [] if v != "9.0.0" else ["обрыв связи: адаптер"]}
-    res = EX.install("pydantic-ai")
-    assert not res["ok"] and res.get("rolled_back") == "9.0.0" and res["version"] == "2.51.0", res
-    assert any("pydantic-ai==2.51.0" in c for c in ran), "прежняя версия не возвращена"
-    assert "не совместим" in res.get("error", ""), res
+    # подмены ниже живут в модуле, общем для всех проверок прогона (на Windows и в долях они идут одним процессом):
+    # без перезагрузки соседняя проверка видела бы чужие `_run`, `installed_version` и `venv_python`
+    try:
+        EX._run = fake_run
+        EX.venv_python = lambda _id: Path(sys.executable)
+        EX.installed_version = lambda _id: have[0]
+        EX.check_compat = lambda v: {"ok": v != "9.0.0", "version": v,
+                                     "problems": [] if v != "9.0.0" else ["обрыв связи: адаптер"]}
+        res = EX.install("pydantic-ai")
+        assert not res["ok"] and res.get("rolled_back") == "9.0.0" and res["version"] == "2.51.0", res
+        assert any("pydantic-ai==2.51.0" in c for c in ran), "прежняя версия не возвращена"
+        assert "не совместим" in res.get("error", ""), res
+    finally:
+        importlib.reload(EX)
 
     vpy = live_adapter_python()
     if vpy is None:

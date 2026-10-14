@@ -1519,7 +1519,7 @@ def test_section_type_single_source(_t):
     files.append(KIT / "aurora.py")
     # AC-CT-04.1: определение пары «раздел: тип» (то же, что `grep` по scripts и tests) — только в реестре
     pair = re.compile('"Concepts":' + ' *"concept"')
-    found = [str(p.relative_to(KIT)) for p in files if pair.search(p.read_text(encoding="utf-8"))]
+    found = [p.relative_to(KIT).as_posix() for p in files if pair.search(p.read_text(encoding="utf-8"))]
     assert found == ["scripts/card_types.py"], f"таблица «раздел → тип» записана вне реестра: {found}"
     # словарный литерал из восьми и более пар таблицы — копия, где бы он ни лежал
     copies = []
@@ -1786,7 +1786,7 @@ def _hook_commit(base: Path, lint_text: str, baseline: int, base_cards: int, car
     root = make_project(base, git=True)
     (root / "lint_out.txt").write_text(lint_text, encoding="utf-8")
     (root / ".aurora" / "scripts" / "kb_lint.py").write_text(
-        "import sys\nsys.stdout.write(open('lint_out.txt', encoding='utf-8').read())\nsys.exit(1)\n", encoding="utf-8")
+        "import sys\nsys.stdout.buffer.write(open('lint_out.txt', 'rb').read())\nsys.exit(1)\n", encoding="utf-8")
     installed = _py(KIT / "scripts" / "aurora_hooks.py", "--install", cwd=root).stdout
     meta = root / "AuroraKnowledgeDB" / "meta"
     meta.mkdir(parents=True, exist_ok=True)
@@ -3440,7 +3440,7 @@ def test_guide_constraints(tmp: Path):
     """Файл кита держит свойства, которые обязан сохранить любой редактор инструкции: длина до 9000 знаков, шаги 0–7,
     таблица шага 2 со всеми типами, которые создают из источника, и формат ответа шага 7; таблицы называют те же шаблоны
     и разделы, что реестр, а в тексте нет ссылок на план работ."""
-    text = GUIDE_KIT.read_bytes().decode("utf-8")
+    text = GUIDE_KIT.read_bytes().decode("utf-8").replace("\r\n", "\n")      # на Windows checkout кладёт CRLF: смотрим на текст
     assert text.endswith("\n") and not text.endswith("\n\n") and "\r" not in text and "\t" not in text, "оформление файла"
     assert 0 < len(text) <= GUIDE_CHARS, f"{len(text)} знаков при пределе {GUIDE_CHARS}"
     head = _mod("aurora_common").frontmatter(text)
@@ -3846,6 +3846,11 @@ def _kit_guide_bytes() -> bytes:
     return (KIT / "scaffold" / "Prompts" / "KB_classify.md").read_bytes()
 
 
+def _kit_guide_text() -> str:
+    """Текст инструкции кита, как его читает движок: с одним видом конца строки (на Windows файл после checkout с CRLF)."""
+    return _kit_guide_bytes().decode("utf-8").replace("\r\n", "\n")
+
+
 def _no_tmp(root: Path) -> None:
     left = [str(p.relative_to(root)) for p in root.rglob("*.aurora-tmp")]
     assert not left, f"остался временный файл записи: {left}"
@@ -3877,7 +3882,7 @@ def test_cards_api_reads_the_registry(tmp: Path):
         g = ru["guide"]
         assert (g["path"], g["exists"], g["source"], g["digest"], g["readonly"], g["modified"]) == (
             GUIDE_REL, False, "kit", "absent", "", False), g
-        assert g["text"] == _kit_guide_bytes().decode("utf-8") and g["checks"] == [] and g["limit"] == 9000 and g["kit_available"]
+        assert g["text"] == _kit_guide_text() and g["checks"] == [] and g["limit"] == 9000 and g["kit_available"]
         assert g["kit_digest"] == hashlib.sha256(_kit_guide_bytes()).hexdigest() and g["chars"] == len(g["text"])
         assert "stats" not in ru, "сводка читает всю базу и приходит только по просьбе"
         st = ck.cards_state(str(root), "ru", stats=True)["stats"]
@@ -4084,7 +4089,7 @@ def test_cards_api_writes_the_guide_with_expect(tmp: Path):
     try:
         root = _panel_project(tmp)
         guide = root / "Prompts" / "KB_classify.md"
-        kit_text = _kit_guide_bytes().decode("utf-8")
+        kit_text = _kit_guide_text()
         mine = kit_text + "\n| 99 | свой источник | `concept` | `akdb_concept` | `Concepts` |\n"
         # файла нет: слепок «absent»; устаревший слепок — расхождение (файл успел появиться — например, от обновления)
         assert ck.cards_state(str(root))["guide"]["digest"] == "absent"
@@ -4107,7 +4112,7 @@ def test_cards_api_writes_the_guide_with_expect(tmp: Path):
         assert ck.cards_guide_write(str(root), "# Сокращённо\nшаг\n", r["guide"]["digest"]).get("unchanged") is True
         assert guide.stat().st_mtime_ns == stamp
         # без слепка — без проверки («оставить моё»)
-        assert ck.cards_guide_write(str(root), kit_text)["ok"] and guide.read_bytes() == _kit_guide_bytes()
+        assert ck.cards_guide_write(str(root), kit_text)["ok"] and guide.read_bytes() == kit_text.encode("utf-8")
         # отказы: не строка, пустой, слишком длинный; прежний файл цел
         keep = guide.read_bytes()
         for bad in (None, 5, ["a"], "", "   \n\t ", "я" * 50_001):
@@ -4224,7 +4229,7 @@ def test_cards_api_guide_reset(tmp: Path):
         # пустой файл проекта — «нет текста»: показан текст кита
         guide.write_bytes(b"")
         g = ck.cards_state(str(root))["guide"]
-        assert (g["exists"], g["source"], g["text"] == _kit_guide_bytes().decode("utf-8")) == (True, "kit", True), g
+        assert (g["exists"], g["source"], g["text"] == _kit_guide_text()) == (True, "kit", True), g
         assert g["digest"] == hashlib.sha256(b"").hexdigest()
         # кита нет: отказ, файл проекта не тронут
         guide.write_text("# Мой текст\n", encoding="utf-8")
@@ -4245,7 +4250,7 @@ def test_card_types_guide_checks(_t):
     """`guide_checks` называет, что не так с текстом инструкции: пусто, длиннее 9000, нет шагов 0–7, нет формата ответа в
     шаге 7; кит проходит; работает за линейное время на враждебном тексте."""
     C = _C()
-    kit = _kit_guide_bytes().decode("utf-8")
+    kit = _kit_guide_text()
     assert C.guide_checks(kit) == [] and C.guide_checks(kit.replace("\n", "\r\n")) == []
     assert C.guide_checks("") == C.guide_checks("  \n\t") == C.guide_checks(None) == [{"code": "empty"}]
     assert C.GUIDE_LIMIT == 9000 and C.guide_checks(kit + "я" * (9000 - len(kit) + 1))[0] == {"code": "too-long", "chars": 9001, "limit": 9000}
@@ -4860,7 +4865,7 @@ def test_cards_guide_survives_a_huge_step_number(tmp: Path):
     после которого каждое чтение падало бы; сбой разбора на странице — ответ 500 с причиной, а не оборванное соединение."""
     from urllib.parse import quote
     C = _C()
-    kit = _kit_guide_bytes().decode("utf-8")
+    kit = _kit_guide_text()
     hostile = kit.replace("## Шаг 3.", HUGE_STEP + "## Шаг 3.")
     assert [c["code"] for c in C.guide_checks(hostile)] == ["too-long"], C.guide_checks(hostile)       # шаги на месте, лишь длинно
     assert C.guide_checks(HUGE_STEP) == [{"code": "steps-missing", "missing": list(range(8))}]
