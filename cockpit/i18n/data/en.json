@@ -509,7 +509,11 @@
     "у типа «{}» поле «{}» должно быть строкой": "type «{}»: the field «{}» must be a string",
     "файл инструкции больше потолка редактора или не читается — правьте его в редакторе": "the instruction file is over the editor limit or unreadable — edit it in an editor",
     "файл инструкции изменился на диске с момента открытия": "the instruction file changed on disk since it was opened",
-    "файл инструкции не читается как UTF-8 или cp1251: сохранение потеряло бы байты": "the instruction file is not readable as UTF-8 or cp1251: saving would lose bytes"
+    "файл инструкции не читается как UTF-8 или cp1251: сохранение потеряло бы байты": "the instruction file is not readable as UTF-8 or cp1251: saving would lose bytes",
+    "Prompts/KB_classify.md или его папка — ссылка: через ссылки панель не пишет": "Prompts/KB_classify.md or its folder is a link: the panel does not write through links",
+    "в запросе есть знаки, которых нет в Юникоде (одиночные суррогаты): запрос отклонён": "the request has characters that are not valid Unicode (lone surrogates): the request was rejected",
+    "текст инструкции не разбирается: проверьте заголовки шагов «## Шаг N.»": "the instruction text cannot be parsed: check the step headings",
+    "запрос к типам карточек не выполнен: {}": "the card types request failed: {}"
   },
   "connectors": {
     "confluence-dc": {

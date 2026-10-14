@@ -232,7 +232,7 @@ def parse_passport(text: str) -> dict:
             out[key] = list_field(text, key)
     for key in PASSPORT_INTS:
         raw = (fm.get(key) or "").strip()
-        if raw.isascii() and raw.isdigit():
+        if raw.isascii() and raw.isdigit() and len(raw) <= 9:      # длиннее — не число паспорта; `int()` от тысяч цифр падает
             out[key] = int(raw)
     return out
 
@@ -453,7 +453,7 @@ def _passport_type(entry, problems: list):
     soft = []
     for key in PASSPORT_INTS:
         if key in p and not isinstance(p[key], int):
-            soft.append(f"{key} «{p[key]}» — не число")
+            soft.append(f"{key} «{str(p[key])[:40]}» — не число")
     for bad in [k for k in p["kinds"] if k not in KIND_VALUES]:
         soft.append(f"вид «{bad}» вне {', '.join(KIND_VALUES)}")
     for bad in [x for x in p["statuses"] if x not in STATUS_VOCAB]:
@@ -2125,7 +2125,9 @@ def guide_text(project_root: str = ".", kit_root: "str | None" = None) -> str:
 # принадлежит проекту, а правят его и без панели.
 GUIDE_LIMIT = 9000                     # знаков: длиннее — запрос раздувается, и шаги тонут
 GUIDE_STEPS = tuple(range(8))          # шаги 0–7
-GUIDE_STEP_RE = re.compile(r"^## Шаг (\d+)\.", re.M)
+# Номер шага — одна-две ASCII-цифры: `int()` от длинной цифровой строки падает (предел 4300 цифр), а текст инструкции
+# приходит и от клонированного репозитория, и со страницы; «Шаг 99999…» просто не шаг.
+GUIDE_STEP_RE = re.compile(r"^## Шаг (\d{1,2})\.", re.M | re.ASCII)
 GUIDE_HEAD_RE = re.compile(r"^## ", re.M)
 GUIDE_ANSWER_WORDS = ("type:", "template:", "section:", "why:")
 

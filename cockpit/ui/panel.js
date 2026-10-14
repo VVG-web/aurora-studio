@@ -1174,6 +1174,8 @@ function show(view, payload){
   // уход из «Настройки» с незаписанными правками — единственное место, где панель
   // может молча потерять введённое: всё остальное она либо пишет сразу, либо не пишет
   if (S.view === "setup" && view !== "setup" && !confirmLeave()) return;
+  // «Настройки проекта» теряют несохранённое так же: переход в другой раздел спрашивает подтверждение
+  if (S.view === "project" && view !== "project" && !confirmLeave()) return;
   // Раздел в разработке закрыт — в него не попасть и по адресу страницы или ссылке.
   if (devOnlyView(view) && !devSectionsOn()) view = "overview";
   S.view = view;
@@ -4423,7 +4425,9 @@ async function renderProject(){
   await renderModelsCard(box, "project");
   renderGitCard(box);
   await renderKinds(box);
-  await renderCardTypes(box);
+  // Сбой одной группы не должен унести строку переходов и всё, что ниже: так же, как у разделов (`refreshModules`).
+  try { await renderCardTypes(box); }
+  catch (e){ showFault(t("modules.refresh_failed", {id: "cardtypes", why: e.message})); }
   drawSetupJump(box);
 }
 

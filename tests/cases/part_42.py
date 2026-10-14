@@ -4163,9 +4163,9 @@ def test_cards_api_guide_path_is_fixed_and_atomic(tmp: Path):
             pass
         else:
             st = ck.cards_state(str(root))["guide"]
-            assert st["readonly"] == "outside" and st["source"] == "kit", st
-            assert ck.cards_guide_write(str(root), "# Текст\n", "")["error"] == "путь вне проекта"
-            assert ck.cards_guide_reset(str(root), "")["error"] == "путь вне проекта"
+            assert st["readonly"] == "link" and st["source"] == "kit", st
+            assert "через ссылки панель не пишет" in ck.cards_guide_write(str(root), "# Текст\n", "")["error"]
+            assert "через ссылки панель не пишет" in ck.cards_guide_reset(str(root), "")["error"]
             assert outside.read_text(encoding="utf-8") == "чужой файл\n"
             guide.unlink()
         # сбой подмены: прежний файл цел, временного файла нет, ответ — 500
@@ -4308,7 +4308,7 @@ class _Live:
         headers = {"X-Aurora-Token": self.ck.TOKEN} if token else {}
         data = None
         if body is not None:
-            data = body if isinstance(body, (bytes, str)) else json.dumps(body)
+            data = body if isinstance(body, bytes) else (body if isinstance(body, str) else json.dumps(body)).encode("utf-8")
             headers["Content-Type"] = ctype
         conn.request(method, path, body=data, headers=headers)
         r = conn.getresponse()
@@ -4413,10 +4413,17 @@ def test_cards_i18n_catalogues_are_complete(tmp: Path):
     need = {"cardtypes.col_": ["name", "type", "desc", "template", "section", "class", "origin", "on"],
             "cardtypes.class_": list(C.CLASS_NAMES), "cardtypes.origin_": ["project", "kit", "fallback"],
             "cardtypes.check_": ["empty", "too_long", "steps_missing", "no_answer_format"],
-            "cardtypes.catalog_": ["ok", "missing", "stale"], "cardtypes.guide_ro_": ["lossy", "big", "unreadable", "outside"]}
+            "cardtypes.catalog_": ["ok", "missing", "stale"], "cardtypes.guide_ro_": ["lossy", "big", "unreadable", "link"]}
     for prefix, tails in need.items():
         for tail in tails:
             assert prefix + tail in ru and prefix + tail in en, f"нет {prefix + tail}"
+    # выключатель типа обещает ровно то, что делает код: проверка и разбор ответа; создание карточек пока не останавливается
+    for lang, cat, honest in (("ru", ru, ("создание карточек", "не останавлива")), ("en", en, ("creating cards", "stop"))):
+        for key in ("cardtypes.about", "cardtypes.on_hint"):
+            assert all(w in cat[key] for w in honest), f"{lang} {key}: нет оговорки о создании карточек"
+        assert "kb:cards --check" in cat["cardtypes.about"], f"{lang}: about не называет, чем выключение проверяется"
+        for promise in ("запрещён в проекте", "forbidden in the project", "не предлагает", "does not offer"):
+            assert promise not in cat["cardtypes.about"] + cat["cardtypes.on_hint"], f"{lang}: обещание «{promise}» без кода за ним"
     # каждый код проверки инструкции, который знает движок, назван в каталоге
     sample = {"too-long", "steps-missing", "no-answer-format", "empty"}
     assert {c["code"] for c in C.guide_checks("")} | {c["code"] for c in C.guide_checks("я" * 9001)} \
@@ -4756,3 +4763,205 @@ def test_cards_panel_is_documented(_t):
     for rel, word in (("docs/INSTALL.md", "«Настройки проекта → Типы карточек»"), ("docs/en/INSTALL.md", "\"Project settings → Card types\"")):
         row = next(l for l in (KIT / rel).read_text(encoding="utf-8").splitlines() if l.startswith("| `cards` |"))
         assert word in row, f"{rel}: строка конфига cards не называет панель"
+
+
+# ------------------------------------------------------------------ доработка CT-08 по ревью
+
+HUGE_STEP = "## Шаг " + "9" * 5000 + ".\n"       # int() от такой строки падает (предел 4300 цифр)
+
+
+@test
+def test_cards_guide_survives_a_huge_step_number(tmp: Path):
+    """Номер шага из тысяч цифр не роняет ничего: `guide_checks`, проверка текста, запись инструкции и чтение состояния
+    работают, а «Шаг 99999…» просто не шаг; текст, который не разобрался бы, отклоняется ДО записи и не оставляет файл,
+    после которого каждое чтение падало бы; сбой разбора на странице — ответ 500 с причиной, а не оборванное соединение."""
+    from urllib.parse import quote
+    C = _C()
+    kit = _kit_guide_bytes().decode("utf-8")
+    hostile = kit.replace("## Шаг 3.", HUGE_STEP + "## Шаг 3.")
+    assert [c["code"] for c in C.guide_checks(hostile)] == ["too-long"], C.guide_checks(hostile)       # шаги на месте, лишь длинно
+    assert C.guide_checks(HUGE_STEP) == [{"code": "steps-missing", "missing": list(range(8))}]
+    assert C.guide_checks("## Шаг 007.\n") == [{"code": "steps-missing", "missing": list(range(8))}], "три цифры — не шаг"
+    assert [c["code"] for c in C.guide_checks(kit.replace("## Шаг 7.", "## Шаг ٧."))] == ["steps-missing"], "не-ASCII цифра — не номер шага"
+    t0 = time.time()
+    C.guide_checks(("## Шаг " + "9" * 5000 + ".\n") * 20)
+    assert time.time() - t0 < 5
+    ck, back = _panel(tmp)
+    live = None
+    try:
+        root = _panel_project(tmp)
+        guide = root / "Prompts" / "KB_classify.md"
+        # на проверке и на записи: ответ есть, состояние живо
+        assert ck.cards_guide_check(HUGE_STEP)["checks"][0]["code"] == "steps-missing"
+        r = ck.cards_guide_write(str(root), hostile, "absent")
+        assert r["ok"] and guide.read_text(encoding="utf-8") == hostile, r
+        assert [c["code"] for c in ck.cards_state(str(root))["guide"]["checks"]] == ["too-long"]
+        guide.write_text(HUGE_STEP, encoding="utf-8")                       # враждебный файл уже лежит (клонированный репозиторий)
+        g = ck.cards_state(str(root))["guide"]
+        assert g["source"] == "project" and g["checks"][0]["code"] == "steps-missing", g
+        # разбор до записи: непригодный текст не оставляет файл
+        guide.unlink()
+        real = C.guide_checks
+
+        def boom(text):
+            raise ValueError("Exceeds the limit (4300 digits)")
+        C.guide_checks = boom
+        try:
+            e = ck.cards_guide_write(str(root), "# Текст\n", "absent")
+            assert "не разбирается" in e["error"] and ck.cards_status(e) == 400 and not guide.exists(), e
+            assert not CYR.search(ck.translate_message(e["error"], "en")), ck.translate_message(e["error"], "en")
+            assert "не разбирается" in ck.cards_guide_check("# Текст\n")["error"]
+        finally:
+            C.guide_checks = real
+        # по сети: проверка, запись и чтение с такими текстами — коды ответа, а не обрыв
+        live = _Live(ck, [tmp])
+        p, q = str(root), quote(str(root))
+        code, chk = live.call("POST", "/api/cards/guide/check", {"project": p, "text": HUGE_STEP})
+        assert code == 200 and chk["checks"][0]["code"] == "steps-missing", (code, str(chk)[:200])
+        code, w = live.call("POST", "/api/cards/guide", {"project": p, "text": HUGE_STEP, "expect": "absent"})
+        assert code == 200 and w["ok"], (code, str(w)[:200])
+        assert live.call("GET", f"/api/cards?project={q}")[0] == 200 and live.call("GET", f"/api/cards?project={q}&stats=1")[0] == 200
+        # сбой внутри обработки: страница получает 500 и причину
+        C.guide_checks = boom
+        try:
+            code, bad = live.call("GET", f"/api/cards?project={q}")
+            assert code == 500 and "не выполнен" in bad["error"] and bad.get("failed"), (code, bad)
+            code, bad = live.call("POST", "/api/cards/guide/reset", {"project": p, "expect": ""})
+            assert code in (400, 500) and bad.get("error"), (code, bad)
+        finally:
+            C.guide_checks = real
+        assert live.call("GET", f"/api/cards?project={q}")[0] == 200
+    finally:
+        if live:
+            live.close()
+        back()
+
+
+@test
+def test_cards_guide_does_not_write_through_links(tmp: Path):
+    """Файл инструкции пишется и читается только по прямому пути `<проект>/Prompts/KB_classify.md`: ссылка на конфиг внутри
+    проекта, ссылка наружу и папка `Prompts/`-ссылка отклоняются (`link`) и ничего не пишут; готовая ссылка на месте
+    временного файла чужой файл не перезаписывает — временный файл создаётся под случайным именем."""
+    ck, back = _panel(tmp)
+    try:
+        root = _panel_project(tmp)
+        cfg = root / "aurora.config.yaml"
+        cfg_before = cfg.read_bytes()
+        outside = tmp / "чужой.md"
+        outside.write_text("чужой файл\n", encoding="utf-8")
+        (root / "Prompts").mkdir(exist_ok=True)
+        guide = root / "Prompts" / "KB_classify.md"
+        try:
+            os.symlink(cfg, guide)
+        except (OSError, NotImplementedError):
+            return      # без прав на ссылки (Windows) проверять нечего
+        # ссылка на файл внутри проекта (конфиг): состояние — «link», запись и возврат отказывают, конфиг цел
+        g = ck.cards_state(str(root))["guide"]
+        assert g["readonly"] == "link" and g["source"] == "kit" and g["digest"] == "" and not g["exists"] or g["readonly"] == "link", g
+        for call in (lambda: ck.cards_guide_write(str(root), "# Текст\n", ""), lambda: ck.cards_guide_write(str(root), "# Текст\n", g["digest"]),
+                     lambda: ck.cards_guide_reset(str(root), "")):
+            e = call()
+            assert "через ссылки панель не пишет" in e["error"] and ck.cards_status(e) == 400 and not CYR.search(ck.translate_message(e["error"], "en")), e
+            assert cfg.read_bytes() == cfg_before, "инструкция записана в конфиг по ссылке"
+        guide.unlink()
+        # ссылка на чужой файл на месте предсказуемого временного имени: чужой файл не тронут, запись проходит
+        for name in ("KB_classify.md.aurora-tmp", "KB_classify.md.tmp", ".KB_classify.md.aurora-tmp"):
+            os.symlink(outside, root / "Prompts" / name)
+        r = ck.cards_guide_write(str(root), "# Своя инструкция\n", "absent")
+        assert r["ok"] and guide.read_text(encoding="utf-8") == "# Своя инструкция\n" and not guide.is_symlink(), r
+        assert outside.read_text(encoding="utf-8") == "чужой файл\n", "чужой файл перезаписан через временное имя"
+        assert not [f for f in (root / "Prompts").glob(".KB_classify.*.aurora-tmp") if not f.is_symlink()], "остался временный файл записи"
+        # права: новый файл — обычные (не 0600 от временного файла), прежний файл сохраняет свои
+        if os.name != "nt":
+            assert (guide.stat().st_mode & 0o777) == 0o644, oct(guide.stat().st_mode)
+            guide.chmod(0o600)
+            assert ck.cards_guide_write(str(root), "# Ещё\n", _sha(guide))["ok"] and (guide.stat().st_mode & 0o777) == 0o600
+        # `Prompts/` — ссылка на другую папку проекта: запись в неё не идёт
+        guide.unlink()
+        for name in ("KB_classify.md.aurora-tmp", "KB_classify.md.tmp", ".KB_classify.md.aurora-tmp"):
+            (root / "Prompts" / name).unlink()
+        (root / "Prompts").rmdir()
+        (root / "Deliverables").mkdir(exist_ok=True)
+        os.symlink(root / "Deliverables", root / "Prompts")
+        assert ck.cards_state(str(root))["guide"]["readonly"] == "link"
+        assert "через ссылки" in ck.cards_guide_write(str(root), "# Текст\n", "")["error"]
+        assert not list((root / "Deliverables").glob("*KB_classify*")), "инструкция записана в чужую папку по ссылке на Prompts/"
+        # ссылка наружу
+        (root / "Prompts").unlink()
+        (root / "Prompts").mkdir()
+        os.symlink(outside, guide)
+        assert ck.cards_state(str(root))["guide"]["readonly"] == "link"
+        assert "через ссылки" in ck.cards_guide_write(str(root), "# Текст\n", "")["error"]
+        assert outside.read_text(encoding="utf-8") == "чужой файл\n"
+    finally:
+        back()
+
+
+@test
+def test_cards_routes_refuse_lone_surrogates(tmp: Path):
+    """Одиночный суррогат (`\\ud800`) в тексте инструкции, имени типа, ключе поля или слепке разбирается JSON, но не кодируется
+    в UTF-8: на маршрутах `/api/cards…` такой запрос отклоняется кодом 400 до записи (раньше обрывалось соединение), файлы
+    и конфиг не меняются, а допустимые не-ASCII знаки (кириллица, эмодзи) проходят."""
+    from urllib.parse import quote
+    ck, back = _panel(tmp)
+    live = None
+    try:
+        root = _panel_project(tmp)
+        cfg = root / "aurora.config.yaml"
+        before = cfg.read_bytes()
+        guide = root / "Prompts" / "KB_classify.md"
+        live = _Live(ck, [tmp])
+        p = json.dumps(str(root))
+        bodies = (
+            ("/api/cards", '{"project": %s, "overrides": {"glossary": {"title": "a\\ud800b"}}}' % p),
+            ("/api/cards", '{"project": %s, "overrides": {"gl\\ud800": {}}}' % p),
+            ("/api/cards", '{"project": %s, "overrides": {"glossary": {"x\\ud800": "1"}}}' % p),
+            ("/api/cards", '{"project": %s, "overrides": {"glossary": {"description": "\\udfff"}}}' % p),
+            ("/api/cards", '{"project": %s, "overrides": {}, "expect": "\\ud800"}' % p),
+            ("/api/cards/guide", '{"project": %s, "text": "# Текст \\ud800\\n", "expect": "absent"}' % p),
+            ("/api/cards/guide", '{"project": %s, "text": "# Текст\\n", "expect": "\\udc00"}' % p),
+            ("/api/cards/guide/check", '{"project": %s, "text": "\\ud83d"}' % p),
+            ("/api/cards/guide/reset", '{"project": %s, "expect": "\\ud800"}' % p),
+        )
+        for path, body in bodies:
+            for lang in ("", "?lang=en"):
+                code, r = live.call("POST", path + lang, body)
+                assert code == 400 and isinstance(r, dict) and r.get("error"), (path, body[:80], code, r)
+                assert not r.get("ok") and not (lang and CYR.search(r["error"])), (path, lang, r)
+        assert cfg.read_bytes() == before and not guide.exists(), "отклонённый запрос что-то записал"
+        assert not (root / "AuroraKnowledgeDB" / "meta" / "card_types.md").exists()
+        # допустимое проходит: кириллица, эмодзи, пара суррогатов (настоящий знак)
+        code, r = live.call("POST", "/api/cards", '{"project": %s, "overrides": {"role": {"title": "Роль \\ud83d\\ude00"}}}' % p)
+        assert code == 200 and r["ok"] and r["overrides"]["role"]["title"] == "Роль 😀", (code, r)
+        code, r = live.call("POST", "/api/cards/guide", '{"project": %s, "text": "# 😀 Текст\\n", "expect": "absent"}' % p)
+        assert code == 200 and guide.read_text(encoding="utf-8") == "# 😀 Текст\n", (code, r)
+        # то же функциями, без сети
+        for call in (lambda: ck.cards_save(str(root), {"role": {"title": "\ud800"}}), lambda: ck.cards_save(str(root), {"\ud800": {}}),
+                     lambda: ck.cards_guide_write(str(root), "\ud800", ""), lambda: ck.cards_guide_check("\ud800"),
+                     lambda: ck.cards_guide_reset(str(root), "\ud800")):
+            e = call()
+            assert e.get("error") and not e.get("ok") and ck.cards_status(e) == 400, e
+            e["error"].encode("utf-8")
+            assert not CYR.search(ck.translate_message(e["error"], "en"))
+    finally:
+        if live:
+            live.close()
+        back()
+
+
+@test
+def test_cards_page_guards_unsaved_settings_and_survives_a_failure(_t):
+    """Страница: уход из «Настроек проекта» с несохранённым спрашивает подтверждение (как из «Настройки»), а сбой группы «Типы
+    карточек» не уносит строку переходов и остальное под ней — он уходит в `showFault`."""
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    show = panel[panel.index("function show(view, payload){"):]
+    show = show[:show.index("\n}\n")]
+    assert 'if (S.view === "setup" && view !== "setup" && !confirmLeave()) return;' in show
+    assert 'if (S.view === "project" && view !== "project" && !confirmLeave()) return;' in show
+    assert show.index('S.view === "project"') < show.index("S.view = view;"), "подтверждение стоит после смены раздела"
+    project = panel[panel.index("async function renderProject(){"):]
+    project = project[:project.index("\n}\n") + 2]
+    assert re.search(r'try \{ await renderCardTypes\(box\); \}\s*catch \(e\)\{ showFault\(t\("modules\.refresh_failed", \{id: "cardtypes", why: e\.message\}\)\); \}\s*drawSetupJump\(box\);',
+                     project), "renderCardTypes не защищён: сбой группы уносит строку переходов"
+    assert "await renderKinds(box);" in project and "modules.refresh_failed" in json.loads(
+        (KIT / "cockpit/i18n/ru.json").read_text(encoding="utf-8"))

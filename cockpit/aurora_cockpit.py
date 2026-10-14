@@ -4145,6 +4145,34 @@ def _cards_digest_of(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _cards_guide_target(project: str) -> str:
+    """Путь файла инструкции — или "" (файл или его папка лежит за ссылкой).
+
+    `inside()` отдаёт путь с уже разрешёнными ссылками: ссылка `Prompts/KB_classify.md` → `../aurora.config.yaml` прошла бы
+    как «внутри проекта», и инструкция записалась бы в конфиг. Поэтому разрешённый путь обязан совпасть с прямым:
+    `<проект>/Prompts/KB_classify.md` без единой ссылки по дороге. Читается и пишется только такой файл."""
+    want = os.path.join(os.path.realpath(project), *CARDS.GUIDE_REL.split("/"))
+    full = inside(project, CARDS.GUIDE_REL)
+    return full if full and os.path.normcase(full) == os.path.normcase(want) else ""
+
+
+def _cards_encodable(value, depth: int = 0) -> bool:
+    """Все строки внутри (и ключи словарей) записываются в UTF-8. Одиночный суррогат в JSON разбирается, но не кодируется:
+    ни записать его в файл, ни вернуть странице в ответе — соединение оборвалось бы. Вглубь — до трёх уровней
+    (`тип → поле → значение`): глубже запрос всё равно отклоняется как не тот объект."""
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            return False
+        return True
+    if depth < 3 and isinstance(value, dict):
+        return all(_cards_encodable(k, depth + 1) and _cards_encodable(v, depth + 1) for k, v in value.items())
+    if depth < 3 and isinstance(value, (list, tuple)):
+        return all(_cards_encodable(v, depth + 1) for v in value)
+    return True
+
+
 def _cards_overrides_digest(project: str) -> str:
     """Слепок блока `cards:` так, как его видит движок: типы и их поля, без комментариев и пустых строк."""
     found, _problems = CARDS.read_config_overrides(project)
@@ -4208,13 +4236,14 @@ def _cards_guide(project: str) -> dict:
     """Инструкция выбора типа: эффективный текст (файл проекта, иначе кита), его слепок и что в нём не так.
 
     `readonly` — почему файл проекта нельзя сохранить из панели: `lossy` (не читается как UTF-8 или cp1251), `big`
-    (больше потолка редактора), `unreadable`, `outside` (ссылка уводит за пределы проекта); пусто — можно."""
-    full = inside(project, CARDS.GUIDE_REL)
+    (больше потолка редактора), `unreadable`, `link` (файл или его папка лежит за ссылкой: через ссылки панель не
+    читает и не пишет); пусто — можно."""
+    full = _cards_guide_target(project)
     raw, why = _cards_read_file(full)
     kit_text, kit_digest = _cards_kit_guide()
     mine, digest, readonly = "", CARDS_ABSENT, ""
     if not full:
-        digest, readonly = "", "outside"
+        digest, readonly = "", "link"
     elif why:
         digest, readonly = "", why             # прочитать не вышло: слепка нет, и писать поверх вслепую нельзя
     elif raw is not None:
@@ -4325,8 +4354,10 @@ def cards_save(project: str, overrides, expect="", lang: str = DEFAULT_LANG) -> 
     Записи блока о типах, которых в реестре нет (шаблон убрали, тип ждёт возвращения), страница не знает и не стирает.
     Ответ — как у `cards_state`, плюс `ok` и `catalog_result`: `written`, `unchanged`, `pinned` (проект оставил каталог
     себе), `none` (базы или типов нет) или `failed`."""
-    if not isinstance(expect, str):
+    if not isinstance(expect, str) or not _cards_encodable(expect):
         return {"error": "слепок expect должен быть строкой"}
+    if not _cards_encodable(overrides):
+        return {"error": "в запросе есть знаки, которых нет в Юникоде (одиночные суррогаты): запрос отклонён"}
     reg = CARDS.safe_registry(project, KIT)
     if not reg.types:
         return {"error": "в реестре проекта нет ни одного типа: шаблоны карточек не доставлены — выполните kit:update"}
@@ -4366,12 +4397,12 @@ def cards_save(project: str, overrides, expect="", lang: str = DEFAULT_LANG) -> 
 
 def _cards_guide_commit(project: str, expect, lang: str, build) -> dict:
     """Записать файл инструкции: сверить слепок, собрать байты (`build(sn, raw)` → (байты, отказ)) и подменить файл
-    целиком (временный файл рядом + замена). Путь один и от страницы не берётся."""
-    if not isinstance(expect, str):
+    целиком (временный файл рядом + замена). Путь один и от страницы не берётся; файл за ссылкой не пишется."""
+    if not isinstance(expect, str) or not _cards_encodable(expect):
         return {"error": "слепок expect должен быть строкой"}
-    full = inside(project, CARDS.GUIDE_REL)
+    full = _cards_guide_target(project)
     if not full:
-        return {"error": "путь вне проекта"}
+        return {"error": "Prompts/KB_classify.md или его папка — ссылка: через ссылки панель не пишет"}
     with CARDS_LOCK:
         raw, why = _cards_read_file(full)
         if why:
@@ -4388,21 +4419,25 @@ def _cards_guide_commit(project: str, expect, lang: str, build) -> dict:
             return refusal
         if data == raw:
             return {**cards_state(project, lang), "ok": True, "unchanged": True}
-        tmp = full + ".aurora-tmp"
+        # Временный файл — со случайным именем и созданный заново (`O_EXCL`): готовая ссылка с предсказуемым именем
+        # рядом с инструкцией не заставит панель перезаписать чужой файл.
+        tmp = ""
         try:
             os.makedirs(os.path.dirname(full), exist_ok=True)
-            with open(tmp, "wb") as f:
+            fd, tmp = tempfile.mkstemp(prefix=".KB_classify.", suffix=".aurora-tmp", dir=os.path.dirname(full))
+            with os.fdopen(fd, "wb") as f:
                 f.write(data)
             try:
                 shutil.copymode(full, tmp)      # права прежнего файла переходят к новому
             except OSError:
-                pass
+                os.chmod(tmp, 0o644)            # файла ещё не было: права обычного нового файла, а не 0600 от mkstemp
             replace_file(tmp, full)
         except OSError as e:
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+            if tmp:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
             return {"error": f"не удалось записать файл: {e.strerror or e}", "failed": True}
     return {**cards_state(project, lang), "ok": True}
 
@@ -4411,14 +4446,18 @@ def cards_guide_write(project: str, text, expect="", lang: str = DEFAULT_LANG) -
     """Записать текст инструкции в `Prompts/KB_classify.md`. Кодировка и окончания строк файла сохраняются; текст без
     перевода строки в конце получает его. Пустой текст и текст длиннее `CARDS_GUIDE_MAX` отклоняются; длиннее
     `CARDS.GUIDE_LIMIT`, без шагов 0–7 или без формата ответа — записывается, а `guide.checks` называет, что не так."""
-    if not isinstance(text, str):
+    if not isinstance(text, str) or not _cards_encodable(text):
         return {"error": "текст инструкции должен быть строкой"}
     if not text.strip():
         return {"error": "текст инструкции пуст — чтобы вернуться к тексту кита, нажмите «Вернуть текст кита»"}
     if len(text) > CARDS_GUIDE_MAX:
         return {"error": f"инструкция длиннее {CARDS_GUIDE_MAX} знаков"}
-    body = text.removeprefix("﻿")
+    body = text.removeprefix("\ufeff")
     body = body if body.endswith("\n") else body + "\n"
+    try:
+        CARDS.guide_checks(body)         # текст разбирается до записи: непригодный не должен оставить файл, который ломает чтение
+    except Exception:  # noqa: BLE001 — любой сбой разбора: отказ без записи
+        return {"error": "текст инструкции не разбирается: проверьте заголовки шагов «## Шаг N.»"}
 
     def build(sn, _raw):
         if sn is not None and not sn["strict"]:
@@ -4441,11 +4480,14 @@ def cards_guide_reset(project: str, expect="", lang: str = DEFAULT_LANG) -> dict
 
 def cards_guide_check(text) -> dict:
     """Проверка текста инструкции без записи: что в нём не так (`CARDS.guide_checks`) и сколько в нём знаков."""
-    if not isinstance(text, str):
+    if not isinstance(text, str) or not _cards_encodable(text):
         return {"error": "текст инструкции должен быть строкой"}
     if len(text) > CARDS_GUIDE_MAX:
         return {"error": f"инструкция длиннее {CARDS_GUIDE_MAX} знаков"}
-    return {"checks": CARDS.guide_checks(text), "chars": len(text), "limit": CARDS.GUIDE_LIMIT}
+    try:
+        return {"checks": CARDS.guide_checks(text), "chars": len(text), "limit": CARDS.GUIDE_LIMIT}
+    except Exception:  # noqa: BLE001 — страница получает отказ, а не оборванное соединение
+        return {"error": "текст инструкции не разбирается: проверьте заголовки шагов «## Шаг N.»"}
 
 
 def agent_ping(project: str) -> dict:
@@ -5340,7 +5382,11 @@ class Handler(BaseHTTPRequestHandler):
             if not project:
                 self.send_json({"error": "проект не выбран"}, 400)
             elif self._known(project):         # неизвестный проект `_known` уже отшил своим ответом
-                self.send_json(cards_state(project, request_lang(q), (q.get("stats") or [""])[0] == "1"))
+                try:
+                    res = cards_state(project, request_lang(q), (q.get("stats") or [""])[0] == "1")
+                except Exception as e:  # noqa: BLE001 — страница получает отказ с причиной, а не оборванное соединение
+                    res = {"error": f"запрос к типам карточек не выполнен: {type(e).__name__}", "failed": True}
+                self.send_json(res, cards_status(res))
         elif u.path == "/api/ask/threads":
             project = (q.get("project") or [""])[0]
             self.send_json(ask_threads(project) if project and self._known(project)
@@ -5781,14 +5827,17 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             lang, expect = request_lang(q), payload.get("expect", "")
-            if u.path == "/api/cards":
-                res = cards_save(project, payload.get("overrides"), expect, lang)
-            elif u.path == "/api/cards/guide":
-                res = cards_guide_write(project, payload.get("text"), expect, lang)
-            elif u.path == "/api/cards/guide/reset":
-                res = cards_guide_reset(project, expect, lang)
-            else:
-                res = cards_guide_check(payload.get("text"))
+            try:
+                if u.path == "/api/cards":
+                    res = cards_save(project, payload.get("overrides"), expect, lang)
+                elif u.path == "/api/cards/guide":
+                    res = cards_guide_write(project, payload.get("text"), expect, lang)
+                elif u.path == "/api/cards/guide/reset":
+                    res = cards_guide_reset(project, expect, lang)
+                else:
+                    res = cards_guide_check(payload.get("text"))
+            except Exception as e:  # noqa: BLE001 — страница получает отказ с причиной, а не оборванное соединение
+                res = {"error": f"запрос к типам карточек не выполнен: {type(e).__name__}", "failed": True}
             return self.send_json(res, cards_status(res))
         if u.path == "/api/kinds":
             project = payload.get("project", "")
