@@ -1552,6 +1552,114 @@ def test_web_allow_private_accepts_ipv6_literals_and_the_form_keeps_them(tmp: Pa
 
 
 @test
+def test_web_connector_limits_body_size_and_total_time(tmp: Path):
+    """BL-SEC-17: страница не больше PAGE_MAX_BYTES, вложение — ASSET_MAX_BYTES. Content-Length больше
+    предела — отказ до чтения тела; поток без Content-Length — отказ на пределе; медленный ответ
+    упирается в общий срок 2×timeout (часы подменены, ожидания нет). Отказ — строка в отчёте без
+    повтора, вложение на диск не пишется; нормальные ответы проходят байт в байт."""
+    _path()
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    WE = importlib.import_module("web_export")
+    big = b"x" * 5000
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            route = self.path.split("/doc")[0]            # «/chunked/doc.pdf» — то же тело, что у «/chunked»
+            if route == "/small":
+                body = b"<p>ok \xd1\x82</p>" * 10
+            elif route in ("/declared", "/chunked", "/exact"):
+                body = big if route != "/exact" else big[:1000]
+            else:
+                body = b""
+            self.send_response(200)
+            if route != "/chunked":              # без Content-Length: тело до закрытия соединения
+                self.send_header("Content-Length", str(len(body) if route != "/declared" else 10 ** 9))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except OSError:
+                pass
+
+        def log_message(self, *a):
+            pass
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    real = (WE.ALLOW_PRIVATE, WE.PAGE_MAX_BYTES, WE.ASSET_MAX_BYTES, WE.RETRIES, WE.time.sleep)
+    slept = []
+    try:
+        WE.ALLOW_PRIVATE = ["127.0.0.1"]
+        WE.PAGE_MAX_BYTES, WE.ASSET_MAX_BYTES, WE.RETRIES = 1000, 4000, 3
+        WE.time.sleep = slept.append
+        raw, enc, err = WE._get(base + "/small", "", 5)
+        assert raw == b"<p>ok \xd1\x82</p>" * 10 and not err, (raw, err)
+        raw, enc, err = WE._get(base + "/exact", "", 5)           # ровно предел — проходит
+        assert raw == big[:1000] and not err, err
+        for path in ("/declared", "/chunked"):
+            raw, _e, err = WE._get(base + path, "", 5)
+            assert raw == b"" and err.startswith("слишком большой ответ (> "), (path, err)
+        assert not slept, "отказ по размеру повторялся"
+        # fetch: тот же отказ строкой, а не исключением
+        html, err = WE.fetch(base + "/chunked")
+        assert html == "" and "слишком большой ответ" in err, err
+        # вложение: предел свой; 5000 байт < 4000? нет — больше, поэтому отказ, файл не записан
+        out = tmp / "mirror"
+        name, err = WE.fetch_asset(base + "/chunked/doc.pdf", str(out), True, "Акт")
+        assert name == "" and "слишком большой ответ" in err, (name, err)
+        assert not (out / WE.ASSET_DIR).exists() or not list((out / WE.ASSET_DIR).iterdir()), "частичный файл"
+        WE.ASSET_MAX_BYTES = 10_000                               # вложение выше предела страницы проходит
+        name, err = WE.fetch_asset(base + "/exact/doc.pdf", str(out), True, "Акт")
+        assert not err and (out / WE.ASSET_DIR / name).read_bytes() == big[:1000], err
+        WE.PAGE_MAX_BYTES = 1000
+        raw, _e, err = WE._get(base + "/chunked", "", 5, max_bytes=10_000)
+        assert raw == big and not err, "явный предел не применён"
+        # Content-Length больше предела: тело не читают (клиент закрывает соединение)
+        raw, _e, err = WE._get(base + "/declared", "", 5)
+        assert raw == b"" and "слишком большой ответ" in err
+    finally:
+        WE.ALLOW_PRIVATE, WE.PAGE_MAX_BYTES, WE.ASSET_MAX_BYTES, WE.RETRIES, WE.time.sleep = real
+        srv.shutdown()
+        srv.server_close()
+    # общий срок: ответ по килобайту «в секунду» на подменных часах; таймаут одного чтения не срабатывает
+    clock = [1000.0]
+
+    class Slow:
+        headers = type("Hd", (), {"get": lambda self, k, d=None: "", "get_content_charset": lambda self: None})()
+        n = 0
+
+        def read(self, size=-1):
+            clock[0] += 1.0
+            Slow.n += 1
+            return b"a" if Slow.n < 1000 else b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    real_open, real_now, real_sleep = WE.guarded_urlopen, WE._now, WE.time.sleep
+    slept.clear()
+    WE.guarded_urlopen = lambda req, timeout=None, allow_private=(): Slow()
+    WE._now = lambda: clock[0]
+    WE.time.sleep = slept.append
+    try:
+        t0 = time.process_time()
+        raw, _e, err = WE._get("https://example.com/slow", "", 10)
+        assert raw == b"" and err == "истёк общий срок", err
+        assert Slow.n <= 22, f"читали после срока: {Slow.n}"       # 2×10 с на часах по секунде
+        assert not slept, "отказ по сроку повторялся"
+        assert time.process_time() - t0 < 5
+        Slow.n = 990                                               # быстрый конец укладывается
+        clock[0] = 0.0
+        WE._now = lambda: 0.0
+        raw, _e, err = WE._get("https://example.com/fast", "", 10)
+        assert raw == b"a" * 9 and not err, (raw, err)
+    finally:
+        WE.guarded_urlopen, WE._now, WE.time.sleep = real_open, real_now, real_sleep
+
+
+@test
 def test_models_list_does_not_send_a_saved_key_to_another_address(tmp: Path):
     """`/api/models/list`: сохранённый ключ провайдера уходит только на его же адрес;
     на другой — отказ без запроса; введённый в форме ключ идёт как есть."""

@@ -64,6 +64,17 @@ ALLOW_PRIVATE: list = []
 # PDF из десяти. Один общий таймаут либо теряет документы, либо заставляет ждать
 # страницу, которой давно нет.
 ASSET_TIMEOUT = 180
+# Предел тела ответа (BL-SEC-17). Чужой сервер вправе отдать гигабайт или лить байт в секунду:
+# без предела `read()` съедал память и держал прогон сколько угодно. Страница — текст, пяти
+# мегабайт ей хватает с запасом; вложение — приказ, акт, архив, и ему отведено больше.
+# Отказ — строка в отчёте, повтор не помогает: сервер ответит тем же.
+PAGE_MAX_BYTES = 5 * 1024 * 1024
+ASSET_MAX_BYTES = 50 * 1024 * 1024
+# Общий срок на один запрос — во столько раз больше таймаута: таймаут считается на каждый
+# `recv`, и сервер, отдающий байт в секунду, укладывался бы в него бесконечно.
+TOTAL_TIMEOUT_FACTOR = 2
+_CHUNK = 64 * 1024
+_now = time.monotonic        # подменяется в тестах: сроки проверяются без ожидания
 # Обрыв связи — не отсутствие страницы. Сайт сбрасывает соединение при частых запросах,
 # и без повтора страница пропадает из базы молча: в отчёте строка «ошибка», а человек
 # видит только, что знания нет.
@@ -185,31 +196,64 @@ def slug(url: str, title: str) -> str:
     return portable_name(base, ext=f"-{tail}.md") or f"page-{tail}.md"
 
 
+class _BodyRefused(Exception):
+    """Тело ответа не принято: слишком большое или не уложилось в общий срок."""
+
+
+def _read_body(r, limit: int, deadline: float) -> bytes:
+    """Тело ответа кусками: не больше `limit` байт и не позже `deadline` (по `_now`)."""
+    def too_big():
+        return _BodyRefused(f"слишком большой ответ (> {limit / 1048576:g} МБ)")
+    try:
+        declared = int(r.headers.get("Content-Length") or -1)
+    except (TypeError, ValueError):
+        declared = -1
+    if declared > limit:
+        raise too_big()                 # отказ до чтения тела
+    parts, got = [], 0
+    while True:
+        if _now() > deadline:
+            raise _BodyRefused("истёк общий срок")
+        chunk = r.read(min(_CHUNK, limit - got + 1))
+        if not chunk:
+            return b"".join(parts)
+        got += len(chunk)
+        if got > limit:
+            raise too_big()
+        parts.append(chunk)
+
+
 def _get(url: str, token: str, timeout: int, headers: dict | None = None,
-         meta: dict | None = None) -> tuple:
+         meta: dict | None = None, max_bytes: int | None = None) -> tuple:
     """(байты, кодировка, ошибка) с повтором при обрыве связи.
 
     Повторяем ровно то, что лечится ожиданием: таймаут и сброс соединения. Ответ «404»
     или «403» повтором не исправить — на таких выходим сразу, чтобы не молотить чужой
-    сервер и не растягивать прогон на пустом месте.
+    сервер и не растягивать прогон на пустом месте. Так же не повторяем отказ по размеру
+    (`max_bytes`, по умолчанию `PAGE_MAX_BYTES`) и по общему сроку (`2 × timeout` на запрос).
     """
+    limit = PAGE_MAX_BYTES if max_bytes is None else max_bytes
     req = urllib.request.Request(url, headers={"User-Agent": AGENT, **(headers or {})})
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     last = ""
     for attempt in range(1, RETRIES + 1):
+        deadline = _now() + TOTAL_TIMEOUT_FACTOR * timeout
         try:
             with guarded_urlopen(req, timeout=timeout, allow_private=ALLOW_PRIVATE) as r:
                 if meta is not None:
                     meta["etag"] = r.headers.get("ETag") or ""
                     meta["modified"] = r.headers.get("Last-Modified") or ""
-                return r.read(), (r.headers.get_content_charset() or "utf-8"), ""
+                return (_read_body(r, limit, deadline),
+                        (r.headers.get_content_charset() or "utf-8"), "")
         except urllib.error.HTTPError as e:
             if e.code == 304 and headers:
                 return b"", "", NOT_MODIFIED        # не изменилась: это ответ, а не сбой
             return b"", "", f"HTTP {e.code}"       # ответ сервера, повтор не поможет
         except EgressRefused as e:
             return b"", "", f"запрещено границами коннектора: {e}"   # политика, повтор не поможет
+        except _BodyRefused as e:
+            return b"", "", str(e)                  # размер и срок: повтор не поможет
         except Exception as e:  # noqa: BLE001 — причина уходит в отчёт словами
             last = f"{type(e).__name__}: {e}"
             if attempt < RETRIES:
@@ -517,7 +561,7 @@ def fetch_asset(url: str, out_dir: str, apply: bool, label: str = "") -> tuple:
         return name, ""
     if not apply:
         return name, ""
-    data, _enc, err = _get(url, "", ASSET_TIMEOUT)
+    data, _enc, err = _get(url, "", ASSET_TIMEOUT, max_bytes=ASSET_MAX_BYTES)
     if err:
         return "", err
     os.makedirs(os.path.dirname(path), exist_ok=True)
