@@ -3607,6 +3607,180 @@ def safe_urlopen(req, timeout: float | None = None, context=None):
     return opener.open(req) if timeout is None else opener.open(req, timeout=timeout)
 
 
+# ------------------------------------------------------------ HTTP: границы веб-коннектора
+# Адреса страниц лежат в общем конфиге, а обход идёт по ссылкам самих страниц: без границ
+# `file:///etc/hosts`, адрес метаданных облака (link-local) или редирект на адрес внутренней сети (SSRF)
+# превращали бы выгрузку в чтение чужих файлов и служб с машины человека (BL-SEC-17). Правило:
+# только http/https, адрес имени — глобальный (не частный, не петля, не link-local), и так на
+# КАЖДОМ переходе. Внутреннюю вики человек разрешает явно: `allow_private` в блоке `web:`.
+# ВАЖНО: этот файл читает и старый Python — без `:=` и `match` (см. шапку модуля).
+
+# Подмена резолвера в тестах: функция `(хост, порт) -> [адреса]`; пусто — настоящий getaddrinfo.
+EGRESS_RESOLVE = None
+EGRESS_MAX_REDIRECTS = 5
+
+
+class EgressRefused(OSError):
+    """Политика границ отказала: схема, адрес или число переходов. Повтор не поможет."""
+
+
+def _allow_private_entries(allow_private) -> list:
+    """[(хост, порт или 0)] из списка `allow_private`: `wiki.example.com`, `host:8080`,
+    `[::1]`. Схема и хвост пути отбрасываются; поддомены в запись не входят."""
+    from urllib.parse import urlsplit
+    out = []
+    for raw in allow_private or ():
+        s = str(raw or "").strip().strip("\"'").lower()
+        if not s:
+            continue
+        try:
+            p = urlsplit(s if "//" in s else "//" + s)
+            host, port = (p.hostname or ""), (p.port or 0)
+        except ValueError:
+            continue
+        if host:
+            out.append((host, port))
+    return out
+
+
+def _non_global(addr: str) -> str:
+    """Почему адрес нельзя трогать (пусто — глобальный). IPv4 внутри IPv6 (`::ffff:10.0.0.1`)
+    проверяется как IPv4."""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(str(addr).split("%", 1)[0])
+    except ValueError:
+        return "не адрес"
+    if getattr(ip, "ipv4_mapped", None) is not None:
+        ip = ip.ipv4_mapped
+    if ip.is_loopback:
+        return "петля (свой компьютер)"
+    if ip.is_link_local:
+        return "link-local (в том числе службы облака 169.254.169.254)"
+    if ip.is_multicast or ip.is_unspecified:
+        return "служебный адрес"
+    if ip.is_private or not ip.is_global:
+        return "частная или служебная сеть"
+    return ""
+
+
+def _egress_check(url: str, allow_private=(), resolve=None) -> tuple:
+    """(причина отказа, временная ли). Временная — имя не разрешилось: это сбой сети, а не
+    политика, и повтор имеет смысл."""
+    import ipaddress
+    from urllib.parse import urlsplit
+    u = str(url or "")
+    if any(ord(c) <= 32 or c == "\\" for c in u):
+        return "в адресе пробел, управляющий или обратный слэш: так его читают по-разному", False
+    try:
+        p = urlsplit(u)
+        scheme, host, port = (p.scheme or "").lower(), (p.hostname or "").lower(), p.port
+    except ValueError:
+        return "адрес не разобрать", False
+    if scheme not in _DEFAULT_PORTS:
+        return f"схема «{scheme or '—'}» не разрешена: только http и https", False
+    if not host:
+        return "в адресе нет имени хоста", False
+    port = port or _DEFAULT_PORTS[scheme]
+    for h, pt in _allow_private_entries(allow_private):
+        if h == host and pt in (0, port):
+            return "", False                # внутренний адрес разрешён человеком явно
+    try:
+        addrs = [host] if ipaddress.ip_address(host) else []
+    except ValueError:
+        fn = resolve or EGRESS_RESOLVE
+        try:
+            if fn is not None:
+                addrs = list(fn(host, port))
+            else:
+                import socket
+                addrs = [i[4][0] for i in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
+        except OSError as e:
+            return f"имя {host} не разрешилось: {e}", True
+    if not addrs:
+        return f"имя {host} не разрешилось", True
+    for a in addrs:
+        why = _non_global(a)
+        if why:
+            return (f"{host} → {a}: {why}; внутренний адрес разрешается явно, "
+                    f"allow_private: [{host}] в блоке web: конфига"), False
+    return "", False
+
+
+def egress_problem(url: str, allow_private=(), resolve=None) -> str:
+    """Причина, по которой на адрес нельзя ходить веб-коннектору; пусто — можно.
+
+    Только http/https; имя резолвится (`resolve(хост, порт)` или `EGRESS_RESOLVE` — подмена
+    для тестов), любой адрес не из глобальной сети — отказ. Хост из `allow_private` (имя или
+    `имя:порт`, поддомены не входят) освобождается от проверки адреса, схема проверяется всегда."""
+    return _egress_check(url, allow_private, resolve)[0]
+
+
+def config_hosts(body: str, key: str = "allow_private") -> list:
+    """Список имён из блока конфига: `key: [a, b]` в строку или `key:` и пункты `- a` ниже."""
+    lines = (body or "").splitlines()
+    for i, line in enumerate(lines):
+        m = re.match(rf"^(\s*){re.escape(key)}\s*:\s*(.*?)\s*$", line)
+        if not m:
+            continue
+        val = re.sub(r"\s+#.*$", "", m.group(2)).strip()
+        if val.startswith("["):
+            return split_inline_items(val.strip("[]"))
+        if val:
+            return [val]
+        out, indent = [], len(m.group(1))
+        for nxt in lines[i + 1:]:
+            if not nxt.strip() or nxt.lstrip().startswith("#"):
+                continue
+            if len(nxt) - len(nxt.lstrip()) < indent or not nxt.lstrip().startswith("-"):
+                break
+            out.append(re.sub(r"\s+#.*$", "", nxt.lstrip()[1:]).strip())
+        return out
+    return []
+
+
+_GUARDED_REDIRECT = None
+
+
+def _guard(url: str, allow_private, resolve=None) -> None:
+    why, transient = _egress_check(url, allow_private, resolve)
+    if why:
+        import urllib.error as _er
+        raise (_er.URLError(why) if transient else EgressRefused(why))
+
+
+def guarded_urlopen(req, timeout: float | None = None, allow_private=(), resolve=None):
+    """`safe_urlopen` для веб-коннектора: проверка границ до запроса и на каждом редиректе.
+
+    Опенер собирается без `FileHandler`, `FTPHandler` и `DataHandler` и без прокси из окружения;
+    переходов не больше `EGRESS_MAX_REDIRECTS`. Отказ политики — `EgressRefused`."""
+    import urllib.request as _rq
+    global _GUARDED_REDIRECT
+    if _GUARDED_REDIRECT is None:
+        base = type(safe_redirect_handler())
+
+        class _GuardedRedirect(base):
+            max_redirections = EGRESS_MAX_REDIRECTS
+
+            def __init__(self, allow=(), resolve=None):
+                self._allow, self._resolve = allow, resolve
+
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                # newurl `urllib` уже сделал абсолютным относительно запроса
+                _guard(newurl, self._allow, self._resolve)
+                return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+        _GUARDED_REDIRECT = _GuardedRedirect
+    url = req if isinstance(req, str) else req.full_url
+    _guard(url, allow_private, resolve)
+    op = _rq.OpenerDirector()
+    for h in (_rq.HTTPHandler(), _rq.HTTPSHandler(), _rq.HTTPDefaultErrorHandler(),
+              _rq.HTTPErrorProcessor(), _rq.UnknownHandler(),
+              _GUARDED_REDIRECT(allow_private, resolve)):
+        op.add_handler(h)
+    return op.open(req) if timeout is None else op.open(req, timeout=timeout)
+
+
 # ---------------------------------------------------------------------------------
 # Секреты в файлах, которые уезжают в git (BL-SEC-18). ОДНО место для правил и для списка
 # мест: их читают `kit:doctor`, линтер базы (`kb_lint`), хук pre-commit проекта и хук/CI

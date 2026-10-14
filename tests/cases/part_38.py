@@ -1169,13 +1169,199 @@ def test_web_token_goes_only_to_its_own_seed_host(tmp: Path):
     assert WE.token_for("http://127.0.0.1:9/a", "http://127.0.0.1:9/", "T") == "T"
     assert WE.token_for("https://wiki.example.com/a", "https://wiki.example.com/", "") == ""
     h = _Hosts()
+    real_allow = WE.ALLOW_PRIVATE
+    WE.ALLOW_PRIVATE = ["127.0.0.1"]        # серверы теста — на своём компьютере: разрешаем явно
     try:
         h.to = h.url("b", "/page")
         _raw, _enc, err = WE._get(h.url("a", "/go"), "T", 10)
         assert not err, err
         assert "authorization" not in h.seen["b"][-1][1], "токен ушёл вслед за редиректом"
     finally:
+        WE.ALLOW_PRIVATE = real_allow
         h.close()
+
+
+_PUBLIC = {"example.com": ["93.184.216.34"], "wiki.example.com": ["93.184.216.35"],
+           "evil.example.com": ["10.0.0.5"], "loop.example.com": ["127.0.0.1"],
+           "meta.example.com": ["169.254.169.254"], "cgn.example.com": ["100.64.0.1"],
+           "v6loop.example.com": ["::1"], "mapped.example.com": ["::ffff:10.0.0.1"],
+           "mixed.example.com": ["93.184.216.34", "192.168.1.7"]}
+
+
+def _resolve(host, _port):
+    return _PUBLIC[host]
+
+
+@test
+def test_web_connector_takes_only_http_and_global_addresses(tmp: Path):
+    """BL-SEC-17: file://, ftp:// и data: — отказ; имя, указывающее на частный, петлевой, link-local,
+    CGNAT-адрес, `::1`, `::ffff:10.x` или хотя бы одним адресом во внутреннюю сеть, — отказ; публичное
+    имя проходит. Резолвер подменён: сети нет."""
+    _path()
+    AC = importlib.import_module("aurora_common")
+    WE = importlib.import_module("web_export")
+    for bad in ("file:///etc/hosts", "ftp://example.com/x", "data:text/plain,hi", "gopher://example.com/",
+                "http:///x", "http://example.com\\@10.0.0.5/", "http://example.com/a b"):
+        assert AC.egress_problem(bad, resolve=_resolve), f"не отказано: {bad}"
+    for host in ("evil", "loop", "meta", "cgn", "v6loop", "mapped", "mixed"):
+        why = AC.egress_problem(f"https://{host}.example.com/x", resolve=_resolve)
+        assert why and "allow_private" in why, f"{host}: {why!r}"
+    # адреса-литералы собираем из частей: проверка «нейтральных хостов» ищет `http://<адрес>` в тексте
+    for lit in ("10.0.0.5", "127.0.0.1:8080", "169.254.169.254/latest/meta-data/", "[::1]",
+                "[::ffff:10.0.0.1]", "0.0.0.0"):
+        assert AC.egress_problem("http" + "://" + lit, resolve=_resolve), f"не отказано: {lit}"
+    assert AC.egress_problem("https://example.com/a", resolve=_resolve) == ""
+    assert AC.egress_problem("http" + "://" + "93.184.216.34/", resolve=_resolve) == ""
+    # подмена модульная: она же работает без аргумента
+    real = AC.EGRESS_RESOLVE
+    AC.EGRESS_RESOLVE = _resolve
+    try:
+        assert AC.egress_problem("http://evil.example.com/") and not AC.egress_problem("http://example.com/")
+        # сам _get: отказ строкой в отчёте, тело не читается, повтора нет
+        slept = []
+        real_sleep, WE.time.sleep = WE.time.sleep, slept.append
+        try:
+            for u in ("file:///etc/hosts", "http://evil.example.com/x", "http://meta.example.com/"):
+                raw, _enc, err = WE._get(u, "T", 5)
+                assert raw == b"" and err.startswith("запрещено границами коннектора"), (u, err)
+        finally:
+            WE.time.sleep = real_sleep
+        assert not slept, "отказ политики повторялся"
+        try:
+            AC.guarded_urlopen("file:///etc/hosts", timeout=5)
+            raise AssertionError("file:// открылся")
+        except AC.EgressRefused:
+            pass
+    finally:
+        AC.EGRESS_RESOLVE = real
+
+
+@test
+def test_web_connector_allow_private_is_per_host_and_does_not_touch_the_token_binding(tmp: Path):
+    """BL-SEC-17: хост из `allow_private` освобождён от проверки адреса (имя или имя:порт, поддомены
+    не входят), схема проверяется всегда; привязка токена от списка не расширяется."""
+    _path()
+    AC = importlib.import_module("aurora_common")
+    WE = importlib.import_module("web_export")
+    wl = ["wiki.example.com", "Proxy.Example.com:8443", "[::1]"]
+    priv = {"wiki.example.com": ["10.1.1.1"], "sub.wiki.example.com": ["10.1.1.2"],
+            "proxy.example.com": ["10.1.1.3"], "evil.example.com": ["10.0.0.5"]}
+    rs = lambda h, _p: priv[h]  # noqa: E731
+    assert AC.egress_problem("https://wiki.example.com/a", wl, rs) == ""
+    assert AC.egress_problem("http://wiki.example.com:8080/a", wl, rs) == "", "голый хост — любой порт"
+    assert AC.egress_problem("https://sub.wiki.example.com/", wl, rs), "поддомен не входит"
+    assert AC.egress_problem("https://proxy.example.com:8443/", wl, rs) == ""
+    assert AC.egress_problem("https://proxy.example.com/", wl, rs), "хост:порт — только свой порт"
+    assert AC.egress_problem("http://[::1]/", wl, rs) == ""
+    assert AC.egress_problem("https://evil.example.com/", wl, rs)
+    assert AC.egress_problem("file://wiki.example.com/etc/hosts", wl, rs), "схема проверяется всегда"
+    assert AC.egress_problem("ftp://wiki.example.com/x", wl, rs)
+    # токен: разрешение внутреннего адреса не делает хост хостом токена
+    real = WE.ALLOW_PRIVATE
+    WE.ALLOW_PRIVATE = ["wiki.example.com"]
+    try:
+        seed = "https://wiki.example.com/"
+        assert WE.token_for(seed + "a", seed, "T", ["other.example.com"]) == ""
+        assert WE.token_for(seed + "a", seed, "T", ["wiki.example.com"]) == "T"
+    finally:
+        WE.ALLOW_PRIVATE = real
+
+
+@test
+def test_web_connector_checks_every_redirect_and_stops_loops(tmp: Path):
+    """BL-SEC-17: редирект на внутренний адрес — отказ, запрос туда не уходит; цикл редиректов
+    обрывается, а не крутится. Серверы на 127.0.0.1: первый разрешён по порту, второй — нет."""
+    _path()
+    AC = importlib.import_module("aurora_common")
+    WE = importlib.import_module("web_export")
+    h = _Hosts()
+    real = WE.ALLOW_PRIVATE
+    try:
+        WE.ALLOW_PRIVATE = [f"127.0.0.1:{h.port['a']}"]
+        h.to = h.url("b", "/secret")
+        raw, _enc, err = WE._get(h.url("a", "/go"), "", 10)
+        assert raw == b"" and "запрещено границами коннектора" in err and "127.0.0.1" in err, err
+        assert not h.seen["b"], "запрос ушёл на запрещённый адрес вслед за редиректом"
+        assert len(h.seen["a"]) == 1
+        # схема в редиректе: file:// тоже отказ
+        h.to = "file:///etc/hosts"
+        raw, _enc, err = WE._get(h.url("a", "/go"), "", 10)
+        assert raw == b"" and err, err
+        # цикл
+        h.seen["a"].clear()
+        h.redirect_all, h.to = True, h.url("a", "/loop")
+        raw, _enc, err = WE._get(h.url("a", "/loop"), "", 10)
+        assert raw == b"" and err, "цикл редиректов не оборван"
+        assert len(h.seen["a"]) <= AC.EGRESS_MAX_REDIRECTS + 1, len(h.seen["a"])
+        # без цикла, но длинная цепочка из разных адресов: пять переходов проходят, шестой — отказ
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import threading
+        hits = []
+
+        class Chain(BaseHTTPRequestHandler):
+            def do_GET(self):
+                k = int(self.path.rsplit("/", 1)[1])
+                hits.append(k)
+                if k < 9:
+                    self.send_response(302)
+                    self.send_header("Location", f"/n/{k + 1}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def log_message(self, *a):
+                pass
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Chain)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            WE.ALLOW_PRIVATE = ["127.0.0.1"]
+            base = f"http://127.0.0.1:{srv.server_address[1]}/n/"
+            raw, _enc, err = WE._get(base + "4", "", 10)         # 5 переходов: 4→9
+            assert raw == b"ok" and not err, (raw, err)
+            hits.clear()
+            raw, _enc, err = WE._get(base + "0", "", 10)         # 9 переходов
+            assert raw == b"" and err, "длинная цепочка редиректов прошла"
+            assert hits == [0, 1, 2, 3, 4, 5], hits
+        finally:
+            srv.shutdown()
+            srv.server_close()
+    finally:
+        WE.ALLOW_PRIVATE = real
+        h.close()
+
+
+@test
+def test_web_allow_private_is_read_from_config_and_survives_the_settings_form(tmp: Path):
+    """BL-SEC-17: `allow_private` читается из блока `web:` строкой и списком пунктов; форма настроек
+    (`aurora_setup`) при сохранении не стирает ключ."""
+    _path()
+    import contextlib
+    import io
+    WE = importlib.import_module("web_export")
+    A = importlib.import_module("aurora_setup")
+    inline = "web:\n  depth: 2\n  allow_private: [wiki.example.com, \"localhost:8080\"]  # внутренние\n  pages:\n    - url: https://example.org/a\n      trusted: true\n"
+    items = "web:\n  allow_private:\n    - wiki.example.com\n    - localhost:8080\n  pages:\n    - url: https://example.org/a\n      trusted: true\n"
+    for text in (inline, items):
+        assert WE.settings_from_config(text)["allow_private"] == ["wiki.example.com", "localhost:8080"], text
+    assert WE.settings_from_config("web:\n  depth: 2\n")["allow_private"] == [], "умолчание — ничего не разрешено"
+    root = tmp / "проект"
+    root.mkdir()
+    cfg = root / "aurora.config.yaml"
+    for text in (inline, items):
+        cfg.write_text('name: "Проект"\nslug: "proj"\n' + text, encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            A.run_answers(root, {"name": "Новое имя"})
+        saved = cfg.read_text(encoding="utf-8")
+        assert "  allow_private: [wiki.example.com, localhost:8080]" in saved, saved
+        assert WE.settings_from_config(saved)["allow_private"] == ["wiki.example.com", "localhost:8080"]
+        assert "https://example.org/a" in saved and 'name: "Новое имя"' in saved
+        with contextlib.redirect_stdout(io.StringIO()):
+            A.run_answers(root, {})
+        assert cfg.read_text(encoding="utf-8") == saved, "повторное сохранение меняет конфиг"
 
 
 @test

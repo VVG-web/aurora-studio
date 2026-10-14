@@ -168,7 +168,7 @@ scripts read them from here, not from their own bodies.
 | `sources` | connected source modules: `id` (the folder name in `Sources/`), `module`, `path`. No section — the built-in Confluence and Jira work |
 | `atlassian.confluence` | `base_url`, `space`, `sync_roots` (a list of roots: `page_id`, `title`, `trusted`) |
 | `atlassian.jira` | `base_url`, `project_key`, `default_jql`, `done_statuses`, `cancelled_statuses`, **`trust_statuses`**, **`assumption_statuses`** |
-| `web` | `pages` (a list of `url` + `trusted`), `depth`, `assets`, `max_pages` — for the `web` module |
+| `web` | `pages` (a list of `url` + `trusted`), `depth`, `assets`, `max_pages`, `allow_private` (internal addresses the crawl may visit; refused by default) — for the `web` module |
 | `paths` | base and mirror paths, `extra_structure_dirs` |
 | `verify` | `trusted_sources` (folders and files trusted by path), `trusted_branches` (reference wiki branches by name) |
 | `privacy` | `scrub`: `off` · `report` (default) · `mask`; `mask_contacts`, `include_raw` |

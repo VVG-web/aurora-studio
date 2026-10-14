@@ -844,9 +844,9 @@ def test_an_unchanged_web_page_is_not_downloaded_again(tmp: Path):
     url = f"http://127.0.0.1:{srv.server_address[1]}/razdel/"
     cwd = os.getcwd()
     os.chdir(tmp)
-    saved_attrs = {k: getattr(W, k) for k in ("config_text", "PAUSE")}
+    saved_attrs = {k: getattr(W, k) for k in ("config_text", "PAUSE", "ALLOW_PRIVATE")}
     trusted = {"v": "true"}
-    W.config_text = lambda: f"web:\n  pages:\n    - url: {url}\n      trusted: {trusted['v']}\n"
+    W.config_text = lambda: f"web:\n  allow_private: [127.0.0.1]\n  pages:\n    - url: {url}\n      trusted: {trusted['v']}\n"
     W.PAUSE = 0
     out = tmp / "Sources" / "Web"
 
@@ -916,8 +916,8 @@ def test_a_mirrored_page_is_not_rewritten_back_and_forth(tmp: Path):
         return real_open(path, mode, *args, **kw)
 
     saved_attrs = {k: getattr(W, k) for k in ("config_text", "fetch", "to_markdown",
-                                              "fetch_asset", "PAUSE")}
-    W.config_text = lambda: f"web:\n  pages:\n    - url: {url}\n      trusted: true\n"
+                                              "fetch_asset", "PAUSE", "ALLOW_PRIVATE")}
+    W.config_text = lambda: f"web:\n  allow_private: [127.0.0.1]\n  pages:\n    - url: {url}\n      trusted: true\n"
     W.fetch = lambda u, token, known=None, meta=None: ("<html></html>", "")
     W.to_markdown = lambda html, u: ("Документы", state["body"], [], [(asset, "Приказ")])
     W.PAUSE = 0

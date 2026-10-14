@@ -38,9 +38,9 @@ import urllib.error
 import urllib.request
 
 from aurora_common import body as body_of
-from aurora_common import (allow_cleartext, cleartext_secret_problem, file_head, head_scalar,
-                           head_trust, head_value, is_loopback_host, safe_urlopen, same_origin,
-                           url_origin, utc_today)
+from aurora_common import (EgressRefused, allow_cleartext, cleartext_secret_problem, config_hosts,
+                           file_head, guarded_urlopen, head_scalar, head_trust, head_value,
+                           is_loopback_host, same_origin, url_origin, utc_today)
 from sources_core import (BoardMirror, block, cited_by_cards, config_text, read_env,
                           is_promoted_document, origin_text, remember_hosts, report_stale,
                           trusted_hosts, verify)
@@ -55,6 +55,10 @@ PAGE_CACHE = os.path.join(".aurora", "cache", "web_pages.json")
 CACHE_FRESH_DAYS = 7
 NOT_MODIFIED = "304"
 TIMEOUT = 30
+# Внутренние адреса, на которые конфиг источника разрешил ходить (`allow_private` в блоке `web:`).
+# По умолчанию пусто: частные, петлевые и link-local адреса запрещены (BL-SEC-17). Ставит `run()`.
+# Разрешение не расширяет привязку токена: хост по-прежнему должен быть в списке токена.
+ALLOW_PRIVATE: list = []
 # Вложению — своё окно. Страница отдаётся за секунды, а приказ на десять мегабайт по
 # медленному каналу не успевает и за полминуты: на живой выгрузке так потерялись два
 # PDF из десяти. Один общий таймаут либо теряет документы, либо заставляет ждать
@@ -99,6 +103,9 @@ def settings_from_config(text: str) -> dict:
 
     Потолок страниц — не оптимизация, а предохранитель: раздел с постраничной навигацией
     ссылается сам на себя бесконечно, и обход без потолка выкачивает сайт целиком.
+
+    `allow_private: [wiki.example.com, localhost]` — внутренние адреса, на которые ходить
+    можно. Без него частные, петлевые и link-local адреса запрещены на каждом переходе.
     """
     # Ищем ключ и в самом начале файла: `block` берёт его по «\nweb:», и конфиг, где
     # блок стоит первой строкой, читался бы как пустой — молча, без единого слова.
@@ -113,7 +120,9 @@ def settings_from_config(text: str) -> dict:
                 if m else default)
     return {"depth": max(1, num("depth", 1)),
             "max_pages": max(1, num("max_pages", MAX_PAGES)),
-            "assets": flag("assets", True)}
+            "assets": flag("assets", True),
+            "allow_private": [h.strip().strip("\"'") for h in config_hosts(body, "allow_private")
+                              if h.strip().strip("\"'")]}
 
 
 def pages_from_config(text: str) -> list:
@@ -190,7 +199,7 @@ def _get(url: str, token: str, timeout: int, headers: dict | None = None,
     last = ""
     for attempt in range(1, RETRIES + 1):
         try:
-            with safe_urlopen(req, timeout=timeout) as r:
+            with guarded_urlopen(req, timeout=timeout, allow_private=ALLOW_PRIVATE) as r:
                 if meta is not None:
                     meta["etag"] = r.headers.get("ETag") or ""
                     meta["modified"] = r.headers.get("Last-Modified") or ""
@@ -199,6 +208,8 @@ def _get(url: str, token: str, timeout: int, headers: dict | None = None,
             if e.code == 304 and headers:
                 return b"", "", NOT_MODIFIED        # не изменилась: это ответ, а не сбой
             return b"", "", f"HTTP {e.code}"       # ответ сервера, повтор не поможет
+        except EgressRefused as e:
+            return b"", "", f"запрещено границами коннектора: {e}"   # политика, повтор не поможет
         except Exception as e:  # noqa: BLE001 — причина уходит в отчёт словами
             last = f"{type(e).__name__}: {e}"
             if attempt < RETRIES:
@@ -733,6 +744,8 @@ def run(a) -> int:
               "(добавить: «Настройки проекта» → «Веб-страницы»; образец блока — --help)")
         return 0
     opt = settings_from_config(cfg)
+    global ALLOW_PRIVATE
+    ALLOW_PRIVATE = list(opt["allow_private"])
     # Окружение вместе с файлом машины: при прямом запуске из консоли привязка хостов и
     # разрешение http из файла иначе молча не действовали бы (в панели их кладёт child_env).
     env = read_env()

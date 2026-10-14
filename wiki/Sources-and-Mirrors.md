@@ -65,6 +65,13 @@ would get it, so the engine remembers the origins (scheme, host and port) that a
 the hosts before the first run (or to accept a new one), list them in `AURORA_WEB_TOKEN_HOSTS=wiki.example.com,…`: the line
 replaces the remembered list (name all hosts, the old ones too) and no other host receives the token (your own computer is the exception: it always gets it). A bare `host` matches any port of that host; `wiki.example.com:9443` and `https://host[:port]` match only their own (the one exception, as for the start page: `http://host` also admits `https://host`).
 
+The website crawl stays within bounds: only `http://` and `https://` addresses are fetched (`file://`, `ftp://`, `data:` are refused), and on
+every hop, redirects included (at most 5), the host name is resolved and the crawl refuses anything that is not a public address: your own computer
+(`127.x`, `::1`), private networks (`10.x`, `172.16–31.x`, `192.168.x`, `100.64.x`), link-local (`169.254.x`, the cloud metadata address) and `::ffff:`
+forms of those. A refusal is one line in the report (`запрещено границами коннектора: …`) and is not retried. An internal wiki is allowed explicitly in the
+`web:` block of `aurora.config.yaml`: `allow_private: [wiki.example.com, localhost:8080]` (a bare host matches any port, `wiki.example.com:8080` only that port, subdomains
+are not included). The list only lifts the address check; it does not add the host to the token binding above, and the scheme is checked always.
+
 ## Checking a mirror
 
 | Command | Finds |

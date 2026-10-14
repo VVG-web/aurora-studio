@@ -28,7 +28,7 @@ from pathlib import Path
 # Разбор и запись скаляра — общим правилом движка: настройка, панель, синки и отчёт
 # читают конфиг одной функцией, иначе формы записи разъезжаются (так и пропадал JQL
 # с датой в двойных кавычках).
-from aurora_common import yaml_scalar, yaml_str  # noqa: E402,F401
+from aurora_common import config_hosts, yaml_scalar, yaml_str  # noqa: E402,F401
 
 
 def read_config(path: Path) -> dict:
@@ -41,6 +41,8 @@ def read_config(path: Path) -> dict:
         # стирала всё остальное. На живом проекте так пропала глубина обхода — человек
         # добавил два адреса, а зеркало молча перестало ходить по внутренним ссылкам.
         "web_depth": "", "web_assets": "", "web_max_pages": "",
+        # Внутренние адреса, разрешённые обходу (`allow_private`): строкой «a, b», как в конфиге.
+        "web_allow_private": "",
         "jira_url": "", "jira_key": "", "jira_jql": "",
         "trust_statuses": "", "assumption_statuses": "",
         "trusted_sources": "", "trusted_branches": "",
@@ -72,6 +74,8 @@ def read_config(path: Path) -> dict:
         m = re.search(rf"^\s+{name}\s*:\s*(\S+)", wblock, re.M)
         if m:
             cfg[key] = m.group(1).strip().strip('"\'')
+    cfg["web_allow_private"] = ", ".join(
+        h.strip().strip('"\'') for h in config_hosts(wblock, "allow_private") if h.strip().strip('"\''))
     # sync_roots: page_id, название и галочка «доверять» — тем же чтением, что у `kb:trust`
     from aurora_common import sync_roots
     cfg["sync_roots"] = [(r["page_id"], r["title"] or f"page {r['page_id']}", r["trusted"])
@@ -320,6 +324,9 @@ def write_config(path: Path, c: dict):
                       ("web_max_pages", "max_pages")):
         if str(c.get(key) or "").strip():
             pages += f"\n  {name}: {c[key]}"
+    if str(c.get("web_allow_private") or "").strip():
+        hosts = [h.strip() for h in str(c["web_allow_private"]).split(",") if h.strip()]
+        pages += "\n  allow_private: [" + ", ".join(hosts) + "]"
     pages += "\n  pages: []"
     if c.get("web_pages"):
         rows = "\n".join(f'    - url: {u}\n      trusted: {"true" if tr else "false"}'
