@@ -5834,8 +5834,10 @@ class Handler(BaseHTTPRequestHandler):
                     res = cards_guide_write(project, payload.get("text"), expect, lang)
                 elif u.path == "/api/cards/guide/reset":
                     res = cards_guide_reset(project, expect, lang)
-                else:
+                elif u.path == "/api/cards/guide/check":
                     res = cards_guide_check(payload.get("text"))
+                else:
+                    return self.send_json({"error": "неизвестный маршрут"}, 404)
             except Exception as e:  # noqa: BLE001 — страница получает отказ с причиной, а не оборванное соединение
                 res = {"error": f"запрос к типам карточек не выполнен: {type(e).__name__}", "failed": True}
             return self.send_json(res, cards_status(res))

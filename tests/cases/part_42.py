@@ -4388,6 +4388,30 @@ def test_cards_api_http_routes(tmp: Path):
 
 
 @test
+def test_cards_panel_cell_reads_defaults_the_server_sends(tmp: Path):
+    """Таблица «Типы карточек» сравнивает поле с умолчанием шаблона по ключу данных (`default_name`, `default_description`),
+    а не по имени колонки надписей (`desc`): иначе у всех строк стоит «изменено», а «↺» подставляет `undefined`."""
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    fn = panel[panel.index("async function renderCardTypes(box){"):]
+    fn = fn[:fn.index("\n}\n") + 2]
+    assert '"default_" + field' not in fn, "умолчание ищется по имени колонки надписей, а не по ключу данных"
+    assert fn.count('r["default_" + key]') == 2, "и подпись, и «↺» читают умолчание по ключу данных"
+    keys = re.findall(r'\bcell\(r, "(\w+)"', fn)
+    assert sorted(keys) == ["description", "name"], keys
+    ck, back = _panel(tmp)
+    try:
+        root = _panel_project(tmp)
+        rows = ck.cards_state(str(root), "ru")["types"]
+        assert rows
+        for row in rows:
+            for k in keys:
+                assert row.get("default_" + k), f"{row['id']}: сервер не прислал default_{k}"
+                assert isinstance(row[k], str), f"{row['id']}: нет поля {k}"
+    finally:
+        back()
+
+
+@test
 def test_cards_i18n_catalogues_are_complete(tmp: Path):
     """Каждый ключ `cardtypes.*` и `dirty.cardtypes`/`dirty.cardguide`, который спрашивает страница (в том числе собранный
     из куска: коды проверки инструкции, классы, источники, состояния каталога, причины запрета записи), есть в `ru` и `en`;
@@ -4902,7 +4926,6 @@ def test_cards_routes_refuse_lone_surrogates(tmp: Path):
     """Одиночный суррогат (`\\ud800`) в тексте инструкции, имени типа, ключе поля или слепке разбирается JSON, но не кодируется
     в UTF-8: на маршрутах `/api/cards…` такой запрос отклоняется кодом 400 до записи (раньше обрывалось соединение), файлы
     и конфиг не меняются, а допустимые не-ASCII знаки (кириллица, эмодзи) проходят."""
-    from urllib.parse import quote
     ck, back = _panel(tmp)
     live = None
     try:

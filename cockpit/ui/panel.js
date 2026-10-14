@@ -2394,16 +2394,17 @@ async function renderCardTypes(box){
   const touched = () => setDirty("cardtypes", t("dirty.cardtypes"), JSON.stringify(overridesOf()) !== mark);
 
   // Поле таблицы: подпись «по умолчанию» или «изменено» и возврат к умолчанию шаблона.
+  // key — поле данных (`name`, `description`: от него имя `default_<key>` в ответе сервера), field — часть ключа надписи колонки.
   const cell = (r, key, field, limit, width) => {
     const e = edit[r.id];
     const note = el("div", {class:"muted", style:"font-size:11px;margin-top:3px"});
     const input = el("input", {class:"btn", style:`width:${width};font-weight:400;font-size:12.5px`,
       maxlength:String(limit), value:e[key], "aria-label": t("cardtypes.col_" + field) + ": " + r.id});
     const back = el("button", {class:"btn sm", title: t("cardtypes.default_reset"), onclick:() => {
-      e[key] = r["default_" + field]; input.value = e[key]; sync(); touched();
+      e[key] = r["default_" + key]; input.value = e[key]; sync(); touched();
     }}, "↺");
     const sync = () => {
-      const same = !e[key].trim() || e[key].trim() === r["default_" + field];
+      const same = !e[key].trim() || e[key].trim() === r["default_" + key];
       note.textContent = same ? t("cardtypes.default_mark") : t("cardtypes.changed_mark");
       back.hidden = same;
     };
