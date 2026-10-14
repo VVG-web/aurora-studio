@@ -23,6 +23,8 @@
 Инструкция «Как определить тип карточки» (пакет CT-07): файл проекта `Prompts/KB_classify.md` (умолчание кита —
 `scaffold/Prompts/KB_classify.md`), его эффективный текст (`guide_text`, `kit_guide_text`) и разбор ответа по шагу 7
 (`classify_answer`: тип, шаблон и раздел сверяются с реестром, ничего не «угадывается»). Модель не вызывается.
+Какие свойства текста инструкции обязан сохранить редактор (шаги 0–7, формат ответа, длина), называет `guide_checks` — её
+зовёт панель («Настройки проекта → Типы карточек», пакет CT-08).
 Конструктор шапки и входа записи (`render_header`, `render_card`, `write_card_text`) добавляет следующий пакет: в этом
 модуле они появятся рядом, под теми же именами.
 
@@ -2116,6 +2118,43 @@ def guide_text(project_root: str = ".", kit_root: "str | None" = None) -> str:
             print(f"card_types: инструкции «Как определить тип карточки» нет ни в проекте ({GUIDE_REL}), ни в ките — "
                   "обновите проект командой kit:update", file=sys.stderr)
     return text
+
+
+# Что обязан сохранить любой, кто правит инструкцию (панель, редактор, ассистент): шаги 0–7, формат ответа шага 7 и длину,
+# с которой текст ещё годится для запросов модели. Проверка только называет проблемы — запись она не запрещает: файл
+# принадлежит проекту, а правят его и без панели.
+GUIDE_LIMIT = 9000                     # знаков: длиннее — запрос раздувается, и шаги тонут
+GUIDE_STEPS = tuple(range(8))          # шаги 0–7
+GUIDE_STEP_RE = re.compile(r"^## Шаг (\d+)\.", re.M)
+GUIDE_HEAD_RE = re.compile(r"^## ", re.M)
+GUIDE_ANSWER_WORDS = ("type:", "template:", "section:", "why:")
+
+
+def guide_checks(text: str) -> list:
+    """Что не так с текстом инструкции: [{code, …}]; пусто — всё на месте. Коды не зависят от языка.
+
+    `empty` — текста нет; `too-long` (`chars`, `limit`) — длиннее `GUIDE_LIMIT`; `steps-missing` (`missing`) — нет
+    заголовков «## Шаг N.» из 0–7; `no-answer-format` — в шаге 7 нет строки ответа `type: …; template: …; section: …;
+    why: …` или отказа `type: none; why: …` (по ним `classify_answer` разбирает ответ модели).
+    """
+    text = str(text or "")
+    if not text.strip():
+        return [{"code": "empty"}]
+    found = []
+    if len(text) > GUIDE_LIMIT:
+        found.append({"code": "too-long", "chars": len(text), "limit": GUIDE_LIMIT})
+    marks = list(GUIDE_STEP_RE.finditer(text))
+    have = {int(m.group(1)) for m in marks}
+    missing = [n for n in GUIDE_STEPS if n not in have]
+    if missing:
+        found.append({"code": "steps-missing", "missing": missing})
+    if 7 in have:
+        start = next(m.end() for m in marks if int(m.group(1)) == 7)
+        stop = GUIDE_HEAD_RE.search(text, start)
+        step = text[start:stop.start() if stop else len(text)]
+        if not (all(w in step for w in GUIDE_ANSWER_WORDS) and "type: none" in step):
+            found.append({"code": "no-answer-format"})
+    return found
 
 
 def _answer_lines(text) -> list:

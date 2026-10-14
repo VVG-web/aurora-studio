@@ -37,6 +37,8 @@ EXCUSES = {
     ("/api/i18n", ".strings.proj.f_trusted_branches_ph"): "значения по умолчанию — названия веток Confluence как есть",
     ("/api/i18n", ".strings.lang.russian"): "язык называют на нём самом",
     ("/api/i18n", ".languages[].name"): "то же",
+    ("/api/cards", ".guide.text"): "текст инструкции «Как определить тип карточки» — файл проекта или кита, он русский, как и сами промпты",
+    ("/api/cards", ".problems[]"): "замечания реестра типов — вывод `kb:cards`, он остаётся русским, как вывод линтера",
 }
 
 
@@ -65,7 +67,7 @@ CRAWLED = (
     "/api/git/head", "/api/activity", "/api/jobs", "/api/scenarios", "/api/skins", "/api/modules",
     "/api/files/tree", "/api/graph", "/api/ask/threads", "/api/i18n", "/api/route/state",
     "/api/runlog", "/api/agent/pydantic", "/api/context/suggest", "/api/skin", "/api/cron",
-    "/api/history", "/api/routes", "/api/bots", "/api/env", "/api/adapter/alarm",
+    "/api/history", "/api/routes", "/api/bots", "/api/env", "/api/adapter/alarm", "/api/cards",
 )
 NOT_CRAWLED = {
     "/api/ping": "ответ — слово «ok», не текст",

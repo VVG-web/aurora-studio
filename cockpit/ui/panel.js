@@ -2348,6 +2348,282 @@ async function renderKinds(box){
   sgroup(box, "project:kinds", t("kinds.title", {project: S.project.name})).append(card);
 }
 
+/* ---------------- типы карточек ----------------
+
+   Реестр типов собирается из шаблонов `akdb_*` кита и проекта. Проект подменяет подпись и описание типа и
+   выключает тип блоком `cards:` своего конфига, а текст инструкции «Как определить тип карточки» держит
+   файлом `Prompts/KB_classify.md`. Панель здесь только удобный ввод: читает и пишет сервер ровно то же,
+   что `kb:cards`, считать и проверять сама ничего не умеет — числа и замечания приходят от движка.
+
+   Таблица и инструкция сохраняются порознь и друг друга не трогают: после записи одной перерисовывается
+   только она. `renderProject()` здесь не зовётся — он сбросил бы несохранённые правки соседних групп. */
+async function renderCardTypes(box){
+  if (!S.project) return;
+  const base = "/api/cards?project=" + encodeURIComponent(S.project.path);
+  const d = await api(base);
+  if (d.error) return;
+  const host = sgroup(box, "project:cardtypes", t("cardtypes.title", {project: S.project.name}));
+  const tableBox = el("div", {class:"card", style:"padding:20px"});
+  const guideBox = el("div", {class:"card", style:"padding:20px;margin-top:14px"});
+  const statsBox = el("div", {class:"card", style:"padding:20px;margin-top:14px"});
+  const howBox = el("div", {class:"card", style:"padding:20px;margin-top:14px"});
+  host.append(tableBox, guideBox, statsBox, howBox);
+
+  let data = d, edit = {}, mark = "", drift = null;
+  // Подмены, которые сейчас набраны в таблице: только отличия от умолчаний шаблонов, как их запишет сервер.
+  const overridesOf = () => {
+    const out = {};
+    for (const r of data.types){
+      const e = edit[r.id];
+      if (!e) continue;
+      const o = {}, name = e.name.trim(), text = e.description.trim();
+      if (name && name !== r.default_name) o.title = name;
+      if (text && text !== r.default_description) o.description = text;
+      if (!e.enabled && !r.locked) o.enabled = false;
+      if (Object.keys(o).length) out[r.id] = o;
+    }
+    return out;
+  };
+  const seed = () => {
+    edit = {};
+    data.types.forEach(r => { edit[r.id] = {name: r.name, description: r.description, enabled: r.enabled}; });
+    mark = JSON.stringify(overridesOf());
+  };
+  const touched = () => setDirty("cardtypes", t("dirty.cardtypes"), JSON.stringify(overridesOf()) !== mark);
+
+  // Поле таблицы: подпись «по умолчанию» или «изменено» и возврат к умолчанию шаблона.
+  const cell = (r, key, field, limit, width) => {
+    const e = edit[r.id];
+    const note = el("div", {class:"muted", style:"font-size:11px;margin-top:3px"});
+    const input = el("input", {class:"btn", style:`width:${width};font-weight:400;font-size:12.5px`,
+      maxlength:String(limit), value:e[key], "aria-label": t("cardtypes.col_" + field) + ": " + r.id});
+    const back = el("button", {class:"btn sm", title: t("cardtypes.default_reset"), onclick:() => {
+      e[key] = r["default_" + field]; input.value = e[key]; sync(); touched();
+    }}, "↺");
+    const sync = () => {
+      const same = !e[key].trim() || e[key].trim() === r["default_" + field];
+      note.textContent = same ? t("cardtypes.default_mark") : t("cardtypes.changed_mark");
+      back.hidden = same;
+    };
+    input.addEventListener("input", () => { e[key] = input.value; sync(); touched(); });
+    sync();
+    return el("div", {}, el("div", {class:"row", style:"gap:6px;flex-wrap:nowrap"}, input, back), note);
+  };
+
+  const drawTable = () => {
+    tableBox.innerHTML = "";
+    tableBox.append(el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px", html: tick(t("cardtypes.about"))}));
+    if (data.problems.length)
+      tableBox.append(el("div", {class:"warnbox"}, el("b", {}, t("cardtypes.problems")),
+        ...data.problems.slice(0, 6).map(p => el("div", {class:"mono", style:"font-size:12px;margin-top:4px"}, p)),
+        data.problems.length > 6 ? el("div", {class:"muted", style:"font-size:12px;margin-top:4px"},
+          t("cardtypes.problems_more", {n: data.problems.length - 6})) : null));
+    if (drift) tableBox.append(driftBox());
+    if (!data.types.length){
+      tableBox.append(el("div", {class:"warnbox", html: tick(t("cardtypes.no_types"))}));
+      return;
+    }
+    const head = ["name", "type", "desc", "template", "section", "class", "origin", "on"]
+      .map(c => el("th", {}, t("cardtypes.col_" + c)));
+    const rows = data.types.map(r => {
+      const e = edit[r.id];
+      const on = el("input", {type:"checkbox", checked: e.enabled ? "" : null, disabled: r.locked ? "" : null,
+        title: r.locked ? t("cardtypes.locked") : t("cardtypes.on_hint"), "aria-label": t("cardtypes.col_on") + ": " + r.id,
+        onchange: ev => { e.enabled = ev.target.checked; touched(); }});
+      return el("tr", {},
+        el("td", {}, cell(r, "name", "name", data.limits.title, "170px")),
+        el("td", {}, el("span", {class:"chip mono"}, r.id)),
+        el("td", {}, cell(r, "description", "desc", data.limits.description, "min(380px,60vw)")),
+        el("td", {}, el("code", {class:"mono", style:"font-size:12px"}, r.template)),
+        el("td", {}, el("code", {class:"mono", style:"font-size:12px"}, r.section || "—")),
+        el("td", {}, t("cardtypes.class_" + r.class)),
+        el("td", {}, t("cardtypes.origin_" + r.origin)),
+        el("td", {style:"text-align:center"}, on, r.locked ? el("div", {class:"muted", style:"font-size:11px"},
+          t("cardtypes.locked_short")) : null));
+    });
+    tableBox.append(el("div", {class:"scroll-x"},
+      el("table", {}, el("thead", {}, el("tr", {}, head)), el("tbody", {}, rows))));
+    tableBox.append(el("div", {class:"row", style:"margin-top:12px;gap:10px"},
+      saveButton("cardtypes", t("dirty.cardtypes"), t("cardtypes.save"), () => saveTable()),
+      el("span", {class:"muted", style:"font-size:12px"}, t("cardtypes.save_note"))));
+    const cat = data.catalog;
+    if (cat && cat.state)
+      tableBox.append(el("div", {class:"muted", style:"font-size:12px;margin-top:10px", html:
+        tick(t("cardtypes.catalog_" + cat.state, {path: cat.path}) + (cat.pinned ? " " + t("cardtypes.catalog_pinned") : ""))}));
+    touched();          // таблицу перерисовали, а правки в ней остались: подсветка кнопки должна им соответствовать
+  };
+
+  // Блок `cards:` на диске изменился, пока таблица была открыта: молча затирать не будем.
+  const driftBox = () => el("div", {class:"warnbox"},
+    el("b", {}, t("cardtypes.conflict")),
+    el("p", {class:"sub", style:"margin:6px 0"}, t("cardtypes.conflict_help")),
+    el("div", {class:"row", style:"gap:8px"},
+      el("button", {class:"btn primary", onclick:() => saveTable(drift.overrides_digest)}, t("editor.keep_mine")),
+      el("button", {class:"btn", onclick:() => {
+        data = {...data, ...drift}; drift = null; seed(); setDirty("cardtypes", t("dirty.cardtypes"), false); drawTable();
+      }}, t("editor.take_disk"))));
+
+  // Запись блока `cards:` не оставляет прежний текст конфига под рукой: поле «aurora.config.yaml» ниже читали до неё.
+  const freshenYaml = async () => {
+    const ta = $("[data-group='project:yaml'] textarea", box);
+    if (!ta) return;
+    if (DIRTY.has("yaml")){ toast(t("cardtypes.yaml_stale"), "warn"); return; }
+    const cfg = await api("/api/config?project=" + encodeURIComponent(S.project.path), {quiet:true});
+    if (typeof cfg.text === "string") ta.value = cfg.text;
+  };
+
+  // Запись идёт по одной: второе нажатие, пока первое не ответило, увидело бы уже сменившийся слепок и показало бы
+  // ложное расхождение.
+  let busy = false;
+  const alone = async work => {
+    if (busy) return;
+    busy = true;
+    try { await work(); } finally { busy = false; }
+  };
+
+  const saveTable = expect => alone(async () => {
+    const r = await api("/api/cards", {method:"POST", quiet:true, body: JSON.stringify(
+      {project: S.project.path, overrides: overridesOf(), expect: expect === undefined ? data.overrides_digest : expect})});
+    if (r.conflict){ drift = r; drawTable(); return; }
+    if (r.error){ toast(r.error, "err"); return; }
+    data = r; drift = null; seed(); setDirty("cardtypes", t("dirty.cardtypes"), false);
+    toast(t("cardtypes.saved") + (r.catalog_result === "written" ? " · " + t("cardtypes.catalog_written") : ""), "ok");
+    if (r.catalog_result === "pinned") toast(t("cardtypes.catalog_pinned"), "warn");
+    if (r.warning) toast(r.warning, "warn");
+    drawTable();
+    freshenYaml();
+  });
+
+  /* ---- инструкция «Как определить тип карточки» ---- */
+  let gd = d.guide, ta = null, seq = 0, timer = null;
+  const checkLine = c => t("cardtypes.check_" + String(c.code).replace(/-/g, "_"),
+    {chars: c.chars, limit: c.limit, missing: (c.missing || []).join(", ")});
+
+  const drawChecks = (list, area) => {
+    area.innerHTML = "";
+    if (!list.length){ area.append(el("div", {class:"muted", style:"font-size:12px"}, "✓ " + t("cardtypes.guide_ok"))); return; }
+    list.forEach(c => area.append(el("div", {class:"warnbox", style:"margin:6px 0", html: tick(checkLine(c))})));
+  };
+
+  const drawGuide = () => {
+    guideBox.innerHTML = "";
+    const ro = gd.readonly;
+    const counter = el("span", {class:"chip"}), checks = el("div", {style:"margin-top:8px"}), alert = el("div", {});
+    ta = el("textarea", {class:"mono", spellcheck:"false", readonly: ro ? "" : null,
+      style:"width:100%;min-height:340px;background:var(--console-bg);color:var(--console-ink);"
+          + "border:1px solid var(--border);border-radius:12px;padding:14px 16px;font-size:12.5px;"
+          + "line-height:1.6;resize:vertical", "aria-label": t("cardtypes.guide_title")}, gd.text);
+    const recount = () => {
+      counter.textContent = t("cardtypes.guide_chars", {n: ta.value.length, max: gd.limit});
+      counter.className = "chip" + (ta.value.length > gd.limit ? " warn" : "");
+    };
+    const recheck = () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const mine = ++seq;
+        const r = await api("/api/cards/guide/check", {method:"POST", quiet:true,
+          body: JSON.stringify({project: S.project.path, text: ta.value})});
+        if (mine === seq && r.checks) drawChecks(r.checks, checks);
+      }, 350);
+    };
+    ta.addEventListener("input", () => {
+      recount(); recheck(); setDirty("cardguide", t("dirty.cardguide"), ta.value !== gd.text);
+    });
+    recount(); drawChecks(gd.checks, checks);
+
+    const where = gd.source === "project" ? t("cardtypes.guide_src_project")
+                : gd.exists ? t("cardtypes.guide_src_blank") : t("cardtypes.guide_src_kit");
+    guideBox.append(
+      el("h3", {style:"margin:0 0 6px"}, t("cardtypes.guide_title")),
+      el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px", html: tick(t("cardtypes.guide_about"))}),
+      el("div", {class:"row", style:"gap:8px;margin-bottom:8px"},
+        el("span", {class:"muted", style:"font-size:12px", html: tick(where)}), counter,
+        gd.source === "project" ? el("span", {class:"chip" + (gd.modified ? " warn" : " ok")},
+          gd.modified ? t("cardtypes.guide_modified") : t("cardtypes.guide_same")) : null),
+      ...(ro ? [el("div", {class:"warnbox", html: tick(t("cardtypes.guide_ro_" + ro))})] : []),
+      alert, ta, checks,
+      el("div", {class:"row", style:"margin-top:12px;gap:10px"},
+        saveButton("cardguide", t("dirty.cardguide"), t("cardtypes.guide_save"), () => saveGuide(alert)),
+        el("button", {class:"btn", disabled: (ro || !gd.kit_available) ? "" : null,
+          title: gd.kit_available ? null : t("cardtypes.guide_no_kit"), onclick:() => resetGuide(alert)},
+          t("cardtypes.guide_reset"))));
+    // Кнопка «Сохранить» у чтения-только не нужна: сохранять нельзя.
+    if (ro) $("[data-save='cardguide']", guideBox).disabled = true;
+  };
+
+  // Файл инструкции изменился на диске, пока текст был открыт: то же окно выбора, что у редактора «Файлов».
+  const guideDrift = (r, alert) => {
+    alert.innerHTML = "";
+    alert.append(el("div", {class:"warnbox"},
+      el("b", {}, t("cardtypes.guide_conflict")),
+      el("p", {class:"sub", style:"margin:6px 0"}, t("cardtypes.guide_conflict_help")),
+      el("div", {class:"row", style:"gap:8px"},
+        el("button", {class:"btn primary", onclick:() => saveGuide(alert, r.digest)}, t("editor.keep_mine")),
+        el("button", {class:"btn", onclick:() => {
+          gd = r.guide; setDirty("cardguide", t("dirty.cardguide"), false); drawGuide();
+        }}, t("editor.take_disk")))));
+  };
+
+  const guideDone = (r, text) => {
+    gd = r.guide; setDirty("cardguide", t("dirty.cardguide"), false); drawGuide();
+    toast(r.unchanged ? t("cardtypes.guide_unchanged") : text, "ok");
+  };
+
+  const saveGuide = (alert, expect) => alone(async () => {
+    const r = await api("/api/cards/guide", {method:"POST", quiet:true, body: JSON.stringify(
+      {project: S.project.path, text: ta.value, expect: expect === undefined ? gd.digest : expect})});
+    if (r.conflict) return guideDrift(r, alert);
+    if (r.error) return toast(r.error, "err");
+    guideDone(r, t("cardtypes.guide_saved"));
+  });
+
+  const resetGuide = alert => alone(async () => {
+    if (!confirm(t("cardtypes.guide_reset_ask"))) return;
+    const r = await api("/api/cards/guide/reset", {method:"POST", quiet:true,
+      body: JSON.stringify({project: S.project.path, expect: gd.digest})});
+    if (r.conflict) return guideDrift(r, alert);
+    if (r.error) return toast(r.error, "err");
+    guideDone(r, t("cardtypes.guide_reset_done"));
+  });
+
+  /* ---- состояние базы по шаблонам (только чтение) ---- */
+  const drawStats = st => {
+    statsBox.innerHTML = "";
+    statsBox.append(el("h3", {style:"margin:0 0 6px"}, t("cardtypes.stats_title")));
+    if (st === undefined){ statsBox.append(el("div", {class:"muted"}, t("cardtypes.stats_wait"))); return; }
+    if (!st){ statsBox.append(el("div", {class:"muted"}, t("cardtypes.stats_none"))); return; }
+    const line = text => el("div", {style:"margin:3px 0"}, text);
+    statsBox.append(line(t("cardtypes.stats_total", {n: st.total})));
+    const names = Object.keys(st.by_template);
+    statsBox.append(line(t("cardtypes.stats_templates") + (names.length ? "" : " —")));
+    names.forEach(n => statsBox.append(el("div", {class:"mono", style:"font-size:12px;margin:2px 0 2px 16px"},
+      `${n} — ${st.by_template[n]}`)));
+    statsBox.append(line(t("cardtypes.stats_legacy", {n: st.legacy})),
+      line(t("cardtypes.stats_violations", {n: st.violations})));
+    statsBox.append(el("div", {class:"row", style:"margin-top:10px;gap:8px"},
+      el("button", {class:"btn sm", onclick:() => {
+        if (!confirmLeave()) return;
+        goCmd("kb:cards", ["--check", "--summary"], t("cardtypes.stats_check")).act();
+      }}, t("cardtypes.stats_check")),
+      el("button", {class:"btn sm", onclick:() => loadStats()}, t("cardtypes.stats_refresh")),
+      el("span", {class:"muted", style:"font-size:12px"}, t("cardtypes.stats_note"))));
+  };
+  async function loadStats(){
+    drawStats(undefined);
+    const r = await api(base + "&stats=1", {quiet:true});
+    drawStats(r && r.stats);
+  }
+
+  howBox.append(el("h3", {style:"margin:0 0 6px"}, t("cardtypes.howto_title")),
+    el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px", html: tick(t("cardtypes.howto"))}),
+    el("button", {class:"btn sm", onclick:() => openDoc("docs/card-templates.md")}, t("cardtypes.howto_open")));
+
+  seed();
+  drawTable();
+  drawGuide();
+  loadStats();
+}
+
 /* ---------------- приёмка карточек ----------------
 
    Линтер и раньше называл эти карточки поимённо, но список жил в тексте отчёта: чтобы
@@ -4147,6 +4423,7 @@ async function renderProject(){
   await renderModelsCard(box, "project");
   renderGitCard(box);
   await renderKinds(box);
+  await renderCardTypes(box);
   drawSetupJump(box);
 }
 

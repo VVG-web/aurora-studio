@@ -34,6 +34,7 @@ const EN_DOCS = {
   "docs/llm-calls.md": "docs/en/llm-calls.md",
   "docs/roadmap.md": "docs/en/roadmap.md",
   "docs/control-panel-ui-requirements.md": "docs/en/control-panel.md",
+  "docs/card-templates.md": "docs/en/card-templates.md",       // открывают «Типы карточек» в настройках проекта
 };
 const docPath = (ctx, path) => ctx.lang !== "en" ? path
   : EN_DOCS[path] || (path.startsWith("docs/readme/") ? "docs/en/" + path.slice(5) : path);

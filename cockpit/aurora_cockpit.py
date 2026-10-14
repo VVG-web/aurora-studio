@@ -59,9 +59,9 @@ KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
-from aurora_common import (child_env, engine_dir, is_folder_guide, kit_mcp_permission,  # noqa: E402
-                           local_view, mtime_stamp, personal_kit_file, replace_file,
-                           same_origin, utc_slug, utc_stamp, yaml_scalar)
+from aurora_common import (child_env, engine_dir, head_value, is_folder_guide,  # noqa: E402
+                           kit_mcp_permission, local_view, mtime_stamp, personal_kit_file,
+                           replace_file, same_origin, utc_slug, utc_stamp, yaml_scalar)
 from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
                            mcp_check, mcp_mask_args, mcp_masked)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
@@ -4114,6 +4114,340 @@ def kinds_write(project: str, kinds: dict) -> dict:
     return {"ok": True, "kinds": len(kinds), "target": path}
 
 
+# ----------------------------------------------------------------- типы карточек проекта
+#
+# «Настройки проекта → Типы карточек». Подпись, описание и выключатель типа живут в блоке `cards:` конфига проекта, текст
+# инструкции «Как определить тип карточки» — в файле `Prompts/KB_classify.md`: панель здесь только удобный ввод, а не
+# хранилище, и пишет ровно три вещи — блок `cards:`, файл инструкции и каталог типов `meta/card_types.md`, который
+# собирается по блоку. Разбор блока, его запись, реестр и каталог — модуль `card_types` (тот же, что у `kb:cards`);
+# здесь — проверка того, что прислала страница, защита от потерянного обновления и ответ страницы.
+#
+# Защита от потерянного обновления — тот же слепок, что у «Файлов» (`file_write`): страница отдаёт назад то, что прочитала
+# (`overrides_digest`, `guide.digest`), а сервер пишет, только если на диске всё ещё оно. Слепок блока считается по
+# тому, как блок читает движок, а не по байтам: комментарий или пустая строка в нём изменением не считаются. Слепок
+# файла инструкции — sha256 его байтов, у отсутствующего файла — `CARDS_ABSENT`. Слепок не прислан — запись без проверки
+# (так «Оставить мою версию» пишет поверх чужого, когда человек так решил).
+
+import card_types as CARDS                  # noqa: E402 — реестр типов карточек, блок `cards:`, инструкция выбора типа
+
+CARDS_LOCK = threading.Lock()              # два окна панели не пишут блок и инструкцию одновременно
+CARDS_ABSENT = "absent"                    # слепок файла, которого на диске нет
+CARDS_GUIDE_MAX = 50_000                   # знаков: больше инструкции быть не может (предупреждение — с `CARDS.GUIDE_LIMIT`)
+CARDS_MAX_TYPES = 200                      # записей в одном запросе: типов тринадцать и свои, двух сотен хватает всем
+
+
+def _one_line(text) -> str:
+    """Текст в одну строку: управляющие знаки и переводы строк — пробелами, подряд идущие пробелы — одним."""
+    return " ".join(head_value("" if text is None else str(text)).split())
+
+
+def _cards_digest_of(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _cards_overrides_digest(project: str) -> str:
+    """Слепок блока `cards:` так, как его видит движок: типы и их поля, без комментариев и пустых строк."""
+    found, _problems = CARDS.read_config_overrides(project)
+    blob = json.dumps({tid: rec for tid, rec in found.items() if rec}, sort_keys=True, ensure_ascii=True)
+    return _cards_digest_of(blob.encode("utf-8"))
+
+
+def _cards_type_row(t, reg, lang: str) -> dict:
+    """Один тип для таблицы: то, что показано, и то, что умолчание шаблона (на языке интерфейса)."""
+    ru = lang == DEFAULT_LANG
+    p = t.passport
+    default_name = _one_line(p.get("name") if ru else t.name_en)
+    default_text = _one_line(p.get("description") if ru else t.description_en)
+    # Своя подпись проекта — данные проекта и показывается как есть; остальное — на языке интерфейса.
+    name = _one_line(t.name) if "title" in t.overridden else default_name
+    text = _one_line(t.description) if "description" in t.overridden else default_text
+    own = reg.overrides.get(t.id, {})
+    return {"id": t.id, "name": name, "description": text,
+            "default_name": default_name, "default_description": default_text,
+            "template": t.template_file, "version": t.version, "versions": list(t.versions),
+            "section": t.section, "class": t.cls, "kinds": list(t.kinds), "home": t.home,
+            "enabled": bool(t.enabled), "origin": t.origin, "overridden": list(t.overridden),
+            # выключен самим реестром (два шаблона в одном разделе), а не проектом: настройкой не включается
+            "locked": (not t.enabled) and own.get("enabled") is not False}
+
+
+def _cards_types(reg, lang: str) -> list:
+    """Типы в порядке каталога: типы кита как в таблице плана, затем проектные по идентификатору."""
+    def key(t):
+        order = CARDS.KIT_TYPE_ORDER
+        return (0, order.index(t.id), "") if t.id in order else (1, 0, t.id)
+    return [_cards_type_row(t, reg, lang) for t in sorted(reg.types.values(), key=key)]
+
+
+def _cards_read_file(full: str):
+    """(байты, отказ) файла до потолка редактора. Нет файла — (None, ""); больше потолка или не читается — отказ-код."""
+    if not full or not os.path.isfile(full):
+        return None, ""
+    try:
+        with open(full, "rb") as f:
+            raw = f.read(MAX_EDIT + 1)
+    except OSError:
+        return None, "unreadable"
+    return (None, "big") if len(raw) > MAX_EDIT else (raw, "")
+
+
+def _cards_kit_guide():
+    """Текст инструкции кита и слепок его файла: (текст, слепок). Нет файла — ("", "")."""
+    raw, _why = _cards_read_file(inside(KIT, CARDS.KIT_GUIDE_REL))
+    if raw is None:
+        return "", ""
+    sn = sniff_text(raw)
+    return (sn["text"] if sn["strict"] else ""), sn["digest"]
+
+
+def _cards_same_text(a: str, b: str) -> bool:
+    return a.replace("\r\n", "\n").strip() == b.replace("\r\n", "\n").strip()
+
+
+def _cards_guide(project: str) -> dict:
+    """Инструкция выбора типа: эффективный текст (файл проекта, иначе кита), его слепок и что в нём не так.
+
+    `readonly` — почему файл проекта нельзя сохранить из панели: `lossy` (не читается как UTF-8 или cp1251), `big`
+    (больше потолка редактора), `unreadable`, `outside` (ссылка уводит за пределы проекта); пусто — можно."""
+    full = inside(project, CARDS.GUIDE_REL)
+    raw, why = _cards_read_file(full)
+    kit_text, kit_digest = _cards_kit_guide()
+    mine, digest, readonly = "", CARDS_ABSENT, ""
+    if not full:
+        digest, readonly = "", "outside"
+    elif why:
+        digest, readonly = "", why             # прочитать не вышло: слепка нет, и писать поверх вслепую нельзя
+    elif raw is not None:
+        sn = sniff_text(raw)
+        mine, digest = sn["text"], sn["digest"]
+        readonly = "" if sn["strict"] else "lossy"
+    project_text = bool(mine.strip())
+    text = mine if project_text else kit_text
+    return {"path": CARDS.GUIDE_REL, "exists": raw is not None or bool(why),
+            "source": "project" if project_text else ("kit" if kit_text else ""),
+            "text": text, "digest": digest, "kit_digest": kit_digest, "kit_available": bool(kit_text),
+            "modified": project_text and bool(kit_text) and not _cards_same_text(mine, kit_text),
+            "readonly": readonly, "chars": len(text), "limit": CARDS.GUIDE_LIMIT, "checks": CARDS.guide_checks(text)}
+
+
+def _cards_stats(project: str, reg):
+    """Сводка `kb:cards --stats` по базе: сколько карточек по шаблонам, до-шаблонных и с нарушениями.
+    Читает всю базу, поэтому отдаётся только по просьбе (`stats=1`). Нет типов или базы — None."""
+    if not reg.types or not os.path.isdir(os.path.join(project, CARDS.KB_ROOT)):
+        return None
+    try:
+        st = CARDS.stats_of(CARDS.check_cards(project, reg, (), "advisory"), reg)
+    except Exception:  # noqa: BLE001 — сводка не повод ронять страницу настроек: счётчики просто не показываются
+        return None
+    return {"total": st["cards"], "stamped": st["stamped"], "legacy": st["legacy"], "pre_template": st["pre_template"],
+            "by_template": st["by_template"], "outdated": st["outdated"], "violations": st["with_violations"],
+            "by_code": st["by_code"]}
+
+
+def cards_state(project: str, lang: str = DEFAULT_LANG, stats: bool = False) -> dict:
+    """Всё, что нужно странице «Типы карточек»: типы, инструкция, каталог, проблемы реестра (и, по просьбе, сводка)."""
+    reg = CARDS.safe_registry(project, KIT)
+    out = {"types": _cards_types(reg, lang), "problems": list(reg.problems),
+           "overrides": {tid: dict(rec) for tid, rec in reg.overrides.items()},
+           "overrides_digest": _cards_overrides_digest(project),
+           "limits": {"title": CARDS.TITLE_LIMIT, "description": CARDS.DESCRIPTION_LIMIT},
+           "catalog": {"state": CARDS.catalog_state(project, reg, KIT), "pinned": CARDS.catalog_pinned(project),
+                       "path": CARDS.CATALOG_REL},
+           "guide": _cards_guide(project)}
+    if stats:
+        out["stats"] = _cards_stats(project, reg)
+    return out
+
+
+def cards_status(res: dict) -> int:
+    """Код ответа по результату записи: расхождение — 409, отказ записать — 500, неверный запрос — 400."""
+    if res.get("conflict"):
+        return 409
+    if res.get("failed"):
+        return 500
+    return 400 if res.get("error") else 200
+
+
+def _cards_clean(overrides, reg):
+    """Что прислала страница → (блок к записи, отказ). Блок — только отличия от умолчаний шаблонов: подпись или описание,
+    равные умолчанию (на любом языке паспорта), и включённый тип переопределением не считаются — возврат к умолчанию
+    убирает запись. Отказ — готовый ответ с `error`: тип вне реестра, чужое поле, не строка, длиннее предела."""
+    if not isinstance(overrides, dict):
+        return None, {"error": "переопределения — объект вида «тип → поля title, description, enabled»"}
+    if len(overrides) > CARDS_MAX_TYPES:
+        return None, {"error": "в запросе слишком много типов"}
+    limits = {"title": CARDS.TITLE_LIMIT, "description": CARDS.DESCRIPTION_LIMIT}
+    clean = {}
+    for tid, rec in overrides.items():
+        if not isinstance(tid, str) or not CARDS.TYPE_ID_RE.match(tid):
+            return None, {"error": f"имя типа «{_one_line(tid)[:40]}» не подходит: 2–31 знак, a-z, 0-9 и «-»"}
+        t = reg.types.get(tid)
+        if t is None:
+            return None, {"error": f"типа «{tid}» нет в реестре проекта"}
+        if rec is None:
+            continue
+        if not isinstance(rec, dict):
+            return None, {"error": f"у типа «{tid}» нужен объект с полями title, description, enabled"}
+        bad = [_one_line(k)[:40] for k in rec if k not in CARDS.OVERRIDE_FIELDS]
+        if bad:
+            return None, {"error": f"у типа «{tid}» нельзя переопределять «{bad[0]}»: допустимы только title, description, "
+                                   "enabled — раздел, класс, шаблон, виды и статусы принадлежат шаблону"}
+        row = {}
+        for key, defaults in (("title", (t.passport.get("name"), t.name_en)),
+                              ("description", (t.passport.get("description"), t.description_en))):
+            value = rec.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                return None, {"error": f"у типа «{tid}» поле «{key}» должно быть строкой"}
+            text = _one_line(value)
+            if len(text) > limits[key]:
+                return None, {"error": f"у типа «{tid}» поле «{key}» длиннее {limits[key]} знаков"}
+            if text and text not in {_one_line(d) for d in defaults}:
+                row[key] = text
+        flag = rec.get("enabled")
+        if flag is not None and flag != "":
+            if isinstance(flag, str) and flag.strip().lower() in ("true", "false"):
+                flag = flag.strip().lower() == "true"
+            if not isinstance(flag, bool):
+                return None, {"error": f"у типа «{tid}» поле «enabled» — true или false"}
+            if flag is False:
+                row["enabled"] = False
+        if row:
+            clean[tid] = row
+    return clean, None
+
+
+def cards_save(project: str, overrides, expect="", lang: str = DEFAULT_LANG) -> dict:
+    """Записать блок `cards:` целиком (то, что прислано, и есть новое состояние) и пересобрать каталог типов.
+
+    Пишется только блок `cards:` конфига — остальной конфиг, комментарии вне блока и окончания строк остаются как были.
+    Записи блока о типах, которых в реестре нет (шаблон убрали, тип ждёт возвращения), страница не знает и не стирает.
+    Ответ — как у `cards_state`, плюс `ok` и `catalog_result`: `written`, `unchanged`, `pinned` (проект оставил каталог
+    себе), `none` (базы или типов нет) или `failed`."""
+    if not isinstance(expect, str):
+        return {"error": "слепок expect должен быть строкой"}
+    reg = CARDS.safe_registry(project, KIT)
+    if not reg.types:
+        return {"error": "в реестре проекта нет ни одного типа: шаблоны карточек не доставлены — выполните kit:update"}
+    clean, refusal = _cards_clean(overrides, reg)
+    if refusal:
+        return refusal
+    with CARDS_LOCK:
+        if expect and expect != _cards_overrides_digest(project):
+            return {"conflict": True, "error": "настройки типов карточек изменились на диске с момента открытия",
+                    **cards_state(project, lang)}
+        current, _problems = CARDS.read_config_overrides(project)
+        keep = {tid: rec for tid, rec in current.items() if rec and tid not in reg.types}
+        try:
+            CARDS.save_overrides(project, {**keep, **clean}, known=set(reg.types) | set(keep))
+        except FileNotFoundError:
+            return {"error": "в проекте нет aurora.config.yaml"}
+        except UnicodeDecodeError:
+            return {"error": "aurora.config.yaml не в кодировке UTF-8 — файл не тронут"}
+        except ValueError:
+            return {"error": "переопределения не приняты: проверьте названия, описания и выключатели типов"}
+        except OSError as e:
+            return {"error": f"не удалось записать aurora.config.yaml: {e.strerror or e}", "failed": True}
+        fresh = CARDS.safe_registry(project, KIT)
+        result = "none"
+        if CARDS.catalog_pinned(project):
+            result = "pinned"
+        elif CARDS.catalog_state(project, fresh, KIT):
+            try:
+                result = "written" if CARDS.write_catalog(project, fresh, kit_root=KIT) else "unchanged"
+            except OSError:
+                result = "failed"
+    out = {**cards_state(project, lang), "ok": True, "catalog_result": result}
+    if result == "failed":
+        out["warning"] = "настройки типов записаны, но каталог типов карточек не пересобран — пересоберите его командой kb:cards --write --apply"
+    return out
+
+
+def _cards_guide_commit(project: str, expect, lang: str, build) -> dict:
+    """Записать файл инструкции: сверить слепок, собрать байты (`build(sn, raw)` → (байты, отказ)) и подменить файл
+    целиком (временный файл рядом + замена). Путь один и от страницы не берётся."""
+    if not isinstance(expect, str):
+        return {"error": "слепок expect должен быть строкой"}
+    full = inside(project, CARDS.GUIDE_REL)
+    if not full:
+        return {"error": "путь вне проекта"}
+    with CARDS_LOCK:
+        raw, why = _cards_read_file(full)
+        if why:
+            return {"error": "файл инструкции больше потолка редактора или не читается — правьте его в редакторе"}
+        if raw is None and os.path.exists(full):
+            return {"error": "Prompts/KB_classify.md — не файл: переименуйте или уберите его и сохраните снова"}
+        digest = CARDS_ABSENT if raw is None else _cards_digest_of(raw)
+        sn = sniff_text(raw) if raw is not None else None
+        if expect and expect != digest:
+            return {"conflict": True, "error": "файл инструкции изменился на диске с момента открытия",
+                    "disk": sn["text"] if sn else "", "digest": digest, **cards_state(project, lang)}
+        data, refusal = build(sn, raw)
+        if refusal:
+            return refusal
+        if data == raw:
+            return {**cards_state(project, lang), "ok": True, "unchanged": True}
+        tmp = full + ".aurora-tmp"
+        try:
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(tmp, "wb") as f:
+                f.write(data)
+            try:
+                shutil.copymode(full, tmp)      # права прежнего файла переходят к новому
+            except OSError:
+                pass
+            replace_file(tmp, full)
+        except OSError as e:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return {"error": f"не удалось записать файл: {e.strerror or e}", "failed": True}
+    return {**cards_state(project, lang), "ok": True}
+
+
+def cards_guide_write(project: str, text, expect="", lang: str = DEFAULT_LANG) -> dict:
+    """Записать текст инструкции в `Prompts/KB_classify.md`. Кодировка и окончания строк файла сохраняются; текст без
+    перевода строки в конце получает его. Пустой текст и текст длиннее `CARDS_GUIDE_MAX` отклоняются; длиннее
+    `CARDS.GUIDE_LIMIT`, без шагов 0–7 или без формата ответа — записывается, а `guide.checks` называет, что не так."""
+    if not isinstance(text, str):
+        return {"error": "текст инструкции должен быть строкой"}
+    if not text.strip():
+        return {"error": "текст инструкции пуст — чтобы вернуться к тексту кита, нажмите «Вернуть текст кита»"}
+    if len(text) > CARDS_GUIDE_MAX:
+        return {"error": f"инструкция длиннее {CARDS_GUIDE_MAX} знаков"}
+    body = text.removeprefix("﻿")
+    body = body if body.endswith("\n") else body + "\n"
+
+    def build(sn, _raw):
+        if sn is not None and not sn["strict"]:
+            return None, {"error": "файл инструкции не читается как UTF-8 или cp1251: сохранение потеряло бы байты"}
+        enc, eol = (sn["encoding"], sn["eol"]) if sn else ("utf-8", "lf")
+        data, bad = encode_text(body, enc, eol)
+        if data is None:
+            return None, {"error": f"знака «{bad}» нет в кодировке файла ({enc}): файл не сохранён"}
+        return data, None
+    return _cards_guide_commit(project, expect, lang, build)
+
+
+def cards_guide_reset(project: str, expect="", lang: str = DEFAULT_LANG) -> dict:
+    """Вернуть инструкции текст кита: файл проекта заменяется копией `<кит>/scaffold/Prompts/KB_classify.md` байт в байт."""
+    kit_raw, _why = _cards_read_file(inside(KIT, CARDS.KIT_GUIDE_REL))
+    if kit_raw is None or not sniff_text(kit_raw)["strict"] or not kit_raw.strip():
+        return {"error": "текста кита нет: scaffold/Prompts/KB_classify.md не найден — обновите кит"}
+    return _cards_guide_commit(project, expect, lang, lambda _sn, _raw: (kit_raw, None))
+
+
+def cards_guide_check(text) -> dict:
+    """Проверка текста инструкции без записи: что в нём не так (`CARDS.guide_checks`) и сколько в нём знаков."""
+    if not isinstance(text, str):
+        return {"error": "текст инструкции должен быть строкой"}
+    if len(text) > CARDS_GUIDE_MAX:
+        return {"error": f"инструкция длиннее {CARDS_GUIDE_MAX} знаков"}
+    return {"checks": CARDS.guide_checks(text), "chars": len(text), "limit": CARDS.GUIDE_LIMIT}
+
+
 def agent_ping(project: str) -> dict:
     """Живой прогон цепочки. Подпроцессом и с cwd проекта: наслоение .env — как у агента."""
     script = script_path(project or KIT, "agent_core.py")
@@ -4999,6 +5333,14 @@ class Handler(BaseHTTPRequestHandler):
             project = (q.get("project") or [""])[0]
             self.send_json(localized_kinds(kinds_read(project), request_lang(q))
                            if project and self._known(project) else {"error": "проект не выбран"})
+        elif u.path == "/api/cards":
+            # Типы карточек проекта: реестр, инструкция выбора типа, каталог. Сводка по базе (`stats=1`) читает все
+            # карточки, поэтому приходит отдельным запросом — страница настроек не ждёт её.
+            project = (q.get("project") or [""])[0]
+            if not project:
+                self.send_json({"error": "проект не выбран"}, 400)
+            elif self._known(project):         # неизвестный проект `_known` уже отшил своим ответом
+                self.send_json(cards_state(project, request_lang(q), (q.get("stats") or [""])[0] == "1"))
         elif u.path == "/api/ask/threads":
             project = (q.get("project") or [""])[0]
             self.send_json(ask_threads(project) if project and self._known(project)
@@ -5430,6 +5772,24 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/roots":
             self.send_json(self._edit_roots(payload))
             return
+        if u.path in ("/api/cards", "/api/cards/guide", "/api/cards/guide/reset", "/api/cards/guide/check"):
+            # «Типы карточек»: блок `cards:` конфига, файл инструкции, проверка её текста. Путь файла от страницы не
+            # приходит: запись возможна только в `Prompts/KB_classify.md` выбранного проекта.
+            project = payload.get("project", "")
+            if not isinstance(project, str) or not project:
+                return self.send_json({"error": "проект не выбран"}, 400)
+            if not self._known(project):
+                return
+            lang, expect = request_lang(q), payload.get("expect", "")
+            if u.path == "/api/cards":
+                res = cards_save(project, payload.get("overrides"), expect, lang)
+            elif u.path == "/api/cards/guide":
+                res = cards_guide_write(project, payload.get("text"), expect, lang)
+            elif u.path == "/api/cards/guide/reset":
+                res = cards_guide_reset(project, expect, lang)
+            else:
+                res = cards_guide_check(payload.get("text"))
+            return self.send_json(res, cards_status(res))
         if u.path == "/api/kinds":
             project = payload.get("project", "")
             if not project or not self._known(project):

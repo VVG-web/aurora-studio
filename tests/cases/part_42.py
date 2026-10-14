@@ -20,6 +20,9 @@
 Пакет CT-07 (в самом конце части): инструкция «Как определить тип карточки» — файл `scaffold/Prompts/KB_classify.md`, его
 доставка в проекты (`aurora.py new`, путь панели, `aurora_update.py`), эффективный текст (`guide_text`, `kit_guide_text`,
 `kb:cards --guide`) и разбор ответа по шагу 7 (`classify_answer`).
+Пакет CT-08 (в самом конце части): «Настройки проекта → Типы карточек» в панели — сервер (`cards_state`, `cards_save`,
+`cards_guide_write`, `cards_guide_reset`, маршруты `/api/cards…`), проверка текста инструкции `guide_checks`, строки в
+каталогах `ru`/`en`, страница (исходник и поведение под node).
 Модель и сеть не используются; проекты — только во временных папках, запуски, которые пишут, — под
 временным HOME прогона.
 """
@@ -3772,9 +3775,9 @@ def test_guide_is_documented(_t):
     выпусках»; дерево проекта и справочник команд называют файл и флаг."""
     for rel, heading, later, other in (
             ("docs/card-templates.md", "\n### Как выбрать тип: `Prompts/KB_classify.md`\n", "## 10. Что будет в следующих выпусках",
-             "настройки типов в панели"),
+             "обязательность шаблона при создании и изменении карточек"),
             ("docs/en/card-templates.md", "\n### How to pick a type: `Prompts/KB_classify.md`\n", "## 10. What the next releases bring",
-             "type settings in the panel")):
+             "a mandatory template when cards are created and changed")):
         text = (KIT / rel).read_text(encoding="utf-8")
         assert text.count("\n") <= 400, f"{rel}: длиннее 400 строк"
         assert "`kb:cards --guide`" in text and "`card_types.classify_answer`" in text and "KB_classify.md.new" in text, rel
@@ -3798,3 +3801,958 @@ def test_guide_is_documented(_t):
     for rel in ("docs/commands.md", "docs/en/commands.md", "skills/aurora-vault/SKILL.md"):
         line = next(l for l in (KIT / rel).read_text(encoding="utf-8").splitlines() if l.startswith("| `kb:cards` |"))
         assert "`--guide`" in line, f"{rel}: строка kb:cards не называет --guide"
+
+
+# ------------------------------------------------------------------ пакет CT-08: «Настройки проекта → Типы карточек»
+#
+# Панель правит блок `cards:` конфига проекта и файл `Prompts/KB_classify.md` и пересобирает каталог типов. Сервер панели
+# (`cards_state`, `cards_save`, `cards_guide_write`, `cards_guide_reset`, `cards_guide_check` и маршруты `/api/cards…`)
+# проверяется без запуска панели: функциями — на временных проектах под временным HOME, маршрутами — на настоящем обработчике,
+# поднятом на свободном порту этого процесса. Страница: разбор исходника, каталоги строк и (если есть node) поведение под
+# подставным DOM.
+
+from harness import card as _fixture_card, set_home  # noqa: E402
+
+CYR = re.compile("[а-яА-ЯёЁ]")
+GUIDE_REL = "Prompts/KB_classify.md"
+
+
+def _panel(tmp: Path):
+    """Модуль панели и возврат HOME: всё, что панель пишет, — во временной папке теста."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    ck = importlib.import_module("aurora_cockpit")
+    back = set_home(tmp / "home")
+    assert Path.home().resolve() == (tmp / "home").resolve(), "HOME не подменён"
+    return ck, back
+
+
+def _panel_project(tmp: Path, delivered: bool = True) -> Path:
+    """Проект с доставленными шаблонами кита (`TemplatesCommon/`); `delivered=False` — типы берутся запасным путём."""
+    tmp.mkdir(parents=True, exist_ok=True)
+    root = make_project(tmp)
+    if delivered:
+        dst = root / "TemplatesCommon"
+        dst.mkdir(exist_ok=True)
+        for f in (KIT / "scaffold" / "TemplatesCommon").glob("akdb_*_v1.0.md"):
+            shutil.copy(f, dst / f.name)
+    return root
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _kit_guide_bytes() -> bytes:
+    return (KIT / "scaffold" / "Prompts" / "KB_classify.md").read_bytes()
+
+
+def _no_tmp(root: Path) -> None:
+    left = [str(p.relative_to(root)) for p in root.rglob("*.aurora-tmp")]
+    assert not left, f"остался временный файл записи: {left}"
+
+
+@test
+def test_cards_api_reads_the_registry(tmp: Path):
+    """AC-CT-08.1: `GET /api/cards` отдаёт тринадцать типов в порядке каталога с умолчаниями шаблонов, а в английском режиме —
+    `name_en`/`description_en`; инструкция, каталог и слепок блока приходят вместе, сводка по базе — только по просьбе."""
+    C = _C()
+    ck, back = _panel(tmp)
+    try:
+        root = _panel_project(tmp)
+        _fixture_card(root, "Concepts/Заявка.md", "Заявка — документ.", template="akdb_concept_v1.0.md")
+        _fixture_card(root, "Glossary/Накладная.md", "Накладная — документ.")
+        ru = ck.cards_state(str(root), "ru")
+        assert [r["id"] for r in ru["types"]] == list(C.KIT_TYPE_ORDER) == list(KIT_IDS) and len(ru["types"]) == 13
+        reg = C.registry(str(root), kit_root=str(KIT))
+        for r in ru["types"]:
+            t = reg.types[r["id"]]
+            assert r["name"] == r["default_name"] == NAMES[r["id"]] == t.name, r
+            assert r["description"] == r["default_description"] == t.description
+            assert (r["template"], r["version"], r["section"], r["class"], r["origin"]) == (
+                t.template_file, t.version, t.section, t.cls, "kit"), r
+            assert r["kinds"] == list(t.kinds) and r["enabled"] is True and r["overridden"] == [] and r["locked"] is False
+        assert ru["problems"] == [] and ru["overrides"] == {} and ru["limits"] == {"title": 80, "description": 220}
+        assert re.fullmatch(r"[0-9a-f]{64}", ru["overrides_digest"])
+        assert ru["catalog"] == {"state": "missing", "pinned": False, "path": "AuroraKnowledgeDB/meta/card_types.md"}
+        g = ru["guide"]
+        assert (g["path"], g["exists"], g["source"], g["digest"], g["readonly"], g["modified"]) == (
+            GUIDE_REL, False, "kit", "absent", "", False), g
+        assert g["text"] == _kit_guide_bytes().decode("utf-8") and g["checks"] == [] and g["limit"] == 9000 and g["kit_available"]
+        assert g["kit_digest"] == hashlib.sha256(_kit_guide_bytes()).hexdigest() and g["chars"] == len(g["text"])
+        assert "stats" not in ru, "сводка читает всю базу и приходит только по просьбе"
+        st = ck.cards_state(str(root), "ru", stats=True)["stats"]
+        assert (st["total"], st["stamped"], st["legacy"]) == (2, 1, 1) and st["by_template"] == {"akdb_concept_v1.0.md": 1}, st
+
+        en = ck.cards_state(str(root), "en")
+        assert [r["id"] for r in en["types"]] == list(KIT_IDS)
+        for r in en["types"]:
+            t = reg.types[r["id"]]
+            assert r["name"] == r["default_name"] == t.name_en and r["description"] == t.description_en, r
+            assert not CYR.search(r["name"] + r["description"] + r["default_name"] + r["default_description"]), r
+        # проект без доставленных шаблонов: те же тринадцать типов запасным путём кита
+        bare = _panel_project(tmp / "bare", delivered=False)
+        assert {r["origin"] for r in ck.cards_state(str(bare), "ru")["types"]} == {"fallback"}
+    finally:
+        back()
+
+
+@test
+def test_cards_api_writes_overrides_and_rebuilds_the_catalogue(tmp: Path):
+    """AC-CT-08.2: `POST /api/cards` меняет подпись и описание и выключает тип; блок `cards:` записан, остальной конфиг и его
+    окончания строк не тронуты, `meta/card_types.md` пересобран; возврат к умолчанию (русскому и английскому) убирает запись;
+    записи о типах вне реестра остаются; повторная запись ничего не меняет."""
+    C = _C()
+    ck, back = _panel(tmp)
+    try:
+        root = _panel_project(tmp)
+        cfg = root / "aurora.config.yaml"
+        before = cfg.read_text(encoding="utf-8")
+        st = ck.cards_state(str(root))
+        want = {"glossary": {"title": "Термин (словарь заказчика)", "description": "Определение термина; без свойств.",
+                             "enabled": False},
+                "status-model": {"enabled": False},
+                "concept": {"title": "Понятие", "description": st["types"][0]["description"]}}
+        r = ck.cards_save(str(root), want, st["overrides_digest"])
+        assert r["ok"] and r["catalog_result"] == "written" and ck.cards_status(r) == 200, r
+        text = cfg.read_text(encoding="utf-8")
+        assert text.startswith(before.rstrip("\n")) and "\n\ncards:\n" in text, text
+        got = C.read_overrides(text)
+        assert got == {"glossary": want["glossary"], "status-model": {"enabled": False}}, got      # concept — умолчание: записи нет
+        assert r["overrides"] == got and r["overrides_digest"] != st["overrides_digest"]
+        rows = {x["id"]: x for x in r["types"]}
+        assert rows["glossary"]["name"] == "Термин (словарь заказчика)" and rows["glossary"]["default_name"] == "Термин"
+        assert rows["glossary"]["overridden"] == ["title", "description", "enabled"] and rows["glossary"]["enabled"] is False
+        assert rows["status-model"]["enabled"] is False and rows["status-model"]["locked"] is False and rows["concept"]["overridden"] == []
+        cat = (root / "AuroraKnowledgeDB" / "meta" / "card_types.md").read_text(encoding="utf-8")
+        assert "| `glossary` | Термин (словарь заказчика) | Определение термина; без свойств. |" in cat
+        assert cat.count("| нет |") == 2 and "включено: 11" in cat and r["catalog"]["state"] == "ok", cat
+        # повтор: файл и каталог не меняются
+        stamp = (cfg.stat().st_mtime_ns, (root / "AuroraKnowledgeDB" / "meta" / "card_types.md").stat().st_mtime_ns)
+        again = ck.cards_save(str(root), want, r["overrides_digest"])
+        assert again["ok"] and again["catalog_result"] == "unchanged"
+        assert (cfg.stat().st_mtime_ns, (root / "AuroraKnowledgeDB" / "meta" / "card_types.md").stat().st_mtime_ns) == stamp
+        # возврат к умолчанию — русскому или английскому — и включённый тип убирают записи; конфиг становится прежним
+        back_to_default = ck.cards_save(str(root), {"glossary": {"title": "Term", "description": "", "enabled": True},
+                                                    "status-model": {"enabled": "true"}}, again["overrides_digest"])
+        assert back_to_default["ok"] and back_to_default["overrides"] == {} and cfg.read_text(encoding="utf-8") == before
+        assert "| нет |" not in (root / "AuroraKnowledgeDB" / "meta" / "card_types.md").read_text(encoding="utf-8")
+
+        # запись блока о типе, которого в реестре нет, панель не стирает; типы реестра пишутся рядом
+        cfg.write_text(before + '\ncards:\n  # заметка\n  old-type:\n    title: "Свой тип"\n  glossary:\n    title: "Слово"\n',
+                       encoding="utf-8")
+        r2 = ck.cards_save(str(root), {"concept": {"title": "Идея"}})
+        assert r2["ok"], r2
+        assert C.read_overrides(cfg.read_text(encoding="utf-8")) == {"concept": {"title": "Идея"}, "old-type": {"title": "Свой тип"}}
+        # управляющие знаки и переводы строк в подписи — в одну строку; кавычки и обратная черта переживают круг
+        r3 = ck.cards_save(str(root), {"role": {"title": "Роль\n\x07заказчика", "description": 'Она: «"да" \\ нет» | и всё'}})
+        assert r3["ok"], r3
+        back_read = C.read_overrides(cfg.read_text(encoding="utf-8"))["role"]
+        assert back_read == {"title": "Роль заказчика", "description": 'Она: «"да" \\ нет» | и всё'}, back_read
+        assert [x["description"] for x in r3["types"] if x["id"] == "role"] == [back_read["description"]]
+        # конфиг с окончаниями CRLF остаётся CRLF
+        cfg.write_bytes(before.replace("\n", "\r\n").encode("utf-8"))
+        assert ck.cards_save(str(root), {"concept": {"title": "Идея"}})["ok"]
+        raw = cfg.read_bytes()
+        assert raw.count(b"\n") == raw.count(b"\r\n") and b"title: \"\xd0\x98\xd0\xb4\xd0\xb5\xd1\x8f\"" in raw
+    finally:
+        back()
+
+
+@test
+def test_cards_api_catalogue_pinned_or_absent(tmp: Path):
+    """Каталог типов пересобирается сохранением, если проект его не оставил себе (`aurora.update_ignore.txt`) и есть база:
+    иначе блок записан, а каталог не тронут — и ответ называет, что произошло."""
+    ck, back = _panel(tmp)
+    try:
+        root = _panel_project(tmp)
+        (root / "aurora.update_ignore.txt").write_text("# своё\nAuroraKnowledgeDB/meta/card_types.md\n", encoding="utf-8")
+        r = ck.cards_save(str(root), {"role": {"title": "Роль проекта"}})
+        assert r["ok"] and r["catalog_result"] == "pinned" and r["catalog"]["pinned"] is True, r
+        assert not (root / "AuroraKnowledgeDB" / "meta" / "card_types.md").exists(), "каталог пересобран вопреки update_ignore"
+        assert "Роль проекта" in (root / "aurora.config.yaml").read_text(encoding="utf-8")
+        (root / "aurora.update_ignore.txt").unlink()
+        shutil.rmtree(root / "AuroraKnowledgeDB")
+        r = ck.cards_save(str(root), {"role": {"title": "Роль проекта"}})
+        assert r["ok"] and r["catalog_result"] == "none" and r["catalog"]["state"] == "" and r["overrides"]["role"], r
+        assert not (root / "AuroraKnowledgeDB").exists(), "панель завела базу ради каталога"
+    finally:
+        back()
+
+
+BAD_OVERRIDES = (
+    (None, "объект"), ([], "объект"), ("x", "объект"), ({"nope": {}}, "нет в реестре"), ({"Glossary": {}}, "не подходит"),
+    ({"gl ossary": {}}, "не подходит"), ({"x" * 40: {}}, "не подходит"), ({"glossary": []}, "нужен объект"),
+    ({"glossary": "x"}, "нужен объект"), ({"glossary": {"section": "Docs"}}, "нельзя переопределять"),
+    ({"glossary": {"template": "a.md"}}, "нельзя переопределять"), ({"glossary": {"kinds": ["x"]}}, "нельзя переопределять"),
+    ({"glossary": {"title": "я" * 81}}, "длиннее 80"), ({"glossary": {"description": "я" * 221}}, "длиннее 220"),
+    ({"glossary": {"title": 5}}, "должно быть строкой"), ({"glossary": {"description": ["a"]}}, "должно быть строкой"),
+    ({"glossary": {"title": {"a": 1}}}, "должно быть строкой"), ({"glossary": {"enabled": "maybe"}}, "true или false"),
+    ({"glossary": {"enabled": 1}}, "true или false"), ({"glossary": {"enabled": []}}, "true или false"),
+    ({f"t{i:03d}": {} for i in range(201)}, "слишком много"),
+)
+
+
+@test
+def test_cards_api_refuses_what_the_template_owns(tmp: Path):
+    """Неверный вход отклоняется целиком и ничего не пишет: не объект, тип вне реестра или с неверным именем, чужое поле
+    (раздел, шаблон, виды), значение не строка, подпись длиннее 80 и описание длиннее 220 знаков, не `true`/`false`; при
+    отказе конфиг и каталог остаются как были, код ответа — 400, а сообщение переводится на английский."""
+    ck, back = _panel(tmp)
+    try:
+        root = _panel_project(tmp)
+        cfg = root / "aurora.config.yaml"
+        before = cfg.read_bytes()
+        for payload, word in BAD_OVERRIDES:
+            r = ck.cards_save(str(root), payload)
+            assert r.get("error") and word in r["error"] and not r.get("ok") and ck.cards_status(r) == 400, (payload, r)
+            assert not CYR.search(ck.translate_message(r["error"], "en")), (r["error"], ck.translate_message(r["error"], "en"))
+            assert cfg.read_bytes() == before and not (root / "AuroraKnowledgeDB" / "meta" / "card_types.md").exists(), payload
+        # предел длины — граница включена: 80 и 220 знаков принимаются
+        ok = ck.cards_save(str(root), {"glossary": {"title": "я" * 80, "description": "ы" * 220}})
+        assert ok["ok"] and len(ok["overrides"]["glossary"]["title"]) == 80 and len(ok["overrides"]["glossary"]["description"]) == 220
+        # слепок — только строка
+        assert ck.cards_save(str(root), {}, 5).get("error") and ck.cards_save(str(root), {}, ["a"]).get("error")
+        # пустое состояние: «ничего не переопределено» убирает блок целиком
+        assert ck.cards_save(str(root), {})["overrides"] == {} and cfg.read_bytes() == before
+        # реестр пуст (шаблонов нет нигде): отказ с объяснением, конфиг не тронут
+        saved_kit = ck.KIT
+        ck.KIT = str(tmp / "no-kit")
+        try:
+            bare = _panel_project(tmp / "bare", delivered=False)
+            bare_before = (bare / "aurora.config.yaml").read_bytes()
+            r = ck.cards_save(str(bare), {"glossary": {"enabled": False}})
+            assert "нет ни одного типа" in r["error"] and (bare / "aurora.config.yaml").read_bytes() == bare_before, r
+            st = ck.cards_state(str(bare))
+            assert st["types"] == [] and st["guide"]["kit_available"] is False and st["guide"]["source"] == "", st["guide"]
+            assert ck.cards_guide_reset(str(bare), "")["error"] and not (bare / GUIDE_REL).exists()
+        finally:
+            ck.KIT = saved_kit
+        # конфига нет / не UTF-8
+        (root / "aurora.config.yaml").unlink()
+        assert "нет aurora.config.yaml" in ck.cards_save(str(root), {"role": {"title": "Р"}})["error"]
+        cfg.write_bytes(b"project:\n  name: \xff\xfe\n")
+        raw = cfg.read_bytes()
+        assert "не в кодировке UTF-8" in ck.cards_save(str(root), {"role": {"title": "Р"}})["error"] and cfg.read_bytes() == raw
+    finally:
+        back()
+
+
+@test
+def test_cards_api_overrides_lost_update_guard(tmp: Path):
+    """Защита от потерянного обновления блока `cards:`: слепок считается по смыслу блока, а не по байтам. Другое на диске —
+    ответ 409 с живым состоянием и без записи; комментарий, пустая строка и чужие разделы слепок не меняют; «оставить моё» —
+    запись со слепком с диска; без слепка запись не проверяется."""
+    C = _C()
+    ck, back = _panel(tmp)
+    try:
+        root = _panel_project(tmp)
+        cfg = root / "aurora.config.yaml"
+        st = ck.cards_state(str(root))
+        # правка вне блока и комментарий — не расхождение
+        cfg.write_text(cfg.read_text(encoding="utf-8") + "\n# заметка владельца\nreports:\n  year: 2026\n", encoding="utf-8")
+        assert ck.cards_state(str(root))["overrides_digest"] == st["overrides_digest"]
+        # правка блока — расхождение
+        cfg.write_text(cfg.read_text(encoding="utf-8") + '\ncards:\n  # вручную\n  concept:\n    title: "Идея"\n', encoding="utf-8")
+        edited = cfg.read_bytes()
+        fresh = ck.cards_state(str(root))
+        assert fresh["overrides_digest"] != st["overrides_digest"] and fresh["overrides"] == {"concept": {"title": "Идея"}}
+        r = ck.cards_save(str(root), {"glossary": {"enabled": False}}, st["overrides_digest"])
+        assert r["conflict"] is True and ck.cards_status(r) == 409 and "изменились на диске" in r["error"], r
+        assert cfg.read_bytes() == edited and not (root / "AuroraKnowledgeDB" / "meta" / "card_types.md").exists(), "409 записал"
+        assert r["overrides_digest"] == fresh["overrides_digest"] and r["overrides"] == fresh["overrides"] and len(r["types"]) == 13
+        assert not CYR.search(ck.translate_message(r["error"], "en"))
+        # «оставить моё»: слепок с диска из ответа 409
+        mine = ck.cards_save(str(root), {"glossary": {"enabled": False}}, r["overrides_digest"])
+        assert mine["ok"] and C.read_overrides(cfg.read_text(encoding="utf-8")) == {"glossary": {"enabled": False}}
+        # комментарий внутри блока слепок не меняет: страница с ним же всё ещё актуальна
+        cfg.write_text(cfg.read_text(encoding="utf-8").replace("cards:\n", "cards:\n  # ещё заметка\n"), encoding="utf-8")
+        assert ck.cards_state(str(root))["overrides_digest"] == mine["overrides_digest"]
+        # без слепка проверки нет
+        assert ck.cards_save(str(root), {"role": {"enabled": False}}, "")["ok"]
+        # слепок несуществующего состояния — тоже расхождение
+        assert ck.cards_save(str(root), {}, "0" * 64)["conflict"]
+    finally:
+        back()
+
+
+@test
+def test_cards_api_writes_the_guide_with_expect(tmp: Path):
+    """AC-CT-08.3: запись инструкции с устаревшим `expect` отвечает 409 и ничего не пишет; с верным — пишет атомарно в
+    единственный файл `Prompts/KB_classify.md`, оставляя кодировку и окончания строк файла; пустой и слишком длинный текст,
+    чужой файл и сбой замены отвечают отказом, не трогая прежний файл."""
+    ck, back = _panel(tmp)
+    try:
+        root = _panel_project(tmp)
+        guide = root / "Prompts" / "KB_classify.md"
+        kit_text = _kit_guide_bytes().decode("utf-8")
+        mine = kit_text + "\n| 99 | свой источник | `concept` | `akdb_concept` | `Concepts` |\n"
+        # файла нет: слепок «absent»; устаревший слепок — расхождение (файл успел появиться — например, от обновления)
+        assert ck.cards_state(str(root))["guide"]["digest"] == "absent"
+        r = ck.cards_guide_write(str(root), mine, "absent")
+        assert r["ok"] and guide.read_bytes() == mine.encode("utf-8"), r
+        _no_tmp(root)
+        g = r["guide"]
+        assert (g["exists"], g["source"], g["modified"], g["digest"], g["text"]) == (True, "project", True, _sha(guide), mine), g
+        stamp = guide.read_bytes()
+        stale = ck.cards_guide_write(str(root), "# Другой текст\n", "absent")
+        assert stale["conflict"] is True and ck.cards_status(stale) == 409 and guide.read_bytes() == stamp, stale
+        assert stale["disk"] == mine and stale["digest"] == _sha(guide) and stale["guide"]["digest"] == stale["digest"]
+        assert not CYR.search(ck.translate_message(stale["error"], "en"))
+        # верный слепок: пишет; текст без перевода строки получает один, метка порядка байтов не записывается
+        r = ck.cards_guide_write(str(root), "﻿# Сокращённо\nшаг", stale["digest"])
+        assert r["ok"] and guide.read_bytes() == "# Сокращённо\nшаг\n".encode("utf-8"), guide.read_bytes()
+        assert [c["code"] for c in r["guide"]["checks"]] == ["steps-missing"] and r["guide"]["checks"][0]["missing"] == list(range(8))
+        # тот же текст: файл не трогается
+        stamp = guide.stat().st_mtime_ns
+        assert ck.cards_guide_write(str(root), "# Сокращённо\nшаг\n", r["guide"]["digest"]).get("unchanged") is True
+        assert guide.stat().st_mtime_ns == stamp
+        # без слепка — без проверки («оставить моё»)
+        assert ck.cards_guide_write(str(root), kit_text)["ok"] and guide.read_bytes() == _kit_guide_bytes()
+        # отказы: не строка, пустой, слишком длинный; прежний файл цел
+        keep = guide.read_bytes()
+        for bad in (None, 5, ["a"], "", "   \n\t ", "я" * 50_001):
+            e = ck.cards_guide_write(str(root), bad, "")
+            assert e.get("error") and not e.get("ok") and ck.cards_status(e) == 400 and guide.read_bytes() == keep, (str(bad)[:20], e)
+            assert not CYR.search(ck.translate_message(e["error"], "en")), e["error"]
+        assert ck.cards_guide_write(str(root), "я" * 50_000, "")["ok"], "предел включён"
+        # длиннее мягкого предела — записывается, а проверка называет
+        long = ck.cards_guide_write(str(root), kit_text + "я" * 600, "")
+        assert long["ok"] and [c["code"] for c in long["guide"]["checks"]] == ["too-long"] and long["guide"]["checks"][0]["limit"] == 9000
+        # окончания строк и кодировка файла сохраняются
+        guide.write_bytes("Первая\r\nВторая\r\n".encode("utf-8"))
+        assert ck.cards_guide_write(str(root), "а\nб\n", _sha(guide))["ok"] and guide.read_bytes() == "а\r\nб\r\n".encode("utf-8")
+        guide.write_bytes("Привет\n".encode("cp1251"))
+        assert ck.cards_guide_write(str(root), "Пока\n", _sha(guide))["ok"] and guide.read_bytes() == "Пока\n".encode("cp1251")
+        raw = guide.read_bytes()
+        emoji = ck.cards_guide_write(str(root), "Пока 😀\n", "")
+        assert "нет в кодировке файла" in emoji["error"] and guide.read_bytes() == raw
+        # файл, который не читается как текст, из панели не сохраняется (байты были бы потеряны)
+        guide.write_bytes(b"abc \x98 \xd0\n")
+        raw = guide.read_bytes()
+        g = ck.cards_state(str(root))["guide"]
+        assert g["readonly"] == "lossy" and g["digest"] == _sha(guide), g
+        lossy = ck.cards_guide_write(str(root), "# Новый\n", g["digest"])
+        assert "не читается как UTF-8" in lossy["error"] and guide.read_bytes() == raw
+        # «Вернуть текст кита» заменяет и такой файл: человек просит именно этого
+        assert ck.cards_guide_reset(str(root), g["digest"])["ok"] and guide.read_bytes() == _kit_guide_bytes()
+        _no_tmp(root)
+    finally:
+        back()
+
+
+@test
+def test_cards_api_guide_path_is_fixed_and_atomic(tmp: Path):
+    """Запись возможна только в `Prompts/KB_classify.md` проекта: ссылка за пределы проекта и папка на его месте отклоняются,
+    а сбой подмены файла оставляет прежний файл целым (временный файл убирается). Два окна с одним слепком не пишут оба."""
+    import threading
+    ck, back = _panel(tmp)
+    try:
+        root = _panel_project(tmp)
+        guide = root / "Prompts" / "KB_classify.md"
+        guide.parent.mkdir(exist_ok=True)
+        # папка на месте файла
+        guide.mkdir()
+        assert "не файл" in ck.cards_guide_write(str(root), "# Текст\n", "")["error"] and guide.is_dir()
+        guide.rmdir()
+        # ссылка наружу
+        outside = tmp / "outside.md"
+        outside.write_text("чужой файл\n", encoding="utf-8")
+        try:
+            os.symlink(outside, guide)
+        except (OSError, NotImplementedError):
+            pass
+        else:
+            st = ck.cards_state(str(root))["guide"]
+            assert st["readonly"] == "outside" and st["source"] == "kit", st
+            assert ck.cards_guide_write(str(root), "# Текст\n", "")["error"] == "путь вне проекта"
+            assert ck.cards_guide_reset(str(root), "")["error"] == "путь вне проекта"
+            assert outside.read_text(encoding="utf-8") == "чужой файл\n"
+            guide.unlink()
+        # сбой подмены: прежний файл цел, временного файла нет, ответ — 500
+        guide.write_text("# Прежний\n", encoding="utf-8")
+        real = ck.replace_file
+
+        def broken(src, dst, **kw):
+            raise OSError(28, "No space left on device")
+        ck.replace_file = broken
+        try:
+            r = ck.cards_guide_write(str(root), "# Новый\n", _sha(guide))
+        finally:
+            ck.replace_file = real
+        assert r.get("failed") and r.get("error") and ck.cards_status(r) == 500, r
+        assert guide.read_text(encoding="utf-8") == "# Прежний\n"
+        _no_tmp(root)
+        # два окна с одним слепком: ровно одно записывает, остальные получают расхождение
+        base = _sha(guide)
+        results, barrier = [], threading.Barrier(8)
+
+        def go(n):
+            barrier.wait()
+            results.append(ck.cards_guide_write(str(root), f"# Окно {n}\n", base))
+        threads = [threading.Thread(target=go, args=(n,)) for n in range(8)]
+        [th.start() for th in threads]
+        [th.join(30) for th in threads]
+        assert len(results) == 8 and sum(1 for r in results if r.get("ok")) == 1 \
+            and sum(1 for r in results if r.get("conflict")) == 7, [list(r) for r in results]
+        _no_tmp(root)
+    finally:
+        back()
+
+
+@test
+def test_cards_api_guide_reset(tmp: Path):
+    """«Вернуть текст кита»: файл проекта становится копией файла кита байт в байт (и создаётся, если его не было); слепок
+    сверяется так же, как при записи; повтор ничего не пишет; нет текста кита — отказ."""
+    ck, back = _panel(tmp)
+    try:
+        root = _panel_project(tmp)
+        guide = root / "Prompts" / "KB_classify.md"
+        # файла нет: создаётся копия кита
+        r = ck.cards_guide_reset(str(root), "absent")
+        assert r["ok"] and guide.read_bytes() == _kit_guide_bytes(), r
+        assert r["guide"]["source"] == "project" and r["guide"]["modified"] is False and r["guide"]["digest"] == r["guide"]["kit_digest"]
+        # правка проекта, затем возврат
+        guide.write_text("# Мой текст\n", encoding="utf-8")
+        g = ck.cards_state(str(root))["guide"]
+        assert g["modified"] is True and g["source"] == "project"
+        stale = ck.cards_guide_reset(str(root), "0" * 64)
+        assert stale["conflict"] is True and ck.cards_status(stale) == 409 and guide.read_text(encoding="utf-8") == "# Мой текст\n"
+        done = ck.cards_guide_reset(str(root), g["digest"])
+        assert done["ok"] and guide.read_bytes() == _kit_guide_bytes() and done["guide"]["modified"] is False
+        stamp = guide.stat().st_mtime_ns
+        assert ck.cards_guide_reset(str(root), done["guide"]["digest"]).get("unchanged") is True and guide.stat().st_mtime_ns == stamp
+        # пустой файл проекта — «нет текста»: показан текст кита
+        guide.write_bytes(b"")
+        g = ck.cards_state(str(root))["guide"]
+        assert (g["exists"], g["source"], g["text"] == _kit_guide_bytes().decode("utf-8")) == (True, "kit", True), g
+        assert g["digest"] == hashlib.sha256(b"").hexdigest()
+        # кита нет: отказ, файл проекта не тронут
+        guide.write_text("# Мой текст\n", encoding="utf-8")
+        saved_kit = ck.KIT
+        ck.KIT = str(tmp / "no-kit")
+        try:
+            e = ck.cards_guide_reset(str(root), "")
+        finally:
+            ck.KIT = saved_kit
+        assert "текста кита нет" in e["error"] and ck.cards_status(e) == 400 and guide.read_text(encoding="utf-8") == "# Мой текст\n"
+        assert not CYR.search(ck.translate_message(e["error"], "en"))
+    finally:
+        back()
+
+
+@test
+def test_card_types_guide_checks(_t):
+    """`guide_checks` называет, что не так с текстом инструкции: пусто, длиннее 9000, нет шагов 0–7, нет формата ответа в
+    шаге 7; кит проходит; работает за линейное время на враждебном тексте."""
+    C = _C()
+    kit = _kit_guide_bytes().decode("utf-8")
+    assert C.guide_checks(kit) == [] and C.guide_checks(kit.replace("\n", "\r\n")) == []
+    assert C.guide_checks("") == C.guide_checks("  \n\t") == C.guide_checks(None) == [{"code": "empty"}]
+    assert C.GUIDE_LIMIT == 9000 and C.guide_checks(kit + "я" * (9000 - len(kit) + 1))[0] == {"code": "too-long", "chars": 9001, "limit": 9000}
+    assert C.guide_checks(kit + "я" * (9000 - len(kit))) == [], "ровно 9000 знаков допустимо"
+    no3 = kit.replace("## Шаг 3.", "## Шаг три.")
+    assert C.guide_checks(no3) == [{"code": "steps-missing", "missing": [3]}]
+    assert [c["code"] for c in C.guide_checks("# Просто текст")] == ["steps-missing"]
+    no7 = kit.split("## Шаг 7.")[0]
+    assert C.guide_checks(no7) == [{"code": "steps-missing", "missing": [7]}], "формат ответа проверяется, когда шаг 7 есть"
+    for cut in ("template:", "section:", "why:", "type: none"):
+        broken = kit.replace(cut, "x:" if cut.endswith(":") else "type: нет")
+        assert [c["code"] for c in C.guide_checks(broken)] == ["no-answer-format"], cut
+    # формат ответа ищется в шаге 7, а не в тексте других шагов
+    moved = kit.replace("## Шаг 7. Как ответить\n", "## Шаг 7. Как ответить\n\nответьте.\n\n## Дополнение\n")
+    assert [c["code"] for c in C.guide_checks(moved)] == ["no-answer-format"]
+    t0 = time.time()
+    C.guide_checks(" " * 200000)
+    C.guide_checks("## Шаг 7." * 20000)
+    C.guide_checks("## Шаг 7.\n" + "## \n" * 100000)
+    C.guide_checks("\n" * 200000 + "## Шаг 7.")
+    assert time.time() - t0 < 5, f"{time.time() - t0:.1f} с на враждебном тексте"
+
+
+@test
+def test_cards_api_is_fast_and_safe_on_hostile_input(tmp: Path):
+    """Миллионы пробелов, тысячи типов и длинные значения отклоняются или разбираются за секунды и не роняют сервер."""
+    ck, back = _panel(tmp)
+    try:
+        root = _panel_project(tmp)
+        t0 = time.time()
+        for payload in ({"glossary": {"title": " " * 2_000_000}}, {"glossary": {"description": "я" * 3_000_000}},
+                        {f"t{i}": {} for i in range(50_000)}, {"glossary": {"title": "\x00\x01" * 100_000}},
+                        {"glossary": {"title": "\n".join(["a"] * 100_000)}}):
+            r = ck.cards_save(str(root), payload)
+            assert not r.get("conflict"), r
+        assert ck.cards_guide_write(str(root), " " * 2_000_000, "").get("error")
+        assert ck.cards_guide_write(str(root), "я" * 5_000_000, "").get("error")
+        assert ck.cards_guide_check("я" * 5_000_000).get("error")
+        assert ck.cards_guide_check(" " * 40_000)["checks"][0]["code"] == "empty"
+        assert time.time() - t0 < 10, f"{time.time() - t0:.1f} с"
+    finally:
+        back()
+
+
+class _Live:
+    """Настоящий обработчик панели на свободном порту этого процесса (без запуска панели): запросы идут по сети, как у
+    страницы — с токеном, JSON-телом, кодами ответа."""
+
+    def __init__(self, ck, roots):
+        import threading
+        from http.server import ThreadingHTTPServer
+        self.ck = ck
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), ck.Handler)
+        self.srv.roots = [str(r) for r in roots]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def call(self, method: str, path: str, body=None, *, token: bool = True, ctype: str = "application/json"):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=60)
+        headers = {"X-Aurora-Token": self.ck.TOKEN} if token else {}
+        data = None
+        if body is not None:
+            data = body if isinstance(body, (bytes, str)) else json.dumps(body)
+            headers["Content-Type"] = ctype
+        conn.request(method, path, body=data, headers=headers)
+        r = conn.getresponse()
+        raw = r.read().decode("utf-8", "replace")
+        try:
+            return r.status, json.loads(raw)
+        except ValueError:
+            return r.status, raw
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+@test
+def test_cards_api_http_routes(tmp: Path):
+    """Маршруты `/api/cards…` на настоящем обработчике: токен и JSON обязательны, неизвестный проект и проект не строкой —
+    отказ без падения, коды 200/400/409, язык ответа — по `?lang=`; путь записи инструкции от страницы не принимается."""
+    from urllib.parse import quote
+    ck, back = _panel(tmp)
+    live = None
+    try:
+        root = _panel_project(tmp)
+        live = _Live(ck, [tmp])
+        p, q = str(root), quote(str(root))
+        # чтение
+        code, d = live.call("GET", f"/api/cards?project={q}")
+        assert code == 200 and len(d["types"]) == 13 and "stats" not in d and d["guide"]["digest"] == "absent", (code, str(d)[:200])
+        code, d = live.call("GET", f"/api/cards?project={q}&stats=1")
+        assert code == 200 and d["stats"]["total"] == 0, d
+        code, en = live.call("GET", f"/api/cards?project={q}&lang=en")
+        assert code == 200 and en["types"][0]["name"] == "Concept" and not CYR.search(json.dumps(en["types"], ensure_ascii=False))
+        assert live.call("GET", f"/api/cards?project={q}", token=False)[0] == 403
+        assert live.call("GET", "/api/cards")[0] == 400 and live.call("GET", "/api/cards?project=" + quote(str(tmp / "чужой")))[0] == 400
+        # запись блока
+        post = lambda path, body, **kw: live.call("POST", path, body, **kw)  # noqa: E731
+        code, r = post("/api/cards", {"project": p, "overrides": {"glossary": {"title": "Слово", "enabled": False}},
+                                      "expect": d["overrides_digest"]})
+        assert code == 200 and r["ok"] and r["overrides"] == {"glossary": {"title": "Слово", "enabled": False}}, (code, r)
+        code, r2 = post("/api/cards", {"project": p, "overrides": {"glossary": {"title": "Другое"}}, "expect": d["overrides_digest"]})
+        assert code == 409 and r2["conflict"] and r2["overrides_digest"] == r["overrides_digest"], (code, r2)
+        code, bad = post("/api/cards", {"project": p, "overrides": {"nope": {}}})
+        assert code == 400 and "нет в реестре" in bad["error"], (code, bad)
+        code, bad = post("/api/cards?lang=en", {"project": p, "overrides": {"glossary": {"section": "X"}}})
+        assert code == 400 and not CYR.search(bad["error"]) and "cannot be overridden" in bad["error"], bad
+        assert post("/api/cards", {"project": p, "overrides": {}}, token=False)[0] == 403
+        assert post("/api/cards", "{not json", ctype="application/json")[0] == 400
+        assert post("/api/cards", json.dumps({"project": p, "overrides": {}}), ctype="text/plain")[0] == 415
+        for weird in ({"project": ["x"], "overrides": {}}, {"project": 5}, {"project": {"a": 1}}, {"project": ""}, {}, {"project": None}):
+            code, e = post("/api/cards", weird)
+            assert code == 400 and e.get("error"), (weird, code, e)
+        assert post("/api/cards", {"project": str(tmp / "чужой"), "overrides": {}})[0] == 400
+        assert post("/api/cards", [1, 2])[0] == 400
+        # инструкция: путь не от страницы
+        outside = tmp / "снаружи.md"
+        outside.write_text("не трогать\n", encoding="utf-8")
+        text = "# Своя инструкция\n"
+        code, g = post("/api/cards/guide", {"project": p, "text": text, "expect": "absent", "path": str(outside),
+                                            "rel": "../снаружи.md"})
+        assert code == 200 and g["ok"] and (root / GUIDE_REL).read_text(encoding="utf-8") == text, (code, g)
+        assert outside.read_text(encoding="utf-8") == "не трогать\n"
+        code, c = post("/api/cards/guide", {"project": p, "text": "# Новый\n", "expect": "absent"})
+        assert code == 409 and c["conflict"] and c["disk"] == text and (root / GUIDE_REL).read_text(encoding="utf-8") == text
+        assert post("/api/cards/guide", {"project": p, "text": "", "expect": g["guide"]["digest"]})[0] == 400
+        assert post("/api/cards/guide", {"project": p, "text": 5})[0] == 400
+        code, chk = post("/api/cards/guide/check", {"project": p, "text": "# Просто\n"})
+        assert code == 200 and chk["checks"] == [{"code": "steps-missing", "missing": list(range(8))}] and chk["chars"] == 9
+        assert post("/api/cards/guide/check", {"project": p, "text": None})[0] == 400
+        code, rs = post("/api/cards/guide/reset", {"project": p, "expect": g["guide"]["digest"]})
+        assert code == 200 and (root / GUIDE_REL).read_bytes() == _kit_guide_bytes(), (code, rs)
+        assert post("/api/cards/guide/reset", {"project": p, "expect": "0" * 64})[0] == 409
+        _no_tmp(root)
+    finally:
+        if live:
+            live.close()
+        back()
+
+
+@test
+def test_cards_i18n_catalogues_are_complete(tmp: Path):
+    """Каждый ключ `cardtypes.*` и `dirty.cardtypes`/`dirty.cardguide`, который спрашивает страница (в том числе собранный
+    из куска: коды проверки инструкции, классы, источники, состояния каталога, причины запрета записи), есть в `ru` и `en`;
+    английский каталог без русских букв, подстановки совпадают; тексты сервера из этого пакета переводятся целиком."""
+    C = _C()
+    ru = json.loads((KIT / "cockpit/i18n/ru.json").read_text(encoding="utf-8"))
+    en = json.loads((KIT / "cockpit/i18n/en.json").read_text(encoding="utf-8"))
+    mine = sorted(k for k in ru if k.startswith("cardtypes.") or k in ("dirty.cardtypes", "dirty.cardguide"))
+    assert len(mine) >= 60, mine
+    assert sorted(k for k in en if k.startswith("cardtypes.") or k in ("dirty.cardtypes", "dirty.cardguide")) == mine
+    for k in mine:
+        assert CYR.search(ru[k]) and not CYR.search(en[k]), f"{k}: русский текст без кириллицы или английский с ней"
+        assert re.findall(r"\{(\w+)\}", ru[k]) == re.findall(r"\{(\w+)\}", en[k]), f"{k}: подстановки разошлись"
+        assert "|" not in ru[k] and "|" not in en[k], f"{k}: «|» в строке — форма множественного числа"
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    fn = panel[panel.index("async function renderCardTypes(box){"):]
+    fn = fn[:fn.index("\n}\n") + 2]
+    literal = set(re.findall(r'\bt\("(cardtypes\.[a-z_]+)"(?! \+)', fn)) | set(re.findall(r'\bt\("(dirty\.card[a-z]+)"', fn))
+    assert literal and literal <= set(ru), f"страница спрашивает ключи, которых нет: {sorted(literal - set(ru))}"
+    prefixes = set(re.findall(r'\bt\("(cardtypes\.[a-z_]+_)" \+', fn))
+    assert prefixes == {"cardtypes.col_", "cardtypes.class_", "cardtypes.origin_", "cardtypes.check_", "cardtypes.catalog_",
+                        "cardtypes.guide_ro_"}, prefixes
+    need = {"cardtypes.col_": ["name", "type", "desc", "template", "section", "class", "origin", "on"],
+            "cardtypes.class_": list(C.CLASS_NAMES), "cardtypes.origin_": ["project", "kit", "fallback"],
+            "cardtypes.check_": ["empty", "too_long", "steps_missing", "no_answer_format"],
+            "cardtypes.catalog_": ["ok", "missing", "stale"], "cardtypes.guide_ro_": ["lossy", "big", "unreadable", "outside"]}
+    for prefix, tails in need.items():
+        for tail in tails:
+            assert prefix + tail in ru and prefix + tail in en, f"нет {prefix + tail}"
+    # каждый код проверки инструкции, который знает движок, назван в каталоге
+    sample = {"too-long", "steps-missing", "no-answer-format", "empty"}
+    assert {c["code"] for c in C.guide_checks("")} | {c["code"] for c in C.guide_checks("я" * 9001)} \
+        | {c["code"] for c in C.guide_checks("# x")} | {"no-answer-format"} == sample
+    assert not [k for k in ru if k.startswith("cardtypes.") and k not in literal
+                and not any(k.startswith(p) for p in prefixes)], "в каталоге есть ключ, который страница не спрашивает"
+    # сообщения сервера из пакета переводятся целиком (английский режим не показывает русского)
+    ck, back = _panel(tmp)
+    try:
+        root = _panel_project(tmp)
+        texts = {ck.cards_save(str(root), payload)["error"] for payload, _w in BAD_OVERRIDES}
+        texts |= {ck.cards_guide_write(str(root), bad, "")["error"] for bad in (None, "", "я" * 50_001)}
+        texts |= {ck.cards_guide_check(None)["error"], ck.cards_save(str(root), {}, 5)["error"]}
+        guide = root / "Prompts" / "KB_classify.md"
+        guide.parent.mkdir(exist_ok=True)
+        guide.write_text("# x\n", encoding="utf-8")
+        texts.add(ck.cards_guide_write(str(root), "# y\n", "0" * 64)["error"])
+        guide.write_bytes(b"abc \x98 \xd0\n")
+        texts.add(ck.cards_guide_write(str(root), "# y\n", "")["error"])
+        texts.add(ck.cards_save(str(root), {"role": {"title": "Р"}}, "0" * 64)["error"])
+        assert len(texts) >= 15, texts
+        for text in texts:
+            assert not CYR.search(ck.translate_message(text, "en")), f"не переведено: {text}"
+        warn = "настройки типов записаны, но каталог типов карточек не пересобран — пересоберите его командой kb:cards --write --apply"
+        assert not CYR.search(ck.translate_message(warn, "en"))
+    finally:
+        back()
+
+
+@test
+def test_cards_panel_script_structure(_t):
+    """Страница: «Типы карточек» — подгруппа настроек проекта (после артефактов, перед строкой переходов), она ходит только в
+    свои маршруты, шлёт слепок прочитанного, сохраняет таблицу и инструкцию порознь и не перерисовывает настройки целиком
+    (это сбросило бы несохранённые правки соседних групп); надписей и непроверенной разметки в ней нет."""
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    assert panel.count("async function renderCardTypes(box){") == 1
+    project = panel[panel.index("async function renderProject(){"):]
+    project = project[:project.index("\n}\n") + 2]
+    order = [project.index(x) for x in ("await renderKinds(box);", "await renderCardTypes(box);", "drawSetupJump(box);")]
+    assert order == sorted(order) and len(set(order)) == 3, "renderCardTypes стоит не между артефактами и строкой переходов"
+    fn = panel[panel.index("async function renderCardTypes(box){"):]
+    fn = fn[:fn.index("\n}\n") + 2]
+    assert 'sgroup(box, "project:cardtypes", t("cardtypes.title"' in fn
+    for route in ('"/api/cards?project="', '"/api/cards"', '"/api/cards/guide"', '"/api/cards/guide/reset"', '"/api/cards/guide/check"'):
+        assert route in fn, route
+    assert set(re.findall(r'"(/api/[\w/]+)', fn)) == {"/api/cards", "/api/cards/guide", "/api/cards/guide/reset",
+                                                      "/api/cards/guide/check", "/api/config"}, "страница ходит не только в свои маршруты"
+    assert "expect" in fn and fn.count("expect") >= 6 and "overrides_digest" in fn and "gd.digest" in fn
+    assert 'setDirty("cardtypes"' in fn and 'setDirty("cardguide"' in fn
+    assert 'saveButton("cardtypes"' in fn and 'saveButton("cardguide"' in fn
+    assert "renderProject(" not in fn and "DIRTY.clear" not in fn, "сохранение группы перерисовывает всю страницу настроек"
+    # всё, что вставляется как разметка, — через `tick` (он экранирует): сырых данных в innerHTML нет
+    assert not re.findall(r"html:\s*(?!\s)(?!tick\()", fn), re.findall(r"html:\s*(?!\s)(?!tick\()[^,}]{0,40}", fn)
+    assert not re.findall(r"innerHTML\s*=\s*(?!\s)(?!\"\")", fn), "innerHTML получает не пустую строку"
+    # русских надписей в коде нет (проверку всего ядра делает `cockpit core strings live in catalogues`)
+    code = re.sub(r"/\*.*?\*/", "", fn, flags=re.S)
+    code = "\n".join(line.split("//")[0] for line in code.splitlines())
+    assert not [lit for lit in re.findall(r'"[^"\n]*"|\'[^\'\n]*\'|`[^`\n]*`', code) if CYR.search(lit)]
+    # разбор файла: node есть — страница разбирается
+    node = shutil.which("node")
+    if node:
+        cp = subprocess.run([node, "--check", str(KIT / "cockpit/ui/panel.js")], capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+        assert cp.returncode == 0, cp.stderr[:600]
+    view = (KIT / "cockpit/modules/reference/view.js").read_text(encoding="utf-8")
+    assert '"docs/card-templates.md": "docs/en/card-templates.md"' in view and (KIT / "docs/en/card-templates.md").is_file()
+
+
+CARDS_PANEL_HARNESS = r"""
+class FakeNode {
+  constructor(tag){ this.tag = tag; this.attrs = {}; this.kids = []; this.ls = {}; this.className = ""; this.nodeType = 1;
+    this._html = ""; this.hidden = false; this.disabled = false; this.checked = false; this._v = undefined; }
+  setAttribute(k, v){ this.attrs[k] = v; if (k === "disabled") this.disabled = true; if (k === "checked") this.checked = true;
+    if (k === "value") this._v = String(v); }
+  addEventListener(ev, f){ (this.ls[ev] = this.ls[ev] || []).push(f); }
+  // как настоящий DOM: строка (и null, и undefined) становится текстом — «null» на экране виден тесту
+  append(...k){ for (const x of k) this.kids.push(x && x.nodeType ? x : {nodeType: 3, text: String(x)}); }
+  get innerHTML(){ return this._html; }
+  set innerHTML(v){ this._html = v; if (v === "") this.kids = []; }
+  get textContent(){ return this.kids.map(k => k.text !== undefined ? k.text : k.textContent).join(""); }
+  set textContent(v){ this.kids = [{nodeType: 3, text: String(v)}]; }
+  get value(){ return this._v !== undefined ? this._v : (this.tag === "textarea" ? this.textContent : ""); }
+  set value(v){ this._v = String(v); }
+}
+const document = {createElement: tag => new FakeNode(tag), createTextNode: s => ({nodeType: 3, text: s})};
+@EL@
+@TICK@
+const walk = function*(n){ yield n; for (const k of n.kids || []) if (k && k.tag) yield* walk(k); };
+const all = (root, pred) => [...walk(root)].filter(pred);
+const textOf = n => [...walk(n)].map(x => x._html + x.kids.filter(k => k.text !== undefined).map(k => k.text).join("")).join(" ");
+const fire = (n, ev) => { for (const f of n.ls[ev] || []) f({target: n}); };
+const click = async n => { await Promise.all((n.ls.click || []).map(f => f({target: n}))); };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const $ = (sel, root) => {
+  const m = sel.match(/^\[data-(save|group)='([^']+)'\]( textarea)?$/);
+  if (!m) throw new Error("непредусмотренный селектор: " + sel);
+  const hit = all(root, n => n.attrs && n.attrs["data-" + m[1]] === m[2])[0];
+  if (!hit) return null;
+  return m[3] ? (all(hit, n => n.tag === "textarea")[0] || null) : hit;
+};
+const S = {project: {path: "/p", name: "Proj"}, lang: "ru"};
+const DIRTY = new Map();
+const setDirty = (key, label, on) => { if (on) DIRTY.set(key, label); else DIRTY.delete(key); };
+const saveButton = (key, label, text, handler) => el("div", {class: "row"}, el("button", {"data-save": key, onclick: handler}, text));
+const sgroup = (box, id, title) => { const body = el("div", {"data-group": id}); body.title_ = title; box.append(body); return body; };
+const t = (k, v) => v ? k + "|" + JSON.stringify(v) : k;
+const toasts = [];
+const toast = (m, kind) => toasts.push([m, kind]);
+let confirmAnswer = true, leaveAnswer = true;
+globalThis.confirm = () => confirmAnswer;
+const confirmLeave = () => leaveAnswer;
+const goCalls = [], openedDocs = [];
+const goCmd = (cmd, args, label) => ({act: async () => { goCalls.push([cmd, args]); }});
+const openDoc = p => openedDocs.push(p);
+const renderProject = () => { throw new Error("renderProject вызван из «Типов карточек»"); };
+const calls = [], routes = {};
+const api = async (path, opts = {}) => {
+  const method = opts.method || "GET", body = opts.body ? JSON.parse(opts.body) : null;
+  calls.push({method, path, body});
+  const fn = routes[method + " " + path.split("?")[0]];
+  if (!fn) throw new Error("нет ответа для " + method + " " + path);
+  return fn(path, body);
+};
+@FN@
+
+const fails = [];
+const ok = (cond, msg) => { if (!cond) fails.push(msg); };
+const mkType = (id, name, desc, extra = {}) => ({id, name, description: desc, default_name: name, default_description: desc,
+  template: "akdb_" + id + "_v1.0.md", version: "1.0", versions: ["1.0"], section: id.toUpperCase(), class: "entity",
+  kinds: ["knowledge"], home: "", enabled: true, origin: "kit", overridden: [], locked: false, ...extra});
+const mkGuide = (extra = {}) => ({path: "Prompts/KB_classify.md", exists: true, source: "project", text: "ТЕКСТ\n", digest: "g1",
+  kit_digest: "k1", kit_available: true, modified: false, readonly: "", chars: 6, limit: 9000, checks: [], ...extra});
+const mkTypes = (over = {}) => [mkType("concept", "Понятие", "Д1"), mkType("glossary", "Термин", "Д2", over.glossary || {}),
+  mkType("role", "Роль", "Д3", over.role || {}), mkType("status-model", "Статусная модель", "Д4", {locked: true, enabled: false})];
+const mkState = (extra = {}) => ({types: mkTypes(), problems: ["проблема реестра"], overrides: {}, overrides_digest: "o1",
+  limits: {title: 80, description: 220}, catalog: {state: "stale", pinned: false, path: "AuroraKnowledgeDB/meta/card_types.md"},
+  guide: mkGuide(), ...extra});
+const postsOf = pred => calls.filter(c => c.method === "POST" && pred(c.path));
+const btn = (root, key) => all(root, n => n.tag === "button" && textOf(n).trim() === key);
+const one = (root, pred, what) => { const r = all(root, pred); if (r.length !== 1) throw new Error(what + ": найдено " + r.length); return r[0]; };
+
+try {
+  routes["GET /api/cards"] = path => path.includes("stats=1")
+    ? {...mkState(), stats: {total: 7, stamped: 5, legacy: 2, pre_template: 2, by_template: {"akdb_concept_v1.0.md": 5},
+        outdated: 0, violations: 1, by_code: {}}} : mkState();
+  const box = el("div");
+  box.append(el("section", {"data-group": "project:yaml"}, el("textarea", {}, "старый конфиг")));
+  await renderCardTypes(box);
+  await sleep(10);
+  const group = all(box, n => n.attrs["data-group"] === "project:cardtypes")[0];
+  ok(group && String(group.title_).startsWith("cardtypes.title"), "нет подгруппы project:cardtypes");
+  const field = (kind, id) => one(group, n => n.tag === "input" && n.attrs["aria-label"] === `cardtypes.col_${kind}: ${id}`, kind + " " + id);
+  const names = ["concept", "glossary", "role", "status-model"];
+  ok(all(group, n => n.tag === "input" && n.attrs.type === "checkbox").length === 4, "должно быть четыре переключателя");
+  ok(field("on", "status-model").disabled === true && field("on", "role").disabled === false, "тип, выключенный реестром, не переключается");
+  ok(names.every(id => field("name", id).value && field("desc", id).value), "поля названия и описания заполнены");
+  ok(!DIRTY.size, "после открытия есть несохранённое");
+  ok(calls.filter(c => c.path.includes("stats=1")).length === 1, "сводка запрошена не один раз");
+  const shown = textOf(group);
+  ok(shown.includes('cardtypes.stats_total|{"n":7}') && shown.includes("akdb_concept_v1.0.md — 5"), "сводка не показана");
+  ok(shown.includes("проблема реестра") && shown.includes("cardtypes.catalog_stale"), "замечания реестра и состояние каталога не показаны");
+
+  // правка и возврат к исходному: пометка «не сохранено» ставится и снимается
+  const g = field("name", "glossary");
+  g.value = "Слово"; fire(g, "input");
+  ok(DIRTY.has("cardtypes"), "правка подписи не помечена несохранённой");
+  g.value = "Термин"; fire(g, "input");
+  ok(!DIRTY.has("cardtypes"), "возврат к исходному не снял пометку");
+  g.value = "Слово"; fire(g, "input");
+  ok(textOf(g.kids ? group : group).includes("cardtypes.changed_mark"), "нет пометки «изменено»");
+  const role = field("on", "role"); role.checked = false; fire(role, "change");
+
+  // инструкция набирается в другой части: сохранение таблицы её не трогает
+  const ta = all(group, n => n.tag === "textarea")[0];
+  routes["POST /api/cards/guide/check"] = (p, body) => ({checks: [{code: "too-long", chars: 9100, limit: 9000}], chars: 9100, limit: 9000});
+  ta.value = "МОЯ ПРАВКА"; fire(ta, "input");
+  ok(DIRTY.has("cardguide"), "правка инструкции не помечена несохранённой");
+  await sleep(450);
+  ok(textOf(group).includes("cardtypes.check_too_long"), "живая проверка текста не показана");
+  ok(postsOf(p => p === "/api/cards/guide/check").at(-1).body.text === "МОЯ ПРАВКА", "на проверку ушёл не тот текст");
+
+  routes["POST /api/cards"] = (p, body) => ({...mkState({types: mkTypes({glossary: {name: "Слово", overridden: ["title"]},
+    role: {enabled: false, overridden: ["enabled"]}}), overrides: {glossary: {title: "Слово"}, role: {enabled: false}}, overrides_digest: "o2"}),
+    ok: true, catalog_result: "written"});
+  routes["GET /api/config"] = () => ({text: "новый конфиг"});
+  await click(one(group, n => n.attrs["data-save"] === "cardtypes", "кнопка таблицы"));
+  await sleep(20);
+  const wrote = postsOf(p => p === "/api/cards").at(-1);
+  ok(JSON.stringify(wrote.body.overrides) === JSON.stringify({glossary: {title: "Слово"}, role: {enabled: false}}),
+     "тело записи таблицы: " + JSON.stringify(wrote.body.overrides));
+  ok(wrote.body.expect === "o1" && wrote.body.project === "/p", "слепок или проект не отправлены");
+  ok(!DIRTY.has("cardtypes"), "после записи таблица осталась несохранённой");
+  ok(DIRTY.has("cardguide"), "несохранённая правка инструкции не пережила запись таблицы");
+  ok(all(group, n => n.tag === "textarea")[0] === ta && ta.value === "МОЯ ПРАВКА", "поле инструкции перерисовано записью таблицы");
+  ok(toasts.some(x => String(x[0]).startsWith("cardtypes.saved")), "нет сообщения о записи");
+  ok(field("name", "glossary").value === "Слово", "таблица не перечитана из ответа");
+  ok($("[data-group='project:yaml'] textarea", box).value === "новый конфиг", "текст конфига ниже не обновлён");
+  DIRTY.set("yaml", "x");
+  field("name", "glossary").value = "Слово2"; fire(field("name", "glossary"), "input");
+  await click(one(group, n => n.attrs["data-save"] === "cardtypes", "кнопка таблицы"));
+  await sleep(20);
+  ok(toasts.some(x => x[0] === "cardtypes.yaml_stale" && x[1] === "warn"), "нет предупреждения о несохранённом тексте конфига");
+  DIRTY.delete("yaml");
+
+  // блок cards: изменили на диске: окно выбора, «оставить моё» шлёт слепок с диска
+  field("name", "role").value = "Ещё"; fire(field("name", "role"), "input");
+  routes["POST /api/cards"] = () => ({conflict: true, error: "x", ...mkState({overrides_digest: "o3", overrides: {concept: {title: "Идея"}}})});
+  await click(one(group, n => n.attrs["data-save"] === "cardtypes", "кнопка таблицы"));
+  ok(textOf(group).includes("cardtypes.conflict") && btn(group, "editor.keep_mine").length === 1, "нет окна выбора при расхождении блока");
+  ok(DIRTY.has("cardtypes"), "расхождение сбросило пометку «не сохранено»");
+  routes["POST /api/cards"] = () => ({...mkState({overrides_digest: "o4"}), ok: true});
+  await click(btn(group, "editor.keep_mine")[0]);
+  ok(postsOf(p => p === "/api/cards").at(-1).body.expect === "o3", "«оставить моё» не взяло слепок с диска");
+  ok(btn(group, "editor.keep_mine").length === 0, "окно выбора осталось после записи");
+
+  // инструкция: расхождение → «оставить моё» (слепок с диска) и «взять с диска»
+  routes["POST /api/cards/guide"] = () => ({conflict: true, error: "x", disk: "ДИСК", digest: "g2",
+    ...mkState({guide: mkGuide({text: "ДИСК", digest: "g2"})})});
+  await click(one(group, n => n.attrs["data-save"] === "cardguide", "кнопка инструкции"));
+  ok(textOf(group).includes("cardtypes.guide_conflict") && DIRTY.has("cardguide"), "нет окна выбора при расхождении инструкции");
+  routes["POST /api/cards/guide"] = (p, body) => ({...mkState({guide: mkGuide({text: body.text, digest: "g3", modified: true})}), ok: true});
+  await click(btn(group, "editor.keep_mine")[0]);
+  const gw = postsOf(p => p === "/api/cards/guide").at(-1).body;
+  ok(gw.expect === "g2" && gw.text === "МОЯ ПРАВКА" && gw.project === "/p", "«оставить моё»: " + JSON.stringify(gw));
+  ok(!DIRTY.has("cardguide") && all(group, n => n.tag === "textarea")[0].value === "МОЯ ПРАВКА", "после записи инструкции осталась пометка");
+  ok(Object.keys(gw).sort().join() === "expect,project,text", "в запросе записи лишние поля (путь не принимается от страницы): " + Object.keys(gw));
+  // «взять с диска»
+  let ta2 = all(group, n => n.tag === "textarea")[0];
+  ta2.value = "ЧЕРНОВИК"; fire(ta2, "input");
+  routes["POST /api/cards/guide"] = () => ({conflict: true, error: "x", disk: "ДИСК2", digest: "g4",
+    ...mkState({guide: mkGuide({text: "ДИСК2", digest: "g4"})})});
+  await click(one(group, n => n.attrs["data-save"] === "cardguide", "кнопка инструкции"));
+  await click(btn(group, "editor.take_disk")[0]);
+  ok(all(group, n => n.tag === "textarea")[0].value === "ДИСК2" && !DIRTY.has("cardguide"), "«взять с диска» не подменило текст");
+
+  // «Вернуть текст кита»: без согласия ничего не уходит, с согласием — слепок и новый текст
+  confirmAnswer = false;
+  await click(btn(group, "cardtypes.guide_reset")[0]);
+  ok(postsOf(p => p.endsWith("/reset")).length === 0, "возврат ушёл без подтверждения");
+  confirmAnswer = true;
+  routes["POST /api/cards/guide/reset"] = () => ({...mkState({guide: mkGuide({text: "КИТ", digest: "k1"})}), ok: true});
+  await click(btn(group, "cardtypes.guide_reset")[0]);
+  const rs = postsOf(p => p.endsWith("/reset")).at(-1).body;
+  ok(rs.expect === "g4" && rs.project === "/p", "возврат: " + JSON.stringify(rs));
+  ok(all(group, n => n.tag === "textarea")[0].value === "КИТ", "после возврата в поле не текст кита");
+
+  // сводка и справка
+  await click(btn(group, "cardtypes.stats_refresh")[0]);
+  ok(calls.filter(c => c.path.includes("stats=1")).length === 2, "«Обновить цифры» не запросило сводку");
+  await click(btn(group, "cardtypes.stats_check")[0]);
+  ok(JSON.stringify(goCalls) === JSON.stringify([["kb:cards", ["--check", "--summary"]]]), "«Проверить»: " + JSON.stringify(goCalls));
+  leaveAnswer = false; goCalls.length = 0;
+  await click(btn(group, "cardtypes.stats_check")[0]);
+  ok(goCalls.length === 0, "«Проверить» ушло, хотя человек остался на странице");
+  await click(btn(group, "cardtypes.howto_open")[0]);
+  ok(JSON.stringify(openedDocs) === JSON.stringify(["docs/card-templates.md"]), "справка открыла не тот документ");
+
+  // двойное нажатие «Сохранить»: второй запрос увидел бы уже сменившийся слепок и показал ложное расхождение
+  routes["POST /api/cards"] = async () => { await sleep(30); return {...mkState({overrides_digest: "o5"}), ok: true}; };
+  field("name", "glossary").value = "Дубль"; fire(field("name", "glossary"), "input");
+  const sb = one(group, n => n.attrs["data-save"] === "cardtypes", "кнопка таблицы");
+  const sent = postsOf(p => p === "/api/cards").length;
+  await Promise.all([click(sb), click(sb)]);
+  ok(postsOf(p => p === "/api/cards").length === sent + 1, "двойное нажатие послало два запроса");
+  ok(textOf(group).includes("cardtypes.conflict") === false, "двойное нажатие показало ложное расхождение");
+
+  // файл инструкции нельзя сохранить из панели: поле только для чтения, кнопки не нажимаются
+  routes["GET /api/cards"] = () => mkState({guide: mkGuide({readonly: "lossy"})});
+  const box2 = el("div");
+  await renderCardTypes(box2);
+  const g2 = all(box2, n => n.attrs["data-group"] === "project:cardtypes")[0];
+  const ta3 = all(g2, n => n.tag === "textarea")[0];
+  ok(ta3.attrs.readonly !== undefined && textOf(g2).includes("cardtypes.guide_ro_lossy"), "файл только для чтения не показан как такой");
+  ok(one(g2, n => n.attrs["data-save"] === "cardguide", "кнопка инструкции").disabled === true
+     && btn(g2, "cardtypes.guide_reset")[0].disabled === true, "кнопки записи у файла только для чтения нажимаются");
+  // типов нет: пояснение вместо таблицы и без кнопки записи
+  routes["GET /api/cards"] = () => mkState({types: [], guide: mkGuide({source: "", kit_available: false, text: ""})});
+  const box3 = el("div");
+  await renderCardTypes(box3);
+  const g3 = all(box3, n => n.attrs["data-group"] === "project:cardtypes")[0];
+  ok(textOf(g3).includes("cardtypes.no_types") && !all(g3, n => n.attrs["data-save"] === "cardtypes").length, "пустой реестр показан как таблица");
+  ok(btn(g3, "cardtypes.guide_reset")[0].disabled === true, "возврат к тексту кита доступен без текста кита");
+  for (const [name, root] of [["основной", group], ["только чтение", g2], ["пустой реестр", g3]])
+    ok(!/\bnull\b|\bundefined\b/.test(textOf(root)), name + ": на экране «null» или «undefined»");
+} catch (e) {
+  fails.push("исключение: " + (e && e.stack || e));
+}
+console.log(JSON.stringify({fails}));
+process.exit(0);
+"""
+
+
+@test
+def test_cards_panel_behaviour_under_node(tmp: Path):
+    """Поведение страницы «Типы карточек» под подставным DOM (нужен node, иначе проверка пропускается): таблица шлёт только
+    отличия от умолчаний и слепок прочитанного; пометки «не сохранено» ставятся и снимаются; запись таблицы не трогает
+    несохранённую инструкцию и наоборот; расхождение на диске даёт окно выбора; возврат к тексту кита спрашивает
+    подтверждение; файл только для чтения и пустой реестр показаны честно; `renderProject()` не вызывается."""
+    node = shutil.which("node")
+    if not node:
+        return
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+
+    def cut(start: str, end: str) -> str:
+        a = panel.index(start)
+        return panel[a:panel.index(end, a) + len(end)]
+    tick = "\n".join(line for line in panel.splitlines() if line.startswith(("const tick =", "const esc =")))
+    code = (CARDS_PANEL_HARNESS.replace("@EL@", cut("const el = (tag", "\n};\n")).replace("@TICK@", tick)
+            .replace("@FN@", cut("async function renderCardTypes(box){", "\n}\n")))
+    src = tmp / "cards_panel.mjs"
+    src.write_text(code, encoding="utf-8")
+    cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+    assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:1500]
+    result = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert result["fails"] == [], "\n".join(result["fails"])
+
+
+@test
+def test_cards_panel_is_documented(_t):
+    """Руководство (оба языка) описывает «Настройки проекта → Типы карточек», больше не относит настройки в панели к «будет
+    в следующих выпусках» и честно говорит, чего выключатель пока не делает; INSTALL называет панель путём правки блока."""
+    for rel, heading, tail_head, words in (
+            ("docs/card-templates.md", "\n### Настройки в панели: «Настройки проекта → Типы карточек»\n", "## 10. Что будет",
+             ("`cards:`", "`Prompts/KB_classify.md`", "409", "«Оставить моё»", "`V-REG-1`", "`kb:cards --stats`", "`aurora.update_ignore.txt`",
+              "создание карточек и запросы встроенного агента")),
+            ("docs/en/card-templates.md", '\n### Panel settings: "Project settings → Card types"\n', "## 10. What the next releases bring",
+             ("`cards:`", "`Prompts/KB_classify.md`", "409", "keep mine", "`V-REG-1`", "`kb:cards --stats`", "`aurora.update_ignore.txt`",
+              "creating cards and the built-in agent's requests"))):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert text.count(heading) == 1, f"{rel}: нет подраздела про панель"
+        section = text.split(heading)[1].split("\n## ")[0]
+        for word in words:
+            assert word in section, f"{rel}: в подразделе нет «{word}»"
+        assert text.count("\n") <= 400, f"{rel}: длиннее 400 строк"
+        assert "в панели" not in text.split(tail_head)[1] and "in the panel" not in text.split(tail_head)[1], rel
+        assert "Типы карточек" in text.split("## 1.")[1].split("## 2.")[0] or "Card types" in text.split("## 1.")[1].split("## 2.")[0], rel
+    for rel, word in (("docs/INSTALL.md", "«Настройки проекта → Типы карточек»"), ("docs/en/INSTALL.md", "\"Project settings → Card types\"")):
+        row = next(l for l in (KIT / rel).read_text(encoding="utf-8").splitlines() if l.startswith("| `cards` |"))
+        assert word in row, f"{rel}: строка конфига cards не называет панель"

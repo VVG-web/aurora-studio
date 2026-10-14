@@ -27,6 +27,8 @@ This page describes what works in the kit today. What is not there yet is named 
   one type without opening all the templates (section 3). A new project gets it on creation, an existing one on
   `aurora.py update <project> --apply` by the same **seed** rule; `kb:cards --guide` prints the text the project
   uses.
+- A type's title, description and switch (the `cards:` block of the config) and the type-choosing instruction are
+  edited in the panel: "Project settings → Card types" (section 3); the type catalogue is built from them.
 - After its summary line `kb:lint` prints a "card templates" section (section 8), and `kit:doctor` adds three
   lines about the delivered templates.
 - The check **only advises.** Source parsing, repair and routes behave as before; a card without `template:` in
@@ -147,6 +149,32 @@ The file belongs to the project: edit it in any editor, keeping steps 0–7 and 
 update does not overwrite your file: the new version of the text lands next to it as `KB_classify.md.new`. The
 kit does not add a project's own type to the tables of steps 2 and 3 — the project adds the row. The built-in
 agent does not put these steps into its requests yet (section 10).
+
+### Panel settings: "Project settings → Card types"
+
+Titles, descriptions and switches of the types and the type-choosing instruction are edited in the "Card types"
+group of "Project settings". The panel stores nothing itself: it writes the project files that `kb:cards` reads.
+
+- **The types table.** The kit's thirteen types and the project's own: title and description (overridable; a value
+  equal to the template default is marked "default", the arrow restores it), template and version, section, class,
+  source, the "Enabled" switch. It writes the `cards:` block of `aurora.config.yaml` (`title` up to 80 characters,
+  `description` up to 220, `enabled: "false"`) and rebuilds the type catalogue. The section, class, template, kinds
+  and statuses cannot be overridden. The block is written whole from what is typed: a default and an enabled type
+  drop the entry, entries for types outside the registry are left alone, comments inside the block are lost, the
+  rest of the config is untouched. A type the registry itself switched off (`V-REG-1`) cannot be switched on here.
+  If the project keeps the catalogue for itself (`aurora.update_ignore.txt`), saving does not rebuild it.
+- **How to determine the card type.** The text of `Prompts/KB_classify.md` (no project file — the kit's text is
+  shown), a character counter and a check of length, steps 0–7 and the answer format. "Restore the kit's text" (with
+  confirmation) replaces the project file with a copy of the kit's. Only this file is written, atomically, in its
+  encoding and line endings; the check does not forbid saving — the file belongs to the project.
+- **State of the base by templates** (read-only), from `kb:cards --stats`; "Check" runs `kb:cards --check --summary`.
+
+Writing is guarded against a lost update, like the "Files" tab: the page returns the digest of what it read (the
+`cards:` block by meaning, without comments; the instruction by bytes), and if the disk holds something else already
+(an editor, `git pull`, a kit update), the 409 answer writes nothing and the panel offers "keep mine" or "take from
+disk". The table and the instruction are saved apart and never reset each other's unsaved edits. The switch works
+so far as follows: the check names the cards of a switched-off type (V-03) and `classify_answer` rejects such a
+type; creating cards and the built-in agent's requests do not look at it yet (section 10).
 
 ## 4. Type, kind and status — three different axes
 
@@ -364,9 +392,9 @@ in the next releases.
 
 ## 10. What the next releases bring
 
-Not here yet and not described as ready: type settings in the panel; a mandatory template when cards are created
-and changed (writing `template:` into the head, refusing to create a card of a type outside the registry, putting
-the steps of the type-choosing instruction into the built-in agent's requests); records in `Raw/decisions`,
+Not here yet and not described as ready: a mandatory template when cards are created and changed (writing
+`template:` into the head, refusing to create a card of a type outside the registry or of a switched-off type,
+putting the steps of the type-choosing instruction into the built-in agent's requests); records in `Raw/decisions`,
 `Raw/questions`, `Raw/reference` and the `kb:record` command; cited documents (the `Documents` section, the
 `kb:cite` command); migration of the base to templates (`kb:conform`); the `## Расхождения` section and the ladder
 "trust → question → correction". Until those releases the check remains advice, and the rule "a card only by a
