@@ -252,12 +252,22 @@ def git_retry(*args: str, cwd: str = ".", env: dict | None = None) -> tuple:
     return rc, out, err  # недостижимо; для читателя
 
 
+def _git_root(cwd: str) -> str:
+    """Корень репозитория: `add -A` берёт всё дерево, поэтому и флаги читаем и возвращаем от корня, не от подпапки."""
+    rc, out, _e = git("rev-parse", "--show-toplevel", cwd=cwd)
+    return out if rc == 0 and out else cwd
+
+
 def _index_flags(cwd: str) -> dict:
     """Флаги индекса человека, которые `read-tree` не переносит: skip-worktree, assume-unchanged, intent-to-add.
 
     `git ls-files -v`: «S» — skip-worktree, «h» — assume-unchanged, «s» — оба; intent-to-add (`git add -N`)
-    виден как «добавлен» в `git diff` дерева против индекса. Сбой чтения — пустые списки: откат пойдёт без флагов."""
-    rc, out, _e = git("ls-files", "-v", "-z", cwd=cwd)
+    виден как «добавлен» в `git diff` дерева против индекса — без поиска переименований, иначе `mv a b` +
+    `add -N b` показан как R и в фильтр A не попадает. Оба чтения идут от корня репозитория: из подпапки
+    `ls-files` отдал бы только её файлы и пути от неё, а `diff` — весь репозиторий от корня.
+    Сбой чтения — пустые списки: откат пойдёт без флагов."""
+    root = _git_root(cwd)
+    rc, out, _e = git("ls-files", "-v", "-z", cwd=root)
     skip, assume = [], []
     for rec in (out.split("\0") if rc == 0 else []):
         tag, path = rec[:1], rec[2:]
@@ -265,19 +275,23 @@ def _index_flags(cwd: str) -> dict:
             skip.append(path)
         if path and tag in "hs":
             assume.append(path)
-    rc, out, _e = git("diff", "--name-only", "--diff-filter=A", "-z", cwd=cwd)
-    return {"skip": skip, "assume": assume, "ita": [p for p in out.split("\0") if p] if rc == 0 else []}
+    rc, out, _e = git("diff", "--no-renames", "--name-only", "--diff-filter=A", "-z", cwd=root)
+    return {"root": root, "skip": skip, "assume": assume, "ita": [p for p in out.split("\0") if p] if rc == 0 else []}
 
 
-def _restore_index_flags(cwd: str, flags: dict) -> bool:
-    """Вернуть флаги после `read-tree`; False — хоть одна команда не прошла (замок держится)."""
-    ok = True
+def _restore_index_flags(cwd: str, flags: dict) -> list:
+    """Вернуть флаги после `read-tree`; результат — пути, у которых флаг не вернулся (пусто — всё на месте)."""
+    lost: list = []
+    root = flags.get("root") or cwd
+    # `add -N` разбирает пути как pathspec: имя со «*» или «[» без литерального режима не нашло бы файл.
     for opts, key in ((["update-index", "--skip-worktree"], "skip"), (["update-index", "--assume-unchanged"], "assume"),
-                      (["add", "-N"], "ita")):
+                      (["--literal-pathspecs", "add", "-N"], "ita")):
         paths = flags.get(key) or []
         for i in range(0, len(paths), 100):
-            ok = git_retry(*opts, "--", *paths[i:i + 100], cwd=cwd)[0] == 0 and ok
-    return ok
+            chunk = paths[i:i + 100]
+            if git_retry(*opts, "--", *chunk, cwd=root)[0] != 0:
+                lost.extend(p for p in chunk if p not in lost)
+    return lost
 
 
 # Журнал запусков пишет панель; до 1.158.0 он лежал в папке движка.
@@ -336,12 +350,13 @@ def checkpoint(cwd: str, task: str, enabled: bool) -> dict:
             # «работа человека не тронута», когда в индексе осталось всё дерево.
             rc2, _o2, err2 = git_retry("read-tree", saved, cwd=cwd)
             # `read-tree` сбрасывает флаги skip-worktree / assume-unchanged / intent-to-add — возвращаем их по записи.
-            flags_ok = rc2 != 0 or _restore_index_flags(cwd, flags)
+            lost = [] if rc2 != 0 else _restore_index_flags(cwd, flags)
+            flags_ok = not lost
             lock = "index.lock" in err
             return {"ok": False, "kind": "lock" if lock else "refused", "sha": "", "index_restored": rc2 == 0, "saved_tree": saved,
-                    "flags_restored": flags_ok,
+                    "flags_restored": flags_ok, "flags_lost": lost[:20], "flags_lost_n": len(lost),
                     "detail": err[:2000] + ("" if rc2 == 0 else "\n[read-tree] " + err2[:500])
-                    + ("" if flags_ok else "\n[флаги индекса не возвращены]"),
+                    + ("" if flags_ok else f"\n[флаги индекса не возвращены: {len(lost)}] " + "; ".join(lost[:20])),
                     "why": f"чекпойнт не создан: {_git_why(err, lock)}"}
     sha = git("rev-parse", "HEAD", cwd=cwd)[1]
     return {"ok": True, "sha": sha, "committed": len(dirty.splitlines()),
@@ -362,8 +377,11 @@ def checkpoint_stop_line(cwd: str, cp: dict) -> str:
         return f"{cp['why']}: индекс не возвращён — в нём осталось всё дерево (файлы на диске целы); " \
                f"`git read-tree {cp.get('saved_tree', '')}` вернёт ваш индекс. Останавливаюсь"
     if cp.get("flags_restored") is False:
+        shown = "; ".join(cp.get("flags_lost") or [])
+        more = max(0, cp.get("flags_lost_n", 0) - len(cp.get("flags_lost") or []))
         return f"{cp['why']}: индекс возвращён, но флаги skip-worktree/assume-unchanged/intent-to-add не вернулись " \
-               "(замок не отпустили); верните их вручную `git update-index`. Останавливаюсь"
+               f"(замок не отпустили){': ' + shown if shown else ''}{f' и ещё {more}' if more else ''}; " \
+               "верните их вручную `git update-index --skip-worktree|--assume-unchanged` или `git add -N`. Останавливаюсь"
     if cp.get("kind") == "lock":
         return f"{cp['why']}: замок не отпустили за ~{int(LOCK_PAUSE * LOCK_RETRIES * (LOCK_RETRIES + 1) / 2)} с, " \
                "останавливаюсь; повторите запуск — работа человека не тронута " \
@@ -7751,7 +7769,10 @@ def main() -> int:
     head0 = RS.git_head(cwd)       # изменения базы за прогон считаются от этой точки
     steps_all: list = []           # шаги всех партий: у петель res — только последняя
     if a.apply and not cp["ok"]:
-        print(f"agent_runner: {cp['why']}. Записывать без отката нельзя — "
+        # Отказ git (замок, хук) — той же строкой и записью в журнал сбоев, что в циклах: подсказки про индекс и флаги
+        # иначе не доходят до первой остановки.
+        why = checkpoint_stop_line(cwd, cp) if cp.get("kind") else cp["why"]
+        print(f"agent_runner: {why}. Записывать без отката нельзя — "
               "закоммитьте работу или запустите без --apply.", file=sys.stderr)
         return 1
     if a.apply:

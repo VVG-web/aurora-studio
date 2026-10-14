@@ -1843,6 +1843,81 @@ def test_refused_checkpoint_gives_back_index_flags_and_commit_result_stops_on_a_
     assert _git_in(root, "rev-parse", "HEAD").stdout.strip() == head, "коммит сделан поверх неудавшегося add"
 
 
+@test
+def test_index_flags_survive_a_rename_a_subfolder_cyrillic_names_big_batches_and_a_failed_restore_is_named(tmp: Path):
+    """BL-SEC-18 (проход 8): флаги человека возвращаются у переименования (`mv` + `add -N` — это R, а не A),
+    из подпапки репозитория, у кириллических имён и у пакетов больше 100 путей; не вернувшиеся флаги названы
+    в записи отказа и в строке остановки (а не «индекс не возвращён»)."""
+    from unittest.mock import patch
+    sys.path.insert(0, str(SCRIPTS))
+    R = importlib.import_module("agent_runner")
+    repo = tmp / "flagrepo"
+    repo.mkdir()
+    _git_in(repo, "init", "-q")
+    (repo / "proj").mkdir()
+    (repo / "other").mkdir()
+    for rel in ("old.md", "proj/s.md", "proj/карточка.md", "other/s2.md"):
+        (repo / rel).write_text(rel + "\n", encoding="utf-8")
+    for i in range(101):
+        (repo / "proj" / f"b{i:03d}.md").write_text("b\n", encoding="utf-8")
+    _git_in(repo, "add", "-A")
+    _git_in(repo, "commit", "-qm", "основа")
+    skipped = ["proj/s.md", "proj/карточка.md", "other/s2.md"] + [f"proj/b{i:03d}.md" for i in range(101)]
+    _git_in(repo, "update-index", "--skip-worktree", *skipped)
+    _git_in(repo, "update-index", "--assume-unchanged", "proj/b000.md")
+    (repo / "old.md").rename(repo / "renamed.md")
+    _git_in(repo, "add", "-N", "renamed.md")
+    (repo / "proj" / "n.md").write_text("n\n", encoding="utf-8")
+    (repo / "other" / "n2.md").write_text("n2\n", encoding="utf-8")
+    _git_in(repo, "add", "-N", "proj/n.md", "other/n2.md")
+
+    def snap():
+        return (_git_in(repo, "ls-files", "-v", "-z").stdout, _git_in(repo, "status", "--short").stdout,
+                _git_in(repo, "diff", "--name-status").stdout)
+
+    before = snap()
+    assert "R" in before[2] or "renamed.md" in before[2], before
+    cwd = str(repo / "proj")                       # проект — подпапка репозитория
+    flags = R._index_flags(cwd)
+    assert flags["ita"] and "renamed.md" in flags["ita"] and "other/n2.md" in flags["ita"] \
+        and "proj/n.md" in flags["ita"], flags
+    assert "other/s2.md" in flags["skip"] and "proj/карточка.md" in flags["skip"] and len(flags["skip"]) == 104, flags
+    saved = _git_in(repo, "write-tree").stdout.strip()
+    _git_in(repo, "add", "-A")
+    _git_in(repo, "read-tree", saved)
+    assert snap() != before                        # read-tree и правда сбросил флаги
+    assert R._restore_index_flags(cwd, flags) == []
+    assert snap() == before, ("флаги не вернулись", before, snap())
+
+    # возврат не прошёл (замок держится): пути названы, замок не винят, а индекс — не «не возвращён»
+    (tmp / "hookedflags").mkdir()
+    proj = _hooked_project(tmp / "hookedflags")
+    (proj / "s.md").write_text("s\n", encoding="utf-8")
+    _git_in(proj, "add", "-A")
+    _git_in(proj, "commit", "-qm", "файл", env={"AURORA_SKIP_RATCHET": "1"})
+    _git_in(proj, "update-index", "--skip-worktree", "s.md")
+    (proj / "mcp.json").write_text('{"env": {"JIRA_PAT": "%s"}}\n' % ("q9w8" + "e7r6" + "t5y4"), encoding="utf-8")
+    real = R.git_retry
+
+    def no_update_index(*args, cwd=".", env=None):
+        if args and args[0] == "update-index":
+            return 1, "", "fatal: Unable to create index.lock: File exists"
+        return real(*args, cwd=cwd, env=env)
+
+    with patch.object(R, "git_retry", no_update_index):
+        cp = R.checkpoint(str(proj), "agent:distill", True)
+    assert cp["ok"] is False and cp["index_restored"] is True and cp["flags_restored"] is False, cp
+    assert cp["flags_lost"] == ["s.md"] and cp["flags_lost_n"] == 1 and "s.md" in cp["detail"], cp
+    recorded: list = []
+    with patch.object(R.AG, "record_failure", lambda *a, **k: recorded.append(k)):
+        line = R.checkpoint_stop_line(str(proj), cp)
+    assert "флаги" in line and "s.md" in line and "индекс не возвращён" not in line, line
+    assert recorded and "s.md" in recorded[0]["detail"], recorded
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    main_src = src[src.index("\ndef main("):src.index("\ndef guarded_main(")]
+    assert "checkpoint_stop_line(cwd, cp) if cp.get(\"kind\")" in main_src, "первая остановка не берёт строку отказа"
+
+
 # --- Уверенность выдачи, честный отказ и прозрачный фильтр доверия (BL-KBA-14) ---------------
 
 def _answerability_base(tmp: Path):
