@@ -1163,6 +1163,12 @@ function confirmLeave(){
   if (ok) DIRTY.clear();
   return ok;
 }
+// После записи одной группы страницу «Настройки проекта» пересобирают, а пересборка сбрасывает несохранённые правки
+// соседних групп (в том числе «Типы карточек»). Есть такие правки — страницу не трогаем и говорим об этом.
+function renderProjectAfterSave(){
+  if (!DIRTY.size){ renderProject(); return; }
+  toast(t("dirty.kept", {names: [...DIRTY.values()].join(", ")}), "warn");
+}
 addEventListener("beforeunload", e => {
   if (!DIRTY.size) return;
   e.preventDefault();          // браузер покажет свой диалог: текст задаём не мы
@@ -2337,7 +2343,7 @@ async function renderKinds(box){
           body:JSON.stringify({project:S.project.path, kinds:KINDS})});
         if (r.ok){ toast(t("kinds.saved", {file: r.target.split("/").pop(), n: r.kinds}));
                    setDirty("kinds", t("dirty.kinds"), false);
-                   renderProject(); }
+                   renderProjectAfterSave();  }
         else toast(r.error || t("kinds.not_saved"), "err");
       }),
       el("span",{class:"muted",style:"font-size:12px"}, t("kinds.out_note"))));
@@ -2621,10 +2627,21 @@ async function renderCardTypes(box){
     el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px", html: tick(t("cardtypes.howto"))}),
     el("button", {class:"btn sm", onclick:() => openDoc("docs/card-templates.md")}, t("cardtypes.howto_open")));
 
+  // Цифры считает сервер по всей базе (на 3000 карточек — больше двух секунд): не при каждом открытии страницы,
+  // а когда группу раскрыли.
+  let statsAsked = false;
+  const askStats = () => { if (!statsAsked){ statsAsked = true; loadStats(); } };
+  const group = host.closest(".sgroup");
   seed();
   drawTable();
   drawGuide();
-  loadStats();
+  if (!group || !host.hidden) askStats();
+  else {
+    statsBox.append(el("h3", {style:"margin:0 0 6px"}, t("cardtypes.stats_title")),
+      el("div", {class:"muted"}, t("cardtypes.stats_lazy")));
+    const open = group.sgSet;
+    group.sgSet = now => { open(now); if (now) askStats(); };
+  }
 }
 
 /* ---------------- приёмка карточек ----------------
@@ -4365,7 +4382,7 @@ async function renderProject(){
           setDirty("form", t("dirty.form"), false);
           S.state = await api("/api/state");
           S.project = S.state.projects.find(p=>p.path===S.project.path) || S.project;
-          renderOverview(); renderProject();
+          renderOverview(); renderProjectAfterSave();
         }
       }),
       el("span",{class:"muted",style:"font-size:12px"}, t("proj.slug_note")))));
@@ -4394,7 +4411,7 @@ async function renderProject(){
       if (r.ok){ toast(t("tokens.saved")); setDirty("tokens", t("dirty.tokens"), false);
         S.state = await api("/api/state");
         S.project = S.state.projects.find(p=>p.path===S.project.path) || S.project;
-        renderProject(); }
+        renderProjectAfterSave(); }
     })));
 
   // 4. конфиг как текст — для того, чего нет в форме

@@ -4412,6 +4412,27 @@ def test_cards_panel_cell_reads_defaults_the_server_sends(tmp: Path):
 
 
 @test
+def test_cards_panel_keeps_unsaved_edits_and_counts_lazily(tmp: Path):
+    """Запись другой группы «Настроек проекта» не пересобирает страницу поверх несохранённых правок (в том числе таблицы
+    типов), а цифры состояния базы считаются, когда группу раскрыли, а не при каждом открытии страницы."""
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    helper = panel[panel.index("function renderProjectAfterSave(){"):]
+    helper = helper[:helper.index("\n}\n")]
+    assert "DIRTY.size" in helper and 't("dirty.kept"' in helper and "renderProject();" in helper, helper
+    # три записи, после которых страницу пересобирали: виды артефактов, форма проекта, доступы
+    assert re.search(r'setDirty\("kinds", t\("dirty\.kinds"\), false\);\s*renderProjectAfterSave\(\)', panel)
+    assert "renderOverview(); renderProjectAfterSave();" in panel
+    assert re.search(r"S\.project = [^\n]*\n\s*renderProjectAfterSave\(\); \}\n\s*\}\)\)\);", panel)
+    fn = panel[panel.index("async function renderCardTypes(box){"):]
+    fn = fn[:fn.index("\n}\n") + 2]
+    assert not [ln for ln in fn.split("\n") if ln.strip() == "loadStats();"], "цифры считаются при каждом открытии страницы"
+    assert "askStats" in fn and "group.sgSet = now =>" in fn and 't("cardtypes.stats_lazy")' in fn
+    for lang in ("ru", "en"):
+        cat = json.loads((KIT / f"cockpit/i18n/{lang}.json").read_text(encoding="utf-8"))
+        assert "{names}" in cat["dirty.kept"] and cat["cardtypes.stats_lazy"], lang
+
+
+@test
 def test_cards_i18n_catalogues_are_complete(tmp: Path):
     """Каждый ключ `cardtypes.*` и `dirty.cardtypes`/`dirty.cardguide`, который спрашивает страница (в том числе собранный
     из куска: коды проверки инструкции, классы, источники, состояния каталога, причины запрета записи), есть в `ru` и `en`;
@@ -4552,7 +4573,12 @@ const S = {project: {path: "/p", name: "Proj"}, lang: "ru"};
 const DIRTY = new Map();
 const setDirty = (key, label, on) => { if (on) DIRTY.set(key, label); else DIRTY.delete(key); };
 const saveButton = (key, label, text, handler) => el("div", {class: "row"}, el("button", {"data-save": key, onclick: handler}, text));
-const sgroup = (box, id, title) => { const body = el("div", {"data-group": id}); body.title_ = title; box.append(body); return body; };
+let groupOpen = true;
+const sgroup = (box, id, title) => {
+  const body = el("div", {"data-group": id}); body.title_ = title; body.hidden = !groupOpen;
+  const wrap = {sgSet(now){ body.hidden = !now; }}; body.closest = () => wrap; body.wrap_ = wrap;
+  box.append(body); return body;
+};
 const t = (k, v) => v ? k + "|" + JSON.stringify(v) : k;
 const toasts = [];
 const toast = (m, kind) => toasts.push([m, kind]);
@@ -4562,7 +4588,8 @@ const confirmLeave = () => leaveAnswer;
 const goCalls = [], openedDocs = [];
 const goCmd = (cmd, args, label) => ({act: async () => { goCalls.push([cmd, args]); }});
 const openDoc = p => openedDocs.push(p);
-const renderProject = () => { throw new Error("renderProject вызван из «Типов карточек»"); };
+let renderCalls = 0;
+const renderProject = () => { renderCalls++; };
 const calls = [], routes = {};
 const api = async (path, opts = {}) => {
   const method = opts.method || "GET", body = opts.body ? JSON.parse(opts.body) : null;
@@ -4572,6 +4599,7 @@ const api = async (path, opts = {}) => {
   return fn(path, body);
 };
 @FN@
+@AFTER@
 
 const fails = [];
 const ok = (cond, msg) => { if (!cond) fails.push(msg); };
@@ -4732,6 +4760,35 @@ try {
   ok(btn(g3, "cardtypes.guide_reset")[0].disabled === true, "возврат к тексту кита доступен без текста кита");
   for (const [name, root] of [["основной", group], ["только чтение", g2], ["пустой реестр", g3]])
     ok(!/\bnull\b|\bundefined\b/.test(textOf(root)), name + ": на экране «null» или «undefined»");
+
+  // цифры состояния базы: свёрнутая группа их не просит, раскрытая — один раз
+  routes["GET /api/cards"] = path => path.includes("stats=1") ? {...mkState(), stats: {total: 9, stamped: 9, legacy: 0, pre_template: 0,
+    by_template: {"akdb_concept_v1.0.md": 9}, outdated: 0, violations: 0, by_code: {}}} : mkState();
+  const statsAsked = () => calls.filter(c => c.path.includes("stats=1")).length;
+  const before = statsAsked();
+  groupOpen = false;
+  const box4 = el("div");
+  await renderCardTypes(box4);
+  await sleep(10);
+  const g4 = all(box4, n => n.attrs["data-group"] === "project:cardtypes")[0];
+  ok(statsAsked() === before, "свёрнутая группа запросила цифры состояния базы");
+  ok(textOf(g4).includes("cardtypes.stats_lazy") && !textOf(g4).includes("cardtypes.stats_total"), "у свёрнутой группы нет пояснения вместо цифр");
+  ok(g4.hidden === true && all(g4, n => n.tag === "input").length > 0, "таблица не отрисована у свёрнутой группы");
+  g4.wrap_.sgSet(true); await sleep(10);
+  ok(statsAsked() === before + 1 && textOf(g4).includes('cardtypes.stats_total|{"n":9}'), "раскрытие группы не показало цифры");
+  g4.wrap_.sgSet(false); g4.wrap_.sgSet(true); await sleep(10);
+  ok(statsAsked() === before + 1, "повторное раскрытие запросило цифры ещё раз");
+  groupOpen = true;
+  ok(renderCalls === 0, "renderProject вызван из «Типов карточек»");
+
+  // запись другой группы: страницу пересобирают, только если нет чужих несохранённых правок
+  DIRTY.clear(); toasts.length = 0;
+  renderProjectAfterSave();
+  ok(renderCalls === 1 && toasts.length === 0, "без чужих правок страница не пересобрана");
+  DIRTY.set("cardtypes", "Типы карточек"); DIRTY.set("yaml", "Конфиг");
+  renderProjectAfterSave();
+  ok(renderCalls === 1, "страница пересобрана поверх несохранённых правок");
+  ok(toasts.length === 1 && toasts[0][0] === 'dirty.kept|{"names":"Типы карточек, Конфиг"}' && toasts[0][1] === "warn", "нет предупреждения: " + JSON.stringify(toasts));
 } catch (e) {
   fails.push("исключение: " + (e && e.stack || e));
 }
@@ -4745,7 +4802,8 @@ def test_cards_panel_behaviour_under_node(tmp: Path):
     """Поведение страницы «Типы карточек» под подставным DOM (нужен node, иначе проверка пропускается): таблица шлёт только
     отличия от умолчаний и слепок прочитанного; пометки «не сохранено» ставятся и снимаются; запись таблицы не трогает
     несохранённую инструкцию и наоборот; расхождение на диске даёт окно выбора; возврат к тексту кита спрашивает
-    подтверждение; файл только для чтения и пустой реестр показаны честно; `renderProject()` не вызывается."""
+    подтверждение; файл только для чтения и пустой реестр показаны честно; `renderProject()` не вызывается; цифры состояния
+    базы просит только раскрытая группа; запись соседней группы не пересобирает страницу поверх несохранённых правок."""
     node = shutil.which("node")
     if not node:
         return
@@ -4756,7 +4814,8 @@ def test_cards_panel_behaviour_under_node(tmp: Path):
         return panel[a:panel.index(end, a) + len(end)]
     tick = "\n".join(line for line in panel.splitlines() if line.startswith(("const tick =", "const esc =")))
     code = (CARDS_PANEL_HARNESS.replace("@EL@", cut("const el = (tag", "\n};\n")).replace("@TICK@", tick)
-            .replace("@FN@", cut("async function renderCardTypes(box){", "\n}\n")))
+            .replace("@FN@", cut("async function renderCardTypes(box){", "\n}\n"))
+            .replace("@AFTER@", cut("function renderProjectAfterSave(){", "\n}\n")))
     src = tmp / "cards_panel.mjs"
     src.write_text(code, encoding="utf-8")
     cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
