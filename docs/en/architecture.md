@@ -54,7 +54,10 @@ What follows from this:
   overwritten, the new kit version lands next to it as `<file>.new` for manual comparison. The 13 knowledge-card
   templates `TemplatesCommon/akdb_<type>_v1.0.md` travel the same way: a card's type, section, kinds and statuses
   are described by their passports, and the type registry and the check against them are the `card_types.py`
-  module (the `kb:cards` command; details — [card templates](card-templates.md)).
+  module (the `kb:cards` command; details — [card templates](card-templates.md)). The type-choosing instruction
+  `Prompts/KB_classify.md` travels the same way; the type catalogue `AuroraKnowledgeDB/meta/card_types.md` is built by the
+  engine (install, `update --apply`, `kb:cards --write --apply`), and a type's title, description and switch are the
+  `cards:` block of `aurora.config.yaml`, edited in the panel ("Project settings → Card types").
 - Individual paths can be opted out of updates in `aurora.update_ignore.txt` in the project root (glob patterns).
 - The engine version in a project is recorded in `AuroraKnowledgeDB/meta/aurora_version.txt`; the path to the
   kit is in `.aurora/kit_path.txt`. The project's copy of `aurora_update.py` finds the kit through it.

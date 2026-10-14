@@ -243,6 +243,30 @@ in `cockpit/i18n/data/en.json` (section `scenarios`, the key is the Russian text
 
 The panel's third-party libraries (`cockpit/vendor/`) are not edited — only replaced whole (see `cockpit/vendor/README.md`).
 
+## Your own card types
+
+A card type is a template `akdb_<type>_v<version>.md`: the kit's thirteen types live in `scaffold/TemplatesCommon/`, your
+own in the project's `Templates/`. The passport, the check codes and the `kb:cards` command are described in the
+[card templates guide](card-templates.md).
+
+- **Your own type or your own edition of a kit type** — a file `Templates/akdb_<type>_v<version>.md` of the project with a
+  passport like the kit's templates. An edition of a kit type keeps `card_type`, `section` and `card_class` (otherwise the
+  registry rejects the template, `V-REG-2`); a new type has its own identifier and its own `PascalCase` section folder
+  declared in `paths.extra_structure_dirs`, class `entity`, `source` or `record` (only the kit creates maps); one
+  section — one type (`V-REG-1`). A project file wins over a kit file at any version.
+- A type's title, description and switch are the `cards:` block of the config or the panel ("Project settings → Card
+  types"); the section, class, template, kinds and statuses cannot be overridden.
+- The project adds the new type's row to the table of step 2 of the `Prompts/KB_classify.md` instruction — otherwise the
+  classifier will not offer it; the type catalogue picks the type up by itself (`kb:cards --write --apply`). For now the
+  type is only in the registry and the check: the engine will start creating cards by project templates in the next
+  releases.
+- **A released template is not edited — a new version comes out.** The seed rule delivers an edit to old projects only as
+  `<file>.new`, so a fix or an extension of `akdb_*_v1.0.md` is a new file `v1.1` (or `v2.0`) with the passport field
+  `migration: none|auto|llm`; `v1.0` stays beside it, and a card is checked by the version in its own `template:`.
+- The `AKDB:COMMON` block is the same text in all thirteen templates and in the `COMMON_RULES` constant
+  (`card_types.py`); a test compares them byte for byte, so a change of the common rules is a new version of every
+  template. The templates carry no references to plans or work packages.
+
 ## Versions and releases
 
 - The version is semver in the `VERSION` file; the panel reads it and `update` writes it into the project's
@@ -271,7 +295,7 @@ The documentation is bilingual: the Russian one lies in `docs/` (that is how the
 - **Edit a Russian document — edit its English twin.** The file and heading structure match.
 - The command reference `docs/commands.md` is **generated**; detailed procedures for the assistant live in
   `skills/aurora-vault/references/` and are not copied into human documents — they are linked.
-- `docs/knowledge-rules.md`, `knowledge-rules-tldr.md` and `накопление-знания.md` travel to projects with the engine
+- `docs/knowledge-rules.md`, `knowledge-rules-tldr.md`, `накопление-знания.md` and `card-templates.md` travel to projects with the engine
   (`engine_manifest.txt`) and are pinned by tests: when changing them, run the tests.
 - **The wiki** — answer pages in `wiki/` (English) and `wiki/ru/` (Russian), the same set in both; a new page is a pair of files
   and a link from `README.md` and `_Sidebar.md`. `python3 scripts/wiki_build.py --check` verifies links, anchors, pairs and

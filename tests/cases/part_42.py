@@ -4965,3 +4965,73 @@ def test_cards_page_guards_unsaved_settings_and_survives_a_failure(_t):
                      project), "renderCardTypes не защищён: сбой группы уносит строку переходов"
     assert "await renderKinds(box);" in project and "modules.refresh_failed" in json.loads(
         (KIT / "cockpit/i18n/ru.json").read_text(encoding="utf-8"))
+
+
+# ------------------------------------------------------------------ документация второй фазы
+
+@test
+def test_phase_two_docs_match_the_code(_t):
+    """Руководство описывает блок `cards:`, каталог типов и выключатель так, как они устроены в коде; CONTRIBUTING, дерево
+    проекта, вики, проводник и справочник называют их. Числа и пример в тексте — те же, что в модуле."""
+    C = _C()
+    lines = C.CARDS_CONFIG_EXAMPLE.splitlines()
+    example = lines[lines.index("# cards:"):]
+    assert len(example) == 6 and all(line.startswith("#") for line in example), example
+    aurora_update = (SCRIPTS / "aurora_update.py").read_text(encoding="utf-8")
+    assert "каталог типов будет пересобран" in aurora_update
+    source = (SCRIPTS / "card_types.py").read_text(encoding="utf-8")
+    assert "V-REG-1" in source and "V-REG-2" in source
+    for rel, block_head, catalog_head in (
+            ("docs/card-templates.md", "\n### Блок `cards:` в `aurora.config.yaml`\n",
+             "\n### Каталог типов: `AuroraKnowledgeDB/meta/card_types.md`\n"),
+            ("docs/en/card-templates.md", "\n### The `cards:` block in `aurora.config.yaml`\n",
+             "\n### The type catalogue: `AuroraKnowledgeDB/meta/card_types.md`\n")):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert text.count(block_head) == 1 and text.count(catalog_head) == 1, f"{rel}: нет подразделов про блок и каталог"
+        block = text.split(block_head)[1].split("\n### ")[0]
+        catalog = text.split(catalog_head)[1].split("\n### ")[0]
+        for field in C.OVERRIDE_FIELDS:
+            assert f"| `{field}` |" in block, f"{rel}: в таблице полей блока нет {field}"
+        assert str(C.TITLE_LIMIT) in block and str(C.DESCRIPTION_LIMIT) in block, f"{rel}: пределы подписи и описания"
+        assert "`kit:doctor`" in block and "`classify_answer`" in block and "V-03" in block, f"{rel}: что делает выключатель"
+        shown = block.split("```yaml\n")[1].split("\n```")[0].splitlines()
+        assert shown == example, f"{rel}: пример блока разошёлся с примером в конфиге (CARDS_CONFIG_EXAMPLE)"
+        assert str(C.CATALOG_LIMIT) in catalog and str(C.CATALOG_SHORT) in catalog, f"{rel}: пределы каталога"
+        for must in ("`aurora.py new`", "`aurora.py update <", "--apply", "`kb:cards --write`", "`aurora.update_ignore.txt`",
+                     "`kb:cards --write --apply`", "`kit:doctor`"):
+            assert must in catalog, f"{rel}: в подразделе про каталог нет «{must}»"
+        assert "каталог типов будет пересобран" in catalog or "the type catalogue will be rebuilt" in catalog, rel
+        assert text.count("\n") <= 400, f"{rel}: длиннее 400 строк"
+    for rel, head, words in (
+            ("docs/CONTRIBUTING.md", "\n## Свои типы карточек\n", ("`V-REG-1`", "`V-REG-2`", "`paths.extra_structure_dirs`", "`cards:`",
+                                                                  "`Prompts/KB_classify.md`", "`COMMON_RULES`", "Выпущенный шаблон не правят",
+                                                                  "`migration: none|auto|llm`")),
+            ("docs/en/CONTRIBUTING.md", "\n## Your own card types\n", ("`V-REG-1`", "`V-REG-2`", "`paths.extra_structure_dirs`", "`cards:`",
+                                                                      "`Prompts/KB_classify.md`", "`COMMON_RULES`", "A released template is not edited",
+                                                                      "`migration: none|auto|llm`"))):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert text.count(head) == 1, f"{rel}: нет раздела про свои типы карточек"
+        section = text.split(head)[1].split("\n## ")[0]
+        for word in words:
+            assert word in section, f"{rel}: в разделе нет «{word}»"
+        docs_head = "\n## Документация" if rel == "docs/CONTRIBUTING.md" else "\n## Documentation"
+        assert "card-templates.md" in text.split(docs_head)[1], f"{rel}: card-templates.md не назван среди документов, что едут с движком"
+    for rel in ("docs/architecture.md", "docs/en/architecture.md"):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        for must in ("Prompts/KB_classify.md", "meta/card_types.md", "`cards:`"):
+            assert must in text, f"{rel}: нет «{must}»"
+    for rel in ("docs/INSTALL.md", "docs/en/INSTALL.md"):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        for must in ("Prompts/KB_classify.md", "card_types.md", "| `cards` |"):
+            assert must in text, f"{rel}: нет «{must}»"
+    for rel in ("wiki/The-Card.md", "wiki/ru/The-Card.md"):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert "Prompts/KB_classify.md" in text and "`cards:`" in text and "meta/card_types.md" in text, rel
+    for rel, words in (("wiki/Glossary.md", ("Type-choosing instruction", "`cards:` block", "Type catalogue")),
+                       ("wiki/ru/Glossary.md", ("Инструкция выбора типа", "Блок `cards:`", "Каталог типов"))):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        for word in words:
+            assert f"| **{word}** |" in text, f"{rel}: в словаре нет «{word}»"
+    for rel in ("docs/knowledge-rules-tldr.md", "docs/en/knowledge-rules-tldr.md", "skills/aurora-vault/references/maintenance.md"):
+        assert "`cards:`" in (KIT / rel).read_text(encoding="utf-8"), f"{rel}: про блок cards: ни слова"
+    assert "`meta/card_types.md`" in (KIT / "templates/meta/READING.md").read_text(encoding="utf-8")

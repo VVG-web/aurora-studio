@@ -41,7 +41,8 @@ The kind is stronger than the status: a trusted dictionary still must not be ret
 The type (`type`) says what the card is about: a concept, a process, a system, a role, a term, a requirement,
 a reference list and others (thirteen in all); it is written by the section folder. Every
 type has a template `TemplatesCommon/akdb_<type>_v1.0.md`: the type's allowed kinds, statuses and body sections,
-and what the head looks like. The list of types and sections is `kb:cards --list`, the guide is `card-templates.md`.
+and what the head looks like. The list of types and sections is `kb:cards --list`, the guide is `card-templates.md`; a project edits a type's title,
+description and switch in "Project settings → Card types" (the `cards:` block of the config).
 Do not confuse the type with the kind (`kind`): the kind answers "who edits the body", the type "what the card
 is about and by which template". **For now the check only advises:** `kb:cards --check` and the "card templates"
 section of `kb:lint` name deviations as warnings, rewrite nothing and forbid nothing; a card without `template:` in

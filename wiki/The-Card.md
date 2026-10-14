@@ -78,6 +78,15 @@ older cards do not have it — that is a "pre-template" card, not an error. The 
 **only advises**: it rewrites nothing and forbids nothing. A released template is not edited — a fix comes as a new
 version (`v1.1`).
 
+**Project rules.** The type is chosen by the instruction "How to determine the card type" — the file
+`Prompts/KB_classify.md`: steps 0–7, the answer in one line `type: …; template: …; section: …; why: …`. The file belongs
+to the project: your edit stays, the kit's new version lands next to it as `.new`; `kb:cards --guide` prints the text. A
+type's title, description and switch are the `cards:` block of `aurora.config.yaml`. For now the switch **only
+advises**: the check names the cards of a switched-off type, the classifier rejects such a type, and creating cards
+does not look at it. The **type catalogue** `AuroraKnowledgeDB/meta/card_types.md` is generated (install,
+`update --apply`, `kb:cards --write --apply`), manual edits in it are lost. All of this is edited in "Project settings →
+Card types". Details — [card templates](../docs/en/card-templates.md).
+
 ## Five statuses
 
 | `status` | Meaning |

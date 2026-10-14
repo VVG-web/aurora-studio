@@ -9,6 +9,9 @@
 | **Card** | A Markdown file with the knowledge about one entity. [The card](The-Card.md) |
 | **Type** (`type`) | What a card is about and by which template it is made: `concept`, `process`, `glossary` … (thirteen types); written by the section folder. [Card templates](../docs/en/card-templates.md) |
 | **Card template** | A file `TemplatesCommon/akdb_<type>_v<version>.md`: the type's passport, a head and body skeleton, an example, a self-check list. Its name is written in the card's `template:` field; `kb:cards` checks cards against it (for now it only advises) |
+| **Type-choosing instruction** | `Prompts/KB_classify.md`: steps 0–7 for picking one card type without reading every template; the file belongs to the project (`kb:cards --guide`) |
+| **`cards:` block** | A section of `aurora.config.yaml`: a card type's title, description and switch; edited in "Project settings → Card types" |
+| **Type catalogue** | The generated `AuroraKnowledgeDB/meta/card_types.md`: the list of types with descriptions; manual edits are lost |
 | **Kind** (`kind`) | `dictionary`, `document` or `knowledge` — decides who may edit the body |
 | **Status** | `knowledge`, `draft`, `placeholder`, `index`, `deprecated` — the trust class |
 | **Trust** | Computed from Jira statuses and where the source lives; never assigned. [Trust](Trust.md) |
