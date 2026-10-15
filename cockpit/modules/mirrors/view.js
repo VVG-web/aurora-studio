@@ -136,4 +136,6 @@ function sourceModules(ctx, src){
     wrap, el("div", {class:"row", style:"margin-top:12px"}, save));
 }
 
+// Здоровье выбранного проекта пришло по частям: раздел перерисовывается на это событие ядра.
+export const refreshOn = ["health"];
 export default {mount, refresh};

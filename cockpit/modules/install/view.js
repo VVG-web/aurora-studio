@@ -430,4 +430,8 @@ function harnessRow(ctx, h, redraw){
         t("install.hs_restore", {n: h.backups})) : null));
 }
 
+// Жизнь раздела (cockpit/modules/README.md): скрытая «Установка» не перерисовывается на каждое
+// событие — три карточки с запросами к серверу строятся при открытии; часть здоровья на виду обновляет её.
+export const lifecycle = 1;
+export const refreshOn = ["health"];
 export default {mount, refresh};

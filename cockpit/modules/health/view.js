@@ -397,4 +397,6 @@ function statusBar(ctx, statuses){
   return el("div", {}, bar, legend);
 }
 
+// Здоровье выбранного проекта пришло по частям: раздел перерисовывается на это событие ядра.
+export const refreshOn = ["health"];
 export default {mount, refresh};

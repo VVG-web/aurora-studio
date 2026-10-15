@@ -430,3 +430,205 @@ def test_extensions_doc_names_every_probe_and_points_to_baseline_file(_t):
         for name in EF.PROBES:
             assert name in rows, (rel, name, "точка метрики не названа в таблице")
             assert not re.match(r"\d+\b", rows[name]), (rel, name, "число в таблице: оно живёт в планке")
+
+
+# ------------------------------------------------------------------ жизнь раздела панели (BL-ARC-11, срез 1)
+
+LIFECYCLE_HARNESS = r"""
+const faults = [], toasts = [];
+const t = (key, vars) => key + ":" + JSON.stringify(vars || {});
+const showFault = (m) => { faults.push(m); };
+const toast = (text, kind) => { toasts.push({text, kind}); };
+const NOOP = () => {};
+const el = (tag, attrs) => ({tag, attrs, classList: {toggle: NOOP}, remove: NOOP});
+const $ = () => ({append: NOOP});
+const $$ = () => [];
+const S = {view: "none", lang: "ru", project: null, health: null, state: {}};
+const location = {hash: ""};
+const TOKEN = "t", location_ = location;
+const api = NOOP, openLink = NOOP, runStep = NOOP, runWatched = NOOP, busyElsewhere = NOOP, openRun = NOOP, openDoc = NOOP,
+  reloadHealth = NOOP, runRoute = NOOP, poll = NOOP, restartPanel = NOOP, ago = NOOP, kb = NOOP, histWhen = NOOP, esc = NOOP,
+  tick = NOOP, md = NOOP, mdLite = NOOP, rtime = NOOP, howLong = NOOP, metricCard = NOOP, metric = NOOP, goRoute = NOOP,
+  goCmd = NOOP, kindChip = NOOP, skillLine = NOOP, copyButton = NOOP, engineWord = NOOP, markdownEditor = NOOP, hasPart = NOOP,
+  waitMark = NOOP, healthAt = NOOP, stampText = NOOP, kbInfo = NOOP, openIssue = NOOP, issueUrl = NOOP, openPath = NOOP,
+  isEngineCmd = NOOP, hideDev = NOOP, openProject = NOOP, lastRun = NOOP, rcMark = NOOP, auraWhy = NOOP;
+const applyI18n = NOOP, confirmLeave = () => true, devOnlyView = () => false, devSectionsOn = () => false;
+const renderOverview = NOOP, renderProjBadge = NOOP, drawBridgeStamp = NOOP, navBadges = NOOP;
+const requestAnimationFrame = (f) => { setTimeout(f, 0); return 1; };
+let IMPORT = async () => { throw new Error("нет модуля"); };
+const globalThis_fetch = async () => ({ok: true, text: async () => "<div></div>"});
+const fetch = globalThis_fetch;
+@MODULES@
+@CTX@
+@HEALTH@
+@SHOW@
+const fails = [];
+const check = (ok, what) => { if (!ok) fails.push(what); };
+const log = [];
+const tickAll = () => new Promise(r => setTimeout(r, 5));
+function add(id, mod, ns){
+  MODULES.set(id, {manifest: {id}, mod, ns: ns || null, section: {classList: {toggle: NOOP}}, subs: null, stale: false, shown: false});
+  return MODULES.get(id);
+}
+const mk = (id, extra) => Object.assign({
+  mount(){}, refresh(){ log.push(id + ".refresh"); }}, extra || {});
+
+(async () => {
+  // 1. события: старый раздел, ленивые на виду и скрытые, подписчик
+  const legacy = add("L", mk("L"));
+  const hidden = add("H", mk("H"), {lifecycle: 1});
+  const visible = add("V", mk("V"), {lifecycle: 1});
+  const named = add("R", mk("R"), {refreshOn: ["health"]});
+  const sub = add("SUB", mk("SUB", {lifecycle: 1}));
+  const ctxSub = moduleCtx("SUB", {});
+  ctxSub.on("data", () => log.push("SUB.fn"));
+  S.view = "V";
+  await refreshModules();
+  const count = (s) => log.filter(x => x === s).length;
+  check(count("L.refresh") === 1, "раздел без экспортов: refresh на «data» как прежде, а их " + count("L.refresh"));
+  check(count("H.refresh") === 0 && hidden.stale === true, "скрытый lifecycle-раздел: 0 refresh и stale=true");
+  check(count("V.refresh") === 1 && visible.stale === false, "видимый lifecycle-раздел: ровно один refresh");
+  check(count("R.refresh") === 1, "старый раздел с refreshOn на «data» тоже обновляется");
+  check(count("SUB.fn") === 1 && count("SUB.refresh") === 0 && sub.stale === false,
+        "подписчик скрытого раздела получает fn, а не refresh");
+  log.length = 0;
+  await dispatchModules("health");
+  check(log.join() === "R.refresh", "«health» зовёт только refreshOn-разделы, а позвал: " + log.join());
+  // ленивый раздел с refreshOn на «health»: на виду — refresh, скрытый — stale
+  add("HW", mk("HW"), {lifecycle: 1, refreshOn: ["health"]});
+  add("VW", mk("VW"), {lifecycle: 1, refreshOn: ["health"]}); 
+  S.view = "VW";
+  log.length = 0;
+  await dispatchModules("health");
+  check(log.includes("VW.refresh") && !log.includes("HW.refresh") && MODULES.get("HW").stale, "refreshOn у lifecycle-разделов: на виду refresh, скрытый — stale: " + log.join());
+  // healthChanged: часть чужого проекта никого не будит, своего — зовёт «health»
+  S.project = {name: "mine"}; S.health = null;
+  log.length = 0;
+  healthChanged({name: "other"}); await tickAll();
+  check(log.length === 0, "часть здоровья чужого проекта не будит разделы");
+  healthChanged(S.project); await tickAll();
+  check(log.includes("R.refresh") && !log.includes("L.refresh"), "часть своего проекта будит refreshOn-разделы, не остальные: " + log.join());
+  // падение refresh одного раздела не мешает другому
+  const bad = add("BAD", {mount(){}, refresh(){ throw new Error("бум"); }});
+  const after = add("AFTER", mk("AFTER"));
+  log.length = 0; faults.length = 0;
+  await refreshModules();
+  check(log.includes("AFTER.refresh") && faults.length === 1 && faults[0].includes("бум"), "сбой refresh не мешает следующему разделу");
+  MODULES.delete("BAD"); MODULES.delete("AFTER");
+
+  // 2. порядок хуков при переходе A -> B
+  for (const id of ["L", "H", "V", "R", "SUB", "HW", "VW"]) MODULES.delete(id);
+  const hooks = (id) => ({onShow(){ log.push(id + ".onShow"); }, onHide(){ log.push(id + ".onHide"); }});
+  const A = add("A", mk("A", hooks("A")));
+  const B = add("B", mk("B", hooks("B")), {lifecycle: 1});
+  S.view = "A"; A.shown = true;
+  log.length = 0;
+  show("B"); await tickAll();
+  check(log.join() === "A.onHide,B.refresh,B.onShow", "A->B: onHide, refresh, onShow, а было: " + log.join());
+  log.length = 0;
+  show("B"); await tickAll();
+  check(log.join() === "B.refresh", "повторный show того же раздела onShow не дублирует: " + log.join());
+  log.length = 0;
+  show("A"); await tickAll();
+  check(log.join() === "B.onHide,A.refresh,A.onShow", "B->A: " + log.join());
+  // ушли, пока раздел отрисовывался: onShow не зовётся
+  let release;
+  const slow = add("SLOW", {mount(){}, refresh(){ return new Promise(r => { release = r; }); }, onShow(){ log.push("SLOW.onShow"); }, onHide(){ log.push("SLOW.onHide"); }});
+  log.length = 0;
+  show("SLOW"); await tickAll();
+  show("A"); await tickAll();
+  release(); await tickAll();
+  check(!log.includes("SLOW.onShow") && !log.includes("SLOW.onHide"), "раздел, из которого ушли до конца отрисовки, не получает onShow: " + log.join());
+  MODULES.delete("SLOW");
+
+  // 3. падение хука одного раздела не мешает другому и переходу
+  const F = add("F", mk("F", {onHide(){ throw new Error("хук упал"); }, onShow(){}}));
+  const G = add("G", mk("G", hooks("G")));
+  S.view = "none"; show("F"); await tickAll();
+  faults.length = 0; log.length = 0;
+  show("G"); await tickAll();
+  check(S.view === "G" && log.includes("G.onShow"), "переход состоялся, хук следующего раздела вызван: " + log.join());
+  check(faults.length === 1 && faults[0].includes("onHide") && faults[0].includes("хук упал"), "сбой хука показан одним сообщением: " + faults.join("|"));
+
+  // 4. раздел не поднялся: dispose и чистое состояние
+  const rec = {manifest: {id: "D"}, mod: null, ns: null, section: null, subs: null, stale: false, shown: false};
+  MODULES.set("D", rec);
+  let disposed = 0;
+  IMPORT = async () => ({default: {mount(ctx){ ctx.on("data", NOOP); throw new Error("mount упал"); }, dispose(){ disposed++; }}});
+  toasts.length = 0;
+  await mountModule("D");
+  check(disposed === 1 && rec.mod === null && rec.subs === null && toasts.length === 1, "сбой mount: dispose один раз, раздел снят, подписки сброшены");
+
+  // 5. версия и описание ctx
+  const c = moduleCtx("A", {});
+  check(c.api_version === @API@, "ctx.api_version = EXT_API_VERSION, а " + c.api_version);
+  check(c.lifecycle === 1, "ctx.lifecycle = 1");
+  const off = c.on("data", NOOP);
+  check(typeof off === "function" && MODULES.get("A").subs.get("data").size === 1, "ctx.on запоминает подписку");
+  off();
+  check(MODULES.get("A").subs.get("data").size === 0, "отписка снимает подписку");
+  console.log(JSON.stringify({fails}));
+})().catch(e => { console.log(JSON.stringify({fails: ["исключение: " + (e && e.stack || e)]})); });
+"""
+
+
+@test
+def test_module_lifecycle_under_node(tmp: Path):
+    """Жизненный цикл раздела панели под подставным DOM (нужен node, иначе проверка пропускается): после «data»
+    скрытый раздел с `lifecycle` не зовёт refresh и помечен устаревшим, видимый обновляется, раздел без экспортов
+    обновляется как раньше; «health» будит только разделы с `refreshOn`; подписчик скрытого раздела получает свою
+    функцию; onHide/refresh/onShow идут в порядке перехода, раздел, из которого ушли до конца отрисовки, onShow не
+    получает; сбой хука или refresh не мешает соседям; сбой mount зовёт dispose; `ctx.api_version` равен
+    `EXT_API_VERSION`."""
+    import aurora_common as C
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    assert f"const CTX_API = {C.EXT_API_VERSION};" in panel, "CTX_API разошёлся с aurora_common.EXT_API_VERSION"
+
+    def cut(start: str, end: str, keep_end: bool = False) -> str:
+        a = panel.index(start)
+        b = panel.index(end, a)
+        return panel[a:b + (len(end) if keep_end else 0)]
+    modules = cut("const MODULES = new Map();", "async function loadModules")
+    ctx = cut("function moduleCtx(id, root){", "// Подписи разделов в меню")
+    health = cut("let HEALTH_FRAME = 0", "async function prefetchHealth")
+    show = cut("function show(view, payload){", "\n}\n", keep_end=True)
+    # статическая проверка: имён разделов в healthChanged больше нет
+    for name in ("mirrors", "install", '["health"'):
+        assert name not in health, f"в healthChanged осталось имя «{name}»"
+    assert 'dispatchModules("health")' in health and "for (const id of" not in health
+    # сам импорт раздела заменён на подставной
+    assert 'import(url("view.js"))' in ctx
+    ctx = ctx.replace('import(url("view.js"))', 'IMPORT(url("view.js"))')
+    node = shutil.which("node")
+    if not node:
+        return
+    code = (LIFECYCLE_HARNESS.replace("@MODULES@", modules).replace("@CTX@", ctx).replace("@HEALTH@", health)
+            .replace("@SHOW@", show).replace("@API@", str(C.EXT_API_VERSION)))
+    src = tmp / "lifecycle_panel.mjs"
+    src.write_text(code, encoding="utf-8")
+    import subprocess
+    cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+    assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:1500]
+    result = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert result["fails"] == [], "\n".join(result["fails"])
+
+
+@test
+def test_first_modules_declare_refresh_events(_t):
+    """«Здоровье», «Зеркала» и «Установка» сами называют событие, на которое перерисовываются (`refreshOn` с «health»),
+    а «Установка» — ещё и ленивое обновление (`lifecycle = 1`): ядро их имён больше не знает."""
+    for mid in ("health", "mirrors", "install"):
+        text = (KIT / "cockpit" / "modules" / mid / "view.js").read_text(encoding="utf-8")
+        assert 'export const refreshOn = ["health"];' in text, mid
+        assert ("export const lifecycle = 1;" in text) == (mid == "install"), mid
+
+
+@test
+def test_module_lifecycle_is_documented(_t):
+    """Справочник автора раздела (ru) и описание панели (en) называют хуки, ленивое обновление и события."""
+    ru = (KIT / "cockpit" / "modules" / "README.md").read_text(encoding="utf-8")
+    en = (KIT / "docs" / "en" / "control-panel.md").read_text(encoding="utf-8")
+    for word in ("lifecycle", "onShow", "onHide", "dispose", "refreshOn", "ctx.on", "api_version"):
+        assert word in ru, f"README раздела: нет «{word}»"
+        assert word in en, f"docs/en/control-panel.md: нет «{word}»"
+    assert "как прежде" in ru and "works as before" in en

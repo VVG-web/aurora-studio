@@ -1190,7 +1190,9 @@ function show(view, payload){
   if (S.view === "project" && view !== "project" && !confirmLeave()) return;
   // Раздел в разработке закрыт — в него не попасть и по адресу страницы или ссылке.
   if (devOnlyView(view) && !devSectionsOn()) view = "overview";
+  const prevView = S.view;
   S.view = view;
+  if (prevView !== view) hideModule(prevView);        // уходящий раздел узнаёт об этом раньше, чем придёт новый
   $$(".view").forEach(v=>v.classList.toggle("on", v.id === "view-"+view));
   $$("nav button").forEach(b=>b.setAttribute("aria-current", String(b.dataset.view===view)));
   if (view==="overview") refreshActivity();
@@ -1573,7 +1575,7 @@ function loadHealth(p, parts = HEALTH_ALL, force = false){
       })));
 }
 // Части приходят пачкой — перерисовка одна на кадр, а не на каждую. Разделы проекта
-// («Здоровье», «Зеркала», «Установка») показывают только выбранный проект, и часть чужого
+// (те, что объявили `refreshOn` с «health») показывают только выбранный проект, и часть чужого
 // проекта их не касается: на старте панель догружает здоровье всех проектов по семь
 // частей, и «Установка» перерисовывалась десятки раз подряд — её блоки мигали (1.170.1).
 let HEALTH_FRAME = 0, HEALTH_MINE = false;
@@ -1587,11 +1589,8 @@ function healthChanged(p){
     const mine = HEALTH_MINE;
     HEALTH_MINE = false;
     if (!mine) return;
-    for (const id of ["health", "mirrors", "install"]){
-      const rec = MODULES.get(id);
-      if (rec && rec.mod) Promise.resolve(rec.mod.refresh?.(moduleCtx(id, rec.section)))
-        .catch(e => showFault(t("modules.refresh_failed", {id, why: e.message})));
-    }
+    // Кого это касается, решают сами разделы (`refreshOn` в их коде): ядро имён не знает.
+    dispatchModules("health");
   });
 }
 async function prefetchHealth(fresh = false){
@@ -4522,6 +4521,41 @@ async function applySkin(id){
    Разметка и скрипт приезжают по требованию: раздел, в который не заходили, не стоит
    ни одного запроса и ни одного байта разобранного кода. */
 const MODULES = new Map();
+const CTX_API = 1;            // = aurora_common.EXT_API_VERSION: версия ctx для `api_version` манифеста
+const CTX_LIFECYCLE = 1;      // раздел с `export const lifecycle = 1` обновляется лениво (README раздела)
+
+// Поле раздела: из `export default {…}`, а если там нет — из именованного экспорта модуля
+// (`export const refreshOn = […]` рядом с `export default {mount, refresh}`).
+function modField(rec, name){
+  if (rec.mod && rec.mod[name] !== undefined) return rec.mod[name];
+  return rec.ns ? rec.ns[name] : undefined;
+}
+
+function moduleOn(id, event, fn){
+  const rec = MODULES.get(id);
+  if (!rec || typeof fn !== "function") return () => {};
+  if (!rec.subs) rec.subs = new Map();
+  if (!rec.subs.has(event)) rec.subs.set(event, new Set());
+  rec.subs.get(event).add(fn);
+  return () => { rec.subs && rec.subs.has(event) && rec.subs.get(event).delete(fn); };
+}
+
+// Хук раздела (onShow, onHide, dispose). Сбой хука — сообщение человеку, а не обрыв: соседний
+// раздел и сам переход от этого не страдают.
+async function callHook(id, rec, name){
+  const fn = modField(rec, name);
+  if (typeof fn !== "function") return;
+  try { await fn.call(rec.mod, moduleCtx(id, rec.section)); }
+  catch (e){ showFault(t("modules.refresh_failed", {id, why: name + ": " + e.message})); }
+}
+
+// Раздел, из которого ушли: `onHide` — остановить таймеры и опросы, которые нужны только на виду.
+function hideModule(id){
+  const rec = MODULES.get(id);
+  if (!rec || !rec.mod || !rec.shown) return;
+  rec.shown = false;
+  callHook(id, rec, "onHide");
+}
 
 function moduleTitle(m){
   return (m.name && (m.name[S.lang] || m.name.ru)) || m.id;
@@ -4544,7 +4578,7 @@ async function loadModules(){
     // Раздел поднят, но с умолчанием вместо кривого поля манифеста: скажем, что починить.
     if (m.warn && m.warn.length)
       toast(t("modules.warn", {id: m.id, why: m.warn.join("; ")}), "warn");
-    MODULES.set(m.id, {manifest: m, mod: null, section: null});
+    MODULES.set(m.id, {manifest: m, mod: null, ns: null, section: null, subs: null, stale: false, shown: false});
     addModuleNav(m);
     if (m.behind)
       console.warn(`модуль ${m.id} собран под ядро ${m["for"]}, установлено ${S.state.kit.version}`);
@@ -4571,6 +4605,11 @@ function addModuleNav(m){
 function moduleCtx(id, root){
   return {
     id, root,
+    api_version: CTX_API,         // версия ctx: раздел сверяет её с той, под которую писан
+    lifecycle: CTX_LIFECYCLE,     // 1 — ядро знает хуки onShow/onHide/dispose и ленивое обновление
+    // Подписка на событие ядра («data», «health»): скрытый раздел с `lifecycle` получает вместо
+    // полной перерисовки именно этот вызов. Возвращает функцию отписки.
+    on: (event, fn) => moduleOn(id, event, fn),
     t, el, api, toast,
     $: (sel) => $(sel, root),
     $$: (sel) => $$(sel, root),
@@ -4615,10 +4654,13 @@ async function mountModule(id, payload){
       $("main").append(rec.section);
       applyI18n(rec.section);
       const mod = await import(url("view.js"));
+      rec.ns = mod;
       rec.mod = mod.default || mod;
       await rec.mod.mount?.(moduleCtx(id, rec.section));
     }catch(e){
-      rec.mod = null;
+      // Раздел, успевший начать работу, освобождает то, что занял (таймеры, подписки).
+      if (rec.mod) await callHook(id, rec, "dispose");
+      rec.mod = null; rec.ns = null; rec.subs = null; rec.stale = false; rec.shown = false;
       if (rec.section){ rec.section.remove(); rec.section = null; }
       toast(t("modules.failed", {id, why: e.message}), "err");
       return;
@@ -4628,17 +4670,45 @@ async function mountModule(id, payload){
   // Груз переходa: «открой справку на этом документе», «покажи карточку на
   // графе». Без него раздел пришлось бы дёргать через глобальную переменную.
   await rec.mod.refresh?.(moduleCtx(id, rec.section), payload);
+  rec.stale = false;
+  // Раздел всё ещё на виду (человек мог уйти, пока шла отрисовка) и ещё не показан: `onShow`.
+  if (S.view === id && !rec.shown){
+    rec.shown = true;
+    await callHook(id, rec, "onShow");
+  }
 }
 
 // Данные сменились — выбрали проект, пересчитали здоровье, сохранили настройку. Разделы,
 // уже поднятые в этой вкладке, обязаны перерисоваться сами: раздел, открытый до выбора
 // проекта, иначе остаётся с «выберите проект» навсегда, и перерисовать его некому.
-async function refreshModules(){
+async function refreshModules(){ await dispatchModules("data"); }
+
+// Событие ядра — разделам. Раздел без `lifecycle` ведёт себя как прежде: «data» перерисовывает
+// его всегда, другое событие — только если он назвал его в `refreshOn`. Раздел с
+// `export const lifecycle = 1` перерисовывается лишь на виду; скрытому достаётся подписка
+// `ctx.on(event, fn)`, а у не подписанного ставится `rec.stale` — полная отрисовка случится при
+// открытии. Так скрытые разделы не строят карточки и не ходят за данными на каждое событие.
+async function dispatchModules(event = "data"){
   for (const [id, rec] of MODULES){
     if (!rec.mod) continue;
+    const on = modField(rec, "refreshOn");
+    const subs = rec.subs && rec.subs.get(event);
+    const named = Array.isArray(on) && on.includes(event);
+    const lazy = !!modField(rec, "lifecycle");
     // Упавший раздел не уносит остальные: иначе одна ошибка в одном экране оставляет
     // всю панель с вчерашними числами, и причину видно только в консоли браузера.
-    try { await rec.mod.refresh?.(moduleCtx(id, rec.section)); }
+    try {
+      if (!lazy){
+        if (event === "data" || named) await rec.mod.refresh?.(moduleCtx(id, rec.section));
+      } else if (event === "data" || named || (subs && subs.size)){
+        if (S.view === id){
+          await rec.mod.refresh?.(moduleCtx(id, rec.section));
+          rec.stale = false;
+        } else if (subs && subs.size){
+          for (const fn of [...subs]) await fn(moduleCtx(id, rec.section));
+        } else rec.stale = true;
+      }
+    }
     catch (e){ showFault(t("modules.refresh_failed", {id, why: e.message})); }
   }
 }
