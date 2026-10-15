@@ -406,12 +406,15 @@ The engine developer's kitchen — `Development/` (test cases, QA scenarios, run
 ## 10. Extensions: what must pass and what is counted
 
 An extension is a file or a folder, not an edit to the core. That is the stated aim for seven
-kinds; how far it holds is counted by code, not recalled from memory: for every extension point
+kinds and the bot; how far it holds is counted by code, not recalled from memory: for every extension point
 `tests/ext_footprint.py` takes the names of the existing extensions from their own manifests and
 registries and counts **how many core files** (`aurora.py`, the root registries, `scripts/`,
-`cockpit/` without `modules`, `skins`, `i18n`, `vendor`, and `reports/`) name them. This is a lower
-bound, not a forecast of "this many files will have to be touched": the more the core quotes the
-literals of some extensions, the likelier the next one needs a line in the same files. Tests,
+`cockpit/` without `modules`, `skins`, `i18n`, `vendor`, and `reports/`) name them. This is a
+heuristic, not an exact count and not a forecast of "this many files will have to be touched": it
+counts the files where an extension's literal occurs; it can both miss points (those in the last
+paragraph) and match by accident (common words such as `continue`, `us`, `ac` also occur outside
+the extension's meaning). Still, the more the core quotes the literals of some extensions, the
+likelier the next one needs a line in the same files. Tests,
 documentation and string catalogues are not the core.
 
 | Kind (metric key) | Core files today | What replaces code |
@@ -437,31 +440,39 @@ python3 tests/ext_footprint.py --write   # write the current numbers as the new 
 ```
 
 **The bar does not grow.** The `ext_footprint_within_baseline` test fails if any point's number
-becomes larger than the recorded one: a new extension or a core edit must not add files that know
+becomes larger than the recorded one (and smaller too, until the bar is updated): a new extension or a core edit must not add files that know
 extensions by name. If a number went down, run `--write`, commit the bar together with the change
 and fix the table above: the bar pins what has been achieved so it cannot be rolled back. If growth
 is justified, that is a decision rather than a workaround, and it goes into the commit message.
 
-**What a manifest must pass.** The envelope is shared by connectors, panel sections and skins
-(details in ["Manifest envelope and API version"](connectors.md#manifest-envelope-and-api-version)):
+**What a manifest must pass.** The envelope is shared by connectors, panel sections, skins and
+Git providers (details in ["Manifest envelope and API version"](connectors.md#manifest-envelope-and-api-version)):
 
-- `id` is required; for a section it equals the folder name, for a skin the file name, for a
-  connector the `.aurora/connectors/<id>.json` name; unique within a kind;
+- `id` is required; for a section, a connector and a Git provider it equals the folder name
+  (`cockpit/modules/<id>/`, `connectors/<id>/`, `gitproviders/<id>/`), for a skin the file name;
+  a connector's `id` also gives the `.aurora/connectors/<id>.json` name; unique within a kind;
 - a title, as a string or per language (a section must have the Russian one);
 - `api_version` is optional, no field means `1`; newer than the engine knows (`EXT_API_VERSION`)
   and the extension is skipped with the reason "update the kit";
 - `requires` is optional;
 - per-kind fields: for a connector `kind`, `mirror`, `run`; for a section, see the table in the
-  section README; for a skin the `name`/`api`/`for`/`about` header.
+  section README; for a skin the `name`/`api`/`for`/`about` header; for a Git provider
+  (`gitproviders/<id>/provider.json`) `title`, `auth` (a list of sign-in methods) and `about` in
+  Russian and English.
 
 The conformance tests (`tests/cases/part_44.py`) check two properties. First, every manifest in the
 repository passes the loader without an error report. Second, **one extension failing does not hide
-the others**: a fictive extension of each kind is picked up without a core edit, and a neighbouring
-broken manifest (not JSON, no `id`, a future `api_version`) lands in the report as its own line.
+the others**: a fictive connector, panel section and skin are picked up without a core edit, and a
+neighbouring broken manifest (not JSON, no `id`, a future `api_version`) lands in the report as its
+own line; a Git provider is checked by the loader: a broken `provider.json` is a report entry, not
+an exception. There is no such test for an LLM provider, an artifact kind, an assistant or a bot.
 
 **What the metric does not see yet.** It counts only mentions of an extension's name in the core.
 Not covered are the points where adding something needs an edit but the core holds no extension
 name: a new command (`commands.txt` and the command reference), an agent task (a role, a chain, a
-model-call site in `scripts/llm_calls.json`), a card linter rule, and a panel section that needs its
-own server route (`/api/<id>`). Their number is unknown today and is not shown in the table. A zero
+model-call site in `scripts/llm_calls.json`), and a card linter rule. A panel section is seen only
+in part: the metric counts the names of the existing `/api/<id>` routes (they give both files of the
+"Panel section" row) but does not see that a new section with a server side must add a route in
+`cockpit/aurora_cockpit.py`. The number of uncovered points is unknown today and is not shown in the
+table. A zero
 in a column does not mean "no edits needed"; it means "the core does not name the extension".

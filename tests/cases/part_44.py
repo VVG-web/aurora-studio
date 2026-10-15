@@ -366,3 +366,27 @@ def test_extensions_doc_table_matches_baseline_in_both_languages(_t):
         for name in EF.PROBES:
             if name not in EF.ratcheted():
                 assert not rows[name].isdigit(), (rel, name, "справочная точка не должна выглядеть планкой")
+
+
+@test
+def test_extensions_doc_does_not_overpromise(_t):
+    """Раздел «Расширения» не называет метрику оценкой снизу, называет правило id == папка для коннектора
+    и провайдера Git, говорит о маршрутах `/api/<id>` как о видимых метрике и не обещает фиктивных
+    тестов для видов, где их нет; README скина не обещает проверки «ядро не знает скинов»."""
+    for rel, bad, must in (
+            ("docs/architecture.md", ("оценка снизу", "оценку снизу"),
+             ("эвристика", "`connectors/<id>/`", "`gitproviders/<id>/`", "provider.json", "семи видов и бота",
+              "и меньше — тоже", "фиктивный коннектор, раздел панели и скин")),
+            ("docs/en/architecture.md", ("lower bound",),
+             ("heuristic", "`connectors/<id>/`", "`gitproviders/<id>/`", "provider.json", "seven\nkinds and the bot",
+              "smaller too", "fictive connector, panel section and skin"))):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        for s in bad:
+            assert s not in text, (rel, s)
+        for s in must:
+            assert s in text, (rel, s)
+        assert "собственный\nмаршрут сервера" not in text and "its\nown server route" not in text, rel
+    skins = (KIT / "cockpit" / "skins" / "README.md").read_text(encoding="utf-8")
+    assert "не знает скинов по имени" not in skins
+    core = (KIT / "tests" / "ext_footprint.py").read_text(encoding="utf-8")
+    assert "оценка снизу" not in core
