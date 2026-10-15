@@ -1565,6 +1565,75 @@ def test_web_allow_private_accepts_ipv6_literals_and_the_form_keeps_them(tmp: Pa
 
 
 @test
+def test_web_connector_refuses_trailing_dot_and_internal_names_through_a_proxy(tmp: Path):
+    """BL-SEC-17 (доработка): хвостовая точка не обходит отказ (`localhost.`, `127.0.0.1.`,
+    `169.254.169.254.`), а в режиме «через прокси» закрыты и внутренние имена, которые у нас
+    не резолвятся: служебные имена хоста и облака, `.local`, `.internal`, `.localdomain`,
+    `*.localhost`, имя без точки. Обычные имена и явный `allow_private` проходят."""
+    _path()
+    AC = importlib.import_module("aurora_common")
+    h = "http" + "://"
+    lo = ".".join(("127", "0", "0", "1"))
+    meta = ".".join(("169", "254", "169", "254"))
+    internal = ["localhost.", "foo.localhost.", lo + ".", meta + ".", "localhost.localdomain",
+                "ip6-localhost", "ip6-loopback", "metadata.google.internal", "metadata.google.internal.",
+                "wiki.local", "db.corp.internal", "host.localdomain", "intranet", "intranet.",
+                "app.localhost"]
+    for host in internal:
+        why, _ = AC._egress_check(f"{h}{host}/x", proxied=True)
+        assert why, f"через прокси не отказано: {host}"
+    # обычные имена и числовые публичные формы через прокси проходят
+    for host in ("example.com", "example.com.", "wiki.example.org", "a.b.example.ru",
+                 "93.184.216.34", "1.example.com"):
+        assert AC._egress_check(f"{h}{host}/x", proxied=True)[0] == "", host
+    # явное разрешение действует и для формы с точкой, и для записи с точкой
+    assert AC._egress_check(f"{h}wiki.local/x", ["wiki.local"], proxied=True)[0] == ""
+    assert AC._egress_check(f"{h}wiki.local./x", ["wiki.local"], proxied=True)[0] == ""
+    assert AC._egress_check(f"{h}wiki.local/x", ["wiki.local."], proxied=True)[0] == ""
+    assert AC._egress_check(f"{h}intranet:8080/x", ["intranet:8080"], proxied=True)[0] == ""
+    assert AC._egress_check(f"{h}intranet:9090/x", ["intranet:8080"], proxied=True)[0], "порт записи не учтён"
+
+    # без прокси точка не выводит из-под проверки адреса (резолвер подменён, сети нет)
+    def _resolve(host, _port):
+        return {"example.com": ["93.184.216.34"], "evil.example.com": [lo],
+                "localhost": [lo]}.get(host, [])
+    assert AC.egress_problem(f"{h}localhost./x", resolve=_resolve)
+    assert AC.egress_problem(f"{h}evil.example.com./x", resolve=_resolve)
+    assert AC.egress_problem(f"{h}{lo}./x", resolve=_resolve)
+    assert AC.egress_problem(f"{h}example.com./x", resolve=_resolve) == ""
+    assert AC.is_loopback_host("localhost.") and AC.is_loopback_host("a.localhost.")
+    assert not AC.is_loopback_host("example.com.")
+
+    # соединение: адрес с точкой на петле отказан и в момент соединения, и разрешение с точкой действует
+    create = AC._guarded_create_connection((), _resolve)
+    for host in ("localhost.", lo + "."):
+        try:
+            create((host, 80))
+            raise AssertionError(f"соединение с {host} не отказано")
+        except AC.EgressRefused:
+            pass
+
+    # сквозной путь: запрос через (подставной) прокси на внутренние имена не уходит
+    real_proxies = AC.EGRESS_PROXIES
+    AC.EGRESS_PROXIES = {"http": "http://proxy.example.com:3128", "https": "http://proxy.example.com:3128"}
+    env_keys = ("no_proxy", "NO_PROXY")
+    saved_env = {k: os.environ.pop(k, None) for k in env_keys}
+    try:
+        for host in ("localhost.", "metadata.google.internal", "wiki.local", "intranet"):
+            try:
+                AC.guarded_urlopen(f"{h}{host}/x", timeout=1)
+                raise AssertionError(f"через прокси прошло: {host}")
+            except AC.EgressRefused:
+                pass
+    finally:
+        AC.EGRESS_PROXIES = real_proxies
+        for k, v in saved_env.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+
+@test
 def test_web_connector_limits_body_size_and_total_time(tmp: Path):
     """BL-SEC-17: страница не больше PAGE_MAX_BYTES, вложение — ASSET_MAX_BYTES. Content-Length больше
     предела — отказ до чтения тела; поток без Content-Length — отказ на пределе; медленный ответ

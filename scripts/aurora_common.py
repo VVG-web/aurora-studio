@@ -3587,7 +3587,7 @@ def same_origin(url: str, base: str) -> bool:
 
 def is_loopback_host(host: str) -> bool:
     """Свой компьютер: `localhost`, `*.localhost`, `127.x.x.x`, `::1`."""
-    h = (host or "").strip("[]").lower()
+    h = (host or "").strip("[]").lower().rstrip(".")       # `localhost.` — то же имя
     return (h == "localhost" or h.endswith(".localhost") or h == "::1"
             or re.fullmatch(r"127(?:\.\d{1,3}){3}", h) is not None)
 
@@ -3681,6 +3681,7 @@ def _allow_private_entries(allow_private) -> list:
             host, port = (p.hostname or ""), (p.port or 0)
         except ValueError:
             continue
+        host = host.rstrip(".")         # `wiki.example.com.` — то же имя
         if host:
             out.append((host, port))
     return out
@@ -3719,11 +3720,32 @@ def _addr_refusal(host: str, addrs) -> str:
     return ""
 
 
+# Имена, которые в режиме «через прокси» нельзя проверить резолвом, но заведомо внутренние.
+_INTERNAL_NAMES = frozenset(("localhost.localdomain", "ip6-localhost", "ip6-loopback",
+                             "metadata.google.internal"))
+_INTERNAL_SUFFIXES = (".localhost", ".local", ".internal", ".localdomain")
+
+
+def _internal_name_refusal(host: str) -> str:
+    """Причина отказа для имени, которое при запросе через прокси не резолвится у нас, но
+    заведомо внутреннее; пусто — обычное имя. `host` уже без хвостовой точки и в нижнем регистре.
+    Закрыто: петля, служебные имена хостов и облака, суффиксы `.local`, `.internal`,
+    `.localdomain`, `.localhost` и имена без точки (одна метка: имя внутренней сети). Имя вида
+    `127.0.0.1.nip.io` проверить без резолва нельзя — известное ограничение режима proxied."""
+    if is_loopback_host(host):          # `localhost` и `*.localhost` по спецификации всегда петля
+        return _addr_refusal(host, ["127.0.0.1"])
+    if host in _INTERNAL_NAMES or host.endswith(_INTERNAL_SUFFIXES) or "." not in host:
+        return (f"{host}: внутреннее имя (через прокси его адрес не проверить); внутренний адрес "
+                f"разрешается явно, allow_private: [{host}] в блоке web: конфига")
+    return ""
+
+
 def _egress_check(url: str, allow_private=(), resolve=None, proxied=False) -> tuple:
     """(причина отказа, временная ли). Временная — имя не разрешилось: это сбой сети, а не
     политика, и повтор имеет смысл. `proxied` — запрос уйдёт через прокси: имя разрешит он, у
     нас его не разрешают (в сети «только через прокси» это и невозможно); проверяются схема и
-    адреса-литералы, в том числе «числовые» формы вроде `2130706433`."""
+    адреса-литералы, в том числе «числовые» формы вроде `2130706433`, и заведомо внутренние
+    имена (`_internal_name_refusal`). Хвостовая точка (`localhost.`) отрезается до всех проверок."""
     import ipaddress
     from urllib.parse import urlsplit
     u = str(url or "")
@@ -3734,6 +3756,7 @@ def _egress_check(url: str, allow_private=(), resolve=None, proxied=False) -> tu
         scheme, host, port = (p.scheme or "").lower(), (p.hostname or "").lower(), p.port
     except ValueError:
         return "адрес не разобрать", False
+    host = host.rstrip(".")             # `localhost.` и `127.0.0.1.` — те же адреса, что без точки
     if scheme not in _DEFAULT_PORTS:
         return f"схема «{scheme or '—'}» не разрешена: только http и https", False
     if not host:
@@ -3746,13 +3769,11 @@ def _egress_check(url: str, allow_private=(), resolve=None, proxied=False) -> tu
         addrs = [host] if ipaddress.ip_address(host) else []
     except ValueError:
         if proxied:
-            if is_loopback_host(host):      # `localhost` и `*.localhost` по спецификации всегда петля
-                return _addr_refusal(host, ["127.0.0.1"]), False
             import socket
             try:
                 addrs = [socket.inet_ntoa(socket.inet_aton(host))]   # `2130706433`, `0x7f.1`
             except (OSError, ValueError):
-                return "", False
+                return _internal_name_refusal(host), False
             return _addr_refusal(host, addrs), False
         fn = resolve or EGRESS_RESOLVE
         try:
@@ -3840,7 +3861,7 @@ def _guarded_create_connection(allow, resolve):
 
     def create(address, *args, **kw):
         host, port = address[0], address[1]
-        h = str(host).lower()
+        h = str(host).lower().rstrip(".")
         for eh, pt in _allow_private_entries(allow):
             if eh == h and pt in (0, port):
                 return socket.create_connection(address, *args, **kw)
@@ -3849,9 +3870,9 @@ def _guarded_create_connection(allow, resolve):
         except ValueError:
             fn = resolve or EGRESS_RESOLVE
             if fn is not None:
-                addrs = list(fn(host, port))
+                addrs = list(fn(h, port))
             else:
-                addrs = [i[4][0] for i in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
+                addrs = [i[4][0] for i in socket.getaddrinfo(h, port, type=socket.SOCK_STREAM)]
         why = _addr_refusal(h, addrs)
         if why:
             raise EgressRefused(why)
