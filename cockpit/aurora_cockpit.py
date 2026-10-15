@@ -1771,8 +1771,10 @@ INSTALL_MANIFEST = ".aurora-install.json"   # что поставил архив
 
 
 def _kit_git(*args, timeout: int = 120):
+    # локаль git — нейтральная: текст его отказа («fatal: …») уходит в ответ панели как есть, и на русской машине он
+    # попадал бы по-русски в английский режим (и менял бы разбор при локализованных сообщениях)
     return subprocess.run(["git", "-C", KIT, *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=timeout)
+                          timeout=timeout, env={**os.environ, "LC_ALL": "C", "LANGUAGE": "C"})
 
 
 def _vt(v: str) -> tuple:

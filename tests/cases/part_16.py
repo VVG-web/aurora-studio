@@ -186,6 +186,27 @@ def test_the_english_panel_server_sends_no_russian_outside_the_documented_except
 
 
 @test
+def test_kit_status_asks_git_in_the_c_locale(tmp: Path):
+    """Вопросы панели к git кита идут в нейтральной локали: русское «fatal: …» не попадает в ответ английского режима
+    (в гейте на русской машине без сети этот тест обхода краснел на `/api/kit/status .error`)."""
+    set_home(tmp / "home")
+    panel = _Panel([tmp])
+    seen = {}
+    real = panel.ck.subprocess.run
+
+    def spy(cmd, **kw):
+        seen.update(kw.get("env") or {})
+        return panel.ck.subprocess.CompletedProcess(cmd, 0, "", "")
+    panel.ck.subprocess.run = spy
+    try:
+        panel.ck._kit_git("branch", "--show-current")
+    finally:
+        panel.ck.subprocess.run = real
+        panel.close()
+    assert seen.get("LC_ALL") == "C" and seen.get("LANGUAGE") == "C", seen
+
+
+@test
 def test_every_get_route_of_the_panel_is_either_crawled_or_excused(tmp: Path):
     """Новый GET-путь панели обязан попасть в обход английского режима или в список исключений.
 

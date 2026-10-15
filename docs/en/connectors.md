@@ -173,6 +173,8 @@ not exist, the historical mirrors are carried into it with the paths from `paths
 doctor read `sources:`, so the owner's path has to be the same in both sections. Who checks a path: one from a manifest is
 checked against the whitelist (`ext_safe_relpath`), one from the project's own config is not checked by anyone: the owner writes it.
 
+**Known limits of writing `sources:` (in the review queue, BL-ARC-08).** The section has two writers with different rules: "Save choice" in the panel keeps the entries of connected modules verbatim, while **the settings form rebuilds the section from the registry as `id`/`module`/`path`**: extra keys of an entry (`exclude:`, `note:`, nested lists), comments and entries without `module:` are lost when the form is saved. The registry and the panel parse the section in two different ways, so an entry with a nested list before `module:` or `path:` is read wrongly by the registry. An empty `sources:` header is read by the registry as a missing section: the last connected module cannot be unticked in the panel, and the historical mirrors from `paths:` work again. Until the section has one parser, keep such entries by editing the config by hand and do not save the settings form over them without checking `git diff`.
+
 ## How a module gets into a project
 
 1. The folder is put into the kit's `connectors/`.
