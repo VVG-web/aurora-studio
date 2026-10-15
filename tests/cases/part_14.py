@@ -1334,6 +1334,11 @@ def test_secret_names_are_closed_in_every_windows_spelling(tmp: Path):
     # карточка `.md` с двоеточием по-прежнему открыта в мягкой мерке, а не-секреты с «:» не закрываются
     assert RC.secret_kind("Glossary/key:1.md", strict=False) == "" and RC.secret_kind("notes/a:b.txt") == ""
     assert RC.name_forms("prod:2026.pem.") == ("prod", "prod:2026.pem")
+    # имя с ведущим «:» на POSIX — обычное имя ключа: пустая часть до «:» не должна выбрасывать компоненту
+    for rel in (":x.pem", "a/:secret.key", "keys/:k.key", "foo/.:x.pem", ":.key"):
+        assert RC.secret_kind(rel) == "secret", (rel, "строгая", RC.secret_kind(rel))
+        assert RC.secret_kind(rel, strict=False) == "secret", (rel, "чтения", RC.secret_kind(rel, strict=False))
+    assert RC.secret_kind("./", strict=False) == "" and RC.secret_kind("a/./b.txt") == "" and RC.secret_kind(":a.txt") == ""
 
 
 @test

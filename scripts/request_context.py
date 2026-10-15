@@ -100,7 +100,8 @@ def secret_kind(rel: str, strict: bool = True) -> str:
     проекта и под `.aurora/`, остальное из `ANY_DEPTH_DIRS` — на любой глубине.
     """
     # обе черты: на POSIX `Path` обратную не делит, а `a\\.git\\config` на Windows — это путь
-    raw = [p for p in re.split(r"[\\/]", str(rel)) if norm_part(p)]
+    # пустые компоненты, «.» и «..» отбрасываются; имя с ведущим «:» (`:x.pem`) остаётся — на POSIX это обычное имя
+    raw = [p for p in re.split(r"[\\/]", str(rel)) if p.rstrip(". ")]
     low = [norm_part(p) for p in raw]
     if not low:
         return ""

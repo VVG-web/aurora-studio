@@ -118,13 +118,17 @@ there. The editor **does not edit** what Aurora's rules forbid editing, and expl
 - `kind: document` cards and the whole `AuroraKnowledgeDB/` except `Decisions/`, `Questions/` and `meta/` (a card is derived
   from sources, and a hand edit disappears at the next build).
 
+A new file is created only where that is legitimate, checked at both the path sent and the real path: a folder link in an
+allowed place (`Workspaces/lnk` -> `Sources/...` or `AuroraKnowledgeDB/...`) does not take creation into the mirror of an
+external system or into the knowledge base — the same for "Create" and for writing a new file.
+
 Secrets and service files are closed to the editor entirely — for reading, writing, creating, renaming and deleting (the boundary is
 the same as for the model's reads of the project: `request_context.secret_kind`): `.env*`, `*.pem`/`*.key`, `id_*` keys,
 `local/` (including `mcp.json`), `.git/`, and at the project root also `.aurora/`, `.claude/`, `.opencode/`. The check looks
 at both the path sent and the real path, so a link with an ordinary name pointing at `.env` is no way round; the same holds
 for the publication preview (`/api/files/clean`). The boundary is wider than the list above: it is set by
 `request_context.secret_kind` (including the root `runs/` and `state/`, `node_modules`, virtual environments, `.ssh`, `.aws`,
-`credentials.*`, `secrets.*`, `.mcp.json`, `.netrc`, `.npmrc`, `.pgpass`, `.dockercfg`, `id_rsa`/`id_dsa`, `*.pem`/`*.key`/`*.kdbx`/`*.ppk`). A name is compared the way the file system sees it: case-insensitively, without trailing dots and spaces and without an NTFS stream after `:` (`.env::$DATA`), and both slashes are equal. The tree does not show dot-files (`.env*`, `.git`) at all; other such files
+`credentials.*`, `secrets.*`, `.mcp.json`, `.netrc`, `.npmrc`, `.pgpass`, `.dockercfg`, `id_rsa`/`id_dsa`, `*.pem`/`*.key`/`*.kdbx`/`*.ppk`). A name is compared the way the file system sees it: case-insensitively, without trailing dots and spaces and without an NTFS stream after `:` (`.env::$DATA`), and both slashes are equal; a secret name is checked both against the part before `:` and against the full name (`prod:2026.pem` on macOS and Linux is a key, not a stream). The tree does not show dot-files (`.env*`, `.git`) at all; other such files
 stay visible, but as "open with the system app", not as text (a link with an ordinary name pointing at a secret too). An
 ordinary `Credentials.md` card opens. Files without an extension open in the editor only by a known name (`Makefile`,
 `Dockerfile`, `README`, `LICENSE`, `VERSION`, `NOTICE`, `Jenkinsfile`, `.gitignore`, `.dockerignore`, `.nvmrc`, and the like).
