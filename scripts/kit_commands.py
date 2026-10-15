@@ -407,7 +407,18 @@ def render_md(rows: list, version: str) -> str:
           "ниже `verified`, отсутствующие основания) дают код `1` и строку `AURORA-GATE` (ворота "
           "`spec_pack`, у каждого риска `id` и `detail`), без рисков — код `0` и `pass`; "
           "ошибка входа (нет базы, нет спеки) в этом режиме — код `2`. Без `--gate` скрипт "
-          "ведёт себя как прежде: риски печатаются, код `0`.", ""]
+          "ведёт себя как прежде: риски печатаются, код `0`. Остальные скрипты с флагом: "
+          "`kb_trace.py --requirements --gate` (`ops:trace`) — разрывы цепочки пункт ТЗ → "
+          "требование → эпик/история → приёмка (раздел «Разрывы» таблицы, у каждого `id` и "
+          "`detail`) дают код `1`, цепь цела — `0` и `pass`; `kb_lint.py --gate` (`kb:lint`) и "
+          "`artifact_lint.py --gate` — те же ошибки и замечания, что скрипты и так находили, "
+          "становятся пунктами вердикта, а их коды прежние (`0` — чисто, `1` — есть). У всех "
+          "трёх нет базы (или у `artifact_lint` файлов без `--profile`) в режиме ворот — код `2`. "
+          "**Режим внедрения:** `--gate=warn` (или переменная окружения `AURORA_GATE_MODE=warn`) "
+          "печатает вердикт `warn` и возвращает `0` — для маршрута проекта с историческими "
+          "красными проверками; шаг с `--gate=warn` воротами не считается и маршрут не "
+          "останавливает, предупреждение попадает в журнал. Без `--gate` строки вердикта нет и "
+          "коды прежние.", ""]
     L += ["## Развёртывание (из клона kit'а, не из проекта)", "",
           "| Команда | Что делает |", "|---|---|",
           "| `python3 aurora.py new <target>` | развернуть Aurora в проект: скелет, движок, "
@@ -505,7 +516,19 @@ def render_en_md(rows: list, names: dict) -> str:
           "grounds below `verified`, grounds missing from the base) give code `1` and an "
           "`AURORA-GATE` line (gate `spec_pack`, each risk with an `id` and a `detail`); no "
           "risks give code `0` and `pass`; an input error (no base, no spec) is code `2` in this "
-          "mode. Without `--gate` the script behaves as before: risks are printed, code `0`."]
+          "mode. Without `--gate` the script behaves as before: risks are printed, code `0`. The "
+          "other scripts with the flag: `kb_trace.py --requirements --gate` (`ops:trace`) — "
+          "chain gaps requirement item → requirement → epic/story → acceptance (the \"Gaps\" "
+          "section of the table, each with an `id` and a `detail`) give code `1`, an intact "
+          "chain gives `0` and `pass`; `kb_lint.py --gate` (`kb:lint`) and `artifact_lint.py "
+          "--gate` — the errors and findings the scripts already found become verdict items, "
+          "and their codes stay (`0` clean, `1` found). For all three, a missing base (or, for "
+          "`artifact_lint`, files without `--profile`) is code `2` in gate mode. **Adoption "
+          "mode:** `--gate=warn` (or the environment variable `AURORA_GATE_MODE=warn`) prints "
+          "the verdict `warn` and returns `0` — for a project route with historical red checks; "
+          "a step with `--gate=warn` is not a gate and does not stop the route, the warning "
+          "goes to the log. Without `--gate` there is no verdict line and the codes are as "
+          "before."]
     return "\n".join(L) + "\n"
 
 

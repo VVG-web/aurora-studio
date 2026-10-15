@@ -31,6 +31,12 @@
   python3 .aurora/scripts/artifact_lint.py US.md --profile us   # один файл
   python3 .aurora/scripts/artifact_lint.py --json
 Выход: 0 — замечаний нет, 1 — есть (годится для скрипта и CI).
+Режим ворот `--gate` (шаг маршрута с этим флагом в `cockpit/scenarios.txt`): те же замечания
+становятся вердиктом — после обычного вывода печатается машинная строка `AURORA-GATE` (ворота
+`artifact_lint`, пункт на замечание: `id` и `detail` — файл и текст), коды прежние: 0 — замечаний
+нет, 1 — есть. `--gate=warn` (или `AURORA_GATE_MODE=warn`) — режим внедрения: вердикт `warn` и
+код 0. Файлы без `--profile` в режиме ворот — код 2 («не смог отработать»). Без `--gate`
+ничего не меняется.
 """
 from __future__ import annotations
 
@@ -42,6 +48,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import clean_copy, frontmatter  # noqa: E402
+import run_summary as RS  # noqa: E402
 
 PROFILES = ("us", "ac", "spec")
 LEVEL = "warn"        # одно место, где замечание станет ошибкой после принятого храповика
@@ -597,7 +604,11 @@ def main() -> int:
     ap.add_argument("files", nargs="*", help="файлы; без них — все артефакты проекта")
     ap.add_argument("--profile", choices=PROFILES, help="профиль для переданных файлов")
     ap.add_argument("--json", action="store_true", help="машинный вывод")
-    a = ap.parse_args()
+    ap.add_argument("--gate", choices=("fail", "warn"), default="", metavar="MODE",
+                    help="режим ворот: вердикт строкой AURORA-GATE; --gate=warn — предупреждение "
+                         "вместо кода 1")
+    a = ap.parse_args(RS.gate_argv(sys.argv[1:]))
+    gate = RS.gate_mode(a.gate)
     if a.files:
         if not a.profile:
             print("artifact_lint: для файлов нужен --profile us|ac|spec", file=sys.stderr)
@@ -622,7 +633,11 @@ def main() -> int:
             print(f"\n{path}")
             for it in items:
                 print(f"  - {it['id']} [{it['level']}] {it['msg']}")
-    return 1 if found else 0
+    rc = 1 if found else 0
+    if gate:
+        rc = RS.gate_exit("artifact_lint", gate, [
+            {"id": it["id"], "detail": f"{path}: {it['msg']}"} for path, items in found for it in items])
+    return rc
 
 
 if __name__ == "__main__":

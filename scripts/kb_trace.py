@@ -15,6 +15,16 @@
   python3 .aurora/scripts/kb_trace.py --impact Основной-объект
   python3 .aurora/scripts/kb_trace.py --explain Deliverables/work/ОПЗ_v1.md
   python3 .aurora/scripts/kb_trace.py --requirements
+  python3 .aurora/scripts/kb_trace.py --requirements --gate    # разрывы цепочки = код выхода 1
+
+Режим ворот `--gate` (шаг маршрута с этим флагом в `cockpit/scenarios.txt`) относится к
+`--requirements`: разрывы цепочки пункт ТЗ → требование → эпик/история → приёмка (и открытые
+вопросы, держащие требование) — те же, что раздел «Разрывы» таблицы — становятся вердиктом. Печатается машинная строка
+`AURORA-GATE` (ворота `kb_trace`, у каждого разрыва `id` и `detail`), код выхода 1 — разрывы
+есть (ворота не пройдены), 0 — цепочка цела, 2 — нет базы. `--gate=warn` (или переменная
+`AURORA_GATE_MODE=warn`) — режим внедрения: вердикт `warn` и код 0, пока в проекте исторические
+разрывы. Без `--gate` таблица пишется как прежде и код 0; с `--impact` и `--explain` флаг
+принимается, но вердикта они не дают.
 
 Панель: `ops:impact` (флаги --impact) · `ops:trace` (флаги --requirements)
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
@@ -33,6 +43,7 @@ ROOT = "AuroraKnowledgeDB"
 PRODUCTS = ["Artifacts", "Deliverables"]
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
+import run_summary as RS  # noqa: E402 — вердикт ворот (`--gate`)
 
 REQ_DIR = "AuroraKnowledgeDB/Requirements"
 SPEC_DIR = "AuroraKnowledgeDB/Specs"
@@ -240,7 +251,7 @@ def load_questions():
     return out
 
 
-def requirements() -> int:
+def requirements(gate: str = "") -> int:
     reqs = load(REQ_DIR)
     specs = load(SPEC_DIR)
     epics = parse_activity()
@@ -259,6 +270,13 @@ def requirements() -> int:
     reqs.sort(key=lambda r: (order.get(r.get("req_kind", ""), 9), r.get("req_id", "")))
 
     rows, gaps, covered_epics = [], [], set()
+    gate_items = []
+
+    def gap(gid: str, line: str) -> None:
+        """Разрыв цепочки: строка раздела «Разрывы» и пункт вердикта ворот с тем же текстом."""
+        gaps.append(line)
+        gate_items.append({"id": gid, "detail": re.sub(r"^- \S+ ", "", line).replace("**", "")})
+
     for r in reqs:
         rid = r.get("req_id", r["_file"])
         kind = r.get("req_kind", "")
@@ -274,21 +292,22 @@ def requirements() -> int:
         qcell = ", ".join(f"{qid}{'❗' if due and due < TODAY else ''}" for qid, _st, due in q_list) or "—"
         for qid, _st, due in q_list:
             mark = " (срок просрочен)" if due and due < TODAY else ""
-            gaps.append(f"- ⏳ **{rid}** заблокировано открытым вопросом **{qid}**{mark}")
+            gap("req-blocked-by-question", f"- ⏳ **{rid}** заблокировано открытым вопросом **{qid}**{mark}")
         if r.get("req_status") == "implemented" and not acc_list:
-            gaps.append(f"- ⚠️ **{rid}** помечено `implemented`, но отчёта приёмки нет "
-                        "(статус поставлен без испытаний)")
+            gap("implemented-without-acceptance",
+                f"- ⚠️ **{rid}** помечено `implemented`, но отчёта приёмки нет "
+                "(статус поставлен без испытаний)")
 
         if kind != "functional" or not my_epics:
             rows.append(f"| {gk} | {tz} | {work} | [[{rid}]] | {subs} | — | — | {spec} | {acc} | {qcell} |")
             if kind == "functional":
-                gaps.append(f"- 🔴 **{rid}** ({subs}) — требование ТЗ **не покрыто ни одной US**")
+                gap("req-without-us", f"- 🔴 **{rid}** ({subs}) — требование ТЗ **не покрыто ни одной US**")
             continue
 
         first = True
         for ek in my_epics:
             if ek not in epics:
-                gaps.append(f"- ⚠️ **{rid}** — ссылается на несуществующий «{ek}»")
+                gap("epic-missing", f"- ⚠️ **{rid}** — ссылается на несуществующий «{ek}»")
                 continue
             covered_epics.add(ek)
             act, etitle, us_list = epics[ek]
@@ -296,7 +315,7 @@ def requirements() -> int:
                 rows.append(f"| {gk if first else '↑'} | {tz if first else '↑'} | {work if first else '↑'} "
                             f"| {'[['+rid+']]' if first else '↑'} | {subs if first else '↑'} | {etitle} | _нет US_ | {spec} "
                             f"| {acc if first else '↑'} | {qcell if first else '↑'} |")
-                gaps.append(f"- ⚠️ **{rid}** → «{etitle}» — эпик без пользовательских историй")
+                gap("epic-without-us", f"- ⚠️ **{rid}** → «{etitle}» — эпик без пользовательских историй")
                 first = False
                 continue
             for us in us_list:
@@ -309,7 +328,7 @@ def requirements() -> int:
     orphan = [k for k in epics if k not in covered_epics]
     for k in orphan:
         act, etitle, us_list = epics[k]
-        gaps.append(f"- 🔴 **{etitle}** ({act}, US: {len(us_list)}) — работа **без требования в ТЗ**")
+        gap("work-without-req", f"- 🔴 **{etitle}** ({act}, US: {len(us_list)}) — работа **без требования в ТЗ**")
 
     n_us = sum(len(v[2]) for v in epics.values())
     n_func = sum(1 for r in reqs if r.get("req_kind") == "functional")
@@ -339,7 +358,12 @@ def requirements() -> int:
           f"строк {len(rows)}, приёмок {sum(len(v) for v in acceptance.values())}, "
           f"открытых вопросов {sum(len(v) for v in questions.values())}, "
           f"разрывов {len(set(gaps))} → {OUT}")
-    return 0
+    if not gate:
+        return 0
+    seen = {}
+    for it in gate_items:               # одна строка раздела «Разрывы» — один пункт вердикта
+        seen.setdefault(it["detail"], it)
+    return RS.gate_exit("kb_trace", gate, list(seen.values()))
 
 
 def main() -> int:
@@ -349,12 +373,16 @@ def main() -> int:
     ap.add_argument("--explain", metavar="FILE", help="документ: на чём он собран")
     ap.add_argument("--requirements", action="store_true",
                     help="сквозная таблица требований в MOC/Трассировка-требований.md")
-    a = ap.parse_args()
+    ap.add_argument("--gate", choices=("fail", "warn"), default="", metavar="MODE",
+                    help="режим ворот: вердикт строкой AURORA-GATE; --gate=warn — предупреждение "
+                         "вместо кода 1")
+    a = ap.parse_args(RS.gate_argv(sys.argv[1:]))
+    gate = RS.gate_mode(a.gate)
     if not os.path.isdir(ROOT):
         print(f"kb_trace: нет {ROOT}/ — запускайте из корня проекта", file=sys.stderr)
-        return 1
+        return 2 if gate else 1       # в воротах «не смог отработать» не смешивается с «не пройдены»
     if a.requirements:
-        return requirements()
+        return requirements(gate)
     if a.explain:
         return explain(a.explain)
     card = a.impact or a.target

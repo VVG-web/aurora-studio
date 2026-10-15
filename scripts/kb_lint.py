@@ -24,6 +24,11 @@
 Легаси-карточки без status валидны (= imported) и не флагуются за отсутствие полей.
 Запуск из корня репозитория: python3 .aurora/scripts/kb_lint.py [--summary]
 Выход: код 0 если ошибок нет, 1 если есть (пригодно для pre-commit/CI).
+Режим ворот `--gate` (шаг маршрута с этим флагом в `cockpit/scenarios.txt`): те же ошибки
+становятся вердиктом — машинная строка `AURORA-GATE` (ворота `kb_lint`, пункт на ошибку: `id` и
+`detail`), коды прежние: 0 — ошибок нет, 1 — есть. `--gate=warn` (или `AURORA_GATE_MODE=warn`)
+— режим внедрения: вердикт `warn` и код 0, пока в проекте исторические ошибки. Нет базы в
+режиме ворот — код 2 («не смог отработать»). Без `--gate` ничего не меняется.
 
 Панель: `kb:lint`
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
@@ -38,6 +43,7 @@ from aurora_common import (OWN_LIFECYCLE, STATUSES, aliases, body_hash, card_bod
                            card_sources, config_list, config_value, frontmatter, is_service, not_a_card_link,
                            leaf_name, link_refs, project_terms)
 from card_types import lint_section, safe_registry
+import run_summary as RS
 
 ROOT = "AuroraKnowledgeDB"
 
@@ -198,7 +204,11 @@ def main():
                     help="то же, что --only, но список путей читается из файла по строке "
                          "на путь: git печатает кириллицу в кавычках и восьмеричных "
                          "escape, и через оболочку такой путь не доходит")
-    args = ap.parse_args()
+    ap.add_argument("--gate", choices=("fail", "warn"), default="", metavar="MODE",
+                    help="режим ворот: вердикт строкой AURORA-GATE; --gate=warn — предупреждение "
+                         "вместо кода 1")
+    args = ap.parse_args(RS.gate_argv(sys.argv[1:]))
+    gate = RS.gate_mode(args.gate)
     summary, full = args.summary, args.full
     picked = list(args.only or [])
     if args.only_from and os.path.isfile(args.only_from):
@@ -210,7 +220,13 @@ def main():
 
     if not os.path.isdir(ROOT):
         print(f"kb_lint: нет папки {ROOT}/ — запускайте из корня репозитория проекта", file=sys.stderr)
-        return 1
+        return 2 if gate else 1       # в воротах «не смог отработать» не смешивается с «не пройдены»
+
+    def verdict() -> int:
+        """Код выхода: 1 при ошибках, 0 без них; в режиме ворот ещё и строка вердикта."""
+        if not gate:
+            return 1 if errors else 0
+        return RS.gate_exit("kb_lint", gate, [{"id": "lint-error", "detail": e} for e in errors])
 
     base_linked = root_link_escapes(ROOT)
     releases = set() if base_linked else load_releases()
@@ -584,7 +600,7 @@ def main():
         except Exception:  # noqa: BLE001 — раздел о шаблонах не должен ронять линтер базы
             pass
     if summary or not errors:
-        return 1 if errors else 0
+        return verdict()
 
     # Список из сотен строк подряд читать нечем: одинаковые беды идут вперемешку, и
     # непонятно, это одна причина или двести разных. Группируем по виду и говорим,
@@ -646,7 +662,7 @@ def main():
             print(f"   - {e}")
         if len(rest) > 20:
             print(f"   … ещё {len(rest) - 20}")
-    return 1
+    return verdict()
 
 
 if __name__ == "__main__":

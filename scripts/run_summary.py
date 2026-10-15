@@ -417,6 +417,40 @@ def parse_gate(lines) -> list:
     return out
 
 
+def gate_argv(argv) -> list:
+    """Аргументы скрипта-ворот: голый `--gate` становится `--gate=fail`.
+
+    Флаг принимает необязательное значение (`--gate=warn`), а argparse отдал бы голому `--gate`
+    следующий аргумент командной строки (`скрипт --gate файл.md`). Нормализация до разбора
+    оставляет флаг флагом: значение пишется только через `=`."""
+    return ["--gate=fail" if a == "--gate" else a for a in argv or []]
+
+
+def gate_mode(value) -> str:
+    """Режим ворот скрипта: «» — флага нет (старое поведение), `fail` — ворота, `warn` — внедрение.
+
+    `warn` включает и переменная окружения `AURORA_GATE_MODE=warn` (маршрут проекта с
+    историческими красными проверками): вердикт печатается, но код выхода 0."""
+    mode = str(value or "").strip().lower()
+    if not mode:
+        return ""
+    if os.environ.get("AURORA_GATE_MODE", "").strip().lower() == "warn":
+        return "warn"
+    return "warn" if mode == "warn" else "fail"
+
+
+def gate_exit(gate: str, mode: str, items=None) -> int:
+    """Печатает вердикт ворот и возвращает код выхода скрипта: нет пунктов — `pass` и 0; пункты в
+    режиме `fail` — `fail` и 1; в режиме `warn` — `warn` и 0 (маршрут идёт дальше с предупреждением).
+    Режима нет (флага `--gate` нет) — ничего не печатает и возвращает 0: вызывающий зовёт функцию
+    только с флагом, а без него возвращает прежний код."""
+    if not mode:
+        return 0
+    verdict = "pass" if not items else ("warn" if mode == "warn" else "fail")
+    print(emit_gate(gate, verdict, items))
+    return 1 if verdict == "fail" else 0
+
+
 def gate_verdict(gates) -> str:
     """Худший вердикт из разобранных строк (fail > warn > pass); строк нет — пустая строка."""
     found = {g.get("verdict") for g in gates or []}

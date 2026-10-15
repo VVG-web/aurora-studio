@@ -3396,3 +3396,146 @@ def test_spec_pack_gate_mode_turns_dor_risks_into_exit_code(tmp: Path):
     cp = run("spec_pack.py", "SPEC-999", "--gate", cwd=root, expect_rc=2)
     assert "AURORA-GATE" not in cp.stdout
     run("spec_pack.py", "SPEC-999", cwd=root, expect_rc=1)
+
+
+def _gate_of(cp) -> list:
+    """Вердикты ворот из вывода скрипта — тем же разбором, каким читает маршрут."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import run_summary as RS
+    return RS.parse_gate(cp.stdout.splitlines())
+
+
+def _gate_env(**extra) -> dict:
+    """Окружение для ручного запуска скрипта: без чужого режима ворот, с добавками."""
+    env = {k: v for k, v in os.environ.items() if k != "AURORA_GATE_MODE"}
+    env.update(extra)
+    return env
+
+
+@test
+def test_kb_trace_gate_mode_turns_chain_gaps_into_exit_code(tmp: Path):
+    """kb_trace --requirements --gate: разрывы цепочки — код 1 и строка AURORA-GATE; цепь цела — 0.
+
+    Без `--gate` таблица пишется как раньше, код 0 и строки нет (старый маршрут не меняется).
+    `--gate=warn` и переменная `AURORA_GATE_MODE=warn` — режим внедрения: вердикт warn, код 0.
+    Нет базы в режиме ворот — код 2, без `--gate` прежний 1. Голый `--gate` перед позиционным
+    аргументом не съедает его.
+    """
+    root = make_project(tmp)
+    card(root, "Requirements/REQ-001-Обмен.md", "", type="requirement", req_id="REQ-001",
+         req_kind="functional", req_status="stated", subsystem="Шина", status="imported")
+    card(root, "Requirements/REQ-002-Работа.md", "", type="requirement", req_id="REQ-002",
+         req_kind="work", req_status="stated", status="imported")
+
+    # старый вызов: разрыв виден в таблице, код 0, строки вердикта нет
+    cp = run("kb_trace.py", "--requirements", cwd=root, expect_rc=0)
+    assert "AURORA-GATE" not in cp.stdout and "разрывов 1" in cp.stdout, cp.stdout
+    assert "не покрыто ни одной US" in (root / "AuroraKnowledgeDB/MOC/Трассировка-требований.md"
+                                        ).read_text(encoding="utf-8")
+
+    # --gate: код 1, вердикт fail, пункт — тот же разрыв, без разметки и значка
+    cp = run("kb_trace.py", "--requirements", "--gate", cwd=root, expect_rc=1)
+    gates = _gate_of(cp)
+    assert len(gates) == 1 and gates[0]["gate"] == "kb_trace" and gates[0]["verdict"] == "fail", cp.stdout
+    assert [it["id"] for it in gates[0]["items"]] == ["req-without-us"], gates
+    detail = gates[0]["items"][0]["detail"]
+    assert detail.startswith("REQ-001") and "**" not in detail and "🔴" not in detail, detail
+
+    # режим внедрения: вердикт warn, код 0 — флагом и переменной
+    cp = run("kb_trace.py", "--requirements", "--gate=warn", cwd=root, expect_rc=0)
+    assert [g["verdict"] for g in _gate_of(cp)] == ["warn"], cp.stdout
+    env = _gate_env(AURORA_GATE_MODE="warn")
+    cp = subprocess.run([sys.executable, str(KIT / "scripts" / "kb_trace.py"), "--requirements", "--gate"],
+                        cwd=str(root), capture_output=True, text=True, encoding="utf-8", env=env)
+    assert cp.returncode == 0 and [g["verdict"] for g in _gate_of(cp)] == ["warn"], (cp.returncode, cp.stdout)
+
+    # цепь цела (остался только требование работы): код 0 и pass
+    (root / "AuroraKnowledgeDB/Requirements/REQ-001-Обмен.md").unlink()
+    cp = run("kb_trace.py", "--requirements", "--gate", cwd=root, expect_rc=0)
+    gates = _gate_of(cp)
+    assert len(gates) == 1 and gates[0]["verdict"] == "pass" and gates[0]["items"] == [], cp.stdout
+
+    # --gate принимается и с --impact (вердикта он не даёт), позиционный аргумент не съедается
+    card(root, "Concepts/Шина.md", "Текст.", type="concept", status="draft")
+    cp = run("kb_trace.py", "--gate", "Шина", cwd=root, expect_rc=0)
+    assert "Влияние карточки Шина" in cp.stdout and "AURORA-GATE" not in cp.stdout, cp.stdout
+
+    # нет базы: в воротах код 2, без них прежний 1
+    empty = tmp / "empty"
+    empty.mkdir()
+    run("kb_trace.py", "--requirements", "--gate", cwd=empty, expect_rc=2)
+    run("kb_trace.py", "--requirements", cwd=empty, expect_rc=1)
+
+
+@test
+def test_kb_lint_gate_mode_keeps_codes_and_names_verdict(tmp: Path):
+    """kb_lint --gate: коды прежние (0 — чисто, 1 — ошибки), добавлена строка AURORA-GATE.
+
+    Без `--gate` строки нет. `--gate=warn` при ошибках — вердикт warn и код 0. С `--summary` и
+    `--only` вердикт тоже печатается (шаг с `--gate` не падает на неизвестном аргументе).
+    """
+    root = make_project(tmp)
+    # связь на себя: карточка без входящих и исходящих ссылок линтеру не нравится
+    card(root, "Concepts/Шина.md", "Текст.", type="concept", status="draft", related='["[[Шина]]"]')
+
+    cp = run("kb_lint.py", "--gate", cwd=root, expect_rc=0)
+    gates = _gate_of(cp)
+    assert len(gates) == 1 and gates[0]["gate"] == "kb_lint" and gates[0]["verdict"] == "pass", cp.stdout
+    assert gates[0]["items"] == [], gates
+
+    card(root, "Concepts/Сбой.md", "Ссылка на [[Нет-такой-карточки]].", type="concept", status="draft",
+         related='["[[Шина]]"]')
+    old = run("kb_lint.py", cwd=root, expect_rc=1)
+    assert "AURORA-GATE" not in old.stdout, "без --gate строка вердикта не печатается"
+    for extra in ((), ("--summary",), ("--full",)):
+        cp = run("kb_lint.py", *extra, "--gate", cwd=root, expect_rc=1)
+        gates = _gate_of(cp)
+        assert len(gates) == 1 and gates[0]["verdict"] == "fail", (extra, cp.stdout)
+        assert any("Нет-такой-карточки" in it["detail"] for it in gates[0]["items"]), gates
+
+    cp = run("kb_lint.py", "--gate=warn", cwd=root, expect_rc=0)
+    gates = _gate_of(cp)
+    assert [g["verdict"] for g in gates] == ["warn"] and gates[0]["items"], cp.stdout
+
+    # хук коммита: итоговая строка «ошибок N» остаётся читаемой, вердикт не ломает её разбор
+    cp = run("kb_lint.py", "--gate", "--only", "AuroraKnowledgeDB/Concepts/Шина.md", cwd=root, expect_rc=0)
+    assert [g["verdict"] for g in _gate_of(cp)] == ["pass"], cp.stdout
+
+    # нет базы: в воротах код 2, без них прежний 1
+    empty = tmp / "empty"
+    empty.mkdir()
+    run("kb_lint.py", "--gate", cwd=empty, expect_rc=2)
+    run("kb_lint.py", cwd=empty, expect_rc=1)
+
+
+@test
+def test_artifact_lint_gate_mode_keeps_codes_and_names_verdict(tmp: Path):
+    """artifact_lint --gate: коды прежние (0 — чисто, 1 — замечания), добавлена строка AURORA-GATE.
+
+    Без `--gate` строки нет; `--gate=warn` — вердикт warn и код 0; голый `--gate` перед именем
+    файла его не съедает; файл без `--profile` в воротах — по-прежнему код 2.
+    """
+    root = make_project(tmp)
+    clean = run("artifact_lint.py", "--gate", cwd=root, expect_rc=0)
+    gates = _gate_of(clean)
+    assert len(gates) == 1 and gates[0]["gate"] == "artifact_lint" and gates[0]["verdict"] == "pass", clean.stdout
+
+    (root / "Artifacts/us").mkdir(parents=True, exist_ok=True)
+    (root / "Artifacts/us/US-1.md").write_text("# История\n\n{{Роль}} ???\n", encoding="utf-8")
+    old = run("artifact_lint.py", cwd=root, expect_rc=1)
+    assert "AURORA-GATE" not in old.stdout, "без --gate строка вердикта не печатается"
+
+    cp = run("artifact_lint.py", "--gate", cwd=root, expect_rc=1)
+    gates = _gate_of(cp)
+    assert len(gates) == 1 and gates[0]["verdict"] == "fail" and gates[0]["items"], cp.stdout
+    assert all(it["id"] and "Artifacts/us/US-1.md" in it["detail"] for it in gates[0]["items"]), gates
+    assert any(it["id"] == "US-23" for it in gates[0]["items"]), gates
+
+    cp = run("artifact_lint.py", "--gate=warn", cwd=root, expect_rc=0)
+    gates = _gate_of(cp)
+    assert [g["verdict"] for g in gates] == ["warn"] and gates[0]["items"], cp.stdout
+
+    # голый --gate перед файлом: файл остаётся файлом, а не значением флага
+    cp = run("artifact_lint.py", "--gate", "Artifacts/us/US-1.md", "--profile", "us", cwd=root, expect_rc=1)
+    assert [g["verdict"] for g in _gate_of(cp)] == ["fail"], cp.stdout
+    run("artifact_lint.py", "--gate", "Artifacts/us/US-1.md", cwd=root, expect_rc=2)
