@@ -1170,6 +1170,127 @@ def test_a_gate_stop_has_its_own_reason_everywhere(tmp: Path):
 
 
 @test
+def test_a_gate_verdict_line_round_trips_and_reads_strictly(tmp: Path):
+    """Строка `AURORA-GATE`: испускание и разбор сходятся, всё непонятное читается как fail.
+
+    Скрипт-ворота печатает вердикт машинной строкой (`emit_gate`), маршрут разбирает её
+    (`parse_gate`). Неизвестный вердикт и неразобранная строка с меткой — `fail`: ворота, чей
+    итог нельзя прочесть, не пропускают. Нет строк — пустой список (решает код выхода). Худший
+    из вердиктов — fail, затем warn.
+    """
+    import importlib
+    sys.path.insert(0, str(KIT / "scripts"))
+    RS = importlib.import_module("run_summary")
+    line = RS.emit_gate("spec", "fail", [{"id": "dor-1", "detail": "нет критерия"}, "dor-2"],
+                        waivable=True)
+    assert line.startswith("AURORA-GATE ") and RS.MARK_GATE == "AURORA-GATE ", line
+    got = RS.parse_gate(["шум", line, "ещё шум"])
+    assert got == [{"gate": "spec", "verdict": "fail", "waivable": True,
+                    "items": [{"id": "dor-1", "detail": "нет критерия"},
+                              {"id": "dor-2", "detail": ""}]}], got
+    for v in ("pass", "warn", "fail"):
+        assert RS.parse_gate([RS.emit_gate("g", v, [])])[0]["verdict"] == v, v
+    assert RS.parse_gate([RS.emit_gate("g", "ok", [])])[0]["verdict"] == "fail", \
+        "неизвестный вердикт при испускании не стал fail"
+    assert RS.parse_gate(['AURORA-GATE {"gate": "g", "verdict": "maybe"}'])[0]["verdict"] == "fail", \
+        "неизвестный вердикт при разборе не стал fail"
+    assert RS.parse_gate(['AURORA-GATE {"gate": "g"}'])[0]["verdict"] == "fail", "нет вердикта — не fail"
+    broken = RS.parse_gate(["AURORA-GATE {не json"])
+    assert broken and broken[0]["verdict"] == "fail", "неразобранная строка пропустила ворота"
+    assert RS.parse_gate(["AURORA-SUMMARY {}", "просто текст"]) == [] and RS.parse_gate(None) == []
+    assert RS.gate_verdict([]) == ""
+    assert RS.gate_verdict(RS.parse_gate([RS.emit_gate("a", "pass"), RS.emit_gate("b", "warn")])) == "warn"
+    assert RS.gate_verdict(RS.parse_gate([RS.emit_gate("a", "warn"), RS.emit_gate("b", "fail"),
+                                          RS.emit_gate("c", "pass")])) == "fail"
+    assert RS.parse(["AURORA-GATE {}"]) == [], "итог агента принял строку ворот за свою"
+
+
+@test
+def test_a_gate_verdict_line_decides_the_route_fail_closed(tmp: Path):
+    """Вердикт ворот в маршруте: скрыт из консоли, пункты — в журнале, расхождение — fail-closed.
+
+    Код 1 — ворота не пройдены, и строка показывается списком нарушенных пунктов (id и detail).
+    Код 0 при вердикте fail тоже останавливает маршрут (причина gated). Вердикт warn при коде 0 —
+    маршрут идёт дальше, предупреждение в журнале. Код 0 без строки — ок: скрипты прошлых
+    выпусков не ломаются. Сама строка в консоль не попадает; вердикт лежит в записи шага. Шаг
+    без `--gate` вердиктом не останавливается. Вердикт, объявленный строкой, — не обрыв сети,
+    даже если пункты называют «timeout».
+    """
+    import importlib
+    sys.path.insert(0, str(KIT / "cockpit"))
+    sys.path.insert(0, str(KIT / "scripts"))
+    rr = importlib.import_module("route_runner")
+    RS = importlib.import_module("run_summary")
+    p18 = importlib.import_module("cases.part_18")
+    item = [{"id": "dor-7", "detail": "нет владельца риска"}]
+
+    def go(rc, lines, flags=("--gate",)):
+        sc = {"id": "gate", "title": "С воротами", "when": "", "group": "база", "steps": [
+            {"manual": False, "cmd": "kb:repair", "why": "", "flags": ["--apply"]},
+            {"manual": False, "cmd": "kb:lint", "why": "ворота", "flags": list(flags)},
+            {"manual": False, "cmd": "agent:build", "why": "", "flags": ["--apply"]}]}
+        ck = p18.FakePanel(tmp, {"kb:repair": [(0, [])], "kb:lint": [(rc, lines)],
+                                 "agent:build": [(0, [])]}, [sc])
+        logs = []
+        route = rr.RouteRun(ck, str(tmp), sc, True, log=logs.append)
+        return route.run(), ck, "\n".join(logs), route
+
+    # код 1 + fail: остановка, пункты списком, строка в консоли не видна
+    res, ck, text, route = go(1, ["шум", RS.emit_gate("spec", "fail", item)])
+    assert res["reason"] == "gated" and res["failed"] == "kb:lint", res
+    assert "AURORA-GATE" not in text, "машинная строка вердикта попала в консоль: " + text
+    assert "dor-7: нет владельца риска" in text and "Ворота «spec» не пройдены" in text, \
+        "нарушенные пункты не показаны в журнале: " + text
+    rec = [x for x in route.summary if x["cmd"] == "kb:lint"][0]
+    assert rec["gate_verdict"] == "fail" and rec["gate_items"][0]["id"] == "dor-7", rec
+
+    # код 0 + fail: расхождение читается как fail-closed
+    res, ck, text, route = go(0, [RS.emit_gate("spec", "fail", item)])
+    assert res["reason"] == "gated" and res["failed"] == "kb:lint" and not res["ok"], \
+        "код 0 при вердикте fail пропустил ворота: " + str(res)
+    assert [c[1] for c in ck.calls] == ["kb:repair", "kb:lint"], "маршрут пошёл дальше: " + str(ck.calls)
+    assert "завершились кодом 0, но их вердикт" in text, "расхождение не названо: " + text
+    assert not any("kb:lint" in k for k in ck.route_state["done"]), "ворота попали в пройденные"
+
+    # код 0 + warn: идёт дальше, предупреждение в журнале
+    res, ck, text, route = go(0, [RS.emit_gate("spec", "warn", item)])
+    assert res["ok"] and [c[1] for c in ck.calls] == ["kb:repair", "kb:lint", "agent:build"], res
+    assert "предупреждают" in text and "dor-7" in text, "предупреждение не в журнале: " + text
+    assert [x for x in route.summary if x["cmd"] == "kb:lint"][0]["gate_verdict"] == "warn"
+
+    # код 0 + pass и код 0 без строки: ок
+    for lines in ([RS.emit_gate("spec", "pass", [])], ["всё хорошо"]):
+        res, ck, text, route = go(0, lines)
+        assert res["ok"], (lines, res)
+    assert "gate_verdict" not in [x for x in route.summary if x["cmd"] == "kb:lint"][0], \
+        "шаг без строки получил вердикт"
+
+    # неизвестный вердикт при коде 0 — fail
+    res, ck, text, route = go(0, ['AURORA-GATE {"gate": "spec", "verdict": "maybe"}'])
+    assert res["reason"] == "gated", "неизвестный вердикт пропустил ворота: " + str(res)
+
+    # шаг без --gate вердиктом маршрут не останавливает
+    res, ck, text, route = go(0, [RS.emit_gate("spec", "fail", item)], flags=())
+    assert res["ok"] and "завершились кодом 0" not in text, "обычный шаг остановлен вердиктом"
+
+    # вердикт строкой — не обрыв сети: ворота не ждут бэкенды
+    res, ck, text, route = go(1, ["timeout при проверке", RS.emit_gate("spec", "fail",
+                                  [{"id": "net", "detail": "timeout"}])])
+    assert res["reason"] == "gated" and len(ck.calls) == 2 and not route.wait, \
+        "вердикт принят за сетевой сбой: " + str(ck.calls)
+
+    # страница и история тоже прячут строку
+    ui = panel_sources()
+    assert 'GATE_MARK = "AURORA-GATE "' in ui and ui.count("startsWith(GATE_MARK)") >= 2, \
+        "панель показывает машинную строку ворот"
+    assert "RS.MARK_GATE" in (KIT / "cockpit" / "aurora_cockpit.py").read_text(encoding="utf-8")
+    for lang in ("ru", "en"):
+        core = json.loads((KIT / "cockpit" / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))
+        for k in ("route.gate_fail", "route.gate_warn", "route.gate_item", "route.gate_mismatch"):
+            assert core.get(k), f"{lang}: нет строки {k}"
+
+
+@test
 def test_a_stopped_route_survives_a_panel_restart(tmp: Path):
     """Остановленный маршрут переживает перезапуск панели: «Продолжить маршрут» после него.
 

@@ -388,8 +388,20 @@ def render_md(rows: list, version: str) -> str:
           "самому скрипту: скрипт без ворот-режима его не знает, поэтому `--gate` ставится "
           "только у шагов, чьи скрипты его поддерживают. Вывод ворот не должен содержать "
           "признаков обрыва сети («timeout», «ssl», «connection error» и т. п.): код `1` с ними "
-          "маршрут принимает за сетевой сбой и ждёт, а не за вердикт. В `aurora.py route` "
-          "остановка на воротах — выход `1` (остановлен), а не `2` (сбой выполнения).", ""]
+          "маршрут принимает за сетевой сбой и ждёт, а не за вердикт (если ворота не назвали "
+          "вердикт машинной строкой, см. ниже). В `aurora.py route` "
+          "остановка на воротах — выход `1` (остановлен), а не `2` (сбой выполнения).", "",
+          "**Строка вердикта.** Скрипт-ворота может, кроме кода выхода, напечатать машинную "
+          "строку `AURORA-GATE {\"gate\": \"<имя>\", \"verdict\": \"pass|warn|fail\", "
+          "\"items\": [{\"id\": \"…\", \"detail\": \"…\"}], \"waivable\": false}` "
+          "(`run_summary.emit_gate`). Консоль её не показывает, а нарушенные пункты (`id` и "
+          "`detail`) маршрут выводит в журнал списком, и вердикт ложится в запись шага. Правила "
+          "шага-ворот: код `1` — не пройдены; код `0` при вердикте `fail` — тоже не пройдены "
+          "(расхождение читается как fail-closed, неизвестный вердикт — это `fail`); `warn` при "
+          "коде `0` — маршрут идёт дальше с предупреждением в журнале (режим внедрения); код `0` "
+          "без строки — ок: скрипты прошлых выпусков и скрипты без адаптера не ломаются, строка "
+          "— деталь, а не вердикт. Шаг, назвавший вердикт строкой, за сетевой сбой не "
+          "принимается. У шага без `--gate` вердикт только записывается и показывается.", ""]
     L += ["## Развёртывание (из клона kit'а, не из проекта)", "",
           "| Команда | Что делает |", "|---|---|",
           "| `python3 aurora.py new <target>` | развернуть Aurora в проект: скелет, движок, "
@@ -467,8 +479,21 @@ def render_en_md(rows: list, names: dict) -> str:
           "so it is set only on steps whose scripts support it. A gate's output must not contain "
           "network-failure signs (\"timeout\", \"ssl\", \"connection error\" and the like): "
           "code `1` with them is taken by the route for a network failure and waited out, not for "
-          "a verdict. In `aurora.py route` a stop at a gate exits `1` (stopped), not `2` "
-          "(execution failure)."]
+          "a verdict (unless the gate named its verdict with a machine line, see below). In "
+          "`aurora.py route` a stop at a gate exits `1` (stopped), not `2` "
+          "(execution failure).", "",
+          "**Verdict line.** Besides the exit code, a gate script may print a machine line "
+          "`AURORA-GATE {\"gate\": \"<name>\", \"verdict\": \"pass|warn|fail\", "
+          "\"items\": [{\"id\": \"...\", \"detail\": \"...\"}], \"waivable\": false}` "
+          "(`run_summary.emit_gate`). The console does not show it; the route lists the violated "
+          "items (`id` and `detail`) in the journal and stores the verdict in the step record. "
+          "Rules for a gate step: code `1` means not passed; code `0` with verdict `fail` is "
+          "also not passed (a mismatch is read fail-closed, an unknown verdict counts as "
+          "`fail`); `warn` with code `0` lets the route go on with a warning in the journal "
+          "(adoption mode); code `0` without a line is fine: scripts of earlier releases and "
+          "scripts without the adapter keep working, the line is a detail, not the verdict. A "
+          "step that named its verdict with the line is not taken for a network failure. For a "
+          "step without `--gate` the verdict is only recorded and shown."]
     return "\n".join(L) + "\n"
 
 

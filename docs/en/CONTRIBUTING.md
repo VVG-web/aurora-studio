@@ -232,6 +232,23 @@ f-string).
 A command that needs a button in a route is added with a line to `cockpit/scenarios.txt`; the step's explanation is translated
 in `cockpit/i18n/data/en.json` (section `scenarios`, the key is the Russian text).
 
+### A gate script: the exit code and the verdict line
+
+A quality gate is a route step with the `--gate` flag (`cockpit/scenarios.txt`); the script must know the flag. Codes: `0` — ok, `1` — the gate is not passed, `2` and above — an execution failure (the reference is `docs/en/commands.md`, "Exit codes and quality gates"). Besides the code, a script may print a **machine verdict line**, so the route shows which items are violated rather than just "not passed":
+
+```python
+import run_summary
+print(run_summary.emit_gate("spec-dor", "fail", [{"id": "dor-3", "detail": "no risk owner"}]))
+sys.exit(1)
+```
+
+- the verdict is `pass`, `warn` or `fail`; any other value is read as `fail`;
+- the items are `{"id", "detail"}`; a person sees them in the route journal, and the line itself is not shown in the console;
+- **the code and the line must agree.** Code `0` with verdict `fail` is read by the route as "not passed" (fail-closed), not as "ok";
+- `warn` with code `0` does not stop the route: the warning goes to the journal (adoption mode for a new rule);
+- code `0` without a line is fine: the line is a detail, not the verdict, so scripts of earlier releases work as before;
+- a step that printed a verdict is not taken for a network failure, while output without the line that contains "timeout" and the like is (code `1` and waiting for the network).
+
 ## How to add a source module, a panel section, a skin
 
 | What | Where | The contract |

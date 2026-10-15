@@ -23,6 +23,7 @@ import os
 import subprocess
 
 MARK = "AURORA-SUMMARY "
+MARK_GATE = "AURORA-GATE "
 KB = "AuroraKnowledgeDB"
 
 # Статусы шагов агентов, где шаг — документ-источник (у шага есть `source`).
@@ -347,3 +348,76 @@ def parse(lines) -> list:
             except ValueError:
                 pass
     return out
+
+
+# ---------------------------------------------------------------- вердикт ворот качества
+#
+# Код выхода шага говорит «ворота пройдены или нет», а машинная строка `AURORA-GATE {...}` —
+# почему: какие пункты нарушены. Строка — деталь, а не вердикт: у шага без неё (скрипты прошлых
+# выпусков, скрипты без адаптера) решает код выхода, как и раньше. Расхождение кода и строки
+# читается в пользу строгости: код 0 при вердикте `fail` ворота не пропускают (fail-closed).
+
+GATE_VERDICTS = ("pass", "warn", "fail")
+GATE_MAX_ITEMS = 50          # длиннее список не нужен ни журналу, ни записи шага
+
+
+def _gate_verdict(value) -> str:
+    """Вердикт из строки; всё неизвестное — `fail`: ворота не гадают в пользу прохода."""
+    v = str(value or "").strip().lower()
+    return v if v in GATE_VERDICTS else "fail"
+
+
+def _gate_items(items) -> list:
+    """Нарушенные пункты в виде [{"id", "detail"}]: принимает словари и голые строки."""
+    out = []
+    for it in items if isinstance(items, (list, tuple)) else []:
+        if isinstance(it, dict):
+            iid, detail = it.get("id"), it.get("detail")
+        else:
+            iid, detail = it, ""
+        out.append({"id": _short(iid, 120), "detail": _short(detail, 300)})
+        if len(out) >= GATE_MAX_ITEMS:
+            break
+    return out
+
+
+def emit_gate(gate: str, verdict: str, items=None, waivable: bool = False) -> str:
+    """Машинная строка вердикта ворот для маршрута. Печатает её скрипт-ворота (`--gate`).
+
+    `gate` — имя ворот, `verdict` — pass | warn | fail (иное пишется как fail), `items` —
+    нарушенные пункты (`{"id", "detail"}` или строки), `waivable` — можно ли пройти ворота
+    осознанным исключением (пока только метка: маршрут её не читает).
+    """
+    return MARK_GATE + json.dumps(
+        {"gate": str(gate or ""), "verdict": _gate_verdict(verdict),
+         "items": _gate_items(items), "waivable": bool(waivable)}, ensure_ascii=False)
+
+
+def parse_gate(lines) -> list:
+    """Вердикты ворот из вывода команды — все машинные строки по порядку.
+
+    Неразобранная строка с меткой — не пропуск, а `fail`: ворота, чей вердикт нельзя прочесть,
+    не пропускают. Строк нет — список пуст (решает код выхода).
+    """
+    out = []
+    for line in lines or []:
+        line = str(line)
+        if not line.startswith(MARK_GATE):
+            continue
+        try:
+            raw = json.loads(line[len(MARK_GATE):])
+        except ValueError:
+            raw = None
+        if not isinstance(raw, dict):
+            out.append({"gate": "", "verdict": "fail", "waivable": False,
+                        "items": [{"id": "gate-line", "detail": _short(line, 120)}]})
+            continue
+        out.append({"gate": str(raw.get("gate") or ""), "verdict": _gate_verdict(raw.get("verdict")),
+                    "items": _gate_items(raw.get("items")), "waivable": bool(raw.get("waivable"))})
+    return out
+
+
+def gate_verdict(gates) -> str:
+    """Худший вердикт из разобранных строк (fail > warn > pass); строк нет — пустая строка."""
+    found = {g.get("verdict") for g in gates or []}
+    return next((v for v in ("fail", "warn", "pass") if v in found), "")

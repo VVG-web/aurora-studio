@@ -3686,7 +3686,7 @@ def _entries_of(project: str, rid: str) -> list:
         pass
     text = read_run_console(project, rid)
     return [{"k": "out", "s": l} for l in (text.get("text") or text.get("error") or "").splitlines()
-            if not l.startswith(RS.MARK)]
+            if not l.startswith((RS.MARK, RS.MARK_GATE))]
 
 
 def history_run(project: str, rid: str) -> dict:

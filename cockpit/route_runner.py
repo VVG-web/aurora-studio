@@ -437,7 +437,8 @@ class RouteRun:
 
         def on_lines(lines):
             for line in lines:
-                if not str(line).startswith(self.ck.RS.MARK):    # машинная строка итога
+                # машинные строки итога и вердикта ворот консоли не показываются
+                if not str(line).startswith((self.ck.RS.MARK, self.ck.RS.MARK_GATE)):
                     self.say("out", line)
         res = run_job(self.ck, self.project, cmd, args, stop=self.stop, on_job=on_job,
                       parent=self.run_id, on_lines=on_lines)
@@ -448,7 +449,42 @@ class RouteRun:
             self.say("err", "■ " + self.t("step.not_started", why=res["refused"]))
         if res.get("stopped"):
             self.stopped = True
+        self._read_gate(cmd, args, res)
         return res
+
+    def _read_gate(self, cmd: str, args: list, res: dict) -> None:
+        """Вердикт ворот из машинной строки `AURORA-GATE`: в журнал и в запись шага.
+
+        Строка — деталь: шаг без неё (скрипт прошлого выпуска, шаг без адаптера) решает
+        кодом выхода. Нарушенные пункты (id и detail) идут в журнал списком — сама строка
+        консоли скрыта. У шага-ворот расхождение «код 0, вердикт fail» читается как fail-closed:
+        код становится 1 («ворота не пройдены»), а предупреждение `warn` при коде 0 маршрут не
+        останавливает (режим внедрения)."""
+        gates = self.ck.RS.parse_gate(res.get("lines"))
+        if not gates:
+            return
+        verdict = self.ck.RS.gate_verdict(gates)
+        res["gate_verdict"] = verdict
+        res["gate_items"] = [dict(it, gate=g["gate"]) for g in gates for it in g["items"]]
+        name = gates[0]["gate"] or cmd
+        for g in gates:
+            if g["verdict"] == "pass":
+                continue
+            self.say("err" if g["verdict"] == "fail" else "warn",
+                     self.t("route.gate_" + g["verdict"], gate=g["gate"] or cmd,
+                            n=len(g["items"])))
+            for it in g["items"]:
+                self.say("out", self.t("route.gate_item", id=it["id"], detail=it["detail"]))
+        if is_gate(args) and res["rc"] == 0 and verdict == "fail":
+            res["rc"] = 1
+            res["gate_mismatch"] = True
+            self.say("warn", self.t("route.gate_mismatch", gate=name))
+
+    def _offline(self, res: dict) -> bool:
+        """Шаг упал по сети? Код 1 с признаками обрыва — да, кроме шага, который сам назвал
+        вердикт строкой `AURORA-GATE`: ворота, объявившие итог, отработали."""
+        return (res["rc"] == 1 and not res.get("gate_verdict")
+                and looks_offline(res["lines"]))
 
     def step_key(self, st: dict) -> str:
         """Ключ шага в списке «сделано». Подпись «команда + флаги» в маршруте не уникальна:
@@ -513,7 +549,7 @@ class RouteRun:
             self._event(st, start, time.time(), res)
             # Сеть раньше ворот: код 1 с признаками обрыва — не вердикт, а повод ждать дальше,
             # как и при первом запуске шага.
-            if res["rc"] == 1 and looks_offline(res["lines"]):
+            if self._offline(res):
                 flaky = made_progress(res["lines"])
                 if not flaky:
                     attempt += 1
@@ -578,11 +614,12 @@ class RouteRun:
         # Хвост вывода шага, «нашедшего, что чинить», — для кнопок «Починить» в итоге.
         self.summary.append({"cmd": st["cmd"], "rc": res["rc"], "gate": is_gate(st["args"]),
                              "summary": self.ck.RS.parse(res["lines"]),
-                             "tail": res["lines"][-300:] if res["rc"] == 1 else []})
-        if res["rc"] == 1 and looks_offline(res["lines"]) and not self.stopped:
+                             "tail": res["lines"][-300:] if res["rc"] == 1 else [],
+                             **self._gate_fields(res)})
+        if self._offline(res) and not self.stopped:
             how = self._wait_network(st)
             if how == "continue":
-                self.summary[-1]["rc"] = 0
+                self.summary[-1].update(rc=0, **self._gate_fields(self.last_res))
                 return {"rc": 0, "lines": res["lines"]}
             if how == "stopped":
                 self.stopped = True
@@ -590,10 +627,16 @@ class RouteRun:
                 return {"rc": 0, "lines": res["lines"], "ended": how}
             if how == "gated":
                 lines = self.last_res.get("lines") or res["lines"]
-                self.summary[-1].update(rc=1, tail=lines[-300:])
+                self.summary[-1].update(rc=1, tail=lines[-300:], **self._gate_fields(self.last_res))
                 return {"rc": 1, "lines": lines}
             return {"rc": 2, "lines": res["lines"]}
         return res
+
+    @staticmethod
+    def _gate_fields(res: dict) -> dict:
+        """Вердикт ворот для записи шага: пусто, если шаг его не назвал."""
+        return ({"gate_verdict": res["gate_verdict"], "gate_items": res.get("gate_items") or []}
+                if res.get("gate_verdict") else {})
 
     def _halted(self, st: dict, res: dict) -> bool:
         """Остановил ли этот шаг маршрут. Заодно помнит, что остановили именно ворота."""

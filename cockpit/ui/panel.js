@@ -3410,6 +3410,7 @@ async function poll(id, since, label, me){
   if (!since){ CONSOLE_LINES = []; POLL_LAST_OUT = Date.now(); POLL_SILENT = false; }
   (d.lines||[]).forEach(l=>{
     if (String(l).startsWith(SUMMARY_MARK)) return;   // машинная строка итога — для панели
+    if (String(l).startsWith(GATE_MARK)) return;      // машинная строка вердикта ворот — тоже
     CONSOLE_LINES.push(l);
     out.append(el("div",{class:lineClass(l)}, l));
   });
@@ -3536,8 +3537,9 @@ function lastRun(cmd){ return runs()[cmd]; }
 // Итог прогона агент печатает и для человека, и одной машинной строкой для панели: её
 // консоль не показывает, а итог маршрута собирает из неё числа шагов.
 const SUMMARY_MARK = "AURORA-SUMMARY ";
+const GATE_MARK = "AURORA-GATE ";       // вердикт ворот качества — тоже машинная строка
 function consoleLine(out, l){
-  if (!String(l).startsWith(SUMMARY_MARK)) out.append(el("div",{class:lineClass(l)}, l));
+  if (!String(l).startsWith(GATE_MARK) && !String(l).startsWith(SUMMARY_MARK)) out.append(el("div",{class:lineClass(l)}, l));
 }
 
 function histWhen(iso){
