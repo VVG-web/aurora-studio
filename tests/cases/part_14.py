@@ -1323,6 +1323,48 @@ def test_secret_names_are_closed_in_every_windows_spelling(tmp: Path):
         assert RC.secret_kind(rel) == "", rel
     assert RC.secret_kind("") == "" and RC.secret_kind(".") == "" and RC.secret_kind("./") == ""
     assert RC.is_secret(".env::$DATA") and not RC.is_secret("id_rsa.pub")
+    # на POSIX и macOS «:» — обычная часть имени: срез по первому «:» не должен открывать ключ
+    # (`prod:2026.pem`, `key:1.key`, `host:prod.key`, `cert:443.pem`, `a:b.p12` были закрыты и обязаны остаться)
+    for rel in ("prod:2026.pem", "keys/key:1.key", "host:prod.key", "a/cert:443.pem", "a:b.p12", "X:Y.PEM."):
+        assert RC.secret_kind(rel) == "secret", (rel, "строгая", RC.secret_kind(rel))
+        assert RC.secret_kind(rel, strict=False) == "secret", (rel, "чтения", RC.secret_kind(rel, strict=False))
+    assert RC.secret_kind("prod:2026.pem") == "secret" and RC.secret_kind("prod:2026.pem", strict=False) == "secret"
+    assert RC.secret_kind("a:b.p12") == "secret" and RC.secret_kind("sub/cert:443.pem", strict=False) == "secret"
+    assert RC.is_secret("host:prod.key") and RC.is_secret("key:1.key", strict=False)
+    # карточка `.md` с двоеточием по-прежнему открыта в мягкой мерке, а не-секреты с «:» не закрываются
+    assert RC.secret_kind("Glossary/key:1.md", strict=False) == "" and RC.secret_kind("notes/a:b.txt") == ""
+    assert RC.name_forms("prod:2026.pem.") == ("prod", "prod:2026.pem")
+
+
+@test
+def test_file_create_checks_the_real_path_through_a_folder_link(tmp: Path):
+    """`file_create` смотрит и реальный путь: ссылка-папка в разрешённом месте не выводит создание в Sources/ и базу знаний (BL-SEC-20)."""
+    sys.path.insert(0, str(SCRIPTS))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+    root = tmp / "Proj"
+    for d in ("Workspaces", "Sources/Confluence", "AuroraKnowledgeDB/Cards", "AuroraKnowledgeDB/Decisions"):
+        (root / d).mkdir(parents=True)
+    try:
+        os.symlink(root / "Sources" / "Confluence", root / "Workspaces" / "lnk", target_is_directory=True)
+        os.symlink(root / "AuroraKnowledgeDB" / "Cards", root / "Workspaces" / "kb", target_is_directory=True)
+        os.symlink(root / "AuroraKnowledgeDB" / "Decisions", root / "Workspaces" / "dec", target_is_directory=True)
+    except OSError:
+        return          # Windows без прав на ссылки: поведение без ссылок проверено в других тестах
+    for rel, folder in (("Workspaces/lnk/new.md", "Sources/Confluence"), ("Workspaces/kb/new.md", "AuroraKnowledgeDB/Cards")):
+        res = ck.file_create(str(root), rel, "x")
+        assert res.get("error") and not res.get("ok"), (rel, res)
+        assert not (root / folder / "new.md").exists(), f"{rel}: файл создан в {folder}"
+        # вход записи даёт тот же отказ: входы не расходятся
+        assert ck.file_write(str(root), rel, "x").get("error"), rel
+        assert not (root / folder / "new.md").exists()
+    # законная ссылка — на место, где создавать можно (Decisions), — не ломается
+    assert ck.file_create(str(root), "Workspaces/dec/ok.md", "x").get("ok")
+    assert (root / "AuroraKnowledgeDB" / "Decisions" / "ok.md").is_file()
+    assert ck.file_create(str(root), "Workspaces/обычный.md", "x").get("ok")
+    assert ck.why_no_create_real(str(root), "Workspaces/lnk/n.md", os.path.join(os.path.realpath(root), "Sources", "Confluence", "n.md"))
 
 
 @test

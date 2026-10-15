@@ -71,12 +71,22 @@ def norm_part(name: str) -> str:
     """Имя компоненты пути так, как его видит файловая система, а не как оно записано.
 
     Windows отбрасывает хвостовые точки и пробелы (`id_rsa.`, `.ENV `) и открывает файл по
-    имени до `:` (`.env::$DATA` — поток NTFS того же файла); на других системах такая запись
-    просто чужое имя, и лишнее закрытие безопасно. Регистр сводится `casefold`: `.GIT` и
-    `.git` — одна папка на macOS и Windows. 8.3-имена (`SECRET~1.KEY`) сюда не входят: их
-    раскрывает `os.path.realpath` (Windows, Python 3.8+) ещё до проверки имени.
+    имени до `:` (`.env::$DATA` — поток NTFS того же файла); на POSIX и macOS двоеточие —
+    обычная часть имени (`prod:2026.pem`), поэтому для имени файла одной этой части мало:
+    секретность проверяют и по полному имени (`name_forms`). Регистр сводится `casefold`:
+    `.GIT` и `.git` — одна папка на macOS и Windows. 8.3-имена (`SECRET~1.KEY`) сюда не
+    входят: их раскрывает `os.path.realpath` (Windows, Python 3.8+) ещё до проверки имени.
     """
     return name.split(":", 1)[0].rstrip(". ").casefold()
+
+
+def name_forms(name: str) -> tuple:
+    """Обе записи имени файла: часть до `:` (как её откроет Windows) и полное имя (как его
+    видят POSIX и macOS). Имя считается секретным, если секретна любая из записей: открытый
+    секрет хуже лишнего закрытия, а на другой системе имя читается по-другому."""
+    head = norm_part(name)
+    full = name.rstrip(". ").casefold()
+    return (head,) if head == full else (head, full)
 
 
 def secret_kind(rel: str, strict: bool = True) -> str:
@@ -90,15 +100,19 @@ def secret_kind(rel: str, strict: bool = True) -> str:
     проекта и под `.aurora/`, остальное из `ANY_DEPTH_DIRS` — на любой глубине.
     """
     # обе черты: на POSIX `Path` обратную не делит, а `a\\.git\\config` на Windows — это путь
-    low = [n for n in (norm_part(p) for p in re.split(r"[\\/]", str(rel))) if n]
+    raw = [p for p in re.split(r"[\\/]", str(rel)) if norm_part(p)]
+    low = [norm_part(p) for p in raw]
     if not low:
         return ""
+    # имя файла — по обеим записям (`name_forms`): `prod:2026.pem` на POSIX — ключ, а не поток
+    forms = name_forms(raw[-1])
     if strict:
         if any(p in NEVER_DIRS for p in low[:-1]):
             return "service"
-        return "secret" if SECRET_NAME.match(low[-1]) else ""
-    card = low[-1].endswith(".md") and not low[-1].startswith(".env")
-    if SECRET_NAME.match(low[-1]) and not card:
+        return "secret" if any(SECRET_NAME.match(f) for f in forms) else ""
+    # карточка `.md` — по каждой записи отдельно: у `secrets.md::$DATA` секретной формы нет
+    if any(SECRET_NAME.match(f) and not (f.endswith(".md") and not f.startswith(".env"))
+           for f in forms):
         return "secret"
     if any(p in ANY_DEPTH_DIRS for p in low):
         return "service"

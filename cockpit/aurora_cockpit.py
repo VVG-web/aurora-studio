@@ -474,6 +474,21 @@ def why_no_create(project: str, rel: str) -> str:
     return ""
 
 
+def why_no_create_real(project: str, rel: str, full: str) -> str:
+    """`why_no_create` и по присланному пути, и по реальному (`full` — уже разрешённый `inside`).
+
+    Один вход для `file_create` и `file_write`: ссылка-папка в разрешённом месте
+    (`Workspaces/lnk` -> `Sources/Confluence`) не выводит создание файла в зеркало внешней
+    системы или в базу знаний. Исключение — корневой `.gitignore` и по присланному, и по
+    реальному пути.
+    """
+    asked = os.path.normpath((rel or "").replace("\\", "/").strip("/")).replace("\\", "/")
+    real = real_rel(project, full)
+    if asked in ROOT_WRITABLE and real in ROOT_WRITABLE:
+        return ""
+    return why_no_create(project, rel) or why_no_create(project, real)
+
+
 def file_create(project: str, rel: str, text: str = "") -> dict:
     """Завести файл там, где это законно."""
     rel = (rel or "").replace("\\", "/").strip("/")
@@ -490,6 +505,10 @@ def file_create(project: str, rel: str, text: str = "") -> dict:
     svc = why_service_real(project, rel, full)
     if svc:
         return {"error": svc}
+    # присланный путь уже проверен выше; реальный — после `inside`, как у `file_write`
+    why = why_readonly_real(project, rel, full) or why_no_create_real(project, rel, full)
+    if why:
+        return {"error": why}
     if os.path.exists(full):
         return {"error": "такой файл уже есть — откройте его"}
     try:
@@ -750,9 +769,7 @@ def file_write(project: str, rel: str, text: str, expect: str = "") -> dict:
         # создавала файлы в корне проекта и в папках, структуру которых держит движок.
         # Смотрим и присланный путь, и реальный: ссылка-папка не выводит в чужой каталог.
         # Исключение — только корневой `.gitignore` и по присланному, и по реальному пути.
-        asked = os.path.normpath((rel or "").replace("\\", "/").strip("/")).replace("\\", "/")
-        why = "" if asked in ROOT_WRITABLE and real_rel(project, full) in ROOT_WRITABLE else \
-            why_no_create(project, rel) or why_no_create(project, real_rel(project, full))
+        why = why_no_create_real(project, rel, full)
         if why:
             return {"error": why}
     if not is_text_file(full):
