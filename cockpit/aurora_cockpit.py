@@ -3968,6 +3968,31 @@ def sources(project: str) -> dict:
         return {"installed": [], "instances": [], "error": out.strip()[:300]}
 
 
+def _sources_chunks(text: str) -> list:
+    """[(id модуля, сырой текст записи)] секции `sources:` — как её написал владелец проекта.
+
+    Запись без `module:` реестр не читает (как и `declared()`), поэтому и здесь её нет. Строки
+    записи, включая лишние ключи и комментарии внутри неё, возвращаются без изменений.
+    """
+    sec = re.search(r"^sources:\s*$(.*?)(?=^\S|\Z)", text, re.M | re.S)
+    if not sec:
+        return []
+    chunks, cur = [], []
+    for line in sec.group(1).splitlines(keepends=True):
+        if re.match(r"^\s*-\s", line):
+            cur = [line]
+            chunks.append(cur)
+        elif cur:
+            cur.append(line)
+    out = []
+    for lines in chunks:
+        raw = "".join(lines).rstrip() + "\n"
+        hit = re.search(r'^\s*(?:-\s+)?module\s*:\s*"?([^"\n#]+?)"?\s*$', raw, re.M)
+        if hit:
+            out.append((hit.group(1).strip(), raw))
+    return out
+
+
 # Пакеты Python, без которых не работают команды: имя для pip, модуль для проверки.
 ENV_PY = (("beautifulsoup4", ("bs4",), "sync:confluence — разбор storage-разметки"),
           ("markdownify", ("markdownify",), "sync:confluence — HTML → markdown"),
@@ -6190,43 +6215,63 @@ class Handler(BaseHTTPRequestHandler):
     def _write_sources(self, project: str, modules: list) -> dict:
         """Переписать секцию `sources:` конфига — подключение и отключение модулей.
 
+        Уже подключённые экземпляры остаются записью как есть: id и путь пишет владелец
+        проекта (`Old` → `Sources/Wiki (old)`, второй экземпляр того же модуля), и пересборка
+        секции из манифестов стирала бы их даже при неизменённых галочках. Манифестный
+        `mirror.default_path` и проверка `ext_safe_relpath` относятся только к ВНОВЬ
+        отмеченным модулям: у них своего пути ещё нет. Снятый модуль убирает свои экземпляры.
+
         Отключение не трогает саму папку зеркала: выгрузка — это данные, а данные
         панель не удаляет. После отключения doctor назовёт папку ничьей — это и есть
         приглашение решить её судьбу руками.
         """
-        known = {m["id"]: m for m in sources(project).get("installed", [])}
+        info = sources(project)
+        known = {m["id"]: m for m in info.get("installed", [])}
+        modules = list(dict.fromkeys(modules))
         bad = [m for m in modules if m not in known]
         if bad:
             return {"error": "не установлены модули: " + ", ".join(bad)}
-        # путь зеркала уходит в `aurora.config.yaml` строкой без экранирования: небезопасный или
-        # отсутствующий `mirror.default_path` манифеста конфиг не получает
-        unsafe = [m for m in modules
-                  if not ext_safe_relpath((known[m].get("mirror") or {}).get("default_path"))]
-        if unsafe:
-            return {"error": "у модулей нет безопасного пути зеркала (mirror.default_path): "
-                    + ", ".join(unsafe)}
         cfg = os.path.join(project, "aurora.config.yaml")
         text = read_text(cfg)
         if not text:
             return {"error": "нет aurora.config.yaml"}
+        # что подключено сейчас: сырые куски записей секции (как написал владелец) либо, пока
+        # секции нет, исторические зеркала из `paths:` — их реестр уже отдал с путями владельца
+        has_section = bool(re.search(r"^sources:\s*$", text, re.M))
+        if has_section:
+            have = _sources_chunks(text)
+        else:
+            have = [(i["module"], f"  - id: {i['id']}\n    module: {i['module']}\n    path: {i['path']}\n")
+                    for i in info.get("instances", []) if i.get("module")]
+        # модуль, которого нет среди установленных, отметить в панели нельзя — и снять тоже:
+        # его запись остаётся, молча терять её нечем оправдать
+        keep = [(mod, chunk) for mod, chunk in have if mod in modules or mod not in known]
+        new = [m for m in modules if m not in {mod for mod, _c in have}]
+        # путь зеркала нового модуля уходит в конфиг строкой без экранирования: небезопасный или
+        # отсутствующий `mirror.default_path` манифеста конфиг не получает
+        unsafe = [m for m in new if not ext_safe_relpath((known[m].get("mirror") or {}).get("default_path"))]
+        if unsafe:
+            return {"error": "у модулей нет безопасного пути зеркала (mirror.default_path): "
+                    + ", ".join(unsafe)}
+        if has_section and len(keep) == len(have) and not new:
+            return {"ok": True, "modules": modules}     # ничего не изменилось — конфиг не трогаем
+        for mid in new:
+            path = known[mid]["mirror"]["default_path"].rstrip("/")
+            keep.append((mid, f"  - id: {os.path.basename(path)}\n    module: {mid}\n    path: {path}\n"))
         block = ["# Подключённые модули источников: id — он же имя папки в Sources/.",
                  "# Что установлено: `python3 .aurora/scripts/sources_registry.py`.",
                  "sources:"]
-        for mid in modules:
-            path = known[mid]["mirror"]["default_path"].rstrip("/")
-            block.append(f"  - id: {os.path.basename(path)}\n"
-                         f"    module: {mid}\n    path: {path}")
-        body = "\n".join(block) + "\n"
-        if re.search(r"^sources:\s*$", text, re.M):
-            new = re.sub(r"(^#[^\n]*\n)*^sources:\s*$.*?(?=^\S|\Z)", body, text,
+        body = "\n".join(block) + "\n" + "".join(chunk for _m, chunk in keep)
+        if has_section:
+            out = re.sub(r"(^#[^\n]*\n)*^sources:\s*$.*?(?=^\S|\Z)", lambda _m: body, text,
                          count=1, flags=re.M | re.S)
         else:
-            new = re.sub(r"^atlassian:", body + "\natlassian:", text, count=1, flags=re.M)
-            if new == text:
-                new = text.rstrip("\n") + "\n\n" + body
+            out = re.sub(r"^atlassian:", lambda _m: body + "\natlassian:", text, count=1, flags=re.M)
+            if out == text:
+                out = text.rstrip("\n") + "\n\n" + body
         try:
             with open(cfg, "w", encoding="utf-8") as f:
-                f.write(new)
+                f.write(out)
         except OSError as e:
             return {"error": f"конфиг не записан: {e}"}
         return {"ok": True, "modules": modules}

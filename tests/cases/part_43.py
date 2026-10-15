@@ -960,3 +960,105 @@ def test_panel_sources_survives_brace_in_registry_output(tmp: Path):
     res = ck.sources(str(root))
     assert "error" not in res, res
     assert {i["path"] for i in res["instances"]} == set(_OWNER_PATHS.values()), res["instances"]
+
+
+def _panel():
+    """Модуль панели (`aurora_cockpit`): путь к нему добавляется один раз."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cockpit"))
+    import importlib
+    return importlib.import_module("aurora_cockpit")
+
+
+_OWNER_SOURCES = ("# Подключённые модули источников.\nsources:\n"
+                  "  - id: Old\n    module: confluence-dc\n    path: Sources/Wiki (old)\n"
+                  "  - id: Jira\n    module: jira-dc\n    path: Sources/JIRA (PRJ-A)\n"
+                  "  - id: Second\n    module: confluence-dc\n    path: Sources/Wiki+Docs\n    note: \"свой ключ\"\n")
+
+
+@test
+def test_panel_save_choice_keeps_owner_sources(tmp: Path):
+    """«Сохранить выбор» в «Зеркалах» не пересобирает `sources:` из манифестов: с неизменёнными галочками конфиг
+    остаётся теми же байтами (id и путь владельца, второй экземпляр модуля, его лишние ключи); отмеченный новый
+    модуль добавляется с путём манифеста, старые записи не трогает; снятый модуль убирает только свои экземпляры."""
+    ck = _panel()
+    root = make_project(tmp)
+    _write(root / ".aurora" / "connectors" / "demo.json", _connector("demo"))
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip("\n") + "\n\n" + _OWNER_SOURCES, encoding="utf-8")
+    before = cfg.read_bytes()
+    res = ck.Handler._write_sources(None, str(root), ["confluence-dc", "jira-dc"])
+    assert res.get("ok"), res
+    assert cfg.read_bytes() == before, cfg.read_text(encoding="utf-8")
+    # новый модуль: путь манифеста только у него, записи владельца дословно на месте
+    res = ck.Handler._write_sources(None, str(root), ["confluence-dc", "jira-dc", "demo"])
+    assert res.get("ok"), res
+    text = cfg.read_text(encoding="utf-8")
+    assert "id: Old\n    module: confluence-dc\n    path: Sources/Wiki (old)\n" in text, text
+    assert "id: Second\n    module: confluence-dc\n    path: Sources/Wiki+Docs\n    note: \"свой ключ\"\n" in text, text
+    assert "id: demo\n    module: demo\n    path: Sources/demo\n" in text, text
+    import sources_registry as R
+    assert {i["id"]: i["path"] for i in R.instances(str(root))} == {
+        "Old": "Sources/Wiki (old)", "Jira": "Sources/JIRA (PRJ-A)", "Second": "Sources/Wiki+Docs",
+        "demo": "Sources/demo"}
+    # снят один модуль — уходят ВСЕ его экземпляры, остальные на месте
+    res = ck.Handler._write_sources(None, str(root), ["jira-dc", "demo"])
+    assert res.get("ok"), res
+    got = {i["id"]: i["path"] for i in R.instances(str(root))}
+    assert got == {"Jira": "Sources/JIRA (PRJ-A)", "demo": "Sources/demo"}, got
+
+
+@test
+def test_panel_save_choice_keeps_owner_path_from_paths_section(tmp: Path):
+    """Секции `sources:` ещё нет, зеркало Confluence — по пути владельца в `paths.sources_confluence`: сохранение
+    выбора записывает в `sources:` ЭТОТ путь, а не умолчание манифеста; путь манифеста — только новому модулю."""
+    ck = _panel()
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "paths:\n  sources_confluence: Sources/Wiki (old)\n",
+                   encoding="utf-8")
+    res = ck.Handler._write_sources(None, str(root), ["confluence-dc"])
+    assert res.get("ok"), res
+    text = cfg.read_text(encoding="utf-8")
+    assert "module: confluence-dc\n    path: Sources/Wiki (old)\n" in text and "path: Sources/Confluence" not in text, text
+    assert "paths:\n  sources_confluence: Sources/Wiki (old)\n" in text, text
+
+
+@test
+def test_settings_form_keeps_owner_paths_keys_in_step_with_sources(tmp: Path):
+    """Сохранение формы настроек не возвращает `paths.sources_confluence` / `sources_jira` к умолчанию: путь владельца
+    остаётся в `paths:` и совпадает с `sources:`, а выгрузчики читают тот же путь; без ключа пишется умолчание;
+    повторное сохранение конфиг не меняет."""
+    import os
+    import aurora_setup as S
+    import confluence_export as CE
+    import jira_export as JE
+    import sources_registry as R
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "paths:\n  knowledge_db: AuroraKnowledgeDB\n"
+                   "  sources_confluence: Sources/Wiki (old)\n  sources_jira: \"Sources/JIRA (PRJ-A)\"\n",
+                   encoding="utf-8")
+    with contextlib.redirect_stdout(io.StringIO()):
+        S.run_answers(root, {"name": "X"})
+    text = cfg.read_text(encoding="utf-8")
+    assert "  sources_confluence: Sources/Wiki (old)\n" in text, text
+    assert "  sources_jira: Sources/JIRA (PRJ-A)\n" in text, text
+    got = {i["module"]: i["path"] for i in R.instances(str(root))}
+    assert got == {"confluence-dc": "Sources/Wiki (old)", "jira-dc": "Sources/JIRA (PRJ-A)"}, got
+    assert CE.read_config(str(root))["out"] == "Sources/Wiki (old)"
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        assert JE.read_config()["out"] == "Sources/JIRA (PRJ-A)"
+    finally:
+        os.chdir(here)
+    with contextlib.redirect_stdout(io.StringIO()):
+        S.run_answers(root, {})
+    assert cfg.read_text(encoding="utf-8") == text, "повторное сохранение формы меняет конфиг"
+    # ключей нет — умолчания, как раньше
+    (tmp / "fresh").mkdir()
+    fresh = make_project(tmp / "fresh")
+    with contextlib.redirect_stdout(io.StringIO()):
+        S.run_answers(fresh, {"name": "Y"})
+    ftext = (fresh / "aurora.config.yaml").read_text(encoding="utf-8")
+    assert "  sources_confluence: Sources/Confluence\n  sources_jira: Sources/JIRA\n" in ftext, ftext

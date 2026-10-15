@@ -162,6 +162,17 @@ and its fields are checked by a test (`tests/cases/part_44.py`), not by the load
   JSON to stdout and report notes to stderr; the panel takes the first JSON object of the output, so a "}" in a note's
   text does not empty the "Sources" section.
 
+**What is kept when the panel or the settings form writes.** "Save choice" ("Mirrors" → "Source modules") does not rebuild
+`sources:` from manifests: entries of already connected modules stay verbatim (the owner's id and path, a second instance of the
+same module, extra keys of an entry), and with the ticks unchanged the config is not rewritten at all. The `mirror.default_path`
+and the `ext_safe_relpath` check apply only to a newly ticked module; an unticked module removes all of its instances (an entry of
+a module that is not installed stays: there is nothing in the panel to tick or untick it with). While the `sources:` section does
+not exist, the historical mirrors are carried into it with the paths from `paths:`. The settings form writes
+`paths.sources_confluence` and `paths.sources_jira` from the previous config (the defaults `Sources/Confluence` and
+`Sources/JIRA` only when the key is absent): `confluence_export.py` and `jira_export.py` read those keys while the registry and
+doctor read `sources:`, so the owner's path has to be the same in both sections. Who checks a path: one from a manifest is
+checked against the whitelist (`ext_safe_relpath`), one from the project's own config is not checked by anyone: the owner writes it.
+
 ## How a module gets into a project
 
 1. The folder is put into the kit's `connectors/`.

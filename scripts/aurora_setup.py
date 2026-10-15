@@ -299,6 +299,18 @@ def cards_example(old: str) -> tuple:
     return old, "\n" + CARDS_CONFIG_EXAMPLE
 
 
+def paths_value(text: str, key: str, default: str) -> str:
+    """Значение ключа `paths:` из прежнего конфига для записи обратно (строка в одну строку YAML).
+
+    Пишем так же, как читают выгрузчики (`yaml_scalar`): простой путь — как есть, с «#» или «:» —
+    в кавычках. Нет ключа или он пуст — умолчание.
+    """
+    value = yaml_scalar(text, key, "").strip()
+    if not value or any(ord(ch) < 32 for ch in value):
+        return default
+    return yaml_str(value) if re.search(r"[#:]|^[\"'\[\]{}&*!|>%@`]", value) else value
+
+
 def write_config(path: Path, c: dict):
     # Поля доверия пустыми не пишутся: пустое поле — значения по умолчанию, и в конфиг они
     # попадают явно, чтобы настройку было видно и её правили, а не угадывали.
@@ -337,6 +349,12 @@ def write_config(path: Path, c: dict):
         if rows:
             pages = pages.replace("\n  pages: []", "\n  pages:\n" + rows)
     sources, sync_skills = source_sections(path.parent, c["slug"])
+    old_text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    # Пути зеркал в `paths:` читают выгрузчики (confluence_export, jira_export), а реестр и doctor — `sources:`:
+    # путь, который владелец задал сам (`Sources/Wiki (old)`), остаётся тем же в обоих разделах, иначе синк
+    # пишет в одну папку, а реестр считает зеркалом другую. Умолчание — только когда ключа в конфиге нет.
+    out_confluence = paths_value(old_text, "sources_confluence", "Sources/Confluence")
+    out_jira = paths_value(old_text, "sources_jira", "Sources/JIRA")
     text = f"""# Aurora project configuration (committed). Schema version 1.
 # Отредактировать в любой момент: python3 .aurora/scripts/aurora_setup.py
 # Секреты (токены) сюда НЕ класть — они в .env.aurora.local (gitignored).
@@ -382,8 +400,8 @@ web:{pages}
 
 paths:
   knowledge_db: AuroraKnowledgeDB
-  sources_confluence: Sources/Confluence
-  sources_jira: Sources/JIRA
+  sources_confluence: {out_confluence}
+  sources_jira: {out_jira}
 
 verify:
   # Доверие по происхождению (`kb:trust`): что собрано из договора, ТЗ, материалов
@@ -407,7 +425,6 @@ privacy:
 bootstrap:
   verified_threshold_pct: {c['threshold']}
 """
-    old_text = path.read_text(encoding="utf-8") if path.is_file() else ""
     old_text, example = cards_example(old_text)
     path.write_text(carry_unmanaged(old_text, text + example), encoding="utf-8")
 
