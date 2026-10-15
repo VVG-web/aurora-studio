@@ -140,6 +140,19 @@ def mirror_owners() -> dict:
     return R.mirror_paths(str(ROOT))
 
 
+def registry_skipped() -> list:
+    """Строки о манифестах модулей источников, которые реестр пропустил (кривой `connector.json`).
+
+    Реестр не падает на таком файле, а копит причину; без этой строки модуль просто молча
+    исчез бы из проекта. Справка не имеет права ронять доктора.
+    """
+    try:
+        import sources_registry as R
+        return list(getattr(R, "registry_report", lambda: [])())
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def read_structure() -> list[str]:
     if not STRUCTURE_FILE.is_file():
         return []
@@ -290,6 +303,11 @@ def check_structure(verbose: bool = False):
         return errors, warns, lines
 
     mirrors = mirror_owners()
+    skipped = registry_skipped()
+    if skipped:
+        warns.append(f"манифест модуля источников не принят ({len(skipped)}): "
+                     f"{'; '.join(skipped[:2])}{' …' if len(skipped) > 2 else ''} → исправьте или "
+                     "удалите этот connector.json в .aurora/connectors/: остальные модули работают")
     artifacts = artifact_dirs()
     declared = project_dirs()
     known = set(schema) | set(mirrors) | set(artifacts) | set(declared)

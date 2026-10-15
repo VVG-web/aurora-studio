@@ -195,3 +195,142 @@ def test_sources_registry_reads_with_old_project_common(tmp: Path):
     finally:
         C.load_manifest = keep
     assert set(mods) == {"good"}, sorted(mods)
+
+
+# ---------------------------------------------------------------------------------------------
+# Срез 2: `update` и `install` раскладывают модули источников через загрузчик конверта: кривой
+# `connector.json` кита — строка в отчёт и пропуск одного модуля, а не падение всего прогона.
+
+def _mini_kit(tmp: Path) -> Path:
+    """Пробный кит с одним правилом манифеста `(connectors)`: годный модуль и пять кривых.
+
+    Скрипты — копии настоящих (update запускается ИЗ этого кита: `find_kit` берёт `parents[1]`).
+    """
+    import shutil
+    from harness import KIT
+    kit = tmp / "mini-kit"
+    (kit / "scripts").mkdir(parents=True)
+    for s in (KIT / "scripts").glob("*.py"):
+        shutil.copy(s, kit / "scripts" / s.name)
+    shutil.copy(KIT / "structure_dirs.txt", kit / "structure_dirs.txt")
+    (kit / "VERSION").write_text("9.9.9\n", encoding="utf-8")
+    (kit / "engine_manifest.txt").write_text("connectors => (connectors)\n", encoding="utf-8")
+    con = kit / "connectors"
+    _write(con / "demo" / "connector.json", _connector("demo"))
+    (con / "demo" / "demo_export.py").write_text("print('demo')\n", encoding="utf-8")
+    _write(con / "no_id" / "connector.json", {"kind": "wiki", "mirror": {}, "run": {}})
+    _write(con / "empty" / "connector.json", "")
+    _write(con / "run_str" / "connector.json", _connector("run-str", run="export.py"))
+    _write(con / "future" / "connector.json", _connector("future", api_version=99))
+    _write(con / "evil" / "connector.json", _connector("../evil"))
+    _write(con / "evil_script" / "connector.json",
+           _connector("evil-script", run={"script": "../../outside.py"}))
+    # порядок обхода — по имени папки: годный модуль лежит и до, и после кривых
+    _write(con / "zeta" / "connector.json", _connector("zeta"))
+    return kit
+
+
+def _run_update(kit: Path, root: Path, *args):
+    import subprocess
+    return subprocess.run([sys.executable, str(kit / "scripts" / "aurora_update.py"), str(root), *args],
+                          cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+
+@test
+def test_update_survives_broken_connector_manifests(tmp: Path):
+    """`update` с кривыми `connector.json` в ките: код 0, пропуск назван, годные модули разложены."""
+    kit = _mini_kit(tmp)
+    root = make_project(tmp)
+    # проект без модулей: всё, что лежит в .aurora/connectors, приедет только из кита
+    for old in (root / ".aurora" / "connectors").glob("*.json"):
+        old.unlink()
+    dry = _run_update(kit, root)
+    assert dry.returncode == 0, (dry.returncode, dry.stdout, dry.stderr)
+    assert "Traceback" not in dry.stderr and "KeyError" not in dry.stderr, dry.stderr
+    out = dry.stdout
+    assert out.count("Модуль источников пропущен") == 6, out
+    for needle in ("no_id", "empty", "run-str", "future", "../evil", "evil-script"):
+        assert needle in out, (needle, out)
+    assert ".aurora/connectors/demo.json" in out and ".aurora/connectors/zeta.json" in out, out
+    assert not (root / ".aurora" / "connectors" / "demo.json").exists(), "dry-run записал файл"
+    done = _run_update(kit, root, "--apply")
+    assert done.returncode == 0, (done.stdout, done.stderr)
+    conn = root / ".aurora" / "connectors"
+    assert sorted(p.name for p in conn.glob("*.json")) == ["demo.json", "zeta.json"], list(conn.iterdir())
+    assert (root / ".aurora" / "scripts" / "demo_export.py").is_file(), "скрипт годного модуля не доехал"
+    assert not (tmp / "evil.json").exists() and not (root / ".aurora" / "evil.json").exists(), \
+        "id с «..» вышел из .aurora/connectors"
+    # повторный прогон: пропуски снова названы, а изменений уже нет
+    again = _run_update(kit, root)
+    assert again.returncode == 0 and again.stdout.count("Модуль источников пропущен") == 6, again.stdout
+
+
+@test
+def test_update_valid_connectors_keep_the_same_plan(tmp: Path):
+    """Годные модули настоящего кита раскладываются как раньше: ни одного «пропущен» на dry-run."""
+    from harness import KIT
+    root = make_project(tmp)
+    cp = _run_update(KIT, root)
+    assert cp.returncode == 0, (cp.stdout, cp.stderr)
+    assert "Модуль источников пропущен" not in cp.stdout, cp.stdout
+    assert ".aurora/connectors/" not in cp.stdout, "годные манифесты кита уже в проекте: плана быть не должно"
+
+
+@test
+def test_install_skips_broken_connector_manifests(tmp: Path):
+    """`install` ставит годные модули и пропускает кривые строкой в отчёте; файл по `id` с «..» не создаётся."""
+    import install_aurora as IA
+    kit = _mini_kit(tmp)
+    target = tmp / "installed"
+    target.mkdir()
+    keep = IA.KIT_ROOT
+    IA.KIT_ROOT = kit
+    try:
+        inst = IA.Installer(target, "Demo", "Demo", None, None, force=False, dry_run=False)
+        with contextlib.redirect_stdout(io.StringIO()):
+            inst.install_connectors()
+    finally:
+        IA.KIT_ROOT = keep
+    conn = target / ".aurora" / "connectors"
+    assert sorted(p.name for p in conn.glob("*.json")) == ["demo.json", "zeta.json"], list(conn.iterdir())
+    assert (target / ".aurora" / "scripts" / "demo_export.py").is_file()
+    assert (target / "Sources" / "demo").is_dir(), "папка зеркала годного модуля не создана"
+    assert "skip (скрипт не найден): zeta" in "\n".join(inst.actions), "модуль без скрипта не назван"
+    log = "\n".join(inst.actions)
+    assert log.count("skip (манифест не принят)") == 6, log
+    for needle in ("no_id", "empty", "run-str", "future", "../evil", "evil-script"):
+        assert needle in log, (needle, log)
+    assert not (tmp / "evil.json").exists() and not (target / ".aurora" / "evil.json").exists()
+    assert not (tmp / "outside.py").exists()
+
+
+@test
+def test_connector_manifest_name_safety(tmp: Path):
+    """`load_connector_manifest`: id, script и skill — простые имена файлов; остальное — пропуск с причиной."""
+    import aurora_common as C
+    ok, rep = C.load_connector_manifest(_write(tmp / "ok.json", _connector("demo")))
+    assert ok and not rep, (ok, rep)
+    for bad in ("../x", "a/b", "a\\b", ".hidden", "x..y", "-x", "a b"):
+        got, rep = C.load_connector_manifest(_write(tmp / "b.json", _connector(bad)))
+        assert got is None and rep, (bad, got)
+    for field in ("script", "skill"):
+        got, rep = C.load_connector_manifest(
+            _write(tmp / "b.json", _connector("demo", run={field: "../../x"})))
+        assert got is None and field in rep[0], (field, rep)
+    assert C.load_connector_manifest(tmp / "missing.json")[0] is None
+
+
+@test
+def test_doctor_names_skipped_connector_manifests(tmp: Path):
+    """Doctor одной строкой называет манифест модуля, который реестр пропустил, а не молчит о нём."""
+    root = make_project(tmp)
+    clean = run("aurora_doctor.py", cwd=root)
+    assert "манифест модуля источников не принят" not in clean.stdout, clean.stdout
+    conn = root / ".aurora" / "connectors"
+    _write(conn / "no_id.json", {"kind": "wiki", "mirror": {}, "run": {}})
+    _write(conn / "future.json", _connector("future", api_version=42))
+    _write(conn / "garbage.json", "{")
+    cp = run("aurora_doctor.py", cwd=root)
+    line = [l for l in cp.stdout.splitlines() if "манифест модуля источников не принят" in l]
+    assert len(line) == 1 and line[0].startswith("WARN:") and "(3)" in line[0], cp.stdout
+    assert "Traceback" not in cp.stderr, cp.stderr

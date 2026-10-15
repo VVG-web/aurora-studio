@@ -123,8 +123,17 @@ share is the "envelope": `id`, `api_version`, a title (a string or per language)
   been read and checked.
 - A connector's `kind` stays the storage kind (`wiki` or `board`); the extension kind is passed to
   the loader by the caller.
-- Transition period: the panel and the installer still read their own manifests; they move to the
-  shared loader one by one, and until then both readings accept the format without `api_version`.
+- **Laying out into a project goes through the loader too.** `update` and `install` read
+  `connectors/*/connector.json` via `load_connector_manifest` (the loader plus a name check). A bad
+  manifest — no `id`, an empty file, not JSON, a root that is not an object, `run` as a string, a future
+  `api_version`, or an `id`, `run.script` or `run.skill` containing "/", "\\" or ".." — produces a
+  "Модуль источников пропущен: …" line in the `update` report (in dry-run and with `--apply`) or a
+  `skip (манифест не принят)` line in the `install` report. The run goes on with the other modules and the
+  exit code does not change. The `.aurora/connectors/<id>.json` file name comes only from an accepted
+  manifest, so an `id` cannot move the file out of the folder. A manifest whose launch script is missing
+  is installed without it (`skip (скрипт не найден)`). Doctor shows skipped manifests as one warning.
+- Transition period: the panel still reads its own manifests; it moves to the shared loader one by
+  one, and until then both readings accept the format without `api_version`.
 - `mirror.default_path` is required for a mirror but not for reading the registry: a module without it
   and without a path in `aurora.config.yaml` has no mirror, while the other modules keep working.
 

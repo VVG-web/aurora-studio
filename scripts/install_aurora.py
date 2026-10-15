@@ -560,16 +560,28 @@ _Мета-вопросы:_
         столько и встанет. Так доустановленный модуль приезжает в проект сам.
         """
         self.log("== модули источников ==")
+        # Лениво: установку зовёт и `update` из копии старого выпуска, где `aurora_common` в
+        # памяти прежний; верхний импорт нового имени ронял бы здесь весь модуль.
+        from aurora_common import load_connector_manifest
         for man in sorted((KIT_ROOT / "connectors").glob("*/connector.json")):
-            m = json.loads(man.read_text(encoding="utf-8"))
+            # Кривой манифест (нет id, не JSON, корень не объект, api_version из будущего) —
+            # строка в отчёт и пропуск одного модуля: остальные и вся установка идут дальше.
+            m, why = load_connector_manifest(man)
+            if m is None:
+                for line in why:
+                    self.log(f"  skip (манифест не принят): {line}")
+                continue
             self.copy_file(man, f".aurora/connectors/{m['id']}.json")
             script = (m.get("run") or {}).get("script", "")
             if script:
                 # скрипт может лежать рядом с манифестом (доустановленный модуль) или
                 # в scripts/ kit'а (встроенный — его же импортируют панель и publish_doc)
                 src = man.parent / script
-                self.copy_file(src if src.is_file() else KIT_ROOT / "scripts" / script,
-                               f".aurora/scripts/{script}")
+                src = src if src.is_file() else KIT_ROOT / "scripts" / script
+                if src.is_file():
+                    self.copy_file(src, f".aurora/scripts/{script}")
+                else:   # манифест есть, скрипта нет: модуль ставится без него, установка не падает
+                    self.log(f"  skip (скрипт не найден): {m['id']} → {script}")
             mirror = (m.get("mirror") or {}).get("default_path", "")
             if mirror:
                 self.ensure_dir(mirror)

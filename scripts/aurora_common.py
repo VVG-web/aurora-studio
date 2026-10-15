@@ -399,6 +399,38 @@ def load_manifest(path, kind: str):
         return None, ["%s: манифест не прочитан (%s: %s) — пропущен" % (pre, type(e).__name__, e)]
 
 
+# Имя из манифеста становится именем файла в проекте (`.aurora/connectors/<id>.json`,
+# `.aurora/scripts/<script>`, `<skill>-<slug>`), поэтому пускаем только простое имя: без
+# разделителей пути, без `..`, не с точки. Манифест доустановленного модуля — чужой файл.
+_EXT_SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def ext_safe_name(value) -> bool:
+    """Годится ли строка из манифеста в имя файла (`demo`, `jira_export.py`; не `../x`, не `a/b`)."""
+    return isinstance(value, str) and bool(_EXT_SAFE_NAME.match(value)) and ".." not in value
+
+
+def load_connector_manifest(path):
+    """Манифест коннектора для РАСКЛАДКИ в проект (`update`, `install`) → `(манифест | None, [отчёт])`.
+
+    `load_manifest` плюс проверка имён, которые раскладка превращает в пути: `id`, `run.script`,
+    `run.skill`. Исключений не бросает: кривой манифест — строка отчёта и пропуск одного модуля,
+    остальные модули и весь проект идут дальше.
+    """
+    m, rep = load_manifest(path, "connector")
+    if m is None:
+        return None, rep
+    pre = "connector «%s»" % m["id"]
+    if not ext_safe_name(m["id"]):
+        return None, ["%s: id не годится в имя файла (простое имя без «/», «\\» и «..») — пропущен" % pre]
+    run = m.get("run") or {}
+    for key in ("script", "skill"):
+        if run.get(key) and not ext_safe_name(run[key]):
+            return None, ["%s: run.%s не годится в имя файла (простое имя без «/», «\\» и «..») — "
+                          "пропущен" % (pre, key)]
+    return m, []
+
+
 # `canonical` убран из схемы в 1.10.0 (ступень не использовалась ни в одном
 # проекте). Читаем его как синоним `verified`: старые базы не должны разом
 # потерять доверие к карточкам. Новое знание пишется только как `verified`.

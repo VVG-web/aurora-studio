@@ -27,11 +27,11 @@ Artifacts, Workspaces, Templates/, Prompts/) не трогается.
 и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
-import argparse, difflib, json, re, subprocess, sys
+import argparse, difflib, re, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from aurora_common import utc_today, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком
+from aurora_common import load_connector_manifest, utc_today, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком; манифест коннектора без исключений
 import folder_guides as FG  # noqa: E402 — описания папок проекта (README.md)
 
 def find_kit() -> Path:
@@ -394,8 +394,13 @@ def load_ignore(target: Path) -> list:
     return out
 
 
+# Манифесты коннекторов кита, которые последний `plan()` пропустил: причины печатает `run()`.
+SKIPPED_CONNECTORS: list = []
+
+
 def plan(target: Path, f: dict):
     changes = []
+    SKIPPED_CONNECTORS.clear()
     ignore = load_ignore(target)
 
     def diff_or_new(rel_dst: str, new_text: str, seed=False):
@@ -437,7 +442,12 @@ def plan(target: Path, f: dict):
         rule, arg = sm.group(1), sm.group(2).strip()
         if rule == "connectors":
             for man in sorted((KIT / src).glob("*/connector.json")):
-                m = json.loads(man.read_text(encoding="utf-8"))
+                # Кривой манифест (нет id, не JSON, корень не объект, api_version из будущего) —
+                # строка в отчёт и пропуск одного модуля: update всех проектов не падает.
+                m, why = load_connector_manifest(man)
+                if m is None:
+                    SKIPPED_CONNECTORS.extend(why)
+                    continue
                 diff_or_new(f".aurora/connectors/{m['id']}.json",
                             man.read_text(encoding="utf-8"))
                 script = m.get("run", {}).get("script", "")
@@ -759,6 +769,8 @@ def run(target: Path, apply: bool, structure_only: bool = False):
         return 0
 
     changes = plan(target, f)
+    for line in SKIPPED_CONNECTORS:
+        print(f"⚠️  Модуль источников пропущен: {line}\n")
     writes = [c for c in changes if c.kind == "write"]
     seeds = [c for c in changes if c.kind == "seed-new"]
     retired = [r for r in retired_paths() if (target / r).is_file()]
