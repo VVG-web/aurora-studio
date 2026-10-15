@@ -3972,14 +3972,19 @@ def _sources_chunks(text: str) -> list:
     """[(id модуля, сырой текст записи)] секции `sources:` — как её написал владелец проекта.
 
     Запись без `module:` реестр не читает (как и `declared()`), поэтому и здесь её нет. Строки
-    записи, включая лишние ключи и комментарии внутри неё, возвращаются без изменений.
+    записи, включая лишние ключи, вложенные списки и комментарии внутри неё, возвращаются без
+    изменений: новая запись начинается только с «- » на отступе первой записи секции или левее.
     """
     sec = re.search(r"^sources:\s*$(.*?)(?=^\S|\Z)", text, re.M | re.S)
     if not sec:
         return []
-    chunks, cur = [], []
+    chunks, cur, first = [], [], None
     for line in sec.group(1).splitlines(keepends=True):
-        if re.match(r"^\s*-\s", line):
+        dash = re.match(r"^(\s*)-\s", line)
+        # вложенный блочный список записи (`exclude:` и под ним `- drafts`) — на более глубоком
+        # отступе, чем «- » самой записи: это её содержимое, а не новая запись
+        if dash and (first is None or len(dash.group(1)) <= first):
+            first = len(dash.group(1)) if first is None else first
             cur = [line]
             chunks.append(cur)
         elif cur:
@@ -6238,9 +6243,10 @@ class Handler(BaseHTTPRequestHandler):
         # что подключено сейчас: сырые куски записей секции (как написал владелец) либо, пока
         # секции нет, исторические зеркала из `paths:` — их реестр уже отдал с путями владельца
         has_section = bool(re.search(r"^sources:\s*$", text, re.M))
-        if has_section:
-            have = _sources_chunks(text)
-        else:
+        have = _sources_chunks(text)
+        if not have:
+            # пустой заголовок `sources:` реестр читает как отсутствующую секцию (declared() пуст,
+            # работают исторические зеркала из `paths:`) — и панель показывает их подключёнными
             have = [(i["module"], f"  - id: {i['id']}\n    module: {i['module']}\n    path: {i['path']}\n")
                     for i in info.get("instances", []) if i.get("module")]
         # модуль, которого нет среди установленных, отметить в панели нельзя — и снять тоже:

@@ -1007,6 +1007,53 @@ def test_panel_save_choice_keeps_owner_sources(tmp: Path):
     assert got == {"Jira": "Sources/JIRA (PRJ-A)", "demo": "Sources/demo"}, got
 
 
+_NESTED_SOURCES = ("sources:\n"
+                   "  - id: Old\n    module: confluence-dc\n    path: Sources/Wiki (old)\n"
+                   "    exclude:\n      - drafts\n      - tmp\n"
+                   "    note: |\n      первая строка\n      - вторая со штрихом\n"
+                   "  - id: Jira\n    module: jira-dc\n    path: Sources/JIRA\n")
+
+
+@test
+def test_panel_save_choice_keeps_nested_lists_in_owner_entries(tmp: Path):
+    """Запись владельца с вложенным блочным списком и многострочным значением переживает любую перезапись `sources:`
+    дословно: «- drafts» под `exclude:` не становится отдельной записью и не теряется при добавлении и снятии модуля."""
+    ck = _panel()
+    root = make_project(tmp)
+    _write(root / ".aurora" / "connectors" / "demo.json", _connector("demo"))
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip("\n") + "\n\n" + _NESTED_SOURCES, encoding="utf-8")
+    old = _NESTED_SOURCES.split("  - id: Jira")[0].split("sources:\n")[1]
+    assert [m for m, _c in ck._sources_chunks(cfg.read_text(encoding="utf-8"))] == ["confluence-dc", "jira-dc"]
+    res = ck.Handler._write_sources(None, str(root), ["confluence-dc", "jira-dc", "demo"])
+    assert res.get("ok"), res
+    assert old in cfg.read_text(encoding="utf-8"), cfg.read_text(encoding="utf-8")
+    res = ck.Handler._write_sources(None, str(root), ["confluence-dc", "demo"])
+    assert res.get("ok"), res
+    text = cfg.read_text(encoding="utf-8")
+    assert old in text and "module: jira-dc" not in text, text
+
+
+@test
+def test_panel_save_choice_empty_sources_header_keeps_paths_mirror(tmp: Path):
+    """Пустой заголовок `sources:` (после «снять все модули») ведёт себя как отсутствующая секция: исторические зеркала
+    по путям владельца из `paths:` остаются подключёнными, сохранение тех же галочек не подменяет путь умолчанием."""
+    ck = _panel()
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "paths:\n  sources_confluence: Sources/Wiki (old)\n",
+                   encoding="utf-8")
+    assert ck.Handler._write_sources(None, str(root), []).get("ok")
+    assert "\nsources:" in cfg.read_text(encoding="utf-8") or cfg.read_text(encoding="utf-8").startswith("sources:")
+    res = ck.Handler._write_sources(None, str(root), ["confluence-dc", "jira-dc"])
+    assert res.get("ok"), res
+    text = cfg.read_text(encoding="utf-8")
+    assert "path: Sources/Confluence" not in text, text
+    import sources_registry as R
+    got = {i["module"]: i["path"] for i in R.instances(str(root))}
+    assert got.get("confluence-dc") == "Sources/Wiki (old)", (got, text)
+
+
 @test
 def test_panel_save_choice_keeps_owner_path_from_paths_section(tmp: Path):
     """Секции `sources:` ещё нет, зеркало Confluence — по пути владельца в `paths.sources_confluence`: сохранение
