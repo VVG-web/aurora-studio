@@ -2606,10 +2606,8 @@ def test_web_connector_does_not_read_the_body_of_a_redirect_response(tmp: Path):
     try:
         WE.ALLOW_PRIVATE = ["127.0.0.1"]
         WE.RETRIES = 1
-        t0 = time.monotonic()
-        raw, _enc, err = WE._get(base + "/go", "", 4)
+        raw, _enc, err = WE._get(base + "/go", "", 4)     # на старом коде чтение тела упирается в таймаут 4 с
         assert raw == b"ok" and not err, (raw, err)
-        assert time.monotonic() - t0 < 3, "тело редиректа читалось до таймаута"
     finally:
         WE.ALLOW_PRIVATE, WE.RETRIES, WE.time.sleep = real
         stop.set()
@@ -2698,23 +2696,30 @@ def test_web_crawl_links_and_assets_follow_the_start_page_policy(tmp: Path):
 @test
 def test_web_crawl_takes_only_links_of_the_same_origin(tmp: Path):
     """BL-SEC-17: ссылка и вложение берутся только того же источника (схема, хост, порт). Ссылка с
-    https-страницы на `http://` того же хоста — понижение защиты — и на чужой порт отбрасывается;
-    обновление `http://хост` → `https://хост` допустимо."""
+    https-страницы на `http://` того же хоста поднимается до `https://` (покрытие не теряется, открытого
+    запроса нет); чужой порт и чужой хост отбрасываются; обновление `http://хост` → `https://хост` допустимо."""
     _path()
     WE = importlib.import_module("web_export")
     html = ('<html><body><main><p>Текст</p>'
             '<a href="/a">a</a><a href="http://wiki.example.com/down">down</a>'
+            '<a href="http://wiki.example.com:80/down80?x=1">down80</a>'
+            '<a href="http://wiki.example.com:8080/port8080">p8080</a>'
+            '<a href="http://other.example.com/foreign">foreign</a>'
             '<a href="https://wiki.example.com:8443/port">port</a>'
             '<a href="https://wiki.example.com/d.pdf">doc</a><a href="http://wiki.example.com/e.pdf">edoc</a>'
             '<img src="http://wiki.example.com/i.png"><img src="/j.png">'
             '</main></body></html>')
     _t, _md, links, assets = WE.to_markdown(html, "https://wiki.example.com/p")
-    assert links == ["https://wiki.example.com/a"], links
-    assert [u for u, _n in assets] == ["https://wiki.example.com/d.pdf", "https://wiki.example.com/j.png"], assets
+    assert links == ["https://wiki.example.com/a", "https://wiki.example.com/down",
+                     "https://wiki.example.com/down80?x=1"], links
+    assert [u for u, _n in assets] == ["https://wiki.example.com/d.pdf", "https://wiki.example.com/e.pdf",
+                                       "https://wiki.example.com/i.png", "https://wiki.example.com/j.png"], assets
     _t, _md, links, assets = WE.to_markdown(
         '<html><body><main><p>Текст</p><a href="https://wiki.example.com/up">up</a></main></body></html>',
         "http://wiki.example.com/p")
     assert links == ["https://wiki.example.com/up"], links
+    # старый кэш страниц (ссылки без отбора по источнику) сбрасывается
+    assert WE.CONVERTER >= 3
 
 
 @test
@@ -2757,3 +2762,64 @@ def test_doctor_names_web_sources_that_go_to_private_addresses(tmp: Path):
     res = run("aurora_doctor.py", cwd=root, expect_rc=None)
     assert "WARN" in res.stdout and "10.0.0.5/wiki" in res.stdout, res.stdout
     assert not any("ERROR" in ln and "10.0.0.5" in ln for ln in res.stdout.splitlines()), res.stdout
+
+
+@test
+def test_doctor_private_sources_survive_bad_pages_and_hide_credentials(tmp: Path):
+    """BL-SEC-17: битый адрес (порт 99999) не гасит предупреждения о остальных страницах; логин и пароль
+    из адреса в сообщение не попадают; числовые литералы (`2130706433`) называются; запись `allow_private`
+    без страницы называется отдельно."""
+    _path()
+    D = importlib.import_module("aurora_doctor")
+    root = tmp / "p"
+    root.mkdir()
+    cfg = root / "aurora.config.yaml"
+    lit = "10.0" + ".0.5"
+    cfg.write_text(f"web:\n  pages:\n    - url: http://host.example.com:99999/x\n    - url: http://{lit}/wiki\n",
+                   encoding="utf-8")
+    got = D.check_web_private_sources(root)
+    assert len(got) == 1 and "10.0.0.5/wiki" in got[0], got
+    cfg.write_text("web:\n  pages:\n    - url: http://user:pw@" + lit + "/wiki?q=1\n", encoding="utf-8")
+    got = D.check_web_private_sources(root)
+    assert len(got) == 1 and "10.0.0.5/wiki" in got[0] and "pw" not in got[0] and "user" not in got[0] \
+        and "q=1" not in got[0], got
+    dec, hexa = "21307" + "06433", "0x7f" + ".1"                            # числовые литералы собраны из частей
+    cfg.write_text(f"web:\n  pages:\n    - url: http://{dec}/x\n    - url: http://{hexa}/y\n"
+                   "    - url: https://example.org/law\n", encoding="utf-8")
+    got = D.check_web_private_sources(root)
+    assert len(got) == 1 and f"{dec}/x" in got[0] and f"{hexa}/y" in got[0] \
+        and "example.org" not in got[0], got
+    cfg.write_text("web:\n  allow_private: [intranet.example.com]\n  pages:\n    - url: https://example.org/law\n",
+                   encoding="utf-8")
+    got = D.check_web_private_sources(root)
+    assert len(got) == 1 and "intranet.example.com" in got[0] and "без страницы" in got[0], got
+    cfg.write_text("web:\n  allow_private: [intranet.example.com]\n  pages:\n"
+                   "    - url: https://intranet.example.com/w\n", encoding="utf-8")
+    got = D.check_web_private_sources(root)
+    assert len(got) == 1 and "без страницы" not in got[0], got        # запись привязана к странице
+    KI = importlib.import_module("kit_i18n")
+    assert any("записи без страницы в списке" in sk for sk in KI.message_skeletons())
+
+
+@test
+def test_guarded_redirect_to_another_origin_drops_the_token_and_same_origin_keeps_it(tmp: Path):
+    """BL-SEC-17: редирект веб-коннектора на ДРУГОЙ источник (разрешённый) идёт без Authorization, на
+    тот же источник — с ним. Два настоящих сервера, оба разрешены в `allow_private`."""
+    _path()
+    import urllib.request
+    AC = importlib.import_module("aurora_common")
+    h = _Hosts()
+    try:
+        h.to = h.url("b", "/landing")
+        allow = ["127.0.0.1"]
+        req = urllib.request.Request(h.url("a", "/go"), headers={"Authorization": "Bearer SECRET"})
+        with AC.guarded_urlopen(req, timeout=10, allow_private=allow) as r:
+            assert r.status == 200
+        assert h.seen["a"][-1][1].get("authorization") == "Bearer SECRET"
+        assert h.seen["b"] and "authorization" not in h.seen["b"][-1][1], h.seen["b"]
+        req = urllib.request.Request(h.url("a", "/same"), headers={"Authorization": "Bearer SECRET"})
+        with AC.guarded_urlopen(req, timeout=10, allow_private=allow):
+            pass
+        assert h.seen["a"][-1][0] == "/ok" and h.seen["a"][-1][1].get("authorization") == "Bearer SECRET"
+    finally:
+        h.close()

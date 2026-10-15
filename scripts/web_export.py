@@ -51,7 +51,7 @@ DEFAULT_OUT = "Sources/Web"
 # Страница, которую сервер назвал неизменной (304), заново не качается и не разбирается.
 # Кэш лежит в проекте рядом с кэшем Confluence. Изменили `to_markdown` так, что меняется
 # вывод, — поднимите CONVERTER: кэш сбросится, и следующий прогон пройдёт всё зеркало.
-CONVERTER = 2   # 2: кодировка страницы определяется (заголовок, BOM, meta, эвристика), а не «UTF-8 с заменой»
+CONVERTER = 3   # 3: ссылки и вложения только того же источника (http→https поднимается); 2: кодировка страницы определяется (заголовок, BOM, meta, эвристика)
 PAGE_CACHE = os.path.join(".aurora", "cache", "web_pages.json")
 # Вложение страницы версию страницы не меняет, поэтому раз в неделю проходим всё заново.
 CACHE_FRESH_DAYS = 7
@@ -584,11 +584,17 @@ def to_markdown(html: str, base_url: str = "") -> tuple:
         form.unwrap()
     main = soup.find("main") or soup.find("article") or soup.body or soup
 
-    def ours(full: str) -> bool:
-        # Тот же источник (схема, хост, порт), что у страницы: ссылка с https-страницы на
-        # `http://` того же хоста — понижение защиты, и содержимое зеркала шло бы открытым
-        # текстом. Допустимо только обновление `http://хост` → `https://хост` (BL-SEC-17).
-        return same_origin(full, base_url)
+    def ours(full: str) -> str:
+        # Тот же источник (схема, хост, порт), что у страницы; иначе пусто. Ссылка с
+        # https-страницы на `http://` того же хоста — частый вид смешанных ссылок на перенесённом
+        # сайте: поднимаем её до `https://`, а не отбрасываем (покрытие остаётся, открытого запроса
+        # нет; если https у хоста не работает, выгрузка покажет `✗`). Чужой хост или порт — пусто.
+        a, b = url_origin(full), url_origin(base_url)
+        if a and b and a[0] == "http" and b[0] == "https" and a[1] == b[1] and a[2] == 80 and b[2] == 443:
+            sp = urllib.parse.urlsplit(full)
+            full = urllib.parse.urlunsplit(sp._replace(
+                scheme="https", netloc=sp.netloc[:-3] if sp.netloc.endswith(":80") else sp.netloc))
+        return full if same_origin(full, base_url) else ""
 
     links, assets = [], []
     for a in main.find_all("a", href=True):
@@ -596,7 +602,8 @@ def to_markdown(html: str, base_url: str = "") -> tuple:
         full, _frag = urllib.parse.urldefrag(full)
         if not full.startswith(("http://", "https://")):
             continue
-        if not ours(full):
+        full = ours(full)
+        if not full:
             continue                     # чужой домен — не наше решение о доверии
         if full.lower().endswith(ASSET_EXT):
             # Имя документа живёт в ТЕКСТЕ ссылки, а не в адресе: сайты кладут файлы под
@@ -608,7 +615,8 @@ def to_markdown(html: str, base_url: str = "") -> tuple:
             links.append(full)
     for img in main.find_all("img", src=True):
         full = web_join(base_url, img["src"])
-        if full.startswith(("http://", "https://")) and ours(full):
+        full = ours(full) if full.startswith(("http://", "https://")) else ""
+        if full:
             assets.append((full, " ".join((img.get("alt") or "").split())[:80]))
 
     md = markdownify(str(main), heading_style="ATX")

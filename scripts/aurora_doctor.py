@@ -647,29 +647,50 @@ def check_web_private_sources(root: Path | None = None) -> list:
     root = root or ROOT
     out = []   # через .append: реестр переводов kit_i18n собирает сообщения доктора именно по вызовам append
     try:
+        import socket
         from urllib.parse import urlsplit
         from aurora_common import _allow_private_entries, _non_global, is_loopback_host
         from web_export import pages_from_config, settings_from_config
         cfg = (root / "aurora.config.yaml").read_text(encoding="utf-8")
-        allow = settings_from_config(cfg)["allow_private"]
-        allowed, refused = [], []
+        entries = _allow_private_entries(settings_from_config(cfg)["allow_private"])
+        allowed, refused, used = [], [], set()
         for url, _trusted, _feed in pages_from_config(cfg):
-            p = urlsplit(url)
-            host, port = (p.hostname or "").lower(), p.port or {"http": 80, "https": 443}.get(p.scheme, 0)
-            if any(h == host and pt in (0, port) for h, pt in _allow_private_entries(allow)):
-                allowed.append(url)
-            elif is_loopback_host(host) or _non_global(host) not in ("", "не адрес"):   # имя — не адрес
-                refused.append(url)
+            try:                                  # один битый адрес (порт 99999) не гасит остальные
+                p = urlsplit(url)
+                host, port = (p.hostname or "").lower(), p.port or {"http": 80, "https": 443}.get(p.scheme, 0)
+            except ValueError:
+                continue
+            # без логина и пароля из адреса: вывод доктора попадает в консоль панели и журналы
+            shown = f"{p.scheme}://{'[' + host + ']' if ':' in host else host}" \
+                    f"{':' + str(p.port) if p.port else ''}{p.path}"
+            hit = [(h, pt) for h, pt in entries if h == host and pt in (0, port)]
+            if hit:
+                used.update(hit)
+                allowed.append(shown)
+                continue
+            why = _non_global(host)
+            if why == "не адрес" and not is_loopback_host(host):
+                try:                              # `2130706433`, `0x7f.1`: числовой литерал, как в экспорте
+                    why = _non_global(socket.inet_ntoa(socket.inet_aton(host)))
+                except (OSError, ValueError):
+                    pass                          # имя — не адрес, без сети не проверить
+            if is_loopback_host(host) or why not in ("", "не адрес"):
+                refused.append(shown)
+        loose = [f"{h}:{pt}" if pt else h for h, pt in entries if (h, pt) not in used]
     except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
         return out
     if allowed:
         out.append(f"aurora.config.yaml: web.allow_private разрешает обходу внутренние адреса, страниц: "
-                   f"{len(allowed)} ({', '.join(u.split('?', 1)[0] for u in allowed[:3])}"
+                   f"{len(allowed)} ({', '.join(allowed[:3])}"
                    f"{' …' if len(allowed) > 3 else ''}) → убедитесь, что это ваши внутренние источники; "
                    "привязка токена от списка не расширяется")
+    if loose:
+        out.append(f"aurora.config.yaml: web.allow_private — записи без страницы в списке: {', '.join(loose[:3])}"
+                   f"{' …' if len(loose) > 3 else ''} → разрешение действует и на редиректы публичных страниц; "
+                   "уберите запись, если внутренний источник вам не нужен")
     if refused:
         out.append(f"aurora.config.yaml: web — страниц с приватным адресом без allow_private: {len(refused)} "
-                   f"({', '.join(u.split('?', 1)[0] for u in refused[:3])}{' …' if len(refused) > 3 else ''}) "
+                   f"({', '.join(refused[:3])}{' …' if len(refused) > 3 else ''}) "
                    "→ выгрузка их откажет; если это внутренняя вики, внесите хост в web.allow_private")
     return out
 
