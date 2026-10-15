@@ -159,7 +159,7 @@ def keys_of(data: dict) -> set:
 # `raise` и возврат функций, которые отдают причину отказа. Сервер знает те же ключи
 # (`MESSAGE_KEYS`) — их совпадение сверяет проверка.
 MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait", "python_error")
-REASON_FUNCS = ("why_readonly", "why_no_create", "graph_state", "mcp_unmask",
+REASON_FUNCS = ("why_readonly", "why_service", "why_no_create", "graph_state", "mcp_unmask",
                 "writable_target", "version_gap", "build", "models_key_note",
                 "_python_refusal", "doctor_start_failure", "restart_probe_failure")
 

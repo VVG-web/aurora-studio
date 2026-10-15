@@ -2082,6 +2082,27 @@ def test_panel_file_api_closes_secrets_and_service_files(tmp: Path):
     assert rows["local/mcp.json"]["text"] is False
     assert rows["Makefile"]["text"] is True and rows["Glossary/Credentials.md"]["text"] is True
 
+    # предпросмотр публикации — тот же редактор: секрет и служебное не отдаёт и он
+    for rel in list(secrets) + [env_name]:
+        r = ck.clean_preview(str(root), rel)
+        assert r.get("error") and "clean" not in r, f"{rel}: предпросмотр отдал тело"
+    assert "clean" in ck.clean_preview(str(root), "Workspaces/заметка.md")
+
+    # файлы без расширения, которые раньше открывались: версия, лицензия, Jenkinsfile
+    for name in ("VERSION", "NOTICE", "Jenkinsfile", ".dockerignore", ".nvmrc"):
+        assert ck.is_text_file(name), f"{name}: не текст"
+    assert not ck.is_text_file("id_ed25519") and not ck.is_text_file(env_name)
+    # папки движка берутся у общего модуля, а не переписываются
+    from aurora_common import ENGINE_DIRS
+    assert set(ENGINE_DIRS) <= set(ck.SERVICE_DIRS), ck.SERVICE_DIRS
+
+    # отказы why_service переведены: английская панель не показывает русский текст
+    import json as _json
+    en = _json.loads((KIT / "cockpit" / "i18n" / "data" / "en.json").read_text(encoding="utf-8"))
+    for rel in (".aurora/x", env_name, "local/mcp.json"):
+        why = ck.why_service(rel)
+        assert why and why in en["messages"], f"{rel}: нет английского текста отказа"
+
     # ссылка с обычным именем на секрет
     try:
         os.symlink(str(root / env_name), str(root / "Workspaces" / "обычная.md"))
@@ -2092,5 +2113,11 @@ def test_panel_file_api_closes_secrets_and_service_files(tmp: Path):
         assert ck.file_read(str(root), rel).get("error"), f"{rel}: ссылка прочитана"
         assert ck.file_write(str(root), rel, "x\n").get("error"), f"{rel}: запись по ссылке"
         assert ck.file_rename(str(root), rel, "y.md").get("error"), f"{rel}: переименование ссылки"
+        assert ck.clean_preview(str(root), rel).get("error"), f"{rel}: предпросмотр по ссылке"
+    # в дереве ссылка на секрет с обычным именем — не текст, обычный файл рядом — текст
+    rows = {r["path"]: r for r in ck.file_tree(str(root))["files"]}
+    assert rows["Workspaces/обычная.md"]["text"] is False
+    assert rows["Workspaces/cfg.md"]["text"] is False
+    assert rows["Workspaces/заметка.md"]["text"] is True
     assert (root / env_name).read_text(encoding="utf-8") == "TOKEN=x\n"
     assert (root / ".git" / "config").read_text(encoding="utf-8") == "[core]\n"

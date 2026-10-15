@@ -59,9 +59,9 @@ KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
-from aurora_common import (child_env, engine_dir, head_value, is_folder_guide,  # noqa: E402
-                           kit_mcp_permission, local_view, mtime_stamp, personal_kit_file,
-                           real_inside, real_rel, replace_file, same_origin, utc_slug, utc_stamp,
+from aurora_common import (ENGINE_DIRS, child_env, engine_dir, head_value,  # noqa: E402
+                           is_folder_guide, kit_mcp_permission, local_view, mtime_stamp,
+                           personal_kit_file, real_inside, real_rel, replace_file, same_origin, utc_slug, utc_stamp,
                            yaml_scalar)
 from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
                            mcp_check, mcp_mask_args, mcp_masked)
@@ -266,7 +266,11 @@ TEXT_EXT = {".md", ".txt", ".yaml", ".yml", ".json", ".csv", ".py", ".sh", ".js"
 # Файлы без расширения открываются по имени, а не «любой без расширения»: пустое расширение
 # в TEXT_EXT пускало в редактор и `.env`, и `id_ed25519`, и любой двоичный файл без точки.
 TEXT_NAMES = {"makefile", "dockerfile", "readme", "license", "licence", "changelog",
-              "procfile", "codeowners", ".gitignore", ".gitattributes", ".editorconfig"}
+              "procfile", "codeowners", ".gitignore", ".gitattributes", ".editorconfig",
+              "version", "notice", "authors", "contributors", "copying", "jenkinsfile",
+              "gemfile", "rakefile", "vagrantfile", "brewfile", "justfile",
+              ".dockerignore", ".nvmrc", ".prettierrc", ".eslintrc", ".npmignore",
+              ".python-version", ".node-version", ".ruby-version", ".tool-versions"}
 MAX_EDIT = 2_000_000          # потолок на файл: больше — это не документ, а выгрузка
 
 # Только для чтения. Список тот же, что в инвариантах скилла, и это не совпадение:
@@ -334,8 +338,9 @@ def why_readonly(rel: str, text: str = "") -> str:
 
 
 # Папки инструментов и движка у корня проекта: `.git` закрыт и на любой глубине (в `RC`), а
-# эти — только у корня, внутри них служебное всё, не только секретные имена.
-SERVICE_DIRS = (".git", ".aurora", ".claude", ".opencode")
+# эти — только у корня, внутри них служебное всё, не только секретные имена. Папки движка берём
+# у `aurora_common`, а не переписываем: переименуют там — граница не разойдётся.
+SERVICE_DIRS = (".git", ".claude") + tuple(ENGINE_DIRS)
 
 
 def why_service(rel: str) -> str:
@@ -407,12 +412,16 @@ def file_tree(project: str, limit: int = FILES_LIMIT) -> dict:
             if len(rows) >= limit:
                 cut = True
                 continue
+            path = os.path.join(cur, name)
             try:
-                size = os.path.getsize(os.path.join(cur, name))
+                size = os.path.getsize(path)
             except OSError:
                 size = 0
+            # ссылка с обычным именем на секрет — не текст: смотрим туда, куда она ведёт
+            svc = (why_service_real(project, rel, path) if os.path.islink(path)
+                   else why_service(rel))
             rows.append({"path": rel, "dir": rel_dir, "name": name, "size": size,
-                         "text": is_text_file(name) and size <= MAX_EDIT and not why_service(rel),
+                         "text": is_text_file(name) and size <= MAX_EDIT and not svc,
                          "readonly": why_readonly(rel)})
     return {"root": root, "files": rows, "truncated": cut, "count": len(rows), "total": total,
             "recent": recent(project), "create_dirs": create_dirs(project)}
@@ -680,6 +689,9 @@ def clean_preview(project: str, rel: str) -> dict:
     full = inside(project, rel)
     if not full or not os.path.isfile(full):
         return {"error": "файл не найден в этом проекте"}
+    svc = why_service_real(project, rel, full)
+    if svc:
+        return {"error": svc, "service": True}
     from aurora_common import clean_copy, MADE_MARK
     text = read_text(full, limit=MAX_EDIT)
     body = strip_frontmatter(text)

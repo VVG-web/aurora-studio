@@ -121,10 +121,13 @@ there. The editor **does not edit** what Aurora's rules forbid editing, and expl
 Secrets and service files are closed to the editor entirely — for reading, writing, creating and renaming (the boundary is
 the same as for the model's reads of the project: `request_context.secret_kind`): `.env*`, `*.pem`/`*.key`, `id_*` keys,
 `local/` (including `mcp.json`), `.git/`, and at the project root also `.aurora/`, `.claude/`, `.opencode/`. The check looks
-at both the path sent and the real path, so a link with an ordinary name pointing at `.env` is no way round. Such a file stays
-visible in the tree, but as "open with the system app", not as text. An ordinary `Credentials.md` card opens. Files without an
-extension open in the editor only by a known name (`Makefile`, `Dockerfile`, `README`, `LICENSE`, `.gitignore`,
-`.gitattributes`, and the like).
+at both the path sent and the real path, so a link with an ordinary name pointing at `.env` is no way round; the same holds
+for the publication preview (`/api/files/clean`). The boundary is wider than the list above: it is set by
+`request_context.secret_kind` (including the root `runs/` and `state/`, `node_modules`, virtual environments, `.ssh`, `.aws`,
+`credentials.*`, `.mcp.json`, `.netrc`, `.npmrc`). The tree does not show dot-files (`.env*`, `.git`) at all; other such files
+stay visible, but as "open with the system app", not as text (a link with an ordinary name pointing at a secret too). An
+ordinary `Credentials.md` card opens. Files without an extension open in the editor only by a known name (`Makefile`,
+`Dockerfile`, `README`, `LICENSE`, `VERSION`, `NOTICE`, `Jenkinsfile`, `.gitignore`, `.dockerignore`, `.nvmrc`, and the like).
 
 A ban "you cannot edit" ends with an action: a card has the **"Correct"** button (the `kb:correct` command). If a file changed
 on disk while it was open (the agent appended, a sync brought something foreign), the divergence is not silently overwritten —
