@@ -26,6 +26,7 @@ Confluence и Jira, но **отдельным блоком настроек**: �
 from __future__ import annotations
 
 import argparse
+import codecs
 import hashlib
 import http.client
 import json
@@ -50,7 +51,7 @@ DEFAULT_OUT = "Sources/Web"
 # Страница, которую сервер назвал неизменной (304), заново не качается и не разбирается.
 # Кэш лежит в проекте рядом с кэшем Confluence. Изменили `to_markdown` так, что меняется
 # вывод, — поднимите CONVERTER: кэш сбросится, и следующий прогон пройдёт всё зеркало.
-CONVERTER = 1
+CONVERTER = 2   # 2: кодировка страницы определяется (заголовок, BOM, meta, эвристика), а не «UTF-8 с заменой»
 PAGE_CACHE = os.path.join(".aurora", "cache", "web_pages.json")
 # Вложение страницы версию страницы не меняет, поэтому раз в неделю проходим всё заново.
 CACHE_FRESH_DAYS = 7
@@ -265,8 +266,9 @@ def _get(url: str, token: str, timeout: int, headers: dict | None = None,
                 if meta is not None:
                     meta["etag"] = r.headers.get("ETag") or ""
                     meta["modified"] = r.headers.get("Last-Modified") or ""
+                # кодировку отдаём как заявлена (пусто, если не указана): решает `decode_page`
                 return (_read_body(r, limit, deadline),
-                        (r.headers.get_content_charset() or "utf-8"), "")
+                        (r.headers.get_content_charset() or ""), "")
         except urllib.error.HTTPError as e:
             if e.code == 304 and headers:
                 return b"", "", NOT_MODIFIED        # не изменилась: это ответ, а не сбой
@@ -372,6 +374,88 @@ def token_for(url: str, seed: str, token: str, hosts: list | None = None,
     return "" if token_refusal(url, seed, token, hosts, env) else token
 
 
+# Кодировки русских страниц без объявления: перебираем их, когда UTF-8 не подошёл.
+_CYR_CANDIDATES = ("cp1251", "koi8-r", "cp866")
+# Частые строчные буквы русского текста: в верной раскладке на них приходится больше половины
+# кириллицы, в неверной (koi8-r вместо cp1251 и т. п.) — заметно меньше, буквы идут вперемешку.
+_CYR_COMMON = frozenset("оеаинтсрвлкпмдуя")
+# Меньше стольких кириллических букв доказательством не считаем: на трёх буквах угадать нельзя.
+_CYR_MIN_LETTERS = 10
+_META_CHARSET = re.compile(rb"<meta[^>]*?charset\s*=\s*[\"']?\s*([A-Za-z0-9_.:-]+)", re.I)
+# Страницы, которые сервер по привычке объявляет «западной» кодировкой: настоящий UTF-8 с
+# многобайтовыми символами в латинице случайно не получается, поэтому ему верим больше заявки.
+_WESTERN = frozenset({"iso-8859-1", "latin-1", "latin1", "windows-1252", "cp1252"})
+
+
+def _try_decode(raw: bytes, name: str):
+    """Текст в кодировке `name` или None: имя неизвестно (LookupError) либо байты не читаются."""
+    try:
+        codecs.lookup(name)
+        return raw.decode(name)
+    except (LookupError, UnicodeError, ValueError):
+        return None
+
+
+def _guess_cyrillic(raw: bytes):
+    """Текст в той из кодировок `_CYR_CANDIDATES`, что читается как русский, иначе None.
+    Считаем только не-ASCII символы: разметка латинская и картину не портит."""
+    best, best_share = None, 0.0
+    for name in _CYR_CANDIDATES:
+        text = raw.decode(name, errors="replace")
+        high = [c for c in text if ord(c) > 127]
+        cyr = [c for c in high if "\u0400" <= c <= "\u04ff" and c.isalpha()]
+        if len(cyr) < _CYR_MIN_LETTERS or len(cyr) < 0.7 * len(high):
+            continue
+        share = sum(c in _CYR_COMMON for c in cyr) / len(cyr)
+        if share >= 0.5 and share > best_share:
+            best, best_share = text, share
+    return best
+
+
+def decode_page(raw: bytes, header_charset: str = "") -> tuple:
+    """(текст, определена ли кодировка). Вместо тихого «UTF-8 с заменой», которая портила
+    страницы в cp1251 и koi8-r. Порядок: BOM; charset из Content-Type; `<meta charset>` и
+    `<meta http-equiv=Content-Type>` в первых 4 КБ; строгий UTF-8; для кириллицы — эвристика
+    (cp1251, koi8-r, cp866 по доле частых букв). Заявка, которую нельзя применить — неизвестное
+    имя или байты не читаются в ней, — пропускается без падения. Ничего не подошло — текст с
+    заменой нечитаемых байтов и признак «не определена»: вызывающий скажет об этом в отчёте."""
+    if raw.startswith(codecs.BOM_UTF8):
+        text = _try_decode(raw[len(codecs.BOM_UTF8):], "utf-8")
+        if text is not None:
+            return text, True
+    # BOM UTF-32 LE начинается теми же байтами, что UTF-16 LE: проверяем его первым
+    for bom, name in ((codecs.BOM_UTF32_LE, "utf-32"), (codecs.BOM_UTF32_BE, "utf-32"),
+                      (codecs.BOM_UTF16_LE, "utf-16"), (codecs.BOM_UTF16_BE, "utf-16")):
+        if not raw.startswith(bom):
+            continue
+        text = _try_decode(raw, name)
+        if text is not None:
+            return text, True
+    declared = []
+    if header_charset:
+        declared.append(header_charset)
+    head = raw[:4096]
+    declared += [m.group(1).decode("ascii", "ignore") for m in _META_CHARSET.finditer(head)]
+    for name in declared:
+        if name.lower().replace("_", "-").startswith(("utf-16", "utf-32")):
+            name = "utf-8"          # в потоке, читаемом как ASCII, такая заявка — ошибка вёрстки
+        text = _try_decode(raw, name)
+        if text is None:
+            continue
+        if name.lower() in _WESTERN:
+            utf = _try_decode(raw, "utf-8")
+            if utf is not None:
+                return utf, True
+        return text, True
+    text = _try_decode(raw, "utf-8")
+    if text is not None:
+        return text, True
+    text = _guess_cyrillic(raw)
+    if text is not None:
+        return text, True
+    return raw.decode("utf-8", errors="replace"), False
+
+
 def fetch(url: str, token: str = "", known: dict | None = None,
           meta: dict | None = None) -> tuple:
     """(html, ошибка). Страницу читаем как есть: разбор — ниже и детерминированный.
@@ -386,7 +470,12 @@ def fetch(url: str, token: str = "", known: dict | None = None,
     if known and known.get("modified"):
         cond["If-Modified-Since"] = known["modified"]
     raw, enc, err = _get(url, token, TIMEOUT, cond or None, meta)
-    return ("" if err else raw.decode(enc, errors="replace")), err
+    if err:
+        return "", err
+    text, known_enc = decode_page(raw, enc)
+    if not known_enc and meta is not None:
+        meta["charset_unknown"] = True
+    return text, err
 
 
 def load_page_cache() -> dict:
@@ -856,6 +945,8 @@ def run(a) -> int:
             meta: dict = {}
             sent = token_for(url, seed, token, hosts, env)
             html, err = fetch(url, sent, known, meta)
+            if meta.get("charset_unknown"):
+                print(f"  ⚠️  {url} — кодировка не определена: нечитаемые байты заменены на «�»")
             o = url_origin(url) if learn and sent else ()
             if o and not is_loopback_host(o[1]):
                 tried.add(origin_text(o))

@@ -2375,3 +2375,140 @@ def test_review_run_says_why_the_server_is_refused(tmp: Path):
                         errors="replace", env=env)
     assert cp.returncode == 1, (cp.returncode, cp.stdout[-300:], cp.stderr[-400:])
     assert "Traceback" not in cp.stderr and "AURORA_ALLOW_HTTP" in cp.stderr, cp.stderr[-400:]
+
+
+@test
+def test_web_connector_detects_the_page_encoding_instead_of_silent_utf8_replace(tmp: Path):
+    """BL-SEC-17: кодировка страницы — BOM, заголовок, `<meta>`, строгий UTF-8, эвристика для
+    кириллицы; заголовок сильнее meta; ложная или неизвестная заявка не роняет разбор; нечитаемые
+    байты — признак «не определена», а не тихая подмена. Чистая UTF-8 страница даёт прежний вывод."""
+    _path()
+    WE = importlib.import_module("web_export")
+    ru = "Налог на добавленную стоимость уплачивается по ставке, которую устанавливает закон. " * 3
+    page = f"<html><body><p>{ru}</p></body></html>"
+    meta_1251 = '<html><head><meta http-equiv="Content-Type" content="text/html; charset=windows-1251">'
+    # (1) cp1251 без charset в заголовке, но с meta: читается
+    raw = (meta_1251 + f"</head><body><p>{ru}</p></body></html>").encode("cp1251")
+    text, ok = WE.decode_page(raw, "")
+    assert ok and ru in text and "�" not in text, text[:200]
+    text, ok = WE.decode_page(f'<meta charset="Windows-1251">{ru}'.encode("cp1251"), "")
+    assert ok and ru in text
+    # (2) koi8-r без объявления: эвристика
+    text, ok = WE.decode_page(page.encode("koi8-r"), "")
+    assert ok and ru in text, text[:200]
+    text, ok = WE.decode_page(page.encode("cp866"), "")
+    assert ok and ru in text, text[:200]
+    text, ok = WE.decode_page(page.encode("cp1251"), "")
+    assert ok and ru in text, text[:200]
+    # (3) UTF-8 с BOM и без, UTF-16 с BOM; BOM в текст не попадает
+    for raw in (b"\xef\xbb\xbf" + page.encode("utf-8"), page.encode("utf-8"),
+                page.encode("utf-16")):
+        text, ok = WE.decode_page(raw, "")
+        assert ok and text == page, text[:80]
+    # UTF-32 с BOM не принимается за UTF-16 (у LE-BOM общее начало)
+    text, ok = WE.decode_page(page.encode("utf-32"), "")
+    assert ok and text == page, text[:80]
+    # заявка utf-16 над ASCII-совместимыми байтами — ошибка вёрстки, а не UTF-16: читаем как utf-8
+    text, ok = WE.decode_page(f'<meta charset="utf-16">{ru}'.encode("utf-8"), "")
+    assert ok and ru in text
+    text, ok = WE.decode_page(page.encode("utf-8"), "UTF-16")
+    assert ok and text == page
+    # пустое тело — пустая страница, а не «не определена»
+    assert WE.decode_page(b"", "") == ("", True)
+    assert WE.decode_page(b"", "windows-1251") == ("", True)
+    # BOM сильнее заявки заголовка
+    text, ok = WE.decode_page(b"\xef\xbb\xbf" + page.encode("utf-8"), "koi8-r")
+    assert ok and text == page
+    # (4) заголовок главнее meta
+    raw = (f'<meta charset="utf-8">{ru}').encode("koi8-r")
+    text, ok = WE.decode_page(raw, "koi8-r")
+    assert ok and ru in text
+    raw = (f'<meta charset="koi8-r">{ru}').encode("cp1251")
+    text, ok = WE.decode_page(raw, "windows-1251")
+    assert ok and ru in text
+    # (5) ложная заявка (utf-8 над cp1251-байтами) и неизвестная кодировка не роняют разбор
+    text, ok = WE.decode_page(page.encode("cp1251"), "utf-8")
+    assert ok and ru in text
+    for bad in ("no-such-charset", "utf-99", "x" * 40):
+        text, ok = WE.decode_page(f'<meta charset="{bad}">{ru}'.encode("cp1251"), bad)
+        assert ok and ru in text, (bad, text[:80])
+    # заявка «latin-1» над настоящим UTF-8 — не мусор из двух символов на букву
+    text, ok = WE.decode_page(page.encode("utf-8"), "ISO-8859-1")
+    assert ok and text == page
+    # (6) нечитаемые байты: текст с заменой и признак «не определена»
+    junk = b"<p>\xff\xfe\x80\x81 \xc3\x28 \xa0\xa1</p>"
+    text, ok = WE.decode_page(junk, "")
+    assert not ok and "�" in text and "<p>" in text, (ok, text)
+    # мало кириллицы — угадывать нечем
+    text, ok = WE.decode_page("<p>да</p>".encode("cp1251") + b"\xff", "")
+    assert not ok
+    # (7) чистая UTF-8 страница: тот же вывод, что давал `raw.decode("utf-8", errors="replace")`
+    clean = page.encode("utf-8")
+    assert WE.decode_page(clean, "utf-8") == (clean.decode("utf-8", errors="replace"), True)
+    assert WE.decode_page(clean, "") == (clean.decode("utf-8", errors="replace"), True)
+    # (8) `_get` не подставляет utf-8, если заголовок кодировки не прислал
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"<p>ok</p>"
+            self.send_response(200)
+            if self.path == "/typed":
+                self.send_header("Content-Type", "text/html; charset=windows-1251")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    real_allow = WE.ALLOW_PRIVATE
+    try:
+        WE.ALLOW_PRIVATE = ["127.0.0.1"]
+        assert WE._get(base + "/bare", "", 5)[1] == "", "кодировка без заголовка — пусто"
+        assert WE._get(base + "/typed", "", 5)[1] == "windows-1251"
+    finally:
+        WE.ALLOW_PRIVATE = real_allow
+        srv.shutdown()
+    # (9) кэш 304 сбрасывается: исправленные страницы меняют вывод
+    assert WE.CONVERTER >= 2
+
+
+@test
+def test_web_run_says_when_the_page_encoding_is_not_detected(tmp: Path):
+    """BL-SEC-17: `fetch` кладёт в `meta` признак «кодировка не определена», а `run()` печатает
+    строку рядом со страницей — только для нечитаемой страницы; читаемая в cp1251 строки не даёт."""
+    _path()
+    WE = importlib.import_module("web_export")
+    ru = "Налог на добавленную стоимость уплачивается по ставке, которую устанавливает закон. " * 3
+    pages = {"https://wiki.example.com/ok": f"<html><body><p>{ru}</p></body></html>".encode("cp1251"),
+             "https://wiki.example.com/junk": b"<html><body><p>\xff\xfe\x80 \xc3\x28</p></body></html>"}
+    proj = tmp / "p"
+    (proj / ".aurora").mkdir(parents=True)
+    real_get, real_argv, cwd = WE._get, sys.argv, os.getcwd()
+    WE._get = lambda url, token="", timeout=0, headers=None, meta=None: (pages[url], "", "")
+    meta: dict = {}
+    html, err = WE.fetch("https://wiki.example.com/ok", "", None, meta)
+    assert not err and ru in html and "charset_unknown" not in meta, (err, meta)
+    html, err = WE.fetch("https://wiki.example.com/junk", "", None, meta)
+    assert not err and meta.get("charset_unknown") is True
+    (proj / "aurora.config.yaml").write_text(
+        "web:\n  pages:\n" + "".join(f"    - url: {u}\n      trusted: false\n" for u in pages),
+        encoding="utf-8")
+    os.chdir(proj)
+    try:
+        sys.argv = ["web_export.py", "--out", str(proj / "out")]
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            WE.main()
+        out = buf.getvalue()
+    finally:
+        WE._get, sys.argv = real_get, real_argv
+        os.chdir(cwd)
+    warn = [ln for ln in out.splitlines() if "кодировка не определена" in ln]
+    assert len(warn) == 1 and "/junk" in warn[0], out
