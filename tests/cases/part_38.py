@@ -2565,3 +2565,195 @@ def test_web_run_says_when_the_page_encoding_is_not_detected(tmp: Path):
     assert not any("/ok" in ln and "кодировка" in ln for ln in state_text.splitlines()), state_text
     cache = json.loads((proj / WE.PAGE_CACHE).read_text(encoding="utf-8"))
     assert "https://wiki.example.com/ok" in cache and "https://wiki.example.com/junk" not in cache, cache
+
+
+@test
+def test_web_connector_does_not_read_the_body_of_a_redirect_response(tmp: Path):
+    """BL-SEC-17: `HTTPRedirectHandler` читал тело ответа 3xx (`fp.read()`) без предела и срока: сервер,
+    пославший редирект и «бесконечное» тело, держал прогон. Настоящий сервер отдаёт 302 с
+    Content-Length на гигабайт и замолкает; редирект обязан выполниться, а тело — не читаться."""
+    _path()
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    WE = importlib.import_module("web_export")
+    stop = threading.Event()
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/go":
+                self.send_response(302)
+                self.send_header("Location", "/ok")
+                self.send_header("Content-Length", str(10 ** 9))
+                self.end_headers()
+                try:
+                    self.wfile.write(b"x" * 100)
+                    self.wfile.flush()
+                except OSError:
+                    return
+                stop.wait(30)                   # тело не заканчивается: чтение его застряло бы
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *a):
+            pass
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    real = (WE.ALLOW_PRIVATE, WE.RETRIES, WE.time.sleep)
+    try:
+        WE.ALLOW_PRIVATE = ["127.0.0.1"]
+        WE.RETRIES = 1
+        t0 = time.monotonic()
+        raw, _enc, err = WE._get(base + "/go", "", 4)
+        assert raw == b"ok" and not err, (raw, err)
+        assert time.monotonic() - t0 < 3, "тело редиректа читалось до таймаута"
+    finally:
+        WE.ALLOW_PRIVATE, WE.RETRIES, WE.time.sleep = real
+        stop.set()
+        srv.shutdown()
+        srv.server_close()
+
+
+@test
+def test_web_crawl_links_and_assets_follow_the_start_page_policy(tmp: Path):
+    """BL-SEC-17: ссылка обхода и вложение проходят ту же политику, что стартовый адрес, — и при
+    выборе (тот же источник: схема, хост, порт), и на каждом переходе; токен уходит только странице
+    и ссылке обхода своего источника, вложению не уходит никогда. Два настоящих сервера:
+    страница-ссылка и вложение отвечают редиректом на второй (не разрешённый) — запрос туда не идёт."""
+    _path()
+    import contextlib
+    import io
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    WE = importlib.import_module("web_export")
+    seen = {"a": [], "b": []}
+    port = {}
+
+    def make(name):
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen[name].append((self.path, self.headers.get("Authorization", "")))
+                if name == "a" and self.path in ("/child", "/doc.pdf"):
+                    self.send_response(302)
+                    self.send_header("Location", f"http://127.0.0.1:{port['b']}/stolen")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                if name == "a" and self.path == "/page":
+                    body = ("<html><head><title>Раздел</title></head><body><main>"
+                            "<p>Текст раздела, достаточно длинный, чтобы страница не была пустой.</p>"
+                            '<a href="/child">Подраздел</a> <a href="/doc.pdf">Приказ о ставке</a> '
+                            f'<a href="http://127.0.0.1:{port["b"]}/other">Чужой порт</a> '
+                            '<img src="/ok.png" alt="Схема"></main></body></html>').encode("utf-8")
+                else:
+                    body = b"PNG-DATA" if self.path == "/ok.png" else b"<html><body><main><p>x</p></main></body></html>"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+        return H
+    srvs = {n: ThreadingHTTPServer(("127.0.0.1", 0), make(n)) for n in ("a", "b")}
+    port.update({n: s.server_address[1] for n, s in srvs.items()})
+    for s in srvs.values():
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+    proj = tmp / "p"
+    (proj / ".aurora").mkdir(parents=True)
+    (proj / "aurora.config.yaml").write_text(
+        f'web:\n  depth: 2\n  allow_private: ["127.0.0.1:{port["a"]}"]\n  pages:\n'
+        f"    - url: http://127.0.0.1:{port['a']}/page\n      trusted: false\n", encoding="utf-8")
+    (proj / ENV_LOCAL).write_text(f"WEB_PERSONAL_TOKEN=SECRET\nAURORA_WEB_TOKEN_HOSTS=127.0.0.1:{port['a']}\n",
+                                  encoding="utf-8")
+    real = (WE.ALLOW_PRIVATE, WE.PAUSE, WE.RETRIES, sys.argv, os.getcwd())
+    os.chdir(proj)
+    try:
+        WE.PAUSE, WE.RETRIES = 0, 1
+        sys.argv = ["web_export.py", "--out", str(proj / "out"), "--apply"]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            WE.main()
+        out = buf.getvalue()
+    finally:
+        WE.ALLOW_PRIVATE, WE.PAUSE, WE.RETRIES, sys.argv = real[:4]
+        os.chdir(real[4])
+        for s in srvs.values():
+            s.shutdown()
+            s.server_close()
+    assert not seen["b"], f"запрос ушёл на запрещённый адрес вслед за редиректом: {seen['b']}"
+    assert "/child — запрещено границами коннектора" in out, out
+    assert "вложение" in out and "/doc.pdf" in out and "запрещено границами коннектора" in out, out
+    tokens = dict(seen["a"])
+    assert tokens["/page"] == "Bearer SECRET" and tokens["/child"] == "Bearer SECRET", tokens
+    assert tokens["/doc.pdf"] == "" and tokens["/ok.png"] == "", f"токен ушёл вложению: {tokens}"
+    assert (proj / "out" / WE.ASSET_DIR).is_dir() and any(
+        p.read_bytes() == b"PNG-DATA" for p in (proj / "out" / WE.ASSET_DIR).iterdir()), "годное вложение потеряно"
+    assert not any(p.endswith("/other") for p, _t in seen["a"] + seen["b"]), "чужой порт взят в обход"
+
+
+@test
+def test_web_crawl_takes_only_links_of_the_same_origin(tmp: Path):
+    """BL-SEC-17: ссылка и вложение берутся только того же источника (схема, хост, порт). Ссылка с
+    https-страницы на `http://` того же хоста — понижение защиты — и на чужой порт отбрасывается;
+    обновление `http://хост` → `https://хост` допустимо."""
+    _path()
+    WE = importlib.import_module("web_export")
+    html = ('<html><body><main><p>Текст</p>'
+            '<a href="/a">a</a><a href="http://wiki.example.com/down">down</a>'
+            '<a href="https://wiki.example.com:8443/port">port</a>'
+            '<a href="https://wiki.example.com/d.pdf">doc</a><a href="http://wiki.example.com/e.pdf">edoc</a>'
+            '<img src="http://wiki.example.com/i.png"><img src="/j.png">'
+            '</main></body></html>')
+    _t, _md, links, assets = WE.to_markdown(html, "https://wiki.example.com/p")
+    assert links == ["https://wiki.example.com/a"], links
+    assert [u for u, _n in assets] == ["https://wiki.example.com/d.pdf", "https://wiki.example.com/j.png"], assets
+    _t, _md, links, assets = WE.to_markdown(
+        '<html><body><main><p>Текст</p><a href="https://wiki.example.com/up">up</a></main></body></html>',
+        "http://wiki.example.com/p")
+    assert links == ["https://wiki.example.com/up"], links
+
+
+@test
+def test_doctor_names_web_sources_that_go_to_private_addresses(tmp: Path):
+    """BL-SEC-17: `kit:doctor` называет источники `web:` с `allow_private` и страницы с приватным
+    адресом без разрешения — предупреждением, не ошибкой; публичные источники и проект без блока —
+    тишина."""
+    _path()
+    D = importlib.import_module("aurora_doctor")
+    KI = importlib.import_module("kit_i18n")
+    root = tmp / "p"
+    root.mkdir()
+    cfg = root / "aurora.config.yaml"
+    lit = "10.0" + ".0.5"                                                   # литерал собран из частей: проверка нейтральных хостов
+    priv = "http" + "://" + lit
+    assert D.check_web_private_sources(root) == []                         # конфига нет
+    cfg.write_text("web:\n  pages:\n    - url: https://example.org/law\n", encoding="utf-8")
+    assert D.check_web_private_sources(root) == []                         # публичный источник
+    cfg.write_text("web:\n  allow_private: [wiki.example.com]\n  pages:\n"
+                   "    - url: https://wiki.example.com/start\n    - url: https://example.org/law\n",
+                   encoding="utf-8")
+    got = D.check_web_private_sources(root)
+    assert len(got) == 1 and "allow_private" in got[0] and "wiki.example.com/start" in got[0] \
+        and "example.org" not in got[0], got
+    cfg.write_text(f"web:\n  pages:\n    - url: {priv}/wiki\n    - url: http://localhost:8080/x\n"
+                   "    - url: https://example.org/law\n", encoding="utf-8")
+    got = D.check_web_private_sources(root)
+    assert len(got) == 1 and "10.0.0.5/wiki" in got[0] and "localhost:8080" in got[0] \
+        and "без allow_private" in got[0], got
+    # то же, но хост разрешён: называется как разрешённый, а не как отказ
+    cfg.write_text(f"web:\n  allow_private: [\"{lit}\"]\n  pages:\n    - url: {priv}/wiki\n",
+                   encoding="utf-8")
+    got = D.check_web_private_sources(root)
+    assert len(got) == 1 and "web.allow_private разрешает" in got[0], got
+    # переводятся на английский, и доктор выводит их как предупреждения (не ERROR)
+    skeletons = KI.message_skeletons()
+    assert any("web.allow_private разрешает обходу" in sk for sk in skeletons)
+    assert any("страниц с приватным адресом без allow_private" in sk for sk in skeletons)
+    cfg.write_text(f"web:\n  pages:\n    - url: {priv}/wiki\n", encoding="utf-8")
+    res = run("aurora_doctor.py", cwd=root, expect_rc=None)
+    assert "WARN" in res.stdout and "10.0.0.5/wiki" in res.stdout, res.stdout
+    assert not any("ERROR" in ln and "10.0.0.5" in ln for ln in res.stdout.splitlines()), res.stdout

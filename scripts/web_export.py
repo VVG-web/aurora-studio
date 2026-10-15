@@ -584,14 +584,19 @@ def to_markdown(html: str, base_url: str = "") -> tuple:
         form.unwrap()
     main = soup.find("main") or soup.find("article") or soup.body or soup
 
-    host = urllib.parse.urlparse(base_url).netloc
+    def ours(full: str) -> bool:
+        # Тот же источник (схема, хост, порт), что у страницы: ссылка с https-страницы на
+        # `http://` того же хоста — понижение защиты, и содержимое зеркала шло бы открытым
+        # текстом. Допустимо только обновление `http://хост` → `https://хост` (BL-SEC-17).
+        return same_origin(full, base_url)
+
     links, assets = [], []
     for a in main.find_all("a", href=True):
         full = web_join(base_url, a["href"])
         full, _frag = urllib.parse.urldefrag(full)
         if not full.startswith(("http://", "https://")):
             continue
-        if urllib.parse.urlparse(full).netloc != host:
+        if not ours(full):
             continue                     # чужой домен — не наше решение о доверии
         if full.lower().endswith(ASSET_EXT):
             # Имя документа живёт в ТЕКСТЕ ссылки, а не в адресе: сайты кладут файлы под
@@ -603,8 +608,7 @@ def to_markdown(html: str, base_url: str = "") -> tuple:
             links.append(full)
     for img in main.find_all("img", src=True):
         full = web_join(base_url, img["src"])
-        if full.startswith(("http://", "https://")) \
-                and urllib.parse.urlparse(full).netloc == host:
+        if full.startswith(("http://", "https://")) and ours(full):
             assets.append((full, " ".join((img.get("alt") or "").split())[:80]))
 
     md = markdownify(str(main), heading_style="ATX")

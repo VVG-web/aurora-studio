@@ -639,6 +639,41 @@ def check_web_token_binding(root: Path | None = None, environ: dict | None = Non
     return out
 
 
+def check_web_private_sources(root: Path | None = None) -> list:
+    """Источники блока `web:`, которые ходят во внутреннюю сеть: хост из `allow_private` или
+    страница с приватным адресом-литералом (BL-SEC-17). Предупреждение, не ошибка: внутренняя
+    вики — законный источник, но человек должен видеть, что обход выходит за публичную сеть.
+    Имена не резолвятся: доктор работает без сети. → предупреждения; пусто — таких нет."""
+    root = root or ROOT
+    out = []   # через .append: реестр переводов kit_i18n собирает сообщения доктора именно по вызовам append
+    try:
+        from urllib.parse import urlsplit
+        from aurora_common import _allow_private_entries, _non_global, is_loopback_host
+        from web_export import pages_from_config, settings_from_config
+        cfg = (root / "aurora.config.yaml").read_text(encoding="utf-8")
+        allow = settings_from_config(cfg)["allow_private"]
+        allowed, refused = [], []
+        for url, _trusted, _feed in pages_from_config(cfg):
+            p = urlsplit(url)
+            host, port = (p.hostname or "").lower(), p.port or {"http": 80, "https": 443}.get(p.scheme, 0)
+            if any(h == host and pt in (0, port) for h, pt in _allow_private_entries(allow)):
+                allowed.append(url)
+            elif is_loopback_host(host) or _non_global(host) not in ("", "не адрес"):   # имя — не адрес
+                refused.append(url)
+    except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
+        return out
+    if allowed:
+        out.append(f"aurora.config.yaml: web.allow_private разрешает обходу внутренние адреса, страниц: "
+                   f"{len(allowed)} ({', '.join(u.split('?', 1)[0] for u in allowed[:3])}"
+                   f"{' …' if len(allowed) > 3 else ''}) → убедитесь, что это ваши внутренние источники; "
+                   "привязка токена от списка не расширяется")
+    if refused:
+        out.append(f"aurora.config.yaml: web — страниц с приватным адресом без allow_private: {len(refused)} "
+                   f"({', '.join(u.split('?', 1)[0] for u in refused[:3])}{' …' if len(refused) > 3 else ''}) "
+                   "→ выгрузка их откажет; если это внутренняя вики, внесите хост в web.allow_private")
+    return out
+
+
 def check_python(errors: list, warns: list, vi=None, platform=None) -> None:
     """Версия Python, на котором идёт doctor: 3.11+ — OK, 3.10 — предупреждение (снят с
     поддержки), ниже — ошибка с подсказкой по системе. `vi` подменяют тесты."""
@@ -746,6 +781,7 @@ def main() -> int:
     warns += check_mirror_heads()
     warns += check_linked_roots()
     warns += check_web_token_binding()
+    warns += check_web_private_sources()
     warns += check_cards_block()
 
     s_err, s_warn, s_lines = check_structure(structure_verbose)

@@ -3870,6 +3870,20 @@ def _guarded_handlers():
     return _GUARDED_HANDLERS
 
 
+class _UnreadBody:
+    """Ответ 3xx для обработчика редиректов: `read()` отдаёт пусто и тела не читает, остальное
+    (`close`, заголовки) — у настоящего ответа."""
+
+    def __init__(self, fp):
+        self._fp = fp
+
+    def read(self, *args):
+        return b""
+
+    def __getattr__(self, name):
+        return getattr(self._fp, name)
+
+
 def guarded_urlopen(req, timeout: float | None = None, allow_private=(), resolve=None):
     """`safe_urlopen` для веб-коннектора: проверка границ до запроса, на каждом редиректе и в
     момент соединения (адрес, на который реально идёт сокет, а не тот, что видела предпроверка).
@@ -3894,6 +3908,14 @@ def guarded_urlopen(req, timeout: float | None = None, allow_private=(), resolve
                 # newurl `urllib` уже сделал абсолютным относительно запроса
                 _guard(newurl, self._allow, self._resolve, self._proxies)
                 return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+            # `HTTPRedirectHandler.http_error_302` перед переходом делает `fp.read()`: тело
+            # ответа-редиректа, которое нам не нужно, читалось без предела и срока. Отдаём
+            # обработчику ответ, у которого `read()` пуст: сокет закрывается, а не вычитывается.
+            def http_error_302(self, req, fp, code, msg, headers):
+                return super().http_error_302(req, _UnreadBody(fp), code, msg, headers)
+
+            http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
         _GUARDED_REDIRECT = _GuardedRedirect
     proxies = _rq.getproxies() if EGRESS_PROXIES is None else dict(EGRESS_PROXIES)

@@ -392,6 +392,8 @@
     "aurora.config.yaml: корень синка записан больше одного раза — {}; уберите повтор в «Настройки проекта» → «Источники»": "aurora.config.yaml: a sync root is written more than once — {}; remove the repeat in «The project's settings» → «Sources»",
     "aurora.config.yaml: не найден блок atlassian": "aurora.config.yaml: the atlassian block was not found",
     "aurora.config.yaml: не найден блок project (проверьте YAML)": "aurora.config.yaml: the project block was not found (check the YAML)",
+    "aurora.config.yaml: web.allow_private разрешает обходу внутренние адреса, страниц: {} ({}{}) → убедитесь, что это ваши внутренние источники; привязка токена от списка не расширяется": "aurora.config.yaml: web.allow_private lets the crawl visit internal addresses, pages: {} ({}{}) → make sure these are your own internal sources; the token binding is not widened by the list",
+    "aurora.config.yaml: web — страниц с приватным адресом без allow_private: {} ({}{}) → выгрузка их откажет; если это внутренняя вики, внесите хост в web.allow_private": "aurora.config.yaml: web — pages with a private address and no allow_private: {} ({}{}) → the export will refuse them; if this is an internal wiki, add the host to web.allow_private",
     "{} — поправьте файл целиком («Весь конфиг»)": "{} — fix the file as a whole («The whole config»)",
     "{}/ на диске ↔ {}/ в git": "{}/ on disk ↔ {}/ in git",
     "{}: возможный секрет ({})": "{}: a possible secret ({})",
