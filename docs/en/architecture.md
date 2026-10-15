@@ -330,7 +330,9 @@ than supported) — the section does not start, `/api/modules` returns a `{id, e
 shows the reason as a line; an optional field of the wrong type (`order` not a number, `needs`/`commands`
 not lists, `group` not a string, `about` not an object, `dev` not a boolean) or an unknown group — the
 section starts with that field's default and the reason is in the entry's `warn` (the panel shows it as a
-warning). The manifest format did not change: no `api_version` means `1`.
+warning; an explicit `null` is the same as no field and gives no warning; in `name`/`about` the languages
+whose value is not a string are dropped with a warning). `api_version` is never softened: a value of the
+wrong type (`"99"`, `2.0`, `true`) is an error, like a version from the future. The manifest format did not change: no `api_version` means `1`.
 
 ## 7. Where things are stored in a project
 

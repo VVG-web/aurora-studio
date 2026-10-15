@@ -337,6 +337,8 @@ def _ext_type_name(want) -> str:
         return "строка или {язык: строка}"
     names = {str: "строка", int: "целое число", float: "число", dict: "объект",
              list: "список", bool: "да/нет"}
+    if want == (int, float):
+        return names[float]                  # «число» — целое тоже число; одно слово переводится одной строкой
     return " или ".join(names.get(t, t.__name__) for t in (want if isinstance(want, tuple) else (want,)))
 
 
@@ -353,8 +355,9 @@ def load_manifest(path, kind: str, lenient: bool = False):
     `lenient=True` — для потребителя, которому важнее показать расширение, чем отвергнуть его
     (панель): поле НЕ из обязательных с неверным типом (и подполе вложенного объекта) не
     отвергает манифест, а отбрасывается — потребитель возьмёт своё умолчание, — и об этом
-    остаётся строка в отчёте при непустом манифесте. Обязательные поля, корень, `id` и
-    `api_version` проверяются так же строго.
+    остаётся строка в отчёте при непустом манифесте. Явный `null` в необязательном поле — то же, что «поля нет» (без записи в отчёт); в поле
+    `{язык: строка}` отбрасываются только языки, где значение не строка. Обязательные поля, корень,
+    `id` и `api_version` (в том числе его тип) проверяются так же строго.
     """
     name = os.path.basename(os.path.dirname(str(path))) if os.path.basename(str(path)) in (
         "connector.json", "module.json") else os.path.splitext(os.path.basename(str(path)))[0]
@@ -382,13 +385,29 @@ def load_manifest(path, kind: str, lenient: bool = False):
         notes = []
         data = dict(data)
         for key, want in list(schema["required"].items()) + list(schema["optional"].items()):
-            if key in data and not _ext_type_ok(data[key], want):
-                if lenient and key not in schema["required"]:
-                    notes.append("%s: поле «%s» — не %s — отброшено, взято умолчание"
-                                 % (pre, key, _ext_type_name(want)))
-                    del data[key]
-                    continue
-                return None, ["%s: поле «%s» — не %s — пропущен" % (pre, key, _ext_type_name(want))]
+            if key not in data:
+                continue
+            # `api_version` смягчению не подлежит: версия «99», 2.0 или true — не «лишняя
+            # запятая», а манифест, о котором нельзя сказать, под какой API он написан.
+            soft = lenient and key not in schema["required"] and key != "api_version"
+            if soft and data[key] is None:
+                del data[key]                    # явный null — то же, что «поля нет»: умолчание, без шума
+                continue
+            if _ext_type_ok(data[key], want):
+                continue
+            if lenient and want == _EXT_I18N and isinstance(data[key], dict):
+                # `{язык: строка}`, где у части языков не строка: остаются языки со строкой
+                # (обязательность имени на языке по умолчанию проверяет потребитель)
+                notes.append("%s: поле «%s» — у части языков значение не строка — эти языки отброшены"
+                             % (pre, key))
+                data[key] = {k: v for k, v in data[key].items() if isinstance(v, str)}
+                continue
+            if soft:
+                notes.append("%s: поле «%s» — не %s — отброшено, взято умолчание"
+                             % (pre, key, _ext_type_name(want)))
+                del data[key]
+                continue
+            return None, ["%s: поле «%s» — не %s — пропущен" % (pre, key, _ext_type_name(want))]
         for key, subs in schema["nested"].items():
             sub = data.get(key)
             if not isinstance(sub, dict):

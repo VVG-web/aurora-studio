@@ -279,6 +279,30 @@ def message_skeletons() -> set:
                         s = sub.value.left.value.replace("%s", "{}")
                         if re.search("[а-яА-ЯёЁ]", s):
                             out.add(s.strip())
+    # Манифесты расширений: причины отказа и предупреждения общего загрузчика (`load_manifest`,
+    # названия типов — `_ext_type_name`) собираются через `%s`, а строки `warn` раздела панели
+    # рождает `modules()`: панель показывает их человеку, и переводятся они по тем же образцам.
+    if os.path.isfile(common):
+        for node in ast.walk(ast.parse(open(common, encoding="utf-8").read())):
+            if isinstance(node, ast.FunctionDef) and node.name == "load_manifest":
+                for sub in ast.walk(node):
+                    if (isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Mod)
+                            and isinstance(sub.left, ast.Constant) and isinstance(sub.left.value, str)
+                            and sub.left.value.startswith("%s: ")):
+                        add(sub)
+            elif isinstance(node, ast.FunctionDef) and node.name == "_ext_type_name":
+                for sub in ast.walk(node):
+                    if (isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+                            and re.search("[а-яА-ЯёЁ]", sub.value) and sub.value.strip() != "или"):
+                        out.add(sub.value.strip())
+    cockpit = servers[0]
+    if os.path.isfile(cockpit):
+        for node in ast.walk(ast.parse(open(cockpit, encoding="utf-8").read())):
+            if isinstance(node, ast.FunctionDef) and node.name == "modules":
+                for sub in ast.walk(node):
+                    if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                            and sub.func.attr == "append" and sub.args):
+                        add(sub.args[0])
     # Реестр видов артефактов: причины, по которым вид не годится, рождает `make_kinds.py` —
     # `check` кладёт их вторым элементом пары, `out_problem` возвращает.
     kinds = os.path.join(KIT, "scripts", "make_kinds.py")

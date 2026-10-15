@@ -407,6 +407,16 @@ def test_cockpit_modules_survive_bad_manifests(tmp: Path):
     _write(root / "noru" / "module.json", {"id": "noru", "name": {"en": "Only English"}})
     _write(root / "other" / "module.json", {"id": "elsewhere", "name": {"ru": "Чужой"}})
     _write(root / "future" / "module.json", {"id": "future", "name": {"ru": "Будущий"}, "api_version": 99})
+    # api_version не смягчается: не тот тип — ошибка раздела, как и версия из будущего
+    for sid, ver in (("verstr", "99"), ("verfloat", 2.0), ("verbool", True), ("verzero", 0), ("vernull", None)):
+        _write(root / sid / "module.json", {"id": sid, "name": {"ru": "Версия"}, "api_version": ver})
+    # не строка в НЕосновном языке имени: раздел поднимается, этот язык отброшен с пометкой
+    _write(root / "nameen" / "module.json", {"id": "nameen", "name": {"ru": "Имя", "en": None}})
+    _write(root / "nonamenull" / "module.json", {"id": "nonamenull", "name": {"ru": None}})
+    # явный null в необязательных полях — «поля нет»: умолчания без единого предупреждения
+    _write(root / "nullfields" / "module.json", {
+        "id": "nullfields", "name": {"ru": "Нули"}, "order": None, "needs": None, "commands": None,
+        "group": None, "about": None, "dev": None, "for": None})
     _write(root / "junk" / "module.json", "{ не json")
     _write(root / "list" / "module.json", "[1, 2]")
     _write(root / "empty" / "module.json", "")
@@ -417,7 +427,8 @@ def test_cockpit_modules_survive_bad_manifests(tmp: Path):
         restore()
     by = {m["id"]: m for m in got}
     assert set(by) == {"good", "types", "badgroup", "inf", "strname", "noru", "other", "future",
-                       "junk", "list", "empty"}, sorted(by)
+                       "junk", "list", "empty", "verstr", "verfloat", "verbool", "verzero", "vernull",
+                       "nameen", "nonamenull", "nullfields"}, sorted(by)
     # валидный на месте и без замечаний
     g = by["good"]
     assert "warn" not in g and "error" not in g and g["dev"] is True and g["order"] == 10
@@ -434,9 +445,17 @@ def test_cockpit_modules_survive_bad_manifests(tmp: Path):
     assert by["badgroup"]["group"] == "project" and "nope" in " ".join(by["badgroup"]["warn"])
     assert by["inf"]["order"] == 100 and by["inf"]["warn"], by["inf"]
     # обязательное: только error
-    for bad in ("strname", "noru", "other", "future", "junk", "list", "empty"):
+    for bad in ("strname", "noru", "other", "future", "junk", "list", "empty",
+                "verstr", "verfloat", "verbool", "verzero", "vernull", "nonamenull"):
         assert set(by[bad]) == {"id", "error"} and by[bad]["error"], (bad, by[bad])
     assert "v99" in by["future"]["error"]
+    for bad in ("verstr", "verfloat", "verbool", "vernull"):
+        assert "api_version" in by[bad]["error"], (bad, by[bad])
+    ne = by["nameen"]
+    assert "error" not in ne and ne["name"] == {"ru": "Имя"} and len(ne["warn"]) == 1, ne
+    nf = by["nullfields"]
+    assert "error" not in nf and "warn" not in nf, nf
+    assert nf["order"] == 100 and nf["needs"] == [] and nf["group"] == "project" and nf["dev"] is False
     assert "объект" in by["list"]["error"]
     # порядок: сначала группы меню, внутри — order, потом id
     ids = [m["id"] for m in got if "error" not in m]
@@ -457,3 +476,50 @@ def test_load_manifest_lenient_drops_only_optional(tmp: Path):
     assert got is None and "name" in notes[0], notes
     clean, notes = C.load_manifest(_write(tmp / "c" / "module.json", {"id": "c", "name": "С"}), "module", lenient=True)
     assert clean and notes == []
+    # api_version смягчению не подлежит ни в каком виде: «99», 2.0, true, null — отказ, как и в строгом режиме
+    for i, ver in enumerate(("99", 2.0, True, None, [1])):
+        p = _write(tmp / ("v%d" % i) / "module.json", {"id": "v%d" % i, "name": "В", "api_version": ver})
+        for lenient in (False, True):
+            got, notes = C.load_manifest(p, "module", lenient=lenient)
+            assert got is None and "api_version" in notes[0], (ver, lenient, got, notes)
+    # явный null в необязательном — «поля нет» без записи в отчёт; не строка в языке — отброшен только язык
+    got, notes = C.load_manifest(_write(tmp / "z" / "module.json", {
+        "id": "z", "name": {"ru": "Я", "en": 5}, "about": {"en": None}, "order": None, "dev": None}),
+        "module", lenient=True)
+    assert got and "order" not in got and "dev" not in got, got
+    assert got["name"] == {"ru": "Я"} and got["about"] == {}, got
+    assert len(notes) == 2 and all("языков" in n for n in notes), notes
+    strict, notes = C.load_manifest(tmp / "z" / "module.json", "module")
+    assert strict is None, notes
+
+
+@test
+def test_cockpit_modules_messages_translate_to_english(tmp: Path):
+    """`error` и `warn` из `modules()` по-английски без русских слов: шаблоны есть в `data/en.json`, `warn` — в списках перевода."""
+    import re as _re
+    root = tmp / "modules"
+    _write(root / "types" / "module.json", {
+        "id": "types", "name": {"ru": "Т", "en": 3}, "order": "abc", "needs": "project",
+        "commands": "agent:ask", "group": 5, "about": 7, "dev": "yes", "for": 3})
+    _write(root / "badgroup" / "module.json", {"id": "badgroup", "name": {"ru": "Т"}, "group": "nope"})
+    _write(root / "inf" / "module.json", '{"id": "inf", "name": {"ru": "Т"}, "order": Infinity}')
+    _write(root / "future" / "module.json", {"id": "future", "name": {"ru": "Т"}, "api_version": 99})
+    _write(root / "verstr" / "module.json", {"id": "verstr", "name": {"ru": "Т"}, "api_version": "2"})
+    _write(root / "noid" / "module.json", {"name": {"ru": "Т"}})
+    _write(root / "badname" / "module.json", {"id": "badname", "name": 5})
+    _write(root / "junk" / "module.json", "{ не json")
+    _write(root / "list" / "module.json", "[1]")
+    _write(root / "other" / "module.json", {"id": "elsewhere", "name": {"ru": "Т"}})
+    ck, restore = _ck_modules_dir(root)
+    try:
+        got = ck.modules()
+        ru = [x for m in got for x in ([m["error"]] if "error" in m else []) + m.get("warn", [])]
+        en = ck.translate_payload({"modules": got}, "en")["modules"]
+    finally:
+        restore()
+    texts = [x for m in en for x in ([m["error"]] if "error" in m else []) + m.get("warn", [])]
+    assert len(texts) == len(ru) >= 14, texts
+    # «не json» из файла попадает в сообщение разбора как есть (это текст файла, а не шаблона)
+    left = [t for t in texts if _re.search("[а-яА-ЯёЁ]", t.replace("не json", ""))]
+    assert not left, left
+    assert any("field «order» is not a number" in t for t in texts), texts
