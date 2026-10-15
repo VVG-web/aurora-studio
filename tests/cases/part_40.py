@@ -225,8 +225,7 @@ def test_lifecycle_update_from_past_releases_n_to_n_plus_k(tmp: Path):
         again = _update(KIT, root)
         # шаблоны и промпты, правленые проектом, по замыслу каждый раз ложатся рядом как `.new`
         # (тем же содержимым) — а вот движку делать нечего
-        assert "Инженерные файлы к перезаписи" not in again.stdout or \
-            "Инженерные файлы к перезаписи: 0" in again.stdout, \
+        assert "Инженерные файлы к перезаписи: 0" in again.stdout, \
             f"{tag}: второе обновление нашло работу в движке:\n{again.stdout[-700:]}"
         assert _tree(root) == before, f"{tag}: второе обновление изменило проект"
         assert _git_status(root) == status, f"{tag}: второе обновление изменило git"

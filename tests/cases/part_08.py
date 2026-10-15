@@ -913,6 +913,9 @@ def test_repair_frees_alias_taken_twice(tmp: Path):
     (cards / "Процесс.md").write_text(
         '---\ntitle: "Процесс"\nstatus: imported\n---\n\nсм. [[УТС]] и [[Ещё-не-описанное]]\n',
         encoding="utf-8")
+    before = run("kb_lint.py", cwd=root).stdout
+    assert "битые ссылки: 2" in before, \
+        f"до заготовок линтер не видит двух висячих ссылок — проверка после них ничего не значит:\n{before[:600]}"
     stub = run("kb_fix.py", "--stubs", "--apply", "--allow-dirty", cwd=root)
     assert "Заготовки под ссылки: 2" in stub.stdout, stub.stdout[:600]
     made = (root / "AuroraKnowledgeDB/Glossary/УТС.md").read_text(encoding="utf-8")
@@ -920,10 +923,16 @@ def test_repair_frees_alias_taken_twice(tmp: Path):
     # а не после того, как кто-то вспомнит про метку в тегах.
     assert "status: placeholder" in made and "заготовка" in made, made
     assert "[[Процесс]]" in made, "в заготовке не сказано, кто её ждёт"
-    assert run("kb_lint.py", cwd=root).returncode == 0 or True
-
-    out = run("kb_lint.py", cwd=root).stdout
-    assert "kb_lint: карточек" in out
+    # Код возврата линта здесь честно 1: у карточек-образцов нет `type:` и связей, и
+    # это не про заготовки. Важно другое — заготовки закрыли обе висячие ссылки и сами
+    # линтеру не мешают: ни битых ссылок, ни замечаний к карточкам Glossary.
+    lint = run("kb_lint.py", cwd=root)
+    out = lint.stdout
+    assert "kb_lint: карточек 5, ошибок 5" in out, out[:300]
+    assert lint.returncode == 1, f"код возврата линта изменился: {lint.returncode}"
+    assert "битая ссылка" not in out and "битые ссылки" not in out, \
+        f"заготовки не закрыли висячие ссылки:\n{out[:700]}"
+    assert "Glossary/" not in out, f"линтер ругается на заготовки:\n{out[:700]}"
 
 
 @test

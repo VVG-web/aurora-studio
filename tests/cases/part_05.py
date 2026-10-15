@@ -271,10 +271,21 @@ def test_correction_asks_instead_of_deciding(tmp: Path):
     assert "status: archived" in (root / "Raw" / "corrections" / f"{name}.md").read_text(
         encoding="utf-8"), "снятое исправление не помечено"
 
-    # Осиротевшее исправление называется, а не исчезает.
+    # Осиротевшее исправление называется, а не исчезает. Снятое (в архиве) сиротой не
+    # считается, поэтому берём живое: исправление на карточке, которая потом пропала.
+    gone = root / "AuroraKnowledgeDB" / "Concepts" / "Пропавшая.md"
+    gone.write_text("---\ntype: concept\nstatus: knowledge\nkind: knowledge\n---\n\n"
+                    "# Пропавшая\n\nТекст.\n", encoding="utf-8")
+    assert run_fix("--new", "Пропавшая", "--text", "правка").returncode == 0
+    gone.unlink()
     card.unlink()
     lost = run_fix("--list")
-    assert "осиротела" in lost.stdout or "Осиротели" in lost.stdout or True
+    assert lost.returncode == 0, lost.stderr[:200]
+    assert "## Осиротели: 1" in lost.stdout, \
+        f"исправление на пропавшей карточке не названо сиротой:\n{lost.stdout[:500]}"
+    assert "карточки «Пропавшая» в базе нет" in lost.stdout, \
+        f"сирота названа без имени карточки:\n{lost.stdout[:500]}"
+    assert "| осиротела |" in lost.stdout, "в таблице у сироты нет состояния"
     fresh = subprocess.run([sys.executable, str(script), "--new", "Заявка", "--text", "x"],
                            cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert fresh.returncode == 1, "исправление заведено на исчезнувшую карточку"

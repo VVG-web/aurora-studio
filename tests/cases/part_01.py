@@ -781,7 +781,9 @@ def test_repair_converges_instead_of_repeating_itself(tmp: Path):
     assert text.count("Заявитель\"") <= 1 or "Податель" in text, "синонимы карточки испорчены"
 
     second = run("kb_fix.py", "--all", "--apply", "--allow-dirty", cwd=root)
-    assert "Одинаковые alias: 0" in second.stdout or "Одинаковые alias" not in second.stdout, \
+    # Раздел про alias в выводе `--all` есть всегда: «нет фразы вовсе» значило бы, что
+    # проверка конфликтов не запускалась, а не что их нет.
+    assert "Одинаковые alias: 0" in second.stdout, \
         f"второй прогон нашёл те же конфликты:\n{second.stdout[:700]}"
     assert "повторяющих имя своей же карточки" not in second.stdout, \
         "самоповторы возвращаются на каждом прогоне — ремонт не сходится"

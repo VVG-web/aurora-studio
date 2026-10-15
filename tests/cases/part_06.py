@@ -130,7 +130,8 @@ def test_index_description_carries_no_link_markup(tmp: Path):
     assert "[[" not in got and "]]" not in got, (
         f"описание несёт разметку ссылки: {got[-50:]!r} — при обрезке она рвётся, "
         "и оглавление получает ссылку на имя-обрубок")
-    assert "ALG-145" in got or len(got) <= 120, "текст ссылки потерян целиком"
+    assert "ALG-145" in got, f"текст ссылки потерян целиком: {got!r}"
+    assert len(got) <= 121, f"описание длиннее предела: {len(got)} знаков"
 
     # Короткая строка со ссылкой — тоже без разметки, но со словами.
     short = ki.first_sentence("Смотри [[Курс валют ЦБ]] и далее")
