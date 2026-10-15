@@ -35,8 +35,9 @@
 становятся вердиктом — после обычного вывода печатается машинная строка `AURORA-GATE` (ворота
 `artifact_lint`, пункт на замечание: `id` и `detail` — файл и текст), коды прежние: 0 — замечаний
 нет, 1 — есть. `--gate=warn` (или `AURORA_GATE_MODE=warn`) — режим внедрения: вердикт `warn` и
-код 0. Файлы без `--profile` и проект без `AuroraKnowledgeDB/` (проверять нечего) в режиме ворот —
-код 2 («не смог отработать»), а не «пусто — pass». Без `--gate` ничего не меняется.
+код 0. Файлы без `--profile` и проект, где нет ни одной папки артефактов (`Artifacts/us`, `Artifacts/ac`,
+`AuroraKnowledgeDB/Specs` или заданные в `artifacts:`; проверять нечего), в режиме ворот — код 2
+(«не смог отработать»), а не «пусто — pass». Без `--gate` ничего не меняется.
 """
 from __future__ import annotations
 
@@ -604,11 +605,12 @@ def main() -> int:
     ap.add_argument("files", nargs="*", help="файлы; без них — все артефакты проекта")
     ap.add_argument("--profile", choices=PROFILES, help="профиль для переданных файлов")
     ap.add_argument("--json", action="store_true", help="машинный вывод")
-    ap.add_argument("--gate", choices=("fail", "warn"), default="", metavar="MODE",
+    ap.add_argument("--gate", action="store_true",
                     help="режим ворот: вердикт строкой AURORA-GATE; --gate=warn — предупреждение "
                          "вместо кода 1")
+    ap.add_argument("--gate-mode", choices=("fail", "warn"), default="", help=argparse.SUPPRESS)
     a = ap.parse_args(RS.gate_argv(sys.argv[1:]))
-    gate = RS.gate_mode(a.gate)
+    gate = RS.gate_mode(a.gate, a.gate_mode)
     if a.files:
         if not a.profile:
             print("artifact_lint: для файлов нужен --profile us|ac|spec", file=sys.stderr)
@@ -621,8 +623,9 @@ def main() -> int:
             if items:
                 found.append((path, items))
     else:
-        if gate and not os.path.isdir("AuroraKnowledgeDB"):
-            print("artifact_lint: нет папки AuroraKnowledgeDB/ — запускайте из корня проекта", file=sys.stderr)
+        if gate and not any(os.path.isdir(d) for d in project_dirs().values()):
+            print("artifact_lint: нет папок артефактов (Artifacts/us, Artifacts/ac, AuroraKnowledgeDB/Specs) — "
+                  "запускайте из корня проекта", file=sys.stderr)
             return 2       # в воротах «не смог отработать» не смешивается с «пусто — прошло»
         checked, found = lint_project()
     if a.json:

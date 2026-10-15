@@ -373,11 +373,12 @@ def main() -> int:
     ap.add_argument("--explain", metavar="FILE", help="документ: на чём он собран")
     ap.add_argument("--requirements", action="store_true",
                     help="сквозная таблица требований в MOC/Трассировка-требований.md")
-    ap.add_argument("--gate", choices=("fail", "warn"), default="", metavar="MODE",
+    ap.add_argument("--gate", action="store_true",
                     help="режим ворот: вердикт строкой AURORA-GATE; --gate=warn — предупреждение "
                          "вместо кода 1")
+    ap.add_argument("--gate-mode", choices=("fail", "warn"), default="", help=argparse.SUPPRESS)
     a = ap.parse_args(RS.gate_argv(sys.argv[1:]))
-    gate = RS.gate_mode(a.gate)
+    gate = RS.gate_mode(a.gate, a.gate_mode)
     if not os.path.isdir(ROOT):
         print(f"kb_trace: нет {ROOT}/ — запускайте из корня проекта", file=sys.stderr)
         return 2 if gate else 1       # в воротах «не смог отработать» не смешивается с «не пройдены»

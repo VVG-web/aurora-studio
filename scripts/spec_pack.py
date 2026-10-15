@@ -90,11 +90,12 @@ def main() -> int:
     ap.add_argument("--version", help="версия бандла (по умолчанию из спеки)")
     ap.add_argument("--apply", action="store_true",
                     help="записать бандл (иначе только состав и риски)")
-    ap.add_argument("--gate", choices=("fail", "warn"), default="", metavar="MODE",
+    ap.add_argument("--gate", action="store_true",
                     help="режим ворот: риски передачи DoR дают код 1 и строку вердикта; "
                          "ошибка входа — код 2; --gate=warn — предупреждение вместо кода 1")
+    ap.add_argument("--gate-mode", choices=("fail", "warn"), default="", help=argparse.SUPPRESS)
     a = ap.parse_args(RS.gate_argv(sys.argv[1:]))
-    gate = RS.gate_mode(a.gate)
+    gate = RS.gate_mode(a.gate, a.gate_mode)
     fail_rc = 2 if gate else 1     # в воротах «не смог отработать» не смешивается с «не пройдены»
 
     if not os.path.isdir(KB_ROOT):

@@ -474,9 +474,11 @@ class RouteRun:
                 continue
             self.say("err" if g["verdict"] == "fail" else "warn",
                      self.t("route.gate_" + g["verdict"], gate=g["gate"] or cmd,
-                            n=len(g["items"])))
+                            n=g["total"]))
             for it in g["items"]:
                 self.say("out", self.t("route.gate_item", id=it["id"], detail=it["detail"]))
+            if g["total"] > len(g["items"]):      # список обрезан потолком: полное число — в заголовке
+                self.say("out", self.t("route.gate_cut", shown=len(g["items"]), total=g["total"]))
         if is_gate(args) and res["rc"] == 0 and verdict == "fail":
             res["rc"] = 1
             res["gate_mismatch"] = True

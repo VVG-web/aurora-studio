@@ -295,6 +295,7 @@
   "route.gate_fail": "■ The gate «{gate}» is not passed: violated items — {n}.",
   "route.gate_warn": "■ The gate «{gate}» warns: items — {n}. The route goes on (the gates' adoption mode).",
   "route.gate_item": "    · {id}: {detail}",
+  "route.gate_cut": "    · the first {shown} of {total} are shown",
   "route.gate_mismatch": "■ The gate «{gate}» ended with code 0, but its verdict is \"fail\". Reading it as not passed: a gate does not guess in favour of passing.",
   "route.gated_why": "■ The route is stopped at the gate «{cmd}»: the findings are still open. Fix them and continue the route (the «Continue» button in the Console, or run it again) — the steps already passed are not repeated, and the gate is checked anew.",
   "route.passed": "■ The route «{title}» passed in full: {steps}.",

@@ -1189,7 +1189,7 @@ def test_a_gate_verdict_line_round_trips_and_reads_strictly(tmp: Path):
                         waivable=True)
     assert line.startswith("AURORA-GATE ") and RS.MARK_GATE == "AURORA-GATE ", line
     got = RS.parse_gate(["шум", line, "ещё шум"])
-    assert got == [{"gate": "spec", "verdict": "fail", "waivable": True,
+    assert got == [{"gate": "spec", "verdict": "fail", "waivable": True, "total": 2,
                     "items": [{"id": "dor-1", "detail": "нет критерия"},
                               {"id": "dor-2", "detail": ""}]}], got
     for v in ("pass", "warn", "fail"):
@@ -1290,7 +1290,8 @@ def test_a_gate_verdict_line_decides_the_route_fail_closed(tmp: Path):
     assert "RS.MARK_GATE" in (KIT / "cockpit" / "aurora_cockpit.py").read_text(encoding="utf-8")
     for lang in ("ru", "en"):
         core = json.loads((KIT / "cockpit" / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))
-        for k in ("route.gate_fail", "route.gate_warn", "route.gate_item", "route.gate_mismatch"):
+        for k in ("route.gate_fail", "route.gate_warn", "route.gate_item", "route.gate_cut",
+                  "route.gate_mismatch"):
             assert core.get(k), f"{lang}: нет строки {k}"
 
 
@@ -3546,10 +3547,11 @@ def test_artifact_lint_gate_mode_keeps_codes_and_names_verdict(tmp: Path):
 
 @test
 def test_gate_verdict_items_keep_a_total_when_the_list_is_cut(_t):
-    """Список пунктов длиннее потолка режется, но последний пункт `gate-total` называет полное число.
+    """Список пунктов длиннее потолка режется, а полное число несёт поле `total` строки вердикта.
 
-    Раньше маршрут писал «нарушенных пунктов — 50» и при сотнях ошибок. Список ровно в потолок не
-    меняется, а повторный разбор уже обрезанной строки (`parse_gate`) итог не наращивает.
+    Служебного пункта в списке нет: он считался бы нарушением (маршрут писал «нарушенных пунктов — 50»
+    при любом числе ошибок от 51). Список ровно в потолок не меняется; строка без `total` (скрипт
+    прошлого выпуска) даёт `total` по числу пунктов, а повторный разбор итог не наращивает.
     """
     sys.path.insert(0, str(KIT / "scripts"))
     import run_summary as RS
@@ -3557,18 +3559,24 @@ def test_gate_verdict_items_keep_a_total_when_the_list_is_cut(_t):
     exact = [{"id": f"x{i}", "detail": "d"} for i in range(cap)]
     gates = RS.parse_gate([RS.emit_gate("g", "fail", exact)])
     assert [it["id"] for it in gates[0]["items"]] == [it["id"] for it in exact], "список в потолок изменился"
+    assert gates[0]["total"] == cap, gates[0]
     many = [{"id": f"x{i}", "detail": "d"} for i in range(cap + 70)]
-    gates = RS.parse_gate([RS.emit_gate("g", "fail", many)])
+    line = RS.emit_gate("g", "fail", many)
+    gates = RS.parse_gate([line])
     items = gates[0]["items"]
-    assert len(items) == cap and items[-1]["id"] == "gate-total", items[-2:]
-    assert str(cap + 70) in items[-1]["detail"] and items[0]["id"] == "x0" and items[-2]["id"] == f"x{cap - 2}", items[-2:]
+    assert len(items) == cap and "gate-total" not in {it["id"] for it in items}, items[-2:]
+    assert gates[0]["total"] == cap + 70 and items[-1]["id"] == f"x{cap - 1}", gates[0]["total"]
+    again = RS.parse_gate([RS.emit_gate("g", "fail", items)])[0]
+    assert again["total"] == cap, "повторный разбор нарастил итог"
+    old = RS.parse_gate(['AURORA-GATE {"gate": "g", "verdict": "fail", "items": ["a", "b"]}'])[0]
+    assert old["total"] == 2, old
 
 
 @test
 def test_kb_lint_gate_items_are_named_by_error_kind_with_a_total(tmp: Path):
     """kb_lint --gate: id пункта — вид ошибки (как группа в обычном выводе), а не общий `lint-error`.
 
-    Сотни ошибок режутся потолком, и вердикт заканчивается итогом `gate-total` с полным числом.
+    Сотни ошибок режутся потолком, а полное число лежит в поле `total` строки вердикта.
     """
     root = make_project(tmp)
     card(root, "Concepts/Шина.md", "Текст.", type="concept", status="draft", related='["[[Шина]]"]')
@@ -3579,11 +3587,10 @@ def test_kb_lint_gate_items_are_named_by_error_kind_with_a_total(tmp: Path):
     items = _gate_of(cp)[0]["items"]
     sys.path.insert(0, str(KIT / "scripts"))
     import run_summary as RS
-    assert len(items) == RS.GATE_MAX_ITEMS and items[-1]["id"] == "gate-total", items[-2:]
+    assert len(items) == RS.GATE_MAX_ITEMS, len(items)
     assert "lint-error" not in {it["id"] for it in items}, "ошибки не названы видом"
-    assert {it["id"] for it in items[:-1]} == {"broken-link"}, {it["id"] for it in items[:-1]}
-    total = int("".join(ch for ch in items[-1]["detail"].split(",")[0] if ch.isdigit()))
-    assert total >= 60, items[-1]
+    assert {it["id"] for it in items} == {"broken-link"}, {it["id"] for it in items}
+    assert _gate_of(cp)[0]["total"] >= 60, _gate_of(cp)[0]["total"]
 
 
 @test
@@ -3632,3 +3639,101 @@ def test_spec_pack_gate_takes_the_adoption_mode_like_the_other_gates(tmp: Path):
 def test_tests_do_not_inherit_the_developers_gate_mode(_t):
     """Тесты не видят `AURORA_GATE_MODE` разработчика: с `warn` в оболочке коды ворот были бы другими."""
     assert "AURORA_GATE_MODE" not in os.environ, "harness не вычистил режим внедрения ворот"
+
+
+@test
+def test_gate_stays_a_bare_flag_for_the_registry_and_scenarios(tmp: Path):
+    """`--gate` у четырёх скриптов — голый флаг без значения; режим — только через `--gate=warn`.
+
+    Реестр панели ищет значимые флаги по метавару в `--help`: объявленный `--gate MODE` требовал бы
+    значение у шага `kb:lint | … | --gate` в `scenarios.txt` (проверка сценариев роняла бы его),
+    диалог запуска не отправлял бы флаг голым, а `--gate warn` двумя токенами превращался в
+    `--gate=fail warn` и давал «unrecognized arguments». Скрытый `--gate-mode` в справке не виден.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    K = importlib.import_module("kit_commands")
+    RS = importlib.import_module("run_summary")
+    reg = {r["cmd"]: r for r in ck.registry()}
+    for cmd in ("kb:lint", "ops:trace", "make:spec-pack"):
+        row = reg[cmd]
+        assert "--gate" in row["flags"], f"{cmd}: флага --gate нет в реестре"
+        assert row["flag_args"].get("--gate") == "", f"{cmd}: --gate требует значения: {row['flag_args']}"
+        assert "--gate" not in row["flags_value"], f"{cmd}: --gate считается флагом со значением"
+        assert "--gate-mode" not in row["flags"], f"{cmd}: скрытый --gate-mode виден в реестре"
+    assert K.flag_args("artifact_lint.py").get("--gate") == "", "artifact_lint: --gate требует значения"
+    assert "--gate" not in K.flags_with_value("artifact_lint.py"), "artifact_lint: --gate со значением"
+    # голый --gate в сценарии (`kb:lint | … | --gate`) проходит проверку part_01 «флагу со значением нужно
+    # значение» только пока его нет среди flags_value — это проверено выше
+    # нормализация: =режим уходит в скрытый флаг, голый --gate и позиционные не трогаются
+    assert RS.gate_argv(["--gate=warn", "x"]) == ["--gate", "--gate-mode=warn", "x"]
+    assert RS.gate_argv(["--gate=fail"]) == ["--gate", "--gate-mode=fail"]
+    assert RS.gate_argv(["--gate", "файл.md"]) == ["--gate", "файл.md"], "голый --gate съел следующий аргумент"
+    assert RS.gate_mode(False, "") == "" and RS.gate_mode(True, "") == "fail"
+    assert RS.gate_mode(True, "warn") == "warn" and RS.gate_mode(True, "fail") == "fail"
+    # справка не показывает метавар и скрытый флаг
+    root = make_project(tmp)
+    for script in ("kb_lint.py", "kb_trace.py", "artifact_lint.py", "spec_pack.py"):
+        out = run(script, "--help", cwd=root, expect_rc=0).stdout
+        assert "--gate MODE" not in out and "--gate-mode" not in out, f"{script}: {out}"
+    # форма с режимом по-прежнему работает, а позиционный аргумент после голого --gate остаётся собой
+    cp = run("kb_lint.py", "--gate=fail", cwd=root, expect_rc=0)
+    assert [g["verdict"] for g in _gate_of(cp)] == ["pass"], cp.stdout
+    run("kb_lint.py", "--gate=bad", cwd=root, expect_rc=2)
+
+
+@test
+def test_route_gate_header_counts_all_items_when_the_list_is_cut(tmp: Path):
+    """Заголовок ворот в журнале маршрута называет полное число пунктов, а не потолок списка.
+
+    120 пунктов: заголовок «нарушенных пунктов — 120», показаны первые 50 и строка об обрезке; служебного
+    пункта `gate-total` нет ни в журнале, ни в записи шага. Список ровно в потолок — без строки об обрезке.
+    """
+    import importlib
+    sys.path.insert(0, str(KIT / "cockpit"))
+    sys.path.insert(0, str(KIT / "scripts"))
+    rr = importlib.import_module("route_runner")
+    RS = importlib.import_module("run_summary")
+    p18 = importlib.import_module("cases.part_18")
+    cap = RS.GATE_MAX_ITEMS
+
+    def go(n, verdict="fail"):
+        items = [{"id": "broken-link", "detail": f"ссылка {i}"} for i in range(n)]
+        sc = {"id": "gate", "title": "С воротами", "when": "", "group": "база", "steps": [
+            {"manual": False, "cmd": "kb:lint", "why": "ворота", "flags": ["--gate"]}]}
+        ck = p18.FakePanel(tmp, {"kb:lint": [(1 if verdict == "fail" else 0,
+                                              [RS.emit_gate("kb_lint", verdict, items)])]}, [sc])
+        logs = []
+        route = rr.RouteRun(ck, str(tmp), sc, True, log=logs.append)
+        route.run()
+        return "\n".join(logs), route
+
+    text, route = go(120)
+    assert "нарушенных пунктов — 120" in text and "показаны первые 50 из 120" in text, text
+    assert text.count("broken-link:") == cap and "gate-total" not in text, text
+    rec = [x for x in route.summary if x["cmd"] == "kb:lint"][0]
+    assert len(rec["gate_items"]) == cap and "gate-total" not in {i["id"] for i in rec["gate_items"]}, rec
+    text, _ = go(cap)
+    assert f"нарушенных пунктов — {cap}" in text and "показаны первые" not in text, text
+    text, _ = go(120, "warn")
+    assert "пунктов — 120" in text and "показаны первые 50 из 120" in text, text
+
+
+@test
+def test_artifact_lint_gate_checks_a_project_with_artifacts_but_no_knowledge_base(tmp: Path):
+    """artifact_lint --gate без `AuroraKnowledgeDB/`, но с `Artifacts/us`: проект проверяется, а не код 2.
+
+    Линтер читает папки видов, а не базу: «нечего проверять» — когда нет ни одной из них.
+    """
+    root = tmp / "only-artifacts"
+    (root / "Artifacts" / "us").mkdir(parents=True)
+    (root / "Artifacts" / "us" / "US-1.md").write_text("# US-1\n\nкак пользователь, я хочу\n", encoding="utf-8")
+    cp = run("artifact_lint.py", "--gate", cwd=root)
+    assert cp.returncode in (0, 1) and [g["gate"] for g in _gate_of(cp)] == ["artifact_lint"], \
+        (cp.returncode, cp.stdout, cp.stderr)
+    assert "артефактов 1" in cp.stdout, cp.stdout
+    empty = tmp / "nothing"
+    empty.mkdir()
+    run("artifact_lint.py", "--gate", cwd=empty, expect_rc=2)

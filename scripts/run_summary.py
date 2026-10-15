@@ -370,19 +370,17 @@ def _gate_verdict(value) -> str:
 def _gate_items(items) -> list:
     """Нарушенные пункты в виде [{"id", "detail"}]: принимает словари и голые строки.
 
-    Длиннее `GATE_MAX_ITEMS` список режется, а последним пунктом встаёт итог `gate-total` с полным
-    числом: иначе маршрут писал бы «нарушенных пунктов — 50» и при сотнях ошибок."""
+    Длиннее `GATE_MAX_ITEMS` список режется; полное число несёт поле `total` строки вердикта
+    (`emit_gate`), а не пункт списка: служебный пункт считался бы нарушением, и маршрут писал бы
+    «нарушенных пунктов — 50» при любом числе ошибок от 51."""
     src = list(items) if isinstance(items, (list, tuple)) else []
     out = []
-    for it in src[:GATE_MAX_ITEMS if len(src) <= GATE_MAX_ITEMS else GATE_MAX_ITEMS - 1]:
+    for it in src[:GATE_MAX_ITEMS]:
         if isinstance(it, dict):
             iid, detail = it.get("id"), it.get("detail")
         else:
             iid, detail = it, ""
         out.append({"id": _short(iid, 120), "detail": _short(detail, 300)})
-    if len(src) > GATE_MAX_ITEMS:
-        out.append({"id": "gate-total",
-                    "detail": f"всего пунктов {len(src)}, показаны первые {GATE_MAX_ITEMS - 1}"})
     return out
 
 
@@ -390,12 +388,16 @@ def emit_gate(gate: str, verdict: str, items=None, waivable: bool = False) -> st
     """Машинная строка вердикта ворот для маршрута. Печатает её скрипт-ворота (`--gate`).
 
     `gate` — имя ворот, `verdict` — pass | warn | fail (иное пишется как fail), `items` —
-    нарушенные пункты (`{"id", "detail"}` или строки), `waivable` — можно ли пройти ворота
-    осознанным исключением (пока только метка: маршрут её не читает).
+    нарушенные пункты (`{"id", "detail"}` или строки; в строку идут первые `GATE_MAX_ITEMS`),
+    `total` — их полное число, `waivable` — можно ли пройти ворота осознанным исключением
+    (пока только метка: маршрут её не читает).
     """
+    shown = _gate_items(items)
+    total = len(items) if isinstance(items, (list, tuple)) else 0
     return MARK_GATE + json.dumps(
         {"gate": str(gate or ""), "verdict": _gate_verdict(verdict),
-         "items": _gate_items(items), "waivable": bool(waivable)}, ensure_ascii=False)
+         "items": shown, "total": max(total, len(shown)), "waivable": bool(waivable)},
+        ensure_ascii=False)
 
 
 def parse_gate(lines) -> list:
@@ -414,34 +416,45 @@ def parse_gate(lines) -> list:
         except ValueError:
             raw = None
         if not isinstance(raw, dict):
-            out.append({"gate": "", "verdict": "fail", "waivable": False,
+            out.append({"gate": "", "verdict": "fail", "waivable": False, "total": 1,
                         "items": [{"id": "gate-line", "detail": _short(line, 120)}]})
             continue
+        items = _gate_items(raw.get("items"))
+        total = raw.get("total")
+        total = total if isinstance(total, int) and not isinstance(total, bool) else 0
         out.append({"gate": str(raw.get("gate") or ""), "verdict": _gate_verdict(raw.get("verdict")),
-                    "items": _gate_items(raw.get("items")), "waivable": bool(raw.get("waivable"))})
+                    "items": items, "total": max(total, len(items)),
+                    "waivable": bool(raw.get("waivable"))})
     return out
 
 
 def gate_argv(argv) -> list:
-    """Аргументы скрипта-ворот: голый `--gate` становится `--gate=fail`.
+    """Аргументы скрипта-ворот: `--gate=warn` / `--gate=fail` становятся `--gate --gate-mode=…`.
 
-    Флаг принимает необязательное значение (`--gate=warn`), а argparse отдал бы голому `--gate`
-    следующий аргумент командной строки (`скрипт --gate файл.md`). Нормализация до разбора
-    оставляет флаг флагом: значение пишется только через `=`."""
-    return ["--gate=fail" if a == "--gate" else a for a in argv or []]
+    Для argparse и `--help` `--gate` — голый флаг (так его видят реестр панели и сценарии
+    `scenarios.txt`: у флага со значением панель потребовала бы MODE), а режим живёт в скрытом
+    `--gate-mode`. Значение в форме `--gate=warn` скрипты по-прежнему принимают; пишется оно только
+    через `=` (голый `--gate` файл.md не съедает следующий аргумент)."""
+    out = []
+    for a in argv or []:
+        if a.startswith("--gate="):
+            out += ["--gate", "--gate-mode=" + a[len("--gate="):]]
+        else:
+            out.append(a)
+    return out
 
 
-def gate_mode(value) -> str:
+def gate_mode(flag, mode="") -> str:
     """Режим ворот скрипта: «» — флага нет (старое поведение), `fail` — ворота, `warn` — внедрение.
 
+    `flag` — был ли голый `--gate`, `mode` — значение `--gate=…` (после `gate_argv` это `--gate-mode`).
     `warn` включает и переменная окружения `AURORA_GATE_MODE=warn` (маршрут проекта с
     историческими красными проверками): вердикт печатается, но код выхода 0."""
-    mode = str(value or "").strip().lower()
-    if not mode:
+    if not flag and not mode:
         return ""
     if os.environ.get("AURORA_GATE_MODE", "").strip().lower() == "warn":
         return "warn"
-    return "warn" if mode == "warn" else "fail"
+    return "warn" if str(mode or "").strip().lower() == "warn" else "fail"
 
 
 def gate_exit(gate: str, mode: str, items=None) -> int:

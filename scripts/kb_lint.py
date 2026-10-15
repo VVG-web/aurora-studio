@@ -30,7 +30,7 @@
 — режим внедрения: вердикт `warn` и код 0, пока в проекте исторические ошибки. Нет базы в
 режиме ворот — код 2 («не смог отработать»), как и база-ссылка за пределы проекта (карточки не
 проверены, а не «чисто»). Пункты вердикта называются видом ошибки (`broken-link`, `orphan-card`…),
-список длиннее 49 пунктов заканчивается итогом `gate-total`. Без `--gate` ничего не меняется.
+в строку идут первые 50 пунктов, а полное число несёт поле `total` вердикта. Без `--gate` ничего не меняется.
 
 Панель: `kb:lint`
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
@@ -244,11 +244,12 @@ def main():
                     help="то же, что --only, но список путей читается из файла по строке "
                          "на путь: git печатает кириллицу в кавычках и восьмеричных "
                          "escape, и через оболочку такой путь не доходит")
-    ap.add_argument("--gate", choices=("fail", "warn"), default="", metavar="MODE",
+    ap.add_argument("--gate", action="store_true",
                     help="режим ворот: вердикт строкой AURORA-GATE; --gate=warn — предупреждение "
                          "вместо кода 1")
+    ap.add_argument("--gate-mode", choices=("fail", "warn"), default="", help=argparse.SUPPRESS)
     args = ap.parse_args(RS.gate_argv(sys.argv[1:]))
-    gate = RS.gate_mode(args.gate)
+    gate = RS.gate_mode(args.gate, args.gate_mode)
     summary, full = args.summary, args.full
     picked = list(args.only or [])
     if args.only_from and os.path.isfile(args.only_from):
