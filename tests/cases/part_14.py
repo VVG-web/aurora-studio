@@ -1218,3 +1218,66 @@ def test_request_context_engine_dirs_match_the_engine_constant(tmp: Path):
     RC = importlib.import_module("request_context")
     AC = importlib.import_module("aurora_common")
     assert tuple(RC.ENGINE_DIRS) == tuple(AC.ENGINE_DIRS), (RC.ENGINE_DIRS, AC.ENGINE_DIRS)
+
+
+@test
+def test_real_inside_is_one_project_boundary_for_cockpit_and_request_context(tmp: Path):
+    """`real_inside`/`real_rel` — одна граница проекта; `inside` панели и `@`-упоминаний идут через неё (BL-SEC-20)."""
+    sys.path.insert(0, str(SCRIPTS))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    RC = importlib.import_module("request_context")
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+    root = tmp / "Proj"
+    (root / "Sources").mkdir(parents=True)
+    (root / "Sources" / "a.md").write_text("x", encoding="utf-8")
+    outside = tmp / "Proj-evil"
+    outside.mkdir()
+    (outside / "s.md").write_text("секрет", encoding="utf-8")
+    rp = os.path.realpath(root)
+    want = os.path.join(rp, "Sources", "a.md")
+    # одна функция на оба потребителя: те же ответы, что у границы
+    for fn in (AC.real_inside, ck.inside, RC.inside):
+        assert fn(str(root), "Sources/a.md") == want, fn
+        assert fn(str(root), "/Sources/a.md") == want and fn(str(root), "\\Sources/a.md") == want, fn
+        assert fn(str(root), "") == rp and fn(str(root), "Sources/..") == rp, fn
+        # несуществующий хвост — не ложный отказ (файл создают, а не читают)
+        assert fn(str(root), "Artifacts/new/x.md") == os.path.join(rp, "Artifacts", "new", "x.md"), fn
+        # `..` и сосед с общей приставкой имени корня — наружу
+        assert fn(str(root), "../Proj-evil/s.md") == "" and fn(str(root), "Sources/../../Proj-evil") == "", fn
+        assert fn(str(root), "..") == "" and fn(str(root), "../../etc/passwd") == "", fn
+    assert "real_inside(" in (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8").split("def inside(")[1] \
+        .split("\ndef ")[0], "inside панели снова держит свою копию границы"
+    # ссылка наружу и корень-ссылка
+    try:
+        os.symlink(outside, root / "Sources" / "out", target_is_directory=True)
+        link_root = tmp / "link-root"
+        os.symlink(root, link_root, target_is_directory=True)
+    except OSError:
+        link_root = None   # Windows без прав на ссылки: остальное проверено выше
+    if link_root is not None:
+        for fn in (AC.real_inside, ck.inside, RC.inside):
+            assert fn(str(root), "Sources/out/s.md") == "", f"{fn}: ссылка наружу открыла выход"
+            assert fn(str(link_root), "Sources/a.md") == want, f"{fn}: корень-ссылка не разрешён до сравнения"
+        assert AC.real_inside(str(link_root), "Sources/out/s.md") == ""
+    # real_rel: прямые слэши от realpath корня; вне корня и корень сам — пусто
+    assert AC.real_rel(str(root), want) == "Sources/a.md"
+    assert AC.real_rel(str(root), rp) == "" and AC.real_rel(str(root), str(outside / "s.md")) == ""
+    assert AC.real_rel(str(root), str(root / "Artifacts" / "new" / "x.md")) == "Artifacts/new/x.md"
+    # регистр: на Windows/macOS без учёта регистра корень — один; выхода это не открывает
+    real_nc = os.path.normcase
+    try:
+        os.path.normcase = str.lower
+        up = os.path.join(os.path.dirname(rp), "PROJ", "Sources", "a.md")
+        assert AC.real_inside(rp.upper(), "Sources/a.md").lower() == want.lower(), "регистр корня дал ложный отказ"
+        assert AC.real_inside(str(root), "../PROJ/Sources/a.md").lower() == want.lower()
+        assert AC.real_rel(str(root), up) == "Sources/a.md", "real_rel не нашёл путь, записанный другим регистром"
+        assert AC.real_inside(str(root), "../PROJ-EVIL/s.md") == "", "регистр открыл соседа с общей приставкой"
+        assert AC.real_inside(str(root), "..") == "" and AC.real_rel(str(root), str(outside / "s.md")) == ""
+        if link_root is not None:
+            assert AC.real_inside(str(root), "SOURCES/out/s.md") == "" or \
+                not os.path.exists(os.path.join(rp, "SOURCES", "out")), "регистр обошёл ссылку наружу"
+    finally:
+        os.path.normcase = real_nc

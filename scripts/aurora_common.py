@@ -1407,6 +1407,43 @@ def _has_markers(folder: str) -> bool:
     return any(os.path.isdir(os.path.join(folder, m)) for m in _PROJECT_MARKERS)
 
 
+def _under_real(rr: str, ff: str) -> bool:
+    """`ff` — сам корень `rr` или лежит под ним; оба уже после `realpath`.
+
+    Сравнение через `os.path.normcase`: на Windows и в регистронезависимой файловой системе
+    `C:\\Proj` и `c:\\proj` — один корень, а «`\\Proj-evil`» корнем не становится: после корня
+    обязателен разделитель.
+    """
+    r, f = os.path.normcase(rr), os.path.normcase(ff)
+    return f == r or f.startswith(r.rstrip(os.sep) + os.sep)
+
+
+def real_inside(root: str, rel: str) -> str:
+    """Абсолютный путь внутри проекта или пусто: граница песочницы файлов, одна на движок.
+
+    Корень и путь берутся по `realpath` ДО сравнения: ссылка наружу и `..` не выводят за корень,
+    корень-ссылка — это его цель. Ведущие `/` и `\\` отбрасываются (путь от корня, а не
+    абсолютный), несуществующий хвост отказа не даёт: `realpath` не требует существования.
+    Регистр — по `os.path.normcase` (на Windows и macOS-«без учёта регистра» он не открывает выход).
+    """
+    rr = os.path.realpath(root)
+    full = os.path.realpath(os.path.join(rr, (rel or "").lstrip("/\\")))
+    return full if _under_real(rr, full) else ""
+
+
+def real_rel(root: str, full: str) -> str:
+    """Путь от `realpath` корня с прямыми слэшами; корень сам — пустая строка, вне корня — пусто.
+
+    Парный к `real_inside`: ключ для сверки с правилами («Sources/…», «Artifacts/…», секреты)
+    берётся от того же реального пути, что прошёл границу, а не от строки, присланной снаружи.
+    """
+    rr = os.path.realpath(root)
+    ff = os.path.realpath(full)
+    if not _under_real(rr, ff):
+        return ""
+    return ff[len(rr):].replace(os.sep, "/").strip("/")
+
+
 def project_root_of(path: str, boundary: str = "", lexical: bool = False) -> str:
     """Корень проекта, к которому относится путь: граница чтения файлов.
 

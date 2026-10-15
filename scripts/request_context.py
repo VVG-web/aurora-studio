@@ -117,9 +117,12 @@ def looks_text(data: bytes) -> bool:
 
 def inside(cwd: str, rel: str) -> str:
     """Абсолютный путь внутри проекта или пусто: ссылка не выводит за корень."""
-    root = os.path.realpath(cwd)
-    full = os.path.realpath(os.path.join(root, rel.strip().lstrip("/\\")))
-    return full if full == root or full.startswith(root + os.sep) else ""
+    import sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from aurora_common import real_inside   # граница — одна на движок (ленивый импорт, как в _read_verdict)
+    return real_inside(cwd, rel.strip())
 
 
 def _read_verdict(path: str, boundary: str) -> str:

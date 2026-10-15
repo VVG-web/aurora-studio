@@ -61,7 +61,8 @@ sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
 from aurora_common import (child_env, engine_dir, head_value, is_folder_guide,  # noqa: E402
                            kit_mcp_permission, local_view, mtime_stamp, personal_kit_file,
-                           replace_file, same_origin, utc_slug, utc_stamp, yaml_scalar)
+                           real_inside, replace_file, same_origin, utc_slug, utc_stamp,
+                           yaml_scalar)
 from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
                            mcp_check, mcp_mask_args, mcp_masked)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
@@ -285,9 +286,7 @@ def inside(root: str, path: str) -> str:
     Символические ссылки разрешаем ДО сравнения: `Artifacts/ac/../../../../etc/passwd`
     отсекается очевидно, а ссылка наружу — нет, и именно она опаснее.
     """
-    root = os.path.realpath(root)
-    full = os.path.realpath(os.path.join(root, path.lstrip("/\\")))
-    return full if full == root or full.startswith(root + os.sep) else ""
+    return real_inside(root, path)
 
 
 def norm_rel(rel: str) -> str:
