@@ -1551,12 +1551,12 @@ def read_verdict(path: str, boundary: str = "", strict: bool = False,
     # корень ищем от папки самой ссылки: realpath(ссылки) уже указывает за пределы проекта
     base = os.path.realpath(base_abs)
     real = os.path.realpath(path)
-    if not (real == base or real.startswith(base + os.sep)):
+    if not _under_real(base, real):       # регистр и разделители — по normcase, как в real_inside
         return "outside"
     shown = [(real, base)]
     if every_file:
         link = os.path.abspath(path)
-        if not (link == base_abs or link.startswith(base_abs + os.sep)):
+        if not _under_real(base_abs, link):
             return "outside"
         shown.insert(0, (link, base_abs))
     for where, start in shown:

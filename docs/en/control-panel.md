@@ -124,7 +124,7 @@ the same as for the model's reads of the project: `request_context.secret_kind`)
 at both the path sent and the real path, so a link with an ordinary name pointing at `.env` is no way round; the same holds
 for the publication preview (`/api/files/clean`). The boundary is wider than the list above: it is set by
 `request_context.secret_kind` (including the root `runs/` and `state/`, `node_modules`, virtual environments, `.ssh`, `.aws`,
-`credentials.*`, `.mcp.json`, `.netrc`, `.npmrc`). The tree does not show dot-files (`.env*`, `.git`) at all; other such files
+`credentials.*`, `secrets.*`, `.mcp.json`, `.netrc`, `.npmrc`, `.pgpass`, `.dockercfg`, `id_rsa`/`id_dsa`, `*.pem`/`*.key`/`*.kdbx`/`*.ppk`). A name is compared the way the file system sees it: case-insensitively, without trailing dots and spaces and without an NTFS stream after `:` (`.env::$DATA`), and both slashes are equal. The tree does not show dot-files (`.env*`, `.git`) at all; other such files
 stay visible, but as "open with the system app", not as text (a link with an ordinary name pointing at a secret too). An
 ordinary `Credentials.md` card opens. Files without an extension open in the editor only by a known name (`Makefile`,
 `Dockerfile`, `README`, `LICENSE`, `VERSION`, `NOTICE`, `Jenkinsfile`, `.gitignore`, `.dockerignore`, `.nvmrc`, and the like).

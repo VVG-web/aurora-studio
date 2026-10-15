@@ -1281,3 +1281,81 @@ def test_real_inside_is_one_project_boundary_for_cockpit_and_request_context(tmp
                 not os.path.exists(os.path.join(rp, "SOURCES", "out")), "регистр обошёл ссылку наружу"
     finally:
         os.path.normcase = real_nc
+
+
+@test
+def test_secret_names_are_closed_in_every_windows_spelling(tmp: Path):
+    """Имя секрета закрыто в записях Windows (хвостовые точки и пробелы, поток NTFS, регистр, обе черты) и по расширенному списку (BL-SEC-20)."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    RC = importlib.import_module("request_context")
+    # (путь, мерка строгая, мерка чтения проекта): "" — открыт
+    closed = [
+        ("id_rsa.", "secret", "secret"), ("id_rsa", "secret", "secret"), ("keys/ID_RSA. .", "secret", "secret"),
+        (".env::$DATA", "secret", "secret"), (".env:stream", "secret", "secret"), (".ENV ", "secret", "secret"),
+        (".Env.Local.", "secret", "secret"), ("a/server.PEM.", "secret", "secret"),
+        ("id_dsa", "secret", "secret"), ("id_dsa_backup", "secret", "secret"),
+        (".pgpass", "secret", "secret"), (".dockercfg", "secret", "secret"), ("_netrc", "secret", "secret"),
+        ("vault/Base.KDBX", "secret", "secret"), ("putty/key.ppk", "secret", "secret"),
+        ("secrets", "secret", "secret"), ("config/secrets.yaml", "secret", "secret"),
+        ("Secrets.JSON", "secret", "secret"), ("secrets.prod.json", "secret", "secret"),
+        # папки: регистр, точка/пробел и поток на каталоге, обратная черта
+        (".GIT/config", "service", "service"), (".git./config", "service", "service"),
+        (".git ::$INDEX_ALLOCATION/config", "service", "service"),
+        ("a\\.ssh\\id_x", "service", "service"), (".aws\\credentials", "service", "secret"),
+        ("sub/Node_Modules/x.js", "service", "service"), ("Local/models.json", "service", "service"),
+    ]
+    for rel, strict, soft in closed:
+        assert RC.secret_kind(rel) == strict, (rel, "строгая", RC.secret_kind(rel))
+        assert RC.secret_kind(rel, strict=False) == soft, (rel, "чтения", RC.secret_kind(rel, strict=False))
+    # карточка `.md` в мягкой мерке открыта, `.env*.md` закрыт по-прежнему
+    for rel in ("Glossary/Credentials.md", "Glossary/Credentials.md.", "Glossary/Secrets.md", "Glossary/secrets.md::$DATA"):
+        assert RC.secret_kind(rel, strict=False) == "", rel
+        assert RC.secret_kind(rel) == "secret", rel
+    assert RC.secret_kind("Glossary/.env.md", strict=False) == "secret"
+    # похожие, но обычные имена не закрываются
+    for rel in ("id_rsa.pub", "secretsx.py", "my-secrets-guide.md", "src/idea_rsa.txt", "env.md", "keyboard.txt",
+                "docs/pgpass.md", "notes/dockercfg.txt", "a.keys", "src/state/store.py", "Sources/key.md"):
+        soft = RC.secret_kind(rel, strict=False)
+        assert soft == "", (rel, soft)
+        assert RC.secret_kind(rel) in ("", "service"), rel
+    for rel in ("id_rsa.pub", "secretsx.py", "my-secrets-guide.md", "src/idea_rsa.txt", "keyboard.txt", "a.keys"):
+        assert RC.secret_kind(rel) == "", rel
+    assert RC.secret_kind("") == "" and RC.secret_kind(".") == "" and RC.secret_kind("./") == ""
+    assert RC.is_secret(".env::$DATA") and not RC.is_secret("id_rsa.pub")
+
+
+@test
+def test_read_verdict_compares_the_boundary_through_normcase(tmp: Path):
+    """`read_verdict` сверяет корень и цель через `normcase`: регистр диска границу не ломает и не открывает (BL-SEC-20)."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    root = tmp / "Proj"
+    (root / "Sources").mkdir(parents=True)
+    ok = root / "Sources" / "a.md"
+    ok.write_text("x", encoding="utf-8")
+    key = root / "Sources" / "k.pem"
+    key.write_text("k", encoding="utf-8")
+    evil = tmp / "Proj-evil"
+    evil.mkdir()
+    (evil / "s.md").write_text("чужой", encoding="utf-8")
+    rp = os.path.realpath(root)
+    ok, key, evil = (Path(rp) / "Sources" / "a.md", Path(rp) / "Sources" / "k.pem", Path(os.path.realpath(evil)))
+    # 8.3-имена (`PROGRA~1`) раскрывает `os.path.realpath` (Windows, Python 3.8+) ещё до сравнения;
+    # здесь проверяется только нормализация регистра — на подставленных строках, без записи в HOME
+    real_nc = os.path.normcase
+    try:
+        os.path.normcase = str.lower        # как на Windows и в macOS без учёта регистра
+        up = rp.upper()
+        assert AC.read_verdict(str(ok), up, every_file=True) == "", "регистр корня дал ложный отказ"
+        assert AC.read_verdict(str(ok), up, strict=True, every_file=True) == ""
+        assert AC.read_verdict(str(key), up, every_file=True) == "secret", "регистр корня открыл секрет"
+        assert AC.read_verdict(str(evil / "s.md"), up, every_file=True) == "outside", "регистр открыл соседа с общей приставкой"
+        assert AC.read_verdict(str(Path(rp) / ".." / "x.md"), up, every_file=True) == "outside"
+    finally:
+        os.path.normcase = real_nc
+    # без подмены (регистрозависимая ФС) прежнее поведение: чужой регистр — другой корень
+    if os.path.normcase("A") == "A" and not os.path.exists(rp.upper()):
+        assert AC.read_verdict(str(ok), rp.upper(), every_file=True) == "outside"
+    assert AC.read_verdict(str(ok), rp, every_file=True) == ""

@@ -50,8 +50,9 @@ ANY_DEPTH_DIRS = {".git", ".ssh", ".aws", "node_modules", ".venv", "venv", "__py
 ROOT_DIRS = {"local", "runs", "state"}
 ENGINE_DIRS = (".aurora", ".opencode")      # копия `aurora_common.ENGINE_DIRS` (модуль легче: без импорта); равенство держит тест
 NEVER_DIRS = ANY_DEPTH_DIRS | ROOT_DIRS
-SECRET_NAME = re.compile(r"^(\.env.*|.*\.(pem|key|p12|pfx|jks|keystore)|id_(rsa|ed25519|ecdsa)\w*|"
-                         r"\.?mcp\.json|\.netrc|\.npmrc|\.pypirc|\.git-credentials|credentials(\.\w+)?)$", re.I)
+SECRET_NAME = re.compile(r"^(\.env.*|.*\.(pem|key|p12|pfx|jks|keystore|kdbx|ppk)|id_(rsa|dsa|ed25519|ecdsa)\w*|"
+                         r"\.?mcp\.json|[._]netrc|\.npmrc|\.pypirc|\.git-credentials|\.pgpass|\.dockercfg|"
+                         r"credentials(\.\w+)?|secrets(\.\w+)*)$", re.I)
 
 SKILL_ALIASES = {"grill-me": "aurora-grill", "grilling": "aurora-grill"}
 MENTION_SKILL = re.compile(r"(?<![\w/.:\-])/([A-Za-z][\w.\-]{0,63})\b")
@@ -66,6 +67,18 @@ def utc_day(when=None) -> str:
     return utc_slug("%Y-%m-%d", when)
 
 
+def norm_part(name: str) -> str:
+    """Имя компоненты пути так, как его видит файловая система, а не как оно записано.
+
+    Windows отбрасывает хвостовые точки и пробелы (`id_rsa.`, `.ENV `) и открывает файл по
+    имени до `:` (`.env::$DATA` — поток NTFS того же файла); на других системах такая запись
+    просто чужое имя, и лишнее закрытие безопасно. Регистр сводится `casefold`: `.GIT` и
+    `.git` — одна папка на macOS и Windows. 8.3-имена (`SECRET~1.KEY`) сюда не входят: их
+    раскрывает `os.path.realpath` (Windows, Python 3.8+) ещё до проверки имени.
+    """
+    return name.split(":", 1)[0].rstrip(". ").casefold()
+
+
 def secret_kind(rel: str, strict: bool = True) -> str:
     """Чем путь закрыт для чтения: "secret" (имя файла с доступами), "service" (служебная
     папка) или "" (можно). `rel` — путь от корня проекта.
@@ -76,16 +89,16 @@ def secret_kind(rel: str, strict: bool = True) -> str:
     глоссарии; `.env*.md` по-прежнему закрыт), `local`/`runs`/`state` служебны лишь у корня
     проекта и под `.aurora/`, остальное из `ANY_DEPTH_DIRS` — на любой глубине.
     """
-    parts = [p for p in Path(rel).parts if p not in ("", ".")]
-    if not parts:
+    # обе черты: на POSIX `Path` обратную не делит, а `a\\.git\\config` на Windows — это путь
+    low = [n for n in (norm_part(p) for p in re.split(r"[\\/]", str(rel))) if n]
+    if not low:
         return ""
-    low = [p.lower() for p in parts]
     if strict:
         if any(p in NEVER_DIRS for p in low[:-1]):
             return "service"
-        return "secret" if SECRET_NAME.match(parts[-1]) else ""
+        return "secret" if SECRET_NAME.match(low[-1]) else ""
     card = low[-1].endswith(".md") and not low[-1].startswith(".env")
-    if SECRET_NAME.match(parts[-1]) and not card:
+    if SECRET_NAME.match(low[-1]) and not card:
         return "secret"
     if any(p in ANY_DEPTH_DIRS for p in low):
         return "service"
