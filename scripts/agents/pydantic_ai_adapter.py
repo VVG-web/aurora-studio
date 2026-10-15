@@ -499,6 +499,11 @@ def register_tools(agent, allowed: list) -> None:
             if rel.split("/")[0].lower() in ("sources", "raw", "auroraknowledgedb"):
                 from aurora_common import untrusted
                 return untrusted(text, rel)
+            # Артефакты и рабочие папки — произведённые черновики: читать можно, знанием они не
+            # считаются (инвариант 1), поэтому перед текстом идёт пометка.
+            if rel.split("/")[0].lower() in ("artifacts", "workspaces"):
+                from aurora_common import DRAFT_ARTIFACT_NOTE
+                return DRAFT_ARTIFACT_NOTE + "\n" + text
             return text
         except (OSError, ValueError) as e:
             return f"не прочитан: {e}"

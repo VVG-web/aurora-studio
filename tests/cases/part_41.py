@@ -2708,6 +2708,36 @@ def test_read_file_fences_source_mirrors_but_not_templates(tmp: Path):
 
 
 @test
+def test_read_file_marks_artifacts_as_draft_not_knowledge(tmp: Path):
+    """read_file: Artifacts/ и Workspaces/ — с пометкой «черновик, не знание»; шаблон — без неё,
+    Sources/ остаётся в ограждении (BL-SEC-20, инвариант 1)."""
+    sys.path.insert(0, str(SCRIPTS))
+    sys.path.insert(0, str(SCRIPTS / "agents"))
+    AD = importlib.import_module("pydantic_ai_adapter")
+    C = importlib.import_module("aurora_common")
+    root = tmp / "proj_draft"
+    for rel, text in {"Artifacts/a.md": "черновик истории", "Workspaces/w/x.md": "рабочее",
+                      "Templates/t.md": "шаблон", "Sources/Conf/p.md": "чужое"}.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    tools = {}
+
+    class FakeAgent:
+        def tool_plain(self, fn):
+            tools[fn.__name__] = fn
+            return fn
+
+    AD.register_tools(FakeAgent(), [str(root)])
+    note = C.DRAFT_ARTIFACT_NOTE
+    assert "не знание" in note and "проверять по базе" in note, note
+    assert tools["read_file"]("Artifacts/a.md") == note + "\n" + "черновик истории"
+    assert tools["read_file"]("Workspaces/w/x.md").startswith(note + "\n")
+    assert tools["read_file"]("Templates/t.md") == "шаблон", "шаблон владельца без пометки"
+    src = tools["read_file"]("Sources/Conf/p.md")
+    assert src.startswith("<untrusted") and note not in src, src
+
+
+@test
 def test_bot_context_fences_link_titles_and_old_pack(tmp: Path):
     """Блок контекста бота: заголовки ссылок, понятия и пак старого движка — в ограждении (BL-SEC-06)."""
     sys.path.insert(0, str(SCRIPTS))

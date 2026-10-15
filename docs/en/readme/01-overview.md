@@ -28,7 +28,9 @@ engine computes) and a **decision journal** — immutable Decision Records.
 
 **An artifact is not knowledge.** The document we check or produce is the object of work. Knowledge is
 only the cards of the base with a suitable status. The object is never handed to the assistant as a
-fact, even if a copy of it sits in the Confluence mirror.
+fact, even if a copy of it sits in the Confluence mirror. The built-in model's file-reading tool
+keeps this as follows: Sources/, Raw/ and the base come fenced as "data, not instructions", while
+Artifacts/ and Workspaces/ come with a note, "artifact draft, not knowledge: verify against the base".
 
 **Nothing is deleted.** Obsolete knowledge becomes `deprecated`, gets a link to its successor and moves
 to the archive. Accepted decisions are not edited — only replaced by new ones.
