@@ -135,6 +135,10 @@ but the panel itself must be running. Rules:
 - a stall at the tail while the base did change during the route is "partly", not a failure: the project is updated
   and its next steps run. A card the thesis step parked for a human (a dictionary longer than the window, with no
   boundaries found) is not counted as work left until it changes;
+- a stop at a quality gate (a `--gate` step, code `1`) has its own reason `gated`, not `failed`: the panel and the
+  history say "gate not passed", Cron counts it as a bad end (the project is deferred even if the base changed during
+  the route: "partly" must not hide a gate); the resume state keeps `gated`, and "Resume route" repeats the gate after
+  the fix, as after a failure. Old records with `failed` are read as before;
 - the task can say "on failure — stop the chain": then it stops at the first failure;
 - **a hang watchdog.** When a route or chain step is silent for longer than 5 minutes, the panel checks the connection
   to the model and to the project's Jira/Confluence. The step is taken down together with its child processes (the

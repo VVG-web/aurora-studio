@@ -69,7 +69,8 @@ FINAL_SAVE_PAUSE = 1.0            # пауза перед второй попы�
 LOG_KEEP = 400                    # строк журнала на шаг цепочки
 MAX_STEPS = 50
 # Итоги шага, после которых проект откладывается: дальше его шаги смысла не имеют.
-BAD = ("failed", "stall", "offline")
+# gated — ворота качества не пропустили маршрут (вердикт, не сбой): к проекту вернёмся в конце.
+BAD = ("failed", "stall", "offline", "gated")
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 ALL = "*"
@@ -846,7 +847,7 @@ class Scheduler:
             it["title"] = sc["title"]
             it["run_id"] = res.get("run_id", "")
             status = {"passed": "passed", "stall": "stall", "offline": "offline",
-                      "stopped": "stopped"}.get(res["reason"], "failed")
+                      "gated": "gated", "stopped": "stopped"}.get(res["reason"], "failed")
             if status == "stall" and res.get("progressed"):
                 # База за маршрут менялась, не двигается только хвост — проект обновлён.
                 status = "partial"

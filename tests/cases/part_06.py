@@ -15,6 +15,7 @@ from harness import (  # noqa: F401
     make_project,
     panel_sources,
     run,
+    set_home,
     test,
     why,
 )
@@ -929,8 +930,8 @@ def test_a_gate_step_stops_the_route_on_code_1(tmp: Path):
 
     Код 1 — «отработала и нашла, что чинить»: у обычного шага маршрут идёт дальше. Но проверка
     SDD, возвращавшая 1 на нарушении, маршрут не останавливала, и дальше шла работа поверх
-    непройденных ворот. Шаг, у которого среди флагов `--gate`, на коде 1 останавливает маршрут:
-    причина остаётся `failed`, в журнале — «остановлен на воротах», а не «команда не
+    непройденных ворот. Шаг, у которого среди флагов `--gate`, на коде 1 останавливает маршрут
+    с причиной `gated` (не `failed`: это вердикт, а не сбой), в журнале — «остановлен на воротах», а не «команда не
     отработала»; в «пройденные» ворота не попадают, и «Продолжить» повторит их после правки;
     итог прогона сбоем выполнения такую остановку не называет.
     """
@@ -955,7 +956,7 @@ def test_a_gate_step_stops_the_route_on_code_1(tmp: Path):
                              "agent:build": [(0, [])]}, [sc])
     logs = []
     res = rr.RouteRun(ck, str(tmp), sc, True, log=logs.append).run()
-    assert not res["ok"] and res["reason"] == "failed" and res["failed"] == "kb:lint", res
+    assert not res["ok"] and res["reason"] == "gated" and res["failed"] == "kb:lint", res
     assert [c[1] for c in ck.calls] == ["kb:repair", "kb:lint"], \
         "маршрут пошёл дальше непройденных ворот: " + str(ck.calls)
     assert ck.calls[1][2] == ["--gate"], "флаг --gate не дошёл до скрипта: " + str(ck.calls)
@@ -964,7 +965,7 @@ def test_a_gate_step_stops_the_route_on_code_1(tmp: Path):
         "остановка на воротах названа не так: " + text
     assert "не отработал (код" not in text, "итог назвал ворота сбоем выполнения: " + text
     state = ck.route_state
-    assert state["reason"] == "failed" and "kb:repair --apply" in state["done"] \
+    assert state["reason"] == "gated" and "kb:repair --apply" in state["done"] \
         and not any("kb:lint" in k for k in state["done"]), \
         "ворота попали в пройденные — «Продолжить» их пропустит: " + str(state)
 
@@ -1023,7 +1024,7 @@ def test_a_gate_inside_a_cycle_block_stops_the_route(tmp: Path):
                              "agent:build": [(0, ["Источников в плане: 5 → 2"])]}, [sc])
     logs = []
     res = rr.RouteRun(ck, str(tmp), sc, True, log=logs.append).run()
-    assert not res["ok"] and res["reason"] == "failed" and res["failed"] == "kb:lint", res
+    assert not res["ok"] and res["reason"] == "gated" and res["failed"] == "kb:lint", res
     assert res["gated"] is True, "итог не знает, что остановили ворота: " + str(res)
     assert [c[1] for c in ck.calls] == ["kb:repair", "kb:lint"], \
         "цикл пошёл дальше непройденных ворот: " + str(ck.calls)
@@ -1031,7 +1032,7 @@ def test_a_gate_inside_a_cycle_block_stops_the_route(tmp: Path):
     assert "остановлен на воротах «kb:lint»" in text, "ворота в цикле названы не так: " + text
     assert "не отработал (код" not in text, "итог назвал ворота сбоем выполнения: " + text
     # в CLI ворота — остановка (1), а не сбой выполнения (2)
-    assert (0 if res["ok"] else 2 if res["reason"] == "failed" and not res.get("gated") else 1) == 1
+    assert (0 if res["ok"] else 2 if res["reason"] == "failed" else 1) == 1
     # код 2 на воротах в цикле — прежний сбой, не вердикт
     ck2 = p18.FakePanel(tmp, {"kb:repair": [(0, [])], "kb:lint": [(2, ["ошибка"])],
                               "agent:build": [(0, [])]}, [sc])
@@ -1061,7 +1062,7 @@ def test_a_gate_waits_for_the_network_before_its_verdict(tmp: Path):
                                  "agent:build": [(0, [])]}, [sc])
         logs = []
         res = rr.RouteRun(ck, str(tmp), sc, True, log=logs.append).run()
-        assert res["reason"] == "failed" and res["failed"] == "kb:lint" and res["gated"], res
+        assert res["reason"] == "gated" and res["failed"] == "kb:lint" and res["gated"], res
         assert [c[1] for c in ck.calls] == ["kb:repair", "kb:lint", "kb:lint"], \
             "ворота не повторены после обрыва сети или маршрут пошёл дальше: " + str(ck.calls)
         text = "\n".join(logs)
@@ -1080,6 +1081,92 @@ def test_a_gate_waits_for_the_network_before_its_verdict(tmp: Path):
             ["kb:repair", "kb:lint", "kb:lint", "agent:build"], (res2, ck2.calls)
     finally:
         rr.OFFLINE_RETRY_S, rr.FLAKY_RETRY_S = saved
+
+
+@test
+def test_a_gate_stop_has_its_own_reason_everywhere(tmp: Path):
+    """Остановка на воротах — причина `gated`, а не `failed`: её видят панель, Cron и история.
+
+    Ворота ответили кодом 1 — это вердикт, и человеку нужно «поправьте и продолжите», а не
+    «ошибка». Итог прогона, состояние продолжения и запись `meta.json` несут `gated`; пункт Cron
+    получает статус `gated` и остаётся плохим концом (проект откладывается) даже когда база за
+    маршрут менялась: «частично» ворота не прячет. Сбой выполнения на воротах (код 2) остаётся
+    `failed`. Страница знает новую причину в обоих местах разбора причин, в тосте и в истории;
+    неизвестную причину она по-прежнему показывает как «остановлен».
+    """
+    import importlib
+    sys.path.insert(0, str(KIT / "cockpit"))
+    rr = importlib.import_module("route_runner")
+    cron = importlib.import_module("cron")
+    p18 = importlib.import_module("cases.part_18")
+    sc = _gate_route(cycle=False)
+
+    # маршрут: итог, состояние продолжения и meta.json
+    ck = p18.FakePanel(tmp, {"kb:repair": [(0, [])], "kb:lint": [(1, ["## нарушений: 3"])],
+                             "agent:build": [(0, [])]}, [sc])
+    logs = []
+    route = rr.RouteRun(ck, str(tmp), sc, True, log=logs.append)
+    res = route.run()
+    assert res["reason"] == "gated" and res["gated"] and res["failed"] == "kb:lint", res
+    assert ck.route_state["reason"] == "gated", "состояние продолжения не знает ворот: " + str(ck.route_state)
+    assert route.meta["status"] == "gated", "meta.json прогона хранит не gated: " + str(route.meta)
+    text = "\n".join(logs)
+    assert "остановлен на воротах «kb:lint»" in text and "Поправьте" in text, \
+        "в итоге нет имени ворот и подсказки «поправьте и продолжите»: " + text
+    assert any("остановлен на воротах «kb:lint»" in c for c in ck.commits), \
+        "коммит маршрута не называет ворота: " + str(ck.commits)
+    ck_fail = p18.FakePanel(tmp, {"kb:repair": [(0, [])], "kb:lint": [(2, ["ошибка"])],
+                                  "agent:build": [(0, [])]}, [sc])
+    assert rr.RouteRun(ck_fail, str(tmp), sc, True, log=lambda m: None).run()["reason"] == "failed", \
+        "сбой выполнения на воротах стал вердиктом"
+
+    # Cron: статус пункта gated — плохой конец, даже если база сдвинулась
+    assert "gated" in cron.BAD, "gated не считается плохим концом цепочки"
+    restore = set_home(tmp / "home")
+    saved = (cron.RR.scenario, cron.RR.RouteRun, rr._head)
+    heads = iter(range(100))
+    try:
+        class Panel:
+            DEFAULT_LANG = "ru"
+
+            def mark_running(self, *a):
+                pass
+
+            def project_activity(self, project):
+                return {}
+
+        class Route(saved[1]):          # настоящий маршрут над подставной панелью
+            def __init__(self, ck_, project, sc_, write, **kw):
+                saved[1].__init__(self, ck2, project, sc_, write)
+        ck2 = p18.FakePanel(tmp, {"kb:repair": [(0, [])], "kb:lint": [(1, ["## нарушений: 3"])],
+                                  "agent:build": [(0, [])]}, [sc])
+        cron.RR.scenario = lambda ck_, rid: sc
+        cron.RR.RouteRun = Route
+        rr._head = lambda project: "c%d" % next(heads)         # база за маршрут «менялась»
+        sched = cron.Scheduler(Panel(), lambda: [])
+        it = {"kind": "route", "project": str(tmp), "route": "gate", "status": "pending",
+              "note": "", "jobs": [], "done": [], "log": []}
+        sched._item({"name": "Ночь"}, {"id": "x", "items": [it]}, it, "ru")
+        assert it["status"] == "gated" and it["failed"] == "kb:lint", it
+    finally:
+        cron.RR.scenario, cron.RR.RouteRun, rr._head = saved
+        restore()
+
+    # страница и каталоги: причина разобрана в обоих местах, тосте, истории и Cron
+    ui = panel_sources()
+    assert ui.count("act.reason_gated") >= 3, "метка ворот не стоит в обоих разборах причин"
+    assert 'r.reason === "gated" ? t("route.toast_gated"' in ui, "тост остановки на воротах не назван"
+    assert 'gated:"warn"' in ui and 'gated: "warn"' in ui, "история или Cron красят ворота как ошибку"
+    assert 'labels[route.reason] || t("act.reason_other")' in ui, "неизвестная причина больше не «остановлен»"
+    for lang in ("ru", "en"):
+        core = json.loads((KIT / "cockpit" / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))
+        mod = json.loads((KIT / "cockpit" / "modules" / "cron" / "i18n" / f"{lang}.json")
+                         .read_text(encoding="utf-8"))
+        for k in ("act.reason_gated", "route.gated_why", "route.how_gated", "route.toast_gated",
+                  "hist.status.gated"):
+            assert core.get(k), f"{lang}: нет строки {k}"
+        for k in ("cron.status.gated", "cron.note.gated"):
+            assert mod.get(k), f"{lang}: нет строки {k}"
 
 
 @test

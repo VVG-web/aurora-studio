@@ -1412,6 +1412,7 @@ function activityChips(act, now){
     ? t("act.lock_note", {task: agent.task || t("act.agent"), pid: agent.pid}) : "";
   if (route){
     const labels = {stall: t("act.reason_stall"), failed: t("act.reason_failed"),
+                    gated: t("act.reason_gated"),
                     offline: t("act.reason_offline"), stopped: t("act.reason_stopped"),
                     interrupted: t("act.reason_interrupted")};
     const waiting = route.reason === "offline" && route.nextRetryAt > now;
@@ -3314,6 +3315,7 @@ function finishRoute(r, sc, write){
   }
   drawLiveJobs();              // задания маршрута кончились — карточка «идёт сейчас» не висит
   toast(r.reason === "stall" ? t("route.toast_stall")
+    : r.reason === "gated" ? t("route.toast_gated", {cmd: r.failed || "—"})
     : bad ? t("route.toast_stopped", {cmd: r.failed || "—"})
     : t("route.toast_passed", {title: sc.title}), bad ? "err" : "ok");
 }
@@ -3359,6 +3361,7 @@ async function showLastRoute(state){
                         {hour:"2-digit",minute:"2-digit"}) : "";
   const label = state.reason === "stall" ? t("act.reason_stall")
     : state.reason === "failed" ? t("act.reason_failed")
+    : state.reason === "gated" ? t("act.reason_gated")
     : state.reason === "offline" ? t("act.reason_offline")
     : state.reason === "stopped" ? t("act.reason_stopped")
     : state.reason === "interrupted" ? t("act.reason_interrupted")
@@ -3580,7 +3583,7 @@ function archiveWhen(runId){
    одной на шаг, а раскрытая строка показывала кусок одного шага. Теперь строка — то, что
    запустили: команда, маршрут или цепочка расписания, — а раскрытие показывает весь вывод
    так же, как он шёл в консоли: шаги, обороты, итог. */
-const HIST_TONE = {passed:"ok", failed:"bad", stall:"warn", stopped:"warn", offline:"warn",
+const HIST_TONE = {passed:"ok", failed:"bad", gated:"warn", stall:"warn", stopped:"warn", offline:"warn",
                    interrupted:"warn", running:"gold", missed:"warn"};
 function histStatus(r){
   if (r.legacy) return {cls:"", what: t("hist.legacy")};

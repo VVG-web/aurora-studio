@@ -382,7 +382,7 @@ def render_md(rows: list, version: str) -> str:
           "Остановка — код `2` и выше.", "",
           "**Ворота.** Шаг, у которого в `cockpit/scenarios.txt` среди флагов стоит `--gate`, "
           "считается воротами качества: код `1` на нём останавливает маршрут "
-          "(`failed=<команда>`, в журнале «Маршрут остановлен на воротах»). Шаг не попадает в "
+          "(причина `gated`, `failed=<команда>`, в журнале «Маршрут остановлен на воротах»). Шаг не попадает в "
           "список пройденных, и «Продолжить маршрут» повторит ворота после правки. "
           "Итог прогона не считает такую остановку сбоем выполнения. Флаг `--gate` передаётся "
           "самому скрипту: скрипт без ворот-режима его не знает, поэтому `--gate` ставится "
@@ -460,7 +460,7 @@ def render_en_md(rows: list, names: dict) -> str:
           "state of a live base, and the summary lists such steps as \"found things to fix\". "
           "Code `2` and above stops it.", "",
           "**Gates.** A step with `--gate` among its flags in `cockpit/scenarios.txt` is a "
-          "quality gate: code `1` on it stops the route (`failed=<command>`, the journal says "
+          "quality gate: code `1` on it stops the route (reason `gated`, `failed=<command>`, the journal says "
           "\"the route is stopped at the gate\"). The step is not recorded as passed, so "
           "\"Continue the route\" repeats the gate after the fix. The run summary does not count "
           "this stop as an execution failure. The `--gate` flag is passed to the script itself, "

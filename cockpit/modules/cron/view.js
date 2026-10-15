@@ -3,7 +3,7 @@
    Ведёт расписание сервер панели (cockpit/cron.py): страница только показывает задания,
    правит их и смотрит за идущей цепочкой. Закрыли вкладку — цепочка идёт дальше. */
 
-const STATUS_TONE = {passed: "ok", partial: "ok", failed: "bad", stall: "warn", offline: "warn",
+const STATUS_TONE = {passed: "ok", partial: "ok", failed: "bad", gated: "warn", stall: "warn", offline: "warn",
   stopped: "warn", interrupted: "warn", missed: "warn", running: "gold", deferred: "warn",
   skipped: "", pending: ""};
 const LIVE_MS = 4000;          // как часто смотреть на идущую цепочку

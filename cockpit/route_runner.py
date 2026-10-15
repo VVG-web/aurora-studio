@@ -748,15 +748,20 @@ class RouteRun:
     def _finish(self, head: str, started: float) -> dict:
         ck, t = self.ck, self.t
         bad = self.failed or ("stall" if self.stalled else "")
+        # gated — ворота качества ответили кодом 1: не сбой, а вердикт; «Продолжить» работает как
+        # после failed. Старые записи с failed читаются как раньше.
+        gated = bool(self.failed and self.gate_failed == self.failed
+                     and not (self.stalled or self.offline or self.stopped))
         reason = ("stall" if self.stalled else "offline" if self.offline
-                  else "stopped" if self.stopped else "failed" if self.failed else "passed")
+                  else "stopped" if self.stopped else "gated" if gated
+                  else "failed" if self.failed else "passed")
         # Итоговая фраза — та, что страница писала в конце консоли: теперь она в журнале и
         # видна в истории так же, как была видна вживую.
         if self.stalled:
             self.say("err", t("route.stalled_why"))
         elif bad:
             self.say("err", t("route.stopped_by_you", cmd=bad) if self.stopped
-                     else t("route.gate_failed", cmd=bad) if self.gate_failed == bad
+                     else t("route.gated_why", cmd=bad) if gated
                      else t("route.stopped_on", cmd=bad,
                             why=(self.refused + ". ") if self.refused else t("route.cmd_failed")))
         else:
@@ -768,6 +773,7 @@ class RouteRun:
             self._kb_updated()
         if self.write:
             how = (t("route.how_stalled") if self.stalled
+                   else t("route.how_gated", cmd=bad) if gated
                    else t("route.how_stopped", cmd=bad) if bad else t("route.how_passed"))
             saved = self._commit(t("route.commit_route", title=self.sc["title"], how=how))
             if saved.get("ok"):
@@ -807,7 +813,7 @@ class RouteRun:
             ck.write_route_state(self.project, state)
         head = _head(self.project)
         res = {"ok": reason == "passed", "reason": reason, "failed": self.failed,
-               "gated": bool(self.failed and self.gate_failed == self.failed),
+               "gated": reason == "gated",
                "progressed": bool(head and head != self.head0),
                "note": self.refused, "steps": self.done, "lines": lines,
                "run_id": self.run_id,
@@ -864,7 +870,8 @@ def main(argv=None) -> int:
     """`aurora.py route <проект> <маршрут> [--apply]` — маршрут из терминала, без страницы панели.
 
     Без `--apply` — как кнопка «Посмотреть»: те же шаги без записи. Код выхода: 0 — пройден,
-    1 — остановлен (застой, человек, сеть, ворота качества не пройдены), 2 — шаг не отработал.
+    1 — остановлен (застой, человек, сеть, ворота качества не пройдены — причина gated),
+    2 — шаг не отработал (причина failed).
     """
     import argparse
     import sys
@@ -889,7 +896,7 @@ def main(argv=None) -> int:
     print(f"\n{'✅' if res['ok'] else '■'} {res['reason']}"
           + (f" · {res['failed']}" if res.get("failed") else ""), flush=True)
     # Ворота, не пропустившие маршрут, — вердикт, а не сбой выполнения: выход 1, как у остановки.
-    return 0 if res["ok"] else 2 if res["reason"] == "failed" and not res.get("gated") else 1
+    return 0 if res["ok"] else 2 if res["reason"] == "failed" else 1
 
 
 if __name__ == "__main__":
