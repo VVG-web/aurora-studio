@@ -282,10 +282,13 @@ def write_if_changed(path: str, text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------------
-# Конверт манифеста расширений (BL-ARC-44). Модули панели, коннекторы источников и скины
+# Конверт манифеста расширений (BL-ARC-44). Модули панели и коннекторы источников
 # описывают себя файлами с разным словарём полей; общее у них — «конверт»: вид расширения,
 # id, версия API, название (строкой или по языкам) и `requires`. Читает конверт ОДИН
-# загрузчик с мини-схемой на каждый вид: сбой одного манифеста даёт строку в отчёт и
+# загрузчик с мини-схемой на каждый вид (`connector`, `module`; скины и провайдеры Git
+# схем здесь не имеют: шапку скина разбирает `cockpit.skins()` и делит с манифестами только
+# правило версии API — `ext_api_problem`; `provider.json` читает `git_sync`, а схему
+# провайдера проверяет тест): сбой одного манифеста даёт строку в отчёт и
 # пропуск, а не исключение — кривое описание одного расширения не должно ронять update
 # всех проектов или главную страницу панели.
 #
@@ -313,20 +316,6 @@ EXT_SCHEMAS = {
                      "api_version": int},
         "nested": {},
     },
-    "skin": {
-        "required": {"id": str},
-        "optional": {"name": _EXT_I18N, "about": _EXT_I18N, "for": str, "requires": dict,
-                     "api_version": int},
-        "nested": {},
-    },
-    # Провайдер Git (`gitproviders/<id>/provider.json`): мини-схема под нынешние файлы. Читает
-    # её пока только проверка расширений в тестах; `git_sync` берёт эти файлы сам.
-    "provider": {
-        "required": {"id": str, "title": str},
-        "optional": {"version": str, "since": str, "api": str, "auth": list,
-                     "about": _EXT_I18N, "requires": dict, "api_version": int},
-        "nested": {},
-    },
 }
 
 
@@ -350,15 +339,15 @@ def _ext_type_name(want) -> str:
     return " или ".join(names.get(t, t.__name__) for t in (want if isinstance(want, tuple) else (want,)))
 
 
-def ext_api_problem(ver, pre: str) -> str:
+def ext_api_problem(ver, pre: str, field: str = "api_version") -> str:
     """Годится ли версия API расширения → пустая строка или причина отказа (с именем `pre` впереди).
 
-    Одно правило на всех: манифест (`load_manifest`) и шапка скина (поле `api`) проверяются
-    здесь. Версия — целое от 1; новее `EXT_API_VERSION` — расширение написано под движок новее
+    Одно правило на всех: манифест (`load_manifest`) и шапка скина проверяются здесь. `field` —
+    как поле называется у автора в сообщении: у манифеста `api_version`, у шапки скина `api`. Версия — целое от 1; новее `EXT_API_VERSION` — расширение написано под движок новее
     этого, и догадываться о незнакомом формате нельзя.
     """
     if isinstance(ver, bool) or not isinstance(ver, int) or ver < 1:
-        return "%s: api_version должен быть целым числом от 1 — пропущен" % pre
+        return "%s: %s должен быть целым числом от 1 — пропущен" % (pre, field)
     if ver > EXT_API_VERSION:
         return ("%s: написан под API расширений v%d, а движок поддерживает до v%d — "
                 "пропущен (обновите кит)" % (pre, ver, EXT_API_VERSION))
@@ -481,12 +470,29 @@ def ext_safe_name(value) -> bool:
     return isinstance(value, str) and bool(_EXT_SAFE_NAME.match(value)) and ".." not in value
 
 
+_EXT_SAFE_SEGMENT = re.compile(r"[\w][\w. -]*")
+
+
+def ext_safe_relpath(value) -> bool:
+    """Годится ли строка из манифеста в относительный путь внутри проекта (`Sources/Notion`).
+
+    Только простые сегменты через «/»: без ведущего «/» и «\\», буквы диска, сегментов «.» и
+    «..», пустых сегментов, управляющих знаков и перевода строки. Один хвостовой «/» допустим
+    (`Sources/Notion/` — как пишут пути зеркал). Путь попадает и в `ensure_dir` установки, и в
+    строку `aurora.config.yaml` без экранирования, поэтому кавычки, «#», «:» не пропускаем.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    parts = value[:-1].split("/") if value.endswith("/") else value.split("/")
+    return all(_EXT_SAFE_SEGMENT.fullmatch(seg) and not seg.endswith((" ", ".")) for seg in parts)
+
+
 def load_connector_manifest(path):
     """Манифест коннектора для РАСКЛАДКИ в проект (`update`, `install`) → `(манифест | None, [отчёт])`.
 
     `load_manifest` плюс проверка имён, которые раскладка превращает в пути: `id`, `run.script`,
-    `run.skill`. Исключений не бросает: кривой манифест — строка отчёта и пропуск одного модуля,
-    остальные модули и весь проект идут дальше.
+    `run.skill`, `mirror.default_path` (если задан). Исключений не бросает: кривой манифест — строка отчёта
+    и пропуск одного модуля, остальные модули и весь проект идут дальше.
     """
     m, rep = load_manifest(path, "connector")
     if m is None:
@@ -499,6 +505,10 @@ def load_connector_manifest(path):
         if run.get(key) and not ext_safe_name(run[key]):
             return None, ["%s: run.%s не годится в имя файла (простое имя без «/», «\\» и «..») — "
                           "пропущен" % (pre, key)]
+    default_path = (m.get("mirror") or {}).get("default_path")
+    if default_path and not ext_safe_relpath(default_path):
+        return None, ["%s: mirror.default_path не годится в путь внутри проекта (простые сегменты "
+                      "через «/» — без «/» в начале, диска, «..» и управляющих знаков) — пропущен" % pre]
     return m, []
 
 

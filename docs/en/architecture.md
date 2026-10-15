@@ -341,8 +341,11 @@ The minor comparison is transitional behaviour; whether a skin is loaded is deci
 field (default `1`; old skins without it are read as v1); it is checked by the same rule as the manifests'
 `api_version` (`aurora_common.ext_api_problem`): not an integer from 1, or newer than supported — the skin
 is not loaded, `cockpit.skins()` returns a `{id, error}` entry, and `/api/skins` puts it in `rejected`, not
-in the picker list. A skin file that cannot be read or is not UTF-8 gets the same entry: one bad skin does
-not bring down the others. `kit:i18n --check` reads `module.json` and `connector.json` through the same
+in the picker list; the panel shows the reason from `rejected` as a warning (`skin.broken`), and the
+message names the field the way a skin author writes it, `api`. A skin file that cannot be read, or whose
+header itself is not UTF-8, gets the same entry: one bad skin does not bring down the others. A stray non-UTF-8
+byte after the header (a cp1251 comment) does not reject the skin: only the header, the first ~2000
+characters, is read. `kit:i18n --check` reads `module.json` and `connector.json` through the same
 loader: a malformed manifest is skipped, the reason goes to the "What does not match" section, the exit
 code is 1, no traceback.
 
@@ -445,8 +448,9 @@ extensions by name. If a number went down, run `--write`, commit the bar togethe
 and fix the table above: the bar pins what has been achieved so it cannot be rolled back. If growth
 is justified, that is a decision rather than a workaround, and it goes into the commit message.
 
-**What a manifest must pass.** The envelope is shared by connectors, panel sections, skins and
-Git providers (details in ["Manifest envelope and API version"](connectors.md#manifest-envelope-and-api-version)):
+**What a manifest must pass.** The envelope is read by the loader (`load_manifest`) for connectors and panel sections; a skin
+shares with them only the API-version rule (`ext_api_problem`), and Git providers are checked by a test,
+not by the loader (details in ["Manifest envelope and API version"](connectors.md#manifest-envelope-and-api-version)):
 
 - `id` is required; for a section, a connector and a Git provider it equals the folder name
   (`cockpit/modules/<id>/`, `connectors/<id>/`, `gitproviders/<id>/`), for a skin the file name;
@@ -456,16 +460,17 @@ Git providers (details in ["Manifest envelope and API version"](connectors.md#ma
   and the extension is skipped with the reason "update the kit";
 - `requires` is optional;
 - per-kind fields: for a connector `kind`, `mirror`, `run`; for a section, see the table in the
-  section README; for a skin the `name`/`api`/`for`/`about` header; for a Git provider
+  section README; for a skin the `name`/`api`/`for`/`about` header (all fields optional); for a Git provider
   (`gitproviders/<id>/provider.json`) `title`, `auth` (a list of sign-in methods) and `about` in
-  Russian and English.
+  Russian and English (the `part_44.py` test requires this; there is no provider schema in the loader);
+  for a connector, `mirror.default_path`, when set, is a plain relative path inside the project.
 
 The conformance tests (`tests/cases/part_44.py`) check two properties. First, every manifest in the
 repository passes the loader without an error report. Second, **one extension failing does not hide
 the others**: a fictive connector, panel section and skin are picked up without a core edit, and a
 neighbouring broken manifest (not JSON, no `id`, a future `api_version`) lands in the report as its
-own line; a Git provider is checked by the loader: a broken `provider.json` is a report entry, not
-an exception. There is no such test for an LLM provider, an artifact kind, an assistant or a bot.
+own line; a Git provider's schema is checked by the test itself: a broken `provider.json` is a report entry,
+not an exception. There is no such test for an LLM provider, an artifact kind, an assistant or a bot.
 
 **What the metric does not see yet.** It counts only mentions of an extension's name in the core.
 Not covered are the points where adding something needs an edit but the core holds no extension

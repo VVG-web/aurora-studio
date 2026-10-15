@@ -60,7 +60,7 @@ UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
 from aurora_common import (ENGINE_DIRS, child_env, engine_dir, head_value,  # noqa: E402
-                           ext_api_problem, ext_behind, is_folder_guide, kit_mcp_permission, load_manifest, local_view, mtime_stamp,
+                           ext_api_problem, ext_behind, ext_safe_relpath, is_folder_guide, kit_mcp_permission, load_manifest, local_view, mtime_stamp,
                            personal_kit_file, real_inside, real_rel, replace_file, same_origin, utc_slug, utc_stamp,
                            yaml_scalar)
 from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
@@ -147,7 +147,7 @@ def skins() -> list:
     скины без поля читаются как v1. Проверяет её то же правило, что и манифесты
     (`aurora_common.ext_api_problem`): число не целое или из будущего — скин не подключается,
     в ответе `{id, error}`. Так же отвечает файл, который не читается или не UTF-8: один
-    плохой скин не роняет список остальных.
+    плохой скин не роняет список остальных. Не UTF-8 считается только шапка (первые ~2000 знаков).
     """
     out = []
     if not os.path.isdir(SKINS_DIR):
@@ -157,17 +157,21 @@ def skins() -> list:
             continue
         try:
             with open(os.path.join(SKINS_DIR, f), "rb") as fh:
-                raw = fh.read(200_000)
-            # хвост, оборванный на середине знака, — не ошибка кодировки
-            head = codecs.getincrementaldecoder("utf-8")().decode(raw)[:2000]
+                raw = fh.read(4000)
         except OSError as e:
             out.append({"id": f[:-4], "error": "skin «%s»: файл не читается (%s) — пропущен" % (f[:-4], e)})
             continue
-        except ValueError:
+        # Шапка — первые ~2000 знаков: разбираем только её. Посторонний байт не в UTF-8 дальше
+        # шапки (комментарий в cp1251 из Windows-редактора) скин не ломает — его CSS отдаёт
+        # `skin_css` с errors=ignore; нечитаемой считается сама шапка. Хвост, оборванный на
+        # середине знака, — не ошибка кодировки.
+        head = codecs.getincrementaldecoder("utf-8")("replace").decode(raw)[:2000]
+        end = head.find("*/")
+        if "\ufffd" in (head if end < 0 else head[:end]):
             out.append({"id": f[:-4], "error": "skin «%s»: файл не в кодировке UTF-8 — пропущен" % f[:-4]})
             continue
         api = (re.search(r"^[ \t]*(?:/\*)?[ \t]*api:[ \t]*(\S+)", head, re.M) or [None, "1"])[1]
-        bad = ext_api_problem(int(api) if api.isdecimal() else api, "skin «%s»" % f[:-4])
+        bad = ext_api_problem(int(api) if api.isdecimal() else api, "skin «%s»" % f[:-4], "api")
         if bad:
             out.append({"id": f[:-4], "error": bad})
             continue
@@ -6192,6 +6196,13 @@ class Handler(BaseHTTPRequestHandler):
         bad = [m for m in modules if m not in known]
         if bad:
             return {"error": "не установлены модули: " + ", ".join(bad)}
+        # путь зеркала уходит в `aurora.config.yaml` строкой без экранирования: небезопасный или
+        # отсутствующий `mirror.default_path` манифеста конфиг не получает
+        unsafe = [m for m in modules
+                  if not ext_safe_relpath((known[m].get("mirror") or {}).get("default_path"))]
+        if unsafe:
+            return {"error": "у модулей нет безопасного пути зеркала (mirror.default_path): "
+                    + ", ".join(unsafe)}
         cfg = os.path.join(project, "aurora.config.yaml")
         text = read_text(cfg)
         if not text:

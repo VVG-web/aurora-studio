@@ -590,10 +590,14 @@ def test_cockpit_skins_survive_bad_files_and_future_api(tmp: Path):
     assert "v2" in by["future"]["error"] and "обновите кит" in by["future"]["error"], by["future"]
     assert "skin «future»" in by["future"]["error"]
     assert "UTF-8" in by["latin"]["error"], by["latin"]
+    # у автора скина поле называется `api`, а не `api_version` (так называют его манифесты)
+    for sid in ("zero", "word", "float"):
+        assert "api должен быть целым" in by[sid]["error"] and "api_version" not in by[sid]["error"], by[sid]
     # английский: ни одного русского слова в причинах
     import re as _re
     assert len(en) == 6 and not [e for e in en if _re.search("[а-яА-ЯёЁ]", e["error"])], en
     assert any("extension API v2" in e["error"] for e in en), en
+    assert any("api must be an integer from 1" in e["error"] for e in en), en
 
 
 @test
@@ -648,3 +652,117 @@ def test_kit_i18n_check_reports_bad_manifests_instead_of_crashing(tmp: Path):
         and any("«mirror»" in s for s in skipped), skipped
     report = out.getvalue()
     assert rc == 1 and "манифест расширения не принят" in report and "module «broken»" in report, report
+
+
+@test
+def test_skin_with_foreign_byte_after_the_header_still_works(tmp: Path):
+    """Посторонний не-UTF-8 байт ДАЛЬШЕ шапки (комментарий в cp1251) скин не отвергает: шапка
+    читается, CSS отдаётся. Не-UTF-8 в самой шапке — отказ с причиной."""
+    root = tmp / "skins"
+    root.mkdir()
+    head = "/* name: Рабочий\n   api: 1\n   about: Описание. */\n".encode("utf-8")
+    body = ":root{--primary:#123}\n".encode("ascii")
+    (root / "winedit.css").write_bytes(head + b"/* " + "комментарий".encode("cp1251") + b" */\n" + body)
+    (root / "far.css").write_bytes(head + b"a{}\n" * 3000 + b"/* \xe0\xe1 */\n")      # байт за пределами головы
+    (root / "inhead.css").write_bytes(b"/* name: \xe0\xe1\n   api: 1 */\n" + body)       # байт в самой шапке
+    ck, restore = _ck_skins_dir(root)
+    try:
+        by = {r["id"]: r for r in ck.skins()}
+        css = ck.skin_css("winedit")
+    finally:
+        restore()
+    for sid in ("winedit", "far"):
+        assert "error" not in by[sid] and by[sid]["name"] == "Рабочий" and by[sid]["api"] == 1, by[sid]
+    assert "--primary:#123" in css, css
+    assert set(by["inhead"]) == {"id", "error"} and "UTF-8" in by["inhead"]["error"], by["inhead"]
+
+
+@test
+def test_panel_shows_why_a_skin_was_rejected(tmp: Path):
+    """Причину отказа скина панель показывает (`rejected` из /api/skins), строки есть в обоих языках."""
+    kit = Path(__file__).resolve().parents[2]
+    js = (kit / "cockpit" / "ui" / "panel.js").read_text(encoding="utf-8")
+    body = js[js.index("async function loadSkins"):js.index("async function applySkin")]
+    assert "d.rejected" in body and 'skin.broken' in body and "r.error" in body, body[:400]
+    for lang, word in (("ru", "не подключён"), ("en", "is not loaded")):
+        cat = json.loads((kit / "cockpit" / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))
+        assert "{id}" in cat["skin.broken"] and "{why}" in cat["skin.broken"] and word in cat["skin.broken"], cat
+
+
+@test
+def test_loader_has_no_dead_schemas(tmp: Path):
+    """Схемы без читателя в боевом коде не живут: у скина шапку разбирает панель, у провайдера Git
+    — `git_sync`; загрузчик такие виды не знает и отвечает причиной."""
+    import aurora_common as C
+    assert set(C.EXT_SCHEMAS) == {"connector", "module"}, sorted(C.EXT_SCHEMAS)
+    for kind in ("skin", "provider"):
+        got, rep = C.load_manifest(_write(tmp / "x.json", {"id": "x"}), kind)
+        assert got is None and "неизвестен" in rep[0], (kind, rep)
+
+
+@test
+def test_connector_mirror_path_must_stay_inside_the_project(tmp: Path):
+    """`mirror.default_path`: простой относительный путь; абсолютный, `..`, диск, перевод строки,
+    служебные для YAML знаки — манифест пропущен с причиной (иначе install создаёт папку вне проекта,
+    а панель пишет путь в конфиг как есть)."""
+    import aurora_common as C
+    for good in ("Sources/Notion", "Sources/Notion/", "Sources/Мой источник", "Notion", "a/b-c/d_e.f"):
+        got, rep = C.load_connector_manifest(_write(tmp / "g.json", _connector(
+            "demo", mirror={"default_path": good})))
+        assert got and not rep, (good, rep)
+    for bad in ("/etc/x", "\\\\srv\\x", "\\x", "C:/x", "C:\\x", "../x", "a/../x", "a/..", "a\\..\\b",
+                "a/./b", "a//b", "Sources/x\ny: z", "Sources/x\n", "a\x00b", "a\tb", "x #c", "x: y", "'x'",
+                " Sources/x", "Sources/x ", "~/x", "."):
+        got, rep = C.load_connector_manifest(_write(tmp / "b.json", _connector(
+            "demo", mirror={"default_path": bad})))
+        assert got is None and "mirror.default_path" in rep[0], (bad, got, rep)
+    # без пути зеркала — по-прежнему годный манифест (зеркало берётся из конфига проекта)
+    assert C.load_connector_manifest(_write(tmp / "n.json", _connector("demo", mirror={"state": "s.md"})))[0]
+    assert C.load_connector_manifest(_write(tmp / "e.json", _connector("demo", mirror={"default_path": ""})))[0]
+
+
+@test
+def test_install_skips_connector_with_escaping_mirror(tmp: Path):
+    """Манифест с `mirror.default_path` за пределами проекта install пропускает строкой в отчёте:
+    папка вне проекта не создаётся, соседний годный модуль ставится."""
+    import install_aurora as IA
+    kit = tmp / "kit"
+    for cid, path in (("evil", "../outside_dir"), ("abs", str(tmp / "abs_dir")), ("fine", "Sources/Fine")):
+        _write(kit / "connectors" / cid / "connector.json", _connector(cid, mirror={"default_path": path}))
+    target = tmp / "installed"
+    target.mkdir()
+    keep = IA.KIT_ROOT
+    IA.KIT_ROOT = kit
+    try:
+        inst = IA.Installer(target, "Demo", "Demo", None, None, force=False, dry_run=False)
+        with contextlib.redirect_stdout(io.StringIO()):
+            inst.install_connectors()
+    finally:
+        IA.KIT_ROOT = keep
+    log = "\n".join(inst.actions)
+    assert log.count("skip (манифест не принят)") == 2 and "mirror.default_path" in log, log
+    assert not (tmp / "outside_dir").exists() and not (tmp / "abs_dir").exists(), "папка вне проекта создана"
+    assert (target / "Sources" / "Fine").is_dir() and (target / ".aurora" / "connectors" / "fine.json").is_file()
+    assert not (target / ".aurora" / "connectors" / "evil.json").exists()
+
+
+@test
+def test_panel_does_not_write_unsafe_mirror_path_into_config(tmp: Path):
+    """Подключение модуля из панели: небезопасный или отсутствующий `mirror.default_path` установленного
+    манифеста не попадает в `aurora.config.yaml`, ответ — ошибка, а не KeyError; годный модуль пишется."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    root = tmp / "proj"
+    cfg = root / "aurora.config.yaml"
+    _write(cfg, "name: Demo\nsources:\n  - id: Old\n")
+    for cid, mirror in (("evil", {"default_path": "../x\nrole: y"}), ("nopath", {"state": "s.md"}),
+                        ("fine", {"default_path": "Sources/Fine"})):
+        _write(root / ".aurora" / "connectors" / f"{cid}.json", _connector(cid, mirror=mirror))
+    before = cfg.read_text(encoding="utf-8")
+    for bad in ("evil", "nopath"):
+        res = ck.Handler._write_sources(None, str(root), ["fine", bad])
+        assert "error" in res and bad in res["error"], (bad, res)
+        assert cfg.read_text(encoding="utf-8") == before, "конфиг изменён при отказе"
+    res = ck.Handler._write_sources(None, str(root), ["fine"])
+    assert res.get("ok") and "path: Sources/Fine" in cfg.read_text(encoding="utf-8"), res

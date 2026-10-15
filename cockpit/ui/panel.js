@@ -4462,10 +4462,20 @@ async function renderProject(){
 
 /* ---------------- скины ---------------- */
 // Оформление живёт в отдельных файлах: свой .css в cockpit/skins/ появляется в списке сам.
+const SKINS_REJECTED_SHOWN = new Set();
 async function loadSkins(){
   const sel = $("#skinSel");
   const d = await api("/api/skins", {quiet:true});
   const list = (d && d.skins) || [];
+  // Скин, не принятый проверкой, в выборе не появится — скажем почему (как у разделов
+  // `modules.broken`), иначе человек ищет свой файл в списке и считает, что сломалась панель.
+  // Смена языка перечитывает список: одну и ту же причину второй раз не повторяем.
+  for (const r of (d && d.rejected) || []){
+    const key = r.id + "\n" + r.error;
+    if (SKINS_REJECTED_SHOWN.has(key)) continue;
+    SKINS_REJECTED_SHOWN.add(key);
+    toast(t("skin.broken", {id: r.id, why: r.error}), "warn");
+  }
   // по умолчанию «Зин»; список отсортирован по алфавиту, и брать из него первый
   // попавшийся значило бы менять облик панели от появления нового файла
   const has = id => list.some(s => s.id === id);

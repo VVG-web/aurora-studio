@@ -106,8 +106,12 @@ The manifest is JSON, not YAML: it is read by the engine, not by a human, and ha
 ## Manifest envelope and API version
 
 A single shared loader reads manifests: `load_manifest(path, kind)` in `scripts/aurora_common.py`
-(BL-ARC-44). Each extension kind (`connector`, `module`, `skin`) has its own mini-schema; what they
+(BL-ARC-44). Each kind the loader reads (`connector`, `module`) has its own mini-schema; what they
 share is the "envelope": `id`, `api_version`, a title (a string or per language) and `requires`.
+Skins and Git providers are not read by the loader. A skin header is parsed by `cockpit.skins()`,
+and it shares one rule with the manifests, the version check (`ext_api_problem`: the header field
+`api` is checked exactly like `api_version`). `gitproviders/<id>/provider.json` is read by `git_sync`,
+and its fields are checked by a test (`tests/cases/part_44.py`), not by the loader.
 
 - `api_version` is the extension API version a manifest was written for. When the field is missing the
   manifest is in the pre-envelope format and is read as `1`; manifests already in projects need no
@@ -126,11 +130,15 @@ share is the "envelope": `id`, `api_version`, a title (a string or per language)
 - **Laying out into a project goes through the loader too.** `update` and `install` read
   `connectors/*/connector.json` via `load_connector_manifest` (the loader plus a name check). A bad
   manifest — no `id`, an empty file, not JSON, a root that is not an object, `run` as a string, a future
-  `api_version`, or an `id`, `run.script` or `run.skill` containing "/", "\\" or ".." — produces a
+  `api_version`, or an `id`, `run.script` or `run.skill` containing "/", "\\" or "..", or a `mirror.default_path` that is not a plain
+  relative path (a leading "/" or "\\", a drive letter, a ".." or "." segment, an empty segment, a line
+  break or other control characters, "#", ":", quotes) — produces a
   "Модуль источников пропущен: …" line in the `update` report (in dry-run and with `--apply`) or a
   `skip (манифест не принят)` line in the `install` report. The run goes on with the other modules and the
   exit code does not change. The `.aurora/connectors/<id>.json` file name comes only from an accepted
-  manifest, so an `id` cannot move the file out of the folder. A manifest whose launch script is missing
+  manifest, so an `id` cannot move the file out of the folder; for the same reason `mirror.default_path`
+  is checked before the installer's `ensure_dir`, and the panel does not write into `aurora.config.yaml`
+  a mirror path that failed the same check (`aurora_common.ext_safe_relpath`). A manifest whose launch script is missing
   is installed without it (`skip (скрипт не найден)`). Doctor shows skipped manifests as one warning.
 - Transition period: the panel's sections (`cockpit/modules/*/module.json`) are already read by the shared
   loader in `lenient` mode (an optional field of the wrong type gets its default and a `warn` instead of

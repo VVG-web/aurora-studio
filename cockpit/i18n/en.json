@@ -628,6 +628,7 @@
   "skin.picked": "{name} — {about}",
   "skin.no_such": "there is no such skin",
   "skin.failed": "The skin did not load, the base colors stayed",
+  "skin.broken": "Skin «{id}» is not loaded: {why}",
   "modules.no_html": "no markup ({status})",
   "modules.refresh_failed": "the section «{id}»: {why}",
   "palette.project": "project · {path}",

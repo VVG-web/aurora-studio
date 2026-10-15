@@ -628,6 +628,7 @@
   "skin.picked": "{name} — {about}",
   "skin.no_such": "нет такого скина",
   "skin.failed": "Скин не загрузился, остались базовые цвета",
+  "skin.broken": "Скин «{id}» не подключён: {why}",
   "modules.no_html": "нет разметки ({status})",
   "modules.refresh_failed": "раздел «{id}»: {why}",
   "palette.project": "проект · {path}",

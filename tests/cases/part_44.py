@@ -181,6 +181,28 @@ def _put(path: Path, data) -> Path:
     return path
 
 
+# Схема provider.json: проверяет её только этот тест, в боевом коде провайдеров Git читает
+# `git_sync` сам; общий загрузчик (`aurora_common.load_manifest`) видов не знает и берёт схему
+# из `EXT_SCHEMAS`, куда на время вызова её кладёт `_load_provider`.
+_PROVIDER_SCHEMA = {
+    "required": {"id": str, "title": str},
+    "optional": {"version": str, "since": str, "api": str, "auth": list,
+                 "about": "i18n", "requires": dict, "api_version": int},
+    "nested": {},
+}
+
+
+def _load_provider(path, lenient: bool = False):
+    """`load_manifest(path, "provider")` с локальной схемой провайдера: после вызова схемы в загрузчике нет."""
+    import aurora_common as C
+    assert "provider" not in C.EXT_SCHEMAS, "схема провайдера вернулась в боевой загрузчик"
+    C.EXT_SCHEMAS["provider"] = _PROVIDER_SCHEMA
+    try:
+        return C.load_manifest(path, "provider", lenient=lenient)
+    finally:
+        del C.EXT_SCHEMAS["provider"]
+
+
 def _repo_manifests() -> dict:
     """{вид: [(id по папке или файлу, путь манифеста)]} — всё, что лежит в репозитории."""
     return {
@@ -201,7 +223,7 @@ def test_every_repo_manifest_passes_the_envelope(_t):
         assert len(items) >= least, (kind, [n for n, _ in items])
         ids = []
         for name, path in items:
-            got, rep = C.load_manifest(path, kind)
+            got, rep = _load_provider(path) if kind == "provider" else C.load_manifest(path, kind)
             assert got is not None and rep == [], (kind, name, rep)
             assert got["id"] == name, (kind, name, got["id"])
             assert got["api_version"] == 1, (kind, name, got["api_version"])
@@ -209,7 +231,7 @@ def test_every_repo_manifest_passes_the_envelope(_t):
         assert len(ids) == len(set(ids)), (kind, ids)
     # провайдеры: схема требует список способов входа и название на каждом языке описания
     for name, path in found["provider"]:
-        got, _ = C.load_manifest(path, "provider")
+        got, _ = _load_provider(path)
         assert got["auth"] and set(got["about"]) >= {"ru", "en"}, (name, got)
 
 
@@ -227,7 +249,6 @@ def test_every_repo_skin_passes_the_envelope(_t):
 @test
 def test_provider_loader_reports_instead_of_raising(tmp: Path):
     """Битый provider.json — отчёт, а не исключение; сосед читается; имя в отчёте — из папки."""
-    import aurora_common as C
     root = tmp / "gitproviders"
     good = {"id": "demo", "title": "Demo", "auth": ["token"], "api": "/api", "about": {"ru": "Р", "en": "E"}}
     _put(root / "demo" / "provider.json", good)
@@ -247,7 +268,7 @@ def test_provider_loader_reports_instead_of_raising(tmp: Path):
     (root / "nofile").mkdir()
     res = {}
     for d in sorted(root.iterdir()):
-        res[d.name] = C.load_manifest(d / "provider.json", "provider")      # не бросает
+        res[d.name] = _load_provider(d / "provider.json")      # не бросает
     assert res["demo"][0]["id"] == "demo" and res["demo"][1] == []
     for name in cases:
         got, rep = res[name]
@@ -255,9 +276,9 @@ def test_provider_loader_reports_instead_of_raising(tmp: Path):
     assert res["nofile"][0] is None and "provider «nofile»" in res["nofile"][1][0], res["nofile"]
     assert "v99" in res["future"][1][0] and "auth" in res["authstr"][1][0]
     # мягкий режим тоже не роняет: необязательное поле не того типа — отброшено, обязательное — отказ
-    got, notes = C.load_manifest(root / "authstr" / "provider.json", "provider", lenient=True)
+    got, notes = _load_provider(root / "authstr" / "provider.json", lenient=True)
     assert got and "auth" not in got and notes, (got, notes)
-    assert C.load_manifest(root / "titlenum" / "provider.json", "provider", lenient=True)[0] is None
+    assert _load_provider(root / "titlenum" / "provider.json", lenient=True)[0] is None
 
 
 @test
