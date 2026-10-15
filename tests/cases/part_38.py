@@ -1447,8 +1447,10 @@ def test_web_connector_works_through_a_proxy_without_resolving_the_name(tmp: Pat
     def no_lookup(host, _port):
         boom.append(host)
         raise OSError("имя не разрешается без прокси")
-    real_proxies, real_resolve = AC.EGRESS_PROXIES, AC.EGRESS_RESOLVE
+    import urllib.request as _rq
+    real_proxies, real_resolve, real_bypass = AC.EGRESS_PROXIES, AC.EGRESS_RESOLVE, _rq.proxy_bypass
     AC.EGRESS_PROXIES, AC.EGRESS_RESOLVE = {"http": proxy, "https": proxy}, no_lookup
+    _rq.proxy_bypass = _rq.proxy_bypass_environment      # герметично: системные исключения прокси (*.local, простые имена) не мешают
     env_keys = ("no_proxy", "NO_PROXY")
     saved_env = {k: os.environ.pop(k, None) for k in env_keys}
     try:
@@ -1487,6 +1489,7 @@ def test_web_connector_works_through_a_proxy_without_resolving_the_name(tmp: Pat
         assert boom == ["wiki.example.com"] and len(seen) == n, (boom, seen)
     finally:
         AC.EGRESS_PROXIES, AC.EGRESS_RESOLVE = real_proxies, real_resolve
+        _rq.proxy_bypass = real_bypass
         for k, v in saved_env.items():
             os.environ.pop(k, None)
             if v is not None:
@@ -1614,8 +1617,10 @@ def test_web_connector_refuses_trailing_dot_and_internal_names_through_a_proxy(t
             pass
 
     # сквозной путь: запрос через (подставной) прокси на внутренние имена не уходит
-    real_proxies = AC.EGRESS_PROXIES
+    import urllib.request as _rq
+    real_proxies, real_bypass = AC.EGRESS_PROXIES, _rq.proxy_bypass
     AC.EGRESS_PROXIES = {"http": "http://proxy.example.com:3128", "https": "http://proxy.example.com:3128"}
+    _rq.proxy_bypass = lambda h: False          # герметично: системные исключения прокси (*.local, простые имена) не мешают
     env_keys = ("no_proxy", "NO_PROXY")
     saved_env = {k: os.environ.pop(k, None) for k in env_keys}
     try:
@@ -1627,10 +1632,140 @@ def test_web_connector_refuses_trailing_dot_and_internal_names_through_a_proxy(t
                 pass
     finally:
         AC.EGRESS_PROXIES = real_proxies
+        _rq.proxy_bypass = real_bypass
         for k, v in saved_env.items():
             os.environ.pop(k, None)
             if v is not None:
                 os.environ[k] = v
+
+
+@test
+def test_web_connector_canonicalizes_host_the_way_the_transport_does(tmp: Path):
+    """BL-SEC-17 (доработка): имя приводится к виду транспорта (`canon_host`: IDNA, нижний регистр,
+    без хвостовых точек) во ВСЕХ проверках. Мягкий перенос U+00AD, `¹²³`, полноширинные знаки не
+    прячут ни адрес-литерал, ни внутреннее имя; в режиме proxied знаки вне `a-z0-9._-` (и `%31`)
+    — отказ с подсказкой про punycode; запись `allow_private` и `is_loopback_host` читают имя так же."""
+    _path()
+    AC = importlib.import_module("aurora_common")
+    h = "http" + "://"
+    shy = "\u00ad"
+    lo = ".".join(("127", "0", "0", "1"))
+    ten = "10.0.0."
+    # само приведение
+    assert AC.canon_host("Wiki.Example.COM..") == "wiki.example.com"
+    assert AC.canon_host(f"wiki.loc{shy}al") == "wiki.local"
+    assert AC.canon_host(f"{ten}\u00b91") == ten + "11"
+    assert AC.canon_host("[::1]") == "::1" and AC.canon_host("пример.example.com").startswith("xn--")
+    for bad in (shy, "a..b", "x" * 70 + ".example.com"):
+        try:
+            AC.canon_host(bad)
+            raise AssertionError(f"имя разобрано: {bad!r}")
+        except ValueError:
+            pass
+    # режим proxied: иные написания внутренних адресов и имён — отказ
+    forms = [f"127{shy}." + ".".join(("0", "0", "1")), f"wiki.loc{shy}al", f"metadata.google.intern{shy}al",
+             f"{ten}\u00b91", f"{ten}\u00b2\u00b3", "127.0.0.%31", "127.0.0.%2e1", "wiki.local%2e", "a" + shy,
+             f"{lo.rsplit('.', 1)[0]}\u3002{lo.rsplit('.', 1)[1]}", "пример.example.com", "ª.example.com"]
+    for host in forms:
+        why, _ = AC._egress_check(f"{h}{host}/x", proxied=True)
+        assert why, f"через прокси не отказано: {host!r}"
+    assert "punycode" in AC._egress_check(f"{h}пример.example.com/x", proxied=True)[0]
+    # punycode и обычные имена проходят
+    for host in ("xn--e1afmkfd.example.com", "example.com", "wiki.example.org"):
+        assert AC._egress_check(f"{h}{host}/x", proxied=True)[0] == "", host
+    assert AC._egress_check("https://[2606:4700::1111]/x", proxied=True)[0] == ""
+    assert AC._egress_check("https://[::1]/x", proxied=True)[0]
+    # прямой путь: резолвер получает имя в виде транспорта, а не с мягким переносом
+    asked = []
+
+    def _resolve(host, _port):
+        asked.append(host)
+        return {"evil.example.com": [lo], "example.com": ["93.184.216.34"]}.get(host, [])
+    assert AC._egress_check(f"{h}evil.exam{shy}ple.com/x", resolve=_resolve)[0]
+    assert AC._egress_check(f"{h}EXAMPLE.com./x", resolve=_resolve)[0] == ""
+    assert asked == ["evil.example.com", "example.com"], asked
+    assert "разобрать" in AC._egress_check(f"{h}{shy}/x", resolve=_resolve)[0]
+    # allow_private: запись и страница читаются одинаково
+    assert AC._egress_check(f"{h}wiki.local/x", [f"wiki.loc{shy}al"], proxied=True)[0] == ""
+    assert AC._egress_check(f"{h}wiki.local/x", ["WIKI.local."], proxied=True)[0] == ""
+    assert AC._allow_private_entries([f"wiki.loc{shy}al", "a..b"]) == [("wiki.local", 0)]
+    # петля в любом написании
+    for host in (f"local{shy}host", "LocalHost.", f"127.0.0.{chr(0xb9)}", "[::1]"):
+        assert AC.is_loopback_host(host), host
+    assert not AC.is_loopback_host("a..b") and not AC.is_loopback_host("example.com")
+    # соединение: имя с мягким переносом отказано в момент соединения (петля), пустое — «не разобрать»
+    create = AC._guarded_create_connection((), _resolve)
+    for host in (f"127{shy}." + ".".join(("0", "0", "1")), f"evil.exam{shy}ple.com", shy):
+        try:
+            create((host, 80))
+            raise AssertionError(f"соединение с {host!r} не отказано")
+        except AC.EgressRefused:
+            pass
+
+
+@test
+def test_web_connector_sends_no_connect_for_disguised_internal_hosts_through_a_proxy(tmp: Path):
+    """BL-SEC-17 (доработка): сквозной путь с подставным прокси. https на внутреннее имя или адрес,
+    написанные с мягким переносом, `¹²³` или `%31`, отказывает ДО отправки CONNECT: прокси ничего
+    не видит. Проверка герметична: исключения прокси системы (`proxy_bypass`) подменены."""
+    _path()
+    import threading
+    import urllib.request as _rq
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    AC = importlib.import_module("aurora_common")
+    seen = []
+
+    class Proxy(BaseHTTPRequestHandler):
+        def do_CONNECT(self):
+            seen.append(self.path)
+            self.send_response(502)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):
+            seen.append(self.path)
+            self.send_response(502)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    proxy = f"http://127.0.0.1:{srv.server_address[1]}"
+    shy = "\u00ad"
+    real_proxies, real_bypass = AC.EGRESS_PROXIES, _rq.proxy_bypass
+    AC.EGRESS_PROXIES = {"http": proxy, "https": proxy}
+    _rq.proxy_bypass = lambda h: False
+    env_keys = ("no_proxy", "NO_PROXY")
+    saved_env = {k: os.environ.pop(k, None) for k in env_keys}
+    try:
+        for scheme in ("https://", "http://"):
+            for host in ("127" + shy + ".0.0.1", f"wiki.loc{shy}al", f"metadata.google.intern{shy}al",
+                         "10.0.0.\u00b91", "127.0.0.%31"):
+                try:
+                    AC.guarded_urlopen(f"{scheme}{host}/x", timeout=2)
+                    raise AssertionError(f"через прокси прошло: {scheme}{host!r}")
+                except AC.EgressRefused:
+                    pass
+        assert seen == [], f"на прокси ушло: {seen}"
+        # контроль: обычное имя до прокси доходит (CONNECT виден), значит проверка не глухая
+        try:
+            AC.guarded_urlopen("https://wiki.example.com/x", timeout=2)
+        except AC.EgressRefused:
+            raise AssertionError("обычное имя отказано политикой")
+        except OSError:
+            pass
+        assert seen == ["wiki.example.com:443"], seen
+    finally:
+        AC.EGRESS_PROXIES = real_proxies
+        _rq.proxy_bypass = real_bypass
+        for k, v in saved_env.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+        srv.shutdown()
+        srv.server_close()
 
 
 @test
@@ -2908,6 +3043,33 @@ def test_doctor_private_sources_survive_bad_pages_and_hide_credentials(tmp: Path
     assert len(got) == 1 and "без страницы" not in got[0], got        # запись привязана к странице
     KI = importlib.import_module("kit_i18n")
     assert any("записи без страницы в списке" in sk for sk in KI.message_skeletons())
+
+
+@test
+def test_doctor_reads_host_spelling_like_the_export_policy(tmp: Path):
+    """BL-SEC-17 (доработка): `kit:doctor` приводит имя страницы и записи `allow_private` к тому же
+    виду, что политика экспорта (`canon_host`): адрес с хвостовой точкой или мягким переносом не
+    уходит из предупреждения, запись без точки при странице с точкой не считается неиспользованной."""
+    _path()
+    D = importlib.import_module("aurora_doctor")
+    root = tmp / "p"
+    root.mkdir()
+    cfg = root / "aurora.config.yaml"
+    meta = ".".join(("169", "254", "169", "254"))
+    cfg.write_text(f"web:\n  pages:\n    - url: http://{meta}./latest\n    - url: https://example.org/law\n",
+                   encoding="utf-8")
+    got = D.check_web_private_sources(root)
+    assert len(got) == 1 and f"{meta}/latest" in got[0] and "без allow_private" in got[0], got
+    cfg.write_text(f"web:\n  pages:\n    - url: http://127\u00ad.0.0.1/x\n", encoding="utf-8")
+    got = D.check_web_private_sources(root)
+    assert len(got) == 1 and "без allow_private" in got[0], got
+    # запись без точки, страница с точкой: разрешено и привязано; и наоборот
+    for entry, page in (("wiki.example.com", "wiki.example.com."), ("wiki.example.com.", "wiki.example.com"),
+                        ("wiki.example.com", "WIKI.example.com.")):
+        cfg.write_text(f"web:\n  allow_private: [{entry}]\n  pages:\n    - url: https://{page}/start\n",
+                       encoding="utf-8")
+        got = D.check_web_private_sources(root)
+        assert len(got) == 1 and "web.allow_private разрешает" in got[0] and "без страницы" not in got[0], (entry, page, got)
 
 
 @test

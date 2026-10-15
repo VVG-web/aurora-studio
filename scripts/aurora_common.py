@@ -3585,9 +3585,34 @@ def same_origin(url: str, base: str) -> bool:
     return b[0] == "http" and a[0] == "https" and a[1] == b[1] and a[2] == 443 and b[2] == 80
 
 
+def canon_host(host: str) -> str:
+    """Имя хоста в том виде, в котором его отдаст транспорт: IDNA-кодирование (его делают `http.client`
+    для CONNECT и `getaddrinfo`: оно выбрасывает мягкий перенос U+00AD, отображает `ª`, `¹²³`,
+    полноширинные знаки и «точки» вроде U+3002), нижний регистр, без хвостовых точек и квадратных
+    скобок (`localhost.` и `[::1]`). Единое правило для ВСЕХ проверок границ веб-коннектора
+    (политика адреса, `allow_private`, соединение, `is_loopback_host`, `kit:doctor`): иначе одно
+    имя имеет несколько написаний, и проверка видит не то, что уйдёт в сеть. IPv6-литерал
+    возвращается как есть. Имя, которое не кодируется (пустая метка, метка длиннее 63 знаков),
+    — `ValueError`: «имя не разобрать»."""
+    h = str(host or "").strip().strip("[]").lower()
+    if ":" in h:                                    # IPv6-литерал: IDNA к нему не применяется
+        return h
+    h = h.rstrip(".")
+    if not h:
+        return ""
+    try:
+        h = h.encode("idna").decode("ascii")
+    except UnicodeError:                            # пустая метка, слишком длинная метка
+        raise ValueError(f"имя хоста не разобрать: {host!r}") from None
+    return h.lower().rstrip(".")
+
+
 def is_loopback_host(host: str) -> bool:
     """Свой компьютер: `localhost`, `*.localhost`, `127.x.x.x`, `::1`."""
-    h = (host or "").strip("[]").lower().rstrip(".")       # `localhost.` — то же имя
+    try:
+        h = canon_host(host)                                # `localhost.` и `local\u00adhost` — то же имя
+    except ValueError:
+        return False                                        # имя не разобрать: своим не считаем
     return (h == "localhost" or h.endswith(".localhost") or h == "::1"
             or re.fullmatch(r"127(?:\.\d{1,3}){3}", h) is not None)
 
@@ -3681,7 +3706,10 @@ def _allow_private_entries(allow_private) -> list:
             host, port = (p.hostname or ""), (p.port or 0)
         except ValueError:
             continue
-        host = host.rstrip(".")         # `wiki.example.com.` — то же имя
+        try:
+            host = canon_host(host)     # `wiki.example.com.` и любое другое написание — то же имя
+        except ValueError:
+            continue                    # запись, которую не разобрать, ничего не разрешает
         if host:
             out.append((host, port))
     return out
@@ -3745,7 +3773,10 @@ def _egress_check(url: str, allow_private=(), resolve=None, proxied=False) -> tu
     политика, и повтор имеет смысл. `proxied` — запрос уйдёт через прокси: имя разрешит он, у
     нас его не разрешают (в сети «только через прокси» это и невозможно); проверяются схема и
     адреса-литералы, в том числе «числовые» формы вроде `2130706433`, и заведомо внутренние
-    имена (`_internal_name_refusal`). Хвостовая точка (`localhost.`) отрезается до всех проверок."""
+    имена (`_internal_name_refusal`). Имя до всех проверок приводится к виду транспорта
+    (`canon_host`: `localhost.`, мягкий перенос, `¹²³`), а в режиме proxied проверка строже:
+    знаки вне `a-z0-9._-` (кроме IPv6-литерала) — отказ, прокси вправе прочитать их иначе
+    (`127.0.0.%31`); имя с такими знаками записывают punycode (`xn--…`)."""
     import ipaddress
     from urllib.parse import urlsplit
     u = str(url or "")
@@ -3756,11 +3787,18 @@ def _egress_check(url: str, allow_private=(), resolve=None, proxied=False) -> tu
         scheme, host, port = (p.scheme or "").lower(), (p.hostname or "").lower(), p.port
     except ValueError:
         return "адрес не разобрать", False
-    host = host.rstrip(".")             # `localhost.` и `127.0.0.1.` — те же адреса, что без точки
     if scheme not in _DEFAULT_PORTS:
         return f"схема «{scheme or '—'}» не разрешена: только http и https", False
-    if not host:
+    try:
+        canon = canon_host(host)        # `localhost.`, `127.0.0.1.`, `127\u00ad.0.0.1`, `10.0.0.¹1`
+    except ValueError:
+        return f"имя хоста не разобрать: {host!r}", False
+    if not canon:
         return "в адресе нет имени хоста", False
+    if proxied and ":" not in canon and not re.fullmatch(r"[a-z0-9._-]+", host.rstrip(".")):
+        return (f"{host!r}: в имени знаки вне a-z0-9._- (через прокси его могут прочесть иначе, "
+                "чем мы); запишите имя в виде punycode (xn--…)"), False
+    host = canon
     port = port or _DEFAULT_PORTS[scheme]
     for h, pt in _allow_private_entries(allow_private):
         if h == host and pt in (0, port):
@@ -3769,6 +3807,8 @@ def _egress_check(url: str, allow_private=(), resolve=None, proxied=False) -> tu
         addrs = [host] if ipaddress.ip_address(host) else []
     except ValueError:
         if proxied:
+            if ":" in host:                 # двоеточие — только у IPv6-литерала, а он не разобрался
+                return f"адрес {host!r} не разобрать", False
             import socket
             try:
                 addrs = [socket.inet_ntoa(socket.inet_aton(host))]   # `2130706433`, `0x7f.1`
@@ -3861,7 +3901,10 @@ def _guarded_create_connection(allow, resolve):
 
     def create(address, *args, **kw):
         host, port = address[0], address[1]
-        h = str(host).lower().rstrip(".")
+        try:
+            h = canon_host(host)
+        except ValueError as e:
+            raise EgressRefused(str(e)) from None
         for eh, pt in _allow_private_entries(allow):
             if eh == h and pt in (0, port):
                 return socket.create_connection(address, *args, **kw)

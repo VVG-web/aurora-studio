@@ -649,7 +649,7 @@ def check_web_private_sources(root: Path | None = None) -> list:
     try:
         import socket
         from urllib.parse import urlsplit
-        from aurora_common import _allow_private_entries, _non_global, is_loopback_host
+        from aurora_common import _allow_private_entries, _non_global, canon_host, is_loopback_host
         from web_export import pages_from_config, settings_from_config
         cfg = (root / "aurora.config.yaml").read_text(encoding="utf-8")
         entries = _allow_private_entries(settings_from_config(cfg)["allow_private"])
@@ -657,7 +657,8 @@ def check_web_private_sources(root: Path | None = None) -> list:
         for url, _trusted, _feed in pages_from_config(cfg):
             try:                                  # один битый адрес (порт 99999) не гасит остальные
                 p = urlsplit(url)
-                host, port = (p.hostname or "").lower(), p.port or {"http": 80, "https": 443}.get(p.scheme, 0)
+                # то же написание имени, что у политики экспорта: `169.254.169.254.`, мягкий перенос, `¹²³`
+                host, port = canon_host(p.hostname or ""), p.port or {"http": 80, "https": 443}.get(p.scheme, 0)
             except ValueError:
                 continue
             # без логина и пароля из адреса: вывод доктора попадает в консоль панели и журналы
