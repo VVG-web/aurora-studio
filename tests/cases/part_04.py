@@ -2008,3 +2008,19 @@ def test_panel_file_api_checks_real_path_and_creation(tmp: Path):
     (root / "Docs" / "старый.md").write_text("а\n", encoding="utf-8")
     assert ck.file_write(str(root), "Docs/старый.md", "б\n").get("ok"), \
         "перезапись существующего файла сломана"
+
+    # кнопка «.gitignore» раздела «Git» заводит корневой файл правил записью — и только его
+    res = ck.file_write(str(root), ".gitignore", "", expect="")
+    assert res.get("ok"), f"корневой .gitignore не заводится: {res}"
+    assert (root / ".gitignore").is_file()
+    for rel in ("./.gitignore.md", "Docs/.gitignore", ".env", "x.md"):
+        bad = ck.file_write(str(root), rel, "x\n")
+        assert bad.get("error") and not bad.get("ok"), f"{rel}: исключение шире .gitignore"
+        assert not (root / rel).exists(), f"{rel}: файл создан"
+    if link_ok:
+        # висячая ссылка .gitignore наружу проекта не даёт записать за периметр
+        (root / ".gitignore").unlink()
+        outside = tmp / "снаружи.txt"
+        os.symlink(str(outside), str(root / ".gitignore"))
+        assert ck.file_write(str(root), ".gitignore", "x\n").get("error"), "запись по ссылке наружу"
+        assert not outside.exists(), "файл вне проекта создан"

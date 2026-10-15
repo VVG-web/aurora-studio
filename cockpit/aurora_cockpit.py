@@ -382,6 +382,11 @@ MAKEABLE = ("Workspaces", "AuroraKnowledgeDB/Decisions", "AuroraKnowledgeDB/Ques
             "Raw/corrections", "Raw/project", "Raw/examples", "Deliverables/work")
 
 
+# Единственный файл в корне проекта, который запись заводит сама: кнопка «.gitignore» раздела
+# «Git» открывает правила, а если файла нет — пишет пустой (установка Авроры тоже его пишет).
+ROOT_WRITABLE = (".gitignore",)
+
+
 def create_dirs(project: str) -> list:
     """Куда можно положить новый файл: постоянные места плюс папки видов артефактов."""
     out = list(MAKEABLE)
@@ -668,7 +673,10 @@ def file_write(project: str, rel: str, text: str, expect: str = "") -> dict:
         # Новый файл — только там, где его можно завести (как `file_create`): иначе запись
         # создавала файлы в корне проекта и в папках, структуру которых держит движок.
         # Смотрим и присланный путь, и реальный: ссылка-папка не выводит в чужой каталог.
-        why = why_no_create(project, rel) or why_no_create(project, real_rel(project, full))
+        # Исключение — только корневой `.gitignore` и по присланному, и по реальному пути.
+        asked = os.path.normpath((rel or "").replace("\\", "/").strip("/")).replace("\\", "/")
+        why = "" if asked in ROOT_WRITABLE and real_rel(project, full) in ROOT_WRITABLE else \
+            why_no_create(project, rel) or why_no_create(project, real_rel(project, full))
         if why:
             return {"error": why}
     if os.path.splitext(full)[1].lower() not in TEXT_EXT:
