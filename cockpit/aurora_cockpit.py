@@ -66,6 +66,7 @@ from aurora_common import (child_env, engine_dir, head_value, is_folder_guide,  
 from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
                            mcp_check, mcp_mask_args, mcp_masked)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
+import request_context as RC                     # noqa: E402 — граница секретов и служебного, одна на движок
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cron as CRON                              # noqa: E402 — расписание: раздел «Cron»
 import route_runner as RR                        # noqa: E402 — маршрут: кнопка, расписание, терминал
@@ -259,9 +260,13 @@ I18N_DIR = os.path.join(KIT, "cockpit", "i18n")
 # показать .drawio или .png внутри редактора мы не можем, а притворяться, что можем,
 # хуже отказа — человек решит, что файл пустой.
 TEXT_EXT = {".md", ".txt", ".yaml", ".yml", ".json", ".csv", ".py", ".sh", ".js", ".css",
-            ".html", ".xml", ".ini", ".cfg", ".toml", ".sql", ".env", ".gitignore", "",
+            ".html", ".xml", ".ini", ".cfg", ".toml", ".sql",
             # 1.165.0: схемы mermaid, журналы и JSON построчно — с видом справа в редакторе
             ".mmd", ".mermaid", ".log", ".jsonl"}
+# Файлы без расширения открываются по имени, а не «любой без расширения»: пустое расширение
+# в TEXT_EXT пускало в редактор и `.env`, и `id_ed25519`, и любой двоичный файл без точки.
+TEXT_NAMES = {"makefile", "dockerfile", "readme", "license", "licence", "changelog",
+              "procfile", "codeowners", ".gitignore", ".gitattributes", ".editorconfig"}
 MAX_EDIT = 2_000_000          # потолок на файл: больше — это не документ, а выгрузка
 
 # Только для чтения. Список тот же, что в инвариантах скилла, и это не совпадение:
@@ -287,6 +292,12 @@ def inside(root: str, path: str) -> str:
     отсекается очевидно, а ссылка наружу — нет, и именно она опаснее.
     """
     return real_inside(root, path)
+
+
+def is_text_file(name: str) -> bool:
+    """Открывается ли файл в редакторе как текст: по расширению или по известному имени."""
+    low = os.path.basename(name or "").lower()
+    return os.path.splitext(low)[1] in TEXT_EXT or low in TEXT_NAMES
 
 
 def norm_rel(rel: str) -> str:
@@ -320,6 +331,38 @@ def why_readonly(rel: str, text: str = "") -> str:
     if re.search(r"^kind:\s*document\s*$", text or "", re.M):
         return "тип document: тело переносится дословно и не переписывается никем"
     return ""
+
+
+# Папки инструментов и движка у корня проекта: `.git` закрыт и на любой глубине (в `RC`), а
+# эти — только у корня, внутри них служебное всё, не только секретные имена.
+SERVICE_DIRS = (".git", ".aurora", ".claude", ".opencode")
+
+
+def why_service(rel: str) -> str:
+    """Почему файл не открывается и не пишется в редакторе совсем: секрет или служебное.
+
+    Пустая строка — можно. Мерка чтения проекта (`request_context.secret_kind` без `strict`):
+    `.env*`, ключи, `local/mcp.json`, `.git/` закрыты, а карточка `Credentials.md` в
+    глоссарии открывается. Сверху — папки движка и инструментов у корня. В дереве такой файл
+    остаётся виден, но не как текст.
+    """
+    rel = norm_rel(rel)
+    if not rel or rel == ".." or rel.startswith("../"):
+        return ""
+    if rel.split("/", 1)[0].lower() in SERVICE_DIRS:
+        return "служебная папка движка и инструментов: в редакторе не открывается"
+    kind = RC.secret_kind(rel, strict=False)
+    if kind == "secret":
+        return "файл с доступами (токены, ключи): в редакторе не открывается и не пишется"
+    if kind:
+        return "служебное хранилище движка: в редакторе не открывается"
+    return ""
+
+
+def why_service_real(project: str, rel: str, full: str) -> str:
+    """`why_service` и по присланному пути, и по реальному: ссылка с обычным именем на `.env`
+    не обход. `full` — уже разрешённый `inside`."""
+    return why_service(rel) or why_service(real_rel(project, full))
 
 
 def why_readonly_real(project: str, rel: str, full: str, text: str = "") -> str:
@@ -364,13 +407,12 @@ def file_tree(project: str, limit: int = FILES_LIMIT) -> dict:
             if len(rows) >= limit:
                 cut = True
                 continue
-            ext = os.path.splitext(name)[1].lower()
             try:
                 size = os.path.getsize(os.path.join(cur, name))
             except OSError:
                 size = 0
             rows.append({"path": rel, "dir": rel_dir, "name": name, "size": size,
-                         "text": ext in TEXT_EXT and size <= MAX_EDIT,
+                         "text": is_text_file(name) and size <= MAX_EDIT and not why_service(rel),
                          "readonly": why_readonly(rel)})
     return {"root": root, "files": rows, "truncated": cut, "count": len(rows), "total": total,
             "recent": recent(project), "create_dirs": create_dirs(project)}
@@ -436,6 +478,9 @@ def file_create(project: str, rel: str, text: str = "") -> dict:
     full = inside(project, rel)
     if not full:
         return {"error": "путь вне проекта"}
+    svc = why_service_real(project, rel, full)
+    if svc:
+        return {"error": svc}
     if os.path.exists(full):
         return {"error": "такой файл уже есть — откройте его"}
     try:
@@ -455,12 +500,20 @@ def file_rename(project: str, rel: str, name: str) -> dict:
     full = inside(project, rel)
     if not full or not os.path.isfile(full):
         return {"error": "файл не найден в этом проекте"}
+    svc = why_service_real(project, rel, full)
+    if svc:
+        return {"error": svc}
     ro = why_readonly_real(project, rel, full, read_text(full, limit=4000))
     if ro:
         return {"error": f"файл только для чтения: {ro}"}
     if "." not in name:
         name += os.path.splitext(full)[1] or ".md"
     dst = os.path.join(os.path.dirname(full), name)
+    # Новое имя тоже не должно стать секретным: `заметка.md` -> `prod.key` вывело бы
+    # карточку из-под охраны чтения.
+    svc = why_service(real_rel(project, dst))
+    if svc:
+        return {"error": svc}
     if os.path.exists(dst):
         return {"error": "файл с таким именем уже есть"}
     try:
@@ -584,9 +637,12 @@ def file_read(project: str, rel: str) -> dict:
     full = inside(project, rel)
     if not full or not os.path.isfile(full):
         return {"error": "файл не найден в этом проекте"}
+    svc = why_service_real(project, rel, full)
+    if svc:
+        return {"error": svc, "service": True}
     size = os.path.getsize(full)
     ext = os.path.splitext(full)[1].lower()
-    if ext not in TEXT_EXT or size > MAX_EDIT:
+    if not is_text_file(full) or size > MAX_EDIT:
         return {"error": "не текстовый файл или слишком большой — откройте системным "
                          "приложением", "binary": True, "size": size}
     try:
@@ -665,6 +721,9 @@ def file_write(project: str, rel: str, text: str, expect: str = "") -> dict:
     full = inside(project, rel)
     if not full:
         return {"error": "путь вне проекта"}
+    svc = why_service_real(project, rel, full)
+    if svc:
+        return {"error": svc, "service": True}
     exists = os.path.isfile(full)
     ro = why_readonly_real(project, rel, full, read_text(full, limit=4000) if exists else "")
     if ro:
@@ -679,7 +738,7 @@ def file_write(project: str, rel: str, text: str, expect: str = "") -> dict:
             why_no_create(project, rel) or why_no_create(project, real_rel(project, full))
         if why:
             return {"error": why}
-    if os.path.splitext(full)[1].lower() not in TEXT_EXT:
+    if not is_text_file(full):
         return {"error": "не текстовый файл"}
     if len(text) > MAX_EDIT:        # дешёвый предохранитель; потолок по байтам — после кодирования
         return {"error": "файл больше потолка редактора"}

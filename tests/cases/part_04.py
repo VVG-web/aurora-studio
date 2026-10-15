@@ -2024,3 +2024,73 @@ def test_panel_file_api_checks_real_path_and_creation(tmp: Path):
         os.symlink(str(outside), str(root / ".gitignore"))
         assert ck.file_write(str(root), ".gitignore", "x\n").get("error"), "запись по ссылке наружу"
         assert not outside.exists(), "файл вне проекта создан"
+
+
+@test
+def test_panel_file_api_closes_secrets_and_service_files(tmp: Path):
+    """Файловое API панели не открывает и не пишет секреты и служебное — ни по имени, ни по
+    ссылке с обычным именем; Makefile и `.gitignore` по-прежнему текст, а карточка
+    `Credentials.md` в глоссарии открывается. В дереве секрет виден, но не как текст."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    root = tmp / "proj"
+    for d in (".git", "local", "Workspaces", "Glossary", ".claude", ".aurora/context"):
+        (root / d).mkdir(parents=True)
+    env_name = ".env." + "aurora.local"
+    secrets = {".git/config": "[core]\n", env_name: "TOKEN=x\n",
+               "local/mcp.json": "{}\n", "id_ed25519": "KEY\n", "x.pem": "PEM\n",
+               "Workspaces/prod.key": "K\n", ".claude/settings.json": "{}\n",
+               ".aurora/context/a.md": "вложение\n"}
+    for rel, body in secrets.items():
+        (root / rel).write_text(body, encoding="utf-8")
+    (root / "Makefile").write_text("all:\n", encoding="utf-8")
+    (root / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (root / "Glossary" / "Credentials.md").write_text("# Credentials\nтермин\n", encoding="utf-8")
+    (root / "Workspaces" / "заметка.md").write_text("# з\n", encoding="utf-8")
+
+    for rel, body in secrets.items():
+        r = ck.file_read(str(root), rel)
+        assert r.get("error") and "text" not in r, f"{rel}: прочитан"
+        w = ck.file_write(str(root), rel, "затёрто\n")
+        assert w.get("error") and not w.get("ok"), f"{rel}: записан"
+        assert (root / rel).read_text(encoding="utf-8") == body, f"{rel}: изменён"
+    # новый секретный файл не заводится ни записью, ни созданием, ни переименованием
+    assert ck.file_create(str(root), "Workspaces/new.pem", "x").get("error")
+    assert not (root / "Workspaces" / "new.pem").exists()
+    assert ck.file_rename(str(root), "Workspaces/заметка.md", "prod.key").get("error")
+    assert (root / "Workspaces" / "заметка.md").is_file()
+    assert ck.file_rename(str(root), "Workspaces/prod.key", "обычная.md").get("error")
+    assert (root / "Workspaces" / "prod.key").is_file()
+
+    # без расширения — только известные имена
+    r = ck.file_read(str(root), "Makefile")
+    assert r.get("text") == "all:\n", r
+    assert ck.file_write(str(root), "Makefile", "all:\n\techo\n").get("ok")
+    assert ck.file_read(str(root), ".gitignore").get("text") == "*.log\n"
+    assert ck.file_write(str(root), ".gitignore", "*.log\n*.tmp\n").get("ok")
+    (root / "Workspaces" / "blob").write_bytes(b"\x00\x01")
+    assert ck.file_read(str(root), "Workspaces/blob").get("binary"), "файл без расширения открыт текстом"
+    assert ck.file_write(str(root), "Workspaces/blob", "x").get("error")
+    assert ck.file_read(str(root), "Glossary/Credentials.md").get("text", "").startswith("# Credentials")
+
+    # дерево: секрет виден, но не текст; Makefile и карточка — текст
+    rows = {r["path"]: r for r in ck.file_tree(str(root))["files"]}
+    assert rows["Workspaces/prod.key"]["text"] is False
+    assert rows["local/mcp.json"]["text"] is False
+    assert rows["Makefile"]["text"] is True and rows["Glossary/Credentials.md"]["text"] is True
+
+    # ссылка с обычным именем на секрет
+    try:
+        os.symlink(str(root / env_name), str(root / "Workspaces" / "обычная.md"))
+        os.symlink(str(root / ".git" / "config"), str(root / "Workspaces" / "cfg.md"))
+    except (OSError, NotImplementedError):
+        return          # без прав на ссылки (Windows) проверять нечего
+    for rel in ("Workspaces/обычная.md", "Workspaces/cfg.md"):
+        assert ck.file_read(str(root), rel).get("error"), f"{rel}: ссылка прочитана"
+        assert ck.file_write(str(root), rel, "x\n").get("error"), f"{rel}: запись по ссылке"
+        assert ck.file_rename(str(root), rel, "y.md").get("error"), f"{rel}: переименование ссылки"
+    assert (root / env_name).read_text(encoding="utf-8") == "TOKEN=x\n"
+    assert (root / ".git" / "config").read_text(encoding="utf-8") == "[core]\n"

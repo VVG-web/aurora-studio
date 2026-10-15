@@ -118,6 +118,14 @@ there. The editor **does not edit** what Aurora's rules forbid editing, and expl
 - `kind: document` cards and the whole `AuroraKnowledgeDB/` except `Decisions/`, `Questions/` and `meta/` (a card is derived
   from sources, and a hand edit disappears at the next build).
 
+Secrets and service files are closed to the editor entirely — for reading, writing, creating and renaming (the boundary is
+the same as for the model's reads of the project: `request_context.secret_kind`): `.env*`, `*.pem`/`*.key`, `id_*` keys,
+`local/` (including `mcp.json`), `.git/`, and at the project root also `.aurora/`, `.claude/`, `.opencode/`. The check looks
+at both the path sent and the real path, so a link with an ordinary name pointing at `.env` is no way round. Such a file stays
+visible in the tree, but as "open with the system app", not as text. An ordinary `Credentials.md` card opens. Files without an
+extension open in the editor only by a known name (`Makefile`, `Dockerfile`, `README`, `LICENSE`, `.gitignore`,
+`.gitattributes`, and the like).
+
 A ban "you cannot edit" ends with an action: a card has the **"Correct"** button (the `kb:correct` command). If a file changed
 on disk while it was open (the agent appended, a sync brought something foreign), the divergence is not silently overwritten —
 both versions are shown with a choice.
