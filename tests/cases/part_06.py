@@ -85,7 +85,10 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
     # воротах; три места цикла спрашивают его, а не сравнивают код сами.
     assert "return rc >= 2 or rc < 0 or (rc == 1 and is_gate(args))" in rr, \
         "маршрут не считает прерывание поводом остановиться"
-    assert rr.count("halts(") >= 3, "не все места остановки зовут общее правило"
+    # def halts( + вызов в _halted + вызов в _wait_network; run и _cycle зовут _halted (поведение —
+    # в тестах про ворота: счёт строк не заменяет прогон).
+    assert rr.count("halts(") >= 3 and rr.count("self._halted(") >= 2, \
+        "не все места остановки зовут общее правило"
     assert 'res["rc"] >= 2:' not in rr, "остались проверки, пропускающие прерывание"
 
     # Отметка ставится вокруг запуска команды, а не где-то рядом.
@@ -990,6 +993,93 @@ def test_a_gate_step_stops_the_route_on_code_1(tmp: Path):
     res4 = rr.RouteRun(ck4, str(tmp), sc, True, log=logs4.append).run()
     assert res4["reason"] == "failed" and res4["failed"] == "kb:lint", res4
     assert "остановлен на воротах" not in "\n".join(logs4), "сбой выполнения назван воротами"
+
+
+def _gate_route(cycle: bool):
+    """Маршрут «ремонт → ворота → сборка»; с cycle ворота и сборка внутри блока «цикл:»."""
+    mk = lambda cmd, flags: {"manual": False, "cmd": cmd, "why": "", "flags": flags}
+    steps = [mk("kb:repair", ["--apply"])]
+    if cycle:
+        steps.append({"manual": False, "cycle": "цикл:", "why": ""})
+    steps += [mk("kb:lint", ["--gate"]), mk("agent:build", ["--apply"])]
+    if cycle:
+        steps.append({"manual": False, "cycle": "конец цикла", "why": ""})
+    return {"id": "gate", "title": "С воротами", "when": "", "group": "база", "steps": steps}
+
+
+@test
+def test_a_gate_inside_a_cycle_block_stops_the_route(tmp: Path):
+    """Ворота внутри блока «цикл:» останавливают маршрут на коде 1, как и вне его.
+
+    Правило остановки зовут три места; блок цикла — отдельное (`_cycle`), и откат его к
+    сравнению «код 2 и выше» не замечал ни один тест: ворота в цикле пропускали бы нарушения.
+    """
+    import importlib
+    sys.path.insert(0, str(KIT / "cockpit"))
+    rr = importlib.import_module("route_runner")
+    p18 = importlib.import_module("cases.part_18")
+    sc = _gate_route(cycle=True)
+    ck = p18.FakePanel(tmp, {"kb:repair": [(0, [])], "kb:lint": [(1, ["## нарушений: 3"])],
+                             "agent:build": [(0, ["Источников в плане: 5 → 2"])]}, [sc])
+    logs = []
+    res = rr.RouteRun(ck, str(tmp), sc, True, log=logs.append).run()
+    assert not res["ok"] and res["reason"] == "failed" and res["failed"] == "kb:lint", res
+    assert res["gated"] is True, "итог не знает, что остановили ворота: " + str(res)
+    assert [c[1] for c in ck.calls] == ["kb:repair", "kb:lint"], \
+        "цикл пошёл дальше непройденных ворот: " + str(ck.calls)
+    text = "\n".join(logs)
+    assert "остановлен на воротах «kb:lint»" in text, "ворота в цикле названы не так: " + text
+    assert "не отработал (код" not in text, "итог назвал ворота сбоем выполнения: " + text
+    # в CLI ворота — остановка (1), а не сбой выполнения (2)
+    assert (0 if res["ok"] else 2 if res["reason"] == "failed" and not res.get("gated") else 1) == 1
+    # код 2 на воротах в цикле — прежний сбой, не вердикт
+    ck2 = p18.FakePanel(tmp, {"kb:repair": [(0, [])], "kb:lint": [(2, ["ошибка"])],
+                              "agent:build": [(0, [])]}, [sc])
+    res2 = rr.RouteRun(ck2, str(tmp), sc, True, log=lambda m: None).run()
+    assert res2["failed"] == "kb:lint" and res2["gated"] is False, res2
+
+
+@test
+def test_a_gate_waits_for_the_network_before_its_verdict(tmp: Path):
+    """Ворота, упавшие по сети, ждут бэкенды; вердикт после ожидания — тот же, что без него.
+
+    Код 1 с признаками обрыва — не вердикт, а повод повторить (`_wait_network`). После повтора
+    ворота ответили кодом 1 без признаков сети — маршрут встаёт на воротах (а не идёт дальше и не
+    зовёт это сбоем выполнения); ответили 0 — маршрут пройден. Откат правила в `_wait_network`
+    к «код 2 и выше» пропускал бы непройденные ворота после любого сетевого сбоя.
+    """
+    import importlib
+    sys.path.insert(0, str(KIT / "cockpit"))
+    rr = importlib.import_module("route_runner")
+    p18 = importlib.import_module("cases.part_18")
+    saved = rr.OFFLINE_RETRY_S, rr.FLAKY_RETRY_S
+    rr.OFFLINE_RETRY_S = rr.FLAKY_RETRY_S = 0
+    try:
+        sc = _gate_route(cycle=False)
+        ck = p18.FakePanel(tmp, {"kb:repair": [(0, [])],
+                                 "kb:lint": [(1, ["Connection refused"]), (1, ["## нарушений: 3"])],
+                                 "agent:build": [(0, [])]}, [sc])
+        logs = []
+        res = rr.RouteRun(ck, str(tmp), sc, True, log=logs.append).run()
+        assert res["reason"] == "failed" and res["failed"] == "kb:lint" and res["gated"], res
+        assert [c[1] for c in ck.calls] == ["kb:repair", "kb:lint", "kb:lint"], \
+            "ворота не повторены после обрыва сети или маршрут пошёл дальше: " + str(ck.calls)
+        text = "\n".join(logs)
+        assert "остановлен на воротах «kb:lint»" in text, "остановка на воротах названа не так: " + text
+        assert not any("kb:lint" in k for k in ck.route_state["done"]), \
+            "ворота попали в пройденные: " + str(ck.route_state)
+        found = [x for x in res["found"] if x["cmd"] == "kb:lint"]
+        assert found and "## нарушений: 3" in "\n".join(found[0]["lines"]), \
+            "вывод ворот после ожидания сети потерян: " + str(res["found"])
+
+        ck2 = p18.FakePanel(tmp, {"kb:repair": [(0, [])],
+                                  "kb:lint": [(1, ["Connection refused"]), (0, [])],
+                                  "agent:build": [(0, [])]}, [sc])
+        res2 = rr.RouteRun(ck2, str(tmp), sc, True, log=lambda m: None).run()
+        assert res2["ok"] and [c[1] for c in ck2.calls] == \
+            ["kb:repair", "kb:lint", "kb:lint", "agent:build"], (res2, ck2.calls)
+    finally:
+        rr.OFFLINE_RETRY_S, rr.FLAKY_RETRY_S = saved
 
 
 @test

@@ -807,6 +807,7 @@ class RouteRun:
             ck.write_route_state(self.project, state)
         head = _head(self.project)
         res = {"ok": reason == "passed", "reason": reason, "failed": self.failed,
+               "gated": bool(self.failed and self.gate_failed == self.failed),
                "progressed": bool(head and head != self.head0),
                "note": self.refused, "steps": self.done, "lines": lines,
                "run_id": self.run_id,
@@ -863,7 +864,7 @@ def main(argv=None) -> int:
     """`aurora.py route <проект> <маршрут> [--apply]` — маршрут из терминала, без страницы панели.
 
     Без `--apply` — как кнопка «Посмотреть»: те же шаги без записи. Код выхода: 0 — пройден,
-    1 — остановлен (застой, человек, сеть), 2 — шаг не отработал.
+    1 — остановлен (застой, человек, сеть, ворота качества не пройдены), 2 — шаг не отработал.
     """
     import argparse
     import sys
@@ -887,7 +888,8 @@ def main(argv=None) -> int:
                     log=lambda text: print(text, flush=True))
     print(f"\n{'✅' if res['ok'] else '■'} {res['reason']}"
           + (f" · {res['failed']}" if res.get("failed") else ""), flush=True)
-    return 0 if res["ok"] else 2 if res["reason"] == "failed" else 1
+    # Ворота, не пропустившие маршрут, — вердикт, а не сбой выполнения: выход 1, как у остановки.
+    return 0 if res["ok"] else 2 if res["reason"] == "failed" and not res.get("gated") else 1
 
 
 if __name__ == "__main__":

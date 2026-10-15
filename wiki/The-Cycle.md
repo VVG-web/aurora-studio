@@ -22,7 +22,7 @@ flowchart LR
 ## Two buttons
 
 The routine work is two routes in the panel's **Routines** section. A route stops only when a step ends with code 2 or
-higher; code 1 ("worked and found things to fix") is the normal state of a living base.
+higher; code 1 ("worked and found things to fix") is the normal state of a living base. The exception is a gate step (the `--gate` flag): it stops the route on code 1 too (see `docs/commands.md`, "Exit codes and quality gates").
 
 | Button | Looks | Does |
 |---|---|---|

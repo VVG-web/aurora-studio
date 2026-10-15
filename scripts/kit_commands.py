@@ -386,7 +386,10 @@ def render_md(rows: list, version: str) -> str:
           "список пройденных, и «Продолжить маршрут» повторит ворота после правки. "
           "Итог прогона не считает такую остановку сбоем выполнения. Флаг `--gate` передаётся "
           "самому скрипту: скрипт без ворот-режима его не знает, поэтому `--gate` ставится "
-          "только у шагов, чьи скрипты его поддерживают.", ""]
+          "только у шагов, чьи скрипты его поддерживают. Вывод ворот не должен содержать "
+          "признаков обрыва сети («timeout», «ssl», «connection error» и т. п.): код `1` с ними "
+          "маршрут принимает за сетевой сбой и ждёт, а не за вердикт. В `aurora.py route` "
+          "остановка на воротах — выход `1` (остановлен), а не `2` (сбой выполнения).", ""]
     L += ["## Развёртывание (из клона kit'а, не из проекта)", "",
           "| Команда | Что делает |", "|---|---|",
           "| `python3 aurora.py new <target>` | развернуть Aurora в проект: скелет, движок, "
@@ -461,7 +464,11 @@ def render_en_md(rows: list, names: dict) -> str:
           "\"the route is stopped at the gate\"). The step is not recorded as passed, so "
           "\"Continue the route\" repeats the gate after the fix. The run summary does not count "
           "this stop as an execution failure. The `--gate` flag is passed to the script itself, "
-          "so it is set only on steps whose scripts support it."]
+          "so it is set only on steps whose scripts support it. A gate's output must not contain "
+          "network-failure signs (\"timeout\", \"ssl\", \"connection error\" and the like): "
+          "code `1` with them is taken by the route for a network failure and waited out, not for "
+          "a verdict. In `aurora.py route` a stop at a gate exits `1` (stopped), not `2` "
+          "(execution failure)."]
     return "\n".join(L) + "\n"
 
 

@@ -64,7 +64,7 @@ Two rules everything else grows from:
 
 Routine work does not need to be typed as commands: the panel runs a **route** — a set of steps in order. A route
 stops only if a step finishes with code 2 or higher; code 1 ("worked and found things to fix") is the normal state of
-a living base. Scenarios lie in `cockpit/scenarios.txt` as plain text: add a line — a step appears. The "Preview"
+a living base. The exception is a gate step (the `--gate` flag): it stops the route on code 1 too (see `docs/commands.md`, "Exit codes and quality gates"). Scenarios lie in `cockpit/scenarios.txt` as plain text: add a line — a step appears. The "Preview"
 button strips `--apply` from every step and shows the same route without writing.
 
 | Route | Tab | What for | Where it looks |
