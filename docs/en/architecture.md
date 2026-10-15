@@ -415,24 +415,27 @@ registries and counts **how many core files** (`aurora.py`, the root registries,
 `cockpit/` without `modules`, `skins`, `i18n`, `vendor`, and `reports/`) name them. This is a
 heuristic, not an exact count and not a forecast of "this many files will have to be touched": it
 counts the files where an extension's literal occurs; it can both miss points (those in the last
-paragraph) and match by accident (common words such as `continue`, `us`, `ac` also occur outside
-the extension's meaning). Still, the more the core quotes the literals of some extensions, the
-likelier the next one needs a line in the same files. Tests,
-documentation and string catalogues are not the core.
+paragraph) and match by accident (the short artifact-kind ids such as `us` and `ac` also occur
+outside the extension's meaning). For an assistant the literal is the path of its settings
+(`config`, `detect` in `scripts/harnesses.json`), not the bare id: the id coincides with format names
+and ordinary words. A known limitation: the count is of files in a union, not of references: a file
+with one mention and a file with twenty weigh the same, and two extensions in one file give one file.
+Still, the more the core quotes the literals of some extensions, the likelier the next one needs a
+line in the same files. Tests, documentation and string catalogues are not the core.
 
-| Kind (metric key) | Core files today | What replaces code |
-|---|---|---|
-| Connector (`connector`) | 27 | a `connectors/<id>/` folder: `connector.json`, `SKILL.md`; the run script in `scripts/`. See [connectors.md](connectors.md) |
-| Panel section (`panel_module`) | 2 | a `cockpit/modules/<id>/` folder: `module.json`, `view.html`, `view.js`, `i18n/`. See the [section README](../../cockpit/modules/README.md) |
-| Skin (`skin`) | reference only, not in the bar | one `cockpit/skins/<id>.css` file with a header. See the [skins README](../../cockpit/skins/README.md) |
-| Git provider (`git_provider`) | 2 | a `gitproviders/<id>/` folder: `provider.json` and `adapter.py` |
-| LLM provider (`llm_provider`) | 3 | an entry in `local/models.json` for an already known type; a new type is a line in `PROVIDER_TYPES` (`scripts/model_config.py`), that is, still code |
-| Artifact kind (`artifact_kind`) | 8 | an `artifacts:` block in the project's `aurora.config.yaml` and a template file; the built-in kinds are named in `KNOWN` (`scripts/make_kinds.py`) |
-| Assistant (`assistant`) | 5 | an entry in `scripts/harnesses.json`: where and in what format to write Aurora's MCP server |
-| Bot | not counted | a `bots/<name>.md` file in the project: the core does not know about it |
+| Kind (metric key) | What replaces code |
+|---|---|
+| Connector (`connector`) | a `connectors/<id>/` folder: `connector.json`, `SKILL.md`; the run script in `scripts/`. See [connectors.md](connectors.md) |
+| Panel section (`panel_module`) | a `cockpit/modules/<id>/` folder: `module.json`, `view.html`, `view.js`, `i18n/`. See the [section README](../../cockpit/modules/README.md) |
+| Skin (`skin`) | one `cockpit/skins/<id>.css` file with a header; reference only in the metric, not in the bar. See the [skins README](../../cockpit/skins/README.md) |
+| Git provider (`git_provider`) | a `gitproviders/<id>/` folder: `provider.json` and `adapter.py` |
+| LLM provider (`llm_provider`) | an entry in `local/models.json` for an already known type; a new type is a line in `PROVIDER_TYPES` (`scripts/model_config.py`), that is, still code |
+| Artifact kind (`artifact_kind`) | an `artifacts:` block in the project's `aurora.config.yaml` and a template file; the built-in kinds are named in `KNOWN` (`scripts/make_kinds.py`) |
+| Assistant (`assistant`) | an entry in `scripts/harnesses.json`: where and in what format to write Aurora's MCP server |
+| Bot | a `bots/<name>.md` file in the project: the core does not know about it; not counted by the metric |
 
-The numbers in the table are the bar from `tests/ext_footprint_baseline.json`; a `part_44.py` test
-checks them against the file, so the document and the bar cannot drift apart.
+The current numbers and the bar live in one place, `tests/ext_footprint_baseline.json`; the table
+has none, so there are not three copies to keep. To see them: `python3 tests/ext_footprint.py`.
 
 **How to run it and update the bar.**
 
@@ -443,9 +446,10 @@ python3 tests/ext_footprint.py --write   # write the current numbers as the new 
 ```
 
 **The bar does not grow.** The `ext_footprint_within_baseline` test fails if any point's number
-becomes larger than the recorded one (and smaller too, until the bar is updated): a new extension or a core edit must not add files that know
-extensions by name. If a number went down, run `--write`, commit the bar together with the change
-and fix the table above: the bar pins what has been achieved so it cannot be rolled back. If growth
+becomes larger than the recorded one: a new extension or a core edit must not add files that know
+extensions by name. A decrease does not fail the test; it prints a "update the bar" hint: run
+`--write` and commit the bar together with the change, so the bar pins what has been achieved and
+it cannot be rolled back. If growth
 is justified, that is a decision rather than a workaround, and it goes into the commit message.
 
 **What a manifest must pass.** The envelope is read by the loader (`load_manifest`) for connectors and panel sections; a skin

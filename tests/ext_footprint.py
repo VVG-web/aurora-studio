@@ -5,20 +5,22 @@
 выполнена не везде, и разрыв рос незаметно. Метрика считает кодом по текущему дереву: сколько
 файлов ядра (движок, панель, отчёты) знают существующие расширения каждой точки по имени.
 Это эвристика (возможны и пропуски, и случайные совпадения общих слов вроде continue), а не
-точный счёт: чем больше
+точный счёт; считаются файлы-объединения, а не число мест-ссылок: файл с одним упоминанием и файл
+с двадцатью весят одинаково, а два расширения в одном файле дают один файл. Чем больше
 ядро цитирует литералы одних расширений, тем вероятнее, что и следующему понадобится строка
 в тех же файлах.
 
 Как считается. Для каждой точки расширения (таблица PROBES) литералы берутся из самих
 манифестов и реестров дерева: connectors/*/connector.json, cockpit/modules/*/module.json,
 gitproviders/*/provider.json, scripts/make_kinds.py:KNOWN, scripts/model_config.py:PROVIDER_TYPES,
-scripts/harnesses.json, cockpit/skins/*.css. Файл ядра, где литерал расширения встречается,
+scripts/harnesses.json (пути config и detect, а не голый id: он совпадает с форматами и словами вроде
+continue), cockpit/skins/*.css. Файл ядра, где литерал расширения встречается,
 считается; собственные файлы расширения (его папка, его скрипт запуска, его реестровый файл)
 не считаются. «Ядро» — aurora.py, текстовые файлы корня, scripts/, cockpit/ (без vendor,
 modules, skins, каталогов строк), reports/. Тесты, документация и каталоги строк не ядро.
 
-Планка (tests/ext_footprint_baseline.json) — храповик: число не должно расти; снизилось —
-обновите планку, чтобы достигнутое не откатилось.
+Планка (tests/ext_footprint_baseline.json) — храповик: падает только рост числа; снизилось —
+проверка печатает подсказку «обнови планку» (`--write`), чтобы достигнутое не откатилось.
 
   python3 tests/ext_footprint.py           # таблица
   python3 tests/ext_footprint.py --json    # то же в JSON, с файлами
@@ -162,11 +164,26 @@ def _probe_artifact_kind(root: Path):
     return {str(k): [_quoted(str(k))] for k in known}, lambda ext, rel: False
 
 
+def _harness_path_literals(h: dict) -> list[str]:
+    """Регулярки по путям ассистента: config и detect без префикса-подстановки ({home}, {appdata},
+    {vscode}). Голый id (`continue`, `vscode`) совпадает с названиями форматов и обычными словами,
+    поэтому не берётся; путь без каталога и не начинающийся с точки (`mcp.json`, `Claude`) слишком
+    общ и тоже пропускается: у такого ассистента литералов нет, и ядро его «по имени» не знает."""
+    out: list[str] = []
+    for raw in [h.get("config")] + list(h.get("detect") or []):
+        if not isinstance(raw, str):
+            continue
+        tail = re.sub(r"^\{\w+\}[/\\]*", "", raw).replace("\\", "/")
+        if tail and ("/" in tail or tail.startswith(".")):
+            out.append(re.escape(tail).replace("/", r"[/\\]"))
+    return out
+
+
 def _probe_assistant(root: Path):
     d = _json(root / "scripts" / "harnesses.json")
     items = d.get("harnesses") if isinstance(d, dict) else None
-    ids = [h.get("id") for h in items if isinstance(h, dict)] if isinstance(items, list) else []
-    return ({str(i): [_quoted(str(i))] for i in ids if i},
+    hs = [h for h in items if isinstance(h, dict) and h.get("id")] if isinstance(items, list) else []
+    return ({str(h["id"]): _harness_path_literals(h) for h in hs},
             lambda ext, rel: rel == "scripts/harnesses.json")
 
 
@@ -228,11 +245,28 @@ def ratcheted() -> list[str]:
     return [n for n, (_p, r) in PROBES.items() if r]
 
 
+def ratchet_verdict(now: dict[str, int], base: dict[str, int]) -> tuple[list[str], list[str]]:
+    """(проблемы, подсказки). Проблема — точка без планки или с числом выше планки: тест падает
+    только на рост. Подсказка — число ниже планки: достигнутое надо закрепить `--write`, но красным
+    это не бывает (снижение — то, к чему стремится метрика, а не поломка)."""
+    problems: list[str] = []
+    hints: list[str] = []
+    for name in ratcheted():
+        if name not in base:
+            problems.append(f"{name}: нет в планке — python3 tests/ext_footprint.py --write")
+        elif now.get(name, 0) > base[name]:
+            problems.append(f"{name}: файлов ядра {now.get(name, 0)} > планки {base[name]}")
+        elif now.get(name, 0) < base[name]:
+            hints.append(f"{name}: файлов ядра {now.get(name, 0)} < планки {base[name]} — хорошо; "
+                         f"обнови планку: python3 tests/ext_footprint.py --write")
+    return problems, hints
+
+
 def write_baseline(root: Path | str = KIT) -> dict[str, int]:
     c = counts(root)
     data = {
         "about": "Планка метрики «файлов ядра на расширение» (tests/ext_footprint.py). "
-                 "Число не должно расти; уменьшили — обновите: python3 tests/ext_footprint.py --write",
+                 "Число не должно расти (рост — красный тест); уменьшили — обновите: python3 tests/ext_footprint.py --write",
         "counts": {n: c[n] for n in ratcheted()},
     }
     BASELINE.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -259,6 +293,8 @@ def main(argv: list[str]) -> int:
         mark = "" if n in base else "  (справка)"
         limit = f" / планка {base[n]}" if n in base else ""
         print(f"{n:<15} {len(files):>3}{limit}{mark}")
+    for h in ratchet_verdict({n: len(f) for n, f in fp.items()}, base)[1]:
+        print("подсказка:", h)
     return 0
 
 

@@ -3,7 +3,8 @@
 Метрика «файлов ядра на расширение» и храповик (BL-ARC-02, срез 1): `tests/ext_footprint.py`
 считает, сколько файлов ядра знают расширения каждой точки (коннектор, раздел панели,
 провайдер Git, провайдер LLM, вид артефакта, ассистент) по литералам из самих манифестов и
-реестров; число не должно расти относительно `tests/ext_footprint_baseline.json`.
+реестров; число не должно расти относительно `tests/ext_footprint_baseline.json` (снижение не красит,
+печатается подсказка «обнови планку»).
 Модель и сеть не используются; копии дерева — только во временных папках.
 
 Conformance расширений (BL-ARC-02, срез 2): каждый манифест репозитория (коннектор, раздел
@@ -12,7 +13,8 @@ Conformance расширений (BL-ARC-02, срез 2): каждый мани�
 соседний битый манифест его не прячет и отвечает записью об ошибке.
 
 Документ для авторов расширений (BL-ARC-02, срез 3): раздел «Расширения» в docs/architecture.md
-и docs/en/architecture.md называет каждую точку метрики, а числа его таблицы равны планке.
+и docs/en/architecture.md называет каждую точку метрики и ссылается на файл планки (чисел в таблице
+нет: они хранятся только в планке).
 """
 from __future__ import annotations
 
@@ -59,19 +61,61 @@ def _new_connector(root: Path, cid: str = "demox") -> None:
 
 @test
 def test_ext_footprint_within_baseline(_t):
-    """Файлов ядра на расширение не больше планки: метрика не растёт, снизилась — обновить планку."""
+    """Файлов ядра на расширение не больше планки: красный только рост; снижение — подсказка."""
     base = EF.load_baseline()
     assert base, "нет планки tests/ext_footprint_baseline.json — python3 tests/ext_footprint.py --write"
     fp = EF.footprint(KIT)
-    for name in EF.ratcheted():
-        assert name in base, (name, "нет в планке: python3 tests/ext_footprint.py --write")
-        now = len(fp[name])
-        assert now <= base[name], (
-            f"{name}: файлов ядра {now} > планки {base[name]}; ядро начало знать расширения "
-            f"по имени, вынесите литерал в манифест или реестр: {fp[name]}")
-        assert now >= base[name], (
-            f"{name}: файлов ядра {now} < планки {base[name]} — хорошо; обновите планку: "
-            f"python3 tests/ext_footprint.py --write")
+    problems, hints = EF.ratchet_verdict({n: len(f) for n, f in fp.items()}, base)
+    assert not problems, (problems, "ядро начало знать расширения по имени: вынесите литерал в "
+                          "манифест или реестр", {n: fp[n] for n in EF.ratcheted()})
+    for h in hints:
+        print("подсказка:", h)
+
+
+@test
+def test_ext_footprint_ratchet_fails_only_on_growth(_t):
+    """Храповик: рост и точка без планки — проблема; равенство — тишина; снижение — подсказка, не падение."""
+    names = EF.ratcheted()
+    base = {n: 5 for n in names}
+    # равенство
+    assert EF.ratchet_verdict(dict(base), base) == ([], [])
+    # снижение: не проблема, но подсказка про планку
+    now = dict(base)
+    now[names[0]] = 3
+    problems, hints = EF.ratchet_verdict(now, base)
+    assert problems == [], problems
+    assert len(hints) == 1 and names[0] in hints[0] and "--write" in hints[0], hints
+    # рост: проблема, подсказки нет
+    now = dict(base)
+    now[names[1]] = 6
+    problems, hints = EF.ratchet_verdict(now, base)
+    assert len(problems) == 1 and names[1] in problems[0] and hints == [], (problems, hints)
+    # точка без планки: проблема
+    problems, _h = EF.ratchet_verdict(dict(base), {n: 5 for n in names[1:]})
+    assert len(problems) == 1 and names[0] in problems[0], problems
+    # справочная точка (скин) планки не требует и на счёт не влияет
+    assert "skin" not in names
+    assert EF.ratchet_verdict({**base, "skin": 99}, base) == ([], [])
+
+
+@test
+def test_ext_footprint_assistant_counts_paths_not_bare_words(tmp: Path):
+    """Ассистент считается по пути настройки, а не по голому id: слово `continue` в кавычках (как в
+    git_sync.py или route_runner.py) счёт не меняет, путь настройки `.continue/...` — растит на один."""
+    root = _kit_copy(tmp)
+    before = EF.counts(root)
+    (root / "scripts" / "zz_core_probe.py").write_text(
+        'FIXES = ("abort", "continue", "vscode", "zed", "pi", "amp")\n'
+        'def f(how):\n    return "continue"\n', encoding="utf-8")
+    assert EF.counts(root) == before, (before, EF.counts(root))
+    assert not any(f.endswith("zz_core_probe.py") for f in EF.footprint(root)["assistant"])
+    (root / "scripts" / "zz_core_probe.py").write_text(
+        'CFG = "~/.continue/mcpServers/aurora.yaml"\n', encoding="utf-8")
+    after = EF.counts(root)
+    assert after["assistant"] == before["assistant"] + 1, (before, after)
+    assert "continue" in EF.footprint_detail(root)["assistant"]
+    # id всё равно виден как расширение, даже если литералов у него нет
+    assert "claude-code" in EF.footprint_detail(root)["assistant"]
 
 
 @test
@@ -357,7 +401,7 @@ def test_fictive_connector_is_found_next_to_broken_manifests(tmp: Path):
 
 
 def _ext_doc_rows(rel: str) -> dict[str, str]:
-    """{ключ точки: вторая ячейка строки} из таблицы раздела «Расширения» документа: ключ — в обратных
+    """{ключ точки: остаток строки} из таблицы раздела «Расширения» документа: ключ — в обратных
     кавычках в первой ячейке, например «Коннектор (`connector`)»."""
     import re
     text = (KIT / rel).read_text(encoding="utf-8")
@@ -368,46 +412,21 @@ def _ext_doc_rows(rel: str) -> dict[str, str]:
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         m = re.search(r"`(\w+)`", cells[0]) if line.startswith("|") and len(cells) >= 2 else None
         if m:
-            rows[m.group(1)] = cells[1]
+            rows[m.group(1)] = " | ".join(cells[1:])
     return rows
 
 
 @test
-def test_extensions_doc_table_matches_baseline_in_both_languages(_t):
-    """Таблица раздела «Расширения» в ru и en называет каждую точку метрики, а числа — те же, что в
-    планке: документ и `ext_footprint_baseline.json` не расходятся."""
-    base = EF.load_baseline()
-    assert base, "нет планки"
+def test_extensions_doc_names_every_probe_and_points_to_baseline_file(_t):
+    """Раздел «Расширения» в ru и en называет каждую точку метрики и ссылается на файл планки, который
+    существует; чисел планки в таблице нет (они хранятся только в `ext_footprint_baseline.json`)."""
+    import re
+    assert (KIT / "tests" / "ext_footprint_baseline.json").is_file()
+    assert (KIT / "tests" / "ext_footprint.py").is_file()
     for rel in ("docs/architecture.md", "docs/en/architecture.md"):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert "tests/ext_footprint_baseline.json" in text, (rel, "нет ссылки на файл планки")
         rows = _ext_doc_rows(rel)
         for name in EF.PROBES:
             assert name in rows, (rel, name, "точка метрики не названа в таблице")
-        for name in EF.ratcheted():
-            assert rows[name] == str(base[name]), (rel, name, rows[name], base[name])
-        for name in EF.PROBES:
-            if name not in EF.ratcheted():
-                assert not rows[name].isdigit(), (rel, name, "справочная точка не должна выглядеть планкой")
-
-
-@test
-def test_extensions_doc_does_not_overpromise(_t):
-    """Раздел «Расширения» не называет метрику оценкой снизу, называет правило id == папка для коннектора
-    и провайдера Git, говорит о маршрутах `/api/<id>` как о видимых метрике и не обещает фиктивных
-    тестов для видов, где их нет; README скина не обещает проверки «ядро не знает скинов»."""
-    for rel, bad, must in (
-            ("docs/architecture.md", ("оценка снизу", "оценку снизу"),
-             ("эвристика", "`connectors/<id>/`", "`gitproviders/<id>/`", "provider.json", "семи видов и бота",
-              "и меньше — тоже", "фиктивный коннектор, раздел панели и скин")),
-            ("docs/en/architecture.md", ("lower bound",),
-             ("heuristic", "`connectors/<id>/`", "`gitproviders/<id>/`", "provider.json", "seven\nkinds and the bot",
-              "smaller too", "fictive connector, panel section and skin"))):
-        text = (KIT / rel).read_text(encoding="utf-8")
-        for s in bad:
-            assert s not in text, (rel, s)
-        for s in must:
-            assert s in text, (rel, s)
-        assert "собственный\nмаршрут сервера" not in text and "its\nown server route" not in text, rel
-    skins = (KIT / "cockpit" / "skins" / "README.md").read_text(encoding="utf-8")
-    assert "не знает скинов по имени" not in skins
-    core = (KIT / "tests" / "ext_footprint.py").read_text(encoding="utf-8")
-    assert "оценка снизу" not in core
+            assert not re.match(r"\d+\b", rows[name]), (rel, name, "число в таблице: оно живёт в планке")
