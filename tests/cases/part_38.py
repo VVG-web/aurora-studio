@@ -1193,6 +1193,19 @@ def _resolve(host, _port):
 
 
 @test
+def test_web_connector_refusal_survives_a_module_reload(tmp: Path):
+    """Прогон перезагружает `aurora_common` (importlib.reload): класс отказа политики после этого новый. Коннектор ловит
+    отказ через модуль, а не по копии имени, поэтому он остаётся отказом («запрещено границами»), а не сбоем с тремя
+    повторами («попыток: 3»), который в полном прогоне красил четыре соседние проверки."""
+    _path()
+    AC = importlib.import_module("aurora_common")
+    WE = importlib.import_module("web_export")
+    importlib.reload(AC)
+    got = WE._get("file:///etc/hosts", "", 5)
+    assert got[2].startswith("запрещено границами коннектора") and "попыток" not in got[2], got
+
+
+@test
 def test_web_connector_takes_only_http_and_global_addresses(tmp: Path):
     """BL-SEC-17: file://, ftp:// и data: — отказ; имя, указывающее на частный, петлевой, link-local,
     CGNAT-адрес, `::1`, `::ffff:10.x` или хотя бы одним адресом во внутреннюю сеть, — отказ; публичное

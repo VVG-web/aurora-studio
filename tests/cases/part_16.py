@@ -216,12 +216,14 @@ def test_engine_words_shown_in_the_panel_have_an_english_label(tmp: Path):
     lint = ast.parse((SCRIPTS / "kb_lint.py").read_text(encoding="utf-8"))
     titles = set()
     for node in ast.walk(lint):
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "kinds" for t in node.targets) \
+        # таблица видов — модульная `KINDS` (подстрока, код вида, название, лечение); прежняя `kinds` из трёх полей тоже читается
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") in ("KINDS", "kinds") for t in node.targets) \
                 and isinstance(node.value, ast.List):
             for tup in node.value.elts:
-                if isinstance(tup, ast.Tuple) and len(tup.elts) == 3 \
-                        and isinstance(tup.elts[1], ast.Constant):
-                    titles.add(tup.elts[1].value)
+                if isinstance(tup, ast.Tuple) and len(tup.elts) in (3, 4):
+                    title = tup.elts[len(tup.elts) - 2]
+                    if isinstance(title, ast.Constant):
+                        titles.add(title.value)
     assert len(titles) >= 10, f"виды ошибок линтера не найдены: {titles}"
     stats = (SCRIPTS / "aurora_stats.py").read_text(encoding="utf-8")
     words = set(titles) | {"прочее"} | set(re.findall(r'trust_why\["([^"]+)"\]', stats)) \

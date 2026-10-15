@@ -39,8 +39,9 @@ import urllib.parse
 import urllib.error
 import urllib.request
 
+import aurora_common as _common
 from aurora_common import body as body_of
-from aurora_common import (EgressRefused, allow_cleartext, cleartext_secret_problem, config_hosts,
+from aurora_common import (allow_cleartext, cleartext_secret_problem, config_hosts,
                            file_head, guarded_urlopen, head_scalar, head_trust, head_value,
                            is_loopback_host, same_origin, url_origin, utc_today)
 from sources_core import (BoardMirror, block, cited_by_cards, config_text, read_env,
@@ -273,7 +274,7 @@ def _get(url: str, token: str, timeout: int, headers: dict | None = None,
             if e.code == 304 and headers:
                 return b"", "", NOT_MODIFIED        # не изменилась: это ответ, а не сбой
             return b"", "", f"HTTP {e.code}"       # ответ сервера, повтор не поможет
-        except EgressRefused as e:
+        except _common.EgressRefused as e:     # через модуль, а не копию имени: перезагрузка модуля не должна менять класс
             return b"", "", f"запрещено границами коннектора: {e}"   # политика, повтор не поможет
         except _BodyRefused as e:
             return b"", "", str(e)                  # размер и срок: повтор не поможет
