@@ -167,6 +167,7 @@ python3 scripts/kit_i18n.py --check         # completeness of the panel's transl
 The corpus is rebuilt by `python3 tests/make_corpus.py` and lies in git. Found a new pathology in the field — add it to the
 corpus, otherwise it will come back. A bug found by hand is closed by a check that fails **without** your fix; the cause is
 established first, not guessed from the symptom.
+A test without `@test` and an `assert` with `or True` / a degenerate `or` fail the invariant; in parts ≥14 write new `assert`s with a message.
 
 CI (`.github/workflows/test.yml`; do not rename the `engine-tests` workflow: `release.yml` depends on it):
 `tests` runs the release check, `--smoke`, the full suite and ruff on Python 3.14; `floor` compiles and runs the full suite

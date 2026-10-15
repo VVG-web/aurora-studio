@@ -5122,3 +5122,57 @@ def test_phase_two_docs_match_the_code(_t):
     for rel in ("docs/knowledge-rules-tldr.md", "docs/en/knowledge-rules-tldr.md", "skills/aurora-vault/references/maintenance.md"):
         assert "`cards:`" in (KIT / rel).read_text(encoding="utf-8"), f"{rel}: про блок cards: ни слова"
     assert "`meta/card_types.md`" in (KIT / "templates/meta/READING.md").read_text(encoding="utf-8")
+
+
+@test
+def test_tests_that_check_nothing_fail_the_invariant(tmp: Path):
+    """Инвариант (BL-LCY-22): тест без @test и тавтологический assert не проходят; реальное дерево чисто.
+
+    Сканер — `harness.vacuous_test_findings` (AST): модульная `test_*` без декоратора в part_*.py,
+    `assert True/1`, `… or True/1/"строка"`, непустой кортеж в assert, вырожденное `X in S or Y not in S`;
+    плюс каждый part_NN.py должен стоять в списке part_* раннера, иначе его тесты не выполняются вовсе.
+    """
+    import harness as H
+    t0 = time.process_time()
+    real = H.scan_tests_tree()
+    spent = time.process_time() - t0
+    assert not real, "тесты, которые ничего не проверяют:\n" + "\n".join(real)
+    # Цель — меньше 2 с (инвариант бежит в каждом --smoke); запас на медленную машину и CI — до 5 с.
+    assert spent < 5, f"сканер тестов слишком медленный: {spent:.1f} с — кэшируйте разбор"
+
+    def kinds(src: str, name: str = "part_99.py") -> list[str]:
+        return H.vacuous_test_findings(src, name)
+
+    bad = {
+        "необъявленный тест": ("def test_forgotten(_t):\n    assert 1 == 1\n", "без @test"),
+        "or True": ("@test\ndef test_a(_t):\n    assert len(x) > 3 or True\n", "or <истина>"),
+        "or строка": ("@test\ndef test_a(_t):\n    assert x == 1 or 'ok'\n", "or <истина>"),
+        "assert True": ("@test\ndef test_a(_t):\n    assert True\n", "константе"),
+        "assert 1": ("@test\ndef test_a(_t):\n    assert 1, 'msg'\n", "константе"),
+        "кортеж": ("@test\ndef test_a(_t):\n    assert (x == 1, 'msg')\n", "кортеж"),
+        "вырожденный in/not in": ("@test\ndef test_a(_t):\n    assert 'a' in out or 'b' not in out\n", "вырожденное"),
+        "вложенный or": ("@test\ndef test_a(_t):\n    assert a == 1 or b == 2 or True\n", "or <истина>"),
+    }
+    for label, (src, word) in bad.items():
+        got = kinds(src)
+        assert got and word in got[0] and ":" in got[0], f"{label}: нарушение не найдено ({got})"
+    assert "part_99.py:1:" in kinds(bad["необъявленный тест"][0])[0], "в перечне нет «файл:строка»"
+    good = (
+        "@test\ndef test_a(_t):\n    hooks = []\n    reg = lambda h: hooks.append(h) or True\n    assert reg(1)\n",
+        "@test\ndef test_a(_t):\n    assert 'a' in out or 'b' in out\n    assert x in s or y not in t\n",
+        "@H.test\ndef test_b(_t):\n    assert x, 'почему'\n    assert x or y, 'msg'\n",
+        "def helper(_t):\n    return 1 or True\n",
+    )
+    for src in good:
+        assert not kinds(src), f"законная конструкция помечена: {kinds(src)}"
+    # Необъявленный тест ищем только в part_*.py: в прочих файлах test_* — обычные вспомогательные функции.
+    assert not kinds("def test_x():\n    pass\n", "helper.py"), "в не-part файле test_* без @test не нарушение"
+    # Часть, не подключённая в раннере.
+    cases = tmp / "cases"
+    cases.mkdir()
+    for n in ("part_01", "part_02"):
+        (cases / f"{n}.py").write_text("", encoding="utf-8")
+    runner = "for _part in ['part_01']:\n    pass\n"
+    miss = H.unconnected_parts(cases, runner)
+    assert len(miss) == 1 and miss[0].startswith("part_02.py"), miss
+    assert not H.unconnected_parts(cases, "for _part in ['part_01', 'part_02']:\n    pass\n")

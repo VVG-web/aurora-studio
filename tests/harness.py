@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -296,7 +297,89 @@ INVARIANTS = frozenset({
     "section is the type written as a folder",
     "adapter answers every caller in parallel",
     "console says which step uses the threads",
+    "tests that check nothing fail the invariant",
 })
+
+
+def _truthy_const(node: ast.AST) -> bool:
+    """Константа, которая всегда истинна: True, ненулевое число, непустая строка."""
+    return (isinstance(node, ast.Constant) and isinstance(node.value, (bool, int, float, str, bytes))
+            and bool(node.value))
+
+
+def _or_operands(node: ast.AST):
+    """Операнды цепочки `a or b or c` (вложенные `or` разворачиваются; лямбды и вызовы не трогаем)."""
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+        for v in node.values:
+            yield from _or_operands(v)
+    else:
+        yield node
+
+
+def _in_pair(node: ast.AST):
+    """(признак «not in», дамп правого операнда) для `X in S` / `X not in S`, иначе None."""
+    if (isinstance(node, ast.Compare) and len(node.ops) == 1
+            and isinstance(node.ops[0], (ast.In, ast.NotIn))):
+        return isinstance(node.ops[0], ast.NotIn), ast.dump(node.comparators[0])
+    return None
+
+
+def vacuous_test_findings(source: str, path: str = "<src>") -> list[str]:
+    """Тесты, которые ничего не проверяют: список «файл:строка: причина» (пусто — всё честно).
+
+    Ловится по AST (не grep): (а) модульная `def test_*` в tests/cases/part_*.py без декоратора `test` —
+    раннер её не видит; (б) `assert` с константно-истинным операндом: `assert True`, `assert 1`,
+    `… or True/1/"строка"`, а также `assert (условие, "текст")` — непустой кортеж всегда истинен;
+    (в) вырожденное `assert X in S or Y not in S` — проходит, когда вывода нет вовсе.
+    Лямбды и `x.append(h) or True` вне assert не трогаются.
+    """
+    tree = ast.parse(source)
+    found: list[str] = []
+    if Path(path).name.startswith("part_"):
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+                if not any((isinstance(d, ast.Name) and d.id == "test")
+                           or (isinstance(d, ast.Attribute) and d.attr == "test") for d in node.decorator_list):
+                    found.append(f"{path}:{node.lineno}: {node.name} без @test — раннер её не запускает")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assert):
+            continue
+        t = node.test
+        if isinstance(t, ast.Tuple) and t.elts:
+            found.append(f"{path}:{node.lineno}: assert на непустом кортеже всегда проходит")
+            continue
+        ops = list(_or_operands(t))
+        if _truthy_const(t):
+            found.append(f"{path}:{node.lineno}: assert на константе всегда проходит")
+        elif len(ops) > 1 and any(_truthy_const(o) for o in ops):
+            found.append(f"{path}:{node.lineno}: assert с `or <истина>` всегда проходит")
+        elif len(ops) > 1:
+            pairs = [p for p in map(_in_pair, ops) if p]
+            if any(neg for neg, _ in pairs) and any(not neg for neg, _ in pairs) \
+                    and {d for n, d in pairs if n} & {d for n, d in pairs if not n}:
+                found.append(f"{path}:{node.lineno}: вырожденное `X in S or Y not in S` проходит, когда вывода нет")
+    return found
+
+
+def unconnected_parts(cases_dir: Path, run_tests_source: str) -> list[str]:
+    """Файлы tests/cases/part_NN.py, которых нет в списке part_* раннера: их тесты не выполняются вовсе."""
+    listed = {n.value for n in ast.walk(ast.parse(run_tests_source))
+              if isinstance(n, ast.Constant) and isinstance(n.value, str) and re.fullmatch(r"part_\d+", n.value)}
+    return [f"{p.name}: не подключён в списке part_* в tests/run_tests.py"
+            for p in sorted(cases_dir.glob("part_*.py")) if p.stem not in listed]
+
+
+def scan_tests_tree(tests_dir: Path | None = None) -> list[str]:
+    """Прогон сканера по реальным tests/cases/part_*.py (и tests/*.py — для assert) плюс проверка подключения частей."""
+    tests_dir = tests_dir or Path(__file__).resolve().parent
+    found: list[str] = []
+    files = sorted((tests_dir / "cases").glob("part_*.py")) + sorted(tests_dir.glob("*.py"))
+    for f in files:
+        found += vacuous_test_findings(f.read_text(encoding="utf-8"), f"tests/{f.relative_to(tests_dir).as_posix()}")
+    runner = tests_dir / "run_tests.py"
+    if runner.is_file():
+        found += unconnected_parts(tests_dir / "cases", runner.read_text(encoding="utf-8"))
+    return found
 
 
 def select_tests(only: str = "", smoke: bool = False, no_invariants: bool = False, shard=None):
