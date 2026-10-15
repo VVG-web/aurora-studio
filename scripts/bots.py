@@ -63,7 +63,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import UNTRUSTED_RULE, is_folder_guide, kit_root, lock_release, lock_take  # noqa: E402 — кит; описание папки — не бот; граница данных
+from aurora_common import UNTRUSTED_RULE, is_folder_guide, kit_root, lock_release, lock_take, read_verdict  # noqa: E402 — кит; описание папки — не бот; граница данных
 
 BOTS_DIR = "bots"
 STATE_DIR = (".aurora", "state", "bots")
@@ -469,8 +469,8 @@ def validate(project, meta: dict, body: str | None = None, mcp: list | None = No
         full = RC.inside(str(project), rel)
         if not full or not os.path.exists(full):
             probs.append({"field": "attachments", "code": "attachment_missing", "detail": rel})
-        elif RC.is_secret(os.path.relpath(full, root)) or \
-                any(p in RC.NEVER_DIRS for p in Path(os.path.relpath(full, root)).parts):
+        elif read_verdict(os.path.join(root, rel.strip().lstrip("/\\")), root, strict=True,
+                          every_file=True):
             probs.append({"field": "attachments", "code": "attachment_secret", "detail": rel})
     return probs
 

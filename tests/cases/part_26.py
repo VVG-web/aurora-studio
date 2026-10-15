@@ -251,6 +251,65 @@ def test_jira_publish_goes_step_by_step_and_needs_permission(tmp: Path):
 
 
 @test
+def test_publish_and_bot_attachments_share_the_read_boundary(tmp: Path):
+    """Вложение в Jira и вложение бота идут через одну границу `read_verdict` (BL-SEC-20, срез 4):
+    секреты (файл настроек проекта, `local/mcp.json`, `.pem`, `id_ed25519`, в любом регистре),
+    ссылка наружу и ссылка с обычным именем на секрет отказываются, обычный файл из Artifacts и
+    отчёт ревью из `.aurora/state/reviews` проходят; у бота секрет — `attachment_secret`."""
+    root = make_project(tmp)
+    _path()
+    import atlassian_ops as A
+    import bots as B
+    import aurora_common as C
+    assert "read_verdict" in A.publish_file.__code__.co_names, "publish_file мимо общей границы"
+    (tmp / "outside.txt").write_text("вне проекта", encoding="utf-8")
+    secrets = {".env." + "aurora.local": "TOKEN=1", "local/mcp.json": "{}",
+               "Artifacts/x.pem": "k", "Artifacts/id_ed25519": "k", "Artifacts/ID_RSA": "k",
+               "Artifacts/.ENV": "t", "Artifacts/local/n.md": "служебная"}
+    for rel, text in secrets.items():
+        f = root / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text, encoding="utf-8")
+    (root / "Artifacts" / "report.md").write_text("отчёт", encoding="utf-8")
+    saved = root / ".aurora" / "state" / "reviews"
+    saved.mkdir(parents=True, exist_ok=True)
+    (saved / "r.md").write_text("ревью", encoding="utf-8")
+    links = {"Artifacts/plain.md": root / "local" / "mcp.json",       # обычное имя, цель — секрет
+             "Artifacts/out.md": tmp / "outside.txt",                 # цель вне проекта
+             "Artifacts/.env.md": root / "Artifacts" / "report.md"}   # секретное имя, цель — отчёт
+    made = {}
+    for rel, target in links.items():
+        try:
+            os.symlink(target, root / rel)
+            made[rel] = target
+        except OSError:
+            pass                                                      # ссылки недоступны — остальное проверим
+    for rel in list(secrets) + list(made):
+        for given in (rel, str(root / rel)):
+            try:
+                A.publish_file(given, str(root))
+            except A.OpError:
+                continue
+            raise AssertionError(f"«{given}» ушёл во вложение Jira")
+    data, name = A.publish_file("Artifacts/report.md", str(root))
+    assert data == "отчёт".encode("utf-8") and name == "report.md"
+    assert A.publish_file(".aurora/state/reviews/r.md", str(root))[1] == "r.md"
+    assert A.publish_file(str(root / "Artifacts" / "report.md"), str(root))[1] == "report.md"
+    # вложения бота: секрет — attachment_secret, ссылка наружу — файла как бы нет, обычный проходит
+    def probs(rel):
+        return B.validate(root, {"attachments": [rel]}, "x", mcp=[], skills=[])
+    for rel in list(secrets) + [r for r in made if r != "Artifacts/out.md"]:
+        got = probs(rel)
+        assert [x["code"] for x in got] == ["attachment_secret"], (rel, got)
+    if "Artifacts/out.md" in made:
+        assert [x["code"] for x in probs("Artifacts/out.md")] == ["attachment_missing"]
+    assert probs("Artifacts/report.md") == [], "обычное вложение бота отклонено"
+    # граница одна: вердикт общей функции совпадает с решением обоих потребителей
+    for rel in secrets:
+        assert C.read_verdict(str(root / rel), str(root), strict=True, every_file=True), rel
+
+
+@test
 def test_jira_publish_path_refuses_secrets_and_escapes_cql(tmp: Path):
     """Вложение по path: секреты, файлы вне проекта, ссылки наружу, скрытые файлы, папки не из
     списка и слишком большие файлы отклоняются понятной ошибкой, обычный отчёт проходит; значения

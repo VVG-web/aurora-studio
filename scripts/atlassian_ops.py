@@ -200,32 +200,37 @@ def cql_quote(value: str) -> str:
 
 def publish_file(path: str, root: str = "") -> tuple:
     """(байты, имя) файла для вложения. Файл — только внутри проекта (ссылки наружу не
-    считаются), не секрет (`request_context.is_secret`), из разрешённых папок и не больше
-    предела: модель, получившая инъекцию со страницы, не должна выгрузить токены в задачу."""
-    from request_context import SECRET_NAME, inside, is_secret
+    считаются), не секрет, из разрешённых папок и не больше предела: модель, получившая
+    инъекцию со страницы, не должна выгрузить токены в задачу. Граница — общая
+    `aurora_common.read_verdict` (строгая мерка, проверка и ссылки, и цели)."""
+    from aurora_common import read_verdict, real_rel
     base = os.path.realpath(root or os.getcwd())
     raw = path.strip()
-    # Абсолютный путь (его отдаёт save_output) `inside` принял бы за относительный: обрезал бы
-    # ведущий «/». Поэтому абсолютный разбираем здесь и проверяем «внутри корня» сами.
+    # Путь берём как записан (по имени ссылки видно секрет под обычным именем цели), но
+    # каталоги до него разрешаем: на macOS `/var` — ссылка на `/private/var`.
     if os.path.isabs(raw):
-        full = os.path.realpath(raw)
-        if not (full == base or full.startswith(base + os.sep)):
-            full = ""
+        cand = os.path.join(os.path.realpath(os.path.dirname(raw)), os.path.basename(raw))
     else:
-        full = inside(base, raw)
-    if not full:
+        cand = os.path.join(base, raw.lstrip("/\\"))
+    why = read_verdict(cand, base, strict=True, every_file=True)
+    if why == "outside":
         raise OpError(f"«{path}» вне проекта — публиковать можно только файлы проекта")
-    rel = os.path.relpath(full, base).replace(os.sep, "/")
+    full = os.path.realpath(cand)
+    rel = real_rel(base, full) or "."
     top = next((r for r in PUBLISH_ROOTS if rel.startswith(r + "/")), "")
-    # Имя по ссылке тоже проверяем: ссылка с обычным именем на секрет не должна пройти.
-    link_name = os.path.basename(path.replace("\\", "/").rstrip("/"))
-    if SECRET_NAME.match(link_name) or SECRET_NAME.match(os.path.basename(rel)) \
-            or (not top and is_secret(rel)):
+    if why == "secret" or (why and not top):
         raise OpError(f"«{path}» — секреты и служебные файлы в Jira не публикуются")
     if not top:
         raise OpError(f"«{path}» не из папок для публикации: {', '.join(PUBLISH_ROOTS)}")
     inner = rel[len(top) + 1:].split("/")
-    if any(part.startswith(".") for part in inner) or is_secret("/".join(inner)):
+    if why:
+        # «служебное» у самой папки публикации законно (`.aurora/state/reviews`): внутри неё
+        # граница проверяется заново, от этой папки
+        top_dir = os.path.join(base, top)
+        probe = cand if os.path.abspath(cand).startswith(top_dir + os.sep) else full
+        if read_verdict(probe, top_dir, strict=True, every_file=True):
+            raise OpError(f"«{path}» — скрытые и служебные файлы в Jira не публикуются")
+    if any(part.startswith(".") for part in inner):
         raise OpError(f"«{path}» — скрытые и служебные файлы в Jira не публикуются")
     if not os.path.isfile(full):
         raise OpError(f"файла «{path}» в проекте нет")

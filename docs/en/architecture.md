@@ -275,7 +275,9 @@ project is checked like the link itself. Readers skip such a file as if it were 
 (`kb:lint`) names a card that is a link, so it is clear why the engine does not see it. A link inside the
 project works as usual. There is one check — `aurora_common.read_verdict` (`link_escapes` is its wrapper for
 links): the model's read tools (`read_file`, `list_dir` through `resolve_project_path`) and the `@` mentions in
-a task (`request_context.read_context`) use it too. They differ in two parameters only: whether to check every
+a task (`request_context.read_context`), Jira attachments (`atlassian_ops.publish_file`, strict measure; on top of it
+only the list of publishing folders, the size limit and the ban on hidden parts) and bot attachments
+(`bots.validate`, code `attachment_secret`) use it too. They differ in two parameters only: whether to check every
 file rather than just links, and the strictness of names (`request_context.secret_kind`). The soft measure is
 for reading the project: a card `Credentials.md` and code in `src/state/` are readable, while `local/`, `runs/`,
 `state/` at the project root and under `.aurora/` (and the former `.opencode/`) are service, as are `.git`, `.ssh`,
