@@ -767,6 +767,7 @@
     "записать отчёты в Artifacts/reviews/": "write the reports into Artifacts/reviews/",
     "версия бандла (по умолчанию из спеки)": "the bundle version (default from the spec)",
     "записать бандл (иначе только состав и риски)": "write the bundle (otherwise only the make-up and risks)",
+    "режим ворот: риски передачи DoR дают код 1 и строку вердикта; ошибка входа — код 2": "gate mode: DoR handover risks give code 1 and a verdict line; an input error is code 2",
     "page_id родителя для новой страницы": "the parent's page_id for the new page",
     "заголовок страницы (по умолчанию — H1 или имя файла)": "the page title (default — H1 or the file name)",
     "перезаписать страницу, которую правили после вашей публикации": "overwrite a page that was edited after your publication",

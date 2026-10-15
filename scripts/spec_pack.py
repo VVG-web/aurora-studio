@@ -9,11 +9,18 @@
 
   python3 .aurora/scripts/spec_pack.py SPEC-012           # что войдёт в бандл
   python3 .aurora/scripts/spec_pack.py SPEC-012 --apply
+  python3 .aurora/scripts/spec_pack.py SPEC-012 --gate    # риски передачи = код выхода 1
 
 Гейт Definition of Ready проверяется механически (см. `workflows.md`): REQ не в `agreed`,
 открытые вопросы, блокирующие спеку, основания ниже `verified`. Нарушения не блокируют
 сборку — но печатаются, и пакет получает раздел «Риски передачи»: подрядчик должен
 видеть, на чём именно построен контракт.
+
+Режим ворот `--gate` (шаг маршрута с флагом `--gate` в `cockpit/scenarios.txt`): те же риски
+становятся вердиктом. Печатается машинная строка `AURORA-GATE` (ворота `spec_pack`, у каждого
+риска `id` и `detail`), код выхода 1 — риски есть (ворота не пройдены), 0 — рисков нет,
+2 — скрипт не смог отработать (нет базы, нет спеки). Без `--gate` поведение прежнее: риски
+печатаются, код 0.
 
 Панель: `make:spec-pack`
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
@@ -82,17 +89,21 @@ def main() -> int:
     ap.add_argument("--version", help="версия бандла (по умолчанию из спеки)")
     ap.add_argument("--apply", action="store_true",
                     help="записать бандл (иначе только состав и риски)")
+    ap.add_argument("--gate", action="store_true",
+                    help="режим ворот: риски передачи DoR дают код 1 и строку вердикта; "
+                         "ошибка входа — код 2")
     a = ap.parse_args()
+    fail_rc = 2 if a.gate else 1     # в воротах «не смог отработать» не смешивается с «не пройдены»
 
     if not os.path.isdir(KB_ROOT):
         print(f"spec_pack: нет {KB_ROOT}/ — запускайте из корня проекта", file=sys.stderr)
-        return 1
+        return fail_rc
     cards = load_cards()
     hits = [s for s in cards if s == a.spec or s.startswith(a.spec + "-") or
             (cards[s]["fm"].get("spec_id") == a.spec)]
     if not hits:
         print(f"spec_pack: спека {a.spec} не найдена в {KB_ROOT}/Specs/", file=sys.stderr)
-        return 1
+        return fail_rc
     spec_stem = sorted(hits)[0]
     spec = cards[spec_stem]
     fm = spec["fm"]
@@ -138,11 +149,34 @@ def main() -> int:
         print(f"⚠️ Оснований ниже verified: {len(weak)} — "
               f"{', '.join(f'{s} ({st})' for s, st in weak[:5])}")
 
+    # вердикт ворот: те же риски, что попадают в раздел «Риски передачи»
+    gate_items = []
+    if weak:
+        gate_items.append({"id": "weak-grounds", "detail": f"оснований ниже verified: {len(weak)} — "
+                           + ", ".join(f"{s} ({st})" for s, st in weak[:5])})
+    if req_not_agreed:
+        gate_items.append({"id": "req-not-agreed", "detail": "требования не в agreed — "
+                           + ", ".join(f"{s} ({st})" for s, st in req_not_agreed[:5])})
+    if questions:
+        gate_items.append({"id": "open-questions", "detail": "спеку держат открытые вопросы — "
+                           + ", ".join(f"{s} ({st})" for s, st, _ in questions[:5])})
+    if missing:
+        gate_items.append({"id": "missing-grounds", "detail": "основания отсутствуют в базе — "
+                           + ", ".join(missing[:5])})
+
+    def done() -> int:
+        """Код выхода: без `--gate` всегда 0 (риски не блокируют); с ним — 1 при рисках."""
+        if not a.gate:
+            return 0
+        import run_summary as RS
+        print(RS.emit_gate("spec_pack", "fail" if gate_items else "pass", gate_items))
+        return 1 if gate_items else 0
+
     target = os.path.join(OUT_DIR, f"{spec_id}_v{version}.md")
     print(f"\nБандл: {target}")
     if not a.apply:
         print("\n(dry-run) Ничего не записано. Повторите с --apply.")
-        return 0
+        return done()
 
     L = [f"# {spec_id} v{version} — пакет спецификации", "",
          f"_Собран {TODAY} из базы знаний проекта, коммит `{git_commit() or '—'}`._", "",
@@ -201,7 +235,7 @@ def main() -> int:
     size = os.path.getsize(target) / 1024
     print(f"\n✅ {target} ({size:.0f} КБ, разделов {len(included) + len(drs) + len(abbrev) + 1})")
     print("   Передали подрядчику → зафиксируйте факт: `ship:release`.")
-    return 0
+    return done()
 
 
 if __name__ == "__main__":

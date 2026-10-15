@@ -12,6 +12,7 @@ import time
 
 from harness import (  # noqa: F401
     KIT,
+    card,
     make_project,
     panel_sources,
     run,
@@ -3336,3 +3337,62 @@ def test_build_stop_really_stops_the_work(tmp: Path):
         f"{len(sources)} — очередь доработала вместо остановки, и с --apply это правки "
         f"в базе после решения остановиться")
     assert res.get("stopped"), "прогон остановился, но причина не названа в отчёте"
+
+
+@test
+def test_spec_pack_gate_mode_turns_dor_risks_into_exit_code(tmp: Path):
+    """spec_pack --gate: риски передачи — код 1 и строка AURORA-GATE; без рисков — 0 и pass.
+
+    Без `--gate` поведение прежнее (риски печатаются, код 0): на этом держится старый маршрут.
+    Ошибка входа в режиме ворот — код 2, а не 1: «не смог отработать» не смешивается с «ворота
+    не пройдены».
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import run_summary as RS
+
+    def gate_lines(cp):
+        return RS.parse_gate(cp.stdout.splitlines())
+
+    root = make_project(tmp)
+    card(root, "Specs/SPEC-012-Обмен.md", "Опирается на [[Шина]] и [[Черновик]].",
+         type="spec", spec_id="SPEC-012", status="draft", version='"1.2"',
+         implements='["[[REQ-042]]"]', based_on='["[[Шина]]"]')
+    card(root, "Requirements/REQ-042-Обмен.md", "", type="requirement",
+         req_id="REQ-042", req_status="stated", status="imported")
+    card(root, "Systems/Шина.md", "Kafka по VPN", status="knowledge",
+         trust_basis='"задача PRJ-1 в статусе Готово"', review_by="2030-01-01")
+    card(root, "Systems/Черновик.md", "набросок", status="draft")
+
+    # старый вызов: риски напечатаны, код 0, машинной строки нет
+    cp = run("spec_pack.py", "SPEC-012", cwd=root, expect_rc=0)
+    assert "DoR: требования не в `agreed`" in cp.stdout, cp.stdout
+    assert "AURORA-GATE" not in cp.stdout, "без --gate строка вердикта не печатается"
+
+    # --gate с рисками: код 1, вердикт fail, у каждого риска id и detail
+    cp = run("spec_pack.py", "SPEC-012", "--gate", cwd=root, expect_rc=1)
+    gates = gate_lines(cp)
+    assert len(gates) == 1 and gates[0]["gate"] == "spec_pack" and gates[0]["verdict"] == "fail", cp.stdout
+    ids = {it["id"]: it["detail"] for it in gates[0]["items"]}
+    assert set(ids) == {"weak-grounds", "req-not-agreed"}, ids
+    assert "REQ-042-Обмен (stated)" in ids["req-not-agreed"] and "Черновик (draft)" in ids["weak-grounds"], ids
+    assert all(ids.values()), "у риска нет detail"
+
+    # с --apply бандл всё равно записан (риски видны подрядчику), код тот же
+    run("spec_pack.py", "SPEC-012", "--gate", "--apply", cwd=root, expect_rc=1)
+    assert (root / "Deliverables/work/spec-packs/SPEC-012_v1.2.md").is_file()
+
+    # рисков нет: код 0 и pass
+    card(root, "Specs/SPEC-020-Чистая.md", "Опирается на [[Шина]].", type="spec",
+         spec_id="SPEC-020", status="draft", version='"1.0"',
+         implements='["[[REQ-050]]"]', based_on='["[[Шина]]"]')
+    card(root, "Requirements/REQ-050-Согласованное.md", "", type="requirement",
+         req_id="REQ-050", req_status="agreed", status="knowledge",
+         trust_basis='"задача PRJ-2 в статусе Готово"', review_by="2030-01-01")
+    cp = run("spec_pack.py", "SPEC-020", "--gate", cwd=root, expect_rc=0)
+    gates = gate_lines(cp)
+    assert len(gates) == 1 and gates[0]["verdict"] == "pass" and gates[0]["items"] == [], cp.stdout
+
+    # ошибка входа: с --gate код 2, без него прежний 1
+    cp = run("spec_pack.py", "SPEC-999", "--gate", cwd=root, expect_rc=2)
+    assert "AURORA-GATE" not in cp.stdout
+    run("spec_pack.py", "SPEC-999", cwd=root, expect_rc=1)

@@ -401,7 +401,13 @@ def render_md(rows: list, version: str) -> str:
           "коде `0` — маршрут идёт дальше с предупреждением в журнале (режим внедрения); код `0` "
           "без строки — ок: скрипты прошлых выпусков и скрипты без адаптера не ломаются, строка "
           "— деталь, а не вердикт. Шаг, назвавший вердикт строкой, за сетевой сбой не "
-          "принимается. У шага без `--gate` вердикт только записывается и показывается.", ""]
+          "принимается. У шага без `--gate` вердикт только записывается и показывается.", "",
+          "**Скрипты с режимом ворот.** `spec_pack.py` (`make:spec-pack`): с `--gate` риски "
+          "передачи Definition of Ready (требования не в `agreed`, открытые вопросы, основания "
+          "ниже `verified`, отсутствующие основания) дают код `1` и строку `AURORA-GATE` (ворота "
+          "`spec_pack`, у каждого риска `id` и `detail`), без рисков — код `0` и `pass`; "
+          "ошибка входа (нет базы, нет спеки) в этом режиме — код `2`. Без `--gate` скрипт "
+          "ведёт себя как прежде: риски печатаются, код `0`.", ""]
     L += ["## Развёртывание (из клона kit'а, не из проекта)", "",
           "| Команда | Что делает |", "|---|---|",
           "| `python3 aurora.py new <target>` | развернуть Aurora в проект: скелет, движок, "
@@ -493,7 +499,13 @@ def render_en_md(rows: list, names: dict) -> str:
           "(adoption mode); code `0` without a line is fine: scripts of earlier releases and "
           "scripts without the adapter keep working, the line is a detail, not the verdict. A "
           "step that named its verdict with the line is not taken for a network failure. For a "
-          "step without `--gate` the verdict is only recorded and shown."]
+          "step without `--gate` the verdict is only recorded and shown.", "",
+          "**Scripts with a gate mode.** `spec_pack.py` (`make:spec-pack`): with `--gate` the "
+          "handover risks of the Definition of Ready (requirements not `agreed`, open questions, "
+          "grounds below `verified`, grounds missing from the base) give code `1` and an "
+          "`AURORA-GATE` line (gate `spec_pack`, each risk with an `id` and a `detail`); no "
+          "risks give code `0` and `pass`; an input error (no base, no spec) is code `2` in this "
+          "mode. Without `--gate` the script behaves as before: risks are printed, code `0`."]
     return "\n".join(L) + "\n"
 
 
