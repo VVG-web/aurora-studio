@@ -381,10 +381,37 @@ _CYR_CANDIDATES = ("cp1251", "koi8-r", "cp866")
 _CYR_COMMON = frozenset("оеаинтсрвлкпмдуя")
 # Меньше стольких кириллических букв доказательством не считаем: на трёх буквах угадать нельзя.
 _CYR_MIN_LETTERS = 10
+# В русском тексте кириллица почти не стоит вплотную к латинице («educaciуn» — признак того,
+# что однобайтовую испанскую, польскую и т. п. страницу прочли как cp1251): больше такой доли
+# кириллических букв рядом с ASCII-буквой — кандидата отбрасываем.
+_CYR_MAX_MIXED = 0.2
+_CYR_NEAR_LATIN = re.compile("[A-Za-z][\u0400-\u04ff]|[\u0400-\u04ff][A-Za-z]")
 _META_CHARSET = re.compile(rb"<meta[^>]*?charset\s*=\s*[\"']?\s*([A-Za-z0-9_.:-]+)", re.I)
 # Страницы, которые сервер по привычке объявляет «западной» кодировкой: настоящий UTF-8 с
 # многобайтовыми символами в латинице случайно не получается, поэтому ему верим больше заявки.
-_WESTERN = frozenset({"iso-8859-1", "latin-1", "latin1", "windows-1252", "cp1252"})
+# Сверяем КАНОНИЧЕСКОЕ имя кодека: «latin_1», «l1», «cp819», «ISO8859-1» — один и тот же кодек.
+_WESTERN = frozenset({"iso8859-1", "iso8859-15", "cp1252"})
+# Кодировки веб-страниц (канонические имена кодеков Python). Заявка не из этого списка —
+# `punycode` (квадратичный разбор: 5 МБ держат прогон минутами), `utf-7`, `idna`,
+# `unicode-escape` и прочие нетекстовые кодеки — пропускается, как неизвестное имя.
+_WEB_CHARSET = re.compile(
+    r"^(utf-8|ascii|cp\d{3,4}|koi8-[a-z]|iso8859-\d+|mac-[a-z0-9]+|tis-620|ptcp154|kz1048|"
+    r"gbk|gb2312|gb18030|hz|big5|big5hkscs|euc_[a-z0-9_]+|shift_jis[a-z0-9]*|iso2022_[a-z0-9_]+|"
+    r"johab)$")
+
+
+def _canon_charset(name: str) -> str:
+    """Каноническое имя кодека для заявки страницы или "" — имя неизвестно либо кодек не из
+    веб-кодировок. utf-16/utf-32 в заявке читаем как utf-8: в потоке, читаемом как ASCII, такая
+    заявка — ошибка вёрстки (настоящий UTF-16 узнаётся по BOM раньше); проверка идёт по
+    каноническому имени, поэтому алиасы («utf16», «u16») её не обходят."""
+    try:
+        canon = codecs.lookup(name).name
+    except (LookupError, ValueError):
+        return ""
+    if canon.replace("_", "-").startswith(("utf-16", "utf-32")):
+        return "utf-8"
+    return canon if _WEB_CHARSET.match(canon) else ""
 
 
 def _try_decode(raw: bytes, name: str):
@@ -405,6 +432,8 @@ def _guess_cyrillic(raw: bytes):
         high = [c for c in text if ord(c) > 127]
         cyr = [c for c in high if "\u0400" <= c <= "\u04ff" and c.isalpha()]
         if len(cyr) < _CYR_MIN_LETTERS or len(cyr) < 0.7 * len(high):
+            continue
+        if len(_CYR_NEAR_LATIN.findall(text)) / len(cyr) > _CYR_MAX_MIXED:
             continue
         share = sum(c in _CYR_COMMON for c in cyr) / len(cyr)
         if share >= 0.5 and share > best_share:
@@ -437,12 +466,13 @@ def decode_page(raw: bytes, header_charset: str = "") -> tuple:
     head = raw[:4096]
     declared += [m.group(1).decode("ascii", "ignore") for m in _META_CHARSET.finditer(head)]
     for name in declared:
-        if name.lower().replace("_", "-").startswith(("utf-16", "utf-32")):
-            name = "utf-8"          # в потоке, читаемом как ASCII, такая заявка — ошибка вёрстки
+        name = _canon_charset(name)
+        if not name:
+            continue
         text = _try_decode(raw, name)
         if text is None:
             continue
-        if name.lower() in _WESTERN:
+        if name in _WESTERN:
             utf = _try_decode(raw, "utf-8")
             if utf is not None:
                 return utf, True
@@ -1028,8 +1058,13 @@ def run(a) -> int:
                     # ссылками на сайт — иначе правка на сайте не дошла бы до зеркала
                     text, _ = store(body, [])
                 status = "без изменений" if was == text else ("обновлена" if was else "новая")
+            if meta.get("charset_unknown"):
+                # признак доходит до таблицы состояния зеркала, а страница не кэшируется:
+                # иначе следующий прогон ответил бы 304 и предупреждение пропало
+                status = (status or "без изменений") + " · кодировка не определена"
             mirror.rows.append((url, trusted, rel, status))
-            if a.apply and (meta.get("etag") or meta.get("modified")):
+            if a.apply and (meta.get("etag") or meta.get("modified")) \
+                    and not meta.get("charset_unknown"):
                 fresh_cache[url] = {"etag": meta.get("etag", ""), "modified": meta.get("modified", ""),
                                     "rel": rel, "links": list(links), "trusted": bool(trusted),
                                     "seed": seed, "feed": bool(feed), "conv": CONVERTER,

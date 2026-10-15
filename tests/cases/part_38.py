@@ -2435,6 +2435,23 @@ def test_web_connector_detects_the_page_encoding_instead_of_silent_utf8_replace(
     # заявка «latin-1» над настоящим UTF-8 — не мусор из двух символов на букву
     text, ok = WE.decode_page(page.encode("utf-8"), "ISO-8859-1")
     assert ok and text == page
+    # алиасы «западной» кодировки сверяются по каноническому имени, а не по строке заявки
+    for alias in ("iso_8859-1", "ISO8859-1", "latin_1", "l1", "cp819", "windows-1252", "iso-8859-15"):
+        text, ok = WE.decode_page(page.encode("utf-8"), alias)
+        assert ok and text == page, (alias, text[:40])
+        text, ok = WE.decode_page(f'<meta charset="{alias}">{ru}'.encode("utf-8"), "")
+        assert ok and ru in text, (alias, text[:40])
+    # нетекстовые кодеки и алиасы utf-16/32 в заявке не меняют текст UTF-8-страницы
+    # (punycode растёт квадратично: 300 КБ — секунды), и заявка не тратит времени
+    big = "<p>" + "Налог на добавленную стоимость. " * 10000 + "</p>"
+    for bad in ("punycode", "utf-7", "utf16", "u16", "UTF_32", "idna", "unicode_escape",
+                "raw_unicode_escape", "undefined", "rot13", "base64", "zlib"):
+        for raw, hdr in ((big.encode("utf-8"), bad),
+                         (f'<meta charset="{bad}">{big}'.encode("utf-8"), "")):
+            t0 = time.process_time()
+            text, ok = WE.decode_page(raw, hdr)
+            assert ok and big in text, (bad, text[:40])
+            assert time.process_time() - t0 < 1.0, (bad, "слишком долго")
     # (6) нечитаемые байты: текст с заменой и признак «не определена»
     junk = b"<p>\xff\xfe\x80\x81 \xc3\x28 \xa0\xa1</p>"
     text, ok = WE.decode_page(junk, "")
@@ -2442,6 +2459,21 @@ def test_web_connector_detects_the_page_encoding_instead_of_silent_utf8_replace(
     # мало кириллицы — угадывать нечем
     text, ok = WE.decode_page("<p>да</p>".encode("cp1251") + b"\xff", "")
     assert not ok
+    # однобайтовые нерусские страницы без объявления — не «русские в cp1251»: кириллица там
+    # вплотную к латинице («educaciуn»), в настоящем русском тексте с разметкой её нет
+    es = ("<html><body><p>La educación en España es una función del Estado, y la protección "
+          "de la información personal también. ¿Qué más? Más información: añadir ñandú, "
+          "canción, corazón, razón, camión, cañón, órgano, árbol.</p></body></html>")
+    pl = ("<html><body><p>Zażółć gęślą jaźń: łódź, świat, źródło, wąż, zażądał, żółć, "
+          "gęsią, jaźni, piękna, łączność, ścieżka, spółka, książka.</p></body></html>")
+    for raw in (es.encode("latin-1"), pl.encode("cp1250")):
+        text, ok = WE.decode_page(raw, "")
+        assert not ok, text[:80]
+    # русский текст с латинскими словами и разметкой угадывается по-прежнему
+    mixed = f"<html><body><p>{ru} iPhone, Windows и API-ключ: NDS-ставка.</p></body></html>"
+    for enc in ("cp1251", "koi8-r", "cp866"):
+        text, ok = WE.decode_page(mixed.encode(enc), "")
+        assert ok and ru in text, enc
     # (7) чистая UTF-8 страница: тот же вывод, что давал `raw.decode("utf-8", errors="replace")`
     clean = page.encode("utf-8")
     assert WE.decode_page(clean, "utf-8") == (clean.decode("utf-8", errors="replace"), True)
@@ -2512,3 +2544,24 @@ def test_web_run_says_when_the_page_encoding_is_not_detected(tmp: Path):
         os.chdir(cwd)
     warn = [ln for ln in out.splitlines() if "кодировка не определена" in ln]
     assert len(warn) == 1 and "/junk" in warn[0], out
+    # с --apply признак попадает в таблицу состояния зеркала, а страница не кэшируется
+    # (иначе следующий прогон ответил бы 304 и предупреждение пропало); читаемая кэшируется
+    def tagged_get(url, token="", timeout=0, headers=None, meta=None):
+        if meta is not None:
+            meta["etag"] = "E1"
+        return pages[url], "", ""
+    WE._get = tagged_get
+    os.chdir(proj)
+    try:
+        sys.argv = ["web_export.py", "--out", str(proj / "out"), "--apply"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            WE.main()
+    finally:
+        WE._get, sys.argv = real_get, real_argv
+        os.chdir(cwd)
+    state_text = (proj / "out" / WE.WebMirror.state_name).read_text(encoding="utf-8")
+    rows = [ln for ln in state_text.splitlines() if "/junk" in ln]
+    assert rows and "кодировка не определена" in rows[0], state_text[-600:]
+    assert not any("/ok" in ln and "кодировка" in ln for ln in state_text.splitlines()), state_text
+    cache = json.loads((proj / WE.PAGE_CACHE).read_text(encoding="utf-8"))
+    assert "https://wiki.example.com/ok" in cache and "https://wiki.example.com/junk" not in cache, cache
