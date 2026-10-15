@@ -941,6 +941,9 @@ def test_a_gate_step_stops_the_route_on_code_1(tmp: Path):
     rr = importlib.import_module("route_runner")
     p18 = importlib.import_module("cases.part_18")
     assert rr.is_gate(["--apply", "--gate"]) and not rr.is_gate(["--apply"]), "флаг ворот не читается"
+    # `--gate=fail` — то же самое, что голый `--gate`; `--gate=warn` — режим внедрения, не ворота
+    assert rr.is_gate(["--gate=fail"]) and rr.halts(["--gate=fail"], 1), "--gate=fail не считается воротами"
+    assert not rr.is_gate(["--gate=warn"]) and not rr.halts(["--gate=warn"], 1), "--gate=warn стал воротами"
     assert rr.halts([], 2) and rr.halts([], -15) and not rr.halts([], 1) and not rr.halts([], 0), \
         "правило остановки обычного шага изменилось"
     assert rr.halts(["--gate"], 1) and not rr.halts(["--gate"], 0), "код 1 на воротах не останавливает"
@@ -3539,3 +3542,93 @@ def test_artifact_lint_gate_mode_keeps_codes_and_names_verdict(tmp: Path):
     cp = run("artifact_lint.py", "--gate", "Artifacts/us/US-1.md", "--profile", "us", cwd=root, expect_rc=1)
     assert [g["verdict"] for g in _gate_of(cp)] == ["fail"], cp.stdout
     run("artifact_lint.py", "--gate", "Artifacts/us/US-1.md", cwd=root, expect_rc=2)
+
+
+@test
+def test_gate_verdict_items_keep_a_total_when_the_list_is_cut(_t):
+    """Список пунктов длиннее потолка режется, но последний пункт `gate-total` называет полное число.
+
+    Раньше маршрут писал «нарушенных пунктов — 50» и при сотнях ошибок. Список ровно в потолок не
+    меняется, а повторный разбор уже обрезанной строки (`parse_gate`) итог не наращивает.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import run_summary as RS
+    cap = RS.GATE_MAX_ITEMS
+    exact = [{"id": f"x{i}", "detail": "d"} for i in range(cap)]
+    gates = RS.parse_gate([RS.emit_gate("g", "fail", exact)])
+    assert [it["id"] for it in gates[0]["items"]] == [it["id"] for it in exact], "список в потолок изменился"
+    many = [{"id": f"x{i}", "detail": "d"} for i in range(cap + 70)]
+    gates = RS.parse_gate([RS.emit_gate("g", "fail", many)])
+    items = gates[0]["items"]
+    assert len(items) == cap and items[-1]["id"] == "gate-total", items[-2:]
+    assert str(cap + 70) in items[-1]["detail"] and items[0]["id"] == "x0" and items[-2]["id"] == f"x{cap - 2}", items[-2:]
+
+
+@test
+def test_kb_lint_gate_items_are_named_by_error_kind_with_a_total(tmp: Path):
+    """kb_lint --gate: id пункта — вид ошибки (как группа в обычном выводе), а не общий `lint-error`.
+
+    Сотни ошибок режутся потолком, и вердикт заканчивается итогом `gate-total` с полным числом.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Шина.md", "Текст.", type="concept", status="draft", related='["[[Шина]]"]')
+    for i in range(60):
+        card(root, f"Concepts/Сбой{i}.md", f"Ссылка на [[Нет-такой-{i}]].", type="concept", status="draft",
+             related='["[[Шина]]"]')
+    cp = run("kb_lint.py", "--gate", cwd=root, expect_rc=1)
+    items = _gate_of(cp)[0]["items"]
+    sys.path.insert(0, str(KIT / "scripts"))
+    import run_summary as RS
+    assert len(items) == RS.GATE_MAX_ITEMS and items[-1]["id"] == "gate-total", items[-2:]
+    assert "lint-error" not in {it["id"] for it in items}, "ошибки не названы видом"
+    assert {it["id"] for it in items[:-1]} == {"broken-link"}, {it["id"] for it in items[:-1]}
+    total = int("".join(ch for ch in items[-1]["detail"].split(",")[0] if ch.isdigit()))
+    assert total >= 60, items[-1]
+
+
+@test
+def test_artifact_lint_gate_without_a_base_is_code_2_not_a_pass(tmp: Path):
+    """artifact_lint --gate в папке без базы — код 2 и без вердикта; без `--gate` прежний 0.
+
+    Ворота, которым нечего проверять, не пропускают: «пусто — pass» выдавал бы зелёный там,
+    где проверки не было.
+    """
+    empty = tmp / "empty"
+    empty.mkdir()
+    cp = run("artifact_lint.py", "--gate", cwd=empty, expect_rc=2)
+    assert "AURORA-GATE" not in cp.stdout and "AuroraKnowledgeDB" in cp.stderr, (cp.stdout, cp.stderr)
+    run("artifact_lint.py", "--gate=warn", cwd=empty, expect_rc=2)
+    run("artifact_lint.py", cwd=empty, expect_rc=0)
+
+
+@test
+def test_spec_pack_gate_takes_the_adoption_mode_like_the_other_gates(tmp: Path):
+    """spec_pack --gate=warn и AURORA_GATE_MODE=warn: вердикт warn и код 0; `--gate=fail` — как голый.
+
+    Режим внедрения общий для всех скриптов с воротами: проект с исторически красной проверкой не
+    должен вставать на одном из них.
+    """
+    root = make_project(tmp)
+    card(root, "Specs/SPEC-012-Обмен.md", "Опирается на [[Черновик]].", type="spec", spec_id="SPEC-012",
+         status="draft", version='"1.2"', implements='["[[REQ-042]]"]', based_on='["[[Черновик]]"]')
+    card(root, "Requirements/REQ-042-Обмен.md", "", type="requirement", req_id="REQ-042",
+         req_status="stated", status="imported")
+    card(root, "Systems/Черновик.md", "набросок", status="draft")
+    for flag in ("--gate", "--gate=fail"):
+        cp = run("spec_pack.py", "SPEC-012", flag, cwd=root, expect_rc=1)
+        assert [g["verdict"] for g in _gate_of(cp)] == ["fail"], (flag, cp.stdout)
+    cp = run("spec_pack.py", "SPEC-012", "--gate=warn", cwd=root, expect_rc=0)
+    gates = _gate_of(cp)
+    assert [g["verdict"] for g in gates] == ["warn"] and gates[0]["items"], cp.stdout
+    env = _gate_env(AURORA_GATE_MODE="warn")
+    cp = subprocess.run([sys.executable, str(KIT / "scripts" / "spec_pack.py"), "SPEC-012", "--gate"],
+                        cwd=str(root), capture_output=True, text=True, encoding="utf-8", env=env)
+    assert cp.returncode == 0 and [g["verdict"] for g in _gate_of(cp)] == ["warn"], (cp.returncode, cp.stdout)
+    # ошибка входа остаётся кодом 2 и в режиме внедрения: «не смог отработать» предупреждением не бывает
+    run("spec_pack.py", "SPEC-999", "--gate=warn", cwd=root, expect_rc=2)
+
+
+@test
+def test_tests_do_not_inherit_the_developers_gate_mode(_t):
+    """Тесты не видят `AURORA_GATE_MODE` разработчика: с `warn` в оболочке коды ворот были бы другими."""
+    assert "AURORA_GATE_MODE" not in os.environ, "harness не вычистил режим внедрения ворот"

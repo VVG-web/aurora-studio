@@ -2601,6 +2601,32 @@ def test_card_types_goes_right_after_the_common_module_in_the_manifest(_t):
 
 
 @test
+def test_run_summary_goes_before_every_script_that_imports_it_at_module_level(_t):
+    """`run_summary.py` стоит в манифесте раньше скриптов, жёстко импортирующих его (`import run_summary` вне функции).
+
+    Обновление пишет файлы по очереди: kb_lint с `RS.gate_argv` при старом run_summary падал бы на ЛЮБОМ вызове,
+    и хук pre-commit пропускал бы проверку базы. Ленивый импорт внутри функции порядка не требует.
+    """
+    order = []
+    for line in (KIT / "engine_manifest.txt").read_text(encoding="utf-8").splitlines():
+        line = line.split("#")[0].strip()
+        if "=>" in line:
+            order.append(line.split("=>")[0].strip())
+    pos = order.index("scripts/run_summary.py")
+    hard_importers = []
+    for script in order:
+        if not (script.startswith("scripts/") and script.endswith(".py")) or script == "scripts/run_summary.py":
+            continue
+        tree = ast.parse((KIT / script).read_text(encoding="utf-8"))
+        if any((isinstance(n, ast.ImportFrom) and n.module == "run_summary") or
+               (isinstance(n, ast.Import) and any(a.name == "run_summary" for a in n.names)) for n in tree.body):
+            hard_importers.append(script)
+            assert order.index(script) > pos, f"{script} импортирует run_summary, а в манифесте стоит раньше"
+    assert {"scripts/kb_lint.py", "scripts/kb_trace.py", "scripts/artifact_lint.py", "scripts/spec_pack.py"} <= \
+        set(hard_importers), hard_importers
+
+
+@test
 def test_kb_cards_list_does_not_claim_enforcement(tmp: Path):
     """Первая фаза только советует: `kb:cards --list` не обещает, что тип вне списка «не существует»."""
     out = _cli(_cli_project(tmp), "--list", expect=0).stdout

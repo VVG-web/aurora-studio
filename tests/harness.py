@@ -100,9 +100,10 @@ os.environ["AURORA_TESTS_ISOLATED"] = "1"
 for _k in [k for k in os.environ if k.startswith("AURORA_AGENT_BACKEND_")]:
     del os.environ[_k]
 # То же для привязок ключа к серверу и разрешения открытого http: стоят в оболочке разработчика —
-# тесты на отказ видят чужой выбор (BL-SEC-05).
+# тесты на отказ видят чужой выбор (BL-SEC-05). Режим внедрения ворот (`AURORA_GATE_MODE=warn`) — туда же:
+# с ним тесты, ждущие код 1 от ворот, краснели бы на машине, где проект так внедряют.
 for _k in ("AURORA_ALLOW_HTTP", "AURORA_CONFLUENCE_SERVER", "AURORA_JIRA_SERVER",
-           "AURORA_WEB_TOKEN_HOSTS"):
+           "AURORA_WEB_TOKEN_HOSTS", "AURORA_GATE_MODE"):
     os.environ.pop(_k, None)
 
 

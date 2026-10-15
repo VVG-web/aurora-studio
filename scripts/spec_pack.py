@@ -19,8 +19,8 @@
 Режим ворот `--gate` (шаг маршрута с флагом `--gate` в `cockpit/scenarios.txt`): те же риски
 становятся вердиктом. Печатается машинная строка `AURORA-GATE` (ворота `spec_pack`, у каждого
 риска `id` и `detail`), код выхода 1 — риски есть (ворота не пройдены), 0 — рисков нет,
-2 — скрипт не смог отработать (нет базы, нет спеки). Без `--gate` поведение прежнее: риски
-печатаются, код 0.
+2 — скрипт не смог отработать (нет базы, нет спеки). `--gate=warn` (или `AURORA_GATE_MODE=warn`) —
+режим внедрения: вердикт `warn` и код 0. Без `--gate` поведение прежнее: риски печатаются, код 0.
 
 Панель: `make:spec-pack`
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
@@ -38,6 +38,7 @@ from aurora_common import (KB_ROOT, TRUSTED, as_list, body, frontmatter, git_com
 
 OUT_DIR = os.path.join("Deliverables", "work", "spec-packs")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+import run_summary as RS  # noqa: E402 — вердикт ворот (`--gate`)
 
 
 def anchor(name: str) -> str:
@@ -89,11 +90,12 @@ def main() -> int:
     ap.add_argument("--version", help="версия бандла (по умолчанию из спеки)")
     ap.add_argument("--apply", action="store_true",
                     help="записать бандл (иначе только состав и риски)")
-    ap.add_argument("--gate", action="store_true",
+    ap.add_argument("--gate", choices=("fail", "warn"), default="", metavar="MODE",
                     help="режим ворот: риски передачи DoR дают код 1 и строку вердикта; "
-                         "ошибка входа — код 2")
-    a = ap.parse_args()
-    fail_rc = 2 if a.gate else 1     # в воротах «не смог отработать» не смешивается с «не пройдены»
+                         "ошибка входа — код 2; --gate=warn — предупреждение вместо кода 1")
+    a = ap.parse_args(RS.gate_argv(sys.argv[1:]))
+    gate = RS.gate_mode(a.gate)
+    fail_rc = 2 if gate else 1     # в воротах «не смог отработать» не смешивается с «не пройдены»
 
     if not os.path.isdir(KB_ROOT):
         print(f"spec_pack: нет {KB_ROOT}/ — запускайте из корня проекта", file=sys.stderr)
@@ -165,12 +167,8 @@ def main() -> int:
                            + ", ".join(missing[:5])})
 
     def done() -> int:
-        """Код выхода: без `--gate` всегда 0 (риски не блокируют); с ним — 1 при рисках."""
-        if not a.gate:
-            return 0
-        import run_summary as RS
-        print(RS.emit_gate("spec_pack", "fail" if gate_items else "pass", gate_items))
-        return 1 if gate_items else 0
+        """Код выхода: без `--gate` всегда 0 (риски не блокируют); с ним — 1 при рисках (`warn` — 0)."""
+        return RS.gate_exit("spec_pack", gate, gate_items)
 
     target = os.path.join(OUT_DIR, f"{spec_id}_v{version}.md")
     print(f"\nБандл: {target}")

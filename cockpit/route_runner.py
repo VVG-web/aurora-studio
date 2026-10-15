@@ -98,8 +98,10 @@ def looks_offline(lines) -> bool:
 
 
 def is_gate(args) -> bool:
-    """Шаг — ворота качества, если среди его флагов в scenarios.txt стоит `--gate`."""
-    return "--gate" in (args or [])
+    """Шаг — ворота качества, если среди его флагов в scenarios.txt стоит `--gate` (или `--gate=fail`).
+
+    `--gate=warn` — режим внедрения: код 1 такого шага маршрут не останавливает, воротами он не считается."""
+    return any(a in ("--gate", "--gate=fail") for a in args or [])
 
 
 def halts(args, rc) -> bool:

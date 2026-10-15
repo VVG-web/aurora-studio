@@ -44,19 +44,22 @@ scripts/aurora_common.py => .aurora/scripts/aurora_common.py
 # kb_lint, kb_fix, build_plan и kb_schema — поэтому сразу за общим модулем: обрыв обновления между записями не
 # должен оставить хуку pre-commit ImportError
 scripts/card_types.py    => .aurora/scripts/card_types.py
+# машинная строка вердикта ворот и общие помощники флага `--gate` (gate_argv, gate_mode, gate_exit); их жёстко
+# импортируют kb_lint, kb_trace, artifact_lint и spec_pack — поэтому тоже раньше них: обрыв обновления между
+# записями не должен оставить хуку pre-commit и шагам маршрута AttributeError на старом run_summary
+scripts/run_summary.py   => .aurora/scripts/run_summary.py
 # общая часть синка и реестр модулей источников
 scripts/sources_core.py     => .aurora/scripts/sources_core.py
 scripts/sources_registry.py => .aurora/scripts/sources_registry.py
 scripts/kb_lint.py       => .aurora/scripts/kb_lint.py
 # детерминированный линтер артефактов (истории, критерии, спеки): его зовёт kb_lint
 scripts/artifact_lint.py => .aurora/scripts/artifact_lint.py
-# Эти три ставились установкой, но в манифест не попали — и потому не обновлялись
+# Эти два (и run_summary выше) ставились установкой, но в манифест не попали — и потому не обновлялись
 # никогда: проект годами держал версию времён своего создания, при том что
 # `aurora_version.txt` исправно показывал свежую. Один прогон двумя версиями движка,
 # только молча.
 scripts/kb_embed.py      => .aurora/scripts/kb_embed.py
 scripts/kb_search_quality.py => .aurora/scripts/kb_search_quality.py
-scripts/run_summary.py       => .aurora/scripts/run_summary.py
 scripts/kb_translit.py   => .aurora/scripts/kb_translit.py
 scripts/kb_twins.py      => .aurora/scripts/kb_twins.py
 scripts/kb_gaps.py       => .aurora/scripts/kb_gaps.py

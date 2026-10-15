@@ -1359,3 +1359,19 @@ def test_read_verdict_compares_the_boundary_through_normcase(tmp: Path):
     if os.path.normcase("A") == "A" and not os.path.exists(rp.upper()):
         assert AC.read_verdict(str(ok), rp.upper(), every_file=True) == "outside"
     assert AC.read_verdict(str(ok), rp, every_file=True) == ""
+
+
+@test
+def test_kb_lint_gate_on_a_linked_base_is_code_2_not_a_pass(tmp: Path):
+    """kb_lint --gate при базе-ссылке за пределы проекта — код 2 и без вердикта, а не «карточек 0 — pass».
+
+    Без `--gate` код прежний (0, одна строка о ссылке): храповик и pre-commit на таком проекте не падают.
+    """
+    fx = _linked_kb_fixture(tmp)
+    if not fx:
+        return
+    root, secret, other = fx
+    cp = run("kb_lint.py", "--gate", cwd=root, expect_rc=2)
+    assert "AURORA-GATE" not in cp.stdout and "ссылка наружу проекта" in cp.stdout, cp.stdout
+    run("kb_lint.py", "--gate=warn", cwd=root, expect_rc=2)
+    run("kb_lint.py", cwd=root, expect_rc=0)

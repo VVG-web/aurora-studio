@@ -368,16 +368,21 @@ def _gate_verdict(value) -> str:
 
 
 def _gate_items(items) -> list:
-    """Нарушенные пункты в виде [{"id", "detail"}]: принимает словари и голые строки."""
+    """Нарушенные пункты в виде [{"id", "detail"}]: принимает словари и голые строки.
+
+    Длиннее `GATE_MAX_ITEMS` список режется, а последним пунктом встаёт итог `gate-total` с полным
+    числом: иначе маршрут писал бы «нарушенных пунктов — 50» и при сотнях ошибок."""
+    src = list(items) if isinstance(items, (list, tuple)) else []
     out = []
-    for it in items if isinstance(items, (list, tuple)) else []:
+    for it in src[:GATE_MAX_ITEMS if len(src) <= GATE_MAX_ITEMS else GATE_MAX_ITEMS - 1]:
         if isinstance(it, dict):
             iid, detail = it.get("id"), it.get("detail")
         else:
             iid, detail = it, ""
         out.append({"id": _short(iid, 120), "detail": _short(detail, 300)})
-        if len(out) >= GATE_MAX_ITEMS:
-            break
+    if len(src) > GATE_MAX_ITEMS:
+        out.append({"id": "gate-total",
+                    "detail": f"всего пунктов {len(src)}, показаны первые {GATE_MAX_ITEMS - 1}"})
     return out
 
 

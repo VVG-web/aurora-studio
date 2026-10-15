@@ -35,8 +35,8 @@
 становятся вердиктом — после обычного вывода печатается машинная строка `AURORA-GATE` (ворота
 `artifact_lint`, пункт на замечание: `id` и `detail` — файл и текст), коды прежние: 0 — замечаний
 нет, 1 — есть. `--gate=warn` (или `AURORA_GATE_MODE=warn`) — режим внедрения: вердикт `warn` и
-код 0. Файлы без `--profile` в режиме ворот — код 2 («не смог отработать»). Без `--gate`
-ничего не меняется.
+код 0. Файлы без `--profile` и проект без `AuroraKnowledgeDB/` (проверять нечего) в режиме ворот —
+код 2 («не смог отработать»), а не «пусто — pass». Без `--gate` ничего не меняется.
 """
 from __future__ import annotations
 
@@ -621,6 +621,9 @@ def main() -> int:
             if items:
                 found.append((path, items))
     else:
+        if gate and not os.path.isdir("AuroraKnowledgeDB"):
+            print("artifact_lint: нет папки AuroraKnowledgeDB/ — запускайте из корня проекта", file=sys.stderr)
+            return 2       # в воротах «не смог отработать» не смешивается с «пусто — прошло»
         checked, found = lint_project()
     if a.json:
         print(json.dumps({"checked": checked, "files": [{"path": p, "findings": i}
