@@ -61,7 +61,7 @@ sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
 from aurora_common import (child_env, engine_dir, head_value, is_folder_guide,  # noqa: E402
                            kit_mcp_permission, local_view, mtime_stamp, personal_kit_file,
-                           real_inside, replace_file, same_origin, utc_slug, utc_stamp,
+                           real_inside, real_rel, replace_file, same_origin, utc_slug, utc_stamp,
                            yaml_scalar)
 from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
                            mcp_check, mcp_mask_args, mcp_masked)
@@ -322,6 +322,17 @@ def why_readonly(rel: str, text: str = "") -> str:
     return ""
 
 
+def why_readonly_real(project: str, rel: str, full: str, text: str = "") -> str:
+    """`why_readonly` и по присланному пути, и по реальному (`full` — уже разрешённый `inside`).
+
+    Ссылка в разрешённой папке (`Artifacts/x.md` -> `Sources/a.md`) не должна быть обходом:
+    запрет смотрит туда, куда запись попадёт на самом деле. Первой называется причина
+    присланного пути — человек видел именно его.
+    """
+    return (why_readonly(rel, text)
+            or why_readonly(real_rel(project, full), text))
+
+
 FILES_LIMIT = 20000     # строк дерева в ответе: на живых проектах 2–4,5 тыс. файлов
 
 
@@ -439,7 +450,7 @@ def file_rename(project: str, rel: str, name: str) -> dict:
     full = inside(project, rel)
     if not full or not os.path.isfile(full):
         return {"error": "файл не найден в этом проекте"}
-    ro = why_readonly(rel, read_text(full, limit=4000))
+    ro = why_readonly_real(project, rel, full, read_text(full, limit=4000))
     if ro:
         return {"error": f"файл только для чтения: {ro}"}
     if "." not in name:
@@ -462,10 +473,11 @@ def file_delete(project: str, rel: str) -> dict:
     full = inside(project, rel)
     if not full or not os.path.isfile(full):
         return {"error": "файл не найден в этом проекте"}
-    ro = why_readonly(rel, read_text(full, limit=4000))
+    ro = why_readonly_real(project, rel, full, read_text(full, limit=4000))
     if ro:
         return {"error": f"файл только для чтения: {ro}"}
-    if norm_rel(rel).lower().startswith("auroraknowledgedb/"):
+    if (norm_rel(rel).lower().startswith("auroraknowledgedb/")
+            or real_rel(project, full).lower().startswith("auroraknowledgedb/")):
         return {"error": "из базы знаний не удаляют: устаревшее заменяют через "
                          "kb:supersede, неверное правят корректировкой. Инвариант 2"}
     try:
@@ -580,7 +592,7 @@ def file_read(project: str, rel: str) -> dict:
     text = sn["text"]
     fm = frontmatter(text) if ext == ".md" else {}
     recent(project, rel)
-    ro = why_readonly(rel, text)
+    ro = why_readonly_real(project, rel, full, text)
     lossy = not sn["strict"]
     # Причина запрета у защищённого файла важнее: «зеркало внешней системы» человеку
     # нужнее, чем «не читается», и интерфейс подменяет её только для чисто нечитаемого.
@@ -648,9 +660,17 @@ def file_write(project: str, rel: str, text: str, expect: str = "") -> dict:
     full = inside(project, rel)
     if not full:
         return {"error": "путь вне проекта"}
-    ro = why_readonly(rel, read_text(full, limit=4000) if os.path.isfile(full) else "")
+    exists = os.path.isfile(full)
+    ro = why_readonly_real(project, rel, full, read_text(full, limit=4000) if exists else "")
     if ro:
         return {"error": f"файл только для чтения: {ro}"}
+    if not exists:
+        # Новый файл — только там, где его можно завести (как `file_create`): иначе запись
+        # создавала файлы в корне проекта и в папках, структуру которых держит движок.
+        # Смотрим и присланный путь, и реальный: ссылка-папка не выводит в чужой каталог.
+        why = why_no_create(project, rel) or why_no_create(project, real_rel(project, full))
+        if why:
+            return {"error": why}
     if os.path.splitext(full)[1].lower() not in TEXT_EXT:
         return {"error": "не текстовый файл"}
     if len(text) > MAX_EDIT:        # дешёвый предохранитель; потолок по байтам — после кодирования

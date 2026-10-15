@@ -1939,10 +1939,11 @@ def test_saving_does_not_silently_overwrite(tmp: Path):
     # Критик после реализации: отказ файловой системы уходил трассировкой. Длинное имя,
     # полный диск, папка без прав — обычные исходы, а не исключительные; для человека
     # трассировка означает «панель сломалась», хотя сломался его путь.
-    long = ck.file_write(str(root), "Artifacts/ac/" + "д" * 400 + ".md", "текст")
+    # (новый файл — только там, где его можно завести: берём Workspaces)
+    long = ck.file_write(str(root), "Workspaces/" + "д" * 400 + ".md", "текст")
     assert long.get("error") and "записать" in long["error"], \
         f"отказ файловой системы не превращён в ответ: {long}"
-    assert not list((root / "Artifacts" / "ac").glob("*.aurora-tmp")), \
+    assert not list((root / "Workspaces").glob("*.aurora-tmp")), \
         "после отказа остался обрубок"
 
     # И линтер после сохранения не имеет права решать судьбу сохранения: он читает базу
@@ -1954,3 +1955,56 @@ def test_saving_does_not_silently_overwrite(tmp: Path):
     assert slow.get("ok"), "зависший линтер отменил сохранение"
     assert slow["lint"]["lines"] and "не ответил" in slow["lint"]["lines"][0], \
         "молчание линтера выглядит как «находок нет»"
+
+
+@test
+def test_panel_file_api_checks_real_path_and_creation(tmp: Path):
+    """Файловое API панели смотрит запрет по реальному пути, а новый файл заводит только там,
+    где это законно: ссылка `Artifacts/x.md` -> `Sources/a.md` не обход, корень проекта и
+    `Docs/` не принимают записи, `Workspaces/` принимает."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    root = tmp / "proj"
+    (root / "Artifacts").mkdir(parents=True)
+    (root / "Sources").mkdir()
+    (root / "Docs").mkdir()
+    (root / "Workspaces").mkdir()
+    target = root / "Sources" / "a.md"
+    target.write_text("зеркало\n", encoding="utf-8")
+    try:
+        os.symlink(str(target), str(root / "Artifacts" / "x.md"))
+        os.symlink(str(root / "Sources"), str(root / "Workspaces" / "src"))
+    except (OSError, NotImplementedError):
+        link_ok = False         # без прав на ссылки (Windows) эту часть проверять нечего
+    else:
+        link_ok = True
+    if link_ok:
+        r = ck.file_read(str(root), "Artifacts/x.md")
+        assert r.get("readonly"), "ссылка на Sources/ показана как редактируемая"
+        for res in (ck.file_write(str(root), "Artifacts/x.md", "затёрто\n"),
+                    ck.file_rename(str(root), "Artifacts/x.md", "y.md"),
+                    ck.file_delete(str(root), "Artifacts/x.md"),
+                    ck.file_write(str(root), "Workspaces/src/a.md", "затёрто\n"),
+                    ck.file_delete(str(root), "Workspaces/src/a.md")):
+            assert "только для чтения" in res.get("error", ""), f"ссылка стала обходом: {res}"
+        assert target.read_text(encoding="utf-8") == "зеркало\n", "файл цели изменён"
+        assert (root / "Artifacts" / "x.md").is_symlink(), "ссылка удалена или переименована"
+        assert (root / "Sources" / "a.md").exists()
+        # ссылка-папка не выводит в корень проекта и в Docs/ за новым файлом
+        os.symlink(str(root / "Docs"), str(root / "Workspaces" / "docs"))
+        bad = ck.file_write(str(root), "Workspaces/docs/new.md", "x\n")
+        assert "здесь файлы не заводят" in bad.get("error", ""), bad
+        assert not (root / "Docs" / "new.md").exists()
+
+    # новый файл: корень и Docs/ закрыты, Workspaces/ открыт, существующий перезаписывается
+    for rel in ("новый.md", "Docs/новый.md"):
+        res = ck.file_write(str(root), rel, "x\n")
+        assert "error" in res and not res.get("ok"), f"{rel}: запись нового файла прошла"
+        assert not (root / rel).exists(), f"{rel}: файл создан"
+    assert ck.file_write(str(root), "Workspaces/новый.md", "x\n").get("ok")
+    (root / "Docs" / "старый.md").write_text("а\n", encoding="utf-8")
+    assert ck.file_write(str(root), "Docs/старый.md", "б\n").get("ok"), \
+        "перезапись существующего файла сломана"
