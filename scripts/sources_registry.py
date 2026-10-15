@@ -89,25 +89,60 @@ def manifest_files(root: str = "") -> list:
                   if os.path.isfile(os.path.join(base, d, "connector.json")))
 
 
+# Сбои чтения манифестов за время жизни процесса: doctor и панель показывают их строкой,
+# а не теряют вместе с пропущенным модулем. Одна и та же причина копится один раз —
+# `installed()` зовут по нескольку раз за запуск.
+_REPORT: list = []
+
+
+def registry_report() -> list:
+    """Строки о манифестах, которые реестр пропустил (для doctor и панели)."""
+    return list(_REPORT)
+
+
+def _note(line: str) -> None:
+    if line not in _REPORT:
+        _REPORT.append(line)
+        print(f"sources_registry: {line}", file=sys.stderr)
+
+
+def _loader():
+    """`load_manifest` из `aurora_common` — той, что лежит рядом с этим файлом.
+
+    `update` может идти из копии старого выпуска в проекте: её `aurora_common` уже в памяти
+    и загрузчика конверта не знает, а реестр берётся из нового кита. Тогда читаем
+    `aurora_common.py` соседа по файлу, а не падаем на `AttributeError`.
+    """
+    fn = getattr(aurora_common, "load_manifest", None)
+    if fn:
+        return fn
+    import importlib.util
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aurora_common.py")
+    spec = importlib.util.spec_from_file_location("aurora_common_envelope", here)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.load_manifest
+
+
 def load(path: str) -> dict:
-    """Манифест + проверка обязательного. Кривой модуль лучше назвать, чем молча пропустить."""
-    try:
-        m = json.load(open(path, encoding="utf-8"))
-    except Exception as e:  # noqa: BLE001
-        print(f"sources_registry: {path} не читается: {e}", file=sys.stderr)
+    """Манифест + проверка обязательного. Кривой модуль лучше назвать, чем молча пропустить.
+
+    Чтение и проверка формы — общий загрузчик конверта (`aurora_common.load_manifest`):
+    он не бросает исключений, поэтому один неполный `connector.json` не обрушивает
+    `update` всех проектов. Любой отказ — `{}` и строка в `registry_report()`.
+    """
+    m, rep = _loader()(path, "connector")
+    for line in rep:
+        _note(line)
+    if m is None:
         return {}
     role = m.get("role", DEFAULT_ROLE)
     if role not in ROLES:
-        print(f"sources_registry: {m['id']}: роль «{role}» движку неизвестна "
-              f"(есть: {', '.join(ROLES)})", file=sys.stderr)
-        return False
-    for key in ("id", "kind", "mirror", "run"):
-        if key not in m:
-            print(f"sources_registry: в {path} нет поля {key} — модуль пропущен", file=sys.stderr)
-            return {}
+        _note(f"{m['id']}: роль «{role}» движку неизвестна (есть: {', '.join(ROLES)}) — модуль пропущен")
+        return {}
     if m["kind"] not in KINDS:
-        print(f"sources_registry: {m['id']}: вид «{m['kind']}» движку неизвестен "
-              f"(есть {', '.join(KINDS)}) — модуль пропущен", file=sys.stderr)
+        _note(f"{m['id']}: вид «{m['kind']}» движку неизвестен "
+              f"(есть {', '.join(KINDS)}) — модуль пропущен")
         return {}
     m["_path"] = path
     return m
@@ -152,11 +187,13 @@ def legacy(root: str = "", mods: dict = None) -> list:
     text = open(cfg, encoding="utf-8", errors="ignore").read() if os.path.isfile(cfg) else ""
     out = []
     for mid, m in sorted(mods.items()):
-        key = m["mirror"].get("legacy_path_key")
+        key = (m.get("mirror") or {}).get("legacy_path_key")
         if not key:
             continue
-        hit = re.search(rf'^\s*{key}\s*:\s*"?([^"\n#]+?)"?\s*$', text, re.M)
-        path = (hit.group(1).strip() if hit else m["mirror"]["default_path"]).rstrip("/")
+        hit = re.search(rf'^\s*{re.escape(key)}\s*:\s*"?([^"\n#]+?)"?\s*$', text, re.M)
+        path = (hit.group(1).strip() if hit else (m.get("mirror") or {}).get("default_path", "")).rstrip("/")
+        if not path:    # у модуля нет ни пути в конфиге, ни `mirror.default_path` — зеркалу негде жить
+            continue
         out.append({"id": os.path.basename(path), "module": mid, "path": path})
     return out
 
@@ -173,7 +210,7 @@ def instances(root: str = "") -> list:
     out = []
     for item in items:
         m = mods.get(item["module"])
-        path = (item.get("path") or (m["mirror"]["default_path"] if m else "")).rstrip("/")
+        path = (item.get("path") or (m["mirror"].get("default_path", "") if m else "")).rstrip("/")
         out.append({
             "id": item.get("id") or os.path.basename(path),
             "module": item["module"],
@@ -231,7 +268,7 @@ def main() -> int:
     print(f"Установлено модулей: {len(mods)}")
     for m in mods.values():
         print(f"  · {m['id']} — {m.get('title', '')} [{m['kind']} · "
-              f"{m.get('role', DEFAULT_ROLE)}] → {m['mirror']['default_path']}")
+              f"{m.get('role', DEFAULT_ROLE)}] → {m['mirror'].get('default_path', '—')}")
     print(f"\nПодключено в проекте: {len(inst)}"
           + ("" if declared() else "  (секции sources: нет — работают исторические зеркала)"))
     for i in inst:

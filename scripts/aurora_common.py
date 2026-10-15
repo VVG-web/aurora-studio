@@ -279,6 +279,126 @@ def write_if_changed(path: str, text: str) -> bool:
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
     return True
+
+
+# ---------------------------------------------------------------------------------
+# Конверт манифеста расширений (BL-ARC-44). Модули панели, коннекторы источников и скины
+# описывают себя файлами с разным словарём полей; общее у них — «конверт»: вид расширения,
+# id, версия API, название (строкой или по языкам) и `requires`. Читает конверт ОДИН
+# загрузчик с мини-схемой на каждый вид: сбой одного манифеста даёт строку в отчёт и
+# пропуск, а не исключение — кривое описание одного расширения не должно ронять update
+# всех проектов или главную страницу панели.
+#
+# Переходный период: манифест без `api_version` — формат до конверта, читается как v1.
+# `api_version` новее нашего — расширение написано под движок новее этого: пропуск с
+# причиной, а не догадка о незнакомых полях. Потребители переводятся на загрузчик по
+# очереди; пока часть читает файлы сама, оба чтения живут рядом.
+EXT_API_VERSION = 1
+_EXT_I18N = "i18n"      # строка или {язык: строка}
+_EXT_MAX_BYTES = 1 << 20   # манифест больше мегабайта — не манифест
+EXT_SCHEMAS = {
+    "connector": {
+        "required": {"id": str, "kind": str, "mirror": dict, "run": dict},
+        "optional": {"title": str, "role": str, "what": str, "since": str, "auth": dict,
+                     "settings_block": str, "settings": list, "requires": dict,
+                     "role_what": str, "api_version": int},
+        "nested": {"mirror": {"default_path": str, "state": str, "legacy_path_key": str},
+                   "run": {"script": str, "command": str, "skill": str},
+                   "auth": {"env_prefix": str, "what": str}},
+    },
+    "module": {
+        "required": {"id": str, "name": _EXT_I18N},
+        "optional": {"about": _EXT_I18N, "group": str, "order": (int, float), "needs": list,
+                     "commands": list, "for": str, "dev": bool, "requires": dict,
+                     "api_version": int},
+        "nested": {},
+    },
+    "skin": {
+        "required": {"id": str},
+        "optional": {"name": _EXT_I18N, "about": _EXT_I18N, "for": str, "requires": dict,
+                     "api_version": int},
+        "nested": {},
+    },
+}
+
+
+def _ext_type_ok(value, want) -> bool:
+    """Тип поля по схеме. `bool` — не число (`True` в `order` — ошибка, а не 1)."""
+    if want == _EXT_I18N:
+        return isinstance(value, str) or (isinstance(value, dict) and all(
+            isinstance(k, str) and isinstance(v, str) for k, v in value.items()))
+    if isinstance(value, bool) and want is not bool:
+        return False
+    return isinstance(value, want)
+
+
+def _ext_type_name(want) -> str:
+    if want == _EXT_I18N:
+        return "строка или {язык: строка}"
+    names = {str: "строка", int: "целое число", float: "число", dict: "объект",
+             list: "список", bool: "да/нет"}
+    return " или ".join(names.get(t, t.__name__) for t in (want if isinstance(want, tuple) else (want,)))
+
+
+def load_manifest(path, kind: str):
+    """Прочитать манифест расширения вида `kind` → `(манифест | None, [строки отчёта])`.
+
+    Манифест — копия файла с `api_version` (нет в файле — 1). `None` — расширение
+    пропущено, причина в отчёте. Исключений не бросает ни при каком входе: нет файла,
+    не JSON, корень не объект, нет обязательного, не тот тип поля (в том числе у
+    вложенных объектов), `api_version` новее поддерживаемого — всё это строка в отчёт.
+    Неизвестные поля не мешают: схема проверяет то, что знает, и не запрещает лишнего.
+    Имя в сообщениях — из имени файла/папки, пока `id` из файла не прочитан и не проверен.
+    """
+    name = os.path.basename(os.path.dirname(str(path))) if os.path.basename(str(path)) in (
+        "connector.json", "module.json") else os.path.splitext(os.path.basename(str(path)))[0]
+    pre = "%s «%s»" % (kind, name or str(path))
+    try:
+        schema = EXT_SCHEMAS.get(kind)
+        if schema is None:
+            return None, ["%s: вид расширения «%s» загрузчику неизвестен" % (pre, kind)]
+        with open(path, "rb") as f:
+            raw = f.read(_EXT_MAX_BYTES + 1)
+        if len(raw) > _EXT_MAX_BYTES:
+            return None, ["%s: манифест больше %d КиБ — пропущен" % (pre, _EXT_MAX_BYTES >> 10)]
+        try:
+            data = json.loads(raw.decode("utf-8-sig"))
+        except (ValueError, UnicodeDecodeError) as e:
+            return None, ["%s: манифест не читается как JSON (%s) — пропущен" % (pre, e)]
+        if not isinstance(data, dict):
+            return None, ["%s: корень манифеста должен быть объектом, а не %s — пропущен"
+                          % (pre, type(data).__name__)]
+        for key, want in schema["required"].items():
+            if key not in data:
+                return None, ["%s: нет обязательного поля «%s» — пропущен" % (pre, key)]
+        if isinstance(data.get("id"), str) and data["id"].strip():
+            pre = "%s «%s»" % (kind, data["id"])
+        for key, want in list(schema["required"].items()) + list(schema["optional"].items()):
+            if key in data and not _ext_type_ok(data[key], want):
+                return None, ["%s: поле «%s» — не %s — пропущен" % (pre, key, _ext_type_name(want))]
+        for key, subs in schema["nested"].items():
+            sub = data.get(key)
+            if not isinstance(sub, dict):
+                continue
+            for sk, want in subs.items():
+                if sk in sub and not _ext_type_ok(sub[sk], want):
+                    return None, ["%s: поле «%s.%s» — не %s — пропущен"
+                                  % (pre, key, sk, _ext_type_name(want))]
+        if not str(data["id"]).strip():
+            return None, ["%s: пустой id — пропущен" % pre]
+        ver = data.get("api_version", 1)
+        if isinstance(ver, bool) or not isinstance(ver, int) or ver < 1:
+            return None, ["%s: api_version должен быть целым числом от 1 — пропущен" % pre]
+        if ver > EXT_API_VERSION:
+            return None, ["%s: написан под API расширений v%d, а движок поддерживает до v%d — "
+                          "пропущен (обновите кит)" % (pre, ver, EXT_API_VERSION)]
+        out = dict(data)
+        out["api_version"] = ver
+        return out, []
+    except Exception as e:  # noqa: BLE001 — загрузчик не имеет права ронять вызывающего
+        return None, ["%s: манифест не прочитан (%s: %s) — пропущен" % (pre, type(e).__name__, e)]
+
+
 # `canonical` убран из схемы в 1.10.0 (ступень не использовалась ни в одном
 # проекте). Читаем его как синоним `verified`: старые базы не должны разом
 # потерять доверие к карточкам. Новое знание пишется только как `verified`.

@@ -103,6 +103,31 @@ connectors/<id>/
 
 The manifest is JSON, not YAML: it is read by the engine, not by a human, and has to be parsed without external dependencies.
 
+## Manifest envelope and API version
+
+A single shared loader reads manifests: `load_manifest(path, kind)` in `scripts/aurora_common.py`
+(BL-ARC-44). Each extension kind (`connector`, `module`, `skin`) has its own mini-schema; what they
+share is the "envelope": `id`, `api_version`, a title (a string or per language) and `requires`.
+
+- `api_version` is the extension API version a manifest was written for. When the field is missing the
+  manifest is in the pre-envelope format and is read as `1`; manifests already in projects need no
+  rewriting. A version newer than the engine knows (currently `EXT_API_VERSION = 1`) makes the
+  extension skipped with a reason ("update the kit") instead of being read by guesswork.
+- The loader checks that the root is an object, that required fields (`id`, `kind`, `mirror`, `run`)
+  exist, and that fields and nested objects (`mirror.default_path`, `run.command`, `auth.env_prefix`)
+  have the right type. Unknown fields do not get in its way.
+- **A bad manifest does not bring the engine down.** Broken JSON, a list as the root, a missing `id`,
+  a wrong type, a future `api_version`, an unknown `role` or `kind` — the module is skipped, the reason
+  goes into the report (`sources_registry.registry_report()`) and stderr as a line, and the other
+  modules are read as usual. The name in a message comes from the file or folder until the `id` has
+  been read and checked.
+- A connector's `kind` stays the storage kind (`wiki` or `board`); the extension kind is passed to
+  the loader by the caller.
+- Transition period: the panel and the installer still read their own manifests; they move to the
+  shared loader one by one, and until then both readings accept the format without `api_version`.
+- `mirror.default_path` is required for a mirror but not for reading the registry: a module without it
+  and without a path in `aurora.config.yaml` has no mirror, while the other modules keep working.
+
 ## How a module gets into a project
 
 1. The folder is put into the kit's `connectors/`.
