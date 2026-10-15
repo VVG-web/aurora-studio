@@ -5,10 +5,18 @@
 провайдер Git, провайдер LLM, вид артефакта, ассистент) по литералам из самих манифестов и
 реестров; число не должно расти относительно `tests/ext_footprint_baseline.json`.
 Модель и сеть не используются; копии дерева — только во временных папках.
+
+Conformance расширений (BL-ARC-02, срез 2): каждый манифест репозитория (коннектор, раздел
+панели, скин, провайдер Git) проходит общий загрузчик без отчёта, id совпадает с папкой или
+файлом и уникален в виде; фиктивное расширение каждого вида подключается без правки ядра, а
+соседний битый манифест его не прячет и отвечает записью об ошибке.
 """
 from __future__ import annotations
 
 import ast
+import contextlib
+import importlib
+import io
 import json
 import shutil
 import sys
@@ -152,3 +160,173 @@ def test_ext_footprint_module_runs_on_python_311(_t):
     ast.parse(src, feature_version=(3, 11))
     base = json.loads(EF.BASELINE.read_text(encoding="utf-8"))
     assert set(base["counts"]) == set(EF.ratcheted()), base
+
+
+# ----------------------------------------------- срез 2: conformance расширений
+
+
+def _ck():
+    """Панель как модуль (без запуска сервера): у неё `modules()` и `skins()`."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    return importlib.import_module("aurora_cockpit")
+
+
+def _put(path: Path, data) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(data if isinstance(data, str) else json.dumps(data, ensure_ascii=False),
+                    encoding="utf-8")
+    return path
+
+
+def _repo_manifests() -> dict:
+    """{вид: [(id по папке или файлу, путь манифеста)]} — всё, что лежит в репозитории."""
+    return {
+        "connector": [(p.parent.name, p) for p in sorted((KIT / "connectors").glob("*/connector.json"))],
+        "module": [(p.parent.name, p) for p in sorted((KIT / "cockpit" / "modules").glob("*/module.json"))],
+        "provider": [(p.parent.name, p) for p in sorted((KIT / "gitproviders").glob("*/provider.json"))],
+    }
+
+
+@test
+def test_every_repo_manifest_passes_the_envelope(_t):
+    """Каждый connector.json, module.json и provider.json репозитория читается загрузчиком без
+    отчёта (строго), его id совпадает с папкой и уникален в виде; расширений каждого вида не меньше базы."""
+    import aurora_common as C
+    found = _repo_manifests()
+    for kind, least in (("connector", 3), ("module", 17), ("provider", 4)):
+        items = found[kind]
+        assert len(items) >= least, (kind, [n for n, _ in items])
+        ids = []
+        for name, path in items:
+            got, rep = C.load_manifest(path, kind)
+            assert got is not None and rep == [], (kind, name, rep)
+            assert got["id"] == name, (kind, name, got["id"])
+            assert got["api_version"] == 1, (kind, name, got["api_version"])
+            ids.append(got["id"])
+        assert len(ids) == len(set(ids)), (kind, ids)
+    # провайдеры: схема требует список способов входа и название на каждом языке описания
+    for name, path in found["provider"]:
+        got, _ = C.load_manifest(path, "provider")
+        assert got["auth"] and set(got["about"]) >= {"ru", "en"}, (name, got)
+
+
+@test
+def test_every_repo_skin_passes_the_envelope(_t):
+    """Скины репозитория проходят `skins()` без ошибок, их id совпадают с файлами и не повторяются."""
+    ck = _ck()
+    files = sorted(p.stem for p in (KIT / "cockpit" / "skins").glob("*.css"))
+    got = ck.skins()
+    assert len(files) >= 5 and [r["id"] for r in got] == files, ([r["id"] for r in got], files)
+    assert not [r for r in got if "error" in r], got
+    assert len({r["id"] for r in got}) == len(got)
+
+
+@test
+def test_provider_loader_reports_instead_of_raising(tmp: Path):
+    """Битый provider.json — отчёт, а не исключение; сосед читается; имя в отчёте — из папки."""
+    import aurora_common as C
+    root = tmp / "gitproviders"
+    good = {"id": "demo", "title": "Demo", "auth": ["token"], "api": "/api", "about": {"ru": "Р", "en": "E"}}
+    _put(root / "demo" / "provider.json", good)
+    cases = {
+        "junk": "{ не json",
+        "noid": {"title": "Нет id"},
+        "notitle": {"id": "notitle"},
+        "future": {**good, "id": "future", "api_version": 99},
+        "authstr": {**good, "id": "authstr", "auth": "token"},
+        "titlenum": {**good, "id": "titlenum", "title": 5},
+        "aboutnum": {**good, "id": "aboutnum", "about": {"ru": 5}},
+        "list": "[1]",
+        "empty": "",
+    }
+    for name, data in cases.items():
+        _put(root / name / "provider.json", data)
+    (root / "nofile").mkdir()
+    res = {}
+    for d in sorted(root.iterdir()):
+        res[d.name] = C.load_manifest(d / "provider.json", "provider")      # не бросает
+    assert res["demo"][0]["id"] == "demo" and res["demo"][1] == []
+    for name in cases:
+        got, rep = res[name]
+        assert got is None and len(rep) == 1 and "provider «%s»" % name in rep[0], (name, got, rep)
+    assert res["nofile"][0] is None and "provider «nofile»" in res["nofile"][1][0], res["nofile"]
+    assert "v99" in res["future"][1][0] and "auth" in res["authstr"][1][0]
+    # мягкий режим тоже не роняет: необязательное поле не того типа — отброшено, обязательное — отказ
+    got, notes = C.load_manifest(root / "authstr" / "provider.json", "provider", lenient=True)
+    assert got and "auth" not in got and notes, (got, notes)
+    assert C.load_manifest(root / "titlenum" / "provider.json", "provider", lenient=True)[0] is None
+
+
+@test
+def test_fictive_panel_section_is_found_next_to_broken_manifests(tmp: Path):
+    """Новый раздел панели — только папка с module.json: он в `modules()` без правки ядра, а соседи
+    (не JSON, нет id, api из будущего, чужой id) не прячут его и дают записи об ошибке."""
+    root = tmp / "modules"
+    _put(root / "fictive" / "module.json", {"id": "fictive", "name": {"ru": "Фиктивный", "en": "Fictive"},
+                                            "group": "project", "order": 7})
+    _put(root / "junk" / "module.json", "{ не json")
+    _put(root / "noid" / "module.json", {"name": {"ru": "Без id"}})
+    _put(root / "future" / "module.json", {"id": "future", "name": {"ru": "Б"}, "api_version": 99})
+    _put(root / "other" / "module.json", {"id": "elsewhere", "name": {"ru": "Чужой"}})
+    ck = _ck()
+    keep = ck.MODULES_DIR
+    ck.MODULES_DIR = str(root)
+    try:
+        by = {m["id"]: m for m in ck.modules()}
+    finally:
+        ck.MODULES_DIR = keep
+    assert set(by) == {"fictive", "junk", "noid", "future", "other"}, sorted(by)
+    ok = by["fictive"]
+    assert "error" not in ok and "warn" not in ok and ok["order"] == 7 and ok["name"]["en"] == "Fictive", ok
+    for bad in ("junk", "noid", "future", "other"):
+        assert set(by[bad]) == {"id", "error"} and by[bad]["error"], (bad, by[bad])
+    assert "v99" in by["future"]["error"]
+
+
+@test
+def test_fictive_skin_is_found_next_to_broken_skins(tmp: Path):
+    """Новый скин — только файл .css с шапкой: он в `skins()` без правки ядра; не UTF-8 и api из
+    будущего его не прячут и отвечают записью об ошибке."""
+    root = tmp / "skins"
+    root.mkdir()
+    (root / "fictive.css").write_text("/* name: Фиктивный\n   api: 1\n   about: Проба. */\n", encoding="utf-8")
+    (root / "latin.css").write_bytes(b"/* name: \xff\xfe */\n")
+    (root / "future.css").write_text("/* name: Б\n   api: 99 */\n", encoding="utf-8")
+    ck = _ck()
+    keep = ck.SKINS_DIR
+    ck.SKINS_DIR = str(root)
+    try:
+        by = {r["id"]: r for r in ck.skins()}
+    finally:
+        ck.SKINS_DIR = keep
+    assert set(by) == {"fictive", "latin", "future"}, sorted(by)
+    assert "error" not in by["fictive"] and by["fictive"]["name"] == "Фиктивный" and by["fictive"]["api"] == 1
+    for bad in ("latin", "future"):
+        assert set(by[bad]) == {"id", "error"} and by[bad]["error"], (bad, by[bad])
+
+
+@test
+def test_fictive_connector_is_found_next_to_broken_manifests(tmp: Path):
+    """Новый коннектор — только connector.json: он в реестре источников без правки ядра; соседи
+    (не JSON, нет id, api из будущего) не прячут его, и каждый назван в отчёте реестра."""
+    import sources_registry as R
+    R._REPORT.clear()
+    root = tmp / "proj"
+    conn = root / ".aurora" / "connectors"
+    _put(conn / "fictive.json", {
+        "id": "fictive", "title": "Фиктивный", "kind": "board", "role": "tasks",
+        "mirror": {"default_path": "Sources/Fictive", "state": "update_log.md"},
+        "run": {"script": "fictive_export.py", "command": "sync:fictive", "skill": "fictive-sync"}})
+    _put(conn / "junk.json", "{ не json")
+    _put(conn / "noid.json", {"kind": "board", "mirror": {}, "run": {}})
+    _put(conn / "future.json", {
+        "id": "future", "kind": "board", "mirror": {}, "run": {}, "api_version": 99})
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            mods = R.installed(str(root))
+            rep = "\n".join(R.registry_report())
+    finally:
+        R._REPORT.clear()
+    assert set(mods) == {"fictive"} and mods["fictive"]["mirror"]["default_path"] == "Sources/Fictive", sorted(mods)
+    for name in ("junk", "noid", "future"):
+        assert "connector «%s»" % name in rep, (name, rep)

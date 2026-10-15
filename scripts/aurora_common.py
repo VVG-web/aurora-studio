@@ -319,6 +319,14 @@ EXT_SCHEMAS = {
                      "api_version": int},
         "nested": {},
     },
+    # Провайдер Git (`gitproviders/<id>/provider.json`): мини-схема под нынешние файлы. Читает
+    # её пока только проверка расширений в тестах; `git_sync` берёт эти файлы сам.
+    "provider": {
+        "required": {"id": str, "title": str},
+        "optional": {"version": str, "since": str, "api": str, "auth": list,
+                     "about": _EXT_I18N, "requires": dict, "api_version": int},
+        "nested": {},
+    },
 }
 
 
@@ -388,7 +396,7 @@ def load_manifest(path, kind: str, lenient: bool = False):
     `id` и `api_version` (в том числе его тип) проверяются так же строго.
     """
     name = os.path.basename(os.path.dirname(str(path))) if os.path.basename(str(path)) in (
-        "connector.json", "module.json") else os.path.splitext(os.path.basename(str(path)))[0]
+        "connector.json", "module.json", "provider.json") else os.path.splitext(os.path.basename(str(path)))[0]
     pre = "%s «%s»" % (kind, name or str(path))
     try:
         schema = EXT_SCHEMAS.get(kind)
