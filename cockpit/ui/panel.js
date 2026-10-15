@@ -4549,12 +4549,24 @@ async function callHook(id, rec, name){
   catch (e){ showFault(t("modules.refresh_failed", {id, why: name + ": " + e.message})); }
 }
 
+// Хуки одного раздела идут друг за другом: если из раздела ушли, пока медленный `onShow` ещё
+// ждёт данных, `onHide` встаёт в очередь за ним, а не обгоняет — иначе опрос, который `onShow`
+// запустит позже, остался бы работать у скрытого раздела.
+function queueHook(id, rec, name){
+  // Нет незаконченного хука — зовём сразу (порядок «onHide ушедшего раньше refresh нового» цел).
+  const run = () => callHook(id, rec, name);
+  const p = rec.hooks ? rec.hooks.then(run) : run();     // callHook не отказывает: сбой он показывает сам
+  rec.hooks = p;
+  p.then(() => { if (rec.hooks === p) rec.hooks = null; });
+  return p;
+}
+
 // Раздел, из которого ушли: `onHide` — остановить таймеры и опросы, которые нужны только на виду.
 function hideModule(id){
   const rec = MODULES.get(id);
   if (!rec || !rec.mod || !rec.shown) return;
   rec.shown = false;
-  callHook(id, rec, "onHide");
+  queueHook(id, rec, "onHide");
 }
 
 function moduleTitle(m){
@@ -4578,7 +4590,7 @@ async function loadModules(){
     // Раздел поднят, но с умолчанием вместо кривого поля манифеста: скажем, что починить.
     if (m.warn && m.warn.length)
       toast(t("modules.warn", {id: m.id, why: m.warn.join("; ")}), "warn");
-    MODULES.set(m.id, {manifest: m, mod: null, ns: null, section: null, subs: null, stale: false, shown: false});
+    MODULES.set(m.id, {manifest: m, mod: null, ns: null, section: null, subs: null, stale: false, shown: false, hooks: null});
     addModuleNav(m);
     if (m.behind)
       console.warn(`модуль ${m.id} собран под ядро ${m["for"]}, установлено ${S.state.kit.version}`);
@@ -4660,7 +4672,7 @@ async function mountModule(id, payload){
     }catch(e){
       // Раздел, успевший начать работу, освобождает то, что занял (таймеры, подписки).
       if (rec.mod) await callHook(id, rec, "dispose");
-      rec.mod = null; rec.ns = null; rec.subs = null; rec.stale = false; rec.shown = false;
+      rec.mod = null; rec.ns = null; rec.subs = null; rec.stale = false; rec.shown = false; rec.hooks = null;
       if (rec.section){ rec.section.remove(); rec.section = null; }
       toast(t("modules.failed", {id, why: e.message}), "err");
       return;
@@ -4669,12 +4681,14 @@ async function mountModule(id, payload){
   rec.section.classList.toggle("on", S.view === id);
   // Груз переходa: «открой справку на этом документе», «покажи карточку на
   // графе». Без него раздел пришлось бы дёргать через глобальную переменную.
-  await rec.mod.refresh?.(moduleCtx(id, rec.section), payload);
-  rec.stale = false;
+  // Сбой первой отрисовки — сообщение, но не повод лишать раздел `onShow`: он на экране, и
+  // опросу, который он запускает, ещё предстоит выровнять картину.
+  try { await rec.mod.refresh?.(moduleCtx(id, rec.section), payload); rec.stale = false; }
+  catch (e){ showFault(t("modules.refresh_failed", {id, why: e.message})); }
   // Раздел всё ещё на виду (человек мог уйти, пока шла отрисовка) и ещё не показан: `onShow`.
   if (S.view === id && !rec.shown){
     rec.shown = true;
-    await callHook(id, rec, "onShow");
+    await queueHook(id, rec, "onShow");
   }
 }
 
@@ -4686,11 +4700,11 @@ async function refreshModules(){ await dispatchModules("data"); }
 // Событие ядра — разделам. Раздел без `lifecycle` ведёт себя как прежде: «data» перерисовывает
 // его всегда, другое событие — только если он назвал его в `refreshOn`. Раздел с
 // `export const lifecycle = 1` перерисовывается лишь на виду; скрытому достаётся подписка
-// `ctx.on(event, fn)`, а у не подписанного ставится `rec.stale` — полная отрисовка случится при
-// открытии. Так скрытые разделы не строят карточки и не ходят за данными на каждое событие.
+// `ctx.on(event, fn)`, а у не подписанного ставится `rec.stale`; при открытии раздел всё равно
+// отрисовывается целиком (пометка пока лишь сведение для будущего пропуска повторной отрисовки). Так скрытые разделы не строят карточки и не ходят за данными на каждое событие.
 async function dispatchModules(event = "data"){
-  for (const [id, rec] of MODULES){
-    if (!rec.mod) continue;
+  const one = async (id, rec) => {
+    if (!rec.mod) return;           // раздел мог не подняться, пока шла очередь
     const on = modField(rec, "refreshOn");
     const subs = rec.subs && rec.subs.get(event);
     const named = Array.isArray(on) && on.includes(event);
@@ -4699,18 +4713,28 @@ async function dispatchModules(event = "data"){
     // всю панель с вчерашними числами, и причину видно только в консоли браузера.
     try {
       if (!lazy){
+        // Подписки `ctx.on` у раздела без `lifecycle` не зовутся: он перерисовывается целиком.
         if (event === "data" || named) await rec.mod.refresh?.(moduleCtx(id, rec.section));
       } else if (event === "data" || named || (subs && subs.size)){
         if (S.view === id){
           await rec.mod.refresh?.(moduleCtx(id, rec.section));
           rec.stale = false;
         } else if (subs && subs.size){
-          for (const fn of [...subs]) await fn(moduleCtx(id, rec.section));
+          // Подписчики не мешают друг другу: сбой одного — сообщение, остальные зовутся.
+          for (const fn of [...subs]){
+            try { await fn(moduleCtx(id, rec.section)); }
+            catch (e){ showFault(t("modules.refresh_failed", {id, why: event + ": " + e.message})); }
+          }
         } else rec.stale = true;
       }
     }
     catch (e){ showFault(t("modules.refresh_failed", {id, why: e.message})); }
-  }
+  };
+  const live = [...MODULES].filter(([, rec]) => rec.mod);
+  // «data» идёт по очереди, как прежде; «health» приходит часто, и медленный раздел не должен
+  // задерживать перерисовку соседей, поэтому такие события обслуживаются вместе.
+  if (event === "data") for (const [id, rec] of live) await one(id, rec);
+  else await Promise.all(live.map(([id, rec]) => one(id, rec)));
 }
 
 // Подписи разделов в меню живут в манифесте, а не в каталоге строк: сменили язык —

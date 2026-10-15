@@ -541,6 +541,45 @@ const mk = (id, extra) => Object.assign({
   check(!log.includes("SLOW.onShow") && !log.includes("SLOW.onHide"), "раздел, из которого ушли до конца отрисовки, не получает onShow: " + log.join());
   MODULES.delete("SLOW");
 
+  // 2б. медленный onShow: уход из раздела не обгоняет его, onHide приходит после конца onShow
+  let relShow;
+  const slowShow = add("SS", {mount(){}, refresh(){}, onShow(){ log.push("SS.onShow.start"); return new Promise(r => { relShow = () => { log.push("SS.onShow.end"); r(); }; }); },
+    onHide(){ log.push("SS.onHide"); }});
+  S.view = "A"; log.length = 0;
+  show("SS"); await tickAll();
+  show("A"); await tickAll();
+  check(log.includes("SS.onShow.start") && !log.includes("SS.onHide"), "onHide ждёт конца медленного onShow: " + log.join());
+  relShow(); await tickAll();
+  check(log.join().indexOf("SS.onShow.end") < log.join().indexOf("SS.onHide") && log.includes("SS.onHide"), "после onShow приходит onHide: " + log.join());
+  MODULES.delete("SS");
+  // 2в. refresh упал при первом показе: сообщение есть, onShow всё равно приходит
+  add("RF", {mount(){}, refresh(){ throw new Error("первый refresh упал"); }, onShow(){ log.push("RF.onShow"); }});
+  S.view = "A"; log.length = 0; faults.length = 0;
+  show("RF"); await tickAll();
+  check(log.includes("RF.onShow") && MODULES.get("RF").shown === true, "сбой первого refresh не лишает раздел onShow: " + log.join());
+  check(faults.length === 1 && faults[0].includes("первый refresh упал"), "сбой первого refresh показан: " + faults.join("|"));
+  MODULES.delete("RF");
+  // 2г. подписка ctx.on у раздела без lifecycle не зовётся; сбой подписчика не мешает остальным и соседям
+  add("NL", mk("NL")); moduleCtx("NL", {}).on("health", () => log.push("NL.fn"));
+  const lz = add("LZ", mk("LZ"), {lifecycle: 1});
+  const cz = moduleCtx("LZ", {});
+  cz.on("health", () => { throw new Error("подписчик 1"); });
+  cz.on("health", () => log.push("LZ.fn2"));
+  S.view = "A"; log.length = 0; faults.length = 0;
+  await dispatchModules("health");
+  check(!log.includes("NL.fn") && !log.includes("NL.refresh"), "ctx.on без lifecycle игнорируется: " + log.join());
+  check(log.includes("LZ.fn2") && faults.length === 1 && faults[0].includes("подписчик 1"), "сбой подписчика не прерывает остальных: " + log.join() + "|" + faults.join("|"));
+  MODULES.delete("NL"); MODULES.delete("LZ");
+  // 2д. «health» обслуживает разделы одновременно: медленный не задерживает соседа
+  let relSlow;
+  add("W1", {mount(){}, refresh(){ return new Promise(r => { relSlow = r; }); }, refreshOn: ["health"]});
+  add("W2", mk("W2", {refreshOn: ["health"]}));
+  log.length = 0;
+  const pending = dispatchModules("health"); await tickAll();
+  check(log.includes("W2.refresh"), "медленный раздел не задерживает соседа на «health»: " + log.join());
+  relSlow(); await pending;
+  MODULES.delete("W1"); MODULES.delete("W2");
+
   // 3. падение хука одного раздела не мешает другому и переходу
   const F = add("F", mk("F", {onHide(){ throw new Error("хук упал"); }, onShow(){}}));
   const G = add("G", mk("G", hooks("G")));
@@ -628,7 +667,12 @@ def test_module_lifecycle_is_documented(_t):
     """Справочник автора раздела (ru) и описание панели (en) называют хуки, ленивое обновление и события."""
     ru = (KIT / "cockpit" / "modules" / "README.md").read_text(encoding="utf-8")
     en = (KIT / "docs" / "en" / "control-panel.md").read_text(encoding="utf-8")
+    ru_docs = (KIT / "docs" / "control-panel-ui-requirements.md").read_text(encoding="utf-8")
     for word in ("lifecycle", "onShow", "onHide", "dispose", "refreshOn", "ctx.on", "api_version"):
         assert word in ru, f"README раздела: нет «{word}»"
         assert word in en, f"docs/en/control-panel.md: нет «{word}»"
-    assert "как прежде" in ru and "works as before" in en
+        assert word in ru_docs, f"docs/control-panel-ui-requirements.md: нет «{word}»"
+    assert "как прежде" in ru and "works as before" in en and "как прежде" in ru_docs
+    # ctx.on работает только у раздела с lifecycle — об этом сказано везде
+    assert "только у\nраздела с `lifecycle = 1`" in ru or "только у раздела с `lifecycle = 1`" in ru
+    assert "only for a section with `lifecycle = 1`" in en
