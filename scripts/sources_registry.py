@@ -228,12 +228,10 @@ def instances(root: str = "") -> list:
     out = []
     for item in items:
         m = mods.get(item["module"])
+        # Путь из `sources:`/`paths:` конфига пишет сам владелец проекта (`Sources/Wiki (old)`,
+        # `../Shared/Confluence`): его не ограничиваем. Проверка пути стоит только на пути из
+        # МАНИФЕСТА (`mirror.default_path`) — она в `load()`, до сюда плохой манифест не доходит.
         raw = item.get("path") or (m["mirror"].get("default_path", "") if m else "")
-        if raw and not safe_relpath(raw):
-            # путь из `sources:` конфига проверяется так же, как путь из манифеста
-            _note(f"{item.get('id') or item['module']}: путь зеркала «{str(raw)[:80]!r}» не годится "
-                  "в путь внутри проекта — зеркало пропущено")
-            continue
         path = raw.rstrip("/")
         out.append({
             "id": item.get("id") or os.path.basename(path),

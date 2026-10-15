@@ -28,7 +28,7 @@ from pathlib import Path
 # Разбор и запись скаляра — общим правилом движка: настройка, панель, синки и отчёт
 # читают конфиг одной функцией, иначе формы записи разъезжаются (так и пропадал JQL
 # с датой в двойных кавычках).
-from aurora_common import config_hosts, ext_safe_relpath, yaml_scalar, yaml_str  # noqa: E402,F401
+from aurora_common import config_hosts, yaml_scalar, yaml_str  # noqa: E402,F401
 
 
 def read_config(path: Path) -> dict:
@@ -110,9 +110,10 @@ def source_sections(target: Path, slug: str) -> tuple:
         import sources_registry as R
     except ImportError:                       # конфиг настраивают из проекта без реестра
         return "", ""
-    # путь пишется в конфиг строкой без экранирования: небезопасный реестр отдать не должен,
-    # но форма настроек не полагается на это одна (перевод строки внедрил бы чужие строки YAML)
-    items = [i for i in R.instances(str(target)) if not i["path"] or ext_safe_relpath(i["path"])]
+    # путь из конфига проекта пишет сам владелец, из манифеста — проверяет реестр (`load()`):
+    # запись конфига форма сохраняет как есть, иначе первое же сохранение стёрло бы зеркало
+    # вроде `Sources/Wiki (old)` вместе с его sync-скиллом
+    items = R.instances(str(target))
     if not items:
         return "", ""
     src = ["\n# Подключённые модули источников. Манифесты — в .aurora/connectors/,",

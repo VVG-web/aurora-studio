@@ -844,8 +844,8 @@ def _project_with_hostile_manifests(tmp: Path) -> Path:
 @test
 def test_registry_drops_connector_with_escaping_mirror_path(tmp: Path):
     """Проверка пути зеркала стоит в общем читателе проектных манифестов: `sources_registry.load()` отбрасывает манифест
-    с небезопасным `mirror.default_path` строкой в отчёт реестра, годный читается; путь из `sources:` конфига проходит ту же
-    проверку, и `instances()` его не отдаёт."""
+    с небезопасным `mirror.default_path` строкой в отчёт реестра, годный читается; путь из `sources:` конфига
+    белым списком не ограничивается: его пишет владелец, `instances()` отдаёт его как есть."""
     import sources_registry as R
     root = _project_with_hostile_manifests(tmp)
     mods = R.installed(str(root))
@@ -856,13 +856,12 @@ def test_registry_drops_connector_with_escaping_mirror_path(tmp: Path):
     assert all("\n" not in line for line in R.registry_report()), rep      # строка отчёта — одна строка
     paths = [i["path"] for i in R.instances(str(root))]
     assert "Sources/Fine" in paths and not any(".." in p or "\n" in p for p in paths), paths
-    # путь из конфига: небезопасный отбрасывается, безопасный остаётся
+    # путь из конфига пишет сам владелец: реестр отдаёт его как есть, без белого списка манифеста
     cfg = root / "aurora.config.yaml"
     cfg.write_text(cfg.read_text(encoding="utf-8") + "sources:\n  - id: Esc\n    module: fine\n    path: ../esc\n"
                    "  - id: Good\n    module: fine\n    path: Sources/Good\n", encoding="utf-8")
     got = {i["id"]: i["path"] for i in R.instances(str(root))}
-    assert got == {"Good": "Sources/Good"}, got
-    assert any("../esc" in line for line in R.registry_report()), R.registry_report()
+    assert got == {"Esc": "../esc", "Good": "Sources/Good"}, got
     # годные пути по-прежнему принимаются (в том числе с хвостовым «/»)
     assert R.safe_relpath("Sources/Notion/") and not R.safe_relpath("/etc") and not R.safe_relpath("")
 
@@ -887,3 +886,77 @@ def test_settings_form_and_update_do_not_use_escaping_mirror_path(tmp: Path):
         "update создал папку вне проекта"
     assert (root / "Sources" / "Fine").is_dir() and not (root / "Sources" / "x").exists()
     assert not any("outside_dir" in str(p) or "role: y" in str(p) for p in root.rglob("*")), "в проекте появился чужой путь"
+
+
+# пути, которые владелец пишет в `sources:` собственного конфига: скобки, плюс, обратная косая, фигурные скобки, «..»
+_OWNER_PATHS = {"Old": "Sources/Wiki (old)", "Prj": "Sources/JIRA (PRJ-A)", "Plus": "Sources/Wiki+Docs",
+                "Shared": "../Shared/Confluence", "Curly": "Sources/Wiki {old}"}
+
+
+def _project_with_owner_paths(tmp: Path) -> Path:
+    """Проект, чей `sources:` ссылается на установленные модули с путями вне белого списка манифеста."""
+    root = make_project(tmp)
+    rows = "".join(f"  - id: {k}\n    module: {'jira-dc' if k == 'Prj' else 'confluence-dc'}\n    path: {v}\n"
+                   for k, v in _OWNER_PATHS.items())
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip("\n") + "\n\nsources:\n" + rows, encoding="utf-8")
+    return root
+
+
+@test
+def test_owner_mirror_paths_in_config_are_kept(tmp: Path):
+    """Путь зеркала из `sources:` собственного конфига («Sources/Wiki (old)», «Sources/JIRA (PRJ-A)», «../Shared/…»)
+    остаётся в `instances()`, `roles()`, `mirror_paths()` и `mirror_dirs()`; белый список ограничивает только путь
+    из манифеста."""
+    import aurora_update as AU
+    import sources_registry as R
+    root = _project_with_owner_paths(tmp)
+    got = {i["id"]: i["path"] for i in R.instances(str(root))}
+    assert got == _OWNER_PATHS, got
+    roles = R.roles(str(root))
+    assert roles.get("Sources/Wiki (old)") == "artifacts" and roles.get("Sources/JIRA (PRJ-A)") == "tasks", roles
+    assert set(R.mirror_paths(str(root))) == set(_OWNER_PATHS.values()), R.mirror_paths(str(root))
+    assert set(AU.mirror_dirs(root)) == set(_OWNER_PATHS.values()), AU.mirror_dirs(root)
+    assert not any("Sources/Wiki" in line or "Shared" in line for line in R.registry_report()), R.registry_report()
+
+
+@test
+def test_settings_form_keeps_owner_mirror_path(tmp: Path):
+    """Первое же сохранение формы настроек не стирает зеркало с путём владельца: запись `sources:` на месте
+    вместе со строкой sync-скилла, повторное сохранение конфиг не меняет."""
+    import aurora_setup as S
+    root = _project_with_owner_paths(tmp)
+    src, skills = S.source_sections(root, "demo")
+    for k, v in _OWNER_PATHS.items():
+        assert f"id: {k}\n    module:" in src and f"path: {v}\n" in src, (k, src)
+    assert "jira-sync-demo" in skills or "confluence-sync-demo" in skills, skills
+    cfg = root / "aurora.config.yaml"
+    with contextlib.redirect_stdout(io.StringIO()):
+        S.run_answers(root, {"name": "Новое имя"})
+    text = cfg.read_text(encoding="utf-8")
+    assert 'name: "Новое имя"' in text, text
+    for v in _OWNER_PATHS.values():
+        assert f"path: {v}\n" in text, (v, text)
+    import sources_registry as R
+    assert {i["path"] for i in R.instances(str(root))} == set(_OWNER_PATHS.values())
+    with contextlib.redirect_stdout(io.StringIO()):
+        S.run_answers(root, {})
+    assert cfg.read_text(encoding="utf-8") == text, "повторное сохранение формы меняет конфиг"
+
+
+@test
+def test_panel_sources_survives_brace_in_registry_output(tmp: Path):
+    """Реестр печатает JSON в stdout, заметки — в stderr; панельный `sources()` не режет вывод по последней «}»:
+    «}» в пути из конфига и в тексте заметки (манифест с неизвестной ролью) раздел «Источники» не опустошает."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    root = _project_with_owner_paths(tmp)
+    _write(root / ".aurora" / "connectors" / "weird.json", _connector("weird", role="bad}role"))
+    cp = run("sources_registry.py", "--json", cwd=root)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert "bad}role" in cp.stderr and "bad}role" not in cp.stdout, cp.stderr     # заметка — в stderr, не в stdout
+    assert json.loads(cp.stdout)["instances"], cp.stdout                           # stdout — чистый JSON
+    res = ck.sources(str(root))
+    assert "error" not in res, res
+    assert {i["path"] for i in res["instances"]} == set(_OWNER_PATHS.values()), res["instances"]

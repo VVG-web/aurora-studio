@@ -3961,7 +3961,9 @@ def sources(project: str) -> dict:
     """Что за модули источников установлены и что подключено — спрашиваем реестр проекта."""
     rc, out = run_capture(project, "sources_registry.py", ["--json"])
     try:
-        return json.loads(out[out.index("{"):out.rindex("}") + 1])
+        # stdout идёт первым, заметки реестра (stderr) — после него: берём первый JSON-объект и
+        # не режем по последней «}», которая может оказаться в тексте заметки
+        return json.JSONDecoder().raw_decode(out[out.index("{"):])[0]
     except Exception:
         return {"installed": [], "instances": [], "error": out.strip()[:300]}
 

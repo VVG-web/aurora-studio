@@ -131,8 +131,10 @@ and its fields are checked by a test (`tests/cases/part_44.py`), not by the load
   `connectors/*/connector.json` via `load_connector_manifest` (the loader plus a name check). A bad
   manifest — no `id`, an empty file, not JSON, a root that is not an object, `run` as a string, a future
   `api_version`, or an `id`, `run.script` or `run.skill` containing "/", "\\" or "..", or a `mirror.default_path` that is not a plain
-  relative path (a leading "/" or "\\", a drive letter, a ".." or "." segment, an empty segment, a line
-  break or other control characters, "#", ":", quotes) — produces a
+  relative path (only "/"-separated segments of letters, digits, "_", "-", dots and spaces are allowed; a segment
+  starts with a letter or digit and does not end with a dot or space, one trailing "/" is fine; anything else — a
+  leading "/" or "\\", a drive letter, ".." or ".", an empty segment, a line break or other control characters,
+  "#", ":", quotes, brackets — is refused) — produces a
   "Модуль источников пропущен: …" line in the `update` report (in dry-run and with `--apply`) or a
   `skip (манифест не принят)` line in the `install` report. The run goes on with the other modules and the
   exit code does not change. The `.aurora/connectors/<id>.json` file name comes only from an accepted
@@ -146,15 +148,19 @@ and its fields are checked by a test (`tests/cases/part_44.py`), not by the load
   format without `api_version`.
 - `mirror.default_path` is required for a mirror but not for reading the registry: a module without it
   and without a path in `aurora.config.yaml` has no mirror, while the other modules keep working.
-- **The mirror path is checked in the registry itself, not by every consumer.** A manifest that already lies in
+- **A mirror path from a manifest is checked in the registry itself, not by every consumer.** A manifest that already lies in
   `.aurora/connectors/` (copied earlier or put there by hand) and carries a `mirror.default_path` that is not a plain
   relative path (`../outside_dir`, a line break, ":" and the rest of the list above) is dropped by
   `sources_registry.load()`: an empty result and a line in the registry report (`registry_report()`, doctor, stderr).
-  A mirror path from the `sources:` section of the config goes through the same check: a mirror with such a path
-  does not appear in `instances()`. So `update` (including `--structure-only`) does not create a folder outside
-  the project, and the settings form does not write into the config a line that would inject foreign keys. `update`
-  and the settings form repeat the same rule right before `mkdir` and before writing the line; when connecting a
-  module the panel checks the path itself too (the registry in a project may be a copy of an older release) and also refuses a manifest with no path at all.
+  So `update` (including `--structure-only`) does not create a folder outside the project from a manifest, and the
+  settings form does not write into the config a line that would inject foreign keys. The check applies only to paths
+  from manifests. A path from the project's own `aurora.config.yaml` (the `sources:` section, the `paths:` keys) is
+  written by the owner, so the registry, `update` and the settings form pass it through as is: `Sources/Wiki (old)`,
+  `Sources/JIRA (PRJ-A)`, `Sources/Wiki+Docs` and `../Shared/Confluence` stay connected, and saving the settings form
+  does not erase such an entry. When connecting a module the panel checks the manifest's path itself (the registry in
+  a project may be a copy of an older release) and also refuses a manifest with no path at all. The registry prints
+  JSON to stdout and report notes to stderr; the panel takes the first JSON object of the output, so a "}" in a note's
+  text does not empty the "Sources" section.
 
 ## How a module gets into a project
 
