@@ -340,7 +340,7 @@ def _ext_type_name(want) -> str:
     return " или ".join(names.get(t, t.__name__) for t in (want if isinstance(want, tuple) else (want,)))
 
 
-def load_manifest(path, kind: str):
+def load_manifest(path, kind: str, lenient: bool = False):
     """Прочитать манифест расширения вида `kind` → `(манифест | None, [строки отчёта])`.
 
     Манифест — копия файла с `api_version` (нет в файле — 1). `None` — расширение
@@ -349,6 +349,12 @@ def load_manifest(path, kind: str):
     вложенных объектов), `api_version` новее поддерживаемого — всё это строка в отчёт.
     Неизвестные поля не мешают: схема проверяет то, что знает, и не запрещает лишнего.
     Имя в сообщениях — из имени файла/папки, пока `id` из файла не прочитан и не проверен.
+
+    `lenient=True` — для потребителя, которому важнее показать расширение, чем отвергнуть его
+    (панель): поле НЕ из обязательных с неверным типом (и подполе вложенного объекта) не
+    отвергает манифест, а отбрасывается — потребитель возьмёт своё умолчание, — и об этом
+    остаётся строка в отчёте при непустом манифесте. Обязательные поля, корень, `id` и
+    `api_version` проверяются так же строго.
     """
     name = os.path.basename(os.path.dirname(str(path))) if os.path.basename(str(path)) in (
         "connector.json", "module.json") else os.path.splitext(os.path.basename(str(path)))[0]
@@ -373,8 +379,15 @@ def load_manifest(path, kind: str):
                 return None, ["%s: нет обязательного поля «%s» — пропущен" % (pre, key)]
         if isinstance(data.get("id"), str) and data["id"].strip():
             pre = "%s «%s»" % (kind, data["id"])
+        notes = []
+        data = dict(data)
         for key, want in list(schema["required"].items()) + list(schema["optional"].items()):
             if key in data and not _ext_type_ok(data[key], want):
+                if lenient and key not in schema["required"]:
+                    notes.append("%s: поле «%s» — не %s — отброшено, взято умолчание"
+                                 % (pre, key, _ext_type_name(want)))
+                    del data[key]
+                    continue
                 return None, ["%s: поле «%s» — не %s — пропущен" % (pre, key, _ext_type_name(want))]
         for key, subs in schema["nested"].items():
             sub = data.get(key)
@@ -382,6 +395,11 @@ def load_manifest(path, kind: str):
                 continue
             for sk, want in subs.items():
                 if sk in sub and not _ext_type_ok(sub[sk], want):
+                    if lenient and key not in schema["required"]:
+                        notes.append("%s: поле «%s.%s» — не %s — отброшено, взято умолчание"
+                                     % (pre, key, sk, _ext_type_name(want)))
+                        data[key] = sub = {k: v for k, v in sub.items() if k != sk}
+                        continue
                     return None, ["%s: поле «%s.%s» — не %s — пропущен"
                                   % (pre, key, sk, _ext_type_name(want))]
         if not str(data["id"]).strip():
@@ -394,7 +412,7 @@ def load_manifest(path, kind: str):
                           "пропущен (обновите кит)" % (pre, ver, EXT_API_VERSION)]
         out = dict(data)
         out["api_version"] = ver
-        return out, []
+        return out, notes
     except Exception as e:  # noqa: BLE001 — загрузчик не имеет права ронять вызывающего
         return None, ["%s: манифест не прочитан (%s: %s) — пропущен" % (pre, type(e).__name__, e)]
 

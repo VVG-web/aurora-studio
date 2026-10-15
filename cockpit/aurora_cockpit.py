@@ -60,7 +60,7 @@ UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
 from aurora_common import (ENGINE_DIRS, child_env, engine_dir, head_value,  # noqa: E402
-                           is_folder_guide, kit_mcp_permission, local_view, mtime_stamp,
+                           is_folder_guide, kit_mcp_permission, load_manifest, local_view, mtime_stamp,
                            personal_kit_file, real_inside, real_rel, replace_file, same_origin, utc_slug, utc_stamp,
                            yaml_scalar)
 from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
@@ -183,8 +183,13 @@ def modules() -> list:
     меню, порядок, нужен ли разделу выбранный проект и какие команды движка он зовёт —
     последнее нужно, чтобы по реестру было видно, кто чем пользуется.
 
-    Битый или чужой манифест не роняет панель: такой модуль просто не поднимается, а
-    причина уезжает в ответ — панель покажет её строкой, а не пустым меню.
+    Манифест читает общий загрузчик (`aurora_common.load_manifest`, вид `module`, режим
+    «мягкий»). Битый или чужой манифест не роняет панель — по тяжести двух видов:
+    - обязательное нарушено (не JSON, id не совпал с папкой, нет имени на языке по
+      умолчанию, `api_version` из будущего): раздел не поднимается, в ответе `{id, error}`,
+      панель покажет причину строкой, а не пустым меню;
+    - необязательное поле не того типа или группа с опечаткой: раздел поднимается с умолчанием
+      этого поля, а причина лежит в `warn` — раздел не должен пропадать из-за лишней запятой.
     """
     out = []
     if not os.path.isdir(MODULES_DIR):
@@ -193,34 +198,46 @@ def modules() -> list:
         man = os.path.join(MODULES_DIR, name, "module.json")
         if not os.path.isfile(man):
             continue
-        try:
-            with open(man, encoding="utf-8") as f:
-                m = json.load(f)
-        except (OSError, ValueError) as e:
-            out.append({"id": name, "error": f"манифест не разобран ({e})"})
+        m, rep = load_manifest(man, "module", lenient=True)
+        if m is None:
+            out.append({"id": name, "error": (rep or ["манифест не принят"])[0]})
             continue
         if m.get("id") != name:
             out.append({"id": name, "error": "в манифесте другой id — папка и id обязаны совпадать"})
             continue
-        title = m.get("name") or {}
+        title = m.get("name")
         if not isinstance(title, dict) or not title.get(DEFAULT_LANG):
             out.append({"id": name, "error": "нет имени раздела на языке по умолчанию"})
             continue
+        warn = list(rep)
+        group = m.get("group", "project")
+        if group not in MODULE_GROUPS:
+            warn.append("module «%s»: группа «%s» неизвестна — раздел показан в группе project"
+                        % (name, group))
+            group = "project"
+        try:
+            order = int(m.get("order") or 100)
+        except (ValueError, OverflowError):      # NaN и бесконечность из JSON
+            warn.append("module «%s»: order — не конечное число — взято 100" % name)
+            order = 100
         ver = str(m.get("for") or kit_version())
-        out.append({
+        item = {
             "id": name,
             "name": title,
-            "group": m.get("group") if m.get("group") in MODULE_GROUPS else "project",
-            "order": int(m.get("order") or 100),
+            "group": group,
+            "order": order,
             "needs": [x for x in (m.get("needs") or []) if x in ("project", "kit")],
-            "commands": list(m.get("commands") or []),
+            "commands": [x for x in (m.get("commands") or []) if isinstance(x, str)],
             "for": ver,
             "behind": minor(ver) != minor(kit_version()),
             "about": m.get("about", {}),
             # Раздел в разработке: в меню только вместе с «Разработкой» (семь нажатий на
             # «О проекте»).
             "dev": m.get("dev") is True,
-        })
+        }
+        if warn:
+            item["warn"] = warn
+        out.append(item)
     out.sort(key=lambda m: (MODULE_GROUPS.index(m.get("group", "project"))
                             if m.get("group") in MODULE_GROUPS else len(MODULE_GROUPS),
                             m.get("order", 100), m["id"]))

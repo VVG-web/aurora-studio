@@ -322,6 +322,16 @@ listens only on `127.0.0.1`, requires a session token, executes **only commands 
 as a list, no shell, an undeclared flag is rejected) and does not accept arbitrary project paths. In detail —
 [the control panel](control-panel.md).
 
+**Section folders are read by the shared manifest loader** (`aurora_common.load_manifest`, kind `module`,
+`lenient` mode), so `cockpit/modules/*/module.json` cannot bring down the main page. There are two
+levels of strictness: a violated required field (the file is not JSON, the root is not an object, the
+`id` differs from the folder, there is no section name in the default language, `api_version` is newer
+than supported) — the section does not start, `/api/modules` returns a `{id, error}` entry and the panel
+shows the reason as a line; an optional field of the wrong type (`order` not a number, `needs`/`commands`
+not lists, `group` not a string, `about` not an object, `dev` not a boolean) or an unknown group — the
+section starts with that field's default and the reason is in the entry's `warn` (the panel shows it as a
+warning). The manifest format did not change: no `api_version` means `1`.
+
 ## 7. Where things are stored in a project
 
 | Path | What | In git |

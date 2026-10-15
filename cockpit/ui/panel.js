@@ -4531,6 +4531,9 @@ async function loadModules(){
       toast(t("modules.broken", {id: m.id, why: m.error}), "err");
       continue;
     }
+    // Раздел поднят, но с умолчанием вместо кривого поля манифеста: скажем, что починить.
+    if (m.warn && m.warn.length)
+      toast(t("modules.warn", {id: m.id, why: m.warn.join("; ")}), "warn");
     MODULES.set(m.id, {manifest: m, mod: null, section: null});
     addModuleNav(m);
     if (m.behind)

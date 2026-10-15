@@ -4,6 +4,7 @@
 `aurora_common.load_manifest` (мини-схема на вид, версия API, отчёт вместо исключения) и
 первый потребитель — `sources_registry`: кривой `connector.json` пропускается строкой в отчёт,
 а не обрушивает чтение реестра, на котором стоят `update`, doctor и панель.
+Срез 3: разделы панели (`cockpit.modules()`) читает тот же загрузчик в «мягком» режиме.
 Модель и сеть не используются; проекты — только во временных папках.
 """
 from __future__ import annotations
@@ -334,3 +335,125 @@ def test_doctor_names_skipped_connector_manifests(tmp: Path):
     line = [l for l in cp.stdout.splitlines() if "манифест модуля источников не принят" in l]
     assert len(line) == 1 and line[0].startswith("WARN:") and "(3)" in line[0], cp.stdout
     assert "Traceback" not in cp.stderr, cp.stderr
+
+
+# ---------------------------------------------------------------- срез 3: модули панели
+
+
+def _modules_before(ck, root: Path) -> list:
+    """Прежний `modules()` (до перевода на загрузчик), как эталон для годных манифестов."""
+    out = []
+    for name in sorted(p.name for p in root.iterdir()):
+        man = root / name / "module.json"
+        if not man.is_file():
+            continue
+        m = json.loads(man.read_text(encoding="utf-8"))
+        ver = str(m.get("for") or ck.kit_version())
+        out.append({
+            "id": name, "name": m["name"],
+            "group": m.get("group") if m.get("group") in ck.MODULE_GROUPS else "project",
+            "order": int(m.get("order") or 100),
+            "needs": [x for x in (m.get("needs") or []) if x in ("project", "kit")],
+            "commands": list(m.get("commands") or []),
+            "for": ver, "behind": ck.minor(ver) != ck.minor(ck.kit_version()),
+            "about": m.get("about", {}), "dev": m.get("dev") is True})
+    out.sort(key=lambda m: (ck.MODULE_GROUPS.index(m["group"]), m["order"], m["id"]))
+    return out
+
+
+def _ck_modules_dir(path):
+    """Панель, у которой папка разделов — `path`; вернуть (модуль, откат)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    keep = ck.MODULES_DIR
+    ck.MODULES_DIR = str(path)
+
+    def restore():
+        ck.MODULES_DIR = keep
+    return ck, restore
+
+
+@test
+def test_cockpit_modules_same_for_valid_manifests(tmp: Path):
+    """Годные манифесты кита читаются как прежде: тот же список, без `warn` и `error`."""
+    real = Path(__file__).resolve().parents[2] / "cockpit" / "modules"
+    ck, restore = _ck_modules_dir(real)
+    try:
+        got = ck.modules()
+    finally:
+        restore()
+    assert len(got) == len(list(real.glob("*/module.json"))) >= 17, [m["id"] for m in got]
+    assert not [m for m in got if "error" in m or "warn" in m], [m for m in got if "error" in m or "warn" in m]
+    assert got == _modules_before(ck, real)
+
+
+@test
+def test_cockpit_modules_survive_bad_manifests(tmp: Path):
+    """Кривой `module.json` не роняет `modules()`: нестрогое — умолчание и `warn`, обязательное — `error`."""
+    root = tmp / "modules"
+    ok = {"id": "good", "name": {"ru": "Хороший", "en": "Good"}, "group": "project", "order": 10,
+          "needs": ["project"], "commands": ["agent:ask"], "for": "1.0.0", "dev": True}
+    _write(root / "good" / "module.json", ok)
+    # нестрогие поля не того типа: раздел поднимается с умолчаниями
+    _write(root / "types" / "module.json", {
+        "id": "types", "name": {"ru": "Типы"}, "order": "abc", "needs": "project",
+        "commands": "agent:ask", "group": 5, "about": 7, "dev": "yes", "for": 3})
+    _write(root / "badgroup" / "module.json", {"id": "badgroup", "name": {"ru": "Группа"}, "group": "nope"})
+    _write(root / "inf" / "module.json",
+           '{"id": "inf", "name": {"ru": "Ин"}, "order": Infinity}')
+    # обязательное нарушено: запись {id, error}
+    _write(root / "strname" / "module.json", {"id": "strname", "name": "Строка"})
+    _write(root / "noru" / "module.json", {"id": "noru", "name": {"en": "Only English"}})
+    _write(root / "other" / "module.json", {"id": "elsewhere", "name": {"ru": "Чужой"}})
+    _write(root / "future" / "module.json", {"id": "future", "name": {"ru": "Будущий"}, "api_version": 99})
+    _write(root / "junk" / "module.json", "{ не json")
+    _write(root / "list" / "module.json", "[1, 2]")
+    _write(root / "empty" / "module.json", "")
+    ck, restore = _ck_modules_dir(root)
+    try:
+        got = ck.modules()               # не бросает
+    finally:
+        restore()
+    by = {m["id"]: m for m in got}
+    assert set(by) == {"good", "types", "badgroup", "inf", "strname", "noru", "other", "future",
+                       "junk", "list", "empty"}, sorted(by)
+    # валидный на месте и без замечаний
+    g = by["good"]
+    assert "warn" not in g and "error" not in g and g["dev"] is True and g["order"] == 10
+    assert g["needs"] == ["project"] and g["commands"] == ["agent:ask"] and g["for"] == "1.0.0"
+    assert g["behind"] is True
+    # нестрогое: умолчания и причина в warn
+    t = by["types"]
+    assert "error" not in t and t["order"] == 100 and t["needs"] == [] and t["commands"] == []
+    assert t["group"] == "project" and t["dev"] is False and t["about"] == {}
+    assert t["for"] == ck.kit_version() and t["behind"] is False
+    warned = "\n".join(t["warn"])
+    for field in ("order", "needs", "commands", "group", "about", "dev", "for"):
+        assert "«%s»" % field in warned, (field, t["warn"])
+    assert by["badgroup"]["group"] == "project" and "nope" in " ".join(by["badgroup"]["warn"])
+    assert by["inf"]["order"] == 100 and by["inf"]["warn"], by["inf"]
+    # обязательное: только error
+    for bad in ("strname", "noru", "other", "future", "junk", "list", "empty"):
+        assert set(by[bad]) == {"id", "error"} and by[bad]["error"], (bad, by[bad])
+    assert "v99" in by["future"]["error"]
+    assert "объект" in by["list"]["error"]
+    # порядок: сначала группы меню, внутри — order, потом id
+    ids = [m["id"] for m in got if "error" not in m]
+    assert ids[0] == "good" or by["good"]["order"] <= by[ids[0]]["order"], ids
+
+
+@test
+def test_load_manifest_lenient_drops_only_optional(tmp: Path):
+    """`lenient=True`: необязательное поле не того типа отбрасывается с пометкой, обязательное — по-прежнему отказ."""
+    import aurora_common as C
+    p = _write(tmp / "m" / "module.json", {"id": "m", "name": {"ru": "М"}, "order": "x", "dev": 1})
+    strict, rep = C.load_manifest(p, "module")
+    assert strict is None and "order" in rep[0], rep
+    got, notes = C.load_manifest(p, "module", lenient=True)
+    assert got and "order" not in got and "dev" not in got and got["api_version"] == 1, got
+    assert len(notes) == 2 and all("отброшено" in n for n in notes), notes
+    got, notes = C.load_manifest(_write(tmp / "n" / "module.json", {"id": "n", "name": 5}), "module", lenient=True)
+    assert got is None and "name" in notes[0], notes
+    clean, notes = C.load_manifest(_write(tmp / "c" / "module.json", {"id": "c", "name": "С"}), "module", lenient=True)
+    assert clean and notes == []

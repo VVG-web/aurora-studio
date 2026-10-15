@@ -371,7 +371,6 @@
     "не удалось записать: {}": "could not write: {}",
     "конфиг не записан: {}": "the config was not written: {}",
     "нет такой папки: {}": "there is no such folder: {}",
-    "манифест не разобран ({})": "the manifest was not parsed ({})",
     "тело запроса не разобрано": "the request body was not parsed",
     "недопустимый id прогона": "invalid run id",
     "прогон не найден": "run not found",

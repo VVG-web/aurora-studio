@@ -132,8 +132,10 @@ share is the "envelope": `id`, `api_version`, a title (a string or per language)
   exit code does not change. The `.aurora/connectors/<id>.json` file name comes only from an accepted
   manifest, so an `id` cannot move the file out of the folder. A manifest whose launch script is missing
   is installed without it (`skip (скрипт не найден)`). Doctor shows skipped manifests as one warning.
-- Transition period: the panel still reads its own manifests; it moves to the shared loader one by
-  one, and until then both readings accept the format without `api_version`.
+- Transition period: the panel's sections (`cockpit/modules/*/module.json`) are already read by the shared
+  loader in `lenient` mode (an optional field of the wrong type gets its default and a `warn` instead of
+  a refusal); the other kinds of extensions move over one by one, and until then both readings accept the
+  format without `api_version`.
 - `mirror.default_path` is required for a mirror but not for reading the registry: a module without it
   and without a path in `aurora.config.yaml` has no mirror, while the other modules keep working.
 
