@@ -18,6 +18,16 @@
     python3 .aurora/scripts/review_run.py --cql '...' --name retro-2025 --as-of 2025-12-31 --apply
     python3 .aurora/scripts/review_run.py --summary Artifacts/reviews/batch_retro-2025
 
+Режим ворот `--gate` (одна страница; шаг маршрута с этим флагом в `cockpit/scenarios.txt`):
+порог GATE превращается в код выхода и машинную строку `AURORA-GATE` (ворота `review_run`, пункт
+`score` несёт баллы, дальше — не пройденные и не определённые вопросы чек-листа). Готова к
+передаче без замечаний — `pass` и 0; готова, но с оговорками (мелкие замечания, не определены
+мелкие вопросы, неустойчивые ответы) — `warn` и 0; оценка ниже порога или есть критичные и важные
+замечания — `fail` и 1; сбой самого прогона (нет доступа к Confluence, страница не прочитана, нет
+годного прогона модели, не хватает покрытия) — код 2 без вердикта: ворота не пропускают то, чего не
+проверили. `--gate=warn` или `AURORA_GATE_MODE=warn` — режим внедрения: `fail` понижается до `warn`
+и кода 0. Без `--gate` поведение прежнее.
+
 Без `--apply` пакет ничего не вызывает: печатает, что будет оценено и сколько это вызовов
 модели. Повторный запуск с тем же `--name` продолжает с места: оценённые страницы
 той же версии не оцениваются заново.
@@ -50,6 +60,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import UNTRUSTED_RULE, UNTRUSTED_TAG, untrusted, utc_label, utc_slug  # noqa: E402 — время одно на движок; граница данных
+import run_summary as RS  # noqa: E402 — вердикт ворот (`--gate`)
 
 TEMPLATE = "review_v2.1.md"
 REVIEWS = "Artifacts/reviews"
@@ -980,6 +991,61 @@ def _quarter(day: str) -> str:
     return f"{day[:4]}-Q{(int(day[5:7]) - 1) // 3 + 1}" if re.match(r"\d{4}-\d{2}", day or "") else ""
 
 
+# ------------------------------------------------------------------ ворота
+
+def gate_items(rec: dict, cl: dict) -> tuple:
+    """Оценка страницы → (вердикт, пункты) ворот: pass | warn | fail.
+
+    `готова к передаче` без оговорок — pass; с оговорками (не пройдены мелкие вопросы, не определены
+    мелкие, ответы неустойчивы) — warn; любой другой вердикт шаблона (оценка ниже порога GATE,
+    критичные и важные замечания, непрочитанная обязательная связанная страница) — fail.
+    Первый пункт `score` несёт баллы, дальше идут не пройденные и не определённые вопросы."""
+    checks = {c["id"]: c for c in cl["profiles"].get(rec.get("profile") or "us", [])}
+    order = {"критичный": 0, "важный": 1, "мелкий": 2}
+    answers = rec.get("answers") or {}
+
+    def pick(value):
+        ids = [i for i, a in answers.items() if a.get("v") == value and i in checks]
+        return sorted(ids, key=lambda i: (order.get(checks[i]["severity"], 3), i))
+
+    items = [{"id": "score", "detail": f"{fmt(rec.get('score', 0))} из 10, порог {fmt(GATE)} · "
+                                       f"вердикт «{rec.get('verdict', '')}» · покрытие "
+                                       f"{rec.get('coverage', 0):.0%}"}]
+    minor_open = False
+    for i in pick("no"):
+        items.append({"id": i, "detail": f"{checks[i]['severity']}: {checks[i]['question']}"})
+        minor_open = minor_open or checks[i]["severity"] == "мелкий"
+    for i in pick("unknown"):
+        items.append({"id": i, "detail": f"не определено ({checks[i]['severity']}): "
+                                         f"{checks[i]['question']}"})
+        minor_open = minor_open or checks[i]["severity"] == "мелкий"
+    if rec.get("incomplete"):
+        items.append({"id": "incomplete", "detail": "не прочитана обязательная связанная страница"})
+    unstable = [i for i, a in answers.items() if not a.get("stable", True)]
+    if unstable:
+        items.append({"id": "unstable", "detail": "прогоны разошлись: " + ", ".join(unstable)})
+    if rec.get("verdict") != "готова к передаче":
+        return "fail", items
+    return ("warn" if minor_open or unstable else "pass"), items
+
+
+def gate_result(rec: dict, cl: dict, mode: str) -> int:
+    """Печатает строку AURORA-GATE и возвращает код: сбой прогона — 2 (вердикта нет), иначе 0 или 1.
+
+    Страница не прочитана, нет годного прогона модели или покрытия не хватает — это «не смог
+    проверить», а не «замечания»: код 2, чтобы маршрут не путал сбой с воротами, не пройденными из-за
+    качества. `mode` — warn (внедрение): fail понижается до warn и кода 0."""
+    if rec.get("status") != "ok" or rec.get("verdict") == "не оценено":
+        print("review_run: ревью не выполнено — " + ("; ".join(rec.get("reasons") or []) or
+                                                     str(rec.get("status"))), file=sys.stderr)
+        return 2
+    verdict, items = gate_items(rec, cl)
+    if verdict == "fail" and mode == "warn":
+        verdict = "warn"
+    print(RS.emit_gate("review_run", verdict, items))
+    return 1 if verdict == "fail" else 0
+
+
 # ------------------------------------------------------------------ запуск
 
 def _default_call():
@@ -987,20 +1053,29 @@ def _default_call():
     return AG.call_role
 
 
-def _connect():
+def _stop(msg: str, gate: str = "") -> None:
+    """Остановка с причиной: прежде код 1 (`sys.exit(строка)`); в режиме ворот — код 2, «не смог
+    отработать» не смешивается с замечаниями."""
+    if gate:
+        print(msg, file=sys.stderr)
+        sys.exit(2)
+    sys.exit(msg)
+
+
+def _connect(gate: str = ""):
     from confluence_export import Api, read_config, read_secret
     cfg = read_config()
     auth, _how = read_secret()
     if not cfg.get("base_url"):
-        sys.exit("нет confluence.base_url в aurora.config.yaml")
+        _stop("нет confluence.base_url в aurora.config.yaml", gate)
     if not auth:
-        sys.exit("нет доступа к Confluence: CONFLUENCE_PAT в .env.aurora.local")
+        _stop("нет доступа к Confluence: CONFLUENCE_PAT в .env.aurora.local", gate)
     from sources_core import UnsafeTarget
     api = Api(cfg["base_url"], auth)
     try:
         api._url("/")       # ключ на этот сервер нельзя: причина строкой, а не «не прочитана»
     except UnsafeTarget as e:
-        sys.exit(f"! {e}")
+        _stop(f"! {e}", gate)
     return api, cfg
 
 
@@ -1032,14 +1107,20 @@ def main() -> int:
                     help="напечатать чек-лист профиля (--profile us|alg) JSON-ом и выйти")
     ap.add_argument("--score-json", action="store_true",
                     help="оценить готовые ответы на чек-лист: JSON на входе, итог JSON-ом")
-    args = ap.parse_args()
+    ap.add_argument("--gate", action="store_true",
+                    help="режим ворот (одна страница): оценка ниже порога — вердикт fail и код 1, "
+                         "с оговорками — warn, сбой прогона — код 2; вердикт строкой AURORA-GATE; "
+                         "--gate=warn — предупреждение вместо кода 1")
+    ap.add_argument("--gate-mode", choices=("fail", "warn"), default="", help=argparse.SUPPRESS)
+    args = ap.parse_args(RS.gate_argv(sys.argv[1:]))
+    gate = RS.gate_mode(args.gate, args.gate_mode)
 
     if args.summary:
         print(summarize(Path(args.summary), args.by_author))
         return 0
     tpl = find_template(args.template)
     if not tpl:
-        sys.exit(f"не найден шаблон {TEMPLATE} (TemplatesCommon/ проекта или кит)")
+        _stop(f"не найден шаблон {TEMPLATE} (TemplatesCommon/ проекта или кит)", gate)
     cl = load_checklist(tpl)
     if args.checklist:
         prof = args.profile if args.profile in cl["profiles"] else "us"
@@ -1056,7 +1137,9 @@ def main() -> int:
                          ensure_ascii=False, indent=1))
         return 0
     runs = max(1, min(MAX_RUNS, args.runs))
-    api, ccfg = _connect()
+    if gate and (args.cql or args.pages_file or len(args.page) > 1):
+        ap.error("--gate работает на одной странице (--page), не на пакете")
+    api, ccfg = _connect(gate)
     reader = Reader(api, ccfg["base_url"], CACHE, args.as_of)
     import agent_core as AG
     cfg = AG.config()
@@ -1068,11 +1151,17 @@ def main() -> int:
         from confluence_export import resolve_ref
         pid, _t, err = resolve_ref(api, args.page[0], ccfg.get("space", ""))
         if err:
-            sys.exit(err)
+            _stop(err, gate)
         print(f"Ревью страницы {pid} · шаблон {cl['file']} · прогонов {runs}", file=sys.stderr)
-        rec = review_page(cfg, cl, reader, pid, profile=args.profile, runs=runs,
-                          depth=args.depth, max_pages=args.max_pages, free=True,
-                          slots=AG.pool(cfg))
+        try:
+            rec = review_page(cfg, cl, reader, pid, profile=args.profile, runs=runs,
+                              depth=args.depth, max_pages=args.max_pages, free=True,
+                              slots=AG.pool(cfg))
+        except Exception as e:      # в воротах обрыв прогона — код 2, а не трассировка с кодом 1
+            if not gate:
+                raise
+            print(f"review_run: сбой прогона — {type(e).__name__}: {e}", file=sys.stderr)
+            return 2
         report = render(rec, cl)
         if args.apply:
             stamp = utc_slug("%Y-%m-%d_%H%M")
@@ -1083,9 +1172,9 @@ def main() -> int:
         if args.json:
             print(json.dumps(as_json(rec, report, save_report(rec, report)), ensure_ascii=False,
                              indent=1))
-            return 0 if rec.get("status") == "ok" else 1
+            return gate_result(rec, cl, gate) if gate else 0 if rec.get("status") == "ok" else 1
         print(report)
-        return 0
+        return gate_result(rec, cl, gate) if gate else 0
 
     todo = select(api, args.cql, args.pages_file,
                   [resolve_or_self(api, p, ccfg) for p in args.page], args.limit)

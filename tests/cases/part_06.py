@@ -3737,3 +3737,127 @@ def test_artifact_lint_gate_checks_a_project_with_artifacts_but_no_knowledge_bas
     empty = tmp / "nothing"
     empty.mkdir()
     run("artifact_lint.py", "--gate", cwd=empty, expect_rc=2)
+
+
+def _review_gate_main(*argv, rec=None, boom=False):
+    """Запускает `review_run.main()` на заглушках: ни Confluence, ни модели — только решение ворот."""
+    import contextlib
+    import importlib
+    import io
+    sys.path.insert(0, str(KIT / "scripts"))
+    R = importlib.import_module("review_run")
+    AG = importlib.import_module("agent_core")
+    CE = importlib.import_module("confluence_export")
+    saved = (R._connect, R.Reader, R.review_page, AG.config, AG.pool, CE.resolve_ref, sys.argv)
+
+    def fake_review(*_a, **_k):
+        if boom:
+            raise OSError("нет сети")
+        return dict(rec)
+
+    R._connect = lambda gate="": (object(), {"base_url": "https://wiki.example.com", "space": "S"})
+    R.Reader = lambda *a, **k: object()
+    R.review_page = fake_review
+    AG.config = lambda: {"budget_min": 1, "request_timeout": 1}
+    AG.pool = lambda cfg: [0]
+    CE.resolve_ref = lambda api, ref, space: (str(ref), "", "")
+    sys.argv = ["review_run.py", *argv]
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                rc = R.main()
+            except SystemExit as e:
+                rc = e.code if isinstance(e.code, int) else 1
+    finally:
+        R._connect, R.Reader, R.review_page, AG.config, AG.pool, CE.resolve_ref, sys.argv = saved
+    return rc, out.getvalue(), err.getvalue(), R
+
+
+@test
+def test_review_run_gate_turns_the_threshold_into_exit_code(tmp: Path):
+    """review_run --gate: оценка ниже GATE — fail и код 1, с оговорками — warn и 0, чисто — pass и 0.
+
+    Оценка и вердикт — настоящий `score()` по настоящему шаблону; Confluence и модель — заглушки.
+    AURORA-GATE несёт баллы (пункт `score`) и не пройденные вопросы чек-листа. Без `--gate` строки
+    нет, а код прежний: 0 в тексте и 0 у `--json` с оценённой страницей. `--gate=warn` понижает fail.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("review_run")
+    RS = importlib.import_module("run_summary")
+    cl = R.load_checklist(str(KIT / "scaffold" / "TemplatesCommon" / "review_v2.1.md"))
+    sev = {c["id"]: c["severity"] for c in cl["profiles"]["us"]}
+    minor = [i for i, s in sev.items() if s == "мелкий"]
+    critical = [i for i, s in sev.items() if s == "критичный"]
+
+    def make(no=(), unknown=()):
+        answers = {i: {"v": "no" if i in no else "unknown" if i in unknown else "yes", "stable": True,
+                       "votes": "3/3", "evidence": "", "fix": ""} for i in sev}
+        res = R.score(cl, "us", answers, False, True, 3)
+        return {"page_id": "1", "code": "US-1", "title": "T", "profile": "us", "status": "ok",
+                "answers": answers, "runs": 3, "good_runs": 3, "incomplete": False, **res}
+
+    clean, reserved = make(), make(no=minor[:2])
+    low, blocker = make(no=minor[:8]), make(no=critical[:1])
+    assert clean["verdict"] == reserved["verdict"] == "готова к передаче" and low["score"] < R.GATE
+    assert reserved["score"] >= R.GATE and blocker["verdict"] == "доработать"
+
+    def gates(out):
+        return RS.parse_gate(out.splitlines())
+
+    rc, out, _e, _R = _review_gate_main("--page", "1", "--gate", rec=clean)
+    assert rc == 0 and [g["verdict"] for g in gates(out)] == ["pass"], (rc, out[-400:])
+    assert gates(out)[0]["gate"] == "review_run" and gates(out)[0]["items"][0]["id"] == "score", out[-400:]
+
+    rc, out, _e, _R = _review_gate_main("--page", "1", "--gate", rec=reserved)
+    g = gates(out)
+    assert rc == 0 and [x["verdict"] for x in g] == ["warn"], (rc, out[-400:])
+    assert [i["id"] for i in g[0]["items"]] == ["score", *minor[:2]], g
+
+    for rec in (low, blocker):
+        rc, out, _e, _R = _review_gate_main("--page", "1", "--gate", rec=rec)
+        g = gates(out)
+        assert rc == 1 and [x["verdict"] for x in g] == ["fail"], (rc, out[-400:])
+        items = g[0]["items"]
+        assert items[0]["id"] == "score" and str(rec["score"]).replace(".", ",") in items[0]["detail"], items
+        assert {i["id"] for i in items[1:]} == {i for i, a in rec["answers"].items() if a["v"] == "no"}, items
+    rc, out, _e, _R = _review_gate_main("--page", "1", "--gate=warn", rec=low)
+    assert rc == 0 and [x["verdict"] for x in gates(out)] == ["warn"], (rc, out[-400:])
+    # неопределённый критичный вопрос — тоже не пропуск
+    rc, out, _e, _R = _review_gate_main("--page", "1", "--gate", rec=make(unknown=critical[:1]))
+    assert rc == 1 and gates(out)[0]["items"][1]["id"] == critical[0], (rc, out[-400:])
+
+    # старый вызов: код 0 в тексте и у --json, строки вердикта нет
+    for argv in (("--page", "1"), ("--page", "1", "--json")):
+        rc, out, _e, _R = _review_gate_main(*argv, rec=low)
+        assert rc == 0 and "AURORA-GATE" not in out, (argv, rc, out[-300:])
+    rc, out, _e, _R = _review_gate_main("--page", "1", "--json", rec={"status": "skipped", "verdict": "не оценено"})
+    assert rc == 1, "--json без --gate: прежний код 1 для неоценённой страницы"
+
+
+@test
+def test_review_run_gate_failure_is_code_2_not_a_finding(tmp: Path):
+    """review_run --gate: сбой самого прогона — код 2 без вердикта (раньше `sys.exit(строка)` — код 1).
+
+    Страница не прочитана, нет годного прогона, не хватает покрытия, обрыв при обращении к модели и
+    нет доступа к Confluence — «не смог проверить», а не «замечания»: ворота такое не пропускают, а
+    маршрут не путает со вердиктом fail. Без `--gate` прежние коды. Пакет с `--gate` — ошибка вызова.
+    """
+    for rec in ({"status": "forbidden", "verdict": "не оценено", "reasons": ["страница: forbidden"]},
+                {"status": "ok", "verdict": "не оценено", "reasons": ["нет годного прогона модели"],
+                 "answers": {}, "score": 0.0, "coverage": 0.0}):
+        rc, out, err, _R = _review_gate_main("--page", "1", "--gate", rec=rec)
+        assert rc == 2 and "AURORA-GATE" not in out and "не выполнено" in err, (rc, out[-200:], err)
+    rc, out, err, _R = _review_gate_main("--page", "1", "--gate", rec={}, boom=True)
+    assert rc == 2 and "AURORA-GATE" not in out and "нет сети" in err, (rc, err)
+    rc, _o, err, _R = _review_gate_main("--cql", "space = X", "--gate", rec={})
+    assert rc == 2 and "--gate" in err, (rc, err)
+    # нет доступа к Confluence: настоящий `_connect` в чужой папке без адреса сервера
+    proj = tmp / "p"
+    proj.mkdir()
+    (proj / "aurora.config.yaml").write_text('atlassian:\n  confluence:\n    space: "S"\n', encoding="utf-8")
+    cp = run("review_run.py", "--page", "1", "--gate", cwd=proj, expect_rc=2)
+    assert "confluence.base_url" in cp.stderr and "AURORA-GATE" not in cp.stdout, cp.stderr
+    cp = run("review_run.py", "--page", "1", cwd=proj, expect_rc=1)
+    assert "confluence.base_url" in cp.stderr, cp.stderr

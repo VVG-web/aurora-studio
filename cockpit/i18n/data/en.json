@@ -769,6 +769,7 @@
     "записать бандл (иначе только состав и риски)": "write the bundle (otherwise only the make-up and risks)",
     "режим ворот: риски передачи DoR дают код 1 и строку вердикта; ошибка входа — код 2; --gate=warn — предупреждение вместо кода 1": "gate mode: DoR handover risks give code 1 and a verdict line; an input error is code 2; --gate=warn gives a warning instead of code 1",
     "режим ворот: вердикт строкой AURORA-GATE; --gate=warn — предупреждение вместо кода 1": "gate mode: the verdict as an AURORA-GATE line; --gate=warn gives a warning instead of code 1",
+    "режим ворот (одна страница): оценка ниже порога — вердикт fail и код 1, с оговорками — warn, сбой прогона — код 2; вердикт строкой AURORA-GATE; --gate=warn — предупреждение вместо кода 1": "gate mode (one page): a score below the threshold is verdict fail and code 1, with reservations warn, a failed run is code 2; the verdict as an AURORA-GATE line; --gate=warn gives a warning instead of code 1",
     "page_id родителя для новой страницы": "the parent's page_id for the new page",
     "заголовок страницы (по умолчанию — H1 или имя файла)": "the page title (default — H1 or the file name)",
     "перезаписать страницу, которую правили после вашей публикации": "overwrite a page that was edited after your publication",

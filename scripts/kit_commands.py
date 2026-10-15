@@ -422,7 +422,16 @@ def render_md(rows: list, version: str) -> str:
           "печатает вердикт `warn` и возвращает `0` — для маршрута проекта с историческими "
           "красными проверками; шаг с `--gate=warn` воротами не считается и маршрут не "
           "останавливает, предупреждение попадает в журнал. Без `--gate` строки вердикта нет и "
-          "коды прежние.", ""]
+          "коды прежние. **Ревью** `review_run.py --page … --gate` (`make:review-auto`, одна "
+          "страница): порог оценки (9,0) становится кодом выхода — «готова к передаче» без "
+          "замечаний даёт `pass` и `0`, с оговорками (не пройдены или не определены мелкие "
+          "вопросы, ответы неустойчивы) — `warn` и `0`, оценка ниже порога или критичные и "
+          "важные замечания — `fail` и `1`. Первый пункт вердикта `score` несёт баллы, дальше "
+          "идут не пройденные и не определённые вопросы чек-листа (`id` вопроса и текст). "
+          "Сбой самого прогона (нет доступа к Confluence, страница не прочитана, нет годного "
+          "прогона модели, не хватает покрытия, обрыв обращения) — код `2` без вердикта, раньше "
+          "это был код `1`. Пакет с `--gate` — ошибка вызова. Без `--gate` коды прежние: "
+          "в тексте `0`, у `--json` — по статусу.", ""]
     L += ["## Развёртывание (из клона kit'а, не из проекта)", "",
           "| Команда | Что делает |", "|---|---|",
           "| `python3 aurora.py new <target>` | развернуть Aurora в проект: скелет, движок, "
@@ -538,7 +547,17 @@ def render_en_md(rows: list, names: dict) -> str:
           "the verdict `warn` and returns `0` — for a project route with historical red checks; "
           "a step with `--gate=warn` is not a gate and does not stop the route, the warning "
           "goes to the log. Without `--gate` there is no verdict line and the codes are as "
-          "before."]
+          "before. **Review** `review_run.py --page … --gate` (`make:review-auto`, one page): "
+          "the score threshold (9.0) becomes the exit code — \"ready for handover\" with no "
+          "findings gives `pass` and `0`, with reservations (minor questions failed or "
+          "undetermined, unstable answers) — `warn` and `0`, a score below the threshold or "
+          "critical and major findings — `fail` and `1`. The first verdict item `score` carries "
+          "the points, then come the failed and undetermined checklist questions (question "
+          "`id` and text). A failure of the run itself (no access to Confluence, page not "
+          "read, no usable model run, too little coverage, a broken request) is code `2` "
+          "without a verdict, formerly code `1`. A batch with `--gate` is a call error. "
+          "Without `--gate` the codes are as before: `0` in text mode, by status with "
+          "`--json`."]
     return "\n".join(L) + "\n"
 
 
