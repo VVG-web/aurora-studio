@@ -10,6 +10,9 @@ Conformance расширений (BL-ARC-02, срез 2): каждый мани�
 панели, скин, провайдер Git) проходит общий загрузчик без отчёта, id совпадает с папкой или
 файлом и уникален в виде; фиктивное расширение каждого вида подключается без правки ядра, а
 соседний битый манифест его не прячет и отвечает записью об ошибке.
+
+Документ для авторов расширений (BL-ARC-02, срез 3): раздел «Расширения» в docs/architecture.md
+и docs/en/architecture.md называет каждую точку метрики, а числа его таблицы равны планке.
 """
 from __future__ import annotations
 
@@ -330,3 +333,36 @@ def test_fictive_connector_is_found_next_to_broken_manifests(tmp: Path):
     assert set(mods) == {"fictive"} and mods["fictive"]["mirror"]["default_path"] == "Sources/Fictive", sorted(mods)
     for name in ("junk", "noid", "future"):
         assert "connector «%s»" % name in rep, (name, rep)
+
+
+def _ext_doc_rows(rel: str) -> dict[str, str]:
+    """{ключ точки: вторая ячейка строки} из таблицы раздела «Расширения» документа: ключ — в обратных
+    кавычках в первой ячейке, например «Коннектор (`connector`)»."""
+    import re
+    text = (KIT / rel).read_text(encoding="utf-8")
+    head = re.search(r"^## 10\. .*$", text, re.M)
+    assert head, (rel, "нет раздела «10. Расширения»")
+    rows: dict[str, str] = {}
+    for line in text[head.end():].splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        m = re.search(r"`(\w+)`", cells[0]) if line.startswith("|") and len(cells) >= 2 else None
+        if m:
+            rows[m.group(1)] = cells[1]
+    return rows
+
+
+@test
+def test_extensions_doc_table_matches_baseline_in_both_languages(_t):
+    """Таблица раздела «Расширения» в ru и en называет каждую точку метрики, а числа — те же, что в
+    планке: документ и `ext_footprint_baseline.json` не расходятся."""
+    base = EF.load_baseline()
+    assert base, "нет планки"
+    for rel in ("docs/architecture.md", "docs/en/architecture.md"):
+        rows = _ext_doc_rows(rel)
+        for name in EF.PROBES:
+            assert name in rows, (rel, name, "точка метрики не названа в таблице")
+        for name in EF.ratcheted():
+            assert rows[name] == str(base[name]), (rel, name, rows[name], base[name])
+        for name in EF.PROBES:
+            if name not in EF.ratcheted():
+                assert not rows[name].isdigit(), (rel, name, "справочная точка не должна выглядеть планкой")
