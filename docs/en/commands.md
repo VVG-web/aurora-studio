@@ -170,3 +170,19 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 | `dev:qa-cover` | Cover what was done: a coverage table and a ready task for the assistant to add tests, cases and scenarios. | script + model | 1.53.0 |
 | `dev:qa-run` | Run a scenario with a journal: automatic tests, a step checklist, a report in `Development/QA/runs/`. | script + model | 1.51.0 |
 | `dev:qa-new` | Create a test case or scenario from a template with the next free number. | script | 1.51.0 |
+
+## Exit codes and quality gates
+
+A command reports its result by exit code, the same for every script and route step:
+
+| Code | Meaning |
+|---|---|
+| `0` | ok: no findings |
+| `1` | findings: the command worked and found things to fix; on a gate step it means "the gate is not passed" |
+| `2` | execution failure: the command could not do its job (bad arguments, no data, a refusal) |
+| `3` | unhandled script error (traceback in the output); treated as a failure |
+| any other code `2` or above, below zero | failure; negative means the process was interrupted |
+
+An ordinary route step that returns `1` does not stop the route: this is the normal state of a live base, and the summary lists such steps as "found things to fix". Code `2` and above stops it.
+
+**Gates.** A step with `--gate` among its flags in `cockpit/scenarios.txt` is a quality gate: code `1` on it stops the route (`failed=<command>`, the journal says "the route is stopped at the gate"). The step is not recorded as passed, so "Continue the route" repeats the gate after the fix. The run summary does not count this stop as an execution failure. The `--gate` flag is passed to the script itself, so it is set only on steps whose scripts support it.

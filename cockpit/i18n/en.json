@@ -291,6 +291,7 @@
   "route.stopped_by_you": "■ You stopped the route at «{cmd}». What is done is committed: run it again, the steps already passed repeat without harm.",
   "route.stopped_on": "■ The route is stopped at «{cmd}»: {why}Deal with it and run the route again — the steps already passed repeat without harm.",
   "route.cmd_failed": "the command did not work. ",
+  "route.gate_failed": "■ The route is stopped at the gate «{cmd}»: the findings are still open. Fix them and run the route again — the steps already passed repeat without harm, and the gate is checked anew.",
   "route.passed": "■ The route «{title}» passed in full: {steps}.",
   "route.how_stalled": "stopped: a stall",
   "route.how_stopped": "stopped at «{cmd}»",

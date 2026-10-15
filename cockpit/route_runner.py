@@ -4,7 +4,8 @@
 прогона в архиве оставались только выводы отдельных шагов, по строке на шаг. Теперь маршрут
 всегда идёт в процессе панели (или `aurora.py route`), а страница только смотрит:
 
-- шаги по порядку; остановка на коде 2 и выше и на убитом процессе (код меньше нуля);
+- шаги по порядку; остановка на коде 2 и выше и на убитом процессе (код меньше нуля), а на
+  шаге-воротах (флаг `--gate` в scenarios.txt) — ещё и на коде 1: «ворота не пройдены»;
 - блок «цикл:» повторяется оборотами: остаток работы считается по видам, каждый оборот
   фиксируется в git, застой и предохранитель в 12 оборотов останавливают маршрут;
 - шаг, упавший по сети, ждёт бэкенды: 15 минут между попытками, 30 секунд, если шаг всё
@@ -94,6 +95,20 @@ def looks_offline(lines) -> bool:
         lines = lines.splitlines()
     text = "\n".join(line for line in lines or [] if not LIVE_LINE.match(line)).lower()
     return any(s in text for s in offline_signs())
+
+
+def is_gate(args) -> bool:
+    """Шаг — ворота качества, если среди его флагов в scenarios.txt стоит `--gate`."""
+    return "--gate" in (args or [])
+
+
+def halts(args, rc) -> bool:
+    """Останавливает ли код `rc` шага с флагами `args` маршрут. Одно правило для всех мест.
+
+    Коды возврата: 0 — ок, 1 — замечания (у обычного шага — «нашла, что чинить», маршрут идёт
+    дальше; у ворот — «ворота не пройдены», маршрут встаёт), 2 — сбой выполнения, всё остальное
+    от 2 и выше и отрицательный (убитый процесс) — тоже сбой."""
+    return rc >= 2 or rc < 0 or (rc == 1 and is_gate(args))
 
 
 def made_progress(lines) -> bool:
@@ -374,6 +389,8 @@ class RouteRun:
         self.events, self.summary = [], []
         self.done = self.lap = self.in_lap = 0
         self.failed = self.refused = ""
+        self.gate_failed = ""                  # шаг-ворота, не пропустивший маршрут (код 1)
+        self.last_res: dict = {}               # последний ответ шага в ожидании сети
         self.stopped = self.stalled = False
         # Продвинулся ли маршрут: каждый шаг агента и каждый оборот фиксируют работу в git,
         # и сдвиг HEAD — честный признак, что база менялась. По нему расписание отличает
@@ -476,7 +493,7 @@ class RouteRun:
 
     def _wait_network(self, st: dict) -> str:
         """Шаг упал по сети: ждём бэкенды и повторяем, пока не вернутся. → continue | failed |
-        stopped."""
+        gated | stopped (gated — ворота ответили кодом 1)."""
         attempt = self.offline_carry + 1
         self.offline_carry = 0
         wait = OFFLINE_RETRY_S
@@ -492,15 +509,20 @@ class RouteRun:
                 return "stopped"
             start = time.time()
             res = self.exec_step(st["cmd"], st["args"])
+            self.last_res = res
             self._event(st, start, time.time(), res)
-            if res["rc"] >= 2 or res["rc"] < 0:
-                return "stopped" if self.stopped else "failed"
+            # Сеть раньше ворот: код 1 с признаками обрыва — не вердикт, а повод ждать дальше,
+            # как и при первом запуске шага.
             if res["rc"] == 1 and looks_offline(res["lines"]):
                 flaky = made_progress(res["lines"])
                 if not flaky:
                     attempt += 1
                 wait = FLAKY_RETRY_S if flaky else OFFLINE_RETRY_S
                 continue
+            if halts(st["args"], res["rc"]):
+                if res["rc"] == 1 and not self.stopped:
+                    return "gated"
+                return "stopped" if self.stopped else "failed"
             return "continue"
 
     def run_one(self, st: dict) -> dict:
@@ -554,7 +576,7 @@ class RouteRun:
         if res.get("refused"):
             self.refused = res["refused"]
         # Хвост вывода шага, «нашедшего, что чинить», — для кнопок «Починить» в итоге.
-        self.summary.append({"cmd": st["cmd"], "rc": res["rc"],
+        self.summary.append({"cmd": st["cmd"], "rc": res["rc"], "gate": is_gate(st["args"]),
                              "summary": self.ck.RS.parse(res["lines"]),
                              "tail": res["lines"][-300:] if res["rc"] == 1 else []})
         if res["rc"] == 1 and looks_offline(res["lines"]) and not self.stopped:
@@ -566,8 +588,21 @@ class RouteRun:
                 self.stopped = True
                 self.failed = st["cmd"]
                 return {"rc": 0, "lines": res["lines"], "ended": how}
+            if how == "gated":
+                lines = self.last_res.get("lines") or res["lines"]
+                self.summary[-1].update(rc=1, tail=lines[-300:])
+                return {"rc": 1, "lines": lines}
             return {"rc": 2, "lines": res["lines"]}
         return res
+
+    def _halted(self, st: dict, res: dict) -> bool:
+        """Остановил ли этот шаг маршрут. Заодно помнит, что остановили именно ворота."""
+        if not halts(st["args"], res["rc"]):
+            return False
+        self.failed = st["cmd"]
+        if res["rc"] == 1:
+            self.gate_failed = st["cmd"]
+        return True
 
     # -------------------------------------------------------------- маршрут
 
@@ -644,8 +679,7 @@ class RouteRun:
                 res = self.run_one(steps[i])
                 if res.get("ended"):
                     break
-                if res["rc"] >= 2 or res["rc"] < 0:
-                    self.failed = steps[i]["cmd"]
+                if self._halted(steps[i], res):
                     break
                 i += 1
                 continue
@@ -671,8 +705,7 @@ class RouteRun:
                 res = self.run_one(steps[k])
                 if res.get("ended"):
                     return False
-                if res["rc"] >= 2 or res["rc"] < 0:
-                    self.failed = steps[k]["cmd"]
+                if self._halted(steps[k], res):
                     return False
                 kinds.update(left_by_kind(res["lines"]))
             if self.cycle_at and self.lap == 1:
@@ -723,6 +756,7 @@ class RouteRun:
             self.say("err", t("route.stalled_why"))
         elif bad:
             self.say("err", t("route.stopped_by_you", cmd=bad) if self.stopped
+                     else t("route.gate_failed", cmd=bad) if self.gate_failed == bad
                      else t("route.stopped_on", cmd=bad,
                             why=(self.refused + ". ") if self.refused else t("route.cmd_failed")))
         else:
@@ -748,7 +782,7 @@ class RouteRun:
         # «Нашла, что чинить» — одна строка на команду, сколько бы шагов она ни заняла.
         times: dict = {}
         for x in self.summary:
-            if x["rc"] == 1:
+            if x["rc"] == 1 and not (x.get("gate") and self.gate_failed == x["cmd"]):
                 times[x["cmd"]] = times.get(x["cmd"], 0) + 1
         for cmd, n in times.items():
             self.say("warn", t("route.found", cmd=cmd)

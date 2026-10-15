@@ -81,8 +81,11 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
         "полоса про устаревший процесс всё ещё отсылает в терминал"
     # Прерванный процесс возвращает отрицательный код: «код 2 и выше» его пропускало,
     # и маршрут после осознанного прерывания шёл дальше.
-    assert 'res["rc"] >= 2 or res["rc"] < 0' in rr, \
+    # Одно правило остановки (`halts`, 1.173+): код 2 и выше и отрицательный — всегда, код 1 — на
+    # воротах; три места цикла спрашивают его, а не сравнивают код сами.
+    assert "return rc >= 2 or rc < 0 or (rc == 1 and is_gate(args))" in rr, \
         "маршрут не считает прерывание поводом остановиться"
+    assert rr.count("halts(") >= 3, "не все места остановки зовут общее правило"
     assert 'res["rc"] >= 2:' not in rr, "остались проверки, пропускающие прерывание"
 
     # Отметка ставится вокруг запуска команды, а не где-то рядом.
@@ -915,6 +918,78 @@ def test_a_stalled_route_is_an_stop_not_a_pass(tmp: Path):
     ui = panel_sources()
     assert "застой" in ui, "в интерфейсе нет «застой» — баннер не честен о причине"
     assert "Продолжить маршрут" in ui, "кнопку продолжения потеряли совсем"
+
+
+@test
+def test_a_gate_step_stops_the_route_on_code_1(tmp: Path):
+    """Ворота качества: шаг с `--gate` останавливает маршрут на коде 1, обычный — нет.
+
+    Код 1 — «отработала и нашла, что чинить»: у обычного шага маршрут идёт дальше. Но проверка
+    SDD, возвращавшая 1 на нарушении, маршрут не останавливала, и дальше шла работа поверх
+    непройденных ворот. Шаг, у которого среди флагов `--gate`, на коде 1 останавливает маршрут:
+    причина остаётся `failed`, в журнале — «остановлен на воротах», а не «команда не
+    отработала»; в «пройденные» ворота не попадают, и «Продолжить» повторит их после правки;
+    итог прогона сбоем выполнения такую остановку не называет.
+    """
+    import importlib
+    sys.path.insert(0, str(KIT / "cockpit"))
+    rr = importlib.import_module("route_runner")
+    p18 = importlib.import_module("cases.part_18")
+    assert rr.is_gate(["--apply", "--gate"]) and not rr.is_gate(["--apply"]), "флаг ворот не читается"
+    assert rr.halts([], 2) and rr.halts([], -15) and not rr.halts([], 1) and not rr.halts([], 0), \
+        "правило остановки обычного шага изменилось"
+    assert rr.halts(["--gate"], 1) and not rr.halts(["--gate"], 0), "код 1 на воротах не останавливает"
+
+    def route(flags):
+        steps = [{"manual": False, "cmd": "kb:repair", "why": "ремонт", "flags": ["--apply"]},
+                 {"manual": False, "cmd": "kb:lint", "why": "ворота", "flags": flags},
+                 {"manual": False, "cmd": "agent:build", "why": "дальше", "flags": ["--apply"]}]
+        return {"id": "gate", "title": "С воротами", "when": "", "group": "база", "steps": steps}
+
+    # с --gate: код 1 — остановка, следующий шаг не запускался
+    sc = route(["--gate"])
+    ck = p18.FakePanel(tmp, {"kb:repair": [(0, [])], "kb:lint": [(1, ["## нарушений: 3"])],
+                             "agent:build": [(0, [])]}, [sc])
+    logs = []
+    res = rr.RouteRun(ck, str(tmp), sc, True, log=logs.append).run()
+    assert not res["ok"] and res["reason"] == "failed" and res["failed"] == "kb:lint", res
+    assert [c[1] for c in ck.calls] == ["kb:repair", "kb:lint"], \
+        "маршрут пошёл дальше непройденных ворот: " + str(ck.calls)
+    assert ck.calls[1][2] == ["--gate"], "флаг --gate не дошёл до скрипта: " + str(ck.calls)
+    text = "\n".join(logs)
+    assert "остановлен на воротах «kb:lint»" in text and "команда не отработала" not in text, \
+        "остановка на воротах названа не так: " + text
+    assert "не отработал (код" not in text, "итог назвал ворота сбоем выполнения: " + text
+    state = ck.route_state
+    assert state["reason"] == "failed" and "kb:repair --apply" in state["done"] \
+        and not any("kb:lint" in k for k in state["done"]), \
+        "ворота попали в пройденные — «Продолжить» их пропустит: " + str(state)
+
+    # «Продолжить» после правки: ворота идут заново и теперь пропускают
+    ck2 = p18.FakePanel(tmp, {"kb:repair": [(0, [])], "kb:lint": [(0, [])],
+                              "agent:build": [(0, [])]}, [sc])
+    res2 = rr.RouteRun(ck2, str(tmp), sc, True, resume={"skipSigs": state["done"]}).run()
+    assert res2["ok"] and [c[1] for c in ck2.calls] == ["kb:lint", "agent:build"], \
+        "продолжение не повторило ворота: " + str(ck2.calls)
+
+    # тот же код 1 без --gate: маршрут идёт до конца, шаг — «нашла, что чинить»
+    sc = route([])
+    ck3 = p18.FakePanel(tmp, {"kb:repair": [(0, [])], "kb:lint": [(1, ["## нарушений: 3"])],
+                              "agent:build": [(0, [])]}, [sc])
+    logs3 = []
+    res3 = rr.RouteRun(ck3, str(tmp), sc, True, log=logs3.append).run()
+    assert res3["ok"] and [c[1] for c in ck3.calls] == ["kb:repair", "kb:lint", "agent:build"], \
+        "код 1 обычного шага остановил маршрут: " + str(res3)
+    assert any("нашла, что чинить" in m for m in logs3), "обычный шаг с кодом 1 не назван находкой"
+
+    # сбой выполнения на воротах (код 2) — прежняя остановка, не «ворота не пройдены»
+    sc = route(["--gate"])
+    ck4 = p18.FakePanel(tmp, {"kb:repair": [(0, [])], "kb:lint": [(2, ["ошибка"])],
+                              "agent:build": [(0, [])]}, [sc])
+    logs4 = []
+    res4 = rr.RouteRun(ck4, str(tmp), sc, True, log=logs4.append).run()
+    assert res4["reason"] == "failed" and res4["failed"] == "kb:lint", res4
+    assert "остановлен на воротах" not in "\n".join(logs4), "сбой выполнения назван воротами"
 
 
 @test

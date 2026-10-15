@@ -240,6 +240,8 @@ def route(cwd: str, since: str, seconds: float, steps: list, lang: str = "ru") -
                     "the step output" if lang == "en"
                  else f"шаг {st.get('cmd')} упал: необработанная ошибка (код 3) — трассировка "
                       "в выводе шага")
+        # Код 1 — «замечания», у обычного шага и у ворот: ворота остановили маршрут своим
+        # вердиктом, а не сбоем выполнения, и «не отработал (код 1)» итог не пишет.
         elif rc >= 2:
             _err(s, f"step {st.get('cmd')} failed (code {rc})" if lang == "en"
                  else f"шаг {st.get('cmd')} не отработал (код {rc})")
