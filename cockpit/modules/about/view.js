@@ -162,4 +162,6 @@ function updateCard(ctx){
   return card;
 }
 
+// Жизнь раздела (cockpit/modules/README.md): скрытый «О проекте» не ходит на /api/about на каждое событие; сведения читаются при показе.
+export const lifecycle = 1;
 export default {mount, refresh};

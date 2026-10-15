@@ -676,3 +676,248 @@ def test_module_lifecycle_is_documented(_t):
     # ctx.on работает только у раздела с lifecycle — об этом сказано везде
     assert "только у\nраздела с `lifecycle = 1`" in ru or "только у раздела с `lifecycle = 1`" in ru
     assert "only for a section with `lifecycle = 1`" in en
+
+
+# ------------------------------------------------------------------ шумные разделы на ленивом обновлении (BL-ARC-11, срез 2)
+
+NOISY_HARNESS = r"""
+import {pathToFileURL} from "node:url";
+const rst = setImmediate;
+const tick = async () => { for (let i = 0; i < 10; i++) await new Promise(r => rst(r)); };
+const fails = [];
+const check = (ok, what) => { if (!ok) fails.push(what); };
+// Подставные таймеры: ход времени — вызовом fire(), настоящих ожиданий нет.
+const timers = [];
+globalThis.setTimeout = (fn, ms) => { const h = {fn, ms, off: false, done: false}; timers.push(h); return h; };
+globalThis.clearTimeout = (h) => { if (h) h.off = true; };
+globalThis.requestAnimationFrame = () => 0;
+globalThis.confirm = () => true;
+globalThis.localStorage = {getItem: () => null, setItem: () => {}};
+const pending = (ms) => timers.filter(h => !h.off && !h.done && (ms === undefined || h.ms === ms));
+async function fire(ms){ const run = pending(ms); for (const h of run){ h.done = true; h.fn(); } await tick(); return run.length; }
+// Подставной DOM: любое обращение к узлу возвращает узел, присвоенное запоминается.
+function node(){
+  const store = {};
+  const p = new Proxy(function(){}, {
+    get(_, k){ if (typeof k === "symbol" || k === "then") return undefined; return k in store ? store[k] : p; },
+    set(_, k, v){ store[k] = v; return true; },
+    apply(){ return p; },
+  });
+  return p;
+}
+const ELS = [];
+const el = (tag, attrs, ...kids) => { ELS.push({tag, attrs: attrs || {}, kids}); return node(); };
+const faults = [];
+const showFault = (m) => { faults.push(m); };
+const t = (k) => k;
+const S = {view: "none", lang: "ru"};
+const CTXS = {};
+function moduleCtx(id){ return CTXS[id]; }
+@MODULES@
+@DISPATCH@
+function mkctx(id, impl, extra){
+  const c = {id, root: node(), calls: [], toasts: [], t: (k) => k, el, $: () => node(), $$: () => [],
+    fmt: node(), ui: node(), project: {path: "/p"}, lang: "ru", state: {kit: {}}, show: () => {},
+    toast: (m, k) => c.toasts.push(m), ...(extra || {}),
+    api: async (path, opts) => { c.calls.push(path); return impl(path, opts); }};
+  Object.defineProperty(c, "view", {get: () => S.view});
+  CTXS[id] = c;
+  return c;
+}
+async function load(id){
+  const ns = await import(pathToFileURL(@DIR@ + "/" + id + ".mjs").href);
+  return ns;
+}
+function register(id, ns){
+  MODULES.set(id, {manifest: {id}, mod: ns.default || ns, ns, section: node(), subs: null, stale: false, shown: false, hooks: null});
+  return MODULES.get(id);
+}
+const apiCount = (c, part) => c.calls.filter(p => p.includes(part)).length;
+
+(async () => {
+  const ns = {};
+  for (const id of ["bots", "cron", "models", "about"]){
+    ns[id] = await load(id);
+    check(ns[id].lifecycle === 1, id + ": нет `export const lifecycle = 1`");
+  }
+
+  // ---- about: скрытый раздел на «data» не ходит на /api/about, видимый — ходит
+  {
+    const c = mkctx("about", () => ({kit: "1", ui: "1", commands: 1, commit: "", license: "MIT", repo: "",
+      branch: "", author: "", path: "", releases: []}));
+    ns.about.mount(c); register("about", ns.about);
+    S.view = "about"; await dispatchModules("data");
+    check(apiCount(c, "/api/about") === 1, "about на виду: один /api/about на «data», а " + apiCount(c, "/api/about"));
+    S.view = "other"; await dispatchModules("data"); await dispatchModules("data");
+    check(apiCount(c, "/api/about") === 1, "about скрыт: «data» не зовёт /api/about, а их " + apiCount(c, "/api/about"));
+    check(MODULES.get("about").stale === true, "about скрыт: помечен устаревшим");
+    check(faults.length === 0, "about: сбой refresh " + faults.join("|"));
+    MODULES.delete("about");
+  }
+
+  // ---- models: скрытый раздел не стирает несохранённую правку и не зовёт /api/models
+  {
+    const cfg = {providers: [], capabilities: {llm: {roles: []}, ocr: {roles: []}, embeddings: {roles: []}}};
+    const c = mkctx("models", (p) => p.startsWith("/api/models") ? {models: cfg, projects: [], path: "x"} : {});
+    ns.models.mount(c); register("models", ns.models);
+    S.view = "models"; ELS.length = 0;
+    await dispatchModules("data");
+    check(apiCount(c, "/api/models") === 1, "models на виду: один /api/models, а " + apiCount(c, "/api/models"));
+    const add = ELS.filter(e => e.kids.includes("models.add_provider")).pop();
+    check(!!add, "models: нет кнопки добавления провайдера в подставном DOM");
+    ELS.length = 0;
+    add.attrs.onclick();                                        // правка формы: DIRTY = true
+    const pingBtn = () => ELS.filter(e => e.attrs["data-llm"] === "ping").pop();
+    c.toasts.length = 0; pingBtn().attrs.onclick(); await tick();
+    check(c.toasts.includes("models.ping_save_first"), "models: правка не сохранена (DIRTY не выставлен): " + c.toasts.join());
+    c.calls.length = 0; c.toasts.length = 0;
+    S.view = "other"; await dispatchModules("data"); await dispatchModules("data");
+    check(c.calls.length === 0, "models скрыт: «data» не ходит на сервер, а было " + c.calls.join());
+    // правка жива: refresh не звался, DIRTY не сброшен — «Проверить» по-прежнему просит сначала сохранить
+    pingBtn().attrs.onclick(); await tick();
+    check(c.toasts.includes("models.ping_save_first") && c.calls.length === 0,
+          "models скрыт: несохранённая правка не должна пропасть от «data»: " + c.toasts.join() + "|" + c.calls.join());
+    check(faults.length === 0, "models: сбой refresh " + faults.join("|"));
+    MODULES.delete("models");
+  }
+
+  // ---- cron: таймер слежения гасится в onHide, поднимается в onShow
+  {
+    const cur = {id: "r1", items: []};
+    const c = mkctx("cron", () => ({current: cur, tasks: [], runs: [], routes: [], projects: [], queue: []}));
+    ns.cron.mount(c); register("cron", ns.cron);
+    S.view = "cron";
+    await dispatchModules("data");
+    check(apiCount(c, "/api/cron") === 1 && pending(4000).length === 1, "cron на виду: один запрос и один таймер слежения");
+    await ns.cron.onShow(c);
+    check(pending(4000).length === 1, "cron onShow не плодит таймеры: " + pending(4000).length);
+    await fire(4000);
+    check(apiCount(c, "/api/cron") === 2 && pending(4000).length === 1, "cron: таймер сработал и взвёлся снова");
+    await ns.cron.onHide(c);
+    check(pending().length === 0, "cron onHide: таймер погашен");
+    const before = c.calls.length;
+    for (let i = 0; i < 3; i++) await fire();                  // «прошло больше LIVE_MS» трижды
+    check(c.calls.length === before && pending().length === 0, "cron скрыт: ни одного нового запроса и таймера");
+    // запрос в полёте при уходе: ответ не взводит новый таймер
+    let release; let gate = false;
+    c.api = async (path) => { c.calls.push(path); if (gate) await new Promise(r => { release = r; }); return {current: cur, tasks: [], runs: [], routes: [], projects: [], queue: []}; };
+    await ns.cron.onShow(c); gate = true;
+    await fire(4000);                                          // таймер сработал, запрос ждёт
+    await ns.cron.onHide(c);
+    release(); await tick();
+    check(pending().length === 0, "cron: ответ, пришедший после onHide, не взводит таймер: " + pending().length);
+    gate = false;
+    await ns.cron.onShow(c);
+    check(pending(4000).length === 1, "cron onShow: таймер поднят снова");
+    const n = c.calls.length;
+    await fire(4000);
+    check(c.calls.length === n + 1, "cron после onShow: слежение идёт");
+    await ns.cron.dispose(c);
+    check(pending().length === 0, "cron dispose: таймер снят");
+    // скрытый раздел не ходит за данными на «data»
+    S.view = "other"; c.calls.length = 0;
+    await dispatchModules("data");
+    check(c.calls.length === 0, "cron скрыт: «data» не зовёт /api/cron");
+    check(faults.length === 0, "cron: сбой refresh " + faults.join("|"));
+    MODULES.delete("cron");
+  }
+
+  // ---- bots: опрос реплики коуча стоит у скрытого раздела и продолжается в onShow
+  {
+    let serverBusy = true, editorOnInput = null;
+    const bot = {file: "bots/a.md", meta: {name: "A", mcp: [], skills: [], attachments: []}, body: "промпт",
+                 problems: [], schedule: null};
+    const c = mkctx("bots", (p) => {
+      if (p.startsWith("/api/bots/coach")) return {messages: [], busy: serverBusy};
+      if (p.startsWith("/api/bots/file")) return bot;
+      if (p.startsWith("/api/bots?")) return {bots: [bot], mcp: [], skills: [], presets: []};
+      return {};
+    });
+    c.ui.editor = async (host, text, opts) => { editorOnInput = opts.onInput; return {getValue: () => text}; };
+    ns.bots.mount(c); register("bots", ns.bots);
+    S.view = "bots";
+    await dispatchModules("data"); await tick();
+    check(apiCount(c, "/api/bots?") === 1, "bots на виду: список прочитан, а " + apiCount(c, "/api/bots?"));
+    const coachBtn = ELS.filter(e => e.attrs["data-llm"] === "coach").pop();
+    check(!!coachBtn, "bots: нет кнопки коуча в подставном DOM");
+    coachBtn.attrs.onclick(); await tick();                     // реплика уже идёт: openCoach → coachWait
+    const loads = () => apiCount(c, "/api/bots/coach");
+    check(loads() === 1 && pending(5000).length === 1, "bots: коуч занят — один запрос и опрос ждёт: " + loads() + "/" + pending(5000).length);
+    await fire(5000);
+    check(loads() === 2 && pending(5000).length === 1, "bots: опрос идёт на виду: " + loads());
+    ns.bots.onHide(c);
+    await fire(5000);                                           // таймер ожидания сработал уже у скрытого раздела
+    check(loads() === 2 && pending().length === 0, "bots: после onHide опрос выходит без нового coachLoad: " + loads() + "/" + pending().length);
+    for (let i = 0; i < 3; i++) await fire();
+    check(loads() === 2, "bots скрыт: опроса нет вовсе");
+    // раздел вернули: опрос продолжается, пока реплика идёт
+    ns.bots.onShow(c); await tick();
+    check(pending(5000).length === 1, "bots onShow: опрос продолжен, пока реплика идёт");
+    await fire(5000);
+    check(loads() === 3, "bots после onShow: опрос ходит снова: " + loads());
+    // быстрое «ушли и вернулись» не плодит два опроса
+    ns.bots.onHide(c); ns.bots.onShow(c); await tick();
+    await fire(5000);
+    check(loads() === 4 && pending(5000).length === 1, "bots: ушли-вернулись — один опрос, а запросов " + loads() + ", таймеров " + pending(5000).length);
+    // ответ лёг: опрос заканчивается, на следующий onShow ничего не возобновляется
+    serverBusy = false;
+    await fire(5000);
+    check(pending().length === 0, "bots: ответ готов — опрос закончен");
+    const done = loads();
+    ns.bots.onHide(c); ns.bots.onShow(c); await tick(); await fire();
+    check(loads() === done && pending().length === 0, "bots: опрос закончен, onShow его не возобновляет");
+    // dispose гасит отложенную проверку правки
+    editorOnInput();
+    check(pending(350).length === 1, "bots: правка ставит отложенную проверку");
+    ns.bots.dispose(c);
+    check(pending().length === 0, "bots dispose: отложенная проверка снята");
+    // скрытый раздел не читает список на «data»
+    S.view = "other"; c.calls.length = 0;
+    await dispatchModules("data");
+    check(c.calls.length === 0, "bots скрыт: «data» не ходит на /api/bots: " + c.calls.join());
+    check(faults.length === 0, "bots: сбой refresh " + faults.join("|"));
+  }
+  console.log(JSON.stringify({fails}));
+})().catch(e => { fails.push("исключение: " + (e && e.stack || e)); console.log(JSON.stringify({fails})); });
+"""
+
+
+@test
+def test_noisy_sections_are_lazy_and_stop_their_timers(tmp: Path):
+    """«Боты», «Cron», «Модели», «О проекте» объявили `lifecycle = 1`: скрытый раздел на «data» не ходит на свой /api
+    (счётчик запросов 0) и не стирает несохранённую правку формы «Моделей»; таймер слежения «Cron» гаснет в onHide, не
+    взводится ответом, пришедшим после ухода, и поднимается в onShow; опрос реплики коуча «Ботов» выходит после onHide
+    без нового запроса и продолжается в onShow, пока реплика идёт (без дублей при «ушли и вернулись»); dispose снимает
+    таймеры. Реальные view.js под node с подставным DOM и таймерами (node нет — проверка пропускается)."""
+    for mid in ("bots", "cron", "models", "about"):
+        text = (KIT / "cockpit" / "modules" / mid / "view.js").read_text(encoding="utf-8")
+        assert "export const lifecycle = 1;" in text, mid
+    for mid in ("cron", "bots"):
+        text = (KIT / "cockpit" / "modules" / mid / "view.js").read_text(encoding="utf-8")
+        assert "export function onHide(" in text and "export function onShow(" in text and "export function dispose(" in text, mid
+    # шумных «gitsync», «ask», «work» срез не трогает: у них свои фоновые обязанности (бейдж, опросы заданий)
+    for mid in ("gitsync", "ask", "work"):
+        text = (KIT / "cockpit" / "modules" / mid / "view.js").read_text(encoding="utf-8")
+        assert "export const lifecycle" not in text, mid
+    node = shutil.which("node")
+    if not node:
+        return
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+
+    def cut(start: str, end: str) -> str:
+        a = panel.index(start)
+        return panel[a:panel.index(end, a)]
+    views = tmp / "views"
+    views.mkdir()
+    for mid in ("bots", "cron", "models", "about"):
+        shutil.copy2(KIT / "cockpit" / "modules" / mid / "view.js", views / f"{mid}.mjs")
+    code = (NOISY_HARNESS.replace("@MODULES@", cut("const MODULES = new Map();", "function moduleTitle"))
+            .replace("@DISPATCH@", cut("async function dispatchModules", "// Подписи разделов в меню"))
+            .replace("@DIR@", json.dumps(str(views))))
+    src = tmp / "noisy_sections.mjs"
+    src.write_text(code, encoding="utf-8")
+    import subprocess
+    cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+    assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:1500]
+    result = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert result["fails"] == [], "\n".join(result["fails"])

@@ -607,4 +607,7 @@ function callCard(ctx, c){
     c.after ? el("div", {class: "muted", style: "font-size:12.5px;margin-top:4px"}, c.after) : null);
 }
 
+// Жизнь раздела (cockpit/modules/README.md): скрытые «Модели» не ходят на /api/models на каждое событие и не затирают несохранённую правку формы;
+// настройка читается при показе.
+export const lifecycle = 1;
 export default {mount, refresh};

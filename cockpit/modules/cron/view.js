@@ -7,7 +7,7 @@ const STATUS_TONE = {passed: "ok", partial: "ok", failed: "bad", gated: "warn", 
   stopped: "warn", interrupted: "warn", missed: "warn", running: "gold", deferred: "warn",
   skipped: "", pending: ""};
 const LIVE_MS = 4000;          // как часто смотреть на идущую цепочку
-let DATA = null, EDIT = null, OPEN_RUN = "", timer = null;
+let DATA = null, EDIT = null, OPEN_RUN = "", timer = null, HIDDEN = false;
 
 export function mount(ctx){
   ctx.root.dataset.module = "cron";
@@ -26,14 +26,17 @@ export async function refresh(ctx){
   live(ctx);
 }
 
-// Пока цепочка идёт и раздел открыт — смотрим на неё. Ушли из раздела — перестали.
+// Пока цепочка идёт и раздел открыт — смотрим на неё. Ушли из раздела — перестали: `onHide` гасит
+// таймер, `onShow` поднимает его снова. Проверка `ctx.view` внутри таймера — запасная.
 function live(ctx){
   clearTimeout(timer);
-  if (!DATA || !DATA.current) return;
+  timer = null;
+  if (HIDDEN || !DATA || !DATA.current) return;
   timer = setTimeout(async () => {
-    if (ctx.view !== "cron") return;
+    timer = null;
+    if (HIDDEN || ctx.view !== "cron") return;
     const d = await ctx.api("/api/cron", {quiet: true});
-    if (!d || d.error) return;
+    if (HIDDEN || !d || d.error) return;      // ушли, пока шёл запрос: цепочку не продолжаем
     const was = DATA.current && DATA.current.id;
     DATA = d;
     drawNow(ctx);
@@ -457,4 +460,10 @@ async function drawDetail(ctx, id, box){
   });
 }
 
+// Жизнь раздела (cockpit/modules/README.md): скрытый «Cron» не ходит на /api/cron на каждое событие
+// и не следит за цепочкой — обновляется при показе, таймер живёт только на виду.
+export const lifecycle = 1;
+export function onShow(ctx){ HIDDEN = false; live(ctx); }
+export function onHide(){ HIDDEN = true; clearTimeout(timer); timer = null; }
+export function dispose(){ HIDDEN = true; clearTimeout(timer); timer = null; }
 export default {mount, refresh};

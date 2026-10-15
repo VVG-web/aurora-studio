@@ -10,6 +10,7 @@ const MODES = ["sv", "ir", "wysiwyg"];                                     // в
 let D = null, CUR = null, FORM = null, BODY = "", ORIG = "", ED = null, PROJECT = "";
 let CHECK = null, CHECK_TIMER = null, RUNNING = false, SKILL_FILTER = "", CARET = false;
 let COACH = null;        // разговор о промпте: {file, messages, busy, undo, pick, refresh, meta}
+let HIDDEN = false;      // раздел скрыт (onHide): опрос реплики и отложенная проверка стоят
 
 export function mount(ctx){
   ctx.root.dataset.module = "bots";
@@ -150,6 +151,7 @@ function touch(ctx){
   clearTimeout(CHECK_TIMER);
   // Проверка — у движка: те же правила, что при запуске, а не их копия в странице.
   CHECK_TIMER = setTimeout(async () => {
+    CHECK_TIMER = null;
     const r = await post(ctx, "/api/bots/validate", {meta: FORM, body: ED ? ED.getValue() : BODY});
     // Только места замечаний и ближайших запусков: поле, в котором печатают, не трогаем.
     if (r && r.problems){ CHECK = r; drawChecks(ctx); drawTop(ctx); }
@@ -635,18 +637,24 @@ function coachApply(ctx, text){
 
 // Реплика идёт на сервере (окно закрывали, или вторая вкладка): ответ ляжет в файл
 // разговора — спрашиваем, пока не ляжет.
+// Раздел скрыт — опрос стоит (`COACH.pollStop`, ставит `onHide`) и не ходит на сервер; `onShow`
+// продолжает его, если реплика ещё идёт. Токен `mine` — один опрос на разговор: новый coachWait
+// вытесняет старый, и после быстрого «ушли и вернулись» два цикла не работают вместе.
 async function coachWait(ctx){
   if (!COACH) return;
   COACH.busy = true; COACH.pending = "";
+  COACH.pollStop = HIDDEN;                            // начали, пока раздел скрыт, — `onShow` продолжит
+  const mine = COACH.poll = {};
   drawCoach(ctx);
   const file = COACH.file;
-  while (COACH && COACH.file === file){
+  const alive = () => COACH && COACH.file === file && COACH.poll === mine;
+  while (alive() && !COACH.pollStop){
     await new Promise(r => setTimeout(r, 5000));
-    if (!COACH || COACH.file !== file) return;
+    if (!alive() || COACH.pollStop) return;           // скрыли раздел: ответа не ждём, `onShow` продолжит
     const d = await coachLoad(ctx);
     if (!d || !d.busy) break;
   }
-  if (COACH && COACH.file === file){ COACH.busy = false; drawCoach(ctx); }
+  if (alive() && !COACH.pollStop){ COACH.busy = false; COACH.poll = null; drawCoach(ctx); }
 }
 
 async function coachSend(ctx, text){
@@ -766,5 +774,27 @@ function drawCoach(ctx){
         t("bots.coach.send")))));
   requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; });   // последняя реплика — на виду
 }
+
+// Жизнь раздела (cockpit/modules/README.md): скрытые «Боты» не ходят на /api/bots на каждое событие,
+// список читается при показе; опрос реплики коуча не живёт у скрытого раздела.
+export const lifecycle = 1;
+
+function stopPoll(){
+  HIDDEN = true;
+  if (COACH && COACH.poll) COACH.pollStop = true;     // опрос реплики встанет на ближайшем шаге
+}
+
+export function onShow(ctx){
+  HIDDEN = false;
+  if (!COACH || !COACH.pollStop) return;
+  COACH.pollStop = false;
+  // Реплика ещё идёт — продолжаем опрос: coachLoad возьмёт готовое, если ответ успел лечь.
+  if (COACH.busy && CUR && COACH.file === CUR.file) coachWait(ctx);
+  else COACH.poll = null;
+}
+// Отложенная проверка (350 мс) — разовая, на уход из раздела не гасится: её ответ нужен правке, которую
+// человек только что сделал. Гасится при снятии раздела.
+export function onHide(){ stopPoll(); }
+export function dispose(){ stopPoll(); clearTimeout(CHECK_TIMER); CHECK_TIMER = null; }
 
 export default {mount, refresh};
