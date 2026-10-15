@@ -146,6 +146,15 @@ and its fields are checked by a test (`tests/cases/part_44.py`), not by the load
   format without `api_version`.
 - `mirror.default_path` is required for a mirror but not for reading the registry: a module without it
   and without a path in `aurora.config.yaml` has no mirror, while the other modules keep working.
+- **The mirror path is checked in the registry itself, not by every consumer.** A manifest that already lies in
+  `.aurora/connectors/` (copied earlier or put there by hand) and carries a `mirror.default_path` that is not a plain
+  relative path (`../outside_dir`, a line break, ":" and the rest of the list above) is dropped by
+  `sources_registry.load()`: an empty result and a line in the registry report (`registry_report()`, doctor, stderr).
+  A mirror path from the `sources:` section of the config goes through the same check: a mirror with such a path
+  does not appear in `instances()`. So `update` (including `--structure-only`) does not create a folder outside
+  the project, and the settings form does not write into the config a line that would inject foreign keys. `update`
+  and the settings form repeat the same rule right before `mkdir` and before writing the line; when connecting a
+  module the panel checks the path itself too (the registry in a project may be a copy of an older release) and also refuses a manifest with no path at all.
 
 ## How a module gets into a project
 

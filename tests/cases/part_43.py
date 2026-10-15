@@ -14,6 +14,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -677,16 +679,77 @@ def test_skin_with_foreign_byte_after_the_header_still_works(tmp: Path):
     assert set(by["inhead"]) == {"id", "error"} and "UTF-8" in by["inhead"]["error"], by["inhead"]
 
 
+SKINS_PANEL_HARNESS = r"""
+const toasts = [];
+let lang = "ru";
+const t = (key, vars) => lang + ":" + key + ":" + JSON.stringify(vars || {});
+const toast = (text, kind) => { toasts.push({text, kind}); };
+const sel = {innerHTML: "", options: [], append(o){ this.options.push(o); }, onchange: null};
+const $ = () => sel;
+const el = (tag, attrs, text) => ({tag, attrs, text});
+const S = {state: {kit: {version: "1.0.0"}}};
+const localStorage = {getItem: () => null, setItem: () => {}};
+const applied = [];
+async function applySkin(id){ applied.push(id); }
+let reply = null;
+const api = async () => reply;
+@FN@
+const fails = [];
+const check = (ok, what) => { if (!ok) fails.push(what); };
+const rejected = [{id: "broken", error: "skin «broken»: поле «api» — не целое число — пропущен"}];
+
+(async () => {
+  reply = {skins: [], rejected};
+  await loadSkins();
+  check(toasts.length === 1, "первый показ: одно предупреждение, а их " + toasts.length);
+  check(toasts[0] && toasts[0].kind === "warn", "предупреждение должно быть уровня warn");
+  check(toasts[0] && toasts[0].text.includes("skin.broken") && toasts[0].text.includes('"id":"broken"')
+        && toasts[0].text.includes("не целое число"), "в тексте нет ключа, id и причины: " + (toasts[0] && toasts[0].text));
+  await loadSkins();
+  check(toasts.length === 1, "повторное чтение списка с той же причиной не должно показывать её снова");
+  lang = "en";                                  // смена языка перечитывает список: причина сервера не меняется
+  await loadSkins();
+  check(toasts.length === 1, "смена языка не должна показывать ту же причину заново");
+  reply = {skins: [], rejected: [{id: "broken", error: "skin «broken»: файл не в кодировке UTF-8 — пропущен"}]};
+  await loadSkins();
+  check(toasts.length === 2, "новая причина для того же скина — новое предупреждение");
+  reply = {skins: [], rejected: [{id: "other", error: "skin «broken»: файл не в кодировке UTF-8 — пропущен"}]};
+  await loadSkins();
+  check(toasts.length === 3, "та же причина у другого скина — отдельное предупреждение");
+  reply = {skins: [{id: "zine", name: "Зин", about: "", "for": "1.0.0", behind: false}]};
+  await loadSkins();
+  check(toasts.length === 3, "ответ без rejected не показывает ничего");
+  check(applied[applied.length - 1] === "zine" && sel.options.length === 1, "список скинов собирается как прежде");
+  reply = null;                                 // сервер не ответил: панель не падает и ничего не показывает
+  await loadSkins();
+  check(toasts.length === 3, "пустой ответ не должен показывать предупреждений");
+  console.log(JSON.stringify({fails}));
+})().catch(e => { console.log(JSON.stringify({fails: ["исключение: " + (e && e.stack || e)]})); });
+"""
+
+
 @test
 def test_panel_shows_why_a_skin_was_rejected(tmp: Path):
-    """Причину отказа скина панель показывает (`rejected` из /api/skins), строки есть в обоих языках."""
+    """Причину отказа скина панель показывает (`rejected` из /api/skins): `loadSkins` вызвана под подставным DOM (нужен node,
+    иначе проверка пропускается) — предупреждение уровня warn с id и причиной, ровно один раз на пару «id + причина»
+    (повторное чтение и смена языка его не повторяют; новая причина или другой скин — показывается). Строки каталога —
+    в обоих языках, с подстановками {id} и {why}."""
     kit = Path(__file__).resolve().parents[2]
-    js = (kit / "cockpit" / "ui" / "panel.js").read_text(encoding="utf-8")
-    body = js[js.index("async function loadSkins"):js.index("async function applySkin")]
-    assert "d.rejected" in body and 'skin.broken' in body and "r.error" in body, body[:400]
-    for lang, word in (("ru", "не подключён"), ("en", "is not loaded")):
+    for lang in ("ru", "en"):
         cat = json.loads((kit / "cockpit" / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))
-        assert "{id}" in cat["skin.broken"] and "{why}" in cat["skin.broken"] and word in cat["skin.broken"], cat
+        assert "{id}" in cat.get("skin.broken", "") and "{why}" in cat["skin.broken"], (lang, cat.get("skin.broken"))
+    node = shutil.which("node")
+    if not node:
+        return
+    panel = (kit / "cockpit" / "ui" / "panel.js").read_text(encoding="utf-8")
+    a = panel.index("const SKINS_REJECTED_SHOWN")
+    fn = panel[a:panel.index("async function applySkin", a)]
+    src = tmp / "skins_panel.mjs"
+    src.write_text(SKINS_PANEL_HARNESS.replace("@FN@", fn), encoding="utf-8")
+    cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+    assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:1500]
+    result = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert result["fails"] == [], "\n".join(result["fails"])
 
 
 @test
@@ -766,3 +829,61 @@ def test_panel_does_not_write_unsafe_mirror_path_into_config(tmp: Path):
         assert cfg.read_text(encoding="utf-8") == before, "конфиг изменён при отказе"
     res = ck.Handler._write_sources(None, str(root), ["fine"])
     assert res.get("ok") and "path: Sources/Fine" in cfg.read_text(encoding="utf-8"), res
+
+
+def _project_with_hostile_manifests(tmp: Path) -> Path:
+    """Проект, в `.aurora/connectors/` которого уже лежат манифесты с путями зеркала за пределами проекта
+    (скопированы прежним выпуском или положены вручную) — `install` их уже не увидит, а реестр читает."""
+    root = make_project(tmp)
+    for cid, path in (("evil", "../outside_dir"), ("inject", "Sources/x\nrole: y"), ("fine", "Sources/Fine")):
+        _write(root / ".aurora" / "connectors" / f"{cid}.json", _connector(
+            cid, mirror={"default_path": path, "legacy_path_key": f"{cid}_dir"}))
+    return root
+
+
+@test
+def test_registry_drops_connector_with_escaping_mirror_path(tmp: Path):
+    """Проверка пути зеркала стоит в общем читателе проектных манифестов: `sources_registry.load()` отбрасывает манифест
+    с небезопасным `mirror.default_path` строкой в отчёт реестра, годный читается; путь из `sources:` конфига проходит ту же
+    проверку, и `instances()` его не отдаёт."""
+    import sources_registry as R
+    root = _project_with_hostile_manifests(tmp)
+    mods = R.installed(str(root))
+    assert "fine" in mods and "evil" not in mods and "inject" not in mods, sorted(mods)
+    assert R.load(str(root / ".aurora" / "connectors" / "evil.json")) == {}
+    rep = "\n".join(R.registry_report())
+    assert "evil" in rep and "inject" in rep and "mirror.default_path" in rep, rep
+    assert all("\n" not in line for line in R.registry_report()), rep      # строка отчёта — одна строка
+    paths = [i["path"] for i in R.instances(str(root))]
+    assert "Sources/Fine" in paths and not any(".." in p or "\n" in p for p in paths), paths
+    # путь из конфига: небезопасный отбрасывается, безопасный остаётся
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "sources:\n  - id: Esc\n    module: fine\n    path: ../esc\n"
+                   "  - id: Good\n    module: fine\n    path: Sources/Good\n", encoding="utf-8")
+    got = {i["id"]: i["path"] for i in R.instances(str(root))}
+    assert got == {"Good": "Sources/Good"}, got
+    assert any("../esc" in line for line in R.registry_report()), R.registry_report()
+    # годные пути по-прежнему принимаются (в том числе с хвостовым «/»)
+    assert R.safe_relpath("Sources/Notion/") and not R.safe_relpath("/etc") and not R.safe_relpath("")
+
+
+@test
+def test_settings_form_and_update_do_not_use_escaping_mirror_path(tmp: Path):
+    """Манифест с `../outside_dir` и «\\nrole: y» лежит в `.aurora/connectors/`: форма настроек (`source_sections`) не
+    пишет эти строки в конфиг, `missing_dirs` их не называет, а `update --structure-only --apply` не создаёт ничего вне
+    проекта (и в проекте — ничего с такими именами)."""
+    import aurora_setup as S
+    import aurora_update as AU
+    root = _project_with_hostile_manifests(tmp)
+    src, _skills = S.source_sections(root, "demo")
+    assert "outside_dir" not in src and "role: y" not in src and "Sources/Fine" in src, src
+    miss = AU.missing_dirs(root)
+    assert not any(".." in d or "\n" in d for d in miss), miss
+    assert "Sources/Fine" in AU.mirror_dirs(root), AU.mirror_dirs(root)
+    before = sorted(p.name for p in tmp.iterdir())
+    cp = run("aurora_update.py", str(root), "--structure-only", "--apply", cwd=root)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert sorted(p.name for p in tmp.iterdir()) == before and not (tmp / "outside_dir").exists(), \
+        "update создал папку вне проекта"
+    assert (root / "Sources" / "Fine").is_dir() and not (root / "Sources" / "x").exists()
+    assert not any("outside_dir" in str(p) or "role: y" in str(p) for p in root.rglob("*")), "в проекте появился чужой путь"

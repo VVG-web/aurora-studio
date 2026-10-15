@@ -31,7 +31,7 @@ import argparse, difflib, re, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from aurora_common import load_connector_manifest, utc_today, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком; манифест коннектора без исключений
+from aurora_common import ext_safe_relpath, load_connector_manifest, utc_today, write_text_atomic  # noqa: E402 — путь зеркала внутри проекта; дата в UTC, одна на движок; запись целиком; манифест коннектора без исключений
 import folder_guides as FG  # noqa: E402 — описания папок проекта (README.md)
 
 def find_kit() -> Path:
@@ -66,7 +66,9 @@ def mirror_dirs(target: Path):
         import sources_registry as R
     except ImportError:
         return []
-    return [i["path"] for i in R.instances(str(target)) if i["path"]]
+    # реестр уже отбрасывает небезопасные пути; проверка здесь — второй рубеж перед `mkdir`:
+    # «../outside» не должен создать папку вне проекта, откуда бы путь ни пришёл
+    return [i["path"] for i in R.instances(str(target)) if i["path"] and ext_safe_relpath(i["path"])]
 
 
 def missing_dirs(target: Path):

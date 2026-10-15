@@ -106,14 +106,14 @@ def _note(line: str) -> None:
         print(f"sources_registry: {line}", file=sys.stderr)
 
 
-def _loader():
-    """`load_manifest` из `aurora_common` — той, что лежит рядом с этим файлом.
+def _common_fn(name: str):
+    """Функция `name` из `aurora_common` — той, что лежит рядом с этим файлом.
 
     `update` может идти из копии старого выпуска в проекте: её `aurora_common` уже в памяти
     и загрузчика конверта не знает, а реестр берётся из нового кита. Тогда читаем
     `aurora_common.py` соседа по файлу, а не падаем на `AttributeError`.
     """
-    fn = getattr(aurora_common, "load_manifest", None)
+    fn = getattr(aurora_common, name, None)
     if fn:
         return fn
     import importlib.util
@@ -121,7 +121,17 @@ def _loader():
     spec = importlib.util.spec_from_file_location("aurora_common_envelope", here)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.load_manifest
+    return getattr(mod, name)
+
+
+def _loader():
+    """`load_manifest` общего загрузчика конверта (см. `_common_fn`)."""
+    return _common_fn("load_manifest")
+
+
+def safe_relpath(value) -> bool:
+    """Годится ли путь зеркала: простой относительный путь внутри проекта (`ext_safe_relpath`)."""
+    return _common_fn("ext_safe_relpath")(value)
 
 
 def load(path: str) -> dict:
@@ -143,6 +153,14 @@ def load(path: str) -> dict:
     if m["kind"] not in KINDS:
         _note(f"{m['id']}: вид «{m['kind']}» движку неизвестен "
               f"(есть {', '.join(KINDS)}) — модуль пропущен")
+        return {}
+    # Путь зеркала из манифеста уходит в `mkdir` обновления и в строку конфига без экранирования
+    # (форма настроек): «../outside» создал бы папку вне проекта, перевод строки — чужие строки YAML.
+    # Проверка стоит здесь, у единственного читателя проектных манифестов, а не в каждом потребителе.
+    default_path = (m.get("mirror") or {}).get("default_path")
+    if default_path and not safe_relpath(default_path):
+        _note(f"{m['id']}: mirror.default_path не годится в путь внутри проекта "
+              "(простые сегменты через «/», без «..», диска и управляющих знаков) — модуль пропущен")
         return {}
     m["_path"] = path
     return m
@@ -210,7 +228,13 @@ def instances(root: str = "") -> list:
     out = []
     for item in items:
         m = mods.get(item["module"])
-        path = (item.get("path") or (m["mirror"].get("default_path", "") if m else "")).rstrip("/")
+        raw = item.get("path") or (m["mirror"].get("default_path", "") if m else "")
+        if raw and not safe_relpath(raw):
+            # путь из `sources:` конфига проверяется так же, как путь из манифеста
+            _note(f"{item.get('id') or item['module']}: путь зеркала «{str(raw)[:80]!r}» не годится "
+                  "в путь внутри проекта — зеркало пропущено")
+            continue
+        path = raw.rstrip("/")
         out.append({
             "id": item.get("id") or os.path.basename(path),
             "module": item["module"],
