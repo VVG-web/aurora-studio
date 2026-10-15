@@ -2789,8 +2789,9 @@ def test_a_path_on_another_drive_does_not_stop_the_engine(tmp: Path):
         "синк снова считает путь от текущей папки напрямую — на другом диске он упадёт"
 
 
+@test
 def test_the_english_panel_describes_every_command_in_english(tmp: Path):
-    """В английском режиме 91 описание команды читается по-английски, а не по-русски.
+    """В английском режиме описание каждой команды читается по-английски, а не по-русски.
 
     Описания приходят от сервера из реестра `commands.txt`, а он один и русский: в
     разделе «Команды», палитре и окне запуска английский экран показывал русский текст у
@@ -2826,7 +2827,7 @@ def test_the_english_panel_describes_every_command_in_english(tmp: Path):
     assert ck.request_lang({"lang": ["../x"]}) == "ru" and ck.request_lang({}) == "ru"
 
     ui = ui_source()
-    assert 'S.lang !== "ru"' in ui and '"&lang=" + encodeURIComponent(S.lang)' in ui, \
+    assert 'S.lang !== "ru"' in ui and '"lang=" + encodeURIComponent(S.lang)' in ui, \
         "страница не просит у сервера язык: описания команд придут по-русски"
     assert 'S.state.commands = st.commands' in ui, \
         "смена языка не перечитывает описания команд: они останутся прежними до перезагрузки"
