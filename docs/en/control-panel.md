@@ -118,7 +118,7 @@ there. The editor **does not edit** what Aurora's rules forbid editing, and expl
 - `kind: document` cards and the whole `AuroraKnowledgeDB/` except `Decisions/`, `Questions/` and `meta/` (a card is derived
   from sources, and a hand edit disappears at the next build).
 
-Secrets and service files are closed to the editor entirely — for reading, writing, creating and renaming (the boundary is
+Secrets and service files are closed to the editor entirely — for reading, writing, creating, renaming and deleting (the boundary is
 the same as for the model's reads of the project: `request_context.secret_kind`): `.env*`, `*.pem`/`*.key`, `id_*` keys,
 `local/` (including `mcp.json`), `.git/`, and at the project root also `.aurora/`, `.claude/`, `.opencode/`. The check looks
 at both the path sent and the real path, so a link with an ordinary name pointing at `.env` is no way round; the same holds

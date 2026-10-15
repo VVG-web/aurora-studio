@@ -587,7 +587,13 @@ async function openFile(f){
   }
   const d = await api("/api/files/read?project=" + encodeURIComponent(S.project.path)
                       + "&path=" + encodeURIComponent(f.path));
-  if (d.error) return;
+  if (d.error){
+    // Отказ (секрет, служебное, нет файла) уже показан тостом из `api`; пустой редактор с именем
+    // отказанного файла в шапке причины не объяснит и выглядит как открывшийся файл.
+    destroyEditor(); F.path = null; F.dirty = false;
+    $("#fileEditor").hidden = true; $("#fileNone").hidden = false;
+    return;
+  }
   if ((d.text || "").length > EDIT_LIMIT){
     destroyEditor();
     $("#fileFm").hidden = true;

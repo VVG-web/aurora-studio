@@ -540,6 +540,11 @@ def file_delete(project: str, rel: str) -> dict:
     full = inside(project, rel)
     if not full or not os.path.isfile(full):
         return {"error": "файл не найден в этом проекте"}
+    # Секреты и служебное не стирают через панель: токены git не вернёт. Та же охрана, что у
+    # записи и переименования, и по присланному пути, и по реальному (ссылка с обычным именем).
+    svc = why_service_real(project, rel, full)
+    if svc:
+        return {"error": svc, "service": True}
     ro = why_readonly_real(project, rel, full, read_text(full, limit=4000))
     if ro:
         return {"error": f"файл только для чтения: {ro}"}

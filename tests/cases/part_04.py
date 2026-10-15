@@ -2057,6 +2057,13 @@ def test_panel_file_api_closes_secrets_and_service_files(tmp: Path):
         w = ck.file_write(str(root), rel, "затёрто\n")
         assert w.get("error") and not w.get("ok"), f"{rel}: записан"
         assert (root / rel).read_text(encoding="utf-8") == body, f"{rel}: изменён"
+    # удаление — тоже запись: секрет и служебное через панель не стираются
+    for rel, body in secrets.items():
+        d = ck.file_delete(str(root), rel)
+        assert d.get("error") and not d.get("ok"), f"{rel}: удалён"
+        assert (root / rel).read_text(encoding="utf-8") == body, f"{rel}: пропал или изменён"
+    assert ck.file_delete(str(root), "Workspaces/заметка.md").get("ok"), "обычная заметка не удалилась"
+    (root / "Workspaces" / "заметка.md").write_text("# з\n", encoding="utf-8")
     # новый секретный файл не заводится ни записью, ни созданием, ни переименованием
     assert ck.file_create(str(root), "Workspaces/new.pem", "x").get("error")
     assert not (root / "Workspaces" / "new.pem").exists()
@@ -2114,6 +2121,8 @@ def test_panel_file_api_closes_secrets_and_service_files(tmp: Path):
         assert ck.file_write(str(root), rel, "x\n").get("error"), f"{rel}: запись по ссылке"
         assert ck.file_rename(str(root), rel, "y.md").get("error"), f"{rel}: переименование ссылки"
         assert ck.clean_preview(str(root), rel).get("error"), f"{rel}: предпросмотр по ссылке"
+        assert ck.file_delete(str(root), rel).get("error"), f"{rel}: ссылка удалена"
+        assert os.path.islink(root / rel), f"{rel}: ссылка пропала"
     # в дереве ссылка на секрет с обычным именем — не текст, обычный файл рядом — текст
     rows = {r["path"]: r for r in ck.file_tree(str(root))["files"]}
     assert rows["Workspaces/обычная.md"]["text"] is False
