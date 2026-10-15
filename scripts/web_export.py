@@ -586,14 +586,12 @@ def to_markdown(html: str, base_url: str = "") -> tuple:
 
     def ours(full: str) -> str:
         # Тот же источник (схема, хост, порт), что у страницы; иначе пусто. Ссылка с
-        # https-страницы на `http://` того же хоста — частый вид смешанных ссылок на перенесённом
-        # сайте: поднимаем её до `https://`, а не отбрасываем (покрытие остаётся, открытого запроса
-        # нет; если https у хоста не работает, выгрузка покажет `✗`). Чужой хост или порт — пусто.
-        a, b = url_origin(full), url_origin(base_url)
-        if a and b and a[0] == "http" and b[0] == "https" and a[1] == b[1] and a[2] == 80 and b[2] == 443:
-            sp = urllib.parse.urlsplit(full)
-            full = urllib.parse.urlunsplit(sp._replace(
-                scheme="https", netloc=sp.netloc[:-3] if sp.netloc.endswith(":80") else sp.netloc))
+        # https-страницы на `http://` того же хоста поднимается до `https://`
+        # (`upgrade_same_host`). Чужой хост или порт — пусто; адрес с логином и паролем
+        # (`user:pw@хост`) тоже: urllib его не откроет, а секрет чужой страницы попал бы в отчёт.
+        if "@" in urllib.parse.urlsplit(full).netloc:
+            return ""
+        full = upgrade_same_host(full, base_url)
         return full if same_origin(full, base_url) else ""
 
     links, assets = [], []
@@ -765,6 +763,22 @@ def head_flag(head: str) -> bool:
     return head_trust(head) is True
 
 
+def upgrade_same_host(full: str, base_url: str) -> str:
+    """Ссылку `http://хост[:80]` на `https`-странице того же хоста поднять до `https://хост`.
+
+    Смешанные ссылки на перенесённом сайте — частый вид: покрытие остаётся, открытого запроса
+    нет (если https у хоста не работает, выгрузка покажет `✗`). Остальные адреса — как есть.
+    Одна функция и для выбора ссылок (`to_markdown`), и для переписывания текста
+    (`local_links`): иначе вложение скачано по `https://`, а в карточке осталась `http://`.
+    """
+    a, b = url_origin(full), url_origin(base_url)
+    if a and b and a[0] == "http" and b[0] == "https" and a[1] == b[1] and a[2] == 80 and b[2] == 443:
+        sp = urllib.parse.urlsplit(full)
+        return urllib.parse.urlunsplit(sp._replace(
+            scheme="https", netloc=sp.netloc[:-3] if sp.netloc.endswith(":80") else sp.netloc))
+    return full
+
+
 def local_links(md: str, base_url: str, saved: dict) -> str:
     """Переписать ссылки на скачанные вложения на локальные пути.
 
@@ -773,7 +787,7 @@ def local_links(md: str, base_url: str, saved: dict) -> str:
     """
     def repl(m):
         full = web_join(base_url, m.group(2))
-        name = saved.get(full)
+        name = saved.get(full) or saved.get(upgrade_same_host(full, base_url))
         return f"{m.group(1)}({ASSET_DIR}/{name})" if name else m.group(0)
     return re.sub(r"(!?\[[^\]]*\])\(([^)\s]+)[^)]*\)", repl, md)
 

@@ -2723,6 +2723,33 @@ def test_web_crawl_takes_only_links_of_the_same_origin(tmp: Path):
 
 
 @test
+def test_web_http_links_of_same_host_are_rewritten_to_local_files_and_userinfo_is_dropped(tmp: Path):
+    """BL-SEC-17: вложение с `http://` того же хоста скачивается по поднятому `https://` адресу, и
+    `local_links` находит его в списке скачанного: в тексте стоит `_files/<имя>`, `http://` не остаётся.
+    Адрес с логином и паролем (`user:pw@хост`) в обход и вложения не попадает."""
+    _path()
+    WE = importlib.import_module("web_export")
+    base = "https://wiki.example.com/p"
+    html = ('<html><body><main><p>Текст</p>'
+            '<a href="http://wiki.example.com/d.pdf">Приказ</a>'
+            '<img src="http://wiki.example.com:80/i.png" alt="Схема">'
+            '<a href="https://wiki.example.com/ok.pdf">Ок</a>'
+            '<a href="http://user:pw@wiki.example.com/x">secret</a>'
+            '<a href="https://user:pw@wiki.example.com/y.pdf">secret2</a>'
+            '</main></body></html>')
+    _t, md, links, assets = WE.to_markdown(html, base)
+    assert links == [], links
+    urls = [u for u, _n in assets]
+    assert sorted(urls) == ["https://wiki.example.com/d.pdf", "https://wiki.example.com/i.png",
+                            "https://wiki.example.com/ok.pdf"], urls
+    saved = {u: WE.asset_name(u, n) for u, n in assets}
+    out = WE.local_links(md, base, saved)
+    assert "(http://wiki" not in out and "(http://user" in out, out     # чужая ссылка с паролем осталась текстом
+    for u in urls:
+        assert f"({WE.ASSET_DIR}/{saved[u]})" in out, (u, out)
+
+
+@test
 def test_doctor_names_web_sources_that_go_to_private_addresses(tmp: Path):
     """BL-SEC-17: `kit:doctor` называет источники `web:` с `allow_private` и страницы с приватным
     адресом без разрешения — предупреждением, не ошибкой; публичные источники и проект без блока —
