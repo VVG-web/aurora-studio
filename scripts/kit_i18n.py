@@ -45,12 +45,31 @@ UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 BASE = "ru"
 
 
+# Манифесты расширений, которые загрузчик не принял (BL-ARC-44): кривой `module.json` или
+# `connector.json` пропускается, а причина попадает сюда и в отчёт проверки, а не в traceback.
+SKIPPED: list = []
+
+
+def read_manifest(path: str, kind: str):
+    """Манифест через общий загрузчик (`aurora_common.load_manifest`, мягкий режим) → словарь или None.
+
+    Отказ не роняет скрипт: строка причины копится в `SKIPPED`, и `--check` называет её среди
+    того, что не сходится. Пропущенное расширение каталогом не проверяется — молча считать его
+    «в порядке» нельзя, поэтому и красная строка.
+    """
+    m, rep = aurora_common.load_manifest(path, kind, lenient=True)
+    if m is None:
+        SKIPPED.extend(r for r in rep if r not in SKIPPED)
+    return m
+
+
 def module_ids() -> list:
     """Разделы-папки: у каждого свой каталог строк."""
     if not os.path.isdir(MODULES):
         return []
     return sorted(d for d in os.listdir(MODULES)
-                  if os.path.isfile(os.path.join(MODULES, d, "module.json")))
+                  if os.path.isfile(os.path.join(MODULES, d, "module.json"))
+                  and read_manifest(os.path.join(MODULES, d, "module.json"), "module") is not None)
 
 
 def path_of(lang: str, module: str = "") -> str:
@@ -284,7 +303,7 @@ def message_skeletons() -> set:
     # рождает `modules()`: панель показывает их человеку, и переводятся они по тем же образцам.
     if os.path.isfile(common):
         for node in ast.walk(ast.parse(open(common, encoding="utf-8").read())):
-            if isinstance(node, ast.FunctionDef) and node.name == "load_manifest":
+            if isinstance(node, ast.FunctionDef) and node.name in ("load_manifest", "ext_api_problem"):
                 for sub in ast.walk(node):
                     if (isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Mod)
                             and isinstance(sub.left, ast.Constant) and isinstance(sub.left.value, str)
@@ -333,8 +352,9 @@ def connector_texts() -> set:
         path = os.path.join(folder, d, "connector.json")
         if not os.path.isfile(path):
             continue
-        with open(path, encoding="utf-8") as f:
-            m = json.load(f)
+        m = read_manifest(path, "connector")
+        if m is None:
+            continue
         out |= {m.get("role_what") or "", (m.get("auth") or {}).get("what") or ""}
         out |= {s.get("what") or "" for s in m.get("settings") or [] if isinstance(s, dict)}
     return {t for t in out if re.search("[а-яА-ЯёЁ]", t)}
@@ -557,6 +577,10 @@ def main() -> int:
                 troubles.append(f"данные `{section}` на `{code}`: перевод того, чего в реестре уже нет — "
                                 + ", ".join(f"`{k}`" for k in extra[:6]))
 
+    # манифесты, которые загрузчик пропустил, — тоже «не сходится»: их каталог не проверен
+    for line in SKIPPED:
+        bad = True
+        troubles.append("манифест расширения не принят, его надписи не проверены — " + line)
     if troubles:
         print("\n## Что не сходится\n")
         for line in troubles:

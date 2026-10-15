@@ -334,6 +334,18 @@ warning; an explicit `null` is the same as no field and gives no warning; in `na
 whose value is not a string are dropped with a warning). `api_version` is never softened: a value of the
 wrong type (`"99"`, `2.0`, `true`) is an error, like a version from the future. The manifest format did not change: no `api_version` means `1`.
 
+**Skins and sections compute "behind" with one function** (`aurora_common.ext_behind(for, kit)`): the core
+version `for` differs from the kit by minor — `behind`, and the panel says so in the list (`ui.behind`).
+The minor comparison is transitional behaviour; whether a skin is loaded is decided not by it but by the
+**extension API version**. A skin header (`/* name: … for: … api: … about: … */`) accepts an optional `api`
+field (default `1`; old skins without it are read as v1); it is checked by the same rule as the manifests'
+`api_version` (`aurora_common.ext_api_problem`): not an integer from 1, or newer than supported — the skin
+is not loaded, `cockpit.skins()` returns a `{id, error}` entry, and `/api/skins` puts it in `rejected`, not
+in the picker list. A skin file that cannot be read or is not UTF-8 gets the same entry: one bad skin does
+not bring down the others. `kit:i18n --check` reads `module.json` and `connector.json` through the same
+loader: a malformed manifest is skipped, the reason goes to the "What does not match" section, the exit
+code is 1, no traceback.
+
 ## 7. Where things are stored in a project
 
 | Path | What | In git |

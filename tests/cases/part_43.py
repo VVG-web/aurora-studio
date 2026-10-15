@@ -5,6 +5,8 @@
 первый потребитель — `sources_registry`: кривой `connector.json` пропускается строкой в отчёт,
 а не обрушивает чтение реестра, на котором стоят `update`, doctor и панель.
 Срез 3: разделы панели (`cockpit.modules()`) читает тот же загрузчик в «мягком» режиме.
+Срез 4: скины (`cockpit.skins()`: поле `api`, общая `ext_behind`, битый файл — запись об ошибке) и
+`kit_i18n` (кривой module.json или connector.json — строка в отчёте проверки, не traceback).
 Модель и сеть не используются; проекты — только во временных папках.
 """
 from __future__ import annotations
@@ -523,3 +525,126 @@ def test_cockpit_modules_messages_translate_to_english(tmp: Path):
     left = [t for t in texts if _re.search("[а-яА-ЯёЁ]", t.replace("не json", ""))]
     assert not left, left
     assert any("field «order» is not a number" in t for t in texts), texts
+
+
+def _ck_skins_dir(path):
+    """Панель, у которой папка скинов — `path`; вернуть (модуль, откат)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    keep = ck.SKINS_DIR
+    ck.SKINS_DIR = str(path)
+
+    def restore():
+        ck.SKINS_DIR = keep
+    return ck, restore
+
+
+@test
+def test_ext_behind_compares_minor_only(tmp: Path):
+    """`ext_behind` — одна функция для скинов и разделов: расходятся по minor — отстало, патч не в счёт."""
+    import aurora_common as C
+    assert C.ext_behind("1.173.0", "1.173.9") is False
+    assert C.ext_behind("1.172.5", "1.173.0") is True
+    assert C.ext_behind("1.174.0", "1.173.0") is True          # переходное поведение: «новее» тоже расхождение
+    assert C.ext_behind("2", "2.0.1") is True                  # «2» и «2.0» — разные minor по строке, как и раньше
+    assert C.ext_api_problem(1, "x") == "" and C.ext_api_problem(C.EXT_API_VERSION + 1, "x")
+    for bad in (0, -1, "1", 1.0, True, None):
+        assert C.ext_api_problem(bad, "x"), bad
+
+
+@test
+def test_cockpit_skins_survive_bad_files_and_future_api(tmp: Path):
+    """`skins()` на папке с кривыми скинами не падает: без `for`, другая minor, `api` из будущего,
+    не UTF-8, не файл — каждый отвечает своей строкой; плохой скин не прячет хорошие."""
+    root = tmp / "skins"
+    head = "/* name: %s\n   %sabout: Описание %s. */\n:root{--primary:#000}\n"
+    _write(root / "old.css", head % ("Старый", "", "без версии"))                       # без for и api: сегодняшний, v1
+    _write(root / "minor.css", head % ("Другая", "for: 1.1.0\n   ", "версия ядра"))
+    _write(root / "new.css", head % ("Новый", "for: 9.9.9\n   api: 1\n   ", "api объявлен"))
+    _write(root / "future.css", head % ("Будущий", "api: 2\n   ", "из будущего"))
+    _write(root / "zero.css", head % ("Нулевой", "api: 0\n   ", "ноль"))
+    _write(root / "word.css", head % ("Словом", "api: x\n   ", "не число"))
+    _write(root / "float.css", head % ("Дробный", "api: 1.5\n   ", "не целое"))
+    _write(root / "inabout.css", "/* name: В тексте\n   about: см. api: 7 в описании. */\n")   # не в начале строки — не поле
+    (root / "latin.css").write_bytes(b"/* name: \xff\xfe\n   about: x */\n")                # не UTF-8
+    (root / "dir.css").mkdir()                                                             # не файл: open падает OSError
+    (root / "readme.txt").write_text("не скин", encoding="utf-8")
+    ck, restore = _ck_skins_dir(root)
+    try:
+        got = ck.skins()                   # не бросает
+        kit = ck.kit_version()
+        en = ck.translate_payload({"rejected": [r for r in got if "error" in r]}, "en")["rejected"]
+    finally:
+        restore()
+    by = {r["id"]: r for r in got}
+    assert set(by) == {"old", "minor", "new", "future", "zero", "word", "float", "inabout", "latin", "dir"}, sorted(by)
+    old = by["old"]
+    assert "error" not in old and old["api"] == 1 and old["for"] == kit and old["behind"] is False, old
+    assert old["name"] == "Старый" and "без версии" in old["about"], old
+    assert by["minor"]["behind"] is True and by["minor"]["for"] == "1.1.0" and "error" not in by["minor"]
+    assert by["new"]["behind"] is True and by["new"]["api"] == 1, by["new"]
+    assert "error" not in by["inabout"] and by["inabout"]["api"] == 1, by["inabout"]
+    for sid in ("future", "zero", "word", "float", "latin", "dir"):
+        assert set(by[sid]) == {"id", "error"} and by[sid]["error"], (sid, by[sid])
+    assert "v2" in by["future"]["error"] and "обновите кит" in by["future"]["error"], by["future"]
+    assert "skin «future»" in by["future"]["error"]
+    assert "UTF-8" in by["latin"]["error"], by["latin"]
+    # английский: ни одного русского слова в причинах
+    import re as _re
+    assert len(en) == 6 and not [e for e in en if _re.search("[а-яА-ЯёЁ]", e["error"])], en
+    assert any("extension API v2" in e["error"] for e in en), en
+
+
+@test
+def test_cockpit_skins_of_the_kit_stay_valid(tmp: Path):
+    """Поставляемые скины читаются как прежде: без ошибок, api — 1, отставших нет."""
+    ck, restore = _ck_skins_dir(Path(__file__).resolve().parents[2] / "cockpit" / "skins")
+    try:
+        got = ck.skins()
+    finally:
+        restore()
+    assert len(got) >= 5 and not [r for r in got if "error" in r], got
+    assert all(r["api"] == 1 and r["for"] and not r["behind"] for r in got), got
+
+
+@test
+def test_kit_i18n_check_reports_bad_manifests_instead_of_crashing(tmp: Path):
+    """`kit_i18n --check` на ките с кривым module.json или connector.json: код 1 и строка в отчёте,
+    а не traceback; кривой манифест пропущен, соседний годный читается."""
+    import importlib
+    KI = importlib.import_module("kit_i18n")
+    mods = tmp / "modules"
+    _write(mods / "good" / "module.json", {"id": "good", "name": {"ru": "Хороший"}})
+    _write(mods / "broken" / "module.json", "{ не json")
+    _write(mods / "future" / "module.json", {"id": "future", "name": {"ru": "Т"}, "api_version": 99})
+    kit = tmp / "kit"
+    _write(kit / "connectors" / "ok" / "connector.json", _connector("ok", role_what="Задачи команды"))
+    _write(kit / "connectors" / "bad" / "connector.json", "{\"id\": ")
+    _write(kit / "connectors" / "nomirror" / "connector.json", {"id": "nomirror", "kind": "board", "run": {}})
+    keep = (KI.MODULES, KI.KIT, list(KI.SKIPPED))
+    out = io.StringIO()
+    try:
+        KI.SKIPPED.clear()
+        KI.MODULES = str(mods)
+        KI.KIT = str(kit)
+        ids = KI.module_ids()
+        texts = KI.connector_texts()           # на старом коде — JSONDecodeError
+        skipped = list(KI.SKIPPED)
+        argv, sys.argv = sys.argv, ["kit_i18n.py", "--check"]
+        try:
+            with contextlib.redirect_stdout(out):
+                KI.KIT = keep[1]               # остальное сверяется с настоящим китом
+                rc = KI.main()
+        finally:
+            sys.argv = argv
+    finally:
+        KI.MODULES, KI.KIT = keep[0], keep[1]
+        KI.SKIPPED[:] = keep[2]
+    assert ids == ["good"], ids
+    assert texts == {"Задачи команды"}, texts
+    assert len(skipped) == 4 and any("module «broken»" in s for s in skipped) \
+        and any("v99" in s for s in skipped) and any("connector «bad»" in s for s in skipped) \
+        and any("«mirror»" in s for s in skipped), skipped
+    report = out.getvalue()
+    assert rc == 1 and "манифест расширения не принят" in report and "module «broken»" in report, report

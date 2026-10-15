@@ -60,7 +60,7 @@ UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
 from aurora_common import (ENGINE_DIRS, child_env, engine_dir, head_value,  # noqa: E402
-                           is_folder_guide, kit_mcp_permission, load_manifest, local_view, mtime_stamp,
+                           ext_api_problem, ext_behind, is_folder_guide, kit_mcp_permission, load_manifest, local_view, mtime_stamp,
                            personal_kit_file, real_inside, real_rel, replace_file, same_origin, utc_slug, utc_stamp,
                            yaml_scalar)
 from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
@@ -134,13 +134,20 @@ MODULES_DIR = os.path.join(KIT, "cockpit", "modules")
 def skins() -> list:
     """Оформление вынесено в файлы: положил свой .css в cockpit/skins/ — он в списке.
 
-    Имя, описание и версия берутся из шапки самого файла (`/* name: … for: … about: … */`),
+    Имя, описание и версия берутся из шапки самого файла (`/* name: … for: … api: … about: … */`),
     чтобы добавление скина не требовало править ни сервер, ни панель.
 
     `for:` — версия ядра, под которую скин собран. Скин красит то, чего в панели могло
     ещё не быть: новый элемент выйдет в цветах по умолчанию, и понять это по внешнему
     виду нельзя. Если версия не объявлена, считаем скин сегодняшним — так ведут себя
-    все скины, написанные до появления поля.
+    все скины, написанные до появления поля. Отставание (`behind`) считает общая
+    `ext_behind`, та же, что у разделов панели.
+
+    `api:` — версия API расширений (конверт манифеста, BL-ARC-44), по умолчанию 1: старые
+    скины без поля читаются как v1. Проверяет её то же правило, что и манифесты
+    (`aurora_common.ext_api_problem`): число не целое или из будущего — скин не подключается,
+    в ответе `{id, error}`. Так же отвечает файл, который не читается или не UTF-8: один
+    плохой скин не роняет список остальных.
     """
     out = []
     if not os.path.isdir(SKINS_DIR):
@@ -148,13 +155,28 @@ def skins() -> list:
     for f in sorted(os.listdir(SKINS_DIR)):
         if not f.endswith(".css"):
             continue
-        head = read_text(os.path.join(SKINS_DIR, f), limit=2000)
+        try:
+            with open(os.path.join(SKINS_DIR, f), "rb") as fh:
+                raw = fh.read(200_000)
+            # хвост, оборванный на середине знака, — не ошибка кодировки
+            head = codecs.getincrementaldecoder("utf-8")().decode(raw)[:2000]
+        except OSError as e:
+            out.append({"id": f[:-4], "error": "skin «%s»: файл не читается (%s) — пропущен" % (f[:-4], e)})
+            continue
+        except ValueError:
+            out.append({"id": f[:-4], "error": "skin «%s»: файл не в кодировке UTF-8 — пропущен" % f[:-4]})
+            continue
+        api = (re.search(r"^[ \t]*(?:/\*)?[ \t]*api:[ \t]*(\S+)", head, re.M) or [None, "1"])[1]
+        bad = ext_api_problem(int(api) if api.isdecimal() else api, "skin «%s»" % f[:-4])
+        if bad:
+            out.append({"id": f[:-4], "error": bad})
+            continue
         name = (re.search(r"name:\s*(.+)", head) or [None, f[:-4]])[1].strip()
         about = (re.search(r"about:\s*([\s\S]*?)\*/", head) or [None, ""])[1]
         about = " ".join(x.strip() for x in about.splitlines() if x.strip())
         ver = (re.search(r"for:\s*([0-9][0-9.]*)", head) or [None, kit_version()])[1].strip()
-        out.append({"id": f[:-4], "name": name, "about": about, "for": ver,
-                    "behind": minor(ver) != minor(kit_version())})
+        out.append({"id": f[:-4], "name": name, "about": about, "for": ver, "api": int(api),
+                    "behind": ext_behind(ver, kit_version())})
     return out
 
 
@@ -229,7 +251,7 @@ def modules() -> list:
             "needs": [x for x in (m.get("needs") or []) if x in ("project", "kit")],
             "commands": [x for x in (m.get("commands") or []) if isinstance(x, str)],
             "for": ver,
-            "behind": minor(ver) != minor(kit_version()),
+            "behind": ext_behind(ver, kit_version()),
             "about": m.get("about", {}),
             # Раздел в разработке: в меню только вместе с «Разработкой» (семь нажатий на
             # «О проекте»).
@@ -5591,7 +5613,12 @@ class Handler(BaseHTTPRequestHandler):
             run = CRON._read_json(CRON.run_path(run_id), {})
             self.send_json(run if run else {"error": "прогон не найден"}, 200 if run else 404)
         elif u.path == "/api/skins":
-            self.send_json({"skins": localized_skins(skins(), request_lang(q))})
+            rows = skins()
+            # скин, не принятый проверкой, в список выбора не входит: причина — в `rejected`
+            # (не `errors`: этот ключ перевод читает как список строк, а здесь записи `{id, error}`)
+            self.send_json({"skins": localized_skins([r for r in rows if "error" not in r],
+                                                     request_lang(q)),
+                            "rejected": [r for r in rows if "error" in r]})
         elif u.path == "/api/modules":
             self.send_json({"modules": modules()})
         elif u.path.startswith("/modules/"):

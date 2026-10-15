@@ -342,6 +342,34 @@ def _ext_type_name(want) -> str:
     return " или ".join(names.get(t, t.__name__) for t in (want if isinstance(want, tuple) else (want,)))
 
 
+def ext_api_problem(ver, pre: str) -> str:
+    """Годится ли версия API расширения → пустая строка или причина отказа (с именем `pre` впереди).
+
+    Одно правило на всех: манифест (`load_manifest`) и шапка скина (поле `api`) проверяются
+    здесь. Версия — целое от 1; новее `EXT_API_VERSION` — расширение написано под движок новее
+    этого, и догадываться о незнакомом формате нельзя.
+    """
+    if isinstance(ver, bool) or not isinstance(ver, int) or ver < 1:
+        return "%s: api_version должен быть целым числом от 1 — пропущен" % pre
+    if ver > EXT_API_VERSION:
+        return ("%s: написан под API расширений v%d, а движок поддерживает до v%d — "
+                "пропущен (обновите кит)" % (pre, ver, EXT_API_VERSION))
+    return ""
+
+
+def ext_behind(for_version, kit_version) -> bool:
+    """Отстало ли расширение от кита: версии ядра `for` и кита расходятся по minor.
+
+    Одна функция для скинов и разделов панели. Сравнение по minor — переходное поведение:
+    скин или раздел, собранный под другую minor, мог не знать нового элемента панели или
+    красить то, чего уже нет, поэтому панель подсказывает об этом (`ui.behind`). Совместимость
+    (подключать или нет) решает не она, а `api_version` (`ext_api_problem`).
+    """
+    def minor(v):
+        return ".".join(str(v).split(".")[:2])
+    return minor(for_version) != minor(kit_version)
+
+
 def load_manifest(path, kind: str, lenient: bool = False):
     """Прочитать манифест расширения вида `kind` → `(манифест | None, [строки отчёта])`.
 
@@ -424,11 +452,9 @@ def load_manifest(path, kind: str, lenient: bool = False):
         if not str(data["id"]).strip():
             return None, ["%s: пустой id — пропущен" % pre]
         ver = data.get("api_version", 1)
-        if isinstance(ver, bool) or not isinstance(ver, int) or ver < 1:
-            return None, ["%s: api_version должен быть целым числом от 1 — пропущен" % pre]
-        if ver > EXT_API_VERSION:
-            return None, ["%s: написан под API расширений v%d, а движок поддерживает до v%d — "
-                          "пропущен (обновите кит)" % (pre, ver, EXT_API_VERSION)]
+        bad = ext_api_problem(ver, pre)
+        if bad:
+            return None, [bad]
         out = dict(data)
         out["api_version"] = ver
         return out, notes

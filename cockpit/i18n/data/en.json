@@ -522,6 +522,8 @@
     "запрос к типам карточек не выполнен: {}": "the card types request failed: {}",
     "module «{}»: order — не конечное число — взято 100": "module «{}»: order is not a finite number — 100 taken",
     "module «{}»: группа «{}» неизвестна — раздел показан в группе project": "module «{}»: group «{}» is unknown — the section is shown in the project group",
+    "skin «{}»: файл не в кодировке UTF-8 — пропущен": "skin «{}»: the file is not UTF-8 — skipped",
+    "skin «{}»: файл не читается ({}) — пропущен": "skin «{}»: the file cannot be read ({}) — skipped",
     "{}: api_version должен быть целым числом от 1 — пропущен": "{}: api_version must be an integer from 1 — skipped",
     "{}: вид расширения «{}» загрузчику неизвестен": "{}: the loader does not know the extension kind «{}»",
     "{}: корень манифеста должен быть объектом, а не {} — пропущен": "{}: the manifest root must be an object, not {} — skipped",
