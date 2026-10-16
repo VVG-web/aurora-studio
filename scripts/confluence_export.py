@@ -285,13 +285,14 @@ VIEWFILE_MACROS = ("view-file", "viewpdf", "viewdoc", "viewxls", "viewppt")
 # (`place`), поэтому разбор ставит заглушку, а экспортёр разворачивает её в `expand_assets`.
 # Подчёркивание в заглушке кодируется: конвертер экранирует его в тексте, и ссылка ломалась бы.
 ASSET_STUB = "aurora-asset:"
-# Исполняемое, скриптовое и открываемое браузером не скачивается никогда: зеркало уезжает в git
+# Исполняемое, скриптовое и веб-страницы (html и родственные) не скачиваются никогда: зеркало уезжает в git
 # и на машины людей. Имена с ведущей точкой («.gitignore», «.gitattributes») тоже: такой файл
 # в `_assets/` меняет поведение git для всей папки (`save_assets`, «служебное имя»).
 BLOCKED_EXTS = (".exe", ".bat", ".cmd", ".com", ".msi", ".dll", ".jar", ".js", ".vbs",
                 ".ps1", ".sh", ".scr", ".py", ".pl", ".rb", ".php", ".command", ".lnk", ".hta",
                 ".wsf", ".vbe", ".jse", ".reg", ".msc", ".cpl", ".pif", ".bash", ".zsh",
-                ".psm1", ".pkg", ".dmg", ".apk", ".app", ".html", ".htm")
+                ".psm1", ".pkg", ".dmg", ".apk", ".app", ".html", ".htm", ".xhtml", ".shtml",
+                ".mht", ".mhtml")
 # Markdown внутри зеркала принимают за страницу: аудит и план сборки обходят все `.md` под
 # Sources/, и вложение `notes.md` в `<страница>_assets/` стало бы «лишним» файлом-сиротой.
 MIRROR_EXTS = (".md", ".markdown")
@@ -968,6 +969,8 @@ class Exporter(WikiMirror):
         except Exception as e:  # noqa: BLE001
             print(f"  ! вложения {page_id}: {e}", file=sys.stderr)
             have, meta = None, {}
+            if not names:       # страница без вложений в теле: папка не вычищена — перечитать
+                self.attach_failed += 1
         base = os.path.splitext(os.path.basename(rel))[0]
         folder = os.path.join(os.path.dirname(rel), base + "_assets").replace("\\", "/")
         full_folder = os.path.join(self.out, folder)
@@ -1167,6 +1170,9 @@ class Exporter(WikiMirror):
         stem = fname[:len(fname) - len(dot)]
         cap = max(PART_MIN, min(80, PATH_CHARS - self.path_prefix() - len(folder) - 1))
         name = portable_name(stem, sep="_", ext=dot, max_chars=cap)
+        if not name and tag_of is not None:
+            stem = "asset"      # одни запрещённые знаки («???.pdf»): основа общая, различит отпечаток
+            name = portable_name(stem, sep="_", ext=dot, max_chars=cap)
         # Укороченное имя получает отпечаток полного: «KG_переход на ГС и Отчет из
         # Расхождений» и «…и отчет из расхождения» иначе стали бы одним файлом, и вторая
         # схема затёрла бы первую (найдено на PRJ-A, 27.09.2026, до выпуска).
@@ -1353,10 +1359,10 @@ def prune_allowed(stale: list, records: int, failed: int) -> tuple:
     """
     if failed:
         return False, f"выгрузка прошла с ошибками ({failed}) — недокачанное выглядело бы удалённым"
-    # Порог — по страницам: вложения исчезнувшей страницы уходят вместе с ней и страниц не добавляют.
-    pages = [s for s in stale if s.endswith(".md") and not ASSET_DIR_RE.search(s)]
-    if len(pages) > max(20, PRUNE_SHARE * max(1, records)):
-        return False, (f"лишних {len(pages)} из {records} — слишком много для удалённых страниц; "
+    # Порог — по всему лишнему: вложения исчезнувшей страницы `split_stale` уже вынес
+    # (они уходят вместе с ней), а массовое удаление посторонних файлов должно останавливаться.
+    if len(stale) > max(20, PRUNE_SHARE * max(1, records)):
+        return False, (f"лишних {len(stale)} из {records} — слишком много для удалённых страниц; "
                        "проверьте корни в aurora.config.yaml и уберите руками")
     return True, ""
 

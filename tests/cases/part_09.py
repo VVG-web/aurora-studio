@@ -2604,7 +2604,8 @@ def test_confluence_script_and_service_names_are_never_downloaded(tmp: Path):
     """Скрипты, ярлыки, пакеты, html и имена с ведущей точкой не запрашиваются: строка «не скачан»."""
     typed = ["a.py", "a.pl", "a.rb", "a.php", "a.command", "a.lnk", "a.hta", "a.wsf", "a.vbe",
              "a.jse", "a.reg", "a.msc", "a.cpl", "a.pif", "a.bash", "a.zsh", "a.psm1", "a.pkg",
-             "a.dmg", "a.apk", "a.app", "a.html", "A.HTM"]
+             "a.dmg", "a.apk", "a.app", "a.html", "A.HTM", "a.xhtml", "a.shtml", "a.mht",
+             "a.MHTML"]
     dotted = [".gitignore", ".gitattributes"]
     page = "".join(_file_link(n) for n in typed + dotted) + _file_link("ok.pdf")
     have = {n: "/d/" + n for n in typed + dotted + ["ok.pdf"]}
@@ -2848,3 +2849,76 @@ def test_confluence_page_stem_with_parenthesis_is_encoded_and_names_repair_sees_
     new = _in_root(root, run)
     text = page.read_text(encoding="utf-8")
     assert f"](1%29_Общие_положения_assets/{up.quote(new)})" in text and long not in text, text
+
+
+@test
+def test_confluence_attachment_default_limit_is_the_same_everywhere(tmp: Path):
+    """Умолчание предела вложения в манифесте коннектора и каталоге en совпадает с кодом (100 МБ)."""
+    import importlib
+    import json
+    sys.path.insert(0, str(SCRIPTS))
+    CE = importlib.import_module("confluence_export")
+    mb = f"{CE.ATTACH_MAX_MB:g}"
+    raw = (KIT / "connectors/confluence-dc/connector.json").read_text(encoding="utf-8")
+    texts = [l for l in raw.splitlines() if "предел размера одного вложения" in l]
+    assert texts and all(f"по умолчанию {mb};" in t for t in texts), texts
+    en = json.loads((KIT / "cockpit/i18n/data/en.json").read_text(encoding="utf-8"))
+    hits = [(k, v) for k, v in _walk_strings(en) if "предел размера одного вложения" in k]
+    assert hits and all(f"по умолчанию {mb};" in k and f"default {mb};" in v for k, v in hits), hits
+
+
+def _walk_strings(node):
+    """Пары (ключ, значение-строка) из вложенного JSON."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if isinstance(v, str):
+                yield k, v
+            else:
+                yield from _walk_strings(v)
+
+
+@test
+def test_confluence_attachments_made_only_of_forbidden_signs_stay_apart(tmp: Path):
+    """«???.pdf» и «***.pdf» после очистки пусты: каждое получает свой файл, а не общий asset.pdf."""
+    names = ["???.pdf", "***.pdf"]
+    page = "".join(_file_link(n) for n in names)
+    have = {n: "/d/" + str(i) for i, n in enumerate(names)}
+    _CE, exp, root, _f = _attach_exporter(tmp, attachments=have, page=page)
+    _in_root(root, lambda: exp.walk("5001", []))
+    folder = root / "Sources/Confluence/Руководство_assets"
+    files = sorted(os.listdir(folder))
+    assert len(files) == 2, files
+    assert len(set(exp.asset_links.values())) == 2, exp.asset_links
+
+
+@test
+def test_confluence_page_without_attachments_is_reread_when_the_list_is_down(tmp: Path):
+    """Список вложений недоступен, а папка _assets осталась: страница не считается свежей."""
+    page = _file_link("law.pdf")
+    plain = "<p>Просто текст</p>"
+    have = {"law.pdf": "/d/law"}
+    _CE, exp1, root, _f = _attach_exporter(tmp, attachments=have, page=page)
+    _in_root(root, lambda: exp1.walk("5001", []))
+    folder = root / "Sources/Confluence/Руководство_assets"
+    assert (folder / "law.pdf").is_file()
+    _CE, exp2, _r, _f2 = _attach_exporter(tmp, root=root, attachments=have, page=plain,
+                                          attach_error=OSError("сеть"))
+    _in_root(root, lambda: exp2.walk("5001", []))
+    assert (folder / "law.pdf").is_file() and "5001" in exp2.nocache, exp2.nocache
+    _CE, exp3, _r, _f3 = _attach_exporter(tmp, root=root, attachments=have, page=plain)
+    _in_root(root, lambda: exp3.walk("5001", []))
+    assert not folder.exists(), "после нормального синка папка вложений осталась"
+
+
+@test
+def test_prune_threshold_counts_stray_files_and_inline_links_do_not_merge(tmp: Path):
+    """Порог --prune считает и посторонние файлы; kb:names не склеивает соседние ссылки."""
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    C = importlib.import_module("confluence_export")
+    ok, why = C.prune_allowed(["junk%d.bak" % i for i in range(300)], 1064, 0)
+    assert not ok and "слишком много" in why, (ok, why)
+    N = importlib.import_module("kb_names")
+    m = N.INLINE_RE.search("[a](#top)![i](Стр_assets/i.png)")
+    assert m and m.group("base") == "Стр", m and m.group("base")
+    assert N.INLINE_RE.search("[a](#top) ![i](Стр_assets/i.png)").group("base") == "Стр"

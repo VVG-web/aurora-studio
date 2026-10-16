@@ -219,8 +219,8 @@ with an icon image in its body stays a page link, and the icon is not downloaded
 The page ends with a `## Вложения страницы` ("Page attachments") section (draw.io and mermaid diagrams stay in
 `## Схемы страницы`). A downloaded file is a row `- [name](<page>_assets/name)`; a file that was not downloaded is a row
 `- не скачан (reason): [name](Confluence address)` ("not downloaded"), and the link in the text leads to the original. The
-reasons: executable type, no attachment of that name on the page, markdown inside the mirror (`.md`, `.markdown`: they would be taken for pages), service name, download error. **Executable, script and browser-openable files are never
-downloaded** (`exe`, `bat`, `cmd`, `com`, `msi`, `dll`, `jar`, `js`, `vbs`, `ps1`, `sh`, `scr`, `py`, `pl`, `rb`, `php`, `command`, `lnk`, `hta`, `wsf`, `vbe`, `jse`, `reg`, `msc`, `cpl`, `pif`, `bash`, `zsh`, `psm1`, `pkg`, `dmg`, `apk`, `app`, `html`, `htm`).
+reasons: executable type, no attachment of that name on the page, markdown inside the mirror (`.md`, `.markdown`: they would be taken for pages), service name, download error. **Executable, script and web-page (html and kin) files are never
+downloaded** (`exe`, `bat`, `cmd`, `com`, `msi`, `dll`, `jar`, `js`, `vbs`, `ps1`, `sh`, `scr`, `py`, `pl`, `rb`, `php`, `command`, `lnk`, `hta`, `wsf`, `vbe`, `jse`, `reg`, `msc`, `cpl`, `pif`, `bash`, `zsh`, `psm1`, `pkg`, `dmg`, `apk`, `app`, `html`, `htm`, `xhtml`, `shtml`, `mht`, `mhtml`).
 A name with a leading dot (`.gitignore`, `.gitattributes`) is not downloaded either ("service name"): such a file in `_assets/` would change git's behaviour for the folder. A download failure of one file does
 not fail the page and does not delete its previous copy. But when the attachment list was obtained and the name is not in it (the attachment was deleted in Confluence), or the policy (mode, size, type) no longer admits the file, the copy leaves `_assets/`
 (an empty folder too) and the link leads to the original; a page with no attachments in its body does not keep the folder. When the list is unavailable (a network failure) nothing is deleted. Different attachments whose names coincide after being made safe
@@ -261,7 +261,7 @@ the same (the version cache would otherwise skip them and files skipped earlier 
 attachments are not affected by the policy. A re-read page downloads all of its attachments again, including those already
 in `_assets/`: raising the limit on a large mirror means re-downloading the attachments of those pages.
 Sync root pages have no version from the child list and are re-read on every sync; their attachments are not downloaded again while the page version, the policy and the converter are the same, the cache entry is fresh (not older than a week), and the file is in place with a size equal to the attachment's property. Once a week and with `--force` it is a full download.
-**Cleanup with `--prune`.** The `<page>_assets/` files of a vanished or moved page go together with it and count neither as "extra" in the list nor in the cleanup threshold (which counts pages, `.md`, only).
+**Cleanup with `--prune`.** The `<page>_assets/` files of a vanished or moved page go together with it and count neither as "extra" in the list nor in the cleanup threshold (which counts everything else that is extra, stray files included).
 
 ## Disconnecting
 
