@@ -27,6 +27,8 @@ flowchart LR
   and what was skipped stays a "not downloaded" row with a link to the original in the `## Вложения страницы` section.
   What to download is set in `atlassian.confluence`: `attachments: all | images | none` (default `all`) and
   `attachment_max_mb` (default 25, `0` = no limit); a file skipped by mode or size is also a "not downloaded (reason)" row.
+  The sync summary has a line `Вложения: скачано N · пропущено по типу M · по размеру K · ошибок E` (downloaded / skipped
+  by type / by size / errors); changing these settings re-reads the already synced pages that have attachments.
 - **Written only by sync.** Do not edit `Sources/` — the next sync would overwrite you; put your own words into
   `Raw/corrections/` (`kb:correct`) instead.
 - **A failed sync keeps what it did not reach.** If the server timed out halfway, the pages the walk did not visit stay

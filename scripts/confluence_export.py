@@ -859,6 +859,10 @@ class Exporter(WikiMirror):
     # Вложения страницы: имя в тексте → ссылка в зеркале; заполняет `save_assets`.
     asset_links: dict = {}
     attach_saved = attach_skipped = attach_failed = 0
+    # Пропущенное разбито по причинам для сводки синка: `attach_skipped` — всего,
+    # `_type` — тип (исполняемый, markdown, режим), `_size` — больше предела,
+    # `attach_missing` — имени нет среди вложений страницы.
+    attach_skipped_type = attach_skipped_size = attach_missing = 0
     # Политика вложений из конфига (`attachments`, `attachment_max_mb`); умолчание — всё до 25 МБ.
     att_mode = "all"
     att_max_mb = float(ATTACH_MAX_MB)
@@ -878,6 +882,13 @@ class Exporter(WikiMirror):
         if self.att_max_mb and size is not None and size > self.limit_bytes():
             return self.too_large()
         return ""
+
+    def att_sig(self) -> str:
+        """Подпись политики вложений для кэша страницы: «режим:предел».
+
+        Смена `attachments` или `attachment_max_mb` меняет то, что лежит рядом со страницей, а
+        версия страницы при этом та же — кэш по версии иначе пропустил бы её навсегда."""
+        return f"{self.att_mode}:{self.att_max_mb:g}"
 
     def limit_bytes(self) -> int:
         return int(self.att_max_mb * 1024 * 1024)
@@ -945,6 +956,7 @@ class Exporter(WikiMirror):
                 blob = self.fetch_limited(have[hit], meta[hit])
             except FileTooLarge:
                 self.attach_skipped += 1
+                self.attach_skipped_size += 1
                 lines.append(f"- схема `{name}` — не скачана ({self.too_large()}): "
                              f"[{hit}]({self.original_url(page_id, hit)})")
                 continue
@@ -998,6 +1010,12 @@ class Exporter(WikiMirror):
                 self.attach_failed += 1
             elif reason:
                 self.attach_skipped += 1
+                if reason.startswith("больше"):
+                    self.attach_skipped_size += 1
+                elif reason.startswith("вложения с таким"):
+                    self.attach_missing += 1
+                else:
+                    self.attach_skipped_type += 1
             # Запрет по типу и настройка (режим, размер) прежнюю копию в ссылку не берут:
             # файл, которого политика больше не допускает, не выдаётся за актуальный.
             policy = reason.startswith(("исполняемый", "markdown", "режим", "больше"))
@@ -1122,6 +1140,10 @@ class Exporter(WikiMirror):
         if (not c or version is None or c.get("version") != int(version)
                 or c.get("conv") != CONVERTER or c.get("at", "") < CACHE_FRESH_SINCE):
             return False
+        # Политика вложений сменилась — страница с вложениями или схемами перечитывается:
+        # от неё зависит, что скачано, а что оставлено строкой «не скачан».
+        if c.get("assets") and c.get("att") != self.att_sig():
+            return False
         try:
             children = self.api.children(page_id)
         except Exception:  # noqa: BLE001
@@ -1212,6 +1234,7 @@ class Exporter(WikiMirror):
         else:
             self.fresh[str(page_id)] = {"version": version, "conv": CONVERTER, "rel": rel,
                                         "title": title, "assets": bool(assets),
+                                        "att": self.att_sig(),
                                         "ryd": len(defines), "ryl": len(links), "at": TODAY}
 
         for child in sorted(children, key=lambda c: (c["title"], c["id"])):
@@ -1296,6 +1319,26 @@ def run_export(cfg: dict, roots: list, out: str, auth: str, force: bool) -> Expo
     return exp
 
 
+def attachments_summary(exp) -> str:
+    """Итог по вложениям одной строкой; пусто, если вложений в этом синке не было.
+
+    Сбой вложения — не сбой страницы: код возврата он не портит, но число ошибок здесь видно."""
+    saved, errors = exp.attach_saved, exp.attach_failed
+    by_type, by_size = exp.attach_skipped_type, exp.attach_skipped_size
+    missing = exp.attach_missing
+    if not (saved or errors or by_type or by_size or missing):
+        return ""
+    return (f"Вложения: скачано {saved} · пропущено по типу {by_type} · по размеру {by_size}"
+            + (f" · нет на странице {missing}" if missing else "")
+            + f" · ошибок {errors}")
+
+
+def print_attachments_summary(exp) -> None:
+    line = attachments_summary(exp)
+    if line:
+        print(line)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Детерминированное зеркало Confluence → Sources/Confluence/")
     ap.add_argument("--roots", nargs="*", help="page_id корней (по умолчанию — из aurora.config.yaml)")
@@ -1352,6 +1395,7 @@ def main() -> int:
         print(f"Схемы плагинов сохранены рядом со страницами: {exp.assets_saved}"
               + (f" · убрано под прежними именами: {exp.assets_dropped}"
                  if exp.assets_dropped else ""))
+    print_attachments_summary(exp)
     if exp.ry_defines or exp.ry_links:
         print(f"Requirement Yogi: объявлено ключей {exp.ry_defines}, "
               f"ссылок на чужие ключи {exp.ry_links}")

@@ -2447,3 +2447,72 @@ def test_confluence_diagram_larger_than_limit_is_not_downloaded(tmp: Path):
     exp2.walk("5001", [])
     page2 = (root2 / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
     assert "не скачана (больше 1e-05 МБ)" in page2, page2
+
+
+@test
+def test_confluence_sync_summary_counts_attachment_outcomes(tmp: Path):
+    """Сводка синка: скачано, пропущено по типу и по размеру, ошибки; сбой вложения не сбой страницы."""
+    import io
+    from contextlib import redirect_stdout
+    mb = 1024 * 1024
+
+    def broken(url):
+        if url == "/d/rep":
+            raise OSError("обрыв")
+        return b"ok " + url.encode("utf-8")
+    CE, exp, root, _f = _attach_exporter(
+        tmp, fetch=broken, sizes={"law-1.pdf": (mb + 1, "application/pdf")}, att_max_mb=1)
+    assert CE.attachments_summary(exp) == "", "сводка без единого вложения должна молчать"
+    _in_root(root, lambda: exp.walk("5001", [], "", 1))
+    # скачаны «Приложение 2.pdf» и картинка; law-1.pdf больше предела; setup.exe и run.bat
+    # по типу; gone.pdf на странице нет; report.docx оборвался
+    assert (exp.attach_saved, exp.attach_skipped_type, exp.attach_skipped_size,
+            exp.attach_failed, exp.attach_missing) == (2, 2, 1, 1, 1), \
+        (exp.attach_saved, exp.attach_skipped_type, exp.attach_skipped_size,
+         exp.attach_failed, exp.attach_missing)
+    assert exp.failed == 0, "сбой вложения посчитан сбоем страницы"
+    assert CE.attachments_summary(exp) == (
+        "Вложения: скачано 2 · пропущено по типу 2 · по размеру 1 · нет на странице 1"
+        " · ошибок 1"), CE.attachments_summary(exp)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        CE.print_attachments_summary(exp)
+    assert buf.getvalue().startswith("Вложения: скачано 2"), buf.getvalue()
+
+
+@test
+def test_confluence_attachment_policy_change_rereads_synced_pages(tmp: Path):
+    """Смена attachments/attachment_max_mb перечитывает уже синхронизированные страницы со вложениями."""
+    page = _file_link("law.pdf")
+    have = {"law.pdf": "/d/law"}
+
+    def sync(**policy):
+        _CE, exp, _r, fetched = _attach_exporter(
+            tmp, attachments=have, page=page, root=root, force=False, **policy)
+
+        def go():
+            exp.walk("5001", [], "", 1)
+            exp.save_cache()
+        _in_root(root, go)
+        return exp, fetched
+    root = make_project(tmp)
+    exp1, f1 = sync()
+    assert f1 == ["/d/law"], f1
+    assert exp1.fresh["5001"]["att"] == "all:25" and exp1.fresh["5001"]["assets"] is True, exp1.fresh
+    exp2, f2 = sync()                       # политика та же — страница пропущена по версии
+    assert f2 == [] and exp2.skipped == 1, (f2, exp2.skipped)
+    exp3, f3 = sync(att_max_mb=1)           # предел сменился — перечитана
+    assert f3 == ["/d/law"] and exp3.fresh["5001"]["att"] == "all:1", (f3, exp3.fresh)
+    exp4, f4 = sync(att_max_mb=1)
+    assert f4 == [], f4
+    exp5, f5 = sync(att_mode="none", att_max_mb=1)      # режим сменился — перечитана, ничего не качает
+    md = (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    assert f5 == [] and exp5.written == 1 and "не скачан (режим none)" in md, (f5, md)
+    assert exp5.skipped == 0 and exp5.attach_skipped_type == 1, (exp5.skipped, exp5.attach_skipped_type)
+    # страница без вложений политикой не перечитывается
+    plain = "<p>Просто текст</p>"
+    _CE, e6, _r, fp = _attach_exporter(tmp, root=root, page=plain, force=False)
+    _in_root(root, lambda: (e6.walk("5001", [], "", 2), e6.save_cache()))
+    _CE, e7, _r, fp7 = _attach_exporter(tmp, root=root, page=plain, force=False, att_max_mb=3)
+    _in_root(root, lambda: e7.walk("5001", [], "", 2))
+    assert e7.skipped == 1 and e7.fresh["5001"]["assets"] is False, e7.fresh

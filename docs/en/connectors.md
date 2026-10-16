@@ -244,6 +244,15 @@ in `## Вложения страницы`: `- не скачан (режим imag
 to them too (a row in `## Схемы страницы`: `не скачана (больше N МБ)`). The settings form does not erase these two keys on
 save; when the config has none, the form does not add them.
 
+**Sync summary.** When there were attachments, the summary gets a line next to the diagrams one: `Вложения: скачано N ·
+пропущено по типу M · по размеру K · ошибок E` ("Attachments: downloaded N · skipped by type M · by size K · errors E"; a
+`· нет на странице P` part is added for attachments the page does not have). A failed attachment is not a failed page: the
+sync exit code is unchanged, the error count shows in the line, and the page is re-read on the next sync.
+**Changing the policy.** Pages with attachments or diagrams remember the policy (`mode:limit`) in the sync cache: change
+`attachments` or `attachment_max_mb` and those pages are re-read on the next sync even when their Confluence version is
+the same (the version cache would otherwise skip them and files skipped earlier would never be fetched). Pages without
+attachments are not affected by the policy.
+
 ## Disconnecting
 
 Unticking removes the module from `sources:` but leaves the mirror folder: an export is data, and the engine does not
