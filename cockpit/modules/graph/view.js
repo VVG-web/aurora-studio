@@ -8,7 +8,7 @@
 // узлов вешает вкладку целиком, и это выглядит как поломка панели, а не как «много».
 const LIMIT = 900;
 
-const G = {data: null, cy: null, focus: "", anyway: false, fitKey: ""};
+const G = {data: null, cy: null, focus: "", anyway: false, fitKey: "", fitTimer: null};
 
 // Насколько разводить узлы. Одной раскладки на все базы не бывает: сорок карточек и
 // четыреста требуют разного, и «чёрный клубок» — это не свойство графа, а неподходящий
@@ -182,6 +182,9 @@ function neighbourhood(id, depth){
 
 function draw(ctx){
   if (!G.data || !window.cytoscape) return;
+  // Из скрытого раздела раскладка выходит нулевой (контейнер без размера): загрузка, ушедшая в
+  // фон, граф не рисует — его соберёт onShow, когда раздел снова на виду.
+  if (ctx.view !== "graph") return;
   const box = ctx.$("#graphBox");
   const depth = parseInt(ctx.$("#graphDepth").value, 10) || 2;
   const want = G.focus ? neighbourhood(G.focus, depth) : null;
@@ -230,7 +233,7 @@ function draw(ctx){
   });
   if (G.fitKey !== G.focus + "|" + depth){
     G.fitKey = G.focus + "|" + depth;
-    setTimeout(() => { try { G.cy.fit(undefined, 40); } catch (e) {} }, 30);
+    G.fitTimer = setTimeout(() => { G.fitTimer = null; try { G.cy.fit(undefined, 40); } catch (e) {} }, 30);
   }
   // Клик ведёт в карточку. Граф, из которого нельзя попасть в файл, — картинка
   // «смотрите, красиво»: её посмотрят один раз.
@@ -306,4 +309,23 @@ function setSpread(ctx, v){
   if (G.cy) draw(ctx);
 }
 
-export default {mount, refresh};
+// Граф держит в памяти экземпляр cytoscape с раскладкой и обработчиками, а скрытому разделу он
+// не нужен: на уходе экземпляр уничтожается и таймер подгонки снимается, данные (`G.data`) остаются.
+function release(){
+  clearTimeout(G.fitTimer);
+  G.fitTimer = null;
+  if (G.cy){ G.cy.destroy(); G.cy = null; }
+  G.fitKey = "";                 // вернулись — первый показ снова подгоняем под окно
+}
+
+export function onHide(){ release(); }
+
+// Вернулись: данные на месте, а графа нет — пересобираем (refresh перед этим уже загрузил данные,
+// если их не было, и сам нарисовал граф; второй раз раскладку не считаем).
+export function onShow(ctx){
+  if (G.data && !G.cy) draw(ctx);
+}
+
+// Скрытому разделу перерисовка не нужна: при открытии refresh и onShow соберут граф.
+export const lifecycle = 1;
+export default {mount, refresh, onHide, onShow};

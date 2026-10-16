@@ -10,6 +10,7 @@ let MAKE = null;               // {sid, kind} — идущее производ�
 // Ссылки и вложения задачи: {path, label, kind: file|dir|attach}. Уходят движку `--context`;
 // упоминания в тексте (`@путь`, `/навык`, `@сервер`) движок разбирает и сам.
 let REFS = [];
+let SUGGEST_STOP = null;       // гасит отложенный запрос подсказки и закрывает список (onHide)
 const ACCEPT = [".md", ".markdown", ".txt", ".rst", ".log", ".json", ".jsonl", ".yaml", ".yml",
   ".toml", ".ini", ".cfg", ".csv", ".tsv", ".xml", ".html", ".htm", ".svg", ".bpmn", ".puml",
   ".mmd", ".sql", ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt", ".go", ".rs", ".rb",
@@ -76,8 +77,10 @@ function tokenAtCaret(area){
 
 function wireSuggest(ctx){
   const area = ctx.$("#makeIdea"), list = ctx.$("#makeSuggest");
-  let items = [], pick = 0, timer = null, tok = null;
+  let items = [], pick = 0, timer = null, tok = null, gen = 0;
   const close = () => { list.hidden = true; items = []; };
+  // Уход из раздела: таймер подсказки снят, запрос, уже ушедший к серверу, список не откроет.
+  SUGGEST_STOP = () => { clearTimeout(timer); timer = null; gen++; close(); };
   const choose = it => {
     if (!tok) return close();
     const value = (it.kind === "file" || it.kind === "dir")
@@ -104,9 +107,11 @@ function wireSuggest(ctx){
     clearTimeout(timer);
     tok = tokenAtCaret(area);
     if (!tok || !ctx.project) return close();
+    const mine = gen;
     timer = setTimeout(async () => {
       const d = await ctx.api("/api/context/suggest?project=" + encodeURIComponent(ctx.project.path)
         + "&q=" + encodeURIComponent(tok.text), {quiet: true});
+      if (mine !== gen) return;
       items = (d && d.items) || []; pick = 0; draw();
     }, 180);
   });
@@ -315,4 +320,9 @@ async function publish(ctx){
       }}, t("work.copy_task")))));
 }
 
-export default {mount, refresh};
+// Подсказки по `@` и `/` нужны только на виду. Опрос задания (`makeCall`) и ответ планировщика
+// уходом не прерываются: результат ложится прямо в разметку раздела и ждёт возвращения.
+export function onHide(){ if (SUGGEST_STOP) SUGGEST_STOP(); }
+
+export const lifecycle = 1;
+export default {mount, refresh, onHide};

@@ -47,4 +47,6 @@ export async function refresh(ctx){
   box.append(el("p", {class: "muted", style: "font-size:12px;margin-top:14px"}, t("dev.note")));
 }
 
+// refresh только рисует список команд движка из ctx.state: скрытому он не нужен.
+export const lifecycle = 1;
 export default {mount, refresh};

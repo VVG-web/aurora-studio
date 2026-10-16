@@ -69,4 +69,6 @@ function row(ctx, r){
           t("commands.procedure")));
 }
 
+// Раздел чисто рисует реестр из ctx.state: скрытому перерисовываться незачем, при открытии refresh придёт.
+export const lifecycle = 1;
 export default {mount, refresh};

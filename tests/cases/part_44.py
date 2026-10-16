@@ -655,11 +655,11 @@ def test_module_lifecycle_under_node(tmp: Path):
 @test
 def test_first_modules_declare_refresh_events(_t):
     """«Здоровье», «Зеркала» и «Установка» сами называют событие, на которое перерисовываются (`refreshOn` с «health»),
-    а «Установка» — ещё и ленивое обновление (`lifecycle = 1`): ядро их имён больше не знает."""
+    и объявили ленивое обновление (`lifecycle = 1`): ядро их имён больше не знает."""
     for mid in ("health", "mirrors", "install"):
         text = (KIT / "cockpit" / "modules" / mid / "view.js").read_text(encoding="utf-8")
         assert 'export const refreshOn = ["health"];' in text, mid
-        assert ("export const lifecycle = 1;" in text) == (mid == "install"), mid
+        assert "export const lifecycle = 1;" in text, mid
 
 
 @test
@@ -895,10 +895,6 @@ def test_noisy_sections_are_lazy_and_stop_their_timers(tmp: Path):
     for mid in ("cron", "bots"):
         text = (KIT / "cockpit" / "modules" / mid / "view.js").read_text(encoding="utf-8")
         assert "export function onHide(" in text and "export function onShow(" in text and "export function dispose(" in text, mid
-    # шумных «gitsync», «ask», «work» срез не трогает: у них свои фоновые обязанности (бейдж, опросы заданий)
-    for mid in ("gitsync", "ask", "work"):
-        text = (KIT / "cockpit" / "modules" / mid / "view.js").read_text(encoding="utf-8")
-        assert "export const lifecycle" not in text, mid
     node = shutil.which("node")
     if not node:
         return
@@ -918,6 +914,306 @@ def test_noisy_sections_are_lazy_and_stop_their_timers(tmp: Path):
     src.write_text(code, encoding="utf-8")
     import subprocess
     cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+    assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:1500]
+    result = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert result["fails"] == [], "\n".join(result["fails"])
+
+
+# ------------------------------------------------------------------ остальные разделы и охранный тест (BL-ARC-11, срез 3)
+
+# Сколько разделов кита вправе остаться без `lifecycle = 1` (с пометкой «legacy» и причиной). Храповик: число не
+# растёт; стало меньше — понизь его. Имён разделов здесь нет: перечень читается из cockpit/modules/*/view.js.
+LEGACY_MAX = 1
+
+
+def _module_views() -> dict[str, str]:
+    """{id раздела: текст view.js} — перечень читается с диска, а не списком в тесте."""
+    return {p.parent.name: p.read_text(encoding="utf-8")
+            for p in sorted((KIT / "cockpit" / "modules").glob("*/view.js"))}
+
+
+def _declared_life(text: str) -> tuple[bool, str]:
+    """(есть `export const lifecycle = 1`, причина пометки `// lifecycle: legacy — …` в первых 20 строках)."""
+    import re
+    flag = bool(re.search(r"^export const lifecycle\s*=\s*1\s*;", text, re.M))
+    head = "\n".join(text.splitlines()[:20])
+    m = re.search(r"^//\s*lifecycle:\s*legacy\s*[—-]\s*(\S.*)$", head, re.M)
+    return flag, (m.group(1).strip() if m else "")
+
+
+@test
+def test_every_module_declares_lifecycle(_t):
+    """Каждый раздел панели объявил жизнь: `export const lifecycle = 1` либо строка `// lifecycle: legacy — <причина>` в
+    первых 20 строках view.js (но не оба сразу); разделов с пометкой «legacy» не больше LEGACY_MAX, и они не растут."""
+    views = _module_views()
+    assert views, "разделов панели не нашли"
+    legacy = []
+    for mid, text in sorted(views.items()):
+        flag, reason = _declared_life(text)
+        assert flag or reason, f"{mid}: нет ни `export const lifecycle = 1`, ни `// lifecycle: legacy — <причина>` в первых 20 строках"
+        assert not (flag and reason), f"{mid}: и lifecycle, и пометка legacy — оставь одно"
+        if reason:
+            legacy.append(mid)
+    assert len(legacy) <= LEGACY_MAX, f"разделов legacy стало больше планки {LEGACY_MAX}: {legacy}"
+    if len(legacy) < LEGACY_MAX:
+        print(f"подсказка: legacy-разделов {len(legacy)}, планка LEGACY_MAX = {LEGACY_MAX} — понизь её")
+
+
+SECTIONS_PRELUDE = NOISY_HARNESS.split("\n(async () => {\n", 1)[0]
+
+SECTIONS_BODY = r"""
+// Подставные браузерные глобали для graph/work/gitsync: top-level кода у разделов почти нет.
+const dom = {};
+const $q = (sel) => dom[sel] || (dom[sel] = node());
+function evnode(sel){
+  const n = node(); const h = {};
+  n.addEventListener = (ev, fn) => { h[ev] = fn; };
+  n.fire = (ev, e) => h[ev] && h[ev](e || {});
+  dom[sel] = n; return n;
+}
+let cyMade = 0, cyAlive = 0;
+globalThis.cytoscape = () => {
+  cyMade++; cyAlive++;
+  return {destroyed: false, destroy(){ this.destroyed = true; cyAlive--; }, on(){}, fit(){}, style(){},
+          batch(f){ f(); }, nodes(){ return []; }};
+};
+globalThis.window = globalThis;
+globalThis.getComputedStyle = () => ({getPropertyValue: () => ""});
+globalThis.document = {body: {}, head: {append(){}}, createTextNode: (x) => x, createElement: () => node()};
+const scriptEl = (tag, attrs, ...kids) => tag === "script"
+  ? {set onload(f){ Promise.resolve().then(f); }, set onerror(f){}}
+  : el(tag, attrs, ...kids);
+const baseCtx = (id, impl, extra) => mkctx(id, impl, {$: $q, el: scriptEl, scenarios: async () => ({scenarios: []}),
+  ui: {kbInfo: () => ({at: 0, stale: false, title: ""}), stampText: (x) => x}, on: (e, f) => moduleOn(id, e, f), ...(extra || {})});
+async function loadView(id){ return import(pathToFileURL(@DIR@ + "/modules/" + id + "/view.js").href); }
+function gate(){ let release; const p = new Promise(r => { release = r; }); return {p, release}; }
+
+(async () => {
+  const ids = @IDS@;                      // разделы с lifecycle = 1 (их перечень прислал тест)
+  const ns = {};
+  for (const id of ids){
+    ns[id] = await loadView(id);
+    check(ns[id].lifecycle === 1, id + ": нет `export const lifecycle = 1`");
+  }
+
+  // ---- каждый раздел с lifecycle: скрытому «data» не зовёт refresh, видимому — ровно один раз; N синтетических
+  {
+    const counts = {};
+    const put = (id, nsx, mod) => MODULES.set(id, {manifest: {id}, mod, ns: nsx, section: node(), subs: null, stale: false, shown: false, hooks: null});
+    for (const id of ids){ counts[id] = 0; put(id, ns[id], {refresh: async () => { counts[id]++; }}); }
+    const N = 10;
+    for (let i = 0; i < N; i++){            // синтетика: половина объявляет lifecycle именованным экспортом, половина — в default
+      const id = "synthetic" + i; counts[id] = 0;
+      i % 2 ? put(id, {lifecycle: 1}, {refresh: async () => { counts[id]++; }})
+            : put(id, null, {lifecycle: 1, refresh: async () => { counts[id]++; }});
+    }
+    S.view = "none";
+    await dispatchModules("data");
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    const stale = [...MODULES.values()].filter(r => r.stale).length;
+    check(total === 0, "скрытые разделы: «data» дало " + total + " вызовов refresh: " + JSON.stringify(counts));
+    check(stale === ids.length + N, "скрытые разделы: stale у " + stale + " из " + (ids.length + N));
+    for (const id of ids){
+      S.view = id; await dispatchModules("data");
+      const others = Object.entries(counts).filter(([k, v]) => k !== id && v !== 0);
+      check(counts[id] === 1 && !others.length, id + ": на виду ровно один refresh, а " + counts[id] + "; чужие: " + others.join());
+      counts[id] = 0;
+    }
+    for (const id of [...MODULES.keys()]) MODULES.delete(id);
+  }
+
+  // ---- graph: onHide уничтожает cytoscape и снимает таймер подгонки, onShow собирает граф заново
+  {
+    const graph = {nodes: [{id: "a", title: "A", path: "a.md"}, {id: "b", title: "B", path: "b.md"}],
+                   edges: [{from: "a", to: "b"}], orphans: 0, when: 0};
+    const c = baseCtx("graph", () => graph);
+    $q("#graphDepth").value = "2";
+    evnode("#graphFind");
+    register("graph", ns.graph);
+    ns.graph.mount(c);
+    S.view = "graph"; timers.length = 0;
+    await dispatchModules("data");
+    check(apiCount(c, "/api/graph") === 1 && cyMade === 1 && cyAlive === 1, "graph на виду: один запрос и один cytoscape: " + apiCount(c, "/api/graph") + "/" + cyMade);
+    check(pending(30).length === 1, "graph: таймер подгонки взведён");
+    S.view = "other";
+    await ns.graph.onHide(c);
+    check(cyAlive === 0, "graph onHide: cytoscape уничтожен (destroy)");
+    check(pending(30).length === 0, "graph onHide: таймер подгонки снят");
+    await dispatchModules("data"); await dispatchModules("data");
+    check(apiCount(c, "/api/graph") === 1 && cyMade === 1, "graph скрыт: «data» ни запроса, ни раскладки");
+    check(MODULES.get("graph").stale === true, "graph скрыт: помечен устаревшим");
+    S.view = "graph";
+    await ns.graph.refresh(c); await ns.graph.onShow(c);
+    check(cyMade === 2 && cyAlive === 1, "graph onShow: граф собран заново (одна раскладка): " + cyMade + "/" + cyAlive);
+    check(apiCount(c, "/api/graph") === 1, "graph при возврате не перечитывает данные: " + apiCount(c, "/api/graph"));
+    check(pending(30).length === 1, "graph при возврате снова подгоняется под окно");
+    await ns.graph.onShow(c);
+    check(cyMade === 2, "graph: повторный onShow не перекладывает граф");
+    // загрузка, ушедшая в фон, граф в скрытом контейнере не рисует: его соберёт onShow
+    await ns.graph.onHide(c);
+    S.view = "other"; const before = cyMade;
+    await ns.graph.refresh(c, {card: "a"});
+    check(cyMade === before, "graph: refresh из скрытого раздела не рисует граф");
+    S.view = "graph"; await ns.graph.onShow(c);
+    check(cyMade === before + 1 && cyAlive === 1, "graph: onShow дорисовал граф после фоновой загрузки");
+    check(faults.length === 0, "graph: сбои " + faults.join("|"));
+    MODULES.delete("graph");
+  }
+
+  // ---- work: onHide гасит отложенный запрос подсказки; задание, дошедшее у скрытого раздела, ждёт возвращения
+  {
+    const box = {resets: 0, appended: 0, set innerHTML(v){ this.resets++; }, get innerHTML(){ return ""; },
+                 append(...a){ this.appended += a.length; }};
+    dom["#makeDialog"] = box;
+    const area = evnode("#makeIdea"), list = $q("#makeSuggest");
+    $q("#makeKind").value = "k";
+    let jobGate = null;
+    const c = baseCtx("work", (p) => {
+      if (p.startsWith("/api/context/suggest")) return {items: [{kind: "file", value: "x.md", label: "x.md"}]};
+      if (p.startsWith("/api/run")) return {job: "j1"};
+      if (p.startsWith("/api/job")) return jobGate.p.then(() => ({lines: ["Сессия: `s1`", "ответ планировщика"], next: 1, done: true}));
+      if (p.startsWith("/api/kinds")) return {kinds: {}};
+      return {};
+    });
+    register("work", ns.work);
+    ns.work.mount(c);
+    S.view = "work";
+    area.value = "@x"; area.selectionStart = 2;
+    area.fire("input");
+    check(pending(180).length === 1, "work: набор «@» ставит отложенный запрос подсказки");
+    await fire(180);
+    check(list.hidden === false, "work на виду: подсказки открылись (проверка самой проверки)");
+    // уход при висящем таймере
+    area.fire("input");
+    check(pending(180).length === 1, "work: второй набор снова ставит таймер");
+    S.view = "other"; ns.work.onHide(c);
+    check(pending(180).length === 0 && list.hidden === true, "work onHide: таймер подсказки снят, список закрыт");
+    // уход при запросе в полёте: ответ список не открывает
+    S.view = "work"; area.fire("input");
+    let hold = gate(); const prev = c.api;
+    c.api = async (path, o) => { if (path.startsWith("/api/context/suggest")){ c.calls.push(path); await hold.p; return {items: [{kind: "file", value: "y.md", label: "y.md"}]}; } return prev(path, o); };
+    await fire(180);
+    S.view = "other"; ns.work.onHide(c); hold.release(); await tick();
+    check(list.hidden === true, "work: ответ подсказки, пришедший после onHide, список не открывает");
+    c.api = prev;
+    // задание: дошло, пока раздел скрыт; результат на месте и не стёрт возвращением
+    S.view = "work"; jobGate = gate();
+    $q("#makeIdea").value = "идея";
+    $q("#makeGo").onclick();
+    await tick();
+    S.view = "other"; ns.work.onHide(c);
+    jobGate.release(); await tick();
+    check(box.appended >= 2, "work: результат задания лёг в разметку, пока раздел скрыт: " + box.appended);
+    const resets = box.resets, put = box.appended;
+    S.view = "work"; await ns.work.refresh(c);
+    check(box.resets === resets && box.appended === put, "work: возвращение не стирает результат задания");
+    // скрытому «data» не нужен
+    S.view = "other"; c.calls.length = 0;
+    await dispatchModules("data");
+    check(c.calls.length === 0 && MODULES.get("work").stale === true, "work скрыт: «data» без запросов, но с пометкой stale: " + c.calls.join());
+    check(faults.length === 0, "work: сбои " + faults.join("|"));
+    MODULES.delete("work");
+  }
+
+  // ---- ask: идущий вопрос не прерывается уходом; ответ ждёт на карточке, возвращение его не стирает
+  {
+    const body = {items: [], resets: 0, prepend(x){ this.items.push(x); }, set innerHTML(v){ this.resets++; },
+                  get innerHTML(){ return ""; }, querySelectorAll(){ return this.items; }};
+    dom["#askBody"] = body;
+    $q("#askText").value = "что в базе?"; $q("#askMode").value = "m";
+    let jobGate = gate();
+    const c = baseCtx("ask", (p) => {
+      if (p.startsWith("/api/run")) return {job: "j1"};
+      if (p.startsWith("/api/job")) return jobGate.p.then(() => ({lines: ["# Ответ базы", "ответ из карточек", "Разговор: `x/t1.md`"], next: 1, done: true}));
+      if (p.startsWith("/api/ask/threads")) return {threads: []};
+      if (p.startsWith("/api/agent")) return {error: "нет"};
+      return {};
+    });
+    register("ask", ns.ask);
+    ns.ask.mount(c);
+    S.view = "ask";
+    await ns.ask.refresh(c);                 // как при открытии: разговор «привязывается» к проекту
+    $q("#askGo").onclick(); await tick();
+    check(body.items.length === 1, "ask: карточка вопроса легла в разговор");
+    S.view = "other";
+    const h0 = apiCount(c, "/api/ask/threads");
+    await dispatchModules("data");
+    check(apiCount(c, "/api/ask/threads") === h0, "ask скрыт: «data» не читает историю");
+    jobGate.release(); await tick();
+    check(body.items[0].a === "ответ из карточек", "ask: ответ дошёл, пока раздел скрыт, и лёг на свою карточку: " + body.items[0].a);
+    const resets = body.resets;
+    S.view = "ask"; await ns.ask.refresh(c);
+    check(body.resets === resets && body.items.length === 1, "ask: возвращение не стирает ответ");
+    check($q("#askNew").hidden === false, "ask: открытый разговор после возвращения на месте");
+    check(apiCount(c, "/api/ask/threads") > h0, "ask при открытии перечитывает историю");
+    check(faults.length === 0, "ask: сбои " + faults.join("|"));
+    MODULES.delete("ask");
+  }
+
+  // ---- gitsync: скрытому «data» достаётся подписка (отметка «!» в меню), а не полная перерисовка
+  {
+    let reloads = 0;
+    const project = {path: "/p", git_alert: false};
+    const c = baseCtx("gitsync", () => ({status: {}, last: {up: {ok: false, trigger: "auto"}}, settings: {}}),
+                      {project, reloadHealth: () => { reloads++; }});
+    register("gitsync", ns.gitsync);
+    ns.gitsync.mount(c);
+    S.view = "other";
+    await dispatchModules("data");
+    check(apiCount(c, "/api/gitsync") === 1 && project.git_alert === true && reloads === 1,
+          "gitsync скрыт: подписка выставила отметку (запросов " + apiCount(c, "/api/gitsync") + ", alert " + project.git_alert + ", reload " + reloads + ")");
+    check(MODULES.get("gitsync").stale === false, "gitsync: у раздела с подпиской пометка stale не нужна");
+    await dispatchModules("data");
+    check(reloads === 1, "gitsync: отметка не меняется — здоровье не пересчитывается снова: " + reloads);
+    check(faults.length === 0, "gitsync: сбои " + faults.join("|"));
+    MODULES.delete("gitsync");
+  }
+  console.log(JSON.stringify({fails}));
+})().catch(e => { fails.push("исключение: " + (e && e.stack || e)); console.log(JSON.stringify({fails})); });
+"""
+
+
+@test
+def test_remaining_sections_are_lazy_and_release_what_they_hold(tmp: Path):
+    """Остальные разделы панели ленивы: у каждого с `lifecycle = 1` скрытому «data» даёт 0 вызовов refresh и пометку
+    stale (и на 10 синтетических тоже), видимому — один вызов; «Граф» уничтожает cytoscape и снимает таймер подгонки в
+    onHide и собирает граф в onShow (из фоновой загрузки граф не рисуется); «Продуктивность» гасит таймер подсказок и не
+    открывает список ответом, пришедшим после ухода, а результат задания ждёт возвращения; «Спросить» не стирает
+    ответ, дошедший у скрытого раздела; «Git» ведёт отметку в меню подпиской на «data». Реальные view.js под node с
+    подставным DOM и таймерами (node нет — проверка пропускается)."""
+    views = _module_views()
+    lazy = sorted(mid for mid, text in views.items() if _declared_life(text)[0])
+    for mid in ("commands", "dev", "graph", "version", "reference", "quickstart", "health", "mirrors", "ask", "work", "gitsync"):
+        assert mid in lazy, f"{mid}: нет `export const lifecycle = 1`"
+    reports = views["reports"]
+    assert not _declared_life(reports)[0] and _declared_life(reports)[1], \
+        "«Отчёты» остаются legacy: refresh сохраняет копию отчёта на диске"
+    assert "export function onHide(" in views["graph"] and "export function onShow(" in views["graph"]
+    assert "export function onHide(" in views["work"]
+    assert 'ctx.on("data"' in views["gitsync"]
+    node = shutil.which("node")
+    if not node:
+        return
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+
+    def cut(start: str, end: str) -> str:
+        a = panel.index(start)
+        return panel[a:panel.index(end, a)]
+    root = tmp / "kit"
+    for mid in views:
+        dst = root / "modules" / mid
+        dst.mkdir(parents=True)
+        for f in (KIT / "cockpit" / "modules" / mid).glob("*.js"):
+            shutil.copy2(f, dst / f.name)
+    (root / "package.json").write_text('{"type": "module"}', encoding="utf-8")
+    code = (SECTIONS_PRELUDE + SECTIONS_BODY)
+    code = (code.replace("@MODULES@", cut("const MODULES = new Map();", "function moduleTitle"))
+            .replace("@DISPATCH@", cut("async function dispatchModules", "// Подписи разделов в меню"))
+            .replace("@DIR@", json.dumps(str(root))).replace("@IDS@", json.dumps(lazy)))
+    src = root / "sections.mjs"
+    src.write_text(code, encoding="utf-8")
+    import subprocess
+    cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
     assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:1500]
     result = json.loads(cp.stdout.strip().splitlines()[-1])
     assert result["fails"] == [], "\n".join(result["fails"])

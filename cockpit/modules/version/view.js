@@ -48,4 +48,6 @@ export async function refresh(ctx){
     row("kit:doctor", t("version.structure"), ["--structure"])));
 }
 
+// refresh только рисует две версии проекта; побочных действий нет — скрытому не нужен.
+export const lifecycle = 1;
 export default {mount, refresh};

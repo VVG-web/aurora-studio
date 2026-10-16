@@ -336,4 +336,7 @@ async function openThread(ctx, id){
   ctx.$("#askText").focus();
 }
 
+// Скрытому разделу перерисовка не нужна: при открытии refresh перечитает историю. Идущий вопрос
+// (`askBase`) уходом не прерывается — ответ ложится на свою карточку в разметке и ждёт возвращения.
+export const lifecycle = 1;
 export default {mount, refresh};

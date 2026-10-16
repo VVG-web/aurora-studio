@@ -399,4 +399,6 @@ function statusBar(ctx, statuses){
 
 // Здоровье выбранного проекта пришло по частям: раздел перерисовывается на это событие ядра.
 export const refreshOn = ["health"];
+// Скрытый раздел не перерисовывается: при открытии refresh придёт сам, а чужих побочных действий в нём нет.
+export const lifecycle = 1;
 export default {mount, refresh};

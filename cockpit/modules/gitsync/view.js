@@ -29,6 +29,26 @@ const blankMirror = () => ({remote: "", provider: "generic", instance: "", repo:
 
 export function mount(ctx){
   ctx.root.dataset.module = "gitsync";
+  // Скрытому разделу перерисовка не нужна, а отметка «!» в меню должна жить: на «data» ядро зовёт
+  // эту подписку вместо refresh — читаем состояние и ведём отметку, форму не трогаем.
+  ctx.on("data", badge);
+}
+
+async function badge(ctx){
+  if (!ctx.project) return;
+  const d = await ctx.api("/api/gitsync?project=" + encodeURIComponent(ctx.project.path),
+                          {quiet: true});
+  if (d && !d.error && d.status) syncAlert(ctx, d);
+}
+
+// Отметка «!» на пункте меню — та же, что считает сервер (git_sync.alert): последняя
+// автоматика не прошла. Кнопка, которая всё починила, снимает её сразу, без перезагрузки.
+function syncAlert(ctx, d){
+  const alert = Object.values(d.last || {}).some(e => e && !e.ok && e.trigger && e.trigger !== "manual");
+  if (ctx.project && !!ctx.project.git_alert !== alert){
+    ctx.project.git_alert = alert;
+    ctx.reloadHealth();
+  }
 }
 
 export async function refresh(ctx, payload){
@@ -50,13 +70,7 @@ async function load(ctx, keepForm){
     return;
   }
   D = d;
-  // Отметка «!» на пункте меню — та же, что считает сервер (git_sync.alert): последняя
-  // автоматика не прошла. Кнопка, которая всё починила, снимает её сразу, без перезагрузки.
-  const alert = Object.values(d.last || {}).some(e => e && !e.ok && e.trigger && e.trigger !== "manual");
-  if (ctx.project && !!ctx.project.git_alert !== alert){
-    ctx.project.git_alert = alert;
-    ctx.reloadHealth();
-  }
+  syncAlert(ctx, d);
   if (!(keepForm && DIRTY)){
     FORM = clone(d.settings);
     FORM.mirrors = FORM.mirrors || [];
@@ -1042,4 +1056,6 @@ function certBox(ctx){
       el("button", {class: "btn sm", onclick: () => { CERT = null; draw(ctx); }}, t("gitsync.cancel"))));
 }
 
+// Скрытый gitsync не перерисовывается; отметку «!» ему ведёт подписка ctx.on("data") из mount.
+export const lifecycle = 1;
 export default {mount, refresh};

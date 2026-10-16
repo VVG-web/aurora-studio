@@ -70,4 +70,6 @@ async function open(ctx, path){
   body.scrollIntoView({block:"start"});
 }
 
+// refresh лишь открывает документ из груза перехода; скрытому раздел ничего не показывает.
+export const lifecycle = 1;
 export default {mount, refresh};
