@@ -1121,7 +1121,7 @@ def test_name_repair_lays_the_mirror_out_as_the_next_sync(tmp: Path):
             return {"KG_переход на ГС и Отчет из Расхождений.drawio": "a1",
                     "KG_переход на ГС и отчет из расхождения.drawio": "a2"}
 
-        def fetch(self, url):
+        def fetch(self, url, max_bytes=None):
             return f"<mxfile>{url}</mxfile>".encode("utf-8")
 
         def user_name(self, key):

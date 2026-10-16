@@ -45,7 +45,7 @@ import sys
 import urllib.parse
 from datetime import date, timedelta
 
-from sources_core import (CONFIG, RestApi, WikiMirror, block, config_text, no_access,
+from sources_core import (CONFIG, FileTooLarge, RestApi, WikiMirror, block, config_text, no_access,
                           drop_empty_dirs, report_stale, scalar, verify)
 from sources_core import read_secret as core_secret
 from kb_remap import follow_moves, moves_report, page_moves  # noqa: E402
@@ -87,11 +87,34 @@ RY_MARK = {"key": "RYk:", "link": "RYl:", "prop": "RYo:", "report": "RYr"}
 
 # ------------------------------------------------------------------ конфиг
 
+# Какие вложения страницы качать (`atlassian.confluence.attachments`): все, только картинки
+# или никакие. Схемы draw.io и mermaid этой настройке не подчиняются — это исходники.
+ATTACH_MODES = ("all", "images", "none")
+ATTACH_MAX_MB = 25          # предел размера одного вложения, МБ; 0 — без предела
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".tif", ".tiff", ".ico")
+
+
+def attach_mode(value) -> str:
+    """Режим вложений из конфига; неизвестное значение — умолчание `all`."""
+    value = str(value or "").strip().lower()
+    return value if value in ATTACH_MODES else "all"
+
+
+def attach_max_mb(value) -> float:
+    """Предел размера вложения в МБ; не число или отрицательное — умолчание, 0 — без предела."""
+    try:
+        mb = float(str(value).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return float(ATTACH_MAX_MB)
+    return mb if mb >= 0 and mb == mb and mb != float("inf") else float(ATTACH_MAX_MB)
+
+
 def read_config(root: str = "") -> dict:
     """base_url и корни синка — из aurora.config.yaml (единственный источник правды).
 
     `root` — корень проекта; без него конфиг ищется от текущей папки процесса."""
-    cfg = {"base_url": "", "space": "", "roots": [], "out": DEFAULT_OUT}
+    cfg = {"base_url": "", "space": "", "roots": [], "out": DEFAULT_OUT,
+           "attachments": "all", "attachment_max_mb": float(ATTACH_MAX_MB)}
     text = config_text(os.path.join(root, CONFIG)) if root else config_text()
     if not text:
         return cfg
@@ -99,6 +122,8 @@ def read_config(root: str = "") -> dict:
     cfg["base_url"] = scalar(conf, "base_url").rstrip("/")
     cfg["space"] = scalar(conf, "space")
     cfg["roots"] = re.findall(r'^\s*-?\s*page_id:\s*"?(\d+)"?', conf, re.M)
+    cfg["attachments"] = attach_mode(scalar(conf, "attachments"))
+    cfg["attachment_max_mb"] = attach_max_mb(scalar(conf, "attachment_max_mb", str(ATTACH_MAX_MB)))
     cfg["out"] = scalar(text, "sources_confluence", DEFAULT_OUT)
     cfg["jira_url"] = scalar(block(text, "jira:", None), "base_url").rstrip("/")
     return cfg
@@ -191,13 +216,29 @@ class Api(RestApi):
         В них живут схемы плагинов: draw.io кладёт рядом `<имя>.drawio`, mermaid —
         исходник диаграммы. В storage от них остаётся только имя в параметрах макроса.
         """
+        return {n: i["link"] for n, i in self.attachment_info(page_id).items()}
+
+    def attachment_info(self, page_id: str) -> dict:
+        """{имя файла: {link, size, media}} — тот же список, но с размером и типом из ответа.
+
+        Размер (`extensions.fileSize`) приходит в списке вместе с адресом и ничего не стоит:
+        по нему решается, качать ли файл, до скачивания. Нет размера — `size` равен None."""
         out, path = {}, f"/rest/api/content/{page_id}/child/attachment?limit=100"
         while path:
             data = self.get(path)
             for r in data.get("results", []):
                 link = (r.get("_links") or {}).get("download", "")
                 if r.get("title") and link:
-                    out[r["title"]] = link
+                    ext = r.get("extensions") or {}
+                    size = ext.get("fileSize")
+                    if size is None:
+                        size = (r.get("metadata") or {}).get("fileSize")
+                    media = ext.get("mediaType") or (r.get("metadata") or {}).get("mediaType") or ""
+                    try:
+                        size = int(size) if size is not None else None
+                    except (TypeError, ValueError):
+                        size = None
+                    out[r["title"]] = {"link": link, "size": size, "media": str(media)}
             nxt = (data.get("_links") or {}).get("next")
             path = nxt if nxt else None
         return out
@@ -777,8 +818,13 @@ class Exporter(WikiMirror):
     banner = "Confluence sync state — генерируется confluence_export.py, не править руками"
 
     def __init__(self, api: Api, out: str, base_url: str, space: str, force: bool,
-                 jira_base: str = ""):
+                 jira_base: str = "", att_mode: str | None = None,
+                 att_max_mb: float | None = None):
         super().__init__(out)
+        if att_mode is not None:
+            self.att_mode = attach_mode(att_mode)
+        if att_max_mb is not None:
+            self.att_max_mb = attach_max_mb(att_max_mb)
         self.api, self.base_url = api, base_url
         self.space, self.force, self.jira_base = space, force, jira_base
         self.written = self.skipped = self.failed = 0
@@ -799,6 +845,37 @@ class Exporter(WikiMirror):
     # Вложения страницы: имя в тексте → ссылка в зеркале; заполняет `save_assets`.
     asset_links: dict = {}
     attach_saved = attach_skipped = attach_failed = 0
+    # Политика вложений из конфига (`attachments`, `attachment_max_mb`); умолчание — всё до 25 МБ.
+    att_mode = "all"
+    att_max_mb = float(ATTACH_MAX_MB)
+
+    def skip_reason(self, name: str, info: dict) -> str:
+        """Почему вложение не качается по настройке (режим, потом размер); пусто — качать.
+
+        Размер берётся из метаданных до скачивания. Нет его в ответе — ограничит само чтение
+        (`fetch_limited`)."""
+        if self.att_mode == "none":
+            return "режим none"
+        media = (info or {}).get("media", "")
+        if self.att_mode == "images" and not (
+                name.lower().endswith(IMAGE_EXTS) or media.lower().startswith("image/")):
+            return "режим images"
+        size = (info or {}).get("size")
+        if self.att_max_mb and size is not None and size > self.limit_bytes():
+            return self.too_large()
+        return ""
+
+    def limit_bytes(self) -> int:
+        return int(self.att_max_mb * 1024 * 1024)
+
+    def too_large(self) -> str:
+        return f"больше {self.att_max_mb:g} МБ"
+
+    def fetch_limited(self, link: str, info: dict) -> bytes:
+        """Скачать вложение. Размер в метаданных неизвестен — чтение ограничено пределом."""
+        if self.att_max_mb and (info or {}).get("size") is None:
+            return self.api.fetch(link, max_bytes=self.limit_bytes())
+        return self.api.fetch(link)
 
     def original_url(self, page_id: str, name: str) -> str:
         """Адрес вложения в самом Confluence — для файла, который в зеркало не попал."""
@@ -818,10 +895,15 @@ class Exporter(WikiMirror):
         """
         self.asset_links = {}
         try:
-            have = self.api.attachments(page_id)
+            if hasattr(self.api, "attachment_info"):
+                meta = self.api.attachment_info(page_id)
+            else:       # подставной клиент без размеров: только имя и адрес
+                meta = {n: {"link": l, "size": None, "media": ""}
+                        for n, l in self.api.attachments(page_id).items()}
+            have = {n: i["link"] for n, i in meta.items()}
         except Exception as e:  # noqa: BLE001
             print(f"  ! вложения {page_id}: {e}", file=sys.stderr)
-            have = None
+            have, meta = None, {}
         base = os.path.splitext(os.path.basename(rel))[0]
         folder = os.path.join(os.path.dirname(rel), base + "_assets").replace("\\", "/")
         full_folder = os.path.join(self.out, folder)
@@ -843,7 +925,14 @@ class Exporter(WikiMirror):
             fname = self.asset_name(fname, folder)
             referenced.add(fname)
             try:
-                blob = self.api.fetch(have[hit])
+                if self.att_max_mb and (meta[hit].get("size") or 0) > self.limit_bytes():
+                    raise FileTooLarge("файл больше предела")
+                blob = self.fetch_limited(have[hit], meta[hit])
+            except FileTooLarge:
+                self.attach_skipped += 1
+                lines.append(f"- схема `{name}` — не скачана ({self.too_large()}): "
+                             f"[{hit}]({self.original_url(page_id, hit)})")
+                continue
             except Exception as e:  # noqa: BLE001
                 print(f"  ! {hit}: {e}", file=sys.stderr)
                 continue
@@ -872,17 +961,21 @@ class Exporter(WikiMirror):
                 reason = "markdown внутри зеркала"
             elif have is not None and name not in have:
                 reason = "вложения с таким именем на странице нет"
+            elif why := self.skip_reason(name, meta.get(name)):
+                reason = why
             else:
                 try:
                     if have is None:
                         raise OSError("список вложений страницы недоступен")
-                    blob = self.api.fetch(have[name])
+                    blob = self.fetch_limited(have[name], meta.get(name))
                     os.makedirs(full_folder, exist_ok=True)
                     same = os.path.isfile(dest) and open(dest, "rb").read() == blob
                     if not same:
                         with open(dest, "wb") as f:
                             f.write(blob)
                     self.attach_saved += 1
+                except FileTooLarge:
+                    reason = self.too_large()
                 except Exception as e:  # noqa: BLE001
                     print(f"  ! {name}: {e}", file=sys.stderr)
                     reason = "ошибка скачивания"
@@ -890,8 +983,10 @@ class Exporter(WikiMirror):
                 self.attach_failed += 1
             elif reason:
                 self.attach_skipped += 1
-            if not reason or (reason not in ("исполняемый тип", "markdown внутри зеркала")
-                              and os.path.isfile(dest)):
+            # Запрет по типу и настройка (режим, размер) прежнюю копию в ссылку не берут:
+            # файл, которого политика больше не допускает, не выдаётся за актуальный.
+            policy = reason.startswith(("исполняемый", "markdown", "режим", "больше"))
+            if not reason or (not policy and os.path.isfile(dest)):
                 # прежняя копия при сбое не удаляется и остаётся рабочей ссылкой
                 kept.add(fname)
                 self.asset_links[name] = local
@@ -1179,7 +1274,8 @@ def run_export(cfg: dict, roots: list, out: str, auth: str, force: bool) -> Expo
     for r, parent in dropped:
         print(f"  ⚠️  корень {r} уже входит в корень {parent} — пропущен, "
               "иначе страница легла бы вторым файлом в корень зеркала")
-    exp = Exporter(api, out, cfg["base_url"], cfg["space"], force, cfg.get("jira_url", ""))
+    exp = Exporter(api, out, cfg["base_url"], cfg["space"], force, cfg.get("jira_url", ""),
+                   att_mode=cfg.get("attachments"), att_max_mb=cfg.get("attachment_max_mb"))
     for root in roots:
         exp.walk(root, [])
     return exp

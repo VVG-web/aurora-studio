@@ -166,7 +166,7 @@ scripts read them from here, not from their own bodies.
 | `project` | `name`, `slug` |
 | `skills` | which skills are required and recommended |
 | `sources` | connected source modules: `id` (the folder name in `Sources/`), `module`, `path`. No section — the built-in Confluence and Jira work |
-| `atlassian.confluence` | `base_url`, `space`, `sync_roots` (a list of roots: `page_id`, `title`, `trusted`) |
+| `atlassian.confluence` | `base_url`, `space`, `sync_roots` (a list of roots: `page_id`, `title`, `trusted`), optional `attachments` (`all` by default, `images`, `none`) and `attachment_max_mb` (default 25, 0 = no limit): which page attachments to download |
 | `atlassian.jira` | `base_url`, `project_key`, `default_jql`, `done_statuses`, `cancelled_statuses`, **`trust_statuses`**, **`assumption_statuses`** |
 | `web` | `pages` (a list of `url` + `trusted`), `depth`, `assets`, `max_pages`, `allow_private` (internal addresses the crawl may visit; refused by default) — for the `web` module |
 | `paths` | base and mirror paths, `extra_structure_dirs` |

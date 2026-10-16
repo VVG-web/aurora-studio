@@ -374,6 +374,14 @@ def write_config(path: Path, c: dict):
     # пишет в одну папку, а реестр считает зеркалом другую. Умолчание — только когда ключа в конфиге нет.
     out_confluence = paths_value(old_text, "sources_confluence", "Sources/Confluence")
     out_jira = paths_value(old_text, "sources_jira", "Sources/JIRA")
+    # Ключи блока confluence, которых форма не спрашивает, но движок читает (политика вложений):
+    # carry_unmanaged переносит только второй уровень, а confluence лежит на третьем.
+    old_conf = re.search(r"^  confluence:[ \t]*\n(.*?)(?=^  [A-Za-z_]+:|^\S|\Z)", old_text, re.M | re.S)
+    att_keys = ""
+    for key in ("attachments", "attachment_max_mb"):
+        value = paths_value(old_conf.group(1), key, "") if old_conf else ""
+        if value:
+            att_keys += f"\n    {key}: {value}"
     text = f"""# Aurora project configuration (committed). Schema version 1.
 # Отредактировать в любой момент: python3 .aurora/scripts/aurora_setup.py
 # Секреты (токены) сюда НЕ класть — они в .env.aurora.local (gitignored).
@@ -399,7 +407,7 @@ skills:
 atlassian:
   confluence:
     base_url: "{c['conf_url']}"
-    space: "{c['conf_space']}"
+    space: "{c['conf_space']}"{att_keys}
     sync_roots: {roots}
   jira:
     base_url: "{c['jira_url']}"

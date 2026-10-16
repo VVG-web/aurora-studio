@@ -231,6 +231,10 @@ def secret_target(url: str, base: str, prefix: str = "", root: str = "",
     return url
 
 
+class FileTooLarge(Exception):
+    """Тело ответа больше заданного предела (`RestApi.fetch(max_bytes=…)`)."""
+
+
 class RestApi:
     """Минимальный REST-клиент: токен в заголовке, JSON на выходе, свой User-Agent.
 
@@ -278,13 +282,28 @@ class RestApi:
             self._ok()
             return json.load(r)
 
-    def fetch(self, url: str) -> bytes:
-        """Сырое тело по адресу: вложения (схемы, диаграммы) — не JSON."""
+    def fetch(self, url: str, max_bytes: int | None = None) -> bytes:
+        """Сырое тело по адресу: вложения (схемы, диаграммы) — не JSON.
+
+        `max_bytes` — предел размера: сервер объявил больше — отказ до чтения тела, иначе
+        читается на байт больше предела, и превышение даёт `FileTooLarge`. Без аргумента
+        читается всё, как раньше."""
         req = urllib.request.Request(self._url(url), headers={"Authorization": self.auth,
                                                               "User-Agent": self.agent})
         with safe_urlopen(req, timeout=120) as r:
             self._ok()
-            return r.read()
+            if max_bytes is None:
+                return r.read()
+            try:
+                declared = int(r.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError, AttributeError):
+                declared = 0
+            if declared > max_bytes:
+                raise FileTooLarge("файл больше предела")
+            data = r.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                raise FileTooLarge("файл больше предела")
+            return data
 
     def send(self, method: str, path: str, body=None, files: dict | None = None,
              timeout: float = 30, tries: int = 3):

@@ -156,7 +156,7 @@ def test_drawio_asset_gets_extension(tmp: Path):
             # второе имя — с точками внутри: «.Кол» не расширение, а часть названия
             return {"Диаграмма-1": "/download/1", "Стр4.Свод.Итог": "/download/2",
                     "Готовая.drawio": "/download/3"}
-        def fetch(self, url):
+        def fetch(self, url, max_bytes=None):
             return b"<mxfile/>"
 
     out = tmp / "mirror"
@@ -1842,7 +1842,7 @@ ATTACH_PAGE = (
 
 
 def _attach_exporter(tmp: Path, fetch=None, attachments=None, root=None, page=None,
-                     attach_error=None, force=True):
+                     attach_error=None, force=True, sizes=None, limits=None, **policy):
     """Экспортёр одной страницы с подставным API (без сети) → (CE, exp, root, fetched)."""
     import importlib
     sys.path.insert(0, str(SCRIPTS))
@@ -1868,20 +1868,30 @@ def _attach_exporter(tmp: Path, fetch=None, attachments=None, root=None, page=No
                 raise attach_error
             return dict(have)
 
-        def fetch(self, url):
+        def fetch(self, url, max_bytes=None):
             fetched.append(url)
+            if limits is not None:
+                limits.append(max_bytes)
             if fetch:
                 return fetch(url)
-            return f"bytes of {url}".encode("utf-8")
+            blob = f"bytes of {url}".encode("utf-8")
+            if max_bytes is not None and len(blob) > max_bytes:
+                raise CE.FileTooLarge("файл больше предела")
+            return blob
 
         def user_name(self, key):
             return key
 
+    api = Api()
+    if sizes is not None:       # {имя: (размер или None, тип)}: ответ со свойствами вложений
+        api.attachment_info = lambda pid: {
+            n: {"link": l, "size": sizes.get(n, (None, ""))[0], "media": sizes.get(n, (None, ""))[1]}
+            for n, l in have.items()}
     here = os.getcwd()
     os.chdir(root)          # кэш страниц читается относительно корня проекта
     try:
-        exp = CE.Exporter(Api(), str(root / "Sources/Confluence"), "https://wiki.example.com",
-                          "S", force)
+        exp = CE.Exporter(api, str(root / "Sources/Confluence"), "https://wiki.example.com",
+                          "S", force, **policy)
     finally:
         os.chdir(here)
     return CE, exp, root, fetched
@@ -2177,3 +2187,186 @@ def test_name_repair_ignores_links_that_escape_the_page_folder(tmp: Path):
                            "new": "Стр.md", "assets": {"../../../secret_demo.txt": "x_secret.txt"}}])
         _in_root(root, run)
         assert victim.read_text(encoding="utf-8") == "данные проекта", "файл проекта перенесён"
+
+
+def _sub(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _read_conf(tmp: Path, conf_lines: str) -> dict:
+    """read_config() по конфигу проекта с заданными строками в блоке confluence."""
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    CE = importlib.import_module("confluence_export")
+    importlib.reload(CE)
+    tmp.mkdir(parents=True, exist_ok=True)
+    root = make_project(tmp)
+    (root / "aurora.config.yaml").write_text(
+        'atlassian:\n  confluence:\n    base_url: "https://wiki.example.com"\n'
+        '    space: "S"\n' + conf_lines + '    sync_roots: []\n  jira:\n    base_url: ""\n'
+        'paths:\n  sources_confluence: Sources/Confluence\n', encoding="utf-8")
+    return CE, CE.read_config(str(root))
+
+
+@test
+def test_confluence_attachment_settings_are_read_from_config(tmp: Path):
+    """attachments / attachment_max_mb читаются из блока confluence; плохое значение — умолчание."""
+    CE, cfg = _read_conf(tmp / "a", "")
+    assert (cfg["attachments"], cfg["attachment_max_mb"]) == ("all", 25.0), cfg
+    for text, mode, mb in (("    attachments: images\n    attachment_max_mb: 1\n", "images", 1.0),
+                           ('    attachments: "none"\n    attachment_max_mb: 0\n', "none", 0.0),
+                           ("    attachments: Images\n    attachment_max_mb: 0.5\n", "images", 0.5),
+                           ("    attachments: всё\n    attachment_max_mb: много\n", "all", 25.0),
+                           ("    attachment_max_mb: -3\n", "all", 25.0),
+                           ("    # attachments: none\n    # attachment_max_mb: 1\n", "all", 25.0)):
+        _c, cfg = _read_conf(tmp / ("b" + str(abs(hash(text)))), text)
+        assert (cfg["attachments"], cfg["attachment_max_mb"]) == (mode, mb), (text, cfg)
+
+
+@test
+def test_confluence_attachment_settings_reach_the_exporter(tmp: Path):
+    """Режим и предел из конфига доходят до Exporter через run_export (без сети: корней нет)."""
+    CE, cfg = _read_conf(tmp, "    attachments: images\n    attachment_max_mb: 3\n")
+    here = os.getcwd()
+    os.chdir(tmp)
+    try:
+        exp = CE.run_export(cfg, [], str(tmp / "out"), "", False)
+    finally:
+        os.chdir(here)
+    assert (exp.att_mode, exp.att_max_mb) == ("images", 3.0), (exp.att_mode, exp.att_max_mb)
+    assert (CE.Exporter.att_mode, CE.Exporter.att_max_mb) == ("all", 25.0), "умолчание класса"
+
+
+@test
+def test_confluence_attachment_size_from_metadata_blocks_before_fetch(tmp: Path):
+    """Размер из свойств вложения больше предела: файл не качается, остаётся строка с причиной."""
+    mb = 1024 * 1024
+    sizes = {"law-1.pdf": (mb + 1, "application/pdf"), "report.docx": (mb, "application/x"),
+             "Приложение 2.pdf": (0, ""), "image-2026-6-3_10-39-19-1.png": (5, "image/png")}
+    CE, exp, root, fetched = _attach_exporter(tmp, sizes=sizes, att_max_mb=1)
+    exp.walk("5001", [])
+    page = (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    assert "/d/law" not in fetched, "файл больше предела скачан"
+    assert ("- не скачан (больше 1 МБ): [law-1.pdf]"
+            "(https://wiki.example.com/download/attachments/5001/law-1.pdf)") in page, page
+    assert "[law-1.pdf](https://wiki.example.com/download/attachments/5001/law-1.pdf)" in page
+    assert {"/d/rep", "/d/app2", "/d/img"} <= set(fetched), fetched      # ровно на пороге — качается
+    assert (root / "Sources/Confluence/Руководство_assets/report.docx").is_file()
+    assert exp.attach_skipped >= 1 and not (root / "Sources/Confluence/Руководство_assets/law-1.pdf").exists()
+
+
+@test
+def test_confluence_attachment_unknown_size_is_limited_while_reading(tmp: Path):
+    """Размера в ответе нет: чтение ограничено пределом (max_bytes), превышение — «не скачан»."""
+    limits: list = []
+    # у «bytes of /d/law» 14 байт: предел 1 МБ его пропускает, а крошечный — нет
+    CE, exp, root, fetched = _attach_exporter(_sub(tmp / "u"), limits=limits)
+    exp.walk("5001", [])
+    assert limits and all(x == 1024 * 1024 * 25 for x in limits), limits
+    CE2, exp2, root2, _f = _attach_exporter(_sub(tmp / "t"), limits=[], att_max_mb=1e-5)
+    exp2.walk("5001", [])
+    page = (root2 / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    assert "не скачан (больше 1e-05 МБ): [law-1.pdf]" in page, page
+    assert exp2.attach_failed == 0 and exp2.attach_skipped >= 3
+    # 0 — без предела: чтение без max_bytes
+    limits3: list = []
+    _C, exp3, _r, _f3 = _attach_exporter(_sub(tmp / "z"), limits=limits3, att_max_mb=0)
+    exp3.walk("5001", [])
+    assert limits3 and all(x is None for x in limits3), limits3
+
+
+@test
+def test_confluence_attachment_modes_images_and_none(tmp: Path):
+    """images качает только картинки (по расширению или типу), none — ничего; ссылки ведут на оригинал."""
+    sizes = {"report.docx": (3, "image/png")}      # тип картинки у файла без картиночного расширения
+    CE, exp, root, fetched = _attach_exporter(_sub(tmp / "i"), sizes=sizes, att_mode="images")
+    exp.walk("5001", [])
+    page = (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    assert sorted(fetched) == ["/d/img", "/d/rep"], fetched
+    assert ("- не скачан (режим images): [law-1.pdf]"
+            "(https://wiki.example.com/download/attachments/5001/law-1.pdf)") in page, page
+    assert "[image-2026-6-3_10-39-19-1.png](Руководство_assets/" in page
+    CE2, exp2, root2, fetched2 = _attach_exporter(_sub(tmp / "n"), att_mode="none")
+    exp2.walk("5001", [])
+    page2 = (root2 / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    assert fetched2 == [], fetched2
+    assert "(режим none)" in page2 and "(Руководство_assets/law-1.pdf)" not in page2
+    assert "](https://wiki.example.com/download/attachments/5001/law-1.pdf)" in page2
+    # схемы режиму не подчиняются: исходник диаграммы качается и при none
+    sch = '<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">Схема</ac:parameter></ac:structured-macro>'
+    _C, exp3, root3, fetched3 = _attach_exporter(_sub(tmp / "s"), att_mode="none", page=sch,
+                                                 attachments={"Схема": "/d/sch"})
+    exp3.walk("5001", [])
+    assert fetched3 == ["/d/sch"], fetched3
+
+
+@test
+def test_rest_fetch_limit_stops_reading_at_max_bytes(tmp: Path):
+    """RestApi.fetch(max_bytes): читает на байт больше предела и бросает FileTooLarge; без аргумента — как раньше."""
+    import importlib
+    import io
+    sys.path.insert(0, str(SCRIPTS))
+    SC = importlib.import_module("sources_core")
+    importlib.reload(SC)
+
+    class Resp(io.BytesIO):
+        def __init__(self, data, length=None):
+            super().__init__(data)
+            self.headers = {"Content-Length": str(length)} if length is not None else {}
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    class Api(SC.RestApi):
+        def _url(self, path):
+            return "https://wiki.example.com" + path
+
+    real = SC.safe_urlopen
+    try:
+        api = Api("https://wiki.example.com", "")
+        api._seen = True
+        SC.safe_urlopen = lambda req, timeout=0: Resp(b"x" * 10)
+        assert api.fetch("/f") == b"x" * 10
+        assert api.fetch("/f", max_bytes=10) == b"x" * 10
+        for resp in (Resp(b"x" * 11), Resp(b"x" * 3, length=11)):
+            SC.safe_urlopen = lambda req, timeout=0, r=resp: r
+            try:
+                api.fetch("/f", max_bytes=10)
+            except SC.FileTooLarge:
+                pass
+            else:
+                raise AssertionError("превышение предела не замечено")
+    finally:
+        SC.safe_urlopen = real
+        importlib.reload(SC)
+
+
+@test
+def test_setup_form_keeps_confluence_attachment_settings(tmp: Path):
+    """Форма настроек не стирает confluence.attachments / attachment_max_mb; повтор даёт тот же текст."""
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    S = importlib.import_module("aurora_setup")
+    importlib.reload(S)
+    cfg = tmp / "aurora.config.yaml"
+    cfg.write_text(
+        'atlassian:\n  confluence:\n    base_url: "https://wiki.example.com"\n    space: "S"\n'
+        '    attachments: images\n    attachment_max_mb: 7\n    sync_roots: []\n'
+        '  jira:\n    base_url: ""\n', encoding="utf-8")
+    c = {"name": "Demo", "slug": "demo", "conf_url": "https://wiki.example.com", "conf_space": "S",
+         "jira_url": "", "jira_key": "D", "jira_jql": "project = D", "trust_statuses": "Done",
+         "assumption_statuses": "Open", "scrub": "off", "sync_roots": [],
+         "trusted_sources": "", "trusted_branches": "", "threshold": "70"}
+    S.write_config(cfg, dict(c))
+    first = cfg.read_text(encoding="utf-8")
+    assert "    attachments: images\n    attachment_max_mb: 7\n" in first, first
+    S.write_config(cfg, dict(c))
+    assert cfg.read_text(encoding="utf-8") == first, "повторное сохранение изменило конфиг"
+    # без ключей в прежнем конфиге форма их не добавляет
+    cfg2 = tmp / "plain" / "aurora.config.yaml"
+    cfg2.parent.mkdir()
+    S.write_config(cfg2, dict(c))
+    assert "\n    attachments:" not in cfg2.read_text(encoding="utf-8")
+    assert "attachment_max_mb:" not in cfg2.read_text(encoding="utf-8")

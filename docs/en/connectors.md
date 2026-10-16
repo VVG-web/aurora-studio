@@ -224,6 +224,24 @@ same markdown. The converter version is 2: the first sync after the update re-re
 attachments. The `kb:names` repair recognises both sections and rewrites the file links embedded in the text together with
 a rename.
 
+**Which attachments to download.** In the `atlassian.confluence` block of `aurora.config.yaml`:
+
+```yaml
+atlassian:
+  confluence:
+    attachments: all        # all (default) | images | none
+    attachment_max_mb: 25   # limit for one file, MB (default 25; 0 = no limit)
+```
+
+`images` downloads only images (by extension or an `image/*` type), `none` downloads nothing: links in the text lead to the
+original in Confluence. An unknown value is read as `all`; a non-numeric or negative `attachment_max_mb` is read as 25. The
+size comes from the attachment properties (`fileSize` in the `child/attachment` response) **before** downloading; when it is
+missing, the read itself stops at the limit. Check order: executable type (always) → mode → size. What was skipped stays a row
+in `## Вложения страницы`: `- не скачан (режим images): [name](original)` or `- не скачан (больше 25 МБ): [name](original)`
+("not downloaded (mode images / larger than 25 MB)"). Diagram sources (draw.io, mermaid) ignore the mode; the size limit applies
+to them too (a row in `## Схемы страницы`: `не скачана (больше N МБ)`). The settings form does not erase these two keys on
+save; when the config has none, the form does not add them.
+
 ## Disconnecting
 
 Unticking removes the module from `sources:` but leaves the mirror folder: an export is data, and the engine does not

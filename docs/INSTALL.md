@@ -165,7 +165,7 @@ start-aurora.command · start-aurora.bat      пусковые файлы
 | `project` | `name`, `slug` |
 | `skills` | какие навыки обязательны и рекомендованы |
 | `sources` | подключённые модули источников: `id` (имя папки в `Sources/`), `module`, `path`. Секции нет — работают встроенные Confluence и Jira |
-| `atlassian.confluence` | `base_url`, `space`, `sync_roots` (список корней: `page_id`, `title`, `trusted`) |
+| `atlassian.confluence` | `base_url`, `space`, `sync_roots` (список корней: `page_id`, `title`, `trusted`), необязательные `attachments` (`all` по умолчанию, `images`, `none`) и `attachment_max_mb` (по умолчанию 25, 0 — без предела): какие вложения страниц качать |
 | `atlassian.jira` | `base_url`, `project_key`, `default_jql`, `done_statuses`, `cancelled_statuses`, **`trust_statuses`**, **`assumption_statuses`** |
 | `web` | `pages` (список `url` + `trusted`), `depth`, `assets`, `max_pages`, `allow_private` (внутренние адреса, на которые обходу можно ходить; по умолчанию запрещены) — для модуля `web` |
 | `paths` | пути базы и зеркал, `extra_structure_dirs` |
