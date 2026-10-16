@@ -2601,15 +2601,27 @@ def yaml_word(text: str, key: str, default: str = "") -> str:
 
 
 def confluence_block(text: str) -> str:
-    """Кусок конфига от `confluence:` до `jira:` — блок Confluence, как его читает движок.
+    """Тело блока `confluence:` конфига — построчно, по отступу: до следующего ключа того же или меньшего отступа.
 
-    Одно правило на синк, настройку проекта и панель: отступ блока и комментарий после
-    двоеточия не важны. Раньше форма и `aurora_setup` читали блок разными регэкспами, и при
-    нестандартной записи панель показывала «все», а скрипт видел настоящий `none`."""
-    text = text or ""
-    if "confluence:" not in text:
+    Одно правило на синк, настройку проекта и панель: отступ блока и комментарий после двоеточия не важны.
+    Блок не режется по подстроке `jira:` (она бывает в названии корня или комментарии), а `sources_confluence:`
+    и закомментированное `# confluence:` началом блока не считаются. Раньше форма и `aurora_setup` читали блок
+    разными регэкспами, и при нестандартной записи панель показывала «все», а скрипт видел настоящий `none`."""
+    lines = (text or "").split("\n")
+    start, indent = None, 0
+    for i, ln in enumerate(lines):
+        m = re.match(r"^([ \t]*)confluence:[ \t]*(?:#.*)?\r?$", ln)
+        if m:
+            start, indent = i, len(m.group(1).expandtabs(2))
+            break
+    if start is None:
         return ""
-    return text.split("confluence:", 1)[-1].split("jira:", 1)[0]
+    body = []
+    for ln in lines[start + 1:]:
+        if ln.strip() and not ln.lstrip().startswith("#") and len(ln[:len(ln) - len(ln.lstrip())].expandtabs(2)) <= indent:
+            break
+        body.append(ln)
+    return "\n" + "\n".join(body)
 
 
 # Политика вложений Confluence (`atlassian.confluence.attachments` / `attachment_max_mb`):

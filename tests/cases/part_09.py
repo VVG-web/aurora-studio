@@ -3248,6 +3248,85 @@ def test_confluence_asset_folder_symlink_is_never_cleaned_or_written(tmp: Path):
 
 
 @test
+def test_confluence_file_symlink_in_the_mirror_is_replaced_not_written_through(tmp: Path):
+    """Ссылка-файл, закоммиченная в зеркало на месте вложения или страницы (`law.pdf`, `Страница.md` → чужой файл), не
+    принимает запись: синк заменяет её обычным файлом, цель вне зеркала остаётся нетронутой."""
+    outside = _sub(tmp / "outside")
+    victim = outside / "victim.txt"
+    victim.write_text("ORIGINAL", encoding="utf-8")
+    for tag in ("asset", "page"):
+        sub = _sub(tmp / tag)
+        _CE, exp, root, _f = _attach_exporter(sub, attachments={"law.pdf": "/d/law"}, page=_file_link("law.pdf"))
+        mirror = root / "Sources/Confluence"
+        folder = mirror / "Руководство_assets"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / "law.pdf" if tag == "asset" else mirror / "Руководство.md"
+        try:
+            os.symlink(str(victim), str(target))
+        except (OSError, NotImplementedError):
+            return          # нет прав на ссылки (Windows) — проверять нечего
+        _in_root(root, lambda: exp.walk("5001", []))
+        assert victim.read_text(encoding="utf-8") == "ORIGINAL", tag
+        assert target.exists() and not os.path.islink(target), tag
+        assert target.read_bytes() != b"ORIGINAL", tag
+
+
+@test
+def test_project_form_compares_attachment_policy_with_what_is_stored_now(tmp: Path):
+    """Форма сравнивает политику вложений не с конфигом, прочитанным при открытии страницы, а с тем, что записано сейчас:
+    после успешной записи база сравнения обновляется. Иначе при несохранённых правках соседней группы (страница не
+    пересобирается) возврат поля к первому значению отбрасывался бы как «не менялось», а панель писала «сохранено»."""
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    assert "let shownPolicy = null;" in panel
+    save = panel[panel.index("confAttachmentsDrop({project:S.project.path, ...A},"):]
+    save = save[:save.index("renderProjectAfterSave();")]
+    assert "shownPolicy || (shownPolicy = confAttachmentsRead(get))" in save, save[:400]
+    after_ok = save[save.index("if (r.ok){"):]
+    assert "shownPolicy = {conf_attachments: A.conf_attachments, conf_attachment_max_mb: A.conf_attachment_max_mb}" in after_ok
+    # поведение отбрасывания: равное показанному не отправляется, изменённое — отправляется
+    node = shutil.which("node")
+    if not node:
+        return
+    fn = panel[panel.index("function confAttachmentsDrop(body, shown){"):]
+    fn = fn[:fn.index("\n}\n") + 2]
+    code = fn + """
+let shown = {conf_attachments: "all", conf_attachment_max_mb: ""};
+const out = [];
+const send = A => { const b = confAttachmentsDrop({project: "/p", ...A}, shown); out.push(Object.keys(b).sort().join()); return b; };
+send({conf_attachments: "all", conf_attachment_max_mb: ""});          // не менялось
+send({conf_attachments: "none", conf_attachment_max_mb: ""});         // изменено: уходит
+shown = {conf_attachments: "none", conf_attachment_max_mb: ""};       // записано
+send({conf_attachments: "all", conf_attachment_max_mb: ""});          // возврат к первому значению: уходит
+console.log(JSON.stringify(out));
+"""
+    src = tmp / "drop.mjs"
+    src.write_text(code, encoding="utf-8")
+    cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert cp.returncode == 0 and json.loads(cp.stdout.strip().splitlines()[-1]) == [
+        "project", "conf_attachments,project", "conf_attachments,project"], (cp.stdout, cp.stderr)
+
+
+@test
+def test_confluence_block_is_cut_by_indent_not_by_a_word(tmp: Path):
+    """Блок `confluence:` кончается на ключе того же отступа, а не на подстроке `jira:`: слово в названии корня или в
+    комментарии его не режет, `sources_confluence:` и закомментированный `# confluence:` его не начинают, комментарий
+    после двоеточия и свой отступ не мешают (иначе форма настроек теряла корни синка и политику вложений)."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    C = importlib.import_module("aurora_common")
+    text = ("paths:\n  sources_confluence: Sources/Confluence\natlassian:\n  # confluence: прежний блок\n"
+            "  confluence:   # основная вики\n    base_url: \"https://wiki.example.com\"\n    attachments: none\n"
+            "    sync_roots:\n      - page_id: \"111\"   # Jira: обзор\n      - page_id: \"222\"\n"
+            "  jira:\n    base_url: \"https://jira.example.com\"\n")
+    block = C.confluence_block(text)
+    assert "page_id: \"222\"" in block and "attachments: none" in block and "# Jira: обзор" in block, block
+    assert "jira.example.com" not in block and "Sources/Confluence" not in block, block
+    assert C.confluence_block("nothing: here\n") == ""
+    other = "confluence:\n\tbase_url: u\n\tspace: S\nweb:\n  x: 1\n"
+    assert "space: S" in C.confluence_block(other) and "x: 1" not in C.confluence_block(other)
+
+
+@test
 def test_inline_links_regex_is_linear_and_stops_at_the_next_link(tmp: Path):
     """INLINE_RE: стем ограничен и не заходит в соседнюю ссылку; текст из «](» не вешает kb:names."""
     import importlib

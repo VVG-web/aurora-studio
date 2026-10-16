@@ -837,6 +837,14 @@ def render_front_matter(meta: dict) -> str:
 
 # -------------------------------------------------------------------- обход
 
+
+def drop_link(path: str) -> None:
+    """Файл-ссылку на месте записи заменяем обычным файлом: закоммиченная в зеркало ссылка `law.pdf` → чужой файл иначе
+    принимала бы байты вложения (или текст страницы) в свою цель вне зеркала."""
+    if os.path.islink(path):
+        os.remove(path)
+
+
 class Exporter(WikiMirror):
     """Обход дерева страниц. Раскладку и состояние ведёт WikiMirror, здесь — Confluence."""
 
@@ -1056,6 +1064,7 @@ class Exporter(WikiMirror):
                 continue
             referenced.add(fname)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
+            drop_link(dest)
             with open(dest, "wb") as f:
                 f.write(blob)
             self.assets_saved += 1
@@ -1092,6 +1101,7 @@ class Exporter(WikiMirror):
                         os.makedirs(full_folder, exist_ok=True)
                         same = os.path.isfile(dest) and open(dest, "rb").read() == blob
                         if not same:
+                            drop_link(dest)
                             with open(dest, "wb") as f:
                                 f.write(blob)
                         self.attach_saved += 1
@@ -1354,6 +1364,7 @@ class Exporter(WikiMirror):
         exists = os.path.isfile(full)
         old = open(full, encoding="utf-8").read() if exists else None
         if old != text:
+            drop_link(full)
             with open(full, "w", encoding="utf-8") as f:
                 f.write(text)
             self.written += 1

@@ -4267,6 +4267,10 @@ async function renderProject(){
     const v = cfgRaw.values ? cfgRaw.values[k] : "";
     return (v === undefined || v === null || v === "") ? d : String(v).trim();
   };
+  // Политика вложений Confluence, как её показала форма (после записи — как она записана): с ней сравнивается
+  // отправляемое, иначе возврат поля к первому значению после сохранения при несохранённых правках соседней группы
+  // (страница тогда не пересобирается и `get` остаётся прежним) молча отбрасывался бы.
+  let shownPolicy = null;
   const A = {
     name: get("name"), slug: get("slug"),
     conf_url: get("base_url"), conf_space: get("space"),
@@ -4460,9 +4464,10 @@ async function renderProject(){
         if (A.sync_roots.length < before){ drawRoots(); toast(t("proj.roots_deduped")); }
         const r = await api("/api/setup",{method:"POST",
           body:JSON.stringify(confAttachmentsDrop({project:S.project.path, ...A},
-                                                  confAttachmentsRead(get)))});
+                                                  shownPolicy || (shownPolicy = confAttachmentsRead(get))))});
         e.target.disabled = false;
         if (r.ok){
+          shownPolicy = {conf_attachments: A.conf_attachments, conf_attachment_max_mb: A.conf_attachment_max_mb};
           toast(t("proj.saved"));
           setDirty("form", t("dirty.form"), false);
           S.state = await api("/api/state");
