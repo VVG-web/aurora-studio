@@ -1182,7 +1182,7 @@ addEventListener("beforeunload", e => {
 });
 
 /* ---------------- навигация ---------------- */
-function show(view, payload){
+function show(view, payload, opts){
   // уход из «Настройки» с незаписанными правками — единственное место, где панель
   // может молча потерять введённое: всё остальное она либо пишет сразу, либо не пишет
   if (S.view === "setup" && view !== "setup" && !confirmLeave()) return;
@@ -1191,10 +1191,13 @@ function show(view, payload){
   // Раздел в разработке закрыт — в него не попасть и по адресу страницы или ссылке.
   if (devOnlyView(view) && !devSectionsOn()) view = "overview";
   // Раздел скрыт профилем рабочего места: меню его не показывает, ни по адресу, ни из ядра
-  // он не открывается — человек получает Мостик, а не пустой экран. Причину говорит только
-  // переход по адресу (`openFromAddress`): автопереход ядра (выбор проекта → «Здоровье»)
-  // человек не просил, упрёк за него был бы шумом.
-  if (profileHidden(view)) view = "overview";
+  // он не открывается — человек получает Мостик, а не пустой экран. Молчит только автопереход,
+  // который человек не просил (`pick` → «Здоровье», флаг `quiet`): упрёк за него был бы шумом при
+  // каждом выборе проекта. Клик, адрес или ссылка, ведущие в скрытый раздел, называют причину.
+  if (profileHidden(view)){
+    if (!(opts && opts.quiet)) toast(t("modules.hidden", {id: moduleTitle(MODULES.get(view).manifest)}), "warn");
+    view = "overview";
+  }
   const prevView = S.view;
   S.view = view;
   if (prevView !== view) hideModule(prevView);        // уходящий раздел узнаёт об этом раньше, чем придёт новый
@@ -1235,13 +1238,6 @@ function devOnlyView(view){
 // здесь нет — решает манифест ответа `/api/modules`.
 function profileHidden(view){
   return !!(MODULES.get(view) && MODULES.get(view).manifest.hidden);
-}
-
-// Раздел из адреса страницы или ссылки: скрытый профилем уводит на Мостик со строкой о причине.
-function openFromAddress(view){
-  if (profileHidden(view))
-    toast(t("modules.hidden", {id: moduleTitle(MODULES.get(view).manifest)}), "warn");
-  show(view);
 }
 
 function showDevNav(){
@@ -1394,7 +1390,7 @@ async function boot(){
   // здоровье перерисует поднятые разделы само (`refreshModules` в `pick`).
   const p = slug ? S.state.projects.find(x => x.slug === slug) : null;
   const picking = p ? pick(p, false) : null;
-  if (v) openFromAddress(v);
+  if (v) show(v);   // скрытый профилем раздел из ссылки сам скажет причину
   if (picking) await picking;
 }
 
@@ -1799,7 +1795,7 @@ async function pick(p, go=true){
   // и он же не даёт дёргать сервер чаще раза в десять минут; итог — в журнале раздела «Git».
   api("/api/gitsync/event", {method:"POST", quiet:true,
     body: JSON.stringify({project: p.path, event: "open"})});
-  if (go) show("health");
+  if (go) show("health", undefined, {quiet: true});   // автопереход: скрытый профилем «Здоровье» не упрекаем
   // Здоровье — частями и из памяти панели: выбор проекта его не пересчитывает (1.166.0),
   // пересчитывает кнопка «Обновить» в «Здоровье».
   const counting = loadHealth(p, HEALTH_ALL);

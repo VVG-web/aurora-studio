@@ -23,6 +23,7 @@ import contextlib
 import importlib
 import io
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -630,7 +631,7 @@ def test_module_lifecycle_under_node(tmp: Path):
     modules = cut("const MODULES = new Map();", "async function loadModules")
     ctx = cut("function moduleCtx(id, root){", "// Подписи разделов в меню")
     health = cut("let HEALTH_FRAME = 0", "async function prefetchHealth")
-    show = cut("function show(view, payload){", "\n}\n", keep_end=True)
+    show = cut("function show(view, payload, opts){", "\n}\n", keep_end=True)
     # статическая проверка: имён разделов в healthChanged больше нет
     for name in ("mirrors", "install", '["health"'):
         assert name not in health, f"в healthChanged осталось имя «{name}»"
@@ -1682,15 +1683,18 @@ const check = (ok, what) => { if (!ok) fails.push(what); };
   show("hidden_one");
   check(S.view === "overview", "скрытый раздел уводит на Мостик, а вид — " + S.view);
   check(!mounted.includes("hidden_one"), "скрытый раздел не монтируется");
-  check(toasts.length === 0, "автопереход ядра (выбор проекта → «Здоровье») молчит: " + JSON.stringify(toasts));
-  S.view = "none";
-  openFromAddress("hidden_two");
-  check(S.view === "overview", "по адресу скрытый раздел тоже уводит на Мостик, а вид — " + S.view);
   check(toasts.length === 1 && toasts[0].text.startsWith("modules.hidden") && toasts[0].kind === "warn"
-        && toasts[0].text.includes("Раздел hidden_two"), "по адресу сказано, что раздел скрыт профилем: " + JSON.stringify(toasts));
+        && toasts[0].text.includes("Раздел hidden_one"), "клик, адрес или ссылка в скрытый раздел называют причину: " + JSON.stringify(toasts));
+  toasts.length = 0; S.view = "none";
+  show("hidden_one", undefined, {quiet: true});
+  check(S.view === "overview" && toasts.length === 0, "автопереход (выбор проекта → «Здоровье») уводит на Мостик молча: " + JSON.stringify(toasts));
+  S.view = "none";
+  show("hidden_two", {card: "x"});
+  check(S.view === "overview" && toasts.length === 1 && toasts[0].text.includes("Раздел hidden_two"),
+        "переход с грузом тоже говорит причину: " + JSON.stringify(toasts));
   toasts.length = 0;
-  openFromAddress("shown_one");
-  check(S.view === "shown_one" && toasts.length === 0, "видимый раздел по адресу открывается молча");
+  show("shown_one");
+  check(S.view === "shown_one" && toasts.length === 0, "видимый раздел открывается молча");
   S.view = "none"; mounted.length = 0;
   toasts.length = 0;
   show("shown_one");
@@ -1706,7 +1710,7 @@ const check = (ok, what) => { if (!ok) fails.push(what); };
 @test
 def test_panel_does_not_mount_a_section_hidden_by_the_profile(tmp: Path):
     """Панель (под node, иначе проверка пропускается): у скрытого профилем раздела нет кнопки меню, запись в `MODULES`
-    есть; `show` уводит на Мостик с предупреждением из каталога и не монтирует раздел; видимые открываются как раньше;
+    есть; `show` уводит на Мостик с предупреждением из каталога (молчит только автопереход с `quiet`) и не монтирует раздел; видимые открываются как раньше;
     в самом JS нет имён разделов, а строка живёт в каталогах ru и en."""
     panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
     for lang in ("ru", "en"):
@@ -1719,10 +1723,10 @@ def test_panel_does_not_mount_a_section_hidden_by_the_profile(tmp: Path):
         return panel[a:b + (len(end) if keep_end else 0)]
     nav = cut("function moduleTitle(m){", "// Всё, чем ядро делится")
     hidden = cut("function profileHidden(view){", "function showDevNav")
-    show = cut("function show(view, payload){", "\n}\n", keep_end=True)
+    show = cut("function show(view, payload, opts){", "\n}\n", keep_end=True)
     assert "manifest.hidden" in hidden and "profileHidden(view)" in show
-    assert "toast(" not in show.split("profileHidden(view)")[1].split("\n")[0], "show() не говорит про скрытый раздел"
-    assert "openFromAddress(v)" in panel and "function openFromAddress(view){" in hidden, "переход по адресу говорит причину"
+    assert "modules.hidden" in show and "opts.quiet" in show, "show() говорит причину, молчит только по флагу quiet"
+    assert 'show("health", undefined, {quiet: true})' in panel, "молчит единственный автопереход — выбор проекта → «Здоровье»"
     assert "if (!m.hidden) addModuleNav(m)" in nav
     node = shutil.which("node")
     if not node:
@@ -1744,15 +1748,21 @@ def test_profile_warns_about_a_module_id_that_is_not_a_section(tmp: Path):
     ck = _ck()
     ids = _real_module_ids()
     undo, _ = _with_profiles(ck, tmp / "typo", {
-        "role.json": {"id": "role", "name": "Роль", "modules": [ids[0].upper(), ids[1], "nope"]},
+        "role.json": {"id": "role", "name": "Роль", "modules": [ids[0].upper(), ids[1], "nope", "nope", "files"]},
         "fine.json": {"id": "fine", "name": "Ладный", "modules": [ids[0], ids[1]]}}, choice={"id": "role"})
     try:
         act = ck.active_profile()
-        bad = [w for w in act["warn"] if "в modules нет раздела" in w]
-        assert len(bad) == 2 and any(ids[0].upper() in w for w in bad) and any("nope" in w for w in bad), act["warn"]
+        bad = [w for w in act["warn"] if "в modules — не раздел" in w]
+        # «nope» назван дважды — строка одна; встроенный «files» назван честно: профиль его не прячет
+        assert len(bad) == 3 and any(ids[0].upper() in w for w in bad) and sum("nope" in w for w in bad) == 1, act["warn"]
+        assert any("«files»" in w and "встроенные разделы профиль не прячет" in w for w in bad), bad
         assert not any("«%s»" % ids[1] in w for w in bad)
         state = ck.profiles_state("ru")
-        assert [w for w in state["warn"] if "в modules нет раздела" in w and "profile «role»" in w] == bad, state["warn"]
+        assert [w for w in state["warn"] if "в modules — не раздел" in w and "profile «role»" in w] == bad, state["warn"]
+        # на английском строка переведена, кириллицы в ней нет (иначе `kit_i18n --check` её не видит)
+        en = [w for w in ck.translate_payload(state, "en")["warn"] if "profile «role»" in w and "modules" in w]
+        assert len(en) == 3 and not any(re.search("[а-яё]", w, re.I) for w in en), en
+        assert any("is not a section from cockpit/modules" in w for w in en), en
         assert not any("profile «fine»" in w for w in state["warn"]), "верный список предупреждений не даёт"
         assert len(state["warn"]) == len(set(state["warn"])), "активный профиль не задваивает строки"
     finally:
@@ -1772,6 +1782,7 @@ def test_profile_section_hiding_is_documented(_t):
     pr = (KIT / "cockpit" / "profiles" / "README.md").read_text(encoding="utf-8")
     assert "hidden" in ru and "профил" in ru and "не права" in ru
     assert "hidden" in en and "profile" in en and "not permissions" in en
-    assert "молча" in ru and "silently" in en, "автопереход ядра в скрытый раздел описан"
-    assert "в modules нет раздела" in ru and "no section" in en, "предупреждение об опечатке описано"
+    ru, en = " ".join(ru.split()), " ".join(en.split())
+    assert "молчит только автопереход" in ru and "only the automatic jump" in en, "тихий автопереход описан, клики — нет"
+    assert "не раздел из cockpit/modules" in ru and "is not a section" in en, "предупреждение об опечатке описано"
     assert "со следующего выпуска" not in pr, "README профилей ещё обещает разделы «в следующем выпуске»"

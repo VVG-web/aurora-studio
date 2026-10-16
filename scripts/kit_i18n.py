@@ -193,7 +193,8 @@ ENGINE_REASONS = {"aurora_common.py": ("mcp_check",),
 
 
 # Функции сервера панели, чьи `.append(...)` — предупреждения раздела или профиля: их показывают человеку.
-PANEL_WARN_FUNCS = ("modules", "profiles", "active_profile", "_text_lists", "profiles_state")
+PANEL_WARN_FUNCS = ("modules", "profiles", "active_profile", "_text_lists", "profiles_state",
+                    "_unknown_module_ids")
 
 
 def _skeleton(node):

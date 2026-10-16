@@ -1775,8 +1775,12 @@ def _unknown_module_ids(row: dict) -> list:
         known = {n for n in os.listdir(MODULES_DIR) if os.path.isfile(os.path.join(MODULES_DIR, n, "module.json"))}
     except OSError:
         return []
-    return ["profile «%s»: в modules нет раздела «%s» — такого раздела в ките нет" % (row["id"], i)
-            for i in ids if i not in known]
+    out = []
+    for i in dict.fromkeys(ids):      # дубль id — одна строка, не две
+        if i not in known:
+            out.append("profile «%s»: «%s» в modules — не раздел из cockpit/modules (встроенные разделы профиль не прячет)"
+                       % (row["id"], i))
+    return out
 
 
 def active_profile() -> dict:

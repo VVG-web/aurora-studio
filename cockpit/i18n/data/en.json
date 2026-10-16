@@ -533,6 +533,7 @@
     "профиль «{}» не принят: {}": "profile «{}» was not accepted: {}",
     "{}: в списке «{}» не только непустые строки — лишнее отброшено": "{}: the list «{}» holds more than non-empty strings — the extras were dropped",
     "{}: в списке «{}» нет ни одной непустой строки — поле не применено": "{}: the list «{}» has no non-empty string — the field was not applied",
+    "profile «{}»: «{}» в modules — не раздел из cockpit/modules (встроенные разделы профиль не прячет)": "profile «{}»: «{}» in modules is not a section from cockpit/modules (the profile does not hide the built-in sections)",
     "пустое name — у профиля должно быть название": "empty name — a profile must have a title",
     "local/profile.json не читается ({}) — взят профиль «all»": "local/profile.json cannot be read ({}) — profile «all» taken",
     "local/profile.json: нет поля id — взят профиль «all»": "local/profile.json: there is no id field — profile «all» taken",
