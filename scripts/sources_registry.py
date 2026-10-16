@@ -182,7 +182,39 @@ def installed(root: str = "") -> dict:
 
 
 # Заголовок секции: `sources:` и ничего после него в строке. Пустой заголовок — тоже секция.
-_SECTION = re.compile(r"^sources:[ \t\r]*(?:\n|\Z)(.*?)(?=^\S|\Z)", re.M | re.S)
+_HEADER = re.compile(r"^sources:[ \t\r]*(?:\n|\Z)", re.M)
+_ITEM0 = re.compile(r"-(?:[ \t]|$)")        # пункт списка на нулевом отступе: `sources:` + `- id: …` без сдвига (стиль PyYAML)
+
+
+def section_span(text: str):
+    """Границы секции `sources:` → (начало заголовка, начало тела, конец тела) или None.
+
+    Единственное место, где решается, где секция кончается: реестр, панель и форма настроек берут границы
+    отсюда. Секцию продолжают строки с отступом и пункты списка на нулевом отступе (`- id: …`); пустые строки
+    и комментарии на нулевом отступе внутри списка остаются в секции, если за ними идёт ещё что-то из секции.
+    Секцию кончает первая строка нулевого отступа, не пункт списка и не комментарий. Пустые строки перед ней
+    остаются в теле (как было всегда), а комментарии перед следующим ключом и всё после них — нет: они его.
+    """
+    m = _HEADER.search(text or "")
+    if not m:
+        return None
+    pos = lead = m.end()     # lead — конец подтверждённой части секции и идущих сразу за ней пустых строк
+    comment = False          # после последней строки секции уже был комментарий на нулевом отступе
+    for line in re.findall(r"[^\n]*\n|[^\n]+", text[m.end():]):
+        bare = line.rstrip("\r\n")
+        pos += len(line)
+        if not bare.strip():
+            if not comment:
+                lead = pos
+        elif bare[0] in " \t" or _ITEM0.match(bare):
+            lead, comment = pos, False
+        elif bare.startswith("#"):
+            comment = True                       # чей он, решит следующая строка: секции или следующего ключа
+        else:
+            break                                # новый верхний ключ
+    return m.start(), m.end(), lead
+
+
 _DASH = re.compile(r"^([ \t]*)-(?:[ \t]+|$)")
 # Значение верхнего ключа записи: в кавычках или без, хвостовой `# комментарий` не значение.
 _VALUE = r'"?([^"\n#]+?)"?[ \t\r]*(?:\s#.*)?$'
@@ -190,7 +222,7 @@ _VALUE = r'"?([^"\n#]+?)"?[ \t\r]*(?:\s#.*)?$'
 
 def has_section(text: str) -> bool:
     """Есть ли в конфиге заголовок `sources:` — в том числе пустой (без единой записи)."""
-    return bool(_SECTION.search(text or ""))
+    return section_span(text) is not None
 
 
 def _entry_key(raw: str, key: str):
@@ -226,11 +258,11 @@ def split_section(text: str) -> tuple:
     Запись без `module:` не выбрасывается: у неё module=None; id и path — None, если не заданы.
     Секции нет — ("", []); пустой заголовок — ("", []) тоже, их различает `has_section`.
     """
-    m = _SECTION.search(text or "")
-    if not m:
+    span = section_span(text)
+    if not span:
         return "", []
     head, chunks, first = [], [], None
-    for line in re.findall(r"[^\n]*\n|[^\n]+", m.group(1)):
+    for line in re.findall(r"[^\n]*\n|[^\n]+", text[span[1]:span[2]]):
         dash = _DASH.match(line)
         if dash and (first is None or len(dash.group(1)) <= first):
             first = len(dash.group(1)) if first is None else first

@@ -6527,8 +6527,11 @@ class Handler(BaseHTTPRequestHandler):
                  "sources:"]
         body = "\n".join(block) + "\n" + head + "".join(chunk for _m, chunk in keep)
         if has_section:
-            out = re.sub(r"(^#[^\n]*\n)*^sources:\s*$.*?(?=^\S|\Z)", lambda _m: body, text,
-                         count=1, flags=re.M | re.S)
+            # границы секции — из реестра (одно правило для чтения и записи); комментарии прямо над заголовком
+            # уходят вместе с ним, как и прежде (их заменяет шапка блока)
+            start, _body, end = SR.section_span(text)
+            start = re.search(r"(?:^#[^\n]*\n)*\Z", text[:start], re.M).start()
+            out = text[:start] + body + text[end:]
         else:
             out = re.sub(r"^atlassian:", lambda _m: body + "\natlassian:", text, count=1, flags=re.M)
             if out == text:

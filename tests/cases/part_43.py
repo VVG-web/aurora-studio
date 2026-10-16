@@ -1274,6 +1274,47 @@ def test_panel_save_choice_keeps_entry_without_module_and_comments(tmp: Path):
 
 
 @test
+def test_sources_section_ends_where_the_yaml_list_ends(tmp: Path):
+    """Границы секции `sources:` решает одна функция реестра: список без сдвига (`- id: …` на нулевом отступе, стиль
+    PyYAML) и комментарий на нулевом отступе между записями остаются в секции, а комментарий перед следующим ключом
+    — нет. Панель пишет по тем же границам: ни одна запись не остаётся «висеть» после перезаписи секции, комментарий
+    следующего ключа цел (на старом коде такой список читался как пустая секция: зеркала молча «не подключены»)."""
+    ck = _panel()
+    import sources_registry as R
+    flat = ("project:\n  name: X\nsources:\n- id: Conf\n  module: confluence-dc\n  path: Sources/Conf\n"
+            "- id: Jira\n  module: jira-dc\n  path: Sources/JIRA\nartifacts:\n  us: {}\n")
+    note = ("sources:\n  - id: Conf\n    module: confluence-dc\n    path: Sources/Conf\n# --- убрано пока\n"
+            "  - id: Jira\n    module: jira-dc\n    path: Sources/JIRA\n\n# про artifacts\nartifacts:\n  us: {}\n")
+    for text, tail in ((flat, "artifacts:\n  us: {}\n"), (note, "# про artifacts\nartifacts:\n  us: {}\n")):
+        span = R.section_span(text)
+        assert span and text[span[2]:].startswith(tail), (span, text[span[2]:])
+        head, chunks = R.split_section(text)
+        assert head + "".join(c[3] for c in chunks) == text[span[1]:span[2]]
+        assert [(m, i) for m, i, _p, _r in R.declared_chunks(text)] == [("confluence-dc", "Conf"), ("jira-dc", "Jira")]
+    assert R.section_span("project:\n  name: X\n") is None
+    # панель: записи под нулевым отступом переписываются целиком, соседний ключ и его комментарий не задеты
+    root = make_project(tmp)
+    _write(root / ".aurora" / "connectors" / "demo.json", _connector("demo"))
+    cfg = root / "aurora.config.yaml"
+    base = cfg.read_text(encoding="utf-8")
+    base = base[:base.index("sources:")] if "sources:" in base else base.rstrip("\n") + "\n\n"
+    cfg.write_text(base + note, encoding="utf-8")
+    assert ck.Handler._write_sources(None, str(root), ["confluence-dc", "jira-dc"]).get("ok")
+    assert cfg.read_text(encoding="utf-8").endswith(note), cfg.read_text(encoding="utf-8")     # ничего не менялось
+    assert ck.Handler._write_sources(None, str(root), ["confluence-dc", "jira-dc", "demo"]).get("ok")
+    text = cfg.read_text(encoding="utf-8")
+    assert "# --- убрано пока\n  - id: Jira" in text and text.endswith("\n\n# про artifacts\nartifacts:\n  us: {}\n") \
+        or text.endswith("# про artifacts\nartifacts:\n  us: {}\n"), text
+    assert text.count("module: jira-dc") == 1 and text.count("module: confluence-dc") == 1, text
+    assert {i["id"] for i in R.declared(str(root))} == {"Conf", "Jira", "demo"}
+    cfg.write_text(base + flat, encoding="utf-8")                       # список без сдвига: снятие модуля не оставляет хвост
+    assert ck.Handler._write_sources(None, str(root), ["confluence-dc"]).get("ok")
+    text = cfg.read_text(encoding="utf-8")
+    assert "jira-dc" not in text and text.endswith("artifacts:\n  us: {}\n"), text
+    assert {i["id"] for i in R.declared(str(root))} == {"Conf"}
+
+
+@test
 def test_settings_form_keeps_source_entries_verbatim(tmp: Path):
     """Форма настроек берёт записи `sources:` сырым текстом: лишние ключи, комментарий и вложенный список раньше
     `module:`, запись без `module:` и комментарии между записями переживают сохранение байт в байт, повторное
