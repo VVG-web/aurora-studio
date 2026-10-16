@@ -2587,6 +2587,19 @@ def yaml_scalar(text: str, key: str, default: str = "") -> str:
     return m.group(1).strip() if m else default
 
 
+def yaml_word(text: str, key: str, default: str = "") -> str:
+    """Короткое значение-слово/число ключа YAML; комментарий в конце строки терпится.
+
+    `yaml_scalar` строку `key: none  # заметка` не читает (для него `#` — не значение), а
+    пример с пояснением справа люди копируют как есть. Здесь берётся первое слово после
+    двоеточия, в кавычках или без; для настроек из одного слова (режим, число)."""
+    m = re.search(rf"""^[ \t]*{re.escape(key)}[ \t]*:[ \t]*(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"'#]+))""",
+                  text, re.M)
+    if not m:
+        return default
+    return next(g for g in m.groups() if g is not None).strip()
+
+
 def yaml_str(value: str) -> str:
     """Скаляр для ЗАПИСИ в конфиг: обычно в двойных кавычках, а при `"` внутри — в
     YAML-одинарных (там `"` легален, а `'` удваивается)."""

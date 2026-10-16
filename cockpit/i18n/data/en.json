@@ -973,6 +973,8 @@
     "адрес сервера Confluence": "the Confluence server address",
     "ключ пространства": "the space key",
     "корни синка: page_id страниц, от которых идёт обход": "sync roots: the page_id of each page the walk starts from",
+    "какие вложения страниц качать: all (по умолчанию), images, none": "which page attachments to download: all (default), images, none",
+    "предел размера одного вложения, МБ (по умолчанию 25; 0 — без предела)": "size limit of one attachment, MB (default 25; 0 = no limit)",
     "страницы вики: артефакты, доверие которых берётся из связанных задач": "wiki pages: artifacts whose trust comes from the linked issues",
     "персональный токен Jira (JIRA_PAT) либо JIRA_USER + JIRA_PASSWORD": "a Jira personal token (JIRA_PAT) or JIRA_USER + JIRA_PASSWORD",
     "адрес сервера Jira": "the Jira server address",

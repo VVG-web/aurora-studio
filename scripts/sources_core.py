@@ -29,7 +29,7 @@ import tempfile
 
 from aurora_common import (allow_cleartext, cleartext_secret_problem, head_scalar, root_link_escapes,
                            is_loopback_host, safe_urlopen, same_origin, split_frontmatter, url_origin,
-                           yaml_scalar)
+                           yaml_scalar, yaml_word)
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -67,6 +67,11 @@ def block(text: str, key: str, *until: str) -> str:
 def scalar(text: str, key: str, default: str = "") -> str:
     """Скаляр конфига — общим правилом движка (`aurora_common.yaml_scalar`)."""
     return yaml_scalar(text, key, default)
+
+
+def word(text: str, key: str, default: str = "") -> str:
+    """Значение-слово или число ключа конфига; комментарий справа от значения не мешает."""
+    return yaml_word(text, key, default)
 
 
 def read_env(root: str = "") -> dict:

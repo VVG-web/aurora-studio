@@ -46,7 +46,7 @@ import urllib.parse
 from datetime import date, timedelta
 
 from sources_core import (CONFIG, FileTooLarge, RestApi, WikiMirror, block, config_text, no_access,
-                          drop_empty_dirs, report_stale, scalar, verify)
+                          drop_empty_dirs, report_stale, scalar, verify, word)
 from sources_core import read_secret as core_secret
 from kb_remap import follow_moves, moves_report, page_moves  # noqa: E402
 from aurora_common import PATH_CHARS, TODAY, head_value, portable_name, safe_relpath  # noqa: E402
@@ -100,13 +100,19 @@ def attach_mode(value) -> str:
     return value if value in ATTACH_MODES else "all"
 
 
-def attach_max_mb(value) -> float:
-    """Предел размера вложения в МБ; не число или отрицательное — умолчание, 0 — без предела."""
+def parse_mb(value) -> float | None:
+    """Предел в МБ из текста конфига; None — не число, отрицательное или бесконечное."""
     try:
         mb = float(str(value).strip().replace(",", "."))
     except (TypeError, ValueError):
-        return float(ATTACH_MAX_MB)
-    return mb if mb >= 0 and mb == mb and mb != float("inf") else float(ATTACH_MAX_MB)
+        return None
+    return mb if mb >= 0 and mb != float("inf") else None
+
+
+def attach_max_mb(value) -> float:
+    """Предел размера вложения в МБ; не число или отрицательное — умолчание, 0 — без предела."""
+    mb = parse_mb(value)
+    return float(ATTACH_MAX_MB) if mb is None else mb
 
 
 def read_config(root: str = "") -> dict:
@@ -122,8 +128,16 @@ def read_config(root: str = "") -> dict:
     cfg["base_url"] = scalar(conf, "base_url").rstrip("/")
     cfg["space"] = scalar(conf, "space")
     cfg["roots"] = re.findall(r'^\s*-?\s*page_id:\s*"?(\d+)"?', conf, re.M)
-    cfg["attachments"] = attach_mode(scalar(conf, "attachments"))
-    cfg["attachment_max_mb"] = attach_max_mb(scalar(conf, "attachment_max_mb", str(ATTACH_MAX_MB)))
+    raw_mode, raw_mb = word(conf, "attachments"), word(conf, "attachment_max_mb")
+    cfg["attachments"] = attach_mode(raw_mode)
+    cfg["attachment_max_mb"] = attach_max_mb(raw_mb)
+    # Опечатка в настройке не должна молча включать самый разрешающий режим.
+    if raw_mode and raw_mode.lower() not in ATTACH_MODES:
+        print(f"confluence_export: attachments: неизвестное значение «{raw_mode}» — принято "
+              f"{cfg['attachments']}", file=sys.stderr)
+    if raw_mb and parse_mb(raw_mb) is None:
+        print(f"confluence_export: attachment_max_mb: неизвестное значение «{raw_mb}» — принято "
+              f"{cfg['attachment_max_mb']:g}", file=sys.stderr)
     cfg["out"] = scalar(text, "sources_confluence", DEFAULT_OUT)
     cfg["jira_url"] = scalar(block(text, "jira:", None), "base_url").rstrip("/")
     return cfg
@@ -871,9 +885,10 @@ class Exporter(WikiMirror):
     def too_large(self) -> str:
         return f"больше {self.att_max_mb:g} МБ"
 
-    def fetch_limited(self, link: str, info: dict) -> bytes:
-        """Скачать вложение. Размер в метаданных неизвестен — чтение ограничено пределом."""
-        if self.att_max_mb and (info or {}).get("size") is None:
+    def fetch_limited(self, link: str, info: dict | None = None) -> bytes:
+        """Скачать вложение. Предел действует всегда: размер в метаданных — ранний отказ, но он
+        бывает неизвестен, нулевой или занижен, поэтому само чтение тоже ограничено."""
+        if self.att_max_mb:
             return self.api.fetch(link, max_bytes=self.limit_bytes())
         return self.api.fetch(link)
 
@@ -890,8 +905,8 @@ class Exporter(WikiMirror):
         без самого Confluence, поэтому кладём именно его: `<страница>_assets/<имя>`.
         Туда же — вложения, на которые ссылается тело (PDF, документы, картинки): схемы
         перечислены в «## Схемы страницы», остальное — в «## Вложения страницы». Файл,
-        который не скачан (исполняемый тип, нет на странице, ошибка), остаётся строкой
-        со ссылкой на оригинал. Ссылки для тела кладутся в `self.asset_links`.
+        который не скачан (исполняемый тип, режим `attachments`, больше `attachment_max_mb`,
+        нет на странице, ошибка), остаётся строкой со ссылкой на оригинал. Ссылки для тела кладутся в `self.asset_links`.
         """
         self.asset_links = {}
         try:

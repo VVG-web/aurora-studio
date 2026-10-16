@@ -28,7 +28,7 @@ from pathlib import Path
 # Разбор и запись скаляра — общим правилом движка: настройка, панель, синки и отчёт
 # читают конфиг одной функцией, иначе формы записи разъезжаются (так и пропадал JQL
 # с датой в двойных кавычках).
-from aurora_common import config_hosts, yaml_scalar, yaml_str  # noqa: E402,F401
+from aurora_common import config_hosts, yaml_scalar, yaml_str, yaml_word  # noqa: E402,F401
 
 
 def read_config(path: Path) -> dict:
@@ -379,8 +379,9 @@ def write_config(path: Path, c: dict):
     old_conf = re.search(r"^  confluence:[ \t]*\n(.*?)(?=^  [A-Za-z_]+:|^\S|\Z)", old_text, re.M | re.S)
     att_keys = ""
     for key in ("attachments", "attachment_max_mb"):
-        value = paths_value(old_conf.group(1), key, "") if old_conf else ""
-        if value:
+        # слово справа от ключа, комментарий в конце строки отбрасывается
+        value = yaml_word(old_conf.group(1), key, "") if old_conf else ""
+        if value and re.fullmatch(r"[A-Za-z0-9.,]+", value):
             att_keys += f"\n    {key}: {value}"
     text = f"""# Aurora project configuration (committed). Schema version 1.
 # Отредактировать в любой момент: python3 .aurora/scripts/aurora_setup.py

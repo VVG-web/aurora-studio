@@ -38,8 +38,10 @@ atlassian:
     base_url: "https://confluence.example.com"
     space: "{{CONFLUENCE_SPACE}}"
     # Вложения страниц (файлы, на которые ссылается тело) качаются в <страница>_assets/:
-    #   attachments: all          # all (по умолчанию) | images | none
-    #   attachment_max_mb: 25     # предел одного файла, МБ; 0 — без предела
+    # attachments: all (по умолчанию) | images | none; attachment_max_mb: предел одного файла, МБ, 0 — без предела.
+    # Комментарий справа от значения читается, но лучше писать его отдельной строкой:
+    #   attachments: all
+    #   attachment_max_mb: 25
     # Исполняемое и скриптовое (exe, bat, sh, js…) не качается никогда.
     # Primary sync roots (page_id preferred). sync_paths.md may mirror these.
     sync_roots: []

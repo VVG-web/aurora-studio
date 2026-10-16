@@ -2370,3 +2370,80 @@ def test_setup_form_keeps_confluence_attachment_settings(tmp: Path):
     S.write_config(cfg2, dict(c))
     assert "\n    attachments:" not in cfg2.read_text(encoding="utf-8")
     assert "attachment_max_mb:" not in cfg2.read_text(encoding="utf-8")
+
+
+@test
+def test_confluence_attachment_settings_tolerate_trailing_comment(tmp: Path):
+    """Пример с пояснением справа от значения читается: `attachments: none  # …` даёт none, а не all."""
+    import contextlib
+    import io
+    CE, cfg = _read_conf(tmp / "c1", "    attachments: none          # all (по умолчанию) | images | none\n"
+                                     "    attachment_max_mb: 0     # предел одного файла, МБ\n")
+    assert (cfg["attachments"], cfg["attachment_max_mb"]) == ("none", 0.0), cfg
+    CE, cfg = _read_conf(tmp / "c2", '    attachments: "images"  # заметка\n    attachment_max_mb: 1,5 # заметка\n')
+    assert (cfg["attachments"], cfg["attachment_max_mb"]) == ("images", 1.5), cfg
+    # неизвестное значение остаётся умолчанием, но не молча: предупреждение в stderr
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        _c, cfg = _read_conf(tmp / "c3", "    attachments: off\n    attachment_max_mb: много # x\n")
+    assert (cfg["attachments"], cfg["attachment_max_mb"]) == ("all", 25.0), cfg
+    msg = err.getvalue()
+    assert "attachments: неизвестное значение «off»" in msg, msg
+    assert "attachment_max_mb: неизвестное значение «много»" in msg, msg
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        _read_conf(tmp / "c4", "    attachments: images\n    attachment_max_mb: 3\n")
+        _read_conf(tmp / "c5", "")
+    assert not err.getvalue(), err.getvalue()
+    # форма настроек переносит значение без комментария
+    import importlib
+    S = importlib.import_module("aurora_setup")
+    importlib.reload(S)
+    cfgp = tmp / "aurora.config.yaml"
+    cfgp.write_text(
+        'atlassian:\n  confluence:\n    base_url: "https://wiki.example.com"\n    space: "S"\n'
+        '    attachments: none  # note\n    attachment_max_mb: 0  # note\n    sync_roots: []\n'
+        '  jira:\n    base_url: ""\n', encoding="utf-8")
+    c = {"name": "Demo", "slug": "demo", "conf_url": "https://wiki.example.com", "conf_space": "S",
+         "jira_url": "", "jira_key": "D", "jira_jql": "project = D", "trust_statuses": "Done",
+         "assumption_statuses": "Open", "scrub": "off", "sync_roots": [],
+         "trusted_sources": "", "trusted_branches": "", "threshold": "70"}
+    S.write_config(cfgp, dict(c))
+    text = cfgp.read_text(encoding="utf-8")
+    assert "    attachments: none\n    attachment_max_mb: 0\n" in text, text
+
+
+@test
+def test_confluence_attachment_limit_applies_when_metadata_size_is_zero(tmp: Path):
+    """fileSize=0 (или занижен) предел не отключает: чтение само ограничено max_bytes."""
+    sizes = {"law-1.pdf": (0, "application/pdf")}
+    limits: list = []
+    CE, exp, root, fetched = _attach_exporter(tmp, sizes=sizes, limits=limits, att_max_mb=1e-5)
+    exp.walk("5001", [])
+    page = (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    assert "/d/law" in fetched and all(x == 10 for x in limits if x is not None), (fetched, limits)
+    assert None not in limits, limits
+    assert "не скачан (больше 1e-05 МБ): [law-1.pdf]" in page, page
+    assert not (root / "Sources/Confluence/Руководство_assets/law-1.pdf").exists()
+
+
+@test
+def test_confluence_diagram_larger_than_limit_is_not_downloaded(tmp: Path):
+    """Исходник схемы больше предела: не качается, в «## Схемы страницы» — строка со ссылкой на оригинал."""
+    mb = 1024 * 1024
+    sch = ('<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">Схема'
+           '</ac:parameter></ac:structured-macro>')
+    CE, exp, root, fetched = _attach_exporter(
+        _sub(tmp / "big"), page=sch, attachments={"Схема": "/d/sch"},
+        sizes={"Схема": (mb + 1, "")}, att_max_mb=1)
+    exp.walk("5001", [])
+    page = (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    assert fetched == [], fetched
+    assert "не скачана (больше 1 МБ)" in page and "/download/attachments/5001/%D0%A1" in page, page
+    assert exp.attach_skipped == 1
+    # размер неизвестен: чтение обрывается на пределе, результат тот же
+    CE, exp2, root2, fetched2 = _attach_exporter(
+        _sub(tmp / "unk"), page=sch, attachments={"Схема": "/d/sch"}, att_max_mb=1e-5)
+    exp2.walk("5001", [])
+    page2 = (root2 / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    assert "не скачана (больше 1e-05 МБ)" in page2, page2

@@ -229,12 +229,14 @@ a rename.
 ```yaml
 atlassian:
   confluence:
-    attachments: all        # all (default) | images | none
-    attachment_max_mb: 25   # limit for one file, MB (default 25; 0 = no limit)
+    # all (default) | images | none
+    attachments: all
+    # limit for one file, MB (default 25; 0 = no limit)
+    attachment_max_mb: 25
 ```
 
 `images` downloads only images (by extension or an `image/*` type), `none` downloads nothing: links in the text lead to the
-original in Confluence. An unknown value is read as `all`; a non-numeric or negative `attachment_max_mb` is read as 25. The
+original in Confluence. An unknown value is read as `all`; a non-numeric or negative `attachment_max_mb` is read as 25; in both cases the sync prints a notice to stderr. A trailing comment on the value line is tolerated. The
 size comes from the attachment properties (`fileSize` in the `child/attachment` response) **before** downloading; when it is
 missing, the read itself stops at the limit. Check order: executable type (always) → mode → size. What was skipped stays a row
 in `## Вложения страницы`: `- не скачан (режим images): [name](original)` or `- не скачан (больше 25 МБ): [name](original)`
