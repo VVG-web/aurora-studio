@@ -930,7 +930,7 @@ def test_settings_form_keeps_owner_mirror_path(tmp: Path):
     src, skills = S.source_sections(root, "demo")
     for k, v in _OWNER_PATHS.items():
         assert f"id: {k}\n    module:" in src and f"path: {v}\n" in src, (k, src)
-    assert "jira-sync-demo" in skills or "confluence-sync-demo" in skills, skills
+    assert "jira-export-demo" in skills or "confluence-sync-demo" in skills, skills
     cfg = root / "aurora.config.yaml"
     with contextlib.redirect_stdout(io.StringIO()):
         S.run_answers(root, {"name": "Новое имя"})
@@ -1222,3 +1222,65 @@ def test_panel_save_choice_keeps_entry_without_module_and_comments(tmp: Path):
     assert ck.Handler._write_sources(None, str(root), []).get("ok")
     text = cfg.read_text(encoding="utf-8")
     assert "note: hand-made" in text and "module: confluence-dc" not in text and "module: demo" not in text, text
+
+
+@test
+def test_settings_form_keeps_source_entries_verbatim(tmp: Path):
+    """Форма настроек берёт записи `sources:` сырым текстом: лишние ключи, комментарий и вложенный список раньше
+    `module:`, запись без `module:` и комментарии между записями переживают сохранение байт в байт, повторное
+    сохранение ничего не меняет; реестр, панель и форма видят один и тот же набор модулей (на старом коде форма
+    пересобирала запись как id/module/path и выбрасывала запись без module:)."""
+    import aurora_setup as S
+    import sources_registry as R
+    ck = _panel()
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    base = cfg.read_text(encoding="utf-8")
+    base = base[:base.index("sources:")] if "sources:" in base else base.rstrip("\n") + "\n\n"
+    cfg.write_text(base + _PANEL_MIXED, encoding="utf-8")
+    section = _PANEL_MIXED[:_PANEL_MIXED.index("atlassian:")]
+    with contextlib.redirect_stdout(io.StringIO()):
+        S.run_answers(root, {"name": "Новое имя"})
+    text = cfg.read_text(encoding="utf-8")
+    assert 'name: "Новое имя"' in text, text
+    assert section in text, text
+    assert text.count("sources:\n") == 1, text
+    # те же модули у реестра, панели и формы; «ничего не менять» в панели конфиг не трогает
+    assert {(i["id"], i["module"]) for i in R.declared(str(root))} == {("Conf", "confluence-dc"), ("Jira", "jira-dc")}
+    src, skills = S.source_sections(root, "demo")
+    assert [m for m, _i, _p, _r in R.declared_chunks(src)] == ["confluence-dc", None, "jira-dc"], src
+    assert "confluence-sync-demo" in skills and "jira-export-demo" in skills, skills
+    before = cfg.read_bytes()
+    assert ck.Handler._write_sources(None, str(root), ["confluence-dc", "jira-dc"]).get("ok")
+    assert cfg.read_bytes() == before
+    with contextlib.redirect_stdout(io.StringIO()):
+        S.run_answers(root, {})
+    assert cfg.read_bytes() == before, "повторное сохранение формы меняет конфиг"
+    # хвостовая пустая строка записи не копится от сохранения к сохранению
+    cfg.write_text(base + section + "\natlassian:\n  jira:\n    project_key: T\n", encoding="utf-8")
+    with contextlib.redirect_stdout(io.StringIO()):
+        S.run_answers(root, {})
+        once = cfg.read_bytes()
+        S.run_answers(root, {})
+    assert cfg.read_bytes() == once, "пустые строки между секциями копятся"
+
+
+@test
+def test_settings_form_first_setup_still_writes_generated_mirrors(tmp: Path):
+    """Секции `sources:` в конфиге нет (первая настройка, исторические зеркала из `paths:`) — форма пишет прежние две
+    записи id/module/path и sync-скиллы; запись без `module:` не мешает генерации записи для модуля, которого в
+    секции нет."""
+    import aurora_setup as S
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    base = cfg.read_text(encoding="utf-8")
+    cfg.write_text(base[:base.index("sources:")] if "sources:" in base else base, encoding="utf-8")
+    src, skills = S.source_sections(root, "demo")
+    assert "  - id: Confluence\n    module: confluence-dc\n    path: Sources/Confluence\n" in src, src
+    assert "  - id: JIRA\n    module: jira-dc\n    path: Sources/JIRA\n" in src, src
+    assert "confluence-sync-demo" in skills and "jira-export-demo" in skills, skills
+    # в секции только запись без module: — она остаётся, а исторические зеркала дописываются после неё
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip("\n") + "\n\nsources:\n  - id: Hand\n    note: x\n",
+                   encoding="utf-8")
+    src, _skills = S.source_sections(root, "demo")
+    assert "  - id: Hand\n    note: x\n  - id: Confluence\n    module: confluence-dc\n" in src, src

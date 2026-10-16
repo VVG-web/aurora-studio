@@ -100,11 +100,18 @@ def read_config(path: Path) -> dict:
     return cfg
 
 
-def source_sections(target: Path, slug: str) -> tuple:
+def source_sections(target: Path, slug: str, old_text: str = None) -> tuple:
     """(секция sources:, строки sync-скиллов для skills.recommended).
 
     Читаем реестр, а не список из головы: сколько модулей подключено, столько строк
     и появится. При первой настройке реестр отдаёт исторические два зеркала.
+
+    Записи, которые владелец уже объявил в конфиге, форма берёт СЫРЫМ текстом тем же разбором,
+    что реестр и панель (`sources_registry.split_section`): лишние ключи (`exclude:`, `note:`),
+    вложенные списки, комментарии и записи без `module:` переживают сохранение. Строка
+    `id/module/path` генерируется только для подключённого модуля, у которого записи в конфиге
+    нет (первая настройка, исторические зеркала из `paths:`). `old_text` — прежний текст конфига;
+    не передан — читается из `target`.
     """
     try:
         import sources_registry as R
@@ -114,18 +121,27 @@ def source_sections(target: Path, slug: str) -> tuple:
     # запись конфига форма сохраняет как есть, иначе первое же сохранение стёрло бы зеркало
     # вроде `Sources/Wiki (old)` вместе с его sync-скиллом
     items = R.instances(str(target))
-    if not items:
+    if old_text is None:
+        cfg = Path(target) / R.CONFIG
+        old_text = cfg.read_text(encoding="utf-8", errors="ignore") if cfg.is_file() else ""
+    head, chunks = R.split_section(old_text)
+    if not items and not chunks:
         return "", ""
     src = ["\n# Подключённые модули источников. Манифесты — в .aurora/connectors/,",
-           "# что установлено и что подключено — `python3 .aurora/scripts/sources_registry.py`.",
-           "sources:"]
+           "# что установлено и что подключено — `python3 .aurora/scripts/sources_registry.py`."]
+    body = head + "".join(raw if raw.endswith("\n") else raw + "\n" for _m, _i, _p, raw in chunks)
+    have = {module for module, _i, _p, _r in chunks if module}
     skills = []
     for i in items:
-        src.append(f'  - id: {i["id"]}\n    module: {i["module"]}\n    path: {i["path"]}')
+        if i["module"] not in have:
+            body += f'  - id: {i["id"]}\n    module: {i["module"]}\n    path: {i["path"]}\n'
         skill = ((i.get("manifest") or {}).get("run") or {}).get("skill", "")
         if skill:
             skills.append(f'    - name: "{skill}-{slug}"\n      via: repo')
-    return "\n".join(src) + "\n", "\n".join(skills)
+    # пустые строки в хвосте последней записи — отступ перед следующим разделом, его ставит шаблон:
+    # без среза они копились бы при каждом сохранении
+    body = re.sub(r"(\n[ \t]*)+\Z", "", body) + "\n" if body.strip() else ""
+    return "\n".join(src) + "\nsources:\n" + body, "\n".join(skills)
 
 
 def top_blocks(text: str) -> list:
@@ -348,8 +364,8 @@ def write_config(path: Path, c: dict):
                           for u, tr in c["web_pages"] if str(u).strip())
         if rows:
             pages = pages.replace("\n  pages: []", "\n  pages:\n" + rows)
-    sources, sync_skills = source_sections(path.parent, c["slug"])
     old_text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    sources, sync_skills = source_sections(path.parent, c["slug"], old_text)
     # Пути зеркал в `paths:` читают выгрузчики (confluence_export, jira_export), а реестр и doctor — `sources:`:
     # путь, который владелец задал сам (`Sources/Wiki (old)`), остаётся тем же в обоих разделах, иначе синк
     # пишет в одну папку, а реестр считает зеркалом другую. Умолчание — только когда ключа в конфиге нет.
