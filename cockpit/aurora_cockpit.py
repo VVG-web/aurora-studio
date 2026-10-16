@@ -4157,36 +4157,6 @@ def sources(project: str) -> dict:
         return {"installed": [], "instances": [], "error": out.strip()[:300]}
 
 
-def _sources_chunks(text: str) -> list:
-    """[(id модуля, сырой текст записи)] секции `sources:` — как её написал владелец проекта.
-
-    Запись без `module:` реестр не читает (как и `declared()`), поэтому и здесь её нет. Строки
-    записи, включая лишние ключи, вложенные списки и комментарии внутри неё, возвращаются без
-    изменений: новая запись начинается только с «- » на отступе первой записи секции или левее.
-    """
-    sec = re.search(r"^sources:\s*$(.*?)(?=^\S|\Z)", text, re.M | re.S)
-    if not sec:
-        return []
-    chunks, cur, first = [], [], None
-    for line in sec.group(1).splitlines(keepends=True):
-        dash = re.match(r"^(\s*)-\s", line)
-        # вложенный блочный список записи (`exclude:` и под ним `- drafts`) — на более глубоком
-        # отступе, чем «- » самой записи: это её содержимое, а не новая запись
-        if dash and (first is None or len(dash.group(1)) <= first):
-            first = len(dash.group(1)) if first is None else first
-            cur = [line]
-            chunks.append(cur)
-        elif cur:
-            cur.append(line)
-    out = []
-    for lines in chunks:
-        raw = "".join(lines).rstrip() + "\n"
-        hit = re.search(r'^\s*(?:-\s+)?module\s*:\s*"?([^"\n#]+?)"?\s*$', raw, re.M)
-        if hit:
-            out.append((hit.group(1).strip(), raw))
-    return out
-
-
 # Пакеты Python, без которых не работают команды: имя для pip, модуль для проверки.
 ENV_PY = (("beautifulsoup4", ("bs4",), "sync:confluence — разбор storage-разметки"),
           ("markdownify", ("markdownify",), "sync:confluence — HTML → markdown"),
@@ -6432,18 +6402,24 @@ class Handler(BaseHTTPRequestHandler):
         text = read_text(cfg)
         if not text:
             return {"error": "нет aurora.config.yaml"}
-        # что подключено сейчас: сырые куски записей секции (как написал владелец) либо, пока
-        # секции нет, исторические зеркала из `paths:` — их реестр уже отдал с путями владельца
-        has_section = bool(re.search(r"^sources:\s*$", text, re.M))
-        have = _sources_chunks(text)
-        if not have:
+        # что подключено сейчас: сырые куски записей секции (как написал владелец) читает единый
+        # разбор реестра — тот же, что у `declared()` и формы настроек; запись без `module:` в нём
+        # есть (module=None): реестр её не подключает, но и панель не вправе её терять. Пока секции
+        # нет (или в ней нет ни одной записи с модулем), — исторические зеркала из `paths:`: их
+        # реестр уже отдал с путями владельца
+        import sources_registry as SR
+        has_section = SR.has_section(text)
+        head, chunks = SR.split_section(text)
+        have = [(mod, raw if raw.endswith("\n") else raw + "\n") for mod, _i, _p, raw in chunks]
+        if not any(mod for mod, _raw in have):
             # пустой заголовок `sources:` реестр читает как отсутствующую секцию (declared() пуст,
             # работают исторические зеркала из `paths:`) — и панель показывает их подключёнными
-            have = [(i["module"], f"  - id: {i['id']}\n    module: {i['module']}\n    path: {i['path']}\n")
-                    for i in info.get("instances", []) if i.get("module")]
+            have += [(i["module"], f"  - id: {i['id']}\n    module: {i['module']}\n    path: {i['path']}\n")
+                     for i in info.get("instances", []) if i.get("module")]
         # модуль, которого нет среди установленных, отметить в панели нельзя — и снять тоже:
-        # его запись остаётся, молча терять её нечем оправдать
-        keep = [(mod, chunk) for mod, chunk in have if mod in modules or mod not in known]
+        # его запись остаётся, молча терять её нечем оправдать; запись без `module:` отметить
+        # нечем вовсе — она остаётся всегда
+        keep = [(mod, chunk) for mod, chunk in have if mod is None or mod in modules or mod not in known]
         new = [m for m in modules if m not in {mod for mod, _c in have}]
         # путь зеркала нового модуля уходит в конфиг строкой без экранирования: небезопасный или
         # отсутствующий `mirror.default_path` манифеста конфиг не получает
@@ -6459,7 +6435,7 @@ class Handler(BaseHTTPRequestHandler):
         block = ["# Подключённые модули источников: id — он же имя папки в Sources/.",
                  "# Что установлено: `python3 .aurora/scripts/sources_registry.py`.",
                  "sources:"]
-        body = "\n".join(block) + "\n" + "".join(chunk for _m, chunk in keep)
+        body = "\n".join(block) + "\n" + head + "".join(chunk for _m, chunk in keep)
         if has_section:
             out = re.sub(r"(^#[^\n]*\n)*^sources:\s*$.*?(?=^\S|\Z)", lambda _m: body, text,
                          count=1, flags=re.M | re.S)

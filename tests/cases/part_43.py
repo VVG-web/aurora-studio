@@ -1025,7 +1025,8 @@ def test_panel_save_choice_keeps_nested_lists_in_owner_entries(tmp: Path):
     cfg = root / "aurora.config.yaml"
     cfg.write_text(cfg.read_text(encoding="utf-8").rstrip("\n") + "\n\n" + _NESTED_SOURCES, encoding="utf-8")
     old = _NESTED_SOURCES.split("  - id: Jira")[0].split("sources:\n")[1]
-    assert [m for m, _c in ck._sources_chunks(cfg.read_text(encoding="utf-8"))] == ["confluence-dc", "jira-dc"]
+    import sources_registry as R
+    assert [m for m, _i, _p, _r in R.declared_chunks(cfg.read_text(encoding="utf-8"))] == ["confluence-dc", "jira-dc"]
     res = ck.Handler._write_sources(None, str(root), ["confluence-dc", "jira-dc", "demo"])
     assert res.get("ok"), res
     assert old in cfg.read_text(encoding="utf-8"), cfg.read_text(encoding="utf-8")
@@ -1174,3 +1175,50 @@ def test_sources_registry_section_header_shapes(tmp: Path):
     # отступ записей: «- » глубже первой — вложение, левее или равный — новая запись
     two = R.declared_chunks("sources:\n    - module: a\n      x:\n        - module: inner\n    - module: b\n")
     assert [m for m, _i, _p, _r in two] == ["a", "b"], two
+
+
+_PANEL_MIXED = ("sources:\n"
+                "  # голова секции\n"
+                "  - exclude:\n      - drafts\n    id: Conf\n    module: confluence-dc\n    path: Sources/Wiki (old)\n"
+                "  # записка между записями\n"
+                "  - id: NoModule\n    path: Sources/Hand\n    note: hand-made\n"
+                "  - id: Jira\n    module: jira-dc\n    path: Sources/JIRA\n"
+                "atlassian:\n  url: https://example.com\n")
+
+
+@test
+def test_panel_save_choice_keeps_entry_without_module_and_comments(tmp: Path):
+    """Панель пишет `sources:` единым разбором реестра: запись без `module:` (реестр её не подключает) и комментарии
+    между записями и над первой переживают и «ничего не менять», и снятие, и добавление модуля — байт в байт; запись
+    с вложенным списком раньше `module:` панель и реестр читают одинаково (на старом коде запись без module: терялась)."""
+    ck = _panel()
+    root = make_project(tmp)
+    _write(root / ".aurora" / "connectors" / "demo.json", _connector("demo"))
+    cfg = root / "aurora.config.yaml"
+    base = cfg.read_text(encoding="utf-8")
+    base = base[:base.index("sources:")] if "sources:" in base else base.rstrip("\n") + "\n\n"
+    cfg.write_text(base + _PANEL_MIXED, encoding="utf-8")
+    import sources_registry as R
+    # одни и те же модули у реестра и у панели (id записи с вложенным списком раньше module: не теряется)
+    assert {(i["id"], i["module"]) for i in R.declared(str(root))} == {("Conf", "confluence-dc"), ("Jira", "jira-dc")}
+    assert [(m, i) for m, i, _p, _r in R.declared_chunks(cfg.read_text(encoding="utf-8"))] == [
+        ("confluence-dc", "Conf"), (None, "NoModule"), ("jira-dc", "Jira")]
+    before = cfg.read_bytes()
+    assert ck.Handler._write_sources(None, str(root), ["confluence-dc", "jira-dc"]).get("ok")
+    assert cfg.read_bytes() == before, cfg.read_text(encoding="utf-8")
+    # снят jira-dc: уходит только его запись; запись без module:, комментарии, соседи и `atlassian:` на месте
+    assert ck.Handler._write_sources(None, str(root), ["confluence-dc"]).get("ok")
+    text = cfg.read_text(encoding="utf-8")
+    keep = _PANEL_MIXED.replace("  - id: Jira\n    module: jira-dc\n    path: Sources/JIRA\n", "")
+    assert text.endswith(keep), text
+    assert "  # голова секции\n  - exclude:" in text and "  # записка между записями\n  - id: NoModule" in text, text
+    # добавлен новый модуль: записи владельца дословно, новая — в конце секции
+    assert ck.Handler._write_sources(None, str(root), ["confluence-dc", "demo"]).get("ok")
+    text = cfg.read_text(encoding="utf-8")
+    assert "  - id: NoModule\n    path: Sources/Hand\n    note: hand-made\n" in text, text
+    assert "  - id: demo\n    module: demo\n    path: Sources/demo\natlassian:" in text, text
+    assert {i["id"] for i in R.declared(str(root))} == {"Conf", "demo"}
+    # снять все модули: запись без module: переживает и это
+    assert ck.Handler._write_sources(None, str(root), []).get("ok")
+    text = cfg.read_text(encoding="utf-8")
+    assert "note: hand-made" in text and "module: confluence-dc" not in text and "module: demo" not in text, text
