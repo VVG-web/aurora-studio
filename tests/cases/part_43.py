@@ -1110,3 +1110,67 @@ def test_settings_form_keeps_owner_paths_keys_in_step_with_sources(tmp: Path):
         S.run_answers(fresh, {"name": "Y"})
     ftext = (fresh / "aurora.config.yaml").read_text(encoding="utf-8")
     assert "  sources_confluence: Sources/Confluence\n  sources_jira: Sources/JIRA\n" in ftext, ftext
+
+
+_SOURCES_TEXT = (
+    "name: X\n"
+    "sources:\n"
+    "  # подключённые модули\n"
+    "\n"
+    "  - exclude:\n"
+    "      - drafts\n"
+    "      - id: not-an-entry\n"
+    "    id: Conf          # комментарий после значения\n"
+    "    module: confluence-dc\n"
+    "    path: \"Sources/Wiki (old)\"\n"
+    "\n"
+    "  # запись без module: — реестр её не читает, писатели не теряют\n"
+    "  - id: NoModule\n"
+    "    note: hand-made\n"
+    "  - module: jira-dc\n"
+    "    path: Sources/JIRA\n"
+    "atlassian:\n"
+    "  url: https://example.com\n"
+)
+
+
+@test
+def test_sources_registry_one_parser_for_the_section(tmp: Path):
+    """Секцию `sources:` разбирает один разбор: вложенный список раньше module:/path: не крадёт id,
+    комментарии и запись без module: остаются сырым текстом, склейка возвращает тело байт в байт."""
+    import re
+    import sources_registry as R
+    head, chunks = R.split_section(_SOURCES_TEXT)
+    assert R.declared_chunks(_SOURCES_TEXT) == chunks
+    assert [(m, i, p) for m, i, p, _r in chunks] == [
+        ("confluence-dc", "Conf", "Sources/Wiki (old)"),
+        (None, "NoModule", None),
+        ("jira-dc", None, "Sources/JIRA"),
+    ], chunks
+    body = re.search(r"^sources:\n(.*?)(?=^\S)", _SOURCES_TEXT, re.M | re.S).group(1)
+    assert head == "  # подключённые модули\n\n", repr(head)
+    assert head + "".join(r for _m, _i, _p, r in chunks) == body, "склейка не равна телу секции"
+    assert "note: hand-made" in chunks[1][3] and "- drafts" in chunks[0][3], chunks
+    assert "# запись без module:" in chunks[0][3], "комментарий между записями потерян"
+    # реестр читает ту же секцию тем же разбором: запись с вложенным списком раньше module: даёт id
+    (tmp / "aurora.config.yaml").write_text(_SOURCES_TEXT, encoding="utf-8")
+    assert R.declared(str(tmp)) == [
+        {"id": "Conf", "module": "confluence-dc", "path": "Sources/Wiki (old)"},
+        {"module": "jira-dc", "path": "Sources/JIRA"},
+    ], R.declared(str(tmp))
+
+
+@test
+def test_sources_registry_section_header_shapes(tmp: Path):
+    """Заголовок: пустая секция отличается от отсутствующей; `sources: x` и вложенный ключ — не секция."""
+    import sources_registry as R
+    assert R.has_section("a: 1\nsources:\natlassian:\n") and R.split_section("sources:\natlassian:\n") == ("", [])
+    assert R.has_section("sources:") and R.has_section("sources:  \r\n")
+    assert not R.has_section("a: 1\n") and not R.has_section("x:\n  sources:\n    - module: m\n")
+    assert not R.has_section("sources: []\n") and R.declared_chunks("sources: []\n") == []
+    # запись «-» в отдельной строке: ключи начинаются со следующей значимой строки
+    got = R.declared_chunks("sources:\n  -\n    # c\n    module: m\n    id: I\n")
+    assert [(m, i) for m, i, _p, _r in got] == [("m", "I")], got
+    # отступ записей: «- » глубже первой — вложение, левее или равный — новая запись
+    two = R.declared_chunks("sources:\n    - module: a\n      x:\n        - module: inner\n    - module: b\n")
+    assert [m for m, _i, _p, _r in two] == ["a", "b"], two

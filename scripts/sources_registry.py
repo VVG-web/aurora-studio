@@ -19,6 +19,10 @@
         module: confluence-dc
         path: Sources/Confluence
 
+Секцию разбирает один разбор — `declared_chunks`/`split_section`: записи с вложенными списками,
+лишними ключами, комментариями и записи без `module:` возвращаются сырым текстом, на нём же
+стоят писатели секции.
+
 Секции нет — работают модули с `legacy_path_key`: ровно те два, что стояли в проектах
 до появления реестра. Настройки продукта живут там, где их ждёт модуль
 (`settings_block` манифеста), а не дублируются в реестре: разбирать `sync_roots`
@@ -176,25 +180,90 @@ def installed(root: str = "") -> dict:
     return out
 
 
+# Заголовок секции: `sources:` и ничего после него в строке. Пустой заголовок — тоже секция.
+_SECTION = re.compile(r"^sources:[ \t\r]*(?:\n|\Z)(.*?)(?=^\S|\Z)", re.M | re.S)
+_DASH = re.compile(r"^([ \t]*)-(?:[ \t]+|$)")
+# Значение верхнего ключа записи: в кавычках или без, хвостовой `# комментарий` не значение.
+_VALUE = r'"?([^"\n#]+?)"?[ \t\r]*(?:\s#.*)?$'
+
+
+def has_section(text: str) -> bool:
+    """Есть ли в конфиге заголовок `sources:` — в том числе пустой (без единой записи)."""
+    return bool(_SECTION.search(text or ""))
+
+
+def _entry_key(raw: str, key: str):
+    """Значение верхнего ключа `key` записи секции или None.
+
+    Верхний уровень — отступ первого ключа после «- » (`  - id: X` → ключи на отступе 4):
+    пункты вложенного списка (`exclude:` и под ним `- drafts`) и ключи глубже в него не входят.
+    """
+    lines = raw.split("\n")
+    indent = len(_DASH.match(lines[0]).group(0))
+    rows = [(indent, lines[0][indent:])]
+    rest = [(len(ln) - len(ln.lstrip(" \t")), ln.lstrip(" \t")) for ln in lines[1:]]
+    if not rows[0][1].strip():      # «-» одна в строке: ключи начинаются со следующей значимой строки
+        for ind, body in rest:
+            if body.strip() and not body.startswith("#"):
+                indent = ind
+                break
+    for ind, body in rows + rest:
+        hit = ind == indent and re.match(rf"{key}\s*:\s*{_VALUE}", body)
+        if hit:
+            return hit.group(1).strip()
+    return None
+
+
+def split_section(text: str) -> tuple:
+    """Тело секции `sources:` → (голова, [(module, id, path, сырой текст записи)]).
+
+    Единственный разбор секции: реестр, панель и форма настроек читают её только им.
+    Новая запись начинается с «- » на отступе первой записи секции или левее; всё, что
+    глубже (вложенный список `exclude:`, лишние ключи), комментарии и пустые строки внутри
+    записи и после неё до следующей — остаются её сырым текстом. Голова — всё до первой записи
+    (комментарии над ней). Склейка `голова + "".join(raw)` возвращает тело секции байт в байт.
+    Запись без `module:` не выбрасывается: у неё module=None; id и path — None, если не заданы.
+    Секции нет — ("", []); пустой заголовок — ("", []) тоже, их различает `has_section`.
+    """
+    m = _SECTION.search(text or "")
+    if not m:
+        return "", []
+    head, chunks, first = [], [], None
+    for line in re.findall(r"[^\n]*\n|[^\n]+", m.group(1)):
+        dash = _DASH.match(line)
+        if dash and (first is None or len(dash.group(1)) <= first):
+            first = len(dash.group(1)) if first is None else first
+            chunks.append([line])
+        elif chunks:
+            chunks[-1].append(line)
+        else:
+            head.append(line)
+    out = []
+    for lines in chunks:
+        raw = "".join(lines)
+        out.append((_entry_key(raw, "module"), _entry_key(raw, "id"), _entry_key(raw, "path"), raw))
+    return "".join(head), out
+
+
+def declared_chunks(text: str) -> list:
+    """Записи секции `sources:` как [(module|None, id, path, сырой текст записи)] — см. `split_section`."""
+    return split_section(text)[1]
+
+
 def declared(root: str = "") -> list:
-    """Секция `sources:` конфига → [{id, module, path}]. Порядок сохраняем."""
+    """Секция `sources:` конфига → [{id, module, path}]. Порядок сохраняем.
+
+    Записи без `module:` не выдаются (модуль не назван — реестру нечего подключать), но
+    остаются в `declared_chunks`: писатели секции не вправе их терять.
+    """
     cfg = os.path.join(root or ".", CONFIG)
     if not os.path.isfile(cfg):
         return []
     text = open(cfg, encoding="utf-8", errors="ignore").read()
-    m = re.search(r"^sources:\s*$(.*?)(?=^\S|\Z)", text, re.M | re.S)
-    if not m:
-        return []
     out = []
-    for chunk in re.split(r"^\s*-\s+", m.group(1), flags=re.M)[1:]:
-        chunk = "  " + chunk
-        item = {}
-        for key in ("id", "module", "path"):
-            hit = re.search(rf'^\s*{key}\s*:\s*"?([^"\n#]+?)"?\s*$', chunk, re.M)
-            if hit:
-                item[key] = hit.group(1).strip()
-        if item.get("module"):
-            out.append(item)
+    for module, eid, path, _raw in declared_chunks(text):
+        if module:
+            out.append({k: v for k, v in (("id", eid), ("module", module), ("path", path)) if v})
     return out
 
 
