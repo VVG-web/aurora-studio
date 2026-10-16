@@ -1301,3 +1301,138 @@ def test_remaining_sections_are_lazy_and_release_what_they_hold(tmp: Path):
     assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:1500]
     result = json.loads(cp.stdout.strip().splitlines()[-1])
     assert result["fails"] == [], "\n".join(result["fails"])
+
+
+# ----------------------------------------------- BL-ARC-04, срез 1: профили рабочего места
+
+
+def _with_profiles(ck, tmp: Path, presets: dict, choice=None):
+    """Подменить папку пресетов и файл выбора на временные; вернуть (откат, путь файла выбора).
+
+    Настоящий `local/profile.json` кита и домашняя папка не трогаются: подмена проверяется.
+    """
+    folder, chosen = tmp / "profiles", tmp / "local" / "profile.json"
+    assert str(folder).startswith(str(tmp)) and chosen != Path(ck.PROFILE_FILE)
+    for name, data in presets.items():
+        _put(folder / name, data)
+    folder.mkdir(parents=True, exist_ok=True)
+    if choice is not None:
+        _put(chosen, choice)
+    keep = (ck.PROFILES_DIR, ck.PROFILE_FILE)
+    ck.PROFILES_DIR, ck.PROFILE_FILE = str(folder), str(chosen)
+
+    def undo():
+        ck.PROFILES_DIR, ck.PROFILE_FILE = keep
+    return undo, chosen
+
+
+@test
+def test_profile_all_keeps_the_scenario_list_as_before(tmp: Path):
+    """Профиль «all» (файла выбора нет) даёт ровно прежний список сценариев — без предупреждений."""
+    ck = _ck()
+    undo, _ = _with_profiles(ck, tmp, {})
+    try:
+        act = ck.active_profile()
+        assert act["id"] == "all" and act["warn"] == [] and act["scenarios"] is None, act
+        full = ck.all_scenarios()
+        assert full and [r["id"] for r in ck.scenarios()] == [r["id"] for r in full]
+        assert ck.scenarios() == full
+        got = ck.profiles_state("en")
+        assert got["active"] == "all" and got["warn"] == [], got
+        assert got["profiles"] == [{"id": "all", "name": "Everything",
+                                    "about": "All panel sections and routes of the kit"}], got
+        assert ck.profiles_state("ru")["profiles"][0]["name"] == "Всё"
+    finally:
+        undo()
+
+
+@test
+def test_profile_preset_cuts_routes_but_not_the_runners(tmp: Path):
+    """Пресет со списком `scenarios` режет то, что видно; запуск (маршрут по id, проверка Cron) профилем не ограничен."""
+    ck = _ck()
+    import route_runner as RR
+    full = [r["id"] for r in ck.all_scenarios()]
+    assert len(full) >= 3, full
+    pick = [full[2], full[0]]                 # порядок в пресете не важен: остаётся порядок файла сценариев
+    undo, _ = _with_profiles(ck, tmp, {
+        "role.json": {"id": "role", "name": {"ru": "Роль", "en": "Role"}, "scenarios": pick,
+                      "modules": ["work"]}}, choice={"id": "role"})
+    try:
+        act = ck.active_profile()
+        assert act["id"] == "role" and act["warn"] == [] and act["modules"] == ["work"], act
+        assert [r["id"] for r in ck.scenarios()] == [i for i in full if i in pick]
+        assert [r["id"] for r in ck.scenarios(all_routes=True)] == full
+        assert RR.scenario(ck, full[1])["id"] == full[1], "скрытый профилем маршрут запускается"
+        assert [r["id"] for r in RR.all_routes(ck)] == full
+        got = ck.profiles_state("en")
+        assert [p["id"] for p in got["profiles"]] == ["all", "role"] and got["active"] == "role", got
+        assert got["profiles"][1]["name"] == "Role" and got["warn"] == [], got
+    finally:
+        undo()
+
+
+@test
+def test_profile_choice_that_is_broken_falls_back_to_all(tmp: Path):
+    """Битый local/profile.json, без id, неизвестный id, отвергнутый пресет — «all» без исключения, причина в warn."""
+    ck = _ck()
+    full = [r["id"] for r in ck.all_scenarios()]
+    cases = {
+        "not json": "{ не json",
+        "root is a list": "[1, 2]",
+        "no id": {"name": "x"},
+        "id is a number": {"id": 5},
+        "unknown id": {"id": "ghost"},
+        "preset rejected": {"id": "bad"},
+        "preset with another id": {"id": "liar"},
+    }
+    for label, choice in cases.items():
+        sub = tmp / label.replace(" ", "_")
+        undo, _ = _with_profiles(ck, sub, {"bad.json": "{ не json",
+                                           "liar.json": {"id": "other", "name": "L"}}, choice=choice)
+        try:
+            act = ck.active_profile()
+            assert act["id"] == "all" and act["warn"], (label, act)
+            assert [r["id"] for r in ck.scenarios()] == full, label
+        finally:
+            undo()
+    undo, chosen = _with_profiles(ck, tmp / "gone", {}, choice="x")
+    try:
+        chosen.unlink()
+        assert ck.active_profile()["warn"] == [], "нет файла выбора — обычное состояние, не жалоба"
+    finally:
+        undo()
+
+
+@test
+def test_profile_manifest_is_checked_by_the_common_loader(tmp: Path):
+    """Вид `profile` проверяет общий загрузчик: нет name — отказ; кривой тип списка отброшен с отчётом;
+    лишнее в списках не попадает в профиль; `all.json` имя «all» не перебивает; битый пресет не прячет соседей."""
+    from aurora_common import load_manifest
+    m, rep = load_manifest(_put(tmp / "a.json", {"id": "a"}), "profile", lenient=True)
+    assert m is None and any("name" in r for r in rep), rep
+    m, rep = load_manifest(_put(tmp / "b.json", {"id": "b", "name": "B", "modules": "work",
+                                                 "scenarios": {"x": 1}}), "profile", lenient=True)
+    assert m is not None and "modules" not in m and "scenarios" not in m and len(rep) == 2, (m, rep)
+    m, rep = load_manifest(_put(tmp / "c.json", {"id": "c", "name": "C", "api_version": 99}),
+                           "profile", lenient=True)
+    assert m is None and rep, rep
+    ck = _ck()
+    undo, _ = _with_profiles(ck, tmp / "set", {
+        "all.json": {"id": "all", "name": "Подмена"},
+        "bad.json": "{ не json",
+        "typed.json": {"id": "typed", "name": "T", "modules": "work", "scenarios": ["fix", 7, ""]},
+        "fine.json": {"id": "fine", "name": {"ru": "Хороший"}, "about": "o"}})
+    try:
+        listed = ck.profiles()
+        rows = {r["id"]: r for r in listed[1:]}
+        assert set(rows) == {"all", "bad", "typed", "fine"} and "error" in rows["bad"], sorted(rows)
+        assert "name" in listed[0] and listed[0]["name"] == "Всё" and "error" in rows["all"], \
+            "профиль «all» задан кодом и файлом не заменяется"
+        assert rows["typed"]["modules"] is None and rows["typed"]["scenarios"] == ["fix"], rows["typed"]
+        assert len(rows["typed"]["warn"]) == 2, rows["typed"]
+        got = ck.profiles_state("en")
+        assert [p["id"] for p in got["profiles"]] == ["all", "fine", "typed"], got
+        assert got["profiles"][1]["name"] == "Хороший", "нет перевода — русское имя, а не пустота"
+        assert len(got["warn"]) == 4, got["warn"]
+    finally:
+        undo()

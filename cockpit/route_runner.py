@@ -217,8 +217,13 @@ def plan(ck, sc: dict, write: bool) -> list:
     return out
 
 
+def all_routes(ck) -> list:
+    """Все маршруты кита, а не только видимые в профиле: профиль прячет, но не запрещает запуск."""
+    return (getattr(ck, "all_scenarios", None) or ck.scenarios)()
+
+
 def scenario(ck, sc_id: str) -> dict | None:
-    return next((s for s in ck.scenarios() if s.get("id") == sc_id), None)
+    return next((s for s in all_routes(ck) if s.get("id") == sc_id), None)
 
 
 def job_project(ck, project: str, cmd: str) -> str:
@@ -935,7 +940,7 @@ def main(argv=None) -> int:
         print(f"{project}: это не проект Авроры (нет aurora.config.yaml)", file=sys.stderr)
         return 2
     if not scenario(ck, a.route):
-        ids = ", ".join(s["id"] for s in ck.scenarios())
+        ids = ", ".join(s["id"] for s in all_routes(ck))
         print(f"Маршрута «{a.route}» нет. Есть: {ids}", file=sys.stderr)
         return 2
     res = run_route(ck, project, a.route, a.apply, lang=a.lang,

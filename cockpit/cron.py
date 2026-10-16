@@ -176,7 +176,7 @@ def clean_task(ck, raw: dict, projects: list) -> tuple:
     if date and not DATE_RE.match(date):
         return None, "bad_date"
     known = {p["path"] for p in projects}
-    routes = {s["id"] for s in ck.scenarios()}
+    routes = {s["id"] for s in RR.all_routes(ck)}
     steps = []
     for st in (raw.get("steps") or [])[:MAX_STEPS]:
         if not isinstance(st, dict):

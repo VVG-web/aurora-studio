@@ -216,6 +216,12 @@
     "Опубликовать артефакт в Confluence как generated-страницу": "Publish the artifact to Confluence as a generated page",
     "Заморозить переданную версию: снимок, коммит, дата": "Freeze the handed-over version: snapshot, commit, date"
   },
+  "profiles": {
+    "all": {
+      "name": "Everything",
+      "about": "All panel sections and routes of the kit"
+    }
+  },
   "skins": {
     "contrast": {
       "name": "Contrast",
@@ -522,6 +528,14 @@
     "текст инструкции не разбирается: проверьте заголовки шагов «## Шаг N.»": "the instruction text cannot be parsed: check the step headings",
     "запрос к типам карточек не выполнен: {}": "the card types request failed: {}",
     "module «{}»: order — не конечное число — взято 100": "module «{}»: order is not a finite number — 100 taken",
+    "в манифесте другой id — имя файла и id обязаны совпадать": "the manifest has a different id — the file name and the id must match",
+    "имя «all» занято профилем «всё» — файл не используется": "the name «all» is taken by the built-in profile «everything» — the file is not used",
+    "профиль «{}» не принят: {}": "profile «{}» was not accepted: {}",
+    "{}: в списке «{}» не только непустые строки — лишнее отброшено": "{}: the list «{}» holds more than non-empty strings — the extras were dropped",
+    "local/profile.json не читается ({}) — взят профиль «all»": "local/profile.json cannot be read ({}) — profile «all» taken",
+    "local/profile.json: нет поля id — взят профиль «all»": "local/profile.json: there is no id field — profile «all» taken",
+    "профиль «{}» не найден среди пресетов — взят профиль «all»": "profile «{}» is not among the presets — profile «all» taken",
+    "профиль «{}» не принят: {} — взят профиль «all»": "profile «{}» was not accepted: {} — profile «all» taken",
     "module «{}»: группа «{}» неизвестна — раздел показан в группе project": "module «{}»: group «{}» is unknown — the section is shown in the project group",
     "skin «{}»: файл не в кодировке UTF-8 — пропущен": "skin «{}»: the file is not UTF-8 — skipped",
     "skin «{}»: файл не читается ({}) — пропущен": "skin «{}»: the file cannot be read ({}) — skipped",

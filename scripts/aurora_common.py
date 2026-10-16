@@ -316,6 +316,13 @@ EXT_SCHEMAS = {
                      "api_version": int},
         "nested": {},
     },
+    # Профиль рабочего места (BL-ARC-04): какие разделы панели и сценарии видны человеку.
+    # Нет списка — видно всё; профиль о видимости, а не о правах.
+    "profile": {
+        "required": {"id": str, "name": _EXT_I18N},
+        "optional": {"about": _EXT_I18N, "modules": list, "scenarios": list, "api_version": int},
+        "nested": {},
+    },
 }
 
 

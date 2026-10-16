@@ -129,6 +129,8 @@ DOC_ROOTS = ("docs", "skills/aurora-vault", "CHANGELOG.md", "commands.txt", "REA
 
 SKINS_DIR = os.path.join(KIT, "cockpit", "skins")
 MODULES_DIR = os.path.join(KIT, "cockpit", "modules")
+PROFILES_DIR = os.path.join(KIT, "cockpit", "profiles")       # пресеты ролей кита (BL-ARC-04)
+PROFILE_FILE = os.path.join(KIT, "local", "profile.json")     # выбор профиля на этой машине
 
 
 def skins() -> list:
@@ -1682,15 +1684,146 @@ def bots_action(action: str, project: str, payload: dict) -> dict:
     return {"ok": False, "error": "нет такого действия"}
 
 
+# ----------------------------------------------------------- профили рабочего места
+
+# Профиль — набор того, что человек видит: разделы панели и сценарии. Это видимость, а не
+# права: скрытое остаётся рабочим (расписание Cron и запуск маршрута из терминала не
+# зависят от профиля). Пресеты ролей — файлы `cockpit/profiles/<id>.json` в ките, выбор —
+# `local/profile.json` на машине (`{"id": "..."}`). Профиль «all» — «всё, как есть»:
+# он задан кодом, файла не требует, и им становится любой неясный выбор.
+ALL_PROFILE = "all"
+
+
+def _profile_all() -> dict:
+    return {"id": ALL_PROFILE, "name": "Всё", "about": "Все разделы и сценарии кита",
+            "modules": None, "scenarios": None}
+
+
+def _text_lists(m: dict, key: str, pre: str, warn: list):
+    """Список строк из поля профиля: нет поля — None («без ограничения»); не строки отброшены."""
+    if key not in m:
+        return None
+    items = [x for x in m[key] if isinstance(x, str) and x.strip()]
+    if len(items) != len(m[key]):
+        warn.append("%s: в списке «%s» не только непустые строки — лишнее отброшено" % (pre, key))
+    return items
+
+
+def profiles() -> list:
+    """Профили: «all» из кода и пресеты `cockpit/profiles/*.json` — тем же приёмом, что разделы.
+
+    Манифест читает общий загрузчик (`load_manifest`, вид `profile`, режим «мягкий»); имя файла
+    без `.json` и есть `id`. Битый пресет не роняет панель: запись `{id, error}`; поле не того
+    типа — пресет поднимается с умолчанием поля, причина в `warn` записи. Файл `all.json`
+    имя «all» не перебивает: оно занято кодом.
+    """
+    out = [_profile_all()]
+    if not os.path.isdir(PROFILES_DIR):
+        return out
+    for fname in sorted(os.listdir(PROFILES_DIR)):
+        name, ext = os.path.splitext(fname)
+        man = os.path.join(PROFILES_DIR, fname)
+        if ext != ".json" or not os.path.isfile(man):
+            continue
+        if name == ALL_PROFILE:
+            out.append({"id": name, "error": "имя «all» занято профилем «всё» — файл не используется"})
+            continue
+        m, rep = load_manifest(man, "profile", lenient=True)
+        if m is None:
+            out.append({"id": name, "error": (rep or ["манифест не принят"])[0]})
+            continue
+        if m.get("id") != name:
+            out.append({"id": name, "error": "в манифесте другой id — имя файла и id обязаны совпадать"})
+            continue
+        warn = list(rep)
+        pre = "profile «%s»" % name
+        item = {"id": name, "name": m["name"], "about": m.get("about", ""),
+                "modules": _text_lists(m, "modules", pre, warn),
+                "scenarios": _text_lists(m, "scenarios", pre, warn)}
+        if warn:
+            item["warn"] = warn
+        out.append(item)
+    return out
+
+
+def active_profile() -> dict:
+    """Профиль этой машины: запись `local/profile.json`; без неё и при любой неясности — «all».
+
+    Нет файла, он не читается, нет `id`, пресета с таким `id` нет или он отвергнут — берётся
+    «all», а причина (кроме «файла нет», это обычное состояние) — в поле `warn`. Исключений
+    не бросает: выбор профиля не должен уронить панель.
+    """
+    base = dict(_profile_all(), warn=[])
+    try:
+        if not os.path.isfile(PROFILE_FILE):
+            return base
+        with open(PROFILE_FILE, "rb") as f:
+            data = json.loads(f.read(1 << 16).decode("utf-8-sig"))
+    except (OSError, ValueError) as e:
+        base["warn"].append("local/profile.json не читается (%s) — взят профиль «all»" % e)
+        return base
+    want = data.get("id") if isinstance(data, dict) else None
+    if not isinstance(want, str) or not want.strip():
+        base["warn"].append("local/profile.json: нет поля id — взят профиль «all»")
+        return base
+    if want == ALL_PROFILE:
+        return base
+    row = next((p for p in profiles() if p["id"] == want), None)
+    if row is None:
+        base["warn"].append("профиль «%s» не найден среди пресетов — взят профиль «all»" % want)
+        return base
+    if "error" in row:
+        base["warn"].append("профиль «%s» не принят: %s — взят профиль «all»" % (want, row["error"]))
+        return base
+    return dict(row, warn=list(row.get("warn", [])))
+
+
+def profiles_state(lang: str) -> dict:
+    """Ответ `/api/profiles`: пресеты кита, выбранный на машине, и всё непринятое строками `warn`."""
+    rows, act = profiles(), active_profile()
+    warn = []
+    for r in rows:
+        if "error" in r:
+            warn.append("профиль «%s» не принят: %s" % (r["id"], r["error"]))
+        warn.extend(r.get("warn", []))
+    warn.extend(act["warn"])
+    return {"profiles": localized_profiles([r for r in rows if "error" not in r], lang),
+            "active": act["id"], "warn": warn}
+
+
+def localized_profiles(rows: list, lang: str) -> list:
+    """`[{id, name, about}]` на языке интерфейса: «all» — из каталога, пресет — из своего манифеста."""
+    tr = data_catalogue(lang).get("profiles") or {}
+
+    def pick(v):
+        if isinstance(v, dict):
+            return v.get(lang) or v.get(DEFAULT_LANG) or next(iter(v.values()), "")
+        return v or ""
+    return [{"id": r["id"],
+             "name": (tr.get(r["id"]) or {}).get("name") or pick(r["name"]),
+             "about": (tr.get(r["id"]) or {}).get("about") or pick(r.get("about"))} for r in rows]
+
+
 # --------------------------------------------------------------- быстрый старт
 
-def scenarios() -> list:
-    """Сценарии рутинной работы: последовательность шагов вместо поиска по 49 командам.
+def scenarios(all_routes: bool = False) -> list:
+    """Сценарии рутинной работы, которые видит человек: последовательность шагов вместо поиска по 49 командам.
 
     Лежат в `cockpit/scenarios.txt` — обычный текст, который правит человек, а не код.
     Шаг без команды (строка с «-») — работа человека или ассистента: её панель не
     запускает, но и пропускать её в сценарии нечестно.
+
+    Список режет профиль машины (`active_profile`): с `scenarios` в профиле остаются только
+    названные маршруты, в прежнем порядке файла; профиль «all» оставляет всё. `all_routes=True`
+    — без среза: так читает тот, кто запускает, а не показывает (расписание, терминал).
     """
+    rows = all_scenarios()
+    keep = None if all_routes else active_profile().get("scenarios")
+    return rows if keep is None else [r for r in rows if r["id"] in keep]
+
+
+def all_scenarios() -> list:
+    """Все сценарии кита из `cockpit/scenarios.txt` — без среза по профилю."""
     path = os.path.join(KIT, "cockpit", "scenarios.txt")
     out, cur = [], None
     for line in read_text(path).splitlines():
@@ -5659,6 +5792,8 @@ class Handler(BaseHTTPRequestHandler):
                             "rejected": [r for r in rows if "error" in r]})
         elif u.path == "/api/modules":
             self.send_json({"modules": modules()})
+        elif u.path == "/api/profiles":
+            self.send_json(profiles_state(request_lang(q)))
         elif u.path.startswith("/modules/"):
             self.send_module(u.path[len("/modules/"):])
         elif u.path == "/api/skin":

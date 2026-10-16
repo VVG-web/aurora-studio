@@ -192,6 +192,10 @@ ENGINE_REASONS = {"aurora_common.py": ("mcp_check",),
                   os.path.join("agents", "pydantic_ai_adapter.py"): ("mcp_probe",)}
 
 
+# Функции сервера панели, чьи `.append(...)` — предупреждения раздела или профиля: их показывают человеку.
+PANEL_WARN_FUNCS = ("modules", "profiles", "active_profile", "_text_lists", "profiles_state")
+
+
 def _skeleton(node):
     """Русский текст сообщения с `{}` на месте подстановок; не текст — None."""
     import ast
@@ -317,7 +321,7 @@ def message_skeletons() -> set:
     cockpit = servers[0]
     if os.path.isfile(cockpit):
         for node in ast.walk(ast.parse(open(cockpit, encoding="utf-8").read())):
-            if isinstance(node, ast.FunctionDef) and node.name == "modules":
+            if isinstance(node, ast.FunctionDef) and node.name in PANEL_WARN_FUNCS:
                 for sub in ast.walk(node):
                     if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
                             and sub.func.attr == "append" and sub.args):
@@ -437,7 +441,7 @@ def data_expected() -> dict:
     """{раздел: набор ключей, которые обязан покрыть перевод} — по самим реестрам."""
     helps, metas = flag_texts()
     out = {"scenarios": scenario_texts(), "skins": skin_ids(), "messages": message_skeletons(),
-           "connectors": connector_ids(), "connector_texts": connector_texts(), "kinds": kind_ids(),
+           "profiles": {"all"}, "connectors": connector_ids(), "connector_texts": connector_texts(), "kinds": kind_ids(),
            "flags": helps, "flag_args": metas}
     reg = os.path.join(KIT, "commands.txt")
     if os.path.isfile(reg):

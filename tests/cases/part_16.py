@@ -64,7 +64,7 @@ def _walk(obj, path=""):
 CRAWLED = (
     "/api/state", "/api/health", "/api/config", "/api/extras", "/api/mcp/kit", "/api/roots",
     "/api/kinds", "/api/artifacts", "/api/about", "/api/agent", "/api/kit/status", "/api/git",
-    "/api/git/head", "/api/activity", "/api/jobs", "/api/scenarios", "/api/skins", "/api/modules",
+    "/api/git/head", "/api/activity", "/api/jobs", "/api/scenarios", "/api/skins", "/api/modules", "/api/profiles",
     "/api/files/tree", "/api/graph", "/api/ask/threads", "/api/i18n", "/api/route/state",
     "/api/runlog", "/api/agent/pydantic", "/api/context/suggest", "/api/skin", "/api/cron",
     "/api/history", "/api/routes", "/api/bots", "/api/env", "/api/adapter/alarm", "/api/cards",

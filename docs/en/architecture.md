@@ -427,6 +427,7 @@ line in the same files. Tests, documentation and string catalogues are not the c
 |---|---|
 | Connector (`connector`) | a `connectors/<id>/` folder: `connector.json`, `SKILL.md`; the run script in `scripts/`. See [connectors.md](connectors.md) |
 | Panel section (`panel_module`) | a `cockpit/modules/<id>/` folder: `module.json`, `view.html`, `view.js`, `i18n/`. See the [section README](../../cockpit/modules/README.md) |
+| Workplace profile (not in the metric) | a file `cockpit/profiles/<id>.json`: the list of visible routes and sections for a role; the choice is `local/profile.json` on the machine; with no choice the profile «all» applies, everything as before. See the [profiles README](../../cockpit/profiles/README.md) |
 | Skin (`skin`) | one `cockpit/skins/<id>.css` file with a header; reference only in the metric, not in the bar. See the [skins README](../../cockpit/skins/README.md) |
 | Git provider (`git_provider`) | a `gitproviders/<id>/` folder: `provider.json` and `adapter.py` |
 | LLM provider (`llm_provider`) | an entry in `local/models.json` for an already known type; a new type is a line in `PROVIDER_TYPES` (`scripts/model_config.py`), that is, still code |
@@ -452,7 +453,7 @@ extensions by name. A decrease does not fail the test; it prints a "update the b
 it cannot be rolled back. If growth
 is justified, that is a decision rather than a workaround, and it goes into the commit message.
 
-**What a manifest must pass.** The envelope is read by the loader (`load_manifest`) for connectors and panel sections; a skin
+**What a manifest must pass.** The envelope is read by the loader (`load_manifest`) for connectors, panel sections and workplace profiles (kind `profile`: `id` and `name` are required; `about`, `modules`, `scenarios` are not — absent means «everything»; a profile hides, it does not forbid: Cron and the terminal still run a hidden route); a skin
 shares with them only the API-version rule (`ext_api_problem`), and Git providers are checked by a test,
 not by the loader (details in ["Manifest envelope and API version"](connectors.md#manifest-envelope-and-api-version)):
 
