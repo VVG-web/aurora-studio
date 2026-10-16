@@ -55,7 +55,8 @@ DEFAULT_OUT = "Sources/Confluence"
 STATE = WikiMirror.state_name
 # Версия конвертера страниц. Изменили `to_markdown` так, что меняется вывод, — поднимите:
 # кэш страниц сбросится, и синк один раз пройдёт всё зеркало полностью.
-CONVERTER = 1
+# 2: вложения страницы (view-file*, картинки, ссылки) — файлы и ссылки на них.
+CONVERTER = 2
 PAGE_CACHE = os.path.join(".aurora", "cache", "confluence_pages.json")
 CACHE_FRESH_SINCE = (date.fromisoformat(TODAY) - timedelta(days=7)).isoformat()
 
@@ -221,6 +222,30 @@ def _macro_name(tag) -> str:
 
 MERMAID_MACROS = ("mermaid", "mermaid-cloud", "macro-mermaid", "mermaidcloud", "mermaid-diagram")
 DRAWIO_MACROS = ("drawio", "drawio-diagram", "drawio-board")
+# Просмотр вложения на странице (PDF, документ, таблица, презентация): имя файла лежит в
+# параметре `name` как `<ri:attachment ri:filename="…"/>`, а не текстом.
+VIEWFILE_MACROS = ("view-file", "viewpdf", "viewdoc", "viewxls", "viewppt")
+# Путь `<страница>_assets/` и безопасное имя файла известны только после раскладки
+# (`place`), поэтому разбор ставит заглушку, а экспортёр разворачивает её в `expand_assets`.
+# Подчёркивание в заглушке кодируется: конвертер экранирует его в тексте, и ссылка ломалась бы.
+ASSET_STUB = "aurora-asset:"
+# Исполняемое и скриптовое не скачивается никогда: зеркало уезжает в git и на машины людей.
+BLOCKED_EXTS = (".exe", ".bat", ".cmd", ".com", ".msi", ".dll", ".jar", ".js", ".vbs",
+                ".ps1", ".sh", ".scr")
+SCHEMES_HEAD = "## Схемы страницы"
+ATTACH_HEAD = "## Вложения страницы"
+
+
+def asset_stub(name: str) -> str:
+    return ASSET_STUB + urllib.parse.quote(name, safe="").replace("_", "%5F")
+
+
+def attachment_of(node) -> tuple:
+    """(имя файла, чужая ли страница) из `<ri:attachment>`; чужая — `ri:page` внутри."""
+    if node is None:
+        return "", False
+    other = node.find(re.compile(r"^ri:page$")) is not None
+    return (node.get("ri:filename", "") or "").strip(), other
 
 
 def preprocess(soup, base_url: str, space: str, jira_base: str = "",
@@ -272,6 +297,22 @@ def preprocess(soup, base_url: str, space: str, jira_base: str = "",
             # Отчёт плагин собирает сам при показе страницы; в storage его содержимого нет,
             # и выдумывать его нельзя — фиксируем факт, что здесь стоит отчёт.
             tag.replace_with(NavigableString(RY_MARK["report"]))
+            continue
+        if name in VIEWFILE_MACROS:
+            # Вставка вложения (PDF и подобное): в storage только имя файла. Общая ветка
+            # выбрасывала макрос без следа — на странице закона пропадали все вставки.
+            fname, other = attachment_of(tag.find(re.compile(r"^ri:attachment$")))
+            if not fname:
+                tag.decompose()
+                continue
+            if other or assets is None:
+                tag.replace_with(NavigableString(
+                    f"[вложение другой страницы: {fname}]" if other else fname))
+                continue
+            assets.append(("file", fname))
+            a = soup.new_tag("a", href=asset_stub(fname))
+            a.string = fname
+            tag.replace_with(a)
             continue
         if name in MERMAID_MACROS:
             # Диаграмма плагина: исходник лежит в теле макроса, а не в тексте страницы.
@@ -439,7 +480,21 @@ def preprocess(soup, base_url: str, space: str, jira_base: str = "",
         user = link.find(re.compile(r"^ri:user$"))
         text_tag = link.find(re.compile(r"^ac:(plain-text-link-body|link-body)$"))
         label = text_tag.get_text(strip=True) if text_tag else ""
-        if page is not None:
+        if att is not None:
+            # раньше страницы: вложение чужой страницы хранит `ri:page` внутри себя
+            fname, other = attachment_of(att)
+            if other:
+                link.replace_with(NavigableString(
+                    f"[вложение другой страницы: {fname}]" if not label
+                    else f"{label} [вложение другой страницы: {fname}]"))
+            elif fname and assets is not None:
+                assets.append(("file", fname))
+                a = soup.new_tag("a", href=asset_stub(fname))
+                a.string = label or fname
+                link.replace_with(a)
+            else:
+                link.replace_with(NavigableString(label or fname or "вложение"))
+        elif page is not None:
             title = page.get("ri:content-title", "")
             sp = page.get("ri:space-key", space) or space
             a = soup.new_tag("a", href=f"{base_url}/display/{urllib.parse.quote(sp)}/"
@@ -454,15 +509,25 @@ def preprocess(soup, base_url: str, space: str, jira_base: str = "",
             if who and users is not None:
                 users.append(who)     # имя спросим у сервера: в storage лежит только ключ
             link.replace_with(NavigableString(label or (f"@{who}" if who else "@")))
-        elif att is not None:
-            link.replace_with(NavigableString(label or att.get("ri:filename", "вложение")))
         else:
             link.replace_with(NavigableString(label))
 
     for img in soup.find_all(re.compile(r"^ac:image$")):
         att = img.find(re.compile(r"^ri:attachment$"))
-        name = att.get("ri:filename", "изображение") if att is not None else "изображение"
-        img.replace_with(NavigableString(f"![{name}]"))
+        ext = img.find(re.compile(r"^ri:url$"))
+        fname, other = attachment_of(att)
+        alt = (fname or "изображение").replace("[", "(").replace("]", ")")
+        if ext is not None and (ext.get("ri:value") or "").strip():
+            # картинка по внешнему адресу: качать нечего, адрес остаётся как есть
+            # (тегом, а не текстом: в тексте конвертер экранирует «_» и ломает адрес)
+            img.replace_with(soup.new_tag("img", src=ext.get("ri:value").strip(), alt=""))
+        elif fname and not other and assets is not None:
+            assets.append(("file", fname))
+            img.replace_with(NavigableString(f"![{alt}]({asset_stub(fname)})"))
+        elif other:
+            img.replace_with(NavigableString(f"[вложение другой страницы: {alt}]"))
+        else:
+            img.replace_with(NavigableString(f"![{alt}]"))
 
     for emo in soup.find_all(re.compile(r"^ac:emoticon$")):
         emo.replace_with(NavigableString(emo.get("ac:name", "")))
@@ -613,7 +678,10 @@ def need_after(has_children: bool, has_assets: bool) -> int:
 # Точка в имени ещё не расширение: вложение зовут «Стр4.Свод.Итог», и `splitext` честно
 # возвращает «.Итог». Сверяем с известными расширениями, а не с точкой.
 ASSET_EXTS = (".drawio", ".xml", ".mmd", ".png", ".svg", ".jpg", ".jpeg", ".pdf",
-              ".puml", ".json", ".txt")
+              ".puml", ".json", ".txt", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt",
+              ".zip", ".7z", ".rar", ".csv", ".gif", ".webp", ".bmp", ".tif", ".tiff",
+              ".rtf", ".odt", ".ods", ".odp", ".msg", ".eml",
+              ".vsd", ".vsdx", ".mp4", ".mov")
 
 
 def fit_part(name: str, page_id: str, room: int) -> str:
@@ -715,24 +783,41 @@ class Exporter(WikiMirror):
         outside = where.startswith("..") or os.path.isabs(where)      # и другой диск Windows
         self.prefix_len = len(DEFAULT_OUT if outside else where) + 1
 
+    # Вложения страницы: имя в тексте → ссылка в зеркале; заполняет `save_assets`.
+    asset_links: dict = {}
+    attach_saved = attach_skipped = attach_failed = 0
+
+    def original_url(self, page_id: str, name: str) -> str:
+        """Адрес вложения в самом Confluence — для файла, который в зеркало не попал."""
+        return (f"{getattr(self, 'base_url', '')}/download/attachments/{page_id}/"
+                f"{urllib.parse.quote(name)}")
+
     def save_assets(self, page_id: str, rel: str, names: list) -> str:
-        """Скачать вложения схем рядом со страницей и вернуть ссылки на них.
+        """Скачать вложения страницы рядом с ней и вернуть разделы со ссылками на них.
 
         Картинку схемы Confluence отдаёт при показе, а в зеркале от неё остаётся имя.
         Исходник (`.drawio`, `.mmd`) — единственное, что можно прочитать и поправить
         без самого Confluence, поэтому кладём именно его: `<страница>_assets/<имя>`.
+        Туда же — вложения, на которые ссылается тело (PDF, документы, картинки): схемы
+        перечислены в «## Схемы страницы», остальное — в «## Вложения страницы». Файл,
+        который не скачан (исполняемый тип, нет на странице, ошибка), остаётся строкой
+        со ссылкой на оригинал. Ссылки для тела кладутся в `self.asset_links`.
         """
+        self.asset_links = {}
         try:
             have = self.api.attachments(page_id)
         except Exception as e:  # noqa: BLE001
             print(f"  ! вложения {page_id}: {e}", file=sys.stderr)
-            return ""
+            have = None
         base = os.path.splitext(os.path.basename(rel))[0]
         folder = os.path.join(os.path.dirname(rel), base + "_assets").replace("\\", "/")
+        full_folder = os.path.join(self.out, folder)
         ext = {"drawio": ".drawio", "mermaid": ".mmd"}
         known = ASSET_EXTS
-        lines, kept = [], set()
+        lines, flines, kept, referenced = [], [], set(), set()
         for kind, name in sorted(set(names)):
+            if kind == "file" or have is None:
+                continue
             # плагин пишет имя схемы, вложение лежит и с расширением, и без
             hit = next((h for h in (name, name + ".drawio", name + ".xml", name + ".mmd")
                         if h in have), None)
@@ -743,6 +828,7 @@ class Exporter(WikiMirror):
             # не открывается ни редактором, ни просмотрщиком: подставляем по виду схемы.
             fname = hit if hit.lower().endswith(known) else hit + ext.get(kind, ".xml")
             fname = self.asset_name(fname, folder)
+            referenced.add(fname)
             try:
                 blob = self.api.fetch(have[hit])
             except Exception as e:  # noqa: BLE001
@@ -756,22 +842,72 @@ class Exporter(WikiMirror):
             kept.add(fname)
             lines.append(f"- [{fname}]({base}_assets/{urllib.parse.quote(fname)})")
 
+        for name in sorted({n for k, n in names if k == "file"}):
+            orig = self.original_url(page_id, name)
+            fname = self.asset_name(name, folder)
+            referenced.add(fname)
+            dest = os.path.join(full_folder, fname)
+            local = f"{base}_assets/{urllib.parse.quote(fname)}"
+            reason = ""
+            if os.path.splitext(name)[1].lower() in BLOCKED_EXTS:
+                reason = "исполняемый тип"
+            elif have is not None and name not in have:
+                reason = "вложения с таким именем на странице нет"
+            else:
+                try:
+                    if have is None:
+                        raise OSError("список вложений страницы недоступен")
+                    blob = self.api.fetch(have[name])
+                    os.makedirs(full_folder, exist_ok=True)
+                    same = os.path.isfile(dest) and open(dest, "rb").read() == blob
+                    if not same:
+                        with open(dest, "wb") as f:
+                            f.write(blob)
+                    self.attach_saved += 1
+                except Exception as e:  # noqa: BLE001
+                    print(f"  ! {name}: {e}", file=sys.stderr)
+                    reason = "ошибка скачивания"
+            if reason == "ошибка скачивания":
+                self.attach_failed += 1
+            elif reason:
+                self.attach_skipped += 1
+            if not reason or (reason != "исполняемый тип" and os.path.isfile(dest)):
+                # прежняя копия при сбое не удаляется и остаётся рабочей ссылкой
+                kept.add(fname)
+                self.asset_links[name] = local
+                flines.append(f"- [{fname}]({local})")
+                continue
+            self.asset_links[name] = orig
+            flines.append(f"- не скачан ({reason}): [{name}]({orig})")
+
         # Папка схем принадлежит странице: файл, которого в этом прогоне не получилось, —
         # след прежнего имени (та же схема без расширения). Иначе он останется навсегда:
-        # `--prune` внутрь папок со схемами не заходит.
-        full_folder = os.path.join(self.out, folder)
+        # `--prune` внутрь папок со схемами не заходит. Но имя, на которое страница всё
+        # ещё ссылается, не трогаем, даже если сегодня скачать не вышло: прежняя копия
+        # лучше пустого места.
+        keep = kept | referenced
         if kept and os.path.isdir(full_folder):
             for old in sorted(os.listdir(full_folder)):
-                if old.startswith(".") or old in kept:
+                if old.startswith(".") or old in keep:
                     continue
                 try:
                     os.remove(os.path.join(full_folder, old))
                     self.assets_dropped += 1
                 except OSError:
                     pass
-        if not lines:
-            return ""
-        return "## Схемы страницы\n\n" + "\n".join(lines)
+        parts = []
+        if lines:
+            parts.append(SCHEMES_HEAD + "\n\n" + "\n".join(lines))
+        if flines:
+            parts.append(ATTACH_HEAD + "\n\n" + "\n".join(flines))
+        return "\n\n".join(parts)
+
+    def expand_assets(self, md: str, page_id: str) -> str:
+        """Заглушки вложений в тексте → ссылки на файл в зеркале (или на оригинал)."""
+        def link(m):
+            name = urllib.parse.unquote(m.group(1))
+            return f"]({self.asset_links.get(name) or self.original_url(page_id, name)})"
+        return re.sub(r"\]\(" + re.escape(ASSET_STUB) + r"([^)\s]*)\)", link, md)
 
     def part_name(self, title: str, page_id: str, parent: str, has_children: bool,
                   has_assets: bool = False) -> str:
@@ -902,7 +1038,9 @@ class Exporter(WikiMirror):
             if name:
                 md = md.replace("@" + key, "@" + name)
         if assets:
-            md += "\n\n" + self.save_assets(page_id, rel, assets)
+            section = self.save_assets(page_id, rel, assets)
+            md = self.expand_assets(md, page_id)
+            md += "\n\n" + section
         meta = {"id": page_id, "title": title, "space": data["space"]["key"],
                 "ry_defines": defines, "ry_links": links,
                 "version": version,

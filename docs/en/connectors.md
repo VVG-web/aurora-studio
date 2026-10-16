@@ -200,6 +200,30 @@ sources:
 
 Check the result: `python3 .aurora/scripts/sources_registry.py`.
 
+## Confluence page attachments
+
+The files a page body refers to are saved next to the page, in `<page>_assets/`, and the text keeps a link to the local
+file:
+
+- attachment viewer macros `view-file`, `viewpdf`, `viewdoc`, `viewxls`, `viewppt` (they used to vanish without a trace) →
+  `[name](<page>_assets/name)`;
+- an attached image `<ac:image>` → `![name](<page>_assets/name)`; an image by external address (`ri:url`) stays a link to
+  that address and is not downloaded;
+- an attachment link `<ac:link>` → `[label or name](<page>_assets/name)`;
+- an attachment of another page (`ri:page` inside `ri:attachment`) is not downloaded: the text carries the note
+  `[вложение другой страницы: name]` ("attachment of another page").
+
+The page ends with a `## Вложения страницы` ("Page attachments") section (draw.io and mermaid diagrams stay in
+`## Схемы страницы`). A downloaded file is a row `- [name](<page>_assets/name)`; a file that was not downloaded is a row
+`- не скачан (reason): [name](Confluence address)` ("not downloaded"), and the link in the text leads to the original. The
+reasons: executable type, no attachment of that name on the page, download error. **Executable and script files are never
+downloaded** (`exe`, `bat`, `cmd`, `com`, `msi`, `dll`, `jar`, `js`, `vbs`, `ps1`, `sh`, `scr`). A failure of one file does
+not fail the page and does not delete its previous copy: the folder cleanup removes only names the page no longer refers
+to. The file name is made safe (no path, no characters forbidden on Windows, length-limited). The same page text gives the
+same markdown. The converter version is 2: the first sync after the update re-reads pages and fetches the missing
+attachments. The `kb:names` repair recognises both sections and rewrites the file links embedded in the text together with
+a rename.
+
 ## Disconnecting
 
 Unticking removes the module from `sources:` but leaves the mirror folder: an export is data, and the engine does not

@@ -39,9 +39,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import case_clashes, path_problems  # noqa: E402
 
 SCHEMES = "## Схемы страницы"
+ATTACHMENTS = "## Вложения страницы"      # файлы, на которые ссылается тело страницы
 # Имя страницы бывает со скобками («Дашборд_(Карта)»), а имя схемы в ссылке закодировано
 # (`quote`), и скобок в нём нет — по этому и отделяем одно от другого.
 LINK_RE = re.compile(r"^- \[(?P<name>.+?)\]\((?P<base>.+?)_assets/(?P<q>[^/()\s]+)\)$", re.M)
+# Файл вложения встроен и в тело: `[метка](<стем>_assets/<имя>)`, `![alt](…)`. Переименование
+# файла правит и такие ссылки, иначе страница с вложениями металась бы между раскладками.
+# Стем страницы без «/» и «:» — так отличаем свою папку от чужого адреса вида `…/static_assets/…`.
+INLINE_RE = re.compile(r"\]\((?P<base>[^\s()/:]*(?:\([^\s()/:]*\)[^\s()/:]*)*?)_assets/(?P<q>[^/()\s]+)\)")
 HASH_RE = re.compile(r"^content_hash: \S+$", re.M)
 
 
@@ -143,15 +148,18 @@ def mirror_plan(root: str, mirror: str) -> list:
             text = open(os.path.join(mirror, rel), encoding="utf-8").read()
         except OSError:
             pass
-        has_assets = f"\n{SCHEMES}\n" in text
+        has_assets = f"\n{SCHEMES}\n" in text or f"\n{ATTACHMENTS}\n" in text
         here = exp.place(title, pid, parent_here, has_children, has_assets)
         new = f"{here}/index.md" if has_children else f"{here}.md"
         new_here[rel] = here
         assets = {}
         if has_assets:
             folder = os.path.splitext(new)[0] + "_assets"
-            for m in LINK_RE.finditer(text):
-                old_name = m.group("name")
+            # имя файла — по ссылке (метка встроенной ссылки бывает любой), а не по метке
+            own = os.path.basename(os.path.splitext(rel)[0])
+            for m in list(LINK_RE.finditer(text)) + [
+                    m for m in INLINE_RE.finditer(text) if m.group("base") == own]:
+                old_name = urllib.parse.unquote(m.group("q"))
                 assets[old_name] = exp.asset_name(old_name, folder)
         if new != rel or any(a != b for a, b in assets.items()):
             plan.append({"pid": pid, "title": title, "old": rel, "new": new, "assets": assets})
@@ -182,7 +190,7 @@ def same_knowledge(a: str, b: str) -> bool:
     разбирал её моделью заново (PRJ-A 28.09.2026: 118 страниц, повторный разбор легаси-
     справочников задвоил в них текст).
     """
-    drop = lambda t: "\n".join(l for l in t.splitlines()
+    drop = lambda t: "\n".join(INLINE_RE.sub("](ASSET)", l) for l in t.splitlines()
                                if not l.startswith("content_hash:") and not LINK_RE.match(l))
     return drop(a) == drop(b)
 
@@ -224,11 +232,25 @@ def apply_mirror(root: str, mirror: str, plan: list) -> dict:
                 else:
                     shutil.copy2(a, b)          # старую папку уберёт follow_moves вместе со страницей
 
-            def relink(m, item=item, stem=stem):
-                name = item["assets"].get(m.group("name"), m.group("name"))
-                return f"- [{name}]({stem}_assets/{urllib.parse.quote(name)})"
+            old_stem = os.path.basename(os.path.splitext(item["old"])[0])
+
+            def relink(m, item=item):
+                # ссылка уже переписана; здесь — метка строки списка, если она и есть имя
+                # файла (у встроенной ссылки метка любая, её не трогаем)
+                new = item["assets"].get(m.group("name"))
+                if new is None or new != urllib.parse.unquote(m.group("q")):
+                    return m.group(0)
+                return f"- [{new}]({m.group('base')}_assets/{m.group('q')})"
+
+            def relink_inline(m, item=item, stem=stem, old_stem=old_stem):
+                if m.group("base") != old_stem:
+                    return m.group(0)          # не наша папка вложений
+                old = urllib.parse.unquote(m.group("q"))
+                return f"]({stem}_assets/{urllib.parse.quote(item['assets'].get(old, old))})"
             head, body = _split(text)
-            body = LINK_RE.sub(relink, body)
+            # сначала ссылки (строки списков тоже их содержат), затем метки строк: каждое
+            # имя переименовывается один раз
+            body = LINK_RE.sub(relink, INLINE_RE.sub(relink_inline, body))
             # хэш — тем же счётом, что у синка: тело без последнего перевода строки
             digest = hashlib.md5(body[:-1].encode("utf-8") if body.endswith("\n")
                                  else body.encode("utf-8")).hexdigest()[:16]

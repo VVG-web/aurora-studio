@@ -1821,3 +1821,188 @@ def test_updating_the_engine_refreshes_the_git_hook(tmp: Path):
                     "--apply"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert "мой собственный хук" in hook.read_text(encoding="utf-8"), \
         "чужой хук перезаписан молча — потеряна работа человека"
+
+
+ATTACH_PAGE = (
+    '<p>Текст до.</p>'
+    '<ac:structured-macro ac:name="view-file"><ac:parameter ac:name="name">'
+    '<ri:attachment ri:filename="law-1.pdf"/></ac:parameter></ac:structured-macro>'
+    '<ac:structured-macro ac:name="viewpdf"><ac:parameter ac:name="name">'
+    '<ri:attachment ri:filename="Приложение 2.pdf"/></ac:parameter></ac:structured-macro>'
+    '<ac:structured-macro ac:name="view-file"><ac:parameter ac:name="name">'
+    '<ri:attachment ri:filename="foreign.pdf"><ri:page ri:content-title="Другая"/>'
+    '</ri:attachment></ac:parameter></ac:structured-macro>'
+    '<p><ac:image><ri:attachment ri:filename="image-2026-6-3_10-39-19-1.png"/></ac:image></p>'
+    '<p><ac:image><ri:url ri:value="https://img.example.com/pic_1.png"/></ac:image></p>'
+    '<p>Файл: <ac:link><ri:attachment ri:filename="report.docx"/>'
+    '<ac:plain-text-link-body><![CDATA[Отчёт]]></ac:plain-text-link-body></ac:link></p>'
+    '<p><ac:link><ri:attachment ri:filename="setup.exe"/></ac:link> '
+    '<ac:link><ri:attachment ri:filename="run.bat"/></ac:link> '
+    '<ac:link><ri:attachment ri:filename="gone.pdf"/></ac:link></p>')
+
+
+def _attach_exporter(tmp: Path, fetch=None, attachments=None, root=None):
+    """Экспортёр одной страницы с подставным API (без сети) → (CE, exp, root, fetched)."""
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    CE = importlib.import_module("confluence_export")
+    importlib.reload(CE)
+    root = root or make_project(tmp)
+    fetched = []
+    have = attachments if attachments is not None else {
+        "law-1.pdf": "/d/law", "Приложение 2.pdf": "/d/app2", "report.docx": "/d/rep",
+        "image-2026-6-3_10-39-19-1.png": "/d/img", "setup.exe": "/d/exe", "run.bat": "/d/bat"}
+
+    class Api:
+        def page(self, pid):
+            return {"title": "Руководство", "version": {"number": 1, "when": "2026-10-16"},
+                    "body": {"storage": {"value": ATTACH_PAGE}}, "space": {"key": "S"},
+                    "_links": {"webui": f"/p/{pid}"}}
+
+        def children(self, pid):
+            return []
+
+        def attachments(self, pid):
+            return dict(have)
+
+        def fetch(self, url):
+            fetched.append(url)
+            if fetch:
+                return fetch(url)
+            return f"bytes of {url}".encode("utf-8")
+
+        def user_name(self, key):
+            return key
+
+    exp = CE.Exporter(Api(), str(root / "Sources/Confluence"), "https://wiki.example.com",
+                      "S", True)
+    return CE, exp, root, fetched
+
+
+@test
+def test_confluence_attachments_become_local_files_and_links(tmp: Path):
+    """Вложения страницы доезжают до зеркала: PDF из view-file, картинки, ссылки на файлы.
+
+    Раньше view-file молча исчезал, картинка оставалась текстом «![имя]» без файла, а
+    список вложений наполняли только схемы. Теперь файлы лежат в `<страница>_assets/`,
+    тело ссылается на них, исполняемое не качается, чужая страница не роняет разбор.
+    """
+    import urllib.parse as up
+    CE, exp, root, fetched = _attach_exporter(tmp)
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        exp.walk("5001", [])
+    finally:
+        os.chdir(here)
+    mirror = root / "Sources/Confluence"
+    page = (mirror / "Руководство.md").read_text(encoding="utf-8")
+    folder = mirror / "Руководство_assets"
+    q = lambda n: up.quote(n)
+    for name in ("law-1.pdf", "Приложение 2.pdf", "report.docx",
+                 "image-2026-6-3_10-39-19-1.png"):
+        assert (folder / name).is_file(), f"вложение {name} не скачано: {sorted(os.listdir(folder))}"
+        assert f"](Руководство_assets/{q(name)})" in page, f"нет ссылки на {name}:\n{page}"
+    assert "[law-1.pdf](Руководство_assets/law-1.pdf)" in page, "view-file не стал ссылкой"
+    assert "![image-2026-6-3\\_10-39-19-1.png](Руководство_assets/" in page, page
+    assert "[Отчёт](Руководство_assets/report.docx)" in page, "метка ссылки на файл потеряна"
+    assert "![](https://img.example.com/pic_1.png)" in page, "внешняя картинка тронута"
+    assert "[вложение другой страницы: foreign.pdf]" in page, page
+    assert "aurora-asset:" not in page, f"заглушка осталась в тексте:\n{page}"
+    assert "\n## Вложения страницы\n" in page
+    # исполняемое не скачивается никогда и не запрашивается; лежит строкой с оригиналом
+    assert not (folder / "setup.exe").exists() and not (folder / "run.bat").exists()
+    assert not any(u in ("/d/exe", "/d/bat") for u in fetched), fetched
+    assert ("- не скачан (исполняемый тип): [setup.exe]"
+            "(https://wiki.example.com/download/attachments/5001/setup.exe)") in page, page
+    assert "- не скачан (вложения с таким именем на странице нет): [gone.pdf](" in page
+    assert "[gone.pdf](https://wiki.example.com/download/attachments/5001/gone.pdf)" in page
+
+    # повторный прогон — тот же markdown, ни одной записи
+    first = page
+    exp2 = _attach_exporter(tmp, root=root)[1]
+    os.chdir(root)
+    try:
+        exp2.walk("5001", [])
+    finally:
+        os.chdir(here)
+    assert (mirror / "Руководство.md").read_text(encoding="utf-8") == first
+    assert exp2.written == 0, "страница без правок переписана"
+
+
+@test
+def test_confluence_attachment_failure_keeps_the_old_copy(tmp: Path):
+    """Сбой скачивания одного файла не стирает его прежнюю копию и не роняет страницу."""
+    CE, exp, root, fetched = _attach_exporter(tmp)
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        exp.walk("5001", [])
+        folder = root / "Sources/Confluence/Руководство_assets"
+        before = (folder / "law-1.pdf").read_bytes()
+
+        def broken(url):
+            if url == "/d/law":
+                raise OSError("обрыв")
+            return b"new " + url.encode("utf-8")
+        exp2 = _attach_exporter(tmp, fetch=broken, root=root)[1]
+        exp2.walk("5001", [])
+    finally:
+        os.chdir(here)
+    assert (folder / "law-1.pdf").read_bytes() == before, "прежняя копия стёрта или испорчена"
+    assert (folder / "report.docx").read_bytes().startswith(b"new "), "соседние файлы не обновлены"
+    assert exp2.failed == 0 and exp2.attach_failed == 1, (exp2.failed, exp2.attach_failed)
+    page = (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    assert "[law-1.pdf](Руководство_assets/law-1.pdf)" in page, "ссылка на прежнюю копию потеряна"
+
+    # без прежней копии сбой — строка с оригиналом, а не пустое место
+    os.chdir(root)
+    try:
+        (folder / "law-1.pdf").unlink()
+        exp3 = _attach_exporter(tmp, fetch=broken, root=root)[1]
+        exp3.walk("5001", [])
+    finally:
+        os.chdir(here)
+    page = (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    assert "- не скачан (ошибка скачивания): [law-1.pdf](https://wiki.example.com/" in page, page
+
+
+@test
+def test_name_repair_follows_attachment_sections_and_inline_links(tmp: Path):
+    """`kb_names` узнаёт «## Вложения страницы» и правит встроенные ссылки на файл."""
+    import importlib
+    import urllib.parse as up
+    sys.path.insert(0, str(SCRIPTS))
+    N = importlib.import_module("kb_names")
+    importlib.reload(N)
+    root = make_project(tmp, git=True)
+    m = root / "Sources/Confluence"
+    long = "Очень длинное имя приложения " * 4 + ".pdf"
+    (m / "Стр_assets").mkdir(parents=True)
+    (m / "Стр_assets" / long).write_bytes(b"pdf")
+    body = (f"Смотрите [файл](Стр_assets/{up.quote(long)}) и ![рис](Стр_assets/{up.quote(long)})."
+            f" Чужое: [x](https://example.com/Стр_assets/{up.quote(long)})\n\n"
+            f"## Вложения страницы\n\n- [{long}](Стр_assets/{up.quote(long)})\n")
+    (m / "Стр.md").write_text(
+        '---\npage_id: 7001\ntitle: "Стр"\nbreadcrumbs: "Стр"\ncontent_hash: 0\n---\n\n# Стр\n\n'
+        + body, encoding="utf-8")
+    (m / "sync_state.md").write_text(
+        "<!-- Confluence sync state -->\n**Sync Date:** 2026-10-16\n**Pages:** 1\n\n"
+        "| # | Page ID | Title | Local Path | Status |\n|---|---|---|---|---|\n"
+        "| 1 | 7001 | Стр | Стр.md | SYNCED |\n", encoding="utf-8")
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        plan = N.mirror_plan(str(root), str(m))
+        assert plan and plan[0]["assets"].get(long) and plan[0]["assets"][long] != long, \
+            f"раздел вложений не узнан, план: {plan}"
+        new = plan[0]["assets"][long]
+        N.apply_mirror(str(root), str(m), plan)
+    finally:
+        os.chdir(here)
+    text = (m / "Стр.md").read_text(encoding="utf-8")
+    assert (m / "Стр_assets" / new).is_file() and not (m / "Стр_assets" / long).exists()
+    assert text.count(f"](Стр_assets/{up.quote(new)})") == 3, text
+    assert f"- [{new}](Стр_assets/{up.quote(new)})" in text, "метка строки списка не обновлена"
+    assert f"](https://example.com/Стр_assets/{up.quote(long)})" in text, "чужой адрес переписан"
+    assert not N.mirror_plan(str(root), str(m)), "повторная починка снова что-то переименует"
