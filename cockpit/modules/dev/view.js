@@ -12,6 +12,12 @@ export function mount(ctx){
 
 export async function refresh(ctx){
   const {t, el} = ctx;
+  // Флаг ролей спрашиваем ДО очистки контейнера и собираем всё одним синхронным проходом: два
+  // refresh подряд (повторный показ раздела и событие «data») иначе стёрли бы друг друга посреди
+  // await и дорисовали каждый своё — карточки задвоились бы. Сбой сети = флаг «выключен».
+  let pf = null;
+  try { pf = await ctx.api("/api/profiles", {quiet: true}); } catch (e) { pf = null; }
+  const rolesOn = !!(pf && pf.enabled);
   const box = ctx.$("#devBody");
   box.innerHTML = "";
   const cmds = (ctx.state.commands || []).filter(ctx.isEngineCmd);
@@ -28,8 +34,6 @@ export async function refresh(ctx){
   // Фиче-флаг «роли для профилей» (BL-ARC-04): выключен по умолчанию, хранится на машине
   // (`local/features.json`). Переключатель живёт здесь, а не в «Настройке»: сама роль появляется
   // там только после включения. Меню и маршруты зависят от флага на сервере — страница перечитывается.
-  const pf = await ctx.api("/api/profiles", {quiet: true});
-  const rolesOn = !!(pf && pf.enabled);
   box.append(el("div", {class: "card", style: "padding:16px 20px;margin-bottom:18px"},
     el("div", {class: "row", style: "justify-content:space-between;gap:12px"},
       el("div", {},
@@ -66,6 +70,7 @@ export async function refresh(ctx){
   box.append(el("p", {class: "muted", style: "font-size:12px;margin-top:14px"}, t("dev.note")));
 }
 
-// refresh только рисует список команд движка из ctx.state: скрытому он не нужен.
+// refresh спрашивает у сервера только флаг ролей и рисует список команд движка из ctx.state:
+// скрытому раздел не нужен.
 export const lifecycle = 1;
 export default {mount, refresh};

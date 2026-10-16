@@ -2121,12 +2121,17 @@ DEV_TOGGLE_HARNESS = r"""
 const calls = [], reloads = [], toasts = [];
 const mk = (tag, attrs, ...kids) => ({tag, attrs: attrs || {}, kids});
 const find = (n, pred, out = []) => { if (n && typeof n === "object") { if (pred(n)) out.push(n); (n.kids || []).forEach(k => find(k, pred, out)); } return out; };
-const box = {kids: [], innerHTML: "", append(...c){ this.kids.push(...c); }};
-let enabled = false;
+const box = {kids: [], set innerHTML(v){ this.kids = []; }, get innerHTML(){ return ""; }, append(...c){ this.kids.push(...c); }};
+let enabled = false, delay = 0, broken = false;
 globalThis.location = {reload: () => reloads.push(1)};
 const ctx = {root: {dataset: {}}, state: {commands: []}, isEngineCmd: () => true,
   t: (k) => k, el: mk, $: () => box, toast: (x, k) => toasts.push({x, k}), hideDev: () => {}, openRun: () => {},
-  api: async (path, opts) => { calls.push({path, opts}); return path === "/api/profiles" ? {enabled, profiles: [], active: "all", warn: []} : {ok: true}; }};
+  api: async (path, opts) => {
+    calls.push({path, opts});
+    if (path === "/api/profiles" && broken) throw new Error("сеть");
+    if (delay) await new Promise(r => setTimeout(r, delay));
+    return path === "/api/profiles" ? {enabled, profiles: [], active: "all", warn: []} : {ok: true};
+  }};
 const fails = [];
 const check = (ok, what) => { if (!ok) fails.push(what); };
 (async () => {
@@ -2146,6 +2151,18 @@ const check = (ok, what) => { if (!ok) fails.push(what); };
   check(btn.kids[0] === "dev.roles_disable", "флаг включён — кнопка выключает");
   await btn.attrs.onclick();
   check(JSON.parse(calls.find(c => c.path === "/api/features/set").opts.body).on === false, "выключение уходит на сервер");
+  // два одновременных refresh (повторный показ + событие «data») не задваивают карточки
+  ctx.state.commands = [{cmd: "dev:qa-run", what: "x"}, {cmd: "dev:qa-list", what: "y"}];
+  delay = 20; box.kids = [];
+  await Promise.all([mod.refresh(ctx), mod.refresh(ctx)]);
+  check(find(box, n => n.attrs && n.attrs.id === "devRolesToggle").length === 1, "одновременные refresh: ровно одна кнопка ролей");
+  check(find(box, n => n.attrs && n.attrs.class === "mono").length === 2, "одновременные refresh: команды не задвоены");
+  // отказ сети по /api/profiles: список команд всё равно рисуется, флаг считается выключенным
+  delay = 0; broken = true; box.kids = [];
+  await mod.refresh(ctx);
+  check(find(box, n => n.attrs && n.attrs.class === "mono").length === 2, "сбой /api/profiles: список команд нарисован");
+  btn = find(box, n => n.attrs && n.attrs.id === "devRolesToggle")[0];
+  check(btn && btn.kids[0] === "dev.roles_enable", "сбой /api/profiles: флаг считается выключенным");
   console.log(JSON.stringify({fails}));
 })().catch(e => { console.log(JSON.stringify({fails: ["исключение: " + (e && e.stack || e)]})); });
 """
@@ -2181,8 +2198,9 @@ def test_panel_role_row_and_developer_toggle_follow_the_flag(tmp: Path):
     picker = panel[a:panel.index("\n}\n", a) + 3]
     res = _run_node(tmp, "role_picker.mjs", ROLE_PICKER_HARNESS.replace("@PICKER@", picker))
     assert res["fails"] == [], "\n".join(res["fails"])
-    res = _run_node(tmp, "dev_toggle.mjs", DEV_TOGGLE_HARNESS,
-                    (KIT / "cockpit/modules/dev/view.js").resolve().as_uri())
+    # view.js — ESM без package.json: на старом node его грузят только как .mjs (как соседние тесты)
+    (tmp / "dev_view.mjs").write_bytes((KIT / "cockpit/modules/dev/view.js").read_bytes())
+    res = _run_node(tmp, "dev_toggle.mjs", DEV_TOGGLE_HARNESS, (tmp / "dev_view.mjs").resolve().as_uri())
     assert res["fails"] == [], "\n".join(res["fails"])
 
 
