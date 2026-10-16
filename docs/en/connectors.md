@@ -213,13 +213,18 @@ file:
 - an attachment of another page (`ri:page` inside `ri:attachment`) is not downloaded: the text carries the note
   `[вложение другой страницы: name]` ("attachment of another page").
 
+The target of an `<ac:link>` (page, attachment, person) is taken from the link's direct children only: a link to a page
+with an icon image in its body stays a page link, and the icon is not downloaded.
+
 The page ends with a `## Вложения страницы` ("Page attachments") section (draw.io and mermaid diagrams stay in
 `## Схемы страницы`). A downloaded file is a row `- [name](<page>_assets/name)`; a file that was not downloaded is a row
 `- не скачан (reason): [name](Confluence address)` ("not downloaded"), and the link in the text leads to the original. The
-reasons: executable type, no attachment of that name on the page, markdown inside the mirror (`.md`, `.markdown`: they would be taken for pages), download error. **Executable and script files are never
-downloaded** (`exe`, `bat`, `cmd`, `com`, `msi`, `dll`, `jar`, `js`, `vbs`, `ps1`, `sh`, `scr`). A failure of one file does
-not fail the page and does not delete its previous copy: the folder cleanup removes only names the page no longer refers
-to. The type is checked both by the original name and by the name the file will get (`setup.exe.` does not bypass the ban). A page whose file failed to download is not counted as fresh: the next sync re-reads it without waiting for the weekly full pass; while the attachment list is unavailable the folder is not cleaned. The file name is made safe (no path, no characters forbidden on Windows, length-limited; an extension such as `.xlsm` is kept on a long name). A page name with "#", "%", "?" is encoded in links. `kb:names` does not move names that carry a path (`..%2F`). The same page text gives the
+reasons: executable type, no attachment of that name on the page, markdown inside the mirror (`.md`, `.markdown`: they would be taken for pages), service name, download error. **Executable, script and browser-openable files are never
+downloaded** (`exe`, `bat`, `cmd`, `com`, `msi`, `dll`, `jar`, `js`, `vbs`, `ps1`, `sh`, `scr`, `py`, `pl`, `rb`, `php`, `command`, `lnk`, `hta`, `wsf`, `vbe`, `jse`, `reg`, `msc`, `cpl`, `pif`, `bash`, `zsh`, `psm1`, `pkg`, `dmg`, `apk`, `app`, `html`, `htm`).
+A name with a leading dot (`.gitignore`, `.gitattributes`) is not downloaded either ("service name"): such a file in `_assets/` would change git's behaviour for the folder. A download failure of one file does
+not fail the page and does not delete its previous copy. But when the attachment list was obtained and the name is not in it (the attachment was deleted in Confluence), or the policy (mode, size, type) no longer admits the file, the copy leaves `_assets/`
+(an empty folder too) and the link leads to the original; a page with no attachments in its body does not keep the folder. When the list is unavailable (a network failure) nothing is deleted. Different attachments whose names coincide after being made safe
+(a forbidden character) or differ only in case get separate files: the second one gets a fingerprint of its full name (`Law~1a2b3c.pdf`). The type is checked both by the original name and by the name the file will get (`setup.exe.` does not bypass the ban). A page whose file failed to download is not counted as fresh: the next sync re-reads it without waiting for the weekly full pass; while the attachment list is unavailable the folder is not cleaned. The file name is made safe (no path, no characters forbidden on Windows, length-limited; an extension such as `.xlsm` is kept on a long name). A page name with "#", "%", "?" and round brackets is encoded in links. `kb:names` does not move names that carry a path (`..%2F`). The same page text gives the
 same markdown. The converter version is 2: the first sync after the update re-reads pages and fetches the missing
 attachments. The `kb:names` repair recognises both sections and rewrites the file links embedded in the text together with
 a rename.
@@ -231,16 +236,16 @@ atlassian:
   confluence:
     # all (default) | images | none
     attachments: all
-    # limit for one file, MB (default 25; 0 = no limit)
-    attachment_max_mb: 25
+    # limit for one file, MB (default 100; 0 = no limit)
+    attachment_max_mb: 100
 ```
 
 `images` downloads only images (by extension or an `image/*` type), `none` downloads nothing: links in the text lead to the
-original in Confluence. An unknown value is read as `all`; a non-numeric or negative `attachment_max_mb` is read as 25; in both cases the sync prints a notice to stderr. A trailing comment on the value line is tolerated. The
+original in Confluence. An unknown value is read as `all`; a non-numeric or negative `attachment_max_mb` is read as 100; in both cases the sync prints a notice to stderr. A trailing comment on the value line is tolerated. The
 size comes from the attachment properties (`fileSize` in the `child/attachment` response) **before** downloading; when it is
 missing, the read itself stops at the limit. Check order: executable type (always) → mode → size. What was skipped stays a row
-in `## Вложения страницы`: `- не скачан (режим images): [name](original)` or `- не скачан (больше 25 МБ): [name](original)`
-("not downloaded (mode images / larger than 25 MB)"). Diagram sources (draw.io, mermaid) ignore the mode; the size limit applies
+in `## Вложения страницы`: `- не скачан (режим images): [name](original)` or `- не скачан (больше 100 МБ): [name](original)`
+("not downloaded (mode images / larger than 100 MB)"). Diagram sources (draw.io, mermaid) ignore the mode; the size limit applies
 to them too (a row in `## Схемы страницы`: `не скачана (больше N МБ)`). The settings form does not erase these two keys on
 save; when the config has none, the form does not add them.
 
@@ -255,6 +260,8 @@ under "by size".
 the same (the version cache would otherwise skip them and files skipped earlier would never be fetched). Pages without
 attachments are not affected by the policy. A re-read page downloads all of its attachments again, including those already
 in `_assets/`: raising the limit on a large mirror means re-downloading the attachments of those pages.
+Sync root pages have no version from the child list and are re-read on every sync; their attachments are not downloaded again while the page version, the policy and the converter are the same, the cache entry is fresh (not older than a week), and the file is in place with a size equal to the attachment's property. Once a week and with `--force` it is a full download.
+**Cleanup with `--prune`.** The `<page>_assets/` files of a vanished or moved page go together with it and count neither as "extra" in the list nor in the cleanup threshold (which counts pages, `.md`, only).
 
 ## Disconnecting
 

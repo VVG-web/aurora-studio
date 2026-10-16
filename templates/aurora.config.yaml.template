@@ -41,8 +41,8 @@ atlassian:
     # attachments: all (по умолчанию) | images | none; attachment_max_mb: предел одного файла, МБ, 0 — без предела.
     # Комментарий справа от значения читается, но лучше писать его отдельной строкой:
     #   attachments: all
-    #   attachment_max_mb: 25
-    # Исполняемое и скриптовое (exe, bat, sh, js…) не качается никогда.
+    #   attachment_max_mb: 100
+    # Исполняемое и скриптовое (exe, bat, sh, js, py, html…) и имена с точки не качаются никогда.
     # Primary sync roots (page_id preferred). sync_paths.md may mirror these.
     sync_roots: []
     # Example:

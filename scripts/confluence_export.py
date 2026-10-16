@@ -45,8 +45,9 @@ import sys
 import urllib.parse
 from datetime import date, timedelta
 
-from sources_core import (CONFIG, FileTooLarge, RestApi, WikiMirror, block, config_text, no_access,
-                          drop_empty_dirs, report_stale, scalar, verify, word)
+from sources_core import (ASSET_DIR_RE, CONFIG, FileTooLarge, RestApi, WikiMirror, block,
+                          config_text, nfc, no_access, drop_empty_dirs, report_stale, scalar,
+                          verify, word)
 from sources_core import read_secret as core_secret
 from kb_remap import follow_moves, moves_report, page_moves  # noqa: E402
 from aurora_common import PATH_CHARS, TODAY, head_value, portable_name, safe_relpath  # noqa: E402
@@ -90,7 +91,7 @@ RY_MARK = {"key": "RYk:", "link": "RYl:", "prop": "RYo:", "report": "RYr"}
 # Какие вложения страницы качать (`atlassian.confluence.attachments`): все, только картинки
 # или никакие. Схемы draw.io и mermaid этой настройке не подчиняются — это исходники.
 ATTACH_MODES = ("all", "images", "none")
-ATTACH_MAX_MB = 25          # предел размера одного вложения, МБ; 0 — без предела
+ATTACH_MAX_MB = 100         # предел размера одного вложения, МБ; 0 — без предела
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".tif", ".tiff", ".ico")
 
 
@@ -284,9 +285,13 @@ VIEWFILE_MACROS = ("view-file", "viewpdf", "viewdoc", "viewxls", "viewppt")
 # (`place`), поэтому разбор ставит заглушку, а экспортёр разворачивает её в `expand_assets`.
 # Подчёркивание в заглушке кодируется: конвертер экранирует его в тексте, и ссылка ломалась бы.
 ASSET_STUB = "aurora-asset:"
-# Исполняемое и скриптовое не скачивается никогда: зеркало уезжает в git и на машины людей.
+# Исполняемое, скриптовое и открываемое браузером не скачивается никогда: зеркало уезжает в git
+# и на машины людей. Имена с ведущей точкой («.gitignore», «.gitattributes») тоже: такой файл
+# в `_assets/` меняет поведение git для всей папки (`save_assets`, «служебное имя»).
 BLOCKED_EXTS = (".exe", ".bat", ".cmd", ".com", ".msi", ".dll", ".jar", ".js", ".vbs",
-                ".ps1", ".sh", ".scr")
+                ".ps1", ".sh", ".scr", ".py", ".pl", ".rb", ".php", ".command", ".lnk", ".hta",
+                ".wsf", ".vbe", ".jse", ".reg", ".msc", ".cpl", ".pif", ".bash", ".zsh",
+                ".psm1", ".pkg", ".dmg", ".apk", ".app", ".html", ".htm")
 # Markdown внутри зеркала принимают за страницу: аудит и план сборки обходят все `.md` под
 # Sources/, и вложение `notes.md` в `<страница>_assets/` стало бы «лишним» файлом-сиротой.
 MIRROR_EXTS = (".md", ".markdown")
@@ -295,12 +300,15 @@ ATTACH_HEAD = "## Вложения страницы"
 
 
 def link_stem(base: str) -> str:
-    """Стем страницы для ссылки: «#», «%» и «?» кодируются, остальное (кириллица) как есть.
+    """Стем страницы для ссылки: «#», «%», «?» и круглые скобки кодируются, остальное как есть.
 
-    Заголовок бывает «НДС 20%» или «C#»: в ссылке без кодирования рендерер читает хвост как
-    фрагмент или как неверный процентный код, и файл, лежащий на диске, не открывается.
+    Заголовок бывает «НДС 20%», «C#» или «1) Общие положения»: в ссылке без кодирования
+    рендерер читает хвост как фрагмент или как неверный процентный код, а CommonMark
+    обрывает адрес на первой «)» — и файл, лежащий на диске, не открывается, а `kb:names`
+    ссылку не видит. `own_stem` сравнивает стемы через `unquote`.
     """
-    return base.replace("%", "%25").replace("#", "%23").replace("?", "%3F")
+    return (base.replace("%", "%25").replace("#", "%23").replace("?", "%3F")
+            .replace("(", "%28").replace(")", "%29"))
 
 
 def asset_stub(name: str) -> str:
@@ -542,10 +550,12 @@ def preprocess(soup, base_url: str, space: str, jira_base: str = "",
 
     # ссылки на страницы, вложения и людей
     for link in soup.find_all(re.compile(r"^ac:link$")):
-        page = link.find(re.compile(r"^ri:page$"))
-        att = link.find(re.compile(r"^ri:attachment$"))
-        user = link.find(re.compile(r"^ri:user$"))
-        text_tag = link.find(re.compile(r"^ac:(plain-text-link-body|link-body)$"))
+        # Цель ссылки — только прямой потомок: в теле ссылки на страницу бывает картинка
+        # (плитка-иконка), и её `ri:attachment` не делает ссылку ссылкой на вложение.
+        page = link.find(re.compile(r"^ri:page$"), recursive=False)
+        att = link.find(re.compile(r"^ri:attachment$"), recursive=False)
+        user = link.find(re.compile(r"^ri:user$"), recursive=False)
+        text_tag = link.find(re.compile(r"^ac:(plain-text-link-body|link-body)$"), recursive=False)
         label = text_tag.get_text(strip=True) if text_tag else ""
         if att is not None:
             # раньше страницы: вложение чужой страницы хранит `ri:page` внутри себя
@@ -864,9 +874,13 @@ class Exporter(WikiMirror):
     # `_type` — тип (исполняемый, markdown, режим), `_size` — больше предела,
     # `attach_missing` — имени нет среди вложений страницы.
     attach_skipped_type = attach_skipped_size = attach_missing = 0
-    # Политика вложений из конфига (`attachments`, `attachment_max_mb`); умолчание — всё до 25 МБ.
+    # Политика вложений из конфига (`attachments`, `attachment_max_mb`); умолчание — всё до 100 МБ.
     att_mode = "all"
     att_max_mb = float(ATTACH_MAX_MB)
+    # Страница не менялась с прошлого синка (версия, конвертер и политика те же, запись свежая):
+    # файл, что уже лежит и совпадает по размеру с вложением, не качается заново. Нужно корневым
+    # страницам — у них нет версии из списка детей, и `cached_walk` их не пропускает.
+    reuse_assets = False
 
     def skip_reason(self, name: str, info: dict) -> str:
         """Почему вложение не качается по настройке (режим, потом размер); пусто — качать.
@@ -904,6 +918,27 @@ class Exporter(WikiMirror):
             return self.api.fetch(link, max_bytes=self.limit_bytes())
         return self.api.fetch(link)
 
+    def local_copy_ok(self, dest: str, info: dict | None) -> bool:
+        """Копия уже лежит и совпадает по размеру с вложением — качать её заново незачем.
+
+        Размер приходит бесплатно в списке вложений. Нет его (или страница изменилась) —
+        честное скачивание."""
+        size = (info or {}).get("size")
+        return bool(self.reuse_assets and size is not None and os.path.isfile(dest)
+                    and os.path.getsize(dest) == size)
+
+    def claim_name(self, fname: str, source: str, folder: str, taken: dict) -> str:
+        """Имя файла вложения в папке страницы; два разных вложения не получают одно имя.
+
+        Имена, совпавшие после приведения к безопасному виду (запрещённый знак) или различные
+        лишь регистром (macOS и Windows их не различают), раньше писались в один файл, и вторая
+        запись затирала первую. Занятому имени добавляется отпечаток полного исходного имени."""
+        name = self.asset_name(fname, folder)
+        if taken.get(nfc(name).casefold(), source) != source:
+            name = self.asset_name(fname, folder, tag_of=source)
+        taken.setdefault(nfc(name).casefold(), source)
+        return name
+
     def original_url(self, page_id: str, name: str) -> str:
         """Адрес вложения в самом Confluence — для файла, который в зеркало не попал."""
         return (f"{getattr(self, 'base_url', '')}/download/attachments/{page_id}/"
@@ -917,8 +952,10 @@ class Exporter(WikiMirror):
         без самого Confluence, поэтому кладём именно его: `<страница>_assets/<имя>`.
         Туда же — вложения, на которые ссылается тело (PDF, документы, картинки): схемы
         перечислены в «## Схемы страницы», остальное — в «## Вложения страницы». Файл,
-        который не скачан (исполняемый тип, режим `attachments`, больше `attachment_max_mb`,
-        нет на странице, ошибка), остаётся строкой со ссылкой на оригинал. Ссылки для тела кладутся в `self.asset_links`.
+        который не скачан (запрещённый тип или служебное имя, режим `attachments`, больше
+        `attachment_max_mb`, нет на странице, ошибка), остаётся строкой со ссылкой на оригинал.
+        Ссылки для тела кладутся в `self.asset_links`. Список вложений получен — копии, которых
+        в нём нет или которых политика не допускает, из папки уходят; не получен — не трогаем.
         """
         self.asset_links = {}
         try:
@@ -937,6 +974,7 @@ class Exporter(WikiMirror):
         ext = {"drawio": ".drawio", "mermaid": ".mmd"}
         known = ASSET_EXTS
         lines, flines, kept, referenced = [], [], set(), set()
+        taken: dict = {}        # имя на диске (NFC, без регистра) → вложение, которому оно отдано
         for kind, name in sorted(set(names)):
             if kind == "file":
                 continue
@@ -954,8 +992,14 @@ class Exporter(WikiMirror):
             # Имя вложения у draw.io — это имя диаграммы, без расширения. Файл без него
             # не открывается ни редактором, ни просмотрщиком: подставляем по виду схемы.
             fname = hit if hit.lower().endswith(known) else hit + ext.get(kind, ".xml")
-            fname = self.asset_name(fname, folder)
-            referenced.add(fname)
+            fname = self.claim_name(fname, hit, folder, taken)
+            dest = os.path.join(self.out, folder, fname)
+            local = f"{link_stem(base)}_assets/{urllib.parse.quote(fname)}"
+            if self.local_copy_ok(dest, meta[hit]):
+                referenced.add(fname)
+                kept.add(fname)
+                lines.append(f"- [{fname}]({local})")
+                continue
             try:
                 if self.att_max_mb and (meta[hit].get("size") or 0) > self.limit_bytes():
                     raise FileTooLarge("файл больше предела")
@@ -969,20 +1013,20 @@ class Exporter(WikiMirror):
             except Exception as e:  # noqa: BLE001
                 print(f"  ! {hit}: {e}", file=sys.stderr)
                 self.attach_failed += 1
+                referenced.add(fname)       # сбой скачивания: прежняя копия цела
                 continue
-            dest = os.path.join(self.out, folder, fname)
+            referenced.add(fname)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "wb") as f:
                 f.write(blob)
             self.assets_saved += 1
             self.attach_saved += 1
             kept.add(fname)
-            lines.append(f"- [{fname}]({link_stem(base)}_assets/{urllib.parse.quote(fname)})")
+            lines.append(f"- [{fname}]({local})")
 
         for name in sorted({n for k, n in names if k == "file"}):
             orig = self.original_url(page_id, name)
-            fname = self.asset_name(name, folder)
-            referenced.add(fname)
+            fname = self.claim_name(name, name, folder, taken)
             dest = os.path.join(full_folder, fname)
             local = f"{link_stem(base)}_assets/{urllib.parse.quote(fname)}"
             reason = ""
@@ -992,6 +1036,8 @@ class Exporter(WikiMirror):
                     for x in (name, name.rstrip(". "), fname, fname.rstrip(". "))}
             if exts & set(BLOCKED_EXTS):
                 reason = "исполняемый тип"
+            elif name.strip().startswith(".") or fname.startswith("."):
+                reason = "служебное имя"
             elif exts & set(MIRROR_EXTS):
                 reason = "markdown внутри зеркала"
             elif have is not None and name not in have:
@@ -1002,13 +1048,14 @@ class Exporter(WikiMirror):
                 try:
                     if have is None:
                         raise OSError("список вложений страницы недоступен")
-                    blob = self.fetch_limited(have[name], meta.get(name))
-                    os.makedirs(full_folder, exist_ok=True)
-                    same = os.path.isfile(dest) and open(dest, "rb").read() == blob
-                    if not same:
-                        with open(dest, "wb") as f:
-                            f.write(blob)
-                    self.attach_saved += 1
+                    if not self.local_copy_ok(dest, meta.get(name)):
+                        blob = self.fetch_limited(have[name], meta.get(name))
+                        os.makedirs(full_folder, exist_ok=True)
+                        same = os.path.isfile(dest) and open(dest, "rb").read() == blob
+                        if not same:
+                            with open(dest, "wb") as f:
+                                f.write(blob)
+                        self.attach_saved += 1
                 except FileTooLarge:
                     reason = self.too_large()
                 except Exception as e:  # noqa: BLE001
@@ -1024,9 +1071,13 @@ class Exporter(WikiMirror):
                     self.attach_missing += 1
                 else:
                     self.attach_skipped_type += 1
-            # Запрет по типу и настройка (режим, размер) прежнюю копию в ссылку не берут:
-            # файл, которого политика больше не допускает, не выдаётся за актуальный.
-            policy = reason.startswith(("исполняемый", "markdown", "режим", "больше"))
+            # Запрет по типу, настройка (режим, размер) и отсутствие вложения в полученном списке
+            # прежнюю копию в ссылку не берут и из папки уходят: файл, которого политика больше
+            # не допускает или которого в Confluence уже нет, не выдаётся за актуальный.
+            policy = reason.startswith(("исполняемый", "служебное", "markdown", "режим", "больше",
+                                        "вложения с таким"))
+            if not policy:
+                referenced.add(fname)       # сбой скачивания: прежняя копия цела
             if not reason or (not policy and os.path.isfile(dest)):
                 # прежняя копия при сбое не удаляется и остаётся рабочей ссылкой
                 kept.add(fname)
@@ -1043,16 +1094,24 @@ class Exporter(WikiMirror):
         # лучше пустого места.
         # Список вложений недоступен (`have is None`) — судить, что в папке лишнее, не по
         # чему: схемы в этом прогоне не разобраны, и чистка стёрла бы их прежние копии.
-        keep = kept | referenced
-        if have is not None and kept and os.path.isdir(full_folder):
+        # Список получен — отсутствие в нём окончательно: вложение, удалённое в Confluence, и
+        # файл, которого политика (режим, размер, тип) больше не допускает, из папки уходят,
+        # даже когда ни одного файла не осталось; пустую папку не держим. Список не получен —
+        # судить не по чему, ничего не удаляется.
+        keep = {nfc(k).casefold() for k in kept | referenced}
+        if have is not None and os.path.isdir(full_folder):
             for old in sorted(os.listdir(full_folder)):
-                if old.startswith(".") or old in keep:
+                if old.startswith(".") or nfc(old).casefold() in keep:
                     continue
                 try:
                     os.remove(os.path.join(full_folder, old))
                     self.assets_dropped += 1
                 except OSError:
                     pass
+            try:
+                os.rmdir(full_folder)
+            except OSError:
+                pass
         parts = []
         if lines:
             parts.append(SCHEMES_HEAD + "\n\n" + "\n".join(lines))
@@ -1089,12 +1148,14 @@ class Exporter(WikiMirror):
             name = fit_part(name + f"_{page_id}", "", max(len(name) + len(page_id) + 1, room))
         return name
 
-    def asset_name(self, fname: str, folder: str) -> str:
+    def asset_name(self, fname: str, folder: str, tag_of: str | None = None) -> str:
         """Имя файла схемы в `folder` (путь папки от корня зеркала).
 
         Имя вложения задаёт человек в Confluence: «:» и «?» там допустимы, а Windows такой
         файл не создаст; длина — по месту, которое осталось в пути. Расширение не режем —
         без него файл не откроется. Считается одним кодом и синком, и `kb_names`.
+        `tag_of` — полное исходное имя вложения: отпечаток от него добавляется всегда (имя
+        занято другим вложением, `claim_name`).
         """
         dot = next((k for k in ASSET_EXTS if fname.lower().endswith(k)), "")
         if not dot:
@@ -1109,8 +1170,10 @@ class Exporter(WikiMirror):
         # Укороченное имя получает отпечаток полного: «KG_переход на ГС и Отчет из
         # Расхождений» и «…и отчет из расхождения» иначе стали бы одним файлом, и вторая
         # схема затёрла бы первую (найдено на PRJ-A, 27.09.2026, до выпуска).
-        if name and name != portable_name(stem, sep="_", ext=dot, max_chars=10 ** 6):
-            tag = "~" + hashlib.sha1(stem.encode("utf-8")).hexdigest()[:6]
+        if name and (tag_of is not None
+                     or name != portable_name(stem, sep="_", ext=dot, max_chars=10 ** 6)):
+            tag = "~" + hashlib.sha1((stem if tag_of is None else tag_of).encode("utf-8")
+                                     ).hexdigest()[:6]
             name = portable_name(stem, sep="_", ext=tag + dot, max_chars=cap)
         return name or f"asset{dot}"
 
@@ -1206,10 +1269,19 @@ class Exporter(WikiMirror):
             if name:
                 md = md.replace("@" + key, "@" + name)
         failed_before = self.attach_failed
+        cached = self.cache.get(str(page_id)) or {}
+        self.reuse_assets = bool(
+            cached and not self.force and cached.get("version") == version
+            and cached.get("conv") == CONVERTER and cached.get("att") == self.att_sig()
+            and cached.get("rel") == rel and cached.get("at", "") >= CACHE_FRESH_SINCE)
         if assets:
             section = self.save_assets(page_id, rel, assets)
             md = self.expand_assets(md, page_id)
             md += "\n\n" + section
+        elif os.path.isdir(os.path.join(self.out, os.path.dirname(rel), os.path.splitext(
+                os.path.basename(rel))[0] + "_assets")):
+            # вложений в теле больше нет: копии прежних вложений убираются (список полученный)
+            self.save_assets(page_id, rel, [])
         meta = {"id": page_id, "title": title, "space": data["space"]["key"],
                 "ry_defines": defines, "ry_links": links,
                 "version": version,
@@ -1243,7 +1315,9 @@ class Exporter(WikiMirror):
             self.fresh[str(page_id)] = {"version": version, "conv": CONVERTER, "rel": rel,
                                         "title": title, "assets": bool(assets),
                                         "att": self.att_sig(),
-                                        "ryd": len(defines), "ryl": len(links), "at": TODAY}
+                                        "ryd": len(defines), "ryl": len(links),
+                                        # файлы не перекачивались — срок свежести не продлевается
+                                        "at": cached["at"] if self.reuse_assets else TODAY}
 
         for child in sorted(children, key=lambda c: (c["title"], c["id"])):
             self.walk(child["id"], ancestors + [title], here,
@@ -1279,10 +1353,35 @@ def prune_allowed(stale: list, records: int, failed: int) -> tuple:
     """
     if failed:
         return False, f"выгрузка прошла с ошибками ({failed}) — недокачанное выглядело бы удалённым"
-    if len(stale) > max(20, PRUNE_SHARE * max(1, records)):
-        return False, (f"лишних {len(stale)} из {records} — слишком много для удалённых страниц; "
+    # Порог — по страницам: вложения исчезнувшей страницы уходят вместе с ней и страниц не добавляют.
+    pages = [s for s in stale if s.endswith(".md") and not ASSET_DIR_RE.search(s)]
+    if len(pages) > max(20, PRUNE_SHARE * max(1, records)):
+        return False, (f"лишних {len(pages)} из {records} — слишком много для удалённых страниц; "
                        "проверьте корни в aurora.config.yaml и уберите руками")
     return True, ""
+
+
+def split_stale(stale: list, moved: dict) -> tuple:
+    """Лишнее в зеркале → (страницы и прочее лишнее, вложения уходящих страниц).
+
+    Файлы `<страница>_assets/` страницы, которая переехала или исчезла, — не отдельные
+    «лишние»: они уходят с ней (переезд убирает папку целиком в `follow_moves`) и ни в списке,
+    ни в пороге чистки не считаются. Переехавшие страницы (`moved`) из списка уходят.
+    """
+    gone = {nfc(s).casefold() for s in stale if not ASSET_DIR_RE.search(s)}
+    gone |= {nfc(m).casefold() for m in moved}
+    pages, riding = [], []
+    for rel in stale:
+        if rel in moved:
+            continue
+        m = ASSET_DIR_RE.search(rel)
+        if m:
+            page = rel[:m.end() - len("_assets/")]
+            if {nfc(page + ".md").casefold(), nfc(page + "/index.md").casefold()} & gone:
+                riding.append(rel)
+                continue
+        pages.append(rel)
+    return pages, riding
 
 
 def drop_nested_roots(api: Api, roots: list) -> tuple:
@@ -1425,7 +1524,11 @@ def main() -> int:
             print(moves_report(follow_moves(out, apply=True), apply=True))
         else:
             print("Перевести базу на новые пути и убрать старые копии: повторите с --prune")
-    stale = [s for s in stale if s not in moved]
+    stale, riding = split_stale(stale, moved)
+
+    def drop_riding() -> int:
+        """Вложения ушедших страниц, которых не унёс `follow_moves`."""
+        return exp.prune([r for r in riding if os.path.isfile(os.path.join(out, r))])
     if stale:
         report_stale("страниц больше нет", stale, out)
         ok, why = prune_allowed(stale, len(exp.records), exp.failed) if a.prune else (False, "")
@@ -1433,12 +1536,15 @@ def main() -> int:
             print(f"Не убираю: {why}")
         elif a.prune:
             gone = exp.prune(stale)
+            files = drop_riding()
             empty = drop_empty_dirs(out)
             print(f"Удалено: {gone} (карточки с `source:` на них найдёт aurora_stats.py)"
+                  + (f" · вложений этих страниц: {files}" if files else "")
                   + (f" · убрано опустевших папок: {empty}" if empty else ""))
         else:
             print("Убрать: повторите с --prune")
     elif moved and a.prune:
+        drop_riding()
         empty = drop_empty_dirs(out)
         if empty:
             print(f"Убрано опустевших папок: {empty}")

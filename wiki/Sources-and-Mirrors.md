@@ -23,10 +23,10 @@ flowchart LR
 - **Incremental.** A Confluence page with the same version, converter and path, and the file in place, is not
   downloaded again; once a week and with `--force` the mirror is passed in full.
 - **Confluence attachments as files.** PDFs and documents from `view-file`, images and attachment links are downloaded
-  into `<page>_assets/` and the text links to them; executables (`exe`, `bat`, `sh`, `js` and alike) are never downloaded,
+  into `<page>_assets/` and the text links to them; executables, scripts and `html` (`exe`, `bat`, `sh`, `js`, `py`, `html` and alike) and dot-named files are never downloaded,
   and what was skipped stays a "not downloaded" row with a link to the original in the `## Вложения страницы` section.
   What to download is set in `atlassian.confluence`: `attachments: all | images | none` (default `all`) and
-  `attachment_max_mb` (default 25, `0` = no limit); a file skipped by mode or size is also a "not downloaded (reason)" row.
+  `attachment_max_mb` (default 100, `0` = no limit); a file skipped by mode or size is also a "not downloaded (reason)" row.
   The sync summary has a line `Вложения: скачано N · пропущено по типу M · по размеру K · ошибок E` (downloaded / skipped
   by type / by size / errors); changing these settings re-reads the already synced pages that have attachments.
 - **Written only by sync.** Do not edit `Sources/` — the next sync would overwrite you; put your own words into

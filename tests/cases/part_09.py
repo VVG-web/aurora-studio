@@ -14,6 +14,8 @@ from harness import (  # noqa: F401
     SCRIPTS,
     _cockpit_on,
     _embed_search,
+    _mirror_page,
+    _sync_state,
     _write_embed_index,
     _write_minimal_docx,
     card,
@@ -2214,13 +2216,13 @@ def _read_conf(tmp: Path, conf_lines: str) -> dict:
 def test_confluence_attachment_settings_are_read_from_config(tmp: Path):
     """attachments / attachment_max_mb читаются из блока confluence; плохое значение — умолчание."""
     CE, cfg = _read_conf(tmp / "a", "")
-    assert (cfg["attachments"], cfg["attachment_max_mb"]) == ("all", 25.0), cfg
+    assert (cfg["attachments"], cfg["attachment_max_mb"]) == ("all", 100.0), cfg
     for text, mode, mb in (("    attachments: images\n    attachment_max_mb: 1\n", "images", 1.0),
                            ('    attachments: "none"\n    attachment_max_mb: 0\n', "none", 0.0),
                            ("    attachments: Images\n    attachment_max_mb: 0.5\n", "images", 0.5),
-                           ("    attachments: всё\n    attachment_max_mb: много\n", "all", 25.0),
-                           ("    attachment_max_mb: -3\n", "all", 25.0),
-                           ("    # attachments: none\n    # attachment_max_mb: 1\n", "all", 25.0)):
+                           ("    attachments: всё\n    attachment_max_mb: много\n", "all", 100.0),
+                           ("    attachment_max_mb: -3\n", "all", 100.0),
+                           ("    # attachments: none\n    # attachment_max_mb: 1\n", "all", 100.0)):
         _c, cfg = _read_conf(tmp / ("b" + str(abs(hash(text)))), text)
         assert (cfg["attachments"], cfg["attachment_max_mb"]) == (mode, mb), (text, cfg)
 
@@ -2236,7 +2238,7 @@ def test_confluence_attachment_settings_reach_the_exporter(tmp: Path):
     finally:
         os.chdir(here)
     assert (exp.att_mode, exp.att_max_mb) == ("images", 3.0), (exp.att_mode, exp.att_max_mb)
-    assert (CE.Exporter.att_mode, CE.Exporter.att_max_mb) == ("all", 25.0), "умолчание класса"
+    assert (CE.Exporter.att_mode, CE.Exporter.att_max_mb) == ("all", 100.0), "умолчание класса"
 
 
 @test
@@ -2264,7 +2266,7 @@ def test_confluence_attachment_unknown_size_is_limited_while_reading(tmp: Path):
     # у «bytes of /d/law» 14 байт: предел 1 МБ его пропускает, а крошечный — нет
     CE, exp, root, fetched = _attach_exporter(_sub(tmp / "u"), limits=limits)
     exp.walk("5001", [])
-    assert limits and all(x == 1024 * 1024 * 25 for x in limits), limits
+    assert limits and all(x == 1024 * 1024 * 100 for x in limits), limits
     CE2, exp2, root2, _f = _attach_exporter(_sub(tmp / "t"), limits=[], att_max_mb=1e-5)
     exp2.walk("5001", [])
     page = (root2 / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
@@ -2387,7 +2389,7 @@ def test_confluence_attachment_settings_tolerate_trailing_comment(tmp: Path):
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         _c, cfg = _read_conf(tmp / "c3", "    attachments: off\n    attachment_max_mb: много # x\n")
-    assert (cfg["attachments"], cfg["attachment_max_mb"]) == ("all", 25.0), cfg
+    assert (cfg["attachments"], cfg["attachment_max_mb"]) == ("all", 100.0), cfg
     msg = err.getvalue()
     assert "attachments: неизвестное значение «off»" in msg, msg
     assert "attachment_max_mb: неизвестное значение «много»" in msg, msg
@@ -2553,7 +2555,7 @@ def test_confluence_attachment_policy_change_rereads_synced_pages(tmp: Path):
     root = make_project(tmp)
     exp1, f1 = sync()
     assert f1 == ["/d/law"], f1
-    assert exp1.fresh["5001"]["att"] == "all:25" and exp1.fresh["5001"]["assets"] is True, exp1.fresh
+    assert exp1.fresh["5001"]["att"] == "all:100" and exp1.fresh["5001"]["assets"] is True, exp1.fresh
     exp2, f2 = sync()                       # политика та же — страница пропущена по версии
     assert f2 == [] and exp2.skipped == 1, (f2, exp2.skipped)
     exp3, f3 = sync(att_max_mb=1)           # предел сменился — перечитана
@@ -2578,3 +2580,271 @@ def test_confluence_attachment_policy_change_rereads_synced_pages(tmp: Path):
     _in_root(root, lambda: e7.walk("5001", [], "", 1))
     assert page_calls == [] and e7.skipped == 1 and e7.fresh["5001"]["assets"] is False, \
         (page_calls, e7.skipped, e7.fresh)
+
+
+@test
+def test_confluence_page_link_with_icon_stays_a_page_link(tmp: Path):
+    """ac:link на страницу с картинкой в теле — ссылка на страницу, а не на вложение-иконку."""
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    CE = importlib.import_module("confluence_export")
+    importlib.reload(CE)
+    body = ('<p><ac:link><ri:page ri:content-title="Законы РФ"/><ac:link-body>'
+            '<ac:image><ri:attachment ri:filename="icon.png"/></ac:image></ac:link-body></ac:link></p>'
+            '<p><ac:link><ri:attachment ri:filename="law.pdf"/></ac:link></p>')
+    assets: list = []
+    md = CE.to_markdown(body, "https://wiki.example.com", "S", "", assets, [])
+    assert "https://wiki.example.com/display/S/%D0%97%D0%B0%D0%BA%D0%BE%D0%BD%D1%8B+%D0%A0%D0%A4" in md, md
+    assert assets == [("file", "law.pdf")], f"иконка плитки принята за вложение: {assets}"
+    assert "icon.png" not in md, md
+
+
+@test
+def test_confluence_script_and_service_names_are_never_downloaded(tmp: Path):
+    """Скрипты, ярлыки, пакеты, html и имена с ведущей точкой не запрашиваются: строка «не скачан»."""
+    typed = ["a.py", "a.pl", "a.rb", "a.php", "a.command", "a.lnk", "a.hta", "a.wsf", "a.vbe",
+             "a.jse", "a.reg", "a.msc", "a.cpl", "a.pif", "a.bash", "a.zsh", "a.psm1", "a.pkg",
+             "a.dmg", "a.apk", "a.app", "a.html", "A.HTM"]
+    dotted = [".gitignore", ".gitattributes"]
+    page = "".join(_file_link(n) for n in typed + dotted) + _file_link("ok.pdf")
+    have = {n: "/d/" + n for n in typed + dotted + ["ok.pdf"]}
+    _CE, exp, root, fetched = _attach_exporter(tmp, attachments=have, page=page)
+    _in_root(root, lambda: exp.walk("5001", []))
+    folder = root / "Sources/Confluence/Руководство_assets"
+    assert sorted(os.listdir(folder)) == ["ok.pdf"], sorted(os.listdir(folder))
+    assert fetched == ["/d/ok.pdf"], fetched
+    md = (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    assert md.count("не скачан (исполняемый тип)") == len(typed), md
+    assert md.count("не скачан (служебное имя)") == len(dotted), md
+    import re
+    docs = ((KIT / "docs/connectors.md").read_text(encoding="utf-8")
+            + (KIT / "docs/en/connectors.md").read_text(encoding="utf-8"))
+    for ext in re.findall(r'"(\.[a-z0-9]+)"', (SCRIPTS / "confluence_export.py").read_text(
+            encoding="utf-8").split("BLOCKED_EXTS = (")[1].split(")")[0]):
+        assert f"`{ext[1:]}`" in docs, f"запрещённый тип {ext} не назван в docs/connectors.md"
+
+
+@test
+def test_confluence_attachments_with_clashing_names_get_separate_files(tmp: Path):
+    """Имена, совпавшие после очистки знака или различные лишь регистром, не затирают друг друга."""
+    import urllib.parse as up
+    names = ["Law.pdf", "law.pdf", "a:b.pdf", "a?b.pdf"]
+    page = "".join(_file_link(n) for n in names)
+    have = {n: "/d/" + str(i) for i, n in enumerate(names)}
+    CE, exp, root, fetched = _attach_exporter(tmp, attachments=have, page=page)
+    _in_root(root, lambda: exp.walk("5001", []))
+    folder = root / "Sources/Confluence/Руководство_assets"
+    files = sorted(os.listdir(folder))
+    assert len(files) == 4 and len({f.casefold() for f in files}) == 4, files
+    seen = set()
+    for i, n in enumerate(names):
+        link = exp.asset_links[n]
+        got = (folder / up.unquote(link.rsplit("/", 1)[1])).read_bytes()
+        assert got == f"bytes of /d/{i}".encode("utf-8"), (n, link, got)
+        seen.add(link)
+    assert len(seen) == 4, exp.asset_links
+    # повторный синк даёт те же имена: файлы не множатся
+    _CE2, exp2, _r, _f = _attach_exporter(tmp, attachments=have, page=page, root=root)
+    _in_root(root, lambda: exp2.walk("5001", []))
+    assert sorted(os.listdir(folder)) == files and exp2.asset_links == exp.asset_links
+
+
+@test
+def test_confluence_attachment_leaves_the_mirror_when_policy_or_source_drops_it(tmp: Path):
+    """Вложение, которого нет в Confluence или которого политика не допускает, уходит из зеркала."""
+    page = _file_link("law.pdf")
+    have = {"law.pdf": "/d/law"}
+    plain = "<p>Просто текст</p>"
+
+    def scenario(tag, **second):
+        sub = _sub(tmp / tag)
+        _CE, exp1, root, _f = _attach_exporter(sub, attachments=have, page=page)
+        _in_root(root, lambda: exp1.walk("5001", []))
+        folder = root / "Sources/Confluence/Руководство_assets"
+        assert (folder / "law.pdf").is_file()
+        kw = dict(attachments=have, page=page)
+        kw.update(second)
+        _CE, exp2, _r, f2 = _attach_exporter(sub, root=root, **kw)
+        _in_root(root, lambda: exp2.walk("5001", []))
+        md = (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+        return folder, md, f2
+
+    folder, md, _f = scenario("size", att_max_mb=1e-5)
+    assert not folder.exists(), "файл больше нового предела остался на диске"
+    assert "(Руководство_assets/law.pdf)" not in md and "не скачан (больше" in md, md
+    folder, md, f2 = scenario("none", att_mode="none")
+    assert not folder.exists() and f2 == [], "режим none оставил копию"
+    assert "(Руководство_assets/law.pdf)" not in md and "не скачан (режим none)" in md, md
+    folder, md, _f = scenario("plain", page=plain)
+    assert not folder.exists(), "страница без вложений оставила папку _assets"
+    folder, md, _f = scenario("gone", attachments={"other.pdf": "/d/other"})
+    assert not folder.exists(), "вложение, удалённое в Confluence, осталось в зеркале"
+    assert ("](https://wiki.example.com/download/attachments/5001/law.pdf)" in md
+            and "(Руководство_assets/law.pdf)" not in md), md
+    assert "не скачан (вложения с таким именем на странице нет): [law.pdf]" in md, md
+    # список вложений недоступен — сбой сети ничего не удаляет
+    sub = _sub(tmp / "outage")
+    _CE, exp1, root, _f = _attach_exporter(sub, attachments=have, page=page)
+    _in_root(root, lambda: exp1.walk("5001", []))
+    _CE, exp2, _r, _f2 = _attach_exporter(sub, root=root, attachments=have, page=plain,
+                                          attach_error=OSError("сеть"))
+    _in_root(root, lambda: exp2.walk("5001", []))
+    assert (root / "Sources/Confluence/Руководство_assets/law.pdf").is_file(), "сбой сети стёр копию"
+    # схема, удалённая в Confluence, тоже уходит, даже когда других файлов не осталось
+    sch = ('<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">Схема'
+           '</ac:parameter></ac:structured-macro>')
+    sub = _sub(tmp / "scheme")
+    _CE, exp1, root, _f = _attach_exporter(sub, attachments={"Схема": "/d/sch"}, page=sch)
+    _in_root(root, lambda: exp1.walk("5001", []))
+    folder = root / "Sources/Confluence/Руководство_assets"
+    assert (folder / "Схема.drawio").is_file()
+    _CE, exp2, _r, _f2 = _attach_exporter(sub, root=root, attachments={}, page=sch)
+    _in_root(root, lambda: exp2.walk("5001", []))
+    assert not folder.exists(), "удалённая схема осталась в зеркале"
+
+
+@test
+def test_confluence_unchanged_root_does_not_download_attachments_again(tmp: Path):
+    """Корень синка (версии из списка детей нет) не качает заново вложения, что уже лежат."""
+    sch = ('<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">Схема'
+           '</ac:parameter></ac:structured-macro>')
+    page = sch + _file_link("law.pdf")
+    have = {"law.pdf": "/d/law", "Схема": "/d/sch"}
+    sizes = {"law.pdf": (len(b"bytes of /d/law"), "application/pdf"),
+             "Схема": (len(b"bytes of /d/sch"), "")}
+    _CE, exp, root, f1 = _attach_exporter(tmp, attachments=have, page=page, sizes=sizes, force=False)
+    _in_root(root, lambda: (exp.walk("5001", []), exp.save_cache()))
+    assert sorted(f1) == ["/d/law", "/d/sch"], f1
+    first = (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    _CE, exp2, _r, f2 = _attach_exporter(tmp, attachments=have, page=page, sizes=sizes, root=root,
+                                         force=False)
+    _in_root(root, lambda: (exp2.walk("5001", []), exp2.save_cache()))
+    assert f2 == [], f"неизменный корень перекачал вложения: {f2}"
+    folder = root / "Sources/Confluence/Руководство_assets"
+    assert sorted(os.listdir(folder)) == ["law.pdf", "Схема.drawio"], os.listdir(folder)
+    assert (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8") == first
+    assert exp2.written == 0
+    # вложение изменилось (размер другой) — качается; потерянная копия — тоже
+    sizes2 = dict(sizes, **{"law.pdf": (999, "application/pdf")})
+    _CE, exp3, _r, f3 = _attach_exporter(tmp, attachments=have, page=page, sizes=sizes2, root=root,
+                                         force=False)
+    _in_root(root, lambda: exp3.walk("5001", []))
+    assert f3 == ["/d/law"], f3
+    (folder / "Схема.drawio").unlink()
+    _CE, exp4, _r, f4 = _attach_exporter(tmp, attachments=have, page=page, sizes=sizes, root=root,
+                                         force=False)
+    _in_root(root, lambda: exp4.walk("5001", []))
+    assert f4 == ["/d/sch"], f4
+    # --force качает всё, как и раньше
+    _CE, exp5, _r, f5 = _attach_exporter(tmp, attachments=have, page=page, sizes=sizes, root=root,
+                                         force=True)
+    _in_root(root, lambda: exp5.walk("5001", []))
+    assert sorted(f5) == ["/d/law", "/d/sch"], f5
+
+
+def _prune_main(root: Path, rows: list) -> str:
+    """Запустить `main()` синка с `--prune` над зеркалом в root; обход «нашёл» только rows."""
+    script = textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(SCRIPTS)!r})
+        import confluence_export as C
+        C.read_config = lambda: {{"base_url": "https://wiki.example.com", "space": "S",
+                                 "out": "Sources/Confluence", "roots": ["1"]}}
+        C.read_secret = lambda: ("x", "токен")
+        def fake(cfg, roots, out, auth, force):
+            exp = C.Exporter(None, out, "https://wiki.example.com", "S", False)
+            exp.records = [(str(pid), rel, "x", "SYNCED") for pid, rel in {rows!r}]
+            return exp
+        C.run_export = fake
+        sys.argv = ["confluence_export.py", "--prune"]
+        sys.exit(C.main())
+    """)
+    cp = subprocess.run([sys.executable, "-c", script], cwd=str(root), capture_output=True,
+                        text=True, encoding="utf-8", errors="replace")
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    return cp.stdout + cp.stderr
+
+
+def _with_assets(root: Path, rel: str, count: int) -> None:
+    folder = root / "Sources/Confluence" / (rel[:-3] + "_assets")
+    folder.mkdir(parents=True, exist_ok=True)
+    for i in range(count):
+        (folder / f"файл{i}.pdf").write_bytes(b"pdf")
+
+
+@test
+def test_confluence_prune_moves_and_gone_pages_carry_their_attachments(tmp: Path):
+    """Переезд страницы с вложениями при --prune: «Удалено», без «не удалить» и порога."""
+    root = make_project(tmp)
+    _mirror_page(root, "Старая/Стр.md", 700001, "текст")
+    _mirror_page(root, "Новая/Стр.md", 700001, "текст")
+    _mirror_page(root, "Старая/Удалённая.md", 700002, "нет")
+    _with_assets(root, "Старая/Стр.md", 2)
+    _with_assets(root, "Новая/Стр.md", 2)
+    _with_assets(root, "Старая/Удалённая.md", 3)
+    _sync_state(root, [(700001, "Новая/Стр.md")])
+    out = _prune_main(root, [(700001, "Новая/Стр.md")])
+    mirror = root / "Sources/Confluence"
+    assert "Удалено: 1" in out and "не удалить" not in out and "слишком много" not in out, out
+    assert not (mirror / "Старая").exists(), sorted(str(p) for p in mirror.rglob("*"))
+    assert len(list((mirror / "Новая/Стр_assets").iterdir())) == 2, "вложения живой страницы тронуты"
+
+
+@test
+def test_confluence_prune_threshold_counts_pages_not_their_attachments(tmp: Path):
+    """30 удалённых страниц по 3 вложения при 300 страницах не блокируются порогом чистки."""
+    root = make_project(tmp)
+    rows = []
+    for i in range(270):
+        _mirror_page(root, f"Живые/С{i}.md", 800000 + i, f"текст {i}")
+        rows.append((800000 + i, f"Живые/С{i}.md"))
+    for i in range(30):
+        _mirror_page(root, f"Живые/Уд{i}.md", 890000 + i, f"нет {i}")
+        _with_assets(root, f"Живые/Уд{i}.md", 3)
+    # до 300 записей состояния: ещё 30 живых страниц
+    for i in range(30):
+        _mirror_page(root, f"Живые/Ж{i}.md", 860000 + i, f"текст {i}")
+        rows.append((860000 + i, f"Живые/Ж{i}.md"))
+    _sync_state(root, rows)
+    out = _prune_main(root, rows)
+    assert "слишком много" not in out and "Удалено: 30" in out and "не удалить" not in out, out
+    left = [p.name for p in (root / "Sources/Confluence/Живые").iterdir() if p.name.startswith("Уд")]
+    assert left == [], left
+
+
+@test
+def test_confluence_page_stem_with_parenthesis_is_encoded_and_names_repair_sees_it(tmp: Path):
+    """Заголовок «1) Общие положения»: «)» в ссылке кодируется, `kb:names` её находит и переписывает."""
+    import importlib
+    import urllib.parse as up
+    sys.path.insert(0, str(SCRIPTS))
+    N = importlib.import_module("kb_names")
+    importlib.reload(N)
+    CE, exp, root, _f = _attach_exporter(tmp, attachments={"law.pdf": "/d/law"}, page=_file_link("law.pdf"))
+    exp.api.page = (lambda orig: lambda pid: dict(orig(pid), title="1) Общие положения"))(exp.api.page)
+    _in_root(root, lambda: (exp.walk("5001", []), exp.write_state()))
+    m = root / "Sources/Confluence"
+    text = (m / "1)_Общие_положения.md").read_text(encoding="utf-8")
+    assert "](1%29_Общие_положения_assets/law.pdf)" in text, text
+    assert CE.link_stem("a(b)") == "a%28b%29"
+    assert N.INLINE_RE.search("[x](1%29_Общие_положения_assets/law.pdf)"), "ссылку не видит kb:names"
+    # зеркало прежнего вида (скобки без кодирования) kb:names тоже читает
+    assert N.INLINE_RE.search("[x](Дашборд_(Карта)_assets/law.pdf)")
+    # длинное имя файла: переименование правит и такую ссылку
+    long = "Очень длинное имя приложения " * 4 + ".pdf"
+    (m / "1)_Общие_положения_assets" / long).write_bytes(b"pdf")
+    body = (f"[файл](1%29_Общие_положения_assets/{up.quote(long)})\n\n## Вложения страницы\n\n"
+            f"- [{long}](1%29_Общие_положения_assets/{up.quote(long)})\n")
+    page = (m / "1)_Общие_положения.md")
+    head = page.read_text(encoding="utf-8").split("\n# ", 1)[0]
+    page.write_text(head + "\n# 1) Общие положения\n\n" + body, encoding="utf-8")
+
+    def run():
+        plan = N.mirror_plan(str(root), str(m))
+        assert plan and plan[0]["assets"].get(long), f"ссылка со скобкой не найдена: {plan}"
+        new = plan[0]["assets"][long]
+        N.apply_mirror(str(root), str(m), plan)
+        return new
+    new = _in_root(root, run)
+    text = page.read_text(encoding="utf-8")
+    assert f"](1%29_Общие_положения_assets/{up.quote(new)})" in text and long not in text, text
