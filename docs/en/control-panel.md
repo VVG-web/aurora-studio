@@ -121,6 +121,17 @@ the automatic jump nobody asked for (picking a project leads to Health) is silen
 from cockpit/modules; the built-in sections are never hidden; a repeated `id` gives one line) — see `/api/profiles`; a hidden
 section gets no «raised with defaults» toast.
 
+**Workplace roles are behind a feature flag.** Six roles, as in a standard team: Analyst, Developer, Tester, Product
+Owner, Project Manager, Team Lead (the names stay English in both languages; the make-up of each is in
+`cockpit/profiles/README.md`). The flag `profiles` is **off by default**: the panel is exactly as before roles — the active
+profile is «all», `local/profile.json` is neither read nor written, there is no «Role» row, no section or route is hidden,
+and `/api/profiles` answers with only «all» and `enabled: false`. The flag is turned on and off in the Development section
+(visible after seven taps on «About»); it is stored on this machine in `local/features.json` and never reaches the
+project's git. When on, it adds a «Role» row to Settings: the choice is written to `local/profile.json`, and the menu and
+routes are rebuilt for the role. A role can never hide the Development and About sections — otherwise there would be no way
+back to «all». Cron and running a route from the terminal are not limited by a role: this is a known boundary, a role is
+visibility, not permissions.
+
 ## 4. The editor and committing
 
 Documents are edited in the panel ("The project" → "Files"). The format stays Obsidian-compatible — whoever wants to can work

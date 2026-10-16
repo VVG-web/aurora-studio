@@ -169,6 +169,16 @@
           оформления. Строки, которых в переводе нет, показываются по-русски: половина
           экрана на чужом языке хуже, чем весь экран на своём.</p>
       </div>
+      <!-- Роль рабочего места: карточка видна только при включённом фиче-флаге (раздел «Разработка») -->
+      <div class="card" id="roleCard" hidden style="padding:14px;margin-bottom:12px">
+        <div class="row" style="gap:10px;align-items:center;flex-wrap:wrap">
+          <b data-i18n="role.title">Role</b>
+          <select id="roleSel" style="font:inherit;padding:6px 8px;border-radius:8px"></select>
+          <span class="sub" id="roleNote"></span>
+        </div>
+        <p class="sub" style="margin:8px 0 0" data-i18n="role.about">Роль прячет лишние разделы и маршруты, но не ограничивает права: расписание Cron и запуск маршрута из терминала от неё не зависят. «Всё» — как без ролей. Общая для всех проектов на этой машине.</p>
+        <p class="sub" id="roleWarn" style="margin:6px 0 0"></p>
+      </div>
       <div id="setupBody"></div>
     </section>
 

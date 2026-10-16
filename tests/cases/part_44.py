@@ -1379,23 +1379,26 @@ def test_remaining_sections_are_lazy_and_release_what_they_hold(tmp: Path):
 # ----------------------------------------------- BL-ARC-04, срез 1: профили рабочего места
 
 
-def _with_profiles(ck, tmp: Path, presets: dict, choice=None):
-    """Подменить папку пресетов и файл выбора на временные; вернуть (откат, путь файла выбора).
+def _with_profiles(ck, tmp: Path, presets: dict, choice=None, enabled: bool = True):
+    """Подменить папку пресетов, файл выбора и файл флагов на временные; вернуть (откат, путь файла выбора).
 
-    Настоящий `local/profile.json` кита и домашняя папка не трогаются: подмена проверяется.
+    Настоящие `local/profile.json` и `local/features.json` кита и домашняя папка не трогаются: подмена
+    проверяется. Роли для профилей включены (`enabled`) — поведение срезов 1–2; `enabled=False` — флаг выключен.
     """
-    folder, chosen = tmp / "profiles", tmp / "local" / "profile.json"
-    assert str(folder).startswith(str(tmp)) and chosen != Path(ck.PROFILE_FILE)
+    folder, chosen, flags = tmp / "profiles", tmp / "local" / "profile.json", tmp / "local" / "features.json"
+    assert str(folder).startswith(str(tmp)) and chosen != Path(ck.PROFILE_FILE) and flags != Path(ck.FEATURES_FILE)
     for name, data in presets.items():
         _put(folder / name, data)
     folder.mkdir(parents=True, exist_ok=True)
     if choice is not None:
         _put(chosen, choice)
-    keep = (ck.PROFILES_DIR, ck.PROFILE_FILE)
-    ck.PROFILES_DIR, ck.PROFILE_FILE = str(folder), str(chosen)
+    if enabled:
+        _put(flags, {"profiles": True})
+    keep = (ck.PROFILES_DIR, ck.PROFILE_FILE, ck.FEATURES_FILE)
+    ck.PROFILES_DIR, ck.PROFILE_FILE, ck.FEATURES_FILE = str(folder), str(chosen), str(flags)
 
     def undo():
-        ck.PROFILES_DIR, ck.PROFILE_FILE = keep
+        ck.PROFILES_DIR, ck.PROFILE_FILE, ck.FEATURES_FILE = keep
     return undo, chosen
 
 
@@ -1676,15 +1679,16 @@ def test_profile_marks_exactly_the_sections_outside_its_list(tmp: Path):
     finally:
         undo()
     assert sorted(got) == ids, "скрытый раздел остаётся в ответе: панели нужен его манифест"
-    assert sorted(i for i, m in got.items() if m.get("hidden")) == sorted(set(ids) - set(keep))
+    # «Разработка» и «О проекте» профиль не прячет: иначе человек не вернул бы «all» (PROFILE_KEEPS)
+    assert sorted(i for i, m in got.items() if m.get("hidden")) == sorted(set(ids) - set(keep) - set(ck.PROFILE_KEEPS))
     for i in ids:
-        want = dict(base[i], hidden=True) if i not in keep else base[i]
+        want = dict(base[i], hidden=True) if i not in keep and i not in ck.PROFILE_KEEPS else base[i]
         assert got[i] == want, (i, got[i])
     # явный пустой список — скрыть всё, как у `scenarios`
     undo, _ = _with_profiles(ck, tmp / "empty", {
         "none.json": {"id": "none", "name": "Ничего", "modules": []}}, choice={"id": "none"})
     try:
-        assert all(m.get("hidden") for m in ck.modules())
+        assert all(m.get("hidden") for m in ck.modules() if m["id"] not in ck.PROFILE_KEEPS)
     finally:
         undo()
 
@@ -1858,3 +1862,340 @@ def test_profile_section_hiding_is_documented(_t):
     assert "молчит только автопереход" in ru and "only the automatic jump" in en, "тихий автопереход описан, клики — нет"
     assert "не раздел из cockpit/modules" in ru and "is not a section" in en, "предупреждение об опечатке описано"
     assert "со следующего выпуска" not in pr, "README профилей ещё обещает разделы «в следующем выпуске»"
+
+
+# ----------------------------- BL-ARC-04, срезы 3–4: роли под фиче-флагом, пресеты ролей, выбор роли
+
+ROLE_IDS = ("analyst", "developer", "tester", "product-owner", "project-manager", "team-lead")
+ROLE_NAMES = {"analyst": "Analyst", "developer": "Developer", "tester": "Tester",
+              "product-owner": "Product Owner", "project-manager": "Project Manager", "team-lead": "Team Lead"}
+
+
+@test
+def test_profiles_feature_is_off_by_default_and_ignores_the_choice_file(tmp: Path):
+    """Флаг `profiles` выключен: активный профиль «all», `local/profile.json` не читается (битый файл молчит),
+    `/api/profiles` отдаёт только «all» с `enabled=false`, разделы и маршруты не скрыты, выбор не пишется."""
+    ck = _ck()
+    preset = {"role.json": {"id": "role", "name": "Роль", "modules": [_real_module_ids()[0]], "scenarios": ["fix"]}}
+    undo, chosen = _with_profiles(ck, tmp / "good", preset, choice={"id": "role"}, enabled=False)
+    try:
+        assert not ck.feature_on("profiles") and not Path(ck.FEATURES_FILE).exists()
+        act = ck.active_profile()
+        assert act["id"] == "all" and act["modules"] is None and act["scenarios"] is None and act["warn"] == [], act
+        assert [r["id"] for r in ck.scenarios()] == [r["id"] for r in ck.all_scenarios()]
+        assert not [m for m in ck.modules() if m.get("hidden")]
+        st = ck.profiles_state("en")
+        assert st["enabled"] is False and st["active"] == "all" and st["warn"] == [], st
+        assert [p["id"] for p in st["profiles"]] == ["all"], "пресеты при выключенном флаге не отдаются"
+        before = chosen.read_text(encoding="utf-8")
+        res = ck.profile_choose("role")
+        assert res["ok"] is False and "выключены" in res["error"], res
+        assert chosen.read_text(encoding="utf-8") == before, "при выключенном флаге выбор не пишется"
+    finally:
+        undo()
+    # битый файл выбора при выключенном флаге не читается вовсе: жалобы «не читается» нет
+    undo, _ = _with_profiles(ck, tmp / "broken", preset, choice="{ не json", enabled=False)
+    try:
+        assert ck.active_profile()["warn"] == [] and ck.profiles_state("ru")["warn"] == []
+    finally:
+        undo()
+    # тот же выбор при включённом флаге действует: флаг — единственный выключатель
+    undo, _ = _with_profiles(ck, tmp / "on", preset, choice={"id": "role"}, enabled=True)
+    try:
+        assert ck.active_profile()["id"] == "role" and ck.profiles_state("ru")["enabled"] is True
+    finally:
+        undo()
+
+
+@test
+def test_profiles_feature_flag_is_stored_on_the_machine_and_toggles(tmp: Path):
+    """Флаг пишет `feature_set` в `local/features.json` машины (не в git): включение, выключение, соседние флаги целы,
+    незнакомое имя отвергнуто, битый файл — «выключено»; прогон тестов не видит настоящий файл владельца."""
+    ck = _ck()
+    flags = tmp / "local" / "features.json"
+    keep = ck.FEATURES_FILE
+    assert Path(keep) != KIT / "local" / "features.json" and str(tmp) not in str(keep)
+    ck.FEATURES_FILE = str(flags)
+    try:
+        assert ck.feature_on("profiles") is False, "файла нет — выключено"
+        assert ck.feature_set("profiles", True) == {"ok": True, "name": "profiles", "enabled": True}
+        assert json.loads(flags.read_text(encoding="utf-8")) == {"profiles": True} and ck.feature_on("profiles")
+        flags.write_text(json.dumps({"profiles": True, "other": 1}), encoding="utf-8")
+        assert ck.feature_set("profiles", False)["ok"]
+        assert json.loads(flags.read_text(encoding="utf-8")) == {"profiles": False, "other": 1}, "соседний флаг не тронут"
+        assert not ck.feature_on("profiles")
+        bad = ck.feature_set("no-such-feature", True)
+        assert bad["ok"] is False and "no-such-feature" in bad["error"]
+        assert "no-such-feature" not in flags.read_text(encoding="utf-8")
+        for junk in ("{ не json", "[1]", '{"profiles": "yes"}', '{"profiles": 1}'):
+            flags.write_text(junk, encoding="utf-8")
+            assert ck.feature_on("profiles") is False, junk
+    finally:
+        ck.FEATURES_FILE = keep
+    src = (KIT / "cockpit" / "aurora_cockpit.py").read_text(encoding="utf-8")
+    assert 'os.path.join(KIT, "local", "features.json")' in src, "флаг по умолчанию лежит в local/ кита"
+    assert "local/" in (KIT / ".gitignore").read_text(encoding="utf-8").split(), "local/ закрыта .gitignore"
+
+
+@test
+def test_profile_choose_writes_only_an_accepted_preset_when_enabled(tmp: Path):
+    """Выбор роли пишет `{"id": ...}` в `local/profile.json`: пресет принят — запись и смена активного профиля;
+    неизвестный и отвергнутый — отказ без записи; «all» — допустим."""
+    ck = _ck()
+    undo, chosen = _with_profiles(ck, tmp, {
+        "role.json": {"id": "role", "name": "Role", "scenarios": ["fix"]},
+        "bad.json": "{ не json"})
+    try:
+        assert not chosen.exists()
+        assert ck.profile_choose("role") == {"ok": True, "active": "role"}
+        assert json.loads(chosen.read_text(encoding="utf-8")) == {"id": "role"}
+        assert ck.active_profile()["id"] == "role"
+        for want in ("nope", "bad", "", None, 7):
+            res = ck.profile_choose(want)
+            assert res["ok"] is False and res["error"], (want, res)
+        assert json.loads(chosen.read_text(encoding="utf-8")) == {"id": "role"}, "отказ ничего не записал"
+        assert ck.profile_choose("all")["ok"] and ck.active_profile()["id"] == "all"
+    finally:
+        undo()
+
+
+@test
+def test_profile_and_feature_routes_work_through_the_handler(tmp: Path):
+    """Настоящий обработчик: `/api/features/set` и `/api/profile/choose` под токеном; флаг выключен — выбор 409 без записи;
+    включили — выбор пишется, `/api/profiles` показывает `enabled` и `active`. Файлы — временные."""
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+    ck = _ck()
+    undo, chosen = _with_profiles(ck, tmp, {"role.json": {"id": "role", "name": "Role"}}, enabled=False)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), ck.Handler)
+    srv.roots = [str(tmp)]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def call(method: str, path: str, body=None):
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=30)
+        data = None if body is None else json.dumps(body)
+        c.request(method, path, body=data, headers={"X-Aurora-Token": ck.TOKEN, "Content-Type": "application/json"})
+        r = c.getresponse()
+        return r.status, json.loads(r.read().decode("utf-8"))
+    try:
+        code, got = call("GET", "/api/profiles")
+        assert code == 200 and got["enabled"] is False and got["active"] == "all", got
+        code, got = call("POST", "/api/profile/choose", {"id": "role"})
+        assert code == 409 and got["ok"] is False and not chosen.exists(), (code, got)
+        code, got = call("POST", "/api/features/set", {"name": "profiles", "on": True})
+        assert code == 200 and got["ok"] and ck.feature_on("profiles"), (code, got)
+        code, got = call("POST", "/api/profile/choose", {"id": "role"})
+        assert code == 200 and got == {"ok": True, "active": "role"}, (code, got)
+        code, got = call("GET", "/api/profiles")
+        assert got["enabled"] is True and got["active"] == "role", got
+        code, got = call("POST", "/api/features/set", {"name": "profiles", "on": False})
+        assert got["ok"] and call("GET", "/api/profiles")[1]["active"] == "all", "выключили — снова «all», файл выбора цел"
+        assert json.loads(chosen.read_text(encoding="utf-8")) == {"id": "role"}
+    finally:
+        srv.shutdown()
+        undo()
+
+
+@test
+def test_shipped_role_presets_are_valid_and_cannot_empty_the_menu(tmp: Path):
+    """Шесть пресетов кита: английские названия в обоих языках, описания на двух языках, все `id` разделов и маршрутов
+    существуют, предупреждений нет; ни одна роль не прячет «Разработку» и «О проекте»; меню не пустеет."""
+    ck = _ck()
+    mods = set(_real_module_ids())
+    scen = {r["id"] for r in ck.all_scenarios()}
+    files = sorted(p.stem for p in (KIT / "cockpit" / "profiles").glob("*.json"))
+    assert files == sorted(ROLE_IDS), files
+    undo, chosen = _with_profiles(ck, tmp, {}, enabled=True)
+    ck.PROFILES_DIR = str(KIT / "cockpit" / "profiles")        # настоящие пресеты; выбор и флаг — во временной папке
+    try:
+        rows = {r["id"]: r for r in ck.profiles() if r["id"] != "all"}
+        assert sorted(rows) == sorted(ROLE_IDS) and not [r for r in rows.values() if "error" in r], rows
+        for rid in ROLE_IDS:
+            raw = json.loads((KIT / "cockpit" / "profiles" / f"{rid}.json").read_text(encoding="utf-8"))
+            assert raw["name"] == ROLE_NAMES[rid], "название роли — английское в обоих языках"
+            assert raw["about"].get("ru") and raw["about"].get("en") and raw["about"]["ru"] != raw["about"]["en"], rid
+            assert not re.search("[а-яё]", raw["about"]["en"], re.I), rid
+            assert raw["modules"] and set(raw["modules"]) <= mods, (rid, set(raw["modules"]) - mods)
+            if "scenarios" in raw:
+                assert raw["scenarios"] and set(raw["scenarios"]) <= scen, (rid, set(raw["scenarios"]) - scen)
+            _put(chosen, {"id": rid})
+            act = ck.active_profile()
+            assert act["id"] == rid and act["warn"] == [], (rid, act["warn"])
+            by = {m["id"]: m for m in ck.modules()}
+            shown = [i for i, m in by.items() if not m.get("hidden")]
+            assert set(ck.PROFILE_KEEPS) <= set(shown), (rid, "роль не должна прятать выключатель ролей")
+            assert set(raw["modules"]) <= set(shown) and len(shown) >= 1
+            assert ck.scenarios(), (rid, "ролью нельзя остаться без маршрутов")
+            assert {r["id"] for r in ck.scenarios(all_routes=True)} == scen, "запуск профилем не ограничен"
+        st = ck.profiles_state("ru")
+        assert {p["id"]: p["name"] for p in st["profiles"] if p["id"] != "all"} == ROLE_NAMES, st
+        assert {p["id"]: p["name"] for p in ck.profiles_state("en")["profiles"] if p["id"] != "all"} == ROLE_NAMES
+        assert st["warn"] == [], st["warn"]
+        assert ck.profiles_state("en")["profiles"][1]["about"] != st["profiles"][1]["about"], "описание переведено"
+    finally:
+        undo()
+
+
+@test
+def test_a_profile_cannot_hide_the_developer_section_or_about(tmp: Path):
+    """Пресет с пустым `modules` прячет всё, кроме «Разработки» и «О проекте»: иначе выключатель ролей недостижим."""
+    ck = _ck()
+    undo, _ = _with_profiles(ck, tmp, {"none.json": {"id": "none", "name": "None", "modules": []}}, choice={"id": "none"})
+    try:
+        by = {m["id"]: m for m in ck.modules()}
+        assert ck.PROFILE_KEEPS == ("dev", "about")
+        for keep in ck.PROFILE_KEEPS:
+            assert keep in by and "hidden" not in by[keep], keep
+        assert all(m.get("hidden") for i, m in by.items() if i not in ck.PROFILE_KEEPS)
+    finally:
+        undo()
+
+
+@test
+def test_profile_warns_about_a_scenario_id_that_is_not_a_route(tmp: Path):
+    """Опечатка в `scenarios` пресета не молчит: строка в `warn` активного профиля и `/api/profiles`, на английском — без кириллицы."""
+    ck = _ck()
+    real = ck.all_scenarios()[0]["id"]
+    undo, _ = _with_profiles(ck, tmp, {
+        "role.json": {"id": "role", "name": "Role", "scenarios": [real, "nope", "nope", real.upper()]},
+        "fine.json": {"id": "fine", "name": "Fine", "scenarios": [real]}}, choice={"id": "role"})
+    try:
+        act = ck.active_profile()
+        bad = [w for w in act["warn"] if "в scenarios — не маршрут" in w]
+        assert len(bad) == 2 and sum("nope" in w for w in bad) == 1 and any("«%s»" % real.upper() in w for w in bad), act["warn"]
+        state = ck.profiles_state("ru")
+        assert [w for w in state["warn"] if "в scenarios — не маршрут" in w] == bad, state["warn"]
+        assert not any("profile «fine»" in w for w in state["warn"])
+        en = [w for w in ck.translate_payload(state, "en")["warn"] if "scenarios" in w]
+        assert len(en) == 2 and not any(re.search("[а-яё]", w, re.I) for w in en), en
+        assert any("is not a route from cockpit/scenarios.txt" in w for w in en), en
+    finally:
+        undo()
+
+
+ROLE_PICKER_HARNESS = r"""
+const calls = [], toasts = [], reloads = [];
+const NOOP = () => {};
+const t = (k) => k;
+const toast = (text, kind) => toasts.push({text, kind});
+const node = (extra) => Object.assign({hidden: false, textContent: "", children: [], value: "", onchange: null,
+  set innerHTML(v){ this.children = []; }, append(...c){ this.children.push(...c); }}, extra || {});
+const nodes = {"#roleCard": node(), "#roleSel": node(), "#roleNote": node(), "#roleWarn": node()};
+const $ = (sel) => nodes[sel] || null;
+const el = (tag, attrs, text) => ({tag, attrs, text});
+const location = {reload: () => reloads.push(1)};
+let REPLY = {};
+const api = async (path, opts) => { calls.push({path, opts}); return REPLY[path] || {}; };
+@PICKER@
+const fails = [];
+const check = (ok, what) => { if (!ok) fails.push(what); };
+(async () => {
+  REPLY["/api/profiles"] = {enabled: false, profiles: [{id: "all", name: "Everything", about: "x"}], active: "all", warn: []};
+  await drawRolePicker();
+  check(nodes["#roleCard"].hidden === true, "флаг выключен — строки «Role» нет");
+  check(nodes["#roleSel"].children.length === 0 && calls.length === 1, "флаг выключен — список не строится, ничего не пишется");
+  REPLY["/api/profiles"] = {enabled: true, active: "analyst", warn: ["опечатка"], profiles: [
+    {id: "all", name: "Everything", about: "всё"}, {id: "analyst", name: "Analyst", about: "требования"}]};
+  await drawRolePicker();
+  check(nodes["#roleCard"].hidden === false, "флаг включён — строка видна");
+  const opts = nodes["#roleSel"].children;
+  check(opts.length === 2 && opts[1].attrs.selected === "" && opts[0].attrs.selected === null, "выбрана активная роль");
+  check(nodes["#roleNote"].textContent === "требования", "описание активной роли под выбором");
+  check(nodes["#roleWarn"].textContent === "опечатка", "предупреждение пресета видно");
+  calls.length = 0;
+  REPLY["/api/profile/choose"] = {ok: true, active: "analyst"};
+  nodes["#roleSel"].value = "analyst";
+  await nodes["#roleSel"].onchange();
+  const post = calls.find(c => c.path === "/api/profile/choose");
+  check(post && post.opts.method === "POST" && JSON.parse(post.opts.body).id === "analyst", "выбор уходит на сервер");
+  check(reloads.length === 1, "после записи страница перечитана: меню пересобирает сервер");
+  REPLY["/api/profile/choose"] = {ok: false, error: "отказ"};
+  await nodes["#roleSel"].onchange();
+  check(reloads.length === 1 && toasts.length === 1 && toasts[0].text === "отказ" && toasts[0].kind === "err", "отказ — без перезагрузки, с причиной");
+  console.log(JSON.stringify({fails}));
+})().catch(e => { console.log(JSON.stringify({fails: ["исключение: " + (e && e.stack || e)]})); });
+"""
+
+DEV_TOGGLE_HARNESS = r"""
+const calls = [], reloads = [], toasts = [];
+const mk = (tag, attrs, ...kids) => ({tag, attrs: attrs || {}, kids});
+const find = (n, pred, out = []) => { if (n && typeof n === "object") { if (pred(n)) out.push(n); (n.kids || []).forEach(k => find(k, pred, out)); } return out; };
+const box = {kids: [], innerHTML: "", append(...c){ this.kids.push(...c); }};
+let enabled = false;
+globalThis.location = {reload: () => reloads.push(1)};
+const ctx = {root: {dataset: {}}, state: {commands: []}, isEngineCmd: () => true,
+  t: (k) => k, el: mk, $: () => box, toast: (x, k) => toasts.push({x, k}), hideDev: () => {}, openRun: () => {},
+  api: async (path, opts) => { calls.push({path, opts}); return path === "/api/profiles" ? {enabled, profiles: [], active: "all", warn: []} : {ok: true}; }};
+const fails = [];
+const check = (ok, what) => { if (!ok) fails.push(what); };
+(async () => {
+  const mod = await import(process.argv[2]);
+  await mod.refresh(ctx);
+  let btn = find(box, n => n.attrs && n.attrs.id === "devRolesToggle")[0];
+  check(btn && find(box, n => n.attrs && n.attrs.id === "devRolesState")[0].kids[0] === "dev.roles_off", "флаг выключен — так и написано");
+  check(btn.kids[0] === "dev.roles_enable", "кнопка предлагает включить");
+  await btn.attrs.onclick();
+  const set = calls.find(c => c.path === "/api/features/set");
+  const body = JSON.parse(set.opts.body);
+  check(set.opts.method === "POST" && body.name === "profiles" && body.on === true, "включение уходит на сервер: " + set.opts.body);
+  check(reloads.length === 1, "после записи страница перечитана");
+  enabled = true; box.kids = []; calls.length = 0;
+  await mod.refresh(ctx);
+  btn = find(box, n => n.attrs && n.attrs.id === "devRolesToggle")[0];
+  check(btn.kids[0] === "dev.roles_disable", "флаг включён — кнопка выключает");
+  await btn.attrs.onclick();
+  check(JSON.parse(calls.find(c => c.path === "/api/features/set").opts.body).on === false, "выключение уходит на сервер");
+  console.log(JSON.stringify({fails}));
+})().catch(e => { console.log(JSON.stringify({fails: ["исключение: " + (e && e.stack || e)]})); });
+"""
+
+
+def _run_node(tmp: Path, name: str, code: str, *argv: str) -> dict:
+    import subprocess
+    src = tmp / name
+    src.write_text(code, encoding="utf-8")
+    cp = subprocess.run([shutil.which("node"), str(src), *argv], capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=60)
+    assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:1500]
+    return json.loads(cp.stdout.strip().splitlines()[-1])
+
+
+@test
+def test_panel_role_row_and_developer_toggle_follow_the_flag(tmp: Path):
+    """Панель: строка «Role» скрыта и ничего не пишет при выключенном флаге, при включённом — выбор уходит на сервер и
+    страница перечитывается; выключатель в разделе «Разработка» шлёт `/api/features/set`. Под node; без него — только текст."""
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    html = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert 'id="roleCard" hidden' in html and 'id="roleSel"' in html, "карточка роли скрыта в разметке по умолчанию"
+    assert "drawRolePicker();" in panel[panel.index("function show(view"):panel.index("let ABOUT_TAPS")]
+    for lang in ("ru", "en"):
+        cat = json.loads((KIT / "cockpit" / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))
+        assert cat.get("role.title") == "Role" and cat.get("role.about") and cat.get("role.failed"), lang
+        dev = json.loads((KIT / "cockpit/modules/dev/i18n" / f"{lang}.json").read_text(encoding="utf-8"))
+        for k in ("title", "about", "on", "off", "enable", "disable", "failed"):
+            assert dev.get("dev.roles_" + k), (lang, k)
+    if not shutil.which("node"):
+        return
+    a = panel.index("async function drawRolePicker(){")
+    picker = panel[a:panel.index("\n}\n", a) + 3]
+    res = _run_node(tmp, "role_picker.mjs", ROLE_PICKER_HARNESS.replace("@PICKER@", picker))
+    assert res["fails"] == [], "\n".join(res["fails"])
+    res = _run_node(tmp, "dev_toggle.mjs", DEV_TOGGLE_HARNESS,
+                    (KIT / "cockpit/modules/dev/view.js").resolve().as_uri())
+    assert res["fails"] == [], "\n".join(res["fails"])
+
+
+@test
+def test_role_profiles_are_documented_in_ru_and_en(_t):
+    """Документация: фиче-флаг и его место, шесть ролей и состав, граница (Cron и терминал), обязательные разделы —
+    в README профилей и в описании панели (ru и en)."""
+    pr = " ".join((KIT / "cockpit" / "profiles" / "README.md").read_text(encoding="utf-8").split())
+    ru = " ".join((KIT / "docs" / "control-panel-ui-requirements.md").read_text(encoding="utf-8").split())
+    en = " ".join((KIT / "docs" / "en" / "control-panel.md").read_text(encoding="utf-8").split())
+    for name in ROLE_NAMES.values():
+        assert name in pr, name
+    for needle in ("local/features.json", "**выключен**", "«Разработка»", "Cron", "терминал", "dev", "about"):
+        assert needle in pr, needle
+    assert "ролей" in ru and "local/features.json" in ru
+    assert "role" in en.lower() and "local/features.json" in en and "off by default" in en and "Cron" in en

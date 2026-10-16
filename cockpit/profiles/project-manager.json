@@ -1,0 +1,22 @@
+{
+  "id": "project-manager",
+  "name": "Project Manager",
+  "about": {
+    "ru": "Ход проекта: здоровье базы, продуктивность, расписание Cron, отчёты, зеркала.",
+    "en": "Project progress: base health, production, the Cron schedule, reports, mirrors."
+  },
+  "modules": [
+    "health",
+    "quickstart",
+    "work",
+    "cron",
+    "reports",
+    "mirrors",
+    "ask",
+    "reference"
+  ],
+  "scenarios": [
+    "update",
+    "deliver"
+  ]
+}

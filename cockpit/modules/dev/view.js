@@ -25,6 +25,25 @@ export async function refresh(ctx){
         ctx.toast(t("dev.hidden"));
       }}, t("dev.hide")))));
 
+  // Фиче-флаг «роли для профилей» (BL-ARC-04): выключен по умолчанию, хранится на машине
+  // (`local/features.json`). Переключатель живёт здесь, а не в «Настройке»: сама роль появляется
+  // там только после включения. Меню и маршруты зависят от флага на сервере — страница перечитывается.
+  const pf = await ctx.api("/api/profiles", {quiet: true});
+  const rolesOn = !!(pf && pf.enabled);
+  box.append(el("div", {class: "card", style: "padding:16px 20px;margin-bottom:18px"},
+    el("div", {class: "row", style: "justify-content:space-between;gap:12px"},
+      el("div", {},
+        el("b", {}, t("dev.roles_title")),
+        el("span", {class: "pill", id: "devRolesState", style: "margin-left:8px"},
+          rolesOn ? t("dev.roles_on") : t("dev.roles_off")),
+        el("div", {class: "muted", style: "font-size:13px;margin-top:4px"}, t("dev.roles_about"))),
+      el("button", {class: "btn sm", id: "devRolesToggle", onclick: async () => {
+        const r = await ctx.api("/api/features/set", {method: "POST", quiet: true,
+          body: JSON.stringify({name: "profiles", on: !rolesOn})});
+        if (!r || !r.ok) return ctx.toast((r && r.error) || t("dev.roles_failed"), "err");
+        location.reload();
+      }}, rolesOn ? t("dev.roles_disable") : t("dev.roles_enable")))));
+
   if (!cmds.length){
     box.append(el("div", {class: "card", style: "padding:20px"}, t("dev.not_from_kit")));
     return;

@@ -62,7 +62,7 @@ sys.path.insert(0, os.path.join(KIT, "scripts"))
 from aurora_common import (ENGINE_DIRS, child_env, engine_dir, head_value,  # noqa: E402
                            ext_api_problem, ext_behind, ext_safe_relpath, is_folder_guide, kit_mcp_permission, load_manifest, local_view, mtime_stamp,
                            personal_kit_file, real_inside, real_rel, replace_file, same_origin, utc_slug, utc_stamp,
-                           yaml_scalar)
+                           write_text_atomic, yaml_scalar)
 from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
                            mcp_check, mcp_mask_args, mcp_masked)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
@@ -132,6 +132,14 @@ MODULES_DIR = os.path.join(KIT, "cockpit", "modules")
 PROFILES_DIR = os.path.join(KIT, "cockpit", "profiles")       # пресеты ролей кита (BL-ARC-04)
 # Выбор профиля на этой машине; `AURORA_PROFILE_FILE` — другой путь (так прогон тестов не видит выбор владельца).
 PROFILE_FILE = os.environ.get("AURORA_PROFILE_FILE") or os.path.join(KIT, "local", "profile.json")
+# Возможности под фиче-флагом: файл на машине (не в git проекта), `{"profiles": true}`. Включает и
+# выключает раздел «Разработка»; `AURORA_FEATURES_FILE` — другой путь (так прогон тестов не видит флаги владельца).
+FEATURES_FILE = os.environ.get("AURORA_FEATURES_FILE") or os.path.join(KIT, "local", "features.json")
+FEATURES = ("profiles",)        # известные флаги: роли для профилей рабочего места (BL-ARC-04)
+# Разделы, которые профиль скрыть не может: «Разработка» держит выключатель ролей, «О проекте» открывает
+# «Разработку» (семь нажатий). Спрячь их роль — человек не вернул бы профиль «all». Мостик и «Настройка»
+# встроены в ядро и профилю не подчиняются вовсе.
+PROFILE_KEEPS = ("dev", "about")
 
 
 def skins() -> list:
@@ -270,7 +278,7 @@ def modules() -> list:
             # «О проекте»).
             "dev": m.get("dev") is True,
         }
-        if shown is not None and name not in shown:
+        if shown is not None and name not in shown and name not in PROFILE_KEEPS:
             item["hidden"] = True
         if warn:
             item["warn"] = warn
@@ -1783,14 +1791,82 @@ def _unknown_module_ids(row: dict) -> list:
     return out
 
 
+def _unknown_scenario_ids(row: dict) -> list:
+    """Предупреждения о `id` в `scenarios` пресета, которым не соответствует ни один маршрут `scenarios.txt`.
+
+    Опечатка в списке молча прятала бы маршрут от роли, которой он нужен: строка говорит об этом вслух.
+    """
+    ids = row.get("scenarios")
+    if not ids:
+        return []
+    known = {r["id"] for r in all_scenarios()}
+    out = []
+    for i in dict.fromkeys(ids):      # дубль id — одна строка, не две
+        if i not in known:
+            out.append("profile «%s»: «%s» в scenarios — не маршрут из cockpit/scenarios.txt" % (row["id"], i))
+    return out
+
+
+def feature_on(name: str) -> bool:
+    """Включён ли флаг в `local/features.json` машины. Нет файла, он не читается, флага нет — выключен."""
+    try:
+        with open(FEATURES_FILE, "rb") as f:
+            data = json.loads(f.read(1 << 16).decode("utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get(name) is True
+
+
+def feature_set(name: str, on) -> dict:
+    """Включить или выключить флаг на этой машине; остальные флаги файла не трогаются.
+
+    Файл `local/` закрыт `.gitignore` и обновлением кита не затрагивается: флаг переживает обновление
+    и не попадает в git проекта. Незнакомое имя флага не пишется.
+    """
+    if name not in FEATURES:
+        return {"ok": False, "error": "неизвестная возможность: %s" % name}
+    try:
+        with open(FEATURES_FILE, "rb") as f:
+            data = json.loads(f.read(1 << 16).decode("utf-8-sig"))
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    data[name] = bool(on)
+    try:
+        os.makedirs(os.path.dirname(FEATURES_FILE) or ".", exist_ok=True)
+        write_text_atomic(FEATURES_FILE, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    except OSError as e:
+        return {"ok": False, "error": "не удалось записать local/features.json: %s" % e}
+    return {"ok": True, "name": name, "enabled": bool(on)}
+
+
+def profile_choose(want) -> dict:
+    """Записать выбор роли в `local/profile.json`. При выключенном флаге не пишет ничего."""
+    if not feature_on("profiles"):
+        return {"ok": False, "error": "роли для профилей выключены: включите их в разделе «Разработка»"}
+    ok_ids = {p["id"] for p in profiles() if "error" not in p}
+    if not isinstance(want, str) or want not in ok_ids:
+        return {"ok": False, "error": "нет такого профиля среди принятых пресетов: %s" % (want,)}
+    try:
+        os.makedirs(os.path.dirname(PROFILE_FILE) or ".", exist_ok=True)
+        write_text_atomic(PROFILE_FILE, json.dumps({"id": want}, ensure_ascii=False) + "\n")
+    except OSError as e:
+        return {"ok": False, "error": "не удалось записать local/profile.json: %s" % e}
+    return {"ok": True, "active": want}
+
+
 def active_profile() -> dict:
     """Профиль этой машины: запись `local/profile.json`; без неё и при любой неясности — «all».
 
     Нет файла, он не читается, нет `id`, пресета с таким `id` нет или он отвергнут — берётся
     «all», а причина (кроме «файла нет», это обычное состояние) — в поле `warn`. Исключений
-    не бросает: выбор профиля не должен уронить панель.
+    не бросает: выбор профиля не должен уронить панель. Флаг `profiles` выключен (по умолчанию) —
+    всегда «all», а `local/profile.json` не читается вовсе.
     """
     base = dict(_profile_all(), warn=[])
+    if not feature_on("profiles"):
+        return base
     try:
         if not os.path.isfile(PROFILE_FILE):
             return base
@@ -1812,11 +1888,18 @@ def active_profile() -> dict:
     if "error" in row:
         base["warn"].append("профиль «%s» не принят: %s — взят профиль «all»" % (want, row["error"]))
         return base
-    return dict(row, warn=list(row.get("warn", [])) + _unknown_module_ids(row))
+    return dict(row, warn=list(row.get("warn", [])) + _unknown_module_ids(row) + _unknown_scenario_ids(row))
 
 
 def profiles_state(lang: str) -> dict:
-    """Ответ `/api/profiles`: пресеты кита, выбранный на машине, и всё непринятое строками `warn`."""
+    """Ответ `/api/profiles`: пресеты кита, выбранный на машине, и всё непринятое строками `warn`.
+
+    `enabled` — включены ли роли (флаг `profiles`). Выключены: только «all», без предупреждений
+    пресетов и без чтения `local/profile.json` — поведение ровно как до ролей.
+    """
+    if not feature_on("profiles"):
+        return {"profiles": localized_profiles([_profile_all()], lang), "active": ALL_PROFILE,
+                "warn": [], "enabled": False}
     rows, act = profiles(), active_profile()
     warn = []
     for r in rows:
@@ -1825,10 +1908,11 @@ def profiles_state(lang: str) -> dict:
         warn.extend(r.get("warn", []))
         if "error" not in r:
             warn.extend(_unknown_module_ids(r))
+            warn.extend(_unknown_scenario_ids(r))
     # Предупреждения пресета выбранного профиля уже в строке пресета: второй раз их не берём.
     warn.extend(w for w in act["warn"] if w not in warn)
     return {"profiles": localized_profiles([r for r in rows if "error" not in r], lang),
-            "active": act["id"], "warn": warn}
+            "active": act["id"], "warn": warn, "enabled": True}
 
 
 def localized_profiles(rows: list, lang: str) -> list:
@@ -6211,6 +6295,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/models/save":
             self.send_json(models_save(payload))
+            return
+        if u.path == "/api/features/set":
+            # Фиче-флаг машины (роли для профилей) — переключатель раздела «Разработка».
+            self.send_json(feature_set(str(payload.get("name") or ""), payload.get("on") is True))
+            return
+        if u.path == "/api/profile/choose":
+            res = profile_choose(payload.get("id"))
+            self.send_json(res, 200 if res.get("ok") else 409)
             return
         if u.path == "/api/models/list":
             self.send_json(models_list(payload))

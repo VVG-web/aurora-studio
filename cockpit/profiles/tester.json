@@ -1,0 +1,20 @@
+{
+  "id": "tester",
+  "name": "Tester",
+  "about": {
+    "ru": "Проверка: метрики и находки базы, отчёты, зеркала источников, команды проверок.",
+    "en": "Verification: base metrics and findings, reports, source mirrors, check commands."
+  },
+  "modules": [
+    "health",
+    "quickstart",
+    "reports",
+    "ask",
+    "mirrors",
+    "commands",
+    "reference"
+  ],
+  "scenarios": [
+    "fix"
+  ]
+}

@@ -7,5 +7,12 @@
   "dev.hidden": "Sections in development are hidden. To bring them back — seven taps on «About» again.",
   "dev.not_from_kit": "There are no development commands: the panel was not started from the kit.",
   "dev.run": "Run",
-  "dev.note": "A scenario run starts with the automated tests and stops at the first failure: running scenarios on a broken build is pointless."
+  "dev.note": "A scenario run starts with the automated tests and stops at the first failure: running scenarios on a broken build is pointless.",
+  "dev.roles_title": "Roles for profiles",
+  "dev.roles_about": "A feature flag, off by default. When on, it adds a «Role» row to Settings and hides the sections and routes you do not need for the role (Analyst, Developer, Tester, Product Owner, Project Manager, Team Lead). When off, the panel is the same as before roles; the chosen role stays in local/profile.json but is not read. The flag is stored on this machine (local/features.json) and never reaches the project's git.",
+  "dev.roles_on": "on",
+  "dev.roles_off": "off",
+  "dev.roles_enable": "Turn on",
+  "dev.roles_disable": "Turn off",
+  "dev.roles_failed": "the flag was not saved"
 }

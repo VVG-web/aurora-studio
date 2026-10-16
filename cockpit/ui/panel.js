@@ -373,6 +373,35 @@ function drawLangPicker(){
   };
 }
 
+// Роль рабочего места (BL-ARC-04): строка «Роль» в «Настройке» видна, только когда включён фиче-флаг
+// «роли для профилей» (раздел «Разработка»). Выбор пишет `local/profile.json` на сервере; меню и маршруты
+// сервер отдаёт уже отфильтрованными, поэтому после записи страница перечитывается. Флаг выключен —
+// карточка скрыта и ничего не пишется.
+async function drawRolePicker(){
+  const card = $("#roleCard");
+  if (!card) return;
+  const d = await api("/api/profiles", {quiet:true});
+  card.hidden = !(d && d.enabled);
+  if (card.hidden) return;
+  const sel = $("#roleSel");
+  sel.innerHTML = "";
+  for (const p of d.profiles)
+    sel.append(el("option", {value: p.id, selected: p.id === d.active ? "" : null}, p.name));
+  sel.value = d.active;
+  const about = () => { const p = d.profiles.find(x => x.id === sel.value); return p ? p.about : ""; };
+  $("#roleNote").textContent = about();
+  // Опечатки и отвергнутые пресеты — строкой под выбором: роль, которая молча «не сработала», хуже шума.
+  $("#roleWarn").textContent = (d.warn || []).join(" · ");
+  sel.onchange = async () => {
+    const r = await api("/api/profile/choose", {method: "POST", quiet: true, body: JSON.stringify({id: sel.value})});
+    if (!r || !r.ok){
+      toast((r && r.error) || t("role.failed"), "err");
+      return drawRolePicker();
+    }
+    location.reload();
+  };
+}
+
 
 /* ---------------- граф базы ---------------- */
 /* ---------------- файлы проекта ---------------- */
@@ -1204,7 +1233,7 @@ function show(view, payload, opts){
   $$(".view").forEach(v=>v.classList.toggle("on", v.id === "view-"+view));
   $$("nav button").forEach(b=>b.setAttribute("aria-current", String(b.dataset.view===view)));
   if (view==="overview") refreshActivity();
-  if (view==="setup"){ renderSetup(); drawLangPicker(); }
+  if (view==="setup"){ renderSetup(); drawLangPicker(); drawRolePicker(); }
   if (view==="project") renderProject();
   if (view==="files") renderFiles();
   if (view==="console"){

@@ -1,0 +1,22 @@
+{
+  "id": "developer",
+  "name": "Developer",
+  "about": {
+    "ru": "Репозиторий и движок: Git, команды, связи карточек, версия кита, установка.",
+    "en": "Repository and engine: Git, commands, card links, kit version, installation."
+  },
+  "modules": [
+    "gitsync",
+    "graph",
+    "commands",
+    "ask",
+    "quickstart",
+    "version",
+    "install",
+    "reference"
+  ],
+  "scenarios": [
+    "update",
+    "fix"
+  ]
+}

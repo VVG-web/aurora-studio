@@ -1,0 +1,21 @@
+{
+  "id": "analyst",
+  "name": "Analyst",
+  "about": {
+    "ru": "Требования и знание: состояние базы, источники, артефакты, вопросы к базе.",
+    "en": "Requirements and knowledge: the state of the base, sources, artifacts, questions to the base."
+  },
+  "modules": [
+    "health",
+    "quickstart",
+    "work",
+    "ask",
+    "mirrors",
+    "reference"
+  ],
+  "scenarios": [
+    "update",
+    "fix",
+    "write"
+  ]
+}

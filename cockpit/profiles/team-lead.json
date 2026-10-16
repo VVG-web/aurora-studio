@@ -1,0 +1,25 @@
+{
+  "id": "team-lead",
+  "name": "Team Lead",
+  "about": {
+    "ru": "Всё из разработки и управления проектом, плюс боты и модели; маршруты видны все.",
+    "en": "Everything from development and project management, plus bots and models; all routes are shown."
+  },
+  "modules": [
+    "health",
+    "quickstart",
+    "work",
+    "bots",
+    "gitsync",
+    "graph",
+    "ask",
+    "reports",
+    "commands",
+    "mirrors",
+    "version",
+    "cron",
+    "models",
+    "install",
+    "reference"
+  ]
+}

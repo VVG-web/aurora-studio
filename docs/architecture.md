@@ -426,7 +426,7 @@ aurora-studio/
 |---|---|
 | Коннектор (`connector`) | папка `connectors/<id>/`: `connector.json`, `SKILL.md`; скрипт запуска в `scripts/`. См. [connectors.md](connectors.md) |
 | Раздел панели (`panel_module`) | папка `cockpit/modules/<id>/`: `module.json`, `view.html`, `view.js`, `i18n/`. См. [README раздела](../cockpit/modules/README.md) |
-| Профиль рабочего места (не в метрике) | файл `cockpit/profiles/<id>.json`: список видимых сценариев и разделов под роль; выбор — `local/profile.json` на машине; без выбора профиль «all» — всё, как раньше. См. [README профилей](../cockpit/profiles/README.md) |
+| Профиль рабочего места (не в метрике) | файл `cockpit/profiles/<id>.json`: список видимых сценариев и разделов под роль; выбор — `local/profile.json` на машине; без выбора профиль «all» — всё, как раньше. Шесть ролей (Analyst, Developer, Tester, Product Owner, Project Manager, Team Lead) работают только при фиче-флаге `profiles` (`local/features.json`, по умолчанию выключен; включается в разделе «Разработка»). См. [README профилей](../cockpit/profiles/README.md) |
 | Скин (`skin`) | один файл `cockpit/skins/<id>.css` с шапкой; в метрике справка, в планку не входит. См. [README скинов](../cockpit/skins/README.md) |
 | Провайдер Git (`git_provider`) | папка `gitproviders/<id>/`: `provider.json` и `adapter.py` |
 | Провайдер LLM (`llm_provider`) | запись в `local/models.json` для уже известного типа; новый тип — строка в `PROVIDER_TYPES` (`scripts/model_config.py`), то есть пока код |
