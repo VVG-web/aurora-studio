@@ -59,8 +59,8 @@ STRUCTURE = KIT / "structure_dirs.txt"
 VERSION_FILE = KIT / "VERSION"
 
 
-def mirror_dirs(target: Path):
-    """Папки зеркал подключённых модулей: их нет в схеме, их заявляет реестр."""
+def _config_mirror_paths(target: Path):
+    """Пути зеркал подключённых модулей так, как их отдаёт реестр (из конфига — как написал владелец)."""
     sys.path.insert(0, str(KIT / "scripts"))
     try:
         import sources_registry as R
@@ -69,6 +69,29 @@ def mirror_dirs(target: Path):
     # путь из манифеста реестр уже проверил (`load()`: «../outside» отброшен вместе с модулем);
     # путь из конфига проекта пишет сам владелец и отдаётся как есть
     return [i["path"] for i in R.instances(str(target)) if i["path"]]
+
+
+def _outside_project(path: str) -> bool:
+    """Путь выходит за проект: абсолютный (в том числе «\\x», «C:/x») или с сегментом «..».
+
+    Проверка лексическая и нарочно мягче `ext_safe_relpath`: «Sources/Wiki (old)» владельца — внутри проекта.
+    """
+    p = path.replace("\\", "/")
+    return p.startswith("/") or bool(re.match(r"[A-Za-z]:", p)) or ".." in p.split("/")
+
+
+def mirror_dirs(target: Path):
+    """Папки зеркал подключённых модулей, которые `update` вправе создать: их нет в схеме, их заявляет реестр.
+
+    Путь зеркала вне проекта (`../Shared/Confluence`, абсолютный) сюда не входит: значение владельца реестр
+    отдаёт как есть и не правит, но `update` не создаёт за него папок за пределами проекта (`outside_mirror_dirs`).
+    """
+    return [d for d in _config_mirror_paths(target) if not _outside_project(d)]
+
+
+def outside_mirror_dirs(target: Path):
+    """Пути зеркал из конфига, выходящие за проект: `update` папок для них не создаёт."""
+    return [d for d in _config_mirror_paths(target) if _outside_project(d)]
 
 
 def missing_dirs(target: Path):
@@ -747,6 +770,11 @@ def run(target: Path, apply: bool, structure_only: bool = False):
         print(f"Недостающие папки схемы к созданию: {len(new_dirs)}")
         for d in new_dirs:
             print(f"  + {d}/")
+        print()
+    outside = outside_mirror_dirs(target)
+    for d in outside:
+        print(f"⚠️  Путь зеркала вне проекта — папка не создана: {d}")
+    if outside:
         print()
 
     # режим «только структура»: папки + штамп версии, движок не трогаем

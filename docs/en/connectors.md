@@ -157,7 +157,10 @@ and its fields are checked by a test (`tests/cases/part_44.py`), not by the load
   from manifests. A path from the project's own `aurora.config.yaml` (the `sources:` section, the `paths:` keys) is
   written by the owner, so the registry, `update` and the settings form pass it through as is: `Sources/Wiki (old)`,
   `Sources/JIRA (PRJ-A)`, `Sources/Wiki+Docs` and `../Shared/Confluence` stay connected, and saving the settings form
-  does not erase such an entry. When connecting a module the panel checks the manifest's path itself (the registry in
+  does not erase such an entry. The owner's value is not rewritten, but `update` does not create a folder outside the
+  project for it: a path with ".." or an absolute one is skipped with the report line "Путь зеркала вне проекта — папка
+  не создана: <path>" (the mirror path is outside the project, the folder was not created); folders inside the project,
+  `Sources/Wiki (old)` among them, are created as before. When connecting a module the panel checks the manifest's path itself (the registry in
   a project may be a copy of an older release) and also refuses a manifest with no path at all. The registry prints
   JSON to stdout and report notes to stderr; the panel takes the first JSON object of the output, so a "}" in a note's
   text does not empty the "Sources" section.

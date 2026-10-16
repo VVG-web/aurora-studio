@@ -907,7 +907,7 @@ def _project_with_owner_paths(tmp: Path) -> Path:
 @test
 def test_owner_mirror_paths_in_config_are_kept(tmp: Path):
     """Путь зеркала из `sources:` собственного конфига («Sources/Wiki (old)», «Sources/JIRA (PRJ-A)», «../Shared/…»)
-    остаётся в `instances()`, `roles()`, `mirror_paths()` и `mirror_dirs()`; белый список ограничивает только путь
+    остаётся в `instances()`, `roles()`, `mirror_paths()`; `update` не создаёт папок вне проекта (`mirror_dirs()`); белый список ограничивает только путь
     из манифеста."""
     import aurora_update as AU
     import sources_registry as R
@@ -917,7 +917,9 @@ def test_owner_mirror_paths_in_config_are_kept(tmp: Path):
     roles = R.roles(str(root))
     assert roles.get("Sources/Wiki (old)") == "artifacts" and roles.get("Sources/JIRA (PRJ-A)") == "tasks", roles
     assert set(R.mirror_paths(str(root))) == set(_OWNER_PATHS.values()), R.mirror_paths(str(root))
-    assert set(AU.mirror_dirs(root)) == set(_OWNER_PATHS.values()), AU.mirror_dirs(root)
+    inside = set(_OWNER_PATHS.values()) - {"../Shared/Confluence"}
+    assert set(AU.mirror_dirs(root)) == inside, AU.mirror_dirs(root)            # папки, которые update вправе создать
+    assert AU.outside_mirror_dirs(root) == ["../Shared/Confluence"], AU.outside_mirror_dirs(root)   # значение не правится
     assert not any("Sources/Wiki" in line or "Shared" in line for line in R.registry_report()), R.registry_report()
 
 
@@ -1331,3 +1333,35 @@ def test_settings_form_first_setup_still_writes_generated_mirrors(tmp: Path):
                    encoding="utf-8")
     src, skills = S.source_sections(root, "demo")
     assert src.endswith("sources:\n  - id: Hand\n    note: x\n") and skills == "", src
+
+
+@test
+def test_update_does_not_create_mirror_dirs_outside_project(tmp: Path):
+    """Конфиг владельца называет зеркала `../outside` и абсолютный путь: `update --apply` (и `--structure-only`) не
+    создаёт ни одной папки вне проекта, называет эти пути строкой отчёта, а обычные пути внутри проекта (в том числе
+    «Sources/Wiki (old)») создаёт как раньше. Значение владельца реестр по-прежнему отдаёт как написано."""
+    import aurora_update as AU
+    import sources_registry as R
+    root = make_project(tmp)
+    absolute = tmp / "abs_outside"
+    rows = [("Up", "confluence-dc", "../outside"), ("Abs", "confluence-dc", str(absolute)),
+            ("Old", "confluence-dc", "Sources/Wiki (old)"), ("Fine", "jira-dc", "Sources/FineNew")]
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip("\n") + "\n\nsources:\n"
+                   + "".join(f"  - id: {i}\n    module: {m}\n    path: {p}\n" for i, m, p in rows), encoding="utf-8")
+    got = {i["id"]: i["path"] for i in R.instances(str(root))}
+    assert got == {i: p for i, _m, p in rows}, got                               # чтение реестра не изменилось
+    assert sorted(AU.mirror_dirs(root)) == ["Sources/FineNew", "Sources/Wiki (old)"], AU.mirror_dirs(root)
+    assert sorted(AU.outside_mirror_dirs(root)) == sorted(["../outside", str(absolute)]), AU.outside_mirror_dirs(root)
+    before = sorted(p.name for p in tmp.iterdir())
+    for flags in (["--structure-only"], []):
+        shutil.rmtree(root / "Sources" / "FineNew", ignore_errors=True)
+        cp = run("aurora_update.py", str(root), *flags, "--apply", cwd=root)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        assert "Путь зеркала вне проекта — папка не создана: ../outside" in cp.stdout, cp.stdout
+        assert f"папка не создана: {absolute}" in cp.stdout, cp.stdout
+        assert sorted(p.name for p in tmp.iterdir()) == before, f"update создал папку вне проекта: {flags}"
+        assert not (tmp / "outside").exists() and not absolute.exists()
+        assert (root / "Sources" / "Wiki (old)").is_dir() and (root / "Sources" / "FineNew").is_dir()
+    assert cfg.read_text(encoding="utf-8").count("path: ../outside\n") == 1, "update переписал значение владельца"
+    assert {i["id"]: i["path"] for i in R.instances(str(root))} == {i: p for i, _m, p in rows}
