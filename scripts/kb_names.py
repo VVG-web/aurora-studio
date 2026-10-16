@@ -50,6 +50,27 @@ INLINE_RE = re.compile(r"\]\((?P<base>[^\s()/:]*(?:\([^\s()/:]*\)[^\s()/:]*)*?)_
 HASH_RE = re.compile(r"^content_hash: \S+$", re.M)
 
 
+def plain_name(name: str) -> bool:
+    """Имя файла вложения без пути: ссылка с `..%2F` не должна выводить за папку страницы.
+
+    Текст страницы пишет человек в Confluence, и `kb:names --apply` переносит файлы по
+    именам из ссылок: «../../файл» увёл бы произвольный файл проекта в зеркало.
+    """
+    return bool(name) and name not in (".", "..") and os.path.basename(name) == name \
+        and "\\" not in name and "\0" not in name
+
+
+def own_stem(base: str, stem: str) -> bool:
+    """Стем из ссылки — стем этой страницы (в ссылке «#», «%», «?» кодируются)."""
+    return base == stem or urllib.parse.unquote(base) == stem
+
+
+def inside(path: str, folder: str) -> bool:
+    """Путь лежит внутри папки (после раскрытия ссылок и `..`)."""
+    path, folder = os.path.realpath(path), os.path.realpath(folder)
+    return path.startswith(folder.rstrip(os.sep) + os.sep)
+
+
 # ------------------------------------------------------------------- зеркало
 
 def mirror_dir(root: str) -> str:
@@ -158,9 +179,10 @@ def mirror_plan(root: str, mirror: str) -> list:
             # имя файла — по ссылке (метка встроенной ссылки бывает любой), а не по метке
             own = os.path.basename(os.path.splitext(rel)[0])
             for m in list(LINK_RE.finditer(text)) + [
-                    m for m in INLINE_RE.finditer(text) if m.group("base") == own]:
+                    m for m in INLINE_RE.finditer(text) if own_stem(m.group("base"), own)]:
                 old_name = urllib.parse.unquote(m.group("q"))
-                assets[old_name] = exp.asset_name(old_name, folder)
+                if plain_name(old_name):
+                    assets[old_name] = exp.asset_name(old_name, folder)
         if new != rel or any(a != b for a, b in assets.items()):
             plan.append({"pid": pid, "title": title, "old": rel, "new": new, "assets": assets})
         for child in sorted(kids.get(rel, []), key=lambda r: (by_rel[r][1], by_rel[r][0])):
@@ -227,6 +249,10 @@ def apply_mirror(root: str, mirror: str, plan: list) -> dict:
                 b = os.path.join(mirror, new_base, new_name)
                 if not os.path.isfile(a) or os.path.abspath(a) == os.path.abspath(b):
                     continue
+                if not (plain_name(old_name) and plain_name(new_name)
+                        and inside(a, os.path.join(mirror, old_base))
+                        and inside(b, os.path.join(mirror, new_base))):
+                    continue                    # имя уводит за папку страницы — не трогаем
                 if item["old"] == item["new"]:
                     os.replace(a, b)            # страница на месте — схему переименовываем
                 else:
@@ -243,10 +269,11 @@ def apply_mirror(root: str, mirror: str, plan: list) -> dict:
                 return f"- [{new}]({m.group('base')}_assets/{m.group('q')})"
 
             def relink_inline(m, item=item, stem=stem, old_stem=old_stem):
-                if m.group("base") != old_stem:
+                if not own_stem(m.group("base"), old_stem):
                     return m.group(0)          # не наша папка вложений
                 old = urllib.parse.unquote(m.group("q"))
-                return f"]({stem}_assets/{urllib.parse.quote(item['assets'].get(old, old))})"
+                return (f"]({CE.link_stem(stem)}_assets/"
+                        f"{urllib.parse.quote(item['assets'].get(old, old))})")
             head, body = _split(text)
             # сначала ссылки (строки списков тоже их содержат), затем метки строк: каждое
             # имя переименовывается один раз

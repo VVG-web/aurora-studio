@@ -1841,7 +1841,8 @@ ATTACH_PAGE = (
     '<ac:link><ri:attachment ri:filename="gone.pdf"/></ac:link></p>')
 
 
-def _attach_exporter(tmp: Path, fetch=None, attachments=None, root=None):
+def _attach_exporter(tmp: Path, fetch=None, attachments=None, root=None, page=None,
+                     attach_error=None, force=True):
     """Экспортёр одной страницы с подставным API (без сети) → (CE, exp, root, fetched)."""
     import importlib
     sys.path.insert(0, str(SCRIPTS))
@@ -1856,13 +1857,15 @@ def _attach_exporter(tmp: Path, fetch=None, attachments=None, root=None):
     class Api:
         def page(self, pid):
             return {"title": "Руководство", "version": {"number": 1, "when": "2026-10-16"},
-                    "body": {"storage": {"value": ATTACH_PAGE}}, "space": {"key": "S"},
+                    "body": {"storage": {"value": page or ATTACH_PAGE}}, "space": {"key": "S"},
                     "_links": {"webui": f"/p/{pid}"}}
 
         def children(self, pid):
             return []
 
         def attachments(self, pid):
+            if attach_error:
+                raise attach_error
             return dict(have)
 
         def fetch(self, url):
@@ -1874,8 +1877,13 @@ def _attach_exporter(tmp: Path, fetch=None, attachments=None, root=None):
         def user_name(self, key):
             return key
 
-    exp = CE.Exporter(Api(), str(root / "Sources/Confluence"), "https://wiki.example.com",
-                      "S", True)
+    here = os.getcwd()
+    os.chdir(root)          # кэш страниц читается относительно корня проекта
+    try:
+        exp = CE.Exporter(Api(), str(root / "Sources/Confluence"), "https://wiki.example.com",
+                          "S", force)
+    finally:
+        os.chdir(here)
     return CE, exp, root, fetched
 
 
@@ -2006,3 +2014,166 @@ def test_name_repair_follows_attachment_sections_and_inline_links(tmp: Path):
     assert f"- [{new}](Стр_assets/{up.quote(new)})" in text, "метка строки списка не обновлена"
     assert f"](https://example.com/Стр_assets/{up.quote(long)})" in text, "чужой адрес переписан"
     assert not N.mirror_plan(str(root), str(m)), "повторная починка снова что-то переименует"
+
+
+def _in_root(root, fn):
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        return fn()
+    finally:
+        os.chdir(here)
+
+
+def _file_link(name: str, label: str = "") -> str:
+    return (f'<ac:link><ri:attachment ri:filename="{name}"/>'
+            f'<ac:plain-text-link-body><![CDATA[{label or name}]]></ac:plain-text-link-body></ac:link>')
+
+
+@test
+def test_confluence_attachment_outage_keeps_diagrams_and_copies(tmp: Path):
+    """Список вложений недоступен — папка страницы не чистится: схемы и PDF на месте."""
+    page = ('<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">схема1'
+            '</ac:parameter></ac:structured-macro>' + _file_link("law.pdf"))
+    have = {"схема1": "/d/s1", "law.pdf": "/d/law"}
+    _CE, exp, root, _f = _attach_exporter(tmp, attachments=have, page=page)
+    _in_root(root, lambda: exp.walk("5001", []))
+    folder = root / "Sources/Confluence/Руководство_assets"
+    assert sorted(os.listdir(folder)) == ["law.pdf", "схема1.drawio"], os.listdir(folder)
+    exp2 = _attach_exporter(tmp, attachments=have, page=page, root=root,
+                            attach_error=OSError("сеть"))[1]
+    _in_root(root, lambda: exp2.walk("5001", []))
+    assert sorted(os.listdir(folder)) == ["law.pdf", "схема1.drawio"], \
+        f"сбой списка вложений стёр схему: {sorted(os.listdir(folder))}"
+
+
+@test
+def test_confluence_blocked_types_are_not_bypassed_by_trailing_dots(tmp: Path):
+    """«setup.exe.» и «x.cmd..» ложатся на диск как setup.exe и x.cmd — не скачиваются."""
+    names = ["setup.exe.", "x.cmd..", "SETUP.EXE", "tool.sh "]
+    page = "".join(_file_link(n) for n in names)
+    have = {n: "/d/" + n.strip() for n in names}
+    _CE, exp, root, fetched = _attach_exporter(tmp, attachments=have, page=page)
+    _in_root(root, lambda: exp.walk("5001", []))
+    folder = root / "Sources/Confluence/Руководство_assets"
+    left = sorted(os.listdir(folder)) if folder.is_dir() else []
+    assert not left, f"исполняемое скачано: {left}"
+    assert not fetched, f"исполняемое запрошено: {fetched}"
+    page_md = (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    assert page_md.count("не скачан (исполняемый тип)") == len(names), page_md
+
+
+@test
+def test_confluence_markdown_attachment_is_not_mirrored(tmp: Path):
+    """Вложение notes.md не ложится в _assets/ (его приняли бы за страницу и сироту)."""
+    page = _file_link("notes.md") + _file_link("Doc.MARKDOWN") + _file_link("data.txt")
+    have = {"notes.md": "/d/n", "Doc.MARKDOWN": "/d/m", "data.txt": "/d/t"}
+    _CE, exp, root, fetched = _attach_exporter(tmp, attachments=have, page=page)
+    _in_root(root, lambda: exp.walk("5001", []))
+    folder = root / "Sources/Confluence/Руководство_assets"
+    assert sorted(os.listdir(folder)) == ["data.txt"], sorted(os.listdir(folder))
+    assert sorted(fetched) == ["/d/t"], fetched
+    page_md = (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    assert "не скачан (markdown внутри зеркала): [notes.md](https://wiki.example.com/" in page_md
+
+
+@test
+def test_confluence_failed_attachment_page_is_refetched_next_sync(tmp: Path):
+    """Сбой вложения — страница не попадает в кэш свежих: следующий синк качает снова."""
+    page = _file_link("law.pdf")
+    have = {"law.pdf": "/d/law"}
+
+    def broken(url):
+        raise OSError("таймаут")
+    _CE, exp, root, _f = _attach_exporter(tmp, attachments=have, page=page, fetch=broken,
+                                          force=False)
+
+    def first():
+        exp.walk("5001", [], "", 1)
+        exp.save_cache()
+    _in_root(root, first)
+    assert exp.attach_failed == 1 and "5001" not in exp.fresh, \
+        "страница со сбойным вложением записана в кэш как свежая"
+    _CE2, exp2, _r, fetched2 = _attach_exporter(tmp, attachments=have, page=page, root=root,
+                                                force=False)
+
+    def second():
+        exp2.walk("5001", [], "", 1)
+        exp2.save_cache()
+    _in_root(root, second)
+    assert fetched2 == ["/d/law"], f"страница пропущена по кэшу: {fetched2}, {exp2.skipped}"
+    md = (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
+    assert "не скачан" not in md and (root / "Sources/Confluence/Руководство_assets/law.pdf").is_file()
+    # теперь всё хорошо — третий синк пропускает страницу по версии
+    exp3 = _attach_exporter(tmp, attachments=have, page=page, root=root, force=False)
+    _in_root(root, lambda: exp3[1].walk("5001", [], "", 1))
+    assert exp3[3] == [] and exp3[1].skipped == 1, (exp3[3], exp3[1].skipped)
+
+
+@test
+def test_confluence_attachment_links_encode_special_page_stems(tmp: Path):
+    """Заголовок с «#» и «%» даёт кодируемый стем в ссылке; kb_names узнаёт такую ссылку."""
+    import importlib
+    import urllib.parse as up
+    page = _file_link("law.pdf")
+    CE, exp, root, _f = _attach_exporter(tmp, attachments={"law.pdf": "/d/law"}, page=page)
+    exp.api.page = (lambda orig: lambda pid: dict(orig(pid), title="НДС 20% и C#"))(exp.api.page)
+    _in_root(root, lambda: exp.walk("5001", []))
+    mirror = root / "Sources/Confluence"
+    md = (mirror / "НДС_20%_и_C#.md").read_text(encoding="utf-8")
+    assert "](НДС_20%25_и_C%23_assets/law.pdf)" in md, md
+    assert (mirror / "НДС_20%_и_C#_assets/law.pdf").is_file()
+    sys.path.insert(0, str(SCRIPTS))
+    N = importlib.import_module("kb_names")
+    importlib.reload(N)
+    assert N.own_stem("НДС_20%25_и_C%23", "НДС_20%_и_C#") and not N.own_stem("Другая", "НДС_20%")
+    assert up.unquote("НДС_20%25_и_C%23") == "НДС_20%_и_C#"
+    assert CE.link_stem("НДС_20%_и_C#_x?") == "НДС_20%25_и_C%23_x%3F"
+
+
+@test
+def test_confluence_long_attachment_name_keeps_its_short_extension(tmp: Path):
+    """Длинное имя с расширением вне списка (.xlsm) не теряет расширение; «.Итог» — часть имени."""
+    CE, exp, root, _f = _attach_exporter(tmp)
+    folder = "П" * 100 + "_assets"
+    long = "Очень длинное название отчёта о проделанной работе за 2026 год и ещё много слов"
+    got = exp.asset_name(long + ".xlsm", folder)
+    assert got.endswith(".xlsm"), got
+    import re
+    assert re.search(r"~[0-9a-f]{6}$", exp.asset_name(long + ".Итог", folder)), \
+        "«.Итог» принят за расширение"
+    assert exp.asset_name("Стр4.Свод.2", folder) == "Стр4.Свод.2"
+
+
+@test
+def test_name_repair_ignores_links_that_escape_the_page_folder(tmp: Path):
+    """Ссылка вида `..%2F..%2Ffile` в тексте страницы не переносит файлы проекта."""
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    N = importlib.import_module("kb_names")
+    importlib.reload(N)
+    root = make_project(tmp, git=True)
+    m = root / "Sources/Confluence"
+    m.mkdir(parents=True, exist_ok=True)
+    victim = root / "secret_demo.txt"
+    victim.write_text("данные проекта", encoding="utf-8")
+    (m / "Стр_assets").mkdir()
+    for body in ("[x](Стр_assets/..%2F..%2F..%2Fsecret_demo.txt)",
+                 "[x](Стр_assets/..%2F..%2F..%2Fsecret_demo.txt)\n\n## Вложения страницы\n\n"
+                 "- [../../../secret_demo.txt](Стр_assets/..%2F..%2F..%2Fsecret_demo.txt)"):
+        (m / "Стр.md").write_text(
+            '---\npage_id: 7001\ntitle: "Стр"\nbreadcrumbs: "Стр"\ncontent_hash: 0\n---\n\n'
+            "# Стр\n\n" + body + "\n\n## Схемы страницы\n\n", encoding="utf-8")
+        (m / "sync_state.md").write_text(
+            "<!-- Confluence sync state -->\n**Sync Date:** 2026-10-16\n**Pages:** 1\n\n"
+            "| # | Page ID | Title | Local Path | Status |\n|---|---|---|---|---|\n"
+            "| 1 | 7001 | Стр | Стр.md | SYNCED |\n", encoding="utf-8")
+
+        def run():
+            plan = N.mirror_plan(str(root), str(m))
+            assert not any(".." in k for it in plan for k in it["assets"]), plan
+            # даже прямой план с таким именем не двигает файл за пределы папки страницы
+            N.apply_mirror(str(root), str(m), [{"pid": "7001", "title": "Стр", "old": "Стр.md",
+                           "new": "Стр.md", "assets": {"../../../secret_demo.txt": "x_secret.txt"}}])
+        _in_root(root, run)
+        assert victim.read_text(encoding="utf-8") == "данные проекта", "файл проекта перенесён"

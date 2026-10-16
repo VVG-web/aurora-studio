@@ -216,10 +216,10 @@ file:
 The page ends with a `## Вложения страницы` ("Page attachments") section (draw.io and mermaid diagrams stay in
 `## Схемы страницы`). A downloaded file is a row `- [name](<page>_assets/name)`; a file that was not downloaded is a row
 `- не скачан (reason): [name](Confluence address)` ("not downloaded"), and the link in the text leads to the original. The
-reasons: executable type, no attachment of that name on the page, download error. **Executable and script files are never
+reasons: executable type, no attachment of that name on the page, markdown inside the mirror (`.md`, `.markdown`: they would be taken for pages), download error. **Executable and script files are never
 downloaded** (`exe`, `bat`, `cmd`, `com`, `msi`, `dll`, `jar`, `js`, `vbs`, `ps1`, `sh`, `scr`). A failure of one file does
 not fail the page and does not delete its previous copy: the folder cleanup removes only names the page no longer refers
-to. The file name is made safe (no path, no characters forbidden on Windows, length-limited). The same page text gives the
+to. The type is checked both by the original name and by the name the file will get (`setup.exe.` does not bypass the ban). A page whose file failed to download is not counted as fresh: the next sync re-reads it without waiting for the weekly full pass; while the attachment list is unavailable the folder is not cleaned. The file name is made safe (no path, no characters forbidden on Windows, length-limited; an extension such as `.xlsm` is kept on a long name). A page name with "#", "%", "?" is encoded in links. `kb:names` does not move names that carry a path (`..%2F`). The same page text gives the
 same markdown. The converter version is 2: the first sync after the update re-reads pages and fetches the missing
 attachments. The `kb:names` repair recognises both sections and rewrites the file links embedded in the text together with
 a rename.

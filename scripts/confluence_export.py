@@ -232,8 +232,20 @@ ASSET_STUB = "aurora-asset:"
 # Исполняемое и скриптовое не скачивается никогда: зеркало уезжает в git и на машины людей.
 BLOCKED_EXTS = (".exe", ".bat", ".cmd", ".com", ".msi", ".dll", ".jar", ".js", ".vbs",
                 ".ps1", ".sh", ".scr")
+# Markdown внутри зеркала принимают за страницу: аудит и план сборки обходят все `.md` под
+# Sources/, и вложение `notes.md` в `<страница>_assets/` стало бы «лишним» файлом-сиротой.
+MIRROR_EXTS = (".md", ".markdown")
 SCHEMES_HEAD = "## Схемы страницы"
 ATTACH_HEAD = "## Вложения страницы"
+
+
+def link_stem(base: str) -> str:
+    """Стем страницы для ссылки: «#», «%» и «?» кодируются, остальное (кириллица) как есть.
+
+    Заголовок бывает «НДС 20%» или «C#»: в ссылке без кодирования рендерер читает хвост как
+    фрагмент или как неверный процентный код, и файл, лежащий на диске, не открывается.
+    """
+    return base.replace("%", "%25").replace("#", "%23").replace("?", "%3F")
 
 
 def asset_stub(name: str) -> str:
@@ -777,6 +789,7 @@ class Exporter(WikiMirror):
         # Кэш — производное: нет его — синк просто идёт полным проходом.
         self.cache = {} if force else load_page_cache()
         self.fresh: dict = {}
+        self.nocache: set = set()      # страницы, у которых не скачалось вложение
         # Длина пути считается от корня проекта: зеркало лежит в `Sources/Confluence/`,
         # и эти знаки Windows тоже засчитывает.
         where = safe_relpath(os.path.abspath(out), os.getcwd()).replace("\\", "/")
@@ -840,17 +853,23 @@ class Exporter(WikiMirror):
                 f.write(blob)
             self.assets_saved += 1
             kept.add(fname)
-            lines.append(f"- [{fname}]({base}_assets/{urllib.parse.quote(fname)})")
+            lines.append(f"- [{fname}]({link_stem(base)}_assets/{urllib.parse.quote(fname)})")
 
         for name in sorted({n for k, n in names if k == "file"}):
             orig = self.original_url(page_id, name)
             fname = self.asset_name(name, folder)
             referenced.add(fname)
             dest = os.path.join(full_folder, fname)
-            local = f"{base}_assets/{urllib.parse.quote(fname)}"
+            local = f"{link_stem(base)}_assets/{urllib.parse.quote(fname)}"
             reason = ""
-            if os.path.splitext(name)[1].lower() in BLOCKED_EXTS:
+            # тип — и по очищенному исходному имени, и по тому, под которым файл ляжет:
+            # «setup.exe.» на диске становится «setup.exe» (хвостовые точки отбрасываются)
+            exts = {os.path.splitext(x)[1].lower()
+                    for x in (name, name.rstrip(". "), fname, fname.rstrip(". "))}
+            if exts & set(BLOCKED_EXTS):
                 reason = "исполняемый тип"
+            elif exts & set(MIRROR_EXTS):
+                reason = "markdown внутри зеркала"
             elif have is not None and name not in have:
                 reason = "вложения с таким именем на странице нет"
             else:
@@ -871,7 +890,8 @@ class Exporter(WikiMirror):
                 self.attach_failed += 1
             elif reason:
                 self.attach_skipped += 1
-            if not reason or (reason != "исполняемый тип" and os.path.isfile(dest)):
+            if not reason or (reason not in ("исполняемый тип", "markdown внутри зеркала")
+                              and os.path.isfile(dest)):
                 # прежняя копия при сбое не удаляется и остаётся рабочей ссылкой
                 kept.add(fname)
                 self.asset_links[name] = local
@@ -885,8 +905,10 @@ class Exporter(WikiMirror):
         # `--prune` внутрь папок со схемами не заходит. Но имя, на которое страница всё
         # ещё ссылается, не трогаем, даже если сегодня скачать не вышло: прежняя копия
         # лучше пустого места.
+        # Список вложений недоступен (`have is None`) — судить, что в папке лишнее, не по
+        # чему: схемы в этом прогоне не разобраны, и чистка стёрла бы их прежние копии.
         keep = kept | referenced
-        if kept and os.path.isdir(full_folder):
+        if have is not None and kept and os.path.isdir(full_folder):
             for old in sorted(os.listdir(full_folder)):
                 if old.startswith(".") or old in keep:
                     continue
@@ -939,6 +961,12 @@ class Exporter(WikiMirror):
         без него файл не откроется. Считается одним кодом и синком, и `kb_names`.
         """
         dot = next((k for k in ASSET_EXTS if fname.lower().endswith(k)), "")
+        if not dot:
+            # Расширение вне списка (.xlsm, .html, .bpmn): короткий хвост из латиницы и
+            # цифр с буквой. Иначе у длинного имени его срезало бы вместе с хвостом, и
+            # файл нечем было бы открыть. «.Итог» и «.2» остаются частью имени.
+            m = re.search(r"\.(?=[0-9]*[A-Za-z])[A-Za-z0-9]{1,5}$", fname)
+            dot = m.group(0) if m else ""
         stem = fname[:len(fname) - len(dot)]
         cap = max(PART_MIN, min(80, PATH_CHARS - self.path_prefix() - len(folder) - 1))
         name = portable_name(stem, sep="_", ext=dot, max_chars=cap)
@@ -1037,6 +1065,7 @@ class Exporter(WikiMirror):
             name = self.api.user_name(key)
             if name:
                 md = md.replace("@" + key, "@" + name)
+        failed_before = self.attach_failed
         if assets:
             section = self.save_assets(page_id, rel, assets)
             md = self.expand_assets(md, page_id)
@@ -1065,9 +1094,15 @@ class Exporter(WikiMirror):
         else:
             self.skipped += 1
             self.records.append((str(page_id), rel, title, "SYNCED"))
-        self.fresh[str(page_id)] = {"version": version, "conv": CONVERTER, "rel": rel,
-                                    "title": title, "assets": bool(assets),
-                                    "ryd": len(defines), "ryl": len(links), "at": TODAY}
+        if self.attach_failed > failed_before:
+            # Файл не доехал (таймаут, обрыв): страница с «не скачан (ошибка скачивания)»
+            # не должна считаться свежей, иначе следующий синк её пропустит по версии и
+            # файла не будет до недельного полного прохода.
+            self.nocache.add(str(page_id))
+        else:
+            self.fresh[str(page_id)] = {"version": version, "conv": CONVERTER, "rel": rel,
+                                        "title": title, "assets": bool(assets),
+                                        "ryd": len(defines), "ryl": len(links), "at": TODAY}
 
         for child in sorted(children, key=lambda c: (c["title"], c["id"])):
             self.walk(child["id"], ancestors + [title], here,
@@ -1077,6 +1112,8 @@ class Exporter(WikiMirror):
         """Запомнить страницы для следующего синка. Непройденные из-за сбоя — прежними."""
         keep = dict(self.cache) if self.failed else {}
         keep.update(self.fresh)
+        for pid in self.nocache:        # прежняя запись не должна пережить сбой вложения
+            keep.pop(pid, None)
         save_page_cache(keep)
 
     def stale(self) -> list:
