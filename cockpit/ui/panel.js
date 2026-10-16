@@ -1190,9 +1190,11 @@ function show(view, payload){
   if (S.view === "project" && view !== "project" && !confirmLeave()) return;
   // Раздел в разработке закрыт — в него не попасть и по адресу страницы или ссылке.
   if (devOnlyView(view) && !devSectionsOn()) view = "overview";
-  // Раздел скрыт профилем рабочего места: меню его не показывает, по адресу или ссылке он
-  // не открывается — человек получает Мостик и строку о причине, а не пустой экран.
-  if (profileHidden(view)){ toast(t("modules.hidden", {id: moduleTitle(MODULES.get(view).manifest)}), "warn"); view = "overview"; }
+  // Раздел скрыт профилем рабочего места: меню его не показывает, ни по адресу, ни из ядра
+  // он не открывается — человек получает Мостик, а не пустой экран. Причину говорит только
+  // переход по адресу (`openFromAddress`): автопереход ядра (выбор проекта → «Здоровье»)
+  // человек не просил, упрёк за него был бы шумом.
+  if (profileHidden(view)) view = "overview";
   const prevView = S.view;
   S.view = view;
   if (prevView !== view) hideModule(prevView);        // уходящий раздел узнаёт об этом раньше, чем придёт новый
@@ -1233,6 +1235,13 @@ function devOnlyView(view){
 // здесь нет — решает манифест ответа `/api/modules`.
 function profileHidden(view){
   return !!(MODULES.get(view) && MODULES.get(view).manifest.hidden);
+}
+
+// Раздел из адреса страницы или ссылки: скрытый профилем уводит на Мостик со строкой о причине.
+function openFromAddress(view){
+  if (profileHidden(view))
+    toast(t("modules.hidden", {id: moduleTitle(MODULES.get(view).manifest)}), "warn");
+  show(view);
 }
 
 function showDevNav(){
@@ -1385,7 +1394,7 @@ async function boot(){
   // здоровье перерисует поднятые разделы само (`refreshModules` в `pick`).
   const p = slug ? S.state.projects.find(x => x.slug === slug) : null;
   const picking = p ? pick(p, false) : null;
-  if (v) show(v);
+  if (v) openFromAddress(v);
   if (picking) await picking;
 }
 
@@ -4597,11 +4606,12 @@ async function loadModules(){
       continue;
     }
     // Раздел поднят, но с умолчанием вместо кривого поля манифеста: скажем, что починить.
-    if (m.warn && m.warn.length)
+    // Скрытому профилем разделу toast не нужен: его нет в меню, и открыть его нельзя.
+    if (m.warn && m.warn.length && !m.hidden)
       toast(t("modules.warn", {id: m.id, why: m.warn.join("; ")}), "warn");
     MODULES.set(m.id, {manifest: m, mod: null, ns: null, section: null, subs: null, stale: false, shown: false, hooks: null});
     if (!m.hidden) addModuleNav(m);       // скрытый профилем: запись есть (подписи, адрес), кнопки нет
-    if (m.behind)
+    if (m.behind && !m.hidden)
       console.warn(`модуль ${m.id} собран под ядро ${m["for"]}, установлено ${S.state.kit.version}`);
   }
 }

@@ -115,6 +115,11 @@ line `modules.hidden` from the core catalogue. The profile «all» and a profile
 explicit empty list hides everything; a broken section (`error`) is never hidden. It is visibility, not permissions:
 the files `/modules/<id>/` are served as before, Cron and the terminal do not depend on the profile, the built-in
 sections (the Bridge, Settings, Project, Files, the console) are not touched. A section declares nothing for this.
+The reason (section hidden by the profile) is shown only when a section is opened by address or link; the core's own
+automatic jumps (picking a project leads to Health, the graph from a card, etc.) silently lead to the Bridge when the
+target is hidden. An `id` in `modules` that matches no `cockpit/modules` folder is a typo that hides too much, so the
+profile adds a `warn` line «no section X in modules» (see `/api/profiles`); a hidden section gets no «raised with
+defaults» toast.
 
 ## 4. The editor and committing
 

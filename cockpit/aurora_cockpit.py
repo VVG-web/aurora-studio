@@ -1761,6 +1761,24 @@ def profiles() -> list:
     return out
 
 
+def _unknown_module_ids(row: dict) -> list:
+    """Предупреждения о `id` в `modules` пресета, которым не соответствует ни одна папка `cockpit/modules`.
+
+    Поле `modules` прячет разделы, поэтому опечатка («Work» вместо «work») прячет всё: без строки
+    человек не поймёт, почему меню опустело. Сверка здесь, а не в загрузчике: папки разделов
+    знает только панель. Встроенные разделы в списке не нужны — профиль их не трогает.
+    """
+    ids = row.get("modules")
+    if not ids:
+        return []
+    try:
+        known = {n for n in os.listdir(MODULES_DIR) if os.path.isfile(os.path.join(MODULES_DIR, n, "module.json"))}
+    except OSError:
+        return []
+    return ["profile «%s»: в modules нет раздела «%s» — такого раздела в ките нет" % (row["id"], i)
+            for i in ids if i not in known]
+
+
 def active_profile() -> dict:
     """Профиль этой машины: запись `local/profile.json`; без неё и при любой неясности — «all».
 
@@ -1790,7 +1808,7 @@ def active_profile() -> dict:
     if "error" in row:
         base["warn"].append("профиль «%s» не принят: %s — взят профиль «all»" % (want, row["error"]))
         return base
-    return dict(row, warn=list(row.get("warn", [])))
+    return dict(row, warn=list(row.get("warn", [])) + _unknown_module_ids(row))
 
 
 def profiles_state(lang: str) -> dict:
@@ -1801,6 +1819,8 @@ def profiles_state(lang: str) -> dict:
         if "error" in r:
             warn.append("профиль «%s» не принят: %s" % (r["id"], r["error"]))
         warn.extend(r.get("warn", []))
+        if "error" not in r:
+            warn.extend(_unknown_module_ids(r))
     # Предупреждения пресета выбранного профиля уже в строке пресета: второй раз их не берём.
     warn.extend(w for w in act["warn"] if w not in warn)
     return {"profiles": localized_profiles([r for r in rows if "error" not in r], lang),
