@@ -28,7 +28,8 @@ from pathlib import Path
 # Разбор и запись скаляра — общим правилом движка: настройка, панель, синки и отчёт
 # читают конфиг одной функцией, иначе формы записи разъезжаются (так и пропадал JQL
 # с датой в двойных кавычках).
-from aurora_common import config_hosts, yaml_scalar, yaml_str, yaml_word  # noqa: E402,F401
+from aurora_common import (ATTACH_MAX_MB, ATTACH_MODES, attachment_answers_problem,  # noqa: E402,F401
+                           config_hosts, confluence_block, yaml_scalar, yaml_str, yaml_word)
 
 
 def read_config(path: Path) -> dict:
@@ -60,8 +61,7 @@ def read_config(path: Path) -> dict:
     cfg["name"] = scalar("name")
     cfg["slug"] = scalar("slug")
     # confluence блок
-    cm = re.search(r"confluence:(.*?)(?:\n  jira:|\Z)", text, re.S)
-    cblock = cm.group(1) if cm else ""
+    cblock = confluence_block(text)
     cfg["conf_url"] = (re.search(r'base_url:\s*"?([^"\n]+)', cblock) or [None, ""])[1].strip() if cblock else ""
     cfg["conf_space"] = (re.search(r'space:\s*"?([^"\n]+)', cblock) or [None, ""])[1].strip() if cblock else ""
     for key, name in (("conf_attachments", "attachments"), ("conf_attachment_max_mb", "attachment_max_mb")):
@@ -381,14 +381,14 @@ def write_config(path: Path, c: dict):
     out_jira = paths_value(old_text, "sources_jira", "Sources/JIRA")
     # Ключи блока confluence, которых форма не спрашивает, но движок читает (политика вложений):
     # carry_unmanaged переносит только второй уровень, а confluence лежит на третьем.
-    old_conf = re.search(r"^  confluence:[ \t]*\n(.*?)(?=^  [A-Za-z_]+:|^\S|\Z)", old_text, re.M | re.S)
+    old_conf = confluence_block(old_text)       # тот же разбор, что у read_config, синка и панели
     att_keys = ""
     for key, ckey in (("attachments", "conf_attachments"), ("attachment_max_mb", "conf_attachment_max_mb")):
         if c.get(ckey) is not None:          # значение задано (форма, диалог): пусто — ключа нет
             value = str(c[ckey]).strip()
         else:                                # словарь собран не read_config'ом — берём из прежнего конфига
             # слово справа от ключа, комментарий в конце строки отбрасывается
-            value = yaml_word(old_conf.group(1), key, "") if old_conf else ""
+            value = yaml_word(old_conf, key, "") if old_conf else ""
         if value and re.fullmatch(r"[A-Za-z0-9.,]+", value):
             att_keys += f"\n    {key}: {value}"
     text = f"""# Aurora project configuration (committed). Schema version 1.
@@ -527,21 +527,25 @@ def run_answers(target: Path, answers: dict) -> int:
     # до записи: опечатка не должна молча дать самый разрешающий режим. Пусто — ключа нет, действует
     # умолчание; значение, равное умолчанию, ключ не заводит (прежний конфиг остаётся как был).
     # Значение, которое уже лежит в конфиге (дробное, написанное рукой), форма пропускает как есть.
+    problem = attachment_answers_problem(answers.get("conf_attachments"), answers.get("conf_attachment_max_mb"),
+                                         c["conf_attachment_max_mb"])
+    if problem == "mode":
+        print(f"❌ attachments: допустимо {', '.join(ATTACH_MODES)}, получено "
+              f"«{str(answers['conf_attachments']).strip().lower()}»", file=sys.stderr)
+        return 2
+    if problem == "limit":
+        print(f"❌ attachment_max_mb: нужно целое число от 0, получено "
+              f"«{str(answers['conf_attachment_max_mb']).strip()}»", file=sys.stderr)
+        return 2
     if "conf_attachments" in answers:
         mode = str(answers["conf_attachments"] or "").strip().lower()
-        if mode not in ("", "all", "images", "none"):
-            print(f"❌ attachments: допустимо all, images или none, получено «{mode}»", file=sys.stderr)
-            return 2
         c["conf_attachments"] = "" if mode == "" or (mode == "all" and not c["conf_attachments"]) else mode
     if "conf_attachment_max_mb" in answers:
         mb = str(answers["conf_attachment_max_mb"] if answers["conf_attachment_max_mb"] is not None else "").strip()
-        kept = mb == c["conf_attachment_max_mb"] and re.fullmatch(r"\d+([.,]\d+)?", mb)
-        if mb and not kept and not re.fullmatch(r"\d{1,9}", mb):
-            print(f"❌ attachment_max_mb: нужно целое число от 0, получено «{mb}»", file=sys.stderr)
-            return 2
         if mb.isdigit():
             mb = str(int(mb))
-        c["conf_attachment_max_mb"] = "" if mb == "" or (mb == "100" and not c["conf_attachment_max_mb"]) else mb
+        c["conf_attachment_max_mb"] = ("" if mb == "" or (mb == str(ATTACH_MAX_MB) and not c["conf_attachment_max_mb"])
+                                       else mb)
     # Поля доверия очищаются: пустой список — настройка по умолчанию, и человек, стерев
     # поле, возвращается к ней. Прочие поля пустой ответ не трогает, как и раньше.
     for key in ("trust_statuses", "assumption_statuses", "trusted_sources", "trusted_branches"):

@@ -50,7 +50,9 @@ from sources_core import (ASSET_DIR_RE, CONFIG, FileTooLarge, RestApi, WikiMirro
                           verify, word)
 from sources_core import read_secret as core_secret
 from kb_remap import follow_moves, moves_report, page_moves  # noqa: E402
-from aurora_common import PATH_CHARS, TODAY, head_value, portable_name, safe_relpath  # noqa: E402
+from aurora_common import (ATTACH_MAX_MB, ATTACH_MODES, PATH_CHARS, TODAY,  # noqa: E402,F401
+                           confluence_block, head_value, portable_name,
+                           root_link_escapes, safe_relpath)
 
 DEFAULT_OUT = "Sources/Confluence"
 STATE = WikiMirror.state_name
@@ -90,8 +92,6 @@ RY_MARK = {"key": "RYk:", "link": "RYl:", "prop": "RYo:", "report": "RYr"}
 
 # Какие вложения страницы качать (`atlassian.confluence.attachments`): все, только картинки
 # или никакие. Схемы draw.io и mermaid этой настройке не подчиняются — это исходники.
-ATTACH_MODES = ("all", "images", "none")
-ATTACH_MAX_MB = 100         # предел размера одного вложения, МБ; 0 — без предела
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".tif", ".tiff", ".ico")
 
 
@@ -125,7 +125,7 @@ def read_config(root: str = "") -> dict:
     text = config_text(os.path.join(root, CONFIG)) if root else config_text()
     if not text:
         return cfg
-    conf = block(text, "confluence:", "jira:")
+    conf = confluence_block(text)
     cfg["base_url"] = scalar(conf, "base_url").rstrip("/")
     cfg["space"] = scalar(conf, "space")
     cfg["roots"] = re.findall(r'^\s*-?\s*page_id:\s*"?(\d+)"?', conf, re.M)
@@ -945,6 +945,40 @@ class Exporter(WikiMirror):
         return (f"{getattr(self, 'base_url', '')}/download/attachments/{page_id}/"
                 f"{urllib.parse.quote(name)}")
 
+    def folder_unsafe(self, full_folder: str) -> bool:
+        """Папка вложений — ссылка за пределы зеркала (или лежит внутри такой ссылки).
+
+        Закоммиченный symlink `<страница>_assets` на чужую папку превратил бы чистку и запись
+        вложений в удаление и перезапись файлов цели; кит такую угрозу уже знает
+        (`root_link_escapes`). Каталог-ссылка вообще не наш: в ней ничего не пишется и не чистится."""
+        if os.path.islink(full_folder):
+            return True
+        real_out = os.path.normcase(os.path.realpath(self.out))
+        real = os.path.normcase(os.path.realpath(full_folder))
+        if real != real_out and not real.startswith(real_out.rstrip(os.sep) + os.sep):
+            return True
+        return root_link_escapes(full_folder)
+
+    def refuse_folder(self, page_id: str, folder: str, names: list) -> str:
+        """Папка вложений небезопасна: ничего не качаем, страница ссылается на оригиналы."""
+        print(f"  ! {folder}: папка вложений — ссылка за пределы зеркала, вложения страницы "
+              f"{page_id} не сохранены", file=sys.stderr)
+        self.attach_failed += 1
+        lines, flines = [], []
+        for kind, name in sorted(set(names)):
+            orig = self.original_url(page_id, name)
+            if kind == "file":
+                self.asset_links[name] = orig
+                flines.append(f"- не скачан (папка вложений — ссылка): [{name}]({orig})")
+            else:
+                lines.append(f"- схема `{name}` — не скачана (папка вложений — ссылка)")
+        parts = []
+        if lines:
+            parts.append(SCHEMES_HEAD + "\n\n" + "\n".join(lines))
+        if flines:
+            parts.append(ATTACH_HEAD + "\n\n" + "\n".join(flines))
+        return "\n\n".join(parts)
+
     def save_assets(self, page_id: str, rel: str, names: list) -> str:
         """Скачать вложения страницы рядом с ней и вернуть разделы со ссылками на них.
 
@@ -974,6 +1008,8 @@ class Exporter(WikiMirror):
         base = os.path.splitext(os.path.basename(rel))[0]
         folder = os.path.join(os.path.dirname(rel), base + "_assets").replace("\\", "/")
         full_folder = os.path.join(self.out, folder)
+        if self.folder_unsafe(full_folder):
+            return self.refuse_folder(page_id, folder, names)
         ext = {"drawio": ".drawio", "mermaid": ".mmd"}
         known = ASSET_EXTS
         lines, flines, kept, referenced = [], [], set(), set()
@@ -1106,6 +1142,11 @@ class Exporter(WikiMirror):
             for old in sorted(os.listdir(full_folder)):
                 if old.startswith(".") or nfc(old).casefold() in keep:
                     continue
+                # Папка вложений — не место страниц зеркала: .md и подпапки (дети соседней
+                # страницы) чистка не трогает никогда.
+                if (os.path.splitext(old)[1].lower() in MIRROR_EXTS
+                        or not os.path.isfile(os.path.join(full_folder, old))):
+                    continue
                 try:
                     os.remove(os.path.join(full_folder, old))
                     self.assets_dropped += 1
@@ -1141,6 +1182,11 @@ class Exporter(WikiMirror):
         used = self.path_prefix() + (len(parent) + 1 if parent else 0)
         room = PATH_CHARS - used - need_after(has_children, has_assets)
         name = fit_part(name, page_id, room)
+        # `<страница>_assets/` — папка вложений соседа: страница с именем «X_assets» (заголовок
+        # «X assets») делила бы с ней одну папку, и чистка вложений трогала бы её детей.
+        # Такая страница получает номер, как при коллизии регистра.
+        if page_id and name.casefold().endswith("_assets"):
+            name = fit_part(name + f"_{page_id}", "", max(len(name) + len(page_id) + 1, room))
         # macOS и Windows не различают регистр: два соседних заголовка, отличные только
         # им, легли бы в один файл. Второму — номер страницы.
         key = (parent.casefold(), name.casefold())
@@ -1284,9 +1330,12 @@ class Exporter(WikiMirror):
             section = self.save_assets(page_id, rel, assets)
             md = self.expand_assets(md, page_id)
             md += "\n\n" + section
-        elif os.path.isdir(os.path.join(self.out, os.path.dirname(rel), os.path.splitext(
-                os.path.basename(rel))[0] + "_assets")):
-            # вложений в теле больше нет: копии прежних вложений убираются (список полученный)
+        elif (cached.get("assets") or "assets" not in cached) and os.path.isdir(os.path.join(
+                self.out, os.path.dirname(rel), os.path.splitext(os.path.basename(rel))[0]
+                + "_assets")):
+            # вложений в теле больше нет: копии прежних вложений убираются (список полученный).
+            # Только у страницы, у которой они были (или история неизвестна): папка
+            # `<имя>_assets` чужой страницы без вложений не наша.
             self.save_assets(page_id, rel, [])
         meta = {"id": page_id, "title": title, "space": data["space"]["key"],
                 "ry_defines": defines, "ry_links": links,
@@ -1367,18 +1416,21 @@ def prune_allowed(stale: list, records: int, failed: int) -> tuple:
     return True, ""
 
 
-def split_stale(stale: list, moved: dict) -> tuple:
+def split_stale(stale: list, moved: dict, live=()) -> tuple:
     """Лишнее в зеркале → (страницы и прочее лишнее, вложения уходящих страниц).
 
     Файлы `<страница>_assets/` страницы, которая переехала или исчезла, — не отдельные
     «лишние»: они уходят с ней (переезд убирает папку целиком в `follow_moves`) и ни в списке,
     ни в пороге чистки не считаются. Переехавшие страницы (`moved`) из списка уходят.
+    Файл, который есть в записях состояния (`live`), — страница, а не вложение и не лишнее:
+    ни в одном из двух списков его не бывает (иначе `--prune` удалил бы живую страницу).
     """
+    alive = {nfc(x).casefold() for x in live}
     gone = {nfc(s).casefold() for s in stale if not ASSET_DIR_RE.search(s)}
     gone |= {nfc(m).casefold() for m in moved}
     pages, riding = [], []
     for rel in stale:
-        if rel in moved:
+        if rel in moved or nfc(rel).casefold() in alive:
             continue
         m = ASSET_DIR_RE.search(rel)
         if m:
@@ -1530,7 +1582,7 @@ def main() -> int:
             print(moves_report(follow_moves(out, apply=True), apply=True))
         else:
             print("Перевести базу на новые пути и убрать старые копии: повторите с --prune")
-    stale, riding = split_stale(stale, moved)
+    stale, riding = split_stale(stale, moved, [rel for _, rel, _, _ in exp.records])
 
     def drop_riding() -> int:
         """Вложения ушедших страниц, которых не унёс `follow_moves`."""

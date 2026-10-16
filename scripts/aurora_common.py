@@ -2600,6 +2600,42 @@ def yaml_word(text: str, key: str, default: str = "") -> str:
     return next(g for g in m.groups() if g is not None).strip()
 
 
+def confluence_block(text: str) -> str:
+    """Кусок конфига от `confluence:` до `jira:` — блок Confluence, как его читает движок.
+
+    Одно правило на синк, настройку проекта и панель: отступ блока и комментарий после
+    двоеточия не важны. Раньше форма и `aurora_setup` читали блок разными регэкспами, и при
+    нестандартной записи панель показывала «все», а скрипт видел настоящий `none`."""
+    text = text or ""
+    if "confluence:" not in text:
+        return ""
+    return text.split("confluence:", 1)[-1].split("jira:", 1)[0]
+
+
+# Политика вложений Confluence (`atlassian.confluence.attachments` / `attachment_max_mb`):
+# режимы и умолчание живут здесь, синк, настройка проекта и панель берут их отсюда.
+ATTACH_MODES = ("all", "images", "none")
+ATTACH_MAX_MB = 100         # предел размера одного вложения, МБ; 0 — без предела
+
+
+def attachment_answers_problem(mode, max_mb, current_mb: str = "") -> str:
+    """Ответы формы по вложениям Confluence → "" (допустимо), "mode" или "limit".
+
+    Проверка до записи: опечатка в режиме молча давала бы самый разрешающий (`all`), а дробное
+    или отрицательное число — умолчание. `None` — поле не прислано, не проверяется. Предел,
+    уже лежащий в конфиге (`current_mb`) в прежнем виде, пропускается как есть: человек не
+    трогал поле, и отказывать ему не в чем. Причину называют вызывающие (скрипт настройки —
+    в терминале, панель — через каталог переводов)."""
+    if mode is not None and str(mode).strip().lower() not in ("",) + ATTACH_MODES:
+        return "mode"
+    if max_mb is not None and str(max_mb).strip():
+        mb = str(max_mb).strip()
+        kept = mb == current_mb and re.fullmatch(r"\d+([.,]\d+)?", mb)
+        if not re.fullmatch(r"\d{1,9}", mb) and not kept:
+            return "limit"
+    return ""
+
+
 def yaml_str(value: str) -> str:
     """Скаляр для ЗАПИСИ в конфиг: обычно в двойных кавычках, а при `"` внутри — в
     YAML-одинарных (там `"` легален, а `'` удваивается)."""

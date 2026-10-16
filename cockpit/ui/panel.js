@@ -4224,6 +4224,12 @@ function confAttachmentsRead(get){
   return {conf_attachments: CONF_ATTACH_MODES.includes(mode) ? mode : "all",
           conf_attachment_max_mb: get("confluence_attachment_max_mb")};
 }
+/* Политику сервер получает, только если человек её изменил: сохранение несвязанных полей
+   (имя, корни, Jira) политику не трогает, даже если форма показала её не так, как лежит в конфиге. */
+function confAttachmentsDrop(body, shown){
+  for (const k of Object.keys(shown)) if (body[k] === shown[k]) delete body[k];
+  return body;
+}
 function confAttachmentsFields(A, inp){
   return [
     el("label",{style:"display:block;margin-bottom:12px"},
@@ -4453,7 +4459,8 @@ async function renderProject(){
         });
         if (A.sync_roots.length < before){ drawRoots(); toast(t("proj.roots_deduped")); }
         const r = await api("/api/setup",{method:"POST",
-          body:JSON.stringify({project:S.project.path, ...A})});
+          body:JSON.stringify(confAttachmentsDrop({project:S.project.path, ...A},
+                                                  confAttachmentsRead(get)))});
         e.target.disabled = false;
         if (r.ok){
           toast(t("proj.saved"));

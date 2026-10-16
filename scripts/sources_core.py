@@ -470,6 +470,9 @@ class Mirror:
             # раскладки. PRJ-B 29.09.2026: папка прежней раскладки от 12.08 держала три
             # `_assets/` без единой страницы, и путь одного из них в 205 знаков doctor
             # звал на починку, а ни синк, ни аудит, ни `kb_names` его не видели.
+            n = nfc(rel)
+            if n in known_n or n.casefold() in known_ci:
+                continue      # запись состояния — страница, даже если лежит в `X_assets/`
             m = ASSET_DIR_RE.search(rel)
             if m:
                 page = rel[:m.end() - len("_assets/")]
@@ -478,9 +481,7 @@ class Mirror:
                     continue
                 out.append(rel)
                 continue
-            n = nfc(rel)
-            if n not in known_n and n.casefold() not in known_ci:
-                out.append(rel)
+            out.append(rel)
         return sorted(out)
 
     def prune(self, rels, keep=()) -> int:

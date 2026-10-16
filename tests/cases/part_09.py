@@ -2857,6 +2857,7 @@ def test_confluence_attachment_default_limit_is_the_same_everywhere(tmp: Path):
     """Умолчание предела вложения в манифесте коннектора и каталоге en совпадает с кодом (100 МБ)."""
     import importlib
     import json
+    import re
     sys.path.insert(0, str(SCRIPTS))
     CE = importlib.import_module("confluence_export")
     mb = f"{CE.ATTACH_MAX_MB:g}"
@@ -2866,6 +2867,24 @@ def test_confluence_attachment_default_limit_is_the_same_everywhere(tmp: Path):
     en = json.loads((KIT / "cockpit/i18n/data/en.json").read_text(encoding="utf-8"))
     hits = [(k, v) for k, v in _walk_strings(en) if "предел размера одного вложения" in k]
     assert hits and all(f"по умолчанию {mb};" in k and f"default {mb};" in v for k, v in hits), hits
+    # те же режим и умолчание — в скрипте настройки, форме панели, её каталогах и в обоих языках документации
+    S = importlib.import_module("aurora_setup")
+    C = importlib.import_module("aurora_common")
+    assert S.ATTACH_MODES is C.ATTACH_MODES is CE.ATTACH_MODES and S.ATTACH_MAX_MB == CE.ATTACH_MAX_MB == C.ATTACH_MAX_MB
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    m = re.search(r"const CONF_ATTACH_MODES = \[([^\]]*)\]", panel)
+    assert m and tuple(re.findall(r'"(\w+)"', m.group(1))) == tuple(CE.ATTACH_MODES), m and m.group(1)
+    for lang, hint in (("ru", f"пусто — {mb},"), ("en", f"empty — {mb},")):
+        cat = json.loads((KIT / f"cockpit/i18n/{lang}.json").read_text(encoding="utf-8"))
+        assert cat["proj.f_conf_att_max_ph"] == mb and hint in cat["proj.f_conf_att_max_hint"], (lang, cat["proj.f_conf_att_max_ph"])
+        assert all(f"proj.att_{v}" in cat for v in CE.ATTACH_MODES), lang
+    for rel, words in (("docs/connectors.md", ("по умолчанию 100", "attachment_max_mb: 100")),
+                       ("docs/en/connectors.md", ("attachment_max_mb: 100", "empty = 100"))):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert mb == "100" and all(w in text for w in words), (rel, words)
+    # одна проверка ответов на сервере и в скрипте настройки
+    assert C.attachment_answers_problem("imges", None) == "mode" and C.attachment_answers_problem("all", "1.5") == "limit"
+    assert C.attachment_answers_problem("IMAGES", " 40 ") == "" and C.attachment_answers_problem(None, "1.5", "1.5") == ""
 
 
 def _walk_strings(node):
@@ -3104,8 +3123,229 @@ console.log(JSON.stringify({fails}));
 
 @test
 def test_confluence_attachment_settings_are_documented_in_the_panel_guides(_t):
-    """Руководства (ru и en) и вики говорят, где править политику вложений: «Настройки проекта»."""
-    for rel in ("docs/connectors.md", "docs/en/connectors.md",
-                "wiki/Sources-and-Mirrors.md", "wiki/ru/Sources-and-Mirrors.md"):
+    """Руководства и вики называют место правки политики вложений рядом с `attachment_max_mb`.
+
+    В ru-файлах это «Настройки проекта», в en-файлах — «Project settings»: само имя ключа в
+    документах было и до появления поля в панели, поэтому проверяется то, что добавлено.
+    """
+    for rel, place in (("docs/connectors.md", "Настройки проекта"), ("docs/en/connectors.md", "Project settings"),
+                       ("wiki/Sources-and-Mirrors.md", "Project settings"),
+                       ("wiki/ru/Sources-and-Mirrors.md", "Настройки проекта")):
         text = (KIT / rel).read_text(encoding="utf-8")
-        assert "attachment_max_mb" in text, rel
+        i = text.index("attachment_max_mb")
+        assert place in text[max(0, i - 700):i + 1500], f"{rel}: рядом с attachment_max_mb нет «{place}»"
+
+
+def _two_design_pages(tmp: Path, root=None, force=True):
+    """Экспортёр, у которого есть страница «Design» (с вложением) и «Design assets» с ребёнком."""
+    CE, exp, root, _f = _attach_exporter(tmp, root=root, attachments={"law.pdf": "/d/law"},
+                                         page=_file_link("law.pdf"), force=force)
+    base_page, base_att = exp.api.page, exp.api.attachments
+    titles = {"5001": "Design", "5002": "Design assets", "5003": "Child"}
+
+    def page(pid):
+        d = dict(base_page(pid), title=titles[str(pid)])
+        if str(pid) != "5001":
+            d["body"] = {"storage": {"value": "<p>Просто текст</p>"}}
+        return d
+    exp.api.page = page
+    exp.api.children = lambda pid: ([{"id": "5003", "title": "Child", "version": {"number": 1}}]
+                                    if str(pid) == "5002" else [])
+    exp.api.attachments = lambda pid: base_att(pid) if str(pid) == "5001" else {}
+    return CE, exp, root
+
+
+@test
+def test_confluence_page_named_like_an_assets_folder_does_not_share_it(tmp: Path):
+    """Страницы «Design» и «Design assets» не делят папку: перечитывание первой не трогает вторую.
+
+    `safe_name("Design assets")` даёт `Design_assets` — то же имя, что у папки вложений страницы
+    «Design». Чистка вложений «Design» сносила index.md и детей соседа, а `--prune` называл их
+    вложениями. Теперь вторая получает номер, а чистка не трогает ни `.md`, ни подпапки.
+    """
+    CE, exp, root = _two_design_pages(tmp)
+    _in_root(root, lambda: (exp.walk("5001", []), exp.walk("5002", []), exp.write_state()))
+    mirror = root / "Sources/Confluence"
+    assert (mirror / "Design_assets/law.pdf").is_file(), sorted(str(p) for p in mirror.rglob("*"))
+    assert not (mirror / "Design_assets/index.md").exists(), "страница «Design assets» легла в папку вложений"
+    assert (mirror / "Design_assets_5002/index.md").is_file() and (mirror / "Design_assets_5002/Child.md").is_file(), \
+        sorted(str(p) for p in mirror.rglob("*"))
+    # перечитывание «Design» (теперь и без вложений) соседа не трогает
+    _CE, exp2, _r = _two_design_pages(tmp, root=root)
+    exp2.api.attachments = lambda pid: {}
+    exp2.api.page = (lambda orig: lambda pid: dict(orig(pid), body={"storage": {"value": "<p>Текст</p>"}}))(exp2.api.page)
+    _in_root(root, lambda: exp2.walk("5001", []))
+    assert not (mirror / "Design_assets").exists(), "папка вложений осталась"
+    assert (mirror / "Design_assets_5002/index.md").is_file() and (mirror / "Design_assets_5002/Child.md").is_file()
+    # страховка чистки: даже в папке вложений .md и подпапки остаются на месте
+    folder = mirror / "Design_assets"
+    (folder / "sub").mkdir(parents=True)
+    (folder / "sub/keep.txt").write_text("x", encoding="utf-8")
+    (folder / "Чужая.md").write_text("страница", encoding="utf-8")
+    (folder / "old.pdf").write_bytes(b"pdf")
+    _CE, exp3, _r = _two_design_pages(tmp, root=root)
+    exp3.api.page = (lambda orig: lambda pid: dict(orig(pid), body={"storage": {"value": "<p>Текст</p>"}}))(exp3.api.page)
+    _in_root(root, lambda: exp3.walk("5001", []))
+    assert (folder / "Чужая.md").is_file() and (folder / "sub/keep.txt").is_file(), "чистка тронула страницу или подпапку"
+    assert not (folder / "old.pdf").exists(), "вложение не убрано"
+    # страница, у которой вложений не было (запись кэша это помнит), чужую папку вовсе не чистит
+    _CE, exp4, _r = _two_design_pages(tmp, root=root)
+    exp4.api.page = (lambda orig: lambda pid: dict(orig(pid), body={"storage": {"value": "<p>Текст</p>"}}))(exp4.api.page)
+    _in_root(root, lambda: (exp4.walk("5001", []), exp4.save_cache()))
+    (folder / "neighbour.pdf").write_bytes(b"pdf")
+    _CE, exp5, _r = _two_design_pages(tmp, root=root, force=False)
+    exp5.api.page = (lambda orig: lambda pid: dict(orig(pid), body={"storage": {"value": "<p>Другой текст</p>"}}))(exp5.api.page)
+    _in_root(root, lambda: exp5.walk("5001", []))
+    assert (folder / "neighbour.pdf").is_file(), "страница без вложений почистила папку соседа"
+
+
+@test
+def test_confluence_prune_never_calls_live_pages_attachments(tmp: Path):
+    """Живая страница из `X_assets/` не попадает ни в «лишние», ни в «вложения уходящих страниц»."""
+    CE, exp, root = _two_design_pages(tmp)
+    mirror = root / "Sources/Confluence"
+    # зеркало прежней раскладки: страница «Design assets» лежит в Design_assets/, «Design» исчезла
+    for rel in ("Design_assets/index.md", "Design_assets/Child.md", "Design_assets/law.pdf", "Design.md"):
+        (mirror / rel).parent.mkdir(parents=True, exist_ok=True)
+        (mirror / rel).write_text("x", encoding="utf-8")
+    live = ["Design_assets/index.md", "Design_assets/Child.md"]
+    extra = exp.extra_files(live)
+    assert "Design_assets/index.md" not in extra and "Design_assets/Child.md" not in extra, extra
+    assert "Design.md" in extra, extra
+    pages, riding = CE.split_stale(["Design.md", "Design_assets/index.md", "Design_assets/Child.md",
+                                    "Design_assets/law.pdf"], {}, live)
+    assert "Design_assets/index.md" not in pages + riding and "Design_assets/Child.md" not in pages + riding, (pages, riding)
+    assert pages == ["Design.md"] and riding == ["Design_assets/law.pdf"], (pages, riding)
+
+
+@test
+def test_confluence_asset_folder_symlink_is_never_cleaned_or_written(tmp: Path):
+    """`<страница>_assets` — ссылка на чужую папку: синк в неё не пишет и из неё не удаляет."""
+    outside = _sub(tmp / "outside")
+    (outside / "foreign.txt").write_text("чужое", encoding="utf-8")
+    (outside / "law.pdf").write_bytes(b"theirs")
+    for tag, page in (("plain", "<p>Текст без вложений</p>"), ("withfile", _file_link("law.pdf"))):
+        sub = _sub(tmp / tag)
+        _CE, exp, root, _f = _attach_exporter(sub, attachments={"law.pdf": "/d/law"}, page=page)
+        mirror = root / "Sources/Confluence"
+        mirror.mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(str(outside), str(mirror / "Руководство_assets"), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            return          # нет прав на ссылки (Windows) — проверять нечего
+        _in_root(root, lambda: exp.walk("5001", []))
+        assert sorted(os.listdir(outside)) == ["foreign.txt", "law.pdf"], (tag, os.listdir(outside))
+        assert (outside / "law.pdf").read_bytes() == b"theirs" and (outside / "foreign.txt").is_file(), tag
+        assert os.path.islink(mirror / "Руководство_assets"), "ссылку заменили на папку"
+        if tag == "withfile":
+            md = (mirror / "Руководство.md").read_text(encoding="utf-8")
+            assert "(Руководство_assets/law.pdf)" not in md and "папка вложений" in md, md
+        (mirror / "Руководство_assets").unlink()
+        shutil.rmtree(str(outside), ignore_errors=True)
+        _sub(outside)
+        (outside / "foreign.txt").write_text("чужое", encoding="utf-8")
+        (outside / "law.pdf").write_bytes(b"theirs")
+
+
+@test
+def test_inline_links_regex_is_linear_and_stops_at_the_next_link(tmp: Path):
+    """INLINE_RE: стем ограничен и не заходит в соседнюю ссылку; текст из «](» не вешает kb:names."""
+    import importlib
+    import time
+    sys.path.insert(0, str(SCRIPTS))
+    N = importlib.import_module("kb_names")
+    importlib.reload(N)
+    # ссылка на вложение сразу за другой ссылкой, через любой знак без пробела
+    for sep in (",", ".", "|", "-", ";", ")"):
+        text = f"[a](#top){sep}[b](Стр_assets/i.png)"
+        found = [m.group("base") for m in N.INLINE_RE.finditer(text)]
+        assert found == ["Стр"], (sep, found)
+    # имя вида «[DRAFT]_Title» — стем целиком, а три прежних случая распознаются
+    assert N.INLINE_RE.search("[x]([DRAFT]_Title_assets/y.png)").group("base") == "[DRAFT]_Title"
+    assert N.INLINE_RE.search("[x](1%29_Общие_assets/law.pdf)").group("base") == "1%29_Общие"
+    assert N.INLINE_RE.search("[x](Дашборд_(Карта)_assets/law.pdf)").group("base") == "Дашборд_(Карта)"
+    assert N.INLINE_RE.search("[a](#top)![i](Стр_assets/i.png)").group("base") == "Стр"
+    # враждебный текст: каждое «](» не должно сканировать остаток строки
+    hostile = "](" * 20000 + "x"
+    t0 = time.process_time()
+    assert not N.INLINE_RE.findall(hostile)
+    N.INLINE_RE.sub("", hostile)
+    hostile2 = "](" + "a" * 50000
+    assert not N.INLINE_RE.findall(hostile2)
+    spent = time.process_time() - t0
+    assert spent < 2.0, f"INLINE_RE квадратичен: {spent:.1f} с"
+
+
+def _policy_project(tmp: Path, header: str, indent: str) -> Path:
+    """Проект, где блок confluence записан нестандартно: комментарий после двоеточия и свой отступ."""
+    root = make_project(tmp)
+    i, j = indent, indent * 2
+    (root / "aurora.config.yaml").write_text(
+        f'name: "Demo"\nslug: "demo"\natlassian:\n{i}confluence:{header}\n'
+        f'{j}base_url: "https://wiki.example.com"\n{j}space: "S"\n{j}attachments: none\n'
+        f'{j}attachment_max_mb: 5\n{j}sync_roots: []\n{i}jira:\n{j}base_url: ""\n'
+        'paths:\n  sources_confluence: Sources/Confluence\n', encoding="utf-8")
+    return root
+
+
+@test
+def test_unrelated_form_save_does_not_loosen_confluence_attachment_policy(tmp: Path):
+    """Блок confluence с комментарием или другим отступом: панель, мастер и синк читают одно и то же.
+
+    Раньше форма читала блок строгим регэкспом, показывала «все»/пусто и присылала `all`, а
+    скрипт настройки видел настоящий `none` и записывал `all`: любое несвязанное сохранение
+    формы меняло «не скачивать» и «5 МБ» на самое разрешающее.
+    """
+    import contextlib
+    import importlib
+    import io
+    sys.path.insert(0, str(KIT / "cockpit"))
+    sys.path.insert(0, str(SCRIPTS))
+    import aurora_cockpit as ck
+    S = importlib.import_module("aurora_setup")
+    importlib.reload(S)
+    CE = importlib.import_module("confluence_export")
+    importlib.reload(CE)
+    for tag, header, indent in (("comment", "   # вики", "  "), ("indent4", "", "    "),
+                                ("both", "  # вики", "    ")):
+        root = _policy_project(_sub(tmp / tag), header, indent)
+        cfgp = root / "aurora.config.yaml"
+        text = cfgp.read_text(encoding="utf-8")
+        shown = ck.config_values(text)
+        assert (shown["confluence_attachments"], shown["confluence_attachment_max_mb"]) == ("none", "5"), (tag, shown)
+        assert S.read_config(cfgp)["conf_attachments"] == "none", tag
+        parsed = CE.read_config(str(root))
+        assert (parsed["attachments"], parsed["attachment_max_mb"]) == ("none", 5.0), (tag, parsed)
+        # форма отправляет то, что показала: сохранение несвязанного поля политику не меняет
+        answers = {"name": "Другое имя", "conf_attachments": shown["confluence_attachments"],
+                   "conf_attachment_max_mb": shown["confluence_attachment_max_mb"]}
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            assert S.run_answers(root, answers) == 0
+            assert S.run_answers(root, {"name": "Ещё имя"}) == 0
+        after = CE.read_config(str(root))
+        assert (after["attachments"], after["attachment_max_mb"]) == ("none", 5.0), (tag, after)
+
+
+@test
+def test_confluence_policy_is_not_sent_by_the_form_unless_changed(tmp: Path):
+    """Панель присылает `conf_attachments` / `conf_attachment_max_mb`, только если их изменили."""
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    assert "confAttachmentsDrop({project:S.project.path, ...A}" in panel
+    node = shutil.which("node")
+    if not node:
+        return
+    a = panel.index("function confAttachmentsDrop(body, shown){")
+    fn = panel[a:panel.index("\n}\n", a) + 3]
+    code = fn + r"""
+const shown = {conf_attachments: "all", conf_attachment_max_mb: ""};
+const same = confAttachmentsDrop({name: "X", conf_attachments: "all", conf_attachment_max_mb: ""}, shown);
+const edited = confAttachmentsDrop({name: "X", conf_attachments: "none", conf_attachment_max_mb: ""}, shown);
+console.log(JSON.stringify({same, edited}));
+"""
+    src = tmp / "conf_drop.mjs"
+    src.write_text(code, encoding="utf-8")
+    cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+    assert cp.returncode == 0, cp.stderr[:800]
+    got = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert got["same"] == {"name": "X"}, got
+    assert got["edited"] == {"name": "X", "conf_attachments": "none"}, got

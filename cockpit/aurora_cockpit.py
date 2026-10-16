@@ -59,7 +59,8 @@ KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
-from aurora_common import (ENGINE_DIRS, child_env, engine_dir, head_value,  # noqa: E402
+from aurora_common import (ENGINE_DIRS, attachment_answers_problem, child_env, confluence_block,  # noqa: E402
+                           engine_dir, head_value,
                            ext_api_problem, ext_behind, ext_safe_relpath, is_folder_guide, kit_mcp_permission, load_manifest, local_view, mtime_stamp,
                            personal_kit_file, real_inside, real_rel, replace_file, same_origin, utc_slug, utc_stamp,
                            write_text_atomic, yaml_scalar, yaml_word)
@@ -2990,11 +2991,12 @@ def config_values(text: str) -> dict:
     """Скаляры формы настроек. `base_url` в конфиге два — у вики и у Jira, поэтому адрес
     Jira достаётся из её блока отдельным ключом."""
     out = {k: config_value(text, k) for k in FORM_SCALARS}
-    # Политика вложений лежит в блоке confluence и читается тем же правилом, что в движке:
-    # слово справа от ключа, комментарий в конце строки терпится. Пусто — ключа в конфиге нет.
-    conf = re.search(r"^  confluence:[ \t]*\n(.*?)(?=^  [A-Za-z_]+:|^\S|\Z)", text, re.M | re.S)
+    # Политика вложений лежит в блоке confluence и читается тем же правилом, что в движке и в
+    # скрипте настройки (`confluence_block`): слово справа от ключа, комментарий в конце строки
+    # терпится, отступ блока не важен. Пусто — ключа в конфиге нет.
+    conf = confluence_block(text)
     for key in ("attachments", "attachment_max_mb"):
-        out["confluence_" + key] = yaml_word(conf.group(1), key, "") if conf else ""
+        out["confluence_" + key] = yaml_word(conf, key, "") if conf else ""
     jira = text.split("\n  jira:", 1)[1].split("\n  auth:", 1)[0] if "\n  jira:" in text else ""
     out["jira_base_url"] = config_value(jira, "base_url") if jira else ""
     return out
@@ -3006,15 +3008,12 @@ def attachment_answers_error(answers: dict, cfg_text: str) -> str:
     Проверка до записи: опечатка в режиме молча давала бы самый разрешающий (`all`), а дробное
     или отрицательное число — умолчание. Предел, уже лежащий в конфиге в прежнем виде, форма
     пропускает как есть: человек не трогал поле, и отказывать ему не в чем."""
-    mode = answers.get("conf_attachments")
-    if mode is not None and str(mode).strip().lower() not in ("", "all", "images", "none"):
+    why = attachment_answers_problem(answers.get("conf_attachments"), answers.get("conf_attachment_max_mb"),
+                                     config_values(cfg_text)["confluence_attachment_max_mb"])
+    if why == "mode":
         return "Вложения Confluence: допустимо «все», «только картинки» или «не скачивать»"
-    mb = answers.get("conf_attachment_max_mb")
-    if mb is not None and str(mb).strip():
-        mb = str(mb).strip()
-        kept = mb == config_values(cfg_text)["confluence_attachment_max_mb"] and re.fullmatch(r"\d+([.,]\d+)?", mb)
-        if not re.fullmatch(r"\d{1,9}", mb) and not kept:
-            return "Предел размера вложения Confluence: нужно целое число МБ от 0 (0 — без предела)"
+    if why == "limit":
+        return "Предел размера вложения Confluence: нужно целое число МБ от 0 (0 — без предела)"
     return ""
 
 
