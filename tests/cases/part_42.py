@@ -5067,7 +5067,9 @@ def test_cards_page_guards_unsaved_settings_and_survives_a_failure(_t):
     """Страница: уход из «Настроек проекта» с несохранённым спрашивает подтверждение (как из «Настройки»), а сбой группы «Типы
     карточек» не уносит строку переходов и остальное под ней — он уходит в `showFault`."""
     panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
-    show = panel[panel.index("function show(view, payload){"):]
+    start = re.search(r"function show\(view, payload[^)]*\)\{", panel)       # подпись растёт (opts у автопереходов): не пинуем её
+    assert start, "функция show не найдена"
+    show = panel[start.start():]
     show = show[:show.index("\n}\n")]
     assert 'if (S.view === "setup" && view !== "setup" && !confirmLeave()) return;' in show
     assert 'if (S.view === "project" && view !== "project" && !confirmLeave()) return;' in show
