@@ -172,11 +172,14 @@ flowchart LR
   itself and loads on demand. The modules' contract — [cockpit/modules/README.md](../../cockpit/modules/README.md) (in Russian).
   A section's life cycle is optional and opt-in: a section with no extra exports works as before (the core calls its
   `refresh` on every event). `export const lifecycle = 1` makes it update lazily (`refresh` only while it is on screen;
-  a hidden one is marked stale, and `refresh` is called when it is opened anyway), `export const refreshOn = ["health"]` names the events besides
+  a hidden one gets no `refresh`, and it is called when the section is opened anyway), `export const refreshOn = ["health"]` names the events besides
   `data` it redraws on, `onShow` / `onHide` / `dispose` hooks start and stop timers and polls, and `ctx.on(event, fn)`
   subscribes a hidden section to a core event (only for a section with `lifecycle = 1`; otherwise it is ignored); `ctx.api_version` tells the section which `ctx` it got.
   Every section in the kit declares its life cycle: `export const lifecycle = 1` or, if a hidden redraw must keep running,
   a line `// lifecycle: legacy — <reason>` in the first 20 lines of `view.js`; a test enforces it and the list of legacy sections does not grow.
+  A kit section survives a core older than its `ctx` fields (a tab opened before a kit update): `ctx.on` is called only after
+  a check. Data a section keeps between visits (the graph) is tied to the project and dropped when it changes; an unsaved form
+  edit (Models, Bots) survives a return to the section.
 - **The interface is translated** by catalogues `cockpit/i18n/<lang>.json` (the core) and `modules/<id>/i18n/` (the
   sections): Russian and English. What the server itself hands out — command and flag descriptions, routes, skin names,
   connector descriptions, the doctor's findings, error messages — is translated by the table

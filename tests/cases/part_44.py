@@ -468,7 +468,7 @@ const check = (ok, what) => { if (!ok) fails.push(what); };
 const log = [];
 const tickAll = () => new Promise(r => setTimeout(r, 5));
 function add(id, mod, ns){
-  MODULES.set(id, {manifest: {id}, mod, ns: ns || null, section: {classList: {toggle: NOOP}}, subs: null, stale: false, shown: false});
+  MODULES.set(id, {manifest: {id}, mod, ns: ns || null, section: {classList: {toggle: NOOP}}, subs: null, shown: false});
   return MODULES.get(id);
 }
 const mk = (id, extra) => Object.assign({
@@ -487,21 +487,21 @@ const mk = (id, extra) => Object.assign({
   await refreshModules();
   const count = (s) => log.filter(x => x === s).length;
   check(count("L.refresh") === 1, "раздел без экспортов: refresh на «data» как прежде, а их " + count("L.refresh"));
-  check(count("H.refresh") === 0 && hidden.stale === true, "скрытый lifecycle-раздел: 0 refresh и stale=true");
-  check(count("V.refresh") === 1 && visible.stale === false, "видимый lifecycle-раздел: ровно один refresh");
+  check(count("H.refresh") === 0 && !("stale" in hidden), "скрытый lifecycle-раздел: 0 refresh, пометки stale в записи нет");
+  check(count("V.refresh") === 1, "видимый lifecycle-раздел: ровно один refresh");
   check(count("R.refresh") === 1, "старый раздел с refreshOn на «data» тоже обновляется");
-  check(count("SUB.fn") === 1 && count("SUB.refresh") === 0 && sub.stale === false,
+  check(count("SUB.fn") === 1 && count("SUB.refresh") === 0,
         "подписчик скрытого раздела получает fn, а не refresh");
   log.length = 0;
   await dispatchModules("health");
   check(log.join() === "R.refresh", "«health» зовёт только refreshOn-разделы, а позвал: " + log.join());
-  // ленивый раздел с refreshOn на «health»: на виду — refresh, скрытый — stale
+  // ленивый раздел с refreshOn на «health»: на виду — refresh, скрытому ничего не приходит
   add("HW", mk("HW"), {lifecycle: 1, refreshOn: ["health"]});
   add("VW", mk("VW"), {lifecycle: 1, refreshOn: ["health"]}); 
   S.view = "VW";
   log.length = 0;
   await dispatchModules("health");
-  check(log.includes("VW.refresh") && !log.includes("HW.refresh") && MODULES.get("HW").stale, "refreshOn у lifecycle-разделов: на виду refresh, скрытый — stale: " + log.join());
+  check(log.includes("VW.refresh") && !log.includes("HW.refresh"), "refreshOn у lifecycle-разделов: на виду refresh, скрытому ничего: " + log.join());
   // healthChanged: часть чужого проекта никого не будит, своего — зовёт «health»
   S.project = {name: "mine"}; S.health = null;
   log.length = 0;
@@ -591,7 +591,7 @@ const mk = (id, extra) => Object.assign({
   check(faults.length === 1 && faults[0].includes("onHide") && faults[0].includes("хук упал"), "сбой хука показан одним сообщением: " + faults.join("|"));
 
   // 4. раздел не поднялся: dispose и чистое состояние
-  const rec = {manifest: {id: "D"}, mod: null, ns: null, section: null, subs: null, stale: false, shown: false};
+  const rec = {manifest: {id: "D"}, mod: null, ns: null, section: null, subs: null, shown: false};
   MODULES.set("D", rec);
   let disposed = 0;
   IMPORT = async () => ({default: {mount(ctx){ ctx.on("data", NOOP); throw new Error("mount упал"); }, dispose(){ disposed++; }}});
@@ -730,7 +730,7 @@ async function load(id){
   return ns;
 }
 function register(id, ns){
-  MODULES.set(id, {manifest: {id}, mod: ns.default || ns, ns, section: node(), subs: null, stale: false, shown: false, hooks: null});
+  MODULES.set(id, {manifest: {id}, mod: ns.default || ns, ns, section: node(), subs: null, shown: false, hooks: null});
   return MODULES.get(id);
 }
 const apiCount = (c, part) => c.calls.filter(p => p.includes(part)).length;
@@ -751,7 +751,6 @@ const apiCount = (c, part) => c.calls.filter(p => p.includes(part)).length;
     check(apiCount(c, "/api/about") === 1, "about на виду: один /api/about на «data», а " + apiCount(c, "/api/about"));
     S.view = "other"; await dispatchModules("data"); await dispatchModules("data");
     check(apiCount(c, "/api/about") === 1, "about скрыт: «data» не зовёт /api/about, а их " + apiCount(c, "/api/about"));
-    check(MODULES.get("about").stale === true, "about скрыт: помечен устаревшим");
     check(faults.length === 0, "about: сбой refresh " + faults.join("|"));
     MODULES.delete("about");
   }
@@ -759,7 +758,7 @@ const apiCount = (c, part) => c.calls.filter(p => p.includes(part)).length;
   // ---- models: скрытый раздел не стирает несохранённую правку и не зовёт /api/models
   {
     const cfg = {providers: [], capabilities: {llm: {roles: []}, ocr: {roles: []}, embeddings: {roles: []}}};
-    const c = mkctx("models", (p) => p.startsWith("/api/models") ? {models: cfg, projects: [], path: "x"} : {});
+    const c = mkctx("models", (p) => p.startsWith("/api/models") ? {ok: true, models: cfg, projects: [], path: "x"} : {});
     ns.models.mount(c); register("models", ns.models);
     S.view = "models"; ELS.length = 0;
     await dispatchModules("data");
@@ -778,6 +777,20 @@ const apiCount = (c, part) => c.calls.filter(p => p.includes(part)).length;
     pingBtn().attrs.onclick(); await tick();
     check(c.toasts.includes("models.ping_save_first") && c.calls.length === 0,
           "models скрыт: несохранённая правка не должна пропасть от «data»: " + c.toasts.join() + "|" + c.calls.join());
+    // человек вернулся в раздел: ядро зовёт refresh при каждом открытии — правка остаётся на месте, без запроса
+    // к серверу и без сброса признака (раньше refresh безусловно перечитывал /api/models и стирал правку)
+    S.view = "models"; ELS.length = 0; c.calls.length = 0; c.toasts.length = 0;
+    await ns.models.refresh(c);
+    check(c.calls.length === 0, "models: открытие с несохранённой правкой не ходит на сервер: " + c.calls.join());
+    check(ELS.some(e => e.kids.includes("models.unsaved")), "models: после открытия форма снова нарисована с пометкой «не сохранено»");
+    pingBtn().attrs.onclick(); await tick();
+    check(c.toasts.includes("models.ping_save_first"), "models: после открытия правка жива (DIRTY не сброшен): " + c.toasts.join());
+    // сохранение снимает признак и перечитывает настройку с сервера
+    c.calls.length = 0; c.toasts.length = 0;
+    ELS.filter(e => e.kids.includes("models.save")).pop().attrs.onclick(); await tick();
+    check(c.calls[0] === "/api/models/save" && c.calls.slice(1).includes("/api/models"), "models: сохранение и перечитывание: " + c.calls.join());
+    c.calls.length = 0; pingBtn().attrs.onclick(); await tick();
+    check(!c.toasts.includes("models.ping_save_first") && apiCount(c, "/api/agent/ping") === 1, "models: после сохранения «Проверить» работает: " + c.toasts.join() + "|" + c.calls.join());
     check(faults.length === 0, "models: сбой refresh " + faults.join("|"));
     MODULES.delete("models");
   }
@@ -1012,7 +1025,7 @@ function gate(){ let release; const p = new Promise(r => { release = r; }); retu
   // ---- каждый раздел с lifecycle: скрытому «data» не зовёт refresh, видимому — ровно один раз; N синтетических
   {
     const counts = {};
-    const put = (id, nsx, mod) => MODULES.set(id, {manifest: {id}, mod, ns: nsx, section: node(), subs: null, stale: false, shown: false, hooks: null});
+    const put = (id, nsx, mod) => MODULES.set(id, {manifest: {id}, mod, ns: nsx, section: node(), subs: null, shown: false, hooks: null});
     for (const id of ids){ counts[id] = 0; put(id, ns[id], {refresh: async () => { counts[id]++; }}); }
     const N = 10;
     for (let i = 0; i < N; i++){            // синтетика: половина объявляет lifecycle именованным экспортом, половина — в default
@@ -1023,9 +1036,7 @@ function gate(){ let release; const p = new Promise(r => { release = r; }); retu
     S.view = "none";
     await dispatchModules("data");
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
-    const stale = [...MODULES.values()].filter(r => r.stale).length;
     check(total === 0, "скрытые разделы: «data» дало " + total + " вызовов refresh: " + JSON.stringify(counts));
-    check(stale === ids.length + N, "скрытые разделы: stale у " + stale + " из " + (ids.length + N));
     for (const id of ids){
       S.view = id; await dispatchModules("data");
       const others = Object.entries(counts).filter(([k, v]) => k !== id && v !== 0);
@@ -1054,7 +1065,6 @@ function gate(){ let release; const p = new Promise(r => { release = r; }); retu
     check(pending(30).length === 0, "graph onHide: таймер подгонки снят");
     await dispatchModules("data"); await dispatchModules("data");
     check(apiCount(c, "/api/graph") === 1 && cyMade === 1, "graph скрыт: «data» ни запроса, ни раскладки");
-    check(MODULES.get("graph").stale === true, "graph скрыт: помечен устаревшим");
     S.view = "graph";
     await ns.graph.refresh(c); await ns.graph.onShow(c);
     check(cyMade === 2 && cyAlive === 1, "graph onShow: граф собран заново (одна раскладка): " + cyMade + "/" + cyAlive);
@@ -1173,7 +1183,7 @@ function gate(){ let release; const p = new Promise(r => { release = r; }); retu
     // скрытому «data» не нужен
     S.view = "other"; c.calls.length = 0;
     await dispatchModules("data");
-    check(c.calls.length === 0 && MODULES.get("work").stale === true, "work скрыт: «data» без запросов, но с пометкой stale: " + c.calls.join());
+    check(c.calls.length === 0, "work скрыт: «data» без запросов: " + c.calls.join());
     check(faults.length === 0, "work: сбои " + faults.join("|"));
     MODULES.delete("work");
   }
@@ -1225,7 +1235,6 @@ function gate(){ let release; const p = new Promise(r => { release = r; }); retu
     await dispatchModules("data");
     check(apiCount(c, "/api/gitsync") === 1 && project.git_alert === true && reloads === 1,
           "gitsync скрыт: подписка выставила отметку (запросов " + apiCount(c, "/api/gitsync") + ", alert " + project.git_alert + ", reload " + reloads + ")");
-    check(MODULES.get("gitsync").stale === false, "gitsync: у раздела с подпиской пометка stale не нужна");
     await dispatchModules("data");
     check(reloads === 1, "gitsync: отметка не меняется — здоровье не пересчитывается снова: " + reloads);
     check(faults.length === 0, "gitsync: сбои " + faults.join("|"));
@@ -1253,6 +1262,67 @@ function gate(){ let release; const p = new Promise(r => { release = r; }); retu
     check(faults.length === 0, "gitsync: сбои (смена проекта) " + faults.join("|"));
     MODULES.delete("gitsync");
   }
+  // ---- gitsync: проект сменили, пока шёл первый запрос раздела на виду, — форма и отметка новому проекту не достаются
+  {
+    let reloads = 0;
+    const first = {path: "/p", git_alert: false}, second = {path: "/q", git_alert: false};
+    const g = gate();
+    const c = baseCtx("gitsync", async () => { await g.p; return {status: {}, last: {up: {ok: false, trigger: "auto"}}, settings: {}}; },
+                      {project: first, reloadHealth: () => { reloads++; }});
+    register("gitsync", ns.gitsync);
+    S.view = "gitsync";
+    const run = ns.gitsync.refresh(c).catch(e => fails.push("gitsync: refresh упал: " + e));
+    c.project = second;
+    g.release(); await run;
+    check(first.git_alert === false && second.git_alert === false && reloads === 0,
+          "gitsync: refresh, ответ про прежний проект ничего не ставит новому (alert " + second.git_alert + ", reload " + reloads + ")");
+    MODULES.delete("gitsync");
+  }
+
+  // ---- graph: смена проекта между onHide и открытием — новый запрос, граф прежнего проекта не рисуется
+  {
+    const mkg = id => ({nodes: [{id, title: id, path: id + ".md"}], edges: [], orphans: 1, when: 0});
+    const project = {path: "/A"};
+    const c = baseCtx("graph", p => p.includes("%2FB") ? mkg("b") : mkg("a"), {project});
+    $q("#graphDepth").value = "2";
+    evnode("#graphFind");
+    const gns = await import(pathToFileURL(@DIR@ + "/modules/graph/view.js").href + "?proj");
+    register("graph", gns);
+    gns.mount(c);
+    S.view = "graph"; const alive0 = cyAlive;
+    await gns.refresh(c, {card: "a"}); await gns.onShow(c);
+    check(apiCount(c, "/api/graph") === 1 && cyLast.nodes().map(n => n.id()).join() === "a", "graph(проект A): граф A");
+    S.view = "other"; await gns.onHide(c);
+    c.project = {path: "/B"};
+    S.view = "graph";
+    await gns.refresh(c); await gns.onShow(c);
+    check(apiCount(c, "/api/graph") === 2 && c.calls[1].includes("%2FB"), "graph: после смены проекта новый запрос про B: " + c.calls.join());
+    check(cyAlive === alive0 + 1 && cyLast.nodes().map(n => n.id()).join() === "b", "graph: рисуется граф B, не A: " + cyLast.nodes().map(n => n.id()).join());
+    await gns.refresh(c);
+    check(apiCount(c, "/api/graph") === 2, "graph: тот же проект — данные не перечитываются");
+    // запрос про прежний проект вернулся после смены: ответ отбрасывается
+    const g = gate();
+    const c2 = baseCtx("graph", async p => { if (p.includes("%2FC")) await g.p; return mkg(p.includes("%2FC") ? "c" : "d"); }, {project: {path: "/C"}});
+    register("graph", gns);
+    const made = cyMade;
+    const run = gns.refresh(c2);
+    c2.project = {path: "/D"};
+    g.release(); await run;
+    check(cyMade === made, "graph: запоздавший ответ про прежний проект не рисуется");
+    await gns.refresh(c2);
+    check(cyLast.nodes().map(n => n.id()).join() === "d", "graph: после гонки рисуется граф нового проекта");
+    await gns.onHide(c2);
+    MODULES.delete("graph");
+  }
+
+  // ---- раздел кита не падает в mount на ctx без новых полей (вкладка открыта до обновления кита, ядро старше)
+  for (const id of @ALL@){
+    const mod = await loadView(id);
+    const old = baseCtx(id, () => ({}));
+    delete old.on; delete old.api_version; delete old.lifecycle;
+    try { await (mod.default && mod.default.mount || mod.mount)?.(old); }
+    catch (e) { fails.push(id + ": mount падает на ctx без новых полей: " + e); }
+  }
   console.log(JSON.stringify({fails}));
 })().catch(e => { fails.push("исключение: " + (e && e.stack || e)); console.log(JSON.stringify({fails})); });
 """
@@ -1260,11 +1330,12 @@ function gate(){ let release; const p = new Promise(r => { release = r; }); retu
 
 @test
 def test_remaining_sections_are_lazy_and_release_what_they_hold(tmp: Path):
-    """Остальные разделы панели ленивы: у каждого с `lifecycle = 1` скрытому «data» даёт 0 вызовов refresh и пометку
-    stale (и на 10 синтетических тоже), видимому — один вызов; «Граф» уничтожает cytoscape и снимает таймер подгонки в
+    """Остальные разделы панели ленивы: у каждого с `lifecycle = 1` скрытому «data» даёт 0 вызовов refresh
+    (и на 10 синтетических тоже), видимому — один вызов; «Граф» уничтожает cytoscape и снимает таймер подгонки в
     onHide и собирает граф в onShow (из фоновой загрузки граф не рисуется); «Продуктивность» гасит таймер подсказок и не
     открывает список ответом, пришедшим после ухода, а результат задания ждёт возвращения; «Спросить» не стирает
-    ответ, дошедший у скрытого раздела; «Git» ведёт отметку в меню подпиской на «data». Реальные view.js под node с
+    ответ, дошедший у скрытого раздела; «Git» ведёт отметку в меню подпиской на «data» и не принимает ответ про прежний проект; «Граф» после смены проекта
+    запрашивает граф заново и не рисует чужой; mount каждого раздела кита выдерживает ctx без `on`. Реальные view.js под node с
     подставным DOM и таймерами (node нет — проверка пропускается)."""
     views = _module_views()
     lazy = sorted(mid for mid, text in views.items() if _declared_life(text)[0])
@@ -1294,7 +1365,8 @@ def test_remaining_sections_are_lazy_and_release_what_they_hold(tmp: Path):
     code = (SECTIONS_PRELUDE + SECTIONS_BODY)
     code = (code.replace("@MODULES@", cut("const MODULES = new Map();", "function moduleTitle"))
             .replace("@DISPATCH@", cut("async function dispatchModules", "// Подписи разделов в меню"))
-            .replace("@DIR@", json.dumps(str(root))).replace("@IDS@", json.dumps(lazy)))
+            .replace("@DIR@", json.dumps(str(root))).replace("@IDS@", json.dumps(lazy))
+            .replace("@ALL@", json.dumps(sorted(views))))
     src = root / "sections.mjs"
     src.write_text(code, encoding="utf-8")
     import subprocess

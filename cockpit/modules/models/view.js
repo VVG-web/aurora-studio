@@ -27,6 +27,9 @@ export function mount(ctx){
 export async function refresh(ctx, payload){
   // Пришли из подсказки или окна запуска за конкретным вызовом — сразу на «Где работают».
   if (payload && payload.call){ TAB = "calls"; FOCUS = payload.call; }
+  // Несохранённая правка формы — человека: возврат в раздел перерисовывает её из памяти, без запроса
+  // к серверу и без сброса признака (как у «Ботов»). Сохранение и «Отменить» сами снимают DIRTY.
+  if (DIRTY && M){ draw(ctx); return; }
   const d = await ctx.api("/api/models", {quiet: true});
   if (!d || !d.models) return ctx.toast((d && d.error) || ctx.t("models.load_failed"), "err");
   DATA = d;
@@ -122,6 +125,7 @@ async function save(ctx){
   if (!r || !r.ok) return ctx.toast((r && r.error) || t("models.save_failed"), "err");
   ctx.toast(t("models.saved"), "ok");
   (r.notes || []).forEach(n => ctx.toast(n, "warn"));
+  DIRTY = false;                 // сохранено: refresh обязан перечитать настройку с сервера
   await refresh(ctx);
 }
 
@@ -607,7 +611,7 @@ function callCard(ctx, c){
     c.after ? el("div", {class: "muted", style: "font-size:12.5px;margin-top:4px"}, c.after) : null);
 }
 
-// Жизнь раздела (cockpit/modules/README.md): скрытые «Модели» не ходят на /api/models на каждое событие и не затирают несохранённую правку формы;
-// настройка читается при показе.
+// Жизнь раздела (cockpit/modules/README.md): скрытые «Модели» не ходят на /api/models на каждое событие;
+// настройка читается при показе, а несохранённую правку формы refresh не затирает (DIRTY).
 export const lifecycle = 1;
 export default {mount, refresh};

@@ -4605,7 +4605,7 @@ async function loadModules(){
     // Скрытому профилем разделу toast не нужен: его нет в меню, и открыть его нельзя.
     if (m.warn && m.warn.length && !m.hidden)
       toast(t("modules.warn", {id: m.id, why: m.warn.join("; ")}), "warn");
-    MODULES.set(m.id, {manifest: m, mod: null, ns: null, section: null, subs: null, stale: false, shown: false, hooks: null});
+    MODULES.set(m.id, {manifest: m, mod: null, ns: null, section: null, subs: null, shown: false, hooks: null});
     if (!m.hidden) addModuleNav(m);       // скрытый профилем: запись есть (подписи, адрес), кнопки нет
     if (m.behind && !m.hidden)
       console.warn(`модуль ${m.id} собран под ядро ${m["for"]}, установлено ${S.state.kit.version}`);
@@ -4688,7 +4688,7 @@ async function mountModule(id, payload){
     }catch(e){
       // Раздел, успевший начать работу, освобождает то, что занял (таймеры, подписки).
       if (rec.mod) await callHook(id, rec, "dispose");
-      rec.mod = null; rec.ns = null; rec.subs = null; rec.stale = false; rec.shown = false; rec.hooks = null;
+      rec.mod = null; rec.ns = null; rec.subs = null; rec.shown = false; rec.hooks = null;
       if (rec.section){ rec.section.remove(); rec.section = null; }
       toast(t("modules.failed", {id, why: e.message}), "err");
       return;
@@ -4699,7 +4699,7 @@ async function mountModule(id, payload){
   // графе». Без него раздел пришлось бы дёргать через глобальную переменную.
   // Сбой первой отрисовки — сообщение, но не повод лишать раздел `onShow`: он на экране, и
   // опросу, который он запускает, ещё предстоит выровнять картину.
-  try { await rec.mod.refresh?.(moduleCtx(id, rec.section), payload); rec.stale = false; }
+  try { await rec.mod.refresh?.(moduleCtx(id, rec.section), payload); }
   catch (e){ showFault(t("modules.refresh_failed", {id, why: e.message})); }
   // Раздел всё ещё на виду (человек мог уйти, пока шла отрисовка) и ещё не показан: `onShow`.
   if (S.view === id && !rec.shown){
@@ -4716,8 +4716,9 @@ async function refreshModules(){ await dispatchModules("data"); }
 // Событие ядра — разделам. Раздел без `lifecycle` ведёт себя как прежде: «data» перерисовывает
 // его всегда, другое событие — только если он назвал его в `refreshOn`. Раздел с
 // `export const lifecycle = 1` перерисовывается лишь на виду; скрытому достаётся подписка
-// `ctx.on(event, fn)`, а у не подписанного ставится `rec.stale`; при открытии раздел всё равно
-// отрисовывается целиком (пометка пока лишь сведение для будущего пропуска повторной отрисовки). Так скрытые разделы не строят карточки и не ходят за данными на каждое событие.
+// `ctx.on(event, fn)`, а не подписанный не получает ничего; при открытии раздел всё равно
+// отрисовывается целиком (`mountModule` зовёт `refresh` при каждом открытии). Так скрытые разделы
+// не строят карточки и не ходят за данными на каждое событие.
 async function dispatchModules(event = "data"){
   const one = async (id, rec) => {
     if (!rec.mod) return;           // раздел мог не подняться, пока шла очередь
@@ -4734,14 +4735,13 @@ async function dispatchModules(event = "data"){
       } else if (event === "data" || named || (subs && subs.size)){
         if (S.view === id){
           await rec.mod.refresh?.(moduleCtx(id, rec.section));
-          rec.stale = false;
         } else if (subs && subs.size){
           // Подписчики не мешают друг другу: сбой одного — сообщение, остальные зовутся.
           for (const fn of [...subs]){
             try { await fn(moduleCtx(id, rec.section)); }
             catch (e){ showFault(t("modules.refresh_failed", {id, why: event + ": " + e.message})); }
           }
-        } else rec.stale = true;
+        }
       }
     }
     catch (e){ showFault(t("modules.refresh_failed", {id, why: e.message})); }

@@ -10,8 +10,20 @@ const LIMIT = 900;
 
 // keep — состояние картинки, оставленное при уходе из раздела: позиции узлов, масштаб, сдвиг и признак
 // «большой граф показан по просьбе человека». big — последний собранный граф был больше LIMIT.
+// project — путь проекта, чей граф лежит в data: при смене проекта чужой граф не рисуем.
 const G = {data: null, cy: null, focus: "", anyway: false, fitKey: "", fitTimer: null,
-           keep: null, big: false, depth: 2};
+           keep: null, big: false, depth: 2, project: ""};
+
+// Выбрали другой проект: граф прежнего, картинка, фокус и «показать всё равно» к новому не относятся.
+function forget(ctx){
+  clearTimeout(G.fitTimer);
+  G.fitTimer = null;
+  if (G.cy){ try { G.cy.destroy(); } catch (e) {} G.cy = null; }
+  G.data = null; G.keep = null; G.focus = ""; G.fitKey = ""; G.big = false; G.anyway = false;
+  G.project = "";
+  const find = ctx.$("#graphFind");
+  if (find) find.value = "";
+}
 
 // Насколько разводить узлы. Одной раскладки на все базы не бывает: сорок карточек и
 // четыреста требуют разного, и «чёрный клубок» — это не свойство графа, а неподходящий
@@ -129,6 +141,7 @@ export async function refresh(ctx, payload){
   // этого нужно загрузиться — зовущему знать об этом незачем.
   const card = payload && payload.card
     ? payload.card.split("/").pop().replace(/\.md$/, "") : "";
+  if (G.project !== (ctx.project ? ctx.project.path : "")) forget(ctx);
   if (!G.data || card) await load(ctx, false);
   if (!card || !G.data) return;
   if (!G.data.nodes.some(n => n.id === card))
@@ -142,13 +155,17 @@ async function load(ctx, rebuild){
   const note = ctx.$("#graphNote");
   if (!ctx.project){ note.textContent = ctx.t("graph.pick_project"); return; }
   note.textContent = ctx.t("graph.loading");
+  const path = ctx.project.path;
   // Пересчёт запускает обход базы — это действие, поэтому POST; чтение из кэша — GET.
   const d = await (rebuild
     ? ctx.api("/api/graph", {method: "POST", quiet: true,
         body: JSON.stringify({project: ctx.project.path, rebuild: true})})
     : ctx.api("/api/graph?project=" + encodeURIComponent(ctx.project.path), {quiet: true}));
+  // Проект успели сменить, пока шёл запрос: ответ про прежний, новому он не принадлежит.
+  if (!ctx.project || ctx.project.path !== path) return;
   if (d.error){ note.textContent = d.error; return; }
   G.data = d;
+  G.project = path;
   ctx.$("#graphStamp").textContent = ctx.t("graph.when",
     {when: d.when ? ctx.fmt.when(d.when) : "—"});
   // Пересчёт сорвался, а картинка прежняя — сказать вслух. Молча показанный вчерашний

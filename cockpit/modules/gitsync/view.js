@@ -31,7 +31,8 @@ export function mount(ctx){
   ctx.root.dataset.module = "gitsync";
   // Скрытому разделу перерисовка не нужна, а отметка «!» в меню должна жить: на «data» ядро зовёт
   // эту подписку вместо refresh — читаем состояние и ведём отметку, форму не трогаем.
-  ctx.on("data", badge);
+  // У ядра старше этого поля (вкладка открыта до обновления кита) подписки нет — раздел обходится без неё.
+  if (typeof ctx.on === "function") ctx.on("data", badge);
 }
 
 async function badge(ctx){
@@ -66,8 +67,11 @@ export async function refresh(ctx, payload){
 const clone = x => JSON.parse(JSON.stringify(x));
 
 async function load(ctx, keepForm){
-  const d = await ctx.api("/api/gitsync?project=" + encodeURIComponent(ctx.project.path),
+  const path = ctx.project.path;
+  const d = await ctx.api("/api/gitsync?project=" + encodeURIComponent(path),
                           {quiet: true});
+  // Проект успели сменить, пока шёл запрос: ответ про прежний, форму и отметку он не трогает.
+  if (!ctx.project || ctx.project.path !== path) return;
   if (!d || d.error || !d.status){
     ctx.$("#gitsyncBody").textContent = (d && d.error) || ctx.t("gitsync.load_failed");
     return;
