@@ -972,10 +972,22 @@ function evnode(sel){
   dom[sel] = n; return n;
 }
 let cyMade = 0, cyAlive = 0;
-globalThis.cytoscape = () => {
+let cyLast = null;
+globalThis.cytoscape = (opts) => {
   cyMade++; cyAlive++;
-  return {destroyed: false, destroy(){ this.destroyed = true; cyAlive--; }, on(){}, fit(){}, style(){},
-          batch(f){ f(); }, nodes(){ return []; }};
+  const cy = {destroyed: false, destroy(){ this.destroyed = true; cyAlive--; }, on(){}, fit(){}, style(){},
+              batch(f){ f(); }, z: 1, p: {x: 0, y: 0}, opts, zoom(){ return this.z; }, pan(){ return this.p; },
+              viewport(v){ this.z = v.zoom; this.p = v.pan; this.vp = v; }};
+  // узлы: позиция берётся из preset-раскладки, а при случайной (cose) каждый раз иная
+  const pre = opts.layout && opts.layout.name === "preset";
+  const pos = {};
+  const list = (opts.elements || []).filter(e => !e.data.source).map(e => ({
+    id: () => e.data.id, data: () => e.data,
+    position: () => pos[e.data.id]}));
+  list.forEach(n => { const id = n.id(); pos[id] = pre ? opts.layout.positions({id: () => id}) : {x: Math.random() * 1000, y: Math.random() * 1000}; });
+  cy.nodes = () => list;
+  cyLast = cy;
+  return cy;
 };
 globalThis.window = globalThis;
 globalThis.getComputedStyle = () => ({getPropertyValue: () => ""});
@@ -1046,7 +1058,7 @@ function gate(){ let release; const p = new Promise(r => { release = r; }); retu
     await ns.graph.refresh(c); await ns.graph.onShow(c);
     check(cyMade === 2 && cyAlive === 1, "graph onShow: граф собран заново (одна раскладка): " + cyMade + "/" + cyAlive);
     check(apiCount(c, "/api/graph") === 1, "graph при возврате не перечитывает данные: " + apiCount(c, "/api/graph"));
-    check(pending(30).length === 1, "graph при возврате снова подгоняется под окно");
+    check(pending(30).length === 0, "graph при возврате ставит прежний масштаб и не подгоняет заново");
     await ns.graph.onShow(c);
     check(cyMade === 2, "graph: повторный onShow не перекладывает граф");
     // загрузка, ушедшая в фон, граф в скрытом контейнере не рисует: его соберёт onShow
@@ -1058,6 +1070,56 @@ function gate(){ let release; const p = new Promise(r => { release = r; }); retu
     check(cyMade === before + 1 && cyAlive === 1, "graph: onShow дорисовал граф после фоновой загрузки");
     check(faults.length === 0, "graph: сбои " + faults.join("|"));
     MODULES.delete("graph");
+  }
+
+  // ---- graph: уход и возврат сохраняют картинку (позиции, масштаб, сдвиг), большой граф не просит «всё равно» снова
+  {
+    const mk = n => ({nodes: Array.from({length: n}, (_, i) => ({id: "n" + i, title: "N" + i, path: "n" + i + ".md"})),
+                      edges: [], orphans: n, when: 0});
+    for (const size of [5, 905]){
+      const graph = mk(size);
+      const c = baseCtx("graph", () => graph);
+      $q("#graphDepth").value = "2";
+      evnode("#graphFind");
+      const outBtn = evnode("#graphOut");
+      const gns = await import(pathToFileURL(@DIR@ + "/modules/graph/view.js").href + "?k" + size);   // свежий модуль: своё G
+      // кнопка «всё равно» создаётся через ctx.el: считаем её появления в журнале ELS
+      const warns = () => ELS.filter(e => e.tag === "button" && e.attrs.onclick).length;
+      timers.length = 0;
+      const base = cyAlive; let seen = warns();
+      const warned = () => { const w = warns() > seen; seen = warns(); return w; };
+      register("graph", gns);
+      gns.mount(c);
+      S.view = "graph";
+      await dispatchModules("data");
+      if (size > 900){
+        check(warned() && cyAlive === base, "graph(" + size + "): без «всё равно» граф не строится");
+        ELS.filter(e => e.tag === "button" && e.attrs.onclick).pop().attrs.onclick();
+      }
+      check(cyAlive === base + 1, "graph(" + size + "): граф собран");
+      cyLast.viewport({zoom: 2.5, pan: {x: 33, y: -7}});
+      const was = Object.fromEntries(cyLast.nodes().map(n => [n.id(), n.position()]));
+      warned();
+      S.view = "other"; await gns.onHide(c);
+      S.view = "graph"; await gns.onShow(c);
+      check(cyAlive === base + 1 && cyLast.opts.layout.name === "preset", "graph(" + size + "): возврат строит граф по сохранённым позициям: " + (cyLast.opts.layout || {}).name);
+      check(!warned(), "graph(" + size + "): возврат не показывает предупреждение «слишком большой граф»");
+      const now = Object.fromEntries(cyLast.nodes().map(n => [n.id(), n.position()]));
+      check(JSON.stringify(now) === JSON.stringify(was), "graph(" + size + "): позиции узлов те же");
+      check(cyLast.z === 2.5 && cyLast.p.x === 33 && cyLast.p.y === -7, "graph(" + size + "): масштаб и сдвиг те же");
+      check(pending(30).length === 0, "graph(" + size + "): подгонку под окно не повторяем");
+      // сменили разброс, пока раздел скрыт, — прежняя раскладка не подходит, строим заново
+      S.view = "other"; await gns.onHide(c);
+      outBtn.fire("click");
+      S.view = "graph"; await gns.onShow(c);
+      if (size > 900) check(warned(), "graph(" + size + "): после смены разброса «всё равно» спрашивается заново");
+      else check(cyLast.opts.layout.name === "cose", "graph(" + size + "): после смены разброса раскладка считается заново");
+      S.view = "other"; await gns.onHide(c);
+      MODULES.delete("graph");
+      for (const k of Object.keys(dom)) delete dom[k];
+      timers.length = 0;
+    }
+    check(faults.length === 0, "graph(keep): сбои " + faults.join("|"));
   }
 
   // ---- work: onHide гасит отложенный запрос подсказки; задание, дошедшее у скрытого раздела, ждёт возвращения
@@ -1166,6 +1228,28 @@ function gate(){ let release; const p = new Promise(r => { release = r; }); retu
     await dispatchModules("data");
     check(reloads === 1, "gitsync: отметка не меняется — здоровье не пересчитывается снова: " + reloads);
     check(faults.length === 0, "gitsync: сбои " + faults.join("|"));
+    MODULES.delete("gitsync");
+  }
+
+  // ---- gitsync: проект сменили, пока шёл запрос, — отметка и пересчёт здоровья чужому проекту не достаются
+  {
+    let reloads = 0;
+    const first = {path: "/p", git_alert: false}, second = {path: "/q", git_alert: false};
+    const g = gate();
+    const c = baseCtx("gitsync", async () => { await g.p; return {status: {}, last: {up: {ok: false, trigger: "auto"}}, settings: {}}; },
+                      {project: first, reloadHealth: () => { reloads++; }});
+    register("gitsync", ns.gitsync);
+    ns.gitsync.mount(c);
+    S.view = "other";
+    const run = dispatchModules("data");
+    c.project = second;                       // выбрали другой проект, пока git-подпроцесс отвечает
+    g.release(); await run;
+    check(first.git_alert === false && second.git_alert === false && reloads === 0,
+          "gitsync: ответ про прежний проект ничего не ставит новому (alert " + second.git_alert + ", reload " + reloads + ")");
+    c.project = {path: "/q", git_alert: false};   // ядро подменяет объект проекта при обновлении состояния — путь тот же
+    await dispatchModules("data");
+    check(c.project.git_alert === true && reloads === 1, "gitsync: тот же проект (новый объект) отметку получает");
+    check(faults.length === 0, "gitsync: сбои (смена проекта) " + faults.join("|"));
     MODULES.delete("gitsync");
   }
   console.log(JSON.stringify({fails}));

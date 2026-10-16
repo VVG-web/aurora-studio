@@ -8,7 +8,10 @@
 // узлов вешает вкладку целиком, и это выглядит как поломка панели, а не как «много».
 const LIMIT = 900;
 
-const G = {data: null, cy: null, focus: "", anyway: false, fitKey: "", fitTimer: null};
+// keep — состояние картинки, оставленное при уходе из раздела: позиции узлов, масштаб, сдвиг и признак
+// «большой граф показан по просьбе человека». big — последний собранный граф был больше LIMIT.
+const G = {data: null, cy: null, focus: "", anyway: false, fitKey: "", fitTimer: null,
+           keep: null, big: false, depth: 2};
 
 // Насколько разводить узлы. Одной раскладки на все базы не бывает: сорок карточек и
 // четыреста требуют разного, и «чёрный клубок» — это не свойство графа, а неподходящий
@@ -187,15 +190,22 @@ function draw(ctx){
   if (ctx.view !== "graph") return;
   const box = ctx.$("#graphBox");
   const depth = parseInt(ctx.$("#graphDepth").value, 10) || 2;
+  G.depth = depth;
   const want = G.focus ? neighbourhood(G.focus, depth) : null;
   const nodes = want ? G.data.nodes.filter(n => want.has(n.id)) : G.data.nodes;
   const ids = new Set(nodes.map(n => n.id));
   const edges = G.data.edges.filter(e => ids.has(e.from) && ids.has(e.to));
+  // Вернулись в раздел: ту же картинку (тот же фокус, глубина, разброс, те же узлы) ставим, как
+  // она была, — раскладка случайная, и иначе человек видит другой клубок, а большой граф,
+  // показанный «всё равно», снова упирается в предупреждение. Состояние тратится на одну сборку.
+  const keep = G.keep && G.keep.focus === G.focus && G.keep.depth === depth
+    && G.keep.spread === SPREAD && nodes.every(n => G.keep.pos[n.id]) ? G.keep : null;
+  G.keep = null;
   // Порог считаем по тому, что реально пойдёт в раскладку, а не по тому, откуда набор
   // взялся: у карточки-концентратора окрестность оказывается почти всей базой.
   // Порог — предупреждение с проходом, а не запрет: решать за человека, что ему не
   // нужен большой граф, мы не вправе — разброс как раз и делает такой граф читаемым.
-  if (nodes.length > LIMIT && !G.anyway){
+  if (nodes.length > LIMIT && !G.anyway && !(keep && keep.big)){
     const note = ctx.$("#graphNote");
     note.innerHTML = "";
     note.append(document.createTextNode(G.focus
@@ -205,10 +215,12 @@ function draw(ctx){
         G.anyway = true; draw(ctx); G.anyway = false;
       }}, ctx.t("graph.anyway")));
     if (G.cy){ G.cy.destroy(); G.cy = null; }
+    G.big = false;
     box.innerHTML = "";
     return;
   }
   if (G.cy){ G.cy.destroy(); G.cy = null; }
+  G.big = nodes.length > LIMIT;
   const degree = Object.fromEntries(nodes.map(n => [n.id, 0]));
   for (const e of edges){ degree[e.from]++; degree[e.to]++; }
   G.degree = degree;
@@ -225,13 +237,17 @@ function draw(ctx){
     // `fit: false` намеренно: с автоподгонкой раскладка всегда вписывается в окно, и
     // «развести узлы» гасится обратным масштабированием — человек жмёт «+», а картинка
     // не меняется. Первый показ подгоняем сами, дальше масштаб в руках человека.
-    layout: {name: "cose", animate: false, fit: false, randomize: true,
+    layout: keep ? {name: "preset", fit: false, positions: n => keep.pos[n.id()]}
+      : {name: "cose", animate: false, fit: false, randomize: true,
              nodeRepulsion: Math.round(9000 * SPREAD * SPREAD),
              idealEdgeLength: Math.round(60 * SPREAD),
              nestingFactor: 1.2, gravity: 1 / SPREAD},
     wheelSensitivity: 0.25
   });
-  if (G.fitKey !== G.focus + "|" + depth){
+  if (keep){
+    G.fitKey = G.focus + "|" + depth;        // масштаб и сдвиг — человека, подгонку не повторяем
+    try { G.cy.viewport({zoom: keep.zoom, pan: keep.pan}); } catch (e) {}
+  } else if (G.fitKey !== G.focus + "|" + depth){
     G.fitKey = G.focus + "|" + depth;
     G.fitTimer = setTimeout(() => { G.fitTimer = null; try { G.cy.fit(undefined, 40); } catch (e) {} }, 30);
   }
@@ -311,10 +327,19 @@ function setSpread(ctx, v){
 
 // Граф держит в памяти экземпляр cytoscape с раскладкой и обработчиками, а скрытому разделу он
 // не нужен: на уходе экземпляр уничтожается и таймер подгонки снимается, данные (`G.data`) остаются.
+// Картинка запоминается (позиции, масштаб, сдвиг), чтобы возврат не показывал другой клубок.
 function release(){
   clearTimeout(G.fitTimer);
   G.fitTimer = null;
-  if (G.cy){ G.cy.destroy(); G.cy = null; }
+  if (G.cy){
+    try {
+      const pos = {};
+      G.cy.nodes().forEach(n => { const p = n.position(); pos[n.id()] = {x: p.x, y: p.y}; });
+      G.keep = {pos, zoom: G.cy.zoom(), pan: G.cy.pan(), focus: G.focus, big: G.big, spread: SPREAD,
+                depth: G.depth};
+    } catch (e) { G.keep = null; }
+    G.cy.destroy(); G.cy = null;
+  }
   G.fitKey = "";                 // вернулись — первый показ снова подгоняем под окно
 }
 

@@ -35,10 +35,13 @@ export function mount(ctx){
 }
 
 async function badge(ctx){
-  if (!ctx.project) return;
-  const d = await ctx.api("/api/gitsync?project=" + encodeURIComponent(ctx.project.path),
+  const p = ctx.project;
+  if (!p) return;
+  const d = await ctx.api("/api/gitsync?project=" + encodeURIComponent(p.path),
                           {quiet: true});
-  if (d && !d.error && d.status) syncAlert(ctx, d);
+  // Проект успели сменить, пока шёл запрос: ответ про прежний, чужому проекту отметку не ставим
+  // (объект проекта ядро подменяет при каждом обновлении состояния, поэтому сверяем путь).
+  if (d && !d.error && d.status && ctx.project && ctx.project.path === p.path) syncAlert(ctx, d);
 }
 
 // Отметка «!» на пункте меню — та же, что считает сервер (git_sync.alert): последняя
