@@ -392,7 +392,7 @@ aurora-studio/
 ├── scripts/                  the engine; scripts/agents/ — Pydantic AI and graphify adapters
 ├── skills/                   aurora-vault · aurora-grill · aurora-dev
 ├── connectors/               confluence-dc · jira-dc · web (connector.json + SKILL.md)
-├── cockpit/                  server, ui/, modules/, skins/, i18n/, vendor/, scenarios.txt
+├── cockpit/                  server, ui/, modules/, skins/, profiles/, i18n/, vendor/, scenarios.txt
 ├── templates/                AGENTS, config, sample .env, launch files, meta/
 ├── scaffold/                 Templates · TemplatesCommon · Prompts — the starter content
 ├── reports/analyst/          the analyst-efficiency dashboard
@@ -458,7 +458,7 @@ shares with them only the API-version rule (`ext_api_problem`), and Git provider
 not by the loader (details in ["Manifest envelope and API version"](connectors.md#manifest-envelope-and-api-version)):
 
 - `id` is required; for a section, a connector and a Git provider it equals the folder name
-  (`cockpit/modules/<id>/`, `connectors/<id>/`, `gitproviders/<id>/`), for a skin the file name;
+  (`cockpit/modules/<id>/`, `connectors/<id>/`, `gitproviders/<id>/`), for a skin and a profile the file name;
   a connector's `id` also gives the `.aurora/connectors/<id>.json` name; unique within a kind;
 - a title, as a string or per language (a section must have the Russian one);
 - `api_version` is optional, no field means `1`; newer than the engine knows (`EXT_API_VERSION`)

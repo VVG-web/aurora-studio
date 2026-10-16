@@ -28,7 +28,8 @@ export async function renderRoutes(ctx, group, box){
         onclick: () => ctx.show("overview")}, t("routes.to_bridge"))));
     return;
   }
-  (d.scenarios || []).filter(sc => (sc.group || "база") === group)   // данные движка
+  // Профиль машины прячет маршруты (`hidden`), но не запрещает: запуск по id им доступен.
+  (d.scenarios || []).filter(sc => !sc.hidden && (sc.group || "база") === group)   // данные движка
     .forEach(sc => box.append(routeCard(ctx, sc)));
 }
 

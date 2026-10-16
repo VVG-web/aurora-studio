@@ -130,7 +130,8 @@ DOC_ROOTS = ("docs", "skills/aurora-vault", "CHANGELOG.md", "commands.txt", "REA
 SKINS_DIR = os.path.join(KIT, "cockpit", "skins")
 MODULES_DIR = os.path.join(KIT, "cockpit", "modules")
 PROFILES_DIR = os.path.join(KIT, "cockpit", "profiles")       # пресеты ролей кита (BL-ARC-04)
-PROFILE_FILE = os.path.join(KIT, "local", "profile.json")     # выбор профиля на этой машине
+# Выбор профиля на этой машине; `AURORA_PROFILE_FILE` — другой путь (так прогон тестов не видит выбор владельца).
+PROFILE_FILE = os.environ.get("AURORA_PROFILE_FILE") or os.path.join(KIT, "local", "profile.json")
 
 
 def skins() -> list:
@@ -1705,6 +1706,9 @@ def _text_lists(m: dict, key: str, pre: str, warn: list):
         return None
     items = [x for x in m[key] if isinstance(x, str) and x.strip()]
     if len(items) != len(m[key]):
+        if not items:       # ни одной годной строки: список непустой, но смысла не несёт — как «поля нет»
+            warn.append("%s: в списке «%s» нет ни одной непустой строки — поле не применено" % (pre, key))
+            return None
         warn.append("%s: в списке «%s» не только непустые строки — лишнее отброшено" % (pre, key))
     return items
 
@@ -1737,6 +1741,9 @@ def profiles() -> list:
             continue
         warn = list(rep)
         pre = "profile «%s»" % name
+        if not isinstance(m["name"], (str, dict)) or not m["name"]:
+            out.append({"id": name, "error": "пустое name — у профиля должно быть название"})
+            continue
         item = {"id": name, "name": m["name"], "about": m.get("about", ""),
                 "modules": _text_lists(m, "modules", pre, warn),
                 "scenarios": _text_lists(m, "scenarios", pre, warn)}
@@ -1786,7 +1793,8 @@ def profiles_state(lang: str) -> dict:
         if "error" in r:
             warn.append("профиль «%s» не принят: %s" % (r["id"], r["error"]))
         warn.extend(r.get("warn", []))
-    warn.extend(act["warn"])
+    # Предупреждения пресета выбранного профиля уже в строке пресета: второй раз их не берём.
+    warn.extend(w for w in act["warn"] if w not in warn)
     return {"profiles": localized_profiles([r for r in rows if "error" not in r], lang),
             "active": act["id"], "warn": warn}
 
@@ -1820,6 +1828,20 @@ def scenarios(all_routes: bool = False) -> list:
     rows = all_scenarios()
     keep = None if all_routes else active_profile().get("scenarios")
     return rows if keep is None else [r for r in rows if r["id"] in keep]
+
+
+def scenarios_payload(lang: str, everything: bool = False) -> list:
+    """Маршруты для `/api/scenarios`. `everything` — все, скрытые профилем с пометкой `hidden`.
+
+    Панель запускает маршруты по зашитому id (плитки «Починить», «Обновить базу»), возобновляет
+    их и подписывает историю: профиль только прячет, поэтому ей нужен полный список, а показывает
+    она лишь не помеченные. Без `everything` — то, что видит человек.
+    """
+    if not everything:
+        return localized_scenarios(scenarios(), lang)
+    shown = {r["id"] for r in scenarios()}
+    return [r if r["id"] in shown else dict(r, hidden=True)
+            for r in localized_scenarios(all_scenarios(), lang)]
 
 
 def all_scenarios() -> list:
@@ -5739,7 +5761,7 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/about":
             self.send_json(about())
         elif u.path == "/api/scenarios":
-            self.send_json({"scenarios": localized_scenarios(scenarios(), request_lang(q))})
+            self.send_json({"scenarios": scenarios_payload(request_lang(q), q.get("all", [""])[0] == "1")})
         elif u.path == "/api/route/live":
             self.send_json(route_live(q.get("id", [""])[0],
                                       int((q.get("since") or ["0"])[0] or 0)))
@@ -5765,8 +5787,9 @@ class Handler(BaseHTTPRequestHandler):
                               for p in find_projects(self.server.roots)]
             # Боты проектов — для шага «бот» цепочки: проект → его боты (1.163.0).
             st["bots"] = {p["path"]: bots_brief(p["path"]) for p in st["projects"]}
+            # Cron запускает, а не показывает: ему нужны все маршруты, профиль их лишь прячет.
             st["routes"] = [{"id": r["id"], "title": r["title"], "group": r["group"]}
-                            for r in localized_scenarios(scenarios(), request_lang(q))]
+                            for r in localized_scenarios(all_scenarios(), request_lang(q))]
             self.send_json(st)
         elif u.path == "/api/cron/live":
             # Поток идущей цепочки для Консоли — со строки `since` (1.167.0).

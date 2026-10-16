@@ -532,6 +532,8 @@
     "имя «all» занято профилем «всё» — файл не используется": "the name «all» is taken by the built-in profile «everything» — the file is not used",
     "профиль «{}» не принят: {}": "profile «{}» was not accepted: {}",
     "{}: в списке «{}» не только непустые строки — лишнее отброшено": "{}: the list «{}» holds more than non-empty strings — the extras were dropped",
+    "{}: в списке «{}» нет ни одной непустой строки — поле не применено": "{}: the list «{}» has no non-empty string — the field was not applied",
+    "пустое name — у профиля должно быть название": "empty name — a profile must have a title",
     "local/profile.json не читается ({}) — взят профиль «all»": "local/profile.json cannot be read ({}) — profile «all» taken",
     "local/profile.json: нет поля id — взят профиль «all»": "local/profile.json: there is no id field — profile «all» taken",
     "профиль «{}» не найден среди пресетов — взят профиль «all»": "profile «{}» is not among the presets — profile «all» taken",

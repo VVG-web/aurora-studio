@@ -1436,3 +1436,113 @@ def test_profile_manifest_is_checked_by_the_common_loader(tmp: Path):
         assert len(got["warn"]) == 4, got["warn"]
     finally:
         undo()
+
+
+def _hide_all_but_first(ck, tmp: Path):
+    """Профиль «role» с одним видимым маршрутом; вернуть (откат, id всех, id скрытого)."""
+    full = [r["id"] for r in ck.all_scenarios()]
+    assert len(full) >= 3, full
+    undo, _ = _with_profiles(ck, tmp, {
+        "role.json": {"id": "role", "name": "Роль", "scenarios": [full[0]]}}, choice={"id": "role"})
+    return undo, full, full[1]
+
+
+@test
+def test_profile_hides_routes_only_in_the_view_not_in_cron_and_terminal(tmp: Path):
+    """Расписание Cron и `aurora.py route` берут все маршруты кита: профиль скрывает, но не запрещает.
+
+    Скрытый маршрут проходит проверку задания (`clean_task`); несуществующий — `bad_route`; ответ
+    терминала на незнакомый маршрут перечисляет все маршруты кита, а не только видимые."""
+    ck = _ck()
+    import cron
+    import route_runner as RR
+    undo, full, hidden = _hide_all_but_first(ck, tmp)
+    try:
+        assert [r["id"] for r in ck.scenarios()] == [full[0]]
+        projects = [{"name": "A", "path": "/p/a"}]
+
+        def step(route):
+            return {"name": "N", "time": "20:00", "steps": [{"kind": "route", "project": "*", "route": route}]}
+        task, err = cron.clean_task(ck, step(hidden), projects)
+        assert not err and task["steps"][0]["route"] == hidden, (task, err)
+        assert cron.clean_task(ck, step("no-such-route"), projects)[1] == "bad_route"
+        proj = tmp / "proj"
+        proj.mkdir()
+        (proj / "aurora.config.yaml").write_text("project: demo\n", encoding="utf-8")
+        err_out = io.StringIO()
+        with contextlib.redirect_stderr(err_out):
+            rc = RR.main([str(proj), "no-such-route"])
+        assert rc == 2, rc
+        listed = err_out.getvalue().split("Есть:")[1].replace("\n", "").split(", ")
+        assert [x.strip() for x in listed] == full, listed
+    finally:
+        undo()
+
+
+@test
+def test_profile_hidden_routes_stay_reachable_for_the_panel_and_cron_editor(tmp: Path):
+    """`/api/cron` отдаёт редактору все маршруты; `/api/scenarios` — видимые, а с `all=1` — все,
+    скрытые с `hidden: true` (кнопки по зашитому id и подписи истории ищут по полному списку)."""
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+    ck = _ck()
+    undo, full, hidden = _hide_all_but_first(ck, tmp)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), ck.Handler)
+    srv.roots = [str(tmp)]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def get(path):
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=60)
+        c.request("GET", path, headers={"X-Aurora-Token": ck.TOKEN})
+        r = c.getresponse()
+        return json.loads(r.read().decode("utf-8"))
+    try:
+        assert [r["id"] for r in get("/api/scenarios")["scenarios"]] == [full[0]]
+        rows = get("/api/scenarios?all=1")["scenarios"]
+        assert [r["id"] for r in rows] == full, "в полном списке порядок и состав файла сценариев"
+        assert [r["id"] for r in rows if r.get("hidden")] == [i for i in full if i != full[0]]
+        assert [r["id"] for r in get("/api/cron")["routes"]] == full, "редактор Cron видит все маршруты"
+    finally:
+        srv.shutdown()
+        undo()
+    ui = (KIT / "cockpit" / "ui" / "panel.js").read_text(encoding="utf-8")
+    assert '"/api/scenarios"' not in ui, "панель ищет маршрут по урезанному списку профиля"
+    routes = (KIT / "cockpit" / "modules" / "quickstart" / "routes.js").read_text(encoding="utf-8")
+    assert "!sc.hidden" in routes, "Быстрый старт показывает и скрытые профилем маршруты"
+
+
+@test
+def test_profile_warnings_are_not_doubled_and_empty_fields_do_not_hide_everything(tmp: Path):
+    """Активный пресет с одним предупреждением даёт его один раз; список, где отброшено всё, —
+    «поля нет» (видно всё), а не «скрыть всё»; пустое name — отказ пресета с причиной."""
+    ck = _ck()
+    full = [r["id"] for r in ck.all_scenarios()]
+    undo, _ = _with_profiles(ck, tmp, {
+        "once.json": {"id": "once", "name": "Один", "modules": ["work", 7], "scenarios": [full[0]]},
+        "junk.json": {"id": "junk", "name": "Мусор", "scenarios": [7, ""], "modules": ["", None]},
+        "blank.json": {"id": "blank", "name": ""},
+        "empty.json": {"id": "empty", "name": "Пусто", "scenarios": []}}, choice={"id": "once"})
+    try:
+        got = ck.profiles_state("ru")
+        mine = [w for w in got["warn"] if "«once»" in w]
+        assert len(mine) == 1 and "modules" in mine[0], got["warn"]
+        rows = {r["id"]: r for r in ck.profiles()[1:]}
+        assert rows["junk"]["scenarios"] is None and rows["junk"]["modules"] is None, rows["junk"]
+        assert len(rows["junk"]["warn"]) == 2, rows["junk"]
+        assert "error" in rows["blank"] and "name" in rows["blank"]["error"], rows["blank"]
+        assert rows["empty"]["scenarios"] == [], "явный пустой список — скрыть всё, это не ошибка"
+        _put(Path(ck.PROFILE_FILE), {"id": "junk"})
+        assert ck.active_profile()["scenarios"] is None
+        assert [r["id"] for r in ck.scenarios()] == full, "список из мусора не должен прятать маршруты"
+    finally:
+        undo()
+
+
+@test
+def test_tests_do_not_see_the_owners_profile(tmp: Path):
+    """Прогон тестов не читает настоящий `local/profile.json`: выбор роли на машине не меняет `scenarios()`."""
+    ck = _ck()
+    assert Path(ck.PROFILE_FILE) != KIT / "local" / "profile.json", ck.PROFILE_FILE
+    assert not Path(ck.PROFILE_FILE).exists()
+    assert [r["id"] for r in ck.scenarios()] == [r["id"] for r in ck.all_scenarios()]

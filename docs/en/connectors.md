@@ -106,7 +106,7 @@ The manifest is JSON, not YAML: it is read by the engine, not by a human, and ha
 ## Manifest envelope and API version
 
 A single shared loader reads manifests: `load_manifest(path, kind)` in `scripts/aurora_common.py`
-(BL-ARC-44). Each kind the loader reads (`connector`, `module`) has its own mini-schema; what they
+(BL-ARC-44). Each kind the loader reads (`connector`, `module`, `profile`) has its own mini-schema; what they
 share is the "envelope": `id`, `api_version`, a title (a string or per language) and `requires`.
 Skins and Git providers are not read by the loader. A skin header is parsed by `cockpit.skins()`,
 and it shares one rule with the manifests, the version check (`ext_api_problem`: the header field

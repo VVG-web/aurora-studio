@@ -97,6 +97,9 @@ REGISTRY: list = []
 # Тесты, которым нужно кольцо из нескольких бэкендов, объявляют его сами через окружение:
 # слой окружения изоляция не трогает.
 os.environ["AURORA_TESTS_ISOLATED"] = "1"
+# Профиль рабочего места (BL-ARC-04) выбирает владелец в `local/profile.json`; прогон его не видит:
+# иначе список маршрутов в проверках зависел бы от роли, выбранной на машине. Файла по этому пути нет.
+os.environ.setdefault("AURORA_PROFILE_FILE", os.path.join(os.environ["AURORA_TESTS_HOME"], "no-profile.json"))
 for _k in [k for k in os.environ if k.startswith("AURORA_AGENT_BACKEND_")]:
     del os.environ[_k]
 # То же для привязок ключа к серверу и разрешения открытого http: стоят в оболочке разработчика —

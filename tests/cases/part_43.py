@@ -755,9 +755,10 @@ def test_panel_shows_why_a_skin_was_rejected(tmp: Path):
 @test
 def test_loader_has_no_dead_schemas(tmp: Path):
     """Схемы без читателя в боевом коде не живут: у скина шапку разбирает панель, у провайдера Git
-    — `git_sync`; загрузчик такие виды не знает и отвечает причиной."""
+    — `git_sync`; загрузчик такие виды не знает и отвечает причиной. У вида `profile` читатель
+    боевой: `cockpit.profiles()` (профиль рабочего места, BL-ARC-04)."""
     import aurora_common as C
-    assert set(C.EXT_SCHEMAS) == {"connector", "module"}, sorted(C.EXT_SCHEMAS)
+    assert set(C.EXT_SCHEMAS) == {"connector", "module", "profile"}, sorted(C.EXT_SCHEMAS)
     for kind in ("skin", "provider"):
         got, rep = C.load_manifest(_write(tmp / "x.json", {"id": "x"}), kind)
         assert got is None and "неизвестен" in rep[0], (kind, rep)

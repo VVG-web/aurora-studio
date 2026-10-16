@@ -1971,7 +1971,7 @@ function metricCard(o){
 // Действие карточки: либо запуск маршрута с подтверждением, либо список, с которым надо
 // разбираться. Ведём туда, где решают проблему, а не туда, где о ней написано подробнее.
 const goRoute = (id, label) => ({label, llm: "route:" + id, act: async () => {
-  const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
+  const d = S.scenarios || (S.scenarios = await api("/api/scenarios?all=1"));
   const sc = (d.scenarios||[]).find(s=>s.id===id);
   if (!sc) return toast(t("run.not_found_route"), "warn");
   runRoute(sc, true);
@@ -3182,7 +3182,7 @@ async function runRoute(sc, write, resume){
     // заводим второй поверх.
     if (res && res.route){
       toast(res.error || "", "warn");
-      const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
+      const d = S.scenarios || (S.scenarios = await api("/api/scenarios?all=1"));
       const live = (d.scenarios || []).find(x=>x.id === res.scId) || sc;
       return attachRoute(res.route, live, res.write !== false);
     }
@@ -3324,7 +3324,7 @@ function finishRoute(r, sc, write){
    перезапуск панели. Пропускаются только шаги, завершившиеся успехом (rc 0): rc 1 —
    «отработала и нашла, что чинить», её повторять надо. */
 async function resumeLastRoute(last){
-  const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
+  const d = S.scenarios || (S.scenarios = await api("/api/scenarios?all=1"));
   const sc2 = (d.scenarios||[]).find(s=>s.id===last.scId);
   if (!sc2) return toast(t("route.not_found"), "warn");
   runRoute(sc2, last.write, {skipSigs: last.done || [], attempts: last.attempts,
@@ -3347,7 +3347,7 @@ function dropResumeButtons(){
 async function showLastRoute(state){
   dropResumeButtons();
   if (!S.project || ROUTE !== null) return;
-  const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
+  const d = S.scenarios || (S.scenarios = await api("/api/scenarios?all=1"));
   const live = await api("/api/routes?project="+encodeURIComponent(S.project.path), {quiet:true});
   const now = ((live && live.routes) || [])[0];
   if (now){
@@ -3607,7 +3607,7 @@ async function loadRuns(){
   const [d, h] = await Promise.all([
     api("/api/runlog?project=" + encodeURIComponent(S.project.path), {quiet:true}),
     api("/api/history?project=" + encodeURIComponent(S.project.path), {quiet:true}),
-    S.scenarios || (S.scenarios = await api("/api/scenarios", {quiet:true})),
+    S.scenarios || (S.scenarios = await api("/api/scenarios?all=1", {quiet:true})),
   ]);
   if (d && d.runs) S.runs = d.runs;
   S.history = (h && h.runs) || [];
@@ -4631,7 +4631,8 @@ function moduleCtx(id, root){
     // Маршрут ведёт ядро: он переживает перезагрузку вкладки, пишет в проект
     // и продолжается с той же точки. Раздел только показывает список.
     runRoute, poll,
-    scenarios: () => S.scenarios || (S.scenarios = api("/api/scenarios")),
+    // Все маршруты кита: скрытые профилем — с `hidden: true`, показывает раздел только остальные.
+    scenarios: async () => S.scenarios || (S.scenarios = await api("/api/scenarios?all=1")),
     restartPanel,
     fmt: {ago, kb, when: histWhen, esc, tick, md, mdLite, rtime, howLong},
     // Общие детали панели: раздел не рисует свою плитку метрики и свою кнопку

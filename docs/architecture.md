@@ -392,7 +392,7 @@ aurora-studio/
 ├── scripts/                  движок; scripts/agents/ — адаптеры Pydantic AI и graphify
 ├── skills/                   aurora-vault · aurora-grill · aurora-dev
 ├── connectors/               confluence-dc · jira-dc · web (connector.json + SKILL.md)
-├── cockpit/                  сервер, ui/, modules/, skins/, i18n/, vendor/, scenarios.txt
+├── cockpit/                  сервер, ui/, modules/, skins/, profiles/, i18n/, vendor/, scenarios.txt
 ├── templates/                AGENTS, конфиг, образец .env, пусковые файлы, meta/
 ├── scaffold/                 Templates · TemplatesCommon · Prompts — стартовое содержимое
 ├── reports/analyst/          дашборд эффективности аналитиков
@@ -455,7 +455,7 @@ python3 tests/ext_footprint.py --write   # записать текущие чи�
 только правило версии API (`ext_api_problem`), а провайдеры Git проверяет тест, а не загрузчик (подробно — [«Конверт манифеста и версия API»](connectors.md#конверт-манифеста-и-версия-api)):
 
 - `id` — обязателен; у раздела, коннектора и провайдера Git совпадает с именем папки
-  (`cockpit/modules/<id>/`, `connectors/<id>/`, `gitproviders/<id>/`), у скина — с именем файла;
+  (`cockpit/modules/<id>/`, `connectors/<id>/`, `gitproviders/<id>/`), у скина и профиля — с именем файла;
   из `id` коннектора берётся имя `.aurora/connectors/<id>.json`; в пределах вида уникален;
 - название — строкой или по языкам (у раздела обязательно русское);
 - `api_version` — необязателен, нет поля — это `1`; новее, чем знает движок (`EXT_API_VERSION`), —
