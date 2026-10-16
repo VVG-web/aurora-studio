@@ -180,7 +180,8 @@ def keys_of(data: dict) -> set:
 MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait", "python_error")
 REASON_FUNCS = ("why_readonly", "why_service", "why_no_create", "graph_state", "mcp_unmask",
                 "writable_target", "version_gap", "build", "models_key_note",
-                "_python_refusal", "doctor_start_failure", "restart_probe_failure")
+                "_python_refusal", "doctor_start_failure", "restart_probe_failure",
+                "attachment_answers_error")
 
 
 # Причины отказа, которые панель берёт у движка как есть: проверка серверов MCP кита живёт в

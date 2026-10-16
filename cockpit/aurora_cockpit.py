@@ -62,7 +62,7 @@ sys.path.insert(0, os.path.join(KIT, "scripts"))
 from aurora_common import (ENGINE_DIRS, child_env, engine_dir, head_value,  # noqa: E402
                            ext_api_problem, ext_behind, ext_safe_relpath, is_folder_guide, kit_mcp_permission, load_manifest, local_view, mtime_stamp,
                            personal_kit_file, real_inside, real_rel, replace_file, same_origin, utc_slug, utc_stamp,
-                           write_text_atomic, yaml_scalar)
+                           write_text_atomic, yaml_scalar, yaml_word)
 from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
                            mcp_check, mcp_mask_args, mcp_masked)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
@@ -2990,9 +2990,32 @@ def config_values(text: str) -> dict:
     """Скаляры формы настроек. `base_url` в конфиге два — у вики и у Jira, поэтому адрес
     Jira достаётся из её блока отдельным ключом."""
     out = {k: config_value(text, k) for k in FORM_SCALARS}
+    # Политика вложений лежит в блоке confluence и читается тем же правилом, что в движке:
+    # слово справа от ключа, комментарий в конце строки терпится. Пусто — ключа в конфиге нет.
+    conf = re.search(r"^  confluence:[ \t]*\n(.*?)(?=^  [A-Za-z_]+:|^\S|\Z)", text, re.M | re.S)
+    for key in ("attachments", "attachment_max_mb"):
+        out["confluence_" + key] = yaml_word(conf.group(1), key, "") if conf else ""
     jira = text.split("\n  jira:", 1)[1].split("\n  auth:", 1)[0] if "\n  jira:" in text else ""
     out["jira_base_url"] = config_value(jira, "base_url") if jira else ""
     return out
+
+
+def attachment_answers_error(answers: dict, cfg_text: str) -> str:
+    """Отказ формы настроек по вложениям Confluence или пустая строка, если всё допустимо.
+
+    Проверка до записи: опечатка в режиме молча давала бы самый разрешающий (`all`), а дробное
+    или отрицательное число — умолчание. Предел, уже лежащий в конфиге в прежнем виде, форма
+    пропускает как есть: человек не трогал поле, и отказывать ему не в чем."""
+    mode = answers.get("conf_attachments")
+    if mode is not None and str(mode).strip().lower() not in ("", "all", "images", "none"):
+        return "Вложения Confluence: допустимо «все», «только картинки» или «не скачивать»"
+    mb = answers.get("conf_attachment_max_mb")
+    if mb is not None and str(mb).strip():
+        mb = str(mb).strip()
+        kept = mb == config_values(cfg_text)["confluence_attachment_max_mb"] and re.fullmatch(r"\d+([.,]\d+)?", mb)
+        if not re.fullmatch(r"\d{1,9}", mb) and not kept:
+            return "Предел размера вложения Confluence: нужно целое число МБ от 0 (0 — без предела)"
+    return ""
 
 
 def project_card(path: str) -> dict:
@@ -6575,6 +6598,9 @@ class Handler(BaseHTTPRequestHandler):
         """Настройка формой. Записывает не панель, а сам `aurora_setup.py`:
         один способ собрать конфиг, а не два расходящихся."""
         path = script_path(project, "aurora_setup.py")
+        bad = attachment_answers_error(answers, read_text(os.path.join(project, "aurora.config.yaml")))
+        if bad:
+            return {"error": bad}
         try:
             p = subprocess.run([sys.executable, path, "--target", project, "--json", "-"],
                                input=json.dumps(answers, ensure_ascii=False),

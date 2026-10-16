@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -2922,3 +2923,189 @@ def test_prune_threshold_counts_stray_files_and_inline_links_do_not_merge(tmp: P
     m = N.INLINE_RE.search("[a](#top)![i](Стр_assets/i.png)")
     assert m and m.group("base") == "Стр", m and m.group("base")
     assert N.INLINE_RE.search("[a](#top) ![i](Стр_assets/i.png)").group("base") == "Стр"
+
+
+@test
+def test_project_form_reads_and_writes_confluence_attachment_settings(tmp: Path):
+    """Форма проекта читает и пишет `attachments` / `attachment_max_mb` и проверяет их до записи.
+
+    16.10.2026 владелец: политика вложений жила только в aurora.config.yaml, править её было негде.
+    Сервер отдаёт значения формы, `/api/setup` пишет их тем же скриптом, что и остальные поля;
+    опечатка в режиме и дробное или отрицательное число — отказ без записи; запись другой группы
+    ключи не стирает; ключ, равный умолчанию, на пустом конфиге не заводится.
+    """
+    import contextlib
+    import importlib
+    import io
+    sys.path.insert(0, str(KIT / "cockpit"))
+    sys.path.insert(0, str(SCRIPTS))
+    import aurora_cockpit as ck
+    S = importlib.import_module("aurora_setup")
+    importlib.reload(S)
+    root = make_project(tmp)
+    cfgp = root / "aurora.config.yaml"
+    plain = cfgp.read_text(encoding="utf-8")
+    got = ck.config_values(plain)
+    assert got["confluence_attachments"] == "" and got["confluence_attachment_max_mb"] == "", got
+
+    def save(answers):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return S.run_answers(root, answers)
+
+    # умолчания на пустом конфиге ключей не заводят (форма шлёт «all» и пустой предел)
+    assert save({"conf_attachments": "all", "conf_attachment_max_mb": ""}) == 0
+    text = cfgp.read_text(encoding="utf-8")
+    assert "attachments:" not in text and "attachment_max_mb:" not in text, text
+    assert save({"conf_attachments": "all", "conf_attachment_max_mb": "100"}) == 0
+    assert "attachment_max_mb:" not in cfgp.read_text(encoding="utf-8")
+    # свои значения пишутся в блок confluence и читаются сервером обратно
+    assert save({"conf_attachments": "images", "conf_attachment_max_mb": "25"}) == 0
+    text = cfgp.read_text(encoding="utf-8")
+    conf = text.split("  confluence:", 1)[1].split("  jira:", 1)[0]
+    assert "    attachments: images\n" in conf and "    attachment_max_mb: 25\n" in conf, text
+    got = ck.config_values(text)
+    assert (got["confluence_attachments"], got["confluence_attachment_max_mb"]) == ("images", "25"), got
+    # движок читает то же самое
+    CE = importlib.import_module("confluence_export")
+    parsed = CE.read_config(str(root))
+    assert (parsed["attachments"], parsed["attachment_max_mb"]) == ("images", 25.0), parsed
+    # запись другой группы без этих полей и форма с прежними значениями ключей не стирают
+    assert save({"name": "Другое имя"}) == 0
+    assert save({"trust_statuses": "Done", "jira_key": "T"}) == 0
+    text = cfgp.read_text(encoding="utf-8")
+    assert "    attachments: images\n" in text and "    attachment_max_mb: 25\n" in text, text
+    # 0 — без предела — записывается как есть, «none» тоже
+    assert save({"conf_attachments": "none", "conf_attachment_max_mb": "0"}) == 0
+    got = ck.config_values(cfgp.read_text(encoding="utf-8"))
+    assert (got["confluence_attachments"], got["confluence_attachment_max_mb"]) == ("none", "0"), got
+    # «all» при уже заведённом ключе остаётся явным; пустой предел возвращает умолчание (ключ уходит)
+    assert save({"conf_attachments": "all", "conf_attachment_max_mb": ""}) == 0
+    got = ck.config_values(cfgp.read_text(encoding="utf-8"))
+    assert (got["confluence_attachments"], got["confluence_attachment_max_mb"]) == ("all", ""), got
+    assert "attachment_max_mb:" not in cfgp.read_text(encoding="utf-8")
+
+    # проверка до записи: файл не меняется, причина названа
+    before = cfgp.read_text(encoding="utf-8")
+    for bad in ({"conf_attachments": "imges"}, {"conf_attachment_max_mb": "-5"},
+                {"conf_attachment_max_mb": "1.5"}, {"conf_attachment_max_mb": "много"}):
+        why_server = ck.attachment_answers_error(bad, before)
+        assert why_server, f"сервер пропустил {bad}"
+        assert save(bad) == 2 and cfgp.read_text(encoding="utf-8") == before, f"скрипт записал {bad}"
+    assert ck.attachment_answers_error({"conf_attachments": "IMAGES", "conf_attachment_max_mb": " 40 "}, before) == ""
+    # дробный предел, написанный рукой и не тронутый в форме, не мешает сохранить остальное
+    hand = before.replace("    space:", "    attachment_max_mb: 1.5\n    space:", 1)
+    assert "attachment_max_mb: 1.5" in hand
+    assert ck.attachment_answers_error({"conf_attachment_max_mb": "1.5"}, hand) == ""
+    assert ck.attachment_answers_error({"conf_attachment_max_mb": "2.5"}, hand)
+
+    # через обработчик /api/setup: отказ без запуска, затем настоящая запись
+    handler = ck.Handler._run_setup
+    r = handler(None, str(root), {"conf_attachments": "imges"})
+    assert r.get("error") and "ok" not in r, r
+    assert cfgp.read_text(encoding="utf-8") == before
+    r = handler(None, str(root), {"conf_attachments": "images", "conf_attachment_max_mb": "7"})
+    assert r.get("ok"), r
+    got = ck.config_values(cfgp.read_text(encoding="utf-8"))
+    assert (got["confluence_attachments"], got["confluence_attachment_max_mb"]) == ("images", "7"), got
+    # сообщение об отказе переводится: в каталоге данных есть английский текст
+    en = json.loads((KIT / "cockpit/i18n/data/en.json").read_text(encoding="utf-8"))["messages"]
+    for msg in (ck.attachment_answers_error({"conf_attachments": "x"}, ""),
+                ck.attachment_answers_error({"conf_attachment_max_mb": "x"}, "")):
+        assert msg in en, msg
+
+
+@test
+def test_panel_project_form_has_confluence_attachment_fields(tmp: Path):
+    """В форме проекта есть выбор «Вложения Confluence» и число «Максимальный размер файла, МБ».
+
+    Поведенчески, под node: значения берутся из ответа сервера, неизвестное слово показывается как
+    умолчание, правка поля помечает форму несохранённой и попадает в ответы, подсказка стоит под
+    полями. Страница собирает их рядом с адресом и пространством. Без node — проверка по тексту.
+    """
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    proj = panel[panel.index("async function renderProject(){"):]
+    assert "...confAttachmentsRead(get)," in proj and "...confAttachmentsFields(A, inp)," in proj
+    assert proj.index('inp("conf_space"') < proj.index("confAttachmentsFields(A, inp)") < proj.index("roots_note")
+    node = shutil.which("node")
+    if not node:
+        return
+
+    def cut(start: str, end: str) -> str:
+        a = panel.index(start)
+        return panel[a:panel.index(end, a) + len(end)]
+    harness = r"""
+class FakeNode {
+  constructor(tag){ this.tag = tag; this.attrs = {}; this.kids = []; this.ls = {}; this.className = ""; this.nodeType = 1;
+    this._v = undefined; }
+  setAttribute(k, v){ this.attrs[k] = v; if (k === "value") this._v = String(v); }
+  addEventListener(ev, f){ (this.ls[ev] = this.ls[ev] || []).push(f); }
+  append(...k){ for (const x of k) this.kids.push(x && x.nodeType ? x : {nodeType: 3, text: String(x)}); }
+  get textContent(){ return this.kids.map(k => k.text !== undefined ? k.text : k.textContent).join(""); }
+  get value(){ return this._v !== undefined ? this._v : ""; }
+  set value(v){ this._v = String(v); }
+}
+const document = {createElement: tag => new FakeNode(tag), createTextNode: s => ({nodeType: 3, text: s})};
+@EL@
+const DIRTY = new Map();
+const setDirty = (key, label, on) => { if (on) DIRTY.set(key, label); else DIRTY.delete(key); };
+@WATCH@
+const t = k => k;
+@CONST@
+@READ@
+@FIELDS@
+const walk = function*(n){ yield n; for (const k of n.kids || []) if (k && k.tag) yield* walk(k); };
+const all = (root, pred) => [...walk(root)].filter(pred);
+const fire = (n, ev) => { for (const f of n.ls[ev] || []) f({target: n}); };
+const fails = [];
+const ok = (c, m) => { if (!c) fails.push(m); };
+const getter = vals => (k, d = "") => { const v = vals[k]; return (v === undefined || v === null || v === "") ? d : String(v).trim(); };
+const inp = (A) => (key, label, ph, hint) => watch(el("input", {"data-key": key, "aria-label": label + "|" + ph + "|" + hint,
+  value: A[key] || "", oninput: e => A[key] = e.target.value}), "form", "dirty");
+
+let A = confAttachmentsRead(getter({confluence_attachments: "Images", confluence_attachment_max_mb: "7"}));
+ok(A.conf_attachments === "images" && A.conf_attachment_max_mb === "7", "значения не прочитаны: " + JSON.stringify(A));
+const bad = confAttachmentsRead(getter({confluence_attachments: "imges"}));
+ok(bad.conf_attachments === "all" && bad.conf_attachment_max_mb === "", "опечатка/пусто не дали умолчание: " + JSON.stringify(bad));
+const none = confAttachmentsRead(getter({}));
+ok(none.conf_attachments === "all" && none.conf_attachment_max_mb === "", "пустой конфиг: " + JSON.stringify(none));
+
+const rows = confAttachmentsFields(A, inp(A));
+ok(rows.length === 3, "полей и подсказки должно быть три узла: " + rows.length);
+const sel = all(rows[0], n => n.tag === "select")[0];
+const opts = all(sel, n => n.tag === "option");
+ok(JSON.stringify(opts.map(o => o.attrs.value)) === JSON.stringify(["all", "images", "none"]), "варианты режима");
+ok(opts.map(o => "selected" in o.attrs).join() === "false,true,false", "выбран не тот режим: " + opts.map(o => "selected" in o.attrs));
+ok(JSON.stringify(opts.map(o => o.textContent)) === JSON.stringify(["proj.att_all", "proj.att_images", "proj.att_none"]), "подписи режимов");
+ok(rows[0].textContent.includes("proj.f_conf_attachments"), "нет подписи выбора");
+const num = all(rows[1], n => n.tag === "input")[0] || rows[1];
+ok(num.attrs["data-key"] === "conf_attachment_max_mb" && num.value === "7", "поле предела не заполнено из конфига");
+ok(num.attrs["aria-label"] === "proj.f_conf_att_max|proj.f_conf_att_max_ph|proj.f_conf_att_max_hint", "подписи поля предела: " + num.attrs["aria-label"]);
+ok(rows[2].textContent === "proj.att_hint", "подсказка под полями не показана");
+ok(!DIRTY.size, "после открытия есть несохранённое");
+sel.value = "none"; fire(sel, "change");
+ok(A.conf_attachments === "none" && DIRTY.has("form"), "смена режима не попала в ответы или не пометила форму");
+DIRTY.clear();
+num.value = "0"; fire(num, "input");
+ok(A.conf_attachment_max_mb === "0" && DIRTY.has("form"), "правка предела не попала в ответы или не пометила форму");
+console.log(JSON.stringify({fails}));
+"""
+    code = (harness.replace("@EL@", cut("const el = (tag", "\n};\n"))
+            .replace("@WATCH@", cut("const watch = (node, key, label) => {", "\n};\n"))
+            .replace("@CONST@", cut("const CONF_ATTACH_MODES", ";\n"))
+            .replace("@READ@", cut("function confAttachmentsRead(get){", "\n}\n"))
+            .replace("@FIELDS@", cut("function confAttachmentsFields(A, inp){", "\n}\n")))
+    src = tmp / "conf_attach_panel.mjs"
+    src.write_text(code, encoding="utf-8")
+    cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+    assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:1500]
+    result = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert result["fails"] == [], "\n".join(result["fails"])
+
+
+@test
+def test_confluence_attachment_settings_are_documented_in_the_panel_guides(_t):
+    """Руководства (ru и en) и вики говорят, где править политику вложений: «Настройки проекта»."""
+    for rel in ("docs/connectors.md", "docs/en/connectors.md",
+                "wiki/Sources-and-Mirrors.md", "wiki/ru/Sources-and-Mirrors.md"):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert "attachment_max_mb" in text, rel

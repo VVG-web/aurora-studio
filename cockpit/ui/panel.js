@@ -4215,6 +4215,29 @@ function openMcpRaw(){
       el("button", {class:"btn sm", onclick:()=>closeMcp()}, t("mcpk.close"))));
 }
 
+/* Вложения Confluence в форме проекта: режим и предел размера файла. Значения читает сервер
+   (`confluence_attachments`, `confluence_attachment_max_mb` в `values`), проверяет тоже он. */
+const CONF_ATTACH_MODES = ["all", "images", "none"];
+function confAttachmentsRead(get){
+  // неизвестное слово в конфиге форма показывает как умолчание: движок читает его так же (all)
+  const mode = get("confluence_attachments").toLowerCase();
+  return {conf_attachments: CONF_ATTACH_MODES.includes(mode) ? mode : "all",
+          conf_attachment_max_mb: get("confluence_attachment_max_mb")};
+}
+function confAttachmentsFields(A, inp){
+  return [
+    el("label",{style:"display:block;margin-bottom:12px"},
+      el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"}, t("proj.f_conf_attachments")),
+      watch(el("select",{class:"btn",style:"width:100%;font-weight:400","data-conf":"attachments",
+        onchange:e=>A.conf_attachments=e.target.value},
+        ...CONF_ATTACH_MODES.map(v=>el("option",{value:v, selected:A.conf_attachments===v?"":null},
+          t("proj.att_" + v)))),
+        "form", t("dirty.form"))),
+    inp("conf_attachment_max_mb", t("proj.f_conf_att_max"), t("proj.f_conf_att_max_ph"),
+        t("proj.f_conf_att_max_hint")),
+    el("div",{class:"muted",style:"font-size:12px;margin:-4px 0 14px"}, t("proj.att_hint"))];
+}
+
 /* ---------------- настройки проекта ----------------
 
    Отдельная вкладка появилась не ради порядка. Одна форма держала и общее, и частное:
@@ -4241,6 +4264,7 @@ async function renderProject(){
   const A = {
     name: get("name"), slug: get("slug"),
     conf_url: get("base_url"), conf_space: get("space"),
+    ...confAttachmentsRead(get),
     jira_url: get("jira_base_url"),
     jira_key: get("project_key"), jira_jql: get("default_jql"),
     trust_statuses: (cfgRaw.text.match(/trust_statuses:\s*\[([^\]]*)\]/)||[])[1]||"",
@@ -4361,6 +4385,7 @@ async function renderProject(){
     el("div",{class:"sep"}),
     inp("conf_url", t("proj.f_conf_url"), "https://confluence.example.com"),
     inp("conf_space", t("proj.f_conf_space"), "SPACE"),
+    ...confAttachmentsFields(A, inp),
     el("div",{class:"muted",style:"font-size:12px;margin:14px 0 6px"}, t("proj.roots_note")),
     rootsBox,
     el("div",{class:"sep"}),

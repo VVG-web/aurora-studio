@@ -36,6 +36,8 @@ def read_config(path: Path) -> dict:
     cfg = {
         "name": "", "slug": "",
         "conf_url": "", "conf_space": "", "sync_roots": [], "web_pages": [],
+        # Политика вложений Confluence: слово из конфига как есть, пусто — ключа нет (действует умолчание).
+        "conf_attachments": "", "conf_attachment_max_mb": "",
         # Настройки обхода веб-страниц. Читаются и возвращаются на место при каждой
         # записи конфига: панель правит СПИСОК адресов, и перезапись блока целиком
         # стирала всё остальное. На живом проекте так пропала глубина обхода — человек
@@ -62,6 +64,9 @@ def read_config(path: Path) -> dict:
     cblock = cm.group(1) if cm else ""
     cfg["conf_url"] = (re.search(r'base_url:\s*"?([^"\n]+)', cblock) or [None, ""])[1].strip() if cblock else ""
     cfg["conf_space"] = (re.search(r'space:\s*"?([^"\n]+)', cblock) or [None, ""])[1].strip() if cblock else ""
+    for key, name in (("conf_attachments", "attachments"), ("conf_attachment_max_mb", "attachment_max_mb")):
+        word = yaml_word(cblock, name, "") if cblock else ""
+        cfg[key] = word if re.fullmatch(r"[A-Za-z0-9.,]+", word) else ""
     # web: пары url / галочка доверия. Список свой, не смешанный с корнями Confluence:
     # это разные источники, и доверие у них считается по разным правилам.
     for m in re.finditer(r"-\s*url\s*:\s*(\S+)\s*\n\s*trusted\s*:\s*(\S+)", text):
@@ -378,9 +383,12 @@ def write_config(path: Path, c: dict):
     # carry_unmanaged переносит только второй уровень, а confluence лежит на третьем.
     old_conf = re.search(r"^  confluence:[ \t]*\n(.*?)(?=^  [A-Za-z_]+:|^\S|\Z)", old_text, re.M | re.S)
     att_keys = ""
-    for key in ("attachments", "attachment_max_mb"):
-        # слово справа от ключа, комментарий в конце строки отбрасывается
-        value = yaml_word(old_conf.group(1), key, "") if old_conf else ""
+    for key, ckey in (("attachments", "conf_attachments"), ("attachment_max_mb", "conf_attachment_max_mb")):
+        if c.get(ckey) is not None:          # значение задано (форма, диалог): пусто — ключа нет
+            value = str(c[ckey]).strip()
+        else:                                # словарь собран не read_config'ом — берём из прежнего конфига
+            # слово справа от ключа, комментарий в конце строки отбрасывается
+            value = yaml_word(old_conf.group(1), key, "") if old_conf else ""
         if value and re.fullmatch(r"[A-Za-z0-9.,]+", value):
             att_keys += f"\n    {key}: {value}"
     text = f"""# Aurora project configuration (committed). Schema version 1.
@@ -515,6 +523,25 @@ def run_answers(target: Path, answers: dict) -> int:
                 "jira_jql", "scrub", "threshold"):
         if key in answers and str(answers[key]).strip():
             c[key] = str(answers[key]).strip()
+    # Вложения Confluence: режим из трёх слов и предел файла в МБ (целое, 0 — без предела). Проверка
+    # до записи: опечатка не должна молча дать самый разрешающий режим. Пусто — ключа нет, действует
+    # умолчание; значение, равное умолчанию, ключ не заводит (прежний конфиг остаётся как был).
+    # Значение, которое уже лежит в конфиге (дробное, написанное рукой), форма пропускает как есть.
+    if "conf_attachments" in answers:
+        mode = str(answers["conf_attachments"] or "").strip().lower()
+        if mode not in ("", "all", "images", "none"):
+            print(f"❌ attachments: допустимо all, images или none, получено «{mode}»", file=sys.stderr)
+            return 2
+        c["conf_attachments"] = "" if mode == "" or (mode == "all" and not c["conf_attachments"]) else mode
+    if "conf_attachment_max_mb" in answers:
+        mb = str(answers["conf_attachment_max_mb"] if answers["conf_attachment_max_mb"] is not None else "").strip()
+        kept = mb == c["conf_attachment_max_mb"] and re.fullmatch(r"\d+([.,]\d+)?", mb)
+        if mb and not kept and not re.fullmatch(r"\d{1,9}", mb):
+            print(f"❌ attachment_max_mb: нужно целое число от 0, получено «{mb}»", file=sys.stderr)
+            return 2
+        if mb.isdigit():
+            mb = str(int(mb))
+        c["conf_attachment_max_mb"] = "" if mb == "" or (mb == "100" and not c["conf_attachment_max_mb"]) else mb
     # Поля доверия очищаются: пустой список — настройка по умолчанию, и человек, стерев
     # поле, возвращается к ней. Прочие поля пустой ответ не трогает, как и раньше.
     for key in ("trust_statuses", "assumption_statuses", "trusted_sources", "trusted_branches"):
