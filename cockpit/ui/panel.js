@@ -1190,6 +1190,9 @@ function show(view, payload){
   if (S.view === "project" && view !== "project" && !confirmLeave()) return;
   // Раздел в разработке закрыт — в него не попасть и по адресу страницы или ссылке.
   if (devOnlyView(view) && !devSectionsOn()) view = "overview";
+  // Раздел скрыт профилем рабочего места: меню его не показывает, по адресу или ссылке он
+  // не открывается — человек получает Мостик и строку о причине, а не пустой экран.
+  if (profileHidden(view)){ toast(t("modules.hidden", {id: moduleTitle(MODULES.get(view).manifest)}), "warn"); view = "overview"; }
   const prevView = S.view;
   S.view = view;
   if (prevView !== view) hideModule(prevView);        // уходящий раздел узнаёт об этом раньше, чем придёт новый
@@ -1224,6 +1227,12 @@ function devSectionsOn(){ return devOn() && !!(S.state && S.state.dev_available)
 function devOnlyView(view){
   return !!$(`nav button[data-view="${view}"][data-devonly]`)
     || !!(MODULES.get(view) && MODULES.get(view).manifest.dev);
+}
+
+// Раздел вне списка `modules` активного профиля: сервер пометил его `hidden`. Имён разделов
+// здесь нет — решает манифест ответа `/api/modules`.
+function profileHidden(view){
+  return !!(MODULES.get(view) && MODULES.get(view).manifest.hidden);
 }
 
 function showDevNav(){
@@ -4591,7 +4600,7 @@ async function loadModules(){
     if (m.warn && m.warn.length)
       toast(t("modules.warn", {id: m.id, why: m.warn.join("; ")}), "warn");
     MODULES.set(m.id, {manifest: m, mod: null, ns: null, section: null, subs: null, stale: false, shown: false, hooks: null});
-    addModuleNav(m);
+    if (!m.hidden) addModuleNav(m);       // скрытый профилем: запись есть (подписи, адрес), кнопки нет
     if (m.behind)
       console.warn(`модуль ${m.id} собран под ядро ${m["for"]}, установлено ${S.state.kit.version}`);
   }

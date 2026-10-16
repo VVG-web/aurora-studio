@@ -108,6 +108,14 @@ run unfolds by steps, and the header shows the model, backend and speed.
 
 Sections marked `dev: true` in the manifest are hidden until "Development" is opened.
 
+A workplace profile (`cockpit/profiles/`, chosen in `local/profile.json`) with a `modules` list hides every section
+outside it: `/api/modules` marks such a section `hidden: true`, the panel adds no menu button, never mounts the section
+and sends it no `onShow`, `onHide`, `refresh` or events; opening it by address or link leads to the Bridge with the
+line `modules.hidden` from the core catalogue. The profile «all» and a profile without `modules` hide nothing; an
+explicit empty list hides everything; a broken section (`error`) is never hidden. It is visibility, not permissions:
+the files `/modules/<id>/` are served as before, Cron and the terminal do not depend on the profile, the built-in
+sections (the Bridge, Settings, Project, Files, the console) are not touched. A section declares nothing for this.
+
 ## 4. The editor and committing
 
 Documents are edited in the panel ("The project" → "Files"). The format stays Obsidian-compatible — whoever wants to can work

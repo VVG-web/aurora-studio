@@ -3,6 +3,7 @@
   "_about": "Translation. An empty value shows the Russian string — that is honest, not broken.",
   "modules.broken": "Section «{id}» did not start: {why}",
   "modules.warn": "Section «{id}» started with defaults: {why}",
+  "modules.hidden": "Section «{id}» is hidden by the workplace profile",
   "modules.failed": "Section «{id}» failed to load: {why}",
   "run.ok": "success",
   "run.warn": "something to fix",

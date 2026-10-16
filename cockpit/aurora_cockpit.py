@@ -219,10 +219,16 @@ def modules() -> list:
       панель покажет причину строкой, а не пустым меню;
     - необязательное поле не того типа или группа с опечаткой: раздел поднимается с умолчанием
       этого поля, а причина лежит в `warn` — раздел не должен пропадать из-за лишней запятой.
+
+    Профиль рабочего места (`active_profile`) с полем `modules` помечает `hidden: true` каждый
+    раздел вне списка: панель не кладёт его в меню и не монтирует. Это видимость, а не права —
+    файлы раздела по-прежнему отдаются. Профиль «all» и профиль без `modules` скрывают ничего;
+    запись с `error` не скрывается: поломку должно быть видно.
     """
     out = []
     if not os.path.isdir(MODULES_DIR):
         return out
+    shown = active_profile().get("modules")     # None — «видно всё»
     for name in sorted(os.listdir(MODULES_DIR)):
         man = os.path.join(MODULES_DIR, name, "module.json")
         if not os.path.isfile(man):
@@ -264,6 +270,8 @@ def modules() -> list:
             # «О проекте»).
             "dev": m.get("dev") is True,
         }
+        if shown is not None and name not in shown:
+            item["hidden"] = True
         if warn:
             item["warn"] = warn
         out.append(item)

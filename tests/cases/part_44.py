@@ -452,7 +452,7 @@ const api = NOOP, openLink = NOOP, runStep = NOOP, runWatched = NOOP, busyElsewh
   goCmd = NOOP, kindChip = NOOP, skillLine = NOOP, copyButton = NOOP, engineWord = NOOP, markdownEditor = NOOP, hasPart = NOOP,
   waitMark = NOOP, healthAt = NOOP, stampText = NOOP, kbInfo = NOOP, openIssue = NOOP, issueUrl = NOOP, openPath = NOOP,
   isEngineCmd = NOOP, hideDev = NOOP, openProject = NOOP, lastRun = NOOP, rcMark = NOOP, auraWhy = NOOP;
-const applyI18n = NOOP, confirmLeave = () => true, devOnlyView = () => false, devSectionsOn = () => false;
+const applyI18n = NOOP, confirmLeave = () => true, devOnlyView = () => false, devSectionsOn = () => false, profileHidden = () => false;
 const renderOverview = NOOP, renderProjBadge = NOOP, drawBridgeStamp = NOOP, navBadges = NOOP;
 const requestAnimationFrame = (f) => { setTimeout(f, 0); return 1; };
 let IMPORT = async () => { throw new Error("нет модуля"); };
@@ -1546,3 +1546,188 @@ def test_tests_do_not_see_the_owners_profile(tmp: Path):
     assert Path(ck.PROFILE_FILE) != KIT / "local" / "profile.json", ck.PROFILE_FILE
     assert not Path(ck.PROFILE_FILE).exists()
     assert [r["id"] for r in ck.scenarios()] == [r["id"] for r in ck.all_scenarios()]
+
+
+# ----------------------------------------------- BL-ARC-04, срез 2: профиль скрывает разделы панели
+
+
+def _real_module_ids() -> list:
+    """Разделы кита — по папкам `cockpit/modules/*/module.json`; имён в тесте нет."""
+    return sorted(p.parent.name for p in (KIT / "cockpit" / "modules").glob("*/module.json"))
+
+
+@test
+def test_profile_without_modules_leaves_the_section_list_as_before(tmp: Path):
+    """Профиль «all» и пресет без поля `modules` не меняют `modules()`: ни одна запись не помечена `hidden`,
+    состав и порядок те же, что без профиля."""
+    ck = _ck()
+    ids = _real_module_ids()
+    assert len(ids) >= 3, ids
+    undo, _ = _with_profiles(ck, tmp, {}, choice=None)
+    try:
+        base = ck.modules()
+        assert sorted(m["id"] for m in base) == ids
+        assert not [m for m in base if "hidden" in m], "без профиля прятать нечего"
+    finally:
+        undo()
+    undo, _ = _with_profiles(ck, tmp / "p2", {
+        "plain.json": {"id": "plain", "name": "Простой", "scenarios": ["x"]}}, choice={"id": "plain"})
+    try:
+        assert ck.active_profile()["modules"] is None
+        assert ck.modules() == base, "пресет без `modules` даёт тот же ответ, что «all»"
+    finally:
+        undo()
+    undo, _ = _with_profiles(ck, tmp / "p3", {}, choice={"id": "all"})
+    try:
+        assert ck.modules() == base
+    finally:
+        undo()
+
+
+@test
+def test_profile_marks_exactly_the_sections_outside_its_list(tmp: Path):
+    """Пресет с `modules` помечает `hidden: true` ровно дополнение к списку; остальные записи те же, что без профиля;
+    имена разделов берутся из перечня `cockpit/modules`, а не из теста."""
+    ck = _ck()
+    ids = _real_module_ids()
+    keep = [ids[0], ids[2]]
+    undo, _ = _with_profiles(ck, tmp / "none", {})
+    try:
+        base = {m["id"]: m for m in ck.modules()}
+    finally:
+        undo()
+    undo, _ = _with_profiles(ck, tmp, {
+        "role.json": {"id": "role", "name": "Роль", "modules": keep + ["no-such-section"]}}, choice={"id": "role"})
+    try:
+        got = {m["id"]: m for m in ck.modules()}
+    finally:
+        undo()
+    assert sorted(got) == ids, "скрытый раздел остаётся в ответе: панели нужен его манифест"
+    assert sorted(i for i, m in got.items() if m.get("hidden")) == sorted(set(ids) - set(keep))
+    for i in ids:
+        want = dict(base[i], hidden=True) if i not in keep else base[i]
+        assert got[i] == want, (i, got[i])
+    # явный пустой список — скрыть всё, как у `scenarios`
+    undo, _ = _with_profiles(ck, tmp / "empty", {
+        "none.json": {"id": "none", "name": "Ничего", "modules": []}}, choice={"id": "none"})
+    try:
+        assert all(m.get("hidden") for m in ck.modules())
+    finally:
+        undo()
+
+
+@test
+def test_profile_does_not_hide_broken_sections_and_keeps_their_files(tmp: Path):
+    """Запись с `error` профиль не скрывает (поломку видно); файлы скрытого раздела по-прежнему отдаются —
+    профиль не механизм прав."""
+    ck = _ck()
+    root = tmp / "modules"
+    _put(root / "fine" / "module.json", {"id": "fine", "name": {"ru": "Годный"}, "group": "project"})
+    _put(root / "fine" / "view.js", "export default {};")
+    _put(root / "other" / "module.json", {"id": "other", "name": {"ru": "Другой"}})
+    _put(root / "junk" / "module.json", "{ не json")
+    _put(root / "alien" / "module.json", {"id": "elsewhere", "name": {"ru": "Чужой"}})
+    undo, _ = _with_profiles(ck, tmp / "prof", {
+        "role.json": {"id": "role", "name": "Роль", "modules": ["other"]}}, choice={"id": "role"})
+    keep = ck.MODULES_DIR
+    ck.MODULES_DIR = str(root)
+    try:
+        by = {m["id"]: m for m in ck.modules()}
+        assert by["fine"].get("hidden") is True and "hidden" not in by["other"], by
+        for bad in ("junk", "alien"):
+            assert "error" in by[bad] and "hidden" not in by[bad], by[bad]
+        assert ck.module_file("fine", "view.js"), "файл скрытого раздела отдаётся"
+    finally:
+        ck.MODULES_DIR = keep
+        undo()
+
+
+HIDDEN_HARNESS = r"""
+const faults = [], toasts = [], mounted = [], hid = [], buttons = [];
+const NOOP = () => {};
+const t = (k, p) => k + ":" + JSON.stringify(p || {});
+const toast = (text, kind) => { toasts.push({text, kind}); };
+const group = {insertBefore: (b) => buttons.push(b.attrs["data-view"])};
+const el = (tag, attrs) => ({tag, attrs, dataset: {}, classList: {toggle: NOOP}});
+const $ = (sel) => (sel.startsWith(".navgroup") ? group : null);
+const $$ = () => [];
+const S = {view: "none", lang: "ru", project: null, state: {}};
+const location = {hash: ""};
+const MODULES = new Map();
+let REPLY = {modules: []};
+const api = async () => REPLY;
+const confirmLeave = () => true, devOnlyView = () => false, devSectionsOn = () => false;
+const hideModule = (id) => hid.push(id), mountModule = (id) => mounted.push(id), refreshActivity = NOOP,
+  renderSetup = NOOP, drawLangPicker = NOOP, renderProject = NOOP, renderFiles = NOOP, renderHistory = NOOP,
+  loadRuns = NOOP, drawTaskButton = NOOP, drawLiveJobs = () => Promise.resolve(), autoFollow = NOOP, ROUTE = null;
+@NAV@
+@HIDDEN@
+@SHOW@
+const fails = [];
+const check = (ok, what) => { if (!ok) fails.push(what); };
+(async () => {
+  const m = (id, extra) => Object.assign({id, name: {ru: "Раздел " + id}, group: "project", order: 10, needs: []}, extra || {});
+  REPLY = {modules: [m("shown_one"), m("hidden_one", {hidden: true}), {id: "broken_one", error: "плохой"}]};
+  await loadModules();
+  check(buttons.join() === "shown_one", "кнопка только у видимого раздела: " + buttons.join());
+  check(MODULES.has("hidden_one") && MODULES.has("shown_one"), "запись скрытого раздела в MODULES есть");
+  check(!MODULES.has("broken_one"), "раздел с error не поднят, как и раньше");
+  check(toasts.length === 1 && toasts[0].text.startsWith("modules.broken"), "про сломанный раздел сказано одним сообщением");
+  toasts.length = 0;
+  show("hidden_one");
+  check(S.view === "overview", "скрытый раздел уводит на Мостик, а вид — " + S.view);
+  check(!mounted.includes("hidden_one"), "скрытый раздел не монтируется");
+  check(toasts.length === 1 && toasts[0].text.startsWith("modules.hidden") && toasts[0].kind === "warn"
+        && toasts[0].text.includes("Раздел hidden_one"), "сказано, что раздел скрыт профилем: " + JSON.stringify(toasts));
+  toasts.length = 0;
+  show("shown_one");
+  check(S.view === "shown_one" && mounted.join() === "shown_one" && toasts.length === 0, "видимый раздел открывается как раньше");
+  show("hidden_one");
+  check(hid.includes("shown_one"), "уходящий видимый раздел узнал об уходе");
+  check(!hid.includes("hidden_one"), "в скрытый раздел не заходили — и уходить из него нечему: " + hid.join());
+  console.log(JSON.stringify({fails}));
+})().catch(e => { console.log(JSON.stringify({fails: ["исключение: " + (e && e.stack || e)]})); });
+"""
+
+
+@test
+def test_panel_does_not_mount_a_section_hidden_by_the_profile(tmp: Path):
+    """Панель (под node, иначе проверка пропускается): у скрытого профилем раздела нет кнопки меню, запись в `MODULES`
+    есть; `show` уводит на Мостик с предупреждением из каталога и не монтирует раздел; видимые открываются как раньше;
+    в самом JS нет имён разделов, а строка живёт в каталогах ru и en."""
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    for lang in ("ru", "en"):
+        cat = json.loads((KIT / "cockpit" / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))
+        assert "{id}" in cat.get("modules.hidden", ""), f"нет строки modules.hidden в {lang}.json"
+
+    def cut(start: str, end: str, keep_end: bool = False) -> str:
+        a = panel.index(start)
+        b = panel.index(end, a)
+        return panel[a:b + (len(end) if keep_end else 0)]
+    nav = cut("function moduleTitle(m){", "// Всё, чем ядро делится")
+    hidden = cut("function profileHidden(view){", "function showDevNav")
+    show = cut("function show(view, payload){", "\n}\n", keep_end=True)
+    assert "manifest.hidden" in hidden and "profileHidden(view)" in show
+    assert "if (!m.hidden) addModuleNav(m)" in nav
+    node = shutil.which("node")
+    if not node:
+        return
+    code = HIDDEN_HARNESS.replace("@NAV@", nav).replace("@HIDDEN@", hidden).replace("@SHOW@", show)
+    src = tmp / "hidden_panel.mjs"
+    src.write_text(code, encoding="utf-8")
+    import subprocess
+    cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+    assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:1500]
+    result = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert result["fails"] == [], "\n".join(result["fails"])
+
+
+@test
+def test_profile_section_hiding_is_documented(_t):
+    """Справочник раздела (ru) и описание панели (en) говорят, что профиль прячет разделы полем `hidden` и что это не права."""
+    ru = (KIT / "cockpit" / "modules" / "README.md").read_text(encoding="utf-8")
+    en = (KIT / "docs" / "en" / "control-panel.md").read_text(encoding="utf-8")
+    pr = (KIT / "cockpit" / "profiles" / "README.md").read_text(encoding="utf-8")
+    assert "hidden" in ru and "профил" in ru and "не права" in ru
+    assert "hidden" in en and "profile" in en and "not permissions" in en
+    assert "со следующего выпуска" not in pr, "README профилей ещё обещает разделы «в следующем выпуске»"
