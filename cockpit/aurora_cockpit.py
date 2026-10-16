@@ -6405,15 +6405,13 @@ class Handler(BaseHTTPRequestHandler):
         # что подключено сейчас: сырые куски записей секции (как написал владелец) читает единый
         # разбор реестра — тот же, что у `declared()` и формы настроек; запись без `module:` в нём
         # есть (module=None): реестр её не подключает, но и панель не вправе её терять. Пока секции
-        # нет (или в ней нет ни одной записи с модулем), — исторические зеркала из `paths:`: их
-        # реестр уже отдал с путями владельца
+        # нет вовсе, — исторические зеркала из `paths:`: их реестр уже отдал с путями владельца;
+        # пустой заголовок `sources:` — это «не подключено ничего», откатов к `paths:` нет
         import sources_registry as SR
         has_section = SR.has_section(text)
         head, chunks = SR.split_section(text)
         have = [(mod, raw if raw.endswith("\n") else raw + "\n") for mod, _i, _p, raw in chunks]
-        if not any(mod for mod, _raw in have):
-            # пустой заголовок `sources:` реестр читает как отсутствующую секцию (declared() пуст,
-            # работают исторические зеркала из `paths:`) — и панель показывает их подключёнными
+        if not has_section:
             have += [(i["module"], f"  - id: {i['id']}\n    module: {i['module']}\n    path: {i['path']}\n")
                      for i in info.get("instances", []) if i.get("module")]
         # модуль, которого нет среди установленных, отметить в панели нельзя — и снять тоже:

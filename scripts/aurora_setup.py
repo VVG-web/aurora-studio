@@ -110,7 +110,8 @@ def source_sections(target: Path, slug: str, old_text: str = None) -> tuple:
     что реестр и панель (`sources_registry.split_section`): лишние ключи (`exclude:`, `note:`),
     вложенные списки, комментарии и записи без `module:` переживают сохранение. Строка
     `id/module/path` генерируется только для подключённого модуля, у которого записи в конфиге
-    нет (первая настройка, исторические зеркала из `paths:`). `old_text` — прежний текст конфига;
+    нет (первая настройка, исторические зеркала из `paths:`). Пустой заголовок `sources:` остаётся
+    пустым: это «не подключено ничего». `old_text` — прежний текст конфига;
     не передан — читается из `target`.
     """
     try:
@@ -125,7 +126,9 @@ def source_sections(target: Path, slug: str, old_text: str = None) -> tuple:
         cfg = Path(target) / R.CONFIG
         old_text = cfg.read_text(encoding="utf-8", errors="ignore") if cfg.is_file() else ""
     head, chunks = R.split_section(old_text)
-    if not items and not chunks:
+    # секция есть, а подключённого нет (пустой заголовок после «снять все модули») — пишем явный
+    # пустой `sources:`: без него зеркала ожили бы из `paths:`; секции нет вовсе — прежнее поведение
+    if not items and not chunks and not R.has_section(old_text):
         return "", ""
     src = ["\n# Подключённые модули источников. Манифесты — в .aurora/connectors/,",
            "# что установлено и что подключено — `python3 .aurora/scripts/sources_registry.py`."]

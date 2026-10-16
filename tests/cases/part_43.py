@@ -1037,23 +1037,70 @@ def test_panel_save_choice_keeps_nested_lists_in_owner_entries(tmp: Path):
 
 
 @test
-def test_panel_save_choice_empty_sources_header_keeps_paths_mirror(tmp: Path):
-    """Пустой заголовок `sources:` (после «снять все модули») ведёт себя как отсутствующая секция: исторические зеркала
-    по путям владельца из `paths:` остаются подключёнными, сохранение тех же галочек не подменяет путь умолчанием."""
+def test_empty_sources_header_means_nothing_connected(tmp: Path):
+    """Пустой заголовок `sources:` — «не подключено ничего»: реестр не возвращается к `paths:` (на старом коде
+    исторические зеркала оживали); снятие последнего модуля в панели пишет явный пустой заголовок, повторное
+    сохранение того же набора конфиг не трогает; секции нет вовсе — по-прежнему два исторических зеркала."""
     ck = _panel()
+    import sources_registry as R
     root = make_project(tmp)
     cfg = root / "aurora.config.yaml"
-    cfg.write_text(cfg.read_text(encoding="utf-8") + "paths:\n  sources_confluence: Sources/Wiki (old)\n",
-                   encoding="utf-8")
-    assert ck.Handler._write_sources(None, str(root), []).get("ok")
-    assert "\nsources:" in cfg.read_text(encoding="utf-8") or cfg.read_text(encoding="utf-8").startswith("sources:")
+    base = cfg.read_text(encoding="utf-8")
+    base = base[:base.index("sources:")] if "sources:" in base else base.rstrip("\n") + "\n\n"
+    cfg.write_text(base + "paths:\n  sources_confluence: Sources/Wiki (old)\n", encoding="utf-8")
+    # секции нет вовсе: исторические зеркала, путь владельца из paths:
+    assert not R.has_section(cfg.read_text(encoding="utf-8"))
+    assert {i["module"]: i["path"] for i in R.instances(str(root))}.get("confluence-dc") == "Sources/Wiki (old)"
+    assert len(R.instances(str(root))) == 2
+    # первое сохранение переносит зеркала в секцию; потом снимаем их все
     res = ck.Handler._write_sources(None, str(root), ["confluence-dc", "jira-dc"])
     assert res.get("ok"), res
+    assert {i["module"]: i["path"] for i in R.instances(str(root))}.get("confluence-dc") == "Sources/Wiki (old)"
+    res = ck.Handler._write_sources(None, str(root), ["jira-dc"])
+    assert res.get("ok"), res
+    res = ck.Handler._write_sources(None, str(root), [])
+    assert res.get("ok"), res
     text = cfg.read_text(encoding="utf-8")
-    assert "path: Sources/Confluence" not in text, text
-    import sources_registry as R
+    assert R.has_section(text) and R.declared_chunks(text) == [], text
+    assert "# Подключённые модули источников" in text and "module:" not in text.split("sources:")[1].split("\n\n")[0], text
+    # заголовок пуст: реестр не оживляет зеркала из paths: (путь у владельца в paths: остался)
+    assert "sources_confluence: Sources/Wiki (old)" in text
+    assert R.instances(str(root)) == [] and R.mirror_paths(str(root)) == {} and R.roles(str(root)) == {}
+    # повторное сохранение пустого набора конфиг не трогает
+    before = cfg.read_bytes()
+    assert ck.Handler._write_sources(None, str(root), []).get("ok")
+    assert cfg.read_bytes() == before
+    # CLI реестра на таком проекте не падает и не показывает зеркал
+    out = run("sources_registry.py", "--json", cwd=root).stdout
+    assert json.loads(out)["instances"] == []
+    # снова отмечаем модуль: он подключается с путём манифеста, а не из paths:
+    assert ck.Handler._write_sources(None, str(root), ["confluence-dc"]).get("ok")
     got = {i["module"]: i["path"] for i in R.instances(str(root))}
-    assert got.get("confluence-dc") == "Sources/Wiki (old)", (got, text)
+    assert got == {"confluence-dc": "Sources/Confluence"}, got
+
+
+@test
+def test_settings_form_keeps_empty_sources_header_empty(tmp: Path):
+    """Форма настроек поверх пустого заголовка `sources:` оставляет его пустым и не воскрешает зеркала из `paths:`
+    (на старом коде секция пропадала); запись без `module:` не подключает исторические зеркала."""
+    import aurora_setup as S
+    import sources_registry as R
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    base = cfg.read_text(encoding="utf-8")
+    base = base[:base.index("sources:")] if "sources:" in base else base.rstrip("\n") + "\n\n"
+    cfg.write_text(base + "sources:\natlassian:\n  url: https://example.com\n", encoding="utf-8")
+    src, skills = S.source_sections(root, "demo")
+    assert src.rstrip("\n").endswith("sources:") and skills == "", (src, skills)
+    with contextlib.redirect_stdout(io.StringIO()):
+        S.run_answers(root, {"name": "Имя"})
+    text = cfg.read_text(encoding="utf-8")
+    assert R.has_section(text) and R.declared_chunks(text) == [], text
+    assert R.instances(str(root)) == [] and R.mirror_paths(str(root)) == {}
+    once = cfg.read_bytes()
+    with contextlib.redirect_stdout(io.StringIO()):
+        S.run_answers(root, {})
+    assert cfg.read_bytes() == once, "повторное сохранение формы меняет конфиг"
 
 
 @test
@@ -1279,8 +1326,8 @@ def test_settings_form_first_setup_still_writes_generated_mirrors(tmp: Path):
     assert "  - id: Confluence\n    module: confluence-dc\n    path: Sources/Confluence\n" in src, src
     assert "  - id: JIRA\n    module: jira-dc\n    path: Sources/JIRA\n" in src, src
     assert "confluence-sync-demo" in skills and "jira-export-demo" in skills, skills
-    # в секции только запись без module: — она остаётся, а исторические зеркала дописываются после неё
+    # в секции только запись без module: — она остаётся, секция есть, поэтому зеркала из paths: не оживают
     cfg.write_text(cfg.read_text(encoding="utf-8").rstrip("\n") + "\n\nsources:\n  - id: Hand\n    note: x\n",
                    encoding="utf-8")
-    src, _skills = S.source_sections(root, "demo")
-    assert "  - id: Hand\n    note: x\n  - id: Confluence\n    module: confluence-dc\n" in src, src
+    src, skills = S.source_sections(root, "demo")
+    assert src.endswith("sources:\n  - id: Hand\n    note: x\n") and skills == "", src

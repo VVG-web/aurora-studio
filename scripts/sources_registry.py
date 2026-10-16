@@ -23,8 +23,9 @@
 лишними ключами, комментариями и записи без `module:` возвращаются сырым текстом, на нём же
 стоят писатели секции.
 
-Секции нет — работают модули с `legacy_path_key`: ровно те два, что стояли в проектах
-до появления реестра. Настройки продукта живут там, где их ждёт модуль
+Секции нет вовсе — работают модули с `legacy_path_key`: ровно те два, что стояли в проектах
+до появления реестра. Секция есть, но пуста (заголовок `sources:` без записей), — это «не подключено
+ничего»: исторические зеркала из `paths:` в таком проекте не оживают. Настройки продукта живут там, где их ждёт модуль
 (`settings_block` манифеста), а не дублируются в реестре: разбирать `sync_roots`
 умеет только сам Confluence-модуль.
 
@@ -250,18 +251,20 @@ def declared_chunks(text: str) -> list:
     return split_section(text)[1]
 
 
+def config_text(root: str = "") -> str:
+    """Текст `aurora.config.yaml` проекта ("" — конфига нет)."""
+    cfg = os.path.join(root or ".", CONFIG)
+    return open(cfg, encoding="utf-8", errors="ignore").read() if os.path.isfile(cfg) else ""
+
+
 def declared(root: str = "") -> list:
     """Секция `sources:` конфига → [{id, module, path}]. Порядок сохраняем.
 
     Записи без `module:` не выдаются (модуль не назван — реестру нечего подключать), но
     остаются в `declared_chunks`: писатели секции не вправе их терять.
     """
-    cfg = os.path.join(root or ".", CONFIG)
-    if not os.path.isfile(cfg):
-        return []
-    text = open(cfg, encoding="utf-8", errors="ignore").read()
     out = []
-    for module, eid, path, _raw in declared_chunks(text):
+    for module, eid, path, _raw in declared_chunks(config_text(root)):
         if module:
             out.append({k: v for k, v in (("id", eid), ("module", module), ("path", path)) if v})
     return out
@@ -270,8 +273,7 @@ def declared(root: str = "") -> list:
 def legacy(root: str = "", mods: dict = None) -> list:
     """Чем работал проект до реестра: модули с `legacy_path_key` и путями из `paths:`."""
     mods = installed(root) if mods is None else mods
-    cfg = os.path.join(root or ".", CONFIG)
-    text = open(cfg, encoding="utf-8", errors="ignore").read() if os.path.isfile(cfg) else ""
+    text = config_text(root)
     out = []
     for mid, m in sorted(mods.items()):
         key = (m.get("mirror") or {}).get("legacy_path_key")
@@ -286,14 +288,17 @@ def legacy(root: str = "", mods: dict = None) -> list:
 
 
 def instances(root: str = "") -> list:
-    """Что подключено: объявленное в конфиге, иначе — исторические два зеркала.
+    """Что подключено: объявленное в конфиге; секции `sources:` нет вовсе — исторические два зеркала.
+
+    Секция есть, а записей с модулем в ней нет (пустой заголовок), — подключено ничего:
+    легаси-возврат к `paths:` только когда секции нет совсем.
 
     Каждый элемент: id, module, path, kind, state, command, script, manifest.
     Модуль, которого нет среди установленных, не выбрасывается молча: он остаётся
     в списке с `manifest: None`, чтобы doctor мог сказать, чего не хватает.
     """
     mods = installed(root)
-    items = declared(root) or legacy(root, mods)
+    items = declared(root) if has_section(config_text(root)) else legacy(root, mods)
     out = []
     for item in items:
         m = mods.get(item["module"])
@@ -361,7 +366,7 @@ def main() -> int:
         print(f"  · {m['id']} — {m.get('title', '')} [{m['kind']} · "
               f"{m.get('role', DEFAULT_ROLE)}] → {m['mirror'].get('default_path', '—')}")
     print(f"\nПодключено в проекте: {len(inst)}"
-          + ("" if declared() else "  (секции sources: нет — работают исторические зеркала)"))
+          + ("" if has_section(config_text()) else "  (секции sources: нет — работают исторические зеркала)"))
     for i in inst:
         mark = "" if i["manifest"] else "  ← модуль не установлен"
         exists = "" if os.path.isdir(i["path"]) else "  ← папки нет"
