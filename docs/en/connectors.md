@@ -248,10 +248,13 @@ save; when the config has none, the form does not add them.
 пропущено по типу M · по размеру K · ошибок E` ("Attachments: downloaded N · skipped by type M · by size K · errors E"; a
 `· нет на странице P` part is added for attachments the page does not have). A failed attachment is not a failed page: the
 sync exit code is unchanged, the error count shows in the line, and the page is re-read on the next sync.
+The counters are shared by files and diagram sources: a saved diagram counts as downloaded, a diagram over the limit counts
+under "by size".
 **Changing the policy.** Pages with attachments or diagrams remember the policy (`mode:limit`) in the sync cache: change
 `attachments` or `attachment_max_mb` and those pages are re-read on the next sync even when their Confluence version is
 the same (the version cache would otherwise skip them and files skipped earlier would never be fetched). Pages without
-attachments are not affected by the policy.
+attachments are not affected by the policy. A re-read page downloads all of its attachments again, including those already
+in `_assets/`: raising the limit on a large mirror means re-downloading the attachments of those pages.
 
 ## Disconnecting
 

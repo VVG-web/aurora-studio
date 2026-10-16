@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import textwrap
 import time
 
 from harness import (  # noqa: F401
@@ -2481,6 +2482,60 @@ def test_confluence_sync_summary_counts_attachment_outcomes(tmp: Path):
 
 
 @test
+def test_confluence_sync_summary_counts_diagrams_like_files(tmp: Path):
+    """Схемы считаются в сводке так же, как файлы: скачано, нет на странице, ошибка, предел."""
+    def macro(n):
+        return (f'<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">{n}'
+                '</ac:parameter></ac:structured-macro>')
+    page = "<p>x</p>" + macro("Есть") + macro("Нет") + macro("Сбой")
+
+    def fetch(url):
+        if url == "/d/b":
+            raise OSError("обрыв")
+        return b"<mxfile/>"
+    CE, exp, root, _f = _attach_exporter(
+        tmp, fetch=fetch, page=page, attachments={"Есть": "/d/a", "Сбой": "/d/b"})
+    _in_root(root, lambda: exp.walk("5001", [], "", 1))
+    assert (exp.attach_saved, exp.attach_missing, exp.attach_failed, exp.attach_skipped,
+            exp.attach_skipped_size) == (1, 1, 1, 1, 0), vars(exp)
+    assert exp.assets_saved == 1
+    assert CE.attachments_summary(exp) == (
+        "Вложения: скачано 1 · пропущено по типу 0 · по размеру 0 · нет на странице 1 · ошибок 1"), \
+        CE.attachments_summary(exp)
+    assert "5001" in exp.nocache, "страница со сбоем схемы не должна считаться свежей"
+    # список вложений недоступен: каждая схема — ошибка, а не молчаливый пропуск
+    CE, exp2, root2, _f = _attach_exporter(
+        _sub(tmp / "out"), page=page, attach_error=OSError("503"))
+    _in_root(root2, lambda: exp2.walk("5001", [], "", 1))
+    assert exp2.attach_failed == 3 and exp2.attach_saved == 0, vars(exp2)
+
+
+@test
+def test_confluence_main_prints_attachments_summary(tmp: Path):
+    """main() печатает строку «Вложения: …» из счётчиков экспортёра (подключение, не только функция)."""
+    root = make_project(tmp)
+    script = textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(SCRIPTS)!r})
+        import confluence_export as C
+        C.read_config = lambda: {{"base_url": "https://wiki.example.com", "space": "S",
+                                 "out": "Sources/Confluence", "roots": ["1"]}}
+        C.read_secret = lambda: ("x", "токен")
+        def fake(cfg, roots, out, auth, force):
+            exp = C.Exporter(None, out, "https://wiki.example.com", "S", False)
+            exp.attach_saved, exp.attach_failed, exp.attach_skipped_size = 3, 1, 2
+            return exp
+        C.run_export = fake
+        sys.argv = ["confluence_export.py"]
+        sys.exit(C.main())
+    """)
+    cp = subprocess.run([sys.executable, "-c", script], cwd=str(root), capture_output=True,
+                        text=True, encoding="utf-8", errors="replace")
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert "Вложения: скачано 3 · пропущено по типу 0 · по размеру 2 · ошибок 1" in cp.stdout, cp.stdout
+
+
+@test
 def test_confluence_attachment_policy_change_rereads_synced_pages(tmp: Path):
     """Смена attachments/attachment_max_mb перечитывает уже синхронизированные страницы со вложениями."""
     page = _file_link("law.pdf")
@@ -2509,10 +2564,17 @@ def test_confluence_attachment_policy_change_rereads_synced_pages(tmp: Path):
     md = (root / "Sources/Confluence/Руководство.md").read_text(encoding="utf-8")
     assert f5 == [] and exp5.written == 1 and "не скачан (режим none)" in md, (f5, md)
     assert exp5.skipped == 0 and exp5.attach_skipped_type == 1, (exp5.skipped, exp5.attach_skipped_type)
-    # страница без вложений политикой не перечитывается
+    # страница без вложений политикой не перечитывается: тело не качается (api.page не зовут),
+    # запись кэша прежняя. Версия в подсказке та же, что отдаёт страница (1), иначе кэш
+    # промахнулся бы по версии и охранник по `assets` остался бы непроверенным.
     plain = "<p>Просто текст</p>"
     _CE, e6, _r, fp = _attach_exporter(tmp, root=root, page=plain, force=False)
-    _in_root(root, lambda: (e6.walk("5001", [], "", 2), e6.save_cache()))
+    _in_root(root, lambda: (e6.walk("5001", [], "", 1), e6.save_cache()))
+    assert e6.fresh["5001"]["assets"] is False, e6.fresh
     _CE, e7, _r, fp7 = _attach_exporter(tmp, root=root, page=plain, force=False, att_max_mb=3)
-    _in_root(root, lambda: e7.walk("5001", [], "", 2))
-    assert e7.skipped == 1 and e7.fresh["5001"]["assets"] is False, e7.fresh
+    page_calls = []
+    real_page = e7.api.page
+    e7.api.page = lambda pid: (page_calls.append(pid), real_page(pid))[1]
+    _in_root(root, lambda: e7.walk("5001", [], "", 1))
+    assert page_calls == [] and e7.skipped == 1 and e7.fresh["5001"]["assets"] is False, \
+        (page_calls, e7.skipped, e7.fresh)

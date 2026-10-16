@@ -859,6 +859,7 @@ class Exporter(WikiMirror):
     # Вложения страницы: имя в тексте → ссылка в зеркале; заполняет `save_assets`.
     asset_links: dict = {}
     attach_saved = attach_skipped = attach_failed = 0
+    # Счётчики общие для файлов и схем: схема — такое же вложение страницы.
     # Пропущенное разбито по причинам для сводки синка: `attach_skipped` — всего,
     # `_type` — тип (исполняемый, markdown, режим), `_size` — больше предела,
     # `attach_missing` — имени нет среди вложений страницы.
@@ -937,12 +938,17 @@ class Exporter(WikiMirror):
         known = ASSET_EXTS
         lines, flines, kept, referenced = [], [], set(), set()
         for kind, name in sorted(set(names)):
-            if kind == "file" or have is None:
+            if kind == "file":
+                continue
+            if have is None:        # список недоступен: схема — такое же вложение, как файл
+                self.attach_failed += 1
                 continue
             # плагин пишет имя схемы, вложение лежит и с расширением, и без
             hit = next((h for h in (name, name + ".drawio", name + ".xml", name + ".mmd")
                         if h in have), None)
             if not hit:
+                self.attach_skipped += 1
+                self.attach_missing += 1
                 lines.append(f"- схема `{name}` — вложения с таким именем на странице нет")
                 continue
             # Имя вложения у draw.io — это имя диаграммы, без расширения. Файл без него
@@ -962,12 +968,14 @@ class Exporter(WikiMirror):
                 continue
             except Exception as e:  # noqa: BLE001
                 print(f"  ! {hit}: {e}", file=sys.stderr)
+                self.attach_failed += 1
                 continue
             dest = os.path.join(self.out, folder, fname)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "wb") as f:
                 f.write(blob)
             self.assets_saved += 1
+            self.attach_saved += 1
             kept.add(fname)
             lines.append(f"- [{fname}]({link_stem(base)}_assets/{urllib.parse.quote(fname)})")
 
