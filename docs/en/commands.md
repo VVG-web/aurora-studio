@@ -18,7 +18,7 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 
 | Command | What it does | Executor | Since |
 |---|---|---|---|
-| `kit:doctor` (`doctor`) | Project readiness: config, skills, secrets in git (config, skills, bots, `mcp.json` — one scanner shared with the hooks), engine version, folder structure, file-name portability. `--structure` — details per folder outside the schema. | script | 1.0.0 |
+| `kit:doctor` (`doctor`) | Project readiness: config, skills, secrets in git (config, skills, bots, `mcp.json` — one scanner shared with the hooks), engine version and the state of its copy on this computer (missing files by name), folder structure, file-name portability. `--structure` — details per folder outside the schema. | script | 1.0.0 |
 | `kit:hooks` | Git hooks: pre-commit with the linter, the ratchet (errors may not grow) and the secret check; in the kit also commit-msg and pre-push, so internal names, secrets and kitchen branches do not reach history. | script | 1.3.0 |
 | `kit:remap-sources` (`remap`) | Retarget cards' `source:` after a mirror moved (Confluence — by page_id, Jira — by issue key). | script | 1.7.0 |
 | `kit:update` | Update the engine in a project to the kit's version (preview, then `--apply`); `--structure-only` — only the schema folders; `--engine-only` — only the engine in this machine's `.aurora/` (a clone without `.aurora/` is completed; project files and git are not touched — the panel does this itself when you pick the project). | script | 1.3.0 |
