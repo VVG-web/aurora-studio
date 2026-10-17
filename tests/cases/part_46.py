@@ -280,6 +280,7 @@ def test_confluence_diagnose_tree_prints_children_per_page_and_writes_nothing(tm
                             env=env, timeout=120)
     finally:
         srv.shutdown()
+        srv.server_close()
     out = cp.stdout.replace("\r\n", "\n")
     assert cp.returncode == 0, out + cp.stderr
     assert "Страница верхнего уровня (1) — детей: 120" in out, out
@@ -300,3 +301,36 @@ def test_confluence_diagnose_tree_prints_children_per_page_and_writes_nothing(tm
     for lang in ("ru", "en"):
         cat = json.loads((SCRIPTS.parent / f"cockpit/modules/mirrors/i18n/{lang}.json").read_text(encoding="utf-8"))
         assert cat.get("mirrors.tree") and cat.get("mirrors.tree_hint"), lang
+
+
+@test
+def test_confluence_page_whose_child_list_was_lost_stays_a_folder(tmp: Path):
+    """Страница, у которой дети были, а список не пришёл (отказ 403 или «0 из N»), остаётся папкой и при `--force`,
+    когда кэша нет: прежний путь берётся из состояния зеркала — рядом не появляется лист «Раздел.md»."""
+    import contextlib
+    import io
+    CE = _ce()
+    root = tmp / "lost-list-project"
+    root.mkdir()
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        out_dir = str(root / "Sources/Confluence")
+        first = CE.Exporter(_wiki_api(CE, WIKI_TREE), out_dir, "https://wiki.example.com", "S", True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            first.walk("1", [])
+        first.write_state()
+        rels = {r[0]: r[1] for r in first.records}
+        assert rels["2"].endswith("/index.md") and rels["3"].endswith("/index.md"), rels
+        for label, kw in (("отказ", {"refuse": {"2": 403}}), ("пустой список", {"cut": {"2": (0, 2)}})):
+            again = CE.Exporter(_wiki_api(CE, WIKI_TREE, **kw), out_dir, "https://wiki.example.com", "S", True)
+            assert again.cache == {}, "проверка требует запуска без кэша (--force)"
+            with contextlib.redirect_stdout(io.StringIO()):
+                again.walk("1", [])
+            now = {r[0]: r[1] for r in again.records}
+            assert now["2"] == rels["2"], f"{label}: страница сменила путь {rels['2']} → {now['2']}"
+            leaf = rels["2"][:-len("/index.md")] + ".md"
+            assert not os.path.exists(os.path.join(out_dir, leaf)), f"{label}: рядом с папкой появился лист {leaf}"
+            assert again.branch_refused == 1, (label, again.branch_refused)
+    finally:
+        os.chdir(here)

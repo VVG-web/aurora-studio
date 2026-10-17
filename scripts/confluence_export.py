@@ -958,6 +958,7 @@ class Exporter(WikiMirror):
     reuse_assets = False
     # Ветки, где сервер не отдал детей (отказ, меньше объявленного, оборванный список): счёт для сводки.
     branch_refused = 0
+    prev_rels = None            # {номер страницы: путь} по состоянию зеркала; читается один раз, когда понадобится
 
     @staticmethod
     def new_stat() -> dict:
@@ -1007,8 +1008,22 @@ class Exporter(WikiMirror):
             return []
         why = children_verdict(rep)
         if why:
+            self.refused_ids.add(str(page_id))
             self.refuse_branch(title, why, failed=bool(rep.get("error")))
         return kids
+
+    def had_children(self, page_id: str) -> bool:
+        """Была ли страница папкой с детьми в прежних синках.
+
+        Берётся из кэша страниц, а когда его нет (`--force`, другая машина: кэш лежит вне репозитория) —
+        из состояния зеркала, которое едет вместе с ним. Без этого страница с неполным списком детей
+        ложилась бы листом рядом со своей прежней папкой."""
+        rel = (self.cache.get(str(page_id)) or {}).get("rel", "")
+        if not rel:
+            if self.prev_rels is None:
+                self.prev_rels = {c[1]: c[3] for c in self.state_cells() if len(c) >= 4 and c[1].isdigit()}
+            rel = self.prev_rels.get(str(page_id), "")
+        return rel.endswith("/index.md")
 
     def skip_reason(self, name: str, info: dict) -> str:
         """Почему вложение не качается по настройке (режим, потом размер); пусто — качать.
@@ -1439,8 +1454,7 @@ class Exporter(WikiMirror):
         children = self.child_list(page_id, title)
         # Список детей не пришёл (отказ сервера), а у страницы они были: путь не меняем на «лист»,
         # иначе её папка с поддеревом выглядела бы переехавшей и лишней.
-        had = (self.cache.get(str(page_id)) or {}).get("rel", "").endswith("/index.md")
-        grown = bool(children) or (str(page_id) in self.refused_ids and had)
+        grown = bool(children) or (str(page_id) in self.refused_ids and self.had_children(page_id))
         self.count_page(ancestors, title, children)
         # ключи RY считаем всегда, даже когда страница не переписывается: иначе итог
         # зависел бы от того, что изменилось со вчера, а не от того, что есть в источнике

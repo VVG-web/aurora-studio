@@ -279,7 +279,17 @@ def test_engine_prepare_touches_only_dot_aurora_and_is_idempotent(tmp: Path):
     # правило .gitignore проекта не добавляется само, но об его отсутствии сказано
     bare = _clone(tmp, "no-ignore-rule")
     subprocess.run(["git", "init", "-q"], cwd=str(bare), check=True)
-    assert AU.engine_prepare(bare)["ignored"] is False
+    # личный gitconfig с глобальным excludesFile не должен менять ответ: проверка идёт с пустым
+    saved_cfg = os.environ.get("GIT_CONFIG_GLOBAL")
+    (tmp / "empty.gitconfig").write_text("", encoding="utf-8")
+    os.environ["GIT_CONFIG_GLOBAL"] = str(tmp / "empty.gitconfig")
+    try:
+        assert AU.engine_prepare(bare)["ignored"] is False
+    finally:
+        if saved_cfg is None:
+            os.environ.pop("GIT_CONFIG_GLOBAL", None)
+        else:
+            os.environ["GIT_CONFIG_GLOBAL"] = saved_cfg
     assert not (bare / ".gitignore").exists(), "подготовка движка завела правило в файле проекта"
 
 
@@ -544,6 +554,13 @@ const card = (state, extra) => Object.assign({path: "/p/" + state, kit: "1.174.0
   await ensureEngine(p);
   check(text(cur).includes("engine.failed") && text(cur).includes("kb:lint"), "причина отказа видна");
   check(buttons(cur).some(b => text(b) === "engine.prepare") && !p._engineBusy, "кнопка повторить, занятость снята");
+  // часть файлов за ссылкой: сервер ответил «ok», но «в порядке» не наступило — об этом сказано, кнопка осталась
+  p = card("incomplete"); S.project = p; calls.length = 0; ENGINE_TRIED.clear();
+  REPLY["/api/engine/prepare"] = {ok: true, created: 3, refreshed: 0, files: [], ignored: true, shared: 2,
+                                  state: {state: "incomplete", missing: 2, total: 103, files: [".aurora/a"], legacy: false}};
+  await ensureEngine(p);
+  check(text(cur).includes("engine.failed") && text(cur).includes("engine.shared"), "файлы за ссылкой названы в полосе");
+  check(buttons(cur).some(b => text(b) === "engine.prepare"), "и кнопка остаётся");
   // чужой проект на экране: полоса не рисуется
   const other = card("missing"); S.project = card("ok");
   cur = null; drawEngineBar(other);
@@ -567,7 +584,7 @@ def test_panel_prepares_a_project_engine_on_pick_and_offers_a_button(tmp: Path):
         core = json.loads((KIT / "cockpit/i18n" / f"{lang}.json").read_text(encoding="utf-8"))
         ver = json.loads((KIT / "cockpit/modules/version/i18n" / f"{lang}.json").read_text(encoding="utf-8"))
         for key in ("busy", "bar_missing", "bar_incomplete", "bar_stale", "bar_legacy", "prepare", "update",
-                    "open_version", "dismiss", "prepared", "prepared_files", "not_ignored", "failed"):
+                    "open_version", "dismiss", "prepared", "prepared_files", "not_ignored", "failed", "shared"):
             assert core.get("engine." + key), (lang, key)
         for key in ("title", "about", "ok", "missing", "incomplete", "stale", "legacy", "prepare", "update", "done"):
             assert ver.get("version.engine_" + key), (lang, key)
@@ -586,3 +603,183 @@ def _run_node(tmp: Path, name: str, code: str, *argv: str) -> dict:
                         encoding="utf-8", errors="replace", timeout=60)
     assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:1500]
     return json.loads(cp.stdout.strip().splitlines()[-1])
+
+
+# ------------------------------------------------------------------ движок проекта: границы, версии, отказы записи
+
+@test
+def test_engine_prepare_refuses_links_in_the_engine_folder_and_its_service_files(tmp: Path):
+    """`.aurora` — ссылка на чужой каталог, `.aurora/scripts` — ссылка, `kit_path.txt` — ссылка: ничего не пишется
+    и не удаляется насквозь (ни файлы движка, ни выведенные из состава, ни указатель на кит и метка копии)."""
+    AU = _mod("aurora_update")
+    outside = tmp / "elsewhere"
+    outside.mkdir()
+    probe = outside / "marker.txt"
+    probe.write_text("чужой файл\n", encoding="utf-8")
+
+    def link(target, where, directory=False) -> bool:
+        try:
+            os.symlink(target, where, target_is_directory=directory)
+            return True
+        except (OSError, NotImplementedError):
+            return False                 # Windows без права на ссылки: проверять нечем
+
+    # 1. вся папка движка — ссылка
+    a = _clone(tmp, "linked-engine")
+    if not link(outside, a / ".aurora", True):
+        return
+    res = AU.engine_prepare(a)
+    assert sorted(p.name for p in outside.iterdir()) == ["marker.txt"], "в чужой каталог легли файлы движка"
+    assert res["shared"] and not res["created"] and res["after"] == "missing", res
+    # 2. ссылка на каталог скриптов: выведенный из состава файл по ту сторону не удаляется
+    b = _clone(tmp, "linked-scripts")
+    (b / ".aurora").mkdir()
+    (outside / "kb_queue.py").write_text("# выведен из движка, но лежит в общем каталоге\n", encoding="utf-8")
+    assert link(outside, b / ".aurora/scripts", True)
+    res = AU.engine_prepare(b)
+    assert (outside / "kb_queue.py").is_file() and not res["removed"], "удалено насквозь через ссылку"
+    assert not (outside / "aurora_common.py").exists(), "файл движка записан насквозь"
+    assert ".aurora/scripts/aurora_common.py" in res["shared"], res["shared"]
+    assert not (b / ".aurora/engine_version.txt").exists(), "копия не целиком совпала с китом — версия не объявляется"
+    # 3. указатель на кит — ссылка на чужой файл
+    c = _clone(tmp, "linked-pointer")
+    (c / ".aurora").mkdir()
+    assert link(probe, c / ".aurora/kit_path.txt")
+    res = AU.engine_prepare(c)
+    assert probe.read_text(encoding="utf-8") == "чужой файл\n", "указатель на кит записан через ссылку"
+    assert ".aurora/kit_path.txt" in res["shared"], res["shared"]
+
+
+@test
+def test_engine_prepare_leaves_update_ignore_paths_to_the_project(tmp: Path):
+    """Всё под `.aurora/` в `aurora.update_ignore.txt` — проект ведёт сам: ни файлов, ни указателя на кит, ни метки."""
+    AU = _mod("aurora_update")
+    root = _clone(tmp)
+    (root / "aurora.update_ignore.txt").write_text(".aurora/*\n", encoding="utf-8")
+    res = AU.engine_prepare(root)
+    assert res["ok"] and not res["created"], res
+    assert not (root / ".aurora").exists() or not any((root / ".aurora").rglob("*")), \
+        "подготовка записала в путь, который проект ведёт сам"
+    st = AU.engine_state(root)
+    assert st["total"] == 0 and st["state"] in ("ok", "stale"), st
+
+
+@test
+def test_engine_copy_version_comes_from_the_local_mark_not_from_the_project_stamp(tmp: Path):
+    """Штамп проекта едет через git и может быть новее кита этой машины: «движок новее кита» — только по метке копии.
+    Копия без метки, у которой реестр команд расходится с китовым, названа устаревшей, хотя штамп равен киту."""
+    AU = _mod("aurora_update")
+    kit = AU.kit_version()
+    root = _clone(tmp, stamp="99.0.0")                      # владелец обновился дальше, чем кит коллеги
+    AU.engine_prepare(root)
+    (root / ".aurora/scripts/aurora_common.py").write_text("# старая копия\n", encoding="utf-8")
+    (root / ".aurora/engine_version.txt").unlink()           # копия из времён до метки
+    res = AU.engine_prepare(root)
+    assert res["ahead"] is False and res["refreshed"] == [".aurora/scripts/aurora_common.py"], res
+    assert (root / ".aurora/engine_version.txt").read_text(encoding="utf-8").strip() == kit
+    # штамп равен киту, метки нет, реестр команд в копии старый — устарела
+    old = _clone(tmp, "old-copy", stamp=kit)
+    AU.engine_prepare(old)
+    (old / ".aurora/engine_version.txt").unlink()
+    assert AU.engine_state(old)["state"] == "ok", "копия, совпавшая с китом, устаревшей не считается"
+    (old / ".aurora/commands.txt").write_text("# реестр прежнего выпуска\n", encoding="utf-8")
+    assert AU.engine_state(old)["state"] == "stale"
+    AU.engine_prepare(old)
+    assert AU.engine_state(old)["state"] == "ok"
+    # один файл на месте, указателя нет — это «неполный», а не «нет вовсе»
+    few = _clone(tmp, "few")
+    (few / ".aurora/scripts").mkdir(parents=True)
+    (few / ".aurora/scripts/aurora_common.py").write_text("#\n", encoding="utf-8")
+    assert AU.engine_state(few)["state"] == "incomplete"
+    # указатель на месте, файлов нет — «нет вовсе»
+    (few / ".aurora/scripts/aurora_common.py").unlink()
+    (few / ".aurora/kit_path.txt").write_text(str(AU.KIT) + "\n", encoding="utf-8")
+    assert AU.engine_state(few)["state"] == "missing"
+
+
+@test
+def test_engine_prepare_reports_failed_writes_without_crashing_and_keeps_modes(tmp: Path):
+    """Сбой записи одного файла, указателя или удаления — строка в `failed`, а не трассировка; «создано» не включает
+    упавшие; права прежнего файла переходят к новому; метка копии при сбое не объявляется."""
+    AU = _mod("aurora_update")
+    root = _clone(tmp)
+    real_write, real_atomic = AU._write_engine_file, AU.write_text_atomic
+    try:
+        def flaky(dst, text):
+            if dst.name == "aurora_common.py":
+                raise PermissionError("файл занят")
+            return real_write(dst, text)
+
+        AU._write_engine_file = flaky
+        res = AU.engine_prepare(root)
+        assert res["ok"] is False and len(res["failed"]) == 1 and "aurora_common.py" in res["failed"][0], res["failed"]
+        assert ".aurora/scripts/aurora_common.py" not in res["created"] and len(res["created"]) > 50, "упавший файл числится созданным"
+        assert not (root / ".aurora/engine_version.txt").exists() and not (root / ".aurora/kit_path.txt").exists()
+        AU._write_engine_file = real_write
+        assert AU.engine_prepare(root)["ok"], "повтор после сбоя должен достроить остальное"
+
+        def broken_atomic(path, text):
+            raise OSError("диск полон")
+
+        (root / ".aurora/engine_version.txt").unlink()
+        AU.write_text_atomic = broken_atomic
+        res = AU.engine_prepare(root)
+        assert res["ok"] is False and any("kit_path.txt" in f for f in res["failed"]), res["failed"]
+    finally:
+        AU._write_engine_file, AU.write_text_atomic = real_write, real_atomic
+    if os.name != "nt":
+        script = root / ".aurora/scripts/aurora_common.py"
+        os.chmod(script, 0o755)
+        script.write_text("# правка\n", encoding="utf-8")
+        assert AU.engine_prepare(root)["refreshed"] == [".aurora/scripts/aurora_common.py"]
+        assert os.stat(script).st_mode & 0o777 == 0o755, "права прежнего файла потеряны"
+
+
+@test
+def test_panel_engine_route_answers_unknown_projects_busy_runs_and_agents(tmp: Path):
+    """`POST /api/engine/prepare` на настоящем обработчике: чужой путь — отказ и ничего не создано; идущий запуск и замок
+    агента — отказ с причиной (по-английски при `?lang=en`); иначе движок встаёт, а ответ несёт состояние."""
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+    sys.path.insert(0, str(KIT / "cockpit"))
+    ck = importlib.import_module("aurora_cockpit")
+    restore_home = set_home(tmp / "home")
+    root = _clone(tmp)
+    (tmp / "other-place").mkdir()
+    stranger = _clone(tmp / "other-place", "stranger")
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), ck.Handler)
+    srv.roots = [str(root)]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def post(body: dict, query: str = ""):
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=60)
+        c.request("POST", "/api/engine/prepare" + query, json.dumps(body),
+                  headers={"X-Aurora-Token": ck.TOKEN, "Content-Type": "application/json"})
+        r = c.getresponse()
+        return r.status, json.loads(r.read().decode("utf-8"))
+
+    try:
+        code, out = post({"project": str(stranger)})
+        assert code == 400 and out.get("error") and not (stranger / ".aurora").exists(), (code, out)
+        ck.JOBS["busy-run"] = {"id": "busy-run", "cmd": "sync:confluence", "project": str(root), "done": False}
+        try:
+            code, out = post({"project": str(root)})
+            assert code == 409 and "sync:confluence" in out["error"], (code, out)
+            code, out = post({"project": str(root)}, "?lang=en")
+            assert code == 409 and out["error"].startswith("a run is in progress in the project (sync:confluence)"), out
+        finally:
+            ck.JOBS.pop("busy-run", None)
+        (root / ".aurora/state").mkdir(parents=True)
+        (root / ".aurora/state/agent.lock").write_text(json.dumps({"pid": os.getpid(), "task": "build"}), encoding="utf-8")
+        code, out = post({"project": str(root)})
+        assert code == 409 and "build" in out["error"] and not (root / ".aurora/scripts").exists(), (code, out)
+        (root / ".aurora/state/agent.lock").unlink()
+        code, out = post({"project": str(root)})
+        assert code == 200 and out["ok"] and out["state"]["state"] == "ok" and out["created"] > 50, (code, out)
+        code, out = post({"project": str(root)})
+        assert code == 200 and out["created"] == 0 and out["refreshed"] == 0, "повтор должен быть пустым"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        restore_home()

@@ -583,7 +583,8 @@
     "кит с манифестом не найден — подготовить движок нечем": "the kit with the manifest was not found — there is nothing to prepare the engine from",
     "подготовка движка уже идёт — подождите несколько секунд": "the engine is already being prepared — wait a few seconds",
     "это не проект Aurora (нет AuroraKnowledgeDB/)": "this is not an Aurora project (no AuroraKnowledgeDB/)",
-    "подготовка движка не вышла: {}: {}": "preparing the engine failed: {}: {}"
+    "подготовка движка не вышла: {}: {}": "preparing the engine failed: {}: {}",
+    "в проекте идёт прогон агента ({}) — движок подготовится после него": "an agent run is in progress in the project ({}) — the engine will be prepared after it"
   },
   "connectors": {
     "confluence-dc": {

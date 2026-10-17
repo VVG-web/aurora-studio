@@ -33,7 +33,7 @@ Artifacts, Workspaces, Templates/, Prompts/) не трогается.
 и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
-import argparse, difflib, os, re, subprocess, sys
+import argparse, difflib, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -563,7 +563,7 @@ def stamp_engine(target: Path, ver: str) -> None:
 
     Штамп проекта (`aurora_version.txt`) ездит через git и говорит о версии у владельца, метка —
     локальная: по ней видно, что копия на этом компьютере отстала. Полное обновление ставит и то и другое."""
-    if (target / ENGINE).is_dir():
+    if (target / ENGINE).is_dir() and _linkless(target, ENGINE_MARK) and not _ignored(ENGINE_MARK, load_ignore(target)):
         write_text_atomic(target / ENGINE_MARK, ver + "\n")
 
 
@@ -600,16 +600,46 @@ def _ignored(rel: str, ignore: list) -> bool:
     return any(fnmatch(rel, pat) for pat in ignore)
 
 
+def _read_version(path: Path) -> str:
+    try:
+        v = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+    return v if re.match(r"\d", v) else ""
+
+
+def mark_version(target: Path) -> str:
+    """Версия кита, с которой скопирован движок на этой машине (метка копии); нет метки — пусто."""
+    return _read_version(target / ENGINE_MARK)
+
+
 def copy_version(target: Path) -> str:
-    """Версия движка в `.aurora/`: метка копии, а нет её — штамп проекта (`aurora_version.txt`)."""
-    for rel in (ENGINE_MARK, "AuroraKnowledgeDB/meta/aurora_version.txt"):
-        try:
-            v = (target / rel).read_text(encoding="utf-8").strip()
-        except (OSError, UnicodeDecodeError):
-            continue
-        if re.match(r"\d", v):
-            return v
-    return ""
+    """Версия движка в `.aurora/` для показа: метка копии, а нет её — штамп проекта (`aurora_version.txt`)."""
+    return mark_version(target) or _read_version(target / "AuroraKnowledgeDB/meta/aurora_version.txt")
+
+
+def _linkless(target: Path, rel: str) -> bool:
+    """Путь от корня проекта без ссылок на каждом уровне: через ссылку подготовка не пишет и не удаляет."""
+    p = target
+    for part in Path(rel).parts:
+        p = p / part
+        if p.is_symlink():
+            return False
+    return True
+
+
+def _witness_differs(target: Path, ignore: list) -> bool:
+    """Свидетель устаревшей копии без метки: реестр команд в `.aurora/` расходится с китовым.
+
+    Копии, сделанные до метки, версии не помнят, а штамп проекта едет через git и может быть новее
+    копии на этой машине. Реестр команд меняется почти с каждым выпуском, читается за миллисекунду."""
+    if _ignored(f"{ENGINE}/commands.txt", ignore):
+        return False
+    try:
+        return (target / ENGINE / "commands.txt").read_text(encoding="utf-8") != \
+            (KIT / "commands.txt").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def _pointer_ok(target: Path) -> bool:
@@ -644,14 +674,17 @@ def engine_state(target: Path) -> dict:
         if not _pointer_ok(target):
             missing.append(KIT_POINTER)
     out.update(missing=missing, total=len(wanted))
-    if files and len(missing) >= len(files):
+    if files and len([m for m in missing if m != KIT_POINTER]) >= len(files):
         out["state"] = "missing"                  # ни одного файла манифеста: движка на машине нет
     elif missing:
         out["state"] = "incomplete"
-    elif out["copy"] and version_key(out["copy"]) < version_key(kit):
-        out["state"] = "stale"
+    elif mark_version(target):
+        out["state"] = "stale" if version_key(mark_version(target)) < version_key(kit) else "ok"
     else:
-        out["state"] = "ok"
+        # метки нет (копия старше метки): версию подскажет штамп проекта — нижняя оценка — и свидетель
+        stamp = out["copy"]
+        old = bool(stamp) and version_key(stamp) < version_key(kit)
+        out["state"] = "stale" if old or _witness_differs(target, ignore) else "ok"
     return out
 
 
@@ -679,6 +712,10 @@ def _write_engine_file(dst: Path, text: str) -> None:
     tmp = dst.with_name(f"{dst.name}.{os.getpid()}.aurora-tmp")
     try:
         tmp.write_bytes(text.encode("utf-8"))        # LF, как у полного обновления
+        try:
+            shutil.copymode(dst, tmp)                # права прежнего файла переходят к новому
+        except OSError:
+            pass
         replace_file(tmp, dst)
     finally:
         tmp.unlink(missing_ok=True)
@@ -690,10 +727,10 @@ def engine_prepare(target: Path, apply: bool = True) -> dict:
     Идемпотентно: файл, совпавший с китом, не пишется. Расходящийся с китом файл движка
     заменяется — копия должна быть целой, одной версии: недостающий файл рядом со старым
     `aurora_common.py` падал бы там, где из кита работал. Исключения: пути из
-    `aurora.update_ignore.txt` проект ведёт сам; движок НОВЕЕ кита только достраивается, не
-    откатывается; ссылки и пути за пределами проекта не трогаются (общий движок обновляет
-    полный `kit:update` с предупреждением). Движок в прежней `.opencode/` не переезжает —
-    переезд раскладывает данные проекта и идёт полным обновлением.
+    `aurora.update_ignore.txt` проект ведёт сам; движок НОВЕЕ кита (по метке копии) только
+    достраивается, не откатывается; через ссылки и за пределы проекта не пишется и не удаляется
+    (общий движок обновляет полный `kit:update` с предупреждением). Движок в прежней `.opencode/`
+    не переезжает — переезд раскладывает данные проекта и идёт полным обновлением.
     → {ok, reason, before, after, created, refreshed, removed, shared, failed, ahead, ignored}.
     """
     res = {"ok": False, "reason": "", "applied": False, "before": "", "after": "", "created": [],
@@ -706,7 +743,9 @@ def engine_prepare(target: Path, apply: bool = True) -> dict:
         return {**res, "reason": "no_kit"}
     if st["legacy"]:
         return {**res, "reason": "legacy"}
-    res["ahead"] = bool(st["copy"]) and version_key(st["copy"]) > version_key(st["kit"])
+    # «новее кита» знает только метка копии: штамп проекта едет через git и может быть новее и кита этой машины
+    res["ahead"] = bool(mark_version(target)) and version_key(mark_version(target)) > version_key(st["kit"])
+    ignore = load_ignore(target)
     todo, seen = [], set()
     for c in plan(target, project_fields(target)):
         # путь бывает в плане дважды (скрипт модуля лежит и в манифесте, и в его описании)
@@ -714,34 +753,45 @@ def engine_prepare(target: Path, apply: bool = True) -> dict:
             continue
         seen.add(c.path)
         dst = target / c.path
-        if (c.external or dst.is_symlink() or ".." in Path(c.path).parts
-                or not _inside(target, dst.parent)):
+        if c.external or ".." in Path(c.path).parts or not _linkless(target, c.path) or not _inside(target, dst.parent):
             res["shared"].append(c.path)
             continue
-        new = not dst.exists()
-        if res["ahead"] and not new:
+        if res["ahead"] and dst.exists():
             continue
-        (res["created"] if new else res["refreshed"]).append(c.path)
-        todo.append(c)
-    ignore = load_ignore(target)
-    gone = [r for r in retired_paths() if r.startswith(ENGINE + "/") and (target / r).is_file()
-            and not (target / r).is_symlink() and not _ignored(r, ignore)]
-    res["removed"] = gone
+        todo.append((c, not dst.exists()))
+    gone = [r for r in retired_paths() if r.startswith(ENGINE + "/") and _linkless(target, r)
+            and (target / r).is_file() and not _ignored(r, ignore)]
     res["ok"] = True
     if not apply:
+        res.update(created=[c.path for c, new in todo if new], refreshed=[c.path for c, new in todo if not new],
+                   removed=gone)
         return res
-    for c in todo:
+    for c, new in todo:
         try:
             _write_engine_file(target / c.path, c.new_text)
+            res["created" if new else "refreshed"].append(c.path)
         except OSError as e:
             res["failed"].append(f"{c.path}: {e}")
     for r in gone:
-        (target / r).unlink(missing_ok=True)
-    if not res["failed"]:
-        (target / ENGINE).mkdir(parents=True, exist_ok=True)
-        write_text_atomic(target / KIT_POINTER, str(KIT) + "\n")
-        if not res["ahead"]:
-            write_text_atomic(target / ENGINE_MARK, kit_version() + "\n")
+        try:
+            (target / r).unlink(missing_ok=True)
+            res["removed"].append(r)
+        except OSError as e:
+            res["failed"].append(f"{r}: {e}")
+    # указатель на кит и метка — тем же правилом: не через ссылку, не в путь, который ведёт проект сам
+    for rel, text in ((KIT_POINTER, str(KIT)), (ENGINE_MARK, kit_version())):
+        if res["failed"] or _ignored(rel, ignore):
+            continue
+        if rel == ENGINE_MARK and (res["ahead"] or res["shared"]):
+            continue                                  # копия не совпала с китом целиком: версию не объявляем
+        if not _linkless(target, rel):
+            res["shared"].append(rel)
+            continue
+        try:
+            (target / ENGINE).mkdir(parents=True, exist_ok=True)
+            write_text_atomic(target / rel, text + "\n")
+        except OSError as e:
+            res["failed"].append(f"{rel}: {e}")
     res["applied"] = True
     res["ok"] = not res["failed"]
     res["ignored"] = _git_ignored(target, KIT_POINTER)
@@ -768,7 +818,9 @@ def engine_report(res: dict, apply: bool) -> list:
         lines.append("\n(dry-run) Ничего не записано. Повторите с --apply." if done
                      else "✅ Движок проекта уже актуален — делать нечего.")
         return lines
-    lines += [f"   ⚠️ не вышло: {line}" for line in res["failed"]]
+    lines += [f"   ⚠️ не вышло: {line}" for line in res["failed"][:40]]
+    if len(res["failed"]) > 40:
+        lines.append(f"   … ещё {len(res['failed']) - 40}")
     lines.append(f"\n{'✅' if res['ok'] else '⚠️'} Движок проекта подготовлен на этом компьютере: создано "
                  f"{len(res['created'])}, заменено {len(res['refreshed'])}, убрано {len(res['removed'])} "
                  f"файлов в .aurora/. Файлы проекта и git не тронуты. Версия движка → {kit_version()}")

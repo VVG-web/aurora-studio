@@ -3178,7 +3178,8 @@ def engine_fallback_note(project: str, script: str, path: str) -> str:
             "«Версия» → «Подготовить проект»")
 
 
-ENGINE_LOCK = threading.Lock()
+ENGINE_LOCKS: dict = {}          # по замку на проект: подготовка одного не ждёт другого
+ENGINE_LOCKS_GUARD = threading.Lock()
 
 
 def engine_prepare_action(project: str) -> dict:
@@ -3188,7 +3189,9 @@ def engine_prepare_action(project: str) -> dict:
     действие сама при выборе проекта без движка и по кнопке «Версия». Пока в проекте идёт запуск,
     движок не подменяется: один прогон двумя версиями — худшее из состояний. Результат остаётся в
     истории «Консоли» строкой `kit:update --engine-only`."""
-    if not ENGINE_LOCK.acquire(blocking=False):
+    with ENGINE_LOCKS_GUARD:
+        lock = ENGINE_LOCKS.setdefault(os.path.realpath(project), threading.Lock())
+    if not lock.acquire(blocking=False):
         return {"error": "подготовка движка уже идёт — подождите несколько секунд"}
     try:
         with JOBS_LOCK:
@@ -3196,6 +3199,9 @@ def engine_prepare_action(project: str) -> dict:
         if busy:
             return {"error": f"в проекте идёт запуск ({busy[0]}) — движок подготовится после него"}
         import aurora_update as AU
+        held = AU.agent_running(Path(project))         # замок агента: пишущий прогон не из панели тоже в счёт
+        if held:
+            return {"error": f"в проекте идёт прогон агента ({held}) — движок подготовится после него"}
         t0, started = time.time(), utc_stamp()
         try:
             res = AU.engine_prepare(Path(project))
@@ -3215,7 +3221,7 @@ def engine_prepare_action(project: str) -> dict:
                 "files": res["created"][:6], "ahead": res["ahead"], "ignored": res["ignored"],
                 "state": engine_info(project)}
     finally:
-        ENGINE_LOCK.release()
+        lock.release()
 
 
 def record_engine_run(project: str, lines: list, res: dict, started: str, seconds: float) -> None:

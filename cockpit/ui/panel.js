@@ -1551,6 +1551,8 @@ async function prepareEngine(p){
     p.engine_prepared = {created: d.created, refreshed: d.refreshed, files: d.files || [],
                          ignored: d.ignored, ahead: d.ahead};
     toast(t("engine.prepared", {created: d.created, refreshed: d.refreshed}));
+    // Часть файлов за ссылкой или вне проекта: их подготовка не трогает, и «в порядке» не наступит.
+    if (d.shared && d.state && d.state.state !== "ok") p.engine_error = t("engine.shared", {n: d.shared});
   } else if (d && d.failed && d.failed.length) p.engine_error = d.failed[0];
   drawEngineBar(p);
   refreshModules();

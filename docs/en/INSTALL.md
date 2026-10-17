@@ -153,8 +153,10 @@ update` moves it to `.aurora/` by itself: the engine's data goes there too, the 
 travel in git: a clone arrives without it (or with an incomplete one, if the kit has released something since).
 Clone the project and open it in the panel: when you pick the project the panel completes `.aurora/` from the kit
 by itself — `kit:update --engine-only`. Only the paths under `.aurora/` from `engine_manifest.txt` are copied
-(scripts, skills, documents, connectors); project files and git are not touched, and the Console keeps a record of
-what was created. The rest of the update — `AGENTS.md`, `AuroraKnowledgeDB/README.md`, the type catalogue,
+(scripts, skills, documents, connectors): what is missing is created, what differs from the kit is replaced (the
+copy must be whole and of one version), and paths listed in `aurora.update_ignore.txt`, an engine newer than the
+kit, links and paths outside the project are left alone. Project files and git are not touched, and the Console
+keeps a record of what was created. The rest of the update — `AGENTS.md`, `AuroraKnowledgeDB/README.md`, the type catalogue,
 `Templates/`, `TemplatesCommon/`, `Prompts/`, `Settings/*.csv`, the schema folders, the `.gitignore` rules, the
 bodies of the sync skills — creates changes in git, so it stays behind a button: **Version → Update preview → Apply**
 (`kit:update`). No terminal is needed. The engine state of the project — `ok`, `missing` (not there at all),

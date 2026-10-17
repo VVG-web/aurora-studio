@@ -64,7 +64,9 @@ What follows from this:
   version the engine copy on this machine matches is in `.aurora/engine_version.txt` (a local mark outside git: the
   stamp `aurora_version.txt` travels through git and describes the owner's version). The copy is checked against the
   manifest by `aurora_update.engine_state`: `ok`, `missing`, `incomplete`, `stale`; `kit:update --engine-only`
-  completes it.
+  completes it. A copy without a mark (made before the mark existed) counts as stale if the project stamp is lower
+  than the kit or the command registry `.aurora/commands.txt` differs from the kit's; only the mark decides
+  "the engine is newer than the kit".
 - If a project's skill is a symbolic link to a shared folder, `update` warns: the write goes to the shared
   target and every project that shares it gets updated.
 

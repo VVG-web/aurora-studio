@@ -889,6 +889,7 @@
   "engine.prepared_files": "For example: {files}.",
   "engine.not_ignored": "The .aurora/ folder is not covered by .gitignore — git will see it; Version → Apply adds the rule.",
   "engine.failed": "The engine was not prepared: {why}",
+  "engine.shared": "Files behind a link or outside the project: {n} — the preparation does not touch them (Version → Apply updates a shared engine).",
   "route.hung_restart": "⚠ The step hung: {why}. Starting it again (attempt {n}).",
   "job.stopped_agent": "■ The run was stopped by a person. What the agent did is committed under its own commit — see the “Agent result” line above.",
   "job.stopped": "■ The run was stopped by a person.",
