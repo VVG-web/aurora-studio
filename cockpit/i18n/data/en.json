@@ -4,7 +4,7 @@
     "kit:doctor": "Project readiness: config, skills, secrets in git (config, skills, bots, `mcp.json` — one scanner shared with the hooks), engine version, folder structure, file-name portability. `--structure` — details per folder outside the schema.",
     "kit:hooks": "Git hooks: pre-commit with the linter, the ratchet (errors may not grow) and the secret check; in the kit also commit-msg and pre-push, so internal names, secrets and kitchen branches do not reach history.",
     "kit:remap-sources": "Retarget cards' `source:` after a mirror moved (Confluence — by page_id, Jira — by issue key).",
-    "kit:update": "Update the engine in a project to the kit's version (preview, then `--apply`); `--structure-only` — only the schema folders.",
+    "kit:update": "Update the engine in a project to the kit's version (preview, then `--apply`); `--structure-only` — only the schema folders; `--engine-only` — only the engine in this machine's `.aurora/` (a clone without `.aurora/` is completed; project files and git are not touched — the panel does this itself when you pick the project).",
     "kit:i18n": "Panel interface languages: completeness of every catalogue against the markup; `--new <code> <name>` creates a language.",
     "kit:skills": "Put Aurora's skills into the agent's shared folder (`~/.claude/skills`) so `/aurora-vault` and `/aurora-dev` are found in any conversation.",
     "kit:mcp": "The base as a tool for any assistant: server check and a ready connection line. The server only reads — writing through MCP is impossible.",
@@ -570,7 +570,20 @@
     "строка": "a string",
     "строка или {язык: строка}": "a string or {language: string}",
     "целое число": "an integer",
-    "число": "a number"
+    "число": "a number",
+    "venv python: {} не найден — «Установка» → Pydantic AI": "venv python: {} not found — Install → Pydantic AI",
+    "адаптер: {} не найден — движок проекта неполный: «Версия» → «Подготовить проект»": "adapter: {} not found — the project engine is incomplete: Version → Prepare project",
+    "адаптер: {} не найден — кит неполный: обновите кит": "adapter: {} not found — the kit is incomplete: update the kit",
+    "в проекте идёт запуск ({}) — движок подготовится после него": "a run is in progress in the project ({}) — the engine will be prepared after it",
+    "движка проекта нет на этом компьютере: в .aurora/ ни одного из {} файлов по манифесту → откройте проект в панели (движок подготовится сам) или «Версия» → «Подготовить проект»": "the project engine is not on this computer: .aurora/ has none of the {} files named by the manifest → open the project in the panel (the engine prepares itself) or Version → Prepare project",
+    "движок проекта {} старше кита {} → «Версия» → «Обновить»": "the project engine {} is older than the kit {} → Version → Update",
+    "движок проекта в прежней папке .opencode/ (версия {}) → «Версия» → «Предпросмотр обновления» → «Применить»: движок переедет в .aurora/": "the project engine is still in the old .opencode/ folder (version {}) → Version → Update preview → Apply: the engine moves to .aurora/",
+    "движок проекта ещё в прежней папке .opencode/ — его переезд делает «Версия» → «Предпросмотр обновления» → «Применить»": "the project engine is still in the old .opencode/ folder — Version → Update preview → Apply moves it",
+    "движок проекта неполный: нет {} из {} файлов в .aurora/ ({}) → «Версия» → «Подготовить проект»": "the project engine is incomplete: {} of {} files are missing in .aurora/ ({}) → Version → Prepare project",
+    "кит с манифестом не найден — подготовить движок нечем": "the kit with the manifest was not found — there is nothing to prepare the engine from",
+    "подготовка движка уже идёт — подождите несколько секунд": "the engine is already being prepared — wait a few seconds",
+    "это не проект Aurora (нет AuroraKnowledgeDB/)": "this is not an Aurora project (no AuroraKnowledgeDB/)",
+    "подготовка движка не вышла: {}: {}": "preparing the engine failed: {}: {}"
   },
   "connectors": {
     "confluence-dc": {
@@ -948,7 +961,8 @@
     "корень проекта (по умолчанию — текущая папка)": "project root (the current folder by default)",
     "собрать каталог типов AuroraKnowledgeDB/meta/card_types.md (без --apply — только план)": "build the type catalogue AuroraKnowledgeDB/meta/card_types.md (without --apply — the plan only)",
     "эффективный текст инструкции «Как определить тип карточки»: Prompts/KB_classify.md проекта, иначе кита": "the effective text of the instruction \"How to determine the card type\": the project's Prompts/KB_classify.md, otherwise the kit's",
-    "с --write --apply: перезаписать каталог типов, даже если его правили руками и не закоммитили": "with --write --apply: overwrite the type catalogue even if it was edited by hand and not committed"
+    "с --write --apply: перезаписать каталог типов, даже если его правили руками и не закоммитили": "with --write --apply: overwrite the type catalogue even if it was edited by hand and not committed",
+    "Только движок в .aurora/ этой машины; файлы проекта и git не трогаются": "Only the engine in this machine's .aurora/; project files and git are not touched"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

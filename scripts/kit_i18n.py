@@ -188,7 +188,8 @@ REASON_FUNCS = ("why_readonly", "why_service", "why_no_create", "graph_state", "
 # `aurora_common` и `agent_core`, а не в сервере панели. Читаются только эти функции — остальной
 # `agent_core` в каталог сообщений не входит.
 ENGINE_REASONS = {"aurora_common.py": ("mcp_check",),
-                  "agent_core.py": ("mcp_probe", "mcp_no_kit"),
+                  # `_venv_gap`/`_adapter_gap` — причина обхода Pydantic AI: нет venv или нет файла адаптера
+                  "agent_core.py": ("mcp_probe", "mcp_no_kit", "_venv_gap", "_adapter_gap"),
                   # причина отказа одного сервера проверки (`servers.<имя>.error`) рождается в адаптере
                   os.path.join("agents", "pydantic_ai_adapter.py"): ("mcp_probe",)}
 

@@ -111,7 +111,7 @@ aurora.env.local.example      a sample → .env.aurora.local (outside git)
   reports/analyst/            the analyst-efficiency dashboard
   vendor/                     the offline graph library
   state/ · runs/ · context/ · cache/      state, runs, attachments, cache
-  structure_dirs.txt · commands.txt · moc_groups.txt · kit_path.txt
+  structure_dirs.txt · commands.txt · moc_groups.txt · kit_path.txt · engine_version.txt
 .claude/skills/               the project's skills — shared, in git: sync skills confluence-sync-<Slug>,
                               jira-export-<Slug> and your own
 Sources/                      mirrors of connected modules: Confluence, JIRA, Web
@@ -147,8 +147,22 @@ every person keeps their agent's settings, plans and cache locally. The project 
 `.claude/skills/`. Before 1.158.0 the engine lived in `.opencode/` and travelled in git; `aurora.py
 update` moves it to `.aurora/` by itself: the engine's data goes there too, the run journal to
 `AuroraKnowledgeDB/meta/`, project skills to `.claude/skills/`, the project's own scripts to
-`Scripts/`, OpenCode's own files stay. After the move a new teammate clones the project and runs
-`aurora.py update <project> --apply` — the engine is installed from the kit.
+`Scripts/`, OpenCode's own files stay.
+
+**A teammate joins an existing project.** `.aurora/` is the engine copy on this computer and it does not
+travel in git: a clone arrives without it (or with an incomplete one, if the kit has released something since).
+Clone the project and open it in the panel: when you pick the project the panel completes `.aurora/` from the kit
+by itself — `kit:update --engine-only`. Only the paths under `.aurora/` from `engine_manifest.txt` are copied
+(scripts, skills, documents, connectors); project files and git are not touched, and the Console keeps a record of
+what was created. The rest of the update — `AGENTS.md`, `AuroraKnowledgeDB/README.md`, the type catalogue,
+`Templates/`, `TemplatesCommon/`, `Prompts/`, `Settings/*.csv`, the schema folders, the `.gitignore` rules, the
+bodies of the sync skills — creates changes in git, so it stays behind a button: **Version → Update preview → Apply**
+(`kit:update`). No terminal is needed. The engine state of the project — `ok`, `missing` (not there at all),
+`incomplete` (files of the manifest are missing), `stale` (the copy is older than the kit) — shows in the Version
+section (with the buttons "Prepare project" and "Update"), in the bar above the sections and in `kit:doctor`, which
+lists the missing files one by one. While the engine is absent, commands run on the kit's scripts, but no longer
+silently: the Console and the run journal start with a line "⚠️ project engine: …" and the hint Version → Prepare
+project.
 
 The folder list is **fixed by the engine** (`structure_dirs.txt`) and identical in every Aurora project;
 anything non-standard lies in `Workspaces/<task>/`. A folder needed only by this project (legacy of an old
@@ -561,7 +575,9 @@ git -C /path/to/your-project add -A && git -C /path/to/your-project commit -m "U
 
 Only files from `engine_manifest.txt` are touched; the config, knowledge, `Raw/`, `Sources/`, `Artifacts/`,
 `Workspaces/` — never. The project's templates stay as they are, and changed kit versions land next to them as
-`*.new` for comparison. `--structure-only` creates only the missing schema folders. The project's engine version is
+`*.new` for comparison. `--structure-only` creates only the missing schema folders; `--engine-only` only completes
+the engine in this machine's `.aurora/` (project files and git are not touched; the panel runs it by itself when you
+pick a project without an engine). The project's engine version is
 in `AuroraKnowledgeDB/meta/aurora_version.txt`; the panel warns when a project has fallen behind.
 
 The kit itself is updated from its repository: `git pull` in the kit folder, or the button in "About" (a

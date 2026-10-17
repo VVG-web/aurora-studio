@@ -1518,13 +1518,80 @@ function drawAdapterAlarm(rows){
       {path: r.path, project: r.project || "—", when: r.at ? histWhen(r.at) : "—",
        calls: r.calls, why: r.why}))),
     el("div",{}, t("alarm.adapter_tail"),
-      el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("install")},
-        t("alarm.adapter_open")))));
+      // Чем лечить, говорит причина: нет файла адаптера в движке проекта — «Версия», иначе «Установка».
+      ...(rows.some(r => r.fix === "adapter")
+        ? [el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("version")},
+            t("alarm.adapter_engine"))] : []),
+      ...(rows.some(r => r.fix !== "adapter")
+        ? [el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("install")},
+            t("alarm.adapter_open"))] : []))));
 }
 async function refreshAdapterAlarm(){
   let d = null;
   try { d = await api("/api/adapter/alarm", {quiet:true}); } catch (e) { return; }
   if (d) drawAdapterAlarm(d.alarm);
+}
+/* ---------------- движок проекта на этой машине ---------------- */
+// Папка `.aurora/` — копия движка на этом компьютере, вне git: клон проекта приходит без неё.
+// Нет её или она неполная — панель достраивает сама при выборе проекта (это не меняет ни файлы
+// проекта, ни git), отставшую обновляет кнопка. Ядро только вызывает сервер и рисует полосу.
+const ENGINE_TRIED = new Set();         // проекты, для которых автоподготовка уже была в этой вкладке
+async function prepareEngine(p){
+  p = p || S.project;
+  if (!p || p._engineBusy) return null;
+  p._engineBusy = true; p.engine_error = "";
+  drawEngineBar(p);
+  let d = null;
+  try { d = await api("/api/engine/prepare", {method:"POST", quiet:true, body: JSON.stringify({project: p.path})}); }
+  catch (e) { d = {error: String(e)}; }
+  p._engineBusy = false;
+  if (d && d.state) p.engine_state = d.state;
+  if (d && d.error) p.engine_error = d.error;
+  else if (d && d.ok){
+    p.engine_prepared = {created: d.created, refreshed: d.refreshed, files: d.files || [],
+                         ignored: d.ignored, ahead: d.ahead};
+    toast(t("engine.prepared", {created: d.created, refreshed: d.refreshed}));
+  } else if (d && d.failed && d.failed.length) p.engine_error = d.failed[0];
+  drawEngineBar(p);
+  refreshModules();
+  return d;
+}
+function drawEngineBar(p){
+  const old = $("#enginebar");
+  if (old) old.remove();
+  if (!p || p !== S.project) return;
+  const es = p.engine_state || {};
+  const put = (alarm, ...kids) => $("main").prepend(
+    el("div", {id:"enginebar", class:"stalebar" + (alarm ? " alarm" : "")}, ...kids));
+  const btn = (label, fn) => el("button", {class:"btn", style:"margin-left:8px", onclick: fn}, label);
+  if (p._engineBusy) return put(false, el("b", {}, t("engine.busy")));
+  const done = p.engine_prepared;
+  if (done && es.state === "ok"){
+    return put(false, el("b", {}, t("engine.prepared", {created: done.created, refreshed: done.refreshed})),
+      done.files.length ? " " + t("engine.prepared_files", {files: done.files.join(", ")}) : "",
+      done.ignored === false ? " " + t("engine.not_ignored") : "",
+      btn(t("engine.dismiss"), () => { p.engine_prepared = null; drawEngineBar(p); }));
+  }
+  const why = p.engine_error ? [el("div", {}, t("engine.failed", {why: p.engine_error}))] : [];
+  if (es.legacy) return put(false, el("b", {}, t("engine.bar_legacy")), btn(t("engine.open_version"), () => show("version")));
+  if (es.state === "missing")
+    return put(true, el("b", {}, t("engine.bar_missing")), ...why, btn(t("engine.prepare"), () => prepareEngine(p)));
+  if (es.state === "incomplete")
+    return put(true, el("b", {}, t("engine.bar_incomplete",
+      {n: es.missing, total: es.total, files: (es.files || []).join(", ")})), ...why,
+      btn(t("engine.prepare"), () => prepareEngine(p)));
+  if (es.state === "stale")
+    return put(false, el("b", {}, t("engine.bar_stale", {copy: es.copy || "—", kit: p.kit})), ...why,
+      btn(t("engine.update"), () => prepareEngine(p)));
+}
+// Выбрали проект: без движка или с неполным — достроить до того, как считаться здоровью (иначе
+// первые команды пойдут на скриптах кита), один раз за вкладку; полоса остаётся с кнопкой на случай отказа.
+async function ensureEngine(p){
+  const es = p.engine_state || {};
+  if ((es.state === "missing" || es.state === "incomplete") && !es.legacy && !ENGINE_TRIED.has(p.path)){
+    ENGINE_TRIED.add(p.path);
+    await prepareEngine(p);
+  } else drawEngineBar(p);
 }
 const ALARM_POLL_MS = 20000;
 setInterval(() => { if (!document.hidden) refreshAdapterAlarm(); }, ALARM_POLL_MS);
@@ -1825,6 +1892,9 @@ async function pick(p, go=true){
   api("/api/gitsync/event", {method:"POST", quiet:true,
     body: JSON.stringify({project: p.path, event: "open"})});
   if (go) show("health", undefined, {quiet: true});   // автопереход: скрытый профилем «Здоровье» не упрекаем
+  // Движок проекта на этой машине (`.aurora/`) — до здоровья: клон без него считался бы на скриптах кита.
+  await ensureEngine(p);
+  if (S.project !== p) return;       // пока готовился движок, выбрали другой проект
   // Здоровье — частями и из памяти панели: выбор проекта его не пересчитывает (1.166.0),
   // пересчитывает кнопка «Обновить» в «Здоровье».
   const counting = loadHealth(p, HEALTH_ALL);
@@ -4723,6 +4793,8 @@ function moduleCtx(id, root){
          // Здоровье приходит частями: пришла ли часть и чем занять место под её число.
          has: hasPart, wait: waitMark, healthAt, stampText, kbInfo, openIssue, issueUrl},
     openPath, isEngineCmd, hideDev, openProject,
+    // Достроить/обновить движок выбранного проекта на этой машине: ту же кнопку рисует полоса ядра.
+    prepareEngine: () => prepareEngine(S.project),
     // Журнал запусков ведёт ядро: отметка «последний запуск» стоит в
     // нескольких разделах сразу, и считать её каждому по-своему нельзя.
     runs: {last: lastRun, mark: rcMark},

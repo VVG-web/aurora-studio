@@ -54,6 +54,8 @@ Engine scripts explain the reason instead of just failing. The common cases:
 | Symptom | Cause and fix |
 |---|---|
 | **"engine behind the kit"** | **Version** → preview → `--apply`. A route will not start on a project whose engine is older than the panel's kit. |
+| **A fresh clone: "the project engine is not on this computer" / "incomplete"** | `.aurora/` is a local engine copy and does not travel in git. Open the project in the panel: it completes `.aurora/` by itself (`kit:update --engine-only`; project files and git are untouched). If it did not, the bar above the sections and **Version** have the **Prepare project** button. Everything else of the update (`AGENTS.md`, templates, `.gitignore` rules) stays behind **Version** → **Apply**. |
+| **"Pydantic AI is selected, but calls bypass it": `venv python: … not found` or `adapter: … not found`** | These are two different causes. `venv python` — Pydantic AI is not installed on this computer: **Install** → Pydantic AI. `adapter: .aurora/scripts/agents/… not found` — the project engine is incomplete (the page *Install* may be green): **Version** → **Prepare project**. |
 | **The page shows an old interface after an update** | Restart the panel (`aurora_cockpit.py --restart`); the first start of a new version rebuilds the command registry and can take a minute. |
 | **The port is taken** | `--port 9000`, or `--restart` to replace the running panel. |
 | **macOS blocks `start-aurora.command`** | Right-click → *Open*. |

@@ -28,6 +28,15 @@ A project folder with a **fixed layout** (the same in every Aurora project): `So
 `Raw/` (immutable evidence), `AuroraKnowledgeDB/` (the cards), `Artifacts/`, `Deliverables/`, `Workspaces/`, and
 `.aurora/` with a copy of the engine. Details: [INSTALL](../docs/en/INSTALL.md#2-what-appears-in-the-project).
 
+## A teammate joins a project that already exists
+
+Clone the project and open it in the panel — no terminal. `.aurora/` (the engine copy) does not travel in git, so a
+clone arrives without it; when you pick the project the panel completes it from the kit by itself and says what it
+created (`kit:update --engine-only`: only the paths under `.aurora/`, project files and git stay untouched). The rest of
+the update — `AGENTS.md`, templates, the `.gitignore` rules — changes git, so it waits for **Version** → **Update
+preview** → **Apply**. The state of the engine (`ok`, `missing`, `incomplete`, `stale`) is visible in **Version** and in
+`kit:doctor`.
+
 ## The first fifteen minutes
 
 1. **Check readiness.** In the panel, `kit:doctor` (or `python3 aurora.py doctor <project>`): it names what is missing

@@ -714,6 +714,36 @@ def check_web_private_sources(root: Path | None = None) -> list:
     return out
 
 
+def check_engine(warns: list) -> list:
+    """Сверка `.aurora/` с манифестом кита и его версией. → строки подробного перечня недостающего.
+
+    Находка идёт в `warns` с первыми именами недостающих файлов, полный список — отдельными строками
+    под находками. Кита с манифестом не видно (копия движка без указателя на кит) — сверять не с чем:
+    молча, как и при старой копии `aurora_update.py` без этой проверки."""
+    try:
+        import aurora_update as AU
+        st = AU.engine_state(ROOT)
+    except Exception:  # noqa: BLE001 — справка не роняет доктора
+        return []
+    miss = st["missing"]
+    names = ", ".join(miss[:6]) + (" …" if len(miss) > 6 else "")
+    if st["legacy"]:
+        warns.append(f"движок проекта в прежней папке .opencode/ (версия {st['copy'] or '—'}) → «Версия» → "
+                     "«Предпросмотр обновления» → «Применить»: движок переедет в .aurora/")
+    elif st["state"] == "missing":
+        warns.append(f"движка проекта нет на этом компьютере: в .aurora/ ни одного из {st['total']} файлов по "
+                     "манифесту → откройте проект в панели (движок подготовится сам) или «Версия» → "
+                     "«Подготовить проект»")
+    elif st["state"] == "incomplete":
+        warns.append(f"движок проекта неполный: нет {len(miss)} из {st['total']} файлов в .aurora/ ({names}) → "
+                     "«Версия» → «Подготовить проект»")
+    elif st["state"] == "stale":
+        warns.append(f"движок проекта {st['copy']} старше кита {st['kit']} → «Версия» → «Обновить»")
+    if not miss or st["legacy"]:
+        return []
+    return [f"недостающие файлы движка ({len(miss)}):"] + [f"  {m}" for m in miss]
+
+
 def check_python(errors: list, warns: list, vi=None, platform=None) -> None:
     """Версия Python, на котором идёт doctor: 3.11+ — OK, 3.10 — предупреждение (снят с
     поддержки), ниже — ошибка с подсказкой по системе. `vi` подменяют тесты."""
@@ -810,6 +840,10 @@ def main() -> int:
     if not engine_ver:
         warns.append("версия движка не проставлена — обновите через `aurora.py update <project>`")
 
+    # Копия движка в `.aurora/` — на этой машине, вне git: клон проекта приходит без неё, а
+    # полусобранная давала странные сбои («мимо Pydantic AI» при зелёной установке). Точный
+    # перечень недостающего — ниже находок; лечит панель: «Версия» → «Подготовить проект».
+    engine_lines = check_engine(warns)
     seeds = retired_fields_in_seeds()
     if seeds:
         warns.append(f"выведенные из схемы поля в шаблонах ({len(seeds)}): "
@@ -841,9 +875,12 @@ def main() -> int:
             _ok, _v = _ag.venv_status()
             _chat = [b for b in _cfg["backends"] if b.get("chat", True)]
             _vec = _ag.embed_ring(_cfg)
+            # venv стоит, а файла адаптера нет — движок проекта неполный: «venv не установлен» тут было бы ложью
+            _gap = getattr(_ag, "adapter_gap", lambda: "")() if _ok else ""
             print(f"агент: провайдеров чата {len(_chat)} · векторных {len(_vec)}"
                   f" · адаптер {_cfg['adapter']}"
-                  + (f" ({_v})" if _ok else " — venv не установлен, stdlib-фолбэк")
+                  + ((f" — {_gap}; вызовы идут мимо Pydantic AI" if _gap else f" ({_v})") if _ok
+                     else " — venv не установлен, stdlib-фолбэк")
                   + " · настройка одна на кит · проверить: agent:ping")
         else:
             print("агент: не настроен (это не ошибка) — панель: раздел «Модели»")
@@ -874,6 +911,8 @@ def main() -> int:
     for w in warns:
         print("WARN:", w)
     for line in s_lines:
+        print(line)
+    for line in engine_lines:
         print(line)
     for line in check_card_templates():           # сведения, не находки: итог ниже они не меняют
         print(line)

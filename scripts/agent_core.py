@@ -567,10 +567,66 @@ ADAPTER_FAIL = "адаптер Pydantic AI: "
 ADAPTER_NO_CONNECT = "нет соединения"
 
 
+def _venv_python() -> Path:
+    return VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def _adapter_file() -> Path:
+    return Path(__file__).resolve().parent / "agents" / "pydantic_ai_adapter.py"
+
+
 def _adapter_argv() -> list:
-    vpy = VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    adapter = Path(__file__).resolve().parent / "agents" / "pydantic_ai_adapter.py"
+    vpy, adapter = _venv_python(), _adapter_file()
     return [str(vpy), str(adapter)] if vpy.is_file() and adapter.is_file() else []
+
+
+# Начала причин «адаптер не запускается»: по ним панель отличает лечение (venv — «Установка»,
+# адаптер — «Версия»), а итог прогона не добавляет к ним общую подсказку.
+GAP_VENV, GAP_ADAPTER = "venv python: ", "адаптер: "
+
+
+def gap_kind(why: str) -> str:
+    """Какого файла не хватает по причине обхода: `venv`, `adapter` или пусто (причина иная)."""
+    text = str(why or "")
+    return "venv" if text.startswith(GAP_VENV) else "adapter" if text.startswith(GAP_ADAPTER) else ""
+
+
+def _shown_path(path) -> str:
+    """Путь для сообщения: только под `~/.aurora` и `<проект>/.aurora` (или хвост внутри кита).
+
+    Имя пользователя и папки заказчика в строку итога не попадают: она уходит в журнал, тревогу
+    панели и отчёт, которыми делятся."""
+    parts = Path(path).parts
+    if ".aurora" in parts:
+        i = len(parts) - 1 - parts[::-1].index(".aurora")
+        home = i > 0 and Path(*parts[:i]) == Path.home()
+        return ("~/" if home else "") + "/".join(parts[i:])
+    return "/".join(parts[-3:])
+
+
+def _venv_gap() -> str:
+    return f"venv python: {_shown_path(_venv_python())} не найден — «Установка» → Pydantic AI"
+
+
+def _adapter_gap() -> str:
+    where = _shown_path(_adapter_file())
+    if where.startswith(".aurora/"):
+        return f"адаптер: {where} не найден — движок проекта неполный: «Версия» → «Подготовить проект»"
+    return f"адаптер: {where} не найден — кит неполный: обновите кит"
+
+
+def adapter_gap() -> str:
+    """Чего именно не хватает адаптеру Pydantic AI → причина с путём и лекарством; пусто — всё на месте.
+
+    Раньше оба случая — нет venv и нет файла адаптера в `.aurora/scripts/agents/` — назывались
+    одинаково («venv не установлен»), и человек с неполным движком проекта шёл переустанавливать
+    Pydantic AI, который стоял и был зелёным на странице «Установка»."""
+    gaps = []
+    if not _venv_python().is_file():
+        gaps.append(_venv_gap())
+    if not _adapter_file().is_file():
+        gaps.append(_adapter_gap())
+    return "; ".join(gaps)
 
 
 # Совместимость адаптера с установленной версией Pydantic AI. API фреймворка меняется от
@@ -613,7 +669,8 @@ def adapter_selfcheck(version: str = "", force: bool = False) -> dict:
             return cached
     argv = _adapter_argv()
     if not argv:
-        return {"ok": False, "version": version, "problems": ["venv с pydantic-ai не установлен"]}
+        return {"ok": False, "version": version,
+                "problems": [adapter_gap() or "адаптер Pydantic AI не запускается"]}
     try:
         p = subprocess.run(argv + ["--selfcheck"], stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, encoding="utf-8", timeout=180,
@@ -678,7 +735,7 @@ def adapter_hub():
             return None, _HUB["broken"]
         argv = _adapter_argv()
         if not argv:
-            return None, "venv с pydantic-ai не установлен"
+            return None, adapter_gap() or "адаптер Pydantic AI не запускается"
         try:
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, text=True, bufsize=1,
@@ -1172,7 +1229,8 @@ def note_bypass(why: str, needs_tools: bool = False) -> None:
         print(f"⛔ Pydantic AI выбран, но вызов модели прошёл мимо него (прямой HTTP): {why}. "
               + ("Вызов с инструментами и MCP без адаптера не принят. " if needs_tools else
                  "Ответ получен, но без инструментов и MCP. ")
-              + "Проверьте «Установка» → Pydantic AI.", flush=True)
+              # причина «нет файла» уже называет лечение: общая подсказка про venv увела бы не туда
+              + ("" if gap_kind(why) else "Проверьте «Установка» → Pydantic AI."), flush=True)
         record_failure("адаптер", why, stage="мимо Pydantic AI", needs_tools=needs_tools)
     with _ALARM_LOCK:
         data = read_alarm()
@@ -2798,7 +2856,7 @@ def embed_probe(cfg: dict) -> str:
 
 def venv_status() -> tuple:
     """→ (стоит ли pydantic-ai, версия)."""
-    vpy = VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    vpy = _venv_python()
     if not vpy.is_file():
         return False, ""
     try:

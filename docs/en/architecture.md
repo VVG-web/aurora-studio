@@ -60,7 +60,11 @@ What follows from this:
   `cards:` block of `aurora.config.yaml`, edited in the panel ("Project settings → Card types").
 - Individual paths can be opted out of updates in `aurora.update_ignore.txt` in the project root (glob patterns).
 - The engine version in a project is recorded in `AuroraKnowledgeDB/meta/aurora_version.txt`; the path to the
-  kit is in `.aurora/kit_path.txt`. The project's copy of `aurora_update.py` finds the kit through it.
+  kit is in `.aurora/kit_path.txt`. The project's copy of `aurora_update.py` finds the kit through it. The kit
+  version the engine copy on this machine matches is in `.aurora/engine_version.txt` (a local mark outside git: the
+  stamp `aurora_version.txt` travels through git and describes the owner's version). The copy is checked against the
+  manifest by `aurora_update.engine_state`: `ok`, `missing`, `incomplete`, `stale`; `kit:update --engine-only`
+  completes it.
 - If a project's skill is a symbolic link to a shared folder, `update` warns: the write goes to the shared
   target and every project that shares it gets updated.
 
