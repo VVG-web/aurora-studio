@@ -23,6 +23,7 @@ Engine scripts explain the reason instead of just failing. The common cases:
 | **A sync skill looks at the wrong space or JQL** | The values live in `aurora.config.yaml`, not in the skill: edit the config or run `aurora_setup.py` again. |
 | **Timeouts, half the pages missing** | The pages the walk did not reach stay in the state; run the sync again. `--prune` refuses to delete after an export with errors. |
 | **A page moved in Confluence** | `kit:remap-sources`, then `kb:repair --gone-sources`. |
+| **A subtree is missing in the mirror, but the page is visible on the web** | Read the sync output: `ветка <title>: сервер отдал N из M` or `отказ 403` names the branch the server did not hand over (the token's rights, a moved page), and the root line shows the depth reached. `sync:confluence --diagnose-tree` prints the tree with the number of children per page and writes nothing. An incomplete engine copy gives the same picture: `kit:doctor` lists it. |
 | **`sync:audit` reports `COLLISION`** | Two pages differ only in case; the mirror appends the page id. Run `kb:names`. |
 
 ## The agent

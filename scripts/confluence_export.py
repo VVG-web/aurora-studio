@@ -45,7 +45,7 @@ import sys
 import urllib.parse
 from datetime import date, timedelta
 
-from sources_core import (ASSET_DIR_RE, CONFIG, FileTooLarge, RestApi, WikiMirror, block,
+from sources_core import (ASSET_DIR_RE, CONFIG, FileTooLarge, RestApi, UnsafeTarget, WikiMirror, block,
                           config_text, nfc, no_access, drop_empty_dirs, report_stale, scalar,
                           verify, word)
 from sources_core import read_secret as core_secret
@@ -189,6 +189,37 @@ def resolve_ref(api, raw: str, default_space: str = "") -> tuple:
                         "проверьте адрес или права доступа")
     return str(page.get("id", "")), page.get("title", title), ""
 
+
+def branch_error(e) -> str:
+    """Отказ или сбой сервера на запросе списка детей — словами для человека."""
+    code = getattr(e, "code", None)
+    if code == 401:
+        return "отказ 401 (токен не принят)"
+    if code == 403:
+        return "отказ 403 (нет доступа под этим токеном)"
+    if code == 404:
+        return "отказ 404 (страница не найдена или скрыта от этого токена)"
+    if isinstance(code, int):
+        return f"отказ {code}"
+    return f"{type(e).__name__}: {e}"
+
+
+def children_verdict(rep: dict) -> str:
+    """Чем список детей, который отдал сервер, неполон; пусто — список полон.
+
+    Сверка идёт по самому ответу: `size` (сколько записей сервер объявил) против полученного и
+    `_links.next` (обещанное продолжение, до которого не дошли). Подставной клиент без отчёта
+    (`sized` ложно, ответов нет) полным считается."""
+    if rep.get("error"):
+        return f"сервер отдал {rep['got']}, дальше {rep['error']}"
+    if rep.get("more"):
+        return f"сервер отдал {rep['got']}, а обещанное продолжение списка (_links.next) не получено"
+    expected = max(rep.get("size", 0), rep.get("total", 0))
+    if rep.get("sized") and expected > rep["got"]:
+        return f"сервер отдал {rep['got']} из {expected}"
+    return ""
+
+
 class Api(RestApi):
     agent = "aurora-confluence-export/1.0"
     secret_prefix = "CONFLUENCE"
@@ -259,15 +290,47 @@ class Api(RestApi):
         return out
 
     def children(self, page_id: str) -> list:
-        # Номер версии ребёнка приходит в том же списке и ничего не стоит — по нему синк
-        # решает, качать ли страницу (`Exporter.cached_walk`).
-        out, path = [], f"/rest/api/content/{page_id}/child/page?limit=50&expand=version"
+        return self.children_report(page_id)[0]
+
+    def children_report(self, page_id: str) -> tuple:
+        """Дети страницы и то, что сервер сообщил о списке: `([страницы], отчёт)`.
+
+        Номер версии ребёнка приходит в том же списке и ничего не стоит — по нему синк решает,
+        качать ли страницу (`Exporter.cached_walk`). Отчёт: `got` — сколько страниц получено,
+        `size` — сколько записей сервер объявил в своих ответах (поле `size`; `sized` — было ли оно),
+        `pages` — ответов, `more` — список обещал продолжение (`_links.next`), которого не получили
+        (повтор той же ссылки, сбой), `error` — причина сбоя. Отказ на первом ответе (403, 404) —
+        исключение вызывающему: решать, что это за ветка, ему; сбой на следующем — частичный список
+        с `error`, а не потеря уже полученного."""
+        out, path, seen = [], f"/rest/api/content/{page_id}/child/page?limit=50&expand=version", set()
+        rep = {"got": 0, "size": 0, "total": 0, "sized": False, "pages": 0, "more": False, "error": ""}
         while path:
-            data = self.get(path)
+            if path in seen:            # сервер вернул ту же ссылку: не крутимся вечно
+                rep["more"] = True
+                break
+            seen.add(path)
+            try:
+                data = self.get(path)
+            except UnsafeTarget:
+                raise               # ключ на этот адрес нельзя: это настройка, не отказ ветки
+            except Exception as e:  # noqa: BLE001
+                if not rep["pages"]:
+                    raise
+                rep["more"], rep["error"] = True, branch_error(e)
+                break
+            rep["pages"] += 1
             out += data.get("results", [])
+            size = data.get("size")
+            if isinstance(size, int) and not isinstance(size, bool):
+                rep["sized"] = True
+                if size > int(data.get("limit") or 50):
+                    rep["total"] = max(rep["total"], size)      # больше страницы — это общее число, а не число записей в ответе
+                else:
+                    rep["size"] += size
             nxt = (data.get("_links") or {}).get("next")
             path = nxt if nxt else None
-        return out
+        rep["got"] = len(out)
+        return out, rep
 
 
 # -------------------------------------------------- конвертация (детерминированная)
@@ -864,6 +927,9 @@ class Exporter(WikiMirror):
         self.ry_defines = self.ry_links = self.assets_saved = self.assets_dropped = 0
         self.claimed: dict = {}     # (папка, имя без регистра) → номер страницы
         self.visited: set = set()   # страницы, пройденные этим синком
+        self.branch_notes: list = []        # ветки, где сервер отказал или отдал меньше объявленного
+        self.refused_ids: set = set()       # страницы, чей список детей сервер не отдал
+        self.stat = self.new_stat()
         # Что синк знает о страницах с прошлого раза: версия, путь, ключи RY, схемы.
         # Кэш — производное: нет его — синк просто идёт полным проходом.
         self.cache = {} if force else load_page_cache()
@@ -890,6 +956,59 @@ class Exporter(WikiMirror):
     # файл, что уже лежит и совпадает по размеру с вложением, не качается заново. Нужно корневым
     # страницам — у них нет версии из списка детей, и `cached_walk` их не пропускает.
     reuse_assets = False
+    # Ветки, где сервер не отдал детей (отказ, меньше объявленного, оборванный список): счёт для сводки.
+    branch_refused = 0
+
+    @staticmethod
+    def new_stat() -> dict:
+        """Счёт обхода одного корня: страниц, максимальная глубина (корень — 1), страниц с детьми."""
+        return {"pages": 0, "depth": 0, "parents": 0, "title": ""}
+
+    def count_page(self, ancestors: list, title: str, kids: list) -> None:
+        st = self.stat
+        st["pages"] += 1
+        st["depth"] = max(st["depth"], len(ancestors) + 1)
+        st["parents"] += 1 if kids else 0
+        st["title"] = st["title"] or title
+
+    def fetch_children(self, page_id: str) -> tuple:
+        """(дети, отчёт сервера о списке); у подставного клиента без отчёта отчёт пуст, список полон."""
+        if hasattr(self.api, "children_report"):
+            return self.api.children_report(page_id)
+        kids = self.api.children(page_id)
+        return kids, {"got": len(kids), "size": 0, "total": 0, "sized": False, "pages": 1, "more": False,
+                      "error": ""}
+
+    def refuse_branch(self, title: str, why: str, failed: bool) -> None:
+        """Ветка не выгружена целиком: строка в консоль и счёт для сводки.
+
+        Отказ или сбой (`failed`) — ошибка выгрузки, как упавшая страница: чистка по такому обходу
+        снесла бы не дошедшее. Меньше объявленного — не сбой запроса, но и не полный список: код
+        возврата прежний, чистка закрыта через счёт веток (`prune_allowed`)."""
+        self.branch_refused += 1
+        self.failed += 1 if failed else 0
+        note = f"ветка {title}: {why}"
+        self.branch_notes.append(note)
+        print(f"  ⚠️ {note}")
+
+    def child_list(self, page_id: str, title: str) -> list:
+        """Дети страницы для обхода. Отказ сервера на списке не рвёт синк: ветка названа и посчитана.
+
+        Раньше исключение из `children()` (403/404 на ветку под этим токеном) падало через весь
+        обход трассировкой, а список, который сервер отдал короче объявленного или пустым, молча
+        обрезал дерево — страница видна в вебе, а в зеркале её поддерева нет."""
+        try:
+            kids, rep = self.fetch_children(page_id)
+        except UnsafeTarget:
+            raise
+        except Exception as e:  # noqa: BLE001
+            self.refused_ids.add(str(page_id))
+            self.refuse_branch(title, branch_error(e), failed=True)
+            return []
+        why = children_verdict(rep)
+        if why:
+            self.refuse_branch(title, why, failed=bool(rep.get("error")))
+        return kids
 
     def skip_reason(self, name: str, info: dict) -> str:
         """Почему вложение не качается по настройке (режим, потом размер); пусто — качать.
@@ -1278,13 +1397,19 @@ class Exporter(WikiMirror):
         if c.get("assets") and c.get("att") != self.att_sig():
             return False
         try:
-            children = self.api.children(page_id)
+            children, rep = self.fetch_children(page_id)
         except Exception:  # noqa: BLE001
-            return False
+            return False            # полный проход перечитает список и назовёт отказ сам
         here = self.place(c["title"], page_id, parent, bool(children), bool(c.get("assets")))
         rel = f"{here}/index.md" if children else f"{here}.md"
         if rel != c.get("rel") or not os.path.isfile(os.path.join(self.out, rel)):
             return False
+        # Неизменённая страница список детей у сервера перечитывает: короткий или оборванный список
+        # назван здесь, а не пропущен молча (иначе поддерево пропадало бы без единой строки).
+        why = children_verdict(rep)
+        if why:
+            self.refuse_branch(c["title"], why, failed=bool(rep.get("error")))
+        self.count_page(ancestors, c["title"], children)
         self.ry_defines += int(c.get("ryd") or 0)
         self.ry_links += int(c.get("ryl") or 0)
         self.skipped += 1
@@ -1311,7 +1436,12 @@ class Exporter(WikiMirror):
             return
         title = data["title"]
         version = int(data.get("version", {}).get("number", 1))
-        children = self.api.children(page_id)
+        children = self.child_list(page_id, title)
+        # Список детей не пришёл (отказ сервера), а у страницы они были: путь не меняем на «лист»,
+        # иначе её папка с поддеревом выглядела бы переехавшей и лишней.
+        had = (self.cache.get(str(page_id)) or {}).get("rel", "").endswith("/index.md")
+        grown = bool(children) or (str(page_id) in self.refused_ids and had)
+        self.count_page(ancestors, title, children)
         # ключи RY считаем всегда, даже когда страница не переписывается: иначе итог
         # зависел бы от того, что изменилось со вчера, а не от того, что есть в источнике
         defines, links = ry_keys(data.get("body", {}).get("storage", {}).get("value", ""))
@@ -1323,8 +1453,8 @@ class Exporter(WikiMirror):
         md = to_markdown(body, self.base_url, self.space, self.jira_base, assets, users)
         # Путь — после разбора: у страницы со схемами рядом ляжет `<имя>_assets/`, и место
         # под него держим только у неё, не укорачивая имена всем остальным.
-        here = self.place(title, page_id, parent, bool(children), bool(assets))
-        rel = f"{here}/index.md" if children else f"{here}.md"
+        here = self.place(title, page_id, parent, grown, bool(assets))
+        rel = f"{here}/index.md" if grown else f"{here}.md"
         self.align_case(rel)
         for key in sorted(set(users)):
             name = self.api.user_name(key)
@@ -1407,7 +1537,7 @@ class Exporter(WikiMirror):
 PRUNE_SHARE = 0.10     # больше этой доли зеркала «лишним» — это не удалённые страницы
 
 
-def prune_allowed(stale: list, records: int, failed: int) -> tuple:
+def prune_allowed(stale: list, records: int, failed: int, refused: int = 0) -> tuple:
     """Можно ли убрать лишние файлы зеркала без человека. → (да/нет, почему нет).
 
     Маршрут «Обновить базу» зовёт синк с `--prune`: без этого удалённая в Confluence
@@ -1419,6 +1549,9 @@ def prune_allowed(stale: list, records: int, failed: int) -> tuple:
     """
     if failed:
         return False, f"выгрузка прошла с ошибками ({failed}) — недокачанное выглядело бы удалённым"
+    if refused:
+        return False, (f"ветки с отказом сервера ({refused}) — их страницы выглядели бы удалёнными; "
+                       "разберите отказ (--diagnose-tree) и повторите")
     # Порог — по всему лишнему: вложения исчезнувшей страницы `split_stale` уже вынес
     # (они уходят вместе с ней), а массовое удаление посторонних файлов должно останавливаться.
     if len(stale) > max(20, PRUNE_SHARE * max(1, records)):
@@ -1491,8 +1624,66 @@ def run_export(cfg: dict, roots: list, out: str, auth: str, force: bool) -> Expo
     exp = Exporter(api, out, cfg["base_url"], cfg["space"], force, cfg.get("jira_url", ""),
                    att_mode=cfg.get("attachments"), att_max_mb=cfg.get("attachment_max_mb"))
     for root in roots:
+        exp.stat = exp.new_stat()
         exp.walk(root, [])
+        st = exp.stat
+        # По корню видно, дошёл ли обход вглубь: «страниц 2, глубина 2» при корне из трёх уровней —
+        # ровно то, чего не было видно, когда поддерево терялось молча.
+        print(f"Корень {root}" + (f" ({st['title']})" if st["title"] else "")
+              + f": страниц {st['pages']} · максимальная глубина {st['depth']} · "
+                f"страниц с детьми {st['parents']}")
     return exp
+
+
+def print_tree(api, root: str, title: str = "") -> dict:
+    """Дерево корня с числом детей у каждой страницы — без записи файлов (`--diagnose-tree`).
+
+    Идёт теми же запросами, что и синк (список детей с пагинацией), страницы не качаются. На каждой
+    странице сверяются полученные дети с тем, что объявил сервер; отказ ветки называется в строке.
+    → счёт корня: страниц, глубина, страниц с детьми, веток с отказом."""
+    out = {"pages": 0, "depth": 0, "parents": 0, "refused": 0}
+    seen = set()
+
+    def visit(page_id: str, name: str, depth: int) -> None:
+        if page_id in seen:
+            return
+        seen.add(page_id)
+        out["pages"] += 1
+        out["depth"] = max(out["depth"], depth)
+        try:
+            kids, rep = api.children_report(page_id)
+            why = children_verdict(rep)
+        except Exception as e:  # noqa: BLE001
+            kids, why = [], branch_error(e)
+        out["parents"] += 1 if kids else 0
+        out["refused"] += 1 if why else 0
+        print("  " * (depth - 1) + f"{name} ({page_id}) — детей: {len(kids)}" + (f" ⚠️ {why}" if why else ""))
+        for child in sorted(kids, key=lambda c: (c["title"], c["id"])):
+            visit(str(child["id"]), child["title"], depth + 1)
+
+    visit(str(root), title or str(root), 1)
+    return out
+
+
+def diagnose_tree(api: Api, roots: list) -> int:
+    """`--diagnose-tree`: дерево каждого корня с числом детей и отказами сервера. Файлов не пишет.
+
+    Нужен, когда в зеркале нет поддерева, а в вебе страница видна: по дереву видно, на какой
+    странице сервер отдал детей меньше объявленного, отказал или вернул пустой список, а
+    значит — права токена это, перенос страницы или устаревшая копия движка."""
+    api._url("/")           # ключ на этот сервер нельзя — отказ один, а не по строке на корень
+    code = 0
+    for root in dict.fromkeys(str(r) for r in roots):
+        try:
+            title = api.page(root).get("title", "")
+        except Exception as e:  # noqa: BLE001
+            print(f"  ! корень {root}: {branch_error(e)}", file=sys.stderr)
+            code = 1
+            continue
+        st = print_tree(api, root, title)
+        print(f"Корень {root} ({title}): страниц {st['pages']} · максимальная глубина {st['depth']} · "
+              f"страниц с детьми {st['parents']} · ветки с отказом сервера {st['refused']}\n")
+    return code
 
 
 def attachments_summary(exp) -> str:
@@ -1524,6 +1715,8 @@ def main() -> int:
     ap.add_argument("--prune", action="store_true", help="удалить зеркала страниц, которых больше нет")
     ap.add_argument("--verify", action="store_true",
                     help="гейт детерминизма: выгрузить дважды во временные папки и сверить")
+    ap.add_argument("--diagnose-tree", action="store_true",
+                    help="только показать дерево корней с числом детей у страниц и отказами сервера; файлы не пишутся")
     a = ap.parse_args()
 
     cfg = read_config()
@@ -1541,6 +1734,11 @@ def main() -> int:
         print("confluence_export: не заданы корни синка — добавьте sync_roots в aurora.config.yaml "
               "или укажите --roots <page_id>", file=sys.stderr)
         return 1
+    if a.diagnose_tree:
+        # Дерево без конвертера и без записи: нужны только запросы списков детей.
+        print(f"Confluence, дерево корней ({cfg['base_url']}, доступ: {kind}, корней: {len(roots)}) — "
+              "файлы не пишутся\n")
+        return diagnose_tree(Api(cfg["base_url"], auth), roots)
     try:
         import bs4, markdownify  # noqa: F401
     except Exception:
@@ -1555,7 +1753,7 @@ def main() -> int:
 
     exp = run_export(cfg, roots, out, auth, a.force)
     exp.save_cache()
-    if exp.failed:
+    if exp.failed or exp.branch_refused:
         kept = exp.keep_unvisited()
         if kept:
             print(f"Не дошли из-за сбоев: {kept} страниц — в состоянии зеркала остаются "
@@ -1576,7 +1774,16 @@ def main() -> int:
         print(f"Requirement Yogi: объявлено ключей {exp.ry_defines}, "
               f"ссылок на чужие ключи {exp.ry_links}")
     print(f"Страниц: {len(exp.records)} · записано: {exp.written} · без изменений: {exp.skipped}"
-          + (f" · ошибок: {exp.failed}" if exp.failed else ""))
+          + (f" · ошибок: {exp.failed}" if exp.failed else "")
+          + (f" · ветки с отказом сервера: {exp.branch_refused}" if exp.branch_refused else ""))
+    if exp.branch_notes:
+        # Строки о ветках шли посреди обхода и тонули в журнале; здесь они вместе, с чем разбираться.
+        print(f"Ветки, где сервер не отдал детей целиком ({len(exp.branch_notes)}):")
+        for note in exp.branch_notes[:20]:
+            print(f"  - {note}")
+        if len(exp.branch_notes) > 20:
+            print(f"  … ещё {len(exp.branch_notes) - 20}")
+        print("Дерево с числом детей у каждой страницы: повторите с --diagnose-tree.")
     # Переехавшая страница — не удалённая: её номер стоит в этом обходе под другим путём.
     # Её старая копия уходит всегда, а база переводится на новый путь (`follow_moves`):
     # без этого разбор видел новый путь как новый источник и клал тот же текст в ту же
@@ -1600,7 +1807,8 @@ def main() -> int:
         return exp.prune([r for r in riding if os.path.isfile(os.path.join(out, r))])
     if stale:
         report_stale("страниц больше нет", stale, out)
-        ok, why = prune_allowed(stale, len(exp.records), exp.failed) if a.prune else (False, "")
+        ok, why = (prune_allowed(stale, len(exp.records), exp.failed, exp.branch_refused)
+                   if a.prune else (False, ""))
         if a.prune and not ok:
             print(f"Не убираю: {why}")
         elif a.prune:

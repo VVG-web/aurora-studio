@@ -962,7 +962,8 @@
     "собрать каталог типов AuroraKnowledgeDB/meta/card_types.md (без --apply — только план)": "build the type catalogue AuroraKnowledgeDB/meta/card_types.md (without --apply — the plan only)",
     "эффективный текст инструкции «Как определить тип карточки»: Prompts/KB_classify.md проекта, иначе кита": "the effective text of the instruction \"How to determine the card type\": the project's Prompts/KB_classify.md, otherwise the kit's",
     "с --write --apply: перезаписать каталог типов, даже если его правили руками и не закоммитили": "with --write --apply: overwrite the type catalogue even if it was edited by hand and not committed",
-    "Только движок в .aurora/ этой машины; файлы проекта и git не трогаются": "Only the engine in this machine's .aurora/; project files and git are not touched"
+    "Только движок в .aurora/ этой машины; файлы проекта и git не трогаются": "Only the engine in this machine's .aurora/; project files and git are not touched",
+    "только показать дерево корней с числом детей у страниц и отказами сервера; файлы не пишутся": "only show the tree of the roots with the number of children per page and the server's refusals; no files are written"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

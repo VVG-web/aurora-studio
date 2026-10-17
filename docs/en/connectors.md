@@ -264,6 +264,32 @@ Sync root pages have no version from the child list and are re-read on every syn
 **Cleanup with `--prune`.** The `<page>_assets/` files of a vanished or moved page go together with it and count neither as "extra" in the list nor in the cleanup threshold (which counts everything else that is extra, stray files included).
 **Attachment folder and neighbouring pages.** The `<page>_assets/` folder belongs to the page and is cleaned of attachment files only: the sync never touches `.md` files or subfolders in it. A page whose title ends in "assets" ("Design assets") gets its id in the name (`Design_assets_<id>`); otherwise it would share a folder with the attachments of the page "Design". If `<page>_assets` in the mirror is a symbolic link (or sits inside one) pointing outside the mirror, the sync writes nothing into it and deletes nothing from it: the page's attachments stay links to the original, a line about the linked folder goes to stderr, and the summary counts an attachment error.
 
+## The Confluence page tree: what the sync shows
+
+The sync walks down the tree with the "children of a page" request (`/rest/api/content/{id}/child/page`, 50 per
+response, then `_links.next`), and a subtree the server did not hand over used to vanish silently: the page is
+visible in the web interface and absent from the mirror. Now the sync prints (and the panel's Console shows):
+
+- per root: `Корень <id> (<title>): страниц N · максимальная глубина D · страниц с детьми K` (pages N, maximum depth
+  D, pages with children K) — a root of three levels with "depth 2" is visible at once;
+- per branch whose child list is incomplete: `ветка <title>: сервер отдал N из M` (the server gave N of M — checked
+  against the response's `size` field and against `_links.next` not followed to the end) or
+  `ветка <title>: отказ 403 (нет доступа под этим токеном)` / `отказ 404 …` (refusal) — a refusal on a child list
+  does not break the sync: the page is written, the other branches are exported;
+- in the summary: `ветки с отказом сервера: N` (branches the server refused) and the list of those branches. A
+  refusal (403, 404, a cut-off list) is an export error, exit code 1; "fewer than announced" leaves the code as it
+  was. Both close `--prune`: what was not reached would look deleted. A page that had children and whose list did not
+  arrive stays a folder (`index.md`) instead of turning into a leaf.
+
+The child list of an unchanged page is re-read on every sync (the page version does not matter), so a shortened
+answer shows even on a sync where nothing changed.
+
+`sync:confluence --diagnose-tree` (in the panel — Mirrors → the Confluence card → "Page tree") prints the tree of
+each root — page, id, number of children, a mark of a refusal or of a mismatch with `size` — and a total per root; it
+writes no files and does not need the page parser (`beautifulsoup4`). If a page is missing in the tree but visible on the web, the cause is one of three: the token's
+rights on that branch, a moved page, or a stale engine copy (`kit:doctor` names an incomplete engine file by file,
+Version → Prepare project).
+
 ## Disconnecting
 
 Unticking removes the module from `sources:` but leaves the mirror folder: an export is data, and the engine does not
