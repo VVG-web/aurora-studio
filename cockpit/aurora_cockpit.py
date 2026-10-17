@@ -3035,6 +3035,8 @@ def project_card(path: str) -> dict:
         "engine": ver or "—",
         "kit": kit_version(),
         "behind": ver != kit_version() and bool(ver),
+        # Копия движка в .aurora/ на этой машине: у клона проекта её нет, пока панель не подготовит.
+        "engine_state": engine_info(path),
         "space": config_value(cfg, "space"),
         "jira_key": config_value(cfg, "project_key"),
         "privacy": config_value(cfg, "scrub", "report"),
@@ -3139,6 +3141,106 @@ def version_gap(project: str) -> str:
 
 def kit_version() -> str:
     return read_text(os.path.join(KIT, "VERSION")).strip() or "—"
+
+
+def engine_info(project: str) -> dict:
+    """Движок проекта на этой машине коротко — для карточки проекта, баннера и «Версии».
+
+    Сверку делает `aurora_update.engine_state` (тот же код, что у `kit:doctor`): `ok`, `missing`
+    (клон без `.aurora/`), `incomplete` (не хватает файлов манифеста), `stale` (копия старше кита)
+    или `unknown`. `files` — первые недостающие, `missing` — сколько их всего."""
+    try:
+        import aurora_update as AU
+        st = AU.engine_state(Path(project))
+    except Exception:  # noqa: BLE001 — сверка не роняет список проектов
+        return {"state": "unknown", "missing": 0, "total": 0, "copy": "", "legacy": False, "files": []}
+    return {"state": st["state"], "missing": len(st["missing"]), "total": st["total"],
+            "copy": st["copy"], "legacy": st["legacy"], "files": st["missing"][:8]}
+
+
+def engine_fallback_note(project: str, script: str, path: str) -> str:
+    """Строка для «Консоли» и журнала прогона, когда скрипт взят из кита вместо движка проекта.
+
+    `script_path` берёт скрипт из `.aurora/scripts/` проекта, а которого там нет — из кита: клон
+    проекта без `.aurora/` «работал» на скриптах кита, и никто об этом не знал. Это по-прежнему
+    так (что исполняется — не меняется), но теперь вслух: состояние движка и чем его лечить.
+    Скрипты, которые по замыслу идут из кита (`KIT_SIDE`), и состояние `ok`/`stale` — молча."""
+    if not project or script in KIT_SIDE or os.path.realpath(project) == os.path.realpath(KIT):
+        return ""
+    if os.path.realpath(os.path.dirname(path)) != os.path.realpath(os.path.join(KIT, "scripts")):
+        return ""                                   # скрипт взят из проекта
+    info = engine_info(project)
+    if info["state"] not in ("missing", "incomplete"):
+        return ""
+    what = ("движка проекта на этом компьютере нет" if info["state"] == "missing" else
+            f"движок проекта неполный: нет {info['missing']} из {info['total']} файлов")
+    return (f"⚠️ движок проекта: {info['state']} — {what}; скрипт {script} взят из кита, а не из проекта. "
+            "«Версия» → «Подготовить проект»")
+
+
+ENGINE_LOCKS: dict = {}          # по замку на проект: подготовка одного не ждёт другого
+ENGINE_LOCKS_GUARD = threading.Lock()
+
+
+def engine_prepare_action(project: str) -> dict:
+    """«Подготовить проект»: достроить движок в `.aurora/` этой машины (`aurora_update.engine_prepare`).
+
+    Файлов проекта и git это не касается — только копия движка, которая в git не едет. Панель зовёт
+    действие сама при выборе проекта без движка и по кнопке «Версия». Пока в проекте идёт запуск,
+    движок не подменяется: один прогон двумя версиями — худшее из состояний. Результат остаётся в
+    истории «Консоли» строкой `kit:update --engine-only`."""
+    with ENGINE_LOCKS_GUARD:
+        lock = ENGINE_LOCKS.setdefault(os.path.realpath(project), threading.Lock())
+    if not lock.acquire(blocking=False):
+        return {"error": "подготовка движка уже идёт — подождите несколько секунд"}
+    try:
+        with JOBS_LOCK:
+            busy = [j["cmd"] for j in JOBS.values() if not j["done"] and j["project"] == project]
+        if busy:
+            return {"error": f"в проекте идёт запуск ({busy[0]}) — движок подготовится после него"}
+        import aurora_update as AU
+        held = AU.agent_running(Path(project))         # замок агента: пишущий прогон не из панели тоже в счёт
+        if held:
+            return {"error": f"в проекте идёт прогон агента ({held}) — движок подготовится после него"}
+        t0, started = time.time(), utc_stamp()
+        try:
+            res = AU.engine_prepare(Path(project))
+        except Exception as e:  # noqa: BLE001 — сломанный кит или диск: человеку причина, а не трассировка
+            return {"error": f"подготовка движка не вышла: {type(e).__name__}: {e}"}
+        if res["reason"] == "legacy":
+            return {"error": "движок проекта ещё в прежней папке .opencode/ — его переезд делает "
+                             "«Версия» → «Предпросмотр обновления» → «Применить»", "state": engine_info(project)}
+        if res["reason"] == "no_kit":
+            return {"error": "кит с манифестом не найден — подготовить движок нечем"}
+        if res["reason"]:
+            return {"error": "это не проект Aurora (нет AuroraKnowledgeDB/)"}
+        record_engine_run(project, AU.engine_report(res, True), res, started, time.time() - t0)
+        return {"ok": res["ok"], "before": res["before"], "after": res["after"],
+                "created": len(res["created"]), "refreshed": len(res["refreshed"]),
+                "removed": len(res["removed"]), "shared": len(res["shared"]), "failed": res["failed"][:5],
+                "files": res["created"][:6], "ahead": res["ahead"], "ignored": res["ignored"],
+                "state": engine_info(project)}
+    finally:
+        lock.release()
+
+
+def record_engine_run(project: str, lines: list, res: dict, started: str, seconds: float) -> None:
+    """Подготовка движка в истории «Консоли»: тот же архив прогона, что у команды, со строками отчёта."""
+    run_id = utc_slug() + "-" + secrets.token_hex(3)
+    base = os.path.join(runs_dir(project), run_id)
+    try:
+        os.makedirs(base, exist_ok=True)
+        with open(os.path.join(base, "console.log"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except OSError:
+        return                  # история — удобство: не записалась, подготовка от этого не хуже
+    args = ["--engine-only", "--apply"]
+    RR.write_meta(base, {"kind": "command", "id": run_id, "parent": "",
+                         "title": ("kit:update " + " ".join(args)).strip(), "cmd": "kit:update",
+                         "args": args, "started": started, "who": who(project), "kit": kit_version(),
+                         "status": "done", "rc": 0 if res["ok"] else 1, "finished": utc_stamp(),
+                         "seconds": int(seconds)})
+    trim_runs(project)
 
 
 def git_branch(path: str) -> str:
@@ -5025,6 +5127,8 @@ def adapter_alarm() -> list:
     for path, row in sorted(AG.read_alarm().items()):
         if isinstance(row, dict):
             rows.append({"path": path, "at": row.get("at", ""), "why": row.get("why", ""),
+                         # чем лечить: venv — «Установка», файл адаптера — «Версия»
+                         "fix": AG.gap_kind(row.get("why", "")),
                          "project": os.path.basename(str(row.get("project") or "")),
                          "calls": int(row.get("calls") or 0)})
     return rows
@@ -5193,6 +5297,18 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "") -> str:
                 # вызов модели не сдаётся по сроку и обрыву (`agent_core.persist_mode`).
                 env["AURORA_PERSIST"] = "1"
             mark_running(job["id"], cmd, project, True)
+            # Скрипт взят из кита, потому что у проекта нет движка или он неполный: молчать об этом
+            # нельзя — прогон идёт не тем, что лежит в проекте. Что исполняется, не меняется.
+            note = engine_fallback_note(project, row["script"], path)
+            if note:
+                with JOBS_LOCK:
+                    job_push(job, note)
+                if run_log is not None:
+                    try:
+                        run_log.write(note + "\n")
+                        run_log.flush()
+                    except OSError:
+                        pass
             p = subprocess.Popen([sys.executable, path, *args], cwd=project, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, encoding="utf-8", errors="replace", bufsize=1)
@@ -6404,6 +6520,13 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/update-all":
             self.send_json(update_all_projects(self.server.roots,
                                                bool(payload.get("apply"))))
+            return
+        if u.path == "/api/engine/prepare":
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            res = engine_prepare_action(project)
+            self.send_json(res, 409 if res.get("error") else 200)
             return
         if u.path == "/api/run":
             project = payload.get("project", "")

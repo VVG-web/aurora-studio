@@ -72,7 +72,8 @@ def from_agent(steps, usage: dict | None, seconds: float, delta: dict | None) ->
     # причиной: прогон без инструментов и MCP не должен выглядеть обычным (1.161.0).
     if u.get("bypass"):
         s["adapter_bypass"] = int(u["bypass"])
-        _err(s, "⛔ мимо Pydantic AI: " + _short(u.get("bypass_why") or "", 120),
+        # причина «нет файла» длиннее прочих: путь и лекарство в ней нужны целиком
+        _err(s, "⛔ мимо Pydantic AI: " + _short(u.get("bypass_why") or "", 220),
              int(u["bypass"]))
     # Ошибки прогона — это документы и карточки, которые не вышли. Неудачный вызов модели —
     # ещё не ошибка: его повторяют, и чаще всего следующая попытка проходит; такие вызовы

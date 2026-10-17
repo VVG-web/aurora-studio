@@ -96,7 +96,7 @@ flowchart TB
 | **Ask** | A question in your own words: the engine assembles context from cards, the model answers from them only — a role by its chain or exactly the chosen provider model; conversations are kept in `meta/ask/` and visible to everyone | `agent:ask` |
 | **Commands** | The whole registry: executor, modifiers, version introduced, last run. Script commands are run; for procedure commands the description opens | the registry |
 | **Mirrors** | The state of Confluence, Jira and sites, token presence, the sync → audit → drift chain, connecting source modules | `sync:audit`, `sync:diff`, `sync:jira-status`, `kit:remap-sources` |
-| **Version** | The project's engine against the kit, an update preview, migration of a foreign project | `kit:update`, `kit:doctor` |
+| **Version** | The project's engine against the kit, the state of the engine copy on this computer (`ok` / `missing` / `incomplete` / `stale`, a "Prepare project" or "Update" button), an update preview, migration of a foreign project. A project without an engine or with an incomplete one is completed by the panel itself when picked (`kit:update --engine-only`: only `.aurora/`, project files and git are not changed); a bar above the sections shows the same state | `kit:update`, `kit:doctor` |
 | **Graph** *(in development)* | Cards and the links between them: a way to reach a card, not a report. The neighbourhood of a named card, a click opens it in the editor. Analytics (communities, bridges, islands) belongs to `kb:map` | `kb:links`, `kb:map` |
 | **Reports** *(in development)* | Dashboards from Jira and Confluence exports, including analyst efficiency | `ops:report` |
 

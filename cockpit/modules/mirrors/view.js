@@ -66,6 +66,10 @@ function mirrorCard(ctx, inst, m, src, p){
         data.dup_head ? el("span", {class:"chip bad"}, t("mirrors.dup_head", {n: data.dup_head})) : null,
         data.age_days != null ? el("span", {class:"chip"}, t("mirrors.age", {n: data.age_days})) : null)
     : el("div", {class:"chip"}, t("mirrors.empty"));
+  // Дерево страниц с числом детей и отказами сервера — у команды, которая умеет `--diagnose-tree`
+  // (список флагов читается из самой команды, имени модуля здесь нет).
+  const cmdRow = (ctx.state.commands || []).find(c => c.cmd === inst.command);
+  const hasTree = !!(cmdRow && (cmdRow.flags || []).includes("--diagnose-tree"));
   return el("div", {class:"card", style:"padding:18px"},
     el("div", {class:"row"}, el("b", {}, inst.id + " · " + (inst.title || inst.module)),
       el("span", {class:"chip " + (tokenOk ? "ok" : "warn")},
@@ -76,6 +80,8 @@ function mirrorCard(ctx, inst, m, src, p){
     el("div", {class:"row", style:"margin-top:14px"},
       inst.command ? el("button", {class:"btn sm primary", disabled: tokenOk ? null : "",
         onclick: () => ctx.openRun(inst.command)}, t("mirrors.sync")) : null,
+      hasTree ? el("button", {class:"btn sm", title: t("mirrors.tree_hint"), disabled: tokenOk ? null : "",
+        onclick: () => ctx.openRun(inst.command, ["--diagnose-tree"])}, t("mirrors.tree")) : null,
       el("button", {class:"btn sm", onclick: () => ctx.openRun("sync:audit")}, t("mirrors.audit")),
       bad ? el("span", {class:"chip warn"}, t("mirrors.drifted")) : null,
       inst.kind ? null : el("span", {class:"chip bad"}, t("mirrors.not_installed"))));

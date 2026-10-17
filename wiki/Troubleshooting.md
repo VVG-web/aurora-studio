@@ -23,6 +23,7 @@ Engine scripts explain the reason instead of just failing. The common cases:
 | **A sync skill looks at the wrong space or JQL** | The values live in `aurora.config.yaml`, not in the skill: edit the config or run `aurora_setup.py` again. |
 | **Timeouts, half the pages missing** | The pages the walk did not reach stay in the state; run the sync again. `--prune` refuses to delete after an export with errors. |
 | **A page moved in Confluence** | `kit:remap-sources`, then `kb:repair --gone-sources`. |
+| **A subtree is missing in the mirror, but the page is visible on the web** | Read the sync output: `ветка <title>: сервер отдал N из M` or `отказ 403` names the branch the server did not hand over (the token's rights, a moved page), and the root line shows the depth reached. `sync:confluence --diagnose-tree` prints the tree with the number of children per page and writes nothing. An incomplete engine copy gives the same picture: `kit:doctor` lists it. |
 | **`sync:audit` reports `COLLISION`** | Two pages differ only in case; the mirror appends the page id. Run `kb:names`. |
 
 ## The agent
@@ -54,6 +55,8 @@ Engine scripts explain the reason instead of just failing. The common cases:
 | Symptom | Cause and fix |
 |---|---|
 | **"engine behind the kit"** | **Version** → preview → `--apply`. A route will not start on a project whose engine is older than the panel's kit. |
+| **A fresh clone: "the project engine is not on this computer" / "incomplete"** | `.aurora/` is a local engine copy and does not travel in git. Open the project in the panel: it completes `.aurora/` by itself (`kit:update --engine-only`; project files and git are untouched). If it did not, the bar above the sections and **Version** have the **Prepare project** button. Everything else of the update (`AGENTS.md`, templates, `.gitignore` rules) stays behind **Version** → **Apply**. |
+| **"Pydantic AI is selected, but calls bypass it": `venv python: … not found` or `adapter: … not found`** | These are two different causes. `venv python` — Pydantic AI is not installed on this computer: **Install** → Pydantic AI. `adapter: .aurora/scripts/agents/… not found` — the project engine is incomplete (the page *Install* may be green): **Version** → **Prepare project**. |
 | **The page shows an old interface after an update** | Restart the panel (`aurora_cockpit.py --restart`); the first start of a new version rebuilds the command registry and can take a minute. |
 | **The port is taken** | `--port 9000`, or `--restart` to replace the running panel. |
 | **macOS blocks `start-aurora.command`** | Right-click → *Open*. |

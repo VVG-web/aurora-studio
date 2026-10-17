@@ -12,6 +12,8 @@
   "mirrors.token_no": "no token",
   "mirrors.folder": "Folder: {path}.",
   "mirrors.sync": "Synchronise",
+  "mirrors.tree": "Page tree",
+  "mirrors.tree_hint": "Show the tree with the number of children per page and the server's refusals: a subtree was not exported, yet the page is visible on the web. No files are written.",
   "mirrors.audit": "Check integrity",
   "mirrors.dup_head": "headers with a repeated field or a forgery: {n}",
   "mirrors.drifted": "there are discrepancies — audit first",

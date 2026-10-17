@@ -22,16 +22,22 @@ Artifacts, Workspaces, Templates/, Prompts/) не трогается.
 (glob-шаблоны, по одному в строке). Полезно для шаблонов, локализованных под проект:
 иначе update предлагает одни и те же .new на каждом запуске.
 
+Режим `--engine-only` — подготовка движка на этой машине. Копирует только пути под `.aurora/` из
+манифеста (скрипты, навыки, документы, коннекторы): папка локальная и вне git, поэтому клон
+проекта приходит без неё. Файлов проекта и git это не касается; остальное обновление (AGENTS.md,
+шаблоны, схема папок, правила .gitignore) остаётся за полным `kit:update`. Панель вызывает этот
+режим сама при выборе проекта с неполным движком и по кнопке «Подготовить проект».
+
 Панель: `kit:update`
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
 и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
-import argparse, difflib, re, subprocess, sys
+import argparse, difflib, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from aurora_common import load_connector_manifest, utc_today, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком; манифест коннектора без исключений
+from aurora_common import load_connector_manifest, replace_file, utc_today, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком; манифест коннектора без исключений
 import folder_guides as FG  # noqa: E402 — описания папок проекта (README.md)
 
 def find_kit() -> Path:
@@ -541,6 +547,310 @@ def stamp_version(target: Path, ver: str):
     write_text_atomic(vf, ver + "\n")
 
 
+# ---------- движок проекта на этой машине ----------
+#
+# `.aurora/` — копия движка на ЭТОМ компьютере, вне git: клон проекта приходит без неё. Панель
+# в таком проекте молча брала скрипты из кита, а полусобранная копия (нет `scripts/agents/`)
+# давала странные сбои — «мимо Pydantic AI» при зелёной установке. Здесь копия сверяется с
+# манифестом и достраивается; файлов проекта и git это не касается.
+
+KIT_POINTER = f"{ENGINE}/kit_path.txt"
+ENGINE_MARK = f"{ENGINE}/engine_version.txt"      # версия кита, с которой скопирован движок на этой машине
+
+
+def stamp_engine(target: Path, ver: str) -> None:
+    """Метка копии движка: с какой версией кита совпадает `.aurora/` на этой машине.
+
+    Штамп проекта (`aurora_version.txt`) ездит через git и говорит о версии у владельца, метка —
+    локальная: по ней видно, что копия на этом компьютере отстала. Полное обновление ставит и то и другое."""
+    if (target / ENGINE).is_dir() and _linkless(target, ENGINE_MARK) and not _ignored(ENGINE_MARK, load_ignore(target)):
+        write_text_atomic(target / ENGINE_MARK, ver + "\n")
+
+
+def version_key(v: str) -> tuple:
+    """«1.174.0» → (1, 174, 0): сравнение версий числами, а не строками."""
+    nums = [int(x) for x in re.findall(r"\d+", str(v).split("+")[0])[:3]]
+    return tuple(nums + [0] * (3 - len(nums)))
+
+
+def engine_targets() -> list:
+    """Пути под `.aurora/`, которые манифест кладёт в проект. Проекта не читает.
+
+    Тот же разбор строк, что у `plan()` (обычные пути и модули источников); тест сверяет оба."""
+    out = []
+    for src, dst in parse_manifest():
+        sm = re.match(r"\((\w+)\)\s*(.*)", dst)
+        if not sm:
+            if dst.startswith(ENGINE + "/"):
+                out.append(dst)
+        elif sm.group(1) == "connectors":
+            for man in sorted((KIT / src).glob("*/connector.json")):
+                m, _why = load_connector_manifest(man)
+                if m is None:
+                    continue
+                out.append(f"{ENGINE}/connectors/{m['id']}.json")
+                script = m.get("run", {}).get("script", "")
+                if script and ((man.parent / script).is_file() or (KIT / "scripts" / script).is_file()):
+                    out.append(f"{ENGINE}/scripts/{script}")
+    return list(dict.fromkeys(out))
+
+
+def _ignored(rel: str, ignore: list) -> bool:
+    from fnmatch import fnmatch
+    return any(fnmatch(rel, pat) for pat in ignore)
+
+
+def _read_version(path: Path) -> str:
+    try:
+        v = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+    return v if re.match(r"\d", v) else ""
+
+
+def mark_version(target: Path) -> str:
+    """Версия кита, с которой скопирован движок на этой машине (метка копии); нет метки — пусто."""
+    return _read_version(target / ENGINE_MARK)
+
+
+def copy_version(target: Path) -> str:
+    """Версия движка в `.aurora/` для показа: метка копии, а нет её — штамп проекта (`aurora_version.txt`)."""
+    return mark_version(target) or _read_version(target / "AuroraKnowledgeDB/meta/aurora_version.txt")
+
+
+def _linkless(target: Path, rel: str) -> bool:
+    """Путь от корня проекта без ссылок на каждом уровне: через ссылку подготовка не пишет и не удаляет."""
+    p = target
+    for part in Path(rel).parts:
+        p = p / part
+        if p.is_symlink():
+            return False
+    return True
+
+
+def _witness_differs(target: Path, ignore: list) -> bool:
+    """Свидетель устаревшей копии без метки: реестр команд в `.aurora/` расходится с китовым.
+
+    Копии, сделанные до метки, версии не помнят, а штамп проекта едет через git и может быть новее
+    копии на этой машине. Реестр команд меняется почти с каждым выпуском, читается за миллисекунду."""
+    if _ignored(f"{ENGINE}/commands.txt", ignore):
+        return False
+    try:
+        return (target / ENGINE / "commands.txt").read_text(encoding="utf-8") != \
+            (KIT / "commands.txt").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def _pointer_ok(target: Path) -> bool:
+    """`kit_path.txt` ведёт в кит: копии скриптов проекта берут от него манифест, версию и настройку."""
+    try:
+        kit = Path((target / KIT_POINTER).read_text(encoding="utf-8").strip()).expanduser()
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
+    return (kit / "engine_manifest.txt").is_file()
+
+
+def engine_state(target: Path) -> dict:
+    """Состояние движка проекта на этой машине: сверка `.aurora/` с манифестом и версией кита.
+
+    `state`: `ok` — всё на месте; `missing` — движка нет вовсе (клон без `.aurora/`); `incomplete` —
+    не хватает файлов манифеста (они в `missing`); `stale` — версия копии ниже кита (или движок
+    ещё в прежней `.opencode/`: `legacy`); `unknown` — кита с манифестом не видно. Читает только
+    пути: ни сети, ни содержимого файлов."""
+    kit = kit_version()
+    out = {"state": "unknown", "missing": [], "total": 0, "copy": "", "kit": kit, "legacy": False}
+    if not MANIFEST.is_file():
+        return out
+    out["copy"] = copy_version(target)
+    if (target / LEGACY / "scripts").is_dir() and not (target / ENGINE / "scripts").is_dir():
+        return {**out, "state": "stale", "legacy": True}       # переезд в .aurora/ — только полным kit:update
+    ignore = load_ignore(target)
+    files = [p for p in engine_targets() if not _ignored(p, ignore)]
+    missing = [p for p in files if not (target / p).is_file()]
+    wanted = list(files)
+    if not _ignored(KIT_POINTER, ignore):
+        wanted.append(KIT_POINTER)
+        if not _pointer_ok(target):
+            missing.append(KIT_POINTER)
+    out.update(missing=missing, total=len(wanted))
+    if files and len([m for m in missing if m != KIT_POINTER]) >= len(files):
+        out["state"] = "missing"                  # ни одного файла манифеста: движка на машине нет
+    elif missing:
+        out["state"] = "incomplete"
+    elif mark_version(target):
+        out["state"] = "stale" if version_key(mark_version(target)) < version_key(kit) else "ok"
+    else:
+        # метки нет (копия старше метки): версию подскажет штамп проекта — нижняя оценка — и свидетель
+        stamp = out["copy"]
+        old = bool(stamp) and version_key(stamp) < version_key(kit)
+        out["state"] = "stale" if old or _witness_differs(target, ignore) else "ok"
+    return out
+
+
+def _inside(target: Path, path: Path) -> bool:
+    try:
+        Path(os.path.realpath(path)).relative_to(os.path.realpath(target))
+        return True
+    except ValueError:
+        return False
+
+
+def _git_ignored(target: Path, rel: str):
+    """Закрыт ли путь правилом git: True/False; None — это не репозиторий или git недоступен."""
+    try:
+        cp = subprocess.run(["git", "-C", str(target), "check-ignore", "-q", "--", rel],
+                            capture_output=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return True if cp.returncode == 0 else False if cp.returncode == 1 else None
+
+
+def _write_engine_file(dst: Path, text: str) -> None:
+    """Файл движка целиком или никак: временный файл рядом и подмена. Ссылка заменяется сама, а не её цель."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(f"{dst.name}.{os.getpid()}.aurora-tmp")
+    try:
+        tmp.write_bytes(text.encode("utf-8"))        # LF, как у полного обновления
+        try:
+            shutil.copymode(dst, tmp)                # права прежнего файла переходят к новому
+        except OSError:
+            pass
+        replace_file(tmp, dst)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def engine_prepare(target: Path, apply: bool = True) -> dict:
+    """Подготовить движок проекта на этой машине: пути под `.aurora/` из манифеста, и только они.
+
+    Идемпотентно: файл, совпавший с китом, не пишется. Расходящийся с китом файл движка
+    заменяется — копия должна быть целой, одной версии: недостающий файл рядом со старым
+    `aurora_common.py` падал бы там, где из кита работал. Исключения: пути из
+    `aurora.update_ignore.txt` проект ведёт сам; движок НОВЕЕ кита (по метке копии) только
+    достраивается, не откатывается; через ссылки и за пределы проекта не пишется и не удаляется
+    (общий движок обновляет полный `kit:update` с предупреждением). Движок в прежней `.opencode/`
+    не переезжает — переезд раскладывает данные проекта и идёт полным обновлением.
+    → {ok, reason, before, after, created, refreshed, removed, shared, failed, ahead, ignored}.
+    """
+    res = {"ok": False, "reason": "", "applied": False, "before": "", "after": "", "created": [],
+           "refreshed": [], "removed": [], "shared": [], "failed": [], "ahead": False, "ignored": None}
+    if not (target / "AuroraKnowledgeDB").is_dir():
+        return {**res, "reason": "not_project"}
+    st = engine_state(target)
+    res.update(before=st["state"], after=st["state"])
+    if st["state"] == "unknown":
+        return {**res, "reason": "no_kit"}
+    if st["legacy"]:
+        return {**res, "reason": "legacy"}
+    # «новее кита» знает только метка копии: штамп проекта едет через git и может быть новее и кита этой машины
+    res["ahead"] = bool(mark_version(target)) and version_key(mark_version(target)) > version_key(st["kit"])
+    ignore = load_ignore(target)
+    todo, seen = [], set()
+    for c in plan(target, project_fields(target)):
+        # путь бывает в плане дважды (скрипт модуля лежит и в манифесте, и в его описании)
+        if c.kind != "write" or not c.path.startswith(ENGINE + "/") or c.path in seen:
+            continue
+        seen.add(c.path)
+        dst = target / c.path
+        if c.external or ".." in Path(c.path).parts or not _linkless(target, c.path) or not _inside(target, dst.parent):
+            res["shared"].append(c.path)
+            continue
+        if res["ahead"] and dst.exists():
+            continue
+        todo.append((c, not dst.exists()))
+    gone = [r for r in retired_paths() if r.startswith(ENGINE + "/") and _linkless(target, r)
+            and (target / r).is_file() and not _ignored(r, ignore)]
+    res["ok"] = True
+    if not apply:
+        res.update(created=[c.path for c, new in todo if new], refreshed=[c.path for c, new in todo if not new],
+                   removed=gone)
+        return res
+    for c, new in todo:
+        try:
+            _write_engine_file(target / c.path, c.new_text)
+            res["created" if new else "refreshed"].append(c.path)
+        except OSError as e:
+            res["failed"].append(f"{c.path}: {e}")
+    for r in gone:
+        try:
+            (target / r).unlink(missing_ok=True)
+            res["removed"].append(r)
+        except OSError as e:
+            res["failed"].append(f"{r}: {e}")
+    # указатель на кит и метка — тем же правилом: не через ссылку, не в путь, который ведёт проект сам
+    for rel, text in ((KIT_POINTER, str(KIT)), (ENGINE_MARK, kit_version())):
+        if res["failed"] or _ignored(rel, ignore):
+            continue
+        if rel == ENGINE_MARK and (res["ahead"] or res["shared"]):
+            continue                                  # копия не совпала с китом целиком: версию не объявляем
+        if not _linkless(target, rel):
+            res["shared"].append(rel)
+            continue
+        try:
+            (target / ENGINE).mkdir(parents=True, exist_ok=True)
+            write_text_atomic(target / rel, text + "\n")
+        except OSError as e:
+            res["failed"].append(f"{rel}: {e}")
+    res["applied"] = True
+    res["ok"] = not res["failed"]
+    res["ignored"] = _git_ignored(target, KIT_POINTER)
+    res["after"] = engine_state(target)["state"]
+    return res
+
+
+def engine_report(res: dict, apply: bool) -> list:
+    """Что сделала (или сделает) подготовка движка — строки для терминала и для «Консоли» панели."""
+    lines = []
+    for label, mark, rows in (("Создать", "+", res["created"]), ("Заменить (расходится с китом)", "~", res["refreshed"]),
+                              ("Убрать (выведены из движка)", "−", res["removed"])):
+        if rows:
+            lines.append(f"{label}: {len(rows)}")
+            lines += [f"  {mark} {rel}" for rel in rows[:40]]
+            if len(rows) > 40:
+                lines.append(f"  … ещё {len(rows) - 40}")
+    lines += [f"  ⚠️ {rel}: ссылка или путь вне проекта — не тронут (общий движок обновляет полный kit:update)"
+              for rel in res["shared"]]
+    if res["ahead"]:
+        lines.append("  ⚠️ движок проекта новее кита — только достроен, существующие файлы не заменены")
+    if not apply:
+        done = res["created"] or res["refreshed"] or res["removed"]
+        lines.append("\n(dry-run) Ничего не записано. Повторите с --apply." if done
+                     else "✅ Движок проекта уже актуален — делать нечего.")
+        return lines
+    lines += [f"   ⚠️ не вышло: {line}" for line in res["failed"][:40]]
+    if len(res["failed"]) > 40:
+        lines.append(f"   … ещё {len(res['failed']) - 40}")
+    lines.append(f"\n{'✅' if res['ok'] else '⚠️'} Движок проекта подготовлен на этом компьютере: создано "
+                 f"{len(res['created'])}, заменено {len(res['refreshed'])}, убрано {len(res['removed'])} "
+                 f"файлов в .aurora/. Файлы проекта и git не тронуты. Версия движка → {kit_version()}")
+    if res["ignored"] is False:
+        lines.append("   ⚠️ .aurora/ не закрыта правилом .gitignore — git увидит её как новую папку; "
+                     "правило добавит «Версия» → «Применить»")
+    return lines
+
+
+def run_engine_only(target: Path, apply: bool) -> int:
+    """`--engine-only`: достроить `.aurora/` и сказать, что сделано. Файлов проекта и git не касается."""
+    if not (target / "AuroraKnowledgeDB").is_dir():
+        print(f"⚠️  {target} не похоже на проект Aurora (нет AuroraKnowledgeDB/).", file=sys.stderr)
+        return 1
+    print(f"Aurora update (только движок) — {target}")
+    st = engine_state(target)
+    print(f"  движок проекта: {st['state']}" + (f" ({st['copy']})" if st["copy"] else "")
+          + f" · kit {st['kit']}\n")
+    res = engine_prepare(target, apply)
+    if res["reason"] == "legacy":
+        print("⚠️  Движок проекта ещё в прежней папке .opencode/: его переезд в .aurora/ делает полное "
+              "обновление — раздел «Версия» → «Предпросмотр обновления» → «Применить».", file=sys.stderr)
+        return 1
+    if not res["ok"] and not res["applied"]:
+        print(f"⚠️  Движок не подготовлен: {res['reason']}.", file=sys.stderr)
+        return 1
+    print("\n".join(engine_report(res, apply)))
+    return 0 if res["ok"] else 1
+
+
 # ---------- main ----------
 
 def refresh_hooks(target: Path) -> str:
@@ -834,8 +1144,10 @@ def run(target: Path, apply: bool, structure_only: bool = False):
                 kb_date = backfill_kb_updated(target)
                 if kb_date:
                     print(f"   Дата обновления базы из истории прогонов: {kb_date}")
+        if apply:
+            stamp_engine(target, kv)       # движок совпал с китом: метка копии не отстаёт от штампа
         if apply and pv != kv:
-            stamp_version(target, kv)
+            stamp_version(target, kv)      # штамп проекта — последним: он говорит «обновление дошло до конца»
             print(f"   Проставлен штамп версии: {kv}")
         return 0
 
@@ -911,7 +1223,8 @@ def run(target: Path, apply: bool, structure_only: bool = False):
     untracked = untrack_runlog(target)
     kb_date = backfill_kb_updated(target)
     attrs = refresh_gitattributes(target)
-    stamp_version(target, kv)
+    stamp_engine(target, kv)
+    stamp_version(target, kv)              # штамп проекта — последним: по нему видно, что обновление дошло до конца
     print(f"\n✅ Применено: {len(new_dirs)} папок, {len(writes)} перезаписей, "
           f"{len(seeds)} .new-файлов, {len(retired)} удалено"
           + (f", хук обновлён ({refreshed})" if refreshed else "")
@@ -968,12 +1281,18 @@ def main():
     ap = argparse.ArgumentParser(description="Обновить движок Aurora в проекте по манифесту")
     ap.add_argument("target", nargs="?", default=".", help="Корень проекта")
     ap.add_argument("--apply", action="store_true", help="Записать изменения (иначе dry-run)")
-    ap.add_argument("--structure-only", action="store_true",
-                    help="Только досоздать недостающие папки схемы + штамп версии; движок не трогать")
+    only = ap.add_mutually_exclusive_group()
+    only.add_argument("--structure-only", action="store_true",
+                      help="Только досоздать недостающие папки схемы + штамп версии; движок не трогать")
+    only.add_argument("--engine-only", action="store_true",
+                      help="Только движок в .aurora/ этой машины; файлы проекта и git не трогаются")
     a = ap.parse_args()
     if not kit_is_reachable():
         return 2
-    return run(Path(a.target).expanduser().resolve(), a.apply, a.structure_only)
+    target = Path(a.target).expanduser().resolve()
+    if a.engine_only:
+        return run_engine_only(target, a.apply)
+    return run(target, a.apply, a.structure_only)
 
 
 if __name__ == "__main__":
