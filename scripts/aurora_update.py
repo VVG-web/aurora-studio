@@ -1092,11 +1092,11 @@ def run(target: Path, apply: bool, structure_only: bool = False):
                 kb_date = backfill_kb_updated(target)
                 if kb_date:
                     print(f"   Дата обновления базы из истории прогонов: {kb_date}")
-        if apply and pv != kv:
-            stamp_version(target, kv)
-            print(f"   Проставлен штамп версии: {kv}")
         if apply:
             stamp_engine(target, kv)       # движок совпал с китом: метка копии не отстаёт от штампа
+        if apply and pv != kv:
+            stamp_version(target, kv)      # штамп проекта — последним: он говорит «обновление дошло до конца»
+            print(f"   Проставлен штамп версии: {kv}")
         return 0
 
     ext_writes = [c for c in changes if c.external]
@@ -1171,8 +1171,8 @@ def run(target: Path, apply: bool, structure_only: bool = False):
     untracked = untrack_runlog(target)
     kb_date = backfill_kb_updated(target)
     attrs = refresh_gitattributes(target)
-    stamp_version(target, kv)
     stamp_engine(target, kv)
+    stamp_version(target, kv)              # штамп проекта — последним: по нему видно, что обновление дошло до конца
     print(f"\n✅ Применено: {len(new_dirs)} папок, {len(writes)} перезаписей, "
           f"{len(seeds)} .new-файлов, {len(retired)} удалено"
           + (f", хук обновлён ({refreshed})" if refreshed else "")
