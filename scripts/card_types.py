@@ -167,7 +167,7 @@ GENERAL_FIELDS = frozenset((
     "sources", "source", "source_synced", "source_hash",
     "trust", "trust_basis", "trust_checked", "distilled", "distilled_by", "distilled_was",
     "distill_empty", "extracted", "relinked", "neighbours", "tasks_kept", "unsupported",
-    "corrected_by", "correction_retired",
+    "corrected_by", "correction_retired", "accepted_fp",
     "related", "part_of", "supersedes", "superseded_by", "based_on", "applies_to", "same_subject",
 ))
 # Следы ручной «приёмки» версий 1.21–1.73 (приложение A.7): не пишутся, читаются терпимо.

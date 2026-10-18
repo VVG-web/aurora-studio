@@ -286,6 +286,11 @@ def main() -> int:
         was = text = open(path, encoding="utf-8", errors="ignore").read()
         for kind, start, end, _frag in reversed(hits):
             text = text[:start] + MASK.format(kind) + text[end:]
+        try:
+            import kb_decide as KD           # принятое решение: маски ПДн — не правка смысла, отпечаток тела следует за ними
+            text = KD.reseal(was, text, "обезличено (kb:scrub)")
+        except ImportError:
+            pass
         if is_card_path(path):
             # Карточка базы — через единый вход шаблонов. Отказ не прячем: непрошедшая запись означает, что
             # ПДн остался в файле, и шаг обязан сказать об этом кодом возврата.

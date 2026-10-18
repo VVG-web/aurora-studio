@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -690,3 +691,141 @@ def test_decide_reads_a_question_with_its_answer_source(tmp: Path):
     content = seen[0][1][0]["content"]
     assert "Какой срок подтверждения заявки?" in content and "Руководитель проекта: срок подтверждения" in content
     assert "[[Q-007-срок-заявки]]" in res["text"], res["text"][:900]
+
+
+# ------------------------------------------------------------------ BL-TEAM-02: доработка по независимому просмотру
+
+@test
+def test_decide_source_stays_inside_the_project_text_boundary(tmp: Path):
+    """Источник решения — текст проекта по общей границе чтения: секреты, служебные папки, чужие файлы и `answer_source` закрыты."""
+    R = _mod("agent_runner")
+    root = _decide_project(tmp)
+    (root / ".env.aurora.local").write_text("TOKEN=СЕКРЕТНЫЙ-ТОКЕН-12345\n", encoding="utf-8")
+    outside = tmp / "чужой.md"
+    outside.write_text("# Чужой файл\n\nЧУЖОЙ-ТЕКСТ-ВНЕ-ПРОЕКТА\n", encoding="utf-8")
+    seen: list = []
+    call = _decide_call(_decide_answer(), seen)
+    for src in (".env.aurora.local", "aurora.config.yaml", "../чужой.md", str(outside), ".aurora/state/x.md"):
+        res = R.run_decide(_decide_cfg(), str(root), src, "", "@analyst", [], False, call=call)
+        assert not res["ok"] and "нет в проекте" in res["why"], (src, res)
+    # вопрос с вредным answer_source: карточка читается, ответ-секрет и чужой файл — нет
+    for bad in (".env.aurora.local", "../чужой.md", str(outside)):
+        _touch(root, "AuroraKnowledgeDB/Questions/Q-001-вред.md",
+               '---\ntitle: "Q-001"\ntype: question\nstatus: draft\nq_status: answered\n'
+               f'answer_source: "{bad}"\nblocks: []\n---\n\n# Q-001\n\nКакой срок?\n')
+        seen.clear()
+        res = R.run_decide(_decide_cfg(), str(root), "Q-1", "", "@analyst", [], False, call=call)
+        sent = seen[0][1][0]["content"]
+        assert res["ok"] and "Какой срок?" in sent, res
+        assert "СЕКРЕТНЫЙ-ТОКЕН" not in sent and "ЧУЖОЙ-ТЕКСТ" not in sent, f"файл вне границы ушёл модели ({bad})"
+
+
+@test
+def test_decide_human_name_rejects_models_and_header_forgery(tmp: Path):
+    """`--by` и `--owner`: имена моделей в любом написании, управляющие знаки и подделка полей шапки — отказ; обычные имена проходят."""
+    KD = _mod("kb_decide")
+    for bad in ("claude_code", "Claude3", "ClaudeCode", "gpt4", "GPT_4", "Сlaude", "Клод", "Ассистент", "Codex",
+                "Opus", "my-bot", "aurora-studio", "@x\rstatus: accepted\raccepted_fp: dead", "x y", "a\tb", 'a"b', "a\\b"):
+        who, err = KD.human_name(bad)
+        assert err and not who, (bad, who, err)
+    for good in ("Aurora", "Ольга Клодт", "Botvinnik", "Ботвинник", "Abbott", "@analyst", "Иван Петров"):
+        who, err = KD.human_name(good)
+        assert who == "@" + good.lstrip("@") and not err, (good, who, err)
+
+
+@test
+def test_decision_fingerprint_sees_inner_headings_and_link_labels(tmp: Path):
+    """Отпечаток: первый заголовок и переименование цели ссылки он не видит, внутренний заголовок и подпись ссылки — видит."""
+    KD = _mod("kb_decide")
+    base = "---\ntitle: t\n---\n\n" + GOOD_BODY.replace("{n}", "0001")
+    fp = KD.body_fingerprint(base)
+    assert KD.body_fingerprint(base.replace("# DR-0001: Срок", "# DR-0001: Другое имя", 1)) == fp
+    assert KD.body_fingerprint(base.replace("[[Заявка на поставку]]", "[[Заявка]]")) == fp
+    assert KD.body_fingerprint(base.replace("Срок подтверждения — три рабочих дня.", "# Теперь пять дней\nСрок.")) != fp
+    assert KD.body_fingerprint(base.replace("[[Заявка на поставку]]", "[[Заявка|заявку]]")) != fp
+    assert KD.body_fingerprint(base.replace("Затронутые карточки: [[Заявка на поставку]]", "Затронутые карточки: нет")) != fp
+
+
+@test
+def test_decision_form_reads_real_headings_and_english_decisions(tmp: Path):
+    """Форма: «Обработка отклонений — выбран» выбран, «Причины отказа» читается, список затронутых строками ниже; английское решение."""
+    KD = _mod("kb_decide")
+    body = ("# DR-0001: X\n\n## Контекст\nТекст [[Заявка]].\n\n## Рассмотренные варианты\n\n"
+            "### 1. Обработка отклонений — выбран\n- Плюсы: а.\n\n### 2. Принятие всего подряд — отклонён\n"
+            "- **Причины отказа:** слишком шумно.\n\n## Решение\nОтклонения обрабатываем.\n\n## Следствия\n"
+            "- Затронутые карточки:\n  - [[Заявка]]\n  - [[Заявка на поставку]]\n")
+    text = "---\ntitle: t\nstatus: proposed\n---\n\n" + body
+    assert KD.lint_decision(text, {"Заявка", "Заявка на поставку"}) == [], KD.lint_decision(text, {"Заявка", "Заявка на поставку"})
+    assert [v["chosen"] for v in KD.variants(body)] == [True, False]
+    assert KD.affected(body) == ["Заявка", "Заявка на поставку"]
+    en = ("# DR-0002: Pick a bus\n\n## Context\nText [[Bus]].\n\n## Considered options\n\n### 1. Kafka — chosen\n- Pros: fast.\n\n"
+          "### 2. Rabbit — rejected\n- Reason for rejection: ops cost.\n\n## Decision\nKafka.\n\n## Consequences\n- Affected cards: [[Bus]]\n")
+    assert KD.lint_decision("---\ntitle: t\nstatus: proposed\n---\n\n" + en, {"Bus"}) == []
+
+
+@test
+def test_decide_survives_hostile_model_answers(tmp: Path):
+    """Ответ модели с кавычками в заголовке, строками вместо списков, «chosen: "false"», чужими и слабыми цитатами."""
+    R = _mod("agent_runner")
+    root = _decide_project(tmp)
+    src = "Raw/meetings/2026-10-01_срок/protocol.md"
+    ans = _decide_answer(title='Срок: "три" дня', consequences="Описание процесса приводится к ТЗ.", affects="Заявка на поставку")
+    ans["options"][0]["chosen"] = "false"                                   # строка «false» истиной не считается
+    ans["options"].append({"name": "Просто слабая цитата", "chosen": False, "why_not": "-", "quote": "----------"})
+    ans["options"].append({"name": "Чужая цитата", "chosen": False, "why_not": "-",
+                           "quote": ans["options"][1]["quote"]})            # цитата другого варианта
+    ans["options"].append({"name": "Общая фраза", "chosen": False, "why_not": "-", "quote": "Обсуждали срок"})
+    res = R.run_decide(_decide_cfg(), str(root), src, "", "@analyst", [], True, call=_decide_call(ans, []), today="2026-10-19")
+    assert res["ok"] and res["written"], res                                # кавычки в заголовке шаблон принял
+    text = (root / res["path"]).read_text(encoding="utf-8")
+    assert '"' not in text.splitlines()[1].split(":", 1)[1].strip('" ') and "# DR-0001: Срок: три дня" in text, text[:400]
+    assert text.count("\n- Описание процесса приводится к ТЗ.") == 1 and "\n- О\n" not in text
+    assert "### 1. Три рабочих дня — отклонён" in text, "строка «false» стала выбором"
+    under = text.split("## Под вопросом", 1)[1]
+    for name in ("Просто слабая цитата", "Чужая цитата", "Общая фраза"):
+        assert f"Вариант «{name}»" in under, (name, under)
+    assert "Вариант «Пять рабочих дней»" not in under, "своя цитата принята за чужую"
+    assert "Затронутые карточки: [[Заявка на поставку]]" in text and "нет в базе" not in under
+
+
+@test
+def test_decide_accept_and_reject_cannot_both_win(tmp: Path):
+    """Одновременные принять и отклонить: выигрывает один, второй видит новое состояние."""
+    KD = _mod("kb_decide")
+    root = _decision_project(tmp)
+    _dr(root)
+    os.chdir(root)
+    results = []
+
+    def go(reject: bool):
+        results.append(KD.decide(".", "DR-0001", "@analyst", reject, "причина" if reject else "")[0])
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        list(ex.map(go, (False, True)))
+    assert sorted(results) == [0, 1], results
+    final = (root / "AuroraKnowledgeDB/Decisions/DR-0001-срок.md").read_text(encoding="utf-8")
+    assert ("status: accepted" in final) != ("status: rejected" in final), final[:300]
+    assert KD.find_dr(".", "²")[1], "надстрочная цифра принята за номер"
+
+
+@test
+def test_scrub_keeps_an_accepted_decision_sealed(tmp: Path):
+    """`kb:scrub --apply` закрывает ПДн маркером в принятом решении и пересчитывает отпечаток; изменённое руками не отмывает."""
+    KD = _mod("kb_decide")
+    root = _decision_project(tmp)
+    path = _dr(root, body=GOOD_BODY.replace("Срок подтверждения — три рабочих дня.",
+                                            "Срок подтверждения — три рабочих дня. Контакт: ivan.petrov@example.com"))
+    run("kb_decide.py", "DR-0001", "--by", "@analyst", cwd=root, expect_rc=0)
+    assert not KD.body_changed(path.read_text(encoding="utf-8"))
+    cp = run("kb_scrub.py", "--apply", "--allow-dirty", "--force", cwd=root)
+    text = path.read_text(encoding="utf-8")
+    assert "ivan.petrov@example.com" not in text and "[ПДн" in text, (cp.stdout, text[-500:])
+    assert not KD.body_changed(text), "обезличивание сломало отпечаток принятого решения"
+    assert "обезличено (kb:scrub)" in text.split("## История", 1)[1]
+    lint = run("kb_lint.py", cwd=root)
+    assert "тело принятого решения" not in lint.stdout, lint.stdout
+    # изменённое руками тело не «отмывается» пересчётом
+    tampered = text.replace("подписанный документ", "что угодно")
+    assert KD.body_changed(tampered)
+    laundered = KD.reseal(tampered, tampered + "\nещё слово", "обезличено")
+    assert KD.body_changed(laundered), "reseal отмыл правку тела"

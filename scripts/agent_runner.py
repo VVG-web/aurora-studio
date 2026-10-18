@@ -6656,11 +6656,33 @@ def quote_key(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+def decide_list(value) -> list:
+    """Поле ответа модели как список: строка — один элемент, не список символов; остальное — пусто."""
+    return [value] if isinstance(value, str) else [x for x in value if isinstance(x, str)] if isinstance(value, list) else []
+
+
+def decide_flag(value) -> bool:
+    """«chosen» из ответа модели: только истина или слова «true/да/yes» — строка «false» истиной не считается."""
+    return value is True or str(value).strip().lower() in ("true", "да", "yes")
+
+
 def decide_clean(text, limit: int = 600) -> str:
     """Строка из ответа модели в карточку: одна строка, без ссылок `[[…]]`, заготовок `{{…}}` и разметки."""
     text = " ".join(str(text or "").split())
     text = re.sub(r"\[\[([^\]]*)\]\]", r"\1", text).replace("{{", "(").replace("}}", ")")
     return text.lstrip("#>-* ").strip()[:limit]
+
+
+def decide_readable(cwd: str, path: str) -> bool:
+    """Можно ли отдать файл модели как источник: текст проекта (.md, .txt) по общей границе чтения — ссылки наружу,
+    файлы с доступами и служебные папки закрыты. Путь приходит от человека или из карточки вопроса: не доверяем."""
+    from aurora_common import read_verdict
+    try:
+        inside = not os.path.relpath(path, cwd).replace("\\", "/").startswith("..")
+    except ValueError:                      # Windows: другой диск
+        return False
+    return (inside and os.path.isfile(path) and path.lower().endswith((".md", ".txt"))
+            and not read_verdict(path, cwd, strict=True, every_file=True))
 
 
 def decide_source(cwd: str, ref: str) -> tuple:
@@ -6680,13 +6702,13 @@ def decide_source(cwd: str, ref: str) -> tuple:
         src = re.search(r"(?m)^answer_source:\s*[\"']?([^\"'\n]+)", text)
         if src and src.group(1).strip():
             extra = os.path.join(cwd, src.group(1).strip())
-            if os.path.isfile(extra) and not link_escapes(extra):
+            if decide_readable(cwd, extra):
                 text += "\n\n--- Ответ: " + src.group(1).strip() + " ---\n\n" + read_text_file(extra, DECIDE_SOURCE_LIMIT)
         return hits[0][:-3], text, hits[0][:-3], ""
     path = os.path.normpath(os.path.join(cwd, ref))
+    if not decide_readable(cwd, path):
+        return "", "", "", f"источника «{ref}» нет в проекте (нужен текстовый файл .md или .txt внутри проекта или Q-NNN)"
     rel = os.path.relpath(path, cwd).replace("\\", "/")
-    if rel.startswith("..") or not os.path.isfile(path) or link_escapes(path):
-        return "", "", "", f"источника «{ref}» нет в проекте (нужен файл внутри проекта или Q-NNN)"
     text = read_text_file(path, DECIDE_SOURCE_LIMIT)
     if not text.strip():
         return "", "", "", f"источник «{ref}» пуст или не читается как текст"
@@ -6703,18 +6725,28 @@ def build_decision(cwd: str, ans: dict, source: str, label: str, card: str, owne
     ident = f"DR-{number:04d}"
     skey = quote_key(source)
 
-    def found(quote) -> bool:
-        key = quote_key(quote)
-        return len(key) >= 10 and key in skey
+    used: set = set()
 
-    title = decide_clean(ans.get("title"), 120)
+    def found(quote, shared: bool = False) -> bool:
+        """Цитата есть в источнике дословно, содержательна (не меньше трёх слов и пятнадцати букв) и не повторяет
+        цитату другого варианта: вариант с чужой цитатой не подтверждён. `shared` — цитата решения может
+        совпасть с цитатой выбранного варианта."""
+        key = quote_key(quote)
+        if len(re.findall(r"\w+", key)) < 3 or sum(ch.isalpha() for ch in key) < 15 or key not in skey:
+            return False
+        if key in used and not shared:
+            return False
+        used.add(key)
+        return True
+
+    title = decide_clean(ans.get("title"), 120).replace('"', "")
     doubts: list = []
     rows = []
-    for opt in [o for o in ans.get("options") or [] if isinstance(o, dict)][:8]:
+    for opt in [o for o in (ans.get("options") if isinstance(ans.get("options"), list) else []) if isinstance(o, dict)][:8]:
         name = decide_clean(opt.get("name"), 160)
         if not name:
             continue
-        chosen = bool(opt.get("chosen"))
+        chosen = decide_flag(opt.get("chosen"))
         ok = found(opt.get("quote"))
         n = sum(1 for r in rows if r.startswith("### ")) + 1
         rows.append(f"### {n}. {name} — {'выбран' if chosen else 'отклонён'}")
@@ -6730,10 +6762,10 @@ def build_decision(cwd: str, ans: dict, source: str, label: str, card: str, owne
             doubts.append(f"Вариант «{name}»: дословной цитаты в источнике нет.")
         rows.append("")
     decision = decide_clean(ans.get("decision"), 600)
-    if not found(ans.get("decision_quote")):
+    if not found(ans.get("decision_quote"), shared=True):
         doubts.append("Решение: дословной цитаты в источнике нет.")
     # затронутые карточки: названные моделью и человеком — только существующие
-    named = [decide_clean(x, 120) for x in (ans.get("affects") or []) if isinstance(x, str)]
+    named = [decide_clean(x, 120) for x in decide_list(ans.get("affects"))]
     named += [decide_clean(x, 120) for x in extra_affects]
     affects = list(dict.fromkeys(known[quote_key(n)] for n in named if quote_key(n) in known))
     absent = [n for n in dict.fromkeys(named) if n and quote_key(n) not in known]
@@ -6741,14 +6773,14 @@ def build_decision(cwd: str, ans: dict, source: str, label: str, card: str, owne
         doubts.append("Затронутые карточки, которых нет в базе: " + ", ".join(absent[:6]) + ".")
     older = []
     import kb_decide as KD
-    for r in [x for x in ans.get("replaces") or [] if isinstance(x, str)][:4]:
+    for r in decide_list(ans.get("replaces"))[:4]:
         path, err = KD.find_dr(cwd, r.strip())
         if not err:
             older.append(os.path.splitext(os.path.basename(path))[0])
     for stem in older:
         doubts.append(f"Возможно, заменяет [[{stem}]]: подтвердите и выполните `kb:supersede` — само решение прежнее не меняет.")
     where = f"[[{card}]]" if card else f"`{label}`"
-    cons = [decide_clean(c, 300) for c in ans.get("consequences") or [] if isinstance(c, str) and decide_clean(c, 300)]
+    cons = [decide_clean(c, 300) for c in decide_list(ans.get("consequences")) if decide_clean(c, 300)]
     out = ["---", f'title: "{ident}: {title.replace(chr(34), "")}"', f'aliases: ["{ident}"]', "tags: [decision]", "type: decision",
            "template: akdb_decision_v1.0.md", "kind: document", "status: proposed", f"date: {today}", f'owner: "{owner}"',
            "supersedes: []", "superseded_by:", "applies_to: []", f"created: {today}", f"updated: {today}", "---", "",
