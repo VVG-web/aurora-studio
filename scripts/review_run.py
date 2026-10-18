@@ -61,6 +61,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import UNTRUSTED_RULE, UNTRUSTED_TAG, untrusted, utc_label, utc_slug  # noqa: E402 — время одно на движок; граница данных
 import run_summary as RS  # noqa: E402 — вердикт ворот (`--gate`)
+import fidelity as FID  # noqa: E402 — механическая сверка цитат (BL-KBA-05)
 
 TEMPLATE = "review_v2.1.md"
 REVIEWS = "Artifacts/reviews"
@@ -443,6 +444,22 @@ def parse_answer(text: str, ids: list) -> dict | None:
     return {"checks": checks, "split": str(data.get("split") or "").strip()}
 
 
+def verify_evidence(parsed: dict, text: str) -> list:
+    """Цитата-доказательство ответа должна быть в тексте, который модели показали. → id ответов, которые не прошли.
+
+    Выдуманная цитата засчитывалась как доказательство: «нет» с придуманной выдержкой снижало оценку, «да» с ней
+    поднимало. Ответ с цитатой, которой нет в странице, понижается до `unknown` (воздержался), цитата остаётся
+    в отчёте с пометкой. Пересказ вместо дословной выдержки допустим: слова цитаты ищутся с допуском (`fidelity`)."""
+    bad = []
+    for cid, a in (parsed.get("checks") or {}).items():
+        ev = a.get("evidence") or ""
+        if ev and a.get("v") in ("yes", "no") and not FID.quote_found(ev, text):
+            a["unverified"] = a["v"]
+            a["v"] = "unknown"
+            bad.append(cid)
+    return bad
+
+
 def one_run(cfg: dict, cl: dict, profile: str, system: str, body: str, call, prefer: int,
             deadline: float) -> dict:
     ids = [c["id"] for c in cl["profiles"][profile] if c["decider"] != "код"]
@@ -457,6 +474,7 @@ def one_run(cfg: dict, cl: dict, profile: str, system: str, body: str, call, pre
     if parsed is None:
         return {"ok": False, "why": "ответ модели не разобран как JSON"}
     parsed.update(ok=True, model=r.get("model", ""), seen=r.get("seen", 0), cut=r.get("cut", 0))
+    parsed["unverified"] = verify_evidence(parsed, body)
     return parsed
 
 
@@ -789,6 +807,8 @@ def summary_lines(rec: dict) -> list:
               f"прогонов {rec.get('runs', 0)}"
               + (" · прочитаны не все обязательные связанные страницы"
                  if rec.get("incomplete") else "")]
+    if rec.get("source") == "assistant":
+        L.append("Источник оценки: ответы ассистента, не прогоны движка — цитаты со страницей не сверялись")
     if rec.get("reasons"):
         L.append("Почему: " + "; ".join(rec["reasons"]))
     return L
@@ -810,7 +830,7 @@ def as_json(rec: dict, report: str, path: str = "") -> dict:
     """Итог одной страницы для машины: вердикт, оценка, причины, сводка и отчёт."""
     keep = ("page_id", "code", "title", "url", "version", "profile", "status", "verdict",
             "score", "coverage", "failed", "unknown", "unstable", "incomplete", "reasons",
-            "runs", "good_runs", "model")
+            "runs", "good_runs", "model", "source")
     out = {k: rec.get(k) for k in keep if k in rec}
     out["failed_questions"] = [i for i, a in (rec.get("answers") or {}).items() if a.get("v") == "no"]
     out["summary"] = "\n".join(summary_lines(rec))
@@ -839,6 +859,7 @@ def score_answers(cl: dict, req: dict) -> dict:
     incomplete = bool(req.get("incomplete"))
     res = score(cl, profile, answers, incomplete, True, 1)
     rec = {"status": "ok", "profile": profile, "answers": answers, "runs": 1, "good_runs": 1,
+           "source": "assistant",      # ответы дал ассистент, а не прогоны движка: цитаты не сверялись со страницей
            "incomplete": incomplete, "title": str(req.get("title") or ""),
            "code": str(req.get("code") or ""), "reviewed": _now(), **res}
     missing = [cid for cid in ids if cid not in (req.get("answers") or {})]

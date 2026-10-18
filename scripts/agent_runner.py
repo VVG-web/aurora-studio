@@ -6475,6 +6475,36 @@ def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
     return out
 
 
+def run_momus_chunks(cfg: dict, packs: list, question: str, answer: str, call=None, prefer: int = 0) -> dict:
+    """Момус по источнику, нарезанному на куски: без опоры — то, чего нет НИ В ОДНОМ куске.
+
+    Первый кусок проверяет весь ответ. Что он счёл неподтверждённым, переходит к следующему куску — уже
+    только эти утверждения, — и так до конца: найденное в любом куске опорой считается. Нет названных
+    утверждений (Момус дал одно число) — сузить нечем, остаётся результат первого куска."""
+    first = run_momus(cfg, packs[0], question, answer, call, prefer)
+    if len(packs) < 2 or not first.get("ok") or first.get("clean"):
+        return first
+    left = momus_claims(first.get("text"))
+    if not left:
+        return first
+    for pack in packs[1:]:
+        again = run_momus(cfg, pack, question + " (часть источника)",
+                          "Утверждения для проверки:\n" + "\n".join(
+                              "- " + c.split(": ", 1)[-1] for c in left), call, prefer)
+        if not again.get("ok"):
+            first["partial"] = again.get("why") or "часть источника не проверена"
+            return first
+        if again.get("clean"):
+            left = []
+            break
+        # не назвал утверждения (дал только число) — остаются первые из прежнего списка, сколько он насчитал
+        left = momus_claims(again.get("text")) or left[:max(1, int(again.get("unsupported") or 1))]
+    out = dict(first)
+    out.update(unsupported=len(left), clean=not left,
+               text="\n".join(left) + f"\nВЕРДИКТ: {'БЕЗ ОПОРЫ ' + str(len(left)) if left else 'ЧИСТО'}")
+    return out
+
+
 UNSUPPORTED_JSON = os.path.join("AuroraKnowledgeDB", "meta", "unsupported.json")
 UNSUPPORTED_MD = os.path.join("AuroraKnowledgeDB", "meta", "unsupported.md")
 
@@ -7013,6 +7043,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     # раз. На PRJ-A так прошли все 399 карточек с тезисом.
     was_thesis = (source_part or "").strip() if QUOTES in body else ""
     changed = ""
+    check_pack = parts[0]          # на чём проверяется итог: источник (один кусок) либо выписки (несколько)
     if len(parts) == 1 and was_thesis:
         a = once(with_terms(PROMPT_REDISTILL.format(
             title=title, was=was_thesis[:4000], body=parts[0], type_rules=rules_re) + note_back, parts[0], root))
@@ -7031,8 +7062,17 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         # PRJ-B и четыре из пяти у PRJ-C, и в половине случаев тезис переписывался
         # заметно иначе, хотя знание не менялось (1.138.0).
         if SAME_MEANING.search(changed):
-            step["kept"] = True
-            thesis = was_thesis
+            # «Без изменений» говорит модель, а оно отменяет проверку Момусом — поэтому сначала код: числа, даты
+            # и коды прежнего тезиса должны жить в новом источнике, а новый тезис не должен приносить чужих
+            # (был «срок 5 дней», стал «3 дня» — тезис устарел, что бы ни ответила модель; AR2-13, KB3-04).
+            same, reasons = FID.kept_ok(was_thesis, thesis, src + "\n" + title, human)
+            if same:
+                step["kept"] = True
+                thesis = was_thesis
+            else:
+                step["kept_refused"] = reasons
+                changed = (changed + " " if changed else "") + \
+                    "[«без изменений» не принято: " + "; ".join(reasons) + "]"
     elif len(parts) == 1:
         # Тезис — без списка карточек. Замер PRJ-A 22.09.2026: получив список, модель
         # начинает ссылаться на карточки как на источники («согласно …», «описано в …»),
@@ -7073,6 +7113,9 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
             fail_step(step, "свод частей: " + model_fail_note(j), j, key="note")
             return step
         thesis = (j["text"] or "").strip()
+        # Свод написан из выписок, и опора у него — выписки (каждую уже проверил Момус), а не первый кусок
+        # источника: факты второй и третьей части иначе получали «без опоры» и счёт шёл дважды (AR2-14).
+        check_pack = lead + "\n\n".join(notes)
 
     if not thesis or thesis.strip().upper().startswith("ПУСТО"):
         step.update(status="знания нет", note="в тексте одна вёрстка — человеку")
@@ -7087,10 +7130,14 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     if invented:
         step["note"] = (step.get("note", "") + f"; снято выдуманных ссылок: {invented}"
                         ).strip("; ")
+    # Дешёвый первый слой под Момусом: числа, даты и коды тезиса, которых нет ни в источнике, ни в слове
+    # человека. Сами по себе вердикт не меняют (перефраз и вёрстка дают ложные), но попадают в отчёт шага
+    # и не дают пропустить проверку: такой тезис Момус смотрит всегда (KB3-04).
+    gone = FID.unbacked(thesis, src, human, title)
+    if gone:
+        step["unbacked"] = gone[:12]
     if momus and not step.get("kept"):
-        # Итог сверяем с ПЕРВЫМ куском, если текст резали: сверять с обрезком и называть
-        # это проверкой целого было бы той же тихой потерей, только в проверке.
-        mo = run_momus(cfg, parts[0], f"Тезис карточки «{title}»",
+        mo = run_momus(cfg, check_pack, f"Тезис карточки «{title}»",
                        plain_links(thesis, readable=True), call, MOMUS_PREFER)
         step["momus"] = mo
         if mo.get("ok") and not mo.get("clean"):
@@ -7500,9 +7547,12 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
         lead = HUMAN_LEAD.format(text=human) if human else ""
         title = (frontmatter(text).get("title") or os.path.basename(path)[:-3]).strip().strip('"')
         budget = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_MOMUS) + len(thesis) + 400)
-        pack = lead + (chunks(quotes.strip(), budget) or [""])[0]
-        mo = run_momus(cfg, pack, f"Тезис карточки «{title}»",
-                       plain_links(thesis.strip(), readable=True), call, MOMUS_PREFER)
+        # Источник мог не влезть в окно и быть нарезан: утверждение без опоры — то, чего нет ни в одном куске
+        # (раньше смотрели только первый, и ложная пометка карточки из двух-трёх кусков не снималась никогда).
+        packs = [lead + c for c in chunks(quotes.strip(), budget)] or [lead]
+        pack = packs[0]
+        mo = run_momus_chunks(cfg, packs, f"Тезис карточки «{title}»",
+                              plain_links(thesis.strip(), readable=True), call, MOMUS_PREFER)
         if not mo.get("ok"):
             return path, fail_step({}, mo.get("why", "") or "проверка не состоялась",
                                    mo.get("call"), subject=path,
@@ -7605,6 +7655,22 @@ def report_distill(res: dict, apply: bool) -> str:
         L += [f"- {s['card']}: без опоры {s['unsupported']}" for s in flagged[:15]]
         if len(flagged) > 15:
             L.append(f"- … ещё {len(flagged) - 15}")
+        L += [""]
+    # Механический слой под Момусом (BL-KBA-05): что нашёл код, а не модель.
+    refused_keep = [s for s in res["steps"] if s.get("kept_refused")]
+    if refused_keep:
+        L += ["## «Без изменений» не принято", "",
+              "Модель ответила, что тезис верен, но числа, даты или коды разошлись с источником: тезис пересобран и "
+              "прошёл проверку Момусом.", ""]
+        L += [f"- {s['card']}: {'; '.join(s['kept_refused'])[:200]}" for s in refused_keep[:15]]
+        L += [""]
+    unbacked = [s for s in made if s.get("unbacked")]
+    if unbacked:
+        L += ["## Числа, даты и коды без опоры в источнике", "",
+              "Перефраз и вёрстка дают ложные срабатывания, поэтому это подозрение, а не приговор: смотрите глазами.", ""]
+        L += [f"- {s['card']}: {', '.join(s['unbacked'][:6])}" for s in unbacked[:15]]
+        if len(unbacked) > 15:
+            L.append(f"- … ещё {len(unbacked) - 15}")
         L += [""]
     if made:
         L += ["## Переписанные тезисы", ""]
