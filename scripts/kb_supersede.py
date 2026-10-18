@@ -28,7 +28,7 @@ import shutil
 import sys
 
 from aurora_common import frontmatter, rewrite_links, set_field, split_frontmatter
-from card_types import in_base, is_card_path, put_text, run_script, why_refused
+from card_types import is_card_path, leaves_base, put_text, run_script, why_refused
 
 ROOT = "AuroraKnowledgeDB"
 ARCHIVE = os.path.join(ROOT, "_archive")
@@ -195,7 +195,7 @@ def main() -> int:
         if src in refused:
             print(f"  ! {os.path.basename(src)} остаётся на месте: пометка о замене не записана", file=sys.stderr)
             continue
-        if not in_base(os.path.dirname(dst) or "."):
+        if leaves_base(src, os.path.dirname(dst) or "."):
             print(f"  ! {os.path.basename(src)} остаётся на месте: папка архива лежит вне базы знаний (ссылка)", file=sys.stderr)
             stuck.append(src)
             continue

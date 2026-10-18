@@ -63,7 +63,7 @@ MERGE_REPORT: list = []      # (слитые, отказы) — для отчё�
 ARCHIVE = os.path.join(ROOT, "_archive")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
-from card_types import (UnknownCardType, run_script, fit_kind, in_base, put_text, registry_for,  # noqa: E402
+from card_types import (UnknownCardType, run_script, fit_kind, leaves_base, put_text, registry_for,  # noqa: E402
                         render_card, why_refused,
                         section_type_table)   # единый источник «раздел → тип», шапка по шаблону, вход записи
 
@@ -3237,7 +3237,7 @@ def apply_plan(plan: Plan) -> int:
             print(f"  ! пропущено переименование {old} → {new}: файл уже существует", file=sys.stderr)
             skipped += 1
             continue
-        if not in_base(os.path.dirname(new) or "."):
+        if leaves_base(old, os.path.dirname(new) or "."):
             print(f"  ! пропущено переименование {old} → {new}: папка назначения лежит вне базы знаний (ссылка)", file=sys.stderr)
             skipped += 1
             continue
@@ -3259,7 +3259,7 @@ def apply_plan(plan: Plan) -> int:
         # прогоне сливался снова. На живой базе так набралось СОРОК ДЕВЯТЬ одинаковых
         # блоков «Слияние» в одной карточке.
         dst = free_archive_name(dst)
-        if not in_base(os.path.dirname(dst) or "."):
+        if leaves_base(src, os.path.dirname(dst) or "."):
             print(f"  ! {src} остаётся на месте: папка архива лежит вне базы знаний (ссылка)", file=sys.stderr)
             skipped += 1
             continue

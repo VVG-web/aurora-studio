@@ -2585,6 +2585,12 @@ def in_base(folder: str) -> bool:
     return real == base or real.startswith(base + os.sep)
 
 
+def leaves_base(src: str, dst_folder: str) -> bool:
+    """Файл `src` лежит в базе знаний, а папка назначения — нет (после разворота ссылок). Файл вне базы (шаблон, зеркало)
+    ограничений не получает: правило охраняет карточки."""
+    return kb_location(src) is not None and not in_base(dst_folder)
+
+
 def is_card_path(path: str) -> bool:
     """Файл — карточка базы: лежит в разделе под `AuroraKnowledgeDB/` и не служебный (`index.md`, `meta/…`).
     Так решает вход записи, куда можно писать; скрипты, чьи правки идут и по карточкам, и по прочим файлам проекта

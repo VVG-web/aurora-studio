@@ -2693,7 +2693,7 @@ def test_phase_one_docs_name_the_card_templates(_t):
     skill = (KIT / "skills/aurora-vault/SKILL.md").read_text(encoding="utf-8")
     cards_row = next(line for line in skill.splitlines() if line.startswith("| `kb:cards` |"))
     assert cards_row.rstrip().endswith("`references/maintenance.md` |"), "строка kb:cards отсылает не в maintenance.md"
-    assert "## Шаблоны карточек (`kb:cards`; в составе `kb:lint`, только предупреждения)" in \
+    assert "## Шаблоны карточек (`kb:cards`; в составе `kb:lint`)" in \
         (KIT / "skills/aurora-vault/references/maintenance.md").read_text(encoding="utf-8")
     for rel in ("docs/lifecycle.md", "docs/en/lifecycle.md"):
         assert "card_types.py" in (KIT / rel).read_text(encoding="utf-8"), f"{rel}: линтер шаблонов карточек не назван"
@@ -4500,12 +4500,13 @@ def test_cards_i18n_catalogues_are_complete(tmp: Path):
     for prefix, tails in need.items():
         for tail in tails:
             assert prefix + tail in ru and prefix + tail in en, f"нет {prefix + tail}"
-    # выключатель типа обещает ровно то, что делает код: проверка и разбор ответа; создание карточек пока не останавливается
-    for lang, cat, honest in (("ru", ru, ("создание карточек", "не останавлива")), ("en", en, ("creating cards", "stop"))):
+    # выключатель типа обещает ровно то, что делает код: проверка, разбор ответа и разбор источников (раздел выключенного типа
+    # в перечень не входит, новых карточек такого типа нет)
+    for lang, cat, honest in (("ru", ru, ("разбор", "не создаёт")), ("en", en, ("parsing", "new cards"))):
         for key in ("cardtypes.about", "cardtypes.on_hint"):
             assert all(w in cat[key] for w in honest), f"{lang} {key}: нет оговорки о создании карточек"
         assert "kb:cards --check" in cat["cardtypes.about"], f"{lang}: about не называет, чем выключение проверяется"
-        for promise in ("запрещён в проекте", "forbidden in the project", "не предлагает", "does not offer"):
+        for promise in ("запрещён в проекте", "forbidden in the project"):
             assert promise not in cat["cardtypes.about"] + cat["cardtypes.on_hint"], f"{lang}: обещание «{promise}» без кода за ним"
     # каждый код проверки инструкции, который знает движок, назван в каталоге
     sample = {"too-long", "steps-missing", "no-answer-format", "empty"}
@@ -4869,10 +4870,10 @@ def test_cards_panel_is_documented(_t):
     for rel, heading, tail_head, words in (
             ("docs/card-templates.md", "\n### Настройки в панели: «Настройки проекта → Типы карточек»\n", "## 10. Что будет",
              ("`cards:`", "`Prompts/KB_classify.md`", "409", "«Оставить моё»", "`V-REG-1`", "`kb:cards --stats`", "`aurora.update_ignore.txt`",
-              "создание карточек и запросы встроенного агента")),
+              "разбор и запросы встроенного агента")),
             ("docs/en/card-templates.md", '\n### Panel settings: "Project settings → Card types"\n', "## 10. What the next releases bring",
              ("`cards:`", "`Prompts/KB_classify.md`", "409", "keep mine", "`V-REG-1`", "`kb:cards --stats`", "`aurora.update_ignore.txt`",
-              "creating cards and the built-in agent's requests"))):
+              "parsing and the built-in agent's requests"))):
         text = (KIT / rel).read_text(encoding="utf-8")
         assert text.count(heading) == 1, f"{rel}: нет подраздела про панель"
         section = text.split(heading)[1].split("\n## ")[0]
