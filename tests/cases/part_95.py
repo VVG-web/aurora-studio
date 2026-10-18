@@ -213,19 +213,19 @@ def test_path_check_limit_of_259_on_windows_is_exact(tmp: Path):
     """Граница 259/260/261: файл ровно в предел проходит, на знак длиннее не поместится; корень Windows — допущение."""
     pb = _pb()
     root = _project(tmp)
-    roots = _win(60)
-    base = 60 + 1 + len("Sources/Confluence")
+    roots = _win(200)               # длинный допущенный корень: сами файлы на диске остаются короткими
+    base = 200 + 1 + len("Sources/Confluence")
     (root / "Sources" / "Confluence" / ("a" * (259 - base - 1 - 3) + ".md")).write_text("x", encoding="utf-8")
     ok = pb.assess(str(root), roots=roots, current="macos")
-    assert not [f for f in ok.findings if f.system == "Windows"], [f.as_dict() for f in ok.findings]
+    assert not [f for f in ok.findings if f.extra.get("effect") == "files"], ok.findings
     for extra in (1, 2):
         (root / "Sources" / "Confluence" / ("b" * (259 - base - 1 - 3 + extra) + ".md")).write_text("x", encoding="utf-8")
         rep = pb.assess(str(root), roots=roots, current="macos")
-        hit = [f for f in rep.findings if f.kind == "path" and f.system == "Windows"]
+        hit = [f for f in rep.findings if f.kind == "path" and f.extra.get("effect") == "files"]
         assert len(hit) == 1 and hit[0].count == extra and hit[0].length == 259 + extra, \
-            (extra, [f.as_dict() for f in rep.findings])
+            (extra, rep.findings)
         assert hit[0].limit == 259 and hit[0].level == "fail" and hit[0].extra["assumed"] is True
-    assert hit[0].line == "sources: Confluence → path" and hit[0].root_len == 60, hit[0]
+    assert hit[0].line == "sources: Confluence → path" and hit[0].root_len == 200, hit[0]
 
 
 @test
@@ -233,8 +233,8 @@ def test_path_check_folder_limit_of_247_on_windows(tmp: Path):
     """Папку Windows без длинных путей создаёт до 247 знаков: файл внутри короткий, а папка уже не создаётся."""
     pb = _pb()
     root = _project(tmp)
-    roots = _win(40)
-    base = 40 + 1 + len("Sources/Confluence")
+    roots = _win(190)
+    base = 190 + 1 + len("Sources/Confluence")
     deep = root / "Sources" / "Confluence" / ("d" * (247 - base - 1))
     deep.mkdir()
     (deep / "a.md").write_text("x", encoding="utf-8")
@@ -244,7 +244,8 @@ def test_path_check_folder_limit_of_247_on_windows(tmp: Path):
     (deeper / "a.md").write_text("x", encoding="utf-8")
     dirs = [f for f in pb.assess(str(root), roots=roots, current="macos").findings if f.kind == "dir"]
     assert len(dirs) == 1 and dirs[0].length == 248 and dirs[0].limit == 247 and dirs[0].count == 1, dirs
-    assert not [f for f in pb.assess(str(root), roots=roots, current="macos").findings if f.kind == "path"]
+    assert not [f for f in pb.assess(str(root), roots=roots, current="macos").findings
+                if f.kind == "path" and f.extra.get("effect") == "files"]
 
 
 class _Who:
@@ -252,19 +253,49 @@ class _Who:
 
 
 @test
-def test_path_check_names_count_utf16_on_windows_and_bytes_elsewhere(tmp: Path):
-    """Имя: 255 знаков на Windows, 255 БАЙТ на macOS и Linux — кириллица 127 букв проходит, 128 нет."""
+def test_path_check_names_count_utf16_on_windows_and_macos_and_bytes_on_linux(tmp: Path):
+    """Имя: 255 знаков UTF-16 — Windows и macOS, 255 БАЙТ — Linux: кириллица 127 букв проходит, 128 — только Linux."""
     pb = _pb()
     models = pb.root_models("/p", current="macos")
 
     def flagged(name):
         t = pb.Tally()
         t.add(name, name, False)
-        return {f.system: f for f in pb._names(_Who(), t.name_w, t.name_b, models)}
-    assert not flagged("a" * 255) and "Windows" in flagged("a" * 256)
+        return {f.system_id: f for f in pb._names(_Who(), t.name_w, t.name_b, models)}
+    assert not flagged("a" * 255) and list(flagged("a" * 256)) == ["all"], "256 знаков не поместятся нигде"
     assert not flagged("я" * 127), "127 букв — 254 байта"
-    unix = flagged("я" * 128)           # 128 знаков для Windows ещё норма, 256 байт для macOS и Linux — нет
-    assert list(unix) == ["macOS и Linux"] and unix["macOS и Linux"].length == 256, unix
+    linux = flagged("я" * 128)          # 128 знаков для Windows и macOS норма, 256 байт для Linux — нет
+    assert list(linux) == ["linux"] and linux["linux"].length == 256 and linux["linux"].system == "Linux", linux
+    assert not flagged("я" * 128)["linux"].system_id == "all"
+    both = flagged("я" * 256)
+    assert list(both) == ["all"] and both["all"].system == "Windows, macOS и Linux" and both["all"].length == 256, both
+    assert "256 байт при пределе 255 на Linux" in pb.describe(linux["linux"]), pb.describe(linux["linux"])
+    assert "256 знаков при пределе 255 на Windows, macOS и Linux" in pb.describe(both["all"])
+
+
+def _files_of(pb, root: Path, roots: dict, system: str) -> list:
+    """Находки о файлах зеркала (не о худшем случае) для одной системы."""
+    return [f for f in pb.assess(str(root), roots=roots, current="windows").findings
+            if f.extra.get("effect") == "files" and f.system_id == system]
+
+
+@test
+def test_path_check_limits_of_macos_1023_and_linux_4095_are_exact(tmp: Path):
+    """Границы PATH_MAX: macOS 1023/1024, Linux 4095/4096 (байты); файл внутри короткий, остальные корни короткие."""
+    pb = _pb()
+    for system, root_len, limit in (("macos", 900, 1023), ("linux", 4000, 4095)):
+        (tmp / system).mkdir()
+        root = _project(tmp / system)
+        mirror = root / "Sources" / "Confluence"
+        other = {s: "C:\\w" if s == "windows" else "/o" for s in ("windows", "macos", "linux")}
+        roots = dict(other, **{system: "/" + "x" * (root_len - 1)})
+        room = limit - (root_len + 1 + len("Sources/Confluence")) - 1        # знаков в имени файла: ровно предел
+        (mirror / ("a" * (room - 3) + ".md")).write_text("x", encoding="utf-8")
+        assert not _files_of(pb, root, roots, system), system
+        (mirror / ("b" * (room - 2) + ".md")).write_text("x", encoding="utf-8")                     # на знак больше
+        hit = _files_of(pb, root, roots, system)
+        assert len(hit) == 1 and (hit[0].length, hit[0].limit, hit[0].count) == (limit + 1, limit, 1), (system, hit)
+        assert f"{limit + 1} байт при пределе {limit}" in pb.describe(hit[0]), pb.describe(hit[0])[:300]
 
 
 @test
@@ -276,11 +307,11 @@ def test_path_check_names_each_confluence_root_row_with_real_files(tmp: Path):
         (root / "Sources" / "Confluence" / name).mkdir()
         (root / "Sources" / "Confluence" / name / "index.md").write_text("x", encoding="utf-8")
     _state(root, [("111", "Страница верхнего уровня/index.md"), ("222", "Подсистема-1/index.md")])
-    long_page = root / "Sources" / "Confluence" / "Страница верхнего уровня" / ("я" * 120 + ".md")
+    long_page = root / "Sources" / "Confluence" / "Страница верхнего уровня" / ("я" * 40 + ".md")
     long_page.write_text("x", encoding="utf-8")
-    rep = pb.assess(str(root), roots=_win(110), current="macos")
-    win = [f for f in rep.findings if f.system == "Windows" and f.kind == "path"]
-    assert [f.key for f in win] == ["root:111"], [f.as_dict() for f in rep.findings]
+    rep = pb.assess(str(root), roots=_win(175), current="macos")
+    win = [f for f in rep.findings if f.system == "Windows" and f.kind == "path" and f.extra.get("effect") == "files"]
+    assert [f.key for f in win] == ["root:111"], rep.findings
     assert win[0].line == "atlassian → confluence → sync_roots → строка 1" and win[0].cfg_line == 17, win[0]
     assert "Страница верхнего уровня" in win[0].sample and win[0].count == 1
     assert not pb.assess(str(root), roots=_win(40), current="macos").findings
@@ -293,7 +324,7 @@ def test_path_check_worst_case_of_a_confluence_tree_before_the_first_sync(tmp: P
     from aurora_common import PATH_CHARS
     root = _project(tmp)
     safe = pb.assess(str(root), roots=_win(58), current="macos")        # 58 + 1 + 200 = 259: помещается
-    assert not [f for f in safe.findings if f.kind == "path"], [f.as_dict() for f in safe.findings]
+    assert not [f for f in safe.findings if f.kind == "path"], safe.findings
     risky = pb.assess(str(root), roots=_win(59), current="macos")      # 260: нет
     hit = [f for f in risky.findings if f.level == "risk"]
     assert len(hit) == 1 and hit[0].length == 59 + 1 + PATH_CHARS and hit[0].line == "sources: Confluence → path", hit
@@ -334,7 +365,7 @@ def test_path_check_prefix_that_leaves_no_room_fails_for_any_source(tmp: Path):
     root = _project(tmp, cfg)
     rep = pb.assess(str(root), roots=_win(150), current="macos")
     hit = [f for f in rep.findings if f.key == "artifacts:ac"]
-    assert hit and all(f.level == "fail" for f in hit), [f.as_dict() for f in rep.findings]
+    assert hit and all(f.level == "fail" for f in hit), rep.findings
     assert hit[0].kind in ("prefix", "dir") and hit[0].line == "artifacts → ac → out" and hit[0].limit in (247, 259)
     assert hit[0].cfg_line == 36, hit[0]
     rows = {f.key: f for f in pb.assess(str(root), roots=_win(240), current="macos").findings}
@@ -365,15 +396,15 @@ def test_path_check_ceiling_marks_the_result_partial_and_stays_fast(tmp: Path):
     mirror = root / "Sources" / "Confluence"
     for i in range(3000):
         (mirror / f"p{i:04d}.md").write_text("x", encoding="utf-8")
-    (mirror / ("z" * 200 + ".md")).write_text("x", encoding="utf-8")
+    (mirror / ("z" * 60 + ".md")).write_text("x", encoding="utf-8")
     t0 = time.process_time()
-    rep = pb.assess(str(root), roots=_win(80), current="macos")
+    rep = pb.assess(str(root), roots=_win(200), current="macos")
     assert time.process_time() - t0 < 5, time.process_time() - t0         # потолок с запасом: CI медленнее машины
     assert rep.files >= 3001 and not rep.partial
     saved = pb.SCAN_FILES_MAX
     pb.SCAN_FILES_MAX = 100
     try:
-        part = pb.assess(str(root), roots=_win(80), current="macos")
+        part = pb.assess(str(root), roots=_win(200), current="macos")
     finally:
         pb.SCAN_FILES_MAX = saved
     assert part.partial and part.files <= 100, part.as_dict()
@@ -386,18 +417,22 @@ def test_path_check_messages_name_the_line_the_limit_and_what_will_not_load(tmp:
     """Сообщение называет строку конфига, длину и предел, систему, корень-допущение и последствие."""
     pb = _pb()
     root = _project(tmp)
-    base = 60 + 1 + len("Sources/Confluence")
+    base = 200 + 1 + len("Sources/Confluence")
     (root / "Sources" / "Confluence" / ("b" * (259 - base - 1 - 3 + 2) + ".md")).write_text("x", encoding="utf-8")
-    rep = pb.assess(str(root), roots=_win(60), current="macos")
+    rep = pb.assess(str(root), roots=_win(200), current="macos")
     msg = pb.describe(rep.findings[0])
-    for need in ("sources: Confluence → path", "261 знаков", "предел", "259", "Windows", "допущение", "не включены",
-                 "Filename too long", "C:\\" + "r" * 57, "Пример: Sources/Confluence/"):
+    for need in ("sources: Confluence → path (aurora.config.yaml, строка 7)", "261 знаков", "предел", "259", "Windows",
+                 "допущение", "не включены", "Filename too long", "C:\\" + "r" * 197, "Пример: Sources/Confluence/",
+                 "LongPathsEnabled"):
         assert need in msg, (need, msg)
-    assert pb.hint(rep) == "длинные пути: не всё будет загружено — sources: Confluence → path", pb.hint(rep)
+    assert pb.hint(rep).startswith("длинные пути: не всё будет загружено — sources: Confluence → path"), pb.hint(rep)
     out = pb.render(rep)
     assert "Запуск возможен, но не всё будет загружено" in out and "✗ sources: Confluence → path" in out, out
-    unix = pb.Finding("k", "paths → x", "Папка", "macOS и Linux", "name", "fail", 256, 255, sample="я" * 128)
+    unix = pb.Finding("k", "paths → x", "Папка", "Linux", "name", "fail", 256, 255, sample="я" * 128, system_id="linux")
     assert "256 байт при пределе 255" in pb.describe(unix) and "Сократите имя" in pb.describe(unix)
+    assert "значение по умолчанию" in pb.describe(unix), "строки в файле нет — сказано, что значение по умолчанию"
+    assert set(rep.findings[0].api()) >= {"key", "where", "system", "kind", "level", "length", "limit", "count"}
+    assert "line" not in rep.findings[0].api() and rep.findings[0].api()["system"] == "windows"
     (tmp / "two").mkdir()
     risk = pb.assess(str(_project(tmp / "two")), roots=_win(59), current="macos")
     assert "в худшем случае" in pb.describe(risk.findings[0]) and "страницы глубже запаса" in pb.describe(risk.findings[0])
@@ -416,3 +451,102 @@ def test_path_check_report_is_quiet_when_everything_fits(tmp: Path):
     rep.partial = True
     assert "проверено частично" in pb.render(rep)
     assert pb.main.__name__ == "main" and pb.__doc__.count("kit:paths") == 1
+
+
+# ------------------------------------------------------------------ замечания независимого просмотра
+
+@test
+def test_path_check_survives_odd_configs_and_unreadable_folders(tmp: Path):
+    """Конфиг с CRLF и табами, пункты-отображения вместо списков, закрытая папка: без падения и без ложного «всё хорошо»."""
+    pb = _pb()
+    crlf = CONFIG.replace("\n", "\r\n").replace("    path: Sources/Web", "\tpath: Sources/Web")
+    items = pb.config_items(crlf)
+    assert items[("paths", "knowledge_db")][0] == "AuroraKnowledgeDB" and items[("sources", 0, "path")][0] == "Sources/Confluence"
+    odd = ("atlassian:\n  confluence:\n    sync_roots:\n      page_id: \"5\"\nweb:\n  pages:\n    url: https://example.org/x\n"
+           "paths:\n  extra_structure_dirs:\n    dir: Artifacts/x\n")
+    root = _project(tmp, odd)
+    rep = pb.assess(str(root), roots=_win(240), current="macos")           # раньше — TypeError на сложении с ключом
+    assert isinstance(rep.findings, list)
+    comment = pb.config_items("paths:\n  extra_structure_dirs: [a/b, \"c d\"]  # см. [1]\n")
+    assert comment[("paths", "extra_structure_dirs", 1)][0] == "c d" and ("paths", "extra_structure_dirs", 2) not in comment, comment
+    if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() != 0:
+        root2 = _project(tmp / "ro") if (tmp / "ro").mkdir() is None else None
+        closed = root2 / "Sources" / "Confluence" / "закрытая"
+        closed.mkdir()
+        os.chmod(closed, 0)
+        try:
+            rep2 = pb.assess(str(root2), roots=_win(240), current="macos")
+        finally:
+            os.chmod(closed, 0o755)
+        assert rep2.partial, "папку не открыли — проверено частично"
+        assert not [f for f in rep2.findings if f.level == "risk"], "по недочитанной папке худший случай не считаем"
+
+
+@test
+def test_path_check_does_not_invent_a_risk_when_the_scan_stopped_early(tmp: Path):
+    """Потолок кончился на первом зеркале — следующее не считается «пустым»: ложного риска нет."""
+    pb = _pb()
+    root = _project(tmp)
+    for i in range(5):
+        (root / "Sources" / "Confluence" / f"p{i}.md").write_text("x", encoding="utf-8")
+    (root / "Sources" / "JIRA" / "PRJ-1.md").write_text("x", encoding="utf-8")
+    saved = pb.SCAN_FILES_MAX
+    pb.SCAN_FILES_MAX = 3
+    try:
+        rep = pb.assess(str(root), roots=_win(240), current="macos")
+    finally:
+        pb.SCAN_FILES_MAX = saved
+    assert rep.partial and not [f for f in rep.findings if f.extra.get("effect") in ("tree", "issue")], \
+        rep.findings
+
+
+@test
+def test_path_check_risk_of_a_confluence_tree_needs_a_root_to_sync(tmp: Path):
+    """Зеркало Confluence без корней синка не грузится — тревоги «в худшем случае» по нему нет; корень есть — есть."""
+    pb = _pb()
+    empty = CONFIG.replace('      - page_id: "111"\n        title: "Страница верхнего уровня"\n', "") \
+                  .replace('      - page_id: "222"\n        title: "Подсистема-1"\n', "").replace("sync_roots:\n", "sync_roots: []\n")
+    root = _project(tmp, empty)
+    assert not [f for f in pb.assess(str(root), roots=_win(150), current="macos").findings if f.extra.get("effect") == "tree"]
+    (tmp / "two").mkdir()
+    full = _project(tmp / "two")
+    assert [f for f in pb.assess(str(full), roots=_win(150), current="macos").findings if f.extra.get("effect") == "tree"]
+    # зеркало вне проекта: движок считает запас от стандартной папки (19 знаков), а не от корня проекта
+    outside = CONFIG.replace("path: Sources/Confluence", "path: D:/" + "s" * 70 + "/Confluence")
+    (tmp / "three").mkdir()
+    rep = pb.assess(str(_project(tmp / "three", outside)), roots=_win(150), current="macos")
+    risk = [f for f in rep.findings if f.extra.get("effect") == "tree"]
+    base = len("D:\\" + "s" * 70 + "\\Confluence")
+    assert len(risk) == 1 and risk[0].system_id == "windows" and risk[0].length == base + 1 + (200 - 19), risk
+
+
+@test
+def test_path_check_web_attachments_off_means_no_attachment_risk(tmp: Path):
+    """Вложения сайтов выключены (`web.assets: false`) — их хвост пути не считается; включены — считается."""
+    pb = _pb()
+    base = 166 + 1 + len("Sources/Web")               # хвост вложения 82 знака: ровно 260; страница (73) помещается
+    off = CONFIG.replace("web:\n  pages:", "web:\n  assets: false\n  pages:")
+    root = _project(tmp, off)
+    assert not [f for f in pb.assess(str(root), roots=_win(166), current="macos").findings if f.key.startswith("sources:Web")]
+    (tmp / "on").mkdir()
+    on = _project(tmp / "on")
+    hit = [f for f in pb.assess(str(on), roots=_win(166), current="macos").findings if f.key == "sources:Web"]
+    assert hit and hit[0].extra["effect"] == "assets" and hit[0].length == base + 1 + 7 + 74, hit
+    assert pb.WEB_FILES == "_files"
+
+
+@test
+def test_path_check_on_windows_uses_the_real_root_and_the_advice_follows_the_cause(tmp: Path):
+    """Машина Windows: корень настоящий, не допущение; длинную папку, заданную в конфиге, советуют сократить в конфиге."""
+    pb = _pb()
+    root = _project(tmp)
+    (root / "Sources" / "Confluence" / ("q" * 120 + ".md")).write_text("x", encoding="utf-8")
+    rep = pb.assess(str(root), roots=_win(150), current="windows")
+    hit = [f for f in rep.findings if f.kind == "path"]
+    assert hit and hit[0].extra["assumed"] is False and rep.current == "windows", rep.findings
+    assert "допущение" not in pb.describe(hit[0]) and "Windows: корень проекта C:\\rr" in pb.render(rep)
+    cfg = CONFIG.replace("out: Artifacts/ac", "out: " + "/".join(["очень-длинная-папка"] * 5))
+    (tmp / "b").mkdir()
+    folder = [f for f in pb.assess(str(_project(tmp / "b", cfg)), roots=_win(150), current="macos").findings
+              if f.key == "artifacts:ac"]
+    assert folder and "Сократите путь папки в конфиге" in pb.describe(folder[0]) and "LongPathsEnabled" not in pb.describe(folder[0])

@@ -6,9 +6,11 @@
 
   Windows  — весь путь до 259 знаков (MAX_PATH 260 вместе с завершающим нулём), папка — до 247,
              имя — до 255 знаков UTF-16; это, пока в системе не включены длинные пути;
-  macOS    — путь до 1023 байт (PATH_MAX 1024 с нулём), имя — до 255 БАЙТ UTF-8: кириллица
-             занимает два байта на букву, то есть около 127 букв;
-  Linux    — путь до 4095 байт, имя — до 255 байт.
+  macOS    — путь до 1023 байт (PATH_MAX 1024 с нулём), имя — до 255 знаков UTF-16, как у Windows
+             (проверено на APFS: имя из 255 «я» создаётся, из 256 — нет);
+  Linux    — путь до 4095 байт, имя — до 255 БАЙТ UTF-8: кириллица занимает два байта на букву,
+             то есть около 127 букв. Имя, которое macOS создал, а Linux не примет, ломает
+             `git clone` на Linux, поэтому байтовый предел проверяется тоже, и назван Linux.
 
 Корень проекта у людей разный: на Windows у коллеги он обычно `C:\\Users\\<имя>\\Documents\\…`,
 длиннее, чем на Mac владельца. Поэтому проверка считает не только эту машину, но и
@@ -47,9 +49,10 @@ WIN_DIR = 247           # папку без длинных путей созда
 WIN_NAME = 255          # одно имя, знаки UTF-16
 MAC_PATH = 1023         # PATH_MAX 1024 включает завершающий нуль
 LIN_PATH = 4095
-NAME_BYTES = 255        # одно имя macOS и Linux, байты UTF-8
+NAME_BYTES = 255        # одно имя Linux, байты UTF-8
+# Имя: Windows и macOS считают знаки UTF-16 (`name_units`), Linux — байты UTF-8 (`name_bytes`).
 LIMITS = {"windows": {"path": WIN_PATH, "dir": WIN_DIR, "name": WIN_NAME},
-          "macos": {"path": MAC_PATH, "dir": MAC_PATH, "name": NAME_BYTES},
+          "macos": {"path": MAC_PATH, "dir": MAC_PATH, "name": WIN_NAME},
           "linux": {"path": LIN_PATH, "dir": LIN_PATH, "name": NAME_BYTES}}
 
 # Корень проекта, каким его считает проверка, когда система — не эта машина. Константа кода,
@@ -59,7 +62,10 @@ MAC_ASSUMED_ROOT = "/Users/username/Documents/Projects"
 LIN_ASSUMED_ROOT = "/home/username/Projects"
 ASSUMED_BASE = {"windows": WIN_ASSUMED_ROOT, "macos": MAC_ASSUMED_ROOT, "linux": LIN_ASSUMED_ROOT}
 
-SERVICE_FILES = ("sync_state.md", "update_log.md")   # состояние синка — не страница
+try:
+    from sources_core import SERVICE_RE         # служебные файлы зеркала — тот же список, что у синка и аудита
+except Exception:  # noqa: BLE001 — нет общей части синка: хотя бы состояние синка
+    SERVICE_RE = re.compile(r"(sync_state|update_log)")
 SCAN_FILES_MAX = 60000  # файлов за одну проверку, все папки вместе; дальше — «проверено частично»
 
 
@@ -68,7 +74,9 @@ def current_system() -> str:
 
 
 def measure(system: str, text: str) -> int:
-    """Длина строки в единицах системы: знаки UTF-16 у Windows, байты UTF-8 у macOS и Linux."""
+    """Длина строки в единицах системы: знаки UTF-16 у Windows, байты UTF-8 у macOS и Linux.
+
+    Это единицы ПУТИ. Имя считается иначе: знаки UTF-16 у Windows и macOS, байты — только у Linux."""
     if text.isascii():
         return len(text)
     if system == "windows":
@@ -98,7 +106,7 @@ def root_models(root: str, current: str | None = None, roots: dict | None = None
 
 # ------------------------------------------------------------------ что нашли
 
-@dataclass
+@dataclass(repr=False)
 class Finding:
     """Одна строка конфига, у которой на какой-то системе не хватает места.
 
@@ -106,11 +114,13 @@ class Finding:
     по правилам именования выгрузки, на диске его может ещё не быть. `kind`: `path` — путь
     файла, `dir` — путь папки (Windows создаёт папку по более строгому пределу), `name` — одно
     имя, `prefix` — папка источника настолько длинна, что в неё не поместится даже самый короткий файл.
+    `system`: Windows | macOS | Linux | «Windows, macOS и Linux» (имя в знаках UTF-16: не поместится нигде);
+    `system_id`: windows | macos | linux | all.
     """
     key: str                # строка для формы: `root:<page_id>`, `web:<адрес>`, `sources:<id>`, `path:<ключ>`…
     line: str               # понятное название строки конфига
     source: str             # источник: Confluence, Web, Jira, База знаний, Папка…
-    system: str             # Windows | macOS | Linux | macOS и Linux
+    system: str             # Windows | macOS | Linux | Windows, macOS и Linux
     kind: str               # path | dir | name | prefix
     level: str              # fail | risk
     length: int             # посчитанная длина
@@ -122,6 +132,11 @@ class Finding:
     cfg_line: int = 0       # строка aurora.config.yaml; 0 — не нашлась
     extra: dict = field(default_factory=dict)
     where: list = field(default_factory=list)   # та же строка частями без слов: ключи конфига и номера пунктов с нуля
+    system_id: str = ""     # windows | macos | linux | all (имя в знаках UTF-16: везде) — для страницы, без слов
+
+    def __repr__(self) -> str:      # коротко: корень в сотни знаков не должен забивать вывод ошибок
+        return (f"Finding({self.key}, {self.system_id}, {self.kind}, {self.level}, "
+                f"{self.length}/{self.limit}, n={self.count})")
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -131,6 +146,7 @@ class Finding:
         out = asdict(self)
         out.pop("line", None)
         out.pop("source", None)
+        out["system"] = out.pop("system_id")
         return out
 
 
@@ -163,7 +179,7 @@ class Tally:
             self.dw[w] += 1
             return
         self.files += 1
-        self.pages += 1 if name.endswith(".md") and not name.startswith(".") and name not in SERVICE_FILES else 0
+        self.pages += 1 if name.endswith(".md") and not name.startswith(".") and not SERVICE_RE.search(name) else 0
         self.w[w] += 1
         self.b[b] += 1
         if w > self.long_w[0]:
@@ -205,7 +221,7 @@ def owner_top(name: str) -> str:
 
 
 def scan(folder: str, tops: bool = False, left: list | None = None) -> Scan:
-    """Обойти папку и посчитать длины. Ссылки не раскрываются, порядок обхода — по имени.
+    """Обойти папку и посчитать длины. Ссылки не раскрываются; обход детерминирован (имена по порядку).
 
     `left` — общий счётчик оставшихся файлов (`[число]`) на все папки одной проверки: кончился —
     обход останавливается, результат помечен `partial`. `tops` — отдельно по первому уровню."""
@@ -272,6 +288,8 @@ def _inline_items(text: str) -> list:
                 quote = ""
             else:
                 cur += ch
+        elif ch == "]":
+            break               # список кончился: всё дальше (комментарий) не пункты
         elif ch in "\"'":
             quote = ch
         elif ch == ",":
@@ -330,7 +348,7 @@ def config_items(text: str) -> dict:
         if value[:1] in ("|", ">"):
             block = indent
         elif value.startswith("["):
-            for n, item in enumerate(_inline_items(value[1:value.rfind("]")] if "]" in value else value[1:])):
+            for n, item in enumerate(_inline_items(value[1:])):
                 out[path + (n,)] = (_scalar(item), no)
         elif value and not value.startswith("#"):
             out[path] = (_scalar(value), no)
@@ -359,6 +377,7 @@ class Res:
     cfg_line: int = 0
     rows: list = field(default_factory=list)    # строки внутри источника: корни Confluence, адреса сайта
     where: tuple = ()
+    extra: dict = field(default_factory=dict)       # особенности источника: вложения сайтов включены ли
 
 
 def abs_prefix(system: str, root: str, rel: str):
@@ -439,39 +458,43 @@ def resources(root: str, text: str, cfg: dict) -> list:
         value, line = get("paths", key)
         if value and (kind, value.strip("/").casefold()) not in seen:
             out.append(Res(f"path:{key}", f"paths → {key}", name, kind, value, line, where=("paths", key)))
-    mirrors = {r.kind: r for r in out if r.kind in ("confluence", "web")}
+    mirrors: dict = {}
+    for r in out:
+        if r.kind in ("confluence", "web"):
+            mirrors.setdefault(r.kind, r)           # строки внутри источника — первому зеркалу вида
     if "confluence" in mirrors:
         for path, (page_id, line) in cfg.items():
-            if len(path) >= 3 and path[-1] == "page_id" and path[-3] == "sync_roots" and page_id.isdigit():
+            if (len(path) >= 3 and path[-1] == "page_id" and path[-3] == "sync_roots" and page_id.isdigit()
+                    and isinstance(path[-2], int)):
                 title = cfg.get(path[:-1] + ("title",), ("", 0))[0]
                 mirrors["confluence"].rows.append({
                     "key": f"root:{page_id}", "id": page_id, "title": title, "cfg_line": line,
                     "where": ["atlassian", "confluence", "sync_roots", path[-2]],
                     "line": f"atlassian → confluence → sync_roots → строка {path[-2] + 1}"})
     if "web" in mirrors:
+        mirrors["web"].extra["assets"] = get("web", "assets")[0].lower() not in ("false", "no", "нет")
         for path, (url, line) in cfg.items():
-            if path[:2] == ("web", "pages") and path[-1] == "url" and len(path) == 4:
+            if path[:2] == ("web", "pages") and path[-1] == "url" and len(path) == 4 and isinstance(path[2], int):
                 mirrors["web"].rows.append({
                     "key": f"web:{url}", "id": url, "title": "", "cfg_line": line,
                     "where": ["web", "pages", path[2]], "line": f"web → pages → строка {path[2] + 1}"})
     value, line = get("paths", "knowledge_db")
     out.append(Res("path:knowledge_db", "paths → knowledge_db", "База знаний", "kb",
                    value or "AuroraKnowledgeDB", line, where=("paths", "knowledge_db")))
-    slug = get("project", "slug")[0]
+    # `{project}` в пути отчёта движок подставляет именем проекта без пробелов (`reports/analyst/paths.py`)
+    slug = "_".join((get("project", "slug")[0] or get("project", "name")[0] or "project").split())
     for path, (value, line) in cfg.items():
         if not value:
             continue
-        if path[:2] == ("paths", "extra_structure_dirs") and len(path) == 3:
+        if path[:2] == ("paths", "extra_structure_dirs") and len(path) == 3 and isinstance(path[2], int):
             out.append(Res(f"extra:{value}", f"paths → extra_structure_dirs → строка {path[2] + 1}",
                            "Папка проекта", "free", value, line, where=("paths", "extra_structure_dirs", path[2])))
         elif len(path) == 3 and path[0] == "artifacts" and path[2] == "out":
             out.append(Res(f"artifacts:{path[1]}", f"artifacts → {path[1]} → out", "Артефакты", "free", value, line,
                            where=("artifacts", path[1], "out")))
-        elif len(path) == 3 and path[0] == "reports" and path[2] in ("output", "data_dir"):
-            file_out = path[2] == "output"
+        elif len(path) == 3 and path[0] == "reports" and path[2] == "output":
             out.append(Res(f"reports:{path[1]}:{path[2]}", f"reports → {path[1]} → {path[2]}", "Отчёты",
-                           "file" if file_out else "free", value.replace("{project}", slug or "project"), line,
-                           where=("reports", path[1], path[2])))
+                           "file", value.replace("{project}", slug), line, where=("reports", path[1], path[2])))
     return out
 
 
@@ -483,7 +506,8 @@ class Report:
     models: dict            # система -> корень проекта, от которого считали
     resources: int = 0      # сколько строк конфига проверено
     files: int = 0          # сколько файлов просмотрено в зеркалах и папках
-    partial: bool = False   # обход упёрся в потолок: проверено частично
+    partial: bool = False   # обход упёрся в потолок или папку не открыли: проверено частично
+    current: str = ""       # система этой машины: её корень настоящий, остальные — допущения
 
     def keys(self) -> list:
         """Строки конфига с находками — без повторов, в порядке находок."""
@@ -492,7 +516,7 @@ class Report:
     def as_dict(self) -> dict:
         return {"findings": [f.as_dict() for f in self.findings], "lines": len(self.keys()),
                 "models": self.models, "resources": self.resources, "files": self.files,
-                "partial": self.partial}
+                "partial": self.partial, "current": self.current}
 
     def api(self) -> dict:
         """Ответ панели: те же находки без русских подписей."""
@@ -514,7 +538,7 @@ def _find(owner, system: str, models: dict, **kw) -> Finding:
     extra = kw.pop("extra", {})
     return Finding(key=owner.key, line=owner.line, source=owner.source, system=LABEL[system],
                    root=models[system], root_len=measure(system, models[system]),
-                   cfg_line=owner.cfg_line, extra=extra, where=list(owner.where), **kw)
+                   cfg_line=owner.cfg_line, extra=extra, where=list(owner.where), system_id=system, **kw)
 
 
 def _facts(owner, tally: Tally, system: str, models: dict, base: int, rel: str, partial: bool) -> list:
@@ -538,15 +562,18 @@ def _facts(owner, tally: Tally, system: str, models: dict, base: int, rel: str, 
 
 
 def _names(owner, name_w: tuple, name_b: tuple, models: dict, level: str = "fail", effect: str = "files") -> list:
-    """Имена длиннее предела: Windows — знаки UTF-16, macOS и Linux — байты UTF-8."""
+    """Имя длиннее предела: знаки UTF-16 — Windows и macOS (а значит и Linux), байты UTF-8 — только Linux."""
     out = []
-    for system, (size, name) in (("windows", name_w), ("macos", name_b)):
-        if size > LIMITS[system]["name"]:
-            f = _find(owner, system, models, kind="name", level=level, length=size,
-                      limit=LIMITS[system]["name"], sample=short(name, 60), extra={"effect": effect})
-            if system == "macos":
-                f.system = "macOS и Linux"
-            out.append(f)
+    size, name = name_w
+    if size > WIN_NAME:
+        f = _find(owner, "windows", models, kind="name", level=level, length=size, limit=WIN_NAME,
+                  sample=short(name, 60), extra={"effect": effect})
+        f.system, f.system_id = "Windows, macOS и Linux", "all"
+        return [f]
+    size, name = name_b
+    if size > NAME_BYTES:
+        out.append(_find(owner, "linux", models, kind="name", level=level, length=size, limit=NAME_BYTES,
+                         sample=short(name, 60), extra={"effect": effect}))
     return out
 
 
@@ -573,6 +600,8 @@ def _check_folder(root: str, res: Res, models: dict, scans: dict, left: list, re
         report.files += scans[cache_key].total.files
         report.partial = report.partial or scans[cache_key].partial
     sc = scans.get(cache_key) if scannable else None
+    if sc and sc.unreadable:
+        report.partial = True       # папку не открыли (права): «всё помещается» по такой папке не говорится
     owner = _Owner(res)
     # Тали: строка внутри источника и её доля зеркала. Корни Confluence — по состоянию синка.
     tallies = []
@@ -615,27 +644,33 @@ def _check_folder(root: str, res: Res, models: dict, scans: dict, left: list, re
             continue
         for who, tally in tallies:
             out += _facts(who, tally, system, models, base, rel, bool(sc and sc.partial))
-        out += _risks(res, system, models, base, tallies)
+        if not (sc and (sc.partial or sc.unreadable)):      # по неполной сводке худший случай не считаем
+            out += _risks(res, system, models, base, tallies, rel)
     return out
 
 
-def _risks(res: Res, system: str, models: dict, base: int, tallies: list) -> list:
+def _risks(res: Res, system: str, models: dict, base: int, tallies: list, rel: str = "") -> list:
     """Худший случай по правилам именования выгрузки — там, где на диске ещё нечего измерить."""
     lim = LIMITS[system]
     owner = _Owner(res)
-    seen_pages = any(t.pages for _w, t in tallies)
-    if res.kind == "confluence" and not seen_pages:
-        # движок держит путь страницы от корня проекта в `PATH_CHARS`; корень длиннее — запас кончается
-        worst = measure(system, models[system]) + 1 + aurora_common.PATH_CHARS
+    if any(t.pages for _w, t in tallies):
+        return []                           # есть файлы — слово за ними, а не за моделью
+    if res.kind == "confluence" and res.rows:
+        # Движок держит путь страницы от корня проекта в `PATH_CHARS`; зеркало вне проекта он считает
+        # от стандартной папки (`confluence_export.Exporter.prefix_len`). Корень длиннее — запас кончается.
+        parts = [p for p in re.split(r"[\\/]+", rel) if p not in ("", ".")]
+        inside = bool(parts) and ".." not in parts and not re.match(r"^([A-Za-z]:|[\\/])", rel.strip())
+        room = aurora_common.PATH_CHARS - (len("/".join(parts)) + 1 if inside else len("Sources/Confluence") + 1)
+        worst = base + 1 + room
         if worst > lim["path"]:
             return [_find(owner, system, models, kind="path", level="risk", length=worst, limit=lim["path"],
                           extra={"effect": "tree", "engine": aurora_common.PATH_CHARS})]
-    if res.kind == "jira" and not seen_pages:
+    if res.kind == "jira":
         worst = base + 1 + measure(system, "K" * JIRA_KEY_MAX + ".md")
         if worst > lim["path"]:
             return [_find(owner, system, models, kind="path", level="risk", length=worst, limit=lim["path"],
                           extra={"effect": "issue"})]
-    if res.kind == "web" and not seen_pages:
+    if res.kind == "web" and res.rows:
         out = []
         for row in res.rows:
             worst = max([base + 1 + measure(system, n) for n in web_names(row["id"])] or [0])
@@ -644,11 +679,11 @@ def _risks(res: Res, system: str, models: dict, base: int, tallies: list) -> lis
                                  limit=lim["path"], extra={"effect": "page"}))
         if out:
             return out
-        stem = "я" * WEB_STEM + "-" + "0" * 8 + ".converted.md"
-        worst = base + 1 + len(WEB_FILES) + 1 + measure(system, stem)
-        if worst > lim["path"]:
-            return [_find(owner, system, models, kind="path", level="risk", length=worst, limit=lim["path"],
-                          extra={"effect": "assets"})]
+        if res.extra.get("assets", True):
+            worst = base + 1 + len(WEB_FILES) + 1 + measure(system, "я" * WEB_STEM + "-" + "0" * 8 + ".docx")
+            if worst > lim["path"]:
+                return [_find(owner, system, models, kind="path", level="risk", length=worst, limit=lim["path"],
+                              extra={"effect": "assets"})]
     return []
 
 
@@ -657,21 +692,21 @@ def assess(root: str, roots: dict | None = None, current: str | None = None) -> 
 
     Ничего не пишет и не ходит в сеть. `roots` и `current` — для проверок: корни систем и система
     «этой машины». Потолок обхода — `SCAN_FILES_MAX` файлов на всё сразу."""
+    current = current or current_system()
     try:
         with open(os.path.join(root, "aurora.config.yaml"), encoding="utf-8", errors="ignore") as f:
             text = f.read()
     except OSError:
-        return Report([], root_models(root, current, roots))
+        return Report([], root_models(root, current, roots), current=current)
     models = root_models(root, current, roots)
     res = resources(root, text, config_items(text))
-    report = Report([], models, resources=len(res))
+    report = Report([], models, resources=len(res), current=current)
     left, scans = [SCAN_FILES_MAX], {}
     for r in res:
         report.findings += _check_folder(root, r, models, scans, left, report)
-    here = current or current_system()
     for f in report.findings:
-        # корень чужой системы — допущение, и в сообщении это сказано
-        f.extra["assumed"] = f.system.split()[0].lower() != here
+        # корень чужой системы — допущение, и в сообщении это сказано; имя в знаках UTF-16 от корня не зависит
+        f.extra["assumed"] = f.system_id not in (current, "all") if f.kind != "name" else False
     return report
 
 
@@ -701,9 +736,10 @@ HINT_WINDOWS = ("сократите имя папки проекта или пе
 
 def describe(f: Finding) -> str:
     """Находка одной строкой по-русски: строка конфига, что и насколько превышено, что из-за этого будет."""
-    win = f.system == "Windows"
-    u = "знаков" if win else "байт"
-    where = f"корень проекта {f.root}, {f.root_len} {u}" + (" — допущение" if f.extra.get("assumed") else "")
+    win = f.system_id == "windows"
+    u = "знаков" if f.system_id in ("windows", "all") else "байт"
+    where = f"корень проекта {f.root}, {f.root_len} {'знаков' if win else 'байт'}" \
+        + (" — допущение" if f.extra.get("assumed") else "")
     if f.kind == "name":
         what = f"имя «{f.sample}» — {f.length} {u} при пределе {f.limit} на {f.system}"
     elif f.kind == "prefix":
@@ -722,9 +758,10 @@ def describe(f: Finding) -> str:
         what += ", если длинные пути Windows не включены"
     effect = EFFECT.get(f.extra.get("effect", ""), "")
     advice = ("Сократите имя." if f.kind == "name"
-              else HINT_WINDOWS[0].upper() + HINT_WINDOWS[1:] + "." if win
+              else HINT_WINDOWS[0].upper() + HINT_WINDOWS[1:] + "." if win and f.kind == "path"
               else "Сократите путь папки в конфиге или перенесите проект ближе к корню диска.")
-    out = f"{f.line}: {what}" + (f" — {effect}" if effect else "") + "."
+    where_line = f"{f.line} (aurora.config.yaml, строка {f.cfg_line})" if f.cfg_line else f"{f.line} (значение по умолчанию)"
+    out = f"{where_line}: {what}" + (f" — {effect}" if effect else "") + "."
     if f.sample and f.kind != "name":
         out += f" Пример: {f.sample}."
     return f"{out} {advice}" + (" Проверено частично." if f.extra.get("partial") else "")
@@ -747,7 +784,7 @@ def render(report: Report) -> str:
     lines = [f"Длинные пути: проверено строк конфига {report.resources}, файлов просмотрено {report.files}"
              + (" — проверено частично (потолок обхода)" if report.partial else "")]
     for system in SYSTEMS:
-        mark = " (допущение)" if system != current_system() else ""
+        mark = " (допущение)" if system != (report.current or current_system()) else ""
         lines.append(f"  {LABEL[system]}: корень проекта {report.models[system]}{mark}")
     if not report.findings:
         return "\n".join(lines + ["Всё помещается: ни одна строка конфига не даст ошибки длины пути."])
@@ -764,7 +801,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Длина путей проекта на Windows, macOS и Linux (только чтение)")
     ap.add_argument("--json", action="store_true", help="машиночитаемый вывод")
     a = ap.parse_args()
-    report = assess(os.getcwd())
+    try:
+        report = assess(os.getcwd())
+    except Exception as e:  # noqa: BLE001 — проверка справочная: причина строкой, а не трейсбек
+        print(f"path_budget: проверка не сработала — {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
     if a.json:
         print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
     else:
