@@ -820,6 +820,7 @@
   "word.artifacts_in_kb": "артефакты, попавшие в базу знаний",
   "word.no_type": "карточки без типа",
   "word.type_mismatch": "тип не по разделу",
+  "word.template_violation": "нарушения шаблона у карточек со штампом",
   "word.other": "прочее",
   "word.trusted": "доверенные",
   "word.meetings": "из встреч (вне доли)",

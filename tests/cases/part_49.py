@@ -435,4 +435,6 @@ def test_section_list_in_the_prompt_is_bounded_and_todo_names_the_new_group(tmp:
         R.build_sections = was
     assert len(text) <= R.SECTION_LIST_CHARS + 4 and text.endswith("…"), len(text)
     T = _mod("aurora_todo")
-    assert "нарушения шаблона у карточек со штампом" in {title for title, _w, _h in T.HUMAN}
+    group = "нарушения шаблона у карточек со штампом"
+    assert group not in {title for title, _w, _h in T.HUMAN}, "решает движок, а не человек (решение заказчика 15.09)"
+    assert group in T.STUCK_WHY, "новая группа линтера без пояснения в «Что осталось»"

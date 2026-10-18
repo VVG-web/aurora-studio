@@ -820,6 +820,7 @@
   "word.artifacts_in_kb": "Artifacts that got into the knowledge base",
   "word.no_type": "Cards without a type",
   "word.type_mismatch": "Type does not match the section",
+  "word.template_violation": "Template violations in stamped cards",
   "word.other": "Other",
   "word.trusted": "trusted",
   "word.meetings": "from meetings (outside the share)",
