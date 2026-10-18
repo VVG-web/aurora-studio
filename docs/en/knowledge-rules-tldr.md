@@ -44,9 +44,10 @@ type has a template `TemplatesCommon/akdb_<type>_v1.0.md`: the type's allowed ki
 and what the head looks like. The list of types and sections is `kb:cards --list`, the guide is `card-templates.md`; a project edits a type's title,
 description and switch in "Project settings → Card types" (the `cards:` block of the config).
 Do not confuse the type with the kind (`kind`): the kind answers "who edits the body", the type "what the card
-is about and by which template". **For now the check only advises:** `kb:cards --check` and the "card templates"
-section of `kb:lint` name deviations as warnings, rewrite nothing and forbid nothing; a card without `template:` in
-its head is "pre-template", not faulty.
+is about and by which template". **The template is mandatory when writing:** the engine builds a new card by its
+type's template and checks it strictly, an edit of an existing one "by difference" (a new violation is rejected), and a
+card that passes its template gets the `template:` stamp. A violation in a stamped card is a `kb:lint` error; a card
+without `template:` in its head is "pre-template", and `kb:cards --check` names its deviations as warnings.
 
 ## Links are mandatory
 

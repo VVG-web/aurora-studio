@@ -275,9 +275,15 @@ own in the project's `Templates/`. The passport, the check codes and the `kb:car
 - A type's title, description and switch are the `cards:` block of the config or the panel ("Project settings → Card
   types"); the section, class, template, kinds and statuses cannot be overridden.
 - The project adds the new type's row to the table of step 2 of the `Prompts/KB_classify.md` instruction — otherwise the
-  classifier will not offer it; the type catalogue picks the type up by itself (`kb:cards --write --apply`). For now the
-  type is only in the registry and the check: the engine will start creating cards by project templates in the next
-  releases.
+  classifier will not offer it; the type catalogue picks the type up by itself (`kb:cards --write --apply`). The section of
+  the type enters the list of sections of the parsing request, the engine creates cards by the template, and the single
+  write entry checks the head and the body.
+- **A script that writes base cards writes them through `card_types.write_card_text`** (or `try_write_card`, `put_text`,
+  `put_map`), and the head of a new card is built by `render_card`. A direct write (`open(…, "w")`, `write_text`,
+  `os.replace` …) into a card does not pass the ratchet test `tests/card_write_sites.py`; a new place that writes
+  something other than a card is added to `tests/card_write_sites.json` with a reason (`python3
+  tests/card_write_sites.py --snapshot --write`). A template refusal is not a failure: the script writes the reason, goes
+  on and ends with exit code 1 (`card_types.finish_code`).
 - **A released template is not edited — a new version comes out.** The seed rule delivers an edit to old projects only as
   `<file>.new`, so a fix or an extension of `akdb_*_v1.0.md` is a new file `v1.1` (or `v2.0`) with the passport field
   `migration: none|auto|llm`; `v1.0` stays beside it, and a card is checked by the version in its own `template:`.

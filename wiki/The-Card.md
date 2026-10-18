@@ -74,16 +74,16 @@ example and a self-check list. It is read by a human, an assistant and the engin
 Unsure which type to choose — take `concept`; the borders of neighbouring types are worked out in the templates
 themselves. The `template:` field in the head names the file the card was made by (`template: akdb_concept_v1.0.md`);
 older cards do not have it — that is a "pre-template" card, not an error. The list of types and sections is
-`kb:cards --list`, the check is `kb:cards --check` (and the "card templates" section of `kb:lint`). For now the check
-**only advises**: it rewrites nothing and forbids nothing. A released template is not edited — a fix comes as a new
-version (`v1.1`).
+`kb:cards --list`, the check is `kb:cards --check` (and the "card templates" section of `kb:lint`). The template is
+**mandatory when writing**: every write of a card goes through one entry that checks it (a new card strictly, an edit
+"by difference"); a card that passes its template gets the `template:` stamp, and a violation in a stamped card is a
+`kb:lint` error. A released template is not edited — a fix comes as a new version (`v1.1`).
 
 **Project rules.** The type is chosen by the instruction "How to determine the card type" — the file
 `Prompts/KB_classify.md`: steps 0–7, the answer in one line `type: …; template: …; section: …; why: …`. The file belongs
 to the project: your edit stays, the kit's new version lands next to it as `.new`; `kb:cards --guide` prints the text. A
-type's title, description and switch are the `cards:` block of `aurora.config.yaml`. For now the switch **only
-advises**: the check names the cards of a switched-off type, the classifier rejects such a type, and creating cards
-does not look at it. The **type catalogue** `AuroraKnowledgeDB/meta/card_types.md` is generated (install,
+type's title, description and switch are the `cards:` block of `aurora.config.yaml`. A switched-off type creates no
+cards: parsing offers only the sections of enabled types, and the check names the cards of a switched-off type. The **type catalogue** `AuroraKnowledgeDB/meta/card_types.md` is generated (install,
 `update --apply`, `kb:cards --write --apply`), manual edits in it are lost. All of this is edited in "Project settings →
 Card types". Details — [card templates](../docs/en/card-templates.md).
 

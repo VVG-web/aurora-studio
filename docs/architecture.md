@@ -57,7 +57,8 @@ flowchart LR
   [шаблоны карточек](card-templates.md)). Инструкция выбора типа `Prompts/KB_classify.md` едет так же; каталог типов
   `AuroraKnowledgeDB/meta/card_types.md` собирает движок (установка, `update --apply`, `kb:cards --write --apply`), а
   подписи, описания и выключатели типов — блок `cards:` в `aurora.config.yaml`, который правит панель («Настройки проекта
-  → Типы карточек»).
+  → Типы карточек»). Любая запись карточки базы идёт через единый вход `card_types.write_card_text`: шаблон обязателен, а
+  список мест записи охраняет тест-храповик `tests/card_write_sites.py`.
 - Отказаться от обновления отдельных путей можно в `aurora.update_ignore.txt` в корне проекта (glob-шаблоны).
 - Версия движка в проекте записана в `AuroraKnowledgeDB/meta/aurora_version.txt`; путь к ките —
   в `.aurora/kit_path.txt`. Копия `aurora_update.py` в проекте находит кит по нему. С какой версией кита совпадает
