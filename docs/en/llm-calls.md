@@ -17,6 +17,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 - [Golden questions: lost targets](#golden)
 - [Ask the base](#ask)
 - [Artifact (Productivity)](#make)
+- [A decision from a source (draft)](#decide)
 - [Review of a story or an algorithm](#review)
 - [Project bot](#bot)
 - [Bot prompt review](#coach)
@@ -233,6 +234,20 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 | Momus (qa) | Momus: the document's claims rest on the pack. | `PROMPT_MOMUS` (agent_runner.py) |
 
 - **Tools:** the planner has read_file and list_dir (inside the project only; links out of it and credential files are refused), kb_search, kb_context, artifact_spec and the request's MCP; the outgoing guard lets out only words of the task and the pack.
+- **Path:** Pydantic AI.
+
+<a id="decide"></a>
+
+## A decision from a source (draft)
+
+- **When.** The agent:decide command.
+- **Commands:** `agent:decide`.
+
+| Role | What it does | Prompt |
+|---|---|---|
+| Planner (planner) | A meeting protocol, an answer to a question or another project file → a decision record: options, refusal reasons, the decision, affected cards. Every option and the decision carry a verbatim quote of the source; the code checks the quotes, and what is not confirmed stays in the card under the "Under question" marker. Status proposed, a person accepts. | `PROMPT_DECIDE` (agent_runner.py) |
+
+- **Tools:** none.
 - **Path:** Pydantic AI.
 
 <a id="review"></a>

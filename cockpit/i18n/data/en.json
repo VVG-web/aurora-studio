@@ -88,6 +88,7 @@
     "agent:relink": "Place links inside finished theses without rewriting the text: the model inserts only markup, the engine strips it and checks the original character by character.",
     "agent:translit": "Fill the Latin↔Cyrillic name dictionary for cards named by transliteration: a translation is work with meaning, done by the model.",
     "agent:make": "Produce an artifact of a registry type: enrichment from the base, a plan with questions to the analyst, worker, critic, Momus. The stages are marked in the header — after an interruption it resumes from the same point. Understands `@path`, `/skill`, `@server`.",
+    "agent:decide": "A draft decision (Decision Record) from a source: a meeting protocol, an answer to a question (`--source Q-007`) or a project file. Every option and the decision itself carry a verbatim quote of the source; the code checks the quotes; what is not confirmed stays in the card under the marker in the \"Under question\" section, and only existing cards are taken as affected. Without `--apply` — a preview, with it — the card `DR-NNNN` with status proposed (the number is issued by `kb:next-id`); a person accepts the decision (`kb:decide-accept`).",
     "agent:ask": "Ask the base in your own words: the engine assembles context, the model answers only from the cards and puts a link on each claim; Momus checks the answer; the conversation goes to `meta/ask/`.",
     "agent:width": "Measure how many simultaneous requests each gateway holds: raise the load while throughput grows.",
     "agent:pydantic": "Pydantic AI settings: what goes to the gateway per role — model, reasoning on or off, chat-template fields and the timeout, whether the installed version passed the compatibility check.",
@@ -987,7 +988,6 @@
     "проверить сейчас (все probe или --only)": "check now (all probes or --only)",
     "только этот профиль или probe": "only this profile or probe",
     "показать адреса probe (по умолчанию — только тип и идентификатор)": "show the probe addresses (by default only the type and the identifier)",
-<<<<<<< HEAD
     "зеркало вики (по умолчанию — зеркало с ролью projectwiki)": "wiki mirror (by default the mirror with the projectwiki role)",
     "зеркало трекера задач (по умолчанию — с ролью tasktracker)": "task tracker mirror (by default the one with the tasktracker role)",
     "корень зеркала (по умолчанию — зеркало вики проекта)": "mirror root (by default the project's wiki mirror)",
@@ -997,8 +997,7 @@
     "проверить сданные версии в Deliverables/released/: хеш, правки и удаления после коммита": "check the delivered versions in Deliverables/released/: hash, edits and deletions after the commit",
     "снять блокировку предохранителя выходных команд (КОД назван в его сообщении)": "lift a block of the outbound-commands guard (the CODE is named in its message)",
     "записать бандл с персональными данными при privacy.scrub: mask (КОД назван в сообщении)": "write the bundle with personal data under privacy.scrub: mask (the CODE is named in the message)",
-    "--export: встроить картинки в документ (pandoc без песочницы; только для документов, которым доверяете)": "--export: embed images into the document (pandoc without the sandbox; only for documents you trust)"
-=======
+    "--export: встроить картинки в документ (pandoc без песочницы; только для документов, которым доверяете)": "--export: embed images into the document (pandoc without the sandbox; only for documents you trust)",
     "журнал решений: состояния, просроченные, изменённые": "the decision journal: states, overdue and changed ones",
     "кто принял (человек; по умолчанию git user.name)": "who accepted (a person; git user.name by default)",
     "машинный вывод журнала": "machine output of the journal",
@@ -1009,8 +1008,11 @@
     "пространства имён и где они ищутся": "the namespaces and where they are searched",
     "с чем связан артефакт (для --task make), в шапку паспорта: REQ-042 — реализует, AC-… — покрывает, SPEC-012 / US-… / ART-… — родитель; повторяется": "what the artifact is linked to (for --task make), into the passport head: REQ-042 — implements, AC-… — covers, SPEC-012 / US-… / ART-… — parent; repeatable",
     "сколько дней предложенное решение ждёт принятия (по умолчанию 14)": "how many days a proposed decision waits for acceptance (14 by default)",
-    "форма каждого решения (код 1 — есть замечания)": "the form of every decision (code 1 — there are remarks)"
->>>>>>> 7299775e (ревью: журнал решений — принять и отклонить решение командой человека, отпечаток тела, форма DR, kb:lint (BL-TEAM-02))
+    "форма каждого решения (код 1 — есть замечания)": "the form of every decision (code 1 — there are remarks)",
+    "источник решения (для --task decide): файл проекта или вопрос Q-NNN": "the decision source (for --task decide): a project file or a question Q-NNN",
+    "тема решения своими словами (для --task decide; необязательно)": "the decision topic in your own words (for --task decide; optional)",
+    "кто ведёт запись о решении (для --task decide; человек, по умолчанию git user.name)": "who keeps the decision record (for --task decide; a person, git user.name by default)",
+    "карточка базы, которой касается решение (для --task decide; повторяется)": "a card of the base the decision affects (for --task decide; repeatable)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",
@@ -1031,12 +1033,10 @@
     "Ч": "H",
     "ПРОВАЙДЕР/МОДЕЛЬ": "PROVIDER/MODEL",
     "РОЛЬ": "ROLE",
-<<<<<<< HEAD
-    "КОД": "CODE"
-=======
+    "КОД": "CODE",
     "@ИМЯ": "@NAME",
-    "[ПРОСТРАНСТВО]": "[SPACE]"
->>>>>>> 7299775e (ревью: журнал решений — принять и отклонить решение командой человека, отпечаток тела, форма DR, kb:lint (BL-TEAM-02))
+    "[ПРОСТРАНСТВО]": "[SPACE]",
+    "ФАЙЛ|Q-NNN": "FILE|Q-NNN"
   },
   "connector_texts": {
     "персональный токен Confluence (CONFLUENCE_PAT) либо CONFLUENCE_USER + CONFLUENCE_PASSWORD": "a Confluence personal token (CONFLUENCE_PAT) or CONFLUENCE_USER + CONFLUENCE_PASSWORD",

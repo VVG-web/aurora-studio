@@ -551,6 +551,38 @@
       "engine": "pydantic_ai"
     },
     {
+      "id": "decide",
+      "title": {
+        "ru": "Решение из источника (черновик)",
+        "en": "A decision from a source (draft)"
+      },
+      "when": {
+        "ru": "Команда agent:decide.",
+        "en": "The agent:decide command."
+      },
+      "commands": [
+        "agent:decide"
+      ],
+      "code": [
+        "agent_runner.py:run_decide"
+      ],
+      "steps": [
+        {
+          "role": "planner",
+          "prompt": "agent_runner.py:PROMPT_DECIDE",
+          "what": {
+            "ru": "Протокол встречи, ответ на вопрос или другой файл проекта → запись о решении: варианты, причины отказа, решение, затронутые карточки. Каждый вариант и решение несут дословную цитату источника; цитаты проверяет код, непроверенное остаётся в карточке под маркером «Под вопросом». Статус proposed, принимает человек.",
+            "en": "A meeting protocol, an answer to a question or another project file → a decision record: options, refusal reasons, the decision, affected cards. Every option and the decision carry a verbatim quote of the source; the code checks the quotes, and what is not confirmed stays in the card under the \"Under question\" marker. Status proposed, a person accepts."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
       "id": "review",
       "title": {
         "ru": "Ревью истории или алгоритма",

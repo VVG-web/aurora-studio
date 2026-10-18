@@ -118,6 +118,7 @@ def prune_runs(runs: Path, task: str) -> int:
     return len(old)
 from aurora_common import (local_now, local_view, lock_holder, lock_release,  # noqa: E402,F401
                            lock_take, pid_alive, utc_label, utc_slug, utc_stamp, utc_today)
+from aurora_common import UNTRUSTED_RULE, untrusted  # noqa: E402 — чужой текст в запросе модели: ограждение и правило
 TODAY_STR = utc_today()
 ASK_DIR = Path("AuroraKnowledgeDB") / "meta" / "ask"
 ASK_TAIL = 4          # столько прошлых пар вопрос-ответ уходит в контекст уточнения
@@ -4063,7 +4064,7 @@ _RULES_CACHE: dict = {}
 
 
 CARD_WRITING_TASKS = ("build", "distill", "extract", "relink", "twins", "tasks", "aliases", "clashes", "translit",
-                      "conform")
+                      "conform", "decide")
 
 
 def registry_gate(cwd: str = ".") -> str:
@@ -6612,6 +6613,223 @@ def write_artifact(cwd: str, st: dict) -> str:
     return os.path.relpath(path, cwd)
 
 
+# --------------------------------------------------------- журнал решений: черновик из источника
+#
+# `agent:decide` читает источник (протокол встречи, ответ на вопрос Q-NNN, файл проекта) и предлагает
+# запись о решении со статусом `proposed`. Модель не принимает решений и не пересказывает по памяти: каждый
+# вариант и само решение несут дословную цитату источника, а проверяет цитаты код. Что цитаты не нашло,
+# остаётся в карточке под маркером в разделе «Под вопросом», и пока он не разобран, решение не принять
+# (`kb:decide-accept`). Принимает человек.
+
+PROMPT_DECIDE = """Ты — системный аналитик. Из ИСТОЧНИКА ниже оформи запись о решении (Decision Record): что решили, \
+из чего выбирали и почему не выбрали остальное.
+
+{rule}
+
+Правила:
+- Только то, что сказано в источнике. Ни одного факта из общих знаний, ни одного придуманного варианта. \
+Решения в источнике нет — верни {{"none": "почему"}}.
+- Варианты — только те, что назвал источник. К каждому — поле quote: дословная цитата из источника \
+(10–300 знаков, слово в слово, без пересказа). Нет цитаты — вариант не включай.
+- У отклонённого варианта why_not — причина, названная в источнике; не названа — пустая строка, не выдумывай.
+- decision — что решили (и кто участвовал, если источник называет людей); decision_quote — дословная цитата.
+- affects — понятия и документы, которых решение касается, как они названы в источнике.
+- replaces — номера прежних решений DR-NNNN, только если источник прямо говорит, что решение заменяет прежнее.
+- Деловой русский, настоящее время, без оценок и вопросов.
+{topic}
+ИСТОЧНИК ({label}):
+{source}
+
+Ответ — один JSON-объект, без текста вокруг:
+{{"title": "краткая формулировка решения", "context": "какая задача потребовала решения", \
+"options": [{{"name": "...", "chosen": true, "pros": "...", "cons": "...", "why_not": "", "quote": "..."}}], \
+"decision": "...", "decision_quote": "...", "consequences": ["..."], "affects": ["..."], "replaces": []}}
+"""
+DECIDE_SOURCE_LIMIT = 60_000
+
+
+def quote_key(text: str) -> str:
+    """Цитата для сверки с источником: без различий в пробелах, регистре, кавычках, тире и «ё»."""
+    text = str(text or "")
+    for a, b in (("«", '"'), ("»", '"'), ("“", '"'), ("”", '"'), ("—", "-"), ("–", "-"), ("ё", "е"), ("Ё", "Е")):
+        text = text.replace(a, b)
+    return " ".join(text.lower().split())
+
+
+def decide_clean(text, limit: int = 600) -> str:
+    """Строка из ответа модели в карточку: одна строка, без ссылок `[[…]]`, заготовок `{{…}}` и разметки."""
+    text = " ".join(str(text or "").split())
+    text = re.sub(r"\[\[([^\]]*)\]\]", r"\1", text).replace("{{", "(").replace("}}", ")")
+    return text.lstrip("#>-* ").strip()[:limit]
+
+
+def decide_source(cwd: str, ref: str) -> tuple:
+    """→ (подпись, текст, имя карточки-источника или пусто, ошибка). Источник — `Q-NNN` или файл проекта."""
+    ref = (ref or "").strip()
+    if not ref:
+        return "", "", "", "нужен источник: --source «файл проекта» или «Q-NNN»"
+    base = os.path.join(cwd, "AuroraKnowledgeDB", "Questions")
+    m = re.match(r"(?i)^Q-(\d+)$", ref)
+    if m:
+        hits = [f for f in sorted(os.listdir(base) if os.path.isdir(base) else [])
+                if re.match(rf"(?i)^Q-0*{int(m.group(1))}(?!\d)", f) and f.endswith(".md")]
+        if not hits:
+            return "", "", "", f"вопроса {ref} нет в AuroraKnowledgeDB/Questions/"
+        path = os.path.join(base, hits[0])
+        text = read_text_file(path, DECIDE_SOURCE_LIMIT)
+        src = re.search(r"(?m)^answer_source:\s*[\"']?([^\"'\n]+)", text)
+        if src and src.group(1).strip():
+            extra = os.path.join(cwd, src.group(1).strip())
+            if os.path.isfile(extra) and not link_escapes(extra):
+                text += "\n\n--- Ответ: " + src.group(1).strip() + " ---\n\n" + read_text_file(extra, DECIDE_SOURCE_LIMIT)
+        return hits[0][:-3], text, hits[0][:-3], ""
+    path = os.path.normpath(os.path.join(cwd, ref))
+    rel = os.path.relpath(path, cwd).replace("\\", "/")
+    if rel.startswith("..") or not os.path.isfile(path) or link_escapes(path):
+        return "", "", "", f"источника «{ref}» нет в проекте (нужен файл внутри проекта или Q-NNN)"
+    text = read_text_file(path, DECIDE_SOURCE_LIMIT)
+    if not text.strip():
+        return "", "", "", f"источник «{ref}» пуст или не читается как текст"
+    card = os.path.splitext(os.path.basename(path))[0] if rel.startswith("AuroraKnowledgeDB/") else ""
+    return rel, text, card, ""
+
+
+def build_decision(cwd: str, ans: dict, source: str, label: str, card: str, owner: str, number: int,
+                   known: dict, extra_affects: list, today: str) -> dict:
+    """Ответ модели → текст карточки решения и перечень непроверенного.
+
+    `known` — {сравнимое имя: имя карточки} базы. Вариант и решение, чьей цитаты нет в источнике дословно,
+    остаются в карточке с маркером и названы в «Под вопросом»; несуществующие карточки не становятся ссылками."""
+    ident = f"DR-{number:04d}"
+    skey = quote_key(source)
+
+    def found(quote) -> bool:
+        key = quote_key(quote)
+        return len(key) >= 10 and key in skey
+
+    title = decide_clean(ans.get("title"), 120)
+    doubts: list = []
+    rows = []
+    for opt in [o for o in ans.get("options") or [] if isinstance(o, dict)][:8]:
+        name = decide_clean(opt.get("name"), 160)
+        if not name:
+            continue
+        chosen = bool(opt.get("chosen"))
+        ok = found(opt.get("quote"))
+        n = sum(1 for r in rows if r.startswith("### ")) + 1
+        rows.append(f"### {n}. {name} — {'выбран' if chosen else 'отклонён'}")
+        for key, word in (("pros", "Плюсы"), ("cons", "Минусы")):
+            if decide_clean(opt.get(key)):
+                rows.append(f"- {word}: {decide_clean(opt.get(key))}")
+        if not chosen and decide_clean(opt.get("why_not")):
+            rows.append(f"- **Причина отказа:** {decide_clean(opt.get('why_not'))}")
+        if ok:
+            rows.append(f"- Источник: «{decide_clean(opt.get('quote'), 300)}»")
+        else:
+            rows.append("- ⚠ Цитаты нет в источнике: вариант назван моделью, подтвердите или удалите")
+            doubts.append(f"Вариант «{name}»: дословной цитаты в источнике нет.")
+        rows.append("")
+    decision = decide_clean(ans.get("decision"), 600)
+    if not found(ans.get("decision_quote")):
+        doubts.append("Решение: дословной цитаты в источнике нет.")
+    # затронутые карточки: названные моделью и человеком — только существующие
+    named = [decide_clean(x, 120) for x in (ans.get("affects") or []) if isinstance(x, str)]
+    named += [decide_clean(x, 120) for x in extra_affects]
+    affects = list(dict.fromkeys(known[quote_key(n)] for n in named if quote_key(n) in known))
+    absent = [n for n in dict.fromkeys(named) if n and quote_key(n) not in known]
+    if absent:
+        doubts.append("Затронутые карточки, которых нет в базе: " + ", ".join(absent[:6]) + ".")
+    older = []
+    import kb_decide as KD
+    for r in [x for x in ans.get("replaces") or [] if isinstance(x, str)][:4]:
+        path, err = KD.find_dr(cwd, r.strip())
+        if not err:
+            older.append(os.path.splitext(os.path.basename(path))[0])
+    for stem in older:
+        doubts.append(f"Возможно, заменяет [[{stem}]]: подтвердите и выполните `kb:supersede` — само решение прежнее не меняет.")
+    where = f"[[{card}]]" if card else f"`{label}`"
+    cons = [decide_clean(c, 300) for c in ans.get("consequences") or [] if isinstance(c, str) and decide_clean(c, 300)]
+    out = ["---", f'title: "{ident}: {title.replace(chr(34), "")}"', f'aliases: ["{ident}"]', "tags: [decision]", "type: decision",
+           "template: akdb_decision_v1.0.md", "kind: document", "status: proposed", f"date: {today}", f'owner: "{owner}"',
+           "supersedes: []", "superseded_by:", "applies_to: []", f"created: {today}", f"updated: {today}", "---", "",
+           f"# {ident}: {title}", "", "## Контекст", f"{decide_clean(ans.get('context'), 600)} Источник: {where}.", "",
+           "## Рассмотренные варианты", ""] + rows + ["## Решение", decision or title, "", "## Следствия"]
+    out += [f"- {c}" for c in cons]
+    if affects:
+        out.append("- Затронутые карточки: " + ", ".join(f"[[{a}]]" for a in affects))
+    out += ["", "## История", f"- {today} — создана ({owner}) по источнику {where}; черновик модели, принимает человек", ""]
+    if doubts:
+        out += ["## Под вопросом", "", "Модель назвала то, чего нет в источнике дословно. Перенесите проверенное в варианты и "
+                "решение, остальное удалите — пока раздел не пуст, решение не принять.", ""] + [f"- {d}" for d in doubts] + [""]
+    return {"id": ident, "title": title, "text": "\n".join(out), "doubts": doubts, "affects": affects,
+            "options": sum(1 for r in rows if r.startswith("### "))}
+
+
+def run_decide(cfg: dict, cwd: str, source: str, topic: str, owner: str, affects: list, apply: bool,
+               call=None, today: str = "") -> dict:
+    """Черновик решения из источника: чтение → модель → проверка цитат → карточка `proposed` (с `--apply`)."""
+    call = call or AG.call_role
+    import card_types as CT
+    import id_registry as IDR
+    import kb_decide as KD
+    who, err = KD.human_name(owner)
+    if err:
+        return {"ok": False, "why": err}
+    label, text, card, err = decide_source(cwd, source)
+    if err:
+        return {"ok": False, "why": err}
+    known = {quote_key(n): n for n in KD.known_names(cwd)}
+    missing = [a for a in affects if quote_key(a) not in known]
+    if missing:
+        return {"ok": False, "why": "в базе нет карточки: " + ", ".join(missing) + " (проверьте имя)"}
+    prompt = PROMPT_DECIDE.format(
+        rule=UNTRUSTED_RULE, label=decide_clean(label, 160),
+        topic=(f"\nТема, заданная человеком: {decide_clean(topic, 200)}\n" if topic.strip() else ""),
+        source=untrusted(text, "источник решения"))
+    r = call(cfg, "planner", [{"role": "user", "content": prompt}], deadline=time.time() + cfg["request_timeout"])
+    if not r["ok"]:
+        return {"ok": False, "why": "модель не ответила: " + model_fail_note(r)}
+    ans = parse_json(r["text"])
+    if not isinstance(ans, dict):
+        return {"ok": False, "why": "модель не вернула разбираемый ответ — повторите"}
+    if ans.get("none"):
+        return {"ok": False, "why": "в источнике решения не нашлось: " + decide_clean(ans["none"], 300)}
+    if not decide_clean(ans.get("title"), 120):
+        return {"ok": False, "why": "модель не сформулировала решение — повторите"}
+    today = today or utc_today()
+    number = int(IDR.peek("DR", cwd).split("-")[1]) if not apply else int(IDR.allocate("DR", cwd).split("-")[1])
+    built = build_decision(cwd, ans, text, label, card, who, number, known, affects, today)
+    remarks = [f"{p['id']}: {p['msg']}" for p in KD.lint_decision(built["text"], set(known.values()))]
+    res = {"ok": True, "id": built["id"], "text": built["text"], "doubts": built["doubts"], "remarks": remarks,
+           "source": label, "written": False, "path": ""}
+    if not apply:
+        return res
+    path = os.path.join(cwd, "AuroraKnowledgeDB", "Decisions", f"{built['id']}-{slug(built['title'])}.md")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    done, why = CT.try_write_card(path, built["text"], op="create")
+    if not done:
+        return {**res, "ok": False, "why": f"шаблон решения не принял запись ({built['id']} занят и пропущен): {why}"}
+    return {**res, "written": True, "path": os.path.relpath(path, cwd).replace("\\", "/")}
+
+
+def report_decide(res: dict, apply: bool) -> str:
+    if not res.get("ok"):
+        return f"# Решение не оформлено\n\n{res.get('why', '')}"
+    L = [f"# Черновик решения {res['id']} · {utc_label()}", "", f"Источник: `{res['source']}`", ""]
+    if res.get("written"):
+        L += [f"Записано: `{res['path']}` (статус proposed).", ""]
+    else:
+        L += ["Предпросмотр: ничего не записано. Повторите с `--apply`, чтобы завести карточку.", "", res["text"], ""]
+    if res.get("doubts"):
+        L += [f"⚠ Не подтверждено источником: {len(res['doubts'])} — раздел «Под вопросом» в карточке:"] + \
+             [f"- {d}" for d in res["doubts"]] + [""]
+    if res.get("remarks"):
+        L += ["До принятия поправьте:"] + [f"- {x}" for x in res["remarks"]] + [""]
+    L.append("Принять или отклонить решение — `kb:decide-accept` (решает человек).")
+    return "\n".join(L)
+
+
+
 def read_text_file(path: str, limit: int = 200_000) -> str:
     if link_escapes(path):          # шаблон-ссылка на файл вне проекта модели не отдаём
         return ""
@@ -8424,7 +8642,7 @@ def main() -> int:
     ap.add_argument("--task", default="aliases",
                     choices=["aliases", "build", "ask", "distill", "extract",
                              "twins", "tasks", "clashes", "relink", "translit", "make",
-                             "golden", "conform"],
+                             "golden", "conform", "decide"],
                     help="aliases — разобрать конфликты синонимов; "
                          "build — разобрать партию источников на карточки; "
                          "make — произвести артефакт: обогащение, план с вопросами, "
@@ -8453,6 +8671,14 @@ def main() -> int:
     ap.add_argument("--context", metavar="ПУТЬ", action="append", default=[],
                     help="файл или папка проекта в контекст задачи (для --task make); "
                          "повторяется. Вложения панель кладёт в .aurora/context/")
+    ap.add_argument("--source", metavar="ФАЙЛ|Q-NNN", default="",
+                    help="источник решения (для --task decide): файл проекта или вопрос Q-NNN")
+    ap.add_argument("--topic", metavar="ТЕКСТ", default="",
+                    help="тема решения своими словами (для --task decide; необязательно)")
+    ap.add_argument("--owner", metavar="@ИМЯ", default="",
+                    help="кто ведёт запись о решении (для --task decide; человек, по умолчанию git user.name)")
+    ap.add_argument("--affects", metavar="КАРТОЧКА", action="append", default=[],
+                    help="карточка базы, которой касается решение (для --task decide; повторяется)")
     ap.add_argument("--from", dest="from_ids", metavar="ID", action="append", default=[],
                     help="с чем связан артефакт (для --task make), в шапку паспорта: REQ-042 — реализует, "
                          "AC-… — покрывает, SPEC-012 / US-… / ART-… — родитель; повторяется")
@@ -8557,6 +8783,13 @@ def main() -> int:
             return 2
         print(report_make(res))
         return 0
+
+    if a.task == "decide":
+        # Черновик решения: одна новая карточка со статусом proposed (с --apply), без чекпойнта и оракула —
+        # правок существующих карточек нет, отказ шаблона не оставляет следов, кроме пропущенного номера.
+        res = run_decide(cfg, cwd, a.source, a.topic, a.owner, a.affects, a.apply)
+        print(report_decide(res, a.apply))
+        return 0 if res["ok"] else 2
 
     if a.task == "ask":
         # Вопрос не правит базу: ни чекпойнта, ни коммита, ни правки карточек. Пишется

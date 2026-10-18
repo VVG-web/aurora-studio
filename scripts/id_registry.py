@@ -212,8 +212,9 @@ def _ledger_write(root: str, ns: str, number: int) -> None:
             os.replace(tmp, path)
             return
         except PermissionError:          # Windows: отметку в эту минуту читает чужой `--peek`
+            if attempt == 5:
+                raise
             time.sleep(0.02)
-    os.replace(tmp, path)
 
 
 def next_number(root: str, ns: str) -> int:

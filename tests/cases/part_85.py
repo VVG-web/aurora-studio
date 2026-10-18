@@ -544,3 +544,149 @@ def test_impact_reads_numbers_with_a_dot_and_yogi_keys(tmp: Path):
     R = _mod("agent_runner")
     links, bad = R.parse_from(["req-042", "ac-3.1"])
     assert not bad and links == {"implements": ["REQ-042"], "covers": ["AC-3.1"]}, (links, bad)
+
+
+# ------------------------------------------------------------------ BL-TEAM-02: черновик решения из источника
+
+PROTOCOL = """\
+# Протокол встречи 2026-10-01
+
+Обсуждали срок подтверждения заявки на поставку.
+
+Аналитик: в ТЗ срок подтверждения заявки — три рабочих дня, в описании процесса пять.
+Руководитель проекта: срок подтверждения — три рабочих дня, как в ТЗ, потому что ТЗ подписан заказчиком.
+Пять рабочих дней отклонили: это противоречит подписанному ТЗ, изменение потребует доп. соглашения.
+"""
+
+
+def _decide_project(tmp: Path):
+    from harness import card
+    root = make_project(tmp)
+    card(root, "Concepts/Заявка на поставку.md", "Заявка на поставку — документ.", status="knowledge", kind="knowledge")
+    _touch(root, "Raw/meetings/2026-10-01_срок/protocol.md", PROTOCOL)
+    return root
+
+
+def _decide_answer(**over) -> dict:
+    ans = {"title": "Срок подтверждения заявки — три рабочих дня",
+           "context": "В ТЗ и в описании процесса разные сроки подтверждения заявки.",
+           "options": [
+               {"name": "Три рабочих дня", "chosen": True, "pros": "совпадает с ТЗ", "cons": "",
+                "quote": "срок подтверждения — три рабочих дня, как в ТЗ"},
+               {"name": "Пять рабочих дней", "chosen": False, "pros": "", "cons": "противоречит ТЗ",
+                "why_not": "противоречит подписанному ТЗ, нужно доп. соглашение",
+                "quote": "Пять рабочих дней отклонили: это противоречит подписанному ТЗ"}],
+           "decision": "Срок подтверждения заявки — три рабочих дня.",
+           "decision_quote": "срок подтверждения — три рабочих дня, как в ТЗ",
+           "consequences": ["Описание процесса приводится к ТЗ."], "affects": ["Заявка на поставку"], "replaces": []}
+    ans.update(over)
+    return ans
+
+
+def _decide_call(ans, seen: list):
+    def fake(cfg_, role, messages, **kw):
+        seen.append((role, messages))
+        text = ans if isinstance(ans, str) else json.dumps(ans, ensure_ascii=False)
+        return {"ok": True, "backend": 1, "model": "m", "tps": 9, "log": [], "text": text}
+    return fake
+
+
+def _decide_cfg():
+    return _mod("agent_core").parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+
+
+@test
+def test_decide_drafts_a_proposed_decision_and_marks_what_the_source_does_not_say(tmp: Path):
+    """`agent:decide`: цитаты проверяет код; ненайденное и несуществующие карточки — «Под вопросом»; принять нельзя, пока он не пуст."""
+    R = _mod("agent_runner")
+    root = _decide_project(tmp)
+    ans = _decide_answer()
+    ans["options"].append({"name": "Семь дней", "chosen": False, "why_not": "долго",
+                           "quote": "все единогласно проголосовали за семь дней"})          # такого в протоколе нет
+    ans["affects"].append("Нет такой карточки")
+    ans["context"] = "Контекст со ссылкой [[Выдумка]] и заготовкой {{x}}."
+    seen: list = []
+    res = R.run_decide(_decide_cfg(), str(root), "Raw/meetings/2026-10-01_срок/protocol.md", "срок заявки", "@analyst", [],
+                       True, call=_decide_call(ans, seen), today="2026-10-19")
+    assert res["ok"] and res["written"] and res["id"] == "DR-0001", res
+    path = root / res["path"]
+    text = path.read_text(encoding="utf-8")
+    fm = _mod("aurora_common").frontmatter(text)
+    assert fm["status"] == "proposed" and fm["template"] == "akdb_decision_v1.0.md" and fm["owner"] == "@analyst", text[:500]
+    assert "### 1. Три рабочих дня — выбран" in text and "### 2. Пять рабочих дней — отклонён" in text, text
+    assert "**Причина отказа:** противоречит подписанному ТЗ" in text
+    assert "Источник: «срок подтверждения — три рабочих дня, как в ТЗ»" in text
+    under = text.split("## Под вопросом", 1)[1]
+    assert "Вариант «Семь дней»" in under and "Нет такой карточки" in under, under
+    assert "[[Выдумка]]" not in text and "{{" not in text, "ссылка и заготовка из ответа модели попали в карточку"
+    assert "Затронутые карточки: [[Заявка на поставку]]" in text and "[[Нет такой карточки]]" not in text
+    # запрос к модели: источник в ограждении недоверенных данных, роль — планировщик
+    role, msgs = seen[0]
+    assert role == "planner"
+    assert "Протокол встречи 2026-10-01" in msgs[0]["content"]
+    # пока «Под вопросом» не пуст, решение не принять; после разбора — принимается
+    cp = run("kb_decide.py", "DR-0001", "--by", "@analyst", cwd=root, expect_rc=1)
+    assert "DR-08" in cp.stderr, cp.stderr
+    cleaned = text.split("## Под вопросом")[0].rstrip() + "\n"
+    cleaned = cleaned.replace("### 3. Семь дней — отклонён\n- **Причина отказа:** долго\n- ⚠ Цитаты нет в источнике: вариант назван моделью, подтвердите или удалите\n", "")
+    path.write_text(cleaned, encoding="utf-8")
+    run("kb_decide.py", "DR-0001", "--by", "@analyst", cwd=root, expect_rc=0)
+    assert "status: accepted" in path.read_text(encoding="utf-8")
+
+
+@test
+def test_decide_preview_writes_nothing_and_takes_no_number(tmp: Path):
+    """Без `--apply` карточки нет и номер не занят; ответ «решения нет», сбой модели и мусор — отказ без записи."""
+    R = _mod("agent_runner")
+    IDR = _mod("id_registry")
+    root = _decide_project(tmp)
+    src = "Raw/meetings/2026-10-01_срок/protocol.md"
+    res = R.run_decide(_decide_cfg(), str(root), src, "", "@analyst", [], False, call=_decide_call(_decide_answer(), []))
+    assert res["ok"] and not res["written"] and "# DR-0001:" in res["text"], res
+    assert not list((root / "AuroraKnowledgeDB/Decisions").glob("DR-*.md"))
+    assert IDR.peek("DR", str(root)) == "DR-0001", "предпросмотр занял номер"
+    assert "Предпросмотр" in R.report_decide(res, False) and "--apply" in R.report_decide(res, False)
+    no = R.run_decide(_decide_cfg(), str(root), src, "", "@analyst", [], True, call=_decide_call({"none": "решения нет"}, []))
+    assert not no["ok"] and "не нашлось" in no["why"], no
+    junk = R.run_decide(_decide_cfg(), str(root), src, "", "@analyst", [], True, call=_decide_call("не json", []))
+    assert not junk["ok"] and "разбираемый" in junk["why"], junk
+
+    def down(cfg_, role, messages, **kw):
+        return {"ok": False, "log": ["№1: шлюз не ответил"], "text": ""}
+
+    bad = R.run_decide(_decide_cfg(), str(root), src, "", "@analyst", [], True, call=down)
+    assert not bad["ok"] and "модель не ответила" in bad["why"], bad
+    assert IDR.peek("DR", str(root)) == "DR-0001", "отказ занял номер"
+
+
+@test
+def test_decide_checks_who_and_where_before_calling_the_model(tmp: Path):
+    """Имя модели, чужой файл, несуществующая карточка и вопрос без номера отсекаются до обращения к модели."""
+    R = _mod("agent_runner")
+    root = _decide_project(tmp)
+    src = "Raw/meetings/2026-10-01_срок/protocol.md"
+    seen: list = []
+    call = _decide_call(_decide_answer(), seen)
+    for kwargs, word in (({"owner": "Claude"}, "человек"), ({"source": "../secret.md"}, "нет в проекте"),
+                         ({"source": "Q-9"}, "нет в"), ({"source": ""}, "нужен источник"),
+                         ({"affects": ["Нет такой"]}, "нет карточки")):
+        args = {"source": src, "owner": "@analyst", "affects": [], **kwargs}
+        res = R.run_decide(_decide_cfg(), str(root), args["source"], "", args["owner"], args["affects"], True, call=call)
+        assert not res["ok"] and word in res["why"], (kwargs, res)
+    assert not seen, "модель вызвана до проверки входа"
+
+
+@test
+def test_decide_reads_a_question_with_its_answer_source(tmp: Path):
+    """`--source Q-7`: карточка вопроса и файл `answer_source` идут моделью как источник; карточка вопроса — ссылка в контексте."""
+    R = _mod("agent_runner")
+    root = _decide_project(tmp)
+    _touch(root, "AuroraKnowledgeDB/Questions/Q-007-срок-заявки.md",
+           '---\ntitle: "Q-007 — срок заявки"\ntype: question\nstatus: draft\nq_status: answered\nanswered: 2026-10-01\n'
+           'answer_source: "Raw/meetings/2026-10-01_срок/protocol.md"\nblocks: []\n---\n\n# Q-007\n\nКакой срок подтверждения заявки?\n')
+    seen: list = []
+    res = R.run_decide(_decide_cfg(), str(root), "Q-7", "", "@analyst", [], False, call=_decide_call(_decide_answer(), seen))
+    assert res["ok"] and res["source"] == "Q-007-срок-заявки", res
+    content = seen[0][1][0]["content"]
+    assert "Какой срок подтверждения заявки?" in content and "Руководитель проекта: срок подтверждения" in content
+    assert "[[Q-007-срок-заявки]]" in res["text"], res["text"][:900]
