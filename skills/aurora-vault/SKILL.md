@@ -107,6 +107,7 @@ needed for the requested command (progressive disclosure, keep context small).
 |---|---|---|
 | `kit:list` | справочник всех команд: модификаторы, чем исполняется, с какой версии (`kit_commands.py`) | `docs/commands.md` |
 | `kit:doctor` (`doctor`) | онбординг: config, skills, секреты в git, версия движка, структура папок (`--structure` — подробно) | `.aurora/scripts/aurora_doctor.py` |
+| `kit:paths` | длина путей на Windows, macOS и Linux: какие строки конфига (корни Confluence, адреса сайтов, папки) не поместятся в путь и что из-за этого не загрузится; только чтение, запуск не блокирует | `references/maintenance.md` |
 | `kit:hooks` | git-хуки: pre-commit с `kb_lint` (ошибки не копятся) и проверкой секретов в добавленных строках, commit-msg и pre-push (внутренние названия, секреты и ветки кухни не уходят в историю и в публичный origin; два последних — только в ките) | `.aurora/scripts/aurora_hooks.py` |
 | `kit:remap-sources` | перенацелить `source:` карточек после переезда зеркала (по page_id) | `references/migration.md` |
 | `kit:update` | обновить движок проекта до версии kit'а; `--structure-only` — только папки схемы | `references/migration.md` |
