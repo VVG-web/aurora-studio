@@ -93,7 +93,9 @@ python3 .aurora/scripts/aurora_setup.py
 ```
 
 In the panel: "The project's settings". The form there asks the same and writes with the same script; below it
-is the whole config as text, for what the form lacks.
+is the whole config as text, for what the form lacks. On saving, the form checks path lengths for Windows, macOS and Linux:
+a line that will not fit is named in red, saving and running are not blocked (details —
+[path length](connectors.md#path-length-the-check-on-saving-settings), the `kit:paths` command).
 
 ## 2. What appears in the project
 
