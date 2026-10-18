@@ -805,6 +805,9 @@ LINK_ALARM_KINDS = frozenset({"dns", "refused", "connect_timeout", "unreachable"
                               "reset", "server_error", "auth", "not_found", "bad_reply", "other"})
 LINK_REACHED_KINDS = frozenset({"silent", "rate_limit"})
 LINK_KINDS = LINK_ALARM_KINDS | LINK_REACHED_KINDS
+# Обрывы, после которых стоит спросить проверку соединений, не упал ли профиль или интернет: соединение не установилось.
+NET_KINDS = frozenset({"dns", "refused", "connect_timeout", "unreachable", "tls", "proxy", "reset"})
+NET_POLL = 15.0     # секунд между перепроверками связи, пока все провайдеры роли недоступны
 # Сколько неудач подряд на одном бэкенде (и сколько обрывов адаптера, спасённых прямым запросом,
 # подряд без единого прохода через адаптер) — тревога, а не мигание сети. Одно число на оба счёта.
 ALARM_AFTER = 3
@@ -2790,6 +2793,15 @@ def _cache_put(key: str, r: dict) -> None:
         pass
 
 
+def _net_gate():
+    """Проверка соединений (`conn_gate`) или None: нет модуля (старая копия движка) — вызов идёт как раньше."""
+    try:
+        import conn_gate
+    except ImportError:
+        return None
+    return conn_gate
+
+
 def call_role(cfg: dict, role: str, messages: list, transport=None,
               deadline: float | None = None, sleep=time.sleep,
               thinking: bool | None = None, max_tokens: int | None = None,
@@ -2917,8 +2929,33 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         "бэкенды не настроены: нет AURORA_AGENT_BACKEND_1_URL"]}
 
     order = ring_order(cfg, prefer, role)
+    # Проверка соединений (включена владельцем): провайдера, чей профиль или интернет недоступен либо чья ручка не отвечает,
+    # не трогаем и в карантин не сажаем — это не его беда. Падать «наугад» на другой адаптер незачем: запасные — только те,
+    # что явно стоят в цепочке роли, и они идут своим чередом. Если недоступны все — LLM-функция блокируется, а не крутит
+    # кольцо вхолостую: разовому вызову отказ с причиной, шагу маршрута — ожидание восстановления (политика queue).
+    gate = _net_gate()
+    net_waits = persist and patient and os.environ.get("AURORA_NET_POLICY", "partial_queue") in ("queue", "partial_queue")
     while time.time() < deadline:
         ring += 1
+        skipped: dict = {}
+        if gate is not None:
+            down = gate.providers_down()
+            skipped = {b["n"]: down[b["provider"]] for b in order if b.get("provider") in down}
+            if skipped and all(b["n"] in skipped for b in order):
+                names = "; ".join(f"{b.get('provider')}: {gate.provider_reason(skipped[b['n']])}" for b in order)
+                if net_waits:
+                    log.append(f"все провайдеры роли недоступны ({names}) — жду восстановления связи")
+                    say_live("⏳", role, f"все провайдеры недоступны ({names}) — жду восстановления связи, продолжу сам")
+                    mine = [b.get("provider") for b in order]
+                    gate.wait_restored(
+                        lambda mine=mine: {"ok": any(pid not in gate.providers_down(fresh=True) for pid in mine)},
+                        poll=NET_POLL)
+                    waited += 1.0
+                    continue
+                log.append(f"все провайдеры роли недоступны по связи ({names}) — вызов не начат: это не поломка провайдеров")
+                _note_failure("связь: нужное недоступно")
+                return {"ok": False, "log": log, "req": req,
+                        "net_blocked": {"providers": [b.get("provider") for b in order], "why": names}}
         if persist:
             # Медленный шлюз — в конец кольца, порядок остальных прежний. Журнал бесконечного
             # вызова не растёт без конца: начало и свежий хвост.
@@ -2943,6 +2980,12 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             model = role_model(b, role)
             if not model:
                 log.append(f"№{b['n']}: нет модели для роли {role} — пропущен")
+                continue
+            if b["n"] in skipped:
+                log.append(f"№{b['n']} {model}: провайдер недоступен ({gate.provider_reason(skipped[b['n']])}) — пропущен до "
+                           "восстановления, карантин не ставлю")
+                other += 1
+                can_recover = can_recover or persist
                 continue
             # Провайдера, который только что не ответил, не спрашиваем на каждом
             # источнике: это минута ожидания на каждом, а за ночь — часы в пустоту. Через
@@ -3096,6 +3139,18 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         # повторяется, либо процесс адаптера завис: неисправен путь Pydantic AI —
                         # тревога про него (ответа на вызов при этом не было).
                         note_bypass(cause, needs_adapter, answered=False)
+                    if gate is not None and lw is not None and lw.kind in NET_KINDS and b.get("provider"):
+                        down_now = gate.note_failure(b["provider"])
+                        if b["provider"] in down_now:
+                            # Соединение не установилось, а проверка соединений знает, почему: профиль или интернет лежит.
+                            # Карантин за чужую беду не ставим — провайдер вернётся вместе со связью.
+                            log.append(f"№{b['n']} {model}: {lw.body} — {gate.provider_reason(down_now[b['provider']])}; "
+                                       "карантин не ставлю, дождусь связи")
+                            say_live("⚠", role, f"№{b['n']} {model}: нет связи ({gate.provider_reason(down_now[b['provider']])})"
+                                                + (" — подожду и повторю" if persist else ""))
+                            other += 1
+                            can_recover = can_recover or persist
+                            continue
                     if st != 429 and looks_like_overflow(err, body):
                         # (429 — всегда лимит скорости: «too many tokens» шлюзы пишут и про него.)
                         # Провайдер жив и отказал по делу: запрос длиннее его окна. Гасить

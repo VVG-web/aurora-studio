@@ -1180,4 +1180,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    from sources_core import net_refusal
+    _why = net_refusal()                   # не хватает связи источнику: отказ с причиной до первого запроса (код 2)
+    if _why:
+        print(_why, flush=True)
+        sys.exit(2)
     sys.exit(main())

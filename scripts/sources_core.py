@@ -197,10 +197,29 @@ def remember_hosts(prefix: str, hosts, root: str = "") -> bool:
     return _store_trusted(prefix, hosts, root)
 
 
+def net_refusal() -> str:
+    """Отказ синку по связи (проверка соединений) или пусто. Режим доступа источника — в конфиге проекта: профиль,
+    которого сейчас нет (или нет интернета), останавливает синк сразу и называет причину, а не даёт упасть таймаутом
+    через минуты. Проверка выключена, модуля нет (старый движок), режим не задан — пусто."""
+    try:
+        import conn_gate
+    except ImportError:
+        return ""
+    try:
+        return conn_gate.sync_refusal(os.path.basename(sys.argv[0] or ""), os.getcwd())
+    except Exception:  # noqa: BLE001 — связь — подсказка: сбой разбора не останавливает синк
+        return ""
+
+
 def run_main(main) -> int:
     """Запуск `main()` командного скрипта: отказ `UnsafeTarget` — ожидаемая настройка (чужой
-    адрес, открытый http), а не сбой: одна строка причины в stderr и код 1, без трейсбека."""
+    адрес, открытый http), а не сбой: одна строка причины в stderr и код 1, без трейсбека.
+    Не хватает связи источнику (проверка соединений) — отказ с точной причиной и код 2 до первого запроса."""
     try:
+        refusal = net_refusal()
+        if refusal:
+            print(refusal, flush=True)
+            return 2
         return main()
     except UnsafeTarget as e:
         print(f"! {e}", file=sys.stderr)

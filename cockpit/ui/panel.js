@@ -85,6 +85,46 @@ document.addEventListener("mouseout", e => {
   if (node && !node.contains(e.relatedTarget)) hideHelp();
 });
 ["mousedown", "keydown", "wheel", "scroll"].forEach(ev => document.addEventListener(ev, hideHelp, true));
+// Причина «не хватает связи» из ответа сервера — строкой на языке страницы.
+function netReason(r){
+  if (r.code === "profile_offline")
+    return r.source ? t("net.reason.profile_offline_src", {name: r.name, source: r.source}) : t("net.reason.profile_offline", {name: r.name});
+  if (r.code === "internet_offline")
+    return r.source ? t("net.reason.internet_offline_src", {source: r.source}) : t("net.reason.internet_offline");
+  if (r.code === "llm_down") return t("net.reason.llm_down");
+  return r.code;
+}
+// Диалог запуска без связи (`info` — ответ 409 сервера). → "partial" | "queue" | null (отмена).
+function askNet(info){
+  return new Promise(done => {
+    const ov = $("#netOverlay"), box = $("#netDialog");
+    const close = v => { ov.classList.remove("on"); box.innerHTML = ""; done(v); };
+    const items = info.cmd
+      ? [{cmd: info.cmd, blocked: info.blocked}]
+      : info.items || [];
+    const has = c => (info.choices || []).includes(c);
+    box.innerHTML = "";
+    box.append(el("h2", {style:"margin:0 0 8px"}, t("net.dialog_title")),
+      el("p", {class:"muted", style:"font-size:13.5px;margin:0 0 10px"},
+        info.cmd ? t("net.dialog_intro_cmd", {cmd: info.cmd})
+                 : t("net.dialog_intro_route", {title: info.title || info.route, n: items.length, total: info.total || items.length})),
+      ...items.slice(0, 12).map(x => el("div", {style:"margin:4px 0"},
+        el("span", {class:"mono", style:"font-weight:600"}, x.cmd), " — ",
+        (x.blocked || []).map(netReason).join("; "))),
+      items.length > 12 ? el("div", {class:"muted"}, t("net.dialog_more", {n: items.length - 12})) : null,
+      el("div", {class:"muted", style:"font-size:12.5px;margin:12px 0 4px"},
+        has("partial") ? t("net.hint_partial") : null),
+      el("div", {class:"muted", style:"font-size:12.5px;margin:0 0 14px"},
+        info.cmd ? t("net.hint_queue_cmd") : t("net.hint_queue_route")),
+      el("div", {class:"row", style:"gap:8px;flex-wrap:wrap"},
+        has("partial") ? el("button", {class:"btn primary", onclick: () => close("partial")}, t("net.btn_partial")) : null,
+        has("queue") ? el("button", {class:"btn" + (has("partial") ? "" : " primary"), onclick: () => close("queue")}, t("net.btn_queue")) : null,
+        el("div", {class:"spacer"}),
+        el("button", {class:"btn sm", onclick: () => close(null)}, t("net.btn_cancel"))));
+    ov.classList.add("on");
+    setTimeout(() => box.querySelector("button")?.focus(), 40);
+  });
+}
 const tick = s => esc(s).replace(/`([^`]+)`/g, '<code class="tick">$1</code>');
 const esc = s => String(s??"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const api = async (path, opts={}) => {
@@ -96,6 +136,13 @@ const api = async (path, opts={}) => {
   const r = await fetch(path + lang, {...opts, headers:{"Content-Type":"application/json",
     "X-Aurora-Token": TOKEN, ...(opts.headers||{})}});
   const d = await r.json();
+  // Проверка соединений: запуск, которому не хватает связи, спрашивает человека — запустить только доступное,
+  // встать в очередь или отменить. Выбор уходит тем же запросом в поле `net`.
+  if (path === "/api/run" && r.status === 409 && d.net_blocked && !opts.netAsked){
+    const choice = await askNet(d.net_blocked);
+    if (!choice) return {cancelled: true};
+    return api(path, {...opts, netAsked: true, body: JSON.stringify({...JSON.parse(opts.body), net: choice})});
+  }
   // Токен не принят — панель запущена заново или вкладка старая: поток отказов превращается
   // в одно понятное окно «обновите страницу», а не в тост на каждый опрос.
   if (r.status === 403 && d.code === "session"){ showAuthGate(); return d; }
@@ -2584,7 +2631,10 @@ async function renderSourceAccess(box){
     const e = eff(src), rec = ACC[src.id] || {};
     const dflt = src.default_mode ? t("access.mode." + src.default_mode) : t("access.mode_unset");
     const modeSel = selectOf([["", t("access.mode_default", {what: dflt})], ...MODES.map(m => [m, t("access.mode." + m)])],
-      rec.mode || "", v => edit(src, r => { if (v){ r.mode = v; } else { delete r.mode; delete r.vpn; } }));
+      rec.mode || "", v => edit(src, r => {
+        if (v){ r.mode = v; if (v !== "vpn" && v !== "mixed") delete r.vpn; }     // имя профиля нужно только режимам с VPN
+        else { delete r.mode; delete r.vpn; }
+      }));
     const cells = [labelled(t("access.f_mode"), modeSel, e.mode ? t("access.h." + e.mode) : t("access.h_unset"))];
     if (e.mode === "vpn" || e.mode === "mixed"){
       const names = d.profiles || [];
@@ -2606,9 +2656,16 @@ async function renderSourceAccess(box){
         flag("internet", t("access.f_internet"), t("access.h_internet"), e.internet),
         flag("offline_cache", t("access.f_cache"), t("access.h_cache"), e.cache)));
   };
+  const send = replace => api("/api/net/access/save", {method:"POST", quiet:true,
+    body: JSON.stringify({project: S.project.path, access: ACC, expect: digest, replace_lossy: replace === true})});
   const save = async () => {
-    const r = await api("/api/net/access/save", {method:"POST", quiet:true,
-      body: JSON.stringify({project: S.project.path, access: ACC, expect: digest})});
+    let r = await send(false);
+    // В блоке есть то, что переписывание потеряет (комментарии, лишние поля): заменяем только по согласию.
+    if (r && r.code === "lossy"){
+      const list = (r.lossy || []).map(k => "• " + t("access.lossy." + k)).join("\n");
+      if (!confirm(t("access.lossy_ask", {list}))) return;
+      r = await send(true);
+    }
     if (r && r.ok){
       d = r.state; ACC = JSON.parse(JSON.stringify(d.explicit || {})); digest = d.digest;
       setDirty("access", t("dirty.access"), false);
@@ -2633,6 +2690,9 @@ async function renderSourceAccess(box){
       card.append(el("div", {class:"muted", style:"font-size:13px"}, t("access.none")));
       return;
     }
+    if ((d.lossy || []).length)
+      card.append(el("div", {class:"warnbox", style:"margin-bottom:10px;font-size:12.5px"},
+        el("div", {}, t("access.lossy_title")), ...d.lossy.map(k => el("div", {}, "• " + t("access.lossy." + k)))));
     d.sources.forEach(src => card.append(row(src)));
     card.append(el("div", {class:"row", style:"margin-top:12px;gap:10px"},
       saveButton("access", t("dirty.access"), t("access.save"), save),
@@ -3454,10 +3514,17 @@ async function runRoute(sc, write, resume){
   if (!resume && write && writes.length && !confirm(t("route.ask", {title: sc.title,
       steps: steps.length, writes: writes.length,
       list: writes.map(s=>"  " + s.cmd + " " + s.args.join(" ")).join("\n")}))) return;
-  const res = await api("/api/route/run", {method:"POST", quiet:true, body: JSON.stringify({
+  const payload = {
     project: S.project.path, scId: sc.id, write,
     resume: resume ? {skipSigs: [...(resume.skipSigs || [])], attempts: resume.attempts || 0,
-                      cycleAt: resume.cycleAt || null} : null})});
+                      cycleAt: resume.cycleAt || null} : null};
+  let res = await api("/api/route/run", {method:"POST", quiet:true, body: JSON.stringify(payload)});
+  if (res && res.net_blocked){
+    // Не хватает связи: человек выбирает — только доступное, очередь или отмена.
+    const choice = await askNet(res.net_blocked);
+    if (!choice) return toast(t("net.cancelled"), "warn");
+    res = await api("/api/route/run", {method:"POST", quiet:true, body: JSON.stringify({...payload, net: choice})});
+  }
   if (!res || !res.route || res.error){
     // Уже идёт маршрут (кнопка в другой вкладке, расписание) — подключаемся к нему, а не
     // заводим второй поверх.
@@ -3525,8 +3592,9 @@ async function attachRoute(id, sc, write, resumed){
       const when = new Date(w.at).toLocaleTimeString(S.lang === "en" ? "en-GB" : "ru-RU",
                                                      {hour:"2-digit", minute:"2-digit"});
       holder.append(el("span",{class:"chip warn"}, t("route.wait_chip")),
-        el("div",{style:"flex:1;min-width:220px", html: t("route.wait_line",
-          {cmd: esc(w.cmd), n: w.attempt, time: when})}),
+        el("div",{style:"flex:1;min-width:220px", html: w.net
+          ? t("route.wait_net_line", {cmd: esc(w.cmd), why: esc(w.net)})
+          : t("route.wait_line", {cmd: esc(w.cmd), n: w.attempt, time: when})}),
         el("button",{class:"btn sm gold", onclick: () => api("/api/route/wake",
           {method:"POST", quiet:true, body: JSON.stringify({id})})}, t("route.wait_now")),
         el("button",{class:"btn sm", onclick: () => api("/api/route/stop",

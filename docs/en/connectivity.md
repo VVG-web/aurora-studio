@@ -123,6 +123,50 @@ The **«Commands»** tab shows for each command: a type label (1 — depends on 
 neither; the labels are for display only), the VPN profiles, whether the model is needed, whether it works offline and which
 sources it uses.
 
+## What happens when the connection is not enough
+
+With the check on and something the work needs unavailable, the function **does not start** (instead of failing by timeout minutes
+later), and the reason is named: "VPN-1 is unavailable (needed by source "Wiki")", "the internet is unavailable", "all model
+providers are unavailable — VPN-1 is not answering". Only a **known** "unavailable" blocks: `unknown` (no checks yet, or the
+internet has no addresses) stops nothing. Commands that need no connection (`kb:lint`, `kb:repair`, `net:status`…) always run.
+
+| Where it starts from | What happens |
+|---|---|
+| A command button in the panel | a dialog with the reason and a choice: **queue** (the job waits for restoration with no limit and starts by itself; "Stop" cancels the wait) or **cancel** |
+| A route, the "Run" button | a dialog listing the steps that lack the connection: **only what is available**, **queue**, or **cancel** |
+| Cron, bots on a schedule | the policy (below): the common one from the "Connection check" section, or the task's own |
+| A source sync from the command line | the script does not start: the reason, exit code 2 and a machine line `AURORA-NET {…}` by which routes and the schedule recognise a connection refusal |
+| A model call | an unavailable provider is not touched and is not quarantined; all unavailable — a refusal with the reason (one-off call) or a wait (route step) |
+
+### Policies for automatic runs
+
+| Policy | A step that lacks the connection |
+|---|---|
+| `fail_fast` | the run does not start (or the step refuses): the reason is in the result, a "no connection" code |
+| `partial` | the step is skipped with a note, the rest goes on; the result is "partial" and names what was skipped |
+| `queue` | the run waits for restoration with no limit and goes whole |
+| `partial_queue` (default) | what is available goes now, the rest is deferred and repeated at the end — after restoration (it waits there) |
+
+A "cycle:" block does not spin idle: a step without a connection stops the lap, and the block repeats whole after restoration
+(`partial_queue`) or goes on without that step (`partial`). Waiting has no time limit anywhere — a route sees the work through
+until a person stops it; "Check now" wakes the wait. The step's process learns the policy too (`AURORA_NET_POLICY`): a model call
+inside it either waits for the providers to return (`queue`, `partial_queue`) or refuses at once (`fail_fast`, `partial`).
+
+### What became of the old waiting
+
+With the check off everything is as before. With it on, each "wait blindly" is replaced by waiting on a known reason, and when the
+check does not know the reason the old behaviour stays:
+
+| Before | Now (check on) |
+|---|---|
+| Agent run after a drop: a 5-minute pause, up to 24 times (`OFFLINE_WAIT`, `OFFLINE_TRIES`) | all models unavailable by the check — wait for them to return, re-checking every 15 seconds; reason unknown — the old pause |
+| A route step fell over the network: 15 minutes (30 seconds if the step did work), "Check now" wakes it | reason known — wait for restoration by the check and repeat at once; unknown — the old rhythm |
+| Provider quarantine in the ring: 15 minutes after a drop, "Return to the main one" | the drop is explained by an unavailable profile or the internet — no quarantine, the provider returns with the connection; a real provider failure — quarantine as before |
+| A request to a provider whose profile is down went out and failed by timeout | no request: the provider is skipped until the profile returns |
+| The step watchdog asked the model and the source servers with direct requests | takes the connection check's summary for what the work needs; servers whose access mode is not set are asked directly, as before |
+| A lost connection → a direct HTTP request bypassing the adapter | not done: the direct-request reserve is only for a broken adapter, not for a lost connection |
+| Cron: a failed step was deferred and repeated at the end | a step without a connection is deferred by the same mechanism (`partial_queue`), the repeat at the end waits for restoration |
+
 ## Commands
 
 Read and check only — the settings are written by the panel:

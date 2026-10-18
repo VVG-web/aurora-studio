@@ -37,5 +37,6 @@
   "commands.net.variant.parse_downloaded": "без связи: разбор уже скачанного",
   "commands.net.sources": "источники: {list}",
   "commands.net.sources_hint": "Какие источники проекта использует команда.",
-  "commands.net.no_source": "не подключён"
+  "commands.net.no_source": "не подключён",
+  "commands.net.llm_internet_hint": "Команде нужна модель кита; провайдер без VPN-профиля работает через интернет."
 }

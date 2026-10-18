@@ -146,5 +146,6 @@
   "models.p_health_hint.auth": "The kit requests the endpoint with the provider's key and expects a successful answer. The key goes only to the provider's own address and only over https (or on this computer).",
   "models.p_health_path": "Check endpoint",
   "models.p_health_path_hint": "A path on the provider's server. Example: /models",
-  "models.conflict": "The model setup changed on disk since the page was opened. Your edits are still on the page: press «Discard changes» to load the fresh setup, then make them again."
+  "models.conflict": "The model setup changed on disk since the page was opened. Your edits are still on the page: press «Discard changes» to load the fresh setup, then make them again.",
+  "models.broken_ask": "The model setup file cannot be parsed (a hand edit?). Saving will replace it entirely; a copy stays beside it. Replace it?"
 }

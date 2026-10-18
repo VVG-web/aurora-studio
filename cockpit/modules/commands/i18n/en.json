@@ -37,5 +37,6 @@
   "commands.net.variant.parse_downloaded": "offline: parse what is already downloaded",
   "commands.net.sources": "sources: {list}",
   "commands.net.sources_hint": "Which of the project's sources the command uses.",
-  "commands.net.no_source": "not connected"
+  "commands.net.no_source": "not connected",
+  "commands.net.llm_internet_hint": "The command needs the kit's model; a provider with no VPN profile works over the internet."
 }

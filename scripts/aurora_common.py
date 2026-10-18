@@ -3887,6 +3887,17 @@ def same_origin(url: str, base: str) -> bool:
     return b[0] == "http" and a[0] == "https" and a[1] == b[1] and a[2] == 443 and b[2] == 80
 
 
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
+
+
+def profile_name_ok(name) -> bool:
+    """Годится ли имя профиля соединений (VPN-1, Office): короткая метка, а не адрес.
+
+    IP-литерал и имя вроде `gw.corp.example.com` не годятся: имя профиля уходит в общий конфиг проекта и в его git, а
+    адресам там не место — они лежат на машине (`local/connectivity.json`). Одной точки в имени достаточно."""
+    return isinstance(name, str) and bool(_PROFILE_NAME_RE.match(name)) and name.count(".") < 2
+
+
 def canon_host(host: str) -> str:
     """Имя хоста в том виде, в котором его отдаст транспорт: IDNA-кодирование (его делают `http.client`
     для CONNECT и `getaddrinfo`: оно выбрасывает мягкий перенос U+00AD, отображает `ª`, `¹²³`,

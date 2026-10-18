@@ -162,23 +162,35 @@ def stale_git_lock(project: str, older_than: float = 60) -> str:
 
 def probe(project: str) -> dict:
     """Связь, без которой шаг не может закончиться: модель и Jira/Confluence проекта.
-    → {"ok": bool, "down": [что не отвечает]}. Ключей наружу нет."""
+    → {"ok": bool, "down": [что не отвечает]}. Ключей наружу нет.
+
+    Проверка соединений включена и знает нужное делу — берём её сводку, а не опрашиваем модель и серверы второй раз;
+    Jira/Confluence, чей доступ режимом не задан, опрашиваются прямо, как и без проверки."""
     down = []
     here = os.path.dirname(os.path.abspath(__file__))
     scripts = os.path.join(os.path.dirname(here), "scripts")
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
+    net = {"known": False, "covered": []}
     try:
-        import agent_core as AG
-        import model_config as MC
-        cfg = MC.to_config(MC.load(os.path.dirname(here), AG.kit_env(os.path.dirname(here))))
-        chat = [b for b in cfg.get("backends") or [] if b.get("chat", True)]
-        if chat:
-            got = AG.models_of(chat[0], timeout=PROBE_TIMEOUT)
-            if got.get("error"):
-                down.append("модель (" + (chat[0].get("name") or f"№{chat[0]['n']}") + ")")
-    except Exception:  # noqa: BLE001 — сторож не падает из-за настройки моделей
+        import conn_gate
+        net = conn_gate.watch_state(project)
+    except Exception:  # noqa: BLE001 — нет проверки соединений: прямые запросы, как раньше
         pass
+    if net["known"]:
+        down += net["down"]
+    else:
+        try:
+            import agent_core as AG
+            import model_config as MC
+            cfg = MC.to_config(MC.load(os.path.dirname(here), AG.kit_env(os.path.dirname(here))))
+            chat = [b for b in cfg.get("backends") or [] if b.get("chat", True)]
+            if chat:
+                got = AG.models_of(chat[0], timeout=PROBE_TIMEOUT)
+                if got.get("error"):
+                    down.append("модель (" + (chat[0].get("name") or f"№{chat[0]['n']}") + ")")
+        except Exception:  # noqa: BLE001 — сторож не падает из-за настройки моделей
+            pass
     if project:
         try:
             import urllib.error
@@ -193,7 +205,7 @@ def probe(project: str) -> dict:
                     ("Jira", s["jira_url"], "/rest/api/2/serverInfo", "JIRA", JE.Api),
                     ("Confluence", s["confluence_url"], "/rest/api/space?limit=1", "CONFLUENCE",
                      CE.Api)):
-                if not base:
+                if not base or prefix in net["covered"]:
                     continue
                 auth, _how = read_secret(prefix, project)
                 # Запрос строит клиент источника: ключ уходит только на свой сервер, не по

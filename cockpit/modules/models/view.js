@@ -103,7 +103,9 @@ function drawBar(ctx){
     el("button", {class: "btn primary", disabled: DIRTY ? null : "", onclick: () => save(ctx)},
       t("models.save")),
     el("button", {class: "btn", disabled: DIRTY ? null : "",
-      onclick: () => { M = JSON.parse(JSON.stringify(DATA.models)); DIRTY = false; draw(ctx); }},
+      // «Отменить» перечитывает настройку с сервера: после отказа по слепку (файл менялся на диске) локальная копия
+      // устарела, и без этого каждая следующая запись упиралась бы в тот же отказ.
+      onclick: async () => { DIRTY = false; await refresh(ctx); }},
       t("models.revert")),
     DIRTY ? el("span", {class: "chip warn"}, t("models.unsaved")) : null,
     el("span", {style: "flex:1"}),
@@ -111,7 +113,7 @@ function drawBar(ctx){
   if (PING) box.append(PING);
 }
 
-async function save(ctx){
+async function save(ctx, replaceBroken){
   const {t} = ctx;
   // Бэкенд без провайдера или модели сервер отбросит — скажем это заранее, а не после.
   const holes = [];
@@ -119,10 +121,12 @@ async function save(ctx){
     if (!b.provider || !String(b.model || "").trim())
       holes.push(`${t("models.tab." + c)} · ${r.name} · ${i + 1}`);
   })));
-  if (holes.length && !confirm(t("models.holes_ask", {list: holes.join("\n")}))) return;
+  if (holes.length && replaceBroken !== true && !confirm(t("models.holes_ask", {list: holes.join("\n")}))) return;
   const r = await ctx.api("/api/models/save", {method: "POST", quiet: true,
-    body: JSON.stringify({models: M, expect: DATA.stamp})});
+    body: JSON.stringify({models: M, expect: DATA.stamp, replace_broken: replaceBroken === true})});
   if (r && r.conflict) return ctx.toast(t("models.conflict"), "err");
+  // Прежний файл не разобрать (правка руками?): заменяем только по согласию, копия остаётся рядом.
+  if (r && r.code === "broken") return confirm(t("models.broken_ask")) ? save(ctx, true) : undefined;
   if (!r || !r.ok) return ctx.toast((r && r.error) || t("models.save_failed"), "err");
   ctx.toast(t("models.saved"), "ok");
   (r.notes || []).forEach(n => ctx.toast(n, "warn"));
@@ -233,7 +237,7 @@ function netRow(ctx, p, touchFn){
   const check = el("select", {class: "btn", style: "width:100%"},
     ...(DATA.health_checks || ["off", "reach", "auth"]).map(v => el("option",
       {value: v, selected: health.check === v ? "" : null}, t("models.p_health." + v))));
-  check.onchange = () => { health.check = check.value; touchFn(ctx); };
+  check.onchange = () => { health.check = check.value; touchFn(ctx, true); };
   const path = el("input", {class: "btn mono", style: "width:100%;font-weight:400", placeholder: "/models"});
   path.value = health.path || "/models";
   path.oninput = () => { health.path = path.value; touchFn(ctx); };

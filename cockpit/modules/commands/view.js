@@ -10,21 +10,30 @@ const OUTWARD = ["sync:confluence", "sync:jira", "ship:publish", "ship:export"];
 
 export function mount(ctx){
   ctx.root.dataset.module = "commands";
-  ctx.$("#cmdSearch").oninput = () => refresh(ctx);
+  ctx.$("#cmdSearch").oninput = () => refresh(ctx, true);
 }
 
 // Зависимости команд от связи (`command_deps.json`, профили — из проекта): что нужно команде, чтобы она заработала.
-let NET = {};
+let NET = {}, NET_KEY = null;
 
-async function loadNet(ctx){
-  const q = ctx.project ? "?project=" + encodeURIComponent(ctx.project.path) : "";
-  const d = await ctx.api("/api/net/commands" + q, {quiet: true});
-  NET = (d && d.commands) || {};
+// При открытии раздела — заново, при наборе в поиске — из уже загруженного: поиск фильтрует список, а не зовёт сервер на
+// каждую букву. Метки зависимостей — украшение: сбой загрузки список команд не ломает.
+async function loadNet(ctx, typing){
+  const key = ctx.project ? ctx.project.path : "";
+  if (typing && NET_KEY === key) return;
+  NET_KEY = key;
+  try {
+    const q = key ? "?project=" + encodeURIComponent(key) : "";
+    const d = await ctx.api("/api/net/commands" + q, {quiet: true});
+    NET = (d && d.commands) || {};
+  } catch (e) {
+    NET = {};
+  }
 }
 
-export async function refresh(ctx){
+export async function refresh(ctx, typing){
   const {t, el} = ctx;
-  await loadNet(ctx);
+  await loadNet(ctx, typing);
   const q = (ctx.$("#cmdSearch").value || "").toLowerCase().trim();
   const all = ctx.state.commands.filter(r => !ctx.isEngineCmd(r));
   const rows = all.filter(r => !q ||
@@ -54,6 +63,7 @@ function netChips(ctx, n){
   if (n.profiles.length) chips.push(el("span", {class:"chip warn", title: t("commands.net.vpn_hint")}, t("commands.net.vpn", {names: n.profiles.join(", ")})));
   if (n.llm) chips.push(el("span", {class:"chip", title: n.llm_profiles.length ? t("commands.net.llm_vpn", {names: n.llm_profiles.join(", ")}) : t("commands.net.llm_hint")}, t("commands.net.llm")));
   if (n.internet && !n.profiles.length) chips.push(el("span", {class:"chip warn"}, t("commands.net.internet")));
+  else if (n.llm_internet) chips.push(el("span", {class:"chip warn", title: t("commands.net.llm_internet_hint")}, t("commands.net.internet")));
   chips.push(n.offline ? el("span", {class:"chip ok", title: t("commands.net.offline_hint")}, t("commands.net.offline"))
                        : el("span", {class:"chip", title: t("commands.net.needs_net_hint")}, t("commands.net.needs_net")));
   if (n.variant) chips.push(el("span", {class:"chip", title: t("commands.net.variant_hint")}, t("commands.net.variant." + n.variant)));

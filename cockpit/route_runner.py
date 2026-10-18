@@ -9,7 +9,10 @@
 - блок «цикл:» повторяется оборотами: остаток работы считается по видам, каждый оборот
   фиксируется в git, застой и предохранитель в 12 оборотов останавливают маршрут;
 - шаг, упавший по сети, ждёт бэкенды: 15 минут между попытками, 30 секунд, если шаг всё
-  же сделал работу, — до восьми попыток; «Проверить сейчас» будит ожидание;
+  же сделал работу, — до восьми попыток; «Проверить сейчас» будит ожидание. При включённой проверке
+  соединений (`conn_gate`) шагу, которому не хватает связи, не дают начаться: политика прогона
+  (`fail_fast`, `partial`, `queue`, `partial_queue`) решает — остановить, пропустить, дождаться или
+  отложить на конец маршрута; ожидание идёт по проверке связи, а не вслепую;
 - хвост маршрута фиксируется в git, итог складывает движок (`run_summary`), состояние
   остановленного маршрута пишется для «Продолжить маршрут»;
 - журнал прогона — всё, что видно в консоли, пока маршрут идёт: заголовки шагов, вывод
@@ -37,7 +40,17 @@ FLAKY_RETRY_S = 30               # шлюз мигает, а не лежит: п
 # Потолка попыток нет (1.170.0): маршрут ждёт сеть, пока она не вернётся или человек не
 # нажмёт «не ждать». Прежние 8 попыток (≈ 2 часа) заканчивали ночной прогон к утру ничем.
 POLL_S = 1.0
+NET_POLL_S = 5.0         # ожидание связи: вердикт обновляется раз в столько секунд (сводка — из кэша проверок)
 JOB_KEEP_LINES = 4000    # строк вывода задания в памяти; полный текст — в console.log прогона
+
+
+def net_gate():
+    """Проверка соединений (`conn_gate`) либо None: у старого кита модуля нет — маршрут идёт как раньше."""
+    try:
+        import conn_gate
+    except ImportError:
+        return None
+    return conn_gate
 
 
 def job_push(job: dict, line: str) -> None:
@@ -235,17 +248,18 @@ def job_project(ck, project: str, cmd: str) -> str:
 
 
 def run_job(ck, project: str, cmd: str, args: list, stop=None, on_job=None,
-            parent: str = "", on_lines=None) -> dict:
+            parent: str = "", on_lines=None, net: str = "") -> dict:
     """Запустить команду заданием панели и дождаться конца. → {rc, lines, refused, stopped}.
 
     Задание то же, что у кнопки: оно видно в «Консоли», пишет архив прогона и журнал
     запусков, а «Прервать» в панели его останавливает. `parent` — прогон, частью которого
     шаг идёт (маршрут, цепочка расписания): история покажет его внутри родителя.
-    `on_lines(строки)` получает вывод по мере появления — для журнала маршрута.
+    `on_lines(строки)` получает вывод по мере появления — для журнала маршрута. `net` — политика
+    прогона без связи: процесс шага узнаёт её из окружения (`AURORA_NET_POLICY`).
     """
     where = job_project(ck, project, cmd)
     try:
-        job_id = ck.start_job(where, cmd, list(args), parent=parent)
+        job_id = ck.start_job(where, cmd, list(args), parent=parent, **({"net_policy": net} if net else {}))
     except ValueError as e:
         return {"rc": 2, "lines": [str(e)], "refused": str(e)}
     if on_job:
@@ -368,8 +382,13 @@ class RouteRun:
 
     def __init__(self, ck, project: str, sc: dict, write: bool = True, lang: str = "ru",
                  log=None, stop=None, on_job=None, on_step=None, resume: dict | None = None,
-                 trigger: str = "cli", parent: str = ""):
+                 trigger: str = "cli", parent: str = "", net: str = ""):
         self.ck, self.project, self.sc, self.write = ck, project, sc, write
+        # Политика прогона без связи: задание Cron или выбор человека в диалоге; пусто — из настройки кита.
+        self.net, self.net_policy = net, ""
+        self.deferred: list = []               # шаги, которым не хватило связи: повторим после восстановления
+        self.deferred_blocks: list = []        # то же для блоков цикла: (начало, конец)
+        self.net_skipped: list = []            # пропущенные по политике partial
         self.t = Texts(ck, lang)
         self.lang = lang
         self.log = log or (lambda text: None)
@@ -437,6 +456,154 @@ class RouteRun:
             time.sleep(min(POLL_S, max(0.0, end - time.time())))
         return not self._stopping()
 
+    # ------------------------------------------------------- связь: хватает ли её шагу
+
+    def _net_svc(self):
+        try:
+            import connectivity as CN
+            return CN.service(getattr(self.ck, "KIT", None))
+        except Exception:  # noqa: BLE001 — связь — подсказка: сбой разбора не останавливает маршрут
+            return None
+
+    def _verdict(self, cmd: str) -> dict:
+        """Хватает ли связи команде сейчас. Выключенная проверка и сбой самой проверки — «хватает»."""
+        G, svc = net_gate(), self._net_svc()
+        if G is None or svc is None:
+            return {"ok": True, "blocked": []}
+        try:
+            return G.check_command(cmd, self.project, svc=svc)
+        except Exception:  # noqa: BLE001
+            return {"ok": True, "blocked": []}
+
+    def _why(self, v: dict) -> str:
+        G = net_gate()
+        return "; ".join(G.reason_line(r) for r in v.get("blocked") or []) if G else ""
+
+    def _woken(self) -> bool:
+        """«Проверить сейчас» во время ожидания: перепроверить немедленно."""
+        if self.wake.is_set():
+            self.wake.clear()
+            return True
+        return False
+
+    def _set_net_wait(self, cmd: str, why: str) -> None:
+        """Метка ожидания связи для страницы: время `at` не меняется, пока ждём, — страница не перерисовывает строку."""
+        same = self.wait.get("net") is not None and self.wait.get("cmd") == cmd
+        self.wait = {"cmd": cmd, "attempt": 0, "at": self.wait["at"] if same else _iso(), "net": why}
+
+    def _net_wait(self, st: dict, v: dict | None = None) -> bool:
+        """Ждать, пока связи хватит шагу. Предела нет — маршрут доводит дело до конца; «Остановить» прерывает.
+        → дождались ли (False — остановил человек)."""
+        G = net_gate()
+        cmd = (st["cmd"] + " " + " ".join(st["args"])).strip()
+        v = v or self._verdict(st["cmd"])
+        started, said = time.time(), [0.0]
+
+        def on_wait(verdict, _secs):
+            now = time.time()
+            self._set_net_wait(cmd, self._why(verdict))
+            if now - said[0] >= 600:             # в журнал — раз в десять минут, а не на каждый опрос
+                said[0] = now
+                self.say("warn", self.t("route.net_wait_line", cmd=cmd, why=self._why(verdict)))
+        on_wait(v, 0)
+        ok = G.wait_restored(lambda: self._verdict(st["cmd"]), stop=self.stop, poll=NET_POLL_S, on_wait=on_wait,
+                             woken=self._woken)
+        self.wait = {}
+        if ok:
+            self.say("ok", self.t("route.net_restored", cmd=cmd, took=self._dur(time.time() - started)))
+        return ok
+
+    def _net_step(self, st: dict):
+        """Шагу не хватает связи? → None (идти дальше) либо результат шага без запуска. Политика решает: отказ,
+        пропуск, ожидание или откладывание на конец маршрута."""
+        G = net_gate()
+        if G is None:
+            return None
+        v = self._verdict(st["cmd"])
+        if v.get("ok", True):
+            return None
+        return self._net_apply(st, v)
+
+    def _net_apply(self, st: dict, v: dict):
+        """Применить политику прогона к вердикту «связи не хватает». → None (дождались, идти дальше) либо результат шага
+        без запуска. Вердикт даёт предзапуск (`_net_step`) или отказ самого скрипта источника (`AURORA-NET`)."""
+        G = net_gate()
+        why, cmd = self._why(v), st["cmd"]
+        act = G.decide(self.net_policy, v)
+        if act == "fail":
+            self.say("err", self.t("route.net_fail", cmd=cmd, why=why))
+            self.failed, self.refused, self.offline = cmd, G.blocked_text(cmd, v), True
+            return {"rc": 2, "lines": [], "ended": "net"}
+        if act == "skip":
+            self.say("warn", self.t("route.net_skip", cmd=cmd, why=why))
+            self.net_skipped.append(cmd)
+            return {"rc": 0, "skipped": True, "net": True, "lines": []}
+        if act == "defer":
+            self.say("warn", self.t("route.net_defer", cmd=cmd, why=why))
+            self.deferred.append(st)
+            return {"rc": 0, "skipped": True, "net": True, "deferred": True, "lines": []}
+        if not self._net_wait(st, v):
+            self.stopped, self.failed = True, self.failed or cmd
+            return {"rc": 0, "lines": [], "ended": "stopped"}
+        return None
+
+    def _net_precheck(self, steps: list) -> bool:
+        """До первого шага: `fail_fast` — не начинать, если чего-то не хватает; `queue` — дождаться всего и идти целиком.
+        → False, если маршрут дальше не идёт."""
+        G = net_gate()
+        if G is None or self.net_policy not in ("fail_fast", "queue"):
+            return True
+        cmds = [st["cmd"] for st in steps]
+        lacking: list = []                     # какие команды маршрута остались без связи (по последней проверке)
+
+        def check() -> dict:
+            try:
+                rows = G.check_steps(cmds, self.project, svc=self._net_svc())
+            except Exception:  # noqa: BLE001
+                return {"ok": True, "blocked": []}
+            lacking[:] = [x["cmd"] for x in rows if not x["ok"]]
+            bad = [r for x in rows if not x["ok"] for r in x["blocked"]]
+            return {"ok": not bad, "blocked": bad}
+        v = check()
+        if v["ok"]:
+            return True
+        why = self._why(v)
+        if self.net_policy == "fail_fast":
+            self.say("err", self.t("route.net_fail_all", why=why))
+            self.failed, self.refused, self.offline = (lacking[0] if lacking else steps[0]["cmd"]), why, True
+            return False
+        self.say("warn", self.t("route.net_queue_line", why=why))
+        started = time.time()
+        ok = G.wait_restored(check, stop=self.stop, poll=NET_POLL_S, woken=self._woken,
+                             on_wait=lambda verdict, _s: self._set_net_wait(steps[0]["cmd"] if steps else "", self._why(verdict)))
+        self.wait = {}
+        if not ok:
+            self.stopped, self.failed = True, self.failed or (steps[0]["cmd"] if steps else "")
+            return False
+        self.say("ok", self.t("route.net_restored", cmd=self.sc.get("title", ""), took=self._dur(time.time() - started)))
+        return True
+
+    def _run_deferred(self, steps: list) -> bool:
+        """Отложенное — после восстановления связи, по очереди, как стояло в маршруте. → False, если маршрут дальше не идёт."""
+        self.say("head", self.t("route.net_retry_head", n=len(self.deferred) + len(self.deferred_blocks)))
+        self.net_policy = "queue"             # повтор уже ждёт, а не откладывает снова
+        for st in list(self.deferred):
+            if self._stopping():
+                self.stopped, self.failed = True, self.failed or st["cmd"]
+                return False
+            v = self._verdict(st["cmd"])
+            if not v.get("ok", True) and not self._net_wait(st, v):
+                self.stopped, self.failed = True, self.failed or st["cmd"]
+                return False
+            res = self.run_one(st, retry=True)
+            if res.get("ended") or self._halted(st, res):
+                return False
+        for a, b in list(self.deferred_blocks):
+            if not self._cycle(steps, a, b):
+                return False
+            self.lap = 0
+        return True
+
     def exec_step(self, cmd: str, args: list) -> dict:
         def on_job(job_id, name):
             self.job = job_id
@@ -448,7 +615,7 @@ class RouteRun:
                 if not str(line).startswith((self.ck.RS.MARK, self.ck.RS.MARK_GATE)):
                     self.say("out", line)
         res = run_job(self.ck, self.project, cmd, args, stop=self.stop, on_job=on_job,
-                      parent=self.run_id, on_lines=on_lines)
+                      parent=self.run_id, on_lines=on_lines, net=self.net_policy)
         self.job = ""
         if res.get("run_id"):
             self.children.append(res["run_id"])
@@ -544,14 +711,22 @@ class RouteRun:
         wait = OFFLINE_RETRY_S
         cmd = (st["cmd"] + " " + " ".join(st["args"])).strip()
         while True:
-            when = datetime.fromtimestamp(time.time() + wait).strftime("%H:%M")
-            self.wait = {"cmd": cmd, "attempt": attempt, "at": _iso(time.time() + wait)}
-            self.offline_attempts = attempt
-            self.say("warn", self.t("route.wait_line", cmd=cmd, n=attempt, time=when))
-            slept = self._sleep(wait)
-            self.wait = {}
-            if not slept:
-                return "stopped"
+            known = self._verdict(st["cmd"])
+            if not known.get("ok", True):
+                # Проверка соединений знает причину (профиль или интернет лежит): ждём восстановления по ней, а не
+                # вслепую по пятнадцать минут, и повторяем шаг сразу, как связь вернулась.
+                self.offline_attempts = attempt
+                if not self._net_wait(st, known):
+                    return "stopped"
+            else:
+                when = datetime.fromtimestamp(time.time() + wait).strftime("%H:%M")
+                self.wait = {"cmd": cmd, "attempt": attempt, "at": _iso(time.time() + wait)}
+                self.offline_attempts = attempt
+                self.say("warn", self.t("route.wait_line", cmd=cmd, n=attempt, time=when))
+                slept = self._sleep(wait)
+                self.wait = {}
+                if not slept:
+                    return "stopped"
             start = time.time()
             res = self.exec_step(st["cmd"], st["args"])
             self.last_res = res
@@ -570,14 +745,14 @@ class RouteRun:
                 return "stopped" if self.stopped else "failed"
             return "continue"
 
-    def run_one(self, st: dict) -> dict:
+    def run_one(self, st: dict, retry: bool = False) -> dict:
         sig = (st["cmd"] + " " + " ".join(st["args"])).strip()
-        if self.skip and not st["cycle"] and self.step_key(st) in self.skip:
+        if not retry and self.skip and not st["cycle"] and self.step_key(st) in self.skip:
             self.done += 1
             self.say("note", self.t("route.skip_step", step=self.done, of=self.total,
                                     cmd=st["cmd"]))
             return {"rc": 0, "skipped": True, "lines": []}
-        if self.cycle_at and st["cycle"] and self.lap == 1 \
+        if not retry and self.cycle_at and st["cycle"] and self.lap == 1 \
                 and st["cycleIdx"] < self.cycle_at["inLap"]:
             self.in_lap = st["cycleIdx"]
             self.say("note", self.t("route.skip_lap_step", step=st["cycleIdx"],
@@ -585,7 +760,7 @@ class RouteRun:
             return {"rc": 0, "skipped": True, "lines": []}
         if st["cycle"]:
             self.in_lap = st["cycleIdx"]
-        else:
+        elif not retry:
             self.done += 1
         lap = self.t("route.lap_mark", lap=self.lap) if self.lap else ""
         where = (self.t("route.where_lap", step=self.in_lap, of=self.cycle_size) if self.lap
@@ -594,6 +769,10 @@ class RouteRun:
                     "inLap": self.in_lap, "cycleSize": self.cycle_size, "cmd": st["cmd"],
                     "since": _iso()}
         self.say("head", self.t("route.step_head", where=where, lap=lap, cmd=sig, why=st["why"]))
+        # Связи не хватает — шаг не начинается (политика прогона): иначе он упал бы таймаутом через минуты.
+        gated = None if retry else self._net_step(st)
+        if gated is not None:
+            return gated
         start = time.time()
         # Длительность прошлого шага — единственный симптом букса на длинном маршруте.
         # Считается от начала до конца прошлого шага. До 1.161.0 здесь стояло «начало
@@ -614,6 +793,19 @@ class RouteRun:
         while res.get("hung") and not self.stopped:
             tries += 1
             self.say("warn", self.t("route.hung_restart", why=res["hung"], n=tries))
+            res = self.exec_step(st["cmd"], st["args"])
+        # Скрипт источника сам отказал по связи (`AURORA-NET`: она пропала между проверкой и первым запросом): это не
+        # поломка шага, а тот же вердикт «связи не хватает» — политика решает, ждать, откладывать или пропустить.
+        G = net_gate()
+        while G is not None and self.net_policy and res["rc"] == 2 and not self.stopped:
+            mark = G.parse_marker(res["lines"])
+            if not mark:
+                break
+            out = self._net_apply(st, {"ok": False, "blocked": mark["blocked"]})
+            if out is not None:
+                return out
+            if not self._sleep(NET_POLL_S):          # проверка и скрипт спорят о связи — не крутимся впустую
+                break
             res = self.exec_step(st["cmd"], st["args"])
         end = time.time()
         self.prev_took = end - start
@@ -717,6 +909,11 @@ class RouteRun:
             res = {"ok": False, "reason": "failed", "failed": steps[0]["cmd"] if steps else "",
                    "note": why, "steps": 0, "lines": [], "run_id": self.run_id, "found": []}
             return self._close(res)
+        G, svc = net_gate(), self._net_svc()
+        # Политика нужна только включённой проверке: выключенная ничего не решает и в окружение шага не попадает.
+        self.net_policy = G.policy_for(self.net, svc) if (G and svc and svc.enabled) else ""
+        if not self._net_precheck(steps):
+            return self._finish(self.head0 or "", started)
         if not self.resumed:
             self._git("update", "before_route")
         head = ck.RS.git_head(self.project)
@@ -742,6 +939,8 @@ class RouteRun:
                 break
             self.lap = 0
             i = end
+        if (self.deferred or self.deferred_blocks) and not (self._stopping() or self.failed or self.stopped):
+            self._run_deferred(steps)
         return self._finish(head, started)
 
     def _cycle(self, steps: list, i: int, end: int) -> bool:
@@ -749,7 +948,7 @@ class RouteRun:
         t = self.t
         prev = {}
         for self.lap in range(1, CYCLE_LIMIT + 1):
-            kinds = {}
+            kinds, blocked_lap = {}, False
             for k in range(i, end):
                 if self._stopping():
                     self.stopped, self.failed = True, steps[k]["cmd"]
@@ -757,9 +956,21 @@ class RouteRun:
                 res = self.run_one(steps[k])
                 if res.get("ended"):
                     return False
+                if res.get("net"):
+                    # Шагу не хватило связи: цикл не крутится вхолостую. Отложенный блок повторится целиком после
+                    # восстановления (шаги идемпотентны), пропущенный — идёт дальше без него.
+                    blocked_lap = True
+                    if res.get("deferred"):
+                        self.deferred = [d for d in self.deferred if d is not steps[k]]
+                        if (i, end) not in self.deferred_blocks:
+                            self.deferred_blocks.append((i, end))
+                    continue
                 if self._halted(steps[k], res):
                     return False
                 kinds.update(left_by_kind(res["lines"]))
+            if blocked_lap:
+                self.say("note", t("route.net_cycle_stop"))
+                return True
             if self.cycle_at and self.lap == 1:
                 continue
             name = lambda k: (t("route.kind." + k) if t("route.kind." + k) != "route.kind." + k
@@ -807,6 +1018,8 @@ class RouteRun:
         reason = ("stall" if self.stalled else "offline" if self.offline
                   else "stopped" if self.stopped else "gated" if gated
                   else "failed" if self.failed else "passed")
+        if self.net_skipped:
+            self.say("warn", t("route.net_skipped", n=len(self.net_skipped), list=", ".join(dict.fromkeys(self.net_skipped))))
         # Итоговая фраза — та, что страница писала в конце консоли: теперь она в журнале и
         # видна в истории так же, как была видна вживую.
         if self.stalled:
@@ -866,7 +1079,7 @@ class RouteRun:
         head = _head(self.project)
         res = {"ok": reason == "passed", "reason": reason, "failed": self.failed,
                "gated": reason == "gated",
-               "progressed": bool(head and head != self.head0),
+               "progressed": bool(head and head != self.head0), "net_skipped": list(self.net_skipped),
                "note": self.refused, "steps": self.done, "lines": lines,
                "run_id": self.run_id,
                "found": [{"cmd": x["cmd"], "lines": x["tail"]} for x in self.summary
