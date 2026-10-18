@@ -2089,7 +2089,7 @@ def kit_root():
 
 
 def personal_kit_file(path) -> bool:
-    """Личный файл настоящего кита (`ENV_FILE`, `local/mcp.json`) в прогоне тестов?
+    """Личный файл настоящего кита (`ENV_FILE`, `local/mcp.json`, `local/models.json`, `local/connectivity.json`) в прогоне тестов?
 
     Прогон тестов (`AURORA_TESTS_ISOLATED`) не читает личную настройку машины: иначе счёт
     зависит от того, чья машина его запустила. Изоляция агента ловила это для вызова без
@@ -2105,7 +2105,7 @@ def personal_kit_file(path) -> bool:
         return False
     kit = os.path.realpath(_REAL_KIT)
     return p in (os.path.join(kit, ENV_FILE), os.path.join(kit, "local", "mcp.json"),
-                 os.path.join(kit, "local", "models.json"))
+                 os.path.join(kit, "local", "models.json"), os.path.join(kit, "local", "connectivity.json"))
 
 
 def load_env(path) -> dict:

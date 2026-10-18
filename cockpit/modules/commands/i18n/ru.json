@@ -19,5 +19,6 @@
   "commands.ns.ops": "ops: управление и отчётность",
   "commands.ns.agent": "agent: встроенный агент",
   "commands.ns.git": "git: Git проекта",
-  "commands.ns.bot": "bot: боты проекта"
+  "commands.ns.bot": "bot: боты проекта",
+  "commands.ns.net": "net: проверка соединения"
 }

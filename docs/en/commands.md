@@ -159,6 +159,13 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 | `bot:check` | Check a bot without running it: the schedule (cron), MCP servers, skills and attachment paths — with the next runs. | script | 1.156.0 |
 | `bot:list` (`bots`) | The project's bots: schedule and next run, the last run's outcome, problems. | script | 1.156.0 |
 
+## `net:` — Connectivity: VPN profiles, probes, the kit's mode of work
+
+| Command | What it does | Executor | Since |
+|---|---|---|---|
+| `net:status` | Availability of connections: profiles (VPN), probes, the internet and the model providers, the kit's mode of work and the reasons; read-only, changes nothing — profiles and probes are set up in the panel, the «Connection check» section. | script | 1.176.0 |
+| `net:probe` | Check the connection now: all probes (or `--only` — one profile or probe); the state is updated with anti-flapping; exit code 1 when the profiles in need are down. With the feature off it does nothing. | script | 1.176.0 |
+
 ## `dev:` — QA of the engine
 
 | Command | What it does | Executor | Since |

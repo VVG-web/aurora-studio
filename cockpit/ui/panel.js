@@ -1405,6 +1405,7 @@ async function boot(){
         t("boot.restart"))));
   }
   drawAdapterAlarm(S.state.adapter_alarm);
+  refreshNetBar();
   showReaped(S.state.reaped);
   renderOverview();
   renderHistory();
@@ -1559,6 +1560,40 @@ async function refreshAdapterAlarm(){
   try { d = await api("/api/adapter/alarm", {quiet:true}); } catch (e) { return; }
   if (d) drawAdapterAlarm(d.alarm);
 }
+/* ---------------- соединения ---------------- */
+// Значок в шапке: как кит видит связь прямо сейчас. Виден, только пока проверка включена; сеть
+// тут не трогается — состояние приносит сервер панели (его проверяет фоновая проверка). Нажатие
+// открывает раздел, где профили и адреса проверки настраиваются.
+function netModeText(d){
+  const down = d.down || [];
+  if (d.state === "offline") return t("net.mode_offline");
+  if ((d.state === "no_vpn" || d.state === "partial") && down.length)
+    return t("net.mode_down", {n: down.length, names: down.join(", ")});
+  return t("net.mode_" + d.state);
+}
+async function refreshNetBar(){
+  const bar = $("#connBar");
+  if (!bar) return;
+  let d = null;
+  try { d = await api("/api/net/brief" + (S.project ? "?project=" + encodeURIComponent(S.project.path) : ""), {quiet:true}); }
+  catch (e) { return; }
+  if (!d || typeof d.error !== "boolean") return;               // ответа нет (панель перезапускается): прежний вид остаётся
+  if (!d.enabled){ bar.hidden = true; return; }
+  bar.hidden = false;
+  if (d.error){
+    bar.className = "btn sm connbar bad";
+    bar.textContent = t("net.bar_error");
+    bar.title = t("net.mode_error");
+    return;
+  }
+  bar.className = "btn sm connbar " + ({online:"ok", degraded:"warn", partial:"warn", no_vpn:"bad", offline:"bad"}[d.state] || "");
+  bar.textContent = t("net.bar_" + d.state);
+  bar.title = netModeText(d);
+}
+const NET_POLL_MS = 20000;
+setInterval(() => { if (!document.hidden) refreshNetBar(); }, NET_POLL_MS);
+$("#connBar").onclick = () => show("connectivity");
+
 /* ---------------- движок проекта на этой машине ---------------- */
 // Папка `.aurora/` — копия движка на этом компьютере, вне git: клон проекта приходит без неё.
 // Нет её или она неполная — панель достраивает сама при выборе проекта (это не меняет ни файлы
