@@ -29,4 +29,5 @@ skill: "/aurora-vault decide"
 - Если это решение заменяет прежнее — найди старый DR в AuroraKnowledgeDB/Decisions/,
   укажи его в supersedes и попроси меня подтвердить простановку ему status: superseded.
 - Перечисли карточки AuroraKnowledgeDB, которые надо обновить из-за этого решения.
-- Номер DR возьми следующим свободным из AuroraKnowledgeDB/Decisions/_index.md.
+- Номер DR возьми командой `kb:next-id DR`: она выдаёт его под замком, два параллельных вызова
+  не получат один номер.
