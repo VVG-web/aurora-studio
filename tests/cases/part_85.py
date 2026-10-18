@@ -298,6 +298,184 @@ def test_impact_follows_the_passport_links_of_artifacts(tmp: Path):
     assert "История.md" not in cp.stdout.split("Зависит от неё")[1], cp.stdout
 
 
+# ------------------------------------------------------------------ BL-TEAM-02: журнал решений
+
+GOOD_BODY = """\
+# DR-{n}: Срок подтверждения заявки — три рабочих дня
+
+## Контекст
+В ТЗ срок три рабочих дня, в описании процесса — пять. Нужно единое значение для [[Заявка на поставку]].
+
+## Рассмотренные варианты
+
+### 1. Три рабочих дня — выбран
+- Плюсы: совпадает с ТЗ.
+- Минусы: поставщики просили больше.
+
+### 2. Пять рабочих дней — отклонён
+- Плюсы: удобнее поставщикам.
+- Минусы: противоречит ТЗ.
+- **Причина отказа:** ТЗ — подписанный документ, изменение требует доп. соглашения.
+
+## Решение
+Срок подтверждения — три рабочих дня.
+
+## Следствия
+- Описание процесса приводится к ТЗ.
+- Затронутые карточки: [[Заявка на поставку]]
+
+## История
+- 2026-09-20 — создана (@analyst)
+"""
+
+
+def _dr(root: Path, n: int = 1, status: str = "proposed", body: str = GOOD_BODY, date: str = "2026-09-20",
+        extra: str = "") -> Path:
+    num = f"{n:04d}"
+    head = (f'---\ntitle: "DR-{num}: Срок подтверждения заявки"\naliases: ["DR-{num}"]\ntags: [decision]\n'
+            f"type: decision\ntemplate: akdb_decision_v1.0.md\nkind: document\nstatus: {status}\ndate: {date}\n"
+            f'owner: "@analyst"\nsupersedes: []\nsuperseded_by:\napplies_to: []\ncreated: {date}\nupdated: {date}\n'
+            f"{extra}---\n\n")
+    return _touch(root, f"AuroraKnowledgeDB/Decisions/DR-{num}-срок.md", head + body.replace("{n}", num))
+
+
+def _decision_project(tmp: Path) -> Path:
+    from harness import card
+    root = make_project(tmp)
+    card(root, "Concepts/Заявка на поставку.md", "Заявка на поставку — документ.", status="knowledge", kind="knowledge")
+    card(root, "Concepts/Заявка.md", "Заявка — документ.", status="knowledge", kind="knowledge")
+    return root
+
+
+@test
+def test_decide_accept_records_who_when_and_a_body_fingerprint(tmp: Path):
+    """Принятие: статус, дата, отпечаток тела в шапке, строка истории; принять второй раз нельзя."""
+    root = _decision_project(tmp)
+    path = _dr(root)
+    cp = run("kb_decide.py", "DR-0001", "--by", "@analyst", cwd=root, expect_rc=0)
+    assert "proposed → accepted" in cp.stdout, cp.stdout
+    text = path.read_text(encoding="utf-8")
+    fm = _mod("aurora_common").frontmatter(text)
+    assert fm["status"] == "accepted" and len(fm["accepted_fp"]) == 64, text[:600]
+    assert fm["date"] != "2026-09-20" and fm["owner"] == "@analyst", fm
+    hist = text.split("## История", 1)[1]
+    assert "принято (@analyst)" in hist and "создана (@analyst)" in hist, hist
+    cp = run("kb_decide.py", "DR-0001", "--by", "@analyst", cwd=root, expect_rc=1)
+    assert "accepted" in cp.stderr and "proposed" in cp.stderr, cp.stderr
+    # шаблон и линтер приняли результат
+    lint = run("kb_lint.py", cwd=root)
+    assert "тело принятого решения" not in lint.stdout, lint.stdout
+
+
+@test
+def test_decide_accept_refuses_a_decision_with_a_broken_form(tmp: Path):
+    """Принять нельзя: один вариант, нет причины отказа, нет затронутых, чужая карточка, остатки «Под вопросом»."""
+    root = _decision_project(tmp)
+    one = GOOD_BODY.split("### 2.")[0] + "## Решение\nСрок — три дня.\n\n## Следствия\n- Приводим к ТЗ.\n\n## История\n- создана\n"
+    path = _dr(root, 1, body=one)
+    cp = run("kb_decide.py", "DR-0001", "--by", "@analyst", cwd=root, expect_rc=1)
+    for code in ("DR-01", "DR-04"):
+        assert code in cp.stderr, cp.stderr
+    assert "status: proposed" in path.read_text(encoding="utf-8"), "отказанное решение изменено"
+    no_reason = GOOD_BODY.replace("- **Причина отказа:** ТЗ — подписанный документ, изменение требует доп. соглашения.\n", "")
+    _dr(root, 2, body=no_reason)
+    cp = run("kb_decide.py", "DR-0002", "--by", "@analyst", cwd=root, expect_rc=1)
+    assert "DR-02" in cp.stderr and "Пять рабочих дней" in cp.stderr, cp.stderr
+    _dr(root, 3, body=GOOD_BODY.replace("[[Заявка на поставку]]\n", "[[Нет такой карточки]]\n"))
+    cp = run("kb_decide.py", "DR-0003", "--by", "@analyst", cwd=root, expect_rc=1)
+    assert "DR-05" in cp.stderr and "Нет такой карточки" in cp.stderr, cp.stderr
+    _dr(root, 4, body=GOOD_BODY + "\n## Под вопросом\n- вариант без подтверждения\n")
+    cp = run("kb_decide.py", "DR-0004", "--by", "@analyst", cwd=root, expect_rc=1)
+    assert "DR-08" in cp.stderr, cp.stderr
+    cp = run("kb_decide.py", "DR-0099", "--by", "@analyst", cwd=root, expect_rc=1)
+    assert "нет в" in cp.stderr, cp.stderr
+
+
+@test
+def test_decide_accepts_only_a_person_and_a_rejection_needs_a_reason(tmp: Path):
+    """Имя модели или программы не принимается; отклонение без причины — отказ; с причиной — в истории."""
+    root = _decision_project(tmp)
+    path = _dr(root)
+    for who in ("Claude", "@gpt-4", "aurora-bot", "AI assistant"):
+        cp = run("kb_decide.py", "DR-0001", "--by", who, cwd=root, expect_rc=1)
+        assert "человек" in cp.stderr, (who, cp.stderr)
+    assert "status: proposed" in path.read_text(encoding="utf-8")
+    run("kb_decide.py", "DR-0001", "--reject", "--by", "@analyst", cwd=root, expect_rc=1)
+    run("kb_decide.py", "DR-0001", "--reject", "--reason", "  ", "--by", "@analyst", cwd=root, expect_rc=1)
+    run("kb_decide.py", "DR-1", "--reject", "--reason", "заказчик снял вопрос", "--by", "@analyst", cwd=root, expect_rc=0)
+    text = path.read_text(encoding="utf-8")
+    assert "status: rejected" in text and "отклонено (@analyst) — причина: заказчик снял вопрос" in text, text[:900]
+    # отклонить принятое нельзя — его заменяют
+    _dr(root, 2, status="accepted")
+    cp = run("kb_decide.py", "2", "--reject", "--reason", "передумали", "--by", "@analyst", cwd=root, expect_rc=1)
+    assert "kb:supersede" in cp.stderr, cp.stderr
+
+
+@test
+def test_accepted_decision_body_is_immutable_but_history_and_renames_are_not(tmp: Path):
+    """`kb:lint`: тело принятого решения изменено — ошибка; история, перенос строк и переименование цели ссылки — нет."""
+    root = _decision_project(tmp)
+    path = _dr(root)
+    run("kb_decide.py", "DR-0001", "--by", "@analyst", cwd=root, expect_rc=0)
+    base = run("kb_lint.py", cwd=root)
+    assert "тело принятого решения" not in base.stdout, base.stdout
+    accepted = path.read_text(encoding="utf-8")
+    # история дописана, ссылка переименована (так делают kb:supersede и kb:repair), строки переложены — отпечаток тот же
+    ok = (accepted.replace("## История\n", "## История\n\n- 2026-10-01: заменено в ссылках.\n")
+          .replace("[[Заявка на поставку]]", "[[Заявка]]").replace("- Плюсы: совпадает с ТЗ.",
+                                                                  "- Плюсы:   совпадает\nс ТЗ."))
+    path.write_text(ok, encoding="utf-8")
+    cp = run("kb_lint.py", cwd=root)
+    assert "тело принятого решения" not in cp.stdout, cp.stdout
+    # слово в причине отказа — правка по существу
+    path.write_text(accepted.replace("подписанный документ", "устное соглашение"), encoding="utf-8")
+    cp = run("kb_lint.py", cwd=root)
+    assert cp.returncode == 1 and "тело принятого решения изменено" in cp.stdout and "DR-0001" in cp.stdout, cp.stdout
+    gate = run("kb_lint.py", "--gate", cwd=root)
+    assert "decision-body-changed" in gate.stdout, gate.stdout
+    # решение, принятое до команды (нет отпечатка), не судится
+    legacy = _dr(root, 2, status="accepted")
+    legacy.write_text(legacy.read_text(encoding="utf-8").replace("подписанный документ", "что угодно"), encoding="utf-8")
+    path.write_text(accepted, encoding="utf-8")
+    cp = run("kb_lint.py", cwd=root)
+    assert "тело принятого решения" not in cp.stdout, cp.stdout
+
+
+@test
+def test_decision_journal_is_stable_and_names_stale_and_changed(tmp: Path):
+    """`ops:decisions`: таблица решений, просроченные предложенные, изменённые принятые; два запуска совпадают."""
+    root = _decision_project(tmp)
+    _dr(root, 1)
+    run("kb_decide.py", "DR-0001", "--by", "@analyst", cwd=root, expect_rc=0)
+    _dr(root, 2, date="2020-01-01")                                        # давно предложено и не принято
+    bad = _dr(root, 3)
+    run("kb_decide.py", "DR-0003", "--by", "@analyst", cwd=root, expect_rc=0)
+    bad.write_text(bad.read_text(encoding="utf-8").replace("Срок подтверждения — три", "Срок — два"), encoding="utf-8")
+    first = run("kb_decide.py", "--journal", cwd=root, expect_rc=0).stdout
+    second = run("kb_decide.py", "--journal", cwd=root, expect_rc=0).stdout
+    assert first == second, "журнал недетерминирован"
+    assert "Журнал решений — 3" in first and "accepted 2" in first and "proposed 1" in first, first
+    assert "больше 14 дней назад" in first and "DR-0002" in first.split("больше 14 дней назад")[1].split("—")[0], first
+    assert "тело изменено после принятия" in first and "DR-0003" in first.split("Тело изменено после принятия:")[1], first
+    j = json.loads(run("kb_decide.py", "--journal", "--json", cwd=root).stdout)
+    assert j["stale"] == ["DR-0002"] and j["body_changed"] == ["DR-0003"], j
+    assert [r["id"] for r in j["decisions"]] == ["DR-0001", "DR-0002", "DR-0003"]
+    assert run("kb_decide.py", "--check", cwd=root).returncode == 1
+
+
+@test
+def test_kb_lint_reports_decision_form_as_warnings(tmp: Path):
+    """Форма решений (один вариант и т. п.) — предупреждение: код возврата и счёт ошибок прежние."""
+    root = _decision_project(tmp)
+    clean = run("kb_lint.py", cwd=root)
+    assert "решений с замечаниями" not in clean.stdout
+    _dr(root, 1, body=GOOD_BODY.split("### 2.")[0] + "## Решение\nТри дня.\n\n## Следствия\n- Приводим.\n")
+    cp = run("kb_lint.py", cwd=root)
+    assert cp.returncode == clean.returncode, (cp.returncode, cp.stdout)
+    assert "решений с замечаниями по форме 1" in cp.stdout and "DR-01" in cp.stdout, cp.stdout
+    assert "решений с замечаниями" not in run("kb_lint.py", "--only", "AuroraKnowledgeDB/Concepts/Заявка.md", cwd=root).stdout
+
+
 @test
 def test_id_registry_edge_cases_found_in_review(tmp: Path):
     """Снимок сданного не даёт повтор; большая и BOM-шапка читаются; даты и дроби не номера; замок живого процесса."""

@@ -32,6 +32,7 @@
     "kb:scrub": "Personal data: find and cover with markers; the mode is `privacy.scrub`.",
     "kb:schema": "The card schema version (`schema_version`) and migration of the base between versions along a declared chain.",
     "kb:correct": "Corrective artifacts: a human writes in their own words what is wrong in a card and how it really is. Lives in `Raw/corrections/` and is applied at EVERY build; `--check`, `--retire`.",
+    "kb:decide-accept": "Accept or reject a proposed decision (DR): `--by @name` — who accepted (a person; a model's name is refused), `--reject --reason \"…\"` — reject with a reason. Accepting checks the form (at least two options, a refusal reason for the rejected ones, the affected cards exist in the base, no `{{…}}` and no unresolved \"Under question\") and puts a body fingerprint into the head: an accepted decision is immutable, `kb:lint` reports a body changed after acceptance as an error; `--check` — the form of every decision.",
     "kb:supersede": "Replace knowledge with history: deprecated → `_archive`, links rewritten. A requirement is not replaced without `--changed` and `--migration`.",
     "kb:links": "The link graph: Requirement Yogi keys and story numbers; `--cards` carries links into cards' `related:`; `--cards-json` exports the base's own graph for the panel.",
     "kb:map": "What the graph says: communities that have grown to their own map, bridges between topics and islands unreachable by links.",
@@ -67,6 +68,7 @@
     "ops:search-quality": "Search quality as a number: self-search — a card's thesis as a question, the right answer known by construction. R@1/R@5/MRR.",
     "ops:gaps": "Meaning gaps: a concept named but with no card, a link named but not placed, lonely cards, a thesis behind its source, a vanished source.",
     "ops:todo": "What is left: what routes and commands will finish, what repair did not take, what depends on project settings and where a human decides.",
+    "ops:decisions": "The decision journal: the state of every DR, owner, date, how many cards it affects, proposals older than 14 days that are not accepted, accepted ones with a changed body, form remarks; `--json` — machine form; two runs on one day print the same.",
     "ops:impact": "What depends on a card; `--explain` — what a document is built on.",
     "ops:trace": "Tracing: spec item → REQ → SPEC → Jira → AC → PMI → acceptance.",
     "ops:trace-table": "The \"artifact ↔ issue\" table: direct links, links by code and tracing by names two hops deep; trust is computed on it.",
@@ -985,6 +987,7 @@
     "проверить сейчас (все probe или --only)": "check now (all probes or --only)",
     "только этот профиль или probe": "only this profile or probe",
     "показать адреса probe (по умолчанию — только тип и идентификатор)": "show the probe addresses (by default only the type and the identifier)",
+<<<<<<< HEAD
     "зеркало вики (по умолчанию — зеркало с ролью projectwiki)": "wiki mirror (by default the mirror with the projectwiki role)",
     "зеркало трекера задач (по умолчанию — с ролью tasktracker)": "task tracker mirror (by default the one with the tasktracker role)",
     "корень зеркала (по умолчанию — зеркало вики проекта)": "mirror root (by default the project's wiki mirror)",
@@ -995,6 +998,19 @@
     "снять блокировку предохранителя выходных команд (КОД назван в его сообщении)": "lift a block of the outbound-commands guard (the CODE is named in its message)",
     "записать бандл с персональными данными при privacy.scrub: mask (КОД назван в сообщении)": "write the bundle with personal data under privacy.scrub: mask (the CODE is named in the message)",
     "--export: встроить картинки в документ (pandoc без песочницы; только для документов, которым доверяете)": "--export: embed images into the document (pandoc without the sandbox; only for documents you trust)"
+=======
+    "журнал решений: состояния, просроченные, изменённые": "the decision journal: states, overdue and changed ones",
+    "кто принял (человек; по умолчанию git user.name)": "who accepted (a person; git user.name by default)",
+    "машинный вывод журнала": "machine output of the journal",
+    "найти идентификаторы, которые носят два разных файла (код 1 — повторы есть)": "find identifiers carried by two different files (code 1 — there are repeats)",
+    "отклонить вместо принятия (нужен --reason)": "reject instead of accepting (needs --reason)",
+    "показать следующий номер, не занимая его": "show the next number without taking it",
+    "причина отклонения": "the reason for the rejection",
+    "пространства имён и где они ищутся": "the namespaces and where they are searched",
+    "с чем связан артефакт (для --task make), в шапку паспорта: REQ-042 — реализует, AC-… — покрывает, SPEC-012 / US-… / ART-… — родитель; повторяется": "what the artifact is linked to (for --task make), into the passport head: REQ-042 — implements, AC-… — covers, SPEC-012 / US-… / ART-… — parent; repeatable",
+    "сколько дней предложенное решение ждёт принятия (по умолчанию 14)": "how many days a proposed decision waits for acceptance (14 by default)",
+    "форма каждого решения (код 1 — есть замечания)": "the form of every decision (code 1 — there are remarks)"
+>>>>>>> 7299775e (ревью: журнал решений — принять и отклонить решение командой человека, отпечаток тела, форма DR, kb:lint (BL-TEAM-02))
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",
@@ -1015,7 +1031,12 @@
     "Ч": "H",
     "ПРОВАЙДЕР/МОДЕЛЬ": "PROVIDER/MODEL",
     "РОЛЬ": "ROLE",
+<<<<<<< HEAD
     "КОД": "CODE"
+=======
+    "@ИМЯ": "@NAME",
+    "[ПРОСТРАНСТВО]": "[SPACE]"
+>>>>>>> 7299775e (ревью: журнал решений — принять и отклонить решение командой человека, отпечаток тела, форма DR, kb:lint (BL-TEAM-02))
   },
   "connector_texts": {
     "персональный токен Confluence (CONFLUENCE_PAT) либо CONFLUENCE_USER + CONFLUENCE_PASSWORD": "a Confluence personal token (CONFLUENCE_PAT) or CONFLUENCE_USER + CONFLUENCE_PASSWORD",
