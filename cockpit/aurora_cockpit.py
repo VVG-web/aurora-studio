@@ -5138,6 +5138,14 @@ def extras_install(extra_id: str) -> dict:
 
 # ----------------------------------------------------------------- выполнение
 
+def _int_or_zero(value) -> int:
+    """Число вызовов из файла тревог: файл правили руками — строка не роняет `/api/state`."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def adapter_alarm() -> list:
     """Тревоги вызова модели, которые пишет движок (`agent_core`): [{path, area, kind, sub, fix,
     args, at, why, project, calls}].
@@ -5161,7 +5169,7 @@ def adapter_alarm() -> list:
                          "sub": cause.sub, "fix": cause.fix, "args": dict(cause.args),
                          "at": row.get("at", ""), "why": str(cause),
                          "project": os.path.basename(str(row.get("project") or "")),
-                         "calls": int(row.get("calls") or 0)})
+                         "calls": _int_or_zero(row.get("calls"))})
     return rows
 
 

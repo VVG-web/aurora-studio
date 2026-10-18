@@ -190,3 +190,62 @@ def test_the_panel_draws_the_right_bar_for_the_adapter_and_for_the_link(tmp: Pat
         .replace("%MODELS%", json.dumps(models_fix))
     res = _run_node(tmp, "alarm_bars.mjs", code)
     assert res["fails"] == [], "\n".join(res["fails"])
+
+
+@test
+def test_a_failure_text_for_the_shared_bar_has_no_paths_logins_or_reply_bodies(tmp: Path):
+    """Причина `adapter_error` уходит в общую для машины полосу, итог прогона и журнал сбоев: текст
+    исключения адаптера — одна строка, без адреса, логина прокси, абсолютного пути и тела ответа модели."""
+    AG, _ck = _mods()
+    samples = [
+        "FileNotFoundError: [Errno 2] No such file or directory: '/Users/user-1/project/.aurora/mcp/server.js'",
+        "ProxyError: через user-1:secret@proxy.example.com:3128 не вышло",
+        "UnexpectedModelBehavior: ответ без текста\n{\"body\": \"содержимое страницы заказчика\"}",
+        "OSError: C:\\Users\\user-1\\AppData\\Local\\Temp\\x.json",
+        "ConnectError: https://gw.example.com/v1/models",
+    ]
+    for text in samples:
+        out = AG._scrub(text)
+        assert "\n" not in out, out
+        for bad in ("user-1", "secret", "proxy.example.com", "gw.example.com", "содержимое", "/Users", "C:\\"):
+            assert bad not in out, (bad, out)
+    assert AG._scrub("ModuleNotFoundError: нет модуля x").startswith("ModuleNotFoundError: нет модуля")
+    assert len(AG._scrub("x" * 500)) == 200
+
+
+@test
+def test_a_gateway_reply_that_is_not_json_still_counts_as_reachable(tmp: Path):
+    """Контрольная проверка шлюза: страница входа или пустое тело при 200 — это ответ, шлюз достижим;
+    обрыв, отказ порта и таймаут — нет."""
+    AG, _ck = _mods()
+    saved = AG.http_json
+    try:
+        def reply(err, st=None):
+            AG._PROBE.clear()
+            AG.http_json = lambda url, body, key, timeout: (st, None, err, 0.01)
+            return AG.probe_gateway({"n": 91, "url": "http://gw.example.com/v1"})
+        assert reply("JSONDecodeError: Expecting value: line 1 column 1 (char 0)") == (True, "")
+        assert reply("", st=404) == (True, "")
+        ok, why = reply("URLError: <urlopen error [Errno 61] Connection refused>")
+        assert ok is False and "Connection refused" in why
+        ok, why = reply("TimeoutError: timed out")
+        assert ok is False
+    finally:
+        AG.http_json = saved
+        AG._PROBE.clear()
+
+
+@test
+def test_a_hand_edited_alarm_file_does_not_break_the_panel_state(tmp: Path):
+    """Строка тревоги с мусором в `calls` не роняет `adapter_alarm()` и `/api/state`."""
+    AG, ck = _mods()
+    set_home(tmp / "home")
+    try:
+        why = AG.Why("process_died", "closed")
+        row = why.row()
+        row.update(at="2026-10-18T10:19:00Z", project="/work/PRJ-A", calls="много")
+        AG._write_alarm({"agent:build": row})
+        rows = ck.adapter_alarm()
+        assert len(rows) == 1 and rows[0]["calls"] == 0, rows
+    finally:
+        AG._write_alarm({})

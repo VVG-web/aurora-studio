@@ -1201,8 +1201,17 @@ def _hub_reader(proc, pending: dict) -> None:
 
 
 def _scrub(text, limit: int = 200) -> str:
-    """Текст чужой ошибки для причины: без адресов (в сообщении исключения бывает адрес шлюза)."""
-    return re.sub(r"\w+://\S+", "<адрес>", str(text or ""))[:limit]
+    """Текст чужой ошибки для причины: одна строка, без адресов, логинов и путей.
+
+    В сообщении исключения бывает адрес шлюза или прокси с логином, абсолютный путь с именем
+    пользователя и после перевода строки — тело ответа модели; причина уходит в общую для машины
+    полосу панели, итог прогона и журнал сбоев, которыми делятся. Полный текст остаётся только там,
+    где его пишет сам исключаемый код (журнал вызова)."""
+    line = (str(text or "").strip().splitlines() or [""])[0]
+    line = re.sub(r"\w+://\S+", "<адрес>", line)
+    line = re.sub(r"\S+@\S+", "<адрес>", line)                       # логин:пароль@прокси
+    line = re.sub(r"(?:[A-Za-z]:\\|/)(?:[^\s'\"]+[\\/])+[^\s'\"]*", "<путь>", line)
+    return line[:limit]
 
 
 def _hello_cause(hello: dict) -> Why:
@@ -1638,7 +1647,10 @@ def probe_gateway(backend: dict) -> tuple:
         if row and time.monotonic() - row[0] < PROBE_TTL:
             return row[1], row[2]
         st, _body, err, _dt = http_json(backend["url"] + "/models", None, "", CONNECT_TIMEOUT)
-        row = _PROBE[n] = (time.monotonic(), st is not None, "" if st is not None else str(err or ""))
+        # Ответ, который не разобрался как JSON (страница входа, пустое тело при 200), — тоже
+        # ответ: шлюз достижим, и «клиент адаптера не доходит, а движок доходит» не теряется.
+        answered = st is not None or str(err or "").startswith(("JSONDecodeError", "UnicodeDecodeError"))
+        row = _PROBE[n] = (time.monotonic(), answered, "" if answered else str(err or ""))
         return row[1], row[2]
 
 
