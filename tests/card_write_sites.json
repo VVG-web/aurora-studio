@@ -101,6 +101,11 @@
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
    "calls": 1
   },
+  "cockpit/aurora_cockpit.py:record_engine_run": {
+   "kind": "other",
+   "reason": "журнал запуска копии движка проекта на этой машине: служебный файл вне базы",
+   "calls": 1
+  },
   "cockpit/aurora_cockpit.py:save_roots": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
@@ -351,6 +356,16 @@
    "reason": "метрики и отчёт статистики: служебные файлы",
    "calls": 1
   },
+  "scripts/aurora_update.py:_write_engine_file": {
+   "kind": "other",
+   "reason": "файл копии движка на этой машине: служебный файл вне базы",
+   "calls": 2
+  },
+  "scripts/aurora_update.py:engine_prepare": {
+   "kind": "other",
+   "reason": "подготовка копии движка на этой машине: служебные файлы вне базы",
+   "calls": 1
+  },
   "scripts/aurora_update.py:relayout_moves": {
    "kind": "other",
    "reason": "доставка файлов кита в проект: вне базы знаний",
@@ -365,6 +380,11 @@
    "kind": "other",
    "reason": "доставка файлов кита в проект; карточки базы не пишет",
    "calls": 3
+  },
+  "scripts/aurora_update.py:stamp_engine": {
+   "kind": "other",
+   "reason": "метка версии копии движка: служебный файл вне базы",
+   "calls": 1
   },
   "scripts/aurora_update.py:stamp_version": {
    "kind": "other",
