@@ -3274,7 +3274,8 @@ def defer(cwd: str, source: str, step: dict, apply: bool,
 # бэкенд не ответил» — это про контур, и следующий источник упадёт ровно так же.
 OFFLINE_SIGNS = ("timed out", "timeout", "connection error", "connection refused",
                  "ни один бэкенд", "temporarily unavailable", "failed to establish",
-                 "name or service not known", "ssl", "network is unreachable")
+                 "name or service not known", "ssl", "network is unreachable",
+                 "обрыв связи")      # метка `agent_core.LINK_FAILURE` в итоговой строке вызова
 OFFLINE_WAIT = 300          # секунд между попытками достучаться: VPN поднимают минутами
 OFFLINE_TRIES = 24          # два часа ожидания; дольше — это не обрыв, а выключенный шлюз
 

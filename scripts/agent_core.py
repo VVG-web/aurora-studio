@@ -812,6 +812,7 @@ ALARM_AFTER = 3
 # секунд панель уже не показывает: у живой тревоги `at` обновляется с каждой новой неудачей.
 LINK_ALARM_TTL = 12 * 3600
 LINK_FAILURE = "обрыв связи"         # вид сбоя вызова в `USAGE["errors"]`; причина — в `USAGE["link_why"]`
+LINK_HUMAN_KINDS = frozenset({"auth", "not_found"})   # чинятся человеком (ключ, имя модели), а не ожиданием
 
 
 def cause_id(kind: str, sub: str = "") -> str:
@@ -960,21 +961,21 @@ _LINK_TEXT = tuple((kind, re.compile(rx, re.I)) for kind, rx in (
     ("proxy", r"proxyerror|tunnel connection failed|proxy authentication|proxy error|bad proxy"),
     # оборванный посреди TLS (`[SSL: UNEXPECTED_EOF_WHILE_READING]`) — обрыв сети, а не сертификат
     ("reset", r"unexpected_eof|eof occurred|connection ?reset|reset by peer|remotedisconnected|"
-              r"remote end closed|connection ?aborted|broken ?pipe|incompleteread|forcibly closed|"
-              r"remoteprotocolerror|ssleoferror|sslzeroreturn|sslsyscall|\[errno (?:32|54|104|10053|10054)\]"),
+              r"remote end closed|connection (?:was )?aborted|connection ?aborted|broken ?pipe|incompleteread|forcibly closed|"
+              r"remoteprotocolerror|ssleoferror|sslzeroreturn|sslsyscall|\[(?:errno|winerror) (?:32|54|104|10053|10054)\]"),
     # рукопожатие, не уложившееся в срок, — соединение не установилось
     ("connect_timeout", r"connecttimeout|connect timeout|connection timed out|handshake operation "
                         r"timed out|urlopen error timed out|did not properly respond|"
-                        r"\[errno (?:60|110|10060)\]"),
+                        r"\[(?:errno|winerror) (?:60|110|10060)\]"),
     ("tls", r"certificate|\bssl\b|sslerror|sslcertverification|\btls\b|handshake|wrong version number"),
     ("dns", r"nodename nor servname|name or service not known|temporary failure in name "
             r"resolution|getaddrinfo failed|gaierror|no address associated|name resolution|"
-            r"\[errno (?:-2|-3|11001)\]"),
+            r"\[(?:errno|winerror) (?:-2|-3|11001)\]"),
     ("refused", r"connection refused|connectionrefused|actively refused|"
-                r"\[errno (?:61|111|10061)\]"),
+                r"\[(?:errno|winerror) (?:61|111|10061)\]"),
     ("unreachable", r"network is unreachable|no route to host|network is down|host is down|"
                     r"unreachable network|unreachable host|"
-                    r"\[errno (?:50|51|64|65|100|101|112|113|10050|10051|10064|10065)\]"),
+                    r"\[(?:errno|winerror) (?:50|51|64|65|100|101|112|113|10050|10051|10064|10065)\]"),
     # `The read operation timed out` — чтение ответа по TLS: соединение было, сервер молчит
     ("silent", r"timed out|timeout|readtimeout"),
     ("bad_reply", r"jsondecodeerror|expecting value|extra data|unterminated string|not valid json"),
@@ -3326,8 +3327,13 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                    "Лечится сроком запроса (раздел «Модели», общие настройки), а не "
                    "ожиданием")
     elif final is not None:
-        # Реальная причина, а не «ни один не ответил осмысленно»: что именно не дошло.
-        log.append(f"дедлайн исчерпан: {final.body}")
+        # Реальная причина, а не «ни один не ответил осмысленно»: что именно не дошло. Обрыв связи,
+        # который лечится ожиданием, несёт метку `LINK_FAILURE`: по ней цикл «до конца очереди»
+        # (`agent_runner.looks_offline`) отличает «упала связь — жду» от «источник не разобрался».
+        # Ключ и «нет такой модели» ожиданием не лечатся — без метки, разбираться человеку.
+        mark = (f", {LINK_FAILURE}" if final.area == "link" and final.kind not in LINK_HUMAN_KINDS
+                else "")
+        log.append(f"дедлайн исчерпан{mark}: {final.body}")
     else:
         log.append("дедлайн исчерпан: ни один бэкенд не ответил осмысленно")
     out = {"ok": False, "log": log, "timed_out": bool(attempts and slow == attempts),

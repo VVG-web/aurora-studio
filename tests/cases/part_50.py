@@ -1222,3 +1222,55 @@ def test_the_direct_http_payload_never_carries_the_internal_tools_flag(tmp: Path
         for body in chat:
             assert not {"needs_adapter", "adapter", "tools_root", "mcp", "guard", "role"} & set(body), body
         assert "needs_adapter" in AG.ADAPTER_ONLY
+
+
+# ------------------------------------------------------------------ ожидание связи в цикле «до конца очереди»
+
+@test
+def test_a_link_failure_still_reads_as_offline_to_the_until_done_loop(tmp: Path):
+    """Запуск без постоянного режима (`agent:* --until-done` из терминала, команда панели): вызов,
+    упавший из-за связи, несёт метку «обрыв связи», и `looks_offline` велит цикла ждать, а не
+    останавливаться «разбираться человеку»; ключ и «нет такой модели» ожиданием не лечатся — метки нет.
+    До правки итог вызова терял общую фразу «ни один бэкенд», и ночной цикл вставал на первой же
+    ошибке связи."""
+    import agent_runner as R
+    waits = ("connect_timeout", "dns", "refused", "reset", "tls", "proxy", "unreachable")
+    with _World(tmp) as w:
+        AG = w.AG
+
+        def offline_after(transport):
+            AG.pydantic_transport = transport
+            AG.http_json = _direct([], reached=False)
+            r = w.ask()
+            assert not r["ok"], r
+            note = R.model_fail_note(r)
+            return R.looks_offline({"steps": [{"status": "сбой", "note": note}]}), note
+        for kind in waits:
+            w.reset()
+            off, note = offline_after(lambda b, p, t, k=kind: _drop(k))
+            assert off, (kind, note)
+        w.reset()
+        off, note = offline_after(lambda b, p, t: (503, None, AG.Refusal("HTTP 503", None), 0.01))
+        assert off, ("server_error", note)
+        for status in (401, 404):
+            w.reset()
+            off, note = offline_after(lambda b, p, t, s=status: (s, None, AG.Refusal(f"HTTP {s}", None), 0.01))
+            assert not off, (status, note)
+
+
+@test
+def test_windows_error_codes_name_the_link_failure_in_the_text_classifier(tmp: Path):
+    """Тексты ошибок Windows — `[WinError 10061]`, «connection was aborted» — разбираются как и POSIX-коды."""
+    AG = _ag()
+    cases = {
+        "ConnectionRefusedError: [WinError 10061] No connection could be made": "refused",
+        "TimeoutError: [WinError 10060] A connection attempt failed because the connected party did not properly respond": "connect_timeout",
+        "OSError: [WinError 10051] network unreachable": "unreachable",
+        "ConnectionResetError: [WinError 10054] existing connection was forcibly closed": "reset",
+        "ConnectionAbortedError: [WinError 10053] software caused connection abort": "reset",
+        "ConnectionAbortedError: an established connection was aborted by the software": "reset",
+        "gaierror: [WinError 11001] getaddrinfo failed": "dns",
+    }
+    for text, want in cases.items():
+        got = AG.classify_failure(text).kind
+        assert got == want, (text, got, want)
