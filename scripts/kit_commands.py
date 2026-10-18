@@ -581,6 +581,15 @@ def check(rows: list) -> int:
             problems.append(f"{r['cmd']}: нет файла {script}")
         if not re.fullmatch(r"\d+\.\d+\.\d+", r["since"]):
             problems.append(f"{r['cmd']}: версия «{r['since']}» не похожа на версию")
+    # Зависимости команд от связи (`command_deps.json`): запись на каждую команду реестра, формат полей, модули источников.
+    deps = next((p for p in (os.path.join(HERE, "..", "command_deps.json"),
+                             os.path.join(HERE, "..", "..", "command_deps.json")) if os.path.isfile(p)), "")
+    if deps:
+        try:
+            import conn_gate as G
+            problems += G.check_deps(rows, os.path.dirname(os.path.abspath(deps)), deps)
+        except ImportError:
+            pass
     for p in problems:
         print("ERROR:", p, file=sys.stderr)
     print(f"kit:list --check: команд {len(rows)}, замечаний {len(problems)}")

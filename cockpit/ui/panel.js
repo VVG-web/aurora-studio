@@ -2540,6 +2540,109 @@ async function renderKinds(box){
   sgroup(box, "project:kinds", t("kinds.title", {project: S.project.name})).append(card);
 }
 
+/* ---------------- режим доступа источников ----------------
+
+   Как источник проекта достаётся: через интернет, через VPN-профиль или локально. В проекте хранится только ИМЯ профиля
+   (блок `source_access:` конфига) — профили и адреса проверки живут на машине, в разделе «Проверка соединения». Группа
+   пишет только свой блок, остальной конфиг не трогает, и правку одной группы не сбрасывает записью другой
+   (`renderProject()` здесь не зовётся). Источник без записи работает как раньше: доступен всегда (у веба умолчание —
+   «без VPN, требует интернет»). */
+async function renderSourceAccess(box){
+  if (!S.project) return;
+  const base = "/api/net/access?project=" + encodeURIComponent(S.project.path);
+  let d = await api(base, {quiet:true});
+  if (!d || d.error || !d.sources) return;
+  const host = sgroup(box, "project:access", t("access.title", {project: S.project.name}));
+  const card = el("div", {class:"card", style:"padding:20px"});
+  host.append(card);
+  const MODES = ["internet", "vpn", "local", "mixed"];
+  let ACC = JSON.parse(JSON.stringify(d.explicit || {})), digest = d.digest;
+  const touched = () => setDirty("access", t("dirty.access"), true);
+  const eff = src => {
+    const rec = ACC[src.id] || {};
+    const mode = rec.mode || src.default_mode || "";
+    return {mode, vpn: (mode === "vpn" || mode === "mixed") ? (rec.vpn || "") : "",
+            internet: rec.internet !== undefined ? rec.internet : mode === "internet",
+            cache: rec.offline_cache !== undefined ? rec.offline_cache : (mode === "local" || mode === "mixed")};
+  };
+  const edit = (src, fn) => {
+    const rec = {...(ACC[src.id] || {})};
+    fn(rec);
+    if (Object.keys(rec).length) ACC[src.id] = rec; else delete ACC[src.id];
+    touched(); draw();
+  };
+  const selectOf = (opts, value, onchange) => {
+    const sel = el("select", {class:"btn", style:"width:100%;font-weight:400"},
+      ...opts.map(([v, label]) => el("option", {value:v, selected: v === value ? "" : null}, label)));
+    sel.onchange = () => onchange(sel.value);
+    return sel;
+  };
+  const labelled = (label, node, hint) => el("label", {style:"display:block;flex:1;min-width:170px"},
+    el("div", {class:"muted", style:"font-size:11.5px;margin-bottom:3px"}, label), node,
+    hint ? el("div", {class:"muted", style:"font-size:11px;margin-top:3px"}, hint) : null);
+  const row = src => {
+    const e = eff(src), rec = ACC[src.id] || {};
+    const dflt = src.default_mode ? t("access.mode." + src.default_mode) : t("access.mode_unset");
+    const modeSel = selectOf([["", t("access.mode_default", {what: dflt})], ...MODES.map(m => [m, t("access.mode." + m)])],
+      rec.mode || "", v => edit(src, r => { if (v){ r.mode = v; } else { delete r.mode; delete r.vpn; } }));
+    const cells = [labelled(t("access.f_mode"), modeSel, e.mode ? t("access.h." + e.mode) : t("access.h_unset"))];
+    if (e.mode === "vpn" || e.mode === "mixed"){
+      const names = d.profiles || [];
+      const opts = [["", t("access.vpn_none")], ...names.map(n => [n, n])];
+      if (e.vpn && !names.includes(e.vpn)) opts.push([e.vpn, t("access.vpn_missing", {name: e.vpn})]);
+      cells.push(labelled(t("access.f_vpn"), selectOf(opts, e.vpn, v => edit(src, r => { if (v) r.vpn = v; else delete r.vpn; })),
+        names.length ? t("access.h_vpn") : t("access.no_profiles")));
+    }
+    const flag = (key, label, hint, value) => el("label", {class:"row", style:"gap:6px;font-size:12.5px", title: hint},
+      el("input", {type:"checkbox", checked: value ? "" : null,
+        onchange: ev => edit(src, r => { r[key] = ev.target.checked; })}), label);
+    return el("div", {class:"list-item", style:"flex-direction:column;align-items:stretch;gap:8px"},
+      el("div", {class:"row", style:"gap:8px"}, el("b", {}, src.title || src.module), el("span", {class:"chip mono"}, src.id),
+        e.mode ? null : el("span", {class:"chip"}, t("access.as_before")),
+        ACC[src.id] ? el("button", {class:"btn sm", style:"margin-left:auto", onclick: () => { delete ACC[src.id]; touched(); draw(); }},
+          t("access.reset")) : null),
+      el("div", {class:"row", style:"gap:10px;flex-wrap:wrap;align-items:flex-start"}, ...cells),
+      el("div", {class:"row", style:"gap:16px;flex-wrap:wrap"},
+        flag("internet", t("access.f_internet"), t("access.h_internet"), e.internet),
+        flag("offline_cache", t("access.f_cache"), t("access.h_cache"), e.cache)));
+  };
+  const save = async () => {
+    const r = await api("/api/net/access/save", {method:"POST", quiet:true,
+      body: JSON.stringify({project: S.project.path, access: ACC, expect: digest})});
+    if (r && r.ok){
+      d = r.state; ACC = JSON.parse(JSON.stringify(d.explicit || {})); digest = d.digest;
+      setDirty("access", t("dirty.access"), false);
+      toast(t("access.saved"), "ok");
+      draw();
+      return;
+    }
+    if (r && r.conflict) return toast(t("access.conflict"), "err");
+    // Код ошибки сервера → строка каталога; кода нет в таблице — текст сервера.
+    const ERR = {bad_mode: () => t("access.err.bad_mode"), bad_name: () => t("access.err.bad_name"),
+                 bad_flag: () => t("access.err.bad_flag"), bad_field: () => t("access.err.bad_field"),
+                 bad_source: () => t("access.err.bad_source"), bad_access: () => t("access.err.bad_access"),
+                 no_config: () => t("access.err.no_config"), not_utf8: () => t("access.err.not_utf8"),
+                 write: () => t("access.err.write")};
+    const say = ERR[r && r.code];
+    toast(say ? say() : ((r && r.error) || t("access.save_failed")), "err");
+  };
+  const draw = () => {
+    card.innerHTML = "";
+    card.append(el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px"}, t("access.about")));
+    if (!d.sources.length){
+      card.append(el("div", {class:"muted", style:"font-size:13px"}, t("access.none")));
+      return;
+    }
+    d.sources.forEach(src => card.append(row(src)));
+    card.append(el("div", {class:"row", style:"margin-top:12px;gap:10px"},
+      saveButton("access", t("dirty.access"), t("access.save"), save),
+      el("span", {class:"muted", style:"font-size:12px"}, t("access.note")),
+      el("button", {class:"btn sm", onclick: () => show("connectivity")}, t("access.open_net"))));
+    setDirty("access", t("dirty.access"), JSON.stringify(ACC) !== JSON.stringify(d.explicit || {}));
+  };
+  draw();
+}
+
 /* ---------------- типы карточек ----------------
 
    Реестр типов собирается из шаблонов `akdb_*` кита и проекта. Проект подменяет подпись и описание типа и
@@ -4669,6 +4772,8 @@ async function renderProject(){
   await renderModelsCard(box, "project");
   renderGitCard(box);
   await renderKinds(box);
+  try { await renderSourceAccess(box); }
+  catch (e){ showFault(t("modules.refresh_failed", {id: "access", why: e.message})); }
   // Сбой одной группы не должен унести строку переходов и всё, что ниже: так же, как у разделов (`refreshModules`).
   try { await renderCardTypes(box); }
   catch (e){ showFault(t("modules.refresh_failed", {id: "cardtypes", why: e.message})); }

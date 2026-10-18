@@ -304,10 +304,11 @@ EXT_SCHEMAS = {
         "required": {"id": str, "kind": str, "mirror": dict, "run": dict},
         "optional": {"title": str, "role": str, "what": str, "since": str, "auth": dict,
                      "settings_block": str, "settings": list, "requires": dict,
-                     "role_what": str, "api_version": int},
+                     "role_what": str, "api_version": int, "access": dict},
         "nested": {"mirror": {"default_path": str, "state": str, "legacy_path_key": str},
                    "run": {"script": str, "command": str, "skill": str},
-                   "auth": {"env_prefix": str, "what": str}},
+                   "auth": {"env_prefix": str, "what": str},
+                   "access": {"mode": str}},
     },
     "module": {
         "required": {"id": str, "name": _EXT_I18N},

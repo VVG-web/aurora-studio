@@ -1001,6 +1001,11 @@ def models_state(projects: list) -> dict:
         "projects": [p["name"] for p in projects],
         "leftovers": project_model_leftovers(projects),
         "venv": dict(zip(("ok", "version"), AG.venv_status())),
+        # Слепок файла настройки: страница шлёт его обратно при записи (`expect`), и чужая правка не теряется.
+        "stamp": MC.file_stamp(KIT),
+        # Профили соединений для привязки провайдера: только имена, адресов probe здесь нет.
+        "net_profiles": [p["name"] for p in net_service().config().get("profiles") or []],
+        "health_checks": list(MC.HEALTH_CHECKS),
     }
 
 
@@ -1037,7 +1042,9 @@ def models_save(payload: dict) -> dict:
         return {"ok": False, "error": "настройка не разобрана"}
     old = models_data()
     dropped: list = []
-    r = MC.save(KIT, MC.unmask(new, old, dropped))
+    expect = payload.get("expect")
+    clean = MC.unmask(new, old, dropped)
+    r = MC.save(KIT, clean, expect) if isinstance(expect, str) else MC.save(KIT, clean)
     if r.get("ok") and dropped:      # провайдер иначе дал бы 401 без объяснения
         r["notes"] = list(r.get("notes") or []) + [models_key_note(pid) for pid in dropped]
     return r
@@ -1156,6 +1163,44 @@ def net_probe(payload: dict) -> dict:
     only = str(payload.get("profile") or "") or None
     svc.check(only=only, budget=None, force=True)
     return {"snapshot": svc.snapshot(net_required(str(payload.get("project") or "")))}
+
+
+def net_access(project: str, lang: str = "") -> dict:
+    """Группа «Режим доступа источников» в «Настройках проекта»: источники с режимами, слепок блока, профили."""
+    import conn_gate as GATE
+    out = GATE.access_state(project)
+    titles = data_catalogue(lang or DEFAULT_LANG).get("connectors") or {}
+    for src in out["sources"]:
+        src["title"] = (titles.get(src["module"]) or {}).get("title") or src["title"]
+    out["profiles"] = [p["name"] for p in net_service().config().get("profiles") or []]
+    return out
+
+
+def net_access_save(project: str, payload: dict, lang: str = "") -> dict:
+    """Записать блок `source_access:` конфига проекта; остальной конфиг не тронут."""
+    import conn_gate as GATE
+    expect = payload.get("expect")
+    res = GATE.save_access(project, payload.get("access"), expect if isinstance(expect, str) else "")
+    if res.get("ok"):
+        res["state"] = net_access(project, lang)
+    return res
+
+
+def net_commands(project: str) -> dict:
+    """Зависимости команд для закладки «Команды»: что нужно (VPN-профили, модель, источники) и работает ли без сети."""
+    import conn_gate as GATE
+    deps = GATE.load_deps()
+    sources = GATE.source_instances(project) if project else []
+    providers = GATE.models_used()
+    out = {}
+    for cmd in deps:
+        req = GATE.command_requirements(cmd, project, deps, sources, providers)
+        d = GATE.deps_of(cmd, deps)
+        out[cmd] = {"types": req["types"], "profiles": req["profiles"], "llm": req["llm"],
+                           "llm_profiles": req["llm_profiles"], "internet": req["internet"],
+                           "offline": req["offline_capable"], "variant": req["offline_variant"],
+                           "modules": d["requires_sources"], "sources": [x["id"] for x in req["sources"]]}
+    return {"commands": out}
 
 
 def corrections_state(project: str) -> dict:
@@ -6104,6 +6149,14 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/net/state":
             project = (q.get("project") or [""])[0]
             self.send_json(net_state(self._quiet_project(project)))
+        elif u.path == "/api/net/access":
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(net_access(project, request_lang(q)))
+        elif u.path == "/api/net/commands":
+            project = (q.get("project") or [""])[0]
+            self.send_json(net_commands(self._quiet_project(project)))
         elif u.path == "/api/net/brief":
             project = (q.get("project") or [""])[0]
             self.send_json(net_brief(self._quiet_project(project)))
@@ -6563,7 +6616,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(kinds_write(project, payload.get("kinds") or {}))
             return
         if u.path == "/api/models/save":
-            self.send_json(models_save(payload))
+            # Слепок обязателен для существующего файла: запрос без него не вправе молча заменить чужую правку.
+            import model_config as MC
+            if "expect" not in payload and MC.file_stamp(KIT):
+                payload = dict(payload, expect="")
+            res = models_save(payload)
+            self.send_json(res, 409 if res.get("conflict") else 200)
             return
         if u.path == "/api/net/save":
             res = net_save(payload)
@@ -6571,6 +6629,14 @@ class Handler(BaseHTTPRequestHandler):
             code = (200 if res.get("ok") else 409 if res.get("conflict") else 503 if res.get("code") == "busy"
                     else 500 if res.get("failed") else 400)
             self.send_json(dict(res, **({"state": net_state(project)} if res.get("ok") else {})), code)
+            return
+        if u.path == "/api/net/access/save":
+            project = str(payload.get("project") or "")
+            if not self._known(project):
+                return
+            res = net_access_save(project, payload, request_lang(q))
+            code = 200 if res.get("ok") else 409 if res.get("conflict") else 500 if res.get("failed") else 400
+            self.send_json(res, code)
             return
         if u.path == "/api/net/probe":
             project = self._quiet_project(str(payload.get("project") or ""))

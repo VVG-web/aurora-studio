@@ -18,6 +18,9 @@
     "env_prefix": "WEB",
     "what": "не нужен для открытых страниц; WEB_PERSONAL_TOKEN — если сайт просит Bearer"
   },
+  "access": {
+    "mode": "internet"
+  },
   "settings_block": "web",
   "settings": [
     {

@@ -20,5 +20,22 @@
   "commands.ns.agent": "agent: встроенный агент",
   "commands.ns.git": "git: Git проекта",
   "commands.ns.bot": "bot: боты проекта",
-  "commands.ns.net": "net: проверка соединения"
+  "commands.ns.net": "net: проверка соединения",
+  "commands.net.type": "тип {types}",
+  "commands.net.type_hint": "Ярлык для показа: 1 — зависит от источников или сети, 2 — от модели, 3 — ни от того, ни от другого. Решение о запуске ярлык не принимает.",
+  "commands.net.vpn": "VPN: {names}",
+  "commands.net.vpn_hint": "Профили соединений, без которых источники этой команды в проекте недоступны.",
+  "commands.net.llm": "LLM",
+  "commands.net.llm_hint": "Команде нужна модель кита: хватит любого доступного провайдера из цепочки роли.",
+  "commands.net.llm_vpn": "Команде нужна модель кита; провайдеры живут за профилями: {names}",
+  "commands.net.internet": "нужен интернет",
+  "commands.net.offline": "работает без связи",
+  "commands.net.offline_hint": "Команда не требует ни источников, ни модели, ни интернета: работает и в режиме offline.",
+  "commands.net.needs_net": "нужна связь",
+  "commands.net.needs_net_hint": "Команде нужны источники, модель или интернет: без связи панель предложит запустить только доступное или встать в очередь.",
+  "commands.net.variant_hint": "Вариант команды, который работает без связи.",
+  "commands.net.variant.parse_downloaded": "без связи: разбор уже скачанного",
+  "commands.net.sources": "источники: {list}",
+  "commands.net.sources_hint": "Какие источники проекта использует команда.",
+  "commands.net.no_source": "не подключён"
 }

@@ -100,6 +100,10 @@ connectors/<id>/
   each product has its own (for Confluence, e.g., the list of sync roots is a list of dictionaries).
 - `mirror.legacy_path_key` exists only in the two oldest built-in modules: it enables them in projects where the
   `sources:` section does not exist yet.
+- `access.mode` — how the source is reached by default: `internet` («no VPN, needs the internet», the web module), `vpn`,
+  `local` or `mixed`. No field — the source counts as available, as always. A project overrides the mode with a
+  `source_access:` block (in the panel: «Project settings → Source access mode»); see the
+  [connection check](connectivity.md).
 
 The manifest is JSON, not YAML: it is read by the engine, not by a human, and has to be parsed without external dependencies.
 
