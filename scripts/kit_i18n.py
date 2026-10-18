@@ -274,25 +274,6 @@ def message_skeletons() -> set:
                         if (isinstance(tgt, ast.Subscript) and isinstance(tgt.slice, ast.Constant)
                                 and tgt.slice.value in MESSAGE_KEYS):
                             add(sub.value)
-    # Таблица причин сбоя вызова модели (`agent_core.CAUSES`): тексты тревог, итога прогона и
-    # отчётов ботов рождаются в ней по-русски, с подстановками `{имя}`; панель показывает их в
-    # поле `why` и переводит по тем же образцам, где каждая подстановка — `{}`.
-    core = os.path.join(KIT, "scripts", "agent_core.py")
-    if os.path.isfile(core):
-        for node in ast.walk(ast.parse(open(core, encoding="utf-8").read())):
-            if (isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Dict)
-                    and "CAUSES" in [getattr(t, "id", "") for t in
-                                     (node.targets if isinstance(node, ast.Assign) else [node.target])]):
-                for row in node.value.values:
-                    if not isinstance(row, ast.Dict):
-                        continue
-                    for k, v in zip(row.keys, row.values):
-                        # `ru` — сам текст причины; `label` — короткое название вида, оно
-                        # встаёт в текст «спасённого обрыва» подстановкой и переводится отдельно
-                        if isinstance(k, ast.Constant) and k.value in ("ru", "label"):
-                            text = _skeleton(v)
-                            if text:
-                                out.add(re.sub(r"\{\w+\}", "{}", text).strip())
     # Находки доктора — строки `ERROR:` и `WARN:`, которые панель показывает на «Здоровье»:
     # их рождает `.append(...)` в самом скрипте.
     doctor = os.path.join(KIT, "scripts", "aurora_doctor.py")
@@ -458,6 +439,26 @@ def flag_texts() -> tuple:
     return helps, metas
 
 
+def cause_problems() -> list:
+    """Строки таблицы причин (`agent_core.CAUSES`) без английского текста, без названия вида или с
+    расходящимися подстановками."""
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    try:
+        import agent_core
+    except ImportError:
+        return []
+    out = []
+    for cid, row in sorted(agent_core.CAUSES.items()):
+        holes = lambda t: sorted(re.findall(r"\{(\w+)\}", t))          # noqa: E731
+        if not str(row.get("en") or "").strip():
+            out.append(f"причина `{cid}`: нет английского текста (`en`) в agent_core.CAUSES")
+        elif holes(row["ru"]) != holes(row["en"]):
+            out.append(f"причина `{cid}`: подстановки в `ru` и `en` разные")
+        if row.get("label") and not str(row.get("label_en") or "").strip():
+            out.append(f"причина `{cid}`: нет английского названия (`label_en`)")
+    return out
+
+
 def data_expected() -> dict:
     """{раздел: набор ключей, которые обязан покрыть перевод} — по самим реестрам."""
     helps, metas = flag_texts()
@@ -601,6 +602,13 @@ def main() -> int:
                 bad = True
                 troubles.append(f"данные `{section}` на `{code}`: перевод того, чего в реестре уже нет — "
                                 + ", ".join(f"`{k}`" for k in extra[:6]))
+
+    # Тексты причин сбоя вызова модели (`agent_core.CAUSES`): русский и английский рядом в таблице,
+    # панель переводит по ним сообщения движка. Строка без перевода или с другими подстановками —
+    # английский экран показал бы русский оригинал или потерял бы бэкенд из текста.
+    for line in cause_problems():
+        bad = True
+        troubles.append(line)
 
     # манифесты, которые загрузчик пропустил, — тоже «не сходится»: их каталог не проверен
     for line in SKIPPED:

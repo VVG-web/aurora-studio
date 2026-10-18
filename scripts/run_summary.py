@@ -35,27 +35,15 @@ DOC_FAIL = {"сбой", "отклонено критиком", "отклонен
 NUMBERS = ("seconds", "model_calls", "model_failed", "tokens_in", "tokens_out", "gen_seconds",
            "docs_done", "docs_skipped", "docs_failed",
            "cards_created", "cards_updated", "cards_marked", "cards_deleted", "cards_failed",
-           "adapter_bypass", "link_rescued", "link_failed")
-
-# Названия видов обрыва связи по-английски: русские — в таблице причин движка
-# (`agent_core.CAUSES[вид]["label"]`). Сверяются тестом: вид без названия остался бы пустым.
-LINK_LABELS_EN = {
-    "dns": "gateway name not found (DNS)", "refused": "connection refused",
-    "connect_timeout": "connection timeout", "unreachable": "network unreachable",
-    "tls": "TLS or certificate error", "proxy": "proxy refused the request",
-    "reset": "connection reset", "silent": "no answer within the read timeout",
-    "server_error": "server error (5xx)", "auth": "key or access refused (401/403)",
-    "rate_limit": "rate limit (429)", "not_found": "no such model or path (404)",
-    "bad_reply": "gateway reply is not JSON", "other": "could not reach the gateway"}
-
+           "adapter_bypass", "link_retried", "link_failed")
 
 def link_label(kind: str, lang: str = "ru") -> str:
-    """Короткое название вида обрыва связи для строки итога."""
-    if lang == "en":
-        return LINK_LABELS_EN.get(kind or "other", LINK_LABELS_EN["other"])
+    """Короткое название вида обрыва связи для строки итога — из таблицы причин движка
+    (`agent_core.CAUSES[вид]["label"]`, по-английски `label_en`)."""
     try:
         import agent_core
-        return str(agent_core.CAUSES.get(kind or "other", {}).get("label") or kind)
+        row = agent_core.CAUSES.get(kind or "other") or agent_core.CAUSES["other"]
+        return str(row.get("label_en" if lang == "en" else "label") or kind)
     except ImportError:          # итог собирают и там, где движка агента рядом нет
         return str(kind or "")
 
@@ -98,12 +86,12 @@ def from_agent(steps, usage: dict | None, seconds: float, delta: dict | None) ->
         # причина «нет файла» длиннее прочих: путь и лекарство в ней нужны целиком
         _err(s, "⛔ мимо Pydantic AI: " + _short(u.get("bypass_why") or "", 220),
              int(u["bypass"]))
-    # Обрыв связи — отдельно от поломки адаптера. Спасённый прямым запросом — сведение (не ошибка):
-    # вызов получил ответ. Вызовы, оставшиеся без ответа из-за связи или шлюза, — ошибка с реальной
+    # Обрыв связи — отдельно от поломки адаптера. Вызов, который обрыв задержал, но потом прошёл, —
+    # сведение (не ошибка). Вызовы, оставшиеся без ответа из-за связи или шлюза, — ошибка с реальной
     # причиной, и она в списке первая (⛔).
-    if u.get("link_rescued"):
-        s["link_rescued"] = int(u["link_rescued"])
-        s["link_kind"] = str(u.get("link_rescued_kind") or "other")
+    if u.get("link_retried"):
+        s["link_retried"] = int(u["link_retried"])
+        s["link_kind"] = str(u.get("link_retried_kind") or "other")
     if u.get("link_failed"):
         s["link_failed"] = int(u["link_failed"])
         _err(s, "⛔ обрыв связи: " + _short(u.get("link_why") or "", 220), int(u["link_failed"]))
@@ -326,14 +314,13 @@ def render(s: dict, title: str = "Итог прогона", lang: str = "ru") ->
                              f"Connection lost: {_n(s['link_failed'])} calls got no answer — the model "
                              "gateway is unreachable or refuses requests. This is not a Pydantic AI "
                              "fault; the real reason is the first line in the errors below"))
-    if s.get("link_rescued"):
+    if s.get("link_retried"):
         kind = s.get("link_kind") or "other"
-        L.append("  ℹ️ " + w(f"Обрыв связи: {_n(s['link_rescued'])} вызовов адаптера не дошли до шлюза "
-                             f"({link_label(kind)}), повторены прямым запросом — это не поломка "
-                             "Pydantic AI",
-                             f"Connection drop: {_n(s['link_rescued'])} adapter calls did not reach the "
-                             f"gateway ({link_label(kind, 'en')}), repeated over a direct request — "
-                             "this is not a Pydantic AI fault"))
+        L.append("  ℹ️ " + w(f"Обрыв связи: {_n(s['link_retried'])} вызовов не дошли до шлюза "
+                             f"({link_label(kind)}) и были повторены — это не поломка Pydantic AI",
+                             f"Connection drop: {_n(s['link_retried'])} calls did not reach the "
+                             f"gateway ({link_label(kind, 'en')}) and were repeated — this is not "
+                             "a Pydantic AI fault"))
     if s.get("adapter_bypass"):
         L.append("  ⛔ " + w(f"Мимо Pydantic AI: вызовов {_n(s['adapter_bypass'])} — прямым HTTP, "
                              "без инструментов и MCP. Причина — в ошибках ниже; "

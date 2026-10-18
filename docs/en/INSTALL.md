@@ -259,17 +259,19 @@ model name gives not a refusal but a coherent fabrication in the primary source'
 The Pydantic AI path takes the proxy from the same variables as direct HTTP (`HTTP_PROXY`, `HTTPS_PROXY`,
 `NO_PROXY`; a value without a scheme, `proxy.example.com:3128`, is read as an http proxy; gateways on this very
 machine — `localhost`, `127.0.0.1`, `::1` — bypass the proxy). If the adapter failed to reach the gateway (port
-refused, DNS, certificate, proxy), that is a connection drop, not a Pydantic AI fault. A call without tools is
-repeated once over direct HTTP — the same request shows whether the other path would get there — and counts as
-a "drop rescued by a direct request": a line in the run summary and a `connection drop` record in the failure
-journal, with no red Pydantic AI bar. A direct request will not help a call with tools and MCP (its answer
-without tools is not accepted): if the gateway is unreachable for the direct path too, the call fails with a
-named link cause and the ring waits and repeats it by itself; if the gateway is reachable, the call is first
-repeated once through the adapter. The mismatch "the adapter cannot reach, the direct request can" raises the
-Pydantic AI alarm (`client_net`) only when it repeats three times in a row without a single pass through the
-adapter, or the cause is obvious (the environment proxy did not suit the adapter's client, its client did not
-accept the certificate). A connection dropped after the request was sent is not repeated over direct HTTP — the
-server got the request.
+refused, DNS, certificate, proxy), that is a connection drop, not a Pydantic AI fault, and direct HTTP does not
+cure it: the call does not go there. The engine checks the gateway itself with a light request that carries
+neither a prompt nor a key (`GET <address>/models`, at most once per 10 s per backend). If the check did not get
+through either, it is the link or the gateway: a refusal with the named kind (DNS, port refused, timeout…) goes to
+the ring, which waits and repeats the call through the adapter (a route "sees it through"), and the link alarm
+rises on the third failure in a row. If the check got through, the drop may have been a blink: the call is
+repeated once through the adapter, and if it passed, only a note stays in the run summary. If the repeat did not
+pass either, the adapter's HTTP client does not reach where the engine does (`client_net`: environment proxy,
+certificate, DNS of the adapter process). The Pydantic AI alarm rises when this happened three times in a row
+without a single pass through the adapter, or the cause is obvious (the environment proxy did not suit the
+adapter's client, its client did not accept the certificate); only then does a call without tools get the
+explicit reserve — direct HTTP without tools and MCP — while a call with tools fails with this cause. A
+connection dropped after the request was sent is not repeated over direct HTTP — the server got the request.
 
 Shared by all roles: the cap of simultaneous requests ("auto" — the sum of provider widths), the request
 timeout, the agent's steps and budget, the call method (`pydantic_ai` or direct HTTP). A failure on one card
@@ -278,15 +280,15 @@ does not stop the run; three failures in a row do — that is the provider, not 
 **Two different troubles — two different bars.** The red Pydantic AI bar ("Pydantic AI is selected, but model
 calls bypass it") appears only when the Pydantic AI path itself is faulty: the package is not installed or does
 not import, the version failed the compatibility check, the adapter process does not start, crashes or hangs, the
-adapter's answer is not parsed, the adapter is not enabled, or its HTTP client cannot reach the gateway while a
-direct request can. `pydantic_ai` is selected, but a call came over direct HTTP — this shows in three places: a
+adapter's answer is not parsed, the adapter is not enabled, or its HTTP client cannot reach the gateway while the
+engine's own check can. `pydantic_ai` is selected, but a call came over direct HTTP — this shows in three places: a
 `⛔` line in the command output, a red bar in the panel over any section (what, where, when and why) and the
 first line of the run summary. A call with tools or MCP is not accepted without the adapter at all: an answer
 "without tools" to a question that needs them is not an answer. The bar goes away by itself once the same path
 (an agent task, a bot) goes through the adapter again.
 
 Everything else — network, DNS, certificate, timeout, a server refusal — is called by its own name and does not
-touch Pydantic AI. A lone drop is only a line in the course log and a note in the summary. Three failures in a
+touch Pydantic AI. A lone drop is only a line in the course log and a note in the summary; direct HTTP is not used for a connection drop. Three failures in a
 row on one backend with no answer between them raise a separate red bar, "The model gateway is unreachable: …",
 with the kind of trouble and the backend number, and no buttons about Pydantic AI; the first answer from the
 backend clears it. Events are counted, not calls: a drop that cuts all requests in flight at once is one event. A silence past the
@@ -309,7 +311,7 @@ The Pydantic AI alarm — the adapter path is faulty:
 | `the adapter process closed in the middle of a call`, `the pipe … is closed`, `died N times`, `gave no answer within N s` | the process crashes or hangs | Install → Pydantic AI; `agent:pydantic` |
 | `the adapter returned an error: …`, `the adapter's reply could not be parsed` | an internal adapter error | the same; the error text is in the failure journal |
 | `the adapter is not enabled in this process` | an engine error | report it (the About section) |
-| `the adapter's HTTP client does not reach backend №N …, while a direct request does: …` | the adapter process has its own network: environment proxy, certificate, DNS | check `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and the proxy scheme; the gateway's root certificate (`SSL_CERT_FILE`); DNS and VPN |
+| `the adapter's HTTP client does not reach backend №N …, while the engine's own check does: …` | the adapter process has its own network: environment proxy, certificate, DNS | check `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and the proxy scheme; the gateway's root certificate (`SSL_CERT_FILE`); DNS and VPN |
 
 The link alarm — the gateway is unreachable or refuses (Pydantic AI is fine):
 

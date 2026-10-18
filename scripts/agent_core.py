@@ -581,136 +581,223 @@ ADAPTER_NO_CONNECT = "нет соединения"
 # Область (`area`) решает, чья это беда:
 #   adapter — неисправен путь Pydantic AI: пакет не стоит или не импортируется, версия не прошла
 #             проверку, процесс не запускается или падает, ответ не разобран, а также HTTP-клиент
-#             адаптера не доходит до шлюза, хотя прямой запрос доходит (прокси, сертификат, DNS
-#             процесса адаптера). ТОЛЬКО они поднимают красную полосу «мимо Pydantic AI».
+#             адаптера не доходит до шлюза, хотя контрольная проверка самого движка доходит
+#             (прокси, сертификат, DNS процесса адаптера). ТОЛЬКО они поднимают красную полосу
+#             «мимо Pydantic AI» и только при них допустим прямой HTTP — как явный резерв.
 #   link    — связь или сервер: DNS, отказ порта, таймаут соединения, нет маршрута, TLS, прокси,
 #             сброс, молчание по сроку, 5xx, ключ, лимит, 404. Pydantic AI тут ни при чём, и
 #             говорить про него нельзя: у такой беды своя тревога связи.
 # `fix` — куда ведёт кнопка полосы: `install` («Установка»), `version` («Версия»), `models`
 # («Модели»); пусто — кнопки нет, лечится снаружи (сеть, VPN, шлюз).
-# `ru` — текст по-русски, подстановки `{имя}`; английский — `cockpit/i18n/data/en.json`
-# (раздел messages; `kit:i18n --check` сверяет их с этой таблицей). Адресов и ключей в
+# `ru` и `en` — тексты по-русски и по-английски, подстановки `{имя}` одни и те же (сверяет
+# `kit:i18n --check`); панель переводит по ним русские сообщения движка. Адресов и ключей в
 # текстах нет: бэкенд назван номером и моделью. Ключ — `вид` или `вид.подвид`.
-# `label` — короткое название вида для строки итога и счётчиков ошибок.
+# `label`/`label_en` — короткое название вида для строки итога и счётчиков ошибок.
+# Чистая точка входа для тех, кому нужна только классификация, — `classify_failure`.
 CAUSES: dict = {
     # --- adapter: сам Pydantic AI
     "venv": {"area": "adapter", "fix": "install",
-             "ru": "venv python: {path} не найден — «Установка» → Pydantic AI"},
-    "adapter_file.project": {
-        "area": "adapter", "fix": "version",
-        "ru": "адаптер: {path} не найден — движок проекта неполный: «Версия» → «Подготовить проект»"},
+        "ru": "venv python: {path} не найден — «Установка» → Pydantic AI",
+        "en": "venv python: {path} not found — Install → Pydantic AI"},
+    "adapter_file.project": {"area": "adapter", "fix": "version",
+        "ru": "адаптер: {path} не найден — движок проекта неполный: «Версия» → "
+              "«Подготовить проект»",
+        "en": "adapter: {path} not found — the project engine is incomplete: Version → "
+              "Prepare project"},
     "adapter_file.kit": {"area": "adapter", "fix": "version",
-                         "ru": "адаптер: {path} не найден — кит неполный: обновите кит"},
-    "import_failed.missing": {
-        "area": "adapter", "fix": "install",
+        "ru": "адаптер: {path} не найден — кит неполный: обновите кит",
+        "en": "adapter: {path} not found — the kit is incomplete: update the kit"},
+    "import_failed.missing": {"area": "adapter", "fix": "install",
         "ru": "в venv не установлен пакет {module} — Pydantic AI не запускается: "
-              "«Установка» → Pydantic AI"},
-    "import_failed.broken": {
-        "area": "adapter", "fix": "install",
-        "ru": "Pydantic AI не импортируется в venv ({exc}) — пакет повреждён или не подходит к "
-              "Python venv: «Установка» → Pydantic AI, переустановить"},
-    "incompatible": {
-        "area": "adapter", "fix": "install",
-        "ru": "Pydantic AI {version} не прошёл проверку совместимости с Авророй ({first}) — "
-              "работаю прямым HTTP; вернуть прежнюю версию: «Установка» → Pydantic AI"},
+              "«Установка» → Pydantic AI",
+        "en": "package {module} is not installed in the venv — Pydantic AI does not start:"
+              " Install → Pydantic AI"},
+    "import_failed.broken": {"area": "adapter", "fix": "install",
+        "ru": "Pydantic AI не импортируется в venv ({exc}) — пакет повреждён или не "
+              "подходит к Python venv: «Установка» → Pydantic AI, переустановить",
+        "en": "Pydantic AI does not import in the venv ({exc}) — the package is damaged or"
+              " does not fit the venv's Python: Install → Pydantic AI, reinstall"},
+    "incompatible": {"area": "adapter", "fix": "install",
+        "ru": "Pydantic AI {version} не прошёл проверку совместимости с Авророй ({first}) "
+              "— работаю прямым HTTP; вернуть прежнюю версию: «Установка» → Pydantic AI",
+        "en": "Pydantic AI {version} failed the compatibility check with Aurora ({first}) "
+              "— working over plain HTTP; to restore the previous version: Install → "
+              "Pydantic AI"},
     "process_start": {"area": "adapter", "fix": "install",
-                      "ru": "процесс адаптера не запускается ({exc}) — «Установка» → Pydantic AI"},
-    "process_died.start": {
-        "area": "adapter", "fix": "install",
-        "ru": "процесс адаптера завершился сразу при запуске (код {code}) — venv повреждён: "
-              "«Установка» → Pydantic AI"},
-    "process_died.closed": {
-        "area": "adapter", "fix": "install",
-        "ru": "процесс адаптера закрылся посреди вызова — «Установка» → Pydantic AI"},
-    "process_died.pipe": {
-        "area": "adapter", "fix": "install",
-        "ru": "труба к процессу адаптера закрыта ({exc}) — процесс упал: «Установка» → Pydantic AI"},
-    "process_died.repeated": {
-        "area": "adapter", "fix": "install",
+        "ru": "процесс адаптера не запускается ({exc}) — «Установка» → Pydantic AI",
+        "en": "the adapter process does not start ({exc}) — Install → Pydantic AI"},
+    "process_died.start": {"area": "adapter", "fix": "install",
+        "ru": "процесс адаптера завершился сразу при запуске (код {code}) — venv "
+              "повреждён: «Установка» → Pydantic AI",
+        "en": "the adapter process exited right at startup (code {code}) — the venv is "
+              "damaged: Install → Pydantic AI"},
+    "process_died.closed": {"area": "adapter", "fix": "install",
+        "ru": "процесс адаптера закрылся посреди вызова — «Установка» → Pydantic AI",
+        "en": "the adapter process closed in the middle of a call — Install → Pydantic AI"},
+    "process_died.pipe": {"area": "adapter", "fix": "install",
+        "ru": "труба к процессу адаптера закрыта ({exc}) — процесс упал: «Установка» → "
+              "Pydantic AI",
+        "en": "the pipe to the adapter process is closed ({exc}) — the process died: "
+              "Install → Pydantic AI"},
+    "process_died.repeated": {"area": "adapter", "fix": "install",
         "ru": "процесс адаптера падал {times} раза за прогон — больше его не зову: "
-              "«Установка» → Pydantic AI"},
-    "process_hang.start": {
-        "area": "adapter", "fix": "install",
-        "ru": "процесс адаптера не ответил за {sec} с после запуска — «Установка» → Pydantic AI"},
-    "process_hang.call": {
-        "area": "adapter", "fix": "install",
-        "ru": "процесс адаптера не дал ответа за {sec} с — завис (timed out): «Установка» → Pydantic AI"},
+              "«Установка» → Pydantic AI",
+        "en": "the adapter process died {times} times in this run — I no longer call it: "
+              "Install → Pydantic AI"},
+    "process_hang.start": {"area": "adapter", "fix": "install",
+        "ru": "процесс адаптера не ответил за {sec} с после запуска — «Установка» → "
+              "Pydantic AI",
+        "en": "the adapter process did not answer within {sec} s after start — Install → "
+              "Pydantic AI"},
+    "process_hang.call": {"area": "adapter", "fix": "install",
+        "ru": "процесс адаптера не дал ответа за {sec} с — завис (timed out): «Установка» "
+              "→ Pydantic AI",
+        "en": "the adapter process gave no answer within {sec} s — it hung (timed out): "
+              "Install → Pydantic AI"},
     "adapter_error": {"area": "adapter", "fix": "install",
-                      "ru": "адаптер вернул ошибку: {error} — «Установка» → Pydantic AI"},
+        "ru": "адаптер вернул ошибку: {error} — «Установка» → Pydantic AI",
+        "en": "the adapter returned an error: {error} — Install → Pydantic AI"},
     "reply_bad": {"area": "adapter", "fix": "install",
-                  "ru": "ответ адаптера не разобран ({detail}) — «Установка» → Pydantic AI"},
+        "ru": "ответ адаптера не разобран ({detail}) — «Установка» → Pydantic AI",
+        "en": "the adapter's reply could not be parsed ({detail}) — Install → Pydantic AI"},
     "not_enabled": {"area": "adapter", "fix": "",
-                    "ru": "адаптер не включён в этом процессе — ошибка движка"},
-    # --- adapter: HTTP-клиент адаптера не доходит до шлюза, а прямой запрос доходит
-    "client_net.proxy": {
-        "area": "adapter", "fix": "",
-        "ru": "HTTP-клиент адаптера не доходит до бэкенда №{n} ({model}), а прямой запрос доходит: "
-              "прокси окружения не подошёл клиенту адаптера{detail} — сверьте HTTP_PROXY, "
-              "HTTPS_PROXY и NO_PROXY и схему прокси (для socks в venv нужен свой пакет)"},
-    "client_net.tls": {
-        "area": "adapter", "fix": "",
-        "ru": "HTTP-клиент адаптера не доходит до бэкенда №{n} ({model}), а прямой запрос доходит: "
-              "ошибка сертификата — клиент адаптера обычно проверяет сертификаты по своему "
-              "хранилищу, а не по системному; сверьте корневой сертификат шлюза (SSL_CERT_FILE) "
-              "и цепочку прокси"},
-    "client_net.dns": {
-        "area": "adapter", "fix": "",
-        "ru": "HTTP-клиент адаптера не доходит до бэкенда №{n} ({model}), а прямой запрос доходит: "
-              "имя шлюза не разрешается в процессе адаптера — сверьте DNS, VPN и прокси окружения"},
-    "client_net.other": {
-        "area": "adapter", "fix": "",
-        "ru": "HTTP-клиент адаптера не доходит до бэкенда №{n} ({model}), а прямой запрос доходит: "
-              "причину не удалось назвать точнее — сверьте прокси окружения, сертификаты и DNS "
-              "процесса адаптера"},
+        "ru": "адаптер не включён в этом процессе — ошибка движка",
+        "en": "the adapter is not enabled in this process — an engine error"},
+    # --- adapter: HTTP-клиент адаптера не доходит до шлюза, а контрольная проверка движка доходит
+    "client_net.proxy": {"area": "adapter", "fix": "",
+        "ru": "HTTP-клиент адаптера не доходит до бэкенда №{n} ({model}), а проверка "
+              "движка доходит: прокси окружения не подошёл клиенту адаптера{detail} — сверьте "
+              "HTTP_PROXY, HTTPS_PROXY и NO_PROXY и схему прокси (для socks в venv нужен "
+              "свой пакет)",
+        "en": "the adapter's HTTP client does not reach backend №{n} ({model}), while the "
+              "engine's own check does: the environment proxy did not suit the adapter's "
+              "client{detail} — check HTTP_PROXY, HTTPS_PROXY and NO_PROXY and the proxy "
+              "scheme (socks needs its own package in the venv)"},
+    "client_net.tls": {"area": "adapter", "fix": "",
+        "ru": "HTTP-клиент адаптера не доходит до бэкенда №{n} ({model}), а проверка "
+              "движка доходит: ошибка сертификата — клиент адаптера обычно проверяет сертификаты "
+              "по своему хранилищу, а не по системному; сверьте корневой сертификат шлюза "
+              "(SSL_CERT_FILE) и цепочку прокси",
+        "en": "the adapter's HTTP client does not reach backend №{n} ({model}), while the "
+              "engine's own check does: certificate error — the adapter's client usually checks "
+              "certificates against its own store, not the system one; check the gateway's"
+              " root certificate (SSL_CERT_FILE) and the proxy chain"},
+    "client_net.dns": {"area": "adapter", "fix": "",
+        "ru": "HTTP-клиент адаптера не доходит до бэкенда №{n} ({model}), а проверка "
+              "движка доходит: имя шлюза не разрешается в процессе адаптера — сверьте DNS, VPN и "
+              "прокси окружения",
+        "en": "the adapter's HTTP client does not reach backend №{n} ({model}), while the "
+              "engine's own check does: the gateway name does not resolve in the adapter "
+              "process — check DNS, VPN and the environment proxy"},
+    "client_net.other": {"area": "adapter", "fix": "",
+        "ru": "HTTP-клиент адаптера не доходит до бэкенда №{n} ({model}), а проверка "
+              "движка доходит: причину не удалось назвать точнее — сверьте прокси окружения, "
+              "сертификаты и DNS процесса адаптера",
+        "en": "the adapter's HTTP client does not reach backend №{n} ({model}), while the "
+              "engine's own check does: the cause could not be named more precisely — check "
+              "the environment proxy, certificates and DNS of the adapter process"},
     # --- link: связь и сервер
-    "dns": {"area": "link", "fix": "", "label": "имя шлюза не найдено (DNS)",
-            "ru": "бэкенд №{n} ({model}): имя шлюза не найдено (DNS) — проверьте сеть и VPN и "
-                  "адрес шлюза в разделе «Модели»"},
-    "refused": {"area": "link", "fix": "", "label": "отказ в соединении",
-                "ru": "бэкенд №{n} ({model}): отказ в соединении (порт закрыт) — шлюз выключен или "
-                      "адрес и порт указаны неверно: проверьте статус шлюза и раздел «Модели»"},
-    "connect_timeout": {
-        "area": "link", "fix": "", "label": "таймаут соединения",
-        "ru": "бэкенд №{n} ({model}): таймаут соединения — сеть или VPN недоступны либо шлюз не "
-              "принимает соединения: проверьте сеть, VPN и статус шлюза"},
-    "unreachable": {"area": "link", "fix": "", "label": "сеть недоступна",
-                    "ru": "бэкенд №{n} ({model}): сеть недоступна или нет маршрута до шлюза — "
-                          "проверьте подключение к сети и VPN"},
-    "tls": {"area": "link", "fix": "", "label": "ошибка TLS или сертификата",
-            "ru": "бэкенд №{n} ({model}): ошибка TLS или сертификата шлюза — проверьте сертификат "
-                  "шлюза и корневые сертификаты этого компьютера"},
-    "proxy": {"area": "link", "fix": "", "label": "прокси не пропустил запрос",
-              "ru": "бэкенд №{n} ({model}): прокси не пропустил запрос — проверьте HTTP_PROXY, "
-                    "HTTPS_PROXY, NO_PROXY и учётные данные прокси"},
-    "reset": {"area": "link", "fix": "", "label": "соединение сброшено",
-              "ru": "бэкенд №{n} ({model}): соединение сброшено сервером — шлюз перезапускается или "
-                    "перегружен: проверьте статус шлюза, сеть и VPN"},
-    "silent": {"area": "link", "fix": "models", "label": "молчание по сроку чтения",
-               "ru": "бэкенд №{n} ({model}): сервер принял запрос и не ответил за срок — шлюз занят "
-                     "или завис; это не поломка Pydantic AI: проверьте шлюз или поднимите срок "
-                     "запроса в разделе «Модели»"},
-    "server_error": {"area": "link", "fix": "", "label": "ошибка сервера (5xx)",
-                     "ru": "бэкенд №{n} ({model}): шлюз ответил ошибкой сервера (HTTP {status}) — сбой "
-                           "на его стороне: проверьте статус шлюза; движок повторит сам"},
-    "auth": {"area": "link", "fix": "models", "label": "ключ или доступ не приняты (401/403)",
-             "ru": "бэкенд №{n} ({model}): шлюз не принял ключ или доступ (HTTP {status}) — проверьте "
-                   "ключ и права в разделе «Модели»"},
-    "rate_limit": {"area": "link", "fix": "models", "label": "лимит скорости (429)",
-                   "ru": "бэкенд №{n} ({model}): шлюз ограничил скорость (HTTP 429) — движок подождёт "
-                         "и повторит; снизьте ширину в разделе «Модели»"},
-    "not_found": {"area": "link", "fix": "models", "label": "нет модели или пути (404)",
-                  "ru": "бэкенд №{n} ({model}): шлюз ответил 404 — нет такой модели или пути: проверьте "
-                        "имя модели и адрес в разделе «Модели»"},
-    "bad_reply": {"area": "link", "fix": "", "label": "ответ шлюза не JSON",
-                  "ru": "бэкенд №{n} ({model}): шлюз ответил не JSON — вероятно, прокси или страница "
-                        "входа вместо шлюза: проверьте адрес, прокси и VPN"},
-    "other": {"area": "link", "fix": "", "label": "не удалось обратиться к шлюзу",
-              "ru": "бэкенд №{n} ({model}): не удалось обратиться к шлюзу, причину не удалось назвать "
-                    "точнее — проверьте сеть, VPN и статус шлюза (подробности — в журнале сбоев)"},
-    # --- сведение, не сбой: обрыв у адаптера, спасённый прямым запросом
-    "rescued": {"area": "link", "fix": "", "label": "обрыв, спасённый прямым запросом",
-                "ru": "бэкенд №{n} ({model}): вызов адаптера не дошёл до шлюза ({label}) и повторён "
-                      "прямым запросом — это обрыв связи, а не поломка Pydantic AI"},
+    "dns": {"area": "link", "fix": "",
+        "label": "имя шлюза не найдено (DNS)", "label_en": "gateway name not found (DNS)",
+        "ru": "бэкенд №{n} ({model}): имя шлюза не найдено (DNS) — проверьте сеть и VPN и "
+              "адрес шлюза в разделе «Модели»",
+        "en": "backend №{n} ({model}): the gateway name was not found (DNS) — check the "
+              "network and VPN and the gateway address in the Models section"},
+    "refused": {"area": "link", "fix": "",
+        "label": "отказ в соединении", "label_en": "connection refused",
+        "ru": "бэкенд №{n} ({model}): отказ в соединении (порт закрыт) — шлюз выключен или"
+              " адрес и порт указаны неверно: проверьте статус шлюза и раздел «Модели»",
+        "en": "backend №{n} ({model}): connection refused (the port is closed) — the "
+              "gateway is down or the address and port are wrong: check the gateway status"
+              " and the Models section"},
+    "connect_timeout": {"area": "link", "fix": "",
+        "label": "таймаут соединения", "label_en": "connection timeout",
+        "ru": "бэкенд №{n} ({model}): таймаут соединения — сеть или VPN недоступны либо "
+              "шлюз не принимает соединения: проверьте сеть, VPN и статус шлюза",
+        "en": "backend №{n} ({model}): connection timed out — the network or VPN is down "
+              "or the gateway does not accept connections: check the network, VPN and "
+              "gateway status"},
+    "unreachable": {"area": "link", "fix": "",
+        "label": "сеть недоступна", "label_en": "network unreachable",
+        "ru": "бэкенд №{n} ({model}): сеть недоступна или нет маршрута до шлюза — "
+              "проверьте подключение к сети и VPN",
+        "en": "backend №{n} ({model}): the network is unreachable or there is no route to "
+              "the gateway — check the network connection and VPN"},
+    "tls": {"area": "link", "fix": "",
+        "label": "ошибка TLS или сертификата", "label_en": "TLS or certificate error",
+        "ru": "бэкенд №{n} ({model}): ошибка TLS или сертификата шлюза — проверьте "
+              "сертификат шлюза и корневые сертификаты этого компьютера",
+        "en": "backend №{n} ({model}): TLS or gateway certificate error — check the "
+              "gateway certificate and this computer's root certificates"},
+    "proxy": {"area": "link", "fix": "",
+        "label": "прокси не пропустил запрос", "label_en": "proxy refused the request",
+        "ru": "бэкенд №{n} ({model}): прокси не пропустил запрос — проверьте HTTP_PROXY, "
+              "HTTPS_PROXY, NO_PROXY и учётные данные прокси",
+        "en": "backend №{n} ({model}): the proxy did not let the request through — check "
+              "HTTP_PROXY, HTTPS_PROXY, NO_PROXY and the proxy credentials"},
+    "reset": {"area": "link", "fix": "",
+        "label": "соединение сброшено", "label_en": "connection reset",
+        "ru": "бэкенд №{n} ({model}): соединение сброшено сервером — шлюз перезапускается "
+              "или перегружен: проверьте статус шлюза, сеть и VPN",
+        "en": "backend №{n} ({model}): the connection was reset by the server — the "
+              "gateway is restarting or overloaded: check the gateway status, the network "
+              "and VPN"},
+    "silent": {"area": "link", "fix": "models",
+        "label": "молчание по сроку чтения", "label_en": "no answer within the read timeout",
+        "ru": "бэкенд №{n} ({model}): сервер принял запрос и не ответил за срок — шлюз "
+              "занят или завис; это не поломка Pydantic AI: проверьте шлюз или поднимите "
+              "срок запроса в разделе «Модели»",
+        "en": "backend №{n} ({model}): the server accepted the request and did not answer "
+              "in time — the gateway is busy or hung; this is not a Pydantic AI fault: "
+              "check the gateway or raise the request timeout in the Models section"},
+    "server_error": {"area": "link", "fix": "",
+        "label": "ошибка сервера (5xx)", "label_en": "server error (5xx)",
+        "ru": "бэкенд №{n} ({model}): шлюз ответил ошибкой сервера (HTTP {status}) — сбой "
+              "на его стороне: проверьте статус шлюза; движок повторит сам",
+        "en": "backend №{n} ({model}): the gateway answered with a server error (HTTP "
+              "{status}) — a failure on its side: check the gateway status; the engine "
+              "will retry by itself"},
+    "auth": {"area": "link", "fix": "models",
+        "label": "ключ или доступ не приняты (401/403)", "label_en": "key or access refused (401/403)",
+        "ru": "бэкенд №{n} ({model}): шлюз не принял ключ или доступ (HTTP {status}) — "
+              "проверьте ключ и права в разделе «Модели»",
+        "en": "backend №{n} ({model}): the gateway refused the key or access (HTTP "
+              "{status}) — check the key and permissions in the Models section"},
+    "rate_limit": {"area": "link", "fix": "models",
+        "label": "лимит скорости (429)", "label_en": "rate limit (429)",
+        "ru": "бэкенд №{n} ({model}): шлюз ограничил скорость (HTTP 429) — движок подождёт"
+              " и повторит; снизьте ширину в разделе «Модели»",
+        "en": "backend №{n} ({model}): the gateway limited the rate (HTTP 429) — the "
+              "engine will wait and retry; lower the width in the Models section"},
+    "not_found": {"area": "link", "fix": "models",
+        "label": "нет модели или пути (404)", "label_en": "no such model or path (404)",
+        "ru": "бэкенд №{n} ({model}): шлюз ответил 404 — нет такой модели или пути: "
+              "проверьте имя модели и адрес в разделе «Модели»",
+        "en": "backend №{n} ({model}): the gateway answered 404 — no such model or path: "
+              "check the model name and the address in the Models section"},
+    "bad_reply": {"area": "link", "fix": "",
+        "label": "ответ шлюза не JSON", "label_en": "gateway reply is not JSON",
+        "ru": "бэкенд №{n} ({model}): шлюз ответил не JSON — вероятно, прокси или страница"
+              " входа вместо шлюза: проверьте адрес, прокси и VPN",
+        "en": "backend №{n} ({model}): the gateway answered with something that is not "
+              "JSON — probably a proxy or a login page instead of the gateway: check the "
+              "address, the proxy and VPN"},
+    "other": {"area": "link", "fix": "",
+        "label": "не удалось обратиться к шлюзу", "label_en": "could not reach the gateway",
+        "ru": "бэкенд №{n} ({model}): не удалось обратиться к шлюзу, причину не удалось "
+              "назвать точнее — проверьте сеть, VPN и статус шлюза (подробности — в "
+              "журнале сбоев)",
+        "en": "backend №{n} ({model}): could not reach the gateway, the cause could not be"
+              " named more precisely — check the network, VPN and gateway status (details "
+              "in the failure journal)"},
+    # --- сведение, не сбой: обрыв у адаптера, после которого вызов повторён и прошёл
+    "retried": {"area": "link", "fix": "",
+        "label": "обрыв, повторённый через адаптер", "label_en": "drop repeated through the adapter",
+        "ru": "бэкенд №{n} ({model}): вызов адаптера не дошёл до шлюза ({label}) и был "
+              "повторён — это обрыв связи, а не поломка Pydantic AI",
+        "en": "backend №{n} ({model}): the adapter call did not reach the gateway "
+              "({label}) and was repeated — this is a connection drop, not a Pydantic AI "
+              "fault"},
 }
 # Виды связи, которые считаются подряд на одном бэкенде и поднимают тревогу связи; остальное
 # из `link` — «сервер жив»: молчание по сроку и лимит скорости серию неудач обнуляют.
@@ -777,6 +864,25 @@ class Why(str):
     @property
     def label(self) -> str:
         return str(CAUSES[cause_id(self.kind, self.sub)].get("label") or "")
+
+    def text(self, lang: str = "ru") -> str:
+        """Текст причины на языке (`ru` | `en`); у готового чужого текста (`plain`) перевода нет."""
+        if self.plain:
+            return str(self)
+        row = CAUSES[cause_id(self.kind, self.sub)]
+        args = dict(self.args)
+        ref = CAUSES.get(args.get("ref"), {})
+        if ref.get("label"):                         # сведение «повторён» называет вид оборвавшегося вызова
+            args["label"] = ref["label_en"] if lang == "en" else ref["label"]
+        return row["en" if lang == "en" and row.get("en") else "ru"].format_map(_Blank(args))
+
+    @property
+    def ru(self) -> str:
+        return self.text("ru")
+
+    @property
+    def en(self) -> str:
+        return self.text("en")
 
     @property
     def body(self) -> str:
@@ -853,14 +959,14 @@ class AdapterFail(Refusal):
 _LINK_TEXT = tuple((kind, re.compile(rx, re.I)) for kind, rx in (
     ("proxy", r"proxyerror|tunnel connection failed|proxy authentication|proxy error|bad proxy"),
     # оборванный посреди TLS (`[SSL: UNEXPECTED_EOF_WHILE_READING]`) — обрыв сети, а не сертификат
-    ("reset", r"unexpected_eof|eof occurred|connection reset|reset by peer|remotedisconnected|"
-              r"remote end closed|connection aborted|broken pipe|incompleteread|forcibly closed|"
-              r"remoteprotocolerror|\[errno (?:32|54|104|10053|10054)\]"),
+    ("reset", r"unexpected_eof|eof occurred|connection ?reset|reset by peer|remotedisconnected|"
+              r"remote end closed|connection ?aborted|broken ?pipe|incompleteread|forcibly closed|"
+              r"remoteprotocolerror|ssleoferror|sslzeroreturn|sslsyscall|\[errno (?:32|54|104|10053|10054)\]"),
     # рукопожатие, не уложившееся в срок, — соединение не установилось
     ("connect_timeout", r"connecttimeout|connect timeout|connection timed out|handshake operation "
                         r"timed out|urlopen error timed out|did not properly respond|"
                         r"\[errno (?:60|110|10060)\]"),
-    ("tls", r"certificate|\bssl\b|sslerror|\btls\b|handshake|wrong version number"),
+    ("tls", r"certificate|\bssl\b|sslerror|sslcertverification|\btls\b|handshake|wrong version number"),
     ("dns", r"nodename nor servname|name or service not known|temporary failure in name "
             r"resolution|getaddrinfo failed|gaierror|no address associated|name resolution|"
             r"\[errno (?:-2|-3|11001)\]"),
@@ -876,12 +982,28 @@ _LINK_TEXT = tuple((kind, re.compile(rx, re.I)) for kind, rx in (
 _LINK_STATUS = {401: "auth", 403: "auth", 404: "not_found", 408: "silent", 429: "rate_limit"}
 
 
+def _error_text(err) -> str:
+    """Текст ошибки для разбора: у исключения — класс и сообщение каждого звена цепочки (причина,
+    контекст, члены группы); у всего прочего — сама строка."""
+    if not isinstance(err, BaseException):
+        return str(err or "")
+    parts, seen, todo = [], set(), [err]
+    while todo and len(seen) < 20:
+        x = todo.pop(0)
+        if x is None or id(x) in seen:
+            continue
+        seen.add(id(x))
+        parts.append(f"{type(x).__name__}: {x}")
+        todo += [x.__cause__, x.__context__, *(getattr(x, "exceptions", None) or ())]
+    return " | ".join(parts)
+
+
 def link_kind(err, status=None) -> str:
     """Какая беда связи или шлюза по отказу вызова: ключ области `link` из `CAUSES`; пусто — это
     не связь (сервер ответил по делу: 400, 413, 422…, он достижим).
 
     Вид уже назвал адаптер (`err.kind`, по классам исключений) — берём его. Иначе — по статусу
-    (401/403, 404, 429, 5xx) или, если статуса нет, по тексту ошибки прямого пути."""
+    (401/403, 404, 429, 5xx) или, если статуса нет, по тексту ошибки (или по цепочке исключения)."""
     named = getattr(err, "kind", None)
     if named in LINK_KINDS:
         return named
@@ -889,7 +1011,7 @@ def link_kind(err, status=None) -> str:
         if status in _LINK_STATUS:
             return _LINK_STATUS[status]
         return "server_error" if 500 <= status < 600 else ""
-    text = str(err or "")
+    text = _error_text(err)
     for kind, rx in _LINK_TEXT:
         if rx.search(text):
             return kind
@@ -899,7 +1021,16 @@ def link_kind(err, status=None) -> str:
 def link_why(kind: str, n, model: str = "", status=None) -> Why:
     """Причина беды связи с бэкендом №`n` и моделью `model` — с названием, без адреса и ключа."""
     shown = status if status else {"server_error": "5xx", "auth": "401/403"}.get(kind, "")
-    return Why(kind, n=n, model=model or "модель не названа", status=shown)
+    return Why(kind, n="?" if n is None else n, model=model or "модель не названа", status=shown)
+
+
+def classify_failure(err, status=None, n=None, model: str = ""):
+    """Чистая точка входа классификатора: исключение или текст ошибки (+ статус HTTP) → причина связи
+    или шлюза (`Why`: `.kind`, `.area`, `.fix`, текст `.ru` и `.en`), либо None — это не связь
+    (сервер ответил по делу: 400, 422… и значит достижим). Без панели, сети и состояния процесса;
+    `n` и `model` называют бэкенд в тексте. Этим же пользуется кольцо вызовов (`link_note`)."""
+    kind = link_kind(err, status)
+    return link_why(kind, n, model, status) if kind else None
 
 
 def _venv_python() -> Path:
@@ -1410,20 +1541,17 @@ def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -
         return http_json(root + "/slots", None, backend["key"], CONNECT_TIMEOUT)
     # Каждый вызов модели — через Pydantic AI, когда он выбран: одиночный пересказ так же,
     # как разговор с инструментами. Ответ сервера (и отказ тоже) возвращается как есть;
-    # прямой HTTP — только если не смог сам адаптер (venv не стоит, процесс упал, ответ
-    # не разобран). Фолбэк не молчаливый: `_call_role` видит путь ответа (`aurora.via`) и
-    # поднимает тревогу (`note_bypass`), а вызов с инструментами без адаптера не принимает.
+    # прямой HTTP — только как явный резерв, когда сломан сам адаптер (venv не стоит, процесс
+    # упал, ответ не разобран, версия не прошла проверку). Резерв не молчаливый: `_call_role` видит
+    # путь ответа (`aurora.via`) и поднимает тревогу (`note_bypass`), а вызов с инструментами без
+    # адаптера не принимает.
     #
-    # Обрыв связи — не поломка адаптера. Адаптер сказал «нет соединения» (`AdapterFail.link`):
-    # сеть мигнула, упал VPN или шлюз выключен. Это не «мимо Pydantic AI»:
-    # - вызов без инструментов повторяется прямым HTTP (он же показывает, дошёл бы туда другой
-    #   путь), но считается как «обрыв, спасённый прямым запросом» (`note_rescued`); тревога про
-    #   адаптер — только если так повторяется (`net_gap`) или причина очевидна (прокси, сертификат);
-    # - вызову с инструментами и MCP прямой путь не поможет — без инструментов его ответ не
-    #   принимается, — поэтому ему отдаётся отказ с причиной связи, а кольцо ждёт и повторяет сам.
+    # Обрыв связи — не поломка адаптера, и прямым HTTP он не лечится. Адаптер сказал «нет
+    # соединения» (`AdapterFail.link`): сеть мигнула, упал VPN или шлюз выключен — вызов не уходит
+    # прямым запросом, а `_adapter_drop` разбирает, чья беда: связь (отказ уходит в кольцо, оно
+    # ждёт и повторяет через адаптер) или сам HTTP-клиент адаптера.
     want = (payload or {}).get("adapter") or ADAPTER.get("name")
     needs = bool((payload or {}).get("needs_adapter") or (payload or {}).get("tools_root"))
-    model = (payload or {}).get("model") or ""
     link = hard = None
     dt = 0.0
     entered = time.monotonic()        # когда вызов начался: обрыв, задевший сразу много вызовов, — одно событие
@@ -1439,13 +1567,13 @@ def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -
         link, hard = _adapter_failure(err)
         if hard is not None:
             ADAPTER["fallback_why"] = hard
-    if link is not None and needs:
-        done, hard = _link_with_tools(backend, payload, timeout, link, dt, entered)
+    if link is not None:
+        done, hard = _adapter_drop(backend, payload, timeout, link, dt, entered, needs)
         if done is not None:
             return done
-        # На повторе сломался уже сам адаптер: дальше — как при любой его поломке (прямой запрос,
-        # причина в ответе, а вызов с инструментами такой ответ не примет).
-        link = None
+        # Сломался сам путь Pydantic AI (на повторе процесс упал, либо клиент адаптера не доходит туда,
+        # куда доходит проверка движка, и это доказано): дальше — как при любой его поломке. Прямой
+        # запрос — явный резерв, причина едет в ответе, а вызов с инструментами такой ответ не примет.
         ADAPTER["fallback_why"] = hard
     # В шлюз уходит запрос по стандарту. Внутренние поля адресованы адаптеру, а не
     # серверу: `guard`/`role`/`tools_root`/`mcp` — сторожу и инструментам. Строгий шлюз
@@ -1455,22 +1583,7 @@ def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -
     res = http_json(backend["url"] + "/chat/completions",
                     {k: v for k, v in (payload or {}).items() if k not in ADAPTER_ONLY},
                     backend["key"], timeout)
-    if link is not None:
-        if res[0] is None:
-            # Не дошли ни адаптер, ни прямой путь: это связь. Вид — тот, что точнее назвал адаптер
-            # по классам исключений, иначе по тексту прямой ошибки.
-            return res[0], res[1], Refusal(str(res[2]), kind=_best_kind(link, res[2])), res[3]
-        gap = net_gap(backend, model, link, entered)
-        tag = {"bypass_why": str(gap), "bypass_cause": gap.row()} if gap.armed else \
-            {"rescued": link.get("kind") if link.get("kind") in LINK_KINDS else "other"}
-        if not gap.armed:
-            ADAPTER["fallback_why"] = ""
-            if res[0] == 200:
-                note_rescued(backend, model, link)
-        else:
-            ADAPTER["fallback_why"] = gap
-        _tag_answer(res, tag)
-    elif hard is not None and res[0] is not None:
+    if hard is not None and res[0] is not None:
         # Причину обхода несёт сам ответ: общее поле перетирает любой параллельный вызов,
         # дошедший через адаптер, а прямой запрос идёт минуты — к чтению оно уже пустое.
         _tag_answer(res, {"bypass_why": str(hard), "bypass_cause": hard.row()})
@@ -1492,8 +1605,8 @@ def _adapter_failure(err) -> tuple:
 
 
 def _best_kind(link: dict, err) -> str:
-    """Вид обрыва, когда не дошли оба пути: тот, что точнее назвал адаптер (по классам
-    исключений), а при «прочем» — по тексту прямой ошибки."""
+    """Вид обрыва, когда не дошли ни адаптер, ни проверка движка: тот, что точнее назвал адаптер
+    (по классам исключений), а при «прочем» — по тексту ошибки проверки."""
     kind = link.get("kind")
     return kind if kind in LINK_KINDS and kind != "other" else link_kind(err)
 
@@ -1506,34 +1619,64 @@ def _tag_answer(res: tuple, fields: dict) -> None:
         res[1]["aurora"].update(fields)
 
 
-def _link_with_tools(backend: dict, payload: dict, timeout: float, link: dict, dt: float,
-                     entered: float) -> tuple:
-    """Адаптер не дошёл до сервера, а вызову нужны инструменты и MCP: прямой запрос ему не поможет.
-    → (ответ транспорта, None) либо (None, поломка адаптера на повторе).
+# Контрольная проверка шлюза силами самого движка (urllib, не клиент адаптера): GET `<адрес>/models`
+# без ключа и без тела — промпт и ключ наружу не идут; любой ответ сервера значит «достижим».
+# Результат помнится на `PROBE_TTL` секунд на бэкенд: упавшая связь не засыпается проверками.
+PROBE_TTL = 10.0
+_PROBE: dict = {}                 # {№ бэкенда: (когда, достигнут, текст ошибки)}
+_PROBE_LOCKS: dict = {}           # {№ бэкенда: замок}: параллельные вызовы ждут одну проверку
+_PROBE_GUARD = threading.Lock()
 
-    Проверка дешёвая — GET `/models` напрямую: любой ответ сервера значит «шлюз достижим».
-    - Достижим: обрыв мог мигнуть — один повтор через адаптер. Прошёл — это ответ. Не прошёл
-      снова — адаптер не доходит туда, куда доходит прямой путь: `client_net` (область adapter),
-      не обрыв связи. Сломался сам адаптер — об этом знает вызывающий (вторая половина кортежа).
-    - Недостижим: это связь. Отказ уходит в кольцо обычным обрывом: оно ждёт и повторяет само."""
+
+def probe_gateway(backend: dict) -> tuple:
+    """→ (достижим ли шлюз, текст ошибки). Проверка стеком движка; результат — на `PROBE_TTL` секунд."""
+    n = backend.get("n")
+    with _PROBE_GUARD:
+        lock = _PROBE_LOCKS.setdefault(n, threading.Lock())
+    with lock:
+        row = _PROBE.get(n)
+        if row and time.monotonic() - row[0] < PROBE_TTL:
+            return row[1], row[2]
+        st, _body, err, _dt = http_json(backend["url"] + "/models", None, "", CONNECT_TIMEOUT)
+        row = _PROBE[n] = (time.monotonic(), st is not None, "" if st is not None else str(err or ""))
+        return row[1], row[2]
+
+
+def _adapter_drop(backend: dict, payload: dict, timeout: float, link: dict, dt: float,
+                  entered: float, needs: bool) -> tuple:
+    """Адаптер не дошёл до сервера. → (ответ транспорта, None) либо (None, поломка пути Pydantic AI).
+
+    Прямым запросом обрыв не лечится: сперва контрольная проверка движка (`probe_gateway`).
+    - Не дошла — это связь или шлюз. Отказ с видом обрыва уходит в кольцо: оно ждёт и повторяет
+      вызов через адаптер, серия неудач и тревога связи считаются там (`link_note`).
+    - Дошла — обрыв мог мигнуть: один повтор через адаптер, прошёл — это ответ (`note_retried`).
+      Не прошёл снова — адаптерный клиент не доходит туда, куда доходит движок (`client_net`).
+      Пока это не доказано (`net_gap`: `ALARM_AFTER` событий подряд либо причина очевидна —
+      прокси, сертификат), отказ уходит в кольцо, и оно повторит вызов. Доказано — путь Pydantic AI
+      неисправен: вызов с инструментами отказывает с этой причиной, а вызов без них получает
+      явный резерв — прямой HTTP без инструментов и MCP (вторая половина кортежа)."""
     model = payload.get("model") or ""
-    probe = http_json(backend["url"] + "/models", None, backend["key"], CONNECT_TIMEOUT)
-    if probe[0] is None:
-        return (None, None, Refusal(str(probe[2]), kind=_best_kind(link, probe[2])), dt), None
-    link_ok(backend.get("n"))          # шлюз достижим: серия обрывов связи не растёт
+    reached, perr = probe_gateway(backend)
+    if not reached:
+        return (None, None, Refusal(perr, kind=_best_kind(link, perr)), dt), None
+    link_ok(backend.get("n"), keep_probe=True)          # шлюз достижим: серия обрывов связи не растёт
     st, body, err, dt2 = pydantic_transport(backend, payload, timeout)
     if not str(err or "").startswith(ADAPTER_FAIL):
         if st is not None:
             ADAPTER["fallback_why"] = ""
             adapter_reached(backend)
+            note_retried(backend, model, link)
         return (st, body, err, dt + dt2), None
     again, hard = _adapter_failure(err)
     if again is None:
         return None, hard
     gap = net_gap(backend, model, again, entered)
-    if gap.armed:
-        ADAPTER["fallback_why"] = gap       # пока расхождение не доказано, это не причина обхода
-    return (None, None, Refusal(str(gap), cause=gap), dt + dt2), None
+    if not gap.armed:
+        return (None, None, Refusal(str(gap), cause=gap), dt + dt2), None
+    if needs:
+        ADAPTER["fallback_why"] = gap
+        return (None, None, Refusal(str(gap), cause=gap), dt + dt2), None
+    return None, gap
 
 
 def answer_of(body: dict) -> tuple:
@@ -1639,12 +1782,13 @@ def quota_spent(st, err, body) -> bool:
 # Обращения к модели за процесс — для итога прогона (`run_summary`): сколько токенов ушло, с
 # какой скоростью шла генерация и сколько вызовов не удалось — по видам. Вызовы идут из
 # нескольких потоков, поэтому счётчик под замком.
-# `bypass` — вызовы мимо Pydantic AI (неисправен сам адаптер); `link_rescued` — обрывы связи у
-# адаптера, повторённые прямым запросом (не поломка); `link_failed` — вызовы, не получившие ответа
-# из-за связи или шлюза (`link_why` — последняя причина). Итог прогона называет каждое отдельно.
+# `bypass` — вызовы мимо Pydantic AI (неисправен сам адаптер); `link_retried` — вызовы, которым
+# обрыв связи помешал, но после повтора они прошли (не поломка); `link_failed` — вызовы, не
+# получившие ответа из-за связи или шлюза (`link_why` — последняя причина). Итог прогона называет
+# каждое отдельно.
 USAGE: dict = {"calls": 0, "failed": 0, "tokens_in": 0, "tokens_out": 0, "gen_seconds": 0.0,
                "errors": {}, "cached": 0, "bypass": 0, "bypass_why": "",
-               "link_rescued": 0, "link_rescued_kind": "", "link_failed": 0, "link_why": ""}
+               "link_retried": 0, "link_retried_kind": "", "link_failed": 0, "link_why": ""}
 _USAGE_LOCK = threading.Lock()
 
 
@@ -1662,11 +1806,11 @@ def _note_failure(kind: str) -> None:
 RUN_TASK: dict = {"name": ""}
 _BYPASS_SAID: set = set()      # о чём уже кричали в этом процессе: одна строка на причину
 _LINK_SAID: set = set()        # (№ бэкенда, вид) — о чём тревога связи уже сказала; бэкенд ответил — забыто
-_RESCUE_SAID: set = set()      # (№ бэкенда, вид) — о каких спасённых обрывах уже написано в консоль
+_RETRY_SAID: set = set()       # (№ бэкенда, вид) — о каких повторённых обрывах уже написано в консоль
 # Счёт подряд, на процесс: сколько неудач связи на бэкенде без единого ответа между ними и сколько
-# обрывов адаптера подряд спасено прямым запросом без единого прохода через адаптер.
-LINK_RUN: dict = {}            # {№ бэкенда: {"fails": число, "kind": последний вид}}
-RESCUE_RUN: dict = {}          # {№ бэкенда: {"count": число}}
+# раз адаптер не дошёл при живой контрольной проверке движка без единого прохода через адаптер.
+LINK_RUN: dict = {}            # {№ бэкенда: {"fails": число, "kind": последний вид, "at": момент}}
+GAP_RUN: dict = {}             # {№ бэкенда: {"count": число, "at": момент}}
 _STREAK_LOCK = threading.Lock()
 
 
@@ -1764,19 +1908,22 @@ def clear_bypass() -> None:
 
 
 def adapter_reached(backend: dict) -> None:
-    """Через адаптер дошли до сервера: обрывы адаптера, спасённые прямым запросом, считаются заново."""
+    """Через адаптер дошли до сервера: неудачи адаптера при живой проверке движка считаются заново."""
     with _STREAK_LOCK:
-        RESCUE_RUN.pop(backend.get("n"), None)
+        GAP_RUN.pop(backend.get("n"), None)
+    with _PROBE_GUARD:
+        _PROBE.pop(backend.get("n"), None)      # прежний результат проверки устарел
 
 
 def net_gap(backend: dict, model: str, link: dict, started=None) -> Why:
-    """Адаптер не дошёл до сервера, а прямой путь дошёл. → причина `client_net` с подвидом (прокси
-    окружения, сертификат, DNS, иное); `armed` — пора ли поднимать тревогу про Pydantic AI.
+    """Адаптер не дошёл до сервера, а контрольная проверка движка дошла. → причина `client_net` с
+    подвидом (прокси окружения, сертификат, DNS, иное); `armed` — пора ли поднимать тревогу про
+    Pydantic AI и пускать прямой HTTP как резерв.
 
     Один такой случай — обрыв, который мигнул между двумя попытками: не поломка. Тревога — когда
     это повторяется `ALARM_AFTER` раз подряд без единого прохода через адаптер между ними либо
     когда причина очевидно адаптерная и от времени не пройдёт: прокси окружения не подошёл клиенту
-    (`proxy_fell`) или сертификат не принят клиентом, а прямой путь им доволен.
+    (`proxy_fell`) или сертификат не принят клиентом, а движок им доволен.
 
     Считаются события, а не вызовы: мигнувшая сеть рвёт разом все запросы, что были в пути, —
     24 параллельных вызова дали бы 24 «подряд». Вызов, начатый раньше, чем учтён предыдущий обрыв
@@ -1786,7 +1933,7 @@ def net_gap(backend: dict, model: str, link: dict, started=None) -> Why:
     fell = str(link.get("proxy_fell") or "")
     sub = "proxy" if fell or kind == "proxy" else kind if kind in ("tls", "dns") else "other"
     with _STREAK_LOCK:
-        run = RESCUE_RUN.setdefault(n, {"count": 0, "at": 0.0})
+        run = GAP_RUN.setdefault(n, {"count": 0, "at": 0.0})
         if started is None or started >= run["at"]:
             run["count"] += 1
             run["at"] = time.monotonic()
@@ -1797,18 +1944,18 @@ def net_gap(backend: dict, model: str, link: dict, started=None) -> Why:
     return why
 
 
-def note_rescued(backend: dict, model: str, link: dict) -> None:
-    """Обрыв адаптера, спасённый прямым запросом: не поломка Pydantic AI, а сведение — счётчик для
-    итога прогона, строка в консоль (по разу на бэкенд и вид) и запись в журнал сбоев."""
+def note_retried(backend: dict, model: str, link: dict) -> None:
+    """Обрыв адаптера, после которого повтор через адаптер прошёл: не поломка Pydantic AI, а сведение —
+    счётчик для итога прогона, строка в консоль (по разу на бэкенд и вид) и запись в журнал сбоев."""
     n = backend.get("n")
     kind = link.get("kind") if link.get("kind") in LINK_KINDS else "other"
-    why = Why("rescued", n=n, model=model or "модель не названа", label=CAUSES[kind]["label"])
+    why = Why("retried", n=n, model=model or "модель не названа", label=CAUSES[kind]["label"], ref=kind)
     with _USAGE_LOCK:
-        USAGE["link_rescued"] += 1
-        USAGE["link_rescued_kind"] = kind
+        USAGE["link_retried"] += 1
+        USAGE["link_retried_kind"] = kind
     with _STREAK_LOCK:
-        fresh = (n, kind) not in _RESCUE_SAID
-        _RESCUE_SAID.add((n, kind))
+        fresh = (n, kind) not in _RETRY_SAID
+        _RETRY_SAID.add((n, kind))
     if fresh:
         print(f"ℹ️ Обрыв связи: {why}.", flush=True)
     record_failure("обрыв связи", str(why), stage="обрыв связи", kind=kind, backend=n)
@@ -1818,12 +1965,16 @@ def _link_key(n) -> str:
     return f"link:{n}"
 
 
-def link_ok(n) -> None:
-    """Бэкенд №`n` ответил — успехом или внятным отказом: серия неудач связи обнулена, тревога снята."""
+def link_ok(n, keep_probe: bool = False) -> None:
+    """Бэкенд №`n` ответил — успехом или внятным отказом: серия неудач связи обнулена, тревога снята.
+    Результат контрольной проверки шлюза устарел вместе с ответом (`keep_probe` — когда он только что получен)."""
     with _STREAK_LOCK:
         LINK_RUN.pop(n, None)
         for k in [k for k in _LINK_SAID if k[0] == n]:
             _LINK_SAID.discard(k)
+    if not keep_probe:
+        with _PROBE_GUARD:
+            _PROBE.pop(n, None)
     if not alarm_path().is_file():
         return
     with _ALARM_LOCK:
@@ -1934,8 +2085,7 @@ def call_diag(r: dict) -> dict:
     """
     d = dict(r.get("req") or {})
     for k in ("ok", "backend", "model", "seconds", "waited", "ring", "timed_out", "finish",
-              "tokens_in", "tokens_out", "tps", "seen", "cut", "via", "cached", "bypass", "link",
-              "rescued"):
+              "tokens_in", "tokens_out", "tps", "seen", "cut", "via", "cached", "bypass", "link"):
         if k in r:
             d[k] = r[k]
     d["log"] = [str(x) for x in r.get("log") or []]
@@ -2826,8 +2976,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             payload = {"model": model, "messages": msgs,
                        "chat_template_kwargs": request_template(b, think), "adapter": want}
             if needs_adapter:
-                # Без адаптера такому вызову не поможет и прямой запрос: при обрыве связи
-                # транспорт не станет спасать его прямым HTTP, а отдаст кольцу причину.
+                # Без адаптера такому вызову не поможет и прямой запрос: если путь Pydantic AI
+                # неисправен, транспорт откажет ему с причиной, а не отдаст ответ без инструментов.
                 payload["needs_adapter"] = True
             if history:
                 # У OpenAI-совместимого шлюза история — это просто предыдущие сообщения.
@@ -3071,32 +3221,36 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 SLOW.pop(b["n"], None)
                 LAST_OK[b["n"]] = time.time()
                 via = (body.get("aurora") or {}).get("via", "http")
-                bypass = rescued = ""
+                bypass = ""
                 if watch and via != "pydantic_ai":
+                    # Адаптер выбран, а ответ пришёл прямым HTTP: venv не стоит, процесс адаптера
+                    # упал, новая версия не прошла проверку, его HTTP-клиент не доходит до шлюза,
+                    # а проверка движка доходит, — причина едет в ответе, а в `fallback_why` —
+                    # запасная. Пусто — переключатель не включён вовсе (так было с 1.153.0 по
+                    # 1.160.0). Обрыв связи сюда не попадает: прямым HTTP он не лечится.
                     aur = body.get("aurora")
                     aur = aur if isinstance(aur, dict) else {}
-                    rescued = str(aur.get("rescued") or "")
-                    if not rescued:
-                        # Адаптер выбран, а ответ пришёл прямым HTTP: venv не стоит, процесс
-                        # адаптера упал, новая версия не прошла проверку, его HTTP-клиент не
-                        # доходит до шлюза — причина едет в ответе, а в `fallback_why` — запасная.
-                        # Пусто — переключатель не включён вовсе (так было с 1.153.0 по 1.160.0).
-                        # Обрыв связи, спасённый прямым запросом (`rescued`), — не обход.
-                        row = aur.get("bypass_cause")
-                        cause = (alarm_cause(row) if isinstance(row, dict) else cause_of(
-                            aur.get("bypass_why") or ADAPTER.get("fallback_why")
-                            or "адаптер не включён в этом процессе — ошибка движка"))
-                        bypass = str(cause)
-                        note_bypass(cause, needs_adapter)
-                        if needs_adapter:
-                            # Ответ без инструментов на вопрос, где они нужны, — не ответ:
-                            # бот «не видит MCP», план собран без поиска. Честнее отказать.
-                            log.append(f"№{b['n']} {model}: ⛔ Pydantic AI не сработал ({bypass}) — "
-                                       "вызов с инструментами и MCP прямым HTTP не принимаю")
-                            _note_failure("мимо Pydantic AI")
-                            return {"ok": False, "log": log, "req": req, "bypass": bypass}
+                    row = aur.get("bypass_cause")
+                    cause = (alarm_cause(row) if isinstance(row, dict) else cause_of(
+                        aur.get("bypass_why") or ADAPTER.get("fallback_why")
+                        or "адаптер не включён в этом процессе — ошибка движка"))
+                    bypass = str(cause)
+                    note_bypass(cause, needs_adapter)
+                    if needs_adapter:
+                        # Ответ без инструментов на вопрос, где они нужны, — не ответ:
+                        # бот «не видит MCP», план собран без поиска. Честнее отказать.
+                        log.append(f"№{b['n']} {model}: ⛔ Pydantic AI не сработал ({bypass}) — "
+                                   "вызов с инструментами и MCP прямым HTTP не принимаю")
+                        _note_failure("мимо Pydantic AI")
+                        return {"ok": False, "log": log, "req": req, "bypass": bypass}
                 elif watch:
                     clear_bypass()
+                if live and any(w.area == "link" for w in why_seen):
+                    # Вызов упёрся в обрыв связи, но дождался: сведение для итога (не поломка)
+                    with _USAGE_LOCK:
+                        USAGE["link_retried"] += 1
+                        USAGE["link_retried_kind"] = next(
+                            w.kind for w in reversed(why_seen) if w.area == "link")
                 usage = body.get("usage") or {}
                 out_tokens = int(usage.get("completion_tokens") or 0)
                 say_live("✓", role, f"ответ №{b['n']} {model} за {human_secs(dt)}"
@@ -3114,7 +3268,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         "tokens_in": int(usage.get("prompt_tokens") or 0),
                         "tokens_out": out_tokens,
                         "tps": round(out_tokens / dt, 1) if out_tokens and dt > 0 else 0.0,
-                        "via": via, "bypass": bypass, "rescued": rescued, "finish": finish,
+                        "via": via, "bypass": bypass, "finish": finish,
                         "req": dict(req, attempts=attempts, rings=ring),
                         "tools_called": list((body.get("aurora") or {}).get("tools_called") or [])}
             finally:

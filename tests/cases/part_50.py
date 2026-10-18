@@ -82,16 +82,16 @@ class _World:
         self.env.__enter__()
         self.saved = {n: getattr(AG, n) for n in ("pydantic_transport", "http_json")}
         self.dicts = {n: dict(getattr(AG, n)) for n in ("ADAPTER", "USAGE", "RUN_TASK", "FAILS")}
-        self.sets = {n: set(getattr(AG, n)) for n in ("_BYPASS_SAID", "_LINK_SAID", "_RESCUE_SAID")}
+        self.sets = {n: set(getattr(AG, n)) for n in ("_BYPASS_SAID", "_LINK_SAID", "_RETRY_SAID")}
         self.reset()
         return self
 
     def reset(self):
         AG = self.AG
         for d in (AG.DOWN, AG.DOWN_WHY, AG.SLOW, AG.LAST_OK, AG.COOL, AG.COOL_HITS, AG.ERR_HITS,
-                  AG.LINK_RUN, AG.RESCUE_RUN, AG._BYPASS_SAID, AG._LINK_SAID, AG._RESCUE_SAID):
+                  AG.LINK_RUN, AG.GAP_RUN, AG._PROBE, AG._BYPASS_SAID, AG._LINK_SAID, AG._RETRY_SAID):
             d.clear()
-        AG.USAGE.update(bypass=0, bypass_why="", link_rescued=0, link_rescued_kind="", link_failed=0,
+        AG.USAGE.update(bypass=0, bypass_why="", link_retried=0, link_retried_kind="", link_failed=0,
                         link_why="", calls=0, failed=0, errors={})
         AG.ADAPTER.update(name="pydantic_ai", fallback_why="")
         AG.RUN_TASK["name"] = "agent:test"
@@ -108,7 +108,7 @@ class _World:
             getattr(AG, n).clear()
             getattr(AG, n).update(v)
         for d in (AG.DOWN, AG.DOWN_WHY, AG.SLOW, AG.LAST_OK, AG.COOL, AG.COOL_HITS, AG.ERR_HITS,
-                  AG.LINK_RUN, AG.RESCUE_RUN):
+                  AG.LINK_RUN, AG.GAP_RUN, AG._PROBE):
             d.clear()
         self.env.__exit__()
         self.restore_home()
@@ -144,32 +144,55 @@ def _drop(kind="connect_timeout", proxy_fell=""):
                                       link=link), 0.01
 
 
+def _direct(calls, reached=True, probe_error="URLError: <urlopen error [Errno 61] Connection refused>"):
+    """`http_json` движка: GET без тела — проверка достижимости (и `/slots`), запрос с телом — вызов модели.
+    Всё, что движок спросил, ложится в `calls` как (адрес, тело, ключ)."""
+    def fn(url, body, key, timeout):
+        calls.append((url, body, key))
+        if body is None:
+            return (404, None, "HTTP 404", 0.01) if reached else (None, None, probe_error, 0.01)
+        return 200, json.loads(json.dumps(PLAIN)), "", 0.1
+    return fn
+
+
+def _chat(calls):
+    """Запросы с телом — то есть настоящие вызовы модели напрямую."""
+    return [c for c in calls if c[1] is not None]
+
+
 # ------------------------------------------------------------------ (а) одиночный обрыв
 
 @test
 def test_a_one_off_adapter_drop_is_not_a_pydantic_ai_alarm(tmp: Path):
-    """Адаптер не дошёл до шлюза, прямой запрос ответил: вызов получил ответ, красной полосы про
-    Pydantic AI нет, в итоге прогона — сведение «обрыв связи … это не поломка Pydantic AI», в
-    журнале сбоев — этап «обрыв связи», а не «мимо Pydantic AI»."""
+    """Адаптер не дошёл до шлюза один раз: прямой HTTP НЕ вызывается (обрыв им не лечится), движок проверяет
+    шлюз сам (GET без тела и без ключа), повторяет вызов через адаптер — тот проходит. Красной полосы про
+    Pydantic AI нет, в итоге прогона — сведение «обрыв связи … это не поломка Pydantic AI», в журнале
+    сбоев — этап «обрыв связи», а не «мимо Pydantic AI»."""
     import run_summary as RS
     with _World(tmp) as w:
         AG = w.AG
-        AG.pydantic_transport = lambda b, p, t: _drop("connect_timeout")
-        AG.http_json = lambda url, body, key, timeout: (200, json.loads(json.dumps(PLAIN)), "", 0.1)
+        calls, attempts = [], []
+        AG.pydantic_transport = lambda b, p, t: (attempts.append(1) or (
+            _drop("connect_timeout") if len(attempts) == 1 else (200, json.loads(json.dumps(VIA)), "", 0.1)))
+        AG.http_json = _direct(calls)
         r = w.ask()
-        assert r["ok"] and r["via"] == "http", r
-        assert r["bypass"] == "" and r["rescued"] == "connect_timeout", r
+        assert r["ok"] and r["via"] == "pydantic_ai" and r["bypass"] == "", r
+        assert len(attempts) == 2, "повтор через адаптер не сделан"
+        assert not _chat(calls), f"при обрыве связи ушёл прямой запрос на чат: {_chat(calls)}"
+        probes = [c for c in calls if c[0].endswith("/models")]
+        assert len(probes) == 1 and probes[0][1] is None and probes[0][2] == "", probes
         assert AG.read_alarm() == {}, f"единичный обрыв поднял тревогу: {AG.read_alarm()}"
-        assert AG.USAGE["bypass"] == 0 and AG.USAGE["link_rescued"] == 1, AG.USAGE
+        assert AG.USAGE["bypass"] == 0 and AG.USAGE["link_retried"] == 1, AG.USAGE
         assert AG.ADAPTER["fallback_why"] == "", "обрыв записан как причина обхода"
         recs = w.failures()
         assert [x["stage"] for x in recs] == ["обрыв связи"], recs
         assert recs[0]["kind"] == "connect_timeout" and "не поломка Pydantic AI" in recs[0]["why"], recs
+        assert "повторён" in recs[0]["why"] and "прямым" not in recs[0]["why"], recs
         assert not any(x["stage"] == "мимо Pydantic AI" for x in recs), recs
         lines = RS.render(RS.from_agent([], AG.USAGE, 1.0, None))
         sentence = next(x for x in lines if "Обрыв связи" in x)
-        assert "1 вызовов адаптера не дошли до шлюза (таймаут соединения)" in sentence, sentence
-        assert "повторены прямым запросом — это не поломка Pydantic AI" in sentence, sentence
+        assert "1 вызовов не дошли до шлюза (таймаут соединения) и были повторены" in sentence, sentence
+        assert "это не поломка Pydantic AI" in sentence, sentence
         assert not any("Мимо Pydantic AI" in x or "мимо Pydantic AI" in x for x in lines), lines
         # сведение, а не ошибка: ошибок в итоге нет
         assert lines[-1].strip() == "Ошибки: не было", lines
@@ -177,40 +200,46 @@ def test_a_one_off_adapter_drop_is_not_a_pydantic_ai_alarm(tmp: Path):
         en = RS.render(RS.from_agent([], AG.USAGE, 1.0, None), lang="en")
         assert any("did not reach the gateway (connection timeout)" in x and "not a Pydantic AI fault" in x
                    for x in en), en
-        # вызов того же пути через адаптер потом ничего не «снимает»: нечего снимать, файла тревоги нет
-        AG.pydantic_transport = lambda b, p, t: (200, json.loads(json.dumps(VIA)), "", 0.1)
-        ok = w.ask()
-        assert ok["via"] == "pydantic_ai" and AG.read_alarm() == {}, ok
+        assert w.ask()["via"] == "pydantic_ai" and AG.read_alarm() == {}
 
 
 # ------------------------------------------------------------------ (б) повторяемое расхождение
 
 @test
-def test_three_rescued_drops_in_a_row_name_the_adapter_client_and_a_success_clears(tmp: Path):
-    """Три спасённых обрыва подряд на одном бэкенде без единого прохода через адаптер — это уже не
-    мигание, а расхождение «адаптерный клиент не доходит, а прямой доходит»: `client_net`, и текст
-    называет причину и что проверить. Любой успех через адаптер обнуляет счёт и снимает тревогу."""
+def test_three_adapter_gaps_with_a_live_check_name_the_adapter_client_and_a_success_clears(tmp: Path):
+    """Адаптер не доходит, а проверка движка доходит, три раза подряд без единого прохода через адаптер —
+    это уже не мигание, а расхождение `client_net`: текст называет причину и что проверить. Только тогда
+    (и ни раньше) вызов без инструментов получает явный резерв — прямой HTTP; до того он отказывает, и ни
+    одного запроса на чат нет. Проверка шлюза — не чаще раза в десять секунд. Любой успех через адаптер
+    обнуляет счёт и снимает тревогу."""
     with _World(tmp) as w:
         AG = w.AG
-        AG.http_json = lambda url, body, key, timeout: (200, json.loads(json.dumps(PLAIN)), "", 0.1)
+        calls = []
+        AG.http_json = _direct(calls)
         AG.pydantic_transport = lambda b, p, t: _drop("dns")
         assert AG.ALARM_AFTER == 3, "порог серии — одно число на движок"
         for i in (1, 2):
             r = w.ask()
-            assert r["ok"] and not r["bypass"] and AG.read_alarm() == {}, (i, r)
-        assert AG.RESCUE_RUN[1]["count"] == 2
+            assert not r["ok"] and not r.get("bypass") and AG.read_alarm() == {}, (i, r["log"])
+            assert any("не доходит до бэкенда №1 (model-x)" in x for x in r["log"]), r["log"]
+        assert AG.GAP_RUN[1]["count"] == 2 and not _chat(calls), "резерв раньше срока"
+        assert AG.ADAPTER["fallback_why"] == ""
         r = w.ask()
-        assert r["ok"] and "не доходит до бэкенда №1 (model-x)" in r["bypass"], r["bypass"]
+        assert r["ok"] and "не доходит до бэкенда №1 (model-x)" in r["bypass"], r
+        assert len(_chat(calls)) == 1, "резерв — один прямой запрос"
         row = AG.read_alarm()["agent:test"]
         assert (row["area"], row["kind"], row["sub"]) == ("adapter", "client_net", "dns"), row
         assert "имя шлюза не разрешается в процессе адаптера" in row["why"] and "DNS" in row["why"], row
+        assert "а проверка движка доходит" in row["why"], row
         assert row["fix"] == "" and "venv" not in row["why"].lower(), row
-        assert AG.USAGE["bypass"] == 1 and AG.USAGE["link_rescued"] == 2, AG.USAGE
+        assert AG.USAGE["bypass"] == 1, AG.USAGE
         assert any(x["stage"] == "мимо Pydantic AI" and x["kind"] == "client_net" for x in w.failures())
+        probes = [c for c in calls if c[0].endswith("/models")]
+        assert len(probes) == 1, f"шлюз проверяли {len(probes)} раз за десять секунд"
         # успех через адаптер: тревога снята, счёт заново
         AG.pydantic_transport = lambda b, p, t: (200, json.loads(json.dumps(VIA)), "", 0.1)
         assert w.ask()["via"] == "pydantic_ai"
-        assert AG.read_alarm() == {} and AG.RESCUE_RUN == {}, (AG.read_alarm(), AG.RESCUE_RUN)
+        assert AG.read_alarm() == {} and AG.GAP_RUN == {}, (AG.read_alarm(), AG.GAP_RUN)
         AG.pydantic_transport = lambda b, p, t: _drop("dns")
         for _ in range(2):
             w.ask()
@@ -219,19 +248,22 @@ def test_three_rescued_drops_in_a_row_name_the_adapter_client_and_a_success_clea
 
 @test
 def test_an_obvious_adapter_side_cause_alarms_at_once_and_names_itself(tmp: Path):
-    """Прокси окружения, не подошедший клиенту адаптера, и сертификат, не принятый его клиентом при
-    живом прямом пути, не пройдут сами: тревога с первого раза, и каждая причина названа своим текстом."""
+    """Прокси окружения, не подошедший клиенту адаптера, и сертификат, не принятый его клиентом при живой
+    проверке движка, не пройдут сами: тревога с первого раза, вызов без инструментов получает резерв, и
+    каждая причина названа своим текстом."""
     with _World(tmp) as w:
         AG = w.AG
-        AG.http_json = lambda url, body, key, timeout: (200, json.loads(json.dumps(PLAIN)), "", 0.1)
         seen = {}
         for name, link in (("proxy", ("other", "ImportError")), ("tls", ("tls", "")),
                            ("proxy-kind", ("proxy", ""))):
             w.reset()
+            calls = []
+            AG.http_json = _direct(calls)
             AG.pydantic_transport = lambda b, p, t, link=link: _drop(link[0], link[1])
             r = w.ask()
             row = AG.read_alarm()["agent:test"]
-            assert r["bypass"] and row["kind"] == "client_net", (name, r)
+            assert r["ok"] and r["bypass"] and row["kind"] == "client_net", (name, r)
+            assert len(_chat(calls)) == 1, (name, "резерв — один прямой запрос")
             seen[name] = row
         assert seen["proxy"]["sub"] == "proxy" and "прокси окружения не подошёл клиенту адаптера (ImportError)" \
             in seen["proxy"]["why"] and "NO_PROXY" in seen["proxy"]["why"], seen["proxy"]
@@ -239,6 +271,31 @@ def test_an_obvious_adapter_side_cause_alarms_at_once_and_names_itself(tmp: Path
             and "SSL_CERT_FILE" in seen["tls"]["why"], seen["tls"]
         assert seen["proxy-kind"]["sub"] == "proxy"
         assert len({seen[k]["why"] for k in ("proxy", "tls")}) == 2
+
+
+@test
+def test_an_unreachable_gateway_is_a_link_failure_not_a_pydantic_ai_alarm_for_every_call(tmp: Path):
+    """Адаптер не дошёл, и проверка движка не дошла: это связь или шлюз. Вызов без инструментов, как и с
+    инструментами, отказывает с названным видом (DNS), прямой запрос на чат не уходит, тревоги про Pydantic AI
+    нет; на третьей неудаче подряд поднимается тревога связи, первый ответ бэкенда её снимает."""
+    with _World(tmp) as w:
+        AG = w.AG
+        for tools in (False, True):
+            w.reset()
+            calls = []
+            AG.http_json = _direct(calls, reached=False,
+                                   probe_error="URLError: <urlopen error [Errno 8] nodename nor servname provided, or not known>")
+            AG.pydantic_transport = lambda b, p, t: _drop("other")
+            for i in (1, 2, 3):
+                AG._PROBE.clear()
+                r = w.ask(tools=tools)
+                assert not r["ok"] and r["link"]["kind"] == "dns", (tools, i, r["log"])
+                assert not r.get("bypass") and not _chat(calls), (tools, i)
+                assert "имя шлюза не найдено (DNS)" in r["log"][-1], r["log"][-1]
+            alarm = AG.read_alarm()
+            assert list(alarm) == ["link:1"] and alarm["link:1"]["kind"] == "dns", (tools, alarm)
+            AG.pydantic_transport = lambda b, p, t: (200, json.loads(json.dumps(VIA)), "", 0.1)
+            assert w.ask(tools=tools)["ok"] and AG.read_alarm() == {}, tools
 
 
 # ------------------------------------------------------------------ (в) вызов с инструментами
@@ -401,6 +458,24 @@ def test_the_engine_tells_every_link_failure_of_the_direct_path_apart(tmp: Path)
     AG = _ag()
     for st, text, want in DIRECT:
         assert AG.link_kind(text, st) == want, (st, text, AG.link_kind(text, st), want)
+    # исключение целиком (с цепочкой причин) разбирается так же, как его текст
+    for exc, want in ((ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused"), "refused"),
+                      (socket.gaierror(-2, "Name or service not known"), "dns"),
+                      (ssl.SSLCertVerificationError(1, "certificate verify failed"), "tls"),
+                      (ssl.SSLEOFError(8, "EOF occurred in violation of protocol"), "reset"),
+                      (ConnectionResetError(errno.ECONNRESET, "reset"), "reset"),
+                      (TimeoutError("timed out"), "silent")):
+        assert AG.link_kind(exc) == want, (exc, AG.link_kind(exc), want)
+    outer = RuntimeError("Connection error.")
+    outer.__cause__ = socket.gaierror(-3, "Temporary failure in name resolution")
+    assert AG.link_kind(outer) == "dns"
+    # чистая точка входа: исключение или текст (+ статус) → вид, область и тексты ru/en; «не связь» → None
+    why = AG.classify_failure(ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused"), n=3, model="m-1")
+    assert (why.kind, why.area, why.fix) == ("refused", "link", "") and why.args["n"] == 3, why
+    assert why.ru.startswith("бэкенд №3 (m-1): отказ в соединении") \
+        and why.en.startswith("backend №3 (m-1): connection refused"), (why.ru, why.en)
+    assert AG.classify_failure("bad request", 400) is None and AG.classify_failure("слишком часто", 429).kind == "rate_limit"
+    assert AG.classify_failure("странное").kind == "other" and "бэкенд №?" in AG.classify_failure("странное").ru
     # вид, названный адаптером по классам исключений, главнее текста
     assert AG.link_kind(AG.Refusal("Connection error.", kind="tls")) == "tls"
     assert AG.link_kind(AG.Refusal("Connection error.", kind="не вид")) == "other"
@@ -699,7 +774,7 @@ def test_a_blip_that_cuts_many_parallel_calls_at_once_is_one_event_not_an_alarm(
         link = {"kind": "dns", "proxy_fell": "", "raw": ""}
         t0 = time.monotonic() - 1.0
         gaps = [AG.net_gap(be, "m", link, t0) for _ in range(6)]
-        assert AG.RESCUE_RUN[1]["count"] == 1 and not any(g.armed for g in gaps), AG.RESCUE_RUN
+        assert AG.GAP_RUN[1]["count"] == 1 and not any(g.armed for g in gaps), AG.GAP_RUN
         later = [AG.net_gap(be, "m", link, time.monotonic() + 1.0) for _ in range(2)]
         assert [g.armed for g in later] == [False, True], later
 
@@ -1038,32 +1113,32 @@ def test_a_plain_text_cause_keeps_its_text_and_is_read_by_prefix(tmp: Path):
 
 @test
 def test_the_summary_names_drops_and_failures_apart_from_the_adapter(tmp: Path):
-    """Итог прогона: спасённый обрыв — сведение (не ошибка), потерянные вызовы — первая ошибка с
-    реальной причиной, «мимо Pydantic AI» — только для неисправного адаптера; шаги маршрута складываются;
-    у каждого вида связи есть английское название."""
+    """Итог прогона: повторённый после обрыва вызов — сведение (не ошибка), потерянные вызовы — первая
+    ошибка с реальной причиной, «мимо Pydantic AI» — только для неисправного адаптера; шаги маршрута
+    складываются; у каждого вида связи есть русское и английское название."""
     RS = importlib.import_module("run_summary") if str(SCRIPTS) in sys.path else None
     if RS is None:
         sys.path.insert(0, str(SCRIPTS))
         RS = importlib.import_module("run_summary")
     AG = _ag()
-    assert {k for k, row in AG.CAUSES.items() if row["area"] == "link" and k != "rescued"} \
-        == set(RS.LINK_LABELS_EN) == set(AG.LINK_KINDS)
+    assert {k for k, row in AG.CAUSES.items() if row["area"] == "link" and k != "retried"} == set(AG.LINK_KINDS)
     for kind in AG.LINK_KINDS:
-        assert RS.link_label(kind) == AG.CAUSES[kind]["label"] and RS.link_label(kind, "en")
-    a = RS.from_agent([], {"link_rescued": 2, "link_rescued_kind": "dns"}, 5.0, None)
+        assert RS.link_label(kind) == AG.CAUSES[kind]["label"] and RS.link_label(kind, "en") \
+            == AG.CAUSES[kind]["label_en"] != AG.CAUSES[kind]["label"], kind
+    a = RS.from_agent([], {"link_retried": 2, "link_retried_kind": "dns"}, 5.0, None)
     b = RS.from_agent([], {"link_failed": 3, "link_why": "бэкенд №2 (m): отказ в соединении",
                            "bypass": 1, "bypass_why": "адаптер вернул ошибку: x"}, 7.0, None)
-    assert a["link_rescued"] == 2 and a["errors"] == {}, a
+    assert a["link_retried"] == 2 and a["errors"] == {}, a
     merged = RS.merge([a, b])
-    assert merged["link_rescued"] == 2 and merged["link_failed"] == 3 and merged["link_kind"] == "dns"
+    assert merged["link_retried"] == 2 and merged["link_failed"] == 3 and merged["link_kind"] == "dns"
     errs = list(RS.render(merged))
     first = next(x for x in errs if x.startswith("    · "))
     assert first.startswith("    · ⛔ обрыв связи: бэкенд №2 (m): отказ"), errs
     assert any("мимо Pydantic AI: адаптер вернул ошибку: x" in x for x in errs), errs
     ru = "\n".join(RS.render(merged))
-    assert "2 вызовов адаптера не дошли до шлюза (имя шлюза не найдено (DNS))" in ru
+    assert "2 вызовов не дошли до шлюза (имя шлюза не найдено (DNS)) и были повторены" in ru
     en = "\n".join(RS.render(merged, lang="en"))
-    assert "2 adapter calls did not reach the gateway (gateway name not found (DNS))" in en
+    assert "2 calls did not reach the gateway (gateway name not found (DNS)) and were repeated" in en
     assert "3 calls got no answer" in en and "not a Pydantic AI fault" in en
 
 
@@ -1088,8 +1163,8 @@ def test_a_bot_that_lost_the_connection_gets_its_own_problem_not_no_tools(tmp: P
 @test
 def test_the_cause_table_is_complete_and_every_text_is_translated(tmp: Path):
     """Таблица причин: у каждой строки область, лекарство из допустимых, текст с подстановками, которые
-    движок умеет заполнять, и английский перевод (раздел messages) — панель отдаёт тексты по-русски и
-    переводит по образцам. Названия видов связи, лекарства и области не разъезжаются."""
+    движок умеет заполнять, и английский текст рядом (`en`, у видов связи ещё `label_en`) — панель отдаёт
+    тексты по-русски и переводит по этой же таблице. Названия видов связи, лекарства и области не разъезжаются."""
     AG = _ag()
     sys.path.insert(0, str(KIT / "cockpit"))
     ck = importlib.import_module("aurora_cockpit")
@@ -1098,18 +1173,24 @@ def test_the_cause_table_is_complete_and_every_text_is_translated(tmp: Path):
     for cid, row in AG.CAUSES.items():
         assert row["area"] in ("adapter", "link") and row["fix"] in ("", "install", "version", "models"), cid
         assert set(re.findall(r"\{(\w+)\}", row["ru"])) <= known, (cid, row["ru"])
+        assert sorted(re.findall(r"\{(\w+)\}", row["ru"])) == sorted(re.findall(r"\{(\w+)\}", row["en"])), cid
         if row["area"] == "link":
-            assert row.get("label"), cid
+            assert row.get("label") and row.get("label_en"), cid
         kind, _dot, sub = cid.partition(".")
         why = AG.Why(kind, sub, n=3, model="m-1", path="p", module="mod", exc="E", version="1.0",
                      first="f", code=7, times=3, sec=60, error="e", detail="d", status=502,
-                     label=AG.CAUSES["dns"]["label"])
+                     label=AG.CAUSES["dns"]["label"], ref="dns")
         en = ck.translate_message(str(why), "en")
         assert not re.search("[а-яА-ЯёЁ]", en.replace("№", "")), (cid, en)
         assert str(why) != en, cid
+        # те же два текста отдаёт сама причина — для тех, кто панель не использует
+        assert why.ru == str(why) and not re.search("[а-яА-ЯёЁ]", why.en.replace("№", "")), (cid, why.en)
     # области: тревогу про Pydantic AI поднимают только adapter; связь — своя
     assert {k for k, r in AG.CAUSES.items() if r["area"] == "adapter"} >= {"venv", "client_net.dns"}
-    assert not any(AG.CAUSES[k]["area"] == "adapter" for k in AG.LINK_KINDS | {"rescued"})
+    assert not any(AG.CAUSES[k]["area"] == "adapter" for k in AG.LINK_KINDS | {"retried"})
+    sys.path.insert(0, str(SCRIPTS))
+    KI = importlib.import_module("kit_i18n")
+    assert KI.cause_problems() == [], KI.cause_problems()                  # проверка полноты таблицы
     # каталоги панели: заголовок тревоги связи по каждому виду, на обоих языках
     for lang in ("ru", "en"):
         cat = json.loads((KIT / "cockpit/i18n" / f"{lang}.json").read_text(encoding="utf-8"))
@@ -1123,20 +1204,21 @@ def test_the_cause_table_is_complete_and_every_text_is_translated(tmp: Path):
 @test
 def test_the_direct_http_payload_never_carries_the_internal_tools_flag(tmp: Path):
     """Служебные поля (`needs_adapter`, `adapter`, `tools_root`…) адресованы транспорту: в HTTP-запрос к
-    шлюзу они не уходят — ни при спасённом обрыве, ни при поломке адаптера у вызова с инструментами."""
+    шлюзу они не уходят — ни в явном резерве при неисправном клиенте адаптера, ни при поломке адаптера у
+    вызова с инструментами."""
     with _World(tmp) as w:
         AG = w.AG
-        sent = []
-        AG.http_json = lambda url, body, key, timeout: (sent.append(body) or
-                                                       (200, json.loads(json.dumps(PLAIN)), "", 0.1))
-        AG.pydantic_transport = lambda b, p, t: _drop("connect_timeout")
-        w.ask()
+        calls = []
+        AG.http_json = _direct(calls)
+        # неисправный клиент адаптера, причина очевидна (прокси): вызов без инструментов получает резерв
+        AG.pydantic_transport = lambda b, p, t: _drop("other", "ImportError")
+        assert w.ask()["ok"]
         # поломка самого адаптера: вызов с инструментами всё же ушёл прямым запросом и был отвергнут
         AG.pydantic_transport = lambda b, p, t: (None, None, AG.ADAPTER_FAIL + "ответ не разобран", 0.0)
         r = w.ask(tools=True)
         assert not r["ok"] and r["bypass"] == "ответ не разобран", r
-        chat = [b for b in sent if b is not None]                 # без `/slots` (занятость)
-        assert len(chat) == 2, sent
+        chat = [c[1] for c in _chat(calls)]
+        assert len(chat) == 2, calls
         for body in chat:
             assert not {"needs_adapter", "adapter", "tools_root", "mcp", "guard", "role"} & set(body), body
         assert "needs_adapter" in AG.ADAPTER_ONLY
