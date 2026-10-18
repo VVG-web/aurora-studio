@@ -253,7 +253,7 @@ def test_quarantine_set_before_the_check_knew_is_lifted_when_the_connection_retu
         r = AG.call_role(cfg, "worker", MSGS, transport=transport, deadline=time.time() + 30, sleep=lambda s: None)
         assert r["ok"] and r["backend"] == 1 and calls == [1] and 1 not in AG.DOWN, \
             f"карантин пережил возвращение связи: {AG.DOWN} {calls}"
-        assert any("карантин за обрыв снят" in line for line in r["log"]), r["log"]
+        assert any("карантин за обрыв соединения снят" in line for line in r["log"]), r["log"]
     finally:
         AG.DOWN.clear()
         AG._NET_SEEN.clear()
