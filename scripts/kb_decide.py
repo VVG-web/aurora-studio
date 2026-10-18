@@ -38,6 +38,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 for _s in (sys.stdin, sys.stdout, sys.stderr):
     # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
     try:
@@ -48,8 +49,9 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
-from aurora_common import (KB_ROOT, LINK_RE, aliases as card_aliases, body as card_body, frontmatter,  # noqa: E402
-                           link_targets, safe_walk, utc_today, with_fields)
+from aurora_common import (KB_ROOT, LINK_RE, aliases as card_aliases, body as card_body, fold,  # noqa: E402
+                           frontmatter, link_targets, lock_release, lock_take, safe_walk, utc_today,
+                           with_fields)
 
 DECISIONS = f"{KB_ROOT}/Decisions"
 ARCHIVE = f"{KB_ROOT}/_archive"
@@ -58,8 +60,17 @@ FINAL = ("accepted", "rejected", "superseded")
 # Служебный хвост карточки: его ведёт движок, на отпечаток принятого решения он не влияет.
 TAIL = ("история", "история изменений", "под вопросом", "источник (перенесено дословно)",
         "исправления человеком", "слияние")
-# Имя принимающего: человек. Имя модели или программы — нельзя (правило авторства Авроры).
-NOT_HUMAN = re.compile(r"(?i)\b(claude|anthropic|gpt|chatgpt|openai|gemini|copilot|llm|assistant|bot|aurora)\b")
+# Имя принимающего: человек. Имя модели или программы — нельзя (правило авторства Авроры). Латиница сверяется
+# после `fold` (кириллическая «С» в «Сlaude» становится латинской) и по подстроке: `claude_code`, `gpt4`.
+MODEL_WORDS = re.compile(r"claude|anthropic|gpt|openai|gemini|copilot|llm|assistant|codex|opus|sonnet|haiku|"
+                         r"mistral|llama|deepseek|aurora[-_ ]?(?:studio|bot|engine)")
+BOT_WORD = re.compile(r"(?:^|[^a-z0-9])bot(?:$|[^a-z0-9])")
+RU_NOT_HUMAN = re.compile(r"(?<![а-яё])(?:клод|ассистент\w*|нейросет\w*|бот)(?![а-яё])")
+
+
+def not_human(name: str) -> bool:
+    low = fold(name)
+    return bool(MODEL_WORDS.search(low) or BOT_WORD.search(low) or RU_NOT_HUMAN.search(name.lower()))
 
 
 # ------------------------------------------------------------------ разбор тела
@@ -83,34 +94,48 @@ def section_text(body: str, *names: str) -> str:
     return ""
 
 
+OPTIONS = ("рассмотренные варианты", "варианты", "considered options", "options")
+CONSEQUENCES = ("следствия", "consequences")
+CHOSEN = re.compile(r"(?<![а-яёa-z])(?:выбран\w*|принят\w*|chosen|selected)(?![а-яёa-z])")
+REJECTED = re.compile(r"(?<![а-яёa-z])(?:отклон[её]н\w*|отвергнут\w*|rejected)(?![а-яёa-z])")
+REASON = re.compile(r"(?im)(?:причин\w*\s+отказ\w*|reason\s+for\s+(?:rejection|refusal)|rejection\s+reason)[\s*:—-]*(\S[^\n]*)$")
+
+
 def body_fingerprint(text: str) -> str:
     """Отпечаток тела решения: sha256 нормализованного текста без служебного хвоста.
 
-    Нормализация: без разделов хвоста (`TAIL`) и заголовков первого уровня, цели ссылок `[[…]]`
-    заменены одним знаком, пробельные последовательности сжаты. Так переименование карточки, на
-    которую ссылается решение, перенос строк или правка истории отпечаток не меняют, а слово в
-    варианте, причине отказа или решении — меняют."""
-    keep = []
+    Нормализация: без разделов хвоста (`TAIL`) и первого заголовка, цель ссылки `[[…]]` заменена её
+    подписью (`[[Цель|подпись]]` → подпись, `[[Цель]]` → пусто; число ссылок остаётся), пробельные
+    последовательности сжаты. Так переименование карточки, на которую ссылается решение, перенос строк
+    или правка истории отпечаток не меняют, а слово в варианте, причине отказа или решении — меняют.
+    Предел: подмена одной цели ссылки на другую того же числа и подписи отпечатком не видна —
+    переименование и слияние движком от неё не отличить."""
+    keep, first = [], True
     for title, lines in split_sections(card_body(text)):
         if title.lower() in TAIL:
             continue
-        keep += [l for l in lines if not re.match(r"^#\s", l)]
+        for l in lines:
+            if first and re.match(r"^#\s", l):          # первый заголовок первого уровня — имя, его правит `kb:repair`
+                first = False
+                continue
+            keep.append(l)
         if title:
             keep.append("## " + title)
-    flat = LINK_RE.sub("[[]]", "\n".join(keep))
+    flat = LINK_RE.sub(lambda m: "[[" + (m.group(5) or "") + "]]", "\n".join(keep))
     return hashlib.sha256(" ".join(flat.split()).encode("utf-8")).hexdigest()
 
 
 def variants(body: str) -> list:
     """Варианты из раздела «Рассмотренные варианты»: [{title, chosen, rejected, reason}]."""
-    block = section_text(body, "рассмотренные варианты", "варианты")
+    block = section_text(body, *OPTIONS)
     out = []
     for part in re.split(r"(?m)^###\s+", block)[1:]:
         head, _, rest = part.partition("\n")
-        low = head.lower()
-        rejected = bool(re.search(r"отклон[её]н|отвергнут|rejected", low))
-        chosen = not rejected and bool(re.search(r"выбран|принят|chosen|selected", low))
-        m = re.search(r"(?im)причина\s+отказа[\s*:—-]*(\S[^\n]*)$", rest)
+        # Отметка стоит в конце заголовка после тире («1. Три дня — выбран»); нет тире — отдельное слово.
+        tail = re.split(r"\s[—–-]\s", head)[-1].lower() if re.search(r"\s[—–-]\s", head) else head.lower()
+        rejected = bool(REJECTED.search(tail))
+        chosen = not rejected and bool(CHOSEN.search(tail))
+        m = REASON.search(rest)
         out.append({"title": re.sub(r"^\d+[.)]\s*", "", head).strip(), "chosen": chosen,
                     "rejected": rejected, "reason": (m.group(1).strip() if m else "")})
     return out
@@ -118,10 +143,15 @@ def variants(body: str) -> list:
 
 def affected(body: str) -> list:
     """Карточки из строки «Затронутые карточки: [[…]], […]» раздела «Следствия»."""
-    names = []
-    for line in section_text(body, "следствия").splitlines():
-        if re.search(r"(?i)затронут", line):
+    names, inside = [], False
+    for line in section_text(body, *CONSEQUENCES).splitlines():
+        if re.search(r"(?i)затронут|affected", line):
+            inside = True
             names += link_targets(line)
+        elif inside and (line.startswith((" ", "\t")) or not line.strip()) and line.strip():
+            names += link_targets(line)                 # продолжение списком на следующих строках
+        elif inside and line.strip():
+            inside = False
     return list(dict.fromkeys(names))
 
 
@@ -164,7 +194,7 @@ def body_changed(text: str) -> bool:
 # ------------------------------------------------------------------ поиск
 
 def dr_number(name: str) -> int:
-    m = re.match(r"(?i)^DR-(\d+)", name)
+    m = re.match(r"(?i)^DR-([0-9]+)", name)
     return int(m.group(1)) if m else -1
 
 
@@ -187,7 +217,7 @@ def find_dr(root: str, ident: str) -> tuple:
     ident = ident.strip()
     if ident.lower().endswith(".md"):
         ident = ident[:-3]
-    num = int(ident) if ident.isdigit() else dr_number(ident)
+    num = int(ident) if ident.isascii() and ident.isdigit() else dr_number(ident)
     hits = [p for p, _a in decision_files(root)
             if os.path.splitext(os.path.basename(p))[0] == ident or (num >= 0 and dr_number(os.path.basename(p)) == num)]
     exact = [p for p in hits if os.path.splitext(os.path.basename(p))[0] == ident]
@@ -223,6 +253,7 @@ def known_names(root: str = ".") -> set:
 def human_name(by: str) -> tuple:
     """→ (имя «@имя», ошибка). Пусто — из `git config user.name`. Имя модели или программы не принимается."""
     by = (by or "").strip()
+    given = bool(by)
     if not by:
         try:
             by = subprocess.run(["git", "config", "user.name"], capture_output=True, text=True,
@@ -232,9 +263,12 @@ def human_name(by: str) -> tuple:
     if not by:
         return "", "не назван принявший: укажите --by @имя (решение принимает человек)"
     by = by.lstrip("@").strip()
-    if not by or len(by) > 60 or "\n" in by or '"' in by:
-        return "", "имя принявшего не годится: одна короткая строка без кавычек"
-    if NOT_HUMAN.search(by):
+    # Имя попадает в шапку и в историю: управляющие знаки, переводы строк (в том числе U+2028 и `\r`, по которым
+    # рвёт `splitlines`), кавычки и обратная косая не годятся — иначе имя дописало бы в шапку чужие поля.
+    if not by or len(by) > 60 or any(ord(ch) < 32 or ch in '"\\\u2028\u2029\u0085\u007f' for ch in by):
+        src = "" if given else " (взято из git config user.name — задайте --by)"
+        return "", "имя принявшего не годится: одна короткая строка без кавычек и управляющих знаков" + src
+    if not_human(by):
         return "", "решение принимает человек: имя модели или программы не принимается"
     return "@" + by, ""
 
@@ -253,6 +287,24 @@ def decide(root: str, ident: str, by: str, reject: bool, reason: str) -> tuple:
     path, err = find_dr(root, ident)
     if err:
         return 1, [f"kb_decide: {err}"]
+    # Принять и отклонить одновременно нельзя: статус читается и пишется под замком, и второй видит уже
+    # изменённое решение.
+    lock = os.path.join(root, ".aurora", "state", "ids", f"decide-{dr_number(os.path.basename(path)):04d}.lock")
+    got = False
+    for _ in range(100):
+        got, _held = lock_take(lock, {"task": "decide", "at": time.time()}, stale_s=60)
+        if got:
+            break
+        time.sleep(0.05)
+    if not got:
+        return 1, ["kb_decide: решение сейчас меняет другой процесс — повторите"]
+    try:
+        return _decide_locked(root, path, by, reject, reason)
+    finally:
+        lock_release(lock)
+
+
+def _decide_locked(root: str, path: str, by: str, reject: bool, reason: str) -> tuple:
     with open(path, encoding="utf-8") as f:
         text = f.read()
     fm = frontmatter(text)
@@ -292,6 +344,17 @@ def decide(root: str, ident: str, by: str, reject: bool, reason: str) -> tuple:
                "меняется только заменой (`kb:supersede`)."]
 
 
+def reseal(was: str, now: str, why: str) -> str:
+    """Текст `now` (правка движка, не смысла: обезличивание) с отпечатком, пересчитанным по новому телу.
+
+    Только если принятое решение до правки было целым: отпечаток сходился. Уже изменённое тело не «отмывается»."""
+    stamp = (frontmatter(was).get("accepted_fp") or "").strip().strip("\"'")
+    if not stamp or body_changed(was) or not frontmatter(now).get("accepted_fp"):
+        return now
+    out = with_fields(now, {"accepted_fp": body_fingerprint(now)})
+    return add_history(out, f"- {utc_today()}: {why}, отпечаток тела пересчитан")
+
+
 # ------------------------------------------------------------------ журнал
 
 def read_decision(path: str, archived: bool, known: set, today: str) -> dict:
@@ -313,7 +376,8 @@ def read_decision(path: str, archived: bool, known: set, today: str) -> dict:
             "superseded_by": (fm.get("superseded_by") or "").strip().strip("\"'[]"),
             "affects": affected(card_body(text)), "age_days": age,
             "body_changed": body_changed(text),
-            "form": [p["id"] for p in lint_decision(text, known)]}
+            "form": ([p["id"] for p in lint_decision(text, known)]
+                     if status in ("proposed", "accepted") and not archived else [])}
 
 
 def journal(root: str = ".", today: str = "", stale_days: int = STALE_DAYS) -> dict:
@@ -327,7 +391,7 @@ def journal(root: str = ".", today: str = "", stale_days: int = STALE_DAYS) -> d
     return {"decisions": rows, "by_status": dict(sorted(by_status.items())),
             "stale": [r["id"] for r in rows if r["status"] == "proposed" and (r["age_days"] or 0) > stale_days],
             "body_changed": [r["id"] for r in rows if r["body_changed"]],
-            "form_problems": [r["id"] for r in rows if r["form"] and r["status"] in ("proposed", "accepted")],
+            "form_problems": [r["id"] for r in rows if r["form"]],
             "stale_days": stale_days}
 
 
