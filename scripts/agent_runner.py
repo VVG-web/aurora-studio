@@ -65,6 +65,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
 import card_types as CT  # noqa: E402 — единый вход записи карточки: шаблон обязателен
+import fidelity as FID  # noqa: E402 — механический слой под Момусом: числа, цитаты, вердикт (BL-KBA-05)
 from aurora_common import (QUOTES, aliases, body as body_of, fold, head_text,  # noqa: E402
                            link_escapes, replace_file, write_text_atomic)
 
@@ -6559,8 +6560,10 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
     # обещать человеку контекст втрое больше настоящего. Число даёт сам пак.
     m = re.search(r"карточек (\d+)", pack)
     total = int(m.group(1)) if m else 0
-    # Имя карточки — до тире: заголовок блока пака теперь «имя — title».
-    cards = [h.split(" — ")[0].strip() for h in re.findall(r"^## (.+)$", pack, re.M)]
+    # Имя карточки — до тире: заголовок блока пака теперь «имя — title». Карточки берутся по структуре пака
+    # (заголовки вне ограждения тела), а не по каждой строке «## »: раздел страницы внутри тела карточки
+    # карточкой пака не был, а ссылку на него проверка принимала за «в паке».
+    cards = FID.pack_cards(pack)
 
     prompt = PROMPT_ASK.format(pack=pack, question=question)
     # Разговор передаётся МЕХАНИЗМОМ истории, а не пересказом в промпте. Текстовый
@@ -6625,15 +6628,28 @@ def classify_links(text: str, cards: list, pack: str, cwd: str) -> dict:
     настоящая выдумка. Предупреждение, которое одинаково пугает в трёх разных случаях,
     перестают читать — а два из трёх случаев лечатся командой, а не вниманием.
     """
+    from aurora_common import fold_hard
     named = {n.strip() for n in re.findall(r"\[\[([^\]|#]+)", text)}
-    known = {c.strip() for c in cards}
+    known = {fold_hard(c) for c in cards}
     issues = set(re.findall(r"\b([A-Z][A-Z0-9]+-\d+)\b", pack))    # ключи задач из зеркала
     base = base_names(cwd)
+    base_f = {fold_hard(b) for b in base}
+
+    def by_code(name: str, names) -> bool:
+        """`[[ALG-3.14]]` вместо `ALG-3.14 Учёт операции`: имя — начало карточки по границе слова, и в нём
+        есть цифра (код). Усечённое слово (`Заявка-на-поставк`) и случайная подстрока (`Баланс` внутри
+        другого имени) под это не подходят: раньше любая подстрока считалась «своей» (KB2-05, AR2-14)."""
+        low = fold(name).strip()
+        if not re.search(r"\d", low):
+            return False
+        return any(fold(c).startswith(low) and (len(fold(c)) == len(low) or fold(c)[len(low)] in " -_.:·—")
+                   for c in names)
+
     outside, mentioned, invented = [], [], []
     for n in sorted(named):
-        if n in known or n in issues or any(n.lower() in c.lower() for c in known):
+        if fold_hard(n) in known or n in issues or by_code(n, cards):
             continue
-        if n in base or any(n.lower() in b.lower() for b in base):
+        if fold_hard(n) in base_f or by_code(n, base):
             outside.append(n)                 # карточка есть, но в контекст не попала
         elif n.lower() in pack.lower():
             mentioned.append(n)               # упомянута внутри карточки, своей карточки нет
@@ -6689,8 +6705,12 @@ def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
                 "timed_out": bool(v.get("timed_out")), "given": rt,
                 "call": {k: x for k, x in v.items() if k != "url"}}
     text = (v["text"] or "").strip()
-    m = re.search(r"ВЕРДИКТ:\s*(ЧИСТО|БЕЗ ОПОРЫ\s*(\d+))", text, re.I)
-    unsupported = int(m.group(2)) if (m and m.group(2)) else 0
+    # Вердикт — ПОСЛЕДНЯЯ строка (так сказано в промпте): первое совпадение выигрывало у настоящего, если
+    # «ВЕРДИКТ: ЧИСТО» стояло в цитате или пересказе. Число сверяется с названными нарушениями: «ЧИСТО» рядом
+    # с перечнем «НЕТ ОПОРЫ …» — не чисто, берём большее из двух (AR2-14, KB3-03).
+    m = FID.parse_verdict(text)
+    listed = len(momus_claims(text))
+    unsupported, mismatch = FID.reconcile(m["n"], listed) if m else (0, False)
     # Вердикта нет — считаем проверку не состоявшейся: молча выдавать «чисто» нельзя.
     # Сам ответ уходит вызывающему (`call`) — в журнал сбоев: «не дал вердикта» без
     # ответа не разобрать — оборван ли он лимитом, отказ ли это или другой формат.
@@ -6699,6 +6719,14 @@ def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
            "seconds": round(time.time() - started, 1),
            "why": "" if m else (f"Момус не дал вердикта — проверка не состоялась "
                                 f"(finish_reason={v.get('finish')}, ответ {len(text)} зн.)")}
+    if mismatch:
+        out["verdict_mismatch"] = {"said": m["n"], "listed": listed}
+    if m:
+        # Цитата «ОПОРА …», которой нет в контексте, — выдуманное подтверждение. Вердикт не меняем (пересказ
+        # цитатой не бывает дословным), но число проверенных и не найденных цитат уходит в отчёт.
+        out["quotes"] = FID.check_quotes(text, pack)
+        if out["quotes"]["checked"] and len(out["quotes"]["missing"]) == out["quotes"]["checked"]:
+            out["suspect"] = True       # ни одна из цитат опоры не найдена в контексте: «чисто» доверия не заслуживает
     if not m:
         out["call"] = {k: x for k, x in v.items() if k != "url"}
     return out
@@ -6838,6 +6866,9 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
         elif mo.get("clean"):
             L += ["", f"✅ **Момус: чисто** — каждое утверждение нашло опору в контексте "
                   f"(проверил {mo['model']}, {mo['seconds']} с)."]
+            if mo.get("suspect"):
+                L += ["", "⚠️ Но ни одной из цитат, на которые сослался Момус, в контексте нет "
+                      f"({len(mo['quotes']['missing'])} из {mo['quotes']['checked']}): «чисто» стоит перепроверить глазами."]
         else:
             # Без HTML-свёрток: этот текст читают и в панели, и в журнале разговоров в
             # Obsidian, и в терминале. Разметка, которую понимает только один из трёх,
@@ -6846,6 +6877,9 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
                   "контекст не подтверждает: их нельзя переносить в постановку.", "",
                   "**Разбор Момуса:**", ""]
             L += ["> " + line if line.strip() else ">" for line in mo["text"].splitlines()]
+            if mo.get("verdict_mismatch"):
+                said, listed = mo["verdict_mismatch"]["said"], mo["verdict_mismatch"]["listed"]
+                L += ["", f"_Вердикт Момуса называл {said}, а в разборе названо {listed}: взято большее._"]
     if res.get("outside"):
         L += ["", "**Названы карточки, которых не было в контексте, но в базе они есть** — "
               "промах отбора, а не выдумка: спросите точнее или откройте их сами:",
