@@ -1876,7 +1876,7 @@ def test_a_route_says_why_a_step_did_not_start_and_saves_its_tail(tmp: Path):
     assert '(self.refused + ". ") if self.refused else t("route.cmd_failed")' in rr, \
         "итог маршрута говорит «не отработала» вместо причины"
     tail = rr[rr.index("def _finish"):rr.index("def _close")]
-    assert "if self.write:" in tail and 'self._commit(t("route.commit_route"' in tail, \
+    assert "if self.write and not self.no_run:" in tail and 'self._commit(t("route.commit_route"' in tail, \
         "результат маршрута после цикла не фиксируется"
     assert "git_commit(self.project, message, None, True)" in rr and 't("route.not_saved"' in tail, \
         "фиксация хвоста встанет на храповике или провалится молча"

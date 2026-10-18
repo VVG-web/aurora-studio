@@ -398,6 +398,7 @@ class RouteRun:
 
     net, net_policy = "", ""        # политика без связи: запрошенная и действующая; пусто — проверка соединений не вмешивается
     no_run = False                  # маршрут отказал до первого шага: ни коммита, ни пометки «маршрут идёт»
+    stop = None                     # Event остановки; у каркаса проверок без __init__ его нет
 
     def __init__(self, ck, project: str, sc: dict, write: bool = True, lang: str = "ru",
                  log=None, stop=None, on_job=None, on_step=None, resume: dict | None = None,
