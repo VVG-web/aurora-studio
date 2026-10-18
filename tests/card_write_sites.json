@@ -286,6 +286,11 @@
    "reason": "замок процесса: служебный файл-охрана",
    "calls": 1
   },
+  "scripts/aurora_common.py:keep_private_copy": {
+   "kind": "other",
+   "reason": "личная копия служебного файла проекта (хранится вне базы знаний), не карточка",
+   "calls": 1
+  },
   "scripts/aurora_common.py:lock_take": {
    "kind": "other",
    "reason": "замок процесса: служебный файл",
@@ -460,6 +465,21 @@
    "kind": "other",
    "reason": "зеркало Confluence в Sources/: источник, не карточка",
    "calls": 1
+  },
+  "scripts/conn_gate.py:_write_exact": {
+   "kind": "other",
+   "reason": "состояние ожидающих запусков и проверки соединений (`~/.aurora`), не карточка",
+   "calls": 1
+  },
+  "scripts/connectivity.py:_write_state": {
+   "kind": "other",
+   "reason": "состояние проверок соединений (`~/.aurora/connectivity-state.json`), не карточка",
+   "calls": 2
+  },
+  "scripts/connectivity.py:save": {
+   "kind": "other",
+   "reason": "профили и адреса проверки машины (`local/connectivity.json`), не карточка",
+   "calls": 2
   },
   "scripts/ctx_pack.py:log_usage": {
    "kind": "other",
@@ -756,10 +776,15 @@
    "reason": "справочник вызовов моделей (документ)",
    "calls": 1
   },
+  "scripts/model_config.py:_stamp_salt": {
+   "kind": "other",
+   "reason": "соль слепка страницы настроек моделей (`local/.stamp-salt`), не карточка",
+   "calls": 1
+  },
   "scripts/model_config.py:save": {
    "kind": "other",
    "reason": "настройка моделей local/models.json",
-   "calls": 2
+   "calls": 1
   },
   "scripts/office_ingest.py:main": {
    "kind": "other",
