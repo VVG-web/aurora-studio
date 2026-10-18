@@ -18,6 +18,12 @@
 Что НЕ публикуется: карточки `AuroraKnowledgeDB/` (внутренний слой доверия) и
 `Sources/` (зеркала — это вход, а не выход). Отказ жёсткий, без флага-обхода.
 
+Ворота ревью. Если у вида артефакта в `artifacts:` проекта объявлено ревью (`review: us` или `alg`), наружу
+уходит только артефакт со свежим ревью «готова к передаче» (`make:review-auto --file … --apply` кладёт итог и
+отпечаток проверенного текста в шапку): нет ревью, текст изменён после него или вердикт ниже — код 2 и перечень
+причин, без обращения к Confluence (и в пробном прогоне тоже). Обход — `--allow review`: публикация идёт, а
+в шапку ложится `review_bypass` с временем. У видов без объявленного ревью поведение прежнее.
+
 Панель: `ship:publish`
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
 и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
@@ -37,7 +43,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (GATE_CODES, KB_ROOT, TRUSTED, as_list, body as md_body, clean_copy,
                            git_commit, frontmatter, link_escapes, outward_check, safe_urlopen,
-                           set_field, split_frontmatter)
+                           set_field, split_frontmatter, utc_stamp, with_fields)
 
 from confluence_export import Api, read_config, read_secret
 
@@ -302,6 +308,22 @@ def weak_grounds(fm: dict) -> list:
     return weak
 
 
+def review_gate(text: str, fm: dict) -> list:
+    """Что мешает опубликовать: [(id, пояснение)] — только для вида, у которого в реестре объявлено ревью."""
+    try:
+        import make_kinds as MK
+        rec = (MK.read_kinds(".") or {}).get((fm.get("type") or "").strip().strip('"'))
+    except Exception:  # noqa: BLE001 — реестр видов необязателен: без него ворот нет
+        return []
+    if not rec or (rec.get("review") or "").strip() not in ("us", "alg"):
+        return []
+    try:
+        import review_run as RR
+    except ImportError:          # движок проекта обновлён не целиком: ревью нечем проверить
+        return [("review-engine", "модуль ревью (review_run.py) недоступен — обновите движок проекта")]
+    return RR.publish_gate(text)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Опубликовать артефакт в Confluence")
     ap.add_argument("path", help="файл из Artifacts/ или Deliverables/")
@@ -316,6 +338,8 @@ def main() -> int:
                     help="взять под управление существующую страницу с таким заголовком")
     ap.add_argument("--apply", action="store_true",
                     help="отправить в Confluence (иначе только предпросмотр)")
+    ap.add_argument("--allow", action="append", default=[], choices=["review"],
+                    help="обойти ворота: review — опубликовать без свежего ревью (обход записывается в шапку)")
     a = ap.parse_args()
 
     path = a.path
@@ -343,6 +367,17 @@ def main() -> int:
         return 1
     text = open(path, encoding="utf-8-sig").read()
     fm = frontmatter(text)
+    gate = review_gate(text, fm)
+    bypass = bool(gate) and "review" in a.allow
+    if gate and not bypass:
+        print(f"publish: ворота ревью не пройдены для {path}:", file=sys.stderr)
+        for gid, why in gate:
+            print(f"  {gid}: {why}", file=sys.stderr)
+        print("Обход — --allow review (запишется в шапку); для вида артефакта ревью объявлено в "
+              "aurora.config.yaml (artifacts → review).", file=sys.stderr)
+        return 2
+    if bypass:
+        print("⚠️ Ворота ревью обойдены (--allow review): " + "; ".join(why for _gid, why in gate))
     # В чистовик уходит только документ: уточнения, допущения, замечания критика и
     # план — это производство, и команде разработки они не нужны. Режем по маркеру, а
     # не по списку заголовков: список разошёлся бы с тем, кто их пишет.
@@ -467,6 +502,8 @@ def main() -> int:
     ver = (res.get("version") or {}).get("number", "?")
     text = stamp(text, pid, commit, str(ver),
                  f"{base_url}/pages/viewpage.action?pageId={pid}")
+    if bypass:
+        text = with_fields(text, {"review_bypass": utc_stamp()})
     open(path, "w", encoding="utf-8").write(text)
 
     print(f"\n✅ {base_url}/pages/viewpage.action?pageId={pid} (версия {ver}, доступ {kind})")

@@ -53,6 +53,8 @@ MCP убирает посредника — ассистент сам ищет �
     review_page              ревью страницы движком целиком: страница и связанные, чек-лист
                              несколькими прогонами, оценка и вердикт кодом; отчёт — файлом
     review_score             оценка готовых ответов на чек-лист по формуле шаблона
+    review_file              ревью локального артефакта или страницы-зеркала тем же движком, без сети
+    story_lint               форма истории, критериев или спецификации кодом: без модели и сети
     atlassian_check          доступны ли Jira и Confluence проекта и под кем
     jira_search / jira_issue  очередь задач одним запросом (родитель, метки, вложения)
     jira_publish             вложение → комментарий → метки, по шагам и с пробным прогоном
@@ -188,6 +190,24 @@ TOOLS = [
          "page": {"type": "string", "description": "номер страницы или её адрес"},
          "profile": {"type": "string", "enum": ["auto", "us", "alg"]},
          "runs": {"type": "integer", "description": "прогонов чек-листа, 1–5 (по умолчанию 3)"}}}},
+    {"name": "review_file",
+     "description": "Ревью локального артефакта (Artifacts/…) или страницы-зеркала тем же движком, что review_page, "
+                    "но без Confluence и сети: чистовик и связанное из базы знаний и зеркала, чек-лист несколькими "
+                    "прогонами модели проекта, оценка и вердикт кодом. Ответ «нет» принимается только с цитатой, "
+                    "найденной в тексте. Итог в шапку артефакта не пишет (это делает `make:review-auto --file --apply` "
+                    "в панели). Долго: минуты.",
+     "inputSchema": {"type": "object", "required": ["path"], "properties": {
+         "path": {"type": "string", "description": "файл проекта: Artifacts/us/US-1.md, Sources/Confluence/…"},
+         "profile": {"type": "string", "enum": ["auto", "us", "alg"]},
+         "runs": {"type": "integer", "description": "прогонов чек-листа, 1–5 (по умолчанию 3)"}}}},
+    {"name": "story_lint",
+     "description": "Форма истории, критериев приёмки или спецификации кодом: разделы шаблона, формула «Как / Я хочу / "
+                    "Чтобы», «Реализует», пара «Действие / Реакция», лимиты шагов, остатки {{…}}. Без модели и сети, "
+                    "доли секунды; без path проверяются все артефакты проекта.",
+     "inputSchema": {"type": "object", "properties": {
+         "path": {"type": "string", "description": "файл проекта (необязательно)"},
+         "profile": {"type": "string", "enum": ["us", "ac", "spec"],
+                     "description": "обязателен, если задан path"}}}},
     {"name": "review_score",
      "description": "Оценить готовые ответы на чек-лист по формуле шаблона: оценка, вердикт, "
                     "сводка и отчёт. Ответы — {\"US-01\": {\"v\": \"yes|no|na|unknown\", "
@@ -197,7 +217,9 @@ TOOLS = [
          "answers": {"type": "object"},
          "incomplete": {"type": "boolean",
                         "description": "не прочитана обязательная связанная страница"},
-         "title": {"type": "string"}, "code": {"type": "string"}}}},
+         "title": {"type": "string"}, "code": {"type": "string"},
+         "text": {"type": "string", "description": "проверяемый текст: тогда ответы «no» без цитаты, найденной в нём, "
+                                                   "снимаются до «unknown»"}}}},
     {"name": "atlassian_check",
      "description": "Доступны ли Jira и Confluence проекта, под каким пользователем, "
                     "разрешена ли запись в Jira. Звать в начале прогона.",
@@ -557,11 +579,55 @@ def t_review_page(project: str, args: dict) -> str:
                timeout=REVIEW_TIMEOUT, fail_from=2)
 
 
+def project_file(project: str, args: dict) -> str:
+    """Путь файла проекта из запроса: относительный, внутри проекта. Путь приходит от модели."""
+    rel = need(args, "path", "файл проекта").replace("\\", "/").strip()
+    norm = os.path.normpath(rel).replace("\\", "/")
+    if os.path.isabs(rel) or norm.startswith("..") or not os.path.isfile(os.path.join(project, norm)):
+        raise ToolError(f"{rel}: нужен файл внутри проекта (путь от корня проекта).")
+    return norm
+
+
+def run_new(project: str, script: str, argv: list, what: str, timeout: int = 120) -> str:
+    """Команда движка с флагами новее, чем у части проектов: старый движок отвечает справкой argparse о
+    незнакомом флаге, а ассистенту нужна причина словами."""
+    try:
+        return run(project, script, argv, timeout=timeout, fail_from=2)
+    except ToolError as e:
+        if "unrecognized arguments" in str(e) or "unknown option" in str(e):
+            raise ToolError(f"{what}: движок проекта {version(project)} не знает нужных флагов — обновите "
+                            "движок проекта (панель, раздел «Версия») и повторите.") from None
+        raise
+
+
+def t_review_file(project: str, args: dict) -> str:
+    path = project_file(project, args)
+    profile = str(args.get("profile") or "auto")
+    if profile not in ("auto", "us", "alg"):
+        raise ToolError("profile — auto, us или alg.")
+    try:
+        runs = max(1, min(int(args.get("runs") or 3), 5))
+    except (TypeError, ValueError):
+        runs = 3
+    return run_new(project, "review_run.py", ["--file", path, "--profile", profile, "--runs", str(runs), "--json"],
+                   "review_file", timeout=REVIEW_TIMEOUT)
+
+
+def t_story_lint(project: str, args: dict) -> str:
+    if not args.get("path"):
+        return run_new(project, "artifact_lint.py", ["--json"], "story_lint")
+    path = project_file(project, args)
+    profile = str(args.get("profile") or "")
+    if profile not in ("us", "ac", "spec"):
+        raise ToolError("Для файла нужен profile: us, ac или spec.")
+    return run_new(project, "artifact_lint.py", [path, "--profile", profile, "--json"], "story_lint")
+
+
 def t_review_score(project: str, args: dict) -> str:
     need_engine(project, REVIEW_SINCE, "review_score")
     if not isinstance(args.get("answers"), dict) or not args["answers"]:
         raise ToolError("Не заданы answers: {\"US-01\": {\"v\": \"yes\"}, …}.")
-    req = {k: args[k] for k in ("profile", "answers", "incomplete", "title", "code") if k in args}
+    req = {k: args[k] for k in ("profile", "answers", "incomplete", "title", "code", "text") if k in args}
     return run(project, "review_run.py", ["--score-json"], stdin=json.dumps(req, ensure_ascii=False))
 
 
@@ -601,6 +667,8 @@ WORK_TOOLS = {
     "review_checklist": t_review_checklist,
     "review_page": t_review_page,
     "review_score": t_review_score,
+    "review_file": t_review_file,
+    "story_lint": t_story_lint,
     **{name: t_atlassian(name) for name in ("atlassian_check", "jira_search", "jira_issue",
                                             "jira_publish", "confluence_find",
                                             "confluence_page")},

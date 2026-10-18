@@ -841,9 +841,19 @@
    "reason": "отчёты ревью: производные документы, не карточки",
    "calls": 2
   },
+  "scripts/review_run.py:review_file_main": {
+   "kind": "other",
+   "reason": "отчёты ревью: производные документы, не карточки",
+   "calls": 1
+  },
   "scripts/review_run.py:save_report": {
    "kind": "other",
    "reason": "отчёты ревью: производные документы, не карточки",
+   "calls": 1
+  },
+  "scripts/review_run.py:stamp_review": {
+   "kind": "other",
+   "reason": "шапка собственного артефакта (Artifacts/, Deliverables/work/) с итогом ревью: не карточка базы",
    "calls": 1
   },
   "scripts/review_run.py:summarize": {

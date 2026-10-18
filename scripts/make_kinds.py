@@ -58,10 +58,14 @@ KNOWN = {
 # Поля типа артефакта. Шаблон и папка обязательны: без первого документ выйдет не по
 # форме (и ревью этого не поймает), без второй его некуда класть. Остальное
 # необязательно — промпта у типа может не быть, публиковать можно не всё.
-FIELDS = ("title", "template", "prompt", "out", "publish_url", "mcp", "tech_agnostic")
+FIELDS = ("title", "template", "prompt", "out", "publish_url", "mcp", "tech_agnostic", "review")
 # `tech_agnostic` — включает правило «критерии без технологий» для этого вида документа.
 # Не глобально: у ОПЗ и проектного решения стек это предмет документа, и общее правило
 # заставило бы критика ругаться на каждый. Осмысленно у ac, us, test-case.
+# `review` — профиль ревью по чек-листу, обязательного перед публикацией этого вида (`us` — история, `alg` —
+# алгоритм; пусто — ревью не требуется). Ворота `ship:publish` пускают наружу только артефакт со свежим ревью
+# «готова к передаче» (`make:review-auto --file … --apply`); обход — `--allow review`, он записывается.
+REVIEW_PROFILES = ("us", "alg")
 # Свойства связанной задачи: их собирает панель, а заводит задачу ассистент. Заводить
 # задачу в общей системе команды кнопкой, нажатой между делом, движок не будет.
 TASK_FIELDS = ("project", "type", "assignee", "labels", "components", "epic")
@@ -147,6 +151,9 @@ def check(root: str, kinds: dict) -> list:
             bad.append((kind, out_problem(out)))
         elif not os.path.isdir(os.path.join(root, out)):
             bad.append((kind, f"папки результата нет: {out}/"))
+        review = (rec.get("review") or "").strip()
+        if review and review not in REVIEW_PROFILES:
+            bad.append((kind, f"ревью «{review}»: профили — {', '.join(REVIEW_PROFILES)} или пусто"))
     return bad
 
 
@@ -180,6 +187,9 @@ def main() -> int:
             print(f"Промпт проекта: {rec['prompt']} — читать вместе с шаблоном")
         if rec.get("publish_url"):
             print(f"Публикуется в: {rec['publish_url']}")
+        if (rec.get("review") or "").strip() in REVIEW_PROFILES:
+            print(f"Ревью перед публикацией: профиль {rec['review']} — `make:review-auto --file <файл> --apply`; "
+                  "без свежего ревью «готова к передаче» `ship:publish` не пустит")
         if str(rec.get("tech_agnostic", "")).strip().lower() in ("true", "да", "yes", "1"):
             print("\nБез технологий: критерии этого вида пишутся в терминах поведения и "
                   "данных.\nНе называйте СУБД, брокеры, фреймворки и имена сервисов — "
