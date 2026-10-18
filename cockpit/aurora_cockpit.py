@@ -5119,16 +5119,27 @@ def extras_install(extra_id: str) -> dict:
 # ----------------------------------------------------------------- выполнение
 
 def adapter_alarm() -> list:
-    """Где вызовы моделей шли мимо Pydantic AI, хотя он выбран: [{path, at, why, project,
-    calls}]. Пишет движок (`agent_core.note_bypass`), снимает первый же вызов того же пути,
-    прошедший через адаптер."""
+    """Тревоги вызова модели, которые пишет движок (`agent_core`): [{path, area, kind, sub, fix,
+    args, at, why, project, calls}].
+
+    `area`: `adapter` — Pydantic AI выбран, а вызовы идут мимо него (`note_bypass`), снимает первый
+    же вызов того же пути, прошедший через адаптер; `link` — нет связи с бэкендом
+    (`link_note`), снимает первый же ответ этого бэкенда. `kind` — вид по таблице причин движка,
+    `fix` — куда ведёт кнопка: `install`, `version`, `models` или ничего. Строка без вида
+    (написана до 1.176.0) читается как неисправность адаптера, вид — по тексту."""
     import agent_core as AG
     rows = []
-    for path, row in sorted(AG.read_alarm().items()):
+    for key, row in sorted(AG.read_alarm().items()):
         if isinstance(row, dict):
-            rows.append({"path": path, "at": row.get("at", ""), "why": row.get("why", ""),
-                         # чем лечить: venv — «Установка», файл адаптера — «Версия»
-                         "fix": AG.gap_kind(row.get("why", "")),
+            try:
+                cause = AG.alarm_cause(row)
+            except (TypeError, ValueError, KeyError):
+                continue                  # строку тревоги правили руками: панель из-за неё не падает
+            if cause.area == "link" and AG.alarm_age(row) > AG.LINK_ALARM_TTL:
+                continue                  # забытая тревога связи (бэкенд убран из настройки) не висит вечно
+            rows.append({"path": str(row.get("path") or key), "area": cause.area, "kind": cause.kind,
+                         "sub": cause.sub, "fix": cause.fix, "args": dict(cause.args),
+                         "at": row.get("at", ""), "why": str(cause),
                          "project": os.path.basename(str(row.get("project") or "")),
                          "calls": int(row.get("calls") or 0)})
     return rows
@@ -5737,8 +5748,9 @@ class Handler(BaseHTTPRequestHandler):
                        "behind": ui_version() != kit_version(),
                        "stale_process": os.path.getmtime(os.path.abspath(__file__)) > STARTED},
                 "projects": projects,
-                # Pydantic AI выбран, а вызовы где-то идут мимо него — красной полосой
-                # поверх любого раздела (1.161.0). Опрашивается и отдельно, раз в 20 с.
+                # Тревоги вызова модели красной полосой поверх любого раздела: Pydantic AI выбран, а
+                # вызовы идут мимо него (1.161.0), и нет связи с бэкендом — это разные полосы (область
+                # в каждой строке). Опрашивается и отдельно, раз в 20 с.
                 "adapter_alarm": adapter_alarm(),
                 # Что панель сняла на старте: брошенные процессы прежней — один раз тостом.
                 "reaped": {"at": STARTED, "items": REAPED},
