@@ -36,7 +36,7 @@ import sys
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import case_clashes, path_problems  # noqa: E402
+from aurora_common import case_clashes, path_problems, service_dirs  # noqa: E402
 
 SCHEMES = "## Схемы страницы"
 ATTACHMENTS = "## Вложения страницы"      # файлы, на которые ссылается тело страницы
@@ -432,8 +432,9 @@ def main() -> int:
         changed = True
     print()
 
+    mirrors = tuple(d + "/" for d in service_dirs("projectwiki", root)) + ("AuroraKnowledgeDB/",)
     rest = [(r, w[0]) for r in tracked(root)
-            if not r.startswith(("Sources/Confluence/", "AuroraKnowledgeDB/"))
+            if not r.startswith(mirrors)
             for w in [path_problems(r)] if w]
     if rest:
         print(f"## Файлы человека — переименовать руками: {len(rest)}\n")

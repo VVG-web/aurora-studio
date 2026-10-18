@@ -41,7 +41,7 @@ import re
 import shutil
 import sys
 
-from aurora_common import (FOOTER, HEAD_BLOCK_TAIL, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
+from aurora_common import (FOOTER, HEAD_BLOCK_TAIL, service_dirs, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            card_title_safe, corrections_of, cut_corrections, put_corrections,
                            split_tail, split_inline_items, part_stem, ARCHIVE_SUFFIX,
                            is_meeting,
@@ -1432,12 +1432,13 @@ def plan_drop_jira(cards: dict, plan: Plan) -> list:
     Не удаляем, а архивируем: перенос обратим, входящие ссылки чинит `--links`.
     """
     dropped = []
+    task_dirs = tuple(d + "/" for d in service_dirs("tasktracker"))
     for path, c in sorted(cards.items()):
         rel = path.replace("\\", "/")
         if is_service(rel) or "/_archive/" in rel:
             continue
         srcs = [x for x in card_sources(c.text) if x]
-        if not srcs or not all(x.replace("\\", "/").startswith("Sources/JIRA/") for x in srcs):
+        if not srcs or not all(x.replace("\\", "/").startswith(task_dirs) for x in srcs):
             continue
         if plan.protects(c):
             continue

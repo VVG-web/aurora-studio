@@ -1,7 +1,7 @@
 {
   "about": "Планка метрики «файлов ядра на расширение» (tests/ext_footprint.py). Число не должно расти (рост — красный тест); уменьшили — обновите: python3 tests/ext_footprint.py --write",
   "counts": {
-    "connector": 27,
+    "connector": 24,
     "panel_module": 2,
     "git_provider": 2,
     "llm_provider": 3,

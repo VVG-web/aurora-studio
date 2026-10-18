@@ -49,9 +49,11 @@ scripts/card_types.py    => .aurora/scripts/card_types.py
 # импортируют kb_lint, kb_trace, artifact_lint и spec_pack — поэтому тоже раньше них: обрыв обновления между
 # записями не должен оставить хуку pre-commit и шагам маршрута AttributeError на старом run_summary
 scripts/run_summary.py   => .aurora/scripts/run_summary.py
-# общая часть синка и реестр модулей источников
-scripts/sources_core.py     => .aurora/scripts/sources_core.py
+# реестр модулей источников: `aurora_common.service_dirs` (папки зеркал по роли сервиса, BL-DEC-06) спрашивает его на каждой
+# карточке, поэтому он стоит раньше всех, кто ищет зеркала (kb_lint, kb_trust, ctx_pack): обрыв обновления не оставит их без реестра
 scripts/sources_registry.py => .aurora/scripts/sources_registry.py
+# общая часть синка
+scripts/sources_core.py     => .aurora/scripts/sources_core.py
 # длина путей на Windows, macOS и Linux: проверка настройки, подсказка при старте прогона, doctor
 scripts/path_budget.py      => .aurora/scripts/path_budget.py
 scripts/kb_lint.py       => .aurora/scripts/kb_lint.py

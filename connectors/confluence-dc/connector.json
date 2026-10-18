@@ -3,6 +3,8 @@
   "title": "Confluence (Server / Data Center / Cloud)",
   "kind": "wiki",
   "role": "artifacts",
+  "service_role": "projectwiki",
+  "aliases": ["confluence"],
   "since": "1.28.0",
   "what": "Дерево страниц пространства Confluence: иерархия — папками, страница с детьми — папка и index.md. Читает REST-ом, на сервер ничего не ставит.",
   "mirror": {

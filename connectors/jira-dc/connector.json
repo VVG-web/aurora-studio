@@ -3,6 +3,8 @@
   "title": "Jira (Server / Data Center)",
   "kind": "board",
   "role": "tasks",
+  "service_role": "tasktracker",
+  "aliases": ["jira"],
   "since": "1.28.0",
   "what": "Задачи по JQL: файл на задачу, имя — ключ. Состояние копится между прогонами, поэтому узкий запрос не выбрасывает остальное из зеркала.",
   "mirror": {

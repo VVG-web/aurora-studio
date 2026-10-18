@@ -106,13 +106,16 @@ def unq(v: str) -> str:
 
 
 def mirrors(root: str = ".") -> dict:
-    """{путь: роль}. Реестра нет — работаем по историческим именам зеркал."""
-    # Исторические умолчания: проект мог не успеть обновить описания коннекторов, а роль
-    # у зеркала JIRA всегда была одна. Объявленное всегда сильнее умолчания.
-    out = {"Sources/JIRA": "tasks", "Sources/Confluence": "artifacts"}
+    """{путь: роль}. Реестра нет — пусто: ядро не знает зеркал по названиям (BL-DEC-06)."""
+    out = {}
     if REG is not None:
         try:
-            out.update(REG.roles(root))
+            # Описание коннектора могло не успеть обновиться и не назвать `role`: тогда роль доверия
+            # берётся из роли сервиса — трекер задач всегда «задачи», вики всегда «артефакты».
+            for service, role in (("tasktracker", "tasks"), ("projectwiki", "artifacts")):
+                for path in REG.service_paths(root, service):
+                    out[path.rstrip("/")] = role
+            out.update(REG.roles(root))              # объявленное всегда сильнее умолчания
         except Exception:                            # noqa: BLE001
             pass
     return out
