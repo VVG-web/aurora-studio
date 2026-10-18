@@ -16,6 +16,7 @@ const DOCS = [
   ["skills/aurora-vault/SKILL.md", "reference.doc.skill"],
   ["docs/commands.md", "reference.doc.commands"],
   ["docs/llm-calls.md", "reference.doc.llm_calls"],
+  ["docs/connectivity.md", "reference.doc.connectivity"],
   ["docs/roadmap.md", "reference.doc.roadmap"],
   ["skills/aurora-vault/references/workflows.md", "reference.doc.workflows"],
   ["skills/aurora-vault/references/maintenance.md", "reference.doc.maintenance"],
@@ -32,6 +33,7 @@ const DOCS = [
 const EN_DOCS = {
   "docs/commands.md": "docs/en/commands.md",
   "docs/llm-calls.md": "docs/en/llm-calls.md",
+  "docs/connectivity.md": "docs/en/connectivity.md",
   "docs/roadmap.md": "docs/en/roadmap.md",
   "docs/control-panel-ui-requirements.md": "docs/en/control-panel.md",
   "docs/card-templates.md": "docs/en/card-templates.md",       // открывают «Типы карточек» в настройках проекта

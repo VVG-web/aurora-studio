@@ -19,5 +19,6 @@
   "commands.ns.ops": "ops: management and reporting",
   "commands.ns.agent": "agent: the built-in agent",
   "commands.ns.git": "git: project Git",
-  "commands.ns.bot": "bot: project bots"
+  "commands.ns.bot": "bot: project bots",
+  "commands.ns.net": "net: connection check"
 }

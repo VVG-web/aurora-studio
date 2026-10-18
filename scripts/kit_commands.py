@@ -49,6 +49,7 @@ NS_TITLE = {
     "agent": "agent: — встроенный агент",
     "git": "git: — Git проекта: сервер, обновление, отправка",
     "bot": "bot: — боты проекта: промпт, MCP, навыки, расписание",
+    "net": "net: — доступность соединений: профили VPN, probe, режим работы кита",
     # Разработка самого движка. В проекте на основе Авроры этих команд нет: их исполнитель
     # не входит в engine_manifest.txt, и показывать их аналитику значит врать про состав.
     "dev": "dev: — разработка движка (только в ките)",
@@ -455,6 +456,7 @@ EN_NS = {"kit": "The engine and the project", "sync": "Mirrors of external syste
          "make": "Producing artifacts", "ship": "Outward", "ops": "Management and reporting",
          "agent": "The built-in agent", "git": "Project Git: server, update, push",
          "bot": "Project bots: prompt, MCP, skills, schedule",
+         "net": "Connectivity: VPN profiles, probes, the kit's mode of work",
          "dev": "QA of the engine"}
 EN_KIND = {"скрипт": "script", "модель": "model", "скрипт+модель": "script + model"}
 

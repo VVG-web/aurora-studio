@@ -987,5 +987,21 @@
   "pulse.stop_hint": "if it stays like this — “Stop”",
   "pulse.checked": "checked {time}",
   "pulse.title": "Step pulse: whether the process is alive, when the last line came and which model requests are in progress. A model answer arrives whole, so a step can stay silent up to the request time limit — that is not a hang. The wheel spins while the process is alive.",
-  "pulse.rings": "calls waiting for a gateway slot or a retry: {n}"
+  "pulse.rings": "calls waiting for a gateway slot or a retry: {n}",
+  "net.bar_hint": "State of the connections — click to open the «Connection check» section",
+  "net.bar_online": "Connection: fine",
+  "net.bar_degraded": "Connection: partial",
+  "net.bar_partial": "Connection: not all",
+  "net.bar_no_vpn": "VPN is down",
+  "net.bar_offline": "No connection",
+  "net.bar_unknown": "Connection: unknown",
+  "net.mode_offline": "Mode of work — offline, only features that need no connection are available",
+  "net.mode_down": "{names} is down; features that do not need {names} and web features are available|{names} are down; features that do not need them and web features are available",
+  "net.mode_online": "The connection is fine: everything needed is available",
+  "net.mode_degraded": "Everything needed is available, but some check addresses do not answer",
+  "net.mode_partial": "Some dependencies are unavailable: features that do not need them work",
+  "net.mode_no_vpn": "The internet is up, but the VPN profiles needed are down",
+  "net.mode_unknown": "State unknown: not checked yet, or the data is out of date",
+  "net.bar_error": "Connection: setup error",
+  "net.mode_error": "The connection setup file cannot be read: fix it in the «Connection check» section or delete it"
 }

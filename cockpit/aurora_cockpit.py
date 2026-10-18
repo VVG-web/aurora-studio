@@ -1073,6 +1073,91 @@ def models_list(payload: dict) -> dict:
     return {k: v for k, v in got.items() if k in ("models", "error")}
 
 
+# ------------------------------------------------------- проверка соединения
+
+NET_CTX: dict = {"project": ""}      # проект, который сейчас показан в шапке: по нему фоновая проверка считает «требуемое»
+
+
+def net_service():
+    """Сервис доступности кита (`connectivity.py`): один на процесс панели."""
+    import connectivity as CN
+    svc = CN.service(KIT)
+    if svc.required_fn is None:
+        svc.required_fn = lambda: net_required(NET_CTX["project"])
+    return svc
+
+
+def net_required(project: str):
+    """Что нужно делу выбранного проекта — его включённые источники и провайдеры моделей; без проекта — None."""
+    if not project or not os.path.isfile(os.path.join(project, "aurora.config.yaml")):
+        return None
+    try:
+        import conn_gate as GATE
+    except ImportError:
+        return None
+    try:
+        return GATE.required_for(project, net_service())
+    except Exception:  # noqa: BLE001 — сводка важнее разбора проекта
+        return None
+
+
+def net_state(project: str = "") -> dict:
+    """Раздел «Проверка соединения»: настройка с отпечатком файла, сводка и пределы формы. Сеть не трогает."""
+    import connectivity as CN
+    svc = net_service()
+    cfg = svc.config()
+    return {"config": cfg, "stamp": CN.file_stamp(KIT), "snapshot": svc.snapshot(net_required(project)),
+            "path": str(CN.config_path(KIT) or ""), "error": cfg.get("error", ""),
+            "limits": {"probes": CN.MAX_PROBES, "interval": CN.LIMITS["interval"], "timeout": CN.LIMITS["timeout"],
+                       "fail_after": CN.LIMITS["fail_after"], "ok_after": CN.LIMITS["ok_after"],
+                       "quorum": CN.LIMITS["quorum"]},
+            "defaults": dict(CN.DEFAULTS), "types": list(CN.PROBE_TYPES), "aggregates": list(CN.AGGREGATES),
+            "policies": list(CN.POLICIES), "internet": CN.INTERNET}
+
+
+def net_brief(project: str = "") -> dict:
+    """Короткая сводка для значка в шапке: включено ли, состояние, какие профили лежат."""
+    NET_CTX["project"] = project
+    snap = net_service().snapshot(net_required(project))
+    return {"enabled": snap["enabled"] or bool(snap.get("error")), "state": snap["state"], "reasons": snap["reasons"],
+            "down": [r["name"] for r in snap["profiles"] if r.get("required") and r["state"] == "offline"],
+            "error": bool(snap.get("error"))}
+
+
+def net_save(payload: dict) -> dict:
+    """Записать настройку соединений целиком (профили, probe, правила, политика). Кит — один на машину."""
+    import connectivity as CN
+    cfg = payload.get("config")
+    if not isinstance(cfg, dict):
+        return {"ok": False, "code": "bad_config", "error": "настройка не разобрана"}
+    # Слепка нет в запросе — страница устарела или это не страница: для существующего файла это конфликт, а не разрешение.
+    expect = payload.get("expect")
+    res = CN.save(KIT, cfg, expect if isinstance(expect, str) else "", replace_broken=payload.get("replace") is True)
+    if res.get("ok"):
+        net_service().config()
+    return res
+
+
+def net_probe(payload: dict) -> dict:
+    """«Проверить»: черновик probe из формы (ничего не пишет), сохранённый probe или профиль, либо всё сразу."""
+    import connectivity as CN
+    svc = net_service()
+    draft = payload.get("draft")
+    if isinstance(draft, dict):
+        settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else None
+        return {"result": CN.try_probe(draft, settings)}
+    pid = str(payload.get("probe") or "")
+    if pid:
+        saved = next((p for p in svc.config().get("probes") or [] if p.get("id") == pid), None)
+        if saved is None:
+            return {"result": {"ok": False, "problems": [{"code": "unknown_probe", "where": "probe",
+                                                          "text": "такого probe нет в сохранённой настройке"}]}}
+        return {"result": CN.try_probe({k: v for k, v in saved.items() if k != "profile"}, svc.config().get("settings"))}
+    only = str(payload.get("profile") or "") or None
+    svc.check(only=only, budget=None, force=True)
+    return {"snapshot": svc.snapshot(net_required(str(payload.get("project") or "")))}
+
+
 def corrections_state(project: str) -> dict:
     """Исправления человека: сколько действует и сколько под вопросом.
 
@@ -6016,6 +6101,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(agent_state(q.get("project", [""])[0]))
         elif u.path == "/api/models":
             self.send_json(models_state(find_projects(self.server.roots)))
+        elif u.path == "/api/net/state":
+            project = (q.get("project") or [""])[0]
+            self.send_json(net_state(self._quiet_project(project)))
+        elif u.path == "/api/net/brief":
+            project = (q.get("project") or [""])[0]
+            self.send_json(net_brief(self._quiet_project(project)))
         elif u.path == "/api/llm/calls":
             # Где работают модели: каталог вызовов и живые цепочки ролей кита.
             self.send_json(llm_calls_state(request_lang(q)))
@@ -6474,6 +6565,17 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/models/save":
             self.send_json(models_save(payload))
             return
+        if u.path == "/api/net/save":
+            res = net_save(payload)
+            project = self._quiet_project(str(payload.get("project") or ""))
+            code = (200 if res.get("ok") else 409 if res.get("conflict") else 503 if res.get("code") == "busy"
+                    else 500 if res.get("failed") else 400)
+            self.send_json(dict(res, **({"state": net_state(project)} if res.get("ok") else {})), code)
+            return
+        if u.path == "/api/net/probe":
+            project = self._quiet_project(str(payload.get("project") or ""))
+            self.send_json(net_probe(dict(payload, project=project)))
+            return
         if u.path == "/api/features/set":
             # Фиче-флаг машины (роли для профилей) — переключатель раздела «Разработка».
             self.send_json(feature_set(str(payload.get("name") or ""), payload.get("on") is True))
@@ -6834,6 +6936,15 @@ class Handler(BaseHTTPRequestHandler):
         if added:
             out["added_root"] = added
         return out
+
+    def _quiet_project(self, project: str) -> str:
+        """Проект из необязательного параметра запроса: известный — как есть, любой другой — пусто, без отказа клиенту.
+        Список берётся из последнего ответа `/api/state` (обход папок дорог), и лишь потом — свежим обходом."""
+        if not project:
+            return ""
+        if project in set(getattr(self.server, "seen_projects", None) or []):
+            return project
+        return project if project in {p["path"] for p in find_projects(self.server.roots)} else ""
 
     def _known(self, project: str) -> bool:
         """Путь — только из списка обнаруженных проектов, не произвольная строка."""
@@ -7623,6 +7734,12 @@ def main() -> int:
     # Сторож: шаг маршрута или цепочки, зависший после обрыва связи, снимается и
     # перезапускается — ночью «Прервать» нажать некому.
     WD.Watchdog(sys.modules[__name__]).start()
+    # Фоновая проверка соединений — ведёт панель: пока она работает, состояние в файле на машине свежее
+    # интервала проверки. Проверка выключена (по умолчанию) — ход ничего не делает.
+    try:
+        net_service().start_monitor()
+    except Exception:  # noqa: BLE001 — связь — подсказка, панель из-за неё не падает
+        pass
     # Здоровье всех проектов — один раз на старте; дальше страница берёт его из памяти.
     threading.Thread(target=warm_health, args=(lambda: find_projects(srv.roots),),
                      daemon=True, name="aurora-health").start()

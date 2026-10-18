@@ -886,6 +886,18 @@ def main() -> int:
             print("агент: не настроен (это не ошибка) — панель: раздел «Модели»")
     except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
         pass
+    # Связь — справка из сохранённого состояния: доктор сети не трогает. Выключенная проверка
+    # (по умолчанию) молчит, чтобы не шуметь на каждом запуске.
+    try:
+        import connectivity as _cn
+        _svc = _cn.AvailabilityService()
+        if _svc.enabled:
+            _snap = _svc.snapshot()
+            _ages = [r["age_s"] for r in [_snap["internet"]] + _snap["profiles"] if r.get("age_s") is not None]
+            print(f"связь: {_snap['state']} — {_cn.mode_line(_snap)}"
+                  + (f" · проверено {min(_ages)} с назад" if _ages else "") + " · подробнее: net:status")
+    except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
+        pass
     # С 1.153.0 модели настраиваются одним файлом кита. Переменные моделей в `.env`
     # проекта больше не действуют: сказать об этом, чтобы человек не правил их впустую.
     # Файл не трогаем — он человека; называем только имена, не значения.

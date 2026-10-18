@@ -1,0 +1,13 @@
+{
+  "id": "connectivity",
+  "name": { "ru": "Проверка соединения", "en": "Connection check" },
+  "about": {
+    "ru": "Проверка доступности и стабильности связи: профили VPN, адреса проверки (probe), интернет, режим работы кита и политика прогонов без связи.",
+    "en": "Availability and stability check: VPN profiles, check addresses (probes), the internet, the kit's mode of work and the policy of runs without a connection."
+  },
+  "group": "machine",
+  "order": 34,
+  "needs": [],
+  "commands": ["net:status", "net:probe"],
+  "for": "1.175.0"
+}

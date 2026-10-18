@@ -23,5 +23,6 @@
   "reference.doc.panel": "Requirements for this panel",
   "reference.doc.changelog": "Kit version history",
   "reference.ru_only": "This document exists only in Russian.",
-  "reference.doc.llm_calls": "Model calls: where, which roles, prompts, tools"
+  "reference.doc.llm_calls": "Model calls: where, which roles, prompts, tools",
+  "reference.doc.connectivity": "Connection check: profiles, probes, modes"
 }
