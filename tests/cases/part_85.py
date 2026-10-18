@@ -693,6 +693,291 @@ def test_decide_reads_a_question_with_its_answer_source(tmp: Path):
     assert "[[Q-007-срок-заявки]]" in res["text"], res["text"][:900]
 
 
+# ------------------------------------------------------------------ BL-TEAM-03: ревью файла и зеркала
+
+STORY_FILE = """\
+---
+title: "US-1.1.1 Приём заявки"
+type: us
+artifact_id: ART-0001
+status: draft
+based_on: ["[[Заявка]]"]
+---
+
+# Задача на разработку истории
+
+## Предусловия US
+
+* Готова форма: [[Заявка]]
+
+## Описание
+
+| **Как** | Оператор системы |
+| **Я хочу** | принять заявку из смежной системы |
+
+<!-- ниже — производство, в чистовик не идёт -->
+
+## Допущения
+
+- ПРОИЗВОДСТВО-СЕКРЕТ: срок принят по умолчанию
+"""
+
+
+def _review_project(tmp: Path):
+    from harness import card
+    root = make_project(tmp)
+    card(root, "Concepts/Заявка.md", "Заявка — документ. Форма: поле ИНН обязательно.", status="knowledge",
+         kind="knowledge")
+    _touch(root, "Artifacts/us/US-1.1.1-приём.md", STORY_FILE)
+    (root / "TemplatesCommon").mkdir(exist_ok=True)               # в проекте шаблон ревью лежит рядом с остальными общими
+    shutil.copy(KIT / "scaffold/TemplatesCommon/review_v2.1.md", root / "TemplatesCommon/review_v2.1.md")
+    return root
+
+
+def _review_stub(cl, override=None, seen=None):
+    from harness import _answer, stub_messages
+
+    def fake(cfg_, role, messages, **kw):
+        if seen is not None:
+            seen.append(stub_messages(messages, kw))
+        return {"ok": True, "text": _answer(cl, "us", override), "model": "m", "seen": 1, "cut": 0}
+    return fake
+
+
+@test
+def test_review_file_reads_the_artifact_and_linked_cards_without_confluence(tmp: Path):
+    """`--file`: чистовик и связанные карточки базы идут в промпт; производство — нет; сети и Confluence нет."""
+    from harness import _review_checklist, _review_module
+    rr = _review_module()
+    cl = _review_checklist(rr)
+    root = _review_project(tmp)
+    seen: list = []
+    rec = rr.review_file({"request_timeout": 5}, cl, "Artifacts/us/US-1.1.1-приём.md", root=str(root), runs=3,
+                         call=_review_stub(cl, seen=seen))
+    assert rec["status"] == "ok" and rec["profile"] == "us" and rec["verdict"] == "готова к передаче", rec
+    assert rec["subject"] == "file" and rec["code"] == "US-1.1.1-приём" and len(rec["subject_sha"]) == 16, rec
+    prompt = "\n".join(m["content"] for m in seen[0])
+    assert "принять заявку из смежной системы" in prompt, "чистовик не попал в промпт"
+    assert "поле ИНН обязательно" in prompt, "связанная карточка базы не прочитана"
+    assert "ПРОИЗВОДСТВО-СЕКРЕТ" not in prompt, "раздел производства ушёл модели"
+    assert [ln["title"] for ln in rec["linked"]] == ["Заявка"] and rec["linked"][0]["status"] == "ok", rec["linked"]
+    assert not rec["incomplete"] and len(seen) == 3
+    report = rr.render(rec, cl)
+    assert "object_link: \"Artifacts/us/US-1.1.1-приём.md\"" in report, report[:400]
+
+
+@test
+def test_review_file_profile_and_zero_network(tmp: Path):
+    """Профиль — по `type:`, заголовку или папке; не определён — понятный пропуск; зеркало читается как предмет."""
+    from harness import _review_checklist, _review_module
+    rr = _review_module()
+    cl = _review_checklist(rr)
+    root = _review_project(tmp)
+    assert rr.file_profile("Artifacts/us/x.md", "---\ntype: algorithm\n---\n") == "alg"
+    assert rr.file_profile("Artifacts/x/y.md", "# ALG-5 Расчёт\n") == "alg"
+    assert rr.file_profile("Artifacts/us/y.md", "просто текст") == "us"
+    assert rr.file_profile("Artifacts/x/y.md", "просто текст") == ""
+    assert rr.file_profile("Artifacts/x/y.md", "просто текст", "alg") == "alg"
+    _touch(root, "Artifacts/reports/итог.md", "# Итог\n\nТекст.\n")
+    rec = rr.review_file({"request_timeout": 5}, cl, "Artifacts/reports/итог.md", root=str(root), runs=1,
+                         call=_review_stub(cl))
+    assert rec["verdict"] == "не оценено" and "задайте --profile" in " ".join(rec["reasons"]), rec
+    # страница-зеркало: предмет ревью, а не только источник связей; шапку зеркала модель не видит
+    _touch(root, "Sources/Confluence/US-4.2.1 Страница.md",
+           '---\ntitle: "US-4.2.1 Страница"\nurl: https://example.com/x\nry_defines: [RU.PRJ.US-4.2.1]\n---\n\n'
+           "Как оператор я хочу принять документ.\n")
+    seen: list = []
+    rec = rr.review_file({"request_timeout": 5}, cl, "Sources/Confluence/US-4.2.1 Страница.md", root=str(root),
+                         runs=1, call=_review_stub(cl, seen=seen))
+    assert rec["profile"] == "us" and rec["status"] == "ok", rec
+    assert "принять документ" in "\n".join(m["content"] for m in seen[0]) and "ry_defines" not in "\n".join(m["content"] for m in seen[0])
+    # ключ Requirement Yogi в тексте артефакта ведёт на страницу зеркала, где он объявлен
+    _touch(root, "Artifacts/us/US-9.md", "---\ntype: us\n---\n\n# Ист\n\n## Предусловия\n\nРеализует RU.PRJ.US-4.2.1.\n")
+    seen.clear()
+    rec = rr.review_file({"request_timeout": 5}, cl, "Artifacts/us/US-9.md", root=str(root), runs=1,
+                         call=_review_stub(cl, seen=seen))
+    assert [ln["title"] for ln in rec["linked"]] == ["US-4.2.1 Страница"], rec["linked"]
+    assert "принять документ" in "\n".join(m["content"] for m in seen[0])
+    # CLI: нет файла и несовместимые флаги — отказ до обращения к модели
+    cp = run("review_run.py", "--file", "нет/такого.md", cwd=root)
+    assert cp.returncode == 1 and "нет файла" in (cp.stderr + cp.stdout), (cp.returncode, cp.stderr)
+    cp = run("review_run.py", "--file", "Artifacts/us/US-9.md", "--page", "10", cwd=root)
+    assert cp.returncode == 2 and "несовместим" in cp.stderr, cp.stderr
+    cp = run("review_run.py", "--file", "нет/такого.md", "--gate", cwd=root)
+    assert cp.returncode == 2, "в воротах отказ входа — код 2"
+
+
+@test
+def test_review_file_drops_a_no_whose_quote_is_not_in_the_text(tmp: Path):
+    """Ответ «нет» принимается с цитатой, найденной в тексте; выдуманная или отсутствующая — «не определено»."""
+    from harness import _review_checklist, _review_module
+    rr = _review_module()
+    cl = _review_checklist(rr)
+    root = _review_project(tmp)
+    good = {"v": "no", "evidence": "в строке «Оператор системы» не названа система-источник", "fix": "назвать"}
+    fake_q = {"v": "no", "evidence": "в тексте сказано «Заявка принимается через шину Kafka»", "fix": "убрать"}
+    bare = {"v": "no", "evidence": "формулировка неясная", "fix": "уточнить"}
+    stub = _review_stub(cl, {"US-04": good, "US-05": fake_q, "US-09": bare})
+    rec = rr.review_file({"request_timeout": 5}, cl, "Artifacts/us/US-1.1.1-приём.md", root=str(root), runs=3, call=stub)
+    ans = rec["answers"]
+    assert ans["US-04"]["v"] == "no", ans["US-04"]
+    assert ans["US-05"]["v"] == "unknown" and "цитаты нет в тексте" in ans["US-05"]["evidence"], ans["US-05"]
+    assert ans["US-09"]["v"] == "unknown", ans["US-09"]
+    assert rec["quotes_dropped"] == 6 and rec["verify_quotes"], rec["quotes_dropped"]
+    assert "Ответов «нет» без цитаты в тексте (сняты) | 6" in rr.render(rec, cl)
+    # выключено — принято как есть
+    off = rr.review_file({"request_timeout": 5}, cl, "Artifacts/us/US-1.1.1-приём.md", root=str(root), runs=3,
+                         call=stub, verify=False)
+    assert off["answers"]["US-05"]["v"] == "no" and not off["verify_quotes"]
+    # цитата ассистента (review_score) сверяется, когда передан текст
+    req = {"profile": "us", "text": "Как оператор системы я хочу принять заявку",
+           "answers": {"US-05": {"v": "no", "evidence": "«выдуманная цитата»"},
+                       "US-04": {"v": "no", "evidence": "«принять заявку»"}}}
+    got = rr.score_answers(cl, req)
+    assert got["quotes_dropped"] == 1 and got["source"] == "assistant", got
+
+
+@test
+def test_review_stamp_and_publish_gate_follow_the_clean_text(tmp: Path):
+    """Итог ревью в шапке артефакта; ворота видят устаревшее (текст изменён), провал и отсутствие ревью."""
+    from harness import _review_checklist, _review_module
+    rr = _review_module()
+    cl = _review_checklist(rr)
+    root = _review_project(tmp)
+    os.chdir(root)
+    path = "Artifacts/us/US-1.1.1-приём.md"
+    assert [i for i, _w in rr.publish_gate((root / path).read_text(encoding="utf-8"))] == ["review-missing"]
+    rec = rr.review_file({"request_timeout": 5}, cl, path, root=str(root), runs=3, call=_review_stub(cl))
+    assert rr.stamp_review(path, rec, cl) is True
+    text = (root / path).read_text(encoding="utf-8")
+    fm = _mod("aurora_common").frontmatter(text)
+    assert fm["review"] == "готова к передаче" and fm["review_sha"] == rec["subject_sha"], text[:500]
+    assert fm["review_template"] == "review_v2.1.md" and fm["review_failed"] == "[]" and fm["artifact_id"] == "ART-0001"
+    assert rr.publish_gate(text) == [], rr.publish_gate(text)
+    # производство и шапка отпечаток не меняют, чистовик — меняет
+    assert rr.publish_gate(text.replace("срок принят по умолчанию", "срок принят иначе")) == []
+    stale = rr.publish_gate(text.replace("принять заявку", "принять запрос"))
+    assert [i for i, _w in stale] == ["review-stale"], stale
+    # провал: вердикт «доработать» и номера вопросов
+    bad = _review_stub(cl, {"US-04": {"v": "no", "evidence": "«Оператор системы»", "fix": "уточнить"}})
+    rec2 = rr.review_file({"request_timeout": 5}, cl, path, root=str(root), runs=3, call=bad)
+    assert rr.stamp_review(path, rec2, cl)
+    gate = rr.publish_gate((root / path).read_text(encoding="utf-8"))
+    assert [i for i, _w in gate] == ["review-verdict"] and "US-04" in gate[0][1], gate
+    # зеркало и сырьё шапкой не метятся, не оценённое — тоже
+    _touch(root, "Sources/Confluence/US-1.md", "---\ntitle: US-1\n---\n\nТекст.\n")
+    assert rr.stamp_review("Sources/Confluence/US-1.md", rec, cl) is False
+    assert (root / "Sources/Confluence/US-1.md").read_text(encoding="utf-8").startswith("---\ntitle: US-1\n---")
+    assert rr.stamp_review(path, {"status": "ok", "verdict": "не оценено", "subject_sha": "x"}, cl) is False
+    # файл без шапки получает её, текст не тронут
+    _touch(root, "Artifacts/us/голый.md", "# Голая история\n\nКак оператор я хочу.\n")
+    rec3 = rr.review_file({"request_timeout": 5}, cl, "Artifacts/us/голый.md", root=str(root), runs=1,
+                          call=_review_stub(cl))
+    assert rr.stamp_review("Artifacts/us/голый.md", rec3, cl)
+    bare = (root / "Artifacts/us/голый.md").read_text(encoding="utf-8")
+    assert bare.startswith("---\n") and bare.endswith("# Голая история\n\nКак оператор я хочу.\n"), bare
+
+
+@test
+def test_publish_gate_blocks_a_kind_with_review_until_the_review_is_fresh(tmp: Path):
+    """`ship:publish`: у вида с `review: us` нет ревью / текст изменён / вердикт ниже — код 2 без обращения к Confluence."""
+    from harness import _review_checklist, _review_module
+    rr = _review_module()
+    cl = _review_checklist(rr)
+    root = _review_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip() + '\nartifacts:\n  us:\n    template: T/us.md\n'
+                   '    out: Artifacts/us\n    review: us\n', encoding="utf-8")
+    path = "Artifacts/us/US-1.1.1-приём.md"
+    cp = run("publish_doc.py", path, cwd=root, expect_rc=2)
+    assert "review-missing" in cp.stderr and "--allow review" in cp.stderr, cp.stderr
+    os.chdir(root)
+    rec = rr.review_file({"request_timeout": 5}, cl, path, root=str(root), runs=3, call=_review_stub(cl))
+    assert rr.stamp_review(path, rec, cl)
+    # свежее ревью «готова к передаче» ворота проходит: дальше отказ уже от конфигурации Confluence, а не ревью
+    cp = run("publish_doc.py", path, cwd=root, expect_rc=1)
+    assert "нет confluence.base_url" in cp.stderr and "ворота ревью" not in cp.stderr, cp.stderr
+    # текст изменён после ревью
+    p = root / path
+    p.write_text(p.read_text(encoding="utf-8").replace("принять заявку", "принять запрос"), encoding="utf-8")
+    cp = run("publish_doc.py", path, cwd=root, expect_rc=2)
+    assert "review-stale" in cp.stderr, cp.stderr
+    # обход: ворота пройдены, причины названы, публикация идёт дальше (здесь — до отказа конфигурации)
+    cp = run("publish_doc.py", path, "--allow", "review", cwd=root, expect_rc=1)
+    assert "Ворота ревью обойдены" in cp.stdout and "нет confluence.base_url" in cp.stderr, (cp.stdout, cp.stderr)
+    # вид без объявленного ревью — поведение прежнее (только предупреждение об отметке)
+    _touch(root, "Artifacts/reports/итог.md", "---\ntitle: итог\ntype: report\n---\n\n# Итог\n")
+    cp = run("publish_doc.py", "Artifacts/reports/итог.md", cwd=root, expect_rc=1)
+    assert "ворота ревью" not in cp.stderr, cp.stderr
+    # объявленное ревью проверяется реестром видов
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace("review: us", "review: zzz"), encoding="utf-8")
+    cp = run("make_kinds.py", cwd=root)
+    assert "zzz" in cp.stdout and cp.returncode == 1, cp.stdout
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace("review: zzz", "review: alg"), encoding="utf-8")
+    cp = run("make_kinds.py", "--kind", "us", cwd=root)
+    assert "Ревью перед публикацией: профиль alg" in cp.stdout, cp.stdout
+
+
+@test
+def test_kinds_form_carries_the_review_field(tmp: Path):
+    """Поле `review` вида артефакта: есть в форме панели и в обоих каталогах строк, записывается панелью и читается движком."""
+    from harness import panel_sources
+    src = panel_sources()
+    for key in ("kinds.review", "kinds.review_hint", "kinds.review_off"):
+        assert src.count(f'"{key}"') >= 3, (key, src.count(f'"{key}"'))              # разметка, ru, en
+    for key in ("kinds.review_us", "kinds.review_alg"):                              # в разметке собираются из «kinds.review_» + вид
+        assert src.count(f'"{key}"') >= 2, (key, src.count(f'"{key}"'))
+    assert 'review:"", task:{}' in src, "новый вид создаётся без поля review"
+    MK = _mod("make_kinds")
+    assert "review" in MK.FIELDS
+    sys.path.insert(0, str(KIT / "cockpit"))
+    ck = importlib.import_module("aurora_cockpit")
+    root = tmp / "проект"
+    (root / "Templates").mkdir(parents=True)
+    (root / "Templates/US.md").write_text("шаблон", encoding="utf-8")
+    (root / "aurora.config.yaml").write_text('project:\n  name: Т\n', encoding="utf-8")
+    res = ck.kinds_write(str(root), {"us": {"title": "История", "template": "Templates/US.md", "out": "Artifacts/us",
+                                            "review": "us", "task": {}}})
+    assert res.get("ok"), res
+    assert MK.read_kinds(str(root))["us"]["review"] == "us", "ревью не дожило до чтения"
+
+
+@test
+def test_mcp_tools_review_file_and_story_lint_are_bounded(tmp: Path):
+    """MCP: `story_lint` читает файл проекта; путь от модели не выходит за проект; `review_file` отказывает не-тексту."""
+    M = _mod("aurora_mcp")
+    root = _review_project(tmp)
+    names = {t["name"] for t in M.TOOLS}
+    assert {"review_file", "story_lint"} <= names, names
+    assert all("project" in t["inputSchema"]["required"] for t in M.TOOLS_ALL if t["name"] in ("review_file", "story_lint"))
+
+    def call(name: str, args: dict):
+        try:
+            return M.call_tool(str(root), name, args), False
+        except M.ToolError as e:
+            return str(e), True
+
+    out, err = call("story_lint", {"path": "Artifacts/us/US-1.1.1-приём.md", "profile": "us"})
+    assert not err and "US-" in out, out                              # замечания по форме, JSON от движка
+    out, err = call("story_lint", {})
+    assert not err, out
+    for bad in ("../чужой.md", "/etc/passwd", "Artifacts/us/нет.md"):
+        out, err = call("story_lint", {"path": bad, "profile": "us"})
+        assert err and "внутри проекта" in out, (bad, out)
+        out, err = call("review_file", {"path": bad})
+        assert err and "внутри проекта" in out, (bad, out)
+    out, err = call("story_lint", {"path": "Artifacts/us/US-1.1.1-приём.md"})
+    assert err and "profile" in out, out
+    # не текст проекта: конфиг и служебная папка модели не отдаются
+    out, err = call("review_file", {"path": "aurora.config.yaml"})
+    assert "ревью читает текст проекта" in out, out
+    _touch(root, ".aurora/state/секрет.md", "# секрет\n")
+    out, err = call("review_file", {"path": ".aurora/state/секрет.md"})
+    assert "за границей чтения" in out, out
+    out, err = call("review_file", {"path": "Artifacts/us/US-1.1.1-приём.md", "profile": "zzz"})
+    assert err and "profile" in out, out
+
+
 # ------------------------------------------------------------------ BL-TEAM-02: доработка по независимому просмотру
 
 @test

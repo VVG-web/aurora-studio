@@ -54,12 +54,13 @@
     "make:kinds": "The project's artifact registry: template, result folder, project prompt, the \"no technologies\" rule per kind and the final-text boundary.",
     "make:create": "An artifact in `Artifacts/<type>/` — only a standard type from conventions.md. The manual path; the main one is `agent:make`.",
     "make:review": "Check an artifact's quality against the base.",
-    "make:review-auto": "Review of a story or algorithm without a human: a closed checklist from `review_v2.1.md`, three model runs vote on each question, a script computes the score and verdict; `--page`, `--cql`, `--as-of`.",
+    "make:story-lint": "Artifact form by code, without a model or a network: template sections, the \"As / I want / So that\" formula, \"Implements\", precondition statuses, the Action / Reaction pair, at most 10 steps and 5 criteria groups, leftover `{{…}}`; profiles us, ac, spec; `--gate` — a verdict for a route (`--gate=warn` — the rollout mode).",
+    "make:review-auto": "Review of a story or algorithm without a human (a Confluence page — `--page`; a local artifact or a mirror page — `--file`, offline: related material is read from the base and the mirror; a \"no\" is accepted only with a quote found in the text; `--apply` writes the result into the artifact head, and the `ship:publish` gate sees how fresh the review is): a closed checklist from `review_v2.1.md`, three model runs vote on each question, a script computes the score and verdict; `--cql`, `--as-of`.",
     "make:spec": "A feature specification from REQ and `knowledge` cards (SDD).",
     "make:spec-pack": "A spec bundle: grounds, DRs, abbreviations, DoR risks — one self-contained file.",
     "make:validate": "Compare a contractor's implementation and tests with the spec's scenarios.",
     "make:assemble": "Assemble a deliverable (OPZ/PMI/user guide) from the base by a template.",
-    "ship:publish": "An artifact → a generated Confluence page; knowledge cards do not go out. The body is cut at the marker line: \"Clarifications\", \"Assumptions\", \"In question\" stay in the analyst's draft.",
+    "ship:publish": "An artifact → a generated Confluence page; knowledge cards do not go out. The body is cut at the marker line: \"Clarifications\", \"Assumptions\", \"In question\" stay in the analyst's draft. For an artifact kind with a declared review (`review: us or alg` in `artifacts:`) only an artifact with a fresh review \"ready to hand over\" goes out (`make:review-auto --file … --apply`): no review, a text changed after it, or a lower verdict — code 2 and a list of reasons; the bypass is `--allow review` (recorded in the head as `review_bypass`).",
     "ship:export": "A deliverable → docx/pdf (pandoc, a corporate template).",
     "ship:release": "Freeze the delivered version: a snapshot, a base commit, a date.",
     "ship:acceptance": "Acceptance results and sorting out the customer's remarks.",
@@ -215,6 +216,7 @@
     "Создать артефакт по шаблону проекта": "Create an artifact from the project's template",
     "ассистент пишет по паку и шаблону, вы правите": "the assistant writes from the pack and the template, you edit",
     "Написать содержание": "Write the content",
+    "Форма артефактов кодом, без модели: разделы шаблона, формула «Как / Я хочу / Чтобы», шаги и критерии, остатки заготовок": "Artifact form by code, without a model: template sections, the \"As / I want / So that\" formula, steps and criteria, leftover placeholders",
     "Проверить артефакт против базы: расхождения и пробелы": "Check the artifact against the base: discrepancies and gaps",
     "посмотрите `based_on` артефакта: на каких карточках он стоит и что придётся пересматривать, если знание изменится": "look at the artifact's `based_on`: which cards it stands on and what will have to be reviewed if the knowledge changes",
     "Сверить основания": "Check what it is based on",
@@ -603,7 +605,8 @@
     "сданная версия {}: сданного файла нет рядом со снимком {} → верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо": "delivered version {}: the delivered file is missing next to the snapshot {} → restore it from git (`git checkout -- Deliverables/released/`) or release a new version: what was delivered is immutable",
     "сданная версия {}: файл не совпадает с хешем из снимка {} — его заменили после передачи → верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо": "delivered version {}: the file does not match the hash in the snapshot {} — it was replaced after delivery → restore it from git (`git checkout -- Deliverables/released/`) or release a new version: what was delivered is immutable",
     "сданная версия {}: изменён после коммита → верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо": "delivered version {}: changed after the commit → restore it from git (`git checkout -- Deliverables/released/`) or release a new version: what was delivered is immutable",
-    "сданная версия {}: удалён после коммита → верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо": "delivered version {}: deleted after the commit → restore it from git (`git checkout -- Deliverables/released/`) or release a new version: what was delivered is immutable"
+    "сданная версия {}: удалён после коммита → верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо": "delivered version {}: deleted after the commit → restore it from git (`git checkout -- Deliverables/released/`) or release a new version: what was delivered is immutable",
+    "ревью «{}»: профили — {} или пусто": "review \"{}\": the profiles are {} or empty"
   },
   "connectors": {
     "confluence-dc": {
@@ -1012,7 +1015,11 @@
     "источник решения (для --task decide): файл проекта или вопрос Q-NNN": "the decision source (for --task decide): a project file or a question Q-NNN",
     "тема решения своими словами (для --task decide; необязательно)": "the decision topic in your own words (for --task decide; optional)",
     "кто ведёт запись о решении (для --task decide; человек, по умолчанию git user.name)": "who keeps the decision record (for --task decide; a person, git user.name by default)",
-    "карточка базы, которой касается решение (для --task decide; повторяется)": "a card of the base the decision affects (for --task decide; repeatable)"
+    "карточка базы, которой касается решение (для --task decide; повторяется)": "a card of the base the decision affects (for --task decide; repeatable)",
+    "--file: не снимать ответы «нет» без цитаты в тексте": "--file: do not drop \"no\" answers without a quote in the text",
+    "локальный артефакт (Artifacts/…) или страница-зеркало вместо страницы Confluence: без сети и CONFLUENCE_PAT, связанное читается из базы и зеркала; ответы «нет» принимаются только с цитатой, найденной в тексте": "a local artifact (Artifacts/…) or a mirror page instead of a Confluence page: no network and no CONFLUENCE_PAT, related material is read from the base and the mirror; \"no\" answers are accepted only with a quote found in the text",
+    "профиль для переданных файлов": "the profile for the given files",
+    "обойти ворота: review — опубликовать без свежего ревью (обход записывается в шапку)": "bypass a gate: review — publish without a fresh review (the bypass is recorded in the head)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

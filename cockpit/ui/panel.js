@@ -2564,6 +2564,13 @@ async function renderKinds(box){
             onchange:e=>{ rec.tech_agnostic = e.target.checked ? "true" : "";
                           setDirty("kinds", t("dirty.kinds"), true); }}),
           t("kinds.tech_agnostic")),
+        // Ревью по чек-листу перед публикацией: ворота `ship:publish` пускают наружу только свежее ревью.
+        el("label",{class:"row",style:"gap:6px;font-size:12px;flex:none", title: t("kinds.review_hint")},
+          t("kinds.review"),
+          el("select",{class:"btn sm",style:"font-weight:400",
+            onchange:e=>{ rec.review = e.target.value; setDirty("kinds", t("dirty.kinds"), true); }},
+            ...["", "us", "alg"].map(v=>el("option",{value:v, selected:(rec.review||"")===v?"":null},
+              v ? t("kinds.review_" + v) : t("kinds.review_off"))))),
         el("button",{class:"btn sm", title: t("kinds.task_hint"),
           onclick:e=>{ taskBox.hidden = !taskBox.hidden;
                        e.target.textContent = taskBox.hidden ? t("kinds.task_open")
@@ -2585,7 +2592,7 @@ async function renderKinds(box){
           return toast(t("kinds.bad_name"), "warn");
         if (KINDS[key]) return toast(t("kinds.exists"), "warn");
         KINDS[key] = {title:"", template:"", prompt:"", out:"Artifacts/" + key,
-                      publish_url:"", mcp:"", tech_agnostic:"", task:{}};
+                      publish_url:"", mcp:"", tech_agnostic:"", review:"", task:{}};
         name.value = ""; setDirty("kinds", t("dirty.kinds"), true); draw();
       }}, t("kinds.add")),
       saveButton("kinds", t("dirty.kinds"), t("kinds.save"), async ()=>{

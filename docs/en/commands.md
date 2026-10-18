@@ -93,7 +93,8 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 | `make:kinds` (`kinds`) | The project's artifact registry: template, result folder, project prompt, the "no technologies" rule per kind and the final-text boundary. | script | 1.69.0 |
 | `make:create` (`create`) | An artifact in `Artifacts/<type>/` — only a standard type from conventions.md. The manual path; the main one is `agent:make`. | model | 1.1.0 |
 | `make:review` (`review`) | Check an artifact's quality against the base. | model | 1.0.0 |
-| `make:review-auto` (`review-auto`) | Review of a story or algorithm without a human: a closed checklist from `review_v2.1.md`, three model runs vote on each question, a script computes the score and verdict; `--page`, `--cql`, `--as-of`. | script + model | 1.119.0 |
+| `make:story-lint` (`story-lint`) | Artifact form by code, without a model or a network: template sections, the "As / I want / So that" formula, "Implements", precondition statuses, the Action / Reaction pair, at most 10 steps and 5 criteria groups, leftover `{{…}}`; profiles us, ac, spec; `--gate` — a verdict for a route (`--gate=warn` — the rollout mode). | script | 1.180.0 |
+| `make:review-auto` (`review-auto`) | Review of a story or algorithm without a human (a Confluence page — `--page`; a local artifact or a mirror page — `--file`, offline: related material is read from the base and the mirror; a "no" is accepted only with a quote found in the text; `--apply` writes the result into the artifact head, and the `ship:publish` gate sees how fresh the review is): a closed checklist from `review_v2.1.md`, three model runs vote on each question, a script computes the score and verdict; `--cql`, `--as-of`. | script + model | 1.119.0 |
 | `make:spec` (`spec`) | A feature specification from REQ and `knowledge` cards (SDD). | model | 1.0.0 |
 | `make:spec-pack` (`spec-pack`) | A spec bundle: grounds, DRs, abbreviations, DoR risks — one self-contained file. | script | 1.9.4 |
 | `make:validate` (`validate`) | Compare a contractor's implementation and tests with the spec's scenarios. | model | 1.0.0 |
@@ -103,7 +104,7 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 
 | Command | What it does | Executor | Since |
 |---|---|---|---|
-| `ship:publish` (`publish`) | An artifact → a generated Confluence page; knowledge cards do not go out. The body is cut at the marker line: "Clarifications", "Assumptions", "In question" stay in the analyst's draft. | script | 1.9.6 |
+| `ship:publish` (`publish`) | An artifact → a generated Confluence page; knowledge cards do not go out. The body is cut at the marker line: "Clarifications", "Assumptions", "In question" stay in the analyst's draft. For an artifact kind with a declared review (`review: us or alg` in `artifacts:`) only an artifact with a fresh review "ready to hand over" goes out (`make:review-auto --file … --apply`): no review, a text changed after it, or a lower verdict — code 2 and a list of reasons; the bypass is `--allow review` (recorded in the head as `review_bypass`). | script | 1.9.6 |
 | `ship:export` (`export`) | A deliverable → docx/pdf (pandoc, a corporate template). | script | 1.5.0 |
 | `ship:release` (`release`) | Freeze the delivered version: a snapshot, a base commit, a date. | script | 1.9.1 |
 | `ship:acceptance` | Acceptance results and sorting out the customer's remarks. | model | 1.4.0 |

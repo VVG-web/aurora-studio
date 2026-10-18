@@ -408,6 +408,8 @@ The engine does the mechanics; the model spends tokens only on judgement:
 | `lock_acquire` / `lock_release` | a lock on a job: a second run of the same job will not start |
 | `review_checklist` | the review checklist for a story or an algorithm (`review_v2.1`) |
 | `review_page` | a whole review of a page by the engine: linked pages, the checklist over several runs, score and verdict by code; the report as a file in `.aurora/state/reviews/` |
+| `review_file` | a review of a local artifact or a mirror page by the same engine, offline: the clean text and what it links in the base and the mirror, the checklist over several runs, score and verdict by code; a "no" is accepted only with a quote found in the text |
+| `story_lint` | the form of a story, criteria or a spec by code: no model and no network, a fraction of a second |
 | `review_score` | scoring ready checklist answers by the template's formula |
 | `atlassian_check` | whether the project's Jira and Confluence are reachable, as whom, whether writing is allowed |
 | `jira_search` / `jira_issue` | issues in one request: parent, labels, attachment names |
