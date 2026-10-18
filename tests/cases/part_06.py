@@ -1367,7 +1367,7 @@ def test_a_stalled_route_stops_honestly_and_resume_skips_only_success(tmp: Path)
     fin = ui[ui.index("function finishRoute("):ui.index("async function resumeLastRoute(")]
     assert 'r.reason === "stall"' in fin and 't("route.rc_stalled")' in fin \
         and 'className = "chip warn"' in fin, "плашка застоя не жёлтая или не названа"
-    assert "if (bad && S.lastRoute && S.project){" in fin, \
+    assert "if ((bad || part) && S.lastRoute && S.project){" in fin, \
         "кнопка «Продолжить маршрут» не связана с остановкой"
     rr = (KIT / "cockpit/route_runner.py").read_text(encoding="utf-8")
     assert 'if res["rc"] == 0:\n            self.done_keys.add(key)' in rr, \

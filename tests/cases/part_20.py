@@ -288,7 +288,7 @@ def test_routes_update_before_and_push_after_when_asked(_t):
     assert run_body.index('self._git("update", "before_route")') < run_body.index("git_head(self.project)"), \
         "обновление перед маршрутом идёт после того, как маршрут запомнил свою отправную точку"
     fin = src[src.index("    def _finish("):src.index("    def _close(")]
-    assert 'if reason == "passed":\n            self._git("push", "after_route")' in fin
+    assert 'if reason == "passed" and not partial:\n            self._git("push", "after_route")' in fin
     git = src[src.index("    def _git("):src.index("    def run(self)")]
     assert "self.exec_step(" in git and '"warn"' in git, "шаг Git идёт мимо журнала или молчит об отказе"
     sys.path.insert(0, str(KIT / "cockpit"))
