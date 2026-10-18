@@ -25,7 +25,7 @@ MIRROR_LITERALS_BASELINE = {
     "scripts/aurora_common.py": 2,      # прежние папки на случай, когда реестр источников не ответил вовсе
     "scripts/aurora_setup.py": 2,       # умолчания исторических ключей `paths:` в форме настроек
     "scripts/kb_remap.py": 6,           # разовый ремонт ссылок на старые имена файлов Jira
-    "scripts/build_plan.py": 1,         # подсказка `--group` в тексте отчёта
+    "scripts/build_plan.py": 2,         # группа разбора `Confluence` и подсказка `--group` в тексте отчёта
     "reports/analyst/paths.py": 1,      # отчёты аналитика
 }
 
@@ -48,6 +48,12 @@ def _mirror_literals(kit: Path) -> dict:
         count = sum(1 for n in ast.walk(tree)
                     if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs
                     and MIRROR_LITERAL.search(n.value))
+        # os.path.join("Sources", "JIRA") и подобное: путь собран из кусков, подстроки `Sources/JIRA` в коде нет
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "join":
+                parts = [a.value for a in n.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+                if "Sources" in parts and any(x in ("JIRA", "Confluence") for x in parts):
+                    count += 1
         if count:
             out[p.relative_to(kit).as_posix()] = count
     return out
@@ -76,4 +82,5 @@ def test_mirror_literal_counter_sees_code_but_not_docstrings(tmp: Path):
         encoding="utf-8")
     (tmp / "scripts" / "jira_export.py").write_text('P = "Sources/JIRA"\n', encoding="utf-8")
     (tmp / "scripts" / "other.py").write_text('P = "Sources/Web"\n', encoding="utf-8")
-    assert _mirror_literals(tmp) == {"scripts/core.py": 2}, _mirror_literals(tmp)
+    (tmp / "scripts" / "joined.py").write_text('import os\nP = os.path.join("Sources", "Confluence")\n', encoding="utf-8")
+    assert _mirror_literals(tmp) == {"scripts/core.py": 2, "scripts/joined.py": 1}, _mirror_literals(tmp)

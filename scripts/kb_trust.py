@@ -114,6 +114,7 @@ EPIC_TYPES = ("epic", "эпик")
 # «GUI» — это постановка, и готова она тогда, когда готова её задача.
 REFERENCE_BRANCHES: list = list(TRUSTED_BRANCHES_DEFAULT)   # из настройки проекта в main
 PROJECT_ROOT = ["."]      # корень, о котором отвечают функции без аргумента root; ставит main
+_WIKI_RUN: list = [None]  # папки вики на время прогона `main`: вопрос «чья папка» задаётся на каждую карточку
 
 
 def wiki_dirs(root: str = "") -> list:
@@ -121,6 +122,8 @@ def wiki_dirs(root: str = "") -> list:
 
     Корня у `reference_page` и подобных нет — они берут корень, который поставил `main`, либо текущую папку.
     """
+    if not root and _WIKI_RUN[0] is not None:
+        return _WIKI_RUN[0]
     return [d + "/" for d in service_dirs("projectwiki", root or PROJECT_ROOT[0])]
 
 
@@ -432,6 +435,13 @@ def note_downgrade(text: str, was: str, now: str, why: str) -> str:
 
 
 def main() -> int:
+    try:
+        return _main()
+    finally:
+        _WIKI_RUN[0] = None
+
+
+def _main() -> int:
     ap = argparse.ArgumentParser(description="Пересчёт класса доверия карточек")
     ap.add_argument("--apply", action="store_true", help="записать классы в карточки")
     ap.add_argument("--root", default=".", help="корень проекта")
@@ -439,6 +449,7 @@ def main() -> int:
 
     root = a.root
     PROJECT_ROOT[0] = root
+    _WIKI_RUN[0] = [d + "/" for d in service_dirs("projectwiki", root)]
     if not os.path.isdir(os.path.join(root, KB)):
         print("kb_trust: нет AuroraKnowledgeDB/ — запускайте из корня проекта", file=sys.stderr)
         return 1

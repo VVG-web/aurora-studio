@@ -2591,6 +2591,8 @@ def jira_task_cards(cwd: str) -> list:
     key = (config_value("project_key") or "").strip()
     jira_re = re.compile(rf"(?i)^{re.escape(key)}-\d+") if key else None
     out = []
+    from aurora_common import service_dirs
+    tasks = tuple(d + "/" for d in service_dirs("tasktracker", cwd))
     for path in walk_md(root, skip_service=True, skip_archive=True):
         text = open(path, encoding="utf-8", errors="ignore").read()
         fm = frontmatter(text)
@@ -2599,7 +2601,7 @@ def jira_task_cards(cwd: str) -> list:
         stem = os.path.basename(path)[:-3]
         section = os.path.relpath(os.path.dirname(path), root).split(os.sep)[0]
         kind = artifact_kind(stem, (fm.get("title") or stem).strip().strip('"'),
-                             (card_sources(text) or [""])[0], section, jira_re)
+                             (card_sources(text) or [""])[0], section, jira_re, tasks)
         if kind == "задача Jira":
             out.append(path)
     return sorted(out)

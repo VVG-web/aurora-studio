@@ -192,10 +192,18 @@ def test_engine_copy_in_project_with_old_manifests_still_finds_the_mirrors(tmp: 
     cp = _in_project(root, _DIRS)
     assert cp.returncode == 0, cp.stderr
     assert json.loads(cp.stdout) == [["Sources/JIRA"], ["Sources/Confluence"]], cp.stdout
-    # указатель на кит не читается как UTF-8 — не traceback и не пустота: кит просто не виден
+    # указатель на кит не читается как UTF-8 — не traceback и не пустота: кит не виден, копии манифестов старше поля
+    # роли не знают — слой слеп, и ответ прежний (на этом шаге раньше получалось `[[], []]`)
     (root / ".aurora" / "kit_path.txt").write_bytes(b"\xff\xfe\x00bad")
     cp = _in_project(root, _DIRS)
-    assert cp.returncode == 0 and cp.stdout.strip(), cp.stderr
+    assert cp.returncode == 0, cp.stderr
+    assert json.loads(cp.stdout) == [["Sources/JIRA"], ["Sources/Confluence"]], (cp.stdout, cp.stderr)
+    # копии свежие (роли есть), кита не видно, в `sources:` только вики: зеркало трекера, лежащее на диске, не теряется
+    (tmp / "second").mkdir()
+    root2 = make_project(tmp / "second")
+    _with_sources(root2, [("Wiki", "confluence-dc", "Sources/Confluence")])
+    cp = _in_project(root2, _DIRS)
+    assert json.loads(cp.stdout) == [["Sources/JIRA"], ["Sources/Confluence"]], (cp.stdout, cp.stderr)
 
 
 @test
@@ -275,7 +283,7 @@ def test_service_role_of_wrong_type_does_not_drop_the_module(tmp: Path):
     (conn / "own-tracker.json").write_text(json.dumps(own, ensure_ascii=False), encoding="utf-8")
     got = R.load(str(conn / "own-tracker.json"))
     assert got and got["id"] == "own-tracker" and got["service_role"] == "" and got["aliases"] == [], got
-    assert any("5" in line for line in R.registry_report()), R.registry_report()
+    assert any("own-tracker" in line and "«5»" in line for line in R.registry_report()), R.registry_report()
     # перевод строки в конце псевдонима — не простое слово
     assert not R._ALIAS_OK.fullmatch("jira\n") and R._ALIAS_OK.fullmatch("jira-dc")
 
@@ -307,6 +315,18 @@ def test_linter_and_pack_read_the_tracker_mirror_by_role(tmp: Path):
         assert [(r["key"], r["status"]) for r in rows] == [("AB-5", "Бэклог")], rows
     finally:
         os.chdir(here)
+    # вызывающий, который знает проект, но стоит в другой папке (панель), называет зеркало трекера сам
+    import agent_runner as AR
+    assert os.path.abspath(os.getcwd()) != os.path.abspath(root)
+    assert L.artifact_kind("Разработка-таблицы-Х", "Разработка таблицы Х", "Sources/Tasks/AB-5.md", "Concepts",
+                           None, ("Sources/Tasks/",)) == "задача Jira"
+    kb = root / "AuroraKnowledgeDB" / "Concepts"
+    kb.mkdir(parents=True, exist_ok=True)
+    (kb / "Разработка-таблицы-Х.md").write_text(
+        '---\ntitle: "Разработка таблицы Х"\ntype: concept\nkind: knowledge\nstatus: draft\n'
+        'sources:\n  - "Sources/Tasks/AB-5.md"\n---\n\n# Разработка таблицы Х\n\nТ.\n', encoding="utf-8")
+    # процесс стоит не в проекте (так работает панель): зеркало трекера берётся по переданному корню, а не по cwd
+    assert [Path(p).name for p in AR.jira_task_cards(str(root))] == ["Разработка-таблицы-Х.md"]
 
 
 @test
@@ -339,6 +359,8 @@ def test_fix_graph_and_remap_follow_the_mirrors_by_role(tmp: Path):
 @test
 def test_portable_names_check_groups_wiki_mirror_files_by_role(tmp: Path):
     """doctor и kb_names: файл с плохим именем в зеркале вики из реестра — «зеркало», а не «прочее»."""
+    if os.name == "nt":
+        return          # Windows сама отрезает точку на конце имени: плохого имени там не создать
     root = make_project(tmp, git=True)
     _with_sources(root, [("Wiki", "confluence-dc", "Sources/Wiki")])
     bad = root / "Sources" / "Wiki" / "Страница."
