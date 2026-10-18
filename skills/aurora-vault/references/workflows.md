@@ -348,7 +348,7 @@ Object: Confluence page (via MCP or `Sources/Confluence/...`) or local file.
 трассировке, ни в DoR, и всплывает на приёмке.
 
 1. Create `AuroraKnowledgeDB/Questions/Q-NNN-<кратко>.md` from `Templates/question_template.md`
-   (NNN — следующий свободный номер). Обязательно: `owner` (кто ведёт, не кто отвечает),
+   (NNN — номер выдаёт `kb:next-id Q`). Обязательно: `owner` (кто ведёт, не кто отвечает),
    `asked_to`, `blocks` (какие REQ/SPEC стоят), `due`.
 2. Одно неизвестное = одна карточка. Сформулировать так, чтобы можно было отправить
    заказчику без редактуры; приложить 2 гипотезы («A или B?» отвечается быстрее открытого вопроса).

@@ -63,6 +63,9 @@ scripts/path_budget.py      => .aurora/scripts/path_budget.py
 scripts/kb_lint.py       => .aurora/scripts/kb_lint.py
 # детерминированный линтер артефактов (истории, критерии, спеки): его зовёт kb_lint
 scripts/artifact_lint.py => .aurora/scripts/artifact_lint.py
+# реестр идентификаторов (`kb:next-id`): выдача номеров REQ, SPEC, Q, DR и артефактов агента под замком; его подключают
+# kb_lint и agent_runner лениво — движок проекта, обновлённый не целиком, работает без него
+scripts/id_registry.py   => .aurora/scripts/id_registry.py
 # Эти два (и run_summary выше) ставились установкой, но в манифест не попали — и потому не обновлялись
 # никогда: проект годами держал версию времён своего создания, при том что
 # `aurora_version.txt` исправно показывал свежую. Один прогон двумя версиями движка,
