@@ -6391,6 +6391,8 @@ def parse_from(values) -> tuple:
             if not field:
                 bad.append(token)
                 continue
+            if re.match(r"^[A-Za-z]+-", token):
+                token = token.split("-", 1)[0].upper() + "-" + token.split("-", 1)[1]      # req-042 → REQ-042
             have = links.setdefault(field, [])
             if token not in have:
                 have.append(token)
@@ -6436,7 +6438,7 @@ def artifact_number(cwd: str, st: dict) -> str:
     try:
         import id_registry as IDR
         st["artifact_id"] = IDR.allocate("ART", cwd)
-    except (ImportError, OSError, RuntimeError):
+    except (ImportError, OSError, RuntimeError, ValueError):
         return ""
     return st["artifact_id"]
 

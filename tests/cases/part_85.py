@@ -296,3 +296,73 @@ def test_impact_follows_the_passport_links_of_artifacts(tmp: Path):
     cp = run("kb_trace.py", "--impact", "ART-0003", cwd=root, expect_rc=0)
     assert "Artifacts/ac/Критерии.md (паспорт: parent)" in cp.stdout, cp.stdout
     assert "История.md" not in cp.stdout.split("Зависит от неё")[1], cp.stdout
+
+
+@test
+def test_id_registry_edge_cases_found_in_review(tmp: Path):
+    """Снимок сданного не даёт повтор; большая и BOM-шапка читаются; даты и дроби не номера; замок живого процесса."""
+    ID = _mod("id_registry")
+    root = make_project(tmp)
+    # снимок сданного документа несёт копию шапки: номер занят, повтора нет
+    _touch(root, "Artifacts/us/а.md", "---\ntitle: а\nartifact_id: ART-0001\n---\n\nТекст.\n")
+    _touch(root, "Deliverables/released/а_v1.md", "---\ntitle: а\nartifact_id: ART-0001\n---\n\nТекст.\n")
+    assert ID.duplicates(str(root)) == {}, ID.duplicates(str(root))
+    assert ID.peek("ART", str(root)) == "ART-0002"
+    # шапка длиннее окна чтения (сотни ссылок) и шапка с BOM
+    big = ("---\ntitle: б\nartifact_id: ART-0005\nbased_on: ["
+           + ", ".join(f'"[[Карточка-{i}]]"' for i in range(400)) + "]\n---\n\nТекст.\n")
+    assert len(big) > ID.HEAD_CHARS
+    _touch(root, "Artifacts/us/б.md", big)
+    _touch(root, "Artifacts/us/в.md", "﻿---\ntitle: в\nartifact_id: ART-0007\n---\n\nТекст.\n")
+    assert ID.peek("ART", str(root)) == "ART-0008", ID.peek("ART", str(root))
+    # дата в имени и дробный номер — не номера реестра
+    _touch(root, "AuroraKnowledgeDB/Decisions/DR-2026-10-19-заметка.md")
+    _touch(root, "AuroraKnowledgeDB/Questions/Q-1.1-подвопрос.md")
+    _touch(root, "AuroraKnowledgeDB/Questions/Q-001-вопрос.md")
+    assert ID.peek("DR", str(root)) == "DR-0001" and ID.peek("Q", str(root)) == "Q-002", (ID.peek("DR", str(root)), ID.peek("Q", str(root)))
+    assert ID.duplicates(str(root)) == {}
+    # огромное число в шапке не роняет выдачу
+    _touch(root, "Artifacts/us/г.md", "---\ntitle: г\nartifact_id: ART-" + "9" * 5000 + "\n---\n")
+    assert ID.peek("ART", str(root)) == "ART-0008"
+    # пробел вокруг имени пространства не обходит отметку
+    assert ID.allocate("ART", str(root)) == "ART-0008"
+    assert ID.peek(" art ", str(root)) == "ART-0009"
+    # замок живого процесса, который не отпускают, — понятный отказ, а не зависание
+    lock = root / ".aurora/state/ids/DR.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(json.dumps({"pid": os.getpid(), "at": __import__("time").time()}), encoding="utf-8")
+    was = ID.LOCK_WAIT_S
+    ID.LOCK_WAIT_S = 0.3
+    try:
+        try:
+            ID.allocate("DR", str(root))
+            raise AssertionError("выдача прошла мимо чужого замка")
+        except ID.IdBusy:
+            pass
+        cp = run("id_registry.py", "DR", cwd=root)         # другой процесс, замок держит живой pid
+        assert cp.returncode == 2 and "занята" in cp.stderr, (cp.returncode, cp.stderr)
+        # замок мёртвого процесса снимается
+        lock.write_text(json.dumps({"pid": 2 ** 22 + 12345, "at": __import__("time").time() - 600}), encoding="utf-8")
+        assert ID.allocate("DR", str(root)) == "DR-0001"
+    finally:
+        ID.LOCK_WAIT_S = was
+
+
+@test
+def test_impact_reads_numbers_with_a_dot_and_yogi_keys(tmp: Path):
+    """`ops:impact`: `AC-3.1` и ключ `RU.PRJ.REQ-010` в паспорте читаются целиком; `AC-3` не принимается за `AC-3.1`."""
+    from harness import card
+    root = make_project(tmp)
+    card(root, "Requirements/REQ-010-Срок.md", "Срок.", status="knowledge", kind="knowledge", type="requirement")
+    _touch(root, "Artifacts/ac/Критерий.md", "---\ntitle: К\nartifact_id: ART-0001\ncovers: [AC-3.1]\nimplements: [RU.PRJ.REQ-010]\n---\n\nТекст.\n")
+    cp = run("kb_trace.py", "--impact", "REQ-010-Срок", cwd=root, expect_rc=0)
+    assert "Artifacts/ac/Критерий.md (паспорт: implements)" in cp.stdout, cp.stdout
+    card(root, "Concepts/AC-3.1-Критерий.md", "Критерий.", status="knowledge", kind="knowledge")
+    card(root, "Concepts/AC-3-Другое.md", "Другое.", status="knowledge", kind="knowledge")
+    cp = run("kb_trace.py", "--impact", "AC-3.1-Критерий", cwd=root, expect_rc=0)
+    assert "Критерий.md (паспорт: covers)" in cp.stdout, cp.stdout
+    cp = run("kb_trace.py", "--impact", "AC-3-Другое", cwd=root, expect_rc=0)
+    assert "Критерий.md" not in cp.stdout, cp.stdout
+    R = _mod("agent_runner")
+    links, bad = R.parse_from(["req-042", "ac-3.1"])
+    assert not bad and links == {"implements": ["REQ-042"], "covers": ["AC-3.1"]}, (links, bad)
