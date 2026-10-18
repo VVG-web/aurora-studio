@@ -50,7 +50,7 @@ from aurora_common import (OWN_LIFECYCLE, card_type, is_meeting, branch_kind, LE
                            walk_md, with_fields)
 
 from aurora_common import TODAY, file_head, head_pairs, head_text, head_trust  # noqa: E402 — дата в UTC, одна на движок
-from card_types import finish_code, try_write_card  # noqa: E402 — единый вход записи карточки
+from card_types import run_script, registry_for, try_write_card  # noqa: E402 — единый вход записи карточки
 TABLE = os.path.join("AuroraKnowledgeDB", "meta", "trace", "trace.json")
 KB = "AuroraKnowledgeDB"
 FOOTER = "## История изменений"
@@ -486,6 +486,7 @@ def main() -> int:
 
     counts, changes, moved, refreshed = {}, [], 0, 0
     dr_traces, refused = [], []
+    reg = registry_for(root)
 
     def put(path: str, new_text: str, op: str, old_text: str) -> None:
         """Запись через вход шаблонов: отказ одной карточки в отчёт, остальные идут дальше."""
@@ -550,8 +551,12 @@ def main() -> int:
                     why += f" (слабейший из {len(documented)} документальных источников)"
                 if len(documented) < len(judged):
                     why += "; сказанное на встрече доверия не прибавляет — оно помечено"
-        counts[cls] = counts.get(cls, 0) + 1
         now = wanted_status(cls)
+        tpl_type = card_type(fm, os.path.relpath(path, os.path.join(root, KB)).split(os.sep)[0])
+        tpl = reg.get(tpl_type)
+        if tpl is not None and tpl.statuses and now not in reg.statuses_for(tpl_type):
+            continue        # шкала типа короче общей (вопрос — только `draft`): доверие по нему не пересчитывается
+        counts[cls] = counts.get(cls, 0) + 1
         if now == was:
             # Т-68: вердикт записывается в предмет решения и при прежнем статусе. Раньше
             # карточка, которая была черновиком и осталась им, основания не получала, и
@@ -608,4 +613,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(finish_code(main()))
+    sys.exit(run_script(main))

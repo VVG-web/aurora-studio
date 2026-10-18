@@ -3799,10 +3799,23 @@ def build_sections(cwd: str = ".") -> list:
     return [(sec, tid) for sec, tid in CT.LEGACY_SECTION_TYPE.items() if sec not in skip]
 
 
+SECTION_LIST_CHARS = 1500            # перечень разделов в запросе: свой тип проекта не раздувает запрос без предела
+
+
 def types_for_prompt(cwd: str = ".") -> str:
-    """Значения поля `to` для запроса модели: «Concepts (concept), Processes (process), …» — из реестра проекта.
-    Выключенный тип в перечень не входит, свой тип проекта входит."""
-    return ", ".join(f"{sec} ({tid})" for sec, tid in build_sections(cwd))
+    """Значения поля `to` для запроса модели: «"Concepts" (concept), "Processes" (process), …» — из реестра проекта.
+    Значение в кавычках: модель переписывает его целиком, без скобок. Выключенный тип в перечень не входит, свой тип
+    проекта входит; перечень не длиннее `SECTION_LIST_CHARS` (допустимые разделы проверяет `check_cards` по полному
+    списку)."""
+    out, size = [], 0
+    for sec, tid in build_sections(cwd):
+        item = f'"{sec}" ({tid})'
+        if size + len(item) + 2 > SECTION_LIST_CHARS:
+            out.append("…")
+            break
+        out.append(item)
+        size += len(item) + 2
+    return ", ".join(out)
 
 
 def guide_for_prompt(cwd: str = ".") -> str:

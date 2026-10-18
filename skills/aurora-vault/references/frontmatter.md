@@ -28,7 +28,7 @@ distilled: 2026-08-21     # когда модель написала тезис 
 created: 2026-05-17
 updated: 2026-07-05
 sources:                  # блок-список путей; доверие считается по слабейшему
-  - "Sources/Confluence/SM - Алгоритмы/04. ..."   # или Raw/..., или Sources/JIRA/...
+  - "Sources/Confluence/Процессы/04. ..."   # или Raw/..., или Sources/JIRA/...
 source_synced: 2026-07-05 # версия источника на момент последней обработки
 supersedes: []            # wiki-ссылки на карточки, которые эта заменила
 superseded_by:            # заполняется ТОЛЬКО у deprecated

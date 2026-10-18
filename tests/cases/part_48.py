@@ -889,3 +889,81 @@ def test_parked_refusal_returns_when_templates_change(tmp: Path):
     assert R.still_parked(cwd, path, parked), "парковка «человеку» не должна зависеть от шаблонов"
     Path(path).write_text(Path(path).read_text(encoding="utf-8") + "\nПравка.\n", encoding="utf-8")
     assert not R.still_parked(cwd, path, parked)
+
+
+@test
+def test_root_notes_links_and_service_files_do_not_stop_the_editors(tmp: Path):
+    """Заметка с шапкой прямо в корне базы и карточка-ссылка на файл проекта вне базы не роняют правщиков: `kb:kind`,
+    `kb:schema`, `kb:trust`, `kb:fix` пишут их как прежде (заметку) или называют отказом (ссылку) и идут дальше."""
+    root = make_project(tmp, git=True)
+    kb = root / KB
+    (kb / "Заметка.md").write_text("---\ntags: [idea]\n---\n\nЗаметка в корне хранилища.\n", encoding="utf-8")
+    (root / "Raw/project").mkdir(parents=True, exist_ok=True)
+    (root / "Raw/project/Док.md").write_text("Текст документа.\n", encoding="utf-8")
+    card(root, "Concepts/Целая.md", "Текст.", status="draft", kind="knowledge")
+    link = kb / "Concepts" / "Ссылка.md"
+    try:
+        os.symlink(root / "Raw/project/Док.md", link)
+    except (OSError, NotImplementedError):
+        link = None                                    # символические ссылки недоступны (Windows без прав)
+    for args in (("kb_kind.py", "--apply"), ("kb_schema.py", "--apply", "--allow-dirty"), ("kb_trust.py", "--apply"),
+                 ("kb_fix.py", "--frontmatter", "--retire", "--apply", "--allow-dirty")):
+        cp = run(*args, cwd=root)
+        assert cp.returncode in (0, 1) and "Traceback" not in cp.stderr, (args, cp.stdout[-400:] + cp.stderr[-600:])
+    if link is not None:
+        assert (root / "Raw/project/Док.md").read_text(encoding="utf-8") == "Текст документа.\n", "запись прошла через ссылку"
+
+
+@test
+def test_a_disabled_map_type_does_not_crash_the_map_scripts(tmp: Path):
+    """Тип `moc` выключен в настройках проекта: скрипты карт не падают трассировкой, а называют причину и кончаются кодом 1."""
+    root = make_project(tmp, git=True)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip("\n") + '\ncards:\n  moc:\n    enabled: "false"\n', encoding="utf-8")
+    card(root, "Concepts/Заявка.md", "Текст про US-4.2.1.", status="draft", kind="knowledge",
+         sources='\n  - "Sources/Confluence/Док.md"')
+    cp = run("kb_moc.py", "--apply", "--allow-dirty", cwd=root)
+    assert cp.returncode == 1 and "Traceback" not in cp.stderr and "moc" in cp.stderr, cp.stdout[-300:] + cp.stderr[-600:]
+    assert not list((root / KB / "MOC").glob("*.md")), "карта записана при выключенном типе"
+
+
+@test
+def test_trust_does_not_move_a_status_the_type_does_not_have(tmp: Path):
+    """У типа `question` единственный статус — `draft`: `kb:trust` не пытается записать ему `knowledge`, не печатает отказ
+    на каждом прогоне и не оставляет шаг красным."""
+    root = make_project(tmp, git=True)
+    q = root / KB / "Questions" / "Q-0001-Срок.md"
+    q.parent.mkdir(parents=True, exist_ok=True)
+    (root / "Raw/questions").mkdir(parents=True, exist_ok=True)
+    (root / "Raw/questions/Q-0001-Срок.md").write_text("Какой срок?\n", encoding="utf-8")
+    q.write_text('---\ntitle: "Q-0001: Срок"\naliases: []\ntags: []\ntype: question\ntemplate: akdb_question_v1.0.md\n'
+                 'kind: document\nstatus: draft\nsources:\n  - "Raw/questions/Q-0001-Срок.md"\nsource_synced: 2026-10-01\n'
+                 'created: 2026-10-01\nupdated: 2026-10-01\nbuilt: machine\nq_status: open\n---\n\n# Q-0001: Срок\n\nКакой срок?\n',
+                 encoding="utf-8")
+    was = q.read_bytes()
+    cp = run("kb_trust.py", "--apply", cwd=root)
+    assert cp.returncode == 0 and "Не записано шаблоном" not in cp.stdout and "Traceback" not in cp.stderr, cp.stdout + cp.stderr
+    assert q.read_bytes() == was, "статус вопроса пересчитан"
+
+
+@test
+def test_archive_folder_that_leaves_the_project_is_not_followed(tmp: Path):
+    """Папка `_archive` — ссылка за пределы проекта: слияние оставляет донора на месте, а не выносит знание наружу."""
+    K = _mod("kb_fix")
+    root = make_project(tmp, git=True)
+    outside = tmp / "outside"
+    outside.mkdir()
+    arch = root / KB / "_archive"
+    try:
+        os.symlink(outside, arch)
+    except (OSError, NotImplementedError):
+        return                                         # символические ссылки недоступны (Windows без прав)
+    keep = card(root, "Concepts/Кеп.md", "Выживший.", status="draft", kind="knowledge")
+    drop = card(root, "Concepts/Дроп.md", "Донор.", status="draft", kind="knowledge")
+    with _in_dir(root):
+        cards = K.load_cards(K.ROOT)
+        plan = K.Plan()
+        assert K.plan_merge(cards, "Кеп", "Дроп", plan, quiet=True) == 0
+        K.apply_plan(plan)
+    assert drop.is_file() and not list(outside.iterdir()), "донор вынесен за пределы проекта"
+    assert keep.is_file()

@@ -38,7 +38,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (card_sources, frontmatter, link_escapes, name_lineage,  # noqa: E402
                            split_frontmatter, walk_md, with_fields)
-from card_types import finish_code, fit_kind, registry_for, try_write_card  # noqa: E402 — вид в пределах видов типа; вход записи
+from card_types import run_script, fit_kind, registry_for, try_write_card  # noqa: E402 — вид в пределах видов типа; вход записи
 
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 KB = "AuroraKnowledgeDB"
@@ -198,4 +198,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(finish_code(main()))
+    sys.exit(run_script(main))

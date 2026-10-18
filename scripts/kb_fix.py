@@ -62,8 +62,8 @@ JSON_ONLY = -7               # сигнал main: машинный вывод н
 MERGE_REPORT: list = []      # (слитые, отказы) — для отчёта после прогона
 ARCHIVE = os.path.join(ROOT, "_archive")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
-from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
-from card_types import (UnknownCardType, finish_code, fit_kind, put_text, registry_for,  # noqa: E402
+from aurora_common import root_link_escapes, safe_walk  # noqa: E402 — обход и запись без ссылок за пределы проекта
+from card_types import (UnknownCardType, run_script, fit_kind, put_text, registry_for,  # noqa: E402
                         render_card, why_refused,
                         section_type_table)   # единый источник «раздел → тип», шапка по шаблону, вход записи
 
@@ -612,6 +612,7 @@ class Plan:
         self.renames: list = []          # (старый путь, новый путь)
         self.moves: list = []            # (путь, куда) — в _archive
         self.reopen: list = []           # источники — обратно в план разбора
+        self.reopen_of: dict = {}        # источник → карточки, из-за которых он возвращается (отказ карточки отменяет возврат)
         self.coupled: list = []          # группы путей, которые пишутся вместе: отказ одной отменяет запись всех
         self.notes: list = []            # строки отчёта
         self.unresolved: list = []       # ссылки, которые движок не берёт
@@ -623,6 +624,12 @@ class Plan:
         self.file_writes[path] = text
         if op:
             self.ops[path] = op
+
+    def reopen_for(self, card_path: str, sources: list) -> None:
+        """Вернуть источники в план вместе с изменением карточки: не записана карточка — источники остаются разобранными."""
+        self.reopen += sources
+        for s in sources:
+            self.reopen_of.setdefault(s, set()).add(card_path.replace("\\", "/"))
 
     def couple(self, *paths: str) -> None:
         """Связать записи: если шаблон не примет хоть одну из них, не пишется ни одна (и не уходят в архив связанные карточки).
@@ -1741,7 +1748,7 @@ def plan_template(cards: dict, plan: Plan, root: str) -> tuple:
             continue
         if hit:
             plan.moves.append((rel, dst))
-            plan.reopen += [s for s in srcs if s.startswith(("Sources/", "Raw/"))]
+            plan.reopen_for(rel, [s for s in srcs if s.startswith(("Sources/", "Raw/"))])
             born.append((c.stem, hit[0], hit[1], len(srcs)))
             gone[c.stem] = title
             continue
@@ -1786,7 +1793,7 @@ def plan_template(cards: dict, plan: Plan, root: str) -> tuple:
             head = BP.drop_thesis_mark(BP.with_sources(prefix[:head_end], keep))
             text = head + prefix[head_end:] + own + sep + new_quotes
             plan.write(path, text)
-            plan.reopen += [s for s in drop_keys if s.startswith(("Sources/", "Raw/"))]
+            plan.reopen_for(path, [s for s in drop_keys if s.startswith(("Sources/", "Raw/"))])
             detached.append((c.stem, len(drop_keys), len(srcs)))
             continue
         # Служебный абзац шаблона, вписанный в тезис, — строкой: тезис пишется построчно.
@@ -1847,7 +1854,7 @@ def plan_copies(cards: dict, plan: Plan) -> tuple:
         machine = [s for s in srcs if twin(s)]
         if not machine:
             continue
-        plan.reopen += machine
+        plan.reopen_for(path, machine)
         keep = [s for s in srcs if s not in machine]
         title = (c.fm.get("title") or "").strip().strip('"') or c.stem
         if not keep:
@@ -3212,6 +3219,10 @@ def apply_plan(plan: Plan) -> int:
             print(f"  ! пропущено переименование {old} → {new}: файл уже существует", file=sys.stderr)
             skipped += 1
             continue
+        if root_link_escapes(os.path.dirname(new) or "."):
+            print(f"  ! пропущено переименование {old} → {new}: папка назначения — ссылка за пределы проекта", file=sys.stderr)
+            skipped += 1
+            continue
         os.makedirs(os.path.dirname(new) or ".", exist_ok=True)
         os.rename(old, new)
     renamed_to = dict(renames)
@@ -3230,6 +3241,10 @@ def apply_plan(plan: Plan) -> int:
         # прогоне сливался снова. На живой базе так набралось СОРОК ДЕВЯТЬ одинаковых
         # блоков «Слияние» в одной карточке.
         dst = free_archive_name(dst)
+        if root_link_escapes(os.path.dirname(dst) or "."):
+            print(f"  ! {src} остаётся на месте: папка архива — ссылка за пределы проекта", file=sys.stderr)
+            skipped += 1
+            continue
         os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
         shutil.move(src, dst)
     if plan.reopen:
@@ -3239,6 +3254,9 @@ def apply_plan(plan: Plan) -> int:
         import build_plan as BP
         manifest = BP.load_manifest()
         for s in dict.fromkeys(plan.reopen):
+            owners = plan.reopen_of.get(s) or set()
+            if owners and owners <= refused_now:
+                continue               # карточку шаблон не принял: источник остаётся разобранным, а не перечитывается каждую ночь
             (manifest.get("sources") or {}).pop(s, None)
         BP.save_manifest(manifest)
     # Папка, из которой ушли все карточки, не остаётся пустой: пустая «Glossary/Glossary»
@@ -3752,4 +3770,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(finish_code(main()))
+    sys.exit(run_script(main))

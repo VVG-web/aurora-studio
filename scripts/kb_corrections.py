@@ -40,7 +40,7 @@ KB = "AuroraKnowledgeDB"
 DIR = os.path.join("Raw", "corrections")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import link_escapes, name_lineage, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
-from card_types import finish_code, try_write_card, write_card_text  # noqa: E402 — единый вход записи карточки
+from card_types import run_script, try_write_card, write_card_text  # noqa: E402 — единый вход записи карточки
 MARK = CORRECTIONS
 
 
@@ -488,4 +488,4 @@ def heir_of(name: str) -> str:
 
 
 if __name__ == "__main__":
-    sys.exit(finish_code(main()))
+    sys.exit(run_script(main))

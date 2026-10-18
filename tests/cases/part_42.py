@@ -2388,8 +2388,11 @@ def test_kb_cards_links_are_advisory(tmp: Path):
     # kb:lint: раздел о шаблонах называет коды, итоговая строка та же, что без шаблонов
     bare = _cli_project(tmp / "b", templates=False)
     for base in (root, bare):
-        _put(base / "AuroraKnowledgeDB" / "Concepts" / "Без-связей.md", mk(title='"Без связей"', body="Определение без единой ссылки.\n"))
-        _put(base / "AuroraKnowledgeDB" / "Concepts" / "Не-там.md", mk(title='"Не там"', blocks='["[[Заявка на поставку]]"]'))
+        # без штампа: «до-шаблонные» карточки; нарушения шаблона у карточки со штампом — уже ошибки линтера (CT-12)
+        _put(base / "AuroraKnowledgeDB" / "Concepts" / "Без-связей.md",
+             mk(title='"Без связей"', body="Определение без единой ссылки.\n", template=None))
+        _put(base / "AuroraKnowledgeDB" / "Concepts" / "Не-там.md",
+             mk(title='"Не там"', blocks='["[[Заявка на поставку]]"]', template=None))
     full, plain = _lint(root, "--full"), _lint(bare, "--full")
     assert full.returncode == plain.returncode and _summary_line(full.stdout) == _summary_line(plain.stdout)
     section = [l for l in _section_of(full.stdout) if l]

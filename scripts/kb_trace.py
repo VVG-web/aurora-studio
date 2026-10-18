@@ -42,7 +42,7 @@ from aurora_common import TRUSTED, as_list, config_value, frontmatter, link_targ
 ROOT = "AuroraKnowledgeDB"
 PRODUCTS = ["Artifacts", "Deliverables"]
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
-from card_types import finish_code, put_map, render_card  # noqa: E402 — шапка карты по шаблону и вход записи
+from card_types import run_script, put_map, render_card  # noqa: E402 — шапка карты по шаблону и вход записи
 from aurora_common import link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
 import run_summary as RS  # noqa: E402 — вердикт ворот (`--gate`)
 
@@ -402,4 +402,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(finish_code(main()))
+    sys.exit(run_script(main))

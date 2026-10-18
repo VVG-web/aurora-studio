@@ -37,7 +37,7 @@ import subprocess
 import sys
 
 from aurora_common import fold, head_text
-from card_types import finish_code, put_text
+from card_types import run_script, put_text
 from sources_core import nfc
 
 KB = "AuroraKnowledgeDB"
@@ -537,4 +537,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(finish_code(main()))
+    sys.exit(run_script(main))

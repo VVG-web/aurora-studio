@@ -40,9 +40,10 @@ skills/aurora-vault/references/maintenance.md  => .aurora/skills/aurora-vault/re
 # --- скрипты движка ---
 # общий модуль примитивов: его импортируют остальные скрипты
 scripts/aurora_common.py => .aurora/scripts/aurora_common.py
-# реестр типов карточек, паспорт шаблона и проверка карточки по шаблону (`kb:cards`); его жёстко импортируют
-# kb_lint, kb_fix, build_plan и kb_schema — поэтому сразу за общим модулем: обрыв обновления между записями не
-# должен оставить хуку pre-commit ImportError
+# реестр типов карточек, паспорт шаблона, проверка карточки по шаблону (`kb:cards`) и единый вход записи карточек
+# базы; его жёстко импортируют kb_lint и все скрипты, которые пишут карточки (kb_fix, build_plan, kb_schema, kb_kind,
+# kb_trust, kb_moc, kb_trace, kb_supersede, agent_runner и другие) — поэтому сразу за общим модулем: обрыв обновления
+# между записями не должен оставить хуку pre-commit ImportError (kb_graph подключает модуль лениво)
 scripts/card_types.py    => .aurora/scripts/card_types.py
 # машинная строка вердикта ворот и общие помощники флага `--gate` (gate_argv, gate_mode, gate_exit); их жёстко
 # импортируют kb_lint, kb_trace, artifact_lint и spec_pack — поэтому тоже раньше них: обрыв обновления между

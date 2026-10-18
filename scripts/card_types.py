@@ -67,6 +67,7 @@ import itertools
 import json
 import os
 import re
+import stat
 import sys
 import threading
 from dataclasses import dataclass, field, replace
@@ -453,7 +454,7 @@ def _passport_type(entry, problems: list):
     section = (p.get("section") or "").strip()
     if not section and p.get("card_class") != "record":
         why.append("в паспорте нет section (пусто допустимо только у записи)")
-    if section and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_\-]*", section):
+    if section and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_\-]{0,39}", section):
         why.append(f"section «{section}» не похож на папку раздела")
     if why:
         problems.append(f"{name}: паспорт не принят — " + "; ".join(why))
@@ -1249,7 +1250,7 @@ def _check_own(own: str, line0: int, fm: dict, ct: CardType, eff_kind: str, add,
         if name in EXTRA_SERVICE:
             continue
         if name not in allowed:
-            add("V-09", line0 + i, f"раздел «{name}» не из списка типа «{ct.id}»",
+            add("V-09", line0 + i, f"раздел «{name[:80]}» не из списка типа «{ct.id}»",
                 "допустимы: " + ", ".join(allowed))
             continue
         idx = allowed.index(name)
@@ -2482,6 +2483,8 @@ def stamp_if_conformant(text: str, rel: str, reg: Registry, *, raw_ok: bool = Tr
     stamped = _stamp_header(text, ct.template_file)
     if stamped == text or _write_errors(stamped, rel, reg, template_required=True, raw_ok=raw_ok):
         return text
+    if _section_violation(stamped, rel, reg) is not None:        # «проходит валидатор» значит и «лежит в своём разделе»
+        return text
     return stamped
 
 
@@ -2496,9 +2499,14 @@ def stamped_card_errors(rel: str, text: str, reg: Registry) -> list:
         return []
     out = []
     for v in validate_card(text, path=rel, reg=reg, level="strict"):
-        if v.severity == "error":
-            hint = f" ({_calm(v.hint, 120)})" if v.hint else ""
-            out.append(f"{rel}:{v.line}: карточка с template: нарушает шаблон — {v.code}: {_calm(v.message, 160)}{hint}")
+        if v.severity != "error":
+            continue
+        if v.code == "V-03" and "выключен" in v.message:
+            continue                  # выключенный тип — настройка проекта, а не порча карточки (`kb:cards` называет такие)
+        hint = f" ({_calm(v.hint, 120)})" if v.hint else ""
+        # Номера строки нет: остаток починки (`lint_residue.json`) сравнивает строки дословно, а строка сдвигается от
+        # любой правки шапки выше нарушения.
+        out.append(f"{rel}: карточка с template: нарушает шаблон — {v.code}: {_calm(v.message, 160)}{hint}")
     return out
 
 
@@ -2623,11 +2631,16 @@ def write_atomic(path: str, text: str) -> None:
     if _crlf_file(target):
         text = text.replace("\n", "\r\n")
     try:
-        with open(tmp, "xb") as fh:
+        try:
+            mode = stat.S_IMODE(os.stat(target).st_mode)
+        except OSError:
+            mode = 0o666                         # прежнего файла нет — права по умолчанию (за вычетом umask)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), mode)
+        with os.fdopen(fd, "wb") as fh:
             fh.write(_encode(text))
         try:
             import shutil
-            shutil.copymode(target, tmp)         # нет прежнего файла — права по умолчанию
+            shutil.copymode(target, tmp)         # umask не должен урезать права прежнего файла
         except OSError:
             pass
         replace_file(tmp, target)
@@ -2700,14 +2713,16 @@ def _admit(path: str, new_text: str, op: str, reg: "Registry | None") -> tuple:
     if not is_card_path(path):
         raise ValueError(f"write_card_text: «{rel}» — служебный файл базы, а не карточка")
     if link_escapes(path):
-        raise OSError(f"write_card_text: «{rel}» — ссылка за пределы проекта или к секретам, не пишу")
+        raise TemplateViolation(path, op, [Violation("V-LINK", "error", 1, f"«{rel}» — ссылка за пределы проекта или к секретам",
+                                                     "карточка-ссылка не пишется: положите файл в базу или уберите ссылку")])
     real = os.path.realpath(path)
     there = kb_location(real)
     if (there is None or os.path.normcase(there[0]) != os.path.normcase(os.path.realpath(root))
             or not is_card_path(real)):
-        raise OSError(f"write_card_text: «{rel}» — ссылка на файл вне базы знаний, не пишу")
+        raise TemplateViolation(path, op, [Violation("V-LINK", "error", 1, f"«{rel}» — ссылка на файл вне базы знаний",
+                                                     "карточка-ссылка не пишется: положите файл в базу или уберите ссылку")])
     if reg is not None and not reg.types:
-        raise ValueError("write_card_text: передан пустой реестр типов — проверку нельзя отключить пустым реестром")
+        reg = None                  # пустой реестр, переданный явно, не отключает проверку: берётся реестр проекта
     text = str(new_text).replace("\r\n", "\n")
     disk = _read_old(path) if os.path.isfile(path) else None
     if disk is not None and disk == text:
@@ -2740,7 +2755,7 @@ def _admit(path: str, new_text: str, op: str, reg: "Registry | None") -> tuple:
             if not frontmatter(disk):
                 # У карточки не было шапки вовсе: поля, которых в только что заведённой шапке ещё нет, не ухудшение —
                 # раньше их не было и подавно (`kb:repair --frontmatter` достраивает шапку по шагам).
-                errors = [v for v in errors if violation_key(v)[0] != "field"]
+                errors = [v for v in errors if v.code != "V-02"]
             if (frontmatter(disk).get("template") or "").strip() and not (frontmatter(text).get("template") or "").strip():
                 errors.append(Violation("V-02", "error", 1, "штамп template: снят с карточки",
                                         "поле template: означает «карточка проходит шаблон» и не снимается"))
@@ -2776,10 +2791,15 @@ def write_card_text(path: str, new_text: str, *, op: str, old_text: "str | None"
     запись идёт как прежняя, без проверки, с одним предупреждением на процесс; шаблоны есть, но ни один не принят, —
     отказ (`RegistryBroken`). Выключателя проверки нет.
     """
-    text, same, errors = _admit(path, new_text, op, reg)
+    try:
+        text, same, errors = _admit(path, new_text, op, reg)
+    except TemplateViolation:
+        _REFUSALS["n"] += 1
+        raise
     if same:
         return False
     if errors:
+        _REFUSALS["n"] += 1
         raise TemplateViolation(path, op, errors)
     write_atomic(path, text)
     return True
@@ -2802,10 +2822,13 @@ def try_write_card(path: str, text: str, *, op: str, old_text: "str | None" = No
     пишет её в свой журнал сбоев и идёт дальше (маршрут не падает целиком, источник остаётся в очереди). Прочие ошибки
     (путь не под базой, ссылка за пределы проекта, диск) пробрасываются как есть: это дефект вызова, а не карточки.
     """
+    if kb_location(path) is not None and not is_card_path(path):
+        # Заметка в корне базы, оглавление, служебный файл: не карточка по шаблону, пишется как раньше (атомарно)
+        why = put_text(path, text, op=op)
+        return (not why), why
     try:
         return write_card_text(path, text, op=op, old_text=old_text, reg=reg), ""
     except TemplateViolation as e:
-        _REFUSALS["n"] += 1
         return False, str(e)
 
 
@@ -2828,6 +2851,21 @@ def finish_code(rc: "int | None" = 0) -> int:
               file=sys.stderr)
         return 1
     return code
+
+
+def run_script(main) -> int:
+    """Запустить `main()` скрипта и вернуть код возврата с учётом отказов шаблона (`finish_code`).
+
+    Тип карточки, выключенный в настройках проекта или вне реестра, не должен ронять скрипт трассировкой посреди
+    работы: это настройка проекта, а не дефект кода, — причина идёт в stderr, код 1.
+    """
+    try:
+        rc = main()
+    except UnknownCardType as e:
+        print(f"! {e}", file=sys.stderr)
+        _REFUSALS["n"] += 1
+        rc = 0
+    return finish_code(rc)
 
 
 def why_refused(path: str, text: str, *, op: str, reg: "Registry | None" = None) -> str:

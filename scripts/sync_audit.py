@@ -45,7 +45,7 @@ from datetime import date, datetime
 import sources_registry as R
 from aurora_common import (KB_ROOT, TRUSTED, card_sources, file_head, frontmatter, git_guard,
                            head_dupes, head_odd, head_pairs, split_frontmatter, walk_md, with_fields)
-from card_types import finish_code, try_write_card
+from card_types import run_script, try_write_card
 from sources_core import (ASSET_DIR_RE, SERVICE_RE, cited_by_cards,  # noqa: E402
                           is_promoted_document, nfc)
 
@@ -659,4 +659,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(finish_code(main()))
+    sys.exit(run_script(main))

@@ -33,7 +33,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (KB_ROOT, as_list, frontmatter, git_guard, set_field,
                            split_frontmatter, walk_md)
-from card_types import finish_code, try_write_card
+from card_types import run_script, try_write_card
 
 MIRROR = os.path.join("Sources", "JIRA")
 US_DIR = os.path.join("Artifacts", "us")
@@ -388,13 +388,17 @@ def main() -> int:
     if a.link:
         for stem, keys in new_links.items():
             req = reqs[stem]
-            head, rest = split_frontmatter(req["text"])
+            try:                                  # первая запись могла уже поставить штамп: читаем карточку, какая она сейчас
+                current = open(req["path"], encoding="utf-8").read()
+            except OSError:
+                current = req["text"]
+            head, rest = split_frontmatter(current)
             if head is None:
                 continue
             allk = sorted(set(req["keys"]) | set(keys))
             head = set_field(head, "jira", "[" + ", ".join(f'"{k}"' for k in allk) + "]")
             _done, why_not = try_write_card(req["path"], "---" + head.rstrip("\n") + rest, op="header",
-                                            old_text=req["text"])
+                                            old_text=current)
             if why_not:
                 print(f"  ! связь с задачей не записана в {req['path']}: {why_not}", file=sys.stderr)
                 continue
@@ -407,4 +411,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(finish_code(main()))
+    sys.exit(run_script(main))

@@ -28,12 +28,12 @@ import shutil
 import sys
 
 from aurora_common import frontmatter, rewrite_links, set_field, split_frontmatter
-from card_types import finish_code, is_card_path, put_text, why_refused
+from card_types import run_script, is_card_path, put_text, why_refused
 
 ROOT = "AuroraKnowledgeDB"
 ARCHIVE = os.path.join(ROOT, "_archive")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
-from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
+from aurora_common import root_link_escapes, safe_walk  # noqa: E402 — обход и запись без ссылок за пределы проекта
 
 
 def find_card(stem: str) -> str | None:
@@ -194,6 +194,9 @@ def main() -> int:
         if src in refused:
             print(f"  ! {os.path.basename(src)} остаётся на месте: пометка о замене не записана", file=sys.stderr)
             continue
+        if root_link_escapes(os.path.dirname(dst) or "."):
+            print(f"  ! {os.path.basename(src)} остаётся на месте: папка архива — ссылка за пределы проекта", file=sys.stderr)
+            continue
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         if os.path.exists(dst):
             print(f"  ! в _archive уже есть {os.path.basename(dst)} — файл оставлен на месте",
@@ -208,4 +211,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(finish_code(main()))
+    sys.exit(run_script(main))

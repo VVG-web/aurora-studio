@@ -446,11 +446,17 @@ def test_gate_refuses_non_cards_links_and_bad_ops(tmp: Path):
         return                                     # символические ссылки недоступны (Windows без прав)
     try:
         C.write_card_text(str(link), text, op="body", reg=reg)
-    except OSError as e:
-        assert "ссылка" in str(e), str(e)
+    except C.TemplateViolation as e:
+        assert "V-LINK" in str(e) and "ссылка" in str(e), str(e)
     else:
         raise AssertionError("запись через ссылку наружу принята")
     assert outside.read_text(encoding="utf-8") == "чужой файл\n", "файл за пределами проекта изменён"
+    # пакетный скрипт идёт дальше: отказ приходит строкой, а не исключением, и счётчик отказов растёт
+    before = C.refusal_count()
+    done, why = C.try_write_card(str(link), text, op="body", reg=reg)
+    assert not done and "V-LINK" in why and C.refusal_count() == before + 1, (done, why)
+    why = C.put_text(str(link), text, op="body", reg=reg)
+    assert "V-LINK" in why, why
 
 
 @test
@@ -535,14 +541,10 @@ def test_gate_without_templates_writes_as_before_and_warns_once(tmp: Path):
             assert C.write_card_text(p, "без шапки, ещё раз\n", op="body") is True
         assert err.getvalue().count("шаблонов карточек нет") == 1, err.getvalue()
         assert _read(p) == "без шапки, ещё раз\n"
-        # пустой реестр, переданный явно, — не выключатель
-        for given in (C.Registry(), C.registry(str(root), kit_root=str(tmp / "none"))):
-            try:
-                C.write_card_text(p, "ещё текст\n", op="create", reg=given)
-            except ValueError as e:
-                assert "пустой реестр" in str(e), str(e)
-            else:
-                raise AssertionError("пустой реестр, переданный явно, отключил проверку")
+        # пустой реестр, переданный явно, заменяется реестром проекта; шаблонов нет и там — запись как прежде
+        for n, given in enumerate((C.Registry(), C.registry(str(root), kit_root=str(tmp / "none")))):
+            assert C.write_card_text(p, f"ещё текст {n}\n", op="body", reg=given) is True
+        assert _read(p) == "ещё текст 1\n"
         # шаблоны найдены, но ни один не принят (в паспортах нет card_type): запись отвергается, а не идёт «как раньше»
         proj = _project(tmp)
         for f in (proj / "TemplatesCommon").glob("akdb_*.md"):
@@ -559,6 +561,13 @@ def test_gate_without_templates_writes_as_before_and_warns_once(tmp: Path):
         for f in (proj / "TemplatesCommon").glob("akdb_*.md"):
             f.write_text(f.read_text(encoding="utf-8").replace("card_typo:", "card_type:"), encoding="utf-8")
         assert C.write_card_text(card, P42.mk(), op="create") is True
+        # а в проекте с шаблонами пустой реестр, переданный явно, проверку не отключает
+        try:
+            C.write_card_text(card, "мусор без шапки\n", op="create", reg=C.Registry())
+        except C.TemplateViolation:
+            pass
+        else:
+            raise AssertionError("пустой реестр, переданный явно, отключил проверку")
     finally:
         C._find_kit = real_kit
     # выключателя «обойти проверку» нет ни в аргументах, ни в окружении
@@ -663,10 +672,12 @@ def test_gate_refuses_a_link_to_a_file_outside_the_base(tmp: Path):
         return                                     # символические ссылки недоступны (Windows без прав)
     try:
         C.write_card_text(str(link), P42.mk(), op="body", reg=reg)
-    except OSError as e:
-        assert "вне базы" in str(e) or "ссылка" in str(e), str(e)
+    except C.TemplateViolation as e:
+        assert "V-LINK" in str(e) and ("вне базы" in str(e) or "ссылка" in str(e)), str(e)
     else:
         raise AssertionError("карточка записана поверх страницы зеркала")
+    why = C.try_write_card(str(link), P42.mk(), op="body", reg=reg)[1]
+    assert "V-LINK" in why, why                       # отказ строкой: пакетный скрипт не падает на такой карточке
     assert target.read_text(encoding="utf-8") == "страница зеркала\n"
 
 

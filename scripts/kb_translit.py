@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from aurora_common import (KB_ROOT, card_filename, git_guard, rewrite_links, split_inline_items,
                             walk_md)
-from card_types import finish_code, put_text
+from card_types import run_script, put_text
 
 DICT_PATH = os.path.join(KB_ROOT, "meta", "translit.md")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
@@ -371,4 +371,4 @@ def add_alias(text: str, name: str) -> str:
 
 
 if __name__ == "__main__":
-    sys.exit(finish_code(main()))
+    sys.exit(run_script(main))

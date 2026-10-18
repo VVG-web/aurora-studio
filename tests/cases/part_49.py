@@ -78,7 +78,7 @@ def test_prompt_build_sections_from_registry(tmp: Path):
     root = make_project(tmp)
     r = str(root)
     assert R.build_sections(r) == SECTIONS, R.build_sections(r)
-    assert R.types_for_prompt(r) == ", ".join(f"{s} ({t})" for s, t in SECTIONS)
+    assert R.types_for_prompt(r) == ", ".join(f'"{s}" ({t})' for s, t in SECTIONS)
     for name in ("PROMPT_BUILD", "PROMPT_MEETING", "PROMPT_PLAN_SOURCE"):
         prompt = getattr(R, name)
         assert "{section_list}" in prompt and "{guide}" in prompt, name
@@ -86,12 +86,12 @@ def test_prompt_build_sections_from_registry(tmp: Path):
             assert sec not in prompt, f"{name}: раздел {sec} вписан в текст запроса"
     _disable(root, "role")
     off = R.types_for_prompt(r)
-    assert "Roles" not in off and "Glossary (glossary)" in off, off
+    assert "Roles" not in off and '"Glossary" (glossary)' in off, off
     guide = R.guide_for_prompt(r)
     assert "`akdb_role`" not in guide and "`akdb_glossary`" in guide, "строка выключенного типа осталась в таблице инструкции"
     assert "cited-document" not in guide and "`decision`" not in guide, "в таблице типы, которых разбор не предлагает"
     P42._put(root / "Templates" / "akdb_policy_v1.0.md", P42._template_text(P42.POLICY))
-    assert R.types_for_prompt(r).endswith("Policies (policy)"), R.types_for_prompt(r)
+    assert R.types_for_prompt(r).endswith('"Policies" (policy)'), R.types_for_prompt(r)
 
 
 @test
@@ -393,3 +393,46 @@ def test_lint_summary_of_a_base_without_stamps_is_unchanged(tmp: Path):
     assert "нарушает шаблон" not in cp.stdout and "до-шаблонных" not in cp.stdout
     # те же ошибки, что считал линтер: две битые ссылки у двух карточек
     assert int(re.search(r"ошибок (\d+)", line).group(1)) == 2 and cp.returncode == 1
+
+
+@test
+def test_a_misplaced_card_is_not_stamped_and_stamped_errors_are_stable(tmp: Path):
+    """Штамп «проходит валидатор» не ставится карточке не в своём разделе; ошибка штампованной карточки не несёт номера строки
+    (остаток починки сравнивает строки дословно); выключенный тип — настройка проекта, а не ошибка карточки."""
+    C = _C()
+    root = P42._project(tmp)
+    reg = P42._reg(root)
+    # раздел не тот: тип concept в Processes
+    folder = root / "AuroraKnowledgeDB" / "Processes"
+    folder.mkdir(parents=True)
+    text = P42.mk(template=None)
+    assert C.stamp_if_conformant(text, "AuroraKnowledgeDB/Concepts/Х.md", reg) != text, "в своём разделе карточка штампуется"
+    assert C.stamp_if_conformant(text, "AuroraKnowledgeDB/Processes/Х.md", reg) == text, "карточка не в своём разделе получила штамп"
+    # номер строки в ошибке нет: сдвиг шапки не делает ошибку «новой»
+    bad = P42.mk(status="imported")
+    shifted = bad.replace('title: "Заявка на поставку"\n', 'title: "Заявка на поставку"\nsummary: "Строка выше сдвигает остальные."\n', 1)
+    a = [e for e in C.stamped_card_errors("AuroraKnowledgeDB/Concepts/Х.md", bad, reg) if "V-06" in e]
+    b = [e for e in C.stamped_card_errors("AuroraKnowledgeDB/Concepts/Х.md", shifted, reg) if "V-06" in e]
+    assert a and a == b and not re.search(r"Х\.md:\d", a[0]), (a, b)
+    # тип выключен: карточка не виновата
+    (root / "aurora.config.yaml").write_text("project:\n  name: Test\n", encoding="utf-8")
+    _disable(root, "concept")
+    off = C.registry_for(str(root))
+    assert not off.types["concept"].enabled
+    assert not [e for e in C.stamped_card_errors("AuroraKnowledgeDB/Concepts/Х.md", P42.mk(), off) if "V-03" in e]
+
+
+@test
+def test_section_list_in_the_prompt_is_bounded_and_todo_names_the_new_group(tmp: Path):
+    """Перечень разделов в запросе не длиннее предела, сколько бы типов ни завёл проект; новая группа линтера в «Что осталось»
+    — решение человека, а не работа маршрута."""
+    R = _mod("agent_runner")
+    was = R.build_sections
+    try:
+        R.build_sections = lambda cwd=".": [(f"Раздел{i}", f"тип-{i}") for i in range(500)]
+        text = R.types_for_prompt(".")
+    finally:
+        R.build_sections = was
+    assert len(text) <= R.SECTION_LIST_CHARS + 4 and text.endswith("…"), len(text)
+    T = _mod("aurora_todo")
+    assert "нарушения шаблона у карточек со штампом" in {title for title, _w, _h in T.HUMAN}

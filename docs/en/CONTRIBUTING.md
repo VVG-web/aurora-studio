@@ -283,7 +283,7 @@ own in the project's `Templates/`. The passport, the check codes and the `kb:car
   `os.replace` …) into a card does not pass the ratchet test `tests/card_write_sites.py`; a new place that writes
   something other than a card is added to `tests/card_write_sites.json` with a reason (`python3
   tests/card_write_sites.py --snapshot --write`). A template refusal is not a failure: the script writes the reason, goes
-  on and ends with exit code 1 (`card_types.finish_code`).
+  on and ends with exit code 1 (`card_types.run_script`).
 - **A released template is not edited — a new version comes out.** The seed rule delivers an edit to old projects only as
   `<file>.new`, so a fix or an extension of `akdb_*_v1.0.md` is a new file `v1.1` (or `v2.0`) with the passport field
   `migration: none|auto|llm`; `v1.0` stays beside it, and a card is checked by the version in its own `template:`.
