@@ -1,5 +1,5 @@
 {
- "card_max": 34,
+ "card_max": 23,
  "sites": {
   "cockpit/aurora_cockpit.py:Handler._write_config": {
    "kind": "other",
@@ -226,44 +226,9 @@
    "reason": "журнал диалога «Спросить» meta/ask: не карточка",
    "calls": 2
   },
-  "scripts/agent_runner.py:apply_extract_plan": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
-  "scripts/agent_runner.py:apply_split_parts": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 2
-  },
   "scripts/agent_runner.py:main": {
    "kind": "other",
    "reason": "журнал прогона агента",
-   "calls": 1
-  },
-  "scripts/agent_runner.py:mark_apart": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
-  "scripts/agent_runner.py:mark_examined": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
-  "scripts/agent_runner.py:mark_neighbours": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
-  "scripts/agent_runner.py:mark_relinked": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
-  "scripts/agent_runner.py:mark_task_kept": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
    "calls": 1
   },
   "scripts/agent_runner.py:note_empty_run": {
@@ -276,29 +241,9 @@
    "reason": "память об отложенных карточках .aurora/state",
    "calls": 1
   },
-  "scripts/agent_runner.py:place_definition": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 3
-  },
-  "scripts/agent_runner.py:recheck_unsupported": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
   "scripts/agent_runner.py:record_unsupported": {
    "kind": "other",
    "reason": "журнал утверждений без опоры .aurora/state",
-   "calls": 2
-  },
-  "scripts/agent_runner.py:relink_card": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
-  "scripts/agent_runner.py:run_distill.finish": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
    "calls": 2
   },
   "scripts/agent_runner.py:save_clash_seen": {

@@ -1513,9 +1513,11 @@ def test_an_extracted_definition_leaves_no_empty_sentence(tmp: Path):
     assert "Заявители — [[Заявители]]" not in own and "Участники — заявители." in own, own
     assert "Заявители — Заявители." in quotes, "тронут дословный раздел"
     R = importlib.import_module("agent_runner")
-    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8").split(
-        "def apply_extract_plan(")[1].split("\ndef ")[0]
-    assert "drop_echo_sentences(new_thesis)" in src, "вынос определения снова оставляет пустую фразу"
+    whole = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    src = whole.split("def apply_extract_plan(")[1].split("\ndef ")[0]
+    tidy = whole.split("def tidy_after_swaps(")[1].split("\ndef ")[0]
+    assert "tidy_after_swaps(root, new_thesis" in src and "drop_echo_sentences(thesis_text)" in tidy, \
+        "вынос определения снова оставляет пустую фразу"
 
 
 @test

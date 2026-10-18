@@ -64,6 +64,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
+import card_types as CT  # noqa: E402 — единый вход записи карточки: шаблон обязателен
 from aurora_common import (QUOTES, aliases, body as body_of, fold, head_text,  # noqa: E402
                            link_escapes, replace_file)
 
@@ -943,6 +944,58 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
     return step
 
 
+def swap_definition(root: str, text: str, term: str, definition: str, keep: str) -> str:
+    """Заменить в тезисе определение термина ссылкой на его карточку. → новый тезис (не нашлось — тот же).
+
+    «Термин (расшифровка)» заменяется целиком на ссылку. Иначе от конструкции остаются скобки, и в тексте выходит
+    «введена УСН ([[УСН]])» — имя дважды и пустая скобка. Так и вышло на первом живом прогоне.
+    """
+    if definition not in text:
+        return text
+    paren = f"{term} ({definition})"
+    # Ссылка ведёт на имя карточки, которую перенос найдёт или заведёт, а подпись —
+    # слово из текста. Раньше ставилось `[[Итоговый ЭСФ]]` при карточке «Итоговый-ЭСФ»:
+    # до хвоста маршрута база жила с битыми ссылками (на PRJ-A 22.09 — 26 штук).
+    link = definition_link(root, term)
+    if paren in text:
+        return text.replace(paren, (keep + " " if keep else "") + link, 1)
+    at = text.find(definition)
+    start, before = at, text[:at]
+    # «Связка», повторяющая текст прямо перед определением, — эхо, а не связка: она и
+    # так остаётся в тексте. Вставленная ещё раз, она дала на PRJ-A 22.09 «Закрытие
+    # расхождений описывается как Закрытие расхождений описывается как [[…]]».
+    if keep and " ".join(before.split()).endswith(" ".join(keep.split())):
+        keep = ""
+    # Термин прямо перед своим определением уходит вместе с ним, как в «термин
+    # (расшифровка)»: иначе «Автоматические связи [[Автоматические связи]]» — имя
+    # дважды. Так же и пример из самого задания: «подсистемы ФЦОД, которая является…»
+    # давал «подсистемы ФЦОД, [[ФЦОД]]», а задуман «подсистемы [[ФЦОД]]».
+    named = re.search(r"(?<!\w)«?" + re.escape(term) + r"»?[\s,—–:-]*$", before)
+    if named and not keep:
+        start = named.start()
+    replacement = (keep + " " if keep else "") + link
+    tail = text[at + len(definition):]
+    return text[:start] + replacement + tail
+
+
+def tidy_after_swaps(root: str, thesis_text: str, terms: list) -> str:
+    """Определение уехало в свою карточку, и от предложения могла остаться одна ссылка: «[[ДОК]]» или «Заявители —
+    [[Заявители]].» (PRJ-C, 1.144.1). Такое предложение уходит, а термин получает ссылку там, где тезис его
+    упоминает (`drop_echo_sentences`)."""
+    from aurora_common import drop_echo_sentences
+    out, _echo = drop_echo_sentences(thesis_text)
+    for term in terms:
+        link = definition_link(root, term)
+        target = link[2:-2].split("|", 1)[0]
+        if f"[[{target}" in out:
+            continue
+        m = re.search(r"(?<![\w\[|])" + re.escape(term) + r"(?![\w\]|])", out)
+        if m:
+            label = f"[[{target}]]" if target == m.group(0) else f"[[{target}|{m.group(0)}]]"
+            out = out[:m.start()] + label + out[m.end():]
+    return out
+
+
 def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
                        apply: bool) -> dict:
     """Перенести чужие определения по плану модели. → {status, made, note}.
@@ -950,6 +1003,9 @@ def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
     Одно правило на движок: план даёт и отдельный осмотр (`agent:extract`), и тезис,
     написанный одним проходом (`agent:distill`). Перенос — механика: кусок ищется в тезисе
     подстрокой и переезжает посимвольно; не нашёлся — перенос отменяется целиком.
+
+    Карточку термина пишет единый вход шаблонов. Термин, чью карточку шаблон не принял, остаётся в тезисе как был:
+    определение не вырезается, пока ему некуда лечь.
     """
     from aurora_common import card_sources, frontmatter
     out = {"status": "", "made": [], "note": ""}
@@ -973,51 +1029,11 @@ def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
             out["note"] = (out["note"] + f"; «{term}» — карточка словаря или документа: "
                            "определение оставлено на месте").strip("; ")
             continue
-        # «Термин (расшифровка)» заменяется целиком на ссылку. Иначе от конструкции
-        # остаются скобки, и в тексте выходит «введена УСН ([[УСН]])» — имя дважды и
-        # пустая скобка. Так и вышло на первом живом прогоне.
-        paren = f"{term} ({definition})"
-        # Ссылка ведёт на имя карточки, которую перенос найдёт или заведёт, а подпись —
-        # слово из текста. Раньше ставилось `[[Итоговый ЭСФ]]` при карточке «Итоговый-ЭСФ»:
-        # до хвоста маршрута база жила с битыми ссылками (на PRJ-A 22.09 — 26 штук).
-        link = definition_link(root, term)
-        if paren in new_thesis:
-            new_thesis = new_thesis.replace(paren, (keep + " " if keep else "") + link, 1)
-        else:
-            at = new_thesis.find(definition)
-            start, before = at, new_thesis[:at]
-            # «Связка», повторяющая текст прямо перед определением, — эхо, а не связка: она и
-            # так остаётся в тексте. Вставленная ещё раз, она дала на PRJ-A 22.09 «Закрытие
-            # расхождений описывается как Закрытие расхождений описывается как [[…]]».
-            if keep and " ".join(before.split()).endswith(" ".join(keep.split())):
-                keep = ""
-            # Термин прямо перед своим определением уходит вместе с ним, как в «термин
-            # (расшифровка)»: иначе «Автоматические связи [[Автоматические связи]]» — имя
-            # дважды. Так же и пример из самого задания: «подсистемы ФЦОД, которая является…»
-            # давал «подсистемы ФЦОД, [[ФЦОД]]», а задуман «подсистемы [[ФЦОД]]».
-            named = re.search(r"(?<!\w)«?" + re.escape(term) + r"»?[\s,—–:-]*$", before)
-            if named and not keep:
-                start = named.start()
-            replacement = (keep + " " if keep else "") + link
-            tail = new_thesis[at + len(definition):]
-            new_thesis = new_thesis[:start] + replacement + tail
-        made.append((term, definition))
+        new_thesis = swap_definition(root, new_thesis, term, definition, keep)
+        made.append((term, definition, keep))
 
-    # Определение уехало в свою карточку, и от предложения могла остаться одна ссылка:
-    # «[[ДОК]]» или «Заявители — [[Заявители]].» (PRJ-C, 1.144.1). Такое предложение уходит,
-    # а термин получает ссылку там, где тезис его упоминает (`drop_echo_sentences`).
     if made:
-        from aurora_common import drop_echo_sentences
-        new_thesis, _echo = drop_echo_sentences(new_thesis)
-        for term, _definition in made:
-            link = definition_link(root, term)
-            target = link[2:-2].split("|", 1)[0]
-            if f"[[{target}" in new_thesis:
-                continue
-            m = re.search(r"(?<![\w\[|])" + re.escape(term) + r"(?![\w\]|])", new_thesis)
-            if m:
-                label = f"[[{target}]]" if target == m.group(0) else f"[[{target}|{m.group(0)}]]"
-                new_thesis = new_thesis[:m.start()] + label + new_thesis[m.end():]
+        new_thesis = tidy_after_swaps(root, new_thesis, [t_ for t_, _d, _k in made])
 
     if not made:
         out["status"] = "нечего выносить"
@@ -1025,7 +1041,7 @@ def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
             mark_examined(path, frontmatter(text))
         return out
 
-    out["made"] = [term for term, _d in made]
+    out["made"] = [term for term, _d, _k in made]
     out["status"] = "вынесено" if apply else "вынес бы"
     if not apply:
         return out
@@ -1038,12 +1054,32 @@ def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
     # заводилась с `sources: []`, не доверялась никогда и переживала снос базы.
     donor = card_sources(text)
     with _EXTRACT_LOCK:
-        for term, definition in made:
+        placed, kept_in_thesis = [], []
+        for term, definition, keep in made:
             # Ссылка «перенесено из» ведёт по ИМЕНИ карточки, а не по заголовку:
             # заголовок может содержать двоеточие, проценты и запятые, которых в имени
             # файла нет, и такая ссылка не разрешается. Поймано на живой пересборке.
-            place_definition(root, term, definition, os.path.basename(path)[:-3],
-                             donor_sources=donor)
+            try:
+                place_definition(root, term, definition, os.path.basename(path)[:-3],
+                                 donor_sources=donor)
+                placed.append((term, definition, keep))
+            except CT.TemplateViolation as e:
+                kept_in_thesis.append(term)
+                out["note"] = (out["note"] + f"; «{term}»: шаблон не принял карточку — определение оставлено на "
+                               f"месте ({e})").strip("; ")
+                AG.record_failure(rel_or_abs(path), str(e), None, "запись по шаблону")
+        if kept_in_thesis:
+            # Тезис пересчитывается только по тем терминам, чьи карточки легли: остальные определения на месте.
+            new_thesis = thesis
+            for term, definition, keep in placed:
+                new_thesis = swap_definition(root, new_thesis, term, definition, keep)
+            if placed:
+                new_thesis = tidy_after_swaps(root, new_thesis, [t_ for t_, _d, _k in placed])
+            out["made"] = [term for term, _d, _k in placed]
+            if not placed:
+                out["status"] = "нечего выносить"
+                mark_examined(path, frontmatter(text))
+                return out
         # Карточку читаем заново: пока модель думала, соседний поток мог дописать в эту же
         # карточку чужое определение (она бывает местом назначения). Запись по тексту,
         # прочитанному до вызова модели, стирала бы его — а из карточки-источника оно уже
@@ -1055,8 +1091,11 @@ def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
                             "тезис не тронут, определения лежат в своих карточках").strip("; "),
                       subject=path)
             return out
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(fresh.replace(thesis, new_thesis, 1))
+        _done, why = CT.try_write_card(path, fresh.replace(thesis, new_thesis, 1), op="body")
+        if why:
+            # Карточки терминов уже легли, а тезис шаблон не принял: определения живут в двух местах, ничего не
+            # потеряно; ссылку поставит связывание. Шаг называет причину.
+            return refuse_step(out, (out["note"] + "; " + why).strip("; "), path)
     mark_examined(path, frontmatter(open(path, encoding="utf-8", errors="ignore").read()))
     return out
 
@@ -1073,7 +1112,7 @@ def mark_examined(path: str, fm: dict) -> None:
     if not stamp:
         return
     text = open(path, encoding="utf-8", errors="ignore").read()
-    open(path, "w", encoding="utf-8").write(with_fields(text, {"extracted": stamp}))
+    put_header(path, with_fields(text, {"extracted": stamp}), "отметка осмотра")
 
 
 def canon_term(term: str) -> str:
@@ -1140,9 +1179,13 @@ def place_definition(root: str, term: str, definition: str, came_from: str,
     (её завёл `kb:repair --stubs` под уже существующую ссылку) — наполняем и снимаем
     отметку; карточка есть и с содержанием — дописываем, потому что выбросить принесённое
     значило бы потерять знание при переезде.
+
+    Запись идёт через единый вход шаблонов; не принявший её шаблон поднимает `CT.TemplateViolation`, и вызывающий
+    оставляет определение в тезисе донора. Карточка, которую собрал движок из источников донора, несёт
+    `built: machine` и дату сверки; у донора без источников метки нет — происхождение неизвестно.
     """
-    from aurora_common import (KB_ROOT, card_body, card_filename,
-                               frontmatter, is_placeholder, set_field, sources_block,
+    from aurora_common import (KB_ROOT, card_body, card_filename, card_sources,
+                               frontmatter, is_placeholder, set_field, with_fields,
                                with_sources)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -1155,14 +1198,15 @@ def place_definition(root: str, term: str, definition: str, came_from: str,
         # назван в тексте, и искать его будут так же.
         name = canon_term(term)
         path = os.path.join(base, "Concepts", card_filename(name) + ".md")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        alias = f'aliases: ["{term}"]' if name != term else "aliases: []"
-        term = name
-        open(path, "w", encoding="utf-8").write(
-            f'---\ntitle: "{term}"\n{alias}\nstatus: draft\ntype: concept\n'
-            f'kind: knowledge\n{sources_block(donor_sources or [])}'
-            f'created: {TODAY_STR}\nupdated: {TODAY_STR}\n'
-            f'built: machine\nrelated: []\n---\n\n# {term}\n\n{line}\n\n{note}\n')
+        sources = [x for x in (donor_sources or []) if x]
+        reg = CT.registry_for(root)
+        fields = {"title": name, "aliases": [term] if name != term else [], "status": "draft", "kind": "knowledge",
+                  "sources": sources, "created": TODAY_STR, "updated": TODAY_STR}
+        if sources:
+            fields.update({"built": "machine", "source_synced": TODAY_STR})
+        card = CT.render_card("concept", fields, f"# {name.replace(chr(34), chr(39))}\n\n{line}\n\n{note}\n",
+                              reg=reg, gap=1)
+        CT.write_card_text(path, card, op="create", reg=reg)
         return path.replace("\\", "/")     # пути движка — в posix-виде, как у `walk_md`
 
     text = open(existing, encoding="utf-8", errors="ignore").read()
@@ -1174,17 +1218,22 @@ def place_definition(root: str, term: str, definition: str, came_from: str,
                              "status", "draft")
         # Снимаем ОБА признака: `is_placeholder` читает и тег. Со снятым одним статусом
         # карточка с определением оставалась пустышкой — вне поиска и вне доли доверия.
-        new_head = re.sub(r"(?m)^tags:\s*\[заготовка\]\s*$", "tags: []", new_head)
-        filled = "---" + new_head + "\n---\n\n" + f"# {term}\n\n{line}\n\n{note}\n"
-        open(existing, "w", encoding="utf-8").write(with_sources(filled, donor_sources or []))
+        new_head = re.sub(r"(?m)^tags:\s*\[\s*[\"']?заготовка[\"']?\s*\]\s*$", "tags: []", new_head)
+        filled = with_sources("---" + new_head + "\n---\n\n" + f"# {term}\n\n{line}\n\n{note}\n",
+                              donor_sources or [])
+        # Наполняет движок, и пометка происхождения встаёт сейчас, если у карточки есть источники: заготовка прежних
+        # версий её не несла.
+        if card_sources(filled) and not re.search(r"(?m)^built:", filled.split("\n---", 1)[0]):
+            filled = with_fields(filled, {"built": "machine", "source_synced": TODAY_STR})
+        CT.write_card_text(existing, filled, op="body")
         return existing
     body = card_body(text)
     if line in body:
         return existing          # это же определение там уже есть — второй раз не кладём
     # Дописанное знание пришло из документов донора — ими же пополняется происхождение:
     # карточка накапливает все источники, из которых наполнена (Т-5).
-    open(existing, "w", encoding="utf-8").write(
-        with_sources(text.rstrip("\n") + f"\n\n{line}\n\n{note}\n", donor_sources or []))
+    CT.write_card_text(existing, with_sources(text.rstrip("\n") + f"\n\n{line}\n\n{note}\n", donor_sources or []),
+                       op="body")
     return existing
 
 
@@ -1505,7 +1554,10 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
         from aurora_common import unglue_quotes
         tail = whole[len(whole.rstrip()):]
         written, _n = unglue_quotes(text.replace(whole, head + got.rstrip() + tail, 1))
-        open(path, "w", encoding="utf-8").write(written)
+        _done, why = CT.try_write_card(path, written, op="body")
+        if why:
+            step["added"] = 0
+            return refuse_step(step, why, path, "отброшен")
     return step
 
 
@@ -1715,7 +1767,7 @@ def mark_relinked(path: str) -> None:
     text = open(path, encoding="utf-8", errors="ignore").read()
     stamp = (frontmatter(text).get("distilled") or "").strip()
     if stamp:
-        open(path, "w", encoding="utf-8").write(with_fields(text, {"relinked": stamp}))
+        put_header(path, with_fields(text, {"relinked": stamp}), "отметка связывания")
 
 
 def report_relink(res: dict, apply: bool) -> str:
@@ -1860,7 +1912,7 @@ def mark_neighbours(cwd: str, stem: str, upto: str, paths: dict | None = None) -
     text = open(path, encoding="utf-8", errors="ignore").read()
     if (frontmatter(text).get("neighbours") or "").strip().strip('"') >= upto:
         return
-    open(path, "w", encoding="utf-8").write(with_fields(text, {"neighbours": upto}))
+    put_header(path, with_fields(text, {"neighbours": upto}), "отметка соседей")
 
 
 CLASH_SEEN = os.path.join("AuroraKnowledgeDB", "meta", "clash-seen.json")
@@ -2155,6 +2207,29 @@ def rel_or_abs(path: str) -> str:
         return str(path)
 
 
+REFUSED = "отклонена шаблоном"       # статус шага: шаблон типа не принял запись карточки
+
+
+def refuse_step(step: dict, why: str, path: str, status: str = REFUSED) -> dict:
+    """Запись карточки отвергнута шаблоном типа: шаг получает причину, журнал сбоев — запись о ней.
+
+    Это не сбой шлюза и не потеря: «сбой» считается предохранителем «три подряд — шлюз лежит» и останавливает
+    прогон, а карточка с нарушением шаблона — своя, и остальные идут дальше.
+    """
+    step.update(status=status, note=str(why)[:300])
+    AG.record_failure(rel_or_abs(path), str(why), None, "запись по шаблону")
+    return step
+
+
+def put_header(path: str, new_text: str, what: str) -> bool:
+    """Отметка в шапке (`extracted`, `relinked`, …) через вход записи. → записана ли. Отказ — строкой в stderr: отметка
+    не поставлена, карточка вернётся в очередь, а прогон идёт дальше."""
+    _done, why = CT.try_write_card(path, new_text, op="header")
+    if why:
+        print(f"  ! {what} не записана: {why}", file=sys.stderr)
+    return not why
+
+
 def fail_step(step: dict, why: str, r: dict | None = None, subject: str = "",
               key: str = "note", stage: str = "", **extra) -> dict:
     """Шаг не удался: причина — в шаг (её печатает строка хода), подробности — в журнал.
@@ -2306,8 +2381,7 @@ def mark_task_kept(path: str) -> None:
     """Запомнить, что карточку из задачи осмотрели и оставили: по этому тексту не спрашиваем."""
     from aurora_common import with_fields
     text = open(path, encoding="utf-8", errors="ignore").read()
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(with_fields(text, {"tasks_kept": task_body_stamp(text)}))
+    put_header(path, with_fields(text, {"tasks_kept": task_body_stamp(text)}), "отметка «оставлена»")
 
 
 def task_kept(path: str) -> bool:
@@ -2689,7 +2763,10 @@ def mark_apart(cwd: str, group: list, why: str) -> int:
             text = text.rstrip() + block + "\n"
         # В `related:` лезть не надо: граф берёт связи и из тела тоже, а шапку с
         # блочным списком легко испортить. Вики-ссылка в разделе — уже ребро графа.
-        open(path, "w", encoding="utf-8").write(text)
+        _done, refusal = CT.try_write_card(path, text, op="body")
+        if refusal:
+            print(f"  ! «Не путать» не записано в {os.path.basename(path)}: {refusal}", file=sys.stderr)
+            continue
         touched += 1
     return touched
 
@@ -6359,8 +6436,7 @@ MAX_PARTS = 3
 # Граница между документом и производством. Публикация режет по ней: в чистовик уходит
 # только то, что выше. Маркер ставит тот же код, что пишет разделы ниже, — разойтись им
 # негде, а список служебных заголовков в двух местах разошёлся бы на шестом разделе.
-from aurora_common import (MADE_MARK, card_sources,  # noqa: E402 — граница одна на движок
-                           sources_block)
+from aurora_common import MADE_MARK, card_sources  # noqa: E402 — граница одна на движок
 
 # Правило «критерии без технологий» включается ТИПОМ артефакта, а не глобально: у ОПЗ и
 # проектного решения стек — это предмет документа, и общее правило заставило бы критика
@@ -6506,6 +6582,10 @@ def apply_split_parts(path: str, parts: list) -> list:
     изменений» тела не касаются, они не текст источника и в части не едут. Названия частей
     приходят от планировщика: в шапку и заголовок они идут очищенными, а имя файла должно
     быть свободно во всей базе (имя карточки уникально глобально), а не только в папке.
+
+    Запись — через единый вход шаблонов, и всё или ничего: сначала проба всех частей и карты, потом запись. Часть,
+    которую шаблон не принял, не должна оставить карточку без текста, уехавшего в соседние части: нарушение
+    поднимается `CT.TemplateViolation` до записи первого файла.
     """
     from aurora_common import (card_title_safe, frontmatter, part_stem, set_field,
                                split_frontmatter, split_tail)
@@ -6531,15 +6611,19 @@ def apply_split_parts(path: str, parts: list) -> list:
         made.append((safe, name, os.path.join(folder, safe + ".md"), chunk))
     if len(made) < 2:
         return []
+    reg = CT.registry_for(os.path.dirname(os.path.abspath(kb)))
+    ptype = fm.get("type") or "concept"
+    kind = CT.fit_kind(ptype, fm.get("kind") or "knowledge", reg)
+    cards = []
     for i, (safe, name, dest, chunk) in enumerate(made):
         neighbours = [made[j][0] for j in (i - 1, i + 1) if 0 <= j < len(made)]
-        related = ", ".join(f'"[[{n}]]"' for n in neighbours)
-        open(dest, "w", encoding="utf-8").write(
-            f'---\ntitle: "{name}"\naliases: []\nstatus: draft\n'
-            f'type: {fm.get("type") or "concept"}\nkind: {fm.get("kind") or "knowledge"}\n'
-            + sources_block(card_sources(text))
-            + f'part_of: "[[{stem}]]"\ncreated: {TODAY_STR}\nupdated: {TODAY_STR}\n'
-            f'built: machine\nrelated: [{related}]\n---\n\n# {name}\n\n{chunk}\n')
+        shown = name.replace('"', "'")
+        fields = {"title": shown, "status": "draft", "kind": kind, "sources": card_sources(text),
+                  "created": TODAY_STR, "updated": TODAY_STR,
+                  "part_of": f'"[[{stem}]]"', "related": [f"[[{n}]]" for n in neighbours]}
+        if card_sources(text):          # собрал движок из источников родителя; у карточки без источников метки нет
+            fields.update({"built": "machine", "source_synced": TODAY_STR})
+        cards.append((dest, CT.render_card(ptype, fields, f"# {shown}\n\n{chunk}\n", reg=reg, gap=1)))
     # Исходная карточка остаётся входом: тело уехало в части, вход и провенанс здесь.
     # Статус — служебный: знание теперь в частях, а это карта, и в паке ей не место.
     # Иначе одна и та же мысль попадёт в контекст дважды — списком и текстом.
@@ -6550,8 +6634,17 @@ def apply_split_parts(path: str, parts: list) -> list:
     _before, tail = split_tail(rest or "")
     if tail.strip():
         body += "\n" + tail.strip() + "\n"
-    open(path, "w", encoding="utf-8").write(
-        "---" + set_field(head, "status", "index") + "\n---" + body)
+    parent = "---" + set_field(head, "status", "index") + "\n---" + body
+    for dest, card in cards:                      # проба: всё или ничего
+        bad = CT.check_card_text(dest, card, op="split", reg=reg)
+        if bad:
+            raise CT.TemplateViolation(dest, "split", bad)
+    bad = CT.check_card_text(path, parent, op="repair", reg=reg)
+    if bad:
+        raise CT.TemplateViolation(path, "repair", bad)
+    for dest, card in cards:
+        CT.write_card_text(dest, card, op="split", reg=reg)
+    CT.write_card_text(path, parent, op="repair", reg=reg)
     return [(s, n) for s, n, _d, _c in made]
 
 
@@ -6828,7 +6921,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
 # ответ будет тем же. Без этой памяти такая карточка вечно стояла в «осталось», и маршрут
 # «Обновить базу» кончался застоем на последнем обороте, хотя проект обновлён (PRJ-B, 6.10.2026).
 PARKED = os.path.join(".aurora", "state", "distill_parked.json")
-PARKED_STATUSES = ("человеку", "слишком длинная")
+PARKED_STATUSES = ("человеку", "слишком длинная", REFUSED)
 
 
 def _card_sig(path: str) -> str:
@@ -7029,11 +7122,19 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             # строке обнуляет файл до того, как его прочтут: `open(..., "w")` считается
             # раньше аргумента. Проверено — карточка теряется целиком.
             was = open(path, encoding="utf-8", errors="ignore").read()
-            open(path, "w", encoding="utf-8").write(
-                with_fields(was, {"distill_empty": TODAY_STR}))
+            _done, why = CT.try_write_card(path, with_fields(was, {"distill_empty": TODAY_STR}), op="header")
+            if why:
+                refuse_step(step, why, path)
+                park_card(cwd, path)
+                say(f"    ✗ шаблон не принял вердикт «знания нет»: {why[:140]}")
             return
         if apply and step.get("split"):
-            apply_split(path, step)
+            try:
+                apply_split(path, step)
+            except CT.TemplateViolation as e:
+                refuse_step(step, f"разрез не записан, карточка осталась как была: {e}", path)
+                park_card(cwd, path)
+                say(f"    ✗ шаблон не принял разрез: {str(e)[:140]}")
             return
         if apply and step.get("head") is not None:
             from aurora_common import with_fields
@@ -7053,7 +7154,17 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
                 text = set_unsupported(text, 0)
             # Пометку встречи ставит движок: тезис переписан — она на месте.
             from aurora_common import with_meeting_mark
-            open(path, "w", encoding="utf-8").write(with_meeting_mark(with_fields(text, fields)))
+            _done, why = CT.try_write_card(path, with_meeting_mark(with_fields(text, fields)), op="body")
+            if why:
+                # Тезис модели не прошёл шаблон типа: карточка остаётся как была, тезис не записан. Повторять
+                # вызов модели на том же тексте незачем — карточка откладывается до изменения (источника,
+                # исправления или самого шаблона).
+                refuse_step(step, why, path)
+                park_card(cwd, path)
+                if commit and commit_every:
+                    written[0] -= 1
+                say(f"    ✗ шаблон не принял тезис: {why[:140]}")
+                return
             if checked:
                 record_unsupported(cwd, path, step.get("claims"), step.get("unsupported", 0))
             if commit and commit_every and written[0] % commit_every == 0:
@@ -7183,7 +7294,10 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
                 text = open(path, encoding="utf-8", errors="ignore").read()
                 new = set_unsupported(text, st["count"])
                 if new != text:
-                    open(path, "w", encoding="utf-8").write(new)
+                    _done, why = CT.try_write_card(path, new, op="header")
+                    if why:
+                        refuse_step(st, why, path)
+                        continue
                 record_unsupported(cwd, path, st["claims"], st["count"])
     return {"steps": steps, "total": total,
             "clean": sum(1 for s in steps if s["status"] == "чисто"),
@@ -7214,11 +7328,19 @@ def report_distill(res: dict, apply: bool) -> str:
     empty = [s for s in res["steps"] if s["status"] == "знания нет"]
     bad = [s for s in res["steps"] if s["status"] == "сбой"]
     long = [s for s in res["steps"] if s["status"] == "слишком длинная"]
+    refused = [s for s in res["steps"] if s["status"] == REFUSED]
     parted = [s for s in made if s.get("parts")]
     L = [f"# Агент · тезисы карточек — {utc_label()}", "",
          f"Режим: {'запись' if apply else 'предпросмотр'} · переписано: {len(made)} · "
          + (f"по сути без изменений (тезис оставлен): {len(kept)} · " if kept else "")
-         + f"без знания: {len(empty)} · сбоев: {len(bad)} · осталось: {res['left']}", ""]
+         + f"без знания: {len(empty)} · сбоев: {len(bad)} · "
+         + (f"шаблон не принял: {len(refused)} · " if refused else "") + f"осталось: {res['left']}", ""]
+    if refused:
+        L += ["## Шаблон типа не принял запись", "",
+              "Тезис (или разрез) нарушает шаблон типа карточки; карточка осталась как была и отложена до "
+              "изменения — повтор того же вызова дал бы то же. Причина записана в `failures.jsonl` прогона:", ""]
+        L += [f"- {s['card']}: {s['note'][:160]}" for s in refused[:15]]
+        L += [""]
     if parted:
         L += [f"Собрано из частей: {len(parted)} — источник не влез в окно модели за один "
               f"заход. Тезис сведён из выписок, каждую проверял Момус.", ""]
