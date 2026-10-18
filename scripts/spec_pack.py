@@ -33,8 +33,8 @@ import os
 import re
 import sys
 
-from aurora_common import (KB_ROOT, TRUSTED, as_list, body, frontmatter, git_commit,
-                           link_targets, read_card_text, trust_header, walk_md)
+from aurora_common import (KB_ROOT, TRUSTED, as_list, body, config_value, frontmatter, git_commit,
+                           link_targets, privacy_hits, read_card_text, trust_header, walk_md)
 
 OUT_DIR = os.path.join("Deliverables", "work", "spec-packs")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
@@ -93,6 +93,8 @@ def main() -> int:
     ap.add_argument("--gate", action="store_true",
                     help="режим ворот: риски передачи DoR дают код 1 и строку вердикта; "
                          "ошибка входа — код 2; --gate=warn — предупреждение вместо кода 1")
+    ap.add_argument("--allow", action="append", default=[], metavar="КОД", choices=["privacy"],
+                    help="записать бандл с персональными данными при privacy.scrub: mask (КОД назван в сообщении)")
     ap.add_argument("--gate-mode", choices=("fail", "warn"), default="", help=argparse.SUPPRESS)
     a = ap.parse_args(RS.gate_argv(sys.argv[1:]))
     gate = RS.gate_mode(a.gate, a.gate_mode)
@@ -229,6 +231,15 @@ def main() -> int:
                              if m.group(1) in known else f"«{m.group(2) or m.group(1)}»"),
                   text)
 
+    # Бандл уходит подрядчику за пределы контура: при privacy.scrub: mask персональные данные в нём — отказ
+    # (BL-SEC-22; тот же сканер, что у публикации и экспорта).
+    if config_value("scrub", "report").strip().lower() == "mask" and "privacy" not in a.allow:
+        hits = privacy_hits(text) or []
+        if hits:
+            kinds = ", ".join(sorted({h[0] for h in hits}))
+            print(f"⛔ [privacy] в бандле персональные данные при privacy.scrub: mask: {len(hits)} ({kinds}) → "
+                  "`kb:scrub --apply` в базе или осознанно --allow privacy", file=sys.stderr)
+            return fail_rc
     os.makedirs(OUT_DIR, exist_ok=True)
     open(target, "w", encoding="utf-8").write(text + "\n")
     size = os.path.getsize(target) / 1024

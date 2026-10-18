@@ -35,8 +35,8 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (KB_ROOT, TRUSTED, as_list, body as md_body, clean_copy, git_commit,
-                           frontmatter, link_escapes, safe_urlopen,
+from aurora_common import (GATE_CODES, KB_ROOT, TRUSTED, as_list, body as md_body, clean_copy,
+                           git_commit, frontmatter, link_escapes, outward_check, safe_urlopen,
                            set_field, split_frontmatter)
 
 from confluence_export import Api, read_config, read_secret
@@ -79,6 +79,21 @@ def code_macro(lang: str, code: str) -> str:
             "</ac:structured-macro>")
 
 
+SAFE_HREF = re.compile(r"(?i)^(?:https?://|mailto:|#|[^:/?#]*(?:[/?#]|$))")     # схема http(s)/mailto, якорь, относительный путь
+
+
+def _link(m) -> str:
+    """Markdown-ссылка → <a>. Схема `javascript:`, `data:`, `file:` и подобные ссылкой не становятся: остаётся текст.
+
+    Текст страницы приходит из базы (Confluence, модель), а ссылка на странице у заказчика кликабельна."""
+    label, href = m.group(1), m.group(2).strip()
+    # экранирование уже прошло (html.escape): `&amp;` в адресе — это `&`, а схему смотрим по началу
+    plain = html.unescape(href).lstrip()
+    if not SAFE_HREF.match(plain) or re.match(r"(?i)^[\s\x00-\x1f]*(?:javascript|data|vbscript|file):", plain):
+        return label
+    return f'<a href="{href}">{label}</a>'
+
+
 def inline(text: str) -> str:
     """Инлайн-разметка строки. Порядок важен: код первым, иначе съест звёздочки внутри."""
     stash: list = []
@@ -89,8 +104,8 @@ def inline(text: str) -> str:
 
     text = re.sub(r"`([^`]+)`", keep, text)
     text = html.escape(text)
-    text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
+    text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", _link, text)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _link, text)
     text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])", r"<em>\1</em>", text)
     return re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], text)
@@ -242,6 +257,35 @@ def stamp(text: str, pid: str, commit: str, ver: str = "", url: str = "") -> str
     return "---" + head.rstrip("\n") + rest
 
 
+def parent_from(raw: str):
+    """Что дали вместо родителя → (page_id, None); для ссылки `/display/SPACE/Заголовок` — ("", (пространство, заголовок));
+    не разобрано — ("", None).
+
+    Номер страницы — это число, `pageId=N` или `/pages/N/…` в адресе. В ссылке `/display/…` номера нет —
+    его спрашивают у сервера (`resolve_parent`)."""
+    raw = str(raw or "").strip().strip("\"'")
+    if re.fullmatch(r"\d+", raw):
+        return raw, None
+    m = re.search(r"[?&]pageId=(\d+)", raw) or re.search(r"/pages/(\d+)(?:[/?#]|$)", raw)
+    if m:
+        return m.group(1), None
+    m = re.search(r"/display/([^/?#]+)/([^?#]+)", raw)
+    if m:
+        return "", (urllib.parse.unquote(m.group(1)), urllib.parse.unquote_plus(m.group(2)))
+    return "", None
+
+
+def choose_parent(cli: str, fm: dict, cfg: dict) -> tuple:
+    """Родитель новой страницы по порядку: `--parent` → `publish_parent` шапки (его пишет вид артефакта с
+    `publish_url`) → `confluence.publish_parent` конфига. → (значение, откуда); пусто — не задан."""
+    for raw, where in ((cli, "--parent"), (fm.get("publish_parent"), "publish_parent в шапке документа"),
+                       (cfg.get("publish_parent"), "confluence.publish_parent в конфиге")):
+        val = str(raw or "").strip().strip("\"'")
+        if val:
+            return val, where
+    return "", ""
+
+
 def weak_grounds(fm: dict) -> list:
     """Основания ниже verified: наружу уходит непроверенное знание — предупредить."""
     weak = []
@@ -261,7 +305,10 @@ def weak_grounds(fm: dict) -> list:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Опубликовать артефакт в Confluence")
     ap.add_argument("path", help="файл из Artifacts/ или Deliverables/")
-    ap.add_argument("--parent", help="page_id родителя для новой страницы")
+    ap.add_argument("--parent", help="page_id родителя для новой страницы (либо ссылка на неё); без него — "
+                    "publish_parent из шапки документа, затем confluence.publish_parent из конфига")
+    ap.add_argument("--allow", action="append", default=[], metavar="КОД", choices=sorted(GATE_CODES),
+                    help="снять блокировку предохранителя выходных команд (КОД назван в его сообщении)")
     ap.add_argument("--title", help="заголовок страницы (по умолчанию — H1 или имя файла)")
     ap.add_argument("--force", action="store_true",
                     help="перезаписать страницу, которую правили после вашей публикации")
@@ -275,16 +322,22 @@ def main() -> int:
     if not os.path.isfile(path):
         print(f"publish: нет файла {path}", file=sys.stderr)
         return 1
-    top = os.path.normpath(path).split(os.sep)[0]
-    if top in (KB_ROOT, "Sources", "Raw"):
+    # Закрытые слои сравниваются без учёта регистра и по настоящему пути: на macOS и Windows `auroraknowledgedb/…`
+    # — та же папка, а абсолютный путь первой компонентой давал пустоту и проходил.
+    closed = {x.casefold() for x in (KB_ROOT, "Sources", "Raw")}
+    top = os.path.normpath(path).replace("\\", "/").split("/")[0]
+    if top.casefold() in closed:
         print(f"publish: {top}/ не публикуется — это внутренний слой доверия, "
               "наружу идут Artifacts/ и Deliverables/", file=sys.stderr)
         return 1
 
     # Ссылка на файл вне проекта (и на закрытый слой по ссылке) наружу не уходит: проверка
     # слоя выше смотрит на строку пути, а читать пришлось бы цель.
-    real_top = os.path.relpath(os.path.realpath(path), os.path.realpath(".")).split(os.sep)[0]
-    if link_escapes(path) or real_top in (KB_ROOT, "Sources", "Raw"):
+    try:
+        real_top = os.path.relpath(os.path.realpath(path), os.path.realpath(".")).replace("\\", "/").split("/")[0]
+    except ValueError:              # другой диск (Windows): файл вне проекта, закрытого слоя в нём нет
+        real_top = ""
+    if link_escapes(path) or real_top.casefold() in closed:
         print(f"publish: {path} — ссылка за пределы проекта или на внутренний слой доверия, "
               "не публикуется", file=sys.stderr)
         return 1
@@ -317,6 +370,10 @@ def main() -> int:
     if (fm.get("review") or "").strip() in ("", "none", "no"):
         print("⚠️ В артефакте нет отметки о ревью (`review:`) — публикуются документы "
               "после проверки человеком")
+    # Единый предохранитель выходных команд: граница чистовика, остатки шаблона, draft, персональные данные.
+    stuck = outward_check(text, a.allow, a.apply, "публикация", "publish")
+    if stuck:
+        return stuck
 
     if not auth:
         print("\npublish: нет доступа к Confluence — задайте CONFLUENCE_PAT "
@@ -366,12 +423,22 @@ def main() -> int:
             print(f"\nСтраница не изменилась ({existing.get('id')}) — публиковать нечего.")
             return 0
     else:
-        parent = a.parent or ""
+        raw_parent, where = choose_parent(a.parent or "", fm, cfg)
+        parent, lookup = parent_from(raw_parent)
+        if not parent and lookup:
+            # ссылка вида /display/SPACE/Заголовок: номер страницы знает только сервер
+            hit = api.find_by_title(*lookup)
+            parent = str(hit.get("id") or "")
+        if raw_parent and not parent:
+            print(f"\npublish: родитель «{raw_parent}» ({where}) не разобран и страница не нашлась — "
+                  "дайте номер страницы или её адрес с pageId", file=sys.stderr)
+            return 1
         if not parent:
-            print("\npublish: новой странице нужен родитель — укажите --parent <page_id>",
+            print("\npublish: новой странице нужен родитель — укажите --parent <page_id>, "
+                  "publish_parent в шапке документа или confluence.publish_parent в конфиге",
                   file=sys.stderr)
             return 1
-        target = f"создание страницы под {parent}"
+        target = f"создание страницы под {parent} (родитель: {where})"
     print(f"Действие: {target}")
 
     if not a.apply:
@@ -389,7 +456,7 @@ def main() -> int:
                                   "message": f"aurora publish {commit or ''}".strip()}
             res = api.send("PUT", f"/rest/api/content/{pid}", payload)
         else:
-            payload["ancestors"] = [{"id": str(a.parent)}]
+            payload["ancestors"] = [{"id": parent}]
             res = api.send("POST", "/rest/api/content", payload)
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "ignore")[:400]

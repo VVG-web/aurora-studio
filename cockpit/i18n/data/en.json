@@ -842,7 +842,6 @@
     "режим ворот: риски передачи DoR дают код 1 и строку вердикта; ошибка входа — код 2; --gate=warn — предупреждение вместо кода 1": "gate mode: DoR handover risks give code 1 and a verdict line; an input error is code 2; --gate=warn gives a warning instead of code 1",
     "режим ворот: вердикт строкой AURORA-GATE; --gate=warn — предупреждение вместо кода 1": "gate mode: the verdict as an AURORA-GATE line; --gate=warn gives a warning instead of code 1",
     "режим ворот (одна страница): оценка ниже порога — вердикт fail и код 1, с оговорками — warn, сбой прогона — код 2; вердикт строкой AURORA-GATE; --gate=warn — предупреждение вместо кода 1": "gate mode (one page): a score below the threshold is verdict fail and code 1, with reservations warn, a failed run is code 2; the verdict as an AURORA-GATE line; --gate=warn gives a warning instead of code 1",
-    "page_id родителя для новой страницы": "the parent's page_id for the new page",
     "заголовок страницы (по умолчанию — H1 или имя файла)": "the page title (default — H1 or the file name)",
     "перезаписать страницу, которую правили после вашей публикации": "overwrite a page that was edited after your publication",
     "взять под управление существующую страницу с таким заголовком": "take under management an existing page with that title",
@@ -983,7 +982,12 @@
     "зеркало вики (по умолчанию — зеркало с ролью projectwiki)": "wiki mirror (by default the mirror with the projectwiki role)",
     "зеркало трекера задач (по умолчанию — с ролью tasktracker)": "task tracker mirror (by default the one with the tasktracker role)",
     "корень зеркала (по умолчанию — зеркало вики проекта)": "mirror root (by default the project's wiki mirror)",
-    "с --venv-install: без паузы после выпуска (проверка свежих версий в CI)": "with --venv-install: no wait after a release (checking fresh versions in CI)"
+    "с --venv-install: без паузы после выпуска (проверка свежих версий в CI)": "with --venv-install: no wait after a release (checking fresh versions in CI)",
+    "--release: документ не закоммичен — всё равно заморозить (в снимке пометка released_dirty)": "--release: the document is not committed — freeze it anyway (the snapshot is marked released_dirty)",
+    "page_id родителя для новой страницы (либо ссылка на неё); без него — publish_parent из шапки документа, затем confluence.publish_parent из конфига": "page_id of the parent for a new page (or a link to it); without it — publish_parent from the document header, then confluence.publish_parent from the config",
+    "проверить сданные версии в Deliverables/released/: хеш, правки и удаления после коммита": "check the delivered versions in Deliverables/released/: hash, edits and deletions after the commit",
+    "снять блокировку предохранителя выходных команд (КОД назван в его сообщении)": "lift a block of the outbound-commands guard (the CODE is named in its message)",
+    "записать бандл с персональными данными при privacy.scrub: mask (КОД назван в сообщении)": "write the bundle with personal data under privacy.scrub: mask (the CODE is named in the message)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",
@@ -1003,7 +1007,8 @@
     "ПУТЬ": "PATH",
     "Ч": "H",
     "ПРОВАЙДЕР/МОДЕЛЬ": "PROVIDER/MODEL",
-    "РОЛЬ": "ROLE"
+    "РОЛЬ": "ROLE",
+    "КОД": "CODE"
   },
   "connector_texts": {
     "персональный токен Confluence (CONFLUENCE_PAT) либо CONFLUENCE_USER + CONFLUENCE_PASSWORD": "a Confluence personal token (CONFLUENCE_PAT) or CONFLUENCE_USER + CONFLUENCE_PASSWORD",

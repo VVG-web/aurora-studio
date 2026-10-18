@@ -23,15 +23,17 @@ frontmatter (`export_doc.py`, `release_doc.py`):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
 import subprocess
 import sys
 
-from aurora_common import (KB_ROOT, LINK_RE, TRUSTED, as_list, body as md_body,
-                           clean_copy, find_bin,
-                           frontmatter, git_commit, set_field, split_frontmatter, walk_md)
+from aurora_common import (GATE_CODES, KB_ROOT, LINK_RE, TRUSTED, as_list, body as md_body,
+                           clean_copy, find_bin, frontmatter, git_commit, git_dirty, outward_check,
+                           path_inside, release_hash, released_problems, safe_part,
+                           set_field, split_frontmatter, walk_md)
 
 WORK = "Deliverables/work"
 RELEASED = "Deliverables/released"
@@ -55,7 +57,21 @@ def flatten_links(text: str) -> str:
     return LINK_RE.sub(lambda m: (m.group(4) or m.group(2)).replace("-", " "), text)
 
 
-def export(source: str, fmt: str, reference: str, out: str, keep_links: bool) -> int:
+def _tracked(path: str) -> bool:
+    """Файл под версионным контролем. Самого git нет — проверять нечего, считаем «да»."""
+    try:
+        return subprocess.run(["git", "ls-files", "--error-unmatch", "--", path], capture_output=True,
+                              timeout=30).returncode == 0
+    except Exception:                                       # noqa: BLE001
+        return True
+
+
+def gate(text: str, allow, apply: bool, what: str) -> int:
+    """Единый предохранитель выходной команды (`aurora_common.outward_check`): 0 — можно, 2 — отказ."""
+    return outward_check(text, allow, apply, what, "ship_doc")
+
+
+def export(source: str, fmt: str, reference: str, out: str, keep_links: bool, allow=()) -> int:
     """Документ → docx/pdf/html/odt через pandoc."""
     # Не только PATH: на Windows winget кладёт pandoc в %LOCALAPPDATA%\Pandoc, а PATH
     # процесса, запущенного до установки, о нём не знает.
@@ -67,6 +83,9 @@ def export(source: str, fmt: str, reference: str, out: str, keep_links: bool) ->
         return 1
     raw = open(source, encoding="utf-8").read()
     fm = frontmatter(raw)
+    stuck = gate(raw, set(allow), True, "экспорт")
+    if stuck:
+        return stuck
     # Выгружаемый документ — тоже чистовик: разделы производства в docx заказчику не идут.
     text = clean_copy(md_body(raw))
     if not keep_links:
@@ -80,7 +99,9 @@ def export(source: str, fmt: str, reference: str, out: str, keep_links: bool) ->
         warnings.append("frontmatter без `type: deliverable`")
 
     target = out or os.path.splitext(source)[0] + "." + fmt
-    cmd = [pandoc, "-f", "gfm", "-o", target, "--from", "gfm", "--standalone"]
+    # --sandbox: текст приходит из базы (Confluence, модель), и pandoc не должен по нему читать файлы и ходить
+    # по адресам из картинок — иначе чужая страница читает диск и сеть пользователя через экспорт.
+    cmd = [pandoc, "-f", "gfm", "-o", target, "--from", "gfm", "--standalone", "--sandbox"]
     if reference and fmt == "docx":
         if not os.path.isfile(reference):
             print(f"ship_doc: нет эталона оформления {reference}", file=sys.stderr)
@@ -110,7 +131,7 @@ def export(source: str, fmt: str, reference: str, out: str, keep_links: bool) ->
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Поставка документа: экспорт и фиксация версии")
-    ap.add_argument("document", help="файл из Deliverables/work/")
+    ap.add_argument("document", nargs="?", help="файл из Deliverables/work/")
     ap.add_argument("--export", metavar="FORMAT", choices=["docx", "pdf", "html", "odt"],
                     help="конвертировать в офисный формат (pandoc)")
     ap.add_argument("--release", action="store_true",
@@ -124,26 +145,42 @@ def main() -> int:
     ap.add_argument("--binary", help="переданный бинарник (docx/pdf) — копируется рядом")
     ap.add_argument("--apply", action="store_true",
                     help="записать снапшот (иначе только что будет заморожено)")
+    ap.add_argument("--verify", action="store_true",
+                    help="проверить сданные версии в Deliverables/released/: хеш, правки и удаления после коммита")
+    ap.add_argument("--allow", action="append", default=[], metavar="КОД", choices=sorted(GATE_CODES),
+                    help="снять блокировку предохранителя выходных команд (КОД назван в его сообщении)")
+    ap.add_argument("--allow-dirty", action="store_true",
+                    help="--release: документ не закоммичен — всё равно заморозить (в снимке пометка released_dirty)")
     a = ap.parse_args()
 
+    if a.verify:
+        bad = released_problems(".")
+        print("# Сданные версии\n")
+        print("\n".join(f"⛔ {p}" for p in bad) if bad else "✅ все сданные версии на месте и не менялись")
+        return 1 if bad else 0
+    if not a.document:
+        ap.error("нужен документ (или --verify)")
     if not os.path.isfile(a.document):
         print(f"ship_doc: нет файла {a.document}", file=sys.stderr)
         return 1
     if a.export:
-        return export(a.document, a.export, a.reference or "", a.out or "", a.keep_links)
-    if not os.path.abspath(a.document).startswith(os.path.abspath(WORK)):
+        return export(a.document, a.export, a.reference or "", a.out or "", a.keep_links, a.allow)
+    if not path_inside(a.document, WORK):
         print(f"ship_doc: замораживать можно только документы из {WORK}/", file=sys.stderr)
         return 1
 
     text = open(a.document, encoding="utf-8").read()
     fm = frontmatter(text)
     stem = os.path.basename(a.document)[:-3]
-    version = a.version or fm.get("version") or ""
+    # doc и version приходят из шапки документа (а шапку пишет и модель), и по ним строится имя файла:
+    # разделители пути и «..» в них вывели бы снимок за пределы Deliverables/released/.
+    version = safe_part(a.version or fm.get("version") or "")
     if not version:
         m = re.search(r"_v([0-9][\w.\-]*)$", stem)
-        version = m.group(1) if m else "1.0"
-    doc_name = fm.get("doc") or re.sub(r"_v[0-9][\w.\-]*$", "", stem)
-    target = os.path.join(RELEASED, f"{doc_name}_v{version}_{a.date}.md")
+        version = safe_part(m.group(1) if m else "1.0", "1.0")
+    doc_name = safe_part(fm.get("doc") or re.sub(r"_v[0-9][\w.\-]*$", "", stem), "document")
+    date = safe_part(a.date, TODAY)
+    target = os.path.join(RELEASED, f"{doc_name}_v{version}_{date}.md")
 
     if os.path.exists(target):
         print(f"ship_doc: снапшот уже существует — {target}\n"
@@ -170,28 +207,67 @@ def main() -> int:
             return 1
         print(f"Бинарник: {a.binary} → {RELEASED}/")
 
+    # Предохранитель: то, что фиксируем и отдаём, проверяется так же, как публикация и экспорт.
+    stuck = gate(text, set(a.allow), a.apply, "фиксация")
+    if stuck:
+        return stuck
+    # `released_commit` обещает: «эта версия была в этом коммите». Документ, которого в коммите нет (правки не
+    # закоммичены или файл не под git), даёт ложное обещание — отказ, либо явный `--allow-dirty` с пометкой.
+    commit = git_commit()
+    dirty = ""
+    if commit:
+        if git_dirty(a.document):
+            dirty = "в документе есть незакоммиченные правки"
+        elif not _tracked(a.document):
+            dirty = "документ не добавлен в git"
+    if dirty:
+        print(f"⚠️ {dirty}: коммит {commit} не содержит того, что сдаётся")
+        if a.apply and not a.allow_dirty:
+            print("ship_doc: закоммитьте документ и повторите (или --allow-dirty: в снимке будет "
+                  "пометка released_dirty)", file=sys.stderr)
+            return 2
+
     if not a.apply:
         print("\n(dry-run) Ничего не записано. Повторите с --apply.")
         return 0
 
-    head, rest = split_frontmatter(text)
-    commit = git_commit()
+    # Снимок — ТО, ЧТО ПЕРЕДАЛИ: чистовик без разделов производства (его же берёт экспорт и публикация),
+    # а не полный текст рабочей копии. Рабочая копия остаётся целой. Хеш в шапке — чем доказать, что сданное
+    # не менялось (`ship:release --verify`, `kit:doctor`).
+    sent = clean_copy(text)
+    head, rest = split_frontmatter(sent)
+    fields = {"released": a.date, "released_commit": commit}
+    if dirty:
+        fields["released_dirty"] = "true"
+    if a.binary:
+        with open(a.binary, "rb") as f:
+            fields["binary"] = os.path.basename(a.binary)
+            fields["binary_sha256"] = hashlib.sha256(f.read()).hexdigest()
     if head is None:
-        snapshot = (f"---\ndoc: {doc_name}\nversion: \"{version}\"\ntype: deliverable\n"
-                    f"released: {a.date}\nreleased_commit: {commit}\n---\n\n" + text)
-        work_text = text
+        base_head = f"\ndoc: {doc_name}\nversion: \"{version}\"\ntype: deliverable"
+        for k, v in fields.items():
+            base_head = set_field(base_head, k, v)
+        shell = "---" + base_head + "\n---\n\n"
+        snapshot = shell + sent
+        snap_head = base_head
     else:
-        snap_head = set_field(set_field(head, "released", a.date), "released_commit", commit)
+        snap_head = head
+        for k, v in fields.items():
+            snap_head = set_field(snap_head, k, v)
         snapshot = "---" + snap_head + rest
-        work_text = "---" + set_field(head, "released", a.date) + rest
+    snapshot = "---" + set_field(snap_head, "sha256", release_hash(snapshot)) + snapshot[len("---" + snap_head):]
+    work_head = split_frontmatter(text)[0]
+    work_text = text if work_head is None else \
+        "---" + set_field(work_head, "released", a.date) + split_frontmatter(text)[1]
 
     os.makedirs(RELEASED, exist_ok=True)
-    open(target, "w", encoding="utf-8").write(snapshot)
+    with open(target, "w", encoding="utf-8", newline="\n") as f:
+        f.write(snapshot)
     open(a.document, "w", encoding="utf-8").write(work_text)
     if a.binary:
         shutil.copy2(a.binary, os.path.join(RELEASED, os.path.basename(a.binary)))
 
-    print(f"\n✅ Снапшот: {target} (неизменяем)")
+    print(f"\n✅ Снапшот: {target} (неизменяем, sha256 {release_hash(snapshot)[:12]}…)")
     print("   В рабочей копии проставлена дата передачи.")
     print("   Дальше: обновить `pmi` в покрытых REQ и прогнать `ops:trace`.")
     return 0
