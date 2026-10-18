@@ -454,3 +454,47 @@ def test_agent_run_wait_has_one_total_limit_not_one_per_wait(tmp: Path):
     finally:
         G.wait_llm_back = real
         net.close()
+
+
+@test
+def test_a_denied_lock_create_is_retried_as_a_file_pending_delete(tmp: Path):
+    """Windows: замок, снятый секунду назад, ещё «ждёт удаления» (держит дескриптор сканер или соседний
+    процесс), и создание поверх него отказывает «Отказано в доступе». `lock_take` ждёт и берёт замок
+    (на CI тест «замок не ломается под новым владельцем» падал именно так); настоящий запрет на запись
+    поднимается после ~1 с, а не глотается."""
+    import os
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
+    target = str(tmp / "state" / "denied.lock")
+    real_open, real_sleep = os.open, time.sleep
+    calls = {"n": 0}
+    try:
+        def flaky(path, flags, *a, **k):
+            if str(path) == target and calls["n"] < 3:
+                calls["n"] += 1
+                raise PermissionError(13, "Отказано в доступе")
+            return real_open(path, flags, *a, **k)
+        os.open = flaky
+        time.sleep = lambda s: None
+        ok, held = AC.lock_take(target, {"who": "test"})
+        assert ok and held == {} and calls["n"] == 3, (ok, held, calls)
+        assert (tmp / "state" / "denied.lock").is_file()
+        # постоянный запрет — не молчание: после ~1 с ожидания ошибка поднимается
+        os.remove(target)
+        calls["n"] = 0
+
+        def always(path, flags, *a, **k):
+            if str(path) == target:
+                calls["n"] += 1
+                raise PermissionError(13, "Отказано в доступе")
+            return real_open(path, flags, *a, **k)
+        os.open = always
+        try:
+            AC.lock_take(target)
+        except PermissionError:
+            assert 40 <= calls["n"] <= 60, calls
+        else:
+            raise AssertionError("постоянный отказ в доступе проглочен")
+    finally:
+        os.open, time.sleep = real_open, real_sleep

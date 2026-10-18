@@ -2542,6 +2542,14 @@ def lock_take(path, info=None, stale_s=None):
     for _ in range(200):               # охрана занята ~мс; ~4 с ожидания с запасом
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except PermissionError:
+            # Windows: файл, снятый секунду назад, ещё «ждёт удаления» (держит дескриптор сканер или
+            # соседний процесс) — создание поверх него отказывает с «Отказано в доступе». Это не
+            # чужой замок и не запрет: ждём ~1 с; не прошло — это настоящая беда с правами, поднимаем.
+            if _ >= 50:
+                raise
+            time.sleep(0.02)
+            continue
         except FileExistsError:
             held = lock_read(path)
             live = _lock_live(path, held, stale_s, missing=None)
