@@ -1495,9 +1495,6 @@ async function refreshActivity(){
   S.state.projects.forEach(p => { if (p.path in d.projects) p.activity = d.projects[p.path]; });
   drawActivity();
 }
-// Pydantic AI выбран, а вызовы идут мимо него: без инструментов и MCP бот «не видит» свои
-// серверы, план собирается без поиска. С 1.139 по 1.160 это случалось четырежды и каждый раз
-// всплывало через неделю. Полоса — поверх любого раздела, пока путь не пройдёт через адаптер.
 // Панель на старте сняла брошенные процессы прежней — сказать один раз за её запуск, а не
 // на каждой перезагрузке страницы.
 function showReaped(r){
@@ -1508,23 +1505,54 @@ function showReaped(r){
   try { localStorage.setItem("aurora-reaped-seen", String(r.at)); } catch (e) {}
   toast(t("boot.reaped", {n: r.items.length, list: r.items.map(x => x.what).join("; ")}), "warn");
 }
+// Тревоги вызова модели — полосой поверх любого раздела. Это две разные беды, и полосы у них
+// разные (область `area` приходит от движка):
+// - `adapter`: Pydantic AI выбран, а вызовы идут мимо него — без инструментов и MCP бот «не видит»
+//   свои серверы, план собирается без поиска. С 1.139 по 1.160 это случалось четырежды и каждый раз
+//   всплывало через неделю. Только неисправный путь Pydantic AI: пакета нет, он не импортируется,
+//   версия не прошла проверку, процесс падает, HTTP-клиент адаптера не доходит до шлюза, а прямой
+//   запрос доходит. Кнопка — туда, где лечится (`fix`): «Установка» или «Версия». Уходит, когда путь
+//   снова пройдёт через адаптер.
+// - `link`: нет связи с бэкендом (сеть, DNS, сертификат, прокси, сам шлюз). Pydantic AI тут ни при
+//   чём, поэтому про него в полосе ни слова и кнопок про него нет. Заголовок называет вид беды;
+//   уходит, когда бэкенд ответит. 18.10.2026 обрыв сети выдавали за поломку Pydantic AI.
 function drawAdapterAlarm(rows){
-  const old = $("#adapterbar");
-  if (old) old.remove();
+  for (const id of ["#adapterbar", "#linkbar"]){
+    const old = $(id);
+    if (old) old.remove();
+  }
   if (!rows || !rows.length) return;
-  $("main").prepend(el("div",{id:"adapterbar", class:"stalebar alarm"},
-    el("b",{}, t("alarm.adapter")),
-    ...rows.map(r => el("div",{}, t("alarm.adapter_row",
-      {path: r.path, project: r.project || "—", when: r.at ? histWhen(r.at) : "—",
-       calls: r.calls, why: r.why}))),
-    el("div",{}, t("alarm.adapter_tail"),
-      // Чем лечить, говорит причина: нет файла адаптера в движке проекта — «Версия», иначе «Установка».
-      ...(rows.some(r => r.fix === "adapter")
-        ? [el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("version")},
-            t("alarm.adapter_engine"))] : []),
-      ...(rows.some(r => r.fix !== "adapter")
-        ? [el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("install")},
-            t("alarm.adapter_open"))] : []))));
+  const adapter = rows.filter(r => r.area !== "link");
+  const link = rows.filter(r => r.area === "link");
+  const when = r => r.at ? histWhen(r.at) : "—";
+  if (link.length){
+    const wait = link.some(r => r.fix !== "models");     // ожидание лечит: сеть, VPN, шлюз
+    const cfg = link.some(r => r.fix === "models");      // лечит настройка: ключ, модель, срок
+    $("main").prepend(el("div",{id:"linkbar", class:"stalebar alarm"},
+      ...link.map(r => el("div",{},
+        el("b",{}, t("alarm.link." + r.kind, Object.assign({n:"?", status:""}, r.args || {}))),
+        " ", t("alarm.link_row", {path: r.path, project: r.project || "—", when: when(r), calls: r.calls}),
+        el("div",{class:"muted"}, r.why))),
+      el("div",{}, [wait ? t("alarm.link_tail") : "", cfg ? t("alarm.link_tail_cfg") : ""]
+          .filter(Boolean).join(" "),
+        ...(cfg ? [el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("models")},
+          t("alarm.link_models"))] : []))));
+  }
+  if (adapter.length){
+    $("main").prepend(el("div",{id:"adapterbar", class:"stalebar alarm"},
+      el("b",{}, t("alarm.adapter")),
+      ...adapter.map(r => el("div",{}, t("alarm.adapter_row",
+        {path: r.path, project: r.project || "—", when: when(r), calls: r.calls, why: r.why}))),
+      el("div",{}, t("alarm.adapter_tail"),
+        // Чем лечить, говорит причина: нет файла адаптера в движке проекта — «Версия», нет или
+        // сломан сам Pydantic AI — «Установка», иначе (прокси, сертификат) кнопки нет: правится снаружи.
+        ...(adapter.some(r => r.fix === "version")
+          ? [el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("version")},
+              t("alarm.adapter_engine"))] : []),
+        ...(adapter.some(r => r.fix === "install")
+          ? [el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("install")},
+              t("alarm.adapter_open"))] : []))));
+  }
 }
 async function refreshAdapterAlarm(){
   let d = null;

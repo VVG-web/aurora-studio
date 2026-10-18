@@ -105,6 +105,8 @@
   "bots.fix.tool_limit": "Split the task — e.g. one label per bot — or run it more often.",
   "bots.p.model_failed": "The model did not answer",
   "bots.fix.model_failed": "Check the connection in the «Models» section; if the server is overloaded, retry later.",
+  "bots.p.link_down": "No connection to the model",
+  "bots.fix.link_down": "Pydantic AI is fine: the call got no answer from the model gateway — network, VPN, certificate, key or the gateway itself. The reason is named in the report; check the connection and the gateway status, then run the bot again.",
   "bots.p.busy": "The bot is already running",
   "bots.fix.busy": "Wait until the run ends.",
   "bots.cron_field.fields": "five space-separated fields are needed",
