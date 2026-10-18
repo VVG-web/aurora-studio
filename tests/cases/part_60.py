@@ -327,7 +327,7 @@ def test_connectivity_icmp_goes_through_system_ping_without_privileges(_t):
     real = CN.subprocess
     try:
         probe = {"host": "example.com"}
-        CN.subprocess = Fake(0)
+        CN.subprocess = Fake(0, "Reply from 192.0.2.1: bytes=32 time=5ms TTL=64")        # настоящий ответ несёт TTL (так проверяет Windows)
         assert CN._check_icmp(probe, 2)["ok"], "ping с кодом 0 не принят"
         assert calls[0][1].get("shell") is not True and isinstance(calls[0][0], list), "ping запущен через оболочку"
         CN.subprocess = Fake(1, "Request timeout for icmp_seq 0")
