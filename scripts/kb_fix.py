@@ -62,8 +62,8 @@ JSON_ONLY = -7               # сигнал main: машинный вывод н
 MERGE_REPORT: list = []      # (слитые, отказы) — для отчёта после прогона
 ARCHIVE = os.path.join(ROOT, "_archive")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
-from aurora_common import root_link_escapes, safe_walk  # noqa: E402 — обход и запись без ссылок за пределы проекта
-from card_types import (UnknownCardType, run_script, fit_kind, put_text, registry_for,  # noqa: E402
+from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
+from card_types import (UnknownCardType, run_script, fit_kind, in_base, put_text, registry_for,  # noqa: E402
                         render_card, why_refused,
                         section_type_table)   # единый источник «раздел → тип», шапка по шаблону, вход записи
 
@@ -614,6 +614,7 @@ class Plan:
         self.reopen: list = []           # источники — обратно в план разбора
         self.reopen_of: dict = {}        # источник → карточки, из-за которых он возвращается (отказ карточки отменяет возврат)
         self.coupled: list = []          # группы путей, которые пишутся вместе: отказ одной отменяет запись всех
+        self.link_moves: list = []       # (донор, выживший, путь выжившего, путь донора, карточки): ссылки переписываются при записи
         self.notes: list = []            # строки отчёта
         self.unresolved: list = []       # ссылки, которые движок не берёт
         self._word_names = None          # кому человек написал исправление (Raw/corrections)
@@ -1037,8 +1038,8 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
             title = f"{title} ({mark})"
         # Часть — карточка того же типа и вида, что у родителя; источники те же (текст пришёл из них), а ссылка на
         # родителя — `part_of`. Шапку строит шаблон типа.
-        ptype = frontmatter(text).get("type") or "concept"
         reg = registry_for(project_of(root))
+        ptype = frontmatter(text).get("type") or section_type().get(section, "concept")
         sources = card_sources(text) or ([src] if src else [])
         fields = {"title": title, "status": "draft",
                   "kind": fit_kind(ptype, frontmatter(text).get("kind") or "knowledge", reg),
@@ -2176,7 +2177,13 @@ def plan_tautologies(cards: dict, plan: Plan) -> list:
         new_own, n = drop_echo_sentences(own)
         if not n:
             continue
-        plan.write(path, base[:len(base) - len(body)] + new_own + sep + rest)
+        prefix = base[:len(base) - len(body)]
+        if not new_own.strip():
+            # Тезис состоял из одних пустых фраз: после чистки карточка ждёт нового (`agent:distill` напишет его заново)
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import build_plan as BP
+            prefix = BP.drop_thesis_mark(prefix[:now.fm_end]) + prefix[now.fm_end:]
+        plan.write(path, prefix + new_own + sep + rest)
         fixed.append(c.stem)
     return fixed
 
@@ -3007,10 +3014,11 @@ def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
         if path in (kpath, dpath):
             continue
         base = plan.file_writes.get(path, c.text)
-        new_text = rewrite_links(base, {drop.stem: keep.stem})
-        if new_text != base:
-            plan.file_writes[path] = new_text
+        if rewrite_links(base, {drop.stem: keep.stem}) != base:
             plan.notes.append(f"  ссылки [[{drop.stem}]] → [[{keep.stem}]] в {path}")
+    # Сами ссылки в третьих карточках переписывает `apply_plan` — и только если слияние состоялось: отказ шаблона не
+    # должен оставить ссылки на выжившую при живом доноре без входящих.
+    plan.link_moves.append((drop.stem, keep.stem, kpath, dpath, cards))
     plan.notes.append(f"  слияние: {drop.stem} → {keep.stem} (донор в _archive/, deprecated)")
     return 0
 
@@ -3205,7 +3213,17 @@ def apply_plan(plan: Plan) -> int:
                                   "(слияние и разрез пишутся целиком)"
             plan.refused.append((m, reason))
             print(f"  ! не записана {m}: {reason}", file=sys.stderr)
-    for path, text in plan.file_writes.items():
+    for drop_stem, keep_stem, kpath, dpath, all_cards in plan.link_moves:
+        if kpath.replace("\\", "/") in refused_now or dpath.replace("\\", "/") in refused_now:
+            continue
+        for path, c in all_cards.items():
+            if path in (kpath, dpath):
+                continue
+            base = plan.file_writes.get(path, c.text)
+            new_text = rewrite_links(base, {drop_stem: keep_stem})
+            if new_text != base:
+                plan.file_writes[path] = new_text
+    for path, text in list(plan.file_writes.items()):
         if path in held:
             continue
         why = put_text(path, text, op=plan.ops.get(path) or "repair")
@@ -3219,8 +3237,8 @@ def apply_plan(plan: Plan) -> int:
             print(f"  ! пропущено переименование {old} → {new}: файл уже существует", file=sys.stderr)
             skipped += 1
             continue
-        if root_link_escapes(os.path.dirname(new) or "."):
-            print(f"  ! пропущено переименование {old} → {new}: папка назначения — ссылка за пределы проекта", file=sys.stderr)
+        if not in_base(os.path.dirname(new) or "."):
+            print(f"  ! пропущено переименование {old} → {new}: папка назначения лежит вне базы знаний (ссылка)", file=sys.stderr)
             skipped += 1
             continue
         os.makedirs(os.path.dirname(new) or ".", exist_ok=True)
@@ -3241,8 +3259,8 @@ def apply_plan(plan: Plan) -> int:
         # прогоне сливался снова. На живой базе так набралось СОРОК ДЕВЯТЬ одинаковых
         # блоков «Слияние» в одной карточке.
         dst = free_archive_name(dst)
-        if root_link_escapes(os.path.dirname(dst) or "."):
-            print(f"  ! {src} остаётся на месте: папка архива — ссылка за пределы проекта", file=sys.stderr)
+        if not in_base(os.path.dirname(dst) or "."):
+            print(f"  ! {src} остаётся на месте: папка архива лежит вне базы знаний (ссылка)", file=sys.stderr)
             skipped += 1
             continue
         os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)

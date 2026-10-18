@@ -90,10 +90,16 @@ def offline_signs() -> tuple:
 LIVE_LINE = re.compile(r"^ {4}[↗⟳⚠…✓⏳] ")
 
 
+# Отказ шаблона карточки (`card_types`): строка называет карточку по имени, а в имени бывают «SSL» и «Timeout» — это не
+# обрыв связи, и шаг, закончившийся такой строкой с кодом 1, ждать сеть не должен.
+REFUSAL_LINE = re.compile(r"нарушает шаблон|шаблон типа не принял|V-LINK|не записана шаблоном")    # данные движка
+
+
 def looks_offline(lines) -> bool:
     if isinstance(lines, str):
         lines = lines.splitlines()
-    text = "\n".join(line for line in lines or [] if not LIVE_LINE.match(line)).lower()
+    text = "\n".join(line for line in lines or []
+                     if not LIVE_LINE.match(line) and not REFUSAL_LINE.search(line)).lower()
     return any(s in text for s in offline_signs())
 
 

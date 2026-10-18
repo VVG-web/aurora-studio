@@ -967,3 +967,102 @@ def test_archive_folder_that_leaves_the_project_is_not_followed(tmp: Path):
         K.apply_plan(plan)
     assert drop.is_file() and not list(outside.iterdir()), "донор вынесен за пределы проекта"
     assert keep.is_file()
+
+
+@test
+def test_archive_and_sections_that_lead_out_of_the_base_are_not_followed(tmp: Path):
+    """Перенос и переименование идут только внутрь базы знаний: `_archive` — ссылка на `Raw/meetings` (внутри проекта, но не
+    в базе) не принимает карточек ни от слияния, ни от замены; `kb:supersede` в этом случае кончается кодом 1."""
+    C = _C()
+    K = _mod("kb_fix")
+    root = make_project(tmp, git=True)
+    (root / "Raw/meetings").mkdir(parents=True, exist_ok=True)
+    arch = root / KB / "_archive"
+    try:
+        os.symlink(root / "Raw/meetings", arch)
+    except (OSError, NotImplementedError):
+        return                                         # символические ссылки недоступны (Windows без прав)
+    assert C.in_base(str(root / KB / "Concepts")) and not C.in_base(str(arch)) and not C.in_base(str(root / "Raw"))
+    keep = card(root, "Concepts/Кеп.md", "Выживший.", status="draft", kind="knowledge")
+    drop = card(root, "Concepts/Дроп.md", "Донор.", status="draft", kind="knowledge")
+    with _in_dir(root):
+        cards = K.load_cards(K.ROOT)
+        plan = K.Plan()
+        assert K.plan_merge(cards, "Кеп", "Дроп", plan, quiet=True) == 0
+        K.apply_plan(plan)
+    assert drop.is_file() and not list((root / "Raw/meetings").glob("*.md")), "донор вынесен в слой доказательств"
+    old = card(root, "Concepts/Старая.md", "Старая.", status="knowledge", kind="knowledge")
+    card(root, "Concepts/Новая.md", "Новая.", status="knowledge", kind="knowledge")
+    cp = run("kb_supersede.py", "Старая", "Новая", "--apply", cwd=root)
+    assert cp.returncode == 1 and old.is_file() and "в архив не перенесено" in cp.stderr, cp.stdout + cp.stderr
+    assert not list((root / "Raw/meetings").glob("*.md")) and keep.is_file()
+
+
+@test
+def test_a_refused_merge_leaves_the_links_of_other_cards_alone(tmp: Path):
+    """Слияние, которого шаблон не принял, не оставляет ссылок на выжившую в чужих карточках при живом доноре; состоявшееся
+    слияние их переписывает (второй проход слияния ничего не меняет)."""
+    K = _mod("kb_fix")
+    root = make_project(tmp, git=True)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/Док.md").write_text("Текст.\n", encoding="utf-8")
+    _meeting_card(root, "Concepts/Кеп.md", "Выживший.", sources=("Sources/Confluence/Док.md",), title="Кеп")
+    _meeting_card(root, "Concepts/Дроп.md", "Донор.", title="Дроп")
+    third = card(root, "Concepts/Третья.md", "Ссылка на [[Дроп]] и [[Кеп]].", status="draft", kind="knowledge")
+    was = third.read_bytes()
+    real = K.why_refused
+    with _in_dir(root):
+        try:
+            K.why_refused = lambda path, text, op="repair", reg=None: ("отказ" if path.endswith("Кеп.md") else "")
+            cards = K.load_cards(K.ROOT)
+            plan = K.Plan()
+            K.plan_merge(cards, "Кеп", "Дроп", plan, quiet=True)
+            K.apply_plan(plan)
+        finally:
+            K.why_refused = real
+    assert third.read_bytes() == was, "ссылка на донора переписана, хотя слияние отклонено"
+    with _in_dir(root):
+        cards = K.load_cards(K.ROOT)
+        plan = K.Plan()
+        K.plan_merge(cards, "Кеп", "Дроп", plan, quiet=True)
+        K.apply_plan(plan)
+    text = third.read_text(encoding="utf-8")
+    assert "[[Дроп]]" not in text and text.count("[[Кеп]]") == 2, text
+
+
+@test
+def test_a_read_only_card_is_refused_not_overwritten(tmp: Path):
+    """Карточка только для чтения вход записи не перезаписывает: отказ строкой (V-RO), файл не тронут. Под root проверка
+    защиты бессмысленна и пропускается."""
+    C = _C()
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return
+    root = make_project(tmp)
+    p = card(root, "Concepts/Защищена.md", "Текст.", status="draft", kind="knowledge")
+    was = p.read_bytes()
+    os.chmod(p, 0o444)
+    try:
+        done, why = C.try_write_card(str(p), p.read_text(encoding="utf-8") + "\nДобавка.\n", op="body")
+    finally:
+        os.chmod(p, 0o644)
+    assert not done and "V-RO" in why and p.read_bytes() == was, (done, why)
+
+
+@test
+def test_a_card_without_a_type_is_split_as_its_section_says(tmp: Path):
+    """Разрез карточки без `type:` берёт тип по разделу (`Glossary` → `glossary`), а не `concept`: части и карта остаются
+    в своём разделе и проходят шаблон."""
+    R = _mod("agent_runner")
+    root = make_project(tmp, git=True)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/Док.md").write_text("Текст.\n", encoding="utf-8")
+    p = root / KB / "Glossary" / "Сокращения.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('---\ntitle: "Сокращения"\naliases: []\nkind: knowledge\nstatus: draft\nsources:\n  - "Sources/Confluence/Док.md"\n'
+                 "source_synced: 2026-10-01\ncreated: 2026-10-01\nupdated: 2026-10-01\nbuilt: machine\n---\n\n# Сокращения\n\n"
+                 "## Источник (перенесено дословно)\n\nПервая часть. Вторая часть.\n", encoding="utf-8")
+    made = R.apply_split_parts(str(p), [("Первая", "Первая часть. " * 8), ("Вторая", "Вторая часть. " * 8)])
+    assert len(made) == 2, made
+    for stem, _title in made:
+        text = _text(root, f"Glossary/{stem}.md")
+        assert "type: glossary" in text.split("\n---\n", 1)[0], text[:300]

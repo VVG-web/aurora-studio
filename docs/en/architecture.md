@@ -58,7 +58,7 @@ What follows from this:
   `Prompts/KB_classify.md` travels the same way; the type catalogue `AuroraKnowledgeDB/meta/card_types.md` is built by the
   engine (install, `update --apply`, `kb:cards --write --apply`), and a type's title, description and switch are the
   `cards:` block of `aurora.config.yaml`, edited in the panel ("Project settings → Card types"). Every write of a base
-  card goes through the single entry `card_types.write_card_text`: the template is mandatory, and the list of write
+  card by an engine script goes through the single entry `card_types.write_card_text`: the template is mandatory, and the list of write
   places is guarded by the ratchet test `tests/card_write_sites.py`.
 - Individual paths can be opted out of updates in `aurora.update_ignore.txt` in the project root (glob patterns).
 - The engine version in a project is recorded in `AuroraKnowledgeDB/meta/aurora_version.txt`; the path to the
@@ -158,7 +158,7 @@ all commands is [commands.md](commands.md).
 
 ### Writing a card: the single entry
 
-Every write of a base card goes through the single entry `card_types.write_card_text` (and its wrappers `try_write_card`,
+Every write of a base card by an engine script goes through the single entry `card_types.write_card_text` (and its wrappers `try_write_card`,
 `put_text`, `put_map`); the head of new cards is built by the type's template (`render_header`, `render_card`). There is
 no switch that turns the check off.
 

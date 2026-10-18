@@ -125,8 +125,8 @@ not fit is rejected, not "guessed".
 
 The file belongs to the project: edit it in any editor, keeping steps 0–7 and the answer line of step 7. A kit update does
 not overwrite your file: the new version lands next to it as `KB_classify.md.new`. The kit does not add a project's own
-type to the tables of steps 2 and 3 — the project adds the row. The built-in agent does not put these steps into its
-requests yet (section 10).
+type to the tables of steps 2 and 3 — the project adds the row. The built-in agent puts steps 2 and 3 into its parsing
+requests (section 8).
 
 ### The `cards:` block in `aurora.config.yaml`
 
@@ -155,8 +155,8 @@ example is commented out at the end of the config:
 The block is edited in the panel or by hand; the settings form (`aurora.py setup`) keeps it, like any section it does
 not know. What `enabled: "false"` does **now**: the check names the cards of that type (V-03 "the type is switched
 off"), `classify_answer` rejects such a type, the catalogue shows "no", and `kit:doctor` reminds you if cards of a
-switched-off type remain in the base. The cards themselves stay and are checked as before; creating cards does not
-look at the switch yet.
+switched-off type remain in the base. The cards themselves stay and are checked as before; parsing does not offer such
+a type and creates no new cards of it.
 
 ### The type catalogue: `AuroraKnowledgeDB/meta/card_types.md`
 
@@ -193,7 +193,7 @@ Writing is guarded against a lost update, like the "Files" tab: the page returns
 (an editor, `git pull`, a kit update), the 409 answer writes nothing and the panel offers "keep mine" or "take from
 disk". The table and the instruction are saved apart and never reset each other's unsaved edits. A catalogue the
 project keeps for itself (`aurora.update_ignore.txt`) is not rebuilt by saving. The switch works as described above:
-creating cards and the built-in agent's requests do not look at it yet (section 10).
+parsing and the built-in agent's requests take the sections of enabled types only.
 
 ## 4. Type, kind and status — three different axes
 

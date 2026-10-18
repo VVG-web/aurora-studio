@@ -3775,14 +3775,29 @@ def source_is_feed(cwd: str, source: str) -> bool:
 
 # Выдержка из инструкции «Как определить тип карточки» для запросов разбора. Шаги — по важности: тип выбирают по
 # шагу 2, спорные пары решает шаг 3; шаги 0 и 6 повторяют правила самого запроса разбора (задача — не сущность,
-# одна сущность — одна карточка) и уходят первыми, когда выдержка не влезает в бюджет. Бюджет держит рост запроса
-# разбора вместе с перечнем разделов в пределах четырёх тысяч знаков.
+# одна сущность — одна карточка) и уходят первыми, когда выдержка не влезает в бюджет. Для инструкции кита рост
+# запроса разбора вместе с перечнем разделов — около трёх с половиной тысяч знаков (предел плана — четыре); у инструкции
+# проекта без заголовков шагов выдержка до `GUIDE_HEADLESS_CHARS`.
 GUIDE_PROMPT_STEPS = (2, 3, 0, 6)
 GUIDE_PROMPT_CHARS = 3600
 GUIDE_HEADLESS_CHARS = 6000          # инструкция проекта без заголовков шагов — целиком, но не длиннее
 TYPE_RULES_CHARS = 880               # правило 6 тезиса: с подписью не больше 960 знаков
 DEFAULT_BUILD_SECTION = "Concepts"   # раздел, если модель его не назвала (как до реестра)
 _RULES_CACHE: dict = {}
+
+
+CARD_WRITING_TASKS = ("build", "distill", "extract", "relink", "twins", "tasks", "aliases", "clashes", "translit")
+
+
+def registry_gate(cwd: str = ".") -> str:
+    """Причина, по которой карточки писать нельзя, или пустая строка. Шаблоны найдены, но ни один не принят: каждая запись
+    будет отвергнута, и платные вызовы модели ушли бы впустую (очередь тезисов сожгли бы за ночь без единой записи)."""
+    reg = CT.registry_for(cwd or ".")
+    if reg.types or not reg.found_files:
+        return ""
+    why = "; ".join(reg.problems[:3]) or "паспорта шаблонов не приняты"
+    return (f"шаблоны карточек найдены ({reg.found_files}), но ни один не принят: {why} — модель не зовётся, пока записывать "
+            "нечем. `kb:cards --list` называет причину, `kit:update` вернёт шаблоны")
 
 
 def build_sections(cwd: str = ".") -> list:
@@ -3853,7 +3868,7 @@ def guide_for_prompt(cwd: str = ".") -> str:
             continue
         body = re.sub(r"\n{3,}", "\n\n", "\n".join(ln for ln in body.split("\n") if keep(ln))).strip()
         if used + len(body) + 2 > GUIDE_PROMPT_CHARS:
-            continue
+            break                        # менее важный шаг на место не влезшего более важного не берётся
         picked[n] = body
         used += len(body) + 2
     if not picked:                       # шаг 2 один длиннее бюджета: лучше его начало, чем ничего
@@ -3890,10 +3905,14 @@ def type_rules_for(cwd: str = ".", card_type: str = "") -> str:
     return own
 
 
-def type_rules_line(cwd: str, card_type: str) -> str:
-    """Правило 6 для запроса тезиса: «\n6. Форма тезиса для типа этой карточки: …» или пустая строка."""
+TYPE_RULES_LEAD = "\n6. Форма тезиса для типа этой карточки: "
+
+
+def type_rules_line(cwd: str, card_type: str, lead: str = TYPE_RULES_LEAD) -> str:
+    """Правило 6 для запроса тезиса: «\n6. Форма тезиса для типа этой карточки: …» или пустая строка. `lead` — подпись
+    (в запросе пересборки правил 1–5 нет, и подпись без номера)."""
     rules = type_rules_for(cwd, card_type)
-    return f"\n6. Форма тезиса для типа этой карточки: {rules}" if rules else ""
+    return f"{lead}{rules}" if rules else ""
 
 
 PROMPT_BUILD = """Ты разбираешь источник на карточки знаний.
@@ -4393,6 +4412,8 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         if not res["ok"]:
             fail_step(step, key="note", why="карточка не собрана: "
                         + (res.get("why") or res["out"][:200]))
+            if "нарушает шаблон" in (res.get("why") or "") + (res.get("out") or ""):
+                step["content_fail"] = True      # шаблон отверг эту карточку — повтор даст то же, источник отложит план
             return step
         made.append(f"«{into_name}» ← дописаны секции {card['sections']}" if into_name
                     else f"«{card['title']}» ← секции {card['sections']} → "
@@ -5100,7 +5121,7 @@ PROMPT_REDISTILL = """Источник карточки «{title}» измени
 
 Новый текст источника, перенесённый дословно:
 
-{body}
+{body}{type_rules}
 
 Верни ДВА блока и ничего больше:
 
@@ -5110,7 +5131,7 @@ PROMPT_REDISTILL = """Источник карточки «{title}» измени
 
 ИЗМЕНИЛОСЬ:
 <одна-две фразы: что в знании стало другим против прежнего тезиса. Если по сути ничего
-не изменилось, а поменялась только вёрстка — так и напишите: «по сути без изменений»>{type_rules}"""
+не изменилось, а поменялась только вёрстка — так и напишите: «по сути без изменений»>"""
 
 
 # Ответ «ИЗМЕНИЛОСЬ: по сути без изменений» — формулировка задана заданием выше.
@@ -6748,7 +6769,7 @@ def apply_split_parts(path: str, parts: list) -> list:
     if len(made) < 2:
         return []
     reg = CT.registry_for(os.path.dirname(os.path.abspath(kb)))
-    ptype = fm.get("type") or "concept"
+    ptype = fm.get("type") or reg.section_type().get(os.path.basename(folder), "concept")
     kind = CT.fit_kind(ptype, fm.get("kind") or "knowledge", reg)
     cards = []
     for i, (safe, name, dest, chunk) in enumerate(made):
@@ -6819,8 +6840,12 @@ def plan_split(cfg: dict, title: str, text: str, call, deadline: float,
     return out if len(out) >= 2 else []
 
 
+FEEDBACK_NOTE = ("\n\nПРОШЛЫЙ ТЕЗИС НЕ ПРИНЯТ ШАБЛОНОМ ТИПА. Нарушение: {why}\n"
+                 "Напиши тезис заново, исправив именно это; правила выше те же.")
+
+
 def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
-                 deadline: float = 0.0, prefer: int = 0) -> dict:
+                 deadline: float = 0.0, prefer: int = 0, feedback: str = "") -> dict:
     """Переписать одну карточку `kind: knowledge` в тезис. → шаг для отчёта.
 
     Дословный текст не пропадает: он уезжает в раздел «Источник» под тезисом. Это и есть
@@ -6895,6 +6920,8 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     card_type = ((_head_scalar(head, "type") or "").strip().strip('"')
                  or CT.registry_for(root).section_type().get(os.path.basename(os.path.dirname(os.path.abspath(path))), ""))
     rules = type_rules_line(root, card_type)
+    rules_re = type_rules_line(root, card_type, lead="\n\nФорма тезиса для типа этой карточки: ")
+    note_back = (FEEDBACK_NOTE.format(why=" ".join(str(feedback).split())[:500]) if feedback else "")
     budget = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + len(title) + 200
                               + len(lead) + len(rules))
     parts = [lead + p for p in chunks(src, budget)]
@@ -6937,7 +6964,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     changed = ""
     if len(parts) == 1 and was_thesis:
         a = once(with_terms(PROMPT_REDISTILL.format(
-            title=title, was=was_thesis[:4000], body=parts[0], type_rules=rules), parts[0], root))
+            title=title, was=was_thesis[:4000], body=parts[0], type_rules=rules_re) + note_back, parts[0], root))
         if not a["ok"]:
             fail_step(step, model_fail_note(a), a, key="note")
             return step
@@ -6960,7 +6987,8 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         # начинает ссылаться на карточки как на источники («согласно …», «описано в …»),
         # и строгий Момус находит в тезисах втрое больше утверждений без опоры. Связи
         # ставит отдельный проход, где движок доказывает, что текст не изменился.
-        a = once(with_terms(PROMPT_DISTILL.format(title=title, body=parts[0], type_rules=rules), parts[0], root))
+        a = once(with_terms(PROMPT_DISTILL.format(title=title, body=parts[0], type_rules=rules) + note_back,
+                            parts[0], root))
         if not a["ok"]:
             fail_step(step, model_fail_note(a), a, key="note")
             return step
@@ -7305,10 +7333,24 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             # Пометку встречи ставит движок: тезис переписан — она на месте.
             from aurora_common import with_meeting_mark
             _done, why = CT.try_write_card(path, with_meeting_mark(with_fields(text, fields)), op="body")
-            if why:
-                # Тезис модели не прошёл шаблон типа: карточка остаётся как была, тезис не записан. Повторять
-                # вызов модели на том же тексте незачем — карточка откладывается до изменения (источника,
+            if why and not step.get("parts") and not step.get("kept"):
+                # Тезис модели не прошёл шаблон типа: одна повторная попытка с текстом нарушения в запросе (как у разбора
+                # источников). Второй отказ — карточка остаётся как была и откладывается до изменения (источника,
                 # исправления или самого шаблона).
+                again = distill_card(cfg, path, call=call, momus=momus, feedback=why,
+                                     deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")))
+                if again.get("head") is not None and again.get("status") == "переписана":
+                    step.clear()
+                    step.update(again, retried=True)
+                    head_now = re.sub(r"^distilled_was:.*$\n?", "", step["head"], flags=re.M)
+                    fields = {"distilled": TODAY_STR}
+                    if by := used_model(step):
+                        fields["distilled_by"] = f'"{by}"'
+                    if step.get("unsupported"):
+                        fields["unsupported"] = str(step["unsupported"])
+                    text = "---" + head_now + "\n---" + step["body"]
+                    _done, why = CT.try_write_card(path, with_meeting_mark(with_fields(text, fields)), op="body")
+            if why:
                 refuse_step(step, why, path)
                 park_card(cwd, path, refused=True)
                 if commit and commit_every:
@@ -7978,6 +8020,12 @@ def main() -> int:
         print("agent_runner: агент не настроен — панель «Настройка» → «Агент», "
               "проверка: agent:ping", file=sys.stderr)
         return 1
+
+    if a.apply and a.task in CARD_WRITING_TASKS:
+        broken = registry_gate(cwd)
+        if broken:
+            print(f"agent_runner: {broken}", file=sys.stderr)
+            return 2
 
     if a.task == "make":
         if not a.session and not (a.kind and a.idea):

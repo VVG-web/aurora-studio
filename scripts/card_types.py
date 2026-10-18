@@ -2574,6 +2574,17 @@ def kb_location(path: str) -> "tuple | None":
     return None
 
 
+def in_base(folder: str) -> bool:
+    """Папка (после разворота ссылок) лежит внутри базы знаний своего проекта. Перенос и переименование карточек не идут
+    туда, куда не пустила бы запись: `_archive` или раздел — ссылка на `Raw/`, зеркало источников или чужую папку."""
+    where = kb_location(os.path.join(os.path.abspath(str(folder)), "_"))
+    if where is None:
+        return False
+    base = os.path.normcase(os.path.realpath(os.path.join(where[0], KB_ROOT)))
+    real = os.path.normcase(os.path.realpath(str(folder)))
+    return real == base or real.startswith(base + os.sep)
+
+
 def is_card_path(path: str) -> bool:
     """Файл — карточка базы: лежит в разделе под `AuroraKnowledgeDB/` и не служебный (`index.md`, `meta/…`).
     Так решает вход записи, куда можно писать; скрипты, чьи правки идут и по карточкам, и по прочим файлам проекта
@@ -2721,6 +2732,9 @@ def _admit(path: str, new_text: str, op: str, reg: "Registry | None") -> tuple:
             or not is_card_path(real)):
         raise TemplateViolation(path, op, [Violation("V-LINK", "error", 1, f"«{rel}» — ссылка на файл вне базы знаний",
                                                      "карточка-ссылка не пишется: положите файл в базу или уберите ссылку")])
+    if os.path.isfile(path) and not os.access(path, os.W_OK):
+        raise TemplateViolation(path, op, [Violation("V-RO", "error", 1, f"«{rel}» — файл только для чтения",
+                                                     "защиту от записи движок не снимает: снимите её сами или правьте карточку руками")])
     if reg is not None and not reg.types:
         reg = None                  # пустой реестр, переданный явно, не отключает проверку: берётся реестр проекта
     text = str(new_text).replace("\r\n", "\n")
@@ -2745,7 +2759,13 @@ def _admit(path: str, new_text: str, op: str, reg: "Registry | None") -> tuple:
         # которым тезис ещё не писали (заготовка, наполненная текстом источника).
         marks = frontmatter(disk) if disk else {}
         settled = bool((marks.get("distilled") or "").strip() or (marks.get("distilled_was") or "").strip())
-        errors = _write_errors(text, rel, reg, template_required=strict, raw_ok=not settled)
+        # Правка, снявшая отметку тезиса и оставившая память о ней (`distilled_was`), возвращает карточку в «тезис ждёт»
+        # (ремонт вычистил из тезиса служебное, источник обновлён): её собственная часть судится как перенос. Снять отметку
+        # без памяти о ней и подставить мусорное тело по-прежнему нельзя.
+        now_marks = frontmatter(text)
+        waiting = bool((now_marks.get("distilled_was") or "").strip()) and not (now_marks.get("distilled") or "").strip()
+        raw_ok = (not settled) or waiting
+        errors = _write_errors(text, rel, reg, template_required=strict, raw_ok=raw_ok)
         if strict:
             wrong = _section_violation(text, rel, reg)
             if wrong is not None:
@@ -2760,7 +2780,7 @@ def _admit(path: str, new_text: str, op: str, reg: "Registry | None") -> tuple:
                 errors.append(Violation("V-02", "error", 1, "штамп template: снят с карточки",
                                         "поле template: означает «карточка проходит шаблон» и не снимается"))
             if not errors and op in STAMP_OPS:
-                text = stamp_if_conformant(text, rel, reg, raw_ok=not settled)
+                text = stamp_if_conformant(text, rel, reg, raw_ok=raw_ok)
         return text, False, errors
     return text, False, []
 

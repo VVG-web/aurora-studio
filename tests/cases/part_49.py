@@ -438,3 +438,151 @@ def test_section_list_in_the_prompt_is_bounded_and_todo_names_the_new_group(tmp:
     group = "нарушения шаблона у карточек со штампом"
     assert group not in {title for title, _w, _h in T.HUMAN}, "решает движок, а не человек (решение заказчика 15.09)"
     assert group in T.STUCK_WHY, "новая группа линтера без пояснения в «Что осталось»"
+
+
+@test
+def test_a_template_refusal_is_not_taken_for_a_dropped_connection(tmp: Path):
+    """Шаг маршрута с кодом 1, чей вывод называет карточку «Настройка SSL» в строке об отказе шаблона, не считается обрывом
+    сети (иначе маршрут ждал бы сеть без предела); настоящий обрыв по-прежнему узнаётся."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    rr = importlib.import_module("route_runner")
+    line = ("  ! не записана AuroraKnowledgeDB/Concepts/Настройка SSL.md: карточка не записана (body) — Настройка SSL.md "
+            "нарушает шаблон: V-LINK: «AuroraKnowledgeDB/Concepts/Настройка SSL.md» — ссылка на файл вне базы знаний")
+    assert not rr.looks_offline(["шаг", line, "⚠ шаблон типа не принял записей: 1 — строки «!» выше называют карточки"])
+    assert rr.looks_offline(["шаг", line, "Connection refused"])
+
+
+@test
+def test_an_edit_that_hands_the_thesis_back_is_not_a_return_to_raw(tmp: Path):
+    """Правка карточки с тезисом, которая снимает `distilled` и оставляет `distilled_was` (ремонт вычистил служебное из
+    тезиса, источник обновлён), — это «тезис ждёт», и вход её принимает; без памяти об отметке мусорное тело по-прежнему нельзя."""
+    C = _C()
+    root = P42._project(tmp)
+    reg = P42._reg(root)
+    path = root / "AuroraKnowledgeDB" / "Concepts" / "Заявка.md"
+    P42._put(path, P42.mk())
+    waiting = P42.mk(distilled=None, distilled_was="2026-10-01",
+                     body="## Источник (перенесено дословно)\n\n### Sources/Confluence/Процессы/Заявка на поставку.md\n\nТекст источника.\n")
+    assert C.write_card_text(str(path), waiting, op="repair", reg=reg) is True
+    P42._put(path, P42.mk())
+    bare = P42.mk(distilled=None, body="## Свойства\n- мусор без определения\n")
+    try:
+        C.write_card_text(str(path), bare, op="repair", reg=reg)
+    except C.TemplateViolation:
+        pass
+    else:
+        raise AssertionError("отметка тезиса снята без памяти о ней, и мусорное тело принято")
+
+
+@test
+def test_a_thesis_of_empty_sentences_leaves_the_card_waiting_for_a_thesis(tmp: Path):
+    """`kb:repair --tautologies`: тезис, состоявший из одной пустой фразы («X — [[X]].»), после чистки не оставляет
+    карточку с пустой собственной частью: отметка тезиса снимается (с памятью о ней), `agent:distill` напишет тезис заново."""
+    root = make_project(tmp, git=True)
+    p = root / KB / "Concepts" / "Заявители.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/Док.md").write_text("Текст.\n", encoding="utf-8")
+    p.write_text('---\ntitle: "Заявители"\naliases: []\ntype: concept\nkind: knowledge\nstatus: draft\nsources:\n'
+                 '  - "Sources/Confluence/Док.md"\nsource_synced: 2026-10-01\ncreated: 2026-10-01\nupdated: 2026-10-01\n'
+                 'built: machine\ndistilled: 2026-10-01\n---\n\nЗаявители — [[Заявители]].\n\n## Источник (перенесено дословно)\n\n'
+                 'Заявители подают заявки.\n', encoding="utf-8")
+    cp = run("kb_fix.py", "--tautologies", "--apply", "--allow-dirty", cwd=root)
+    text = p.read_text(encoding="utf-8")
+    head = text.split("\n---\n", 1)[0]
+    assert cp.returncode == 0 and "не записана" not in cp.stderr, cp.stdout + cp.stderr
+    assert "distilled_was: 2026-10-01" in head and "\ndistilled:" not in head, head
+    assert "Заявители подают заявки." in text and "[[Заявители]]." not in text.split("## Источник")[0], text
+
+
+@test
+def test_a_broken_registry_stops_the_card_writing_tasks_before_any_model_call(tmp: Path):
+    """Шаблоны найдены, но ни один не принят: задачи агента, пишущие карточки, не зовут модель (каждая запись была бы
+    отвергнута, а вызовы оплачены впустую); читающие задачи не затронуты."""
+    R = _mod("agent_runner")
+    C = _mod("card_types")
+    proj = P42._project(tmp)
+    for f in (proj / "TemplatesCommon").glob("akdb_*.md"):
+        f.write_text(f.read_text(encoding="utf-8").replace("card_type:", "card_typo:"), encoding="utf-8")
+    real_kit = C._find_kit
+    C._find_kit = lambda: ("", "")
+    try:
+        why = R.registry_gate(str(proj))
+        assert "ни один не принят" in why and "модель не зовётся" in why, why
+        assert {"build", "distill", "extract", "relink"} <= set(R.CARD_WRITING_TASKS) and "ask" not in R.CARD_WRITING_TASKS
+        assert R.registry_gate(str(tmp / "empty")) == "", "проект без шаблонов (их просто нет) — не поломка реестра"
+    finally:
+        C._find_kit = real_kit
+    (tmp / "ok").mkdir()
+    ok = make_project(tmp / "ok")
+    assert R.registry_gate(str(ok)) == ""
+
+
+@test
+def test_a_refused_thesis_gets_one_more_try_with_the_violation_in_the_request(tmp: Path):
+    """Тезис, отвергнутый шаблоном, пересобирается один раз с текстом нарушения в запросе; принятый со второй попытки
+    записывается, второй отказ паркует карточку."""
+    R = _mod("agent_runner")
+    root = make_project(tmp)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/Док.md").write_text("Текст.\n", encoding="utf-8")
+    head = ('---\ntitle: "{t}"\naliases: []\ntype: concept\nkind: knowledge\nstatus: draft\nsources:\n  - "Sources/Confluence/Док.md"\n'
+            'source_synced: 2026-10-01\ncreated: 2026-10-01\nupdated: 2026-10-01\nbuilt: machine\n---\n\n')
+    paths = {}
+    for name in ("Исправимая", "Упрямая"):
+        paths[name] = root / KB / "Concepts" / f"{name}.md"
+        paths[name].write_text(head.format(t=name) + "## Источник (перенесено дословно)\n\n" + PAGE, encoding="utf-8")
+    seen = []
+
+    def model(cfg_, role, messages, **kw):
+        prompt = messages[0]["content"]
+        seen.append(prompt)
+        retry = "ПРОШЛЫЙ ТЕЗИС НЕ ПРИНЯТ ШАБЛОНОМ ТИПА" in prompt
+        if "Упрямая" in prompt or not retry:
+            return _answer("## Заголовок вместо определения\n- пункт списка")
+        return _answer("Заявка на поставку — документ, которым заказчик поручает поставщику передать товар.")
+
+    with _RunDir(tmp / "run"):
+        R.run_distill(_cfg(), str(root), apply=True, limit=0, momus=False, call=model)
+    good = paths["Исправимая"].read_text(encoding="utf-8")
+    bad = paths["Упрямая"].read_text(encoding="utf-8")
+    assert "distilled: " in good and "Заявка на поставку — документ" in good, good[:600]
+    assert "distilled:" not in bad, "дважды отвергнутый тезис записан"
+    assert sum("ПРОШЛЫЙ ТЕЗИС НЕ ПРИНЯТ" in p for p in seen) == 2, "повторная попытка — по одной на карточку"
+    assert R.still_parked(str(root), str(paths["Упрямая"]), R.parked_cards(str(root))), "карточка не отложена после второго отказа"
+
+
+@test
+def test_guide_steps_are_taken_in_order_of_importance_without_skipping_ahead(tmp: Path):
+    """Шаг инструкции, не влезший в бюджет, обрывает отбор: менее важный шаг на его место не берётся; тезис и ответ разбора
+    при отказе шаблона ставят `content_fail`, чтобы источник отложил план."""
+    R = _mod("agent_runner")
+    root = make_project(tmp)
+    prompts = root / "Prompts"
+    prompts.mkdir(exist_ok=True)
+    (prompts / "KB_classify.md").write_text(
+        "## Шаг 0. Нулевой\n\n" + "а " * 10 + "\n\n## Шаг 2. Второй\n\n" + "б " * 20 + "\n\n## Шаг 3. Третий\n\n" + "в " * 400
+        + "\n\n## Шаг 6. Шестой\n\n" + "г " * 10 + "\n", encoding="utf-8")
+    was = R.GUIDE_PROMPT_CHARS
+    try:
+        R.GUIDE_PROMPT_CHARS = 300
+        got = R.guide_for_prompt(str(root))
+    finally:
+        R.GUIDE_PROMPT_CHARS = was
+    assert re.findall(r"(?m)^## Шаг (\d+)\.", got) == ["2"], got
+    # отказ шаблона при сборке карточки — отказ по содержанию
+    real = R.run_build_plan
+    (root / "Raw/project").mkdir(parents=True, exist_ok=True)
+    (root / "Raw/project/Заявка.md").write_text(PAGE, encoding="utf-8")
+
+    def model(cfg_, role, messages, **kw):
+        return _answer(json.dumps({"cards": [{"title": "Заявка на поставку", "sections": "1-2", "to": "Concepts"}]}, ensure_ascii=False))
+
+    try:
+        R.run_build_plan = lambda cwd, args, timeout=300: {"ok": False, "rc": 1, "out": "", "refused": "",
+                                                           "why": "карточка не записана (create) — X.md нарушает шаблон: V-12"}
+        with _RunDir(tmp / "run"):
+            step = R.solve_source(_cfg(), str(root), "Raw", "Raw/project/Заявка.md", True, False, model, 0)
+    finally:
+        R.run_build_plan = real
+    assert step.get("content_fail") and "нарушает шаблон" in step["note"], step
