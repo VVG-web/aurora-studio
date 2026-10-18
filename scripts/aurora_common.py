@@ -3142,13 +3142,9 @@ def with_meeting_mark(text: str) -> str:
     text = text or ""
     base = re.sub(r"\n+" + re.escape(MEETING_MARK) + r"[^\n]*(?=\n|$)", "", text)
     base = re.sub(r"\A" + re.escape(MEETING_MARK) + r"[^\n]*\n\n?", "", base)
-    meets = [s for s in card_sources(base) if is_meeting(s)]
-    if not meets:
+    mark = meeting_mark_line(card_sources(base))
+    if not mark:
         return base
-    when = ", ".join(dict.fromkeys(meeting_label(s) for s in meets))
-    mark = (f"{MEETING_MARK}: {when} — сказано в разговоре, а не записано в документе. "
-            f"Стенограмм{'а' if len(meets) == 1 else 'ы'}: "
-            + ", ".join(f"`{s}`" for s in meets) + ".")
     at = base.find("\n" + QUOTES)
     if at >= 0:
         before = base[:at].rstrip("\n")
@@ -3156,7 +3152,25 @@ def with_meeting_mark(text: str) -> str:
     m = re.search(r"^# .+$", base, re.M)
     if m:
         return base[:m.end()] + "\n\n" + mark + base[m.end():]
+    if base.startswith("---\n"):                  # шапка есть, заголовка и дословного текста нет — пометка под шапкой
+        close = base.find("\n---", 3)
+        if close >= 0:
+            end = base.find("\n", close + 1)
+            end = len(base) if end < 0 else end
+            body = base[end:].lstrip("\n")
+            return base[:end] + "\n\n" + mark + ("\n\n" + body if body else "\n")
     return mark + "\n\n" + base
+
+
+def meeting_mark_line(sources) -> str:
+    """Строка пометки «из встречи» для карточки с такими источниками; пусто — среди них стенограмм нет."""
+    meets = [s for s in sources if is_meeting(s)]
+    if not meets:
+        return ""
+    when = ", ".join(dict.fromkeys(meeting_label(s) for s in meets))
+    return (f"{MEETING_MARK}: {when} — сказано в разговоре, а не записано в документе. "
+            f"Стенограмм{'а' if len(meets) == 1 else 'ы'}: "
+            + ", ".join(f"`{s}`" for s in meets) + ".")
 
 
 def corrections_of(text: str) -> str:

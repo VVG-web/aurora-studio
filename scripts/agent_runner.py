@@ -1063,7 +1063,7 @@ def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
                 place_definition(root, term, definition, os.path.basename(path)[:-3],
                                  donor_sources=donor)
                 placed.append((term, definition, keep))
-            except CT.TemplateViolation as e:
+            except REFUSALS as e:
                 kept_in_thesis.append(term)
                 out["note"] = (out["note"] + f"; «{term}»: шаблон не принял карточку — определение оставлено на "
                                f"месте ({e})").strip("; ")
@@ -1204,8 +1204,9 @@ def place_definition(root: str, term: str, definition: str, came_from: str,
                   "sources": sources, "created": TODAY_STR, "updated": TODAY_STR}
         if sources:
             fields.update({"built": "machine", "source_synced": TODAY_STR})
-        card = CT.render_card("concept", fields, f"# {name.replace(chr(34), chr(39))}\n\n{line}\n\n{note}\n",
-                              reg=reg, gap=1)
+        from aurora_common import with_meeting_mark
+        card = with_meeting_mark(CT.render_card("concept", fields, f"# {name.replace(chr(34), chr(39))}\n\n{line}\n\n{note}\n",
+                                                reg=reg, gap=1))
         CT.write_card_text(path, card, op="create", reg=reg)
         return path.replace("\\", "/")     # пути движка — в posix-виде, как у `walk_md`
 
@@ -1225,14 +1226,16 @@ def place_definition(root: str, term: str, definition: str, came_from: str,
         # версий её не несла.
         if card_sources(filled) and not re.search(r"(?m)^built:", filled.split("\n---", 1)[0]):
             filled = with_fields(filled, {"built": "machine", "source_synced": TODAY_STR})
-        CT.write_card_text(existing, filled, op="body")
+        from aurora_common import with_meeting_mark
+        CT.write_card_text(existing, with_meeting_mark(filled), op="body")
         return existing
     body = card_body(text)
     if line in body:
         return existing          # это же определение там уже есть — второй раз не кладём
     # Дописанное знание пришло из документов донора — ими же пополняется происхождение:
     # карточка накапливает все источники, из которых наполнена (Т-5).
-    CT.write_card_text(existing, with_sources(text.rstrip("\n") + f"\n\n{line}\n\n{note}\n", donor_sources or []),
+    from aurora_common import with_meeting_mark
+    CT.write_card_text(existing, with_meeting_mark(with_sources(text.rstrip("\n") + f"\n\n{line}\n\n{note}\n", donor_sources or [])),
                        op="body")
     return existing
 
@@ -2208,6 +2211,7 @@ def rel_or_abs(path: str) -> str:
 
 
 REFUSED = "отклонена шаблоном"       # статус шага: шаблон типа не принял запись карточки
+REFUSALS = (CT.TemplateViolation, CT.UnknownCardType)    # нарушение шаблона и тип вне реестра или выключенный
 
 
 def refuse_step(step: dict, why: str, path: str, status: str = REFUSED) -> dict:
@@ -6706,8 +6710,8 @@ def apply_split_parts(path: str, parts: list) -> list:
     которую шаблон не принял, не должна оставить карточку без текста, уехавшего в соседние части: нарушение
     поднимается `CT.TemplateViolation` до записи первого файла.
     """
-    from aurora_common import (card_title_safe, frontmatter, part_stem, set_field,
-                               split_frontmatter, split_tail)
+    from aurora_common import (card_title_safe, frontmatter, meeting_mark_line, part_stem, set_field,
+                               split_frontmatter, split_tail, with_meeting_mark)
     text = open(path, encoding="utf-8", errors="ignore").read()
     fm = frontmatter(text)
     head, rest = split_frontmatter(text)
@@ -6742,11 +6746,12 @@ def apply_split_parts(path: str, parts: list) -> list:
                   "part_of": f'"[[{stem}]]"', "related": [f"[[{n}]]" for n in neighbours]}
         if card_sources(text):          # собрал движок из источников родителя; у карточки без источников метки нет
             fields.update({"built": "machine", "source_synced": TODAY_STR})
-        cards.append((dest, CT.render_card(ptype, fields, f"# {shown}\n\n{chunk}\n", reg=reg, gap=1)))
+        cards.append((dest, with_meeting_mark(CT.render_card(ptype, fields, f"# {shown}\n\n{chunk}\n", reg=reg, gap=1))))
     # Исходная карточка остаётся входом: тело уехало в части, вход и провенанс здесь.
     # Статус — служебный: знание теперь в частях, а это карта, и в паке ей не место.
     # Иначе одна и та же мысль попадёт в контекст дважды — списком и текстом.
-    body = (f"\n\nКарточка была разрезана: тело выросло до размеров документа, а знание "
+    mark = meeting_mark_line(card_sources(text))        # источник-стенограмма: карта документа сохраняет пометку встречи
+    body = ((f"\n\n{mark}" if mark else "") + f"\n\nКарточка была разрезана: тело выросло до размеров документа, а знание "
             f"ищут атомарным. Границы предложил планировщик; части — дословный текст источника (у карточки "
             f"знания без блоков шаблона страницы: они остались в самом источнике).\n\n"
             + "\n".join(f"- [[{s}|{n}]]" for s, n, _d, _c in made) + "\n")
@@ -7066,9 +7071,12 @@ def parked_cards(cwd: str) -> dict:
         return {}
 
 
-def park_card(cwd: str, path: str) -> None:
+def park_card(cwd: str, path: str, refused: bool = False) -> None:
+    """Отложить карточку до изменения файла. Отказ шаблона (`refused`) снимается ещё и сменой шаблонов или настроек
+    типов: починили шаблоны — карточка возвращается в очередь, не дожидаясь правки своего текста."""
     data = parked_cards(cwd)
-    data[os.path.relpath(path, cwd).replace("\\", "/")] = _card_sig(path)
+    sig = _card_sig(path)
+    data[os.path.relpath(path, cwd).replace("\\", "/")] = (sig + "@" + CT.registry_fingerprint(cwd)) if refused else sig
     full = os.path.join(cwd, PARKED)
     try:
         os.makedirs(os.path.dirname(full), exist_ok=True)
@@ -7080,7 +7088,10 @@ def park_card(cwd: str, path: str) -> None:
 
 def still_parked(cwd: str, path: str, parked: dict) -> bool:
     rel = os.path.relpath(path, cwd).replace("\\", "/")
-    return rel in parked and parked[rel] == _card_sig(path)
+    if rel not in parked:
+        return False
+    sig, _at, registry = str(parked[rel]).partition("@")
+    return sig == _card_sig(path) and (not registry or registry == CT.registry_fingerprint(cwd))
 
 
 def distill_queue(cfg: dict, cwd: str, defer_refresh: bool = False) -> list:
@@ -7096,7 +7107,9 @@ def distill_queue(cfg: dict, cwd: str, defer_refresh: bool = False) -> list:
     новые сущности для следующего оборота (1.138.0).
     """
     from aurora_common import card_body, frontmatter, is_placeholder, walk_md
-    window = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + 400 + TYPE_RULES_CHARS + 80)
+    # Словарь и документ — типы, чьё правило 6 коротко (справочник — сотни знаков): запас под него небольшой, иначе на узком
+    # окне бюджет обнулялся бы и «не влезающие» словари перестали бы попадать в очередь.
+    window = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + 400 + 300)
     parked = parked_cards(cwd)
     todo = []
     for p in walk_md(os.path.join(cwd, "AuroraKnowledgeDB"), skip_service=True,
@@ -7224,7 +7237,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
         if apply and step["status"] in PARKED_STATUSES:
             # Ждёт человека — в следующие обороты не считаем. Разрезанная ниже карточка
             # меняется, и её отпечаток с запомненным уже не совпадёт.
-            park_card(cwd, path)
+            park_card(cwd, path, refused=step["status"] == REFUSED)
         if apply and step.get("head") is not None and commit and commit_every:
             written[0] += 1          # коммит — ниже, когда тезис уже записан
         say(f"  {progress(done, total, started)}"
@@ -7249,15 +7262,15 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             _done, why = CT.try_write_card(path, with_fields(was, {"distill_empty": TODAY_STR}), op="header")
             if why:
                 refuse_step(step, why, path)
-                park_card(cwd, path)
+                park_card(cwd, path, refused=True)
                 say(f"    ✗ шаблон не принял вердикт «знания нет»: {why[:140]}")
             return
         if apply and step.get("split"):
             try:
                 apply_split(path, step)
-            except CT.TemplateViolation as e:
+            except REFUSALS as e:
                 refuse_step(step, f"разрез не записан, карточка осталась как была: {e}", path)
-                park_card(cwd, path)
+                park_card(cwd, path, refused=True)
                 say(f"    ✗ шаблон не принял разрез: {str(e)[:140]}")
             return
         if apply and step.get("head") is not None:
@@ -7284,7 +7297,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
                 # вызов модели на том же тексте незачем — карточка откладывается до изменения (источника,
                 # исправления или самого шаблона).
                 refuse_step(step, why, path)
-                park_card(cwd, path)
+                park_card(cwd, path, refused=True)
                 if commit and commit_every:
                     written[0] -= 1
                 say(f"    ✗ шаблон не принял тезис: {why[:140]}")

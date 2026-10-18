@@ -2634,7 +2634,7 @@ def test_run_summary_goes_before_every_script_that_imports_it_at_module_level(_t
 def test_kb_cards_list_does_not_claim_enforcement(tmp: Path):
     """Первая фаза только советует: `kb:cards --list` не обещает, что тип вне списка «не существует»."""
     out = _cli(_cli_project(tmp), "--list", expect=0).stdout
-    assert "Проверка пока только советует" in out and "не существует" not in out, out[-300:]
+    assert "единый вход шаблонов" in out and "не существует" not in out, out[-300:]
 
 
 # ------------------------------------------------------------------ документация первой фазы

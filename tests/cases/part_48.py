@@ -372,7 +372,7 @@ def test_creator_term_stubs_golden(tmp: Path):
     for i in range(3):
         card(root, f"Processes/Обмен-{i}.md", f"Квитанция уходит по ТКС и по ЭДО ({i}).", status="knowledge")
     cp = run("kb_fix.py", "--terms", "--apply", "--allow-dirty", cwd=root)
-    assert cp.returncode in (0, 1), cp.stdout + cp.stderr
+    assert cp.returncode in (0, 1) and "Traceback" not in cp.stderr, cp.stdout + cp.stderr
     known = _gold(_text(root, "Glossary/ТКС.md"))
     assert known.startswith("\n".join([
         "---", 'title: "ТКС"', "type: glossary", "template: akdb_glossary_v1.0.md", "kind: dictionary", "status: draft",
@@ -424,7 +424,7 @@ def test_creator_frontmatter_repair_keeps_the_template_rules(tmp: Path):
     p.write_text('---\ntitle: "Старая"\n---\n\nСтарая карточка без статуса и типа, которую пишет человек.\n',
                  encoding="utf-8")
     cp = run("kb_fix.py", "--frontmatter", "--apply", "--allow-dirty", cwd=root)
-    assert cp.returncode in (0, 1), cp.stdout + cp.stderr
+    assert cp.returncode in (0, 1) and "Traceback" not in cp.stderr, cp.stdout + cp.stderr
     got = p.read_text(encoding="utf-8")
     assert "status:" in got and "Старая карточка без статуса и типа, которую пишет человек." in got, got
 
@@ -586,7 +586,7 @@ def test_repair_keeps_verbatim_bodies(tmp: Path):
              ["--stale-stubs"], ["--merge-all"], ["--names"], ["--titles"], ["--links", "--homoglyphs", "--frontmatter", "--retire"])
     for fl in flags:
         cp = run("kb_fix.py", *fl, "--apply", "--allow-dirty", cwd=root)
-        assert cp.returncode in (0, 1), (fl, cp.stdout[-600:] + cp.stderr[-600:])
+        assert cp.returncode in (0, 1) and "Traceback" not in cp.stderr, (fl, cp.stdout[-600:] + cp.stderr[-600:])
     run("kb_kind.py", "--apply", cwd=root, expect_rc=0)
     for fl in (["--by-source"], ["--by-code"], []):
         run("kb_moc.py", *fl, "--apply", "--allow-dirty", cwd=root, expect_rc=0)
@@ -670,7 +670,7 @@ def _routed_project(tmp: Path) -> tuple:
                      ("kb_graph.py", "--cards", "--apply", "--allow-dirty"), ("kb_moc.py", "--apply", "--allow-dirty"),
                      ("kb_moc.py", "--by-code", "--apply", "--allow-dirty")):
             cp = run(*args, cwd=root)
-            assert cp.returncode in (0, 1), (args, cp.stdout[-500:] + cp.stderr[-500:])
+            assert cp.returncode in (0, 1) and "Traceback" not in cp.stderr, (args, cp.stdout[-500:] + cp.stderr[-500:])
     return root, update
 
 
@@ -711,7 +711,7 @@ def test_editors_keep_cards_valid(tmp: Path):
     run("kb_corrections.py", "--new", "Заявка-на-поставку", "--text", "Срок подтверждения — пять рабочих дней.", cwd=root, expect_rc=0)
     for args in (("kb_corrections.py", "--apply"), ("kb_trust.py", "--apply"), ("kb_schema.py", "--apply", "--allow-dirty")):
         cp = run(*args, cwd=root)
-        assert cp.returncode in (0, 1), (args, cp.stdout[-500:] + cp.stderr[-500:])
+        assert cp.returncode in (0, 1) and "Traceback" not in cp.stderr, (args, cp.stdout[-500:] + cp.stderr[-500:])
     concept = _text(root, "Concepts/Заявка-на-поставку.md")
     assert "## Исправления человеком" in concept and "пять рабочих дней" in concept, concept[-900:]
     assert not _strict_errors(root), _strict_errors(root)
@@ -719,3 +719,173 @@ def test_editors_keep_cards_valid(tmp: Path):
     for args in (("kb_corrections.py", "--apply"), ("kb_trust.py", "--apply"), ("kb_schema.py", "--apply", "--allow-dirty")):
         run(*args, cwd=root)
     assert {p: p.read_bytes() for p in _kb_cards(root)} == stamp, "повторный проход правщиков переписал карточки"
+
+
+# ------------------------------------------------------------------ доработка CT-10 по независимому просмотру
+
+MEETING = "Raw/meetings/2026-09-01_10-00-sync.md"
+
+
+def _meeting_card(root: Path, rel: str, body: str, sources=(MEETING,), title: str = "") -> Path:
+    """Карточка знания, собранная движком из стенограммы встречи (с пометкой «из встречи»)."""
+    from aurora_common import with_meeting_mark
+    p = root / KB / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    srcs = "".join(f'\n  - "{s}"' for s in sources)
+    text = (f'---\ntitle: "{title or p.stem}"\naliases: []\ntype: concept\nkind: knowledge\nstatus: draft\nsources:{srcs}\n'
+            "source_synced: 2026-09-01\ncreated: 2026-09-01\nupdated: 2026-09-01\nbuilt: machine\n---\n\n"
+            f"# {title or p.stem}\n\n{body}\n")
+    p.write_text(with_meeting_mark(text), encoding="utf-8")
+    return p
+
+
+@test
+def test_supersede_survives_service_files_and_writes_the_pair_whole(tmp: Path):
+    """`kb:supersede`: ссылки на заменяемую карточку в индексе и заметке `meta/` переписываются без падения (служебные
+    файлы пишутся не как карточки); устаревшая уходит в `_archive`, преемник получает `supersedes`."""
+    root = make_project(tmp)
+    card(root, "Concepts/Старая.md", "Старая карточка.", status="knowledge", kind="knowledge")
+    card(root, "Concepts/Новая.md", "Новая карточка.", status="knowledge", kind="knowledge")
+    for rel in ("index.md", "Concepts/_index.md", "meta/заметка.md"):
+        p = root / KB / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("Список: [[Старая]] и [[Новая]].\n", encoding="utf-8")
+    cp = run("kb_supersede.py", "Старая", "Новая", "--reason", "заменена", "--apply", cwd=root)
+    assert cp.returncode == 0 and "Traceback" not in cp.stderr, cp.stdout + cp.stderr
+    assert (root / KB / "_archive" / "Старая.md").is_file() and not (root / KB / "Concepts" / "Старая.md").exists()
+    assert "[[Старая]]" not in _text(root, "index.md") and "[[Новая]]" in _text(root, "meta/заметка.md")
+    assert "supersedes:" in _text(root, "Concepts/Новая.md") and "[[Старая]]" in _text(root, "Concepts/Новая.md")
+
+
+@test
+def test_merge_is_written_whole_or_not_at_all(tmp: Path):
+    """Слияние и разрез пишутся связкой: если шаблон не принял запись одной из карточек (выжившей или части), не пишется
+    ни одна и не уходят в архив донор и переименованные; отказ виден в отчёте, шаг кончается кодом 1."""
+    K = _mod("kb_fix")
+    root = make_project(tmp)
+    keep = _meeting_card(root, "Concepts/Кеп.md", "Выживший.", sources=("Sources/Confluence/Док.md",), title="Кеп")
+    drop = _meeting_card(root, "Concepts/Дроп.md", "Донор.", title="Дроп")
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/Док.md").write_text("Текст.\n", encoding="utf-8")
+    was = {p: p.read_bytes() for p in (keep, drop)}
+    real = K.why_refused
+    with _in_dir(root):
+        try:
+            K.why_refused = lambda path, text, op="repair", reg=None: ("шаблон не принял" if path.endswith("Кеп.md") else "")
+            cards = K.load_cards(K.ROOT)
+            plan = K.Plan()
+            assert K.plan_merge(cards, "Кеп", "Дроп", plan, quiet=True) == 0
+            assert plan.coupled and len(plan.coupled[0]) == 2
+            K.apply_plan(plan)
+        finally:
+            K.why_refused = real
+    assert {p: p.read_bytes() for p in (keep, drop)} == was, "связанная запись прошла наполовину"
+    assert not (root / KB / "_archive" / "Дроп.md").exists(), "донор ушёл в архив при отказе выжившей"
+    assert {Path(p).name for p, _why in plan.refused} == {"Кеп.md", "Дроп.md"}, plan.refused
+
+
+@test
+def test_merge_of_a_meeting_donor_marks_the_survivor(tmp: Path):
+    """Донор из встречи сливается в выжившую из документа: выжившая получает пометку «из встречи» вместе с источником,
+    слияние проходит, донор уходит в архив."""
+    root = make_project(tmp, git=True)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/Док.md").write_text("Текст.\n", encoding="utf-8")
+    keep = _meeting_card(root, "Concepts/Кеп.md", "Выживший.", sources=("Sources/Confluence/Док.md",), title="Кеп")
+    _meeting_card(root, "Concepts/Дроп.md", "Донор.", title="Дроп")
+    cp = run("kb_fix.py", "--merge", "Кеп", "Дроп", "--apply", "--allow-dirty", cwd=root)
+    assert cp.returncode == 0 and "не записана" not in cp.stderr, cp.stdout + cp.stderr
+    text = keep.read_text(encoding="utf-8")
+    assert MEETING in text.split("\n---\n", 1)[0] and "Из встречи" in text, text[:700]
+    assert (root / KB / "_archive" / "Дроп.md").is_file()
+    assert not _errors(root, "Concepts/Кеп.md"), _errors(root, "Concepts/Кеп.md")
+
+
+@test
+def test_creators_carry_the_meeting_mark(tmp: Path):
+    """Создатели карточек из стенограмм ставят пометку «из встречи» сами: разрез `kb:split`, разрез агентом и вынос
+    определения кладут её на части, карту и карточку термина; шаблон такие записи принимает."""
+    R = _mod("agent_runner")
+    root = make_project(tmp, git=True)
+    body = "\n\n".join(f"## Тема {i}\n\n" + f"Решение {i} принято на встрече, срок три дня. " * 8 for i in (1, 2))
+    _meeting_card(root, "Concepts/Совещание.md", body, title="Совещание")
+    cp = run("kb_fix.py", "--split", "Совещание", "--split-min", "50", "--apply", "--allow-dirty", cwd=root)
+    assert cp.returncode == 0 and "не записана" not in cp.stderr, cp.stdout + cp.stderr
+    parts = sorted(p for p in (root / KB / "Concepts").glob("*.md") if p.stem.startswith("Тема"))
+    assert len(parts) == 2, [p.name for p in (root / KB / "Concepts").glob("*.md")]
+    for p in parts + [root / KB / "Concepts" / "Совещание.md"]:
+        assert "Из встречи" in p.read_text(encoding="utf-8"), p.name
+        assert not _errors(root, f"Concepts/{p.name}"), (p.name, _errors(root, f"Concepts/{p.name}"))
+    # разрез агентом (части приходят от планировщика)
+    other = _meeting_card(root, "Concepts/Планёрка.md", "Текст.\n\n## Раз\n\nПервое. " * 5, title="Планёрка")
+    made = R.apply_split_parts(str(other), [("Первое решение", "Первое решение принято. " * 6),
+                                            ("Второе решение", "Второе решение принято. " * 6)])
+    assert len(made) == 2
+    for stem in ("Планёрка", made[0][0], made[1][0]):
+        assert "Из встречи" in _text(root, f"Concepts/{stem}.md"), stem
+        assert not _errors(root, f"Concepts/{stem}.md"), (stem, _errors(root, f"Concepts/{stem}.md"))
+    # вынос определения из карточки встречи
+    with _in_dir(root):
+        placed = R.place_definition(str(root), "Накладная", "Накладная — документ о передаче товара.", "Совещание",
+                                    donor_sources=[MEETING])
+    assert "Из встречи" in Path(placed).read_text(encoding="utf-8")
+    assert not _errors(root, "Concepts/Накладная.md"), _errors(root, "Concepts/Накладная.md")
+
+
+@test
+def test_repair_gives_a_header_to_a_card_without_one(tmp: Path):
+    """`kb:repair --frontmatter`: карточка без шапки получает шапку (статус и тип по разделу); вход записи не считает
+    недостающие поля новой шапки ухудшением."""
+    root = make_project(tmp, git=True)
+    p = root / KB / "Concepts" / "Голая.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("# Голая\n\nОписание без шапки.\n", encoding="utf-8")
+    cp = run("kb_fix.py", "--frontmatter", "--apply", "--allow-dirty", cwd=root)
+    assert cp.returncode == 0 and "не записана" not in cp.stderr, cp.stdout + cp.stderr
+    text = p.read_text(encoding="utf-8")
+    assert text.startswith("---\n") and "status: draft" in text.split("\n---\n", 1)[0] and "type: concept" in text.split("\n---\n", 1)[0], text[:300]
+    assert "Описание без шапки." in text
+
+
+@test
+def test_refusals_end_the_step_with_code_one(tmp: Path):
+    """Отказ шаблона не маскируется кодом 0: скрипт, у которого шаблон отверг запись, кончается кодом 1 и словом об этом
+    в stderr (`card_types.finish_code`); чужие коды возврата и ход без отказов не меняются; ремонт без отказов
+    печатает прежнее «✅ Записано» и код 0."""
+    root = make_project(tmp, git=True)
+    card(root, "Concepts/Целая.md", "Ссылка на [[склад]].", status="knowledge", kind="knowledge")
+    card(root, "Concepts/Склад.md", "Склад.", status="knowledge", kind="knowledge")
+    cp = run("kb_fix.py", "--links", "--apply", "--allow-dirty", cwd=root)
+    assert cp.returncode == 0 and "✅ Записано" in cp.stdout, cp.stdout + cp.stderr
+    code = (f"import sys; sys.path.insert(0, {str(SCRIPTS)!r}); import card_types as C; "
+            "assert C.finish_code(0) == 0 and C.finish_code(2) == 2; "
+            "C.try_write_card('AuroraKnowledgeDB/Concepts/Целая.md', 'без шапки\\n', op='repair'); "
+            "sys.exit(C.finish_code(0) + 10 * C.finish_code(3))")
+    out = subprocess.run([sys.executable, "-c", code], cwd=str(root), capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    assert out.returncode == 31 and "шаблон типа не принял записей: 1" in out.stderr, (out.returncode, out.stderr)
+
+
+@test
+def test_parked_refusal_returns_when_templates_change(tmp: Path):
+    """Карточка, отложенная отказом шаблона, возвращается в очередь, когда меняется реестр (шаблон или настройки типов);
+    отложенная «человеку» остаётся отложенной, пока не изменится сама."""
+    R = _mod("agent_runner")
+    C = _mod("card_types")
+    root = make_project(tmp)
+    path = str(card(root, "Concepts/Заявка.md", "Текст.", status="draft", kind="knowledge"))
+    cwd = str(root)
+    cfg = root / "aurora.config.yaml"
+    R.park_card(cwd, path, refused=True)
+    parked = R.parked_cards(cwd)
+    assert R.still_parked(cwd, path, parked)
+    before = C.registry_fingerprint(cwd)
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip("\n") + '\ncards:\n  role:\n    enabled: "false"\n', encoding="utf-8")
+    assert C.registry_fingerprint(cwd) != before
+    assert not R.still_parked(cwd, path, parked), "смена настроек типов не вернула карточку в очередь"
+    R.park_card(cwd, path)                                           # отложена «человеку»: шаблоны ни при чём
+    parked = R.parked_cards(cwd)
+    cfg.write_text(cfg.read_text(encoding="utf-8") + '  glossary:\n    enabled: "false"\n', encoding="utf-8")
+    assert R.still_parked(cwd, path, parked), "парковка «человеку» не должна зависеть от шаблонов"
+    Path(path).write_text(Path(path).read_text(encoding="utf-8") + "\nПравка.\n", encoding="utf-8")
+    assert not R.still_parked(cwd, path, parked)

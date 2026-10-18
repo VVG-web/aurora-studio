@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from aurora_common import (KB_ROOT, card_filename, git_guard, rewrite_links, split_inline_items,
                             walk_md)
-from card_types import put_text
+from card_types import finish_code, put_text
 
 DICT_PATH = os.path.join(KB_ROOT, "meta", "translit.md")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
@@ -283,15 +283,21 @@ def main() -> int:
     return 0
 
 
-def _drop_aliases(path: str, names: set) -> None:
-    """Снять из шапки синонимы с этими именами."""
-    text = open(path, encoding="utf-8").read()
+def _without_aliases(text: str, names: set) -> str:
+    """Текст карточки без синонимов с этими именами в шапке."""
     head_end = text.find("\n---", 3)
     head = text[:head_end]
     for n in names:
         head = re.sub(r'^\s*-\s*"?' + re.escape(n) + r'"?\s*\n', "", head + "\n", flags=re.M)[:-1]
-    if head != text[:head_end]:
-        why_not = put_text(path, head + text[head_end:], op="header", old_text=text)
+    return head + text[head_end:]
+
+
+def _drop_aliases(path: str, names: set) -> None:
+    """Снять из шапки синонимы с этими именами."""
+    text = open(path, encoding="utf-8").read()
+    new = _without_aliases(text, names)
+    if new != text:
+        why_not = put_text(path, new, op="header", old_text=text)
         if why_not:
             print(f"  ! синонимы {path} не сняты: {why_not}", file=sys.stderr)
 
@@ -330,8 +336,9 @@ def undo_identifiers(known: dict, apply: bool, say: bool = True) -> dict:
         out[name] = out[cyr] = back
         if not apply:
             continue
-        _drop_aliases(path, {lat, cyr, name})
-        was = text = open(path, encoding="utf-8").read()
+        # Снятие синонимов и возврат имени — одна запись: отказ шаблона оставляет карточку как была, а не без синонимов.
+        was = open(path, encoding="utf-8").read()
+        text = _without_aliases(was, {lat, cyr, name})
         own, sep, rest = text.partition("## Источник (перенесено дословно)")
         own = re.sub(r"^#\s+(" + re.escape(cyr) + "|" + re.escape(name) + r")\s*$",
                      lambda _m, lat=lat: f"# {lat}", own, count=1, flags=re.M)
@@ -364,4 +371,4 @@ def add_alias(text: str, name: str) -> str:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(finish_code(main()))

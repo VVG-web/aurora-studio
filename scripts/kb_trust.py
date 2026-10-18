@@ -50,7 +50,7 @@ from aurora_common import (OWN_LIFECYCLE, card_type, is_meeting, branch_kind, LE
                            walk_md, with_fields)
 
 from aurora_common import TODAY, file_head, head_pairs, head_text, head_trust  # noqa: E402 — дата в UTC, одна на движок
-from card_types import try_write_card  # noqa: E402 — единый вход записи карточки
+from card_types import finish_code, try_write_card  # noqa: E402 — единый вход записи карточки
 TABLE = os.path.join("AuroraKnowledgeDB", "meta", "trace", "trace.json")
 KB = "AuroraKnowledgeDB"
 FOOTER = "## История изменений"
@@ -608,4 +608,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(finish_code(main()))

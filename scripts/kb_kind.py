@@ -38,7 +38,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (card_sources, frontmatter, link_escapes, name_lineage,  # noqa: E402
                            split_frontmatter, walk_md, with_fields)
-from card_types import fit_kind, registry_for, try_write_card  # noqa: E402 — вид в пределах видов типа; вход записи
+from card_types import finish_code, fit_kind, registry_for, try_write_card  # noqa: E402 — вид в пределах видов типа; вход записи
 
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 KB = "AuroraKnowledgeDB"
@@ -161,8 +161,9 @@ def main() -> int:
         else:
             kind, why = guess(os.path.relpath(path, root), fm, body or "",
                               card_sources(text))
-            # Правило не знает видов типа: роль не бывает «документом». Вид — в пределах шаблона типа.
-            fitted = fit_kind((fm.get("type") or "").strip(), kind, reg)
+            # Правило не знает видов типа: роль не бывает «документом». Вид — в пределах шаблона типа, но только
+            # там, где он меняется: уже стоящий вид (пусть и не из списка типа) карточке не пересчитывается.
+            fitted = fit_kind((fm.get("type") or "").strip(), kind, reg) if kind != was else kind
             if fitted != kind:
                 why, kind = f"{why}; у типа «{fm.get('type')}» такого вида нет — {fitted}", fitted
         counts[kind] = counts.get(kind, 0) + 1
@@ -197,4 +198,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(finish_code(main()))

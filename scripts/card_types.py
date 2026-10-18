@@ -1685,7 +1685,9 @@ def _validate(text: str, path: str, reg: Registry, add, seen: dict, raw_ok: bool
                 + (", ".join(ct.kinds) or "видов нет"), "kb:kind назначает вид по форме текста")
     if status:
         if status == "index" and ct.cls in ("entity", "source"):
-            lead = [ln.strip() for ln in own.split("\n") if ln.strip() and not ln.startswith("# ")]
+            # пометка «из встречи» стоит у карточки из стенограммы выше всего прочего и не мешает признаку разреза
+            lead = [ln.strip() for ln in own.split("\n")
+                    if ln.strip() and not ln.startswith("# ") and not ln.startswith(MEETING_MARK)]
             if not (lead and lead[0].startswith(SPLIT_WORDS)):
                 add("V-25", kline("status"), "status: index у карточки, которая не карта и не разрезана",
                     "index допустим у карт и у разрезанных карточек («Карточка была разрезана …»)")
@@ -2322,6 +2324,28 @@ class RegistryBroken(TemplateViolation):
 _REG_CACHE: dict = {}
 
 
+def _registry_stamp(root: str, kit: "str | None") -> tuple:
+    """Что менять реестру: папки шаблонов проекта и кита и конфиг проекта (блок `cards:`)."""
+    try:
+        conf = os.stat(os.path.join(root, CONFIG_FILE))
+        conf_stamp = (conf.st_mtime_ns, conf.st_size)
+    except OSError:
+        conf_stamp = None
+    return (_stamp(os.path.join(root, "Templates")), _stamp(os.path.join(root, "TemplatesCommon")),
+            _stamp(os.path.join(kit, "scaffold", "TemplatesCommon")) if kit else None, conf_stamp)
+
+
+def registry_fingerprint(project_root: str = ".", kit_root: "str | None" = None) -> str:
+    """Короткий отпечаток шаблонов и конфига проекта: меняется, когда меняется реестр типов. Им помечают то, что
+    было отвергнуто шаблоном и должно вернуться в работу, как только шаблоны или настройки типов изменятся."""
+    import hashlib
+    root = str(project_root or ".")
+    kit = kit_root
+    if kit is None:
+        kit, _why = _find_kit()
+    return hashlib.sha1(repr(_registry_stamp(root, kit)).encode("utf-8")).hexdigest()[:10]
+
+
 def registry_for(project_root: str = ".", kit_root: "str | None" = None) -> Registry:
     """Реестр проекта, собранный один раз на корень: вход записи зовут на каждую карточку, а реестр читает шаблоны.
 
@@ -2332,13 +2356,7 @@ def registry_for(project_root: str = ".", kit_root: "str | None" = None) -> Regi
     kit = kit_root
     if kit is None:
         kit, _why = _find_kit()
-    try:
-        conf = os.stat(os.path.join(root, CONFIG_FILE))
-        conf_stamp = (conf.st_mtime_ns, conf.st_size)
-    except OSError:
-        conf_stamp = None
-    stamp = (_stamp(os.path.join(root, "Templates")), _stamp(os.path.join(root, "TemplatesCommon")),
-             _stamp(os.path.join(kit, "scaffold", "TemplatesCommon")) if kit else None, conf_stamp)
+    stamp = _registry_stamp(root, kit)
     key = (os.path.realpath(root), str(kit or ""))
     hit = _REG_CACHE.get(key)
     if hit is None or hit[0] != stamp:
@@ -2719,6 +2737,10 @@ def _admit(path: str, new_text: str, op: str, reg: "Registry | None") -> tuple:
                 errors.append(wrong)
         else:
             errors = new_violations(errors, _write_errors(_as_typed(disk, text, reg), rel, reg, template_required=False))
+            if not frontmatter(disk):
+                # У карточки не было шапки вовсе: поля, которых в только что заведённой шапке ещё нет, не ухудшение —
+                # раньше их не было и подавно (`kb:repair --frontmatter` достраивает шапку по шагам).
+                errors = [v for v in errors if violation_key(v)[0] != "field"]
             if (frontmatter(disk).get("template") or "").strip() and not (frontmatter(text).get("template") or "").strip():
                 errors.append(Violation("V-02", "error", 1, "штамп template: снят с карточки",
                                         "поле template: означает «карточка проходит шаблон» и не снимается"))
@@ -2741,8 +2763,8 @@ def write_card_text(path: str, new_text: str, *, op: str, old_text: "str | None"
     отсутствие `template:` и раздел, не ведущий тип карточки, — `TemplateViolation`, файл не пишется); `body`,
     `header`, `repair` — правка существующей карточки, проверка «по разности»: ошибки нового текста минус ошибки
     прежнего (`violation_key`, `Violation.count`); унаследованное терпится, новое отвергается; штамп `template:`
-    с карточки не снимается, а карточка, у которой тезис уже был (отметка `distilled` или раздел «Источник»),
-    не возвращается правкой в «ещё без тезиса». Прежний текст — всегда тот, что на диске: `old_text` принимается
+    с карточки не снимается, а карточка, у которой тезис уже был (отметка `distilled` или память о ней
+    `distilled_was`), не возвращается правкой в «ещё без тезиса». Прежний текст — всегда тот, что на диске: `old_text` принимается
     ради вызывающих, у которых он уже в руках, но проверку не смягчает. Файла нет — правка проверяется как создание.
     Правка (`body`, `header`, `repair`), после которой карточка проходит шаблон своего типа в строгом режиме, получает
     штамп `template:` (`stamp_if_conformant`): касание приводит карточку к шаблону там, где это уже верно.
@@ -2783,7 +2805,42 @@ def try_write_card(path: str, text: str, *, op: str, old_text: "str | None" = No
     try:
         return write_card_text(path, text, op=op, old_text=old_text, reg=reg), ""
     except TemplateViolation as e:
+        _REFUSALS["n"] += 1
         return False, str(e)
+
+
+_REFUSALS = {"n": 0}      # сколько записей отвергнул шаблон в этом процессе (`try_write_card`)
+
+
+def refusal_count() -> int:
+    return _REFUSALS["n"]
+
+
+def finish_code(rc: "int | None" = 0) -> int:
+    """Код возврата скрипта: прежний, а если он 0 и шаблон отверг хотя бы одну запись — 1.
+
+    Скрипт, чьи отказы шли в stderr, не должен кончаться нулём и словом «записано», когда часть работы не сделана:
+    на отказе строится вывод шага маршрута (шаг с кодом 1 попадает в итог маршрута, но маршрут не останавливает).
+    """
+    code = rc or 0
+    if code == 0 and _REFUSALS["n"]:
+        print(f"⚠ шаблон типа не принял записей: {_REFUSALS['n']} — строки «!» выше называют карточки и причины",
+              file=sys.stderr)
+        return 1
+    return code
+
+
+def why_refused(path: str, text: str, *, op: str, reg: "Registry | None" = None) -> str:
+    """Причина, по которой вход записи отверг бы эту запись, или пустая строка, если примет. Ничего не пишет.
+
+    Для связанных записей (слияние: выживший и донор; разрез: родитель и части): сначала проба всех, потом запись, чтобы
+    отказ одной не оставил остальные в половине дела.
+    """
+    try:
+        errors = check_card_text(path, text, op=op, reg=reg)
+    except TemplateViolation as e:
+        return str(e)
+    return str(TemplateViolation(path, op, errors)) if errors else ""
 
 
 def put_map(path: str, text: str, *, reg: "Registry | None" = None) -> tuple:
@@ -2842,7 +2899,7 @@ def _print_registry(reg: Registry) -> None:
         print("  ".join(c.ljust(widths[k]) for k, c in enumerate(r)).rstrip())
         if i == 0:
             print("  ".join("-" * w for w in widths))
-    print(f"\nТипов: {len(reg.types)}. Проверка пока только советует: карточку типа вне списка она замечает, но не отвергает.")
+    print(f"\nТипов: {len(reg.types)}. Запись карточки идёт через единый вход шаблонов; `--check` показывает ошибки предупреждениями (строго — `--strict`).")
     for p in reg.problems:
         print(f"  проблема реестра: {p}")
 

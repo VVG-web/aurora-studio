@@ -33,7 +33,7 @@ from aurora_common import (KB_ROOT, PLACEHOLDER, RETIRED_STATUS,
 CURRENT = 6
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
-from card_types import section_type_table, try_write_card  # noqa: E402 — единый источник «раздел → тип»; вход записи
+from card_types import finish_code, section_type_table, try_write_card  # noqa: E402 — единый источник «раздел → тип»; вход записи
 
 
 def drop_fields(head: str, fields: tuple) -> str:
@@ -233,4 +233,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(finish_code(main()))

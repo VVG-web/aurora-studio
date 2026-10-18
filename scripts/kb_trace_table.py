@@ -58,7 +58,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import frontmatter, walk_md, write_if_changed  # noqa: E402
-from card_types import put_map, render_card  # noqa: E402 — шапка карты по шаблону и вход записи
+from card_types import finish_code, put_map, render_card  # noqa: E402 — шапка карты по шаблону и вход записи
 try:
     from sources_core import SERVICE_RE
 except Exception:                                    # noqa: BLE001
@@ -509,4 +509,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(finish_code(main()))

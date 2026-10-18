@@ -63,7 +63,8 @@ MERGE_REPORT: list = []      # (слитые, отказы) — для отчё�
 ARCHIVE = os.path.join(ROOT, "_archive")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
-from card_types import (UnknownCardType, fit_kind, put_text, registry_for, render_card,  # noqa: E402
+from card_types import (UnknownCardType, finish_code, fit_kind, put_text, registry_for,  # noqa: E402
+                        render_card, why_refused,
                         section_type_table)   # единый источник «раздел → тип», шапка по шаблону, вход записи
 
 
@@ -108,6 +109,7 @@ class Card(BaseCard):
 
 def load_cards(root: str) -> dict:
     cards = {}
+    _VERBATIM_TYPES.clear()
     for dirpath, _, files in safe_walk(root):
         for f in files:
             if not f.endswith(".md"):
@@ -139,6 +141,20 @@ def project_of(root: str) -> str:
     return os.path.dirname(os.path.abspath(root))
 
 
+_VERBATIM_TYPES: dict = {}      # {папка процесса: типы классов source и record} — реестр не пересобирается на каждую карточку
+
+
+def verbatim_types() -> frozenset:
+    """Типы классов `source` и `record` реестра проекта; считаются один раз на процесс и папку (шаблоны за прогон
+    ремонта не меняются, а спрашивать реестр на каждую карточку — тысячи раз по две миллисекунды)."""
+    here = os.getcwd()
+    hit = _VERBATIM_TYPES.get(here)
+    if hit is None:
+        reg = registry_for(project_of(ROOT))
+        hit = _VERBATIM_TYPES[here] = frozenset(t.id for t in reg.types.values() if t.cls in ("source", "record"))
+    return hit
+
+
 def verbatim(c: "Card") -> bool:
     """Карточка, чьё слово ремонт не правит: дословный носитель или запись человека (класс `source` или `record`) с видом
     `document` или `dictionary`. Имя, заголовок и тело такой карточки — то, что принесли источник или человек; шаги,
@@ -149,8 +165,7 @@ def verbatim(c: "Card") -> bool:
     if kind not in ("document", "dictionary"):
         return False
     tid = (c.fm.get("type") or "").strip().strip('"') or section_type().get(c.section, "")
-    ct = registry_for(project_of(ROOT)).get(tid) if tid else None
-    return ct is not None and ct.cls in ("source", "record")
+    return bool(tid) and tid in verbatim_types()
 
 
 def current(path: str, c: "Card", plan) -> "Card":
@@ -315,8 +330,9 @@ def ensure_frontmatter(card: Card, section: str = "") -> str:
         m = re.search(r"^#\s+(.+)$", card.text, re.M)
         if m:
             title = m.group(1).strip()
-        fm = (f'---\ntitle: "{title}"\naliases: []\ntags: []\n'
-              f"status: draft\ncreated: {TODAY}\nupdated: {TODAY}\n---\n\n")
+        want = section_type().get(section) if section else ""      # тип по разделу — шапка не начинается с недостающего типа
+        fm = (f'---\ntitle: "{title}"\naliases: []\ntags: []\n' + (f"type: {want}\n" if want else "")
+              + f"status: draft\ncreated: {TODAY}\nupdated: {TODAY}\n---\n\n")
         return fm + card.text.lstrip("\n")
     head, rest = card.text[:card.fm_end], card.text[card.fm_end:]
     head = drop_retired(head)
@@ -596,6 +612,7 @@ class Plan:
         self.renames: list = []          # (старый путь, новый путь)
         self.moves: list = []            # (путь, куда) — в _archive
         self.reopen: list = []           # источники — обратно в план разбора
+        self.coupled: list = []          # группы путей, которые пишутся вместе: отказ одной отменяет запись всех
         self.notes: list = []            # строки отчёта
         self.unresolved: list = []       # ссылки, которые движок не берёт
         self._word_names = None          # кому человек написал исправление (Raw/corrections)
@@ -606,6 +623,15 @@ class Plan:
         self.file_writes[path] = text
         if op:
             self.ops[path] = op
+
+    def couple(self, *paths: str) -> None:
+        """Связать записи: если шаблон не примет хоть одну из них, не пишется ни одна (и не уходят в архив связанные карточки).
+        Пересекающиеся группы сливаются: выживший с несколькими донорами — одна группа."""
+        group = {p.replace("\\", "/") for p in paths}
+        for other in [g for g in self.coupled if g & group]:
+            group |= other
+            self.coupled.remove(other)
+        self.coupled.append(group)
 
     def protects(self, c, note: bool = True) -> bool:
         """У карточки есть слово человека — в архив её не уносим. → да/нет.
@@ -1012,8 +1038,12 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
                   "sources": sources, "created": TODAY, "updated": TODAY, "part_of": f'"[[{hit.stem}]]"'}
         if sources:                     # собрал движок из источников родителя; у карточки без источников метки нет
             fields.update({"built": "machine", "source_synced": TODAY})
-        card = render_card(ptype, fields, f"# {title}\n\n{chunk}\n", reg=reg)
-        plan.write(path, card, "split")
+        try:
+            card = render_card(ptype, fields, f"# {title}\n\n{chunk}\n", reg=reg)
+        except UnknownCardType as e:
+            return f"«{hit.stem}»: {e}", False
+        from aurora_common import with_meeting_mark
+        plan.write(path, with_meeting_mark(card), "split")
         made.append((name, title))
     if not made:
         return f"«{hit.stem}»: все части уже вынесены отдельными карточками", False
@@ -1024,7 +1054,11 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
             "а знание ищут атомарным. Ниже — части в исходном порядке.\n\n"
             + "\n".join(f"- [[{n}|{ttl}]]" for n, ttl in made) + "\n"
             + (("\n" + tail.strip() + "\n") if tail.strip() else ""))
-    plan.write(hit.path, (("---" + head[3:] if head.startswith("---") else head) + "\n---\n\n" + keep))
+    from aurora_common import with_meeting_mark
+    plan.write(hit.path, with_meeting_mark((("---" + head[3:] if head.startswith("---") else head) + "\n---\n\n" + keep)))
+    # Родитель и части — одна запись: часть, которую шаблон не принял, не должна оставить карту со ссылкой на пустоту
+    # (текст уехал бы в часть, а карта уже переписана).
+    plan.couple(hit.path, *[os.path.join(root, section, n + ".md") for n, _t in made])
     lost = (f"; вне частей осталось {left_out} знаков (вводный текст и короткие разделы), "
             "они есть в источнике и в git" if left_out else "")
     return f"«{hit.stem}» → частей {len(made)}, сама стала картой документа{lost}", True
@@ -1073,7 +1107,8 @@ def born(plan: Plan, path: str, section: str, title: str, op: str, fields: dict,
     except UnknownCardType as e:
         plan.refused.append((path, str(e)))
         return False
-    plan.write(path, text, op)
+    from aurora_common import with_meeting_mark
+    plan.write(path, with_meeting_mark(text), op)      # источник-стенограмма: пометка «из встречи» ставится при рождении
     return True
 
 
@@ -2941,7 +2976,8 @@ def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
             f"\n\n## Слияние\n\n_Присоединено из [[{drop.stem}]] "
             f"({TODAY}); источник карточки-донора: {', '.join(donor) or '—'}._\n\n"
             + merged_body + "\n")
-    plan.write(kpath, text)
+    from aurora_common import with_meeting_mark
+    plan.write(kpath, with_meeting_mark(text))      # источники донора переехали: стенограмма среди них — пометка нужна
 
     dtext = drop.text
     if drop.has_frontmatter:
@@ -2956,6 +2992,7 @@ def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
         dtext = head + rest
     dtext = dtext.rstrip("\n") + f"\n\n## История\n\n- {TODAY}: слито в [[{keep.stem}]] (kb_fix --merge).\n"
     plan.write(dpath, dtext)
+    plan.couple(kpath, dpath)
     if "/_archive/" not in dpath:
         plan.moves.append((dpath, os.path.join(ARCHIVE, os.path.basename(dpath)).replace("\\", "/")))
 
@@ -3146,7 +3183,24 @@ def apply_plan(plan: Plan) -> int:
     # ремонт, но вместе с ней не делаются её переименование и перенос в архив: без записи (синоним старого имени,
     # пометка «слито») они потеряли бы то, ради чего стоят в плане.
     refused_now = set()
+    held = set()
+    keyed = {p.replace("\\", "/"): p for p in plan.file_writes}
+    for group in plan.coupled:
+        members = [keyed[m] for m in sorted(group) if m in keyed]
+        why_by = {m: why_refused(m, plan.file_writes[m], op=plan.ops.get(m) or "repair") for m in members}
+        bad = [m for m in members if why_by[m]]
+        if not bad:
+            continue
+        for m in members:
+            held.add(m)
+            refused_now.add(m.replace("\\", "/"))
+            reason = why_by[m] or f"запись отменена: связанная «{os.path.basename(bad[0])}» не принята шаблоном " \
+                                  "(слияние и разрез пишутся целиком)"
+            plan.refused.append((m, reason))
+            print(f"  ! не записана {m}: {reason}", file=sys.stderr)
     for path, text in plan.file_writes.items():
+        if path in held:
+            continue
         why = put_text(path, text, op=plan.ops.get(path) or "repair")
         if why:
             refused_now.add(path.replace("\\", "/"))
@@ -3660,6 +3714,7 @@ def main() -> int:
                    if plan.unresolved else "")]
         if skipped_total:
             out.append(f"- пропущено из-за коллизий имён: {skipped_total} (разберите через --merge)")
+        refused_total = list(dict.fromkeys((p_, why_) for p_, why_ in refused_total))     # повторные проходы — один отказ
         if refused_total:
             out.append(f"- не записано шаблоном типа: {len(refused_total)}")
             out += [f"    {short(p_)}: {why_[:160]}" for p_, why_ in refused_total[:10]]
@@ -3685,14 +3740,16 @@ def main() -> int:
     if not applied:
         print("\n(dry-run) Ничего не записано. Повторите с --apply.")
         return 0
-    print(f"\n✅ Записано за {passes} проход(а/ов)."
-          + (f" Пропущено из-за коллизий имён: {skipped_total}." if skipped_total else ""))
+    mark = "⚠" if refused_total else "✅"
+    print(f"\n{mark} Записано за {passes} проход(а/ов)."
+          + (f" Пропущено из-за коллизий имён: {skipped_total}." if skipped_total else "")
+          + (f" Шаблон типа не принял карточек: {len(refused_total)} — они остались как были." if refused_total else ""))
     print("   Проверьте: в панели `kb:lint`, затем git diff --stat")
     # Ссылка без карточки — работа следующих шагов того же ремонта (`--stubs`, `--terms`),
     # а не сбой этого: код 1 красил шаг в панели упавшим при каждом прогоне, и красное
-    # переставало что-либо значить.
-    return 0
+    # переставало что-либо значить. Отказ шаблона — другое: часть работы не сделана, и шаг это говорит.
+    return 1 if refused_total else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(finish_code(main()))

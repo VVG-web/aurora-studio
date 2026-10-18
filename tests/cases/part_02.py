@@ -1524,8 +1524,9 @@ def test_planner_gives_structure_to_a_shapeless_source(tmp: Path):
     # показывает первые слова абзаца, поэтому целого абзаца в промпте быть не должно.
     whole = f"Абзац 3. Правило номер 3 и условия его применения. " * 8
     assert whole.strip() not in seen["planner"], "планировщику отдали текст вместо описи"
-    assert len(seen["planner"]) < len(text), \
-        f"промпт длиннее самого источника: {len(seen['planner'])} против {len(text)}"
+    guide = len(R.guide_block(str(root)))                  # выдержка из инструкции выбора типа — не часть описи
+    assert len(seen["planner"]) - guide < len(text), \
+        f"промпт длиннее самого источника: {len(seen['planner']) - guide} против {len(text)}"
 
     # знания нет — поведение прежнее, выдумывать карточки не начинаем
     def empty_planner(cfg, role, messages, **kw):
@@ -1675,7 +1676,8 @@ def test_long_source_is_not_silently_cut(tmp: Path):
     para = "Правило работает так. " * 40 + "\n\n"
     cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
                           "AURORA_AGENT_BACKEND_1_CONTEXT": "4000"})
-    budget = A.prompt_budget(cfg, reserve_chars=len(R.PROMPT_DISTILL) + 200)
+    # правило 6 запроса (форма тезиса для типа карточки) занимает место в окне, как и сам запрос
+    budget = A.prompt_budget(cfg, reserve_chars=len(R.PROMPT_DISTILL) + 400 + len(R.type_rules_line(str(tmp), "concept")))
     assert budget > 0, "окно объявлено, а бюджет не посчитан"
 
     short = R.distill_card(cfg, str(card("Короткая.md", para * 2)), call=fake, momus=False)

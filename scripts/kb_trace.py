@@ -42,7 +42,7 @@ from aurora_common import TRUSTED, as_list, config_value, frontmatter, link_targ
 ROOT = "AuroraKnowledgeDB"
 PRODUCTS = ["Artifacts", "Deliverables"]
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
-from card_types import put_map, render_card  # noqa: E402 — шапка карты по шаблону и вход записи
+from card_types import finish_code, put_map, render_card  # noqa: E402 — шапка карты по шаблону и вход записи
 from aurora_common import link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
 import run_summary as RS  # noqa: E402 — вердикт ворот (`--gate`)
 
@@ -361,7 +361,7 @@ def requirements(gate: str = "") -> int:
     _done, why_not = put_map(OUT, card)
     if why_not:
         print(f"trace: свод {OUT} не записан: {why_not}", file=sys.stderr)
-        return 1
+        return 2 if gate else 1       # в воротах «не смог отработать» не смешивается с «не пройдены»
     print(f"trace: требований {len(reqs)}, эпиков {len(epics)}, US {n_us}, "
           f"строк {len(rows)}, приёмок {sum(len(v) for v in acceptance.values())}, "
           f"открытых вопросов {sum(len(v) for v in questions.values())}, "
@@ -402,4 +402,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(finish_code(main()))

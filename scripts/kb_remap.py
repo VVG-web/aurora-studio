@@ -37,7 +37,7 @@ import subprocess
 import sys
 
 from aurora_common import fold, head_text
-from card_types import put_text
+from card_types import finish_code, put_text
 from sources_core import nfc
 
 KB = "AuroraKnowledgeDB"
@@ -165,7 +165,8 @@ def follow_moves(mirror: str, apply: bool, kb: str = KB, everywhere: bool = Fals
     prefix = mirror_prefix(mirror)
     full = {f"{prefix}/{o}": f"{prefix}/{n}" for o, n in moves.items()}
     st = {"moves": len(moves), "cards": 0, "blocks": 0, "redistill": 0, "manifest": 0,
-          "files": 0, "_cards": []}
+          "files": 0, "held": 0, "_cards": []}
+    held: set = set()        # старые пути, на которые ещё ссылается карточка, не принятая шаблоном: их не трогаем
     if not moves and not everywhere:
         return st
 
@@ -194,11 +195,14 @@ def follow_moves(mirror: str, apply: bool, kb: str = KB, everywhere: bool = Fals
                 why_not = put_text(path, new, op="repair", old_text=text)
                 if why_not:
                     print(f"  ! {path} не переведена на новые пути: {why_not}", file=sys.stderr)
+                    held |= {o for o in full if o in text}
 
     if os.path.isfile(MANIFEST):
         man = load_manifest()
         srcs = man.setdefault("sources", {})
         for old, cur in full.items():
+            if old in held:
+                continue                # карточка ещё ссылается на старый путь — учёт разбора за ним
             rec = srcs.pop(old, None)
             if rec is None:
                 continue
@@ -220,14 +224,17 @@ def follow_moves(mirror: str, apply: bool, kb: str = KB, everywhere: bool = Fals
             fails = json.load(open(FAILURES, encoding="utf-8"))
         except (OSError, ValueError):
             fails = {}
-        dropped = [k for k in list(fails) if k in full]
+        dropped = [k for k in list(fails) if k in full and k not in held]
         for k in dropped:
             fails.pop(k)
         if apply and dropped:
             with open(FAILURES, "w", encoding="utf-8") as fh:
                 json.dump(fails, fh, ensure_ascii=False, indent=1, sort_keys=True)
 
+    st["held"] = len(held)
     for old in sorted(moves):
+        if f"{prefix}/{old}" in held:
+            continue                    # старая копия нужна карточке, которую шаблон не пустил на новый путь
         path = os.path.join(mirror, old)
         assets = os.path.splitext(path)[0] + "_assets"   # схемы страницы — рядом с ней
         if apply:
@@ -252,6 +259,9 @@ def moves_report(st: dict, apply: bool) -> str:
              + (f" · убрано вторых экземпляров текста: {st['blocks']}" if st["blocks"] else "")
              + (f" · тезис перепишется: {st['redistill']}" if st["redistill"] else ""),
              f"Записей учёта разбора перенесено: {st['manifest']}"]
+    if st.get("held"):
+        lines.append(f"Не переведено на новые пути (шаблон не принял карточку): страниц {st['held']} — "
+                     "их старые копии остаются, пока карточка не будет переведена")
     for path in st["_cards"][:10]:
         lines.append(f"  - {path}")
     if len(st["_cards"]) > 10:
@@ -527,4 +537,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(finish_code(main()))

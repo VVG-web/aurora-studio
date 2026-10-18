@@ -33,7 +33,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (KB_ROOT, as_list, frontmatter, git_guard, set_field,
                            split_frontmatter, walk_md)
-from card_types import try_write_card
+from card_types import finish_code, try_write_card
 
 MIRROR = os.path.join("Sources", "JIRA")
 US_DIR = os.path.join("Artifacts", "us")
@@ -407,4 +407,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(finish_code(main()))

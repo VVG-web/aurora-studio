@@ -40,7 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (TRUSTED, card_sources, frontmatter, git_guard,  # noqa: E402
                            is_placeholder, list_field,
                            is_service, undated)
-from card_types import put_map as card_put_map, put_text, render_card  # noqa: E402 — шапка карты и вход записи
+from card_types import finish_code, put_map as card_put_map, put_text, render_card  # noqa: E402 — шапка карты и вход записи
 
 ROOT = "AuroraKnowledgeDB"
 MOC_DIR = os.path.join(ROOT, "MOC")
@@ -641,4 +641,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(finish_code(main()))

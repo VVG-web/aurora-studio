@@ -28,7 +28,7 @@ import shutil
 import sys
 
 from aurora_common import frontmatter, rewrite_links, set_field, split_frontmatter
-from card_types import try_write_card
+from card_types import finish_code, is_card_path, put_text, why_refused
 
 ROOT = "AuroraKnowledgeDB"
 ARCHIVE = os.path.join(ROOT, "_archive")
@@ -173,11 +173,20 @@ def main() -> int:
     if not a.apply:
         print("\n(dry-run) Ничего не записано. Повторите с --apply.")
         return 0
-    # Запись — через единый вход шаблонов. Отказ одной карточки не останавливает остальные, но карточку, чья
-    # пометка «заменена» не записана, в архив не уносим: без пометки она ушла бы туда молча.
+    # Запись — через единый вход шаблонов. Устаревшая и преемник записываются вместе: отказ любой из двух отменяет замену
+    # целиком (пометка без преемника или преемник без пометки хуже, чем ничего). Остальные карточки — ссылки на
+    # преемника — пишутся независимо: отказ одной из них не останавливает прочие.
+    pair = {p: why_refused(p, writes[p], op="repair") for p in (old_path, new_path) if p in writes and is_card_path(p)}
+    pair = {p: why for p, why in pair.items() if why}
+    if pair:
+        for p, why in pair.items():
+            print(f"  ! не записана {p}: {why}", file=sys.stderr)
+        print("\nЗамена не выполнена: шаблон типа не принял запись устаревшей или преемника — ничего не записано.",
+              file=sys.stderr)
+        return 1
     refused = {}
     for p, t in writes.items():
-        _done, why_not = try_write_card(p, t, op="repair")
+        why_not = put_text(p, t, op="repair")
         if why_not:
             refused[p] = why_not
             print(f"  ! не записана {p}: {why_not}", file=sys.stderr)
@@ -199,4 +208,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(finish_code(main()))

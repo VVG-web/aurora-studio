@@ -1647,4 +1647,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        from card_types import finish_code
+    except ImportError:                      # движок обновлён не целиком: отказов шаблона нет, код возврата прежний
+        def finish_code(rc=0):
+            return rc or 0
+    sys.exit(finish_code(main()))
