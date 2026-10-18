@@ -1,0 +1,741 @@
+{
+ "card_max": 36,
+ "sites": {
+  "cockpit/aurora_cockpit.py:Handler._write_config": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:Handler._write_sources": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:Handler._write_tokens": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:Handler.do_POST": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:_cards_guide_commit": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:_registry": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:_update_archive": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:_update_archive.keep_copy": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:drop_dead_running": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:feature_set": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:file_create": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:file_rename": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:file_write": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:keep_version": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:kinds_write": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:mark_running": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:ping_state": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:profile_choose": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:recent": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:save_roots": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:start_job.worker": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:write_route_state": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:write_runlog": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/aurora_cockpit.py:write_session": {
+   "kind": "other",
+   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека"
+  },
+  "cockpit/cron.py:_write_json": {
+   "kind": "other",
+   "reason": "расписание Cron: служебное состояние"
+  },
+  "cockpit/route_runner.py:Journal.__init__": {
+   "kind": "other",
+   "reason": "журнал и состояние маршрута: служебные файлы"
+  },
+  "cockpit/route_runner.py:RouteRun._finish": {
+   "kind": "other",
+   "reason": "журнал и состояние маршрута: служебные файлы"
+  },
+  "cockpit/route_runner.py:write_meta": {
+   "kind": "other",
+   "reason": "журнал и состояние маршрута: служебные файлы"
+  },
+  "scripts/agent_core.py:_cache_put": {
+   "kind": "other",
+   "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP"
+  },
+  "scripts/agent_core.py:_pulse_save": {
+   "kind": "other",
+   "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP"
+  },
+  "scripts/agent_core.py:_write_alarm": {
+   "kind": "other",
+   "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP"
+  },
+  "scripts/agent_core.py:adapter_selfcheck": {
+   "kind": "other",
+   "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP"
+  },
+  "scripts/agent_core.py:record_failure": {
+   "kind": "other",
+   "reason": "журнал сбоев failures.jsonl"
+  },
+  "scripts/agent_core.py:write_mcp_file": {
+   "kind": "other",
+   "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP"
+  },
+  "scripts/agent_runner.py:append_turn": {
+   "kind": "other",
+   "reason": "журнал диалога «Спросить» meta/ask: не карточка"
+  },
+  "scripts/agent_runner.py:apply_extract_plan": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/agent_runner.py:apply_split_parts": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/agent_runner.py:main": {
+   "kind": "other",
+   "reason": "журнал прогона агента"
+  },
+  "scripts/agent_runner.py:mark_apart": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/agent_runner.py:mark_examined": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/agent_runner.py:mark_neighbours": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/agent_runner.py:mark_relinked": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/agent_runner.py:mark_task_kept": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/agent_runner.py:note_empty_run": {
+   "kind": "other",
+   "reason": "журнал холостых прогонов агента"
+  },
+  "scripts/agent_runner.py:park_card": {
+   "kind": "other",
+   "reason": "память об отложенных карточках .aurora/state"
+  },
+  "scripts/agent_runner.py:place_definition": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/agent_runner.py:recheck_unsupported": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/agent_runner.py:record_unsupported": {
+   "kind": "other",
+   "reason": "журнал утверждений без опоры .aurora/state"
+  },
+  "scripts/agent_runner.py:relink_card": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/agent_runner.py:run_distill.finish": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/agent_runner.py:save_clash_seen": {
+   "kind": "other",
+   "reason": "память о просмотренных противоречиях в .aurora/state"
+  },
+  "scripts/agent_runner.py:save_session": {
+   "kind": "other",
+   "reason": "сессия мастера артефакта .aurora/state"
+  },
+  "scripts/agent_runner.py:service_template": {
+   "kind": "other",
+   "reason": "память о служебных блоках шаблона страницы в .aurora/state"
+  },
+  "scripts/agent_runner.py:write_artifact": {
+   "kind": "other",
+   "reason": "артефакт Artifacts/: производный документ, не карточка"
+  },
+  "scripts/agents/pydantic_ai_adapter.py:log_outbound": {
+   "kind": "other",
+   "reason": "журнал вызовов модели: служебный файл"
+  },
+  "scripts/agents/pydantic_ai_adapter.py:register_output.save_output": {
+   "kind": "other",
+   "reason": "журнал вызовов модели: служебный файл"
+  },
+  "scripts/aurora_common.py:replace_file": {
+   "kind": "other",
+   "reason": "подмена файла с повтором на Windows; сама карточек не пишет"
+  },
+  "scripts/aurora_common.py:template_blocks": {
+   "kind": "other",
+   "reason": "кэш блоков шаблона страницы в .aurora/state"
+  },
+  "scripts/aurora_common.py:write_if_changed": {
+   "kind": "other",
+   "reason": "общая запись генерируемого файла; карточку через неё не пишут"
+  },
+  "scripts/aurora_common.py:write_text_atomic": {
+   "kind": "other",
+   "reason": "общая атомарная запись файла проекта; карточку через неё не пишут"
+  },
+  "scripts/aurora_extras.py:latest": {
+   "kind": "other",
+   "reason": "надстройки движка вне базы знаний"
+  },
+  "scripts/aurora_extras.py:register_graph_mcp": {
+   "kind": "other",
+   "reason": "надстройки движка вне базы знаний"
+  },
+  "scripts/aurora_hooks.py:_install_push_hook": {
+   "kind": "other",
+   "reason": "хуки git проекта: файлы вне базы знаний"
+  },
+  "scripts/aurora_hooks.py:main": {
+   "kind": "other",
+   "reason": "хуки git проекта: файлы вне базы знаний"
+  },
+  "scripts/aurora_mcp.py:_state_save": {
+   "kind": "other",
+   "reason": "состояние MCP-сервера: служебный файл"
+  },
+  "scripts/aurora_setup.py:reconcile_sync_skills": {
+   "kind": "other",
+   "reason": "конфиг и навыки проекта: файлы вне базы знаний"
+  },
+  "scripts/aurora_setup.py:write_config": {
+   "kind": "other",
+   "reason": "конфиг и навыки проекта: файлы вне базы знаний"
+  },
+  "scripts/aurora_stats.py:append_metrics": {
+   "kind": "other",
+   "reason": "метрики и отчёт статистики: служебные файлы"
+  },
+  "scripts/aurora_stats.py:main": {
+   "kind": "other",
+   "reason": "метрики и отчёт статистики: служебные файлы"
+  },
+  "scripts/aurora_update.py:relayout_moves": {
+   "kind": "other",
+   "reason": "доставка файлов кита в проект: вне базы знаний"
+  },
+  "scripts/aurora_update.py:relayout_rewrite": {
+   "kind": "other",
+   "reason": "перекладка файлов проекта при обновлении движка (пути в конфигах), не карточки"
+  },
+  "scripts/aurora_update.py:run": {
+   "kind": "other",
+   "reason": "доставка файлов кита в проект; карточки базы не пишет"
+  },
+  "scripts/aurora_update.py:stamp_version": {
+   "kind": "other",
+   "reason": "доставка файлов кита в проект: вне базы знаний"
+  },
+  "scripts/bot_coach.py:save": {
+   "kind": "other",
+   "reason": "состояние ботов: служебный файл"
+  },
+  "scripts/bots.py:_report": {
+   "kind": "other",
+   "reason": "боты проекта (bots/): не карточки"
+  },
+  "scripts/bots.py:_write_state": {
+   "kind": "other",
+   "reason": "боты проекта (bots/): не карточки"
+  },
+  "scripts/bots.py:create_example": {
+   "kind": "other",
+   "reason": "боты проекта (bots/): не карточки"
+  },
+  "scripts/bots.py:rename": {
+   "kind": "other",
+   "reason": "боты проекта (bots/): не карточки"
+  },
+  "scripts/bots.py:write": {
+   "kind": "other",
+   "reason": "боты проекта (bots/): не карточки"
+  },
+  "scripts/build_plan.py:add_er_labels": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/build_plan.py:append_card": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/build_plan.py:build_card": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/build_plan.py:record_failure": {
+   "kind": "other",
+   "reason": "журнал сбоев разбора .aurora/state"
+  },
+  "scripts/build_plan.py:refresh_card": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/build_plan.py:save_manifest": {
+   "kind": "other",
+   "reason": "манифест разбора .aurora/state/build_manifest.json"
+  },
+  "scripts/build_plan.py:unmark_placeholder": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/card_types.py:_write_text_exact": {
+   "kind": "other",
+   "reason": "конфиг проекта (блок cards:), не карточка"
+  },
+  "scripts/card_types.py:write_atomic": {
+   "kind": "other",
+   "reason": "сам вход записи карточки: временный файл и подмена; через него пишут все карточки"
+  },
+  "scripts/card_types.py:write_catalog": {
+   "kind": "other",
+   "reason": "каталог типов meta/card_types.md: генерируемый служебный файл"
+  },
+  "scripts/confluence_export.py:Exporter.save_assets": {
+   "kind": "other",
+   "reason": "зеркало Confluence в Sources/: источник, не карточка"
+  },
+  "scripts/confluence_export.py:Exporter.walk": {
+   "kind": "other",
+   "reason": "зеркало Confluence в Sources/: источник, не карточка"
+  },
+  "scripts/confluence_export.py:save_page_cache": {
+   "kind": "other",
+   "reason": "зеркало Confluence в Sources/: источник, не карточка"
+  },
+  "scripts/ctx_pack.py:log_usage": {
+   "kind": "other",
+   "reason": "журнал использования карточек в .aurora/state"
+  },
+  "scripts/ctx_pack.py:main": {
+   "kind": "other",
+   "reason": "сохранённый пакет контекста в Artifacts/drafts"
+  },
+  "scripts/dev_qa.py:cmd_new": {
+   "kind": "other",
+   "reason": "журнал QA кухни разработки: вне базы знаний"
+  },
+  "scripts/dev_qa.py:cmd_run": {
+   "kind": "other",
+   "reason": "журнал QA кухни разработки: вне базы знаний"
+  },
+  "scripts/dev_qa.py:retrieval_report": {
+   "kind": "other",
+   "reason": "журнал QA кухни разработки: вне базы знаний"
+  },
+  "scripts/folder_guides.py:apply": {
+   "kind": "other",
+   "reason": "справки папок README.md: служебные файлы"
+  },
+  "scripts/git_sync.py:_store_key": {
+   "kind": "other",
+   "reason": "синхронизация git проекта: служебные файлы вне базы знаний"
+  },
+  "scripts/git_sync.py:_write_json": {
+   "kind": "other",
+   "reason": "синхронизация git проекта: служебные файлы вне базы знаний"
+  },
+  "scripts/git_sync.py:check": {
+   "kind": "other",
+   "reason": "синхронизация git проекта: служебные файлы вне базы знаний"
+  },
+  "scripts/git_sync.py:install_module": {
+   "kind": "other",
+   "reason": "синхронизация git проекта: служебные файлы вне базы знаний"
+  },
+  "scripts/git_sync.py:record": {
+   "kind": "other",
+   "reason": "синхронизация git проекта: служебные файлы вне базы знаний"
+  },
+  "scripts/git_sync.py:trust_cert": {
+   "kind": "other",
+   "reason": "синхронизация git проекта: служебные файлы вне базы знаний"
+  },
+  "scripts/harness_mcp.py:_save_manifest": {
+   "kind": "other",
+   "reason": "настройки внешних ассистентов: вне базы знаний"
+  },
+  "scripts/harness_mcp.py:add": {
+   "kind": "other",
+   "reason": "настройки внешних ассистентов: вне базы знаний"
+  },
+  "scripts/harness_mcp.py:add_by_edit": {
+   "kind": "other",
+   "reason": "настройки внешних ассистентов: вне базы знаний"
+  },
+  "scripts/harness_mcp.py:backup": {
+   "kind": "other",
+   "reason": "настройки внешних ассистентов: вне базы знаний"
+  },
+  "scripts/harness_mcp.py:restore": {
+   "kind": "other",
+   "reason": "настройки внешних ассистентов: вне базы знаний"
+  },
+  "scripts/install_aurora.py:Installer.copy_file": {
+   "kind": "other",
+   "reason": "установка проекта: файлы вне базы знаний"
+  },
+  "scripts/install_aurora.py:Installer.install_launchers": {
+   "kind": "other",
+   "reason": "установка проекта: файлы вне базы знаний"
+  },
+  "scripts/install_aurora.py:Installer.write": {
+   "kind": "other",
+   "reason": "установка проекта: файлы вне базы знаний"
+  },
+  "scripts/install_aurora.py:merge_gitignore": {
+   "kind": "other",
+   "reason": "установка проекта: файлы вне базы знаний"
+  },
+  "scripts/install_skills.py:replace_skill": {
+   "kind": "other",
+   "reason": "навыки ассистентов: вне базы знаний"
+  },
+  "scripts/jira_export.py:run_export": {
+   "kind": "other",
+   "reason": "зеркало задач Jira в Sources/"
+  },
+  "scripts/jira_status.py:main": {
+   "kind": "other",
+   "reason": "отчёт и состояние статусов Jira: не карточки базы"
+  },
+  "scripts/kb_code_graph.py:main": {
+   "kind": "other",
+   "reason": "граф кода в meta/: служебный файл"
+  },
+  "scripts/kb_corrections.py:apply_block": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_corrections.py:cmd_new": {
+   "kind": "other",
+   "reason": "новое исправление человека в Raw/corrections: запись, а не карточка базы"
+  },
+  "scripts/kb_corrections.py:main": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_embed.py:save_index": {
+   "kind": "other",
+   "reason": "семантический индекс .aurora/state: служебный файл"
+  },
+  "scripts/kb_fix.py:apply_plan": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_fix.py:main": {
+   "kind": "other",
+   "reason": "отчёт по флагу --report"
+  },
+  "scripts/kb_gaps.py:main": {
+   "kind": "other",
+   "reason": "отчёт по флагу --report"
+  },
+  "scripts/kb_graph.py:apply_card_links": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_graph.py:export_graph": {
+   "kind": "other",
+   "reason": "meta/graph-export.json: служебный файл"
+  },
+  "scripts/kb_graph.py:graph_page": {
+   "kind": "other",
+   "reason": "страница графа в meta/"
+  },
+  "scripts/kb_graph.py:main": {
+   "kind": "other",
+   "reason": "файл --json по просьбе человека"
+  },
+  "scripts/kb_graph.py:save_cards_stamp": {
+   "kind": "other",
+   "reason": "отпечаток графа в .aurora/state"
+  },
+  "scripts/kb_graph.py:write_cards_graph": {
+   "kind": "other",
+   "reason": "meta/graph.json: служебный файл"
+  },
+  "scripts/kb_graph.py:write_insights": {
+   "kind": "other",
+   "reason": "meta/graph-insights.md: служебный отчёт"
+  },
+  "scripts/kb_index.py:main": {
+   "kind": "other",
+   "reason": "index.md и _index.md разделов: служебные файлы, не карточки"
+  },
+  "scripts/kb_kind.py:main": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_lint.py:main": {
+   "kind": "other",
+   "reason": "остаток линтера в meta/"
+  },
+  "scripts/kb_moc.py:drop_links_to": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_moc.py:main": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_names.py:apply_mirror": {
+   "kind": "other",
+   "reason": "переименование страницы зеркала источников (Sources/), не карточки"
+  },
+  "scripts/kb_remap.py:follow_moves": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_remap.py:main": {
+   "kind": "other",
+   "reason": "отчёт по флагу --report"
+  },
+  "scripts/kb_remap.py:remap": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_remap.py:remap_jira": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_reset.py:main": {
+   "kind": "other",
+   "reason": "снимок перед сбросом базы: служебный файл"
+  },
+  "scripts/kb_retrieval.py:main": {
+   "kind": "other",
+   "reason": "состояние оценки поиска: служебный файл"
+  },
+  "scripts/kb_schema.py:main": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_scrub.py:main": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_search_quality.py:golden_follow": {
+   "kind": "other",
+   "reason": "эталоны и история качества поиска: служебные файлы"
+  },
+  "scripts/kb_search_quality.py:golden_remap": {
+   "kind": "other",
+   "reason": "эталоны и история качества поиска: служебные файлы"
+  },
+  "scripts/kb_search_quality.py:golden_set": {
+   "kind": "other",
+   "reason": "эталоны и история качества поиска: служебные файлы"
+  },
+  "scripts/kb_search_quality.py:main": {
+   "kind": "other",
+   "reason": "эталоны и история качества поиска: служебные файлы"
+  },
+  "scripts/kb_supersede.py:main": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_trace.py:requirements": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_trace_table.py:main": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_translit.py:_drop_aliases": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_translit.py:main": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_translit.py:undo_identifiers": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_translit.py:write_dict": {
+   "kind": "other",
+   "reason": "словарь имён meta/translit: служебная таблица, не карточка"
+  },
+  "scripts/kb_trust.py:main": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/kb_twins.py:main": {
+   "kind": "other",
+   "reason": "отчёт по флагу --report"
+  },
+  "scripts/kb_updated.py:_write": {
+   "kind": "other",
+   "reason": "дата обновления базы kb_updated.json: служебный файл"
+  },
+  "scripts/kit_commands.py:main": {
+   "kind": "other",
+   "reason": "справочник команд кита (документ)"
+  },
+  "scripts/kit_i18n.py:main": {
+   "kind": "other",
+   "reason": "каталоги строк кита"
+  },
+  "scripts/llm_calls.py:main": {
+   "kind": "other",
+   "reason": "справочник вызовов моделей (документ)"
+  },
+  "scripts/model_config.py:save": {
+   "kind": "other",
+   "reason": "настройка моделей local/models.json"
+  },
+  "scripts/office_ingest.py:main": {
+   "kind": "other",
+   "reason": "текст из офисного файла в Raw/: источник, не карточка"
+  },
+  "scripts/publish_doc.py:main": {
+   "kind": "other",
+   "reason": "выпуск документа в Deliverables/: не карточка"
+  },
+  "scripts/request_context.py:save_attachment": {
+   "kind": "other",
+   "reason": "вложения запроса: служебные файлы"
+  },
+  "scripts/review_run.py:Reader.page": {
+   "kind": "other",
+   "reason": "отчёты ревью: производные документы, не карточки"
+  },
+  "scripts/review_run.py:main": {
+   "kind": "other",
+   "reason": "отчёты ревью: производные документы, не карточки"
+  },
+  "scripts/review_run.py:main.work": {
+   "kind": "other",
+   "reason": "отчёты ревью: производные документы, не карточки"
+  },
+  "scripts/review_run.py:save_report": {
+   "kind": "other",
+   "reason": "отчёты ревью: производные документы, не карточки"
+  },
+  "scripts/review_run.py:summarize": {
+   "kind": "other",
+   "reason": "отчёты ревью: производные документы, не карточки"
+  },
+  "scripts/ship_doc.py:main": {
+   "kind": "other",
+   "reason": "выпуск документа в Deliverables/: не карточка"
+  },
+  "scripts/sources_core.py:Mirror.write_state": {
+   "kind": "other",
+   "reason": "служебное состояние зеркал источников"
+  },
+  "scripts/sources_core.py:WikiMirror.align_case": {
+   "kind": "other",
+   "reason": "переименование страницы зеркала источников (Sources/)"
+  },
+  "scripts/sources_core.py:_store_trusted": {
+   "kind": "other",
+   "reason": "служебное состояние зеркал источников"
+  },
+  "scripts/spec_pack.py:main": {
+   "kind": "other",
+   "reason": "пакет спецификации в Artifacts/: не карточка"
+  },
+  "scripts/sync_audit.py:main": {
+   "kind": "other",
+   "reason": "отчёт по флагу --report"
+  },
+  "scripts/sync_audit.py:stamp": {
+   "kind": "card",
+   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)"
+  },
+  "scripts/web_export.py:convert_documents": {
+   "kind": "other",
+   "reason": "веб-зеркало в Sources/: источник, не карточка"
+  },
+  "scripts/web_export.py:fetch_asset": {
+   "kind": "other",
+   "reason": "веб-зеркало в Sources/: источник, не карточка"
+  },
+  "scripts/web_export.py:promote_documents": {
+   "kind": "other",
+   "reason": "документ из веб-зеркала в Raw/: источник, не карточка"
+  },
+  "scripts/web_export.py:run.store": {
+   "kind": "other",
+   "reason": "веб-зеркало в Sources/: источник, не карточка"
+  },
+  "scripts/web_export.py:save_page_cache": {
+   "kind": "other",
+   "reason": "веб-зеркало в Sources/: источник, не карточка"
+  },
+  "scripts/wiki_build.py:_write": {
+   "kind": "other",
+   "reason": "страницы вики кита (документы)"
+  }
+ }
+}

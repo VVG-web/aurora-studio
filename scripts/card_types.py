@@ -25,8 +25,10 @@
 (`classify_answer`: тип, шаблон и раздел сверяются с реестром, ничего не «угадывается»). Модель не вызывается.
 Какие свойства текста инструкции обязан сохранить редактор (шаги 0–7, формат ответа, длина), называет `guide_checks` — её
 зовёт панель («Настройки проекта → Типы карточек», пакет CT-08).
-Конструктор шапки и входа записи (`render_header`, `render_card`, `write_card_text`) добавляет следующий пакет: в этом
-модуле они появятся рядом, под теми же именами.
+Конструктор шапки и вход записи (пакет CT-09): `render_header` и `render_card` строят шапку по шаблону типа, а
+`write_card_text` — единственный вход записи карточки базы: проверяет новый текст и пишет атомарно (создание строго,
+правка существующей — по разности: прежние нарушения терпятся, новое отвергается — `TemplateViolation`). Храповик
+`tests/card_write_sites.py` не даёт появиться новому прямому месту записи.
 
 Единый источник «раздел → тип» (CT-04): таблица записана здесь один раз (`LEGACY_SECTION_TYPE`), а разбор
 (`build_plan`), ремонт (`kb_fix`), линтер, схема и заготовки тестов читают её через `section_type_table` и
@@ -70,9 +72,9 @@ from dataclasses import dataclass, field, replace
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (  # noqa: E402
     HEAD_KEY_RE, KB_ROOT, MEETING_MARK, OWN_LIFECYCLE, STATUSES, body, card_sources, card_stem,
-    frontmatter, git_dirty, head_blank, head_broken, head_cut_comment, head_lines, head_text, head_value,
-    is_meeting, leaf_name, list_field, not_a_card_link, read_card_text, split_frontmatter, split_inline_items,
-    replace_file, utc_today, walk_md, write_text_atomic,
+    frontmatter, git_dirty, head_blank, head_broken, head_cut_comment, head_lines, head_list_text, head_text,
+    head_value, is_meeting, is_service, leaf_name, link_escapes, list_field, not_a_card_link, read_card_text,
+    split_frontmatter, split_inline_items, replace_file, sources_block, utc_today, walk_md, write_text_atomic,
 )
 from aurora_common import kit_root as _kit_root  # noqa: E402
 
@@ -1704,13 +1706,29 @@ def _validate(text: str, path: str, reg: Registry, add, seen: dict) -> None:
             "перевод на новую версию — kb:conform", severity="info")
 
     # --- тело
-    _check_own(own, line0, fm, ct, eff_kind, add)
+    own_kind = "document" if _raw_transfer(fm, eff_kind, status, rest) else eff_kind
+    _check_own(own, line0, fm, ct, own_kind, add)
     # --- связи (V-15, V-16): типизированные поля и минимум исходящих ссылок
     typed = _check_typed(fm, ct.id, ct.cls, kline, add)
-    _check_min_links(own, line0, fm, ct.id, ct.cls, ct.min_links, eff_kind, status, typed, path, add)
+    _check_min_links(own, line0, fm, ct.id, ct.cls, ct.min_links, own_kind, status, typed, path, add)
     if has_tail:
         base, at = len(text) - len(rest), _line_counter(text)
         _check_tail(rest, lambda off: at(base + off), add)
+
+
+_QUOTES_HEAD_RE = re.compile(r"(?m)^## " + re.escape(HEAD_QUOTES))
+
+
+def _raw_transfer(fm: dict, eff_kind: str, status: str, rest: str) -> bool:
+    """Машинная карточка знания, чей тезис ещё не написан: разбор перенёс текст источника, а отметку тезиса
+    (`distilled`) и раздел «Источник (перенесено дословно)» заводит сам тезис (`agent:distill`).
+
+    Всё тело такой карточки — перенесённый чужой текст: заголовки, списки и плейсхолдеры в нём принадлежат
+    источнику, а не автору, и собственная часть судится как у `document` (шапка и порядок служебных заголовков).
+    Карточка, чей тезис написан (есть отметка или раздел источника), и рукописная судятся по правилам знания.
+    """
+    return (eff_kind == "knowledge" and status != "placeholder" and (fm.get("built") or "").strip() == "machine"
+            and not (fm.get("distilled") or "").strip() and not _QUOTES_HEAD_RE.search(rest))
 
 
 def _blank(fm: dict, key: str) -> bool:
@@ -2219,6 +2237,314 @@ def classify_answer(text: str, reg: Registry) -> dict:
         return reject("section", f"«{given['section']}» — не раздел типа «{tid}» "
                                  f"(нужен {' или '.join(places) or 'раздел из шаблона'})")
     return {"ok": True, "none": False, **given}
+
+
+# ----------------------------------------------------------------------------- конструктор шапки и вход записи
+#
+# Центрального писателя карточек не было: около шестидесяти мест открывали файл на запись сами, и каждое собирало шапку
+# строкой по-своему (где-то нет `kind`, где-то `built`, где-то устаревшее `source:`). Теперь шапку строит
+# `render_header` — канонический порядок ключей, значения без переводов строк, `template:` всегда, — а файл карточки
+# пишет один вход, `write_card_text`: он проверяет новый текст по шаблону типа и пишет атомарно. Новое прямое место
+# записи не появится: за этим следит храповик `tests/card_write_sites.py`.
+#
+# Две меры строгости. Создание (`create`, `split`, `stub`, `map`, `mirror`) строгое: любая ошибка шаблона — отказ,
+# файл не пишется. Правка существующей карточки (`body`, `header`, `repair`) идёт «по разности»: ошибки, которые у
+# карточки были до правки, терпятся (карточку, которую нельзя привести, движок не ломает ещё сильнее), а новая ошибка
+# — отказ. Выключателя «обойти проверку» нет ни флагом, ни переменной окружения: шаблон обязателен.
+#
+# Вызывающий код ловит `TemplateViolation`, записывает сбой штатным путём (`fail_step`, `record_failure`) и продолжает:
+# отказ в записи одной карточки не останавливает маршрут, а источник остаётся в очереди.
+
+WRITE_OPS_STRICT = ("create", "split", "stub", "map", "mirror")
+WRITE_OPS_DIFF = ("body", "header", "repair")
+WRITE_OPS = WRITE_OPS_STRICT + WRITE_OPS_DIFF
+
+# Канонический порядок ключей шапки (§7.4). «@extra» — место полей типа (`fields_extra` паспорта); поля, которых нет
+# ни здесь, ни в паспорте типа, идут в конец в порядке, в каком их передали.
+HEADER_ORDER = (
+    "title", "aliases", "tags", "type", "template", "kind", "status", "@extra",
+    "sources", "source_synced", "source_hash", "created", "updated", "built", "built_by", "related",
+    "supersedes", "superseded_by", "same_subject", "part_of", "based_on", "applies_to",
+    "trust", "trust_basis", "trust_checked", "distilled", "distilled_by", "distilled_was", "distill_empty",
+    "extracted", "relinked", "neighbours", "summary", "unsupported", "tasks_kept", "corrected_by",
+    "correction_retired",
+)
+LIST_FIELDS = frozenset(("aliases", "tags", "related", "supersedes", "superseded_by", "same_subject", "based_on",
+                         "applies_to", "decisions", "blocks"))
+QUOTED_FIELDS = frozenset(("title", "built_by", "distilled_by", "summary", "trust_basis"))
+FIELD_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$", re.ASCII)
+
+
+class UnknownCardType(ValueError):
+    """Тип карточки вне реестра или выключен: карточка такого типа не создаётся, «похожий» тип не подбирается."""
+
+
+class TemplateViolation(ValueError):
+    """Новый текст карточки нарушает шаблон; файл не записан. `violations` — список `Violation` (ошибки)."""
+
+    def __init__(self, path: str, op: str, violations: list):
+        self.path, self.op, self.violations = str(path), str(op), list(violations)
+        first = "; ".join(f"{v.code}: {v.message}" for v in self.violations[:3])
+        more = f" (и ещё {len(self.violations) - 3})" if len(self.violations) > 3 else ""
+        super().__init__(f"карточка не записана ({op}) — {os.path.basename(self.path)} нарушает шаблон: {first}{more}")
+
+
+_REG_CACHE: dict = {}
+
+
+def registry_for(project_root: str = ".", kit_root: "str | None" = None) -> Registry:
+    """Реестр проекта, собранный один раз на корень: вход записи зовут на каждую карточку, а реестр читает шаблоны.
+
+    Отпечаток — папки шаблонов (`_stamp`) и конфиг проекта (блок `cards:` включает и выключает типы): новый шаблон
+    и переключатель типа видны сразу, без пересборки между записями. Сбой сборки — пустой реестр (`safe_registry`).
+    """
+    root = str(project_root or ".")
+    kit = kit_root
+    if kit is None:
+        kit, _why = _find_kit()
+    try:
+        conf = os.stat(os.path.join(root, CONFIG_FILE))
+        conf_stamp = (conf.st_mtime_ns, conf.st_size)
+    except OSError:
+        conf_stamp = None
+    stamp = (_stamp(os.path.join(root, "Templates")), _stamp(os.path.join(root, "TemplatesCommon")),
+             _stamp(os.path.join(kit, "scaffold", "TemplatesCommon")) if kit else None, conf_stamp)
+    key = (os.path.realpath(root), str(kit or ""))
+    hit = _REG_CACHE.get(key)
+    if hit is None or hit[0] != stamp:
+        hit = (stamp, safe_registry(root, kit))
+        _REG_CACHE[key] = hit
+    return hit[1]
+
+
+def _field_lines(key: str, value) -> str:
+    """Строки шапки для одного поля; пустое значение — пусто (поле опускается)."""
+    if not FIELD_KEY_RE.match(key):
+        raise ValueError(f"имя поля шапки «{key[:40]}» не подходит: латиница, цифры и «_»")
+    if value is None or value is False:
+        return ""
+    if key == "sources":
+        paths = [value] if isinstance(value, str) else [str(x) for x in value]
+        paths = [head_value(p).strip() for p in paths]
+        return sources_block(paths) if any(paths) else ""
+    if isinstance(value, (list, tuple, set)):
+        items = [x for x in (head_value(i).strip() for i in value) if x]
+        return f"{key}: {head_list_text(items)}\n" if items else ""
+    text = head_value(value).strip()
+    if not text:
+        return ""
+    if key == "title":
+        text = text.replace('"', "'")
+    if key in QUOTED_FIELDS and not (len(text) > 1 and text[0] == text[-1] == '"'):
+        text = '"' + text + '"'
+    return f"{key}: {text}\n"
+
+
+def render_header(card_type: str, fields: dict, *, reg: "Registry | None" = None) -> str:
+    """Шапка карточки типа `card_type` из словаря полей: `---` … `---` с переводом строки в конце.
+
+    Ключи — в каноническом порядке (`HEADER_ORDER`, поля типа сразу после `status`), значения без переводов строк
+    (`head_value`); пустые необязательные поля опускаются; списки пишутся в одну строку (`["a", "b"]`), `sources` —
+    блоком, как `sources_block`. `type:` ставится по `card_type`, `template:` — всегда: имя файла наибольшей версии
+    шаблона типа (названный в `fields` шаблон принимается, если он того же типа). Тип вне реестра или выключенный —
+    `UnknownCardType`. Реестра нет вовсе (шаблоны не доставлены) — шапка без `template:`: проект с испорченной
+    установкой не должен остановиться, `write_card_text` предупредит об этом один раз.
+    """
+    reg = reg if reg is not None else registry_for(".")
+    ct = reg.get(card_type)
+    if reg.types:
+        if ct is None:
+            raise UnknownCardType(f"типа «{card_type}» нет в реестре ({', '.join(reg.types) or 'реестр пуст'}): "
+                                  "карточка такого типа не создаётся, а «похожий» тип не подбирается")
+        if not ct.enabled:
+            raise UnknownCardType(f"тип «{card_type}» выключен в настройках проекта: карточек этого типа не создаём")
+    elif card_type not in set(reg.section_type().values()):
+        raise UnknownCardType(f"типа «{card_type}» нет в схеме базы")
+    given = {k: v for k, v in (fields or {}).items() if k not in ("type", "template")}
+    given["type"] = card_type
+    if ct is not None:
+        named = str((fields or {}).get("template") or "").strip()
+        known = reg.files.get(named)
+        given["template"] = named if known is not None and known.id == card_type else ct.template_file
+    lines, used = [], set()
+    for key in HEADER_ORDER:
+        if key == "@extra":
+            for extra in (ct.fields_extra if ct is not None else ()):
+                if extra in given and extra not in used and extra not in HEADER_ORDER:
+                    lines.append(_field_lines(extra, given[extra]))
+                    used.add(extra)
+            continue
+        if key in given:
+            lines.append(_field_lines(key, given[key]))
+            used.add(key)
+    for key, value in given.items():
+        if key not in used:
+            lines.append(_field_lines(key, value))
+    return "---\n" + "".join(lines) + "---\n"
+
+
+def render_card(card_type: str, fields: dict, own_text: str, tail: str = "", *,
+                reg: "Registry | None" = None, gap: int = 1) -> str:
+    """Полный текст карточки: шапка, `gap` пустых строк, собственная часть, хвост.
+
+    `gap` — сколько пустых строк стоит после шапки; у каждого создателя оно своё (одна у разбора источников, две у
+    тезиса), и тело, которое пишется как раньше, не должно сдвигаться ни на строку. Текст собственной части и хвоста
+    передаётся как есть: перевод строки в конце — забота вызывающего.
+    """
+    return render_header(card_type, fields, reg=reg) + "\n" * max(0, int(gap)) + str(own_text) + str(tail)
+
+
+def violation_key(v: Violation) -> tuple:
+    """Что считать «той же» ошибкой до и после правки: код и предмет (раздел, поле, значение), без номера строки.
+
+    Номер строки сдвигается от любой правки выше, а число в тексте (длина абзаца, счёт ссылок) растёт вместе с
+    самим нарушением: ошибка, которая стала чуть хуже, остаётся прежней ошибкой, а не новой.
+    """
+    msg = v.message
+    if v.code == "V-08":
+        return v.code, msg.split(":", 1)[0]
+    if v.code in ("V-12", "V-15"):
+        return v.code, ""
+    m = re.search("«([^»]{0,80})»", msg)
+    return v.code, m.group(1) if m else re.sub(r"\d+", "#", msg)
+
+
+def _write_errors(text: str, rel: str, reg: Registry, template_required: bool) -> list:
+    """Ошибки шаблона для записи: `strict`-ошибки; «нет `template:`» при `template_required` тоже ошибка."""
+    out = []
+    for v in validate_card(text, path=rel, reg=reg, level="strict"):
+        if v.severity == "error":
+            out.append(v)
+        elif template_required and v.code == "V-02" and v.severity == "info" and "template" in v.message:
+            out.append(replace(v, severity="error"))
+    return out
+
+
+def new_violations(now: list, was: list) -> list:
+    """Ошибки `now`, которых не было в `was` (по `violation_key`, с учётом повторов): «не ухудшай»."""
+    spare: dict = {}
+    for v in was:
+        k = violation_key(v)
+        spare[k] = spare.get(k, 0) + 1
+    fresh = []
+    for v in now:
+        k = violation_key(v)
+        if spare.get(k, 0) > 0:
+            spare[k] -= 1
+        else:
+            fresh.append(v)
+    return fresh
+
+
+def kb_location(path: str) -> "tuple | None":
+    """(корень проекта, путь от корня с «/») для файла под `AuroraKnowledgeDB/`; не под базой — None."""
+    parts = os.path.abspath(str(path)).replace("\\", "/").split("/")
+    for i in range(len(parts) - 2, -1, -1):
+        if parts[i] == KB_ROOT:
+            return ("/".join(parts[:i]) or "/"), "/".join(parts[i:])
+    return None
+
+
+def _encode(text: str) -> bytes:
+    """Текст → байты UTF-8. Непарный суррогат (след непонятных байтов исходника) не роняет запись всего прогона."""
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError:
+        pass
+    try:
+        return text.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:
+        return text.encode("utf-8", "replace")
+
+
+def _read_old(path: str) -> "str | None":
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            return fh.read().replace("\r\n", "\n")
+    except OSError:
+        return None
+
+
+def write_atomic(path: str, text: str) -> None:
+    """Записать файл целиком или не трогать: временный файл рядом и подмена; перевод строки — `\\n` на любой системе.
+
+    Права прежнего файла переходят к новому. Ссылка внутри проекта не заменяется — пишется файл, на который она
+    ведёт. Прерывание (`KeyboardInterrupt`, сбой диска) посреди записи оставляет прежний файл и убирает временный.
+    """
+    target = os.path.realpath(path)
+    folder = os.path.dirname(target)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    tmp = f"{target}.{os.getpid()}.aurora-tmp"
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(_encode(text))
+        try:
+            import shutil
+            shutil.copymode(target, tmp)         # нет прежнего файла — права по умолчанию
+        except OSError:
+            pass
+        replace_file(tmp, target)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+_GATE_WARNED: set = set()
+
+
+def write_card_text(path: str, new_text: str, *, op: str, old_text: "str | None" = None,
+                    reg: "Registry | None" = None) -> bool:
+    """Единственный вход записи карточки базы: проверить по шаблону и записать атомарно. → записан ли файл.
+
+    `op`: `create`, `split`, `stub`, `map`, `mirror` — создание, проверка строгая (любая ошибка шаблона, включая
+    отсутствие `template:`, — `TemplateViolation`, файл не пишется); `body`, `header`, `repair` — правка существующей
+    карточки, проверка «по разности»: ошибки нового текста минус ошибки прежнего (`violation_key`); унаследованное
+    терпится, новое отвергается; штамп `template:` с карточки не снимается. `old_text` — прежний текст (по умолчанию
+    читается с диска; файла нет — правка проверяется как создание).
+
+    Путь обязан лежать под `AuroraKnowledgeDB/` и не быть служебным файлом (`index.md`, `meta/…`): служебное и
+    мастер-файлы записей пишут их собственные скрипты. Файл-ссылка за пределы проекта не записывается. Текст,
+    равный записанному, не перезаписывается (`False`). Реестра нет (шаблоны не доставлены ни в проект, ни в кит) —
+    запись идёт как прежняя, без проверки, с одним предупреждением на процесс. Выключателя проверки нет.
+    """
+    if op not in WRITE_OPS:
+        raise ValueError(f"write_card_text: операция «{op}» неизвестна ({', '.join(WRITE_OPS)})")
+    where = kb_location(path)
+    if where is None:
+        raise ValueError(f"write_card_text: «{path}» лежит не под {KB_ROOT}/ — вход пишет только карточки базы")
+    root, rel = where
+    if is_service(rel) or rel.count("/") < 2:
+        raise ValueError(f"write_card_text: «{rel}» — служебный файл базы, а не карточка")
+    if link_escapes(path):
+        raise OSError(f"write_card_text: «{rel}» — ссылка за пределы проекта или к секретам, не пишу")
+    text = str(new_text).replace("\r\n", "\n")
+    reg = reg if reg is not None else registry_for(root)
+    if not reg.types:
+        if root not in _GATE_WARNED:
+            _GATE_WARNED.add(root)
+            print("card_types: шаблонов карточек нет ни в проекте, ни в ките — записываю без проверки "
+                  "(aurora.py update вернёт шаблоны)", file=sys.stderr)
+    else:
+        was = old_text if old_text is not None else _read_old(path)
+        was = None if was is None else str(was).replace("\r\n", "\n")
+        strict = op in WRITE_OPS_STRICT or not (was or "").strip()
+        errors = _write_errors(text, rel, reg, template_required=strict)
+        if not strict:
+            errors = new_violations(errors, _write_errors(was, rel, reg, template_required=False))
+            if (frontmatter(was).get("template") or "").strip() and not (frontmatter(text).get("template") or "").strip():
+                errors.append(Violation("V-02", "error", 1, "штамп template: снят с карточки",
+                                        "поле template: означает «карточка проходит шаблон» и не снимается"))
+        if errors:
+            raise TemplateViolation(path, op, errors)
+    if os.path.isfile(path):
+        same = _read_old(path)
+        if same is not None and same == text:
+            return False
+    write_atomic(path, text)
+    return True
 
 
 # ----------------------------------------------------------------------------- команда kb:cards
