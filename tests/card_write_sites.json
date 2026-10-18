@@ -586,6 +586,11 @@
    "reason": "настройки внешних ассистентов: вне базы знаний",
    "calls": 1
   },
+  "scripts/id_registry.py:_ledger_write": {
+   "kind": "other",
+   "reason": "отметка выданных номеров в .aurora/state/ids: служебное состояние движка, не карточка",
+   "calls": 2
+  },
   "scripts/install_aurora.py:Installer.copy_file": {
    "kind": "other",
    "reason": "установка проекта: файлы вне базы знаний",
