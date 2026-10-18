@@ -152,3 +152,132 @@ def test_links_are_matched_by_exact_name_not_by_substring(tmp: Path):
     assert got["invented"] == ["Баланс"] and got["outside"] == [], got
     # настоящие имена (с разделителями иначе, регистром, кодом вместо полного имени) не тронуты
     assert not ({"Заявка-на-поставку", "alg-3.14", "ALG-3.14 Учёт-операции"} & flagged), got
+
+
+def _refund_card(root: Path, thesis: str, source_text: str):
+    """Карточка с прежним тезисом и новым текстом источника — как после правки страницы (повторяет part_12)."""
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    src = root / "Sources/Confluence/Стр.md"
+    src.write_text("Возврат за 10 дней.", encoding="utf-8")
+    run("build_plan.py", "--card", "Возврат", "--source", "Sources/Confluence/Стр.md", "--paras", "1",
+        "--to", "Concepts", "--apply", cwd=root)
+    card = root / "AuroraKnowledgeDB/Concepts/Возврат.md"
+    txt = card.read_text(encoding="utf-8").replace("# Возврат\n\n", f"{thesis}\n\n## Источник (перенесено дословно)\n\n")
+    txt = txt.replace("built: machine", "built: machine\nkind: knowledge\ndistilled: 2026-08-01"
+                      "\nextracted: 2026-08-01\nrelinked: 2026-08-01")
+    card.write_text(txt + "\n## История изменений\n\n- 2026-08-01: карточка заведена\n", encoding="utf-8")
+    src.write_text(source_text, encoding="utf-8")
+    run("build_plan.py", "--card", "Возврат", "--source", "Sources/Confluence/Стр.md", "--paras", "1",
+        "--to", "Concepts", "--apply", cwd=root)
+    return card
+
+
+@test
+def test_same_meaning_is_refused_when_the_numbers_moved(tmp: Path):
+    """Модель сказала «без изменений», а в источнике «3 дня» вместо «5»: тезис пересобран и проверен Момусом."""
+    import agent_core as A
+    import agent_runner as R
+    root = make_project(tmp)
+    card = _refund_card(root, "Возврат занимает 5 дней, код PAY-12.", "Возврат за 3 дня. Код PAY-12. Для всех заявок.")
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    roles = []
+
+    def fake(cfg_, role, messages, **kw):
+        roles.append(role)
+        if role == "worker":
+            return {"ok": True, "text": "ТЕЗИС:\nВозврат занимает 3 дня, код PAY-12.\n\nИЗМЕНИЛОСЬ:\n"
+                                        "По сути без изменений: уточнена формулировка.",
+                    "backend": 1, "model": "m", "tps": 9, "log": []}
+        return {"ok": True, "text": "ОПОРА «Возврат за 3 дня»\nВЕРДИКТ: ЧИСТО", "backend": 1, "model": "m", "log": [],
+                "seconds": 1, "finish": "stop"}
+    res = R.run_distill(cfg, str(root), apply=True, limit=3, momus=True, call=fake)
+    done = card.read_text(encoding="utf-8")
+    assert roles == ["worker", "qa"], f"Момус обязан проверить тезис, который модель назвала неизменным: {roles}"
+    assert "Возврат занимает 3 дня" in done.split("## Источник")[0] and "5 дней" not in done.split("## Источник")[0], done[:600]
+    assert "прежний тезис оставлен" not in done and "не принято" in done, "в истории нет причины отказа"
+    step = res["steps"][0]
+    assert step["status"] == "переписана" and step.get("kept_refused"), step
+    assert "число 5" in " ".join(step["kept_refused"]) and "число 3" in " ".join(step["kept_refused"]), step["kept_refused"]
+    assert "«Без изменений» не принято" in R.report_distill(res, True) if hasattr(R, "report_distill") else True
+
+
+@test
+def test_a_thesis_with_numbers_absent_from_the_source_is_reported(tmp: Path):
+    """Число, которого нет в источнике, попадает в шаг (`unbacked`); Момус зовётся в любом случае."""
+    import agent_core as A
+    import agent_runner as R
+    root = make_project(tmp)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/Стр.md").write_text("Возврат оформляется за 10 дней.", encoding="utf-8")
+    run("build_plan.py", "--card", "Возврат", "--source", "Sources/Confluence/Стр.md", "--paras", "1",
+        "--to", "Concepts", "--apply", cwd=root)
+    card = root / "AuroraKnowledgeDB/Concepts/Возврат.md"
+    card.write_text(card.read_text(encoding="utf-8").replace("built: machine", "built: machine\nkind: knowledge"), encoding="utf-8")
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    roles = []
+
+    def fake(cfg_, role, messages, **kw):
+        roles.append(role)
+        text = "Возврат оформляется за 14 дней, лимит 500." if role == "worker" else "ВЕРДИКТ: ЧИСТО"
+        return {"ok": True, "text": text, "backend": 1, "model": "m", "tps": 9, "log": [], "seconds": 1, "finish": "stop"}
+    res = R.run_distill(cfg, str(root), apply=False, limit=3, momus=True, call=fake)
+    step = res["steps"][0]
+    assert step["status"] == "переписана" and step.get("unbacked") == ["число 14", "число 500"], step
+    assert "qa" in roles, roles
+
+
+@test
+def test_momus_across_chunks_counts_only_what_no_chunk_supports(_t):
+    """Утверждение без опоры в первом куске, но подтверждённое вторым, — не «без опоры» (раньше метка не снималась)."""
+    import agent_runner as AR
+    seen = []
+
+    def call(_cfg, _role, msgs, **_kw):
+        prompt = msgs[0]["content"]
+        seen.append(prompt)
+        if "КУСОК-ПЕРВЫЙ" in prompt:
+            text = "НЕТ ОПОРЫ срок 5 дней\nНЕТ ОПОРЫ лимит 100\nВЕРДИКТ: БЕЗ ОПОРЫ 2"
+        elif "срок 5 дней" in prompt.split("ОТВЕТ НА ПРОВЕРКУ")[1] and "КУСОК-ВТОРОЙ" in prompt:
+            text = "ОПОРА «срок 5 дней»\nНЕТ ОПОРЫ лимит 100\nВЕРДИКТ: БЕЗ ОПОРЫ 1"
+        else:
+            text = "ВЕРДИКТ: ЧИСТО"
+        return {"ok": True, "text": text, "model": "m", "backend": "b", "finish": "stop"}
+    mo = AR.run_momus_chunks({"request_timeout": 60}, ["КУСОК-ПЕРВЫЙ", "КУСОК-ВТОРОЙ"], "вопрос",
+                             "срок 5 дней, лимит 100", call)
+    assert mo["ok"] and mo["unsupported"] == 1 and not mo["clean"], mo
+    assert AR.momus_claims(mo["text"]) == ["НЕТ ОПОРЫ: лимит 100"], mo["text"]
+    # второй вызов получил только спорные утверждения, а не весь тезис
+    second = seen[1].split("ОТВЕТ НА ПРОВЕРКУ")[1]
+    assert "срок 5 дней" in second and "лимит 100" in second and "Утверждения для проверки" in second, second
+    # подтвердил второй кусок всё — метка снимается
+    seen.clear()
+
+    def call_ok(_cfg, _role, msgs, **_kw):
+        prompt = msgs[0]["content"]
+        text = ("НЕТ ОПОРЫ срок 5 дней\nВЕРДИКТ: БЕЗ ОПОРЫ 1" if "КУСОК-ПЕРВЫЙ" in prompt else "ВЕРДИКТ: ЧИСТО")
+        return {"ok": True, "text": text, "model": "m", "backend": "b", "finish": "stop"}
+    mo = AR.run_momus_chunks({"request_timeout": 60}, ["КУСОК-ПЕРВЫЙ", "КУСОК-ВТОРОЙ"], "вопрос", "срок 5 дней", call_ok)
+    assert mo["clean"] and mo["unsupported"] == 0, mo
+    one = AR.run_momus_chunks({"request_timeout": 60}, ["КУСОК-ПЕРВЫЙ"], "вопрос", "срок 5 дней", call_ok)
+    assert not one["clean"] and one["unsupported"] == 1, one
+
+
+@test
+def test_review_demotes_answers_whose_quote_is_not_on_the_page(_t):
+    """Ответ ревью с цитатой, которой нет в тексте страницы, не засчитывается (воздержание); найденная — засчитывается."""
+    import review_run as RV
+    page = "Платёж проводится за пять рабочих дней после получения заявки. Исключений нет."
+    parsed = {"checks": {
+        "Q1": {"v": "no", "evidence": "Платёж проводится мгновенно", "fix": ""},
+        "Q2": {"v": "no", "evidence": "проводится за пять рабочих дней", "fix": ""},
+        "Q3": {"v": "yes", "evidence": "Возврат оформляется отдельным письмом бухгалтерии", "fix": ""},
+        "Q4": {"v": "yes", "evidence": "", "fix": ""}}}
+    bad = RV.verify_evidence(parsed, "ПРОВЕРЯЕМЫЙ АРТЕФАКТ:\n<untrusted>\n" + page + "\n</untrusted>")
+    assert sorted(bad) == ["Q1", "Q3"], bad
+    assert parsed["checks"]["Q1"]["v"] == parsed["checks"]["Q3"]["v"] == "unknown"
+    assert parsed["checks"]["Q2"]["v"] == "no" and parsed["checks"]["Q4"]["v"] == "yes"
+    assert parsed["checks"]["Q1"]["unverified"] == "no"
+    # ответы ассистента через MCP помечены источником: код не выдаёт их за прогоны движка
+    cl = RV.load_checklist(str(KIT / "scaffold" / "TemplatesCommon" / "review_v2.1.md"))
+    out = RV.score_answers(cl, {"profile": "us", "answers": {}})
+    assert out.get("source") == "assistant" and "ответы ассистента" in out["summary"], out
