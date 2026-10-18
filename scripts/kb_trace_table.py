@@ -58,6 +58,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import frontmatter, walk_md, write_if_changed  # noqa: E402
+from card_types import put_map, render_card  # noqa: E402 — шапка карты по шаблону и вход записи
 try:
     from sources_core import SERVICE_RE
 except Exception:                                    # noqa: BLE001
@@ -434,9 +435,8 @@ def build(root: str = ".") -> dict:
 def render_moc(t: dict) -> str:
     # Шапка первой строкой: файл, который начинается не с «---», для движка не карточка,
     # и его frontmatter не читается вовсе. Пометка генерации — сразу под шапкой.
-    L = ["---", 'title: "Трассировка"', "type: moc", "status: index", "kind: dictionary",
-         f"updated: {TODAY}", "---", "",
-         "<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb_trace_table.py — ручные правки будут потеряны. -->", "", "# Трассировка: артефакт → задача", "",
+    L = ["<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb_trace_table.py — ручные правки будут потеряны. -->", "",
+         "# Трассировка", "", "Артефакт → задача.", "",
          f"_Задач: {t['tasks']} · артефактов: {t['artifacts']} · прямых связей: "
          f"{len(t['direct'])} · по коду: {len(t.get('refs') or {})} · косвенных: "
          f"{len(t['indirect'])} · собрано {t['date']}_", "",
@@ -465,7 +465,9 @@ def render_moc(t: dict) -> str:
         L.append(f"| {os.path.basename(path)} | "
                  f"{', '.join(x['key'] for x in rows[:4])} | "
                  f"{' → '.join(r['trail'])} | {r['depth']} |")
-    return "\n".join(L) + "\n"
+    # Шапку строит шаблон `moc`: название — «Трассировка», вид — словарь, `template:` и `map_kind:` стоят всегда.
+    return render_card("moc", {"title": "Трассировка", "status": "index", "kind": "dictionary",
+                               "map_kind": "trace", "updated": TODAY}, "\n".join(L) + "\n")
 
 
 def main() -> int:
@@ -498,8 +500,10 @@ def main() -> int:
     write_if_changed(os.path.join(a.root, SUMMARY),
                      json.dumps(summary, ensure_ascii=False, indent=1))
     write_if_changed(os.path.join(a.root, TABLE), json.dumps(t, ensure_ascii=False, indent=1))
-    os.makedirs(os.path.dirname(os.path.join(a.root, MOC)), exist_ok=True)
-    write_if_changed(os.path.join(a.root, MOC), render_moc(t))
+    _done, why_not = put_map(os.path.join(a.root, MOC), render_moc(t))
+    if why_not:
+        print(f"kb_trace_table: свод {MOC} не записан: {why_not}", file=sys.stderr)
+        return 1
     print(f"\n✅ Таблица: {TABLE} · свод: {MOC}")
     return 0
 

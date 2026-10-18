@@ -52,6 +52,14 @@ from aurora_common import (HEAD_BLOCK_TAIL, aliases as card_aliases, card_body, 
                            card_stem, walk_md, head_text, related_names,
                            frontmatter, git_guard)
 
+
+def _cards():
+    """Модуль шаблонов карточек подключается, когда граф пишет карточки и карты: граф в json (`--cards-json`) его не
+    требует, и движок проекта, обновлённый не целиком, всё равно строит граф (рёбра по полям шапки пропадают)."""
+    import card_types
+    return card_types
+
+
 CONF_DIR = "Sources/Confluence"
 JIRA_DIR = "Sources/JIRA"
 OUT_MOC = "AuroraKnowledgeDB/MOC/Связи.md"
@@ -650,7 +658,9 @@ def apply_card_links(pairs: dict, apply: bool, cap: int) -> dict:
         new_head = (head[:m.start()] + block.rstrip("\n") + head[m.end():]) if m \
             else head.rstrip("\n") + "\n" + block.rstrip("\n")
         if apply:
-            open(path, "w", encoding="utf-8").write(new_head + "\n---\n" + rest)
+            why_not = _cards().put_text(path, new_head + "\n---\n" + rest, op="header", old_text=text)
+            if why_not:
+                print(f"kb_graph: связи не записаны в {path}: {why_not}", file=sys.stderr)
     return stats
 
 
@@ -1269,9 +1279,9 @@ def export_graph(data: dict) -> dict:
                 reach.setdefault(inside, set()).add(other)
         name = card_stem_safe("Тема-" + g["name"])
         keep.add(name + ".md")
-        L = ["---", f'title: "Тема: {g["name"]}"', "type: moc", "status: index",
-             "kind: document", f"updated: {TODAY}", "---", "", GENERATED, "",
-             f"# Тема: {g['name']}", "",
+        theme = g["name"].replace('"', "'")
+        L = [GENERATED, "",
+             f"# Тема: {theme}", "",
              f"Карточек: **{g['size']}**. Тема — связная группа карточек, которая держится не "
              "на одной ниточке: мосты между темами убраны, осталось то, что ссылается друг на "
              f"друга по кругу. Имя — самая связанная карточка темы, [[{g['hub']}]].", "",
@@ -1290,7 +1300,8 @@ def export_graph(data: dict) -> dict:
                   "Через них тема связана с остальной базой — их правка отзовётся шире темы.", ""]
             L += [f"- [[{k}]] — связана с темами: {n}" for n, k in bridges_top]
         path = os.path.join(COMMUNITY_DIR, name + ".md")
-        text = "\n".join(L) + "\n"
+        text = _cards().render_card("moc", {"title": f"Тема: {theme}", "status": "index", "kind": "document",
+                                   "map_kind": "theme", "updated": TODAY}, "\n".join(L) + "\n")
         # Та же заметка — та же дата: иначе каждый новый день давал в git десятки правок
         # одной строки `updated:` при неизменном содержании (PRJ-A, 28.09.2026).
         try:
@@ -1301,8 +1312,9 @@ def export_graph(data: dict) -> dict:
         done["communities"] += 1
         if was and same(was) == same(text):
             continue
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(text)
+        _done, why_not = _cards().try_write_card(path, text, op="map")
+        if why_not:
+            print(f"kb_graph: тема {path} не записана: {why_not}", file=sys.stderr)
     for f in os.listdir(COMMUNITY_DIR):
         full = os.path.join(COMMUNITY_DIR, f)
         if f.endswith(".md") and f not in keep:
@@ -1619,11 +1631,17 @@ def main() -> int:
         open(a.report_path, "w", encoding="utf-8").write(text)
         print(f"Отчёт: {a.report_path}")
     if a.write:
-        os.makedirs(os.path.dirname(OUT_MOC), exist_ok=True)
-        head = ("---\ntype: moc\nstatus: index\n"
-                f"schema_version: 3\nupdated: {TODAY}\n---\n\n"
-                "<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb_graph.py — ручные правки будут потеряны. -->\n\n")
-        open(OUT_MOC, "w", encoding="utf-8").write(head + text)
+        # Карта — карточка типа `moc`: название берётся из заголовка отчёта (оно же в шапке), жёсткого
+        # `schema_version` у неё нет, `template:` и `map_kind:` ставит шаблон.
+        first = text.split("\n", 1)[0]
+        title = (first[2:].strip() if first.startswith("# ") else "Связи артефактов").replace('"', "'")
+        card = _cards().render_card("moc", {"title": title, "status": "index", "map_kind": "trace", "updated": TODAY},
+                           "<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb_graph.py — ручные правки будут потеряны. -->\n\n"
+                           + (text if first.startswith("# ") else f"# {title}\n\n" + text))
+        _done, why_not = _cards().try_write_card(OUT_MOC, card, op="map")
+        if why_not:
+            print(f"kb_graph: карта {OUT_MOC} не записана: {why_not}", file=sys.stderr)
+            return 1
         print(f"MOC: {OUT_MOC}")
     return 0
 

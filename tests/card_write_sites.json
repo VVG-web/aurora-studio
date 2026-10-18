@@ -1,5 +1,5 @@
 {
- "card_max": 22,
+ "card_max": 15,
  "sites": {
   "cockpit/aurora_cockpit.py:Handler._write_config": {
    "kind": "other",
@@ -601,15 +601,10 @@
    "reason": "отчёт по флагу --report",
    "calls": 1
   },
-  "scripts/kb_graph.py:apply_card_links": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
   "scripts/kb_graph.py:export_graph": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 3
+   "kind": "other",
+   "reason": "meta/graph-export.json и настройки графа Obsidian; страницы тем пишет try_write_card",
+   "calls": 2
   },
   "scripts/kb_graph.py:graph_page": {
    "kind": "other",
@@ -617,9 +612,9 @@
    "calls": 1
   },
   "scripts/kb_graph.py:main": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 3
+   "kind": "other",
+   "reason": "файлы --json и --report по просьбе человека; карту «Связи» пишет try_write_card",
+   "calls": 2
   },
   "scripts/kb_graph.py:save_cards_stamp": {
    "kind": "other",
@@ -650,16 +645,6 @@
    "kind": "other",
    "reason": "остаток линтера в meta/",
    "calls": 1
-  },
-  "scripts/kb_moc.py:drop_links_to": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
-  "scripts/kb_moc.py:main": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 3
   },
   "scripts/kb_names.py:apply_mirror": {
    "kind": "other",
@@ -731,15 +716,10 @@
    "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
    "calls": 2
   },
-  "scripts/kb_trace.py:requirements": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
   "scripts/kb_trace_table.py:main": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 3
+   "kind": "other",
+   "reason": "таблица и свод трассировки в json; карту MOC/Трассировка пишет put_map",
+   "calls": 2
   },
   "scripts/kb_translit.py:_drop_aliases": {
    "kind": "card",

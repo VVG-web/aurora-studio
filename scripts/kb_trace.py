@@ -42,6 +42,7 @@ from aurora_common import TRUSTED, as_list, config_value, frontmatter, link_targ
 ROOT = "AuroraKnowledgeDB"
 PRODUCTS = ["Artifacts", "Deliverables"]
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from card_types import put_map, render_card  # noqa: E402 — шапка карты по шаблону и вход записи
 from aurora_common import link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
 import run_summary as RS  # noqa: E402 — вердикт ворот (`--gate`)
 
@@ -352,8 +353,15 @@ def requirements(gate: str = "") -> int:
         "|---|---|---|---|---|---|---|---|---|---|\n"
     )
     g = "\n\n## Разрывы\n\n" + ("\n".join(dict.fromkeys(gaps)) if gaps else "_Разрывов не найдено._") + "\n"
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    open(OUT, "w", encoding="utf-8").write(hdr + "\n".join(rows) + g)
+    # Свод — карта содержания (тип `moc`): шапку строит шаблон, метку генерации ставит этот скрипт.
+    card = render_card("moc", {"title": "Трассировка требований — сквозная таблица", "status": "index",
+                               "kind": "dictionary", "map_kind": "trace", "updated": TODAY},
+                       "<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb_trace.py — ручные правки будут потеряны. -->\n\n"
+                       + hdr + "\n".join(rows) + g)
+    _done, why_not = put_map(OUT, card)
+    if why_not:
+        print(f"trace: свод {OUT} не записан: {why_not}", file=sys.stderr)
+        return 1
     print(f"trace: требований {len(reqs)}, эпиков {len(epics)}, US {n_us}, "
           f"строк {len(rows)}, приёмок {sum(len(v) for v in acceptance.values())}, "
           f"открытых вопросов {sum(len(v) for v in questions.values())}, "

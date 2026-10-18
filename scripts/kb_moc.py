@@ -39,7 +39,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (TRUSTED, card_sources, frontmatter, git_guard,  # noqa: E402
                            is_placeholder, list_field,
-                           is_service, undated, write_if_changed)
+                           is_service, undated)
+from card_types import put_map as card_put_map, put_text, render_card  # noqa: E402 — шапка карты и вход записи
 
 ROOT = "AuroraKnowledgeDB"
 MOC_DIR = os.path.join(ROOT, "MOC")
@@ -159,14 +160,18 @@ def machine_made(path: str) -> bool:
         return False
 
 
-def render(name: str, note: str, items: list, kind: str = "moc") -> str:
-    """Карта содержания: шапка карточки, пояснение, список ссылок по алфавиту."""
+def render(name: str, note: str, items: list, map_kind: str = "group", tags: tuple = ("moc",),
+           aliases: tuple = ()) -> str:
+    """Карта содержания: шапка карточки по шаблону `moc`, пояснение, список ссылок по алфавиту."""
     # `index` — служебный статус: файл собирается командой и перезаписывается целиком.
     # Подтверждать в нём нечего, и в доле принятого знания ему не место: на живом проекте
     # 296 карт содержания занижали её на четыре процентных пункта, изображая работу,
     # которой не существует.
-    head = (f"---\ntitle: \"{name}\"\ntype: moc\nstatus: index\n"
-            f"schema_version: 3\nupdated: {TODAY}\ntags: [moc]\n---\n\n{GENERATED}\n\n")
+    # Шапку строит шаблон (`render_card`): `template:` и `map_kind:` стоят всегда, жёсткого `schema_version`
+    # у карты нет. Кавычка в имени рвёт шапку, поэтому в `title` и в заголовке тела она одинаково «'».
+    name = name.replace('"', "'")
+    fields = {"title": name, "aliases": list(aliases), "tags": list(tags), "status": "index",
+              "map_kind": map_kind, "updated": TODAY}
     body = [f"# {name}", ""]
     if note:
         body += [note, ""]
@@ -187,7 +192,16 @@ def render(name: str, note: str, items: list, kind: str = "moc") -> str:
             tail = f" — {brief}" if brief else ""
             body.append(f"- [[{c['stem']}|{c['title']}]]{mark}{tail}")
         body.append("")
-    return head + "\n".join(body).rstrip() + "\n"
+    return render_card("moc", fields, GENERATED + "\n\n" + "\n".join(body).rstrip() + "\n")
+
+
+def put_map(path: str, text: str) -> int:
+    """Записать карту через вход шаблонов (`card_types.put_map`, `op=map`). → 1, если файл записан. Отказ шаблона —
+    в stderr: это дефект сборщика карты, остальные карты от него не страдают."""
+    done, why = card_put_map(path, text)
+    if why:
+        print(f"  ! карта {path} не записана: {why}", file=sys.stderr)
+    return int(done)
 
 
 def suggest(cards: dict, groups: list, links: dict, big: int = 8) -> list:
@@ -334,8 +348,10 @@ def drop_links_to(names: set, root: str = "AuroraKnowledgeDB") -> int:
                                         .replace("-", " ")) if m.group(1).strip() in names
                              else m.group(0), "\n".join(lines))
             if new != text:
-                with open(path, "w", encoding="utf-8", errors="surrogateescape", newline="") as fh:
-                    fh.write(new)
+                why_not = put_text(path, new, op="repair", old_text=text)
+                if why_not:
+                    print(f"  ! ссылки на ушедшие карты не сняты в {path}: {why_not}", file=sys.stderr)
+                    continue
                 changed += 1
     return changed
 
@@ -423,13 +439,10 @@ def main() -> int:
             note = (f"Код артефакта `{code}`. Здесь карточки, в которых он упоминается — "
                     "ссылкой или текстом: их связывает одна история, одно требование или один "
                     "эпик. Знания в индексе нет, он ведёт к карточкам, где оно есть.")
-            text = render(code, note, items)
             variants = sorted(v for v in rec["variants"]
                               if v != code and v not in alias_owner and v not in cards)
-            text = text.replace("tags: [moc]\n", "tags: [moc, код]\naliases: ["
-                                + ", ".join(f'"{v}"' for v in variants) + "]\n", 1)
-            os.makedirs(MOC_DIR, exist_ok=True)
-            written += write_if_changed(path, text)
+            text = render(code, note, items, map_kind="code", tags=("moc", "код"), aliases=tuple(variants))
+            written += put_map(path, text)
         stale = [f for f in (sorted(os.listdir(MOC_DIR)) if os.path.isdir(MOC_DIR) else [])
                  if f.endswith(".md") and CODE_NAME_RE.match(f[:-3]) and f not in produced
                  and machine_made(os.path.join(MOC_DIR, f))]
@@ -482,7 +495,7 @@ def main() -> int:
             note = (f"Карточки, извлечённые из одного документа: `{src}`. Каждая "
                     "атомарна и читается сама по себе; эта карта показывает, как они "
                     "складываются обратно в исходный документ.")
-            text = render(name, note, items)
+            text = render(name, note, items, map_kind="document")
             old = open(path, encoding="utf-8").read() if os.path.isfile(path) else None
             if old is not None and undated(old) == undated(text):
                 same += 1
@@ -490,9 +503,7 @@ def main() -> int:
             print(f"| {os.path.basename(src)} | {len(items)} | MOC/{fname} |")
             if not a.apply:
                 continue
-            os.makedirs(MOC_DIR, exist_ok=True)
-            open(path, "w", encoding="utf-8").write(text)
-            written += 1
+            written += put_map(path, text)
         print(f"\nКарт всего: {len(big)} · без изменений: {same}")
         # Карта документа, который больше не даёт карточек, обязана уйти: её не порождают,
         # значит и не переписывают, и она вечно ссылается на то, чего в базе нет. На живом
@@ -596,8 +607,7 @@ def main() -> int:
         if os.path.isfile(path) and not machine_made(path):
             print(f"  ⚠️  {path} написан руками — не трогаю")
             continue
-        os.makedirs(MOC_DIR, exist_ok=True)
-        written += write_if_changed(path, render(name, note, items))
+        written += put_map(path, render(name, note, items))
 
     empty = [n for n, _n2, items in planned if not items]
     if empty:
