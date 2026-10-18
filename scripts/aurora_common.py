@@ -796,8 +796,36 @@ def clean_copy(text: str) -> str:
 # три идут через одну функцию; блокирующее снимается только явным `--allow <код>`.
 
 PRODUCTION_HEADS = ("Уточнения", "Допущения", "Замечания критика", "Под вопросом", "План, по которому собран")
-_PROD_HEAD = re.compile(r"(?m)^#{1,6}[ \t]+(?:%s)[ \t]*$" % "|".join(re.escape(h) for h in PRODUCTION_HEADS))
-_LEFTOVER = re.compile(r"\{\{[^{}\n]*\}\}|\[ПРИМЕР\]|<!--\s*ИНСТРУКЦИЯ", re.I)
+# Служебные комментарии шаблона: правила для модели, примеры, пометки необязательности, «УДАЛИТЬ ПЕРЕД ПУБЛИКАЦИЕЙ».
+# Один перечень на линтер артефактов и на предохранитель выходных команд: два разошлись бы.
+TEMPLATE_COMMENT = re.compile(
+    r"<!--\s*(?:ИНСТРУКЦИЯ|ПРИМЕР|ОПЦИОНАЛЬНО|ШАБЛОН|ГЛОБАЛЬНЫЕ|УДАЛИТЬ)", re.I)
+_LEFTOVER = re.compile(r"\{\{[^{}\n]*\}\}|\[ПРИМЕР\]|(?i:" + TEMPLATE_COMMENT.pattern + ")")
+_MADE_PHRASE = "в чистовик не идёт"
+_PROD_KEYS = tuple(h.casefold() for h in PRODUCTION_HEADS)
+
+
+def _head_title(line: str):
+    """Название раздела из строки-заголовка Markdown (`## Допущения ##`, `# **Допущения:**`) без разметки; иначе None."""
+    m = re.match(r"^ {0,3}(#{1,6})[ \t\u00a0]+(.*)$", line)
+    if not m:
+        return None
+    t = m.group(2).strip().rstrip("#").strip().replace("\u00a0", " ")
+    t = re.sub(r"^[\d.\s]+", "", t.replace("*", "").replace("_", "")).strip(" :.—-").casefold()
+    return t
+
+
+def production_headings(text: str) -> list:
+    """Заголовки разделов производства в тексте вне блоков кода (ATX и Setext; регистр, `:`, `**`, номер не мешают)."""
+    lines = _without_code(text).split("\n")
+    found = []
+    for i, line in enumerate(lines):
+        title = _head_title(line)
+        if title is None and i + 1 < len(lines) and re.fullmatch(r"[=-]{3,}[ \t]*", lines[i + 1]) and line.strip():
+            title = re.sub(r"[*_]", "", line).strip(" :.").casefold()
+        if title and any(title == k or title.startswith(k + " ") or title.startswith(k + "(") for k in _PROD_KEYS):
+            found.append(line.strip())
+    return found
 GATE_CODES = {
     "no-marker": "нет границы чистовика, но в тексте есть разделы производства",
     "template-leftovers": "в чистовике остались места шаблона",
@@ -830,15 +858,19 @@ def outward_gate(text: str, fm: dict | None = None, scrub: str = "") -> list:
     ищется строкой, а заголовки производства — признак того, что он нужен), остатки шаблона, статус draft,
     персональные данные при `privacy.scrub: mask`. Решает вызывающий: он печатает находки и
     отказывает, если не названа `--allow <код>`. Список кодов — `GATE_CODES`."""
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     fm = frontmatter(text) if fm is None else fm
     full = body(text)
     clean = clean_copy(full)
     out = []
-    has_mark = any(line.rstrip("\r\n") == MADE_MARK for line in full.splitlines())
-    found = _PROD_HEAD.findall(_without_code(full)) if not has_mark else []
-    if found:
-        names = ", ".join(sorted({re.sub(r"^#+\s*", "", h).strip() for h in found}))
-        out.append(("block", "no-marker", f"{GATE_CODES['no-marker']} ({names}): без границы {MADE_MARK!r} "
+    lines = full.split("\n")
+    has_mark = any(line == MADE_MARK for line in lines)
+    found = production_headings(full) if not has_mark else []
+    # граница есть, но испорчена (пробел, другое тире, правка руками): `clean_copy` её не видит и режет не по ней
+    broken = [ln for ln in lines if not has_mark and _MADE_PHRASE in ln.casefold() and ln != MADE_MARK]
+    if found or broken:
+        names = ", ".join(sorted({re.sub(r"^[#\s]+|[#\s]+$", "", h) for h in found})) or "граница повреждена"
+        out.append(("block", "no-marker", f"{GATE_CODES['no-marker']} ({names}): без точной строки {MADE_MARK!r} "
                     "кухня производства уедет наружу целиком"))
     left = sorted({m.group(0)[:30] for m in _LEFTOVER.finditer(_without_code(clean))})
     if left:
@@ -905,28 +937,46 @@ def release_hash(text: str) -> str:
 def released_problems(root: str = ".") -> list:
     """Сданные версии `Deliverables/released/`, которые перестали быть сданными. → строки о проблемах.
 
-    Хеш в шапке снимка (`sha256`) сверяется с текстом; снимок до хеширования без него просто не проверяется.
-    Файл, изменённый или удалённый после коммита, назван по git: правка из терминала или чужим ассистентом
-    иначе незаметна, а «сданное неизменяемо» держалось только режимом «только чтение» в редакторе панели."""
+    Хеш в шапке снимка (`sha256`) сверяется с текстом, `binary_sha256` — с переданным файлом; снимок до
+    хеширования без них не проверяется. Файл, изменённый или удалённый после коммита, назван по git: правка из
+    терминала или чужим ассистентом иначе незаметна, а «сданное неизменяемо» держалось только режимом «только
+    чтение» в редакторе панели. Описание папки (`README.md`, его обновляет кит) и точечные файлы не сданное."""
     folder = os.path.join(root, "Deliverables", "released")
     out = []
     if os.path.isdir(folder):
         for name in sorted(os.listdir(folder)):
-            if not name.endswith(".md"):
+            if not name.endswith(".md") or name == FOLDER_GUIDE:
                 continue
             try:
                 text = open(os.path.join(folder, name), encoding="utf-8", errors="replace").read()
             except OSError:
                 continue
-            want = (frontmatter(text).get("sha256") or "").strip().strip("\"'")
+            fm = frontmatter(text)
+            want = (fm.get("sha256") or "").strip().strip("\"'")
             if want and release_hash(text) != want:
                 out.append(f"{name}: текст не совпадает с хешем сданной версии — файл правили после передачи")
+            blob = os.path.basename((fm.get("binary") or "").strip().strip("\"'"))
+            blob_want = (fm.get("binary_sha256") or "").strip().strip("\"'")
+            if blob and blob_want:
+                try:
+                    with open(os.path.join(folder, blob), "rb") as f:
+                        have = hashlib.sha256(f.read()).hexdigest()
+                except OSError:
+                    out.append(f"{blob}: сданного файла нет рядом со снимком {name}")
+                else:
+                    if have != blob_want:
+                        out.append(f"{blob}: файл не совпадает с хешем из снимка {name} — его заменили после передачи")
     try:
-        for flag, what in (("--diff-filter=M", "изменён"), ("--diff-filter=D", "удалён")):
-            cp = subprocess.run(["git", "diff", "HEAD", "--name-only", flag, "--", "Deliverables/released"], cwd=root,
-                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
-            if cp.returncode == 0:
-                out += [f"{os.path.basename(p)}: {what} после коммита" for p in cp.stdout.splitlines() if p.strip()]
+        cp = subprocess.run(["git", "-c", "core.quotepath=off", "diff", "HEAD", "--name-status", "-z",
+                             "--diff-filter=MD", "--", "Deliverables/released"], cwd=root, capture_output=True,
+                            timeout=60)
+        if cp.returncode == 0:
+            parts = cp.stdout.decode("utf-8", "replace").split("\0")
+            for flag, path in zip(parts[0::2], parts[1::2]):
+                base = os.path.basename(path)
+                if base == FOLDER_GUIDE or base.startswith("."):
+                    continue
+                out.append(f"{base}: {'изменён' if flag.startswith('M') else 'удалён'} после коммита")
     except Exception:                                       # noqa: BLE001 — нет git: остаются хеши
         pass
     return out

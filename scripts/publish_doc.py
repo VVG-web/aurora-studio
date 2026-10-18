@@ -271,7 +271,7 @@ def parent_from(raw: str):
         return m.group(1), None
     m = re.search(r"/display/([^/?#]+)/([^?#]+)", raw)
     if m:
-        return "", (urllib.parse.unquote(m.group(1)), urllib.parse.unquote_plus(m.group(2)))
+        return "", (urllib.parse.unquote(m.group(1)), urllib.parse.unquote_plus(m.group(2)).strip("/ "))
     return "", None
 
 
