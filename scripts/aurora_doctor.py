@@ -765,6 +765,29 @@ def check_engine(warns: list) -> list:
     return [f"недостающие файлы движка ({len(miss)}):"] + [f"  {m}" for m in miss]
 
 
+def check_pins() -> list:
+    """Закреплённые китом зависимости (`requirements.txt`) в другой версии. → предупреждения.
+
+    Зеркала сверяются побайтно: другая версия разбора страниц даёт другой markdown, и в истории проекта
+    появятся правки там, где их нет. Не установленный пакет здесь не ошибка — об отсутствии говорит «Установка»."""
+    try:
+        import aurora_extras as EX
+        from importlib import metadata
+        pins = EX.requirements_pins()
+    except Exception:                                  # noqa: BLE001 — доктор не падает из-за чужой установки
+        return []
+    out = []
+    for name, want in sorted(pins.items()):
+        try:
+            have = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            continue
+        if have != want:
+            out.append(f"{name} {have}, а кит закрепил {want}: зеркала могут писаться иначе, чем у остальных → "
+                       f"«Установка» → {name}, либо `python3 -m pip install {name}=={want}`")
+    return out
+
+
 def check_python(errors: list, warns: list, vi=None, platform=None) -> None:
     """Версия Python, на котором идёт doctor: 3.11+ — OK, 3.10 — предупреждение (снят с
     поддержки), ниже — ошибка с подсказкой по системе. `vi` подменяют тесты."""
@@ -873,6 +896,7 @@ def main() -> int:
 
     warns += check_portable_names()
     warns += check_long_paths()
+    warns += check_pins()
     warns += check_kit_hooks()
     warns += check_mirror_heads()
     warns += check_linked_roots()

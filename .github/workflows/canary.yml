@@ -34,7 +34,10 @@ jobs:
         with:
           node-version: "24"
       - name: Engine dependencies (latest, no constraints)
-        run: python3 -m pip install --quiet -r requirements.txt
+        # requirements.txt закреплён (BL-SEC-21), а canary и нужен, чтобы видеть свежие выпуски: те же имена без версий.
+        run: |
+          sed 's/==.*//' requirements.txt > "$RUNNER_TEMP/requirements-latest.txt"
+          python3 -m pip install --quiet -r "$RUNNER_TEMP/requirements-latest.txt"
       # venv ставит сам движок (`--venv-install` → `aurora_extras.install()`, без пина версии — то есть
       # последняя Pydantic AI), под временным HOME раннера. `runner` в `env:` уровня задания недоступен,
       # поэтому пути задаём шагом; их называет движок, а не YAML. Пути от установки не зависят, поэтому
@@ -48,7 +51,17 @@ jobs:
           paths="$(HOME="$H" USERPROFILE="$H" python3 -c "import sys; sys.path.insert(0, 'scripts'); import aurora_extras as E; print(E.EXTRAS['pydantic-ai']['venv'].as_posix()); print(E.venv_python('pydantic-ai').as_posix())")"
           echo "AURORA_ADAPTER_VENV=$(echo "$paths" | sed -n 1p)" >> "$GITHUB_ENV"
           echo "AURORA_ADAPTER_PYTHON=$(echo "$paths" | sed -n 2p)" >> "$GITHUB_ENV"
-          HOME="$H" USERPROFILE="$H" python3 scripts/agent_core.py --venv-install
+          HOME="$H" USERPROFILE="$H" python3 scripts/agent_core.py --venv-install --no-quarantine
+      # Известные уязвимости того, что стоит в venv надстройки (BL-SEC-21): пакеты по снимку установки, без сети к PyPI
+      # за самим снимком. Сигнал, а не поломка: advisory не должен краснить прогон, поэтому шаг не блокирует.
+      - name: Known vulnerabilities in the extras venv (pip-audit)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo pip-audit > "$RUNNER_TEMP/audit-requirements.txt"
+          python3 -m pip install --quiet -r "$RUNNER_TEMP/audit-requirements.txt"
+          "$AURORA_ADAPTER_PYTHON" -m pip freeze --all > "$RUNNER_TEMP/extras-freeze.txt"
+          pip-audit --requirement "$RUNNER_TEMP/extras-freeze.txt" --no-deps --disable-pip --progress-spinner off
       - name: Adapter self-check on the latest framework
         id: selfcheck
         # После красной установки (несовместимая версия) всё равно печатаем полный JSON самопроверки.

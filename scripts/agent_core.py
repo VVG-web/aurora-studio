@@ -3961,7 +3961,7 @@ def cmd_pydantic(as_json: bool, check: bool = False) -> int:
     return 0
 
 
-def cmd_venv_install() -> int:
+def cmd_venv_install(quarantine: bool = True) -> int:
     """Поставить или обновить Pydantic AI в отдельном venv.
 
     Отдельный venv, а не системный pip: ядро кита обязано работать без зависимостей, и
@@ -3971,7 +3971,7 @@ def cmd_venv_install() -> int:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import aurora_extras as EX
     print("Ставлю/обновляю pydantic-ai (может занять пару минут)…")
-    res = EX.install("pydantic-ai")
+    res = EX.install("pydantic-ai", None if quarantine else 0)
     print(res["log"] if res["ok"] else f"agent: {res['log']}",
           file=sys.stdout if res["ok"] else sys.stderr)
     return 0 if res["ok"] else 1
@@ -3993,6 +3993,8 @@ def main() -> int:
     ap.add_argument("--venv-status", action="store_true", help="стоит ли Pydantic AI")
     ap.add_argument("--venv-install", action="store_true",
                     help="поставить/обновить Pydantic AI в ~/.aurora/venv")
+    ap.add_argument("--no-quarantine", action="store_true",
+                    help="с --venv-install: без паузы после выпуска (проверка свежих версий в CI)")
     ap.add_argument("--mcp-probe", action="store_true",
                     help="запустить MCP-серверы кита и назвать их инструменты")
     ap.add_argument("--json", action="store_true", help="машинный вывод (для панели)")
@@ -4012,7 +4014,7 @@ def main() -> int:
             print(f"Pydantic AI: {'установлен, ' + version if ok else 'не установлен'} ({VENV})")
         return 0
     if a.venv_install:
-        return cmd_venv_install()
+        return cmd_venv_install(not a.no_quarantine)
     if a.mcp_probe:
         return cmd_mcp_probe(a.json)
     return cmd_show()

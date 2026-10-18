@@ -1473,7 +1473,8 @@ def test_engine_addons_show_versions_and_install_from_the_panel(tmp: Path):
         cat = json.loads((KIT / f"cockpit/modules/install/i18n/{lang}.json").read_text(encoding="utf-8"))
         assert {"install.extras", "install.ex_update", "install.ex_git", "install.ex_mcp_hint"} <= set(cat)
     core = (SCRIPTS / "agent_core.py").read_text(encoding="utf-8")
-    assert 'EX.install("pydantic-ai")' in core, "две разные установки Pydantic AI"
+    assert 'EX.install("pydantic-ai"' in core and "pip install" not in core.split("def cmd_venv_install")[1].split("\ndef ")[0], \
+        "две разные установки Pydantic AI"
 
 
 @test

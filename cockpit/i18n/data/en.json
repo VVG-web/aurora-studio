@@ -585,7 +585,8 @@
     "подготовка движка уже идёт — подождите несколько секунд": "the engine is already being prepared — wait a few seconds",
     "это не проект Aurora (нет AuroraKnowledgeDB/)": "this is not an Aurora project (no AuroraKnowledgeDB/)",
     "подготовка движка не вышла: {}: {}": "preparing the engine failed: {}: {}",
-    "в проекте идёт прогон агента ({}) — движок подготовится после него": "an agent run is in progress in the project ({}) — the engine will be prepared after it"
+    "в проекте идёт прогон агента ({}) — движок подготовится после него": "an agent run is in progress in the project ({}) — the engine will be prepared after it",
+    "{} {}, а кит закрепил {}: зеркала могут писаться иначе, чем у остальных → «Установка» → {}, либо `python3 -m pip install {}=={}`": "{} {}, but the kit pins {}: mirrors may be written differently from everyone else's → \"Install\" → {}, or `python3 -m pip install {}=={}`"
   },
   "connectors": {
     "confluence-dc": {
@@ -969,7 +970,8 @@
     "показать адреса probe (по умолчанию — только тип и идентификатор)": "show the probe addresses (by default only the type and the identifier)",
     "зеркало вики (по умолчанию — зеркало с ролью projectwiki)": "wiki mirror (by default the mirror with the projectwiki role)",
     "зеркало трекера задач (по умолчанию — с ролью tasktracker)": "task tracker mirror (by default the one with the tasktracker role)",
-    "корень зеркала (по умолчанию — зеркало вики проекта)": "mirror root (by default the project's wiki mirror)"
+    "корень зеркала (по умолчанию — зеркало вики проекта)": "mirror root (by default the project's wiki mirror)",
+    "с --venv-install: без паузы после выпуска (проверка свежих версий в CI)": "with --venv-install: no wait after a release (checking fresh versions in CI)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",
