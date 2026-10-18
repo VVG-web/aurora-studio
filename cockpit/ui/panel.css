@@ -387,6 +387,11 @@ tr:last-child td{border-bottom:0}
   padding:var(--sp-3) var(--sp-4);font-size:var(--text-md);margin:var(--sp-3) 0}
 .dangerbox{border-color:color-mix(in oklab,var(--danger) 45%,var(--border));
   background:color-mix(in oklab,var(--danger) 10%,transparent)}
+/* длина путей: красная строка у строки формы и сводка под кнопкой */
+.pathline{color:var(--danger);font-size:var(--text-sm);line-height:1.45;margin:-4px 0 8px;overflow-wrap:anywhere}
+.pathbox ul{margin:8px 0 0 18px;padding:0;font-size:var(--text-sm)}
+.pathbox li{margin-bottom:4px;overflow-wrap:anywhere}
+.pathbox b{color:var(--danger)}
 
 /* тосты */
 #toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:10px;z-index:80}

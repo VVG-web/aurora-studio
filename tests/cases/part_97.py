@@ -48,7 +48,7 @@ def test_saving_the_project_form_answers_with_the_path_findings_and_still_saves(
         assert found["lines"] == 1 and found["models"]["windows"].startswith("C:\\Users\\username"), found
         f = found["findings"][0]
         assert f["key"] == "artifacts:ac" and f["where"] == ["artifacts", "ac", "out"], f
-        assert f["system"] == "Windows" and f["limit"] == 247 and f["kind"] in ("dir", "prefix"), f
+        assert f["system"] == "windows" and f["limit"] == 247 and f["kind"] in ("dir", "prefix"), f
         assert f["length"] > 247 and f["cfg_line"] > 0 and f["root_len"] > 0, f
         assert "line" not in f and "source" not in f, "русские подписи страница берёт из каталога"
         assert not re.search("[А-Яа-яЁё]", json.dumps({k: v for k, v in f.items() if k not in ("sample", "root")},

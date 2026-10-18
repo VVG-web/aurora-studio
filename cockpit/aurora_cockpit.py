@@ -5547,9 +5547,15 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
             # Скрипт взят из кита, потому что у проекта нет движка или он неполный: молчать об этом
             # нельзя — прогон идёт не тем, что лежит в проекте. Что исполняется, не меняется.
             note = engine_fallback_note(project, row["script"], path)
+            # Выгрузка вне маршрута (кнопка одной команды): длинные пути названы одной строкой в начале.
+            # Шаг маршрута её не печатает — маршрут сказал о них один раз на весь прогон.
+            if not parent and cmd in RR.SYNC_LOADS:
+                note = "\n".join(x for x in (note, RR.paths_lines(sys.modules[__name__], project,
+                                                                   RR.Texts(sys.modules[__name__], "ru"))[0]) if x)
             if note:
                 with JOBS_LOCK:
-                    job_push(job, note)
+                    for one in note.split("\n"):
+                        job_push(job, one)
                 if run_log is not None:
                     try:
                         run_log.write(note + "\n")

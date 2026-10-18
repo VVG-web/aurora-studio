@@ -88,6 +88,8 @@ DID_WORK = (r"переписано:\s*([1-9]\d*)", r"разобрано\s+([1-9]
             # итог шага агента: «Документы: обработано 2 · …», «Карт … записано: 76»
             r"обработано\s+([1-9]\d*)", r"записано:\s*([1-9]\d*)")          # данные движка
 ENGINE_CMDS = ("kit:skills",)
+# Шаги, которые кладут файлы в зеркала: на них упирается длина пути (`path_budget`), и о ней говорится в начале прогона.
+SYNC_LOADS = ("sync:confluence", "sync:web", "sync:jira")
 CYCLE_START, CYCLE_END = "цикл:", "конец цикла"                             # данные движка
 
 
@@ -316,6 +318,25 @@ def run_job(ck, project: str, cmd: str, args: list, stop=None, on_job=None,
             "job": job_id, "run_id": run_id, "hung": hung}
 
 
+def paths_lines(ck, project: str, t) -> tuple:
+    """(строка начала прогона, строка итога) про длинные пути; пусто — находок нет или проверка не сработала.
+
+    Строки конфига называются так же, как в форме: ключи и «строка N» (`pathlen.row`). Одна проверка на запуск."""
+    try:
+        report = ck.PB.assess(project)
+    except Exception:  # noqa: BLE001 — справка не имеет права ронять запуск
+        return "", ""
+    names: list = []
+    for f in report.findings:
+        label = " → ".join(t("pathlen.row", n=p + 1) if isinstance(p, int) else str(p) for p in f.where)
+        if label and label not in names:
+            names.append(label)
+    if not names:
+        return "", ""
+    shown = "; ".join(names[:3]) + (t("route.paths_more", n=len(names) - 3) if len(names) > 3 else "")
+    return t("route.paths", lines=shown), t("route.paths_final", lines=shown)
+
+
 class Journal:
     """Журнал прогона маршрута: то, что видно в консоли, — в памяти, в файлах и по запросу.
 
@@ -446,6 +467,7 @@ class RouteRun:
         self.failed = self.refused = ""
         self.gate_failed = ""                  # шаг-ворота, не пропустивший маршрут (код 1)
         self.last_res: dict = {}               # последний ответ шага в ожидании сети
+        self.paths_final = ""                  # итоговая строка про длинные пути (пусто — находок нет)
         self.stopped = self.stalled = False
         # Продвинулся ли маршрут: каждый шаг агента и каждый оборот фиксируют работу в git,
         # и сдвиг HEAD — честный признак, что база менялась. По нему расписание отличает
@@ -995,6 +1017,7 @@ class RouteRun:
         self.net_policy = G.policy_for(self.net, svc) if (G and svc and svc.enabled) else ""
         if not self._net_precheck(steps):
             return self._finish(self.head0 or "", started)
+        self._paths_hint(steps)
         if not self.resumed:
             self._git("update", "before_route")
         head = ck.RS.git_head(self.project)
@@ -1030,6 +1053,15 @@ class RouteRun:
             else:
                 self._run_deferred(steps)
         return self._finish(head, started)
+
+    def _paths_hint(self, steps: list) -> None:
+        """Одна строка в начале прогона с выгрузкой: какие строки конфига не поместятся в путь на Windows, macOS
+        или Linux. Запуск не блокируется — не всё будет загружено, и человек знает заранее, что именно."""
+        if not any(s["cmd"] in SYNC_LOADS for s in steps):
+            return
+        start, self.paths_final = paths_lines(self.ck, self.project, self.t)
+        if start:
+            self.say("warn", start)
 
     def _cycle(self, steps: list, i: int, end: int) -> bool:
         """Блок цикла оборотами. → False, если маршрут дальше не идёт."""
@@ -1147,6 +1179,8 @@ class RouteRun:
         lines = totals.get("lines") or []
         for line in lines:
             self.say("sum", line)
+        if self.paths_final:
+            self.say("warn", self.paths_final)
         # «Нашла, что чинить» — одна строка на команду, сколько бы шагов она ни заняла.
         times: dict = {}
         for x in self.summary:

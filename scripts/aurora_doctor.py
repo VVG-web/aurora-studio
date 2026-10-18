@@ -451,6 +451,25 @@ def check_portable_names() -> list:
     return warns
 
 
+def check_long_paths(root: Path | None = None) -> list:
+    """Строки конфига, которым на Windows, macOS или Linux не хватит места под путь. → одно предупреждение.
+
+    Не ошибка и не блокер: запуск возможен, но не всё будет загружено. Какие строки и сколько в них файлов —
+    `kit:paths`; доктор даёт число и первые строки. Без `path_budget` (старый движок проекта) молчит."""
+    out = []   # через .append: реестр переводов kit_i18n собирает сообщения доктора именно по вызовам append
+    try:
+        import path_budget as PB
+        report = PB.assess(str(root or ROOT))
+        names = list(dict.fromkeys(f.line for f in report.findings))
+    except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
+        return out
+    if names:
+        out.append(f"длинные пути: строк конфига {len(names)} не поместятся в путь на Windows, macOS или Linux "
+                   f"({'; '.join(names[:3])}{' …' if len(names) > 3 else ''}) → запуск возможен, но не всё "
+                   "будет загружено; какие файлы и что сократить — `kit:paths`")
+    return out
+
+
 # Почему находка — блокер. Строка находки говорит «что» и «как исправить» (через «→»), но
 # не «почему это мешает»: человек видел «блокеры: 2», не понимал, что сломано и зачем
 # чинить, и не знал, куда нажать. Панель показывает все три части в отчёте «Блокеры»
@@ -851,6 +870,7 @@ def main() -> int:
                      + " → уберите: kb_fix.py --retire --apply")
 
     warns += check_portable_names()
+    warns += check_long_paths()
     warns += check_kit_hooks()
     warns += check_mirror_heads()
     warns += check_linked_roots()

@@ -4566,6 +4566,53 @@ function confAttachmentsFields(A, inp){
     el("div",{class:"muted",style:"font-size:12px;margin:-4px 0 14px"}, t("proj.att_hint"))];
 }
 
+/* Длина путей: сервер присылает находки (`path_findings`) вместе с ответом записи и по запросу
+   `/api/paths`. Запись не блокируется — находка стоит красной строкой у своей строки формы (корень
+   Confluence, адрес сайта) и сводкой под кнопкой «Сохранить»: запуск возможен, но не всё будет загружено.
+   Слова — из каталога языка; сервер не присылает ни русских подписей, ни готовых фраз. */
+const PATHS = {map: {}, lines: 0, partial: false, models: {}};
+function pathsSet(d){
+  PATHS.map = {};
+  for (const f of (d && d.findings) || []) (PATHS.map[f.key] = PATHS.map[f.key] || []).push(f);
+  PATHS.lines = Object.keys(PATHS.map).length;
+  PATHS.partial = !!(d && d.partial);
+  PATHS.models = (d && d.models) || {};
+}
+function pathWhere(f){            // «atlassian → confluence → sync_roots → строка 2»
+  return (f.where || []).map(p => typeof p === "number" ? t("pathlen.row", {n: p + 1}) : String(p)).join(" → ");
+}
+function pathText(f, full){
+  const win = f.system === "windows";
+  const x = {system: t("pathlen.sys." + f.system), length: f.length, limit: f.limit, name: f.sample, root: f.root,
+             rootLen: f.root_len, unit: t(win || f.system === "all" ? "pathlen.unit_chars" : "pathlen.unit_bytes")};
+  const what = f.kind === "name" ? t("pathlen.name", x) : f.kind === "prefix" ? t("pathlen.prefix", x)
+    : f.kind === "dir" ? t("pathlen.dir", x) : f.level === "risk" ? t("pathlen.risk", x)
+    : f.count ? t("pathlen.files", Object.assign({n: f.count}, x)) : t("pathlen.path", x);
+  const eff = f.extra && f.extra.effect ? t("pathlen.eff." + f.extra.effect) : "";
+  const cond = win && f.kind !== "name" ? " " + t("pathlen.win_cond") : "";
+  const root = full ? " " + t(f.extra && f.extra.assumed ? "pathlen.root_assumed" : "pathlen.root", x) : "";
+  return what + cond + (eff ? " — " + eff : "") + "." + root;
+}
+function pathLines(key){           // красные строки под строкой формы: пусто — находок нет
+  return (PATHS.map[key] || []).map(f => el("div", {class: "pathline", "data-path": key}, pathText(f, false)));
+}
+function pathBoxFill(box){
+  box.innerHTML = "";
+  if (!PATHS.lines) return;
+  const list = el("ul", {});
+  const advice = new Set();
+  for (const fs of Object.values(PATHS.map)) for (const f of fs){
+    list.append(el("li", {}, el("b", {}, pathWhere(f)), ": " + pathText(f, true)));
+    advice.add(f.kind === "name" ? t("pathlen.advice_name") : f.system === "windows" && f.kind === "path"
+               ? t("pathlen.advice_win") : t("pathlen.advice_dir"));
+  }
+  box.append(el("div", {class: "warnbox dangerbox pathbox"},
+    el("div", {}, el("b", {}, t("pathlen.title", {n: PATHS.lines}))),
+    list,
+    ...[...advice].map(text => el("div", {class: "muted", style: "font-size:12px;margin-top:8px"}, text)),
+    PATHS.partial ? el("div", {class: "muted", style: "font-size:12px;margin-top:4px"}, t("pathlen.partial")) : null));
+}
+
 /* ---------------- настройки проекта ----------------
 
    Отдельная вкладка появилась не ради порядка. Одна форма держала и общее, и частное:
@@ -4657,7 +4704,7 @@ async function renderProject(){
         el("span",{class:"muted",style:"font-size:12px"}, t("proj.roots_sort")),
         el("button",{class:"btn sm", onclick:()=>sortRoots("title")}, t("proj.sort_title")),
         el("button",{class:"btn sm", onclick:()=>sortRoots("id")}, t("proj.sort_id"))));
-    A.sync_roots.forEach((r, i) => rootsBox.append(el("div",{class:"row",style:"margin-bottom:8px"},
+    A.sync_roots.forEach((r, i) => rootsBox.append(el("div",{}, el("div",{class:"row",style:"margin-bottom:8px"},
       watch(el("input",{class:"btn mono",style:"width:190px;font-weight:400",
         placeholder: t("proj.root_id_ph"), value:r.page_id,
         oninput:e=>r.page_id=e.target.value}), "form", t("dirty.form")),
@@ -4675,7 +4722,8 @@ async function renderProject(){
               : null,
       el("button",{class:"btn sm danger", title: t("proj.drop"),
         onclick:()=>{A.sync_roots.splice(i,1); drawRoots();
-                     setDirty("form", t("dirty.form"), true);}},"✕"))));
+                     setDirty("form", t("dirty.form"), true);}},"✕")),
+      ...pathLines("root:" + (r.page_id || "").trim()))));
     rootsBox.append(el("button",{class:"btn sm",style:"margin-top:4px",
       onclick:()=>{A.sync_roots.push({page_id:"",title:"",trusted:false}); drawRoots();
                    setDirty("form", t("dirty.form"), true);}},
@@ -4690,7 +4738,7 @@ async function renderProject(){
   const webBox = el("div",{});
   const drawWeb = () => {
     webBox.innerHTML = "";
-    A.web_pages.forEach((w, i) => webBox.append(el("div",{class:"row",style:"margin-bottom:8px"},
+    A.web_pages.forEach((w, i) => webBox.append(el("div",{}, el("div",{class:"row",style:"margin-bottom:8px"},
       watch(el("input",{class:"btn mono",style:"flex:1;min-width:200px;font-weight:400",
         placeholder:"https://…", value:w.url,
         oninput:e=>w.url=e.target.value}), "form", t("dirty.form")),
@@ -4701,13 +4749,21 @@ async function renderProject(){
         t("proj.trust")),
       el("button",{class:"btn sm danger", title: t("proj.drop"),
         onclick:()=>{A.web_pages.splice(i,1); drawWeb();
-                     setDirty("form", t("dirty.form"), true);}},"✕"))));
+                     setDirty("form", t("dirty.form"), true);}},"✕")),
+      ...pathLines("web:" + (w.url || "").trim()))));
     webBox.append(el("button",{class:"btn sm",style:"margin-top:4px",
       onclick:()=>{A.web_pages.push({url:"",trusted:false}); drawWeb();
                    setDirty("form", t("dirty.form"), true);}},
       t("proj.add_web")));
   };
   drawWeb();
+  // Длина путей: сводка под кнопкой и красные строки у корней и адресов. Находки приходят отдельным запросом
+  // (обход зеркал не должен держать открытие страницы) и с ответом каждой записи.
+  const pathBox = el("div", {});
+  const drawPaths = () => { drawRoots(); drawWeb(); pathBoxFill(pathBox); };
+  const showPaths = d => { pathsSet(d); drawPaths(); };
+  pathsSet(null);
+  api("/api/paths?project=" + encodeURIComponent(S.project.path), {quiet:true}).then(d => { if (d && Array.isArray(d.findings)) showPaths(d); }).catch(() => {});
 
   formBox.append(el("div",{class:"card",style:"padding:20px"},
     el("p",{class:"muted",style:"font-size:13px;margin:0 0 14px"},
@@ -4790,14 +4846,17 @@ async function renderProject(){
         e.target.disabled = false;
         if (r.ok){
           shownPolicy = {conf_attachments: A.conf_attachments, conf_attachment_max_mb: A.conf_attachment_max_mb};
-          toast(t("proj.saved"));
+          showPaths(r.path_findings);
+          toast(PATHS.lines ? t("proj.saved") + " · " + t("pathlen.toast", {n: PATHS.lines}) : t("proj.saved"),
+                PATHS.lines ? "warn" : "ok");
           setDirty("form", t("dirty.form"), false);
           S.state = await api("/api/state");
           S.project = S.state.projects.find(p=>p.path===S.project.path) || S.project;
           renderOverview(); renderProjectAfterSave();
         }
       }),
-      el("span",{class:"muted",style:"font-size:12px"}, t("proj.slug_note")))));
+      el("span",{class:"muted",style:"font-size:12px"}, t("proj.slug_note"))),
+    pathBox));
 
   // 3. доступы
   const tokBox = sgroup(box, "project:tokens", t("tokens.title", {project: S.project.name}));
@@ -4842,7 +4901,9 @@ async function renderProject(){
       saveButton("yaml", t("dirty.yaml"), t("yaml.save"), async ()=>{
         const r = await api("/api/config",{method:"POST",
           body:JSON.stringify({project:S.project.path, text: ta.value})});
-        if (r.ok){ toast(r.unchanged ? t("yaml.unchanged") : t("yaml.saved", {backup: r.backup}));
+        if (r.ok){ showPaths(r.path_findings);
+          toast((r.unchanged ? t("yaml.unchanged") : t("yaml.saved", {backup: r.backup}))
+                + (PATHS.lines ? " · " + t("pathlen.toast", {n: PATHS.lines}) : ""), PATHS.lines ? "warn" : "ok");
           setDirty("yaml", t("dirty.yaml"), false);
           S.state = await api("/api/state");
           S.project = S.state.projects.find(p=>p.path===S.project.path) || S.project;
