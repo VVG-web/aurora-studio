@@ -96,7 +96,7 @@ python3 .aurora/scripts/kb_schema.py --apply
 ## Requirement extras (type: requirement)
 
 Requirement cards live in `AuroraKnowledgeDB/Requirements/`, named `REQ-NNN-<кратко-суть>.md`
-(NNN — next free number in `Requirements/_index.md`). Card `status` tracks knowledge
+(NNN — the next number from `kb:next-id REQ`, issued under a lock). Card `status` tracks knowledge
 status as usual; the requirement's own lifecycle is separate:
 
 ```yaml
@@ -192,12 +192,12 @@ DR rules (append-only):
 - Accepted/rejected DRs are **immutable**. The only allowed edits: set
   `status: superseded` + `superseded_by` when a newer DR replaces it.
 - Never delete a DR. Rejected options stay inside the DR body forever.
-- Naming: `Decisions/DR-NNNN-<кратко-суть>.md`, NNNN — next free number in `Decisions/_index.md`.
+- Naming: `Decisions/DR-NNNN-<кратко-суть>.md`, NNNN — the next number from `kb:next-id DR` (under a lock; the archive is counted too).
 
 ## Spec extras (type: spec)
 
-Specs live in `AuroraKnowledgeDB/Specs/`, named `SPEC-NNN-<фича>.md` (next number in
-`Specs/_index.md`). Template: `Templates/spec_template.md`.
+Specs live in `AuroraKnowledgeDB/Specs/`, named `SPEC-NNN-<фича>.md` (the next number from
+`kb:next-id SPEC`). Template: `Templates/spec_template.md`.
 
 ```yaml
 type: spec
@@ -214,6 +214,30 @@ Lifecycle: `draft → knowledge` (движок пересчитывает по �
 Ready (см. workflows.md). После передачи в разработку спека неизменна для своего релиза: изменение =
 новая версия (`applies_to`/`supersede`) + дельта-задачи. Сценарии — Given/When/Then,
 формулировки EARS-style.
+
+## Паспорт артефакта v1 (артефакты агента, `agent:make`)
+
+Шапку артефакта в `Artifacts/<вид>/` собирает движок (`write_artifact`), модель её не пишет. Паспорт — поля,
+по которым артефакт находят и связывают, не открывая текст; в Confluence шапка не уходит (публикация режет её
+и всё ниже `MADE_MARK`).
+
+```yaml
+type: us                  # вид из artifacts: проекта (он же «kind» паспорта)
+artifact_id: ART-0007     # номер, выдан `kb:next-id ART` под замком; не меняется и не переиспользуется
+implements: [REQ-042]     # какие требования реализует: из `--from REQ-…` и карточек REQ, на которые сослался текст
+parent: SPEC-012          # из чего вырос (`--from SPEC-…`, `US-…`, `ART-…`); родитель один
+covers: [AC-3.1]          # какие критерии покрывает (`--from AC-…`) — для тест-кейсов
+session: us-2026-10-19_101503Z
+started: 2026-10-19T10:15:03Z    # начало работы; finished — когда цепочка прошла до конца (время человека между вопросами входит)
+finished: 2026-10-19T10:41:50Z
+model_calls: 6            # обращения к ролям модели за всю работу над артефактом
+pipeline:                 # время каждого этапа (UTC, секунды); у старых артефактов — дата без времени, читаются оба вида
+  enriched: 2026-10-19T10:15:40Z
+```
+
+`ops:impact REQ-042-…` и `ops:impact ART-0007` показывают артефакты, чей паспорт называет цель (строка «паспорт:
+implements»). Старые артефакты без паспорта читаются как есть. Повтор `artifact_id` у двух файлов — предупреждение
+`kb:lint`. Поле `template:` паспорту не мешает: оно у карточек базы, не у артефактов.
 
 ## Deliverable extras (type: deliverable)
 

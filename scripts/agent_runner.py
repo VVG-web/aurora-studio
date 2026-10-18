@@ -6033,7 +6033,7 @@ def pack_refusal(out: str) -> str:
 
 
 def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
-             force_plan: bool, call=None, momus: bool = True, context=None) -> dict:
+             force_plan: bool, call=None, momus: bool = True, context=None, links=None) -> dict:
     """Производство артефакта: обогащение → план с вопросами → воркер → критик → Момус.
 
     Разбито на вызовы, потому что посередине стоит человек: планировщик задаёт вопросы и
@@ -6056,10 +6056,22 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         d = make_session_dir(cwd, kind)
         sid = d.name
         st = {"sid": sid, "kind": kind, "idea": idea, "spec": spec,
-              "stages": {}, "rounds": [], "plan": ""}
+              "stages": {}, "rounds": [], "plan": "", "started": utc_stamp()}
     # Файлы, папки и вложения аналитика живут в сессии: следующий раунд вопросов и писатель
     # видят то же, что видел планировщик. Новые ссылки при продолжении — добавляются.
     st["context"] = list(dict.fromkeys((st.get("context") or []) + list(context or [])))
+    # Паспорт артефакта: с чем он связан (`--from REQ-042`, `--from SPEC-012`). При продолжении
+    # сессии новые связи добавляются к прежним, а не заменяют их.
+    for field, ids in (links or {}).items():
+        have = st.setdefault("links", {}).setdefault(field, [])
+        have += [x for x in ids if x not in have]
+    # Обращения к роли считаем здесь, в одном месте: в шапку идёт число за всю работу, в том числе за
+    # прошлые заходы той же сессии (человек отвечает на вопросы, цепочка продолжается).
+    inner_call = call
+
+    def call(*a, **kw):                       # noqa: F811 — тот же вызов, со счётчиком
+        st["model_calls"] = int(st.get("model_calls") or 0) + 1
+        return inner_call(*a, **kw)
 
     spec = st["spec"]
     stages = st["stages"]
@@ -6099,7 +6111,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         if not r["ok"] or "## " not in r["out"]:
             return {"ok": False, "sid": sid, "why": pack_refusal(r["out"])}
         st["pack"] = r["out"]
-        stages["enriched"] = TODAY_STR
+        stages["enriched"] = utc_stamp()
         st.setdefault("draft", "")
         st.setdefault("clarifications", [])
         st.setdefault("assumptions", [])
@@ -6214,7 +6226,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             st.setdefault("assumptions", []).append(
                 {"text": str(a)[:300], "by": "решила модель"})
         st["plan"] = plan
-        stages["planned"] = TODAY_STR
+        stages["planned"] = utc_stamp()
         save_session(cwd, sid, st)
         say("  план готов")
 
@@ -6236,7 +6248,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         st["draft"] = (r["text"] or "").strip()
         if not st["draft"]:
             return {"ok": False, "sid": sid, "why": "воркер вернул пустой документ"}
-        stages["drafted"] = TODAY_STR
+        stages["drafted"] = utc_stamp()
         st["path"] = write_artifact(cwd, st)
         save_session(cwd, sid, st)
         say(f"  черновик: {len(st['draft'])} знаков → {st['path']}")
@@ -6267,7 +6279,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         # опроса. Планировщик мог спросить про крайние случаи, получить ответ и всё
         # равно не дойти до них в плане.
         st["coverage"] = clean_coverage(verdict.get("coverage"))
-        stages["reviewed"] = TODAY_STR
+        stages["reviewed"] = utc_stamp()
         st["path"] = write_artifact(cwd, st)
         save_session(cwd, sid, st)
         say(f"  критик: замечаний {len(st['issues'])}")
@@ -6283,7 +6295,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             save_session(cwd, sid, st)
             return {"ok": False, "sid": sid,
                     "why": "Момус не проверил документ: " + (mo.get("why") or "нет вердикта")}
-        stages["checked"] = TODAY_STR
+        stages["checked"] = utc_stamp()
         st["path"] = write_artifact(cwd, st)
         save_session(cwd, sid, st)
         say(f"  Момус: {'чисто' if mo.get('clean') else 'без опоры ' + str(mo.get('unsupported', 0))}")
@@ -6317,6 +6329,8 @@ def report_make(res: dict) -> str:
     for stage in MAKE_STAGES:
         L.append(f"| {names[stage]} | {stages.get(stage) or '— не пройден'} |")
     L += ["", f"Документ: `{st.get('path', '—')}`"]
+    if st.get("artifact_id"):
+        L.append(f"Номер: `{st['artifact_id']}`")
     if st.get("issues"):
         L += ["", f"Критик нашёл замечаний: {len(st['issues'])} — они в самом документе."]
     mo = st.get("momus") or {}
@@ -6346,6 +6360,85 @@ def clean_coverage(raw) -> dict:
         if key and val:
             out[key] = val
     return out
+
+
+PASSPORT_TOKEN = re.compile(r"^[\w][\w.:\-/]{0,80}$")
+# Что значит идентификатор в `--from`: префикс (последний сегмент ключа до номера) → поле паспорта.
+FROM_FIELDS = {"REQ": "implements", "AC": "covers", "SPEC": "parent", "US": "parent", "ART": "parent"}
+
+
+def passport_token(value) -> str:
+    """Значение поля паспорта: слова, точки, дефисы, двоеточия, косые — без пробелов и переводов строки."""
+    value = str(value or "").strip()
+    return value if PASSPORT_TOKEN.match(value) else ""
+
+
+def parse_from(values) -> tuple:
+    """`--from REQ-042 --from SPEC-012` → ({поле: [идентификаторы]}, ошибка).
+
+    Префикс определяет поле паспорта: REQ — реализует (`implements`), AC — покрывает (`covers`),
+    SPEC, US, ART — родитель (`parent`, он один). Ключ Requirement Yogi (`RU.PRJ.REQ-010`) читается по
+    последнему сегменту. Что не узнано — ошибка вызова: связь, молча не попавшая в шапку, хуже отказа.
+    """
+    links: dict = {}
+    bad: list = []
+    for raw in values or []:
+        for token in re.split(r"[,\s]+", str(raw).strip()):
+            if not token:
+                continue
+            m = re.search(r"(?:^|\.)([A-Za-z]+)-[\w.\-]*\d$", token)
+            field = FROM_FIELDS.get(m.group(1).upper()) if m and passport_token(token) else None
+            if not field:
+                bad.append(token)
+                continue
+            have = links.setdefault(field, [])
+            if token not in have:
+                have.append(token)
+    if bad:
+        return links, ("не знаю, чем считать " + ", ".join(bad) + " — принимаются REQ-…, AC-…, US-…, "
+                       "SPEC-…, ART-… (ключ Requirement Yogi — по последнему сегменту)")
+    if len(links.get("parent", [])) > 1:
+        return links, "родитель у артефакта один, а указано: " + ", ".join(links["parent"])
+    return links, ""
+
+
+def passport_lines(st: dict, draft_cards: list) -> list:
+    """Строки шапки со связями артефакта: `implements`, `parent`, `covers`.
+
+    `implements` — объявленные через `--from` и карточки REQ-NNN, на которые документ сослался (он стоит
+    на этом требовании; правится рукой в шапке, если сослался только для контекста)."""
+    links = st.get("links") or {}
+    implements = [x for x in links.get("implements") or [] if passport_token(x)]
+    for name in draft_cards:
+        m = re.match(r"(REQ-\d+)(?:\D|$)", name)
+        if m and m.group(1) not in implements:
+            implements.append(m.group(1))
+    out = []
+    if implements:
+        out.append("implements: [" + ", ".join(implements) + "]")
+    parent = next((x for x in links.get("parent") or [] if passport_token(x)), "")
+    if parent:
+        out.append(f"parent: {parent}")
+    covers = [x for x in links.get("covers") or [] if passport_token(x)]
+    if covers:
+        out.append("covers: [" + ", ".join(covers) + "]")
+    return out
+
+
+def artifact_number(cwd: str, st: dict) -> str:
+    """Номер артефакта (`ART-0007`): выдаётся один раз на сессию и дальше хранится в ней.
+
+    Выдаёт его реестр идентификаторов под замком, поэтому два параллельных прогона номер не делят.
+    Нет модуля (движок проекта обновлён не целиком) или замок занят — документ пишется без номера:
+    потерять работу из-за номера хуже, чем выдать его позже (следующая запись шапки попробует снова)."""
+    if st.get("artifact_id"):
+        return str(st["artifact_id"])
+    try:
+        import id_registry as IDR
+        st["artifact_id"] = IDR.allocate("ART", cwd)
+    except (ImportError, OSError, RuntimeError):
+        return ""
+    return st["artifact_id"]
 
 
 def write_artifact(cwd: str, st: dict) -> str:
@@ -6404,18 +6497,6 @@ def write_artifact(cwd: str, st: dict) -> str:
         card_stem(x) for x in link_refs(st.get("draft") or "") if x.strip()) if c in unver]
     if lean:
         done = False
-    head = ["---", f'title: "{title.replace(chr(34), "")}"',
-            f"type: {st['kind']}", f"status: {'ready' if done else 'draft'}",
-            f"created: {TODAY_STR}", f"updated: {TODAY_STR}", "built: machine",
-            f"session: {st['sid']}",
-            "pipeline:"]
-    for stage in MAKE_STAGES:
-        head.append(f"  {stage}: {stages.get(stage) or '—'}")
-    if st.get("issues"):
-        head.append(f"review_issues: {len(st['issues'])}")
-    mo = st.get("momus") or {}
-    if mo.get("ok"):
-        head.append(f"unsupported: {unsupported}")
     # `based_on` — карточки, на которые документ СОСЛАЛСЯ, а не весь пак: сорок карточек
     # в контексте и три ссылки в тексте значат, что документ стоит на трёх. Пак — это
     # «что мы дали», основания — «на чём стоит».
@@ -6427,6 +6508,33 @@ def write_artifact(cwd: str, st: dict) -> str:
     in_pack = {h.split(" — ")[0].strip()
                for h in re.findall(r"^## (.+)$", st.get("pack") or "", re.M)}
     grounded = [c for c in cited if c in in_pack]
+    head = ["---", f'title: "{title.replace(chr(34), "")}"',
+            f"type: {st['kind']}", f"status: {'ready' if done else 'draft'}",
+            f"created: {TODAY_STR}", f"updated: {TODAY_STR}", "built: machine"]
+    # Паспорт артефакта v1 (BL-TEAM-07): номер выдаёт код под замком, связи берутся из `--from` и из
+    # карточек REQ, на которые документ сослался; время этапов и число обращений к модели — для
+    # метрик цикла. Поля паспорта не уходят наружу: публикация режет шапку, а не только производство.
+    # Шапка собирается движком, значения проходят `passport_token`: перевод строки в них не попадёт.
+    artifact_id = artifact_number(cwd, st)
+    if artifact_id:
+        head.append(f"artifact_id: {artifact_id}")
+    head += passport_lines(st, grounded)
+    head.append(f"session: {st['sid']}")
+    started, finished = passport_token(st.get("started")), passport_token(stages.get("checked"))
+    if started:
+        head.append(f"started: {started}")
+    if started and finished:
+        head.append(f"finished: {finished}")
+    if st.get("model_calls"):
+        head.append(f"model_calls: {int(st['model_calls'])}")
+    head.append("pipeline:")
+    for stage in MAKE_STAGES:
+        head.append(f"  {stage}: {stages.get(stage) or '—'}")
+    if st.get("issues"):
+        head.append(f"review_issues: {len(st['issues'])}")
+    mo = st.get("momus") or {}
+    if mo.get("ok"):
+        head.append(f"unsupported: {unsupported}")
     # Сослалась на то, чего в паке не было, — назвала то, чего ей не давали. Тот же
     # класс, что утверждение без опоры, и место ему там же: Момус имён не проверяет.
     invented = [c for c in cited if c not in in_pack]
@@ -8343,6 +8451,9 @@ def main() -> int:
     ap.add_argument("--context", metavar="ПУТЬ", action="append", default=[],
                     help="файл или папка проекта в контекст задачи (для --task make); "
                          "повторяется. Вложения панель кладёт в .aurora/context/")
+    ap.add_argument("--from", dest="from_ids", metavar="ID", action="append", default=[],
+                    help="с чем связан артефакт (для --task make), в шапку паспорта: REQ-042 — реализует, "
+                         "AC-… — покрывает, SPEC-012 / US-… / ART-… — родитель; повторяется")
     ap.add_argument("--thread", metavar="ID", default="",
                     help="продолжить разговор: уточняющий вопрос с контекстом прошлых "
                          "ответов (id — имя файла в meta/ask/ без .md)")
@@ -8433,8 +8544,12 @@ def main() -> int:
             print("agent_runner: нужен --kind ТИП и --idea «задача», либо --session ID",
                   file=sys.stderr)
             return 1
+        links, bad = parse_from(a.from_ids)
+        if bad:
+            print(f"agent_runner: {bad}", file=sys.stderr)
+            return 1
         res = run_make(cfg, cwd, a.kind, a.idea, a.session, a.answers, a.enough,
-                       momus=not a.no_momus, context=a.context)
+                       momus=not a.no_momus, context=a.context, links=links)
         if not res["ok"]:
             print(f"# Артефакт не сделан\n\n{res.get('why', '')}")
             return 2
