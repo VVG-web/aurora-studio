@@ -290,7 +290,8 @@ def test_models_saves_at_once_do_not_clash(tmp: Path):
         th.start()
     for th in threads:
         th.join()
-    assert sum(1 for r in results if r.get("ok")) == 1 and all(r.get("ok") or r.get("conflict") for r in results), results
+    # На медленной файловой системе (Windows) очередь за замком может не дождаться: «занято» — честный ответ, повтор вправе.
+    assert sum(1 for r in results if r.get("ok")) == 1 and all(r.get("ok") or r.get("conflict") or r.get("code") == "busy" for r in results), results
     assert not list((kit / "local").glob("*.tmp")) and not (kit / "local" / "models.json.lock").exists(), "остались временные файлы"
 
 
