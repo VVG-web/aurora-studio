@@ -1790,11 +1790,12 @@ def test_adapter_tells_a_refused_port_from_a_drop_after_the_request(tmp: Path):
 
 
 @test
-def test_adapter_connect_failure_makes_exactly_one_direct_request(tmp: Path):
-    """Адаптер сообщил «нет соединения»: вызов без инструментов получает ровно одну контрольную попытку
-    прямым HTTP, и её ответ принимается как «обрыв, спасённый прямым запросом» — это не обход адаптера и
-    не тревога про Pydantic AI. Вызову с инструментами прямой запрос на чат не поможет: шлюз проверяется
-    дешёвым GET, а при недоступности адаптера со второго раза отказ называет причину, не «мимо Pydantic AI»."""
+def test_adapter_connect_failure_never_goes_over_direct_http_until_the_gap_is_proven(tmp: Path):
+    """Адаптер сообщил «нет соединения»: вызов прямым HTTP не уходит — ни с инструментами, ни без. Движок
+    проверяет шлюз сам (GET без тела и ключа); пока «адаптер не доходит, а проверка доходит» не повторилось
+    три раза подряд, вызов отказывает с названной причиной, и ни тревоги про Pydantic AI, ни прямого запроса
+    на чат нет. На третий раз путь Pydantic AI признан неисправным: вызов без инструментов получает явный
+    резерв (прямой HTTP), вызов с инструментами — отказ с причиной."""
     _path()
     import agent_core as AG
     hub = {"proc": object(), "pending": {}}
@@ -1813,7 +1814,7 @@ def test_adapter_connect_failure_makes_exactly_one_direct_request(tmp: Path):
     saved = (AG.adapter_hub, AG.note_bypass, dict(AG.ADAPTER))
     AG.adapter_hub = lambda: (proc, hub["pending"])
     said = []
-    AG.note_bypass = lambda why, needs_tools=False: said.append((why, needs_tools))
+    AG.note_bypass = lambda why, needs_tools=False, answered=True: said.append((why, needs_tools))
     try:
         for tools in (False, True):
             gw = _Gateway([_OK])
@@ -1821,32 +1822,38 @@ def test_adapter_connect_failure_makes_exactly_one_direct_request(tmp: Path):
                 with _Env():
                     cfg = _channel_cfg(AG, gw.url)
                     cfg["adapter"] = "pydantic_ai"
+                    AG.GAP_RUN.clear()
+                    AG._PROBE.clear()
                     del said[:]
+                    for i in (1, 2):
+                        r = AG.call_role(cfg, "worker", [{"role": "user", "content": "?"}],
+                                         deadline=time.time() + 20, sleep=AG.NO_WAIT, tools=tools)
+                        assert not r["ok"] and not r.get("bypass"), (tools, i, r["log"])
+                        assert any("не доходит до бэкенда №1" in x for x in r["log"]), r["log"]
+                        assert gw.hits == 0 and not said, (tools, i, "прямой запрос или тревога раньше срока")
                     r = AG.call_role(cfg, "worker", [{"role": "user", "content": "?"}],
                                      deadline=time.time() + 20, sleep=AG.NO_WAIT, tools=tools)
             finally:
                 gw.close()
-            assert not said, (tools, "обрыв связи объявлен обходом Pydantic AI", said)
+            assert said and said[0][0].kind == "client_net", (tools, said)
             if tools:
-                assert gw.hits == 0, (tools, "вызову с инструментами ушёл прямой запрос на чат", gw.hits)
-                assert not r["ok"] and not r.get("bypass"), r["log"]
-                assert not any("не сработал" in x or "не принимаю" in x for x in r["log"]), r["log"]
+                assert gw.hits == 0 and not r["ok"], (tools, "вызову с инструментами ушёл прямой запрос", gw.hits)
             else:
-                assert gw.hits == 1, (tools, "прямых запросов", gw.hits)
-                assert r["ok"] and not r["bypass"] and r["rescued"], r["log"]
+                assert gw.hits == 1 and r["ok"] and "не доходит до бэкенда №1" in r["bypass"], r["log"]
     finally:
         AG.adapter_hub, AG.note_bypass = saved[0], saved[1]
         AG.ADAPTER.clear()
         AG.ADAPTER.update(saved[2])
-        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS, AG.ERR_HITS, AG.RESCUE_RUN, AG.LINK_RUN):
+        for d in (AG.DOWN, AG.COOL, AG.COOL_HITS, AG.ERR_HITS, AG.GAP_RUN, AG.LINK_RUN, AG._PROBE):
             d.clear()
 
 
 @test
 def test_a_lost_connection_is_never_recorded_as_the_reason_for_a_bypass(tmp: Path):
-    """Адаптер сказал «нет соединения»: ни при ответе прямого пути, ни без него причина обхода не пишется —
-    обрыв связи не поломка адаптера, и итог прогона не зовёт проверять venv. Поломка адаптера иного рода
-    пишется как раньше, успешный вызов через адаптер её снимает."""
+    """Адаптер сказал «нет соединения»: причина обхода не пишется ни при недоступном шлюзе, ни при живом —
+    обрыв связи не поломка адаптера, и итог прогона не зовёт проверять venv. Недоступный шлюз называется
+    по виду («отказ в соединении»); поломка адаптера иного рода пишется как раньше, успешный вызов через
+    адаптер счёт сбрасывает."""
     import socket
     _path()
     import agent_core as AG
@@ -1875,21 +1882,24 @@ def test_a_lost_connection_is_never_recorded_as_the_reason_for_a_bypass(tmp: Pat
         with _Env():
             AG.ADAPTER.update(name="pydantic_ai", fallback_why="")
             hub["out"] = down
+            AG._PROBE.clear()
             st, _b, err, _t = AG._transport("chat", {"n": 1, "url": dead_url, "key": ""}, payload, 5)
             assert st is None and AG.ADAPTER["fallback_why"] == "", \
                 f"обхода не было, а причина записана: {AG.ADAPTER['fallback_why']!r}"
             assert AG.link_kind(err) == "refused", f"закрытый порт назван иначе: {err!r}"
+            # шлюз жив, адаптер не доходит: прямого запроса на чат нет, причина обхода не записана
             gw = _Gateway([_OK])
+            AG._PROBE.clear()
             try:
-                st, body, *_ = AG._transport("chat", {"n": 1, "url": gw.url, "key": ""}, payload, 5)
+                st, body, err, _t = AG._transport("chat", {"n": 1, "url": gw.url, "key": ""}, payload, 5)
             finally:
                 gw.close()
-            assert st == 200 and AG.ADAPTER["fallback_why"] == "", AG.ADAPTER["fallback_why"]
-            assert body["aurora"].get("rescued") and "bypass_why" not in body["aurora"], body["aurora"]
-            # адаптер снова дошёл до сервера — счёт спасённых обрывов обнулён
+            assert st is None and gw.hits == 0 and AG.ADAPTER["fallback_why"] == "", (st, gw.hits)
+            assert err.cause is not None and err.cause.kind == "client_net" and not err.cause.armed, err
+            # адаптер снова дошёл до сервера — счёт обнулён
             hub["out"] = {"ok": True, "text": "да", "usage": {}}
             st, *_ = AG._transport("chat", {"n": 1, "url": dead_url, "key": ""}, payload, 5)
-            assert st == 200 and AG.ADAPTER["fallback_why"] == "" and not AG.RESCUE_RUN, AG.RESCUE_RUN
+            assert st == 200 and AG.ADAPTER["fallback_why"] == "" and not AG.GAP_RUN, AG.GAP_RUN
             # другая поломка адаптера (не «нет соединения») пишется как раньше
             hub["out"] = {"ok": False, "where": "adapter", "error": "ответ не разобран"}
             AG._transport("chat", {"n": 1, "url": dead_url, "key": ""}, payload, 5)
@@ -1900,7 +1910,8 @@ def test_a_lost_connection_is_never_recorded_as_the_reason_for_a_bypass(tmp: Pat
         AG.adapter_hub = saved[0]
         AG.ADAPTER.clear()
         AG.ADAPTER.update(saved[1])
-        AG.RESCUE_RUN.clear()
+        AG.GAP_RUN.clear()
+        AG._PROBE.clear()
 
 
 @test
@@ -1945,14 +1956,17 @@ def test_bypass_reason_travels_with_the_call_not_the_global_field(tmp: Path):
         assert st == 200 and AG.ADAPTER["fallback_why"] == "", AG.ADAPTER["fallback_why"]
         aur = got["a"][1]["aurora"]
         assert isinstance(aur, dict) and aur.get("bypass_why") == "ответ не разобран", aur
-        # обрыв связи едет так же, но не как причина обхода: ответ несёт «спасённый обрыв»
+        # обрыв связи причиной обхода не едет вовсе: прямого запроса нет, отказ несёт причину связи
         AG.pydantic_transport = lambda b, p, t: (None, None, AG.ADAPTER_FAIL
                                                  + AG.ADAPTER_NO_CONNECT + ": обрыв", 0.0)
-        _st, body, *_ = ask("C")
-        assert body["aurora"].get("rescued") and "bypass_why" not in body["aurora"], body["aurora"]
+        AG.GAP_RUN.clear()
+        AG._PROBE.clear()
+        st, body, err, _t = ask("C")
+        assert st is None and body is None and err.cause.kind == "client_net", (st, err)
+        assert AG.ADAPTER["fallback_why"] == "", AG.ADAPTER["fallback_why"]
         AG.pydantic_transport = adapter
         _st, body, *_ = ask("B")
-        assert "bypass_why" not in body["aurora"] and "rescued" not in body["aurora"], body["aurora"]
+        assert "bypass_why" not in body["aurora"], body["aurora"]
     finally:
         AG.pydantic_transport, AG.http_json = saved[0], saved[1]
         AG.ADAPTER.clear()

@@ -1256,10 +1256,30 @@ MESSAGE_LISTS = ("errors", "warns", "blocker_why", "notes", "warn")  # нахо�
 _MATCHERS: dict = {}
 
 
+def _cause_messages(lang: str) -> dict:
+    """Тексты причин сбоя вызова модели: русский образец → перевод. Их пишет таблица причин движка
+    (`agent_core.CAUSES`, поля `ru` и `en`), поэтому отдельного перевода в каталоге данных у них нет."""
+    if lang != "en":
+        return {}
+    try:
+        import agent_core as AG
+    except ImportError:
+        return {}
+    skel = lambda t: re.sub(r"\{\w+\}", "{}", t).strip()          # noqa: E731
+    out = {}
+    for row in AG.CAUSES.values():
+        if row.get("en"):
+            out[skel(row["ru"])] = skel(row["en"])
+        if row.get("label") and row.get("label_en"):
+            out[row["label"]] = row["label_en"]
+    return out
+
+
 def _message_matchers(lang: str):
     """[(образец, перевод)] для языка: сначала строки без подстановок, потом по длине."""
     if lang not in _MATCHERS:
-        table = data_catalogue(lang).get("messages") or {}
+        table = dict(data_catalogue(lang).get("messages") or {})
+        table.update(_cause_messages(lang))
         exact = {k: v for k, v in table.items() if "{}" not in k}
         pattern = []
         for k, v in table.items():
