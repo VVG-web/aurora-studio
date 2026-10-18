@@ -62,7 +62,7 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
     except (AttributeError, ValueError, OSError):
         pass
 
-from aurora_common import keep_private_copy, lock_release, lock_take, parse_time, replace_file, utc_stamp  # noqa: E402
+from aurora_common import keep_private_copy, lock_release_retry, lock_take, parse_time, replace_file, utc_stamp  # noqa: E402
 
 VERSION = 1
 CONFIG_FILE = ("local", "connectivity.json")
@@ -555,7 +555,7 @@ def save(kit, data, expect=None, replace_broken: bool = False) -> dict:
         return {"ok": False, "code": "write", "errors": [], "failed": True,
                 "error": f"не удалось записать настройку: {getattr(e, 'strerror', None) or type(e).__name__}"}
     finally:
-        lock_release(lock)
+        lock_release_retry(lock)
     return {"ok": True, "stamp": stamp}
 
 
@@ -952,7 +952,7 @@ def update_state(fn, path=None):
         return res
     finally:
         if held:
-            lock_release(lock)
+            lock_release_retry(lock)
 
 
 def provider_profile(pid: str) -> str:
