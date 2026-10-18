@@ -156,6 +156,35 @@ Command names are `<set>:<action>`; there are nine sets.
 Short names without a prefix (`build`, `lint`, `fix`) are historical aliases and always work. The reference of
 all commands is [commands.md](commands.md).
 
+### Writing a card: the single entry
+
+Every write of a base card goes through the single entry `card_types.write_card_text` (and its wrappers `try_write_card`,
+`put_text`, `put_map`); the head of new cards is built by the type's template (`render_header`, `render_card`). There is
+no switch that turns the check off.
+
+| Operation | When | Check |
+|---|---|---|
+| `create`, `split`, `stub`, `map`, `mirror` | a card is born: split parts, stubs, maps | strict: any template error, including a missing `template:`, rejects the write |
+| `body`, `header`, `repair` | an existing card is edited | "by difference": old violations are tolerated, a new one is rejected; the `template:` stamp is not removed, a thesis that was already written is not "erased" |
+
+- An edit after which the card passes its type's template in strict mode gets the `template:` stamp (after `type:`):
+  "touch = conform". A violation prevents the stamp but does not block an edit that does not make it worse.
+- The write is atomic (a temporary file next to it, then a replace), the line endings of an existing file are kept, a
+  link to a file outside the base or the project is not written; the path must lie under `AuroraKnowledgeDB/` and not
+  be a service file.
+- No templates in the project and none in the kit — the write goes as before, with one warning per process; templates
+  found but none accepted — a refusal.
+- A refusal is not a failure. Source parsing, repair and editors write the reason ("V-NN …") and go on: an agent step gets
+  the status "rejected by the template" (the "three failures in a row" fuse does not count it), the card is parked until
+  its file or the templates and type settings change; `kb:repair` names such cards in its summary ("не записано шаблоном
+  типа") and ends with exit code 1; linked writes — a merge (survivor and donor) and a split (parts and map) — are
+  written whole or not at all.
+- Verbatim carriers and human records (`reference`, `cited-document`, `decision`, `question`, `correction` of kind
+  `document` or `dictionary`) are not renamed or rewritten by repair: `kb:repair --names`, `--titles`, `--links`,
+  `--stub-text`, `--tautologies` and the merge of twins skip them.
+- Whoever adds a new place that writes cards to a script uses the entry: the list of write places is guarded by the
+  ratchet test `tests/card_write_sites.py` (see [CONTRIBUTING](CONTRIBUTING.md)).
+
 ## 3. Safeguards
 
 Scripts write into hundreds of files at once, so protection is built into the engine itself.

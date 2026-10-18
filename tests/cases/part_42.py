@@ -3808,9 +3808,9 @@ def test_guide_is_documented(_t):
     выпусках»; дерево проекта и справочник команд называют файл и флаг."""
     for rel, heading, later, other in (
             ("docs/card-templates.md", "\n### Как выбрать тип: `Prompts/KB_classify.md`\n", "## 10. Что будет в следующих выпусках",
-             "обязательность шаблона при создании и изменении карточек"),
+             "массовое приведение базы к шаблонам (`kb:conform`)"),
             ("docs/en/card-templates.md", "\n### How to pick a type: `Prompts/KB_classify.md`\n", "## 10. What the next releases bring",
-             "a mandatory template when cards are created and changed")):
+             "a mass conversion of the base to templates (`kb:conform`)")):
         text = (KIT / rel).read_text(encoding="utf-8")
         assert text.count("\n") <= 400, f"{rel}: длиннее 400 строк"
         assert "`kb:cards --guide`" in text and "`card_types.classify_answer`" in text and "KB_classify.md.new" in text, rel

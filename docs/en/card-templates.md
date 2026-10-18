@@ -24,12 +24,9 @@ This page describes what works in the kit today. What is not there yet is named 
   "Project settings".
 - After its summary line `kb:lint` prints a "card templates" section; `kit:doctor` names the delivered templates,
   the registry problems and the state of the type catalogue (section 8).
-- The template is **mandatory when writing** (section "Writing a card: the single entry"). A new card is checked strictly,
-  an edit of an existing one by difference; a card that passes its template gets the `template:` stamp. A template
-  violation in a card with the stamp is a **`kb:lint` error** (exit code 1); in a card without the stamp ("pre-template")
-  it is a note only. Source parsing takes the list of sections and the steps of the type-choosing instruction from the
-  project registry: a section outside the registry or of a switched-off type creates no card, the source stays in the
-  plan. `kb:cards` still shows errors as warnings (strict mode is `--strict`).
+- The template is **mandatory when writing**: a new card is checked strictly, an edit by difference; a card that passes gets
+  the `template:` stamp (a violation in a stamped card is a `kb:lint` error, in a "pre-template" one a note); see
+  "Writing a card" in the [architecture](architecture.md). `kb:cards` shows errors as warnings (strict mode is `--strict`).
 
 ## 2. How a template is built
 
@@ -261,35 +258,6 @@ The own-part sections the model writes (optional, in this order):
 | `requirement` | `Условия` |
 | `reference`, `cited-document`, `decision`, `question`, `moc` | no own sections: the body is a carry-over or generated |
 
-### Writing a card: the single entry
-
-Every write of a base card goes through the single entry `card_types.write_card_text` (and its wrappers `try_write_card`,
-`put_text`, `put_map`); the head of new cards is built by the type's template (`render_header`, `render_card`). There is
-no switch that turns the check off.
-
-| Operation | When | Check |
-|---|---|---|
-| `create`, `split`, `stub`, `map`, `mirror` | a card is born: split parts, stubs, maps | strict: any template error, including a missing `template:`, rejects the write |
-| `body`, `header`, `repair` | an existing card is edited | "by difference": old violations are tolerated, a new one is rejected; the `template:` stamp is not removed, a thesis that was already written is not "erased" |
-
-- An edit after which the card passes its type's template in strict mode gets the `template:` stamp (after `type:`):
-  "touch = conform". A violation prevents the stamp but does not block an edit that does not make it worse.
-- The write is atomic (a temporary file next to it, then a replace), the line endings of an existing file are kept, a
-  link to a file outside the base or the project is not written; the path must lie under `AuroraKnowledgeDB/` and not
-  be a service file.
-- No templates in the project and none in the kit — the write goes as before, with one warning per process; templates
-  found but none accepted — a refusal.
-- A refusal is not a failure. Source parsing, repair and editors write the reason ("V-NN …") and go on: an agent step gets
-  the status "rejected by the template" (the "three failures in a row" fuse does not count it), the card is parked until
-  its file or the templates and type settings change; `kb:repair` names such cards in its summary ("не записано шаблоном
-  типа") and ends with exit code 1; linked writes — a merge (survivor and donor) and a split (parts and map) — are
-  written whole or not at all.
-- Verbatim carriers and human records (`reference`, `cited-document`, `decision`, `question`, `correction` of kind
-  `document` or `dictionary`) are not renamed or rewritten by repair: `kb:repair --names`, `--titles`, `--links`,
-  `--stub-text`, `--tautologies` and the merge of twins skip them.
-- Whoever adds a new place that writes cards to a script uses the entry: the list of write places is guarded by the
-  ratchet test `tests/card_write_sites.py` (see [CONTRIBUTING](CONTRIBUTING.md)).
-
 ## 6. Links
 
 A card without links is a lint error; in the templates this is a number, the `min_links` field — how many different
@@ -318,9 +286,8 @@ The base graph builds edges from these fields: `part_of` — "part of a document
 
 ## 7. Violation codes (V-NN) and the `kb:cards` command
 
-Severity: `error` rejects a write (on creation any error, on an edit of an existing card only a new one) and, in a card
-with the `template:` stamp, counts as a `kb:lint` error; `warn` goes into the report, `info` only into the statistics.
-In the ordinary mode `kb:cards --check` (without `--strict`) errors are shown as warnings.
+Severity: `error` rejects a write (on creation any, on an edit only a new one) and in a stamped card is a `kb:lint`
+error; `warn` goes into the report, `info` into the statistics. `kb:cards --check` without `--strict` shows errors as warnings.
 
 | Code | Severity | Rule | Release |
 |---|---|---|---|
@@ -388,18 +355,10 @@ are printed as "проблема реестра" lines.
 
 ## 8. Relation to `kb:lint` and `kit:doctor`
 
-`kb:lint`: a template violation in a card with the `template:` stamp is an **error**. It is listed in the group
-"нарушения шаблона у карточек со штампом" (template violations in stamped cards; `… карточка с template: нарушает
-шаблон — V-NN: …`), changes the exit code (1) and raises the error count, so the pre-commit hook stops a commit that
-contains such a card. Violations in cards without the stamp are not errors. In the summary line "карточек N, ошибок M",
-once the base has stamped cards, the counter "· до-шаблонных: K" (pre-template) follows the errors; on a base with no
-stamp at all the line and the exit code are unchanged.
-
-After the summary line `kb:lint` prints the section **"### шаблоны карточек (предупреждения, не ошибки)"** (card
-templates — warnings, not errors): how many cards were checked against a template, how many have `template:`, how
-many have violations, and the codes with the number of cards. It appears only in a full run (not with `--summary` or
-`--only`) and contains no "ошибок N" or "карточек N", so the pre-commit hook, the panel and "Health" read the result as
-before. Details — `kb:cards --check`.
+`kb:lint`: a template violation in a card with the `template:` stamp is an **error** (group "нарушения шаблона у
+карточек со штампом", exit code 1, the pre-commit hook sees the rise); in a card without the stamp it is a note. The
+summary line "карточек N, ошибок M" gets "· до-шаблонных: K" after the errors once the base has stamped cards (no
+stamps — unchanged). Then the section **"### шаблоны карточек (предупреждения, не ошибки)"**: V-NN codes, full run only.
 
 `kit:doctor` adds notes: how many of the thirteen kit templates are delivered (not all — `kit:update`), registry
 problems, how many cards have no `template:`, whether the type catalogue is current, whether cards of a switched-off
@@ -434,9 +393,8 @@ its template, and the single write entry checks the head and the body.
 
 ## 10. What the next releases bring
 
-Not here yet and not described as ready: records in `Raw/decisions`, `Raw/questions`, `Raw/reference` and the
-`kb:record` command; cited documents (the `Documents` section, `kb:cite`); a mass conversion of the existing base to
-templates (`kb:conform`); the `## Расхождения` section and the ladder "trust → question → correction". The rule "a card
-only by a template" already holds for new and edited cards, but for now only a touch of a card (an edit, a thesis,
-repair) sets the `template:` stamp: most of an existing base stays "pre-template", and its violations are notes, not
-errors. They become errors after the migration (`kb:conform`), which stamps the cards that pass their template.
+Not here yet and not described as ready: records in `Raw/decisions`, `Raw/questions`, `Raw/reference` and `kb:record`;
+cited documents (the `Documents` section, `kb:cite`); a mass conversion of the base to templates (`kb:conform`); the
+`## Расхождения` section and the ladder "trust → question → correction". "A card only by a template" already holds
+for new and edited cards, but only a touch (an edit, a thesis, repair) sets the stamp: most of an old base stays
+"pre-template", and its violations are notes; they become errors after `kb:conform`.
