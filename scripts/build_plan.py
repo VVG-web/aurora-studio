@@ -42,7 +42,8 @@ from aurora_common import (HEAD_BLOCK_TAIL, KB_ROOT, aliases as card_aliases, ca
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
 from aurora_common import TODAY, file_hash, replace_file  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
-from card_types import section_type_table  # noqa: E402 — единый источник «раздел → тип»
+from card_types import (UnknownCardType, fit_kind, registry_for, render_card,  # noqa: E402 — единый источник
+                        section_type_table, try_write_card)  # «раздел → тип», шапка по шаблону и вход записи
 
 # Порядок групп — из build.md: терминология раньше того, что на неё ссылается.
 GROUPS = [
@@ -161,7 +162,7 @@ def add_er_labels(path: str, labels: list) -> None:
         head = re.sub(r"(?m)^aliases:[ \t]*$", lambda _m: "aliases:" + items, head, count=1)
     else:
         head = head.rstrip("\n") + "\naliases:" + items
-    open(path, "w", encoding="utf-8").write("---" + head + "\n---" + rest)
+    put_card(path, "---" + head + "\n---" + rest, "header", text)
 
 
 def section_type(root: str = "") -> dict:
@@ -170,6 +171,19 @@ def section_type(root: str = "") -> dict:
     (цитируемые документы), сюда не входят: `--to` их отвергал и раньше. `root` — корень проекта,
     когда процесс стоит не в нём (разбор в несколько потоков)."""
     return section_type_table(root or ".", for_build=True)
+
+
+def put_card(path: str, text: str, op: str, old_text: "str | None" = None) -> bool:
+    """Записать карточку через единый вход шаблонов (`card_types.write_card_text`). → записана ли (или та же).
+
+    Нарушение шаблона не роняет разбор: причина идёт в stderr, а результат — «нет»; вызывающий возвращает код 1,
+    шаг агента записывает сбой, а источник остаётся в плане и берётся снова.
+    """
+    _done, why = try_write_card(path, text, op=op, old_text=old_text)
+    if why:
+        print(f"build_plan: {why}", file=sys.stderr)
+        return False
+    return True
 
 
 BARE_CODE_RE = re.compile(r"^[A-ZА-ЯЁ][A-ZА-ЯЁ0-9]*(?:[.\-_][A-ZА-ЯЁ0-9]+)*[.\-_]\d+$")
@@ -1008,9 +1022,8 @@ def append_card(path: str, old_text: str, body: str, source: str, apply: bool,
         return 0
     # `head` уже содержит открывающее `---`: так его отдаёт partition. Дописать своё
     # значило бы получить `------` в первой строке — шапку после этого не читает никто.
-    open(path, "w", encoding="utf-8").write(with_meeting_mark(
-        (new_head + "\n---\n\n" if head else "") + new_rest.lstrip("\n")))
-    return 0
+    written = with_meeting_mark((new_head + "\n---\n\n" if head else "") + new_rest.lstrip("\n"))
+    return 0 if put_card(path, written, "body", old_text) else 1
 
 
 FIRST_PARSE = "(первый разбор)"
@@ -1286,7 +1299,7 @@ def refresh_card(path: str, old_text: str, body: str, source: str, apply: bool,
     print(f"{'✅ обновлён источник' if apply else '(dry-run) обновить источник'}: {path} · "
           f"{len(body)} симв.")
     if apply:
-        open(path, "w", encoding="utf-8").write(with_meeting_mark(new_head + "\n---\n" + new_rest))
+        return 0 if put_card(path, with_meeting_mark(new_head + "\n---\n" + new_rest), "body", old_text) else 1
     return 0
 
 
@@ -1314,12 +1327,18 @@ def unmark_placeholder(path: str) -> None:
     снятым одним карточка знания по-прежнему числилась бы пустышкой.
     """
     from aurora_common import with_fields
-    text = open(path, encoding="utf-8", errors="ignore").read()
-    text = with_fields(text, {"status": "draft"})
-    text = re.sub(r"(?m)^tags:\s*\[заготовка\]\s*$", "tags: []", text, count=1)
+    was = open(path, encoding="utf-8", errors="ignore").read()
+    # Заготовку прежних версий завёл движок, но пометки происхождения она не несла; наполняет её тоже движок
+    # (дословный текст источника), поэтому метка встаёт сейчас — без неё шаблон не отличил бы «ждёт тезиса» от
+    # рукописной карточки без определения.
+    fields = {"status": "draft"}
+    if not re.search(r"(?m)^built:", was.split("\n---", 1)[0]):
+        fields["built"] = "machine"
+    text = with_fields(was, fields)
+    text = re.sub(r"(?m)^tags:\s*\[\s*[\"']?заготовка[\"']?\s*\]\s*$", "tags: []", text, count=1)
     text = "\n".join(line for line in text.split("\n")
                      if not line.startswith(("_Заготовка:", "_Наполните её")))
-    open(path, "w", encoding="utf-8").write(text)
+    put_card(path, text, "body", was)
 
 
 def build_card(title: str, source: str, spec: str, into: str, apply: bool,
@@ -1488,30 +1507,44 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     # Код документа из имени — в синонимы: карточка знания называется по объекту.
     title, codes = split_doc_code(title)
     codes = er_labels + codes          # подпись сущности ER — синоним (Т-74)
-    head_summary = f'summary: "{summary.strip()}"\n' if summary.strip() else ""
-    codes_list = ("\n" + "\n".join(f'  - "{c}"' for c in codes)) if codes else " []"
     # Источники списком с самого рождения карточки. Одно поле `source:` держало ровно
     # один документ, а карточка — сущность: про один объект говорят несколько артефактов,
     # и все они в неё накапливаются. С одним полем после первого же дополнения оно начнёт
     # называть один источник из пяти.
-    card = (f'---\ntitle: "{title}"\naliases:{codes_list}\nstatus: draft\n'
-            f'type: {table.get(into, "concept")}\n{head_summary}'
-            f'{sources_block([source])}'
-            f"source_synced: {TODAY}\ncreated: {TODAY}\nupdated: {TODAY}\n"
-            f"built: machine\n{by_line(by)}"
-            # Требование, сказанное на встрече, — заявлено, но не согласовано (правило
-            # базы для встреч: `req_status: stated`).
-            + ("req_status: stated\n" if into == "Requirements" and is_meeting(source) else "")
-            + f"related: []\n---\n\n# {title}\n\n{body}\n")
+    # Шапку строит шаблон типа (`card_types.render_card`): `template:` и `kind:` стоят с самого рождения. Вид тот же,
+    # что назначит `kb:kind` следом по правилу, — но в пределах видов типа: шаблон роли не знает вида «документ».
+    reg = registry_for(root or ".")
+    type_id = table.get(into, "concept")
+    fields = {"title": title, "aliases": codes, "kind": fresh_kind(into, body, source, type_id, reg),
+              "status": "draft", "summary": summary.strip(), "sources": [source], "source_synced": TODAY,
+              "created": TODAY, "updated": TODAY, "built": "machine", "built_by": by,
+              # Требование, сказанное на встрече, — заявлено, но не согласовано (правило
+              # базы для встреч: `req_status: stated`).
+              "req_status": "stated" if into == "Requirements" and is_meeting(source) else ""}
     print(f"{'✅' if apply else '(dry-run)'} {path} · секций {len(picked)} · "
           f"{len(body)} симв.")
     if not apply:
         print("Повторите с --apply, чтобы записать.")
         return 0
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(with_meeting_mark(card))
-    return 0
+    try:
+        card = with_meeting_mark(render_card(type_id, fields, f"# {title}\n\n{body}\n", reg=reg, gap=1))
+    except UnknownCardType as e:
+        # Раздел вне реестра или выключенный тип: карточка не создаётся, «похожий» тип не подбирается.
+        print(f"build_plan: {e}", file=sys.stderr)
+        return 1
+    return 0 if put_card(path, card, "create") else 1
+
+
+def fresh_kind(into: str, body: str, source: str, type_id: str, reg) -> str:
+    """Вид только что перенесённой карточки: тот, что назначит `kb:kind` (правило по источнику, разделу и форме
+    текста), в пределах видов типа. Без `kb_kind` (повреждённая копия движка) — `knowledge`, как у любого знания."""
+    try:
+        import kb_kind
+        kind = kb_kind.guess(os.path.join(KB_ROOT.rsplit(os.sep, 1)[-1] or "AuroraKnowledgeDB", into, "x.md"),
+                             {}, body, [source])[0]
+    except Exception:  # noqa: BLE001 — вид не должен ронять разбор: kb:kind назначит его следом
+        kind = "knowledge"
+    return fit_kind(type_id, kind, reg)
 
 
 def sources_in_use() -> set:

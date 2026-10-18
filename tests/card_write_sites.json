@@ -1,5 +1,5 @@
 {
- "card_max": 39,
+ "card_max": 34,
  "sites": {
   "cockpit/aurora_cockpit.py:Handler._write_config": {
    "kind": "other",
@@ -456,39 +456,14 @@
    "reason": "боты проекта (bots/): не карточки",
    "calls": 2
   },
-  "scripts/build_plan.py:add_er_labels": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
-  "scripts/build_plan.py:append_card": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
-  "scripts/build_plan.py:build_card": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
   "scripts/build_plan.py:record_failure": {
    "kind": "other",
    "reason": "журнал сбоев разбора .aurora/state",
    "calls": 1
   },
-  "scripts/build_plan.py:refresh_card": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
   "scripts/build_plan.py:save_manifest": {
    "kind": "other",
    "reason": "манифест разбора .aurora/state/build_manifest.json",
-   "calls": 1
-  },
-  "scripts/build_plan.py:unmark_placeholder": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
    "calls": 1
   },
   "scripts/card_types.py:_write_text_exact": {
