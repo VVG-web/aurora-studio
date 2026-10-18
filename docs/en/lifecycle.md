@@ -245,8 +245,8 @@ flowchart TD
 | 11 | Use | `ctx:context`, `agent:ask` | a pack with trust headers, `usage.log` | headers in place | **yes** for the model's work |
 | 12 | Artifact | `agent:make`, `make:*` | a file in `Artifacts/`, `based_on` | `based_on` is filled in | **yes** |
 | 13 | Review | `make:review`, `make:review-auto` | a report in `Artifacts/reviews/` | the remarks are handled | recommended |
-| 14 | Delivery | `ship:export`, `ship:publish` | docx/pdf, a Confluence page | the document is proofread | by stage |
-| 15 | Freezing | `ship:release --apply` | a snapshot in `Deliverables/released/`, a base commit | the document was handed to the customer | **yes** — otherwise you cannot prove what you delivered |
+| 14 | Delivery | `ship:export`, `ship:publish` | docx/pdf, a Confluence page | the document is proofread; the outbound-commands guard (clean-copy boundary, template leftovers, `draft`, personal data under `privacy.scrub: mask`) passes it, or `--allow CODE` | by stage |
+| 15 | Freezing | `ship:release --apply` | a snapshot in `Deliverables/released/` (the clean copy, `sha256`, the base commit; `ship:release --verify` and `kit:doctor` catch an edit or a deletion) | the document was handed to the customer and committed | **yes** — otherwise you cannot prove what you delivered |
 | 16 | Feedback | `sync:diff`, `sync:jira-status` | a report | drift appeared — go back to step 5 or 10 | **yes**, regularly |
 
 ## 4. Card statuses

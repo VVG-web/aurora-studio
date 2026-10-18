@@ -789,6 +789,149 @@ def clean_copy(text: str) -> str:
     return text
 
 
+# ----------------------------------------------------------- выходные команды: единый предохранитель (BL-SEC-22)
+#
+# Публикация, экспорт и фиксация сданной версии отправляют документ за пределы базы, и каждая проверяла своё:
+# граница чистовика — только в предпросмотре панели, приватность — нигде, остатки шаблона — нигде. Теперь все
+# три идут через одну функцию; блокирующее снимается только явным `--allow <код>`.
+
+PRODUCTION_HEADS = ("Уточнения", "Допущения", "Замечания критика", "Под вопросом", "План, по которому собран")
+_PROD_HEAD = re.compile(r"(?m)^#{1,6}[ \t]+(?:%s)[ \t]*$" % "|".join(re.escape(h) for h in PRODUCTION_HEADS))
+_LEFTOVER = re.compile(r"\{\{[^{}\n]*\}\}|\[ПРИМЕР\]|<!--\s*ИНСТРУКЦИЯ", re.I)
+GATE_CODES = {
+    "no-marker": "нет границы чистовика, но в тексте есть разделы производства",
+    "template-leftovers": "в чистовике остались места шаблона",
+    "draft": "документ в статусе draft",
+    "privacy": "в чистовике персональные данные при privacy.scrub: mask",
+}
+
+
+def _without_code(text: str) -> str:
+    """Текст без блоков кода и встроенного кода: `{{…}}` в примере команды — не остаток шаблона."""
+    text = re.sub(r"(?ms)^(`{3,}|~{3,}).*?^\1[ \t]*$", " ", text)
+    return re.sub(r"`[^`\n]*`", " ", text)
+
+
+def privacy_hits(text: str):
+    """Персональные данные в тексте по сканеру `kb:scrub` (рабочая атрибуция — Assignee, Автор — не в счёт).
+
+    None — сканер не запустился: выходная команда не должна ни падать, ни молча считать текст чистым."""
+    try:
+        import kb_scrub
+        return [h for h in kb_scrub.scan(text) if h[0] != "рабочий контакт"]
+    except Exception:                                       # noqa: BLE001
+        return None
+
+
+def outward_gate(text: str, fm: dict | None = None, scrub: str = "") -> list:
+    """Единый предохранитель выходных команд → [(уровень, код, сообщение)]; уровень `block` или `warn`.
+
+    Блокирует то, что нельзя забрать назад после отправки: производство без границы чистовика (маркер
+    ищется строкой, а заголовки производства — признак того, что он нужен), остатки шаблона, статус draft,
+    персональные данные при `privacy.scrub: mask`. Решает вызывающий: он печатает находки и
+    отказывает, если не названа `--allow <код>`. Список кодов — `GATE_CODES`."""
+    fm = frontmatter(text) if fm is None else fm
+    full = body(text)
+    clean = clean_copy(full)
+    out = []
+    has_mark = any(line.rstrip("\r\n") == MADE_MARK for line in full.splitlines())
+    found = _PROD_HEAD.findall(_without_code(full)) if not has_mark else []
+    if found:
+        names = ", ".join(sorted({re.sub(r"^#+\s*", "", h).strip() for h in found}))
+        out.append(("block", "no-marker", f"{GATE_CODES['no-marker']} ({names}): без границы {MADE_MARK!r} "
+                    "кухня производства уедет наружу целиком"))
+    left = sorted({m.group(0)[:30] for m in _LEFTOVER.finditer(_without_code(clean))})
+    if left:
+        out.append(("block", "template-leftovers", f"{GATE_CODES['template-leftovers']}: {', '.join(left[:5])}"))
+    if (fm.get("status") or "").strip().strip("\"'").casefold() in ("draft", "черновик"):
+        out.append(("block", "draft", GATE_CODES["draft"] + " — опубликуйте после ревью или осознанно: --allow draft"))
+    if (scrub or "").strip().lower() == "mask":
+        hits = privacy_hits(clean)
+        if hits is None:
+            out.append(("warn", "privacy", "privacy.scrub: mask, но сканер персональных данных не запустился — проверьте `kb:scrub`"))
+        elif hits:
+            kinds = ", ".join(sorted({h[0] for h in hits}))
+            out.append(("block", "privacy", f"{GATE_CODES['privacy']}: {len(hits)} ({kinds}) → `kb:scrub --apply`"))
+    return out
+
+
+def gate_blocked(findings: list, allowed) -> list:
+    """Блокирующие находки, которые не сняты явным `--allow`."""
+    allowed = set(allowed or ())
+    return [f for f in findings if f[0] == "block" and f[1] not in allowed]
+
+
+def outward_check(text: str, allow, apply: bool, what: str, prog: str) -> int:
+    """Общий шаг выходных команд: печатает находки предохранителя; блокирующие, не снятые `--allow`, — код 2.
+
+    Без `--apply` (предпросмотр) отказа нет, но сказано, что `--apply` откажет."""
+    allow = set(allow or ())
+    findings = outward_gate(text, None, config_value("scrub", "report"))
+    for level, code, msg in findings:
+        print(("⛔ " if level == "block" and code not in allow else "⚠️ ") + f"[{code}] {msg}")
+    stuck = gate_blocked(findings, allow)
+    if not stuck:
+        return 0
+    codes = " ".join(f"--allow {c}" for _l, c, _m in stuck)
+    if apply:
+        print(f"{prog}: {what} остановлено предохранителем выходных команд. Исправьте документ либо, если так и "
+              f"задумано, повторите с: {codes}", file=sys.stderr)
+        return 2
+    print(f"(предпросмотр) {what} с --apply откажет, пока это не исправлено или не снято: {codes}")
+    return 0
+
+
+def path_inside(path, base) -> bool:
+    """Лежит ли `path` внутри `base` — по настоящим путям, без учёта регистра и с границей по разделителю.
+
+    `startswith` по строке принимал `Deliverables/work2/x.md` за папку `Deliverables/work`."""
+    p = os.path.normcase(os.path.realpath(str(path))).casefold()
+    b = os.path.normcase(os.path.realpath(str(base))).casefold().rstrip(os.sep)
+    return p == b or p.startswith(b + os.sep)
+
+
+def safe_part(value, default: str = "") -> str:
+    """Часть имени файла из чужой шапки или аргумента: без разделителей, `..` и запрещённых знаков."""
+    s = re.sub(r"\.{2,}", "-", re.sub(r"[/\\]+", "-", str(value or ""))).strip()
+    return portable_name(s, max_chars=80) or default
+
+
+def release_hash(text: str) -> str:
+    """sha256 сданного документа: тело без шапки, переводы строк приведены к `\n` (на Windows их меняет git)."""
+    norm = body(text).replace("\r\n", "\n").replace("\r", "\n").rstrip("\n") + "\n"
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+
+
+def released_problems(root: str = ".") -> list:
+    """Сданные версии `Deliverables/released/`, которые перестали быть сданными. → строки о проблемах.
+
+    Хеш в шапке снимка (`sha256`) сверяется с текстом; снимок до хеширования без него просто не проверяется.
+    Файл, изменённый или удалённый после коммита, назван по git: правка из терминала или чужим ассистентом
+    иначе незаметна, а «сданное неизменяемо» держалось только режимом «только чтение» в редакторе панели."""
+    folder = os.path.join(root, "Deliverables", "released")
+    out = []
+    if os.path.isdir(folder):
+        for name in sorted(os.listdir(folder)):
+            if not name.endswith(".md"):
+                continue
+            try:
+                text = open(os.path.join(folder, name), encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            want = (frontmatter(text).get("sha256") or "").strip().strip("\"'")
+            if want and release_hash(text) != want:
+                out.append(f"{name}: текст не совпадает с хешем сданной версии — файл правили после передачи")
+    try:
+        for flag, what in (("--diff-filter=M", "изменён"), ("--diff-filter=D", "удалён")):
+            cp = subprocess.run(["git", "diff", "HEAD", "--name-only", flag, "--", "Deliverables/released"], cwd=root,
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+            if cp.returncode == 0:
+                out += [f"{os.path.basename(p)}: {what} после коммита" for p in cp.stdout.splitlines() if p.strip()]
+    except Exception:                                       # noqa: BLE001 — нет git: остаются хеши
+        pass
+    return out
+
+
 SERVICE_NAMES = {"index.md", "_index.md", "manifest.json", "README.md"}
 # Описание папки (`README.md`, его кладёт кит — `folder_guides.py`): объясняет папку, а не
 # лежит в ней содержимым — не источник, не шаблон, не артефакт и не карточка.

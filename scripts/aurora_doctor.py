@@ -788,6 +788,16 @@ def check_pins() -> list:
     return out
 
 
+def check_released() -> list:
+    """Сданные версии (`Deliverables/released/`), которые правили или удалили после передачи. → предупреждения."""
+    try:
+        from aurora_common import released_problems
+        return [f"сданная версия {p} → верните из git (`git checkout -- Deliverables/released/`) или выпустите "
+                "новую версию: сданное неизменяемо" for p in released_problems(str(ROOT))]
+    except Exception:                                  # noqa: BLE001 — проверка не должна ронять doctor
+        return []
+
+
 def check_python(errors: list, warns: list, vi=None, platform=None) -> None:
     """Версия Python, на котором идёт doctor: 3.11+ — OK, 3.10 — предупреждение (снят с
     поддержки), ниже — ошибка с подсказкой по системе. `vi` подменяют тесты."""
@@ -897,6 +907,7 @@ def main() -> int:
     warns += check_portable_names()
     warns += check_long_paths()
     warns += check_pins()
+    warns += check_released()
     warns += check_kit_hooks()
     warns += check_mirror_heads()
     warns += check_linked_roots()

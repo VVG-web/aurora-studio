@@ -132,6 +132,7 @@ def read_config(root: str = "") -> dict:
     conf = confluence_block(text)
     cfg["base_url"] = scalar(conf, "base_url").rstrip("/")
     cfg["space"] = scalar(conf, "space")
+    cfg["publish_parent"] = scalar(conf, "publish_parent")      # родитель новых страниц `ship:publish` (номер или адрес)
     cfg["roots"] = re.findall(r'^\s*-?\s*page_id:\s*"?(\d+)"?', conf, re.M)
     raw_mode, raw_mb = word(conf, "attachments"), word(conf, "attachment_max_mb")
     cfg["attachments"] = attach_mode(raw_mode)

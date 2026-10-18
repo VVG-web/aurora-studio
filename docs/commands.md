@@ -88,7 +88,7 @@
 | `make:review` (`review`) | проверка качества артефакта против базы знаний | модель | `workflows.md` | — | 1.0.0 |
 | `make:review-auto` (`review-auto`) | ревью истории или алгоритма без человека: закрытый чек-лист из шаблона review_v2.1.md, три прогона модели с голосованием по каждому вопросу, оценку и вердикт считает скрипт. Одна страница — отчёт с подсказками, что исправить; пакет по CQL (`--cql`, `--as-of` — по состоянию на дату) — ретроспектива со сводкой и продолжением после обрыва | скрипт+модель | `review_run.py` | `--page --cql --pages-file --name --profile --as-of --runs --depth --max-pages --limit --free --by-author --budget-min --template --summary --apply --json --checklist --score-json --gate` | 1.119.0 |
 | `make:spec` (`spec`) | спецификация фичи из REQ и verified-знаний (SDD) | модель | `workflows.md` | — | 1.0.0 |
-| `make:spec-pack` (`spec-pack`) | бандл спеки: основания, DR, аббревиатуры, DoR-риски — самодостаточный файл | скрипт | `spec_pack.py` `spec` | `--version --apply --gate` | 1.9.4 |
+| `make:spec-pack` (`spec-pack`) | бандл спеки: основания, DR, аббревиатуры, DoR-риски — самодостаточный файл | скрипт | `spec_pack.py` `spec` | `--version --apply --gate --allow` | 1.9.4 |
 | `make:validate` (`validate`) | сверить реализацию и тесты подрядчика со сценариями спеки | модель | `workflows.md` | — | 1.0.0 |
 | `make:assemble` (`assemble`) | собрать поставляемый документ (ОПЗ/ПМИ/РП) из базы по шаблону | модель | `workflows.md` | — | 1.0.0 |
 
@@ -96,9 +96,9 @@
 
 | Команда | Что делает | Исполнитель | Чем | Модификаторы | С версии |
 |---|---|---|---|---|---|
-| `ship:publish` (`publish`) | артефакт → generated-страница Confluence; карточки знаний наружу не идут. Тело режется по строке-маркеру: «Уточнения», «Допущения», «Под вопросом» остаются в черновике аналитика, локальный файл не меняется | скрипт | `publish_doc.py` `path` | `--parent --title --force --adopt --apply` | 1.9.6 |
-| `ship:export` (`export`) | поставляемый документ → docx/pdf (pandoc, фирменный шаблон) | скрипт | `ship_doc.py --export docx` `document` | `--release --reference --out --keep-links --version --date --binary --apply` | 1.5.0 |
-| `ship:release` (`release`) | заморозить переданную версию: снапшот, коммит базы, дата | скрипт | `ship_doc.py --release` `document` | `--export --reference --out --keep-links --version --date --binary --apply` | 1.9.1 |
+| `ship:publish` (`publish`) | артефакт → generated-страница Confluence; карточки знаний наружу не идут. Тело режется по строке-маркеру: «Уточнения», «Допущения», «Под вопросом» остаются в черновике аналитика, локальный файл не меняется | скрипт | `publish_doc.py` `path` | `--parent --allow --title --force --adopt --apply` | 1.9.6 |
+| `ship:export` (`export`) | поставляемый документ → docx/pdf (pandoc, фирменный шаблон) | скрипт | `ship_doc.py --export docx` `[document]` | `--release --reference --out --keep-links --version --date --binary --apply --verify --allow --allow-dirty` | 1.5.0 |
+| `ship:release` (`release`) | заморозить переданную версию: снапшот, коммит базы, дата | скрипт | `ship_doc.py --release` `[document]` | `--export --reference --out --keep-links --version --date --binary --apply --verify --allow --allow-dirty` | 1.9.1 |
 | `ship:acceptance` | результаты приёмки и разбор замечаний заказчика | модель | `workflows.md` | — | 1.4.0 |
 
 ## `ops: — управление и отчётность`
