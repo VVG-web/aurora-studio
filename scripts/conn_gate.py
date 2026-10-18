@@ -260,6 +260,30 @@ def lossy_of(config_text: str) -> list:
     return notes
 
 
+_DOC_MARK_RE = re.compile(r"^(?:\.\.\.|---)[ \t]*$")
+
+
+def unsupported_layout(config_text: str) -> str:
+    """Раскладка конфига, в которой блок не переписать, не испортив файл: `flow` (многострочная запись в фигурных или
+    квадратных скобках), `anchor` (якорь, алиас, блочный скаляр у ключа блока), `documents` (маркер конца или несколько
+    документов YAML). Пусто — переписывать можно. Это не «потеря при замене», а отказ: подтверждения не бывает."""
+    lines = str(config_text).removeprefix(BOM).replace("\r\n", "\n").split("\n")
+    spans = _spans(lines)
+    if not spans:
+        return ""
+    marks = [(i, ln) for i, ln in enumerate(lines) if _DOC_MARK_RE.match(ln)]
+    if any(ln.startswith("...") for _i, ln in marks) or len(marks) > 1:
+        return "documents"
+    for a, _b in spans:
+        head = lines[a]
+        value = head[_HEAD_RE.match(head).end():].split(" #", 1)[0].strip()
+        if value[:1] in ("&", "*", "|", ">", "!"):
+            return "anchor"
+        if value[:1] in ("{", "[") and (value.count("{") != value.count("}") or value.count("[") != value.count("]")):
+            return "flow"
+    return ""
+
+
 def lossy_kinds(config_text: str) -> list:
     """Те же потери кодами для страницы: `comments`, `inline` (запись в одну строку), `duplicate` (второй блок),
     `skipped` (строки и поля, которых движок не читает). Подписи к кодам — в каталоге строк страницы."""
@@ -432,6 +456,11 @@ def save_access(project: str, access: dict, expect=None, replace_lossy: bool = F
                     "error": "режимы доступа изменились на диске с момента открытия страницы"}
         new = write_access(old, clean)
         if new != old:
+            bad = unsupported_layout(old)
+            if bad:
+                return {"ok": False, "code": "unsupported", "unsupported": bad, "errors": [],
+                        "error": f"блок source_access записан так ({bad}), что страница не перепишет его, не испортив конфиг: "
+                                 "поправьте файл руками"}
             lossy = lossy_of(old)
             if lossy and not replace_lossy:
                 return {"ok": False, "code": "lossy", "lossy": lossy_kinds(old), "errors": [],
@@ -699,8 +728,10 @@ def evaluate(req: dict, snap: dict) -> dict:
             seen.add(key)
             out["blocked"].append({"code": code, **kw})
 
+    named: set = set()                              # профили, уже названные недоступными вместе с источником
     for s in req.get("sources") or []:
         if s.get("profile") and _row_state(profiles, "name", s["profile"]) == "offline":
+            named.add(s["profile"])
             # Из кэша источник доступен, но синк без связи не идёт: кэш выручает только команду, которая умеет без сети.
             if not (s.get("offline_cache") and req.get("offline_capable")):
                 block("profile_offline", name=s["profile"], source=s["id"])
@@ -709,7 +740,7 @@ def evaluate(req: dict, snap: dict) -> dict:
     if req.get("internet") and net_down:
         block("internet_offline", name=CN.INTERNET)
     for name in req.get("profiles") or []:
-        if _row_state(profiles, "name", name) == "offline":
+        if _row_state(profiles, "name", name) == "offline" and name not in named:
             block("profile_offline", name=name)
     if req.get("llm"):
         used = req.get("providers_used")
@@ -892,9 +923,12 @@ def sync_refusal(script: str, project: str = ".", svc=None) -> str:
             f"запустите снова (состояние — `net:status`).\n{net_marker(v['blocked'], v['sources'])}")
 
 
-def parse_marker(lines) -> dict:
-    """Машинная строка отказа в выводе шага → {blocked, sources} или пусто."""
-    for line in lines or []:
+def parse_marker(lines, tail: int = 60) -> dict:
+    """Машинная строка отказа в выводе шага → {blocked, sources} или пусто.
+
+    Берётся последняя метка из хвоста вывода (`tail` строк): шаг, напечатавший метку, оправившийся и упавший по другой
+    причине далеко от неё, отказом по связи не считается."""
+    for line in reversed(list(lines or [])[-tail:]):
         text = str(line)
         if text.startswith(NET_MARK + " "):
             try:
@@ -913,6 +947,7 @@ _ENSURE: dict = {"at": 0.0, "key": None}
 _REFRESH = threading.Lock()   # обновление сводки одним потоком: двадцать потоков пула не гонят двадцать проверок разом
 DOWN_TTL = 2.0           # секунд: решение «кого не трогать» не пересчитывается на каждый вызов модели
 ENSURE_EVERY = 10.0      # секунд: перепроверка устаревшего на месте — не чаще; между ними читается готовая сводка
+FRESH_EVERY = 3.0        # секунд: даже «свежая» перепроверка (ожидание, обрыв вызова) не чаще — зависшая проверка потоки не копит
 
 
 def _service(svc=None):
@@ -942,7 +977,7 @@ def providers_down(svc=None, budget: float = CN.PRELAUNCH_BUDGET, fresh: bool = 
         with _REFRESH:
             if not fresh and _DOWN["key"] == key and time.monotonic() - _DOWN["at"] < DOWN_TTL:
                 return _DOWN["val"]            # пока ждали, другой поток уже обновил сводку
-            if fresh or _ENSURE["key"] != id(svc) or time.monotonic() - _ENSURE["at"] >= ENSURE_EVERY:
+            if _ENSURE["key"] != id(svc) or time.monotonic() - _ENSURE["at"] >= (FRESH_EVERY if fresh else ENSURE_EVERY):
                 svc.ensure(budget=budget)      # зависшая проверка не тормозит каждый вызов: не чаще раза в ENSURE_EVERY
                 _ENSURE.update(at=time.monotonic(), key=id(svc))
             snap = svc.snapshot(hold=hold)
@@ -960,7 +995,9 @@ def llm_outage(svc=None, fresh: bool = False, hold: bool = False) -> dict:
     svc = _service(svc)
     if svc is None:
         return {}
-    down = providers_down(svc, fresh=fresh, hold=hold)
+    # Проверка ручки провайдера («не прошла») — подсказка владельца, а не обрыв связи: если путь проверки задан неверно, ждать
+    # такого «отказа» вечно нельзя. Ожидание держат недоступные профили и интернет.
+    down = {pid: d for pid, d in providers_down(svc, fresh=fresh, hold=hold).items() if d.get("why") != "provider_check"}
     if not down:
         return {}
     used = [p["id"] for p in models_used(getattr(svc, "kit", None))]

@@ -205,6 +205,8 @@ def net_refusal() -> str:
         import conn_gate
     except ImportError:
         return ""
+    if any(a in ("-h", "--help") for a in sys.argv[1:]):
+        return ""                      # справка сети не требует
     try:
         return conn_gate.sync_refusal(os.path.basename(sys.argv[0] or ""), os.getcwd())
     except Exception:  # noqa: BLE001 — связь — подсказка: сбой разбора не останавливает синк

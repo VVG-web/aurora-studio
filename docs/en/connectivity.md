@@ -33,11 +33,11 @@ before saving (the «Check» button of the probe itself) and after.
 | Type | Good for | Notes |
 |---|---|---|
 | **TCP** | «the port is open» | host and port, for example `example.com`, 443 |
-| **HTTP/HTTPS** | «the service answers» | the status (2xx and 3xx by default; you may give `200`, `2xx`, `401`) and an optional text at the start of the answer; redirects are not followed; no login and password in the address |
+| **HTTP/HTTPS** | «the service answers» | the status (2xx and 3xx by default; you may give `200`, `2xx`, `401`) and an optional text that must appear at the start of the answer (within the first 64 KB); redirects are not followed; no login and password in the address |
 | **ICMP (ping)** | «the host answers» | through the system `ping`; many servers and networks drop ICMP — then use TCP or HTTP |
 
 The answer time and the frequency are set per probe or once for all (the «Common settings»). The addresses are kept on this
-machine and never go into the project's git.
+machine (the file is closed with 600 rights) and never go into the project's git. Do not put tokens or passwords into an address: its path is stored in the file in clear text.
 
 ## The profile rule and anti-flapping
 
@@ -50,7 +50,7 @@ A profile gets its state from the probes' answers by a rule:
 
 A profile does not change state at once: it becomes **unavailable** after N checks in a row failed, and **available** again after
 M checks in a row succeeded (3 and 2 by default; set for all or per profile). Between checks the state holds, and blinking is
-not shown. A series of checks within a second or two (several presses of «Check now») counts as one assessment. The first check
+not shown. A check that arrives sooner than half an interval after the previous one (30 seconds at the default interval; this happens with several presses of «Check now») replaces the previous assessment instead of adding to it. The first check
 after a long break (data older than three intervals) decides the state at once — there is nothing to compare with.
 
 ## States
@@ -165,6 +165,16 @@ Details worth knowing:
   itself) is not counted as a round at all.
 - **Resume and the dialog.** Steps done last time need no connection and are not listed in the dialog. A refusal before the first step
   commits nothing. "Stop" is heard during the wait and in the very moment the connection returns.
+- **A deferred step and the steps after it.** If a step is deferred until the connection returns while the steps after it ran on
+  the previous data (parsing on an old mirror), the route ends as "passed partly": the steps after the deferred one are assigned to
+  be repeated, and "Continue the route" (in Cron — the repeat at the end of the chain) runs them again.
+- **The mark at exit.** An agent process whose last model calls did not start because every provider was unavailable exits with a
+  non-zero code and the last line `AURORA-NET {…}`: routes and the schedule apply the run policy. The mark is taken from the tail of the output.
+- **A provider handle check failing alone.** If the profiles and the internet are fine and only the provider's handle check fails
+  (its path or key may be set wrongly), calls are still tried and the agent run's wait does not hold on it; a command that needs the
+  model is stopped with the named reason "the handle check failed" — fix the check path in "Models".
+- **A mode block in an unusual form.** If `source_access:` is written as a multi-line bracket form, with an anchor or in a file with
+  several YAML documents, the page will not rewrite the block (refusal `unsupported`): edit the file by hand.
 - **Diagnostics are not blocked.** `agent:ping`, `agent:probe`, `agent:width` ask the providers live: that is what they are for.
 - **One drop classifier.** The kind of a drop (DNS, connection refused, connection timeout, route, TLS, proxy, reset…) is named by
   the engine's classifier (`agent_core.link_kind`, the `CAUSES` table of reasons) — the same one that raises the connection alarm
@@ -204,9 +214,12 @@ Read and check only — the settings are written by the panel:
 - Profiles and probes — in the kit, `local/connectivity.json` (on the machine, never goes to git, no secrets). It is a storage
   format, not a way of setting up: it is edited in the panel, the write is protected against a lost update (a page opened before
   someone else's edit gets a refusal and does not overwrite it), and unknown fields of the file survive a save.
-- The state of the checks and the journal of changes — `~/.aurora/connectivity-state.json`: it is written by the panel's
+- Next to the settings, `local/` holds service files: `.stamp-salt` (the salt of the page's stamp, it never leaves the machine) and
+  `models.json.broken-<time>` / `connectivity.json.broken-<time>` — copies of a file that could not be parsed, made before it is
+  replaced with your consent (600 rights, the three newest are kept). The model copies may still hold keys: delete them after a key change.
+- The state of the checks and the journal of changes (600 rights) — `~/.aurora/connectivity-state.json`: it is written by the panel's
   background check and by any process that checked the connection before a run.
-- The data in the state is fresh for one interval; stale data is re-checked immediately before a run (all probes at once, within
+- The data in the state is fresh for one interval; stale data is re-checked right before a run (all probes at once, within
   three seconds). Data older than three intervals counts as unknown.
 
 ## Appendix: storage format

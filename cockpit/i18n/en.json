@@ -1083,5 +1083,8 @@
   "route.how_partial": "passed partly (no connection)",
   "route.rc_partial": "partly: {n} steps",
   "route.toast_partial": "The route «{title}» passed partly: some steps wait for the connection",
-  "route.net_handed": "⏸ Deferred until the connection returns: {n} — {list}. The schedule comes back to this at the end of the chain; other projects do not wait."
+  "route.net_handed": "⏸ Deferred until the connection returns: {n} — {list}. The schedule comes back to this at the end of the chain; other projects do not wait.",
+  "route.net_redo": "Steps after the deferred ones ran on the previous data ({n}): «Continue the route» repeats them.",
+  "route.net_queue_still": "⏳ The route is still waiting for the connection: {why}",
+  "access.err.unsupported": "The source_access block is written in a way the page cannot rewrite without breaking the config (a multi-line bracket form, an anchor or several YAML documents): edit the file by hand"
 }

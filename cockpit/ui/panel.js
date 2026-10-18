@@ -2612,7 +2612,9 @@ async function renderSourceAccess(box){
   const card = el("div", {class:"card", style:"padding:20px"});
   host.append(card);
   const MODES = ["internet", "vpn", "local", "mixed"];
-  let ACC = JSON.parse(JSON.stringify(d.explicit || {})), digest = d.digest;
+  // Объект без прототипа: имя источника «constructor» или «__proto__» — обычный ключ, а не свойство Object.
+  const fresh = src => Object.assign(Object.create(null), JSON.parse(JSON.stringify(src || {})));
+  let ACC = fresh(d.explicit), digest = d.digest;
   const touched = () => setDirty("access", t("dirty.access"), true);
   const eff = src => {
     const rec = ACC[src.id] || {};
@@ -2676,7 +2678,7 @@ async function renderSourceAccess(box){
       r = await send(true);
     }
     if (r && r.ok){
-      d = r.state; ACC = JSON.parse(JSON.stringify(d.explicit || {})); digest = d.digest;
+      d = r.state; ACC = fresh(d.explicit); digest = d.digest;
       setDirty("access", t("dirty.access"), false);
       toast(t("access.saved"), "ok");
       draw();
@@ -2688,7 +2690,7 @@ async function renderSourceAccess(box){
                  bad_flag: () => t("access.err.bad_flag"), bad_field: () => t("access.err.bad_field"),
                  bad_source: () => t("access.err.bad_source"), bad_access: () => t("access.err.bad_access"),
                  no_config: () => t("access.err.no_config"), not_utf8: () => t("access.err.not_utf8"),
-                 write: () => t("access.err.write")};
+                 write: () => t("access.err.write"), unsupported: () => t("access.err.unsupported")};
     const say = ERR[r && r.code];
     toast(say ? say() : ((r && r.error) || t("access.save_failed")), "err");
   };

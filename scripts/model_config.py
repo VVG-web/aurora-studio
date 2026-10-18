@@ -33,7 +33,7 @@ import sys
 import threading
 from pathlib import Path
 
-from aurora_common import profile_name_ok  # noqa: E402  — та же проверка имени профиля, что у раздела связи
+from aurora_common import keep_private_copy, profile_name_ok  # noqa: E402  — та же проверка имени профиля, что у раздела связи
 
 VERSION = 1
 CAPABILITIES = ("llm", "ocr", "embeddings")
@@ -279,7 +279,8 @@ def _carry_unknown(old: dict, clean: dict) -> None:
         if key not in clean and key not in ("providers", "capabilities", "settings", "version"):
             clean[key] = value
     known = {"id", "name", "type", "url", "key", "width", "parallel", "template", "vpn", "health"}
-    was = {str(p.get("id")): p for p in old.get("providers") or [] if isinstance(p, dict)}
+    rows = old.get("providers")
+    was = {str(p.get("id")): p for p in (rows if isinstance(rows, list) else []) if isinstance(p, dict)}
     for p in clean["providers"]:
         prev = was.get(p["id"]) or {}
         was_url, url = str(prev.get("url") or "").strip(), str(p.get("url") or "").strip()
@@ -304,13 +305,15 @@ def _carry_unknown(old: dict, clean: dict) -> None:
             continue
         for key, value in ocap.items():
             mine.setdefault(key, value)
-        roles = {str(r.get("id")): r for r in ocap.get("roles") or [] if isinstance(r, dict)}
+        rows = ocap.get("roles")
+        roles = {str(r.get("id")): r for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict)}
         for role in mine["roles"]:
             orole = roles.get(role["id"]) or {}
             for key, value in orole.items():
                 role.setdefault(key, value)
             backs: dict = {}
-            for ob in orole.get("backends") or []:
+            obs = orole.get("backends")
+            for ob in (obs if isinstance(obs, list) else []):
                 if isinstance(ob, dict):
                     backs.setdefault((ob.get("provider"), str(ob.get("model") or "").strip()), ob)
             for b in role["backends"]:
@@ -367,7 +370,7 @@ def save(kit, data: dict, expect=None, replace_broken: bool = False) -> dict:
                     return {"ok": False, "code": "broken",
                             "error": f"{path.name} не разобран (правка руками?): сохранение заменит его целиком — "
                                      "рядом останется копия"}
-                if not _keep_copy(path):
+                if not keep_private_copy(path):
                     return {"ok": False, "code": "write", "failed": True,
                             "error": "не удалось оставить копию прежнего файла рядом — замена отменена"}
                 old = {}
@@ -391,23 +394,6 @@ def save(kit, data: dict, expect=None, replace_broken: bool = False) -> dict:
                 "error": f"не удалось записать настройку моделей: {e.strerror or e}"}
     finally:
         lock_release(lock)
-
-
-def _keep_copy(path: Path) -> bool:
-    """Копия файла, который сейчас будет заменён: `models.json.broken-<время>` рядом, права 600 с первого байта (внутри
-    ключи); хранятся три свежие. → удалось ли: не удалось — заменять файл нельзя."""
-    from aurora_common import utc_slug
-    dst = path.with_name(f"{path.name}.broken-{utc_slug()}")
-    try:
-        data = path.read_bytes()
-        fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        for old in sorted(path.parent.glob(path.name + ".broken-*"))[:-3]:
-            old.unlink(missing_ok=True)
-        return True
-    except OSError:
-        return False
 
 
 def masked(data: dict) -> dict:

@@ -46,7 +46,7 @@ from harness import (  # noqa: F401
 # Проверки лежат в tests/cases/part_NN.py; импорт регистрирует их в harness.REGISTRY по порядку.
 import importlib  # noqa: E402
 
-for _part in ['part_01', 'part_02', 'part_03', 'part_04', 'part_05', 'part_06', 'part_07', 'part_08', 'part_09', 'part_10', 'part_11', 'part_12', 'part_13', 'part_14', 'part_15', 'part_16', 'part_17', 'part_18', 'part_19', 'part_20', 'part_21', 'part_22', 'part_23', 'part_24', 'part_25', 'part_26', 'part_27', 'part_28', 'part_29', 'part_30', 'part_31', 'part_32', 'part_33', 'part_34', 'part_35', 'part_36', 'part_37', 'part_38', 'part_39', 'part_40', 'part_41', 'part_42', 'part_43', 'part_44', 'part_45', 'part_46', 'part_47', 'part_48', 'part_49', 'part_50', 'part_51', 'part_60', 'part_61', 'part_62', 'part_63', 'part_64', 'part_65', 'part_66']:
+for _part in ['part_01', 'part_02', 'part_03', 'part_04', 'part_05', 'part_06', 'part_07', 'part_08', 'part_09', 'part_10', 'part_11', 'part_12', 'part_13', 'part_14', 'part_15', 'part_16', 'part_17', 'part_18', 'part_19', 'part_20', 'part_21', 'part_22', 'part_23', 'part_24', 'part_25', 'part_26', 'part_27', 'part_28', 'part_29', 'part_30', 'part_31', 'part_32', 'part_33', 'part_34', 'part_35', 'part_36', 'part_37', 'part_38', 'part_39', 'part_40', 'part_41', 'part_42', 'part_43', 'part_44', 'part_45', 'part_46', 'part_47', 'part_48', 'part_49', 'part_50', 'part_51', 'part_60', 'part_61', 'part_62', 'part_63', 'part_64', 'part_65', 'part_66', 'part_67']:
     importlib.import_module("cases." + _part)
 
 # ------------------------------------------------------------------- smoke-мета-тесты

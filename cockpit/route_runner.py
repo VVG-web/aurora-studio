@@ -404,6 +404,8 @@ class RouteRun:
 
     net, net_policy = "", ""        # политика без связи: запрошенная и действующая; пусто — проверка соединений не вмешивается
     no_run = False                  # маршрут отказал до первого шага: ни коммита, ни пометки «маршрут идёт»
+    force_check = False             # человек нажал «Проверить сейчас»: ближайший вердикт сперва перепроверит связь
+    redo: tuple = ()                # ключи шагов, шедших на прежних данных из-за отложенного шага: их надо повторить
     stop = None                     # Event остановки; у каркаса проверок без __init__ его нет
 
     def __init__(self, ck, project: str, sc: dict, write: bool = True, lang: str = "ru",
@@ -499,18 +501,34 @@ class RouteRun:
         if G is None or svc is None:
             return {"ok": True, "blocked": []}
         try:
+            if self.force_check:
+                self.force_check = False
+                svc.check()
             return G.check_command(cmd, self.project, svc=svc, hold=hold)
         except Exception:  # noqa: BLE001
             return {"ok": True, "blocked": []}
 
     def _why(self, v: dict) -> str:
-        G = net_gate()
-        return "; ".join(G.reason_line(r) for r in v.get("blocked") or []) if G else ""
+        """Причина «связи не хватает» словами интерфейса: строки каталога `net.reason.*`, те же, что в диалоге страницы."""
+        t, parts = self.t, []
+        for r in v.get("blocked") or []:
+            code, src = r.get("code"), r.get("source")
+            if code == "profile_offline":
+                parts.append(t("net.reason.profile_offline_src", name=r.get("name", ""), source=src) if src
+                             else t("net.reason.profile_offline", name=r.get("name", "")))
+            elif code == "internet_offline":
+                parts.append(t("net.reason.internet_offline_src", source=src) if src else t("net.reason.internet_offline"))
+            elif code == "llm_down":
+                parts.append(t("net.reason.llm_down"))
+            else:
+                parts.append(str(code))
+        return "; ".join(parts)
 
     def _woken(self) -> bool:
-        """«Проверить сейчас» во время ожидания: перепроверить немедленно."""
+        """«Проверить сейчас» во время ожидания: перепроверить немедленно (и по-настоящему: следующий вердикт спросит сеть)."""
         if self.wake.is_set():
             self.wake.clear()
+            self.force_check = True
             return True
         return False
 
@@ -560,7 +578,7 @@ class RouteRun:
         act = G.decide(self.net_policy, v)
         if act == "fail":
             self.say("err", self.t("route.net_fail", cmd=cmd, why=why))
-            self.failed, self.refused, self.offline = cmd, G.blocked_text(cmd, v), True
+            self.failed, self.refused, self.offline = cmd, f"{cmd}: {why}", True
             return {"rc": 2, "lines": [], "ended": "net"}
         if act == "skip":
             self.say("warn", self.t("route.net_skip", cmd=cmd, why=why))
@@ -599,13 +617,19 @@ class RouteRun:
         why = self._why(v)
         if self.net_policy == "fail_fast":
             self.say("err", self.t("route.net_fail_all", why=why))
-            self.failed, self.refused, self.offline = (lacking[0] if lacking else steps[0]["cmd"]), why, True
+            first = lacking[0] if lacking else steps[0]["cmd"]
+            self.failed, self.refused, self.offline = first, f"{first}: {why}", True
             self.no_run = True
             return False
         self.say("warn", self.t("route.net_queue_line", why=why))
-        started = time.time()
-        ok = G.wait_restored(lambda: check(hold=True), stop=self.stop, poll=NET_POLL_S, woken=self._woken,
-                             on_wait=lambda verdict, _s: self._set_net_wait(steps[0]["cmd"] if steps else "", self._why(verdict)))
+        started, said = time.time(), [time.time()]
+
+        def on_wait(verdict, _s):
+            self._set_net_wait(steps[0]["cmd"] if steps else "", self._why(verdict))
+            if time.time() - said[0] >= 300:          # пульс: цепочка расписания видит, что маршрут жив, а не завис
+                said[0] = time.time()
+                self.say("note", self.t("route.net_queue_still", why=self._why(verdict)))
+        ok = G.wait_restored(lambda: check(hold=True), stop=self.stop, poll=NET_POLL_S, woken=self._woken, on_wait=on_wait)
         self.wait = {}
         if not ok:
             self.stopped, self.failed = True, self.failed or (steps[0]["cmd"] if steps else "")
@@ -614,10 +638,25 @@ class RouteRun:
         self.say("ok", self.t("route.net_restored", cmd=self.sc.get("title", ""), took=self._dur(time.time() - started)))
         return True
 
+    def _mark_redo(self, steps: list) -> None:
+        """Шаги после первого отложенного, уже пройденные на прежних данных (синк отложен, разбор идёт на старом зеркале):
+        их ключи — в `self.redo`, чтобы «Продолжить маршрут» и повтор расписания прошли их заново."""
+        first = min([st["pos"] for st in self.deferred] + [a for a, _b in self.deferred_blocks], default=None)
+        if first is None:
+            self.redo = ()
+            return
+        self.redo = tuple(self.step_key(st) for st in steps
+                          if not st["cycle"] and st["pos"] > first and self.step_key(st) in (self.done_keys | self.skip))
+
     def _run_deferred(self, steps: list) -> bool:
         """Отложенное — после восстановления связи, по очереди, как стояло в маршруте. → False, если маршрут дальше не идёт."""
         self.say("head", self.t("route.net_retry_head", n=len(self.deferred) + len(self.deferred_blocks)))
         self.net_policy = "queue"             # повтор уже ждёт, а не откладывает снова
+        self.cycle_at = None                  # продолжение внутри цикла к повтору блока отношения не имеет
+        self._mark_redo(steps)
+        for key in self.redo:                 # шаги после отложенного будут повторены при продолжении
+            self.done_keys.discard(key)
+            self.skip.discard(key)
         # Порядок плана сохраняется: отложенный шаг не обгоняет блок цикла, стоявший перед ним (публикация раньше сборки).
         todo = sorted([(st["pos"], False, st) for st in self.deferred] + [(a, True, (a, b)) for a, b in self.deferred_blocks],
                       key=lambda x: x[0])
@@ -985,6 +1024,7 @@ class RouteRun:
             if self.trigger == "cron" and self.parent:
                 # Повтор — дело цепочки расписания: она вернётся к проекту в конце, а остальные проекты не ждут связи.
                 self.net_deferred = [st["cmd"] for st in self.deferred] + [steps[a]["cmd"] for a, _b in self.deferred_blocks]
+                self._mark_redo(steps)
                 self.say("warn", self.t("route.net_handed", n=len(self.net_deferred),
                                         list=", ".join(dict.fromkeys(self.net_deferred))))
             else:
@@ -1068,9 +1108,11 @@ class RouteRun:
                   else "failed" if self.failed else "passed")
         # Шаги, которых не хватило связи (пропущены по partial или отданы расписанию), — маршрут частичный: он остаётся
         # «продолжаемым», не отмечает базу обновлённой и не уходит в push, как законченный.
-        partial = reason == "passed" and bool(self.net_skipped or self.net_deferred)
+        partial = reason == "passed" and bool(self.net_skipped or self.net_deferred or self.redo)
         if self.net_skipped:
             self.say("warn", t("route.net_skipped", n=len(self.net_skipped), list=", ".join(dict.fromkeys(self.net_skipped))))
+        if self.redo and reason == "passed":
+            self.say("warn", t("route.net_redo", n=len(self.redo)))
         # Итоговая фраза — та, что страница писала в конце консоли: теперь она в журнале и
         # видна в истории так же, как была видна вживую.
         if self.stalled:
@@ -1135,7 +1177,7 @@ class RouteRun:
         res = {"ok": reason == "passed", "reason": reason, "failed": self.failed,
                "gated": reason == "gated",
                "progressed": bool(head and head != self.head0), "net_skipped": list(self.net_skipped),
-               "net_deferred": list(self.net_deferred), "partial": partial,
+               "net_deferred": list(self.net_deferred), "partial": partial, "redo": list(self.redo),
                "note": self.refused, "steps": self.done, "lines": lines,
                "run_id": self.run_id,
                "found": [{"cmd": x["cmd"], "lines": x["tail"]} for x in self.summary

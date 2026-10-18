@@ -812,7 +812,9 @@ LINK_KINDS = LINK_ALARM_KINDS | LINK_REACHED_KINDS
 NET_KINDS = frozenset(k for k, row in CAUSES.items() if row.get("conn"))
 NET_POLL = 15.0     # секунд между перепроверками связи, пока все провайдеры роли недоступны
 _NET_SEEN: set = set()       # провайдеры, которых проверка соединений называла недоступными: вернулись — карантин за обрыв снимается
-_NET_MARK_SAID: set = set()  # о каких недоступных наборах провайдеров метка `AURORA-NET` уже напечатана в этом процессе
+# Вызов не начат из-за недоступных провайдеров, и с тех пор ни один вызов не прошёл: строка для метки `AURORA-NET`, которую
+# процесс шага печатает последней при выходе (`agent_runner._net_exit`). Прошёл вызов — связь вернулась, запись снята.
+NET_BLOCKED: dict = {"row": None}
 # Сколько неудач подряд на одном бэкенде (и сколько обрывов адаптера, спасённых прямым запросом,
 # подряд без единого прохода через адаптер) — тревога, а не мигание сети. Одно число на оба счёта.
 ALARM_AFTER = 3
@@ -2807,17 +2809,14 @@ def _net_gate():
     return conn_gate
 
 
-def _say_net_blocked(gate, skipped: dict, providers: list) -> None:
-    """Вызов не начат: недоступны все провайдеры роли. Машинная строка `AURORA-NET` (раз на набор в процессе) — по ней маршрут и
-    расписание узнают, что шаг не поломался, а не получил связь, и применяют политику прогона."""
-    names = tuple(sorted(str(v.get("profile") or v.get("why")) for v in skipped.values()))
-    if names in _NET_MARK_SAID:
-        return
-    _NET_MARK_SAID.add(names)
+def _note_net_blocked(skipped: dict, providers: list) -> dict:
+    """Вызов не начат: недоступны все провайдеры роли. Запоминает строку причины для машинной метки `AURORA-NET`: процесс шага
+    напечатает её последней при выходе, и маршрут с расписанием узнают, что шаг не поломался, а не получил связь."""
     row = {"code": "llm_down", "name": "llm", "providers": sorted(str(p) for p in providers),
            "why": sorted({v.get("why", "") for v in skipped.values() if v.get("why")}),
            "profiles": sorted({v["profile"] for v in skipped.values() if v.get("profile")})}
-    print(gate.net_marker([row]), flush=True)
+    NET_BLOCKED["row"] = row
+    return row
 
 
 def call_role(cfg: dict, role: str, messages: list, transport=None,
@@ -2954,7 +2953,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     # Диагностика (`NO_WAIT`: `agent:ping`, `agent:probe`, `agent:width`) спрашивает провайдеров живьём: она и нужна, чтобы
     # увидеть, что с ними, — проверка соединений её не останавливает.
     gate = _net_gate() if patient else None
-    net_waits = persist and patient and os.environ.get("AURORA_NET_POLICY", "partial_queue") in ("queue", "partial_queue")
+    net_waits = bool(persist and gate is not None and gate.policy_for() in ("queue", "partial_queue"))
     refresh = False
     while time.time() < deadline:
         ring += 1
@@ -2969,9 +2968,17 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 elif pid in _NET_SEEN:
                     # Связь вернулась: карантин, посаженный за обрыв, который объясняла недоступная связь, снимается сразу.
                     _NET_SEEN.discard(pid)
-                    if DOWN.pop(b["n"], None):
-                        log.append(f"№{b['n']}: связь вернулась — карантин за обрыв снят")
+                    held = DOWN_WHY.get(b["n"])
+                    if held and held[0] == DOWN.get(b["n"]) and held[1].kind in NET_KINDS and DOWN.pop(b["n"], None):
+                        log.append(f"№{b['n']}: связь вернулась — карантин за обрыв соединения снят")
             skipped = {b["n"]: down[b["provider"]] for b in order if b.get("provider") in down}
+            if skipped and all(b["n"] in skipped for b in order) \
+                    and all(v.get("why") == "provider_check" for v in skipped.values()):
+                # Профили и интернет в порядке, не прошла только проверка ручки провайдера: она могла быть настроена неверно
+                # (путь, ключ). Вызовы пробуем — иначе роль заперта навсегда, а виноват может быть путь проверки.
+                log.append("проверка ручки не прошла у всех провайдеров роли, хотя профили и интернет в порядке — "
+                           "пробую вызовы (проверка могла быть настроена неверно)")
+                skipped = {}
             if skipped and all(b["n"] in skipped for b in order):
                 names = "; ".join(f"{b.get('provider')}: {gate.provider_reason(skipped[b['n']])}" for b in order)
                 if net_waits:
@@ -2985,10 +2992,11 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         if time.time() - last[0] >= gate.PULSE_EVERY:
                             last[0] = time.time()
                             say_live("⏳", role, f"всё ещё жду связи с провайдерами ({secs // 60} мин)")
+                    began = time.time()
                     gate.wait_restored(
                         lambda mine=mine: {"ok": any(pid not in gate.providers_down(fresh=True, hold=True) for pid in mine)},
                         poll=NET_POLL, on_wait=still_waiting)
-                    waited += 1.0
+                    waited += time.time() - began
                     refresh = True
                     continue
                 # Метка LINK_FAILURE — та же, что в итоговой строке обрыва связи: прогон агента (`looks_offline`) узнаёт по
@@ -2998,9 +3006,11 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 with _USAGE_LOCK:
                     USAGE["link_failed"] += 1
                     USAGE["link_why"] = f"все провайдеры роли недоступны ({names})"
-                _say_net_blocked(gate, skipped, [b.get("provider") for b in order])
+                _note_net_blocked(skipped, [b.get("provider") for b in order])
                 return {"ok": False, "log": log, "req": req,
-                        "net_blocked": {"providers": [b.get("provider") for b in order], "why": names}}
+                        "net_blocked": {"providers": [b.get("provider") for b in order], "why": names},
+                        # то же, что у обрыва связи: `bots` и итог прогона называют причину связью, а не «модель не ответила»
+                        "link": {"kind": "other", "n": None, "why": f"все провайдеры роли недоступны ({names})", "count": 0}}
         if persist:
             # Медленный шлюз — в конец кольца, порядок остальных прежний. Журнал бесконечного
             # вызова не растёт без конца: начало и свежий хвост.
@@ -3189,6 +3199,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         if b["provider"] in down_now:
                             # Соединение не установилось, а проверка соединений знает, почему: профиль или интернет лежит.
                             # Карантин за чужую беду не ставим — провайдер вернётся вместе со связью.
+                            with _STREAK_LOCK:
+                                LINK_RUN.pop(b["n"], None)       # объяснённый проверкой обрыв — не «неожиданная серия» для тревоги
                             log.append(f"№{b['n']} {model}: {lw.body} — {gate.provider_reason(down_now[b['provider']])}; "
                                        "карантин не ставлю, дождусь связи")
                             say_live("⚠", role, f"№{b['n']} {model}: нет связи ({gate.provider_reason(down_now[b['provider']])})"
@@ -3378,6 +3390,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 say_live("✓", role, f"ответ №{b['n']} {model} за {human_secs(dt)}"
                                     + (f" · {out_tokens} ток. · {out_tokens / dt:.1f} ток/с"
                                        if out_tokens and dt > 0 else ""))
+                NET_BLOCKED["row"] = None
                 with _USAGE_LOCK:
                     USAGE["calls"] += 1
                     USAGE["tokens_in"] += int(usage.get("prompt_tokens") or 0)
