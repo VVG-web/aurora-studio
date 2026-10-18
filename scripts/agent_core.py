@@ -1679,6 +1679,11 @@ def _adapter_drop(backend: dict, payload: dict, timeout: float, link: dict, dt: 
             ADAPTER["fallback_why"] = ""
             adapter_reached(backend)
             note_retried(backend, model, link)
+            if isinstance(body, dict):
+                aur = body.get("aurora")
+                if not isinstance(aur, dict):
+                    aur = body["aurora"] = {}
+                aur["link_retried"] = True
         return (st, body, err, dt + dt2), None
     again, hard = _adapter_failure(err)
     if again is None:
@@ -1964,8 +1969,7 @@ def note_retried(backend: dict, model: str, link: dict) -> None:
     kind = link.get("kind") if link.get("kind") in LINK_KINDS else "other"
     why = Why("retried", n=n, model=model or "модель не названа", label=CAUSES[kind]["label"], ref=kind)
     with _USAGE_LOCK:
-        USAGE["link_retried"] += 1
-        USAGE["link_retried_kind"] = kind
+        USAGE["link_retried_kind"] = kind     # сам вызов считает кольцо — один раз, а не здесь
     with _STREAK_LOCK:
         fresh = (n, kind) not in _RETRY_SAID
         _RETRY_SAID.add((n, kind))
@@ -2899,6 +2903,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     log, waited, ring = [], 0.0, 0
     slow = 0                    # сколько попыток кончилось молчанием по сроку
     why_seen: list = []         # беды этого вызова по порядку: обрывы связи и шлюза (`link_note`), поломки адаптера
+    fresh_link_fail: list = []    # виды настоящих неудач связи этого вызова (без пропусков на карантине)
     attempts = 0
     tried: set = set()          # кому уже давали честный шанс в этом вызове
     if retry_primary_asked():
@@ -3082,6 +3087,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     cause = getattr(err, "cause", None)
                     if lw is not None and lw.kind in LINK_ALARM_KINDS:
                         why_seen.append(lw)
+                        fresh_link_fail.append(lw.kind)
                     elif cause is not None:
                         why_seen.append(cause)
                     if (live and cause is not None
@@ -3258,12 +3264,15 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         return {"ok": False, "log": log, "req": req, "bypass": bypass}
                 elif watch:
                     clear_bypass()
-                if live and any(w.area == "link" for w in why_seen):
-                    # Вызов упёрся в обрыв связи, но дождался: сведение для итога (не поломка)
+                retried = isinstance(body.get("aurora"), dict) and bool(body["aurora"].get("link_retried"))
+                if live and (retried or fresh_link_fail):
+                    # Вызов упёрся в обрыв связи, но дождался: сведение для итога (не поломка). Считаем
+                    # вызов один раз и только за настоящую неудачу этого вызова — пропуск бэкенда на
+                    # карантине за неё не засчитывается.
                     with _USAGE_LOCK:
                         USAGE["link_retried"] += 1
-                        USAGE["link_retried_kind"] = next(
-                            w.kind for w in reversed(why_seen) if w.area == "link")
+                        if fresh_link_fail:
+                            USAGE["link_retried_kind"] = fresh_link_fail[-1]
                 usage = body.get("usage") or {}
                 out_tokens = int(usage.get("completion_tokens") or 0)
                 say_live("✓", role, f"ответ №{b['n']} {model} за {human_secs(dt)}"

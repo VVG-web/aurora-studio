@@ -695,7 +695,7 @@ def test_the_link_alarm_does_not_flash_on_a_lone_failure_between_answers(tmp: Pa
         assert said.getvalue().count("⛔ Нет связи с моделью") == 1, said.getvalue()
         assert "отказ в соединении" in said.getvalue() and "не поломка Pydantic AI" in said.getvalue()
         assert r["link"]["why"].startswith("бэкенд №1 (model-x): отказ в соединении"), r["link"]
-        assert r["log"][-1].startswith("дедлайн исчерпан: отказ в соединении"), r["log"][-3:]
+        assert r["log"][-1].startswith("дедлайн исчерпан, обрыв связи: отказ в соединении"), r["log"][-3:]
         assert "ни один бэкенд не ответил осмысленно" not in " ".join(r["log"])
         # итог прогона: реальная причина — первой строкой ошибок, про Pydantic AI — ни слова
         s = RS.from_agent([], AG.USAGE, 1.0, None)
@@ -817,7 +817,7 @@ def test_a_quarantined_backend_keeps_naming_the_real_cause(tmp: Path):
             r = w.ask(cfg, keep_down=True)
             assert not r["ok"] and r["link"]["kind"] == "refused" and r["link"]["n"] == 1, (i, r["log"])
             assert any("не отвечал, вернёмся" in x and "Причина: отказ в соединении" in x for x in r["log"]), r["log"]
-            assert r["log"][-1].startswith("дедлайн исчерпан: отказ в соединении"), r["log"][-1]
+            assert r["log"][-1].startswith("дедлайн исчерпан, обрыв связи: отказ в соединении"), r["log"][-1]
         assert len(calls) == 1, "карантин не удержал: бэкенд спрашивали заново"
         assert AG.USAGE["link_failed"] == 4, AG.USAGE
         s = RS.from_agent([], AG.USAGE, 1.0, None)
@@ -1274,3 +1274,42 @@ def test_windows_error_codes_name_the_link_failure_in_the_text_classifier(tmp: P
     for text, want in cases.items():
         got = AG.classify_failure(text).kind
         assert got == want, (text, got, want)
+
+
+@test
+def test_a_call_is_counted_as_retried_once_and_not_for_a_quarantine_skip(tmp: Path):
+    """Итог «N вызовов не дошли до шлюза и были повторены» считает вызов один раз и только за настоящую
+    неудачу связи в этом вызове: бэкенд №1 отказал и сел на карантин, №2 отвечает — первый вызов считается,
+    следующие четыре (№1 пропущен на карантине, к нему не обращались) — нет; повтор через адаптер после
+    обрыва — тоже один вызов, а не два."""
+    with _World(tmp) as w:
+        AG = w.AG
+        AG.ADAPTER["name"] = "openai_compat"
+        cfg = w.cfg(2)
+        cfg["adapter"] = "openai_compat"
+
+        def direct(url, body, key, timeout):
+            if body is None:
+                return 404, None, "HTTP 404", 0.01
+            if "gw1" in url:
+                return None, None, "URLError: <urlopen error [Errno 61] Connection refused>", 0.01
+            return 200, json.loads(json.dumps(PLAIN)), "", 0.05
+        AG.http_json = direct
+        r = w.ask(cfg)
+        assert r["ok"] and r["backend"] == 2, r
+        assert AG.USAGE["link_retried"] == 1, AG.USAGE
+        for _ in range(4):
+            r = w.ask(cfg, keep_down=True)
+            assert r["ok"] and r["backend"] == 2, r
+        assert AG.USAGE["link_retried"] == 1, f"пропуски на карантине засчитаны: {AG.USAGE['link_retried']}"
+        # повтор через адаптер: один вызов — один счёт
+        w.reset()
+        AG.ADAPTER["name"] = "pydantic_ai"
+        cfg1 = w.cfg()
+        calls, attempts = [], []
+        AG.pydantic_transport = lambda b, p, t: (attempts.append(1) or (
+            _drop("connect_timeout") if len(attempts) == 1 else (200, json.loads(json.dumps(VIA)), "", 0.1)))
+        AG.http_json = _direct(calls)
+        r = w.ask(cfg1)
+        assert r["ok"] and len(attempts) == 2, r
+        assert AG.USAGE["link_retried"] == 1, AG.USAGE
