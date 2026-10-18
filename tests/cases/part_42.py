@@ -1671,16 +1671,17 @@ def test_lint_section_uses_registry(tmp: Path):
 
 @test
 def test_lint_without_templates_falls_back(tmp: Path):
-    """AC-CT-04.2: без шаблонов линтер судит, как судил до реестра; с шаблонами кита вывод тот же, плюс раздел о шаблонах."""
+    """AC-CT-04.2: без шаблонов линтер судит, как судил до реестра; с шаблонами кита вывод тот же, плюс раздел о шаблонах.
+    Карточки базы без штампа `template:` — «до-шаблонные»: их нарушения шаблона ошибками не становятся (CT-12)."""
     def fixture(base: Path, templates: bool) -> Path:
         root = _cli_project(base, templates=templates)
         kb = root / "AuroraKnowledgeDB"
-        _put(kb / "Concepts" / "Ок.md", mk(title='"Ок"', status="draft"))
-        _put(kb / "Concepts" / "Чужой.md", mk(title='"Чужой"', type="person", status="draft"))
-        _put(kb / "Processes" / "Не-там.md", mk(title='"Не там"', type="concept", status="draft"))
-        _put(kb / "Glossary" / "Статус.md", mk(title='"Статус"', type="glossary", status="active"))
-        _put(kb / "Specs" / "Спека.md", mk(title='"Спека"', type="spec", status="draft"))
-        _put(kb / "Concepts" / "Без-типа.md", mk(title='"Без типа"', type=None, status="draft"))
+        _put(kb / "Concepts" / "Ок.md", mk(title='"Ок"', status="draft", template=None))
+        _put(kb / "Concepts" / "Чужой.md", mk(title='"Чужой"', type="person", status="draft", template=None))
+        _put(kb / "Processes" / "Не-там.md", mk(title='"Не там"', type="concept", status="draft", template=None))
+        _put(kb / "Glossary" / "Статус.md", mk(title='"Статус"', type="glossary", status="active", template=None))
+        _put(kb / "Specs" / "Спека.md", mk(title='"Спека"', type="spec", status="draft", template=None))
+        _put(kb / "Concepts" / "Без-типа.md", mk(title='"Без типа"', type=None, status="draft", template=None))
         return root
     bare, shipped = fixture(tmp / "bare", False), fixture(tmp / "shipped", True)
     assert _C().registry(str(bare), kit_root=str(tmp / "no-kit")).types == {}, "в проекте без шаблонов реестр не пуст"
@@ -1701,11 +1702,14 @@ def test_lint_without_templates_falls_back(tmp: Path):
 
 @test
 def test_lint_templates_section_is_warnings_only(tmp: Path):
-    """Раздел «шаблоны карточек»: только предупреждения — число ошибок и код возврата те же, что без шаблонов; он
-    печатается после итоговой строки, под `###`, без «ошибок N»/«карточек N» и без новых «## …»."""
+    """Раздел «шаблоны карточек»: сведения — число ошибок и код возврата те же, что без шаблонов (в базе нет нарушений у
+    карточек со штампом); он печатается после итоговой строки, под `###`, без «ошибок N»/«карточек N» и без новых
+    «## …». Итоговая строка при штампованных карточках дополнена счётчиком «до-шаблонных» после «ошибок M» (CT-12)."""
     root, bare = _lint_project(tmp / "a"), _lint_project(tmp / "b", templates=False)
     full, plain = _lint(root, "--full"), _lint(bare, "--full")
-    assert full.returncode == plain.returncode and _summary_line(full.stdout) == _summary_line(plain.stdout), \
+    counted = _summary_line(full.stdout)
+    assert counted.endswith(" · до-шаблонных: 1"), counted
+    assert full.returncode == plain.returncode and counted.replace(" · до-шаблонных: 1", "") == _summary_line(plain.stdout), \
         "шаблоны изменили число ошибок или код возврата линтера"
     lines = full.stdout.splitlines()
     assert lines[0] == _summary_line(full.stdout) and lines.index(HEAD_LINT) > 0, "раздел стоит не после итоговой строки"

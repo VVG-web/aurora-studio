@@ -2433,6 +2433,57 @@ def render_card(card_type: str, fields: dict, own_text: str, tail: str = "", *,
     return render_header(card_type, fields, reg=reg) + "\n" * max(0, int(gap)) + str(own_text) + str(tail)
 
 
+def _stamp_header(text: str, template_file: str) -> str:
+    """Текст с полем `template:` в шапке (после `type:`); поле уже есть или шапки нет — текст как был."""
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return text
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    if end is None or any(re.match(r"template\s*:", ln) for ln in lines[1:end]):
+        return text
+    at = next((i for i in range(1, end) if re.match(r"type\s*:", lines[i])), None)
+    if at is None:
+        return text
+    lines.insert(at + 1, f"template: {template_file}")
+    return "\n".join(lines)
+
+
+def stamp_if_conformant(text: str, rel: str, reg: Registry, *, raw_ok: bool = True) -> str:
+    """Карточка после правки: если она проходит шаблон своего типа в строгом режиме — с `template:` в шапке.
+
+    «Касание = приведение»: штамп означает «карточка проходит валидатор» и ставится только тогда, когда это так
+    (по наибольшей версии шаблона типа); есть нарушение — поле не ставится, карточка остаётся «до-шаблонной»; уже
+    стоящий штамп не снимается и не меняется. Типа нет в реестре или он выключен — текст как был.
+    """
+    fm = frontmatter(text)
+    if (fm.get("template") or "").strip():
+        return text
+    ct = reg.get((fm.get("type") or "").strip().strip('"'))
+    if ct is None or not ct.enabled or not ct.template_file:
+        return text
+    stamped = _stamp_header(text, ct.template_file)
+    if stamped == text or _write_errors(stamped, rel, reg, template_required=True, raw_ok=raw_ok):
+        return text
+    return stamped
+
+
+def stamped_card_errors(rel: str, text: str, reg: Registry) -> list:
+    """Ошибки `kb:lint` у карточки со штампом `template:`: нарушения шаблона в строгом режиме, по строке на нарушение.
+
+    Штамп означает «карточка проходит валидатор»; нарушение у штампованной карточки — это правка руками или дефект
+    движка, и показывается ошибкой (меняет код возврата линтера). У карточки без штампа — пусто: она «до-шаблонная».
+    Строка не содержит сочетаний «ошибок <число>» и «карточек <число>»: итоговую строку линтера читают хук и панель.
+    """
+    if not (frontmatter(text).get("template") or "").strip():
+        return []
+    out = []
+    for v in validate_card(text, path=rel, reg=reg, level="strict"):
+        if v.severity == "error":
+            hint = f" ({_calm(v.hint, 120)})" if v.hint else ""
+            out.append(f"{rel}:{v.line}: карточка с template: нарушает шаблон — {v.code}: {_calm(v.message, 160)}{hint}")
+    return out
+
+
 def violation_key(v: Violation) -> tuple:
     """Что считать «той же» ошибкой до и после правки: код и предмет (раздел, поле, значение), без номера строки.
 
@@ -2671,10 +2722,15 @@ def _admit(path: str, new_text: str, op: str, reg: "Registry | None") -> tuple:
             if (frontmatter(disk).get("template") or "").strip() and not (frontmatter(text).get("template") or "").strip():
                 errors.append(Violation("V-02", "error", 1, "штамп template: снят с карточки",
                                         "поле template: означает «карточка проходит шаблон» и не снимается"))
+            if not errors and op in STAMP_OPS:
+                text = stamp_if_conformant(text, rel, reg, raw_ok=not settled)
         return text, False, errors
     return text, False, []
 
 
+
+
+STAMP_OPS = ("body", "header", "repair")     # правка существующей карточки: проходящая шаблон получает штамп `template:`
 
 
 def write_card_text(path: str, new_text: str, *, op: str, old_text: "str | None" = None,
@@ -2688,6 +2744,8 @@ def write_card_text(path: str, new_text: str, *, op: str, old_text: "str | None"
     с карточки не снимается, а карточка, у которой тезис уже был (отметка `distilled` или раздел «Источник»),
     не возвращается правкой в «ещё без тезиса». Прежний текст — всегда тот, что на диске: `old_text` принимается
     ради вызывающих, у которых он уже в руках, но проверку не смягчает. Файла нет — правка проверяется как создание.
+    Правка (`body`, `header`, `repair`), после которой карточка проходит шаблон своего типа в строгом режиме, получает
+    штамп `template:` (`stamp_if_conformant`): касание приводит карточку к шаблону там, где это уже верно.
 
     Путь обязан лежать под `AuroraKnowledgeDB/` и не быть служебным файлом (`index.md`, `meta/…`): служебное и
     мастер-файлы записей пишут их собственные скрипты. Файл-ссылка за пределы проекта или на файл вне базы не

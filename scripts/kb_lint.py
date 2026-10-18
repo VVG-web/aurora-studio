@@ -12,12 +12,15 @@
   7. Форма артефактов (`Artifacts/us`, `Artifacts/ac`, `Specs/`) — модуль `artifact_lint.py`:
      разделы шаблона, формула истории, шаги, остатки `{{…}}`. Только предупреждения: в код
      возврата они не входят.
-  8. Шаблоны карточек — раздел «шаблоны карточек» (модуль `card_types.py`): сколько карточек
-     проверено по шаблону их типа, у скольких стоит `template:`, нарушения по кодам V-NN. Только
-     предупреждения; печатается ПОСЛЕ итоговой строки и только в полном прогоне (не с
-     `--summary` и не с `--only`). Итоговую строку «карточек N, ошибок M» читают хук pre-commit,
-     панель и `smoke_live`, а заголовки «## …» — `ops:todo` и «Здоровье»: в разделе нет ни
-     «ошибок N», ни «карточек N», ни новых «##».
+  8. Шаблоны карточек (модуль `card_types.py`). Карточка со штампом `template:` обязана проходить
+     шаблон своего типа: нарушение кода V-NN — ОШИБКА (меняет код возврата, ловится хуком
+     pre-commit как рост числа ошибок). Карточка без штампа «до-шаблонная»: её нарушения — сведения.
+     Раздел «шаблоны карточек» (сколько карточек проверено, у скольких стоит `template:`, нарушения
+     по кодам V-NN) печатается ПОСЛЕ итоговой строки и только в полном прогоне (не с `--summary` и не
+     с `--only`). Итоговую строку «карточек N, ошибок M» читают хук pre-commit, панель и `smoke_live`,
+     а заголовки «## …» — `ops:todo` и «Здоровье»: в разделе нет ни «ошибок N», ни «карточек N», ни
+     новых «##». Когда в базе есть штампованные карточки, в итоговой строке после «ошибок M» стоит
+     «· до-шаблонных: K»; на базе без штампов строка и код возврата прежние.
   Типы карточек, раздел каждого типа и допустимые статусы берутся из реестра типов
   (`card_types.registry()`), своей таблицы у линтера нет.
 
@@ -44,7 +47,7 @@ from aurora_common import link_escapes, root_link_escapes, scan_secret_files
 from aurora_common import (OWN_LIFECYCLE, STATUSES, aliases, body_hash, card_body, card_stem, card_type,
                            card_sources, config_list, config_value, frontmatter, is_service, not_a_card_link,
                            leaf_name, link_refs, project_terms)
-from card_types import lint_section, safe_registry
+from card_types import is_card_path, lint_section, safe_registry, stamped_card_errors
 import run_summary as RS
 
 ROOT = "AuroraKnowledgeDB"
@@ -52,6 +55,9 @@ ROOT = "AuroraKnowledgeDB"
 # Виды ошибок: (признак в тексте, id пункта вердикта ворот, заголовок группы, чем лечится). Человеку список
 # сгруппирован по виду (сотни одинаковых строк подряд читать нечем), ворота называют пункт по тому же виду.
 KINDS = [
+    ("нарушает шаблон", "template-violation", "нарушения шаблона у карточек со штампом",
+     "карточка помечена как проходящая шаблон, а теперь не проходит: поправьте её по коду V-NN "
+     "(`kb:cards --check` называет причину и подсказку) или верните прежний текст"),
     ("битая ссылка", "broken-link", "битые ссылки",
      "цели нет в базе. `kb:repair --links` чинит то, что находится по алиасу или "
      "регистру; остальное — либо завести карточку на термин, либо снять ссылку"),
@@ -569,6 +575,19 @@ def main():
             errors.append(f"{rel}: возможный секрет в git ({rule}) — уберите токен/пароль "
                           f"(токены только в .env.aurora.local)")
 
+    # Шаблоны карточек (CT-12): у карточки со штампом `template:` нарушение шаблона — ошибка. Счётчик «до-шаблонных»
+    # показывается, когда штампованные карточки в базе уже есть: на базе без штампов итоговая строка прежняя.
+    stamped = pre_template = 0
+    if reg.types and not base_linked:
+        for rel, (fm, text) in sorted(cards.items()):
+            if "/_archive/" in rel or not is_card_path(rel):
+                continue
+            if (fm.get("template") or "").strip():
+                stamped += 1
+                errors.extend(stamped_card_errors(rel, text, reg))
+            else:
+                pre_template += 1
+
     n = len(cards)
     if only:
         # Фильтруем ПОСЛЕ полного прохода: находка «битая ссылка» рождается от знания
@@ -599,6 +618,7 @@ def main():
             with open(residue_path, "w", encoding="utf-8") as fh:
                 json.dump(sorted(errors), fh, ensure_ascii=False, indent=1)
         print(f"kb_lint: карточек {n}, ошибок {len(errors)}"
+              + (f" · до-шаблонных: {pre_template}" if stamped else "")
               + (f" · нового после починки: {fresh}" if fresh is not None else ""))
         if fresh:
             # Итог маршрута (`run_summary`) складывает ошибки шагов: база, ставшая хуже, чем
@@ -655,7 +675,7 @@ def main():
     # чем каждый вид лечится.
     shown, rest = set(), []
     for needle, _kid, title, cure in KINDS:
-        hits = [e for e in errors if needle in e]
+        hits = [e for e in errors if needle in e and id(e) not in shown]
         if not hits:
             continue
         shown.update(id(e) for e in hits)

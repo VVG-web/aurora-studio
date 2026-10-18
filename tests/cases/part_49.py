@@ -254,3 +254,142 @@ def test_distill_prompt_carries_the_type_rules(tmp: Path):
     assert rule in seen["Заявка"] and "Тип: concept (Понятие)." in seen["Заявка"], seen["Заявка"][-1400:]
     assert rule not in seen["Свой тип"], "правило 6 добавлено карточке неизвестного типа"
     assert "5. Ссылок `[[…]]` не ставь" in seen["Заявка"] and "1. Только то, что есть в тексте выше." in seen["Заявка"]
+
+
+# ------------------------------------------------------------------ CT-12: «касание = приведение», строгость линтера
+
+def _C():
+    return _mod("card_types")
+
+
+def _write_header_of(text: str) -> str:
+    return text.split("\n---\n", 1)[0]
+
+
+@test
+def test_a_conformant_card_gets_the_stamp_on_touch(tmp: Path):
+    """AC-CT-12.1 (вход записи): правка (`body`, `header`, `repair`) карточки без `template:`, которая после неё проходит
+    шаблон в строгом режиме, получает штамп сразу после `type:`; карточка с нарушением штампа не получает; уже стоящий
+    штамп не снимается; создание штамп не ставит (там он обязателен); тип вне реестра штампа не получает."""
+    C = _C()
+    root = P42._project(tmp)
+    reg = P42._reg(root)
+    cases = tmp / "cases"
+    cases.mkdir()
+
+    def card(name: str, text: str) -> str:
+        path = root / "AuroraKnowledgeDB" / "Concepts" / f"{name}.md"
+        P42._put(path, text)
+        return str(path)
+
+    good = card("Заявка", P42.mk(template=None))
+    assert C.write_card_text(good, P42.mk(template=None) + "\nДополнение к тексту источника.\n", op="body", reg=reg)
+    got = (root / "AuroraKnowledgeDB/Concepts/Заявка.md").read_text(encoding="utf-8")
+    head = _write_header_of(got).split("\n")
+    assert head[head.index("type: concept") + 1] == "template: akdb_concept_v1.0.md", head
+    assert not [v for v in C.validate_card(got, path="AuroraKnowledgeDB/Concepts/Заявка.md", reg=reg, level="strict")
+                if v.severity == "error"], "штампованная карточка не проходит шаблон"
+
+    for op in ("header", "repair"):
+        path = card(f"Заявка-{op}", P42.mk(template=None))
+        assert C.write_card_text(path, P42.mk(template=None, updated="2026-10-02"), op=op, reg=reg)
+        assert "template: akdb_concept_v1.0.md" in Path(path).read_text(encoding="utf-8"), op
+
+    bad = card("Плохая", P42.mk(template=None, status="imported"))
+    assert C.write_card_text(bad, P42.mk(template=None, status="imported") + "\nДополнение.\n", op="body", reg=reg)
+    assert "template:" not in Path(bad).read_text(encoding="utf-8"), "карточка с нарушением получила штамп"
+
+    odd = card("Чужой", P42.mk(template=None, type="nosuch"))
+    C.write_card_text(odd, P42.mk(template=None, type="nosuch") + "\nДополнение.\n", op="body", reg=reg)
+    assert "template:" not in Path(odd).read_text(encoding="utf-8"), "карточка типа вне реестра получила штамп"
+
+    kept = card("Со штампом", P42.mk())
+    C.write_card_text(kept, P42.mk() + "\nДополнение.\n", op="body", reg=reg)
+    assert Path(kept).read_text(encoding="utf-8").count("template: akdb_concept_v1.0.md") == 1
+    try:
+        C.write_card_text(kept, P42.mk(template=None) + "\nЕщё дополнение.\n", op="body", reg=reg)
+        raise AssertionError("штамп снят с карточки")
+    except C.TemplateViolation:
+        pass
+    # повтор того же текста ничего не пишет и штамп второй раз не ставит
+    again = Path(good).read_text(encoding="utf-8")
+    assert C.write_card_text(good, again, op="body", reg=reg) is False and Path(good).read_text(encoding="utf-8") == again
+
+
+@test
+def test_distill_stamps_a_conformant_card_and_leaves_the_other(tmp: Path):
+    """AC-CT-12.1: `agent:distill` на фикстуре штампует карточку, которая после тезиса проходит валидатор, и не штампует ту,
+    что не проходит (в сводке `kb:cards` она остаётся «до-шаблонной»)."""
+    R = _mod("agent_runner")
+    C = _C()
+    root = make_project(tmp)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/Док.md").write_text("Текст.\n", encoding="utf-8")
+    head = ('---\ntitle: "{t}"\naliases: []\ntype: concept\nkind: knowledge\nstatus: {s}\nsources:\n  - "Sources/Confluence/Док.md"\n'
+            'source_synced: 2026-10-01\ncreated: 2026-10-01\nupdated: 2026-10-01\nbuilt: machine\n---\n\n')
+    paths = {}
+    for name, status in (("Исправная", "draft"), ("С нарушением", "imported")):
+        paths[name] = root / KB / "Concepts" / f"{name}.md"
+        paths[name].write_text(head.format(t=name, s=status) + "## Источник (перенесено дословно)\n\n" + PAGE, encoding="utf-8")
+
+    def model(cfg_, role, messages, **kw):
+        return _answer("Заявка на поставку — документ, которым заказчик поручает поставщику передать товар.")
+
+    with _RunDir(tmp / "run"):
+        R.run_distill(_cfg(), str(root), apply=True, limit=0, momus=False, call=model)
+    good = paths["Исправная"].read_text(encoding="utf-8")
+    bad = paths["С нарушением"].read_text(encoding="utf-8")
+    assert "template: akdb_concept_v1.0.md" in good and "distilled: " in good, good[:500]
+    assert "template:" not in bad and "distilled: " in bad, bad[:500]
+    reg = C.registry(str(root), kit_root=str(KIT))
+    stats = C.stats_of(C.check_cards(str(root), reg, level="advisory"), reg)
+    assert stats["stamped"] == 1 and stats["legacy"] == 1, stats
+
+
+@test
+def test_lint_template_violation_of_a_stamped_card_is_an_error(tmp: Path):
+    """AC-CT-12.2/12.3 и хук pre-commit: нарушение шаблона у карточки со штампом — ошибка `kb:lint` (код 1, группа в списке,
+    число ошибок растёт, `--only` по этому файлу тоже видит ошибку); то же нарушение без штампа — сведение. В итоговой строке
+    после «ошибок M» стоит «до-шаблонных: K», повторного «ошибок <число>» нет; на базе без штампов итоговая строка прежняя."""
+    root = P42._lint_project(tmp / "p")
+    kb = root / KB / "Concepts"
+    first = P42._lint(root, "--full")
+    base_errors = int(re.search(r"ошибок (\d+)", P42._summary_line(first.stdout)).group(1))
+    assert "нарушает шаблон" not in first.stdout
+    P42._put(kb / "Нарушает.md", P42.mk(status="imported", title='"Нарушает"'))
+    cp = P42._lint(root, "--full")
+    line = P42._summary_line(cp.stdout)
+    errors = int(re.search(r"ошибок (\d+)", line).group(1))
+    assert cp.returncode == 1 and errors > base_errors, (cp.returncode, line)
+    assert re.fullmatch(r"kb_lint: карточек \d+, ошибок \d+ · до-шаблонных: \d+", line), line
+    assert len(re.findall(r"ошибок\s+\d", line)) == 1 and len(re.findall(r"карточек\s+\d", line)) == 1, line
+    assert "нарушения шаблона у карточек со штампом" in cp.stdout and "карточка с template: нарушает шаблон — V-06" in cp.stdout
+    only = P42._lint(root, "--only", f"{KB}/Concepts/Нарушает.md", "--summary")
+    only_errors = int(re.search(r"ошибок (\d+)", only.stdout).group(1))
+    assert only.returncode == 1 and only_errors >= 2, only.stdout        # битая ссылка и нарушение шаблона
+    # строку читает настоящий хук pre-commit: число — из итоговой строки, а не из раздела о шаблонах
+    rc, out, base, _inst = P42._hook_commit(tmp / "hook", cp.stdout, baseline=errors + 9, base_cards=100)
+    assert rc == 0 and f"база чище ({errors + 9} → {errors})" in out and base == str(errors), (rc, out, base)
+    # без штампа то же нарушение — сведение: число ошибок прежнее, штампованных в базе больше нет у нарушителя
+    P42._put(kb / "Нарушает.md", P42.mk(status="imported", title='"Нарушает"', template=None))
+    cp2 = P42._lint(root, "--full")
+    assert "нарушает шаблон" not in cp2.stdout
+    assert int(re.search(r"ошибок (\d+)", P42._summary_line(cp2.stdout)).group(1)) == errors - 1, "ошибка шаблона осталась без штампа"
+    only2 = P42._lint(root, "--only", f"{KB}/Concepts/Нарушает.md", "--summary")
+    assert int(re.search(r"ошибок (\d+)", only2.stdout).group(1)) == only_errors - 1, only2.stdout
+
+
+@test
+def test_lint_summary_of_a_base_without_stamps_is_unchanged(tmp: Path):
+    """AC-CT-12.3: на базе, где нет ни одной карточки с `template:`, итоговая строка линтера и его код возврата такие же,
+    как до пакета: «карточек N, ошибок M» без счётчика, нарушения шаблона ошибками не становятся."""
+    root = P42._lint_project(tmp / "p")
+    kb = root / KB / "Concepts"
+    # единственная штампованная карточка теряет штамп: в базе «до-шаблонные» все
+    P42._put(kb / "Заявка-на-поставку.md", P42._example(P42.CATALOGUE[0]).replace("template: akdb_concept_v1.0.md\n", ""))
+    cp = P42._lint(root, "--full")
+    line = P42._summary_line(cp.stdout)
+    assert re.fullmatch(r"kb_lint: карточек \d+, ошибок \d+", line), line
+    assert "нарушает шаблон" not in cp.stdout and "до-шаблонных" not in cp.stdout
+    # те же ошибки, что считал линтер: две битые ссылки у двух карточек
+    assert int(re.search(r"ошибок (\d+)", line).group(1)) == 2 and cp.returncode == 1
