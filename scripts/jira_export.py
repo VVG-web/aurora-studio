@@ -42,11 +42,14 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
         pass
 import urllib.parse
 
-from sources_core import (BoardMirror, RestApi, block, cited_by_cards, config_text,
-                          no_access, report_stale, scalar, verify)
+from sources_core import (BoardMirror, RestApi, block, cited_by_cards, config_text, loss_summary,
+                          lose_path, no_access, path_overflow, report_stale, scalar, verify)
 from sources_core import read_secret as core_secret
 
 DEFAULT_OUT = "Sources/JIRA"
+# Задачи, которые не поместились в путь этой системы (Windows без длинных путей): синк идёт дальше,
+# потеря названа строкой и счётчиком в сводке. Список прогона; сбрасывает `run_export()`.
+PATH_LOST: list = []
 FIELDS = ("summary,issuetype,status,priority,resolution,created,updated,resolutiondate,"
           "assignee,reporter,labels,components,fixVersions,parent,description")
 
@@ -272,6 +275,7 @@ def run_export(cfg: dict, auth: str, out_dir: str, jql: str, limit: int,
     epic_field = api.epic_field()
     issues = api.search(jql, FIELDS + (f",{epic_field}" if epic_field else ""), limit)
     state = {} if force else load_state(out_dir)
+    del PATH_LOST[:]
     epic_titles: dict = {}      # ключ эпика → название: спрашиваем один раз за прогон
     os.makedirs(out_dir, exist_ok=True)
     written = skipped = 0
@@ -295,7 +299,13 @@ def run_export(cfg: dict, auth: str, out_dir: str, jql: str, limit: int,
         if old == text:
             skipped += 1
             continue
-        open(full, "w", encoding="utf-8").write(text)
+        try:
+            open(full, "w", encoding="utf-8").write(text)
+        except OSError as e:
+            if not path_overflow(e, full):
+                raise
+            lose_path(PATH_LOST, f"задача {key}", full)
+            continue
         written += 1
     return rows, written, skipped
 
@@ -338,6 +348,8 @@ def main() -> int:
     rows, written, skipped = run_export(cfg, auth, out_dir, jql, a.limit, a.force, a.comments)
     state = write_state(out_dir, rows)
     print(f"Задач: {len(rows)} · записано: {written} · без изменений: {skipped}")
+    if PATH_LOST:
+        print(loss_summary(PATH_LOST, "задач"))
 
     extra = stale(out_dir, state)
     if extra:

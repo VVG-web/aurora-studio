@@ -44,9 +44,9 @@ from aurora_common import body as body_of
 from aurora_common import (allow_cleartext, cleartext_secret_problem, config_hosts,
                            file_head, guarded_urlopen, head_scalar, head_trust, head_value,
                            is_loopback_host, same_origin, url_origin, utc_today)
-from sources_core import (BoardMirror, block, cited_by_cards, config_text, read_env,
-                          is_promoted_document, origin_text, remember_hosts, report_stale,
-                          trusted_hosts, verify)
+from sources_core import (BoardMirror, block, cited_by_cards, config_text, loss_summary, lose_path,
+                          path_overflow, read_env, is_promoted_document, origin_text,
+                          remember_hosts, report_stale, trusted_hosts, verify)
 
 DEFAULT_OUT = "Sources/Web"
 # Страница, которую сервер назвал неизменной (304), заново не качается и не разбирается.
@@ -62,6 +62,9 @@ TIMEOUT = 30
 # По умолчанию пусто: частные, петлевые и link-local адреса запрещены (BL-SEC-17). Ставит `run()`.
 # Разрешение не расширяет привязку токена: хост по-прежнему должен быть в списке токена.
 ALLOW_PRIVATE: list = []
+# Файлы, которые не поместились в путь этой системы (Windows без длинных путей): синк идёт дальше,
+# потеря названа строкой и счётчиком в сводке. Список прогона; сбрасывает `run()`.
+PATH_LOST: list = []
 # Вложению — своё окно. Страница отдаётся за секунды, а приказ на десять мегабайт по
 # медленному каналу не успевает и за полминуты: на живой выгрузке так потерялись два
 # PDF из десяти. Один общий таймаут либо теряет документы, либо заставляет ждать
@@ -197,6 +200,10 @@ def slug(url: str, title: str) -> str:
     # Правила трёх систем разом: NFC, имена вроде CON, длина в байтах (`portable_name`).
     from aurora_common import portable_name
     return portable_name(base, ext=f"-{tail}.md") or f"page-{tail}.md"
+
+
+class _PathLost(Exception):
+    """Страница не записана: путь не помещается в эту систему."""
 
 
 class _BodyRefused(Exception):
@@ -717,9 +724,15 @@ def fetch_asset(url: str, out_dir: str, apply: bool, label: str = "") -> tuple:
     data, _enc, err = _get(url, "", ASSET_TIMEOUT, max_bytes=ASSET_MAX_BYTES)
     if err:
         return "", err
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(data)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+    except OSError as e:
+        if not path_overflow(e, path):
+            raise
+        lose_path(PATH_LOST, f"вложение {name}", path)
+        return "", "путь слишком длинный"
     return name, ""
 
 
@@ -959,6 +972,7 @@ def run(a) -> int:
     opt = settings_from_config(cfg)
     global ALLOW_PRIVATE
     ALLOW_PRIVATE = list(opt["allow_private"])
+    del PATH_LOST[:]
     # Окружение вместе с файлом машины: при прямом запуске из консоли привязка хостов и
     # разрешение http из файла иначе молча не действовали бы (в панели их кладёт child_env).
     env = read_env()
@@ -1046,7 +1060,12 @@ def run(a) -> int:
                 text = card_text(url, title, trusted, md, seed, files, feed)
                 was = open(path, encoding="utf-8").read() if os.path.isfile(path) else None
                 if a.apply and write and was != text:
-                    open(path, "w", encoding="utf-8").write(text)
+                    try:
+                        open(path, "w", encoding="utf-8").write(text)
+                    except OSError as e:
+                        if not path_overflow(e, path):
+                            raise
+                        raise _PathLost(path) from e
                 return text, was
 
             # Новую страницу записываем СРАЗУ, до вложений. Вложений у страницы бывает
@@ -1060,7 +1079,13 @@ def run(a) -> int:
             # (дифф в git, смена времени файла) ради текста, которого никто не прочтёт.
             # Её пишем один раз, когда вложения уже скачаны.
             will_fetch = bool(opt["assets"] and assets)
-            text, was = store(body, [], write=not (will_fetch and os.path.isfile(path)))
+            try:
+                text, was = store(body, [], write=not (will_fetch and os.path.isfile(path)))
+            except _PathLost:
+                lose_path(PATH_LOST, f"страница {url}", path)
+                print(f"  ✗ {url} — путь не помещается в эту систему, страница не сохранена")
+                mirror.rows.append((url, trusted, "—", "длинный путь"))
+                continue
             status = ""
             if not will_fetch or was is None:
                 status = "без изменений" if was == text else ("обновлена" if was else "новая")
@@ -1146,7 +1171,10 @@ def run(a) -> int:
                     pass
             print(f"\nУдалено файлов снятых ссылок: {gone} "
                   f"(на {len(cited)} ссылаются карточки — оставлены)")
-    print(f"\n{'✅' if a.apply else '(dry-run)'} страниц: {len(seen) - failed} · "
+    if PATH_LOST:
+        print("\n" + loss_summary(PATH_LOST, "файлов зеркала"))
+    too_long = sum(1 for r in mirror.rows if r[3] == "длинный путь")       # страница не записана: путь
+    print(f"\n{'✅' if a.apply else '(dry-run)'} страниц: {len(seen) - failed - too_long} · "
           f"вложений: {files_total} · ошибок: {failed} · зеркало: {mirror.out}"
           + (f" · не менялись (304): {unchanged}" if unchanged else ""))
     if not a.apply:

@@ -46,8 +46,8 @@ import urllib.parse
 from datetime import date, timedelta
 
 from sources_core import (ASSET_DIR_RE, CONFIG, FileTooLarge, RestApi, UnsafeTarget, WikiMirror, block,
-                          config_text, nfc, no_access, drop_empty_dirs, report_stale, scalar,
-                          verify, word)
+                          config_text, loss_summary, lose_path, nfc, no_access, drop_empty_dirs,
+                          path_overflow, report_stale, scalar, verify, word)
 from sources_core import read_secret as core_secret
 from kb_remap import follow_moves, moves_report, page_moves  # noqa: E402
 from aurora_common import (ATTACH_MAX_MB, ATTACH_MODES, PATH_CHARS, TODAY,  # noqa: E402,F401
@@ -924,6 +924,7 @@ class Exporter(WikiMirror):
         self.api, self.base_url = api, base_url
         self.space, self.force, self.jira_base = space, force, jira_base
         self.written = self.skipped = self.failed = 0
+        self.path_lost: list = []       # файлы, которые не поместились в путь этой системы (Windows без длинных путей)
         self.ry_defines = self.ry_links = self.assets_saved = self.assets_dropped = 0
         self.claimed: dict = {}     # (папка, имя без регистра) → номер страницы
         self.visited: set = set()   # страницы, пройденные этим синком
@@ -1197,10 +1198,19 @@ class Exporter(WikiMirror):
                 referenced.add(fname)       # сбой скачивания: прежняя копия цела
                 continue
             referenced.add(fname)
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            drop_link(dest)
-            with open(dest, "wb") as f:
-                f.write(blob)
+            try:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                drop_link(dest)
+                with open(dest, "wb") as f:
+                    f.write(blob)
+            except OSError as e:
+                if not path_overflow(e, dest):
+                    raise
+                lose_path(self.path_lost, f"схема {hit}", dest)
+                self.attach_failed += 1
+                lines.append(f"- схема `{name}` — не скачана (путь слишком длинный): "
+                             f"[{hit}]({self.original_url(page_id, hit)})")
+                continue
             self.assets_saved += 1
             self.attach_saved += 1
             kept.add(fname)
@@ -1242,9 +1252,13 @@ class Exporter(WikiMirror):
                 except FileTooLarge:
                     reason = self.too_large()
                 except Exception as e:  # noqa: BLE001
-                    print(f"  ! {name}: {e}", file=sys.stderr)
-                    reason = "ошибка скачивания"
-            if reason == "ошибка скачивания":
+                    if path_overflow(e, dest):
+                        lose_path(self.path_lost, f"вложение {name}", dest)
+                        reason = "путь слишком длинный"
+                    else:
+                        print(f"  ! {name}: {e}", file=sys.stderr)
+                        reason = "ошибка скачивания"
+            if reason in ("ошибка скачивания", "путь слишком длинный"):
                 self.attach_failed += 1
             elif reason:
                 self.attach_skipped += 1
@@ -1500,22 +1514,30 @@ class Exporter(WikiMirror):
                 "hash": hashlib.md5(md.encode("utf-8")).hexdigest()[:16]}
         text = render_front_matter(meta) + f"# {head_value(title)}\n\n" + md + "\n"
         full = os.path.join(self.out, rel)
-        os.makedirs(os.path.dirname(full), exist_ok=True)
         # Сверка с тем, что уже лежит: страница без правок не должна давать дифф в git.
         # `--force` отменяет пропуск по версии (страницу перечитываем и пересобираем
         # заново), но не саму сверку: писать байт в байт то же самое незачем, а счётчик
         # «записано» после такой записи означал бы объём выгрузки, а не объём изменений.
-        exists = os.path.isfile(full)
-        old = open(full, encoding="utf-8").read() if exists else None
-        if old != text:
-            drop_link(full)
-            with open(full, "w", encoding="utf-8") as f:
-                f.write(text)
-            self.written += 1
-            self.records.append((str(page_id), rel, title, "UPDATED" if exists else "NEW"))
-        else:
-            self.skipped += 1
-            self.records.append((str(page_id), rel, title, "SYNCED"))
+        try:
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            exists = os.path.isfile(full)
+            old = open(full, encoding="utf-8").read() if exists else None
+            if old != text:
+                drop_link(full)
+                with open(full, "w", encoding="utf-8") as f:
+                    f.write(text)
+                self.written += 1
+                self.records.append((str(page_id), rel, title, "UPDATED" if exists else "NEW"))
+            else:
+                self.skipped += 1
+                self.records.append((str(page_id), rel, title, "SYNCED"))
+        except OSError as e:
+            # Путь не помещается в эту систему (Windows без длинных путей): страница не записана,
+            # обход идёт дальше, потеря названа строкой и счётчиком в сводке.
+            if not path_overflow(e, full):
+                raise
+            lose_path(self.path_lost, f"страница {page_id}", full)
+            self.nocache.add(str(page_id))
         if self.attach_failed > failed_before:
             # Файл не доехал (таймаут, обрыв): страница с «не скачан (ошибка скачивания)»
             # не должна считаться свежей, иначе следующий синк её пропустит по версии и
@@ -1767,7 +1789,7 @@ def main() -> int:
 
     exp = run_export(cfg, roots, out, auth, a.force)
     exp.save_cache()
-    if exp.failed or exp.branch_refused:
+    if exp.failed or exp.branch_refused or exp.path_lost:
         kept = exp.keep_unvisited()
         if kept:
             print(f"Не дошли из-за сбоев: {kept} страниц — в состоянии зеркала остаются "
@@ -1784,6 +1806,8 @@ def main() -> int:
               + (f" · убрано под прежними именами: {exp.assets_dropped}"
                  if exp.assets_dropped else ""))
     print_attachments_summary(exp)
+    if exp.path_lost:
+        print(loss_summary(exp.path_lost, "файлов зеркала"))
     if exp.ry_defines or exp.ry_links:
         print(f"Requirement Yogi: объявлено ключей {exp.ry_defines}, "
               f"ссылок на чужие ключи {exp.ry_links}")
@@ -1821,7 +1845,7 @@ def main() -> int:
         return exp.prune([r for r in riding if os.path.isfile(os.path.join(out, r))])
     if stale:
         report_stale("страниц больше нет", stale, out)
-        ok, why = (prune_allowed(stale, len(exp.records), exp.failed, exp.branch_refused)
+        ok, why = (prune_allowed(stale, len(exp.records), exp.failed + len(exp.path_lost), exp.branch_refused)
                    if a.prune else (False, ""))
         if a.prune and not ok:
             print(f"Не убираю: {why}")

@@ -213,10 +213,54 @@ def net_refusal() -> str:
         return ""
 
 
+def path_overflow(e: BaseException, path: str = "") -> bool:
+    """Ошибка записи — «путь не помещается в эту систему», а не нет места или прав.
+
+    Linux и macOS отвечают `ENAMETOOLONG`; Windows без длинных путей отвечает «путь не найден»
+    (WinError 3), «неверное имя» (123) или «имя слишком длинно» (206) — их отличает только длина:
+    папка создаётся до 247 знаков, файл пишется до 259 (`path_budget`)."""
+    import errno
+    if not isinstance(e, OSError):
+        return False
+    if e.errno == errno.ENAMETOOLONG or getattr(e, "winerror", None) == 206:
+        return True
+    return (getattr(e, "winerror", None) in (3, 123)
+            and len(os.path.abspath(path or str(getattr(e, "filename", "") or ""))) > 247)
+
+
+def loss_limit() -> int:
+    """Предел длины пути на этой системе — для сообщения о потерянном файле."""
+    try:
+        import path_budget as PB
+        return PB.LIMITS[PB.current_system()]["path"]
+    except Exception:  # noqa: BLE001 — сообщение важнее точности числа
+        return 259
+
+
+def lose_path(lost: list, what: str, full: str, show: int = 5) -> None:
+    """Файл не записан из-за длины пути: строка в журнал (первые `show`, дальше — только счёт) и в `lost`.
+
+    Выгрузка идёт дальше: одна длинная страница не должна обрывать весь синк и не должна пропадать молча."""
+    lost.append(full)
+    if len(lost) <= show:
+        print(f"  ! {what}: путь {len(os.path.abspath(full))} знаков не помещается в этой системе "
+              f"(предел {loss_limit()}) — не записано", file=sys.stderr)
+
+
+def loss_summary(lost: list, what: str = "файлов") -> str:
+    """Итог потерь по длине пути одной строкой для сводки синка; пусто — потерь нет."""
+    if not lost:
+        return ""
+    return (f"Длинные пути: не записано {len(lost)} {what} — путь длиннее предела этой системы "
+            f"({loss_limit()} знаков). Какие строки конфига тому виной — `kit:paths`; "
+            "лечится коротким именем папки проекта или длинными путями Windows")
+
+
 def run_main(main) -> int:
     """Запуск `main()` командного скрипта: отказ `UnsafeTarget` — ожидаемая настройка (чужой
     адрес, открытый http), а не сбой: одна строка причины в stderr и код 1, без трейсбека.
-    Не хватает связи источнику (проверка соединений) — отказ с точной причиной и код 2 до первого запроса."""
+    Не хватает связи источнику (проверка соединений) — отказ с точной причиной и код 2 до первого запроса.
+    Путь, не помещающийся в систему (папка зеркала не создаётся), — тоже строка, а не трейсбек."""
     try:
         refusal = net_refusal()
         if refusal:
@@ -225,6 +269,12 @@ def run_main(main) -> int:
         return main()
     except UnsafeTarget as e:
         print(f"! {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        if not path_overflow(e):
+            raise
+        print(f"! путь не помещается в эту систему: {getattr(e, 'filename', '') or e} — "
+              "проверьте длину путей: `kit:paths`", file=sys.stderr)
         return 1
 
 
