@@ -772,7 +772,6 @@ def test_connectivity_icmp_windows_needs_ttl_and_posix_exit_two_is_not_silence(_
 @test
 def test_connectivity_force_check_never_sends_provider_keys_while_the_feature_is_off(tmp: Path):
     """«Проверить сейчас» у выключенной проверки идёт только по адресам владельца: ручки провайдеров (с ключом) не трогаются."""
-    CN = _cn()
     prov = [{"id": "gw", "name": "GW", "url": "https://llm.example.com/v1", "key": "k", "profile": "", "check": "auth",
              "path": "/models", "local": False}]
     off = _cfg(enabled=False, profiles=[{"name": "VPN-1"}], probes=[_tcp("VPN-1", 1)])

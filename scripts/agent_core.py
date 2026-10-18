@@ -593,6 +593,8 @@ ADAPTER_NO_CONNECT = "нет соединения"
 # `kit:i18n --check`); панель переводит по ним русские сообщения движка. Адресов и ключей в
 # текстах нет: бэкенд назван номером и моделью. Ключ — `вид` или `вид.подвид`.
 # `label`/`label_en` — короткое название вида для строки итога и счётчиков ошибок.
+# `conn` — соединение не установилось (DNS, отказ, таймаут соединения, маршрут, TLS, прокси, сброс): после такого обрыва
+# проверка соединений (`conn_gate`) спрашивает, не лежит ли профиль или интернет, и карантина за чужую беду не ставит.
 # Чистая точка входа для тех, кому нужна только классификация, — `classify_failure`.
 CAUSES: dict = {
     # --- adapter: сам Pydantic AI
@@ -697,45 +699,45 @@ CAUSES: dict = {
               "engine's own check does: the cause could not be named more precisely — check "
               "the environment proxy, certificates and DNS of the adapter process"},
     # --- link: связь и сервер
-    "dns": {"area": "link", "fix": "",
+    "dns": {"area": "link", "fix": "", "conn": True,
         "label": "имя шлюза не найдено (DNS)", "label_en": "gateway name not found (DNS)",
         "ru": "бэкенд №{n} ({model}): имя шлюза не найдено (DNS) — проверьте сеть и VPN и "
               "адрес шлюза в разделе «Модели»",
         "en": "backend №{n} ({model}): the gateway name was not found (DNS) — check the "
               "network and VPN and the gateway address in the Models section"},
-    "refused": {"area": "link", "fix": "",
+    "refused": {"area": "link", "fix": "", "conn": True,
         "label": "отказ в соединении", "label_en": "connection refused",
         "ru": "бэкенд №{n} ({model}): отказ в соединении (порт закрыт) — шлюз выключен или"
               " адрес и порт указаны неверно: проверьте статус шлюза и раздел «Модели»",
         "en": "backend №{n} ({model}): connection refused (the port is closed) — the "
               "gateway is down or the address and port are wrong: check the gateway status"
               " and the Models section"},
-    "connect_timeout": {"area": "link", "fix": "",
+    "connect_timeout": {"area": "link", "fix": "", "conn": True,
         "label": "таймаут соединения", "label_en": "connection timeout",
         "ru": "бэкенд №{n} ({model}): таймаут соединения — сеть или VPN недоступны либо "
               "шлюз не принимает соединения: проверьте сеть, VPN и статус шлюза",
         "en": "backend №{n} ({model}): connection timed out — the network or VPN is down "
               "or the gateway does not accept connections: check the network, VPN and "
               "gateway status"},
-    "unreachable": {"area": "link", "fix": "",
+    "unreachable": {"area": "link", "fix": "", "conn": True,
         "label": "сеть недоступна", "label_en": "network unreachable",
         "ru": "бэкенд №{n} ({model}): сеть недоступна или нет маршрута до шлюза — "
               "проверьте подключение к сети и VPN",
         "en": "backend №{n} ({model}): the network is unreachable or there is no route to "
               "the gateway — check the network connection and VPN"},
-    "tls": {"area": "link", "fix": "",
+    "tls": {"area": "link", "fix": "", "conn": True,
         "label": "ошибка TLS или сертификата", "label_en": "TLS or certificate error",
         "ru": "бэкенд №{n} ({model}): ошибка TLS или сертификата шлюза — проверьте "
               "сертификат шлюза и корневые сертификаты этого компьютера",
         "en": "backend №{n} ({model}): TLS or gateway certificate error — check the "
               "gateway certificate and this computer's root certificates"},
-    "proxy": {"area": "link", "fix": "",
+    "proxy": {"area": "link", "fix": "", "conn": True,
         "label": "прокси не пропустил запрос", "label_en": "proxy refused the request",
         "ru": "бэкенд №{n} ({model}): прокси не пропустил запрос — проверьте HTTP_PROXY, "
               "HTTPS_PROXY, NO_PROXY и учётные данные прокси",
         "en": "backend №{n} ({model}): the proxy did not let the request through — check "
               "HTTP_PROXY, HTTPS_PROXY, NO_PROXY and the proxy credentials"},
-    "reset": {"area": "link", "fix": "",
+    "reset": {"area": "link", "fix": "", "conn": True,
         "label": "соединение сброшено", "label_en": "connection reset",
         "ru": "бэкенд №{n} ({model}): соединение сброшено сервером — шлюз перезапускается "
               "или перегружен: проверьте статус шлюза, сеть и VPN",
@@ -806,7 +808,8 @@ LINK_ALARM_KINDS = frozenset({"dns", "refused", "connect_timeout", "unreachable"
 LINK_REACHED_KINDS = frozenset({"silent", "rate_limit"})
 LINK_KINDS = LINK_ALARM_KINDS | LINK_REACHED_KINDS
 # Обрывы, после которых стоит спросить проверку соединений, не упал ли профиль или интернет: соединение не установилось.
-NET_KINDS = frozenset({"dns", "refused", "connect_timeout", "unreachable", "tls", "proxy", "reset"})
+# Это отметка `conn` строк таблицы `CAUSES`, а не второй классификатор: вид по-прежнему называет `link_kind`.
+NET_KINDS = frozenset(k for k, row in CAUSES.items() if row.get("conn"))
 NET_POLL = 15.0     # секунд между перепроверками связи, пока все провайдеры роли недоступны
 _NET_SEEN: set = set()       # провайдеры, которых проверка соединений называла недоступными: вернулись — карантин за обрыв снимается
 _NET_MARK_SAID: set = set()  # о каких недоступных наборах провайдеров метка `AURORA-NET` уже напечатана в этом процессе
@@ -2988,8 +2991,13 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     waited += 1.0
                     refresh = True
                     continue
-                log.append(f"все провайдеры роли недоступны по связи ({names}) — вызов не начат: это не поломка провайдеров")
-                _note_failure("связь: нужное недоступно")
+                # Метка LINK_FAILURE — та же, что в итоговой строке обрыва связи: прогон агента (`looks_offline`) узнаёт по
+                # ней, что партия встала из-за связи, а итог прогона считает вызов без ответа из-за связи.
+                log.append(f"вызов не начат, {LINK_FAILURE}: все провайдеры роли недоступны ({names}) — это не поломка провайдеров")
+                _note_failure(LINK_FAILURE)
+                with _USAGE_LOCK:
+                    USAGE["link_failed"] += 1
+                    USAGE["link_why"] = f"все провайдеры роли недоступны ({names})"
                 _say_net_blocked(gate, skipped, [b.get("provider") for b in order])
                 return {"ok": False, "log": log, "req": req,
                         "net_blocked": {"providers": [b.get("provider") for b in order], "why": names}}

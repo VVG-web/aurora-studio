@@ -670,38 +670,27 @@ def trend(entry) -> dict:
 
 # ------------------------------------------------------------------ проверки (probe)
 
-_ERRNO_UNREACHABLE = {101, 113, 50, 51, 64, 65, 10050, 10051, 10064, 10065, 100, 112}   # данные ОС
-_ERRNO_REFUSED = {111, 61, 10061}
-_ERRNO_TIMEOUT = {110, 60, 10060}
+# Вид обрыва, названный движком (`agent_core.link_kind`), → код результата проверки. Остальное — «other».
+_ENGINE_KIND_CODE = {"dns": "dns", "refused": "refused", "unreachable": "unreachable", "tls": "tls",
+                     "connect_timeout": "timeout", "silent": "timeout"}
 
 
 def classify_error(exc) -> tuple:
     """Исключение сети → (код, подробность). Коды: dns, refused, timeout, unreachable, tls, other. Подробность —
-    только то, что не переводится (текст самой библиотеки); объяснение по коду даёт тот, кто показывает."""
-    import ssl
-    reason = getattr(exc, "reason", None)
-    if isinstance(exc, urllib.error.URLError) and reason is not None and not isinstance(exc, urllib.error.HTTPError):
-        if isinstance(reason, str):
-            return "other", "URLError"
-        return classify_error(reason)
-    if isinstance(exc, ssl.SSLError) or (isinstance(exc, ssl.CertificateError)):
-        return "tls", str(getattr(exc, "reason", None) or exc)[:80]
-    if isinstance(exc, socket.gaierror):
-        return "dns", ""
-    if isinstance(exc, (socket.timeout, TimeoutError)):
-        return "timeout", ""
-    if isinstance(exc, ConnectionRefusedError):
-        return "refused", ""
-    code = getattr(exc, "errno", None)
-    win = getattr(exc, "winerror", None)
-    for n in (code, win):
-        if n in _ERRNO_REFUSED:
-            return "refused", ""
-        if n in _ERRNO_TIMEOUT:
-            return "timeout", ""
-        if n in _ERRNO_UNREACHABLE:
-            return "unreachable", ""
-    return "other", type(exc).__name__
+    только то, что не переводится (текст самой библиотеки); объяснение по коду даёт тот, кто показывает.
+
+    Вид обрыва определяет классификатор движка (`agent_core.link_kind`, таблица `CAUSES`): он один на вызовы моделей и
+    проверки соединений, своего разбора текстов и кодов ошибок здесь нет. Это тонкий переходник: названия видов движка
+    сводятся к кодам проверки (молчание по сроку и таймаут соединения — оба «timeout»)."""
+    try:
+        import agent_core
+        kind = agent_core.link_kind(exc)
+    except Exception:  # noqa: BLE001 — нет движка рядом: вид не назван, а проверка не падает
+        kind = ""
+    code = _ENGINE_KIND_CODE.get(kind, "other")
+    if code == "tls":
+        return code, str(getattr(exc, "reason", None) or exc)[:80]
+    return code, "" if code != "other" else type(exc).__name__
 
 
 def _result(ok: bool, started: float, code: str, detail: str = "") -> dict:
