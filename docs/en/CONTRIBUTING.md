@@ -186,7 +186,7 @@ result, and a job with `continue-on-error` does not affect it; `windows-314` (3.
 non-blocking for now (`continue-on-error`) and become blocking after stable green runs.
 
 Pinning and drift: actions are referenced by version (`@v6`), not by branch; the `beautifulsoup4`, `markdownify` and `ruff`
-versions for CI live in `.github/requirements-ci.txt` (installed with `-c`; `requirements.txt` for users stays unpinned), updates to
+versions for CI live in `.github/requirements-ci.txt` (installed with `-c`; `requirements.txt` pins `beautifulsoup4` and `markdownify` to the same versions — mirrors are compared byte for byte — so bumping those two changes both files, and a part 93 test compares them), updates to
 the actions and to that file come from Dependabot (`.github/dependabot.yml`: monthly, one PR per ecosystem, new releases wait 7 days); node is installed with a version (LTS 24), otherwise
 the JS checks are silently skipped. The `adapter-live` job (Linux and Windows, non-blocking) installs the Pydantic AI venv with the engine's real
 install (`agent_core.py --venv-install` under a temporary HOME on the runner: the real install path is exercised: venv, pip, install and the adapter compatibility check (a separate test covers the rollback); no

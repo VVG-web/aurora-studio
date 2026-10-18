@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
@@ -21,6 +22,11 @@ from harness import KIT, SCRIPTS, test  # noqa: F401
 
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
+
+def HX(tag: str) -> str:
+    """Короткая метка хеша в тесте → настоящий образ sha256 (отчёт pip проверяется на 64 шестнадцатеричных знака)."""
+    return hashlib.sha256(tag.encode()).hexdigest()
+
 
 NOW = 1_800_000_000.0                       # фиксированное «сейчас» проверок
 DAY = 86400.0
@@ -38,12 +44,15 @@ class Pip:
         self.calls, self.constraints, self.locks, self.json_urls = [], [], [], []
         self.have = ["2.51.0"]
         self.fail_venv = False
+        self.fail_binary = False        # первое решение с --only-binary падает: у пакета нет колеса
+        self.url = "https://files.example.org/{n}-{v}.whl"
+        self.upload_json = None         # подмена ответа PyPI для выпуска
 
-    @staticmethod
-    def report(path: str, pkgs: list) -> None:
+    def report(self, path: str, pkgs: list) -> None:
         items = [{"metadata": {"name": n, "version": v},
-                  "download_info": {"url": f"https://files.example.org/{n}-{v}.whl",
-                                    "archive_info": {"hashes": {"sha256": h}}}} for n, v, h in pkgs]
+                  "download_info": {"url": self.url.format(n=n, v=v),
+                                    "archive_info": {"hashes": {"sha256": HX(h) if re.fullmatch(r"h[a-z0-9]*", h) else h}}}}
+                 for n, v, h in pkgs]
         Path(path).write_text(json.dumps({"version": "1", "install": items}), encoding="utf-8")
 
     def run(self, cmd, timeout=60):
@@ -60,6 +69,8 @@ class Pip:
         if "freeze" in cmd:
             return done(0, self.freeze)
         if "--report" in cmd:
+            if self.fail_binary and "--only-binary=:all:" in cmd:
+                return done(1, "", "ERROR: No matching distribution found (no wheel)")
             if "-c" in cmd:
                 self.constraints.append(Path(cmd[cmd.index("-c") + 1]).read_text(encoding="utf-8"))
             pkgs = self.rounds.pop(0) if self.rounds else None
@@ -74,15 +85,20 @@ class Pip:
             self.have[0] = pinned.group(1) if pinned else "9.0.0"        # что в снимке, то и стоит после
             return done(0)
         if "-m" in cmd and "venv" in cmd:
-            return done(1, "", "venv не создан") if self.fail_venv else done(0)
+            if self.fail_venv:
+                return done(1, "", "venv не создан")
+            Path(cmd[-1]).mkdir(parents=True, exist_ok=True)        # новый venv на деле появляется
+            return done(0)
         if any(c.startswith("pydantic-ai==") for c in cmd):
             self.have[0] = next(c for c in cmd if c.startswith("pydantic-ai==")).split("==")[1]
         return done(0)
 
-    def get_json(self, url, timeout=15):
+    def get_json(self, url, timeout=15, limit=0):
         self.json_urls.append(url)
         m = re.match(r"https://pypi\.org/pypi/([^/]+)/([^/]+)/json$", url)
         if m:
+            if self.upload_json is not None:
+                return self.upload_json
             age = self.ages.get((m.group(1), m.group(2)))
             if age is None:
                 import urllib.error
@@ -128,7 +144,7 @@ def test_extras_install_skips_young_releases_and_installs_by_hashes(tmp: Path):
         EX.check_compat = lambda v: {"ok": True, "version": v, "problems": []}
         got = EX.plan_lock(Path("python"), "a b", 7, NOW)
         assert got[1] == "", got
-        assert "b==1.9" in got[0] and "--hash=sha256:hb19" in got[0] and "b==2.0" not in got[0], got[0]
+        assert "b==1.9" in got[0] and f"--hash=sha256:{HX('hb19')}" in got[0] and "b==2.0" not in got[0], got[0]
         assert pip.constraints == ["b<2.0\n"], pip.constraints
         # то же через install(): ставят из файла с хешами, без зависимостей, а снимок остаётся
         pip.rounds[:] = [[("a", "1.0", "ha"), ("b", "2.0", "hb")], [("a", "1.0", "ha"), ("b", "1.9", "hb19")]]
@@ -137,7 +153,7 @@ def test_extras_install_skips_young_releases_and_installs_by_hashes(tmp: Path):
         assert res["ok"] and res["version"] == "9.0.0", res
         install_cmd = next(c for c in pip.calls if "-r" in c and "--no-deps" in c)
         assert "--require-hashes" in install_cmd, install_cmd
-        assert pip.locks and "b==1.9 \\\n    --hash=sha256:hb19" in pip.locks[0], pip.locks
+        assert pip.locks and f"b==1.9 \\\n    --hash=sha256:{HX('hb19')}" in pip.locks[0], pip.locks
         saved = EX.lock_files("pydantic-ai")
         assert [p.name for p in saved if p.name.endswith("-install.txt")] and res["lock"] in [p.name for p in saved], res
         assert any(c[-2:] == ["--quiet", "pip==26.0"] or "pip==26.0" in c for c in pip.calls), \
@@ -189,7 +205,7 @@ def test_extras_no_quarantine_skips_the_wait_but_keeps_hashes(tmp: Path):
     EX, _venv = _patched(tmp, pip)
     try:
         text, why = EX.plan_lock(Path("python"), "a b", 0, NOW)
-        assert why == "" and "--hash=sha256:hb" in text and "пауза после выпуска: 0 сут." in text, (text, why)
+        assert why == "" and f"--hash=sha256:{HX('hb')}" in text and "release wait: 0 days" in text, (text, why)
         assert pip.json_urls == [], pip.json_urls
         import agent_core as AG
         seen = []
@@ -285,7 +301,7 @@ def test_age_lookup_failure_is_a_clean_refusal_and_a_locked_venv_survives(tmp: P
     pip = Pip(rounds=[[("a", "1.0", "ha")]], ages={})
     EX, venv = _patched(tmp, pip)
     try:
-        def broken(url, timeout=15):
+        def broken(url, timeout=15, limit=0):
             raise OSError("нет сети")
         EX._get_json = broken
         text, why = EX.plan_lock(Path("python"), "a", 7, NOW)
@@ -306,6 +322,151 @@ def test_age_lookup_failure_is_a_clean_refusal_and_a_locked_venv_survives(tmp: P
         finally:
             EX.os.replace = real_replace
         assert marker.read_text(encoding="utf-8") == "жив" and any("не удался" in x for x in log), log
+    finally:
+        importlib.reload(EX)
+
+
+@test
+def test_unknown_release_age_refuses_instead_of_letting_the_package_in(tmp: Path):
+    """Возраст неизвестен — отказ: пустой ответ PyPI, 404 на файл с pythonhosted.org; частный индекс (404) пускается."""
+    pip = Pip(rounds=[[("a", "1.0", "a" * 64)]] * 4, ages={("a", "1.0"): 90})
+    EX, _venv = _patched(tmp, pip)
+    try:
+        pip.upload_json = {}
+        text, why = EX.plan_lock(Path("python"), "a", 7, NOW)
+        assert text == "" and "не удалось узнать возраст" in why and "время загрузки" in why, (text, why)
+        pip.upload_json = None
+        pip.url = "https://files.pythonhosted.org/packages/a-{v}.whl"
+        pip.ages = {}                                       # PyPI о выпуске молчит (404), файл — с pythonhosted.org
+        text, why = EX.plan_lock(Path("python"), "a", 7, NOW)
+        assert text == "" and "PyPI не знает выпуска a 1.0" in why, (text, why)
+        pip.url = "https://packages.example.org/a-{v}.whl"  # частный индекс: PyPI его не знает, и это не повод отказывать
+        text, why = EX.plan_lock(Path("python"), "a", 7, NOW)
+        assert why == "" and "a==1.0" in text, (text, why)
+        # хеш файла не нашёлся среди файлов выпуска — возраст по самому СВЕЖЕМУ файлу (дозагруженное позже колесо)
+        pip.ages = {("a", "1.0"): 90}
+        pip.upload_json = {"urls": [{"digests": {"sha256": "x"}, "upload_time_iso_8601": _stamp(90)},
+                                    {"digests": {"sha256": "y"}, "upload_time_iso_8601": _stamp(1)}]}
+        assert EX.release_age_days("a", "1.0", "z" * 64, NOW) < 2
+        assert abs(EX.release_age_days("a", "1.0", "x", NOW) - 90) < 0.01
+    finally:
+        importlib.reload(EX)
+
+
+@test
+def test_pip_report_is_untrusted_input_and_litellm_stays_out(tmp: Path):
+    """Имя, версия и хеш из отчёта pip проверяются (перевод строки не дописывает директиву в снимок); LiteLLM и DSPy — отказ."""
+    pip = Pip(rounds=[[("a", "1.0", "ab" * 32 + "\n--index-url http://evil.example.org")],
+                      [("lite" + "llm", "1.0", "ab" * 32)], [("a\nb", "1.0", "ab" * 32)]], ages={})
+    EX, _venv = _patched(tmp, pip)
+    try:
+        for expect in ("странное имя, версия или хеш", "который в надстройки не вводится", "странное имя, версия или хеш"):
+            text, why = EX.plan_lock(Path("python"), "a", 0, NOW)
+            assert text == "" and expect in why, (expect, text, why)
+    finally:
+        importlib.reload(EX)
+
+
+@test
+def test_a_package_without_a_wheel_is_resolved_once_more_without_the_ban(tmp: Path):
+    """Решение идёт по готовым колёсам (`--only-binary`): сборка из исходников исполняет код до проверки возраста; нет колеса — повтор."""
+    pip = Pip(rounds=[[("a", "1.0", "ab" * 32)]], ages={("a", "1.0"): 90})
+    EX, _venv = _patched(tmp, pip)
+    try:
+        text, why = EX.plan_lock(Path("python"), "a", 7, NOW)
+        first = next(c for c in pip.calls if "--report" in c)
+        assert "--only-binary=:all:" in first and why == "" and "only-binary" in text, (first, text, why)
+        lock = tmp / "l.txt"
+        lock.write_text(text, encoding="utf-8")
+        assert "--only-binary=:all:" in EX._install_lock(Path("python"), lock).args
+        pip.fail_binary, pip.rounds[:] = True, [[("a", "1.0", "ab" * 32)]]
+        pip.url = "https://files.example.org/a-{v}.tar.gz"
+        text, why = EX.plan_lock(Path("python"), "a", 7, NOW)
+        assert why == "" and "only-binary" not in text, (text, why)       # повтор без запрета, снимок без пометки
+        lock.write_text(text, encoding="utf-8")
+        assert "--only-binary=:all:" not in EX._install_lock(Path("python"), lock).args
+    finally:
+        importlib.reload(EX)
+
+
+@test
+def test_restore_never_destroys_the_live_venv_and_replaces_it_when_it_can(tmp: Path):
+    """Остаток прежнего `.prev`, исключение подпроцесса, успешная замена: живой venv не теряется, при успехе заменён."""
+    pip = Pip(rounds=[], ages={})
+    EX, venv = _patched(tmp, pip)
+    try:
+        (venv / "marker.txt").write_text("жив", encoding="utf-8")
+        lock = tmp / "snap.txt"
+        lock.write_text("httpx==0.28.1\n", encoding="utf-8")
+        stale = venv.with_name("venv.prev")                  # остаток прежней попытки (имя старой схемы)
+        stale.mkdir()
+        (stale / "stale.txt").write_text("мусор", encoding="utf-8")
+        real_replace = EX.os.replace
+
+        def refuse(src, dst):
+            raise PermissionError("занят")
+        EX.os.replace = refuse
+        try:
+            assert EX.restore("pydantic-ai", lock, []) is False
+        finally:
+            EX.os.replace = real_replace
+        assert (venv / "marker.txt").read_text(encoding="utf-8") == "жив" and not (venv / "stale.txt").exists()
+        # таймаут подпроцесса: исключение не вылетает, прежний venv возвращён на место
+        real_run = pip.run
+
+        def slow(cmd, timeout=60):
+            if "-m" in cmd and "venv" in [str(c) for c in cmd]:
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            return real_run(cmd, timeout)
+        EX._run = slow
+        log = []
+        assert EX.restore("pydantic-ai", lock, log) is False
+        assert (venv / "marker.txt").read_text(encoding="utf-8") == "жив" and not list(tmp.glob("venv.prev-*")), log
+        # успех: venv заменён новым, отложенный прежний убран
+        EX._run = pip.run
+        assert EX.restore("pydantic-ai", lock, []) is True
+        assert venv.is_dir() and not (venv / "marker.txt").exists() and not list(tmp.glob("venv.prev-*"))
+        assert pip.locks and "httpx==0.28.1" in pip.locks[-1]
+    finally:
+        importlib.reload(EX)
+
+
+@test
+def test_two_installs_of_one_extra_do_not_run_at_once_and_snapshots_never_collide(tmp: Path):
+    """Вторая установка той же надстройки отказывает, пока идёт первая; снимки двух процессов не затирают друг друга."""
+    pip = Pip(rounds=[], ages={})
+    EX, _venv = _patched(tmp, pip)
+    try:
+        from aurora_common import lock_release, lock_take
+        guard = EX.LOCKS / "pydantic-ai.install.lock"
+        assert lock_take(guard, {"what": "other"})[0]
+        busy = EX.install("pydantic-ai", 7)
+        assert not busy["ok"] and "уже идёт" in busy["log"], busy
+        lock_release(guard)
+        a, b = EX.save_lock("pydantic-ai", "# a\n"), EX.save_lock("pydantic-ai", "# b\n")
+        assert a != b and a.read_text(encoding="utf-8") == "# a\n" and b.read_text(encoding="utf-8") == "# b\n"
+    finally:
+        importlib.reload(EX)
+
+
+@test
+def test_status_offers_the_release_the_install_will_actually_take(tmp: Path):
+    """Кнопка «Обновить» называет выпуск старше паузы, а не самый свежий на PyPI (который установка не возьмёт)."""
+    pip = Pip(rounds=[], ages={})
+    EX, _venv = _patched(tmp, pip)
+    try:
+        EX.CACHE = tmp / "cache.json"
+        EX.installed_version = lambda _id: "2.0.0"
+        data = {"info": {"version": "2.2.0"},
+                "releases": {"2.0.0": [{"upload_time_iso_8601": _stamp(90)}],
+                             "2.1.0": [{"upload_time_iso_8601": _stamp(30)}],
+                             "2.2.0": [{"upload_time_iso_8601": _stamp(1)}]}}
+        EX._get_json = lambda url, timeout=15, limit=0: data if "pypi.org/pypi/" in url else {"tag_name": "v2.2.0"}
+        row = next(r for r in EX.status(fresh=True) if r["id"] == "pydantic-ai")
+        assert row["pypi"] == "2.2.0" and row["target"] == "2.1.0" and row["update"] is True, row
+        EX.installed_version = lambda _id: "2.1.0"
+        row = next(r for r in EX.status() if r["id"] == "pydantic-ai")
+        assert row["update"] is False, "стоит всё, что установка готова взять: обновлять нечего"
     finally:
         importlib.reload(EX)
 
@@ -351,7 +512,7 @@ def test_panel_installs_pinned_or_aged_python_packages(tmp: Path):
         out = ck.env_install("beautifulsoup4")
         assert out["ok"] and seen[-1][-1] == f"beautifulsoup4=={EX.requirements_pins()['beautifulsoup4']}", seen
         out = ck.env_install("lxml")
-        assert out["ok"] and seen[-1][-1] == "lxml==5.0.0", seen
+        assert out["ok"] and seen[-1][-1] == "lxml<=5.0.0", seen
         EX.aged_version = lambda dist, days, now=0.0: (_ for _ in ()).throw(OSError("нет сети"))
         out = ck.env_install("lxml")
         assert seen[-1][-1] == "lxml" and "паузу после выпуска проверить не удалось" in out["output"], (seen, out)

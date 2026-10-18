@@ -232,7 +232,7 @@ function extraRow(ctx, x, redraw){
   const git = x.git ? t("install.ex_git", {v: x.git}) : "";
   const pypi = x.pypi && x.pypi !== x.git ? t("install.ex_pypi", {v: x.pypi}) : "";
   const label = !have ? t("install.ex_install")
-    : x.update ? t("install.ex_update", {v: x.pypi}) : t("install.ex_latest");
+    : x.update ? t("install.ex_update", {v: x.target || x.pypi}) : t("install.ex_latest");
   const btn = el("button", {class:"btn sm" + (!have || x.update ? " primary" : ""),
     disabled: have && !x.update ? "" : null,
     title: t("install.ex_where", {path: x.venv}),
