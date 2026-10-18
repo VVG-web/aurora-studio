@@ -188,8 +188,7 @@ REASON_FUNCS = ("why_readonly", "why_service", "why_no_create", "graph_state", "
 # `aurora_common` и `agent_core`, а не в сервере панели. Читаются только эти функции — остальной
 # `agent_core` в каталог сообщений не входит.
 ENGINE_REASONS = {"aurora_common.py": ("mcp_check",),
-                  # `_venv_gap`/`_adapter_gap` — причина обхода Pydantic AI: нет venv или нет файла адаптера
-                  "agent_core.py": ("mcp_probe", "mcp_no_kit", "_venv_gap", "_adapter_gap"),
+                  "agent_core.py": ("mcp_probe", "mcp_no_kit"),
                   # причина отказа одного сервера проверки (`servers.<имя>.error`) рождается в адаптере
                   os.path.join("agents", "pydantic_ai_adapter.py"): ("mcp_probe",)}
 
@@ -275,6 +274,25 @@ def message_skeletons() -> set:
                         if (isinstance(tgt, ast.Subscript) and isinstance(tgt.slice, ast.Constant)
                                 and tgt.slice.value in MESSAGE_KEYS):
                             add(sub.value)
+    # Таблица причин сбоя вызова модели (`agent_core.CAUSES`): тексты тревог, итога прогона и
+    # отчётов ботов рождаются в ней по-русски, с подстановками `{имя}`; панель показывает их в
+    # поле `why` и переводит по тем же образцам, где каждая подстановка — `{}`.
+    core = os.path.join(KIT, "scripts", "agent_core.py")
+    if os.path.isfile(core):
+        for node in ast.walk(ast.parse(open(core, encoding="utf-8").read())):
+            if (isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Dict)
+                    and "CAUSES" in [getattr(t, "id", "") for t in
+                                     (node.targets if isinstance(node, ast.Assign) else [node.target])]):
+                for row in node.value.values:
+                    if not isinstance(row, ast.Dict):
+                        continue
+                    for k, v in zip(row.keys, row.values):
+                        # `ru` — сам текст причины; `label` — короткое название вида, оно
+                        # встаёт в текст «спасённого обрыва» подстановкой и переводится отдельно
+                        if isinstance(k, ast.Constant) and k.value in ("ru", "label"):
+                            text = _skeleton(v)
+                            if text:
+                                out.add(re.sub(r"\{\w+\}", "{}", text).strip())
     # Находки доктора — строки `ERROR:` и `WARN:`, которые панель показывает на «Здоровье»:
     # их рождает `.append(...)` в самом скрипте.
     doctor = os.path.join(KIT, "scripts", "aurora_doctor.py")

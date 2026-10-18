@@ -19,24 +19,30 @@
 ответа в секунду на шлюзе №1 против 18,8 прямым HTTP, на №2 — 2,37 против 2,48. Узким
 местом была наша труба, а не фреймворк, и теперь через него идёт каждый вызов.
 
-Первая строка процесса — {"ready": true, "version"} либо {"ready": false, "error"}.
+Первая строка процесса — {"ready": true, "version"} либо {"ready": false, "error", "kind":
+"import_failed", "sub": "missing"|"broken", "exc", "module"}.
 Задание: {"id", "url", "key", "model", "messages", "template", "max_tokens", "timeout",
           "tools", "mcp", "mcp_active", "guard", "role", "tool_calls"}
 Ответ:   {"id", "ok": true, "text", "reasoning", "finish", "usage"}
          либо {"id", "ok": false, "where": "server"|"adapter", "status", "error", "body",
-               "headers"}
-`where` отделяет отказ сервера (движок решает по нему, как по HTTP) от поломки адаптера
-(движок повторяет вызов прямым HTTP и пишет причину в отчёт). `headers` — заголовки лимита
-(`retry-after` и др.), по которым движок решает, сколько ждать после 429. Нет соединения с
-сервером — тоже `adapter`: у процесса своя сеть (прокси), и прямой путь может дойти.
+               "headers", "kind", "proxy_fell"}
+`kind` — вид обрыва связи (DNS, отказ порта, сертификат, сброс, срок…): по нему движок отличает
+обрыв сети от поломки самого Pydantic AI. `where` отделяет отказ сервера (движок решает по нему,
+как по HTTP) от поломки адаптера (движок повторяет вызов прямым HTTP и пишет причину в отчёт).
+`headers` — заголовки лимита (`retry-after` и др.), по которым движок решает, сколько ждать после
+429. Нет соединения с сервером — тоже `adapter`: у процесса своя сеть (прокси), и прямой путь
+может дойти.
 
 Зачем фреймворк, если есть прямой HTTP: Pydantic AI валидирует ответ и умеет заставить
 модель переписать невалидный — а в фазе 2 агент возвращает не текст, а решение в JSON,
 по которому движок правит базу знаний. Ошибка формата здесь дороже лишней секунды.
 """
+import errno
 import json
 import os
 import re
+import socket
+import ssl
 import sys
 
 # Pydantic AI 2.5x печатает приветствие про observability. В процессе адаптера stdout — это
@@ -872,18 +878,72 @@ RATE_HEADERS = ("retry-after", "retry-after-ms", "x-ratelimit-reset-requests",
                 "x-ratelimit-remaining-tokens")
 
 
-def exc_chain(e, limit: int = 40) -> set:
-    """Имена классов всей цепочки исключения: `__cause__`, `__context__` и члены группы
+def exc_objs(e, limit: int = 40) -> list:
+    """Все исключения цепочки: сам `e`, `__cause__`, `__context__` и члены группы
     (`ExceptionGroup`) — до корня, с защитой от циклов."""
-    names, seen, todo = set(), set(), [e]
+    out, seen, todo = [], set(), [e]
     while todo and len(seen) < limit:
         x = todo.pop()
         if x is None or id(x) in seen:
             continue
         seen.add(id(x))
-        names.add(type(x).__name__)
+        out.append(x)
         todo += [x.__cause__, x.__context__, *(getattr(x, "exceptions", None) or ())]
-    return names
+    return out
+
+
+def exc_chain(e, limit: int = 40) -> set:
+    """Имена классов всей цепочки исключения (см. `exc_objs`)."""
+    return {type(x).__name__ for x in exc_objs(e, limit)}
+
+
+def _errnos(*names) -> set:
+    """Коды ошибок по именам (`ECONNREFUSED`, `WSAECONNREFUSED`): на Windows и в Unix числа свои."""
+    return {getattr(errno, n) for n in names if hasattr(errno, n)}
+
+
+E_REFUSED = _errnos("ECONNREFUSED", "WSAECONNREFUSED")
+E_UNREACHABLE = _errnos("ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN", "WSAENETUNREACH",
+                        "WSAEHOSTUNREACH", "WSAENETDOWN", "WSAEHOSTDOWN")
+E_TIMED_OUT = _errnos("ETIMEDOUT", "WSAETIMEDOUT")
+
+
+def link_kind(objs) -> str:
+    """Какой именно обрыв связи: по классам исключений цепочки и кодам ошибок ОС, без текста.
+
+    Те же слова, что в `agent_core.CAUSES` (область `link`): `proxy`, `tls`, `dns`, `refused`,
+    `unreachable`, `connect_timeout`, `reset`, `silent` (сервер принял запрос и молчит по сроку),
+    `other`. Частное идёт раньше общего: сертификат и прокси — раньше «не дошли». Движок
+    называет по виду причину в тревоге и в итоге прогона; текст исключения в вид не входит,
+    потому что в нём бывают адреса и логины."""
+    objs = list(objs)
+    names = {type(x).__name__ for x in objs}
+    codes = {x.errno for x in objs if isinstance(getattr(x, "errno", None), int)}
+
+    def is_a(*classes) -> bool:
+        return any(isinstance(x, classes) for x in objs)
+    if "ProxyError" in names:
+        return "proxy"
+    # Оборванный посреди рукопожатия TLS (`SSLEOFError`, `SSLZeroReturnError`, `SSLSyscallError`) —
+    # обрыв сети, а не сертификат: частый симптом мигнувшей связи, и тревоги про клиент он не стоит.
+    if is_a(ssl.SSLEOFError, ssl.SSLZeroReturnError, ssl.SSLSyscallError) \
+            or names & {"SSLEOFError", "SSLZeroReturnError", "SSLSyscallError"}:
+        return "reset"
+    if is_a(ssl.SSLError) or names & {"SSLError", "SSLCertVerificationError", "CertificateError"}:
+        return "tls"
+    if is_a(socket.gaierror) or "gaierror" in names:
+        return "dns"
+    if is_a(ConnectionRefusedError) or codes & E_REFUSED:
+        return "refused"
+    if codes & E_UNREACHABLE:
+        return "unreachable"
+    if "ConnectTimeout" in names or codes & E_TIMED_OUT:
+        return "connect_timeout"
+    if is_a(ConnectionResetError, ConnectionAbortedError, BrokenPipeError) or names & LINK_DROPPED:
+        return "reset"
+    if names & TIMED_OUT:
+        return "silent"
+    return "other"
 
 
 def connect_failed(chain) -> bool:
@@ -1064,15 +1124,20 @@ def runtime():
                 chain = exc_chain(e)
                 if chain & (SERVER_SILENT | CONNECT_FAILED):
                     msg = getattr(e, "message", "") or str(e)
+                    # Вид обрыва — по классам и кодам ОС, а не по тексту: движок называет по нему
+                    # причину (DNS, отказ порта, сертификат, сброс, срок) и отличает обрыв связи
+                    # от поломки самого Pydantic AI.
+                    kind = link_kind(exc_objs(e))
                     if connect_failed(chain):
                         # Не дошли до сервера: прокси, сертификат, сеть процесса. Прямой путь
                         # движка может дойти — пусть сделает одну контрольную попытку.
                         note = (f" (прокси окружения не подошёл клиенту: {PROXY_FELL['why']})"
                                 if PROXY_FELL["why"] else "")
-                        return {"ok": False, "where": "adapter",
+                        return {"ok": False, "where": "adapter", "kind": kind,
+                                "proxy_fell": PROXY_FELL["why"],
                                 "error": f"нет соединения: {str(msg)[:200]}{note}"[:300]}
                     # Срок: сервер не ответил. Повтор прямым HTTP упрётся в то же.
-                    return {"ok": False, "where": "server", "error": str(msg)[:300]}
+                    return {"ok": False, "where": "server", "kind": kind, "error": str(msg)[:300]}
                 raise
         last = last_response(result.all_messages())
         return {"ok": True, "text": (result.output or "").strip(),
@@ -1221,9 +1286,11 @@ def selfcheck() -> dict:
                                   messages=[{"role": "user", "content": "цикл"}]))
         check("потолок вызовов инструментов", out.get("ok") and out.get("finish") == "tool_limit",
               out)
-        # 7. нет соединения — отказ адаптера: прямой путь движка делает контрольную попытку
+        # 7. нет соединения — отказ адаптера: прямой путь движка делает контрольную попытку;
+        #    вид обрыва назван (какой именно — зависит от ОС, важно, что он есть)
         out = await run_task(dict(base, url=dead, messages=[{"role": "user", "content": "есть?"}]))
-        check("нет соединения", out.get("where") == "adapter" and not out.get("ok"), out)
+        check("нет соединения", out.get("where") == "adapter" and not out.get("ok")
+              and bool(out.get("kind")), out)
         # 8. лимит скорости: статус и подсказка шлюза доходят до движка
         out = await run_task(dict(base, messages=[{"role": "user", "content": "лимит скорости"}]))
         check("лимит скорости", out.get("where") == "server" and out.get("status") == 429
@@ -1271,7 +1338,13 @@ def main() -> int:
         import threading
         run_task, version = runtime()
     except Exception as e:  # noqa: BLE001
-        answer({"ready": False, "error": f"pydantic-ai не импортируется: {type(e).__name__}"})
+        # Нет пакета и пакет не импортируется — разные беды: движок называет их по-разному.
+        # Имя модуля — только если оно похоже на имя модуля, а не на путь или текст.
+        module = str(getattr(e, "name", "") or "")
+        answer({"ready": False, "error": f"pydantic-ai не импортируется: {type(e).__name__}",
+                "kind": "import_failed", "exc": type(e).__name__,
+                "sub": "missing" if isinstance(e, ModuleNotFoundError) else "broken",
+                "module": module if re.fullmatch(r"[A-Za-z_][\w.]*", module) else ""})
         return 0
 
     loop = asyncio.new_event_loop()
