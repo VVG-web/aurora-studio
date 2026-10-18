@@ -259,20 +259,76 @@ model name gives not a refusal but a coherent fabrication in the primary source'
 The Pydantic AI path takes the proxy from the same variables as direct HTTP (`HTTP_PROXY`, `HTTPS_PROXY`,
 `NO_PROXY`; a value without a scheme, `proxy.example.com:3128`, is read as an http proxy; gateways on this very
 machine — `localhost`, `127.0.0.1`, `::1` — bypass the proxy). If the adapter failed to reach the gateway (port
-refused, DNS, certificate, proxy), the call is repeated once over direct HTTP, and the reason is shown in the bypass
-alarm (if the direct request did not get through either, there was no bypass and no alarm; a successful call
-through the adapter clears the earlier reason); a connection dropped after the request was sent is not repeated that way — the server got the request.
+refused, DNS, certificate, proxy), that is a connection drop, not a Pydantic AI fault. A call without tools is
+repeated once over direct HTTP — the same request shows whether the other path would get there — and counts as
+a "drop rescued by a direct request": a line in the run summary and a `connection drop` record in the failure
+journal, with no red Pydantic AI bar. A direct request will not help a call with tools and MCP (its answer
+without tools is not accepted): if the gateway is unreachable for the direct path too, the call fails with a
+named link cause and the ring waits and repeats it by itself; if the gateway is reachable, the call is first
+repeated once through the adapter. The mismatch "the adapter cannot reach, the direct request can" raises the
+Pydantic AI alarm (`client_net`) only when it repeats three times in a row without a single pass through the
+adapter, or the cause is obvious (the environment proxy did not suit the adapter's client, its client did not
+accept the certificate). A connection dropped after the request was sent is not repeated over direct HTTP — the
+server got the request.
 
 Shared by all roles: the cap of simultaneous requests ("auto" — the sum of provider widths), the request
 timeout, the agent's steps and budget, the call method (`pydantic_ai` or direct HTTP). A failure on one card
 does not stop the run; three failures in a row do — that is the provider, not the cards.
 
-**Bypassing Pydantic AI is visible at once.** `pydantic_ai` is selected, but a call came over direct HTTP (the
-venv is not installed, the adapter process crashed, a new version failed the compatibility check) — this shows
-in three places: a `⛔` line in the command output, a red bar in the panel over any section (what, where, when
-and why) and the first line of the run summary. A call with tools or MCP is not accepted without the adapter at
-all: an answer "without tools" to a question that needs them is not an answer. The bar goes away by itself once
-the same path (an agent task, a bot) goes through the adapter again.
+**Two different troubles — two different bars.** The red Pydantic AI bar ("Pydantic AI is selected, but model
+calls bypass it") appears only when the Pydantic AI path itself is faulty: the package is not installed or does
+not import, the version failed the compatibility check, the adapter process does not start, crashes or hangs, the
+adapter's answer is not parsed, the adapter is not enabled, or its HTTP client cannot reach the gateway while a
+direct request can. `pydantic_ai` is selected, but a call came over direct HTTP — this shows in three places: a
+`⛔` line in the command output, a red bar in the panel over any section (what, where, when and why) and the
+first line of the run summary. A call with tools or MCP is not accepted without the adapter at all: an answer
+"without tools" to a question that needs them is not an answer. The bar goes away by itself once the same path
+(an agent task, a bot) goes through the adapter again.
+
+Everything else — network, DNS, certificate, timeout, a server refusal — is called by its own name and does not
+touch Pydantic AI. A lone drop is only a line in the course log and a note in the summary. Three failures in a
+row on one backend with no answer between them raise a separate red bar, "The model gateway is unreachable: …",
+with the kind of trouble and the backend number, and no buttons about Pydantic AI; the first answer from the
+backend clears it. Events are counted, not calls: a drop that cuts all requests in flight at once is one event. A silence past the
+timeout and a rate limit do not count in the series: the server is alive. A backend that only the adapter cannot
+reach is not quarantined.
+The first error of the run summary becomes the real cause ("connection drop: backend №2 (…): connection timed
+out …"), not "the model did not answer meaningfully".
+
+### What each message means
+
+The Pydantic AI alarm — the adapter path is faulty:
+
+| Message | What it means | What to do |
+|---|---|---|
+| `venv python: … not found` | Pydantic AI is not installed on this computer | Install → Pydantic AI |
+| `adapter: .aurora/scripts/agents/… not found` | the project engine is incomplete (the Install page may be green) | Version → Prepare project; `… the kit is incomplete` — update the kit |
+| `package … is not installed in the venv`, `Pydantic AI does not import in the venv (…)` | the package is missing or damaged | Install → Pydantic AI, reinstall |
+| `Pydantic AI … failed the compatibility check …` | the new package version does not suit Aurora | Install → restore the previous version; `agent:pydantic` |
+| `the adapter process does not start`, `exited right at startup`, `did not answer within N s after start` | the venv is damaged or does not start | Install → Pydantic AI |
+| `the adapter process closed in the middle of a call`, `the pipe … is closed`, `died N times`, `gave no answer within N s` | the process crashes or hangs | Install → Pydantic AI; `agent:pydantic` |
+| `the adapter returned an error: …`, `the adapter's reply could not be parsed` | an internal adapter error | the same; the error text is in the failure journal |
+| `the adapter is not enabled in this process` | an engine error | report it (the About section) |
+| `the adapter's HTTP client does not reach backend №N …, while a direct request does: …` | the adapter process has its own network: environment proxy, certificate, DNS | check `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and the proxy scheme; the gateway's root certificate (`SSL_CERT_FILE`); DNS and VPN |
+
+The link alarm — the gateway is unreachable or refuses (Pydantic AI is fine):
+
+| Message | What it means | What to do |
+|---|---|---|
+| the gateway name was not found (DNS) | the name does not resolve | network and VPN, the gateway address in the Models section |
+| connection refused (the port is closed) | the gateway is down or the address and port are wrong | gateway status, the Models section |
+| connection timed out | the network or VPN is down, or the gateway does not accept connections | network, VPN, gateway status |
+| the network is unreachable or there is no route | no network connection | network connection and VPN |
+| TLS or certificate error | the gateway certificate is not accepted | the gateway certificate and the computer's root certificates |
+| the proxy did not let the request through | the proxy refused | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, credentials |
+| the connection was reset by the server | the gateway is restarting or overloaded | gateway status, network, VPN |
+| the server accepted the request and did not answer in time | the gateway is busy or hung | the gateway; the request timeout in the Models section |
+| a server error (HTTP 5xx) | a failure on the gateway's side | gateway status; the engine retries by itself |
+| the key or access was refused (HTTP 401/403) | the key or permissions | the key in the Models section; waiting will not help |
+| rate limit (HTTP 429) | the gateway asks to wait | the engine waits by itself; lower the width in Models |
+| the gateway answered 404 | no such model or path | the model name and address in the Models section |
+| the gateway answered with something that is not JSON | a proxy or a login page answers instead of the gateway | address, proxy, VPN |
+| could not reach the gateway | the cause cannot be named more precisely | network, VPN, gateway status; details in `failures.jsonl` |
 
 **Failure journal.** Every failed agent step is a record in `failures.jsonl` of the run folder
 (`.aurora/runs/<run>/`; from the terminal — `.aurora/state/failures.jsonl`): the reason, the call's course
@@ -618,5 +674,6 @@ In detail — `skills/aurora-vault/references/migration.md` (in Russian). In sho
 | A file name does not pass on Windows/macOS | `kb:names` (preview, then `--apply`) |
 | Renaming `raw` → `Raw` on macOS | in two steps: `mv raw tmp && mv tmp Raw` |
 | `agent:ping` — "did not answer" | `agent:probe`: distinguishes the connection, the key and the model name |
+| A red bar "The model gateway is unreachable: …" | Pydantic AI is not involved: the bar names the kind of trouble and the backend — see the table "What each message means" above |
 | macOS blocks `start-aurora.command` | right-click → "Open" |
 | The panel opened in an editor instead of the browser (or the tab is empty) | on macOS and Windows the address is opened directly (the single-use code lives two minutes); on Linux through a redirect file. Choose the mode with `AURORA_COCKPIT_OPEN=direct` or `file`; otherwise open the address from the console |
