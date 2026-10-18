@@ -90,8 +90,10 @@ def passport_hit(fm: dict, names: set, target: str) -> str:
     артефакта (`ART-0007`). Паспорт хранит номер, поэтому совпадением считается и номер из
     карточки цели (`req_id`, `spec_id`, `artifact_id`), и начало имени файла до дефиса."""
     for field in PASSPORT_FIELDS:
-        for v in as_list(fm.get(field, "")):
-            v = _bare(v)
+        # Номера с точкой (`AC-3.1`) и ключи Requirement Yogi (`RU.PRJ.REQ-010`) `as_list` резал бы по
+        # расширению файла: список разбирается здесь. Ключ сводится к последнему сегменту — `REQ-010`.
+        for v in (x.strip(" \"'[]") for x in str(fm.get(field, "")).strip().strip("[]").split(",")):
+            v = re.sub(r"^(?:[A-Za-z]+\.)+(?=[A-Za-z]+-\d)", "", v)
             if v and (v in names or target.startswith(v + "-")):
                 return field
     return ""

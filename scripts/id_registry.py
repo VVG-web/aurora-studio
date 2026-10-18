@@ -46,7 +46,7 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
-from aurora_common import KB_ROOT, frontmatter, lock_release, lock_take, safe_walk, utc_stamp  # noqa: E402
+from aurora_common import KB_ROOT, lock_release, lock_take, safe_walk, utc_stamp  # noqa: E402
 
 STATE = ".aurora/state/ids"
 LOCK_WAIT_S = 15         # сколько ждать чужую выдачу: она длится миллисекунды
@@ -68,15 +68,23 @@ SPACES = {
             "dirs": ("Artifacts", "Deliverables")},
 }
 ARCHIVE = f"{KB_ROOT}/_archive"      # архив всей базы: в нём лежат и прежние REQ, Q, DR
+# Снимки и архив поставок хранят копию шапки сданного документа: номер они занимают (чужой артефакт не
+# получит его), но «вторым файлом с тем же номером» не считаются.
+SNAPSHOT_DIRS = ("Deliverables/released/", "Deliverables/_archive/")
 
 
 class IdBusy(RuntimeError):
     """Замок выдачи занят дольше `LOCK_WAIT_S`: чужая выдача не закончилась."""
 
 
+def _ns(name: str) -> str:
+    """Каноничное имя пространства: без пробелов, в верхнем регистре."""
+    return (name or "").strip().upper()
+
+
 def space_of(name: str) -> dict:
     """Описание пространства по имени (`dr`, `DR`); неизвестное — ValueError со списком."""
-    key = (name or "").strip().upper()
+    key = _ns(name)
     if key not in SPACES:
         raise ValueError(f"пространства «{name}» нет; есть: {', '.join(SPACES)}")
     return SPACES[key]
@@ -126,15 +134,29 @@ def _session_ids(root: str, key: str) -> list:
     return out
 
 
-def occupied(root: str, ns: str) -> dict:
+def _head_value(head: str, key: str) -> str:
+    """Значение поля шапки по первым знакам файла. Шапку, не закрытую в окне чтения (сотни ссылок в
+    `based_on`), это не мешает: закрывающая черта не нужна; BOM в начале терпится."""
+    head = head.lstrip("\ufeff")
+    if not head.startswith("---"):
+        return ""
+    end = head.find("\n---", 3)
+    m = re.search(rf"(?m)^{re.escape(key)}:[ \t]*[\"']?([^\s\"']+)", head[3:end] if end != -1 else head[3:])
+    return m.group(1) if m else ""
+
+
+def occupied(root: str, ns: str, sessions: bool = True) -> dict:
     """{номер: [опоры]} — где пространство уже занято. Опора — путь файла без расширения (карточки)
-    или путь файла с полем (артефакты): по числу разных опор у номера находят повтор."""
+    или путь файла с полем (артефакты): по числу разных опор у номера находят повтор. `sessions` —
+    считать ли номера сессий производства (нужно выдаче, поиску повторов не нужно)."""
     spec = space_of(ns)
-    pat = re.compile(rf"^{re.escape(spec['prefix'])}-(\d+)(?:\D|$)", re.I)
+    # Номер — до девяти цифр и не начало даты или дробного номера (`DR-2026-10-19`, `Q-1.1`): такие имена
+    # не выдача этого реестра и не должны ни сдвигать нумерацию, ни давать ложный повтор.
+    pat = re.compile(rf"^{re.escape(spec['prefix'])}-(\d{{1,9}})(?!\d)(?!\.\d)(?!-\d\d-\d\d)", re.I)
     found: dict = {}
     if "header" in spec:
         key = spec["header"]
-        id_re = re.compile(rf"^{re.escape(spec['prefix'])}-(\d+)$", re.I)
+        id_re = re.compile(rf"^{re.escape(spec['prefix'])}-(\d{{1,9}})$", re.I)
         folders = list(spec["dirs"]) + [d for d in _kind_dirs(root) if d not in spec["dirs"]]
         seen = set()
         for rel in folders:
@@ -148,12 +170,13 @@ def occupied(root: str, ns: str) -> dict:
                         head = f.read(HEAD_CHARS)
                 except OSError:
                     continue
-                value = str(frontmatter(head).get(key) or "").strip().strip('"\'')
-                m = id_re.match(value)
+                m = id_re.match(_head_value(head, key))
                 if m:
-                    found.setdefault(int(m.group(1)), []).append(
-                        os.path.relpath(path, root).replace("\\", "/"))
-        for value, rel in _session_ids(root, key):
+                    shown = os.path.relpath(path, root).replace("\\", "/")
+                    found.setdefault(int(m.group(1)), [])
+                    if not shown.startswith(SNAPSHOT_DIRS):
+                        found[int(m.group(1))].append(shown)
+        for value, rel in (_session_ids(root, key) if sessions else []):
             m = id_re.match(value.strip())
             if m:
                 found.setdefault(int(m.group(1)), [])        # занято, но файла ещё нет — не повтор
@@ -168,7 +191,7 @@ def occupied(root: str, ns: str) -> dict:
 
 
 def _ledger_path(root: str, ns: str) -> str:
-    return os.path.join(root, STATE, f"{ns.upper()}.json")
+    return os.path.join(root, STATE, f"{_ns(ns)}.json")
 
 
 def _ledger_last(root: str, ns: str) -> int:
@@ -184,6 +207,12 @@ def _ledger_write(root: str, ns: str, number: int) -> None:
     tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"last": number, "at": utc_stamp()}, f)
+    for attempt in range(6):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:          # Windows: отметку в эту минуту читает чужой `--peek`
+            time.sleep(0.02)
     os.replace(tmp, path)
 
 
@@ -200,7 +229,7 @@ def allocate(ns: str, root: str = ".") -> str:
     """Выдать следующий номер пространства: он записывается в отметку до отпускания замка, поэтому
     второй вызов (другой процесс, другой поток) получит следующий."""
     space_of(ns)
-    ns = ns.strip().upper()
+    ns = _ns(ns)
     lock = os.path.join(root, STATE, f"{ns}.lock")
     deadline = time.monotonic() + LOCK_WAIT_S
     while True:
@@ -224,7 +253,7 @@ def duplicates(root: str = ".", spaces=None) -> dict:
     out: dict = {}
     for ns in (spaces or SPACES):
         by_name = "header" not in SPACES[ns]
-        for number, where in sorted(occupied(root, ns).items()):
+        for number, where in sorted(occupied(root, ns, sessions=False).items()):
             unique = sorted(dict.fromkeys(where))
             # Карточка: тот же файл в папке раздела и в архиве — одна карточка (то же имя), а не повтор.
             # Артефакт: два пути — два файла, даже если имена совпадают.
@@ -278,7 +307,7 @@ def main() -> int:
     try:
         space_of(a.space)
         ident = peek(a.space, a.root) if a.peek else allocate(a.space, a.root)
-    except (ValueError, IdBusy) as e:
+    except (ValueError, OSError, IdBusy) as e:
         print(f"id_registry: {e}", file=sys.stderr)
         return 2
     if a.json:
