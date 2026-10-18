@@ -130,7 +130,7 @@ def test_router_of_a_route_step_waits_for_the_network_and_other_policies_refuse(
     AG.NET_POLL = 0.05
     try:
         cfg = dict(cfg, persist=True)
-        net.later(0.5, v1=True)
+        net.later(1.5, v1=True)
         r = AG.call_role(cfg, "worker", MSGS, transport=transport, sleep=lambda s: None)
         assert r["ok"] and r["backend"] == 1 and seen == [(1, True)], f"вызов не дождался связи: {seen} {r}"
         assert any("жду восстановления связи" in line for line in r["log"]), r["log"]
@@ -208,7 +208,7 @@ def test_agent_run_waits_for_the_link_by_the_check_and_falls_back_to_the_old_pau
     AR.LINK_POLL = 0.05
     try:
         t0 = time.time()
-        net.later(0.4, v1=True)
+        net.later(1.5, v1=True)
         assert AR.wait_for_link(time.time() + 60) is True and net.up["v1"] and time.time() - t0 < 30, "ожидание не дождалось"
         assert AR.wait_for_link(time.time() + 60) is False, "все модели живы, а ждали по проверке"
         # живой хотя бы один провайдер — беда не из связи: прежняя пауза
