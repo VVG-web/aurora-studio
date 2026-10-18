@@ -76,7 +76,8 @@ from aurora_common import (  # noqa: E402
     HEAD_KEY_RE, KB_ROOT, MEETING_MARK, OWN_LIFECYCLE, STATUSES, body, card_sources, card_stem,
     frontmatter, git_dirty, head_blank, head_broken, head_cut_comment, head_lines, head_list_text, head_text,
     head_value, is_meeting, is_service, leaf_name, link_escapes, list_field, not_a_card_link, read_card_text,
-    split_frontmatter, split_inline_items, replace_file, sources_block, utc_today, walk_md, write_text_atomic,
+    split_frontmatter, split_inline_items, replace_file, sources_block, undated, utc_today, walk_md,
+    write_text_atomic,
 )
 from aurora_common import kit_root as _kit_root  # noqa: E402
 
@@ -1218,8 +1219,11 @@ def _check_own(own: str, line0: int, fm: dict, ct: CardType, eff_kind: str, add,
     if marks:
         add("V-13", line0 + marks[0], "в тексте осталась пометка шаблона «[ПРИМЕР]» или строка «TODO:»",
             "уберите пометку", count=len(marks))
-    # V-12: ведущий абзац-определение.
-    lead = _lead_line(lines)
+    # V-12: ведущий абзац-определение. Служебные списки движка («Упоминается в», «Названо в карточках»…) определением
+    # не бывают: ищем его выше первого из них, а карточка, где выше них пусто, определения не имеет.
+    service_at = next((i for i, line in enumerate(lines)
+                       if line.startswith("## ") and line[3:].strip() in EXTRA_SERVICE), len(lines))
+    lead = _lead_line(lines[:service_at])
     if lead < 0:
         if not waiting:
             add("V-12", line0, "собственная часть пуста: у карточки нет определения",
@@ -2290,6 +2294,7 @@ LIST_FIELDS = frozenset(("aliases", "tags", "related", "supersedes", "superseded
                          "applies_to", "decisions", "blocks"))
 QUOTED_FIELDS = frozenset(("title", "built_by", "distilled_by", "summary", "trust_basis"))
 FIELD_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*", re.ASCII)       # `fullmatch`: `$` пропустил бы «x\n»
+TAG_PLAIN_RE = re.compile(r"[^\s,\[\]\"'#:|>*&!%@`{}][^,\[\]\"'#:|{}]*")   # метка, которую можно писать без кавычек
 
 
 class UnknownCardType(ValueError):
@@ -2361,6 +2366,8 @@ def _field_lines(key: str, value) -> str:
         value = [value]                      # одно значение поля-списка — список из одного пункта
     if isinstance(value, (list, tuple)):
         items = [x for x in (head_value(i).strip() for i in value) if x]
+        if key == "tags" and items and all(TAG_PLAIN_RE.fullmatch(x) for x in items):
+            return f"tags: [{', '.join(items)}]\n"          # метки пишутся без кавычек, как всегда: `[moc]`, `[заготовка]`
         return f"{key}: {head_list_text(items)}\n" if items else ""
     text = head_value(value).strip()
     if key == "title":
@@ -2434,8 +2441,21 @@ def violation_key(v: Violation) -> tuple:
     кода (V-12: «пусто», «заголовок вместо определения», «слишком длинно») — разные ошибки.
     """
     msg = v.message
+    # Нарушение о поле шапки (нет поля, чужое значение типа, шаблона, вида, статуса, даты) называется полем: замена
+    # одного плохого значения другим (легаси-статус `canonical` → `verified`, нет статуса → `imported`) — не ухудшение.
+    field = {"V-03": "type", "V-04": "template", "V-05": "kind", "V-06": "status"}.get(v.code)
     if v.code == "V-08":
-        return v.code, msg.split(":", 1)[0]
+        field = msg.split(":", 1)[0]
+    elif v.code == "V-02":
+        m2 = re.search(r"обязательного поля (\w+)", msg)
+        if m2:
+            field = m2.group(1)
+        elif "sources" in msg or "source_synced" in msg:
+            field = "sources" if "sources" in msg.split("у карточки")[0] else "source_synced"
+        elif "template" in msg:
+            field = "template"
+    if field:
+        return "field", field
     m = re.search("«([^»]{0,80})»", msg)
     if m and v.code not in ("V-12", "V-15"):
         return v.code, m.group(1)
@@ -2581,6 +2601,21 @@ def _section_violation(text: str, rel: str, reg: Registry) -> "Violation | None"
     return None
 
 
+def _as_typed(was: str, now: str, reg: Registry) -> str:
+    """Прежний текст, прочитанный по типу нового. Пока у карточки нет типа (или он не из реестра), проверка идёт
+    только до этого поля: остальные недостатки шапки за ним не видны. Правка, которая тип проставила (`kb:schema`,
+    `kb:repair --sections`), не должна «получить» их заново: они были и раньше, их просто закрывала первая ошибка."""
+    old_type = (frontmatter(was).get("type") or "").strip()
+    new_type = (frontmatter(now).get("type") or "").strip()
+    if old_type in reg.types or old_type in reg.unmanaged.values() or new_type not in reg.types:
+        return was
+    try:
+        from aurora_common import with_fields
+        return with_fields(was, {"type": new_type})
+    except (ValueError, AssertionError):
+        return was
+
+
 def _admit(path: str, new_text: str, op: str, reg: "Registry | None") -> tuple:
     """Суд над записью без самой записи: → (текст с `\\n`, совпадает ли с диском, ошибки шаблона).
 
@@ -2621,15 +2656,18 @@ def _admit(path: str, new_text: str, op: str, reg: "Registry | None") -> tuple:
                   "(aurora.py update вернёт шаблоны)", file=sys.stderr)
     else:
         strict = op in WRITE_OPS_STRICT or not (disk or "").strip()
-        settled = bool(disk) and (bool((frontmatter(disk).get("distilled") or "").strip())
-                                  or bool(_QUOTES_HEAD_RE.search(disk)))
+        # Тезис у карточки уже был, если она несёт его отметку (`distilled`) или память о ней (`distilled_was`, её
+        # оставляет обновление источника). Раздел «Источник» этого не доказывает: разбор заводит его и у карточек,
+        # которым тезис ещё не писали (заготовка, наполненная текстом источника).
+        marks = frontmatter(disk) if disk else {}
+        settled = bool((marks.get("distilled") or "").strip() or (marks.get("distilled_was") or "").strip())
         errors = _write_errors(text, rel, reg, template_required=strict, raw_ok=not settled)
         if strict:
             wrong = _section_violation(text, rel, reg)
             if wrong is not None:
                 errors.append(wrong)
         else:
-            errors = new_violations(errors, _write_errors(disk, rel, reg, template_required=False))
+            errors = new_violations(errors, _write_errors(_as_typed(disk, text, reg), rel, reg, template_required=False))
             if (frontmatter(disk).get("template") or "").strip() and not (frontmatter(text).get("template") or "").strip():
                 errors.append(Violation("V-02", "error", 1, "штамп template: снят с карточки",
                                         "поле template: означает «карточка проходит шаблон» и не снимается"))
@@ -2688,6 +2726,19 @@ def try_write_card(path: str, text: str, *, op: str, old_text: "str | None" = No
         return write_card_text(path, text, op=op, old_text=old_text, reg=reg), ""
     except TemplateViolation as e:
         return False, str(e)
+
+
+def put_map(path: str, text: str, *, reg: "Registry | None" = None) -> tuple:
+    """Записать карту содержания (`op=map`, проверка строгая). → `(записан ли файл, причина отказа)`.
+
+    Карту порождает движок и пересобирает целиком, поэтому та же карта, что на диске, с точностью до даты сборки
+    (`aurora_common.undated`), не переписывается: день перегенерации — не изменение, в git лишних правок нет.
+    Карта, не прошедшая шаблон, не пишется: это дефект сборщика, остальные карты от него не страдают.
+    """
+    old = _read_old(path) if os.path.isfile(path) else None
+    if old is not None and undated(old) == undated(str(text).replace("\r\n", "\n")):
+        return False, ""
+    return try_write_card(path, text, op="map", reg=reg)
 
 
 def put_text(path: str, text: str, *, op: str = "repair", old_text: "str | None" = None,
