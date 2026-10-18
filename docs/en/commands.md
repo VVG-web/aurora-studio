@@ -163,8 +163,8 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 
 | Command | What it does | Executor | Since |
 |---|---|---|---|
-| `net:status` | Availability of connections: profiles (VPN), probes, the internet and the model providers, the kit's mode of work and the reasons; read-only, changes nothing — profiles and probes are set up in the panel, the «Connection check» section. | script | 1.176.0 |
-| `net:probe` | Check the connection now: all probes (or `--only` — one profile or probe); the state is updated with anti-flapping; exit code 1 when the profiles in need are down. With the feature off it does nothing. | script | 1.176.0 |
+| `net:status` | Availability of connections: profiles (VPN), probes, the internet and the model providers, the kit's mode of work and the reasons; read-only, changes nothing — profiles and probes are set up in the panel, the «Connection check» section. | script | 1.178.0 |
+| `net:probe` | Check the connection now: all probes (or `--only` — one profile or probe); the state is updated with anti-flapping; exit code 1 when the profiles in need are down. With the feature off it does nothing. | script | 1.178.0 |
 
 ## `dev:` — QA of the engine
 
