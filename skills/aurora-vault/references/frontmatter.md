@@ -190,7 +190,10 @@ DR rules (append-only):
   пропускает (тип `decision`), `kb:lint` принимает `proposed | accepted | rejected |
   superseded`. Доверие DR не считается.
 - Accepted/rejected DRs are **immutable**. The only allowed edits: set
-  `status: superseded` + `superseded_by` when a newer DR replaces it.
+  `status: superseded` + `superseded_by` when a newer DR replaces it. `kb:decide-accept` puts the
+  body fingerprint into `accepted_fp` (sha256 of the body without the service tail, the first heading and
+  the targets of `[[…]]` links, so renaming a linked card does not change it); `kb:lint` reports a changed
+  body of such a DR as an error. A DR accepted by hand before the command has no fingerprint and is not judged.
 - Never delete a DR. Rejected options stay inside the DR body forever.
 - Naming: `Decisions/DR-NNNN-<кратко-суть>.md`, NNNN — the next number from `kb:next-id DR` (under a lock; the archive is counted too).
 

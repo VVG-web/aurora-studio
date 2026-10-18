@@ -59,6 +59,7 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 | `kb:scrub` (`scrub`) | Personal data: find and cover with markers; the mode is `privacy.scrub`. | script | 1.9.6 |
 | `kb:schema` | The card schema version (`schema_version`) and migration of the base between versions along a declared chain. | script | 1.12.0 |
 | `kb:correct` (`correct`) | Corrective artifacts: a human writes in their own words what is wrong in a card and how it really is. Lives in `Raw/corrections/` and is applied at EVERY build; `--check`, `--retire`. | script | 1.99.0 |
+| `kb:decide-accept` (`decide-accept`) | Accept or reject a proposed decision (DR): `--by @name` — who accepted (a person; a model's name is refused), `--reject --reason "…"` — reject with a reason. Accepting checks the form (at least two options, a refusal reason for the rejected ones, the affected cards exist in the base, no `{{…}}` and no unresolved "Under question") and puts a body fingerprint into the head: an accepted decision is immutable, `kb:lint` reports a body changed after acceptance as an error; `--check` — the form of every decision. | script | 1.180.0 |
 | `kb:supersede` (`supersede`) | Replace knowledge with history: deprecated → `_archive`, links rewritten. A requirement is not replaced without `--changed` and `--migration`. | script | 1.8.0 |
 | `kb:links` (`links`, `graph`) | The link graph: Requirement Yogi keys and story numbers; `--cards` carries links into cards' `related:`; `--cards-json` exports the base's own graph for the panel. | script | 1.19.0 |
 | `kb:map` (`map`) | What the graph says: communities that have grown to their own map, bridges between topics and islands unreachable by links. | script | 1.66.0 |
@@ -116,6 +117,7 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 | `ops:search-quality` (`search-quality`, `поиск`) | Search quality as a number: self-search — a card's thesis as a question, the right answer known by construction. R@1/R@5/MRR. | script | 1.100.28 |
 | `ops:gaps` (`gaps`) | Meaning gaps: a concept named but with no card, a link named but not placed, lonely cards, a thesis behind its source, a vanished source. | script | 1.100.35 |
 | `ops:todo` (`todo`) | What is left: what routes and commands will finish, what repair did not take, what depends on project settings and where a human decides. | script | 1.84.0 |
+| `ops:decisions` (`decisions`) | The decision journal: the state of every DR, owner, date, how many cards it affects, proposals older than 14 days that are not accepted, accepted ones with a changed body, form remarks; `--json` — machine form; two runs on one day print the same. | script | 1.180.0 |
 | `ops:impact` (`impact`) | What depends on a card; `--explain` — what a document is built on. | script | 1.8.0 |
 | `ops:trace` (`trace`) | Tracing: spec item → REQ → SPEC → Jira → AC → PMI → acceptance. | script | 1.0.0 |
 | `ops:trace-table` | The "artifact ↔ issue" table: direct links, links by code and tracing by names two hops deep; trust is computed on it. | script | 1.89.0 |

@@ -402,11 +402,16 @@ Object: Confluence page (via MCP or `Sources/Confluence/...`) or local file.
 1. Interview the analyst (or parse the provided text): контекст, рассмотренные варианты
    (минимум 2, включая отклонённые — с причинами), решение, следствия, затронутые карточки.
 2. Create `AuroraKnowledgeDB/Decisions/DR-NNNN-<суть>.md` from
-   `Templates/decision_record_template.md`, `status: proposed` (or `accepted` if the
-   decision is already made by the team).
-3. If it replaces an older DR: set old DR `status: superseded`, `superseded_by: [[DR-NNNN]]`
-   — the ONLY edit allowed to an accepted DR.
-4. Update affected knowledge cards: link the DR under `## Обоснование`; if the decision
+   `Templates/decision_record_template.md`, `status: proposed`; the number comes from
+   `kb:next-id DR`. Принятым решение становится только командой человека (шаг 3).
+3. Принять: `kb:decide-accept DR-NNNN --by @имя` (отклонить — `--reject --reason «…»`). Команда
+   проверяет форму (минимум два варианта, причина отказа у отклонённых, затронутые карточки есть
+   в базе, нет `{{…}}` и раздела «Под вопросом»), ставит `accepted`, дату и отпечаток тела
+   (`accepted_fp`) и дописывает строку в «История». С этого момента тело неизменяемо: `kb:lint`
+   называет ошибкой тело, которое изменили. Журнал всех решений — `ops:decisions`.
+4. If it replaces an older DR: `kb:supersede` (старое получает `status: superseded`,
+   `superseded_by: [[DR-NNNN]]`) — the ONLY edit allowed to an accepted DR.
+5. Update affected knowledge cards: link the DR under `## Обоснование`; if the decision
    changes current truth — run `supersede` on those cards.
 
 ## supersede <old-card> — замена знания без потери истории
