@@ -13,8 +13,18 @@ export function mount(ctx){
   ctx.$("#cmdSearch").oninput = () => refresh(ctx);
 }
 
+// Зависимости команд от связи (`command_deps.json`, профили — из проекта): что нужно команде, чтобы она заработала.
+let NET = {};
+
+async function loadNet(ctx){
+  const q = ctx.project ? "?project=" + encodeURIComponent(ctx.project.path) : "";
+  const d = await ctx.api("/api/net/commands" + q, {quiet: true});
+  NET = (d && d.commands) || {};
+}
+
 export async function refresh(ctx){
   const {t, el} = ctx;
+  await loadNet(ctx);
   const q = (ctx.$("#cmdSearch").value || "").toLowerCase().trim();
   const all = ctx.state.commands.filter(r => !ctx.isEngineCmd(r));
   const rows = all.filter(r => !q ||
@@ -33,6 +43,24 @@ export async function refresh(ctx){
     list.forEach(r => card.append(row(ctx, r)));
     box.append(card);
   }
+}
+
+// Строка зависимостей: тип-ярлык (1 — источники или сеть, 2 — модель, 3 — ни то ни другое; только подпись), VPN-профили,
+// нужна ли модель, работает ли без связи, какие источники использует. Решение о запуске принимают сами метаданные.
+function netChips(ctx, n){
+  const {t, el} = ctx;
+  if (!n) return null;
+  const chips = [el("span", {class:"chip", title: t("commands.net.type_hint")}, t("commands.net.type", {types: n.types.join("+")}))];
+  if (n.profiles.length) chips.push(el("span", {class:"chip warn", title: t("commands.net.vpn_hint")}, t("commands.net.vpn", {names: n.profiles.join(", ")})));
+  if (n.llm) chips.push(el("span", {class:"chip", title: n.llm_profiles.length ? t("commands.net.llm_vpn", {names: n.llm_profiles.join(", ")}) : t("commands.net.llm_hint")}, t("commands.net.llm")));
+  if (n.internet && !n.profiles.length) chips.push(el("span", {class:"chip warn"}, t("commands.net.internet")));
+  chips.push(n.offline ? el("span", {class:"chip ok", title: t("commands.net.offline_hint")}, t("commands.net.offline"))
+                       : el("span", {class:"chip", title: t("commands.net.needs_net_hint")}, t("commands.net.needs_net")));
+  if (n.variant) chips.push(el("span", {class:"chip", title: t("commands.net.variant_hint")}, t("commands.net.variant." + n.variant)));
+  if (n.modules.length) chips.push(el("span", {class:"chip mono", title: t("commands.net.sources_hint")},
+    t("commands.net.sources", {list: n.sources.length ? n.sources.join(", ") : n.modules.join(", ")})
+    + (n.sources.length ? "" : " · " + t("commands.net.no_source"))));
+  return el("div", {class:"row", style:"gap:6px;margin-top:6px;flex-wrap:wrap"}, ...chips);
 }
 
 function row(ctx, r){
@@ -56,6 +84,7 @@ function row(ctx, r){
           title: t("commands.last_hint", {label: last.label, what: mark.what,
                                           rc: last.rc, kit: last.kit || "?"})},
           mark.what + " · " + ctx.fmt.when(last.at)) : null),
+      netChips(ctx, NET[r.cmd]),
       el("div", {class:"muted", style:"font-size:13px;margin-top:5px", html: ctx.fmt.tick(r.what)}),
       r.flags.length ? el("div", {class:"mono",
         style:"font-size:11.5px;color:var(--text-muted);margin-top:6px"}, r.flags.join(" ")) : null),

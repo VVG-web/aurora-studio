@@ -132,5 +132,19 @@
   "models.calls.http": "bypassing Pydantic AI",
   "models.calls.routes": "Routes: {list}",
   "models.calls.tools": "Tools:",
-  "models.calls.why_http": "Why direct: {why}"
+  "models.calls.why_http": "Why direct: {why}",
+  "models.p_vpn": "Works through the profile",
+  "models.p_vpn_none": "no VPN",
+  "models.p_vpn_hint": "A profile from the «Connection check» section: while it is down the kit does not call this provider and does not cycle through the ring blindly. «no VPN» — the provider does not depend on profiles.",
+  "models.p_vpn_missing": "{name} (no such profile in «Connection check»)",
+  "models.p_health": "Provider endpoint check",
+  "models.p_health.off": "do not check",
+  "models.p_health.reach": "does it answer",
+  "models.p_health.auth": "answers with the key",
+  "models.p_health_hint.off": "The availability of the profile is enough. Turn it on if the VPN is up but the provider is sometimes down.",
+  "models.p_health_hint.reach": "The kit requests the endpoint and counts the provider alive on any answer except server errors.",
+  "models.p_health_hint.auth": "The kit requests the endpoint with the provider's key and expects a successful answer. The key goes only to the provider's own address and only over https (or on this computer).",
+  "models.p_health_path": "Check endpoint",
+  "models.p_health_path_hint": "A path on the provider's server. Example: /models",
+  "models.conflict": "The model setup changed on disk since the page was opened. Your edits are still on the page: press «Discard changes» to load the fresh setup, then make them again."
 }

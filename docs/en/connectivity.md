@@ -83,6 +83,46 @@ blocked. Enter any address you trust (for example, `example.com`).
 - Messages: with no internet — «Mode of work — offline, only features that need no connection are available»; with an
   unavailable profile — «VPN-1 is down; features that do not need VPN-1 and web features are available».
 
+## Sources: the access mode
+
+Panel → **Project settings → Source access mode**. For every connected source you say how it is reached:
+
+| Mode | Meaning |
+|---|---|
+| no VPN, needs the internet | web pages and the like: no profile is needed, but without the internet the source is unavailable |
+| needs a VPN profile | a source behind a VPN; you choose a profile from the «Connection check» section |
+| local or cached | read from this computer, no network needed |
+| mixed: VPN and a local cache | fresh data comes through the profile, what was read stays available from the cache |
+
+Two flags are independent of the mode: **«Needs the internet»** (needed regardless of the VPN: «no VPN» does not mean «no
+internet») and **«Available from the cache without a connection»**. The project keeps only the **name** of the profile (the
+`source_access:` block in `aurora.config.yaml`; the save leaves the rest of the config alone); the project holds no check
+addresses.
+
+Defaults: the web module is «no VPN, needs the internet» (its manifest says so, `access.mode`); other sources and providers
+with no binding to a profile **count as available, as before**: until the owner sets anything up, the behaviour does not change.
+
+## Model providers
+
+Panel → **Models** → for a provider: **«Works through the profile»** (a profile from «Connection check» or «no VPN») and
+**«Provider endpoint check»**: «do not check» (default), «does it answer» or «answers with the key». The availability of a VPN is
+not the availability of a provider: the VPN is up and the provider is down — the provider still counts as unavailable. With the
+«with the key» check the key goes only to the provider's own address and only over a protected channel (https, or this
+computer). Old model setup files are read unchanged, a provider has no binding. A provider on this very computer (`127.0.0.1`)
+depends neither on a VPN nor on the internet; a cloud provider without a VPN depends on the internet.
+
+## Command dependencies
+
+Every command has dependency metadata (`command_deps.json`): which sources are needed, whether the kit's model is needed,
+whether the internet is needed, whether it can work without a connection. The defaults come from the command registry: `sync:*`
+depends on the source of its module, a command with a model depends on the LLM, a command with no sources and no model works
+without a connection too; single commands are edited in the file. The profiles without which a command is unavailable in a
+project are **computed** from the access modes of the sources and the providers' bindings.
+
+The **«Commands»** tab shows for each command: a type label (1 — depends on sources or the network, 2 — on the model, 3 — on
+neither; the labels are for display only), the VPN profiles, whether the model is needed, whether it works offline and which
+sources it uses.
+
 ## Commands
 
 Read and check only — the settings are written by the panel:

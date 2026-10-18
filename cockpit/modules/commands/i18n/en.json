@@ -20,5 +20,22 @@
   "commands.ns.agent": "agent: the built-in agent",
   "commands.ns.git": "git: project Git",
   "commands.ns.bot": "bot: project bots",
-  "commands.ns.net": "net: connection check"
+  "commands.ns.net": "net: connection check",
+  "commands.net.type": "type {types}",
+  "commands.net.type_hint": "A display label: 1 — depends on sources or the network, 2 — on the model, 3 — on neither. The label does not decide whether the command runs.",
+  "commands.net.vpn": "VPN: {names}",
+  "commands.net.vpn_hint": "The connection profiles without which this command's sources in the project are unavailable.",
+  "commands.net.llm": "LLM",
+  "commands.net.llm_hint": "The command needs the kit's model: any available provider of the role's chain will do.",
+  "commands.net.llm_vpn": "The command needs the kit's model; the providers live behind profiles: {names}",
+  "commands.net.internet": "needs the internet",
+  "commands.net.offline": "works offline",
+  "commands.net.offline_hint": "The command needs no sources, no model and no internet: it works in the offline mode too.",
+  "commands.net.needs_net": "needs a connection",
+  "commands.net.needs_net_hint": "The command needs sources, the model or the internet: without a connection the panel offers to run only what is available or to queue.",
+  "commands.net.variant_hint": "A variant of the command that works without a connection.",
+  "commands.net.variant.parse_downloaded": "offline: parse what is already downloaded",
+  "commands.net.sources": "sources: {list}",
+  "commands.net.sources_hint": "Which of the project's sources the command uses.",
+  "commands.net.no_source": "not connected"
 }

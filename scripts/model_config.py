@@ -37,6 +37,11 @@ CAPABILITIES = ("llm", "ocr", "embeddings")
 MODELS_FILE = ("local", "models.json")
 MASK = "••••••"
 PROVIDER_TYPES = ("openai", "llama.cpp", "vllm", "sglang", "ollama", "tei")
+# Связь провайдера (1.176): к какому профилю соединений он привязан (`vpn` — только ИМЯ профиля, адресов тут нет:
+# они живут в `local/connectivity.json`) и проверка его ручки. Нет привязки — «без VPN», как было всегда.
+HEALTH_CHECKS = ("off", "reach", "auth")
+HEALTH_DEFAULT = {"check": "off", "path": "/models"}
+PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
 
 # Роли, которые зовёт сам движок. Их нельзя удалить (иначе задача останется без модели), но
 # можно переименовать на свой лад. Свои роли человек добавляет рядом — по мере нужды.
@@ -111,6 +116,15 @@ def normalize(data) -> tuple:
             pid = slug(pid, ids)
         ids.add(pid)
         template = p.get("template") if isinstance(p.get("template"), dict) else {}
+        vpn = str(p.get("vpn") or "").strip()
+        if vpn and not PROFILE_NAME_RE.match(vpn):
+            notes.append(f"провайдер {pid}: имя профиля связи «{vpn[:40]}» не годится — привязка снята")
+            vpn = ""
+        hin = p.get("health") if isinstance(p.get("health"), dict) else {}
+        hpath = str(hin.get("path") or HEALTH_DEFAULT["path"]).strip()
+        if not hpath.startswith("/") or len(hpath) > 200 or re.search(r"\s", hpath):
+            notes.append(f"провайдер {pid}: путь проверки «{hpath[:40]}» не годится — взят {HEALTH_DEFAULT['path']}")
+            hpath = HEALTH_DEFAULT["path"]
         out["providers"].append({
             "id": pid,
             "name": " ".join(str(p.get("name") or pid).split())[:80],
@@ -124,6 +138,8 @@ def normalize(data) -> tuple:
             "parallel": p.get("parallel", True) is not False,
             # Свои поля chat-шаблона (как extraBody у opencode): {"reasoning_effort": "xhigh"}.
             "template": {k: v for k, v in template.items() if k != "enable_thinking"},
+            "vpn": vpn,
+            "health": {"check": hin.get("check") if hin.get("check") in HEALTH_CHECKS else "off", "path": hpath},
         })
     caps_in = data.get("capabilities") if isinstance(data.get("capabilities"), dict) else {}
     for cap in CAPABILITIES:
@@ -212,8 +228,39 @@ def load(kit, migrate_env=None) -> dict:
     return data
 
 
-def save(kit, data: dict) -> dict:
-    """Записать неделимо и закрыть правами 600: внутри ключи."""
+def file_stamp(kit) -> str:
+    """Слепок файла настройки (`expect` панели): нет файла — пусто."""
+    import hashlib
+    from aurora_common import personal_kit_file
+    path = models_path(kit)
+    if personal_kit_file(path):
+        return ""                   # прогон тестов: личная настройка машины не читается даже для слепка
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:32]
+    except OSError:
+        return ""
+
+
+def _carry_unknown(old: dict, clean: dict) -> None:
+    """Перенести из прежнего файла то, чего форма не знает и не прислала: разделы верхнего уровня и лишние поля
+    провайдеров (по `id`). Форма «Моделей» не стирает то, чем не управляет."""
+    for key, value in old.items():
+        if key not in clean and key not in ("providers", "capabilities", "settings", "version"):
+            clean[key] = value
+    known = {"id", "name", "type", "url", "key", "width", "parallel", "template", "vpn", "health"}
+    was = {str(p.get("id")): p for p in old.get("providers") or [] if isinstance(p, dict)}
+    for p in clean["providers"]:
+        for key, value in (was.get(p["id"]) or {}).items():
+            if key not in known and key not in p:
+                p[key] = value
+
+
+def save(kit, data: dict, expect=None) -> dict:
+    """Записать неделимо и закрыть правами 600: внутри ключи.
+
+    `expect` — слепок файла, с которым страница его открыла (`file_stamp`): файл за это время менялся —
+    отказ `conflict`, а не молчаливая перезапись чужой правки. Не задан — запись как прежде.
+    """
     clean, notes = normalize(data)
     path = models_path(kit)
     from aurora_common import personal_kit_file
@@ -226,6 +273,16 @@ def save(kit, data: dict) -> dict:
     if (root / "aurora.config.yaml").is_file() and not (root / "scripts" / "model_config.py").is_file():
         return {"ok": False, "error": f"{root} — папка проекта, а не кита: настройка моделей "
                                       "пишется только в кит (нет .aurora/kit_path.txt?)"}
+    if expect is not None and expect != file_stamp(kit):
+        return {"ok": False, "conflict": True, "code": "conflict",
+                "error": "настройка моделей изменилась на диске с момента открытия страницы"}
+    if path.is_file():
+        try:
+            old = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            old = {}
+        if isinstance(old, dict):
+            _carry_unknown(old, clean)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -233,8 +290,9 @@ def save(kit, data: dict) -> dict:
         os.chmod(tmp, 0o600)
     except OSError:
         pass
-    os.replace(tmp, path)
-    return {"ok": True, "notes": notes, "path": str(path)}
+    from aurora_common import replace_file
+    replace_file(tmp, path)
+    return {"ok": True, "notes": notes, "path": str(path), "stamp": file_stamp(kit)}
 
 
 def masked(data: dict) -> dict:
@@ -356,7 +414,7 @@ def to_config(data: dict) -> dict:
                 "url": b.get("url") or p["url"], "key": p["key"], "model": b["model"],
                 "models": {}, "context": b.get("context", 0), "width": p["width"],
                 "parallel": p["parallel"], "fallback": True, "chat": cap == "llm",
-                "template": p.get("template") or {}, "template_error": "",
+                "template": p.get("template") or {}, "template_error": "", "vpn": p.get("vpn", ""),
                 "embed_model": b["model"] if cap == "embeddings" else "",
                 "embed_url": b.get("url") or p["url"],
                 "ocr_model": b["model"] if cap == "ocr" else "",
@@ -390,7 +448,7 @@ def to_config(data: dict) -> dict:
                          "ocr_model": ocr["model"] if ocr else "",
                          "ocr_url": (ocr.get("url") or p["url"]) if ocr else p["url"],
                          "template": p.get("template") or {}, "template_error": "",
-                         "chat": llm_in})
+                         "vpn": p.get("vpn", ""), "chat": llm_in})
     first_e = (chain(data, "embeddings", "index") or [None])[0]
     first_o = (chain(data, "ocr", "document") or [None])[0]
     s = data["settings"]

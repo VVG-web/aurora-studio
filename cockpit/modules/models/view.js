@@ -121,7 +121,8 @@ async function save(ctx){
   })));
   if (holes.length && !confirm(t("models.holes_ask", {list: holes.join("\n")}))) return;
   const r = await ctx.api("/api/models/save", {method: "POST", quiet: true,
-    body: JSON.stringify({models: M})});
+    body: JSON.stringify({models: M, expect: DATA.stamp})});
+  if (r && r.conflict) return ctx.toast(t("models.conflict"), "err");
   if (!r || !r.ok) return ctx.toast((r && r.error) || t("models.save_failed"), "err");
   ctx.toast(t("models.saved"), "ok");
   (r.notes || []).forEach(n => ctx.toast(n, "warn"));
@@ -158,8 +159,9 @@ function drawBody(ctx){
 const roleName = (ctx, r) => r.builtin && r.name === ENGINE_NAMES[r.id]
   ? ctx.t("models.role_default." + r.id) : r.name;
 
-const field = (ctx, label, input) => ctx.el("label", {style: "display:block;flex:1;min-width:160px"},
-  ctx.el("div", {class: "muted", style: "font-size:11.5px;margin-bottom:3px"}, label), input);
+const field = (ctx, label, input, hint) => ctx.el("label", {style: "display:block;flex:1;min-width:160px"},
+  ctx.el("div", {class: "muted", style: "font-size:11.5px;margin-bottom:3px"}, label), input,
+  hint ? ctx.el("div", {class: "muted", style: "font-size:11px;margin-top:3px"}, hint) : null);
 
 function providerForm(ctx, p, onDone){
   // Один и тот же вид у провайдера во вкладке и у провайдера, заведённого из строки бэкенда.
@@ -201,6 +203,7 @@ function providerForm(ctx, p, onDone){
       field(ctx, t("models.p_key"), key),
       hadKey ? el("button", {class: "btn sm", style: "align-self:flex-end",
         onclick: () => { p.key = ""; touch(ctx, true); }}, t("models.key_drop")) : null),
+    onDone ? null : netRow(ctx, p, touch),
     onDone ? null : el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;margin-top:8px;align-items:flex-end"},
       el("label", {style: "display:block"},
         el("div", {class: "muted", style: "font-size:11.5px", title: t("models.p_width_hint")},
@@ -214,6 +217,30 @@ function providerForm(ctx, p, onDone){
     onDone ? el("div", {class: "row", style: "gap:8px;margin-top:10px"},
       el("button", {class: "btn sm primary", onclick: () => onDone(true)}, t("models.p_add")),
       el("button", {class: "btn sm", onclick: () => onDone(false)}, t("models.cancel"))) : null);
+}
+
+// Связь провайдера: к какому профилю из «Проверки соединения» он привязан и проверять ли его ручку. Адресов
+// профилей здесь нет — только имена; настройка профилей живёт в своём разделе.
+function netRow(ctx, p, touchFn){
+  const {t, el} = ctx;
+  const names = DATA.net_profiles || [];
+  const prof = el("select", {class: "btn", style: "width:100%"},
+    el("option", {value: "", selected: !p.vpn ? "" : null}, t("models.p_vpn_none")),
+    ...names.map(n => el("option", {value: n, selected: p.vpn === n ? "" : null}, n)),
+    p.vpn && !names.includes(p.vpn) ? el("option", {value: p.vpn, selected: ""}, t("models.p_vpn_missing", {name: p.vpn})) : null);
+  prof.onchange = () => { p.vpn = prof.value; touchFn(ctx); };
+  const health = p.health || (p.health = {check: "off", path: "/models"});
+  const check = el("select", {class: "btn", style: "width:100%"},
+    ...(DATA.health_checks || ["off", "reach", "auth"]).map(v => el("option",
+      {value: v, selected: health.check === v ? "" : null}, t("models.p_health." + v))));
+  check.onchange = () => { health.check = check.value; touchFn(ctx); };
+  const path = el("input", {class: "btn mono", style: "width:100%;font-weight:400", placeholder: "/models"});
+  path.value = health.path || "/models";
+  path.oninput = () => { health.path = path.value; touchFn(ctx); };
+  return el("div", {class: "row", style: "gap:10px;flex-wrap:wrap;margin-top:8px;align-items:flex-start"},
+    field(ctx, t("models.p_vpn"), prof, t("models.p_vpn_hint")),
+    field(ctx, t("models.p_health"), check, t("models.p_health_hint." + health.check)),
+    health.check !== "off" ? field(ctx, t("models.p_health_path"), path, t("models.p_health_path_hint")) : null);
 }
 
 function providersTab(ctx){
@@ -248,7 +275,7 @@ function providersTab(ctx){
   });
   box.append(el("button", {class: "btn", onclick: () => {
     M.providers.push({id: newId("provider"), name: "", type: "openai", url: "", key: "",
-                      width: 0, parallel: true, template: {}});
+                      width: 0, parallel: true, template: {}, vpn: "", health: {check: "off", path: "/models"}});
     touch(ctx, true);
   }}, t("models.add_provider")));
   return box;
