@@ -63,10 +63,12 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import itertools
 import json
 import os
 import re
 import sys
+import threading
 from dataclasses import dataclass, field, replace
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -146,8 +148,10 @@ HEAD_MERGE = "Слияние"
 TAIL_ORDER = (HEAD_QUESTION, HEAD_QUOTES, HEAD_CORRECTIONS, HEAD_FOOTER, HEAD_MERGE)
 TAIL_RE = re.compile(r"^## (?:" + "|".join(re.escape(h) for h in TAIL_ORDER) + ")", re.M)
 # Разделы, которые движок вправе дописать ниже собственной части (в области дословного текста или
-# в конце файла): порядок и повторы не проверяются.
-EXTRA_SERVICE = ("Не путать", "Что относится к теме", "Упоминается в", "Названо в карточках")
+# в конце файла): порядок и повторы не проверяются. «История» — прежнее название истории, которое пишут слияние
+# двойников (`kb_fix --merge`) и замена знания (`kb:supersede`); записывать её заново как «История изменений» нельзя:
+# по этой строке слияние узнаёт уже слитых доноров.
+EXTRA_SERVICE = ("Не путать", "Что относится к теме", "Упоминается в", "Названо в карточках", "История")
 ODD_IN_OWN_RE = re.compile(r"^## (?:Не путать|Что относится к теме)", re.M)
 DISPUTES_HEAD = "Расхождения"
 SPLIT_WORDS = "Карточка была разрезана"
@@ -356,6 +360,7 @@ class Registry:
     kit_root: str = ""
     overrides: dict = field(default_factory=dict)     # {тип: {title, description, enabled}} — наложено из блока `cards:`
     config_problems: list = field(default_factory=list)   # проблемы блока `cards:` (они же — в `problems`)
+    found_files: int = 0      # сколько файлов шаблонов найдено (принятых и нет): «типов нет» при найденных файлах — поломка
 
     def section_type(self) -> dict:
         """{раздел: тип}, включая неуправляемые; без шаблонов — прежняя таблица.
@@ -523,6 +528,7 @@ def registry(project_root: str = ".", kit_root: "str | None" = None) -> Registry
     project = _scan(os.path.join(project_root, "Templates"), "project")
     common = _scan(os.path.join(project_root, "TemplatesCommon"), "kit")
     fallback = _scan(os.path.join(kit_dir, "scaffold", "TemplatesCommon") if kit_dir else "", "fallback")
+    reg.found_files = len(project) + len(common) + len(fallback)
 
     groups = {}
     for entry in project + common + fallback:
@@ -1077,6 +1083,7 @@ class Violation:
     line: int
     message: str
     hint: str = ""
+    count: int = 1            # сколько мест затронуто, когда проверка называет только первое (остатки шаблона)
 
     def as_dict(self) -> dict:
         return {"code": self.code, "severity": self.severity, "line": self.line,
@@ -1170,8 +1177,9 @@ def _is_list_item(s: str) -> bool:
     return 0 < n < len(s) - 1 and s[n] in ".)" and s[n + 1] == " "
 
 
-def _check_own(own: str, line0: int, fm: dict, ct: CardType, eff_kind: str, add) -> None:
-    """Проверки собственной части: V-09, V-10, V-12, V-13, V-23, V-24."""
+def _check_own(own: str, line0: int, fm: dict, ct: CardType, eff_kind: str, add, waiting: bool = False) -> None:
+    """Проверки собственной части: V-09, V-10, V-12, V-13, V-23, V-24. `waiting` — тезис ещё ждёт написания:
+    пустая собственная часть ошибкой не считается (`_thesis_pending`)."""
     placeholder = fm.get("status") == "placeholder"
     knowledge = eff_kind == "knowledge" and not placeholder and ct.cls != "map"
     # V-23: заголовок «# Имя» в начале собственной части равен title (глубже — текст переноса).
@@ -1196,25 +1204,26 @@ def _check_own(own: str, line0: int, fm: dict, ct: CardType, eff_kind: str, add)
     at = own.find("<!-- ИНСТРУКЦИЯ")
     if at >= 0:
         add("V-13", line0 + own.count("\n", 0, at), "в тексте остался комментарий шаблона «<!-- ИНСТРУКЦИЯ»",
-            "комментарии шаблона в карточку не переносятся")
+            "комментарии шаблона в карточку не переносятся", count=own.count("<!-- ИНСТРУКЦИЯ"))
     if not knowledge:
         return
     lines = own.split("\n")
-    for i, line in enumerate(lines):
-        s = line.strip()
-        if "{{" in s and "}}" in s[s.index("{{"):]:
-            add("V-13", line0 + i, "в тексте остался плейсхолдер «{{…}}»", "заполните или удалите раздел")
-            break
-    for i, line in enumerate(lines):
-        s = line.strip().lstrip("-*+ ").lstrip()
-        if "[ПРИМЕР]" in line or s.startswith("TODO:"):
-            add("V-13", line0 + i, "в тексте осталась пометка шаблона «[ПРИМЕР]» или строка «TODO:»", "уберите пометку")
-            break
+    holders = [i for i, line in enumerate(lines)
+               if "{{" in line.strip() and "}}" in line.strip()[line.strip().index("{{"):]]
+    if holders:
+        add("V-13", line0 + holders[0], "в тексте остался плейсхолдер «{{…}}»", "заполните или удалите раздел",
+            count=len(holders))
+    marks = [i for i, line in enumerate(lines)
+             if "[ПРИМЕР]" in line or line.strip().lstrip("-*+ ").lstrip().startswith("TODO:")]
+    if marks:
+        add("V-13", line0 + marks[0], "в тексте осталась пометка шаблона «[ПРИМЕР]» или строка «TODO:»",
+            "уберите пометку", count=len(marks))
     # V-12: ведущий абзац-определение.
     lead = _lead_line(lines)
     if lead < 0:
-        add("V-12", line0, "собственная часть пуста: у карточки нет определения",
-            "первая строка — определение: что это и чем отличается от соседнего")
+        if not waiting:
+            add("V-12", line0, "собственная часть пуста: у карточки нет определения",
+                "первая строка — определение: что это и чем отличается от соседнего")
     else:
         s = lines[lead].strip()
         if s.startswith("#") or s.startswith("|") or s.startswith(">") or _is_list_item(s):
@@ -1542,30 +1551,32 @@ def _check_min_links(own: str, line0: int, fm: dict, type_id: str, cls: str, nee
 
 
 def validate_card(text: str, *, path: str = "", reg: "Registry | None" = None,
-                  level: str = "advisory") -> list:
+                  level: str = "advisory", raw_ok: bool = True) -> list:
     """Карточка → список `Violation` (код V-NN, серьёзность, строка, сообщение, подсказка).
 
     Чистая функция: ничего не читает, кроме шаблонов реестра, не ходит в сеть и не вызывает модель.
     `advisory` — ошибки показываются предупреждениями (первая фаза только советует); `strict` —
-    ошибки остаются ошибками. Реестр без типов (шаблонов нет) судит только шапку (V-01).
+    ошибки остаются ошибками. Реестр без типов (шаблонов нет) судит только шапку (V-01). `raw_ok=False` — не
+    смягчать оценку машинной карточки без тезиса (`_thesis_pending`): так судит вход записи карточку, у которой
+    тезис уже был, — правка не вправе вернуть её в «ещё без тезиса», убрав отметку.
     """
-    return _run(text, path, reg, level)[0]
+    return _run(text, path, reg, level, raw_ok)[0]
 
 
-def _run(text: str, path: str, reg: "Registry | None", level: str) -> tuple:
+def _run(text: str, path: str, reg: "Registry | None", level: str, raw_ok: bool = True) -> tuple:
     """→ (нарушения, поля шапки): `check_cards` берёт из того же разбора и шаблон карточки."""
     if level not in LEVELS:
         raise ValueError(f"level: «{level}» — ожидается одно из {', '.join(LEVELS)}")
     reg = reg if reg is not None else registry(".")
     found, seen = [], {}
 
-    def add(code, line, message, hint="", severity=None):
-        found.append(Violation(code, severity or SEVERITY[code], int(line), message, hint))
+    def add(code, line, message, hint="", severity=None, count=1):
+        found.append(Violation(code, severity or SEVERITY[code], int(line), message, hint, int(count)))
 
     text = str(text or "")
     if "\r" in text:
         text = text.replace("\r\n", "\n")
-    _validate(text, str(path or "").replace("\\", "/"), reg, add, seen)
+    _validate(text, str(path or "").replace("\\", "/"), reg, add, seen, raw_ok)
     found.sort(key=lambda v: (v.line, v.code))
     if level == "advisory":
         found = [replace(v, severity="warn") if v.severity == "error" else v for v in found]
@@ -1579,7 +1590,7 @@ def _is_correction(fm: dict, tpl_type: str, path: str) -> bool:
     return tpl_type == "correction" or "Raw/corrections/" in path or "corrects" in fm
 
 
-def _validate(text: str, path: str, reg: Registry, add, seen: dict) -> None:
+def _validate(text: str, path: str, reg: Registry, add, seen: dict, raw_ok: bool = True) -> None:
     head, _rest = split_frontmatter(text)
     if head is None:
         add("V-01", 1, "шапка не найдена: файл должен начинаться со строки «---» и закрываться такой же",
@@ -1706,8 +1717,9 @@ def _validate(text: str, path: str, reg: Registry, add, seen: dict) -> None:
             "перевод на новую версию — kb:conform", severity="info")
 
     # --- тело
-    own_kind = "document" if _raw_transfer(fm, eff_kind, status, rest) else eff_kind
-    _check_own(own, line0, fm, ct, own_kind, add)
+    pending = _thesis_pending(fm, eff_kind, status, rest) if raw_ok else ""
+    own_kind = "document" if pending == "transfer" else eff_kind
+    _check_own(own, line0, fm, ct, own_kind, add, waiting=pending == "waiting")
     # --- связи (V-15, V-16): типизированные поля и минимум исходящих ссылок
     typed = _check_typed(fm, ct.id, ct.cls, kline, add)
     _check_min_links(own, line0, fm, ct.id, ct.cls, ct.min_links, own_kind, status, typed, path, add)
@@ -1719,16 +1731,21 @@ def _validate(text: str, path: str, reg: Registry, add, seen: dict) -> None:
 _QUOTES_HEAD_RE = re.compile(r"(?m)^## " + re.escape(HEAD_QUOTES))
 
 
-def _raw_transfer(fm: dict, eff_kind: str, status: str, rest: str) -> bool:
-    """Машинная карточка знания, чей тезис ещё не написан: разбор перенёс текст источника, а отметку тезиса
-    (`distilled`) и раздел «Источник (перенесено дословно)» заводит сам тезис (`agent:distill`).
+def _thesis_pending(fm: dict, eff_kind: str, status: str, rest: str) -> str:
+    """Машинная карточка знания, чей тезис ещё не написан: `""`, `"transfer"` или `"waiting"`.
 
-    Всё тело такой карточки — перенесённый чужой текст: заголовки, списки и плейсхолдеры в нём принадлежат
-    источнику, а не автору, и собственная часть судится как у `document` (шапка и порядок служебных заголовков).
-    Карточка, чей тезис написан (есть отметка или раздел источника), и рукописная судятся по правилам знания.
+    Разбор переносит текст источника, а отметку тезиса (`distilled`) и раздел «Источник (перенесено дословно)»
+    заводит сам тезис (`agent:distill`). `transfer` — раздела нет: всё тело карточки — перенесённый чужой текст,
+    заголовки, списки и плейсхолдеры в нём принадлежат источнику, а не автору, и собственная часть судится как у
+    `document` (шапка и порядок служебных заголовков). `waiting` — раздел уже есть (разбор заменил или дописал
+    текст источника, прежний тезис снят, а нового ещё нет): собственная часть судится по правилам знания, но то,
+    что определения в ней пока нет, не ошибка. Карточка с тезисом (есть отметка `distilled`) и рукописная судятся
+    по правилам знания целиком.
     """
-    return (eff_kind == "knowledge" and status != "placeholder" and (fm.get("built") or "").strip() == "machine"
-            and not (fm.get("distilled") or "").strip() and not _QUOTES_HEAD_RE.search(rest))
+    if not (eff_kind == "knowledge" and status != "placeholder" and (fm.get("built") or "").strip() == "machine"
+            and not (fm.get("distilled") or "").strip()):
+        return ""
+    return "waiting" if _QUOTES_HEAD_RE.search(rest) else "transfer"
 
 
 def _blank(fm: dict, key: str) -> bool:
@@ -2272,7 +2289,7 @@ HEADER_ORDER = (
 LIST_FIELDS = frozenset(("aliases", "tags", "related", "supersedes", "superseded_by", "same_subject", "based_on",
                          "applies_to", "decisions", "blocks"))
 QUOTED_FIELDS = frozenset(("title", "built_by", "distilled_by", "summary", "trust_basis"))
-FIELD_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$", re.ASCII)
+FIELD_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*", re.ASCII)       # `fullmatch`: `$` пропустил бы «x\n»
 
 
 class UnknownCardType(ValueError):
@@ -2287,6 +2304,14 @@ class TemplateViolation(ValueError):
         first = "; ".join(f"{v.code}: {v.message}" for v in self.violations[:3])
         more = f" (и ещё {len(self.violations) - 3})" if len(self.violations) > 3 else ""
         super().__init__(f"карточка не записана ({op}) — {os.path.basename(self.path)} нарушает шаблон: {first}{more}")
+
+    def __reduce__(self):
+        return self.__class__, (self.path, self.op, self.violations)
+
+
+class RegistryBroken(TemplateViolation):
+    """Шаблоны в проекте или ките есть, но ни один не принят: типов нет, и судить карточку нечем. Запись отвергается —
+    молча писать без проверки здесь нельзя: поломку шаблонов видно в `problems` реестра (`kb:cards --list`)."""
 
 
 _REG_CACHE: dict = {}
@@ -2313,13 +2338,16 @@ def registry_for(project_root: str = ".", kit_root: "str | None" = None) -> Regi
     hit = _REG_CACHE.get(key)
     if hit is None or hit[0] != stamp:
         hit = (stamp, safe_registry(root, kit))
-        _REG_CACHE[key] = hit
+        if hit[1].types:                     # пустой реестр (шаблоны не доставлены, сбой сборки) не запоминается
+            _REG_CACHE[key] = hit
+        else:
+            _REG_CACHE.pop(key, None)
     return hit[1]
 
 
 def _field_lines(key: str, value) -> str:
     """Строки шапки для одного поля; пустое значение — пусто (поле опускается)."""
-    if not FIELD_KEY_RE.match(key):
+    if not FIELD_KEY_RE.fullmatch(key):
         raise ValueError(f"имя поля шапки «{key[:40]}» не подходит: латиница, цифры и «_»")
     if value is None or value is False:
         return ""
@@ -2327,14 +2355,18 @@ def _field_lines(key: str, value) -> str:
         paths = [value] if isinstance(value, str) else [str(x) for x in value]
         paths = [head_value(p).strip() for p in paths]
         return sources_block(paths) if any(paths) else ""
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, (set, frozenset)):
+        value = sorted(value, key=str)
+    if key in LIST_FIELDS and isinstance(value, str) and value.strip() and not value.strip().startswith("["):
+        value = [value]                      # одно значение поля-списка — список из одного пункта
+    if isinstance(value, (list, tuple)):
         items = [x for x in (head_value(i).strip() for i in value) if x]
         return f"{key}: {head_list_text(items)}\n" if items else ""
     text = head_value(value).strip()
+    if key == "title":
+        text = text.strip('"').strip().replace('"', "'")
     if not text:
         return ""
-    if key == "title":
-        text = text.replace('"', "'")
     if key in QUOTED_FIELDS and not (len(text) > 1 and text[0] == text[-1] == '"'):
         text = '"' + text + '"'
     return f"{key}: {text}\n"
@@ -2398,21 +2430,22 @@ def violation_key(v: Violation) -> tuple:
     """Что считать «той же» ошибкой до и после правки: код и предмет (раздел, поле, значение), без номера строки.
 
     Номер строки сдвигается от любой правки выше, а число в тексте (длина абзаца, счёт ссылок) растёт вместе с
-    самим нарушением: ошибка, которая стала чуть хуже, остаётся прежней ошибкой, а не новой.
+    самим нарушением: ошибка, которая стала чуть хуже, остаётся прежней ошибкой, а не новой. Разные причины одного
+    кода (V-12: «пусто», «заголовок вместо определения», «слишком длинно») — разные ошибки.
     """
     msg = v.message
     if v.code == "V-08":
         return v.code, msg.split(":", 1)[0]
-    if v.code in ("V-12", "V-15"):
-        return v.code, ""
     m = re.search("«([^»]{0,80})»", msg)
-    return v.code, m.group(1) if m else re.sub(r"\d+", "#", msg)
+    if m and v.code not in ("V-12", "V-15"):
+        return v.code, m.group(1)
+    return v.code, re.sub(r"\d+", "#", msg)
 
 
-def _write_errors(text: str, rel: str, reg: Registry, template_required: bool) -> list:
+def _write_errors(text: str, rel: str, reg: Registry, template_required: bool, raw_ok: bool = True) -> list:
     """Ошибки шаблона для записи: `strict`-ошибки; «нет `template:`» при `template_required` тоже ошибка."""
     out = []
-    for v in validate_card(text, path=rel, reg=reg, level="strict"):
+    for v in validate_card(text, path=rel, reg=reg, level="strict", raw_ok=raw_ok):
         if v.severity == "error":
             out.append(v)
         elif template_required and v.code == "V-02" and v.severity == "info" and "template" in v.message:
@@ -2421,19 +2454,18 @@ def _write_errors(text: str, rel: str, reg: Registry, template_required: bool) -
 
 
 def new_violations(now: list, was: list) -> list:
-    """Ошибки `now`, которых не было в `was` (по `violation_key`, с учётом повторов): «не ухудшай»."""
-    spare: dict = {}
+    """Ошибки `now`, которых не было в `was`: по предмету (`violation_key`) и по числу затронутых мест
+    (`Violation.count`). Ошибка, которая стала шире (в тексте было одно `{{…}}`, стало пять), — новая."""
+    old_w: dict = {}
     for v in was:
         k = violation_key(v)
-        spare[k] = spare.get(k, 0) + 1
-    fresh = []
+        old_w[k] = old_w.get(k, 0) + max(1, v.count)
+    new_w: dict = {}
     for v in now:
         k = violation_key(v)
-        if spare.get(k, 0) > 0:
-            spare[k] -= 1
-        else:
-            fresh.append(v)
-    return fresh
+        new_w[k] = new_w.get(k, 0) + max(1, v.count)
+    worse = {k for k, n in new_w.items() if n > old_w.get(k, 0)}
+    return [v for v in now if violation_key(v) in worse]
 
 
 def kb_location(path: str) -> "tuple | None":
@@ -2443,6 +2475,14 @@ def kb_location(path: str) -> "tuple | None":
         if parts[i] == KB_ROOT:
             return ("/".join(parts[:i]) or "/"), "/".join(parts[i:])
     return None
+
+
+def is_card_path(path: str) -> bool:
+    """Файл — карточка базы: лежит в разделе под `AuroraKnowledgeDB/` и не служебный (`index.md`, `meta/…`).
+    Так решает вход записи, куда можно писать; скрипты, чьи правки идут и по карточкам, и по прочим файлам проекта
+    (маскирование, перекладка путей), этим же вопросом выбирают, какой записью пользоваться."""
+    where = kb_location(path)
+    return where is not None and not is_service(where[1]) and where[1].count("/") >= 2
 
 
 def _encode(text: str) -> bytes:
@@ -2465,19 +2505,36 @@ def _read_old(path: str) -> "str | None":
         return None
 
 
-def write_atomic(path: str, text: str) -> None:
-    """Записать файл целиком или не трогать: временный файл рядом и подмена; перевод строки — `\\n` на любой системе.
+def _crlf_file(target: str) -> bool:
+    """Файл на диске записан с `\\r\\n` (в большинстве строк)? Новый файл и файл с `\\n` — нет."""
+    try:
+        with open(target, "rb") as fh:
+            raw = fh.read(65536)
+    except OSError:
+        return False
+    return raw.count(b"\r\n") * 2 > raw.count(b"\n")
 
-    Права прежнего файла переходят к новому. Ссылка внутри проекта не заменяется — пишется файл, на который она
-    ведёт. Прерывание (`KeyboardInterrupt`, сбой диска) посреди записи оставляет прежний файл и убирает временный.
+
+def write_atomic(path: str, text: str) -> None:
+    """Записать файл целиком или не трогать: временный файл рядом и подмена.
+
+    Перевод строки — `\\n` на любой системе, кроме файла, который уже записан с `\\r\\n`: правка не должна менять
+    чужую договорённость о концах строк (под Windows его выбирает редактор человека). Права прежнего файла
+    переходят к новому. Ссылка внутри проекта не заменяется — пишется файл, на который она ведёт. Прерывание
+    (`KeyboardInterrupt`, сбой диска) посреди записи оставляет прежний файл и убирает временный.
     """
     target = os.path.realpath(path)
     folder = os.path.dirname(target)
     if folder:
         os.makedirs(folder, exist_ok=True)
-    tmp = f"{target}.{os.getpid()}.aurora-tmp"
+    # Имя временного файла своё у процесса, потока и каждой записи: две записи в один файл из двух потоков не делят
+    # его (иначе читатель видел бы смесь двух текстов). Имя короткое — к длинному имени карточки не прибавляется.
+    tmp = os.path.join(folder, f".{os.getpid()}-{threading.get_ident()}-{next(_TMP_SEQ)}.aurora-tmp")
+    text = str(text).replace("\r\n", "\n")
+    if _crlf_file(target):
+        text = text.replace("\n", "\r\n")
     try:
-        with open(tmp, "wb") as fh:
+        with open(tmp, "xb") as fh:
             fh.write(_encode(text))
         try:
             import shutil
@@ -2493,22 +2550,42 @@ def write_atomic(path: str, text: str) -> None:
 
 
 _GATE_WARNED: set = set()
+_TMP_SEQ = itertools.count(1)
 
 
-def write_card_text(path: str, new_text: str, *, op: str, old_text: "str | None" = None,
-                    reg: "Registry | None" = None) -> bool:
-    """Единственный вход записи карточки базы: проверить по шаблону и записать атомарно. → записан ли файл.
+def _section_violation(text: str, rel: str, reg: Registry) -> "Violation | None":
+    """Карточка кладётся в раздел, который ведёт её тип: раздел и тип — одно (`kb:repair --sections` держит это).
 
-    `op`: `create`, `split`, `stub`, `map`, `mirror` — создание, проверка строгая (любая ошибка шаблона, включая
-    отсутствие `template:`, — `TemplateViolation`, файл не пишется); `body`, `header`, `repair` — правка существующей
-    карточки, проверка «по разности»: ошибки нового текста минус ошибки прежнего (`violation_key`); унаследованное
-    терпится, новое отвергается; штамп `template:` с карточки не снимается. `old_text` — прежний текст (по умолчанию
-    читается с диска; файла нет — правка проверяется как создание).
+    Тип без шаблона (`spec`) — только в `Specs/`; исправление (`correction`) карточкой базы не бывает: его место —
+    `Raw/corrections/`. Папка без своего типа (`_archive/`, свой раздел проекта) не проверяется.
+    """
+    parts = rel.split("/")
+    if len(parts) < 3:
+        return None
+    folder, tid = parts[1], (frontmatter(text).get("type") or "").strip()
+    if not tid or folder.startswith("_"):
+        return None
+    if tid == "correction":
+        return Violation("V-03", "error", 1, "type «correction»: исправление — запись в Raw/corrections/, а не карточка базы",
+                         "исправление человека создаёт kb:correct --new")
+    spec = {v: k for k, v in reg.unmanaged.items()}
+    if tid in spec:
+        if folder != spec[tid]:
+            return Violation("V-03", "error", 1, f"type «{tid}» лежит в разделе «{folder}», а ему место в «{spec[tid]}»",
+                             "раздел базы — это тип, записанный папкой")
+        return None
+    ct = reg.get(tid)
+    if ct is not None and ct.section and ct.section != folder:
+        return Violation("V-03", "error", 1, f"type «{tid}» лежит в разделе «{folder}», а ему место в «{ct.section}»",
+                         "раздел базы — это тип, записанный папкой")
+    return None
 
-    Путь обязан лежать под `AuroraKnowledgeDB/` и не быть служебным файлом (`index.md`, `meta/…`): служебное и
-    мастер-файлы записей пишут их собственные скрипты. Файл-ссылка за пределы проекта не записывается. Текст,
-    равный записанному, не перезаписывается (`False`). Реестра нет (шаблоны не доставлены ни в проект, ни в кит) —
-    запись идёт как прежняя, без проверки, с одним предупреждением на процесс. Выключателя проверки нет.
+
+def _admit(path: str, new_text: str, op: str, reg: "Registry | None") -> tuple:
+    """Суд над записью без самой записи: → (текст с `\\n`, совпадает ли с диском, ошибки шаблона).
+
+    Общий для `write_card_text` и `check_card_text`: проба и запись судят одинаково. Исключения (`ValueError`,
+    `OSError`, `RegistryBroken`) — отказ по месту или по реестру, а не по тексту.
     """
     if op not in WRITE_OPS:
         raise ValueError(f"write_card_text: операция «{op}» неизвестна ({', '.join(WRITE_OPS)})")
@@ -2516,35 +2593,131 @@ def write_card_text(path: str, new_text: str, *, op: str, old_text: "str | None"
     if where is None:
         raise ValueError(f"write_card_text: «{path}» лежит не под {KB_ROOT}/ — вход пишет только карточки базы")
     root, rel = where
-    if is_service(rel) or rel.count("/") < 2:
+    if not is_card_path(path):
         raise ValueError(f"write_card_text: «{rel}» — служебный файл базы, а не карточка")
     if link_escapes(path):
         raise OSError(f"write_card_text: «{rel}» — ссылка за пределы проекта или к секретам, не пишу")
+    real = os.path.realpath(path)
+    there = kb_location(real)
+    if (there is None or os.path.normcase(there[0]) != os.path.normcase(os.path.realpath(root))
+            or not is_card_path(real)):
+        raise OSError(f"write_card_text: «{rel}» — ссылка на файл вне базы знаний, не пишу")
+    if reg is not None and not reg.types:
+        raise ValueError("write_card_text: передан пустой реестр типов — проверку нельзя отключить пустым реестром")
     text = str(new_text).replace("\r\n", "\n")
+    disk = _read_old(path) if os.path.isfile(path) else None
+    if disk is not None and disk == text:
+        return text, True, []                        # та же карточка: не пишем и не судим унаследованное
     reg = reg if reg is not None else registry_for(root)
     if not reg.types:
+        if reg.found_files:
+            why = "; ".join(reg.problems[:3]) or "паспорта шаблонов не приняты"
+            raise RegistryBroken(path, op, [Violation("V-REG-1", "error", 1,
+                                                     f"шаблоны карточек найдены ({reg.found_files}), но ни один не принят: {why}",
+                                                     "kb:cards --list называет причину")])
         if root not in _GATE_WARNED:
             _GATE_WARNED.add(root)
             print("card_types: шаблонов карточек нет ни в проекте, ни в ките — записываю без проверки "
                   "(aurora.py update вернёт шаблоны)", file=sys.stderr)
     else:
-        was = old_text if old_text is not None else _read_old(path)
-        was = None if was is None else str(was).replace("\r\n", "\n")
-        strict = op in WRITE_OPS_STRICT or not (was or "").strip()
-        errors = _write_errors(text, rel, reg, template_required=strict)
-        if not strict:
-            errors = new_violations(errors, _write_errors(was, rel, reg, template_required=False))
-            if (frontmatter(was).get("template") or "").strip() and not (frontmatter(text).get("template") or "").strip():
+        strict = op in WRITE_OPS_STRICT or not (disk or "").strip()
+        settled = bool(disk) and (bool((frontmatter(disk).get("distilled") or "").strip())
+                                  or bool(_QUOTES_HEAD_RE.search(disk)))
+        errors = _write_errors(text, rel, reg, template_required=strict, raw_ok=not settled)
+        if strict:
+            wrong = _section_violation(text, rel, reg)
+            if wrong is not None:
+                errors.append(wrong)
+        else:
+            errors = new_violations(errors, _write_errors(disk, rel, reg, template_required=False))
+            if (frontmatter(disk).get("template") or "").strip() and not (frontmatter(text).get("template") or "").strip():
                 errors.append(Violation("V-02", "error", 1, "штамп template: снят с карточки",
                                         "поле template: означает «карточка проходит шаблон» и не снимается"))
-        if errors:
-            raise TemplateViolation(path, op, errors)
-    if os.path.isfile(path):
-        same = _read_old(path)
-        if same is not None and same == text:
-            return False
+        return text, False, errors
+    return text, False, []
+
+
+
+
+def write_card_text(path: str, new_text: str, *, op: str, old_text: "str | None" = None,
+                    reg: "Registry | None" = None) -> bool:
+    """Единственный вход записи карточки базы: проверить по шаблону и записать атомарно. → записан ли файл.
+
+    `op`: `create`, `split`, `stub`, `map`, `mirror` — создание, проверка строгая (любая ошибка шаблона, включая
+    отсутствие `template:` и раздел, не ведущий тип карточки, — `TemplateViolation`, файл не пишется); `body`,
+    `header`, `repair` — правка существующей карточки, проверка «по разности»: ошибки нового текста минус ошибки
+    прежнего (`violation_key`, `Violation.count`); унаследованное терпится, новое отвергается; штамп `template:`
+    с карточки не снимается, а карточка, у которой тезис уже был (отметка `distilled` или раздел «Источник»),
+    не возвращается правкой в «ещё без тезиса». Прежний текст — всегда тот, что на диске: `old_text` принимается
+    ради вызывающих, у которых он уже в руках, но проверку не смягчает. Файла нет — правка проверяется как создание.
+
+    Путь обязан лежать под `AuroraKnowledgeDB/` и не быть служебным файлом (`index.md`, `meta/…`): служебное и
+    мастер-файлы записей пишут их собственные скрипты. Файл-ссылка за пределы проекта или на файл вне базы не
+    записывается. Текст, равный записанному, не перезаписывается (`False`) и не проверяется. Реестр — всегда проекта
+    (`registry_for`): передать свой (`reg`) можно, но пустой — нельзя. Шаблонов нет совсем (ни в проекте, ни в ките) —
+    запись идёт как прежняя, без проверки, с одним предупреждением на процесс; шаблоны есть, но ни один не принят, —
+    отказ (`RegistryBroken`). Выключателя проверки нет.
+    """
+    text, same, errors = _admit(path, new_text, op, reg)
+    if same:
+        return False
+    if errors:
+        raise TemplateViolation(path, op, errors)
     write_atomic(path, text)
     return True
+
+
+def check_card_text(path: str, new_text: str, *, op: str, reg: "Registry | None" = None) -> list:
+    """Нарушения, из-за которых `write_card_text` отверг бы эту запись; ничего не пишет. Пусто — запись примут.
+
+    Нужна тому, кто пишет несколько карточек сразу и не вправе записать половину (разрез: части и карта вместе).
+    Отказы по месту и по реестру (`ValueError`, `OSError`, `RegistryBroken`) пробрасываются, как у записи.
+    """
+    return _admit(path, new_text, op, reg)[2]
+
+
+def try_write_card(path: str, text: str, *, op: str, old_text: "str | None" = None,
+                   reg: "Registry | None" = None) -> tuple:
+    """`write_card_text` для сценариев, где отказ одной карточки не должен останавливать остальные.
+
+    → `(записан ли файл, причина отказа)`: нарушение шаблона не пробрасывается, а возвращается строкой — вызывающий
+    пишет её в свой журнал сбоев и идёт дальше (маршрут не падает целиком, источник остаётся в очереди). Прочие ошибки
+    (путь не под базой, ссылка за пределы проекта, диск) пробрасываются как есть: это дефект вызова, а не карточки.
+    """
+    try:
+        return write_card_text(path, text, op=op, old_text=old_text, reg=reg), ""
+    except TemplateViolation as e:
+        return False, str(e)
+
+
+def put_text(path: str, text: str, *, op: str = "repair", old_text: "str | None" = None,
+             reg: "Registry | None" = None) -> str:
+    """Записать файл базы, правя его «на месте»: карточку — через вход шаблонов, любой другой файл базы (индекс,
+    карта-оглавление раздела, служебное) — атомарно, как есть. → причина отказа или пустая строка.
+
+    Для скриптов, чьи циклы идут и по карточкам, и по служебным файлам (перекладка ссылок после переименования):
+    отказ карточки они пишут в отчёт и идут дальше, а не падают.
+    """
+    if is_card_path(path):
+        return try_write_card(path, text, op=op, old_text=old_text, reg=reg)[1]
+    if link_escapes(path):
+        return f"{os.path.basename(path)}: ссылка за пределы проекта или к секретам, не пишу"
+    write_atomic(path, text)
+    return ""
+
+
+def fit_kind(type_id: str, kind: str, reg: "Registry | None" = None) -> str:
+    """Вид карточки, допустимый её типу: назначенный правилом (`kb_kind.guess`) вид бывает вне списка типа
+    (`document` у роли, `dictionary` у процесса), и шаблон такую карточку не принимает.
+
+    Вид типу подходит — он и остаётся. Не подходит — `knowledge`, если тип его допускает (знание пишет тезис, текст
+    источника остаётся в разделе «Источник»), иначе первый вид типа. Типа в реестре нет — вид как есть.
+    """
+    reg = reg if reg is not None else registry_for(".")
+    ct = reg.get(type_id)
+    if ct is None or not ct.kinds or not kind or kind in ct.kinds or kind in LEGACY_KINDS:
+        return kind
+    return "knowledge" if "knowledge" in ct.kinds else ct.kinds[0]
 
 
 # ----------------------------------------------------------------------------- команда kb:cards
