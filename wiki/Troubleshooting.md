@@ -19,6 +19,7 @@ Engine scripts explain the reason instead of just failing. The common cases:
 
 | Symptom | Cause and fix |
 |---|---|
+| **A sync did not start: «VPN-1 is unavailable» / exit code 2 / a line `AURORA-NET {…}`** | The connection check is on and the source's profile does not answer, so the script refused before the first request instead of timing out. Bring the VPN up and run again, or queue the run in the panel dialog. `net:status` shows the state, `net:probe` checks now. |
 | **"no token — set CONFLUENCE_PERSONAL_TOKEN"** | Sync scripts go to Confluence and Jira directly; your editor's MCP does not help. Copy `aurora.env.local.example` to `.env.aurora.local` and fill it in. Check: `python3 .aurora/scripts/jira_export.py --limit 1`. |
 | **A sync skill looks at the wrong space or JQL** | The values live in `aurora.config.yaml`, not in the skill: edit the config or run `aurora_setup.py` again. |
 | **Timeouts, half the pages missing** | The pages the walk did not reach stay in the state; run the sync again. `--prune` refuses to delete after an export with errors. |
@@ -30,6 +31,7 @@ Engine scripts explain the reason instead of just failing. The common cases:
 
 | Symptom | Cause and fix |
 |---|---|
+| **«all providers of the role are unavailable» / a step is «waiting for the connection»** | The connection check knows the providers' profile or the internet is down; the call did not go out, nothing is quarantined, and a route step waits by itself (a one-off call refuses with the reason). It resumes when the link returns; «Check now» wakes it. If the VPN is up, check the provider's handle check in *Models → the provider* (path and key). |
 | **"did not answer" / an empty answer** | `agent:ping` checks the chain; `agent:probe` tells "no connection" from "wrong key" from "no such model" and lists the gateway's models. |
 | **Three failures in a row, the run stops** | By design: it is the gateway, not the cards. Fix the gateway, run again — the rest is picked up. |
 | **Very slow, one request at a time** | `agent:width` measures how many parallel requests a gateway holds; set `…_WIDTH`. |

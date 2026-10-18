@@ -62,7 +62,7 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
     except (AttributeError, ValueError, OSError):
         pass
 
-from aurora_common import lock_release, lock_take, parse_time, replace_file, utc_stamp  # noqa: E402
+from aurora_common import lock_release, lock_take, parse_time, replace_file, utc_slug, utc_stamp  # noqa: E402
 
 VERSION = 1
 CONFIG_FILE = ("local", "connectivity.json")
@@ -518,6 +518,10 @@ def save(kit, data, expect=None, replace_broken: bool = False) -> dict:
                 if not replace_broken:
                     return {"ok": False, "code": "broken_file", "errors": [],
                             "error": "прежний файл настройки не разобран; сохранение заменит его целиком"}
+                try:                       # рядом остаётся копия: в файле могла быть правка руками
+                    path.with_name(f"{path.name}.broken-{utc_slug()}").write_bytes(path.read_bytes())
+                except OSError:
+                    pass
                 old = {}
         _carry(old if isinstance(old, dict) else {}, new, data if isinstance(data, dict) else {})
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -532,9 +536,9 @@ def save(kit, data, expect=None, replace_broken: bool = False) -> dict:
         finally:
             tmp.unlink(missing_ok=True)
         stamp = file_stamp(kit)
-    except OSError as e:
+    except (OSError, ValueError) as e:
         return {"ok": False, "code": "write", "errors": [], "failed": True,
-                "error": f"не удалось записать настройку: {e.strerror or e}"}
+                "error": f"не удалось записать настройку: {getattr(e, 'strerror', None) or type(e).__name__}"}
     finally:
         lock_release(lock)
     return {"ok": True, "stamp": stamp}
@@ -727,7 +731,12 @@ def _check_http(p: dict, timeout: float) -> dict:
     headers = {"User-Agent": "aurora-connectivity/1", "Accept": "*/*"}
     headers.update(p.get("_headers") or {})
     req = urllib.request.Request(p["url"], headers=headers, method="GET")
-    opener = urllib.request.build_opener(_NoRedirect())
+    handlers = [_NoRedirect()]
+    if p.get("_headers") and p["url"].lower().startswith("http://"):
+        # Проверка с ключом по открытому каналу идёт напрямую: прокси из окружения увидел бы ключ, и проверка мерила бы
+        # прокси, а не провайдера. Без ключа (и по https, где прокси видит только туннель) прокси окружения соблюдается.
+        handlers.append(urllib.request.ProxyHandler({}))
+    opener = urllib.request.build_opener(*handlers)
     want = p.get("expect_status") or STATUS_DEFAULT
     body = b""
     try:
@@ -771,11 +780,11 @@ def _check_icmp(p: dict, timeout: float) -> dict:
         cp = subprocess.run(icmp_argv(p["host"], timeout), capture_output=True, text=True, errors="replace",
                             timeout=timeout + 2, **extra)
     except FileNotFoundError:
-        return _result(False, started, "no_ping")
+        return dict(_result(False, started, "no_ping"), inconclusive=True)         # нет программы ping — не «нет ответа»
     except subprocess.TimeoutExpired:
         return _result(False, started, "timeout")
     except OSError as e:
-        return _result(False, started, "other", type(e).__name__)
+        return dict(_result(False, started, "other", type(e).__name__), inconclusive=True)
     text = (cp.stdout or "") + (cp.stderr or "")
     if cp.returncode == 0:
         # Windows отвечает кодом 0 и на «Destination host unreachable» от шлюза: настоящий ответ несёт TTL.
@@ -785,7 +794,8 @@ def _check_icmp(p: dict, timeout: float) -> dict:
     if re.search(r"unknown host|could not find host|cannot resolve|name or service not known|nodename nor", text, re.I):
         return _result(False, started, "dns")
     if cp.returncode >= 2 and not sys.platform.startswith("win"):
-        return _result(False, started, "other", f"ping: код {cp.returncode}")      # нет прав или ping не смог — не «нет ответа»
+        # нет прав или ping не смог — не «нет ответа»: раунд не засчитывается
+        return dict(_result(False, started, "other", f"ping: код {cp.returncode}"), inconclusive=True)
     return _result(False, started, "timeout")
 
 
@@ -811,7 +821,8 @@ def run_probe(p: dict, timeout: float, checkers=None) -> dict:
     try:
         res = fn(p, timeout)
     except Exception as e:  # noqa: BLE001 — проверка не должна ронять вызывающего
-        res = {"ok": False, "code": "other", "ms": 0, "detail": (type(e).__name__ + ": " + str(e))[:120]}
+        # Сама проверка сломалась — это не свидетельство против адреса: раунд по ней не засчитывается (`inconclusive`).
+        res = {"ok": False, "code": "other", "ms": 0, "detail": (type(e).__name__ + ": " + str(e))[:120], "inconclusive": True}
     return res
 
 
@@ -891,6 +902,10 @@ def _write_state(path: Path, state: dict) -> None:
     tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
     try:
         tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
         replace_file(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
@@ -942,14 +957,16 @@ def _sig(cfg: dict, profile: str, probes: list) -> str:
 def apply_round(state: dict, cfg: dict, profile: str, probes: list, results: dict, now: float) -> list:
     """Записать раунд профиля в состояние → список событий (смены состояния).
 
-    Если хоть одна probe не успела за общий срок (`late`), раунд профиля не пишется: оценка по обрывку — не оценка.
+    Если хоть одна probe не успела за общий срок (`late`) или не смогла выполниться (`inconclusive`: нет программы ping,
+    сбой самой проверки), раунд профиля не пишется: оценка по обрывку — не оценка, а «нет программы» — не «нет связи».
     Раунд, пришедший раньше половины интервала после прежнего, заменяет прежнюю оценку, а не добавляется к ней."""
     stamp = utc_stamp(now)
     healthy, late = 0, False
     for p in probes:
         res = results.get(p["id"]) or {"ok": False, "code": "other", "ms": 0, "detail": ""}
-        late = late or bool(res.get("late"))
-        state["probes"][p["id"]] = {"ok": None if res.get("late") else bool(res.get("ok")), "code": res.get("code", ""),
+        late = late or bool(res.get("late")) or bool(res.get("inconclusive"))
+        state["probes"][p["id"]] = {"ok": None if (res.get("late") or res.get("inconclusive")) else bool(res.get("ok")),
+                                    "code": res.get("code", ""),
                                     "ms": res.get("ms", 0), "detail": str(res.get("detail") or "")[:160], "at": stamp,
                                     "profile": profile}
         healthy += 1 if res.get("ok") else 0
@@ -1037,6 +1054,8 @@ def provider_probe(p: dict) -> dict | None:
     probe = {"id": provider_profile(p["id"]), "profile": provider_profile(p["id"]), "type": "http", "url": url,
              "expect_status": ["lt500"] if p["check"] == "reach" else ["2xx"]}
     key = str(p.get("key") or "").strip()
+    if p["check"] == "auth" and not key:
+        return None                       # проверка «с ключом» без ключа не проверка: неизвестно, а не «не прошла»
     if p["check"] == "auth" and key:
         # Ключ с управляющими знаками или не из latin-1 не годится в заголовок: библиотека назвала бы его в тексте ошибки.
         if any(ord(c) < 32 or ord(c) == 127 for c in key) or not key.isascii():
@@ -1243,11 +1262,15 @@ class AvailabilityService:
             self._emit([ev])
 
     # ---- сводка
-    def snapshot(self, required: dict | None = None) -> dict:
+    def snapshot(self, required: dict | None = None, hold: bool = False) -> dict:
         """Состояние целиком (JSON): профили, probe, интернет, провайдеры, глобальное состояние и причины.
 
         `required` — {profiles: [...], providers: [id...]|None, internet: bool|None}: что нужно текущему делу.
         Не задано — нужны профили, на которые ссылаются провайдеры моделей.
+
+        `hold` — для ожидания восстановления: профиль, чьё последнее известное состояние «недоступен», а данные состарились
+        (проверка не может завершиться, например зависло разрешение имени), остаётся недоступным, пока не придёт
+        положительный раунд. Обычная сводка считает такой профиль неизвестным и ничего не блокирует.
         """
         cfg = self.config()
         now = self.clock()
@@ -1267,6 +1290,8 @@ class AvailabilityService:
             ent = state["profiles"].get(name) if isinstance(state["profiles"].get(name), dict) else None
             known = ent is not None and ent.get("sig") == _sig(cfg, name, probes)
             st = profile_state(ent, now, iv) if known else "unknown"
+            if hold and st == "unknown" and known and ent.get("state") == "offline":
+                st = "offline"
             rule = rule_of(cfg, name)
             row = {"name": name, "state": st, "rule": rule_text(rule), "interval": iv,
                    "fail_after": rule["fail_after"], "ok_after": rule["ok_after"],

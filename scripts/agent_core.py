@@ -808,6 +808,8 @@ LINK_KINDS = LINK_ALARM_KINDS | LINK_REACHED_KINDS
 # Обрывы, после которых стоит спросить проверку соединений, не упал ли профиль или интернет: соединение не установилось.
 NET_KINDS = frozenset({"dns", "refused", "connect_timeout", "unreachable", "tls", "proxy", "reset"})
 NET_POLL = 15.0     # секунд между перепроверками связи, пока все провайдеры роли недоступны
+_NET_SEEN: set = set()       # провайдеры, которых проверка соединений называла недоступными: вернулись — карантин за обрыв снимается
+_NET_MARK_SAID: set = set()  # о каких недоступных наборах провайдеров метка `AURORA-NET` уже напечатана в этом процессе
 # Сколько неудач подряд на одном бэкенде (и сколько обрывов адаптера, спасённых прямым запросом,
 # подряд без единого прохода через адаптер) — тревога, а не мигание сети. Одно число на оба счёта.
 ALARM_AFTER = 3
@@ -2802,6 +2804,19 @@ def _net_gate():
     return conn_gate
 
 
+def _say_net_blocked(gate, skipped: dict, providers: list) -> None:
+    """Вызов не начат: недоступны все провайдеры роли. Машинная строка `AURORA-NET` (раз на набор в процессе) — по ней маршрут и
+    расписание узнают, что шаг не поломался, а не получил связь, и применяют политику прогона."""
+    names = tuple(sorted(str(v.get("profile") or v.get("why")) for v in skipped.values()))
+    if names in _NET_MARK_SAID:
+        return
+    _NET_MARK_SAID.add(names)
+    row = {"code": "llm_down", "name": "llm", "providers": sorted(str(p) for p in providers),
+           "why": sorted({v.get("why", "") for v in skipped.values() if v.get("why")}),
+           "profiles": sorted({v["profile"] for v in skipped.values() if v.get("profile")})}
+    print(gate.net_marker([row]), flush=True)
+
+
 def call_role(cfg: dict, role: str, messages: list, transport=None,
               deadline: float | None = None, sleep=time.sleep,
               thinking: bool | None = None, max_tokens: int | None = None,
@@ -2933,13 +2948,26 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     # не трогаем и в карантин не сажаем — это не его беда. Падать «наугад» на другой адаптер незачем: запасные — только те,
     # что явно стоят в цепочке роли, и они идут своим чередом. Если недоступны все — LLM-функция блокируется, а не крутит
     # кольцо вхолостую: разовому вызову отказ с причиной, шагу маршрута — ожидание восстановления (политика queue).
-    gate = _net_gate()
+    # Диагностика (`NO_WAIT`: `agent:ping`, `agent:probe`, `agent:width`) спрашивает провайдеров живьём: она и нужна, чтобы
+    # увидеть, что с ними, — проверка соединений её не останавливает.
+    gate = _net_gate() if patient else None
     net_waits = persist and patient and os.environ.get("AURORA_NET_POLICY", "partial_queue") in ("queue", "partial_queue")
+    refresh = False
     while time.time() < deadline:
         ring += 1
         skipped: dict = {}
         if gate is not None:
-            down = gate.providers_down()
+            down = gate.providers_down(fresh=refresh)
+            refresh = False
+            for b in order:
+                pid = b.get("provider")
+                if pid in down:
+                    _NET_SEEN.add(pid)
+                elif pid in _NET_SEEN:
+                    # Связь вернулась: карантин, посаженный за обрыв, который объясняла недоступная связь, снимается сразу.
+                    _NET_SEEN.discard(pid)
+                    if DOWN.pop(b["n"], None):
+                        log.append(f"№{b['n']}: связь вернулась — карантин за обрыв снят")
             skipped = {b["n"]: down[b["provider"]] for b in order if b.get("provider") in down}
             if skipped and all(b["n"] in skipped for b in order):
                 names = "; ".join(f"{b.get('provider')}: {gate.provider_reason(skipped[b['n']])}" for b in order)
@@ -2947,13 +2975,22 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     log.append(f"все провайдеры роли недоступны ({names}) — жду восстановления связи")
                     say_live("⏳", role, f"все провайдеры недоступны ({names}) — жду восстановления связи, продолжу сам")
                     mine = [b.get("provider") for b in order]
+                    last = [time.time()]
+
+                    def still_waiting(_verdict, secs, last=last):
+                        # Строка раз в несколько минут: ожидание не должно выглядеть зависанием шага (сторож смотрит на вывод).
+                        if time.time() - last[0] >= gate.PULSE_EVERY:
+                            last[0] = time.time()
+                            say_live("⏳", role, f"всё ещё жду связи с провайдерами ({secs // 60} мин)")
                     gate.wait_restored(
-                        lambda mine=mine: {"ok": any(pid not in gate.providers_down(fresh=True) for pid in mine)},
-                        poll=NET_POLL)
+                        lambda mine=mine: {"ok": any(pid not in gate.providers_down(fresh=True, hold=True) for pid in mine)},
+                        poll=NET_POLL, on_wait=still_waiting)
                     waited += 1.0
+                    refresh = True
                     continue
                 log.append(f"все провайдеры роли недоступны по связи ({names}) — вызов не начат: это не поломка провайдеров")
                 _note_failure("связь: нужное недоступно")
+                _say_net_blocked(gate, skipped, [b.get("provider") for b in order])
                 return {"ok": False, "log": log, "req": req,
                         "net_blocked": {"providers": [b.get("provider") for b in order], "why": names}}
         if persist:

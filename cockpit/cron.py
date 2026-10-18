@@ -843,9 +843,15 @@ class Scheduler:
                 it.update(status="failed", note="no_route", finished=now_iso())
                 return
             resume = {"skipSigs": it["done"]} if it.get("done") else None
+            net = task.get("net", "")
+            if it.get("retry"):
+                # Повтор в конце цепочки уже ждёт связь, а не откладывает снова.
+                G, svc = RR.net_gate(), self._net_svc()
+                if G is not None and svc is not None and G.policy_for(net, svc) in ("queue", "partial_queue"):
+                    net = "queue"
             route = RR.RouteRun(ck, project, sc, it.get("write", True), lang=lang, log=log,
                                 stop=self.stop_event, on_job=on_job, on_step=on_step,
-                                resume=resume, trigger="cron", parent=run["id"], net=task.get("net", ""))
+                                resume=resume, trigger="cron", parent=run["id"], net=net)
             if hasattr(ck, "route_register"):
                 ck.route_register(route, project)
             res = route.safe_run()
@@ -856,10 +862,14 @@ class Scheduler:
             if status == "stall" and res.get("progressed"):
                 # База за маршрут менялась, не двигается только хвост — проект обновлён.
                 status = "partial"
-            if status == "passed" and res.get("net_skipped"):
+            note = res.get("note", "")
+            if status == "passed" and res.get("net_deferred"):
+                # Маршрут отдал отложенные шаги цепочке: она вернётся к ним в конце, когда остальные проекты пройдены.
+                status, note = "deferred", "net: " + ", ".join(dict.fromkeys(res["net_deferred"]))[:200]
+            elif status == "passed" and res.get("net_skipped"):
                 # Политика «сделать доступное»: часть шагов пропущена из-за связи — это частичный итог, а не чистый.
                 status = "partial"
-            it.update(status=status, failed=res.get("failed", ""), note=res.get("note", ""),
+            it.update(status=status, failed=res.get("failed", ""), note=note,
                       finished=now_iso())
             return
         gap = ck.version_gap(project)
@@ -879,7 +889,7 @@ class Scheduler:
             tries += 1
             log(f"⚠ шаг завис ({res['hung']}) — запускаю заново (попытка {tries})")
             res = RR.run_job(ck, project, it["cmd"], it["args"], stop=self.stop_event,
-                             on_job=on_job, parent=run["id"])
+                             on_job=on_job, parent=run["id"], net=self._net_policy(task))
         if res.get("hung"):
             # Сюда доходим, только если цепочку остановили, пока шаг висел.
             res = dict(res, rc=2, refused=f"шаг завис, цепочку остановили: {res['hung']}")
@@ -892,7 +902,7 @@ class Scheduler:
         if res.get("stopped"):
             it.update(status="stopped", finished=now_iso())
             return
-        if rc == 2 and self._net_refused(task, it, res, log):
+        if rc >= 1 and self._net_refused(task, it, res, log):
             return
         if rc >= 2 or rc < 0:
             it.update(status="failed", note=res.get("refused") or "", finished=now_iso())
@@ -931,6 +941,8 @@ class Scheduler:
         policy = G.policy_for(task.get("net", ""), self._net_svc())
         act = G.decide(policy, {"ok": False})
         status = {"fail": "offline", "skip": "partial"}.get(act, "deferred")
+        if it.get("retry") and status == "deferred":
+            status = "offline"                  # повтор в конце цепочки отказал снова: это итог, цепочка не крутится по кругу
         log(f"⏸ {it['cmd']}: источник отказал по связи — {why}.")
         it.update(status=status, note="net: " + why[:200], finished=now_iso())
         return True
@@ -976,10 +988,19 @@ class Scheduler:
             if time.time() - said[0] >= 600:           # в журнал — раз в десять минут, а не на каждый опрос
                 said[0] = time.time()
                 log(f"⏳ {cmd}: связи всё ещё нет — " + "; ".join(G.reason_line(r) for r in verdict["blocked"]))
-        ok = G.wait_restored(lambda: G.check_command(it["cmd"], it["project"], svc=svc), stop=self.stop_event,
-                             poll=RR.NET_POLL_S, on_wait=on_wait)
+
+        def verdict() -> dict:
+            try:
+                return G.check_command(it["cmd"], it["project"], svc=svc, hold=True)
+            except Exception:  # noqa: BLE001 — сбой самой проверки не рушит шаг: связи «хватает»
+                return {"ok": True, "blocked": []}
+        ok = G.wait_restored(verdict, stop=self.stop_event, poll=RR.NET_POLL_S, on_wait=on_wait)
         if not ok:
             it.update(status="stopped", finished=now_iso())
+            return True
+        if not self._wait_free(it["project"], log):            # за время ожидания проект мог занять запуск руками
+            it.update(status="stopped" if self.stop_event.is_set() else "skipped",
+                      note="" if self.stop_event.is_set() else "busy", finished=now_iso())
             return True
         log(f"✓ {cmd}: связь вернулась (ждали {int(time.time() - started)} с) — продолжаю")
         return False

@@ -342,13 +342,17 @@ def save(kit, data: dict, expect=None, replace_broken: bool = False) -> dict:
     from aurora_common import lock_release, lock_take, replace_file
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = str(path) + ".lock"
-    for _ in range(100):
-        got, _held = lock_take(lock, stale_s=60)
-        if got:
-            break
-        time.sleep(0.05)
-    else:
-        return {"ok": False, "code": "busy", "error": "файл настройки моделей занят другим процессом"}
+    try:
+        for _ in range(100):
+            got, _held = lock_take(lock, stale_s=60)
+            if got:
+                break
+            time.sleep(0.05)
+        else:
+            return {"ok": False, "code": "busy", "error": "файл настройки моделей занят другим процессом"}
+    except OSError as e:
+        return {"ok": False, "code": "write", "failed": True,
+                "error": f"не удалось записать настройку моделей: {e.strerror or type(e).__name__}"}
     try:
         if expect is not None and expect != file_stamp(kit):
             return {"ok": False, "conflict": True, "code": "conflict",
@@ -363,7 +367,9 @@ def save(kit, data: dict, expect=None, replace_broken: bool = False) -> dict:
                     return {"ok": False, "code": "broken",
                             "error": f"{path.name} не разобран (правка руками?): сохранение заменит его целиком — "
                                      "рядом останется копия"}
-                _keep_copy(path)
+                if not _keep_copy(path):
+                    return {"ok": False, "code": "write", "failed": True,
+                            "error": "не удалось оставить копию прежнего файла рядом — замена отменена"}
                 old = {}
             _carry_unknown(old, clean)
         import tempfile
@@ -387,15 +393,21 @@ def save(kit, data: dict, expect=None, replace_broken: bool = False) -> dict:
         lock_release(lock)
 
 
-def _keep_copy(path: Path) -> None:
-    """Копия файла, который сейчас будет заменён: `models.json.broken-<время>` рядом, права 600 (внутри ключи)."""
-    import time
-    dst = path.with_name(f"{path.name}.broken-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}")
+def _keep_copy(path: Path) -> bool:
+    """Копия файла, который сейчас будет заменён: `models.json.broken-<время>` рядом, права 600 с первого байта (внутри
+    ключи); хранятся три свежие. → удалось ли: не удалось — заменять файл нельзя."""
+    from aurora_common import utc_slug
+    dst = path.with_name(f"{path.name}.broken-{utc_slug()}")
     try:
-        dst.write_bytes(path.read_bytes())
-        os.chmod(dst, 0o600)
+        data = path.read_bytes()
+        fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        for old in sorted(path.parent.glob(path.name + ".broken-*"))[:-3]:
+            old.unlink(missing_ok=True)
+        return True
     except OSError:
-        pass
+        return False
 
 
 def masked(data: dict) -> dict:

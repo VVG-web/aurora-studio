@@ -50,6 +50,7 @@ flowchart LR
 
 | Page | Answers |
 |---|---|
+| [Connection check](Connection-Check.md) | What is available now, and what the kit does when something is not |
 | [Troubleshooting](Troubleshooting.md) | Typical errors and what to do |
 | [Windows and macOS](Windows-and-macOS.md) | What behaves differently, file names, launch files |
 | [FAQ](FAQ.md) | Short answers |

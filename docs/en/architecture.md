@@ -204,6 +204,19 @@ Scripts write into hundreds of files at once, so protection is built into the en
 | **Distrust of its own memory** | The engine does not rewrite what it did not write: the body of a dictionary and a document, the history footer and the previous thesis are not overwritten |
 | **A closed folder schema** | `kit:doctor --structure` names everything not in `structure_dirs.txt` |
 
+### Connection availability
+
+Opt-in (the *Connection check* section in the panel; with it off nothing below is called). `AvailabilityService`
+(`scripts/connectivity.py`) answers "what is available now": profiles (VPNs), the internet and model providers; the state lives in
+`~/.aurora/connectivity-state.json`, shared by the machine's processes, and anti-flapping decides state changes (N failures in a
+row — unavailable, M successes — available again). `scripts/conn_gate.py` answers "what does the work need and may it start": the
+command's requirements (`command_deps.json` + the project's source access modes + provider bindings) against the summary. Only a
+known "unavailable" blocks; `unknown` does not. What to do about a gap is a policy (`fail_fast`, `partial`, `queue`,
+`partial_queue`); the places it applies are routes and Cron (`cockpit/route_runner.py`, `cockpit/cron.py`), a launch from the panel
+(a dialog and a waiting job), the source sync script's refusal (`sources_core.run_main`), the model router
+(`agent_core.call_role`: an unavailable provider is skipped and not quarantined), the agent run's wait and the step watchdog. More:
+[connectivity.md](connectivity.md).
+
 ## 4. The built-in agent
 
 Routine steps with a model are executed not by an external assistant but by Aurora's own agent — the `agent:*`

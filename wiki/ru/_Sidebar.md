@@ -16,6 +16,7 @@
 [Панель управления](The-Control-Panel.md)
 
 **На практике**
+[Проверка соединения](Connection-Check.md) ·
 [Если что-то не так](Troubleshooting.md) ·
 [Windows и macOS](Windows-and-macOS.md) ·
 [Частые вопросы](FAQ.md) ·
