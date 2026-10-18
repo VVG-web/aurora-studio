@@ -7521,8 +7521,17 @@ def checkpoint_lines(cp: dict) -> list:
 def adapter_lines(cfg: dict, res: dict) -> list:
     L = []
     if AG.ADAPTER.get("fallback_why"):
-        L += ["", f"⚠️ Адаптер `{cfg['adapter']}` не сработал ({AG.ADAPTER['fallback_why']}) — "
-              "работали на stdlib-транспорте. Проверьте venv: «Настройка» → «Агент»."]
+        # Лекарство называет сама причина (она из таблицы `agent_core.CAUSES`); общая подсказка
+        # про venv — только неназванной ошибке адаптера.
+        cause = AG.cause_of(AG.ADAPTER["fallback_why"])
+        L += ["", f"⚠️ Адаптер `{cfg['adapter']}` не сработал ({cause}) — работали на "
+              "stdlib-транспорте." + (" Проверьте venv: «Настройка» → «Агент»."
+                                      if cause.plain and cause.kind == "adapter_error" else "")]
+    if AG.USAGE.get("link_rescued"):
+        # Обрыв связи — не поломка адаптера: вызовы повторены прямым запросом, и только.
+        L += ["", f"ℹ️ Обрыв связи: {AG.USAGE['link_rescued']} вызовов адаптера не дошли до шлюза "
+              f"({AG.CAUSES.get(AG.USAGE.get('link_rescued_kind') or 'other', {}).get('label', '')}), "
+              "повторены прямым запросом — это не поломка Pydantic AI."]
     degraded = [s for s in res["steps"] if s.get("degraded")]
     if degraded:
         L += ["", f"⚠️ **Частично на резервных моделях**: шагов {len(degraded)}. "

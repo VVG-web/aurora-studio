@@ -140,6 +140,10 @@ PROBLEMS = {
                  "Вызов прошёл мимо Pydantic AI — без MCP-серверов и файлов. Причина — в "
                  "отчёте; проверьте Pydantic AI на странице «Установка».",
                  ["open_install", "retry"]),
+    "link_down": ("Нет связи с моделью",
+                  "Pydantic AI исправен: вызов не получил ответа от шлюза моделей — сеть, VPN, "
+                  "сертификат, ключ или сам шлюз. Причина названа в отчёте; проверьте связь и "
+                  "статус шлюза, потом запустите бота снова.", ["open_models", "retry"]),
     "no_tool_calls": ("Бот не вызвал ни одного инструмента",
                       "MCP-серверы бота были подключены, но модель ответила текстом. Скажите в "
                       "промпте прямо, какой инструмент звать первым (например, поиск задач "
@@ -742,6 +746,10 @@ def _model_problem(r: dict) -> dict:
         return problem("tool_limit", text)
     if r.get("timed_out"):
         return problem("timeout", text)
+    if r.get("link"):
+        # Обрыв связи или отказ шлюза — не «модель не ответила» и не «мимо Pydantic AI»:
+        # называем реальную причину.
+        return problem("link_down", str(r["link"].get("why") or text)[:500])
     return problem("model_failed", text)
 
 

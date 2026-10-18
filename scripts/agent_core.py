@@ -438,13 +438,19 @@ class Refusal(str):
 
     Транспорт возвращает ошибку строкой, и весь движок читает её как строку; подсказка
     шлюза едет на том же объекте, чтобы не менять форму кортежа `(статус, тело, ошибка,
-    секунд)`, которую знают транспорты тестов и замеров.
+    секунд)`, которую знают транспорты тестов и замеров. Там же едут вид обрыва связи
+    (`kind`: DNS, сброс, срок — его назвал адаптер) и поломка самого пути Pydantic AI
+    (`cause`, см. `Why`): по ним кольцо отличает обрыв сети от неисправного адаптера.
     """
     retry_after = None
+    kind = None
+    cause = None
 
-    def __new__(cls, text, retry_after=None):
+    def __new__(cls, text, retry_after=None, kind=None, cause=None):
         self = super().__new__(cls, text)
         self.retry_after = retry_after
+        self.kind = kind
+        self.cause = cause
         return self
 
 
@@ -567,6 +573,335 @@ ADAPTER_FAIL = "адаптер Pydantic AI: "
 ADAPTER_NO_CONNECT = "нет соединения"
 
 
+# ------------------------------------------------------------------ причины сбоя вызова
+
+# Почему вызов модели не дошёл до ответа и что с этим делать — ОДНА таблица на движок. Ею
+# пользуются транспорт, кольцо, тревога панели, итог прогона, боты и доктор.
+#
+# Область (`area`) решает, чья это беда:
+#   adapter — неисправен путь Pydantic AI: пакет не стоит или не импортируется, версия не прошла
+#             проверку, процесс не запускается или падает, ответ не разобран, а также HTTP-клиент
+#             адаптера не доходит до шлюза, хотя прямой запрос доходит (прокси, сертификат, DNS
+#             процесса адаптера). ТОЛЬКО они поднимают красную полосу «мимо Pydantic AI».
+#   link    — связь или сервер: DNS, отказ порта, таймаут соединения, нет маршрута, TLS, прокси,
+#             сброс, молчание по сроку, 5xx, ключ, лимит, 404. Pydantic AI тут ни при чём, и
+#             говорить про него нельзя: у такой беды своя тревога связи.
+# `fix` — куда ведёт кнопка полосы: `install` («Установка»), `version` («Версия»), `models`
+# («Модели»); пусто — кнопки нет, лечится снаружи (сеть, VPN, шлюз).
+# `ru` — текст по-русски, подстановки `{имя}`; английский — `cockpit/i18n/data/en.json`
+# (раздел messages; `kit:i18n --check` сверяет их с этой таблицей). Адресов и ключей в
+# текстах нет: бэкенд назван номером и моделью. Ключ — `вид` или `вид.подвид`.
+# `label` — короткое название вида для строки итога и счётчиков ошибок.
+CAUSES: dict = {
+    # --- adapter: сам Pydantic AI
+    "venv": {"area": "adapter", "fix": "install",
+             "ru": "venv python: {path} не найден — «Установка» → Pydantic AI"},
+    "adapter_file.project": {
+        "area": "adapter", "fix": "version",
+        "ru": "адаптер: {path} не найден — движок проекта неполный: «Версия» → «Подготовить проект»"},
+    "adapter_file.kit": {"area": "adapter", "fix": "version",
+                         "ru": "адаптер: {path} не найден — кит неполный: обновите кит"},
+    "import_failed.missing": {
+        "area": "adapter", "fix": "install",
+        "ru": "в venv не установлен пакет {module} — Pydantic AI не запускается: "
+              "«Установка» → Pydantic AI"},
+    "import_failed.broken": {
+        "area": "adapter", "fix": "install",
+        "ru": "Pydantic AI не импортируется в venv ({exc}) — пакет повреждён или не подходит к "
+              "Python venv: «Установка» → Pydantic AI, переустановить"},
+    "incompatible": {
+        "area": "adapter", "fix": "install",
+        "ru": "Pydantic AI {version} не прошёл проверку совместимости с Авророй ({first}) — "
+              "работаю прямым HTTP; вернуть прежнюю версию: «Установка» → Pydantic AI"},
+    "process_start": {"area": "adapter", "fix": "install",
+                      "ru": "процесс адаптера не запускается ({exc}) — «Установка» → Pydantic AI"},
+    "process_died.start": {
+        "area": "adapter", "fix": "install",
+        "ru": "процесс адаптера завершился сразу при запуске (код {code}) — venv повреждён: "
+              "«Установка» → Pydantic AI"},
+    "process_died.closed": {
+        "area": "adapter", "fix": "install",
+        "ru": "процесс адаптера закрылся посреди вызова — «Установка» → Pydantic AI"},
+    "process_died.pipe": {
+        "area": "adapter", "fix": "install",
+        "ru": "труба к процессу адаптера закрыта ({exc}) — процесс упал: «Установка» → Pydantic AI"},
+    "process_died.repeated": {
+        "area": "adapter", "fix": "install",
+        "ru": "процесс адаптера падал {times} раза за прогон — больше его не зову: "
+              "«Установка» → Pydantic AI"},
+    "process_hang.start": {
+        "area": "adapter", "fix": "install",
+        "ru": "процесс адаптера не ответил за {sec} с после запуска — «Установка» → Pydantic AI"},
+    "process_hang.call": {
+        "area": "adapter", "fix": "install",
+        "ru": "процесс адаптера не дал ответа за {sec} с — завис (timed out): «Установка» → Pydantic AI"},
+    "adapter_error": {"area": "adapter", "fix": "install",
+                      "ru": "адаптер вернул ошибку: {error} — «Установка» → Pydantic AI"},
+    "reply_bad": {"area": "adapter", "fix": "install",
+                  "ru": "ответ адаптера не разобран ({detail}) — «Установка» → Pydantic AI"},
+    "not_enabled": {"area": "adapter", "fix": "",
+                    "ru": "адаптер не включён в этом процессе — ошибка движка"},
+    # --- adapter: HTTP-клиент адаптера не доходит до шлюза, а прямой запрос доходит
+    "client_net.proxy": {
+        "area": "adapter", "fix": "",
+        "ru": "HTTP-клиент адаптера не доходит до бэкенда №{n} ({model}), а прямой запрос доходит: "
+              "прокси окружения не подошёл клиенту адаптера{detail} — сверьте HTTP_PROXY, "
+              "HTTPS_PROXY и NO_PROXY и схему прокси (для socks в venv нужен свой пакет)"},
+    "client_net.tls": {
+        "area": "adapter", "fix": "",
+        "ru": "HTTP-клиент адаптера не доходит до бэкенда №{n} ({model}), а прямой запрос доходит: "
+              "ошибка сертификата — клиент адаптера обычно проверяет сертификаты по своему "
+              "хранилищу, а не по системному; сверьте корневой сертификат шлюза (SSL_CERT_FILE) "
+              "и цепочку прокси"},
+    "client_net.dns": {
+        "area": "adapter", "fix": "",
+        "ru": "HTTP-клиент адаптера не доходит до бэкенда №{n} ({model}), а прямой запрос доходит: "
+              "имя шлюза не разрешается в процессе адаптера — сверьте DNS, VPN и прокси окружения"},
+    "client_net.other": {
+        "area": "adapter", "fix": "",
+        "ru": "HTTP-клиент адаптера не доходит до бэкенда №{n} ({model}), а прямой запрос доходит: "
+              "причину не удалось назвать точнее — сверьте прокси окружения, сертификаты и DNS "
+              "процесса адаптера"},
+    # --- link: связь и сервер
+    "dns": {"area": "link", "fix": "", "label": "имя шлюза не найдено (DNS)",
+            "ru": "бэкенд №{n} ({model}): имя шлюза не найдено (DNS) — проверьте сеть и VPN и "
+                  "адрес шлюза в разделе «Модели»"},
+    "refused": {"area": "link", "fix": "", "label": "отказ в соединении",
+                "ru": "бэкенд №{n} ({model}): отказ в соединении (порт закрыт) — шлюз выключен или "
+                      "адрес и порт указаны неверно: проверьте статус шлюза и раздел «Модели»"},
+    "connect_timeout": {
+        "area": "link", "fix": "", "label": "таймаут соединения",
+        "ru": "бэкенд №{n} ({model}): таймаут соединения — сеть или VPN недоступны либо шлюз не "
+              "принимает соединения: проверьте сеть, VPN и статус шлюза"},
+    "unreachable": {"area": "link", "fix": "", "label": "сеть недоступна",
+                    "ru": "бэкенд №{n} ({model}): сеть недоступна или нет маршрута до шлюза — "
+                          "проверьте подключение к сети и VPN"},
+    "tls": {"area": "link", "fix": "", "label": "ошибка TLS или сертификата",
+            "ru": "бэкенд №{n} ({model}): ошибка TLS или сертификата шлюза — проверьте сертификат "
+                  "шлюза и корневые сертификаты этого компьютера"},
+    "proxy": {"area": "link", "fix": "", "label": "прокси не пропустил запрос",
+              "ru": "бэкенд №{n} ({model}): прокси не пропустил запрос — проверьте HTTP_PROXY, "
+                    "HTTPS_PROXY, NO_PROXY и учётные данные прокси"},
+    "reset": {"area": "link", "fix": "", "label": "соединение сброшено",
+              "ru": "бэкенд №{n} ({model}): соединение сброшено сервером — шлюз перезапускается или "
+                    "перегружен: проверьте статус шлюза, сеть и VPN"},
+    "silent": {"area": "link", "fix": "models", "label": "молчание по сроку чтения",
+               "ru": "бэкенд №{n} ({model}): сервер принял запрос и не ответил за срок — шлюз занят "
+                     "или завис; это не поломка Pydantic AI: проверьте шлюз или поднимите срок "
+                     "запроса в разделе «Модели»"},
+    "server_error": {"area": "link", "fix": "", "label": "ошибка сервера (5xx)",
+                     "ru": "бэкенд №{n} ({model}): шлюз ответил ошибкой сервера (HTTP {status}) — сбой "
+                           "на его стороне: проверьте статус шлюза; движок повторит сам"},
+    "auth": {"area": "link", "fix": "models", "label": "ключ или доступ не приняты (401/403)",
+             "ru": "бэкенд №{n} ({model}): шлюз не принял ключ или доступ (HTTP {status}) — проверьте "
+                   "ключ и права в разделе «Модели»"},
+    "rate_limit": {"area": "link", "fix": "models", "label": "лимит скорости (429)",
+                   "ru": "бэкенд №{n} ({model}): шлюз ограничил скорость (HTTP 429) — движок подождёт "
+                         "и повторит; снизьте ширину в разделе «Модели»"},
+    "not_found": {"area": "link", "fix": "models", "label": "нет модели или пути (404)",
+                  "ru": "бэкенд №{n} ({model}): шлюз ответил 404 — нет такой модели или пути: проверьте "
+                        "имя модели и адрес в разделе «Модели»"},
+    "bad_reply": {"area": "link", "fix": "", "label": "ответ шлюза не JSON",
+                  "ru": "бэкенд №{n} ({model}): шлюз ответил не JSON — вероятно, прокси или страница "
+                        "входа вместо шлюза: проверьте адрес, прокси и VPN"},
+    "other": {"area": "link", "fix": "", "label": "не удалось обратиться к шлюзу",
+              "ru": "бэкенд №{n} ({model}): не удалось обратиться к шлюзу, причину не удалось назвать "
+                    "точнее — проверьте сеть, VPN и статус шлюза (подробности — в журнале сбоев)"},
+    # --- сведение, не сбой: обрыв у адаптера, спасённый прямым запросом
+    "rescued": {"area": "link", "fix": "", "label": "обрыв, спасённый прямым запросом",
+                "ru": "бэкенд №{n} ({model}): вызов адаптера не дошёл до шлюза ({label}) и повторён "
+                      "прямым запросом — это обрыв связи, а не поломка Pydantic AI"},
+}
+# Виды связи, которые считаются подряд на одном бэкенде и поднимают тревогу связи; остальное
+# из `link` — «сервер жив»: молчание по сроку и лимит скорости серию неудач обнуляют.
+LINK_ALARM_KINDS = frozenset({"dns", "refused", "connect_timeout", "unreachable", "tls", "proxy",
+                              "reset", "server_error", "auth", "not_found", "bad_reply", "other"})
+LINK_REACHED_KINDS = frozenset({"silent", "rate_limit"})
+LINK_KINDS = LINK_ALARM_KINDS | LINK_REACHED_KINDS
+# Сколько неудач подряд на одном бэкенде (и сколько обрывов адаптера, спасённых прямым запросом,
+# подряд без единого прохода через адаптер) — тревога, а не мигание сети. Одно число на оба счёта.
+ALARM_AFTER = 3
+# Тревога связи, которую никто не снял (бэкенд убрали из настройки, прогонов больше нет), через столько
+# секунд панель уже не показывает: у живой тревоги `at` обновляется с каждой новой неудачей.
+LINK_ALARM_TTL = 12 * 3600
+LINK_FAILURE = "обрыв связи"         # вид сбоя вызова в `USAGE["errors"]`; причина — в `USAGE["link_why"]`
+
+
+def cause_id(kind: str, sub: str = "") -> str:
+    return f"{kind}.{sub}" if sub else kind
+
+
+class _Blank(dict):
+    """Подстановки причины: чего не передали — вопросительный знак, а не исключение."""
+
+    def __missing__(self, key):
+        return "?"
+
+
+class Why(str):
+    """Причина сбоя: текст для людей и разбор для кода — вид, подвид, область, лекарство.
+
+    Это строка (её печатают, сравнивают и режут как прежде), поэтому там, где раньше шла причина
+    текстом, ничего не меняется; а транспорт, кольцо и тревога читают `kind`/`area`/`fix`.
+    `Why("dns", n=2, model="m")` строит текст из таблицы `CAUSES`; `Why.raw(текст)` — причина с
+    готовым текстом (от самого адаптера, из подставного транспорта теста)."""
+    kind = "adapter_error"
+    sub = ""
+    area = "adapter"
+    fix = ""
+    args: dict = {}
+    plain = False        # текст не из таблицы: к нему добавляется общая подсказка
+    armed = False        # для `client_net`: пора ли поднимать тревогу про Pydantic AI (см. `net_gap`)
+
+    def __new__(cls, kind: str, sub: str = "", /, **args):
+        row = CAUSES[cause_id(kind, sub)]
+        self = super().__new__(cls, row["ru"].format_map(_Blank(args)))
+        self._set(kind, sub, row, args)
+        return self
+
+    def _set(self, kind: str, sub: str, row: dict, args: dict) -> None:
+        self.kind, self.sub, self.area, self.fix = kind, sub, row["area"], row["fix"]
+        self.args = {k: v for k, v in args.items() if isinstance(v, (str, int, float, bool))}
+
+    @classmethod
+    def raw(cls, text, kind: str = "adapter_error", sub: str = "", /, **args) -> "Why":
+        self = str.__new__(cls, str(text))
+        self._set(kind, sub, CAUSES[cause_id(kind, sub)], args)
+        self.plain = True
+        return self
+
+    def __reduce__(self):
+        # копирование и pickle: у строки другая сигнатура `__new__`, по умолчанию причина не восстановилась бы
+        return (_rebuild_why, (str(self), self.kind, self.sub, dict(self.args), self.plain, self.armed))
+
+    @property
+    def label(self) -> str:
+        return str(CAUSES[cause_id(self.kind, self.sub)].get("label") or "")
+
+    @property
+    def body(self) -> str:
+        """Текст без «бэкенд №N (модель): » — для строки журнала, где бэкенд уже назван."""
+        head, sep, tail = str(self).partition("): ")
+        return tail if sep and head.startswith("бэкенд №") else str(self)
+
+    def row(self) -> dict:
+        """Поля для файла тревоги и ответа панели."""
+        return {"area": self.area, "kind": self.kind, "sub": self.sub, "fix": self.fix,
+                "args": dict(self.args), "why": str(self), "plain": self.plain}
+
+
+def _rebuild_why(text, kind, sub, args, plain, armed) -> Why:
+    why = Why.raw(text, kind, sub, **args)
+    why.plain, why.armed = plain, armed
+    return why
+
+
+def cause_of(why) -> Why:
+    """Причина по её тексту: готовая `Why` как есть, начало «venv python: » и «адаптер: » — по
+    ним, остальное — неназванная ошибка адаптера (`adapter_error`, текст сохраняется)."""
+    if isinstance(why, Why):
+        return why
+    text = str(why or "")
+    if text.startswith(GAP_VENV):
+        return Why.raw(text, "venv")
+    if text.startswith(GAP_ADAPTER):
+        return Why.raw(text, "adapter_file", "project" if "движок проекта" in text else "kit")
+    if text.startswith("адаптер не включён"):
+        return Why.raw(text, "not_enabled")
+    return Why.raw(text)
+
+
+def alarm_age(row: dict) -> float:
+    """Сколько секунд назад записана тревога (`at`); не разобрать — 0: лучше показать, чем потерять."""
+    from datetime import datetime, timezone
+    try:
+        then = datetime.strptime(str(row["at"]), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+    return max(0.0, time.time() - then.timestamp())
+
+
+def alarm_cause(row: dict) -> Why:
+    """Причина по строке файла тревоги. Строка без `kind` (написана движком до 1.176.0) — это
+    область adapter, вид определяется по тексту."""
+    kind, sub = str(row.get("kind") or ""), str(row.get("sub") or "")
+    args = row.get("args") if isinstance(row.get("args"), dict) else {}
+    if cause_id(kind, sub) in CAUSES:
+        if row.get("plain"):
+            return Why.raw(row.get("why") or "", kind, sub, **args)
+        return Why(kind, sub, **args)
+    return cause_of(row.get("why"))
+
+
+class AdapterFail(Refusal):
+    """Отказ самого адаптера: текст начинается с `ADAPTER_FAIL`.
+
+    `cause` — поломка пути Pydantic AI (`Why`); `link` — не поломка, а обрыв: адаптер не дошёл
+    до сервера, `{kind, proxy_fell, raw}`. Транспорт выбирает по ним, что делать дальше."""
+    link = None
+
+    def __new__(cls, text, cause=None, link=None):
+        self = super().__new__(cls, text, cause=cause)
+        self.link = link
+        return self
+
+
+# Вид обрыва связи по тексту ошибки. Порядок важен: частное раньше общего (прокси и сертификат —
+# раньше «не дошли», сброс — раньше «срок»). Формы текста — у прямого пути (`http_json`):
+# `URLError: <urlopen error [Errno 61] Connection refused>`, `TimeoutError: timed out`,
+# `RemoteDisconnected: …`, `JSONDecodeError: …`; номера кодов — macOS, Linux и Windows.
+_LINK_TEXT = tuple((kind, re.compile(rx, re.I)) for kind, rx in (
+    ("proxy", r"proxyerror|tunnel connection failed|proxy authentication|proxy error|bad proxy"),
+    # оборванный посреди TLS (`[SSL: UNEXPECTED_EOF_WHILE_READING]`) — обрыв сети, а не сертификат
+    ("reset", r"unexpected_eof|eof occurred|connection reset|reset by peer|remotedisconnected|"
+              r"remote end closed|connection aborted|broken pipe|incompleteread|forcibly closed|"
+              r"remoteprotocolerror|\[errno (?:32|54|104|10053|10054)\]"),
+    # рукопожатие, не уложившееся в срок, — соединение не установилось
+    ("connect_timeout", r"connecttimeout|connect timeout|connection timed out|handshake operation "
+                        r"timed out|urlopen error timed out|did not properly respond|"
+                        r"\[errno (?:60|110|10060)\]"),
+    ("tls", r"certificate|\bssl\b|sslerror|\btls\b|handshake|wrong version number"),
+    ("dns", r"nodename nor servname|name or service not known|temporary failure in name "
+            r"resolution|getaddrinfo failed|gaierror|no address associated|name resolution|"
+            r"\[errno (?:-2|-3|11001)\]"),
+    ("refused", r"connection refused|connectionrefused|actively refused|"
+                r"\[errno (?:61|111|10061)\]"),
+    ("unreachable", r"network is unreachable|no route to host|network is down|host is down|"
+                    r"unreachable network|unreachable host|"
+                    r"\[errno (?:50|51|64|65|100|101|112|113|10050|10051|10064|10065)\]"),
+    # `The read operation timed out` — чтение ответа по TLS: соединение было, сервер молчит
+    ("silent", r"timed out|timeout|readtimeout"),
+    ("bad_reply", r"jsondecodeerror|expecting value|extra data|unterminated string|not valid json"),
+))
+_LINK_STATUS = {401: "auth", 403: "auth", 404: "not_found", 408: "silent", 429: "rate_limit"}
+
+
+def link_kind(err, status=None) -> str:
+    """Какая беда связи или шлюза по отказу вызова: ключ области `link` из `CAUSES`; пусто — это
+    не связь (сервер ответил по делу: 400, 413, 422…, он достижим).
+
+    Вид уже назвал адаптер (`err.kind`, по классам исключений) — берём его. Иначе — по статусу
+    (401/403, 404, 429, 5xx) или, если статуса нет, по тексту ошибки прямого пути."""
+    named = getattr(err, "kind", None)
+    if named in LINK_KINDS:
+        return named
+    if status is not None:
+        if status in _LINK_STATUS:
+            return _LINK_STATUS[status]
+        return "server_error" if 500 <= status < 600 else ""
+    text = str(err or "")
+    for kind, rx in _LINK_TEXT:
+        if rx.search(text):
+            return kind
+    return "other"
+
+
+def link_why(kind: str, n, model: str = "", status=None) -> Why:
+    """Причина беды связи с бэкендом №`n` и моделью `model` — с названием, без адреса и ключа."""
+    shown = status if status else {"server_error": "5xx", "auth": "401/403"}.get(kind, "")
+    return Why(kind, n=n, model=model or "модель не названа", status=shown)
+
+
 def _venv_python() -> Path:
     return VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
@@ -604,15 +939,22 @@ def _shown_path(path) -> str:
     return "/".join(parts[-3:])
 
 
-def _venv_gap() -> str:
-    return f"venv python: {_shown_path(_venv_python())} не найден — «Установка» → Pydantic AI"
+def _venv_gap() -> Why:
+    return Why("venv", path=_shown_path(_venv_python()))
 
 
-def _adapter_gap() -> str:
+def _adapter_gap() -> Why:
     where = _shown_path(_adapter_file())
-    if where.startswith(".aurora/"):
-        return f"адаптер: {where} не найден — движок проекта неполный: «Версия» → «Подготовить проект»"
-    return f"адаптер: {where} не найден — кит неполный: обновите кит"
+    return Why("adapter_file", "project" if where.startswith(".aurora/") else "kit", path=where)
+
+
+def _gap_causes() -> list:
+    gaps = []
+    if not _venv_python().is_file():
+        gaps.append(_venv_gap())
+    if not _adapter_file().is_file():
+        gaps.append(_adapter_gap())
+    return gaps
 
 
 def adapter_gap() -> str:
@@ -621,12 +963,16 @@ def adapter_gap() -> str:
     Раньше оба случая — нет venv и нет файла адаптера в `.aurora/scripts/agents/` — назывались
     одинаково («venv не установлен»), и человек с неполным движком проекта шёл переустанавливать
     Pydantic AI, который стоял и был зелёным на странице «Установка»."""
-    gaps = []
-    if not _venv_python().is_file():
-        gaps.append(_venv_gap())
-    if not _adapter_file().is_file():
-        gaps.append(_adapter_gap())
-    return "; ".join(gaps)
+    return "; ".join(str(g) for g in _gap_causes())
+
+
+def adapter_gap_why():
+    """То же, что `adapter_gap`, но причиной (`Why`) с видом и лекарством; None — всё на месте.
+    Не хватает обоих — текст общий, вид и лекарство по первому (venv)."""
+    gaps = _gap_causes()
+    if len(gaps) < 2:
+        return gaps[0] if gaps else None
+    return Why.raw("; ".join(str(g) for g in gaps), gaps[0].kind, gaps[0].sub, **gaps[0].args)
 
 
 # Совместимость адаптера с установленной версией Pydantic AI. API фреймворка меняется от
@@ -702,6 +1048,8 @@ def _hub_reader(proc, pending: dict) -> None:
             out = json.loads(line)
         except ValueError:
             continue
+        if not isinstance(out, dict):       # посторонняя строка вроде «1» или «[]» — не ответ
+            continue
         with _HUB_LOCK:
             slot = pending.pop(out.get("id"), None)
         if slot is not None:
@@ -712,16 +1060,32 @@ def _hub_reader(proc, pending: dict) -> None:
             _HUB["proc"] = None
             _HUB["deaths"] += 1
             if _HUB["deaths"] >= ADAPTER_DEATHS:
-                _HUB["broken"] = f"процесс падал {_HUB['deaths']} раза за прогон"
+                _HUB["broken"] = Why("process_died", "repeated", times=_HUB["deaths"])
         left = list(pending.values())
         pending.clear()
     for slot in left:
-        slot["out"] = {"ok": False, "where": "adapter", "error": "процесс адаптера закрылся"}
+        slot["out"] = {"ok": False, "where": "adapter", "error": "процесс адаптера закрылся",
+                       "kind": "process_died", "sub": "closed"}
         slot["done"].set()
 
 
+def _scrub(text, limit: int = 200) -> str:
+    """Текст чужой ошибки для причины: без адресов (в сообщении исключения бывает адрес шлюза)."""
+    return re.sub(r"\w+://\S+", "<адрес>", str(text or ""))[:limit]
+
+
+def _hello_cause(hello: dict) -> Why:
+    """Почему процесс адаптера не сказал «готов»: пакет не стоит, не импортируется или иное."""
+    if hello.get("kind") == "import_failed":
+        module = str(hello.get("module") or "") or "pydantic_ai"
+        if hello.get("sub") == "missing":
+            return Why("import_failed", "missing", module=module)
+        return Why("import_failed", "broken", exc=str(hello.get("exc") or "ошибка импорта"))
+    return Why("adapter_error", error=_scrub(hello.get("error") or "причина не названа"))
+
+
 def adapter_hub():
-    """→ (процесс, его ожидающие) либо (None, причина). Запускает процесс при первом зове.
+    """→ (процесс, его ожидающие) либо (None, причина `Why`). Запускает процесс при первом зове.
 
     Запуск — под замком: пока venv поднимается, остальным потокам процесс всё равно нужен
     тот же. Не поднялся — причина запоминается на весь прогон, и восемь секунд запуска не
@@ -735,13 +1099,13 @@ def adapter_hub():
             return None, _HUB["broken"]
         argv = _adapter_argv()
         if not argv:
-            return None, adapter_gap() or "адаптер Pydantic AI не запускается"
+            return None, adapter_gap_why() or Why.raw("адаптер Pydantic AI не запускается")
         try:
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, text=True, bufsize=1,
                                     encoding="utf-8", env=child_env())
         except OSError as e:
-            _HUB["broken"] = f"не запускается: {type(e).__name__}"
+            _HUB["broken"] = Why("process_start", exc=type(e).__name__)
             return None, _HUB["broken"]
         box: list = []
 
@@ -763,11 +1127,23 @@ def adapter_hub():
         t.join(ADAPTER_START)
         hello = box[0] if box else {}
         if not hello.get("ready"):
+            hung = t.is_alive()             # нить ещё ждёт строку: процесс жив и молчит
             try:
                 proc.kill()
             except OSError:
                 pass
-            _HUB["broken"] = hello.get("error") or f"не ответил за {ADAPTER_START} с запуска"
+            if hello:
+                _HUB["broken"] = _hello_cause(hello)
+            elif hung:
+                _HUB["broken"] = Why("process_hang", "start", sec=ADAPTER_START)
+            else:
+                # Поток вывода закрылся, не сказав ни слова: процесс завершился сам, например
+                # из-за повреждённого venv. «Не ответил за 60 с» тут было бы неправдой.
+                try:
+                    code = proc.wait(timeout=2)
+                except subprocess.SubprocessError:
+                    code = "?"
+                _HUB["broken"] = Why("process_died", "start", code=code)
             return None, _HUB["broken"]
         version = hello.get("version") or ""
         chk = adapter_selfcheck(version)
@@ -777,14 +1153,21 @@ def adapter_hub():
             except OSError:
                 pass
             first = (chk.get("problems") or ["причина не названа"])[0]
-            _HUB["broken"] = (f"Pydantic AI {version} не прошёл проверку совместимости с "
-                              f"Авророй ({first}) — работаю прямым HTTP; вернуть прежнюю "
-                              f"версию: «Установка» → Pydantic AI")
+            _HUB["broken"] = Why("incompatible", version=version, first=first)
             return None, _HUB["broken"]
         pending: dict = {}
         _HUB.update(proc=proc, pending=pending, version=version)
         threading.Thread(target=_hub_reader, args=(proc, pending), daemon=True).start()
         return proc, pending
+
+
+def _out_cause(out: dict, err: str) -> Why:
+    """Поломка адаптера по его ответу `where=adapter` (не обрыв связи)."""
+    if out.get("kind") == "process_died":
+        return Why("process_died", out.get("sub") or "closed")
+    if not out.get("error"):
+        return Why("reply_bad", detail="нет ни результата, ни описания ошибки")
+    return Why("adapter_error", error=_scrub(err))
 
 
 def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
@@ -793,12 +1176,14 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     Подпроцессом, а не импортом: зависимости фреймворка живут в `~/.aurora/venv` и в
     питон движка не попадают. Отказ сервера возвращается как есть (статус, тело, причина),
     и кольцо решает по нему так же, как по HTTP. Поломка самого адаптера — с приставкой
-    `ADAPTER_FAIL`: транспорт повторит вызов прямым HTTP.
+    `ADAPTER_FAIL` (`AdapterFail`: причина `cause` либо разбор обрыва `link`): транспорт
+    отличит неисправный Pydantic AI от обрыва связи и решит, повторять ли вызов прямым HTTP.
     """
     t0 = time.time()
     proc, pending = adapter_hub()
     if proc is None:
-        return None, None, ADAPTER_FAIL + str(pending), 0.0
+        cause = cause_of(pending)
+        return None, None, AdapterFail(ADAPTER_FAIL + str(cause), cause=cause), 0.0
     tools = bool(payload.get("tools_root"))
     task = {"url": backend["url"], "key": backend["key"], "model": payload["model"],
             # Разговор целиком: адаптер сам разложит его на инструкции, историю и запрос.
@@ -824,22 +1209,34 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     except (OSError, ValueError) as e:
         with _HUB_LOCK:
             pending.pop(rid, None)
-        return None, None, ADAPTER_FAIL + f"труба закрыта ({type(e).__name__})", time.time() - t0
+        cause = Why("process_died", "pipe", exc=type(e).__name__)
+        return None, None, AdapterFail(ADAPTER_FAIL + str(cause), cause=cause), time.time() - t0
     # У вызова с инструментами несколько запросов к модели — и срок на каждый.
     wait = timeout * (1 + task["tool_calls"]) + 30
     if not slot["done"].wait(wait):
         with _HUB_LOCK:
             pending.pop(rid, None)
-        return None, None, f"адаптер не дал ответа за {int(wait)} с (timed out)", time.time() - t0
+        # Свой срок клиента адаптера короче этого: если и он не сработал, завис процесс. Текст
+        # хранит «timed out» — по нему кольцо читает это как молчание по сроку, а не как отказ.
+        cause = Why("process_hang", "call", sec=int(wait))
+        return None, None, Refusal(str(cause), cause=cause), time.time() - t0
     out = slot["out"] or {}
     dt = time.time() - t0
     if not out.get("ok"):
         err = str(out.get("error") or "ошибка без описания")
         if out.get("where") == "server":
             # Заголовки лимита адаптер присылает как есть: разбирает их тот же `retry_hint`,
-            # что и на прямом пути.
-            return out.get("status"), out.get("body"), Refusal(err, retry_hint(out.get("headers"))), dt
-        return None, None, ADAPTER_FAIL + err, dt
+            # что и на прямом пути. Вид обрыва (срок, сброс) едет с отказом.
+            return (out.get("status"), out.get("body"),
+                    Refusal(err, retry_hint(out.get("headers")), kind=out.get("kind")), dt)
+        if out.get("where") == "adapter" and err.startswith(ADAPTER_NO_CONNECT):
+            # Не поломка адаптера, а обрыв: не дошли до сервера. Вид назвал сам адаптер.
+            link = {"kind": out.get("kind") or link_kind(err),
+                    "proxy_fell": str(out.get("proxy_fell") or ""),
+                    "raw": err[len(ADAPTER_NO_CONNECT):].lstrip(": ")}
+            return None, None, AdapterFail(ADAPTER_FAIL + err, link=link), dt
+        cause = _out_cause(out, err)
+        return None, None, AdapterFail(ADAPTER_FAIL + str(cause), cause=cause), dt
     body = {"choices": [{"message": {"content": out.get("text") or "",
                                      "reasoning_content": out.get("reasoning") or ""},
                          "finish_reason": out.get("finish") or "stop"}],
@@ -852,7 +1249,7 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
 
 # Поля payload, которые понимает только внутренний адаптер. В HTTP-запрос они не идут.
 ADAPTER_ONLY = frozenset({"guard", "role", "tools_root", "mcp", "mcp_active", "outdir",
-                          "tool_calls", "adapter"})
+                          "tool_calls", "adapter", "needs_adapter"})
 
 
 # Пульс прогона (1.170.0): какие запросы к моделям идут прямо сейчас. Ответ модели приходит
@@ -1016,8 +1413,20 @@ def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -
     # прямой HTTP — только если не смог сам адаптер (venv не стоит, процесс упал, ответ
     # не разобран). Фолбэк не молчаливый: `_call_role` видит путь ответа (`aurora.via`) и
     # поднимает тревогу (`note_bypass`), а вызов с инструментами без адаптера не принимает.
+    #
+    # Обрыв связи — не поломка адаптера. Адаптер сказал «нет соединения» (`AdapterFail.link`):
+    # сеть мигнула, упал VPN или шлюз выключен. Это не «мимо Pydantic AI»:
+    # - вызов без инструментов повторяется прямым HTTP (он же показывает, дошёл бы туда другой
+    #   путь), но считается как «обрыв, спасённый прямым запросом» (`note_rescued`); тревога про
+    #   адаптер — только если так повторяется (`net_gap`) или причина очевидна (прокси, сертификат);
+    # - вызову с инструментами и MCP прямой путь не поможет — без инструментов его ответ не
+    #   принимается, — поэтому ему отдаётся отказ с причиной связи, а кольцо ждёт и повторяет сам.
     want = (payload or {}).get("adapter") or ADAPTER.get("name")
-    soft_why = hard_why = ""
+    needs = bool((payload or {}).get("needs_adapter") or (payload or {}).get("tools_root"))
+    model = (payload or {}).get("model") or ""
+    link = hard = None
+    dt = 0.0
+    entered = time.monotonic()        # когда вызов начался: обрыв, задевший сразу много вызовов, — одно событие
     if want == "pydantic_ai" and payload:
         st, body, err, dt = pydantic_transport(backend, payload, timeout)
         if not str(err or "").startswith(ADAPTER_FAIL):
@@ -1025,15 +1434,19 @@ def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -
                 # Адаптер сам довёл вызов до сервера (ответом или отказом): обхода нет, и
                 # причина прежнего обхода — уже не причина.
                 ADAPTER["fallback_why"] = ""
+                adapter_reached(backend)
             return st, body, err, dt
-        why = err[len(ADAPTER_FAIL):]
-        if why.startswith(ADAPTER_NO_CONNECT):
-            # «Не дошли» — не поломка адаптера: упала сеть или выключен шлюз. Причину обхода
-            # записываем, только если прямой запрос ответил (обход и правда был); иначе итог
-            # прогона грозил бы «Проверьте venv» после любого обрыва связи.
-            soft_why = why
-        else:
-            ADAPTER["fallback_why"] = hard_why = why
+        link, hard = _adapter_failure(err)
+        if hard is not None:
+            ADAPTER["fallback_why"] = hard
+    if link is not None and needs:
+        done, hard = _link_with_tools(backend, payload, timeout, link, dt, entered)
+        if done is not None:
+            return done
+        # На повторе сломался уже сам адаптер: дальше — как при любой его поломке (прямой запрос,
+        # причина в ответе, а вызов с инструментами такой ответ не примет).
+        link = None
+        ADAPTER["fallback_why"] = hard
     # В шлюз уходит запрос по стандарту. Внутренние поля адресованы адаптеру, а не
     # серверу: `guard`/`role`/`tools_root`/`mcp` — сторожу и инструментам. Строгий шлюз
     # на неизвестное поле отвечает `400 Unrecognized request argument`, а движок объявлял
@@ -1042,16 +1455,85 @@ def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -
     res = http_json(backend["url"] + "/chat/completions",
                     {k: v for k, v in (payload or {}).items() if k not in ADAPTER_ONLY},
                     backend["key"], timeout)
-    if res[0] is not None and (soft_why or hard_why):
-        if soft_why:
-            ADAPTER["fallback_why"] = soft_why
+    if link is not None:
+        if res[0] is None:
+            # Не дошли ни адаптер, ни прямой путь: это связь. Вид — тот, что точнее назвал адаптер
+            # по классам исключений, иначе по тексту прямой ошибки.
+            return res[0], res[1], Refusal(str(res[2]), kind=_best_kind(link, res[2])), res[3]
+        gap = net_gap(backend, model, link, entered)
+        tag = {"bypass_why": str(gap), "bypass_cause": gap.row()} if gap.armed else \
+            {"rescued": link.get("kind") if link.get("kind") in LINK_KINDS else "other"}
+        if not gap.armed:
+            ADAPTER["fallback_why"] = ""
+            if res[0] == 200:
+                note_rescued(backend, model, link)
+        else:
+            ADAPTER["fallback_why"] = gap
+        _tag_answer(res, tag)
+    elif hard is not None and res[0] is not None:
         # Причину обхода несёт сам ответ: общее поле перетирает любой параллельный вызов,
         # дошедший через адаптер, а прямой запрос идёт минуты — к чтению оно уже пустое.
-        if isinstance(res[1], dict):
-            if not isinstance(res[1].get("aurora"), dict):
-                res[1]["aurora"] = {}
-            res[1]["aurora"]["bypass_why"] = soft_why or hard_why
+        _tag_answer(res, {"bypass_why": str(hard), "bypass_cause": hard.row()})
     return res
+
+
+def _adapter_failure(err) -> tuple:
+    """Отказ самого адаптера (текст с `ADAPTER_FAIL`) → (обрыв связи, поломка адаптера): заполнено одно.
+
+    Обрыв — адаптер не дошёл до сервера (`AdapterFail.link`; у подставного транспорта теста и прежнего
+    адаптера — по началу текста «нет соединения»). Всё прочее — поломка пути Pydantic AI (`Why`)."""
+    why = str(err)[len(ADAPTER_FAIL):]
+    link = getattr(err, "link", None)
+    if link is None and why.startswith(ADAPTER_NO_CONNECT):
+        link = {"kind": link_kind(why), "proxy_fell": "", "raw": why[len(ADAPTER_NO_CONNECT):]}
+    if link is not None:
+        return link, None
+    return None, getattr(err, "cause", None) or cause_of(why)
+
+
+def _best_kind(link: dict, err) -> str:
+    """Вид обрыва, когда не дошли оба пути: тот, что точнее назвал адаптер (по классам
+    исключений), а при «прочем» — по тексту прямой ошибки."""
+    kind = link.get("kind")
+    return kind if kind in LINK_KINDS and kind != "other" else link_kind(err)
+
+
+def _tag_answer(res: tuple, fields: dict) -> None:
+    """Дописать в `aurora` ответа, что случилось с вызовом (чужой `aurora` не словарь — не трогаем)."""
+    if isinstance(res[1], dict):
+        if not isinstance(res[1].get("aurora"), dict):
+            res[1]["aurora"] = {}
+        res[1]["aurora"].update(fields)
+
+
+def _link_with_tools(backend: dict, payload: dict, timeout: float, link: dict, dt: float,
+                     entered: float) -> tuple:
+    """Адаптер не дошёл до сервера, а вызову нужны инструменты и MCP: прямой запрос ему не поможет.
+    → (ответ транспорта, None) либо (None, поломка адаптера на повторе).
+
+    Проверка дешёвая — GET `/models` напрямую: любой ответ сервера значит «шлюз достижим».
+    - Достижим: обрыв мог мигнуть — один повтор через адаптер. Прошёл — это ответ. Не прошёл
+      снова — адаптер не доходит туда, куда доходит прямой путь: `client_net` (область adapter),
+      не обрыв связи. Сломался сам адаптер — об этом знает вызывающий (вторая половина кортежа).
+    - Недостижим: это связь. Отказ уходит в кольцо обычным обрывом: оно ждёт и повторяет само."""
+    model = payload.get("model") or ""
+    probe = http_json(backend["url"] + "/models", None, backend["key"], CONNECT_TIMEOUT)
+    if probe[0] is None:
+        return (None, None, Refusal(str(probe[2]), kind=_best_kind(link, probe[2])), dt), None
+    link_ok(backend.get("n"))          # шлюз достижим: серия обрывов связи не растёт
+    st, body, err, dt2 = pydantic_transport(backend, payload, timeout)
+    if not str(err or "").startswith(ADAPTER_FAIL):
+        if st is not None:
+            ADAPTER["fallback_why"] = ""
+            adapter_reached(backend)
+        return (st, body, err, dt + dt2), None
+    again, hard = _adapter_failure(err)
+    if again is None:
+        return None, hard
+    gap = net_gap(backend, model, again, entered)
+    if gap.armed:
+        ADAPTER["fallback_why"] = gap       # пока расхождение не доказано, это не причина обхода
+    return (None, None, Refusal(str(gap), cause=gap), dt + dt2), None
 
 
 def answer_of(body: dict) -> tuple:
@@ -1085,6 +1567,7 @@ DOWN_FOR = 900        # столько не трогаем провайдера,
 # «не отвечал», и человек пойдёт искать обрыв связи вместо строки в настройках.
 SPEAKS_CLEARLY = frozenset({400, 401, 403, 404, 422})
 DOWN: dict = {}       # {номер бэкенда: когда пробовать снова} — живёт в процессе прогона
+DOWN_WHY: dict = {}   # {номер бэкенда: (до какого времени, причина связи `Why`)} — чем объяснить пропуск
 
 # Лимит скорости и сбой сервера — не смерть провайдера. 429 говорит «подожди», а не «меня нет»:
 # карантин на 15 минут для всего провайдера (на все роли и модели) превращал минутный лимит
@@ -1156,8 +1639,12 @@ def quota_spent(st, err, body) -> bool:
 # Обращения к модели за процесс — для итога прогона (`run_summary`): сколько токенов ушло, с
 # какой скоростью шла генерация и сколько вызовов не удалось — по видам. Вызовы идут из
 # нескольких потоков, поэтому счётчик под замком.
+# `bypass` — вызовы мимо Pydantic AI (неисправен сам адаптер); `link_rescued` — обрывы связи у
+# адаптера, повторённые прямым запросом (не поломка); `link_failed` — вызовы, не получившие ответа
+# из-за связи или шлюза (`link_why` — последняя причина). Итог прогона называет каждое отдельно.
 USAGE: dict = {"calls": 0, "failed": 0, "tokens_in": 0, "tokens_out": 0, "gen_seconds": 0.0,
-               "errors": {}, "cached": 0, "bypass": 0, "bypass_why": ""}
+               "errors": {}, "cached": 0, "bypass": 0, "bypass_why": "",
+               "link_rescued": 0, "link_rescued_kind": "", "link_failed": 0, "link_why": ""}
 _USAGE_LOCK = threading.Lock()
 
 
@@ -1168,22 +1655,36 @@ def _note_failure(kind: str) -> None:
         USAGE["errors"][kind] = USAGE["errors"].get(kind, 0) + 1
 
 
-# ------------------------------------------------------------------ мимо Pydantic AI
+# ------------------------------------------------------------------ тревоги: мимо Pydantic AI и связь
 
 # Что за прогон идёт в этом процессе: задача агента, бот, вопрос. Ставит вызывающий; по
 # этому имени тревога и журнал сбоев говорят, ГДЕ вызов прошёл мимо адаптера.
 RUN_TASK: dict = {"name": ""}
 _BYPASS_SAID: set = set()      # о чём уже кричали в этом процессе: одна строка на причину
+_LINK_SAID: set = set()        # (№ бэкенда, вид) — о чём тревога связи уже сказала; бэкенд ответил — забыто
+_RESCUE_SAID: set = set()      # (№ бэкенда, вид) — о каких спасённых обрывах уже написано в консоль
+# Счёт подряд, на процесс: сколько неудач связи на бэкенде без единого ответа между ними и сколько
+# обрывов адаптера подряд спасено прямым запросом без единого прохода через адаптер.
+LINK_RUN: dict = {}            # {№ бэкенда: {"fails": число, "kind": последний вид}}
+RESCUE_RUN: dict = {}          # {№ бэкенда: {"count": число}}
+_STREAK_LOCK = threading.Lock()
+
+
+def run_path() -> str:
+    """Путь вызова — ключ тревоги и подпись в журнале: задача агента, бот, вопрос."""
+    return RUN_TASK.get("name") or os.path.basename(sys.argv[0] or "") or "?"
 
 
 def alarm_path() -> Path:
-    """Тревога «Pydantic AI выбран, но не используется» — общая на машину: её пишет любой
-    процесс движка, а показывает панель красной полосой поверх любого раздела."""
+    """Тревоги вызова модели — общие на машину: их пишет любой процесс движка, а показывает панель
+    красной полосой поверх любого раздела. Две области в одном файле: «Pydantic AI выбран, но не
+    используется» (ключ — путь вызова) и «нет связи с бэкендом» (ключ `link:<№ бэкенда>`)."""
     return Path.home() / ".aurora" / "adapter-alarm.json"
 
 
 def read_alarm() -> dict:
-    """{путь вызова: {at, why, project, calls}} — где адаптер сейчас обходят. Пусто — нигде."""
+    """{ключ: {at, why, project, calls, area, kind, sub, fix, args, path}} — где сейчас тревога. Пусто —
+    нигде. Строка без `area` и `kind` (написана до 1.176.0) — область adapter: `alarm_cause`."""
     try:
         with open(alarm_path(), encoding="utf-8") as f:
             data = json.load(f)
@@ -1209,7 +1710,7 @@ def _write_alarm(data: dict) -> None:
 _ALARM_LOCK = threading.Lock()
 
 
-def note_bypass(why: str, needs_tools: bool = False) -> None:
+def note_bypass(why, needs_tools: bool = False, answered: bool = True) -> None:
     """Вызов прошёл мимо Pydantic AI, хотя адаптер выбран, — громко и сразу.
 
     С 1.139.0 по 1.160.0 адаптер уходил из строя четыре раза: поле шлюза, которого клиент
@@ -1218,24 +1719,34 @@ def note_bypass(why: str, needs_tools: bool = False) -> None:
     тихо продолжал прямым HTTP, причина ложилась в одно поле одного отчёта, и человек
     узнавал о беде через неделю — по боту, который «не видит MCP». Теперь обход виден
     сразу в трёх местах: строкой в выводе команды, тревогой в панели и в итоге прогона.
+
+    Сюда попадает только неисправность самого пути Pydantic AI (область `adapter` таблицы
+    `CAUSES`). Обрыв связи — не она: у него своя тревога (`link_note`). `answered=False` — ответа
+    не было вовсе (процесс адаптера завис, адаптер не дошёл до шлюза и вызов отказан).
     """
-    path = RUN_TASK.get("name") or os.path.basename(sys.argv[0] or "") or "?"
+    cause = cause_of(why)
+    text = str(cause)
+    path = run_path()
     with _USAGE_LOCK:
         USAGE["bypass"] += 1
-        USAGE["bypass_why"] = why
-    key = (path, why)
+        USAGE["bypass_why"] = text
+    key = (path, text)
     if key not in _BYPASS_SAID:
         _BYPASS_SAID.add(key)
-        print(f"⛔ Pydantic AI выбран, но вызов модели прошёл мимо него (прямой HTTP): {why}. "
-              + ("Вызов с инструментами и MCP без адаптера не принят. " if needs_tools else
-                 "Ответ получен, но без инструментов и MCP. ")
-              # причина «нет файла» уже называет лечение: общая подсказка про venv увела бы не туда
-              + ("" if gap_kind(why) else "Проверьте «Установка» → Pydantic AI."), flush=True)
-        record_failure("адаптер", why, stage="мимо Pydantic AI", needs_tools=needs_tools)
+        print((f"⛔ Pydantic AI выбран, но вызов модели прошёл мимо него (прямой HTTP): {text}. "
+               if answered else
+               f"⛔ Pydantic AI выбран, но вызов модели через него не прошёл: {text}. ")
+              + ("" if not answered else "Вызов с инструментами и MCP без адаптера не принят. "
+                 if needs_tools else "Ответ получен, но без инструментов и MCP. ")
+              # причина из таблицы уже называет лечение; общая подсказка — только неназванной ошибке
+              + ("Проверьте «Установка» → Pydantic AI." if cause.plain and cause.kind == "adapter_error"
+                 else ""), flush=True)
+        record_failure("адаптер", text, stage="мимо Pydantic AI", needs_tools=needs_tools,
+                       kind=cause.kind)
     with _ALARM_LOCK:
         data = read_alarm()
         row = data.get(path) or {}
-        data[path] = {"at": utc_stamp(), "why": why, "project": os.getcwd(),
+        data[path] = {**cause.row(), "at": utc_stamp(), "project": os.getcwd(), "path": path,
                       "calls": int(row.get("calls") or 0) + 1}
         _write_alarm(data)
 
@@ -1243,13 +1754,146 @@ def note_bypass(why: str, needs_tools: bool = False) -> None:
 def clear_bypass() -> None:
     """Вызов этого пути прошёл через адаптер — его тревога снята. Чужие пути не трогаем:
     бот может обходить адаптер, пока разбор базы идёт через него, и наоборот."""
-    path = RUN_TASK.get("name") or os.path.basename(sys.argv[0] or "") or "?"
+    path = run_path()
     if not alarm_path().is_file():
         return
     with _ALARM_LOCK:
         data = read_alarm()
         if data.pop(path, None) is not None:
             _write_alarm(data)
+
+
+def adapter_reached(backend: dict) -> None:
+    """Через адаптер дошли до сервера: обрывы адаптера, спасённые прямым запросом, считаются заново."""
+    with _STREAK_LOCK:
+        RESCUE_RUN.pop(backend.get("n"), None)
+
+
+def net_gap(backend: dict, model: str, link: dict, started=None) -> Why:
+    """Адаптер не дошёл до сервера, а прямой путь дошёл. → причина `client_net` с подвидом (прокси
+    окружения, сертификат, DNS, иное); `armed` — пора ли поднимать тревогу про Pydantic AI.
+
+    Один такой случай — обрыв, который мигнул между двумя попытками: не поломка. Тревога — когда
+    это повторяется `ALARM_AFTER` раз подряд без единого прохода через адаптер между ними либо
+    когда причина очевидно адаптерная и от времени не пройдёт: прокси окружения не подошёл клиенту
+    (`proxy_fell`) или сертификат не принят клиентом, а прямой путь им доволен.
+
+    Считаются события, а не вызовы: мигнувшая сеть рвёт разом все запросы, что были в пути, —
+    24 параллельных вызова дали бы 24 «подряд». Вызов, начатый раньше, чем учтён предыдущий обрыв
+    (`started` — `time.monotonic()` его начала), — того же события и в счёт не идёт."""
+    n = backend.get("n")
+    kind = link.get("kind") if link.get("kind") in LINK_KINDS else "other"
+    fell = str(link.get("proxy_fell") or "")
+    sub = "proxy" if fell or kind == "proxy" else kind if kind in ("tls", "dns") else "other"
+    with _STREAK_LOCK:
+        run = RESCUE_RUN.setdefault(n, {"count": 0, "at": 0.0})
+        if started is None or started >= run["at"]:
+            run["count"] += 1
+            run["at"] = time.monotonic()
+        count = run["count"]
+    why = Why("client_net", sub, n=n, model=model or "модель не названа",
+              detail=f" ({fell})" if fell else "")
+    why.armed = sub in ("proxy", "tls") or count >= ALARM_AFTER
+    return why
+
+
+def note_rescued(backend: dict, model: str, link: dict) -> None:
+    """Обрыв адаптера, спасённый прямым запросом: не поломка Pydantic AI, а сведение — счётчик для
+    итога прогона, строка в консоль (по разу на бэкенд и вид) и запись в журнал сбоев."""
+    n = backend.get("n")
+    kind = link.get("kind") if link.get("kind") in LINK_KINDS else "other"
+    why = Why("rescued", n=n, model=model or "модель не названа", label=CAUSES[kind]["label"])
+    with _USAGE_LOCK:
+        USAGE["link_rescued"] += 1
+        USAGE["link_rescued_kind"] = kind
+    with _STREAK_LOCK:
+        fresh = (n, kind) not in _RESCUE_SAID
+        _RESCUE_SAID.add((n, kind))
+    if fresh:
+        print(f"ℹ️ Обрыв связи: {why}.", flush=True)
+    record_failure("обрыв связи", str(why), stage="обрыв связи", kind=kind, backend=n)
+
+
+def _link_key(n) -> str:
+    return f"link:{n}"
+
+
+def link_ok(n) -> None:
+    """Бэкенд №`n` ответил — успехом или внятным отказом: серия неудач связи обнулена, тревога снята."""
+    with _STREAK_LOCK:
+        LINK_RUN.pop(n, None)
+        for k in [k for k in _LINK_SAID if k[0] == n]:
+            _LINK_SAID.discard(k)
+    if not alarm_path().is_file():
+        return
+    with _ALARM_LOCK:
+        data = read_alarm()
+        if data.pop(_link_key(n), None) is not None:
+            _write_alarm(data)
+
+
+def link_note(backend: dict, model: str, st, err, live: bool = True, started=None):
+    """Разобрать отказ вызова: связь это или нет. → причина `Why` (область link) либо None.
+
+    None — отказ не про связь: сервер ответил по делу (400, 413, 422…) или беда в самом пути
+    Pydantic AI (`err.cause`, у неё своя тревога). Серия неудач на бэкенде считается подряд и
+    обнуляется любым ответом (`link_ok`); на `ALARM_AFTER`-й подряд поднимается тревога связи.
+    Молчание по сроку и лимит скорости — сервер жив: серию они обнуляют, но причина о них
+    возвращается (для журнала). `live` — настоящий транспорт; подставной (тесты, замеры) серию
+    не считает и тревогу не пишет.
+
+    Считаются события, а не вызовы: мигнувшая сеть рвёт разом все запросы в пути. Запрос, начатый
+    раньше, чем учтена предыдущая неудача (`started` — `time.monotonic()` его начала), — того же
+    события, и серию он не растит; запрос, начатый после, — новое свидетельство."""
+    n = backend.get("n")
+    if getattr(err, "cause", None) is not None:
+        return None
+    kind = link_kind(err, st)
+    if not kind:
+        if live:
+            link_ok(n)
+        return None
+    why = link_why(kind, n, model, st)
+    if kind in LINK_REACHED_KINDS:
+        if live:
+            link_ok(n)
+        return why
+    if not live:
+        return why
+    with _STREAK_LOCK:
+        run = LINK_RUN.setdefault(n, {"fails": 0, "kind": kind, "at": 0.0})
+        if started is None or started >= run["at"]:
+            run["fails"] += 1
+            run["at"] = time.monotonic()
+        run["kind"] = kind
+        fails = run["fails"]
+    if fails >= ALARM_AFTER:
+        _raise_link_alarm(n, why, fails)
+    return why
+
+
+def _raise_link_alarm(n, why: Why, fails: int) -> None:
+    """Тревога связи: строка в консоль (по разу на вид, пока бэкенд не ответит) и запись для панели."""
+    with _ALARM_LOCK:
+        with _STREAK_LOCK:
+            if LINK_RUN.get(n, {}).get("fails", 0) < ALARM_AFTER:
+                return                  # бэкенд ответил, пока мы собирались: тревога устарела
+        data = read_alarm()
+        data[_link_key(n)] = {**why.row(), "at": utc_stamp(), "project": os.getcwd(),
+                              "path": run_path(), "calls": fails}
+        _write_alarm(data)
+    with _STREAK_LOCK:
+        fresh = (n, why.kind) not in _LINK_SAID
+        _LINK_SAID.add((n, why.kind))
+    if fresh:
+        print(f"⛔ Нет связи с моделью, неудач подряд: {fails}. Это не поломка Pydantic AI. {why}. "
+              "Полоса в панели уйдёт сама, когда бэкенд ответит.", flush=True)
+
+
+def link_summary(seen: list) -> dict:
+    """Итог обрывов связи одного вызова для результата `call_role`: {kind, n, why, count}."""
+    last = seen[-1]
+    return {"kind": last.kind, "n": last.args.get("n"), "why": str(last), "count": len(seen)}
 
 
 # ------------------------------------------------------------------ журнал сбоев
@@ -1290,7 +1934,8 @@ def call_diag(r: dict) -> dict:
     """
     d = dict(r.get("req") or {})
     for k in ("ok", "backend", "model", "seconds", "waited", "ring", "timed_out", "finish",
-              "tokens_in", "tokens_out", "tps", "seen", "cut", "via", "cached", "bypass"):
+              "tokens_in", "tokens_out", "tps", "seen", "cut", "via", "cached", "bypass", "link",
+              "rescued"):
         if k in r:
             d[k] = r[k]
     d["log"] = [str(x) for x in r.get("log") or []]
@@ -2078,7 +2723,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     # Проверять, дошёл ли вызов до адаптера, имеет смысл только на настоящем транспорте:
     # подменённый (тесты, замеры) сам решает, чем отвечать.
     want = cfg.get("adapter") or "pydantic_ai"
-    watch = transport is default_transport and want == "pydantic_ai"
+    live = transport is default_transport
+    watch = live and want == "pydantic_ai"
     needs_adapter = bool(tools or mcp_active or outdir)
     # Что за вызов — для журнала сбоев: размер запроса, срок, режим. Ключей и адресов нет.
     req = {"role": role, "thinking": bool(think), "max_tokens": max_tokens,
@@ -2089,6 +2735,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
            "tools": bool(tools), "mcp_active": list(mcp_active or []), "adapter": want}
     log, waited, ring = [], 0.0, 0
     slow = 0                    # сколько попыток кончилось молчанием по сроку
+    why_seen: list = []         # беды этого вызова по порядку: обрывы связи и шлюза (`link_note`), поломки адаптера
     attempts = 0
     tried: set = set()          # кому уже давали честный шанс в этом вызове
     if retry_primary_asked():
@@ -2112,6 +2759,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
         if len(log) > 200:
             # Журнал не растёт без конца ни в каком режиме: начало и свежий хвост.
             log[:] = log[:20] + ["…"] + log[-150:]
+        if len(why_seen) > 40:
+            del why_seen[:-20]
         answered_empty, other = 0, 0
         cool_waits: list = []   # сколько ещё стоят на паузе пары, отказавшие лимитом или 5xx
         cool_keys: list = []    # какие это пары
@@ -2132,8 +2781,13 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             # 15 минут пробуем сами; кнопка «Вернуться на основного» снимает отметку сразу.
             until = DOWN.get(b["n"], 0)
             if until > time.time():
+                held = DOWN_WHY.get(b["n"])
+                held = held[1] if held and held[0] == until else None     # причина именно этого карантина
                 log.append(f"№{b['n']}: не отвечал, вернёмся через "
-                           f"{int(until - time.time())} с (кнопка снимает сразу)")
+                           f"{int(until - time.time())} с (кнопка снимает сразу)"
+                           + (f". Причина: {held.body}" if held is not None else ""))
+                if held is not None:
+                    why_seen.append(held)
                 can_recover = can_recover or until < deadline
                 continue
             cool_until = COOL.get((b["n"], model), 0)
@@ -2171,6 +2825,10 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 continue
             payload = {"model": model, "messages": msgs,
                        "chat_template_kwargs": request_template(b, think), "adapter": want}
+            if needs_adapter:
+                # Без адаптера такому вызову не поможет и прямой запрос: при обрыве связи
+                # транспорт не станет спасать его прямым HTTP, а отдаст кольцу причину.
+                payload["needs_adapter"] = True
             if history:
                 # У OpenAI-совместимого шлюза история — это просто предыдущие сообщения.
                 # Адаптеру Pydantic AI — так же: он сам отделит историю от нового запроса.
@@ -2244,6 +2902,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 limit = req_timeout * grow.get(b["n"], 1.0)
                 say_live("↗", role, f"запрос → №{b['n']} {model} · ≈{rough_tokens(payload['messages'])} "
                                     f"ток. · срок {human_secs(min(left, limit))}")
+                t_req = time.monotonic()
                 st, body, err, dt = transport("chat", b, payload,
                                               max(5.0, min(left, limit)))
                 if st == 400 and rejects_template(err, body):
@@ -2254,6 +2913,20 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     st, body, err, dt = transport("chat", b, payload,
                                                   max(5.0, deadline - time.time()))
                 if st != 200 or not isinstance(body, dict):
+                    # Связь это или отказ по делу: серия неудач на бэкенде, тревога связи, и
+                    # реальная причина вместо «не ответил».
+                    lw = link_note(b, model, st, err, live, t_req)
+                    cause = getattr(err, "cause", None)
+                    if lw is not None and lw.kind in LINK_ALARM_KINDS:
+                        why_seen.append(lw)
+                    elif cause is not None:
+                        why_seen.append(cause)
+                    if (live and cause is not None
+                            and (cause.kind != "client_net" or cause.armed)):
+                        # HTTP-клиент адаптера не доходит туда, куда доходит прямой запрос, и это
+                        # повторяется, либо процесс адаптера завис: неисправен путь Pydantic AI —
+                        # тревога про него (ответа на вызов при этом не было).
+                        note_bypass(cause, needs_adapter, answered=False)
                     if st != 429 and looks_like_overflow(err, body):
                         # (429 — всегда лимит скорости: «too many tokens» шлюзы пишут и про него.)
                         # Провайдер жив и отказал по делу: запрос длиннее его окна. Гасить
@@ -2270,7 +2943,9 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         # минуту пользовались другие программы, у нас числился мёртвым.
                         log.append(f"№{b['n']} {model}: HTTP {st} — сервер ответил и отказал"
                                    + (f": {str(err)[:120]}" if err else "")
-                                   + ". Это настройка, а не связь: карантин не ставлю")
+                                   + ". Это настройка, а не связь: карантин не ставлю"
+                                   + (f". {lw.body}" if lw is not None and lw.kind in ("auth", "not_found")
+                                      else ""))
                     elif st == 429 or (st == 503 and getattr(err, "retry_after", None) is not None):
                         # Лимит скорости или «перегружен»: шлюз жив и просит подождать. Пауза
                         # у пары «шлюз + модель» (срок называет сам шлюз), без карантина:
@@ -2296,18 +2971,23 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         other += 1
                         if hits >= SERVER_ERR_DOWN:
                             DOWN[b["n"]] = time.time() + DOWN_FOR
+                            if lw is not None:
+                                DOWN_WHY[b["n"]] = (DOWN[b["n"]], lw)
                             can_recover = can_recover or persist
                             log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'} — {hits} раз "
-                                       f"подряд, провайдер в карантин")
+                                       f"подряд, провайдер в карантин"
+                                       + (f". {lw.body}" if lw is not None else ""))
                         else:
                             cool_waits.append(wait)
                             cool_keys.append((b["n"], model))
                             can_recover = can_recover or (patient and time.time() + wait < deadline)
                             log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'} — пауза "
-                                       f"{int(wait)} с (отказ {hits} из {SERVER_ERR_DOWN})")
+                                       f"{int(wait)} с (отказ {hits} из {SERVER_ERR_DOWN})"
+                                       + (f". {lw.body}" if lw is not None else ""))
                         say_live("⚠", role, f"№{b['n']} {model}: {str(err or f'HTTP {st}')[:120]}"
                                             + (" — подожду и повторю" if persist else ""))
-                    elif looks_like_timeout(err):
+                    elif looks_like_timeout(err) or (lw is not None
+                                                     and lw.kind in ("silent", "connect_timeout")):
                         other += 1
                         if persist:
                             grow[b["n"]] = grow.get(b["n"], 1.0) * PERSIST_GROWTH
@@ -2317,7 +2997,11 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         # так и вышло — Момус не уложился на модели, которая только что
                         # написала сам ответ, и её объявили недоступной. В карантин
                         # сажаем лишь того, от кого давно ничего не слышали.
-                        slow += 1
+                        # Не каждый «таймаут» — медленный ответ: соединение, которое не
+                        # установилось, и зависший процесс адаптера — это другие беды.
+                        really_slow = cause is None and not (lw is not None
+                                                             and lw.kind == "connect_timeout")
+                        slow += 1 if really_slow else 0
                         can_recover = True
                         fresh = time.time() - LAST_OK.get(b["n"], 0) < DOWN_FOR
                         # Наши же запросы к нему ещё висят — значит, он стоит в очереди, которую
@@ -2329,10 +3013,13 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         # в конец кольца (`SLOW`) и получает вдвое больший срок, а не карантин.
                         if not fresh and not ours and not persist:
                             DOWN[b["n"]] = time.time() + DOWN_FOR
-                        say_live("⟳", role, f"№{b['n']} {model} не ответил за {human_secs(limit)}"
+                        real = "" if really_slow else (lw.body if lw is not None else str(cause))
+                        say_live("⟳", role, f"№{b['n']} {model} " + (f"не ответил за {human_secs(limit)}"
+                                                                       if really_slow else real[:120])
                                  + (f" — повторю, срок вдвое больше: {human_secs(limit * PERSIST_GROWTH)}"
                                     if persist else " — дальше по кольцу"))
-                        log.append(f"№{b['n']} {model}: не уложился в {int(limit)} с"
+                        log.append(f"№{b['n']} {model}: " + (f"не уложился в {int(limit)} с"
+                                                             if really_slow else real)
                                    + (f" — следующая попытка на нём получит "
                                       f"{int(limit * PERSIST_GROWTH)} с" if persist else "")
                                    + (" (но отвечал только что — карантин не ставлю)"
@@ -2340,14 +3027,31 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                                       f" (к нему ещё {ours} наших запросов — это очередь, "
                                       f"карантин не ставлю)" if ours else ""))
                     else:
-                        DOWN[b["n"]] = time.time() + DOWN_FOR
-                        log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'}")
-                        say_live("⚠", role, f"№{b['n']} {model}: {str(err or f'HTTP {st}')[:120]}"
+                        # Бэкенд жив, если не дошёл только адаптер (`client_net`): в карантин его не
+                        # сажаем — прямые вызовы без инструментов к нему идут. Пока расхождение не
+                        # доказано (`armed`), вызов повторяется; доказано — ждать нечего, чинится
+                        # прокси или сертификат, и вызов отказывает с названной причиной.
+                        adapter_side = cause is not None and cause.kind == "client_net"
+                        if not adapter_side:
+                            DOWN[b["n"]] = time.time() + DOWN_FOR
+                            if lw is not None and lw.kind in LINK_ALARM_KINDS:
+                                DOWN_WHY[b["n"]] = (DOWN[b["n"]], lw)
+                        # Что не так на самом деле: вид обрыва (DNS, отказ порта, сертификат,
+                        # сброс…) или поломка адаптера — а сырой текст ошибки остаётся в скобках.
+                        real = (lw.body if lw is not None
+                                else str(cause) if cause is not None else "")
+                        log.append(f"№{b['n']} {model}: "
+                                   + (f"{real} ({str(err)[:160]})" if real and err and str(err) != real
+                                      else real or str(err or f'HTTP {st}')))
+                        say_live("⚠", role, f"№{b['n']} {model}: "
+                                            + (real or str(err or f'HTTP {st}'))[:140]
                                             + (" — подожду и повторю" if persist else ""))
                         # Обрыв связи, 5xx — временное: маршрут дождётся, когда шлюз вернётся.
                         other += 1
-                        can_recover = can_recover or persist
+                        can_recover = can_recover or (persist and not (adapter_side and cause.armed))
                     continue
+                if live:
+                    link_ok(b["n"])      # бэкенд ответил: серия неудач связи обнулена, тревога снята
                 text, reasoning = answer_of(body)
                 finish = (body.get("choices") or [{}])[0].get("finish_reason")
                 if not text:
@@ -2367,24 +3071,30 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 SLOW.pop(b["n"], None)
                 LAST_OK[b["n"]] = time.time()
                 via = (body.get("aurora") or {}).get("via", "http")
-                bypass = ""
+                bypass = rescued = ""
                 if watch and via != "pydantic_ai":
-                    # Адаптер выбран, а ответ пришёл прямым HTTP: venv не стоит, процесс
-                    # адаптера упал, новая версия не прошла проверку — причина в
-                    # `fallback_why`. Пусто — переключатель не включён вовсе (так было
-                    # с 1.153.0 по 1.160.0).
                     aur = body.get("aurora")
-                    bypass = ((aur.get("bypass_why") if isinstance(aur, dict) else "")
-                              or ADAPTER.get("fallback_why")
-                              or "адаптер не включён в этом процессе — ошибка движка")
-                    note_bypass(bypass, needs_adapter)
-                    if needs_adapter:
-                        # Ответ без инструментов на вопрос, где они нужны, — не ответ:
-                        # бот «не видит MCP», план собран без поиска. Честнее отказать.
-                        log.append(f"№{b['n']} {model}: ⛔ Pydantic AI не сработал ({bypass}) — "
-                                   "вызов с инструментами и MCP прямым HTTP не принимаю")
-                        _note_failure("мимо Pydantic AI")
-                        return {"ok": False, "log": log, "req": req, "bypass": bypass}
+                    aur = aur if isinstance(aur, dict) else {}
+                    rescued = str(aur.get("rescued") or "")
+                    if not rescued:
+                        # Адаптер выбран, а ответ пришёл прямым HTTP: venv не стоит, процесс
+                        # адаптера упал, новая версия не прошла проверку, его HTTP-клиент не
+                        # доходит до шлюза — причина едет в ответе, а в `fallback_why` — запасная.
+                        # Пусто — переключатель не включён вовсе (так было с 1.153.0 по 1.160.0).
+                        # Обрыв связи, спасённый прямым запросом (`rescued`), — не обход.
+                        row = aur.get("bypass_cause")
+                        cause = (alarm_cause(row) if isinstance(row, dict) else cause_of(
+                            aur.get("bypass_why") or ADAPTER.get("fallback_why")
+                            or "адаптер не включён в этом процессе — ошибка движка"))
+                        bypass = str(cause)
+                        note_bypass(cause, needs_adapter)
+                        if needs_adapter:
+                            # Ответ без инструментов на вопрос, где они нужны, — не ответ:
+                            # бот «не видит MCP», план собран без поиска. Честнее отказать.
+                            log.append(f"№{b['n']} {model}: ⛔ Pydantic AI не сработал ({bypass}) — "
+                                       "вызов с инструментами и MCP прямым HTTP не принимаю")
+                            _note_failure("мимо Pydantic AI")
+                            return {"ok": False, "log": log, "req": req, "bypass": bypass}
                 elif watch:
                     clear_bypass()
                 usage = body.get("usage") or {}
@@ -2404,7 +3114,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         "tokens_in": int(usage.get("prompt_tokens") or 0),
                         "tokens_out": out_tokens,
                         "tps": round(out_tokens / dt, 1) if out_tokens and dt > 0 else 0.0,
-                        "via": via, "bypass": bypass, "finish": finish,
+                        "via": via, "bypass": bypass, "rescued": rescued, "finish": finish,
                         "req": dict(req, attempts=attempts, rings=ring),
                         "tools_called": list((body.get("aurora") or {}).get("tools_called") or [])}
             finally:
@@ -2443,17 +3153,29 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             log.append("ожидание не продвинуло время, а пары всё ещё на паузе — "
                        "круг не изменит ничего")
             break
+    final = why_seen[-1] if why_seen else None
     if attempts and slow == attempts:
         log.append(f"никто не уложился в срок: {int(req_timeout)} с на запрос. "
                    "Это медленно, а не мёртво — модель отвечает, но дольше отпущенного. "
                    "Лечится сроком запроса (раздел «Модели», общие настройки), а не "
                    "ожиданием")
+    elif final is not None:
+        # Реальная причина, а не «ни один не ответил осмысленно»: что именно не дошло.
+        log.append(f"дедлайн исчерпан: {final.body}")
     else:
         log.append("дедлайн исчерпан: ни один бэкенд не ответил осмысленно")
-    _note_failure("модель не уложилась в срок" if attempts and slow == attempts
-                  else "модель не ответила осмысленно")
-    return {"ok": False, "log": log, "timed_out": bool(attempts and slow == attempts),
-            "req": dict(req, attempts=attempts, rings=ring, waited=round(waited, 1))}
+    out = {"ok": False, "log": log, "timed_out": bool(attempts and slow == attempts),
+           "req": dict(req, attempts=attempts, rings=ring, waited=round(waited, 1))}
+    if final is not None and final.area == "link" and not out["timed_out"]:
+        out["link"] = link_summary(why_seen)
+        _note_failure(LINK_FAILURE)
+        with _USAGE_LOCK:
+            USAGE["link_failed"] += 1
+            USAGE["link_why"] = str(final)
+    else:
+        _note_failure("модель не уложилась в срок" if attempts and slow == attempts
+                      else "модель не ответила осмысленно")
+    return out
 
 
 # ------------------------------------------------------------------ команды
