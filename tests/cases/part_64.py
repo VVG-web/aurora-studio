@@ -44,6 +44,7 @@ def _reset_gate_caches() -> None:
     """Короткие кэши решений «кого не трогать»: тест двигает связь быстрее, чем они остывают."""
     G = _g()
     G._DOWN.update(at=0.0, key=None, val={})
+    G._ENSURE.update(at=0.0, key=None)
     G._NOTED.clear()
 
 
@@ -69,7 +70,13 @@ class _Net:
         self.up.update(up or {})
         self.clock = _Clock()
 
+        self.probes = 0                       # сколько раз проверки реально спрашивали (считает checker)
+        self.special: dict = {}               # {id probe: готовый ответ} — для «проверка не смогла», «не успела»
+
         def checker(p, timeout):
+            self.probes += 1
+            if p["id"] in self.special:
+                return dict(self.special[p["id"]])
             ok = bool(self.up.get(p["id"], True))
             return {"ok": ok, "code": "ok" if ok else "timeout", "ms": 3, "detail": ""}
         self.svc = CN.AvailabilityService(self.kit, clock=self.clock, checkers={"tcp": checker, "http": checker, "icmp": checker},

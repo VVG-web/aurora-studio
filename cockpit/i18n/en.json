@@ -1002,7 +1002,7 @@
   "net.mode_no_vpn": "The internet is up, but the VPN profiles needed are down",
   "net.mode_unknown": "State unknown: not checked yet, or the data is out of date",
   "access.title": "Source access mode — {project}",
-  "access.about": "How a source is reached: over the internet, through a VPN profile or locally. Only the profile name is stored here; the profiles and the check addresses are in the «Connection check» section. A source with no setting works as before: always available.",
+  "access.about": "How a source is reached: over the internet, through a VPN profile or locally. Only the profile name is stored here; the profiles and the check addresses are in the «Connection check» section. The modes take effect when the connection check is on; while it is off, sources work as before. A source with no setting works as before too: always available.",
   "access.none": "The project has no connected sources.",
   "access.f_mode": "Access mode",
   "access.mode_default": "default: {what}",
@@ -1077,5 +1077,10 @@
   "access.lossy.inline": "the block is written on one line — it will be rewritten with nested lines",
   "access.lossy.duplicate": "the block is written several times — one will remain",
   "access.lossy.skipped": "lines and fields the engine does not read will be removed",
-  "access.lossy_ask": "The source_access block has things that saving will rewrite:\n\n{list}\n\nSave and replace the block?"
+  "access.lossy_ask": "The source_access block has things that saving will rewrite:\n\n{list}\n\nSave and replace the block?",
+  "route.passed_partly": "■ The route «{title}» passed partly: {steps}. Steps left without a connection: {n}.",
+  "route.how_partial": "passed partly (no connection)",
+  "route.rc_partial": "partly: {n} steps",
+  "route.toast_partial": "The route «{title}» passed partly: some steps wait for the connection",
+  "route.net_handed": "⏸ Deferred until the connection returns: {n} — {list}. The schedule comes back to this at the end of the chain; other projects do not wait."
 }

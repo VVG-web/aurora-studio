@@ -95,10 +95,14 @@ function netReason(r){
   return r.code;
 }
 // Диалог запуска без связи (`info` — ответ 409 сервера). → "partial" | "queue" | null (отмена).
+// Escape и щелчок мимо окна — отмена; новый вопрос закрывает прежний отменой, чтобы тот не завис без ответа.
+let NET_CLOSE = null;
 function askNet(info){
+  if (NET_CLOSE) NET_CLOSE(null);
   return new Promise(done => {
     const ov = $("#netOverlay"), box = $("#netDialog");
-    const close = v => { ov.classList.remove("on"); box.innerHTML = ""; done(v); };
+    const close = v => { if (NET_CLOSE !== close) return; NET_CLOSE = null; ov.classList.remove("on"); box.innerHTML = ""; done(v); };
+    NET_CLOSE = close;
     const items = info.cmd
       ? [{cmd: info.cmd, blocked: info.blocked}]
       : info.items || [];
@@ -2448,6 +2452,11 @@ async function fire(apply){
   $("#consoleRc").className = "chip";
   const res = await api("/api/run", {method:"POST", body: JSON.stringify(
     {project: (isEngineCmd(r) ? "" : S.project.path), cmd:r.cmd, args})});
+  if (res.cancelled){      // в диалоге связи человек отказался: запуска не было, метка «идёт» не остаётся
+    $("#consoleRc").textContent = t("net.cancelled");
+    $("#consoleRc").className = "chip warn";
+    return;
+  }
   if (!res.job) return;
   S.lastStep = {cmd:r.cmd, args, n, failed:false, job:res.job};
   const label = (n > 1 ? t("run.attempt", {n}) : "") + line;
@@ -3623,6 +3632,8 @@ function leaveRoute(id){
 function finishRoute(r, sc, write){
   const out = $("#consoleOut");
   const bad = r.reason !== "passed";
+  // Пройден, но часть шагов осталась без связи (пропущена или отдана расписанию): маршрут частичный, его можно продолжить.
+  const part = !bad && !!(r.partial || (r.net_skipped || []).length || (r.net_deferred || []).length);
   if (r.reason === "stall"){
     $("#consoleCmd").textContent = t("route.head_stalled", {title: sc.title});
     $("#consoleRc").textContent = t("route.rc_stalled");
@@ -3631,8 +3642,9 @@ function finishRoute(r, sc, write){
     $("#consoleCmd").textContent = bad ? t("route.head_stopped", {title: sc.title})
                                        : t("route.head_passed", {title: sc.title});
     $("#consoleRc").textContent = bad ? t("route.rc_stopped", {cmd: r.failed || "—"})
+                                      : part ? t("route.rc_partial", {n: r.steps || 0})
                                       : t("route.rc_passed", {n: r.steps || 0});
-    $("#consoleRc").className = "chip " + (bad ? "bad" : "ok");
+    $("#consoleRc").className = "chip " + (bad ? "bad" : part ? "warn" : "ok");
   }
   // Что нашли шаги и чем это чинят — кнопками. В самой «Починить базу» кнопка «Починить:
   // kb:repair» — круг: ремонт только что прошёл, и остаток ему не по силам.
@@ -3645,7 +3657,7 @@ function finishRoute(r, sc, write){
         btn));
     });
   });
-  if (bad && S.lastRoute && S.project){
+  if ((bad || part) && S.lastRoute && S.project){
     dropResumeButtons();
     api("/api/route/state?project="+encodeURIComponent(S.project.path), {quiet:true})
       .then(d=>{ if (d && d.state) $("#consoleApply").append(el("button",{class:"btn sm gold resume-route",
@@ -3665,7 +3677,8 @@ function finishRoute(r, sc, write){
   toast(r.reason === "stall" ? t("route.toast_stall")
     : r.reason === "gated" ? t("route.toast_gated", {cmd: r.failed || "—"})
     : bad ? t("route.toast_stopped", {cmd: r.failed || "—"})
-    : t("route.toast_passed", {title: sc.title}), bad ? "err" : "ok");
+    : part ? t("route.toast_partial", {title: sc.title})
+    : t("route.toast_passed", {title: sc.title}), bad ? "err" : part ? "warn" : "ok");
 }
 
 /* Кнопка «Продолжить маршрут». Сделанное знает сервер: оно в состоянии маршрута, которое он
@@ -5298,9 +5311,10 @@ $("#paletteInput").addEventListener("keydown", e=>{
 });
 $("#paletteBtn").onclick = openPalette;
 $("#paletteOverlay").onclick = e => { if (e.target.id==="paletteOverlay") e.currentTarget.classList.remove("on"); };
+$("#netOverlay").onclick = e => { if (e.target.id==="netOverlay" && NET_CLOSE) NET_CLOSE(null); };
 document.addEventListener("keydown", e=>{
   if ((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==="k"){ e.preventDefault(); openPalette(); }
-  if (e.key==="Escape"){ closeRun(); closeMcp(); $("#paletteOverlay").classList.remove("on"); }
+  if (e.key==="Escape"){ if (NET_CLOSE) NET_CLOSE(null); closeRun(); closeMcp(); $("#paletteOverlay").classList.remove("on"); }
 });
 
 /* ---------------- обработчики раздела «Файлы» ---------------- */

@@ -150,7 +150,24 @@ internet has no addresses) stops nothing. Commands that need no connection (`kb:
 A "cycle:" block does not spin idle: a step without a connection stops the lap, and the block repeats whole after restoration
 (`partial_queue`) or goes on without that step (`partial`). Waiting has no time limit anywhere — a route sees the work through
 until a person stops it; "Check now" wakes the wait. The step's process learns the policy too (`AURORA_NET_POLICY`): a model call
-inside it either waits for the providers to return (`queue`, `partial_queue`) or refuses at once (`fail_fast`, `partial`).
+inside it either waits for the providers to return (`queue`, `partial_queue`) or refuses at once (`fail_fast`, `partial`): the step then
+prints a line `AURORA-NET {…}` by which routes and the schedule recognise a connection refusal rather than a breakage.
+
+Details worth knowing:
+
+- **"Partly".** A route in which steps were skipped by `partial` (or handed to the schedule) ends as "passed partly": the "Continue
+  the route" button stays and runs what was skipped, the base is not marked updated, and no push happens. In Cron such an item is
+  "partial" (skipped) or "deferred" (handed to the chain, which comes back to it at the end and waits for the connection); the other
+  projects of the chain do not wait for the connection.
+- **Waiting is not released without a positive answer.** If the check cannot finish (for example, name resolution hangs), the
+  ordinary summary treats the profile as "unknown" after three intervals and blocks nothing; waiting keeps the last known
+  "unavailable" until at least one positive round arrives. A check that cannot be run (no `ping` program, a failure of the check
+  itself) is not counted as a round at all.
+- **Resume and the dialog.** Steps done last time need no connection and are not listed in the dialog. A refusal before the first step
+  commits nothing. "Stop" is heard during the wait and in the very moment the connection returns.
+- **Diagnostics are not blocked.** `agent:ping`, `agent:probe`, `agent:width` ask the providers live: that is what they are for.
+- **Quarantine.** A drop explained by an unavailable profile or the internet causes no quarantine; if the check learned about the
+  outage after the first drop, the quarantine set for it is lifted when the connection returns.
 
 ### What became of the old waiting
 

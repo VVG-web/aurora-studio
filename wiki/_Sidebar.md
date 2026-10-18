@@ -16,6 +16,7 @@
 [The control panel](The-Control-Panel.md)
 
 **Practicalities**
+[Connection check](Connection-Check.md) ·
 [Troubleshooting](Troubleshooting.md) ·
 [Windows and macOS](Windows-and-macOS.md) ·
 [FAQ](FAQ.md) ·

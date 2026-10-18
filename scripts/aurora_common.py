@@ -3895,7 +3895,7 @@ def profile_name_ok(name) -> bool:
 
     IP-литерал и имя вроде `gw.corp.example.com` не годятся: имя профиля уходит в общий конфиг проекта и в его git, а
     адресам там не место — они лежат на машине (`local/connectivity.json`). Одной точки в имени достаточно."""
-    return isinstance(name, str) and bool(_PROFILE_NAME_RE.match(name)) and name.count(".") < 2
+    return isinstance(name, str) and bool(_PROFILE_NAME_RE.fullmatch(name)) and name.count(".") < 2
 
 
 def canon_host(host: str) -> str:

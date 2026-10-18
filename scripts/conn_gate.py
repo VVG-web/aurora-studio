@@ -35,6 +35,7 @@ import os
 import re
 import sys
 import threading
+import unicodedata
 from pathlib import Path
 
 for _s in (sys.stdout, sys.stderr):
@@ -62,6 +63,7 @@ _NAME_OK = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 _HEAD_RE = re.compile(r"""^(?:"source_access"|'source_access'|source_access)[ \t]*:""")
 _SAVE_LOCK = threading.Lock()       # запись блока: прочитать, сверить слепок и записать — одним ходом, а не вперемешку
+_BAD_CATS = frozenset({"Cc", "Cs", "Zl", "Zp", "Cn"})       # управляющие, суррогаты, разделители строк, неназначенные знаки
 _P_DUP = f"{ACCESS_KEY}: блок записан"                                 # начала двух проблем, которые страница показывает кодом
 _P_INLINE = f"{ACCESS_KEY}: значение записано в одну строку"
 
@@ -149,6 +151,36 @@ def _split_key(line: str):
     return (key.strip(), rest) if sep else (None, "")
 
 
+def valid_source_id(sid) -> bool:
+    """Годится ли имя источника как ключ блока: непустая строка до 120 знаков без управляющих знаков, суррогатов, разделителей
+    строк (U+0085, U+2028/2029 рвали бы файл для других читалок) и неназначенных кодов."""
+    return (isinstance(sid, str) and bool(sid.strip()) and len(sid) <= 120
+            and not any(unicodedata.category(c) in _BAD_CATS for c in sid))
+
+
+def _has_comment(line: str) -> bool:
+    """Есть ли в строке комментарий YAML: `#` в начале или после пробела вне кавычек (в имени «C# docs» его нет)."""
+    quote, prev, i = "", " ", 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if quote == '"' and ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                if quote == "'" and line[i + 1:i + 2] == "'":
+                    i += 2
+                    continue
+                quote = ""
+        elif ch in "\"'" and prev in " \t:-{[,":
+            quote = ch
+        elif ch == "#" and prev in " \t":
+            return True
+        prev = ch
+        i += 1
+    return False
+
+
 def parse_access(config_text: str) -> tuple:
     """(режимы доступа, проблемы) из блока `source_access:` → {id источника: {mode, vpn, internet, offline_cache}}.
 
@@ -181,7 +213,7 @@ def parse_access(config_text: str) -> tuple:
             base = indent
         if indent <= base:                                   # строка источника
             sid = None
-            if not key or len(key) > 120 or any(ord(c) < 32 for c in key):
+            if not valid_source_id(key):
                 problems.append(f"{ACCESS_KEY}: имя источника «{key[:40]}» не годится; блок пропущен")
             elif value:
                 problems.append(f"{ACCESS_KEY}: у «{key}» значение в одной строке — поля пишутся вложенными строками")
@@ -223,7 +255,7 @@ def lossy_of(config_text: str) -> list:
     if not spans:
         return []
     notes = list(parse_access(config_text)[1])
-    if any("#" in ln for a, b in spans for ln in lines[a:b]):
+    if any(_has_comment(ln) for a, b in spans for ln in lines[a:b]):
         notes.append(f"{ACCESS_KEY}: в блоке есть комментарии — при сохранении они пропадут")
     return notes
 
@@ -241,7 +273,7 @@ def lossy_kinds(config_text: str) -> list:
         out.append("duplicate")
     if any(p.startswith(_P_INLINE) for p in problems):
         out.append("inline")
-    if any("#" in ln for a, b in spans for ln in lines[a:b]):
+    if any(_has_comment(ln) for a, b in spans for ln in lines[a:b]):
         out.append("comments")
     if any(not p.startswith((_P_DUP, _P_INLINE)) for p in problems):
         out.append("skipped")
@@ -261,7 +293,7 @@ def clean_access(access) -> tuple:
         return {}, [{"code": "bad_access", "where": "", "text": "режимы доступа — объект {источник: поля}"}]
     for sid, rec in access.items():
         where = f"{ACCESS_KEY}.{sid}"
-        if not isinstance(sid, str) or not sid.strip() or len(sid) > 120 or any(ord(c) < 32 for c in sid):
+        if not valid_source_id(sid):
             errors.append({"code": "bad_source", "where": where, "text": "имя источника не годится"})
             continue
         if rec is None or rec == {}:
@@ -406,9 +438,9 @@ def save_access(project: str, access: dict, expect=None, replace_lossy: bool = F
                         "error": "в блоке source_access есть то, что сохранение перепишет: " + "; ".join(lossy[:3])}
             try:
                 _write_exact(path, new)
-            except OSError as e:
+            except (OSError, ValueError) as e:
                 return {"ok": False, "code": "write", "failed": True, "errors": [],
-                        "error": f"не удалось записать aurora.config.yaml: {e.strerror or e}"}
+                        "error": f"не удалось записать aurora.config.yaml: {getattr(e, 'strerror', None) or type(e).__name__}"}
     return {"ok": True, "digest": block_digest(parse_access(new)[0])}
 
 
@@ -718,8 +750,10 @@ def needed_profiles(req: dict) -> list:
     return sorted(set(req.get("profiles") or []) | set(req.get("llm_profiles") or []))
 
 
-def check_requirements(req: dict, svc=None, budget: float = CN.PRELAUNCH_BUDGET) -> dict:
-    """Предзапуск: свежее состояние из кэша, устаревшее — перепроверка на месте (≤ бюджета), затем вердикт."""
+def check_requirements(req: dict, svc=None, budget: float = CN.PRELAUNCH_BUDGET, hold: bool = False) -> dict:
+    """Предзапуск: свежее состояние из кэша, устаревшее — перепроверка на месте (≤ бюджета), затем вердикт.
+
+    `hold` — для ожидания восстановления: последнее известное «недоступно» держится, пока не придёт положительный раунд."""
     svc = svc or CN.service()
     if not svc.enabled:
         return {"ok": True, "blocked": [], "state": "unknown", "enabled": False}
@@ -727,17 +761,18 @@ def check_requirements(req: dict, svc=None, budget: float = CN.PRELAUNCH_BUDGET)
     if req.get("llm") and "providers_used" not in req:
         req = dict(req, providers_used=[p["id"] for p in models_used(svc.kit)])
     snap = svc.snapshot({"profiles": needed_profiles(req), "providers": req.get("providers_used"),
-                         "internet": bool(req.get("internet"))})
+                         "internet": bool(req.get("internet"))}, hold=hold)
     return evaluate(req, snap)
 
 
-def check_command(cmd: str, project: str, svc=None, deps: dict | None = None, budget: float = CN.PRELAUNCH_BUDGET) -> dict:
+def check_command(cmd: str, project: str, svc=None, deps: dict | None = None, budget: float = CN.PRELAUNCH_BUDGET,
+                  hold: bool = False) -> dict:
     """Можно ли запускать команду в проекте → {ok, blocked[], requirements}. Проверка выключена — всегда «можно»."""
     svc = svc or CN.service()
     if not svc.enabled:
         return {"ok": True, "blocked": [], "state": "unknown", "enabled": False, "cmd": cmd}
     req = command_requirements(cmd, project, deps)
-    out = check_requirements(req, svc, budget)
+    out = check_requirements(req, svc, budget, hold)
     out.update(cmd=cmd, offline_capable=req["offline_capable"])
     return out
 
@@ -755,7 +790,7 @@ def merge_requirements(reqs: list) -> dict:
     return out
 
 
-def check_steps(cmds: list, project: str, svc=None, budget: float = CN.PRELAUNCH_BUDGET) -> list:
+def check_steps(cmds: list, project: str, svc=None, budget: float = CN.PRELAUNCH_BUDGET, hold: bool = False) -> list:
     """Шаги маршрута или цепочки: один предзапуск на всё, вердикт на каждый шаг → [{cmd, ok, blocked}] в порядке шагов."""
     svc = svc or CN.service()
     if not svc.enabled:
@@ -767,7 +802,7 @@ def check_steps(cmds: list, project: str, svc=None, budget: float = CN.PRELAUNCH
     merged = merge_requirements(list(reqs.values()))
     svc.ensure(profiles=needed_profiles(merged), budget=budget)
     snap = svc.snapshot({"profiles": needed_profiles(merged), "providers": [p["id"] for p in provs],
-                         "internet": merged["internet"]})
+                         "internet": merged["internet"]}, hold=hold)
     out = []
     for c in cmds:
         r = dict(reqs[c], providers_used=[p["id"] for p in provs])
@@ -840,6 +875,12 @@ def sync_verdict(script: str, project: str = ".", svc=None, budget: float = CN.P
     return verdict
 
 
+def net_marker(blocked: list, sources=()) -> str:
+    """Машинная строка отказа по связи: `AURORA-NET {…}`. Её печатают скрипты источников и процесс агента, а маршрут и
+    расписание узнают по ней, что шаг не поломался, а не получил связь."""
+    return NET_MARK + " " + json.dumps({"blocked": list(blocked), "sources": list(sources)}, ensure_ascii=False)
+
+
 def sync_refusal(script: str, project: str = ".", svc=None) -> str:
     """Текст отказа синку («VPN-1 недоступен…») или пусто, если можно. Две строки: человеку и машинная `AURORA-NET {…}`."""
     v = sync_verdict(script, project, svc)
@@ -847,9 +888,8 @@ def sync_refusal(script: str, project: str = ".", svc=None) -> str:
         return ""
     names = ", ".join(v["sources"])
     why = "; ".join(reason_line(r) for r in v["blocked"])
-    marker = json.dumps({"blocked": v["blocked"], "sources": v["sources"]}, ensure_ascii=False)
     return (f"Синк источника «{names}» не запущен: {why}. Это отказ проверки соединений, а не таймаут: связь вернётся — "
-            f"запустите снова (состояние — `net:status`).\n{NET_MARK} {marker}")
+            f"запустите снова (состояние — `net:status`).\n{net_marker(v['blocked'], v['sources'])}")
 
 
 def parse_marker(lines) -> dict:
@@ -869,51 +909,67 @@ def parse_marker(lines) -> dict:
 # ------------------------------------------------------------------ провайдеры моделей: кого не трогать
 
 _DOWN: dict = {"at": 0.0, "key": None, "val": {}}
+_ENSURE: dict = {"at": 0.0, "key": None}
+_REFRESH = threading.Lock()   # обновление сводки одним потоком: двадцать потоков пула не гонят двадцать проверок разом
 DOWN_TTL = 2.0           # секунд: решение «кого не трогать» не пересчитывается на каждый вызов модели
+ENSURE_EVERY = 10.0      # секунд: перепроверка устаревшего на месте — не чаще; между ними читается готовая сводка
 
 
-def providers_down(svc=None, budget: float = CN.PRELAUNCH_BUDGET, fresh: bool = False) -> dict:
+def _service(svc=None):
+    """Сервис проверки или None: сбой при его создании (нет кита, битый указатель) вызов модели не останавливает."""
+    try:
+        return svc or CN.service()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def providers_down(svc=None, budget: float = CN.PRELAUNCH_BUDGET, fresh: bool = False, hold: bool = False) -> dict:
     """{id провайдера: причина} для тех, кого трогать нельзя: профиль недоступен, нет интернета, проверка ручки не прошла.
 
     Пусто — проверка выключена или все доступны. Причина — код сводки (`profile_offline`, `internet_offline`,
-    `provider_check`) плюс имя профиля. `unknown` не блокирует: недоступным провайдер считается только по известному."""
+    `provider_check`) плюс имя профиля. `unknown` не блокирует: недоступным провайдер считается только по известному.
+    `hold` — для ожидания: профиль с последним известным «недоступен» и устаревшими данными остаётся недоступным."""
     import time
-    svc = svc or CN.service()
-    if not fresh and _DOWN["key"] == id(svc) and time.monotonic() - _DOWN["at"] < DOWN_TTL:
+    svc = _service(svc)
+    if svc is None:
+        return {}
+    key = (id(svc), hold)
+    if not fresh and _DOWN["key"] == key and time.monotonic() - _DOWN["at"] < DOWN_TTL:
         return _DOWN["val"]
     try:
         if not svc.enabled:
             return {}
-        svc.ensure(budget=budget)
-        snap = svc.snapshot()
+        with _REFRESH:
+            if not fresh and _DOWN["key"] == key and time.monotonic() - _DOWN["at"] < DOWN_TTL:
+                return _DOWN["val"]            # пока ждали, другой поток уже обновил сводку
+            if fresh or _ENSURE["key"] != id(svc) or time.monotonic() - _ENSURE["at"] >= ENSURE_EVERY:
+                svc.ensure(budget=budget)      # зависшая проверка не тормозит каждый вызов: не чаще раза в ENSURE_EVERY
+                _ENSURE.update(at=time.monotonic(), key=id(svc))
+            snap = svc.snapshot(hold=hold)
     except Exception:  # noqa: BLE001 — связь — подсказка: сбой проверки не должен останавливать работу
         return {}
     val = {r["id"]: {"why": r["why"], "profile": r.get("profile", "")}
            for r in snap.get("providers") or [] if r["state"] == "offline"}
-    _DOWN.update(at=time.monotonic(), key=id(svc), val=val)
+    _DOWN.update(at=time.monotonic(), key=key, val=val)
     return val
 
 
-def provider_reason(down: dict) -> str:
-    """Причина строкой: «VPN-1 не отвечает», «нет интернета», «проверка ручки не прошла»."""
-    if down.get("why") == "profile_offline":
-        return f"{down.get('profile') or 'профиль'} не отвечает"
-    if down.get("why") == "internet_offline":
-        return "нет интернета"
-    return "проверка ручки не прошла"
-
-
-def llm_outage(svc=None, fresh: bool = False) -> dict:
+def llm_outage(svc=None, fresh: bool = False, hold: bool = False) -> dict:
     """{id: причина}, если недоступны ВСЕ провайдеры, на которых работает кит; иначе пусто. Кто-то жив — партия встала не
     из-за связи, и ждать по проверке соединений нечего (прежнее ожидание вслепую остаётся)."""
-    svc = svc or CN.service()
-    down = providers_down(svc, fresh=fresh)
+    svc = _service(svc)
+    if svc is None:
+        return {}
+    down = providers_down(svc, fresh=fresh, hold=hold)
     if not down:
         return {}
     used = [p["id"] for p in models_used(getattr(svc, "kit", None))]
     if not used or any(pid not in down for pid in used):
         return {}
     return {pid: down[pid] for pid in used}
+
+
+PULSE_EVERY = 180.0      # секунд: пока ждём, раз в столько в консоль идёт строка — ожидание не принимают за зависание
 
 
 def wait_llm_back(cap: float, poll: float = 15.0, say=None, svc=None) -> bool:
@@ -928,37 +984,14 @@ def wait_llm_back(cap: float, poll: float = 15.0, say=None, svc=None) -> bool:
         why = "; ".join(f"{pid}: {provider_reason(d)}" for pid, d in out.items())
         say(f"все провайдеры моделей недоступны по проверке соединений ({why}) — жду восстановления, "
             f"перепроверяю каждые {int(poll)} с")
-    wait_restored(lambda: {"ok": time.time() >= cap or not llm_outage(svc, fresh=True)}, poll=poll)
+    last = [time.time()]
+
+    def on_wait(_verdict, secs):
+        if say and time.time() - last[0] >= PULSE_EVERY:
+            last[0] = time.time()
+            say(f"всё ещё жду связи с моделями ({secs // 60} мин)")
+    wait_restored(lambda: {"ok": time.time() >= cap or not llm_outage(svc, fresh=True, hold=True)}, poll=poll, on_wait=on_wait)
     return True
-
-
-def watch_state(project: str, svc=None, budget: float = CN.PRELAUNCH_BUDGET) -> dict:
-    """Связь для сторожа шагов (`cockpit/watchdog.py`) по проверке соединений: {known, ok, down[], covered[]}.
-
-    `known` — проверка включена и по нужному делу проекта уже есть сведения; иначе сторож спрашивает прямыми запросами, как
-    раньше. `covered` — префиксы учётных данных (`auth.env_prefix` манифеста) источников, чей доступ задан режимом: такие
-    серверы сторож отдельно не опрашивает, их состояние уже в сводке."""
-    none = {"known": False, "ok": True, "down": [], "covered": []}
-    try:
-        svc = svc or CN.service()
-        if not svc.enabled:
-            return none
-        need = required_for(project, svc)
-        svc.ensure(profiles=need["profiles"], budget=budget)
-        snap = svc.snapshot(need)
-        if snap.get("state") == "unknown":
-            return none
-        down = []
-        if need["internet"] and (snap.get("internet") or {}).get("state") == "offline":
-            down.append("интернет")
-        down += [r["name"] for r in snap.get("profiles") or [] if r.get("required") and r["state"] == "offline"]
-        down += [f"модель ({r['name'] or r['id']})" for r in snap.get("providers") or []
-                 if r.get("required") and r["state"] == "offline"]
-        covered = sorted({s["prefix"] for s in source_instances(project) if s["prefix"]
-                          and (needs_of_source(s)["profile"] or needs_of_source(s)["internet"])}) if project else []
-        return {"known": True, "ok": not down, "down": down, "covered": covered}
-    except Exception:  # noqa: BLE001 — сторож не падает из-за проверки связи
-        return none
 
 
 _NOTED: dict = {}
@@ -969,7 +1002,9 @@ def note_failure(provider: str, svc=None) -> dict:
     """Вызов провайдера оборвался по связи: сразу перепроверить его профиль и интернет (на месте, в пределах бюджета),
     а не ждать следующего хода фоновой проверки → {provider_id: причина} недоступных на сейчас."""
     import time
-    svc = svc or CN.service()
+    svc = _service(svc)
+    if svc is None:
+        return {}
     try:
         if not svc.enabled:
             return {}
@@ -986,6 +1021,52 @@ def note_failure(provider: str, svc=None) -> dict:
     except Exception:  # noqa: BLE001
         return {}
     return providers_down(svc, budget=0.5, fresh=True)
+
+
+def watch_state(project: str, svc=None, budget: float = CN.PRELAUNCH_BUDGET) -> dict:
+    """Связь для сторожа шагов (`cockpit/watchdog.py`) по проверке соединений: {known, ok, down[], covered[]}.
+
+    `known` — проверка включена, а нужное делу проекта ею действительно покрыто: профиль за ним следит, у интернета есть
+    адрес, у каждого нужного провайдера есть привязка, проверка ручки или проверяемый интернет. Иначе сторож спрашивает
+    прямыми запросами, как раньше (сводка «всё в порядке» без единой проверки сторожу не ответ). `covered` — префиксы
+    учётных данных (`auth.env_prefix` манифеста) источников, чей доступ задан режимом: такие серверы сторож отдельно не
+    опрашивает, их состояние уже в сводке."""
+    none = {"known": False, "ok": True, "down": [], "covered": []}
+    svc = _service(svc)
+    if svc is None:
+        return none
+    try:
+        if not svc.enabled:
+            return none
+        need = required_for(project, svc)
+        svc.ensure(profiles=need["profiles"], budget=budget)
+        snap = svc.snapshot(need)
+        provs = [p for p in models_used(getattr(svc, "kit", None)) if p["id"] in need["providers"]]
+        net_mon = bool((snap.get("internet") or {}).get("monitored"))
+        uncovered = [p for p in provs if not (p["profile"] or p["check"] != "off" or (not p["local"] and net_mon))]
+        watched = bool(need["profiles"]) or net_mon or any(p["check"] != "off" for p in provs)
+        if snap.get("state") == "unknown" or uncovered or not watched:
+            return none
+        down = []
+        if need["internet"] and (snap.get("internet") or {}).get("state") == "offline":
+            down.append("интернет")
+        down += [r["name"] for r in snap.get("profiles") or [] if r.get("required") and r["state"] == "offline"]
+        down += [f"модель ({r['name'] or r['id']})" for r in snap.get("providers") or []
+                 if r.get("required") and r["state"] == "offline"]
+        covered = sorted({s["prefix"] for s in source_instances(project) if s["prefix"]
+                          and (needs_of_source(s)["profile"] or needs_of_source(s)["internet"])}) if project else []
+        return {"known": True, "ok": not down, "down": down, "covered": covered}
+    except Exception:  # noqa: BLE001 — сторож не падает из-за проверки связи
+        return none
+
+
+def provider_reason(down: dict) -> str:
+    """Причина строкой: «VPN-1 не отвечает», «нет интернета», «проверка ручки не прошла»."""
+    if down.get("why") == "profile_offline":
+        return f"{down.get('profile') or 'профиль'} не отвечает"
+    if down.get("why") == "internet_offline":
+        return "нет интернета"
+    return "проверка ручки не прошла"
 
 
 # ------------------------------------------------------------------ разработка кита: реестр и метаданные

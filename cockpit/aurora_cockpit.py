@@ -1103,21 +1103,25 @@ def net_enabled() -> bool:
         return False
 
 
-def net_check_command(project: str, cmd: str) -> dict:
-    """Хватает ли связи команде в проекте → {ok, blocked[], state}. Сбой самой проверки — «хватает»."""
+def net_check_command(project: str, cmd: str, hold: bool = False) -> dict:
+    """Хватает ли связи команде в проекте → {ok, blocked[], state}. Сбой самой проверки — «хватает». `hold` — в ожидании:
+    последнее известное «недоступно» держится, пока не придёт положительный ответ."""
     try:
         import conn_gate as GATE
-        return GATE.check_command(cmd, project, svc=net_service())
+        return GATE.check_command(cmd, project, svc=net_service(), hold=hold)
     except Exception:  # noqa: BLE001
         return {"ok": True, "blocked": []}
 
 
-def net_check_route(project: str, sc_id: str, write: bool) -> dict:
-    """Хватает ли связи шагам маршрута → {ok, items[{cmd, blocked}], total}: только шаги, которым не хватает."""
+def net_check_route(project: str, sc_id: str, write: bool, resume: dict | None = None) -> dict:
+    """Хватает ли связи шагам маршрута → {ok, items[{cmd, blocked}], total}: только шаги, которым не хватает.
+    Продолжение (`resume.skipSigs`) пройденные шаги не проверяет."""
     try:
         import conn_gate as GATE
         sc = RR.scenario(sys.modules[__name__], sc_id)
-        cmds = [st["cmd"] for st in RR.plan(sys.modules[__name__], sc, write)] if sc else []
+        steps = RR.plan(sys.modules[__name__], sc, write) if sc else []
+        skip = (resume or {}).get("skipSigs") if isinstance(resume, dict) else None
+        cmds = [st["cmd"] for st in RR.pending_steps(steps, skip if isinstance(skip, list) else [])]
         rows = GATE.check_steps(cmds, project, svc=net_service())
     except Exception:  # noqa: BLE001
         return {"ok": True, "items": [], "total": 0}
@@ -1137,8 +1141,10 @@ def net_wait_for(job: dict, project: str, cmd: str) -> bool:
         job_push(job, f"⏳ {cmd}: нужное недоступно — {why}. Стою в очереди и начну сам, когда связь вернётся.")
     job["waiting"] = True
     started = time.time()
-    ok = GATE.wait_restored(lambda: net_check_command(project, cmd), stop=job["cancel"], poll=RR.NET_POLL_S)
+    ok = GATE.wait_restored(lambda: net_check_command(project, cmd, hold=True), stop=job["cancel"], poll=RR.NET_POLL_S)
     job["waiting"] = False
+    if job["cancel"].is_set():
+        ok = False                           # «Прервать» пришло одновременно с возвращением связи: человек главнее
     with JOBS_LOCK:
         job_push(job, f"✓ связь вернулась (ждали {int(time.time() - started)} с) — запускаю" if ok
                  else "■ ожидание прервано: команда не запускалась")
@@ -6457,7 +6463,8 @@ class Handler(BaseHTTPRequestHandler):
             # только доступное, встать в очередь или отменить. Выбор приходит в `net` и становится политикой этого прогона.
             net = str(payload.get("net") or "")
             if net_enabled() and net not in ("partial", "queue"):
-                chk = net_check_route(project, str(payload.get("scId") or ""), bool(payload.get("write", True)))
+                chk = net_check_route(project, str(payload.get("scId") or ""), bool(payload.get("write", True)),
+                                      payload.get("resume") if isinstance(payload.get("resume"), dict) else None)
                 if not chk["ok"]:
                     self.send_json({"net_blocked": dict(chk, route=str(payload.get("scId") or ""),
                                                         choices=["partial", "queue", "cancel"])}, 409)
@@ -7199,7 +7206,7 @@ def job_pulse(job: dict, now: float = 0.0) -> dict:
     """
     now = now or time.time()
     proc = job.get("proc")
-    alive = proc is not None and proc.poll() is None
+    alive = (proc is not None and proc.poll() is None) or (proc is None and bool(job.get("waiting")))
     started = job.get("started") or now
     quiet = max(0.0, now - (job.get("last_out") or started))
     calls, answered, failed, last_answer, rings = [], 0, 0, 0.0, 0
@@ -7222,6 +7229,8 @@ def job_pulse(job: dict, now: float = 0.0) -> dict:
                                                 str(oldest.get("model") or "")) if x))
     if not alive:
         state = "gone"
+    elif proc is None and job.get("waiting"):
+        state = "wait"         # задание стоит в очереди за связью (диалог «встать в очередь»): процесса ещё нет
     elif quiet < PULSE_QUIET or (last_answer and now - last_answer < PULSE_QUIET):
         state = "ok"
     elif oldest:
