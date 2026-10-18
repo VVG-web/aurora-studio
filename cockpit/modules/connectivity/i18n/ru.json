@@ -75,7 +75,7 @@
   "connectivity.f_status": "Ожидаемые статусы",
   "connectivity.h_status": "Какие ответы считать нормой: числа (200) или классы (2xx). Пусто — 2xx и 3xx. Если сервис без входа отвечает 401, впишите 401.",
   "connectivity.f_body": "Ожидаемый текст",
-  "connectivity.h_body": "Необязательно: текст, который должен быть в начале ответа. Пример: OK.",
+  "connectivity.h_body": "Необязательно: текст, который должен встретиться в начале ответа (в первых 64 КБ). Пример: OK.",
   "connectivity.f_timeout": "Срок ответа, с",
   "connectivity.h_timeout": "Сколько ждать ответа от этого адреса. Пусто — общее значение из настроек ниже.",
   "connectivity.f_interval": "Как часто, с",
@@ -182,7 +182,7 @@
   "connectivity.err.bad_policy": "Выберите политику из списка",
   "connectivity.err.bad_profiles": "Список профилей заполнен не так",
   "connectivity.err.bad_profile": "Профиль заполнен не так",
-  "connectivity.err.bad_name": "Имя профиля: латиница, цифры, «_», «-», «.»; до 40 знаков, начинается с буквы или цифры",
+  "connectivity.err.bad_name": "Имя профиля — метка, не адрес: латиница, цифры, «_», «-», не больше одной «.»; до 40 знаков, начинается с буквы или цифры",
   "connectivity.err.reserved_name": "Это имя занято китом",
   "connectivity.err.dup_profile": "Профиль с таким именем уже есть (или имя занято китом)",
   "connectivity.err.bad_internet": "Правило интернета заполнено не так",
@@ -212,5 +212,6 @@
   "connectivity.reason.check_unusable": "Проверку ручки провайдера {name} собрать нельзя: адрес, ключ или открытый http",
   "connectivity.prov_why.check_unusable": "проверку ручки собрать нельзя (адрес, ключ или открытый http)",
   "connectivity.code.late": "не успел за общий срок",
-  "connectivity.doc": "Справка"
+  "connectivity.doc": "Справка",
+  "connectivity.code.reset": "соединение сброшено"
 }

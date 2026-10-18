@@ -2203,6 +2203,26 @@ def replace_file(src, dst, *, windows: bool | None = None, attempts: int = 40,
             time.sleep(pause * min(n + 1, 8))
 
 
+def keep_private_copy(path, tag: str = "broken", keep: int = 3) -> bool:
+    """Копия файла рядом (`<имя>.<tag>-<время>`) с правами 600 с первого байта; хранятся `keep` свежих. → удалось ли.
+
+    Файлы настроек машины могут нести ключи, поэтому копия никогда не открыта другим, даже на мгновение. Не удалось
+    сделать копию — вызывающий файл не заменяет."""
+    from pathlib import Path
+    path = Path(path)
+    dst = path.with_name(f"{path.name}.{tag}-{utc_slug()}")
+    try:
+        data = path.read_bytes()
+        fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        for old in sorted(path.parent.glob(f"{path.name}.{tag}-*"))[:-keep]:
+            old.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def write_text_atomic(path, text: str) -> None:
     """Записать текстовый файл целиком или не трогать его: через временный файл рядом и подмену.
 

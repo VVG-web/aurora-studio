@@ -863,10 +863,13 @@ class Scheduler:
                 # База за маршрут менялась, не двигается только хвост — проект обновлён.
                 status = "partial"
             note = res.get("note", "")
+            for key in res.get("redo") or []:           # шаги, шедшие на прежних данных, повторятся вместе с отложенными
+                if key in it["done"]:
+                    it["done"].remove(key)
             if status == "passed" and res.get("net_deferred"):
                 # Маршрут отдал отложенные шаги цепочке: она вернётся к ним в конце, когда остальные проекты пройдены.
                 status, note = "deferred", "net: " + ", ".join(dict.fromkeys(res["net_deferred"]))[:200]
-            elif status == "passed" and res.get("net_skipped"):
+            elif status == "passed" and (res.get("net_skipped") or res.get("redo")):
                 # Политика «сделать доступное»: часть шагов пропущена из-за связи — это частичный итог, а не чистый.
                 status = "partial"
             it.update(status=status, failed=res.get("failed", ""), note=note,

@@ -62,7 +62,7 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
     except (AttributeError, ValueError, OSError):
         pass
 
-from aurora_common import lock_release, lock_take, parse_time, replace_file, utc_slug, utc_stamp  # noqa: E402
+from aurora_common import keep_private_copy, lock_release, lock_take, parse_time, replace_file, utc_stamp  # noqa: E402
 
 VERSION = 1
 CONFIG_FILE = ("local", "connectivity.json")
@@ -97,7 +97,6 @@ PROFILE_KEYS = ("name", "aggregate", "quorum", "fail_after", "ok_after", "note")
 PROBE_KEYS = ("id", "profile", "type", "host", "port", "url", "expect_status", "expect_body", "timeout",
               "interval", "label")
 
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
 PROBE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,23}$")
 
 
@@ -179,6 +178,10 @@ def valid_url(url) -> bool:
     if not u or len(u) > 1000 or u != u.strip() or re.search(r"\s", u) or any(ord(c) < 32 for c in u):
         return False
     try:
+        u.encode("utf-8")
+    except UnicodeEncodeError:                 # одинокий суррогат: адрес не записать и не отправить
+        return False
+    try:
         p = urllib.parse.urlsplit(u)
         p.port        # noqa: B018 — разбор порта бросает ValueError на мусоре
     except ValueError:
@@ -222,6 +225,21 @@ def _problem(problems: list, code: str, where: str, text: str) -> None:
     problems.append({"code": code, "where": where, "text": text})
 
 
+def _scrub(obj):
+    """Одинокие суррогаты в строках настройки (их не записать в UTF-8) заменяются знаком замены."""
+    if isinstance(obj, str):
+        try:
+            obj.encode("utf-8")
+            return obj
+        except UnicodeEncodeError:
+            return obj.encode("utf-8", "replace").decode("utf-8", "replace")
+    if isinstance(obj, dict):
+        return {_scrub(k): _scrub(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrub(v) for v in obj]
+    return obj
+
+
 def clean(data) -> tuple:
     """Привести настройку к схеме → (настройка, [проблемы]).
 
@@ -231,6 +249,7 @@ def clean(data) -> tuple:
     что знает более новый кит или рука человека.
     """
     problems: list = []
+    data = _scrub(data)
     raw = data if isinstance(data, dict) else {}
     if data is not None and not isinstance(data, dict):
         _problem(problems, "bad_config", "", "настройка соединений — не объект")
@@ -518,20 +537,16 @@ def save(kit, data, expect=None, replace_broken: bool = False) -> dict:
                 if not replace_broken:
                     return {"ok": False, "code": "broken_file", "errors": [],
                             "error": "прежний файл настройки не разобран; сохранение заменит его целиком"}
-                try:                       # рядом остаётся копия: в файле могла быть правка руками
-                    path.with_name(f"{path.name}.broken-{utc_slug()}").write_bytes(path.read_bytes())
-                except OSError:
-                    pass
+                if not keep_private_copy(path):           # рядом остаётся копия: в файле могла быть правка руками
+                    return {"ok": False, "code": "write", "errors": [], "failed": True,
+                            "error": "не удалось оставить копию прежнего файла рядом — замена отменена"}
                 old = {}
         _carry(old if isinstance(old, dict) else {}, new, data if isinstance(data, dict) else {})
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
         try:
-            tmp.write_text(json.dumps(new, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            try:
-                os.chmod(tmp, 0o600)
-            except OSError:
-                pass
+            with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+                f.write(json.dumps(new, ensure_ascii=False, indent=2) + "\n")
             replace_file(tmp, path)
         finally:
             tmp.unlink(missing_ok=True)
@@ -551,7 +566,8 @@ def _carry(old: dict, new: dict, sent: dict) -> None:
         if key not in TOP_KEYS and key not in sent:
             new[key] = value
     for coll, ident, known in (("profiles", "name", PROFILE_KEYS), ("probes", "id", PROBE_KEYS)):
-        was = {str(x.get(ident)): x for x in old.get(coll) or [] if isinstance(x, dict)}
+        rows = old.get(coll)
+        was = {str(x.get(ident)): x for x in (rows if isinstance(rows, list) else []) if isinstance(x, dict)}
         for row in new.get(coll, []):
             prev = was.get(str(row.get(ident))) or {}
             for key, value in prev.items():
@@ -671,12 +687,12 @@ def trend(entry) -> dict:
 # ------------------------------------------------------------------ проверки (probe)
 
 # Вид обрыва, названный движком (`agent_core.link_kind`), → код результата проверки. Остальное — «other».
-_ENGINE_KIND_CODE = {"dns": "dns", "refused": "refused", "unreachable": "unreachable", "tls": "tls",
+_ENGINE_KIND_CODE = {"dns": "dns", "refused": "refused", "unreachable": "unreachable", "tls": "tls", "reset": "reset",
                      "connect_timeout": "timeout", "silent": "timeout"}
 
 
 def classify_error(exc) -> tuple:
-    """Исключение сети → (код, подробность). Коды: dns, refused, timeout, unreachable, tls, other. Подробность —
+    """Исключение сети → (код, подробность). Коды: dns, refused, timeout, unreachable, tls, reset, other. Подробность —
     только то, что не переводится (текст самой библиотеки); объяснение по коду даёт тот, кто показывает.
 
     Вид обрыва определяет классификатор движка (`agent_core.link_kind`, таблица `CAUSES`): он один на вызовы моделей и
@@ -792,7 +808,8 @@ CHECKERS = {"tcp": _check_tcp, "http": _check_http, "icmp": _check_icmp}
 
 
 def probe_target(p: dict) -> str:
-    """Куда смотрит probe — для показа: без пути и параметров адреса (в запросе бывают токены)."""
+    """Куда смотрит probe — для показа: хост и путь, без параметров запроса (в запросе бывают токены). Путь адреса
+    остаётся в настройке на этой машине открытым текстом: токены в адрес не вписывают."""
     if p.get("type") == "http":
         try:
             u = urllib.parse.urlsplit(p.get("url") or "")
@@ -811,7 +828,11 @@ def run_probe(p: dict, timeout: float, checkers=None) -> dict:
         res = fn(p, timeout)
     except Exception as e:  # noqa: BLE001 — проверка не должна ронять вызывающего
         # Сама проверка сломалась — это не свидетельство против адреса: раунд по ней не засчитывается (`inconclusive`).
-        res = {"ok": False, "code": "other", "ms": 0, "detail": (type(e).__name__ + ": " + str(e))[:120], "inconclusive": True}
+        detail = type(e).__name__ + ": " + str(e)
+        for secret in (p.get("_headers") or {}).values():
+            if secret and len(str(secret)) > 3:
+                detail = detail.replace(str(secret), "***").replace(str(secret).removeprefix("Bearer "), "***")
+        res = {"ok": False, "code": "other", "ms": 0, "detail": detail[:120], "inconclusive": True}
     return res
 
 
@@ -829,6 +850,10 @@ def try_probe(probe, settings=None, checkers=None) -> dict:
     res = run_probe(p, probe_timeout(cfg, p), checkers)
     res["target"] = probe_target(p)
     return res
+
+
+_PROBE_THREADS: dict = {}          # id probe → поток её последней проверки: зависшая (имя не разрешается) не множится
+_PROBE_LOCK = threading.Lock()
 
 
 def run_probes(probes: list, cfg: dict, budget: float | None = None, checkers=None) -> dict:
@@ -850,7 +875,12 @@ def run_probes(probes: list, cfg: dict, budget: float | None = None, checkers=No
 
     threads = []
     for p in probes:
-        t = threading.Thread(target=one, args=(p,), daemon=True)
+        with _PROBE_LOCK:
+            busy = _PROBE_THREADS.get(p["id"])
+            if busy is not None and busy.is_alive():
+                continue            # прошлая проверка этого адреса ещё висит: вторую не копим, раунд по нему — `late`
+            t = threading.Thread(target=one, args=(p,), daemon=True)
+            _PROBE_THREADS[p["id"]] = t
         t.start()
         threads.append(t)
     end = None if budget is None else time.monotonic() + budget
@@ -890,11 +920,8 @@ def _write_state(path: Path, state: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
     try:
-        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
-        try:
-            os.chmod(tmp, 0o600)
-        except OSError:
-            pass
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+            f.write(json.dumps(state, ensure_ascii=False, indent=1))
         replace_file(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
@@ -977,12 +1004,20 @@ def apply_round(state: dict, cfg: dict, profile: str, probes: list, results: dic
     return events
 
 
-def prune_state(state: dict, cfg: dict, extra_profiles=()) -> None:
-    """Убрать из состояния профили и probe, которых в настройке больше нет."""
+PRUNE_AFTER = 7 * 24 * 3600     # запись, которой нет в настройке и которую неделю не обновляли, из состояния уходит
+
+
+def prune_state(state: dict, cfg: dict, extra_profiles=(), now: float | None = None) -> None:
+    """Убрать из состояния профили и probe, которых в настройке больше нет и которые давно не обновлялись.
+
+    Файл состояния один на машину: другой кит с другими профилями пишет в него же, и стирать его записи при каждом раунде
+    нельзя (запись чужого профиля узнаётся по подписи `sig` и чужому кит не мешает)."""
+    now = time.time() if now is None else now
     live = {p["name"] for p in cfg.get("profiles") or []} | {INTERNET} | set(extra_profiles)
-    for name in [n for n in state["profiles"] if n not in live]:
+    stale = lambda rec, key: _age((rec or {}).get(key), now) > PRUNE_AFTER      # noqa: E731
+    for name in [n for n in state["profiles"] if n not in live and stale(state["profiles"][n], "round_at")]:
         del state["profiles"][name]
-    for pid in [i for i, r in state["probes"].items() if (r or {}).get("profile") not in live]:
+    for pid in [i for i, r in state["probes"].items() if (r or {}).get("profile") not in live and stale(r, "at")]:
         del state["probes"][pid]
 
 
@@ -1218,7 +1253,7 @@ class AvailabilityService:
         def write(state: dict) -> None:
             for name, probes in units.items():
                 events.extend(apply_round(state, cfg, name, probes, results, now))
-            prune_state(state, cfg, [provider_profile(p["id"]) for p in self.providers()])
+            prune_state(state, cfg, [provider_profile(p["id"]) for p in self.providers()], now)
 
         update_state(write, self.state_file)
         self._emit(events)
@@ -1445,7 +1480,8 @@ GLOBAL_TEXT = {
 }
 STATE_TEXT = {"online": "доступен", "degraded": "доступен частично", "offline": "недоступен", "unknown": "не известно"}
 CODE_TEXT = {"ok": "ответил", "late": "не успел за общий срок", "timeout": "нет ответа", "refused": "отказал в соединении", "dns": "имя не находится",
-             "unreachable": "недостижим", "tls": "ошибка TLS", "status": "неожиданный статус", "body": "нет ожидаемого текста",
+             "unreachable": "недостижим", "tls": "ошибка TLS", "reset": "соединение сброшено", "status": "неожиданный статус",
+             "body": "нет ожидаемого текста",
              "no_ping": "нет команды ping", "other": "ошибка"}
 REASON_TEXT = {
     "nothing_required": "ни один источник или провайдер не привязан к профилю, интернет не проверяется: проверять нечего "

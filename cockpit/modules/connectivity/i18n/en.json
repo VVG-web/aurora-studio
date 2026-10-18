@@ -75,7 +75,7 @@
   "connectivity.f_status": "Expected statuses",
   "connectivity.h_status": "Which answers count as normal: numbers (200) or classes (2xx). Empty — 2xx and 3xx. If a service answers 401 without a login, enter 401.",
   "connectivity.f_body": "Expected text",
-  "connectivity.h_body": "Optional: text that must be at the start of the answer. Example: OK.",
+  "connectivity.h_body": "Optional: text that must appear at the start of the answer (within the first 64 KB). Example: OK.",
   "connectivity.f_timeout": "Answer time, s",
   "connectivity.h_timeout": "How long to wait for this address. Empty — the common value from the settings below.",
   "connectivity.f_interval": "How often, s",
@@ -182,7 +182,7 @@
   "connectivity.err.bad_policy": "Choose a policy from the list",
   "connectivity.err.bad_profiles": "The list of profiles is filled in wrongly",
   "connectivity.err.bad_profile": "The profile is filled in wrongly",
-  "connectivity.err.bad_name": "Profile name: Latin letters, digits, «_», «-», «.»; up to 40 characters, starting with a letter or digit",
+  "connectivity.err.bad_name": "A profile name is a label, not an address: Latin letters, digits, «_», «-», at most one «.»; up to 40 characters, starting with a letter or digit",
   "connectivity.err.reserved_name": "This name is taken by the kit",
   "connectivity.err.dup_profile": "A profile with this name already exists (or the name is taken by the kit)",
   "connectivity.err.bad_internet": "The internet rule is filled in wrongly",
@@ -212,5 +212,6 @@
   "connectivity.reason.check_unusable": "The endpoint check of provider {name} cannot be built: address, key or cleartext http",
   "connectivity.prov_why.check_unusable": "the endpoint check cannot be built (address, key or cleartext http)",
   "connectivity.code.late": "did not finish in the common time",
-  "connectivity.doc": "Help"
+  "connectivity.doc": "Help",
+  "connectivity.code.reset": "connection reset"
 }

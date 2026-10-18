@@ -3281,7 +3281,7 @@ OFFLINE_TRIES = 24          # два часа ожидания; дольше —
 LINK_POLL = 15.0            # секунд между перепроверками связи, когда её ждут по проверке соединений
 
 
-def wait_for_link(deadline: float) -> bool:
+def wait_for_link(deadline: float, tried: int = 0) -> bool:
     """Переждать обрыв связи по проверке соединений → True, если ждали ею; False — причина ей не известна.
 
     Проверка включена и знает, что недоступны все провайдеры моделей: ждём их возвращения, перепроверяя каждые 15 секунд,
@@ -3292,7 +3292,7 @@ def wait_for_link(deadline: float) -> bool:
         import conn_gate as G
     except ImportError:
         return False
-    cap = deadline if AG.persist_mode() else min(deadline, time.time() + OFFLINE_WAIT * OFFLINE_TRIES)
+    cap = deadline if AG.persist_mode() else min(deadline, time.time() + OFFLINE_WAIT * max(1, OFFLINE_TRIES - tried))
     return G.wait_llm_back(cap, poll=LINK_POLL, say=lambda t: say(f"=== {t}"))
 
 
@@ -3345,7 +3345,7 @@ def until_done(cwd: str, a, task: str, run_batch, report, headline, passed,
                 say(f"\n=== связь потеряна (попытка {waits}"
                     + ("" if AG.persist_mode() else f" из {OFFLINE_TRIES}") + "): "
                     f"жду {OFFLINE_WAIT // 60} мин и продолжаю с той же карточки")
-                if not wait_for_link(deadline):
+                if not wait_for_link(deadline, waits):
                     time.sleep(OFFLINE_WAIT)
                 continue
             say(f"\n=== заход {batch} не прошёл ни одной карточки"
@@ -7846,7 +7846,7 @@ def main() -> int:
                     + ("" if AG.persist_mode() else f" из {OFFLINE_TRIES}") + "): "
                         f"жду {OFFLINE_WAIT // 60} мин и продолжаю с того же источника. "
                         f"Разобрано к этому моменту: {done_after}")
-                    if not wait_for_link(deadline):
+                    if not wait_for_link(deadline, waits):
                         time.sleep(OFFLINE_WAIT)
                     continue
                 say(f"\n=== партия {batch} не прошла ни одного источника "
@@ -8096,12 +8096,27 @@ def main() -> int:
     return 0 if ok and not cp_stopped else 1
 
 
+def _net_exit(rc: int) -> int:
+    """Шаг кончился, а последний вызов модели отказал из-за недоступной связи (`AG.NET_BLOCKED`): последней строкой — метка
+    `AURORA-NET`, по которой маршрут и расписание применят политику прогона, и код не ноль (очередь не доделана)."""
+    row = AG.NET_BLOCKED.get("row")
+    if not row:
+        return rc
+    try:
+        import conn_gate
+        sys.stdout.write(conn_gate.net_marker([row]) + "\n")       # одна запись: строки потоков не перемешиваются
+        sys.stdout.flush()
+    except Exception:                                          # noqa: BLE001 — метка — подсказка: выход не должен упасть
+        return rc
+    return rc or 2
+
+
 def guarded_main(entry=None) -> int:
     """`main()` с последним рубежом: исключение, не пойманное на единице работы, не должно
     оставлять сделанное без коммита агента (иначе следующий чекпойнт запишет его на человека),
     а замок базы снимается всегда."""
     try:
-        return (entry or main)()
+        return _net_exit((entry or main)())
     except CommandDead as e:
         # Команда-читатель не отработала (срок, запуск): говорим причину прямо — без трассировки,
         # она не про дефект кода, — и фиксируем сделанное. Код 1: «пусто» о таком прогоне не скажешь.

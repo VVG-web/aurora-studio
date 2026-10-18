@@ -262,10 +262,10 @@ def test_quarantine_set_before_the_check_knew_is_lifted_when_the_connection_retu
 
 @test
 def test_diagnostics_ask_the_providers_live_and_a_blocked_call_leaves_a_machine_line(tmp: Path):
-    """`agent:ping`/`probe`/`width` (без ожидания) не останавливает проверка соединений; отказ вызова печатает `AURORA-NET` раз на набор."""
+    """`agent:ping`/`probe`/`width` (без ожидания) не останавливает проверка соединений; отказ вызова запоминает причину для метки."""
     AG = _agent()
     G = _g()
-    AG._NET_MARK_SAID.clear()
+    AG.NET_BLOCKED["row"] = None
     net, cfg = _models_net(tmp, up={"v1": False})
     calls: list = []
 
@@ -282,16 +282,13 @@ def test_diagnostics_ask_the_providers_live_and_a_blocked_call_leaves_a_machine_
         out = io.StringIO()
         with redirect_stdout(out):
             r1 = AG.call_role(one, "worker", MSGS, transport=transport, deadline=time.time() + 30, sleep=lambda s: None)
-            r2 = AG.call_role(one, "worker", MSGS, transport=transport, deadline=time.time() + 30, sleep=lambda s: None)
-        assert not r1["ok"] and r1.get("net_blocked") and not r2["ok"] and calls == [], (r1, calls)
-        lines = [ln for ln in out.getvalue().splitlines() if ln.startswith(G.NET_MARK)]
-        assert len(lines) == 1, f"метка напечатана {len(lines)} раз вместо одного: {out.getvalue()!r}"
-        mark = G.parse_marker(lines)
-        assert mark["blocked"][0]["code"] == "llm_down" and mark["blocked"][0]["providers"] == ["gw-a"] \
-            and mark["blocked"][0]["profiles"] == ["VPN-1"], mark
-        assert "все провайдеры моделей недоступны" in G.reason_line(mark["blocked"][0])
+        assert not r1["ok"] and r1.get("net_blocked") and calls == [], (r1, calls)
+        assert G.NET_MARK not in out.getvalue(), "метка напечатана посреди работы, а не при выходе шага"
+        row = AG.NET_BLOCKED["row"]
+        assert row["code"] == "llm_down" and row["providers"] == ["gw-a"] and row["profiles"] == ["VPN-1"], row
+        assert "все провайдеры моделей недоступны" in G.reason_line(row)
     finally:
-        AG._NET_MARK_SAID.clear()
+        AG.NET_BLOCKED["row"] = None
         net.close()
 
 
@@ -642,4 +639,7 @@ def test_connectivity_save_keeps_a_copy_of_a_broken_file_and_reports_unwritable_
     copies = list(path.parent.glob("connectivity.json.broken-*"))
     assert len(copies) == 1 and copies[0].read_bytes() == before, copies
     res = CN.save(kit, {"enabled": False, "profiles": [{"name": "VPN-1", "note": "a\ud800b"}], "probes": []})
-    assert not res["ok"] and res["code"] in ("write", "bad_note", "bad_profile", "bad_config"), f"суррогат в тексте: {res}"
+    assert res["ok"], f"суррогат в тексте рвёт запись: {res}"
+    assert "\ud800" not in (kit / "local" / "connectivity.json").read_text(encoding="utf-8")
+    if sys.platform != "win32":
+        assert all(oct(c.stat().st_mode & 0o777) == "0o600" for c in copies), "копия настройки открыта всем"

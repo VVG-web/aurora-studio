@@ -5543,6 +5543,9 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
                         run_log.flush()
                     except OSError:
                         pass
+            if job["cancel"].is_set():          # «Прервать» пришло, пока процесса ещё не было: команда не стартует
+                job["rc"] = -15
+                return
             p = subprocess.Popen([sys.executable, path, *args], cwd=project, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, encoding="utf-8", errors="replace", bufsize=1)
@@ -7503,8 +7506,10 @@ def stop_job(job_id: str, lang: str = "") -> dict:
     if not job:
         return {"error": "такого задания нет — возможно, оно уже закончилось"}
     proc = job.get("proc")
-    if job.get("waiting") and not proc:
-        job["cancel"].set()                  # задание стоит в очереди за связью: процесса ещё нет, прерывается ожидание
+    if not proc and not job.get("done") and job.get("cancel") is not None:
+        # Процесса ещё нет: задание стоит в очереди за связью или как раз стартует. Остановка запоминается, и команда
+        # не запустится (ожидание прервётся, а рождение процесса остановку увидит).
+        job["cancel"].set()
         return {"ok": True}
     if job.get("done") or not proc:
         return {"error": "задание уже закончилось"}
