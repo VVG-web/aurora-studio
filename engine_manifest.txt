@@ -52,6 +52,8 @@ scripts/run_summary.py   => .aurora/scripts/run_summary.py
 # общая часть синка и реестр модулей источников
 scripts/sources_core.py     => .aurora/scripts/sources_core.py
 scripts/sources_registry.py => .aurora/scripts/sources_registry.py
+# длина путей на Windows, macOS и Linux: проверка настройки, подсказка при старте прогона, doctor
+scripts/path_budget.py      => .aurora/scripts/path_budget.py
 scripts/kb_lint.py       => .aurora/scripts/kb_lint.py
 # детерминированный линтер артефактов (истории, критерии, спеки): его зовёт kb_lint
 scripts/artifact_lint.py => .aurora/scripts/artifact_lint.py

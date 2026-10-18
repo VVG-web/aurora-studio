@@ -248,7 +248,7 @@ def test_path_check_folder_limit_of_247_on_windows(tmp: Path):
 
 
 class _Who:
-    key, line, source, cfg_line = "k", "l", "s", 0
+    key, line, source, cfg_line, where = "k", "l", "s", 0, ()
 
 
 @test

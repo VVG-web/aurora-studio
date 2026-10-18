@@ -121,9 +121,17 @@ class Finding:
     root_len: int = 0
     cfg_line: int = 0       # строка aurora.config.yaml; 0 — не нашлась
     extra: dict = field(default_factory=dict)
+    where: list = field(default_factory=list)   # та же строка частями без слов: ключи конфига и номера пунктов с нуля
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+    def api(self) -> dict:
+        """Для страницы: без русских подписей (`line`, `source`) — слова она берёт из каталога языка."""
+        out = asdict(self)
+        out.pop("line", None)
+        out.pop("source", None)
+        return out
 
 
 class Tally:
@@ -350,6 +358,7 @@ class Res:
     path: str
     cfg_line: int = 0
     rows: list = field(default_factory=list)    # строки внутри источника: корни Confluence, адреса сайта
+    where: tuple = ()
 
 
 def abs_prefix(system: str, root: str, rel: str):
@@ -418,18 +427,18 @@ def resources(root: str, text: str, cfg: dict) -> list:
         if not it.get("path"):
             continue
         if declared and n < len(order):
-            line, label = get("sources", order[n], "path")[1], f"sources: {it['id']} → path"
+            line, label, where = get("sources", order[n], "path")[1], f"sources: {it['id']} → path", ("sources", it["id"], "path")
         else:
             legacy = ((it.get("manifest") or {}).get("mirror") or {}).get("legacy_path_key") or "sources_confluence"
-            line, label = get("paths", legacy)[1], f"paths → {legacy}"
-        res = Res(f"sources:{it['id']}", label, it["id"], kind, it["path"], line)
+            line, label, where = get("paths", legacy)[1], f"paths → {legacy}", ("paths", legacy)
+        res = Res(f"sources:{it['id']}", label, it["id"], kind, it["path"], line, where=where)
         out.append(res)
         seen.setdefault((kind, it["path"].strip("/").casefold()), res)
     # Пути, которые читают сами выгрузчики (`paths`), могут расходиться с реестром `sources:`.
     for kind, key, name in (("confluence", "sources_confluence", "Confluence"), ("jira", "sources_jira", "Jira")):
         value, line = get("paths", key)
         if value and (kind, value.strip("/").casefold()) not in seen:
-            out.append(Res(f"path:{key}", f"paths → {key}", name, kind, value, line))
+            out.append(Res(f"path:{key}", f"paths → {key}", name, kind, value, line, where=("paths", key)))
     mirrors = {r.kind: r for r in out if r.kind in ("confluence", "web")}
     if "confluence" in mirrors:
         for path, (page_id, line) in cfg.items():
@@ -437,29 +446,32 @@ def resources(root: str, text: str, cfg: dict) -> list:
                 title = cfg.get(path[:-1] + ("title",), ("", 0))[0]
                 mirrors["confluence"].rows.append({
                     "key": f"root:{page_id}", "id": page_id, "title": title, "cfg_line": line,
+                    "where": ["atlassian", "confluence", "sync_roots", path[-2]],
                     "line": f"atlassian → confluence → sync_roots → строка {path[-2] + 1}"})
     if "web" in mirrors:
         for path, (url, line) in cfg.items():
             if path[:2] == ("web", "pages") and path[-1] == "url" and len(path) == 4:
                 mirrors["web"].rows.append({
                     "key": f"web:{url}", "id": url, "title": "", "cfg_line": line,
-                    "line": f"web → pages → строка {path[2] + 1}"})
+                    "where": ["web", "pages", path[2]], "line": f"web → pages → строка {path[2] + 1}"})
     value, line = get("paths", "knowledge_db")
     out.append(Res("path:knowledge_db", "paths → knowledge_db", "База знаний", "kb",
-                   value or "AuroraKnowledgeDB", line))
+                   value or "AuroraKnowledgeDB", line, where=("paths", "knowledge_db")))
     slug = get("project", "slug")[0]
     for path, (value, line) in cfg.items():
         if not value:
             continue
         if path[:2] == ("paths", "extra_structure_dirs") and len(path) == 3:
             out.append(Res(f"extra:{value}", f"paths → extra_structure_dirs → строка {path[2] + 1}",
-                           "Папка проекта", "free", value, line))
+                           "Папка проекта", "free", value, line, where=("paths", "extra_structure_dirs", path[2])))
         elif len(path) == 3 and path[0] == "artifacts" and path[2] == "out":
-            out.append(Res(f"artifacts:{path[1]}", f"artifacts → {path[1]} → out", "Артефакты", "free", value, line))
+            out.append(Res(f"artifacts:{path[1]}", f"artifacts → {path[1]} → out", "Артефакты", "free", value, line,
+                           where=("artifacts", path[1], "out")))
         elif len(path) == 3 and path[0] == "reports" and path[2] in ("output", "data_dir"):
             file_out = path[2] == "output"
             out.append(Res(f"reports:{path[1]}:{path[2]}", f"reports → {path[1]} → {path[2]}", "Отчёты",
-                           "file" if file_out else "free", value.replace("{project}", slug or "project"), line))
+                           "file" if file_out else "free", value.replace("{project}", slug or "project"), line,
+                           where=("reports", path[1], path[2])))
     return out
 
 
@@ -482,6 +494,10 @@ class Report:
                 "models": self.models, "resources": self.resources, "files": self.files,
                 "partial": self.partial}
 
+    def api(self) -> dict:
+        """Ответ панели: те же находки без русских подписей."""
+        return dict(self.as_dict(), findings=[f.api() for f in self.findings])
+
 
 class _Owner:
     """Чья находка: строка конфига (или строка внутри источника) — ключ, подпись, номер строки."""
@@ -489,6 +505,7 @@ class _Owner:
     def __init__(self, res: Res, row: dict | None = None):
         self.key = row["key"] if row else res.key
         self.line = row["line"] if row else res.line
+        self.where = row["where"] if row else res.where
         self.source = res.source
         self.cfg_line = row["cfg_line"] if row else res.cfg_line
 
@@ -497,7 +514,7 @@ def _find(owner, system: str, models: dict, **kw) -> Finding:
     extra = kw.pop("extra", {})
     return Finding(key=owner.key, line=owner.line, source=owner.source, system=LABEL[system],
                    root=models[system], root_len=measure(system, models[system]),
-                   cfg_line=owner.cfg_line, extra=extra, **kw)
+                   cfg_line=owner.cfg_line, extra=extra, where=list(owner.where), **kw)
 
 
 def _facts(owner, tally: Tally, system: str, models: dict, base: int, rel: str, partial: bool) -> list:

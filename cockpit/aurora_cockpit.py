@@ -76,6 +76,7 @@ import kb_updated as KBU                          # noqa: E402 — дата об
 import git_sync as GS                            # noqa: E402 — Git проекта: настройка, состояние
 import git_auto as GITA                          # noqa: E402 — автоматика Git: события и тик
 import bots as BOTS                              # noqa: E402 — боты проектов: раздел «Боты»
+import path_budget as PB                         # noqa: E402 — длина путей на Windows, macOS и Linux
 
 # Токен сессии. Страница его не получает «просто так»: он выдаётся в обмен на одноразовый
 # код (`issue_launch_code`), а дальше идёт заголовком `X-Aurora-Token`. Переданный новому
@@ -3211,6 +3212,18 @@ def config_values(text: str) -> dict:
     return out
 
 
+def path_findings(project: str) -> dict:
+    """Строки конфига, которым на какой-то системе не хватит места под путь, — для формы «Настройки проекта».
+
+    Не блокирует: ответ записи и страница показывают находки красной строкой у поля, а запись
+    прошла. Сбой проверки не должен ронять сохранение — тогда находок просто нет."""
+    try:
+        return PB.assess(project).api()
+    except Exception:  # noqa: BLE001 — справка не имеет права ронять запись настроек
+        return {"findings": [], "lines": 0, "models": {}, "resources": 0, "files": 0, "partial": False,
+                "failed": True}
+
+
 def attachment_answers_error(answers: dict, cfg_text: str) -> str:
     """Отказ формы настроек по вложениям Confluence или пустая строка, если всё допустимо.
 
@@ -6006,6 +6019,11 @@ class Handler(BaseHTTPRequestHandler):
             cfg_text = read_text(os.path.join(project, "aurora.config.yaml"))
             self.send_json({"text": cfg_text, "path": "aurora.config.yaml",
                             "values": config_values(cfg_text)})
+        elif u.path == "/api/paths":
+            project = q.get("project", [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(path_findings(project))
         elif u.path == "/api/extras":
             self.send_json(localized_extras(extras_state(fresh=bool(q.get("fresh"))),
                                             request_lang(q)))
@@ -6869,7 +6887,7 @@ class Handler(BaseHTTPRequestHandler):
         new = text if text.endswith("\n") else text + "\n"
         # То же правило, что у `mcp_write`: сохранение без правок не трогает ни файл, ни копию «до».
         if os.path.isfile(path) and read_text(path) == new:
-            return {"ok": True, "unchanged": True,
+            return {"ok": True, "unchanged": True, "path_findings": path_findings(project),
                     "backup": "aurora.config.yaml.bak" if os.path.isfile(path + ".bak") else ""}
         try:
             if os.path.isfile(path):
@@ -6880,7 +6898,7 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(new)
         except Exception as e:
             return {"error": f"не удалось записать: {e}"}
-        return {"ok": True, "backup": "aurora.config.yaml.bak"}
+        return {"ok": True, "backup": "aurora.config.yaml.bak", "path_findings": path_findings(project)}
 
     def _write_tokens(self, project: str, payload: dict) -> dict:
         """Токены синка. Значение приходит от человека и НИКОГДА не отдаётся обратно:
@@ -6985,7 +7003,7 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(out)
         except OSError as e:
             return {"error": f"конфиг не записан: {e}"}
-        return {"ok": True, "modules": modules}
+        return {"ok": True, "modules": modules, "path_findings": path_findings(project)}
 
     def _resolve_refs(self, project: str, refs: list) -> dict:
         """Ссылки вида …/display/ПРОСТРАНСТВО/Заголовок → номер страницы.
@@ -7030,7 +7048,7 @@ class Handler(BaseHTTPRequestHandler):
             return {"error": str(e)}
         if p.returncode != 0:
             return {"error": (p.stderr or p.stdout)[-500:]}
-        return {"ok": True, "log": (p.stdout or "").splitlines()[-8:]}
+        return {"ok": True, "log": (p.stdout or "").splitlines()[-8:], "path_findings": path_findings(project)}
 
     def _edit_roots(self, payload: dict) -> dict:
         """Добавить или убрать корень поиска. Список сохраняется между запусками."""

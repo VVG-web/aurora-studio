@@ -69,6 +69,7 @@ CRAWLED = (
     "/api/runlog", "/api/agent/pydantic", "/api/context/suggest", "/api/skin", "/api/cron",
     "/api/history", "/api/routes", "/api/bots", "/api/env", "/api/adapter/alarm", "/api/cards",
     "/api/net/state", "/api/net/brief", "/api/net/access", "/api/net/commands",
+    "/api/paths",
 )
 NOT_CRAWLED = {
     "/api/ping": "ответ — слово «ok», не текст",
