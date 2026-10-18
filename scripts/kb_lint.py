@@ -120,12 +120,15 @@ WORK_NAME = re.compile(
 
 
 
-def artifact_kind(stem: str, title: str, src: str, section: str, jira_re) -> str:
+def artifact_kind(stem: str, title: str, src: str, section: str, jira_re, tasks=None) -> str:
     """«Это артефакт, а не знание» — US, AC, Epic или задача Jira, осевшая в базе.
 
     Инвариант 1: артефакт ≠ знание. Нарушается молча — извлечение тянет страницы историй
     подряд, и они попадают в контекст как факты. Переносить карточку скрипт не берётся:
     иногда US в базе действительно нужен. Механика — только увидеть и назвать.
+
+    `tasks` — префиксы папок зеркала трекера задач («Sources/<папка>/»): вызывающий, который гонит правило по
+    всей базе, называет их один раз; не назван — спрашивается слой ролей по текущей папке.
     """
     if section in ("Requirements", "Specs", "Decisions", "Questions"):
         return ""      # законные жители базы, даже если ссылаются на историю
@@ -133,7 +136,7 @@ def artifact_kind(stem: str, title: str, src: str, section: str, jira_re) -> str
     # законно, как бы ни называлась страница. Артефакт — то, что мы сгенерировали сами:
     # у него нет источника в зеркале. Правило по одному имени объявляло чужой историей
     # каждую страницу с «US-» в заголовке и давало сотни ложных срабатываний.
-    tasks = tuple(d + "/" for d in service_dirs("tasktracker"))
+    tasks = tuple(tasks) if tasks is not None else tuple(d + "/" for d in service_dirs("tasktracker"))
     if src.startswith("Sources/") and not src.startswith(tasks):
         return ""
     for rx, label in ARTIFACT_PATTERNS:
@@ -362,6 +365,7 @@ def main():
                 if d.replace("\\", "/").startswith(ROOT + "/") and "/" in d.replace("\\", "/")}
     # Словарь проекта читается один раз: он нужен проверке расшифровок ниже.
     terms = project_terms(ROOT)
+    task_dirs = tuple(d + "/" for d in service_dirs("tasktracker"))      # зеркало трекера — один вопрос на проход
     for rel, (fm, text) in cards.items():
         status = fm.get("status", "")
         body = card_body(text)
@@ -372,7 +376,7 @@ def main():
             # ведёт к карточкам, где код упомянут, и знанием себя не выдаёт. Звать его
             # «артефактом в знаниях» — ложная тревога: на живом проекте их было 211.
             kind = "" if status.strip() == "index" else artifact_kind(
-                stem, fm.get("title", stem), (card_sources(text) or [""])[0], section, jira_re)
+                stem, fm.get("title", stem), (card_sources(text) or [""])[0], section, jira_re, task_dirs)
             if kind:
                 errors.append(f"{rel}: артефакт в знаниях — это {kind}, "
                               f"а не дистиллированное знание")

@@ -167,7 +167,7 @@ def safe_relpath(value) -> bool:
 def _kit_manifest(mid: str) -> dict:
     """Манифест модуля `mid` из настоящего кита (`{}` — кита или модуля нет)."""
     kit = real_kit_root()
-    if not kit or not _ALIAS_OK.fullmatch(mid or ""):
+    if not kit or not _ALIAS_OK.fullmatch(mid or "") or mid.strip(".") == "":
         return {}
     path = os.path.join(kit, KIT_DIR, mid, "connector.json")
     if not os.path.isfile(path):
@@ -483,8 +483,10 @@ def fingerprint(root: str = "") -> tuple:
 
 
 def blind(root: str = "") -> bool:
-    """Реестр не видит ни одного манифеста — ни в проекте, ни в ките (пустая копия, кита нет)."""
-    return not installed(root) and not _kit_manifests()
+    """Реестр не знает ни одной роли сервиса: манифестов нет вовсе либо ни у одного (ни в проекте, ни в ките) нет
+    `service_role` — копии старше поля, а кита не видно. В таком состоянии «роли нет» не значит «сервиса нет»."""
+    return not any(m.get("service_role") for m in installed(root).values()) \
+        and not any(m.get("service_role") for m in _kit_manifests().values())
 
 
 def canonical_role(name, root: str = "") -> str:
@@ -526,11 +528,13 @@ def service_paths(root: str = "", role: str = "") -> list:
     if found:
         return found
     want = canonical_role(role, root)
-    kit = real_kit_root()
-    if not want or not kit:
+    if not want:
         return []
+    # Путь по умолчанию — у модуля кита с этой ролью; кита не видно — у такого же модуля копий в проекте
+    # (их путь уже прошёл `safe_relpath` в `load`).
+    mods = _kit_manifests() if real_kit_root() else installed(root)
     out = []
-    for got in _kit_manifests().values():
+    for got in mods.values():
         path = (got.get("mirror") or {}).get("default_path", "") if got.get("service_role") == want else ""
         if path and safe_relpath(path):
             out.append(path.rstrip("/"))

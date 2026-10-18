@@ -70,7 +70,7 @@ try:
 except Exception:                                    # noqa: BLE001
     REG = None
 
-from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import TODAY, service_dirs  # noqa: E402 — дата в UTC, одна на движок
 OUT_DIR = os.path.join("AuroraKnowledgeDB", "meta", "trace")
 TABLE = os.path.join(OUT_DIR, "trace.json")
 # Сводка отдельным файлом: сама таблица на живом проекте весит двадцать
@@ -106,15 +106,16 @@ def unq(v: str) -> str:
 
 
 def mirrors(root: str = ".") -> dict:
-    """{путь: роль}. Реестра нет — пусто: ядро не знает зеркал по названиям (BL-DEC-06)."""
+    """{путь: роль доверия}. Папки зеркал называет слой ролей сервисов (BL-DEC-06) со всеми запасными путями, а не
+    реестр одним списком: сбой реестра не должен оставлять трассировку без зеркал."""
     out = {}
+    # Описание коннектора могло не успеть обновиться и не назвать `role`: тогда роль доверия берётся из роли
+    # сервиса — трекер задач всегда «задачи», вики всегда «артефакты».
+    for service, role in (("tasktracker", "tasks"), ("projectwiki", "artifacts")):
+        for path in service_dirs(service, root):
+            out[path] = role
     if REG is not None:
         try:
-            # Описание коннектора могло не успеть обновиться и не назвать `role`: тогда роль доверия
-            # берётся из роли сервиса — трекер задач всегда «задачи», вики всегда «артефакты».
-            for service, role in (("tasktracker", "tasks"), ("projectwiki", "artifacts")):
-                for path in REG.service_paths(root, service):
-                    out[path.rstrip("/")] = role
             out.update(REG.roles(root))              # объявленное всегда сильнее умолчания
         except Exception:                            # noqa: BLE001
             pass
