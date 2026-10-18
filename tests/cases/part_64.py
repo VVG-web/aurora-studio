@@ -348,9 +348,15 @@ def test_route_queue_waits_for_the_network_then_goes_whole(tmp: Path):
             ck = NetPanel(tmp, _script(), [])
             seen: list = []
             ck.on_call = lambda cmd: seen.append((cmd, net.up["v1"]))
-            net.later(0.4, v1=True)
             logs: list = []
-            res = rr.RouteRun(ck, str(proj), _sc("kb:lint", "sync:confluence", "kb:repair"), True, net="queue", log=logs.append).run()
+            flipped: list = []
+
+            def log(text):
+                logs.append(text)
+                if "VPN-1" in text and not flipped:          # связь возвращается, когда маршрут уже встал ждать: медленная машина не мешает
+                    flipped.append(1)
+                    net.later(0.2, v1=True)
+            res = rr.RouteRun(ck, str(proj), _sc("kb:lint", "sync:confluence", "kb:repair"), True, net="queue", log=log).run()
             assert res["ok"], res
             assert seen == [("kb:lint", True), ("sync:confluence", True), ("kb:repair", True)], \
                 f"шаги пошли до возвращения связи или не пошли все: {seen}"
@@ -545,7 +551,15 @@ def test_cron_applies_each_policy_to_a_step_that_lacks_the_network(tmp: Path):
         # queue: ждёт связь и идёт сам
         net.set(v1=False)
         cron, ck, sched = _net_scheduler(tmp, _script(), projects, _task(net="queue", steps=steps), net)
-        net.later(0.5, v1=True)
+        flipped: list = []
+        real_say = sched.say
+
+        def say(text):
+            real_say(text)
+            if "⏳" in text and not flipped:                  # связь возвращается, когда шаг уже встал ждать
+                flipped.append(1)
+                net.later(0.2, v1=True)
+        sched.say = say
         sched.enqueue("a1b2c3d4")
         _wait_cron(sched)
         run = cron.list_runs()[0]
