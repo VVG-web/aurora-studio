@@ -187,7 +187,8 @@ function taskRow(ctx, task){
         task.steps.map(st => el("li", {}, stepText(ctx, st)))),
       el("div", {class: "muted", style: "font-size:12px;margin-top:4px"},
         t(task.order === "steps" ? "cron.order_steps" : "cron.order_projects") + " · "
-        + t(task.on_fail === "stop" ? "cron.fail_stop" : "cron.fail_next"))),
+        + t(task.on_fail === "stop" ? "cron.fail_stop" : "cron.fail_next")
+        + (task.net ? " · " + t("cron.net." + task.net) : ""))),
     el("div", {class: "row", style: "gap:6px"},
       el("button", {class: "btn sm primary", onclick: async () => {
         const r = await post("/api/cron/start");
@@ -248,7 +249,7 @@ function botRow(ctx, task, post){
 
 function blankTask(ctx){
   return {id: "", name: "", enabled: true, time: "20:00", days: [], date: "",
-          order: "projects", on_fail: "next", lang: ctx.lang || "ru",
+          order: "projects", on_fail: "next", net: "", lang: ctx.lang || "ru",
           steps: [{kind: "route", project: "*", route: "update", write: true}]};
 }
 
@@ -310,6 +311,10 @@ function drawEditor(ctx){
                                     ["steps", t("cron.order_steps")]], v => task.order = v);
   const onFail = select(task.on_fail, [["next", t("cron.fail_next")],
                                        ["stop", t("cron.fail_stop")]], v => task.on_fail = v);
+  // Политика без связи: пусто — как в настройке кита («Проверка соединения»), иначе своя у этого задания.
+  const net = select(task.net || "", [["", t("cron.net_default")], ["fail_fast", t("cron.net.fail_fast")],
+                                      ["partial", t("cron.net.partial")], ["queue", t("cron.net.queue")],
+                                      ["partial_queue", t("cron.net.partial_queue")]], v => task.net = v);
   const steps = el("div", {});
   const drawSteps = () => {
     steps.innerHTML = "";
@@ -341,6 +346,9 @@ function drawEditor(ctx){
       }}, t("cron.add_step"))),
     el("div", {class: "row", style: "margin-top:14px"},
       el("span", {}, t("cron.order")), order, el("span", {}, t("cron.on_fail")), onFail),
+    el("div", {class: "row", style: "margin-top:10px"},
+      el("span", {}, t("cron.net_label")), net),
+    el("div", {class: "muted", style: "font-size:12px;margin-top:4px"}, t("cron.net_hint")),
     el("div", {class: "row", style: "margin-top:16px"},
       el("button", {class: "btn primary", onclick: save}, t("cron.save")),
       el("button", {class: "btn", onclick: () => { EDIT = null; drawEditor(ctx); }},

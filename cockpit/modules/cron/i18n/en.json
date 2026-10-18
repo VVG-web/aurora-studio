@@ -121,5 +121,13 @@
   "cron.bot_off": "off",
   "cron.err.bad_bot": "The project has no such bot",
   "cron.other_panel": "Another panel on this machine runs the schedule (process {pid}): tasks are visible here, but they run only there. Close that panel — this one takes over the schedule by itself within five minutes.",
-  "cron.err.other_panel": "Another panel on this machine runs the schedule — start the chain there"
+  "cron.err.other_panel": "Another panel on this machine runs the schedule — start the chain there",
+  "cron.err.bad_net": "The policy without a connection is one of: fail_fast, partial, queue or partial_queue",
+  "cron.net_label": "If the connection is lacking:",
+  "cron.net_default": "as in the kit setup",
+  "cron.net.fail_fast": "stop at once",
+  "cron.net.partial": "do what is available, skip the rest",
+  "cron.net.queue": "wait for the connection, then everything",
+  "cron.net.partial_queue": "what is available now, postpone the rest and repeat",
+  "cron.net_hint": "Works while the «Connection check» is on. Default — «what is available now, postpone the rest and repeat»: a step without a connection does not fail by timeout but waits for it to come back."
 }

@@ -99,6 +99,14 @@ PROBE_KEYS = ("id", "profile", "type", "host", "port", "url", "expect_status", "
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
 PROBE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,23}$")
+
+
+def valid_name(name) -> bool:
+    """Имя профиля — метка, а не адрес (`aurora_common.profile_name_ok`): IP и составные имена хостов не принимаются."""
+    from aurora_common import profile_name_ok
+    return profile_name_ok(name)
+
+
 HOST_LABEL_RE = re.compile(r"^[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?$")
 STATUS_RE = re.compile(r"^[1-5]xx$")
 
@@ -271,9 +279,10 @@ def clean(data) -> tuple:
             _problem(problems, "bad_profile", where, "профиль — не объект")
             continue
         name = str(p.get("name") or "").strip()
-        if not NAME_RE.match(name):
+        if not valid_name(name):
             _problem(problems, "bad_name", where + ".name",
-                     "имя профиля: латиница, цифры, «_», «-», «.»; до 40 знаков, начинается с буквы или цифры")
+                     "имя профиля — короткая метка: латиница, цифры, «_», «-», не больше одной «.»; до 40 знаков, "
+                     "начинается с буквы или цифры; адрес сюда не пишут")
             continue
         low = name.lower()
         if low == INTERNET or low.startswith(PROVIDER_PREFIX):

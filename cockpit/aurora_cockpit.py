@@ -1044,7 +1044,8 @@ def models_save(payload: dict) -> dict:
     dropped: list = []
     expect = payload.get("expect")
     clean = MC.unmask(new, old, dropped)
-    r = MC.save(KIT, clean, expect) if isinstance(expect, str) else MC.save(KIT, clean)
+    kw = {"replace_broken": True} if payload.get("replace_broken") is True else {}
+    r = MC.save(KIT, clean, expect, **kw) if isinstance(expect, str) else MC.save(KIT, clean, **kw)
     if r.get("ok") and dropped:      # провайдер иначе дал бы 401 без объяснения
         r["notes"] = list(r.get("notes") or []) + [models_key_note(pid) for pid in dropped]
     return r
@@ -1092,6 +1093,56 @@ def net_service():
     if svc.required_fn is None:
         svc.required_fn = lambda: net_required(NET_CTX["project"])
     return svc
+
+
+def net_enabled() -> bool:
+    """Включена ли проверка соединений (по умолчанию нет — тогда запуск идёт как раньше)."""
+    try:
+        return net_service().enabled
+    except Exception:  # noqa: BLE001 — связь — подсказка: сбой не останавливает запуск
+        return False
+
+
+def net_check_command(project: str, cmd: str) -> dict:
+    """Хватает ли связи команде в проекте → {ok, blocked[], state}. Сбой самой проверки — «хватает»."""
+    try:
+        import conn_gate as GATE
+        return GATE.check_command(cmd, project, svc=net_service())
+    except Exception:  # noqa: BLE001
+        return {"ok": True, "blocked": []}
+
+
+def net_check_route(project: str, sc_id: str, write: bool) -> dict:
+    """Хватает ли связи шагам маршрута → {ok, items[{cmd, blocked}], total}: только шаги, которым не хватает."""
+    try:
+        import conn_gate as GATE
+        sc = RR.scenario(sys.modules[__name__], sc_id)
+        cmds = [st["cmd"] for st in RR.plan(sys.modules[__name__], sc, write)] if sc else []
+        rows = GATE.check_steps(cmds, project, svc=net_service())
+    except Exception:  # noqa: BLE001
+        return {"ok": True, "items": [], "total": 0}
+    bad = [{"cmd": r["cmd"], "blocked": r["blocked"]} for r in rows if not r["ok"]]
+    return {"ok": not bad, "items": bad, "total": len(rows), "title": (sc or {}).get("title", "")}
+
+
+def net_wait_for(job: dict, project: str, cmd: str) -> bool:
+    """Задание ждёт связь (диалог «встать в очередь»): строка в консоль и ожидание без предела до восстановления или
+    «Прервать». → True, если связь вернулась и команду можно запускать."""
+    import conn_gate as GATE
+    v = net_check_command(project, cmd)
+    if v.get("ok", True):
+        return True
+    why = "; ".join(GATE.reason_line(r) for r in v["blocked"])
+    with JOBS_LOCK:
+        job_push(job, f"⏳ {cmd}: нужное недоступно — {why}. Стою в очереди и начну сам, когда связь вернётся.")
+    job["waiting"] = True
+    started = time.time()
+    ok = GATE.wait_restored(lambda: net_check_command(project, cmd), stop=job["cancel"], poll=RR.NET_POLL_S)
+    job["waiting"] = False
+    with JOBS_LOCK:
+        job_push(job, f"✓ связь вернулась (ждали {int(time.time() - started)} с) — запускаю" if ok
+                 else "■ ожидание прервано: команда не запускалась")
+    return ok
 
 
 def net_required(project: str):
@@ -1180,7 +1231,8 @@ def net_access_save(project: str, payload: dict, lang: str = "") -> dict:
     """Записать блок `source_access:` конфига проекта; остальной конфиг не тронут."""
     import conn_gate as GATE
     expect = payload.get("expect")
-    res = GATE.save_access(project, payload.get("access"), expect if isinstance(expect, str) else "")
+    res = GATE.save_access(project, payload.get("access"), expect if isinstance(expect, str) else "",
+                           replace_lossy=payload.get("replace_lossy") is True)
     if res.get("ok"):
         res["state"] = net_access(project, lang)
     return res
@@ -1197,7 +1249,8 @@ def net_commands(project: str) -> dict:
         req = GATE.command_requirements(cmd, project, deps, sources, providers)
         d = GATE.deps_of(cmd, deps)
         out[cmd] = {"types": req["types"], "profiles": req["profiles"], "llm": req["llm"],
-                           "llm_profiles": req["llm_profiles"], "internet": req["internet"],
+                           "llm_profiles": req["llm_profiles"], "llm_internet": req["llm_internet"],
+                           "internet": req["internet"],
                            "offline": req["offline_capable"], "variant": req["offline_variant"],
                            "modules": d["requires_sources"], "sources": [x["id"] for x in req["sources"]]}
     return {"commands": out}
@@ -5403,7 +5456,7 @@ def harness_action(action: str, payload: dict) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def start_job(project: str, cmd: str, extra: list, parent: str = "") -> str:
+def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy: str = "", net_wait: bool = False) -> str:
     row = command_by_name(cmd)
     if not row or not row["runnable"]:
         raise ValueError(f"команда «{cmd}» не запускается панелью")
@@ -5420,7 +5473,7 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "") -> str:
     run_id = utc_slug() + "-" + job_id[:6]
     job = {"id": job_id, "cmd": cmd, "args": args, "project": project, "rc": None,
            "out": [], "started": time.time(), "done": False, "run_id": run_id,
-           "parent": parent, "last_out": time.time()}
+           "parent": parent, "last_out": time.time(), "cancel": threading.Event()}
     with JOBS_LOCK:
         # Та же команда с теми же аргументами в том же проекте уже идёт — второй процесс рядом не
         # заводим, а отдаём идущее задание: двойной щелчок, вторая вкладка или повтор после
@@ -5465,7 +5518,13 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "") -> str:
                 # Шаг маршрута или цепочки доводит работу до конца: без бюджета по времени,
                 # вызов модели не сдаётся по сроку и обрыву (`agent_core.persist_mode`).
                 env["AURORA_PERSIST"] = "1"
+            if net_policy:
+                # Политика прогона без связи: процесс шага (вызов модели, синк) узнаёт, ждать ли ему восстановления.
+                env["AURORA_NET_POLICY"] = net_policy
             mark_running(job["id"], cmd, project, True)
+            if net_wait and not net_wait_for(job, project, cmd):
+                job["rc"] = -15              # ожидание прервано: команда не запускалась, как прерванный процесс
+                return
             # Скрипт взят из кита, потому что у проекта нет движка или он неполный: молчать об этом
             # нельзя — прогон идёт не тем, что лежит в проекте. Что исполняется, не меняется.
             note = engine_fallback_note(project, row["script"], path)
@@ -6394,10 +6453,19 @@ class Handler(BaseHTTPRequestHandler):
             if (gap := version_gap(project)):
                 self.send_json({"error": f"Маршрут не начат: {gap}"}, 409)
                 return
+            # Проверка соединений: маршрут, которому не хватает связи, спрашивает человека (диалог страницы): запустить
+            # только доступное, встать в очередь или отменить. Выбор приходит в `net` и становится политикой этого прогона.
+            net = str(payload.get("net") or "")
+            if net_enabled() and net not in ("partial", "queue"):
+                chk = net_check_route(project, str(payload.get("scId") or ""), bool(payload.get("write", True)))
+                if not chk["ok"]:
+                    self.send_json({"net_blocked": dict(chk, route=str(payload.get("scId") or ""),
+                                                        choices=["partial", "queue", "cancel"])}, 409)
+                    return
             res = route_start(project, str(payload.get("scId") or ""),
                               bool(payload.get("write", True)),
                               payload.get("resume") if isinstance(payload.get("resume"), dict)
-                              else None, request_lang(q))
+                              else None, request_lang(q), net=net)
             self.send_json(res, 200 if res.get("route") and not res.get("error") else 409)
             return
         if u.path == "/api/route/stop":
@@ -6616,12 +6684,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(kinds_write(project, payload.get("kinds") or {}))
             return
         if u.path == "/api/models/save":
-            # Слепок обязателен для существующего файла: запрос без него не вправе молча заменить чужую правку.
+            # Слепок обязателен для существующего файла: запрос без него (или с null, числом) не вправе молча
+            # заменить чужую правку, он считается «страница видела пустое».
             import model_config as MC
-            if "expect" not in payload and MC.file_stamp(KIT):
+            if not isinstance(payload.get("expect"), str) and MC.file_stamp(KIT):
                 payload = dict(payload, expect="")
             res = models_save(payload)
-            self.send_json(res, 409 if res.get("conflict") else 200)
+            self.send_json(res, 409 if res.get("conflict") else 503 if res.get("code") == "busy"
+                           else 500 if res.get("failed") else 200)
             return
         if u.path == "/api/net/save":
             res = net_save(payload)
@@ -6757,9 +6827,20 @@ class Handler(BaseHTTPRequestHandler):
             if payload.get("route") and (gap := version_gap(project)):
                 self.send_json({"error": f"Маршрут не начат: {gap}"}, 409)
                 return
+            # Проверка соединений: запуск из панели, которому не хватает связи, спрашивает человека (диалог страницы):
+            # встать в очередь до восстановления или отменить. Шаги маршрутов и цепочек идут без диалога — у них политика.
+            wait = False
+            if row and not payload.get("route") and project != KIT and net_enabled():
+                chk = net_check_command(project, row["cmd"])
+                if not chk["ok"]:
+                    if str(payload.get("net") or "") != "queue":
+                        self.send_json({"net_blocked": {"cmd": row["cmd"], "blocked": chk["blocked"], "state": chk.get("state"),
+                                                        "choices": ["queue", "cancel"]}}, 409)
+                        return
+                    wait = True
             try:
                 job_id = start_job(project, payload.get("cmd", ""),
-                                   [str(x) for x in payload.get("args", [])])
+                                   [str(x) for x in payload.get("args", [])], net_wait=wait)
             except ValueError as e:
                 self.send_json({"error": str(e)}, 400)
                 return
@@ -7035,7 +7116,7 @@ def _prune_routes() -> None:
 
 
 def route_start(project: str, sc_id: str, write: bool, resume: dict | None = None,
-                lang: str = DEFAULT_LANG) -> dict:
+                lang: str = DEFAULT_LANG, net: str = "") -> dict:
     """Начать маршрут в процессе панели. → {route: id} или {error}.
 
     Закрытая вкладка маршрут больше не останавливает: он идёт здесь, а журнал прогона —
@@ -7050,7 +7131,7 @@ def route_start(project: str, sc_id: str, write: bool, resume: dict | None = Non
                 return {"error": "в проекте уже идёт маршрут", "route": r["id"],
                         "scId": r["run"].sc.get("id"), "write": r["run"].write}
     run = RR.RouteRun(sys.modules[__name__], project, sc, write, lang=lang, resume=resume,
-                      trigger="button")
+                      trigger="button", net=net)
     rid = run.run_id
     mark = "route-" + rid
 
@@ -7413,6 +7494,9 @@ def stop_job(job_id: str, lang: str = "") -> dict:
     if not job:
         return {"error": "такого задания нет — возможно, оно уже закончилось"}
     proc = job.get("proc")
+    if job.get("waiting") and not proc:
+        job["cancel"].set()                  # задание стоит в очереди за связью: процесса ещё нет, прерывается ожидание
+        return {"ok": True}
     if job.get("done") or not proc:
         return {"error": "задание уже закончилось"}
     try:

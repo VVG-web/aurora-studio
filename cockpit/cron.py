@@ -74,6 +74,7 @@ BAD = ("failed", "stall", "offline", "gated")
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 ALL = "*"
+NET_POLICIES = ("fail_fast", "partial", "queue", "partial_queue")      # данные движка: `connectivity.POLICIES`
 
 
 def home() -> str:
@@ -215,7 +216,11 @@ def clean_task(ck, raw: dict, projects: list) -> tuple:
     tid = str(raw.get("id") or "")
     if not re.match(r"^[0-9a-f]{8}$", tid):
         tid = secrets.token_hex(4)
-    return {"id": tid, "name": name, "enabled": bool(raw.get("enabled", True)),
+    # Политика прогона без связи (проверка соединений): пусто — по настройке кита (по умолчанию `partial_queue`).
+    net = str(raw.get("net") or "")
+    if net and net not in NET_POLICIES:
+        return None, "bad_net"
+    return {"id": tid, "name": name, "enabled": bool(raw.get("enabled", True)), "net": net,
             "time": when, "days": days, "date": date,
             "order": "steps" if raw.get("order") == "steps" else "projects",
             "on_fail": "stop" if raw.get("on_fail") == "stop" else "next",
@@ -840,7 +845,7 @@ class Scheduler:
             resume = {"skipSigs": it["done"]} if it.get("done") else None
             route = RR.RouteRun(ck, project, sc, it.get("write", True), lang=lang, log=log,
                                 stop=self.stop_event, on_job=on_job, on_step=on_step,
-                                resume=resume, trigger="cron", parent=run["id"])
+                                resume=resume, trigger="cron", parent=run["id"], net=task.get("net", ""))
             if hasattr(ck, "route_register"):
                 ck.route_register(route, project)
             res = route.safe_run()
@@ -851,6 +856,9 @@ class Scheduler:
             if status == "stall" and res.get("progressed"):
                 # База за маршрут менялась, не двигается только хвост — проект обновлён.
                 status = "partial"
+            if status == "passed" and res.get("net_skipped"):
+                # Политика «сделать доступное»: часть шагов пропущена из-за связи — это частичный итог, а не чистый.
+                status = "partial"
             it.update(status=status, failed=res.get("failed", ""), note=res.get("note", ""),
                       finished=now_iso())
             return
@@ -859,9 +867,11 @@ class Scheduler:
             log(gap)
             it.update(status="failed", note="engine_behind", finished=now_iso())
             return
+        if self._net_blocks(task, it, log):
+            return
         log("▸ " + (it["cmd"] + " " + " ".join(it["args"])).strip())
         res = RR.run_job(ck, project, it["cmd"], it["args"], stop=self.stop_event,
-                         on_job=on_job, parent=run["id"])
+                         on_job=on_job, parent=run["id"], net=self._net_policy(task))
         tries = 0
         while res.get("hung") and not self.stop_event.is_set():
             # Снят сторожем после обрыва связи — тот же шаг заново (`watchdog`), без потолка:
@@ -882,6 +892,8 @@ class Scheduler:
         if res.get("stopped"):
             it.update(status="stopped", finished=now_iso())
             return
+        if rc == 2 and self._net_refused(task, it, res, log):
+            return
         if rc >= 2 or rc < 0:
             it.update(status="failed", note=res.get("refused") or "", finished=now_iso())
             return
@@ -892,6 +904,85 @@ class Scheduler:
                 it["cmd"] + " " + " ".join(it["args"])).strip()), None, True)
             if saved.get("ok"):
                 it["commit"] = saved["commit"]
+
+    # ------------------------------------------------------- связь: хватает ли её шагу
+
+    def _net_svc(self):
+        try:
+            import connectivity as CN
+            svc = CN.service(getattr(self.ck, "KIT", None))
+            return svc if svc.enabled else None
+        except Exception:  # noqa: BLE001 — связь — подсказка: сбой разбора не останавливает цепочку
+            return None
+
+    def _net_policy(self, task: dict) -> str:
+        """Политика этого задания для окружения шага; выключенная проверка — пусто."""
+        svc, G = self._net_svc(), RR.net_gate()
+        return G.policy_for(task.get("net", ""), svc) if (svc and G) else ""
+
+    def _net_refused(self, task: dict, it: dict, res: dict, log) -> bool:
+        """Скрипт источника сам отказал по связи (`AURORA-NET`: она пропала между проверкой и первым запросом) → True,
+        статус выставлен по политике. Это не поломка шага: ждать или откладывать, а не считать упавшим."""
+        G = RR.net_gate()
+        mark = G.parse_marker(res["lines"]) if G is not None else {}
+        if not mark:
+            return False
+        why = "; ".join(G.reason_line(r) for r in mark["blocked"])
+        policy = G.policy_for(task.get("net", ""), self._net_svc())
+        act = G.decide(policy, {"ok": False})
+        status = {"fail": "offline", "skip": "partial"}.get(act, "deferred")
+        log(f"⏸ {it['cmd']}: источник отказал по связи — {why}.")
+        it.update(status=status, note="net: " + why[:200], finished=now_iso())
+        return True
+
+    def _net_blocks(self, task: dict, it: dict, log) -> bool:
+        """Не хватает связи этому шагу? → True: статус выставлен, шаг не запускается.
+
+        Политика — задания (`net`) или кита: `fail_fast` — шаг не прошёл (offline); `partial` — пропущен с пометкой, остальное идёт;
+        `queue` — ждём восстановления и идём; `partial_queue` — откладываем на повтор в конце цепочки (там ждём), остальное
+        идёт сразу. Отложенный шаг не откладывает остальные шаги своего проекта: им связь не нужна или вердикт свой."""
+        G, svc = RR.net_gate(), self._net_svc()
+        if G is None or svc is None:
+            return False
+        try:
+            v = G.check_command(it["cmd"], it["project"], svc=svc)
+        except Exception:  # noqa: BLE001
+            return False
+        if v.get("ok", True):
+            return False
+        why = "; ".join(G.reason_line(r) for r in v["blocked"])
+        policy = G.policy_for(task.get("net", ""), svc)
+        if it.get("retry") and policy in ("queue", "partial_queue"):
+            policy = "queue"                    # повтор в конце цепочки уже ждёт, а не откладывает снова
+        act = G.decide(policy, v)
+        cmd = (it["cmd"] + " " + " ".join(it["args"])).strip()
+        if act == "fail":
+            log(f"■ {cmd}: нужное недоступно — {why}. Политика — остановиться сразу.")
+            it.update(status="offline", note="net: " + why[:200], finished=now_iso())
+            return True
+        if act == "skip":
+            log(f"⏭ {cmd}: пропущен — нужное недоступно ({why}). Остальное идёт.")
+            it.update(status="partial", note="net: " + why[:200], finished=now_iso())
+            return True
+        if act == "defer":
+            log(f"⏸ {cmd}: отложен до восстановления связи — {why}. Остальное идёт, к этому вернусь в конце цепочки.")
+            it.update(status="deferred", note="net: " + why[:200], finished=now_iso())
+            return True
+        log(f"⏳ {cmd}: нужное недоступно — {why}. Жду восстановления связи и продолжу сам.")
+        started = time.time()
+        said = [started]
+
+        def on_wait(verdict, _secs):
+            if time.time() - said[0] >= 600:           # в журнал — раз в десять минут, а не на каждый опрос
+                said[0] = time.time()
+                log(f"⏳ {cmd}: связи всё ещё нет — " + "; ".join(G.reason_line(r) for r in verdict["blocked"]))
+        ok = G.wait_restored(lambda: G.check_command(it["cmd"], it["project"], svc=svc), stop=self.stop_event,
+                             poll=RR.NET_POLL_S, on_wait=on_wait)
+        if not ok:
+            it.update(status="stopped", finished=now_iso())
+            return True
+        log(f"✓ {cmd}: связь вернулась (ждали {int(time.time() - started)} с) — продолжаю")
+        return False
 
     # ------------------------------------------------------- для экрана
 

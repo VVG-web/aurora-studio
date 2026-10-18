@@ -3359,6 +3359,22 @@ OFFLINE_SIGNS = ("timed out", "timeout", "connection error", "connection refused
                  "обрыв связи")      # метка `agent_core.LINK_FAILURE` в итоговой строке вызова
 OFFLINE_WAIT = 300          # секунд между попытками достучаться: VPN поднимают минутами
 OFFLINE_TRIES = 24          # два часа ожидания; дольше — это не обрыв, а выключенный шлюз
+LINK_POLL = 15.0            # секунд между перепроверками связи, когда её ждут по проверке соединений
+
+
+def wait_for_link(deadline: float) -> bool:
+    """Переждать обрыв связи по проверке соединений → True, если ждали ею; False — причина ей не известна.
+
+    Проверка включена и знает, что недоступны все провайдеры моделей: ждём их возвращения, перепроверяя каждые 15 секунд,
+    а не вслепую по пять минут. Предел тот же, что у прежнего ожидания: в маршруте, доводящем дело до конца, — окно
+    прогона, иначе — те же `OFFLINE_TRIES` пауз. Проверка выключена или все живы (беда не из связи) — False, и вызывающий
+    ждёт по-старому (`OFFLINE_WAIT`)."""
+    try:
+        import conn_gate as G
+    except ImportError:
+        return False
+    cap = deadline if AG.persist_mode() else min(deadline, time.time() + OFFLINE_WAIT * OFFLINE_TRIES)
+    return G.wait_llm_back(cap, poll=LINK_POLL, say=lambda t: say(f"=== {t}"))
 
 
 def until_done(cwd: str, a, task: str, run_batch, report, headline, passed,
@@ -3410,7 +3426,8 @@ def until_done(cwd: str, a, task: str, run_batch, report, headline, passed,
                 say(f"\n=== связь потеряна (попытка {waits}"
                     + ("" if AG.persist_mode() else f" из {OFFLINE_TRIES}") + "): "
                     f"жду {OFFLINE_WAIT // 60} мин и продолжаю с той же карточки")
-                time.sleep(OFFLINE_WAIT)
+                if not wait_for_link(deadline):
+                    time.sleep(OFFLINE_WAIT)
                 continue
             say(f"\n=== заход {batch} не прошёл ни одной карточки"
                 + (f", связь не вернулась за {waits * OFFLINE_WAIT // 60} мин"
@@ -8149,7 +8166,8 @@ def main() -> int:
                     + ("" if AG.persist_mode() else f" из {OFFLINE_TRIES}") + "): "
                         f"жду {OFFLINE_WAIT // 60} мин и продолжаю с того же источника. "
                         f"Разобрано к этому моменту: {done_after}")
-                    time.sleep(OFFLINE_WAIT)
+                    if not wait_for_link(deadline):
+                        time.sleep(OFFLINE_WAIT)
                     continue
                 say(f"\n=== партия {batch} не прошла ни одного источника "
                     f"(пройдено {done_after})"

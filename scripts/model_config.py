@@ -30,7 +30,10 @@ import json
 import os
 import re
 import sys
+import threading
 from pathlib import Path
+
+from aurora_common import profile_name_ok  # noqa: E402  — та же проверка имени профиля, что у раздела связи
 
 VERSION = 1
 CAPABILITIES = ("llm", "ocr", "embeddings")
@@ -41,7 +44,6 @@ PROVIDER_TYPES = ("openai", "llama.cpp", "vllm", "sglang", "ollama", "tei")
 # они живут в `local/connectivity.json`) и проверка его ручки. Нет привязки — «без VPN», как было всегда.
 HEALTH_CHECKS = ("off", "reach", "auth")
 HEALTH_DEFAULT = {"check": "off", "path": "/models"}
-PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
 
 # Роли, которые зовёт сам движок. Их нельзя удалить (иначе задача останется без модели), но
 # можно переименовать на свой лад. Свои роли человек добавляет рядом — по мере нужды.
@@ -117,7 +119,7 @@ def normalize(data) -> tuple:
         ids.add(pid)
         template = p.get("template") if isinstance(p.get("template"), dict) else {}
         vpn = str(p.get("vpn") or "").strip()
-        if vpn and not PROFILE_NAME_RE.match(vpn):
+        if vpn and not profile_name_ok(vpn):
             notes.append(f"провайдер {pid}: имя профиля связи «{vpn[:40]}» не годится — привязка снята")
             vpn = ""
         hin = p.get("health") if isinstance(p.get("health"), dict) else {}
@@ -228,38 +230,101 @@ def load(kit, migrate_env=None) -> dict:
     return data
 
 
+_PROCESS_SALT = os.urandom(32)      # соль на случай, когда рядом с файлом её не записать
+_SALT_LOCK = threading.Lock()       # первая запись соли — одним потоком: иначе второй прочтёт пустой файл
+
+
+def _stamp_salt(kit) -> bytes:
+    """Соль слепка: лежит рядом с файлом настройки (права 600) и с машины не уходит. Слепок уходит в браузер, а в файле
+    ключи: без соли по слепку можно было бы перебирать слабые ключи, зная остальной файл."""
+    path = models_path(kit).with_name(".stamp-salt")
+    with _SALT_LOCK:
+        try:
+            raw = path.read_bytes()
+            if len(raw) >= 16:
+                return raw
+        except OSError:
+            pass
+        salt = os.urandom(32)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(salt)
+        except OSError:
+            return _PROCESS_SALT
+        return salt
+
+
 def file_stamp(kit) -> str:
-    """Слепок файла настройки (`expect` панели): нет файла — пусто."""
+    """Слепок файла настройки (`expect` панели): нет файла — пусто. Это HMAC с солью машины, а не хэш содержимого."""
     import hashlib
+    import hmac
     from aurora_common import personal_kit_file
     path = models_path(kit)
     if personal_kit_file(path):
         return ""                   # прогон тестов: личная настройка машины не читается даже для слепка
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()[:32]
+        raw = path.read_bytes()
     except OSError:
         return ""
+    return hmac.new(_stamp_salt(kit), raw, hashlib.sha256).hexdigest()[:32]
 
 
 def _carry_unknown(old: dict, clean: dict) -> None:
-    """Перенести из прежнего файла то, чего форма не знает и не прислала: разделы верхнего уровня и лишние поля
-    провайдеров (по `id`). Форма «Моделей» не стирает то, чем не управляет."""
+    """Перенести из прежнего файла то, чего форма не знает и не прислала: разделы верхнего уровня, лишние поля провайдеров
+    (по `id`), возможностей, ролей (по `id`), бэкендов (по паре «провайдер + модель») и настроек. Форма «Моделей» не
+    стирает то, чем не управляет."""
+    from aurora_common import same_origin
     for key, value in old.items():
         if key not in clean and key not in ("providers", "capabilities", "settings", "version"):
             clean[key] = value
     known = {"id", "name", "type", "url", "key", "width", "parallel", "template", "vpn", "health"}
     was = {str(p.get("id")): p for p in old.get("providers") or [] if isinstance(p, dict)}
     for p in clean["providers"]:
-        for key, value in (was.get(p["id"]) or {}).items():
+        prev = was.get(p["id"]) or {}
+        was_url, url = str(prev.get("url") or "").strip(), str(p.get("url") or "").strip()
+        if was_url and url != was_url and not same_origin(url, was_url):
+            continue                # провайдер переехал на другой адрес: чужие поля (заголовки, токены) за ним не идут
+        for key, value in prev.items():
             if key not in known and key not in p:
                 p[key] = value
+    st = old.get("settings")
+    if isinstance(st, dict):
+        for key, value in st.items():
+            clean["settings"].setdefault(key, value)
+    caps = old.get("capabilities")
+    if not isinstance(caps, dict):
+        return
+    for cap, ocap in caps.items():
+        mine = clean["capabilities"].get(cap)
+        if not isinstance(ocap, dict):
+            continue
+        if mine is None:
+            clean["capabilities"][cap] = ocap       # возможность, которой этот кит не знает, — как есть
+            continue
+        for key, value in ocap.items():
+            mine.setdefault(key, value)
+        roles = {str(r.get("id")): r for r in ocap.get("roles") or [] if isinstance(r, dict)}
+        for role in mine["roles"]:
+            orole = roles.get(role["id"]) or {}
+            for key, value in orole.items():
+                role.setdefault(key, value)
+            backs: dict = {}
+            for ob in orole.get("backends") or []:
+                if isinstance(ob, dict):
+                    backs.setdefault((ob.get("provider"), str(ob.get("model") or "").strip()), ob)
+            for b in role["backends"]:
+                for key, value in (backs.get((b["provider"], b["model"])) or {}).items():
+                    b.setdefault(key, value)
 
 
-def save(kit, data: dict, expect=None) -> dict:
+def save(kit, data: dict, expect=None, replace_broken: bool = False) -> dict:
     """Записать неделимо и закрыть правами 600: внутри ключи.
 
     `expect` — слепок файла, с которым страница его открыла (`file_stamp`): файл за это время менялся —
-    отказ `conflict`, а не молчаливая перезапись чужой правки. Не задан — запись как прежде.
+    отказ `conflict`, а не молчаливая перезапись чужой правки. Не задан — запись как прежде. Прежний файл, который не
+    разобрать, заменяется только по явной просьбе (`replace_broken`) и после копии рядом: в нём могла быть правка
+    человека с запятой не там.
     """
     clean, notes = normalize(data)
     path = models_path(kit)
@@ -273,26 +338,64 @@ def save(kit, data: dict, expect=None) -> dict:
     if (root / "aurora.config.yaml").is_file() and not (root / "scripts" / "model_config.py").is_file():
         return {"ok": False, "error": f"{root} — папка проекта, а не кита: настройка моделей "
                                       "пишется только в кит (нет .aurora/kit_path.txt?)"}
-    if expect is not None and expect != file_stamp(kit):
-        return {"ok": False, "conflict": True, "code": "conflict",
-                "error": "настройка моделей изменилась на диске с момента открытия страницы"}
-    if path.is_file():
-        try:
-            old = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            old = {}
-        if isinstance(old, dict):
-            _carry_unknown(old, clean)
+    import time
+    from aurora_common import lock_release, lock_take, replace_file
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    lock = str(path) + ".lock"
+    for _ in range(100):
+        got, _held = lock_take(lock, stale_s=60)
+        if got:
+            break
+        time.sleep(0.05)
+    else:
+        return {"ok": False, "code": "busy", "error": "файл настройки моделей занят другим процессом"}
     try:
-        os.chmod(tmp, 0o600)
+        if expect is not None and expect != file_stamp(kit):
+            return {"ok": False, "conflict": True, "code": "conflict",
+                    "error": "настройка моделей изменилась на диске с момента открытия страницы"}
+        if path.is_file():
+            try:
+                old = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(old, dict):
+                    raise ValueError("не объект")
+            except (OSError, ValueError):
+                if not replace_broken:
+                    return {"ok": False, "code": "broken",
+                            "error": f"{path.name} не разобран (правка руками?): сохранение заменит его целиком — "
+                                     "рядом останется копия"}
+                _keep_copy(path)
+                old = {}
+            _carry_unknown(old, clean)
+        import tempfile
+        fd, name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+        tmp = Path(name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(clean, ensure_ascii=False, indent=2) + "\n")
+            try:
+                os.chmod(tmp, 0o600)
+            except OSError:
+                pass
+            replace_file(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return {"ok": True, "notes": notes, "path": str(path), "stamp": file_stamp(kit)}
+    except OSError as e:
+        return {"ok": False, "code": "write", "failed": True,
+                "error": f"не удалось записать настройку моделей: {e.strerror or e}"}
+    finally:
+        lock_release(lock)
+
+
+def _keep_copy(path: Path) -> None:
+    """Копия файла, который сейчас будет заменён: `models.json.broken-<время>` рядом, права 600 (внутри ключи)."""
+    import time
+    dst = path.with_name(f"{path.name}.broken-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}")
+    try:
+        dst.write_bytes(path.read_bytes())
+        os.chmod(dst, 0o600)
     except OSError:
         pass
-    from aurora_common import replace_file
-    replace_file(tmp, path)
-    return {"ok": True, "notes": notes, "path": str(path), "stamp": file_stamp(kit)}
 
 
 def masked(data: dict) -> dict:
