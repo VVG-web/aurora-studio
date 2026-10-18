@@ -5326,7 +5326,7 @@ def agent_venv_install() -> dict:
     """Поставить/обновить Pydantic AI. Синхронно: локальная панель, пользователь ждёт."""
     try:
         p = subprocess.run([sys.executable, os.path.join(KIT, "scripts", "agent_core.py"),
-                            "--venv-install"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
+                            "--venv-install"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2400)
         CACHE.pop("env", None)      # строка в «Установке» обязана обновиться
         return {"ok": p.returncode == 0, "log": (p.stdout + p.stderr).strip()[-600:]}
     except Exception as e:  # noqa: BLE001

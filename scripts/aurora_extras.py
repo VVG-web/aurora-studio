@@ -108,11 +108,14 @@ def installed_version(extra_id: str) -> str:
     return p.stdout.strip() if p.returncode == 0 else ""
 
 
-def _get_json(url: str, timeout: int = 15) -> dict:
+def _get_json(url: str, timeout: int = 15, limit: int = 2_000_000) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": "aurora-studio",
                                                "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read(2_000_000).decode("utf-8", "replace"))
+        raw = r.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError(f"ответ {url.split('?')[0]} больше {limit >> 20} МБ — не разбираю")
+    return json.loads(raw.decode("utf-8", "replace"))
 
 
 def _clean(tag: str) -> str:
@@ -132,7 +135,7 @@ def latest(extra_id: str, fresh: bool = False) -> dict:
     if not fresh and got and time.time() - got.get("at", 0) < CACHE_TTL:
         return got
     ex = EXTRAS[extra_id]
-    out = {"git": "", "pypi": "", "error": "", "at": time.time()}
+    out = {"git": "", "pypi": "", "aged": "", "error": "", "at": time.time()}
     try:
         rel = _get_json(f"https://api.github.com/repos/{ex['repo']}/releases/latest")
         out["git"] = _clean(rel.get("tag_name") or rel.get("name") or "")
@@ -143,7 +146,9 @@ def latest(extra_id: str, fresh: bool = False) -> dict:
         except Exception:                                    # noqa: BLE001
             out["error"] = f"GitHub не ответил: {str(e)[:120] or type(e).__name__}"
     try:
-        out["pypi"] = _get_json(f"https://pypi.org/pypi/{ex['dist']}/json")["info"]["version"]
+        data = _get_json(f"https://pypi.org/pypi/{ex['dist']}/json", limit=30_000_000)
+        out["pypi"] = data["info"]["version"]
+        out["aged"] = aged_from(data, QUARANTINE_DAYS)       # то, что поставит установка с паузой
     except Exception as e:                                   # noqa: BLE001
         out["error"] = (out["error"] + "; " if out["error"] else "") + \
             f"PyPI не ответил: {str(e)[:120] or type(e).__name__}"
@@ -165,14 +170,16 @@ def status(fresh: bool = False, online: bool = True) -> list:
     rows = []
     for eid, ex in EXTRAS.items():
         have = installed_version(eid)
-        new = latest(eid, fresh) if online else {"git": "", "pypi": "", "error": ""}
+        new = latest(eid, fresh) if online else {"git": "", "pypi": "", "aged": "", "error": ""}
         avail = new.get("pypi") or ""
+        # Обновить можно до того, что поставит установка: выпуск старше паузы, а не самый свежий на PyPI
+        # (кэш прежнего выпуска кита поля нет — тогда как раньше, до версии PyPI).
+        target = (new.get("aged") if "aged" in new else avail) or ""
         rows.append({
             "id": eid, "title": ex["title"], "enables": ex["enables"],
-            "installed": have, "git": new.get("git", ""), "pypi": avail,
+            "installed": have, "git": new.get("git", ""), "pypi": avail, "target": target or avail,
             "error": new.get("error", ""),
-            # Обновить можно до того, что ставит pip, — до версии PyPI.
-            "update": bool(have and avail and _vt(avail) > _vt(have)),
+            "update": bool(have and target and _vt(target) > _vt(have)),
             "pypi_behind": bool(new.get("git") and avail and _vt(new["git"]) > _vt(avail)),
             "venv": str(ex["venv"]), "repo": f"https://github.com/{ex['repo']}",
             "python": python_for(eid) or "",
@@ -256,33 +263,39 @@ def _epoch(stamp: str) -> float:
 
 
 def release_age_days(name: str, version: str, sha256: str = "", now: float = 0.0):
-    """Сколько суток назад вышел этот файл выпуска. None — PyPI о выпуске не знает.
+    """Сколько суток назад вышел этот файл выпуска. None — PyPI такого выпуска не знает (частный индекс).
 
-    Файл — по хешу из решённого набора; не нашёлся — самый ранний файл выпуска (колёса одного выпуска
-    грузят в течение минут, но моложе самого раннего считать выпуск нельзя)."""
-    data = _get_age_json(PYPI_VERSION_JSON.format(name=name, version=version))
+    Файл — по хешу из решённого набора; не нашёлся — самый СВЕЖИЙ файл выпуска (дозагруженное позже колесо не
+    должно делать выпуск «старым»). Ответ без времени загрузки — ValueError: возраст неизвестен, не «пускаем»."""
+    data = _get_age_json(PYPI_VERSION_JSON.format(name=urllib.parse.quote(name, safe=""),
+                                                  version=urllib.parse.quote(version, safe="")))
     if data is None:
         return None
     files = [u for u in (data.get("urls") or []) if isinstance(u, dict) and u.get("upload_time_iso_8601")]
+    if not files:
+        raise ValueError(f"PyPI не назвал время загрузки {name} {version}")
     mine = [u for u in files if sha256 and (u.get("digests") or {}).get("sha256") == sha256] or files
-    if not mine:
-        return None
-    return ((now or _now()) - min(_epoch(u["upload_time_iso_8601"]) for u in mine)) / 86400
+    return ((now or _now()) - max(_epoch(u["upload_time_iso_8601"]) for u in mine)) / 86400
 
 
-def aged_version(dist: str, days: float, now: float = 0.0) -> str:
-    """Самый новый выпуск `dist` старше `days` суток (без предвыпусков и снятых). Пусто — не нашёлся."""
-    data = _get_json(f"https://pypi.org/pypi/{dist}/json")
+def aged_from(data: dict, days: float, now: float = 0.0) -> str:
+    """Самый новый выпуск из ответа PyPI старше `days` суток (без предвыпусков и снятых). Пусто — не нашёлся."""
     best, best_key = "", ()
     for version, files in (data.get("releases") or {}).items():
         files = [f for f in (files or []) if isinstance(f, dict) and not f.get("yanked")
                  and f.get("upload_time_iso_8601")]
         if not files or re.search(r"[a-zA-Z]", version):
             continue
-        age = ((now or _now()) - min(_epoch(f["upload_time_iso_8601"]) for f in files)) / 86400
+        age = ((now or _now()) - max(_epoch(f["upload_time_iso_8601"]) for f in files)) / 86400
         if age >= days and _vt(version) > best_key:
             best, best_key = version, _vt(version)
     return best
+
+
+def aged_version(dist: str, days: float, now: float = 0.0) -> str:
+    """Самый новый выпуск `dist` старше `days` суток. Пусто — не нашёлся."""
+    return aged_from(_get_json(f"https://pypi.org/pypi/{urllib.parse.quote(dist, safe='')}/json",
+                               limit=30_000_000), days, now)
 
 
 def _report_items(path) -> list:
@@ -298,24 +311,35 @@ def _report_items(path) -> list:
         if not (name and version and digest):
             raise ValueError(f"у {name or '?'} {version or ''} нет хеша из индекса (каталог или VCS?) — "
                              "ставить без хеша не буду")
-        items.append({"name": re.sub(r"[-_.]+", "-", name).casefold(), "version": version, "sha256": digest})
+        # Отчёт пишет pip по ответам индекса: строка с переводом строки породила бы в файле снимка чужую директиву.
+        if not (re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", str(name)) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+!_-]*", str(version))
+                and re.fullmatch(r"[0-9a-f]{64}", str(digest))):
+            raise ValueError(f"в отчёте pip странное имя, версия или хеш пакета «{str(name)[:40]}» — не ставлю")
+        items.append({"name": re.sub(r"[-_.]+", "-", name).casefold(), "version": version, "sha256": digest,
+                      "url": str(dl.get("url") or "")})
     if not items:
         raise ValueError("pip не назвал ни одного пакета для установки")
     return sorted(items, key=lambda x: x["name"])
 
 
-def plan_lock(vpy, spec: str, days: float, now: float = 0.0) -> tuple:
+BLOCKED_PACKAGES = ("litellm", "dspy")      # решение по цепочке поставок: в надстройки не вводятся (ни прямо, ни через зависимость)
+
+
+def plan_lock(vpy, spec: str, days: float, now: float = 0.0, binary_only: bool = True) -> tuple:
     """Решить набор пакетов для `spec` без выпусков моложе `days` суток. → (текст снимка, "") либо ("", причина).
 
     Слишком свежий пакет запрещается ограничением `имя<версия`, и pip решает набор заново: если нужному
-    свежему выпуску есть замена постарше, получится набор из старых; нет — отказ с названием пакета."""
+    свежему выпуску есть замена постарше, получится набор из старых; нет — отказ с названием пакета.
+    Набор решается только по готовым колёсам (`--only-binary=:all:`): сборка пакета из исходников исполняет его код
+    ещё до проверки возраста. Колеса нет — один повтор без этого запрета (в журнале сказано, чья сборка пойдёт)."""
     work = tempfile.mkdtemp(prefix="aurora-extras-")
     bans, ages = {}, {}
     try:
         for _round in range(RESOLVE_ROUNDS):
             report = os.path.join(work, "report.json")
             cmd = [str(vpy), "-m", "pip", "install", "--dry-run", "--ignore-installed", "--quiet",
-                   "--disable-pip-version-check", "--report", report, *spec.split()]
+                   "--disable-pip-version-check", "--report", report, *(["--only-binary=:all:"] if binary_only else []),
+                   *spec.split()]
             if bans:
                 cons = os.path.join(work, "constraints.txt")
                 with open(cons, "w", encoding="utf-8") as f:
@@ -325,11 +349,16 @@ def plan_lock(vpy, spec: str, days: float, now: float = 0.0) -> tuple:
                 os.remove(report)
             p = _run(cmd, timeout=1800)
             if p.returncode != 0:
+                if binary_only:
+                    return plan_lock(vpy, spec, days, now, False)       # у какого-то пакета нет колеса — один повтор
                 return "", ((p.stderr or p.stdout or "pip не ответил")[-300:]).strip()
             try:
                 items = _report_items(report)
             except (OSError, ValueError) as e:
                 return "", f"набор не решён: {e}"
+            blocked = [it["name"] for it in items if it["name"] in BLOCKED_PACKAGES]
+            if blocked:
+                return "", f"в наборе пакет {blocked[0]}, который в надстройки не вводится (цепочка поставок)"
             young = []
             if days:
                 from concurrent.futures import ThreadPoolExecutor
@@ -341,11 +370,15 @@ def plan_lock(vpy, spec: str, days: float, now: float = 0.0) -> tuple:
                             ages[(it["name"], it["version"])] = age
                 except Exception as e:                     # noqa: BLE001 — сеть, ответ PyPI: возраст не узнать — не ставим
                     return "", f"не удалось узнать возраст выпусков на PyPI ({str(e)[:100] or type(e).__name__})"
+                unknown = [it for it in items if ages.get((it["name"], it["version"])) is None
+                           and "files.pythonhosted.org" in it.get("url", "")]
+                if unknown:        # файл с pythonhosted.org, а PyPI о выпуске молчит: возраст неизвестен — не ставим
+                    return "", f"PyPI не знает выпуска {unknown[0]['name']} {unknown[0]['version']} — возраст неизвестен"
                 young = [it for it in items
                          if ages.get((it["name"], it["version"])) is not None
                          and ages[(it["name"], it["version"])] < days]
             if not young:
-                return _lock_text(items, days, now), ""
+                return _lock_text(items, days, now, all(it.get("url", "").endswith(".whl") for it in items)), ""
             for it in young:
                 bans[it["name"]] = it["version"]
         names = ", ".join(f"{n} {v}" for n, v in sorted(bans.items())[:6])
@@ -355,10 +388,12 @@ def plan_lock(vpy, spec: str, days: float, now: float = 0.0) -> tuple:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _lock_text(items: list, days: float, now: float = 0.0) -> str:
+def _lock_text(items: list, days: float, now: float = 0.0, wheels: bool = False) -> str:
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now or _now()))
-    head = [f"# Снимок установки надстройки Авроры · {stamp}",
-            f"# пауза после выпуска: {days:g} сут. · python {sys.version_info[0]}.{sys.version_info[1]}"]
+    # заголовок только ASCII: pip читает файл в кодировке локали
+    head = [f"# Aurora extras install snapshot {stamp}",
+            f"# release wait: {days:g} days; python {sys.version_info[0]}.{sys.version_info[1]}"
+            + ("; only-binary" if wheels else "")]
     body = [f"{it['name']}=={it['version']} \\\n    --hash=sha256:{it['sha256']}" for it in items]
     return "\n".join(head + body) + "\n"
 
@@ -378,8 +413,15 @@ def save_lock(extra_id: str, text: str, kind: str = "install") -> Path:
     # а не первый свободный — иначе место прибранного старого снимка занял бы новый и встал бы в хвост
     taken = [int(m.group(1)) for f in folder.glob(f"{base}-*.txt")
              for m in [re.match(r".*Z-(\d{3})-", f.name)] if m]
-    path = folder / f"{base}-{max(taken, default=0) + 1:03d}-{kind}.txt"
-    path.write_text(text, encoding="utf-8")
+    n = max(taken, default=0) + 1
+    while True:                 # два процесса не получат одно имя: файл создаётся только если его ещё нет
+        path = folder / f"{base}-{n:03d}-{kind}.txt"
+        try:
+            with open(path, "x", encoding="utf-8") as f:
+                f.write(text)
+            break
+        except FileExistsError:
+            n += 1
     try:
         os.chmod(path, 0o600)
     except OSError:
@@ -405,9 +447,12 @@ def freeze_text(vpy) -> str:
 
 
 def _install_lock(vpy, path) -> subprocess.CompletedProcess:
-    hashed = "--hash=" in Path(path).read_text(encoding="utf-8")
+    text = Path(path).read_text(encoding="utf-8")
+    hashed = "--hash=" in text
+    wheels = bool(re.search(r"(?m)^# release wait: .*; only-binary\s*$", text))
     return _run([str(vpy), "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--no-deps",
-                 *(["--require-hashes"] if hashed else []), "-r", str(path)], timeout=1800)
+                 *(["--require-hashes"] if hashed else []), *(["--only-binary=:all:"] if wheels else []),
+                 "-r", str(path)], timeout=1800)
 
 
 def restore(extra_id: str, lock: Path, log: list) -> bool:
@@ -417,29 +462,34 @@ def restore(extra_id: str, lock: Path, log: list) -> bool:
     base = python_for(extra_id)
     if not base or not lock.is_file():
         return False
-    aside = venv.with_name(venv.name + ".prev")
-    shutil.rmtree(aside, ignore_errors=True)
+    # имя уникально на попытку: остаток прежней (занятый файл, антивирус) не примут за отложенный сейчас venv
+    for old in venv.parent.glob(venv.name + ".prev-*"):
+        shutil.rmtree(old, ignore_errors=True)
+    aside = venv.with_name(f"{venv.name}.prev-{os.getpid()}-{int(_now())}")
     existed = venv.exists()
+    moved = False
+    ok = False
     try:
         if existed:
             os.replace(venv, aside)         # на Windows venv, занятый процессом, не переименуется — тогда он остаётся как был
+            moved = True
         made = _run([base, "-m", "venv", str(venv)], timeout=300)
         ok = made.returncode == 0 and _install_lock(venv_python(extra_id), lock).returncode == 0
-    except OSError as e:
-        log.append(f"откат по снимку не удался: {e}")
+    except (OSError, subprocess.SubprocessError) as e:
+        log.append(f"откат по снимку не удался: {str(e)[:120]}")
         ok = False
-    if ok:
-        shutil.rmtree(aside, ignore_errors=True)
-        return True
-    if aside.exists():                      # прежний venv отложен — на его месте недостроенный новый: убрать и вернуть
-        shutil.rmtree(venv, ignore_errors=True)
-        try:
-            os.replace(aside, venv)
-        except OSError as e:
-            log.append(f"прежний venv не возвращён: {e}")
-    elif not existed:
-        shutil.rmtree(venv, ignore_errors=True)
-    return False
+    finally:
+        if ok:
+            shutil.rmtree(aside, ignore_errors=True)
+        elif moved:                         # прежний venv отложен нами — на его месте недостроенный новый: убрать и вернуть
+            shutil.rmtree(venv, ignore_errors=True)
+            try:
+                os.replace(aside, venv)
+            except OSError as e:
+                log.append(f"прежний venv не возвращён: {e}")
+        elif not existed:
+            shutil.rmtree(venv, ignore_errors=True)
+    return ok
 
 
 def _pip_older_than(vpy, want: tuple) -> bool:
@@ -455,6 +505,9 @@ def _upgrade_pip(vpy, days: float, log: list) -> None:
     """pip в venv — до выпуска старше `days` суток. Сбой не мешает установке: pip просто остаётся прежним."""
     try:
         want = aged_version("pip", days) if days else ""
+        if days and not want:
+            log.append("pip не обновлён: выпуска старше паузы PyPI не назвал")
+            return
         _run([str(vpy), "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
               *([f"pip=={want}"] if want else ["--upgrade", "pip"])], timeout=600)
     except Exception as e:                                    # noqa: BLE001 — сеть, JSON PyPI, pip
@@ -465,7 +518,22 @@ def install(extra_id: str, quarantine_days=None) -> dict:
     """Поставить или обновить надстройку в её venv. → {ok, version, log}.
 
     `quarantine_days`: сколько суток выпуск должен пролежать на PyPI (по умолчанию `QUARANTINE_DAYS`);
-    0 — без паузы (проверка свежих версий в CI), набор всё равно ставится по хешам."""
+    0 — без паузы (проверка свежих версий в CI), набор всё равно ставится по хешам.
+
+    Одна установка на надстройку за раз: две делили бы один venv и одно имя отложенного каталога."""
+    from aurora_common import lock_release, lock_take
+    guard = LOCKS / f"{extra_id}.install.lock"
+    taken, who = lock_take(guard, {"what": "extras-install"}, stale_s=3 * 3600)
+    if not taken:
+        return {"ok": False, "version": installed_version(extra_id),
+                "log": f"установка {EXTRAS[extra_id]['title']} уже идёт (процесс {who.get('pid', '?')}) — дождитесь её конца"}
+    try:
+        return _install(extra_id, quarantine_days)
+    finally:
+        lock_release(guard)
+
+
+def _install(extra_id: str, quarantine_days=None) -> dict:
     ex = EXTRAS[extra_id]
     days = QUARANTINE_DAYS if quarantine_days is None else float(quarantine_days)
     log = []
@@ -546,7 +614,10 @@ def install(extra_id: str, quarantine_days=None) -> dict:
                             + (f" — оставлена {res['version']}" if res.get("rolled_back") else ""))
             chosen = ""         # снимок несовместимой установки не сохраняем
     if ok and chosen:
-        res["lock"] = save_lock(extra_id, chosen).name
+        try:
+            res["lock"] = save_lock(extra_id, chosen).name
+        except OSError as e:
+            log.append(f"снимок установки не сохранён: {e}")
     log.append(f"✅ {ex['title']} {res['version']}" if ok else
                ("" if res.get("error") else "установка не удалась"))
     if ok and extra_id == "graphify":
@@ -636,7 +707,7 @@ def safe_spec(pkg: str, days=None) -> tuple:
         ver = aged_version(pkg, days) if days else ""
     except Exception as e:                                    # noqa: BLE001 — сеть, формат ответа PyPI
         return pkg, f"паузу после выпуска проверить не удалось ({str(e)[:80]}) — ставлю последнюю версию"
-    return (f"{pkg}=={ver}" if ver else pkg), ("" if ver or not days else "выпуска старше паузы не нашлось — ставлю последнюю")
+    return (f"{pkg}<={ver}" if ver else pkg), ("" if ver or not days else "выпуска старше паузы не нашлось — ставлю последнюю")
 
 
 def graph_mcp() -> dict:

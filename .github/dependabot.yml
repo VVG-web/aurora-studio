@@ -15,7 +15,9 @@ updates:
       actions:
         patterns: ["*"]
   - package-ecosystem: pip
-    directory: "/.github"
+    # requirements.txt (версии для пользователей, BL-SEC-21) и requirements-ci.txt (для CI) держат одни и те же bs4 и
+    # markdownify; тест части 93 сверяет их, поэтому PR на один файл дополняется правкой другого.
+    directories: ["/", "/.github"]
     schedule:
       interval: monthly
     cooldown:
