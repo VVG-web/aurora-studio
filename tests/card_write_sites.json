@@ -1,5 +1,5 @@
 {
- "card_max": 23,
+ "card_max": 22,
  "sites": {
   "cockpit/aurora_cockpit.py:Handler._write_config": {
    "kind": "other",
@@ -587,9 +587,9 @@
    "calls": 4
   },
   "scripts/kb_fix.py:apply_plan": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 3
+   "kind": "other",
+   "reason": "переименования и переносы карточек в _archive; содержимое карточек пишет put_text, файлы вне базы (Templates/Prompts) — атомарно",
+   "calls": 2
   },
   "scripts/kb_fix.py:main": {
    "kind": "other",

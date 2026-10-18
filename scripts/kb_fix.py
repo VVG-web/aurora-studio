@@ -63,7 +63,8 @@ MERGE_REPORT: list = []      # (слитые, отказы) — для отчё�
 ARCHIVE = os.path.join(ROOT, "_archive")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
-from card_types import section_type_table  # noqa: E402 — единый источник «раздел → тип»
+from card_types import (UnknownCardType, fit_kind, put_text, registry_for, render_card,  # noqa: E402
+                        section_type_table)   # единый источник «раздел → тип», шапка по шаблону, вход записи
 
 
 # Служебные файлы навигации/механики — не карточки знаний.
@@ -131,6 +132,25 @@ def live_only(paths: list) -> list:
     """
     live = [p for p in paths if "/_archive/" not in p.replace("\\", "/")]
     return live or paths
+
+
+def project_of(root: str) -> str:
+    """Корень проекта по корню базы (`AuroraKnowledgeDB`): шаблоны типов лежат рядом с базой, а не в ней."""
+    return os.path.dirname(os.path.abspath(root))
+
+
+def verbatim(c: "Card") -> bool:
+    """Карточка, чьё слово ремонт не правит: дословный носитель или запись человека (класс `source` или `record`) с видом
+    `document` или `dictionary`. Имя, заголовок и тело такой карточки — то, что принесли источник или человек; шаги,
+    которые их меняют (`--names`, `--titles`, `--links`, `--tautologies`, `--stub-text`) и слияние двойников (`--merge-all`),
+    её пропускают.
+    Тип — из шапки, а без него — по разделу; тип вне реестра правилу не подпадает."""
+    kind = (c.fm.get("kind") or "").strip().strip('"')
+    if kind not in ("document", "dictionary"):
+        return False
+    tid = (c.fm.get("type") or "").strip().strip('"') or section_type().get(c.section, "")
+    ct = registry_for(project_of(ROOT)).get(tid) if tid else None
+    return ct is not None and ct.cls in ("source", "record")
 
 
 def current(path: str, c: "Card", plan) -> "Card":
@@ -364,7 +384,7 @@ def plan_names(cards: dict, plan: "Plan") -> tuple:
             claimed.add(_a.strip())
     for path, card in sorted(cards.items()):
         rel = path.replace("\\", "/")
-        if is_service(rel) or "/_archive/" in rel or "/meta/" in rel or "/MOC/" in rel:
+        if is_service(rel) or "/_archive/" in rel or "/meta/" in rel or "/MOC/" in rel or verbatim(card):
             continue
         stem = os.path.splitext(os.path.basename(rel))[0]
         title = (card.fm.get("title") or stem).strip().strip('"')
@@ -571,6 +591,8 @@ def plan_sections(cards: dict, plan: "Plan") -> tuple:
 class Plan:
     def __init__(self):
         self.file_writes: dict = {}      # path → новый текст
+        self.ops: dict = {}              # path → операция входа записи (`create`, `split`, `stub`, …); нет — по диску
+        self.refused: list = []          # (путь, причина): карточки, которых шаблон не принял
         self.renames: list = []          # (старый путь, новый путь)
         self.moves: list = []            # (путь, куда) — в _archive
         self.reopen: list = []           # источники — обратно в план разбора
@@ -578,8 +600,12 @@ class Plan:
         self.unresolved: list = []       # ссылки, которые движок не берёт
         self._word_names = None          # кому человек написал исправление (Raw/corrections)
 
-    def write(self, path: str, text: str):
+    def write(self, path: str, text: str, op: str = ""):
+        """Поставить запись файла. `op` — операция входа записи для НОВОЙ карточки (`create`, `split`, `stub`);
+        правка существующей идёт операцией `repair` (проверка «по разности») без указания."""
         self.file_writes[path] = text
+        if op:
+            self.ops[path] = op
 
     def protects(self, c, note: bool = True) -> bool:
         """У карточки есть слово человека — в архив её не уносим. → да/нет.
@@ -698,6 +724,9 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
         # Архив — история, а не база: ссылка из убранной карточки на убранную карту не
         # ошибка базы. Ремонт ссылок судил и её — и маршрут получал код 1 (PRJ-B 25.09.2026).
         if "/_archive/" in path.replace("\\", "/"):
+            continue
+        # Дословный носитель и запись человека (§12.4): ссылки в их тексте ремонт не переписывает.
+        if verbatim(c):
             continue
         mapping, aliases_for = {}, {}
         for m in LINK_RE.finditer(c.text):
@@ -883,7 +912,7 @@ def plan_titles(cards: dict, plan: Plan, root: str = ROOT) -> tuple:
     from aurora_common import looks_like_stem, title_from_stem
     heads = theses = 0
     for path, c in cards.items():
-        if is_service(path.replace("\\", "/")) or "/_archive/" in path or not c.has_frontmatter:
+        if is_service(path.replace("\\", "/")) or "/_archive/" in path or not c.has_frontmatter or verbatim(c):
             continue
         if not path.replace("\\", "/").startswith(root.rstrip("/").replace("\\", "/") + "/"):
             continue          # шаблоны и промпты — не карточки: их заголовок — образец
@@ -973,12 +1002,18 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
             continue
         if mark:
             title = f"{title} ({mark})"
-        card = (f'---\ntitle: "{title}"\naliases: []\nstatus: draft\n'
-                f'type: {frontmatter(text).get("type") or "concept"}\n'
-                + (f'source: {src}\n' if src else "")
-                + f'part_of: "[[{hit.stem}]]"\ncreated: {TODAY}\nupdated: {TODAY}\n'
-                f"built: machine\nrelated: []\n---\n\n# {title}\n\n{chunk}\n")
-        plan.file_writes[path] = card
+        # Часть — карточка того же типа и вида, что у родителя; источники те же (текст пришёл из них), а ссылка на
+        # родителя — `part_of`. Шапку строит шаблон типа.
+        ptype = frontmatter(text).get("type") or "concept"
+        reg = registry_for(project_of(root))
+        sources = card_sources(text) or ([src] if src else [])
+        fields = {"title": title, "status": "draft",
+                  "kind": fit_kind(ptype, frontmatter(text).get("kind") or "knowledge", reg),
+                  "sources": sources, "created": TODAY, "updated": TODAY, "part_of": f'"[[{hit.stem}]]"'}
+        if sources:                     # собрал движок из источников родителя; у карточки без источников метки нет
+            fields.update({"built": "machine", "source_synced": TODAY})
+        card = render_card(ptype, fields, f"# {title}\n\n{chunk}\n", reg=reg)
+        plan.write(path, card, "split")
         made.append((name, title))
     if not made:
         return f"«{hit.stem}»: все части уже вынесены отдельными карточками", False
@@ -989,8 +1024,7 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
             "а знание ищут атомарным. Ниже — части в исходном порядке.\n\n"
             + "\n".join(f"- [[{n}|{ttl}]]" for n, ttl in made) + "\n"
             + (("\n" + tail.strip() + "\n") if tail.strip() else ""))
-    plan.file_writes[hit.path] = (("---" + head[3:] if head.startswith("---") else head)
-                                  + "\n---\n\n" + keep)
+    plan.write(hit.path, (("---" + head[3:] if head.startswith("---") else head) + "\n---\n\n" + keep))
     lost = (f"; вне частей осталось {left_out} знаков (вводный текст и короткие разделы), "
             "они есть в источнике и в git" if left_out else "")
     return f"«{hit.stem}» → частей {len(made)}, сама стала картой документа{lost}", True
@@ -1015,6 +1049,32 @@ def is_code_name(stem: str, title: str, src: str = "", section: str = "Concepts"
         return True
     return artifact_kind(stem, title, src, section, None) in ("User Story",
                                                               "Acceptance Criteria", "Epic")
+
+
+def born(plan: Plan, path: str, section: str, title: str, op: str, fields: dict, own: str, root: str) -> bool:
+    """Поставить в план НОВУЮ карточку: шапку строит шаблон типа раздела (`render_card`), запись пойдёт через вход
+    (`apply_plan`, операция `op`). → поставлена ли. Тип раздела вне реестра или выключен (`UnknownCardType`) — карточка
+    не заводится, причина — в отчёт плана; «похожий» тип не подбирается.
+
+    Вид, если не назван, — тот, что назначит `kb:kind` по разделу (словари и справочники — `dictionary`, прочее —
+    `knowledge`), в пределах видов типа; `title` в шапке и в заголовке тела один и тот же (кавычка в имени — «'»).
+    """
+    reg = registry_for(project_of(root))
+    type_id = section_type().get(section, "concept")
+    given = dict(fields)
+    given["title"] = title
+    given.setdefault("created", TODAY)
+    given.setdefault("updated", TODAY)
+    if not given.get("kind"):
+        from kb_kind import DICT_SECTIONS
+        given["kind"] = fit_kind(type_id, "dictionary" if section in DICT_SECTIONS else "knowledge", reg)
+    try:
+        text = render_card(type_id, given, own, reg=reg, gap=1)
+    except UnknownCardType as e:
+        plan.refused.append((path, str(e)))
+        return False
+    plan.write(path, text, op)
+    return True
 
 
 def plan_stubs(cards: dict, idx, plan: Plan, root: str):
@@ -1096,17 +1156,13 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
             continue
         mentions = "\n".join(f"- [[{r}]]" for r in sorted(set(refs))[:20])
         taken.add(fold_hard(safe))
-        alias_lines = ("[]" if not extra else
-                       "\n" + "\n".join(f'  - "{a}"' for a in dict.fromkeys(extra)))
-        plan.write(path,
-                   f"---\ntitle: \"{clean}\"\naliases: {alias_lines}\n"
-                   f"status: {PLACEHOLDER}\n"
-                   f"type: {section_type().get(section, 'concept')}\n"
-                   f"tags: [заготовка]\ncreated: {TODAY}\nupdated: {TODAY}\n"
-                   f"related: []\n---\n\n# {clean}\n\n"
-                   "_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n"
-                   "_Наполните её при следующем разборе источника — ссылки переписывать "
-                   "не придётся._\n\n## Упоминается в\n\n" + mentions + "\n")
+        if not born(plan, path, section, clean, "stub", {"aliases": list(dict.fromkeys(extra)), "tags": ["заготовка"],
+                                                          "status": PLACEHOLDER, "built": "machine"},
+                    f"# {clean.replace(chr(34), chr(39))}\n\n"
+                    "_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n"
+                    "_Наполните её при следующем разборе источника — ссылки переписывать "
+                    "не придётся._\n\n## Упоминается в\n\n" + mentions + "\n", root):
+            continue
         created.append((clean, section, len(set(refs))))
     return created
 
@@ -1229,7 +1285,7 @@ def plan_term_definitions(cards: dict, plan: Plan) -> list:
             continue
         head, rest = c.text[:c.fm_end], c.text[c.fm_end:]
         head = re.sub(r"^status:.*$", "status: draft", head, count=1, flags=re.M)
-        head = re.sub(r"^tags:\s*\[\s*заготовка\s*\]\s*\n", "", head, flags=re.M)
+        head = re.sub(r"^tags:\s*\[\s*[\"']?заготовка[\"']?\s*\]\s*\n", "", head, flags=re.M)
         head = re.sub(r"^(tags:\s*\[)([^\]]*)\]", lambda t: t.group(1) + ", ".join(
             x.strip() for x in t.group(2).split(",") if x.strip() and x.strip() != "заготовка")
             + "]", head, flags=re.M)
@@ -1299,27 +1355,23 @@ def plan_term_stubs(cards: dict, idx, plan: Plan, root: str, floor: int = 3):
                     else f"Понятие названо в {seen} карточках базы.") + "\n")
         if meaning:
             origin, srcs = term_origin(cards, name, meaning)
-            plan.write(path,
-                       f"---\ntitle: \"{name}\"\naliases: []\nstatus: draft\n"
-                       f"type: {section_type().get(section, 'concept')}\n"
-                       + sources_block(srcs) +
-                       f"created: {TODAY}\nupdated: {TODAY}\nrelated: []\n---\n\n# {name}\n\n"
-                       f"{name} — {meaning}.\n"
-                       + (f"\n_Расшифровка — из [[{origin}]]._\n" if origin else "")
-                       + named)
-            created.append((name, section, seen))
+            # Происхождение: источники справочника, где записана расшифровка. Нашлись — карточку собрал движок
+            # (`built: machine`, дата сверки); не нашлись — происхождение неизвестно, метки нет (как и было).
+            fields = {"status": "draft", "sources": srcs}
+            if srcs:
+                fields.update({"built": "machine", "source_synced": TODAY})
+            if born(plan, path, section, name, "stub", fields,
+                    f"# {name.replace(chr(34), chr(39))}\n\n{name} — {meaning}.\n"
+                    + (f"\n_Расшифровка — из [[{origin}]]._\n" if origin else "") + named, root):
+                created.append((name, section, seen))
             continue
         body = ("_Заготовка: имя названо в базе, расшифровки база пока не знает, знания о "
                 "предмете пока нет._\n"
                 "_Наполните её при следующем разборе источника — ссылки переписывать "
                 "не придётся._" + named)
-        plan.write(path,
-                   f"---\ntitle: \"{name}\"\naliases: []\n"
-                   f"status: {PLACEHOLDER}\n"
-                   f"type: {section_type().get(section, 'concept')}\n"
-                   f"tags: [заготовка]\ncreated: {TODAY}\nupdated: {TODAY}\n"
-                   f"related: []\n---\n\n# {name}\n\n" + body)
-        created.append((name, section, seen))
+        if born(plan, path, section, name, "stub", {"tags": ["заготовка"], "status": PLACEHOLDER, "built": "machine"},
+                f"# {name.replace(chr(34), chr(39))}\n\n" + body, root):
+            created.append((name, section, seen))
     return created
 
 
@@ -1520,23 +1572,20 @@ def plan_unparsed_sources(cards: dict, plan: Plan, root: str) -> tuple:
                 if tpl:
                     body = ("_Шаблон проекта. Разбору не подлежит: это форма, а не "
                             "знание._\n\n" + BP.card_body_of(text))
-                    plan.write(path,
-                               f'---\ntitle: "{name}"\naliases: []\nstatus: draft\n'
-                               f'type: reference\nkind: template\ntags: [шаблон]\n'
-                               f'{sources_block([src])}created: {TODAY}\nupdated: {TODAY}\n'
-                               f'built: machine\nrelated: []\n---\n\n# {name}\n\n{body}\n')
-                    made_t.append(name)
+                    if born(plan, path, section, name, "create",
+                            {"status": "draft", "kind": "template", "tags": ["шаблон"], "sources": [src],
+                             "source_synced": TODAY, "built": "machine"},
+                            f"# {name.replace(chr(34), chr(39))}\n\n{body}\n", root):
+                        made_t.append(name)
                 else:
-                    plan.write(path,
-                               f'---\ntitle: "{name}"\naliases: []\n'
-                               f'status: {PLACEHOLDER}\ntype: concept\nkind: knowledge\n'
-                               f'tags: [заготовка]\n{sources_block([src])}'
-                               f'created: {TODAY}\nupdated: {TODAY}\nbuilt: machine\n'
-                               f'related: []\n---\n\n# {name}\n\n'
-                               f'Описано во внешнем артефакте, текста в источнике нет:\n\n'
-                               f'{ptr.strip()}\n\n'
-                               "_Заготовка: сущность названа, содержание лежит вне базы._\n")
-                    made_p.append(name)
+                    if born(plan, path, section, name, "stub",
+                            {"status": PLACEHOLDER, "kind": "knowledge", "tags": ["заготовка"], "sources": [src],
+                             "built": "machine"},
+                            f"# {name.replace(chr(34), chr(39))}\n\n"
+                            f"Описано во внешнем артефакте, текста в источнике нет:\n\n"
+                            f"{ptr.strip()}\n\n"
+                            "_Заготовка: сущность названа, содержание лежит вне базы._\n", root):
+                        made_p.append(name)
     return made_t, made_p
 
 
@@ -2029,7 +2078,7 @@ def plan_stub_text(cards: dict, plan: Plan) -> tuple:
         rel = path.replace("\\", "/")
         if is_service(rel) or "/_archive/" in rel or "/MOC/" in rel or c.stem.startswith("_"):
             continue
-        if not is_placeholder(c.fm, c.text) or card_sources(c.text):
+        if not is_placeholder(c.fm, c.text) or card_sources(c.text) or verbatim(c):
             continue
         base = plan.file_writes.get(path, c.text)
         now = Card(path, base)
@@ -2076,7 +2125,7 @@ def plan_tautologies(cards: dict, plan: Plan) -> list:
         rel = path.replace("\\", "/")
         if is_service(rel) or "/_archive/" in rel or "/MOC/" in rel:
             continue
-        if (c.fm.get("kind") or "").strip().strip('"') != "knowledge":
+        if (c.fm.get("kind") or "").strip().strip('"') != "knowledge" or verbatim(c):
             continue
         base = plan.file_writes.get(path, c.text)
         now = Card(path, base)
@@ -2142,15 +2191,15 @@ def plan_themes(cards: dict, plan: Plan, root: str, floor: int = 3) -> list:
             continue
         taken.add(fold_hard(name))
         body = "\n".join(f"- [[{x}]]" for x in sorted(stems))
-        plan.write(path,
-                   f'---\ntitle: "{name}"\naliases: []\nstatus: draft\n'
-                   f'type: concept\nkind: knowledge\ntags: [тема]\n'
-                   f'{sources_block([folder])}created: {TODAY}\nupdated: {TODAY}\n'
-                   f'built: machine\nrelated: []\n---\n\n# {name}\n\n'
-                   f"Тема проекта: под этим именем в источниках собраны страницы, из "
-                   f"которых вышли карточки ниже. Группировку задал человек — она взята "
-                   f"из структуры источников, а не выведена движком.\n\n"
-                   f"## Что относится к теме\n\n{body}\n")
+        if not born(plan, path, "Concepts", name, "create",
+                    {"status": "draft", "kind": "knowledge", "tags": ["тема"], "sources": [folder],
+                     "source_synced": TODAY, "built": "machine"},
+                    f"# {name.replace(chr(34), chr(39))}\n\n"
+                    f"Тема проекта: под этим именем в источниках собраны страницы, из "
+                    f"которых вышли карточки ниже. Группировку задал человек — она взята "
+                    f"из структуры источников, а не выведена движком.\n\n"
+                    f"## Что относится к теме\n\n{body}\n", root):
+            continue
         made.append((name, len(stems)))
     return made
 
@@ -2570,7 +2619,7 @@ def plan_frontmatter(cards: dict, plan: Plan):
             # их пустышками навсегда: `is_placeholder` читает и тег тоже.
             fixed = re.sub(r"(?m)^status:\s*" + PLACEHOLDER + r"\s*$", "status: draft",
                            base, count=1)
-            fixed = re.sub(r"(?m)^tags:\s*\[заготовка\]\s*$", "tags: []", fixed, count=1)
+            fixed = re.sub(r"(?m)^tags:\s*\[\s*[\"']?заготовка[\"']?\s*\]\s*$", "tags: []", fixed, count=1)
             fixed = drop_stub_line(fixed)
             if fixed != base:
                 plan.file_writes[path] = fixed
@@ -2754,7 +2803,7 @@ def plan_merge_all(cards: dict, plan: Plan) -> tuple:
 
     done, refused, merged_paths = [], [], set()
     for kind, paths in find_dupes(cards):
-        live = [p for p in paths if p not in merged_paths]
+        live = [p for p in paths if p not in merged_paths and not verbatim(cards[p])]
         if len(live) < 2:
             continue
         # Общий синоним — не признак двойника: этап процесса и понятие, которому щедро
@@ -3092,9 +3141,18 @@ def apply_plan(plan: Plan) -> int:
             continue
         print(f"  ! пропущено переименование {old} → {new}: {why}", file=sys.stderr)
         skipped += 1
+    # Запись карточек — через единый вход шаблонов (`put_text`): новая карточка проверяется строго, правка существующей
+    # «по разности» (унаследованные нарушения терпятся, новые отвергаются). Отказ одной карточки не останавливает
+    # ремонт, но вместе с ней не делаются её переименование и перенос в архив: без записи (синоним старого имени,
+    # пометка «слито») они потеряли бы то, ради чего стоят в плане.
+    refused_now = set()
     for path, text in plan.file_writes.items():
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(text)
+        why = put_text(path, text, op=plan.ops.get(path) or "repair")
+        if why:
+            refused_now.add(path.replace("\\", "/"))
+            plan.refused.append((path, why))
+            print(f"  ! не записана {path}: {why}", file=sys.stderr)
+    renames = [(o, n) for o, n in renames if o.replace("\\", "/") not in refused_now]
     for old, new in renames:
         if os.path.exists(new):
             print(f"  ! пропущено переименование {old} → {new}: файл уже существует", file=sys.stderr)
@@ -3104,7 +3162,7 @@ def apply_plan(plan: Plan) -> int:
         os.rename(old, new)
     renamed_to = dict(renames)
     for src, dst in plan.moves:
-        if os.path.abspath(src) == os.path.abspath(dst):
+        if os.path.abspath(src) == os.path.abspath(dst) or src.replace("\\", "/") in refused_now:
             continue
         if not os.path.exists(src) and os.path.exists(renamed_to.get(src, "")):
             src = renamed_to[src]          # тот же прогон её уже переименовал
@@ -3523,10 +3581,12 @@ def main() -> int:
     # Запись: переименования делают разрешимой часть ссылок, поэтому после первого прохода
     # план пересобирается и применяется снова — до неподвижной точки (максимум 3 прохода).
     applied, skipped_total, passes = False, 0, 0
+    refused_total: list = []
     if a.apply:
         if not git_guard(a.root, a.allow_dirty, "ремонт базы"):
             return 2
         skipped_total += apply_plan(plan)
+        refused_total += plan.refused
         applied, passes = True, 1
         while a.links and plan.renames and passes < 3:
             cards, packed, rc = build_plan()
@@ -3537,6 +3597,7 @@ def main() -> int:
                 plan = next_plan
                 break
             skipped_total += apply_plan(next_plan)
+            refused_total += next_plan.refused
             plan, passes = next_plan, passes + 1
             out += [""] + [f"(проход {passes}) " + h for h in next_head]
 
@@ -3599,6 +3660,9 @@ def main() -> int:
                    if plan.unresolved else "")]
         if skipped_total:
             out.append(f"- пропущено из-за коллизий имён: {skipped_total} (разберите через --merge)")
+        if refused_total:
+            out.append(f"- не записано шаблоном типа: {len(refused_total)}")
+            out += [f"    {short(p_)}: {why_[:160]}" for p_, why_ in refused_total[:10]]
     else:
         out += [f"- файлов к записи: {len(plan.file_writes)}",
                 f"- переименований: {len(plan.renames)}",

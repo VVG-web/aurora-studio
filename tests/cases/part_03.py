@@ -396,7 +396,7 @@ def test_a_term_with_a_known_expansion_is_a_definition_not_a_stub(tmp: Path):
     K = importlib.import_module("kb_fix")
     src = (SCRIPTS / "kb_fix.py").read_text(encoding="utf-8")
     stub_branch = src.split("def plan_term_stubs(")[1].split("def plan_drop_jira(")[0]
-    assert "расшифровки база пока не знает" in stub_branch and "status: {PLACEHOLDER}" in stub_branch
+    assert "расшифровки база пока не знает" in stub_branch and '"status": PLACEHOLDER' in stub_branch
 
 
 @test
