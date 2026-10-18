@@ -4644,7 +4644,8 @@ def pip_command(pkg: str) -> str:
     """Установка в ТОТ Python, которым работает панель: `pip3` в терминале на Windows часто
     принадлежит другому Python, и пакет «ставится», а панель его не видит."""
     exe = f'"{sys.executable}"' if " " in sys.executable else sys.executable
-    return f"{exe} -m pip install {pkg}"
+    # закреплённая китом версия (requirements.txt) — в самой команде: так её увидит и тот, кто ставит руками
+    return f"{exe} -m pip install {_extras().pinned_spec(pkg) or pkg}"
 
 
 def refresh_import_paths() -> None:
@@ -4717,10 +4718,13 @@ def env_install(name: str) -> dict:
     pkg = next((p for p, _m, _w in ENV_PY if p == name), "")
     if not pkg:
         return {"ok": False, "code": "unknown", "output": ""}
+    # Версия — закреплённая китом либо самый новый выпуск старше паузы (BL-SEC-21): панель ставит в Python,
+    # которым работает, и «последнее, что вышло час назад» туда не берётся.
+    spec, note = _extras().safe_spec(pkg)
     try:
-        p = subprocess.run([sys.executable, "-m", "pip", "install", pkg], capture_output=True,
+        p = subprocess.run([sys.executable, "-m", "pip", "install", spec], capture_output=True,
                            text=True, encoding="utf-8", errors="replace", timeout=900)
-        ok, tail = p.returncode == 0, ((p.stdout or "") + (p.stderr or "")).strip()[-1500:]
+        ok, tail = p.returncode == 0, (note + "\n" if note else "") + ((p.stdout or "") + (p.stderr or "")).strip()[-1500:]
     except (OSError, subprocess.SubprocessError) as e:
         ok, tail = False, f"{type(e).__name__}: {e}"
     env = environment(fresh=True)

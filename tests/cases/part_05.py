@@ -1281,7 +1281,12 @@ def test_a_pydantic_update_is_checked_before_it_works(tmp: Path):
         ran.append(cmd)
         if "import sys" in " ".join(cmd):
             return subprocess.CompletedProcess(cmd, 0, "3.13\n", "")
-        if "--upgrade" in cmd and "pydantic-ai" in cmd:
+        if "--report" in cmd:     # pip решает набор заранее (BL-SEC-21): отчёт с одним пакетом и хешем
+            Path(cmd[cmd.index("--report") + 1]).write_text(json.dumps({"install": [{
+                "metadata": {"name": "pydantic-ai", "version": "9.0.0"},
+                "download_info": {"url": "https://files.example.org/p.whl",
+                                  "archive_info": {"hashes": {"sha256": "ab" * 32}}}}]}), encoding="utf-8")
+        if "--no-deps" in cmd and "-r" in cmd:
             have[0] = "9.0.0"
         if any(str(c).startswith("pydantic-ai==") for c in cmd):
             have[0] = str(next(c for c in cmd if str(c).startswith("pydantic-ai=="))).split("==")[1]
@@ -1290,6 +1295,11 @@ def test_a_pydantic_update_is_checked_before_it_works(tmp: Path):
     # без перезагрузки соседняя проверка видела бы чужие `_run`, `installed_version` и `venv_python`
     try:
         EX._run = fake_run
+        # PyPI: все выпуски давно вышли (пауза после выпуска их не держит), сеть не трогаем
+        EX._get_json = lambda url, timeout=15: {
+            "urls": [{"digests": {"sha256": "ab" * 32}, "upload_time_iso_8601": "2020-01-01T00:00:00Z"}],
+            "releases": {"25.0": [{"upload_time_iso_8601": "2020-01-01T00:00:00Z", "yanked": False}]}}
+        EX.LOCKS = tmp / "locks"
         EX.venv_python = lambda _id: Path(sys.executable)
         EX.installed_version = lambda _id: have[0]
         EX.check_compat = lambda v: {"ok": v != "9.0.0", "version": v,

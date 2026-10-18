@@ -100,6 +100,9 @@ An assistant fixing a bug from a project's error follows the same rule: anonymis
 - do not hard-code one company's space or project into defaults;
 - do not break the installer's safety ("existing files are not overwritten") without a `--force` path;
 - do not add runtime dependencies: the engine runs on the standard library;
+- do not bring LiteLLM or DSPy (which pulls LiteLLM) into the add-on venvs: they carry dozens of vulnerability records
+  and a 2026 supply-chain incident, while the machine holds Jira and Confluence tokens; the pinned dependency versions
+  (`requirements.txt`) and the wait after a release for add-ons are kept by the part 93 tests;
 - do not create your own artifact types and top-level folders in a project — it is a change to the whole kit
   ([decisions](roadmap.md#why-the-folder-structure-is-fixed)).
 
