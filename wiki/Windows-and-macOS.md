@@ -12,13 +12,13 @@ strictest of the three.
 |---|---|
 | no `< > : " / \ \| ? *` | Windows refuses them |
 | not `CON`, `NUL`, `COM1`, … | reserved on Windows |
-| at most **255 bytes** per name (Cyrillic is two bytes a letter) | macOS and Linux limits |
-| a path from the project root up to **200 characters** | Windows' 260 limit, with a margin |
+| at most **255 characters** per name (UTF-16: Windows and macOS) and **255 bytes** (Linux; Cyrillic is two bytes a letter, about 127 letters) | the limits of the three systems |
+| a path from the project root up to **200 characters** | Windows' 259-character limit, with a margin for the project root |
 | names in one folder must differ by more than case | macOS and Windows treat `A` and `a` as one file |
 | letters in NFC | macOS creates NFD names; the same word then looks different to Linux |
 | no trailing dot or space | Windows strips them |
 
-The check is `kit:doctor`; the fix is `kb:names` (preview, then `--apply`). Mirror paths are shortened by the sync itself
+The check is `kit:doctor`; the fix is `kb:names` (preview, then `--apply`). Config lines whose paths will not fit a colleague's longer project root are found by `kit:paths` and shown when settings are saved ("Project settings"); the run is never blocked. Mirror paths are shortened by the sync itself
 when a deep Confluence branch would not fit.
 
 ## Windows

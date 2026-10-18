@@ -268,6 +268,66 @@ Sync root pages have no version from the child list and are re-read on every syn
 **Cleanup with `--prune`.** The `<page>_assets/` files of a vanished or moved page go together with it and count neither as "extra" in the list nor in the cleanup threshold (which counts everything else that is extra, stray files included).
 **Attachment folder and neighbouring pages.** The `<page>_assets/` folder belongs to the page and is cleaned of attachment files only: the sync never touches `.md` files or subfolders in it. A page whose title ends in "assets" ("Design assets") gets its id in the name (`Design_assets_<id>`); otherwise it would share a folder with the attachments of the page "Design". If `<page>_assets` in the mirror is a symbolic link (or sits inside one) pointing outside the mirror, the sync writes nothing into it and deletes nothing from it: the page's attachments stay links to the original, a line about the linked folder goes to stderr, and the summary counts an attachment error.
 
+## Path length: the check on saving settings
+
+A project is a git repository opened on Windows, macOS and Linux, and the root differs from person to person: a colleague on Windows
+usually has `C:\Users\<name>\Documents\…`, longer than yours on a Mac. A path that is created on one system is not created at all on another.
+The limits the engine counts by (`scripts/path_budget.py`):
+
+| System | File path | Folder path | Name |
+|---|---|---|---|
+| Windows (long paths not enabled) | 259 characters (MAX_PATH 260 with the terminating null) | 247 characters (creating a folder is stricter) | 255 UTF-16 characters |
+| macOS | 1023 bytes (PATH_MAX 1024 with the null) | 1023 bytes | 255 UTF-16 characters (as on Windows) |
+| Linux | 4095 bytes | 4095 bytes | 255 **bytes** of UTF-8: Cyrillic takes two bytes a letter, about 127 letters |
+
+**Where it shows.** "Project settings" → the project form. Saving the form (and saving the config text below it) goes through as before
+and returns findings: a red line under the Confluence root row or the website address, and a box under the "Save" button -
+"Long paths: N lines — you can run, but not everything will be loaded". Nothing is blocked: a path you wrote into your own config is not
+limited or "fixed", it is only reported. The same findings come from:
+
+- `kit:paths` — a report in the terminal and the panel (`--json` for machines); read-only, exit code 1 when there are findings;
+- `kit:doctor` — one warning with the number of lines (not an error, not a blocker);
+- the "Update the base" and "Fix the base" routes (button, Cron, terminal) and a single-button sync — one line "Long paths: not everything
+  will be loaded — <lines>" at the start of the run (not at every step) and the same line in the summary; in the console and in the run's `console.log`.
+
+**What is checked** — every config line that names a place on disk, and the message names it as written:
+
+| Line | What is counted |
+|---|---|
+| `sources: <id> → path`, `paths → sources_confluence`, `paths → sources_jira` | the mirror folder: its path, the files and folders already in the mirror (an `os.scandir` walk, a ceiling of 60,000 files — "checked partially"), for an empty Confluence or Jira mirror the worst case by the exporter's rules |
+| `atlassian → confluence → sync_roots → line N` | the files of this root's subtree (by the sync state `sync_state.md`) |
+| `web → pages → line N` | the page file name by the `web_export.slug` rule (up to 60 characters of the title plus the address tail) and the attachment names in `_files/` |
+| `paths → knowledge_db`, `paths → extra_structure_dirs → line N`, `artifacts → <kind> → out`, `reports → <name> → output` | the folder or file path and what is already in the folder |
+
+**The project root.** For the system you work on it is the real path, for the others an assumption, named in every message: Windows
+`C:\Users\username\Documents\Projects\<project folder name>`, macOS `/Users/username/Documents/Projects/<name>`, Linux
+`/home/username/Projects/<name>`. These are code constants (`WIN_ASSUMED_ROOT` and its neighbours), not a file setting. The check is
+conservative: it counts the worst case and says "if Windows long paths are not enabled".
+
+**What the messages mean.**
+
+- *"N files will not fit: the longest path is M characters against the limit of 259 on Windows"* — the files already lie in the mirror
+  (made on a machine with a short root) and will not be created on a system with such a root: `git clone` says "Filename too long" and the
+  sync cannot update them. The config line is named; for a Confluence root it is the line under whose subtree the files lie.
+- *"in the worst case the path reaches … against the limit of …"* — the mirror is still empty (or this is the worst case by the naming rules):
+  the engine keeps a page path from the project root within 200 characters (`PATH_CHARS`), and a root longer than 58 characters eats this
+  reserve; website file names and Jira issues are bounded by the rules of their exporters. For Confluence the alarm exists only when the
+  settings have sync roots.
+- *"the folder path is … against the limit of 247"* — Windows will not create such a folder even if the files in it are short.
+- *"the folder path takes … and the shortest file needs … more"* — nothing fits into this folder.
+- *"the name "…" is N characters/bytes against the limit of 255"* — a long name: Windows and macOS count UTF-16 characters (it fits nowhere),
+  Linux counts bytes (127 Cyrillic letters pass, 128 are not created on Linux only).
+
+**What to do.** Shorten the project folder name or move the project closer to the disk root (`C:\Projects\…`); or enable Windows long paths
+(`LongPathsEnabled` = 1 in the registry or a group policy) and run `git config --global core.longpaths true`; for a long path you wrote into the
+config yourself, shorten it in the config; for a name, shorten the name.
+
+**What the exporters do on overflow.** Confluence keeps a page path from the project root within 200 characters (`place()`): a page deeper
+than the limit goes into the folder of its nearest ancestor. If the path still does not fit the system (a long project root on Windows),
+the page is not written: the sync goes on, the log has "! page N: the path of M characters does not fit this system", the summary has
+"Long paths: N mirror files not written", the page stays out of the cache (the next sync tries again), and `--prune` removes nothing in this run.
+Website and Jira exports behave the same way; if the mirror folder itself cannot be created, there is one line with the reason and exit code 1, no traceback.
+
 ## The Confluence page tree: what the sync shows
 
 The sync walks down the tree with the "children of a page" request (`/rest/api/content/{id}/child/page`, 50 per
