@@ -656,3 +656,109 @@ def assess(root: str, roots: dict | None = None, current: str | None = None) -> 
         # корень чужой системы — допущение, и в сообщении это сказано
         f.extra["assumed"] = f.system.split()[0].lower() != here
     return report
+
+
+# ------------------------------------------------------------------ слова
+
+def _plural(n: int, forms: tuple) -> str:
+    n = abs(n)
+    if n % 10 == 1 and n % 100 != 11:
+        return forms[0]
+    return forms[1] if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else forms[2]
+
+
+EFFECT = {
+    "files": "эти файлы не создадутся при клонировании репозитория (git сообщит «Filename too long»), "
+             "а синк не сможет их обновить",
+    "tree": "страницы глубже запаса не будут записаны: синк назовёт их строкой в итоге, а при клонировании "
+            "такие файлы не создадутся",
+    "page": "страница сайта не будет сохранена",
+    "assets": "вложения сайта (`_files/`) не будут сохранены",
+    "issue": "задача не будет записана",
+    "none_fits": "в эту папку не поместится ни один файл",
+    "file": "файл не создастся",
+}
+HINT_WINDOWS = ("сократите имя папки проекта или перенесите проект ближе к корню диска; либо включите длинные "
+                "пути Windows (LongPathsEnabled) и `git config core.longpaths true`")
+
+
+def describe(f: Finding) -> str:
+    """Находка одной строкой по-русски: строка конфига, что и насколько превышено, что из-за этого будет."""
+    win = f.system == "Windows"
+    u = "знаков" if win else "байт"
+    where = f"корень проекта {f.root}, {f.root_len} {u}" + (" — допущение" if f.extra.get("assumed") else "")
+    if f.kind == "name":
+        what = f"имя «{f.sample}» — {f.length} {u} при пределе {f.limit} на {f.system}"
+    elif f.kind == "prefix":
+        what = (f"путь папки занимает {f.length} из {f.limit} {u} на {f.system}, а самому короткому файлу нужно "
+                f"ещё {f.extra.get('need', 0) + 1} ({where})")
+    elif f.kind == "dir":
+        what = f"путь папки — {f.length} {u} при пределе {f.limit} на {f.system} ({where})"
+    elif f.level == "risk":
+        what = f"в худшем случае путь достигнет {f.length} {u} при пределе {f.limit} на {f.system} ({where})"
+    elif f.count:
+        what = (f"не поместится {f.count} {_plural(f.count, ('файл', 'файла', 'файлов'))}: самый длинный путь — "
+                f"{f.length} {u} при пределе {f.limit} на {f.system} ({where})")
+    else:
+        what = f"путь — {f.length} {u} при пределе {f.limit} на {f.system} ({where})"
+    if win and f.kind != "name":
+        what += ", если длинные пути Windows не включены"
+    effect = EFFECT.get(f.extra.get("effect", ""), "")
+    advice = ("Сократите имя." if f.kind == "name"
+              else HINT_WINDOWS[0].upper() + HINT_WINDOWS[1:] + "." if win
+              else "Сократите путь папки в конфиге или перенесите проект ближе к корню диска.")
+    out = f"{f.line}: {what}" + (f" — {effect}" if effect else "") + "."
+    if f.sample and f.kind != "name":
+        out += f" Пример: {f.sample}."
+    return f"{out} {advice}" + (" Проверено частично." if f.extra.get("partial") else "")
+
+
+def hint(report: Report, width: int = 3) -> str:
+    """Подсказка для старта прогона и итога: что не загрузится и какие строки тому виной. Пусто — всё в порядке."""
+    names = []
+    for f in report.findings:
+        if f.line not in names:
+            names.append(f.line)
+    if not names:
+        return ""
+    shown = "; ".join(names[:width]) + (f"; ещё {len(names) - width}" if len(names) > width else "")
+    return f"длинные пути: не всё будет загружено — {shown}"
+
+
+def render(report: Report) -> str:
+    """Отчёт для терминала: корни по системам, находки по строкам, подсказка."""
+    lines = [f"Длинные пути: проверено строк конфига {report.resources}, файлов просмотрено {report.files}"
+             + (" — проверено частично (потолок обхода)" if report.partial else "")]
+    for system in SYSTEMS:
+        mark = " (допущение)" if system != current_system() else ""
+        lines.append(f"  {LABEL[system]}: корень проекта {report.models[system]}{mark}")
+    if not report.findings:
+        return "\n".join(lines + ["Всё помещается: ни одна строка конфига не даст ошибки длины пути."])
+    lines.append("")
+    lines += [f"✗ {describe(f)}" for f in report.findings]
+    lines.append("")
+    lines.append("Запуск возможен, но не всё будет загружено: " + hint(report).split(" — ", 1)[1] + ".")
+    return "\n".join(lines)
+
+
+def main() -> int:
+    import argparse
+    import json
+    ap = argparse.ArgumentParser(description="Длина путей проекта на Windows, macOS и Linux (только чтение)")
+    ap.add_argument("--json", action="store_true", help="машиночитаемый вывод")
+    a = ap.parse_args()
+    report = assess(os.getcwd())
+    if a.json:
+        print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(render(report))
+    return 1 if report.findings else 0
+
+
+if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+    sys.exit(main())

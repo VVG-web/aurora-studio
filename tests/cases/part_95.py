@@ -377,3 +377,42 @@ def test_path_check_ceiling_marks_the_result_partial_and_stays_fast(tmp: Path):
     finally:
         pb.SCAN_FILES_MAX = saved
     assert part.partial and part.files <= 100, part.as_dict()
+
+
+# ------------------------------------------------------------------ слова
+
+@test
+def test_path_check_messages_name_the_line_the_limit_and_what_will_not_load(tmp: Path):
+    """Сообщение называет строку конфига, длину и предел, систему, корень-допущение и последствие."""
+    pb = _pb()
+    root = _project(tmp)
+    base = 60 + 1 + len("Sources/Confluence")
+    (root / "Sources" / "Confluence" / ("b" * (259 - base - 1 - 3 + 2) + ".md")).write_text("x", encoding="utf-8")
+    rep = pb.assess(str(root), roots=_win(60), current="macos")
+    msg = pb.describe(rep.findings[0])
+    for need in ("sources: Confluence → path", "261 знаков", "предел", "259", "Windows", "допущение", "не включены",
+                 "Filename too long", "C:\\" + "r" * 57, "Пример: Sources/Confluence/"):
+        assert need in msg, (need, msg)
+    assert pb.hint(rep) == "длинные пути: не всё будет загружено — sources: Confluence → path", pb.hint(rep)
+    out = pb.render(rep)
+    assert "Запуск возможен, но не всё будет загружено" in out and "✗ sources: Confluence → path" in out, out
+    unix = pb.Finding("k", "paths → x", "Папка", "macOS и Linux", "name", "fail", 256, 255, sample="я" * 128)
+    assert "256 байт при пределе 255" in pb.describe(unix) and "Сократите имя" in pb.describe(unix)
+    (tmp / "two").mkdir()
+    risk = pb.assess(str(_project(tmp / "two")), roots=_win(59), current="macos")
+    assert "в худшем случае" in pb.describe(risk.findings[0]) and "страницы глубже запаса" in pb.describe(risk.findings[0])
+    many = pb.Report([pb.Finding(f"k{i}", f"строка {i}", "s", "Windows", "path", "fail", 300, 259) for i in range(5)], {})
+    assert pb.hint(many).endswith("строка 0; строка 1; строка 2; ещё 2"), pb.hint(many)
+
+
+@test
+def test_path_check_report_is_quiet_when_everything_fits(tmp: Path):
+    """Нечего сообщать — одна спокойная строка, подсказка пуста; частичный обход называется в отчёте."""
+    pb = _pb()
+    root = _project(tmp)
+    rep = pb.assess(str(root), current="macos")
+    assert pb.hint(rep) == "" and "Всё помещается" in pb.render(rep), pb.render(rep)
+    assert "допущение" in pb.render(rep) and "C:\\Users\\username\\Documents\\Projects\\project" in pb.render(rep)
+    rep.partial = True
+    assert "проверено частично" in pb.render(rep)
+    assert pb.main.__name__ == "main" and pb.__doc__.count("kit:paths") == 1
