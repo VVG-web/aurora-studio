@@ -45,6 +45,7 @@ from datetime import date, datetime
 import sources_registry as R
 from aurora_common import (KB_ROOT, TRUSTED, card_sources, file_head, frontmatter, git_guard,
                            head_dupes, head_odd, head_pairs, split_frontmatter, walk_md, with_fields)
+from card_types import try_write_card
 from sources_core import (ASSET_DIR_RE, SERVICE_RE, cited_by_cards,  # noqa: E402
                           is_promoted_document, nfc)
 
@@ -513,9 +514,12 @@ def stamp(unstamped: list, apply: bool) -> int:
             continue
         new = with_fields(text, {"source_hash": actual,
                                  "source_synced": TODAY.isoformat()})
-        done += 1
         if apply:
-            open(path, "w", encoding="utf-8").write(new)
+            _done, why_not = try_write_card(path, new, op="header", old_text=text)
+            if why_not:
+                print(f"  ! отпечаток источника не записан в {path}: {why_not}", file=sys.stderr)
+                continue
+        done += 1
     return done
 
 

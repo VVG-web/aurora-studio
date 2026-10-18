@@ -40,6 +40,7 @@ KB = "AuroraKnowledgeDB"
 DIR = os.path.join("Raw", "corrections")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import link_escapes, name_lineage, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
+from card_types import try_write_card, write_card_text  # noqa: E402 — единый вход записи карточки
 MARK = CORRECTIONS
 
 
@@ -307,7 +308,9 @@ def apply_block(card_path: str, cs: list) -> bool:
     if not same_word:
         new = (re.sub(r"(?m)^(distilled|distill_empty):.*\n", "", new[:fm_end + 1])
                + new[fm_end + 1:])
-    open(card_path, "w", encoding="utf-8").write(new)
+    # Карточка пишется через единый вход шаблонов. Отказ (`TemplateViolation` — это `ValueError`) вызывающий
+    # записывает в «Пропущено» этого исправления: слово человека не теряется, оно ждёт в `Raw/corrections`.
+    write_card_text(card_path, new, op="repair", old_text=text)
     return True
 
 
@@ -355,8 +358,10 @@ def main() -> int:
         if found["owner"] in known:
             card = known[found["owner"]][0]
             raw = open(card, encoding="utf-8", errors="ignore").read()
-            open(card, "w", encoding="utf-8").write(with_fields(raw, {
-                "correction_retired": f'"[[{found["name"]}]] — {a.reason.strip()}"'}))
+            _done, why_not = try_write_card(card, with_fields(raw, {
+                "correction_retired": f'"[[{found["name"]}]] — {a.reason.strip()}"'}), op="header", old_text=raw)
+            if why_not:
+                print(f"  ! пометка о снятом исправлении не записана в {card}: {why_not}", file=sys.stderr)
         print(f"Исправление «{a.retire}» снято: {a.reason.strip()}")
         return 0
 

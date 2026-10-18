@@ -37,6 +37,7 @@ import subprocess
 import sys
 
 from aurora_common import fold, head_text
+from card_types import put_text
 from sources_core import nfc
 
 KB = "AuroraKnowledgeDB"
@@ -190,8 +191,9 @@ def follow_moves(mirror: str, apply: bool, kb: str = KB, everywhere: bool = Fals
             if info["dropped"]:
                 st["_cards"].append(path)
             if apply:
-                with open(path, "w", encoding="utf-8") as fh:
-                    fh.write(new)
+                why_not = put_text(path, new, op="repair", old_text=text)
+                if why_not:
+                    print(f"  ! {path} не переведена на новые пути: {why_not}", file=sys.stderr)
 
     if os.path.isfile(MANIFEST):
         man = load_manifest()
@@ -348,7 +350,9 @@ def remap_jira(mirror: str, apply: bool) -> dict:
             if dirty:
                 stats["_touched"] += 1
                 if apply:
-                    open(path, "w", encoding="utf-8").write(new_text)
+                    why_not = put_text(path, new_text, op="header", old_text=text)
+                    if why_not:
+                        print(f"  ! {path}: пути Jira не переписаны: {why_not}", file=sys.stderr)
     return stats
 
 
@@ -405,8 +409,9 @@ def remap(mirror: str, old_map: dict, apply: bool) -> dict:
             if dirty:
                 touched += 1
                 if apply:
-                    with open(path, "w", encoding="utf-8") as fh:
-                        fh.write(new_text)
+                    why_not = put_text(path, new_text, op="header", old_text=text)
+                    if why_not:
+                        print(f"  ! {path}: источники не переписаны: {why_not}", file=sys.stderr)
 
     stats["_touched"] = touched
     stats["_unmapped"] = unmapped

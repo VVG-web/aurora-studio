@@ -36,6 +36,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import config_value, git_guard, walk_md
+from card_types import is_card_path, try_write_card
 
 # Слои по режиму обращения: что правим, что только показываем.
 WRITABLE = ("AuroraKnowledgeDB", "Artifacts", "Workspaces", os.path.join("Deliverables", "work"))
@@ -279,20 +280,33 @@ def main() -> int:
 
     if not git_guard(".", a.allow_dirty, "маскирование ПДн"):
         return 2   # отказ писать — не находка, а несделанная работа: маршрут стоит
-    changed = 0
+    changed, refused = 0, {}
     for path, hits in sorted(fixable.items()):
-        text = open(path, encoding="utf-8", errors="ignore").read()
+        was = text = open(path, encoding="utf-8", errors="ignore").read()
         for kind, start, end, _frag in reversed(hits):
             text = text[:start] + MASK.format(kind) + text[end:]
-        open(path, "w", encoding="utf-8").write(text)
+        if is_card_path(path):
+            # Карточка базы — через единый вход шаблонов. Отказ не прячем: непрошедшая запись означает, что
+            # ПДн остался в файле, и шаг обязан сказать об этом кодом возврата.
+            _done, why_not = try_write_card(path, text, op="repair", old_text=was)
+            if why_not:
+                refused[path] = why_not
+                continue
+        else:
+            open(path, "w", encoding="utf-8").write(text)
         changed += 1
+    for path, why_not in list(refused.items())[:8]:
+        print(f"  ! маркеры в {path} не записаны: {why_not}", file=sys.stderr)
+    if refused:
+        print(f"\n⚠️ Не закрыто: {len(refused)} карточек — шаблон типа не принял правку, ПДн остался в файле.",
+              file=sys.stderr)
     print(f"\n✅ Закрыто маркерами: файлов {changed}, находок "
-          f"{sum(len(h) for h in fixable.values())}.")
+          f"{sum(len(h) for p, h in fixable.items() if p not in refused)}.")
     if evidence_files:
         print(f"   ⚠️ Среди них доказательства: {len(evidence_files)} файлов "
               "(Raw/, Sources/, released/) — неизменяемый слой изменён осознанно.")
     print("   Проверьте `git diff`: маркер должен стоять там, где был реальный ПДн.")
-    return 0
+    return 2 if refused else 0
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 {
- "card_max": 15,
+ "card_max": 0,
  "sites": {
   "cockpit/aurora_cockpit.py:Handler._write_config": {
    "kind": "other",
@@ -557,18 +557,13 @@
    "calls": 1
   },
   "scripts/jira_status.py:main": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 3
+   "kind": "other",
+   "reason": "отчёт по флагу --report; карточки требований пишет try_write_card",
+   "calls": 1
   },
   "scripts/kb_code_graph.py:main": {
    "kind": "other",
    "reason": "граф кода в meta/: служебный файл",
-   "calls": 1
-  },
-  "scripts/kb_corrections.py:apply_block": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
    "calls": 1
   },
   "scripts/kb_corrections.py:cmd_new": {
@@ -577,9 +572,9 @@
    "calls": 1
   },
   "scripts/kb_corrections.py:main": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 3
+   "kind": "other",
+   "reason": "файлы исправлений человека в Raw/corrections (запись, а не карточка базы); карточки — через вход записи",
+   "calls": 2
   },
   "scripts/kb_embed.py:save_index": {
    "kind": "other",
@@ -636,11 +631,6 @@
    "reason": "index.md и _index.md разделов: служебные файлы, не карточки",
    "calls": 2
   },
-  "scripts/kb_kind.py:main": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
   "scripts/kb_lint.py:main": {
    "kind": "other",
    "reason": "остаток линтера в meta/",
@@ -652,24 +642,14 @@
    "calls": 3
   },
   "scripts/kb_remap.py:follow_moves": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 2
+   "kind": "other",
+   "reason": "журнал сбоев разбора и учёт разобранного; карточки пишет put_text",
+   "calls": 1
   },
   "scripts/kb_remap.py:main": {
    "kind": "other",
    "reason": "отчёт по флагу --report",
    "calls": 3
-  },
-  "scripts/kb_remap.py:remap": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
-  "scripts/kb_remap.py:remap_jira": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
   },
   "scripts/kb_reset.py:main": {
    "kind": "other",
@@ -681,14 +661,9 @@
    "reason": "состояние оценки поиска: служебный файл",
    "calls": 1
   },
-  "scripts/kb_schema.py:main": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
-  },
   "scripts/kb_scrub.py:main": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
+   "kind": "other",
+   "reason": "маскирование ПДн в файлах вне базы знаний (Artifacts, Workspaces, Deliverables/work); карточки — через try_write_card",
    "calls": 1
   },
   "scripts/kb_search_quality.py:golden_follow": {
@@ -712,39 +687,29 @@
    "calls": 1
   },
   "scripts/kb_supersede.py:main": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 2
+   "kind": "other",
+   "reason": "перенос замещённой карточки в _archive; пометки в карточках пишет try_write_card",
+   "calls": 1
   },
   "scripts/kb_trace_table.py:main": {
    "kind": "other",
    "reason": "таблица и свод трассировки в json; карту MOC/Трассировка пишет put_map",
    "calls": 2
   },
-  "scripts/kb_translit.py:_drop_aliases": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
+  "scripts/kb_translit.py:main": {
+   "kind": "other",
+   "reason": "переименование карточки после записи её синонима через вход",
    "calls": 1
   },
-  "scripts/kb_translit.py:main": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 3
-  },
   "scripts/kb_translit.py:undo_identifiers": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 2
+   "kind": "other",
+   "reason": "переименование карточки после записи через вход",
+   "calls": 1
   },
   "scripts/kb_translit.py:write_dict": {
    "kind": "other",
    "reason": "словарь имён meta/translit: служебная таблица, не карточка",
    "calls": 1
-  },
-  "scripts/kb_trust.py:main": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 2
   },
   "scripts/kb_twins.py:main": {
    "kind": "other",
@@ -845,11 +810,6 @@
    "kind": "other",
    "reason": "отчёт по флагу --report",
    "calls": 2
-  },
-  "scripts/sync_audit.py:stamp": {
-   "kind": "card",
-   "reason": "прямая запись карточки базы: переводится на write_card_text (CT-10)",
-   "calls": 1
   },
   "scripts/web_export.py:convert_documents": {
    "kind": "other",

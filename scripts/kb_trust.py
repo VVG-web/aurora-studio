@@ -50,6 +50,7 @@ from aurora_common import (OWN_LIFECYCLE, card_type, is_meeting, branch_kind, LE
                            walk_md, with_fields)
 
 from aurora_common import TODAY, file_head, head_pairs, head_text, head_trust  # noqa: E402 — дата в UTC, одна на движок
+from card_types import try_write_card  # noqa: E402 — единый вход записи карточки
 TABLE = os.path.join("AuroraKnowledgeDB", "meta", "trace", "trace.json")
 KB = "AuroraKnowledgeDB"
 FOOTER = "## История изменений"
@@ -484,7 +485,13 @@ def main() -> int:
         print(f"Подзадач, отставших от своей истории: {len(LAG)} — судим по истории\n")
 
     counts, changes, moved, refreshed = {}, [], 0, 0
-    dr_traces = []
+    dr_traces, refused = [], []
+
+    def put(path: str, new_text: str, op: str, old_text: str) -> None:
+        """Запись через вход шаблонов: отказ одной карточки в отчёт, остальные идут дальше."""
+        _done, why_not = try_write_card(path, new_text, op=op, old_text=old_text)
+        if why_not:
+            refused.append((os.path.relpath(path, root), why_not))
     for path in walk_md(os.path.join(root, KB), skip_service=True, skip_archive=True):
         text = open(path, encoding="utf-8", errors="ignore").read()
         head, rest = split_frontmatter(text)
@@ -556,9 +563,8 @@ def main() -> int:
                 continue
             refreshed += 1
             if a.apply:
-                open(path, "w", encoding="utf-8").write(with_fields(
-                    text, {"trust": cls, "trust_basis": f'"{why[:200]}"',
-                           "trust_checked": TODAY}))
+                put(path, with_fields(text, {"trust": cls, "trust_basis": f'"{why[:200]}"',
+                                             "trust_checked": TODAY}), "header", text)
             continue
         moved += 1
         changes.append((os.path.relpath(path, root), was or "(нет)", now, why))
@@ -572,7 +578,7 @@ def main() -> int:
             if was == "knowledge" and now == "draft":
                 nhead, nrest = split_frontmatter(new)
                 new = "---" + nhead + note_downgrade(nrest, "knowledge", "draft", why)
-            open(path, "w", encoding="utf-8").write(new)
+            put(path, new, "repair", text)
 
     print(f"# Класс доверия — {TODAY}\n")
     print("| Класс источника | Карточек |")
@@ -590,6 +596,10 @@ def main() -> int:
         print(f"\nDecision Record со следами прежнего прогона (trust_checked): {len(dr_traces)} — "
               "статус мог быть переписан, сверьте с git: " + ", ".join(dr_traces[:5])
               + (" …" if len(dr_traces) > 5 else ""))
+    if refused:
+        print(f"\nНе записано шаблоном типа: {len(refused)}")
+        for rel, why_not in refused[:8]:
+            print(f"  ! {rel}: {why_not}")
     if not a.apply:
         print("\n(dry-run) Ничего не записано. Повторите с --apply.")
     elif moved:

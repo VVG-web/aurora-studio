@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from aurora_common import (KB_ROOT, card_filename, git_guard, rewrite_links, split_inline_items,
                             walk_md)
+from card_types import put_text
 
 DICT_PATH = os.path.join(KB_ROOT, "meta", "translit.md")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
@@ -231,11 +232,15 @@ def main() -> int:
             if not a.apply:
                 renamed += 1
                 continue
-            text = open(path, encoding="utf-8").read()
+            was = open(path, encoding="utf-8").read()
             # Старое имя уходит в синонимы: ссылки, набранные транслитом, обязаны
             # продолжать работать — их писали люди и они разбросаны по базе.
-            text = add_alias(text, stem)
-            open(path, "w", encoding="utf-8").write(text)
+            why_not = put_text(path, add_alias(was, stem), op="header", old_text=was)
+            if why_not:
+                print(f"  ! {stem} не переименован: {why_not}", file=sys.stderr)
+                links.pop(stem, None)
+                links.pop(cyr, None)
+                continue
             os.rename(path, new_path)
             renamed += 1
         # Уже переименованные прежним прогоном: ссылки на строку словаря — на имя файла.
@@ -251,7 +256,9 @@ def main() -> int:
                 text = open(path, encoding="utf-8", errors="ignore").read()
                 fixed = rewrite_links(text, links)
                 if fixed != text:
-                    open(path, "w", encoding="utf-8").write(fixed)
+                    why_not = put_text(path, fixed, op="repair", old_text=text)
+                    if why_not:
+                        print(f"  ! ссылки в {path} не переписаны: {why_not}", file=sys.stderr)
         stale = [lat for lat, cyr in known.items()
                  if is_identifier(lat) and cyr and cyr != NOT_TRANSLIT]
         if a.apply and stale:
@@ -284,7 +291,9 @@ def _drop_aliases(path: str, names: set) -> None:
     for n in names:
         head = re.sub(r'^\s*-\s*"?' + re.escape(n) + r'"?\s*\n', "", head + "\n", flags=re.M)[:-1]
     if head != text[:head_end]:
-        open(path, "w", encoding="utf-8").write(head + text[head_end:])
+        why_not = put_text(path, head + text[head_end:], op="header", old_text=text)
+        if why_not:
+            print(f"  ! синонимы {path} не сняты: {why_not}", file=sys.stderr)
 
 
 def undo_identifiers(known: dict, apply: bool, say: bool = True) -> dict:
@@ -322,14 +331,19 @@ def undo_identifiers(known: dict, apply: bool, say: bool = True) -> dict:
         if not apply:
             continue
         _drop_aliases(path, {lat, cyr, name})
-        text = open(path, encoding="utf-8").read()
+        was = text = open(path, encoding="utf-8").read()
         own, sep, rest = text.partition("## Источник (перенесено дословно)")
         own = re.sub(r"^#\s+(" + re.escape(cyr) + "|" + re.escape(name) + r")\s*$",
                      lambda _m, lat=lat: f"# {lat}", own, count=1, flags=re.M)
         text = own + sep + rest
         text = re.sub(r'^(title:\s*)"?[^"\n]*"?\s*$', f'\\1"{lat}"', text, count=1,
                       flags=re.M)
-        open(path, "w", encoding="utf-8").write(text)
+        why_not = put_text(path, text, op="repair", old_text=was)
+        if why_not:
+            print(f"  ! {name} не возвращено имя {back}: {why_not}", file=sys.stderr)
+            out.pop(name, None)
+            out.pop(cyr, None)
+            continue
         os.rename(path, os.path.join(os.path.dirname(path), back + ".md"))
     return out
 

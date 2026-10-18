@@ -33,6 +33,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (KB_ROOT, as_list, frontmatter, git_guard, set_field,
                            split_frontmatter, walk_md)
+from card_types import try_write_card
 
 MIRROR = os.path.join("Sources", "JIRA")
 US_DIR = os.path.join("Artifacts", "us")
@@ -378,7 +379,10 @@ def main() -> int:
             break
         text = stamp(req["text"], line)
         if text != req["text"]:
-            open(req["path"], "w", encoding="utf-8").write(text)
+            _done, why_not = try_write_card(req["path"], text, op="repair", old_text=req["text"])
+            if why_not:
+                print(f"  ! состояние Jira не записано в {req['path']}: {why_not}", file=sys.stderr)
+                continue
             changed += 1
     linked_n = 0
     if a.link:
@@ -389,7 +393,11 @@ def main() -> int:
                 continue
             allk = sorted(set(req["keys"]) | set(keys))
             head = set_field(head, "jira", "[" + ", ".join(f'"{k}"' for k in allk) + "]")
-            open(req["path"], "w", encoding="utf-8").write("---" + head.rstrip("\n") + rest)
+            _done, why_not = try_write_card(req["path"], "---" + head.rstrip("\n") + rest, op="header",
+                                            old_text=req["text"])
+            if why_not:
+                print(f"  ! связь с задачей не записана в {req['path']}: {why_not}", file=sys.stderr)
+                continue
             linked_n += 1
 
     print(f"\n✅ Записано: состояние в {changed} требованиях"

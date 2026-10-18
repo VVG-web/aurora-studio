@@ -28,6 +28,7 @@ import shutil
 import sys
 
 from aurora_common import frontmatter, rewrite_links, set_field, split_frontmatter
+from card_types import try_write_card
 
 ROOT = "AuroraKnowledgeDB"
 ARCHIVE = os.path.join(ROOT, "_archive")
@@ -117,7 +118,10 @@ def main() -> int:
         print(f"kb_supersede: у {a.old} нет frontmatter — сначала приведите карточку в схему "
               "(kb_fix.py --frontmatter)", file=sys.stderr)
         return 1
-    head = set_field(head, "status", "deprecated")
+    # Решение живёт по своему циклу (proposed → accepted | rejected → superseded): шаблон `decision` не знает
+    # статуса `deprecated`, и замещённое решение получает `superseded`.
+    gone = "superseded" if (old_fm.get("type") or "").strip() == "decision" else "deprecated"
+    head = set_field(head, "status", gone)
     head = set_field(head, "superseded_by", f'"[[{a.new}]]"')
     head = set_field(head, "updated", TODAY)
     line = f"- {TODAY}: {reason} → [[{a.new}]]{dr_note}."
@@ -169,15 +173,27 @@ def main() -> int:
     if not a.apply:
         print("\n(dry-run) Ничего не записано. Повторите с --apply.")
         return 0
+    # Запись — через единый вход шаблонов. Отказ одной карточки не останавливает остальные, но карточку, чья
+    # пометка «заменена» не записана, в архив не уносим: без пометки она ушла бы туда молча.
+    refused = {}
     for p, t in writes.items():
-        open(p, "w", encoding="utf-8").write(t)
+        _done, why_not = try_write_card(p, t, op="repair")
+        if why_not:
+            refused[p] = why_not
+            print(f"  ! не записана {p}: {why_not}", file=sys.stderr)
     for src, dst in moves:
+        if src in refused:
+            print(f"  ! {os.path.basename(src)} остаётся на месте: пометка о замене не записана", file=sys.stderr)
+            continue
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         if os.path.exists(dst):
             print(f"  ! в _archive уже есть {os.path.basename(dst)} — файл оставлен на месте",
                   file=sys.stderr)
             continue
         shutil.move(src, dst)
+    if refused:
+        print(f"\nНе записано шаблоном типа: {len(refused)}", file=sys.stderr)
+        return 1
     print(f"\n✅ Готово. Проверьте: kb_lint.py --summary && git diff --stat")
     return 0
 

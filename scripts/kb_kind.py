@@ -38,6 +38,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (card_sources, frontmatter, link_escapes, name_lineage,  # noqa: E402
                            split_frontmatter, walk_md, with_fields)
+from card_types import fit_kind, registry_for, try_write_card  # noqa: E402 — вид в пределах видов типа; вход записи
 
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 KB = "AuroraKnowledgeDB"
@@ -122,7 +123,8 @@ def main() -> int:
     if not os.path.isdir(os.path.join(root, KB)):
         print("kb_kind: нет AuroraKnowledgeDB/ — запускайте из корня проекта", file=sys.stderr)
         return 1
-    counts, set_now, kept = {}, [], 0
+    counts, set_now, kept, refused = {}, [], 0, []
+    reg = registry_for(root)
     paths = list(walk_md(os.path.join(root, KB), skip_service=True, skip_archive=True))
     human = human_kinds(root)
     # Исправление называет карточку по имени, а имя меняется (синоним после снятия кода
@@ -159,13 +161,19 @@ def main() -> int:
         else:
             kind, why = guess(os.path.relpath(path, root), fm, body or "",
                               card_sources(text))
+            # Правило не знает видов типа: роль не бывает «документом». Вид — в пределах шаблона типа.
+            fitted = fit_kind((fm.get("type") or "").strip(), kind, reg)
+            if fitted != kind:
+                why, kind = f"{why}; у типа «{fm.get('type')}» такого вида нет — {fitted}", fitted
         counts[kind] = counts.get(kind, 0) + 1
         if kind == was:
             continue
         set_now.append((os.path.relpath(path, root), kind,
                         (f"было {was} — " if was else "") + why))
         if a.apply:
-            open(path, "w", encoding="utf-8").write(with_fields(text, {"kind": kind}))
+            _done, why_not = try_write_card(path, with_fields(text, {"kind": kind}), op="header", old_text=text, reg=reg)
+            if why_not:
+                refused.append((os.path.relpath(path, root), why_not))
 
     print(f"# Тип карточек — {TODAY}\n")
     print("| Тип | Карточек | Что можно делать с телом |")
@@ -179,6 +187,10 @@ def main() -> int:
         print(f"  - {rel}: {kind} — {why}")
     if len(set_now) > 8:
         print(f"  … ещё {len(set_now) - 8}")
+    if refused:
+        print(f"\nНе записано шаблоном типа: {len(refused)}")
+        for rel, why_not in refused[:8]:
+            print(f"  ! {rel}: {why_not}")
     if not a.apply:
         print("\n(dry-run) Ничего не записано. Повторите с --apply.")
     return 0

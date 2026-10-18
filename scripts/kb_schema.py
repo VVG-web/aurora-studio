@@ -33,7 +33,7 @@ from aurora_common import (KB_ROOT, PLACEHOLDER, RETIRED_STATUS,
 CURRENT = 6
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
-from card_types import section_type_table  # noqa: E402 — единый источник «раздел → тип»
+from card_types import section_type_table, try_write_card  # noqa: E402 — единый источник «раздел → тип»; вход записи
 
 
 def drop_fields(head: str, fields: tuple) -> str:
@@ -218,9 +218,16 @@ def main() -> int:
         return 0
     if not git_guard(a.root, a.allow_dirty, "миграция схемы"):
         return 2   # отказ писать — не находка, а несделанная работа: маршрут стоит
+    refused = []
     for path, text, _steps in plan:
-        open(path, "w", encoding="utf-8").write(text)
-    print(f"\n✅ Переведено карточек: {len(plan)} → schema_version: {a.to}")
+        _done, why_not = try_write_card(path, text, op="repair")
+        if why_not:
+            refused.append((path, why_not))
+    for path, why_not in refused[:8]:
+        print(f"  ! не записана {path}: {why_not}", file=sys.stderr)
+    if refused:
+        print(f"\n⚠ Не записано шаблоном типа: {len(refused)} из {len(plan)}", file=sys.stderr)
+    print(f"\n✅ Переведено карточек: {len(plan) - len(refused)} → schema_version: {a.to}")
     print("   Проверьте `git diff`: в шапке должна появиться отметка версии, тело не тронуто.")
     return 0
 
