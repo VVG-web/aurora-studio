@@ -48,7 +48,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import clean_copy, frontmatter  # noqa: E402
+from aurora_common import TEMPLATE_COMMENT, clean_copy, frontmatter  # noqa: E402
 import run_summary as RS  # noqa: E402
 
 PROFILES = ("us", "ac", "spec")
@@ -68,8 +68,7 @@ _HEAD = re.compile(r"^(#{1,6})\s+(.*)$")
 _ITEM = re.compile(r"^\s*(?:[*\-+]|\d+[.)])\s+(\S.*)$")
 # Служебные комментарии шаблона: правила для модели, примеры, пометки необязательности и
 # «УДАЛИТЬ ПЕРЕД ПУБЛИКАЦИЕЙ» (так помечены блоки шаблона истории `user_story_template.md`).
-_TEMPLATE_COMMENT = re.compile(
-    r"<!--\s*(?:ИНСТРУКЦИЯ|ПРИМЕР|ОПЦИОНАЛЬНО|ШАБЛОН|ГЛОБАЛЬНЫЕ|УДАЛИТЬ)", re.I)
+_TEMPLATE_COMMENT = TEMPLATE_COMMENT       # один перечень с предохранителем выходных команд (aurora_common)
 # Рабочие пометки — тот же перечень, что «Рабочие пометки» словаря `review_v2.1`.
 _NOTE = re.compile(r"\?\?\?|\bTODO\b|\bTBD\b|(?i:\bуточнить у\b)")
 

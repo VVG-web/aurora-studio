@@ -987,7 +987,8 @@
     "page_id родителя для новой страницы (либо ссылка на неё); без него — publish_parent из шапки документа, затем confluence.publish_parent из конфига": "page_id of the parent for a new page (or a link to it); without it — publish_parent from the document header, then confluence.publish_parent from the config",
     "проверить сданные версии в Deliverables/released/: хеш, правки и удаления после коммита": "check the delivered versions in Deliverables/released/: hash, edits and deletions after the commit",
     "снять блокировку предохранителя выходных команд (КОД назван в его сообщении)": "lift a block of the outbound-commands guard (the CODE is named in its message)",
-    "записать бандл с персональными данными при privacy.scrub: mask (КОД назван в сообщении)": "write the bundle with personal data under privacy.scrub: mask (the CODE is named in the message)"
+    "записать бандл с персональными данными при privacy.scrub: mask (КОД назван в сообщении)": "write the bundle with personal data under privacy.scrub: mask (the CODE is named in the message)",
+    "--export: встроить картинки в документ (pandoc без песочницы; только для документов, которым доверяете)": "--export: embed images into the document (pandoc without the sandbox; only for documents you trust)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

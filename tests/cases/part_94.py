@@ -108,6 +108,7 @@ def test_publish_parent_comes_from_cli_header_or_config(tmp: Path):
     assert P.parent_from("https://wiki.example.com/pages/viewpage.action?pageId=777") == ("777", None)
     assert P.parent_from("https://wiki.example.com/spaces/T/pages/4242/Some+Title") == ("4242", None)
     assert P.parent_from("https://wiki.example.com/display/T/Мой+раздел") == ("", ("T", "Мой раздел"))
+    assert P.parent_from("https://wiki.example.com/display/T/Мой+раздел/") == ("", ("T", "Мой раздел"))
     assert P.parent_from("") == ("", None) and P.parent_from("просто слова") == ("", None)
     cfg = {"publish_parent": "30"}
     assert P.choose_parent("10", {"publish_parent": "20"}, cfg) == ("10", "--parent")
@@ -242,6 +243,8 @@ def test_export_and_release_go_through_the_same_gate_and_pandoc_runs_sandboxed(t
     real_run, real_find = S.subprocess.run, S.find_bin
 
     def spy(cmd, *a, **kw):
+        if "--version" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "pandoc 3.1\n", "")
         seen.append([str(c) for c in cmd])
         Path(cmd[cmd.index("-o") + 1]).write_text("docx", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -278,6 +281,110 @@ def test_spec_pack_refuses_personal_data_under_mask_mode(tmp: Path):
     for old in (root / "Deliverables" / "work" / "spec-packs").glob("*.md"):
         old.unlink()
     assert run("spec_pack.py", "SPEC-012", "--apply", cwd=root).returncode == 0, "в режиме report бандл должен собираться"
+
+
+@test
+def test_outward_gate_sees_heading_variants_a_broken_boundary_and_crlf(_t):
+    """Заголовки производства в любой записи, повреждённая граница и CRLF не проходят; ссылка `[пример]` — не остаток шаблона."""
+    import aurora_common as C
+    codes = lambda text, **kw: sorted(c for lvl, c, _m in C.outward_gate(text, None, **kw) if lvl == "block")  # noqa: E731
+    for head in ("## допущения", "## Допущения ##", "## Допущения:", "## **Допущения**", "### 2. Допущения",
+                 "## Замечания критика (авто)", "##\u00a0Допущения", "Допущения\n=========", "Допущения\n---------"):
+        assert codes(_doc(body=CLEAN + "\n" + head + "\n\nтекст\n")) == ["no-marker"], head
+    assert codes(_doc(body=CLEAN + "\n## Допущения и ограничения проекта\n\nтекст\n")) == ["no-marker"]
+    assert codes(_doc(body=CLEAN + "\n## Допущения\n")) == ["no-marker"] and codes(_doc(body=CLEAN + "\n## Обзор\n")) == []
+    # граница есть, но испорчена: другое тире, хвостовой пробел — `clean_copy` её не режет
+    for bad in ("<!-- ниже - производство, в чистовик не идёт -->", MARK + " ", "<!-- ниже — производство, в чистовик не идёт  -->"):
+        assert codes(_doc(body=CLEAN + "\n" + bad + "\n" + KITCHEN)) == ["no-marker"], bad
+    # текст из байтов с CRLF (Windows) ведёт себя так же, как с LF
+    assert codes(_doc(body=CLEAN + KITCHEN).replace("\n", "\r\n")) == ["no-marker"]
+    assert codes(_doc().replace("\n", "\r\n")) == []
+    # остатки шаблона: тот же перечень, что у линтера артефактов; обычная ссылка [пример] — не остаток
+    assert codes(_doc(body=CLEAN + "\n<!-- ОПЦИОНАЛЬНО -->\n")) == ["template-leftovers"]
+    assert codes(_doc(body=CLEAN + "\n<!-- УДАЛИТЬ ПЕРЕД ПУБЛИКАЦИЕЙ -->\n")) == ["template-leftovers"]
+    assert codes(_doc(body=CLEAN + "\nСм. [пример](x.md) и [Пример] ниже.\n")) == []
+    import artifact_lint as AL
+    assert AL._TEMPLATE_COMMENT is C.TEMPLATE_COMMENT, "два перечня остатков шаблона разошлись"
+
+
+@test
+def test_released_check_ignores_the_folder_guide_and_reads_non_ascii_names(tmp: Path):
+    """README.md папки (его обновляет кит) — не сданное; кириллическое имя называется читаемо; бинарник сверяется по хешу."""
+    import aurora_common as C
+    root = make_project(tmp, git=True)
+    work = root / "Deliverables" / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "Спека_v1.0.md").write_text(_doc(head="type: deliverable\ndoc: Спека\nversion: \"1.0\"\nstatus: ready\n"),
+                                       encoding="utf-8")
+    rel = root / "Deliverables" / "released"
+    rel.mkdir(parents=True, exist_ok=True)
+    (rel / "README.md").write_text("guide v1\n", encoding="utf-8")
+    (rel / "built.docx").write_bytes(b"docx-bytes-v1")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "docs")
+    cp = run("ship_doc.py", "Deliverables/work/Спека_v1.0.md", "--release", "--apply", "--date", "2026-10-19",
+             "--binary", "Deliverables/released/built.docx", cwd=root)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    snap = rel / "Спека_v1.0_2026-10-19.md"
+    assert "binary_sha256:" in snap.read_text(encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "released")
+    (rel / "README.md").write_text("guide v2 (обновил кит)\n", encoding="utf-8")
+    assert C.released_problems(str(root)) == [], "обновление описания папки названо правкой сданного"
+    snap.write_text(snap.read_text(encoding="utf-8").replace("пять дней", "три дня"), encoding="utf-8")
+    problems = C.released_problems(str(root))
+    assert any(p.startswith("Спека_v1.0_2026-10-19.md: ") for p in problems) and not any("\\3" in p for p in problems), problems
+    (rel / "built.docx").write_bytes(b"docx-bytes-OTHER")
+    assert any("built.docx" in p and "заменили после передачи" in p for p in C.released_problems(str(root)))
+    # второй релиз с тем же именем бинарника и другим содержимым не затирает сданный
+    other = tmp / "built.docx"
+    other.write_bytes(b"docx-bytes-v2")
+    (work / "Спека_v1.1.md").write_text(_doc(head="type: deliverable\ndoc: Спека\nversion: \"1.1\"\nstatus: ready\n"),
+                                       encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "v1.1")
+    bad = run("ship_doc.py", "Deliverables/work/Спека_v1.1.md", "--release", "--apply", "--date", "2026-10-20",
+              "--binary", str(other), cwd=root)
+    assert bad.returncode == 1 and "уже сдан с другим содержимым" in bad.stderr, bad.stdout + bad.stderr
+
+
+@test
+def test_export_tells_that_images_are_not_embedded_and_can_embed_them_on_request(tmp: Path):
+    """Песочница pandoc не встраивает картинки — об этом сказано; `--embed-images` отключает её для доверенного документа."""
+    import ship_doc as S
+    root = make_project(tmp)
+    work = root / "Deliverables" / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "P_v1.md").write_text(_doc(body=CLEAN + "\n![схема](pic.png)\n"), encoding="utf-8")
+    seen, version = [], ["pandoc 3.1"]
+    real_run, real_find = S.subprocess.run, S.find_bin
+
+    def spy(cmd, *a, **kw):
+        if "--version" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, version[0] + "\n", "")
+        seen.append([str(c) for c in cmd])
+        Path(cmd[cmd.index("-o") + 1]).write_text("docx", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    S.subprocess.run = spy
+    S.find_bin = lambda name: "/usr/bin/pandoc"
+    here = os.getcwd()
+    os.chdir(root)
+    import contextlib
+    import io
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            assert S.export("Deliverables/work/P_v1.md", "docx", "", "", False) == 0
+            assert S.export("Deliverables/work/P_v1.md", "docx", "", "", False, (), True) == 0
+            version[0] = "pandoc 2.9.2"
+            assert S.export("Deliverables/work/P_v1.md", "docx", "", "", False) == 0
+    finally:
+        os.chdir(here)
+        S.subprocess.run, S.find_bin = real_run, real_find
+        importlib.reload(S)
+    assert "--sandbox" in seen[0] and "--sandbox" not in seen[1] and "--sandbox" not in seen[2], seen
+    assert "картинок: 1" in out.getvalue() and "--embed-images" in out.getvalue(), out.getvalue()
+    assert "pandoc старше 2.15" in out.getvalue(), out.getvalue()
 
 
 @test

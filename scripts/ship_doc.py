@@ -71,7 +71,22 @@ def gate(text: str, allow, apply: bool, what: str) -> int:
     return outward_check(text, allow, apply, what, "ship_doc")
 
 
-def export(source: str, fmt: str, reference: str, out: str, keep_links: bool, allow=()) -> int:
+def _pandoc_sandbox(pandoc: str) -> bool:
+    """Умеет ли этот pandoc `--sandbox` (с 2.15). Не смогли спросить — считаем, что умеет: лучше отказ, чем экспорт без защиты."""
+    try:
+        cp = subprocess.run([pandoc, "--version"], capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=30)
+        m = re.match(r"pandoc(?:\.exe)?\s+(\d+)\.(\d+)", (cp.stdout or "").strip())
+        return not m or (int(m.group(1)), int(m.group(2))) >= (2, 15)
+    except Exception:                                       # noqa: BLE001
+        return True
+
+
+IMAGE_RE = re.compile(r"!\[[^\]\n]{0,300}\]\([^)\n]{1,500}\)|<img\b", re.I)
+
+
+def export(source: str, fmt: str, reference: str, out: str, keep_links: bool, allow=(),
+           embed_images: bool = False) -> int:
     """Документ → docx/pdf/html/odt через pandoc."""
     # Не только PATH: на Windows winget кладёт pandoc в %LOCALAPPDATA%\Pandoc, а PATH
     # процесса, запущенного до установки, о нём не знает.
@@ -100,8 +115,18 @@ def export(source: str, fmt: str, reference: str, out: str, keep_links: bool, al
 
     target = out or os.path.splitext(source)[0] + "." + fmt
     # --sandbox: текст приходит из базы (Confluence, модель), и pandoc не должен по нему читать файлы и ходить
-    # по адресам из картинок — иначе чужая страница читает диск и сеть пользователя через экспорт.
-    cmd = [pandoc, "-f", "gfm", "-o", target, "--from", "gfm", "--standalone", "--sandbox"]
+    # по адресам из картинок — иначе чужая страница читает диск и сеть пользователя через экспорт. Цена —
+    # картинки в документ не встраиваются (pandoc молча пишет warning): об этом сказано в выводе, а документу,
+    # которому доверяют, картинки возвращает `--embed-images`.
+    sandbox = not embed_images and _pandoc_sandbox(pandoc)
+    cmd = [pandoc, "-f", "gfm", "-o", target, "--from", "gfm", "--standalone"] + (["--sandbox"] if sandbox else [])
+    if not embed_images and not sandbox:
+        warnings.append("pandoc старше 2.15 не знает --sandbox: экспорт идёт без защиты от чтения файлов и адресов "
+                        "из текста — обновите pandoc")
+    images = len(IMAGE_RE.findall(text))
+    if images and sandbox:
+        warnings.append(f"в документе картинок: {images} — в экспорт они не встроены (песочница pandoc); "
+                        "документу, которому доверяете, — `--embed-images`")
     if reference and fmt == "docx":
         if not os.path.isfile(reference):
             print(f"ship_doc: нет эталона оформления {reference}", file=sys.stderr)
@@ -149,6 +174,8 @@ def main() -> int:
                     help="проверить сданные версии в Deliverables/released/: хеш, правки и удаления после коммита")
     ap.add_argument("--allow", action="append", default=[], metavar="КОД", choices=sorted(GATE_CODES),
                     help="снять блокировку предохранителя выходных команд (КОД назван в его сообщении)")
+    ap.add_argument("--embed-images", action="store_true",
+                    help="--export: встроить картинки в документ (pandoc без песочницы; только для документов, которым доверяете)")
     ap.add_argument("--allow-dirty", action="store_true",
                     help="--release: документ не закоммичен — всё равно заморозить (в снимке пометка released_dirty)")
     a = ap.parse_args()
@@ -164,7 +191,7 @@ def main() -> int:
         print(f"ship_doc: нет файла {a.document}", file=sys.stderr)
         return 1
     if a.export:
-        return export(a.document, a.export, a.reference or "", a.out or "", a.keep_links, a.allow)
+        return export(a.document, a.export, a.reference or "", a.out or "", a.keep_links, a.allow, a.embed_images)
     if not path_inside(a.document, WORK):
         print(f"ship_doc: замораживать можно только документы из {WORK}/", file=sys.stderr)
         return 1
@@ -206,6 +233,14 @@ def main() -> int:
             print(f"ship_doc: нет бинарника {a.binary}", file=sys.stderr)
             return 1
         print(f"Бинарник: {a.binary} → {RELEASED}/")
+        kept = os.path.join(RELEASED, os.path.basename(a.binary))
+        if os.path.exists(kept) and os.path.abspath(kept) != os.path.abspath(a.binary):
+            with open(kept, "rb") as f1, open(a.binary, "rb") as f2:
+                same = hashlib.sha256(f1.read()).digest() == hashlib.sha256(f2.read()).digest()
+            if not same:
+                print(f"ship_doc: {kept} уже сдан с другим содержимым. Сданное неизменяемо: дайте новой версии "
+                      "файла другое имя.", file=sys.stderr)
+                return 1
 
     # Предохранитель: то, что фиксируем и отдаём, проверяется так же, как публикация и экспорт.
     stuck = gate(text, set(a.allow), a.apply, "фиксация")
@@ -264,7 +299,7 @@ def main() -> int:
     with open(target, "w", encoding="utf-8", newline="\n") as f:
         f.write(snapshot)
     open(a.document, "w", encoding="utf-8").write(work_text)
-    if a.binary:
+    if a.binary and os.path.abspath(a.binary) != os.path.abspath(os.path.join(RELEASED, os.path.basename(a.binary))):
         shutil.copy2(a.binary, os.path.join(RELEASED, os.path.basename(a.binary)))
 
     print(f"\n✅ Снапшот: {target} (неизменяем, sha256 {release_hash(snapshot)[:12]}…)")

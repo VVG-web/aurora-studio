@@ -305,8 +305,11 @@ async function publish(ctx){
         const f = files.find(x => x.rel === sel.value) || {};
         if (f.status === "draft" && !confirm(t("work.publish_draft_ask"))) return;
         ctx.show("console");
+        // «Всё равно публиковать?» с ответом «да» и есть осознанное решение, которое предохранитель
+        // выходных команд просит словом --allow; без него черновик скрипт теперь не отправит.
+        const args = f.status === "draft" ? [f.rel, "--apply", "--allow", "draft"] : [f.rel, "--apply"];
         const res = await ctx.api("/api/run", {method: "POST", body: JSON.stringify(
-          {project: ctx.project.path, cmd: "ship:publish", args: [f.rel, "--apply"]})});
+          {project: ctx.project.path, cmd: "ship:publish", args})});
         if (res.job) ctx.poll(res.job, 0, "ship:publish " + f.rel);
       }}, t("work.publish_go")),
       el("button", {class: "btn", "data-help": "work.help.copy_task", onclick: () => {

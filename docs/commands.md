@@ -98,8 +98,8 @@
 | Команда | Что делает | Исполнитель | Чем | Модификаторы | С версии |
 |---|---|---|---|---|---|
 | `ship:publish` (`publish`) | артефакт → generated-страница Confluence; карточки знаний наружу не идут. Тело режется по строке-маркеру: «Уточнения», «Допущения», «Под вопросом» остаются в черновике аналитика, локальный файл не меняется | скрипт | `publish_doc.py` `path` | `--parent --allow --title --force --adopt --apply` | 1.9.6 |
-| `ship:export` (`export`) | поставляемый документ → docx/pdf (pandoc, фирменный шаблон) | скрипт | `ship_doc.py --export docx` `[document]` | `--release --reference --out --keep-links --version --date --binary --apply --verify --allow --allow-dirty` | 1.5.0 |
-| `ship:release` (`release`) | заморозить переданную версию: снапшот, коммит базы, дата | скрипт | `ship_doc.py --release` `[document]` | `--export --reference --out --keep-links --version --date --binary --apply --verify --allow --allow-dirty` | 1.9.1 |
+| `ship:export` (`export`) | поставляемый документ → docx/pdf (pandoc, фирменный шаблон) | скрипт | `ship_doc.py --export docx` `[document]` | `--release --reference --out --keep-links --version --date --binary --apply --verify --allow --embed-images --allow-dirty` | 1.5.0 |
+| `ship:release` (`release`) | заморозить переданную версию: снапшот, коммит базы, дата | скрипт | `ship_doc.py --release` `[document]` | `--export --reference --out --keep-links --version --date --binary --apply --verify --allow --embed-images --allow-dirty` | 1.9.1 |
 | `ship:acceptance` | результаты приёмки и разбор замечаний заказчика | модель | `workflows.md` | — | 1.4.0 |
 
 ## `ops: — управление и отчётность`

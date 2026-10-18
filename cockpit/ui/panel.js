@@ -1041,8 +1041,11 @@ async function publishFromEditor(){
       el("button",{class:"btn primary", onclick:async ()=>{
         box.remove();
         show("console");
+        // Предпросмотр выше показал ровно то, что уйдёт: без маркера — тело целиком. Нажатие «Опубликовать» после
+        // него — осознанное решение, которое предохранитель выходных команд просит словом --allow no-marker.
         const res = await api("/api/run", {method:"POST", body: JSON.stringify(
-          {project:S.project.path, cmd:"ship:publish", args:[F.path, "--apply"]})});
+          {project:S.project.path, cmd:"ship:publish",
+           args: d.marked ? [F.path, "--apply"] : [F.path, "--apply", "--allow", "no-marker"]})});
         if (res.job) poll(res.job, 0, "ship:publish " + F.path);
       }}, t("editor.publish_go")),
       el("button",{class:"btn", onclick:()=>box.remove()}, t("editor.publish_cancel"))));
