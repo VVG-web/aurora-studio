@@ -140,7 +140,8 @@ def test_run_summary_and_alarm_keep_the_whole_adapter_gap(tmp: Path):
                          "agent:b": {"at": "2026-10-17T10:00:00Z", "why": AC._venv_gap(), "project": "P", "calls": 1},
                          "agent:c": {"at": "2026-10-17T10:00:00Z", "why": "процесс падал 3 раза", "project": "P", "calls": 1}})
         fixes = {r["path"]: r["fix"] for r in ck.adapter_alarm()}
-        assert fixes == {"agent:a": "adapter", "agent:b": "venv", "agent:c": ""}, fixes
+        # лекарство: файл адаптера — «Версия», venv и неназванная поломка адаптера — «Установка»
+        assert fixes == {"agent:a": "version", "agent:b": "install", "agent:c": "install"}, fixes
     finally:
         AC._adapter_file = saved[0]
         AC._write_alarm({})
