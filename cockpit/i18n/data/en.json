@@ -639,7 +639,6 @@
     "с --scan-push: имя remote, куда идёт пуш (сужает проверку неизвестного remote_sha)": "with --scan-push: the name of the remote the push goes to (narrows the check of an unknown remote_sha)",
     "с --scan-push: версия установленного хука (vN); старее скрипта — предупреждение": "with --scan-push: the version of the installed hook (vN); older than the script — a warning",
     "переставить свой устаревший pre-push (чужой и актуальный не трогается); зовётся обновлением кита": "reinstall an outdated own pre-push (a foreign or current one is left alone); called by the kit update",
-    "корень зеркала (Sources/Confluence)": "the mirror root (Sources/Confluence)",
     "снять карту page_id → путь ДО переэкспорта и сохранить в meta/": "take the page_id → path map BEFORE re-export and save it in meta/",
     "взять старое зеркало из ревизии git (если снимок не снимали)": "take the old mirror from a git revision (if no snapshot was taken)",
     "страницы, переехавшие в Confluence: карточки — на новые пути, второй экземпляр той же страницы — прочь, старые копии из зеркала": "pages moved in Confluence: cards go to the new paths, the second copy of the same page and old copies in the mirror are removed",
@@ -800,8 +799,6 @@
     "что говорит граф: сообщества, мосты, острова — и чего не хватает": "what the graph says: communities, bridges, islands — and what is missing",
     "писать по грязному дереву (маршрут «Быстрого старта» уже зафиксировал состояние до себя)": "write on a dirty tree (the «Quick start» route has already committed the state before itself)",
     "сколько связей писать в одну карточку (по умолчанию 60)": "how many links to write into one card (default 60)",
-    "зеркало Confluence (Sources/Confluence)": "the Confluence mirror (Sources/Confluence)",
-    "зеркало Jira (Sources/JIRA)": "the Jira mirror (Sources/JIRA)",
     "записать AuroraKnowledgeDB/meta/graphify/code.json": "write AuroraKnowledgeDB/meta/graphify/code.json",
     "удалить (иначе dry-run)": "delete (otherwise dry-run)",
     "снести и карточки неизвестного происхождения: пересборка их не вернёт, только git": "demolish cards of unknown origin too: a rebuild will not bring them back, only git",
@@ -981,7 +978,10 @@
     "состояние профилей, probe, провайдеров и причины": "state of profiles, probes, providers and the reasons",
     "проверить сейчас (все probe или --only)": "check now (all probes or --only)",
     "только этот профиль или probe": "only this profile or probe",
-    "показать адреса probe (по умолчанию — только тип и идентификатор)": "show the probe addresses (by default only the type and the identifier)"
+    "показать адреса probe (по умолчанию — только тип и идентификатор)": "show the probe addresses (by default only the type and the identifier)",
+    "зеркало вики (по умолчанию — зеркало с ролью projectwiki)": "wiki mirror (by default the mirror with the projectwiki role)",
+    "зеркало трекера задач (по умолчанию — с ролью tasktracker)": "task tracker mirror (by default the one with the tasktracker role)",
+    "корень зеркала (по умолчанию — зеркало вики проекта)": "mirror root (by default the project's wiki mirror)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

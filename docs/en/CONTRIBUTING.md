@@ -66,12 +66,18 @@ Jira and Confluence live only inside connectors (`connectors/<id>/`) and their m
 scripts of the connectors themselves (`jira_export.py`, `confluence_export.py`, `atlassian_ops.py`, `jira_status.py`):
 they are connector code even though they sit in `scripts/`; the rule covers the rest of the core.
 
-Today a source is chosen by the `role` field of the connector manifest (`tasks`, `artifacts`, `raw`; it is also the
-source of trust) through `scripts/sources_registry.py`. New core code picks a source that way, and a product-name
-literal in the core is a reason to rewrite it, not a pattern to follow. The target vocabulary of the roles layer —
-`tasktracker`, `projectwiki`, `documents`, `coderepo`, `testmgmt`, `webpages` — is not implemented yet: it is a
-different vocabulary from the manifest `role`, and code cannot refer to it for now. Existing literals move to roles as
-the roles and aliases layer lands (the old names stay as aliases for existing projects).
+A source is chosen by a role from the connector manifest through `scripts/sources_registry.py`. There are two roles,
+and they are different vocabularies. `role` (`tasks`, `artifacts`, `raw`) is where a source's trust comes from.
+`service_role` (`tasktracker`, `projectwiki`, `documents`, `coderepo`, `testmgmt`, `webpages`) is what kind of service
+stands behind the mirror: a task tracker, a wiki, a code repository. The core asks for a service's mirror folders with
+`aurora_common.service_dirs("tasktracker")` (or `sources_registry.service_paths`) instead of building
+`Sources/<product>` itself. The old product name (`jira`, `confluence`) stays an alias of the role: the manifest itself
+declares it in `aliases`, and `sources_registry.canonical_role` understands any spelling. New core code picks a source
+that way, and a product-name literal in the core is a reason to rewrite it, not a pattern to follow; a guard test
+(`tests/cases/part_91.py`) counts such literals, and the count can only go down. Not moved to roles yet: reading wiki
+and tasks in `kb_graph` (Requirement Yogi keys), `build_plan` groups named after the product, the config keys
+`atlassian.jira` / `atlassian.confluence`, the `JIRA_*` and `CONFLUENCE_*` variables and the MCP tools — they stay as
+they are and keep working for existing projects.
 
 ### Notes on the cause of a bug are anonymised
 

@@ -1868,6 +1868,53 @@ def walk_md(root: str, skip_service: bool = False, skip_archive: bool = False):
             yield full
 
 
+_SERVICE_MEMO: dict = {}
+# Прежние папки зеркал: единственное место ядра, где они названы. Нужны, когда реестр источников не
+# ответил вовсе (оборванное обновление, неполная копия движка, сбой чтения манифестов): тогда доверие
+# считается по ним, как до слоя ролей, а не по пустому месту — пустой ответ понизил бы всю базу.
+_LEGACY_SERVICE_DIRS = {"tasktracker": "Sources/JIRA", "projectwiki": "Sources/Confluence"}
+_SERVICE_WARNED: set = set()
+
+
+def service_dirs(role: str, root: str = ".") -> list:
+    """Папки зеркал сервиса по роли (`tasktracker`, `projectwiki`, …) — чистые posix-пути.
+
+    Ядро не знает, какой продукт стоит за ролью: ответ даёт реестр источников проекта
+    (`sources_registry`, BL-DEC-06). Подключённых источников с ролью нет — папка по умолчанию модуля
+    кита с этой ролью (проект мог отключить коннектор, оставив зеркало на диске). Пусто — такого
+    сервиса у проекта нет. Роль можно назвать и старым именем продукта. Реестр не ответил (его нет,
+    он старше этого модуля, манифесты не читаются) — прежние папки, и об этом одна строка в stderr.
+
+    Вопрос «где зеркало» задаётся на каждую карточку и страницу, а ответ меняется только вместе с
+    конфигом проекта и манифестами, поэтому он запоминается на их отпечаток (`sources_registry.fingerprint`).
+    """
+    import posixpath
+    base = os.path.abspath(root or ".")
+    try:
+        import sources_registry as _reg      # реестр сам тянет aurora_common: импорт здесь, не наверху
+        sig = _reg.fingerprint(root or ".")
+        hit = _SERVICE_MEMO.get((base, str(role)))
+        if hit and hit[0] == sig:
+            return list(hit[1])
+        raw = _reg.service_paths(root or ".", role)
+        if not raw and _reg.blind(root or "."):
+            raise LookupError("манифестов нет ни в проекте, ни в ките")
+    except Exception as e:  # noqa: BLE001 — реестр не вправе уронить доверие, линтер и пак
+        legacy = _LEGACY_SERVICE_DIRS.get(str(role).casefold())
+        if (base, str(role)) not in _SERVICE_WARNED:
+            _SERVICE_WARNED.add((base, str(role)))
+            print(f"service_dirs: реестр источников не ответил ({type(e).__name__}: {e}) — "
+                  f"{'прежняя папка ' + legacy if legacy else 'папок нет'}", file=sys.stderr)
+        return [legacy] if legacy else []
+    out = []
+    for path in raw:
+        norm = posixpath.normpath(str(path).replace("\\", "/")) if path else ""
+        if norm and norm != "." and norm not in out:
+            out.append(norm)
+    _SERVICE_MEMO[(base, str(role))] = (sig, out)
+    return list(out)
+
+
 # Расширения, которые в имени карточки или вложения действительно расширения. Всё
 # остальное после точки — часть названия: «ALG-3.14 Учёт операции», «Спецификация 1.2».
 KNOWN_EXT = (".md", ".png", ".jpg", ".jpeg", ".svg", ".pdf", ".drawio", ".xml", ".mmd",

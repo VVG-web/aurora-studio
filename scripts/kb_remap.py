@@ -36,13 +36,12 @@ import re
 import subprocess
 import sys
 
-from aurora_common import fold, head_text
+from aurora_common import fold, head_text, service_dirs
 from card_types import run_script, put_text
 from sources_core import nfc
 
 KB = "AuroraKnowledgeDB"
 SNAPSHOT = os.path.join(KB, "meta", "mirror_snapshot.json")
-DEFAULT_MIRROR = "Sources/Confluence"
 STATE = "sync_state.md"
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
@@ -430,7 +429,7 @@ def remap(mirror: str, old_map: dict, apply: bool) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Перенацелить source: карточек на новое зеркало")
-    ap.add_argument("--mirror", default=DEFAULT_MIRROR, help=f"корень зеркала ({DEFAULT_MIRROR.replace(os.sep, '/')})")
+    ap.add_argument("--mirror", default="", help="корень зеркала (по умолчанию — зеркало вики проекта)")
     ap.add_argument("--snapshot", action="store_true",
                     help="снять карту page_id → путь ДО переэкспорта и сохранить в meta/")
     ap.add_argument("--from-git", metavar="REF",
@@ -444,6 +443,10 @@ def main() -> int:
 
     if not os.path.isdir(KB):
         print(f"kb_remap: нет {KB}/ — запускайте из корня проекта", file=sys.stderr)
+        return 1
+    a.mirror = a.mirror or (service_dirs("projectwiki") or [""])[0]
+    if not a.mirror:
+        print("kb_remap: у проекта нет зеркала вики — укажите папку: --mirror <папка>", file=sys.stderr)
         return 1
 
     if a.moved:

@@ -66,6 +66,31 @@ KINDS = ("wiki", "board")
 # доверия само по себе.
 ROLES = ("tasks", "artifacts", "raw")
 DEFAULT_ROLE = "artifacts"
+# Роль сервиса (BL-DEC-06) — другой словарь, чем `role` выше: не «откуда доверие», а «что за сервис
+# стоит за зеркалом». Ядро ищет источник по ней (`service_paths`), а не по названию продукта:
+# замена трекера или вики — это другой коннектор с той же ролью, а не правка файлов ядра.
+# Список закрытый: роль называет вид сервиса, и новую вводит кит, а не манифест со стороны.
+SERVICE_ROLES = ("tasktracker", "projectwiki", "documents", "coderepo", "testmgmt", "webpages")
+_ALIAS_OK = re.compile(r"[\w.\-]{1,40}")        # проверять `fullmatch`: `$` пропустил бы хвостовой перевод строки
+_ENGINE_DIRS = (".aurora", ".opencode")        # папка движка в проекте (`aurora_common.ENGINE_DIRS`)
+
+
+def real_kit_root() -> str:
+    """Настоящий кит: скрипт лежит в `scripts/` кита либо в копии движка проекта с указателем на кит.
+
+    Не то же, что `kit_root()`: у копии движка рядом со скриптами лежит `connectors/` с КОПИЯМИ
+    манифестов, и `kit_root()` принимает за кит саму папку движка. Для вопроса «что в манифесте
+    у кита» нужен именно кит. Пусто — кита нет (указатель не прочитан, папки нет).
+    """
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if os.path.basename(here) in getattr(aurora_common, "ENGINE_DIRS", _ENGINE_DIRS):
+        mark = os.path.join(here, "kit_path.txt")
+        try:
+            with open(mark, encoding="utf-8") as f:
+                here = f.read().strip()
+        except (OSError, ValueError):
+            return ""
+    return here if here and os.path.isdir(os.path.join(here, KIT_DIR)) else ""
 
 
 def kit_root() -> str:
@@ -139,6 +164,45 @@ def safe_relpath(value) -> bool:
     return _common_fn("ext_safe_relpath")(value)
 
 
+def _kit_manifest(mid: str) -> dict:
+    """Манифест модуля `mid` из настоящего кита (`{}` — кита или модуля нет)."""
+    kit = real_kit_root()
+    if not kit or not _ALIAS_OK.fullmatch(mid or ""):
+        return {}
+    path = os.path.join(kit, KIT_DIR, mid, "connector.json")
+    if not os.path.isfile(path):
+        return {}
+    got, _rep = _loader()(path, "connector", True)
+    if got:
+        _clean_service(got)
+    return got or {}
+
+
+def _kit_manifests() -> dict:
+    """{id: манифест} всех модулей настоящего кита."""
+    kit = real_kit_root()
+    base = os.path.join(kit, KIT_DIR) if kit else ""
+    out = {}
+    for d in sorted(os.listdir(base)) if base and os.path.isdir(base) else []:
+        got = _kit_manifest(d)
+        if got.get("id"):
+            out[got["id"]] = got
+    return out
+
+
+def _clean_service(m: dict) -> None:
+    """Роль сервиса и псевдонимы манифеста → проверенные значения (`service_role`: роль или пусто)."""
+    svc = m.get("service_role")
+    if svc is not None and svc not in SERVICE_ROLES:
+        _note(f"{m['id']}: роль сервиса «{svc}» движку неизвестна (есть: {', '.join(SERVICE_ROLES)}) "
+              "— модуль работает без неё")
+        svc = None
+    m["service_role"] = svc or ""
+    al = m.get("aliases")
+    m["aliases"] = [a for a in (al if isinstance(al, list) else [])
+                    if isinstance(a, str) and _ALIAS_OK.fullmatch(a) and a.casefold() not in SERVICE_ROLES]
+
+
 def load(path: str) -> dict:
     """Манифест + проверка обязательного. Кривой модуль лучше назвать, чем молча пропустить.
 
@@ -159,6 +223,16 @@ def load(path: str) -> dict:
         _note(f"{m['id']}: вид «{m['kind']}» движку неизвестен "
               f"(есть {', '.join(KINDS)}) — модуль пропущен")
         return {}
+    # Роль сервиса и старые имена приходят из манифеста — а он может быть чужим. Неизвестная
+    # роль не роняет модуль (он по-прежнему выгружает зеркало), а только не получает роли:
+    # ядро его по роли не найдёт. Псевдонимы — короткие простые слова, остальное отбрасывается.
+    if "service_role" not in m:
+        # Копия манифеста в проекте старше поля (update ещё не прошёл) — роль и псевдонимы у кита.
+        kit_m = _kit_manifest(m["id"])
+        for key in ("service_role", "aliases"):
+            if key in kit_m:
+                m[key] = kit_m[key]
+    _clean_service(m)
     # Путь зеркала из манифеста уходит в `mkdir` обновления и в строку конфига без экранирования
     # (форма настроек): «../outside» создал бы папку вне проекта, перевод строки — чужие строки YAML.
     # Проверка стоит здесь, у единственного читателя проектных манифестов, а не в каждом потребителе.
@@ -348,6 +422,7 @@ def instances(root: str = "") -> list:
             # подставляет тот, кто читает, и делает это осознанно; тихая подстановка
             # здесь превращает зеркало задач в зеркало артефактов.
             "role": (m.get("role", "") if m else ""),
+            "service_role": (m.get("service_role", "") if m else ""),
             "state": m["mirror"].get("state", "") if m else "",
             "command": m["run"].get("command", "") if m else "",
             "script": m["run"].get("script", "") if m else "",
@@ -376,6 +451,97 @@ def roles(root: str = "") -> dict:
     return out
 
 
+def fingerprint(root: str = "") -> tuple:
+    """Отпечаток того, от чего зависят ответы реестра: конфиг проекта, копии манифестов, манифесты кита.
+
+    Каждый файл — своими временем правки и размером: правка на месте (`copy2`, `open("w")`) не меняет
+    время каталога, и по одному каталогу устаревший ответ пережил бы её.
+    """
+    def stat(path):
+        try:
+            st = os.stat(path)
+            return (path, st.st_mtime_ns, st.st_size)
+        except OSError:
+            return (path, None, None)
+    base = root or "."
+    files = [os.path.join(base, CONFIG), os.path.join(base, PROJECT_DIR),
+             os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kit_path.txt")]
+    for folder in (os.path.join(base, PROJECT_DIR),):
+        try:
+            files += [os.path.join(folder, f) for f in sorted(os.listdir(folder)) if f.endswith(".json")]
+        except OSError:
+            pass
+    kit = real_kit_root()
+    if kit:
+        kit_conn = os.path.join(kit, KIT_DIR)
+        files.append(kit_conn)
+        try:
+            files += [os.path.join(kit_conn, d, "connector.json") for d in sorted(os.listdir(kit_conn))]
+        except OSError:
+            pass
+    return tuple(stat(f) for f in files)
+
+
+def blind(root: str = "") -> bool:
+    """Реестр не видит ни одного манифеста — ни в проекте, ни в ките (пустая копия, кита нет)."""
+    return not installed(root) and not _kit_manifests()
+
+
+def canonical_role(name, root: str = "") -> str:
+    """Имя роли сервиса по любому написанию: роль как есть либо старое имя продукта или модуля.
+
+    `tasktracker`, `Jira`, `jira-dc` — одна и та же роль, пока установленные манифесты согласны,
+    чья это роль. Имя, которое манифесты делят между разными ролями (чужой модуль занял чужое
+    старое имя), — пусто: лучше «не знаю», чем молча подменённый сервис.
+    """
+    key = str(name or "").strip().casefold()
+    if key in SERVICE_ROLES:
+        return key
+    mods = dict(_kit_manifests())
+    mods.update(installed(root))            # копия в проекте сильнее кита с тем же id
+    hits = set()
+    for mid, m in mods.items():
+        names = {mid.casefold()} | {a.casefold() for a in m.get("aliases", [])}
+        if key in names and m.get("service_role"):
+            hits.add(m["service_role"])
+    return hits.pop() if len(hits) == 1 else ""
+
+
+def service_instances(root: str = "", role: str = "") -> list:
+    """Подключённые источники с этой ролью сервиса — в порядке `sources:` (или исторических двух)."""
+    want = canonical_role(role, root)
+    return [i for i in instances(root) if want and i.get("service_role") == want]
+
+
+def service_paths(root: str = "", role: str = "") -> list:
+    """Папки зеркал, где живёт сервис этой роли (путь как в конфиге, без косой в конце).
+
+    Пусто в `sources:` не значит «сервиса нет»: проект мог отключить коннектор, оставив папку
+    зеркала на диске, и доверие к его карточкам не должно пропасть вместе со строкой конфига.
+    Поэтому, пока среди подключённых никого с такой ролью нет, берётся папка по умолчанию модуля
+    КИТА с этой ролью — как и было, когда ядро знало её по имени. Только кита: копия манифеста в
+    проекте путь по умолчанию не подсказывает.
+    """
+    found = [i["path"] for i in service_instances(root, role) if i["path"]]
+    if found:
+        return found
+    want = canonical_role(role, root)
+    kit = real_kit_root()
+    if not want or not kit:
+        return []
+    out = []
+    for got in _kit_manifests().values():
+        path = (got.get("mirror") or {}).get("default_path", "") if got.get("service_role") == want else ""
+        if path and safe_relpath(path):
+            out.append(path.rstrip("/"))
+    return out
+
+
+def service_path(root: str = "", role: str = "") -> str:
+    """Первая папка зеркала сервиса этой роли; пусто — такого сервиса у проекта нет."""
+    return (service_paths(root, role) or [""])[0]
+
+
 def mirror_paths(root: str = "") -> dict:
     """{папка зеркала: id модуля} — чем занята `Sources/` по мнению конфига."""
     return {i["path"]: i["module"] for i in instances(root) if i["path"]}
@@ -396,7 +562,9 @@ def main() -> int:
     print(f"Установлено модулей: {len(mods)}")
     for m in mods.values():
         print(f"  · {m['id']} — {m.get('title', '')} [{m['kind']} · "
-              f"{m.get('role', DEFAULT_ROLE)}] → {m['mirror'].get('default_path', '—')}")
+              f"{m.get('role', DEFAULT_ROLE)}"
+              + (f" · {m['service_role']}" if m.get("service_role") else "")
+              + f"] → {m['mirror'].get('default_path', '—')}")
     print(f"\nПодключено в проекте: {len(inst)}"
           + ("" if has_section(config_text()) else "  (секции sources: нет — работают исторические зеркала)"))
     for i in inst:

@@ -90,6 +90,14 @@ connectors/<id>/
 
 - `kind` — `wiki` or `board`; the engine chooses both the layout and the audit rules by it;
 - `role` — `tasks`, `artifacts` or `raw`: where a source's trust comes from (the table above);
+- `service_role` (optional) — what kind of service stands behind the mirror: `tasktracker`, `projectwiki`, `documents`,
+  `coderepo`, `testmgmt` or `webpages`. The core finds the mirror by it (`aurora_common.service_dirs`), so replacing a
+  tracker or a wiki means another connector with the same role, not edits to core files. The list is closed: an unknown
+  role does not disable the module, it only leaves it without a role (a line in `registry_report()`). Missing from a
+  project's copy of the manifest, it is taken from the manifest of the same module in the kit;
+- `aliases` (optional) — old product names that configs and scenarios know it by (`["jira"]`):
+  `sources_registry.canonical_role("Jira")` returns the role. A name that two modules share between different roles
+  resolves to no role at all;
 - `requires.python` — Python packages the module needs; the engine runs on the standard library, so they are installed
   separately ([INSTALL](INSTALL.md#requirements));
 - `mirror.default_path` — the mirror folder; it also becomes legitimate in `Sources/` (`kit:doctor --structure` stops

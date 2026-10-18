@@ -27,7 +27,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import TODAY, config_list, walk_md  # noqa: E402
+from aurora_common import TODAY, config_list, service_dirs, walk_md  # noqa: E402
 from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
 
 KB = "AuroraKnowledgeDB"
@@ -43,8 +43,8 @@ SKIP_DIRS = {".git", ".aurora", "node_modules", "_archive", "venv", ".venv"}
 def sql_sources(root: str) -> list:
     """[(откуда, текст SQL)] — блоки со страниц зеркала и файлы `*.sql` проекта."""
     out = []
-    conf = os.path.join(root, "Sources", "Confluence")
-    for p in walk_md(conf) if os.path.isdir(conf) else []:
+    wikis = [os.path.join(root, d) for d in service_dirs("projectwiki", root)]
+    for p in (q for w in wikis if os.path.isdir(w) for q in walk_md(w)):
         text = open(p, encoding="utf-8", errors="ignore").read()
         for m in SQL_BLOCK.finditer(text):
             # Зеркало экранирует разметку: `\_` в запросе — это `_`.

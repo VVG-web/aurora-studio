@@ -24,7 +24,8 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import RETIRED_FIELDS, config_list, python_status, root_link_escapes, scan_secret_files
+from aurora_common import (RETIRED_FIELDS, config_list, python_status, root_link_escapes, scan_secret_files,
+                           service_dirs)
 from pathlib import Path
 
 ROOT = Path.cwd()
@@ -426,11 +427,12 @@ def check_portable_names() -> list:
         return []
     rels = [r for r in out.split("\0") if r]
     groups: dict = {}
+    wikis = tuple(d + "/" for d in service_dirs("projectwiki", str(ROOT)))
     for rel in rels:
         why = path_problems(rel)
         if not why:
             continue
-        where = ("зеркало Confluence" if rel.startswith("Sources/Confluence/") else
+        where = ("зеркало Confluence" if rel.startswith(wikis) else
                  "карточки" if rel.startswith("AuroraKnowledgeDB/") else "прочее")
         groups.setdefault(where, []).append((rel, why[0]))
     fix = {"зеркало Confluence": "`kb_names.py --apply` переложит страницы без сети по правилу "

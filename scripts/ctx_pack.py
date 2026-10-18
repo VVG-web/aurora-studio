@@ -38,14 +38,13 @@ import os
 import re
 import sys
 
-from aurora_common import (TRUSTED, Card as BaseCard, aliases as card_aliases, body, card_sources, decision_slice, frontmatter,
+from aurora_common import (TRUSTED, service_dirs, Card as BaseCard, aliases as card_aliases, body, card_sources, decision_slice, frontmatter,
                            is_decision_card, is_meeting, is_placeholder, link_targets, read_card_text, related_targets,
                            status_rank, trust_header, untrusted, walk_md, UNTRUSTED_RULE)
 
 ROOT = "AuroraKnowledgeDB"
 USAGE = os.path.join(ROOT, "meta", "usage.log")
 RELEASES = os.path.join(ROOT, "meta", "releases.md")
-JIRA_MIRROR = os.path.join("Sources", "JIRA")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 # «US-4.7.2», «US 4.7.2», «4.7.2» в вопросе — номер истории; «PRJ-480» — ключ задачи
 STORY_NUM = re.compile(r"(?i)\b(?:US|AC|ALG)?[\s._-]?(\d+(?:\.\d+){1,3})\b")
@@ -965,14 +964,15 @@ def jira_state(topic: str, limit: int = JIRA_ROWS) -> list:
     лежала в зеркале рядом, со статусом «Бэклог». Знание было в проекте, но не на пути
     к модели: пак собирается только из карточек.
     """
-    if not os.path.isdir(JIRA_MIRROR):
+    mirrors = [m for m in service_dirs("tasktracker") if os.path.isdir(m)]
+    if not mirrors:
         return []
     nums = {m.group(1) for m in STORY_NUM.finditer(topic)}
     keys = {m.group(1) for m in ISSUE_KEY.finditer(topic)}
     if not nums and not keys:
         return []
     out = []
-    for path in sorted(walk_md(JIRA_MIRROR)):
+    for path in sorted(p for m in mirrors for p in walk_md(m)):
         fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read())
         unq = lambda v: (v or "").strip().strip('"\'')          # noqa: E731
         key, title = unq(fm.get("key")), unq(fm.get("title"))

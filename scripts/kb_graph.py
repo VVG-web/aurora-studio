@@ -50,7 +50,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (HEAD_BLOCK_TAIL, aliases as card_aliases, card_body, card_sources,  # noqa: E402
                            card_stem, walk_md, head_text, related_names,
-                           frontmatter, git_guard)
+                           frontmatter, git_guard, service_dirs)
 
 
 def _cards():
@@ -60,8 +60,6 @@ def _cards():
     return card_types
 
 
-CONF_DIR = "Sources/Confluence"
-JIRA_DIR = "Sources/JIRA"
 OUT_MOC = "AuroraKnowledgeDB/MOC/Связи.md"
 # Ниже этой близости пара — просто соседи по теме: на живой базе порог 0.93
 # оставляет десятки настоящих кандидатов, 0.85 — сотни соседей и ни одного решения.
@@ -1462,9 +1460,11 @@ def main() -> int:
     ap.add_argument("--max-related", type=int, default=60, metavar="N",
                     help="сколько связей писать в одну карточку (по умолчанию 60)")
     ap.add_argument("--report", dest="report_path", help="сохранить отчёт в файл")
-    ap.add_argument("--conf", default=CONF_DIR, help=f"зеркало Confluence ({CONF_DIR.replace(os.sep, '/')})")
-    ap.add_argument("--jira", default=JIRA_DIR, help=f"зеркало Jira ({JIRA_DIR.replace(os.sep, '/')})")
+    ap.add_argument("--conf", default="", help="зеркало вики (по умолчанию — зеркало с ролью projectwiki)")
+    ap.add_argument("--jira", default="", help="зеркало трекера задач (по умолчанию — с ролью tasktracker)")
     a = ap.parse_args()
+    a.conf = a.conf or (service_dirs("projectwiki") or [""])[0]
+    a.jira = a.jira or (service_dirs("tasktracker") or [""])[0]
 
     # Граф самой базы читает только `AuroraKnowledgeDB` — ни зеркал, ни RY-ключей ему
     # не нужно. Требовать Confluence значило бы оставить без графа проект, собранный
@@ -1480,7 +1480,7 @@ def main() -> int:
         return 0
 
     if not os.path.isdir(a.conf):
-        print(f"kb_graph: нет {a.conf}/ — запускайте из корня проекта", file=sys.stderr)
+        print(f"kb_graph: нет {a.conf or 'зеркала вики'}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
 
     stamp = ""

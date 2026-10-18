@@ -45,7 +45,7 @@ import argparse
 import json, os, re, sys
 
 from aurora_common import QUOTES, looks_like_expansion  # noqa: F401
-from aurora_common import link_escapes, root_link_escapes, scan_secret_files
+from aurora_common import link_escapes, root_link_escapes, scan_secret_files, service_dirs
 from aurora_common import (OWN_LIFECYCLE, STATUSES, aliases, body_hash, card_body, card_stem, card_type,
                            card_sources, config_list, config_value, frontmatter, is_service, not_a_card_link,
                            leaf_name, link_refs, project_terms)
@@ -147,7 +147,8 @@ def artifact_kind(stem: str, title: str, src: str, section: str, jira_re) -> str
     # законно, как бы ни называлась страница. Артефакт — то, что мы сгенерировали сами:
     # у него нет источника в зеркале. Правило по одному имени объявляло чужой историей
     # каждую страницу с «US-» в заголовке и давало сотни ложных срабатываний.
-    if src.startswith("Sources/") and not src.startswith("Sources/JIRA/"):
+    tasks = tuple(d + "/" for d in service_dirs("tasktracker"))
+    if src.startswith("Sources/") and not src.startswith(tasks):
         return ""
     for rx, label in ARTIFACT_PATTERNS:
         if rx.search(stem) or rx.search(title):
@@ -158,7 +159,7 @@ def artifact_kind(stem: str, title: str, src: str, section: str, jira_re) -> str
     # приходит именно из задачи, и карточка предмета, названная по предмету, — законный
     # житель базы: `agent:tasks` для того и есть, чтобы вернуть знание задачи предмету.
     # Артефакт — карточка, названная РАБОТОЙ: её имя говорит, что кто-то что-то делает.
-    if src.startswith("Sources/JIRA/") and (WORK_NAME.match(stem.replace("-", " "))
+    if src.startswith(tasks) and (WORK_NAME.match(stem.replace("-", " "))
                                             or WORK_NAME.match(title)):
         return "задача Jira"
     return ""

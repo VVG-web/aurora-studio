@@ -45,7 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (OWN_LIFECYCLE, card_type, is_meeting, branch_kind, LEGACY_TRUSTED_BRANCHES, ASSUMPTION_STATUSES_DEFAULT, SERVICE_STATUS,  # noqa: E402
                            TRUST_STATUSES_DEFAULT, TRUSTED_BRANCHES_DEFAULT,
                            TRUSTED_SOURCES_DEFAULT, card_sources, config_list, frontmatter,
-                           sync_roots,
+                           service_dirs, sync_roots,
                            is_placeholder, split_frontmatter,
                            walk_md, with_fields)
 
@@ -69,13 +69,18 @@ def config_statuses(key: str) -> set:
             if x.strip().strip('"\'')} if m else set()
 
 
+def task_files(root: str):
+    """Файлы зеркал трекера задач проекта — по роли сервиса, а не по названию продукта (BL-DEC-06)."""
+    for rel in service_dirs("tasktracker", root):
+        base = os.path.join(root, rel)
+        if os.path.isdir(base):
+            yield from walk_md(base)
+
+
 def task_status(root: str) -> dict:
     """{ключ задачи: статус} из зеркала."""
     out = {}
-    base = os.path.join(root, "Sources", "JIRA")
-    if not os.path.isdir(base):
-        return out
-    for p in walk_md(base):
+    for p in task_files(root):
         fm = frontmatter(open(p, encoding="utf-8", errors="ignore").read(), unique=True)
         key = (fm.get("key") or "").strip().strip('"')
         if key:
@@ -86,10 +91,7 @@ def task_status(root: str) -> dict:
 def task_parents(root: str) -> dict:
     """{ключ подзадачи: ключ её истории} из зеркала задач."""
     out = {}
-    base = os.path.join(root, "Sources", "JIRA")
-    if not os.path.isdir(base):
-        return out
-    for p in walk_md(base):
+    for p in task_files(root):
         fm = frontmatter(open(p, encoding="utf-8", errors="ignore").read(), unique=True)
         key = (fm.get("key") or "").strip().strip('"')
         parent = (fm.get("parent") or "").strip().strip('"')
@@ -111,16 +113,27 @@ EPIC_TYPES = ("epic", "эпик")
 # статусу задачи на момент синка. Папка «по названию» доверия больше не даёт: «Алгоритмы» и
 # «GUI» — это постановка, и готова она тогда, когда готова её задача.
 REFERENCE_BRANCHES: list = list(TRUSTED_BRANCHES_DEFAULT)   # из настройки проекта в main
-WIKI = "Sources/Confluence/"
+PROJECT_ROOT = ["."]      # корень, о котором отвечают функции без аргумента root; ставит main
+
+
+def wiki_dirs(root: str = "") -> list:
+    """Папки зеркал вики проекта с косой в конце — по роли сервиса (`projectwiki`), не по названию продукта.
+
+    Корня у `reference_page` и подобных нет — они берут корень, который поставил `main`, либо текущую папку.
+    """
+    return [d + "/" for d in service_dirs("projectwiki", root or PROJECT_ROOT[0])]
+
+
+def wiki_of(src: str, root: str = "") -> str:
+    """Папка зеркала вики, в которой лежит источник (с косой), либо пусто."""
+    src = (src or "").replace("\\", "/")
+    return next((w for w in wiki_dirs(root) if src.startswith(w)), "")
 
 
 def task_types(root: str) -> dict:
     """{ключ задачи: тип} из зеркала задач."""
     out = {}
-    base = os.path.join(root, "Sources", "JIRA")
-    if not os.path.isdir(base):
-        return out
-    for p in walk_md(base):
+    for p in task_files(root):
         fm = frontmatter(open(p, encoding="utf-8", errors="ignore").read(), unique=True)
         key = (fm.get("key") or "").strip().strip('"')
         if key:
@@ -131,13 +144,22 @@ def task_types(root: str) -> dict:
 def reference_page(src: str) -> bool:
     """Страница вики из справочной ветки (НСИ, справочники, глоссарий)."""
     src = (src or "").replace("\\", "/")
-    if not src.startswith(WIKI):
+    pre = wiki_of(src)
+    if not pre:
         return False
-    top = src[len(WIKI):].split("/", 1)[0]
+    top = src[len(pre):].split("/", 1)[0]
     return bool(branch_kind(top, REFERENCE_BRANCHES))
 
 
 TRUSTED_ROOTS: list = []          # [(путь в зеркале, название)] корней с галочкой «доверять»
+
+
+def _wiki_top(root: str):
+    """(папка зеркала вики с косой, имя на её верхнем уровне) по всем зеркалам вики проекта."""
+    for pre in wiki_dirs(root):
+        base = os.path.join(root, pre)
+        for name in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+            yield pre, name
 
 
 def trusted_roots(root: str, roots: list) -> list:
@@ -150,10 +172,9 @@ def trusted_roots(root: str, roots: list) -> list:
     want = {r["page_id"]: r["title"] for r in roots if r.get("trusted")}
     if not want:
         return []
-    base = os.path.join(root, WIKI)
     out = []
-    for name in sorted(os.listdir(base)) if os.path.isdir(base) else []:
-        full = os.path.join(base, name)
+    for pre, name in _wiki_top(root):
+        full = os.path.join(root, pre, name)
         head = os.path.join(full, "index.md") if os.path.isdir(full) else full
         if not head.endswith(".md") or not os.path.isfile(head):
             continue
@@ -165,7 +186,7 @@ def trusted_roots(root: str, roots: list) -> list:
         fm = frontmatter(head_text(head), unique=True)
         pid = str(fm.get("page_id") or "").strip().strip("\"'")
         if pid in want:
-            out.append((WIKI + name + ("/" if os.path.isdir(full) else ""), want.pop(pid)))
+            out.append((pre + name + ("/" if os.path.isdir(full) else ""), want.pop(pid)))
     for pid, title in want.items():
         print(f"Корень «{title}» ({pid}) отмечен «доверять», но в зеркале его нет — "
               "синк ещё не забирал его: `sync:confluence --apply`.")
@@ -288,7 +309,7 @@ def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
                            "отнесён ни к доверенным, ни к черновым")
     # Эпик доверия не решает: его статус выбрасываем из связей, как будто связи нет.
     direct = [r for r in (table.get("direct", {}).get(src) or []) if r["key"] not in EPICS]
-    if src.startswith(WIKI):
+    if wiki_of(src):
         # Вики — по одному правилу для всех проектов: справочник доверен по природе, прочее —
         # только задачей. Папки из `trusted_sources`/`trusted_branches` здесь не действуют.
         if reference or reference_page(src):
@@ -417,6 +438,7 @@ def main() -> int:
     a = ap.parse_args()
 
     root = a.root
+    PROJECT_ROOT[0] = root
     if not os.path.isdir(os.path.join(root, KB)):
         print("kb_trust: нет AuroraKnowledgeDB/ — запускайте из корня проекта", file=sys.stderr)
         return 1
@@ -429,6 +451,11 @@ def main() -> int:
         return 0
     table = json.loads(open(tpath, encoding="utf-8").read())
     statuses = task_status(root)
+    if not any(os.path.isdir(os.path.join(root, d)) for d in service_dirs("tasktracker", root)):
+        # Прежде зеркало искалось по одному имени папки, и его отсутствие было видно сразу. Теперь папку
+        # называет реестр источников: если он её не назвал или её нет на диске, доверие по задачам не считается.
+        print("Зеркала трекера задач не нашлось (роль tasktracker в `sources:` проекта и папка на диске) — "
+              "статусы задач неизвестны, доверие по ним не считается.\n")
     trust = config_statuses("trust_statuses")
     draft = config_statuses("assumption_statuses")
     # Документы, объявленные доверенными в конфиге проекта. `Raw/` встроен правилом —
@@ -476,8 +503,9 @@ def main() -> int:
     # Папка пишется в конфиге и без косой в конце («Sources/Confluence»), и выше вики
     # («Sources») — такая тоже не действует на вики, о ней надо сказать.
     folders = [(d, d.replace("\\", "/").strip().rstrip("/") + "/") for d in docs]
-    ignored = [d for d, f in folders if WIKI.startswith(f)
-               or (f.startswith(WIKI) and not reference_page(f + "x"))]
+    wikis = wiki_dirs(root)
+    ignored = [d for d, f in folders if any(w.startswith(f) for w in wikis)
+               or (any(f.startswith(w) for w in wikis) and not reference_page(f + "x"))]
     if ignored:
         print("Папки из настройки доверия, которые страницам вики доверия больше не дают "
               "(вики доверена как справочник или задачей): " + ", ".join(ignored) + "\n")
