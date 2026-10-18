@@ -111,7 +111,7 @@ def test_the_path_hint_is_worded_by_the_catalogue_of_each_language(tmp: Path):
         assert got[0].startswith(start) and got[1].startswith(final), got
         assert "paths → sources_confluence" in got[0] and "kit:paths" in got[0], got[0]
     src = (COCKPIT / "aurora_cockpit.py").read_text(encoding="utf-8")
-    assert "if not parent and cmd in RR.SYNC_LOADS:" in src, "выгрузка одной кнопкой тоже говорит об этом в начале"
+    assert "if not parent and cmd in RR.sync_commands(project):" in src, "выгрузка одной кнопкой тоже говорит об этом в начале"
 
 
 @test

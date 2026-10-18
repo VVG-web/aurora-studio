@@ -55,6 +55,9 @@ from aurora_common import (ATTACH_MAX_MB, ATTACH_MODES, PATH_CHARS, TODAY,  # no
                            root_link_escapes, safe_relpath)
 
 DEFAULT_OUT = "Sources/Confluence"
+# Как выгрузка раскладывает файлы — для проверки длины путей (`path_budget`): дерево страниц, путь от корня проекта
+# держится в `PATH_CHARS`, а зеркало вне проекта считается от `DEFAULT_OUT`.
+PATH_MODEL = "tree"
 STATE = WikiMirror.state_name
 # Версия конвертера страниц. Изменили `to_markdown` так, что меняется вывод, — поднимите:
 # кэш страниц сбросится, и синк один раз пройдёт всё зеркало полностью.

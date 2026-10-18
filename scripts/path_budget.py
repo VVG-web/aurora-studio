@@ -358,12 +358,21 @@ def config_items(text: str) -> dict:
 # ------------------------------------------------------------------ что и как ложится на диск
 
 # Сколько места нужно под самый короткий файл источника: меньше — не поместится ничего.
-MIN_TAIL = {"confluence": 14, "wiki": 14, "web": 14, "jira": 8, "board": 8, "kb": 12, "free": 12}
+MIN_TAIL = {"tree": 14, "wiki": 14, "pages": 14, "issues": 8, "board": 8, "kb": 12, "free": 12}
 JIRA_KEY_MAX = 10 + 1 + 7       # ключ проекта до 10 знаков, номер задачи до 7 цифр
 WEB_STEM = 60                   # основа имени вложения сайта (`web_export.asset_name`)
 WEB_FILES = "_files"            # `web_export.ASSET_DIR`
 
-EXPORTERS = {"confluence_export.py": "confluence", "web_export.py": "web", "jira_export.py": "jira"}
+def exporter(script: str):
+    """(модуль выгрузки, его `PATH_MODEL`: tree | pages | issues) по имени скрипта из манифеста; без модели — (None, "")."""
+    if not script.endswith(".py"):
+        return None, ""
+    try:
+        import importlib
+        module = importlib.import_module(script[:-3])
+    except Exception:  # noqa: BLE001 — нет скрипта или он не импортируется: правил его имён не знаем
+        return None, ""
+    return module, str(getattr(module, "PATH_MODEL", "") or "")
 
 
 @dataclass
@@ -372,11 +381,12 @@ class Res:
     key: str
     line: str
     source: str
-    kind: str               # confluence | web | jira | wiki | board | kb | free | file
+    kind: str               # tree | pages | issues (модель выгрузки) | wiki | board | kb | free | file
     path: str
     cfg_line: int = 0
-    rows: list = field(default_factory=list)    # строки внутри источника: корни Confluence, адреса сайта
+    rows: list = field(default_factory=list)    # строки внутри источника: корни дерева страниц, адреса сайта
     where: tuple = ()
+    module: object = None                       # модуль выгрузки: его `DEFAULT_OUT` и правила имён
     extra: dict = field(default_factory=dict)       # особенности источника: вложения сайтов включены ли
 
 
@@ -442,7 +452,8 @@ def resources(root: str, text: str, cfg: dict) -> list:
         inst, declared, order = [], False, []
     seen: dict = {}
     for n, it in enumerate(inst):
-        kind = EXPORTERS.get(it.get("script") or "") or it.get("kind") or "free"
+        module, model = exporter(it.get("script") or "")
+        kind = model or it.get("kind") or "free"
         if not it.get("path"):
             continue
         if declared and n < len(order):
@@ -450,32 +461,39 @@ def resources(root: str, text: str, cfg: dict) -> list:
         else:
             legacy = ((it.get("manifest") or {}).get("mirror") or {}).get("legacy_path_key") or "sources_confluence"
             line, label, where = get("paths", legacy)[1], f"paths → {legacy}", ("paths", legacy)
-        res = Res(f"sources:{it['id']}", label, it["id"], kind, it["path"], line, where=where)
+        res = Res(f"sources:{it['id']}", label, it["id"], kind, it["path"], line, where=where, module=module)
         out.append(res)
         seen.setdefault((kind, it["path"].strip("/").casefold()), res)
     # Пути, которые читают сами выгрузчики (`paths`), могут расходиться с реестром `sources:`.
-    for kind, key, name in (("confluence", "sources_confluence", "Confluence"), ("jira", "sources_jira", "Jira")):
-        value, line = get("paths", key)
-        if value and (kind, value.strip("/").casefold()) not in seen:
-            out.append(Res(f"path:{key}", f"paths → {key}", name, kind, value, line, where=("paths", key)))
+    try:
+        modules = R.installed(root).values()
+    except Exception:  # noqa: BLE001
+        modules = []
+    for m in modules:
+        key = (m.get("mirror") or {}).get("legacy_path_key")
+        module, model = exporter((m.get("run") or {}).get("script") or "")
+        value, line = get("paths", key) if key else ("", 0)
+        if value and model and (model, value.strip("/").casefold()) not in seen:
+            out.append(Res(f"path:{key}", f"paths → {key}", str(m.get("id") or key), model, value, line,
+                           where=("paths", key), module=module))
     mirrors: dict = {}
     for r in out:
-        if r.kind in ("confluence", "web"):
+        if r.kind in ("tree", "pages"):
             mirrors.setdefault(r.kind, r)           # строки внутри источника — первому зеркалу вида
-    if "confluence" in mirrors:
+    if "tree" in mirrors:
         for path, (page_id, line) in cfg.items():
             if (len(path) >= 3 and path[-1] == "page_id" and path[-3] == "sync_roots" and page_id.isdigit()
                     and isinstance(path[-2], int)):
                 title = cfg.get(path[:-1] + ("title",), ("", 0))[0]
-                mirrors["confluence"].rows.append({
+                mirrors["tree"].rows.append({
                     "key": f"root:{page_id}", "id": page_id, "title": title, "cfg_line": line,
                     "where": ["atlassian", "confluence", "sync_roots", path[-2]],
                     "line": f"atlassian → confluence → sync_roots → строка {path[-2] + 1}"})
-    if "web" in mirrors:
-        mirrors["web"].extra["assets"] = get("web", "assets")[0].lower() not in ("false", "no", "нет")
+    if "pages" in mirrors:
+        mirrors["pages"].extra["assets"] = get("web", "assets")[0].lower() not in ("false", "no", "нет")
         for path, (url, line) in cfg.items():
             if path[:2] == ("web", "pages") and path[-1] == "url" and len(path) == 4 and isinstance(path[2], int):
-                mirrors["web"].rows.append({
+                mirrors["pages"].rows.append({
                     "key": f"web:{url}", "id": url, "title": "", "cfg_line": line,
                     "where": ["web", "pages", path[2]], "line": f"web → pages → строка {path[2] + 1}"})
     value, line = get("paths", "knowledge_db")
@@ -593,7 +611,7 @@ def _check_folder(root: str, res: Res, models: dict, scans: dict, left: list, re
     folder = os.path.normpath(os.path.join(root, rel)) if rel else ""
     real, here = os.path.realpath(folder), os.path.realpath(root)
     scannable = (res.kind != "file" and rel and here != real and not here.startswith(real.rstrip(os.sep) + os.sep))
-    tree = res.kind in ("confluence", "wiki")
+    tree = res.kind in ("tree", "wiki")
     cache_key = (folder, tree)
     if scannable and cache_key not in scans:
         scans[cache_key] = scan(folder, tops=tree, left=left)
@@ -655,22 +673,23 @@ def _risks(res: Res, system: str, models: dict, base: int, tallies: list, rel: s
     owner = _Owner(res)
     if any(t.pages for _w, t in tallies):
         return []                           # есть файлы — слово за ними, а не за моделью
-    if res.kind == "confluence" and res.rows:
+    if res.kind == "tree" and res.rows:
         # Движок держит путь страницы от корня проекта в `PATH_CHARS`; зеркало вне проекта он считает
         # от стандартной папки (`confluence_export.Exporter.prefix_len`). Корень длиннее — запас кончается.
         parts = [p for p in re.split(r"[\\/]+", rel) if p not in ("", ".")]
         inside = bool(parts) and ".." not in parts and not re.match(r"^([A-Za-z]:|[\\/])", rel.strip())
-        room = aurora_common.PATH_CHARS - (len("/".join(parts)) + 1 if inside else len("Sources/Confluence") + 1)
+        default = len(getattr(res.module, "DEFAULT_OUT", "") or "")      # вне проекта выгрузка считает от стандартной папки
+        room = aurora_common.PATH_CHARS - (len("/".join(parts)) + 1 if inside else default + 1)
         worst = base + 1 + room
         if worst > lim["path"]:
             return [_find(owner, system, models, kind="path", level="risk", length=worst, limit=lim["path"],
                           extra={"effect": "tree", "engine": aurora_common.PATH_CHARS})]
-    if res.kind == "jira":
+    if res.kind == "issues":
         worst = base + 1 + measure(system, "K" * JIRA_KEY_MAX + ".md")
         if worst > lim["path"]:
             return [_find(owner, system, models, kind="path", level="risk", length=worst, limit=lim["path"],
                           extra={"effect": "issue"})]
-    if res.kind == "web" and res.rows:
+    if res.kind == "pages" and res.rows:
         out = []
         for row in res.rows:
             worst = max([base + 1 + measure(system, n) for n in web_names(row["id"])] or [0])

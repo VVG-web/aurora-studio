@@ -47,6 +47,7 @@ from sources_core import (BoardMirror, RestApi, block, cited_by_cards, config_te
 from sources_core import read_secret as core_secret
 
 DEFAULT_OUT = "Sources/JIRA"
+PATH_MODEL = "issues"       # плоские файлы `<ключ>.md` — для проверки длины путей (`path_budget`)
 # Задачи, которые не поместились в путь этой системы (Windows без длинных путей): синк идёт дальше,
 # потеря названа строкой и счётчиком в сводке. Список прогона; сбрасывает `run_export()`.
 PATH_LOST: list = []

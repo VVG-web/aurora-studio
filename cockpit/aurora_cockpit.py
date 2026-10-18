@@ -5549,7 +5549,7 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
             note = engine_fallback_note(project, row["script"], path)
             # Выгрузка вне маршрута (кнопка одной команды): длинные пути названы одной строкой в начале.
             # Шаг маршрута её не печатает — маршрут сказал о них один раз на весь прогон.
-            if not parent and cmd in RR.SYNC_LOADS:
+            if not parent and cmd in RR.sync_commands(project):
                 note = "\n".join(x for x in (note, RR.paths_lines(sys.modules[__name__], project,
                                                                    RR.Texts(sys.modules[__name__], "ru"))[0]) if x)
             if note:

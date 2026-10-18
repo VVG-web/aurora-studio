@@ -88,8 +88,6 @@ DID_WORK = (r"переписано:\s*([1-9]\d*)", r"разобрано\s+([1-9]
             # итог шага агента: «Документы: обработано 2 · …», «Карт … записано: 76»
             r"обработано\s+([1-9]\d*)", r"записано:\s*([1-9]\d*)")          # данные движка
 ENGINE_CMDS = ("kit:skills",)
-# Шаги, которые кладут файлы в зеркала: на них упирается длина пути (`path_budget`), и о ней говорится в начале прогона.
-SYNC_LOADS = ("sync:confluence", "sync:web", "sync:jira")
 CYCLE_START, CYCLE_END = "цикл:", "конец цикла"                             # данные движка
 
 
@@ -316,6 +314,16 @@ def run_job(ck, project: str, cmd: str, args: list, stop=None, on_job=None,
         pass
     return {"rc": rc if rc is not None else 2, "lines": lines, "stopped": asked,
             "job": job_id, "run_id": run_id, "hung": hung}
+
+
+def sync_commands(project: str) -> set:
+    """Команды выгрузки подключённых к проекту модулей источников — по реестру. На этих шагах упирается длина
+    пути (`path_budget`), и о ней говорится в начале прогона."""
+    try:
+        import sources_registry as SR
+        return {i["command"] for i in SR.instances(project) if i.get("command")}
+    except Exception:  # noqa: BLE001 — справка не имеет права ронять запуск
+        return set()
 
 
 def paths_lines(ck, project: str, t) -> tuple:
@@ -1057,7 +1065,8 @@ class RouteRun:
     def _paths_hint(self, steps: list) -> None:
         """Одна строка в начале прогона с выгрузкой: какие строки конфига не поместятся в путь на Windows, macOS
         или Linux. Запуск не блокируется — не всё будет загружено, и человек знает заранее, что именно."""
-        if not any(s["cmd"] in SYNC_LOADS for s in steps):
+        loads = sync_commands(self.project)
+        if not any(s["cmd"] in loads for s in steps):
             return
         start, self.paths_final = paths_lines(self.ck, self.project, self.t)
         if start:

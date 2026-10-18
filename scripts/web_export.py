@@ -49,6 +49,7 @@ from sources_core import (BoardMirror, block, cited_by_cards, config_text, loss_
                           remember_hosts, report_stale, trusted_hosts, verify)
 
 DEFAULT_OUT = "Sources/Web"
+PATH_MODEL = "pages"        # плоские файлы страниц по `slug()` и вложения в `ASSET_DIR` — для `path_budget`
 # Страница, которую сервер назвал неизменной (304), заново не качается и не разбирается.
 # Кэш лежит в проекте рядом с кэшем Confluence. Изменили `to_markdown` так, что меняется
 # вывод, — поднимите CONVERTER: кэш сбросится, и следующий прогон пройдёт всё зеркало.
