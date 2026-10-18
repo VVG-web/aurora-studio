@@ -93,12 +93,15 @@ def test_router_blocks_when_every_provider_of_the_role_is_unavailable(tmp: Path)
         calls.append(b["n"])
         return (200, OK_BODY, "", 0.1)
     try:
-        before = AG.USAGE["errors"].get("связь: нужное недоступно", 0)
+        before, failed = AG.USAGE["errors"].get(AG.LINK_FAILURE, 0), AG.USAGE["link_failed"]
         r = AG.call_role(cfg, "critic", MSGS, transport=transport, deadline=time.time() + 30, sleep=lambda s: None)
         assert not r["ok"] and r.get("net_blocked") and calls == [], f"цепочка роли недоступна, а запрос ушёл: {calls} {r}"
         assert r["net_blocked"]["providers"] == ["gw-a"] and "VPN-1" in r["net_blocked"]["why"], r["net_blocked"]
-        assert any("не поломка провайдеров" in line for line in r["log"]), r["log"]
-        assert AG.USAGE["errors"].get("связь: нужное недоступно", 0) == before + 1, "отказ не попал в счёт сбоев вызовов"
+        assert any("не поломка провайдеров" in line and AG.LINK_FAILURE in line for line in r["log"]), r["log"]
+        assert AG.USAGE["errors"].get(AG.LINK_FAILURE, 0) == before + 1 and AG.USAGE["link_failed"] == failed + 1, \
+            "отказ не попал в счёт обрывов связи (итог прогона)"
+        looks = importlib.import_module("agent_runner").looks_offline({"steps": [{"status": "сбой", "note": r["log"][-1]}]})
+        assert looks, "прогон агента не узнаёт отказ по связи как обрыв связи и не станет ждать"
         assert not AG.DOWN
         # у роли worker запасной gw-b жив — он идёт, а gw-a для critic по-прежнему не подставляется «наугад»
         r = AG.call_role(cfg, "worker", MSGS, transport=transport, deadline=time.time() + 30, sleep=lambda s: None)

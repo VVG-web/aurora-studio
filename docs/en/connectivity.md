@@ -166,6 +166,12 @@ Details worth knowing:
 - **Resume and the dialog.** Steps done last time need no connection and are not listed in the dialog. A refusal before the first step
   commits nothing. "Stop" is heard during the wait and in the very moment the connection returns.
 - **Diagnostics are not blocked.** `agent:ping`, `agent:probe`, `agent:width` ask the providers live: that is what they are for.
+- **One drop classifier.** The kind of a drop (DNS, connection refused, connection timeout, route, TLS, proxy, reset…) is named by
+  the engine's classifier (`agent_core.link_kind`, the `CAUSES` table of reasons) — the same one that raises the connection alarm
+  `link:<n>` and writes the "connection lost" lines of a run summary. The connection check keeps no parsing of its own: drops marked
+  `conn` in the table make the ring ask the check whether a profile or the internet is down, and the probe result codes
+  (`timeout`, `refused`, `dns`…) come from the same kinds. A call refused for lack of connection carries the "connection lost" mark —
+  an agent run recognises by it that the batch stopped because of the connection.
 - **Quarantine.** A drop explained by an unavailable profile or the internet causes no quarantine; if the check learned about the
   outage after the first drop, the quarantine set for it is lifted when the connection returns.
 
