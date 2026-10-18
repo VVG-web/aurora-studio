@@ -14,6 +14,7 @@ import importlib
 import json
 import sys
 import threading
+import time
 from pathlib import Path
 
 from harness import KIT, SCRIPTS, make_project, set_home, test  # noqa: F401
@@ -292,7 +293,13 @@ def test_models_saves_at_once_do_not_clash(tmp: Path):
         th.join()
     # На медленной файловой системе (Windows) очередь за замком может не дождаться: «занято» — честный ответ, повтор вправе.
     assert sum(1 for r in results if r.get("ok")) == 1 and all(r.get("ok") or r.get("conflict") or r.get("code") == "busy" for r in results), results
-    assert not list((kit / "local").glob("*.tmp")) and not (kit / "local" / "models.json.lock").exists(), "остались временные файлы"
+    assert not list((kit / "local").glob("*.tmp")), "остались временные файлы"
+    lock = kit / "local" / "models.json.lock"
+    for _ in range(40):                                    # замок снимается с повтором: на Windows это занимает мгновения
+        if not lock.exists():
+            break
+        time.sleep(0.05)
+    assert not lock.exists(), "после записей остался замок"
 
 
 # ------------------------------------------------------------------ метаданные команд и закладки

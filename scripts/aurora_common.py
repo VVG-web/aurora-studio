@@ -2203,6 +2203,17 @@ def replace_file(src, dst, *, windows: bool | None = None, attempts: int = 40,
             time.sleep(pause * min(n + 1, 8))
 
 
+def lock_release_retry(path, tries: int = 40, pause: float = 0.05) -> bool:
+    """`lock_release` с повтором: на Windows замок, который в этот миг читает ждущий поток, не удаляется («занят»), и без
+    повтора он оставался бы на минуту (до признания залежавшимся) и держал следующих. → снят ли (нет файла — тоже снят)."""
+    import time
+    for _ in range(max(1, tries)):
+        if lock_release(path) or not os.path.exists(str(path)):
+            return True
+        time.sleep(pause)
+    return False
+
+
 def keep_private_copy(path, tag: str = "broken", keep: int = 3) -> bool:
     """Копия файла рядом (`<имя>.<tag>-<время>`) с правами 600 с первого байта; хранятся `keep` свежих. → удалось ли.
 

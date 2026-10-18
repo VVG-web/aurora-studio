@@ -342,7 +342,7 @@ def save(kit, data: dict, expect=None, replace_broken: bool = False) -> dict:
         return {"ok": False, "error": f"{root} — папка проекта, а не кита: настройка моделей "
                                       "пишется только в кит (нет .aurora/kit_path.txt?)"}
     import time
-    from aurora_common import lock_release, lock_take, replace_file
+    from aurora_common import lock_release_retry, lock_take, replace_file
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = str(path) + ".lock"
     try:
@@ -393,7 +393,7 @@ def save(kit, data: dict, expect=None, replace_broken: bool = False) -> dict:
         return {"ok": False, "code": "write", "failed": True,
                 "error": f"не удалось записать настройку моделей: {e.strerror or e}"}
     finally:
-        lock_release(lock)
+        lock_release_retry(lock)
 
 
 def masked(data: dict) -> dict:
