@@ -145,3 +145,154 @@ def test_kb_lint_shows_repeated_identifiers_as_a_warning_only(tmp: Path):
     assert "повторов идентификаторов" not in only.stdout, "хук коммита судит только переданные карточки"
     errs = [l for l in cp.stdout.splitlines() if l.startswith("kb_lint: карточек")]
     assert errs and "ошибок" in errs[0] and "повторов" not in errs[0], errs
+
+
+# ------------------------------------------------------------------ BL-TEAM-07: паспорт артефакта
+
+def _make_project_with_kind(tmp: Path, kind: str = "us"):
+    root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/T.md").write_text("# История\n\n## Описание\n\n## Сценарии\n", encoding="utf-8")
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip()
+                   + f'\nartifacts:\n  {kind}:\n    title: "История"\n    template: "Templates/T.md"\n'
+                     f'    out: "Artifacts/{kind}"\n', encoding="utf-8")
+    (root / "Artifacts" / kind).mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _fake_model(draft: str, calls: list):
+    def fake(cfg_, role, messages, **kw):
+        calls.append(role)
+        ok = {"ok": True, "backend": 1, "model": "m", "tps": 9, "log": []}
+        if role == "planner":
+            return {**ok, "text": json.dumps({"questions": [], "plan": "1. Описание"}, ensure_ascii=False)}
+        if role == "critic":
+            return {**ok, "text": json.dumps({"ok": True, "issues": []}, ensure_ascii=False)}
+        if role == "qa":
+            return {**ok, "text": "1. ОПОРА «срок»\n\nВЕРДИКТ: ЧИСТО"}
+        return {**ok, "text": draft}
+    return fake
+
+
+@test
+def test_make_writes_the_artifact_passport_and_stage_times(tmp: Path):
+    """`agent:make`: номер, связи, время этапов и число обращений к модели попадают в шапку артефакта."""
+    A = _mod("agent_core")
+    R = _mod("agent_runner")
+    root = _make_project_with_kind(tmp)
+    from harness import card
+    for i in range(5):
+        card(root, f"Concepts/Заявка-{i}.md", f"Заявка проходит статусы. Срок десять дней. [[Заявка-{(i + 1) % 5}]]",
+             status="knowledge", kind="knowledge")
+    card(root, "Requirements/REQ-042-Срок-заявки.md", "Срок заявки — десять дней. [[Заявка-1]]",
+         status="knowledge", kind="knowledge", type="requirement")
+    calls: list = []
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    fake = _fake_model("# История\n\n## Описание\n\nСрок заявки — десять дней, см. [[REQ-042-Срок-заявки]] "
+                       "и [[REQ-999-Выдумка]].\n", calls)
+    links, bad = R.parse_from(["REQ-007", "SPEC-012,AC-3.1"])
+    assert not bad and links == {"implements": ["REQ-007"], "parent": ["SPEC-012"], "covers": ["AC-3.1"]}, (links, bad)
+    r = R.run_make(cfg, str(root), "us", "срок заявки десять дней", "", "", True, call=fake, links=links)
+    assert r["ok"] and r["stage"] == "done", r
+    st = R.load_session(str(root), r["sid"])
+    doc = (root / st["path"]).read_text(encoding="utf-8")
+    head = doc.split("---", 2)[1]
+    fm = _mod("aurora_common").frontmatter(doc)
+    assert fm["artifact_id"] == "ART-0001", head
+    # связи: объявленные + карточка REQ из пака, на которую документ сослался; выдуманную REQ-999 в паспорт не берём
+    assert "implements: [REQ-007, REQ-042]" in head, head
+    assert "parent: SPEC-012" in head and "covers: [AC-3.1]" in head, head
+    assert "REQ-999" not in head
+    # время этапов — UTC с секундами, а не дата
+    import re as _re
+    for stage in R.MAKE_STAGES:
+        assert _re.search(rf"^  {stage}: \d{{4}}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", head, _re.M), (stage, head)
+    assert _re.search(r"^started: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", head, _re.M), head
+    assert _re.search(r"^finished: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", head, _re.M), head
+    assert f"model_calls: {len(calls)}" in head and len(calls) >= 4, (calls, head)
+    # сессия хранит тот же номер: продолжение не выдаёт второй
+    assert st["artifact_id"] == "ART-0001"
+    r2 = R.run_make(cfg, str(root), "", "", r["sid"], "", False, call=fake)
+    assert r2["ok"], r2
+    assert R.load_session(str(root), r["sid"])["artifact_id"] == "ART-0001"
+    assert "Номер: `ART-0001`" in R.report_make(r2)
+
+
+@test
+def test_two_artifacts_get_two_numbers_and_the_header_survives_hostile_values(tmp: Path):
+    """Каждый артефакт получает свой номер; значения паспорта не несут переводов строки и пробелов."""
+    R = _mod("agent_runner")
+    root = _make_project_with_kind(tmp)
+
+    def doc(sid: str, **extra) -> str:
+        st = {"sid": sid, "kind": "us", "idea": "Идея " + sid,
+              "spec": {"out": "Artifacts/us", "template": "t.md", "title": "US"},
+              "stages": {"checked": "2026-10-19T01:02:03Z"}, "issues": [],
+              "momus": {"ok": True, "unsupported": 0, "clean": True},
+              "draft": "Текст.", "pack": "# Context pack\n", "path": None, **extra}
+        return (root / R.write_artifact(str(root), st)).read_text(encoding="utf-8")
+
+    one = doc("s1")
+    two = doc("s2")
+    assert "artifact_id: ART-0001" in one and "artifact_id: ART-0002" in two, (one[:200], two[:200])
+    evil = doc("s3", links={"implements": ["REQ-1\nstatus: ready", "REQ-2"], "parent": ["SPEC 3"]},
+               started="2026-10-19T00:00:00Z\nstatus: ready")
+    head = evil.split("---", 2)[1]
+    assert [l for l in head.splitlines() if l.startswith("status:")] == ["status: ready"], head   # одна строка status
+    assert "implements: [REQ-2]" in head and "parent:" not in head, head
+    assert "started:" not in head, "значение с переводом строки попало в шапку"
+    # неузнанный идентификатор — ошибка вызова, а не молчаливая потеря связи
+    _l, bad = R.parse_from(["REQ-1", "ФИЧА-7"])
+    assert "ФИЧА-7" in bad, bad
+    _l, bad = R.parse_from(["SPEC-1", "US-2"])
+    assert "родитель" in bad, bad
+    links, bad = R.parse_from(["RU.PRJ.REQ-010", "RU.PRJ.AC-1.1.1"])
+    assert not bad and links == {"implements": ["RU.PRJ.REQ-010"], "covers": ["RU.PRJ.AC-1.1.1"]}, (links, bad)
+
+
+@test
+def test_make_without_the_id_module_still_writes_the_document(tmp: Path):
+    """Движок проекта, обновлённый не целиком (нет id_registry), документ пишет — без номера, а не отказом."""
+    import builtins
+    R = _mod("agent_runner")
+    root = _make_project_with_kind(tmp)
+    saved = sys.modules.pop("id_registry", None)
+    real_import = builtins.__import__
+
+    def deny(name, *a, **kw):
+        if name == "id_registry":
+            raise ImportError("нет модуля")
+        return real_import(name, *a, **kw)
+
+    builtins.__import__ = deny
+    try:
+        st = {"sid": "s9", "kind": "us", "idea": "Идея", "spec": {"out": "Artifacts/us", "template": "t.md",
+              "title": "US"}, "stages": {}, "issues": [], "draft": "Текст.", "pack": "", "path": None}
+        text = (root / R.write_artifact(str(root), st)).read_text(encoding="utf-8")
+    finally:
+        builtins.__import__ = real_import
+        if saved is not None:
+            sys.modules["id_registry"] = saved
+    assert "artifact_id" not in text and "session: s9" in text, text[:300]
+
+
+@test
+def test_impact_follows_the_passport_links_of_artifacts(tmp: Path):
+    """`ops:impact`: артефакт, чей паспорт называет цель (`implements`, `parent`, `covers`), попадает в зависимых."""
+    from harness import card
+    root = make_project(tmp)
+    card(root, "Requirements/REQ-042-Срок-заявки.md", "Срок — десять дней.", status="knowledge",
+         kind="knowledge", type="requirement", req_id="REQ-042")
+    _touch(root, "Artifacts/us/История.md",
+           "---\ntitle: История\nartifact_id: ART-0003\nimplements: [REQ-042]\nparent: SPEC-012\n---\n\nТекст.\n")
+    _touch(root, "Artifacts/ac/Критерии.md",
+           "---\ntitle: Критерии\nartifact_id: ART-0004\nparent: ART-0003\ncovers: [AC-3.1]\n---\n\nТекст.\n")
+    _touch(root, "Artifacts/us/Другая.md", "---\ntitle: Другая\nimplements: [REQ-421]\n---\n\nТекст.\n")
+    cp = run("kb_trace.py", "--impact", "REQ-042-Срок-заявки", cwd=root, expect_rc=0)
+    assert "Artifacts/us/История.md (паспорт: implements)" in cp.stdout, cp.stdout
+    assert "Другая.md" not in cp.stdout, "REQ-421 принят за REQ-042"        # совпадение целого номера, не префикса
+    # цель можно назвать номером артефакта: зависимые — те, у кого он родитель
+    cp = run("kb_trace.py", "--impact", "ART-0003", cwd=root, expect_rc=0)
+    assert "Artifacts/ac/Критерии.md (паспорт: parent)" in cp.stdout, cp.stdout
+    assert "История.md" not in cp.stdout.split("Зависит от неё")[1], cp.stdout

@@ -76,22 +76,46 @@ def scan(paths: list) -> dict:
     return out
 
 
+PASSPORT_FIELDS = ("implements", "parent", "covers")      # связи паспорта артефакта (BL-TEAM-07)
+
+
+def _bare(value) -> str:
+    return str(value or "").strip().strip("\"'")
+
+
+def passport_hit(fm: dict, names: set, target: str) -> str:
+    """Название поля паспорта, через которое артефакт связан с целью, или пусто.
+
+    Цель называют по-разному: именем файла (`REQ-042-Срок`), номером (`REQ-042`) или номером
+    артефакта (`ART-0007`). Паспорт хранит номер, поэтому совпадением считается и номер из
+    карточки цели (`req_id`, `spec_id`, `artifact_id`), и начало имени файла до дефиса."""
+    for field in PASSPORT_FIELDS:
+        for v in as_list(fm.get(field, "")):
+            v = _bare(v)
+            if v and (v in names or target.startswith(v + "-")):
+                return field
+    return ""
+
+
 def impact(target: str) -> int:
     graph = scan([ROOT] + PRODUCTS)
-    hit = [p for p in graph if os.path.splitext(os.path.basename(p))[0] == target]
+    hit = [p for p in graph if os.path.splitext(os.path.basename(p))[0] == target
+           or _bare(graph[p][0].get("artifact_id")) == target]
     if not hit:
         print(f"kb_impact: карточка {target} не найдена", file=sys.stderr)
         return 1
     card_fm = graph[hit[0]][0]
+    names = {target} | {_bare(card_fm.get(k)) for k in ("artifact_id", "req_id", "spec_id", "q_id")} - {""}
 
     cards, artifacts, delivered, released = [], [], [], []
     for p, (fm, links, base) in graph.items():
         if p in hit:
             continue
-        touched = target in links or target in base
+        by_passport = passport_hit(fm, names, target)
+        touched = target in links or target in base or bool(by_passport)
         if not touched:
             continue
-        how = "based_on" if target in base else "ссылка"
+        how = "based_on" if target in base else "ссылка" if target in links else f"паспорт: {by_passport}"
         if p.startswith(ROOT):
             cards.append((p, how, (fm.get("status") or "").strip()))
         elif p.startswith("Deliverables/released"):
