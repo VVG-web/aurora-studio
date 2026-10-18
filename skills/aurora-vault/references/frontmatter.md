@@ -1,10 +1,12 @@
-# Frontmatter schema v4 — lifecycle
+# Шапка карточки — поля и жизненный цикл
 
-Every card in `AuroraKnowledgeDB/` carries these fields. Legacy cards (only
-`title/aliases/tags/created/updated/source/related`) are valid but are treated as
-`status: draft` until upgraded — доверие им никто не считал. Upgrade lazily: whenever any
-workflow touches a legacy card, add the missing fields; `kb:trust` пересчитает класс, как
-только у карточки появится источник и связи.
+Каждая карточка в `AuroraKnowledgeDB/` несёт шапку. Её форму задаёт **шаблон типа** карточки
+(`akdb_<тип>_v<версия>.md`), и на него ссылается поле `template:` — это и есть версия формы. Прежнее
+`schema_version` ставит только `kb:schema` на старые карточки, новым оно не нужно. Старые карточки (только
+`title/aliases/tags/created/updated/source/related`) допустимы и считаются `status: draft`, пока их не коснулся
+какой-либо процесс: тогда недостающие поля достраиваются, а `kb:trust` пересчитает класс, как только у карточки
+появятся источник и связи. Карточка без `template:` — «до-шаблонная»: ошибкой это не считается; ставится штамп
+при записи, которая проходит строгую проверку шаблона.
 
 ## Full schema
 
@@ -13,10 +15,10 @@ workflow touches a legacy card, add the missing fields; `kb:trust` пересч�
 title: "Алгоритм смены статусов заявки"
 aliases: []               # см. build.md — правила alias обязательны
 tags: [process.algorithm]
-type: process             # concept | process | glossary | system | role | status-model |
-                          # reference | decision | spec | moc
-schema_version: 3         # версия схемы карточки; проставляет kb:schema
-status: knowledge         # knowledge | draft · служебные: index, deprecated
+type: process             # concept | process | glossary | system | role | status-model | requirement |
+                          # reference | cited-document | decision | question | correction | moc | spec
+template: akdb_process_v1.0.md   # шаблон, по которому составлена карточка; ставит движок
+status: knowledge         # knowledge | draft · служебные: index, placeholder, deprecated
 kind: knowledge           # dictionary | document | knowledge — кому позволено править тело
 built: machine            # метку ставит машина; её отсутствие НЕ значит «писал человек»
 trust: trusted            # класс источника: raw | trusted | draft | unknown
@@ -25,7 +27,8 @@ trust_checked: 2026-08-21 # когда доверие пересчитывало
 distilled: 2026-08-21     # когда модель написала тезис (kind: knowledge)
 created: 2026-05-17
 updated: 2026-07-05
-source: "Sources/Confluence/SM - Алгоритмы/04. ..."   # или Raw/..., или Sources/JIRA/...
+sources:                  # блок-список путей; доверие считается по слабейшему
+  - "Sources/Confluence/SM - Алгоритмы/04. ..."   # или Raw/..., или Sources/JIRA/...
 source_synced: 2026-07-05 # версия источника на момент последней обработки
 supersedes: []            # wiki-ссылки на карточки, которые эта заменила
 superseded_by:            # заполняется ТОЛЬКО у deprecated
@@ -60,6 +63,7 @@ Do not split a card by hand with `text.split("---")`.
 | `knowledge` | все связанные задачи в доверенных статусах | факт |
 | `draft` | хоть одна задача в работе, либо связей нет вовсе | идея, требует проверки |
 | `index` | служебный: карта содержания, `_index.md` | навигация, не знание |
+| `placeholder` | заготовка: имя названо в тексте, определения пока нет | пустышка, знанием не считается |
 | `deprecated` | заменено через `kb:supersede` | история; НЕ применять, цитировать для «почему» |
 
 Переходы не «разрешаются» — они **происходят сами** при следующем `kb:trust`: задача
@@ -73,8 +77,9 @@ Do not split a card by hand with `text.split("---")`.
 ## Версия схемы
 
 Схема карточки меняется вместе с движком, и без отметки в самой карточке узнать, прошла
-ли миграция, невозможно. `schema_version` проставляет `kb:schema`; карточка без отметки
-считается версией 1 (легаси-база), а если у неё уже есть `status` и `type` — версией 2.
+ли миграция, невозможно. `schema_version` проставляет `kb:schema` на старые карточки; карточка без отметки
+считается версией 1 (легаси-база), а если у неё уже есть `status` и `type` — версией 2. У карточки по шаблону
+версию формы называет поле `template:`.
 
 | Версия | Что появилось | Когда |
 |---|---|---|

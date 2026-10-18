@@ -35,9 +35,9 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 
 | Role | What it does | Prompt |
 |---|---|---|
-| Planner (planner) | A large source without structure: a plan of sections to cut it by. | `PROMPT_PLAN_SOURCE` (agent_runner.py) |
-| Planner (planner) | A meeting transcript from Raw/meetings: a plan part by part. | `PROMPT_MEETING` (agent_runner.py) |
-| Writer (worker) | Storyboarding a source: topic boundaries, card names, kind of knowledge. The engine, not the model, moves the text into cards. | `PROMPT_BUILD` (agent_runner.py) |
+| Planner (planner) | A large source without structure: a plan of sections to cut it by. The card section comes from the project card type registry; an excerpt of the 'How to choose a card type' guide is attached. | `PROMPT_PLAN_SOURCE` (agent_runner.py) |
+| Planner (planner) | A meeting transcript from Raw/meetings: a plan part by part. The card section comes from the project card type registry, with an excerpt of the type guide. | `PROMPT_MEETING` (agent_runner.py) |
+| Writer (worker) | Storyboarding a source: topic boundaries, card names, the base section (card type). Sections come from the project card type registry together with an excerpt of the 'How to choose a card type' guide; the engine refuses a section outside the registry. The engine, not the model, moves the text into cards. | `PROMPT_BUILD` (agent_runner.py) |
 | Writer (worker) | A source without structure: break it down, skip it or treat it as service text. Also the 'empty' verdict on a source that has sections. | `PROMPT_NO_SECTIONS` (agent_runner.py) |
 | Critic (critic) | Checking the storyboard before writing into the base. | `PROMPT_BUILD_CRITIC` (agent_runner.py) |
 | Critic (critic) | A second opinion on the 'empty' verdict about a source: always for sources of 8000 characters and more, for any with the critic on. | `PROMPT_NO_SECTIONS` (agent_runner.py) |
@@ -56,7 +56,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 
 | Role | What it does | Prompt |
 |---|---|---|
-| Writer (worker) | A card thesis from the moved source text. Changed source — PROMPT_REDISTILL; long text — by parts (PROMPT_DISTILL_PART) and joining (PROMPT_DISTILL_JOIN). | `PROMPT_DISTILL` (agent_runner.py) |
+| Writer (worker) | A card thesis from the moved source text; rule 6 of the request is the thesis form for the card type, taken from its template. Changed source — PROMPT_REDISTILL; long text — by parts (PROMPT_DISTILL_PART) and joining (PROMPT_DISTILL_JOIN). | `PROMPT_DISTILL` (agent_runner.py) |
 | Planner (planner) | An overgrown card: a plan to split it into several. | `PROMPT_PLAN_SPLIT` (agent_runner.py) |
 | Writer (worker) | Paragraphs repeated on dozens of pages: a template or knowledge. | `PROMPT_TEMPLATE_KINDS` (agent_runner.py) |
 | Momus (qa) | Momus: every claim of the thesis rests on the source. Without support — a mark and a re-check. | `PROMPT_MOMUS` (agent_runner.py) |

@@ -3767,6 +3767,118 @@ def source_is_feed(cwd: str, source: str) -> bool:
     return head is not None and (head_scalar(head, "feed") or "").lower() == "true"
 
 
+# ------------------------------------------------------------------ правила шаблонов в запросах модели (CT-11)
+
+# Выдержка из инструкции «Как определить тип карточки» для запросов разбора. Шаги — по важности: тип выбирают по
+# шагу 2, спорные пары решает шаг 3; шаги 0 и 6 повторяют правила самого запроса разбора (задача — не сущность,
+# одна сущность — одна карточка) и уходят первыми, когда выдержка не влезает в бюджет. Бюджет держит рост запроса
+# разбора вместе с перечнем разделов в пределах четырёх тысяч знаков.
+GUIDE_PROMPT_STEPS = (2, 3, 0, 6)
+GUIDE_PROMPT_CHARS = 3600
+GUIDE_HEADLESS_CHARS = 6000          # инструкция проекта без заголовков шагов — целиком, но не длиннее
+TYPE_RULES_CHARS = 880               # правило 6 тезиса: с подписью не больше 960 знаков
+DEFAULT_BUILD_SECTION = "Concepts"   # раздел, если модель его не назвала (как до реестра)
+_RULES_CACHE: dict = {}
+
+
+def build_sections(cwd: str = ".") -> list:
+    """[(раздел, тип)] — куда разбор источников вправе класть карточки: включённые типы классов `entity` и `source`
+    из реестра проекта, кроме тех, что ведёт только свой скрипт. Шаблонов нет ни в проекте, ни в ките — прежние восемь
+    разделов (`card_types.LEGACY_SECTION_TYPE` без записей и спецификаций)."""
+    reg = CT.registry_for(cwd or ".")
+    types = [t for t in reg.allowed_for_build() if t.section]
+    if types:
+        order = {t: i for i, t in enumerate(CT.KIT_TYPE_ORDER)}
+        types.sort(key=lambda t: (order.get(t.id, len(order)), t.id))
+        return [(t.section, t.id) for t in types]
+    skip = set(CT.UNMANAGED_SECTION_TYPES) | {"Decisions", "Questions", "MOC"}
+    return [(sec, tid) for sec, tid in CT.LEGACY_SECTION_TYPE.items() if sec not in skip]
+
+
+def types_for_prompt(cwd: str = ".") -> str:
+    """Значения поля `to` для запроса модели: «Concepts (concept), Processes (process), …» — из реестра проекта.
+    Выключенный тип в перечень не входит, свой тип проекта входит."""
+    return ", ".join(f"{sec} ({tid})" for sec, tid in build_sections(cwd))
+
+
+def guide_for_prompt(cwd: str = ".") -> str:
+    """Выдержка из инструкции «Как определить тип карточки» (файл проекта, иначе кита): шаги 0, 2, 3, 6.
+
+    В таблицах вычёркиваются строки типов, которых разбор не предлагает: выключенных, цитируемых документов, записей
+    и карт. Шаги берутся по важности (`GUIDE_PROMPT_STEPS`), пока влезают в `GUIDE_PROMPT_CHARS`; в запросе они идут
+    в исходном порядке. У инструкции проекта нет заголовков «## Шаг N.» — берётся весь текст, не длиннее
+    `GUIDE_HEADLESS_CHARS`. Инструкции нет вовсе — пустая строка.
+    """
+    text = CT.guide_text(cwd or ".").strip()
+    if not text:
+        return ""
+    marks = list(CT.GUIDE_STEP_RE.finditer(text))
+    if not marks:
+        return text[:GUIDE_HEADLESS_CHARS].rstrip()
+    reg = CT.registry_for(cwd or ".")
+    known, offered = set(reg.types), {t.id for t in reg.allowed_for_build()}
+    steps = {}
+    for i, m in enumerate(marks):
+        stop = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        nxt = CT.GUIDE_HEAD_RE.search(text, m.end())
+        steps.setdefault(int(m.group(1)), text[m.start():min(stop, nxt.start()) if nxt else stop])
+
+    def keep(line: str) -> bool:
+        if not line.startswith("|"):
+            return True
+        ids = {x[5:] if x.startswith("akdb_") else x for x in re.findall(r"`([^`\n]+)`", line)} & known
+        return ids <= offered
+
+    picked, used = {}, 0
+    for n in GUIDE_PROMPT_STEPS:
+        body = steps.get(n)
+        if not body:
+            continue
+        body = re.sub(r"\n{3,}", "\n\n", "\n".join(ln for ln in body.split("\n") if keep(ln))).strip()
+        if used + len(body) + 2 > GUIDE_PROMPT_CHARS:
+            continue
+        picked[n] = body
+        used += len(body) + 2
+    if not picked:                       # шаг 2 один длиннее бюджета: лучше его начало, чем ничего
+        first = next((steps[n] for n in GUIDE_PROMPT_STEPS if steps.get(n)), "")
+        return first.strip()[:GUIDE_PROMPT_CHARS].rstrip()
+    return "\n\n".join(picked[n] for n in sorted(picked))
+
+
+def guide_block(cwd: str = ".") -> str:
+    """Блок инструкции для запроса разбора: пустая строка, если инструкции нет, иначе заголовок и выдержка."""
+    got = guide_for_prompt(cwd)
+    return ("\n\nИнструкция выбора раздела (раздел базы — это тип карточки, записанный папкой):\n\n" + got) if got else ""
+
+
+def type_rules_for(cwd: str = ".", card_type: str = "") -> str:
+    """Правила собственной части карточки типа `card_type` (блок AKDB:PROMPT шаблона) одним абзацем, не длиннее
+    `TYPE_RULES_CHARS`. Типа нет в реестре, шаблон не читается — пустая строка."""
+    reg = CT.registry_for(cwd or ".")
+    if not card_type or reg.get(card_type) is None:
+        return ""
+    hit = _RULES_CACHE.get((id(reg), card_type))
+    if hit is not None and hit[0] is reg:
+        return hit[1]
+    try:
+        own = " ".join(CT.prompt_extract(card_type, reg, common=False).split())
+    except OSError:
+        own = ""
+    if len(own) > TYPE_RULES_CHARS:
+        cut = own[:TYPE_RULES_CHARS]
+        own = cut[:cut.rfind(". ") + 1] if ". " in cut else cut.rstrip()
+    if len(_RULES_CACHE) > 64:
+        _RULES_CACHE.clear()
+    _RULES_CACHE[(id(reg), card_type)] = (reg, own)
+    return own
+
+
+def type_rules_line(cwd: str, card_type: str) -> str:
+    """Правило 6 для запроса тезиса: «\n6. Форма тезиса для типа этой карточки: …» или пустая строка."""
+    rules = type_rules_for(cwd, card_type)
+    return f"\n6. Форма тезиса для типа этой карточки: {rules}" if rules else ""
+
+
 PROMPT_BUILD = """Ты разбираешь источник на карточки знаний.
 
 Источник: {source}
@@ -3812,10 +3924,9 @@ PROMPT_BUILD = """Ты разбираешь источник на карточк
   есть и описание предмета (как устроена таблица, какие поля, откуда данные), оно ложится
   в ту же карточку. Пустым (`empty`) такой источник не считается: терять привязку к
   задаче нельзя;
-- раздел базы выбирай по существу: Concepts — понятия и правила, Processes — этапы
-  и процедуры, Glossary — термины, Systems — системы и интеграции, Roles — роли,
-  Statuses — статусы и их переходы, Reference — справочники и таблицы значений,
-  Requirements — требования.
+- раздел базы (`to`) — одно из значений: {section_list}. Раздел — это тип карточки,
+  записанный папкой: выбирай его по существу и по инструкции ниже, придумывать раздел и
+  подбирать «похожий» нельзя.{guide}
 
 Ответь строго одним JSON-объектом, без пояснений вокруг:
 
@@ -4026,8 +4137,11 @@ def section_set(spec: str) -> set:
     return out
 
 
-def check_cards(cards: list, sections: list) -> str:
+def check_cards(cards: list, sections: list, allowed=None) -> str:
     """Проверить разбор арифметикой, а не мнением модели. → причина отказа или пусто.
+
+    `allowed` — разделы, куда разбор вправе класть карточки (`build_sections`): новая карточка в другом разделе —
+    отказ с перечнем допустимых, «похожий» раздел за модель не подбирается. Без `allowed` раздел не проверяется.
 
     Первый живой прогон собрал две карточки из одних и тех же секций 3,4: разные имена,
     дословно одинаковое тело. Критик этого не заметил — и не должен был: пересечение
@@ -4041,6 +4155,11 @@ def check_cards(cards: list, sections: list) -> str:
         if c.get("into") and c.get("title"):
             return (f"у карточки «{name}» указаны сразу `into` и `title`: либо знание "
                     "дописывается в существующую, либо заводится новая")
+        if allowed is not None and not c.get("into"):
+            to = str(c.get("to") or "").strip() or DEFAULT_BUILD_SECTION
+            if to not in allowed:
+                return (f"карточка «{name}»: раздела «{to}» нет среди допустимых ({', '.join(sorted(allowed))}) — "
+                        "укажи в `to` один из них: придумывать раздел и подбирать «похожий» нельзя")
         nums = section_set(c.get("sections", ""))
         if not nums:
             return f"у карточки «{name}» не разобраны номера секций"
@@ -4116,7 +4235,8 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
     # который назвал человек, а не по нашей догадке о содержании.
     feed_rule = FEED_RULE if source_is_feed(cwd, source) else ""
     cands = candidates_block(candidates_for(cwd, cfg, listing))
-    prompt = cands + with_terms(PROMPT_BUILD.format(source=source, sections=listing),
+    prompt = cands + with_terms(PROMPT_BUILD.format(source=source, sections=listing,
+                                                    section_list=types_for_prompt(cwd), guide=guide_block(cwd)),
                                 listing, cwd) + feed_rule
     attempt, note_back = 0, ""
     while True:
@@ -4159,7 +4279,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
             fail_step(step, "карточки предложены без имени или секций", r, key="note")
             step["content_fail"] = True
             return step
-        why, from_check = check_cards(cards, sections), True
+        why, from_check = check_cards(cards, sections, {sec for sec, _tid in build_sections(cwd)}), True
         if not why and use_critic:
             from_check = False
             c = call(cfg, "critic", [{"role": "user", "content": PROMPT_BUILD_CRITIC.format(
@@ -4324,7 +4444,8 @@ def plan_source(cfg: dict, cwd: str, source: str, whole: str, step: dict, apply:
     if shown < 4:
         return 0
     r = call(cfg, "planner", [{"role": "user", "content": PROMPT_PLAN_SOURCE.format(
-        source=source, size=len(whole), outline=listing)}], deadline=deadline)
+        source=source, size=len(whole), outline=listing, section_list=types_for_prompt(cwd),
+        guide=guide_block(cwd))}], deadline=deadline)
     if not r["ok"]:
         return 0
     step["backends"].append((r["backend"], r["model"]))
@@ -4397,7 +4518,7 @@ PROMPT_MEETING = """Ты планировщик. Перед тобой част�
 
 Найди в этой части знание по предмету проекта: решения, факты о процессах, системах и
 данных, требования, ответы на вопросы. Верни JSON:
-{{"parts": [{{"title": "Название карточки", "from": 12, "to": 18, "to_section": "Concepts"}},
+{{"parts": [{{"title": "Название карточки", "from": 12, "to": 18, "to_section": "<раздел>"}},
             {{"into": "Имя существующей карточки", "from": 30, "to": 34}}]}}
 
 Правила:
@@ -4406,10 +4527,10 @@ PROMPT_MEETING = """Ты планировщик. Перед тобой част�
 • речь о сущности, карточка которой есть в списке выше, — `into` с её именем вместо
   `title`: знание о ней копится в одной карточке;
 • границы — номера реплик этой части, не пересекаются; тема может занимать много реплик;
-• раздел: Concepts, Processes, Glossary, Systems, Roles, Statuses, Reference, Requirements;
+• раздел (`to_section`) — одно из значений: {section_list}; выбирай по инструкции ниже;
 • приветствия, организационное («слышно?», «переключите экран»), шутки и рассуждения
   вслух — не знание, их не бери;
-• знания нет — верни {{"parts": []}}."""
+• знания нет — верни {{"parts": []}}.{guide}"""
 
 
 def num_ranges(nums) -> str:
@@ -4472,7 +4593,7 @@ def solve_meeting(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         cands = candidates_block(candidates_for(cwd, cfg, text[:4000]))
         r = call(cfg, "planner", [{"role": "user", "content": with_terms(PROMPT_MEETING.format(
             part=k + 1, parts=len(windows), source=source, when=when, candidates=cands,
-            turns=text), text, cwd)}], deadline=min(step_end or float("inf"),
+            turns=text, section_list=types_for_prompt(cwd), guide=guide_block(cwd)), text, cwd)}], deadline=min(step_end or float("inf"),
                                                     time.time() + AG.call_budget(cfg, "planner")))
         rows = []
         if r["ok"]:
@@ -4972,7 +5093,7 @@ PROMPT_REDISTILL = """Источник карточки «{title}» измени
 
 ИЗМЕНИЛОСЬ:
 <одна-две фразы: что в знании стало другим против прежнего тезиса. Если по сути ничего
-не изменилось, а поменялась только вёрстка — так и напишите: «по сути без изменений»>"""
+не изменилось, а поменялась только вёрстка — так и напишите: «по сути без изменений»>{type_rules}"""
 
 
 # Ответ «ИЗМЕНИЛОСЬ: по сути без изменений» — формулировка задана заданием выше.
@@ -5027,7 +5148,7 @@ PROMPT_DISTILL = """Ты превращаешь перенесённый тек�
    пустая таблица) — верни ровно `ПУСТО`.
 5. Ссылок `[[…]]` не ставь: связи расставит отдельный проход, который не может
    изменить ни слова. Не отсылай к карточкам и документам, которых нет в тексте выше, —
-   никаких «см.», «согласно», «не путать с»: тезис говорит только то, что сказал источник.
+   никаких «см.», «согласно», «не путать с»: тезис говорит только то, что сказал источник.{type_rules}
 
 Верни только текст тезиса, без заголовков и пояснений."""
 
@@ -6483,11 +6604,9 @@ PROMPT_PLAN_SOURCE = """Ты планировщик. Источник «{source}
 
 Правила:
 • карточка — одно понятие, правило или сущность. Название — то, как его будут искать;
-• раздел выбирай по существу: Concepts — понятия и правила, Processes — этапы и
-  процедуры, Glossary — термины, Systems — системы и интеграции, Roles — роли,
-  Statuses — статусы и переходы, Reference — справочники и таблицы, Requirements —
-  требования. Раздел — это тип карточки, записанный папкой, и угадывать его за тебя
-  движок не будет;
+• раздел (`to_section`) — одно из значений: {section_list}. Раздел — это тип карточки,
+  записанный папкой, и угадывать его за тебя движок не будет: выбирай по существу и по
+  инструкции ниже, придумывать раздел и подбирать «похожий» нельзя;
 • код документа в названии не оставляй: «AC-3.4.2 Отправка начислений» — это имя
   бумаги, а искать будут «Отправка начислений на КБК ОП». Код попадёт в синонимы сам;
 • название пиши НА ЯЗЫКЕ ИСТОЧНИКА и его буквами. Источник по-русски — название
@@ -6496,7 +6615,7 @@ PROMPT_PLAN_SOURCE = """Ты планировщик. Источник «{source}
   латинским именем, и карточка останется без единого входа;
 • границы не пересекаются; служебные абзацы (шапка, участники, подписи) пропускай;
 • меньше двух абзацев в карточку не выделяй;
-• если знания в источнике нет вовсе — верни {{"parts": []}}."""
+• если знания в источнике нет вовсе — верни {{"parts": []}}.{guide}"""
 
 
 PROMPT_PLAN_SPLIT = """Ты планировщик. Карточка «{title}» разрослась до {size} знаков —
@@ -6753,8 +6872,13 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     # Раньше здесь стояло `[:12000]` — молчаливое обрезание. Всё, что дальше, в тезис не
     # попадало, и об этом никто не узнавал: ни отчёт, ни карточка. Теперь режем по
     # объявленному окну и говорим, когда текст не влезает целиком.
+    # Правило 6 — форма тезиса для типа карточки (блок AKDB:PROMPT шаблона). Тип — из шапки, а без него — по разделу.
+    from aurora_common import head_scalar as _head_scalar
+    card_type = ((_head_scalar(head, "type") or "").strip().strip('"')
+                 or CT.registry_for(root).section_type().get(os.path.basename(os.path.dirname(os.path.abspath(path))), ""))
+    rules = type_rules_line(root, card_type)
     budget = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + len(title) + 200
-                              + len(lead))
+                              + len(lead) + len(rules))
     parts = [lead + p for p in chunks(src, budget)]
     if len(parts) > MAX_PARTS:
         # Пересказывать такой объём нельзя — но и отдавать человеку с советом «разрежьте»
@@ -6795,7 +6919,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     changed = ""
     if len(parts) == 1 and was_thesis:
         a = once(with_terms(PROMPT_REDISTILL.format(
-            title=title, was=was_thesis[:4000], body=parts[0]), parts[0], root))
+            title=title, was=was_thesis[:4000], body=parts[0], type_rules=rules), parts[0], root))
         if not a["ok"]:
             fail_step(step, model_fail_note(a), a, key="note")
             return step
@@ -6818,7 +6942,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         # начинает ссылаться на карточки как на источники («согласно …», «описано в …»),
         # и строгий Момус находит в тезисах втрое больше утверждений без опоры. Связи
         # ставит отдельный проход, где движок доказывает, что текст не изменился.
-        a = once(with_terms(PROMPT_DISTILL.format(title=title, body=parts[0]), parts[0], root))
+        a = once(with_terms(PROMPT_DISTILL.format(title=title, body=parts[0], type_rules=rules), parts[0], root))
         if not a["ok"]:
             fail_step(step, model_fail_note(a), a, key="note")
             return step
@@ -6972,7 +7096,7 @@ def distill_queue(cfg: dict, cwd: str, defer_refresh: bool = False) -> list:
     новые сущности для следующего оборота (1.138.0).
     """
     from aurora_common import card_body, frontmatter, is_placeholder, walk_md
-    window = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + 400)
+    window = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + 400 + TYPE_RULES_CHARS + 80)
     parked = parked_cards(cwd)
     todo = []
     for p in walk_md(os.path.join(cwd, "AuroraKnowledgeDB"), skip_service=True,

@@ -26,24 +26,24 @@
           "role": "planner",
           "prompt": "agent_runner.py:PROMPT_PLAN_SOURCE",
           "what": {
-            "ru": "Большой источник без разметки: план разделов, по которым его резать.",
-            "en": "A large source without structure: a plan of sections to cut it by."
+            "ru": "Большой источник без разметки: план разделов, по которым его резать. Раздел карточки — из реестра типов проекта; к запросу приложена выдержка из инструкции «Как определить тип карточки».",
+            "en": "A large source without structure: a plan of sections to cut it by. The card section comes from the project card type registry; an excerpt of the 'How to choose a card type' guide is attached."
           }
         },
         {
           "role": "planner",
           "prompt": "agent_runner.py:PROMPT_MEETING",
           "what": {
-            "ru": "Стенограмма встречи из Raw/meetings: план по частям.",
-            "en": "A meeting transcript from Raw/meetings: a plan part by part."
+            "ru": "Стенограмма встречи из Raw/meetings: план по частям. Раздел карточки — из реестра типов проекта, с выдержкой из инструкции выбора типа.",
+            "en": "A meeting transcript from Raw/meetings: a plan part by part. The card section comes from the project card type registry, with an excerpt of the type guide."
           }
         },
         {
           "role": "worker",
           "prompt": "agent_runner.py:PROMPT_BUILD",
           "what": {
-            "ru": "Раскадровка источника: границы тем, имена карточек, вид знания. Текст в карточки переносит движок, а не модель.",
-            "en": "Storyboarding a source: topic boundaries, card names, kind of knowledge. The engine, not the model, moves the text into cards."
+            "ru": "Раскадровка источника: границы тем, имена карточек, раздел базы (тип карточки). Разделы приходят из реестра типов проекта вместе с выдержкой из инструкции «Как определить тип карточки»; раздела вне реестра движок не принимает. Текст в карточки переносит движок, а не модель.",
+            "en": "Storyboarding a source: topic boundaries, card names, the base section (card type). Sections come from the project card type registry together with an excerpt of the 'How to choose a card type' guide; the engine refuses a section outside the registry. The engine, not the model, moves the text into cards."
           }
         },
         {
@@ -105,8 +105,8 @@
           "role": "worker",
           "prompt": "agent_runner.py:PROMPT_DISTILL",
           "what": {
-            "ru": "Тезис карточки из перенесённого текста источника. Источник изменился — PROMPT_REDISTILL; длинный текст — по частям (PROMPT_DISTILL_PART) и сборка (PROMPT_DISTILL_JOIN).",
-            "en": "A card thesis from the moved source text. Changed source — PROMPT_REDISTILL; long text — by parts (PROMPT_DISTILL_PART) and joining (PROMPT_DISTILL_JOIN)."
+            "ru": "Тезис карточки из перенесённого текста источника; правило 6 запроса — форма тезиса для типа карточки из её шаблона. Источник изменился — PROMPT_REDISTILL; длинный текст — по частям (PROMPT_DISTILL_PART) и сборка (PROMPT_DISTILL_JOIN).",
+            "en": "A card thesis from the moved source text; rule 6 of the request is the thesis form for the card type, taken from its template. Changed source — PROMPT_REDISTILL; long text — by parts (PROMPT_DISTILL_PART) and joining (PROMPT_DISTILL_JOIN)."
           }
         },
         {
