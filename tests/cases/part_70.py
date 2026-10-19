@@ -373,6 +373,9 @@ def test_conform_never_touches_raw_and_makes_no_commits(tmp: Path):
     assert "template:" not in raw.read_text(encoding="utf-8")
     changed = [l[3:] for l in _git(root, "-c", "core.quotepath=false", "status", "--porcelain",
                                    "--untracked-files=all").splitlines()]
+    # `.aurora/` — локальное состояние движка (замок записи карточек и др.): в настоящем проекте оно закрыто `.gitignore`,
+    # а в этой заготовке `.gitignore` нет
+    changed = [c for c in changed if not c.startswith(".aurora/")]
     assert changed and all(c.startswith(KB + "/") for c in changed), changed
 
 
