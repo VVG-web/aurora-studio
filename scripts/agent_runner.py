@@ -43,7 +43,7 @@ dry-run, git-guard и журнал. Прямая правка файлов мо�
 уточнении контекст собирается по всему разговору, а не по последней фразе: «а если он
 ИП?» сама по себе не находит в базе ничего — тему держит предыдущий вопрос.
 
-Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:tasks` · `agent:clashes` · `agent:relink` · `agent:translit` · `agent:make` · `agent:golden`
+Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:tasks` · `agent:clashes` · `agent:relink` · `agent:translit` · `agent:make` · `agent:golden` · `agent:conform`
 """
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
 import card_types as CT  # noqa: E402 — единый вход записи карточки: шаблон обязателен
 from aurora_common import (QUOTES, aliases, body as body_of, fold, head_text,  # noqa: E402
-                           link_escapes, replace_file)
+                           link_escapes, replace_file, write_text_atomic)
 
 RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
 
@@ -1795,6 +1795,262 @@ def report_relink(res: dict, apply: bool) -> str:
         L += ["", "«Отброшен» — ответ модели не разобран или связывание задело бы текст: "
               "ссылки механики записаны, а карточка остаётся в очереди и вернётся следующим "
               "прогоном — связи не стоят того, чтобы ради них менялось знание."]
+    return "\n".join(L)
+
+
+# ------------------------------------------------------------------ задача: раскладка собственной части по шаблону
+#
+# `agent:conform` (CT-19) доводит то, что механическая миграция (`kb:conform`) не взяла: у машинной карточки знания
+# собственная часть не по шаблону — первая строка не определение, лишние или перепутанные разделы. Модель не пишет
+# текста: она называет НОМЕРА уже имеющихся строк (определение, продолжение абзаца, строки по разделам типа), а
+# заголовки и порядок расставляет скрипт. Скрипт проверяет, что множество строк не изменилось, и только потом пишет.
+
+PROMPT_CONFORM = """Ты раскладываешь готовый текст карточки базы знаний по разделам шаблона. Текст менять нельзя: ты
+только указываешь, в каком порядке и под какими заголовками стоят уже имеющиеся строки.
+
+Тип карточки: {type_name}. Разрешённые разделы — только эти и в таком порядке: {sections}.
+Строки пронумерованы:
+
+{segments}
+
+Ответь строго одним JSON-объектом:
+{{"lead": <номер строки-определения>, "body": [<номера строк, продолжающих первый абзац>],
+  "sections": {{"<Раздел>": [<номера строк>], ...}}}}
+
+Правила:
+1. lead — строка, которая лучше всего служит определением: что это и чем отличается от соседнего.
+2. Каждый номер встречается в ответе ровно один раз: в lead, в body или в одном разделе.
+3. Раздел называй только из разрешённых. Нет подходящего раздела — строка идёт в body.
+4. Не придумывай строк, не объединяй и не разбивай их."""
+
+CONFORM_PARKED = os.path.join(".aurora", "state", "conform_parked.json")
+CONFORM_DONE = "разложена"
+CONFORM_PREVIEW = "разложил бы"
+CONFORM_DROPPED = "отброшена"
+CONFORM_SKIPPED = "пропущена"
+
+
+def conform_assemble(plan: dict, answer) -> "tuple":
+    """План и ответ модели → (новая собственная часть, "") либо ("", причина отказа). Заголовки и порядок разделов
+    расставляет скрипт: модель называет только номера. Единицы соединяются так, как они стояли (`kb_conform.join_items`):
+    абзацы не склеиваются, абзац после списка не становится продолжением пункта."""
+    import kb_conform as KC
+    if not isinstance(answer, dict):
+        return "", "ответ не разобран как JSON-объект"
+    items, ct = plan["items"], plan["ct"]
+    n = len(items)
+
+    def number(x, what):
+        if isinstance(x, bool):
+            raise ValueError(f"{what}: ожидается номер строки")
+        if isinstance(x, int):
+            return x
+        if isinstance(x, str) and x.strip().isdigit():
+            return int(x.strip())
+        raise ValueError(f"{what}: ожидается номер строки")
+
+    def numbers(value, what):
+        if not isinstance(value, list):
+            raise ValueError(f"{what}: ожидается список номеров")
+        return [number(x, what) for x in value]
+
+    try:
+        lead = number(answer.get("lead"), "lead")
+        body_n = numbers(answer.get("body", []), "body")
+        sections = answer.get("sections", {})
+        if not isinstance(sections, dict):
+            raise ValueError("sections: ожидается объект")
+        by_section = {}
+        for name, value in sections.items():
+            key = str(name).strip()
+            if key not in ct.sections:
+                raise ValueError(f"раздел «{str(name)[:40]}» не из списка типа")
+            if key in by_section:
+                raise ValueError(f"раздел «{key}» назван дважды")
+            by_section[key] = numbers(value, f"sections.{key}")
+    except ValueError as e:
+        return "", str(e)
+    seen = [lead] + body_n + [x for v in by_section.values() for x in v]
+    if sorted(seen) != list(range(1, n + 1)):
+        return "", f"номера строк названы не по одному разу (строк {n}, названо {len(seen)})"
+    if not KC.lead_ok(items[lead - 1]):
+        return "", "lead — не обычный текст до 600 знаков (заголовок, список, таблица, цитата или слишком длинная)"
+    out = KC.join_items(plan, [lead] + body_n)
+    for name in ct.sections:
+        rows = by_section.get(name)
+        if rows:
+            out += f"\n\n## {name}\n\n" + KC.join_items(plan, rows)
+    if plan["h1"]:
+        out = plan["h1"] + "\n\n" + out
+    if plan["trailer"]:
+        out += "\n\n" + plan["trailer"]
+    if plan["marks"]:                      # пометка встречи — последней в собственной части, как её ставит `with_meeting_mark`
+        out += "\n\n" + "\n".join(plan["marks"])
+    return out, ""
+
+
+def conform_lines(text: str):
+    """Состав строк собственной части для сверки «до/после»: без пустых и без заголовков `## …` (их расставляет скрипт
+    или они вне ответа модели)."""
+    import collections
+    return collections.Counter(ln.strip() for ln in text.split("\n") if ln.strip() and not ln.startswith("## "))
+
+
+def conform_card(cfg: dict, path: str, call=None, apply: bool = False, deadline: float = 0.0, prefer: int = 0,
+                 cwd: str = ".") -> dict:
+    """Разложить собственную часть одной карточки по разделам её шаблона. → шаг отчёта.
+
+    Модель называет номера строк (`PROMPT_CONFORM`), текст не пишет. Скрипт сверяет: каждый номер ровно раз; состав строк
+    равен исходному; определение — обычный текст до 600 знаков; результат проходит `validate_card(strict)`. Любой
+    провал — карточка не меняется, причина в шаге. Успех — запись через вход шаблонов (штамп `template:` ставит он),
+    строка в «История изменений».
+    """
+    import kb_conform as KC
+    call = call or AG.call_role
+    step = {"card": os.path.basename(path)[:-3], "status": CONFORM_SKIPPED, "note": "", "backends": [], "lines": 0,
+            "parked": False}
+    text = KC.read_card(path)
+    if text is None:
+        step.update(note="файл не в UTF-8 или не читается — не трогаю", parked=True)
+        return step
+    reg = CT.registry_for(cwd)
+    rel = os.path.relpath(path, cwd).replace("\\", "/")
+    plan = KC.plan_conform(text, reg)
+    if isinstance(plan, str):
+        step.update(note=plan, parked=True)
+        return step
+    shown = "\n".join(f"{n}. {t}" if n else f"   [заголовок прежней группы: {t} — в ответ не входит]"
+                      for n, t in plan["shown"])
+    ct = plan["ct"]
+    ask = [{"role": "user", "content": PROMPT_CONFORM.format(
+        type_name=ct.name, sections=", ".join(ct.sections) or "— (разделов нет: всё идёт в body)", segments=shown)}]
+    r = call(cfg, "worker", ask, deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")), prefer=prefer)
+    step["backends"].append(r.get("backend"))
+    if not r["ok"]:
+        return fail_step(step, model_fail_note(r), r, key="note")
+    if KC.read_card(path) != text:          # вызов шёл минуты: человек мог править карточку — его правку не затираем
+        step.update(note="файл изменился, пока шёл вызов модели — карточка вернётся в очередь")
+        return step
+    answer = parse_json(r.get("text") or "")
+    new_own, why = conform_assemble(plan, answer)
+    if not why and conform_lines(new_own) != conform_lines(plan["own"]):
+        why = "состав строк изменился: ответ потерял или добавил строку"
+    if why:
+        step.update(status=CONFORM_DROPPED, note=why, parked=True)
+        AG.record_failure(rel_or_abs(path), why, r, "разбор ответа")
+        return step
+    new_text = plan["prefix"] + plan["lead_ws"] + new_own + plan["trail_ws"] + plan["after"]
+    dropped_heads = sum(1 for n, _t in plan["shown"] if n is None)
+    new_text = KC.add_history(new_text, f"- {TODAY_STR}: собственная часть разложена по разделам шаблона "
+                                        f"`{ct.template_file}` (строки перенесены без изменения текста"
+                                        + ("; заголовки прежних групп заменены разделами шаблона" if dropped_heads else "") + ")")
+    bad = [v for v in CT.validate_card(new_text, path=rel, reg=reg, level="strict", raw_ok=CT.thesis_raw_ok(text, new_text))
+           if v.severity == "error"]
+    if bad:
+        why = "результат не проходит шаблон: " + "; ".join(f"{v.code}: {v.message}" for v in bad[:2])
+        step.update(status=CONFORM_DROPPED, note=why, parked=True)
+        AG.record_failure(rel_or_abs(path), why, r, "проверка результата")
+        return step
+    step["lines"] = len(plan["items"])
+    if not apply:
+        step.update(status=CONFORM_PREVIEW, note=f"строк {step['lines']}")
+        return step
+    if KC.read_card(path) != text:          # и ещё раз перед самой записью
+        step.update(note="файл изменился перед записью — карточка вернётся в очередь")
+        return step
+    done, refusal = CT.try_write_card(path, new_text, op="body")
+    if refusal:
+        step["parked"] = True
+        return refuse_step(step, refusal, path)
+    from aurora_common import frontmatter
+    if not (frontmatter(KC.read_card(path) or "").get("template") or "").strip():
+        step.update(status=CONFORM_DROPPED, note="записана, но штамп не поставлен: карточка не проходит шаблон", parked=True)
+        return step
+    step.update(status=CONFORM_DONE, note=f"строк {step['lines']}")
+    return step
+
+
+def conform_queue(cwd: str, parked: "dict | None" = None) -> list:
+    """Очередь `agent:conform`: карточки без штампа, у которых нарушены только разделы и определение собственной части
+    (`kb_conform.queue`), без отложенных. Собирается обходом файлов и стоит даром."""
+    import kb_conform as KC
+    memory = parked if parked is not None else parked_cards(cwd, CONFORM_PARKED)
+    return [p for p, _codes in KC.queue(cwd, CT.registry_for(cwd), parked=lambda p: KC.is_parked(cwd, p, memory))]
+
+
+def run_conform(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None, skip=None) -> dict:
+    """Пройти по очереди и разложить собственные части. `skip` — карточки, отброшенные в этом прогоне. → ответ захода.
+
+    Отброшенная карточка (модель ошиблась с номерами, результат не прошёл шаблон) откладывается до правки файла: спрашивать
+    модель о ней каждую ночь незачем, ответ будет тем же. Сбой шлюза не откладывает — карточка вернётся в очередь."""
+    started = time.time()
+    budget = started + cfg["budget_min"] * 60
+    todo = [p for p in conform_queue(cwd) if not (skip and p in skip)]
+    if limit:
+        todo = todo[:limit]
+    from concurrent.futures import ThreadPoolExecutor
+    slots, width = parallel_width(cfg, len(todo))
+    print(f"Карточек к раскладке: {len(todo)} · {AG.budget_text(cfg)}", flush=True)
+    if todo:
+        print(threads_line(cfg, width), flush=True)
+    steps, done, rejected = [], [0], []
+    fails, fails_lock = {"row": 0, "tripped": False}, threading.Lock()
+
+    def one(idx_path):
+        i, path = idx_path
+        if time.time() > budget or fails["tripped"]:
+            return None
+        st = conform_card(cfg, path, call, apply, deadline=budget,
+                          prefer=slots[(i - 1) % len(slots)] if len(slots) > 1 else 0, cwd=cwd)
+        with fails_lock:
+            fails["row"] = fails["row"] + 1 if dead_fail(st) else 0
+            if fails["row"] >= FAILS_IN_A_ROW and not fails["tripped"]:
+                fails["tripped"] = True
+                print(f"  {FAILS_IN_A_ROW} сбоя подряд — останавливаюсь: это шлюз, а не "
+                      f"карточки ({st['note'][:120]})", flush=True)
+            if st.get("parked"):
+                rejected.append(path)
+                if apply:
+                    park_card(cwd, path, refused=True, store=CONFORM_PARKED)
+            done[0] += 1
+        print(f"  [{done[0]}/{len(todo)}] {st['card']} → {st['status']}" + (f" · {st['note']}" if st["note"] else ""),
+              flush=True)
+        return st
+
+    safe_one = guard_each(one, lambda it: (rel_or_abs(it[1]), {"card": os.path.basename(it[1])[:-3], "lines": 0}))
+    with ThreadPoolExecutor(max_workers=max(1, width)) as pool:
+        for st in pool.map(safe_one, list(enumerate(todo, 1))):
+            if st is not None:
+                steps.append(st)
+    left = len(todo) - len(steps)
+    if left:
+        why = (f"шлюзы не отвечают — {FAILS_IN_A_ROW} сбоя подряд, остаток {left} разложит следующий прогон"
+               if fails["tripped"] else f"бюджет исчерпан, осталось {left}")
+        steps.append({"card": "—", "status": "стоп", "note": why, "backends": [], "lines": 0})
+        print(f"  стоп: {why}", flush=True)
+    made = sum(1 for s in steps if s["status"] in (CONFORM_DONE, CONFORM_PREVIEW))
+    return {"steps": steps, "cards": len(todo), "made": made, "left": left, "gateways_down": fails["tripped"],
+            "seconds": round(time.time() - started, 1), "rejected": rejected}
+
+
+def report_conform(res: dict, apply: bool) -> str:
+    L = [f"# Раскладка собственной части по шаблону — {utc_label()}", "",
+         f"Карточек просмотрено: **{res['cards']}** · разложено: **{res['made']}** · {res['seconds']} с", ""]
+    if not apply:
+        L += ["(dry-run) Ничего не записано. Применить: `--apply`.", ""]
+    L += ["Текст карточки не переписывался: модель называла номера строк, заголовки и порядок разделов расставил "
+          "скрипт, а состав строк сверен с исходным.", ""]
+    done = [s for s in res["steps"] if s["status"] in (CONFORM_DONE, CONFORM_PREVIEW)]
+    if done:
+        L += ["| Карточка | Строк |", "|---|---|"]
+        L += [f"| `{s['card']}` | {s['lines']} |" for s in done[:60]]
+        L.append("")
+    bad = [s for s in res["steps"] if s["status"] in (CONFORM_DROPPED, CONFORM_SKIPPED, REFUSED, "сбой", "стоп")]
+    if bad:
+        L += ["## Не сделано", ""]
+        L += [f"- `{s['card']}` — {s['note'] or s['status']}" for s in bad[:20]]
+        L += ["", "«Отброшена» — ответ модели не прошёл сверку (номера, состав строк или шаблон): карточка не менялась и "
+              "отложена до правки файла. Остаток называет `kb:conform`; закрыть его можно правкой самой карточки."]
     return "\n".join(L)
 
 
@@ -3803,7 +4059,8 @@ DEFAULT_BUILD_SECTION = "Concepts"   # раздел, если модель ег�
 _RULES_CACHE: dict = {}
 
 
-CARD_WRITING_TASKS = ("build", "distill", "extract", "relink", "twins", "tasks", "aliases", "clashes", "translit")
+CARD_WRITING_TASKS = ("build", "distill", "extract", "relink", "twins", "tasks", "aliases", "clashes", "translit",
+                      "conform")
 
 
 def registry_gate(cwd: str = ".") -> str:
@@ -7120,26 +7377,26 @@ def _card_sig(path: str) -> str:
         return ""
 
 
-def parked_cards(cwd: str) -> dict:
-    """{путь от проекта: отпечаток} — отложенные карточки на момент откладывания."""
+def parked_cards(cwd: str, store: str = "") -> dict:
+    """{путь от проекта: отпечаток} — отложенные карточки на момент откладывания. `store` — файл памяти задачи
+    (по умолчанию — тезисов); у каждой задачи своя, чтобы отложенное одной не пряталось от другой."""
     try:
-        data = json.load(open(os.path.join(cwd, PARKED), encoding="utf-8"))
+        data = json.load(open(os.path.join(cwd, store or PARKED), encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
-def park_card(cwd: str, path: str, refused: bool = False) -> None:
+def park_card(cwd: str, path: str, refused: bool = False, store: str = "") -> None:
     """Отложить карточку до изменения файла. Отказ шаблона (`refused`) снимается ещё и сменой шаблонов или настроек
     типов: починили шаблоны — карточка возвращается в очередь, не дожидаясь правки своего текста."""
-    data = parked_cards(cwd)
+    data = parked_cards(cwd, store)
     sig = _card_sig(path)
     data[os.path.relpath(path, cwd).replace("\\", "/")] = (sig + "@" + CT.registry_fingerprint(cwd)) if refused else sig
-    full = os.path.join(cwd, PARKED)
+    full = os.path.join(cwd, store or PARKED)
     try:
         os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=1)
+        write_text_atomic(full, json.dumps(data, ensure_ascii=False, indent=1))
     except OSError:
         pass
 
@@ -7933,13 +8190,15 @@ def main() -> int:
     ap.add_argument("--task", default="aliases",
                     choices=["aliases", "build", "ask", "distill", "extract",
                              "twins", "tasks", "clashes", "relink", "translit", "make",
-                             "golden"],
+                             "golden", "conform"],
                     help="aliases — разобрать конфликты синонимов; "
                          "build — разобрать партию источников на карточки; "
                          "make — произвести артефакт: обогащение, план с вопросами, "
                          "воркер, критик, Момус; "
                          "tasks — вернуть предмету знание задач Jira, осевших "
                          "отдельными карточками; "
+                         "conform — разложить собственную часть машинной карточки по разделам "
+                         "шаблона дословным переносом строк; "
                          "ask — ответить на вопрос по базе (ничего не пишет)")
     ap.add_argument("--question", metavar="ТЕКСТ", default="",
                     help="вопрос к базе своими словами (для --task ask)")
@@ -7995,7 +8254,8 @@ def main() -> int:
                          "не кончатся источники (первичная сборка: часы, можно на ночь), "
                          "для relink — пока не свяжутся все тезисы, для distill — пока "
                          "у всех карточек не будет тезиса, для extract — осмотреть всю "
-                         "очередь в окне --hours, а не в бюджете шага")
+                         "очередь в окне --hours, а не в бюджете шага, для conform — пока "
+                         "не будет разобрана вся очередь раскладки")
     ap.add_argument("--hours", type=float, default=12.0, metavar="Ч",
                     help="потолок времени для --until-done (по умолчанию 12)")
     ap.add_argument("--no-checkpoint", action="store_true",
@@ -8127,6 +8387,7 @@ def main() -> int:
 
     cp_stopped = False            # цикл остановил отказ чекпойнта: Cron и боты видят это по коду возврата
     relink_loop = (0, 0)          # заходов и связей за прогон: пусто — петли не было
+    conform_loop = (0, 0)         # заходов и разложенных карточек за прогон: пусто — петли не было
     distill_loop = 0              # заходов переосмысления: 0 — петли не было
     if a.task == "build" and a.until_done:
         # Первичная сборка: три года проекта — это полторы тысячи источников, а партия
@@ -8306,6 +8567,32 @@ def main() -> int:
                   file=sys.stderr)
         res = run_relink(cfg, cwd, a.apply, a.limit)
         text = report_relink(res, a.apply)
+    elif a.task == "conform" and a.until_done and a.apply:
+        # Очередь раскладки идёт заходами до конца окна, как связывание: отброшенную в этом прогоне карточку следующий
+        # заход не берёт (её память — `conform_parked.json`), сбой шлюза карточку в очереди оставляет.
+        conform_rejected: set = set()
+
+        def conform_step():
+            r = run_conform(cfg, cwd, True, a.limit, skip=conform_rejected)
+            conform_rejected.update(r["rejected"])
+            return r
+
+        loop = until_done(cwd, a, "conform", conform_step,
+                          lambda r: report_conform(r, True),
+                          lambda r: f"карточек разложено: {r['made']}",
+                          lambda r: r["cards"] - r["left"],
+                          remaining=lambda: len(conform_queue(cwd)))
+        res = loop["res"]
+        steps_all += [s for r in loop["results"] for s in r.get("steps", [])]
+        conform_loop = (loop["batches"], sum(r["made"] for r in loop["results"]))
+        cp_stopped = bool(loop["stopped"])
+        text = "\n\n---\n\n".join(loop["texts"][-3:])
+    elif a.task == "conform":
+        if a.until_done and not a.apply:
+            print("agent_runner: --until-done без --apply зациклится: предпросмотр ничего не записывает, и очередь не "
+                  "убывает. Делаю один заход.", file=sys.stderr)
+        res = run_conform(cfg, cwd, a.apply, a.limit)
+        text = report_conform(res, a.apply)
     elif a.task == "build":
         res = run_build(cfg, cwd, a.apply, a.critic, a.limit, a.partition)
         text = report_build(res, cp, a.apply, a.critic, cfg)
@@ -8348,6 +8635,16 @@ def main() -> int:
             done = commit_result(cwd, "agent:relink", head, not a.no_checkpoint)
             print(f"Результат агента: {done.get('why')}")
         return 1 if cp_stopped else 0
+    if a.task == "conform":
+        # Отброшенные карточки — не провал прогона: они в остатке `kb:conform`. Код 1 — только если остановил чекпойнт
+        # или легли шлюзы (очередь не пройдена).
+        made = conform_loop[1] if conform_loop[0] else res["made"]
+        head = (f"журнал прогона: заходов {conform_loop[0]}, карточек разложено: {made}" if conform_loop[0]
+                else f"карточек разложено: {made}")
+        if a.apply and made:
+            done = commit_result(cwd, "agent:conform", head, not a.no_checkpoint)
+            print(f"Результат агента: {done.get('why')}")
+        return 1 if cp_stopped or res.get("gateways_down") else 0
     if a.task == "clashes":
         return 0          # находки — не провал: их разбирает человек
     if a.task == "tasks":

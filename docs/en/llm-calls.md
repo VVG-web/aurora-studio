@@ -8,6 +8,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 - [Card theses](#distill)
 - [Extracting foreign definitions](#extract)
 - [Links in theses](#relink)
+- [Laying a card out by its template](#conform)
 - [Synonym conflicts](#aliases)
 - [Twins](#twins)
 - [Contradictions](#clashes)
@@ -91,6 +92,20 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 | Role | What it does | Prompt |
 |---|---|---|
 | Writer (worker) | Places [[…]] links in a finished thesis; the thesis text does not change. | `PROMPT_RELINK` (agent_runner.py) |
+
+- **Tools:** none.
+- **Path:** Pydantic AI.
+
+<a id="conform"></a>
+
+## Laying a card out by its template
+
+- **When.** The agent:conform command — a step of the 'Fix the base' route after kb:conform.
+- **Commands:** `agent:conform`.
+
+| Role | What it does | Prompt |
+|---|---|---|
+| Writer (worker) | A machine knowledge card whose own part does not follow the template: the model names only the numbers of the lines already there (the definition, the rest of the paragraph, the lines per type section); it writes no text, the script places the headings and the set of lines is checked against the original. | `PROMPT_CONFORM` (agent_runner.py) |
 
 - **Tools:** none.
 - **Path:** Pydantic AI.
