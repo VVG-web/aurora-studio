@@ -287,8 +287,10 @@ limited or "fixed", it is only reported. The same findings come from:
 
 - `kit:paths` — a report in the terminal and the panel (`--json` for machines); read-only, exit code 1 when there are findings;
 - `kit:doctor` — one warning with the number of lines (not an error, not a blocker);
-- the "Update the base" and "Fix the base" routes (button, Cron, terminal) and a single-button sync — one line "Long paths: not everything
-  will be loaded — <lines>" at the start of the run (not at every step) and the same line in the summary; in the console and in the run's `console.log`.
+- routes with sync steps (for example "Update the base"; button, Cron, terminal) and a single-button sync — one line "Long paths: not everything
+  will be loaded — <lines>" at the start of the run (not at every step) and a reminder in the summary (the files that did not fit are named by the
+  sync summary); in the console and in the run's `console.log`. When it does not fit only on another system (the project root there is an
+  assumption), the line says so separately: "This run is not affected, colleagues will not get everything loaded".
 
 **What is checked** — every config line that names a place on disk, and the message names it as written:
 
@@ -324,8 +326,9 @@ config yourself, shorten it in the config; for a name, shorten the name.
 
 **What the exporters do on overflow.** Confluence keeps a page path from the project root within 200 characters (`place()`): a page deeper
 than the limit goes into the folder of its nearest ancestor. If the path still does not fit the system (a long project root on Windows),
-the page is not written: the sync goes on, the log has "! page N: the path of M characters does not fit this system", the summary has
-"Long paths: N mirror files not written", the page stays out of the cache (the next sync tries again), and `--prune` removes nothing in this run.
+the page is not written: the sync goes on, the log has "! page N: the path does not fit this system (length M, path limit L, name limit 255) — not written",
+the summary has "Long paths: not written mirror files: N", the page stays out of the cache (the next sync tries again), and if a page itself is
+lost `--prune` removes nothing in this run (lost attachments do not stop the cleanup). An attachment with no room is not downloaded in vain.
 Website and Jira exports behave the same way; if the mirror folder itself cannot be created, there is one line with the reason and exit code 1, no traceback.
 
 ## The Confluence page tree: what the sync shows

@@ -29,7 +29,7 @@ FINDINGS = {
          "level": "risk", "length": 262, "limit": 259, "count": 0, "sample": "", "root": "C:\\p", "root_len": 3,
          "extra": {"effect": "page", "assumed": True}},
         {"key": "sources:Confluence", "where": ["sources", "Confluence", "path"], "system": "linux",
-         "kind": "name", "level": "fail", "length": 256, "limit": 255, "count": 0, "sample": "я" * 128,
+         "kind": "name", "level": "fail", "length": 256, "limit": 255, "count": 0, "sample": "<img src=x onerror=alert(1)>" + "я" * 128,
          "root": "/p", "root_len": 2, "extra": {"effect": "files"}},
     ],
 }
@@ -45,7 +45,10 @@ def test_the_project_form_marks_the_long_path_lines_in_both_languages(tmp: Path)
     """Красная строка у корня и адреса, сводка с числом строк; русский и английский каталоги; ничего не блокируется."""
     panel = PANEL.read_text(encoding="utf-8")
     proj = panel[panel.index("async function renderProject(){"):]
-    assert '...pathLines("root:" + (r.page_id || "").trim())' in proj and '...pathLines("web:" + (w.url || "").trim())' in proj
+    assert 'noteBox(rootNotes, () => "root:" + (r.page_id || "").trim())' in proj \
+        and 'noteBox(webNotes, () => "web:" + (w.url || "").trim())' in proj, "красные строки наполняются на месте"
+    assert "pathsSet(null);" in proj and proj.index("pathsSet(null);") < proj.index("const drawRoots = () => {"), \
+        "первый кадр не рисует находки прежнего проекта"
     assert proj.count("showPaths(r.path_findings)") == 2 and '"/api/paths?project="' in proj, "запись формы и текста обновляют строки"
     assert proj.index("pathBox));") > proj.index('t("proj.slug_note")'), "сводка стоит под кнопкой «Сохранить»"
     node = shutil.which("node")
@@ -70,6 +73,9 @@ let I18N = CAT;
 @T@
 @PATHS@
 const walk = function*(n){ yield n; for (const k of n.kids || []) if (k && k.tag) yield* walk(k); };
+const made = [];
+const mk = document.createElement;
+document.createElement = tag => { made.push(tag); return mk(tag); };
 pathsSet(@DATA@);
 const rootLines = pathLines("root:111").map(n => n.textContent);
 const none = pathLines("root:999").length;
@@ -81,7 +87,7 @@ const klass = [...walk(box)].map(n => n.className).filter(Boolean);
 pathsSet({findings: []});
 const empty = new FakeNode("div");
 pathBoxFill(empty);
-console.log(JSON.stringify({rootLines, none, webLines, text, klass, emptyKids: empty.kids.length,
+console.log(JSON.stringify({rootLines, none, webLines, text, klass, emptyKids: empty.kids.length, made,
   where: pathWhere({where: ["atlassian", "confluence", "sync_roots", 1]})}));
 """
     for lang, cat in (("ru", ru), ("en", en)):
@@ -96,6 +102,8 @@ console.log(JSON.stringify({rootLines, none, webLines, text, klass, emptyKids: e
         assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:1500]
         out = json.loads(cp.stdout.strip().splitlines()[-1])
         assert out["none"] == 0 and out["emptyKids"] == 0, out
+        assert "img" not in out["made"] and set(out["made"]) <= {"div", "ul", "li", "b"}, out["made"]
+        assert "<img src=x onerror=alert(1)>" in out["text"], "разметка из данных остаётся текстом, а не узлом"
         assert out["webLines"][0][0] == "pathline", out["webLines"]
         assert len(out["rootLines"]) == 1 and "281" in out["rootLines"][0] and "14" in out["rootLines"][0], out
         assert "pathbox" in " ".join(out["klass"]) and "dangerbox" in " ".join(out["klass"]), out["klass"]

@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 import importlib
 import json
+import os
 import sys
 
 from harness import KIT, SCRIPTS, make_project, run, test  # noqa: F401
@@ -42,6 +43,21 @@ def _route(cmds: list) -> dict:
     return {"id": "update", "title": "Обновить базу", "when": "", "group": "база", "steps": steps}
 
 
+class _System:
+    """Пин системы «этой машины»: корень её — настоящий путь проекта, остальные — допущения. Без него тест зависит от ОС прогона."""
+
+    def __init__(self, pb, name: str):
+        self.pb, self.name = pb, name
+
+    def __enter__(self):
+        self.saved = self.pb.current_system
+        self.pb.current_system = lambda: self.name
+        return self
+
+    def __exit__(self, *exc):
+        self.pb.current_system = self.saved
+
+
 def _panel(tmp: Path, cmds: list, fake, pb):
     class Panel(fake):
         PB = pb
@@ -56,17 +72,18 @@ def test_a_route_with_a_sync_says_about_long_paths_once_and_still_runs(tmp: Path
     (tmp / "panel").mkdir()
     panel = _panel(tmp, ["sync:confluence", "sync:web", "sync:audit"], fake, pb)
     logs: list = []
-    res = rr.run_route(panel, str(root), "update", True, log=logs.append)
+    with _System(pb, "windows"):
+        res = rr.run_route(panel, str(root), "update", True, log=logs.append)
     assert res["ok"] and res["reason"] == "passed", res
     assert [c[1] for c in panel.calls] == ["sync:confluence", "sync:web", "sync:audit"], panel.calls
     start = [m for m in logs if m.startswith("⚠ Длинные пути: не всё будет загружено")]
-    final = [m for m in logs if m.startswith("Длинные пути: не всё было загружено")]
+    final = [m for m in logs if m.startswith("Длинные пути: artifacts → ac → out — не поместившиеся файлы названы")]
     assert len(start) == 1 and len(final) == 1, logs
     assert "artifacts → ac → out" in start[0] and "kit:paths" in start[0], start[0]
     assert logs.index(start[0]) < min(i for i, m in enumerate(logs) if "sync:confluence" in m), "строка стоит до первого шага"
     assert logs.index(final[0]) > logs.index("■ Итог прогона"), "итоговая строка стоит после итога прогона"
     journal = (panel.runs / res["run_id"] / "console.log").read_text(encoding="utf-8")
-    assert journal.count("Длинные пути: не всё будет загружено") == 1 and "не всё было загружено" in journal, journal
+    assert journal.count("Длинные пути: не всё будет загружено") == 1 and "не поместившиеся файлы названы" in journal, journal
 
 
 @test
@@ -80,7 +97,8 @@ def test_a_route_without_a_sync_or_without_findings_stays_silent(tmp: Path):
     for root, cmds in ((long_root, ["kb:repair", "kb:lint"]), (short_root, ["sync:confluence"])):
         panel = _panel(tmp / ("a" if root == long_root else "b"), cmds, fake, pb)
         logs: list = []
-        res = rr.run_route(panel, str(root), "update", True, log=logs.append)
+        with _System(pb, "windows"):
+            res = rr.run_route(panel, str(root), "update", True, log=logs.append)
         assert res["ok"], res
         assert not [m for m in logs if "Длинные пути" in m], logs
     panel = _panel(tmp / "c", ["sync:confluence"], fake, pb)
@@ -97,21 +115,30 @@ def test_a_route_without_a_sync_or_without_findings_stays_silent(tmp: Path):
 
 @test
 def test_the_path_hint_is_worded_by_the_catalogue_of_each_language(tmp: Path):
-    """Строка про длинные пути — из каталога языка: строки конфига названы «строка N» / «line N»."""
+    """Строка про длинные пути — из каталога языка; на другой системе (корень — допущение) она говорит иначе и без итога."""
     rr, pb, fake = _mods()
     root = _project(tmp, long=False)
     cfg = root / "aurora.config.yaml"
     cfg.write_text(cfg.read_text(encoding="utf-8") + f"paths:\n  sources_confluence: {LONG_OUT}\n", encoding="utf-8")
     (tmp / "panel").mkdir()
     panel = _panel(tmp, ["sync:confluence"], fake, pb)
-    for lang, start, final in (("ru", "⚠ Длинные пути: не всё будет загружено — ", "Длинные пути: не всё было загружено — "),
-                               ("en", "⚠ Long paths: not everything will be loaded — ", "Long paths: not everything was loaded — ")):
+    words = {"ru": ("⚠ Длинные пути: не всё будет загружено — ", "Длинные пути: ", "ℹ Длинные пути на другой системе "),
+             "en": ("⚠ Long paths: not everything will be loaded — ", "Long paths: ", "ℹ Long paths on another system ")}
+    for lang, (start, final, other) in words.items():
         panel.strings = json.loads((COCKPIT / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))
-        got = rr.paths_lines(panel, str(root), rr.Texts(panel, lang))
+        with _System(pb, "windows"):
+            got = rr.paths_lines(panel, str(root), rr.Texts(panel, lang))
         assert got[0].startswith(start) and got[1].startswith(final), got
         assert "paths → sources_confluence" in got[0] and "kit:paths" in got[0], got[0]
+        assert "не всё было загружено" not in got[1] and "not everything was loaded" not in got[1], "итог не врёт о факте"
+        with _System(pb, "linux"):       # на этой машине помещается, а у коллег на Windows — нет
+            elsewhere = rr.paths_lines(panel, str(root), rr.Texts(panel, lang))
+        assert elsewhere[0].startswith(other) and elsewhere[1] == "", elsewhere
     src = (COCKPIT / "aurora_cockpit.py").read_text(encoding="utf-8")
     assert "if not parent and cmd in RR.sync_commands(project):" in src, "выгрузка одной кнопкой тоже говорит об этом в начале"
+    route = (COCKPIT / "route_runner.py").read_text(encoding="utf-8")
+    assert route.index('self._git("update", "before_route")') < route.index("self._paths_hint(steps)"), \
+        "подсказка считается после обновления конфига с сервера"
 
 
 @test
@@ -121,7 +148,7 @@ def test_kit_paths_and_the_doctor_report_the_same_lines_without_blocking(tmp: Pa
     cp = run("path_budget.py", cwd=root)
     assert cp.returncode == 1 and "✗ artifacts → ac → out (aurora.config.yaml, строка" in cp.stdout, cp.stdout + cp.stderr
     assert "Запуск возможен, но не всё будет загружено: artifacts → ac → out." in cp.stdout, cp.stdout
-    assert "допущение" in cp.stdout and "LongPathsEnabled" not in cp.stdout.split("✗")[1].split("Сократите")[0]
+    assert os.name == "nt" or "допущение" in cp.stdout, "корень чужой системы назван допущением"
     data = json.loads(run("path_budget.py", "--json", cwd=root).stdout)
     assert data["lines"] == 1 and data["findings"][0]["key"] == "artifacts:ac" and data["findings"][0]["where"] == ["artifacts", "ac", "out"]
     doc = run("aurora_doctor.py", cwd=root)

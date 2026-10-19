@@ -4596,6 +4596,15 @@ function pathText(f, full){
 function pathLines(key){           // красные строки под строкой формы: пусто — находок нет
   return (PATHS.map[key] || []).map(f => el("div", {class: "pathline", "data-path": key}, pathText(f, false)));
 }
+/* Место под строкой формы для красных строк: наполняется на месте (`fill`), строка формы не перерисовывается —
+   поздний ответ сервера не отнимает у человека фокус и каретку, пока он печатает. */
+function noteBox(list, keyOf){
+  const box = el("div", {class: "pathnotes"});
+  const fill = () => { box.innerHTML = ""; box.append(...pathLines(keyOf())); };
+  fill();
+  list.push({fill});
+  return box;
+}
 function pathBoxFill(box){
   box.innerHTML = "";
   if (!PATHS.lines) return;
@@ -4676,6 +4685,8 @@ async function renderProject(){
     watch(el("input",{class:"btn",style:"width:100%;font-weight:400",placeholder:ph,
       value:A[key]||"", oninput:e=>A[key]=e.target.value}), "form", t("dirty.form")));
 
+  pathsSet(null);               // первый кадр — без находок прежнего проекта; настоящие придут запросом ниже
+  const rootNotes = [], webNotes = [];
   const rootsBox = el("div",{});
   // Повтор корня — тот же номер страницы или то же название. В PRJ-C корень был записан
   // дважды с 10.08: синк обходил поддерево два раза, а среди девятнадцати строк в порядке
@@ -4698,6 +4709,7 @@ async function renderProject(){
   };
   const drawRoots = () => {
     rootsBox.innerHTML = "";
+    rootNotes.length = 0;
     const twin = rootTwins();
     if (A.sync_roots.length > 1)
       rootsBox.append(el("div",{class:"row",style:"gap:6px;margin-bottom:8px"},
@@ -4723,7 +4735,7 @@ async function renderProject(){
       el("button",{class:"btn sm danger", title: t("proj.drop"),
         onclick:()=>{A.sync_roots.splice(i,1); drawRoots();
                      setDirty("form", t("dirty.form"), true);}},"✕")),
-      ...pathLines("root:" + (r.page_id || "").trim()))));
+      noteBox(rootNotes, () => "root:" + (r.page_id || "").trim()))));
     rootsBox.append(el("button",{class:"btn sm",style:"margin-top:4px",
       onclick:()=>{A.sync_roots.push({page_id:"",title:"",trusted:false}); drawRoots();
                    setDirty("form", t("dirty.form"), true);}},
@@ -4738,6 +4750,7 @@ async function renderProject(){
   const webBox = el("div",{});
   const drawWeb = () => {
     webBox.innerHTML = "";
+    webNotes.length = 0;
     A.web_pages.forEach((w, i) => webBox.append(el("div",{}, el("div",{class:"row",style:"margin-bottom:8px"},
       watch(el("input",{class:"btn mono",style:"flex:1;min-width:200px;font-weight:400",
         placeholder:"https://…", value:w.url,
@@ -4750,7 +4763,7 @@ async function renderProject(){
       el("button",{class:"btn sm danger", title: t("proj.drop"),
         onclick:()=>{A.web_pages.splice(i,1); drawWeb();
                      setDirty("form", t("dirty.form"), true);}},"✕")),
-      ...pathLines("web:" + (w.url || "").trim()))));
+      noteBox(webNotes, () => "web:" + (w.url || "").trim()))));
     webBox.append(el("button",{class:"btn sm",style:"margin-top:4px",
       onclick:()=>{A.web_pages.push({url:"",trusted:false}); drawWeb();
                    setDirty("form", t("dirty.form"), true);}},
@@ -4760,10 +4773,13 @@ async function renderProject(){
   // Длина путей: сводка под кнопкой и красные строки у корней и адресов. Находки приходят отдельным запросом
   // (обход зеркал не должен держать открытие страницы) и с ответом каждой записи.
   const pathBox = el("div", {});
-  const drawPaths = () => { drawRoots(); drawWeb(); pathBoxFill(pathBox); };
+  const drawPaths = () => { rootNotes.forEach(n => n.fill()); webNotes.forEach(n => n.fill()); pathBoxFill(pathBox); };
   const showPaths = d => { pathsSet(d); drawPaths(); };
-  pathsSet(null);
-  api("/api/paths?project=" + encodeURIComponent(S.project.path), {quiet:true}).then(d => { if (d && Array.isArray(d.findings)) showPaths(d); }).catch(() => {});
+  const asked = S.project.path;
+  api("/api/paths?project=" + encodeURIComponent(asked), {quiet:true}).then(d => {
+    // ответ позднее ухода со страницы или смены проекта не рисуется
+    if (d && Array.isArray(d.findings) && pathBox.isConnected && S.project && S.project.path === asked) showPaths(d);
+  }).catch(() => {});
 
   formBox.append(el("div",{class:"card",style:"padding:20px"},
     el("p",{class:"muted",style:"font-size:13px;margin:0 0 14px"},

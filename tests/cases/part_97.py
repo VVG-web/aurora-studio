@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 import importlib
 import json
+import os
 import re
 import sys
 
@@ -45,7 +46,9 @@ def test_saving_the_project_form_answers_with_the_path_findings_and_still_saves(
         assert r.get("ok") and "error" not in r, r
         assert 'name: "Другое имя"' in (root / "aurora.config.yaml").read_text(encoding="utf-8"), "запись выполнена"
         found = r["path_findings"]
-        assert found["lines"] == 1 and found["models"]["windows"].startswith("C:\\Users\\username"), found
+        assert found["lines"] == 1, found
+        want = os.path.abspath(root) if os.name == "nt" else "C:\\Users\\username\\Documents\\Projects\\project"
+        assert found["models"]["windows"] == want, found["models"]
         f = found["findings"][0]
         assert f["key"] == "artifacts:ac" and f["where"] == ["artifacts", "ac", "out"], f
         assert f["system"] == "windows" and f["limit"] == 247 and f["kind"] in ("dir", "prefix"), f

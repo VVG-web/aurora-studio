@@ -460,7 +460,7 @@ def check_long_paths(root: Path | None = None) -> list:
     try:
         import path_budget as PB
         report = PB.assess(str(root or ROOT))
-        names = list(dict.fromkeys(f.line for f in report.findings))
+        names = list(dict.fromkeys(PB.neutral(f) for f in report.findings))
     except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
         return out
     if names:

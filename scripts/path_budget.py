@@ -363,6 +363,7 @@ JIRA_KEY_MAX = 10 + 1 + 7       # ключ проекта до 10 знаков, 
 WEB_STEM = 60                   # основа имени вложения сайта (`web_export.asset_name`)
 WEB_FILES = "_files"            # `web_export.ASSET_DIR`
 
+
 def exporter(script: str):
     """(модуль выгрузки, его `PATH_MODEL`: tree | pages | issues) по имени скрипта из манифеста; без модели — (None, "")."""
     if not script.endswith(".py"):
@@ -784,6 +785,11 @@ def describe(f: Finding) -> str:
     if f.sample and f.kind != "name":
         out += f" Пример: {f.sample}."
     return f"{out} {advice}" + (" Проверено частично." if f.extra.get("partial") else "")
+
+
+def neutral(f: Finding) -> str:
+    """Строка конфига без слов естественного языка: `atlassian → confluence → sync_roots → #2` (для doctor и логов)."""
+    return " → ".join(str(p) if isinstance(p, str) else f"#{p + 1}" for p in f.where) or f.line
 
 
 def hint(report: Report, width: int = 3) -> str:

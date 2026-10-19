@@ -334,15 +334,21 @@ def paths_lines(ck, project: str, t) -> tuple:
         report = ck.PB.assess(project)
     except Exception:  # noqa: BLE001 — справка не имеет права ронять запуск
         return "", ""
-    names: list = []
+    here: list = []         # строки, где не поместится на системе этой машины: этот запуск затронут
+    other: list = []        # строки, где не поместится на другой системе (корень там — допущение)
     for f in report.findings:
         label = " → ".join(t("pathlen.row", n=p + 1) if isinstance(p, int) else str(p) for p in f.where)
-        if label and label not in names:
-            names.append(label)
-    if not names:
-        return "", ""
-    shown = "; ".join(names[:3]) + (t("route.paths_more", n=len(names) - 3) if len(names) > 3 else "")
-    return t("route.paths", lines=shown), t("route.paths_final", lines=shown)
+        bucket = other if f.extra.get("assumed") else here
+        if label and label not in bucket:
+            bucket.append(label)
+
+    def shown(names: list) -> str:
+        return "; ".join(names[:3]) + (t("route.paths_more", n=len(names) - 3) if len(names) > 3 else "")
+    if here:
+        return t("route.paths", lines=shown(here)), t("route.paths_final", lines=shown(here))
+    if other:
+        return t("route.paths_other", lines=shown(other)), ""
+    return "", ""
 
 
 class Journal:
@@ -1025,9 +1031,9 @@ class RouteRun:
         self.net_policy = G.policy_for(self.net, svc) if (G and svc and svc.enabled) else ""
         if not self._net_precheck(steps):
             return self._finish(self.head0 or "", started)
-        self._paths_hint(steps)
         if not self.resumed:
             self._git("update", "before_route")
+        self._paths_hint(steps)             # после обновления с сервера: конфиг уже тот, с которым идёт прогон
         head = ck.RS.git_head(self.project)
         if self.resumed:
             self.say("ok", t("route.resumed", title=self.sc["title"]))
