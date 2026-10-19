@@ -76,6 +76,7 @@ def test_momus_verdict_is_the_last_line_and_agrees_with_listed_claims(_t):
     assert F.parse_verdict("НЕТ ОПОРЫ a\n1. ВЕРДИКТ: БЕЗ ОПОРЫ 2") == {"clean": False, "n": 2}
     assert F.parse_verdict("Итог. ВЕРДИКТ: ЧИСТО") == {"clean": True, "n": 0}
     assert F.parse_verdict("Модель написала ВЕРДИКТ: ЧИСТО в цитате") is None
+    assert F.unbacked("версия v2.5", "была 2.5") == [] and F.unbacked("версия 2.5", "was v2.5") == [] and F.unbacked("версия v2.6", "была 2.5")
     # версия с приставкой v из двух чисел — версия, а не число; голое «2.5» остаётся числом
     assert F.tokens("версия v2.5 вышла") == {("v", "2.5")} and F.tokens("версия 2.5 вышла") == {("n", "2.5")}
     assert F.parse_verdict("вердикта нет вовсе") is None
@@ -300,6 +301,14 @@ def test_review_demotes_answers_whose_quote_is_not_on_the_page(_t):
     assert parsed["checks"]["Q1"]["v"] == parsed["checks"]["Q3"]["v"] == "unknown"
     assert [parsed["checks"][i]["v"] for i in ("Q2", "Q4", "Q5", "Q6", "Q7", "Q8")] == ["no", "yes", "no", "no", "no", "no"]
     assert parsed["checks"]["Q1"]["unverified"] == "no"
+    # выдержка с пропуском: цепочка ищется от любого места страницы, а не только от первого вхождения первого куска;
+    # короткие куски ищутся рядом с предыдущим; название из пяти слов после «нет» не сверяется
+    far = "заказчик вправе отказаться от услуги. " + "слово " * 400 + "заказчик вправе отказаться от услуги. возврат средств проводится за пять рабочих дней"
+    assert RV._quote_there("Заказчик вправе отказаться от услуги… возврат средств проводится за пять рабочих дней", far)
+    assert not RV._quote_there("возврат средств проводится за пять рабочих дней… заказчик вправе отказаться от услуги", far)
+    assert not RV._quote_there("возврат средств проводится… штраф", "возврат средств проводится за пять рабочих дней")
+    assert RV._checkable_quotes("нет раздела «Требования к производительности и отказоустойчивости»") == []
+    assert RV._checkable_quotes("нет раздела «Срок возврата составляет десять рабочих дней и ещё»") != []
     # ответы ассистента через MCP помечены источником: код не выдаёт их за прогоны движка
     cl = RV.load_checklist(str(KIT / "scaffold" / "TemplatesCommon" / "review_v2.1.md"))
     out = RV.score_answers(cl, {"profile": "us", "answers": {}})
