@@ -168,7 +168,9 @@ no switch that turns the check off.
 | `body`, `header`, `repair` | an existing card is edited | "by difference": old violations are tolerated, a new one is rejected; the `template:` stamp is not removed, a thesis that was already written is not "erased" |
 
 - An edit after which the card passes its type's template in strict mode gets the `template:` stamp (after `type:`):
-  "touch = conform". A violation prevents the stamp but does not block an edit that does not make it worse.
+  "touch = conform". A violation prevents the stamp but does not block an edit that does not make it worse. A whole old
+  base is brought over by `kb:conform` (heads and stamps, no model) and `agent:conform` (laying the own part out by a
+  verbatim transfer of lines) — [migration](card-migration.md); both also write through this entry.
 - The write is atomic (a temporary file next to it, then a replace), the line endings of an existing file are kept, a
   link to a file outside the base or the project is not written; the path must lie under `AuroraKnowledgeDB/` and not
   be a service file.

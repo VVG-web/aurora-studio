@@ -210,7 +210,7 @@ written by the section folder: a card in `Processes/` is `type: process`.
 
 **The head.** The required fields depend on the class. For `entity` and `source`: `title`, `type`, `template`,
 `status`, `created`, `updated`; `kind` if the type has kinds; for a machine card (`built: machine`) that is not
-a stub also `sources` and `source_synced`. For `map`: `title`, `type`, `template`, `status`, `updated`. The other
+a stub also `sources` and `source_synced` (a missing `source_synced` is a warning: older builds have no sync date to take). For `map`: `title`, `type`, `template`, `status`, `updated`. The other
 fields come from the common dictionary (`aliases`, `tags`, `sources`, `built`, `related`, `trust`, `distilled`,
 `summary` and others) or from the type's `fields_extra`. The `template` field names the template file
 (`template: akdb_concept_v1.0.md`); older cards do not have it — that is not an error but a "pre-template" card.
@@ -356,12 +356,12 @@ are printed as "проблема реестра" lines.
 ## 8. Relation to `kb:lint` and `kit:doctor`
 
 `kb:lint`: a template violation in a card with the `template:` stamp is an **error** (group "нарушения шаблона у
-карточек со штампом", exit code 1, the pre-commit hook sees the rise); in a card without the stamp it is a note. The
+карточек со штампом", exit code 1, the pre-commit hook sees the rise); in a card without the stamp it is a note (an error after `kb:conform --finalize --apply`, see [migration](card-migration.md)). The
 summary line "карточек N, ошибок M" gets "· до-шаблонных: K" after the errors once the base has stamped cards (no
 stamps — unchanged). Then the section **"### шаблоны карточек (предупреждения, не ошибки)"**: V-NN codes, full run only.
 
 `kit:doctor` adds notes: how many of the thirteen kit templates are delivered (not all — `kit:update`), registry
-problems, how many cards have no `template:`, whether the type catalogue is current, whether cards of a switched-off
+problems, how many cards have no `template:` and whether the migration is complete, whether the type catalogue is current, whether cards of a switched-off
 type remain. They do not affect the verdict; `cards:` block lines the registry did not accept are warnings.
 
 ## 9. Template versions
@@ -394,7 +394,7 @@ its template, and the single write entry checks the head and the body.
 ## 10. What the next releases bring
 
 Not here yet and not described as ready: records in `Raw/decisions`, `Raw/questions`, `Raw/reference` and `kb:record`;
-cited documents (the `Documents` section, `kb:cite`); a mass conversion of the base to templates (`kb:conform`); the
-`## Расхождения` section and the ladder "trust → question → correction". "A card only by a template" already holds
-for new and edited cards, but only a touch (an edit, a thesis, repair) sets the stamp: most of an old base stays
-"pre-template", and its violations are notes; they become errors after `kb:conform`.
+cited documents (the `Documents` section, `kb:cite`); the `## Расхождения` section and the ladder "trust → question →
+correction". "A card only by a template" holds for new and edited cards, a touch (an edit, a thesis, repair) sets the
+stamp, and an old base is brought over by `kb:conform` and `agent:conform` ([migration](card-migration.md)); until the
+migration is declared complete, violations in unstamped cards are notes.

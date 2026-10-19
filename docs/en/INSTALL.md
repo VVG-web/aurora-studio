@@ -122,6 +122,7 @@ AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Sta
                               Requirements, Specs, Questions, Decisions, MOC, _archive, _assets,
                               _inbox, meta (kb_updated.json — the base update date, in git;
                               card_types.md — the catalogue of card types, built by the engine;
+                              conform_report.md, conform_state.json — the report and state of the template migration;
                               run_log.md — this machine's run journal, outside git)
 Artifacts/{us,ac,algorithms,dictionaries,screens,contracts,mappings,role-model,diagrams,
            acceptance,tests,reviews,reports,drafts,meetings}/
