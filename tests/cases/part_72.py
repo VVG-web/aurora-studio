@@ -173,9 +173,19 @@ def test_lint_with_an_old_card_types_module_does_not_judge_the_migration(tmp: Pa
     P70._card(root, "Concepts/Заявка.md")
     (root / KB / "meta").mkdir(exist_ok=True)
     (root / KB / "meta" / "conform_state.json").write_text('{"complete": true}\n', encoding="utf-8")
-    cp = subprocess.run([sys.executable, str(old / "kb_lint.py"), "--summary"], cwd=str(root), capture_output=True,
-                        text=True, encoding="utf-8", errors="replace")
-    assert cp.returncode == 0 and "ошибок 0" in cp.stdout and "Traceback" not in cp.stderr, (cp.stdout, cp.stderr[-600:])
+    def lint(*args):
+        return subprocess.run([sys.executable, str(old / "kb_lint.py"), *args], cwd=str(root), capture_output=True,
+                              text=True, encoding="utf-8", errors="replace")
+
+    cp = lint()
+    assert "Traceback" not in cp.stderr and "kb_lint: карточек" in cp.stdout, (cp.stdout, cp.stderr[-600:])
+    assert "без template:" not in cp.stdout, "старый card_types.py не знает состояния миграции — ошибки быть не должно"
+    # и с файлом состояния, и без него итог одинаков
+    (root / KB / "meta" / "conform_state.json").unlink()
+    def summary(out):
+        return [l for l in out.splitlines() if l.startswith("kb_lint: карточек")]
+
+    assert summary(lint().stdout) == summary(cp.stdout) != []
 
 
 @test

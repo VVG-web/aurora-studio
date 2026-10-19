@@ -73,7 +73,7 @@ example and a self-check list. It is read by a human, an assistant and the engin
 
 Unsure which type to choose — take `concept`; the borders of neighbouring types are worked out in the templates
 themselves. The `template:` field in the head names the file the card was made by (`template: akdb_concept_v1.0.md`);
-older cards do not have it — that is a "pre-template" card, not an error. The list of types and sections is
+older cards do not have it — that is a "pre-template" card, not an error (until the migration is declared complete: `kb:conform`). The list of types and sections is
 `kb:cards --list`, the check is `kb:cards --check` (and the "card templates" section of `kb:lint`). The template is
 **mandatory when writing**: every write of a card goes through one entry that checks it (a new card strictly, an edit
 "by difference"); a card that passes its template gets the `template:` stamp, and a violation in a stamped card is a

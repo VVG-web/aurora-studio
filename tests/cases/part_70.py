@@ -182,7 +182,7 @@ def test_conform_stage1_stamps_what_passes_and_names_the_rest(tmp: Path):
         # golden: кроме одной строки `template:` карточка байт в байт прежняя
         assert _strip_stamp(text) == was[name], name
     for name in ("Длинная.md", "Безымянная.md", "Сломана.md", "Спека.md", "DR-0001.md", "Уже.md"):
-        assert (root / KB).rglob(name) and next((root / KB).rglob(name)).read_bytes().decode("utf-8") == was[name], name
+        assert next((root / KB).rglob(name)).read_bytes().decode("utf-8") == was[name], name
     report = (root / KB / "meta" / "conform_report.md").read_text(encoding="utf-8")
     assert "V-12" in report and "concept" in report, report
     # конец: линтер видит штамп, у штампованной нарушающей карточки — ошибка, у остальных нет
@@ -250,9 +250,10 @@ APART = "## Не путать\n\n[[Отгрузка]] — другая сущн�
 
 
 @test
-def test_conform_service_blocks_move_to_the_end_of_the_card(tmp: Path):
-    """Шаг 4: повтор служебного блока схлопывается, «Не путать» и «Что относится к теме» уезжают из собственной части в
-    конец карточки (туда же, куда их пишет `agent:twins`) как есть; тела `document` и `dictionary` не трогаются."""
+def test_conform_collapses_repeated_service_blocks_and_leaves_the_rest_in_place(tmp: Path):
+    """Шаг 4: повтор служебного блока схлопывается; «Не путать» и «Что относится к теме» остаются на месте (в область
+    источника их класть нельзя — обновление источника стирает блок, в конец карточки — туда пишут историю); тела `document`
+    и `dictionary` не трогаются вовсе."""
     root = _project(tmp)
     _card(root, "Concepts/Заявка.md", own=LEAD + "\n\n" + BLOCK + "\n" + BLOCK + "\n" + APART, tail=VERBATIM + "\n" + HISTORY)
     doc = _head(_machine(kind="document", title='"Договор"')) + "\n" + LEAD + "\n\n" + BLOCK + "\n" + BLOCK + "\n" + VERBATIM
@@ -263,14 +264,9 @@ def test_conform_service_blocks_move_to_the_end_of_the_card(tmp: Path):
     was = _read(root, "Concepts/Заявка.md")
     _conform(root, "--apply")
     text = _read(root, "Concepts/Заявка.md")
-    own_after = text.split("## Источник (перенесено дословно)")[0]
-    assert "Что относится к теме" not in own_after and "Не путать" not in own_after, text
     assert text.count("## Что относится к теме") == 1 and text.count("## Не путать") == 1, text
-    assert text.index("## История изменений") < text.index("## Что относится к теме") < text.index("## Не путать"), text
-    assert text.rstrip().endswith("[[Отгрузка]] — другая сущность."), text
-    assert "Текст страницы источника.\n\n## История" in text, text
-    C = _mod("aurora_common")
-    assert C.body(_strip_stamp(text)).count("\n") < C.body(was).count("\n"), "повторный блок не убран"
+    assert _strip_stamp(text) == was.replace(BLOCK + "\n" + BLOCK, BLOCK), text
+    assert text.index("## Что относится к теме") < text.index("## Не путать") < text.index("## Источник"), text
     # документ и словарь: тело не тронуто (повтор остался, «Не путать» на месте), штамп стоит
     assert _strip_stamp(_read(root, "Concepts/Договор.md")) == doc
     assert _strip_stamp(_read(root, "Concepts/Словарь.md")) == dic
@@ -279,32 +275,23 @@ def test_conform_service_blocks_move_to_the_end_of_the_card(tmp: Path):
     _commit(root)
     _conform(root, "--apply")
     assert not _git(root, "status", "--porcelain").strip()
-    # перенос пережил обновление источника: `build_plan.append_card` заменяет блок источника и хвост оставляет
-    BP = _mod("build_plan")
-    path = root / KB / "Concepts" / "Заявка.md"
-    BP.append_card(str(path), path.read_text(encoding="utf-8"), "Новый текст страницы источника.", SRC, True, str(root))
-    after = path.read_text(encoding="utf-8")
-    assert "Новый текст страницы источника." in after and "[[Отгрузка]] — другая сущность." in after \
-        and "- [[Поставка]]" in after, after
+    # и неидентичные или непоследовательные повторы не трогаются
+    other = BLOCK.replace("Приём", "Отгрузка")
+    keep = _card(root, "Concepts/Разные.md", title='"Разные"', own=LEAD + "\n\n" + BLOCK + "\n" + other + "\n" + BLOCK)
+    before = keep.read_bytes().decode("utf-8")
+    _conform(root, "--apply", "--allow-dirty")
+    assert _strip_stamp(keep.read_bytes().decode("utf-8")) == before
 
 
 @test
-def test_conform_leaves_service_blocks_where_moving_would_hurt(tmp: Path):
-    """Переносить некуда или опасно — блок остаётся на месте, карточка всё равно штампуется (V-24 — предупреждение):
-    нет «Источника», за «Источником» нет «Истории» и «Исправлений» (конец файла лежит внутри текста источника), есть
-    «Слияние» (за ним — тело донора), ограды кода непарные."""
+def test_conform_leaves_fenced_service_text_alone(tmp: Path):
+    """Ограды кода непарные — собственная часть не режется по заголовкам; карточка всё равно штампуется."""
     root = _project(tmp)
-    own = LEAD + "\n\n" + APART
-    _card(root, "Concepts/БезИсточника.md", own=own, tail="")
-    _card(root, "Concepts/БезИстории.md", own=own)
-    _card(root, "Concepts/Слитая.md", own=own, tail=VERBATIM + "\n" + HISTORY + "\n## Слияние\n\nТело донора.\n\n" + VERBATIM)
-    _card(root, "Concepts/Рваная.md", own=LEAD + "\n\n```\nкод\n\n" + APART, tail=VERBATIM + "\n" + HISTORY)
+    path = _card(root, "Concepts/Рваная.md", own=LEAD + "\n\n```\nкод\n\n" + BLOCK + "\n" + BLOCK, tail=VERBATIM + "\n" + HISTORY)
     _commit(root)
-    was = {n: _read(root, f"Concepts/{n}.md") for n in ("БезИсточника", "БезИстории", "Слитая", "Рваная")}
+    was = path.read_bytes().decode("utf-8")
     cp = _conform(root, "--apply", "--json")
-    for name, text in was.items():
-        now = _read(root, f"Concepts/{name}.md")
-        assert _strip_stamp(now) == text, (name, now)
+    assert _strip_stamp(path.read_bytes().decode("utf-8")) == was
     assert json.loads(cp.stdout)["body"] == {}
 
 
@@ -534,21 +521,27 @@ def test_conform_does_not_touch_special_cards(tmp: Path):
 
 @test
 def test_conform_dry_run_equals_apply_and_exit_codes(tmp: Path):
-    """Сухой прогон называет те же числа, что даст запись; делать нечего — код 0; `--limit` отчёта не пишет;
-    без папки `meta/` команда работает; `--root` меняет корень."""
+    """Сухой прогон называет те же числа, что даст запись, и они сходятся с состоянием базы после записи; делать нечего —
+    код 0; `--limit` отчёта не пишет; без папки `meta/` команда работает; `--root` меняет корень."""
     root = _project(tmp)
     _mixed(root)
     shutil.rmtree(root / KB / "meta", ignore_errors=True)
     _commit(root)
     dry = json.loads(_conform(root, "--json", expect=1).stdout)
     assert not (root / KB / "meta").exists(), "сухой прогон создал meta/"
+    # --limit: часть карточек, отчёт по части не пишется
     part = json.loads(_conform(root, "--apply", "--limit", "2", "--json", expect=1).stdout)
     assert part["cards"] == 2 and not (root / KB / "meta" / "conform_report.md").exists(), "по части карточек записан отчёт"
     _commit(root)
+    # запись целиком: прогноз сухого прогона совпал бы с фактом — после записи те же карточки штампованы, остаток тот же
     full = json.loads(_conform(root, "--apply", "--json", expect=1).stdout)
-    assert full["outcomes"]["stamp"] + part["outcomes"]["stamp"] == dry["outcomes"]["stamp"], (dry, part, full)
-    assert full["outcomes"]["queue"] == dry["outcomes"]["queue"] and full["outcomes"]["rest"] == dry["outcomes"]["rest"] - 0, (dry, full)
     assert (root / KB / "meta" / "conform_report.md").is_file()
+    _commit(root)
+    after = json.loads(_conform(root, "--json", expect=1).stdout)["outcomes"]
+    stamped_before = part["outcomes"]["stamp"] + full["outcomes"]["stamp"]
+    assert stamped_before == dry["outcomes"]["stamp"], (dry, part, full)
+    assert after["ok"] == dry["outcomes"]["ok"] + dry["outcomes"]["stamp"] and after["stamp"] == 0, (dry, after)
+    assert (after["queue"], after["rest"]) == (dry["outcomes"]["queue"], dry["outcomes"]["rest"]), (dry, after)
     # всё приведено, остатка нет — код 0
     (tmp / "clean").mkdir()
     clean = _project(tmp / "clean")
@@ -559,6 +552,98 @@ def test_conform_dry_run_equals_apply_and_exit_codes(tmp: Path):
     _conform(clean, expect=0)
     outside = run("kb_conform.py", "--root", str(clean), "--json", cwd=tmp, expect_rc=0)
     assert json.loads(outside.stdout)["cards"] == 1
+
+
+@test
+def test_conform_report_and_state_do_not_follow_links_out_of_the_project(tmp: Path):
+    """Файл отчёта и файл состояния — служебные файлы базы: ссылка на файл вне проекта не перезаписывается."""
+    root = _project(tmp)
+    _card(root, "Concepts/Заявка.md")
+    outside = tmp / "outside.txt"
+    outside.write_text("чужое\n", encoding="utf-8")
+    (root / KB / "meta").mkdir(exist_ok=True)
+    try:
+        os.symlink(outside, root / KB / "meta" / "conform_report.md")
+        os.symlink(outside, root / KB / "meta" / "conform_state.json")
+    except (OSError, NotImplementedError):
+        return                                        # символьные ссылки недоступны (Windows без прав): проверять нечего
+    _commit(root)
+    cp = _conform(root, "--apply", "--allow-dirty", expect=None)
+    assert outside.read_text(encoding="utf-8") == "чужое\n", "отчёт записан по ссылке наружу"
+    assert "отчёт не записан" in cp.stderr, cp.stderr
+    cp = _conform(root, "--finalize", "--apply", expect=2)
+    assert outside.read_text(encoding="utf-8") == "чужое\n" and "состояние не записано" in cp.stderr, cp.stderr
+
+
+@test
+def test_conform_does_not_overwrite_an_edit_made_after_the_scan(tmp: Path):
+    """Разбор идёт секунды: карточку, которую правили после него, запись не затирает (карточка вернётся на следующем прогоне)."""
+    K = _mod("kb_conform")
+    root = _project(tmp)
+    mine = _card(root, "Concepts/Заявка.md")
+    other = _card(root, "Concepts/Вторая.md", title='"Вторая"')
+    _commit(root)
+    real = K.scan
+    edited = {}
+
+    def scan_then_edit(*args, **kw):
+        found = real(*args, **kw)
+        edited["text"] = mine.read_bytes().decode("utf-8") + "\nПравка человека.\n"
+        mine.write_bytes(edited["text"].encode("utf-8"))
+        return found
+
+    was = os.getcwd()
+    os.chdir(root)
+    K.scan = scan_then_edit
+    try:
+        rc = K.main(["--apply", "--allow-dirty", "--json"])
+    finally:
+        K.scan = real
+        os.chdir(was)
+    assert mine.read_bytes().decode("utf-8") == edited["text"], "правка человека затёрта"
+    assert _template_line(other.read_bytes().decode("utf-8")) == "akdb_concept_v1.0.md"
+    assert rc == 1                                    # отказ входа записи — код 1
+
+
+@test
+def test_conform_state_readers_survive_a_hostile_file(tmp: Path):
+    """Файл состояния и память отложенного читает хук pre-commit: большой, битый и враждебно вложенный файл — пустой
+    результат, а не трассировка; `kb:lint` на таком состоянии работает."""
+    C = _mod("card_types")
+    root = _project(tmp, git=False)
+    _card(root, "Concepts/Заявка.md")
+    meta = root / KB / "meta"
+    meta.mkdir(exist_ok=True)
+    path = meta / "conform_state.json"
+    for body in ("[" * 200000, '{"complete": tru', '"строка"', "x" * (2 << 20), '{"complete": true}'):
+        path.write_text(body, encoding="utf-8")
+        got = C.conform_state(str(root))
+        assert got == ({"complete": True} if body == '{"complete": true}' else {}), (body[:20], got)
+        cp = run("kb_lint.py", "--summary", cwd=root)
+        assert cp.returncode in (0, 1) and "Traceback" not in cp.stderr, (body[:20], cp.stderr[-300:])
+
+
+@test
+def test_doctor_line_about_the_migration_is_one_short_line(tmp: Path):
+    """Дата из файла состояния — чужой текст: перевод строки в ней не должен рождать подложную строку `ERROR:`."""
+    D = _mod("aurora_doctor")
+    root = _project(tmp, git=False)
+    _card(root, "Concepts/Заявка.md", template="akdb_concept_v1.0.md")
+    meta = root / KB / "meta"
+    meta.mkdir(exist_ok=True)
+    (meta / "conform_state.json").write_text(json.dumps({"complete": True, "date": "2026-10-01\nERROR: подделка"}),
+                                            encoding="utf-8")
+    lines = [l for l in D.check_card_templates(root) if "миграция на шаблоны" in l]
+    assert len(lines) == 1 and "\n" not in lines[0] and "ERROR" not in lines[0], lines
+
+
+@test
+def test_reset_keeps_the_migration_state(tmp: Path):
+    """«Пересобрать с нуля» не стирает состояние миграции: новые карточки и так пишутся по шаблону, а объявление
+    «миграция завершена» не должно молча пропасть."""
+    R = _mod("kb_reset")
+    assert "правила и проверки базы" in R.survives("meta/conform_state.json", False, False, "", False)
+    assert not R.survives("meta/conform_state.json", False, False, "", True), "просили снести всё — и состояние тоже"
 
 
 @test

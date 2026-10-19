@@ -25,11 +25,10 @@ V-NN: карточкам `built: machine` с нарушениями структ
      выдумывается: `source_synced` и `sources` не заводятся. У карточки неизвестного происхождения (нет
      `built: machine` и нет живого `sources`) шапка только пополняется недостающим, а тело не трогается вообще.
   4. Собственная часть — только у `built: machine`, `kind: knowledge`, не заготовки: подряд идущие одинаковые служебные
-     блоки схлопываются в один, а разделы «Не путать» и «Что относится к теме», оказавшиеся в собственной части,
-     переносятся как есть в конец карточки (туда же, куда их пишет `agent:twins`; в область дословного текста нельзя —
-     обновление источника стёрло бы блок) — если за «Источником» есть «Исправления человеком» или «История изменений»,
-     нет «Слияния» и ограды кода парные. Тела `document` и `dictionary`, «Исправления человеком», «История изменений»
-     и «Источник» не меняются никогда.
+     блоки схлопываются в один. Служебные разделы «Не путать» и «Что относится к теме» в собственной части остаются
+     на месте (V-24 — предупреждение): в область источника их класть нельзя, обновление источника стирает блок, а в
+     конец карточки — туда пишут историю и пометки ремонта. Тела `document` и `dictionary`, «Исправления человеком»,
+     «История изменений» и «Источник» не меняются никогда.
   5. Проверка `validate_card(strict)`: ошибок нет — `template:` ставится (наибольшая версия типа); есть — карточка в остатке.
 Неуправляемые типы (`spec`) и рукописные записи (решение, вопрос, справочник без `built: machine` и без живого
 источника) пропускаются: записи переведёт перенос в `Raw/`. Карты правятся только штампом. `kb:schema` не используется,
@@ -61,8 +60,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (  # noqa: E402
-    KB_ROOT, MEETING_MARK, QUOTES, TODAY, body, card_sources, frontmatter, git_guard, split_frontmatter, split_tail,
-    undated, walk_md, write_text_atomic,
+    KB_ROOT, MEETING_MARK, TODAY, body, card_sources, frontmatter, git_guard, split_frontmatter, undated, walk_md,
 )
 import card_types as CT  # noqa: E402 — реестр, проверка, штамп, единый вход записи, состояние миграции
 
@@ -73,8 +71,7 @@ OUTCOMES = (OK, BAD, STAMP, QUEUE, REST, SKIP_UNMANAGED, SKIP_RECORD)
 
 AGENT_CODES = frozenset(("V-09", "V-10", "V-12"))      # нарушения структуры собственной части: их берёт agent:conform
 OWN_LIMIT = 6000                                       # знаков собственной части, больше которых agent:conform не берёт
-MOVABLE = ("Не путать", "Что относится к теме")        # служебные разделы, которым не место в собственной части
-SERVICE = MOVABLE + ("Упоминается в", "Названо в карточках")
+SERVICE = ("Не путать", "Что относится к теме", "Упоминается в", "Названо в карточках")   # служебные разделы движка
 LIST_LIMIT = 20                                        # имён карточек в списке аномалий отчёта
 
 _BUILT_MAC = re.compile(r'(?m)^built[ \t]*:[ \t]*["\']?mac["\']?[ \t]*$')
@@ -83,8 +80,6 @@ _UPDATED = re.compile(r"(?m)^updated[ \t]*:([^\n]*)$")
 _EMPTY_TEMPLATE = re.compile(r"(?m)^template[ \t]*:[ \t]*(?:#[^\n]*)?$")
 _STUB_KEYS = re.compile(r"(?m)^(ilt|lt)[ \t]*:")
 _FENCE = ("```", "~~~")
-_VERBATIM_RE = re.compile(r"(?m)^" + re.escape(QUOTES))
-_MERGE_AT = re.compile(r"(?m)^## Слияние")
 
 
 # ----------------------------------------------------------------------------- шапка
@@ -166,7 +161,7 @@ def repair_header(text: str, rel: str, ct, fm: dict, root: str, human: dict, kno
             section = rel.split("/")[1] if rel.count("/") >= 2 else ""
             new, changed = m6(head, section)
             if changed and new != head:
-                head = new
+                head = new if head.endswith("\n") else new.rstrip("\n")     # блок кончается переводом строки: перед «---» пустой нет
                 notes.append("source → sources")
     if ct is not None and ct.cls != "map" and ct.kinds and not (fm.get("kind") or "").strip():
         stem = os.path.splitext(os.path.basename(rel))[0]
@@ -228,13 +223,11 @@ def _block_text(lines: list) -> str:
 def repair_body(text: str) -> tuple:
     """(текст, [правила]) — ремонт собственной части машинной карточки знания.
 
-    (а) подряд идущие одинаковые служебные блоки схлопываются в один; (б) разделы «Не путать» и «Что относится к теме»
-    переезжают из собственной части в конец карточки — как есть, строка в строку, туда же, куда их пишет `agent:twins`.
-    В область дословного текста их класть нельзя: она принадлежит источнику, и следующее обновление источника стёрло бы
-    блок. Поэтому перенос делается, только когда за «Источником» стоит «Исправления человеком» или «История изменений»
-    (конец карточки лежит за областью источника) и нет «Слияния» (за ним — тело донора). Ограды кода непарные —
-    карточка не меняется. Проверка на месте: ни одна строка, кроме убранных повторов, не потеряна и не прибавлена (иначе —
-    `AssertionError`, карточку не трогаем).
+    Подряд идущие одинаковые служебные блоки («Что относится к теме», «Не путать»…) схлопываются в один. Больше ничего:
+    служебные разделы из собственной части не переносятся — в область дословного текста их класть нельзя (обновление
+    источника стирает блок), а в конец карточки — туда пишут историю и пометки ремонта, блок оказался бы под ними. Такой
+    раздел остаётся на месте, и V-24 — предупреждение, а не ошибка. Ограды кода непарные — карточка не меняется. Проверка
+    на месте: ни одна строка, кроме убранных повторов, не потеряна и не прибавлена (иначе — `AssertionError`).
     """
     head, _rest = _head_pair(text)
     if head is None:
@@ -246,31 +239,18 @@ def repair_body(text: str) -> tuple:
     after = full[len(own):]
     if not fences_balanced(own):
         return text, []
-    notes, dropped = [], collections.Counter()
-    kept, moved = [], []
+    notes, dropped, kept = [], collections.Counter(), []
     for name, lines in _segments(own):
         if name in SERVICE and kept and kept[-1][0] == name and _block_text(kept[-1][1]) == _block_text(lines):
             notes.append(f"повтор «{name}» убран")
             dropped.update(ln.strip() for ln in lines if ln.strip())
             continue
         kept.append((name, lines))
-    quotes = _VERBATIM_RE.search(after)
-    if quotes and not _MERGE_AT.search(after) and split_tail(after[quotes.end():])[1]:
-        stay = []
-        for name, lines in kept:
-            if name in MOVABLE:
-                moved.append(_block_text(lines))
-                notes.append(f"«{name}» перенесён в конец карточки")
-            else:
-                stay.append((name, lines))
-        kept = stay
     if not notes:
         return text, []
     new_own = "\n".join(ln for _name, lines in kept for ln in lines)
     if after:
         new_own = new_own.rstrip("\n") + ("\n\n" if new_own.strip() else "")
-    if moved:
-        after = after.rstrip("\n") + "\n\n" + "\n\n".join(moved) + "\n"
     out = prefix + new_own + after
     was = collections.Counter(ln.strip() for ln in text.split("\n") if ln.strip())
     now = collections.Counter(ln.strip() for ln in out.split("\n") if ln.strip())
@@ -658,6 +638,11 @@ def state_rows(summary: dict) -> list:
     return rows
 
 
+def _cell(text) -> str:
+    """Значение для ячейки таблицы или пункта отчёта: чужой текст в одну строку, без знаков разметки таблицы."""
+    return " ".join(str(text).split()).replace("|", "/").replace("`", "'")[:80]
+
+
 def render_state(results: list, summary: dict, reg) -> str:
     """Отчёт-файл: состояние базы после этапа 1. Только то, что от повторного прогона не меняется (вместе с датой
     сборки в строке «· собрано …», которую сравнение файла не учитывает)."""
@@ -668,7 +653,7 @@ def render_state(results: list, summary: dict, reg) -> str:
          "| Тип | Карточек | Со штампом | В очереди agent:conform | Остаток | Нарушают при штампе | Пропущено |",
          "|---|---|---|---|---|---|---|"]
     for r in rows:
-        L.append(f"| `{r['type']}` | {r['cards']} | {r['stamped']} | {r['queue']} | {r['rest']} | {r['bad']} | {r['skipped']} |")
+        L.append(f"| `{_cell(r['type'])}` | {r['cards']} | {r['stamped']} | {r['queue']} | {r['rest']} | {r['bad']} | {r['skipped']} |")
     stamped = sum(r["stamped"] for r in rows)
     share = f"{stamped * 100 / total:.1f} %" if total else "—"
     L += ["", f"Всего {total}; со штампом после прогона {stamped} ({share}).", ""]
@@ -683,7 +668,7 @@ def render_state(results: list, summary: dict, reg) -> str:
         for name, rels in shown.items():
             L.append(f"### {name}: {len(rels)}")
             L.append("")
-            L += [f"- `{x}`" for x in sorted(rels)[:LIST_LIMIT]]
+            L += [f"- `{_cell(x)}`" for x in sorted(rels)[:LIST_LIMIT]]
             if len(rels) > LIST_LIMIT:
                 L.append(f"- … ещё {len(rels) - LIST_LIMIT}")
             L.append("")
@@ -699,8 +684,10 @@ def write_report(root: str, text: str) -> bool:
                 return False
     except OSError:
         pass
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    write_text_atomic(path, text)
+    why = CT.put_text(path, text)
+    if why:
+        print(f"kb_conform: отчёт не записан — {why}", file=sys.stderr)
+        return False
     return True
 
 
@@ -794,12 +781,7 @@ PARKED_REL = os.path.join(".aurora", "state", "conform_parked.json")      # па
 
 def parked_memory(root: str) -> dict:
     """{путь карточки от проекта: отпечаток[@отпечаток реестра]} — карточки, которые `agent:conform` отложил до правки файла."""
-    try:
-        with open(os.path.join(root, PARKED_REL), encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return CT.read_small_json(os.path.join(root, PARKED_REL))
 
 
 def is_parked(root: str, path: str, memory: "dict | None" = None) -> bool:
@@ -898,8 +880,10 @@ def finalize(root: str, reg, apply: bool) -> int:
     if not apply:
         print("(dry-run) Ничего не записано. Объявить миграцию завершённой: `kb:conform --finalize --apply`")
         return 0
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    write_text_atomic(path, json.dumps(state, ensure_ascii=False, indent=1) + "\n")
+    why = CT.put_text(path, json.dumps(state, ensure_ascii=False, indent=1) + "\n")
+    if why:
+        print(f"kb_conform: состояние не записано — {why}", file=sys.stderr)
+        return 2
     print(f"✅ Записано {CT.CONFORM_STATE_REL}: с этого момента `kb:lint` считает карточку без template: ошибкой.")
     return 0
 
@@ -963,6 +947,11 @@ def main(argv=None) -> int:
             return 2
         for r in results:
             if r["text"] == r["was"]:
+                continue
+            if read_card(r["path"]) != r["was"]:            # разбор шёл секунды: правку человека за это время не затираем
+                r["refused"] = "файл изменился после разбора — карточка вернётся на следующем прогоне"
+                refused.append((r["rel"], r["refused"]))
+                _undo(r, reg)
                 continue
             done, why = CT.try_write_card(r["path"], r["text"], op="repair", reg=reg)
             if why:

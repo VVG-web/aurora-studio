@@ -47,7 +47,7 @@ Do not confuse the type with the kind (`kind`): the kind answers "who edits the 
 is about and by which template". **The template is mandatory when writing:** the engine builds a new card by its
 type's template and checks it strictly, an edit of an existing one "by difference" (a new violation is rejected), and a
 card that passes its template gets the `template:` stamp. A violation in a stamped card is a `kb:lint` error; a card
-without `template:` in its head is "pre-template", and `kb:cards --check` names its deviations as warnings.
+without `template:` in its head is "pre-template", and `kb:cards --check` names its deviations as warnings — until the migration is declared complete (`kb:conform`, `agent:conform`).
 
 ## Links are mandatory
 
