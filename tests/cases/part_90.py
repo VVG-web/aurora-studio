@@ -140,6 +140,31 @@ def test_project_copy_cannot_reassign_the_role_of_a_kit_module(tmp: Path):
 
 
 @test
+def test_a_failed_registry_read_is_not_remembered_as_an_answer(tmp: Path):
+    """Сбой чтения манифеста (замок файла на Windows) даёт прежние папки на этот раз, но не запоминается: следующий вопрос
+    снова идёт в реестр. Запоминается только слепой реестр (манифестов нет совсем)."""
+    import aurora_common as C
+    import sources_registry as R
+    root = make_project(tmp)
+    real, calls = R.service_paths, []
+
+    def flaky(root_, role):
+        calls.append(role)
+        if len(calls) == 1:
+            raise PermissionError("манифест занят")
+        return real(root_, role)
+    R.service_paths = flaky
+    C._SERVICE_MEMO.clear()
+    try:
+        assert C.service_dirs("tasktracker", str(root)) == ["Sources/JIRA"]       # прежняя папка на время сбоя
+        assert C.service_dirs("tasktracker", str(root)) == ["Sources/JIRA"]
+        assert len(calls) == 2, "сбой чтения запомнен как ответ реестра"
+    finally:
+        R.service_paths = real
+        C._SERVICE_MEMO.clear()
+
+
+@test
 def test_foreign_manifest_cannot_take_a_role_it_does_not_have(tmp: Path):
     """Манифест со стороны: неизвестная роль не роняет модуль, чужое старое имя не перехватывает роль."""
     import sources_registry as R
