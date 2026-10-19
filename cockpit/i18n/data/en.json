@@ -5,7 +5,7 @@
     "kit:paths": "Path length on Windows, macOS and Linux: which config lines (Confluence roots, website addresses, source and project folders) will not fit into a path and what will not be loaded because of it; read-only, never blocks a run; the Windows root, when it is not this machine, is an assumption named in the report.",
     "kit:hooks": "Git hooks: pre-commit with the linter, the ratchet (errors may not grow) and the secret check; in the kit also commit-msg and pre-push, so internal names, secrets and kitchen branches do not reach history.",
     "kit:remap-sources": "Retarget cards' `source:` after a mirror moved (Confluence — by page_id, Jira — by issue key).",
-    "kit:update": "Update the engine in a project to the kit's version (preview, then `--apply`); `--structure-only` — only the schema folders; `--engine-only` — only the engine in this machine's `.aurora/` (a clone without `.aurora/` is completed; project files and git are not touched — the panel does this itself when you pick the project).",
+    "kit:update": "Update the engine in a project to the kit's version (preview, then `--apply`); `--structure-only` — only the schema folders; `--engine-only` — only the engine in this machine's `.aurora/` (a clone without `.aurora/` is completed; project files and git are not touched — the panel does this itself when you pick the project); `--rollback` — return the project's engine from the snapshot taken before the last update (without `--apply` it only previews); `--allow-downgrade` — update even when the project's engine or stamp is newer than the kit (a deliberate rollback).",
     "kit:i18n": "Panel interface languages: completeness of every catalogue against the markup; `--new <code> <name>` creates a language.",
     "kit:skills": "Put Aurora's skills into the agent's shared folder (`~/.claude/skills`) so `/aurora-vault` and `/aurora-dev` are found in any conversation.",
     "kit:mcp": "The base as a tool for any assistant: server check and a ready connection line. The server only reads — writing through MCP is impossible.",
@@ -609,7 +609,14 @@
     "сданная версия {}: изменён после коммита → верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо": "delivered version {}: changed after the commit → restore it from git (`git checkout -- Deliverables/released/`) or release a new version: what was delivered is immutable",
     "сданная версия {}: удалён после коммита → верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо": "delivered version {}: deleted after the commit → restore it from git (`git checkout -- Deliverables/released/`) or release a new version: what was delivered is immutable",
     "ревью «{}»: профили — {} или пусто": "review \"{}\": the profiles are {} or empty",
-    "маска ключа: {}": "key mask: {}"
+    "маска ключа: {}": "key mask: {}",
+    "в проекте идёт запуск ({}) — обновление после него": "a run is in progress in the project ({}) — update after it",
+    "движок или штамп проекта новее кита {}: обновите кит (git pull в его папке); обновление проекта этим китом движок не понизит": "the project's engine or stamp is newer than kit {}: update the kit (git pull in its folder); updating the project with this kit will not downgrade the engine",
+    "движок проекта {} несовместим с китом {}: контракт движка изменился (ENGINE_API {} → {}). Обновите движок проекта: раздел «Версия».": "the project's engine {} is incompatible with kit {}: the engine contract changed (ENGINE_API {} → {}). Update the project's engine: the «Version» section.",
+    "контракт движка проекта (ENGINE_API {}) новее, чем у кита ({}): обновите кит {}, а движок проекта понижать не нужно.": "the project's engine contract (ENGINE_API {}) is newer than the kit's ({}): update the kit {}, there is no need to downgrade the project's engine.",
+    "обновление движка оборвалось на середине (метка .aurora/state/update.pending) → «Версия» → «Обновить» достроит его; вернуть прежний движок — `kit:update --rollback`": "the engine update was interrupted midway (mark .aurora/state/update.pending) → «Version» → «Update» will finish it; to return the previous engine use `kit:update --rollback`",
+    "обновление движка проекта оборвалось на середине: повторите «Версия» → «Применить» или откатите его командой kit:update --rollback.": "the project's engine update was interrupted midway: repeat «Version» → «Apply» or roll it back with kit:update --rollback.",
+    "обновление этого проекта уже идёт — движок подготовится после него": "an update of this project is already running — the engine will be prepared after it"
   },
   "connectors": {
     "confluence-dc": {
@@ -1026,7 +1033,9 @@
     "записать (иначе --assign только показывает)": "write (otherwise --assign only shows)",
     "проставить @id: сценариям без идентификатора": "put @id: on scenarios without an identifier",
     "волна правок: что затронет требование (ключ Requirement Yogi)": "the wave of edits: what a requirement touches (a Requirement Yogi key)",
-    "типы ключей, которые считать требованиями, через запятую (по умолчанию REQ)": "key types to treat as requirements, comma-separated (REQ by default)"
+    "типы ключей, которые считать требованиями, через запятую (по умолчанию REQ)": "key types to treat as requirements, comma-separated (REQ by default)",
+    "Вернуть движок проекта (.aurora/) к состоянию до последнего обновления из снимка; без --apply — только просмотр": "Return the project's engine (.aurora/) to its state before the last update from the snapshot; without --apply it only previews",
+    "Разрешить обновление, когда движок или штамп проекта НОВЕЕ кита (осознанный откат кита)": "Allow the update when the project's engine or stamp is NEWER than the kit (a deliberate kit rollback)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

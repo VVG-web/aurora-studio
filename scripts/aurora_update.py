@@ -37,8 +37,10 @@ import argparse, difflib, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from aurora_common import load_connector_manifest, replace_file, utc_today, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком; манифест коннектора без исключений
+from aurora_common import (ENGINE_BEHIND, engine_status, kit_engine_api, load_connector_manifest, replace_file,  # noqa: E402
+                           utc_today, version_key, write_text_atomic)  # дата в UTC, одна на движок; запись целиком; манифест коннектора без исключений; версии и статус движка — одно определение
 import folder_guides as FG  # noqa: E402 — описания папок проекта (README.md)
+import engine_txn as ETX  # noqa: E402 — проверка до записи, снимок, метка и откат обновления движка (BL-LCY-07)
 
 def find_kit() -> Path:
     """Где лежит kit. Копия этого скрипта живёт и в проекте — она обновлять не умеет.
@@ -567,12 +569,6 @@ def stamp_engine(target: Path, ver: str) -> None:
         write_text_atomic(target / ENGINE_MARK, ver + "\n")
 
 
-def version_key(v: str) -> tuple:
-    """«1.174.0» → (1, 174, 0): сравнение версий числами, а не строками."""
-    nums = [int(x) for x in re.findall(r"\d+", str(v).split("+")[0])[:3]]
-    return tuple(nums + [0] * (3 - len(nums)))
-
-
 def engine_targets() -> list:
     """Пути под `.aurora/`, которые манифест кладёт в проект. Проекта не читает.
 
@@ -659,7 +655,8 @@ def engine_state(target: Path) -> dict:
     ещё в прежней `.opencode/`: `legacy`); `unknown` — кита с манифестом не видно. Читает только
     пути: ни сети, ни содержимого файлов."""
     kit = kit_version()
-    out = {"state": "unknown", "missing": [], "total": 0, "copy": "", "kit": kit, "legacy": False}
+    out = {"state": "unknown", "missing": [], "total": 0, "copy": "", "kit": kit, "legacy": False,
+           "status": "unknown", "status_reason": ""}
     if not MANIFEST.is_file():
         return out
     out["copy"] = copy_version(target)
@@ -674,17 +671,20 @@ def engine_state(target: Path) -> dict:
         if not _pointer_ok(target):
             missing.append(KIT_POINTER)
     out.update(missing=missing, total=len(wanted))
+    # «Отстала ли версия» решает единый статус (`aurora_common.engine_status`), а не своё сравнение строк: он же даёт
+    # панели, гейту маршрутов, «Обновить все» и доктору один ответ. Оборванное обновление тоже требует обновления.
+    es = engine_status(target, kit, kit_engine_api(KIT))
+    out.update(status=es["status"], status_reason=es["reason"])
+    behind = es["status"] in ENGINE_BEHIND or es["status"] == "partial"
     if files and len([m for m in missing if m != KIT_POINTER]) >= len(files):
         out["state"] = "missing"                  # ни одного файла манифеста: движка на машине нет
     elif missing:
         out["state"] = "incomplete"
     elif mark_version(target):
-        out["state"] = "stale" if version_key(mark_version(target)) < version_key(kit) else "ok"
+        out["state"] = "stale" if behind else "ok"
     else:
         # метки нет (копия старше метки): версию подскажет штамп проекта — нижняя оценка — и свидетель
-        stamp = out["copy"]
-        old = bool(stamp) and version_key(stamp) < version_key(kit)
-        out["state"] = "stale" if old or _witness_differs(target, ignore) else "ok"
+        out["state"] = "stale" if behind or _witness_differs(target, ignore) else "ok"
     return out
 
 
@@ -719,6 +719,56 @@ def _write_engine_file(dst: Path, text: str) -> None:
         replace_file(tmp, dst)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def apply_engine(target: Path, items: list, gone: list, ver: str, from_ver: str, effects=()) -> dict:
+    """Положить файлы движка проекта как одну операцию: проверка → снимок → метка → запись → сверка → (при сбое) откат.
+
+    `items` — [(путь от корня проекта, новый текст)] под `.aurora/`, `gone` — выведенные файлы к удалению. Скрипты
+    проверяются ДО первой записи (`engine_txn.verify_overlay`): сломанный набор не ляжет в проект и не оставит смешанный
+    движок. Перед записью снимается копия заменяемого и удаляемого (вне проекта, три последних), создаётся метка
+    `update.pending` — её снимает только конец обновления. После записи хеш каждого файла сверяется с проверенным текстом,
+    а скрипты компилируются; расхождение откатывает файлы из снимка. → {ok, stage, problems, backup, restored}."""
+    res = {"ok": False, "stage": "", "problems": [], "backup": "", "restored": False}
+    staged = {rel[len(ENGINE) + 1:]: text for rel, text in items}
+    kit_modules = {p.stem for p in (KIT / "scripts").glob("*.py")}
+    bad = ETX.verify_overlay(staged, target / ENGINE / "scripts", kit_modules)
+    if bad:
+        return {**res, "stage": "verify", "problems": bad}
+    rels = [rel for rel, _t in items] + list(gone) + [ENGINE_MARK, KIT_POINTER, ETX.LOCK_FILE]
+    stamp = target / "AuroraKnowledgeDB/meta/aurora_version.txt"
+    meta = {"from": from_ver, "to": ver, "effects": list(effects),
+            "project_stamp": stamp.read_text(encoding="utf-8").strip() if stamp.is_file() else None}
+    snap = ETX.snapshot(target, rels, meta)
+    res["backup"] = str(snap)
+    ETX.mark_pending(target, {"from": from_ver, "to": ver, "backup": str(snap)})
+    failed = []
+    for rel, text in items:
+        try:
+            _write_engine_file(target / rel, text)
+        except OSError as e:
+            failed.append(f"{rel}: {e}")
+    for rel in gone:
+        try:
+            (target / rel).unlink(missing_ok=True)
+        except OSError as e:
+            failed.append(f"{rel}: {e}")
+    if not failed:
+        failed = ETX.check_installed(target, {rel: ETX.sha256_text(text) for rel, text in items})
+    if failed:
+        back = ETX.restore(target, snap)
+        res.update(stage="write", problems=failed + [f"откат: {b}" for b in back], restored=not back)
+        if not back:
+            ETX.clear_pending(target)       # движок вернулся целиком; метка остаётся только у неоконченного отката
+        return res
+    return {**res, "ok": True}
+
+
+def seal_engine(target: Path, ver: str) -> None:
+    """Конец обновления движка: `engine.lock.json` с хешами нынешних файлов и снятая метка `update.pending`."""
+    if (target / ENGINE).is_dir() and _linkless(target, ETX.LOCK_FILE) and not _ignored(ETX.LOCK_FILE, load_ignore(target)):
+        ETX.write_lock(target, KIT, ver, [p for p in engine_targets() if (target / p).is_file()])
+    ETX.clear_pending(target)
 
 
 def engine_prepare(target: Path, apply: bool = True) -> dict:
@@ -766,32 +816,39 @@ def engine_prepare(target: Path, apply: bool = True) -> dict:
         res.update(created=[c.path for c, new in todo if new], refreshed=[c.path for c, new in todo if not new],
                    removed=gone)
         return res
-    for c, new in todo:
-        try:
-            _write_engine_file(target / c.path, c.new_text)
-            res["created" if new else "refreshed"].append(c.path)
-        except OSError as e:
-            res["failed"].append(f"{c.path}: {e}")
-    for r in gone:
-        try:
-            (target / r).unlink(missing_ok=True)
-            res["removed"].append(r)
-        except OSError as e:
-            res["failed"].append(f"{r}: {e}")
-    # указатель на кит и метка — тем же правилом: не через ссылку, не в путь, который ведёт проект сам
-    for rel, text in ((KIT_POINTER, str(KIT)), (ENGINE_MARK, kit_version())):
-        if res["failed"] or _ignored(rel, ignore):
-            continue
-        if rel == ENGINE_MARK and (res["ahead"] or res["shared"]):
-            continue                                  # копия не совпала с китом целиком: версию не объявляем
-        if not _linkless(target, rel):
-            res["shared"].append(rel)
-            continue
-        try:
-            (target / ENGINE).mkdir(parents=True, exist_ok=True)
-            write_text_atomic(target / rel, text + "\n")
-        except OSError as e:
-            res["failed"].append(f"{rel}: {e}")
+    lock = ETX.update_lock(target)
+    locked = bool(todo or gone) and lock.acquire(blocking=False)
+    if (todo or gone) and not locked:
+        return {**res, "ok": False, "reason": "update_running", "failed": ["обновление этого проекта уже идёт"]}
+    try:
+        if todo or gone:
+            done = apply_engine(target, [(c.path, c.new_text) for c, _new in todo], gone, kit_version(),
+                                copy_version(target) or "?")
+            if done["ok"]:
+                for c, new in todo:
+                    res["created" if new else "refreshed"].append(c.path)
+                res["removed"].extend(gone)
+            else:
+                res["failed"].extend(done["problems"])
+        # указатель на кит и метка — тем же правилом: не через ссылку, не в путь, который ведёт проект сам
+        for rel, text in ((KIT_POINTER, str(KIT)), (ENGINE_MARK, kit_version())):
+            if res["failed"] or _ignored(rel, ignore):
+                continue
+            if rel == ENGINE_MARK and (res["ahead"] or res["shared"]):
+                continue                                  # копия не совпала с китом целиком: версию не объявляем
+            if not _linkless(target, rel):
+                res["shared"].append(rel)
+                continue
+            try:
+                (target / ENGINE).mkdir(parents=True, exist_ok=True)
+                write_text_atomic(target / rel, text + "\n")
+            except OSError as e:
+                res["failed"].append(f"{rel}: {e}")
+        if not res["failed"] and not res["ahead"] and not res["shared"]:
+            seal_engine(target, kit_version())            # engine.lock.json и снятая метка; у чужой копии — не объявляем
+    finally:
+        if locked:
+            lock.release()
     res["applied"] = True
     res["ok"] = not res["failed"]
     res["ignored"] = _git_ignored(target, KIT_POINTER)
@@ -849,6 +906,59 @@ def run_engine_only(target: Path, apply: bool) -> int:
         return 1
     print("\n".join(engine_report(res, apply)))
     return 0 if res["ok"] else 1
+
+
+def run_rollback(target: Path, apply: bool) -> int:
+    """`--rollback`: вернуть файлы движка проекта к состоянию до последнего обновления (из снимка, BL-LCY-07).
+
+    Откатывается только `.aurora/` (копия движка вне git): файлы самого проекта, которые обновление тоже правило
+    (`AGENTS.md`, шаблоны, `.gitignore`, конфиг), живут в git — их возвращает git, а здесь они только названы.
+    Без `--apply` — просмотр: что вернётся и что уберётся."""
+    if not (target / "AuroraKnowledgeDB").is_dir():
+        print(f"⚠️  {target} не похоже на проект Aurora (нет AuroraKnowledgeDB/).", file=sys.stderr)
+        return 1
+    print(f"Aurora update --rollback — {target}")
+    shots = ETX.list_snapshots(target)
+    if not shots:
+        print("⚠️  Снимков движка этого проекта нет: обновление, которое можно откатить, ещё не делалось "
+              f"(снимки лежат в {ETX.backups_root()}).", file=sys.stderr)
+        return 1
+    snap, man = shots[0]
+    files = man.get("files") or {}
+    restore_n = sum(1 for rec in files.values() if rec.get("existed"))
+    print(f"  снимок {snap.name}: версия до обновления {man.get('from')}, после — {man.get('to')}")
+    print(f"  вернётся файлов движка: {restore_n}; уберётся созданных обновлением: {len(files) - restore_n}")
+    effects = man.get("effects") or []
+    if effects:
+        print(f"  Файлы проекта, которые обновление тоже правило ({len(effects)}), в git — откат через git, не отсюда:")
+        print("".join(f"     {e}\n" for e in effects[:10]).rstrip("\n"))
+        if len(effects) > 10:
+            print(f"     … ещё {len(effects) - 10}")
+    if not apply:
+        print("\n(dry-run) Ничего не возвращено. Повторите с --apply.")
+        return 0
+    busy = agent_running(target)
+    if busy:
+        print(f"\n⛔ В проекте идёт прогон агента: {busy}. Откат движка — после него.", file=sys.stderr)
+        return 3
+    lock = ETX.update_lock(target)
+    if not lock.acquire(blocking=False):
+        print("\n⛔ Обновление этого проекта уже идёт. Откат — после него.", file=sys.stderr)
+        return 3
+    try:
+        failed = ETX.restore(target, snap)
+        if not failed:
+            if man.get("project_stamp") is not None:
+                stamp_version(target, man["project_stamp"])      # штамп проекта говорит ту версию, что и вернувшийся движок
+            ETX.clear_pending(target)
+    finally:
+        lock.release()
+    for line in failed:
+        print(f"   ⚠️ не вернулось: {line}", file=sys.stderr)
+    if failed:
+        return 1
+    print(f"\n✅ Движок проекта возвращён к версии {man.get('from')}. Проверьте: в панели `kit:doctor`.")
+    return 0
 
 
 # ---------- main ----------
@@ -1063,7 +1173,31 @@ def rebuild_catalog(target: Path, ignore: list) -> bool:
         return False
 
 
-def run(target: Path, apply: bool, structure_only: bool = False):
+def run(target: Path, apply: bool, structure_only: bool = False, allow_downgrade: bool = False):
+    """Обновление проекта. Запись (`--apply`) идёт под замком проекта: кнопка, Cron и вторая панель не обновляют один
+    проект одновременно (BL-LCY-07). Просмотр (dry-run) замка не берёт."""
+    if apply and not allow_downgrade and (target / "AuroraKnowledgeDB").is_dir():
+        # Старый кит поверх нового проекта понизил бы штамп (он едет через git к коллегам) и поставил старый движок на
+        # данные новее его: обновление не пишет ничего (даже замка), пока человек не скажет, что откат осознанный.
+        st = engine_status(target, kit_version(), kit_engine_api(KIT))
+        if st["status"] == "ahead":
+            print(f"\n⛔ {st['reason']}.\n   Ничего не записано. Обновите кит (git pull в папке кита); осознанный откат "
+                  "кита и движка — `--allow-downgrade`.", file=sys.stderr)
+            return 4
+    if not apply or structure_only or not (target / "AuroraKnowledgeDB").is_dir():
+        return _run(target, apply, structure_only, allow_downgrade)
+    lock = ETX.update_lock(target)
+    if not lock.acquire(blocking=False):
+        print("\n⛔ Обновление этого проекта уже идёт (другая панель, Cron или терминал). Повторите после него.",
+              file=sys.stderr)
+        return 3
+    try:
+        return _run(target, apply, structure_only, allow_downgrade)
+    finally:
+        lock.release()
+
+
+def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrade: bool = False):
     if not (target / "AuroraKnowledgeDB").is_dir():
         print(f"⚠️  {target} не похоже на проект Aurora (нет AuroraKnowledgeDB/).", file=sys.stderr)
         return 1
@@ -1074,6 +1208,12 @@ def run(target: Path, apply: bool, structure_only: bool = False):
     if ignored:
         print(f"  update_ignore: {len(ignored)} правил — эти пути проект ведёт сам")
     print(f"  проект: {f['name']} (slug {f['slug']}) · версия {pv} → kit {kv}\n")
+    st = engine_status(target, kv, kit_engine_api(KIT))
+    if st["status"] == "ahead":                     # запись без `--allow-downgrade` отклонена раньше, в `run`
+        if not apply:
+            print(f"⚠️  {st['reason']}. `--apply` откажет без `--allow-downgrade`.\n")
+        else:
+            print(f"⚠️  {st['reason']}. Понижение разрешено флагом --allow-downgrade.\n")
 
     new_dirs = missing_dirs(target)
     if new_dirs:
@@ -1146,6 +1286,8 @@ def run(target: Path, apply: bool, structure_only: bool = False):
                     print(f"   Дата обновления базы из истории прогонов: {kb_date}")
         if apply:
             stamp_engine(target, kv)       # движок совпал с китом: метка копии не отстаёт от штампа
+        if apply:
+            seal_engine(target, kv)        # замок движка с хешами; метка оборванного обновления, если была, снимается
         if apply and pv != kv:
             stamp_version(target, kv)      # штамп проекта — последним: он говорит «обновление дошло до конца»
             print(f"   Проставлен штамп версии: {kv}")
@@ -1184,12 +1326,36 @@ def run(target: Path, apply: bool, structure_only: bool = False):
         print("\n(dry-run) Ничего не записано. Повторите с --apply, чтобы применить.")
         return 0
 
-    busy = agent_running(target) if moving else ""
+    # Файлы движка (`.aurora/`) кладутся одной операцией (`apply_engine`): проверка до записи, снимок, метка, сверка.
+    # Движок в прежней `.opencode/` (переезд) и пути через ссылки — прежним порядком, без снимка.
+    engine_items, gone = [], []
+    if not moving:
+        engine_items = [(c.path, c.new_text) for c in writes if c.path.startswith(ENGINE + "/") and not c.external
+                        and ".." not in Path(c.path).parts and _linkless(target, c.path)]
+        gone = [r_ for r_ in retired if r_.startswith(ENGINE + "/") and _linkless(target, r_)]
+    busy = agent_running(target) if (moving or engine_items or gone) else ""
     if busy:
-        # Переезд перекладывает состояние прогона из-под работающего агента.
-        print(f"\n⛔ В проекте идёт прогон агента: {busy}. Переезд движка — после него.",
+        # Переезд и замена скриптов перекладывают движок из-под работающего агента: один прогон двумя версиями — худшее.
+        print(f"\n⛔ В проекте идёт прогон агента: {busy}. Обновление движка — после него.",
               file=sys.stderr)
         return 3
+    prev = ETX.read_pending(target)         # замок обновления держим мы сами: метка — след прежнего, оборванного запуска
+    if prev:
+        print(f"\n⚠️  Прошлое обновление движка ({prev.get('from')} → {prev.get('to')}) оборвалось на середине: "
+              "достраиваю. Откатить к состоянию до него — `update --rollback`.")
+    if engine_items or gone:
+        effects = [c.path for c in writes + seeds if not c.path.startswith(ENGINE + "/")] \
+            + [r_ for r_ in retired if not r_.startswith(ENGINE + "/")]
+        done = apply_engine(target, engine_items, gone, kv, pv, effects)
+        if not done["ok"]:
+            print(f"\n⛔ Движок проекта не обновлён ({'проверка до записи' if done['stage'] == 'verify' else 'запись'}): "
+                  + ("проект не тронут." if done["stage"] == "verify" else
+                     ("файлы возвращены из снимка." if done["restored"] else
+                      "откат неполный — `update --rollback`.")), file=sys.stderr)
+            for line in done["problems"][:20]:
+                print(f"   - {line}", file=sys.stderr)
+            return 5 if done["stage"] == "verify" else 6
+    engine_done = {rel for rel, _t in engine_items}
     failed = relayout_moves(target, rp) if moving else []
     rewritten = relayout_rewrite(target)
     for d in new_dirs:
@@ -1197,6 +1363,8 @@ def run(target: Path, apply: bool, structure_only: bool = False):
         p.mkdir(parents=True, exist_ok=True)
         (p / ".gitkeep").touch()
     for c in writes + seeds:
+        if c.path in engine_done:
+            continue                 # уже лежит: записано и сверено `apply_engine`
         dst = target / c.path
         dst.parent.mkdir(parents=True, exist_ok=True)
         # .bat — с CRLF при любой системе (с одними LF cmd.exe промахивается мимо меток goto).
@@ -1207,6 +1375,8 @@ def run(target: Path, apply: bool, structure_only: bool = False):
         if dst.suffix in (".command", ".sh"):
             dst.chmod(0o755)     # без бита исполнения двойной щелчок не сработает
     for r in retired:
+        if r in gone:
+            continue
         # Второе обновление (кнопка и Cron разом) могло убрать файл раньше: это не ошибка.
         (target / r).unlink(missing_ok=True)
     if cfg_done:
@@ -1224,6 +1394,7 @@ def run(target: Path, apply: bool, structure_only: bool = False):
     kb_date = backfill_kb_updated(target)
     attrs = refresh_gitattributes(target)
     stamp_engine(target, kv)
+    seal_engine(target, kv)                # замок движка с хешами файлов; метка update.pending снимается
     stamp_version(target, kv)              # штамп проекта — последним: по нему видно, что обновление дошло до конца
     print(f"\n✅ Применено: {len(new_dirs)} папок, {len(writes)} перезаписей, "
           f"{len(seeds)} .new-файлов, {len(retired)} удалено"
@@ -1286,13 +1457,20 @@ def main():
                       help="Только досоздать недостающие папки схемы + штамп версии; движок не трогать")
     only.add_argument("--engine-only", action="store_true",
                       help="Только движок в .aurora/ этой машины; файлы проекта и git не трогаются")
+    ap.add_argument("--allow-downgrade", action="store_true",
+                    help="Разрешить обновление, когда движок или штамп проекта НОВЕЕ кита (осознанный откат кита)")
+    only.add_argument("--rollback", action="store_true",
+                      help="Вернуть движок проекта (.aurora/) к состоянию до последнего обновления из снимка; "
+                           "без --apply — только просмотр")
     a = ap.parse_args()
     if not kit_is_reachable():
         return 2
     target = Path(a.target).expanduser().resolve()
+    if a.rollback:
+        return run_rollback(target, a.apply)
     if a.engine_only:
         return run_engine_only(target, a.apply)
-    return run(target, a.apply, a.structure_only)
+    return run(target, a.apply, a.structure_only, a.allow_downgrade)
 
 
 if __name__ == "__main__":

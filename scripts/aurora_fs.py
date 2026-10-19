@@ -37,6 +37,12 @@ _SEQ = itertools.count(1)
 _WARNED: set = set()                      # о чём уже сказано в этом процессе (по ключу): повторять не нужно
 
 
+def utc_stamp() -> str:
+    """Время в UTC строкой ISO («2026-10-19T08:00:00Z»): движок записывает время только в UTC (оно показывается в местном)."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _warn_once(key: str, text: str) -> None:
     if key in _WARNED:
         return
@@ -531,7 +537,7 @@ class FileLock:
         raise OSError("не удалось запереть %s: файл замка постоянно убирают" % self.path)
 
     def _describe(self, fd: int) -> None:
-        rec = {"pid": os.getpid(), "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+        rec = {"pid": os.getpid(), "at": utc_stamp()}
         rec.update(self.info or {})
         try:
             data = json.dumps(rec, ensure_ascii=False, default=str).encode("utf-8", "replace")

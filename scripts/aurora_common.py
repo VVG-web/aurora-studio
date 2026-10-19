@@ -2375,6 +2375,109 @@ def engine_dir(project) -> str:
     return ENGINE_DIR
 
 
+def version_key(v) -> tuple:
+    """«1.174.0» → (1, 174, 0): версии сравниваются числами, а не строками. Хвост после «+» не в счёт."""
+    nums = [int(x) for x in re.findall(r"\d+", str(v).split("+")[0])[:3]]
+    return tuple(nums + [0] * (3 - len(nums)))
+
+
+def kit_engine_api(kit) -> int:
+    """`ENGINE_API` кита — целое из файла рядом с `VERSION`; растёт только при несовместимом изменении контракта движка
+    (команды и их флаги, форматы файлов состояния, схема конфига, раскладка `.aurora/`). Нет файла или он не число — 1."""
+    try:
+        with open(os.path.join(os.fspath(kit), "ENGINE_API"), encoding="utf-8") as fh:
+            return max(1, int(fh.read().strip().split()[0]))
+    except (OSError, ValueError, IndexError):
+        return 1
+
+
+ENGINE_BEHIND = ("behind_minor", "behind_patch")        # движок проекта старше кита: его стоит обновить
+
+
+def _engine_pinned(root: str) -> bool:
+    """Проект ведёт свой движок сам: ядро (`aurora_common.py`) названо в `aurora.update_ignore.txt` — обновление его не трогает."""
+    from fnmatch import fnmatch
+    for rel in ("aurora.update_ignore.txt", os.path.join(LEGACY_ENGINE_DIR, "update_ignore.txt")):
+        try:
+            with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
+                pats = [ln.strip() for ln in fh if ln.strip() and not ln.strip().startswith("#")]
+        except OSError:
+            continue
+        if any(fnmatch(ENGINE_DIR + "/scripts/aurora_common.py", p) for p in pats):
+            return True
+    return False
+
+
+def engine_status(project, kit_version: str, kit_api: int = 1) -> dict:
+    """Единое определение «отстал ли движок проекта» (BL-LCY-01): им пользуются панель, `kit:doctor`, гейт маршрутов и
+    Cron и «Обновить все». Раньше «отстал» значило три разных вещи (штамп не равен ките; другой минор; копия на машине
+    старше), и «Обновить все» понижало проект, чей движок НОВЕЕ кита.
+
+    → {status, reason, engine, stamp, kit, engine_api, kit_api, blocks}. `status`:
+      `ok` — версия движка равна версии кита; `behind_minor` / `behind_patch` — старше кита (отличается минор /
+      только патч); `ahead` — НОВЕЕ кита (движок или штамп проекта): обновление его не понизит (флаг
+      `--allow-downgrade`), а нужно обновить кит; `partial` — обновление оборвалось на середине (метка `update.pending`,
+      замок обновления не занят); `pinned` — проект ведёт движок сам (`aurora.update_ignore.txt`), даже если версии
+      расходятся; `unknown` — штампа или версии кита нет. `blocks` — стоит ли гейту остановить маршрут и шаг Cron:
+      оборванное обновление; контракт кита (`ENGINE_API`) новее движка проекта или движок проекта новее контракта кита;
+      у проекта без замка движка (`engine.lock.json`, ставится обновлением) — прежнее правило минора.
+    Версия движка — метка копии на машине (`engine_version.txt`), а нет её — замок движка, нет и его — штамп проекта
+    (он едет через git и говорит о версии у владельца, это нижняя оценка). Читает только файлы проекта.
+    """
+    root = os.fspath(project)
+    eng = engine_dir(root)
+
+    def small(rel):
+        try:
+            with open(os.path.join(root, rel), encoding="utf-8") as fh:
+                return fh.read(4096).strip()
+        except (OSError, UnicodeDecodeError):
+            return ""
+
+    def good(v):
+        return v if v[:1].isdigit() else ""
+
+    stamp = good(small("AuroraKnowledgeDB/meta/aurora_version.txt"))
+    lock = {}
+    try:
+        with open(os.path.join(root, eng, "engine.lock.json"), encoding="utf-8") as fh:
+            lock = json.load(fh)
+    except (OSError, ValueError):
+        lock = {}
+    lock = lock if isinstance(lock, dict) else {}
+    api = lock.get("engine_api")
+    api = api if isinstance(api, int) and not isinstance(api, bool) and api > 0 else 0
+    engine = good(small(eng + "/engine_version.txt")) or good(str(lock.get("version") or ""))
+    kit = good(str(kit_version or ""))
+    out = {"status": "unknown", "reason": "", "engine": engine, "stamp": stamp, "kit": kit, "engine_api": api,
+           "kit_api": int(kit_api or 1), "blocks": False}
+    pend = os.path.join(root, eng, "state", "update.pending")
+    if os.path.isfile(pend) and not _fs().is_locked(os.path.join(root, eng, "state", "update.lock")):
+        out.update(status="partial", blocks=True,
+                   reason="обновление движка оборвалось на середине (метка update.pending): повторите обновление или откатите его")
+        return out
+    have = engine or stamp
+    if not have or not kit:
+        out["reason"] = "нет штампа версии проекта" if not have else "версия кита неизвестна"
+        return out
+    vk, sk, kk = version_key(have), version_key(stamp) if stamp else (0, 0, 0), version_key(kit)
+    if max(vk, sk) > kk:
+        out.update(status="ahead", blocks=bool(api and api > out["kit_api"]),
+                   reason="%s проекта %s новее кита %s: нужно обновить кит, понижать движок проекта не нужно"
+                          % ("штамп" if sk > vk else "движок", stamp if sk > vk else have, kit))
+        return out
+    if vk == kk:
+        out.update(status="ok")
+        return out
+    kind = "behind_minor" if vk[:2] != kk[:2] else "behind_patch"
+    out.update(status=kind, reason="движок проекта %s старше кита %s" % (have, kit),
+               blocks=(out["kit_api"] > api) if api else kind == "behind_minor")
+    if _engine_pinned(root):
+        out.update(status="pinned", blocks=False, reason="проект ведёт движок сам (aurora.update_ignore.txt): версия %s, кит %s"
+                                                          % (have, kit))
+    return out
+
+
 def kit_root():
     """Кит: сам скрипт в `scripts/` кита либо копия движка проекта с указателем на кит
     (`.aurora/kit_path.txt`). Указателя нет или кит пропал — None."""

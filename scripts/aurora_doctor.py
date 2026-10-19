@@ -782,6 +782,12 @@ def check_engine(warns: list) -> list:
                      "«Версия» → «Подготовить проект»")
     elif st["state"] == "stale":
         warns.append(f"движок проекта {st['copy']} старше кита {st['kit']} → «Версия» → «Обновить»")
+    if st.get("status") == "partial":
+        warns.append("обновление движка оборвалось на середине (метка .aurora/state/update.pending) → «Версия» → "
+                     "«Обновить» достроит его; вернуть прежний движок — `kit:update --rollback`")
+    elif st.get("status") == "ahead":
+        warns.append(f"движок или штамп проекта новее кита {st['kit']}: обновите кит (git pull в его папке); "
+                     "обновление проекта этим китом движок не понизит")
     if not miss or st["legacy"]:
         return []
     return [f"недостающие файлы движка ({len(miss)}):"] + [f"  {m}" for m in miss]

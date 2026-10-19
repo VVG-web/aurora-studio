@@ -417,7 +417,11 @@ def _run_in_process(AU, root: Path, ops: list | None = None, fired: list | None 
     err = None
     with f, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         try:
-            AU.run(root, True)
+            rc = AU.run(root, True)
+            if rc not in (0, None):
+                # Файлы движка кладутся одной операцией (BL-LCY-07): отказ записи там — не исключение, а код 6 после
+                # отката из снимка. Для проверки это тот же «отказ записи».
+                err = OSError(28, f"обновление кончилось кодом {rc} (откат движка из снимка)")
         except Exception as e:  # noqa: BLE001 — обрыв проверки и есть исключение
             err = e
     if ops is not None:
@@ -493,8 +497,9 @@ def test_lifecycle_update_interrupted_midway_leaves_project_recoverable(tmp: Pat
                     f"обрыв на {n}/{total}: проект уже назвался обновлённым ({_stamp(root)})"
             # Файл ни прежний, ни новый — обрезок. Без обрыва посреди записи их быть не должно, с
             # обрывом — не больше одного (того, что писался), и не из числа единственных.
+            # метка оборванного обновления (`update.pending`) — не обрезок, а след обрыва: она нужна, чтобы обрыв был виден
             broken = sorted(rel for rel, h in _tree(root).items()
-                            if h != before.get(rel) and h != reference.get(rel))
+                            if h != before.get(rel) and h != reference.get(rel) and not rel.endswith("state/update.pending"))
             assert len(broken) <= (1 if torn else 0), \
                 f"обрыв на {n}/{total} (torn={torn}): побито больше одного файла: {broken[:6]}"
             assert not [rel for rel in broken if name_of(rel) in single], \
@@ -554,8 +559,12 @@ def test_lifecycle_two_updates_at_once_converge(tmp: Path):
              for _ in range(2)]
     outs = [p.communicate(timeout=120) for p in procs]
     for p, (o, e) in zip(procs, outs):
-        assert p.returncode == 0, f"параллельное обновление: rc={p.returncode}\n{o[-400:]}\n{e[-600:]}"
+        # Замок проекта (BL-LCY-07): пока идёт одно обновление, второе отказывает кодом 3 и ничего не пишет.
+        assert p.returncode in (0, 3), f"параллельное обновление: rc={p.returncode}\n{o[-400:]}\n{e[-600:]}"
+        assert p.returncode == 0 or "уже идёт" in e, e[-600:]
         assert "Traceback" not in e, e[-600:]
+    assert any(p.returncode == 0 for p in procs), "ни одно из двух обновлений не прошло"
+    _update(KIT, root)                      # отказавшее повторяется и доводит проект до того же состояния
     got = _tree(root)
     diff = sorted(k for k in set(got) | set(reference) if got.get(k) != reference.get(k))
     assert not diff, f"два процесса разом не сошлись: {diff[:6]}"
@@ -794,9 +803,9 @@ def test_check_release_reports_each_mismatch(tmp: Path):
     spec.loader.exec_module(CR)
 
     def tree(version="1.2.3", changelog="## 1.2.3 — x\n", ui="1.2.3", wf="engine-tests",
-             waits="engine-tests") -> Path:
-        root = tmp / f"rel-{abs(hash((version, changelog, ui, wf, waits)))}"
-        for rel, text in (("VERSION", version + "\n"), ("CHANGELOG.md", changelog),
+             waits="engine-tests", engine_api="1\n") -> Path:
+        root = tmp / f"rel-{abs(hash((version, changelog, ui, wf, waits, engine_api)))}"
+        for rel, text in (("VERSION", version + "\n"), ("CHANGELOG.md", changelog), ("ENGINE_API", engine_api),
                           ("cockpit/ui/panel.js", f'const UI_VERSION = "{ui}";\n'),
                           (".github/workflows/test.yml", f"name: {wf}\non: [push]\n"),
                           (".github/workflows/release.yml", f"on:\n  workflow_run:\n    workflows: [{waits}]\n")):
@@ -818,6 +827,7 @@ def test_check_release_reports_each_mismatch(tmp: Path):
             ("версия не X.Y.Z", dict(version="1.2", changelog="## 1.2 — x\n", ui="1.2"), "не вида X.Y.Z"),
             ("нет записи в CHANGELOG", dict(changelog="## 1.2.2 — x\n"), "нет записи"),
             ("панель врёт", dict(ui="1.2.2"), "UI_VERSION"),
-            ("release.yml ждёт другое", dict(waits="other"), "release.yml ждёт")):
+            ("release.yml ждёт другое", dict(waits="other"), "release.yml ждёт"),
+            ("ENGINE_API не число", dict(engine_api="много\n"), "ENGINE_API")):
         rc, out = check(tree(**kw))
         assert rc == 1 and needle in out, (label, rc, out)
