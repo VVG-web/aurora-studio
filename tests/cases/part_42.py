@@ -511,10 +511,10 @@ _pair("V-01",
       lambda: [mk(), mk(title='"Title: в кавычках"')])
 _pair("V-02",
       lambda: [mk(title=None), mk(updated=None), mk(created=None), mk(kind=None), mk(status=None), mk(type=None),
-               mk(sources=" []"), mk(source_synced=None)],
+               mk(sources=" []")],
       lambda: [mk(), mk(built=None, sources=" []", source_synced=None),
                mk(status="placeholder", sources=" []", source_synced=None, body="# Имя\n\n_Заготовка: пусто._\n")],
-      "Нет `template` — это сведение (до-шаблонная карточка), а не ошибка.")
+      "Нет `template` — это сведение (до-шаблонная карточка), а не ошибка; нет `source_synced` — предупреждение (part_70).")
 _pair("V-03",
       lambda: [mk(type="person"), mk(type="entity", template=None), mk(type="process", template="akdb_concept_v1.0.md"),
                (mk(), _disabled)],
