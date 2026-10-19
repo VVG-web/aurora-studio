@@ -4628,6 +4628,8 @@ ENV_PY = (("beautifulsoup4", ("bs4",), "sync:confluence — разбор storage
           ("markitdown", ("markitdown",), "kb:ingest-office — docx/pptx → markdown"),
           ("openpyxl", ("openpyxl",), "kb:ingest-office — xlsx"),
           ("pypdf", ("pypdf", "fitz"), "kb:ingest-office — pdf"))
+# Пакеты, чья закреплённая версия ставится вместе с этим: иначе pip возьмёт зависимость самой свежей.
+ENV_COMPANIONS = {"markdownify": ("beautifulsoup4",)}
 # Программы: как поставить на каждой системе. На Windows — winget: он есть в Windows 11.
 ENV_BIN = {"git": {"darwin": "brew install git", "nt": "winget install --id Git.Git -e",
                    "linux": "sudo apt install git"},
@@ -4721,8 +4723,13 @@ def env_install(name: str) -> dict:
     # Версия — закреплённая китом либо самый новый выпуск старше паузы (BL-SEC-21): панель ставит в Python,
     # которым работает, и «последнее, что вышло час назад» туда не берётся.
     spec, note = _extras().safe_spec(pkg)
+    # markdownify тянет beautifulsoup4: без своей закреплённой версии pip взял бы самую свежую
+    specs = [spec] + [s for s in (_extras().pinned_spec(d) for d in ENV_COMPANIONS.get(pkg, ())) if s]
+    # -P (Python 3.11+): папка запуска не первой в sys.path; на 3.10 флага нет, и pip запускается из папки кокпита
+    safe = ["-P"] if sys.version_info >= (3, 11) else []
     try:
-        p = subprocess.run([sys.executable, "-P", "-m", "pip", "install", spec], capture_output=True,   # -P: папка запуска не первой в sys.path
+        p = subprocess.run([sys.executable, *safe, "-m", "pip", "install", *specs], capture_output=True,
+                           cwd=os.path.dirname(os.path.abspath(__file__)),
                            text=True, encoding="utf-8", errors="replace", timeout=900)
         ok, tail = p.returncode == 0, (note + "\n" if note else "") + ((p.stdout or "") + (p.stderr or "")).strip()[-1500:]
     except (OSError, subprocess.SubprocessError) as e:

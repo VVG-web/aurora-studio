@@ -326,8 +326,8 @@ BLOCKED_PACKAGES = ("litellm", "dspy")      # решение по цепочке
 
 
 _NO_WHEEL = re.compile(r"No matching distribution found|Could not find a version that satisfies")
-_NET_TROUBLE = re.compile(r"(?i)retrying|connection|timed? ?out|temporary failure|name resolution|ssl|proxy|network|"
-                          r"certificate|HTTP error|unreachable")
+_NET_TROUBLE = re.compile(r"(?i)retrying|connection (?:error|broken|aborted|refused|reset)|timed? ?out|temporary failure|"
+                          r"name resolution|ssl: |sslerror|proxyerror|certificate verify|http error|unreachable|max retries")
 
 
 def plan_lock(vpy, spec: str, days: float, now: float = 0.0, binary_only: bool = True, log=None) -> tuple:
@@ -343,7 +343,7 @@ def plan_lock(vpy, spec: str, days: float, now: float = 0.0, binary_only: bool =
     try:
         for _round in range(RESOLVE_ROUNDS):
             report = os.path.join(work, "report.json")
-            cmd = [str(vpy), "-I", "-m", "pip", "install", "--dry-run", "--ignore-installed", "--quiet",
+            cmd = [str(vpy), "-I", "-X", "utf8", "-m", "pip", "install", "--dry-run", "--ignore-installed", "--quiet",
                    "--disable-pip-version-check", "--report", report, *(["--only-binary=:all:"] if binary_only else []),
                    *spec.split()]
             if bans:
@@ -456,7 +456,7 @@ def save_lock(extra_id: str, text: str, kind: str = "install") -> Path:
 def freeze_text(vpy) -> str:
     """Что стоит в venv сейчас — `имя==версия` без хешей (старая установка снимка не оставила)."""
     try:
-        p = _run([str(vpy), "-I", "-m", "pip", "freeze", "--all", "--disable-pip-version-check"], timeout=120)
+        p = _run([str(vpy), "-I", "-X", "utf8", "-m", "pip", "freeze", "--all", "--disable-pip-version-check"], timeout=120)
     except (OSError, subprocess.SubprocessError):
         return ""
     if p.returncode != 0:
@@ -480,6 +480,19 @@ def lock_text_problem(text: str) -> str:
     return ""
 
 
+def _lock_version(path, dist: str) -> str:
+    """Версия пакета `dist` в снимке; пакета нет или файл не прочитать — пусто."""
+    want = re.sub(r"[-_.]+", "-", dist).casefold()
+    try:
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
+            m = re.match(r"([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9.+!_-]+)", line)
+            if m and re.sub(r"[-_.]+", "-", m.group(1)).casefold() == want:
+                return m.group(2)
+    except (OSError, ValueError):
+        pass
+    return ""
+
+
 def _install_lock(vpy, path) -> subprocess.CompletedProcess:
     text = Path(path).read_text(encoding="utf-8")
     bad = lock_text_problem(text)
@@ -487,7 +500,7 @@ def _install_lock(vpy, path) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess([], 2, "", bad + " — снимок не используется")
     hashed = "--hash=" in text
     wheels = bool(re.search(r"(?m)^# release wait: .*; only-binary\s*$", text))
-    return _run([str(vpy), "-I", "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--no-deps",
+    return _run([str(vpy), "-I", "-X", "utf8", "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--no-deps",
                  *(["--require-hashes"] if hashed else []), *(["--only-binary=:all:"] if wheels else []),
                  "-r", str(path)], timeout=1800)
 
@@ -531,7 +544,7 @@ def restore(extra_id: str, lock: Path, log: list) -> bool:
 
 def _pip_older_than(vpy, want: tuple) -> bool:
     try:
-        p = _run([str(vpy), "-I", "-m", "pip", "--version"], timeout=60)
+        p = _run([str(vpy), "-I", "-X", "utf8", "-m", "pip", "--version"], timeout=60)
     except (OSError, subprocess.SubprocessError):
         return False
     m = re.match(r"pip (\d+)\.(\d+)", (p.stdout or "").strip()) if p.returncode == 0 else None
@@ -545,7 +558,7 @@ def _upgrade_pip(vpy, days: float, log: list) -> None:
         if days and not want:
             log.append("pip не обновлён: выпуска старше паузы PyPI не назвал")
             return
-        _run([str(vpy), "-I", "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
+        _run([str(vpy), "-I", "-X", "utf8", "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
               *([f"pip=={want}"] if want else ["--upgrade", "pip"])], timeout=600)
     except Exception as e:                                    # noqa: BLE001 — сеть, JSON PyPI, pip
         log.append(f"pip не обновлён: {str(e)[:120]}")
@@ -602,6 +615,8 @@ def _install(extra_id: str, quarantine_days=None) -> dict:
         if frozen:
             save_lock(extra_id, frozen, "before")
     previous = (lock_files(extra_id) or [None])[0]
+    if previous is not None and before and _lock_version(previous, ex["dist"]) not in ("", before):
+        previous = None         # venv правили мимо движка: последний снимок не про ту версию, что стоит сейчас
     if _pip_older_than(vpy, (22, 2)):            # `--report` появился в pip 22.2
         _upgrade_pip(vpy, days, log)
     chosen, last_ok = "", False
@@ -640,7 +655,7 @@ def _install(extra_id: str, quarantine_days=None) -> dict:
                 if previous is not None and restore(extra_id, previous, log):
                     log.append(f"venv возвращён целиком по снимку {previous.name}")
                 else:       # снимка нет или откат по нему не вышел — как прежде, одним верхним пакетом
-                    _run([str(vpy), "-I", "-m", "pip", "install", "--quiet", f"{ex['dist']}=={before}"],
+                    _run([str(vpy), "-I", "-X", "utf8", "-m", "pip", "install", "--quiet", f"{ex['dist']}=={before}"],
                          timeout=1800)
                 back = installed_version(extra_id)
                 res["compat"] = check_compat(back) if back else chk
@@ -692,14 +707,21 @@ def graph_entry(vpy) -> dict:
 KIT = Path(__file__).resolve().parent.parent
 
 
+def _kit_dir() -> Path:
+    """Кит: эта папка либо (в копии движка проекта) та, на которую указывает `kit_path.txt`. Битый указатель — эта папка."""
+    ptr = KIT / "kit_path.txt"
+    if KIT.name in (".aurora", ".opencode") and ptr.is_file():       # движок проекта; .opencode — до 1.158
+        try:
+            return Path(ptr.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return KIT
+    return KIT
+
+
 def kit_mcp_file() -> Path:
     """Серверы MCP машины (`<кит>/local/mcp.json`, с 1.127.0). В копии движка проекта —
     кит по `kit_path.txt`."""
-    kit = KIT
-    ptr = KIT / "kit_path.txt"
-    if KIT.name in (".aurora", ".opencode") and ptr.is_file():    # движок проекта; .opencode — до 1.158
-        kit = Path(ptr.read_text(encoding="utf-8").strip())
-    return kit / "local" / "mcp.json"
+    return _kit_dir() / "local" / "mcp.json"
 
 
 def requirements_pins(path=None) -> dict:
@@ -707,11 +729,7 @@ def requirements_pins(path=None) -> dict:
 
     Незакреплённые строки и комментарии пропускаются. Файла нет — пусто: закрепление не выдумывают."""
     if path is None:
-        kit = KIT
-        ptr = KIT / "kit_path.txt"
-        if KIT.name in (".aurora", ".opencode") and ptr.is_file():
-            kit = Path(ptr.read_text(encoding="utf-8").strip())
-        path = kit / "requirements.txt"
+        path = _kit_dir() / "requirements.txt"
     try:
         lines = Path(path).read_text(encoding="utf-8").splitlines()
     except (OSError, ValueError):
