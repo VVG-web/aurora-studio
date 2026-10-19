@@ -2114,6 +2114,7 @@ def service_dirs(role: str, root: str = ".") -> list:
     """
     import posixpath
     base = os.path.abspath(root or ".")
+    sig = None
     try:
         import sources_registry as _reg      # реестр сам тянет aurora_common: импорт здесь, не наверху
         sig = _reg.fingerprint(root or ".")
@@ -2129,6 +2130,8 @@ def service_dirs(role: str, root: str = ".") -> list:
             _SERVICE_WARNED.add((base, str(role)))
             print(f"service_dirs: реестр источников не ответил ({type(e).__name__}: {e}) — "
                   f"{'прежняя папка ' + legacy if legacy else 'папок нет'}", file=sys.stderr)
+        if sig is not None:        # слепой реестр отвечает тем же, пока не меняются конфиг и манифесты: считать заново незачем
+            _SERVICE_MEMO[(base, str(role))] = (sig, [legacy] if legacy else [])
         return [legacy] if legacy else []
     out = []
     for path in raw:

@@ -439,6 +439,7 @@ def main() -> int:
         return _main()
     finally:
         _WIKI_RUN[0] = None
+        PROJECT_ROOT[0] = "."           # тест или панель, позвавшие main() в своём процессе, не получают чужой корень
 
 
 def _main() -> int:
