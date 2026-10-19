@@ -846,6 +846,11 @@
    "reason": "отчёты ревью: производные документы, не карточки",
    "calls": 2
   },
+  "scripts/ship_doc.py:export": {
+   "kind": "other",
+   "reason": "экспорт документа в html: очистка готового файла от опасных адресов, не карточка",
+   "calls": 1
+  },
   "scripts/ship_doc.py:main": {
    "kind": "other",
    "reason": "выпуск документа в Deliverables/: не карточка",
