@@ -1459,3 +1459,74 @@ def test_scenario_ids_are_unique_across_files_and_visible_to_next_id(tmp: Path):
     assert run("id_registry.py", "SC", cwd=root).stdout.strip() == "SC-0006"
     _touch(root, "Artifacts/tests/c.feature", "@RU.PRJ.US-2.2.2\nFeature: В\n\n  @id:SC-0001 @id:SC-0002\n  Scenario: Два тега\n    Given x\n")
     assert "SC-02" in [f["id"] for f in FI.analyse(str(root))["findings"]]
+
+
+# ------------------------------------------------------------------ BL-KBA-17: покрытие требований по ключам Requirement Yogi
+
+def _mirror_page(root: Path, name: str, title: str, defines=(), links=()) -> None:
+    _touch(root, f"Sources/Confluence/{name}.md",
+           f'---\ntitle: "{title}"\nry_defines: [{", ".join(defines)}]\nry_links: [{", ".join(links)}]\n---\n\nТекст страницы.\n')
+
+
+def _coverage_project(tmp: Path) -> Path:
+    root = make_project(tmp)
+    _mirror_page(root, "REQ-010", "REQ-010 Срок", defines=["RU.PRJ.REQ-010"])
+    _mirror_page(root, "REQ-011", "REQ-011 Канал", defines=["RU.PRJ.REQ-011"])
+    _mirror_page(root, "REQ-012", "REQ-012 Нигде", defines=["RU.PRJ.REQ-012"])
+    _mirror_page(root, "US-1.1.1", "US-1.1.1 Приём", defines=["RU.PRJ.US-1.1.1"], links=["RU.PRJ.REQ-010"])
+    _mirror_page(root, "AC-1.1.1", "AC-1.1.1 Критерии приёма")
+    _mirror_page(root, "US-2.2.2", "US-2.2.2 Канал", defines=["RU.PRJ.US-2.2.2"], links=["RU.PRJ.REQ-011"])
+    _mirror_page(root, "US-3.3.3", "US-3.3.3 Без требования", defines=["RU.PRJ.US-3.3.3"])
+    _mirror_page(root, "US-4.4.4", "US-4.4.4 Висячая", defines=["RU.PRJ.US-4.4.4"], links=["RU.PRJ.REQ-099"])
+    return root
+
+
+@test
+def test_coverage_names_the_gaps_between_requirement_story_and_criteria(tmp: Path):
+    """`ops:coverage`: история без требования, требование без истории и без AC, висячий ключ; полные цепочки не в дырах."""
+    CV = _mod("kb_coverage")
+    root = _coverage_project(tmp)
+    os.chdir(root)
+    cov = CV.coverage(".")
+    gaps = cov["gaps"]
+    assert cov["requirements"] == 3 and cov["stories"] == 4, cov
+    assert [g["title"] for g in gaps["story_without_requirement"]] == ["US-3.3.3 Без требования"], gaps
+    assert [g["key"] for g in gaps["requirement_without_story"]] == ["RU.PRJ.REQ-012"], gaps
+    assert [g["key"] for g in gaps["requirement_without_ac"]] == ["RU.PRJ.REQ-011"], gaps       # US-2.2.2 без страницы AC
+    assert [g["key"] for g in gaps["dangling_requirement"]] == ["RU.PRJ.REQ-099"], gaps
+    assert cov["with_story"] == 2 and cov["with_ac"] == 1, cov
+    cp = run("kb_coverage.py", cwd=root, expect_rc=1)
+    for need in ("Истории без ссылки на требование: 1", "Требования без истории: 1", "Требования без критериев приёмки: 1",
+                 "RU.PRJ.REQ-099", "Пункты ТЗ или контракта без ключа"):
+        assert need in cp.stdout, (need, cp.stdout)
+    assert "REQ-010" not in cp.stdout.split("## Требования без истории")[1].split("##")[0], "полная цепочка попала в дыры"
+    j = json.loads(run("kb_coverage.py", "--json", cwd=root).stdout)
+    assert j["requirements"] == 3
+    # типы ключей настраиваются: если требования у проекта называются иначе
+    assert CV.coverage(".", ("NOSUCH",))["requirements"] == 0
+
+
+@test
+def test_coverage_requirement_wave_lists_stories_criteria_and_artifacts(tmp: Path):
+    """`--requirement`: истории, их AC и артефакты (по паспорту и по тексту), которые называют требование; чужое не попадает."""
+    CV = _mod("kb_coverage")
+    root = _coverage_project(tmp)
+    _touch(root, "Artifacts/us/Паспорт.md", "---\ntitle: п\nimplements: [REQ-010]\n---\n\nТекст.\n")
+    _touch(root, "Artifacts/us/Ключ.md", "---\ntitle: к\nimplements: [RU.PRJ.REQ-010]\n---\n\nТекст.\n")
+    _touch(root, "Artifacts/us/Текст.md", "---\ntitle: т\n---\n\nСм. требование RU.PRJ.REQ-010 и RU.PRJ.REQ-0101.\n")
+    _touch(root, "Artifacts/us/Чужое.md", "---\ntitle: ч\nimplements: [REQ-011]\n---\n\nСм. RU.PRJ.REQ-0101.\n")
+    os.chdir(root)
+    w = CV.wave(".", "RU.PRJ.REQ-010")
+    assert w["defined_on"].endswith("REQ-010.md") and [s.rsplit("/", 1)[-1] for s in w["stories"]] == ["US-1.1.1.md"], w
+    assert [c.rsplit("/", 1)[-1] for c in w["criteria"]] == ["AC-1.1.1.md"], w
+    got = {a["path"].rsplit("/", 1)[-1]: a["how"] for a in w["artifacts"]}
+    assert got == {"Паспорт.md": "паспорт", "Ключ.md": "паспорт", "Текст.md": "текст"}, got
+    cp = run("kb_coverage.py", "--requirement", "RU.PRJ.REQ-010", cwd=root, expect_rc=0)
+    assert "Истории, которые на него ссылаются: 1" in cp.stdout and "Это список для пересмотра" in cp.stdout, cp.stdout
+    cp = run("kb_coverage.py", "--requirement", "RU.PRJ.REQ-777", cwd=root, expect_rc=1)
+    assert "нигде не объявлен" in cp.stdout, cp.stdout
+    empty = tmp / "пустой"
+    empty.mkdir()
+    cp = subprocess.run([sys.executable, str(SCRIPTS / "kb_coverage.py")], cwd=str(empty), capture_output=True,
+                        text=True, encoding="utf-8", errors="replace")
+    assert cp.returncode == 2 and "нет Sources/Confluence" in cp.stderr, (cp.returncode, cp.stderr)
