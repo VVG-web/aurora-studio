@@ -827,10 +827,11 @@ def test_review_file_drops_a_no_whose_quote_is_not_in_the_text(tmp: Path):
     assert ans["US-09"]["v"] == "unknown", ans["US-09"]
     assert rec["quotes_dropped"] == 6 and rec["verify_quotes"], rec["quotes_dropped"]
     assert "Ответов «нет» без цитаты в тексте (сняты) | 6" in rr.render(rec, cl)
-    # выключено — принято как есть
+    # выключено — «нет» без цитаты принято как есть; сверка выдержек в кавычках (`verify_evidence`) работает всегда
     off = rr.review_file({"request_timeout": 5}, cl, "Artifacts/us/US-1.1.1-приём.md", root=str(root), runs=3,
                          call=stub, verify=False)
-    assert off["answers"]["US-05"]["v"] == "no" and not off["verify_quotes"]
+    assert off["answers"]["US-09"]["v"] == "no" and not off["verify_quotes"], off["answers"]["US-09"]
+    assert off["answers"]["US-05"]["v"] == "unknown" and off["answers"]["US-05"]["unverified"] == ["no"], off["answers"]["US-05"]
     # цитата ассистента (review_score) сверяется, когда передан текст
     req = {"profile": "us", "text": "Как оператор системы я хочу принять заявку",
            "answers": {"US-05": {"v": "no", "evidence": "«выдуманная цитата»"},

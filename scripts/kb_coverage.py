@@ -44,7 +44,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import kb_graph as G  # noqa: E402 — те же страницы и ключи, что у `kb:links`
-from aurora_common import clean_copy, frontmatter, body as md_body, safe_walk  # noqa: E402
+from aurora_common import clean_copy, frontmatter, body as md_body, safe_walk, service_dirs  # noqa: E402
+
+def wiki_dir(root: str = ".") -> str:
+    """Папка зеркала вики проекта — по роли `projectwiki` (как у `kb:links`); пусто — зеркала нет."""
+    return (service_dirs("projectwiki", root) or [""])[0]
+
 
 SHOW = 40                  # строк на раздел отчёта; остальное — счётом
 
@@ -52,7 +57,8 @@ SHOW = 40                  # строк на раздел отчёта; оста
 def coverage(root: str = ".", req_types=("REQ",)) -> dict:
     """Дыры цепочки по зеркалу Confluence: {requirements, stories, gaps: {…}} — страницы названы путями зеркала."""
     g = G.Graph()
-    g.read_confluence(os.path.join(root, G.CONF_DIR))
+    if wiki_dir(root):
+        g.read_confluence(os.path.join(root, wiki_dir(root)))
     types = {t.upper() for t in req_types}
     reqs = {k: rel for k, rel in g.owner.items() if G.ry_type(k) in types}
     stories = {rel: p for rel, p in g.pages.items() if p["kind"] == G.KIND_STORY and p["story"]}
@@ -81,7 +87,8 @@ def coverage(root: str = ".", req_types=("REQ",)) -> dict:
 def wave(root: str, key: str, req_types=("REQ",)) -> dict:
     """Что затронет смена требования `key`: истории, их критерии, артефакты проекта."""
     g = G.Graph()
-    g.read_confluence(os.path.join(root, G.CONF_DIR))
+    if wiki_dir(root):
+        g.read_confluence(os.path.join(root, wiki_dir(root)))
     hubs = g.stories()
     stories = [rel for rel, p in sorted(g.pages.items()) if p["kind"] == G.KIND_STORY and key in p["links"]]
     criteria = sorted({ac for rel in stories for ac in G.criteria_of(hubs, g.pages[rel]["story"])})
@@ -160,8 +167,9 @@ def main() -> int:
                     help="типы ключей, которые считать требованиями, через запятую (по умолчанию REQ)")
     ap.add_argument("--json", action="store_true", help="машинный вывод")
     a = ap.parse_args()
-    if not os.path.isdir(G.CONF_DIR):
-        print(f"kb_coverage: нет {G.CONF_DIR}/ — запускайте из корня проекта с зеркалом вики",
+    wiki = wiki_dir(".")
+    if not wiki or not os.path.isdir(wiki):
+        print(f"kb_coverage: нет {wiki or 'зеркала вики'}/ — запускайте из корня проекта с зеркалом вики",
               file=sys.stderr)
         return 2
     types = [t.strip() for t in a.req_types.split(",") if t.strip()] or ["REQ"]

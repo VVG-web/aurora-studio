@@ -830,6 +830,11 @@ def drop_unquoted(checks: dict, haystack: str) -> int:
     считается. `haystack` — `quote_key` проверяемого текста и связанных страниц. → сколько ответов снято."""
     dropped = 0
     for a in checks.values():
+        if a.get("v") == "unknown" and a.get("unverified") == "no" and "[цитаты нет в тексте]" not in (a.get("evidence") or ""):
+            # «no» с выдуманной цитатой уже понижен сверкой выдержек (`verify_evidence`): здесь он только считается и помечается
+            a["evidence"] = ("[цитаты нет в тексте] " + (a.get("evidence") or "")[:EVIDENCE_CAP]).strip()
+            dropped += 1
+            continue
         if a.get("v") != "no":
             continue
         ev = (a.get("evidence") or "")[:EVIDENCE_CAP]          # длинная строка из «« давала квадратичный разбор
@@ -910,11 +915,12 @@ class FileReader:
 
     def mirror_page(self, key: str) -> str:
         """Страница зеркала Confluence, где объявлен ключ Requirement Yogi, пусто — не найдена."""
-        from aurora_common import frontmatter, head_text, safe_walk
+        from aurora_common import frontmatter, head_text, safe_walk, service_dirs
         if self.ry is None:
             self.ry = {}
-            base = os.path.join(self.root, "Sources", "Confluence")
-            for dirpath, dirs, files in (safe_walk(base) if os.path.isdir(base) else []):
+            wiki = (service_dirs("projectwiki", self.root) or [""])[0]
+            base = os.path.join(self.root, wiki) if wiki else ""
+            for dirpath, dirs, files in (safe_walk(base) if base and os.path.isdir(base) else []):
                 dirs.sort()
                 for f in sorted(files):
                     if not f.endswith(".md"):

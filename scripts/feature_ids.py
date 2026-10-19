@@ -47,7 +47,7 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
-from aurora_common import frontmatter, head_text, read_verdict, real_inside, safe_walk  # noqa: E402
+from aurora_common import frontmatter, head_text, read_verdict, real_inside, safe_walk, service_dirs  # noqa: E402
 
 FEATURES = "Artifacts/tests"
 FEATURE_WORDS = ("feature", "функция", "функциональность", "функционал", "свойство")
@@ -111,7 +111,7 @@ def feature_files(root: str, paths) -> list:
 def known_refs(root: str) -> set:
     """Ключи Requirement Yogi, о которых проект знает: `ref_key` артефактов и `ry_defines` страниц зеркала."""
     keys = set()
-    for sub, field in (("Artifacts", "ref_key"), (os.path.join("Sources", "Confluence"), "ry_defines")):
+    for sub, field in [("Artifacts", "ref_key")] + [(d, "ry_defines") for d in service_dirs("projectwiki", root)]:
         base = os.path.join(root, sub)
         for dirpath, dirs, files in (safe_walk(base) if os.path.isdir(base) else []):
             dirs.sort()
