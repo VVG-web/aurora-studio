@@ -526,6 +526,11 @@
    "reason": "журнал QA кухни разработки: вне базы знаний",
    "calls": 1
   },
+  "scripts/feature_ids.py:assign": {
+   "kind": "other",
+   "reason": "файлы сценариев Gherkin (Artifacts/tests): теги @id, не карточки базы",
+   "calls": 1
+  },
   "scripts/folder_guides.py:apply": {
    "kind": "other",
    "reason": "справки папок README.md: служебные файлы",

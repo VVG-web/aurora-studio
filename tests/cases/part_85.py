@@ -1354,3 +1354,108 @@ def test_publish_gate_matches_the_kind_in_any_case_and_old_review_engine(tmp: Pa
     cp = subprocess.run([sys.executable, str(root / ".aurora/scripts/publish_doc.py"), "Artifacts/us/Верхний.md"],
                         cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 2 and "review-engine" in cp.stderr and "Traceback" not in cp.stderr, (cp.returncode, cp.stderr)
+
+
+# ------------------------------------------------------------------ BL-KBA-17: сценарии Gherkin и их идентификаторы
+
+FEATURE = """\
+# language: ru
+@RU.PRJ.US-1.1.1
+Функционал: Приём заявки
+  Заявка принимается из смежной системы.
+
+  Предыстория:
+    Дано система доступна
+
+  @id:SC-0001 @covers:RU.PRJ.AC-1.1.1 @positive @auto
+  Сценарий: Заявка принята
+    Когда оператор отправляет заявку
+    Тогда заявка принята
+
+  # без идентификатора и без критерия
+  @negative
+  Сценарий: Пустая заявка отклонена
+    Когда оператор отправляет пустую заявку
+    Тогда система отвечает отказом
+
+  Структура сценария: Разные каналы
+    Когда оператор отправляет заявку по каналу "<канал>"
+    Тогда заявка принята
+
+    Примеры:
+      | канал |
+      | почта |
+"""
+
+
+@test
+def test_feature_ids_parse_tags_and_name_what_is_missing(tmp: Path):
+    """`ops:scenarios`: теги над ключевыми словами, русские ключевые слова, замечания SC-01…SC-07."""
+    FI = _mod("feature_ids")
+    parsed = FI.parse(FEATURE)
+    assert [f["name"] for f in parsed["features"]] == ["Приём заявки"] and parsed["features"][0]["tags"] == ["@RU.PRJ.US-1.1.1"]
+    names = [(s["name"], s["tags"], s["outline"]) for s in parsed["scenarios"]]
+    assert names[0] == ("Заявка принята", ["@id:SC-0001", "@covers:RU.PRJ.AC-1.1.1", "@positive", "@auto"], False), names
+    assert names[1][1] == ["@negative"], names[1]                         # комментарий между тегами и словом тегов не сбрасывает
+    assert names[2] == ("Разные каналы", [], True), names[2]              # «Примеры:» — не сценарий
+    root = make_project(tmp)
+    _touch(root, "Artifacts/tests/features/приём/US-1.1.1.feature", FEATURE)
+    _touch(root, "Artifacts/ac/Крит.md", "---\ntitle: к\nref_key: RU.PRJ.AC-1.1.1\n---\n\nТекст.\n")
+    res = FI.analyse(str(root))
+    codes = sorted((f["id"], f["msg"][:30]) for f in res["findings"])
+    assert [c for c, _m in codes].count("SC-01") == 2 and [c for c, _m in codes].count("SC-05") == 2, codes
+    assert "SC-06" not in [c for c, _m in codes], "ключ критерия известен по ref_key артефакта"
+    assert res["ids"] == {"SC-0001": ["Artifacts/tests/features/приём/US-1.1.1.feature:10"]}, res["ids"]
+    # неизвестный критерий и feature без ключа истории
+    _touch(root, "Artifacts/tests/features/второй.feature",
+           "Feature: Без ключа\n\n  @id:SC-0002 @covers:RU.PRJ.AC-9.9.9\n  Scenario: Один\n    Given x\n")
+    res = FI.analyse(str(root))
+    found = {(f["id"], f["path"].rsplit("/", 1)[-1]) for f in res["findings"]}
+    assert ("SC-06", "второй.feature") in found and ("SC-07", "второй.feature") in found, found
+    cp = run("feature_ids.py", cwd=root)
+    assert cp.returncode == 1 and "SC-01" in cp.stdout, cp.stdout
+
+
+@test
+def test_feature_ids_assign_is_a_preview_until_apply_and_keeps_line_endings(tmp: Path):
+    """`--assign`: без `--apply` номера не выдаются и файл не меняется; с ним — тег в строку тегов или отдельной строкой."""
+    FI = _mod("feature_ids")
+    IDR = _mod("id_registry")
+    root = make_project(tmp)
+    path = _touch(root, "Artifacts/tests/features/приём.feature", FEATURE)
+    crlf = _touch(root, "Artifacts/tests/features/crlf.feature", "")
+    crlf.write_bytes(FEATURE.replace("SC-0001", "SC-0007").replace("\n", "\r\n").encode("utf-8"))
+    before = path.read_text(encoding="utf-8")
+    cp = run("feature_ids.py", "--assign", cwd=root, expect_rc=0)
+    assert "предпросмотр" in cp.stdout and "SC-????" in cp.stdout, cp.stdout
+    assert path.read_text(encoding="utf-8") == before and IDR.peek("SC", str(root)) == "SC-0008", "предпросмотр занял номер"
+    run("feature_ids.py", "--assign", "--apply", cwd=root, expect_rc=0)
+    text = path.read_text(encoding="utf-8")
+    assert "@negative @id:SC-0010" in text, text                          # дописан в строку тегов над сценарием
+    assert "  @id:SC-0011\n  Структура сценария: Разные каналы" in text, text   # своей строкой, с тем же отступом
+    raw = crlf.read_bytes()
+    assert raw.count(b"\r\n") == raw.count(b"\n"), "перевод строк CRLF потерян"
+    assert FI.analyse(str(root))["ids"].keys() >= {"SC-0001", "SC-0007", "SC-0008", "SC-0009", "SC-0010", "SC-0011"}
+    assert not [f for f in FI.analyse(str(root))["findings"] if f["id"] == "SC-01"], "после --apply остались сценарии без @id"
+    again = run("feature_ids.py", "--assign", "--apply", cwd=root, expect_rc=0)
+    assert "Проставлено: 0" in again.stdout, again.stdout
+
+
+@test
+def test_scenario_ids_are_unique_across_files_and_visible_to_next_id(tmp: Path):
+    """Один `@id` в двух файлах — SC-03, `kb:next-id --check` и `kb:lint`; номер выдаётся после занятых; копию в той же строке не считает дважды."""
+    FI = _mod("feature_ids")
+    IDR = _mod("id_registry")
+    root = make_project(tmp)
+    _touch(root, "Artifacts/tests/a.feature", "@RU.PRJ.US-1.1.1\nFeature: А\n\n  @id:SC-0005 @covers:RU.PRJ.AC-1.1.1\n  Scenario: Один\n    Given x\n")
+    assert IDR.peek("SC", str(root)) == "SC-0006"
+    _touch(root, "Artifacts/tests/b.feature", "@RU.PRJ.US-1.1.1\nFeature: Б\n\n  @id:SC-0005 @covers:RU.PRJ.AC-1.1.1\n  Scenario: Копия\n    Given x\n")
+    res = FI.analyse(str(root))
+    assert [f["id"] for f in res["findings"] if f["id"] == "SC-03"] == ["SC-03"], res["findings"]
+    assert list(IDR.duplicates(str(root))) == ["SC-0005"], IDR.duplicates(str(root))
+    cp = run("id_registry.py", "--check", cwd=root, expect_rc=1)
+    assert "SC-0005" in cp.stdout, cp.stdout
+    assert "SC-0005" in run("kb_lint.py", cwd=root).stdout
+    assert run("id_registry.py", "SC", cwd=root).stdout.strip() == "SC-0006"
+    _touch(root, "Artifacts/tests/c.feature", "@RU.PRJ.US-2.2.2\nFeature: В\n\n  @id:SC-0001 @id:SC-0002\n  Scenario: Два тега\n    Given x\n")
+    assert "SC-02" in [f["id"] for f in FI.analyse(str(root))["findings"]]
