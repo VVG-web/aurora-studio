@@ -4628,7 +4628,7 @@ ENV_PY = (("beautifulsoup4", ("bs4",), "sync:confluence — разбор storage
           ("openpyxl", ("openpyxl",), "kb:ingest-office — xlsx"),
           ("pypdf", ("pypdf", "fitz"), "kb:ingest-office — pdf"))
 # Пакеты, чья закреплённая версия ставится вместе с этим: иначе pip возьмёт зависимость самой свежей.
-ENV_COMPANIONS = {"markdownify": ("beautifulsoup4",)}
+ENV_COMPANIONS = {"markdownify": ("beautifulsoup4",), "markitdown": ("beautifulsoup4", "markdownify")}
 # Программы: как поставить на каждой системе. На Windows — winget: он есть в Windows 11.
 ENV_BIN = {"git": {"darwin": "brew install git", "nt": "winget install --id Git.Git -e",
                    "linux": "sudo apt install git"},
@@ -4725,7 +4725,7 @@ def env_install(name: str) -> dict:
     # markdownify тянет beautifulsoup4: без своей закреплённой версии pip взял бы самую свежую
     specs = [spec] + [s for s in (_extras().pinned_spec(d) for d in ENV_COMPANIONS.get(pkg, ())) if s]
     # -P (Python 3.11+): папка запуска не первой в sys.path; на 3.10 флага нет, и pip запускается из папки кокпита
-    safe = ["-P"] if sys.version_info >= (3, 11) else []
+    safe = (["-P"] if sys.version_info >= (3, 11) else []) + ["-X", "utf8"]
     try:
         p = subprocess.run([sys.executable, *safe, "-m", "pip", "install", *specs], capture_output=True,
                            cwd=os.path.dirname(os.path.abspath(__file__)),
