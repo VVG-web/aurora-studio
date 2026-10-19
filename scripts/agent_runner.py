@@ -6089,6 +6089,11 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         prompt_extra = ("Промпт проекта для этого вида документа:\n"
                         + read_text_file(os.path.join(cwd, spec["prompt"])) + "\n\n")
     prompt_extra += req["extra"]
+    if str(spec.get("ref_mask") or "").strip():
+        # Ключ документа заводит реестр Requirement Yogi: придуманный моделью номер выглядит как настоящий и
+        # уезжает в страницу. Ключа нет — на его месте слова, а не выдумка.
+        prompt_extra += (f"Ключ документа в реестре Requirement Yogi (маска «{spec['ref_mask'].strip()}») заводит реестр, "
+                         "а не ты: не придумывай номер. Если ключ неизвестен, напиши в строке «Код» слова «ключ присвоит реестр».\n\n")
     budget = AG.prompt_budget(cfg)
     # Пак собирается ДО воркера и сам окна шаблона не знает: он делит окно только с
     # шапкой. Шаблон (25 КБ у общих US и AC) идёт воркеру целиком, поэтому его длину
@@ -6428,6 +6433,20 @@ def passport_lines(st: dict, draft_cards: list) -> list:
     return out
 
 
+def ref_key_line(spec: dict, st: dict) -> list:
+    """`ref_key` и `ref_scheme` паспорта: ключ Requirement Yogi документа по маске вида (`ref_mask`), непрозрачным
+    значением. Маски нет или ключа в тексте нет — пусто: ключ заводит реестр, а не движок."""
+    mask = str(spec.get("ref_mask") or "").strip()
+    if not mask:
+        return []
+    try:
+        import id_registry as IDR
+    except ImportError:
+        return []
+    key = passport_token(IDR.own_key(st.get("draft") or "", mask))
+    return [f"ref_key: {key}", "ref_scheme: ry"] if key else []
+
+
 def artifact_number(cwd: str, st: dict) -> str:
     """Номер артефакта (`ART-0007`): выдаётся один раз на сессию и дальше хранится в ней.
 
@@ -6522,6 +6541,9 @@ def write_artifact(cwd: str, st: dict) -> str:
     if artifact_id:
         head.append(f"artifact_id: {artifact_id}")
     head += passport_lines(st, grounded)
+    ref = ref_key_line(spec, st)
+    if ref:
+        head += ref
     head.append(f"session: {st['sid']}")
     started, finished = passport_token(st.get("started")), passport_token(stages.get("checked"))
     if started:

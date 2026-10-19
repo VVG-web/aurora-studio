@@ -58,7 +58,7 @@ KNOWN = {
 # Поля типа артефакта. Шаблон и папка обязательны: без первого документ выйдет не по
 # форме (и ревью этого не поймает), без второй его некуда класть. Остальное
 # необязательно — промпта у типа может не быть, публиковать можно не всё.
-FIELDS = ("title", "template", "prompt", "out", "publish_url", "mcp", "tech_agnostic", "review")
+FIELDS = ("title", "template", "prompt", "out", "publish_url", "mcp", "tech_agnostic", "review", "ref_mask")
 # `tech_agnostic` — включает правило «критерии без технологий» для этого вида документа.
 # Не глобально: у ОПЗ и проектного решения стек это предмет документа, и общее правило
 # заставило бы критика ругаться на каждый. Осмысленно у ac, us, test-case.
@@ -66,6 +66,9 @@ FIELDS = ("title", "template", "prompt", "out", "publish_url", "mcp", "tech_agno
 # алгоритм; пусто — ревью не требуется). Ворота `ship:publish` пускают наружу только артефакт со свежим ревью
 # «готова к передаче» (`make:review-auto --file … --apply`); обход — `--allow review`, он записывается.
 REVIEW_PROFILES = ("us", "alg")
+# `ref_mask` — маска ключа Requirement Yogi для этого вида: `<СТРАНА>.<ПРОЕКТ>.US-x.x.x` (`<имя>` — любой сегмент, `x` —
+# число). Аврора ключ не выдаёт — его заводит реестр Requirement Yogi; она кладёт найденный по маске ключ в паспорт
+# артефакта непрозрачным значением (`ref_key`) и называет ключи, похожие на ключи вида, но не по маске (`kb:lint`).
 # Свойства связанной задачи: их собирает панель, а заводит задачу ассистент. Заводить
 # задачу в общей системе команды кнопкой, нажатой между делом, движок не будет.
 TASK_FIELDS = ("project", "type", "assignee", "labels", "components", "epic")
@@ -135,6 +138,14 @@ def out_problem(out: str) -> str:
     return ""
 
 
+def _mask_problem(mask: str) -> str:
+    try:
+        import id_registry
+    except ImportError:          # движок проекта обновлён не целиком: маска не проверяется
+        return ""
+    return id_registry.mask_problem(mask)
+
+
 def check(root: str, kinds: dict) -> list:
     """[(тип, что не так)] — объявленное, но не существующее на диске."""
     bad = []
@@ -154,6 +165,9 @@ def check(root: str, kinds: dict) -> list:
         review = (rec.get("review") or "").strip()
         if review and review not in REVIEW_PROFILES:
             bad.append((kind, f"ревью «{review}»: профили — {', '.join(REVIEW_PROFILES)} или пусто"))
+        mask_why = _mask_problem(rec.get("ref_mask") or "")
+        if mask_why:
+            bad.append((kind, f"маска ключа: {mask_why}"))
     return bad
 
 
@@ -187,6 +201,9 @@ def main() -> int:
             print(f"Промпт проекта: {rec['prompt']} — читать вместе с шаблоном")
         if rec.get("publish_url"):
             print(f"Публикуется в: {rec['publish_url']}")
+        if (rec.get("ref_mask") or "").strip() and not _mask_problem(rec["ref_mask"]):
+            print(f"Ключ Requirement Yogi вида: маска `{rec['ref_mask'].strip()}` — ключ (например, в строке «Код» истории) "
+                  "заводит реестр, не ассистент; не выдумывайте номер, а оставьте место под ключ")
         if (rec.get("review") or "").strip() in REVIEW_PROFILES:
             print(f"Ревью перед публикацией: профиль {rec['review']} — `make:review-auto --file <файл> --apply`; "
                   "без свежего ревью «готова к передаче» `ship:publish` не пустит")

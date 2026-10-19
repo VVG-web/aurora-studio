@@ -377,6 +377,8 @@
   "kinds.review_off": "not required",
   "kinds.review_us": "story (us)",
   "kinds.review_alg": "algorithm (alg)",
+  "kinds.f_ref_mask": "Requirement Yogi key mask: <COUNTRY>.<PROJECT>.US-x.x.x",
+  "kinds.ref_mask_hint": "The key of a kind is issued by the Requirement Yogi registry, not by Aurora. The mask is for checking that a key in drafts and on pages is written by the kind's rules: <name> — any segment (country, project), x — a number. A key found by the mask goes into the artifact passport as ref_key; one that looks similar but does not fit the mask is a kb:lint warning. Empty — no check.",
   "kinds.task_open": "task…",
   "kinds.task_close": "task ▴",
   "kinds.task_hint": "the properties of the linked task",

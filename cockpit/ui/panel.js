@@ -2555,6 +2555,9 @@ async function renderKinds(box){
         field("out", t("kinds.f_out"), "150px"),
         field("publish_url", t("kinds.f_publish"), "230px"),
         field("mcp", t("kinds.f_mcp"), "210px"),
+        // Маска ключа Requirement Yogi: ключ заводит реестр, Аврора проверяет, что он написан по маске вида.
+        el("span",{title: t("kinds.ref_mask_hint"), style:"flex:none"},
+          field("ref_mask", t("kinds.f_ref_mask"), "230px")),
         // Правило включается видом документа, а не глобально: у ОПЗ стек — это предмет,
         // и общее правило заставило бы критика ругаться на каждый такой документ.
         el("label",{class:"row",style:"gap:6px;font-size:12px;flex:none",
@@ -2592,7 +2595,7 @@ async function renderKinds(box){
           return toast(t("kinds.bad_name"), "warn");
         if (KINDS[key]) return toast(t("kinds.exists"), "warn");
         KINDS[key] = {title:"", template:"", prompt:"", out:"Artifacts/" + key,
-                      publish_url:"", mcp:"", tech_agnostic:"", review:"", task:{}};
+                      publish_url:"", mcp:"", tech_agnostic:"", review:"", ref_mask:"", task:{}};
         name.value = ""; setDirty("kinds", t("dirty.kinds"), true); draw();
       }}, t("kinds.add")),
       saveButton("kinds", t("dirty.kinds"), t("kinds.save"), async ()=>{

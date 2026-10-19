@@ -10,6 +10,7 @@ import importlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -927,7 +928,7 @@ def test_kinds_form_carries_the_review_field(tmp: Path):
         assert src.count(f'"{key}"') >= 3, (key, src.count(f'"{key}"'))              # разметка, ru, en
     for key in ("kinds.review_us", "kinds.review_alg"):                              # в разметке собираются из «kinds.review_» + вид
         assert src.count(f'"{key}"') >= 2, (key, src.count(f'"{key}"'))
-    assert 'review:"", task:{}' in src, "новый вид создаётся без поля review"
+    assert 'review:"", ref_mask:"", task:{}' in src, "новый вид создаётся без поля review"
     MK = _mod("make_kinds")
     assert "review" in MK.FIELDS
     sys.path.insert(0, str(KIT / "cockpit"))
@@ -1114,3 +1115,133 @@ def test_scrub_keeps_an_accepted_decision_sealed(tmp: Path):
     assert KD.body_changed(tampered)
     laundered = KD.reseal(tampered, tampered + "\nещё слово", "обезличено")
     assert KD.body_changed(laundered), "reseal отмыл правку тела"
+
+
+# ------------------------------------------------------------------ BL-KBA-17: маска ключа Requirement Yogi
+
+MASK = "<СТРАНА>.<ПРОЕКТ>.US-x.x.x"
+
+
+@test
+def test_ref_mask_accepts_whole_keys_of_the_kind_only(tmp: Path):
+    """Маска вида: ключ целиком по маске — да; короче, длиннее, чужого вида и часть длинного — нет; негодные маски называются."""
+    ID = _mod("id_registry")
+    rx = ID.mask_regex(MASK)
+    assert rx.fullmatch("RU.PRJ.US-1.1.1") and rx.fullmatch("KZ.AB_1.US-10.2.33")
+    for bad in ("RU.PRJ.US-1.1", "RU.PRJ.US-1.1.1.2", "RU.PRJ.AC-1.1.1", "PRJ.US-1.1.1", "RU.PRJ.US-a.1.1"):
+        assert not rx.fullmatch(bad), bad
+    text = "Реализует RU.PRJ.US-1.1.1. Также RU.PRJ.US-1.1.12, RU.PRJ.AC-1.1.1 и RU.PRJ.US-1.1.1.2."
+    assert ID.find_keys(text, rx) == ["RU.PRJ.US-1.1.1", "RU.PRJ.US-1.1.12"], ID.find_keys(text, rx)
+    like = ID.similar_regex(MASK)
+    assert ID.find_keys("RU.PRJ.US-1.1, US-5 и RU.PRJ.AC-2.1", like) == ["RU.PRJ.US-1.1", "US-5"]
+    assert ID.mask_problem("") == "" and ID.mask_problem(MASK) == ""
+    for bad in ("US-1", "x.x", "a b-x", 'US-"x"', "<a b>-x"):
+        assert ID.mask_problem(bad), bad
+    assert ID.mask_regex("US-1") is None and ID.mask_regex("") is None
+    # собственный ключ документа: строка «Код» важнее порядка
+    doc = "| Реализует | RU.PRJ.US-9.9.9 |\n| Код | RU.PRJ.US-1.1.1 |\n"
+    assert ID.own_key(doc, MASK) == "RU.PRJ.US-1.1.1"
+    assert ID.own_key("Ссылка RU.PRJ.US-2.2.2 и RU.PRJ.US-3.3.3", MASK) == "RU.PRJ.US-2.2.2"
+    assert ID.own_key("ключа нет", MASK) == "" and ID.own_key("RU.PRJ.US-1.1.1", "") == ""
+
+
+@test
+def test_make_puts_the_found_key_into_the_passport_and_never_asks_the_model_to_invent_it(tmp: Path):
+    """Вид с маской: ключ из текста — в паспорт (`ref_key`, `ref_scheme`), нет ключа — нет поля; модели велено не выдумывать номер."""
+    A = _mod("agent_core")
+    R = _mod("agent_runner")
+    root = _make_project_with_kind(tmp)
+    cfg_path = root / "aurora.config.yaml"
+    cfg_path.write_text(cfg_path.read_text(encoding="utf-8").rstrip() + f'\n    ref_mask: "{MASK}"\n', encoding="utf-8")
+    from harness import card
+    for i in range(5):
+        card(root, f"Concepts/Заявка-{i}.md", f"Заявка проходит статусы. Срок десять дней. [[Заявка-{(i + 1) % 5}]]",
+             status="knowledge", kind="knowledge")
+    seen: list = []
+
+    def run_with(draft: str) -> str:
+        def fake(cfg_, role, messages, **kw):
+            seen.append((role, messages, kw))
+            ok = {"ok": True, "backend": 1, "model": "m", "tps": 9, "log": []}
+            if role == "planner":
+                return {**ok, "text": json.dumps({"questions": [], "plan": "1. Описание"}, ensure_ascii=False)}
+            if role == "critic":
+                return {**ok, "text": json.dumps({"ok": True, "issues": []}, ensure_ascii=False)}
+            if role == "qa":
+                return {**ok, "text": "ВЕРДИКТ: ЧИСТО"}
+            return {**ok, "text": draft}
+        cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+        r = R.run_make(cfg, str(root), "us", "срок заявки десять дней " + draft[:5], "", "", True, call=fake)
+        assert r["ok"], r
+        return (root / R.load_session(str(root), r["sid"])["path"]).read_text(encoding="utf-8")
+
+    with_key = run_with("| Код | RU.PRJ.US-1.1.1 |\n| Реализует | RU.PRJ.US-9.9.9 |\n\nТекст заявки.")
+    head = with_key.split("---", 2)[1]
+    assert "ref_key: RU.PRJ.US-1.1.1" in head and "ref_scheme: ry" in head, head
+    no_key = run_with("| Код | ключ присвоит реестр |\n\nТекст заявки.")
+    assert "ref_key" not in no_key.split("---", 2)[1]
+    worker = next(m for role, m, _kw in seen if role == "worker")
+    assert "заводит реестр" in worker[0]["content"] and MASK in worker[0]["content"], "модели не запрещено придумывать ключ"
+
+
+@test
+def test_kb_lint_names_keys_that_look_like_the_kind_but_miss_the_mask(tmp: Path):
+    """`kb:lint`: «US-1.1» вместо «US-1.1.1» в артефакте и на странице зеркала — предупреждение; верные ключи и чужие виды — нет."""
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip() + f'\nartifacts:\n  us:\n    template: T/us.md\n'
+                   f'    out: Artifacts/us\n    ref_mask: "{MASK}"\n', encoding="utf-8")
+    clean = run("kb_lint.py", cwd=root)
+    assert "не по маске" not in clean.stdout, clean.stdout
+    _touch(root, "Artifacts/us/Верная.md", "---\ntitle: в\n---\n\n| Код | RU.PRJ.US-1.1.1 |\nСм. RU.PRJ.AC-2.2.2.\n")
+    _touch(root, "Artifacts/us/Кривая.md", "---\ntitle: к\n---\n\n| Код | RU.PRJ.US-1.1 |\nРеализует RU.PRJ.US-2.2.2.\n")
+    _touch(root, "Sources/Confluence/US-3.md", '---\ntitle: "US-3"\nry_defines: [RU.PRJ.US-3.3]\n---\n\nТекст.\n')
+    _touch(root, "Sources/Confluence/US-4.md", '---\ntitle: "US-4"\nry_defines: [RU.PRJ.US-4.4.4, RU.PRJ.AC-4.4.4]\n---\n\nТекст.\n')
+    cp = run("kb_lint.py", cwd=root)
+    assert "ключей не по маске вида в 2 файлах" in cp.stdout, cp.stdout
+    assert "Artifacts/us/Кривая.md" in cp.stdout and "REF-02" in cp.stdout and "RU.PRJ.US-1.1" in cp.stdout, cp.stdout
+    assert "Sources/Confluence/US-3.md" in cp.stdout and "REF-03" in cp.stdout, cp.stdout
+    block = cp.stdout.split("### ключи Requirement Yogi")[1]
+    assert "Верная.md" not in block and "US-4.md" not in block, block
+    assert cp.returncode == clean.returncode, "предупреждение изменило код возврата"
+    assert "не по маске" not in run("kb_lint.py", "--only", "AuroraKnowledgeDB/x.md", cwd=root).stdout
+    # make:kinds называет негодную маску и показывает годную ассистенту
+    cp = run("make_kinds.py", "--kind", "us", cwd=root)
+    assert MASK in cp.stdout and "не выдумывайте номер" in cp.stdout, cp.stdout
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace(MASK, "US-1"), encoding="utf-8")
+    cp = run("make_kinds.py", cwd=root)
+    assert cp.returncode == 1 and "маска ключа" in cp.stdout, cp.stdout
+
+
+@test
+def test_kinds_form_carries_the_ref_mask_field_and_publish_warns_without_a_key(tmp: Path):
+    """Поле `ref_mask` в форме «Артефакты» и каталогах строк, переживает запись панели; публикация без ключа предупреждает."""
+    from harness import panel_sources
+    src = panel_sources()
+    for key in ("kinds.f_ref_mask", "kinds.ref_mask_hint"):
+        assert src.count(f'"{key}"') >= 3, (key, src.count(f'"{key}"'))
+    assert 'ref_mask:"", task:{}' in src
+    MK = _mod("make_kinds")
+    assert "ref_mask" in MK.FIELDS
+    sys.path.insert(0, str(KIT / "cockpit"))
+    ck = importlib.import_module("aurora_cockpit")
+    root = tmp / "проект"
+    (root / "Templates").mkdir(parents=True)
+    (root / "Templates/US.md").write_text("шаблон", encoding="utf-8")
+    (root / "aurora.config.yaml").write_text('project:\n  name: Т\natlassian:\n  confluence:\n'
+                                             '    base_url: "https://wiki.example.com"\n    space: "T"\n', encoding="utf-8")
+    res = ck.kinds_write(str(root), {"us": {"title": "История", "template": "Templates/US.md", "out": "Artifacts/us",
+                                            "ref_mask": MASK, "task": {}}})
+    assert res.get("ok"), res
+    assert MK.read_kinds(str(root))["us"]["ref_mask"] == MASK, "маска не дожила до чтения"
+    _touch(root, "Artifacts/us/Без-ключа.md", "---\ntitle: к\ntype: us\n---\n\n# История\n")
+    _touch(root, "Artifacts/us/С-ключом.md", "---\ntitle: к\ntype: us\nref_key: RU.PRJ.US-1.1.1\n---\n\n# История\n")
+    env = {**os.environ, "CONFLUENCE_PAT": "", "CONFLUENCE_TOKEN": ""}              # сети в проверке нет
+
+    def publish(name: str) -> str:
+        cp = subprocess.run([sys.executable, str(SCRIPTS / "publish_doc.py"), name], cwd=str(root), env=env,
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        return cp.stdout + cp.stderr
+
+    assert "В паспорте нет ключа по маске вида" in publish("Artifacts/us/Без-ключа.md")
+    assert "ключа по маске" not in publish("Artifacts/us/С-ключом.md")

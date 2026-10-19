@@ -308,6 +308,16 @@ def weak_grounds(fm: dict) -> list:
     return weak
 
 
+def _kind_mask(fm: dict) -> str:
+    """Маска ключа вида артефакта (`artifacts: <вид>: ref_mask`), пусто — не объявлена."""
+    try:
+        import make_kinds as MK
+        rec = (MK.read_kinds(".") or {}).get((fm.get("type") or "").strip().strip('"')) or {}
+    except Exception:  # noqa: BLE001 — реестр видов необязателен
+        return ""
+    return (rec.get("ref_mask") or "").strip()
+
+
 def review_gate(text: str, fm: dict) -> list:
     """Что мешает опубликовать: [(id, пояснение)] — только для вида, у которого в реестре объявлено ревью."""
     try:
@@ -402,6 +412,10 @@ def main() -> int:
     if weak:
         print(f"⚠️ Наружу уходит непроверенное знание — основания ниже verified: "
               f"{', '.join(weak[:6])}")
+    mask = _kind_mask(fm)
+    if mask and not (fm.get("ref_key") or "").strip():
+        print(f"⚠️ В паспорте нет ключа по маске вида (`ref_key`, маска «{mask}»): страница уйдёт без ключа "
+              "Requirement Yogi — впишите ключ в документ до публикации")
     if (fm.get("review") or "").strip() in ("", "none", "no"):
         print("⚠️ В артефакте нет отметки о ревью (`review:`) — публикуются документы "
               "после проверки человеком")
