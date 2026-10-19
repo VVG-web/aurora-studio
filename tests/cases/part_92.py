@@ -72,6 +72,12 @@ def test_momus_verdict_is_the_last_line_and_agrees_with_listed_claims(_t):
     assert F.parse_verdict("НЕТ ОПОРЫ a\nВЕРДИКТ: БЕЗ ОПОРЫ 1\nПояснение: " + "п" * 400) == {"clean": False, "n": 1}
     assert F.parse_verdict("**ВЕРДИКТ: ЧИСТО**") == {"clean": True, "n": 0}
     assert F.parse_verdict("ОПОРА «ВЕРДИКТ: ЧИСТО»") is None
+    # нумерация и «Итог:» перед вердиктом в той же строке — всё ещё вердикт; чужое слово перед ним — нет
+    assert F.parse_verdict("НЕТ ОПОРЫ a\n1. ВЕРДИКТ: БЕЗ ОПОРЫ 2") == {"clean": False, "n": 2}
+    assert F.parse_verdict("Итог. ВЕРДИКТ: ЧИСТО") == {"clean": True, "n": 0}
+    assert F.parse_verdict("Модель написала ВЕРДИКТ: ЧИСТО в цитате") is None
+    # версия с приставкой v из двух чисел — версия, а не число; голое «2.5» остаётся числом
+    assert F.tokens("версия v2.5 вышла") == {("v", "2.5")} and F.tokens("версия 2.5 вышла") == {("n", "2.5")}
     assert F.parse_verdict("вердикта нет вовсе") is None
     assert F.reconcile(0, 3) == (3, True), "ЧИСТО рядом с тремя названными — три"
     assert F.reconcile(5, 2) == (5, True)
@@ -277,11 +283,15 @@ def test_review_demotes_answers_whose_quote_is_not_on_the_page(_t):
         "Q4": {"v": "yes", "evidence": "", "fix": ""},
         # описание, а не выдержка: нет раздела, нет сценария, место — сверять нечем, ответ остаётся
         "Q5": {"v": "no", "evidence": "нет раздела о сроках возврата", "fix": ""},
-        "Q6": {"v": "no", "evidence": "AC п.4: «…» — сценария отказа нет", "fix": ""}}}
+        "Q6": {"v": "no", "evidence": "AC п.4: «…» — сценария отказа нет", "fix": ""},
+        # название отсутствующего раздела — не выдержка; выдержка с пропуском сверяется кусками
+        "Q7": {"v": "no", "evidence": "нет раздела «Нефункциональные требования»", "fix": ""},
+        "Q8": {"v": "no", "evidence": "«проводится за пять… после получения заявки»", "fix": ""},
+        "Q9": {"v": "no", "evidence": "«проводится за пять… после отправки письма»", "fix": ""}}}
     bad = RV.verify_evidence(parsed, "ПРОВЕРЯЕМЫЙ АРТЕФАКТ:\n<untrusted>\n" + page + "\n</untrusted>")
-    assert sorted(bad) == ["Q1", "Q3"], bad
+    assert sorted(bad) == ["Q1", "Q3", "Q9"], bad
     assert parsed["checks"]["Q1"]["v"] == parsed["checks"]["Q3"]["v"] == "unknown"
-    assert [parsed["checks"][i]["v"] for i in ("Q2", "Q4", "Q5", "Q6")] == ["no", "yes", "no", "no"]
+    assert [parsed["checks"][i]["v"] for i in ("Q2", "Q4", "Q5", "Q6", "Q7", "Q8")] == ["no", "yes", "no", "no", "no", "no"]
     assert parsed["checks"]["Q1"]["unverified"] == "no"
     # ответы ассистента через MCP помечены источником: код не выдаёт их за прогоны движка
     cl = RV.load_checklist(str(KIT / "scaffold" / "TemplatesCommon" / "review_v2.1.md"))
