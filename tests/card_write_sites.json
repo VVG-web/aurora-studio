@@ -41,9 +41,9 @@
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
    "calls": 1
   },
-  "cockpit/aurora_cockpit.py:drop_dead_running": {
+  "cockpit/aurora_cockpit.py:_update_running.work": {
    "kind": "other",
-   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
+   "reason": "панель: список «что идёт» (cockpit/.running.json) под замком; не карточка",
    "calls": 1
   },
   "cockpit/aurora_cockpit.py:feature_set": {
@@ -72,11 +72,6 @@
    "calls": 1
   },
   "cockpit/aurora_cockpit.py:kinds_write": {
-   "kind": "other",
-   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
-  },
-  "cockpit/aurora_cockpit.py:mark_running": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
    "calls": 1
@@ -129,12 +124,12 @@
   "cockpit/aurora_cockpit.py:write_session": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 2
+   "calls": 1
   },
   "cockpit/cron.py:_write_json": {
    "kind": "other",
    "reason": "расписание Cron: служебное состояние",
-   "calls": 2
+   "calls": 1
   },
   "cockpit/route_runner.py:Journal.__init__": {
    "kind": "other",
@@ -149,7 +144,7 @@
   "cockpit/route_runner.py:write_meta": {
    "kind": "other",
    "reason": "журнал и состояние маршрута: служебные файлы",
-   "calls": 2
+   "calls": 1
   },
   "reports/analyst/fetch_confluence_metadata.py:main": {
    "kind": "other",

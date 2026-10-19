@@ -285,7 +285,9 @@ def test_file_lock_dies_with_its_process(tmp: Path):
     finally:
         holder.kill()
         holder.wait(30)
-    assert F.FileLock(path).acquire(timeout=20), "замок убитого процесса не освободился"
+    again = F.FileLock(path)
+    assert again.acquire(timeout=20), "замок убитого процесса не освободился"
+    again.release()
 
 
 @test
@@ -315,7 +317,138 @@ def test_file_lock_without_os_locks_degrades_only_when_optional(tmp: Path):
     finally:
         F._try_lock = real
         F._WARNED.clear()
-    assert F.FileLock(tmp / "o3.lock").acquire(timeout=1), "после подмены замок не работает"
+    fine = F.FileLock(tmp / "o3.lock")
+    assert fine.acquire(timeout=1), "после подмены замок не работает"
+    fine.release()
+
+
+_FORK = """
+import os, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+import aurora_fs as F
+lock = F.FileLock(sys.argv[2])
+assert lock.acquire(timeout=10)
+pid = os.fork()
+if pid == 0:
+    got = F.FileLock(sys.argv[2]).acquire(blocking=False)
+    os._exit(1 if got else 0)               # ребёнок не должен получить замок родителя
+_, status = os.waitpid(pid, 0)
+probe = ("import sys; sys.path.insert(0, sys.argv[1]); import aurora_fs as F; "
+         "sys.exit(0 if not F.FileLock(sys.argv[2]).acquire(blocking=False) else 1)")
+still = subprocess.run([sys.executable, "-c", probe, sys.argv[1], sys.argv[2]]).returncode == 0
+print("child_blocked" if os.WEXITSTATUS(status) == 0 else "child_got_lock", "held" if still else "released", flush=True)
+"""
+
+
+@test
+def test_file_lock_one_object_relative_path_alias_and_info_edge_cases(tmp: Path):
+    """Один объект замка в двух потоках не пускает второй; вложенный выход не снимает внешний; относительный путь
+    переживает смену рабочей папки; жёсткая ссылка — тот же замок; странное описание владельца замок не ломает;
+    флаг «без замка» не залипает."""
+    F = _fs()
+    path = tmp / "one.lock"
+    shared = F.FileLock(path, timeout=0.3)
+    with shared:
+        with shared:
+            pass
+        assert F.is_locked(path), "внутренний выход снял внешний замок"
+        res = {}
+
+        def other():
+            res["got"] = shared.acquire(blocking=False)
+        t = threading.Thread(target=other)
+        t.start()
+        t.join(30)
+        assert res["got"] is False, "тот же объект в другом потоке вошёл без ожидания"
+    assert not F.is_locked(path)
+
+    (tmp / "a").mkdir()
+    (tmp / "b").mkdir()
+    here = os.getcwd()
+    os.chdir(tmp / "a")
+    try:
+        rel = F.FileLock("rel.lock")
+        assert rel.acquire()
+        os.chdir(tmp / "b")                                      # движок меняет рабочую папку в потоках
+        rel.release()
+    finally:
+        os.chdir(here)
+    assert not F.is_locked(tmp / "a" / "rel.lock"), "относительный путь: замок остался после смены папки"
+
+    first = tmp / "first.lock"
+    first.write_text("", encoding="utf-8")
+    second = tmp / "second.lock"
+    try:
+        os.link(first, second)
+    except (OSError, NotImplementedError, AttributeError):
+        second = None
+    if second is not None:
+        with F.FileLock(first):
+            with F.FileLock(second, timeout=1):                   # тот же файл под другим именем: вход того же потока
+                pass
+
+    odd = F.FileLock(tmp / "odd.lock", info={"what": "имя \udc80 и путь", "where": tmp})
+    with odd:
+        assert F.is_locked(tmp / "odd.lock")
+    real = F._try_lock
+
+    def unsupported(fd):
+        raise F.LockUnsupported(95, "нет замков")
+    flaky = F.FileLock(tmp / "flaky.lock", optional=True)
+    F._try_lock = unsupported
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            assert flaky.acquire() and flaky.degraded
+    finally:
+        F._try_lock = real
+    flaky.release()
+    assert flaky.acquire() and F.is_locked(tmp / "flaky.lock"), "после сбоя замков настоящий замок не взят"
+    flaky.release()
+    assert not F.is_locked(tmp / "flaky.lock"), "настоящий замок не отпущен: пометка «без замка» залипла"
+
+    fd = os.open(tmp / "gone.lock", os.O_RDWR | os.O_CREAT)
+    try:
+        assert F._replaced(fd, str(tmp / "gone.lock")) is False
+        if os.name != "nt":
+            os.unlink(tmp / "gone.lock")
+            assert F._replaced(fd, str(tmp / "gone.lock")) is True, "убранный файл замка не замечен"
+    finally:
+        os.close(fd)
+
+
+@test
+def test_file_lock_timeout_is_not_swallowed_as_a_disk_error(tmp: Path):
+    """`LockTimeout` — не `OSError`: повсюду в движке `except OSError: pass` означает отказ диска, и таймаут замка нельзя
+    молча проглотить им вместе с записью, которую замок защищает; владелец назван в сообщении."""
+    F = _fs()
+    assert not issubclass(F.LockTimeout, OSError)
+    path = tmp / "w.lock"
+    with F.FileLock(path, info={"what": "ночной разбор"}):
+        res = {}
+
+        def other():
+            try:
+                with F.FileLock(path, timeout=0.2):
+                    pass
+            except OSError:
+                res["swallowed"] = True
+            except F.LockTimeout as e:
+                res["owner"] = e.owner
+        t = threading.Thread(target=other)
+        t.start()
+        t.join(30)
+    assert "swallowed" not in res and "ночной разбор" in res.get("owner", ""), res
+
+
+@test
+def test_file_lock_is_not_inherited_by_a_forked_child(tmp: Path):
+    """Дочерний процесс после `fork` замка родителя не получает и не снимает: родитель держит его до конца."""
+    if not hasattr(os, "fork"):
+        return
+    _fs()
+    cp = subprocess.run([sys.executable, "-c", _FORK, str(SCRIPTS), str(tmp / "f.lock")],
+                        capture_output=True, text=True, timeout=120)
+    assert cp.returncode == 0 and cp.stdout.split() == ["child_blocked", "held"], (cp.stdout, cp.stderr[-400:])
 
 
 @test
