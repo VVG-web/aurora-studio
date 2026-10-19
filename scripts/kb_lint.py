@@ -14,7 +14,9 @@
      возврата они не входят.
   8. Шаблоны карточек (модуль `card_types.py`). Карточка со штампом `template:` обязана проходить
      шаблон своего типа: нарушение кода V-NN — ОШИБКА (меняет код возврата, ловится хуком
-     pre-commit как рост числа ошибок). Карточка без штампа «до-шаблонная»: её нарушения — сведения.
+     pre-commit как рост числа ошибок). Карточка без штампа «до-шаблонная»: её нарушения — сведения —
+     пока миграцию не объявили завершённой (`kb:conform --finalize --apply`, файл `meta/conform_state.json`):
+     после этого карточка без `template:` — ошибка, кроме неуправляемых типов и записей, ждущих переноса в `Raw/`.
      Раздел «шаблоны карточек» (сколько карточек проверено, у скольких стоит `template:`, нарушения
      по кодам V-NN) печатается ПОСЛЕ итоговой строки и только в полном прогоне (не с `--summary` и не
      с `--only`). Итоговую строку «карточек N, ошибок M» читают хук pre-commit, панель и `smoke_live`,
@@ -48,6 +50,14 @@ from aurora_common import (OWN_LIFECYCLE, STATUSES, aliases, body_hash, card_bod
                            card_sources, config_list, config_value, frontmatter, is_service, not_a_card_link,
                            leaf_name, link_refs, project_terms)
 from card_types import is_card_path, lint_section, safe_registry, stamped_card_errors
+try:
+    from card_types import migration_complete, missing_template_error
+except ImportError:      # новый линтер рядом со старым card_types.py (обновление оборвалось): миграцию не судим
+    def migration_complete(project_root="."):
+        return False
+
+    def missing_template_error(project_root, rel, text, reg):
+        return ""
 import run_summary as RS
 
 ROOT = "AuroraKnowledgeDB"
@@ -58,6 +68,10 @@ KINDS = [
     ("нарушает шаблон", "template-violation", "нарушения шаблона у карточек со штампом",
      "карточка помечена как проходящая шаблон, а теперь не проходит: поправьте её по коду V-NN "
      "(`kb:cards --check` называет причину и подсказку) или верните прежний текст"),
+    ("миграция на шаблоны завершена", "missing-template", "карточки без шаблона после завершения миграции",
+     "миграцию объявили завершённой (`meta/conform_state.json`), а у карточки нет штампа `template:`: её правили мимо "
+     "входа записи или она появилась позже. `kb:conform --apply` ставит штамп там, где карточка проходит шаблон, "
+     "`agent:conform --apply` раскладывает собственную часть машинной карточки по разделам; остальное правится руками"),
     ("битая ссылка", "broken-link", "битые ссылки",
      "цели нет в базе. `kb:repair --links` чинит то, что находится по алиасу или "
      "регистру; остальное — либо завести карточку на термин, либо снять ссылку"),
@@ -577,8 +591,11 @@ def main():
 
     # Шаблоны карточек (CT-12): у карточки со штампом `template:` нарушение шаблона — ошибка. Счётчик «до-шаблонных»
     # показывается, когда штампованные карточки в базе уже есть: на базе без штампов итоговая строка прежняя.
+    # После завершения миграции (`kb:conform --finalize --apply`) отсутствие штампа — тоже ошибка (CT-20), кроме
+    # неуправляемых типов и записей, ждущих переноса в `Raw/`.
     stamped = pre_template = 0
     if reg.types and not base_linked:
+        migrated = migration_complete(".")
         for rel, (fm, text) in sorted(cards.items()):
             if "/_archive/" in rel or not is_card_path(rel):
                 continue
@@ -587,6 +604,10 @@ def main():
                 errors.extend(stamped_card_errors(rel, text, reg))
             else:
                 pre_template += 1
+                if migrated:
+                    missing = missing_template_error(".", rel, text, reg)
+                    if missing:
+                        errors.append(missing)
 
     n = len(cards)
     if only:

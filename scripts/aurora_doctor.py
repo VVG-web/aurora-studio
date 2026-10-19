@@ -616,6 +616,28 @@ def check_card_templates(root: Path | None = None) -> list:
         out.append("типы: проблемы реестра — нет")
     if cards is not None:
         out.append(f"карточек без шаблона: {cards - stamped}")
+        try:
+            from card_types import conform_state
+            state = conform_state(str(root))
+        except Exception:  # noqa: BLE001 — старая копия card_types.py: состояния миграции не знает
+            state = None
+        rest_n = cards - stamped
+        try:      # без исключений (неуправляемые типы, записи, ждущие переноса в Raw/): остаток, который миграция обязана закрыть
+            import kb_conform as KC
+            rest_n = len(KC.blockers(str(root), reg)[0])
+        except Exception:  # noqa: BLE001 — старая копия движка: считаем все карточки без штампа
+            pass
+        if state is not None and state.get("complete") is True:
+            when = str(state.get("date") or "—")
+            if rest_n:
+                out.append(f"миграция на шаблоны: завершена {when}, но карточек без шаблона {rest_n} — `kb:lint` называет их ошибками")
+            else:
+                out.append(f"миграция на шаблоны: завершена {when}")
+        elif state is not None and rest_n:
+            out.append(f"миграция на шаблоны: не завершена, карточек без шаблона {rest_n} — ведут `kb:conform` и `agent:conform` "
+                       "в маршруте «Починить базу»")
+        elif state is not None:
+            out.append("миграция на шаблоны: все карточки со штампом — объявите конец командой `kb:conform --finalize --apply`")
     if catalog == "ok":
         out.append("каталог типов карточек: актуален")
     elif catalog == "missing" and pinned:
