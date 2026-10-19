@@ -790,12 +790,30 @@ def check_pins() -> list:
 
 def check_released() -> list:
     """Сданные версии (`Deliverables/released/`), которые правили или удалили после передачи. → предупреждения."""
+    out = []
     try:
-        from aurora_common import released_problems
-        return [f"сданная версия {p} → верните из git (`git checkout -- Deliverables/released/`) или выпустите "
-                "новую версию: сданное неизменяемо" for p in released_problems(str(ROOT))]
+        from aurora_common import released_findings
+        found = released_findings(str(ROOT))
     except Exception:                                  # noqa: BLE001 — проверка не должна ронять doctor
         return []
+    # Каждая находка — своя литеральная строка: так её видит перевод панели (`kit_i18n`).
+    for kind, a, b in found:
+        if kind == "hash":
+            out.append(f"сданная версия {a}: текст не совпадает с хешем сданной версии — файл правили после передачи → "
+                       "верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо")
+        elif kind == "blob-missing":
+            out.append(f"сданная версия {a}: сданного файла нет рядом со снимком {b} → "
+                       "верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо")
+        elif kind == "blob-changed":
+            out.append(f"сданная версия {a}: файл не совпадает с хешем из снимка {b} — его заменили после передачи → "
+                       "верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо")
+        elif kind == "modified":
+            out.append(f"сданная версия {a}: изменён после коммита → "
+                       "верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо")
+        else:
+            out.append(f"сданная версия {a}: удалён после коммита → "
+                       "верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо")
+    return out
 
 
 def check_python(errors: list, warns: list, vi=None, platform=None) -> None:

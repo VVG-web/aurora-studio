@@ -1030,11 +1030,16 @@ async function publishFromEditor(){
   if (d.error) return toast(d.error, "err");
   // Показываем ровно то, что уйдёт. Граница производства невидима в тексте, и человек
   // должен увидеть её собственными глазами до отправки, а не на странице у заказчика.
+  // Черновик (status: draft) предохранитель выходных команд не отправит без --allow draft: нажатие «Опубликовать»
+  // под этим предупреждением и есть осознанное решение.
+  const head = ((F.orig || "").replace(/^\uFEFF/, "").match(/^---\r?\n([\s\S]*?)\r?\n---/) || [])[1] || "";
+  const isDraft = /^status:\s*["']?(?:draft|черновик)["']?\s*$/mi.test(head);
   const box = el("div",{class:"card", style:"padding:14px;margin-bottom:10px"},
     el("b",{}, t("editor.publish_preview")),
     el("div",{class:"sub"}, d.marked
       ? t("editor.publish_cut", {n: d.cut})
       : t("editor.publish_nomark")),
+    isDraft ? el("div",{class:"sub", style:"color:var(--tier-inreview)"}, t("editor.publish_draft")) : null,
     el("pre",{class:"mono", style:"white-space:pre-wrap;max-height:260px;overflow:auto;"
       + "margin-top:8px;padding:8px;border-radius:8px;background:var(--surface-2)"}, d.clean),
     el("div",{class:"row", style:"gap:8px;margin-top:10px"},
@@ -1043,9 +1048,11 @@ async function publishFromEditor(){
         show("console");
         // Предпросмотр выше показал ровно то, что уйдёт: без маркера — тело целиком. Нажатие «Опубликовать» после
         // него — осознанное решение, которое предохранитель выходных команд просит словом --allow no-marker.
+        const args = [F.path, "--apply"];
+        if (!d.marked) args.push("--allow", "no-marker");
+        if (isDraft) args.push("--allow", "draft");
         const res = await api("/api/run", {method:"POST", body: JSON.stringify(
-          {project:S.project.path, cmd:"ship:publish",
-           args: d.marked ? [F.path, "--apply"] : [F.path, "--apply", "--allow", "no-marker"]})});
+          {project:S.project.path, cmd:"ship:publish", args})});
         if (res.job) poll(res.job, 0, "ship:publish " + F.path);
       }}, t("editor.publish_go")),
       el("button",{class:"btn", onclick:()=>box.remove()}, t("editor.publish_cancel"))));

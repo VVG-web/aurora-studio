@@ -391,6 +391,11 @@ def write_config(path: Path, c: dict):
             value = yaml_word(old_conf, key, "") if old_conf else ""
         if value and re.fullmatch(r"[A-Za-z0-9.,]+", value):
             att_keys += f"\n    {key}: {value}"
+    # Родитель публикации (`ship:publish`): форма его не спрашивает, но движок читает — без переноса сохранение формы
+    # стирало бы его, как раньше стирало политику вложений.
+    parent = yaml_scalar(old_conf, "publish_parent", "").strip() if old_conf else ""
+    if parent and "\n" not in parent and "\r" not in parent:
+        att_keys += f"\n    publish_parent: {yaml_str(parent)}"
     text = f"""# Aurora project configuration (committed). Schema version 1.
 # Отредактировать в любой момент: python3 .aurora/scripts/aurora_setup.py
 # Секреты (токены) сюда НЕ класть — они в .env.aurora.local (gitignored).

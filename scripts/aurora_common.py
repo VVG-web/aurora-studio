@@ -815,15 +815,21 @@ def _head_title(line: str):
     return t
 
 
-def production_headings(text: str) -> list:
-    """Заголовки разделов производства в тексте вне блоков кода (ATX и Setext; регистр, `:`, `**`, номер не мешают)."""
+def production_headings(text: str, loose: bool = True) -> list:
+    """Заголовки разделов производства в тексте вне блоков кода (ATX и Setext; регистр, `:`, `**`, номер не мешают).
+
+    Точное название (можно со скобкой: «Замечания критика (авто)») — признак кухни. `loose` добавляет заголовки,
+    которые только начинаются с него («Допущения и ограничения проекта»): это часто содержание документа."""
     lines = _without_code(text).split("\n")
     found = []
     for i, line in enumerate(lines):
         title = _head_title(line)
         if title is None and i + 1 < len(lines) and re.fullmatch(r"[=-]{3,}[ \t]*", lines[i + 1]) and line.strip():
             title = re.sub(r"[*_]", "", line).strip(" :.").casefold()
-        if title and any(title == k or title.startswith(k + " ") or title.startswith(k + "(") for k in _PROD_KEYS):
+        if not title:
+            continue
+        exact = any(title == k or title.startswith(k + "(") or title.startswith(k + " (") for k in _PROD_KEYS)
+        if exact or (loose and any(title.startswith(k + " ") for k in _PROD_KEYS)):
             found.append(line.strip())
     return found
 GATE_CODES = {
@@ -884,15 +890,17 @@ def outward_gate(text: str, fm: dict | None = None, scrub: str = "") -> list:
     ищется строкой, а заголовки производства — признак того, что он нужен), остатки шаблона, статус draft,
     персональные данные при `privacy.scrub: mask`. Решает вызывающий: он печатает находки и
     отказывает, если не названа `--allow <код>`. Список кодов — `GATE_CODES`."""
-    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = (text or "").lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")      # BOM шапку не прячет
     fm = frontmatter(text) if fm is None else fm
     full = body(text)
     clean = clean_copy(full)
     out = []
     lines = full.split("\n")
     has_mark = any(line == MADE_MARK for line in lines)
-    found = production_headings(full) if not has_mark else []
-    above = production_headings(clean) if has_mark else []     # граница есть, но заголовок производства стоит выше неё
+    # Точное название раздела производства без границы — блок. Название, только начинающееся с него («Допущения
+    # и ограничения проекта»), и любой такой заголовок выше границы — предупреждение: это бывает содержанием.
+    found = production_headings(full, loose=False) if not has_mark else []
+    above = [h for h in production_headings(clean) if h not in found]
     # граница есть, но испорчена (пробел, другое тире, правка руками): `clean_copy` её не видит и режет не по ней
     broken = [ln for ln in lines if not has_mark and _MADE_PHRASE in ln.casefold() and ln != MADE_MARK]
     if found or broken:
@@ -901,7 +909,7 @@ def outward_gate(text: str, fm: dict | None = None, scrub: str = "") -> list:
                     "кухня производства уедет наружу целиком"))
     if above:       # не блокирует: «Допущения» бывают содержанием документа, а не кухней; но молча в чистовик это не идёт
         names = ", ".join(sorted({re.sub(r"^[#\s]+|[#\s]+$", "", h) for h in above}))
-        out.append(("warn", "production-heading", f"в чистовике, выше границы, есть разделы с названиями производства ({names}): "
+        out.append(("warn", "production-heading", f"в чистовике есть разделы с названиями производства ({names}): "
                     "убедитесь, что это содержание документа, а не кухня"))
     left = sorted({m.group(0)[:30] for m in _LEFTOVER.finditer(_without_code(clean))})
     if left:
@@ -965,8 +973,11 @@ def release_hash(text: str) -> str:
     return hashlib.sha256(norm.encode("utf-8")).hexdigest()
 
 
-def released_problems(root: str = ".") -> list:
-    """Сданные версии `Deliverables/released/`, которые перестали быть сданными. → строки о проблемах.
+def released_findings(root: str = ".") -> list:
+    """Сданные версии `Deliverables/released/`, которые перестали быть сданными. → [(вид, имя, второе имя)].
+
+    Виды: `hash` (текст не совпал с хешем), `blob-missing` и `blob-changed` (бинарник рядом со снимком),
+    `modified` и `deleted` (после коммита, по git).
 
     Хеш в шапке снимка (`sha256`) сверяется с текстом, `binary_sha256` — с переданным файлом; снимок до
     хеширования без них не проверяется. Файл, изменённый или удалённый после коммита, назван по git: правка из
@@ -979,13 +990,13 @@ def released_problems(root: str = ".") -> list:
             if not name.endswith(".md") or name == FOLDER_GUIDE:
                 continue
             try:
-                text = open(os.path.join(folder, name), encoding="utf-8", errors="replace").read()
+                text = open(os.path.join(folder, name), encoding="utf-8-sig", errors="replace").read()   # BOM шапку не прячет
             except OSError:
                 continue
             fm = frontmatter(text)
             want = (fm.get("sha256") or "").strip().strip("\"'")
             if want and release_hash(text) != want:
-                out.append(f"{name}: текст не совпадает с хешем сданной версии — файл правили после передачи")
+                out.append(("hash", name, ""))
             blob = os.path.basename((fm.get("binary") or "").strip().strip("\"'"))
             blob_want = (fm.get("binary_sha256") or "").strip().strip("\"'")
             if blob and blob_want:
@@ -993,10 +1004,10 @@ def released_problems(root: str = ".") -> list:
                     with open(os.path.join(folder, blob), "rb") as f:
                         have = hashlib.sha256(f.read()).hexdigest()
                 except OSError:
-                    out.append(f"{blob}: сданного файла нет рядом со снимком {name}")
+                    out.append(("blob-missing", blob, name))
                 else:
                     if have != blob_want:
-                        out.append(f"{blob}: файл не совпадает с хешем из снимка {name} — его заменили после передачи")
+                        out.append(("blob-changed", blob, name))
     try:
         cp = subprocess.run(["git", "-c", "core.quotepath=off", "diff", "HEAD", "--name-status", "-z",
                              "--diff-filter=MD", "--", "Deliverables/released"], cwd=root, capture_output=True,
@@ -1007,10 +1018,24 @@ def released_problems(root: str = ".") -> list:
                 base = os.path.basename(path)
                 if base == FOLDER_GUIDE or base.startswith("."):
                     continue
-                out.append(f"{base}: {'изменён' if flag.startswith('M') else 'удалён'} после коммита")
+                out.append(("modified" if flag.startswith("M") else "deleted", base, ""))
     except Exception:                                       # noqa: BLE001 — нет git: остаются хеши
         pass
     return out
+
+
+_RELEASED_TEXT = {
+    "hash": "{a}: текст не совпадает с хешем сданной версии — файл правили после передачи",
+    "blob-missing": "{a}: сданного файла нет рядом со снимком {b}",
+    "blob-changed": "{a}: файл не совпадает с хешем из снимка {b} — его заменили после передачи",
+    "modified": "{a}: изменён после коммита",
+    "deleted": "{a}: удалён после коммита",
+}
+
+
+def released_problems(root: str = ".") -> list:
+    """То же, что `released_findings`, строками: `имя: что не так`."""
+    return [_RELEASED_TEXT[kind].format(a=a, b=b) for kind, a, b in released_findings(root)]
 
 
 SERVICE_NAMES = {"index.md", "_index.md", "manifest.json", "README.md"}

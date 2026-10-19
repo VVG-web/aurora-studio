@@ -5530,6 +5530,30 @@ def job_path_hint(project: str, cmd: str, parent: str) -> str:
         return ""
 
 
+def _args_for_old_script(path: str, args: list) -> list:
+    """`--allow КОД` не уходит скрипту движка проекта, который его не знает.
+
+    Проект ещё не обновлён после выхода нового кита (состояние «устарел»): скрипт `publish_doc.py` старше
+    предохранителя выходных команд (BL-SEC-22) отверг бы запуск «unrecognized arguments: --allow …», а
+    предохранителя в нём нет — разрешать нечего. Кнопка работает как до обновления."""
+    if "--allow" not in args:
+        return args
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            if re.search(r"""["']--allow["']""", f.read()):
+                return args
+    except OSError:
+        return args
+    out, i = [], 0
+    while i < len(args):
+        if args[i] == "--allow":
+            i += 2
+            continue
+        out.append(args[i])
+        i += 1
+    return out
+
+
 def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy: str = "", net_wait: bool = False) -> str:
     row = command_by_name(cmd)
     if not row or not row["runnable"]:
@@ -5543,6 +5567,7 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
         args.append(a)
 
     path = script_path(project, row["script"])
+    args = _args_for_old_script(path, args)
     job_id = secrets.token_hex(8)
     run_id = utc_slug() + "-" + job_id[:6]
     job = {"id": job_id, "cmd": cmd, "args": args, "project": project, "rc": None,
