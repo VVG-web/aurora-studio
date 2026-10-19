@@ -41,6 +41,7 @@ flowchart TD
 | [На одну страницу](knowledge-rules-tldr.md) | [One-page summary](en/knowledge-rules-tldr.md) | то, что нужно помнить каждый день · what to remember daily |
 | [Накопление знания](накопление-знания.md) | [Knowledge accumulation](en/knowledge-accumulation.md) | единица базы — сущность · the unit of the base is an entity |
 | [Шаблоны карточек](card-templates.md) | [Card templates](en/card-templates.md) | типы карточек, шаблоны `akdb_*`, проверка `kb:cards` · card types, `akdb_*` templates, the `kb:cards` check |
+| [Миграция на шаблоны](card-migration.md) | [Migration to templates](en/card-migration.md) | `kb:conform`, `agent:conform`, завершение миграции · `kb:conform`, `agent:conform`, completing the migration |
 | [Цикл и путь карточки](lifecycle.md) | [Lifecycle](en/lifecycle.md) | от источника до сданного документа · from source to delivered document |
 
 ## Установка и эксплуатация · Install and operate
