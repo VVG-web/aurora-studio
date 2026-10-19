@@ -587,3 +587,23 @@ def test_path_check_has_a_time_limit_and_survives_a_bad_path_and_control_charact
     rep = pb.assess(str(_project(tmp / "bad", bad)), roots=_win(150), current="macos")
     assert isinstance(rep.findings, list) and rep.resources >= 5, rep.resources
     assert "\x1b" not in pb.short("файл\x1b[31mкрасный\x07.md") and "\x7f" not in pb.short("a\x7fb"), "управляющие знаки заменены"
+
+
+@test
+def test_path_check_counts_config_lines_like_an_editor_and_folds_repeated_separators(tmp: Path):
+    """Номера строк — по \\n, \\r\\n и \\r (не по U+2028); `D:\\\\Shared\\\\Wiki` в кавычках — те же знаки, что `D:\\Shared\\Wiki`."""
+    pb = _pb()
+    items = pb.config_items("paths:\u2028\n  knowledge_db: A\r\n  other: B\r  tail: C\n")
+    assert items[("paths", "knowledge_db")][1] == 2 and items[("paths", "other")][1] == 3 and items[("paths", "tail")][1] == 4, items
+    assert pb.abs_prefix("windows", "C:\\r", "D:\\\\Shared\\\\Wiki") == "D:\\Shared\\Wiki"
+    assert pb.abs_prefix("macos", "/r", "a//b///c") == "/r/a/b/c"
+    assert pb.abs_prefix("windows", "C:\\r", "//srv/share/x") == "\\\\srv\\share\\x"
+
+
+@test
+def test_path_check_says_so_when_there_is_nothing_to_check(tmp: Path):
+    """Нет `aurora.config.yaml` — «проверять нечего», а не «всё помещается»."""
+    pb = _pb()
+    (tmp / "empty").mkdir()
+    out = pb.render(pb.assess(str(tmp / "empty"), current="macos"))
+    assert "проверять нечего" in out and "Всё помещается" not in out, out

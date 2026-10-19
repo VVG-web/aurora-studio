@@ -43,12 +43,21 @@ def test_a_path_that_does_not_fit_is_told_apart_from_other_write_errors(tmp: Pat
     assert not core.path_overflow(ValueError("x"), "/x")
     win = FileNotFoundError(2, "Не удаётся найти указанный путь")
     win.winerror = 3
-    assert core.path_overflow(win, "C:\\" + "p" * 250), "WinError 3 при длинном пути — это длина"
-    if len(os.path.abspath("C:\\short")) <= 247:        # на POSIX абсолютный путь — от рабочей папки: не длиннее предела
-        assert not core.path_overflow(win, "C:\\short"), "WinError 3 при коротком пути — просто нет папки"
-    empty = FileNotFoundError(2, "нет")
-    empty.winerror = 3
-    assert not core.path_overflow(empty, ""), "без пути нечего мерить"
+    saved = core.IS_WINDOWS
+    core.IS_WINDOWS = True
+    try:
+        assert core.path_overflow(win, "C:\\" + "p" * 250), "WinError 3 при длинном пути — это длина"
+        assert not core.path_overflow(win, "C:\\s"), "WinError 3 при коротком пути — просто нет папки"
+        empty = FileNotFoundError(2, "нет")
+        empty.winerror = 3
+        assert not core.path_overflow(empty, ""), "без пути нечего мерить"
+    finally:
+        core.IS_WINDOWS = saved
+    core.IS_WINDOWS = False
+    try:
+        assert not core.path_overflow(win, "C:\\" + "p" * 250), "вне Windows WinError не ждём: только ENAMETOOLONG"
+    finally:
+        core.IS_WINDOWS = saved
     win206 = OSError(0, "Имя слишком длинно")
     win206.winerror = 206
     assert core.path_overflow(win206, "")
@@ -338,3 +347,48 @@ def test_the_path_probe_never_opens_or_removes_what_already_lies_there(tmp: Path
     assert core.path_probe(str(link)) is False, "ссылка — это «место есть», а не повод её раскрывать"
     assert not (outside / "planted.txt").exists(), "цель ссылки вне зеркала не создана"
     assert os.path.islink(link), "сама ссылка не убрана"
+
+
+@test
+def test_windows_open_errors_without_winerror_are_still_recognised_as_length(tmp: Path):
+    """`open()` на Windows даёт только errno (ENOENT или EINVAL) без winerror: от «нет папки» их отличает длина пути и имени."""
+    core = _mod("sources_core")
+    long_file = "C:\\" + "p" * 270 + "\\a.md"
+    saved = core.IS_WINDOWS
+    core.IS_WINDOWS = True
+    try:
+        assert core.path_overflow(FileNotFoundError(errno.ENOENT, "No such file or directory", long_file)), "файл длиннее 259"
+        assert core.path_overflow(OSError(errno.EINVAL, "Invalid argument", "C:\\x\\" + "n" * 300)), "имя длиннее 255"
+        assert not core.path_overflow(FileNotFoundError(errno.ENOENT, "нет", "C:\\x\\a.md")), "короткий путь — просто нет папки"
+        assert not core.path_overflow(PermissionError(errno.EACCES, "нет прав", long_file)), "другая ошибка — не длина"
+        win3 = FileNotFoundError(2, "нет")
+        win3.winerror = 3
+        assert core.path_overflow(win3, "C:\\" + "d" * 250), "папка длиннее 247"
+    finally:
+        core.IS_WINDOWS = saved
+    core.IS_WINDOWS = False
+    try:
+        assert not core.path_overflow(FileNotFoundError(errno.ENOENT, "нет", "x" * 400)), "вне Windows ENOENT — это ENOENT"
+    finally:
+        core.IS_WINDOWS = saved
+
+
+@test
+def test_the_path_probe_skips_a_dangling_link_before_touching_anything(tmp: Path):
+    """Висячая ссылка — «место есть»: проба не открывает её ни при каких флагах и не создаёт цель."""
+    core = _mod("sources_core")
+    folder = tmp / "m"
+    folder.mkdir()
+    link = folder / "dangling.pdf"
+    try:
+        os.symlink(tmp / "outside" / "target.txt", link)
+    except (OSError, NotImplementedError):
+        return
+    saved = os.open
+    opened: list = []
+    os.open = lambda *a, **k: opened.append(a) or saved(*a, **k)
+    try:
+        assert core.path_probe(str(link)) is False
+    finally:
+        os.open = saved
+    assert opened == [] and os.path.islink(link) and not (tmp / "outside").exists(), (opened, list(tmp.iterdir()))

@@ -320,7 +320,7 @@ def config_items(text: str) -> dict:
     stack: list = []            # (отступ, ключ или номер пункта, "key" | "item")
     seq: dict = {}              # путь родителя -> номер последнего пункта
     block = -1                  # отступ ключа с блочным скаляром («|», «>»): его строки не читаем
-    for no, raw in enumerate(text.replace("\t", "  ").splitlines(), 1):
+    for no, raw in enumerate(re.split(r"\r\n|\r|\n", text.replace("\t", "  ")), 1):
         body = raw.strip()
         if not body or body.startswith("#"):
             continue
@@ -418,7 +418,7 @@ def abs_prefix(system: str, root: str, rel: str):
     Путь с диском Windows (`D:\\…`) относится только к Windows, абсолютный POSIX — только к macOS и
     Linux: чужой системе он ничего не значит и в её модель не входит. `..` — переход в родительскую
     папку корня, `.` пропускается."""
-    rel = (rel or "").strip().replace("\\", "/")
+    rel = re.sub(r"(?<!^)/{2,}", "/", (rel or "").strip().replace("\\", "/"))     # повторные разделители — один
     win_abs = bool(re.match(r"^[A-Za-z]:(/|$)|^//", rel))
     if win_abs or rel.startswith("/"):
         if win_abs != (system == "windows"):
@@ -838,6 +838,8 @@ def render(report: Report) -> str:
     for system in SYSTEMS:
         mark = " (допущение)" if system != (report.current or current_system()) else ""
         lines.append(f"  {LABEL[system]}: корень проекта {report.models[system]}{mark}")
+    if not report.resources:
+        return "\n".join(lines + ["Конфига проекта нет (aurora.config.yaml): проверять нечего."])
     if not report.findings:
         return "\n".join(lines + ["Всё помещается: ни одна строка конфига не даст ошибки длины пути."])
     lines.append("")

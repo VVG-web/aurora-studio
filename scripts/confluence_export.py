@@ -1288,7 +1288,7 @@ class Exporter(WikiMirror):
                                         "вложения с таким"))
             if not policy:
                 referenced.add(fname)       # сбой скачивания: прежняя копия цела
-            if not reason or (not policy and os.path.isfile(dest)):
+            if not reason or (not policy and os.path.isfile(dest) and os.path.getsize(dest) > 0):
                 # прежняя копия при сбое не удаляется и остаётся рабочей ссылкой
                 kept.add(fname)
                 self.asset_links[name] = local

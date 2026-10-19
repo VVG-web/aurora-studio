@@ -213,25 +213,40 @@ def net_refusal() -> str:
         return ""
 
 
+IS_WINDOWS = os.name == "nt"        # проверка подменяет: форму ошибок Windows разбирают и на других системах
+
+
 def path_overflow(e: BaseException, path: str = "") -> bool:
     """Ошибка записи — «путь не помещается в эту систему», а не нет места или прав.
 
-    Linux и macOS отвечают `ENAMETOOLONG`; Windows без длинных путей отвечает «путь не найден»
-    (WinError 3), «неверное имя» (123) или «имя слишком длинно» (206) — их отличает только длина:
-    папка создаётся до 247 знаков, файл пишется до 259 (`path_budget`)."""
+    Linux и macOS отвечают `ENAMETOOLONG`. Windows без длинных путей — по-разному: вызовы Win32 (`makedirs`,
+    `remove`) дают «путь не найден» (WinError 3), «неверное имя» (123) или «имя слишком длинно» (206), а `open()` и
+    `os.open()` идут через CRT и дают только `errno` — `ENOENT` или `EINVAL` без `winerror`. Эти ответы отличает
+    от «нет папки» только длина: папка создаётся до 247 знаков, файл пишется до 259, имя — до 255."""
     import errno
     if not isinstance(e, OSError):
         return False
-    if e.errno == errno.ENAMETOOLONG or getattr(e, "winerror", None) == 206:
+    winerror = getattr(e, "winerror", None)
+    if e.errno == errno.ENAMETOOLONG or winerror == 206:
         return True
     target = path or str(getattr(e, "filename", "") or "")
-    return bool(target) and getattr(e, "winerror", None) in (3, 123) and len(os.path.abspath(target)) > 247
+    if not IS_WINDOWS or not target:
+        return False
+    if winerror in (3, 123):
+        limit = 247
+    elif winerror is None and e.errno in (errno.ENOENT, errno.EINVAL):
+        limit = 259
+    else:
+        return False
+    return len(os.path.abspath(target)) > limit or any(len(part) > 255 for part in target.replace("\\", "/").split("/"))
 
 
 def path_probe(path: str) -> bool:
     """True — файл по этому пути на этой системе не создать из-за длины. Проверка до скачивания: вложение,
     которому некуда лечь, не качается впустую на каждом синке. Создаёт и тут же убирает пустой файл (лежащий
     не трогает, ссылку не раскрывает); иная ошибка записи — не повод отказывать: о ней скажет сама запись."""
+    if os.path.lexists(path):
+        return False                # файл или ссылка (даже висячая) уже лежат: их не открываем и не убираем
     parent = os.path.dirname(path) or "."
     parent_existed = os.path.isdir(parent)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
@@ -243,12 +258,16 @@ def path_probe(path: str) -> bool:
     except OSError as e:
         return path_overflow(e, path)
     os.close(fd)
-    try:
-        os.remove(path)             # убираем только то, что создали сами
-        if not parent_existed:
-            os.rmdir(parent)
-    except OSError:
-        pass
+    for attempt in range(3):        # Windows: антивирус или индексатор бывают заняты только что созданным файлом
+        try:
+            os.remove(path)         # убираем только то, что создали сами
+            if not parent_existed:
+                os.rmdir(parent)
+            break
+        except OSError:
+            if attempt < 2:
+                import time
+                time.sleep(0.05)
     return False
 
 

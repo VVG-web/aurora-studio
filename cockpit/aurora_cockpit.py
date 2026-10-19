@@ -5550,8 +5550,11 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
             # Выгрузка вне маршрута (кнопка одной команды): длинные пути названы одной строкой в начале.
             # Шаг маршрута её не печатает — маршрут сказал о них один раз на весь прогон.
             if not parent and cmd in RR.sync_commands(project):
-                note = "\n".join(x for x in (note, RR.paths_lines(sys.modules[__name__], project,
-                                                                   RR.Texts(sys.modules[__name__], "ru"))[0]) if x)
+                try:
+                    hint = RR.paths_lines(sys.modules[__name__], project, RR.Texts(sys.modules[__name__], "ru"))[0]
+                except Exception:  # noqa: BLE001 — справка не имеет права помешать запуску команды
+                    hint = ""
+                note = "\n".join(x for x in (note, hint) if x)
             if note:
                 with JOBS_LOCK:
                     for one in note.split("\n"):
