@@ -827,11 +827,11 @@ def test_cron_next_skips_a_task_removed_from_the_schedule(tmp: Path):
 
 @test
 def test_cron_write_json_retries_a_busy_replace(tmp: Path):
-    """Подмена файла истории идёт через `aurora_common.replace_file`: первые попытки с
+    """Подмена файла истории идёт через `aurora_fs.replace_file` (ядро надёжности): первые попытки с
     `PermissionError` (файл читают) не теряют запись, а повторяются; так же — `meta.json`
     маршрута."""
     _path()
-    import aurora_common as AC
+    import aurora_fs as AC
     import cron as CRON
     import route_runner as RR
     orig = os.replace

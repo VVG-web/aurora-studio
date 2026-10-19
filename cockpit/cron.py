@@ -41,7 +41,6 @@
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import secrets
@@ -124,24 +123,17 @@ def _alive(pid: int) -> bool:
 
 
 def _read_json(path: str, default):
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, type(default)) else default
-    except (OSError, ValueError):
-        return default
+    """Состояние Cron. Повреждённый файл не молча «пуст»: ядро надёжности переносит его в `.corrupt` и говорит об
+    этом (расписание и история не затираются следующей записью без следа)."""
+    from aurora_common import _fs
+    return _fs().read_state(path, default)
 
 
 def _write_json(path: str, data) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    try:
-        from aurora_common import replace_file
-    except ImportError:                       # панель без движка рядом — подмена без повторов
-        replace_file = os.replace
-    replace_file(tmp, path)                   # на Windows занятый читателем файл — с повторами
+    """Записать состояние Cron целиком или никак: уникальный временный файл рядом, `fsync`, подмена с повтором на
+    Windows (`aurora_fs.write_atomic`)."""
+    from aurora_common import _fs
+    _fs().write_json(path, data)
 
 
 def now_iso(when: datetime | None = None) -> str:
