@@ -326,8 +326,9 @@ BLOCKED_PACKAGES = ("litellm", "dspy")      # решение по цепочке
 
 
 _NO_WHEEL = re.compile(r"No matching distribution found|Could not find a version that satisfies")
-_NET_TROUBLE = re.compile(r"(?i)retrying|connection (?:error|broken|aborted|refused|reset)|timed? ?out|temporary failure|"
-                          r"name resolution|ssl: |sslerror|proxyerror|certificate verify|http error|unreachable|max retries")
+_NET_TROUBLE = re.compile(r"(?i)\bretrying \(|connection (?:error|broken|aborted|refused|reset)|timed out|read timeout|"
+                          r"temporary failure|name resolution|ssl: |sslerror|proxyerror|certificate verify|http error|"
+                          r"network is unreachable|max retries")
 
 
 def plan_lock(vpy, spec: str, days: float, now: float = 0.0, binary_only: bool = True, log=None) -> tuple:
@@ -523,7 +524,7 @@ def restore(extra_id: str, lock: Path, log: list) -> bool:
         if existed:
             os.replace(venv, aside)         # на Windows venv, занятый процессом, не переименуется — тогда он остаётся как был
             moved = True
-        made = _run([base, "-I", "-m", "venv", str(venv)], timeout=300)
+        made = _run([base, "-I", "-X", "utf8", "-m", "venv", str(venv)], timeout=300)
         ok = made.returncode == 0 and _install_lock(venv_python(extra_id), lock).returncode == 0
     except (OSError, subprocess.SubprocessError) as e:
         log.append(f"откат по снимку не удался: {str(e)[:120]}")
@@ -604,7 +605,7 @@ def _install(extra_id: str, quarantine_days=None) -> dict:
                     f"({python_install_hint()}) и нажмите снова"}
         log.append(f"создаю venv {ex['venv']} на {base}")
         ex["venv"].parent.mkdir(parents=True, exist_ok=True)
-        p = _run([base, "-I", "-m", "venv", str(ex["venv"])], timeout=300)
+        p = _run([base, "-I", "-X", "utf8", "-m", "venv", str(ex["venv"])], timeout=300)
         if p.returncode != 0:
             return {"ok": False, "version": "", "log": "\n".join(log + [p.stderr[-400:]])}
     before = installed_version(extra_id)
@@ -712,9 +713,11 @@ def _kit_dir() -> Path:
     ptr = KIT / "kit_path.txt"
     if KIT.name in (".aurora", ".opencode") and ptr.is_file():       # движок проекта; .opencode — до 1.158
         try:
-            return Path(ptr.read_text(encoding="utf-8").strip())
+            text = ptr.read_text(encoding="utf-8").strip()
         except (OSError, ValueError):
             return KIT
+        # пустой указатель дал бы `Path("")` — текущую папку, то есть проект; несуществующий путь — несуществующий кит
+        return Path(text) if text and Path(text).is_dir() else KIT
     return KIT
 
 

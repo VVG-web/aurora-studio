@@ -445,6 +445,26 @@ def test_a_network_failure_is_not_a_reason_to_allow_source_builds(tmp: Path):
 
 
 @test
+def test_kit_pointer_that_is_empty_or_missing_means_this_kit(tmp: Path):
+    """`kit_path.txt` пустой, с пробелами или про папку, которой нет: кит — эта папка, а не текущая (проект)."""
+    EX = importlib.import_module("aurora_extras")
+    importlib.reload(EX)
+    engine = tmp / ".aurora"
+    engine.mkdir()
+    real_kit = tmp / "kit"
+    real_kit.mkdir()
+    try:
+        EX.KIT = engine
+        for text, want in (("", engine), ("  \n", engine), (str(tmp / "нет такой"), engine), (str(real_kit) + "\n", real_kit)):
+            (engine / "kit_path.txt").write_text(text, encoding="utf-8")
+            assert EX._kit_dir() == want, (text, EX._kit_dir())
+        (engine / "kit_path.txt").write_bytes(b"\xff\xfe\x00bad")
+        assert EX._kit_dir() == engine
+    finally:
+        importlib.reload(EX)
+
+
+@test
 def test_snapshots_are_checked_when_read_and_every_pip_runs_isolated(tmp: Path):
     """Снимок читается с диска: чужая директива pip (`--index-url`, `-e`) в нём не принимается; папка снимков только
     владельцу; весь `-m pip` и `-m venv` надстроек идёт с `-I`, чтобы папка запуска не стала первой в sys.path."""
@@ -473,8 +493,7 @@ def test_snapshots_are_checked_when_read_and_every_pip_runs_isolated(tmp: Path):
         assert seen, pip.calls
         for c in seen:
             assert "-I" in c[:c.index("-m")], c
-            if "pip" in c[c.index("-m"):]:
-                assert c[c.index("-m") - 2:c.index("-m")] == ["-X", "utf8"], c       # -I отбросил бы PYTHONUTF8
+            assert c[c.index("-m") - 2:c.index("-m")] == ["-X", "utf8"], c           # -I отбросил бы PYTHONUTF8
     finally:
         importlib.reload(EX)
 
