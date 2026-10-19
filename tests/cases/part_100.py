@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -105,3 +106,24 @@ def test_a_zip_kit_unpacked_inside_another_repository_does_not_show_that_reposit
     assert a["repo"] == ck.KIT_REPO, a
     assert a["author"] == ck.KIT_AUTHOR and "Someone" not in str(a), a
     assert a["branch"] != "other-branch" and a["commit"] == "", a
+
+
+@test
+def test_the_about_page_tells_a_zip_kit_from_a_clone_and_explains_its_empty_commit_tile(tmp: Path):
+    """`source` — «git» у клона и «archive» у кита из zip: по нему плитка «коммит» у архива, скачанного до
+    `.git_archival.txt`, объясняет прочерк словами, а не молчит. Подпись есть на обоих языках."""
+    ck = _ck()
+    root = tmp / "kit"
+    root.mkdir()
+    (root / "CHANGELOG.md").write_text("## 1.2.3 — тест\n", encoding="utf-8")
+    with _Kit(ck, root):
+        a = ck.about()
+    assert a["source"] == "archive" and a["commit"] == "", a
+    subprocess.run(["git", "init", "-q", "-b", "trunk"], cwd=root, check=True, capture_output=True)
+    with _Kit(ck, root):
+        assert ck.about()["source"] == "git"
+    view = (KIT / "cockpit" / "modules" / "about" / "view.js").read_text(encoding="utf-8")
+    assert 'a.source === "archive"' in view and 't("about.commit_archive")' in view, "плитка не читает source"
+    for lang in ("ru", "en"):
+        strings = json.loads((KIT / "cockpit" / "modules" / "about" / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))
+        assert strings.get("about.commit_archive"), f"нет подписи about.commit_archive на языке {lang}"

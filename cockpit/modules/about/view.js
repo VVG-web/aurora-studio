@@ -21,10 +21,13 @@ export async function refresh(ctx){
   // внутри панели, и ассистент в чате. Разойтись двум копиям негде, потому что копия одна.
   box.append(el("p", {class:"sub"}, t("about.skills")));
 
+  // Кит из архива, скачанного до появления `.git_archival.txt`, своего коммита не знает:
+  // объясняем пустоту, а не оставляем «—» без слов.
+  const commitHint = a.commit_date || (!a.commit && a.source === "archive" ? t("about.commit_archive") : "");
   box.append(el("div", {class:"grid metrics"},
     ctx.ui.metric(a.kit, t("about.kit_version"), t("about.panel", {v: a.ui}), "ok"),
     ctx.ui.metric(a.commands, t("about.commands"), t("about.commands_hint"), "ok"),
-    ctx.ui.metric(a.commit || "—", t("about.commit"), a.commit_date || "", "ok"),
+    ctx.ui.metric(a.commit || "—", t("about.commit"), commitHint, "ok"),
     ctx.ui.metric(a.license, t("about.license"), t("about.license_hint"), "ok")));
 
   box.append(el("h2", {}, t("about.repo")));
