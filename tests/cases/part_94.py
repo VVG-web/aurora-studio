@@ -418,7 +418,8 @@ def test_export_does_not_carry_foreign_html_or_script_links_into_the_output(_t):
     for evil in ("[a](javascript:alert(1))", "[a [b]](javascript:alert(1))", "[a\\]b](javascript:alert(1))",
                  "[![i](a.png)](javascript:alert(1))", "[x][1]\n\n[1]:\njavascript:alert(1)", "[a](java&Tab;script:alert(1))",
                  "[a](java&NewLine;script:x)", "[a](java&#9;script:x)", "[a]( JavaScript:x)", "[a](java&#115;cript:x)",
-                 "[e](data:text/html;base64,AAA)", "[r](file:///etc/passwd)", "[v](vbscript:x)"):
+                 "[e](data:text/html;base64,AAA)", "[r](file:///etc/passwd)", "[v](vbscript:x)",
+                 "[a](" + " " * 150 + "javascript:alert(1))", "[a](javascript\\:alert(1))", "[a](\njavascript:x)"):
         out = S.neutralize_links(evil)
         assert "#blocked" in out and "script:" not in out.replace("&#", "").casefold().replace("java", ""), (evil, out)
     t = S.neutralize_links("[c](https://example.org) ![i](data:image/png;base64,AAA) <javascript:alert(1)>\n")

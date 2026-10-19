@@ -98,7 +98,7 @@ _BLOCKED = "#blocked"
 _SCHEME = re.compile(r"(?:javascript|vbscript|data|file):")
 _SAFE_DATA = re.compile(r"data:image/(?:png|jpe?g|gif|webp)[;,]")        # встроенная картинка — не ссылка-сценарий
 _INVISIBLE = re.compile(r"[\x00-\x20\u00a0\u200b-\u200d\u2060\ufeff]")
-_TARGET = re.compile(r"\]\([ \t]{0,20}<?([^)\n]{0,80})")
+_TARGET = re.compile(r"\]\([ \t]*(?:\n[ \t]*)?<?([^)\n]{0,80})")
 _REF_TARGET = re.compile(r"(?m)^( {0,3}\[[^\]\n]{1,200}\]:\s{0,100}<?)([^\s>]{0,80})")
 _AUTOLINK_OPEN = re.compile(r"(?i)<(?=(?:javascript|data|vbscript|file):)")
 _ATTR = re.compile(r"""(?i)\b(href|src|poster|action|formaction|xlink:href|data)[ \t\r\n]*=[ \t\r\n]*(?:"([^"]{0,4000})"|'([^']{0,4000})')""")
@@ -106,7 +106,8 @@ _ATTR = re.compile(r"""(?i)\b(href|src|poster|action|formaction|xlink:href|data)
 
 def _dangerous(raw: str) -> bool:
     """Адрес со схемой-сценарием; сущности (`&Tab;`, `&#106;`) и невидимые знаки в схеме браузер выбрасывает или читает."""
-    t = _INVISIBLE.sub("", html.unescape(raw or "")).casefold()
+    t = re.sub(r"\\(?=[!-/:-@\[-`{-~])", "", html.unescape(raw or ""))      # `javascript\:` — обратный слэш перед знаком не виден
+    t = _INVISIBLE.sub("", t).casefold()
     return bool(_SCHEME.match(t)) and not _SAFE_DATA.match(t)
 
 
