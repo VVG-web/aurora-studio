@@ -406,6 +406,11 @@
    "reason": "метрики и отчёт статистики: служебные файлы",
    "calls": 1
   },
+  "scripts/aurora_update.py:_run": {
+   "kind": "other",
+   "reason": "доставка файлов кита в проект; карточки базы не пишет",
+   "calls": 3
+  },
   "scripts/aurora_update.py:_write_engine_file": {
    "kind": "other",
    "reason": "файл копии движка на этой машине: служебный файл вне базы",
@@ -425,11 +430,6 @@
    "kind": "other",
    "reason": "перекладка файлов проекта при обновлении движка (пути в конфигах), не карточки",
    "calls": 1
-  },
-  "scripts/aurora_update.py:run": {
-   "kind": "other",
-   "reason": "доставка файлов кита в проект; карточки базы не пишет",
-   "calls": 3
   },
   "scripts/aurora_update.py:stamp_engine": {
    "kind": "other",
@@ -559,6 +559,26 @@
   "scripts/dev_qa.py:retrieval_report": {
    "kind": "other",
    "reason": "журнал QA кухни разработки: вне базы знаний",
+   "calls": 1
+  },
+  "scripts/engine_txn.py:mark_pending": {
+   "kind": "other",
+   "reason": "метка оборванного обновления движка (.aurora/state/update.pending); не карточка",
+   "calls": 1
+  },
+  "scripts/engine_txn.py:restore": {
+   "kind": "other",
+   "reason": "откат файлов движка (.aurora/) из снимка; карточек не касается",
+   "calls": 1
+  },
+  "scripts/engine_txn.py:snapshot": {
+   "kind": "other",
+   "reason": "снимок файлов движка проекта в ~/.aurora/engine-backups/; карточек не касается",
+   "calls": 2
+  },
+  "scripts/engine_txn.py:write_lock": {
+   "kind": "other",
+   "reason": "хеши файлов движка (.aurora/engine.lock.json); не карточка",
    "calls": 1
   },
   "scripts/feature_ids.py:assign": {

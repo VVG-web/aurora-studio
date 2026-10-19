@@ -28,6 +28,12 @@ def main():
         problems.append("в cockpit/ui/panel.js не найден UI_VERSION")
     elif ui.group(1) != version:
         problems.append(f"UI_VERSION {ui.group(1)} ≠ VERSION {version}")
+    # ENGINE_API — целое рядом с VERSION: растёт при несовместимом изменении контракта движка (BL-LCY-01)
+    try:
+        if int(read("ENGINE_API").strip()) < 1:
+            raise ValueError
+    except (OSError, ValueError):
+        problems.append("ENGINE_API нет или в нём не целое число от 1")
     # release.yml ждёт workflow по имени: переименовали engine-tests в test.yml — выпуск молча замолчит
     wf = re.search(r"(?m)^name:\s*(\S+)\s*$", read(".github/workflows/test.yml"))
     waits = re.search(r"workflows:\s*\[([^\]]*)\]", read(".github/workflows/release.yml"))

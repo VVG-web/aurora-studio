@@ -304,14 +304,16 @@ def test_engine_prepare_does_not_write_through_links_or_outside_the_project(tmp:
     shared.mkdir()
     (root / ".aurora/scripts").mkdir(parents=True)
     victim = shared / "aurora_common.py"
-    victim.write_text("# общий файл\n", encoding="utf-8")
+    # общий файл — годный `aurora_common` (иначе проверка до записи справедливо откажет смешанному движку)
+    victim.write_text((SCRIPTS / "aurora_common.py").read_text(encoding="utf-8") + "\n# общий файл\n", encoding="utf-8")
+    shared_text = victim.read_text(encoding="utf-8")
     try:
         os.symlink(victim, root / ".aurora/scripts/aurora_common.py")
         os.symlink(shared, root / ".aurora/docs", target_is_directory=True)
     except (OSError, NotImplementedError):
         return              # Windows без права на ссылки: проверять нечем
     res = AU.engine_prepare(root)
-    assert victim.read_text(encoding="utf-8") == "# общий файл\n", "запись ушла за ссылку"
+    assert victim.read_text(encoding="utf-8") == shared_text, "запись ушла за ссылку"
     assert sorted(p.name for p in shared.iterdir()) == ["aurora_common.py"], "в общий каталог легли чужие файлы"
     assert ".aurora/scripts/aurora_common.py" in res["shared"], res["shared"]
     assert any(p.startswith(".aurora/docs/") for p in res["shared"]), res["shared"]
@@ -700,8 +702,9 @@ def test_engine_copy_version_comes_from_the_local_mark_not_from_the_project_stam
 
 @test
 def test_engine_prepare_reports_failed_writes_without_crashing_and_keeps_modes(tmp: Path):
-    """Сбой записи одного файла, указателя или удаления — строка в `failed`, а не трассировка; «создано» не включает
-    упавшие; права прежнего файла переходят к новому; метка копии при сбое не объявляется."""
+    """Сбой записи одного файла, указателя или удаления — строка в `failed`, а не трассировка; движок кладётся как одна
+    операция (BL-LCY-07): при сбое записи файлы возвращаются из снимка, «создано» пусто; права прежнего файла переходят
+    к новому; метка копии при сбое не объявляется."""
     AU = _mod("aurora_update")
     root = _clone(tmp)
     real_write, real_atomic = AU._write_engine_file, AU.write_text_atomic
@@ -714,10 +717,11 @@ def test_engine_prepare_reports_failed_writes_without_crashing_and_keeps_modes(t
         AU._write_engine_file = flaky
         res = AU.engine_prepare(root)
         assert res["ok"] is False and len(res["failed"]) == 1 and "aurora_common.py" in res["failed"][0], res["failed"]
-        assert ".aurora/scripts/aurora_common.py" not in res["created"] and len(res["created"]) > 50, "упавший файл числится созданным"
+        assert res["created"] == [] and res["refreshed"] == [], "упавшая операция числится выполненной"
+        assert not (root / ".aurora/scripts/agent_core.py").exists(), "файлы, записанные до сбоя, не возвращены из снимка"
         assert not (root / ".aurora/engine_version.txt").exists() and not (root / ".aurora/kit_path.txt").exists()
         AU._write_engine_file = real_write
-        assert AU.engine_prepare(root)["ok"], "повтор после сбоя должен достроить остальное"
+        assert AU.engine_prepare(root)["ok"], "повтор после сбоя должен достроить движок"
 
         def broken_atomic(path, text):
             raise OSError("диск полон")

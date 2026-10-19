@@ -3273,9 +3273,17 @@ def attachment_answers_error(answers: dict, cfg_text: str) -> str:
     return ""
 
 
+def engine_status_of(project: str) -> dict:
+    """Статус версии движка проекта относительно этого кита (`aurora_common.engine_status`): карточка проекта, гейт
+    маршрутов и Cron, «Обновить все» и `kit:doctor` отвечают из одного определения «отстал»."""
+    from aurora_common import engine_status, kit_engine_api
+    return engine_status(project, kit_version(), kit_engine_api(KIT))
+
+
 def project_card(path: str) -> dict:
     cfg = read_text(os.path.join(path, "aurora.config.yaml"))
     ver = read_text(os.path.join(path, "AuroraKnowledgeDB", "meta", "aurora_version.txt")).strip()
+    est = engine_status_of(path)
     env = os.path.join(path, ".env.aurora.local")
     env_text = read_text(env)
     def filled(name):
@@ -3290,7 +3298,11 @@ def project_card(path: str) -> dict:
         "slug": config_value(cfg, "slug"),
         "engine": ver or "—",
         "kit": kit_version(),
-        "behind": ver != kit_version() and bool(ver),
+        # Отстал — только если движок СТАРШЕ кита (или обновление оборвалось); «новее кита» — не отставание (BL-LCY-01)
+        "behind": est["status"] in ("behind_minor", "behind_patch", "partial"),
+        "ahead": est["status"] == "ahead",
+        "engine_status": {"status": est["status"], "reason": est["reason"], "engine_api": est["engine_api"],
+                          "kit_api": est["kit_api"], "blocks": est["blocks"]},
         # Копия движка в .aurora/ на этой машине: у клона проекта её нет, пока панель не подготовит.
         "engine_state": engine_info(path),
         "space": config_value(cfg, "space"),
@@ -3336,10 +3348,6 @@ def ui_version() -> str:
     return m.group(1) if m else "—"
 
 
-def minor(v: str) -> str:
-    return ".".join(v.split(".")[:2])
-
-
 def update_all_projects(roots: list, apply: bool) -> dict:
     """Обновить движок во ВСЕХ отставших проектах разом. → отчёт по каждому.
 
@@ -3354,9 +3362,20 @@ def update_all_projects(roots: list, apply: bool) -> dict:
     """
     if not kit_is_source():
         return {"error": "панель поднята не из кита — обновлять нечем"}
-    rows, done, failed = [], 0, 0
+    rows, skipped, done, failed = [], [], 0, 0
     for p in find_projects(roots):
+        est = p.get("engine_status") or {}
         if not p.get("behind"):
+            if est.get("status") in ("ahead", "pinned"):
+                # Движок НОВЕЕ кита (или проект ведёт его сам) обновление не понижает: это отдельная строка отчёта.
+                skipped.append({"name": p.get("name") or p["path"], "path": p["path"], "status": est["status"],
+                                "note": est.get("reason", "")})
+            continue
+        with JOBS_LOCK:
+            busy = [j["cmd"] for j in JOBS.values() if not j["done"] and j["project"] == p["path"]]
+        if busy:
+            skipped.append({"name": p.get("name") or p["path"], "path": p["path"], "status": "busy",
+                            "note": f"в проекте идёт запуск ({busy[0]}) — обновление после него"})
             continue
         args = [sys.executable, os.path.join(KIT, "scripts", "aurora_update.py"), p["path"]]
         if apply:
@@ -3369,12 +3388,12 @@ def update_all_projects(roots: list, apply: bool) -> dict:
         rows.append({"name": p.get("name") or p["path"], "path": p["path"],
                      "was": p.get("engine"), "ok": ok,
                      "why": (tail[-1][:200] if tail else "")})
-    return {"apply": apply, "kit": kit_version(), "updated": done, "failed": failed,
+    return {"apply": apply, "kit": kit_version(), "updated": done, "failed": failed, "skipped": skipped,
             "projects": rows}
 
 
 def version_gap(project: str) -> str:
-    """Отстаёт ли движок проекта от кита — и чем это грозит прямо сейчас.
+    """Останавливает ли расхождение версий движка проекта и кита маршрут и шаг Cron — и чем это грозит прямо сейчас.
 
     Панель берёт скрипт из проекта, а которого в проекте нет — из кита. Задумано как
     удобство: новая команда работает в старом проекте сразу. На маршруте это обернулось
@@ -3384,12 +3403,24 @@ def version_gap(project: str) -> str:
 
     Один прогон двумя версиями движка — это не «частично сработало». Это база, часть
     которой собрана по одним правилам, часть по другим, и разобрать потом, где чьё,
-    нельзя. → пустая строка, если версии сходятся; иначе текст для человека.
+    нельзя. Решает единый статус (`engine_status`): останавливает оборванное обновление, несовместимый контракт
+    (`ENGINE_API` кита новее движка проекта, либо движок проекта новее контракта кита) и — пока у проекта нет замка
+    движка — прежнее правило минора. Отставание в патче и движок новее кита маршрут не останавливают.
+    → пустая строка, если можно идти; иначе текст для человека.
     """
-    ver = read_text(os.path.join(project, "AuroraKnowledgeDB", "meta",
-                                 "aurora_version.txt")).strip()
-    if not ver or minor(ver) == minor(kit_version()):
+    st = engine_status_of(project)
+    if not st["blocks"]:
         return ""
+    ver = st["engine"] or st["stamp"]
+    if st["status"] == "partial":
+        return ("обновление движка проекта оборвалось на середине: повторите «Версия» → «Применить» "
+                "или откатите его командой kit:update --rollback.")
+    if st["status"] == "ahead":
+        return (f"контракт движка проекта (ENGINE_API {st['engine_api']}) новее, чем у кита ({st['kit_api']}): "
+                f"обновите кит {st['kit']}, а движок проекта понижать не нужно.")
+    if st["engine_api"] and st["kit_api"] > st["engine_api"]:
+        return (f"движок проекта {ver} несовместим с китом {st['kit']}: контракт движка изменился "
+                f"(ENGINE_API {st['engine_api']} → {st['kit_api']}). Обновите движок проекта: раздел «Версия».")
     return (f"движок проекта {ver}, а панель работает китом {kit_version()}. "
             f"Часть команд пойдёт из проекта, часть из кита — один прогон двумя "
             f"версиями. Обновите движок проекта: раздел «Версия».")
@@ -3411,7 +3442,7 @@ def engine_info(project: str) -> dict:
     except Exception:  # noqa: BLE001 — сверка не роняет список проектов
         return {"state": "unknown", "missing": 0, "total": 0, "copy": "", "legacy": False, "files": []}
     return {"state": st["state"], "missing": len(st["missing"]), "total": st["total"],
-            "copy": st["copy"], "legacy": st["legacy"], "files": st["missing"][:8]}
+            "copy": st["copy"], "legacy": st["legacy"], "files": st["missing"][:8], "status": st.get("status", "unknown")}
 
 
 def engine_fallback_note(project: str, script: str, path: str) -> str:
@@ -3468,6 +3499,8 @@ def engine_prepare_action(project: str) -> dict:
                              "«Версия» → «Предпросмотр обновления» → «Применить»", "state": engine_info(project)}
         if res["reason"] == "no_kit":
             return {"error": "кит с манифестом не найден — подготовить движок нечем"}
+        if res["reason"] == "update_running":
+            return {"error": "обновление этого проекта уже идёт — движок подготовится после него"}
         if res["reason"]:
             return {"error": "это не проект Aurora (нет AuroraKnowledgeDB/)"}
         record_engine_run(project, AU.engine_report(res, True), res, started, time.time() - t0)

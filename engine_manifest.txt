@@ -140,6 +140,9 @@ scripts/jira_status.py   => .aurora/scripts/jira_status.py
 scripts/aurora_hooks.py  => .aurora/scripts/aurora_hooks.py
 scripts/aurora_setup.py  => .aurora/scripts/aurora_setup.py
 scripts/aurora_doctor.py => .aurora/scripts/aurora_doctor.py
+# транзакционное обновление движка (проверка до записи, снимок, откат; BL-LCY-07): листовой модуль, его подключает
+# aurora_update — поэтому раньше него
+scripts/engine_txn.py    => .aurora/scripts/engine_txn.py
 scripts/aurora_update.py => .aurora/scripts/aurora_update.py
 scripts/kb_updated.py => .aurora/scripts/kb_updated.py
 scripts/folder_guides.py => .aurora/scripts/folder_guides.py

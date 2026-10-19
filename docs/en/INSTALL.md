@@ -665,6 +665,27 @@ fast-forward only; it refuses on uncommitted edits).
 Files removed from the engine's composition are deleted by `update` itself (the list is kept in the manifest). Your
 own paths can be fenced off in `aurora.update_ignore.txt` in the project root.
 
+**An update is one operation.** The write runs under the project's lock (`.aurora/state/update.lock`): the button,
+Cron and the terminal never update a project at the same time, and while an agent run is going the update refuses
+(code 3) and writes nothing. The new engine scripts are checked **before** the first write (they compile; their
+top-level imports and names resolve); a set that would leave a mixed engine does not land in the project (code 5).
+Before writing, a copy of the replaced and deleted `.aurora/` files is taken into `~/.aurora/engine-backups/` (the
+last three are kept) and the mark `.aurora/state/update.pending` is created; only the end of the update removes it.
+After the write every file's hash is checked, and a mismatch returns the files from the snapshot (code 6).
+`.aurora/engine.lock.json` holds the sha256 of the engine files, the kit version and commit, and `ENGINE_API`. To
+return the engine to its state before the last update: `update <project> --rollback` (without `--apply` it only
+previews; the project files the update also changed live in git and are rolled back by it).
+
+**Engine version status.** One function (`aurora_common.engine_status`) answers the panel, `kit:doctor`, the route and
+Cron gate, and "Update all": `ok`, `behind_minor`, `behind_patch`, `ahead` (the project's engine or stamp is newer
+than the kit), `partial` (the update was interrupted), `pinned` (the project keeps the core itself), `unknown`. An
+engine newer than the kit is not downgraded: `update --apply` refuses (code 4) until `--allow-downgrade` is given;
+"Update all" skips such projects and the ones with a run in progress and names them on a separate line. Routes and
+Cron steps are stopped not by every new minor release but by an interrupted update and by a growth of `ENGINE_API`:
+the integer in the `ENGINE_API` file next to `VERSION`, which grows only on an incompatible change of the engine
+contract (commands and their flags, state file formats, the config schema, the `.aurora/` layout). A project without
+`engine.lock.json` (not yet updated by this version) lives by the previous minor rule.
+
 ## 8. The project has already piled up documents
 
 In detail — `skills/aurora-vault/references/migration.md` (in Russian). In short:
