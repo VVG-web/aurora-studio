@@ -385,6 +385,66 @@ def test_a_package_without_a_wheel_is_resolved_once_more_without_the_ban(tmp: Pa
         assert why == "" and "only-binary" not in text, (text, why)       # повтор без запрета, снимок без пометки
         lock.write_text(text, encoding="utf-8")
         assert "--only-binary=:all:" not in EX._install_lock(Path("python"), lock).args
+        # повтор виден в журнале: сказано, что разрешена сборка и какой пакет из исходников
+        pip.fail_binary, pip.rounds[:] = True, [[("a", "1.0", "ab" * 32)]]
+        said = []
+        EX.plan_lock(Path("python"), "a", 7, NOW, log=said)
+        assert any("сборку из исходников" in x for x in said) and any("соберутся: a" in x for x in said), said
+    finally:
+        importlib.reload(EX)
+
+
+@test
+def test_a_network_failure_is_not_a_reason_to_allow_source_builds(tmp: Path):
+    """Повтор без `--only-binary` только когда pip сказал «нет колеса», а не при обрыве связи или сбое прокси."""
+    pip = Pip(rounds=[[("a", "1.0", "ab" * 32)]], ages={("a", "1.0"): 90})
+    EX, _venv = _patched(tmp, pip)
+    real = pip.run
+
+    def net_down(cmd, timeout=60):
+        if "--report" in cmd:
+            pip.calls.append([str(c) for c in cmd])
+            return subprocess.CompletedProcess(cmd, 1, "", "WARNING: Retrying (Retry(total=4)) after connection broken\n"
+                                               "ERROR: Could not find a version that satisfies the requirement a")
+        return real(cmd, timeout)
+    try:
+        EX._run = net_down
+        text, why = EX.plan_lock(Path("python"), "a", 7, NOW)
+        assert text == "" and why, (text, why)
+        assert sum(1 for c in pip.calls if "--report" in c) == 1, "после обрыва связи набор решается второй раз"
+    finally:
+        importlib.reload(EX)
+
+
+@test
+def test_snapshots_are_checked_when_read_and_every_pip_runs_isolated(tmp: Path):
+    """Снимок читается с диска: чужая директива pip (`--index-url`, `-e`) в нём не принимается; папка снимков только
+    владельцу; весь `-m pip` и `-m venv` надстроек идёт с `-I`, чтобы папка запуска не стала первой в sys.path."""
+    pip = Pip(rounds=[[("a", "1.0", "ab" * 32)]], ages={("a", "1.0"): 90}, freeze="a==1.0\n")
+    EX, _venv = _patched(tmp, pip)
+    try:
+        good, _ = EX.plan_lock(Path("python"), "a", 7, NOW)
+        assert EX.lock_text_problem(good) == "", good
+        assert EX.lock_text_problem(EX.freeze_text(Path("python"))) == ""
+        assert good.isascii() and EX.freeze_text(Path("python")).isascii(), "pip читает файл в кодировке локали"
+        for evil in ("--index-url https://example.org/simple\n", "-e .\n", "a==1.0 --hash=sha256:abc\n",
+                     "a==1.0\n--extra-index-url https://example.org\n", "vcs+https://example.org/x.tar\n"):
+            assert EX.lock_text_problem(good + evil), evil
+            f = tmp / "evil.txt"
+            f.write_text(good + evil, encoding="utf-8")
+            before = len(pip.calls)
+            res = EX._install_lock(Path("python"), f)
+            assert res.returncode == 2 and len(pip.calls) == before, "pip запущен по испорченному снимку"
+        EX.save_lock("pydantic-ai", good)
+        if os.name != "nt":
+            assert ((EX.LOCKS / "pydantic-ai").stat().st_mode & 0o777) == 0o700
+        pip.rounds[:] = [[("pydantic-ai", "2.51.0", "ab" * 32)]]
+        pip.ages[("pydantic-ai", "2.51.0")] = 90
+        EX.install("pydantic-ai", 7)
+        seen = [c for c in pip.calls if "-m" in c and ("pip" in c or "venv" in c)]
+        assert seen, pip.calls
+        for c in seen:
+            assert c[c.index("-m") - 1] == "-I", c
     finally:
         importlib.reload(EX)
 

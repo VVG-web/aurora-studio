@@ -325,19 +325,25 @@ def _report_items(path) -> list:
 BLOCKED_PACKAGES = ("litellm", "dspy")      # решение по цепочке поставок: в надстройки не вводятся (ни прямо, ни через зависимость)
 
 
-def plan_lock(vpy, spec: str, days: float, now: float = 0.0, binary_only: bool = True) -> tuple:
+_NO_WHEEL = re.compile(r"No matching distribution found|Could not find a version that satisfies")
+_NET_TROUBLE = re.compile(r"(?i)retrying|connection|timed? ?out|temporary failure|name resolution|ssl|proxy|network|"
+                          r"certificate|HTTP error|unreachable")
+
+
+def plan_lock(vpy, spec: str, days: float, now: float = 0.0, binary_only: bool = True, log=None) -> tuple:
     """Решить набор пакетов для `spec` без выпусков моложе `days` суток. → (текст снимка, "") либо ("", причина).
 
     Слишком свежий пакет запрещается ограничением `имя<версия`, и pip решает набор заново: если нужному
     свежему выпуску есть замена постарше, получится набор из старых; нет — отказ с названием пакета.
     Набор решается только по готовым колёсам (`--only-binary=:all:`): сборка пакета из исходников исполняет его код
-    ещё до проверки возраста. Колеса нет — один повтор без этого запрета (в журнале сказано, чья сборка пойдёт)."""
+    ещё до проверки возраста. Колеса нет — один повтор без этого запрета, но не при обрыве связи; в `log` сказано,
+    какие пакеты пойдут из исходников (их сборка исполняет чужой код: версия и хеш при этом проверены так же)."""
     work = tempfile.mkdtemp(prefix="aurora-extras-")
     bans, ages = {}, {}
     try:
         for _round in range(RESOLVE_ROUNDS):
             report = os.path.join(work, "report.json")
-            cmd = [str(vpy), "-m", "pip", "install", "--dry-run", "--ignore-installed", "--quiet",
+            cmd = [str(vpy), "-I", "-m", "pip", "install", "--dry-run", "--ignore-installed", "--quiet",
                    "--disable-pip-version-check", "--report", report, *(["--only-binary=:all:"] if binary_only else []),
                    *spec.split()]
             if bans:
@@ -349,8 +355,11 @@ def plan_lock(vpy, spec: str, days: float, now: float = 0.0, binary_only: bool =
                 os.remove(report)
             p = _run(cmd, timeout=1800)
             if p.returncode != 0:
-                if binary_only:
-                    return plan_lock(vpy, spec, days, now, False)       # у какого-то пакета нет колеса — один повтор
+                said = (p.stderr or "") + (p.stdout or "")
+                if binary_only and _NO_WHEEL.search(said) and not _NET_TROUBLE.search(said):
+                    if log is not None:
+                        log.append("у какого-то пакета нет готового колеса — набор решаю ещё раз, разрешив сборку из исходников")
+                    return plan_lock(vpy, spec, days, now, False, log)   # у какого-то пакета нет колеса — один повтор
                 return "", ((p.stderr or p.stdout or "pip не ответил")[-300:]).strip()
             try:
                 items = _report_items(report)
@@ -378,6 +387,10 @@ def plan_lock(vpy, spec: str, days: float, now: float = 0.0, binary_only: bool =
                          if ages.get((it["name"], it["version"])) is not None
                          and ages[(it["name"], it["version"])] < days]
             if not young:
+                if log is not None and not binary_only:
+                    src = [it["name"] for it in items if not str(it.get("url", "")).endswith(".whl")]
+                    if src:
+                        log.append("из исходников соберутся: " + ", ".join(src[:8]) + " (сборка исполняет код пакета)")
                 return _lock_text(items, days, now, all(it.get("url", "").endswith(".whl") for it in items)), ""
             for it in young:
                 bans[it["name"]] = it["version"]
@@ -408,7 +421,11 @@ def lock_files(extra_id: str) -> list:
 def save_lock(extra_id: str, text: str, kind: str = "install") -> Path:
     """Положить снимок в `~/.aurora/locks/<надстройка>/` (только владельцу), лишние старые убрать."""
     folder = LOCKS / extra_id
-    folder.mkdir(parents=True, exist_ok=True)
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(folder, 0o700)
+    except OSError:
+        pass
     from aurora_common import utc_slug
     base = utc_slug("%Y%m%dT%H%M%S")
     # номер внутри секунды: имена сортируются по времени, а не по виду снимка; берём следующий за наибольшим,
@@ -439,20 +456,38 @@ def save_lock(extra_id: str, text: str, kind: str = "install") -> Path:
 def freeze_text(vpy) -> str:
     """Что стоит в venv сейчас — `имя==версия` без хешей (старая установка снимка не оставила)."""
     try:
-        p = _run([str(vpy), "-m", "pip", "freeze", "--all", "--disable-pip-version-check"], timeout=120)
+        p = _run([str(vpy), "-I", "-m", "pip", "freeze", "--all", "--disable-pip-version-check"], timeout=120)
     except (OSError, subprocess.SubprocessError):
         return ""
     if p.returncode != 0:
         return ""
     rows = [ln.strip() for ln in (p.stdout or "").splitlines() if re.match(r"^[A-Za-z0-9][\w.\-]*==\S+$", ln.strip())]
-    return "# Снимок до обновления (без хешей)\n" + "\n".join(rows) + "\n" if rows else ""
+    return "# Aurora extras snapshot before the update (no hashes)\n" + "\n".join(rows) + "\n" if rows else ""
+
+
+_LOCK_LINE = re.compile(r"(?:#.*|[A-Za-z0-9][A-Za-z0-9._-]*==[A-Za-z0-9.+!_-]+(?:\s+--hash=sha256:[0-9a-f]{64})*(?:\s*\\)?"
+                        r"|\s+--hash=sha256:[0-9a-f]{64}(?:\s*\\)?|\s*)")
+
+
+def lock_text_problem(text: str) -> str:
+    """Снимок читают с диска и отдают pip: в нём допустимы только комментарии, `имя==версия` и `--hash=sha256:…`.
+
+    Опция вроде `--index-url` или `-e` в таком файле сработала бы как директива pip, а без `--hash` проверки
+    хеша нет — файл правили руками. → описание первой странной строки либо пусто."""
+    for i, line in enumerate(text.splitlines(), 1):
+        if not _LOCK_LINE.fullmatch(line):
+            return f"в снимке странная строка {i}: «{line.strip()[:60]}»"
+    return ""
 
 
 def _install_lock(vpy, path) -> subprocess.CompletedProcess:
     text = Path(path).read_text(encoding="utf-8")
+    bad = lock_text_problem(text)
+    if bad:
+        return subprocess.CompletedProcess([], 2, "", bad + " — снимок не используется")
     hashed = "--hash=" in text
     wheels = bool(re.search(r"(?m)^# release wait: .*; only-binary\s*$", text))
-    return _run([str(vpy), "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--no-deps",
+    return _run([str(vpy), "-I", "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--no-deps",
                  *(["--require-hashes"] if hashed else []), *(["--only-binary=:all:"] if wheels else []),
                  "-r", str(path)], timeout=1800)
 
@@ -475,7 +510,7 @@ def restore(extra_id: str, lock: Path, log: list) -> bool:
         if existed:
             os.replace(venv, aside)         # на Windows venv, занятый процессом, не переименуется — тогда он остаётся как был
             moved = True
-        made = _run([base, "-m", "venv", str(venv)], timeout=300)
+        made = _run([base, "-I", "-m", "venv", str(venv)], timeout=300)
         ok = made.returncode == 0 and _install_lock(venv_python(extra_id), lock).returncode == 0
     except (OSError, subprocess.SubprocessError) as e:
         log.append(f"откат по снимку не удался: {str(e)[:120]}")
@@ -496,7 +531,7 @@ def restore(extra_id: str, lock: Path, log: list) -> bool:
 
 def _pip_older_than(vpy, want: tuple) -> bool:
     try:
-        p = _run([str(vpy), "-m", "pip", "--version"], timeout=60)
+        p = _run([str(vpy), "-I", "-m", "pip", "--version"], timeout=60)
     except (OSError, subprocess.SubprocessError):
         return False
     m = re.match(r"pip (\d+)\.(\d+)", (p.stdout or "").strip()) if p.returncode == 0 else None
@@ -510,7 +545,7 @@ def _upgrade_pip(vpy, days: float, log: list) -> None:
         if days and not want:
             log.append("pip не обновлён: выпуска старше паузы PyPI не назвал")
             return
-        _run([str(vpy), "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
+        _run([str(vpy), "-I", "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
               *([f"pip=={want}"] if want else ["--upgrade", "pip"])], timeout=600)
     except Exception as e:                                    # noqa: BLE001 — сеть, JSON PyPI, pip
         log.append(f"pip не обновлён: {str(e)[:120]}")
@@ -556,7 +591,7 @@ def _install(extra_id: str, quarantine_days=None) -> dict:
                     f"({python_install_hint()}) и нажмите снова"}
         log.append(f"создаю venv {ex['venv']} на {base}")
         ex["venv"].parent.mkdir(parents=True, exist_ok=True)
-        p = _run([base, "-m", "venv", str(ex["venv"])], timeout=300)
+        p = _run([base, "-I", "-m", "venv", str(ex["venv"])], timeout=300)
         if p.returncode != 0:
             return {"ok": False, "version": "", "log": "\n".join(log + [p.stderr[-400:]])}
     before = installed_version(extra_id)
@@ -572,7 +607,7 @@ def _install(extra_id: str, quarantine_days=None) -> dict:
     chosen, last_ok = "", False
     for spec in ex["pip"]:
         log.append(f"pip install {spec}" + (f" (выпуски моложе {days:g} сут. не берём)" if days else ""))
-        text, why = plan_lock(vpy, spec, days)
+        text, why = plan_lock(vpy, spec, days, log=log)
         if not text:
             log.append(why)
             continue
@@ -605,7 +640,7 @@ def _install(extra_id: str, quarantine_days=None) -> dict:
                 if previous is not None and restore(extra_id, previous, log):
                     log.append(f"venv возвращён целиком по снимку {previous.name}")
                 else:       # снимка нет или откат по нему не вышел — как прежде, одним верхним пакетом
-                    _run([str(vpy), "-m", "pip", "install", "--quiet", f"{ex['dist']}=={before}"],
+                    _run([str(vpy), "-I", "-m", "pip", "install", "--quiet", f"{ex['dist']}=={before}"],
                          timeout=1800)
                 back = installed_version(extra_id)
                 res["compat"] = check_compat(back) if back else chk

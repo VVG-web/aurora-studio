@@ -23,8 +23,6 @@ jobs:
       issues: write
     env:
       AURORA_REQUIRE_VENV: "1"
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -76,6 +74,10 @@ jobs:
         run: python3 tests/run_tests.py
       - name: Open an issue if the canary is red
         if: failure()
+        # Токен только здесь: шаги выше ставят непроверенные свежие пакеты (pip-audit, надстройка без паузы).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           TITLE="canary: свежие версии зависимостей ломают проверки"
