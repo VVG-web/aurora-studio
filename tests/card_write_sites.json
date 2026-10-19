@@ -606,16 +606,6 @@
    "reason": "граф кода в meta/: служебный файл",
    "calls": 1
   },
-  "scripts/kb_conform.py:finalize": {
-   "kind": "other",
-   "reason": "состояние миграции на шаблоны meta/conform_state.json: служебный файл базы, не карточка",
-   "calls": 1
-  },
-  "scripts/kb_conform.py:write_report": {
-   "kind": "other",
-   "reason": "отчёт миграции meta/conform_report.md: служебный файл базы, не карточка",
-   "calls": 1
-  },
   "scripts/kb_corrections.py:cmd_new": {
    "kind": "other",
    "reason": "новое исправление человека в Raw/corrections: запись, а не карточка базы",

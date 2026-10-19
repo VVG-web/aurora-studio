@@ -1938,15 +1938,24 @@ CONFORM_STATE_REL = f"{KB_ROOT}/meta/conform_state.json"
 CONFORM_REPORT_REL = f"{KB_ROOT}/meta/conform_report.md"
 
 
+def read_small_json(path: str) -> dict:
+    """JSON-словарь из служебного файла (состояние миграции, память отложенного); нет файла, он велик (больше 1 МБ), не
+    разбирается (в том числе враждебно вложенный) или не словарь — пустой словарь. Читатель не должен падать на чужом файле:
+    состояние читает хук pre-commit."""
+    try:
+        if os.path.getsize(path) > 1 << 20:
+            return {}
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError, RecursionError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def conform_state(project_root: str = ".") -> dict:
     """Состояние миграции: `{"complete": true, "date": …, "versions": {тип: версия}, "exceptions": {…}}`; файла нет,
     он не читается или не словарь — пустой словарь (миграция не завершена)."""
-    try:
-        with open(os.path.join(str(project_root or "."), CONFORM_STATE_REL), encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return read_small_json(os.path.join(str(project_root or "."), CONFORM_STATE_REL))
 
 
 def migration_complete(project_root: str = ".") -> bool:

@@ -64,7 +64,7 @@ KEEP = ("meta/aurora_version.txt",)
 CONVERSATIONS = "meta/ask/"
 # Правила и проверки базы: их пишет человек, и `manifest.json` к ним не относится — он
 # уходит всегда, иначе `kb:build` считает источники разобранными и план выйдет пустым.
-HANDMADE_META = ("conventions.md", "golden_questions.md", "lint_baseline.txt")
+HANDMADE_META = ("conventions.md", "golden_questions.md", "lint_baseline.txt", "conform_state.json")
 # Разделы, которые собираются из самой базы: `kb:moc` и `kb:index` вернут их целиком.
 GENERATED = ("MOC",)
 

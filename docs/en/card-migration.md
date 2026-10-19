@@ -31,9 +31,10 @@ Only what is listed, deterministically; nothing else:
   map); no `created` — the earliest known date; no `updated` → `created`; an empty `template:` line is removed. A field
   that is absent and has nowhere to come from is **not invented**: a machine card without `source_synced` has no error,
   only a warning, and gets the stamp.
-- **Own part** — only for `built: machine`, `kind: knowledge`, not a stub: consecutive identical service blocks collapse
-  into one; "Не путать" and "Что относится к теме" found in the own part move as they are to the end of the card (when
-  after "Источник" there is "Исправления человеком" or "История изменений" and there is no "Слияние").
+- **Own part** — only for `built: machine`, `kind: knowledge`, not a stub: consecutive identical service blocks ("Что
+  относится к теме", "Не путать" …) collapse into one. Service sections stay where they are (V-24 is only a warning): they
+  cannot go into the source area — a source update erases the block — nor to the end of the card, where history and repair
+  notes are written.
 - **Never changed:** the bodies of `kind: document` and `kind: dictionary`; "Исправления человеком", "История
   изменений", "Источник…"; cards of unknown origin (no `built: machine` and no live `sources`) — their head only gets
   the missing fields, the body is untouched. Unmanaged types (`spec`) and hand-written records (a decision, a question, a

@@ -628,7 +628,7 @@ def check_card_templates(root: Path | None = None) -> list:
         except Exception:  # noqa: BLE001 — старая копия движка: считаем все карточки без штампа
             pass
         if state is not None and state.get("complete") is True:
-            when = str(state.get("date") or "—")
+            when = " ".join(str(state.get("date") or "—").split())[:10]      # чужой файл: одна короткая строка
             if rest_n:
                 out.append(f"миграция на шаблоны: завершена {when}, но карточек без шаблона {rest_n} — `kb:lint` называет их ошибками")
             else:

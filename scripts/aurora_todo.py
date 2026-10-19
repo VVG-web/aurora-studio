@@ -70,8 +70,9 @@ def template_rest():
         if not reg.types:
             return 0, 0, {}, False, False, 0
         left = KC.blockers(".", reg)[0]
+        memory = KC.parked_memory(".")
         queued = {os.path.relpath(p, ".").replace("\\", "/")
-                  for p, _c in KC.queue(".", reg, parked=lambda p: KC.is_parked(".", p))}
+                  for p, _c in KC.queue(".", reg, parked=lambda p: KC.is_parked(".", p, memory))}
         codes, gap = {}, 0
         for rel, text, _fm in left:
             if rel in queued:

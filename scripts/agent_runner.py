@@ -1845,7 +1845,7 @@ def conform_assemble(plan: dict, answer) -> "tuple":
             raise ValueError(f"{what}: ожидается номер строки")
         if isinstance(x, int):
             return x
-        if isinstance(x, str) and x.strip().isdigit():
+        if isinstance(x, str) and x.strip().isascii() and x.strip().isdigit():
             return int(x.strip())
         raise ValueError(f"{what}: ожидается номер строки")
 
@@ -1869,7 +1869,7 @@ def conform_assemble(plan: dict, answer) -> "tuple":
                 raise ValueError(f"раздел «{key}» назван дважды")
             by_section[key] = numbers(value, f"sections.{key}")
     except ValueError as e:
-        return "", str(e)
+        return "", " ".join(str(e).split())[:200]
     seen = [lead] + body_n + [x for v in by_section.values() for x in v]
     if sorted(seen) != list(range(1, n + 1)):
         return "", f"номера строк названы не по одному разу (строк {n}, названо {len(seen)})"
@@ -7380,11 +7380,7 @@ def _card_sig(path: str) -> str:
 def parked_cards(cwd: str, store: str = "") -> dict:
     """{путь от проекта: отпечаток} — отложенные карточки на момент откладывания. `store` — файл памяти задачи
     (по умолчанию — тезисов); у каждой задачи своя, чтобы отложенное одной не пряталось от другой."""
-    try:
-        data = json.load(open(os.path.join(cwd, store or PARKED), encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return CT.read_small_json(os.path.join(cwd, store or PARKED))
 
 
 def park_card(cwd: str, path: str, refused: bool = False, store: str = "") -> None:
