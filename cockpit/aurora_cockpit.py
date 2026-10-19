@@ -4721,7 +4721,7 @@ def env_install(name: str) -> dict:
     # которым работает, и «последнее, что вышло час назад» туда не берётся.
     spec, note = _extras().safe_spec(pkg)
     try:
-        p = subprocess.run([sys.executable, "-m", "pip", "install", spec], capture_output=True,
+        p = subprocess.run([sys.executable, "-P", "-m", "pip", "install", spec], capture_output=True,   # -P: папка запуска не первой в sys.path
                            text=True, encoding="utf-8", errors="replace", timeout=900)
         ok, tail = p.returncode == 0, (note + "\n" if note else "") + ((p.stdout or "") + (p.stderr or "")).strip()[-1500:]
     except (OSError, subprocess.SubprocessError) as e:

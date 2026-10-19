@@ -38,7 +38,8 @@ Markdown (`kit:doctor` warns about a mismatch). Add-ons (Pydantic AI, graphify) 
 out an hour ago": the package set is resolved first, releases younger than seven days are dropped, exactly that set
 is installed by hash, and a snapshot of the installation stays in `~/.aurora/locks/` — the venv rolls back to it as a
 whole if the new version fails the compatibility check. For the other packages of the "Install" list the panel takes
-a release no newer than a week. Nothing has to be configured or confirmed for the wait or the hashes.
+a release no newer than a week — that covers the package itself; pip picks its dependencies (a hashed set is resolved
+for add-ons only). Nothing has to be configured or confirmed for the wait or the hashes.
 
 ## 1. Deploy a project
 
