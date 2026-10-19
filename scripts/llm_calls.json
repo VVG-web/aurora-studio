@@ -209,6 +209,38 @@
       "engine": "pydantic_ai"
     },
     {
+      "id": "conform",
+      "title": {
+        "ru": "Раскладка карточки по шаблону",
+        "en": "Laying a card out by its template"
+      },
+      "when": {
+        "ru": "Команда agent:conform — шаг маршрута «Починить базу» после kb:conform.",
+        "en": "The agent:conform command — a step of the 'Fix the base' route after kb:conform."
+      },
+      "commands": [
+        "agent:conform"
+      ],
+      "code": [
+        "agent_runner.py:conform_card"
+      ],
+      "steps": [
+        {
+          "role": "worker",
+          "prompt": "agent_runner.py:PROMPT_CONFORM",
+          "what": {
+            "ru": "Машинная карточка знания, чья собственная часть не по шаблону: модель называет только номера уже имеющихся строк (определение, продолжение абзаца, строки по разделам типа); текст она не пишет, заголовки расставляет скрипт, а состав строк сверяется с исходным.",
+            "en": "A machine knowledge card whose own part does not follow the template: the model names only the numbers of the lines already there (the definition, the rest of the paragraph, the lines per type section); it writes no text, the script places the headings and the set of lines is checked against the original."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
       "id": "aliases",
       "title": {
         "ru": "Конфликты синонимов",
