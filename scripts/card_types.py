@@ -2398,6 +2398,43 @@ class RegistryBroken(TemplateViolation):
     молча писать без проверки здесь нельзя: поломку шаблонов видно в `problems` реестра (`kb:cards --list`)."""
 
 
+class CardChanged(Exception):
+    """Карточка изменилась после того, как писавший прочёл её (`expect_sig`): запись по устаревшему снимку отвергнута,
+    файл не тронут. Это не нарушение шаблона (`TemplateViolation`) и не отказ: карточка вернётся в работу со свежим
+    текстом, а правка человека, внесённая за время вызова модели, не затёрта."""
+
+    def __init__(self, path: str, op: str = ""):
+        self.path, self.op = str(path), str(op)
+        super().__init__(f"карточка изменена после чтения — {os.path.basename(self.path)}: запись по устаревшему снимку "
+                         "не сделана, правка человека сохранена")
+
+    def __reduce__(self):
+        return self.__class__, (self.path, self.op)
+
+
+def file_sig(path: str) -> str:
+    """Отпечаток файла (sha1 его байтов); нет файла — пусто. Снимок, по которому писавший судит, что карточка не менялась."""
+    import hashlib
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha1(fh.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+def card_lock(path: str):
+    """Замок записи карточек проекта (`.aurora/state/cards.lock`, замок ОС): цикл «прочитать — изменить — записать» и
+    сама запись идут под ним, поэтому правки из потоков и процессов движка не затирают друг друга. Повторный вход того
+    же потока допустим (запись берёт замок сама, и вызывающий может держать его шире). Карточка вне базы — без замка;
+    файловая система без замков ОС — работа без замка с одним предупреждением."""
+    import contextlib
+    where = kb_location(path)
+    if where is None:
+        return contextlib.nullcontext()
+    return _fs().FileLock(os.path.join(where[0], ".aurora", "state", "cards.lock"), timeout=300, optional=True,
+                          info={"what": "запись карточек"})
+
+
 _REG_CACHE: dict = {}
 
 
@@ -2834,7 +2871,7 @@ STAMP_OPS = ("body", "header", "repair")     # правка существующ
 
 
 def write_card_text(path: str, new_text: str, *, op: str, old_text: "str | None" = None,
-                    reg: "Registry | None" = None) -> bool:
+                    reg: "Registry | None" = None, expect_sig: "str | None" = None) -> bool:
     """Единственный вход записи карточки базы: проверить по шаблону и записать атомарно. → записан ли файл.
 
     `op`: `create`, `split`, `stub`, `map`, `mirror` — создание, проверка строгая (любая ошибка шаблона, включая
@@ -2853,19 +2890,26 @@ def write_card_text(path: str, new_text: str, *, op: str, old_text: "str | None"
     (`registry_for`): передать свой (`reg`) можно, но пустой — нельзя. Шаблонов нет совсем (ни в проекте, ни в ките) —
     запись идёт как прежняя, без проверки, с одним предупреждением на процесс; шаблоны есть, но ни один не принят, —
     отказ (`RegistryBroken`). Выключателя проверки нет.
+
+    Запись идёт под замком карточек проекта (`card_lock`). `expect_sig` — отпечаток файла (`file_sig`), по которому
+    писавший строил новый текст: если за время его работы (вызов модели занимает минуты) карточку изменили, поднимается
+    `CardChanged` и файл не трогается — правка человека в Obsidian не затирается снимком, прочитанным раньше.
     """
-    try:
-        text, same, errors = _admit(path, new_text, op, reg)
-    except TemplateViolation:
-        _REFUSALS["n"] += 1
-        raise
-    if same:
-        return False
-    if errors:
-        _REFUSALS["n"] += 1
-        raise TemplateViolation(path, op, errors)
-    write_atomic(path, text)
-    return True
+    with card_lock(path):
+        if expect_sig is not None and file_sig(path) != expect_sig:
+            raise CardChanged(path, op)
+        try:
+            text, same, errors = _admit(path, new_text, op, reg)
+        except TemplateViolation:
+            _REFUSALS["n"] += 1
+            raise
+        if same:
+            return False
+        if errors:
+            _REFUSALS["n"] += 1
+            raise TemplateViolation(path, op, errors)
+        write_atomic(path, text)
+        return True
 
 
 def check_card_text(path: str, new_text: str, *, op: str, reg: "Registry | None" = None) -> list:
@@ -2878,19 +2922,20 @@ def check_card_text(path: str, new_text: str, *, op: str, reg: "Registry | None"
 
 
 def try_write_card(path: str, text: str, *, op: str, old_text: "str | None" = None,
-                   reg: "Registry | None" = None) -> tuple:
+                   reg: "Registry | None" = None, expect_sig: "str | None" = None) -> tuple:
     """`write_card_text` для сценариев, где отказ одной карточки не должен останавливать остальные.
 
     → `(записан ли файл, причина отказа)`: нарушение шаблона не пробрасывается, а возвращается строкой — вызывающий
     пишет её в свой журнал сбоев и идёт дальше (маршрут не падает целиком, источник остаётся в очереди). Прочие ошибки
     (путь не под базой, ссылка за пределы проекта, диск) пробрасываются как есть: это дефект вызова, а не карточки.
+    `CardChanged` (при заданном `expect_sig`) тоже пробрасывается: карточка не отказана, а изменена — решает вызывающий.
     """
     if kb_location(path) is not None and not is_card_path(path):
         # Заметка в корне базы, оглавление, служебный файл: не карточка по шаблону, пишется как раньше (атомарно)
         why = put_text(path, text, op=op)
         return (not why), why
     try:
-        return write_card_text(path, text, op=op, old_text=old_text, reg=reg), ""
+        return write_card_text(path, text, op=op, old_text=old_text, reg=reg, expect_sig=expect_sig), ""
     except TemplateViolation as e:
         return False, str(e)
 
