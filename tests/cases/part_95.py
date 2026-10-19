@@ -607,3 +607,44 @@ def test_path_check_says_so_when_there_is_nothing_to_check(tmp: Path):
     (tmp / "empty").mkdir()
     out = pb.render(pb.assess(str(tmp / "empty"), current="macos"))
     assert "проверять нечего" in out and "Всё помещается" not in out, out
+
+
+@test
+def test_path_check_partial_walk_never_says_everything_fits_and_a_linux_name_is_not_this_machines(tmp: Path):
+    """Обход оборван и находок нет — «проверено частично», а не «всё помещается»; имя в байтах на macOS — чужая система."""
+    pb = _pb()
+    root = _project(tmp)
+    for i in range(6):
+        (root / "Sources" / "Confluence" / f"p{i}.md").write_text("x", encoding="utf-8")
+    saved = pb.SCAN_FILES_MAX
+    pb.SCAN_FILES_MAX = 3
+    try:
+        rep = pb.assess(str(root), current="macos")
+    finally:
+        pb.SCAN_FILES_MAX = saved
+    out = pb.render(rep)
+    assert rep.partial and not rep.findings and "Всё помещается" not in out and "проверено частично" in out, out
+    (tmp / "n").mkdir()
+    two = _project(tmp / "n")
+    (two / "Sources" / "Confluence" / ("я" * 128 + ".md")).write_text("x", encoding="utf-8")        # 131 знак, 259 байт
+    rep = pb.assess(str(two), current="macos")
+    names = [f for f in rep.findings if f.kind == "name"]
+    assert len(names) == 1 and names[0].system_id == "linux" and names[0].extra["assumed"] is True, rep.findings
+    assert pb.assess(str(two), current="linux").findings[0].extra["assumed"] is False
+
+
+@test
+def test_path_check_reads_the_web_attachments_flag_like_the_exporter(tmp: Path):
+    """`web.assets`: включено, пока ключа нет; `true`/`yes`/`да` — включено; любое другое слово — выключено, как у выгрузчика."""
+    pb = _pb()
+    for n, (word, on) in enumerate((("true", True), ("yes", True), ("да", True), ("off", False), ("0", False),
+                                    ("false", False), ("нет", False))):
+        (tmp / f"w{n}").mkdir()
+        cfg = CONFIG.replace("web:\n  pages:", f"web:\n  assets: {word}\n  pages:")
+        root = _project(tmp / f"w{n}", cfg)
+        web = [r for r in pb.resources(str(root), cfg, pb.config_items(cfg)) if r.kind == "pages"]
+        assert web and web[0].extra["assets"] is on, (word, web)
+    (tmp / "plain").mkdir()
+    plain_root = _project(tmp / "plain")
+    plain = pb.resources(str(plain_root), CONFIG, pb.config_items(CONFIG))
+    assert [r for r in plain if r.kind == "pages"][0].extra["assets"] is True

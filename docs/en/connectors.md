@@ -329,7 +329,7 @@ than the limit goes into the folder of its nearest ancestor. If the path still d
 the page is not written: the sync goes on, the log has "! page N: the path does not fit this system (length M, path limit L, name limit 255) — not written",
 the summary has "Long paths: not written mirror files: N", the page stays out of the cache (the next sync tries again), and if a page itself is
 lost `--prune` removes nothing in this run (lost attachments do not stop the cleanup). An attachment with no room is not downloaded in vain.
-Website and Jira exports behave the same way; if the mirror folder itself cannot be created, there is one line with the reason and exit code 1, no traceback.
+The website export behaves the same way (when a page is lost `--prune` removes nothing either), in Jira a lost issue stays out of the state; if the mirror folder itself cannot be created, there is one line with the reason and exit code 1, no traceback.
 
 ## The Confluence page tree: what the sync shows
 

@@ -513,7 +513,8 @@ def resources(root: str, text: str, cfg: dict) -> list:
                     "where": ["atlassian", "confluence", "sync_roots", path[-2]],
                     "line": f"atlassian → confluence → sync_roots → строка {path[-2] + 1}"})
     if "pages" in mirrors:
-        mirrors["pages"].extra["assets"] = get("web", "assets")[0].lower() not in ("false", "no", "нет")
+        flag = get("web", "assets")[0].lower()          # как у выгрузчика: включено, пока ключа нет; иное слово, кроме «да», — выключено
+        mirrors["pages"].extra["assets"] = not flag or flag in ("true", "yes", "да")
         for path, (url, line) in cfg.items():
             if path[:2] == ("web", "pages") and path[-1] == "url" and len(path) == 4 and isinstance(path[2], int):
                 mirrors["pages"].rows.append({
@@ -753,7 +754,7 @@ def assess(root: str, roots: dict | None = None, current: str | None = None) -> 
             continue                    # одна строка конфига с недопустимым путём не гасит проверку остальных
     for f in report.findings:
         # корень чужой системы — допущение, и в сообщении это сказано; имя в знаках UTF-16 от корня не зависит
-        f.extra["assumed"] = f.system_id not in (current, "all") if f.kind != "name" else False
+        f.extra["assumed"] = f.system_id not in (current, "all")
     return report
 
 
@@ -840,6 +841,9 @@ def render(report: Report) -> str:
         lines.append(f"  {LABEL[system]}: корень проекта {report.models[system]}{mark}")
     if not report.resources:
         return "\n".join(lines + ["Конфига проекта нет (aurora.config.yaml): проверять нечего."])
+    if not report.findings and report.partial:
+        return "\n".join(lines + ["В просмотренной части всё помещается; проверено частично (потолок числа файлов, срок "
+                                  "обхода или закрытая папка) — остальное не проверено."])
     if not report.findings:
         return "\n".join(lines + ["Всё помещается: ни одна строка конфига не даст ошибки длины пути."])
     lines.append("")

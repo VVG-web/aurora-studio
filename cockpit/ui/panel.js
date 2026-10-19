@@ -4774,11 +4774,14 @@ async function renderProject(){
   // (обход зеркал не должен держать открытие страницы) и с ответом каждой записи.
   const pathBox = el("div", {});
   const drawPaths = () => { rootNotes.forEach(n => n.fill()); webNotes.forEach(n => n.fill()); pathBoxFill(pathBox); };
-  const showPaths = d => { pathsSet(d); drawPaths(); };
-  const asked = S.project.path;
+  let pathSeq = 0;              // номер запроса: ответ записи свежее запроса, ушедшего раньше него
+  const showPaths = d => { pathSeq++; pathsSet(d); drawPaths(); };
+  const asked = S.project.path, mine = ++pathSeq;
   api("/api/paths?project=" + encodeURIComponent(asked), {quiet:true}).then(d => {
-    // ответ позднее ухода со страницы или смены проекта не рисуется
-    if (d && Array.isArray(d.findings) && pathBox.isConnected && S.project && S.project.path === asked) showPaths(d);
+    // ответ позднее ухода со страницы, смены проекта или более свежего ответа записи не рисуется
+    if (d && Array.isArray(d.findings) && pathBox.isConnected && S.project && S.project.path === asked && mine === pathSeq) {
+      pathsSet(d); drawPaths();
+    }
   }).catch(() => {});
 
   formBox.append(el("div",{class:"card",style:"padding:20px"},

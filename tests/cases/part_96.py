@@ -392,3 +392,48 @@ def test_the_path_probe_skips_a_dangling_link_before_touching_anything(tmp: Path
     finally:
         os.open = saved
     assert opened == [] and os.path.islink(link) and not (tmp / "outside").exists(), (opened, list(tmp.iterdir()))
+
+
+@test
+def test_web_prune_keeps_the_old_copy_of_a_page_that_could_not_be_written(tmp: Path):
+    """Страница не записана из-за длины пути — `--prune` не уносит её прежнюю копию, а говорит почему."""
+    W = _mod("web_export")
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            data = "<html><title>Длинная</title><body><main><p>Текст.</p></main></body></html>".encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}/long"
+    cwd = os.getcwd()
+    os.chdir(tmp)
+    saved = {k: getattr(W, k) for k in ("config_text", "PAUSE", "ALLOW_PRIVATE", "slug")}
+    W.config_text = lambda: f"web:\n  allow_private: [127.0.0.1]\n  pages:\n    - url: {url}\n      trusted: true\n"
+    W.PAUSE = 0
+    W.slug = lambda u, title: LONG + ".md"
+    out = tmp / "Sources" / "Web"
+    out.mkdir(parents=True)
+    old = out / "старая-копия-1234abcd.md"
+    old.write_text("прежний текст", encoding="utf-8")
+    buf = io.StringIO()
+    try:
+        args = argparse.Namespace(out=str(out), apply=True, prune=True, verify=False, force=True)
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            rc = W.run(args)
+    finally:
+        srv.shutdown()
+        os.chdir(cwd)
+        for k, v in saved.items():
+            setattr(W, k, v)
+        del W.PATH_LOST[:]
+    assert rc == 0 and old.is_file() and old.read_text(encoding="utf-8") == "прежний текст", buf.getvalue()
+    assert "Не убираю: страниц не записано из-за длины пути (1)" in buf.getvalue(), buf.getvalue()

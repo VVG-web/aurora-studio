@@ -1163,7 +1163,11 @@ def run(a) -> int:
     if extra:
         cited = cited_by_cards(mirror.out, extra)
         report_stale("web", extra, mirror.out)
-        if a.prune and a.apply:
+        lost_pages = sum(1 for r in mirror.rows if r[3] == "длинный путь")
+        if a.prune and a.apply and lost_pages:
+            # страница, которую не удалось записать, не должна унести прежнюю копию того же адреса
+            print(f"\nНе убираю: страниц не записано из-за длины пути ({lost_pages}) — их прежние копии выглядели бы снятыми")
+        elif a.prune and a.apply:
             gone = 0
             for rel in extra:
                 if rel in cited:
