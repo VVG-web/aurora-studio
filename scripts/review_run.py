@@ -447,6 +447,29 @@ def parse_answer(text: str, ids: list) -> dict | None:
 _QUOTED = re.compile(r"[«\"“]([^»\"”]{8,400})[»\"”]")
 
 
+_ABSENCE = re.compile(r"(?i)\b(?:нет|отсутств\w*|не\s+(?:указан\w*|описан\w*|определ\w*|найден\w*|упомян\w*|задан\w*|раскрыт\w*)"
+                      r"|нигде|пропущен\w*)(?:\W+\w+){0,2}\W{0,3}$")
+_GAP = re.compile(r"\s*(?:\[\s*(?:…|\.{3})\s*\]|…|\.{3})\s*")
+
+
+def _checkable_quotes(evidence: str) -> list:
+    """Выдержки из `evidence`, которые есть чем сверять. Название того, чего на странице нет («нет раздела
+    «Нефункциональные требования»»), выдержкой не является: ответ «нет» на то и ответ, что этого в тексте нет."""
+    out = []
+    for m in _QUOTED.finditer(evidence):
+        q = m.group(1).strip()
+        if not q.strip(" .…") or _ABSENCE.search(evidence[max(0, m.start() - 40):m.start()]):
+            continue
+        out.append(q)
+    return out
+
+
+def _quote_there(quote: str, plain: str) -> bool:
+    """Выдержка с пропуском («срок… не более 5 дней», `[...]`) найдена, если найден каждый её кусок."""
+    parts = [p for p in (x.strip() for x in _GAP.split(quote)) if len(p.strip(" .,;:")) >= 4]
+    return all(FID.quote_found(p, plain, plain=True) for p in parts) if parts else True
+
+
 def verify_evidence(parsed: dict, text: str) -> list:
     """Цитата-доказательство ответа должна быть в тексте, который модели показали. → id ответов, которые не прошли.
 
@@ -458,8 +481,8 @@ def verify_evidence(parsed: dict, text: str) -> list:
     bad = []
     plain = FID._plain(text)
     for cid, a in (parsed.get("checks") or {}).items():
-        quotes = [q.strip() for q in _QUOTED.findall(a.get("evidence") or "") if q.strip(" .…")]
-        if quotes and a.get("v") in ("yes", "no") and not any(FID.quote_found(q, plain, plain=True) for q in quotes):
+        quotes = _checkable_quotes(a.get("evidence") or "")
+        if quotes and a.get("v") in ("yes", "no") and not any(_quote_there(q, plain) for q in quotes):
             a["unverified"] = a["v"]
             a["v"] = "unknown"
             bad.append(cid)
