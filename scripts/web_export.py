@@ -45,7 +45,7 @@ from aurora_common import (allow_cleartext, cleartext_secret_problem, config_hos
                            file_head, guarded_urlopen, head_scalar, head_trust, head_value,
                            is_loopback_host, same_origin, url_origin, utc_today)
 from sources_core import (BoardMirror, block, cited_by_cards, config_text, loss_summary, lose_path,
-                          path_overflow, read_env, is_promoted_document, origin_text,
+                          path_overflow, path_probe, read_env, is_promoted_document, origin_text,
                           remember_hosts, report_stale, trusted_hosts, verify)
 
 DEFAULT_OUT = "Sources/Web"
@@ -720,6 +720,9 @@ def fetch_asset(url: str, out_dir: str, apply: bool, label: str = "") -> tuple:
         return name, ""
     if not apply:
         return name, ""
+    if path_probe(path):                    # некуда положить: не качаем впустую
+        lose_path(PATH_LOST, f"вложение {name}", path)
+        return "", "путь слишком длинный"
     # `max_bytes` — ключевой аргумент: подменный `_get` в тестах, до которых доходят вложения,
     # обязан его принимать (`max_bytes=None`).
     data, _enc, err = _get(url, "", ASSET_TIMEOUT, max_bytes=ASSET_MAX_BYTES)
@@ -1209,9 +1212,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    from sources_core import net_refusal
-    _why = net_refusal()                   # не хватает связи источнику: отказ с причиной до первого запроса (код 2)
-    if _why:
-        print(_why, flush=True)
-        sys.exit(2)
-    sys.exit(main())
+    from sources_core import run_main
+    sys.exit(run_main(main))

@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -47,7 +48,7 @@ from datetime import date, timedelta
 
 from sources_core import (ASSET_DIR_RE, CONFIG, FileTooLarge, RestApi, UnsafeTarget, WikiMirror, block,
                           config_text, loss_summary, lose_path, nfc, no_access, drop_empty_dirs,
-                          path_overflow, report_stale, scalar, verify, word)
+                          path_overflow, path_probe, report_stale, scalar, verify, word)
 from sources_core import read_secret as core_secret
 from kb_remap import follow_moves, moves_report, page_moves  # noqa: E402
 from aurora_common import (ATTACH_MAX_MB, ATTACH_MODES, PATH_CHARS, TODAY,  # noqa: E402,F401
@@ -928,6 +929,7 @@ class Exporter(WikiMirror):
         self.space, self.force, self.jira_base = space, force, jira_base
         self.written = self.skipped = self.failed = 0
         self.path_lost: list = []       # файлы, которые не поместились в путь этой системы (Windows без длинных путей)
+        self.pages_lost = 0             # из них страницы: пока они есть, чистка устаревшего не выполняется
         self.ry_defines = self.ry_links = self.assets_saved = self.assets_dropped = 0
         self.claimed: dict = {}     # (папка, имя без регистра) → номер страницы
         self.visited: set = set()   # страницы, пройденные этим синком
@@ -1185,6 +1187,12 @@ class Exporter(WikiMirror):
                 kept.add(fname)
                 lines.append(f"- [{fname}]({local})")
                 continue
+            if path_probe(dest):            # некуда положить: не качаем впустую
+                lose_path(self.path_lost, f"схема {hit}", dest)
+                self.attach_failed += 1
+                lines.append(f"- схема `{name}` — не скачана (путь слишком длинный): "
+                             f"[{hit}]({self.original_url(page_id, hit)})")
+                continue
             try:
                 if self.att_max_mb and (meta[hit].get("size") or 0) > self.limit_bytes():
                     raise FileTooLarge("файл больше предела")
@@ -1244,6 +1252,8 @@ class Exporter(WikiMirror):
                     if have is None:
                         raise OSError("список вложений страницы недоступен")
                     if not self.local_copy_ok(dest, meta.get(name)):
+                        if path_probe(dest):        # некуда положить: не качаем впустую
+                            raise OSError(errno.ENAMETOOLONG, "File name too long", dest)
                         blob = self.fetch_limited(have[name], meta.get(name))
                         os.makedirs(full_folder, exist_ok=True)
                         same = os.path.isfile(dest) and open(dest, "rb").read() == blob
@@ -1540,6 +1550,7 @@ class Exporter(WikiMirror):
             if not path_overflow(e, full):
                 raise
             lose_path(self.path_lost, f"страница {page_id}", full)
+            self.pages_lost += 1
             self.nocache.add(str(page_id))
         if self.attach_failed > failed_before:
             # Файл не доехал (таймаут, обрыв): страница с «не скачан (ошибка скачивания)»
@@ -1792,7 +1803,7 @@ def main() -> int:
 
     exp = run_export(cfg, roots, out, auth, a.force)
     exp.save_cache()
-    if exp.failed or exp.branch_refused or exp.path_lost:
+    if exp.failed or exp.branch_refused:
         kept = exp.keep_unvisited()
         if kept:
             print(f"Не дошли из-за сбоев: {kept} страниц — в состоянии зеркала остаются "
@@ -1848,7 +1859,7 @@ def main() -> int:
         return exp.prune([r for r in riding if os.path.isfile(os.path.join(out, r))])
     if stale:
         report_stale("страниц больше нет", stale, out)
-        ok, why = (prune_allowed(stale, len(exp.records), exp.failed + len(exp.path_lost), exp.branch_refused)
+        ok, why = (prune_allowed(stale, len(exp.records), exp.failed + exp.pages_lost, exp.branch_refused)
                    if a.prune else (False, ""))
         if a.prune and not ok:
             print(f"Не убираю: {why}")

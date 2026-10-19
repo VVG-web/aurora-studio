@@ -44,7 +44,11 @@ def test_a_path_that_does_not_fit_is_told_apart_from_other_write_errors(tmp: Pat
     win = FileNotFoundError(2, "Не удаётся найти указанный путь")
     win.winerror = 3
     assert core.path_overflow(win, "C:\\" + "p" * 250), "WinError 3 при длинном пути — это длина"
-    assert not core.path_overflow(win, "C:\\short"), "WinError 3 при коротком пути — просто нет папки"
+    if len(os.path.abspath("C:\\short")) <= 247:        # на POSIX абсолютный путь — от рабочей папки: не длиннее предела
+        assert not core.path_overflow(win, "C:\\short"), "WinError 3 при коротком пути — просто нет папки"
+    empty = FileNotFoundError(2, "нет")
+    empty.winerror = 3
+    assert not core.path_overflow(empty, ""), "без пути нечего мерить"
     win206 = OSError(0, "Имя слишком длинно")
     win206.winerror = 206
     assert core.path_overflow(win206, "")
@@ -55,7 +59,7 @@ def test_a_path_that_does_not_fit_is_told_apart_from_other_write_errors(tmp: Pat
             core.lose_path(lost, f"страница {i}", "/p/" + "a" * 300)
     assert len(lost) == 8 and err.getvalue().count("не помещается") == 5, "строк в журнале не больше пяти"
     line = core.loss_summary(lost, "файлов зеркала")
-    assert line.startswith("Длинные пути: не записано 8 файлов зеркала") and "kit:paths" in line, line
+    assert line.startswith("Длинные пути: не записано файлов зеркала: 8") and "kit:paths" in line, line
     assert core.loss_summary([]) == ""
 
 
@@ -121,6 +125,7 @@ def test_confluence_main_names_the_loss_and_holds_back_the_cleanup(tmp: Path):
             exp = C.Exporter(None, out, "https://wiki", "S", False)
             exp.records = [("1", "Корень.md", "Корень", "NEW")]
             exp.path_lost = ["/p/" + "a" * 300]
+            exp.pages_lost = 1
             return exp
         C.run_export = fake
         sys.argv = ["confluence_export.py", "--prune"]
@@ -129,7 +134,7 @@ def test_confluence_main_names_the_loss_and_holds_back_the_cleanup(tmp: Path):
     cp = subprocess.run([sys.executable, "-c", script], cwd=str(root), capture_output=True, text=True,
                         encoding="utf-8", errors="replace")
     assert cp.returncode == 0, cp.stdout + cp.stderr
-    assert "Длинные пути: не записано 1 файлов зеркала" in cp.stdout, cp.stdout
+    assert "Длинные пути: не записано файлов зеркала: 1" in cp.stdout, cp.stdout
     assert "Не убираю:" in cp.stdout and stale.is_file(), "чистка при потерях не выполняется\n" + cp.stdout
 
 
@@ -175,7 +180,7 @@ def test_web_sync_goes_on_when_a_page_name_does_not_fit(tmp: Path):
             setattr(W, k, v)
     text = buf.getvalue()
     assert rc == 0, text
-    assert len(W.PATH_LOST) == 1 and "Длинные пути: не записано 1 файлов зеркала" in text, text
+    assert len(W.PATH_LOST) == 1 and "Длинные пути: не записано файлов зеркала: 1" in text, text
     assert "путь не помещается в эту систему, страница не сохранена" in text, text
     saved_pages = [p for p in out.glob("*.md") if p.name not in ("update_log.md", "sync_state.md")]
     assert len(saved_pages) == 1, [p.name for p in saved_pages]
@@ -225,7 +230,7 @@ def test_jira_sync_goes_on_when_an_issue_path_does_not_fit(tmp: Path):
     assert written == 2 and sorted(p.name for p in out.glob("PRJ-*.md")) == ["PRJ-1.md", "PRJ-3.md"], \
         (written, [p.name for p in out.iterdir()])
     assert len(je.PATH_LOST) == 1 and "задача PRJ-2" in err.getvalue(), err.getvalue()
-    assert je.loss_summary(je.PATH_LOST, "задач").startswith("Длинные пути: не записано 1 задач")
+    assert je.loss_summary(je.PATH_LOST, "задач").startswith("Длинные пути: не записано задач: 1")
     state = je.write_state(str(out), rows)
     assert sorted(state) == ["PRJ-1", "PRJ-3"], "в состоянии нет задачи, которой нет на диске"
 
@@ -250,3 +255,59 @@ def test_a_zone_that_cannot_be_created_ends_the_sync_with_one_line(tmp: Path):
         assert e.errno == errno.EACCES
     else:
         raise AssertionError("другая ошибка записи не должна глотаться")
+
+
+@test
+def test_an_attachment_with_no_room_is_not_downloaded_and_a_lost_page_blocks_only_the_cleanup(tmp: Path):
+    """Вложение, которому некуда лечь, не качается впустую; потерянное вложение не держит в состоянии удалённые страницы."""
+    cases = importlib.import_module("cases.part_09") if "cases.part_09" in sys.modules else None
+    if cases is None:
+        sys.path.insert(0, str(KIT / "tests"))
+        cases = importlib.import_module("cases.part_09")
+    CE, exp, root, fetched = cases._attach_exporter(tmp)
+    exp.asset_name = lambda fname, folder, tag_of=None: LONG + ".pdf"
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            exp.walk("5001", [])
+    finally:
+        os.chdir(here)
+    assert fetched == [], f"вложения скачаны впустую: {fetched}"
+    assert len(exp.path_lost) >= 3 and exp.pages_lost == 0, (len(exp.path_lost), exp.pages_lost)
+    page = next((root / "Sources/Confluence").glob("*.md")).read_text(encoding="utf-8")
+    assert "не скачан (путь слишком длинный)" in page, page[-600:]
+    src = (SCRIPTS / "confluence_export.py").read_text(encoding="utf-8")
+    assert "if exp.failed or exp.branch_refused:\n        kept = exp.keep_unvisited()" in src, \
+        "потеря по длине пути не оставляет в состоянии то, до чего обход не дошёл"
+    assert "exp.failed + exp.pages_lost" in src, "чистку держат потерянные страницы, а не вложения"
+
+
+@test
+def test_a_web_attachment_with_no_room_is_not_requested_at_all(tmp: Path):
+    """Вложение сайта, которому некуда лечь, не запрашивается: ни одного обращения к серверу."""
+    W = _mod("web_export")
+    calls: list = []
+    saved = (W._get, W.asset_name)
+    W._get = lambda *a, **k: calls.append(a) or (b"x", "", "")
+    W.asset_name = lambda url, label="": LONG + ".pdf"
+    del W.PATH_LOST[:]
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            got = W.fetch_asset("https://example.org/f.pdf", str(tmp / "mirror"), True, "файл")
+    finally:
+        W._get, W.asset_name = saved
+    assert got == ("", "путь слишком длинный") and calls == [] and len(W.PATH_LOST) == 1, (got, calls)
+    del W.PATH_LOST[:]
+
+
+@test
+def test_the_web_export_ends_with_a_line_when_the_mirror_folder_cannot_be_made(tmp: Path):
+    """Сайт: папка зеркала не создаётся — одна строка причины и код 1, как у Confluence и Jira."""
+    out = tmp / ("o" * 300)
+    cfg = "web:\n  pages:\n    - url: https://example.org/x\n      trusted: true\n"
+    (tmp / "aurora.config.yaml").write_text(cfg, encoding="utf-8")
+    cp = subprocess.run([sys.executable, str(SCRIPTS / "web_export.py"), "--out", str(out), "--apply"], cwd=str(tmp),
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+    assert cp.returncode == 1 and "Traceback" not in cp.stderr and "путь не помещается в эту систему" in cp.stderr, \
+        (cp.returncode, cp.stderr[-400:])

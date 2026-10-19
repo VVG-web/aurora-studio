@@ -224,8 +224,27 @@ def path_overflow(e: BaseException, path: str = "") -> bool:
         return False
     if e.errno == errno.ENAMETOOLONG or getattr(e, "winerror", None) == 206:
         return True
-    return (getattr(e, "winerror", None) in (3, 123)
-            and len(os.path.abspath(path or str(getattr(e, "filename", "") or ""))) > 247)
+    target = path or str(getattr(e, "filename", "") or "")
+    return bool(target) and getattr(e, "winerror", None) in (3, 123) and len(os.path.abspath(target)) > 247
+
+
+def path_probe(path: str) -> bool:
+    """True — файл по этому пути на этой системе не создать из-за длины. Проверка до скачивания: вложение,
+    которому некуда лечь, не качается впустую на каждом синке. Создаёт и тут же убирает пустой файл (лежащий
+    не трогает); иная ошибка записи — не повод отказывать: о ней скажет сама запись."""
+    existed = os.path.exists(path)
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "ab"):
+            pass
+    except OSError as e:
+        return path_overflow(e, path)
+    if not existed:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return False
 
 
 def loss_limit() -> int:
@@ -243,17 +262,17 @@ def lose_path(lost: list, what: str, full: str, show: int = 5) -> None:
     Выгрузка идёт дальше: одна длинная страница не должна обрывать весь синк и не должна пропадать молча."""
     lost.append(full)
     if len(lost) <= show:
-        print(f"  ! {what}: путь {len(os.path.abspath(full))} знаков не помещается в этой системе "
-              f"(предел {loss_limit()}) — не записано", file=sys.stderr)
+        print(f"  ! {what}: путь не помещается в этой системе (длина {len(os.path.abspath(full))}, "
+              f"предел пути {loss_limit()}, имени 255) — не записано", file=sys.stderr)
 
 
 def loss_summary(lost: list, what: str = "файлов") -> str:
     """Итог потерь по длине пути одной строкой для сводки синка; пусто — потерь нет."""
     if not lost:
         return ""
-    return (f"Длинные пути: не записано {len(lost)} {what} — путь длиннее предела этой системы "
-            f"({loss_limit()} знаков). Какие строки конфига тому виной — `kit:paths`; "
-            "лечится коротким именем папки проекта или длинными путями Windows")
+    return (f"Длинные пути: не записано {what}: {len(lost)} — путь или имя длиннее предела этой системы "
+            f"(пути {loss_limit()}, имени 255). Какие строки конфига тому виной — `kit:paths`; лечится "
+            "коротким путём к проекту (на Windows — именем папки проекта или длинными путями Windows)")
 
 
 def run_main(main) -> int:
