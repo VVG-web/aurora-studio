@@ -7692,21 +7692,40 @@ def _running_lock():
     return aurora_fs.FileLock(RUNNING + ".lock", timeout=10, optional=True)
 
 
-def mark_running(job_id: str, name: str, project: str, on: bool) -> None:
+def _update_running(change) -> None:
+    """Прочитать записи «что идёт», изменить (`change(rows)` → новые записи или `None` — файл больше не нужен) и записать
+    целиком, под замком. Замок не дался за 10 с (держит зависший процесс) — запись идёт без него, со строкой в stderr:
+    потерять отметку «идёт» хуже, чем рискнуть гонкой, как было до замка."""
     import aurora_fs
-    try:
-        with _running_lock():
-            rows = aurora_fs.read_state(RUNNING, {})
-            if on:
-                # `panel` — процесс панели, что ведёт работу: новая панель снимает только записи
-                # мёртвых панелей (`drop_dead_running`), а не чужие живые.
-                rows[job_id] = {"cmd": name, "project": os.path.basename(project or ""),
-                                "since": utc_stamp(), "panel": os.getpid()}
-            else:
-                rows.pop(job_id, None)
+
+    def work():
+        rows = change(aurora_fs.read_state(RUNNING, {}))
+        if rows is None:
+            os.remove(RUNNING)
+        else:
             aurora_fs.write_json(RUNNING, rows, indent=None)
+    try:
+        try:
+            with _running_lock():
+                work()
+        except aurora_fs.LockTimeout as e:
+            print(f"записи «что идёт»: {e} — пишу без замка", file=sys.stderr)
+            work()
     except OSError:
         pass
+
+
+def mark_running(job_id: str, name: str, project: str, on: bool) -> None:
+    def change(rows):
+        if on:
+            # `panel` — процесс панели, что ведёт работу: новая панель снимает только записи
+            # мёртвых панелей (`drop_dead_running`), а не чужие живые.
+            rows[job_id] = {"cmd": name, "project": os.path.basename(project or ""),
+                            "since": utc_stamp(), "panel": os.getpid()}
+        else:
+            rows.pop(job_id, None)
+        return rows
+    _update_running(change)
 
 
 def drop_dead_running() -> None:
@@ -7716,19 +7735,13 @@ def drop_dead_running() -> None:
     уборки они навсегда запретили бы перезапуск («идёт работа»). Запись живой панели —
     не след: её работа действительно идёт, и стирать её значит ослепить ту панель.
     """
-    import aurora_fs
     from aurora_common import pid_alive
-    try:
-        with _running_lock():
-            rows = aurora_fs.read_state(RUNNING, {})
-            live = {k: v for k, v in rows.items() if isinstance(v, dict) and v.get("panel")
-                    and v["panel"] != os.getpid() and pid_alive(int(v["panel"]))}
-            if live:
-                aurora_fs.write_json(RUNNING, live, indent=None)
-            else:
-                os.remove(RUNNING)
-    except OSError:
-        pass
+
+    def change(rows):
+        live = {k: v for k, v in rows.items() if isinstance(v, dict) and v.get("panel")
+                and v["panel"] != os.getpid() and pid_alive(int(v["panel"]))}
+        return live or None
+    _update_running(change)
 
 
 def sweep_state_tmp() -> list:

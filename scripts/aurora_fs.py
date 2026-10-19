@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import errno
 import fnmatch
 import itertools
 import json
@@ -267,8 +268,14 @@ def sweep_tmp(folder, *, patterns: tuple = ("*" + TMP_SUFFIX,), older_than: floa
 
 # --------------------------------------------------------------------------- замок ОС
 
-class LockTimeout(OSError):
-    """Замок не достался за отведённое время (держит другой процесс или поток)."""
+class LockTimeout(Exception):
+    """Замок не достался за отведённое время (держит другой процесс или поток). Не `OSError`: повсюду в движке
+    `except OSError: pass` — отказ диска, и молча проглотить им таймаут замка значило бы потерять запись, которую замок
+    и должен защищать. `owner` — кто держит (строка для человека), `path` — файл замка."""
+
+    def __init__(self, path: str, owner: str = ""):
+        self.path, self.owner = str(path), str(owner)
+        super().__init__("замок %s занят: %s" % (self.path, self.owner or "владелец неизвестен"))
 
 
 class LockUnsupported(OSError):
@@ -278,32 +285,34 @@ class LockUnsupported(OSError):
 # Windows: запирается один байт далеко за концом файла, а не начало — иначе описание владельца в начале файла
 # не читалось бы другим процессом (запертый диапазон читать нельзя), а это нужно, чтобы назвать держателя.
 _LOCK_POS = 1 << 30
-_HELD: dict = {}                          # ключ замка → {"tid", "n", "fd"}: замок, взятый этим процессом
-_HELD_GUARD = threading.Lock()
-_BUSY_ERRNO = (11, 13, 35, 36)            # EAGAIN, EACCES, EWOULDBLOCK (macOS), EDEADLK / EDEADLOCK (Windows)
-
-
-def _lock_key(path: str) -> str:
-    return os.path.normcase(os.path.realpath(path))
+_HELD: dict = {}                          # (устройство, inode) файла замка → {"tid", "n", "fd"}: замок этого процесса
+_HELD_GUARD = threading.RLock()           # RLock: обработчик сигнала может войти в замок поверх прерванного
+_BUSY = (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES, getattr(errno, "EDEADLOCK", errno.EDEADLK))
+_NO_LOCKS = tuple(getattr(errno, n) for n in ("ENOLCK", "EOPNOTSUPP", "ENOTSUP", "EINVAL", "ENOSYS") if hasattr(errno, n))
 
 
 def _try_lock(fd: int) -> bool:
-    """Одна неблокирующая попытка. True — замок взят; False — занят; `LockUnsupported` — ОС не умеет."""
+    """Одна неблокирующая попытка. True — замок взят; False — занят; `LockUnsupported` — ОС замков не умеет.
+    Любая другая ошибка (диск, дескриптор) поднимается как есть: «не поддерживается» — только по ясным признакам."""
     if os.name == "nt":
         import msvcrt
         os.lseek(fd, _LOCK_POS, 0)
         try:
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-        except OSError:
-            return False
+        except OSError as e:
+            if e.errno in _BUSY:
+                return False
+            raise LockUnsupported(e.errno, "замки файлов не поддерживаются: %s" % e)
         return True
     import fcntl
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as e:
-        if e.errno in _BUSY_ERRNO:
+        if e.errno in _BUSY:
             return False
-        raise LockUnsupported(e.errno, "замки файлов не поддерживаются: %s" % e)
+        if e.errno in _NO_LOCKS:
+            raise LockUnsupported(e.errno, "замки файлов не поддерживаются: %s" % e)
+        raise
     return True
 
 
@@ -320,96 +329,131 @@ def _unlock(fd: int) -> None:
         pass                              # закрытие дескриптора снимет замок в любом случае
 
 
+def _file_id(fd: int, path: str) -> tuple:
+    """Кто есть файл замка: (устройство, inode) открытого дескриптора — одно и то же при любых написаниях пути (регистр,
+    жёсткая ссылка, смена рабочей папки). Файловая система без inode — по настоящему пути."""
+    st = os.fstat(fd)
+    if st.st_ino:
+        return (st.st_dev, st.st_ino)
+    return (os.path.normcase(os.path.realpath(path)),)
+
+
+def _replaced(fd: int, path: str) -> bool:
+    """Файл замка убрали или подменили, пока мы его запирали (`rm`, `git clean`)? Тогда наш замок — на файле, который уже
+    никто не откроет по имени, и второй процесс взял бы «тот же» замок на новом. POSIX: у Windows открытый файл не удалить."""
+    if os.name == "nt":
+        return False
+    try:
+        now = os.stat(path)
+    except OSError:
+        return True
+    st = os.fstat(fd)
+    return (now.st_dev, now.st_ino) != (st.st_dev, st.st_ino)
+
+
 class FileLock:
     """Межпроцессный замок на файле: `with FileLock(путь): …`.
 
     Замок принадлежит ОС, а не файлу: он снимается вместе с процессом (даже убитым), поэтому `kill -9`, закрытая
     крышка и сбой питания не оставляют «брошенного» замка и не нужны ни проверка «жив ли pid», ни таймаут давности.
-    Файл замка остаётся на диске всегда (удалять его при работе нельзя: ожидающий держит его старый inode, и новый
-    файл дал бы второго хозяина); внутри — описание владельца (`pid`, время, `info`), пока замок взят.
-    Поток, уже державший замок, входит повторно (счётчик): вложенные вызовы под одним замком не блокируют сами себя;
-    другой поток того же процесса ждёт, как чужой процесс.
+    Это верно для локальных файловых систем; сетевая папка (NFS без lockd, SMB с `nobrl`) или синхронизируемая
+    (OneDrive, Dropbox, iCloud) замок между компьютерами не даёт, а на Windows снятие после смерти процесса может
+    занять заметное время. Файл замка остаётся на диске всегда (удалять его при работе нельзя: ожидающий держит
+    его старый inode, и новый файл дал бы второго хозяина); внутри — описание владельца (`pid`, время, `info`), пока
+    замок взят: читать его имеет смысл, только убедившись через `is_locked`, что замок кем-то держится.
+    Поток, уже державший замок, входит повторно (счётчик на файл, а не на объект): вложенные вызовы под одним замком не
+    блокируют сами себя; другой поток того же процесса — даже с тем же объектом — ждёт, как чужой процесс. Замок не
+    переживает `fork` в дочернем процессе: унаследованные дескрипторы закрываются, держатель остаётся родитель.
+    Ожидание — опрос раз в `poll` секунд без очереди: держатель, тут же берущий замок снова, может обгонять ожидающих.
 
-    `timeout` — сколько ждать в `with` (секунды; `None` — без предела); не дождались — `LockTimeout` (это `OSError`).
+    `timeout` — сколько ждать в `with` (секунды; `None` — без предела); не дождались — `LockTimeout`.
     `optional=True`: на файловой системе без замков ОС работа идёт без замка (одно предупреждение), а не отказом.
     """
 
     def __init__(self, path, *, timeout: "float | None" = 60.0, poll: float = 0.05, info: "dict | None" = None,
                  optional: bool = False):
-        self.path = os.fspath(path)
+        self.path = os.path.abspath(os.fspath(path))
         self.timeout, self.poll, self.info, self.optional = timeout, poll, info, optional
         self.degraded = False
-        self._held = False
+        self._taken: list = []            # стек взятий этим объектом: ключ файла или None (работа без замка)
 
     @property
     def held(self) -> bool:
-        return self._held
+        return bool(self._taken)
 
     def acquire(self, blocking: bool = True, timeout: "float | None" = None) -> bool:
         """Взять замок. → True взят; False — не дождались (неблокирующий вызов или истёк `timeout`)."""
-        if self._held:
-            return True
-        key, me = _lock_key(self.path), threading.get_ident()
-        with _HELD_GUARD:
-            mine = _HELD.get(key)
-            if mine is not None and mine["tid"] == me:
-                mine["n"] += 1
-                self._held = True
-                return True
-        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o666)
+        me = threading.get_ident()
         wait = timeout if timeout is not None else self.timeout
         deadline = None if wait is None else time.monotonic() + wait
-        got = False
-        try:
-            while True:
-                try:
-                    got = _try_lock(fd)
-                except LockUnsupported as e:
-                    if not self.optional:
-                        raise
-                    _warn_once("nolock:" + key, "aurora_fs: на этой файловой системе нет замков ОС (%s) — "
-                               "работа идёт без замка: %s" % (e, self.path))
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        for _ in range(8):                # файл замка могли убрать, пока мы его запирали: открываем заново
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o666)
+            key, got, done = _file_id(fd, self.path), False, False
+            try:
+                with _HELD_GUARD:
+                    mine = _HELD.get(key)
+                    if mine is not None and mine["tid"] == me:
+                        mine["n"] += 1
+                        self._taken.append(key)
+                        done = True
+                        return True       # вход того же потока; лишний дескриптор закроет finally
+                while True:
+                    try:
+                        got = _try_lock(fd)
+                    except LockUnsupported as e:
+                        if not self.optional:
+                            raise
+                        _warn_once("nolock:" + self.path, "aurora_fs: на этой файловой системе нет замков ОС (%s) — "
+                                   "работа идёт без замка: %s" % (e, self.path))
+                        self.degraded = True
+                        self._taken.append(None)
+                        done = True
+                        return True
+                    if got:
+                        break
+                    if not blocking or (deadline is not None and time.monotonic() >= deadline):
+                        return False
+                    time.sleep(self.poll if deadline is None else max(0.0, min(self.poll, deadline - time.monotonic())))
+                if _replaced(fd, self.path):
+                    continue              # замок взят на файле, которого по имени больше нет: заново
+                self._describe(fd)
+                with _HELD_GUARD:
+                    _HELD[key] = {"tid": me, "n": 1, "fd": fd}
+                    self._taken.append(key)
+                    done = True
+                return True
+            finally:
+                if not done:
+                    if got:
+                        _unlock(fd)
                     os.close(fd)
-                    self.degraded = self._held = True
-                    return True
-                if got:
-                    break
-                if not blocking or (deadline is not None and time.monotonic() >= deadline):
-                    return False
-                time.sleep(self.poll if deadline is None else max(0.0, min(self.poll, deadline - time.monotonic())))
-            self._describe(fd)
-            with _HELD_GUARD:
-                _HELD[key] = {"tid": me, "n": 1, "fd": fd}
-            self._held = True
-            return True
-        finally:
-            if not self._held:
-                if got:
-                    _unlock(fd)
-                os.close(fd)
+                elif _HELD.get(key, {}).get("fd") != fd:
+                    os.close(fd)          # вход того же потока или работа без замка: дескриптор не нужен
+        raise OSError("не удалось запереть %s: файл замка постоянно убирают" % self.path)
 
     def _describe(self, fd: int) -> None:
         rec = {"pid": os.getpid(), "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
         rec.update(self.info or {})
         try:
+            data = json.dumps(rec, ensure_ascii=False, default=str).encode("utf-8", "replace")
             os.lseek(fd, 0, 0)
             os.ftruncate(fd, 0)
-            os.write(fd, json.dumps(rec, ensure_ascii=False).encode("utf-8"))
-        except OSError:
+            os.write(fd, data)
+        except (OSError, ValueError, TypeError):
             pass                          # описание — подсказка человеку, замок держится и без него
 
     def release(self) -> bool:
         """Отпустить замок (вложенный вход — уменьшить счётчик). → отпущен ли замок насовсем."""
-        if not self._held:
+        if not self._taken:
             return False
-        self._held = False
-        if self.degraded:
-            return True
-        key = _lock_key(self.path)
+        key = self._taken.pop()
+        if key is None:
+            return True                   # работали без замка
         with _HELD_GUARD:
             mine = _HELD.get(key)
-            if mine is None:
+            if mine is None or mine["tid"] != threading.get_ident():
+                self._taken.append(key)   # чужой поток замок не отпускает
                 return False
             mine["n"] -= 1
             if mine["n"] > 0:
@@ -426,15 +470,33 @@ class FileLock:
 
     def __enter__(self) -> "FileLock":
         if not self.acquire(timeout=self.timeout):
-            raise LockTimeout("замок %s занят: %s" % (self.path, describe_owner(self.path) or "владелец неизвестен"))
+            raise LockTimeout(self.path, describe_owner(self.path))
         return self
 
     def __exit__(self, *exc) -> None:
         self.release()
 
 
+def _forget_locks_in_child() -> None:
+    """После `fork` дочерний процесс замков не держит: унаследованные дескрипторы закрываются (без `LOCK_UN` — замок
+    принадлежит открытому описанию файла, и снятие в ребёнке освободило бы его у родителя), реестр пустеет."""
+    global _HELD_GUARD
+    _HELD_GUARD = threading.RLock()
+    for entry in list(_HELD.values()):
+        try:
+            os.close(entry["fd"])
+        except OSError:
+            pass
+    _HELD.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_forget_locks_in_child)
+
+
 def describe_owner(path) -> str:
-    """Кто держит замок, строкой для сообщения; пусто — не держит или описание не читается."""
+    """Кто записан владельцем замка, строкой для сообщения; пусто — записи нет или она не читается. Запись остаётся и
+    после смерти владельца: перед тем как ей верить, спросите `is_locked`."""
     try:
         with open(os.fspath(path), encoding="utf-8") as fh:
             rec = json.load(fh)
@@ -447,18 +509,22 @@ def describe_owner(path) -> str:
 
 
 def is_locked(path) -> bool:
-    """Держит ли замок кто-то сейчас (этот или другой процесс). Не создаёт файла; ничего не занимает надолго."""
+    """Держит ли замок кто-то сейчас (этот или другой процесс). Не создаёт файла; замок берёт на мгновение, чтобы
+    проверить, — неблокирующий `acquire` другого процесса в этот миг может получить отказ."""
     path = os.fspath(path)
-    if not os.path.exists(path):
-        return False
-    with _HELD_GUARD:
-        if _lock_key(path) in _HELD:
-            return True
     try:
         fd = os.open(path, os.O_RDWR | getattr(os, "O_BINARY", 0))
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        try:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))     # чужой файл только для чтения: flock всё равно работает
+        except OSError:
+            return False
     try:
+        with _HELD_GUARD:
+            if _file_id(fd, path) in _HELD:
+                return True
         if _try_lock(fd):
             _unlock(fd)
             return False
