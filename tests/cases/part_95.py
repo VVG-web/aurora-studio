@@ -540,8 +540,8 @@ def test_path_check_on_windows_uses_the_real_root_and_the_advice_follows_the_cau
     """Машина Windows: корень настоящий, не допущение; длинную папку, заданную в конфиге, советуют сократить в конфиге."""
     pb = _pb()
     root = _project(tmp)
-    (root / "Sources" / "Confluence" / ("q" * 120 + ".md")).write_text("x", encoding="utf-8")
-    rep = pb.assess(str(root), roots=_win(150), current="windows")
+    (root / "Sources" / "Confluence" / ("q" * 60 + ".md")).write_text("x", encoding="utf-8")
+    rep = pb.assess(str(root), roots=_win(200), current="windows")
     hit = [f for f in rep.findings if f.kind == "path"]
     assert hit and hit[0].extra["assumed"] is False and rep.current == "windows", rep.findings
     assert "допущение" not in pb.describe(hit[0]) and "Windows: корень проекта C:\\rr" in pb.render(rep)
@@ -550,3 +550,40 @@ def test_path_check_on_windows_uses_the_real_root_and_the_advice_follows_the_cau
     folder = [f for f in pb.assess(str(_project(tmp / "b", cfg)), roots=_win(150), current="macos").findings
               if f.key == "artifacts:ac"]
     assert folder and "Сократите путь папки в конфиге" in pb.describe(folder[0]) and "LongPathsEnabled" not in pb.describe(folder[0])
+
+
+@test
+def test_path_check_reads_the_exporter_rules_without_running_the_script(tmp: Path):
+    """Модель выгрузчика читается из файла (`ast`): скрипт не исполняется и не импортируется; чужое имя не принимается."""
+    import subprocess
+    pb = _pb()
+    assert pb.exporter("this.py") == (None, "") and pb.exporter("../x.py") == (None, "") and pb.exporter("") == (None, "")
+    assert pb.exporter("no_such_exporter.py") == (None, "") and pb.exporter("aurora_common.py") == (None, ""), "модели нет — правил нет"
+    code = ("import sys; sys.path.insert(0, %r); import path_budget as P; r = P.exporter('confluence_export.py'); "
+            "print(r[1], r[0].DEFAULT_OUT, 'confluence_export' in sys.modules)") % str(SCRIPTS)
+    cp = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                        cwd=str(tmp), timeout=60)
+    assert cp.stdout.split() == ["tree", "Sources/Confluence", "False"], (cp.stdout, cp.stderr[-300:])
+    for script, model in (("web_export.py", "pages"), ("jira_export.py", "issues")):
+        assert pb.exporter(script)[1] == model, script
+
+
+@test
+def test_path_check_has_a_time_limit_and_survives_a_bad_path_and_control_characters(tmp: Path):
+    """Срок обхода — «проверено частично»; путь с нулевым байтом не гасит остальные строки; управляющие знаки из имён не доходят до терминала."""
+    pb = _pb()
+    root = _project(tmp)
+    for i in range(20):
+        (root / "Sources" / "Confluence" / f"p{i}.md").write_text("x", encoding="utf-8")
+    saved = pb.SCAN_SECONDS
+    pb.SCAN_SECONDS = -1.0
+    try:
+        late = pb.assess(str(root), roots=_win(200), current="macos")
+    finally:
+        pb.SCAN_SECONDS = saved
+    assert late.partial and late.files == 0, (late.partial, late.files)
+    bad = CONFIG.replace("out: Artifacts/ac", "out: a\x00b") + "  extra:\n    out: " + "/".join(["очень-длинная-папка"] * 6) + "\n"
+    (tmp / "bad").mkdir()
+    rep = pb.assess(str(_project(tmp / "bad", bad)), roots=_win(150), current="macos")
+    assert isinstance(rep.findings, list) and rep.resources >= 5, rep.resources
+    assert "\x1b" not in pb.short("файл\x1b[31mкрасный\x07.md") and "\x7f" not in pb.short("a\x7fb"), "управляющие знаки заменены"

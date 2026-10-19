@@ -716,7 +716,7 @@ def fetch_asset(url: str, out_dir: str, apply: bool, label: str = "") -> tuple:
     """(имя файла, ошибка). Уже скачанное не перекачиваем: файл по адресу неизменен."""
     name = asset_name(url, label)
     path = os.path.join(out_dir, ASSET_DIR, name)
-    if os.path.isfile(path):
+    if os.path.isfile(path) and os.path.getsize(path) > 0:
         return name, ""
     if not apply:
         return name, ""

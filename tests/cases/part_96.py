@@ -311,3 +311,30 @@ def test_the_web_export_ends_with_a_line_when_the_mirror_folder_cannot_be_made(t
                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     assert cp.returncode == 1 and "Traceback" not in cp.stderr and "путь не помещается в эту систему" in cp.stderr, \
         (cp.returncode, cp.stderr[-400:])
+
+
+@test
+def test_the_path_probe_never_opens_or_removes_what_already_lies_there(tmp: Path):
+    """Проба места создаёт только новый файл и сама его убирает: лежащий файл и ссылка (даже висячая) не трогаются."""
+    core = _mod("sources_core")
+    mirror = tmp / "mirror" / "_files"
+    mirror.mkdir(parents=True)
+    keep = mirror / "kept.pdf"
+    keep.write_bytes(b"data")
+    assert core.path_probe(str(keep)) is False and keep.read_bytes() == b"data", "лежащий файл цел"
+    fresh = mirror / "new.pdf"
+    assert core.path_probe(str(fresh)) is False and not fresh.exists(), "пробный файл убран"
+    deeper = tmp / "mirror" / "new-folder" / "x.pdf"
+    assert core.path_probe(str(deeper)) is False and not deeper.exists() and not deeper.parent.exists(), \
+        "папка, заведённая пробой, не остаётся"
+    assert core.path_probe(str(mirror / LONG)) is True, "имя не помещается — это длина"
+    outside = tmp / "outside"
+    outside.mkdir()
+    link = mirror / "link.pdf"
+    try:
+        os.symlink(outside / "planted.txt", link)
+    except (OSError, NotImplementedError):
+        return              # Windows без права на ссылки: остальное проверено выше
+    assert core.path_probe(str(link)) is False, "ссылка — это «место есть», а не повод её раскрывать"
+    assert not (outside / "planted.txt").exists(), "цель ссылки вне зеркала не создана"
+    assert os.path.islink(link), "сама ссылка не убрана"

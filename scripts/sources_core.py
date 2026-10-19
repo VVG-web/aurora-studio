@@ -231,19 +231,24 @@ def path_overflow(e: BaseException, path: str = "") -> bool:
 def path_probe(path: str) -> bool:
     """True — файл по этому пути на этой системе не создать из-за длины. Проверка до скачивания: вложение,
     которому некуда лечь, не качается впустую на каждом синке. Создаёт и тут же убирает пустой файл (лежащий
-    не трогает); иная ошибка записи — не повод отказывать: о ней скажет сама запись."""
-    existed = os.path.exists(path)
+    не трогает, ссылку не раскрывает); иная ошибка записи — не повод отказывать: о ней скажет сама запись."""
+    parent = os.path.dirname(path) or "."
+    parent_existed = os.path.isdir(parent)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "ab"):
-            pass
+        os.makedirs(parent, exist_ok=True)
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError:
+        return False                # файл или ссылка уже лежат: их не открываем и не убираем, место есть
     except OSError as e:
         return path_overflow(e, path)
-    if not existed:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    os.close(fd)
+    try:
+        os.remove(path)             # убираем только то, что создали сами
+        if not parent_existed:
+            os.rmdir(parent)
+    except OSError:
+        pass
     return False
 
 

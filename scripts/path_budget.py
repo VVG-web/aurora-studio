@@ -33,9 +33,12 @@
 from __future__ import annotations
 import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
 
+import ast
 import os
 import re
 import sys
+import time
+import types
 import unicodedata
 from collections import Counter
 from dataclasses import asdict, dataclass, field
@@ -67,6 +70,7 @@ try:
 except Exception:  # noqa: BLE001 — нет общей части синка: хотя бы состояние синка
     SERVICE_RE = re.compile(r"(sync_state|update_log)")
 SCAN_FILES_MAX = 60000  # файлов за одну проверку, все папки вместе; дальше — «проверено частично»
+SCAN_SECONDS = 8.0      # и срок обхода: подвисший диск или бесконечное дерево не задерживают запуск; дальше — то же
 
 
 def current_system() -> str:
@@ -220,11 +224,12 @@ def owner_top(name: str) -> str:
     return name[:-7] if name.endswith("_assets") else name
 
 
-def scan(folder: str, tops: bool = False, left: list | None = None) -> Scan:
+def scan(folder: str, tops: bool = False, left: list | None = None, deadline: float | None = None) -> Scan:
     """Обойти папку и посчитать длины. Ссылки не раскрываются; обход детерминирован (имена по порядку).
 
     `left` — общий счётчик оставшихся файлов (`[число]`) на все папки одной проверки: кончился —
-    обход останавливается, результат помечен `partial`. `tops` — отдельно по первому уровню."""
+    обход останавливается, результат помечен `partial`; так же — когда вышел срок `deadline` (`time.monotonic()`).
+    `tops` — отдельно по первому уровню."""
     res = Scan()
     if left is None:
         left = [SCAN_FILES_MAX]
@@ -233,6 +238,9 @@ def scan(folder: str, tops: bool = False, left: list | None = None) -> Scan:
     res.exists = True
     stack = [(folder, "", "")]
     while stack:
+        if deadline is not None and time.monotonic() > deadline:
+            res.partial = True
+            return res
         here, inner, top = stack.pop()
         try:
             with os.scandir(here) as it:
@@ -242,8 +250,8 @@ def scan(folder: str, tops: bool = False, left: list | None = None) -> Scan:
             continue
         for e in entries:
             try:
-                if e.is_symlink():
-                    continue
+                if e.is_symlink() or getattr(e, "is_junction", lambda: False)():
+                    continue            # ссылки и junction Windows не раскрываются
                 is_dir = e.is_dir(follow_symlinks=False)
                 if not is_dir and not e.is_file(follow_symlinks=False):
                     continue
@@ -365,15 +373,28 @@ WEB_FILES = "_files"            # `web_export.ASSET_DIR`
 
 
 def exporter(script: str):
-    """(модуль выгрузки, его `PATH_MODEL`: tree | pages | issues) по имени скрипта из манифеста; без модели — (None, "")."""
-    if not script.endswith(".py"):
+    """(правила выгрузчика, его `PATH_MODEL`: tree | pages | issues) по имени скрипта из манифеста.
+
+    Выгрузчик объявляет `PATH_MODEL` и `DEFAULT_OUT` литералами верхнего уровня; здесь они читаются из файла
+    рядом с этим модулем разбором `ast`, а сам скрипт НЕ исполняется и не импортируется: имя берётся из манифеста
+    модуля, а проверка работает без действий человека. Нет файла или модели — (None, "")."""
+    name = os.path.basename(script or "")
+    if not name.endswith(".py") or name != script:
         return None, ""
     try:
-        import importlib
-        module = importlib.import_module(script[:-3])
-    except Exception:  # noqa: BLE001 — нет скрипта или он не импортируется: правил его имён не знаем
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), name), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+    except (OSError, SyntaxError, ValueError):
         return None, ""
-    return module, str(getattr(module, "PATH_MODEL", "") or "")
+    found: dict = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id in ("PATH_MODEL", "DEFAULT_OUT") and isinstance(node.value, ast.Constant) \
+                and isinstance(node.value.value, str):
+            found[node.targets[0].id] = node.value.value
+    if not found.get("PATH_MODEL"):
+        return None, ""
+    return types.SimpleNamespace(**found), found["PATH_MODEL"]
 
 
 @dataclass
@@ -425,6 +446,7 @@ def abs_prefix(system: str, root: str, rel: str):
 
 def short(path: str, width: int = 96) -> str:
     """Путь для сообщения: начало и хвост, середина — многоточие."""
+    path = "".join("?" if ord(ch) < 32 or ord(ch) == 127 else ch for ch in path)     # имя из зеркала — не команда терминалу
     return path if len(path) <= width else path[:width // 2 - 1] + "…" + path[-(width // 2):]
 
 
@@ -606,7 +628,8 @@ def _state_tops(folder: str) -> dict:
     return {c[1]: owner_top(nfc(c[3]).split("/")[0]) for c in cells if len(c) >= 4 and c[1].isdigit() and c[3]}
 
 
-def _check_folder(root: str, res: Res, models: dict, scans: dict, left: list, report: Report) -> list:
+def _check_folder(root: str, res: Res, models: dict, scans: dict, left: list, report: Report,
+                  deadline: float | None = None) -> list:
     rel = res.path.strip().replace("\\", "/")
     out: list = []
     folder = os.path.normpath(os.path.join(root, rel)) if rel else ""
@@ -615,7 +638,7 @@ def _check_folder(root: str, res: Res, models: dict, scans: dict, left: list, re
     tree = res.kind in ("tree", "wiki")
     cache_key = (folder, tree)
     if scannable and cache_key not in scans:
-        scans[cache_key] = scan(folder, tops=tree, left=left)
+        scans[cache_key] = scan(folder, tops=tree, left=left, deadline=deadline)
         report.files += scans[cache_key].total.files
         report.partial = report.partial or scans[cache_key].partial
     sc = scans.get(cache_key) if scannable else None
@@ -722,8 +745,12 @@ def assess(root: str, roots: dict | None = None, current: str | None = None) -> 
     res = resources(root, text, config_items(text))
     report = Report([], models, resources=len(res), current=current)
     left, scans = [SCAN_FILES_MAX], {}
+    deadline = time.monotonic() + SCAN_SECONDS
     for r in res:
-        report.findings += _check_folder(root, r, models, scans, left, report)
+        try:
+            report.findings += _check_folder(root, r, models, scans, left, report, deadline)
+        except (ValueError, OSError):
+            continue                    # одна строка конфига с недопустимым путём не гасит проверку остальных
     for f in report.findings:
         # корень чужой системы — допущение, и в сообщении это сказано; имя в знаках UTF-16 от корня не зависит
         f.extra["assumed"] = f.system_id not in (current, "all") if f.kind != "name" else False
