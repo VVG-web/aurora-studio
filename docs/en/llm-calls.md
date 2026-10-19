@@ -102,6 +102,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 
 - **When.** The agent:conform command — a step of the 'Fix the base' route after kb:conform.
 - **Commands:** `agent:conform`.
+- **Routes:** «Repair the base».
 
 | Role | What it does | Prompt |
 |---|---|---|

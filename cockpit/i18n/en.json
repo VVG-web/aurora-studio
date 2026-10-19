@@ -854,6 +854,7 @@
   "word.no_type": "Cards without a type",
   "word.type_mismatch": "Type does not match the section",
   "word.template_violation": "Template violations in stamped cards",
+  "word.missing_template": "Cards without a template after the migration is complete",
   "word.other": "Other",
   "word.trusted": "trusted",
   "word.meetings": "from meetings (outside the share)",

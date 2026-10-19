@@ -53,7 +53,36 @@ STUCK_WHY = {
     "карточки без связей": "До карточки не дошла ни одна карта.",
     "нарушения шаблона у карточек со штампом": "Штамп значит «проходит шаблон», а карточку правили мимо входа записи или "
                                                "движок записал её неверно; `kb:cards --check` называет код V-NN.",
+    "карточки без шаблона после завершения миграции": "Миграцию объявили завершённой, а штамп `template:` у карточки не стоит: "
+                                                      "её правили мимо входа записи или ни `kb:conform`, ни `agent:conform` "
+                                                      "не смогли привести её к шаблону; `kb:cards --check` называет код V-NN.",
 }
+
+
+def template_rest():
+    """(карточек без шаблона вне исключений, из них никто не возьмёт, по кодам V-NN, миграция завершена, `kb:conform`
+    запускался, в очереди `agent:conform`). Исключения — неуправляемые типы и записи, ждущие переноса в `Raw/`. Сбой чтения —
+    нули: сводка остатка не должна ронять итог."""
+    try:
+        import card_types as CT
+        import kb_conform as KC
+        reg = CT.registry_for(".")
+        if not reg.types:
+            return 0, 0, {}, False, False, 0
+        left = KC.blockers(".", reg)[0]
+        queued = {os.path.relpath(p, ".").replace("\\", "/")
+                  for p, _c in KC.queue(".", reg, parked=lambda p: KC.is_parked(".", p))}
+        codes, gap = {}, 0
+        for rel, text, _fm in left:
+            if rel in queued:
+                continue
+            gap += 1
+            for code in KC._codes(KC._errors(text, rel, reg)) or ["штамп не проставлен"]:
+                codes[code] = codes.get(code, 0) + 1
+        return (len(left), gap, codes, CT.migration_complete("."), os.path.isfile(CT.CONFORM_REPORT_REL),
+                len(queued & {rel for rel, _t, _f in left}))
+    except Exception:                                         # noqa: BLE001
+        return 0, 0, {}, False, False, 0
 
 
 def run(script: str, *args, stdout_only: bool = False) -> str:
@@ -169,6 +198,28 @@ def main() -> int:
         if errs:
             decide.append((f"{len(errs)} {what}", how, ""))
 
+    # Карточки без шаблона (миграция на шаблоны, CT-20). Когда миграцию объявили завершённой, их показывает линтер
+    # ошибками (раздел выше), здесь — только пока она идёт: до первого `kb:conform` это работа маршрута, после него —
+    # остаток, который ремонт не взял.
+    rest_n, gap_n, rest_codes, migrated, conformed, queued_n = template_rest()
+    if rest_n and not migrated:
+        if not conformed:
+            route.append((f"карточек без шаблона: {rest_n}",
+                          "Их приводит к шаблонам «Починить базу»: `kb:conform` ставит штамп там, где карточка проходит "
+                          "шаблон, `agent:conform` раскладывает остальные машинные карточки дословным переносом строк.",
+                          "маршрут «Починить базу»"))
+        else:
+            if queued_n:
+                route.append((f"карточек без шаблона в очереди agent:conform: {queued_n}",
+                              "Их возьмёт следующий шаг «Починить базу»: модель называет номера строк, скрипт раскладывает "
+                              "собственную часть по разделам шаблона и сверяет, что текст не изменился.",
+                              "маршрут «Починить базу»"))
+            if gap_n:
+                engine.append((f"карточек без шаблона: {gap_n}",
+                               "`kb:conform` и `agent:conform` прошли, а эти карточки к шаблону не приведены: нарушения, "
+                               "которые правила шапки не чинят и модель не разложила, или карточка не машинная. Это пробел "
+                               "движка, а не ваше решение: ремонт надо научить.",
+                               "; ".join(f"{code} — {n}" for code, n in sorted(rest_codes.items()))))
     # Утверждения тезисов без опоры в источнике нашёл Момус. Перепроверка и переписывание
     # тезиса — работа движка; человек поправляет, только если хочет (`Raw/corrections/`).
     flagged, claims, unlisted = unsupported_cards()
