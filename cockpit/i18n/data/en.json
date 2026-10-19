@@ -40,7 +40,7 @@
     "kb:code-graph": "The project's code and SQL in the graph without a model: tables from SQL on pages and in `*.sql`, table pairs of one query, cards naming a table; code from `graphify: code_dirs`.",
     "kb:reset": "Wipe the base and rebuild: removes what will be rebuilt (a card with a live `source:` or `built: machine`), touches nothing outside `AuroraKnowledgeDB/`; cards of unknown origin stay (`--list-unknown`, `--drop-unknown`); rollback from git.",
     "kb:lint": "Mechanical errors of the base: links, frontmatter, card kinds, artifacts in knowledge, secrets, cards without links.",
-    "kb:next-id": "Issue the next number of REQ, SPEC, Q, DR or an agent artifact (ART) under a lock: two parallel calls get different numbers, the number of a deleted card does not come back; `--peek` shows the number without taking it; `--check` finds identifiers carried by two different files (`kb:lint` shows them as a warning); `--list` — the namespaces.",
+    "kb:next-id": "Issue the next number of REQ, SPEC, Q, DR, an agent artifact (ART) or a Gherkin scenario (SC) under a lock: two parallel calls get different numbers, the number of a deleted card does not come back; `--peek` shows the number without taking it; `--check` finds identifiers carried by two different files (`kb:lint` shows them as a warning); `--list` — the namespaces.",
     "kb:cards": "Card types of the base: the registry built from the `akdb_*` templates and the `cards:` block of the config (`--list`, `--show`), a check of cards against the template of their type by V-NN codes (`--check`: errors are shown as warnings, `--strict` for strict; a violation in a card with the `template:` stamp is a `kb:lint` error), a summary by template versions and pre-template cards (`--stats`), the text of the instruction \"How to determine the card type\" (`--guide`), the type catalogue `meta/card_types.md` (`--write`: the plan, with `--apply` — the write); writes nothing else.",
     "kb:conform": "Migration of the base cards to templates without a model: header repairs by a fixed list of rules (`built: mac`, `pdated`, a single `source:`, missing `kind`, `status`, dates), the `template:` stamp where a card passes the template of its type strictly, and the report `meta/conform_report.md`; without `--apply` it only scouts and writes nothing. `--finalize --apply` declares the migration complete (`meta/conform_state.json`): after that `kb:lint` treats a card without `template:` as an error. The bodies of `document` and `dictionary`, human corrections, the history and the source are never changed; violations in the structure of the own part of a machine card are laid out by `agent:conform`.",
     "kb:question": "Open a question to the customer (Q-NNN): to whom, what it blocks, the deadline.",
@@ -70,6 +70,7 @@
     "ops:gaps": "Meaning gaps: a concept named but with no card, a link named but not placed, lonely cards, a thesis behind its source, a vanished source.",
     "ops:todo": "What is left: what routes and commands will finish, what repair did not take, what depends on project settings and where a human decides.",
     "ops:decisions": "The decision journal: the state of every DR, owner, date, how many cards it affects, proposals older than 14 days that are not accepted, accepted ones with a changed body, form remarks; `--json` — machine form; two runs on one day print the same.",
+    "ops:scenarios": "Gherkin scenarios (`Artifacts/tests/**/*.feature`): every scenario has a stable identifier in the `@id:` tag and a link to a criterion `@covers:<key>`, and a Requirement Yogi key of the story sits above Feature. The report: a scenario without `@id`, one `@id` on two scenarios, no `@covers`, `@covers` on a key that is neither in the artifacts nor in the mirror; `--assign --apply` puts `@id:SC-NNNN` in (the number is issued by `kb:next-id`), without `--apply` — a preview.",
     "ops:impact": "What depends on a card; `--explain` — what a document is built on.",
     "ops:trace": "Tracing: spec item → REQ → SPEC → Jira → AC → PMI → acceptance.",
     "ops:trace-table": "The \"artifact ↔ issue\" table: direct links, links by code and tracing by names two hops deep; trust is computed on it.",
@@ -1020,7 +1021,9 @@
     "--file: не снимать ответы «нет» без цитаты в тексте": "--file: do not drop \"no\" answers without a quote in the text",
     "локальный артефакт (Artifacts/…) или страница-зеркало вместо страницы Confluence: без сети и CONFLUENCE_PAT, связанное читается из базы и зеркала; ответы «нет» принимаются только с цитатой, найденной в тексте": "a local artifact (Artifacts/…) or a mirror page instead of a Confluence page: no network and no CONFLUENCE_PAT, related material is read from the base and the mirror; \"no\" answers are accepted only with a quote found in the text",
     "профиль для переданных файлов": "the profile for the given files",
-    "обойти ворота: review — опубликовать без свежего ревью (обход записывается в шапку)": "bypass a gate: review — publish without a fresh review (the bypass is recorded in the head)"
+    "обойти ворота: review — опубликовать без свежего ревью (обход записывается в шапку)": "bypass a gate: review — publish without a fresh review (the bypass is recorded in the head)",
+    "записать (иначе --assign только показывает)": "write (otherwise --assign only shows)",
+    "проставить @id: сценариям без идентификатора": "put @id: on scenarios without an identifier"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

@@ -256,6 +256,25 @@ pipeline:                 # время каждого этапа (UTC, секу�
 implements»). Старые артефакты без паспорта читаются как есть. Повтор `artifact_id` у двух файлов — предупреждение
 `kb:lint`. Поле `template:` паспорту не мешает: оно у карточек базы, не у артефактов.
 
+## Сценарии Gherkin (`Artifacts/tests/**/*.feature`)
+
+Шаги тест-кейсов — Gherkin; файлы лежат в git (мастер), Confluence — витрина, TMS — исполнение. Личность сценария
+живёт в теге над ним, а не в позиции или названии, поэтому переживает правку текста:
+
+```gherkin
+# language: ru
+@RU.PRJ.US-1.1.1                      # ключ Requirement Yogi истории — над Feature
+Функционал: Приём заявки
+
+  @id:SC-0001 @covers:RU.PRJ.AC-1.1.1 @positive @auto
+  Сценарий: Заявка принята
+```
+
+`@id:` выдаёт `kb:next-id SC` (или это ключ теста из TMS после первого импорта — значение непрозрачно, важна
+уникальность); `@covers:` — ключ критерия приёмки, по одному тегу на ключ. `ops:scenarios` называет сценарий без
+`@id`, один `@id` у двух сценариев (также `kb:lint`), сценарий без `@covers`, `@covers` на ключ, которого нет ни в
+артефактах (`ref_key`), ни на страницах зеркала, и Feature без ключа истории; `--assign --apply` проставляет `@id`.
+
 ## Deliverable extras (type: deliverable)
 
 Files in `Deliverables/work/`, assembled from the knowledge base:

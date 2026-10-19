@@ -14,7 +14,8 @@
   python3 .aurora/scripts/id_registry.py --list        # пространства имён
 
 Пространства: `REQ` и `SPEC` (три цифры), `Q` (три), `DR` (четыре) — карточки базы, номер стоит в
-имени файла; `ART` (четыре) — артефакт агента, номер в поле `artifact_id` его шапки. Номер выдаётся
+имени файла; `ART` (четыре) — артефакт агента, номер в поле `artifact_id` его шапки; `SC` (четыре) — сценарий Gherkin, номер в теге
+`@id:SC-NNNN` над ним (`ops:scenarios`). Номер выдаётся
 под замком `.aurora/state/ids/<пространство>.lock`: максимум из имён и шапок проекта (карточки в
 `_archive` тоже занимают номер) и записанной отметки `.aurora/state/ids/<пространство>.json`. Отметка
 нужна, чтобы выданный, но ещё не записанный номер не достался второму, а номер удалённой карточки
@@ -66,6 +67,8 @@ SPACES = {
            "dirs": (f"{KB_ROOT}/Decisions", "Raw/decisions")},
     "ART": {"prefix": "ART", "width": 4, "title": "артефакт агента", "header": "artifact_id",
             "dirs": ("Artifacts", "Deliverables")},
+    # Сценарий Gherkin: личность — тег `@id:SC-NNNN` над ним в файле `.feature` (`ops:scenarios`).
+    "SC": {"prefix": "SC", "width": 4, "title": "сценарий Gherkin", "tag": "@id:", "dirs": ("Artifacts/tests",)},
 }
 ARCHIVE = f"{KB_ROOT}/_archive"      # архив всей базы: в нём лежат и прежние REQ, Q, DR
 # Снимки и архив поставок хранят копию шапки сданного документа: номер они занимают (чужой артефакт не
@@ -154,6 +157,23 @@ def occupied(root: str, ns: str, sessions: bool = True) -> dict:
     # не выдача этого реестра и не должны ни сдвигать нумерацию, ни давать ложный повтор.
     pat = re.compile(rf"^{re.escape(spec['prefix'])}-(\d{{1,9}})(?!\d)(?!\.\d)(?!-\d\d-\d\d)", re.I)
     found: dict = {}
+    if "tag" in spec:
+        tag_re = re.compile(re.escape(spec["tag"]) + rf"{re.escape(spec['prefix'])}-([0-9]{{1,9}})(?![0-9A-Za-z_-])", re.I)
+        for rel in spec["dirs"]:
+            base = os.path.join(root, rel)
+            for dirpath, _dirs, files in (safe_walk(base) if os.path.isdir(base) else []):
+                for f in sorted(files):
+                    if not f.endswith(".feature"):
+                        continue
+                    try:
+                        with open(os.path.join(dirpath, f), encoding="utf-8", errors="ignore") as fh:
+                            text = fh.read()
+                    except OSError:
+                        continue
+                    shown = os.path.relpath(os.path.join(dirpath, f), root).replace("\\", "/")
+                    for m in tag_re.finditer(text):
+                        found.setdefault(int(m.group(1)), []).append(shown)
+        return found
     if "header" in spec:
         key = spec["header"]
         id_re = re.compile(rf"^{re.escape(spec['prefix'])}-(\d{{1,9}})$", re.I)
@@ -401,7 +421,7 @@ def ref_findings(root: str = ".") -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Реестр идентификаторов: выдача номера под замком, повторы")
     ap.add_argument("space", nargs="?", default="", metavar="ПРОСТРАНСТВО",
-                    help="REQ, SPEC, Q, DR или ART: выдать следующий номер")
+                    help="REQ, SPEC, Q, DR, ART или SC: выдать следующий номер")
     ap.add_argument("--peek", action="store_true", help="показать следующий номер, не занимая его")
     ap.add_argument("--check", action="store_true",
                     help="найти идентификаторы, которые носят два разных файла (код 1 — повторы есть)")
@@ -439,7 +459,7 @@ def main() -> int:
         return 1 if dups else 0
 
     if not a.space:
-        ap.error("нужно пространство (REQ, SPEC, Q, DR, ART), --check или --list")
+        ap.error("нужно пространство (REQ, SPEC, Q, DR, ART, SC), --check или --list")
     try:
         space_of(a.space)
         ident = peek(a.space, a.root) if a.peek else allocate(a.space, a.root)

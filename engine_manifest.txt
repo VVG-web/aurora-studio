@@ -68,6 +68,8 @@ scripts/artifact_lint.py => .aurora/scripts/artifact_lint.py
 scripts/id_registry.py   => .aurora/scripts/id_registry.py
 # журнал решений (`kb:decide-accept`, `ops:decisions`): принятие, отпечаток тела, форма решения; kb_lint подключает его лениво
 scripts/kb_decide.py     => .aurora/scripts/kb_decide.py
+# сценарии Gherkin (`ops:scenarios`): идентификаторы @id и связи @covers; номера выдаёт id_registry
+scripts/feature_ids.py   => .aurora/scripts/feature_ids.py
 # Эти два (и run_summary выше) ставились установкой, но в манифест не попали — и потому не обновлялись
 # никогда: проект годами держал версию времён своего создания, при том что
 # `aurora_version.txt` исправно показывал свежую. Один прогон двумя версиями движка,
