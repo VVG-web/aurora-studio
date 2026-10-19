@@ -66,12 +66,25 @@ def _unit(word: str) -> str:
 
 
 _PIECE = 4000        # длиннее строки разбираются кусками: регулярные выражения идут по недоверенному тексту источников
-_COMBINING = re.compile("[̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃿︠-︯]{9,}")
+_MARK_RUN = 8        # цепочка комбинирующих знаков длиннее этого обрезается: канонический порядок знаков квадратичен
 
 
 def _calm(text: str) -> str:
-    """Нормализация Unicode без квадратичного разбора: цепочки комбинирующих знаков длиннее восьми обрезаются."""
-    return unicodedata.normalize("NFKC", _COMBINING.sub(lambda m: m.group(0)[:8], text or ""))
+    """Нормализация Unicode без квадратичного разбора: за базовым знаком остаётся не больше восьми комбинирующих
+    (любой письменности: считаются знаки с классом комбинирования, а не список диапазонов)."""
+    text = text or ""
+    if text.isascii():
+        return text
+    out, run = [], 0
+    for ch in text:
+        if unicodedata.combining(ch):
+            run += 1
+            if run > _MARK_RUN:
+                continue
+        else:
+            run = 0
+        out.append(ch)
+    return unicodedata.normalize("NFKC", "".join(out))
 
 
 def _pieces(text: str):
@@ -213,6 +226,7 @@ def quote_found(quote: str, text: str, ratio: float = 0.7, plain: bool = False) 
 
 _OPORA = re.compile(r"ОПОРА\b[\s:—\-]*(.+)", re.I)
 _INNER = re.compile(r"[«\"“]([^»\"”]{3,400})[»\"”]")
+_QUOTE_MAX, _QUOTES_MAX = 400, 40
 
 
 def opora_quotes(verdict_text: str) -> list:
@@ -224,9 +238,11 @@ def opora_quotes(verdict_text: str) -> list:
         if m:
             tail = m.group(1).strip()
             inner = _INNER.search(tail)
-            quote = (inner.group(1) if inner else tail).strip("«»\"'“”„ ")
+            quote = (inner.group(1) if inner else tail).strip("«»\"'“”„ ")[:_QUOTE_MAX]
             if len(quote) >= 3:
                 out.append(quote)
+                if len(out) >= _QUOTES_MAX:        # ответ модели не повод считать тысячи цитат по большому контексту
+                    break
     return out
 
 
