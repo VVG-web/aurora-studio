@@ -409,14 +409,37 @@ def test_doctor_reports_released_versions_that_were_touched(tmp: Path):
 def test_export_does_not_carry_foreign_html_or_script_links_into_the_output(_t):
     """Текст приходит из базы: `--sandbox` не мешает pandoc записать в html `<script>` и `javascript:` — это закрыто до pandoc.
 
-    Ссылки со схемами `javascript:`, `data:`, `vbscript:`, `file:` остаются подписью; в html-экспорте начало тега вне
-    кода экранируется (код и автоссылки не трогаются); без `--sandbox` картинки заменяются подписью; всё это быстро."""
+    Адрес со схемой `javascript:`, `data:`, `vbscript:`, `file:` в ссылке markdown заменяется на `#blocked` (подпись
+    остаётся; вложенные скобки, сущности вроде `&Tab;` и ссылки-определения на следующей строке не помеха), а готовый
+    html проходит `scrub_html`; в html-экспорте начало тега вне кода экранируется (код и автоссылки не трогаются);
+    без `--sandbox` картинки заменяются подписью; всё это быстро."""
     import time
     import ship_doc as S
-    t = S.neutralize_links("[a](javascript:alert(3)) [b]( JavaScript:x) [c](https://example.org) [d](java&#115;cript:x) "
-                           "[e](data:text/html;base64,AAA)\n[r]: file:///etc/passwd\n<javascript:alert(1)>\n")
-    assert "javascript" not in t.casefold().replace("java&#115;", "") and "data:" not in t and "file:" not in t, t
-    assert "[c](https://example.org)" in t
+    for evil in ("[a](javascript:alert(1))", "[a [b]](javascript:alert(1))", "[a\\]b](javascript:alert(1))",
+                 "[![i](a.png)](javascript:alert(1))", "[x][1]\n\n[1]:\njavascript:alert(1)", "[a](java&Tab;script:alert(1))",
+                 "[a](java&NewLine;script:x)", "[a](java&#9;script:x)", "[a]( JavaScript:x)", "[a](java&#115;cript:x)",
+                 "[e](data:text/html;base64,AAA)", "[r](file:///etc/passwd)", "[v](vbscript:x)"):
+        out = S.neutralize_links(evil)
+        assert "#blocked" in out and "script:" not in out.replace("&#", "").casefold().replace("java", ""), (evil, out)
+    t = S.neutralize_links("[c](https://example.org) ![i](data:image/png;base64,AAA) <javascript:alert(1)>\n")
+    assert "[c](https://example.org)" in t and "![i](data:image/png;base64,AAA)" in t and "<javascript" not in t, t
+    page = ('<a href="javascript:x">a</a> <a href=\'java&#115;cript:x\'>b</a> <a href="jav&Tab;ascript:x">c</a> '
+            '<img src="data:image/png;base64,AA"> <a href="https://e.org">d</a> <a href="data:text/html,x">e</a>')
+    fixed = S.scrub_html(page)
+    assert fixed.count('href="#blocked"') == 4 and 'src="data:image/png;base64,AA"' in fixed and 'href="https://e.org"' in fixed, fixed
+    # то, что в самом деле выходит из pandoc, чисто (если pandoc есть на машине)
+    pandoc = S.find_bin("pandoc")
+    if pandoc:
+        md = S.escape_raw_html(S.neutralize_links("# T\n\n[a [b]](javascript:alert(1)) [x][1] <br> <script>y()</script>\n\n[1]:\njavascript:alert(2)\n"))
+        cp = subprocess.run([pandoc, "-f", "gfm", "-t", "html", "--sandbox"], input=md, text=True, encoding="utf-8",
+                            capture_output=True, timeout=120)
+        assert cp.returncode == 0 and "javascript:" not in S.scrub_html(cp.stdout) and "<script" not in cp.stdout, cp.stdout
+    started = time.process_time()
+    for bad in ("[a](" * 100000, "[a](" + " " * 100000, "<javascript:" * 100000, "[" * 200000, "](" * 100000):
+        S.neutralize_links(bad)
+        S.scrub_html(bad)
+        S.strip_images(bad)
+    assert time.process_time() - started < 5, "разбор ссылок стал квадратичным"
     h = S.escape_raw_html("# T\n\n<script>x()</script>\n\nтекст `<b>` и <b onclick=x>ж</b> <https://example.org/a> "
                           "<me@example.org>\n\n```html\n<script>в коде</script>\n```\n\n<!-- c -->\n")
     assert "&lt;script>x()&lt;/script>" in h and "&lt;b onclick=x>ж</b>" in h and "&lt;!-- c -->" in h, h

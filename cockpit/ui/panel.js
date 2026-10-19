@@ -1033,7 +1033,7 @@ async function publishFromEditor(){
   // Черновик (status: draft) предохранитель выходных команд не отправит без --allow draft: нажатие «Опубликовать»
   // под этим предупреждением и есть осознанное решение.
   const head = ((F.orig || "").replace(/^\uFEFF/, "").match(/^---\r?\n([\s\S]*?)\r?\n---/) || [])[1] || "";
-  const isDraft = /^status:\s*["']?(?:draft|\u0447\u0435\u0440\u043d\u043e\u0432\u0438\u043a)["']?\s*$/mi.test(head);
+  const isDraft = /^status:\s*["']?(?:draft|\u0447\u0435\u0440\u043d\u043e\u0432\u0438\u043a)["']?(?:\s+#.*)?\s*$/mi.test(head);
   const box = el("div",{class:"card", style:"padding:14px;margin-bottom:10px"},
     el("b",{}, t("editor.publish_preview")),
     el("div",{class:"sub"}, d.marked

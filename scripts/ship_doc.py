@@ -94,20 +94,43 @@ def _pandoc_sandbox(pandoc: str) -> bool:
 IMAGE_RE = re.compile(r"!\[[^\]\n]{0,300}\]\([^)\n]{1,500}\)|<img\b", re.I)
 _IMG_MD = re.compile(r"!\[([^\]\n]{0,300})\]\([^)\n]{1,500}\)")
 _IMG_TAG = re.compile(r"<img\b[^>\n]{0,500}>?", re.I)
-_BAD_SCHEME = re.compile(r"(?i)^[\s\x00-\x1f]*(?:javascript|data|vbscript|file):")
-_MD_LINK = re.compile(r"(?<!!)\[([^\]\n]{0,300})\]\(\s*<?([^)\n]{1,2000})\)")
-_REF_DEF = re.compile(r"(?im)^ {0,3}\[[^\]\n]{1,200}\]:[ \t]*<?(?:javascript|data|vbscript|file):[^\n]{0,2000}$")
-_AUTOLINK = re.compile(r"(?i)<(?:javascript|data|vbscript|file):[^>\n]{0,2000}>")
+_BLOCKED = "#blocked"
+_SCHEME = re.compile(r"(?:javascript|vbscript|data|file):")
+_SAFE_DATA = re.compile(r"data:image/(?:png|jpe?g|gif|webp)[;,]")        # встроенная картинка — не ссылка-сценарий
+_INVISIBLE = re.compile(r"[\x00-\x20\u00a0\u200b-\u200d\u2060\ufeff]")
+_TARGET = re.compile(r"\]\([ \t]{0,20}<?([^)\n]{0,80})")
+_REF_TARGET = re.compile(r"(?m)^( {0,3}\[[^\]\n]{1,200}\]:\s{0,100}<?)([^\s>]{0,80})")
+_AUTOLINK_OPEN = re.compile(r"(?i)<(?=(?:javascript|data|vbscript|file):)")
+_ATTR = re.compile(r"""(?i)\b(href|src|poster|action|formaction|xlink:href|data)[ \t\r\n]*=[ \t\r\n]*(?:"([^"]{0,4000})"|'([^']{0,4000})')""")
+
+
+def _dangerous(raw: str) -> bool:
+    """Адрес со схемой-сценарием; сущности (`&Tab;`, `&#106;`) и невидимые знаки в схеме браузер выбрасывает или читает."""
+    t = _INVISIBLE.sub("", html.unescape(raw or "")).casefold()
+    return bool(_SCHEME.match(t)) and not _SAFE_DATA.match(t)
 
 
 def neutralize_links(text: str) -> str:
-    """Ссылки со схемой `javascript:`, `data:`, `vbscript:`, `file:` теряют адрес и остаются подписью.
+    """Адреса со схемой `javascript:`, `data:`, `vbscript:`, `file:` в ссылках markdown заменяются на `#blocked`.
 
     Текст приходит из базы (Confluence, модель), а экспорт в html открывает заказчик: pandoc переносит адрес как есть,
-    и `--sandbox` этому не мешает (он запрещает pandoc читать файлы и сеть, а не писать опасный адрес в вывод)."""
+    и `--sandbox` этому не мешает (он запрещает pandoc читать файлы и сеть, а не писать опасный адрес в вывод).
+    Смотрится только начало адреса после `](`, подпись не ищется: разбор линеен на любом вводе и не зависит от
+    вложенных скобок в подписи. Последняя защита — `scrub_html` по готовому html: она видит то, что вышло из pandoc."""
+    def target(m):
+        return m.group(0)[:m.start(1) - m.start(0)] + _BLOCKED if _dangerous(m.group(1)) else m.group(0)
+
+    def ref(m):
+        return m.group(1) + _BLOCKED if _dangerous(m.group(2)) else m.group(0)
+    return _AUTOLINK_OPEN.sub("&lt;", _REF_TARGET.sub(ref, _TARGET.sub(target, text)))
+
+
+def scrub_html(page: str) -> str:
+    """Готовый html: `href`, `src` и подобные с адресом-сценарием → `#blocked`. Смотрит на вывод pandoc, а не на вход."""
     def fix(m):
-        return m.group(1) if _BAD_SCHEME.match(html.unescape(m.group(2))) else m.group(0)
-    return _AUTOLINK.sub("", _REF_DEF.sub("", _MD_LINK.sub(fix, text)))
+        raw = m.group(2) if m.group(2) is not None else m.group(3)
+        return f'{m.group(1)}="{_BLOCKED}"' if _dangerous(raw) else m.group(0)
+    return _ATTR.sub(fix, page)
 
 
 _FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)$")
@@ -222,6 +245,16 @@ def export(source: str, fmt: str, reference: str, out: str, keep_links: bool, al
                   "экспортируйте в docx и печатайте из Word.", file=sys.stderr)
         return 1
 
+    if fmt == "html":           # что бы ни вышло из pandoc, опасного адреса в готовом html не остаётся
+        try:
+            with open(target, encoding="utf-8") as f:
+                page = f.read()
+            clean = scrub_html(page)
+            if clean != page:
+                with open(target, "w", encoding="utf-8", newline="") as f:
+                    f.write(clean)
+        except (OSError, ValueError):
+            pass
     print(f"✅ {target}  ({os.path.getsize(target) / 1024:.0f} КБ, из {source})")
     for w in warnings:
         print(f"⚠️  {w}")
