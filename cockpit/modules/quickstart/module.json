@@ -9,5 +9,5 @@
   "order": 30,
   "needs": ["project"],
   "commands": [],
-  "for": "1.186.0"
+  "for": "1.187.0"
 }
