@@ -47,7 +47,7 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
-from aurora_common import KB_ROOT, lock_read, lock_release, lock_take, safe_walk, utc_stamp  # noqa: E402
+from aurora_common import KB_ROOT, lock_read, lock_release, lock_take, safe_walk, service_dirs, utc_stamp  # noqa: E402
 
 STATE = ".aurora/state/ids"
 LOCK_WAIT_S = 15         # сколько ждать чужую выдачу: она длится миллисекунды
@@ -445,8 +445,9 @@ def ref_findings(root: str = ".") -> dict:
                 out.setdefault(os.path.relpath(path, root).replace("\\", "/"), []).append(
                     {"id": "REF-02", "msg": f"ключ «{bad[0]}»" + (f" и ещё {len(bad) - 1}" if len(bad) > 1 else "")
                      + f" похож на ключ вида «{kind}», но не по маске «{spec['mask']}»"})
-    mirror = os.path.join(root, "Sources", "Confluence")
-    if os.path.isdir(mirror):
+    wiki = (service_dirs("projectwiki", root) or [""])[0]       # зеркало вики — по роли, а не по названию продукта
+    mirror = os.path.join(root, wiki) if wiki else ""
+    if mirror and os.path.isdir(mirror):
         for dirpath, _dirs, files in safe_walk(mirror):
             for f in sorted(files):
                 if not f.endswith(".md"):
