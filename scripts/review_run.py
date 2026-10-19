@@ -453,8 +453,8 @@ _GAP = re.compile(r"\s*(?:\[\s*(?:…|\.{3})\s*\]|…|\.{3})\s*")
 
 
 def _title_like(quote: str) -> bool:
-    """Короткая выдержка, похожая на название (до четырёх слов и сорока восьми знаков), а не на предложение страницы."""
-    return len(quote) <= 48 and len(quote.split()) <= 4
+    """Короткая выдержка, похожая на название (до пяти слов и шестидесяти четырёх знаков), а не на предложение страницы."""
+    return len(quote) <= 64 and len(quote.split()) <= 5
 
 
 def _checkable_quotes(evidence: str) -> list:
@@ -473,31 +473,43 @@ def _checkable_quotes(evidence: str) -> list:
 
 
 _PART_MIN = 12          # знаков в куске выдержки с пропуском: «срок» и «дней» находятся в любом тексте
+_CHAIN_GAP = 600        # знаков между соседними кусками выдержки с пропуском
+_CHAIN_STARTS = 50      # сколько мест страницы пробовать как начало цепочки
 
 
 def _quote_there(quote: str, plain: str) -> bool:
-    """Выдержка найдена в тексте. С пропуском («срок… не более 5 дней», `[...]`) — по кускам: каждый достаточно
-    длинный кусок должен найтись, и подряд (следующий не раньше конца прежнего и не дальше 600 знаков от него);
-    короткие куски ничего не доказывают, и если других нет, сверяется вся выдержка целиком."""
-    parts = [p for p in (x.strip() for x in _GAP.split(quote)) if p.strip(" .,;:")]
+    """Выдержка найдена в тексте. С пропуском («срок… не более 5 дней», `[...]`) — по кускам: каждый кусок есть в
+    тексте, и идут они подряд (следующий не раньше конца прежнего и не дальше 600 знаков от него), от какого-нибудь
+    места страницы. Короткие куски сами ничего не доказывают: если содержательных нет, сверяется вся выдержка."""
+    parts = [FID._plain(p) for p in (x.strip() for x in _GAP.split(quote)) if p.strip(" .,;:")]
+    parts = [q for q in parts if len(q) >= 4]
     if len(parts) <= 1:
         return FID.quote_found(parts[0] if parts else quote, plain, plain=True)
-    solid = [FID._plain(p) for p in parts if len(FID._plain(p)) >= _PART_MIN or len(FID._plain(p).split()) >= 3]
+    solid = [q for q in parts if len(q) >= _PART_MIN or len(q.split()) >= 3]
     if not solid:
         return FID.quote_found(" ".join(parts), plain, plain=True)
-    last = 0
-    for q in solid:
-        i = plain.find(q, last)
+    for q in parts:
+        if q not in plain and (q not in solid or not FID.quote_found(q, plain, plain=True)):
+            return False        # короткий кусок не пересказывают; длинный пересказан — его слова должны быть на странице
+    exact = [q for q in parts if q in plain]
+    if len(exact) < 2:
+        return True
+    start = 0
+    for _ in range(_CHAIN_STARTS):
+        i = plain.find(exact[0], start)
         if i < 0:
-            if q in plain:      # кусок есть, но раньше предыдущего: порядок выдержки нарушен
-                return False
-            if not FID.quote_found(q, plain, plain=True):       # пересказан: порядок не проверить, слова — должны быть
-                return False
-            continue
-        if last and i - last > 600:
             return False
-        last = i + len(q)
-    return True
+        last, ok = i + len(exact[0]), True
+        for q in exact[1:]:
+            j = plain.find(q, last)
+            if j < 0 or j - last > _CHAIN_GAP:
+                ok = False
+                break
+            last = j + len(q)
+        if ok:
+            return True
+        start = i + 1
+    return False
 
 
 def verify_evidence(parsed: dict, text: str) -> list:

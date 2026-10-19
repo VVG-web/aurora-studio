@@ -70,24 +70,23 @@ _PIECE = 4000        # длиннее строки разбираются кус
 _MARK_RUN = 8        # цепочка комбинирующих знаков длиннее этого обрезается: канонический порядок знаков квадратичен
 
 
+def _mark_class() -> str:
+    """Все знаки с классом комбинирования (любой письменности), собранные из `unicodedata`, а не списком диапазонов."""
+    return "".join(re.escape(chr(c)) for c in range(0x300, 0x1F000) if unicodedata.combining(chr(c)))
+
+
+_MARKS = re.compile("[" + _mark_class() + "]{%d,}" % (_MARK_RUN + 1))
+
+
 def _calm(text: str) -> str:
     """Нормализация Unicode без квадратичного разбора: за базовым знаком остаётся не больше восьми комбинирующих
-    (любой письменности: считаются знаки с классом комбинирования, а не список диапазонов)."""
+    (любой письменности: знаки с классом комбинирования, а не список диапазонов)."""
     text = text or ""
     if text.isascii():
         return text
-    if not any(unicodedata.combining(c) for c in set(text)):    # разных знаков в тексте немного: обычный текст идёт быстро
-        return unicodedata.normalize("NFKC", text)
-    out, run = [], 0
-    for ch in text:
-        if unicodedata.combining(ch):
-            run += 1
-            if run > _MARK_RUN:
-                continue
-        else:
-            run = 0
-        out.append(ch)
-    return unicodedata.normalize("NFKC", "".join(out))
+    if any(unicodedata.combining(c) for c in set(text)):      # разных знаков в тексте немного: обычный текст идёт быстро
+        text = _MARKS.sub(lambda m: m.group(0)[:_MARK_RUN], text)
+    return unicodedata.normalize("NFKC", text)
 
 
 def _pieces(text: str):
@@ -158,6 +157,8 @@ def _missing(candidate: set, have: set) -> list:
     for kind, value in sorted(candidate):
         if (kind, value) in have:
             continue
+        if kind in ("v", "n") and ("n" if kind == "v" else "v", value) in have and "." in value:
+            continue                                 # «v2.5» в тезисе и «2.5» в источнике (и наоборот) — одна версия
         if kind == "u":
             number = value.split("|")[0]
             if any(k == "u" and v.split("|")[0] == number for k, v in have):
