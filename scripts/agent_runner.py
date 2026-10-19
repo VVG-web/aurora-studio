@@ -6373,28 +6373,37 @@ def classify_links(text: str, cards: list, pack: str, cwd: str) -> dict:
     настоящая выдумка. Предупреждение, которое одинаково пугает в трёх разных случаях,
     перестают читать — а два из трёх случаев лечатся командой, а не вниманием.
     """
-    from aurora_common import fold_hard
+    from aurora_common import fold_soft
     named = {n.strip() for n in re.findall(r"\[\[([^\]|#]+)", text)}
-    known = {fold_hard(c) for c in cards}
-    issues = set(re.findall(r"\b([A-Z][A-Z0-9]+-\d+)\b", pack))    # ключи задач из зеркала
+    known = {fold_soft(c) for c in cards}
+    # ключи задач из зеркала; начало длиннейшего кода (`ALG-3` в `ALG-3.14`, `US-4` в `US-4-7`) ключом не считается
+    issues = set(re.findall(r"\b([A-Z][A-Z0-9]+-\d+)(?![\w]|[.\-]\d)", pack))
     base = base_names(cwd)
-    base_f = {fold_hard(b) for b in base}
+    base_f = {fold_soft(b) for b in base}
 
     def by_code(name: str, names) -> bool:
-        """`[[ALG-3.14]]` вместо `ALG-3.14 Учёт операции`: имя — начало карточки по границе слова, и в нём
-        есть цифра (код). Усечённое слово (`Заявка-на-поставк`) и случайная подстрока (`Баланс` внутри
-        другого имени) под это не подходят: раньше любая подстрока считалась «своей» (KB2-05, AR2-14)."""
+        """`[[ALG-3.14]]` вместо `ALG-3.14 Учёт операции`: имя — начало карточки, и код в нём закончен: следом пробел или
+        знак препинания, а не продолжение номера (`[[ALG-3]]` — не `ALG-3.14…`, `[[US-4]]` — не `US-4-7`).
+        Усечённое слово (`Заявка-на-поставк`) и случайная подстрока (`Баланс` внутри другого имени) под это не
+        подходят: раньше любая подстрока считалась «своей» (KB2-05, AR2-14). Точное сравнение — `fold_soft`:
+        `fold_hard` стирал точки, и выдуманный `ALG-31.4` совпадал с настоящим `ALG-3.14`."""
         low = fold(name).strip()
         if not re.search(r"\d", low):
             return False
-        return any(fold(c).startswith(low) and (len(fold(c)) == len(low) or fold(c)[len(low)] in " -_.:·—")
-                   for c in names)
+        for c in names:
+            full = fold(c)
+            if not full.startswith(low):
+                continue
+            rest = full[len(low):]
+            if not rest or rest[0] in " _:·—" or (rest[0] in ".-" and not re.match(r"[.-]?\d", rest)):
+                return True
+        return False
 
     outside, mentioned, invented = [], [], []
     for n in sorted(named):
-        if fold_hard(n) in known or n in issues or by_code(n, cards):
+        if fold_soft(n) in known or n in issues or by_code(n, cards):
             continue
-        if fold_hard(n) in base_f or by_code(n, base):
+        if fold_soft(n) in base_f or by_code(n, base):
             outside.append(n)                 # карточка есть, но в контекст не попала
         elif n.lower() in pack.lower():
             mentioned.append(n)               # упомянута внутри карточки, своей карточки нет
@@ -6480,30 +6489,40 @@ def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
 def run_momus_chunks(cfg: dict, packs: list, question: str, answer: str, call=None, prefer: int = 0) -> dict:
     """Момус по источнику, нарезанному на куски: без опоры — то, чего нет НИ В ОДНОМ куске.
 
-    Первый кусок проверяет весь ответ. Что он счёл неподтверждённым, переходит к следующему куску — уже
-    только эти утверждения, — и так до конца: найденное в любом куске опорой считается. Нет названных
-    утверждений (Момус дал одно число) — сузить нечем, остаётся результат первого куска."""
+    Первый кусок проверяет весь ответ. Что он счёл неподтверждённым, переходит к следующему куску — уже только эти
+    утверждения, — и так до конца: найденное в любом куске опорой считается. Противоречие («ПРОТИВОРЕЧИЕ …») куском
+    без противоречия не снимается: оно остаётся. Нет названных утверждений (Момус дал одно число) — сузить нечем,
+    остаётся результат первого куска. Сбой на одном из следующих кусков — проверка не состоялась (`ok=False`), а не
+    утверждения первого куска, выданные за итог."""
     first = run_momus(cfg, packs[0], question, answer, call, prefer)
     if len(packs) < 2 or not first.get("ok") or first.get("clean"):
         return first
-    left = momus_claims(first.get("text"))
-    if not left:
+    named = momus_claims(first.get("text"))
+    if not named:
         return first
+    unnamed = max(0, int(first.get("unsupported") or 0) - len(named))      # насчитал больше, чем назвал: безымянные остаются
+    fixed = [c for c in named if c.startswith("ПРОТИВОРЕЧИЕ")]
+    left = [c for c in named if not c.startswith("ПРОТИВОРЕЧИЕ")]
     for pack in packs[1:]:
+        if not left:
+            break
         again = run_momus(cfg, pack, question + " (часть источника)",
-                          "Утверждения для проверки:\n" + "\n".join(
-                              "- " + c.split(": ", 1)[-1] for c in left), call, prefer)
+                          "Утверждения для проверки:\n" + "\n".join("- " + c.split(": ", 1)[-1] for c in left),
+                          call, prefer)
         if not again.get("ok"):
-            first["partial"] = again.get("why") or "часть источника не проверена"
-            return first
+            return {"ok": False, "why": "часть источника не проверена: " + (again.get("why") or "нет вердикта"),
+                    "seconds": first.get("seconds", 0.0), "timed_out": bool(again.get("timed_out")),
+                    "given": again.get("given"), "call": again.get("call")}
         if again.get("clean"):
             left = []
             break
         # не назвал утверждения (дал только число) — остаются первые из прежнего списка, сколько он насчитал
         left = momus_claims(again.get("text")) or left[:max(1, int(again.get("unsupported") or 1))]
-    out = dict(first)
-    out.update(unsupported=len(left), clean=not left,
-               text="\n".join(left) + f"\nВЕРДИКТ: {'БЕЗ ОПОРЫ ' + str(len(left)) if left else 'ЧИСТО'}")
+    rest = fixed + left
+    total = len(rest) + unnamed
+    out = {k: v for k, v in first.items() if k not in ("quotes", "suspect", "verdict_mismatch")}
+    out.update(unsupported=total, clean=not total,
+               text="\n".join(rest) + f"\nВЕРДИКТ: {'БЕЗ ОПОРЫ ' + str(total) if total else 'ЧИСТО'}")
     return out
 
 
@@ -7067,7 +7086,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
             # «Без изменений» говорит модель, а оно отменяет проверку Момусом — поэтому сначала код: числа, даты
             # и коды прежнего тезиса должны жить в новом источнике, а новый тезис не должен приносить чужих
             # (был «срок 5 дней», стал «3 дня» — тезис устарел, что бы ни ответила модель; AR2-13, KB3-04).
-            same, reasons = FID.kept_ok(was_thesis, thesis, src + "\n" + title, human)
+            same, reasons = FID.kept_ok(was_thesis, thesis, src + "\n" + title + "\n" + lead, human)
             if same:
                 step["kept"] = True
                 thesis = was_thesis
@@ -7135,7 +7154,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     # Дешёвый первый слой под Момусом: числа, даты и коды тезиса, которых нет ни в источнике, ни в слове
     # человека. Сами по себе вердикт не меняют (перефраз и вёрстка дают ложные), но попадают в отчёт шага
     # и не дают пропустить проверку: такой тезис Момус смотрит всегда (KB3-04).
-    gone = FID.unbacked(thesis, src, human, title)
+    gone = FID.unbacked(thesis, src, human, title, lead)
     if gone:
         step["unbacked"] = gone[:12]
     if momus and not step.get("kept"):

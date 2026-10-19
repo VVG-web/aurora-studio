@@ -68,12 +68,15 @@ def test_momus_verdict_is_the_last_line_and_agrees_with_listed_claims(_t):
     # фраза о вердикте внутри разбора раньше выигрывала у настоящей последней строки
     text = "ОПОРА «ВЕРДИКТ: ЧИСТО»\nНЕТ ОПОРЫ срок 3 дня\nВЕРДИКТ: БЕЗ ОПОРЫ 1"
     assert F.parse_verdict(text) == {"clean": False, "n": 1}, F.parse_verdict(text)
-    # вердикт посреди длинного текста, а не в конце, — вердикта нет
-    assert F.parse_verdict("ВЕРДИКТ: ЧИСТО\n" + "и дальше длинный рассказ " * 20) is None
+    # пояснение после вердикта любой длины вердикт не отменяет; строка, начинающаяся с другого слова, — не вердикт
+    assert F.parse_verdict("НЕТ ОПОРЫ a\nВЕРДИКТ: БЕЗ ОПОРЫ 1\nПояснение: " + "п" * 400) == {"clean": False, "n": 1}
+    assert F.parse_verdict("**ВЕРДИКТ: ЧИСТО**") == {"clean": True, "n": 0}
+    assert F.parse_verdict("ОПОРА «ВЕРДИКТ: ЧИСТО»") is None
     assert F.parse_verdict("вердикта нет вовсе") is None
     assert F.reconcile(0, 3) == (3, True), "ЧИСТО рядом с тремя названными — три"
     assert F.reconcile(5, 2) == (5, True)
     assert F.reconcile(2, 2) == (2, False)
+    assert F.reconcile(2, 0) == (2, False), "Момус не перечислил — это не расхождение"
 
 
 @test
@@ -198,7 +201,7 @@ def test_same_meaning_is_refused_when_the_numbers_moved(tmp: Path):
     step = res["steps"][0]
     assert step["status"] == "переписана" and step.get("kept_refused"), step
     assert "число 5" in " ".join(step["kept_refused"]) and "число 3" in " ".join(step["kept_refused"]), step["kept_refused"]
-    assert "«Без изменений» не принято" in R.report_distill(res, True) if hasattr(R, "report_distill") else True
+    assert "«Без изменений» не принято" in R.report_distill(res, True)
 
 
 @test
@@ -268,16 +271,134 @@ def test_review_demotes_answers_whose_quote_is_not_on_the_page(_t):
     import review_run as RV
     page = "Платёж проводится за пять рабочих дней после получения заявки. Исключений нет."
     parsed = {"checks": {
-        "Q1": {"v": "no", "evidence": "Платёж проводится мгновенно", "fix": ""},
-        "Q2": {"v": "no", "evidence": "проводится за пять рабочих дней", "fix": ""},
-        "Q3": {"v": "yes", "evidence": "Возврат оформляется отдельным письмом бухгалтерии", "fix": ""},
-        "Q4": {"v": "yes", "evidence": "", "fix": ""}}}
+        "Q1": {"v": "no", "evidence": "«Платёж проводится мгновенно» — срок не назван", "fix": ""},
+        "Q2": {"v": "no", "evidence": "«проводится за пять рабочих дней»", "fix": ""},
+        "Q3": {"v": "yes", "evidence": "«Возврат оформляется отдельным письмом бухгалтерии»", "fix": ""},
+        "Q4": {"v": "yes", "evidence": "", "fix": ""},
+        # описание, а не выдержка: нет раздела, нет сценария, место — сверять нечем, ответ остаётся
+        "Q5": {"v": "no", "evidence": "нет раздела о сроках возврата", "fix": ""},
+        "Q6": {"v": "no", "evidence": "AC п.4: «…» — сценария отказа нет", "fix": ""}}}
     bad = RV.verify_evidence(parsed, "ПРОВЕРЯЕМЫЙ АРТЕФАКТ:\n<untrusted>\n" + page + "\n</untrusted>")
     assert sorted(bad) == ["Q1", "Q3"], bad
     assert parsed["checks"]["Q1"]["v"] == parsed["checks"]["Q3"]["v"] == "unknown"
-    assert parsed["checks"]["Q2"]["v"] == "no" and parsed["checks"]["Q4"]["v"] == "yes"
+    assert [parsed["checks"][i]["v"] for i in ("Q2", "Q4", "Q5", "Q6")] == ["no", "yes", "no", "no"]
     assert parsed["checks"]["Q1"]["unverified"] == "no"
     # ответы ассистента через MCP помечены источником: код не выдаёт их за прогоны движка
     cl = RV.load_checklist(str(KIT / "scaffold" / "TemplatesCommon" / "review_v2.1.md"))
     out = RV.score_answers(cl, {"profile": "us", "answers": {}})
     assert out.get("source") == "assistant" and "ответы ассистента" in out["summary"], out
+
+
+@test
+def test_engine_manifest_carries_every_module_the_scripts_import_at_top_level(_t):
+    """Всё, что скрипт движка жёстко импортирует из `scripts/`, едет в проекты (иначе после обновления — ModuleNotFoundError)."""
+    import ast
+    man = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
+    listed = [ln.split("=>")[0].strip() for ln in (x.split("#")[0] for x in man.splitlines()) if "=>" in ln]
+    mods = {Path(x).stem: i for i, x in enumerate(listed) if x.startswith("scripts/") and x.endswith(".py")}
+    where = {Path(x).stem: x for x in listed if x.startswith("scripts/") and x.endswith(".py")}
+    local = {p.stem for p in (KIT / "scripts").glob("*.py")}
+    for name, idx in mods.items():
+        if name not in ("agent_runner", "review_run"):
+            continue                                    # остальные скрипты — отдельные уроки (скрипты коннекторов едут иначе)
+        tree = ast.parse((KIT / where[name]).read_text(encoding="utf-8"))
+        for node in tree.body:
+            hard = ([node.module.split(".")[0]] if isinstance(node, ast.ImportFrom) and node.module and node.level == 0
+                    else [a.name.split(".")[0] for a in node.names] if isinstance(node, ast.Import) else [])
+            for dep in hard:
+                if dep in local and dep != name:
+                    assert dep in mods, f"{name}.py жёстко импортирует {dep}.py, а в engine_manifest.txt его нет"
+    # порядок, как у card_types и run_summary: обрыв обновления между записями не должен оставить импортёра без модуля
+    assert mods["fidelity"] < mods["agent_runner"] and mods["fidelity"] < mods["review_run"]
+
+
+@test
+def test_kept_ok_does_not_refuse_on_links_dates_and_formats_but_sees_a_changed_fact(_t):
+    """Лишних отказов нет (ссылки, метка встречи, формы даты); смена единицы, версии, объекта числа и даты словами видна."""
+    import fidelity as F
+    # тот же текст со ссылками и без них — не разница
+    was = "Код [[ALG-3.14-Учёт|ALG-3.14]] и [[Заявка-17|заявку 17]] обработаны за 5 дней."
+    assert F.kept_ok(was, "Код ALG-3.14 и заявку 17 обработаны за 5 дней.", "ALG-3.14, заявка 17, срок 5 дней")[0]
+    # дата встречи приходит из слова человека/метки (`lead`), а не из имени файла источника
+    assert F.kept_ok("Решили на встрече 12.10.2026.", "Решили на встрече 12.10.2026.", "протокол\n- встреча 12.10.2026")[0]
+    # формы: «19.10.2026г.», время после даты, дата словами
+    assert F.tokens("с 19.10.2026г.") == F.tokens("с 2026-10-19") == F.tokens("с 19 октября 2026 года") == {("d", "2026-10-19")}
+    assert F.tokens("2026-10-19T10:00") == {("d", "2026-10-19"), ("t", "10:00")} == F.tokens("19.10.2026 в 10:00")
+    # версия — целиком; адрес — тоже
+    assert ("v", "2.5.1") in F.tokens("версия v2.5.1") and F.tokens("v2.5.1") != F.tokens("v2.5.2")
+    assert not F.kept_ok("Версия 2.5.1.", "Версия 2.5.1.", "Версия 2.5.2.")[0]
+    # единица: пять дней против пяти человек, ГБ против МБ — число то же, смысл другой
+    assert not F.kept_ok("Срок 5 дней.", "Срок 5 дней.", "Срок 3 дня. До 5 человек.")[0]
+    assert not F.kept_ok("Лимит 5 ГБ.", "Лимит 5 ГБ.", "Лимит 5 МБ.")[0]
+    assert F.kept_ok("Срок 5 рабочих дней.", "Срок 5 рабочих дней.", "Срок 5 дней.")[0], "лишний отказ на «рабочих»"
+    assert F.kept_ok("Срок 5 дней.", "Срок 5 дн.", "срок: 5 дней")[0]
+    # «10мин» и «19.10.2026г.» читаются
+    assert ("u", "10|мин") in F.tokens("через 10мин")
+
+
+@test
+def test_link_names_distinguish_a_real_code_from_a_longer_one(tmp: Path):
+    """`[[ALG-3]]` — не `ALG-3.14…`, `[[ALG-31.4 Учёт операции]]` — не `ALG-3.14 Учёт операции`; `[[ALG-3.14]]` — своя."""
+    import agent_runner as AR
+    root = tmp / "p"
+    (root / "AuroraKnowledgeDB" / "Concepts").mkdir(parents=True)
+    for name in ("ALG-3.14 Учёт операции", "US-4-7 Заявка"):
+        (root / "AuroraKnowledgeDB" / "Concepts" / f"{name}.md").write_text("---\ntitle: x\n---\n\nТ.\n", encoding="utf-8")
+    cards = ["ALG-3.14 Учёт операции", "US-4-7 Заявка"]
+    pack = "## ALG-3.14 Учёт операции\n\nт\n\n## US-4-7 Заявка\n\nт"
+    got = AR.classify_links("[[ALG-3.14]] [[ALG-3]] [[ALG-31.4 Учёт операции]] [[US-4]] [[US-4-7]]", cards, pack, str(root))
+    flagged = set(got["invented"]) | set(got["mentioned"]) | set(got["outside"])
+    assert flagged == {"ALG-3", "ALG-31.4 Учёт операции", "US-4"}, got
+
+
+@test
+def test_chunked_momus_keeps_unnamed_violations_contradictions_and_failures(_t):
+    """Безымянные нарушения не теряются, противоречие не снимается чужим куском, сбой куска — проверка не состоялась."""
+    import agent_runner as AR
+
+    def make(replies):
+        calls = []
+
+        def call(_cfg, _role, msgs, **_kw):
+            calls.append(msgs[0]["content"])
+            r = replies[min(len(calls) - 1, len(replies) - 1)]
+            if r is None:
+                return {"ok": False, "log": ["нет связи"], "text": "", "model": "m", "backend": "b"}
+            return {"ok": True, "text": r, "model": "m", "backend": "b", "finish": "stop"}
+        return call, calls
+    cfg = {"request_timeout": 60}
+    first = "НЕТ ОПОРЫ срок 5 дней\nВЕРДИКТ: БЕЗ ОПОРЫ 3"            # насчитал три, назвал одно
+    call, _ = make([first, "ВЕРДИКТ: ЧИСТО"])
+    mo = AR.run_momus_chunks(cfg, ["A", "B"], "в", "срок 5 дней", call)
+    assert mo["ok"] and mo["unsupported"] == 2 and not mo["clean"], mo        # названное снято, два безымянных остались
+    contra = "ПРОТИВОРЕЧИЕ срок ↔ «3 дня»\nНЕТ ОПОРЫ лимит\nВЕРДИКТ: БЕЗ ОПОРЫ 2"
+    call, _ = make([contra, "ВЕРДИКТ: ЧИСТО"])
+    mo = AR.run_momus_chunks(cfg, ["A", "B"], "в", "ответ", call)
+    assert mo["unsupported"] == 1 and "ПРОТИВОРЕЧИЕ" in mo["text"], mo          # чужой кусок противоречия не снимает
+    call, _ = make([first, None])
+    mo = AR.run_momus_chunks(cfg, ["A", "B"], "в", "ответ", call)
+    assert mo["ok"] is False and "часть источника не проверена" in mo["why"], mo
+    call, _ = make(["ОПОРА «срок 5 дней»\nНЕТ ОПОРЫ лимит\nВЕРДИКТ: БЕЗ ОПОРЫ 1", "ВЕРДИКТ: БЕЗ ОПОРЫ 1\nНЕТ ОПОРЫ лимит"])
+    mo = AR.run_momus_chunks(cfg, ["A", "B"], "в", "ответ", call)
+    assert "quotes" not in mo and "suspect" not in mo, "устаревшие пометки первого вызова просочились в итог"
+
+
+@test
+def test_quotes_need_consecutive_words_and_hostile_text_stays_fast(_t):
+    """Подмена слова в цитате ловится, набор обычных слов по большому контексту — нет; враждебный ввод не вешает проверку."""
+    import time
+    import fidelity as F
+    ctx = "в течение пяти рабочих дней после получения заявки платёж проводится автоматически"
+    assert F.quote_found("в течение пяти рабочих дней после получения", ctx)
+    for fake in ("в течение трёх рабочих дней после получения", "в течение пяти рабочих часов после получения",
+                 "в течение пяти рабочих дней после отправки заявки"):
+        assert not F.quote_found(fake, ctx), fake
+    big = " ".join("слово%d" % i for i in range(20000)) + " " + ctx
+    assert not F.quote_found("слово3 слово777 слово19999 в течение дней после платёж", big)
+    # хвост-пояснение строки «ОПОРА» не часть цитаты
+    assert F.opora_quotes("ОПОРА «срок пять дней» (утверждение 2)") == ["срок пять дней"]
+    started = time.process_time()
+    for hostile in ("[[a" * 8000, "a" + "\u0301\u0316" * 20000, "1 " + "111 " * 20000):
+        F.tokens(hostile)
+        F.check_quotes("ОПОРА «что-то длинное и придуманное целиком»", hostile)
+    assert time.process_time() - started < 20, "проверка на враждебном вводе стала квадратичной"

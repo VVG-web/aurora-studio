@@ -444,16 +444,22 @@ def parse_answer(text: str, ids: list) -> dict | None:
     return {"checks": checks, "split": str(data.get("split") or "").strip()}
 
 
+_QUOTED = re.compile(r"[«\"“]([^»\"”]{8,400})[»\"”]")
+
+
 def verify_evidence(parsed: dict, text: str) -> list:
     """Цитата-доказательство ответа должна быть в тексте, который модели показали. → id ответов, которые не прошли.
 
     Выдуманная цитата засчитывалась как доказательство: «нет» с придуманной выдержкой снижало оценку, «да» с ней
-    поднимало. Ответ с цитатой, которой нет в странице, понижается до `unknown` (воздержался), цитата остаётся
-    в отчёте с пометкой. Пересказ вместо дословной выдержки допустим: слова цитаты ищутся с допуском (`fidelity`)."""
+    поднимало. Проверяется то, что в кавычках («…»): остальное в `evidence` — описание («нет раздела X», «AC п.4:
+    сценария отказа нет»), а не выдержка, и сверять его с текстом нечем. Все выдержки отсутствуют на странице —
+    ответ понижается до `unknown` (воздержался), прежний ответ остаётся в `unverified` и виден в отчёте. Пересказ
+    вместо дословной выдержки допустим: слова выдержки ищутся с допуском (`fidelity`)."""
     bad = []
+    plain = FID._plain(text)
     for cid, a in (parsed.get("checks") or {}).items():
-        ev = a.get("evidence") or ""
-        if ev and a.get("v") in ("yes", "no") and not FID.quote_found(ev, text):
+        quotes = [q.strip() for q in _QUOTED.findall(a.get("evidence") or "") if q.strip(" .…")]
+        if quotes and a.get("v") in ("yes", "no") and not any(FID.quote_found(q, plain, plain=True) for q in quotes):
             a["unverified"] = a["v"]
             a["v"] = "unknown"
             bad.append(cid)
@@ -525,7 +531,8 @@ def vote(cl: dict, profile: str, runs: list, l0: dict) -> dict:
         side = fail if v == "no" else ok_n
         out[cid] = {"v": v, "evidence": ev, "fix": fix,
                     "votes": f"{side}/{len(seq)}" if seq else "0/0",
-                    "stable": len(blocs) <= 1, "tie": tie, "all": seq}
+                    "stable": len(blocs) <= 1, "tie": tie, "all": seq,
+                    "unverified": sorted({a["unverified"] for a in answers if a.get("unverified")})}
     return out
 
 
@@ -773,7 +780,8 @@ def render(rec: dict, cl: dict) -> str:
         L += ["", f"**Предложение по разделению:** {rec['split']}"]
     unk = [i for i, a in rec["answers"].items() if a["v"] == "unknown"]
     L += ["", "## Не определено", ""]
-    L += [f"* {i}. {checks[i]['question']}" for i in unk] or ["Нет."]
+    L += [f"* {i}. {checks[i]['question']}" + (" — цитата ответа не найдена на странице" if rec["answers"][i].get("unverified") else "")
+          for i in unk] or ["Нет."]
     L += ["", "## Все вопросы", "", "| Вопрос | Критичность | Ответ | Голоса |", "|---|---|---|---|"]
     for i, a in rec["answers"].items():
         mark = "" if a["stable"] else " ⚠"

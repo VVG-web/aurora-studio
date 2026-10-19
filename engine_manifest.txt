@@ -52,6 +52,9 @@ scripts/run_summary.py   => .aurora/scripts/run_summary.py
 # реестр модулей источников: `aurora_common.service_dirs` (папки зеркал по роли сервиса, BL-DEC-06) спрашивает его на каждой
 # карточке, поэтому он стоит раньше всех, кто ищет зеркала (kb_lint, kb_trust, ctx_pack): обрыв обновления не оставит их без реестра
 scripts/sources_registry.py => .aurora/scripts/sources_registry.py
+# механический слой под Момусом (числа, цитаты, вердикт): его жёстко импортируют agent_runner и review_run — поэтому
+# раньше них; без строки здесь проект после обновления не запускал бы ни агента, ни ревью (ModuleNotFoundError)
+scripts/fidelity.py         => .aurora/scripts/fidelity.py
 # общая часть синка
 scripts/sources_core.py     => .aurora/scripts/sources_core.py
 # длина путей на Windows, macOS и Linux: проверка настройки, подсказка при старте прогона, doctor
