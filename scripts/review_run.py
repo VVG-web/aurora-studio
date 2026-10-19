@@ -452,22 +452,52 @@ _ABSENCE = re.compile(r"(?i)\b(?:нет|отсутств\w*|не\s+(?:указа
 _GAP = re.compile(r"\s*(?:\[\s*(?:…|\.{3})\s*\]|…|\.{3})\s*")
 
 
+def _title_like(quote: str) -> bool:
+    """Короткая выдержка, похожая на название (до четырёх слов и сорока восьми знаков), а не на предложение страницы."""
+    return len(quote) <= 48 and len(quote.split()) <= 4
+
+
 def _checkable_quotes(evidence: str) -> list:
     """Выдержки из `evidence`, которые есть чем сверять. Название того, чего на странице нет («нет раздела
-    «Нефункциональные требования»»), выдержкой не является: ответ «нет» на то и ответ, что этого в тексте нет."""
+    «Нефункциональные требования»»), выдержкой не является: ответ «нет» на то и ответ, что этого в тексте нет.
+    Освобождается только короткое название после слова об отсутствии: длинная «цитата» там — выдумка, и её сверяют."""
     out = []
     for m in _QUOTED.finditer(evidence):
         q = m.group(1).strip()
-        if not q.strip(" .…") or _ABSENCE.search(evidence[max(0, m.start() - 40):m.start()]):
+        if not q.strip(" .…"):
+            continue
+        if _title_like(q) and _ABSENCE.search(evidence[max(0, m.start() - 40):m.start()]):
             continue
         out.append(q)
     return out
 
 
+_PART_MIN = 12          # знаков в куске выдержки с пропуском: «срок» и «дней» находятся в любом тексте
+
+
 def _quote_there(quote: str, plain: str) -> bool:
-    """Выдержка с пропуском («срок… не более 5 дней», `[...]`) найдена, если найден каждый её кусок."""
-    parts = [p for p in (x.strip() for x in _GAP.split(quote)) if len(p.strip(" .,;:")) >= 4]
-    return all(FID.quote_found(p, plain, plain=True) for p in parts) if parts else True
+    """Выдержка найдена в тексте. С пропуском («срок… не более 5 дней», `[...]`) — по кускам: каждый достаточно
+    длинный кусок должен найтись, и подряд (следующий не раньше конца прежнего и не дальше 600 знаков от него);
+    короткие куски ничего не доказывают, и если других нет, сверяется вся выдержка целиком."""
+    parts = [p for p in (x.strip() for x in _GAP.split(quote)) if p.strip(" .,;:")]
+    if len(parts) <= 1:
+        return FID.quote_found(parts[0] if parts else quote, plain, plain=True)
+    solid = [FID._plain(p) for p in parts if len(FID._plain(p)) >= _PART_MIN or len(FID._plain(p).split()) >= 3]
+    if not solid:
+        return FID.quote_found(" ".join(parts), plain, plain=True)
+    last = 0
+    for q in solid:
+        i = plain.find(q, last)
+        if i < 0:
+            if q in plain:      # кусок есть, но раньше предыдущего: порядок выдержки нарушен
+                return False
+            if not FID.quote_found(q, plain, plain=True):       # пересказан: порядок не проверить, слова — должны быть
+                return False
+            continue
+        if last and i - last > 600:
+            return False
+        last = i + len(q)
+    return True
 
 
 def verify_evidence(parsed: dict, text: str) -> list:

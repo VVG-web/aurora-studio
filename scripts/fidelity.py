@@ -76,6 +76,8 @@ def _calm(text: str) -> str:
     text = text or ""
     if text.isascii():
         return text
+    if not any(unicodedata.combining(c) for c in set(text)):    # разных знаков в тексте немного: обычный текст идёт быстро
+        return unicodedata.normalize("NFKC", text)
     out, run = [], 0
     for ch in text:
         if unicodedata.combining(ch):
