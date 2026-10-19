@@ -239,7 +239,7 @@ class Api(RestApi):
 
     def by_title(self, space: str, title: str) -> dict:
         q = urllib.parse.quote(title)
-        data = self.get(f"/rest/api/content?spaceKey={space}&title={q}&limit=5")
+        data = self.get(f"/rest/api/content?spaceKey={urllib.parse.quote(str(space), safe='')}&title={q}&limit=5")
         hits = data.get("results", [])
         return hits[0] if hits else {}
 

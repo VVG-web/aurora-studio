@@ -401,3 +401,66 @@ def test_doctor_reports_released_versions_that_were_touched(tmp: Path):
     cp = subprocess.run([sys.executable, ".aurora/scripts/aurora_doctor.py"], cwd=str(root), capture_output=True,
                         text=True, encoding="utf-8", errors="replace", timeout=180)
     assert "Spec_v1.0_2026-10-19.md" in cp.stdout + cp.stderr, cp.stdout[-1500:]
+
+
+@test
+def test_export_does_not_carry_foreign_html_or_script_links_into_the_output(_t):
+    """Текст приходит из базы: `--sandbox` не мешает pandoc записать в html `<script>` и `javascript:` — это закрыто до pandoc.
+
+    Ссылки со схемами `javascript:`, `data:`, `vbscript:`, `file:` остаются подписью; в html-экспорте начало тега вне
+    кода экранируется (код и автоссылки не трогаются); без `--sandbox` картинки заменяются подписью; всё это быстро."""
+    import time
+    import ship_doc as S
+    t = S.neutralize_links("[a](javascript:alert(3)) [b]( JavaScript:x) [c](https://example.org) [d](java&#115;cript:x) "
+                           "[e](data:text/html;base64,AAA)\n[r]: file:///etc/passwd\n<javascript:alert(1)>\n")
+    assert "javascript" not in t.casefold().replace("java&#115;", "") and "data:" not in t and "file:" not in t, t
+    assert "[c](https://example.org)" in t
+    h = S.escape_raw_html("# T\n\n<script>x()</script>\n\nтекст `<b>` и <b onclick=x>ж</b> <https://example.org/a> "
+                          "<me@example.org>\n\n```html\n<script>в коде</script>\n```\n\n<!-- c -->\n")
+    assert "&lt;script>x()&lt;/script>" in h and "&lt;b onclick=x>ж&lt;/b>" in h and "&lt;!-- c -->" in h, h
+    assert "`<b>`" in h and "<script>в коде</script>" in h and "<https://example.org/a>" in h and "<me@example.org>" in h, h
+    assert S.strip_images("до ![схема](a.png) и <img src=x> после") == "до схема и  после"
+    started = time.process_time()
+    for bad in ("<a " * 100000 + "`" * 50000, ("`" * 15 + "a ") * 30000, "<a `x" * 30000):
+        S.escape_raw_html(bad)
+    assert time.process_time() - started < 5, "разбор сырого HTML стал квадратичным"
+
+
+@test
+def test_gate_and_scanners_survive_hostile_text_and_see_what_the_boundary_hides(tmp: Path):
+    """Незакрытые ограждения и длинные цепочки точек не вешают предохранитель и сканер ПДн; заголовок производства выше
+    границы заметен (предупреждение, не блок: «Допущения» бывают содержанием); BOM в начале файла не прячет `status: draft`."""
+    import time
+    import aurora_common as C
+    import kb_scrub
+    started = time.process_time()
+    C._without_code("```a\n" * 50000)
+    C._without_code(("```\n~~~\n" * 20000))
+    kb_scrub.scan("a." * 20000)
+    kb_scrub.scan("x" * 100 + "@" + "b." * 20000)
+    assert time.process_time() - started < 10, "разбор текста стал квадратичным"
+    assert C._without_code("до\n```\n{{x}}\n```\nпосле {{y}} `{{z}}`") == "до\n \nпосле {{y}}  "
+    assert "{{x}}" in C._without_code("```\n{{x}}\n"), "незакрытое ограждение остаётся текстом, как прежде"
+    assert kb_scrub.scan("пишите ivan.petrov@example.org срочно")[0][0] == "почта"
+    above = _doc(body=CLEAN + "\n## Допущения\n\nвходит в содержание\n\n" + MARK + "\n" + KITCHEN)
+    found = C.outward_gate(above, None)
+    assert [(lv, c) for lv, c, _m in found] == [("warn", "production-heading")], found
+    assert C.gate_blocked(found, []) == []
+    root = _publish_project(tmp)
+    doc = root / "Artifacts" / "reports" / "итог.md"
+    doc.write_bytes(b"\xef\xbb\xbf" + _doc(head="type: deliverable\nstatus: draft\n").encode("utf-8"))
+    cp = run("publish_doc.py", "Artifacts/reports/итог.md", "--apply", cwd=root)
+    assert cp.returncode == 2 and "[draft]" in cp.stdout, (cp.returncode, cp.stdout, cp.stderr)
+
+
+@test
+def test_find_by_title_does_not_let_the_space_add_query_parameters(_t):
+    """Пространство из `publish_parent` шапки уходит в запрос кодированным: `A&limit=1` не добавляет параметр."""
+    import confluence_export as CE
+    import publish_doc as P
+    for cls in (P.Writer, CE.Api):
+        asked = []
+        api = object.__new__(cls)
+        api.get = lambda path, _a=asked: _a.append(path) or {}
+        (api.find_by_title if cls is P.Writer else api.by_title)("A&limit=1", "Т")
+        assert asked and "spaceKey=A%26limit%3D1&" in asked[0] and "spaceKey=A&limit" not in asked[0], asked

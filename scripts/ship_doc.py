@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import os
 import re
 import shutil
@@ -83,6 +84,65 @@ def _pandoc_sandbox(pandoc: str) -> bool:
 
 
 IMAGE_RE = re.compile(r"!\[[^\]\n]{0,300}\]\([^)\n]{1,500}\)|<img\b", re.I)
+_IMG_MD = re.compile(r"!\[([^\]\n]{0,300})\]\([^)\n]{1,500}\)")
+_IMG_TAG = re.compile(r"<img\b[^>\n]{0,500}>?", re.I)
+_BAD_SCHEME = re.compile(r"(?i)^[\s\x00-\x1f]*(?:javascript|data|vbscript|file):")
+_MD_LINK = re.compile(r"(?<!!)\[([^\]\n]{0,300})\]\(\s*<?([^)\n]{1,2000})\)")
+_REF_DEF = re.compile(r"(?im)^ {0,3}\[[^\]\n]{1,200}\]:[ \t]*<?(?:javascript|data|vbscript|file):[^\n]{0,2000}$")
+_AUTOLINK = re.compile(r"(?i)<(?:javascript|data|vbscript|file):[^>\n]{0,2000}>")
+
+
+def neutralize_links(text: str) -> str:
+    """Ссылки со схемой `javascript:`, `data:`, `vbscript:`, `file:` теряют адрес и остаются подписью.
+
+    Текст приходит из базы (Confluence, модель), а экспорт в html открывает заказчик: pandoc переносит адрес как есть,
+    и `--sandbox` этому не мешает (он запрещает pandoc читать файлы и сеть, а не писать опасный адрес в вывод)."""
+    def fix(m):
+        return m.group(1) if _BAD_SCHEME.match(html.unescape(m.group(2))) else m.group(0)
+    return _AUTOLINK.sub("", _REF_DEF.sub("", _MD_LINK.sub(fix, text)))
+
+
+_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)$")
+_TAG = re.compile(r"<(?=[A-Za-z/!?])(?![A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*>)(?![^\s<>@]+@[^\s<>]+>)")
+_SPAN = re.compile(r"(`{1,16})(?!`)(.{1,500}?)(?<!`)\1(?!`)")
+
+
+def escape_raw_html(text: str) -> str:
+    """Начало тега (`<script`, `</a`, `<!--`) вне кода → `&lt;`: html-экспорт не получает чужой сырой HTML.
+
+    `--sandbox` pandoc не запрещает ему попасть в вывод, а расширение `raw_html` блоки HTML не отключает. Блоки и
+    строки кода не трогаются (ограждение — по правилам CommonMark: закрывает такое же и не короче), автоссылки
+    `<https://…>` и `<имя@хост>` остаются. Тег внутри многострочного кода-в-строке экранируется лишним: это только
+    вид, не безопасность."""
+    out, fence = [], None
+    for line in text.split("\n"):
+        if fence:
+            m = re.fullmatch(r" {0,3}([`~]{3,})[ \t]*", line)
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+                fence = None
+            out.append(line)
+            continue
+        m = _FENCE.fullmatch(line)
+        if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+            fence = m.group(1)
+            out.append(line)
+            continue
+        if len(line) > 2000:            # длинную строку не разбирают на код-в-строке: теги в ней экранируются все
+            out.append(_TAG.sub("&lt;", line))
+            continue
+        parts, last = [], 0
+        for span in _SPAN.finditer(line):
+            parts.append(_TAG.sub("&lt;", line[last:span.start()]))
+            parts.append(span.group(0))
+            last = span.end()
+        parts.append(_TAG.sub("&lt;", line[last:]))
+        out.append("".join(parts))
+    return "\n".join(out)
+
+
+def strip_images(text: str) -> str:
+    """Картинки → подпись: у pandoc без `--sandbox` адрес картинки из текста — это чтение файла или обращение по сети."""
+    return _IMG_TAG.sub("", _IMG_MD.sub(lambda m: m.group(1), text))
 
 
 def export(source: str, fmt: str, reference: str, out: str, keep_links: bool, allow=(),
@@ -96,7 +156,7 @@ def export(source: str, fmt: str, reference: str, out: str, keep_links: bool, al
               "`winget install --id JohnMacFarlane.Pandoc -e`, Linux: `sudo apt install pandoc`",
               file=sys.stderr)
         return 1
-    raw = open(source, encoding="utf-8").read()
+    raw = open(source, encoding="utf-8-sig").read()      # BOM: без него шапка не читалась и draft не был виден
     fm = frontmatter(raw)
     stuck = gate(raw, set(allow), True, "экспорт")
     if stuck:
@@ -105,6 +165,9 @@ def export(source: str, fmt: str, reference: str, out: str, keep_links: bool, al
     text = clean_copy(md_body(raw))
     if not keep_links:
         text = flatten_links(text)
+    text = neutralize_links(text)
+    if fmt == "html":       # в docx/odt/pdf сырой HTML pandoc отбрасывает, в html-экспорт он попал бы как есть
+        text = escape_raw_html(text)
 
     warnings = []
     if not (fm.get("based_on") or "").strip("[] "):
@@ -121,8 +184,9 @@ def export(source: str, fmt: str, reference: str, out: str, keep_links: bool, al
     sandbox = not embed_images and _pandoc_sandbox(pandoc)
     cmd = [pandoc, "-f", "gfm", "-o", target, "--from", "gfm", "--standalone"] + (["--sandbox"] if sandbox else [])
     if not embed_images and not sandbox:
-        warnings.append("pandoc старше 2.15 не знает --sandbox: экспорт идёт без защиты от чтения файлов и адресов "
-                        "из текста — обновите pandoc")
+        text = strip_images(text)
+        warnings.append("pandoc старше 2.15 не знает --sandbox: картинки заменены подписью, чтобы текст не читал файлы и "
+                        "адреса, — обновите pandoc")
     images = len(IMAGE_RE.findall(text))
     if images and sandbox:
         warnings.append(f"в документе картинок: {images} — в экспорт они не встроены (песочница pandoc); "
@@ -196,7 +260,7 @@ def main() -> int:
         print(f"ship_doc: замораживать можно только документы из {WORK}/", file=sys.stderr)
         return 1
 
-    text = open(a.document, encoding="utf-8").read()
+    text = open(a.document, encoding="utf-8-sig").read()
     fm = frontmatter(text)
     stem = os.path.basename(a.document)[:-3]
     # doc и version приходят из шапки документа (а шапку пишет и модель), и по ним строится имя файла:

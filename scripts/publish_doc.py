@@ -61,7 +61,7 @@ class Writer(Api):
 
     def find_by_title(self, space: str, title: str) -> dict:
         q = urllib.parse.quote(title)
-        data = self.get(f"/rest/api/content?spaceKey={space}&title={q}"
+        data = self.get(f"/rest/api/content?spaceKey={urllib.parse.quote(str(space), safe='')}&title={q}"
                         "&expand=version,body.storage&limit=5")
         hits = data.get("results", [])
         return hits[0] if hits else {}
@@ -341,7 +341,7 @@ def main() -> int:
         print(f"publish: {path} — ссылка за пределы проекта или на внутренний слой доверия, "
               "не публикуется", file=sys.stderr)
         return 1
-    text = open(path, encoding="utf-8").read()
+    text = open(path, encoding="utf-8-sig").read()
     fm = frontmatter(text)
     # В чистовик уходит только документ: уточнения, допущения, замечания критика и
     # план — это производство, и команде разработки они не нужны. Режем по маркеру, а
