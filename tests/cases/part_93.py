@@ -278,6 +278,22 @@ def test_failed_compat_restores_the_whole_venv_from_the_previous_snapshot(tmp: P
 
 
 @test
+def test_rollback_does_not_use_a_snapshot_of_another_version(tmp: Path):
+    """venv правили мимо движка: снимок не про ту версию, что стоит, — откат одним верхним пакетом, а не «целиком» по чужому."""
+    pip = Pip(rounds=[[("pydantic-ai", "9.0.0", "hp")]], ages={("pydantic-ai", "9.0.0"): 30},
+              freeze="pydantic-ai==2.51.0\nhttpx==0.28.1\n")
+    EX, _venv = _patched(tmp, pip)
+    pip.have[0] = "2.40.0"
+    try:
+        res = EX.install("pydantic-ai", 7)
+        assert not res["ok"] and res.get("rolled_back") == "9.0.0", res
+        assert "venv возвращён целиком" not in res["log"], res["log"]
+        assert any(c == "pydantic-ai==2.40.0" for call in pip.calls for c in call), "откат не вернул стоявшую версию"
+    finally:
+        importlib.reload(EX)
+
+
+@test
 def test_restore_keeps_the_old_venv_when_the_rebuild_fails(tmp: Path):
     """Откат по снимку не вышел — прежний venv возвращается на место, ничего не потеряно."""
     pip = Pip(rounds=[], ages={})
@@ -412,6 +428,18 @@ def test_a_network_failure_is_not_a_reason_to_allow_source_builds(tmp: Path):
         text, why = EX.plan_lock(Path("python"), "a", 7, NOW)
         assert text == "" and why, (text, why)
         assert sum(1 for c in pip.calls if "--report" in c) == 1, "после обрыва связи набор решается второй раз"
+        # имя пакета со словом «network»/«ssl» — не сбой сети: «нет колеса» остаётся причиной повтора
+        def no_wheel_named(cmd, timeout=60):
+            if "--report" in cmd and "--only-binary=:all:" in cmd:
+                pip.calls.append([str(c) for c in cmd])
+                return subprocess.CompletedProcess(cmd, 1, "", "ERROR: No matching distribution found for networkx==3.0 (pyopenssl proxy)")
+            return real(cmd, timeout)
+        EX._run = no_wheel_named
+        pip.rounds[:] = [[("networkx", "3.0", "ab" * 32)]]
+        pip.calls.clear()
+        said = []
+        text, why = EX.plan_lock(Path("python"), "networkx", 7, NOW, log=said)
+        assert sum(1 for c in pip.calls if "--report" in c) == 2 and said, (pip.calls, said)
     finally:
         importlib.reload(EX)
 
@@ -444,7 +472,9 @@ def test_snapshots_are_checked_when_read_and_every_pip_runs_isolated(tmp: Path):
         seen = [c for c in pip.calls if "-m" in c and ("pip" in c or "venv" in c)]
         assert seen, pip.calls
         for c in seen:
-            assert c[c.index("-m") - 1] == "-I", c
+            assert "-I" in c[:c.index("-m")], c
+            if "pip" in c[c.index("-m"):]:
+                assert c[c.index("-m") - 2:c.index("-m")] == ["-X", "utf8"], c       # -I отбросил бы PYTHONUTF8
     finally:
         importlib.reload(EX)
 
@@ -573,6 +603,12 @@ def test_panel_installs_pinned_or_aged_python_packages(tmp: Path):
         assert out["ok"] and seen[-1][-1] == f"beautifulsoup4=={EX.requirements_pins()['beautifulsoup4']}", seen
         out = ck.env_install("lxml")
         assert out["ok"] and seen[-1][-1] == "lxml<=5.0.0", seen
+        # -P только там, где он есть (Python 3.11+); markdownify ставится вместе с закреплённым beautifulsoup4
+        assert ("-P" in seen[-1]) == (sys.version_info >= (3, 11)), seen[-1]
+        pins = EX.requirements_pins()
+        ck.environment = lambda fresh=False: {"items": [{"pip": "markdownify", "ok": True}]}
+        out = ck.env_install("markdownify")
+        assert seen[-1][-2:] == [f"markdownify=={pins['markdownify']}", f"beautifulsoup4=={pins['beautifulsoup4']}"], seen[-1]
         EX.aged_version = lambda dist, days, now=0.0: (_ for _ in ()).throw(OSError("нет сети"))
         out = ck.env_install("lxml")
         assert seen[-1][-1] == "lxml" and "паузу после выпуска проверить не удалось" in out["output"], (seen, out)
