@@ -84,6 +84,7 @@ scripts/kb_trace.py      => .aurora/scripts/kb_trace.py
 scripts/kb_trace_table.py  => .aurora/scripts/kb_trace_table.py
 scripts/kb_trust.py        => .aurora/scripts/kb_trust.py
 scripts/kb_kind.py         => .aurora/scripts/kb_kind.py
+scripts/kb_conform.py       => .aurora/scripts/kb_conform.py
 scripts/agent_core.py    => .aurora/scripts/agent_core.py
 scripts/model_config.py  => .aurora/scripts/model_config.py
 # доступность соединений: профили VPN, probe, состояние; его читают команды `net:*`, агент, боты и синк

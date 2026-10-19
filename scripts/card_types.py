@@ -1670,7 +1670,11 @@ def _validate(text: str, path: str, reg: Registry, add, seen: dict, raw_ok: bool
         if not sources:
             add("V-02", kline("sources"), "нет sources у карточки, собранной машиной", "sources — блок путей источников")
         if _blank(fm, "source_synced"):
-            add("V-02", kline("source_synced"), "нет source_synced у карточки, собранной машиной", "дата сверки с источником")
+            # Дата сверки — факт синхронизации с источником; выдумать её нельзя, а у карточек прежних сборок поля нет
+            # (замер на базе-образце: 68 из 906). Отсутствие — предупреждение: иначе такие карточки не получили бы
+            # штамп `template:`, а штамп означает «проходит валидатор» и для них никогда не станет верным.
+            add("V-02", kline("source_synced"), "нет source_synced у карточки, собранной машиной", "дата сверки с источником",
+                severity="warn")
     if not tpl:
         add("V-02", kline("template"), "нет поля template: карточка до-шаблонная", "template: " + ct.template_file,
             severity="info")
@@ -1921,6 +1925,85 @@ def template_stamps(project_root: str = ".") -> tuple:
         if (frontmatter(head_text(path)).get("template") or "").strip():
             stamped += 1
     return total, stamped
+
+
+# ----------------------------------------------------------------------------- миграция на шаблоны (CT-18…CT-20)
+#
+# Явная миграция существующей базы (`kb:conform`, `agent:conform`) ставит `template:` там, где карточка проходит
+# шаблон своего типа. Конец миграции записывает `kb:conform --finalize --apply` в `meta/conform_state.json`; после него
+# карточка без `template:` — ошибка линтера (кроме неуправляемых типов и записей, ждущих переноса в `Raw/`). Здесь —
+# то, что читают сразу три скрипта (миграция, линтер, доктор, `ops:todo`): состояние и правило исключений.
+
+CONFORM_STATE_REL = f"{KB_ROOT}/meta/conform_state.json"
+CONFORM_REPORT_REL = f"{KB_ROOT}/meta/conform_report.md"
+
+
+def conform_state(project_root: str = ".") -> dict:
+    """Состояние миграции: `{"complete": true, "date": …, "versions": {тип: версия}, "exceptions": {…}}`; файла нет,
+    он не читается или не словарь — пустой словарь (миграция не завершена)."""
+    try:
+        with open(os.path.join(str(project_root or "."), CONFORM_STATE_REL), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def migration_complete(project_root: str = ".") -> bool:
+    return conform_state(project_root).get("complete") is True
+
+
+def live_sources(project_root: str, text: str) -> list:
+    """Источники карточки, чьи файлы есть в проекте. Путь наружу проекта (абсолютный, с `..`) живым не считается."""
+    out = []
+    for src in card_sources(text):
+        s = src.replace("\\", "/").strip().rstrip("/")
+        if not s or os.path.isabs(s) or ".." in s.split("/"):
+            continue
+        if os.path.exists(os.path.join(str(project_root or "."), s)):
+            out.append(src)
+    return out
+
+
+def hand_written(project_root: str, text: str) -> bool:
+    """Происхождение карточки — человек или неизвестно: нет `built: machine` и нет ни одного живого источника (§14.4)."""
+    return (frontmatter(text).get("built") or "").strip() != "machine" and not live_sources(project_root, text)
+
+
+def pending_record(project_root: str, rel: str, text: str, reg: Registry) -> bool:
+    """Рукописная запись (решение, вопрос, справочник) в разделе базы: её переведёт в `Raw/` перенос записей, а не эта
+    миграция. Тип берётся из шапки, а без неё — из раздела; карточки с `built: machine` и с живым `sources` записями
+    не считаются (это зеркала или выведенное из источников)."""
+    parts = rel.split("/")
+    if len(parts) < 3:
+        return False
+    tid = (frontmatter(text).get("type") or "").strip() or reg.by_section.get(parts[1], "")
+    ct = reg.get(tid)
+    if ct is None or not ct.home or ct.section != parts[1]:
+        return False
+    return hand_written(project_root, text)
+
+
+def unmanaged_card(rel: str, fm: dict, reg: Registry) -> bool:
+    """Карточка неуправляемого типа (`spec`): движок шаблонов для неё не ведёт, штамп ей не нужен."""
+    parts = rel.split("/")
+    tid = (fm.get("type") or "").strip()
+    return tid in reg.unmanaged.values() or (len(parts) > 2 and parts[1] in reg.unmanaged)
+
+
+MISSING_TEMPLATE_MARK = "миграция на шаблоны завершена"
+
+
+def missing_template_error(project_root: str, rel: str, text: str, reg: Registry) -> str:
+    """Строка ошибки `kb:lint` для карточки без `template:` после завершения миграции; пусто — не ошибка.
+
+    Не ошибка: карточка со штампом, неуправляемого типа и рукописная запись, которая ждёт переноса в `Raw/`. Строка не
+    содержит сочетаний «ошибок <число>» и «карточек <число>»: итоговую строку линтера читают хук и панель."""
+    fm = frontmatter(text)
+    if (fm.get("template") or "").strip() or unmanaged_card(rel, fm, reg) or pending_record(project_root, rel, text, reg):
+        return ""
+    return (f"{rel}: карточка без template: {MISSING_TEMPLATE_MARK} — `kb:conform --apply` ставит штамп там, где карточка "
+            "проходит шаблон, `agent:conform --apply` раскладывает остальные дословным переносом строк")
 
 
 # ----------------------------------------------------------------------------- каталог типов карточек
@@ -2715,6 +2798,22 @@ def _as_typed(was: str, now: str, reg: Registry) -> str:
         return was
 
 
+def thesis_raw_ok(disk: "str | None", text: str) -> bool:
+    """Можно ли судить карточку «ещё без тезиса» (`validate_card(raw_ok=…)`): прежний текст `disk` и новый `text`.
+
+    Тезис у карточки уже был, если она несёт его отметку (`distilled`) или память о ней (`distilled_was`, её оставляет
+    обновление источника). Раздел «Источник» этого не доказывает: разбор заводит его и у карточек, которым тезис ещё
+    не писали (заготовка, наполненная текстом источника). Правка, снявшая отметку тезиса и оставившая память о ней,
+    возвращает карточку в «тезис ждёт» (ремонт вычистил из тезиса служебное, источник обновлён): её собственная часть
+    судится как перенос. Снять отметку без памяти о ней и подставить мусорное тело по-прежнему нельзя.
+    """
+    marks = frontmatter(disk) if disk else {}
+    settled = bool((marks.get("distilled") or "").strip() or (marks.get("distilled_was") or "").strip())
+    now_marks = frontmatter(text)
+    waiting = bool((now_marks.get("distilled_was") or "").strip()) and not (now_marks.get("distilled") or "").strip()
+    return (not settled) or waiting
+
+
 def _admit(path: str, new_text: str, op: str, reg: "Registry | None") -> tuple:
     """Суд над записью без самой записи: → (текст с `\\n`, совпадает ли с диском, ошибки шаблона).
 
@@ -2760,17 +2859,7 @@ def _admit(path: str, new_text: str, op: str, reg: "Registry | None") -> tuple:
                   "(aurora.py update вернёт шаблоны)", file=sys.stderr)
     else:
         strict = op in WRITE_OPS_STRICT or not (disk or "").strip()
-        # Тезис у карточки уже был, если она несёт его отметку (`distilled`) или память о ней (`distilled_was`, её
-        # оставляет обновление источника). Раздел «Источник» этого не доказывает: разбор заводит его и у карточек,
-        # которым тезис ещё не писали (заготовка, наполненная текстом источника).
-        marks = frontmatter(disk) if disk else {}
-        settled = bool((marks.get("distilled") or "").strip() or (marks.get("distilled_was") or "").strip())
-        # Правка, снявшая отметку тезиса и оставившая память о ней (`distilled_was`), возвращает карточку в «тезис ждёт»
-        # (ремонт вычистил из тезиса служебное, источник обновлён): её собственная часть судится как перенос. Снять отметку
-        # без памяти о ней и подставить мусорное тело по-прежнему нельзя.
-        now_marks = frontmatter(text)
-        waiting = bool((now_marks.get("distilled_was") or "").strip()) and not (now_marks.get("distilled") or "").strip()
-        raw_ok = (not settled) or waiting
+        raw_ok = thesis_raw_ok(disk, text)
         errors = _write_errors(text, rel, reg, template_required=strict, raw_ok=raw_ok)
         if strict:
             wrong = _section_violation(text, rel, reg)
