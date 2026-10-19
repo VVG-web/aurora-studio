@@ -90,6 +90,11 @@ def feature_files(root: str, paths) -> list:
     """Файлы `.feature`: переданные (файлы и папки) или `Artifacts/tests`; относительно корня, по порядку."""
     out = []
     for given in (paths or [FEATURES]):
+        if os.path.isabs(given):               # абсолютный путь внутри проекта — как относительный; снаружи — отказ
+            rr, rg = os.path.realpath(root), os.path.realpath(given)
+            if not rg.startswith(rr + os.sep):
+                continue
+            given = os.path.relpath(rg, rr)
         inside = real_inside(root, given)                     # `..`, абсолютные пути и ссылки наружу не выводят за проект
         if not inside:
             continue
@@ -100,7 +105,7 @@ def feature_files(root: str, paths) -> list:
         for dirpath, dirs, files in (safe_walk(base) if os.path.isdir(inside) else []):
             dirs[:] = sorted(d for d in dirs if not d.startswith("."))
             out += [os.path.join(dirpath, f) for f in sorted(files) if f.endswith(".feature")]
-    return sorted(dict.fromkeys(out))
+    return sorted({os.path.normpath(x): x for x in out}.values())          # `./a` и `a` — один файл
 
 
 def known_refs(root: str) -> set:

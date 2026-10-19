@@ -308,31 +308,41 @@ def weak_grounds(fm: dict) -> list:
     return weak
 
 
-def _kind_mask(fm: dict) -> str:
-    """Маска ключа вида артефакта (`artifacts: <вид>: ref_mask`), пусто — не объявлена."""
+def _kind_rec(fm: dict, path: str = "") -> dict:
+    """Запись вида артефакта из реестра проекта: по `type:` шапки, иначе по папке результата (самой глубокой).
+    Реестра нет или он не читается — пусто."""
     try:
         import make_kinds as MK
-        rec = (MK.read_kinds(".") or {}).get((fm.get("type") or "").strip().strip('"')) or {}
+        kinds = MK.read_kinds(".") or {}
     except Exception:  # noqa: BLE001 — реестр видов необязателен
-        return ""
-    return (rec.get("ref_mask") or "").strip()
+        return {}
+    kind = (fm.get("type") or "").strip().strip('"')
+    rec = kinds.get(kind) or kinds.get(kind.lower())
+    if rec or not path:
+        return rec or {}
+    here = os.path.normcase(os.path.realpath(path))
+    best = ("", {})
+    for r in kinds.values():
+        out = (r.get("out") or "").strip().strip("/")
+        base = os.path.normcase(os.path.realpath(out)) + os.sep if out else ""
+        if base and here.startswith(base) and len(base) > len(best[0]):
+            best = (base, r)
+    return best[1]
+
+
+def _kind_mask(fm: dict, path: str = "") -> str:
+    """Маска ключа вида артефакта (`artifacts: <вид>: ref_mask`), пусто — не объявлена."""
+    return (_kind_rec(fm, path).get("ref_mask") or "").strip()
 
 
 def review_gate(text: str, fm: dict, path: str = "") -> list:
     """Что мешает опубликовать: [(id, пояснение)] — только для вида, у которого в реестре объявлено ревью."""
+    rec = _kind_rec(fm, path)
     try:
         import make_kinds as MK
-        kinds = MK.read_kinds(".") or {}
-        profile = MK.review_profile
-    except Exception:  # noqa: BLE001 — реестр видов необязателен: без него ворот нет
+        profile = getattr(MK, "review_profile", None) or (lambda r: (r.get("review") or "").strip().lower())
+    except ImportError:
         return []
-    kind = (fm.get("type") or "").strip().strip('"')
-    rec = kinds.get(kind) or kinds.get(kind.lower())
-    if not rec:
-        # Вид не назван в шапке (или назван иначе): артефакт, лежащий в папке результата вида, ему и принадлежит.
-        here = os.path.realpath(path)
-        rec = next((r for r in kinds.values() if (r.get("out") or "").strip("/") and
-                    here.startswith(os.path.realpath((r["out"] or "").strip("/")) + os.sep)), None)
     if not rec or not profile(rec):
         return []
     try:
@@ -422,7 +432,7 @@ def main() -> int:
     if weak:
         print(f"⚠️ Наружу уходит непроверенное знание — основания ниже verified: "
               f"{', '.join(weak[:6])}")
-    mask = _kind_mask(fm)
+    mask = _kind_mask(fm, path)
     if mask and not (fm.get("ref_key") or "").strip():
         try:
             import id_registry as IDR

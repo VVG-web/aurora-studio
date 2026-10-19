@@ -69,13 +69,15 @@ from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на
 from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
 
 # «US-4.4.2», «US 4.4.2», «us_4.4.2», «AC-3.6.19»: разделитель не значим, регистр тоже.
+STORY_RE = re.compile(r"\b(US|AC)[ ._-]?(\d+(?:\.\d+)+)", re.I)
 KIND_STORY = "US"            # вид страницы-истории в `Graph.pages[…]["kind"]`; потребители графа берут его отсюда
 
 
 def criteria_of(hubs: dict, story: str) -> list:
     """Страницы критериев приёмки истории с этим номером — из центров связи `Graph.stories()`."""
     return (hubs.get(story) or {}).get("ac", [])
-STORY_RE = re.compile(r"\b(US|AC)[ ._-]?(\d+(?:\.\d+)+)", re.I)
+
+
 SUMMARY_RE = re.compile(r"\|\s*\*\*Summary\*\*\s*\|\s*([^|]+)\|")
 KEY_RE = re.compile(r"^\*\*Key\*\*|^#\s*([A-Z][A-Z0-9]+-\d+)\s*:", re.M)
 SERVICE_RE = re.compile(r"(sync_state|update_log|sync_report|SYNC_|_prompt|_template|"

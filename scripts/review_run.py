@@ -990,7 +990,7 @@ def review_file(cfg: dict, cl: dict, path: str, *, root: str = ".", profile: str
     prof = ""
     try:
         with open(full, encoding="utf-8", errors="ignore") as f:
-            prof = file_profile(rel, f.read(20000), profile)
+            prof = file_profile(rel, f.read(20000).lstrip("\ufeff"), profile)
     except OSError:
         pass
     rec = review_page(cfg, cl, reader, rel, profile=prof or "auto", runs=runs, depth=1, free=free, call=call,
@@ -1044,9 +1044,17 @@ def stamp_review(path: str, rec: dict, cl: dict, root: str = ".") -> bool:
     except (AssertionError, ValueError):
         return False
     tmp = f"{full}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8", newline="") as f:
-        f.write(bom + (out.replace("\n", eol) if eol != "\n" else out))
-    os.replace(tmp, full)                     # сбой посреди записи не оставляет половину артефакта
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(bom + (out.replace("\n", eol) if eol != "\n" else out))
+        try:
+            os.chmod(tmp, os.stat(full).st_mode & 0o7777)       # права исходного файла не теряются при замене
+        except OSError:
+            pass
+        os.replace(tmp, full)                 # сбой посреди записи не оставляет половину артефакта
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
     return True
 
 
@@ -1238,7 +1246,7 @@ def score_answers(cl: dict, req: dict) -> dict:
 def _cell(s: str) -> str:
     # Картинка, ссылка и тег из текста артефакта (его цитирует модель) подгружаются при открытии отчёта: остаётся подпись.
     s = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", str(s or ""))
-    s = re.sub(r"<[^<>]{1,200}>", " ", s)
+    s = re.sub(r"(?i)</?(?:img|a|script|iframe|link|svg|video|audio|object|embed|style|source|meta|form|input|button|base|picture|image|body|html)\b[^<>]{0,300}>", " ", s)
     return re.sub(r"\s+", " ", s).replace("|", "/").strip()
 
 

@@ -47,7 +47,7 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
-from aurora_common import KB_ROOT, lock_release, lock_take, safe_walk, utc_stamp  # noqa: E402
+from aurora_common import KB_ROOT, lock_read, lock_release, lock_take, safe_walk, utc_stamp  # noqa: E402
 
 STATE = ".aurora/state/ids"
 LOCK_WAIT_S = 15         # сколько ждать чужую выдачу: она длится миллисекунды
@@ -260,19 +260,23 @@ def allocate(ns: str, root: str = ".") -> str:
         if time.monotonic() > deadline:
             raise IdBusy(f"выдача номеров {ns} занята другим процессом дольше {LOCK_WAIT_S} с")
         time.sleep(0.03)
+    mine = lock_read(lock)
     try:
         number = next_number(root, ns)
         _ledger_write(root, ns, number)
         return format_id(ns, number)
     finally:
-        release(lock)
+        release(lock, mine)
 
 
-def release(lock: str) -> None:
-    """Снять свой замок; на Windows файл, который в эту минуту читает ожидающий, снимается не сразу — повторяем."""
+def release(lock: str, mine: dict) -> None:
+    """Снять свой замок. На Windows файл, который в эту минуту читает ожидающий, снимается не сразу — повторяем, но
+    только пока в файле наша запись: если замок уже снят или его взял следующий (у потоков одного процесса pid общий),
+    второй раз снимать нечего — чужой замок снять нельзя."""
     for _ in range(10):
-        lock_release(lock)
-        if not os.path.exists(lock):
+        if lock_read(lock) != mine:
+            return
+        if lock_release(lock):
             return
         time.sleep(0.02)
 
@@ -290,13 +294,14 @@ def allocate_many(ns: str, count: int, root: str = ".") -> list:
         if time.monotonic() > deadline:
             raise IdBusy(f"выдача номеров {ns} занята другим процессом дольше {LOCK_WAIT_S} с")
         time.sleep(0.03)
+    mine = lock_read(lock)
     try:
         first = next_number(root, ns)
         if count > 0:
             _ledger_write(root, ns, first + count - 1)
         return [format_id(ns, first + i) for i in range(count)]
     finally:
-        release(lock)
+        release(lock, mine)
 
 
 def duplicates(root: str = ".", spaces=None) -> dict:
@@ -395,7 +400,7 @@ def own_key(text: str, mask: str) -> str:
     if not rx:
         return ""
     lines = (text or "").splitlines()
-    marked = [ln for ln in lines if re.search(r"(?i)\bкод\b|\bkey\b", ln)]
+    marked = [ln for ln in lines if re.match(r"(?i)^\s*\|?\s*\**(?:код|key)\**\s*[|:]", ln)]
     if marked:                                  # строка «Код» есть: ключ документа — только на ней, чужие ключи не берутся
         for line in marked:
             found = find_keys(line, rx)

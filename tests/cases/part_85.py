@@ -1696,3 +1696,69 @@ def test_gate_mcp_story_lint_stops_at_the_read_boundary(tmp: Path):
             except M.ToolError as e:
                 out, err = str(e), True
             assert err and "СЕКРЕТНЫЙ" not in out and "sk-live" not in out, (tool, bad, out)
+
+
+@test
+def test_gate2_lock_is_released_once_and_never_the_next_holders(tmp: Path):
+    """Параллельная выдача номеров: замок снимается один раз, чужой (следующий) не снимается — повторов нет много раз подряд."""
+    ID = _mod("id_registry")
+    for attempt in range(4):
+        (tmp / f"p{attempt}").mkdir()
+        root = make_project(tmp / f"p{attempt}")
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            got = list(ex.map(lambda _i: ID.allocate("DR", str(root)), range(40)))
+        assert len(set(got)) == 40, (attempt, sorted(got))
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            parts = list(ex.map(lambda _i: ID.allocate_many("Q", 4, str(root)), range(10)))
+        flat = [x for p in parts for x in p]
+        assert len(set(flat)) == 40, (attempt, sorted(flat))
+        assert not (root / ".aurora/state/ids/DR.lock").exists()
+
+
+@test
+def test_gate2_names_by_token_remote_tags_only_and_key_row(tmp: Path):
+    """Имена: фамилии не склеиваются в слова моделей, ChatGPT и боты отвергаются; `<10 МБ` цело; «Код ответа» — не строка свойства."""
+    KD = _mod("kb_decide")
+    R = _mod("agent_runner")
+    ID = _mod("id_registry")
+    for bad in ("ChatGPT", "chatgpt-4", "Dependabot", "claude_code", "C l a u d e"):
+        assert KD.human_name(bad)[1], bad
+    for good in ("Paul Lamarche", "Daniel Lamas", "Karl Lama", "Jason Nettleton", "Alison Nettles", "Hai Kuo", "Samuel Lamanna"):
+        who, err = KD.human_name(good)
+        assert who and not err, good
+    assert R.decide_clean("при размере <10 МБ — синхронно, >10 МБ — асинхронно; a < b > c") == \
+        "при размере <10 МБ — синхронно, >10 МБ — асинхронно; a < b > c"
+    assert R.decide_clean('текст <img src="//a.example/x"> и <script>x</script> конец') == "текст и x конец"
+    doc = "| Ключ | RU.PRJ.US-1.1.1 |\nКод ответа 404.\n"
+    assert ID.own_key(doc, MASK) == "RU.PRJ.US-1.1.1"
+    assert ID.own_key("| Код | RU.PRJ.US-2.2.2 |\nСм. RU.PRJ.US-9.9.9\n", MASK) == "RU.PRJ.US-2.2.2"
+
+
+@test
+def test_gate2_review_profile_with_bom_feature_paths_and_folder_kinds(tmp: Path):
+    """Профиль файла с BOM; абсолютный путь внутри проекта и `./` для .feature; вид — самая глубокая папка; права файла при записи шапки."""
+    from harness import _review_checklist, _review_module
+    rr = _review_module()
+    cl = _review_checklist(rr)
+    FI = _mod("feature_ids")
+    root = _review_project(tmp)
+    (root / "Artifacts/us/alg.md").write_bytes("﻿---\ntype: alg\n---\n\n# Алгоритм\n".encode("utf-8"))
+    rec = rr.review_file({"request_timeout": 5}, cl, "Artifacts/us/alg.md", root=str(root), runs=1, call=_review_stub(cl))
+    assert rec["profile"] == "alg", rec.get("profile")
+    feat = _touch(root, "Artifacts/tests/a.feature", "Feature: A\n")
+    got = FI.feature_files(str(root), [str(feat), "Artifacts/tests/a.feature", "./Artifacts/tests/a.feature"])
+    assert len(got) == 1, got
+    # вид с общей папкой без ревью не перебивает вид с более глубокой папкой и ревью
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip() + '\nartifacts:\n  all:\n    template: T/a.md\n    out: Artifacts\n'
+                   '  us:\n    template: T/us.md\n    out: Artifacts/us\n    review: us\n', encoding="utf-8")
+    _touch(root, "Artifacts/us/Без-вида.md", "---\ntitle: в\n---\n\n# История\n")
+    cp = run("publish_doc.py", "Artifacts/us/Без-вида.md", cwd=root, expect_rc=2)
+    assert "review-missing" in cp.stderr, cp.stderr
+    if os.name != "nt":
+        os.chdir(root)
+        target = root / "Artifacts/us/US-1.1.1-приём.md"
+        os.chmod(target, 0o640)
+        rec = rr.review_file({"request_timeout": 5}, cl, "Artifacts/us/US-1.1.1-приём.md", root=str(root), runs=1, call=_review_stub(cl))
+        assert rr.stamp_review("Artifacts/us/US-1.1.1-приём.md", rec, cl, str(root))
+        assert (os.stat(target).st_mode & 0o777) == 0o640, "права файла потеряны при записи шапки"

@@ -51,7 +51,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 from aurora_common import (KB_ROOT, LINK_RE, MEETING_MARK, aliases as card_aliases, body as card_body, fold,  # noqa: E402
-                           frontmatter, link_targets, lock_release, lock_take, safe_walk, utc_today,
+                           frontmatter, link_targets, lock_read, lock_release, lock_take, safe_walk, utc_today,
                            with_fields)
 
 DECISIONS = f"{KB_ROOT}/Decisions"
@@ -65,8 +65,9 @@ TAIL = ("история", "история изменений", "под вопр�
 # невидимые знаки (нулевой ширины, мягкий перенос) убираются, латинские слова сверяются после `fold` (кириллическая «С»
 # в «Сlaude» становится латинской). Длинные слова ищутся по подстроке в сжатом имени (`claude_code`, «C l a u d e»),
 # короткие — только как отдельное слово: иначе инициалы «G. P. Thompson» или фамилия «Stallman» были бы отказом.
-LONG_WORDS = re.compile(r"claude|anthropic|openai|gemini|copilot|assistant|codex|sonnet|haiku|mistral|llama|deepseek|"
-                        r"aurora(?:studio|bot|engine)")
+LONG_WORDS = re.compile(r"claude|anthropic|openai|chatgpt|gemini|copilot|assistant|codex|sonnet|haiku|mistral|llama|"
+                        r"deepseek|dependabot|renovatebot")
+PROGRAM_NAMES = re.compile(r"aurora(?:studio|bot|engine)")        # название нашей программы, написанное через разделитель
 SHORT_WORDS = re.compile(r"(?<![a-z])(?:gpt|opus|llm|bot)(?![a-z])")
 RU_NOT_HUMAN = re.compile(r"(?<![а-яё])(?:клод|ассистент\w*|нейросет\w*|бот)(?![а-яё])")
 
@@ -74,8 +75,19 @@ RU_NOT_HUMAN = re.compile(r"(?<![а-яё])(?:клод|ассистент\w*|не
 def not_human(name: str) -> bool:
     plain = "".join(ch for ch in unicodedata.normalize("NFKC", name) if unicodedata.category(ch) not in ("Cf", "Mn"))
     low = fold(plain)
-    squashed = re.sub(r"[\s_.\-]+", "", low)
-    return bool(LONG_WORDS.search(squashed) or SHORT_WORDS.search(low) or RU_NOT_HUMAN.search(plain.lower()))
+    # Длинные слова ищутся внутри одного слова имени (`claude_code`, `ClaudeCode`) и в побуквенной записи «C l a u d e»;
+    # на стыке двух слов («Karl Lama» → «karllama») они не ищутся: это фамилии, а не модели.
+    tokens = [x for x in re.split(r"[^a-z0-9]+", low) if x]
+    runs, run = [], ""
+    for tok in tokens + [""]:
+        if len(tok) == 1:
+            run += tok
+        else:
+            if len(run) >= 4:
+                runs.append(run)
+            run = ""
+    return bool(any(LONG_WORDS.search(x) for x in tokens + runs) or SHORT_WORDS.search(low)
+                or PROGRAM_NAMES.search(re.sub(r"[^a-z0-9]+", "", low)) or RU_NOT_HUMAN.search(plain.lower()))
 
 
 # ------------------------------------------------------------------ разбор тела
@@ -307,12 +319,12 @@ def decide(root: str, ident: str, by: str, reject: bool, reason: str) -> tuple:
         time.sleep(0.05)
     if not got:
         return 1, ["kb_decide: решение сейчас меняет другой процесс — повторите"]
+    mine = lock_read(lock)
     try:
         return _decide_locked(root, path, by, reject, reason)
     finally:
         for _ in range(10):                          # Windows: файл замка, который читает ожидающий, снимается не сразу
-            lock_release(lock)
-            if not os.path.exists(lock):
+            if lock_read(lock) != mine or lock_release(lock):         # чужой (следующий) замок не снимаем
                 break
             time.sleep(0.02)
 
