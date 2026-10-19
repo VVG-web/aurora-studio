@@ -180,5 +180,7 @@ def test_kit_paths_is_a_read_only_command_in_the_registry_and_the_docs(tmp: Path
         assert "kit:paths" in (KIT / rel).read_text(encoding="utf-8"), rel
     script = (SCRIPTS / "path_budget.py").read_text(encoding="utf-8")
     assert "write_config" not in script and "aurora_setup" not in script, "проверка ничего не пишет в настройки"
-    assert 'open(' not in script.replace('open(os.path.join(root, "aurora.config.yaml"), encoding="utf-8", errors="ignore")', ""), \
-        "единственное чтение файла — конфиг; записей нет"
+    import re
+    assert not re.search(r"open\([^)]*,\s*[\"'][wax]b?\+?[\"']", script) and ".write(" not in script \
+        and "os.remove" not in script and "makedirs" not in script and "os.rename" not in script, \
+        "проверка только читает: файлы открываются на чтение (конфиг и текст выгрузчика), записей нет"
