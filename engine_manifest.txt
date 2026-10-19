@@ -70,6 +70,8 @@ scripts/id_registry.py   => .aurora/scripts/id_registry.py
 scripts/kb_decide.py     => .aurora/scripts/kb_decide.py
 # сценарии Gherkin (`ops:scenarios`): идентификаторы @id и связи @covers; номера выдаёт id_registry
 scripts/feature_ids.py   => .aurora/scripts/feature_ids.py
+# покрытие требований по ключам Requirement Yogi и волна правок (`ops:coverage`): строится на графе kb_graph
+scripts/kb_coverage.py   => .aurora/scripts/kb_coverage.py
 # Эти два (и run_summary выше) ставились установкой, но в манифест не попали — и потому не обновлялись
 # никогда: проект годами держал версию времён своего создания, при том что
 # `aurora_version.txt` исправно показывал свежую. Один прогон двумя версиями движка,

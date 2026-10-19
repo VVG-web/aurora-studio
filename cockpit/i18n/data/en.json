@@ -71,6 +71,7 @@
     "ops:todo": "What is left: what routes and commands will finish, what repair did not take, what depends on project settings and where a human decides.",
     "ops:decisions": "The decision journal: the state of every DR, owner, date, how many cards it affects, proposals older than 14 days that are not accepted, accepted ones with a changed body, form remarks; `--json` — machine form; two runs on one day print the same.",
     "ops:scenarios": "Gherkin scenarios (`Artifacts/tests/**/*.feature`): every scenario has a stable identifier in the `@id:` tag and a link to a criterion `@covers:<key>`, and a Requirement Yogi key of the story sits above Feature. The report: a scenario without `@id`, one `@id` on two scenarios, no `@covers`, `@covers` on a key that is neither in the artifacts nor in the mirror; `--assign --apply` puts `@id:SC-NNNN` in (the number is issued by `kb:next-id`), without `--apply` — a preview.",
+    "ops:coverage": "Requirement coverage by the Requirement Yogi keys of the mirror (`ry_defines`, `ry_links`): a story without a link to a requirement, a requirement without a story, a requirement without a criteria page (AC), a link to a key that is not in the mirror; `--requirement KEY` — the wave of edits when the customer's requirement changes: the stories, criteria and project artifacts that name it. Items of the terms of reference without a key are not counted — they need the text checked against the registry.",
     "ops:impact": "What depends on a card; `--explain` — what a document is built on.",
     "ops:trace": "Tracing: spec item → REQ → SPEC → Jira → AC → PMI → acceptance.",
     "ops:trace-table": "The \"artifact ↔ issue\" table: direct links, links by code and tracing by names two hops deep; trust is computed on it.",
@@ -1023,7 +1024,9 @@
     "профиль для переданных файлов": "the profile for the given files",
     "обойти ворота: review — опубликовать без свежего ревью (обход записывается в шапку)": "bypass a gate: review — publish without a fresh review (the bypass is recorded in the head)",
     "записать (иначе --assign только показывает)": "write (otherwise --assign only shows)",
-    "проставить @id: сценариям без идентификатора": "put @id: on scenarios without an identifier"
+    "проставить @id: сценариям без идентификатора": "put @id: on scenarios without an identifier",
+    "волна правок: что затронет требование (ключ Requirement Yogi)": "the wave of edits: what a requirement touches (a Requirement Yogi key)",
+    "типы ключей, которые считать требованиями, через запятую (по умолчанию REQ)": "key types to treat as requirements, comma-separated (REQ by default)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",
@@ -1047,7 +1050,9 @@
     "КОД": "CODE",
     "@ИМЯ": "@NAME",
     "[ПРОСТРАНСТВО]": "[SPACE]",
-    "ФАЙЛ|Q-NNN": "FILE|Q-NNN"
+    "ФАЙЛ|Q-NNN": "FILE|Q-NNN",
+    "КЛЮЧ": "KEY",
+    "ТИПЫ": "TYPES"
   },
   "connector_texts": {
     "персональный токен Confluence (CONFLUENCE_PAT) либо CONFLUENCE_USER + CONFLUENCE_PASSWORD": "a Confluence personal token (CONFLUENCE_PAT) or CONFLUENCE_USER + CONFLUENCE_PASSWORD",
