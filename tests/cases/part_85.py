@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -928,7 +929,7 @@ def test_kinds_form_carries_the_review_field(tmp: Path):
         assert src.count(f'"{key}"') >= 3, (key, src.count(f'"{key}"'))              # разметка, ru, en
     for key in ("kinds.review_us", "kinds.review_alg"):                              # в разметке собираются из «kinds.review_» + вид
         assert src.count(f'"{key}"') >= 2, (key, src.count(f'"{key}"'))
-    assert 'review:"", ref_mask:"", task:{}' in src, "новый вид создаётся без поля review"
+    assert re.search(r'review:"",[^}]*task:\{\}', src), "новый вид создаётся без поля review"
     MK = _mod("make_kinds")
     assert "review" in MK.FIELDS
     sys.path.insert(0, str(KIT / "cockpit"))
@@ -971,7 +972,7 @@ def test_mcp_tools_review_file_and_story_lint_are_bounded(tmp: Path):
     assert err and "profile" in out, out
     # не текст проекта: конфиг и служебная папка модели не отдаются
     out, err = call("review_file", {"path": "aurora.config.yaml"})
-    assert "ревью читает текст проекта" in out, out
+    assert "ревью читает текст внутри проекта" in out, out
     _touch(root, ".aurora/state/секрет.md", "# секрет\n")
     out, err = call("review_file", {"path": ".aurora/state/секрет.md"})
     assert "за границей чтения" in out, out
@@ -1220,7 +1221,7 @@ def test_kinds_form_carries_the_ref_mask_field_and_publish_warns_without_a_key(t
     src = panel_sources()
     for key in ("kinds.f_ref_mask", "kinds.ref_mask_hint"):
         assert src.count(f'"{key}"') >= 3, (key, src.count(f'"{key}"'))
-    assert 'ref_mask:"", task:{}' in src
+    assert re.search(r'ref_mask:"",[^}]*task:\{\}', src)
     MK = _mod("make_kinds")
     assert "ref_mask" in MK.FIELDS
     sys.path.insert(0, str(KIT / "cockpit"))
@@ -1245,3 +1246,111 @@ def test_kinds_form_carries_the_ref_mask_field_and_publish_warns_without_a_key(t
 
     assert "В паспорте нет ключа по маске вида" in publish("Artifacts/us/Без-ключа.md")
     assert "ключа по маске" not in publish("Artifacts/us/С-ключом.md")
+
+
+# ------------------------------------------------------------------ BL-TEAM-03: доработка по независимому просмотру
+
+@test
+def test_review_file_and_stamp_stay_inside_the_project_and_its_own_artifacts(tmp: Path):
+    """`--file` не выходит за проект ни путём, ни `..`, ни ссылкой; шапку получают только свои артефакты (по реальному пути)."""
+    from harness import _review_checklist, _review_module
+    rr = _review_module()
+    cl = _review_checklist(rr)
+    root = _review_project(tmp)
+    outside = tmp / "чужой.md"
+    outside.write_text("# Чужая заметка\n\nЧУЖОЙ-ТЕКСТ\n", encoding="utf-8")
+    seen: list = []
+    for bad in ("../чужой.md", str(outside), "Artifacts/../../чужой.md"):
+        cp = run("review_run.py", "--file", bad, cwd=root)
+        assert cp.returncode == 1 and "нет файла" in (cp.stderr + cp.stdout), (bad, cp.returncode, cp.stderr)
+        rec = rr.review_file({"request_timeout": 5}, cl, bad, root=str(root), runs=1, call=_review_stub(cl, seen=seen))
+        assert rec["verdict"] == "не оценено" and rec["status"] == "missing", (bad, rec)
+    assert not seen, "модель вызвана для файла вне проекта"
+    os.chdir(root)
+    _touch(root, "Sources/Confluence/US-1.md", "---\ntitle: US-1\n---\n\nТекст.\n")
+    rec = rr.review_file({"request_timeout": 5}, cl, "Artifacts/us/US-1.1.1-приём.md", root=str(root), runs=1, call=_review_stub(cl))
+    before = (root / "Sources/Confluence/US-1.md").read_text(encoding="utf-8")
+    for sneaky in ("Artifacts/../Sources/Confluence/US-1.md", "Artifacts/../AuroraKnowledgeDB/Concepts/Заявка.md"):
+        assert rr.stamp_refusal(sneaky, rec), sneaky
+        assert rr.stamp_review(sneaky, rec, cl) is False, sneaky
+    assert (root / "Sources/Confluence/US-1.md").read_text(encoding="utf-8") == before
+    link = root / "Artifacts/us/ссылка.md"
+    try:
+        link.symlink_to(root / "AuroraKnowledgeDB/Concepts/Заявка.md")
+    except (OSError, NotImplementedError):
+        link = None                                                     # Windows без прав на ссылки
+    if link is not None:
+        assert rr.stamp_review("Artifacts/us/ссылка.md", rec, cl) is False, "шапка записана сквозь ссылку"
+        assert "review_sha" not in (root / "AuroraKnowledgeDB/Concepts/Заявка.md").read_text(encoding="utf-8")
+    # нормальный путь с лишним «./» и «..» внутри своей папки приводится к реальному и штампуется
+    assert rr.stamp_review("./Artifacts/us/../us/US-1.1.1-приём.md", rec, cl) is True
+
+
+@test
+def test_review_file_reads_dotted_names_long_mirror_heads_and_markup_quotes(tmp: Path):
+    """`based_on` с кодами через точку, зеркало с сотнями ключей в шапке, цитаты из таблиц и с многоточием, длинная evidence."""
+    import time
+    from harness import _review_checklist, _review_module, card
+    rr = _review_module()
+    cl = _review_checklist(rr)
+    root = _review_project(tmp)
+    card(root, "Concepts/US-1.1.1 Приём заявки.md", "Приём заявки — точный контекст.", status="knowledge", kind="knowledge")
+    card(root, "Concepts/US-1.1.md", "ЛОЖНЫЙ-КОНТЕКСТ другой истории.", status="knowledge", kind="knowledge")
+    keys = ", ".join(f"RU.PRJ.REQ-{i:03d}" for i in range(1, 301))
+    _touch(root, "Sources/Confluence/Требования.md", f'---\ntitle: "Требования"\nry_defines: [{keys}]\n---\n\nТРЕБОВАНИЕ-300 текст.\n')
+    _touch(root, "Artifacts/us/US-5.md",
+           '---\ntype: us\nbased_on: ["[[US-1.1.1 Приём заявки]]"]\n---\n\n# История\n\n## Предусловия\n\nРеализует RU.PRJ.REQ-300.\n')
+    seen: list = []
+    rec = rr.review_file({"request_timeout": 5}, cl, "Artifacts/us/US-5.md", root=str(root), runs=1, call=_review_stub(cl, seen=seen))
+    titles = sorted(ln["title"] for ln in rec["linked"])
+    assert titles == ["US-1.1.1 Приём заявки", "Требования"], titles
+    prompt = "\n".join(m["content"] for m in seen[0])
+    assert "точный контекст" in prompt and "ЛОЖНЫЙ-КОНТЕКСТ" not in prompt and "ТРЕБОВАНИЕ-300" in prompt
+    # разметка таблицы и многоточие в цитате не делают её выдуманной
+    hay = rr.quote_key("| **Как** | Оператор системы |\n| **Я хочу** | принять заявку из смежной системы |")
+    ok = {"A": {"v": "no", "evidence": "«Как Оператор системы»"},
+          "B": {"v": "no", "evidence": "«Оператор системы … принять заявку из смежной»"},
+          "C": {"v": "no", "evidence": "«Оператор системы … выдуманный хвост которого нет»"}}
+    assert rr.drop_unquoted(ok, hay) == 1 and ok["A"]["v"] == "no" and ok["B"]["v"] == "no" and ok["C"]["v"] == "unknown", ok
+    # длинная evidence из кавычек не вешает разбор
+    big = {"v": "no", "evidence": "« " * 20000}
+    started = time.process_time()
+    rr.drop_unquoted({"A": big}, hay)
+    assert time.process_time() - started < 5, "разбор длинной evidence слишком долгий"
+
+
+@test
+def test_stamp_keeps_crlf_and_bom_and_does_not_touch_non_utf8(tmp: Path):
+    """Шапка ревью: CRLF и BOM файла сохраняются; файл не в UTF-8 не меняется и не роняет прогон."""
+    from harness import _review_checklist, _review_module
+    rr = _review_module()
+    cl = _review_checklist(rr)
+    root = _review_project(tmp)
+    os.chdir(root)
+    rec = rr.review_file({"request_timeout": 5}, cl, "Artifacts/us/US-1.1.1-приём.md", root=str(root), runs=1, call=_review_stub(cl))
+    crlf = root / "Artifacts/us/crlf.md"
+    crlf.write_bytes(("﻿---\r\ntitle: к\r\ntype: us\r\n---\r\n\r\n# История\r\n\r\nКак оператор.\r\n").encode("utf-8"))
+    assert rr.stamp_review("Artifacts/us/crlf.md", rec, cl) is True
+    raw = crlf.read_bytes()
+    assert raw.startswith("﻿---".encode("utf-8")) and raw.count(b"\r\n") == raw.count(b"\n"), raw[:200]
+    assert b"review_sha: " in raw and "# История\r\n\r\nКак оператор.\r\n".encode("utf-8") in raw
+    old = root / "Artifacts/us/cp1251.md"
+    old.write_bytes("# История\n\nКак оператор.\n".encode("cp1251"))
+    assert rr.stamp_review("Artifacts/us/cp1251.md", rec, cl) is False
+    assert old.read_bytes() == "# История\n\nКак оператор.\n".encode("cp1251")
+
+
+@test
+def test_publish_gate_matches_the_kind_in_any_case_and_old_review_engine(tmp: Path):
+    """Ворота включаются и при `type: US`; старый review_run без publish_gate — причина словами, а не трассировка."""
+    root = _review_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip() + '\nartifacts:\n  us:\n    template: T/us.md\n'
+                   '    out: Artifacts/us\n    review: us\n', encoding="utf-8")
+    _touch(root, "Artifacts/us/Верхний.md", "---\ntitle: в\ntype: US\n---\n\n# История\n")
+    cp = run("publish_doc.py", "Artifacts/us/Верхний.md", cwd=root, expect_rc=2)
+    assert "review-missing" in cp.stderr, cp.stderr
+    (root / ".aurora/scripts/review_run.py").write_text("# старый движок: publish_gate ещё нет\n", encoding="utf-8")
+    cp = subprocess.run([sys.executable, str(root / ".aurora/scripts/publish_doc.py"), "Artifacts/us/Верхний.md"],
+                        cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert cp.returncode == 2 and "review-engine" in cp.stderr and "Traceback" not in cp.stderr, (cp.returncode, cp.stderr)

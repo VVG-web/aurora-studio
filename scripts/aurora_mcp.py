@@ -581,11 +581,12 @@ def t_review_page(project: str, args: dict) -> str:
 
 def project_file(project: str, args: dict) -> str:
     """Путь файла проекта из запроса: относительный, внутри проекта. Путь приходит от модели."""
+    from aurora_common import real_inside, real_rel
     rel = need(args, "path", "файл проекта").replace("\\", "/").strip()
-    norm = os.path.normpath(rel).replace("\\", "/")
-    if os.path.isabs(rel) or norm.startswith("..") or not os.path.isfile(os.path.join(project, norm)):
+    full = real_inside(project, rel) if not os.path.isabs(rel) else ""
+    if not full or not os.path.isfile(full):
         raise ToolError(f"{rel}: нужен файл внутри проекта (путь от корня проекта).")
-    return norm
+    return real_rel(project, full)
 
 
 def run_new(project: str, script: str, argv: list, what: str, timeout: int = 120) -> str:
