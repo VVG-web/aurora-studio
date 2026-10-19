@@ -425,9 +425,9 @@ def test_export_does_not_carry_foreign_html_or_script_links_into_the_output(_t):
     t = S.neutralize_links("[c](https://example.org) ![i](data:image/png;base64,AAA) <javascript:alert(1)>\n")
     assert "[c](https://example.org)" in t and "![i](data:image/png;base64,AAA)" in t and "<javascript" not in t, t
     page = ('<a href="javascript:x">a</a> <a href=\'java&#115;cript:x\'>b</a> <a href="jav&Tab;ascript:x">c</a> '
-            '<img src="data:image/png;base64,AA"> <a href="https://e.org">d</a> <a href="data:text/html,x">e</a>')
+            '<img src="data:image/png;base64,AA"> <a href="https://example.org">d</a> <a href="data:text/html,x">e</a>')
     fixed = S.scrub_html(page)
-    assert fixed.count('href="#blocked"') == 4 and 'src="data:image/png;base64,AA"' in fixed and 'href="https://e.org"' in fixed, fixed
+    assert fixed.count('href="#blocked"') == 4 and 'src="data:image/png;base64,AA"' in fixed and 'href="https://example.org"' in fixed, fixed
     # то, что в самом деле выходит из pandoc, чисто (если pandoc есть на машине)
     pandoc = S.find_bin("pandoc")
     if pandoc:
