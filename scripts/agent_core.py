@@ -806,6 +806,9 @@ CAUSES: dict = {
 LINK_ALARM_KINDS = frozenset({"dns", "refused", "connect_timeout", "unreachable", "tls", "proxy",
                               "reset", "server_error", "auth", "not_found", "bad_reply", "other"})
 LINK_REACHED_KINDS = frozenset({"silent", "rate_limit"})
+# Обрывы, после которых бэкенд уходит в короткий карантин (`DOWN_LINK_FOR`): до сервера не дошли, и это чаще мигнувшая
+# сеть или VPN, чем смерть шлюза. Ответ шлюза (5xx, нечитаемое тело) и «настройка, а не связь» (ключ, 404) сюда не входят.
+LINK_FAST_KINDS = frozenset({"dns", "refused", "connect_timeout", "unreachable", "reset", "tls", "proxy", "other"})
 LINK_KINDS = LINK_ALARM_KINDS | LINK_REACHED_KINDS
 # Обрывы, после которых стоит спросить проверку соединений, не упал ли профиль или интернет: соединение не установилось.
 # Это отметка `conn` строк таблицы `CAUSES`, а не второй классификатор: вид по-прежнему называет `link_kind`.
@@ -1733,6 +1736,17 @@ def busy(backend: dict, transport) -> bool:
 
 
 DOWN_FOR = 900        # столько не трогаем провайдера, который не ответил: 15 минут
+# Обрыв связи (`LINK_FAST_KINDS`) — минута: мигнувшая сеть или VPN не должна выключать шлюз на четверть часа. Пропуск
+# на карантине неудачей не считается, поэтому три неудачи подряд для тревоги связи набираются за ≈3 минуты аварии.
+DOWN_LINK_FOR = 60
+
+
+def down_for(link) -> int:
+    """Срок карантина после отказа вызова: обрыв связи (`link` — причина `Why` от `link_note`) — `DOWN_LINK_FOR`,
+    всё остальное (5xx, молчание по сроку, отказ без вида связи) — прежние `DOWN_FOR`."""
+    return DOWN_LINK_FOR if link is not None and link.kind in LINK_FAST_KINDS else DOWN_FOR
+
+
 # Коды, которыми живой сервер отказывает внятно. Их ожидание не лечит: правится ключ,
 # имя модели или сам запрос. В карантин за них не сажаем — иначе причина скроется за
 # «не отвечал», и человек пойдёт искать обрыв связи вместо строки в настройках.
@@ -3044,7 +3058,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 continue
             # Провайдера, который только что не ответил, не спрашиваем на каждом
             # источнике: это минута ожидания на каждом, а за ночь — часы в пустоту. Через
-            # 15 минут пробуем сами; кнопка «Вернуться на основного» снимает отметку сразу.
+            # `DOWN_LINK_FOR` (обрыв связи) или `DOWN_FOR` (всё прочее) пробуем сами; кнопка
+            # «Вернуться на основного» снимает отметку сразу.
             until = DOWN.get(b["n"], 0)
             if until > time.time():
                 held = DOWN_WHY.get(b["n"])
@@ -3054,7 +3069,9 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                            + (f". Причина: {held.body}" if held is not None else ""))
                 if held is not None:
                     why_seen.append(held)
-                can_recover = can_recover or until < deadline
+                # Ждать карантин умеет только терпеливый вызов: подставивший `NO_WAIT` паузы не переждёт, и
+                # минутный карантин не должен крутить для него кольцо вхолостую до срока.
+                can_recover = can_recover or (patient and until < deadline)
                 continue
             cool_until = COOL.get((b["n"], model), 0)
             if cool_until > time.time():
@@ -3293,7 +3310,12 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         # Маршрут, доводящий дело до конца, медленного не выключает: он уходит
                         # в конец кольца (`SLOW`) и получает вдвое больший срок, а не карантин.
                         if not fresh and not ours and not persist:
-                            DOWN[b["n"]] = time.time() + DOWN_FOR
+                            if lw is not None and lw.kind == "connect_timeout":
+                                # Соединение не установилось — это обрыв связи, а не медленный ответ: короткий карантин.
+                                DOWN[b["n"]] = time.time() + down_for(lw)
+                                DOWN_WHY[b["n"]] = (DOWN[b["n"]], lw)
+                            else:
+                                DOWN[b["n"]] = time.time() + DOWN_FOR
                         real = "" if really_slow else (lw.body if lw is not None else str(cause))
                         say_live("⟳", role, f"№{b['n']} {model} " + (f"не ответил за {human_secs(limit)}"
                                                                        if really_slow else real[:120])
@@ -3314,7 +3336,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         # прокси или сертификат, и вызов отказывает с названной причиной.
                         adapter_side = cause is not None and cause.kind == "client_net"
                         if not adapter_side:
-                            DOWN[b["n"]] = time.time() + DOWN_FOR
+                            DOWN[b["n"]] = time.time() + down_for(lw)
                             if lw is not None and lw.kind in LINK_ALARM_KINDS:
                                 DOWN_WHY[b["n"]] = (DOWN[b["n"]], lw)
                         # Что не так на самом деле: вид обрыва (DNS, отказ порта, сертификат,
