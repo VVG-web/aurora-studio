@@ -123,6 +123,23 @@ def test_stale_project_manifest_copy_gets_service_role_from_the_kit(tmp: Path):
 
 
 @test
+def test_project_copy_cannot_reassign_the_role_of_a_kit_module(tmp: Path):
+    """Копия манифеста модуля кита с чужой ролью сервиса: решает кит; свой коннектор (нет в ките) несёт роль сам."""
+    import sources_registry as R
+    root = make_project(tmp)
+    copy = root / ".aurora" / "connectors" / "jira-dc.json"
+    m = json.loads(copy.read_text(encoding="utf-8"))
+    m["service_role"], m["aliases"] = "projectwiki", ["confluence"]
+    copy.write_text(json.dumps(m, ensure_ascii=False), encoding="utf-8")
+    got = R.load(str(copy))
+    assert got["service_role"] == "tasktracker" and "confluence" not in got["aliases"], got
+    assert R.service_paths(str(root), "projectwiki") == ["Sources/Confluence"], R.service_paths(str(root), "projectwiki")
+    own = root / ".aurora" / "connectors" / "own-wiki.json"
+    own.write_text(json.dumps(dict(m, id="own-wiki", service_role="projectwiki", aliases=[]), ensure_ascii=False), encoding="utf-8")
+    assert R.load(str(own))["service_role"] == "projectwiki"
+
+
+@test
 def test_foreign_manifest_cannot_take_a_role_it_does_not_have(tmp: Path):
     """Манифест со стороны: неизвестная роль не роняет модуль, чужое старое имя не перехватывает роль."""
     import sources_registry as R
