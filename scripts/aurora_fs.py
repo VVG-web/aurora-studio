@@ -456,6 +456,8 @@ def _unlock(fd: int) -> None:
 def _open_lock_file(path: str, create: bool):
     """Открыть файл замка. Ссылка не разворачивается (`O_NOFOLLOW`: подложенная ссылка на чужой файл не будет усечена
     записью описания владельца) и это обязан быть обычный файл; создаётся с правами 0600."""
+    if os.path.islink(path):                # Windows без O_NOFOLLOW: ссылку отсекаем заранее
+        raise OSError("файл замка %s — ссылка" % path)
     flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | (os.O_CREAT if create else 0)
     fd = os.open(path, flags, 0o600)
     if not stat.S_ISREG(os.fstat(fd).st_mode):

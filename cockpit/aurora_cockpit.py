@@ -3301,9 +3301,9 @@ def project_card(path: str) -> dict:
         # Отстал — только если движок СТАРШЕ кита (или обновление оборвалось); «новее кита» — не отставание (BL-LCY-01)
         "behind": est["status"] in ("behind_minor", "behind_patch", "partial"),
         "ahead": est["status"] == "ahead" or est["stamp_ahead"],
-        "engine_status": {"status": est["status"], "reason": est["reason"], "engine_api": est["engine_api"],
-                          "kit_api": est["kit_api"], "blocks": est["blocks"], "stamp_ahead": est["stamp_ahead"],
-                          "stamp_reason": est["stamp_reason"]},
+        # Только коды и числа: причины (русский текст движка) панель в ответ не кладёт — английский режим их не переведёт
+        "engine_status": {"status": est["status"], "engine_api": est["engine_api"], "kit_api": est["kit_api"],
+                          "blocks": est["blocks"], "stamp_ahead": est["stamp_ahead"]},
         # Копия движка в .aurora/ на этой машине: у клона проекта её нет, пока панель не подготовит.
         "engine_state": engine_info(path),
         "space": config_value(cfg, "space"),
@@ -3369,9 +3369,13 @@ def update_all_projects(roots: list, apply: bool) -> dict:
         if est.get("stamp_ahead") or not p.get("behind"):
             if est.get("status") in ("ahead", "pinned") or est.get("stamp_ahead"):
                 # Движок или штамп НОВЕЕ кита (или проект ведёт движок сам) обновление не понижает: отдельная строка отчёта.
-                skipped.append({"name": p.get("name") or p["path"], "path": p["path"],
-                                "status": "ahead" if est.get("stamp_ahead") else est["status"],
-                                "note": est.get("stamp_reason") if est.get("stamp_ahead") else est.get("reason", "")})
+                name = p.get("name") or p["path"]
+                if est.get("status") == "pinned" and not est.get("stamp_ahead"):
+                    skipped.append({"name": name, "path": p["path"], "status": "pinned",
+                                    "note": "проект ведёт движок сам (aurora.update_ignore.txt) — обновление его не трогает"})
+                else:
+                    skipped.append({"name": name, "path": p["path"], "status": "ahead",
+                                    "note": "движок или штамп проекта новее кита — обновление его не понизит"})
             continue
         with JOBS_LOCK:
             busy = [j["cmd"] for j in JOBS.values() if not j["done"] and j["project"] == p["path"]]

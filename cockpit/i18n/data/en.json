@@ -618,7 +618,9 @@
     "обновление движка проекта оборвалось на середине: повторите «Версия» → «Применить» или откатите его командой kit:update --rollback.": "the project's engine update was interrupted midway: repeat «Version» → «Apply» or roll it back with kit:update --rollback.",
     "обновление этого проекта уже идёт — движок подготовится после него": "an update of this project is already running — the engine will be prepared after it",
     "движок проекта {} новее кита {}: обновите кит (git pull в его папке), а движок проекта понижать не нужно.": "the project's engine {} is newer than kit {}: update the kit (git pull in its folder), there is no need to downgrade the project's engine.",
-    "идёт обновление движка проекта — начните маршрут после него.": "the project's engine is being updated — start the route after it."
+    "идёт обновление движка проекта — начните маршрут после него.": "the project's engine is being updated — start the route after it.",
+    "проект ведёт движок сам (aurora.update_ignore.txt) — обновление его не трогает": "the project keeps its engine itself (aurora.update_ignore.txt) — the update does not touch it",
+    "движок или штамп проекта новее кита — обновление его не понизит": "the project's engine or stamp is newer than the kit — the update will not downgrade it"
   },
   "connectors": {
     "confluence-dc": {

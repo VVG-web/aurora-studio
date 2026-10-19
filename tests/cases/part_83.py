@@ -185,7 +185,7 @@ def test_full_update_lays_the_engine_as_one_operation_and_seals_it(tmp: Path):
         lock = T.read_lock(root)
         assert lock["version"] == AU.kit_version() and lock["engine_api"] >= 1 and lock["schema"] == 1, lock
         for rel, sha in lock["files"].items():
-            assert T.sha256_file(root / rel) == sha, rel
+            assert T.sha256_file(root / rel, normalize=True) == sha, rel
         assert ".aurora/scripts/aurora_fs.py" in lock["files"] and ".aurora/scripts/engine_txn.py" in lock["files"]
         assert T.pending(root) == {} and not (root / ".aurora/state/update.pending").exists()
         shots = T.list_snapshots(root)

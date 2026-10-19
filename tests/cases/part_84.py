@@ -68,7 +68,8 @@ def test_engine_status_answers_with_one_definition_of_behind(tmp: Path):
     patch = AC.engine_status(_project(tmp, "pp", mark="1.177.0"), "1.177.4", 1)
     assert patch["status"] == "behind_patch" and not patch["blocks"], patch
     assert AC.version_key("1.10.0") > AC.version_key("1.9.0") and AC.version_key("1.2.3+x") == (1, 2, 3)
-    assert AU.version_key is AC.version_key, "в aurora_update осталась своя копия сравнения версий"
+    # не равенство объектов: тесты порядка перезагружают aurora_common, и имя в aurora_update держит прежний объект
+    assert AU.version_key.__module__ == "aurora_common", "в aurora_update осталась своя копия сравнения версий"
     root = _project(tmp, "pend", mark="1.177.0")
     (root / ".aurora/state/update.pending").write_text('{"from": "1.0.0", "to": "1.177.0"}', encoding="utf-8")
     st = AC.engine_status(root, kit, 1)
