@@ -1938,12 +1938,12 @@ CONFORM_STATE_REL = f"{KB_ROOT}/meta/conform_state.json"
 CONFORM_REPORT_REL = f"{KB_ROOT}/meta/conform_report.md"
 
 
-def read_small_json(path: str) -> dict:
-    """JSON-словарь из служебного файла (состояние миграции, память отложенного); нет файла, он велик (больше 1 МБ), не
-    разбирается (в том числе враждебно вложенный) или не словарь — пустой словарь. Читатель не должен падать на чужом файле:
-    состояние читает хук pre-commit."""
+def read_small_json(path: str, limit: int = 1 << 20) -> dict:
+    """JSON-словарь из служебного файла (состояние миграции, память отложенного); нет файла, он велик (больше `limit`,
+    по умолчанию 1 МБ), не разбирается (в том числе враждебно вложенный) или не словарь — пустой словарь. Читатель не должен
+    падать на чужом файле: состояние читает хук pre-commit."""
     try:
-        if os.path.getsize(path) > 1 << 20:
+        if os.path.getsize(path) > limit:
             return {}
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
@@ -2631,13 +2631,19 @@ def violation_key(v: Violation) -> tuple:
     return v.code, re.sub(r"\d+", "#", msg)
 
 
-def _write_errors(text: str, rel: str, reg: Registry, template_required: bool, raw_ok: bool = True) -> list:
-    """Ошибки шаблона для записи: `strict`-ошибки; «нет `template:`» при `template_required` тоже ошибка."""
+def _write_errors(text: str, rel: str, reg: Registry, template_required: bool, raw_ok: bool = True,
+                  born: bool = False) -> list:
+    """Ошибки шаблона для записи: `strict`-ошибки; «нет `template:`» при `template_required` тоже ошибка. `born` — карточка
+    только рождается (создание, разрез, заготовка, карта, зеркало): у машинной карточки дата сверки с источником
+    (`source_synced`) обязательна — создатель знает её всегда. У существующей карточки прежних сборок её нет и взять
+    неоткуда: там это предупреждение, штампу и правке оно не мешает."""
     out = []
     for v in validate_card(text, path=rel, reg=reg, level="strict", raw_ok=raw_ok):
         if v.severity == "error":
             out.append(v)
         elif template_required and v.code == "V-02" and v.severity == "info" and "template" in v.message:
+            out.append(replace(v, severity="error"))
+        elif born and v.code == "V-02" and v.severity == "warn" and "source_synced" in v.message:
             out.append(replace(v, severity="error"))
     return out
 
@@ -2869,7 +2875,7 @@ def _admit(path: str, new_text: str, op: str, reg: "Registry | None") -> tuple:
     else:
         strict = op in WRITE_OPS_STRICT or not (disk or "").strip()
         raw_ok = thesis_raw_ok(disk, text)
-        errors = _write_errors(text, rel, reg, template_required=strict, raw_ok=raw_ok)
+        errors = _write_errors(text, rel, reg, template_required=strict, raw_ok=raw_ok, born=strict)
         if strict:
             wrong = _section_violation(text, rel, reg)
             if wrong is not None:

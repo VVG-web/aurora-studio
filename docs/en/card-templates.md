@@ -210,7 +210,7 @@ written by the section folder: a card in `Processes/` is `type: process`.
 
 **The head.** The required fields depend on the class. For `entity` and `source`: `title`, `type`, `template`,
 `status`, `created`, `updated`; `kind` if the type has kinds; for a machine card (`built: machine`) that is not
-a stub also `sources` and `source_synced` (a missing `source_synced` is a warning: older builds have no sync date to take). For `map`: `title`, `type`, `template`, `status`, `updated`. The other
+a stub also `sources` and `source_synced` (a missing `source_synced` in an existing card is a warning: older builds have no sync date to take; a creator of a new card must set it). For `map`: `title`, `type`, `template`, `status`, `updated`. The other
 fields come from the common dictionary (`aliases`, `tags`, `sources`, `built`, `related`, `trust`, `distilled`,
 `summary` and others) or from the type's `fields_extra`. The `template` field names the template file
 (`template: akdb_concept_v1.0.md`); older cards do not have it — that is not an error but a "pre-template" card.
