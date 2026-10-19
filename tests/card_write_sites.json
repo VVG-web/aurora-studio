@@ -346,9 +346,19 @@
    "reason": "снимок установки надстройки в ~/.aurora/locks (вне базы знаний)",
    "calls": 1
   },
+  "scripts/aurora_fs.py:FileLock.acquire": {
+   "kind": "other",
+   "reason": "файл замка ОС (.lock): служебный, описание владельца; карточек не пишет",
+   "calls": 1
+  },
   "scripts/aurora_fs.py:_quarantine": {
    "kind": "other",
    "reason": "перенос повреждённого файла состояния в .corrupt; карточек не касается",
+   "calls": 1
+  },
+  "scripts/aurora_fs.py:is_locked": {
+   "kind": "other",
+   "reason": "проба замка ОС: открывает файл замка, ничего не пишет в содержимое",
    "calls": 1
   },
   "scripts/aurora_fs.py:replace_file": {

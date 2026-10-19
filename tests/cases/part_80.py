@@ -188,6 +188,136 @@ def test_write_atomic_follows_a_link_unless_told_otherwise(tmp: Path):
     assert real.read_text(encoding="utf-8") == "через ссылку", "цель ссылки затронута"
 
 
+_BUMP = """
+import sys
+sys.path.insert(0, sys.argv[1])
+import aurora_fs as F
+path = sys.argv[2]
+for _ in range(int(sys.argv[3])):
+    with F.FileLock(path + ".lock", timeout=60):
+        data = F.read_state(path, {"n": 0})
+        data["n"] += 1
+        F.write_json(path, data, fsync=False)
+"""
+
+_HOLD = """
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import aurora_fs as F
+lock = F.FileLock(sys.argv[2], info={"what": "держу для проверки"})
+assert lock.acquire(timeout=10)
+print("held", flush=True)
+time.sleep(120)
+"""
+
+
+@test
+def test_file_lock_serializes_processes_without_lost_updates(tmp: Path):
+    """Четыре процесса по 25 раз читают-меняют-пишут один счётчик под замком: потерянных обновлений нет."""
+    _fs()
+    counter = tmp / "counter.json"
+    procs = [subprocess.Popen([sys.executable, "-c", _BUMP, str(SCRIPTS), str(counter), "25"],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(4)]
+    errs = []
+    for pr in procs:
+        _out, err = pr.communicate(timeout=180)
+        if pr.returncode:
+            errs.append(err[-400:])
+    assert not errs, errs
+    assert json.loads(counter.read_text(encoding="utf-8")) == {"n": 100}, counter.read_text(encoding="utf-8")
+    assert not _leftovers(tmp), _leftovers(tmp)
+
+
+@test
+def test_file_lock_threads_reentry_timeout_and_owner(tmp: Path):
+    """Тот же поток входит повторно; другой поток ждёт и по таймауту получает `LockTimeout` с именем владельца."""
+    F = _fs()
+    path = tmp / "t.lock"
+    with F.FileLock(path, info={"what": "правка карточки"}) as outer:
+        assert outer.held and F.is_locked(path)
+        with F.FileLock(path):                          # вложенный вход того же потока
+            assert F.is_locked(path)
+        assert F.is_locked(path), "вложенный выход снял внешний замок"
+        assert "правка карточки" in F.describe_owner(path) and str(os.getpid()) in F.describe_owner(path)
+        got = {}
+
+        def other():
+            lock = F.FileLock(path, timeout=0.2)
+            got["nonblocking"] = lock.acquire(blocking=False)
+            try:
+                with lock:
+                    got["entered"] = True
+            except F.LockTimeout as e:
+                got["timeout"] = str(e)
+
+        t = threading.Thread(target=other)
+        t.start()
+        t.join(30)
+        assert got.get("nonblocking") is False and not got.get("entered"), got
+        assert "правка карточки" in got.get("timeout", ""), got
+    assert not F.is_locked(path) and path.read_text(encoding="utf-8") == "", "после выхода замок числится занятым"
+    after = []
+
+    def take_and_free():
+        lock = F.FileLock(path)
+        after.append(lock.acquire(blocking=False))
+        lock.release()
+    t2 = threading.Thread(target=take_and_free)
+    t2.start()
+    t2.join(30)
+    assert after == [True], "замок не отпущен после выхода"
+
+
+@test
+def test_file_lock_dies_with_its_process(tmp: Path):
+    """Держатель убит (`kill`): замок не «брошен» — следующий берёт его сразу, без проверок pid и таймаутов давности."""
+    F = _fs()
+    path = tmp / "d.lock"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(SCRIPTS), str(path)],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held", holder.stderr.read()
+        assert F.is_locked(path), "замок живого держателя не виден"
+        assert "держу для проверки" in F.describe_owner(path)
+        t0 = time.monotonic()
+        assert F.FileLock(path).acquire(timeout=0.3) is False
+        assert time.monotonic() - t0 < 5
+    finally:
+        holder.kill()
+        holder.wait(30)
+    assert F.FileLock(path).acquire(timeout=20), "замок убитого процесса не освободился"
+
+
+@test
+def test_file_lock_without_os_locks_degrades_only_when_optional(tmp: Path):
+    """Файловая система без замков: по запросу работа идёт без замка (одно предупреждение), иначе — понятный отказ."""
+    F = _fs()
+    real = F._try_lock
+
+    def unsupported(fd):
+        raise F.LockUnsupported(95, "нет замков")
+    F._try_lock = unsupported
+    F._WARNED.clear()
+    try:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with F.FileLock(tmp / "o.lock", optional=True) as lock:
+                assert lock.degraded and lock.held
+            with F.FileLock(tmp / "o.lock", optional=True):
+                pass
+        assert err.getvalue().count("нет замков ОС") == 1, err.getvalue()
+        try:
+            F.FileLock(tmp / "o2.lock").acquire()
+        except F.LockUnsupported:
+            pass
+        else:
+            raise AssertionError("без замков ОС обязательный замок выдан")
+    finally:
+        F._try_lock = real
+        F._WARNED.clear()
+    assert F.FileLock(tmp / "o3.lock").acquire(timeout=1), "после подмены замок не работает"
+
+
 @test
 def test_read_state_quarantines_a_damaged_file_loudly(tmp: Path):
     """Нет файла — значение по умолчанию молча; битый или не того типа — переносится в `.corrupt`, строка в stderr."""
