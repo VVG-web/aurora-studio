@@ -1626,7 +1626,7 @@ def test_gate_feature_ids_paths_line_breaks_and_comments(tmp: Path):
     assert outside.read_text(encoding="utf-8").count("@id") == 0, "файл вне проекта изменён"
     odd = root / "Artifacts/tests/странный.feature"
     odd.parent.mkdir(parents=True, exist_ok=True)
-    odd.write_bytes("\ufeff@RU.PRJ.US-1.1.1\nFeature: A\u2028продолжение описания\n\n  @negative # заметка\n  Scenario: Первый\n"
+    odd.write_bytes("\ufeff" "@RU.PRJ.US-1.1.1\nFeature: A\u2028продолжение описания\n\n  @negative # заметка\n  Scenario: Первый\n"
                     "    Given x\n\n  Example: Второй\n    Given y\n".encode("utf-8"))
     parsed = FI.parse(odd.read_text(encoding="utf-8"))
     assert [s["name"] for s in parsed["scenarios"]] == ["Первый", "Второй"], parsed
