@@ -807,6 +807,7 @@ QUOTE_RULE = ("Поле evidence для ответа «no» — ДОСЛОВНА
               "страницы в кавычках «…» (для отсутствия чего-либо — цитата заголовка или соседнего текста, рядом с "
               "которым пусто). Ответ «no» без цитаты, которую код найдёт в тексте, не принимается и считается "
               "«unknown».")
+EVIDENCE_CAP = 2000
 QUOTE_IN_EVIDENCE = re.compile(r"[«\"“]([^»\"”]{8,})[»\"”]")
 RY_KEY = re.compile(r"\b[A-Z]{2}(?:\.[A-Za-z0-9]+)+-\d+(?:\.\d+)*")
 FILE_PROFILES = {"us": "us", "user-story": "us", "alg": "alg", "algorithm": "alg", "algorithms": "alg"}
@@ -815,11 +816,12 @@ STALE = "ревью устарело"
 
 
 def quote_key(text) -> str:
-    """Цитата для сверки с текстом: без различий в пробелах, регистре, кавычках, тире и «ё»."""
+    """Цитата для сверки с текстом: без различий в пробелах, регистре, кавычках, тире, «ё» и разметке таблиц
+    (`*`, `_`, обратные кавычки, `|`): в таблице истории «**Как** | Роль» цитата «Как Роль» — та же строка."""
     text = str(text or "")
     for a, b in (("«", '"'), ("»", '"'), ("“", '"'), ("”", '"'), ("—", "-"), ("–", "-"), ("ё", "е"), ("Ё", "Е")):
         text = text.replace(a, b)
-    return " ".join(text.lower().split())
+    return " ".join(re.sub(r"[*_`|]", " ", text.lower()).split())
 
 
 def drop_unquoted(checks: dict, haystack: str) -> int:
@@ -829,9 +831,11 @@ def drop_unquoted(checks: dict, haystack: str) -> int:
     for a in checks.values():
         if a.get("v") != "no":
             continue
-        ev = a.get("evidence") or ""
+        ev = (a.get("evidence") or "")[:EVIDENCE_CAP]          # длинная строка из «« давала квадратичный разбор
         quotes = [m.group(1) for m in QUOTE_IN_EVIDENCE.finditer(ev)] or [ev]
-        if not any(len(quote_key(q)) >= 8 and quote_key(q) in haystack for q in quotes):
+        # Цитата с многоточием («начало … конец») — это два куска текста: найти надо каждый.
+        pieces = [[p for p in re.split(r"…|\.{3}", q) if len(quote_key(p)) >= 8] or [q] for q in quotes]
+        if not any(all(len(quote_key(p)) >= 8 and quote_key(p) in haystack for p in group) for group in pieces):
             a["v"] = "unknown"
             a["evidence"] = ("[цитаты нет в тексте] " + ev).strip()
             dropped += 1
@@ -885,11 +889,11 @@ class FileReader:
 
     def _kb_files(self):
         from aurora_common import walk_md
-        return walk_md(os.path.join(self.root, "AuroraKnowledgeDB"), skip_service=True, skip_archive=True)
+        return sorted(walk_md(os.path.join(self.root, "AuroraKnowledgeDB"), skip_service=True, skip_archive=True))
 
     def card(self, name: str) -> str:
         """Относительный путь карточки базы по имени или синониму, пусто — нет такой."""
-        from aurora_common import aliases as card_aliases
+        from aurora_common import aliases as card_aliases, head_text
         key = quote_key(name)
         if self.stems is None:
             self.stems = {quote_key(os.path.splitext(os.path.basename(p))[0]):
@@ -899,30 +903,23 @@ class FileReader:
         if self.aliases_idx is None:             # синонимы читаем один раз, и только когда по имени не нашлось
             self.aliases_idx = {}
             for p in self._kb_files():
-                try:
-                    with open(p, encoding="utf-8", errors="ignore") as f:
-                        for al in card_aliases(f.read(4000)):
-                            self.aliases_idx.setdefault(quote_key(al), os.path.relpath(p, self.root).replace("\\", "/"))
-                except OSError:
-                    continue
+                for al in card_aliases(head_text(p)):
+                    self.aliases_idx.setdefault(quote_key(al), os.path.relpath(p, self.root).replace("\\", "/"))
         return self.aliases_idx.get(key, "")
 
     def mirror_page(self, key: str) -> str:
         """Страница зеркала Confluence, где объявлен ключ Requirement Yogi, пусто — не найдена."""
-        from aurora_common import frontmatter
+        from aurora_common import frontmatter, head_text, safe_walk
         if self.ry is None:
             self.ry = {}
             base = os.path.join(self.root, "Sources", "Confluence")
-            for dirpath, _dirs, files in os.walk(base):
-                for f in files:
+            for dirpath, dirs, files in (safe_walk(base) if os.path.isdir(base) else []):
+                dirs.sort()
+                for f in sorted(files):
                     if not f.endswith(".md"):
                         continue
                     p = os.path.join(dirpath, f)
-                    try:
-                        with open(p, encoding="utf-8", errors="ignore") as fh:
-                            head = fh.read(3000)
-                    except OSError:
-                        continue
+                    head = head_text(p)             # шапка с сотнями ключей не умещается в окно фиксированной длины
                     for k in (frontmatter(head).get("ry_defines") or "").strip("[] ").split(","):
                         k = k.strip().strip("\"'")
                         if k:
@@ -931,7 +928,7 @@ class FileReader:
 
     def links_of(self, text: str, fm: dict) -> list:
         """[(заголовок раздела, "id", путь)] — связанное в порядке документа; `based_on` — без раздела."""
-        from aurora_common import as_list, link_targets
+        from aurora_common import leaf_name, link_targets
         out, seen, heading = [], set(), ""
         for line in text.splitlines():
             m = re.match(r"^#{1,6}\s+(.*?)\s*$", line)
@@ -944,17 +941,22 @@ class FileReader:
                 if rel and rel not in seen:
                     seen.add(rel)
                     out.append((heading, "id", rel))
-        for name in as_list(fm.get("based_on", "")):
-            rel = self.card(name)
+        raw = str(fm.get("based_on") or "")
+        # `[[US-1.1.1 Приём]]`: имя с точкой режется по «расширению», если разбирать список как имена файлов.
+        names = [leaf_name(x) for x in re.findall(r"\[\[([^\]|#]+)", raw)] or [x.strip(" \"'[]") for x in raw.split(",")]
+        for name in names:
+            rel = self.card(name) if name else ""
             if rel and rel not in seen:
                 seen.add(rel)
                 out.append(("", "id", rel))
         return out
 
     def page(self, ref: str) -> dict:
-        from aurora_common import body as md_body, clean_copy, frontmatter, link_escapes, read_card_text
-        path = os.path.join(self.root, ref)
-        if link_escapes(path) or not os.path.isfile(path):
+        from aurora_common import body as md_body, clean_copy, frontmatter, read_card_text, read_verdict, real_inside
+        path = real_inside(self.root, ref)
+        # граница чтения сверяет путь так, как он записан от корня проекта, а не его realpath (`/var` → `/private/var`)
+        if (not path or not os.path.isfile(path)
+                or read_verdict(os.path.join(self.root, ref), self.root, strict=True, every_file=True)):
             return {"id": ref, "status": "missing"}
         text = read_card_text(path)
         if text is None:
@@ -976,11 +978,16 @@ class FileReader:
 def review_file(cfg: dict, cl: dict, path: str, *, root: str = ".", profile: str = "auto", runs: int = 3,
                 verify: bool = True, free: bool = False, call=None, slots: list | None = None) -> dict:
     """Ревью локального артефакта или страницы-зеркала: тот же движок, что у страницы, без Confluence."""
-    rel = os.path.relpath(os.path.join(root, path), root).replace("\\", "/")
+    from aurora_common import real_inside, real_rel
+    full = real_inside(root, path)
+    rel = real_rel(root, full) if full else ""
+    if not rel:
+        return {"page_id": path, "status": "missing", "verdict": "не оценено", "reasons": ["файл вне проекта или не найден"],
+                "template": cl["file"], "template_version": cl["version"], "as_of": "", "reviewed": _now()}
     reader = FileReader(root)
     prof = ""
     try:
-        with open(os.path.join(root, rel), encoding="utf-8", errors="ignore") as f:
+        with open(full, encoding="utf-8", errors="ignore") as f:
             prof = file_profile(rel, f.read(20000), profile)
     except OSError:
         pass
@@ -991,18 +998,38 @@ def review_file(cfg: dict, cl: dict, path: str, *, root: str = ".", profile: str
     return rec
 
 
-def stamp_review(path: str, rec: dict, cl: dict) -> bool:
+def stamp_refusal(path: str, rec: dict, root: str = ".") -> str:
+    """Почему шапку артефакта нельзя записать; пусто — можно. Путь берётся по реальному (без `..` и ссылок)."""
+    from aurora_common import real_inside, real_rel
+    if rec.get("status") != "ok" or rec.get("verdict") == "не оценено" or not rec.get("subject_sha"):
+        return "ревью не дало вердикта"
+    full = real_inside(root, path)
+    rel = real_rel(root, full) if full else ""
+    if not rel or not rel.startswith(STAMP_ROOTS):
+        return "шапка ставится только своим артефактам: Artifacts/ и Deliverables/work/ (зеркало, база и сырьё не правятся)"
+    if os.path.islink(os.path.join(root, path)) or os.path.islink(full) or not os.path.isfile(full):
+        return "файл — ссылка или не найден"
+    return ""
+
+
+def stamp_review(path: str, rec: dict, cl: dict, root: str = ".") -> bool:
     """Записать итог ревью в шапку артефакта: вердикт, оценка, отпечаток проверенного текста. → записан ли файл.
 
     Шапка нужна воротам публикации (`ship:publish`): без отпечатка, равного отпечатку текста, ревью считается
-    устаревшим. Ставится только своим артефактам (`Artifacts/`, `Deliverables/work/`): зеркало и сырьё не правятся."""
-    from aurora_common import utc_stamp, with_fields
-    rel = path.replace("\\", "/")
-    if rec.get("status") != "ok" or rec.get("verdict") == "не оценено" or not rec.get("subject_sha") \
-            or not rel.startswith(STAMP_ROOTS):
+    устаревшим. Ставится только своим артефактам (`Artifacts/`, `Deliverables/work/`): зеркало и сырьё не правятся.
+    Перевод строк (CRLF) и BOM файла сохраняются; файл не в UTF-8 не трогается."""
+    from aurora_common import real_inside, utc_stamp, with_fields
+    if stamp_refusal(path, rec, root):
         return False
-    with open(path, encoding="utf-8") as f:
-        text = f.read()
+    full = real_inside(root, path)
+    try:
+        with open(full, encoding="utf-8", newline="") as f:
+            raw = f.read()
+    except (OSError, UnicodeDecodeError):
+        return False
+    bom = "\ufeff" if raw.startswith("\ufeff") else ""
+    eol = "\r\n" if "\r\n" in raw else "\n"
+    text = raw.lstrip("\ufeff").replace("\r\n", "\n")
     if not text.startswith("---"):
         text = "---\n---\n\n" + text
     failed = [i for i, a in (rec.get("answers") or {}).items() if a.get("v") == "no"]
@@ -1010,9 +1037,12 @@ def stamp_review(path: str, rec: dict, cl: dict) -> bool:
               "review_template": cl["file"], "review_runs": rec.get("runs", 0),
               "review_sha": rec["subject_sha"], "review_incomplete": str(bool(rec.get("incomplete"))).lower(),
               "review_failed": "[" + ", ".join(failed) + "]"}
-    out = with_fields(text, fields)
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        f.write(out)
+    try:
+        out = with_fields(text, fields)
+    except (AssertionError, ValueError):
+        return False
+    with open(full, "w", encoding="utf-8", newline="") as f:
+        f.write(bom + (out.replace("\n", eol) if eol != "\n" else out))
     return True
 
 
@@ -1025,10 +1055,10 @@ def publish_gate(text: str) -> list:
     verdict = (fm.get("review") or "").strip().strip('"')
     sha = (fm.get("review_sha") or "").strip().strip('"')
     if not sha or verdict in ("", "none", "no"):
-        return [("review-missing", "ревью по чек-листу не проводилось (`make:review-auto --file`)")]
+        return [("review-missing", "ревью по чек-листу не проводилось (`make:review-auto --file … --apply`)")]
     out = []
     if sha != subject_sha(text):
-        out.append(("review-stale", f"{STALE}: текст изменён после проверки — повторите `make:review-auto --file`"))
+        out.append(("review-stale", f"{STALE}: текст изменён после проверки — повторите `make:review-auto --file … --apply`"))
     if verdict != "готова к передаче":
         failed = (fm.get("review_failed") or "").strip("[] ")
         out.append(("review-verdict", f"вердикт «{verdict}»" + (f", не пройдено: {failed}" if failed else "")))
@@ -1435,13 +1465,17 @@ def _connect(gate: str = ""):
 def review_file_main(args, cl: dict, runs: int, gate: str) -> int:
     """`--file`: ревью локального артефакта или зеркала. Те же отчёт, JSON и ворота, что у страницы."""
     path = args.file.replace("\\", "/")
-    from aurora_common import read_verdict
+    from aurora_common import read_verdict, real_inside, real_rel
     # Содержимое файла уходит модели: читаем только текст проекта и только по общей границе чтения
-    # (ссылки наружу, файлы с доступами и служебные папки закрыты).
-    if not os.path.isfile(path) or not path.lower().endswith((".md", ".txt")):
-        _stop(f"нет файла {path} (ревью читает текст проекта: .md или .txt)", gate)
-    if read_verdict(path, every_file=True, strict=True):
+    # (корень проекта, ссылки наружу, файлы с доступами и служебные папки закрыты). Дальше работаем с реальным
+    # относительным путём: `Artifacts/../Sources/x.md` — это Sources, а не Artifacts.
+    root = os.path.realpath(".")
+    full = real_inside(root, path)
+    if not full or not os.path.isfile(full) or not full.lower().endswith((".md", ".txt")):
+        _stop(f"нет файла {path} (ревью читает текст внутри проекта: .md или .txt)", gate)
+    if read_verdict(full, root, strict=True, every_file=True):
         _stop(f"{path}: файл за границей чтения проекта (ссылка наружу, доступы или служебная папка)", gate)
+    path = real_rel(root, full)
     import agent_core as AG
     cfg = AG.config()
     print(f"Ревью файла {path} · шаблон {cl['file']} · прогонов {runs}", file=sys.stderr)
@@ -1462,6 +1496,8 @@ def review_file_main(args, cl: dict, runs: int, gate: str) -> int:
         if stamp_review(path, rec, cl):
             print(f"Итог записан в шапку {path} (review, review_sha…): публикация видит свежее ревью.",
                   file=sys.stderr)
+        else:
+            print(f"Шапка {path} не записана: {stamp_refusal(path, rec) or 'файл не читается как UTF-8'}.", file=sys.stderr)
     if args.json:
         print(json.dumps(as_json(rec, report, save_report(rec, report)), ensure_ascii=False, indent=1))
         return gate_result(rec, cl, gate) if gate else 0 if rec.get("status") == "ok" else 1

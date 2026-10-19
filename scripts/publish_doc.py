@@ -322,16 +322,18 @@ def review_gate(text: str, fm: dict) -> list:
     """Что мешает опубликовать: [(id, пояснение)] — только для вида, у которого в реестре объявлено ревью."""
     try:
         import make_kinds as MK
-        rec = (MK.read_kinds(".") or {}).get((fm.get("type") or "").strip().strip('"'))
+        kinds = MK.read_kinds(".") or {}
     except Exception:  # noqa: BLE001 — реестр видов необязателен: без него ворот нет
         return []
+    kind = (fm.get("type") or "").strip().strip('"')
+    rec = kinds.get(kind) or kinds.get(kind.lower())
     if not rec or (rec.get("review") or "").strip() not in ("us", "alg"):
         return []
     try:
         import review_run as RR
-    except ImportError:          # движок проекта обновлён не целиком: ревью нечем проверить
-        return [("review-engine", "модуль ревью (review_run.py) недоступен — обновите движок проекта")]
-    return RR.publish_gate(text)
+        return RR.publish_gate(text)
+    except (ImportError, AttributeError):          # движок проекта обновлён не целиком: ревью нечем проверить
+        return [("review-engine", "модуль ревью (review_run.py) недоступен или старый — обновите движок проекта")]
 
 
 def main() -> int:
