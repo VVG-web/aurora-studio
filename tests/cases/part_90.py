@@ -233,6 +233,12 @@ def test_registry_blind_project_falls_back_to_historical_folders(tmp: Path):
     assert cp.returncode == 0, cp.stderr
     assert json.loads(cp.stdout) == [["Sources/JIRA"], ["Sources/Confluence"]], (cp.stdout, cp.stderr)
     assert "service_dirs" in cp.stderr and "прежн" in cp.stderr, cp.stderr
+    # слепой реестр отвечает одно и то же, пока конфиг и манифесты те же: реестр спрашивается один раз, а не на каждую карточку
+    cp = _in_project(root, "import sources_registry as R\nn = [0]\nreal = R.service_paths\n"
+                           "def spy(*a, **k):\n    n[0] += 1\n    return real(*a, **k)\n"
+                           "R.service_paths = spy\nimport aurora_common as C\n"
+                           "for _ in range(50):\n    C.service_dirs('tasktracker')\nprint(n[0])")
+    assert cp.returncode == 0 and cp.stdout.strip() == "1", (cp.stdout, cp.stderr)
     # с указателем на кит те же папки берутся из его манифестов — и без предупреждения
     (root / ".aurora" / "kit_path.txt").write_text(str(KIT), encoding="utf-8")
     cp = _in_project(root, _DIRS)
