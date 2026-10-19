@@ -265,7 +265,38 @@ def allocate(ns: str, root: str = ".") -> str:
         _ledger_write(root, ns, number)
         return format_id(ns, number)
     finally:
+        release(lock)
+
+
+def release(lock: str) -> None:
+    """Снять свой замок; на Windows файл, который в эту минуту читает ожидающий, снимается не сразу — повторяем."""
+    for _ in range(10):
         lock_release(lock)
+        if not os.path.exists(lock):
+            return
+        time.sleep(0.02)
+
+
+def allocate_many(ns: str, count: int, root: str = ".") -> list:
+    """Выдать `count` номеров подряд одним захватом замка (один обход проекта, а не `count`)."""
+    space_of(ns)
+    ns = _ns(ns)
+    lock = os.path.join(root, STATE, f"{ns}.lock")
+    deadline = time.monotonic() + LOCK_WAIT_S
+    while True:
+        got, _held = lock_take(lock, {"task": f"id {ns}", "at": time.time()}, stale_s=LOCK_STALE_S)
+        if got:
+            break
+        if time.monotonic() > deadline:
+            raise IdBusy(f"выдача номеров {ns} занята другим процессом дольше {LOCK_WAIT_S} с")
+        time.sleep(0.03)
+    try:
+        first = next_number(root, ns)
+        if count > 0:
+            _ledger_write(root, ns, first + count - 1)
+        return [format_id(ns, first + i) for i in range(count)]
+    finally:
+        release(lock)
 
 
 def duplicates(root: str = ".", spaces=None) -> dict:
@@ -306,7 +337,14 @@ def mask_problem(mask: str) -> str:
     if len(mask) > 100 or re.search(r"\s", mask) or '"' in mask:
         return "маска — одна строка до 100 знаков без пробелов и кавычек"
     parts = MASK_TOKEN.split(mask)
-    if not any(p == "x" or p.startswith("<") for p in parts):
+    tokens = [p for p in parts if p == "x" or p.startswith("<")]
+    for i, p in enumerate(parts[:-1]):
+        # Два числа или имени подряд без разделителя между ними («<A><B>», «xx» не бывает, «<A>x»): выражение маски
+        # разбирало бы одну и ту же строку многими способами и на длинном слове зависало бы.
+        if (p == "x" or p.startswith("<")) and parts[i + 1] == "" and i + 2 < len(parts) and \
+                (parts[i + 2] == "x" or parts[i + 2].startswith("<")):
+            return "между двумя переменными частями нужен разделитель (точка, дефис): иначе ключ делится на части неоднозначно"
+    if not tokens:
         return "в маске нет ни числа (x), ни именованной части (<имя>): ей отвечал бы один-единственный ключ"
     if not re.search(r"[A-Za-z0-9]", "".join(p for p in parts if not p.startswith("<") and p != "x")):
         return "в маске нет постоянной части (например, «US-»): по ней нельзя отличить ключи вида"
@@ -335,10 +373,14 @@ def mask_regex(mask: str):
 def similar_regex(mask: str):
     """Ключи того же вида в любом написании: постоянная часть перед первым числом маски (`US-`), любые
     префиксы и номер из цифр и точек. Нужна, чтобы назвать ключ, похожий на ключ вида, но не по маске."""
-    m = re.search(r"([A-Za-z]+)-x(?![A-Za-z0-9_])", (mask or "").strip())
+    mask = (mask or "").strip()
+    m = re.search(r"([A-Za-z]+)-x(?![A-Za-z0-9_])", mask)
     if not m or mask_problem(mask):
         return None
-    return re.compile(KEY_BEFORE + r"(?:[A-Za-z0-9_]+\.)*" + re.escape(m.group(1)) + r"-[0-9]+(?:\.[0-9]+)*"
+    # Голое «US-1.1.2» в тексте — ссылка на историю по номеру, а не ключ реестра: у ключа вида столько же
+    # префиксных сегментов (страна, проект), сколько в маске, а у ссылки их нет вовсе.
+    prefix = "(?:[A-Za-z0-9_]+\\.)+" if mask[:m.start()].count(".") else "(?:[A-Za-z0-9_]+\\.)*"
+    return re.compile(KEY_BEFORE + prefix + re.escape(m.group(1)) + r"-[0-9]+(?:\.[0-9]+)*"
                       + r"(?![A-Za-z0-9_]|[.\-][0-9A-Za-z])")
 
 
@@ -352,12 +394,15 @@ def own_key(text: str, mask: str) -> str:
     rx = mask_regex(mask)
     if not rx:
         return ""
-    for line in (text or "").splitlines():
-        if re.search(r"(?i)\bкод\b|\bkey\b", line):
+    lines = (text or "").splitlines()
+    marked = [ln for ln in lines if re.search(r"(?i)\bкод\b|\bkey\b", ln)]
+    if marked:                                  # строка «Код» есть: ключ документа — только на ней, чужие ключи не берутся
+        for line in marked:
             found = find_keys(line, rx)
             if found:
                 return found[0]
-    found = find_keys(text, rx)
+        return ""
+    found = find_keys("\n".join(lines[:30]), rx)           # без таблицы свойств — только в начале документа
     return found[0] if found else ""
 
 
@@ -369,13 +414,13 @@ def kinds_with_masks(root: str = ".") -> dict:
     except Exception:  # noqa: BLE001 — реестр видов необязателен
         return {}
     return {k: {"mask": r["ref_mask"].strip(), "out": r.get("out") or ""} for k, r in kinds.items()
-            if (r.get("ref_mask") or "").strip() and not mask_problem(r["ref_mask"])}
+            if (r.get("ref_mask") or "").strip() and not mask_problem(r["ref_mask"]) and not MK.out_problem(r.get("out") or "")}
 
 
 def ref_findings(root: str = ".") -> dict:
     """{путь: [замечания]} — ключи, похожие на ключи вида, но не по его маске: в артефактах вида и на страницах
     зеркала, объявляющих ключ (`ry_defines`). Замечание — {id, msg}. Нет масок — пусто."""
-    from aurora_common import clean_copy, body as md_body, frontmatter
+    from aurora_common import clean_copy, body as md_body, frontmatter, head_text
     out: dict = {}
     masks = kinds_with_masks(root)
     if not masks:
@@ -397,16 +442,12 @@ def ref_findings(root: str = ".") -> dict:
                      + f" похож на ключ вида «{kind}», но не по маске «{spec['mask']}»"})
     mirror = os.path.join(root, "Sources", "Confluence")
     if os.path.isdir(mirror):
-        for dirpath, _dirs, files in os.walk(mirror):
-            for f in files:
+        for dirpath, _dirs, files in safe_walk(mirror):
+            for f in sorted(files):
                 if not f.endswith(".md"):
                     continue
                 path = os.path.join(dirpath, f)
-                try:
-                    with open(path, encoding="utf-8", errors="ignore") as fh:
-                        head = fh.read(3000)
-                except OSError:
-                    continue
+                head = head_text(path)             # шапка с сотнями ключей в ry_defines не умещается в окно фиксированной длины
                 defined = [k.strip().strip("\"'") for k in (frontmatter(head).get("ry_defines") or "").strip("[] ").split(",")
                            if k.strip()]
                 for kind, spec in sorted(masks.items()):

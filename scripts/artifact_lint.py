@@ -26,6 +26,10 @@
 ошибкой они не становятся, пока владелец проекта не принял «храповик» (после этого
 уровень поднимается здесь, в одном месте — `LEVEL`).
 
+Панель: `make:story-lint` (и в составе `kb:lint`)
+В отчётах и рекомендациях называйте эту команду так, как она называется в панели
+и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
+
 Запуск (обычно — через `kb:lint`, он зовёт этот модуль и печатает итог отдельной строкой):
   python3 .aurora/scripts/artifact_lint.py                  # все артефакты проекта
   python3 .aurora/scripts/artifact_lint.py US.md --profile us   # один файл
@@ -48,7 +52,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import TEMPLATE_COMMENT, clean_copy, frontmatter  # noqa: E402
+from aurora_common import TEMPLATE_COMMENT, clean_copy, frontmatter, safe_walk  # noqa: E402
 import run_summary as RS  # noqa: E402
 
 PROFILES = ("us", "ac", "spec")
@@ -572,7 +576,7 @@ def lint_project(root: str = ".") -> tuple:
             continue
         # Обходим по пути проекта, а не по realpath: в отчёте остаётся «Artifacts/us/…», даже
         # если папка вида — ссылка на общий каталог; realpath нужен только владельцу и дедупликации.
-        for dirpath, dirnames, files in os.walk(base):
+        for dirpath, dirnames, files in safe_walk(base):
             dirnames[:] = sorted(d for d in dirnames if not d.startswith((".", "_")))
             here = os.path.realpath(dirpath)
             owner = max((p for p in PROFILES if here == dirs[p] or here.startswith(dirs[p] + os.sep)),

@@ -808,6 +808,7 @@ QUOTE_RULE = ("Поле evidence для ответа «no» — ДОСЛОВНА
               "которым пусто). Ответ «no» без цитаты, которую код найдёт в тексте, не принимается и считается "
               "«unknown».")
 EVIDENCE_CAP = 2000
+LINE_CAP = 2000          # строка артефакта длиннее на ключи не разбирается: текст недоверенный
 QUOTE_IN_EVIDENCE = re.compile(r"[«\"“]([^»\"”]{8,})[»\"”]")
 RY_KEY = re.compile(r"\b[A-Z]{2}(?:\.[A-Za-z0-9]+)+-\d+(?:\.\d+)*")
 FILE_PROFILES = {"us": "us", "user-story": "us", "alg": "alg", "algorithm": "alg", "algorithms": "alg"}
@@ -936,7 +937,7 @@ class FileReader:
                 heading = m.group(1)
                 continue
             found = [self.card(t) for t in link_targets(line)]
-            found += [self.mirror_page(k) for k in RY_KEY.findall(line)]
+            found += [self.mirror_page(k) for k in RY_KEY.findall(line[:LINE_CAP])]
             for rel in found:
                 if rel and rel not in seen:
                     seen.add(rel)
@@ -961,6 +962,7 @@ class FileReader:
         text = read_card_text(path)
         if text is None:
             return {"id": ref, "status": "error"}
+        text = text.lstrip("\ufeff")
         fm = frontmatter(text)
         title = (fm.get("title") or "").strip().strip('"')
         if not title:
@@ -1041,8 +1043,10 @@ def stamp_review(path: str, rec: dict, cl: dict, root: str = ".") -> bool:
         out = with_fields(text, fields)
     except (AssertionError, ValueError):
         return False
-    with open(full, "w", encoding="utf-8", newline="") as f:
+    tmp = f"{full}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
         f.write(bom + (out.replace("\n", eol) if eol != "\n" else out))
+    os.replace(tmp, full)                     # сбой посреди записи не оставляет половину артефакта
     return True
 
 
@@ -1232,7 +1236,10 @@ def score_answers(cl: dict, req: dict) -> dict:
 
 
 def _cell(s: str) -> str:
-    return re.sub(r"\s+", " ", str(s or "")).replace("|", "/").strip()
+    # Картинка, ссылка и тег из текста артефакта (его цитирует модель) подгружаются при открытии отчёта: остаётся подпись.
+    s = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", str(s or ""))
+    s = re.sub(r"<[^<>]{1,200}>", " ", s)
+    return re.sub(r"\s+", " ", s).replace("|", "/").strip()
 
 
 # ------------------------------------------------------------------ пакет

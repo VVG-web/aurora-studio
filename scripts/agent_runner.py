@@ -43,7 +43,7 @@ dry-run, git-guard и журнал. Прямая правка файлов мо�
 уточнении контекст собирается по всему разговору, а не по последней фразе: «а если он
 ИП?» сама по себе не находит в базе ничего — тему держит предыдущий вопрос.
 
-Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:tasks` · `agent:clashes` · `agent:relink` · `agent:translit` · `agent:make` · `agent:golden` · `agent:conform`
+Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:tasks` · `agent:clashes` · `agent:relink` · `agent:translit` · `agent:make` · `agent:golden` · `agent:conform` · `agent:decide`
 """
 from __future__ import annotations
 
@@ -118,7 +118,6 @@ def prune_runs(runs: Path, task: str) -> int:
     return len(old)
 from aurora_common import (local_now, local_view, lock_holder, lock_release,  # noqa: E402,F401
                            lock_take, pid_alive, utc_label, utc_slug, utc_stamp, utc_today)
-from aurora_common import UNTRUSTED_RULE, untrusted  # noqa: E402 — чужой текст в запросе модели: ограждение и правило
 TODAY_STR = utc_today()
 ASK_DIR = Path("AuroraKnowledgeDB") / "meta" / "ask"
 ASK_TAIL = 4          # столько прошлых пар вопрос-ответ уходит в контекст уточнения
@@ -6392,7 +6391,7 @@ def parse_from(values) -> tuple:
         for token in re.split(r"[,\s]+", str(raw).strip()):
             if not token:
                 continue
-            m = re.search(r"(?:^|\.)([A-Za-z]+)-[\w.\-]*\d$", token)
+            m = re.search(r"(?:^|\.)([A-Za-z]+)-[\w.\-]*\d$", token) if len(token) <= 81 else None
             field = FROM_FIELDS.get(m.group(1).upper()) if m and passport_token(token) else None
             if not field:
                 bad.append(token)
@@ -6418,7 +6417,7 @@ def passport_lines(st: dict, draft_cards: list) -> list:
     links = st.get("links") or {}
     implements = [x for x in links.get("implements") or [] if passport_token(x)]
     for name in draft_cards:
-        m = re.match(r"(REQ-\d+)(?:\D|$)", name)
+        m = re.match(r"(REQ-\d+)(?!\d|\.\d)", name)
         if m and m.group(1) not in implements:
             implements.append(m.group(1))
     out = []
@@ -6691,8 +6690,13 @@ def decide_flag(value) -> bool:
 def decide_clean(text, limit: int = 600) -> str:
     """Строка из ответа модели в карточку: одна строка, без ссылок `[[…]]`, заготовок `{{…}}` и разметки."""
     text = " ".join(str(text or "").split())
+    # Картинка, ссылка и тег подгружаются при открытии карточки (Obsidian, просмотр на сервере): текст источника, ведущий
+    # модель, мог бы вынести кусок протокола в адрес. Остаётся подпись, адрес и разметка уходят.
+    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"<[^<>]{1,200}>", " ", text)
+    text = re.sub(r"(?i)\b(?:https?|ftp)://\S+|\bwww\.\S+", "", text)
     text = re.sub(r"\[\[([^\]]*)\]\]", r"\1", text).replace("{{", "(").replace("}}", ")")
-    return text.lstrip("#>-* ").strip()[:limit]
+    return " ".join(text.split()).lstrip("#>-* ").strip()[:limit]
 
 
 def decide_readable(cwd: str, path: str) -> bool:
@@ -6713,7 +6717,7 @@ def decide_source(cwd: str, ref: str) -> tuple:
     if not ref:
         return "", "", "", "нужен источник: --source «файл проекта» или «Q-NNN»"
     base = os.path.join(cwd, "AuroraKnowledgeDB", "Questions")
-    m = re.match(r"(?i)^Q-(\d+)$", ref)
+    m = re.match(r"(?i)^Q-(\d{1,9})$", ref)
     if m:
         hits = [f for f in sorted(os.listdir(base) if os.path.isdir(base) else [])
                 if re.match(rf"(?i)^Q-0*{int(m.group(1))}(?!\d)", f) and f.endswith(".md")]
@@ -6721,11 +6725,12 @@ def decide_source(cwd: str, ref: str) -> tuple:
             return "", "", "", f"вопроса {ref} нет в AuroraKnowledgeDB/Questions/"
         path = os.path.join(base, hits[0])
         text = read_text_file(path, DECIDE_SOURCE_LIMIT)
-        src = re.search(r"(?m)^answer_source:\s*[\"']?([^\"'\n]+)", text)
-        if src and src.group(1).strip():
-            extra = os.path.join(cwd, src.group(1).strip())
+        from aurora_common import frontmatter as head_fields
+        answer = (head_fields(text).get("answer_source") or "").strip().strip("\"'")          # только шапка: строка тела не выбирает файл
+        if answer:
+            extra = os.path.join(cwd, answer)
             if decide_readable(cwd, extra):
-                text += "\n\n--- Ответ: " + src.group(1).strip() + " ---\n\n" + read_text_file(extra, DECIDE_SOURCE_LIMIT)
+                text += "\n\n--- Ответ: " + answer + " ---\n\n" + read_text_file(extra, DECIDE_SOURCE_LIMIT)
         return hits[0][:-3], text, hits[0][:-3], ""
     path = os.path.normpath(os.path.join(cwd, ref))
     if not decide_readable(cwd, path):
@@ -6801,7 +6806,7 @@ def build_decision(cwd: str, ans: dict, source: str, label: str, card: str, owne
             older.append(os.path.splitext(os.path.basename(path))[0])
     for stem in older:
         doubts.append(f"Возможно, заменяет [[{stem}]]: подтвердите и выполните `kb:supersede` — само решение прежнее не меняет.")
-    where = f"[[{card}]]" if card else f"`{label}`"
+    where = f"[[{card}]]" if card else "`" + decide_clean(label, 160).replace("`", "'") + "`"
     cons = [decide_clean(c, 300) for c in decide_list(ans.get("consequences")) if decide_clean(c, 300)]
     out = ["---", f'title: "{ident}: {title.replace(chr(34), "")}"', f'aliases: ["{ident}"]', "tags: [decision]", "type: decision",
            "template: akdb_decision_v1.0.md", "kind: document", "status: proposed", f"date: {today}", f'owner: "{owner}"',
@@ -6823,6 +6828,7 @@ def run_decide(cfg: dict, cwd: str, source: str, topic: str, owner: str, affects
                call=None, today: str = "") -> dict:
     """Черновик решения из источника: чтение → модель → проверка цитат → карточка `proposed` (с `--apply`)."""
     call = call or AG.call_role
+    from aurora_common import UNTRUSTED_RULE, untrusted         # чужой текст в запросе модели: ограждение и правило
     import card_types as CT
     import id_registry as IDR
     import kb_decide as KD
@@ -6839,7 +6845,7 @@ def run_decide(cfg: dict, cwd: str, source: str, topic: str, owner: str, affects
     prompt = PROMPT_DECIDE.format(
         rule=UNTRUSTED_RULE, label=decide_clean(label, 160),
         topic=(f"\nТема, заданная человеком: {decide_clean(topic, 200)}\n" if topic.strip() else ""),
-        source=untrusted(text, "источник решения"))
+        source=untrusted(text, "источник решения: " + decide_clean(label, 160)))
     r = call(cfg, "planner", [{"role": "user", "content": prompt}], deadline=time.time() + cfg["request_timeout"])
     if not r["ok"]:
         return {"ok": False, "why": "модель не ответила: " + model_fail_note(r)}
@@ -6851,7 +6857,10 @@ def run_decide(cfg: dict, cwd: str, source: str, topic: str, owner: str, affects
     if not decide_clean(ans.get("title"), 120):
         return {"ok": False, "why": "модель не сформулировала решение — повторите"}
     today = today or utc_today()
-    number = int(IDR.peek("DR", cwd).split("-")[1]) if not apply else int(IDR.allocate("DR", cwd).split("-")[1])
+    try:
+        number = int(IDR.peek("DR", cwd).split("-")[1]) if not apply else int(IDR.allocate("DR", cwd).split("-")[1])
+    except (OSError, RuntimeError, ValueError) as e:             # замок выдачи занят дольше положенного или отметка недоступна
+        return {"ok": False, "why": f"номер решения не выдан: {e}"}
     built = build_decision(cwd, ans, text, label, card, who, number, known, affects, today)
     remarks = [f"{p['id']}: {p['msg']}" for p in KD.lint_decision(built["text"], set(known.values()))]
     res = {"ok": True, "id": built["id"], "text": built["text"], "doubts": built["doubts"], "remarks": remarks,

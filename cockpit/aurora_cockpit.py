@@ -4853,7 +4853,7 @@ def kinds_read(project: str) -> dict:
     import importlib
     importlib.reload(MK)
     kinds = MK.read_kinds(project)
-    return {"kinds": kinds, "known": MK.KNOWN,
+    return {"kinds": kinds, "known": MK.KNOWN, "review_profiles": list(MK.REVIEW_PROFILES),
             "problems": [{"kind": k, "why": w} for k, w in MK.check(project, kinds)],
             "templates": sorted(
                 f for f in os.listdir(os.path.join(project, "Templates"))

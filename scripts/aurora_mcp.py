@@ -192,12 +192,12 @@ TOOLS = [
          "runs": {"type": "integer", "description": "прогонов чек-листа, 1–5 (по умолчанию 3)"}}}},
     {"name": "review_file",
      "description": "Ревью локального артефакта (Artifacts/…) или страницы-зеркала тем же движком, что review_page, "
-                    "но без Confluence и сети: чистовик и связанное из базы знаний и зеркала, чек-лист несколькими "
+                    "но без обращения к вики и без сети: чистовик и связанное из базы знаний и зеркала, чек-лист несколькими "
                     "прогонами модели проекта, оценка и вердикт кодом. Ответ «нет» принимается только с цитатой, "
                     "найденной в тексте. Итог в шапку артефакта не пишет (это делает `make:review-auto --file --apply` "
                     "в панели). Долго: минуты.",
      "inputSchema": {"type": "object", "required": ["path"], "properties": {
-         "path": {"type": "string", "description": "файл проекта: Artifacts/us/US-1.md, Sources/Confluence/…"},
+         "path": {"type": "string", "description": "файл проекта от его корня: артефакт из Artifacts/ или страница зеркала источника"},
          "profile": {"type": "string", "enum": ["auto", "us", "alg"]},
          "runs": {"type": "integer", "description": "прогонов чек-листа, 1–5 (по умолчанию 3)"}}}},
     {"name": "story_lint",
@@ -581,11 +581,13 @@ def t_review_page(project: str, args: dict) -> str:
 
 def project_file(project: str, args: dict) -> str:
     """Путь файла проекта из запроса: относительный, внутри проекта. Путь приходит от модели."""
-    from aurora_common import real_inside, real_rel
+    from aurora_common import read_verdict, real_inside, real_rel
     rel = need(args, "path", "файл проекта").replace("\\", "/").strip()
     full = real_inside(project, rel) if not os.path.isabs(rel) else ""
     if not full or not os.path.isfile(full):
         raise ToolError(f"{rel}: нужен файл внутри проекта (путь от корня проекта).")
+    if read_verdict(os.path.join(project, rel), project, strict=True, every_file=True):
+        raise ToolError(f"{rel}: файл за границей чтения проекта (ссылка наружу, доступы или служебная папка).")
     return real_rel(project, full)
 
 

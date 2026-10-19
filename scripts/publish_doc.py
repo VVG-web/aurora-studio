@@ -318,16 +318,22 @@ def _kind_mask(fm: dict) -> str:
     return (rec.get("ref_mask") or "").strip()
 
 
-def review_gate(text: str, fm: dict) -> list:
+def review_gate(text: str, fm: dict, path: str = "") -> list:
     """Что мешает опубликовать: [(id, пояснение)] — только для вида, у которого в реестре объявлено ревью."""
     try:
         import make_kinds as MK
         kinds = MK.read_kinds(".") or {}
+        profile = MK.review_profile
     except Exception:  # noqa: BLE001 — реестр видов необязателен: без него ворот нет
         return []
     kind = (fm.get("type") or "").strip().strip('"')
     rec = kinds.get(kind) or kinds.get(kind.lower())
-    if not rec or (rec.get("review") or "").strip() not in ("us", "alg"):
+    if not rec:
+        # Вид не назван в шапке (или назван иначе): артефакт, лежащий в папке результата вида, ему и принадлежит.
+        here = os.path.realpath(path)
+        rec = next((r for r in kinds.values() if (r.get("out") or "").strip("/") and
+                    here.startswith(os.path.realpath((r["out"] or "").strip("/")) + os.sep)), None)
+    if not rec or not profile(rec):
         return []
     try:
         import review_run as RR
@@ -377,9 +383,11 @@ def main() -> int:
         print(f"publish: {path} — ссылка за пределы проекта или на внутренний слой доверия, "
               "не публикуется", file=sys.stderr)
         return 1
-    text = open(path, encoding="utf-8-sig").read()
+    text = open(path, encoding="utf-8").read()
+    bom = "\ufeff" if text.startswith("\ufeff") else ""
+    text = text.lstrip("\ufeff")                 # BOM перед шапкой прятал бы её от разбора, а с ней — ворота
     fm = frontmatter(text)
-    gate = review_gate(text, fm)
+    gate = review_gate(text, fm, path)
     bypass = bool(gate) and "review" in a.allow
     if gate and not bypass:
         print(f"publish: ворота ревью не пройдены для {path}:", file=sys.stderr)
@@ -416,8 +424,14 @@ def main() -> int:
               f"{', '.join(weak[:6])}")
     mask = _kind_mask(fm)
     if mask and not (fm.get("ref_key") or "").strip():
-        print(f"⚠️ В паспорте нет ключа по маске вида (`ref_key`, маска «{mask}»): страница уйдёт без ключа "
-              "Requirement Yogi — впишите ключ в документ до публикации")
+        try:
+            import id_registry as IDR
+            has_key = bool(IDR.own_key(body, mask))
+        except ImportError:
+            has_key = False
+        if not has_key:
+            print(f"⚠️ В документе нет ключа по маске вида (маска «{mask}»): страница уйдёт без ключа "
+                  "Requirement Yogi — впишите ключ, который заведёт реестр, в строку «Код»")
     if (fm.get("review") or "").strip() in ("", "none", "no"):
         print("⚠️ В артефакте нет отметки о ревью (`review:`) — публикуются документы "
               "после проверки человеком")
@@ -520,6 +534,7 @@ def main() -> int:
                  f"{base_url}/pages/viewpage.action?pageId={pid}")
     if bypass:
         text = with_fields(text, {"review_bypass": utc_stamp()})
+    text = bom + text
     open(path, "w", encoding="utf-8").write(text)
 
     print(f"\n✅ {base_url}/pages/viewpage.action?pageId={pid} (версия {ver}, доступ {kind})")

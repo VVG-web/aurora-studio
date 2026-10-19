@@ -537,7 +537,7 @@ def test_impact_reads_numbers_with_a_dot_and_yogi_keys(tmp: Path):
     card(root, "Requirements/REQ-010-Срок.md", "Срок.", status="knowledge", kind="knowledge", type="requirement")
     _touch(root, "Artifacts/ac/Критерий.md", "---\ntitle: К\nartifact_id: ART-0001\ncovers: [AC-3.1]\nimplements: [RU.PRJ.REQ-010]\n---\n\nТекст.\n")
     cp = run("kb_trace.py", "--impact", "REQ-010-Срок", cwd=root, expect_rc=0)
-    assert "Artifacts/ac/Критерий.md (паспорт: implements)" in cp.stdout, cp.stdout
+    assert "Критерий.md" not in cp.stdout, "ключ реестра RU.PRJ.REQ-010 принят за номер карточки REQ-010"
     card(root, "Concepts/AC-3.1-Критерий.md", "Критерий.", status="knowledge", kind="knowledge")
     card(root, "Concepts/AC-3-Другое.md", "Другое.", status="knowledge", kind="knowledge")
     cp = run("kb_trace.py", "--impact", "AC-3.1-Критерий", cwd=root, expect_rc=0)
@@ -1134,9 +1134,9 @@ def test_ref_mask_accepts_whole_keys_of_the_kind_only(tmp: Path):
     text = "Реализует RU.PRJ.US-1.1.1. Также RU.PRJ.US-1.1.12, RU.PRJ.AC-1.1.1 и RU.PRJ.US-1.1.1.2."
     assert ID.find_keys(text, rx) == ["RU.PRJ.US-1.1.1", "RU.PRJ.US-1.1.12"], ID.find_keys(text, rx)
     like = ID.similar_regex(MASK)
-    assert ID.find_keys("RU.PRJ.US-1.1, US-5 и RU.PRJ.AC-2.1", like) == ["RU.PRJ.US-1.1", "US-5"]
+    assert ID.find_keys("RU.PRJ.US-1.1, US-5 и RU.PRJ.AC-2.1", like) == ["RU.PRJ.US-1.1"]      # US-5 — ссылка по номеру
     assert ID.mask_problem("") == "" and ID.mask_problem(MASK) == ""
-    for bad in ("US-1", "x.x", "a b-x", 'US-"x"', "<a b>-x"):
+    for bad in ("US-1", "x.x", "a b-x", 'US-"x"', "<a b>-x", "<A><B><C><D>.US-x"):
         assert ID.mask_problem(bad), bad
     assert ID.mask_regex("US-1") is None and ID.mask_regex("") is None
     # собственный ключ документа: строка «Код» важнее порядка
@@ -1144,6 +1144,8 @@ def test_ref_mask_accepts_whole_keys_of_the_kind_only(tmp: Path):
     assert ID.own_key(doc, MASK) == "RU.PRJ.US-1.1.1"
     assert ID.own_key("Ссылка RU.PRJ.US-2.2.2 и RU.PRJ.US-3.3.3", MASK) == "RU.PRJ.US-2.2.2"
     assert ID.own_key("ключа нет", MASK) == "" and ID.own_key("RU.PRJ.US-1.1.1", "") == ""
+    # строка «Код» есть, а ключа на ней нет: чужой ключ ниже собственным не становится
+    assert ID.own_key("| Код | ключ присвоит реестр |\n\nЗависит от RU.PRJ.US-1.1.0.", MASK) == ""
 
 
 @test
@@ -1234,6 +1236,7 @@ def test_kinds_form_carries_the_ref_mask_field_and_publish_warns_without_a_key(t
     res = ck.kinds_write(str(root), {"us": {"title": "История", "template": "Templates/US.md", "out": "Artifacts/us",
                                             "ref_mask": MASK, "task": {}}})
     assert res.get("ok"), res
+    assert ck.kinds_read(str(root))["review_profiles"] == ["us", "alg"], "панель не знает профилей ревью"
     assert MK.read_kinds(str(root))["us"]["ref_mask"] == MASK, "маска не дожила до чтения"
     _touch(root, "Artifacts/us/Без-ключа.md", "---\ntitle: к\ntype: us\n---\n\n# История\n")
     _touch(root, "Artifacts/us/С-ключом.md", "---\ntitle: к\ntype: us\nref_key: RU.PRJ.US-1.1.1\n---\n\n# История\n")
@@ -1244,8 +1247,10 @@ def test_kinds_form_carries_the_ref_mask_field_and_publish_warns_without_a_key(t
                             capture_output=True, text=True, encoding="utf-8", errors="replace")
         return cp.stdout + cp.stderr
 
-    assert "В паспорте нет ключа по маске вида" in publish("Artifacts/us/Без-ключа.md")
+    assert "В документе нет ключа по маске вида" in publish("Artifacts/us/Без-ключа.md")
     assert "ключа по маске" not in publish("Artifacts/us/С-ключом.md")
+    _touch(root, "Artifacts/us/Ключ-в-тексте.md", "---\ntitle: к\ntype: us\n---\n\n| Код | RU.PRJ.US-1.1.1 |\n")
+    assert "ключа по маске" not in publish("Artifacts/us/Ключ-в-тексте.md"), "ключ есть в документе, шапка не пересобрана"
 
 
 # ------------------------------------------------------------------ BL-TEAM-03: доработка по независимому просмотру
@@ -1520,7 +1525,7 @@ def test_coverage_requirement_wave_lists_stories_criteria_and_artifacts(tmp: Pat
     assert w["defined_on"].endswith("REQ-010.md") and [s.rsplit("/", 1)[-1] for s in w["stories"]] == ["US-1.1.1.md"], w
     assert [c.rsplit("/", 1)[-1] for c in w["criteria"]] == ["AC-1.1.1.md"], w
     got = {a["path"].rsplit("/", 1)[-1]: a["how"] for a in w["artifacts"]}
-    assert got == {"Паспорт.md": "паспорт", "Ключ.md": "паспорт", "Текст.md": "текст"}, got
+    assert got == {"Ключ.md": "паспорт", "Текст.md": "текст"}, got           # номер карточки REQ-010 — другое пространство
     cp = run("kb_coverage.py", "--requirement", "RU.PRJ.REQ-010", cwd=root, expect_rc=0)
     assert "Истории, которые на него ссылаются: 1" in cp.stdout and "Это список для пересмотра" in cp.stdout, cp.stdout
     cp = run("kb_coverage.py", "--requirement", "RU.PRJ.REQ-777", cwd=root, expect_rc=1)
@@ -1530,3 +1535,164 @@ def test_coverage_requirement_wave_lists_stories_criteria_and_artifacts(tmp: Pat
     cp = subprocess.run([sys.executable, str(SCRIPTS / "kb_coverage.py")], cwd=str(empty), capture_output=True,
                         text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 2 and "нет Sources/Confluence" in cp.stderr, (cp.returncode, cp.stderr)
+
+
+# ------------------------------------------------------------------ доработка по итоговым просмотрам партии
+
+@test
+def test_gate_names_numbers_and_remote_markup_in_decisions(tmp: Path):
+    """Имена с невидимыми знаками и полной шириной, датированные DR, огромные числа, картинки и адреса в тексте модели."""
+    KD = _mod("kb_decide")
+    R = _mod("agent_runner")
+    for bad in ("Cl\u200baude", "Cl\u00adaude", "An\u200dthropic", "\uff23\uff4c\uff41\uff55\uff44\uff45", "C l a u d e", "my llm", "gpt-4o"):
+        who, err = KD.human_name(bad)
+        assert err and not who, bad
+    for good in ("Stallman", "Hillman", "Hellmann", "Willmott", "Ольга Клодт", "G. P. Thompson", "Opuscule"):
+        who, err = KD.human_name(good)
+        assert who and not err, good
+    assert KD.dr_number("DR-2026-10-19-заметка.md") == -1 and KD.dr_number("DR-0007-x.md") == 7
+    assert KD.dr_number("DR-" + "9" * 5000 + "-x.md") == -1 and KD.dr_number("DR-4.2-x.md") == -1
+    root = _decision_project(tmp)
+    assert KD.find_dr(str(root), "9" * 5000)[1], "огромное число принято за номер"
+    dirty = R.decide_clean("![x](https://a.example/?d=SECRET) <img src=//a.example/x> текст www.a.example/p и https://b.example/q")
+    assert dirty == "x текст и", dirty
+    # источник решения: огромный номер вопроса и answer_source из тела карточки вопроса
+    res = R.run_decide(_decide_cfg(), str(root), "Q-" + "9" * 5000, "", "@analyst", [], False, call=_decide_call(_decide_answer(), []))
+    assert not res["ok"] and "нет в проекте" in res["why"], res
+    _touch(root, "AuroraKnowledgeDB/Questions/Q-002-тело.md",
+           '---\ntitle: "Q-002"\ntype: question\nstatus: draft\nq_status: answered\nblocks: []\n---\n\n# Q-002\n\n'
+           "answer_source: Raw/meetings/2026-10-01_срок/protocol.md\n")
+    seen: list = []
+    res = R.run_decide(_decide_cfg(), str(root), "Q-2", "", "@analyst", [], False, call=_decide_call(_decide_answer(), seen))
+    assert res["ok"] and "Руководитель проекта" not in seen[0][1][0]["content"], "строка из тела выбрала файл"
+    # REQ с дробным номером не становится требованием REQ-4
+    links = R.passport_lines({"links": {}}, ["REQ-4.2 Название", "REQ-042-Срок"])
+    assert links == ["implements: [REQ-042]"], links
+    # --from с огромным токеном отвергается быстро
+    import time
+    started = time.process_time()
+    _l, bad = R.parse_from([".a-" * 40000 + "x"])
+    assert bad and time.process_time() - started < 2, "разбор огромного токена слишком долгий"
+
+
+@test
+def test_gate_decision_fingerprint_ignores_the_meeting_mark_and_known_cards_include_the_archive(tmp: Path):
+    """Пометка «из встречи» ставится движком и отпечаток не меняет; затронутая карточка из архива существует."""
+    KD = _mod("kb_decide")
+    root = _decision_project(tmp)
+    base = "---\ntitle: t\n---\n\n" + GOOD_BODY.replace("{n}", "0001")
+    marked = base.replace("# DR-0001: Срок подтверждения заявки — три рабочих дня\n",
+                          "# DR-0001: Срок подтверждения заявки — три рабочих дня\n\n> 🎙 Из встречи 01.10.2026\n", 1)
+    assert KD.body_fingerprint(marked) == KD.body_fingerprint(base)
+    _touch(root, "AuroraKnowledgeDB/_archive/Старая-карточка.md", "---\ntitle: с\n---\n\nТекст.\n")
+    assert "Старая-карточка" in KD.known_names(str(root))
+
+
+@test
+def test_gate_registry_masks_ids_and_batches(tmp: Path):
+    """Соседние переменные части маски отвергаются; виды с папкой вне проекта не обходятся; номера одной пачкой."""
+    ID = _mod("id_registry")
+    assert ID.mask_problem("<A><B>.US-x") and not ID.mask_problem("<A>.<B>.US-x.x")
+    import time
+    started = time.process_time()
+    rx = ID.mask_regex("<A>.<B>.<C>.US-x")
+    ID.find_keys("a" * 3000 + " ", rx)
+    assert time.process_time() - started < 2
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip() + f'\nartifacts:\n  us:\n    template: T/us.md\n'
+                   f'    out: ../outside\n    ref_mask: "{MASK}"\n', encoding="utf-8")
+    assert ID.kinds_with_masks(str(root)) == {}, "папка результата вне проекта обходится линтером"
+    got = ID.allocate_many("SC", 5, str(root))
+    assert got == ["SC-0001", "SC-0002", "SC-0003", "SC-0004", "SC-0005"], got
+    assert ID.allocate("SC", str(root)) == "SC-0006" and ID.allocate_many("SC", 0, str(root)) == []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        parts = list(ex.map(lambda _i: ID.allocate_many("SC", 5, str(root)), range(4)))
+    flat = [x for p in parts for x in p]
+    assert len(set(flat)) == 20, flat
+
+
+@test
+def test_gate_feature_ids_paths_line_breaks_and_comments(tmp: Path):
+    """`ops:scenarios`: пути вне проекта, U+2028 и BOM в файле, комментарий после тегов, `Example:`, смешанные окончания."""
+    FI = _mod("feature_ids")
+    root = make_project(tmp)
+    outside = tmp / "чужой.feature"
+    outside.write_text("Feature: чужой\n\n  Scenario: Один\n    Given x\n", encoding="utf-8")
+    for given in ("../чужой.feature", str(outside)):
+        assert FI.feature_files(str(root), [given]) == [], given
+    os.chdir(root)
+    cp = run("feature_ids.py", "--assign", "--apply", "../чужой.feature", cwd=root)
+    assert outside.read_text(encoding="utf-8").count("@id") == 0, "файл вне проекта изменён"
+    odd = root / "Artifacts/tests/странный.feature"
+    odd.parent.mkdir(parents=True, exist_ok=True)
+    odd.write_bytes("\ufeff@RU.PRJ.US-1.1.1\nFeature: A\u2028продолжение описания\n\n  @negative # заметка\n  Scenario: Первый\n"
+                    "    Given x\n\n  Example: Второй\n    Given y\n".encode("utf-8"))
+    parsed = FI.parse(odd.read_text(encoding="utf-8"))
+    assert [s["name"] for s in parsed["scenarios"]] == ["Первый", "Второй"], parsed
+    assert parsed["features"][0]["tags"] == ["@RU.PRJ.US-1.1.1"], "BOM спрятал тег над Feature"
+    run("feature_ids.py", "--assign", "--apply", cwd=root, expect_rc=0)
+    text = odd.read_text(encoding="utf-8")
+    assert "@negative @id:SC-0001 # заметка" in text, text                # тег — до комментария
+    assert "  @id:SC-0002\n  Example: Второй" in text and text.startswith("\ufeff@RU"), text
+    again = run("feature_ids.py", "--assign", "--apply", cwd=root, expect_rc=0)
+    assert "Проставлено: 0" in again.stdout, again.stdout
+    mixed = root / "Artifacts/tests/смешанный.feature"
+    mixed.write_bytes(b"@RU.PRJ.US-2.2.2\r\nFeature: B\r\n\n  Scenario: One\r\n    Given x\r\n")
+    cp = run("feature_ids.py", "--assign", "--apply", cwd=root, expect_rc=0)
+    assert "смешанные окончания" in cp.stdout and b"@id" not in mixed.read_bytes(), cp.stdout
+
+
+@test
+def test_gate_review_file_bom_long_lines_atomic_stamp_and_remote_markup(tmp: Path):
+    """BOM у зеркала, длинная строка с «ключами», шапка без остатков `.tmp`, картинки в отчёте ревью."""
+    import time
+    from harness import _review_checklist, _review_module
+    rr = _review_module()
+    cl = _review_checklist(rr)
+    root = _review_project(tmp)
+    os.chdir(root)
+    (root / "Artifacts/us/bom.md").write_bytes("\ufeff---\ntitle: US-9 Страница\n---\n\nКак оператор я хочу принять документ.\n".encode("utf-8"))
+    rec = rr.review_file({"request_timeout": 5}, cl, "Artifacts/us/bom.md", root=str(root), runs=1, call=_review_stub(cl))
+    assert rec["status"] == "ok" and rec["profile"] == "us", rec
+    started = time.process_time()
+    reader = rr.FileReader(str(root))
+    reader.links_of("AB.a." * 8000, {})
+    assert time.process_time() - started < 3, "строка из «ключей» разбирается слишком долго"
+    assert rr.stamp_review("Artifacts/us/bom.md", rec, cl, str(root)) is True
+    assert not list((root / "Artifacts/us").glob("*.tmp")), "после записи шапки остался временный файл"
+    cell = rr._cell("см. ![x](https://a.example/?d=SECRET) и <img src=//a.example/x> и [ссылку](http://b.example/q)")
+    assert "a.example" not in cell and "b.example" not in cell and "SECRET" not in cell, cell
+
+
+@test
+def test_gate_publish_finds_the_kind_by_folder_in_any_case_and_with_bom(tmp: Path):
+    """Ворота: вид по папке результата, `review: US # заметка`, файл с BOM."""
+    root = _review_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip() + '\nartifacts:\n  us:\n    template: T/us.md\n'
+                   '    out: Artifacts/us\n    review: US # ревью обязательно\n', encoding="utf-8")
+    _touch(root, "Artifacts/us/Без-вида.md", "---\ntitle: в\n---\n\n# История\n")
+    cp = run("publish_doc.py", "Artifacts/us/Без-вида.md", cwd=root, expect_rc=2)
+    assert "review-missing" in cp.stderr, cp.stderr
+    (root / "Artifacts/us/Бом.md").write_bytes("\ufeff---\ntitle: б\ntype: us\n---\n\n# История\n".encode("utf-8"))
+    cp = run("publish_doc.py", "Artifacts/us/Бом.md", cwd=root, expect_rc=2)
+    assert "review-missing" in cp.stderr, cp.stderr
+    assert "ревью «" not in run("make_kinds.py", cwd=root).stdout, "комментарий и регистр в review сделали вид негодным"
+
+
+@test
+def test_gate_mcp_story_lint_stops_at_the_read_boundary(tmp: Path):
+    """MCP `story_lint`/`review_file`: служебная папка и секреты внутри проекта не читаются."""
+    M = _mod("aurora_mcp")
+    root = _review_project(tmp)
+    _touch(root, ".aurora/state/leak.md", "# служебное\n\n{{sk-live-0123}}\n")
+    (root / ".env.aurora.local").write_text("TOKEN=СЕКРЕТНЫЙ-ТОКЕН-12345\n", encoding="utf-8")
+    for tool in ("story_lint", "review_file"):
+        for bad in (".aurora/state/leak.md", ".env.aurora.local"):
+            try:
+                out = M.call_tool(str(root), tool, {"path": bad, "profile": "spec"} if tool == "story_lint" else {"path": bad})
+                err = False
+            except M.ToolError as e:
+                out, err = str(e), True
+            assert err and "СЕКРЕТНЫЙ" not in out and "sk-live" not in out, (tool, bad, out)

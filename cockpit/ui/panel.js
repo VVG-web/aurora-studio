@@ -2572,7 +2572,7 @@ async function renderKinds(box){
           t("kinds.review"),
           el("select",{class:"btn sm",style:"font-weight:400",
             onchange:e=>{ rec.review = e.target.value; setDirty("kinds", t("dirty.kinds"), true); }},
-            ...["", "us", "alg"].map(v=>el("option",{value:v, selected:(rec.review||"")===v?"":null},
+            ...["", ...(d.review_profiles||[])].map(v=>el("option",{value:v, selected:(rec.review||"")===v?"":null},
               v ? t("kinds.review_" + v) : t("kinds.review_off"))))),
         el("button",{class:"btn sm", title: t("kinds.task_hint"),
           onclick:e=>{ taskBox.hidden = !taskBox.hidden;
@@ -3436,6 +3436,7 @@ const ENGINE_WORDS = {
   "тип не по разделу": "word.type_mismatch",  // данные движка
   "нарушения шаблона у карточек со штампом": "word.template_violation",  // данные движка
   "карточки без шаблона после завершения миграции": "word.missing_template",  // данные движка
+  "принятые решения правили": "word.decision_changed",  // данные движка
   "прочее": "word.other",  // данные движка
   "доверенные": "word.trusted",  // данные движка
   "из встреч (вне доли)": "word.meetings",  // данные движка

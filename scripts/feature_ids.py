@@ -47,11 +47,11 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
-from aurora_common import frontmatter, safe_walk  # noqa: E402
+from aurora_common import frontmatter, head_text, read_verdict, real_inside, safe_walk  # noqa: E402
 
 FEATURES = "Artifacts/tests"
 FEATURE_WORDS = ("feature", "функция", "функциональность", "функционал", "свойство")
-SCENARIO_WORDS = ("scenario outline", "scenario", "структура сценария", "сценарий", "пример")
+SCENARIO_WORDS = ("scenario outline", "scenario", "example", "структура сценария", "сценарий", "пример")
 KEYWORD = re.compile(r"^(" + "|".join(sorted((re.escape(w) for w in FEATURE_WORDS + SCENARIO_WORDS),
                                               key=len, reverse=True)) + r")\s*:\s*(.*)$", re.I)
 RY_TAG = re.compile(r"^@[A-Za-z]{2}(?:\.[A-Za-z0-9]+)+-\d")      # @RU.PRJ.US-1.1.1
@@ -63,7 +63,9 @@ def parse(text: str) -> dict:
     Теги относятся к ключевому слову сразу под ними; любая другая строка (шаг, таблица, строка документа) их
     сбрасывает. Комментарии и пустые строки между тегами и ключевым словом допустимы."""
     features, scenarios, pending = [], [], []
-    for n, raw in enumerate(text.splitlines(), 1):
+    # Строки делятся только по «\n» (после «\r\n»): `splitlines` рвёт ещё по U+2028, \x0b, \x0c, \x85, и номера строк
+    # здесь и в `assign` разошлись бы — тег встал бы не над своим сценарием.
+    for n, raw in enumerate(text.lstrip("\ufeff").replace("\r\n", "\n").split("\n"), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -88,10 +90,14 @@ def feature_files(root: str, paths) -> list:
     """Файлы `.feature`: переданные (файлы и папки) или `Artifacts/tests`; относительно корня, по порядку."""
     out = []
     for given in (paths or [FEATURES]):
+        inside = real_inside(root, given)                     # `..`, абсолютные пути и ссылки наружу не выводят за проект
+        if not inside:
+            continue
         base = os.path.join(root, given)
-        if os.path.isfile(base):
+        if os.path.isfile(inside) and inside.endswith(".feature") \
+                and not read_verdict(base, root, strict=True, every_file=True):
             out.append(base)
-        for dirpath, dirs, files in (safe_walk(base) if os.path.isdir(base) else []):
+        for dirpath, dirs, files in (safe_walk(base) if os.path.isdir(inside) else []):
             dirs[:] = sorted(d for d in dirs if not d.startswith("."))
             out += [os.path.join(dirpath, f) for f in sorted(files) if f.endswith(".feature")]
     return sorted(dict.fromkeys(out))
@@ -102,15 +108,12 @@ def known_refs(root: str) -> set:
     keys = set()
     for sub, field in (("Artifacts", "ref_key"), (os.path.join("Sources", "Confluence"), "ry_defines")):
         base = os.path.join(root, sub)
-        for dirpath, _dirs, files in (os.walk(base) if os.path.isdir(base) else []):
-            for f in files:
+        for dirpath, dirs, files in (safe_walk(base) if os.path.isdir(base) else []):
+            dirs.sort()
+            for f in sorted(files):
                 if not f.endswith(".md"):
                     continue
-                try:
-                    with open(os.path.join(dirpath, f), encoding="utf-8", errors="ignore") as fh:
-                        value = frontmatter(fh.read(3000)).get(field) or ""
-                except OSError:
-                    continue
+                value = frontmatter(head_text(os.path.join(dirpath, f))).get(field) or ""     # шапка с сотнями ключей — целиком
                 keys.update(k.strip().strip("\"'") for k in value.strip("[] ").split(",") if k.strip())
     return keys
 
@@ -174,6 +177,10 @@ def assign(root: str, paths, apply: bool) -> tuple:
         with open(path, encoding="utf-8", newline="") as f:
             raw = f.read()
         eol = "\r\n" if "\r\n" in raw else "\n"
+        # Смешанные окончания: файл с «\r\n» и одиночными «\n» делился бы по-разному здесь и в `parse`.
+        if eol == "\r\n" and raw.replace("\r\n", "").count("\n"):
+            report.append(f"{os.path.relpath(path, root).replace(chr(92), '/')}: смешанные окончания строк — файл пропущен, приведите к одному виду")
+            continue
         lines = raw.split(eol)
         parsed = parse(raw.replace("\r\n", "\n"))
         todo = [sc for sc in parsed["scenarios"] if not tag_values(sc["tags"], "@id:")]
@@ -182,7 +189,8 @@ def assign(root: str, paths, apply: bool) -> tuple:
         # номера выдаются в порядке документа (верхний сценарий получает меньший), правка идёт снизу вверх:
         # так номера строк выше не плывут от вставленных
         todo.sort(key=lambda s: s["line"])
-        idents = {sc["line"]: (IDR.allocate("SC", root) if apply else "SC-????") for sc in todo}
+        got = IDR.allocate_many("SC", len(todo), root) if apply else ["SC-????"] * len(todo)      # один захват замка на файл
+        idents = {sc["line"]: ident for sc, ident in zip(todo, got)}
         for sc in reversed(todo):
             ident = idents[sc["line"]]
             idx = sc["line"] - 1
@@ -190,7 +198,10 @@ def assign(root: str, paths, apply: bool) -> tuple:
             while above >= 0 and (not lines[above].strip() or lines[above].strip().startswith("#")):
                 above -= 1
             if above >= 0 and lines[above].strip().startswith("@") and sc["tags"]:
-                lines[above] = lines[above].rstrip() + f" @id:{ident}"
+                tags_line = lines[above]
+                cut = re.search(r"\s+#", tags_line)             # хвостовой комментарий строки тегов остаётся хвостом
+                lines[above] = (tags_line[:cut.start()].rstrip() + f" @id:{ident}" + tags_line[cut.start():]) if cut \
+                    else tags_line.rstrip() + f" @id:{ident}"
             else:
                 lines.insert(idx, re.match(r"\s*", lines[idx]).group(0) + f"@id:{ident}")
             report.append(f"{rel}:{sc['line']}: «{sc['name']}» → @id:{ident}")
@@ -209,7 +220,11 @@ def main() -> int:
     ap.add_argument("--json", action="store_true", help="машинный вывод")
     a = ap.parse_args()
     if a.assign:
-        n, lines = assign(".", a.paths, a.apply)
+        try:
+            n, lines = assign(".", a.paths, a.apply)
+        except (OSError, RuntimeError) as e:             # замок выдачи номеров занят или отметка недоступна
+            print(f"feature_ids: номера не выданы: {e}", file=sys.stderr)
+            return 2
         print(("Проставлено" if a.apply else "Будет проставлено (предпросмотр, номера не выданы)") + f": {n}")
         print("\n".join(f"- {x}" for x in lines))
         if not a.apply and n:
