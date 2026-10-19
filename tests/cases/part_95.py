@@ -624,9 +624,15 @@ def test_path_check_partial_walk_never_says_everything_fits_and_a_linux_name_is_
         pb.SCAN_FILES_MAX = saved
     out = pb.render(rep)
     assert rep.partial and not rep.findings and "Всё помещается" not in out and "проверено частично" in out, out
+    mk = lambda sid: pb.Finding("k", "l", "s", sid, "name", "fail", 256, 255, system_id=sid)      # noqa: E731
+    assert pb.is_assumed(mk("linux"), "macos") and not pb.is_assumed(mk("linux"), "linux"), "байтовое имя — это Linux"
+    assert not pb.is_assumed(mk("all"), "macos") and not pb.is_assumed(mk("all"), "windows"), "знаки UTF-16 — везде"
     (tmp / "n").mkdir()
     two = _project(tmp / "n")
-    (two / "Sources" / "Confluence" / ("я" * 128 + ".md")).write_text("x", encoding="utf-8")        # 131 знак, 259 байт
+    try:        # на Linux имя длиннее 255 байт создать нельзя: файл бывает только из репозитория, сделанного на macOS
+        (two / "Sources" / "Confluence" / ("я" * 128 + ".md")).write_text("x", encoding="utf-8")
+    except OSError:
+        return
     rep = pb.assess(str(two), current="macos")
     names = [f for f in rep.findings if f.kind == "name"]
     assert len(names) == 1 and names[0].system_id == "linux" and names[0].extra["assumed"] is True, rep.findings

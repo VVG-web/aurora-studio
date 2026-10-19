@@ -731,6 +731,11 @@ def _risks(res: Res, system: str, models: dict, base: int, tallies: list, rel: s
     return []
 
 
+def is_assumed(f: Finding, current: str) -> bool:
+    """Находка про систему, которая не эта машина: корень там — допущение. Имя в знаках UTF-16 (`all`) — везде, значит и здесь."""
+    return f.system_id not in (current, "all")
+
+
 def assess(root: str, roots: dict | None = None, current: str | None = None) -> Report:
     """Проверка проекта `root`: каждая строка конфига, которая называет место на диске.
 
@@ -754,7 +759,7 @@ def assess(root: str, roots: dict | None = None, current: str | None = None) -> 
             continue                    # одна строка конфига с недопустимым путём не гасит проверку остальных
     for f in report.findings:
         # корень чужой системы — допущение, и в сообщении это сказано; имя в знаках UTF-16 от корня не зависит
-        f.extra["assumed"] = f.system_id not in (current, "all")
+        f.extra["assumed"] = is_assumed(f, current)
     return report
 
 
