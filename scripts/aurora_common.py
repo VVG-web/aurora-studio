@@ -2480,27 +2480,26 @@ def stdin_is_terminal(stream=None, kernel32=None) -> bool:
     return bool(k.GetConsoleMode(k.GetStdHandle(STD_INPUT_HANDLE), ctypes.byref(mode)))
 
 
+def _fs():
+    """Ядро надёжности записи (`aurora_fs`). Подключается при первом вызове: `aurora_common` читается и тогда,
+    когда его папки нет в `sys.path` (загрузка по пути файла), — тогда папка добавляется."""
+    try:
+        import aurora_fs
+    except ImportError:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import aurora_fs
+    return aurora_fs
+
+
 def replace_file(src, dst, *, windows: bool | None = None, attempts: int = 40,
                  pause: float = 0.025) -> None:
     """`os.replace` с повтором на Windows: файл, который сейчас читают, туда не подменить.
 
-    На POSIX подмена файла не зависит от того, открыт ли он у других: читатель дочитывает
-    старый, новый встаёт на место. На Windows файл, открытый другим потоком или процессом,
-    подмене не поддаётся — `PermissionError` (WinError 5 или 32), хотя прав хватает. Так
-    неделимая запись манифеста и индексов падала на ровном месте, стоило кому-то в этот
-    миг их читать. Занятость проходит за миллисекунды: ждём и пробуем снова, а на другой
-    системе `PermissionError` — настоящий отказ в правах, и он поднимается сразу.
+    Тело живёт в `aurora_fs.replace_file` (BL-SEC-25); имя оставлено здесь — на него ссылаются все скрипты.
+    На POSIX подмена файла не зависит от того, открыт ли он у других; на Windows занятый читателем файл даёт
+    `PermissionError` (WinError 5 или 32) — ждём и пробуем снова, а на другой системе отказ в правах настоящий.
     """
-    import time
-    retry = (os.name == "nt") if windows is None else windows
-    for n in range(attempts):
-        try:
-            os.replace(src, dst)
-            return
-        except PermissionError:
-            if not retry or n == attempts - 1:
-                raise
-            time.sleep(pause * min(n + 1, 8))
+    _fs().replace_file(src, dst, windows=windows, attempts=attempts, pause=pause)
 
 
 def lock_release_retry(path, tries: int = 40, pause: float = 0.05) -> bool:
@@ -2537,29 +2536,15 @@ def keep_private_copy(path, tag: str = "broken", keep: int = 3) -> bool:
 def write_text_atomic(path, text: str) -> None:
     """Записать текстовый файл целиком или не трогать его: через временный файл рядом и подмену.
 
-    Прямая запись обрывается посреди файла вместе с процессом (убитый `update`, закрытая
-    крышка, диск полон) — и обрезок остаётся настоящим файлом проекта: конфиг без конца,
-    `.gitignore` с половиной правила. Повторное обновление такой файл принимает за
-    человеческий и не чинит. Здесь на месте остаётся либо прежний файл, либо новый.
-    Имя временного файла — своё у каждого процесса: два обновления разом не делят его.
-    Ссылка (общий файл вне проекта) не заменяется — пишется файл, на который она ведёт.
-    Права прежнего файла переходят к новому: временный файл рождается с правами по
-    умолчанию, и без этого исполняемый скрипт человека (`Scripts/run.sh`, 0755) после
-    переписывания путей переставал бы запускаться.
+    Прямая запись обрывается посреди файла вместе с процессом (убитый `update`, закрытая крышка, диск полон) —
+    и обрезок остаётся настоящим файлом проекта: конфиг без конца, `.gitignore` с половиной правила. Повторное
+    обновление такой файл принимает за человеческий и не чинит. Здесь на месте остаётся либо прежний файл, либо
+    новый. Имя временного файла — своё у процесса, потока и записи: два обновления разом не делят его.
+    Ссылка (общий файл вне проекта) не заменяется — пишется файл, на который она ведёт. Права прежнего файла
+    переходят к новому: исполняемый скрипт человека (`Scripts/run.sh`, 0755) после переписывания путей
+    переставал бы запускаться. Перевод строки — платформы (как у `Path.write_text`).
     """
-    import shutil
-    from pathlib import Path
-    real = Path(os.path.realpath(path))
-    tmp = real.with_name(f"{real.name}.{os.getpid()}.aurora-tmp")
-    try:
-        tmp.write_text(text, encoding="utf-8")
-        try:
-            shutil.copymode(real, tmp)       # нет прежнего файла — остаются права по умолчанию
-        except OSError:
-            pass
-        replace_file(tmp, real)
-    finally:
-        tmp.unlink(missing_ok=True)
+    _fs().write_atomic(path, text, newline=None)
 
 
 def _win_pid_alive(pid: int, kernel32=None, last_error=None) -> bool:

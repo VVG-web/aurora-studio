@@ -493,12 +493,13 @@ def test_gate_atomic_write(tmp: Path):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(old.encode("utf-8"))
     new = old + "\nДобавлено.\n"
-    real_replace, real_encode = C.replace_file, C._encode
+    F = C._fs()                       # запись живёт в ядре надёжности (BL-SEC-25): подменяются его имена
+    real_replace, real_encode = F.replace_file, F._encode
     try:
         # прерывание до подмены: временный файл уже записан
         def boom(*args, **kw):
             raise KeyboardInterrupt
-        C.replace_file = boom
+        F.replace_file = boom
         try:
             C.write_card_text(str(p), new, op="body", reg=reg)
         except KeyboardInterrupt:
@@ -507,9 +508,9 @@ def test_gate_atomic_write(tmp: Path):
             raise AssertionError("прерывание проглочено")
         assert _read(p) == old, "прежний файл изменён"
         assert not _leftovers(p.parent), _leftovers(p.parent)
-        C.replace_file = real_replace
+        F.replace_file = real_replace
         # прерывание посреди кодирования и записи нового файла: файла нет вовсе
-        C._encode = boom
+        F._encode = boom
         fresh = Path(_path(root, "AuroraKnowledgeDB/Concepts/Новая.md"))
         try:
             C.write_card_text(str(fresh), P42.mk(), op="create", reg=reg)
@@ -517,7 +518,7 @@ def test_gate_atomic_write(tmp: Path):
             pass
         assert not fresh.exists() and not _leftovers(p.parent), (fresh.exists(), _leftovers(p.parent))
     finally:
-        C.replace_file, C._encode = real_replace, real_encode
+        F.replace_file, F._encode = real_replace, real_encode
     C.write_card_text(str(p), new, op="body", reg=reg)
     assert _read(p) == new
 

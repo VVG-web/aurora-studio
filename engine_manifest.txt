@@ -39,6 +39,10 @@ skills/aurora-vault/references/migration.md    => .aurora/skills/aurora-vault/re
 skills/aurora-vault/references/maintenance.md  => .aurora/skills/aurora-vault/references/maintenance.md
 
 # --- скрипты движка ---
+# ядро надёжности записи (атомарный файл, замок ОС, чтение состояния; BL-SEC-25): листовой модуль на стандартной
+# библиотеке, его подключает aurora_common — поэтому он стоит РАНЬШЕ: обрыв обновления между записями не должен
+# оставить новый aurora_common без него
+scripts/aurora_fs.py     => .aurora/scripts/aurora_fs.py
 # общий модуль примитивов: его импортируют остальные скрипты
 scripts/aurora_common.py => .aurora/scripts/aurora_common.py
 # реестр типов карточек, паспорт шаблона, проверка карточки по шаблону (`kb:cards`) и единый вход записи карточек

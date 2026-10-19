@@ -63,13 +63,10 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import itertools
 import json
 import os
 import re
-import stat
 import sys
-import threading
 from dataclasses import dataclass, field, replace
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -77,10 +74,10 @@ from aurora_common import (  # noqa: E402
     HEAD_KEY_RE, KB_ROOT, MEETING_MARK, OWN_LIFECYCLE, STATUSES, body, card_sources, card_stem,
     frontmatter, git_dirty, head_blank, head_broken, head_cut_comment, head_lines, head_list_text, head_text,
     head_value, is_meeting, is_service, leaf_name, link_escapes, list_field, not_a_card_link, read_card_text,
-    split_frontmatter, split_inline_items, replace_file, sources_block, undated, utc_today, walk_md,
+    split_frontmatter, split_inline_items, sources_block, undated, utc_today, walk_md,
     write_text_atomic,
 )
-from aurora_common import kit_root as _kit_root  # noqa: E402
+from aurora_common import _fs, kit_root as _kit_root  # noqa: E402
 
 # ----------------------------------------------------------------------------- константы
 
@@ -906,20 +903,7 @@ def read_config_overrides(project_root: str) -> tuple:
 def _write_text_exact(path: str, text: str) -> None:
     """Записать текст целиком или не трогать файл — и без перевода строк: «\r\n» остаётся «\r\n», «\n» — «\n» на любой
     системе (`write_text_atomic` на Windows превратил бы «\n» в «\r\n»). Права прежнего файла сохраняются."""
-    import shutil
-    from pathlib import Path
-    real = Path(os.path.realpath(path))
-    tmp = real.with_name(f"{real.name}.{os.getpid()}.aurora-tmp")
-    try:
-        with open(tmp, "w", encoding="utf-8", newline="") as fh:
-            fh.write(text)
-        try:
-            shutil.copymode(real, tmp)
-        except OSError:
-            pass
-        replace_file(tmp, real)
-    finally:
-        tmp.unlink(missing_ok=True)
+    _fs().write_atomic(path, text, newline="")
 
 
 def save_overrides(project_root: str, overrides: dict, *, known=None) -> str:
@@ -2697,18 +2681,6 @@ def is_card_path(path: str) -> bool:
     return where is not None and not is_service(where[1]) and where[1].count("/") >= 2
 
 
-def _encode(text: str) -> bytes:
-    """Текст → байты UTF-8. Непарный суррогат (след непонятных байтов исходника) не роняет запись всего прогона."""
-    try:
-        return text.encode("utf-8")
-    except UnicodeEncodeError:
-        pass
-    try:
-        return text.encode("utf-8", "surrogateescape")
-    except UnicodeEncodeError:
-        return text.encode("utf-8", "replace")
-
-
 def _read_old(path: str) -> "str | None":
     try:
         with open(path, encoding="utf-8", errors="ignore") as fh:
@@ -2717,57 +2689,18 @@ def _read_old(path: str) -> "str | None":
         return None
 
 
-def _crlf_file(target: str) -> bool:
-    """Файл на диске записан с `\\r\\n` (в большинстве строк)? Новый файл и файл с `\\n` — нет."""
-    try:
-        with open(target, "rb") as fh:
-            raw = fh.read(65536)
-    except OSError:
-        return False
-    return raw.count(b"\r\n") * 2 > raw.count(b"\n")
-
-
 def write_atomic(path: str, text: str) -> None:
-    """Записать файл целиком или не трогать: временный файл рядом и подмена.
+    """Записать файл целиком или не трогать: временный файл рядом и подмена (`aurora_fs.write_atomic`, BL-SEC-25).
 
     Перевод строки — `\\n` на любой системе, кроме файла, который уже записан с `\\r\\n`: правка не должна менять
     чужую договорённость о концах строк (под Windows его выбирает редактор человека). Права прежнего файла
     переходят к новому. Ссылка внутри проекта не заменяется — пишется файл, на который она ведёт. Прерывание
     (`KeyboardInterrupt`, сбой диска) посреди записи оставляет прежний файл и убирает временный.
     """
-    target = os.path.realpath(path)
-    folder = os.path.dirname(target)
-    if folder:
-        os.makedirs(folder, exist_ok=True)
-    # Имя временного файла своё у процесса, потока и каждой записи: две записи в один файл из двух потоков не делят
-    # его (иначе читатель видел бы смесь двух текстов). Имя короткое — к длинному имени карточки не прибавляется.
-    tmp = os.path.join(folder, f".{os.getpid()}-{threading.get_ident()}-{next(_TMP_SEQ)}.aurora-tmp")
-    text = str(text).replace("\r\n", "\n")
-    if _crlf_file(target):
-        text = text.replace("\n", "\r\n")
-    try:
-        try:
-            mode = stat.S_IMODE(os.stat(target).st_mode)
-        except OSError:
-            mode = 0o666                         # прежнего файла нет — права по умолчанию (за вычетом umask)
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), mode)
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(_encode(text))
-        try:
-            import shutil
-            shutil.copymode(target, tmp)         # umask не должен урезать права прежнего файла
-        except OSError:
-            pass
-        replace_file(tmp, target)
-    finally:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+    _fs().write_atomic(path, text, newline="keep")
 
 
 _GATE_WARNED: set = set()
-_TMP_SEQ = itertools.count(1)
 
 
 def _section_violation(text: str, rel: str, reg: Registry) -> "Violation | None":
