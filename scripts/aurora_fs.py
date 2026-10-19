@@ -69,12 +69,14 @@ def replace_file(src, dst, *, windows: "bool | None" = None, attempts: int = 40,
             time.sleep(pause * min(n + 1, 8))
 
 
-def _encode(text: str, encoding: str) -> bytes:
-    """Текст → байты. Непарный суррогат (след непонятных байтов исходника) не роняет запись всего прогона."""
+def _encode(text: str, encoding: str, strict: bool = False) -> bytes:
+    """Текст → байты. Непарный суррогат (след непонятных байтов исходника) не роняет запись всего прогона, если не
+    `strict`: тогда это `UnicodeEncodeError`, как у `Path.write_text`."""
     try:
         return text.encode(encoding)
     except UnicodeEncodeError:
-        pass
+        if strict:
+            raise
     try:
         return text.encode(encoding, "surrogateescape")
     except UnicodeEncodeError:
@@ -91,11 +93,15 @@ def crlf_file(path: str) -> bool:
     return raw.count(b"\r\n") * 2 > raw.count(b"\n")
 
 
-def _payload(data, encoding: str, newline: "str | None", target: str) -> bytes:
+def _payload(data, encoding: str, newline: "str | None", target: str, strict: bool = False) -> bytes:
     """Байты к записи. `newline` как у `open()`: `None` — перевод строки платформы, `""`/`"\\n"` — как есть,
     `"\\r\\n"` — принудительно CRLF, `"keep"` — как у файла на диске (CRLF, если он уже такой, иначе LF)."""
     if isinstance(data, (bytes, bytearray)):
+        if strict:
+            raise TypeError("write_atomic: ожидался текст, а пришли байты")
         return bytes(data)
+    if strict and not isinstance(data, str):
+        raise TypeError("write_atomic: ожидался текст, а пришёл %s" % type(data).__name__)
     text = str(data)
     if newline == "keep":
         eol = "\r\n" if crlf_file(target) else "\n"
@@ -111,7 +117,20 @@ def _payload(data, encoding: str, newline: "str | None", target: str) -> bytes:
         text = text.replace("\r\n", "\n").replace("\n", "\r\n")
     elif eol == "\n":
         text = text.replace("\r\n", "\n")
-    return _encode(text, encoding)
+    return _encode(text, encoding, strict)
+
+
+_NO_FSYNC = tuple(getattr(errno, n) for n in ("EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP") if hasattr(errno, n))
+
+
+def _fsync(fd: int) -> None:
+    """`fsync` файла; файловая система, которая его не умеет (часть FUSE и сетевых папок), записи не мешает.
+    Настоящий сбой диска (`EIO`, `ENOSPC`) поднимается."""
+    try:
+        os.fsync(fd)
+    except OSError as e:
+        if e.errno not in _NO_FSYNC:
+            raise
 
 
 def _fsync_dir(folder: str) -> None:
@@ -131,7 +150,7 @@ def _fsync_dir(folder: str) -> None:
 
 
 def write_atomic(path, data, *, mode: "int | None" = None, newline: "str | None" = "", encoding: str = "utf-8",
-                 fsync: bool = True, follow_links: bool = True) -> None:
+                 fsync: bool = True, follow_links: bool = True, strict: bool = False, makedirs: bool = True) -> None:
     """Записать файл целиком или не трогать его: временный файл рядом, `fsync`, подмена.
 
     Прямая запись обрывается посреди файла вместе с процессом (убитый `update`, закрытая крышка, диск полон) —
@@ -144,26 +163,35 @@ def write_atomic(path, data, *, mode: "int | None" = None, newline: "str | None"
     перевод строки платформы; `"\\r\\n"` — CRLF; `"keep"` — как в файле на диске. `mode` — права нового файла
     (секрет: `0o600`, файл рождается уже с ними, окна с широкими правами нет); без него файл наследует права
     прежнего. `follow_links=True`: ссылка не заменяется — пишется файл, на который она ведёт; `False` —
-    заменяется сама ссылка. `fsync=False` — для массовых записей, где важнее скорость.
+    заменяется сама ссылка. `fsync=False` — для массовых записей, где важнее скорость. `strict=True` — только текст
+    и без `surrogateescape`: непарный суррогат — `UnicodeEncodeError`, как у `Path.write_text`. `makedirs=False` —
+    каталога нет: `FileNotFoundError`, а не молчаливое создание.
     """
     target = os.path.realpath(path) if follow_links else os.path.abspath(path)
     folder = os.path.dirname(target)
-    if folder:
+    if folder and makedirs:
         os.makedirs(folder, exist_ok=True)
-    payload = _payload(data, encoding, newline, target)
+    payload = _payload(data, encoding, newline, target, strict)
     try:
         old_mode = stat.S_IMODE(os.stat(target).st_mode)
     except OSError:
         old_mode = None                     # прежнего файла нет
-    tmp = os.path.join(folder, ".%d-%d-%d%s" % (os.getpid(), threading.get_ident(), next(_SEQ), TMP_SUFFIX))
     start = mode if mode is not None else (old_mode if old_mode is not None else 0o666)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), start)
+    for _ in range(100):                    # имя занято следом убитого процесса с тем же pid и потоком — берём следующее
+        tmp = os.path.join(folder, ".%d-%d-%d%s" % (os.getpid(), threading.get_ident(), next(_SEQ), TMP_SUFFIX))
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), start)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise FileExistsError("write_atomic: не удалось подобрать имя временного файла в %s" % folder)
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(payload)
             fh.flush()
             if fsync:
-                os.fsync(fh.fileno())
+                _fsync(fh.fileno())
         want = mode if mode is not None else old_mode
         if want is not None:
             try:
@@ -183,14 +211,35 @@ def write_atomic(path, data, *, mode: "int | None" = None, newline: "str | None"
 
 
 def write_json(path, obj, *, indent: "int | None" = 2, **kw) -> None:
-    """Записать JSON-состояние (`write_atomic`), русские буквы как есть, перевод строки в конце."""
-    write_atomic(path, json.dumps(obj, ensure_ascii=False, indent=indent) + "\n", **kw)
+    """Записать JSON-состояние (`write_atomic`), русские буквы как есть, перевод строки в конце. Непарный суррогат в
+    данных (имя файла из непонятных байтов) уходит escape-кодом: файл остаётся читаемым, а не «битым UTF-8»."""
+    text = json.dumps(obj, ensure_ascii=False, indent=indent)
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        text = json.dumps(obj, ensure_ascii=True, indent=indent)
+    write_atomic(path, text + "\n", **kw)
 
 
 # --------------------------------------------------------------------------- чтение состояния
 
-def _quarantine(path: str) -> str:
-    """Перенести повреждённый файл в `<имя>.corrupt` (занято — `.corrupt-2`, `-3`). → новый путь или пусто."""
+QUARANTINE_AGE = 2.0          # файл моложе (секунд) в карантин не уходит: его может дописывать писатель прежнего кода
+
+
+def _stat_sig(path: str):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _quarantine(path: str, sig) -> str:
+    """Перенести повреждённый файл в `<имя>.corrupt` (занято — `.corrupt-2`, `-3`), если он всё тот же (`sig` — inode,
+    размер и время изменения при чтении): другой читатель мог уже убрать битый файл, а писатель — положить годный.
+    → новый путь или пусто."""
+    if _stat_sig(path) != sig:
+        return ""
     for n in range(1, 50):
         dest = path + (".corrupt" if n == 1 else ".corrupt-%d" % n)
         if os.path.exists(dest):
@@ -203,38 +252,75 @@ def _quarantine(path: str) -> str:
     return ""
 
 
-def read_state(path, default=None, *, kind: "type | None" = None, quarantine: bool = True):
+def _json_type(default, kind):
+    """Какого типа должен быть файл: `kind`, а нет его — базовый тип `default` (словарь любого вида — `dict`)."""
+    if kind is not None:
+        return kind
+    for base in (dict, list, str, bool, int, float):
+        if isinstance(default, base):
+            return base
+    return None
+
+
+def _try_read(path: str, want):
+    """Одно чтение: ("ok", данные) | ("missing", None) | ("bad", причина) | ("busy", исключение)."""
+    try:
+        with open(path, encoding="utf-8-sig") as fh:          # BOM (Блокнот, PowerShell) — не повреждение
+            data = json.load(fh)
+    except FileNotFoundError:
+        return "missing", None
+    except ValueError as e:                                   # JSONDecodeError и UnicodeDecodeError
+        return "bad", "не разобрался (%s)" % str(e)[:80]
+    except OSError as e:
+        return "busy", e
+    if want is None or isinstance(data, want):
+        return "ok", data
+    return "bad", "содержит %s вместо %s" % (type(data).__name__, want.__name__)
+
+
+def read_state(path, default=None, *, kind: "type | None" = None, quarantine: bool = True, strict: bool = False):
     """Прочитать JSON-состояние. Нет файла — `default` молча; не читается — `default`, но не молча.
 
     Файл, который есть, но не разобрался (обрыв записи старым кодом, ручная правка) или несёт не тот тип
     (`kind`, по умолчанию — тип `default`), не «пуст»: его содержимое — след сбоя. Он переносится рядом в
     `<имя>.corrupt` (прежний `.corrupt` не затирается), на stderr — одна строка, и вызывающий получает `default`.
-    Перед переносом файл перечитывается ещё раз: писатель прежнего кода мог быть на середине записи.
-    Ошибка доступа (`PermissionError`, занятый файл Windows) — не повреждение: файл остаётся на месте.
+    Перенос осторожный: файл перечитывается через паузу, должен остаться тем же (inode, размер, время) и быть старше
+    `QUARANTINE_AGE` секунд — писатель прежнего кода мог быть на середине записи, а другой читатель уже мог всё убрать.
+    Ошибка доступа (`PermissionError`, занятый файл Windows) — не повреждение: чтение повторяется несколько раз, файл
+    остаётся на месте. `strict=True` — для «прочитать-изменить-записать»: недоступный файл поднимает ошибку, а не
+    подсовывает `default` (иначе запись поверх затёрла бы всё, чего не удалось прочитать).
     """
     path = os.fspath(path)
-    want = kind if kind is not None else (type(default) if default is not None else None)
-    bad = ""
-    for attempt in (0, 1):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except FileNotFoundError:
-            return default
-        except OSError:
-            return default
-        except (ValueError, UnicodeDecodeError) as e:
-            bad = "не разобрался (%s)" % str(e)[:80]
-        else:
-            if want is None or isinstance(data, want):
-                return data
-            bad = "содержит %s вместо %s" % (type(data).__name__, want.__name__)
-        if attempt == 0:
-            time.sleep(0.05)
-    if quarantine:
-        dest = _quarantine(path)
-        _warn_once("corrupt:" + path, "aurora_fs: файл состояния %s %s — %s; берётся значение по умолчанию"
-                   % (os.path.basename(path), bad, ("перенесён в " + os.path.basename(dest)) if dest else "оставлен на месте"))
+    want = _json_type(default, kind)
+    state, val = "bad", ""
+    for n in range(5):
+        state, val = _try_read(path, want)
+        if state == "busy" and n < 4:
+            time.sleep(0.03)
+            continue
+        break
+    if state == "ok":
+        return val
+    if state == "busy":
+        if strict:
+            raise val
+        return default
+    if state == "missing":
+        return default
+    first = _stat_sig(path)
+    time.sleep(0.05)
+    state, again = _try_read(path, want)
+    if state == "ok":
+        return again
+    if state == "busy" and strict:
+        raise again
+    if state != "bad":
+        return default
+    second = _stat_sig(path)
+    if quarantine and first is not None and first == second and time.time() - second[2] / 1e9 >= QUARANTINE_AGE:
+        dest = _quarantine(path, second)
+        _warn_once("corrupt:" + (dest or path), "aurora_fs: файл состояния %s %s — %s; берётся значение по умолчанию"
+                   % (os.path.basename(path), again, ("перенесён в " + os.path.basename(dest)) if dest else "оставлен на месте"))
     return default
 
 
@@ -263,6 +349,18 @@ def sweep_tmp(folder, *, patterns: tuple = ("*" + TMP_SUFFIX,), older_than: floa
             out.append(name)
         except OSError:
             continue
+    return out
+
+
+def sweep_tree(root, *, patterns: tuple = ("*" + TMP_SUFFIX,), older_than: float = 3600.0, skip: tuple = (".git",)) -> list:
+    """`sweep_tmp` по дереву: осиротевшие временные файлы во всех подкаталогах `root` (карточки базы пишутся в разделы).
+    Ссылки не обходятся, `skip` — имена каталогов, куда не заходим. → относительные пути удалённых."""
+    out = []
+    base = str(root)
+    for folder, dirs, _files in os.walk(base, followlinks=False):
+        dirs[:] = [d for d in dirs if d not in skip]
+        for name in sweep_tmp(folder, patterns=patterns, older_than=older_than):
+            out.append(os.path.relpath(os.path.join(folder, name), base).replace("\\", "/"))
     return out
 
 

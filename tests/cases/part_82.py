@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import importlib
+import json
+import os
 import sys
 import threading
 
@@ -153,3 +155,65 @@ def test_split_of_a_changed_card_is_refused_before_any_part_is_written(tmp: Path
         raise AssertionError("разрез по устаревшему снимку принят")
     assert src.read_bytes() == human, "карта документа записана поверх правки человека"
     assert sorted(p.name for p in folder.iterdir()) == ["Справочник.md"], "часть записана до проверки снимка"
+
+
+@test
+def test_relinking_does_not_overwrite_an_edit_made_while_the_model_thinks(tmp: Path):
+    """Связывание берёт снимок карточки до вызова модели: правка человека за это время не затирается, шаг —
+    «изменена», связи не записаны, карточка не отмечена связанной и вернётся в очередь."""
+    _AG, R, C = _mods()
+    root = make_project(tmp)
+    thesis = ("Аналитический баланс получает данные из ФЦОД по расписанию и обновляет профиль абонента. Остатки "
+              "хранятся за расчётный период. Сверка проводится ежедневно и фиксируется в журнале операций по каждому счёту.")
+    card(root, "Concepts/Журнал-учёта-операций.md", status="draft", kind="knowledge", body="Журнал и его назначение. " * 3)
+    path = card(root, "Concepts/Аналитический-баланс.md", status="draft", kind="knowledge", distilled="2026-09-01", body=thesis)
+    cfg = {"request_timeout": 60, "budget_min": 5, "backends": [], "thinking": False, "thinking_roles": {},
+           "embed": {"model": "m"}}
+
+    def model(c, role, messages, **kw):
+        path.write_text(path.read_text(encoding="utf-8").rstrip("\n") + "\n\nПравка человека: баланс считается ночью.\n", encoding="utf-8")
+        return {"ok": True, "backend": 1, "model": "m", "log": [],
+                "text": '{"links": [{"phrase": "журнале операций", "card": "Журнал-учёта-операций"}]}'}
+
+    was, here = R.candidates_for, os.getcwd()
+    try:
+        os.chdir(root)
+        R.candidates_for = lambda *a, **k: [("Журнал-учёта-операций", "Concepts", "")]
+        st = R.relink_card(cfg, str(path), model, apply=True)
+    finally:
+        R.candidates_for = was
+        os.chdir(here)
+    now = path.read_text(encoding="utf-8")
+    assert "Правка человека: баланс считается ночью." in now, "правка человека затёрта связыванием"
+    assert st["status"] == R.CHANGED and st["added"] == 0, st
+    assert "[[Журнал-учёта-операций" not in now, "связи записаны поверх чужой правки"
+    assert "relinked:" not in now, "карточка отмечена связанной"
+
+
+@test
+def test_a_split_verdict_about_an_edited_card_is_not_parked(tmp: Path):
+    """Планировщик резал карточку, а человек правил её за время вызова: разрез отменён, вердикт к правленому тексту не
+    приклеен — карточка не числится отложенной и вернётся в очередь."""
+    AG, R, C = _mods()
+    kb = tmp / "AuroraKnowledgeDB/Reference"
+    kb.mkdir(parents=True)
+    para = lambda i: f"Термин {i}. Определение термина {i} и правила применения. " * 6
+    body = "\n\n".join(para(i) for i in range(1, 31))
+    card_path = kb / "Справочник.md"
+    card_path.write_text(f'---\nid: X\ntitle: "Справочник"\nkind: dictionary\nstatus: knowledge\ntype: reference\n'
+                         f'source: "Sources/C/S.md"\n---\n\n{R.QUOTES}\n{body}\n', encoding="utf-8")
+
+    def model(cfg_, role, messages, **kw):
+        card_path.write_text(card_path.read_text(encoding="utf-8").rstrip("\n") + "\n\nДобавил человек.\n", encoding="utf-8")
+        rows = {"parts": [{"title": f"Термины {k*10+1}-{k*10+10}", "from": 1 + k * 10, "to": 10 + k * 10} for k in range(3)]}
+        return {"ok": True, "text": json.dumps(rows, ensure_ascii=False), "backend": 1, "model": "p", "tps": 9, "log": []}
+
+    cfg = AG.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                           "AURORA_AGENT_BACKEND_1_CONTEXT": "3000"})
+    res = R.run_distill(cfg, str(tmp), apply=True, limit=5, momus=False, call=model)
+    assert [s["status"] for s in res["steps"]] == [R.CHANGED], res["steps"]
+    assert res["left"] == 1, "изменённая карточка засчитана обработанной"
+    assert "Добавил человек." in card_path.read_text(encoding="utf-8")
+    assert sorted(p.name for p in kb.iterdir()) == ["Справочник.md"], "части записаны поверх правки"
+    assert not R.still_parked(str(tmp), str(card_path), R.parked_cards(str(tmp))), "правленая карточка осталась отложенной"
+    assert "изменены во время прогона" in R.report_distill(res, True)

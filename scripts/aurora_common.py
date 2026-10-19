@@ -2544,7 +2544,7 @@ def write_text_atomic(path, text: str) -> None:
     переходят к новому: исполняемый скрипт человека (`Scripts/run.sh`, 0755) после переписывания путей
     переставал бы запускаться. Перевод строки — платформы (как у `Path.write_text`).
     """
-    _fs().write_atomic(path, text, newline=None)
+    _fs().write_atomic(path, text, newline=None, strict=True, makedirs=False)
 
 
 def _win_pid_alive(pid: int, kernel32=None, last_error=None) -> bool:

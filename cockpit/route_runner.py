@@ -402,8 +402,8 @@ class Journal:
 def write_meta(base: str, meta: dict) -> None:
     """`meta.json` прогона: что это было, кто, когда, чем кончилось — строка истории."""
     try:
-        from aurora_common import _fs
-        _fs().write_json(os.path.join(base, "meta.json"), meta, indent=1)   # целиком или никак; Windows — с повторами
+        import aurora_fs
+        aurora_fs.write_json(os.path.join(base, "meta.json"), meta, indent=1)   # целиком или никак; Windows — с повторами
     except OSError:
         pass
 

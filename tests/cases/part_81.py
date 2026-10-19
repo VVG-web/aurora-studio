@@ -49,6 +49,7 @@ def test_running_registry_keeps_every_mark_under_concurrent_writers(tmp: Path):
 
     def watch():
         while not stop.is_set():
+            time.sleep(0.002)                        # не держать диск плотным опросом: писатели ждут замок
             try:
                 json.loads(Path(ck.RUNNING).read_text(encoding="utf-8"))
             except OSError:
@@ -87,6 +88,8 @@ def test_a_damaged_running_registry_is_kept_aside_and_the_panel_starts_clean(tmp
     saved = ck.RUNNING
     ck.RUNNING = str(tmp / "running.json")
     Path(ck.RUNNING).write_text('{"job": {"cmd": ', encoding="utf-8")
+    past = time.time() - 30                          # карантин не трогает молодой файл: его может дописывать прежний код
+    os.utime(ck.RUNNING, (past, past))
     F._WARNED.clear()
     try:
         with contextlib.redirect_stderr(io.StringIO()) as err:
@@ -113,6 +116,8 @@ def test_cron_state_is_read_through_the_core_and_a_damaged_file_is_not_forgotten
     assert CRON._read_json(path, {}) == {"tasks": [{"id": "а", "name": "ночной разбор"}]}
     assert "ночной разбор" in Path(path).read_text(encoding="utf-8"), "русский текст записан escape-кодами"
     Path(path).write_text('{"tasks": [{"id"', encoding="utf-8")
+    past = time.time() - 30
+    os.utime(path, (past, past))
     F._WARNED.clear()
     with contextlib.redirect_stderr(io.StringIO()):
         assert CRON._read_json(path, {}) == {}

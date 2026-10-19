@@ -1481,6 +1481,7 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
     from aurora_common import frontmatter, is_placeholder
     step = {"card": os.path.basename(path)[:-3], "status": "пропущена", "added": 0,
             "note": "", "backends": [], "mechanical": 0}
+    sig = _card_sig(path)             # снимок, по которому ставятся связи: запись сверит его с файлом (BL-SEC-15)
     text = open(path, encoding="utf-8", errors="ignore").read()
     fm = frontmatter(text)
     if is_placeholder(fm, text) or (fm.get("kind") or "").strip().strip('"') != "knowledge":
@@ -1566,7 +1567,12 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
         from aurora_common import unglue_quotes
         tail = whole[len(whole.rstrip()):]
         written, _n = unglue_quotes(text.replace(whole, head + got.rstrip() + tail, 1))
-        _done, why = CT.try_write_card(path, written, op="body")
+        try:
+            _done, why = CT.try_write_card(path, written, op="body", expect_sig=sig)
+        except CARD_BUSY:
+            step.update(status=CHANGED, added=0, note="карточка изменена во время связывания — связи не записаны, "
+                                                      "карточка вернётся в очередь")
+            return step
         if why:
             step["added"] = 0
             return refuse_step(step, why, path, "отброшен")
@@ -1776,10 +1782,11 @@ def mark_relinked(path: str) -> None:
     на связывание сама, без ручного снятия отметки.
     """
     from aurora_common import frontmatter, with_fields
-    text = open(path, encoding="utf-8", errors="ignore").read()
-    stamp = (frontmatter(text).get("distilled") or "").strip()
-    if stamp:
-        put_header(path, with_fields(text, {"relinked": stamp}), "отметка связывания")
+    with CT.card_lock(path):
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        stamp = (frontmatter(text).get("distilled") or "").strip()
+        if stamp:
+            put_header(path, with_fields(text, {"relinked": stamp}), "отметка связывания")
 
 
 def report_relink(res: dict, apply: bool) -> str:
@@ -2177,10 +2184,11 @@ def mark_neighbours(cwd: str, stem: str, upto: str, paths: dict | None = None) -
     path = (paths if paths is not None else card_paths(cwd)).get(stem)
     if not path or not upto:
         return
-    text = open(path, encoding="utf-8", errors="ignore").read()
-    if (frontmatter(text).get("neighbours") or "").strip().strip('"') >= upto:
-        return
-    put_header(path, with_fields(text, {"neighbours": upto}), "отметка соседей")
+    with CT.card_lock(path):
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        if (frontmatter(text).get("neighbours") or "").strip().strip('"') >= upto:
+            return
+        put_header(path, with_fields(text, {"neighbours": upto}), "отметка соседей")
 
 
 CLASH_SEEN = os.path.join("AuroraKnowledgeDB", "meta", "clash-seen.json")
@@ -2651,8 +2659,9 @@ def task_body_stamp(text: str) -> str:
 def mark_task_kept(path: str) -> None:
     """Запомнить, что карточку из задачи осмотрели и оставили: по этому тексту не спрашиваем."""
     from aurora_common import with_fields
-    text = open(path, encoding="utf-8", errors="ignore").read()
-    put_header(path, with_fields(text, {"tasks_kept": task_body_stamp(text)}), "отметка «оставлена»")
+    with CT.card_lock(path):
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        put_header(path, with_fields(text, {"tasks_kept": task_body_stamp(text)}), "отметка «оставлена»")
 
 
 def task_kept(path: str) -> bool:
@@ -7877,6 +7886,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
 PARKED = os.path.join(".aurora", "state", "distill_parked.json")
 PARKED_STATUSES = ("человеку", "слишком длинная", REFUSED)
 CHANGED = "изменена"        # карточку правили во время прогона: запись по устаревшему снимку отменена (BL-SEC-15)
+CARD_BUSY = (CT.CardChanged, CT.LockTimeout)       # карточку не записать сейчас: изменена после снимка или замок занят
 
 
 def _card_sig(path: str) -> str:
@@ -7896,11 +7906,13 @@ def parked_cards(cwd: str, store: str = "") -> dict:
         return {}
 
 
-def park_card(cwd: str, path: str, refused: bool = False, store: str = "") -> None:
+def park_card(cwd: str, path: str, refused: bool = False, store: str = "", sig: "str | None" = None) -> None:
     """Отложить карточку до изменения файла. Отказ шаблона (`refused`) снимается ещё и сменой шаблонов или настроек
-    типов: починили шаблоны — карточка возвращается в очередь, не дожидаясь правки своего текста."""
+    типов: починили шаблоны — карточка возвращается в очередь, не дожидаясь правки своего текста.
+    `sig` — отпечаток снимка, по которому вынесен вердикт (`step["sig"]`): карточка, правленая после снимка, уже не та,
+    о которой судили, и отложенной не считается (по умолчанию — отпечаток файла сейчас)."""
     data = parked_cards(cwd, store)
-    sig = _card_sig(path)
+    sig = sig or _card_sig(path)
     data[os.path.relpath(path, cwd).replace("\\", "/")] = (sig + "@" + CT.registry_fingerprint(cwd)) if refused else sig
     full = os.path.join(cwd, store or PARKED)
     try:
@@ -8054,13 +8066,15 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
 
     written = [0]
 
-    def changed_step(step, path):
-        """Карточку изменили, пока шла модель: запись не сделана, правка человека цела. Карточка не откладывается и не
-        отмечается осмотренной — следующий оборот (или следующий прогон) возьмёт её со свежим текстом."""
-        step.update(status=CHANGED, note="карточка изменена во время прогона — тезис не записан, карточка вернётся в очередь")
+    def changed_step(step, path, why=None):
+        """Карточку изменили, пока шла модель (или замок карточек занят): запись не сделана, правка человека цела. Карточка
+        не откладывается и не отмечается осмотренной — следующий оборот (или следующий прогон) возьмёт её со свежим текстом."""
+        busy = isinstance(why, CT.LockTimeout)
+        step.update(status=CHANGED, note=("замок карточек занят другим процессом" if busy else "карточка изменена во время прогона")
+                    + " — тезис не записан, карточка вернётся в очередь")
         if commit and commit_every and step.get("head") is not None:
             written[0] -= 1
-        say(f"    ↻ {os.path.basename(path)}: изменена во время прогона — запись по старому снимку отменена")
+        say(f"    ↻ {os.path.basename(path)}: {step['note'].split(' — ')[0]} — запись отменена")
         return step
 
     def finish(path, step):
@@ -8070,7 +8084,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
         if apply and step["status"] in PARKED_STATUSES:
             # Ждёт человека — в следующие обороты не считаем. Разрезанная ниже карточка
             # меняется, и её отпечаток с запомненным уже не совпадёт.
-            park_card(cwd, path, refused=step["status"] == REFUSED)
+            park_card(cwd, path, refused=step["status"] == REFUSED, sig=step.get("sig"))
         if apply and step.get("head") is not None and commit and commit_every:
             written[0] += 1          # коммит — ниже, когда тезис уже записан
         say(f"  {progress(done, total, started)}"
@@ -8095,21 +8109,21 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             try:
                 _done, why = CT.try_write_card(path, with_fields(was, {"distill_empty": TODAY_STR}), op="header",
                                                expect_sig=step.get("sig"))
-            except CT.CardChanged:
-                return changed_step(step, path)
+            except CARD_BUSY as e:
+                return changed_step(step, path, e)
             if why:
                 refuse_step(step, why, path)
-                park_card(cwd, path, refused=True)
+                park_card(cwd, path, refused=True, sig=step.get("sig"))
                 say(f"    ✗ шаблон не принял вердикт «знания нет»: {why[:140]}")
             return
         if apply and step.get("split"):
             try:
                 apply_split(path, step)
-            except CT.CardChanged:
-                return changed_step(step, path)
+            except CARD_BUSY as e:
+                return changed_step(step, path, e)
             except REFUSALS as e:
                 refuse_step(step, f"разрез не записан, карточка осталась как была: {e}", path)
-                park_card(cwd, path, refused=True)
+                park_card(cwd, path, refused=True, sig=step.get("sig"))
                 say(f"    ✗ шаблон не принял разрез: {str(e)[:140]}")
             return
         if apply and step.get("head") is not None:
@@ -8133,8 +8147,8 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             try:
                 _done, why = CT.try_write_card(path, with_meeting_mark(with_fields(text, fields)), op="body",
                                                expect_sig=step.get("sig"))
-            except CT.CardChanged:
-                return changed_step(step, path)
+            except CARD_BUSY as e:
+                return changed_step(step, path, e)
             if why and not step.get("parts") and not step.get("kept"):
                 # Тезис модели не прошёл шаблон типа: одна повторная попытка с текстом нарушения в запросе (как у разбора
                 # источников). Второй отказ — карточка остаётся как была и откладывается до изменения (источника,
@@ -8154,11 +8168,11 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
                     try:
                         _done, why = CT.try_write_card(path, with_meeting_mark(with_fields(text, fields)), op="body",
                                                        expect_sig=step.get("sig"))
-                    except CT.CardChanged:
-                        return changed_step(step, path)
+                    except CARD_BUSY as e:
+                        return changed_step(step, path, e)
             if why:
                 refuse_step(step, why, path)
-                park_card(cwd, path, refused=True)
+                park_card(cwd, path, refused=True, sig=step.get("sig"))
                 if commit and commit_every:
                     written[0] -= 1
                 say(f"    ✗ шаблон не принял тезис: {why[:140]}")
@@ -8213,7 +8227,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
                 if not stop:
                     flying |= {ex.submit(one, job)
                                for job in itertools.islice(queue, width - len(flying))}
-    return {"steps": steps, "left": len(todo) - len(steps), "unsupported": unsupported,
+    return {"steps": steps, "left": len(todo) - sum(1 for s_ in steps if s_["status"] != CHANGED), "unsupported": unsupported,
             "seconds": round(time.time() - started, 1), "tried": tried,
             # Предохранитель сработал — заходы до конца очереди встают, как у связывания:
             # следующий заход упёрся бы в тот же лежащий шлюз.
@@ -8244,6 +8258,7 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
     say(f"Карточек с пометкой «без опоры»: {total} · в этот прогон: {len(todo)}")
 
     def one(path: str) -> tuple:
+        sig = _card_sig(path)
         text = open(path, encoding="utf-8", errors="ignore").read()
         head, body = split_frontmatter(text)
         body = body[4:] if (body or "").startswith("\n---") else (body or "")
@@ -8265,7 +8280,7 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
             return path, fail_step({}, mo.get("why", "") or "проверка не состоялась",
                                    mo.get("call"), subject=path,
                                    extra_chars={"pack": len(pack), "thesis": len(thesis)})
-        return path, {"status": "чисто" if mo.get("clean") else "без опоры",
+        return path, {"status": "чисто" if mo.get("clean") else "без опоры", "sig": sig,
                       "count": mo.get("unsupported", 0), "claims": momus_claims(mo.get("text"))}
 
     def safe_one(path: str) -> tuple:
@@ -8295,7 +8310,11 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
                 text = open(path, encoding="utf-8", errors="ignore").read()
                 new = set_unsupported(text, st["count"])
                 if new != text:
-                    _done, why = CT.try_write_card(path, new, op="header")
+                    try:
+                        _done, why = CT.try_write_card(path, new, op="header", expect_sig=st.get("sig"))
+                    except CARD_BUSY:
+                        st.update(status=CHANGED, note="карточка изменена во время проверки — пометка не тронута")
+                        continue
                     if why:
                         refuse_step(st, why, path)
                         continue
@@ -8330,12 +8349,15 @@ def report_distill(res: dict, apply: bool) -> str:
     bad = [s for s in res["steps"] if s["status"] == "сбой"]
     long = [s for s in res["steps"] if s["status"] == "слишком длинная"]
     refused = [s for s in res["steps"] if s["status"] == REFUSED]
+    changed = [s for s in res["steps"] if s["status"] == CHANGED]
     parted = [s for s in made if s.get("parts")]
     L = [f"# Агент · тезисы карточек — {utc_label()}", "",
          f"Режим: {'запись' if apply else 'предпросмотр'} · переписано: {len(made)} · "
          + (f"по сути без изменений (тезис оставлен): {len(kept)} · " if kept else "")
          + f"без знания: {len(empty)} · сбоев: {len(bad)} · "
-         + (f"шаблон не принял: {len(refused)} · " if refused else "") + f"осталось: {res['left']}", ""]
+         + (f"шаблон не принял: {len(refused)} · " if refused else "")
+         + (f"изменены во время прогона (вернутся в очередь): {len(changed)} · " if changed else "")
+         + f"осталось: {res['left']}", ""]
     if refused:
         L += ["## Шаблон типа не принял запись", "",
               "Тезис (или разрез) нарушает шаблон типа карточки; карточка осталась как была и отложена до "

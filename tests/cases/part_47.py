@@ -493,7 +493,7 @@ def test_gate_atomic_write(tmp: Path):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(old.encode("utf-8"))
     new = old + "\nДобавлено.\n"
-    F = C._fs()                       # запись живёт в ядре надёжности (BL-SEC-25): подменяются его имена
+    F = C.aurora_fs                   # запись живёт в ядре надёжности (BL-SEC-25): подменяются его имена
     real_replace, real_encode = F.replace_file, F._encode
     try:
         # прерывание до подмены: временный файл уже записан
@@ -573,7 +573,8 @@ def test_gate_without_templates_writes_as_before_and_warns_once(tmp: Path):
         C._find_kit = real_kit
     # выключателя «обойти проверку» нет ни в аргументах, ни в окружении
     params = set(inspect.signature(C.write_card_text).parameters)
-    assert params == {"path", "new_text", "op", "old_text", "reg"}, params
+    # `expect_sig` — сверка снимка (BL-SEC-15): она только отказывает в записи, проверку шаблона не обходит
+    assert params == {"path", "new_text", "op", "old_text", "reg", "expect_sig"}, params
     src = (SCRIPTS / "card_types.py").read_text(encoding="utf-8")
     body = src[src.index("def write_card_text"):src.index("def try_write_card")]
     assert "environ" not in body and "getenv" not in body, "вход записи читает окружение: выключателя быть не должно"
