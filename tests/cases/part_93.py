@@ -146,14 +146,21 @@ def test_extras_install_skips_young_releases_and_installs_by_hashes(tmp: Path):
         assert got[1] == "", got
         assert "b==1.9" in got[0] and f"--hash=sha256:{HX('hb19')}" in got[0] and "b==2.0" not in got[0], got[0]
         assert pip.constraints == ["b<2.0\n"], pip.constraints
-        # то же через install(): ставят из файла с хешами, без зависимостей, а снимок остаётся
-        pip.rounds[:] = [[("a", "1.0", "ha"), ("b", "2.0", "hb")], [("a", "1.0", "ha"), ("b", "1.9", "hb19")]]
+        # то же через install(): прямой пакет надстройки моложе паузы заменяется выпуском постарше, ставится из файла с
+        # хешами, без зависимостей, а снимок остаётся; зависимости (httpx) в паузу не входят и возраст их не спрашивается
+        pip.rounds[:] = [[("pydantic-ai", "9.0.0", "hp9"), ("httpx", "1.0.0", "hh")],
+                         [("pydantic-ai", "8.0.0", "hp8"), ("httpx", "1.0.0", "hh")]]
+        pip.ages.update({("pydantic-ai", "9.0.0"): 2, ("pydantic-ai", "8.0.0"): 30})
+        pip.constraints.clear()
+        pip.json_urls.clear()
         pip.have[0] = "2.51.0"
         res = EX.install("pydantic-ai", 7)
-        assert res["ok"] and res["version"] == "9.0.0", res
+        assert res["ok"] and res["version"] == "8.0.0" and not res.get("pause_skipped"), res
+        assert pip.constraints == ["pydantic-ai<9.0.0\n"], pip.constraints
+        assert not any("httpx" in u for u in pip.json_urls), f"возраст зависимости спрашивали: {pip.json_urls}"
         install_cmd = next(c for c in pip.calls if "-r" in c and "--no-deps" in c)
         assert "--require-hashes" in install_cmd, install_cmd
-        assert pip.locks and f"b==1.9 \\\n    --hash=sha256:{HX('hb19')}" in pip.locks[0], pip.locks
+        assert pip.locks and f"pydantic-ai==8.0.0 \\\n    --hash=sha256:{HX('hp8')}" in pip.locks[0], pip.locks
         saved = EX.lock_files("pydantic-ai")
         assert [p.name for p in saved if p.name.endswith("-install.txt")] and res["lock"] in [p.name for p in saved], res
         assert any(c[-2:] == ["--quiet", "pip==26.0"] or "pip==26.0" in c for c in pip.calls), \
@@ -163,19 +170,46 @@ def test_extras_install_skips_young_releases_and_installs_by_hashes(tmp: Path):
 
 
 @test
-def test_extras_install_refuses_when_only_young_releases_exist(tmp: Path):
-    """Старой замены нет — отказ с названием пакета, и ничего не ставится (на старом коде ставилось что вышло)."""
+def test_extras_install_goes_on_without_the_wait_when_no_older_set_exists(tmp: Path):
+    """Пауза мягкая: старой замены прямому пакету нет — набор решается без паузы, в журнале и в итоге сказано об этом."""
     young = [("a", "1.0", "ha"), ("b", "2.0", "hb")]
-    pip = Pip(rounds=[young] * 6, ages={("a", "1.0"): 90, ("b", "2.0"): 1})
+    pip = Pip(rounds=[young] * 7, ages={("a", "1.0"): 90, ("b", "2.0"): 1})
     EX, _venv = _patched(tmp, pip)
     try:
-        text, why = EX.plan_lock(Path("python"), "a b", 7, NOW)
-        assert text == "" and "моложе 7 сут." in why and "b 2.0" in why, (text, why)
-        pip.rounds[:] = [young] * 6
+        EX.check_compat = lambda v: {"ok": True, "version": v, "problems": []}
+        said = []
+        text, why = EX.plan_lock(Path("python"), "a b", 7, NOW, log=said)
+        assert why == "" and "b==2.0" in text and "release wait: 0 days" in text, (text, why)
+        assert any("пауза зависимостей не применена" in x and "b 2.0" in x for x in said), said
+        pip.rounds[:] = [[("pydantic-ai", "9.0.0", "hp")]] * 7
+        pip.ages[("pydantic-ai", "9.0.0")] = 1                      # единственный выпуск вышел вчера
         res = EX.install("pydantic-ai", 7)
-        assert not res["ok"] and "не удалось собрать набор" in res["log"], res
-        assert not [c for c in pip.calls if "--require-hashes" in c or ("-r" in c and "--no-deps" in c)], \
-            "при отказе что-то всё же поставили"
+        assert res["ok"] and "пауза зависимостей не применена" in res["pause_skipped"] + res["log"], res
+        assert res["log"].rstrip().endswith("пауза зависимостей не применена (причина выше)"), res["log"][-300:]
+        assert [c for c in pip.calls if "--require-hashes" in c], "без паузы тоже ставят по хешам"
+    finally:
+        importlib.reload(EX)
+
+
+@test
+def test_young_dependencies_of_an_extra_do_not_make_it_uninstallable(tmp: Path):
+    """У дерева зависимостей Pydantic AI всегда есть выпуск вчерашний (certifi): пауза на них установку не останавливает."""
+    tree = [("pydantic-ai", "9.0.0", "hp"), ("certifi", "2026.10.18", "hc"), ("anthropic", "1.14.0", "han"),
+            ("fastmcp-slim", "4.1.1", "hf")]
+    pip = Pip(rounds=[tree] * 7, ages={("pydantic-ai", "9.0.0"): 30, ("certifi", "2026.10.18"): 1,
+                                       ("anthropic", "1.14.0"): 2, ("fastmcp-slim", "4.1.1"): 3})
+    EX, _venv = _patched(tmp, pip)
+    try:
+        EX.check_compat = lambda v: {"ok": True, "version": v, "problems": []}
+        said = []
+        text, why = EX.plan_lock(Path("python"), "pydantic-ai", 7, NOW, log=said)
+        assert why == "" and "certifi==2026.10.18" in text and "release wait: 7 days" in text, (text, why)
+        assert sum(1 for c in pip.calls if "--report" in c) == 1 and pip.constraints == [], "зависимости запрещали и решали заново"
+        assert not any("certifi" in u or "anthropic" in u for u in pip.json_urls), pip.json_urls
+        assert any("зависимости (3) выбирает pip" in x for x in said), said
+        pip.rounds[:] = [tree]
+        res = EX.install("pydantic-ai", 7)
+        assert res["ok"] and not res.get("pause_skipped") and "certifi==2026.10.18" in pip.locks[-1], res
     finally:
         importlib.reload(EX)
 
@@ -312,16 +346,19 @@ def test_restore_keeps_the_old_venv_when_the_rebuild_fails(tmp: Path):
 
 
 @test
-def test_age_lookup_failure_is_a_clean_refusal_and_a_locked_venv_survives(tmp: Path):
-    """PyPI не ответил — отказ с причиной, а не traceback; venv, который нельзя переименовать (Windows), остаётся на месте."""
+def test_age_lookup_failure_goes_on_without_the_wait_and_a_locked_venv_survives(tmp: Path):
+    """PyPI не ответил — набор ставится без паузы и об этом сказано, не traceback; venv, который нельзя переименовать (Windows), остаётся на месте."""
     pip = Pip(rounds=[[("a", "1.0", "ha")]], ages={})
     EX, venv = _patched(tmp, pip)
     try:
         def broken(url, timeout=15, limit=0):
             raise OSError("нет сети")
         EX._get_json = broken
-        text, why = EX.plan_lock(Path("python"), "a", 7, NOW)
-        assert text == "" and "не удалось узнать возраст выпусков" in why and "нет сети" in why, (text, why)
+        pip.rounds[:] = [[("a", "1.0", "ha")]] * 2
+        said = []
+        text, why = EX.plan_lock(Path("python"), "a", 7, NOW, log=said)
+        assert why == "" and "a==1.0" in text, (text, why)       # возраст не узнать — ставим без паузы, но не молча
+        assert any("не удалось узнать возраст выпусков" in x and "нет сети" in x for x in said), said
         # переименовать venv нельзя: он занят процессом
         marker = venv / "marker.txt"
         marker.write_text("жив", encoding="utf-8")
@@ -343,22 +380,27 @@ def test_age_lookup_failure_is_a_clean_refusal_and_a_locked_venv_survives(tmp: P
 
 
 @test
-def test_unknown_release_age_refuses_instead_of_letting_the_package_in(tmp: Path):
-    """Возраст неизвестен — отказ: пустой ответ PyPI, 404 на файл с pythonhosted.org; частный индекс (404) пускается."""
-    pip = Pip(rounds=[[("a", "1.0", "a" * 64)]] * 4, ages={("a", "1.0"): 90})
+def test_unknown_release_age_goes_on_without_the_wait_with_a_warning(tmp: Path):
+    """Возраст прямого пакета неизвестен (пустой ответ PyPI, 404 на файл с pythonhosted.org) — ставим без паузы, но строка
+    о том есть; частный индекс (404) пускается как раньше; хеш файла не найден — возраст по самому свежему файлу."""
+    pip = Pip(rounds=[[("a", "1.0", "a" * 64)]] * 8, ages={("a", "1.0"): 90})
     EX, _venv = _patched(tmp, pip)
     try:
         pip.upload_json = {}
-        text, why = EX.plan_lock(Path("python"), "a", 7, NOW)
-        assert text == "" and "не удалось узнать возраст" in why and "время загрузки" in why, (text, why)
+        said = []
+        text, why = EX.plan_lock(Path("python"), "a", 7, NOW, log=said)
+        assert why == "" and "release wait: 0 days" in text, (text, why)
+        assert any("не удалось узнать возраст" in x and "время загрузки" in x for x in said), said
         pip.upload_json = None
         pip.url = "https://files.pythonhosted.org/packages/a-{v}.whl"
         pip.ages = {}                                       # PyPI о выпуске молчит (404), файл — с pythonhosted.org
-        text, why = EX.plan_lock(Path("python"), "a", 7, NOW)
-        assert text == "" and "PyPI не знает выпуска a 1.0" in why, (text, why)
-        pip.url = "https://packages.example.org/a-{v}.whl"  # частный индекс: PyPI его не знает, и это не повод отказывать
-        text, why = EX.plan_lock(Path("python"), "a", 7, NOW)
-        assert why == "" and "a==1.0" in text, (text, why)
+        said = []
+        text, why = EX.plan_lock(Path("python"), "a", 7, NOW, log=said)
+        assert why == "" and any("PyPI не знает выпуска a 1.0" in x for x in said), (text, why, said)
+        pip.url = "https://packages.example.org/a-{v}.whl"  # частный индекс: PyPI его не знает, и это не повод для предупреждения
+        said = []
+        text, why = EX.plan_lock(Path("python"), "a", 7, NOW, log=said)
+        assert why == "" and "a==1.0" in text and "release wait: 7 days" in text and not any("пауза" in x and "не применена" in x for x in said), (text, said)
         # хеш файла не нашёлся среди файлов выпуска — возраст по самому СВЕЖЕМУ файлу (дозагруженное позже колесо)
         pip.ages = {("a", "1.0"): 90}
         pip.upload_json = {"urls": [{"digests": {"sha256": "x"}, "upload_time_iso_8601": _stamp(90)},
