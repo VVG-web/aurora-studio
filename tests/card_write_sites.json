@@ -316,15 +316,35 @@
    "reason": "общая атомарная запись файла проекта; карточку через неё не пишут",
    "calls": 2
   },
+  "scripts/aurora_extras.py:_install": {
+   "kind": "other",
+   "reason": "снимок установки надстройки: временный файл для pip (вне базы знаний)",
+   "calls": 1
+  },
   "scripts/aurora_extras.py:latest": {
    "kind": "other",
    "reason": "надстройки движка вне базы знаний",
+   "calls": 1
+  },
+  "scripts/aurora_extras.py:plan_lock": {
+   "kind": "other",
+   "reason": "временные отчёт и ограничения pip при решении набора надстройки (вне базы знаний)",
    "calls": 1
   },
   "scripts/aurora_extras.py:register_graph_mcp": {
    "kind": "other",
    "reason": "надстройки движка вне базы знаний",
    "calls": 3
+  },
+  "scripts/aurora_extras.py:restore": {
+   "kind": "other",
+   "reason": "откат venv надстройки: перенос каталога (вне базы знаний)",
+   "calls": 2
+  },
+  "scripts/aurora_extras.py:save_lock": {
+   "kind": "other",
+   "reason": "снимок установки надстройки в ~/.aurora/locks (вне базы знаний)",
+   "calls": 1
   },
   "scripts/aurora_hooks.py:_install_push_hook": {
    "kind": "other",

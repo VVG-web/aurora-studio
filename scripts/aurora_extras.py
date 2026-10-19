@@ -774,7 +774,7 @@ def main() -> int:
     ap.add_argument("--install", choices=sorted(EXTRAS), metavar="ID",
                     help="поставить или обновить: " + ", ".join(sorted(EXTRAS)))
     ap.add_argument("--no-quarantine", action="store_true",
-                    help=f"с --install: без паузы после выпуска ({QUARANTINE_DAYS} сут.); хеши остаются")
+                    help="с --install: без паузы после выпуска (по умолчанию семь суток); хеши остаются")
     a = ap.parse_args()
     if a.install:
         res = install(a.install, 0 if a.no_quarantine else None)
