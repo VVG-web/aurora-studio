@@ -108,6 +108,13 @@
     "dev:qa-gap": {"requires_sources": [], "requires_llm": true, "requires_internet": false, "offline_capable": false, "offline_variant": ""},
     "dev:qa-cover": {"requires_sources": [], "requires_llm": true, "requires_internet": false, "offline_capable": false, "offline_variant": ""},
     "dev:qa-run": {"requires_sources": [], "requires_llm": true, "requires_internet": false, "offline_capable": false, "offline_variant": ""},
-    "dev:qa-new": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""}
+    "dev:qa-new": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
+    "kb:decide-accept": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
+    "kb:next-id": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
+    "make:story-lint": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
+    "ops:decisions": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
+    "ops:scenarios": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
+    "ops:coverage": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
+    "agent:decide": {"requires_sources": [], "requires_llm": true, "requires_internet": false, "offline_capable": false, "offline_variant": ""}
   }
 }
