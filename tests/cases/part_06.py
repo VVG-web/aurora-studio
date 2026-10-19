@@ -98,14 +98,19 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
     assert "mark_running(job[\"id\"], cmd, project, False)" in run[:4000], \
         "запись о работе не снимается по окончании — перезапуск запретится навсегда"
 
-    was = ck.running_now()
-    ck.mark_running("тест", "agent:distill", "/x/Проект", True)
-    now = ck.running_now()
-    assert now.get("тест", {}).get("cmd") == "agent:distill", "работа не отмечена"
-    assert now["тест"]["project"] == "Проект", "не сказано, в каком проекте идёт работа"
-    ck.mark_running("тест", "agent:distill", "/x/Проект", False)
-    assert "тест" not in ck.running_now(), "отметка не снялась"
-    assert ck.running_now() == was, "список работающего изменился после теста"
+    saved_running = ck.RUNNING
+    ck.RUNNING = str(tmp / "running.json")      # настоящий список заданий кита (cockpit/.running.json) не трогаем
+    try:
+        was = ck.running_now()
+        ck.mark_running("тест", "agent:distill", "/x/Проект", True)
+        now = ck.running_now()
+        assert now.get("тест", {}).get("cmd") == "agent:distill", "работа не отмечена"
+        assert now["тест"]["project"] == "Проект", "не сказано, в каком проекте идёт работа"
+        ck.mark_running("тест", "agent:distill", "/x/Проект", False)
+        assert "тест" not in ck.running_now(), "отметка не снялась"
+        assert ck.running_now() == was, "список работающего изменился после теста"
+    finally:
+        ck.RUNNING = saved_running
 
 
 @test

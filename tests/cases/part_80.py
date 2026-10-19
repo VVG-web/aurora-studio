@@ -29,6 +29,12 @@ def _fs():
     return importlib.import_module("aurora_fs")
 
 
+def _age(path: Path, seconds: float = 30.0) -> None:
+    """Состарить файл: карантин не трогает молодые файлы (их может дописывать писатель прежнего кода)."""
+    past = time.time() - seconds
+    os.utime(path, (past, past))
+
+
 def _leftovers(folder: Path) -> list:
     return sorted(p.name for p in folder.iterdir() if p.name.endswith(".aurora-tmp") or p.name.endswith(".tmp"))
 
@@ -152,7 +158,10 @@ def test_write_atomic_threads_never_mix_texts_or_share_a_temp_name(tmp: Path):
 
     def reader():
         while not stop.is_set():
-            data = p.read_bytes().decode("utf-8")
+            try:
+                data = p.read_bytes().decode("utf-8")
+            except OSError:
+                continue                         # Windows: файл в миг подмены занят — читатель пробует снова
             if data not in texts:
                 bad.append(len(data))
 
@@ -465,10 +474,15 @@ def test_read_state_quarantines_a_damaged_file_loudly(tmp: Path):
     p.write_text('{"cut": ', encoding="utf-8")
     F._WARNED.clear()
     with contextlib.redirect_stderr(err):
+        assert F.read_state(p, {"d": 1}) == {"d": 1}, "молодой битый файл (его может дописывать писатель прежнего кода)"
+    assert p.exists() and not (tmp / "state.json.corrupt").exists(), "свежий файл унесён в карантин сразу"
+    _age(p)
+    with contextlib.redirect_stderr(err):
         assert F.read_state(p, {"d": 1}) == {"d": 1}
     assert "state.json" in err.getvalue() and ".corrupt" in err.getvalue(), err.getvalue()
     assert not p.exists() and (tmp / "state.json.corrupt").read_text(encoding="utf-8") == '{"cut": ', list(tmp.iterdir())
     p.write_text("[1, 2]", encoding="utf-8")                # допустимый JSON не того типа: состояние — словарь
+    _age(p)
     with contextlib.redirect_stderr(io.StringIO()):
         assert F.read_state(p, {}) == {}
     assert (tmp / "state.json.corrupt-2").is_file() and (tmp / "state.json.corrupt").is_file(), \
@@ -525,13 +539,12 @@ def test_aurora_common_delegates_to_the_core_and_finds_it_by_path(tmp: Path):
         "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
         "assert sys.argv[2] not in sys.path\n"
         "m.write_text_atomic(sys.argv[3], 'через ядро\\n')\n"
-        "open(sys.argv[3] + '.src', 'w').write('новый')\n"
-        "m.replace_file(sys.argv[3] + '.src', sys.argv[3])\n"
-        "print(open(sys.argv[3], encoding='utf-8').read())\n")
+        "open(sys.argv[3] + '.src', 'w', encoding='utf-8').write('новый')\n"
+        "m.replace_file(sys.argv[3] + '.src', sys.argv[3])\n")
     target = tmp / "out.txt"
     cp = subprocess.run([sys.executable, "-I", "-c", code, str(SCRIPTS / "aurora_common.py"), str(SCRIPTS), str(target)],
                         capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(tmp), timeout=120)
-    assert cp.returncode == 0 and cp.stdout.strip() == "новый", (cp.stdout, cp.stderr[-500:])
+    assert cp.returncode == 0 and target.read_text(encoding="utf-8") == "новый", (cp.stdout, cp.stderr[-500:])
     assert not _leftovers(tmp), _leftovers(tmp)
 
 
@@ -557,3 +570,98 @@ def test_core_is_a_leaf_module_that_the_manifest_ships_before_aurora_common(tmp:
                 if ln.strip() and not ln.lstrip().startswith("#") and "=>" in ln]
     assert "scripts/aurora_fs.py" in manifest, "ядро не доставляется в проекты"
     assert manifest.index("scripts/aurora_fs.py") < manifest.index("scripts/aurora_common.py"), manifest[:6]
+
+
+@test
+def test_read_state_is_careful_with_young_busy_bom_and_alias_types(tmp: Path):
+    """Карантин осторожен: BOM не повреждение; словарь-наследник принят за словарь; недоступный файл при `strict`
+    поднимает ошибку, а не подсовывает значение по умолчанию; файл, меняющийся на глазах, не уносится."""
+    import collections
+    F = _fs()
+    p = tmp / "bom.json"
+    p.write_bytes(b"\xef\xbb\xbf" + '{"имя": 1}'.encode("utf-8"))
+    assert F.read_state(p, {}) == {"имя": 1}, "файл с BOM принят за битый"
+    F.write_json(p, {"a": 1})
+    assert F.read_state(p, collections.OrderedDict()) == {"a": 1}, "словарь-наследник принят за не тот тип"
+    real_open = open
+    calls = []
+
+    def denied(path, *a, **kw):
+        if str(path) == str(p):
+            calls.append(1)
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, *a, **kw)
+    F.open = denied
+    try:
+        assert F.read_state(p, {"d": 1}) == {"d": 1} and len(calls) >= 3, "занятый файл не перечитан несколько раз"
+        try:
+            F.read_state(p, {"d": 1}, strict=True)
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("strict подсунул значение по умолчанию вместо ошибки доступа")
+    finally:
+        del F.open
+    assert F.read_state(p, {}, strict=True) == {"a": 1}
+    q = tmp / "moving.json"
+    q.write_text("{", encoding="utf-8")
+    _age(q)
+    sig = F._stat_sig(q)
+    q.write_text("{\"ok\": true}", encoding="utf-8")                # другой читатель/писатель успел заменить файл
+    assert F._quarantine(str(q), sig) == "" and q.read_text(encoding="utf-8") == "{\"ok\": true}", "годный файл унесён"
+
+
+@test
+def test_write_atomic_edge_cases_strict_makedirs_name_clash_and_fsync(tmp: Path):
+    """Крайние случаи записи: `strict` и `makedirs=False` повторяют `Path.write_text`; JSON с непарным суррогатом
+    остаётся читаемым; занятое имя временного файла обходится; файловая система без `fsync` записи не мешает."""
+    F = _fs()
+    p = tmp / "s.txt"
+    for bad in ("a \udc80 b", b"bytes", None):
+        try:
+            F.write_atomic(p, bad, strict=True)
+        except (UnicodeEncodeError, TypeError):
+            pass
+        else:
+            raise AssertionError(f"strict принял {bad!r}")
+    assert not p.exists() and not _leftovers(tmp)
+    try:
+        F.write_atomic(tmp / "нет" / "f.txt", "x", makedirs=False)
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("makedirs=False создал каталог")
+    F.write_json(tmp / "sur.json", {"name": "a\udcd0b"})
+    assert F.read_state(tmp / "sur.json", {}) == {"name": "a\udcd0b"}, "JSON с суррогатом стал нечитаемым"
+    pid, tid = os.getpid(), threading.get_ident()
+    seq = next(F._SEQ)
+    for k in range(1, 4):                                           # следы «убитого процесса» с теми же pid и потоком
+        (tmp / f".{pid}-{tid}-{seq + k}.aurora-tmp").write_text("old", encoding="utf-8")
+    F.write_atomic(p, "после следов")
+    assert p.read_text(encoding="utf-8") == "после следов"
+    real = os.fsync
+
+    def no_fsync(fd):
+        raise OSError(getattr(__import__("errno"), "EINVAL"), "Invalid argument")
+    os.fsync = no_fsync
+    try:
+        F.write_atomic(tmp / "fuse.txt", "ok")
+    finally:
+        os.fsync = real
+    assert (tmp / "fuse.txt").read_text(encoding="utf-8") == "ok", "файловая система без fsync сорвала запись"
+
+
+@test
+def test_sweep_tree_cleans_nested_folders_and_skips_links_and_git(tmp: Path):
+    """Уборка дерева: осиротевшие временные файлы во вложенных разделах уходят, `.git` и свежие остаются."""
+    F = _fs()
+    (tmp / "Concepts" / "Sub").mkdir(parents=True)
+    (tmp / ".git").mkdir()
+    old = [tmp / "Concepts" / ".1-2-3.aurora-tmp", tmp / "Concepts" / "Sub" / ".4-5-6.aurora-tmp"]
+    keep = [tmp / ".git" / ".7-8-9.aurora-tmp", tmp / "Concepts" / ".10-11-12.aurora-tmp", tmp / "Concepts" / "card.md"]
+    for p in old + keep:
+        p.write_text("x", encoding="utf-8")
+    for p in old + [keep[0]]:
+        _age(p, 7200)
+    assert sorted(F.sweep_tree(tmp)) == ["Concepts/.1-2-3.aurora-tmp", "Concepts/Sub/.4-5-6.aurora-tmp"]
+    assert all(p.exists() for p in keep) and not any(p.exists() for p in old)

@@ -7699,7 +7699,7 @@ def _update_running(change) -> None:
     import aurora_fs
 
     def work():
-        rows = change(aurora_fs.read_state(RUNNING, {}))
+        rows = change(aurora_fs.read_state(RUNNING, {}, strict=True))     # не прочиталось — не затирать чужие отметки
         if rows is None:
             os.remove(RUNNING)
         else:
@@ -7749,7 +7749,8 @@ def sweep_state_tmp() -> list:
     убитого посреди записи процесса. Старше часа и только по маскам своих временных имён; свежие не трогаются."""
     import aurora_fs
     gone = []
-    for folder in (os.path.dirname(RUNNING), CRON.home()):
+    for folder in (os.path.dirname(RUNNING), CRON.home(), os.path.join(CRON.home(), "cron-runs"),
+                   os.path.join(KIT, "local")):
         gone += aurora_fs.sweep_tmp(folder, patterns=("*.aurora-tmp", "*.json.tmp"))
     return gone
 

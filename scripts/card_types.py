@@ -77,7 +77,9 @@ from aurora_common import (  # noqa: E402
     split_frontmatter, split_inline_items, sources_block, undated, utc_today, walk_md,
     write_text_atomic,
 )
-from aurora_common import _fs, kit_root as _kit_root  # noqa: E402
+from aurora_common import engine_dir, kit_root as _kit_root  # noqa: E402
+import aurora_fs  # noqa: E402 — ядро надёжности записи: листовой модуль, в манифесте раньше aurora_common
+from aurora_fs import LockTimeout  # noqa: E402, F401 — вызывающие ловят «замок карточек занят» отсюда
 
 # ----------------------------------------------------------------------------- константы
 
@@ -903,7 +905,7 @@ def read_config_overrides(project_root: str) -> tuple:
 def _write_text_exact(path: str, text: str) -> None:
     """Записать текст целиком или не трогать файл — и без перевода строк: «\r\n» остаётся «\r\n», «\n» — «\n» на любой
     системе (`write_text_atomic` на Windows превратил бы «\n» в «\r\n»). Права прежнего файла сохраняются."""
-    _fs().write_atomic(path, text, newline="")
+    aurora_fs.write_atomic(path, text, newline="")
 
 
 def save_overrides(project_root: str, overrides: dict, *, known=None) -> str:
@@ -2431,8 +2433,8 @@ def card_lock(path: str):
     where = kb_location(path)
     if where is None:
         return contextlib.nullcontext()
-    return _fs().FileLock(os.path.join(where[0], ".aurora", "state", "cards.lock"), timeout=300, optional=True,
-                          info={"what": "запись карточек"})
+    return aurora_fs.FileLock(os.path.join(where[0], engine_dir(where[0]), "state", "cards.lock"), timeout=300,
+                              optional=True, info={"what": "запись карточек"})
 
 
 _REG_CACHE: dict = {}
@@ -2734,7 +2736,7 @@ def write_atomic(path: str, text: str) -> None:
     переходят к новому. Ссылка внутри проекта не заменяется — пишется файл, на который она ведёт. Прерывание
     (`KeyboardInterrupt`, сбой диска) посреди записи оставляет прежний файл и убирает временный.
     """
-    _fs().write_atomic(path, text, newline="keep")
+    aurora_fs.write_atomic(path, text, newline="keep")
 
 
 _GATE_WARNED: set = set()
@@ -2908,6 +2910,8 @@ def write_card_text(path: str, new_text: str, *, op: str, old_text: "str | None"
         if errors:
             _REFUSALS["n"] += 1
             raise TemplateViolation(path, op, errors)
+        if expect_sig is not None and file_sig(path) != expect_sig:        # проверка шаблона заняла время: ещё раз перед подменой
+            raise CardChanged(path, op)
         write_atomic(path, text)
         return True
 
@@ -2932,6 +2936,8 @@ def try_write_card(path: str, text: str, *, op: str, old_text: "str | None" = No
     """
     if kb_location(path) is not None and not is_card_path(path):
         # Заметка в корне базы, оглавление, служебный файл: не карточка по шаблону, пишется как раньше (атомарно)
+        if expect_sig is not None:
+            raise ValueError("try_write_card: expect_sig — только для карточек; служебный файл базы сверки снимка не знает")
         why = put_text(path, text, op=op)
         return (not why), why
     try:

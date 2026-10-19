@@ -377,11 +377,25 @@ class _Fault:
             return self._saved["unlink"](p, *a, **kw)
 
         P.write_bytes, P.write_text, P.unlink = write_bytes, write_text, unlink
+        # Атомарная запись живёт в ядре надёжности (BL-SEC-25) и идёт мимо `Path.write_*`: обрыв на ней — отказ до записи
+        # (файл либо прежний, либо новый целиком, «половины» у неё не бывает), счёт идёт по пути самой цели.
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        import aurora_fs
+        self._fs, self._fs_write = aurora_fs, aurora_fs.write_atomic
+        real_atomic = self._fs_write
+
+        def write_atomic(path, data, **kw):
+            fault._tick(path, None)
+            return real_atomic(path, data, **kw)
+
+        aurora_fs.write_atomic = write_atomic
         return self
 
     def __exit__(self, *exc):
         for n, f in self._saved.items():
             setattr(Path, n, f)
+        self._fs.write_atomic = self._fs_write
         return False
 
 

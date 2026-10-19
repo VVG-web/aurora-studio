@@ -125,15 +125,15 @@ def _alive(pid: int) -> bool:
 def _read_json(path: str, default):
     """Состояние Cron. Повреждённый файл не молча «пуст»: ядро надёжности переносит его в `.corrupt` и говорит об
     этом (расписание и история не затираются следующей записью без следа)."""
-    from aurora_common import _fs
-    return _fs().read_state(path, default)
+    import aurora_fs
+    return aurora_fs.read_state(path, default)
 
 
 def _write_json(path: str, data) -> None:
     """Записать состояние Cron целиком или никак: уникальный временный файл рядом, `fsync`, подмена с повтором на
     Windows (`aurora_fs.write_atomic`)."""
-    from aurora_common import _fs
-    _fs().write_json(path, data)
+    import aurora_fs
+    aurora_fs.write_json(path, data)
 
 
 def now_iso(when: datetime | None = None) -> str:
