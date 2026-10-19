@@ -184,8 +184,8 @@ def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Pa
 
 @test
 def test_contributing_states_roles_and_anonymised_bug_notes_in_both_languages(tmp: Path):
-    """Правила кита (ru и en): ядро не узнаёт источник по названию продукта, целевой словарь ролей
-    помечен как не внедрённый и отделён от `role` манифеста, экспортёры коннекторов названы исключением;
+    """Правила кита (ru и en): ядро не узнаёт источник по названию продукта, словарь ролей сервиса
+    (`service_role`) отделён от `role` манифеста, а что не переведено на роли, названо, экспортёры коннекторов названы исключением;
     причины багов в коде, тестах, CHANGELOG и коммитах обезличены (PRJ-A/B/C)."""
     for rel in ("docs/CONTRIBUTING.md", "docs/en/CONTRIBUTING.md"):
         text = (KIT / rel).read_text(encoding="utf-8")
@@ -194,10 +194,14 @@ def test_contributing_states_roles_and_anonymised_bug_notes_in_both_languages(tm
         for name in ("jira_export.py", "confluence_export.py", "atlassian_ops.py", "jira_status.py"):
             assert f"`{name}`" in text, f"{rel}: экспортёр {name} не назван исключением"
         assert "sources_registry.py" in text and "`role`" in text and "`tasks`" in text, \
-            f"{rel}: не сказано, что сегодня источник берут по полю role манифеста"
+            f"{rel}: не сказано, что источник берут по полю role манифеста"
+        assert "`service_role`" in text and "service_dirs" in text and "`aliases`" in text, \
+            f"{rel}: не сказано, что роль сервиса берётся из манифеста через service_dirs"
         assert "PRJ-A" in text and "PRJ-C" in text and "CHANGELOG.md" in text, \
             f"{rel}: нет правила об обезличивании заметок о багах"
     ru = (KIT / "docs/CONTRIBUTING.md").read_text(encoding="utf-8")
     en = (KIT / "docs/en/CONTRIBUTING.md").read_text(encoding="utf-8")
-    assert "ещё не внедрён" in ru and "is not implemented yet" in en, \
-        "словарь ролей снова подан как действующий"
+    assert "Ещё не переведено на роли" in ru and "Not moved to roles yet" in en, \
+        "не названо, что ещё не переведено на роли"
+    assert "ещё не внедрён" not in ru and "is not implemented yet" not in en, \
+        "словарь ролей снова подан как не внедрённый"
