@@ -402,3 +402,12 @@ def test_quotes_need_consecutive_words_and_hostile_text_stays_fast(_t):
         F.tokens(hostile)
         F.check_quotes("ОПОРА «что-то длинное и придуманное целиком»", hostile)
     assert time.process_time() - started < 20, "проверка на враждебном вводе стала квадратичной"
+    # цепочки знаков иврита и арабского (раньше список диапазонов их не знал, нормализация шла квадратом)
+    started = time.process_time()
+    for chain in ("a" + "\u05c2\u05b0" * 80000, "\u0628" + "\u064b\u064c" * 80000):
+        F._plain(chain)
+    assert time.process_time() - started < 3, "цепочка комбинирующих знаков вешает нормализацию"
+    assert F._calm("e" + "\u0301" * 30) == "\u00e9" + "\u0301" * 7, "обрезка оставляет не больше восьми знаков"
+    # число и длина цитат ограничены: ответ модели не повод искать тысячи цитат по большому контексту
+    many = F.opora_quotes("\n".join("ОПОРА «цитата номер %d»" % i for i in range(500)))
+    assert len(many) == 40 and len(F.opora_quotes("ОПОРА " + "слово " * 5000)[0]) <= 400, len(many)
