@@ -263,6 +263,141 @@ def duplicates(root: str = ".", spaces=None) -> dict:
     return out
 
 
+# ------------------------------------------------------------------ ключ Requirement Yogi: маска вида (BL-KBA-17)
+#
+# Реестр идентификаторов и связей аналитика — Requirement Yogi: ключ `RU.PRJ.US-1.1.1` заводит он, не Аврора.
+# Аврора ключ не выдаёт и не разбирает формат «внутри»: она хранит его непрозрачным значением (`ref_key` в
+# паспорте артефакта, `ref_scheme: ry`) и проверяет только одно — что ключ написан по маске вида, объявленной в
+# настройках проекта (`artifacts: <вид>: ref_mask`). Смена системы реестра меняет схему, а не карточки.
+#
+# Язык маски: `<имя>` — любой сегмент из букв, цифр и «_» (страна, проект); одиночная `x` — число; остальное —
+# буквально. Пример: `<СТРАНА>.<ПРОЕКТ>.US-x.x.x` читает `RU.PRJ.US-1.1.1`, но не `RU.PRJ.US-1.1`.
+
+MASK_TOKEN = re.compile(r"(<[^<>\s]+>|(?<![A-Za-z0-9_])x(?![A-Za-z0-9_]))")
+KEY_BEFORE = r"(?<![A-Za-z0-9_.\-])"
+KEY_AFTER = r"(?![A-Za-z0-9_]|[.\-][0-9A-Za-z])"
+
+
+def mask_problem(mask: str) -> str:
+    """Что не так с маской; пусто — годится (или маски нет вовсе)."""
+    mask = (mask or "").strip()
+    if not mask:
+        return ""
+    if len(mask) > 100 or re.search(r"\s", mask) or '"' in mask:
+        return "маска — одна строка до 100 знаков без пробелов и кавычек"
+    parts = MASK_TOKEN.split(mask)
+    if not any(p == "x" or p.startswith("<") for p in parts):
+        return "в маске нет ни числа (x), ни именованной части (<имя>): ей отвечал бы один-единственный ключ"
+    if not re.search(r"[A-Za-z0-9]", "".join(p for p in parts if not p.startswith("<") and p != "x")):
+        return "в маске нет постоянной части (например, «US-»): по ней нельзя отличить ключи вида"
+    return ""
+
+
+def _mask_pattern(mask: str) -> str:
+    out = []
+    for part in MASK_TOKEN.split(mask.strip()):
+        if part == "x":
+            out.append(r"[0-9]+")
+        elif part.startswith("<"):
+            out.append(r"[A-Za-z0-9_]+")
+        else:
+            out.append(re.escape(part))
+    return "".join(out)
+
+
+def mask_regex(mask: str):
+    """Регулярное выражение маски (ключ целиком, не часть длиннее); None — маски нет или она негодна."""
+    if not (mask or "").strip() or mask_problem(mask):
+        return None
+    return re.compile(KEY_BEFORE + "(?:" + _mask_pattern(mask) + ")" + KEY_AFTER)
+
+
+def similar_regex(mask: str):
+    """Ключи того же вида в любом написании: постоянная часть перед первым числом маски (`US-`), любые
+    префиксы и номер из цифр и точек. Нужна, чтобы назвать ключ, похожий на ключ вида, но не по маске."""
+    m = re.search(r"([A-Za-z]+)-x(?![A-Za-z0-9_])", (mask or "").strip())
+    if not m or mask_problem(mask):
+        return None
+    return re.compile(KEY_BEFORE + r"(?:[A-Za-z0-9_]+\.)*" + re.escape(m.group(1)) + r"-[0-9]+(?:\.[0-9]+)*"
+                      + r"(?![A-Za-z0-9_]|[.\-][0-9A-Za-z])")
+
+
+def find_keys(text: str, rx) -> list:
+    """Ключи по выражению в порядке появления, без повторов."""
+    return list(dict.fromkeys(m.group(0) for m in rx.finditer(text or ""))) if rx else []
+
+
+def own_key(text: str, mask: str) -> str:
+    """Ключ самого документа по маске вида: на строке с «Код» (таблица свойств истории), иначе первый."""
+    rx = mask_regex(mask)
+    if not rx:
+        return ""
+    for line in (text or "").splitlines():
+        if re.search(r"(?i)\bкод\b|\bkey\b", line):
+            found = find_keys(line, rx)
+            if found:
+                return found[0]
+    found = find_keys(text, rx)
+    return found[0] if found else ""
+
+
+def kinds_with_masks(root: str = ".") -> dict:
+    """{вид: {mask, out}} — виды артефактов с годной маской."""
+    try:
+        import make_kinds as MK
+        kinds = MK.read_kinds(root) or {}
+    except Exception:  # noqa: BLE001 — реестр видов необязателен
+        return {}
+    return {k: {"mask": r["ref_mask"].strip(), "out": r.get("out") or ""} for k, r in kinds.items()
+            if (r.get("ref_mask") or "").strip() and not mask_problem(r["ref_mask"])}
+
+
+def ref_findings(root: str = ".") -> dict:
+    """{путь: [замечания]} — ключи, похожие на ключи вида, но не по его маске: в артефактах вида и на страницах
+    зеркала, объявляющих ключ (`ry_defines`). Замечание — {id, msg}. Нет масок — пусто."""
+    from aurora_common import clean_copy, body as md_body, frontmatter
+    out: dict = {}
+    masks = kinds_with_masks(root)
+    if not masks:
+        return out
+    for kind, spec in sorted(masks.items()):
+        rx, like = mask_regex(spec["mask"]), similar_regex(spec["mask"])
+        if not like:
+            continue
+        for path in _md_files(root, spec["out"]) if spec["out"] else []:
+            try:
+                with open(path, encoding="utf-8", errors="ignore") as f:
+                    text = clean_copy(md_body(f.read()))
+            except OSError:
+                continue
+            bad = [k for k in find_keys(text, like) if not rx.fullmatch(k)]
+            if bad:
+                out.setdefault(os.path.relpath(path, root).replace("\\", "/"), []).append(
+                    {"id": "REF-02", "msg": f"ключ «{bad[0]}»" + (f" и ещё {len(bad) - 1}" if len(bad) > 1 else "")
+                     + f" похож на ключ вида «{kind}», но не по маске «{spec['mask']}»"})
+    mirror = os.path.join(root, "Sources", "Confluence")
+    if os.path.isdir(mirror):
+        for dirpath, _dirs, files in os.walk(mirror):
+            for f in files:
+                if not f.endswith(".md"):
+                    continue
+                path = os.path.join(dirpath, f)
+                try:
+                    with open(path, encoding="utf-8", errors="ignore") as fh:
+                        head = fh.read(3000)
+                except OSError:
+                    continue
+                defined = [k.strip().strip("\"'") for k in (frontmatter(head).get("ry_defines") or "").strip("[] ").split(",")
+                           if k.strip()]
+                for kind, spec in sorted(masks.items()):
+                    rx, like = mask_regex(spec["mask"]), similar_regex(spec["mask"])
+                    bad = [k for k in defined if like and like.fullmatch(k) and not rx.fullmatch(k)]
+                    if bad:
+                        out.setdefault(os.path.relpath(path, root).replace("\\", "/"), []).append(
+                            {"id": "REF-03", "msg": f"страница объявляет ключ «{bad[0]}» не по маске вида «{kind}» («{spec['mask']}»)"})
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Реестр идентификаторов: выдача номера под замком, повторы")
     ap.add_argument("space", nargs="?", default="", metavar="ПРОСТРАНСТВО",

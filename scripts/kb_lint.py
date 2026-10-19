@@ -721,6 +721,25 @@ def main():
                         print(f"       {it['id']}: {it['msg']}")
                 if len(bad) > 8 and not full:
                     print(f"   … ещё решений: {len(bad) - 8}")
+    # Ключи Requirement Yogi не по маске вида (BL-KBA-17): ключ, похожий на ключ вида из `artifacts: <вид>: ref_mask`,
+    # но написанный иначе («US-1.1» вместо «US-1.1.1»), в артефакте или на странице зеркала. Предупреждения.
+    if not only:
+        try:
+            import id_registry
+            refs = id_registry.ref_findings(".")
+        except Exception:  # noqa: BLE001 — маски вида не должны ронять линтер базы
+            refs = {}
+        if refs:
+            print(f"kb_lint: ключей не по маске вида в {len(refs)} файлах — это предупреждения, на код возврата "
+                  "они не влияют (make:kinds — маска вида)")
+            if not summary:
+                print(f"\n### ключи Requirement Yogi не по маске вида (предупреждения, не ошибки) — {len(refs)}")
+                for rel, items in list(sorted(refs.items()))[:None if full else 8]:
+                    print(f"   - {rel}")
+                    for it in items[:None if full else 3]:
+                        print(f"       {it['id']}: {it['msg']}")
+                if len(refs) > 8 and not full:
+                    print(f"   … ещё файлов: {len(refs) - 8}")
     # Повторы идентификаторов (BL-TEAM-07): REQ, SPEC, Q, DR и номер артефакта агента, которые носят два
     # разных файла. Замок `kb:next-id` не спасает от двух веток git, где выдан один номер, — повтор виден
     # только при слиянии. Предупреждения по тем же причинам, что форма артефактов: старая база может
