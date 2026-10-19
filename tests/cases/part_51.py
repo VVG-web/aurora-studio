@@ -37,7 +37,7 @@ def _run_node(tmp: Path, name: str, code: str) -> dict:
 
 def _row(AG, why, **extra):
     row = why.row() if hasattr(why, "row") else {"why": why}
-    row.update(at="2026-10-18T10:19:00Z", project="/work/PRJ-A", calls=3)
+    row.update(at=AG.utc_stamp(), project="/work/PRJ-A", calls=3)      # свежая метка: тревога связи живёт 12 часов
     row.update(extra)
     return row
 
@@ -243,7 +243,7 @@ def test_a_hand_edited_alarm_file_does_not_break_the_panel_state(tmp: Path):
     try:
         why = AG.Why("process_died", "closed")
         row = why.row()
-        row.update(at="2026-10-18T10:19:00Z", project="/work/PRJ-A", calls="много")
+        row.update(at=AG.utc_stamp(), project="/work/PRJ-A", calls="много")
         AG._write_alarm({"agent:build": row})
         rows = ck.adapter_alarm()
         assert len(rows) == 1 and rows[0]["calls"] == 0, rows
