@@ -234,7 +234,11 @@ def main() -> int:
     # Бандл уходит подрядчику за пределы контура: при privacy.scrub: mask персональные данные в нём — отказ
     # (BL-SEC-22; тот же сканер, что у публикации и экспорта).
     if config_value("scrub", "report").strip().lower() == "mask" and "privacy" not in a.allow:
-        hits = privacy_hits(text) or []
+        hits = privacy_hits(text)
+        if hits is None:                    # сканер не запустился: молча считать бандл чистым нельзя, и не падать тоже
+            print("⚠️ [privacy] privacy.scrub: mask, но сканер персональных данных не запустился — проверьте `kb:scrub`",
+                  file=sys.stderr)
+            hits = []
         if hits:
             kinds = ", ".join(sorted({h[0] for h in hits}))
             print(f"⛔ [privacy] в бандле персональные данные при privacy.scrub: mask: {len(hits)} ({kinds}) → "

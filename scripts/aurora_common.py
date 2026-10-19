@@ -834,10 +834,36 @@ GATE_CODES = {
 }
 
 
+_FENCE_OPEN = re.compile(r"(`{3,}|~{3,})")
+_FENCE_CLOSE = re.compile(r"(`{3,}|~{3,})[ \t]*$")
+
+
 def _without_code(text: str) -> str:
-    """Текст без блоков кода и встроенного кода: `{{…}}` в примере команды — не остаток шаблона."""
-    text = re.sub(r"(?ms)^(`{3,}|~{3,}).*?^\1[ \t]*$", " ", text)
-    return re.sub(r"`[^`\n]*`", " ", text)
+    """Текст без блоков кода и встроенного кода: `{{…}}` в примере команды — не остаток шаблона.
+
+    Блок — от строки, начинающейся с ограждения (три и больше «`» или «~»), до строки с тем же ограждением
+    и ничем больше. Построчный проход, а не одна регулярка с ленивым телом: текст приходит из Confluence и от
+    модели, и незакрытые ограждения делали разбор квадратичным."""
+    from bisect import bisect_right
+    lines = text.split("\n")
+    closers: dict = {}
+    for i, line in enumerate(lines):
+        m = _FENCE_CLOSE.fullmatch(line)
+        if m:
+            closers.setdefault(m.group(1), []).append(i)
+    kept, i = [], 0
+    while i < len(lines):
+        m = _FENCE_OPEN.match(lines[i])
+        if m:
+            rows = closers.get(m.group(1), [])
+            k = bisect_right(rows, i)
+            if k < len(rows):
+                kept.append(" ")
+                i = rows[k] + 1
+                continue
+        kept.append(lines[i])
+        i += 1
+    return re.sub(r"`[^`\n]*`", " ", "\n".join(kept))
 
 
 def privacy_hits(text: str):
@@ -866,12 +892,17 @@ def outward_gate(text: str, fm: dict | None = None, scrub: str = "") -> list:
     lines = full.split("\n")
     has_mark = any(line == MADE_MARK for line in lines)
     found = production_headings(full) if not has_mark else []
+    above = production_headings(clean) if has_mark else []     # граница есть, но заголовок производства стоит выше неё
     # граница есть, но испорчена (пробел, другое тире, правка руками): `clean_copy` её не видит и режет не по ней
     broken = [ln for ln in lines if not has_mark and _MADE_PHRASE in ln.casefold() and ln != MADE_MARK]
     if found or broken:
         names = ", ".join(sorted({re.sub(r"^[#\s]+|[#\s]+$", "", h) for h in found})) or "граница повреждена"
         out.append(("block", "no-marker", f"{GATE_CODES['no-marker']} ({names}): без точной строки {MADE_MARK!r} "
                     "кухня производства уедет наружу целиком"))
+    if above:       # не блокирует: «Допущения» бывают содержанием документа, а не кухней; но молча в чистовик это не идёт
+        names = ", ".join(sorted({re.sub(r"^[#\s]+|[#\s]+$", "", h) for h in above}))
+        out.append(("warn", "production-heading", f"в чистовике, выше границы, есть разделы с названиями производства ({names}): "
+                    "убедитесь, что это содержание документа, а не кухня"))
     left = sorted({m.group(0)[:30] for m in _LEFTOVER.finditer(_without_code(clean))})
     if left:
         out.append(("block", "template-leftovers", f"{GATE_CODES['template-leftovers']}: {', '.join(left[:5])}"))
