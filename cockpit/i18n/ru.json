@@ -91,6 +91,7 @@
   "editor.publish_preview": "Что уйдёт заказчику",
   "editor.publish_cut": "Разделы производства отрезаны по маркеру: {n} знаков останется в черновике.",
   "editor.publish_nomark": "Маркера производства в документе нет — уйдёт всё тело целиком.",
+  "editor.publish_draft": "Документ не прошёл цепочку до конца (status: draft): опубликованное увидит команда.",
   "editor.publish_go": "Опубликовать",
   "editor.publish_cancel": "Не публиковать",
   "editor.correct": "Исправить",

@@ -291,7 +291,9 @@ def test_outward_gate_sees_heading_variants_a_broken_boundary_and_crlf(_t):
     for head in ("## допущения", "## Допущения ##", "## Допущения:", "## **Допущения**", "### 2. Допущения",
                  "## Замечания критика (авто)", "##\u00a0Допущения", "Допущения\n=========", "Допущения\n---------"):
         assert codes(_doc(body=CLEAN + "\n" + head + "\n\nтекст\n")) == ["no-marker"], head
-    assert codes(_doc(body=CLEAN + "\n## Допущения и ограничения проекта\n\nтекст\n")) == ["no-marker"]
+    # название, только начинающееся с раздела производства, — содержание документа: предупреждение, не блок
+    loose = _doc(body=CLEAN + "\n## 3. Допущения и ограничения проекта\n\nтекст\n")
+    assert codes(loose) == [] and [c for lv, c, _m in C.outward_gate(loose, None) if lv == "warn"] == ["production-heading"]
     assert codes(_doc(body=CLEAN + "\n## Допущения\n")) == ["no-marker"] and codes(_doc(body=CLEAN + "\n## Обзор\n")) == []
     # граница есть, но испорчена: другое тире, хвостовой пробел — `clean_copy` её не режет
     for bad in ("<!-- ниже - производство, в чистовик не идёт -->", MARK + " ", "<!-- ниже — производство, в чистовик не идёт  -->"):
@@ -417,8 +419,11 @@ def test_export_does_not_carry_foreign_html_or_script_links_into_the_output(_t):
     assert "[c](https://example.org)" in t
     h = S.escape_raw_html("# T\n\n<script>x()</script>\n\nтекст `<b>` и <b onclick=x>ж</b> <https://example.org/a> "
                           "<me@example.org>\n\n```html\n<script>в коде</script>\n```\n\n<!-- c -->\n")
-    assert "&lt;script>x()&lt;/script>" in h and "&lt;b onclick=x>ж&lt;/b>" in h and "&lt;!-- c -->" in h, h
+    assert "&lt;script>x()&lt;/script>" in h and "&lt;b onclick=x>ж</b>" in h and "&lt;!-- c -->" in h, h
     assert "`<b>`" in h and "<script>в коде</script>" in h and "<https://example.org/a>" in h and "<me@example.org>" in h, h
+    # теги без атрибутов, которые ничего не исполняют (<br> в ячейке таблицы Confluence), не превращаются в видимый текст
+    assert S.escape_raw_html("a<br>b H<sub>2</sub>O <kbd>Ctrl</kbd> <br/> <BR />") == "a<br>b H<sub>2</sub>O <kbd>Ctrl</kbd> <br/> <BR />"
+    assert S.escape_raw_html("<br onclick=x> <b style='x'> <img src=x> <a href=y>") == "&lt;br onclick=x> &lt;b style='x'> &lt;img src=x> &lt;a href=y>"
     assert S.strip_images("до ![схема](a.png) и <img src=x> после") == "до схема и  после"
     started = time.process_time()
     for bad in ("<a " * 100000 + "`" * 50000, ("`" * 15 + "a ") * 30000, "<a `x" * 30000):
@@ -451,6 +456,15 @@ def test_gate_and_scanners_survive_hostile_text_and_see_what_the_boundary_hides(
     doc.write_bytes(b"\xef\xbb\xbf" + _doc(head="type: deliverable\nstatus: draft\n").encode("utf-8"))
     cp = run("publish_doc.py", "Artifacts/reports/итог.md", "--apply", cwd=root)
     assert cp.returncode == 2 and "[draft]" in cp.stdout, (cp.returncode, cp.stdout, cp.stderr)
+    assert [c for lv, c, _m in C.outward_gate("\ufeff" + _doc(head="status: draft\n"), None) if lv == "block"] == ["draft"]
+    # снимок, сохранённый редактором с BOM и правленный после передачи, хеш всё равно ловит
+    rel = root / "Deliverables" / "released"
+    rel.mkdir(parents=True, exist_ok=True)
+    good = _doc(head='type: deliverable\nsha256: "%s"\n' % C.release_hash(_doc(body=CLEAN)), body=CLEAN)
+    (rel / "A_2026-10-19.md").write_bytes(b"\xef\xbb\xbf" + good.encode("utf-8"))
+    assert C.released_problems(str(root)) == [], C.released_problems(str(root))
+    (rel / "A_2026-10-19.md").write_bytes(b"\xef\xbb\xbf" + good.replace("пять", "три").encode("utf-8"))
+    assert len(C.released_problems(str(root))) == 1
 
 
 @test
@@ -464,3 +478,59 @@ def test_find_by_title_does_not_let_the_space_add_query_parameters(_t):
         api.get = lambda path, _a=asked: _a.append(path) or {}
         (api.find_by_title if cls is P.Writer else api.by_title)("A&limit=1", "Т")
         assert asked and "spaceKey=A%26limit%3D1&" in asked[0] and "spaceKey=A&limit" not in asked[0], asked
+
+
+@test
+def test_release_recognises_the_same_binary_under_another_case_of_its_path(tmp: Path):
+    """`--binary` с другим регистром пути к уже сданному файлу — тот же файл, а не `SameFileError` посреди фиксации."""
+    import ship_doc as S
+    folder = tmp / "Deliverables" / "released"
+    folder.mkdir(parents=True)
+    f = folder / "built.docx"
+    f.write_bytes(b"x")
+    other = tmp / "deliverables" / "released" / "built.docx"
+    assert S._same_file(str(f), str(f)) and not S._same_file(str(f), str(tmp / "нет.docx"))
+    if other.exists():                   # macOS и Windows: ФС не различает регистр
+        assert S._same_file(str(f), str(other)), "тот же файл принят за другой"
+
+
+@test
+def test_panel_does_not_send_allow_to_a_project_script_that_predates_the_guard(tmp: Path):
+    """Проект не обновлён после выхода кита: старый `publish_doc.py` флага `--allow` не знает и отверг бы запуск — панель его не шлёт."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    ck = importlib.import_module("aurora_cockpit")
+    old = tmp / "old.py"
+    old.write_text('ap.add_argument("--apply")\nap.add_argument("--allow-dirty")\n', encoding="utf-8")
+    new = tmp / "new.py"
+    new.write_text('ap.add_argument("--allow", action="append")\n', encoding="utf-8")
+    args = ["a.md", "--apply", "--allow", "no-marker", "--allow", "draft"]
+    assert ck._args_for_old_script(str(old), args) == ["a.md", "--apply"]
+    assert ck._args_for_old_script(str(new), args) == args
+    assert ck._args_for_old_script(str(tmp / "нет.py"), args) == args
+    assert ck._args_for_old_script(str(old), ["a.md", "--apply"]) == ["a.md", "--apply"]
+
+
+@test
+def test_setup_form_keeps_the_publish_parent(tmp: Path):
+    """`confluence.publish_parent` (родитель `ship:publish`) форма настроек не стирает: ни номер, ни адрес; повтор — тот же текст."""
+    S = importlib.import_module("aurora_setup")
+    importlib.reload(S)
+    c = {"name": "Demo", "slug": "demo", "conf_url": "https://wiki.example.com", "conf_space": "S",
+         "jira_url": "", "jira_key": "D", "jira_jql": "project = D", "trust_statuses": "Done",
+         "assumption_statuses": "Open", "scrub": "off", "sync_roots": [],
+         "trusted_sources": "", "trusted_branches": "", "threshold": "70"}
+    for n, value in enumerate(("9001", "https://wiki.example.com/display/S/Родитель%20публикации")):
+        cfg = tmp / f"p{n}" / "aurora.config.yaml"
+        cfg.parent.mkdir()
+        cfg.write_text('atlassian:\n  confluence:\n    base_url: "https://wiki.example.com"\n    space: "S"\n'
+                       f'    publish_parent: "{value}"\n    sync_roots: []\n'
+                       '  jira:\n    base_url: ""\n', encoding="utf-8")
+        S.write_config(cfg, dict(c))
+        first = cfg.read_text(encoding="utf-8")
+        assert f'    publish_parent: "{value}"\n' in first, first
+        S.write_config(cfg, dict(c))
+        assert cfg.read_text(encoding="utf-8") == first, "повторное сохранение изменило конфиг"
+    plain = tmp / "plain" / "aurora.config.yaml"
+    plain.parent.mkdir()
+    S.write_config(plain, dict(c))
+    assert "publish_parent" not in plain.read_text(encoding="utf-8"), "форма сама выдумала родителя"

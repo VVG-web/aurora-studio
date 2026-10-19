@@ -91,6 +91,7 @@
   "editor.publish_preview": "What the client will get",
   "editor.publish_cut": "Production sections are cut at the marker: {n} characters stay in the draft.",
   "editor.publish_nomark": "There is no production marker in the document — the whole body will go out.",
+  "editor.publish_draft": "The document did not pass the chain to the end (status: draft): the team will see what is published.",
   "editor.publish_go": "Publish",
   "editor.publish_cancel": "Do not publish",
   "editor.correct": "Correct",

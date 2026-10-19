@@ -298,11 +298,13 @@ def test_finished_artifact_lands_in_the_editor_with_a_publish_button(tmp: Path):
     assert "function publishFromEditor" in ui and "/api/files/clean" in ui, \
         "публикация из редактора не показывает чистовик"
     pub = ui[ui.index("async function publishFromEditor("):
-             ui.index("async function publishFromEditor(") + 2000]
+             ui.index("async function publishFromEditor(") + 3500]
     assert pub.index("api(\"/api/files/clean") < pub.index('cmd:"ship:publish"'), \
         "публикация уходит раньше, чем человек увидел, что именно уйдёт"
     assert "editor.publish_nomark" in ui, \
         "документ без маркера публикуется молча — уедет всё тело целиком"
+    assert "editor.publish_draft" in pub and '"--allow", "draft"' in pub, \
+        "черновик из редактора не публикуется: предохранитель выходных команд просит осознанного решения"
     assert "function publishTarget" in ui, \
         "кнопка публикации видна там, где публикация не применима"
     # «Незаконченные» обязаны заканчиваться действием, а не списком.

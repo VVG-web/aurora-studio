@@ -72,6 +72,14 @@ def gate(text: str, allow, apply: bool, what: str) -> int:
     return outward_check(text, allow, apply, what, "ship_doc")
 
 
+def _same_file(a: str, b: str) -> bool:
+    """Один и тот же файл (на macOS и Windows `Deliverables` и `deliverables` — одна папка, а `abspath` их различает)."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return os.path.abspath(a) == os.path.abspath(b)
+
+
 def _pandoc_sandbox(pandoc: str) -> bool:
     """Умеет ли этот pandoc `--sandbox` (с 2.15). Не смогли спросить — считаем, что умеет: лучше отказ, чем экспорт без защиты."""
     try:
@@ -103,7 +111,10 @@ def neutralize_links(text: str) -> str:
 
 
 _FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)$")
-_TAG = re.compile(r"<(?=[A-Za-z/!?])(?![A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*>)(?![^\s<>@]+@[^\s<>]+>)")
+# Теги без атрибутов, которые ничего не исполняют (переносы строк и подстрочные знаки в таблицах Confluence), остаются.
+_PLAIN_TAGS = "br|hr|sub|sup|kbd|b|i|u|s|em|strong|code|mark|details|summary"
+_TAG = re.compile(r"<(?=[A-Za-z/!?])(?![A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*>)(?![^\s<>@]+@[^\s<>]+>)"
+                  rf"(?!/?(?:{_PLAIN_TAGS})[ \t]*/?>)", re.I)
 _SPAN = re.compile(r"(`{1,16})(?!`)(.{1,500}?)(?<!`)\1(?!`)")
 
 
@@ -112,7 +123,7 @@ def escape_raw_html(text: str) -> str:
 
     `--sandbox` pandoc не запрещает ему попасть в вывод, а расширение `raw_html` блоки HTML не отключает. Блоки и
     строки кода не трогаются (ограждение — по правилам CommonMark: закрывает такое же и не короче), автоссылки
-    `<https://…>` и `<имя@хост>` остаются. Тег внутри многострочного кода-в-строке экранируется лишним: это только
+    `<https://…>`, `<имя@хост>` и безобидные теги без атрибутов (`<br>`, `<sub>`, `<kbd>`) остаются. Тег внутри многострочного кода-в-строке экранируется лишним: это только
     вид, не безопасность."""
     out, fence = [], None
     for line in text.split("\n"):
@@ -298,7 +309,7 @@ def main() -> int:
             return 1
         print(f"Бинарник: {a.binary} → {RELEASED}/")
         kept = os.path.join(RELEASED, os.path.basename(a.binary))
-        if os.path.exists(kept) and os.path.abspath(kept) != os.path.abspath(a.binary):
+        if os.path.exists(kept) and not _same_file(kept, a.binary):
             with open(kept, "rb") as f1, open(a.binary, "rb") as f2:
                 same = hashlib.sha256(f1.read()).digest() == hashlib.sha256(f2.read()).digest()
             if not same:
@@ -363,7 +374,7 @@ def main() -> int:
     with open(target, "w", encoding="utf-8", newline="\n") as f:
         f.write(snapshot)
     open(a.document, "w", encoding="utf-8").write(work_text)
-    if a.binary and os.path.abspath(a.binary) != os.path.abspath(os.path.join(RELEASED, os.path.basename(a.binary))):
+    if a.binary and not _same_file(a.binary, os.path.join(RELEASED, os.path.basename(a.binary))):
         shutil.copy2(a.binary, os.path.join(RELEASED, os.path.basename(a.binary)))
 
     print(f"\n✅ Снапшот: {target} (неизменяем, sha256 {release_hash(snapshot)[:12]}…)")
