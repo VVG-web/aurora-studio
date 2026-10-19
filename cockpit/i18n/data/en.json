@@ -616,7 +616,9 @@
     "контракт движка проекта (ENGINE_API {}) новее, чем у кита ({}): обновите кит {}, а движок проекта понижать не нужно.": "the project's engine contract (ENGINE_API {}) is newer than the kit's ({}): update the kit {}, there is no need to downgrade the project's engine.",
     "обновление движка оборвалось на середине (метка .aurora/state/update.pending) → «Версия» → «Обновить» достроит его; вернуть прежний движок — `kit:update --rollback`": "the engine update was interrupted midway (mark .aurora/state/update.pending) → «Version» → «Update» will finish it; to return the previous engine use `kit:update --rollback`",
     "обновление движка проекта оборвалось на середине: повторите «Версия» → «Применить» или откатите его командой kit:update --rollback.": "the project's engine update was interrupted midway: repeat «Version» → «Apply» or roll it back with kit:update --rollback.",
-    "обновление этого проекта уже идёт — движок подготовится после него": "an update of this project is already running — the engine will be prepared after it"
+    "обновление этого проекта уже идёт — движок подготовится после него": "an update of this project is already running — the engine will be prepared after it",
+    "движок проекта {} новее кита {}: обновите кит (git pull в его папке), а движок проекта понижать не нужно.": "the project's engine {} is newer than kit {}: update the kit (git pull in its folder), there is no need to downgrade the project's engine.",
+    "идёт обновление движка проекта — начните маршрут после него.": "the project's engine is being updated — start the route after it."
   },
   "connectors": {
     "confluence-dc": {

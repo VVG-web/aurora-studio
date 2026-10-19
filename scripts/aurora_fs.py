@@ -229,6 +229,7 @@ def write_json(path, obj, *, indent: "int | None" = 2, **kw) -> None:
 
 # --------------------------------------------------------------------------- чтение состояния
 
+MAX_STATE_BYTES = 64 << 20     # файл состояния больше — не состояние, а мусор: не читаем целиком
 QUARANTINE_AGE = 2.0          # файл моложе (секунд) в карантин не уходит: его может дописывать писатель прежнего кода
 
 
@@ -251,10 +252,24 @@ def _quarantine(path: str, sig) -> str:
         if os.path.exists(dest):
             continue
         try:
-            os.rename(path, dest)
-            return dest
+            os.link(path, dest)              # не затирает уже существующий .corrupt (rename на POSIX затёр бы)
+        except FileExistsError:
+            continue
+        except (OSError, NotImplementedError, AttributeError):
+            try:
+                os.rename(path, dest)        # файловая система без жёстких ссылок
+                return dest
+            except OSError:
+                return ""
+        try:
+            os.unlink(path)
         except OSError:
+            try:
+                os.unlink(dest)              # исходный не убрался (Windows: занят) — копию не оставляем, повтор будет позже
+            except OSError:
+                pass
             return ""
+        return dest
     return ""
 
 
@@ -271,11 +286,16 @@ def _json_type(default, kind):
 def _try_read(path: str, want):
     """Одно чтение: ("ok", данные) | ("missing", None) | ("bad", причина) | ("busy", исключение)."""
     try:
+        st = os.stat(path)
+        if not stat.S_ISREG(st.st_mode):
+            return "busy", OSError("%s — не обычный файл" % path)        # FIFO или устройство: не открываем, не ждём вечно
+        if st.st_size > MAX_STATE_BYTES:
+            return "bad", "слишком большой (%d байт)" % st.st_size
         with open(path, encoding="utf-8-sig") as fh:          # BOM (Блокнот, PowerShell) — не повреждение
             data = json.load(fh)
     except FileNotFoundError:
         return "missing", None
-    except ValueError as e:                                   # JSONDecodeError и UnicodeDecodeError
+    except (ValueError, RecursionError) as e:                 # JSONDecodeError, UnicodeDecodeError, слишком глубокая вложенность
         return "bad", "не разобрался (%s)" % str(e)[:80]
     except OSError as e:
         return "busy", e
@@ -433,6 +453,17 @@ def _unlock(fd: int) -> None:
         pass                              # закрытие дескриптора снимет замок в любом случае
 
 
+def _open_lock_file(path: str, create: bool):
+    """Открыть файл замка. Ссылка не разворачивается (`O_NOFOLLOW`: подложенная ссылка на чужой файл не будет усечена
+    записью описания владельца) и это обязан быть обычный файл; создаётся с правами 0600."""
+    flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | (os.O_CREAT if create else 0)
+    fd = os.open(path, flags, 0o600)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise OSError("файл замка %s — не обычный файл" % path)
+    return fd
+
+
 def _file_id(fd: int, path: str) -> tuple:
     """Кто есть файл замка: (устройство, inode) открытого дескриптора — одно и то же при любых написаниях пути (регистр,
     жёсткая ссылка, смена рабочей папки). Файловая система без inode — по настоящему пути."""
@@ -492,7 +523,7 @@ class FileLock:
         deadline = None if wait is None else time.monotonic() + wait
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         for _ in range(8):                # файл замка могли убрать, пока мы его запирали: открываем заново
-            fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o666)
+            fd = _open_lock_file(self.path, create=True)
             key, got, done = _file_id(fd, self.path), False, False
             try:
                 with _HELD_GUARD:
@@ -617,12 +648,13 @@ def is_locked(path) -> bool:
     проверить, — неблокирующий `acquire` другого процесса в этот миг может получить отказ."""
     path = os.fspath(path)
     try:
-        fd = os.open(path, os.O_RDWR | getattr(os, "O_BINARY", 0))
-    except FileNotFoundError:
-        return False
+        fd = _open_lock_file(path, create=False)
     except OSError:
         try:
-            fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))     # чужой файл только для чтения: flock всё равно работает
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))   # чужой файл только для чтения: flock работает
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                os.close(fd)
+                return False
         except OSError:
             return False
     try:

@@ -34,6 +34,7 @@ cockpit/.running.json.lock
 # Повреждённое состояние панели, отложенное ядром надёжности, и недописанные временные файлы записи (в них — токен)
 cockpit/.running.json.corrupt*
 cockpit/.session.json.corrupt*
+cockpit/.session.json.*
 cockpit/*.aurora-tmp
 
 # Следы прогонов движка внутри самого кита: команды рассчитаны на проект и создают его

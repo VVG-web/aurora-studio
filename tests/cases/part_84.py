@@ -54,7 +54,7 @@ def test_engine_status_answers_with_one_definition_of_behind(tmp: Path):
         ("отличается минор", dict(mark="1.170.0"), "behind_minor"),
         ("числа, а не строки", dict(mark="1.9.0"), "behind_minor"),
         ("метка новее", dict(stamp="1.177.0", mark="1.180.0"), "ahead"),
-        ("штамп новее при старой копии", dict(stamp="1.190.0", mark="1.100.0"), "ahead"),
+        ("штамп новее при старой копии: копия по-прежнему отстала", dict(stamp="1.190.0", mark="1.100.0"), "behind_minor"),
         ("только штамп, старый", dict(stamp="1.150.0"), "behind_minor"),
         ("ни штампа, ни метки", dict(), "unknown"),
         ("проект ведёт ядро сам", dict(mark="1.150.0", ignore=".aurora/scripts/aurora_common.py"), "pinned"),
@@ -62,6 +62,9 @@ def test_engine_status_answers_with_one_definition_of_behind(tmp: Path):
     for n, (label, kw, want) in enumerate(cases):
         st = AC.engine_status(_project(tmp, f"p{n}", **kw), kit, 1)
         assert st["status"] == want, (label, st)
+    stamp_only = AC.engine_status(_project(tmp, "sa", stamp="1.190.0", mark="1.100.0"), kit, 1)
+    assert stamp_only["stamp_ahead"] and "штамп проекта 1.190.0 новее" in stamp_only["stamp_reason"], stamp_only
+    assert not AC.engine_status(_project(tmp, "sb", stamp="1.150.0", mark="1.170.0"), kit, 1)["stamp_ahead"]
     patch = AC.engine_status(_project(tmp, "pp", mark="1.177.0"), "1.177.4", 1)
     assert patch["status"] == "behind_patch" and not patch["blocks"], patch
     assert AC.version_key("1.10.0") > AC.version_key("1.9.0") and AC.version_key("1.2.3+x") == (1, 2, 3)
@@ -70,6 +73,24 @@ def test_engine_status_answers_with_one_definition_of_behind(tmp: Path):
     (root / ".aurora/state/update.pending").write_text('{"from": "1.0.0", "to": "1.177.0"}', encoding="utf-8")
     st = AC.engine_status(root, kit, 1)
     assert st["status"] == "partial" and st["blocks"], st
+    import threading
+    held, release, taken = threading.Event(), threading.Event(), []
+
+    def update_goes_on():
+        lock = importlib.import_module("aurora_fs").FileLock(root / ".aurora/state/update.lock")
+        taken.append(lock.acquire(timeout=5))
+        held.set()
+        release.wait(60)
+        lock.release()
+    t = threading.Thread(target=update_goes_on)
+    t.start()
+    try:
+        assert held.wait(60) and taken == [True]
+        live = AC.engine_status(root, kit, 1)
+        assert live["status"] == "updating" and live["blocks"], "идущее обновление не остановило маршрут"
+    finally:
+        release.set()
+        t.join(60)
 
 
 @test
@@ -89,7 +110,11 @@ def test_engine_status_blocks_by_the_engine_contract_not_by_every_release(tmp: P
     newer_contract = AC.engine_status(_project(tmp, "e", mark="1.190.0", lock={"version": "1.190.0", "engine_api": 3}), "1.177.0", 1)
     assert newer_contract["status"] == "ahead" and newer_contract["blocks"], newer_contract
     plain_ahead = AC.engine_status(_project(tmp, "f", mark="1.190.0"), "1.177.0", 1)
-    assert plain_ahead["status"] == "ahead" and not plain_ahead["blocks"], plain_ahead
+    assert plain_ahead["status"] == "ahead" and plain_ahead["blocks"], "без замка движка прежнее правило минора держит и «новее»"
+    same_minor = AC.engine_status(_project(tmp, "g", mark="1.177.9"), "1.177.0", 1)
+    assert same_minor["status"] == "ahead" and not same_minor["blocks"], same_minor
+    with_lock = AC.engine_status(_project(tmp, "h", mark="1.190.0", lock={"version": "1.190.0", "engine_api": 1}), "1.177.0", 1)
+    assert with_lock["status"] == "ahead" and not with_lock["blocks"], with_lock
 
 
 @test
@@ -114,7 +139,9 @@ def test_the_panel_gate_card_and_update_all_use_the_status(tmp: Path):
         cur = _project(tmp, "cur", stamp="1.177.0", mark="1.177.0")
         assert ck.project_card(str(newer))["behind"] is False and ck.project_card(str(newer))["ahead"] is True
         assert ck.project_card(str(old))["behind"] is True
-        assert ck.version_gap(str(newer)) == "", "проект новее кита остановил маршрут"
+        assert "новее кита" in ck.version_gap(str(newer)), "проект новее кита (без замка движка) должен останавливать, как прежде"
+        newer_locked = _project(tmp, "newer_locked", stamp="1.190.0", mark="1.190.0", lock={"version": "1.190.0", "engine_api": 1})
+        assert ck.version_gap(str(newer_locked)) == "", "проект с замком движка, новее кита, остановил маршрут"
         assert ck.version_gap(str(cur)) == ""
         gap = ck.version_gap(str(old))
         assert "движок проекта 1.170.0" in gap, gap

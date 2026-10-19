@@ -785,7 +785,7 @@ def check_engine(warns: list) -> list:
     if st.get("status") == "partial":
         warns.append("обновление движка оборвалось на середине (метка .aurora/state/update.pending) → «Версия» → "
                      "«Обновить» достроит его; вернуть прежний движок — `kit:update --rollback`")
-    elif st.get("status") == "ahead":
+    elif st.get("status") == "ahead" or st.get("stamp_ahead"):
         warns.append(f"движок или штамп проекта новее кита {st['kit']}: обновите кит (git pull в его папке); "
                      "обновление проекта этим китом движок не понизит")
     if not miss or st["legacy"]:

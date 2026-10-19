@@ -37,8 +37,23 @@ import argparse, difflib, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from aurora_common import (ENGINE_BEHIND, engine_status, kit_engine_api, load_connector_manifest, replace_file,  # noqa: E402
-                           utc_today, version_key, write_text_atomic)  # дата в UTC, одна на движок; запись целиком; манифест коннектора без исключений; версии и статус движка — одно определение
+from aurora_common import load_connector_manifest, replace_file, utc_today, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком; манифест коннектора без исключений
+try:
+    from aurora_common import ENGINE_BEHIND, engine_status, kit_engine_api, version_key  # noqa: E402 — версии и статус движка: одно определение
+except ImportError:
+    # Долгоживущий процесс (панель, запущенная до `git pull` кита) держит в памяти прежний `aurora_common` без этих имён:
+    # модуль импортируется, а то, что без них не обойтись, говорит понятно, а не `ImportError` на импорте.
+    ENGINE_BEHIND = ("behind_minor", "behind_patch")
+
+    def version_key(v) -> tuple:
+        nums = [int(x) for x in re.findall(r"\d+", str(v).split("+")[0])[:3]]
+        return tuple(nums + [0] * (3 - len(nums)))
+
+    def kit_engine_api(kit) -> int:
+        return 1
+
+    def engine_status(*_a, **_k):
+        raise RuntimeError("в памяти aurora_common прежней версии (кит обновлён под работающим процессом): перезапустите панель")
 import folder_guides as FG  # noqa: E402 — описания папок проекта (README.md)
 import engine_txn as ETX  # noqa: E402 — проверка до записи, снимок, метка и откат обновления движка (BL-LCY-07)
 
@@ -656,7 +671,7 @@ def engine_state(target: Path) -> dict:
     пути: ни сети, ни содержимого файлов."""
     kit = kit_version()
     out = {"state": "unknown", "missing": [], "total": 0, "copy": "", "kit": kit, "legacy": False,
-           "status": "unknown", "status_reason": ""}
+           "status": "unknown", "status_reason": "", "stamp_ahead": False}
     if not MANIFEST.is_file():
         return out
     out["copy"] = copy_version(target)
@@ -674,7 +689,8 @@ def engine_state(target: Path) -> dict:
     # «Отстала ли версия» решает единый статус (`aurora_common.engine_status`), а не своё сравнение строк: он же даёт
     # панели, гейту маршрутов, «Обновить все» и доктору один ответ. Оборванное обновление тоже требует обновления.
     es = engine_status(target, kit, kit_engine_api(KIT))
-    out.update(status=es["status"], status_reason=es["reason"])
+    out.update(status=es["status"], status_reason=es["reason"], stamp_ahead=es["stamp_ahead"],
+               stamp_reason=es["stamp_reason"])
     behind = es["status"] in ENGINE_BEHIND or es["status"] == "partial"
     if files and len([m for m in missing if m != KIT_POINTER]) >= len(files):
         out["state"] = "missing"                  # ни одного файла манифеста: движка на машине нет
@@ -721,27 +737,45 @@ def _write_engine_file(dst: Path, text: str) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def apply_engine(target: Path, items: list, gone: list, ver: str, from_ver: str, effects=()) -> dict:
+def check_engine_set(target: Path, items, extra=()) -> list:
+    """Проверка набора файлов движка до записи (`engine_txn.verify_overlay`) → список проблем. `extra` — файлы, которые
+    обновление запишет следом через ссылки (общий движок): они входят в состав после обновления, хотя этим шагом не пишутся."""
+    staged = {rel[len(ENGINE) + 1:]: text for rel, text in list(items) + list(extra)}
+    return ETX.verify_overlay(staged, target / ENGINE / "scripts", {p.stem for p in (KIT / "scripts").glob("*.py")})
+
+
+def apply_engine(target: Path, items: list, gone: list, ver: str, from_ver: str, effects=(), extra=()) -> dict:
     """Положить файлы движка проекта как одну операцию: проверка → снимок → метка → запись → сверка → (при сбое) откат.
 
     `items` — [(путь от корня проекта, новый текст)] под `.aurora/`, `gone` — выведенные файлы к удалению. Скрипты
-    проверяются ДО первой записи (`engine_txn.verify_overlay`): сломанный набор не ляжет в проект и не оставит смешанный
-    движок. Перед записью снимается копия заменяемого и удаляемого (вне проекта, три последних), создаётся метка
-    `update.pending` — её снимает только конец обновления. После записи хеш каждого файла сверяется с проверенным текстом,
-    а скрипты компилируются; расхождение откатывает файлы из снимка. → {ok, stage, problems, backup, restored}."""
+    проверяются ДО первой записи (`check_engine_set`): сломанный набор не ляжет в проект и не оставит смешанный движок.
+    Перед записью снимается копия заменяемого и удаляемого (вне проекта, три последних), создаётся метка
+    `update.pending` — её снимает только конец обновления. Повторный запуск после обрыва продолжает ту же операцию:
+    новый снимок не снимается, прежний дополняется, и откат ведёт к состоянию до первой попытки. После записи хеш каждого
+    файла сверяется с проверенным текстом, а скрипты компилируются; расхождение откатывает файлы из снимка.
+    → {ok, stage (`verify` / `snapshot` — ничего не тронуто; `write` — откат), problems, backup, restored}."""
     res = {"ok": False, "stage": "", "problems": [], "backup": "", "restored": False}
-    staged = {rel[len(ENGINE) + 1:]: text for rel, text in items}
-    kit_modules = {p.stem for p in (KIT / "scripts").glob("*.py")}
-    bad = ETX.verify_overlay(staged, target / ENGINE / "scripts", kit_modules)
+    bad = check_engine_set(target, items, extra)
     if bad:
         return {**res, "stage": "verify", "problems": bad}
     rels = [rel for rel, _t in items] + list(gone) + [ENGINE_MARK, KIT_POINTER, ETX.LOCK_FILE]
     stamp = target / "AuroraKnowledgeDB/meta/aurora_version.txt"
     meta = {"from": from_ver, "to": ver, "effects": list(effects),
             "project_stamp": stamp.read_text(encoding="utf-8").strip() if stamp.is_file() else None}
-    snap = ETX.snapshot(target, rels, meta)
-    res["backup"] = str(snap)
-    ETX.mark_pending(target, {"from": from_ver, "to": ver, "backup": str(snap)})
+    prev = ETX.read_pending(target)
+    snap = ETX.own_snapshot(target, prev.get("backup")) if prev.get("backup") else None
+    try:
+        if snap is not None:
+            ETX.extend_snapshot(target, snap, rels)
+            meta["from"] = ETX.clean(prev.get("from") or from_ver)
+        else:
+            snap = ETX.snapshot(target, rels, meta)
+        res["backup"] = str(snap)
+        ETX.mark_pending(target, {"from": meta["from"], "to": ver, "backup": str(snap)})
+    except OSError as e:
+        # Снимки лежат в `~/.aurora/engine-backups`: домашней папки нет, она только для чтения или диск полон —
+        # обновление не начинается (ни один файл движка не тронут), а не падает трассировкой.
+        return {**res, "stage": "snapshot", "problems": [f"снимок движка не снят ({e}); обновление не начато"]}
     failed = []
     for rel, text in items:
         try:
@@ -817,10 +851,17 @@ def engine_prepare(target: Path, apply: bool = True) -> dict:
                    removed=gone)
         return res
     lock = ETX.update_lock(target)
-    locked = bool(todo or gone) and lock.acquire(blocking=False)
+    try:
+        locked = bool(todo or gone) and lock.acquire(timeout=0.5)
+    except OSError as e:
+        return {**res, "ok": False, "failed": [f"замок обновления не открыт: {e}"]}
     if (todo or gone) and not locked:
         return {**res, "ok": False, "reason": "update_running", "failed": ["обновление этого проекта уже идёт"]}
     try:
+        held = agent_running(target) if (todo or gone) else ""
+        if held:
+            return {**res, "ok": False, "reason": "agent_running", "held": held,
+                    "failed": [f"в проекте идёт прогон агента ({held}): движок подготовится после него"]}
         if todo or gone:
             done = apply_engine(target, [(c.path, c.new_text) for c, _new in todo], gone, kit_version(),
                                 copy_version(target) or "?")
@@ -844,8 +885,11 @@ def engine_prepare(target: Path, apply: bool = True) -> dict:
                 write_text_atomic(target / rel, text + "\n")
             except OSError as e:
                 res["failed"].append(f"{rel}: {e}")
-        if not res["failed"] and not res["ahead"] and not res["shared"]:
-            seal_engine(target, kit_version())            # engine.lock.json и снятая метка; у чужой копии — не объявляем
+        if not res["failed"]:
+            if not res["ahead"] and not res["shared"]:
+                seal_engine(target, kit_version())        # engine.lock.json и снятая метка
+            else:
+                ETX.clear_pending(target)                 # движок положен; замок и метку версии у чужой копии не объявляем
     finally:
         if locked:
             lock.release()
@@ -926,9 +970,9 @@ def run_rollback(target: Path, apply: bool) -> int:
     snap, man = shots[0]
     files = man.get("files") or {}
     restore_n = sum(1 for rec in files.values() if rec.get("existed"))
-    print(f"  снимок {snap.name}: версия до обновления {man.get('from')}, после — {man.get('to')}")
+    print(f"  снимок {snap.name}: версия до обновления {ETX.clean(man.get('from'))}, после — {ETX.clean(man.get('to'))}")
     print(f"  вернётся файлов движка: {restore_n}; уберётся созданных обновлением: {len(files) - restore_n}")
-    effects = man.get("effects") or []
+    effects = [ETX.clean(e, 200) for e in (man.get("effects") if isinstance(man.get("effects"), list) else [])]
     if effects:
         print(f"  Файлы проекта, которые обновление тоже правило ({len(effects)}), в git — откат через git, не отсюда:")
         print("".join(f"     {e}\n" for e in effects[:10]).rstrip("\n"))
@@ -942,14 +986,19 @@ def run_rollback(target: Path, apply: bool) -> int:
         print(f"\n⛔ В проекте идёт прогон агента: {busy}. Откат движка — после него.", file=sys.stderr)
         return 3
     lock = ETX.update_lock(target)
-    if not lock.acquire(blocking=False):
+    try:
+        taken = lock.acquire(timeout=0.5)
+    except OSError as e:
+        print(f"\n⛔ Замок обновления проекта не открыт: {e}", file=sys.stderr)
+        return 5
+    if not taken:
         print("\n⛔ Обновление этого проекта уже идёт. Откат — после него.", file=sys.stderr)
         return 3
     try:
         failed = ETX.restore(target, snap)
         if not failed:
-            if man.get("project_stamp") is not None:
-                stamp_version(target, man["project_stamp"])      # штамп проекта говорит ту версию, что и вернувшийся движок
+            if ETX.version_text(man.get("project_stamp")):
+                stamp_version(target, man["project_stamp"].strip())      # штамп проекта говорит ту версию, что и вернувшийся движок
             ETX.clear_pending(target)
     finally:
         lock.release()
@@ -957,7 +1006,7 @@ def run_rollback(target: Path, apply: bool) -> int:
         print(f"   ⚠️ не вернулось: {line}", file=sys.stderr)
     if failed:
         return 1
-    print(f"\n✅ Движок проекта возвращён к версии {man.get('from')}. Проверьте: в панели `kit:doctor`.")
+    print(f"\n✅ Движок проекта возвращён к версии {ETX.clean(man.get('from'))}. Проверьте: в панели `kit:doctor`.")
     return 0
 
 
@@ -1180,14 +1229,19 @@ def run(target: Path, apply: bool, structure_only: bool = False, allow_downgrade
         # Старый кит поверх нового проекта понизил бы штамп (он едет через git к коллегам) и поставил старый движок на
         # данные новее его: обновление не пишет ничего (даже замка), пока человек не скажет, что откат осознанный.
         st = engine_status(target, kit_version(), kit_engine_api(KIT))
-        if st["status"] == "ahead":
-            print(f"\n⛔ {st['reason']}.\n   Ничего не записано. Обновите кит (git pull в папке кита); осознанный откат "
-                  "кита и движка — `--allow-downgrade`.", file=sys.stderr)
+        if st["status"] == "ahead" or st["stamp_ahead"]:
+            print(f"\n⛔ {st['reason'] if st['status'] == 'ahead' else st['stamp_reason']}.\n   Ничего не записано. Обновите кит "
+                  "(git pull в папке кита); осознанный откат кита и движка — `--allow-downgrade`.", file=sys.stderr)
             return 4
     if not apply or structure_only or not (target / "AuroraKnowledgeDB").is_dir():
         return _run(target, apply, structure_only, allow_downgrade)
     lock = ETX.update_lock(target)
-    if not lock.acquire(blocking=False):
+    try:
+        taken = lock.acquire(timeout=0.5)
+    except OSError as e:
+        print(f"\n⛔ Замок обновления проекта не открыт: {e}", file=sys.stderr)
+        return 5
+    if not taken:
         print("\n⛔ Обновление этого проекта уже идёт (другая панель, Cron или терминал). Повторите после него.",
               file=sys.stderr)
         return 3
@@ -1209,11 +1263,12 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
         print(f"  update_ignore: {len(ignored)} правил — эти пути проект ведёт сам")
     print(f"  проект: {f['name']} (slug {f['slug']}) · версия {pv} → kit {kv}\n")
     st = engine_status(target, kv, kit_engine_api(KIT))
-    if st["status"] == "ahead":                     # запись без `--allow-downgrade` отклонена раньше, в `run`
+    if st["status"] == "ahead" or st["stamp_ahead"]:    # запись без `--allow-downgrade` отклонена раньше, в `run`
+        why = st["reason"] if st["status"] == "ahead" else st["stamp_reason"]
         if not apply:
-            print(f"⚠️  {st['reason']}. `--apply` откажет без `--allow-downgrade`.\n")
+            print(f"⚠️  {why}. `--apply` откажет без `--allow-downgrade`.\n")
         else:
-            print(f"⚠️  {st['reason']}. Понижение разрешено флагом --allow-downgrade.\n")
+            print(f"⚠️  {why}. Понижение разрешено флагом --allow-downgrade.\n")
 
     new_dirs = missing_dirs(target)
     if new_dirs:
@@ -1322,17 +1377,26 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
     if catalog:
         print(f"\nКарточки базы — каталог типов будет пересобран: {CATALOG_REL}")
 
+    # Файлы движка (`.aurora/`) кладутся одной операцией (`apply_engine`): проверка до записи, снимок, метка, сверка.
+    # Движок в прежней `.opencode/` (переезд) и пути через ссылки — прежним порядком, без снимка (но в проверке набора
+    # их тексты участвуют: общий файл будет перезаписан следом).
+    engine_items, gone, linked_items = [], [], []
+    if not moving:
+        for c in writes:
+            if not c.path.startswith(ENGINE + "/"):
+                continue
+            if not c.external and ".." not in Path(c.path).parts and _linkless(target, c.path):
+                engine_items.append((c.path, c.new_text))
+            else:
+                linked_items.append((c.path, c.new_text))
+        gone = [r_ for r_ in retired if r_.startswith(ENGINE + "/") and _linkless(target, r_)]
     if not apply:
+        bad = check_engine_set(target, engine_items, linked_items) if engine_items else []
+        if bad:
+            print("\n⚠️  Новый набор файлов движка не пройдёт проверку до записи — `--apply` откажет (код 5):")
+            print("\n".join(f"   - {line}" for line in bad[:10]))
         print("\n(dry-run) Ничего не записано. Повторите с --apply, чтобы применить.")
         return 0
-
-    # Файлы движка (`.aurora/`) кладутся одной операцией (`apply_engine`): проверка до записи, снимок, метка, сверка.
-    # Движок в прежней `.opencode/` (переезд) и пути через ссылки — прежним порядком, без снимка.
-    engine_items, gone = [], []
-    if not moving:
-        engine_items = [(c.path, c.new_text) for c in writes if c.path.startswith(ENGINE + "/") and not c.external
-                        and ".." not in Path(c.path).parts and _linkless(target, c.path)]
-        gone = [r_ for r_ in retired if r_.startswith(ENGINE + "/") and _linkless(target, r_)]
     busy = agent_running(target) if (moving or engine_items or gone) else ""
     if busy:
         # Переезд и замена скриптов перекладывают движок из-под работающего агента: один прогон двумя версиями — худшее.
@@ -1341,20 +1405,26 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
         return 3
     prev = ETX.read_pending(target)         # замок обновления держим мы сами: метка — след прежнего, оборванного запуска
     if prev:
-        print(f"\n⚠️  Прошлое обновление движка ({prev.get('from')} → {prev.get('to')}) оборвалось на середине: "
+        print(f"\n⚠️  Прошлое обновление движка ({ETX.clean(prev.get('from'))} → {ETX.clean(prev.get('to'))}) оборвалось на середине: "
               "достраиваю. Откатить к состоянию до него — `update --rollback`.")
     if engine_items or gone:
         effects = [c.path for c in writes + seeds if not c.path.startswith(ENGINE + "/")] \
             + [r_ for r_ in retired if not r_.startswith(ENGINE + "/")]
-        done = apply_engine(target, engine_items, gone, kv, pv, effects)
+        effects += ["aurora.config.yaml, .gitignore, .gitattributes, хук git, описания папок, каталог типов карточек "
+                    "(те из них, что обновление изменило)"]
+        done = apply_engine(target, engine_items, gone, kv, pv, effects, linked_items)
         if not done["ok"]:
-            print(f"\n⛔ Движок проекта не обновлён ({'проверка до записи' if done['stage'] == 'verify' else 'запись'}): "
-                  + ("проект не тронут." if done["stage"] == "verify" else
+            untouched = done["stage"] in ("verify", "snapshot")
+            print(f"\n⛔ Движок проекта не обновлён ({'проверка до записи' if done['stage'] == 'verify' else 'снимок' if done['stage'] == 'snapshot' else 'запись'}): "
+                  + ("проект не тронут." if untouched else
                      ("файлы возвращены из снимка." if done["restored"] else
                       "откат неполный — `update --rollback`.")), file=sys.stderr)
             for line in done["problems"][:20]:
                 print(f"   - {line}", file=sys.stderr)
-            return 5 if done["stage"] == "verify" else 6
+            if done["stage"] == "verify" and _ignored(ENGINE + "/scripts/aurora_common.py", ignored):
+                print("   Ядро (aurora_common.py) закреплено в aurora.update_ignore.txt и не обновляется, а новые скрипты "
+                      "ждут его новых имён: уберите строку из update_ignore или обновите своё ядро сами.", file=sys.stderr)
+            return 5 if untouched else 6
     engine_done = {rel for rel, _t in engine_items}
     failed = relayout_moves(target, rp) if moving else []
     rewritten = relayout_rewrite(target)
@@ -1463,11 +1533,11 @@ def main():
                       help="Вернуть движок проекта (.aurora/) к состоянию до последнего обновления из снимка; "
                            "без --apply — только просмотр")
     a = ap.parse_args()
+    target = Path(a.target).expanduser().resolve()
+    if a.rollback:                                  # откату нужны снимки в ~/.aurora, а не кит
+        return run_rollback(target, a.apply)
     if not kit_is_reachable():
         return 2
-    target = Path(a.target).expanduser().resolve()
-    if a.rollback:
-        return run_rollback(target, a.apply)
     if a.engine_only:
         return run_engine_only(target, a.apply)
     return run(target, a.apply, a.structure_only, a.allow_downgrade)
