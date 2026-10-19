@@ -3,6 +3,7 @@
   "version": 1,
   "commands": {
     "kit:doctor": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
+    "kit:paths": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "kit:hooks": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "kit:remap-sources": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "kit:update": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
