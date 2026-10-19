@@ -357,8 +357,9 @@ def main() -> int:
     ap.add_argument("path", help="файл из Artifacts/ или Deliverables/")
     ap.add_argument("--parent", help="page_id родителя для новой страницы (либо ссылка на неё); без него — "
                     "publish_parent из шапки документа, затем confluence.publish_parent из конфига")
-    ap.add_argument("--allow", action="append", default=[], metavar="КОД", choices=sorted(GATE_CODES),
-                    help="снять блокировку предохранителя выходных команд (КОД назван в его сообщении)")
+    ap.add_argument("--allow", action="append", default=[], metavar="КОД", choices=sorted(GATE_CODES) + ["review"],
+                    help="снять блокировку предохранителя выходных команд (КОД назван в его сообщении); "
+                         "review — опубликовать без свежего ревью (обход записывается в шапку)")
     ap.add_argument("--title", help="заголовок страницы (по умолчанию — H1 или имя файла)")
     ap.add_argument("--force", action="store_true",
                     help="перезаписать страницу, которую правили после вашей публикации")
@@ -366,8 +367,6 @@ def main() -> int:
                     help="взять под управление существующую страницу с таким заголовком")
     ap.add_argument("--apply", action="store_true",
                     help="отправить в Confluence (иначе только предпросмотр)")
-    ap.add_argument("--allow", action="append", default=[], choices=["review"],
-                    help="обойти ворота: review — опубликовать без свежего ревью (обход записывается в шапку)")
     a = ap.parse_args()
 
     path = a.path
