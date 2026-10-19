@@ -389,7 +389,8 @@ def plan_lock(vpy, spec: str, days: float, now: float = 0.0, binary_only: bool =
 
 
 def _lock_text(items: list, days: float, now: float = 0.0, wheels: bool = False) -> str:
-    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now or _now()))
+    from aurora_common import utc_slug
+    stamp = utc_slug("%Y-%m-%dT%H:%M:%S", now or _now())
     # заголовок только ASCII: pip читает файл в кодировке локали
     head = [f"# Aurora extras install snapshot {stamp}",
             f"# release wait: {days:g} days; python {sys.version_info[0]}.{sys.version_info[1]}"
@@ -408,7 +409,8 @@ def save_lock(extra_id: str, text: str, kind: str = "install") -> Path:
     """Положить снимок в `~/.aurora/locks/<надстройка>/` (только владельцу), лишние старые убрать."""
     folder = LOCKS / extra_id
     folder.mkdir(parents=True, exist_ok=True)
-    base = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    from aurora_common import utc_slug
+    base = utc_slug("%Y%m%dT%H%M%S")
     # номер внутри секунды: имена сортируются по времени, а не по виду снимка; берём следующий за наибольшим,
     # а не первый свободный — иначе место прибранного старого снимка занял бы новый и встал бы в хвост
     taken = [int(m.group(1)) for f in folder.glob(f"{base}-*.txt")
