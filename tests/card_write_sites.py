@@ -7,7 +7,8 @@
 
 Как считается. По AST обходятся все `.py` под `scripts/`, `cockpit/` (кроме `vendor/`), `reports/` и `aurora.py`;
 место записи — функция, в теле которой есть вызов, пишущий файл: `open(…)` с режимом записи (режим не литералом
-считается записью), `.write_text`, `.write_bytes`, `write_if_changed`, `replace_file`, `write_text_atomic`,
+считается записью), `.write_text`, `.write_bytes`, `write_if_changed`, `replace_file`, `write_text_atomic`, `write_atomic`
+(ядро надёжности `aurora_fs`), `write_json`,
 `os.rename`/`os.replace`/`os.truncate`, `os.open` с флагами записи, `shutil.move`/`copy*` (`copyfile`, `copy2`, `copytree`
 и под именем без модуля после `from … import`). Ключ места — `файл:функция` (вложенная — `внешняя.вложенная`, метод — `Класс.метод`); на месте
 записано и число вызовов записи в нём (`calls`): новый вызов в уже названной функции — тоже новое место.
@@ -44,7 +45,8 @@ SKIP_PARTS = ("__pycache__", "vendor")
 KINDS = ("card", "other")
 
 # Вызовы по имени (`write_if_changed(...)`, `aurora_common.replace_file(...)`, а после `from shutil import move` — `move(...)`).
-WRITE_FUNCS = frozenset(("write_if_changed", "replace_file", "write_text_atomic", "copyfile", "copy2", "copytree"))
+WRITE_FUNCS = frozenset(("write_if_changed", "replace_file", "write_text_atomic", "write_atomic", "write_json",
+                         "copyfile", "copy2", "copytree"))
 # Методы и функции модулей, которые пишут или переносят файл. Голый `.rename(` не считается: так называется и метод
 # планировщика ремонта (`Plan.rename`), а перенос файла по-настоящему — `os.rename`/`shutil.move`.
 WRITE_ATTRS = frozenset(("write_text", "write_bytes"))
@@ -94,7 +96,8 @@ def is_write_call(call: ast.Call) -> bool:
             return True
         return fn.id == "open" and _opens_for_writing(call)
     if isinstance(fn, ast.Attribute):
-        if fn.attr in WRITE_ATTRS or fn.attr in ("write_if_changed", "replace_file", "write_text_atomic"):
+        if fn.attr in WRITE_ATTRS or fn.attr in ("write_if_changed", "replace_file", "write_text_atomic", "write_atomic",
+                                                  "write_json"):
             return True
         if _dotted(fn) == "os.open":                       # os.open(путь, флаги): пишет, если среди флагов есть запись
             return len(call.args) > 1 and any(f in ast.unparse(call.args[1]) for f in OS_WRITE_FLAGS)

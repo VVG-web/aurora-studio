@@ -314,7 +314,7 @@
   "scripts/aurora_common.py:write_text_atomic": {
    "kind": "other",
    "reason": "общая атомарная запись файла проекта; карточку через неё не пишут",
-   "calls": 2
+   "calls": 1
   },
   "scripts/aurora_extras.py:_install": {
    "kind": "other",
@@ -344,6 +344,26 @@
   "scripts/aurora_extras.py:save_lock": {
    "kind": "other",
    "reason": "снимок установки надстройки в ~/.aurora/locks (вне базы знаний)",
+   "calls": 1
+  },
+  "scripts/aurora_fs.py:_quarantine": {
+   "kind": "other",
+   "reason": "перенос повреждённого файла состояния в .corrupt; карточек не касается",
+   "calls": 1
+  },
+  "scripts/aurora_fs.py:replace_file": {
+   "kind": "other",
+   "reason": "ядро надёжности: подмена файла с повтором на Windows; сама карточек не пишет",
+   "calls": 1
+  },
+  "scripts/aurora_fs.py:write_atomic": {
+   "kind": "other",
+   "reason": "ядро надёжности: временный файл, fsync и подмена; карточки пишет только card_types.write_card_text",
+   "calls": 2
+  },
+  "scripts/aurora_fs.py:write_json": {
+   "kind": "other",
+   "reason": "ядро надёжности: JSON-состояние через write_atomic; карточек не пишет",
    "calls": 1
   },
   "scripts/aurora_hooks.py:_install_push_hook": {
@@ -459,12 +479,22 @@
   "scripts/card_types.py:_write_text_exact": {
    "kind": "other",
    "reason": "конфиг проекта (блок cards:), не карточка",
-   "calls": 2
+   "calls": 1
+  },
+  "scripts/card_types.py:put_text": {
+   "kind": "other",
+   "reason": "служебный файл базы (не карточка) через атомарную запись; карточку отправляет во вход шаблонов",
+   "calls": 1
   },
   "scripts/card_types.py:write_atomic": {
    "kind": "other",
    "reason": "сам вход записи карточки: временный файл и подмена; через него пишут все карточки",
-   "calls": 2
+   "calls": 1
+  },
+  "scripts/card_types.py:write_card_text": {
+   "kind": "other",
+   "reason": "сам единственный вход записи карточки: проверка по шаблону и атомарная запись",
+   "calls": 1
   },
   "scripts/card_types.py:write_catalog": {
    "kind": "other",
