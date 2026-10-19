@@ -6846,7 +6846,7 @@ def run_decide(cfg: dict, cwd: str, source: str, topic: str, owner: str, affects
         rule=UNTRUSTED_RULE, label=decide_clean(label, 160),
         topic=(f"\nТема, заданная человеком: {decide_clean(topic, 200)}\n" if topic.strip() else ""),
         source=untrusted(text, "источник решения: " + decide_clean(label, 160)))
-    r = call(cfg, "planner", [{"role": "user", "content": prompt}], deadline=time.time() + cfg["request_timeout"])
+    r = call(cfg, "planner", [{"role": "user", "content": prompt}], deadline=time.time() + AG.call_budget(cfg, "planner"))
     if not r["ok"]:
         return {"ok": False, "why": "модель не ответила: " + model_fail_note(r)}
     ans = parse_json(r["text"])
