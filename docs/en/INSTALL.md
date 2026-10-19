@@ -35,9 +35,10 @@ section of the panel — it names which commands do not work without it.
 **Versions are pinned.** The kit installs `beautifulsoup4` and `markdownify` in exactly the versions named in
 `requirements.txt`: mirrors are compared byte for byte, and a different page-parsing version writes different
 Markdown (`kit:doctor` warns about a mismatch). Add-ons (Pydantic AI, graphify) are not installed as "whatever came
-out an hour ago": the package set is resolved first, releases younger than seven days are dropped, exactly that set
-is installed by hash, and a snapshot of the installation stays in `~/.aurora/locks/` — the venv rolls back to it as a
-whole if the new version fails the compatibility check. For the other packages of the "Install" list the panel takes
+out an hour ago": the package set is resolved first, the add-on itself is no younger than seven days (pip picks its
+dependencies), exactly that set is installed by hash, and a snapshot of the installation stays in `~/.aurora/locks/` —
+the venv rolls back to it as a whole if the new version fails the compatibility check. The wait is soft: if it cannot be
+applied the installation goes on without it and the log says "the dependency wait was not applied". For the other packages of the "Install" list the panel takes
 a release no newer than a week — that covers the package itself; pip picks its dependencies (a hashed set is resolved
 for add-ons only). Nothing has to be configured or confirmed for the wait or the hashes.
 

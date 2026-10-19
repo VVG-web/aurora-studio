@@ -16,9 +16,10 @@
 видит, что вышло. Ставится она через pip с PyPI; если PyPI от git отстаёт, статус
 называет обе версии честно.
 
-Установка не берёт «что вышло час назад»: набор пакетов решается заранее, выпуски моложе
-`QUARANTINE_DAYS` суток отбрасываются, ставится ровно решённый набор по хешам, и его снимок
-остаётся в `~/.aurora/locks/` — по нему venv откатывается целиком (BL-SEC-21).
+Установка не берёт «что вышло час назад»: набор пакетов решается заранее, сама надстройка
+не моложе `QUARANTINE_DAYS` суток (её зависимости выбирает pip), ставится ровно решённый набор по хешам, и его
+снимок остаётся в `~/.aurora/locks/` — по нему venv откатывается целиком (BL-SEC-21). Пауза мягкая: нельзя
+применить — ставится без неё, и об этом сказано в журнале и в итоге.
 
 Панель: «Установка» → «Надстройки движка» (кнопки «Установить» / «Обновить»).
 """
@@ -236,9 +237,11 @@ def check_compat(version: str) -> dict:
 #
 # Раньше `install()` делал `pip install --upgrade <пакет>`: что вышло час назад на PyPI, то и попадало в venv вместе
 # со всем деревом зависимостей, без хешей и без паузы, а откат возвращал один верхний пакет. Теперь установка идёт
-# в три шага: (1) pip только РЕШАЕТ набор (`--dry-run --report`), (2) каждый пакет набора, выпущенный моложе
-# `QUARANTINE_DAYS`, запрещается (`имя<версия`) и набор решается заново, (3) ставится ровно решённый набор из файла
-# с хешами (`--require-hashes --no-deps`). Этот файл — снимок установки: по нему откатывается venv целиком.
+# в три шага: (1) pip только РЕШАЕТ набор (`--dry-run --report`), (2) прямой пакет, выпущенный моложе
+# `QUARANTINE_DAYS`, запрещается (`имя<версия`) и набор решается заново (зависимости выбирает pip: у дерева из десятков
+# пакетов всегда есть вчерашний выпуск, и пауза на всех сделала бы установку невозможной; нельзя применить — набор решается
+# без паузы, с заметной строкой), (3) ставится ровно решённый набор из файла с хешами (`--require-hashes --no-deps`).
+# Этот файл — снимок установки: по нему откатывается venv целиком.
 
 def _now() -> float:
     return time.time()
@@ -331,14 +334,35 @@ _NET_TROUBLE = re.compile(r"(?i)\bretrying \(|connection (?:error|broken|aborted
                           r"network is unreachable|max retries")
 
 
-def plan_lock(vpy, spec: str, days: float, now: float = 0.0, binary_only: bool = True, log=None) -> tuple:
-    """Решить набор пакетов для `spec` без выпусков моложе `days` суток. → (текст снимка, "") либо ("", причина).
+def _direct_names(spec: str) -> set:
+    """Имена пакетов, которые названы в `spec` прямо (`graphifyy[mcp] tree-sitter-sql` → graphifyy, tree-sitter-sql)."""
+    out = set()
+    for token in spec.split():
+        m = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", token)
+        if m:
+            out.add(re.sub(r"[-_.]+", "-", m.group(0)).casefold())
+    return out
 
-    Слишком свежий пакет запрещается ограничением `имя<версия`, и pip решает набор заново: если нужному
-    свежему выпуску есть замена постарше, получится набор из старых; нет — отказ с названием пакета.
+
+def plan_lock(vpy, spec: str, days: float, now: float = 0.0, binary_only: bool = True, log=None) -> tuple:
+    """Решить набор пакетов для `spec`; пауза в `days` суток — для пакетов, названных в `spec`. → (текст снимка, "") либо ("", причина).
+
+    Пауза мягкая. Слишком свежий прямой пакет запрещается ограничением `имя<версия`, и pip решает набор заново: если
+    у него есть замена постарше, получится набор из старых. Зависимости этих пакетов выбирает pip и в паузу не входят
+    (у дерева из десятков пакетов всегда есть выпуск вчерашний: с паузой на всех установка была бы невозможна); они
+    ставятся по хешам. Если паузу применить нельзя (нет старой замены, набор не решается с ограничением, PyPI не
+    сказал возраст), набор решается без неё, а в `log` стоит строка «пауза зависимостей не применена»: отказ только
+    когда не вышло и без паузы.
     Набор решается только по готовым колёсам (`--only-binary=:all:`): сборка пакета из исходников исполняет его код
     ещё до проверки возраста. Колеса нет — один повтор без этого запрета, но не при обрыве связи; в `log` сказано,
     какие пакеты пойдут из исходников (их сборка исполняет чужой код: версия и хеш при этом проверены так же)."""
+    direct = _direct_names(spec)
+
+    def soft(reason: str) -> tuple:
+        if log is not None:
+            log.append(f"⚠️ пауза зависимостей не применена: {reason}; ставлю без паузы")
+        return plan_lock(vpy, spec, 0, now, binary_only, log)
+
     work = tempfile.mkdtemp(prefix="aurora-extras-")
     bans, ages = {}, {}
     try:
@@ -361,6 +385,8 @@ def plan_lock(vpy, spec: str, days: float, now: float = 0.0, binary_only: bool =
                     if log is not None:
                         log.append("у какого-то пакета нет готового колеса — набор решаю ещё раз, разрешив сборку из исходников")
                     return plan_lock(vpy, spec, days, now, False, log)   # у какого-то пакета нет колеса — один повтор
+                if bans and not _NET_TROUBLE.search(said):
+                    return soft("набор с ограничением по возрасту не решается (" + (said.strip()[-120:] or "pip не ответил") + ")")
                 return "", ((p.stderr or p.stdout or "pip не ответил")[-300:]).strip()
             try:
                 items = _report_items(report)
@@ -370,21 +396,22 @@ def plan_lock(vpy, spec: str, days: float, now: float = 0.0, binary_only: bool =
             if blocked:
                 return "", f"в наборе пакет {blocked[0]}, который в надстройки не вводится (цепочка поставок)"
             young = []
-            if days:
+            if days and direct:
                 from concurrent.futures import ThreadPoolExecutor
-                todo = [it for it in items if (it["name"], it["version"]) not in ages]
+                mine = [it for it in items if it["name"] in direct]
+                todo = [it for it in mine if (it["name"], it["version"]) not in ages]
                 try:
                     with ThreadPoolExecutor(max_workers=8) as pool:
                         for it, age in zip(todo, pool.map(lambda i: release_age_days(
                                 i["name"], i["version"], i["sha256"], now), todo)):
                             ages[(it["name"], it["version"])] = age
-                except Exception as e:                     # noqa: BLE001 — сеть, ответ PyPI: возраст не узнать — не ставим
-                    return "", f"не удалось узнать возраст выпусков на PyPI ({str(e)[:100] or type(e).__name__})"
-                unknown = [it for it in items if ages.get((it["name"], it["version"])) is None
+                except Exception as e:                     # noqa: BLE001 — сеть, ответ PyPI: возраст не узнать
+                    return soft(f"не удалось узнать возраст выпусков на PyPI ({str(e)[:100] or type(e).__name__})")
+                unknown = [it for it in mine if ages.get((it["name"], it["version"])) is None
                            and "files.pythonhosted.org" in it.get("url", "")]
-                if unknown:        # файл с pythonhosted.org, а PyPI о выпуске молчит: возраст неизвестен — не ставим
-                    return "", f"PyPI не знает выпуска {unknown[0]['name']} {unknown[0]['version']} — возраст неизвестен"
-                young = [it for it in items
+                if unknown:        # файл с pythonhosted.org, а PyPI о выпуске молчит: возраст неизвестен
+                    return soft(f"PyPI не знает выпуска {unknown[0]['name']} {unknown[0]['version']} — возраст неизвестен")
+                young = [it for it in mine
                          if ages.get((it["name"], it["version"])) is not None
                          and ages[(it["name"], it["version"])] < days]
             if not young:
@@ -392,12 +419,16 @@ def plan_lock(vpy, spec: str, days: float, now: float = 0.0, binary_only: bool =
                     src = [it["name"] for it in items if not str(it.get("url", "")).endswith(".whl")]
                     if src:
                         log.append("из исходников соберутся: " + ", ".join(src[:8]) + " (сборка исполняет код пакета)")
+                if log is not None and days:
+                    rest = len([it for it in items if it["name"] not in direct])
+                    if rest:
+                        log.append(f"зависимости ({rest}) выбирает pip: пауза в {days:g} сут. на них не распространяется, "
+                                   "они ставятся по хешам")
                 return _lock_text(items, days, now, all(it.get("url", "").endswith(".whl") for it in items)), ""
             for it in young:
                 bans[it["name"]] = it["version"]
         names = ", ".join(f"{n} {v}" for n, v in sorted(bans.items())[:6])
-        return "", (f"не удалось собрать набор без выпусков моложе {days:g} сут. за {RESOLVE_ROUNDS} проходов "
-                    f"(мешают: {names}) — повторите позже")
+        return soft(f"не нашлось набора без выпусков моложе {days:g} сут. за {RESOLVE_ROUNDS} проходов (мешают: {names})")
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -671,8 +702,11 @@ def _install(extra_id: str, quarantine_days=None) -> dict:
             res["lock"] = save_lock(extra_id, chosen).name
         except OSError as e:
             log.append(f"снимок установки не сохранён: {e}")
-    log.append(f"✅ {ex['title']} {res['version']}" if ok else
-               ("" if res.get("error") else "установка не удалась"))
+    skipped = next((x for x in log if x.startswith("⚠️ пауза зависимостей не применена")), "")
+    if skipped:         # пауза мягкая: установка прошла без неё, и об этом сказано в итоге, а не только в середине журнала
+        res["pause_skipped"] = skipped.partition(": ")[2]
+    log.append((f"✅ {ex['title']} {res['version']}" + (" — пауза зависимостей не применена (причина выше)" if skipped else ""))
+               if ok else ("" if res.get("error") else "установка не удалась"))
     if ok and extra_id == "graphify":
         why = register_graph_mcp()
         res["mcp"] = not why
