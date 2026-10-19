@@ -859,7 +859,7 @@
   "scripts/review_run.py:stamp_review": {
    "kind": "other",
    "reason": "шапка собственного артефакта (Artifacts/, Deliverables/work/) с итогом ревью: не карточка базы",
-   "calls": 1
+   "calls": 2
   },
   "scripts/review_run.py:summarize": {
    "kind": "other",

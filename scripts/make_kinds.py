@@ -66,6 +66,12 @@ FIELDS = ("title", "template", "prompt", "out", "publish_url", "mcp", "tech_agno
 # алгоритм; пусто — ревью не требуется). Ворота `ship:publish` пускают наружу только артефакт со свежим ревью
 # «готова к передаче» (`make:review-auto --file … --apply`); обход — `--allow review`, он записывается.
 REVIEW_PROFILES = ("us", "alg")
+
+
+def review_profile(rec: dict) -> str:
+    """Профиль ревью вида, как его записал человек: без комментария в конце строки, любым регистром. Пусто — нет или негоден."""
+    value = re.sub(r"\s+#.*$", "", str((rec or {}).get("review") or "")).strip().lower()
+    return value if value in REVIEW_PROFILES else ""
 # `ref_mask` — маска ключа Requirement Yogi для этого вида: `<СТРАНА>.<ПРОЕКТ>.US-x.x.x` (`<имя>` — любой сегмент, `x` —
 # число). Аврора ключ не выдаёт — его заводит реестр Requirement Yogi; она кладёт найденный по маске ключ в паспорт
 # артефакта непрозрачным значением (`ref_key`) и называет ключи, похожие на ключи вида, но не по маске (`kb:lint`).
@@ -162,7 +168,7 @@ def check(root: str, kinds: dict) -> list:
             bad.append((kind, out_problem(out)))
         elif not os.path.isdir(os.path.join(root, out)):
             bad.append((kind, f"папки результата нет: {out}/"))
-        review = (rec.get("review") or "").strip()
+        review = re.sub(r"\s+#.*$", "", (rec.get("review") or "")).strip().lower()
         if review and review not in REVIEW_PROFILES:
             bad.append((kind, f"ревью «{review}»: профили — {', '.join(REVIEW_PROFILES)} или пусто"))
         mask_why = _mask_problem(rec.get("ref_mask") or "")
@@ -204,8 +210,8 @@ def main() -> int:
         if (rec.get("ref_mask") or "").strip() and not _mask_problem(rec["ref_mask"]):
             print(f"Ключ Requirement Yogi вида: маска `{rec['ref_mask'].strip()}` — ключ (например, в строке «Код» истории) "
                   "заводит реестр, не ассистент; не выдумывайте номер, а оставьте место под ключ")
-        if (rec.get("review") or "").strip() in REVIEW_PROFILES:
-            print(f"Ревью перед публикацией: профиль {rec['review']} — `make:review-auto --file <файл> --apply`; "
+        if review_profile(rec):
+            print(f"Ревью перед публикацией: профиль {review_profile(rec)} — `make:review-auto --file <файл> --apply`; "
                   "без свежего ревью «готова к передаче» `ship:publish` не пустит")
         if str(rec.get("tech_agnostic", "")).strip().lower() in ("true", "да", "yes", "1"):
             print("\nБез технологий: критерии этого вида пишутся в терминах поведения и "

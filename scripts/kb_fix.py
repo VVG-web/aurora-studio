@@ -1540,6 +1540,11 @@ def plan_stale_stubs(cards: dict, plan: Plan, root: str) -> list:
             base = plan.file_writes.get(path, c.text)
             new = rewrite_links(base, unlink)
             if new != base:
+                try:
+                    import kb_decide as KD
+                    new = KD.reseal(base, new, "ссылка на заготовку снята (kb:repair)")   # принятое решение остаётся запечатанным
+                except ImportError:
+                    pass
                 plan.write(path, new)
     return gone
 

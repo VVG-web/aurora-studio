@@ -55,7 +55,7 @@ def coverage(root: str = ".", req_types=("REQ",)) -> dict:
     g.read_confluence(os.path.join(root, G.CONF_DIR))
     types = {t.upper() for t in req_types}
     reqs = {k: rel for k, rel in g.owner.items() if G.ry_type(k) in types}
-    stories = {rel: p for rel, p in g.pages.items() if p["kind"] == "US" and p["story"]}
+    stories = {rel: p for rel, p in g.pages.items() if p["kind"] == G.KIND_STORY and p["story"]}
     hubs = g.stories()
     linked_by: dict = {}
     no_requirement, dangling = [], {}
@@ -69,7 +69,7 @@ def coverage(root: str = ".", req_types=("REQ",)) -> dict:
                 dangling.setdefault(k, []).append(rel)
     without_story = sorted(k for k in reqs if k not in linked_by)
     without_ac = sorted(k for k in reqs if k in linked_by and not any(
-        hubs.get(stories[rel]["story"], {}).get("ac") for rel in linked_by[k]))
+        G.criteria_of(hubs, stories[rel]["story"]) for rel in linked_by[k]))
     return {"requirements": len(reqs), "stories": len(stories),
             "with_story": len(reqs) - len(without_story), "with_ac": len(reqs) - len(without_story) - len(without_ac),
             "gaps": {"story_without_requirement": [{"page": r, "title": stories[r]["title"]} for r in no_requirement],
@@ -83,9 +83,8 @@ def wave(root: str, key: str, req_types=("REQ",)) -> dict:
     g = G.Graph()
     g.read_confluence(os.path.join(root, G.CONF_DIR))
     hubs = g.stories()
-    stories = [rel for rel, p in sorted(g.pages.items()) if p["kind"] == "US" and key in p["links"]]
-    criteria = sorted({ac for rel in stories for ac in hubs.get(g.pages[rel]["story"], {}).get("ac", [])})
-    last = re.sub(r"^(?:[A-Za-z]+\.)+(?=[A-Za-z]+-\d)", "", key)        # RU.PRJ.REQ-010 → REQ-010
+    stories = [rel for rel, p in sorted(g.pages.items()) if p["kind"] == G.KIND_STORY and key in p["links"]]
+    criteria = sorted({ac for rel in stories for ac in G.criteria_of(hubs, g.pages[rel]["story"])})
     artifacts = []
     base = os.path.join(root, "Artifacts")
     for dirpath, dirs, files in (safe_walk(base) if os.path.isdir(base) else []):
@@ -102,7 +101,7 @@ def wave(root: str, key: str, req_types=("REQ",)) -> dict:
             fm = frontmatter(text)
             passport = [x.strip(" \"'[]") for field in ("implements", "ref_key", "parent", "covers")
                         for x in str(fm.get(field) or "").split(",")]
-            how = ("паспорт" if key in passport or last in passport else
+            how = ("паспорт" if key in passport else
                    "текст" if re.search(r"(?<![\w.\-])" + re.escape(key) + r"(?![\w]|[.\-]\d)", clean_copy(md_body(text))) else "")
             if how:
                 artifacts.append({"path": os.path.relpath(path, root).replace("\\", "/"), "how": how})
@@ -162,7 +161,7 @@ def main() -> int:
     ap.add_argument("--json", action="store_true", help="машинный вывод")
     a = ap.parse_args()
     if not os.path.isdir(G.CONF_DIR):
-        print(f"kb_coverage: нет {G.CONF_DIR}/ — запускайте из корня проекта с зеркалом Confluence (sync:confluence)",
+        print(f"kb_coverage: нет {G.CONF_DIR}/ — запускайте из корня проекта с зеркалом вики",
               file=sys.stderr)
         return 2
     types = [t.strip() for t in a.req_types.split(",") if t.strip()] or ["REQ"]

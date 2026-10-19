@@ -854,6 +854,7 @@
   "word.index_behind": "Tables of contents behind the base",
   "word.golden_orphan": "Golden questions without a source card",
   "word.dup_alias": "Identical aliases on different cards",
+  "word.decision_changed": "Accepted decisions that were edited",
   "word.no_links": "Cards without links",
   "word.header_leak": "Header field leaked into the card body",
   "word.bad_status": "Status outside the scale",

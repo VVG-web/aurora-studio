@@ -39,6 +39,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 for _s in (sys.stdin, sys.stdout, sys.stderr):
     # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
     try:
@@ -49,7 +50,7 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
-from aurora_common import (KB_ROOT, LINK_RE, aliases as card_aliases, body as card_body, fold,  # noqa: E402
+from aurora_common import (KB_ROOT, LINK_RE, MEETING_MARK, aliases as card_aliases, body as card_body, fold,  # noqa: E402
                            frontmatter, link_targets, lock_release, lock_take, safe_walk, utc_today,
                            with_fields)
 
@@ -60,17 +61,21 @@ FINAL = ("accepted", "rejected", "superseded")
 # Служебный хвост карточки: его ведёт движок, на отпечаток принятого решения он не влияет.
 TAIL = ("история", "история изменений", "под вопросом", "источник (перенесено дословно)",
         "исправления человеком", "слияние")
-# Имя принимающего: человек. Имя модели или программы — нельзя (правило авторства Авроры). Латиница сверяется
-# после `fold` (кириллическая «С» в «Сlaude» становится латинской) и по подстроке: `claude_code`, `gpt4`.
-MODEL_WORDS = re.compile(r"claude|anthropic|gpt|openai|gemini|copilot|llm|assistant|codex|opus|sonnet|haiku|"
-                         r"mistral|llama|deepseek|aurora[-_ ]?(?:studio|bot|engine)")
-BOT_WORD = re.compile(r"(?:^|[^a-z0-9])bot(?:$|[^a-z0-9])")
+# Имя принимающего: человек. Имя модели или программы — нельзя (правило авторства Авроры). Имя приводится к NFKC,
+# невидимые знаки (нулевой ширины, мягкий перенос) убираются, латинские слова сверяются после `fold` (кириллическая «С»
+# в «Сlaude» становится латинской). Длинные слова ищутся по подстроке в сжатом имени (`claude_code`, «C l a u d e»),
+# короткие — только как отдельное слово: иначе инициалы «G. P. Thompson» или фамилия «Stallman» были бы отказом.
+LONG_WORDS = re.compile(r"claude|anthropic|openai|gemini|copilot|assistant|codex|sonnet|haiku|mistral|llama|deepseek|"
+                        r"aurora(?:studio|bot|engine)")
+SHORT_WORDS = re.compile(r"(?<![a-z])(?:gpt|opus|llm|bot)(?![a-z])")
 RU_NOT_HUMAN = re.compile(r"(?<![а-яё])(?:клод|ассистент\w*|нейросет\w*|бот)(?![а-яё])")
 
 
 def not_human(name: str) -> bool:
-    low = fold(name)
-    return bool(MODEL_WORDS.search(low) or BOT_WORD.search(low) or RU_NOT_HUMAN.search(name.lower()))
+    plain = "".join(ch for ch in unicodedata.normalize("NFKC", name) if unicodedata.category(ch) not in ("Cf", "Mn"))
+    low = fold(plain)
+    squashed = re.sub(r"[\s_.\-]+", "", low)
+    return bool(LONG_WORDS.search(squashed) or SHORT_WORDS.search(low) or RU_NOT_HUMAN.search(plain.lower()))
 
 
 # ------------------------------------------------------------------ разбор тела
@@ -117,6 +122,8 @@ def body_fingerprint(text: str) -> str:
         for l in lines:
             if first and re.match(r"^#\s", l):          # первый заголовок первого уровня — имя, его правит `kb:repair`
                 first = False
+                continue
+            if l.startswith(MEETING_MARK):               # пометку «из встречи» ставит движок (хвост маршрута), не автор
                 continue
             keep.append(l)
         if title:
@@ -194,7 +201,8 @@ def body_changed(text: str) -> bool:
 # ------------------------------------------------------------------ поиск
 
 def dr_number(name: str) -> int:
-    m = re.match(r"(?i)^DR-([0-9]+)", name)
+    # Как в реестре идентификаторов: до девяти цифр, и не начало даты или дробного номера («DR-2026-10-19-…»).
+    m = re.match(r"(?i)^DR-([0-9]{1,9})(?![0-9])(?!\.[0-9])(?!-[0-9]{2}-[0-9]{2})", name)
     return int(m.group(1)) if m else -1
 
 
@@ -217,7 +225,7 @@ def find_dr(root: str, ident: str) -> tuple:
     ident = ident.strip()
     if ident.lower().endswith(".md"):
         ident = ident[:-3]
-    num = int(ident) if ident.isascii() and ident.isdigit() else dr_number(ident)
+    num = int(ident) if ident.isascii() and ident.isdigit() and len(ident) <= 9 else dr_number(ident)
     hits = [p for p, _a in decision_files(root)
             if os.path.splitext(os.path.basename(p))[0] == ident or (num >= 0 and dr_number(os.path.basename(p)) == num)]
     exact = [p for p in hits if os.path.splitext(os.path.basename(p))[0] == ident]
@@ -235,11 +243,12 @@ def known_names(root: str = ".") -> set:
     names = set()
     base = os.path.join(root, KB_ROOT)
     for dirpath, _dirs, files in safe_walk(base):
-        if "/_archive" in dirpath.replace("\\", "/"):
-            continue
+        archived = "/_archive" in dirpath.replace("\\", "/")
         for f in files:
             if f.endswith(".md"):
                 names.add(os.path.splitext(f)[0])
+                if archived:
+                    continue                         # у архивной карточки имя разрешается, синонимы — нет
                 try:
                     with open(os.path.join(dirpath, f), encoding="utf-8", errors="ignore") as fh:
                         names.update(card_aliases(fh.read(4000)))
@@ -301,7 +310,11 @@ def decide(root: str, ident: str, by: str, reject: bool, reason: str) -> tuple:
     try:
         return _decide_locked(root, path, by, reject, reason)
     finally:
-        lock_release(lock)
+        for _ in range(10):                          # Windows: файл замка, который читает ожидающий, снимается не сразу
+            lock_release(lock)
+            if not os.path.exists(lock):
+                break
+            time.sleep(0.02)
 
 
 def _decide_locked(root: str, path: str, by: str, reject: bool, reason: str) -> tuple:
@@ -429,7 +442,7 @@ def main() -> int:
     ap.add_argument("--journal", action="store_true", help="журнал решений: состояния, просроченные, изменённые")
     ap.add_argument("--check", action="store_true", help="форма каждого решения (код 1 — есть замечания)")
     ap.add_argument("--stale-days", type=int, default=STALE_DAYS, metavar="N",
-                    help=f"сколько дней предложенное решение ждёт принятия (по умолчанию {STALE_DAYS})")
+                    help="сколько дней предложенное решение ждёт принятия (по умолчанию 14)")
     ap.add_argument("--json", action="store_true", help="машинный вывод журнала")
     a = ap.parse_args()
     a.root = "."                      # скрипт запускают из корня проекта, как остальные
