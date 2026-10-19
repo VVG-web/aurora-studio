@@ -55,16 +55,19 @@ def sha256_bytes(data: bytes) -> str:
 
 
 def sha256_text(text: str) -> str:
-    """Хеш текста так, как он ляжет на диск: UTF-8, переводы строк как есть (движок пишет LF)."""
-    return sha256_bytes(text.encode("utf-8"))
+    """Хеш текста (UTF-8, переводы строк как `\\n`): так сверяется то, что движок записал, с замком (`sha256_file(normalize=True)`)."""
+    return sha256_bytes(text.replace("\r\n", "\n").encode("utf-8"))
 
 
-def sha256_file(path) -> str:
+def sha256_file(path, normalize: bool = False) -> str:
+    """sha256 файла; `normalize` — без различия `\\r\\n` и `\\n`: обновление работает с текстом (файл с CRLF, который совпал с
+    китом по тексту, не переписывается), поэтому замок движка на Windows у свежего и обновлённого проектов обязан совпасть."""
     try:
         with open(path, "rb") as fh:
-            return sha256_bytes(fh.read())
+            data = fh.read()
     except OSError:
         return ""
+    return sha256_bytes(data.replace(b"\r\n", b"\n") if normalize else data)
 
 
 def kit_sha(kit) -> str:
@@ -382,7 +385,7 @@ def write_lock(project, kit, version: str, rels) -> dict:
     обновление его не переписывает, а у свежего и обновлённого проектов он совпадает."""
     from aurora_common import kit_engine_api       # лениво: процесс с прежним aurora_common в памяти импортирует модуль
     project = Path(project)
-    files = {rel: sha256_file(project / rel) for rel in sorted(set(rels)) if (project / rel).is_file()}
+    files = {rel: sha256_file(project / rel, normalize=True) for rel in sorted(set(rels)) if (project / rel).is_file()}
     rec = {"schema": LOCK_SCHEMA, "version": version, "kit_sha": kit_sha(kit), "engine_api": kit_engine_api(kit),
            "files": files}
     if read_lock(project) != rec:
@@ -394,7 +397,7 @@ def check_installed(project, expected: dict) -> list:
     """После записи: файл на месте, хеш совпадает с проверенным текстом, скрипт компилируется. → проблемы."""
     project, bad = Path(project), []
     for rel, want in sorted(expected.items()):
-        got = sha256_file(project / rel)
+        got = sha256_file(project / rel, normalize=True)
         if got != want:
             bad.append(f"{rel}: на диске {'нет файла' if not got else 'не тот текст'} (хеш не сошёлся)")
         elif rel.endswith(".py"):
