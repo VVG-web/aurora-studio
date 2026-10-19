@@ -2263,6 +2263,7 @@ def about() -> dict:
     head = [l for l in changelog.splitlines() if l.startswith("## ")][:5]
     return {
         "kit": kit_version(), "ui": ui_version(), "path": KIT,
+        "source": "git" if in_git else "archive",
         "repo": web,
         "branch": git("branch", "--show-current") or arch["branch"] or arch["tag"]
                   or ("" if in_git else KIT_BRANCH),

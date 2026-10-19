@@ -8,6 +8,7 @@
   "about.commands": "команд в реестре",
   "about.commands_hint": "kit:list — справочник",
   "about.commit": "коммит",
+  "about.commit_archive": "кит из архива, git его не знает",
   "about.license": "лицензия",
   "about.license_hint": "свободное использование",
   "about.repo": "Репозиторий",

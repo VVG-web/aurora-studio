@@ -8,6 +8,7 @@
   "about.commands": "commands in the registry",
   "about.commands_hint": "kit:list — the reference",
   "about.commit": "commit",
+  "about.commit_archive": "kit from an archive, git does not know it",
   "about.license": "licence",
   "about.license_hint": "free to use",
   "about.repo": "Repository",
