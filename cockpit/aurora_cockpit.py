@@ -2217,9 +2217,39 @@ def all_scenarios() -> list:
 
 # ------------------------------------------------------------------- о проекте
 
+KIT_AUTHOR = "Vadim Gerasimov"     # автор кита: у установки из архива нет истории git, откуда его взять
+
+
+def archive_info() -> dict:
+    """Сведения о коммите кита без git: {commit, date, branch, tag}.
+
+    Архив GitHub (zip «Source code») собирается `git archive`, и `.git_archival.txt` с атрибутом
+    `export-subst` приезжает с подставленными хешем, датой и именами ссылок. В клоне там остаётся
+    нераскрытый «$Format:…$» — тогда сведений нет, и кит спрашивает git."""
+    info = {}
+    for line in read_text(os.path.join(KIT, ".git_archival.txt"), limit=2000).splitlines():
+        key, _, value = line.partition(":")
+        info[key.strip()] = value.strip()
+    node = info.get("node", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", node):
+        return {"commit": "", "date": "", "branch": "", "tag": ""}
+    refs = info.get("ref-names", "")
+    branch = re.search(r"HEAD -> ([^,\s]+)", refs)
+    tag = re.search(r"tag:\s*(v?\d[^,\s]*)", refs)
+    return {"commit": node[:7], "date": info.get("node-date", "")[:10],
+            "branch": branch.group(1) if branch else "", "tag": tag.group(1) if tag else ""}
+
+
 def about() -> dict:
-    """Факты о ките: откуда взялся, чья работа, что внутри. Всё — из репозитория."""
+    """Факты о ките: откуда взялся, чья работа, что внутри. Из git, а у установки из архива — из самого
+    кита: адрес репозитория и автор записаны в нём, коммит и дату приносит `.git_archival.txt`."""
+    in_git = os.path.isdir(os.path.join(KIT, ".git"))
+
     def git(*args, default=""):
+        # только git самого кита: архив, распакованный внутрь чужого репозитория, не должен
+        # отдавать на странице его адрес, ветку и автора
+        if not in_git:
+            return default
         try:
             r = subprocess.run(["git", "-C", KIT, *args], capture_output=True,
                                text=True, encoding="utf-8", errors="replace", timeout=20)
@@ -2227,15 +2257,18 @@ def about() -> dict:
         except Exception:
             return default
     remote = git("remote", "get-url", "origin")
-    web = re.sub(r"^git@([^:]+):", r"https://\1/", remote).removesuffix(".git")
+    web = re.sub(r"^git@([^:]+):", r"https://\1/", remote).removesuffix(".git") if remote else kit_repo()[2]
+    arch = archive_info()
     changelog = read_text(os.path.join(KIT, "CHANGELOG.md"), limit=8000)
     head = [l for l in changelog.splitlines() if l.startswith("## ")][:5]
     return {
         "kit": kit_version(), "ui": ui_version(), "path": KIT,
-        "repo": web, "branch": git("branch", "--show-current"),
-        "commit": git("rev-parse", "--short", "HEAD"),
-        "commit_date": git("log", "-1", "--format=%ad", "--date=short"),
-        "author": git("log", "--reverse", "--format=%an", "-1") or "—",
+        "repo": web,
+        "branch": git("branch", "--show-current") or arch["branch"] or arch["tag"]
+                  or ("" if in_git else KIT_BRANCH),
+        "commit": git("rev-parse", "--short", "HEAD") or arch["commit"],
+        "commit_date": git("log", "-1", "--format=%ad", "--date=short") or arch["date"],
+        "author": git("log", "--reverse", "--format=%an", "-1") or KIT_AUTHOR,
         "license": "Apache-2.0" if os.path.isfile(os.path.join(KIT, "LICENSE")) else "—",
         "commands": len(registry()),
         "releases": [h[3:] for h in head],
