@@ -2420,7 +2420,8 @@ def engine_status(project, kit_version: str, kit_api: int = 1) -> dict:
       замок обновления не занят); `pinned` — проект ведёт движок сам (`aurora.update_ignore.txt`), даже если версии
       расходятся; `unknown` — штампа или версии кита нет. `blocks` — стоит ли гейту остановить маршрут и шаг Cron:
       оборванное обновление; контракт кита (`ENGINE_API`) новее движка проекта или движок проекта новее контракта кита;
-      у проекта без замка движка (`engine.lock.json`, ставится обновлением) — прежнее правило минора.
+      у проекта без замка движка (`engine.lock.json`, ставится обновлением) — прежнее правило минора (расхождение
+      минора в любую сторону).
     Версия движка — метка копии на машине (`engine_version.txt`), а нет её — замок движка, нет и его — штамп проекта
     (он едет через git и говорит о версии у владельца, это нижняя оценка). Читает только файлы проекта.
     """
@@ -2429,7 +2430,10 @@ def engine_status(project, kit_version: str, kit_api: int = 1) -> dict:
 
     def small(rel):
         try:
-            with open(os.path.join(root, rel), encoding="utf-8") as fh:
+            path = os.path.join(root, rel)
+            if not os.path.isfile(path):                    # FIFO и устройство не открываем: чтение повисло бы
+                return ""
+            with open(path, encoding="utf-8") as fh:
                 return fh.read(4096).strip()
         except (OSError, UnicodeDecodeError):
             return ""
@@ -2440,9 +2444,11 @@ def engine_status(project, kit_version: str, kit_api: int = 1) -> dict:
     stamp = good(small("AuroraKnowledgeDB/meta/aurora_version.txt"))
     lock = {}
     try:
-        with open(os.path.join(root, eng, "engine.lock.json"), encoding="utf-8") as fh:
-            lock = json.load(fh)
-    except (OSError, ValueError):
+        lock_path = os.path.join(root, eng, "engine.lock.json")
+        if os.path.isfile(lock_path) and os.path.getsize(lock_path) <= (8 << 20):
+            with open(lock_path, encoding="utf-8") as fh:
+                lock = json.load(fh)
+    except (OSError, ValueError, RecursionError):
         lock = {}
     lock = lock if isinstance(lock, dict) else {}
     api = lock.get("engine_api")
@@ -2450,21 +2456,28 @@ def engine_status(project, kit_version: str, kit_api: int = 1) -> dict:
     engine = good(small(eng + "/engine_version.txt")) or good(str(lock.get("version") or ""))
     kit = good(str(kit_version or ""))
     out = {"status": "unknown", "reason": "", "engine": engine, "stamp": stamp, "kit": kit, "engine_api": api,
-           "kit_api": int(kit_api or 1), "blocks": False}
+           "kit_api": int(kit_api or 1), "blocks": False, "stamp_ahead": False, "stamp_reason": ""}
     pend = os.path.join(root, eng, "state", "update.pending")
-    if os.path.isfile(pend) and not _fs().is_locked(os.path.join(root, eng, "state", "update.lock")):
-        out.update(status="partial", blocks=True,
-                   reason="обновление движка оборвалось на середине (метка update.pending): повторите обновление или откатите его")
+    if os.path.isfile(pend):
+        if _fs().is_locked(os.path.join(root, eng, "state", "update.lock")):
+            out.update(status="updating", blocks=True, reason="идёт обновление движка проекта (замок обновления занят)")
+        else:
+            out.update(status="partial", blocks=True,
+                       reason="обновление движка оборвалось на середине (метка update.pending): повторите обновление или откатите его")
         return out
     have = engine or stamp
     if not have or not kit:
         out["reason"] = "нет штампа версии проекта" if not have else "версия кита неизвестна"
         return out
     vk, sk, kk = version_key(have), version_key(stamp) if stamp else (0, 0, 0), version_key(kit)
-    if max(vk, sk) > kk:
-        out.update(status="ahead", blocks=bool(api and api > out["kit_api"]),
-                   reason="%s проекта %s новее кита %s: нужно обновить кит, понижать движок проекта не нужно"
-                          % ("штамп" if sk > vk else "движок", stamp if sk > vk else have, kit))
+    if stamp and sk > kk:
+        # Штамп едет через git: у коллеги кит новее. Статус копии движка он не затирает, но обновление не должно
+        # понизить штамп (см. `stamp_ahead` в `aurora_update.run`).
+        out.update(stamp_ahead=True, stamp_reason="штамп проекта %s новее кита %s: нужно обновить кит, штамп (он едет через git) "
+                                                  "понижать не нужно" % (stamp, kit))
+    if vk > kk:
+        out.update(status="ahead", blocks=bool(api and api > out["kit_api"]) or (not api and vk[:2] != kk[:2]),
+                   reason="движок проекта %s новее кита %s: нужно обновить кит, понижать движок проекта не нужно" % (have, kit))
         return out
     if vk == kk:
         out.update(status="ok")

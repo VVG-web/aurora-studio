@@ -359,7 +359,7 @@ def _modules_before(ck, root: Path) -> list:
             "order": int(m.get("order") or 100),
             "needs": [x for x in (m.get("needs") or []) if x in ("project", "kit")],
             "commands": list(m.get("commands") or []),
-            "for": ver, "behind": ck.minor(ver) != ck.minor(ck.kit_version()),
+            "for": ver, "behind": ".".join(ver.split(".")[:2]) != ".".join(ck.kit_version().split(".")[:2]),
             "about": m.get("about", {}), "dev": m.get("dev") is True})
     out.sort(key=lambda m: (ck.MODULE_GROUPS.index(m["group"]), m["order"], m["id"]))
     return out

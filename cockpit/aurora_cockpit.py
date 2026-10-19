@@ -3300,9 +3300,10 @@ def project_card(path: str) -> dict:
         "kit": kit_version(),
         # Отстал — только если движок СТАРШЕ кита (или обновление оборвалось); «новее кита» — не отставание (BL-LCY-01)
         "behind": est["status"] in ("behind_minor", "behind_patch", "partial"),
-        "ahead": est["status"] == "ahead",
+        "ahead": est["status"] == "ahead" or est["stamp_ahead"],
         "engine_status": {"status": est["status"], "reason": est["reason"], "engine_api": est["engine_api"],
-                          "kit_api": est["kit_api"], "blocks": est["blocks"]},
+                          "kit_api": est["kit_api"], "blocks": est["blocks"], "stamp_ahead": est["stamp_ahead"],
+                          "stamp_reason": est["stamp_reason"]},
         # Копия движка в .aurora/ на этой машине: у клона проекта её нет, пока панель не подготовит.
         "engine_state": engine_info(path),
         "space": config_value(cfg, "space"),
@@ -3365,11 +3366,12 @@ def update_all_projects(roots: list, apply: bool) -> dict:
     rows, skipped, done, failed = [], [], 0, 0
     for p in find_projects(roots):
         est = p.get("engine_status") or {}
-        if not p.get("behind"):
-            if est.get("status") in ("ahead", "pinned"):
-                # Движок НОВЕЕ кита (или проект ведёт его сам) обновление не понижает: это отдельная строка отчёта.
-                skipped.append({"name": p.get("name") or p["path"], "path": p["path"], "status": est["status"],
-                                "note": est.get("reason", "")})
+        if est.get("stamp_ahead") or not p.get("behind"):
+            if est.get("status") in ("ahead", "pinned") or est.get("stamp_ahead"):
+                # Движок или штамп НОВЕЕ кита (или проект ведёт движок сам) обновление не понижает: отдельная строка отчёта.
+                skipped.append({"name": p.get("name") or p["path"], "path": p["path"],
+                                "status": "ahead" if est.get("stamp_ahead") else est["status"],
+                                "note": est.get("stamp_reason") if est.get("stamp_ahead") else est.get("reason", "")})
             continue
         with JOBS_LOCK:
             busy = [j["cmd"] for j in JOBS.values() if not j["done"] and j["project"] == p["path"]]
@@ -3412,12 +3414,17 @@ def version_gap(project: str) -> str:
     if not st["blocks"]:
         return ""
     ver = st["engine"] or st["stamp"]
+    if st["status"] == "updating":
+        return "идёт обновление движка проекта — начните маршрут после него."
     if st["status"] == "partial":
         return ("обновление движка проекта оборвалось на середине: повторите «Версия» → «Применить» "
                 "или откатите его командой kit:update --rollback.")
-    if st["status"] == "ahead":
+    if st["status"] == "ahead" and st["engine_api"] and st["engine_api"] > st["kit_api"]:
         return (f"контракт движка проекта (ENGINE_API {st['engine_api']}) новее, чем у кита ({st['kit_api']}): "
                 f"обновите кит {st['kit']}, а движок проекта понижать не нужно.")
+    if st["status"] == "ahead":
+        return (f"движок проекта {ver} новее кита {st['kit']}: обновите кит (git pull в его папке), "
+                "а движок проекта понижать не нужно.")
     if st["engine_api"] and st["kit_api"] > st["engine_api"]:
         return (f"движок проекта {ver} несовместим с китом {st['kit']}: контракт движка изменился "
                 f"(ENGINE_API {st['engine_api']} → {st['kit_api']}). Обновите движок проекта: раздел «Версия».")
@@ -3501,6 +3508,8 @@ def engine_prepare_action(project: str) -> dict:
             return {"error": "кит с манифестом не найден — подготовить движок нечем"}
         if res["reason"] == "update_running":
             return {"error": "обновление этого проекта уже идёт — движок подготовится после него"}
+        if res["reason"] == "agent_running":
+            return {"error": f"в проекте идёт прогон агента ({res['held']}) — движок подготовится после него"}
         if res["reason"]:
             return {"error": "это не проект Aurora (нет AuroraKnowledgeDB/)"}
         record_engine_run(project, AU.engine_report(res, True), res, started, time.time() - t0)

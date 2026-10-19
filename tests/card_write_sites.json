@@ -341,19 +341,9 @@
    "reason": "снимок установки надстройки в ~/.aurora/locks (вне базы знаний)",
    "calls": 1
   },
-  "scripts/aurora_fs.py:FileLock.acquire": {
-   "kind": "other",
-   "reason": "файл замка ОС (.lock): служебный, описание владельца; карточек не пишет",
-   "calls": 1
-  },
   "scripts/aurora_fs.py:_quarantine": {
    "kind": "other",
    "reason": "перенос повреждённого файла состояния в .corrupt; карточек не касается",
-   "calls": 1
-  },
-  "scripts/aurora_fs.py:is_locked": {
-   "kind": "other",
-   "reason": "проба замка ОС: открывает файл замка, ничего не пишет в содержимое",
    "calls": 1
   },
   "scripts/aurora_fs.py:replace_file": {
@@ -561,6 +551,16 @@
    "reason": "журнал QA кухни разработки: вне базы знаний",
    "calls": 1
   },
+  "scripts/engine_txn.py:_record": {
+   "kind": "other",
+   "reason": "копия файла движка в снимок (~/.aurora/engine-backups/); карточек не касается",
+   "calls": 1
+  },
+  "scripts/engine_txn.py:extend_snapshot": {
+   "kind": "other",
+   "reason": "дополнение манифеста снимка движка; карточек не касается",
+   "calls": 1
+  },
   "scripts/engine_txn.py:mark_pending": {
    "kind": "other",
    "reason": "метка оборванного обновления движка (.aurora/state/update.pending); не карточка",
@@ -574,7 +574,7 @@
   "scripts/engine_txn.py:snapshot": {
    "kind": "other",
    "reason": "снимок файлов движка проекта в ~/.aurora/engine-backups/; карточек не касается",
-   "calls": 2
+   "calls": 1
   },
   "scripts/engine_txn.py:write_lock": {
    "kind": "other",

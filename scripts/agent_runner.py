@@ -1176,6 +1176,15 @@ def closed_to_definitions(root: str, term: str, definition: str) -> bool:
 
 def place_definition(root: str, term: str, definition: str, came_from: str,
                      donor_sources: "list | None" = None) -> str:
+    """Положить перенесённое определение в карточку термина (под замком карточек проекта: «нашли — завели» и «прочитали —
+    дописали» не разрываются чужой записью, в том числе из другого процесса). → путь. Подробности — `_place_definition`."""
+    from aurora_common import KB_ROOT
+    with CT.card_lock(os.path.join(root, KB_ROOT, "Concepts", "_")):
+        return _place_definition(root, term, definition, came_from, donor_sources)
+
+
+def _place_definition(root: str, term: str, definition: str, came_from: str,
+                      donor_sources: "list | None" = None) -> str:
     """Положить перенесённое определение в карточку термина. → путь.
 
     Три случая, и ни в одном текст не пропадает: карточки нет — заводим; лежит пустышка

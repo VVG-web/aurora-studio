@@ -140,7 +140,7 @@ def test_engine_pending_mark_lock_file_and_installed_check(tmp: Path):
     assert rec["files"][".aurora/scripts/x.py"] == T.sha256_text(good)
     assert isinstance(rec["engine_api"], int) and rec["engine_api"] >= 1
     assert T.check_installed(proj, {".aurora/scripts/x.py": T.sha256_text(good)}) == []
-    (proj / ".aurora/scripts/x.py").write_text("def run(:\n", encoding="utf-8")
+    (proj / ".aurora/scripts/x.py").write_bytes(b"def run(:\n")
     bad = T.check_installed(proj, {".aurora/scripts/x.py": T.sha256_text("def run(:\n")})
     assert bad and "не компилируется" in bad[0], bad
     bad = T.check_installed(proj, {".aurora/scripts/x.py": T.sha256_text(good), ".aurora/scripts/y.py": T.sha256_text("")})
@@ -320,6 +320,8 @@ def test_interrupted_update_is_visible_and_rollback_returns_the_previous_engine(
         for name in ("kb_lint", "kb_fix", "kb_moc", "kb_index", "kb_names", "kb_gaps"):
             (root / ".aurora/scripts" / (name + ".py")).write_text("# версия 1.100.0\n", encoding="utf-8")
         (root / ".aurora/engine.lock.json").unlink()
+        before = {p.relative_to(root).as_posix(): p.read_bytes() for p in (root / ".aurora").rglob("*")
+                  if p.is_file() and "state" not in p.relative_to(root).parts}
         calls = []
 
         def die(dst, text):
@@ -341,7 +343,9 @@ def test_interrupted_update_is_visible_and_rollback_returns_the_previous_engine(
         rc, out, err = _apply(AU, root)
         assert rc == 0 and "оборвалось на середине" in out, out[-500:]
         assert T.pending(root) == {} and AC.engine_status(root, kit, 1)["status"] == "ok"
-        # откат: последний снимок — тот, что сделан перед достраиванием; возвращает файлы к состоянию «после обрыва»
+        # откат после «обрыв → достраивание»: прежний снимок дополняется, а не снимается заново, поэтому откат ведёт к
+        # состоянию ДО первой попытки (а не к полусобранному)
+        assert len(T.list_snapshots(root)) == 2, "достраивание сняло новый снимок вместо дополнения прежнего"
         dry = io.StringIO()
         with contextlib.redirect_stdout(dry):
             assert AU.run_rollback(root, False) == 0
@@ -351,6 +355,10 @@ def test_interrupted_update_is_visible_and_rollback_returns_the_previous_engine(
         assert (root / "AuroraKnowledgeDB/meta/aurora_version.txt").read_text(encoding="utf-8").strip() == "1.100.0", \
             "штамп проекта не вернулся"
         assert T.pending(root) == {}
+        after = {p.relative_to(root).as_posix(): p.read_bytes() for p in (root / ".aurora").rglob("*")
+                 if p.is_file() and "state" not in p.relative_to(root).parts}
+        mixed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+        assert not mixed, f"откат оставил смешанный движок: {mixed[:6]}"
     finally:
         AU._write_engine_file = real_write
         restore()
@@ -375,4 +383,165 @@ def test_rollback_without_snapshots_and_on_a_busy_project_says_so(tmp: Path):
             assert AU.run_rollback(root, True) == 3
         assert "идёт прогон агента" in err.getvalue()
     finally:
+        restore()
+
+
+@test
+def test_engine_prepare_clears_its_mark_when_part_of_the_engine_is_shared_or_newer(tmp: Path):
+    """Подготовка движка с общей папкой (ссылка) или с копией новее кита кладёт файлы, не объявляет замок и метку версии,
+    но метку обновления снимает: иначе проект навсегда числился бы `partial` и маршруты стояли."""
+    AU, T = _au(), _txn()
+    import aurora_common as AC
+    restore = set_home(tmp / "home")
+    try:
+        root = _aged(tmp, stamp="1.0.0")
+        shared = tmp / "shared-docs"
+        shared.mkdir()
+        (shared / "knowledge-rules.md").write_text("# общий файл\n", encoding="utf-8")
+        (root / ".aurora").mkdir()
+        try:
+            os.symlink(shared, root / ".aurora/docs", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            return                                       # ссылок нельзя (Windows без прав)
+        res = AU.engine_prepare(root)
+        assert res["ok"] and res["shared"], res
+        assert T.read_pending(root) == {}, "метка обновления осталась после успешной подготовки"
+        assert AC.engine_status(root, AU.kit_version(), 1)["status"] != "partial"
+        # копия новее кита и не хватает файла
+        (root / ".aurora/engine_version.txt").write_text("9.9.9\n", encoding="utf-8")
+        (root / ".aurora/scripts/kb_lint.py").unlink()
+        res = AU.engine_prepare(root)
+        assert res["ahead"] and res["ok"] and T.read_pending(root) == {}, res
+        assert AC.engine_status(root, AU.kit_version(), 1)["status"] == "ahead"
+    finally:
+        restore()
+
+
+@test
+def test_update_does_not_start_when_the_snapshot_cannot_be_taken(tmp: Path):
+    """Домашняя папка недоступна для записи (контейнер, служебная учётная запись): обновление не начинается и ничего не
+    пишет в движок (код 5), а не падает трассировкой посреди работы; предпросмотр набора, который не пройдёт проверку,
+    предупреждает заранее."""
+    AU, T = _au(), _txn()
+    restore = set_home(tmp / "home")
+    real_root, real_plan = T.backups_root, AU.plan
+    try:
+        root = _aged(tmp)
+        blocker = tmp / "not-a-folder"
+        blocker.write_text("файл на месте каталога", encoding="utf-8")
+        T.backups_root = lambda: blocker / "engine-backups"
+        rc, out, err = _apply(AU, root)
+        assert rc == 5 and "снимок" in err and "не начато" in err and "Traceback" not in err, (rc, err[-500:])
+        assert not (root / ".aurora/scripts").exists(), "файлы движка записаны без снимка"
+        T.backups_root = real_root
+        AU.plan = lambda target, f: [AU.Change("write", ".aurora/scripts/new_tool.py", "def broken(:\n", "проверка")]
+        out_io = io.StringIO()
+        with contextlib.redirect_stdout(out_io):
+            assert AU.run(root, False) == 0
+        assert "не пройдёт проверку" in out_io.getvalue() and "(dry-run)" in out_io.getvalue(), out_io.getvalue()[-500:]
+    finally:
+        T.backups_root, AU.plan = real_root, real_plan
+        restore()
+
+
+@test
+def test_rollback_never_trusts_paths_or_links_from_outside_the_engine(tmp: Path):
+    """Манифест снимка лежит вне проекта: путь вне `.aurora/` (с `..`, абсолютный, через ссылку), чужой проект и испорченные
+    поля откат отвергает, не тронув файлы; ссылка в проекте не затирается записью файла замка или метки; снимки и копии в
+    них приватны (0700/0600)."""
+    T = _txn()
+    F = importlib.import_module("aurora_fs")
+    restore_home = set_home(tmp / "home")
+    try:
+        proj = tmp / "proj"
+        (proj / ".aurora/scripts").mkdir(parents=True)
+        (proj / ".aurora/scripts/a.py").write_text("X = 1\n", encoding="utf-8")
+        outside = tmp / "outside.txt"
+        outside.write_text("чужой файл", encoding="utf-8")
+        snap = T.snapshot(proj, [".aurora/scripts/a.py"], {"from": "1.0.0", "to": "1.1.0"})
+        man = json.loads((snap / "manifest.json").read_text(encoding="utf-8"))
+        evil = {**man, "files": {**man["files"], "../outside.txt": {"existed": False, "sha256": ""},
+                                 str(outside): {"existed": False, "sha256": ""},
+                                 ".aurora/../../outside.txt": {"existed": False, "sha256": ""}, "list": 5}}
+        (snap / "manifest.json").write_text(json.dumps(evil), encoding="utf-8")
+        (proj / ".aurora/scripts/a.py").write_text("X = 2\n", encoding="utf-8")
+        failed = T.restore(proj, snap)
+        assert outside.read_text(encoding="utf-8") == "чужой файл", "откат тронул файл вне проекта"
+        assert len(failed) == 4 and all("пропущен" in f for f in failed), failed
+        assert (proj / ".aurora/scripts/a.py").read_text(encoding="utf-8") == "X = 1\n", "годный файл не вернулся"
+        other = tmp / "other"
+        (other / ".aurora").mkdir(parents=True)
+        assert "другого проекта" in T.restore(other, snap)[0]
+        (snap / "manifest.json").write_text(json.dumps({**man, "files": ["не словарь"]}), encoding="utf-8")
+        assert "нет списка файлов" in T.restore(proj, snap)[0]
+        # ссылка на месте метки и замка: цель не затирается
+        victim = tmp / "victim.txt"
+        victim.write_text("мои данные", encoding="utf-8")
+        (proj / ".aurora/state").mkdir()
+        try:
+            os.symlink(victim, proj / ".aurora/state/update.pending")
+            os.symlink(victim, proj / ".aurora/state/update.lock")
+        except (OSError, NotImplementedError):
+            return
+        T.mark_pending(proj, {"from": "1", "to": "2"})
+        assert victim.read_text(encoding="utf-8") == "мои данные", "метка записана сквозь ссылку"
+        lock = T.update_lock(proj)
+        try:
+            lock.acquire(timeout=0.2)
+        except OSError:
+            pass
+        else:
+            raise AssertionError("замок взят на файле-ссылке")
+        assert victim.read_text(encoding="utf-8") == "мои данные", "замок усёк файл по ссылке"
+        if os.name != "nt":
+            base = T.backups_root()
+            assert (base.stat().st_mode & 0o077) == 0 and (snap.stat().st_mode & 0o077) == 0
+            assert (snap / "manifest.json").stat().st_mode & 0o077 == 0
+            assert (snap / "files/.aurora/scripts/a.py").stat().st_mode & 0o077 == 0
+        assert F.is_locked(proj / ".aurora/state/update.lock") is False
+    finally:
+        restore_home()
+
+
+@test
+def test_read_state_survives_pipes_and_absurd_nesting(tmp: Path):
+    """Состояние от третьих рук: канал FIFO на месте файла не вешает чтение, глубокая вложенность и огромный размер не
+    роняют его исключением — значение по умолчанию."""
+    F = importlib.import_module("aurora_fs")
+    deep = tmp / "deep.json"
+    deep.write_text("[" * 200000, encoding="utf-8")
+    assert F.read_state(deep, [], quarantine=False) == []
+    big = tmp / "big.json"
+    big.write_text("[1]", encoding="utf-8")
+    real = F.MAX_STATE_BYTES
+    F.MAX_STATE_BYTES = 1
+    try:
+        assert F.read_state(big, [9], quarantine=False) == [9]
+    finally:
+        F.MAX_STATE_BYTES = real
+    if hasattr(os, "mkfifo"):
+        fifo = tmp / "pipe.json"
+        os.mkfifo(fifo)
+        t0 = __import__("time").monotonic()
+        assert F.read_state(fifo, {"d": 1}, quarantine=False) == {"d": 1}
+        assert __import__("time").monotonic() - t0 < 5, "чтение канала повисло"
+
+
+@test
+def test_rollback_needs_the_snapshot_not_the_kit(tmp: Path):
+    """`--rollback` не требует кита рядом: откату нужны снимки в `~/.aurora`, поэтому он отвечает про снимки, а не
+    «запустите из самого кита»."""
+    AU = _au()
+    restore = set_home(tmp / "home")
+    real_manifest, real_argv = AU.MANIFEST, sys.argv
+    try:
+        root = _aged(tmp)
+        AU.MANIFEST = tmp / "no-such-manifest.txt"
+        sys.argv = ["aurora_update.py", str(root), "--rollback"]
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = AU.main()
+        assert rc == 1 and "Снимков движка" in err.getvalue(), (rc, err.getvalue()[-300:])
+    finally:
+        AU.MANIFEST, sys.argv = real_manifest, real_argv
         restore()
