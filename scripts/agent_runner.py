@@ -1085,14 +1085,15 @@ def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
         # карточку чужое определение (она бывает местом назначения). Запись по тексту,
         # прочитанному до вызова модели, стирала бы его — а из карточки-источника оно уже
         # вырезано: знание пропадало вовсе.
-        with open(path, encoding="utf-8", errors="ignore") as f:
-            fresh = f.read()
-        if thesis not in fresh:
-            fail_step(out, (out["note"] + "; карточка изменилась во время осмотра — "
-                            "тезис не тронут, определения лежат в своих карточках").strip("; "),
-                      subject=path)
-            return out
-        _done, why = CT.try_write_card(path, fresh.replace(thesis, new_thesis, 1), op="body")
+        with CT.card_lock(path):               # перечитать и записать одним заходом: между ними чужая правка не втиснется
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                fresh = f.read()
+            if thesis not in fresh:
+                fail_step(out, (out["note"] + "; карточка изменилась во время осмотра — "
+                                "тезис не тронут, определения лежат в своих карточках").strip("; "),
+                          subject=path)
+                return out
+            _done, why = CT.try_write_card(path, fresh.replace(thesis, new_thesis, 1), op="body")
         if why:
             # Карточки терминов уже легли, а тезис шаблон не принял: определения живут в двух местах, ничего не
             # потеряно; ссылку поставит связывание. Шаг называет причину.
@@ -1112,8 +1113,9 @@ def mark_examined(path: str, fm: dict) -> None:
     stamp = (fm.get("distilled") or "").strip()
     if not stamp:
         return
-    text = open(path, encoding="utf-8", errors="ignore").read()
-    put_header(path, with_fields(text, {"extracted": stamp}), "отметка осмотра")
+    with CT.card_lock(path):                  # читать-менять-писать целиком: чужое определение не затрёт отметка
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        put_header(path, with_fields(text, {"extracted": stamp}), "отметка осмотра")
 
 
 def canon_term(term: str) -> str:
@@ -1185,9 +1187,7 @@ def place_definition(root: str, term: str, definition: str, came_from: str,
     оставляет определение в тезисе донора. Карточка, которую собрал движок из источников донора, несёт
     `built: machine` и дату сверки; у донора без источников метки нет — происхождение неизвестно.
     """
-    from aurora_common import (KB_ROOT, card_body, card_filename, card_sources,
-                               frontmatter, is_placeholder, set_field, with_fields,
-                               with_sources)
+    from aurora_common import KB_ROOT, card_filename
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
     base = os.path.join(root, KB_ROOT)
@@ -1211,6 +1211,14 @@ def place_definition(root: str, term: str, definition: str, came_from: str,
         CT.write_card_text(path, card, op="create", reg=reg)
         return path.replace("\\", "/")     # пути движка — в posix-виде, как у `walk_md`
 
+    with CT.card_lock(existing):              # прочитать карточку-приёмник и дописать в неё — одним заходом
+        return _place_into(existing, term, line, note, donor_sources)
+
+
+def _place_into(existing: str, term: str, line: str, note: str, donor_sources: "list | None") -> str:
+    """Тело `place_definition` для карточки, которая уже есть (вызывается под замком карточек)."""
+    from aurora_common import (card_body, card_sources, frontmatter, is_placeholder, set_field, with_fields,
+                               with_sources)
     text = open(existing, encoding="utf-8", errors="ignore").read()
     fm = frontmatter(text)
     if is_placeholder(fm, text):
@@ -7478,7 +7486,7 @@ def chunks(text: str, budget: int) -> list:
 from aurora_common import FOOTER  # noqa: E402 — граница истории одна на движок
 
 
-def apply_split_parts(path: str, parts: list) -> list:
+def apply_split_parts(path: str, parts: list, expect_sig: "str | None" = None) -> list:
     """Записать части разрезанной карточки и превратить её в карту документа. → [(имя файла, название)].
 
     Части получают `part_of` и ссылки на соседей: карточка без связей — ошибка
@@ -7493,6 +7501,9 @@ def apply_split_parts(path: str, parts: list) -> list:
     Запись — через единый вход шаблонов, и всё или ничего: сначала проба всех частей и карты, потом запись. Часть,
     которую шаблон не принял, не должна оставить карточку без текста, уехавшего в соседние части: нарушение
     поднимается `CT.TemplateViolation` до записи первого файла.
+
+    `expect_sig` — отпечаток карточки, по которому планировщик резал её (`distill_card`); изменилась с тех пор —
+    `CT.CardChanged` до записи первого файла: части и карта собраны из старого текста.
     """
     from aurora_common import (card_title_safe, frontmatter, meeting_mark_line, part_stem, set_field,
                                split_frontmatter, split_tail, with_meeting_mark)
@@ -7550,9 +7561,12 @@ def apply_split_parts(path: str, parts: list) -> list:
     bad = CT.check_card_text(path, parent, op="repair", reg=reg)
     if bad:
         raise CT.TemplateViolation(path, "repair", bad)
-    for dest, card in cards:
-        CT.write_card_text(dest, card, op="split", reg=reg)
-    CT.write_card_text(path, parent, op="repair", reg=reg)
+    with CT.card_lock(path):                      # части и карта — одним заходом под замком карточек
+        if expect_sig is not None and CT.file_sig(path) != expect_sig:
+            raise CT.CardChanged(path, "split")
+        for dest, card in cards:
+            CT.write_card_text(dest, card, op="split", reg=reg)
+        CT.write_card_text(path, parent, op="repair", reg=reg, expect_sig=expect_sig)
     return [(s, n) for s, n, _d, _c in made]
 
 
@@ -7607,6 +7621,9 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     # Корень проекта — то, что над разделом базы: карточка лежит в `<корень>/<база>/<раздел>/`.
     # Он нужен словарю сокращений: тот читается из базы, а не из папки процесса.
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
+    # Отпечаток снимка берётся ДО чтения: запись по этому тексту (минуты спустя, после вызова модели) сверяет его с
+    # файлом и не затирает правку человека, внесённую за это время (BL-SEC-15).
+    step["sig"] = _card_sig(path)
     text = open(path, encoding="utf-8", errors="ignore").read()
     head, body = AG.split_frontmatter(text) if hasattr(AG, "split_frontmatter") else (None, None)
     if head is None:
@@ -7859,15 +7876,11 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
 # «Обновить базу» кончался застоем на последнем обороте, хотя проект обновлён (PRJ-B, 6.10.2026).
 PARKED = os.path.join(".aurora", "state", "distill_parked.json")
 PARKED_STATUSES = ("человеку", "слишком длинная", REFUSED)
+CHANGED = "изменена"        # карточку правили во время прогона: запись по устаревшему снимку отменена (BL-SEC-15)
 
 
 def _card_sig(path: str) -> str:
-    import hashlib
-    try:
-        with open(path, "rb") as f:
-            return hashlib.sha1(f.read()).hexdigest()
-    except OSError:
-        return ""
+    return CT.file_sig(path)
 
 
 def parked_cards(cwd: str, store: str = "") -> dict:
@@ -8033,13 +8046,22 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
 
     def apply_split(path: str, step: dict) -> None:
         """Записать части и превратить исходную карточку в карту документа."""
-        made = apply_split_parts(path, step["split"])
+        made = apply_split_parts(path, step["split"], expect_sig=step.get("sig"))
         if len(made) < 2:
             step["note"] += "; части уже вынесены"
             return
         step["note"] += f"; разрезана на {len(made)}"
 
     written = [0]
+
+    def changed_step(step, path):
+        """Карточку изменили, пока шла модель: запись не сделана, правка человека цела. Карточка не откладывается и не
+        отмечается осмотренной — следующий оборот (или следующий прогон) возьмёт её со свежим текстом."""
+        step.update(status=CHANGED, note="карточка изменена во время прогона — тезис не записан, карточка вернётся в очередь")
+        if commit and commit_every and step.get("head") is not None:
+            written[0] -= 1
+        say(f"    ↻ {os.path.basename(path)}: изменена во время прогона — запись по старому снимку отменена")
+        return step
 
     def finish(path, step):
         nonlocal unsupported
@@ -8070,7 +8092,11 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             # строке обнуляет файл до того, как его прочтут: `open(..., "w")` считается
             # раньше аргумента. Проверено — карточка теряется целиком.
             was = open(path, encoding="utf-8", errors="ignore").read()
-            _done, why = CT.try_write_card(path, with_fields(was, {"distill_empty": TODAY_STR}), op="header")
+            try:
+                _done, why = CT.try_write_card(path, with_fields(was, {"distill_empty": TODAY_STR}), op="header",
+                                               expect_sig=step.get("sig"))
+            except CT.CardChanged:
+                return changed_step(step, path)
             if why:
                 refuse_step(step, why, path)
                 park_card(cwd, path, refused=True)
@@ -8079,6 +8105,8 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
         if apply and step.get("split"):
             try:
                 apply_split(path, step)
+            except CT.CardChanged:
+                return changed_step(step, path)
             except REFUSALS as e:
                 refuse_step(step, f"разрез не записан, карточка осталась как была: {e}", path)
                 park_card(cwd, path, refused=True)
@@ -8102,7 +8130,11 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
                 text = set_unsupported(text, 0)
             # Пометку встречи ставит движок: тезис переписан — она на месте.
             from aurora_common import with_meeting_mark
-            _done, why = CT.try_write_card(path, with_meeting_mark(with_fields(text, fields)), op="body")
+            try:
+                _done, why = CT.try_write_card(path, with_meeting_mark(with_fields(text, fields)), op="body",
+                                               expect_sig=step.get("sig"))
+            except CT.CardChanged:
+                return changed_step(step, path)
             if why and not step.get("parts") and not step.get("kept"):
                 # Тезис модели не прошёл шаблон типа: одна повторная попытка с текстом нарушения в запросе (как у разбора
                 # источников). Второй отказ — карточка остаётся как была и откладывается до изменения (источника,
@@ -8119,7 +8151,11 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
                     if step.get("unsupported"):
                         fields["unsupported"] = str(step["unsupported"])
                     text = "---" + head_now + "\n---" + step["body"]
-                    _done, why = CT.try_write_card(path, with_meeting_mark(with_fields(text, fields)), op="body")
+                    try:
+                        _done, why = CT.try_write_card(path, with_meeting_mark(with_fields(text, fields)), op="body",
+                                                       expect_sig=step.get("sig"))
+                    except CT.CardChanged:
+                        return changed_step(step, path)
             if why:
                 refuse_step(step, why, path)
                 park_card(cwd, path, refused=True)
