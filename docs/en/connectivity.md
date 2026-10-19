@@ -194,7 +194,7 @@ check does not know the reason the old behaviour stays:
 |---|---|
 | Agent run after a drop: a 5-minute pause, up to 24 times (`OFFLINE_WAIT`, `OFFLINE_TRIES`) | all models unavailable by the check — wait for them to return, re-checking every 15 seconds; reason unknown — the old pause |
 | A route step fell over the network: 15 minutes (30 seconds if the step did work), "Check now" wakes it | reason known — wait for restoration by the check and repeat at once; unknown — the old rhythm |
-| Provider quarantine in the ring: 15 minutes after a drop, "Return to the main one" | the drop is explained by an unavailable profile or the internet — no quarantine, the provider returns with the connection; a real provider failure — quarantine as before |
+| Provider quarantine in the ring: one minute after a connection drop, 15 minutes after a gateway failure (5xx), "Return to the main one" | the drop is explained by an unavailable profile or the internet — no quarantine, the provider returns with the connection; a real provider failure — quarantine as before |
 | A request to a provider whose profile is down went out and failed by timeout | no request: the provider is skipped until the profile returns |
 | The step watchdog asked the model and the source servers with direct requests | takes the connection check's summary for what the work needs; servers whose access mode is not set are asked directly, as before |
 | A lost connection → a direct HTTP request bypassing the adapter | not done: the direct-request reserve is only for a broken adapter, not for a lost connection |

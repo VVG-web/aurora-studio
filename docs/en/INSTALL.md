@@ -256,8 +256,10 @@ follows the need:
    added right from the backend's dropdown, a model picked from the list the provider itself returned.
 
 When the primary does not answer, the call goes to the next in the chain, with its own model; an unavailable
-provider is left alone for 15 minutes. "Unavailable" means a dropped connection, three 5xx errors in a row (a rate limit between them resets the count)
-or any other unrecognised response code; a
+provider is left alone: for one minute after a connection drop (DNS, refused port, reset, certificate, proxy, unreachable network,
+connection timeout), for 15 minutes after the gateway answered badly (three 5xx errors in a row, a rate limit between them resets the count)
+or with any other unrecognised response code. The one-minute quarantine keeps a network or VPN blip from switching a gateway off for a quarter of an
+hour: the gateway is asked again after a minute, and three failures in a row (about 3 minutes of an outage) raise the red link bar. A
 rate limit (429, `Retry-After`, 503 "overloaded") does not put it in quarantine: only the gateway+model pair is
 paused, for as long as the gateway said (with no hint — 5, 10, 20 s and so on up to two minutes, with some
 randomness; a hint of "0 s" is not a hint, and from the third refusal in a row the gateway's term is only a floor
