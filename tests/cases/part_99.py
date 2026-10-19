@@ -135,7 +135,7 @@ def test_the_path_hint_is_worded_by_the_catalogue_of_each_language(tmp: Path):
             elsewhere = rr.paths_lines(panel, str(root), rr.Texts(panel, lang))
         assert elsewhere[0].startswith(other) and elsewhere[1] == "", elsewhere
     src = (COCKPIT / "aurora_cockpit.py").read_text(encoding="utf-8")
-    assert "if not parent and cmd in RR.sync_commands(project):" in src, "выгрузка одной кнопкой тоже говорит об этом в начале"
+    assert "if parent or cmd not in RR.sync_commands(project):" in src and "job_path_hint(project, cmd, parent)" in src, "выгрузка одной кнопкой тоже говорит об этом в начале"
     route = (COCKPIT / "route_runner.py").read_text(encoding="utf-8")
     assert route.index('self._git("update", "before_route")') < route.index("self._paths_hint(steps)"), \
         "подсказка считается после обновления конфига с сервера"

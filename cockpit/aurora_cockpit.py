@@ -5475,6 +5475,17 @@ def harness_action(action: str, payload: dict) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def job_path_hint(project: str, cmd: str, parent: str) -> str:
+    """Выгрузка одной кнопкой: длинные пути названы одной строкой в начале. Шаг маршрута её не печатает —
+    маршрут сказал о них один раз на весь прогон. Справка не имеет права помешать запуску команды."""
+    try:
+        if parent or cmd not in RR.sync_commands(project):
+            return ""
+        return RR.paths_lines(sys.modules[__name__], project, RR.Texts(sys.modules[__name__], "ru"))[0]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy: str = "", net_wait: bool = False) -> str:
     row = command_by_name(cmd)
     if not row or not row["runnable"]:
@@ -5546,15 +5557,8 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
                 return
             # Скрипт взят из кита, потому что у проекта нет движка или он неполный: молчать об этом
             # нельзя — прогон идёт не тем, что лежит в проекте. Что исполняется, не меняется.
-            note = engine_fallback_note(project, row["script"], path)
-            # Выгрузка вне маршрута (кнопка одной команды): длинные пути названы одной строкой в начале.
-            # Шаг маршрута её не печатает — маршрут сказал о них один раз на весь прогон.
-            if not parent and cmd in RR.sync_commands(project):
-                try:
-                    hint = RR.paths_lines(sys.modules[__name__], project, RR.Texts(sys.modules[__name__], "ru"))[0]
-                except Exception:  # noqa: BLE001 — справка не имеет права помешать запуску команды
-                    hint = ""
-                note = "\n".join(x for x in (note, hint) if x)
+            note = "\n".join(x for x in (engine_fallback_note(project, row["script"], path),
+                                         job_path_hint(project, cmd, parent)) if x)
             if note:
                 with JOBS_LOCK:
                     for one in note.split("\n"):
