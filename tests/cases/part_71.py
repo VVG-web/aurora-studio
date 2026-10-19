@@ -48,6 +48,8 @@ class _Here:
 
     def __enter__(self):
         self.was = os.getcwd()
+        AG = _mod("agent_core")
+        self.fails, self.task = dict(AG.FAILS), dict(AG.RUN_TASK)        # счётчик сбоев — общий на процесс
         self.run_dir = os.environ.get("AURORA_RUN_DIR")
         os.environ["AURORA_RUN_DIR"] = str(self.root.parent / "run")
         os.makedirs(os.environ["AURORA_RUN_DIR"], exist_ok=True)
@@ -56,6 +58,11 @@ class _Here:
 
     def __exit__(self, *exc):
         os.chdir(self.was)
+        AG = _mod("agent_core")
+        AG.FAILS.clear()
+        AG.FAILS.update(self.fails)
+        AG.RUN_TASK.clear()
+        AG.RUN_TASK.update(self.task)
         if self.run_dir is None:
             os.environ.pop("AURORA_RUN_DIR", None)
         else:

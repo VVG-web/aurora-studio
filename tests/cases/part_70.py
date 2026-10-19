@@ -121,6 +121,15 @@ def test_validate_missing_source_synced_is_a_warning_not_an_error(tmp: Path):
     # и штамп такая карточка получает при касании
     stamped = C.stamp_if_conformant(text, f"{KB}/Concepts/Заявка.md", reg)
     assert "template: akdb_concept_v1.0.md" in stamped
+    # новую карточку без даты сверки вход записи не принимает (создатель её знает всегда), а правку существующей — принимает
+    born = _head(_machine(source_synced=None, template="akdb_concept_v1.0.md")) + "\n" + LEAD + "\n\n" + VERBATIM
+    path = root / KB / "Concepts" / "Новая.md"
+    done, why = C.try_write_card(str(path), born, op="create", reg=reg)
+    assert not done and "source_synced" in why and not path.exists(), (done, why)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-8"))
+    done, why = C.try_write_card(str(path), text.replace("updated: 2026-10-01", "updated: 2026-10-02"), op="header", reg=reg)
+    assert done and not why and "template: akdb_concept_v1.0.md" in path.read_text(encoding="utf-8"), why
 
 
 # ------------------------------------------------------------------ этап 0: разведка ничего не пишет

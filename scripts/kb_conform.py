@@ -781,7 +781,7 @@ PARKED_REL = os.path.join(".aurora", "state", "conform_parked.json")      # па
 
 def parked_memory(root: str) -> dict:
     """{путь карточки от проекта: отпечаток[@отпечаток реестра]} — карточки, которые `agent:conform` отложил до правки файла."""
-    return CT.read_small_json(os.path.join(root, PARKED_REL))
+    return CT.read_small_json(os.path.join(root, PARKED_REL), 64 << 20)
 
 
 def is_parked(root: str, path: str, memory: "dict | None" = None) -> bool:
@@ -892,7 +892,8 @@ def finalize(root: str, reg, apply: bool) -> int:
 
 def _in_git() -> bool:
     try:
-        cp = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True, timeout=30)
+        cp = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=30)
         return cp.returncode == 0 and cp.stdout.strip() == "true"
     except (OSError, subprocess.SubprocessError):
         return False
@@ -915,6 +916,9 @@ def main(argv=None) -> int:
     ap.add_argument("--limit", type=int, default=0, metavar="N", help="разобрать только первые N карточек (для пробы)")
     ap.add_argument("--root", metavar="PATH", default=".", help="корень проекта (по умолчанию — текущая папка)")
     args = ap.parse_args(argv)
+    if not hasattr(CT, "unmanaged_card"):             # card_types.py не доехал при обновлении: команда без него не работает
+        print("kb_conform: копия card_types.py старше этого скрипта — обновите проект: `kit:update`", file=sys.stderr)
+        return 2
     if args.root != ".":
         os.chdir(args.root)
     root = "."

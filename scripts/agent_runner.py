@@ -7380,7 +7380,14 @@ def _card_sig(path: str) -> str:
 def parked_cards(cwd: str, store: str = "") -> dict:
     """{путь от проекта: отпечаток} — отложенные карточки на момент откладывания. `store` — файл памяти задачи
     (по умолчанию — тезисов); у каждой задачи своя, чтобы отложенное одной не пряталось от другой."""
-    return CT.read_small_json(os.path.join(cwd, store or PARKED))
+    path = os.path.join(cwd, store or PARKED)
+    if hasattr(CT, "read_small_json"):                # память отложенного растёт с базой: предел щедрый (64 МБ)
+        return CT.read_small_json(path, 64 << 20)
+    try:                                              # старая копия card_types.py (обновление оборвалось)
+        data = json.load(open(path, encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def park_card(cwd: str, path: str, refused: bool = False, store: str = "") -> None:
