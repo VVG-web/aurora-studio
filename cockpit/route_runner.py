@@ -402,15 +402,8 @@ class Journal:
 def write_meta(base: str, meta: dict) -> None:
     """`meta.json` прогона: что это было, кто, когда, чем кончилось — строка истории."""
     try:
-        os.makedirs(base, exist_ok=True)
-        tmp = os.path.join(base, "meta.json.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=1)
-        try:
-            from aurora_common import replace_file
-        except ImportError:                   # панель без движка рядом — подмена без повторов
-            replace_file = os.replace
-        replace_file(tmp, os.path.join(base, "meta.json"))   # Windows: занятый читателем — с повторами
+        from aurora_common import _fs
+        _fs().write_json(os.path.join(base, "meta.json"), meta, indent=1)   # целиком или никак; Windows — с повторами
     except OSError:
         pass
 

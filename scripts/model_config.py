@@ -342,7 +342,7 @@ def save(kit, data: dict, expect=None, replace_broken: bool = False) -> dict:
         return {"ok": False, "error": f"{root} — папка проекта, а не кита: настройка моделей "
                                       "пишется только в кит (нет .aurora/kit_path.txt?)"}
     import time
-    from aurora_common import lock_release_retry, lock_take, replace_file
+    from aurora_common import lock_release_retry, lock_take
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = str(path) + ".lock"
     try:
@@ -375,19 +375,8 @@ def save(kit, data: dict, expect=None, replace_broken: bool = False) -> dict:
                             "error": "не удалось оставить копию прежнего файла рядом — замена отменена"}
                 old = {}
             _carry_unknown(old, clean)
-        import tempfile
-        fd, name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
-        tmp = Path(name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(json.dumps(clean, ensure_ascii=False, indent=2) + "\n")
-            try:
-                os.chmod(tmp, 0o600)
-            except OSError:
-                pass
-            replace_file(tmp, path)
-        finally:
-            tmp.unlink(missing_ok=True)
+        import aurora_fs
+        aurora_fs.write_json(path, clean, mode=0o600)       # ядро надёжности: файл рождается с правами 600, fsync, подмена
         return {"ok": True, "notes": notes, "path": str(path), "stamp": file_stamp(kit)}
     except OSError as e:
         return {"ok": False, "code": "write", "failed": True,

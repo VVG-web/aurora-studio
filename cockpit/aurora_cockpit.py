@@ -7685,22 +7685,26 @@ SESSION = os.path.join(KIT, "cockpit", ".session.json")
 RUNNING = os.path.join(KIT, "cockpit", ".running.json")
 
 
+def _running_lock():
+    """Замок записей «что идёт»: читать-менять-писать из потоков панели, Cron и второй панели не теряет отметки
+    друг друга (BL-SEC-25). Файл замка — рядом с `.running.json`, в `.gitignore` кита."""
+    import aurora_fs
+    return aurora_fs.FileLock(RUNNING + ".lock", timeout=10, optional=True)
+
+
 def mark_running(job_id: str, name: str, project: str, on: bool) -> None:
+    import aurora_fs
     try:
-        with open(RUNNING, encoding="utf-8") as f:
-            rows = json.load(f)
-    except (OSError, ValueError):
-        rows = {}
-    if on:
-        # `panel` — процесс панели, что ведёт работу: новая панель снимает только записи
-        # мёртвых панелей (`drop_dead_running`), а не чужие живые.
-        rows[job_id] = {"cmd": name, "project": os.path.basename(project or ""),
-                        "since": utc_stamp(), "panel": os.getpid()}
-    else:
-        rows.pop(job_id, None)
-    try:
-        with open(RUNNING, "w", encoding="utf-8") as f:
-            json.dump(rows, f, ensure_ascii=False)
+        with _running_lock():
+            rows = aurora_fs.read_state(RUNNING, {})
+            if on:
+                # `panel` — процесс панели, что ведёт работу: новая панель снимает только записи
+                # мёртвых панелей (`drop_dead_running`), а не чужие живые.
+                rows[job_id] = {"cmd": name, "project": os.path.basename(project or ""),
+                                "since": utc_stamp(), "panel": os.getpid()}
+            else:
+                rows.pop(job_id, None)
+            aurora_fs.write_json(RUNNING, rows, indent=None)
     except OSError:
         pass
 
@@ -7712,30 +7716,34 @@ def drop_dead_running() -> None:
     уборки они навсегда запретили бы перезапуск («идёт работа»). Запись живой панели —
     не след: её работа действительно идёт, и стирать её значит ослепить ту панель.
     """
+    import aurora_fs
     from aurora_common import pid_alive
     try:
-        with open(RUNNING, encoding="utf-8") as f:
-            rows = json.load(f)
-    except (OSError, ValueError):
-        rows = {}
-    live = {k: v for k, v in rows.items() if isinstance(v, dict) and v.get("panel")
-            and v["panel"] != os.getpid() and pid_alive(int(v["panel"]))}
-    try:
-        if live:
-            with open(RUNNING, "w", encoding="utf-8") as f:
-                json.dump(live, f, ensure_ascii=False)
-        else:
-            os.remove(RUNNING)
+        with _running_lock():
+            rows = aurora_fs.read_state(RUNNING, {})
+            live = {k: v for k, v in rows.items() if isinstance(v, dict) and v.get("panel")
+                    and v["panel"] != os.getpid() and pid_alive(int(v["panel"]))}
+            if live:
+                aurora_fs.write_json(RUNNING, live, indent=None)
+            else:
+                os.remove(RUNNING)
     except OSError:
         pass
 
 
+def sweep_state_tmp() -> list:
+    """Убрать осиротевшие временные файлы записи в папках состояния панели (кит `cockpit/` и `~/.aurora`): след
+    убитого посреди записи процесса. Старше часа и только по маскам своих временных имён; свежие не трогаются."""
+    import aurora_fs
+    gone = []
+    for folder in (os.path.dirname(RUNNING), CRON.home()):
+        gone += aurora_fs.sweep_tmp(folder, patterns=("*.aurora-tmp", "*.json.tmp"))
+    return gone
+
+
 def running_now() -> dict:
-    try:
-        with open(RUNNING, encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
+    import aurora_fs
+    return aurora_fs.read_state(RUNNING, {})
 
 
 def write_session(port: int, url: str = "") -> None:
@@ -7750,17 +7758,11 @@ def write_session(port: int, url: str = "") -> None:
     base = f"http://127.0.0.1:{port}/"
     row = {"port": port, "url": url or base, "pid": os.getpid(), "kit": kit_version(),
            "auth": "code", "token": TOKEN}
-    tmp = f"{SESSION}.{os.getpid()}.tmp"
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(row, f)
-        os.replace(tmp, SESSION)
+        import aurora_fs
+        aurora_fs.write_json(SESSION, row, indent=None, mode=0o600)        # файл рождается с правами 0600
     except OSError:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+        pass
 
 
 def read_session() -> dict:
@@ -7946,6 +7948,7 @@ def main() -> int:
     # с другим HOME) стёрла файл целиком посреди ночной цепочки — работающая панель
     # потеряла отметки «что идёт», и цепочка выглядела законченной.
     drop_dead_running()
+    sweep_state_tmp()
     try:
         srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
     except OSError as e:
