@@ -6693,7 +6693,7 @@ def decide_clean(text, limit: int = 600) -> str:
     # Картинка, ссылка и тег подгружаются при открытии карточки (Obsidian, просмотр на сервере): текст источника, ведущий
     # модель, мог бы вынести кусок протокола в адрес. Остаётся подпись, адрес и разметка уходят.
     text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)
-    text = re.sub(r"<[^<>]{1,200}>", " ", text)
+    text = re.sub(r"(?i)</?(?:img|a|script|iframe|link|svg|video|audio|object|embed|style|source|meta|form|input|button|base|picture|image|body|html)\b[^<>]{0,300}>", " ", text)           # теги, что грузят чужое; «a < b» и «<10 МБ» остаются
     text = re.sub(r"(?i)\b(?:https?|ftp)://\S+|\bwww\.\S+", "", text)
     text = re.sub(r"\[\[([^\]]*)\]\]", r"\1", text).replace("{{", "(").replace("}}", ")")
     return " ".join(text.split()).lstrip("#>-* ").strip()[:limit]
