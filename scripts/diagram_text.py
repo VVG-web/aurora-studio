@@ -12,8 +12,10 @@ ENTITY не читается (миллиард смехов, внешние су
 и глубина ограничены, HTML из подписей очищается до текста, ничего не исполняется — в том числе
 `scriptTask.script` остаётся строкой, а не кодом к запуску.
 
-  describe(path)      → (markdown, вид) или (None, вид) — вид: drawio | bpmn | dmn | mermaid
+  describe(path)      → (markdown, вид) или (None, причина) — вид: drawio | bpmn | dmn | mermaid
   kind_of(path)       → вид файла или пустая строка (по расширению и по корню XML)
+
+Собственной точки входа нет: запускает `office_ingest.py` (`kb:ingest-office`).
 
 Этот модуль читает `office_ingest.py`, который запускается и на старом Python: без `:=` и `match`,
 f-строки без вложенных одинаковых кавычек.
@@ -25,7 +27,6 @@ import binascii
 import html
 import os
 import re
-import sys
 import urllib.parse
 import zlib
 from html.parser import HTMLParser
@@ -886,19 +887,3 @@ def describe(path: str) -> tuple:
         return DESCRIBERS[kind](data), kind
     except DiagramError as e:
         return None, str(e)
-
-
-def main(argv: list) -> int:
-    if len(argv) != 1:
-        print("использование: diagram_text.py <файл .drawio|.bpmn|.dmn|.mmd|.xml>")
-        return 2
-    text, kind = describe(argv[0])
-    if text is None:
-        print("не разобран: %s" % kind, file=sys.stderr)
-        return 1
-    print(text)
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))

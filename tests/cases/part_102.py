@@ -318,7 +318,7 @@ def test_bpmn_and_xml_with_bpmn_root_are_recognised_and_plain_xml_is_not(tmp: Pa
     assert D.kind_of(_write(tmp, "m.bpmn", _bpmn())) == "bpmn"
     assert D.kind_of(_write(tmp, "m.xml", _bpmn())) == "bpmn", "xml с корнем BPMN не узнан"
     assert D.kind_of(_write(tmp, "other.xml", '<?xml version="1.0"?><root><a/></root>')) == ""
-    assert D.kind_of(_write(tmp, "wsdl.xml", '<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"/>')) == "", \
+    assert D.kind_of(_write(tmp, "wsdl.xml", '<definitions xmlns="http://example.com/wsdl/"/>')) == "", \
         "definitions чужого пространства имён принят за BPMN"
     assert D.kind_of(_write(tmp, "d.xml", _file(_model()))) == "drawio"
     text, why = D.describe(str(tmp / "other.xml"))

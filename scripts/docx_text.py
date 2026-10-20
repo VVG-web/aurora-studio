@@ -665,21 +665,3 @@ def convert(path: str):
             EOFError, zlib.error):
         return None
     return text if text.strip() else None
-
-
-def main(argv: list) -> int:
-    import sys
-    if len(argv) != 1:
-        print("использование: docx_text.py <файл.docx>")
-        return 2
-    text = convert(argv[0])
-    if text is None:
-        print("не разобран", file=sys.stderr)
-        return 1
-    print(text)
-    return 0
-
-
-if __name__ == "__main__":
-    import sys
-    sys.exit(main(sys.argv[1:]))
