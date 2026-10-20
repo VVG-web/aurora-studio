@@ -14,6 +14,9 @@ Raw/project
 Raw/meetings
 Raw/examples
 Raw/corrections
+# Транскрипты вложений страниц и схем (docx, xlsx, pdf, draw.io, BPMN): пишет `kb:ingest-office`,
+# человек сюда ничего не кладёт.
+Raw/Extracted
 
 AuroraKnowledgeDB/Concepts
 AuroraKnowledgeDB/Processes

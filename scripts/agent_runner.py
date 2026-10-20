@@ -5212,6 +5212,15 @@ def accept_empty(cfg: dict, cwd: str, source: str, whole: str, note: str, step: 
                         note=f"критик видел {c.get('seen', 0)} из {len(whole)} знаков — "
                              f"«пусто» по части не принимается; worker: {note[:40]}")
             return defer(cwd, source, step, apply, lead)
+    try:
+        import build_plan as BP
+        held = BP.page_transcripts(source) if os.path.isfile(source) else []
+    except Exception:  # noqa: BLE001 — подпись отметки, не условие её постановки
+        held = []
+    if held:
+        # Знание страницы лежит во вложениях, и их транскрипты идут отдельными источниками: отметка не
+        # должна читаться как «знания нет» (страница-указатель на схему, у которой есть транскрипт).
+        note = f"страница — указатель на вложения, их транскрипты разбираются отдельно ({len(held)}); {note}"
     if apply:
         res = run_build_plan(cwd, ["--done", source, "--empty", note])
         if not res["ok"]:

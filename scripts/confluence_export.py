@@ -823,7 +823,7 @@ def need_after(has_children: bool, has_assets: bool) -> int:
     return need
 # Точка в имени ещё не расширение: вложение зовут «Стр4.Свод.Итог», и `splitext` честно
 # возвращает «.Итог». Сверяем с известными расширениями, а не с точкой.
-ASSET_EXTS = (".drawio", ".xml", ".mmd", ".png", ".svg", ".jpg", ".jpeg", ".pdf",
+ASSET_EXTS = (".drawio", ".xml", ".mmd", ".bpmn", ".dmn", ".png", ".svg", ".jpg", ".jpeg", ".pdf",
               ".puml", ".json", ".txt", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt",
               ".zip", ".7z", ".rar", ".csv", ".gif", ".webp", ".bmp", ".tif", ".tiff",
               ".rtf", ".odt", ".ods", ".odp", ".msg", ".eml",
@@ -1380,7 +1380,7 @@ class Exporter(WikiMirror):
         """
         dot = next((k for k in ASSET_EXTS if fname.lower().endswith(k)), "")
         if not dot:
-            # Расширение вне списка (.xlsm, .html, .bpmn): короткий хвост из латиницы и
+            # Расширение вне списка (.xlsm, .html, .ics): короткий хвост из латиницы и
             # цифр с буквой. Иначе у длинного имени его срезало бы вместе с хвостом, и
             # файл нечем было бы открыть. «.Итог» и «.2» остаются частью имени.
             m = re.search(r"\.(?=[0-9]*[A-Za-z])[A-Za-z0-9]{1,5}$", fname)

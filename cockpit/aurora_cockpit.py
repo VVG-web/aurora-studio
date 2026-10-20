@@ -345,6 +345,7 @@ READONLY = (
     ("Raw/meetings", "доказательная часть: протокол не правят задним числом"),
     ("Raw/laws", "доказательная часть: закон не правят"),
     ("Raw/customer", "доказательная часть: письмо заказчика не правят"),
+    ("Raw/Extracted", "машинные транскрипты вложений: правка не переживёт повторную конвертацию — правьте оригинал"),
     ("Sources", "зеркало внешней системы: правку сотрёт следующий синк"),
 )
 # База знаний выводится из источников — правится корректировкой, а не руками. Кроме
@@ -1242,6 +1243,22 @@ def net_access_save(project: str, payload: dict, lang: str = "") -> dict:
                            replace_lossy=payload.get("replace_lossy") is True)
     if res.get("ok"):
         res["state"] = net_access(project, lang)
+    return res
+
+
+def ingest_settings(project: str) -> dict:
+    """Группа «Извлечение знаний из вложений» в «Настройках проекта»: настройки, умолчания и слепок раздела."""
+    import ingest_config as IC
+    return IC.state(project)
+
+
+def ingest_settings_save(project: str, payload: dict) -> dict:
+    """Записать раздел `ingest:` конфига проекта; остальной конфиг не тронут, устаревший слепок — отказ."""
+    import ingest_config as IC
+    expect = payload.get("expect")
+    res = IC.save(project, payload.get("settings"), expect if isinstance(expect, str) else "")
+    if res.get("ok"):
+        res["state"] = IC.state(project)
     return res
 
 
@@ -6369,6 +6386,11 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(net_access(project, request_lang(q)))
+        elif u.path == "/api/ingest/settings":
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(ingest_settings(project))
         elif u.path == "/api/net/commands":
             project = (q.get("project") or [""])[0]
             self.send_json(net_commands(self._quiet_project(project)))
@@ -6862,6 +6884,14 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             res = net_access_save(project, payload, request_lang(q))
+            code = 200 if res.get("ok") else 409 if res.get("conflict") else 500 if res.get("failed") else 400
+            self.send_json(res, code)
+            return
+        if u.path == "/api/ingest/settings/save":
+            project = str(payload.get("project") or "")
+            if not self._known(project):
+                return
+            res = ingest_settings_save(project, payload)
             code = 200 if res.get("ok") else 409 if res.get("conflict") else 500 if res.get("failed") else 400
             self.send_json(res, code)
             return

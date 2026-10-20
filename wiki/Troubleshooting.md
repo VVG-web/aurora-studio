@@ -53,6 +53,23 @@ Engine scripts explain the reason instead of just failing. The common cases:
 | **A file name does not pass on Windows or macOS** | `kb:names` (preview, then `--apply`). |
 | **Cyrillic folder under `.gitignore` flagged as outside the schema** | Fixed in 1.148.2; update the engine (`kit:update`). |
 
+## Attachments and diagram transcripts
+
+What the lines of `kb:ingest-office` (and the same lines in the run summary, the plan and `kit:doctor`) mean.
+
+| Symptom | Cause and fix |
+|---|---|
+| **«Без транскрипта (текста слишком мало — логотип, иконка, пустая схема)»** (no transcript: too little text) | The file has fewer than 200 characters of text (80 for a diagram or image): a logo, an icon, an empty scheme. It is not an error. The command remembers the file's hash in `Raw/Extracted/.skipped.json`, so a repeat run and the doctor leave it alone; a changed file is tried again, `--force` tries all. |
+| **«Не разобраны: нет транскрипта — N»** in the parsing plan, or a `kit:doctor` warning "без транскрипта" | A document, attachment or diagram has no current transcript: the command was not run after the sync, the cap of files per run cut it off, or no converter fits. Run `kb:ingest-office`; the plan names the files, so nothing is skipped silently. |
+| **«Документов низкого качества: N»** (documents of low quality) | The text came out empty or unreadable (a scan without recognition, a broken encoding, repeated characters). Such a transcript has `quality: low` and is not parsed. Fix the original, or configure the recognition ring (*Models* → OCR) and run `kb:ingest-office --force`. |
+| **«Отложено до следующего запуска (потолок файлов за запуск — N)»** (postponed to the next run) | The per-run cap of attachments and diagrams was reached; written transcripts are counted. Run the command again, or raise "Files per run cap" in "Project settings" → "Extraction from attachments". |
+| **«Дубликаты по содержимому»** (duplicates by content) | The same file was attached to several pages; one transcript serves them all. Nothing to do. |
+| **«Длинные пути: имя транскрипта сокращено до хеша»** (long paths: the transcript name is cut to a hash) | The transcript path did not fit 200 characters, so its name became a hash; the header still has the full `attachment` name. To keep readable names, shorten the page titles or the project path ([path length](../docs/en/connectors.md#path-length-the-check-on-saving-settings)). |
+| **«Изображения без текста: распознавание не настроено»** (images without text: recognition is not configured) | The switch "Recognise images with a model" is on, but the recognition ring has no model. Set the model in *Models* → OCR, or turn the switch off. It is a warning; the step stays green. |
+| **«пропущено (больше предела размера вложения)»** (skipped: above the attachment size limit) | The file is larger than `attachment_max_mb`, the same limit as the sync's. Raise it in the project form if the document is needed. |
+| **«нет подходящего конвертера»** (no suitable converter) | Neither the built-in reader nor `pandoc` / `markitdown` handles the format (for example a pptx without either installed). The line names the file; install a converter ([INSTALL](../docs/en/INSTALL.md)) or export the file to docx / pdf. |
+| **A refusal naming DOCTYPE or ENTITY, or "XML nesting is above N"** | The file is not safe to read: a document or diagram that declares external entities or is built as a bomb. It is refused on purpose and not converted; take the content from the original editor. |
+
 ## The panel
 
 | Symptom | Cause and fix |

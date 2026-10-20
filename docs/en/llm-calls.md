@@ -342,13 +342,13 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 
 ## Scan recognition
 
-- **When.** The kb:ingest-office command: PDFs without a text layer from Raw/.
+- **When.** The kb:ingest-office command: PDFs without a text layer and, when "Recognise images with a model" is on in the project settings, images (jpg, png, webp, gif).
 - **Commands:** `kb:ingest-office`.
-- **Routes:** «Update the base».
+- **Routes:** «Update the base», «Repair the base», «Rebuild the base from scratch».
 
 | Role | What it does | Prompt |
 |---|---|---|
-| Document scans (OCR) | An image of each page → text (OCR_PROMPT), up to the page cap from "Models → OCR". | — |
+| Document scans (OCR) | An image of each pdf page or of an attachment → text (OCR_PROMPT, IMAGE_PROMPT), up to the page cap from "Models → OCR". | — |
 
 - **Tools:** none.
 - **Path:** direct HTTP, bypassing Pydantic AI.

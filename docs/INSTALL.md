@@ -24,10 +24,12 @@ flowchart LR
 |---|---|---|
 | `pandoc` | `ship:export` (markdown → docx/pdf) | пакетный менеджер системы |
 | `beautifulsoup4`, `markdownify`, `lxml` | `sync:confluence` | `pip install` или «Установка» в панели |
-| `markitdown`, `openpyxl`, `pypdf` | `kb:ingest-office` | `pip install` или «Установка» |
+| `openpyxl` (xlsx), `pypdf`, PyMuPDF или `pdftotext` (pdf), `pandoc` или `markitdown` (pptx, odt, rtf) | `kb:ingest-office` | `pip install`, пакетный менеджер или «Установка» |
 | Pydantic AI | каждый вызов модели идёт через него | «Установка» → «Надстройки движка» (venv в `~/.aurora/`) |
 | graphify | темы графа, MCP-сервер по графу, выгрузки HTML/Neo4j | то же |
 | Obsidian | навигация по вики-ссылкам | по желанию: формат совместим |
+
+`kb:ingest-office` читает docx и схемы draw.io, BPMN и DMN встроенным кодом, без зависимостей; изображения (по желанию) читает зрячая модель из раздела «Модели».
 
 Что не хватает на машине и в проекте: `python3 aurora.py doctor <проект>` или раздел «Установка»
 в панели — он называет, какие команды без этого не работают.

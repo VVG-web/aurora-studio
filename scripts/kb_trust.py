@@ -277,6 +277,19 @@ def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
         # встреч PRJ-B записал в знание «по определению» сотни карточек из разговоров.
         return "meeting", ("стенограмма встречи — сказано в разговоре, а не записано в "
                            "документе; подтвердить документом или задачей")
+    if src.startswith("Raw/Extracted/"):
+        # Транскрипт вложения страницы лежит в `Raw/`, но подписанным документом не стал: его доверие —
+        # доверие страницы-владельца (поле `page:` шапки). Страницы нет — происхождение ничем не подтверждено.
+        try:
+            head = open(src, encoding="utf-8", errors="ignore").read(1500).split("\n---\n", 1)[0]
+        except OSError:
+            head = ""
+        m = re.search(r'(?m)^page:\s*"?([^"\n]+?)"?\s*$', head)
+        if m and depth < REF_DEPTH + 1:
+            cls, why = source_class(m.group(1), table, statuses, trust, draft, docs, reference, depth + 1, explicit)
+            return cls, f"вложение страницы {m.group(1)}: {why}"
+        return "draft", ("транскрипт вложения без страницы-владельца: машинная копия файла, происхождение "
+                         "не подтверждено")
     if src.startswith("Raw/"):
         return "raw", "первоисточник в Raw/ — подписанный документ, доверие по определению"
     # Галочка «доверять» у корня синка Confluence — первое слово (решение пользователя

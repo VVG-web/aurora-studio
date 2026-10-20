@@ -12,7 +12,9 @@
   python3 .aurora/scripts/build_plan.py --status            # прогресс по манифесту
 
 Порядок обхода задан `build.md` (сначала терминология, потом то, что на неё ссылается):
-Reference → Statuses → Raw/project → Sources/Confluence → Sources/JIRA. Внутри группы —
+Reference → Statuses → Raw/project → Sources/Confluence → Sources/Web → Raw/Extracted (тексты
+вложений страниц) → встречи. Страницы идут раньше своих вложений: карточка страницы уже есть, когда
+знание из вложения дописывается в неё, а не заводит рядом документ-двойник. Внутри группы —
 по возрастанию размера: мелкие источники дают карточки быстрее и наполняют глоссарий,
 на который опираются крупные.
 
@@ -62,6 +64,11 @@ GROUPS = [
     # идут — обход выше пропускает папки с подчёркивания: картинка и приказ не источник
     # для разбора, а то, на что ссылается разобранная страница.
     ("Web", os.path.join("Sources", "Web")),
+    # Тексты вложений страниц (docx, xlsx, pdf) и схем (draw.io, BPMN), которые переводит `kb:ingest-office`:
+    # после страниц, потому что знание из вложения дописывается в карточки сущностей, а страница-владелец
+    # входит в `sources` карточки (`source_refs`). Черновики из `Workspaces/` сюда не идут: это рабочие
+    # материалы задачи, а не источник знания. Транскрипт с `quality: low` в план не берётся, но называется.
+    ("Вложения", os.path.join("Raw", "Extracted")),
     # Стенограммы встреч — последними: сказанное в разговоре чаще уточняет уже известное,
     # и дописывать его есть куда, когда документы разобраны. Каждая карточка из встречи
     # несёт пометку об этом (`with_meeting_mark`) — решение пользователя 24.09.2026.
@@ -265,9 +272,22 @@ def save_manifest(data: dict) -> None:
         raise
 
 
+LOW_QUALITY: list = []         # транскрипты с `quality: low`, не вошедшие в последний `sources()`
+
+
+def low_quality(path: str) -> bool:
+    """Транскрипт помечен `quality: low`: текст пуст или не читается, в разбор он не идёт (поле шапки)."""
+    try:
+        head = open(path, encoding="utf-8", errors="ignore").read(1500)
+    except OSError:
+        return False
+    return bool(re.search(r"(?m)^quality:\s*low\s*$", head.split("\n---\n", 1)[0]))
+
+
 def sources() -> list:
     """Все файлы-источники по группам, в порядке обхода build.md."""
     out = []
+    LOW_QUALITY.clear()
     for group, root in GROUPS:
         if not os.path.isdir(root):
             continue
@@ -276,6 +296,8 @@ def sources() -> list:
             # Разбирать устаревшую копию договора наравне с действующей значит заводить
             # карточки, противоречащие друг другу, и тратить на это партию целиком.
             dirs[:] = [d for d in dirs if not d.startswith((".", "_"))]
+            if group == "Вложения" and os.path.abspath(dirpath) == os.path.abspath(root):
+                dirs[:] = [d for d in dirs if d != "Workspaces"]       # черновики задач — не источник знания
             # В Reference источник — сам справочник (список аббревиатур, кодов, ролей),
             # а не атомарные карточки, извлечённые из него прошлым build'ом.
             if group == "Reference" and os.path.abspath(dirpath) != os.path.abspath(root):
@@ -301,6 +323,11 @@ def sources() -> list:
                 if human_twin(os.path.join(dirpath, f)):
                     continue
                 path = os.path.join(dirpath, f).replace("\\", "/")
+                # Транскрипт, где текста нет или он не читается (скан без распознавания, битая кодировка), в
+                # разбор молча не идёт: он называется в плане и в `kit:doctor`, и человек решает, что с ним делать.
+                if is_machine_copy(path) and low_quality(path):
+                    LOW_QUALITY.append(path)
+                    continue
                 if retired_page(path):
                     continue
                 # Карточка, собранная из справочника, ложится рядом с ним — и попадала
@@ -424,18 +451,65 @@ def is_template(path: str, text: str = "") -> bool:
     return bool(re.search(r"(?im)^\s*template:\s*(true|yes|да)\s*$", fm))
 
 
+def transcript_head(path: str) -> str:
+    try:
+        return open(path, encoding="utf-8", errors="ignore").read(1500)
+    except OSError:
+        return ""
+
+
+def source_refs(source: str) -> list:
+    """Источники карточки, рождённой из `source`: он сам и, у транскрипта вложения, страница-владелец.
+
+    Карточка, собранная из транскрипта вложения, ссылается и на страницу: по странице работают связи
+    карточек (`kb:links`), трассировка и доверие, а транскрипт лежит в `Raw/Extracted/` и страницей не
+    является. Без страницы такая карточка была бы видна только по пути транскрипта."""
+    refs = [source]
+    if source.replace("\\", "/").startswith("Raw/Extracted/"):
+        m = re.search(r'(?m)^page:\s*"?([^"\n]+?)"?\s*$', transcript_head(source).split("\n---\n", 1)[0])
+        if m and os.path.isfile(m.group(1)):
+            refs.append(m.group(1))
+    return refs
+
+
+def page_transcripts(page: str) -> list:
+    """Транскрипты вложений страницы, что лежат на диске: `Raw/Extracted/<источник>/<путь страницы>/…`."""
+    page = (page or "").replace("\\", "/")
+    if not page.startswith("Sources/") or not page.endswith(".md"):
+        return []
+    kind, _, rest = page[len("Sources/"):-len(".md")].partition("/")
+    folder = f"Raw/Extracted/{kind}/{rest}"
+    out = []
+    if rest and os.path.isdir(folder):
+        for dirpath, _dirs, files in safe_walk(folder):
+            for f in sorted(files):
+                full = os.path.join(dirpath, f).replace("\\", "/")
+                if f.endswith(".md") and re.search(r'(?m)^page:\s*"?' + re.escape(page) + r'"?\s*$',
+                                                   transcript_head(full).split("\n---\n", 1)[0]):
+                    out.append(full)
+    return out
+
+
 # Источник, у которого всё содержание — ссылка на внешний артефакт (схема .drawio,
 # картинка, файл). Знание в нём есть: сущность названа и указано, где она описана.
 ARTIFACT_LINK = re.compile(r"(?i)\.(drawio|vsdx?|png|jpe?g|pdf|xlsx?|docx?|pptx?)\b")
 
 
-def only_artifact_link(text: str) -> str:
-    """Ссылка на внешний артефакт, если больше в источнике ничего нет. → ссылка или пусто."""
+def only_artifact_link(text: str, path: str = "") -> str:
+    """Ссылка на внешний артефакт, если больше в источнике ничего нет. → ссылка или пусто.
+
+    Транскрипт — сам текст, а не ссылка на него (в его предупреждении названо имя оригинала, и оно
+    походило бы на ссылку). Страница, вложения которой уже переведены в текст (`path` — её путь), тоже не
+    указатель: знание лежит в их транскриптах, и «текста в источнике нет» про неё неверно."""
+    if "converted_from:" in (text or "")[:1000]:
+        return ""
     body = re.sub(r"(?s)^---.*?\n---\n", "", text or "")
     body = re.sub(r"(?m)^#.*$", "", body).strip()
     if len(" ".join(body.split())) > 400:
         return ""
     m = ARTIFACT_LINK.search(body)
+    if m and path and page_transcripts(path):
+        return ""
     return body if m else ""
 
 
@@ -448,6 +522,22 @@ def source_title(path: str, text: str = "") -> str:
                                    else os.path.basename(path)[:-3])).strip()
     clean, _codes = split_doc_code(raw.replace("_", " "))
     return (clean or raw).strip()
+
+
+def untranscribed() -> list:
+    """[путь] документов, схем и вложений, у которых нет актуального транскрипта: план их не видит.
+
+    План берёт только markdown, а docx, pdf, xlsx и схемы читаются из транскриптов, которые пишет
+    `kb:ingest-office`. Файл без транскрипта (не переведён или изменился после перевода) молча
+    выпадал из разбора — теперь он называется. Сам план ничего не конвертирует: конвертация идёт
+    минутами и вызывает модель для сканов, ей место в отдельном шаге маршрута, а не внутри плана.
+    Файл, из которого транскрипт не вышел (логотип, пустая схема), называется тоже: отличить его
+    от непереведённого можно только переводом."""
+    try:
+        import office_ingest as OI
+        return OI.inventory()["loose"]
+    except Exception:  # noqa: BLE001 — страховка, а не замок: не вышло спросить — план идёт как шёл
+        return []
 
 
 def card_body_of(text: str) -> str:
@@ -998,7 +1088,7 @@ def append_card(path: str, old_text: str, body: str, source: str, apply: bool,
     if was and was != source and was in srcs:
         srcs = [source if s == was else s for s in srcs]
     if source not in srcs:
-        srcs = srcs + [source]
+        srcs = srcs + [r for r in source_refs(source) if r not in srcs]
     new_head = with_sources(head, srcs)
     for key, val in (("source_synced", TODAY), ("updated", TODAY)):
         new_head = (re.sub(rf"^{key}:.*$", f"{key}: {val}", new_head, flags=re.M)
@@ -1516,7 +1606,7 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     reg = registry_for(root or ".")
     type_id = table.get(into, "concept")
     fields = {"title": title, "aliases": codes, "kind": fresh_kind(into, body, source, type_id, reg),
-              "status": "draft", "summary": summary.strip(), "sources": [source], "source_synced": TODAY,
+              "status": "draft", "summary": summary.strip(), "sources": source_refs(source), "source_synced": TODAY,
               "created": TODAY, "updated": TODAY, "built": "machine", "built_by": by,
               # Требование, сказанное на встрече, — заявлено, но не согласовано (правило
               # базы для встреч: `req_status: stated`).
@@ -1927,6 +2017,24 @@ def main() -> int:
         d = by_group.get(g)
         if d:
             print(f"| {g} | {d['всего']} | {d['осталось']} | {d['объём'] // 1024} КБ |")
+
+    loose = untranscribed()
+    if loose:
+        print(f"\n⚠ Не разобраны: нет транскрипта — {len(loose)} (документы, вложения, схемы). Знание из них "
+              "в базу не попадёт, пока не пройдёт `kb:ingest-office` («Превратить docx/pdf/xlsx в текст»); "
+              "если после него файл остался в этом списке, текста в нём слишком мало или нужного конвертера нет:")
+        for p in loose[:8]:
+            print(f"  - {p}")
+        if len(loose) > 8:
+            print(f"  … ещё {len(loose) - 8}")
+    if LOW_QUALITY:
+        print(f"\n⚠ Низкого качества — в план не включены: {len(LOW_QUALITY)}. Текст транскрипта пуст или не "
+              "читается (скан без распознавания, битая кодировка); исправьте оригинал или включите "
+              "распознавание, затем `kb:ingest-office --force`:")
+        for p in LOW_QUALITY[:8]:
+            print(f"  - {p}")
+        if len(LOW_QUALITY) > 8:
+            print(f"  … ещё {len(LOW_QUALITY) - 8}")
 
     if a.status:
         return 0

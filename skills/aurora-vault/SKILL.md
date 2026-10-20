@@ -140,7 +140,7 @@ needed for the requested command (progressive disclosure, keep context small).
 | Command | What it does | Reference |
 |---|---|---|
 | `kb:build` (`build`) | извлечь карточки: план и учёт — `build_plan.py`, само извлечение — модель. `--partition N` печатает готовое задание на партию: список файлов и правила | `references/build.md` |
-| `kb:ingest-office [path]` | docx/pdf/xlsx/pptx из Raw/ → markdown-транскрипты рядом с оригиналом | `references/maintenance.md` |
+| `kb:ingest-office [path]` | docx/pdf/xlsx/pptx из Raw/ → markdown-транскрипты рядом с оригиналом; вложения страниц Confluence и схемы draw.io / BPMN → транскрипты в `Raw/Extracted/` | `references/maintenance.md` |
 | `kb:ingest <path>` (`ingest`, `ingest-raw`, `ingest-meeting`, `ingest-tz`) | документ из Raw/ → карточки; ветка определяется по документу: ТЗ → REQ с `tz_ref`, транскрипт встречи → резюме, DR, REQ и факты, прочее → атомарные карточки | `references/workflows.md` |
 | `kb:reset` (`reset`) | обнулить базу и собрать заново: сносит из `AuroraKnowledgeDB/` то, что соберётся заново (карточка с живым `source:`), за её пределами не трогает ничего; карточки неизвестного происхождения остаются — `--list-unknown` покажет их, `--drop-unknown` снесёт; откат — из git (`kb_reset.py`) | `references/maintenance.md` |
 | `kb:links` (`links`, `graph`) | граф связей: ключи Requirement Yogi и номера историй; `--cards` переносит связи в `related:` карточек (`kb_graph.py`) | `references/build.md` |
@@ -374,7 +374,7 @@ Context assembly for ALL prompt-enrichment: `references/retrieval.md`.
 | целостность зеркал | `sync_audit.py` | что досинхронизировать |
 | метрики и дашборд | `aurora_stats.py` | комментарий к динамике |
 | план извлечения | `build_plan.py` | само извлечение карточек из источника |
-| офисные первоисточники | `office_ingest.py` | извлечение карточек из транскрипта |
+| офисные первоисточники, вложения страниц и схемы | `office_ingest.py` | извлечение карточек из транскрипта; файлы без транскрипта и транскрипты `quality: low` называет план |
 | экспорт документа | `ship_doc.py --export` | вычитка результата перед передачей |
 | трассировка | `kb_trace.py --requirements` | разбор разрывов |
 | готовность проекта | `aurora_doctor.py` | починка конфига |

@@ -821,22 +821,22 @@
         "en": "Scan recognition"
       },
       "when": {
-        "ru": "Команда kb:ingest-office: PDF без текстового слоя из Raw/.",
-        "en": "The kb:ingest-office command: PDFs without a text layer from Raw/."
+        "ru": "Команда kb:ingest-office: PDF без текстового слоя и, если в настройках проекта включено «Распознавать изображения моделью», изображения (jpg, png, webp, gif).",
+        "en": "The kb:ingest-office command: PDFs without a text layer and, when \"Recognise images with a model\" is on in the project settings, images (jpg, png, webp, gif)."
       },
       "commands": [
         "kb:ingest-office"
       ],
       "code": [
-        "office_ingest.py:conv_pdf_ocr"
+        "office_ingest.py:ocr_page"
       ],
       "steps": [
         {
           "role": "document",
           "capability": "ocr",
           "what": {
-            "ru": "Картинка каждой страницы → текст (OCR_PROMPT), до потолка страниц из «Модели → OCR».",
-            "en": "An image of each page → text (OCR_PROMPT), up to the page cap from \"Models → OCR\"."
+            "ru": "Картинка каждой страницы pdf или изображение вложения → текст (OCR_PROMPT, IMAGE_PROMPT), до потолка страниц из «Модели → OCR».",
+            "en": "An image of each pdf page or of an attachment → text (OCR_PROMPT, IMAGE_PROMPT), up to the page cap from \"Models → OCR\"."
           }
         }
       ],

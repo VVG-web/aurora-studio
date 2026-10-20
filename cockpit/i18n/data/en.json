@@ -18,7 +18,7 @@
     "sync:diff": "Drift: a source changed after the knowledge was built.",
     "sync:jira-status": "The reverse flow: issue statuses → candidates for `req_status`, issues without requirements, links by mention.",
     "kb:build": "Card extraction: plan, batches and ledger by script, the extraction itself by the model; `--slice`, `--card`, `--append`, `--reopen`, `--thin`.",
-    "kb:ingest-office": "docx/pdf/xlsx/pptx from `Raw/` → Markdown transcripts next to the original; scans are read by a vision model if configured.",
+    "kb:ingest-office": "docx/pdf/xlsx/pptx from `Raw/`, page attachments and draw.io/BPMN diagrams → Markdown transcripts (next to the original or in `Raw/Extracted/`); scans are read by a vision model if configured.",
     "kb:ingest": "A document from `Raw/` → cards linked to the primary source; the branch is chosen by the document: a spec → REQ with `tz_ref`, a meeting transcript → summary, DR, REQ and facts.",
     "kb:repair": "Repair: broken links, homoglyphs, legacy frontmatter, fields outside the schema, stubs for links; modes by flag (`--titles`, `--terms`, `--gone-sources`, `--template`, `--copies`, `--aliases`, `--sections`, …). Renaming and moving steps of one run combine on a single card (name from the rename, folder from the move); a taken or contradicting destination is left in the report. Preview without `--apply`.",
     "kb:names": "File and folder names by the strictest rules of Windows, macOS and Linux: long Confluence paths, card names with links, case-only differences.",
@@ -123,7 +123,7 @@
     "Забрать свежие задачи Jira": "Fetch fresh Jira issues",
     "Забрать страницы сайтов по списку адресов": "Fetch website pages from a list of URLs",
     "Убедиться, что зеркала целы: строить будем из них": "Make sure the mirrors are intact: the base is built from them",
-    "Превратить docx/pdf/xlsx из Raw/ в текст, который движок умеет читать": "Turn docx/pdf/xlsx from Raw/ into text the engine can read",
+    "Превратить документы из Raw/, вложения страниц и схемы draw.io/BPMN в текст, который движок умеет читать": "Turn documents from Raw/, page attachments and draw.io/BPMN diagrams into text the engine can read",
     "Карточки, собранные по шаблону страницы, а не по знанию: такие — в архив, их источники — обратно в план, где разбор разложит знание по своим сущностям": "Cards assembled from a page template, not from knowledge: they go to the archive, their sources back to the plan, where parsing lays the knowledge out among its own entities",
     "Документ, разобранный дважды — из копии человека и из машинной расшифровки: расшифровку снять, знание остаётся из копии": "A document parsed twice — from the human's copy and from a machine transcript: drop the transcript, the knowledge stays from the copy",
     "Вернуть в план источники, которые изменились после разбора": "Return to the plan the sources that changed after parsing",
@@ -556,12 +556,12 @@
     "{}: в списке «{}» не только непустые строки — лишнее отброшено": "{}: the list «{}» holds more than non-empty strings — the extras were dropped",
     "{}: в списке «{}» нет ни одной непустой строки — поле не применено": "{}: the list «{}» has no non-empty string — the field was not applied",
     "profile «{}»: «{}» в modules — не раздел из cockpit/modules (встроенные разделы профиль не прячет)": "profile «{}»: «{}» in modules is not a section from cockpit/modules (the profile does not hide the built-in sections)",
-  "profile «{}»: «{}» в scenarios — не маршрут из cockpit/scenarios.txt": "profile «{}»: «{}» in scenarios is not a route from cockpit/scenarios.txt",
-  "не удалось записать local/features.json: {}": "could not write local/features.json: {}",
-  "не удалось записать local/profile.json: {}": "could not write local/profile.json: {}",
-  "неизвестная возможность: {}": "unknown feature: {}",
-  "нет такого профиля среди принятых пресетов: {}": "no such profile among the accepted presets: {}",
-  "роли для профилей выключены: включите их в разделе «Разработка»": "roles for profiles are off: turn them on in the Development section",
+    "profile «{}»: «{}» в scenarios — не маршрут из cockpit/scenarios.txt": "profile «{}»: «{}» in scenarios is not a route from cockpit/scenarios.txt",
+    "не удалось записать local/features.json: {}": "could not write local/features.json: {}",
+    "не удалось записать local/profile.json: {}": "could not write local/profile.json: {}",
+    "неизвестная возможность: {}": "unknown feature: {}",
+    "нет такого профиля среди принятых пресетов: {}": "no such profile among the accepted presets: {}",
+    "роли для профилей выключены: включите их в разделе «Разработка»": "roles for profiles are off: turn them on in the Development section",
     "пустое name — у профиля должно быть название": "empty name — a profile must have a title",
     "local/profile.json не читается ({}) — взят профиль «all»": "local/profile.json cannot be read ({}) — profile «all» taken",
     "local/profile.json: нет поля id — взят профиль «all»": "local/profile.json: there is no id field — profile «all» taken",
@@ -620,7 +620,9 @@
     "движок проекта {} новее кита {}: обновите кит (git pull в его папке), а движок проекта понижать не нужно.": "the project's engine {} is newer than kit {}: update the kit (git pull in its folder), there is no need to downgrade the project's engine.",
     "идёт обновление движка проекта — начните маршрут после него.": "the project's engine is being updated — start the route after it.",
     "проект ведёт движок сам (aurora.update_ignore.txt) — обновление его не трогает": "the project keeps its engine itself (aurora.update_ignore.txt) — the update does not touch it",
-    "движок или штамп проекта новее кита — обновление его не понизит": "the project's engine or stamp is newer than the kit — the update will not downgrade it"
+    "движок или штамп проекта новее кита — обновление его не понизит": "the project's engine or stamp is newer than the kit — the update will not downgrade it",
+    "без транскрипта: {} ({}{}) → знание из этих файлов в базу не попадёт: запустите `kb:ingest-office`; если файл остался в списке и после него, текста в нём слишком мало или нужного конвертера нет": "without a transcript: {} ({}{}) → the knowledge in these files will not reach the base: run `kb:ingest-office`; if a file stays in the list after it, it has too little text or the converter it needs is missing",
+    "транскриптов низкого качества: {} ({}{}) → текст пуст или не читается, в разбор они не идут: исправьте оригинал или включите распознавание и запустите `kb:ingest-office --force`": "low-quality transcripts: {} ({}{}) → the text is empty or unreadable and they are not parsed: fix the original or enable recognition and run `kb:ingest-office --force`"
   },
   "connectors": {
     "confluence-dc": {
@@ -1039,7 +1041,10 @@
     "волна правок: что затронет требование (ключ Requirement Yogi)": "the wave of edits: what a requirement touches (a Requirement Yogi key)",
     "типы ключей, которые считать требованиями, через запятую (по умолчанию REQ)": "key types to treat as requirements, comma-separated (REQ by default)",
     "Вернуть движок проекта (.aurora/) к состоянию до последнего обновления из снимка; без --apply — только просмотр": "Return the project's engine (.aurora/) to its state before the last update from the snapshot; without --apply it only previews",
-    "Разрешить обновление, когда движок или штамп проекта НОВЕЕ кита (осознанный откат кита)": "Allow the update when the project's engine or stamp is NEWER than the kit (a deliberate kit rollback)"
+    "Разрешить обновление, когда движок или штамп проекта НОВЕЕ кита (осознанный откат кита)": "Allow the update when the project's engine or stamp is NEWER than the kit (a deliberate kit rollback)",
+    "не разбирать вложения страниц (Sources/…/<страница>_assets)": "do not process page attachments (Sources/…/<page>_assets)",
+    "не разбирать схемы draw.io и модели BPMN": "do not process draw.io diagrams and BPMN models",
+    "потолок вложений и схем за запуск (по умолчанию — из настроек проекта)": "cap on attachments and diagrams per run (default: from the project settings)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",
@@ -1065,7 +1070,8 @@
     "[ПРОСТРАНСТВО]": "[SPACE]",
     "ФАЙЛ|Q-NNN": "FILE|Q-NNN",
     "КЛЮЧ": "KEY",
-    "ТИПЫ": "TYPES"
+    "ТИПЫ": "TYPES",
+    "ЧИСЛО": "N"
   },
   "connector_texts": {
     "персональный токен Confluence (CONFLUENCE_PAT) либо CONFLUENCE_USER + CONFLUENCE_PASSWORD": "a Confluence personal token (CONFLUENCE_PAT) or CONFLUENCE_USER + CONFLUENCE_PASSWORD",

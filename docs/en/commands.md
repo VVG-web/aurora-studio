@@ -45,7 +45,7 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 | Command | What it does | Executor | Since |
 |---|---|---|---|
 | `kb:build` (`build`) | Card extraction: plan, batches and ledger by script, the extraction itself by the model; `--slice`, `--card`, `--append`, `--reopen`, `--thin`. | script + model | 1.0.0 |
-| `kb:ingest-office` | docx/pdf/xlsx/pptx from `Raw/` → Markdown transcripts next to the original; scans are read by a vision model if configured. | script | 1.5.0 |
+| `kb:ingest-office` | docx/pdf/xlsx/pptx from `Raw/`, page attachments and draw.io/BPMN diagrams → Markdown transcripts (next to the original or in `Raw/Extracted/`); scans are read by a vision model if configured. | script | 1.5.0 |
 | `kb:ingest` (`ingest`, `ingest-raw`, `ingest-meeting`, `ingest-tz`) | A document from `Raw/` → cards linked to the primary source; the branch is chosen by the document: a spec → REQ with `tz_ref`, a meeting transcript → summary, DR, REQ and facts. | model | 1.0.0 |
 | `kb:repair` (`fix`) | Repair: broken links, homoglyphs, legacy frontmatter, fields outside the schema, stubs for links; modes by flag (`--titles`, `--terms`, `--gone-sources`, `--template`, `--copies`, `--aliases`, `--sections`, …). Renaming and moving steps of one run combine on a single card (name from the rename, folder from the move); a taken or contradicting destination is left in the report. Preview without `--apply`. | script | 1.3.0 |
 | `kb:names` (`fix`) | File and folder names by the strictest rules of Windows, macOS and Linux: long Confluence paths, card names with links, case-only differences. | script | 1.140.0 |

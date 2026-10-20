@@ -1721,7 +1721,9 @@ def test_only_neutral_hosts_in_tracked_files(tmp: Path):
              "raw.githubusercontent.com",   # обновление кита читает VERSION с GitHub (1.124.0)
              "pypi.org",   # надстройки движка сверяют версию, которую поставит pip (1.138.0)
              "pythonhosted.org",   # файлы пакетов PyPI: установка надстроек различает их и частный индекс (BL-SEC-21)
-             "bitbucket.org"}   # облачный Bitbucket — сервер модуля провайдера Git (1.154.0)
+             "bitbucket.org",   # облачный Bitbucket — сервер модуля провайдера Git (1.154.0)
+             "www.omg.org",   # пространства имён стандартов BPMN и DMN: по ним узнаётся схема (1.188.0)
+             "www.w3.org"}   # пространство имён SVG в фикстурах чтения svg-вложений (1.188.0)
     def ok(host: str) -> bool:
         h = host.lower().rstrip(".")
         if h in allow or any(h.endswith("." + a) for a in allow):

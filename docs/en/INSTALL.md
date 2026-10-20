@@ -24,10 +24,12 @@ flowchart LR
 |---|---|---|
 | `pandoc` | `ship:export` (Markdown → docx/pdf) | your system's package manager |
 | `beautifulsoup4`, `markdownify`, `lxml` | `sync:confluence` | `pip install` or "Install" in the panel |
-| `markitdown`, `openpyxl`, `pypdf` | `kb:ingest-office` | `pip install` or "Install" |
+| `openpyxl` (xlsx), `pypdf`, PyMuPDF or `pdftotext` (pdf), `pandoc` or `markitdown` (pptx, odt, rtf) | `kb:ingest-office` | `pip install`, the system package manager or "Install" |
 | Pydantic AI | every model call goes through it | "Install" → "Engine add-ons" (a venv in `~/.aurora/`) |
 | graphify | graph themes, an MCP server over the graph, HTML/Neo4j exports | the same |
 | Obsidian | wiki-link navigation | optional: the format is compatible |
+
+`kb:ingest-office` reads docx and draw.io, BPMN and DMN diagrams with built-in code, without dependencies; images (optional) are read by the vision model from the "Models" section.
 
 What is missing on the machine and in the project: `python3 aurora.py doctor <project>` or the "Install"
 section of the panel — it names which commands do not work without it.
