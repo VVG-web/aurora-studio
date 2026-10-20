@@ -810,7 +810,11 @@ def main() -> int:
         items, notes = discover(cfg)
 
     if not items:
+        # вложений не осталось вовсе — транскрипты исчезнувших всё равно убираем
+        gone = clean_orphans([], a.dry_run) if not a.paths else []
         print("office_ingest: офисных файлов не найдено — конвертировать нечего")
+        if gone:
+            print(f"{'Будет убрано' if a.dry_run else 'Убрано'} транскриптов, у которых нет оригинала: {len(gone)}")
         return 0
     assign_unique(items)
 
@@ -826,10 +830,13 @@ def main() -> int:
         if extracted and budget <= 0 and not is_fresh(item["dst"], file_hash(item["src"])):
             stats.deferred.append(item["src"])
             continue
-        before = len(stats.skipped)
+        written = len(stats.done)
         process(item, a, stats, a.force)
-        if extracted and len(stats.skipped) == before:
-            budget -= 1                       # потолок — на файлы, которые пришлось переводить, а не на пропущенные
+        if extracted and len(stats.done) > written:
+            # Потолок считает записанные транскрипты. Пропущенные как неизменившиеся не в счёте, а пустые
+            # (логотип) и неразобранные при каждом запуске пробуются заново: считай их, они занимали бы
+            # потолок вечно, и остальное не добиралось бы никогда.
+            budget -= 1
 
     if not a.paths and not a.dry_run:
         stats.removed = clean_orphans(items, False)
