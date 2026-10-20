@@ -234,7 +234,7 @@ flowchart TD
 |---|---|---|---|---|---|
 | 1 | Source mirror | `sync:confluence`, `sync:jira`, `sync:web` | a file in `Sources/`, an entry in `sync_state.md` / `update_log.md` | sync without errors, `sync:audit` shows no MISSING | **yes** |
 | 2 | Own documents | put into `Raw/` by hand | nothing: `Raw/` is immutable by agreement | the file is in place and will not be edited | **yes** for contracts and meetings |
-| 3 | Office formats | `kb:ingest-office` | a `.md` transcript next to the original | the transcript is readable, tables did not fall apart | yes, if the source is not Markdown |
+| 3 | Office formats, attachments, diagrams | `kb:ingest-office` | a `.md` transcript next to the original in `Raw/`, or in `Raw/Extracted/` for page attachments and draw.io / BPMN diagrams | the transcript is readable, tables did not fall apart, no `quality: low` mark | yes, if the source is not Markdown |
 | 4 | Parse plan | `kb:build` | writes nothing, reads `manifest.json` | the plan has non-empty batches | **yes** |
 | 5 | Parsing | `agent:build` (or `kb:build` → assistant) | cards with `source:`, `built: machine`, `source_synced:` | the file is parsed **entirely** | **yes** |
 | 6 | The parse mark | the parse itself (`kb:build --done`) | an entry in `manifest.json` | the mark is accepted — otherwise an error, it is checked against the base | **yes** |

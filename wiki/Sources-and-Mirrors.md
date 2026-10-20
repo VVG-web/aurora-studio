@@ -97,3 +97,24 @@ Contracts, laws, meeting transcripts and customer material go into `Raw/{laws,co
 examples,corrections}`. By agreement it is **immutable** and counts as trusted without proof. Office formats are turned
 into Markdown transcripts next to the original by `kb:ingest-office`; a scan is read by a vision model if one is
 configured (there is deliberately no default model for scans — a guessed name gives a coherent fabrication).
+
+## Text from attachments and diagrams
+
+The same command reads the knowledge that sits in files, not in page text: attachments of Confluence pages (docx, xlsx,
+pdf and the rest of the supported formats), draw.io diagrams and BPMN / DMN models. The mirror stays as the sync wrote it;
+the transcripts go to `Raw/Extracted/<source>/<page path>/<attachment name>.md`, one per file, and the parsing plan takes
+them as a separate group "Вложения" after the pages.
+
+- A diagram is read **without a model**: nodes, containers, links and labels for draw.io; processes, lanes, the flow from
+  the start events, gateways with conditions and message flows for BPMN. Foreign XML is read safely (DOCTYPE and ENTITY
+  are refused, size and depth are capped).
+- A document whose text is empty or unreadable gets `quality: low` in its header. It is not parsed silently: the plan, the
+  run summary and `kb:doctor` name it.
+- A file with too little text (a logo, an icon) gets no transcript; the command remembers it, so a repeat run and the
+  doctor do not call it "not converted".
+- Images (jpg, png, webp, gif) are off by default; with the switch on, the vision model of the recognition ring reads them.
+- The switches and the per-run cap are in "Project settings" → "Extraction from attachments" (the `ingest:` section of
+  `aurora.config.yaml`).
+
+Details, limits and the transcript header — [connectors](../docs/en/connectors.md#text-of-attachments-and-diagrams-rawextracted);
+what the messages mean — [Troubleshooting](Troubleshooting.md#attachments-and-diagram-transcripts).

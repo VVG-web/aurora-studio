@@ -276,6 +276,71 @@ Sync root pages have no version from the child list and are re-read on every syn
 **Cleanup with `--prune`.** The `<page>_assets/` files of a vanished or moved page go together with it and count neither as "extra" in the list nor in the cleanup threshold (which counts everything else that is extra, stray files included).
 **Attachment folder and neighbouring pages.** The `<page>_assets/` folder belongs to the page and is cleaned of attachment files only: the sync never touches `.md` files or subfolders in it. A page whose title ends in "assets" ("Design assets") gets its id in the name (`Design_assets_<id>`); otherwise it would share a folder with the attachments of the page "Design". If `<page>_assets` in the mirror is a symbolic link (or sits inside one) pointing outside the mirror, the sync writes nothing into it and deletes nothing from it: the page's attachments stay links to the original, a line about the linked folder goes to stderr, and the summary counts an attachment error.
 
+## Text of attachments and diagrams: `Raw/Extracted/`
+
+Page attachments stay in the mirror as they are; `kb:ingest-office` turns the knowledge in them into text:
+
+| What | Where the transcript goes |
+|---|---|
+| documents and diagrams in `Raw/` | next to the original (`X.md`; the name taken by foreign markdown — `X.converted.md`; `X.docx` and `X.txt` share a name — the second gets `X.txt.md`) |
+| attachments in `Sources/**/<page>_assets/` | `Raw/Extracted/<source>/<page path>/<full attachment name>.md` |
+| diagrams in `Workspaces/` | `Raw/Extracted/Workspaces/<path>/<full name>.md` (diagrams only; these drafts do not go into knowledge parsing) |
+
+**Why not in the mirror.** The sync owns the mirror: its `--prune` and `sync:audit` ("strays") would remove foreign files. The
+mirror and the originals are never changed by the command.
+
+**What is converted.**
+
+- documents: docx (the built-in converter, the same on any machine: headings by style, `basedOn` and `outlineLvl`, nested lists,
+  tables — and with merged cells row by row as "column: value", so that nothing is lost; links, footnotes at the end of the
+  section, accepted tracked changes, reviewer comments in a separate "Комментарии" block; headers, footers, page numbers and the
+  table of contents are left out), xlsx, pdf (the text layer with page anchors `<!-- стр. N -->`, without running headers and
+  page numbers; a scan is read by a vision model if one is configured), pptx, odt, rtf, csv, txt;
+- diagrams: draw.io (pages, nodes, containers and lanes, links with labels), BPMN 2.0 models (a summary, participants, lanes, the
+  process flow from the start events, subprocesses, calls, gateways with conditions, message flows), DMN decision tables, mermaid
+  diagrams — **without a model**; foreign XML is read safely: DOCTYPE and ENTITY are refused, size, nesting depth and element
+  count are capped, and `scriptTask.script` stays text;
+- images (optional, off by default): jpg, png, webp, gif are read by the vision model of the recognition ring, svg is read as
+  text without a model. Icons under 8 KB are not sent to the model.
+
+**The transcript header.** `converted_from`, `converter`, `converted`, `source_hash`, `status: draft`; an attachment also gets
+`page` (the owning page) and `attachment`; `quality: low` and `quality_note` when the text is unfit; a split document has
+`part`, `parts`, `part_of`, `prev`, `next`. A transcript is a machine copy; the original is the truth.
+
+**A repeat run** compares the original's hash: unchanged — nothing is written; changed — the transcript is re-read; the original
+is gone (the mirror is in place) — the transcript goes with its empty folders; the mirror itself is missing — nothing is removed.
+Attachments with identical content get one transcript. An attachment with too little text (a logo, an icon, an empty diagram)
+gets none, and the command remembers its hash in `Raw/Extracted/.skipped.json` so as not to try again, and the doctor and the
+plan do not call it "not converted". Foreign markdown in the transcript folder is left alone.
+
+**Limits.** The attachment size limit is the same `attachment_max_mb` as the sync's; attachments and diagrams per run —
+`ingest.max_files` (200 by default; written transcripts are counted, the rest comes with the next run; documents from `Raw/` are
+not capped); the text of an attachment transcript — 200,000 characters; a long document is split into `<name>-часть-NN.md`
+parts by top-level headings (a pdf without headings — by 40 pages). A transcript path that does not fit 200 characters gets its
+name cut to a hash, and the summary says how many.
+
+**Low quality.** Empty or unreadable text (a scan without recognition, a broken encoding, repeated characters, not a single
+sentence) is marked `quality: low`: such a transcript is not parsed and is named in the parsing plan, in the route summary and in
+`kb:doctor`. Fix the original or turn recognition on and run `kb:ingest-office --force`.
+
+**What parsing sees.** The plan takes transcripts as a separate "Вложения" group after the pages; drafts from `Workspaces/` and
+low-quality transcripts are not in it. A card built from a transcript lists the owning page in `sources` too, and the
+transcript's trust is the page's trust. A file without a current transcript is named by the plan ("no transcript"), not skipped
+silently. A page whose only knowledge is a link to a diagram that has a transcript no longer gets a "no text in the source"
+stub. Web connector attachments (`Sources/Web/…/_files/`) are not parsed by this command: `sync:web` converts them itself.
+
+**Where to edit.** "Project settings" → "Extraction from attachments": the switches "Extract text from attachments" (on),
+"Extract draw.io diagrams and BPMN models" (on), "Recognise images with a model" (off) and the files-per-run cap. They are
+written to the `ingest:` section of `aurora.config.yaml`:
+
+```yaml
+ingest:
+  attachments: true
+  diagrams: true
+  images: false
+  max_files: 200
+```
+
 ## Path length: the check on saving settings
 
 A project is a git repository opened on Windows, macOS and Linux, and the root differs from person to person: a colleague on Windows
