@@ -741,7 +741,7 @@ def inventory(cfg: dict | None = None) -> dict:
     """Что лежит и чего не хватает: {attachments, transcripts, chars, loose, low}. Рабочая папка — корень проекта.
 
     `loose` — документы, вложения и схемы без актуального транскрипта (не переведены или изменились после
-    перевода); `low` — транскрипты с `quality: low`. План разбора, `kb:doctor` и сводка прогона считают одним
+    перевода); `low` — транскрипты с `quality: low`. План разбора, `kit:doctor` и сводка прогона считают одним
     и тем же кодом, чтобы числа не расходились."""
     items, _notes = discover(cfg or IC.settings("."))
     assign_unique(items)

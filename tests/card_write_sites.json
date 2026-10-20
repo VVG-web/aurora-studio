@@ -651,6 +651,11 @@
    "reason": "отметка выданных номеров в .aurora/state/ids: служебное состояние движка, не карточка",
    "calls": 2
   },
+  "scripts/ingest_config.py:save": {
+   "kind": "other",
+   "reason": "раздел ingest: в aurora.config.yaml (настройки извлечения из вложений): конфиг, не карточка",
+   "calls": 1
+  },
   "scripts/install_aurora.py:Installer.copy_file": {
    "kind": "other",
    "reason": "установка проекта: файлы вне базы знаний",

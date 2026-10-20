@@ -55,12 +55,12 @@ Engine scripts explain the reason instead of just failing. The common cases:
 
 ## Attachments and diagram transcripts
 
-What the lines of `kb:ingest-office` (and the same lines in the run summary, the plan and `kb:doctor`) mean.
+What the lines of `kb:ingest-office` (and the same lines in the run summary, the plan and `kit:doctor`) mean.
 
 | Symptom | Cause and fix |
 |---|---|
 | **«Без транскрипта (текста слишком мало — логотип, иконка, пустая схема)»** (no transcript: too little text) | The file has fewer than 200 characters of text (80 for a diagram or image): a logo, an icon, an empty scheme. It is not an error. The command remembers the file's hash in `Raw/Extracted/.skipped.json`, so a repeat run and the doctor leave it alone; a changed file is tried again, `--force` tries all. |
-| **«Не разобраны: нет транскрипта — N»** in the parsing plan, or a `kb:doctor` warning "без транскрипта" | A document, attachment or diagram has no current transcript: the command was not run after the sync, the cap of files per run cut it off, or no converter fits. Run `kb:ingest-office`; the plan names the files, so nothing is skipped silently. |
+| **«Не разобраны: нет транскрипта — N»** in the parsing plan, or a `kit:doctor` warning "без транскрипта" | A document, attachment or diagram has no current transcript: the command was not run after the sync, the cap of files per run cut it off, or no converter fits. Run `kb:ingest-office`; the plan names the files, so nothing is skipped silently. |
 | **«Документов низкого качества: N»** (documents of low quality) | The text came out empty or unreadable (a scan without recognition, a broken encoding, repeated characters). Such a transcript has `quality: low` and is not parsed. Fix the original, or configure the recognition ring (*Models* → OCR) and run `kb:ingest-office --force`. |
 | **«Отложено до следующего запуска (потолок файлов за запуск — N)»** (postponed to the next run) | The per-run cap of attachments and diagrams was reached; written transcripts are counted. Run the command again, or raise "Files per run cap" in "Project settings" → "Extraction from attachments". |
 | **«Дубликаты по содержимому»** (duplicates by content) | The same file was attached to several pages; one transcript serves them all. Nothing to do. |

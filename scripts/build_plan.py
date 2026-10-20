@@ -324,7 +324,7 @@ def sources() -> list:
                     continue
                 path = os.path.join(dirpath, f).replace("\\", "/")
                 # Транскрипт, где текста нет или он не читается (скан без распознавания, битая кодировка), в
-                # разбор молча не идёт: он называется в плане и в `kb:doctor`, и человек решает, что с ним делать.
+                # разбор молча не идёт: он называется в плане и в `kit:doctor`, и человек решает, что с ним делать.
                 if is_machine_copy(path) and low_quality(path):
                     LOW_QUALITY.append(path)
                     continue

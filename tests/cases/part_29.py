@@ -67,7 +67,7 @@ def test_the_catalogue_check_catches_a_new_call_and_a_wrong_role(_t):
     assert any("PROMPT_NOPE" in p for p in got) and any("agent:nope" in p for p in got), got
     bad = copy.deepcopy(cat)
     next(c for c in bad["calls"] if c["id"] == "ocr")["engine"] = "pydantic_ai"
-    assert any("conv_pdf_ocr" in p and "http" in p for p in problems(cat=bad)), "прямой запрос не замечен"
+    assert any("ocr_page" in p and "http" in p for p in problems(cat=bad)), "прямой запрос не замечен"
 
 
 @test

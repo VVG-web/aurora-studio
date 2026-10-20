@@ -321,7 +321,7 @@ name cut to a hash, and the summary says how many.
 
 **Low quality.** Empty or unreadable text (a scan without recognition, a broken encoding, repeated characters, not a single
 sentence) is marked `quality: low`: such a transcript is not parsed and is named in the parsing plan, in the route summary and in
-`kb:doctor`. Fix the original or turn recognition on and run `kb:ingest-office --force`.
+`kit:doctor`. Fix the original or turn recognition on and run `kb:ingest-office --force`.
 
 **What parsing sees.** The plan takes transcripts as a separate "Вложения" group after the pages; drafts from `Workspaces/` and
 low-quality transcripts are not in it. A card built from a transcript lists the owning page in `sources` too, and the

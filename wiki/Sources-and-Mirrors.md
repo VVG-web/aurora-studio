@@ -109,7 +109,7 @@ them as a separate group "Вложения" after the pages.
   the start events, gateways with conditions and message flows for BPMN. Foreign XML is read safely (DOCTYPE and ENTITY
   are refused, size and depth are capped).
 - A document whose text is empty or unreadable gets `quality: low` in its header. It is not parsed silently: the plan, the
-  run summary and `kb:doctor` name it.
+  run summary and `kit:doctor` name it.
 - A file with too little text (a logo, an icon) gets no transcript; the command remembers it, so a repeat run and the
   doctor do not call it "not converted".
 - Images (jpg, png, webp, gif) are off by default; with the switch on, the vision model of the recognition ring reads them.
