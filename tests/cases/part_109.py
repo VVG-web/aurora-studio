@@ -179,11 +179,28 @@ const body = () => boxes["#modelsBody"].textContent;
   // событие браузера уже после записи: по-прежнему ничего не зажигает
   await fire(nameInputs()[0], "input");
   ok(saveOff(), "пустое событие после записи зажгло «Сохранить»");
-  // потоки провайдеров: чипы у карточек и предупреждение про необъявленную ширину
+  // потоки провайдеров: чипы у карточек и строка над ними; «ширина не объявлена» больше не бывает
   const text = body();
   ok(text.includes('models.p_slots{"n":8}') && text.includes('models.p_slots{"n":1}'), "чипы потоков: " + text.slice(0, 400));
-  ok((text.match(/models\.p_width_lost/g) || []).length === 1, "предупреждение о необъявленной ширине — ровно у одного провайдера: " + text.slice(0, 400));
+  ok(!text.includes("p_width_lost"), "страница всё ещё говорит о необъявленной ширине");
   ok(text.includes('models.run_slots{"n":9,"split":"Старый×8, Новое имя×1"}'), "строка потоков над карточками: " + text.slice(0, 300));
+  // ширина — не меньше 1: у поля min=1, а ноль, пустое и дробь не доходят до настройки
+  const widths = all(boxes["#modelsBody"], n => n.tag === "input" && n.attrs.type === "number");
+  ok(widths.length === 2 && widths.every(w => String(w.attrs.min) === "1"), "поля ширины без min=1: " + widths.map(w => w.attrs.min));
+  const wide = widths[1];
+  for (const [typed, want] of [["0", 1], ["", 1], ["-4", 1], ["2.9", 2], ["12", 12]]){
+    wide.value = typed; await fire(wide, "input"); await fire(wide, "change");
+    ok(wide.value === String(want), `в поле набрали «${typed}», на уходе из него «${wide.value}», ждали ${want}`);
+  }
+  wide.value = "0"; await fire(wide, "input");
+  RESPOND["/api/models"] = JSON.parse(JSON.stringify(DATA));
+  await saveBtn().ls.click[0]();
+  const sentW = calls.filter(c => c[0] === "/api/models/save").at(-1)[1];
+  ok(sentW.models.providers.every(p => p.width >= 1), "в запись ушла ширина меньше 1: " + JSON.stringify(sentW.models.providers.map(p => p.width)));
+  // новый провайдер заводится с шириной 1, а не 0
+  await fire(all(boxes["#modelsBody"], n => n.tag === "button" && n.textContent === "models.add_provider")[0], "click");
+  const after = all(boxes["#modelsBody"], n => n.tag === "input" && n.attrs.type === "number");
+  ok(after.length === 3 && after[2].value === "1", "новый провайдер заведён с шириной «" + (after[2] && after[2].value) + "», ждали 1");
   console.log(JSON.stringify({fails}));
 })();
 """
@@ -228,12 +245,71 @@ def test_the_models_catalogues_name_the_thread_hints_and_do_not_promise_the_old_
     ru = json.loads((KIT / "cockpit/modules/models/i18n/ru.json").read_text(encoding="utf-8"))
     en = json.loads((KIT / "cockpit/modules/models/i18n/en.json").read_text(encoding="utf-8"))
     view = (KIT / "cockpit/modules/models/view.js").read_text(encoding="utf-8")
-    keys = ("models.p_slots", "models.p_slots_hint", "models.p_width_lost", "models.p_width_lost_hint", "models.slots_about")
+    keys = ("models.p_slots", "models.p_slots_hint", "models.slots_about")
+    assert "models.p_width_lost" not in ru and "models.p_width_lost" not in en, "осталась строка про необъявленную ширину"
     for k in keys:
         assert k in ru and k in en, f"{k}: нет в одном из каталогов"
         assert re.search("[А-Яа-я]", ru[k]) and not re.search("[А-Яа-я]", en[k]), f"{k}: язык строки не тот"
         assert re.findall(r"\{(\w+)\}", ru[k]) == re.findall(r"\{(\w+)\}", en[k]), f"{k}: подстановки разошлись"
         assert f't("{k}"' in view, f"страница не спрашивает {k}"
     # прежняя подсказка обещала «провайдер делит общий потолок» и при объявленной у другого ширине была неправдой
-    assert "один поток" in ru["models.p_width_hint"] and "single thread" in en["models.p_width_hint"], \
-        "подсказка ширины снова не говорит, что необъявленная ширина при объявленной у другого — один поток"
+    assert "не меньше 1" in ru["models.p_width_hint"] and "at least 1" in en["models.p_width_hint"], \
+        "подсказка ширины не говорит, что ширина — от 1"
+    assert "0 — не объявлено" not in ru["models.p_width_hint"] and "0 — not declared" not in en["models.p_width_hint"]
+
+
+def _raw_pool(providers: list, cap, used=("p1",)) -> list:
+    """Слоты «как до правки»: настройка без нормализации, с нулями в ширине, прямо в `to_config` и пул."""
+    MC, AG = _mods()
+    data = MC.empty()
+    data["providers"] = [{"id": f"p{i}", "name": f"P{i}", "type": "openai", "url": f"http://p{i}.example/v1", "key": "",
+                          "width": w, "parallel": True, "template": {}, "vpn": "",
+                          "health": {"check": "off", "path": "/models"}} for i, w in enumerate(providers, 1)]
+    data["capabilities"]["llm"]["roles"][0]["backends"] = [
+        {"provider": u, "model": "m", "enabled": True, "context": 0, "url": ""} for u in used]
+    data["settings"]["parallel"] = cap
+    return sorted(AG.pool(MC.to_config(data), "worker"))
+
+
+def _norm_pool(providers: list, cap, used=("p1",)):
+    MC, AG = _mods()
+    raw = {"providers": [{"id": f"p{i}", "name": f"P{i}", "url": f"http://p{i}.example/v1", "width": w}
+                         for i, w in enumerate(providers, 1)],
+           "capabilities": {"llm": {"roles": [{"id": "worker", "backends": [{"provider": u, "model": "m"} for u in used]}]}},
+           "settings": {"parallel": cap}}
+    data, _notes = MC.normalize(raw)
+    return data, sorted(AG.pool(MC.to_config(data), "worker"))
+
+
+@test
+def test_provider_width_is_never_below_one_and_an_old_zero_keeps_what_it_gave(tmp: Path):
+    MC, _AG = _mods()
+
+    def widths(provs, cap="auto"):
+        data, _ = _norm_pool(provs, cap, used=("p1",))
+        return [p["width"] for p in data["providers"]]
+    # ноль, пусто, отрицательное и мусор — не меньше 1; дробь и строка-число принимаются как есть
+    assert widths([0]) == [1] and widths([None]) == [1] and widths([-3]) == [1] and widths(["x"]) == [1]
+    assert widths([0, 8]) == [1, 8] and widths(["5", 8.9]) == [5, 8]
+    # повторная нормализация ничего не меняет: сохранённое не «плывёт»
+    once, _ = _norm_pool([0, 0], 6)
+    assert MC.normalize(once)[0]["providers"] == once["providers"]
+    # что давал ноль, то он и даёт: слоты до и после совпадают во всех прежних случаях
+    for provs, cap, used in (([0], 6, ("p1",)),                  # один провайдер, потолок числом: все потоки ему
+                             ([0, 0], 6, ("p1", "p2")),          # два провайдера цепочки: потолок поровну
+                             ([0, 0], 5, ("p1", "p2")),          # нечётный потолок: остаток первому
+                             ([0], "auto", ("p1",)),             # «авто»: по одному потоку
+                             ([0, 0], "auto", ("p1", "p2")),
+                             ([8, 0], 6, ("p1", "p2")),          # ширину объявил другой: этому один поток
+                             ([0, 0], 6, ("p1",))):              # второй провайдер только векторов: потолок не делит
+        assert _norm_pool(provs, cap, used)[1] == _raw_pool(provs, cap, used), (provs, cap, used)
+    # провайдер, не берущийся в параллельный прогон, потолок не делит
+    data, _ = MC.normalize({"providers": [{"id": "a", "url": "http://a.example/v1"},
+                                          {"id": "b", "url": "http://b.example/v1", "parallel": False}],
+                            "capabilities": {"llm": {"roles": [{"id": "worker", "backends": [
+                                {"provider": "a", "model": "m"}, {"provider": "b", "model": "m"}]}]}},
+                            "settings": {"parallel": 6}})
+    assert [p["width"] for p in data["providers"]] == [6, 1]
+    # тот же минимум держит и панель: сервер при записи не принимает ширину меньше 1
+    for body in ({"width": 0}, {"width": -1}, {}):
+        assert MC.normalize({"providers": [{"id": "a", "url": "http://a.example/v1", **body}]})[0]["providers"][0]["width"] >= 1

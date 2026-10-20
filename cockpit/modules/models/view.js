@@ -77,10 +77,6 @@ const newId = (base) => {
 const usedBy = id => CAPS.reduce((n, c) => n + M.capabilities[c].roles
   .filter(r => r.backends.some(b => b.provider === id)).length, 0);
 const inLlm = id => M.capabilities.llm.roles.some(r => r.backends.some(b => b.provider === id && b.enabled !== false));
-// Ширина не объявлена, а у другого провайдера цепочек LLM объявлена: движок даст этому ровно один поток
-// параллельного прогона (`agent_core.pool`), и «основной» на деле работает на малую долю заданий.
-const widthLost = p => !(Number(p.width) > 0) && inLlm(p.id)
-  && M.providers.some(x => x.id !== p.id && Number(x.width) > 0 && inLlm(x.id));
 // «Кто сколько потоков получит» — по сохранённой настройке, как её видит движок.
 const slotSplit = () => (DATA.slot_split || [])
   .map(([n, k]) => ((DATA.models.providers[n - 1] || {}).name || "№" + n) + "×" + k).join(", ") || "—";
@@ -200,8 +196,10 @@ function providerForm(ctx, p, onDone){
   const inp = (k, attrs) => {
     const x = el("input", {class: "btn", style: "width:100%;font-weight:400", ...attrs});
     x.value = p[k] == null ? "" : String(p[k]);
-    x.oninput = () => { p[k] = attrs && attrs.type === "number" ? Number(x.value || 0) : x.value;
-                        touch(ctx); };
+    const num = attrs && attrs.type === "number", low = num ? Number(attrs.min) || 0 : 0;
+    // Число не меньше своего «min»: ширина провайдера — от 1, ноль и пустое поле становятся единицей.
+    x.oninput = () => { p[k] = num ? Math.max(low, Math.floor(Number(x.value)) || low) : x.value; touch(ctx); };
+    if (num) x.onchange = () => { x.value = String(p[k]); };
     return x;
   };
   const type = el("select", {class: "btn"}, ...(DATA.types || ["openai"]).map(v =>
@@ -241,7 +239,7 @@ function providerForm(ctx, p, onDone){
       el("label", {style: "display:block"},
         el("div", {class: "muted", style: "font-size:11.5px", title: t("models.p_width_hint")},
           t("models.p_width")),
-        inp("width", {type: "number", min: 0, style: "width:90px;font-weight:400"})),
+        inp("width", {type: "number", min: 1, style: "width:90px;font-weight:400"})),
       el("label", {class: "row", style: "gap:6px", title: t("models.p_parallel_hint")},
         parallel, t("models.p_parallel")),
       el("details", {style: "flex:1;min-width:220px"},
@@ -297,8 +295,6 @@ function providersTab(ctx){
         !DIRTY && inLlm(p.id) && (DATA.slots_by_provider || {})[p.id] !== undefined
           ? el("span", {class: "chip " + (DATA.slots_by_provider[p.id] ? "ok" : "warn"), title: t("models.p_slots_hint")},
               t("models.p_slots", {n: DATA.slots_by_provider[p.id]})) : null,
-        widthLost(p) ? el("span", {class: "chip warn", title: t("models.p_width_lost_hint")},
-                          t("models.p_width_lost")) : null,
         list ? el("span", {class: "chip ok"}, t("models.list_n", {n: list.length})) : null,
         el("span", {style: "flex:1"}),
         el("button", {class: "btn sm", onclick: () => fetchList(ctx, p, true)},
@@ -316,7 +312,7 @@ function providersTab(ctx){
   });
   box.append(el("button", {class: "btn", onclick: () => {
     M.providers.push({id: newId("provider"), name: "", type: "openai", url: "", key: "",
-                      width: 0, parallel: true, template: {}, vpn: "", health: {check: "off", path: "/models"}});
+                      width: 1, parallel: true, template: {}, vpn: "", health: {check: "off", path: "/models"}});
     touch(ctx, true);
   }}, t("models.add_provider")));
   return box;
@@ -509,7 +505,7 @@ function backendRow(ctx, cap, r, b, bi){
   });
   if (!b._new) return row;
   // Новый провайдер прямо из строки бэкенда: заводим, выбираем — и дальше по цепочке.
-  const fresh = {id: "", name: "", type: "openai", url: "", key: "", width: 0, parallel: true,
+  const fresh = {id: "", name: "", type: "openai", url: "", key: "", width: 1, parallel: true,
                  template: {}, vpn: "", health: {check: "off", path: "/models"}};
   return el("div", {}, row, el("div", {class: "card", style: "padding:12px;margin:4px 0 8px 24px"},
     el("div", {class: "muted", style: "font-size:12px;margin-bottom:6px"}, t("models.new_provider_about")),
