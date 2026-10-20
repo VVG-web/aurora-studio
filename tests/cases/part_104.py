@@ -292,7 +292,8 @@ def test_xlsx_and_pdf_attachments_get_transcripts_when_their_readers_are_present
     pdf(assets / "документ.pdf", [alpha, bravo])
     if OI.conv_pdf_builtin(str(assets / "документ.pdf")):
         made.append("документ.pdf.md")
-    run_script("office_ingest.py", cwd=root, expect_rc=0)
+    # Читателя pdf нет (CI без pypdf и pdftotext) — файл честно «не разобран», и скрипт выходит с кодом 1.
+    run_script("office_ingest.py", cwd=root, expect_rc=0 if "документ.pdf.md" in made else 1)
     names = {p.name for p in (root / EXTRACTED).glob("*.md")}
     for name in made:
         assert name in names, (name, sorted(names))
