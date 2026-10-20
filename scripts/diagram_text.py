@@ -23,14 +23,14 @@ from __future__ import annotations
 import base64
 import binascii
 import html
-import io
 import os
 import re
 import sys
 import urllib.parse
 import zlib
 from html.parser import HTMLParser
-from xml.etree import ElementTree as ET
+
+from xml_safe import DOCTYPE_RE, XmlRefused, ln, safe_parse as _xml_safe_parse  # noqa: F401 — ln читают и тесты
 
 MAX_FILE_BYTES = 25_000_000      # файл схемы; встроенные картинки draw.io бывают в мегабайтах
 MAX_XML_BYTES = 60_000_000       # XML после распаковки: больше — не схема, а бомба
@@ -47,58 +47,15 @@ BPMN_NS = "http://www.omg.org/spec/BPMN/20100524/MODEL"
 DMN_NS_PREFIX = "http://www.omg.org/spec/DMN/"
 DMN_NS_NEW = "https://www.omg.org/spec/DMN/"
 
-DOCTYPE_RE = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)", re.I)
-
-
-class DiagramError(Exception):
+class DiagramError(XmlRefused):
     """Файл не разобран: причина — по-русски, в сводку и в отчёт."""
 
 
-# ------------------------------------------------------------------ безопасный XML
-
 def safe_parse(data: bytes, limit: int = MAX_XML_BYTES):
-    """Корень XML-дерева; отказ — `DiagramError` с причиной.
+    """Корень XML-дерева; отказ — `DiagramError` с причиной. Правила — в `xml_safe.safe_parse`.
 
-    DOCTYPE и ENTITY не принимаются вовсе: настоящая схема их не объявляет. Кодировка — UTF-8
-    (с BOM или без): UTF-16 записывает те же слова через нулевые байты, и поиск по байтам их не
-    увидел бы. Число элементов и вложенность считаются на ходу, дерево целиком не строится зря.
-    """
-    if len(data) > limit:
-        raise DiagramError("файл больше предела (%d МБ)" % (limit // 1_000_000))
-    if data.startswith(b"\xef\xbb\xbf"):
-        data = data[3:]
-    if data[:2] in (b"\xff\xfe", b"\xfe\xff") or b"\x00" in data[:2000]:
-        raise DiagramError("кодировка не UTF-8")
-    if DOCTYPE_RE.search(data):
-        raise DiagramError("в XML объявлены DOCTYPE или ENTITY — такой файл не читается")
-    depth = count = 0
-    root = None
-    try:
-        for event, el in ET.iterparse(io.BytesIO(data), events=("start", "end")):
-            if event == "start":
-                if root is None:
-                    root = el
-                depth += 1
-                count += 1
-                if depth > MAX_DEPTH:
-                    raise DiagramError("вложенность XML больше %d" % MAX_DEPTH)
-                if count > MAX_ELEMENTS:
-                    raise DiagramError("в XML больше %d элементов" % MAX_ELEMENTS)
-            else:
-                depth -= 1
-    except ET.ParseError as e:
-        raise DiagramError("XML не разобран: %s" % str(e)[:120])
-    if root is None:
-        raise DiagramError("пустой XML")
-    return root
-
-
-def ln(tag) -> str:
-    """Локальное имя тега без пространства имён: `{ns}task` → `task`, `bpmn:task` → `task`."""
-    if not isinstance(tag, str):
-        return ""
-    tag = tag.rsplit("}", 1)[-1]
-    return tag.rsplit(":", 1)[-1]
+    Пределы берутся из этого модуля при каждом вызове — тест подменяет их здесь."""
+    return _xml_safe_parse(data, limit, MAX_ELEMENTS, MAX_DEPTH, DiagramError)
 
 
 def ns_of(tag) -> str:
