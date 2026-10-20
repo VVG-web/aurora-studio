@@ -323,6 +323,13 @@ name cut to a hash, and the summary says how many.
 sentence) is marked `quality: low`: such a transcript is not parsed and is named in the parsing plan, in the route summary and in
 `kit:doctor`. Fix the original or turn recognition on and run `kb:ingest-office --force`.
 
+**What is not read.** Text inside docx text boxes is not extracted; pictures inside documents stay in the transcript as a
+placeholder such as `![image1.png]`; pptx, odt and rtf are read only by `pandoc` or `markitdown` (there is no built-in reader
+for them; without either the file is named "no suitable converter"); web connector attachments (`Sources/Web/…/_files/`) are
+converted by `sync:web` itself in the old way, without splitting into parts and without the quality mark. If a page moved, its
+transcript is made again at the new path, and cards built on the old one keep pointing to the previous path until the page is
+parsed again.
+
 **What parsing sees.** The plan takes transcripts as a separate "Вложения" group after the pages; drafts from `Workspaces/` and
 low-quality transcripts are not in it. A card built from a transcript lists the owning page in `sources` too, and the
 transcript's trust is the page's trust. A file without a current transcript is named by the plan ("no transcript"), not skipped
