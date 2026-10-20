@@ -1846,18 +1846,27 @@ def gitsync_state(project: str) -> dict:
             "ticking": GITAUTO is not None and getattr(GITAUTO, "started", False)}
 
 
+def cert_action(url: str, payload: dict) -> dict:
+    """Сертификат сервера по адресу: показать отпечаток или довериться ему по отпечатку (на этой машине)."""
+    if not re.match(r"^https://", url or "", re.I):
+        return {"ok": False, "error": "сертификат проверяется только у адреса https://"}
+    if payload.get("action") == "trust":
+        return {**GS.save_cert(url, str(payload.get("sha256") or "")), "scope": "machine"}
+    info = GS.cert_info(url)
+    info.pop("pem", None)
+    return info
+
+
 def gitsync_cert(project: str, payload: dict) -> dict:
     """Сертификат сервера проекта: показать отпечаток или довериться ему по отпечатку."""
     s = GS.load(project)
     url = str(payload.get("url") or s.get("instance") or GS.repo_url(s, GS.cred_load(project)))
-    if not re.match(r"^https://", url or "", re.I):
-        return {"ok": False, "error": "сертификат проверяется только у адреса https://"}
-    if payload.get("action") == "trust":
+    if payload.get("action") == "trust" and payload.get("scope") != "machine" \
+            and re.match(r"^https://", url or "", re.I):
+        # Сервер проекта: доверие ещё и записывается в настройку Git проекта, если он под git.
         return GS.trust_cert(project, url, str(payload.get("sha256") or ""),
                              str(payload.get("remote") or "") or None)
-    info = GS.cert_info(url)
-    info.pop("pem", None)
-    return info
+    return cert_action(url, payload)
 
 
 def gitmods_state(fresh: bool = False) -> dict:
@@ -6832,6 +6841,13 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/project/new":
             self.send_json(self._create_project(payload))
             return
+        if u.path == "/api/project/git/check":
+            # Проверка адреса и входа до создания проекта из git: проекта ещё нет, сохранять нечего.
+            self.send_json(GS.check_remote(payload.get("settings") or {}, payload.get("credentials")))
+            return
+        if u.path == "/api/project/git/cert":
+            self.send_json(cert_action(str(payload.get("url") or ""), payload))
+            return
         if u.path == "/api/roots":
             self.send_json(self._edit_roots(payload))
             return
@@ -7230,7 +7246,12 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "roots": roots}
 
     def _create_project(self, payload: dict) -> dict:
-        """Развернуть Аврору в новую папку — из панели, без терминала.
+        """Завести проект из панели, без терминала. Два пути, и друг с другом они не смешиваются:
+
+        · локальный — развернуть Аврору в новую папку (потом git подключают и отправляют на его вкладке);
+        · из git — клонировать репозиторий в новую папку и сразу записать его настройку (`payload["git"]`): если
+          в нём уже есть проект Авроры, он и есть проект, если нет — структура разворачивается поверх, ничего не
+          затирая.
 
         Папка проекта выбирается человеком и лежать может где угодно: kit и проекты не
         обязаны быть соседями. Если путь вне корней поиска — панель не отказывает, а
@@ -7239,31 +7260,25 @@ class Handler(BaseHTTPRequestHandler):
         """
         raw = (payload.get("path") or "").strip()
         name = (payload.get("name") or "").strip()
-        if not raw or not name:
+        git = payload.get("git") if isinstance(payload.get("git"), dict) else None
+        if git and not raw:
+            return {"error": "нужна папка проекта"}
+        if not raw or (not name and not git):
             return {"error": "нужны путь и название проекта"}
         target = norm(raw)
         bad = writable_target(target)
         if bad:
             return {"error": bad}
-        roots = [norm(r) for r in self.server.roots]
-        added = ""
-        if not any(target == r or target.startswith(r + os.sep) for r in roots):
-            added = os.path.dirname(target) or target
-            roots.append(added)
-            save_roots(roots)
-            self.server.roots = roots
+        if git:
+            if os.path.isfile(os.path.join(target, "aurora.config.yaml")):
+                return {"error": "здесь уже есть проект Авроры"}
+            return self._clone_project(target, name, git, payload)
+        added = self._add_root(target)
         if os.path.isfile(os.path.join(target, "aurora.config.yaml")):
             return {"error": "здесь уже есть проект Авроры"}
-        args = [os.path.join(KIT, "scripts", "install_aurora.py"),
-                "--target", target, "--name", name]
-        for flag, key in (("--slug", "slug"), ("--jira-key", "jira"),
-                          ("--confluence-space", "space")):
-            if (payload.get(key) or "").strip():
-                args += [flag, payload[key].strip()]
         try:
             os.makedirs(target, exist_ok=True)
-            p = subprocess.run([sys.executable, *args], capture_output=True,
-                               text=True, encoding="utf-8", errors="replace", timeout=300)
+            p = self._run_installer(target, name, payload)
         except Exception as e:
             return {"error": str(e)}
         if p.returncode != 0:
@@ -7271,6 +7286,52 @@ class Handler(BaseHTTPRequestHandler):
         out = {"ok": True, "path": target, "log": (p.stdout or "").splitlines()[-12:]}
         if added:
             out["added_root"] = added
+        return out
+
+    def _add_root(self, target: str) -> str:
+        """Папка вне корней поиска: её родитель становится корнем. → добавленный корень или пусто."""
+        roots = [norm(r) for r in self.server.roots]
+        if any(target == r or target.startswith(r + os.sep) for r in roots):
+            return ""
+        added = os.path.dirname(target) or target
+        roots.append(added)
+        save_roots(roots)
+        self.server.roots = roots
+        return added
+
+    def _run_installer(self, target: str, name: str, payload: dict):
+        args = [os.path.join(KIT, "scripts", "install_aurora.py"),
+                "--target", target, "--name", name]
+        for flag, key in (("--slug", "slug"), ("--jira-key", "jira"),
+                          ("--confluence-space", "space")):
+            if (payload.get(key) or "").strip():
+                args += [flag, payload[key].strip()]
+        return subprocess.run([sys.executable, *args], capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", timeout=300)
+
+    def _clone_project(self, target: str, name: str, git: dict, payload: dict) -> dict:
+        """Проект из git-репозитория: клон, настройка Git проекта, затем — либо готовый проект, либо каркас поверх."""
+        res = GS.clone_project(target, git.get("settings") or {}, git.get("credentials"))
+        if not res.get("ok"):
+            return res
+        added = self._add_root(target)
+        out = {"ok": True, "path": target, "branch": res.get("branch", ""), "empty": res.get("empty", False),
+               "added_root": added, "mode": "existing", "log": []}
+        if not os.path.isfile(os.path.join(target, "aurora.config.yaml")):
+            # В репозитории проекта Авроры нет (пустой или чужой): структура ложится поверх, существующие файлы
+            # установщик не трогает.
+            out["mode"] = "deployed"
+            try:
+                p = self._run_installer(target, name or os.path.basename(target), payload)
+            except Exception as e:  # noqa: BLE001 — клон остаётся: человек может повторить развёртывание
+                return {**out, "ok": False, "kept": True, "error": f"клон готов, но развернуть структуру не вышло: {e}"}
+            if p.returncode != 0:
+                return {**out, "ok": False, "kept": True,
+                        "error": "клон готов, но развернуть структуру не вышло: " + (p.stderr or p.stdout)[-400:]}
+            out["log"] = (p.stdout or "").splitlines()[-12:]
+        else:
+            prep = engine_prepare_action(target)           # копия движка на этой машине; в git она не едет
+            out["engine"] = {"ok": bool(prep.get("ok")), "error": prep.get("error", "")}
         return out
 
     def _quiet_project(self, project: str) -> str:

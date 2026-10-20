@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.187.5";
+const UI_VERSION = "1.187.6";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -4135,14 +4135,10 @@ async function renderSetup(){
   const box = $("#setupBody"); box.innerHTML = "";
   DIRTY.clear();     // раздел перерисован заново — значения в полях снова совпадают с файлом
 
-  // 1. новый проект
-  const nf = {};
-  const field = (key, label, ph, hint) => el("label",{style:"display:block;margin-bottom:10px"},
-    el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"}, label +
-      (hint ? " · " + hint : "")),
-    watch(el("input",{class:"btn",style:"width:100%;font-weight:400",placeholder:ph,
-      oninput:e=>nf[key]=e.target.value}), "new", t("dirty.new")));
+  // 1. новый проект: локально или из git; поля после перерисовки раздела, как и прежде, пустые
+  NEWP.local = {}; NEWP.git = null;
   const roots = await api("/api/roots");
+  NEWP.root = (roots.roots||[""])[0] || "";
   const rootsBox2 = el("div",{style:"margin-top:6px"});
   const drawSearchRoots = (list) => {
     rootsBox2.innerHTML = "";
@@ -4170,9 +4166,58 @@ async function renderSetup(){
         t("setup.roots_about", {file: roots.file || "~/.aurora/cockpit-roots.txt"})),
       rootsBox2));
 
-  const newBox = el("div",{class:"card",style:"padding:20px"},
+  const newBox = newProjectCard();
+  sgroup(box, "setup:new", t("setup.new_title")).append(newBox);
+
+  // Модели — общая настройка машины и всех её проектов: раздел «Модели».
+  await renderModelsCard(box, "kit");
+  MCPK.kit.box = sgroup(box, "setup:mcp", t("mcpk.title"));
+  await renderMcpKit();
+  drawSetupJump(box);
+}
+
+/* ---------------- новый проект: локально или из git ----------------
+
+   Два пути, и друг с другом они не смешиваются. Локальный — папка с каркасом, git к ней подключают потом
+   на вкладке «Git» проекта. Из git — репозиторий уже на сервере: движок клонирует его в новую папку и сразу
+   записывает настройку Git проекта (адрес, вход, ветку), так что подключать второй раз нечего. */
+const NEWP = {mode: "local", local: {}, git: null, root: "", draw: () => {}};
+const GIT_AUTHS = ["password", "token", "ssh", "system"];
+const newGit = () => NEWP.git || (NEWP.git = {text: "", parsed: null, busy: "", check: null, failure: null,
+  cert: null, lastAction: "", timer: null, branch: "", path: "", name: "", slug: "", space: "", jira: "",
+  author_name: "", author_email: "",
+  branchTouched: false, pathTouched: false, authTouched: false,
+  cred: {auth: "password", user: "", secret: "", ssh_key: ""}});
+// Строка вкладки «Git», а нет её (модуль выключен) — текст движка: разделы переводятся своими каталогами.
+const tg = (key, fallback, vars) => (I18N[key] !== undefined || RU[key] !== undefined)
+  ? t(key, vars) : (fallback || key);
+
+function newProjectCard(){
+  const card = el("div",{class:"card",style:"padding:20px"});
+  NEWP.draw = () => {
+    card.innerHTML = "";
+    card.append(
+      el("p",{class:"muted",style:"font-size:13px;margin:0 0 12px"}, t("setup.mode_about")),
+      el("div",{class:"row",style:"gap:8px;margin-bottom:14px;flex-wrap:wrap",role:"group"},
+        ...["local","git"].map(m => el("button",{class:"btn sm" + (NEWP.mode === m ? " primary" : ""),
+          "aria-pressed": String(NEWP.mode === m),
+          onclick:()=>{ NEWP.mode = m; NEWP.draw(); }}, t("setup.mode_" + m)))),
+      NEWP.mode === "git" ? newGitForm() : newLocalForm());
+  };
+  NEWP.draw();
+  return card;
+}
+
+function newLocalForm(){
+  const nf = NEWP.local;
+  const field = (key, label, ph, hint) => el("label",{style:"display:block;margin-bottom:10px"},
+    el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"}, label +
+      (hint ? " · " + hint : "")),
+    watch(el("input",{class:"btn",style:"width:100%;font-weight:400",placeholder:ph,value:nf[key]||"",
+      oninput:e=>nf[key]=e.target.value}), "new", t("dirty.new")));
+  return el("div",{},
     el("p",{class:"muted",style:"font-size:13px;margin:0 0 14px"}, t("setup.new_about")),
-    field("path", t("setup.f_path"), "" + ((roots.roots||[""])[0] || "") + "/my-project"),
+    field("path", t("setup.f_path"), "" + NEWP.root + "/my-project"),
     field("name", t("setup.f_name"), "Northwind", t("setup.f_name_hint")),
     field("slug", t("setup.f_slug"), "Northwind", t("setup.f_slug_hint")),
     field("space", t("setup.f_space"), "NW", t("setup.later")),
@@ -4191,13 +4236,236 @@ async function renderSetup(){
         }
       }),
       el("span",{class:"muted",style:"font-size:12px"}, t("setup.git_note"))));
-  sgroup(box, "setup:new", t("setup.new_title")).append(newBox);
+}
 
-  // Модели — общая настройка машины и всех её проектов: раздел «Модели».
-  await renderModelsCard(box, "kit");
-  MCPK.kit.box = sgroup(box, "setup:mcp", t("mcpk.title"));
-  await renderMcpKit();
-  drawSetupJump(box);
+function newGitForm(){
+  const g = newGit();
+  const url = el("input",{class:"btn mono",style:"width:100%;font-weight:400",autocomplete:"off",
+    placeholder:t("setup.g_url_ph"),value:g.text});
+  url.addEventListener("input", () => {
+    g.text = url.value; g.check = null; g.failure = null; g.cert = null;
+    setDirty("new", t("dirty.new"), true);
+    clearTimeout(g.timer); g.timer = setTimeout(parseNewGit, 300);
+  });
+  return el("div",{},
+    el("p",{class:"muted",style:"font-size:13px;margin:0 0 14px"}, t("setup.git_about")),
+    el("label",{style:"display:block;margin-bottom:10px"},
+      el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"}, t("setup.g_url")), url),
+    el("div",{id:"newGitRest"}, ...newGitRest()));
+}
+
+// Перерисовывается только то, что ниже строки адреса: в самой строке не должен пропадать курсор.
+function drawNewGit(){
+  const box = $("#newGitRest");
+  if (box){ box.innerHTML = ""; box.append(...newGitRest()); }
+}
+
+async function parseNewGit(){
+  const g = newGit();
+  if (!g.text.trim()){ g.parsed = null; return drawNewGit(); }
+  const r = await api("/api/gitsync/parse",{method:"POST",quiet:true,body:JSON.stringify({text:g.text})});
+  g.parsed = r || {ok:false, code:"bad_url"};
+  const p = g.parsed;
+  if (p.ok){
+    g.cred = {...g.cred, auth: g.authTouched ? g.cred.auth : p.auth, user: p.user || g.cred.user,
+              secret: p.secret || g.cred.secret};
+    if (p.branch && !g.branchTouched) g.branch = p.branch;
+    if (!g.pathTouched){
+      const name = String(p.repo || p.url || "").replace(/[\\/]+$/, "").replace(/\.git$/i, "")
+        .split(/[\\/:]/).pop().replace(/[*?"<>|]/g, "");
+      g.path = NEWP.root && name ? NEWP.root + "/" + name : "";
+    }
+  }
+  drawNewGit();
+}
+
+// Настройка Git проекта из разобранной строки; остальное (имя сервера в git, автор, автоматика) — по умолчанию.
+function newGitSettings(g){
+  const p = g.parsed;
+  return {provider: p.provider, instance: p.instance, repo: p.repo, branch: g.branch.trim(),
+          author_name: g.author_name.trim(), author_email: g.author_email.trim(),
+          tls: {verify: true, ca_file: ""}};
+}
+
+function newGitRest(){
+  const g = newGit(), p = g.parsed;
+  if (!p) return [];
+  if (!p.ok) return [el("div",{style:"font-size:12.5px;color:var(--danger);margin-top:8px"},
+    tg("gitsync.q.err." + p.code, p.code))];
+  const c = g.cred;
+  const touch = () => setDirty("new", t("dirty.new"), true);
+  const field = (label, control, hint) => el("label",{style:"display:block;flex:1;min-width:220px;margin-bottom:10px"},
+    el("div",{class:"muted",style:"font-size:12px;margin-bottom:3px"}, label), control,
+    hint ? el("div",{class:"muted",style:"font-size:11.5px;margin-top:3px"}, hint) : null);
+  const text = (key, value, attrs) => {
+    const n = el("input",{class:"btn mono",style:"width:100%;font-weight:400",autocomplete:"off",
+      value:value||"", ...(attrs||{})});
+    n.addEventListener("input", () => { touch(); });
+    return n;
+  };
+  const out = [el("div",{class:"row",style:"gap:6px;flex-wrap:wrap;margin:10px 0"},
+    el("span",{class:"chip ok"}, tg("gitsync.prov." + p.provider, p.provider)),
+    p.instance ? el("span",{class:"chip mono"}, p.instance) : null,
+    el("span",{class:"chip mono"}, p.repo))];
+  if (p.secret_in_url) out.push(el("div",{class:"note",style:"margin-bottom:10px"}, t("setup.g_secret_moved")));
+  const method = el("select",{class:"btn",style:"width:100%"},
+    ...GIT_AUTHS.map(v => el("option",{value:v, selected: c.auth === v ? "" : null}, t("setup.g_auth_" + v))));
+  method.onchange = () => { c.auth = method.value; g.authTouched = true; g.check = null; touch(); drawNewGit(); };
+  out.push(field(t("setup.g_auth"), method));
+  if (c.auth === "password" || c.auth === "token"){
+    const user = text("user", c.user);
+    user.oninput = () => { c.user = user.value.trim(); };
+    const sec = el("input",{class:"btn mono",type:"password",autocomplete:"new-password",
+      style:"width:100%;font-weight:400"});
+    sec.value = c.secret || "";
+    sec.oninput = () => { c.secret = sec.value; touch(); };
+    out.push(el("div",{class:"row",style:"gap:12px;flex-wrap:wrap"},
+      field(t("setup.g_user"), user),
+      field(c.auth === "token" ? t("setup.g_token") : t("setup.g_password"), sec)));
+  } else if (c.auth === "ssh"){
+    const key = text("ssh_key", c.ssh_key, {placeholder:"~/.ssh/id_ed25519"});
+    key.oninput = () => { c.ssh_key = key.value.trim(); };
+    out.push(field(t("setup.g_ssh_key"), key));
+  }
+  const branch = text("branch", g.branch, {list:"newGitBranches"});
+  branch.oninput = () => { g.branch = branch.value; g.branchTouched = true; };
+  const path = text("path", g.path, {placeholder: NEWP.root + "/" + "project"});
+  path.oninput = () => { g.path = path.value; g.pathTouched = true; };
+  const heads = ((g.check && g.check.steps || []).find(x => x.id === "git") || {}).branches || [];
+  out.push(el("div",{class:"row",style:"gap:12px;flex-wrap:wrap"},
+    field(t("setup.g_branch"), branch, t("setup.g_branch_hint")),
+    field(t("setup.g_path"), path, t("setup.g_path_hint")),
+    el("datalist",{id:"newGitBranches"}, ...heads.map(b => el("option",{value:b})))));
+  const who = (key, label) => {
+    const n = text(key, g[key]);
+    n.oninput = () => { g[key] = n.value; };
+    return field(label, n);
+  };
+  out.push(el("div",{class:"row",style:"gap:12px;flex-wrap:wrap"},
+    who("author_name", tg("gitsync.field.author_name", "author_name")),
+    who("author_email", tg("gitsync.field.author_email", "author_email"))));
+  const extra = (key, label, ph) => {
+    const n = text(key, g[key], {placeholder:ph, style:"width:100%;font-weight:400"});
+    n.oninput = () => { g[key] = n.value; };
+    return field(label, n);
+  };
+  out.push(el("details",{style:"margin:2px 0 12px"},
+    el("summary",{class:"muted",style:"cursor:pointer;font-size:12.5px"}, t("setup.g_if_empty")),
+    el("div",{class:"muted",style:"font-size:11.5px;margin:6px 0"}, t("setup.g_if_empty_hint")),
+    el("div",{class:"row",style:"gap:12px;flex-wrap:wrap"},
+      extra("name", t("setup.f_name"), "Northwind"), extra("slug", t("setup.f_slug"), "Northwind")),
+    el("div",{class:"row",style:"gap:12px;flex-wrap:wrap"},
+      extra("space", t("setup.f_space"), "NW"), extra("jira", t("setup.f_jira"), "NW"))));
+  out.push(el("div",{class:"row",style:"gap:8px;flex-wrap:wrap;align-items:center"},
+    el("button",{class:"btn",disabled: g.busy ? "" : null, onclick: checkNewGit},
+      g.busy === "check" ? t("setup.g_checking") : t("setup.g_check")),
+    el("button",{class:"btn primary" + (DIRTY.has("new") ? " unsaved" : ""),"data-save":"new",
+      disabled: g.busy ? "" : null, onclick: createNewGit},
+      g.busy === "create" ? t("setup.g_creating") : t("setup.g_create")),
+    g.busy ? el("span",{class:"spin"}) : null));
+  if (g.check) out.push(newGitCheck(g.check));
+  if (g.failure) out.push(newGitFailure(g.failure));
+  if (g.cert) out.push(newGitCert(g));
+  return out;
+}
+
+function newGitCheck(r){
+  return el("div",{style:"margin-top:10px"},
+    el("b",{}, r.ok ? t("setup.g_check_ok") : t("setup.g_check_bad")),
+    ...(r.steps || []).map(x => el("div",{class:"row",style:"gap:8px;margin-top:6px;font-size:12.5px;flex-wrap:wrap"},
+      el("span",{class:"chip " + (x.ok ? "ok" : x.ok === null ? "" : "bad")}, x.ok ? "✓" : x.ok === null ? "·" : "✗"),
+      el("span",{}, tg("gitsync.step." + x.id, x.id, {login: x.login || "", branch: x.detail || ""})))),
+    (r.suggest || {}).empty ? el("div",{class:"note",style:"margin-top:8px"}, t("setup.g_repo_empty")) : null,
+    r.problem ? newGitProblem(r.problem) : null);
+}
+
+// Отказ git — причиной и советом, как на вкладке Git; сертификат собственного сервера — кнопкой «Доверять…».
+function newGitProblem(pr){
+  const raw = pr.raw ? el("details",{style:"margin-top:8px"},
+    el("summary",{class:"muted",style:"cursor:pointer;font-size:12px"}, tg("gitsync.raw", "")),
+    el("pre",{class:"mono",style:"font-size:11.5px;white-space:pre-wrap;margin:6px 0 0"}, pr.raw)) : null;
+  return el("div",{class:"warnbox dangerbox"},
+    el("b",{}, tg("gitsync.p." + pr.code, pr.title)),
+    el("div",{class:"muted",style:"font-size:12.5px;margin-top:3px"}, tg("gitsync.fix." + pr.code, pr.fix)),
+    pr.code === "cert" ? el("div",{class:"row",style:"gap:8px;margin-top:8px"},
+      el("button",{class:"btn sm primary", onclick: certNewShow}, t("setup.g_trust"))) : null,
+    raw);
+}
+
+function newGitFailure(f){
+  if (f.problem) return newGitProblem(f.problem);
+  const lines = (f.problems || []).map(x => el("div",{},
+    "· " + tg("gitsync.field." + x.field, x.field || "") + (x.field ? ": " : "") + tg("gitsync.f." + x.code, x.code)));
+  return el("div",{class:"warnbox dangerbox"},
+    f.error ? el("div",{}, f.error) : null, ...lines,
+    f.kept ? el("div",{class:"muted",style:"font-size:12.5px;margin-top:4px"}, t("setup.g_kept")) : null,
+    !f.error && !lines.length ? el("div",{}, t("setup.g_failed")) : null);
+}
+
+function newGitCert(g){
+  const c = g.cert;
+  if (c.busy) return el("div",{class:"row",style:"gap:8px;margin-top:8px"}, el("span",{class:"spin"}));
+  if (!c.ok) return el("div",{class:"warnbox"}, c.error || t("setup.g_cert_failed"));
+  return el("div",{class:"warnbox"},
+    el("b",{}, t("setup.g_cert_title", {host: c.host + ":" + c.port})),
+    el("div",{class:"muted",style:"font-size:12.5px;margin:4px 0"}, t("setup.g_cert_about")),
+    el("div",{class:"mono",style:"font-size:12px;word-break:break-all"}, "SHA-256 " + c.sha256),
+    el("div",{class:"row",style:"gap:8px;margin-top:8px"},
+      el("button",{class:"btn sm primary", onclick: certNewTrust}, t("setup.g_cert_trust")),
+      el("button",{class:"btn sm", onclick: () => { g.cert = null; drawNewGit(); }}, t("common.cancel"))));
+}
+
+async function certNewShow(){
+  const g = newGit();
+  g.cert = {busy: true}; drawNewGit();
+  const r = await api("/api/project/git/cert",{method:"POST",quiet:true,
+    body:JSON.stringify({action:"show", url:g.parsed.url})});
+  g.cert = r || {ok:false}; drawNewGit();
+}
+
+// Доверие запоминается на машине; то, что просило довериться (проверка или создание), повторяется само.
+async function certNewTrust(){
+  const g = newGit();
+  const r = await api("/api/project/git/cert",{method:"POST",quiet:true,
+    body:JSON.stringify({action:"trust", sha256:g.cert.sha256, url:g.parsed.url})});
+  g.cert = null;
+  if (!r || !r.ok){
+    toast((r && r.error) || t("setup.g_cert_failed"), "err");
+    return drawNewGit();
+  }
+  toast(t("setup.g_cert_trusted", {host: r.host + ":" + r.port}), "ok");
+  g.failure = null; g.check = null;
+  return g.lastAction === "create" ? createNewGit() : checkNewGit();
+}
+
+async function checkNewGit(){
+  const g = newGit();
+  if (g.busy) return;
+  if (!g.parsed || !g.parsed.ok){ g.failure = {error: t("setup.g_need_url")}; return drawNewGit(); }
+  g.busy = "check"; g.check = null; g.failure = null; g.lastAction = "check"; drawNewGit();
+  const r = await api("/api/project/git/check",{method:"POST",quiet:true,
+    body:JSON.stringify({settings:newGitSettings(g), credentials:g.cred})});
+  g.busy = ""; g.check = r || {ok:false, steps:[]};
+  drawNewGit();
+}
+
+async function createNewGit(){
+  const g = newGit();
+  if (g.busy) return;
+  if (!g.parsed || !g.parsed.ok){ g.failure = {error: t("setup.g_need_url")}; return drawNewGit(); }
+  g.busy = "create"; g.failure = null; g.lastAction = "create"; drawNewGit();
+  const r = await api("/api/project/new",{method:"POST",quiet:true,body:JSON.stringify({
+    path: g.path.trim(), name: g.name.trim(), slug: g.slug.trim(), space: g.space.trim(), jira: g.jira.trim(),
+    git: {settings: newGitSettings(g), credentials: g.cred}})});
+  g.busy = "";
+  if (!r || !r.ok){ g.failure = r || {error: t("setup.g_failed")}; return drawNewGit(); }
+  toast(t(r.mode === "deployed" ? "setup.g_done_deployed" : "setup.g_done_existing", {path: r.path})
+        + (r.added_root ? t("setup.deployed_root", {root: r.added_root}) : ""));
+  if (r.engine && !r.engine.ok && r.engine.error) toast(t("setup.g_engine_warn", {error: r.engine.error}), "warn");
+  setDirty("new", t("dirty.new"), false);
+  NEWP.git = null;
+  S.state = await api("/api/state");
+  renderOverview(); renderSetup();
 }
 
 /* ---------------- группы настроек ----------------

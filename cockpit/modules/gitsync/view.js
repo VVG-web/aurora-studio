@@ -474,7 +474,7 @@ function doAction(ctx, id, p, action){
     continue: () => run("git:fix", ["--what=continue"]),
     commit_then_update: () => run("git:update", ["--commit-first"]),
     commit_anyway: () => run(action === "push" ? "git:push" : "git:commit", ["--skip-ratchet"]),
-    trust_cert: () => tab("setup", () => certShow(ctx, p && p.remote)),
+    trust_cert: () => action === "quick" ? quickCertShow(ctx) : tab("setup", () => certShow(ctx, p && p.remote)),
     init: () => run("git:fix", ["--what=init"]),
     checkout_branch: () => run("git:fix", ["--what=checkout"]),
     use_current_branch: () => run("git:fix", ["--what=use-branch"]),
@@ -861,7 +861,7 @@ function stepsView(ctx, check){
 // ветку и логин разбирает движок (git_sync.parse_clone), человек выбирает способ входа и
 // вводит пароль. «Проверить и подключить» — проверка тем же входом, затем сохранение.
 const quick = () => QUICK || (QUICK = {text: "", parsed: null, cred: {...NO_CRED, auth: "password"},
-  target: "", name: "", busy: false, check: null, problems: null, done: null, timer: null});
+  target: "", name: "", busy: false, check: null, problems: null, done: null, cert: null, timer: null});
 
 function quickCard(ctx){
   const {t, el} = ctx;
@@ -870,7 +870,7 @@ function quickCard(ctx){
     placeholder: "git clone https://name@bitbucket.org/team/project.git"});
   text.value = q.text;
   text.oninput = () => {
-    q.text = text.value; q.check = null; q.problems = null; q.done = null;
+    q.text = text.value; q.check = null; q.problems = null; q.done = null; q.cert = null;
     clearTimeout(q.timer);
     q.timer = setTimeout(() => parseQuick(ctx), 300);
   };
@@ -966,7 +966,9 @@ function quickBody(ctx){
   if (q.check) out.push(el("div", {style: "margin-top:10px"},
     el("b", {}, q.check.ok ? t("gitsync.check_ok") : t("gitsync.check_bad")), ...stepsView(ctx, q.check),
     (q.check.suggest || {}).empty ? el("div", {class: "note", style: "margin-top:8px"}, t("gitsync.repo_empty")) : null,
-    q.check.problem ? problemView(ctx, {...q.check.problem, level: "error", actions: []}, "check") : null));
+    q.check.problem ? problemView(ctx, {...q.check.problem, level: "error",
+      actions: q.check.problem.code === "cert" ? ["trust_cert"] : []}, "quick") : null,
+    q.cert ? certPanel(ctx, q.cert, () => quickCertTrust(ctx), () => { q.cert = null; drawQuick(ctx); }) : null));
   if (q.problems) out.push(problemView(ctx, {code: "settings", level: "error", fields: q.problems, actions: []}, "check"));
   if (q.done) out.push(el("div", {class: "note", style: "margin-top:10px"},
     el("div", {}, t("gitsync.q.done", {remote: q.done.remote, url: q.done.url})),
@@ -1026,10 +1028,11 @@ async function connectQuick(ctx, force){
 
 // Сертификат основного сервера или дополнительного (`remote`) — по его адресу.
 function certUrl(remote){
-  if (!remote) return FORM.instance || D.status.remote_url;
+  const https = v => /^https:\/\//i.test(v || "") ? v : "";
+  if (!remote) return FORM.instance || https(FORM.repo) || D.status.remote_url;
   const m = (FORM.mirrors || []).find(x => x.remote === remote) || {};
   const st = (D.status.mirrors || []).find(x => x.remote === remote) || {};
-  return m.instance || st.url || m.repo || "";
+  return m.instance || st.url || https(m.repo) || "";
 }
 
 async function certShow(ctx, remote){
@@ -1041,26 +1044,72 @@ async function certShow(ctx, remote){
   draw(ctx);
 }
 
-function certBox(ctx){
+// Показ сертификата с отпечатком и кнопками; одна карточка на вкладку настройки и на быстрое подключение.
+function certPanel(ctx, cert, onTrust, onCancel){
   const {t, el} = ctx;
-  if (!CERT) return null;
-  if (CERT.busy) return el("div", {class: "row", style: "gap:8px;margin-top:8px"}, el("span", {class: "spin"}));
-  if (!CERT.ok) return el("div", {class: "warnbox"}, CERT.error || t("gitsync.cert_failed"));
+  if (!cert) return null;
+  if (cert.busy) return el("div", {class: "row", style: "gap:8px;margin-top:8px"}, el("span", {class: "spin"}));
+  if (!cert.ok) return el("div", {class: "warnbox"}, cert.error || t("gitsync.cert_failed"));
   return el("div", {class: "warnbox"},
-    el("b", {}, t("gitsync.cert_title", {host: CERT.host + ":" + CERT.port})),
+    el("b", {}, t("gitsync.cert_title", {host: cert.host + ":" + cert.port})),
     el("div", {class: "muted", style: "font-size:12.5px;margin:4px 0"}, t("gitsync.cert_about")),
-    el("div", {class: "mono", style: "font-size:12px;word-break:break-all"}, "SHA-256 " + CERT.sha256),
+    el("div", {class: "mono", style: "font-size:12px;word-break:break-all"}, "SHA-256 " + cert.sha256),
     el("div", {class: "row", style: "gap:8px;margin-top:8px"},
-      el("button", {class: "btn sm primary", onclick: async () => {
-        const r = await ctx.api("/api/gitsync/cert", {method: "POST", quiet: true,
-          body: JSON.stringify({project: ctx.project.path, action: "trust", sha256: CERT.sha256,
-                                url: certUrl(CERT.remote), remote: CERT.remote || ""})});
-        ctx.toast(r && r.ok ? t("gitsync.cert_trusted") : (r && r.error) || t("gitsync.cert_failed"),
-                  r && r.ok ? "ok" : "err");
-        CERT = null;
-        await load(ctx, false);
-      }}, t("gitsync.cert_trust")),
-      el("button", {class: "btn sm", onclick: () => { CERT = null; draw(ctx); }}, t("gitsync.cancel"))));
+      el("button", {class: "btn sm primary", onclick: onTrust}, t("gitsync.cert_trust")),
+      el("button", {class: "btn sm", onclick: onCancel}, t("gitsync.cancel"))));
+}
+
+function certBox(ctx){
+  return certPanel(ctx, CERT, () => certTrust(ctx), () => { CERT = null; draw(ctx); });
+}
+
+function certToast(ctx, r){
+  const {t} = ctx;
+  if (!r || !r.ok) return ctx.toast((r && r.error) || t("gitsync.cert_failed"), "err");
+  ctx.toast(t(r.scope === "project" ? "gitsync.cert_trusted" : "gitsync.cert_trusted_machine",
+              {host: r.host + ":" + r.port}), "ok");
+}
+
+// Доверие запоминается движком; форму с несохранёнными правками не сбрасываем, а проверку,
+// что просила довериться, повторяем сразу: человеку не нужно жать «Проверить» второй раз.
+async function certTrust(ctx){
+  const remote = CERT.remote || "";
+  const r = await ctx.api("/api/gitsync/cert", {method: "POST", quiet: true,
+    body: JSON.stringify({project: ctx.project.path, action: "trust", sha256: CERT.sha256,
+                          url: certUrl(remote), remote})});
+  certToast(ctx, r);
+  CERT = null;
+  if (!r || !r.ok) return draw(ctx);
+  if (r.scope === "project"){
+    const m = remote ? (FORM.mirrors || []).find(x => x.remote === remote) : null;
+    (m || FORM).tls = {verify: true, ca_file: r.path};
+  }
+  await load(ctx, true);
+  if (CHECK && !CHECK.busy && CHECK.ok === false) await runCheck(ctx, CHECK.remote);
+}
+
+// Быстрое подключение: сервера ещё нет в настройке, доверие запоминается на компьютере
+// по адресу из вставленной строки, после чего подключение повторяется само.
+async function quickCertShow(ctx){
+  const q = quick();
+  q.cert = {busy: true};
+  drawQuick(ctx);
+  const r = await ctx.api("/api/gitsync/cert", {method: "POST", quiet: true,
+    body: JSON.stringify({project: ctx.project.path, action: "show", url: q.parsed.url})});
+  q.cert = r || {ok: false};
+  drawQuick(ctx);
+}
+
+async function quickCertTrust(ctx){
+  const q = quick();
+  const r = await ctx.api("/api/gitsync/cert", {method: "POST", quiet: true,
+    body: JSON.stringify({project: ctx.project.path, action: "trust", scope: "machine",
+                          sha256: q.cert.sha256, url: q.parsed.url})});
+  certToast(ctx, r);
+  q.cert = null;
+  if (!r || !r.ok) return drawQuick(ctx);
+  q.check = null;
+  await connectQuick(ctx, false);
 }
 
 // Скрытый gitsync не перерисовывается; отметку «!» ему ведёт подписка ctx.on("data") из mount.

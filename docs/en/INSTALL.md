@@ -74,7 +74,12 @@ If there is no terminal (a launch from the panel, a script, CI), the questions a
 taken and the config is filled in later — `python3 aurora.py setup <project>`. By default the installation
 **never overwrites** existing files; running it again is safe.
 
-The panel does the same: "The kit's setup" → "Connect a new project".
+The panel does the same: "The kit's setup" → "Connect a new project". The panel has two paths that do not mix:
+**New local project** (a skeleton in a folder, git is connected later on the "Git" tab) and **From a git
+repository** (the repository is already on the server: paste the address or a `git clone` line, choose the login, the
+branch and the folder — the repository is cloned into a new or empty folder, and its settings are written to the
+project's Git at once). If the repository already holds an Aurora project, that is the project; if it is empty or holds
+something else, the structure is deployed on top and existing files are not overwritten.
 
 ### Without questions (scripts, CI)
 
@@ -477,7 +482,7 @@ environment variable through its own credential mechanism.
 | Branch, server name | the project branch (empty — the one open now) and the remote's name (usually `origin`) |
 | Author, message template | the commit author's name and email; placeholders `{project} {date} {time} {branch} {count} {files} {trigger}` |
 | How to update | fast-forward only (the default, the safest), merge, or yours on top of the server's |
-| Certificate | verification is on; for your own server with its own certificate — "Trust" by the SHA-256 fingerprint: exactly that certificate is saved, verification stays on |
+| Certificate | verification is on; for your own server with its own certificate — "Trust" by the SHA-256 fingerprint: exactly that certificate is saved, verification stays on. The trust is remembered on this computer by the server address (`~/.aurora/git/certs/<server>_<port>.pem`) and works for every project: for a project that has no git yet, in "Connect with a git clone line" and when creating a project from git; the common certificate set in `GIT_SSL_CAINFO` does not get in the way for this server. To drop the trust, delete the file |
 
 Fields are checked as you type; "Check connection" asks the provider API and git itself and offers
 to fill in what it found: the login, the default branch, the provider by the server's answer.

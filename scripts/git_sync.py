@@ -54,6 +54,7 @@ for _s in (sys.stdout, sys.stderr):
         _s.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError, OSError):
         pass
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -654,16 +655,60 @@ def _quote(path: str) -> str:
     return shlex.quote(path.replace("\\", "/"))
 
 
+def certs_dir() -> Path:
+    """Сертификаты, которым человек доверился кнопкой «Доверять сертификату»: по файлу на сервер."""
+    return aurora_home() / "git" / "certs"
+
+
+def cert_file(host: str, port: int) -> Path:
+    # В имени файла не бывает двоеточия адреса IPv6 и прочего, чего не терпит Windows.
+    return certs_dir() / f"{re.sub(r'[^A-Za-z0-9._-]', '_', host)}_{port}.pem"
+
+
+def trusted_ca(url: str) -> str:
+    """Файл сертификата, которому доверились для сервера этого https-адреса, — или пусто.
+
+    Доверие принадлежит серверу (хост и порт), а не проекту: проекта ещё может не быть (создание из git),
+    быть не под git (нечего хранить), а у быстрого подключения свой черновик настройки без пути к файлу."""
+    if not re.match(r"^https://", url or "", re.I):
+        return ""
+    try:
+        u = urllib.parse.urlparse(url)
+        host, port = (u.hostname or "").lower(), u.port or 443
+    except ValueError:
+        return ""
+    if not host:
+        return ""
+    f = cert_file(host, port)
+    return str(f) if f.is_file() else ""
+
+
+def effective_tls(tls: dict | None, url: str = "") -> dict:
+    """Настройка проверки сертификата с учётом доверия, данного серверу этого адреса.
+
+    Явный выбор в настройке сильнее: проверка выключена или файл назван — как есть. Иначе, если серверу
+    доверились, берётся его сертификат; нет доверия — системное хранилище, как и было."""
+    tls = dict(tls) if isinstance(tls, dict) else {"verify": True, "ca_file": ""}
+    if tls.get("verify") is False or tls.get("ca_file"):
+        return tls
+    ca = trusted_ca(url)
+    return {**tls, "verify": True, "ca_file": ca} if ca else tls
+
+
 def auth_config(s: dict, c: dict, env: dict) -> list:
     """Флаги `-c` и переменные окружения для входа: токен — через помощника учётных
     данных из переменных, ключ — через GIT_SSH_COMMAND. Ни секрет, ни путь к нему не
     попадают в аргументы командной строки, которые видит `ps`."""
     cfg = []
-    tls = s.get("tls") or {}
+    tls = effective_tls(s.get("tls"), repo_url(s, c))
     if tls.get("verify") is False:
         cfg += ["-c", "http.sslVerify=false"]
     elif tls.get("ca_file"):
-        cfg += ["-c", f"http.sslCAInfo={tls['ca_file']}"]
+        # Git for Windows со схемой schannel читает файл сертификата только с этой настройкой; прочим git она неизвестна.
+        cfg += ["-c", f"http.sslCAInfo={tls['ca_file']}", "-c", "http.schannelUseSSLCAInfo=true"]
+        # Переменная окружения сильнее настройки git: стоящий у человека `GIT_SSL_CAINFO` (корпоративный набор
+        # сертификатов, прокси) молча отменял бы выбранный им сертификат сервера, и «доверие» ничего не меняло.
+        env.pop("GIT_SSL_CAINFO", None)
     auth = c.get("auth") or "system"
     if auth in ("token", "password") and c.get("secret"):
         env["AURORA_GIT_USER"] = c.get("user") or default_user(s)
@@ -1890,7 +1935,11 @@ def tls_context(tls: dict | None):
     if tls.get("verify") is False:
         return ssl._create_unverified_context()              # noqa: S323 — выбор человека
     if tls.get("ca_file"):
-        return ssl.create_default_context(cafile=tls["ca_file"])
+        ctx = ssl.create_default_context(cafile=tls["ca_file"])
+        # Доверились конкретному сертификату сервера: он и есть опорный, даже если выдан внутренним УЦ,
+        # корня которого в файле нет (Python 3.10+; на старых самоподписанный проходит и так).
+        ctx.verify_flags |= getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0)
+        return ctx
     return ssl.create_default_context()
 
 
@@ -1980,7 +2029,7 @@ def _check(project, s: dict, c: dict) -> dict:
         cfg = {"instance": s["instance"], "repo": path, "auth": c["auth"],
                "user": c["user"], "secret": c["secret"] if c["auth"] in ("token", "password") else ""}
         try:
-            api = adapter.check(cfg, make_http(s["tls"]))
+            api = adapter.check(cfg, make_http(effective_tls(s["tls"], s["instance"] or url)))
         except Exception as e:                               # noqa: BLE001
             api = {"ok": False, "code": "unknown", "detail": f"{type(e).__name__}: {e}"}
         repo = api.get("repo") or {}
@@ -1996,7 +2045,7 @@ def _check(project, s: dict, c: dict) -> dict:
         steps.append({"id": "api", "ok": None, "detail": mod.get("state", "")})
     base = s["instance"] or (_origin(url) if URL_RX.match(url) else "")
     if s["provider"] == "generic" and base:
-        found = detect_provider(base, s["tls"])
+        found = detect_provider(base, effective_tls(s["tls"], base))
         if found:
             suggest["provider"] = found
     rc, o, e = run_git(project, ["ls-remote", "--heads", url], s, c, 60, network=True)
@@ -2071,30 +2120,119 @@ def cert_info(url: str) -> dict:
             "sha256": ":".join(fp[i:i + 2] for i in range(0, len(fp), 2))}
 
 
-def trust_cert(project, url: str, sha256: str, remote: str | None = None) -> dict:
-    """Доверять сертификату сервера: сохранить его и указать git и API именно его, а не
-    выключать проверку. Отпечаток сверяется — подмена между показом и согласием не пройдёт."""
+def save_cert(url: str, sha256: str) -> dict:
+    """Сохранить сертификат сервера, если его отпечаток тот, что человек видел. Файл ложится на машину по хосту и
+    порту и дальше действует для любого проекта этой машины, ходящего на этот адрес (`trusted_ca`)."""
     info = cert_info(url)
     if not info.get("ok"):
         return info
     if info["sha256"].replace(":", "").upper() != (sha256 or "").replace(":", "").upper():
         return {"ok": False, "error": "отпечаток изменился с момента показа — доверие не выдано"}
-    certs = aurora_home() / "git" / "certs"
-    certs.mkdir(parents=True, exist_ok=True)
-    path = certs / f"{info['host']}_{info['port']}.pem"
+    certs_dir().mkdir(parents=True, exist_ok=True)
+    path = cert_file(info["host"].lower(), info["port"])
     path.write_text(info["pem"], encoding="utf-8")
+    return {"ok": True, "path": str(path), "sha256": info["sha256"], "host": info["host"], "port": info["port"]}
+
+
+def trust_cert(project, url: str, sha256: str, remote: str | None = None) -> dict:
+    """Доверять сертификату сервера: сохранить его и указать git и API именно его, а не
+    выключать проверку. Отпечаток сверяется — подмена между показом и согласием не пройдёт.
+
+    Доверие всегда запоминается на машине по адресу сервера. Если у проекта есть git, файл дополнительно
+    записывается в его настройку (так он виден во вкладке Git); проекта под git может не быть вовсе — тогда доверие
+    только машинное, и сообщать об успехе, ничего не сохранив, нельзя."""
+    got = save_cert(url, sha256)
+    if not got.get("ok"):
+        return got
+    out = {**got, "scope": "machine"}
+    if not store_dir(project):
+        return out
     f = settings_file(project)
     data = _read_json(f, {}) if f and f.is_file() else load(project)
-    tls = {"verify": True, "ca_file": str(path)}
+    tls = {"verify": True, "ca_file": got["path"]}
     mirror = next((m for m in data.get("mirrors") or [] if remote and m.get("remote") == remote), None)
     if mirror is not None:
         mirror["tls"] = tls
     else:
         data["tls"] = tls
     s = normalize(data)[0]
-    if store_dir(project):
-        _write_json(store_dir(project) / "git.json", s)
-    return {"ok": True, "path": str(path), "sha256": info["sha256"]}
+    _write_json(store_dir(project) / "git.json", s)
+    out["scope"] = "project"
+    return out
+
+
+# ---------------------------------------------------------------- проект из репозитория
+
+def check_remote(settings: dict, creds: dict | None = None) -> dict:
+    """Проверка подключения для проекта, которого ещё нет: тот же разбор, что у `check`, но в пустой временной
+    папке — репозиторий, в котором можно было бы спросить сохранённый вход, ещё не создан."""
+    with tempfile.TemporaryDirectory(prefix="aurora-gitcheck-") as tmp:
+        return check(tmp, settings, creds)
+
+
+def _remote_heads(out: str) -> list:
+    return [ln.split("refs/heads/", 1)[1] for ln in out.splitlines() if "refs/heads/" in ln]
+
+
+def clone_project(target, settings: dict, creds: dict | None = None) -> dict:
+    """Создать проект из git: клонировать репозиторий в новую папку и сразу записать настройку git проекта.
+
+    Папка должна быть новой или пустой — git не затрёт ничего чужого. Настройка и вход ложатся так же, как если бы
+    человек подключал сервер на вкладке Git: проект сразу умеет обновляться и отправлять. Не вышло — созданная здесь
+    папка убирается, а вставленный ключ не остаётся на диске.
+    → {ok, path, branch, empty} | {ok: False, problems} | {ok: False, problem} | {ok: False, error}"""
+    target = Path(target)
+    s, probs = normalize(settings)
+    c, cprobs = cred_merge(target, creds, None, s)
+    probs += cprobs + _token_user(s, c, "")
+    url = strip_userinfo(repo_url(s, c))
+    if not url and not any(x["field"] == "repo" for x in probs):
+        probs.append({"field": "repo", "code": "required"})
+    if probs:
+        return {"ok": False, "problems": probs}
+    if target.exists() and (not target.is_dir() or any(target.iterdir())):
+        return {"ok": False, "error": f"папка {target} уже занята — клонировать можно в новую или пустую папку"}
+    if not has_git():
+        return {"ok": False, "problem": problem("no_git")}
+    made = not target.exists()
+    pasted = bool(str((creds or {}).get("ssh_key_text") or "").strip())
+
+    def fail(res: dict) -> dict:
+        if made and target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+        if pasted and c.get("ssh_key"):
+            try:
+                Path(c["ssh_key"]).unlink()
+            except OSError:
+                pass
+        return res
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return fail({"ok": False, "error": f"папку {target.parent} создать не вышло: {e}"})
+    rc, o, e = run_git(target.parent, ["ls-remote", "--heads", url], s, c, 60, network=True)
+    if rc:
+        tail = (o + "\n" + e).strip()
+        return fail({"ok": False, "problem": problem(classify(tail), tail)})
+    heads = _remote_heads(o)
+    want = s["branch"]
+    if want and heads and want not in heads:
+        return fail({"ok": False, "problems": [{"field": "branch", "code": "absent"}]})
+    args = ["clone", "-o", s["remote"]]
+    if want and want in heads:
+        args += ["-b", want]
+    rc, o, e = run_git(target.parent, [*args, "--", url, target.name], s, c, 1800, network=True)
+    if rc:
+        tail = (o + "\n" + e).strip()
+        return fail({"ok": False, "problem": problem(classify(tail), tail)})
+    if want and not heads:                       # пустой сервер: ветку, какую назвали, заведёт первая отправка
+        run_git(target, ["symbolic-ref", "HEAD", "refs/heads/" + want])
+    saved = save(target, settings, creds)
+    if not saved.get("ok"):
+        return fail({"ok": False, "problems": saved.get("problems") or []})
+    return {"ok": True, "path": str(target), "branch": git_ok(target, "branch", "--show-current"),
+            "empty": not heads, "notes": saved.get("notes") or []}
 
 
 # ---------------------------------------------------------------- командная строка
