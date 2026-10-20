@@ -2734,6 +2734,65 @@ async function renderSourceAccess(box){
   draw();
 }
 
+/* ---------------- извлечение знаний из вложений ----------------
+
+   Что `kb:ingest-office` переводит в текст для разбора: вложения страниц (docx, xlsx, pdf…), схемы draw.io и модели BPMN,
+   по желанию — изображения моделью, и сколько файлов за один запуск. Пишется только блок `ingest:` конфига проекта;
+   остальной конфиг не трогается, слепок блока уходит назад как `expect` — правка файла руками между открытием страницы и
+   записью не теряется (отказ 409). Страницу целиком здесь не перерисовывают: это сбросило бы несохранённые правки соседних групп. */
+async function renderIngest(box){
+  if (!S.project) return;
+  let d = await api("/api/ingest/settings?project=" + encodeURIComponent(S.project.path), {quiet:true});
+  if (!d || d.error || !d.settings) return;
+  const host = sgroup(box, "project:ingest", t("ingest.title", {project: S.project.name}));
+  const card = el("div", {class:"card", style:"padding:20px"});
+  host.append(card);
+  let cur = {...d.settings}, digest = d.digest;
+  const touched = () => setDirty("ingest", t("dirty.ingest"), JSON.stringify(cur) !== JSON.stringify(d.settings));
+  const flag = (key, label, hint) => el("label", {class:"row", style:"gap:8px;align-items:flex-start;font-size:13px;margin-bottom:10px"},
+    el("input", {type:"checkbox", "data-key":key, checked: cur[key] ? "" : null,
+      onchange: ev => { cur[key] = ev.target.checked; touched(); }}),
+    el("span", {style:"flex:1"}, label, el("div", {class:"muted", style:"font-size:11.5px;margin-top:2px"}, hint)));
+  const save = async () => {
+    const r = await api("/api/ingest/settings/save", {method:"POST", quiet:true,
+      body: JSON.stringify({project: S.project.path, settings: cur, expect: digest})});
+    if (r && r.ok){
+      d = r.state; cur = {...d.settings}; digest = d.digest;
+      setDirty("ingest", t("dirty.ingest"), false);
+      toast(t("ingest.saved"), "ok");
+      draw();
+      return;
+    }
+    if (r && r.conflict) return toast(t("ingest.conflict"), "err");
+    // Код ошибки сервера → строка каталога; кода нет в таблице — текст сервера.
+    const flagErr = () => t("ingest.err.flag");
+    const ERR = {attachments: flagErr, diagrams: flagErr, images: flagErr, unknown: () => t("ingest.err.unknown"),
+                 max_files: () => t("ingest.err.max_files", {max: d.ceiling}),
+                 no_config: () => t("ingest.err.no_config"), not_utf8: () => t("ingest.err.not_utf8"),
+                 write: () => t("ingest.err.write")};
+    const say = ERR[r && r.code];
+    toast(say ? say() : ((r && r.error) || t("ingest.save_failed")), "err");
+  };
+  const draw = () => {
+    card.innerHTML = "";
+    card.append(el("p", {class:"muted", style:"font-size:13px;margin:0 0 12px"}, t("ingest.about")));
+    card.append(flag("attachments", t("ingest.f_attachments"), t("ingest.h_attachments")));
+    card.append(flag("diagrams", t("ingest.f_diagrams"), t("ingest.h_diagrams")));
+    card.append(flag("images", t("ingest.f_images"), t("ingest.h_images")));
+    card.append(el("label", {style:"display:block;max-width:260px;margin-bottom:12px"},
+      el("div", {class:"muted", style:"font-size:11.5px;margin-bottom:3px"}, t("ingest.f_max_files")),
+      el("input", {class:"btn", type:"number", min:"1", max:String(d.ceiling), "data-key":"max_files",
+        style:"width:100%;font-weight:400", value:String(cur.max_files),
+        oninput: ev => { cur.max_files = ev.target.value === "" ? "" : Number(ev.target.value); touched(); }}),
+      el("div", {class:"muted", style:"font-size:11px;margin-top:3px"}, t("ingest.h_max_files", {max: d.ceiling}))));
+    card.append(el("div", {class:"row", style:"margin-top:4px;gap:10px"},
+      saveButton("ingest", t("dirty.ingest"), t("ingest.save"), save),
+      el("span", {class:"muted", style:"font-size:12px"}, t("ingest.note"))));
+    setDirty("ingest", t("dirty.ingest"), JSON.stringify(cur) !== JSON.stringify(d.settings));
+  };
+  draw();
+}
+
 /* ---------------- типы карточек ----------------
 
    Реестр типов собирается из шаблонов `akdb_*` кита и проекта. Проект подменяет подпись и описание типа и
@@ -4959,6 +5018,8 @@ async function renderProject(){
   await renderKinds(box);
   try { await renderSourceAccess(box); }
   catch (e){ showFault(t("modules.refresh_failed", {id: "access", why: e.message})); }
+  try { await renderIngest(box); }
+  catch (e){ showFault(t("modules.refresh_failed", {id: "ingest", why: e.message})); }
   // Сбой одной группы не должен унести строку переходов и всё, что ниже: так же, как у разделов (`refreshModules`).
   try { await renderCardTypes(box); }
   catch (e){ showFault(t("modules.refresh_failed", {id: "cardtypes", why: e.message})); }

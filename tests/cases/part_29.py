@@ -36,7 +36,7 @@ def test_every_model_call_in_the_code_is_in_the_catalogue(_t):
     assert not problems, "каталог вызовов разошёлся с кодом:\n" + "\n".join(problems)
     found = LC.scan()
     assert "agent_runner.py:run_make" in found and found["bots.py:_run"]["variable"]
-    assert found["office_ingest.py:conv_pdf_ocr"]["http"], "OCR зовёт шлюз напрямую — сверка этого не видит"
+    assert found["office_ingest.py:ocr_page"]["http"], "OCR зовёт шлюз напрямую — сверка этого не видит"
 
 
 @test

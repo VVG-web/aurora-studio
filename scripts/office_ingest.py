@@ -61,11 +61,16 @@ from aurora_fs import write_atomic  # noqa: E402 — транскрипт пиш
 
 SUPPORTED = {".docx", ".xlsx", ".pptx", ".pdf", ".csv", ".txt", ".rtf", ".odt"}
 DIAGRAM_EXTS = {".drawio", ".bpmn", ".dmn", ".mmd"}
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}      # читает зрячая модель (настройка `images`, по умолчанию выкл)
+MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+MIN_IMAGE_BYTES = 8 * 1024           # меньше — значок, не документ: модель не зовём
+MAX_IMAGE_BYTES = 8 * 1024 * 1024    # больше — не отправляем: запрос к модели не примет, да и стоит дорого
+MAX_SVG_BYTES = 5_000_000
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".aurora", ".cursor", ".claude"}
 EXTRACTED = "Raw/Extracted"          # транскрипты вложений и схем вне Raw/
 MAX_TRANSCRIPT_CHARS = 200_000       # текст транскрипта вложения или схемы; больше — «усечено»
 MIN_DOC_CHARS = 200                  # вложение с меньшим текстом (логотип, иконка) транскрипта не получает
-MIN_DIAGRAM_CHARS = 80               # у схемы порог ниже: маленькая схема — тоже знание
+MIN_DIAGRAM_CHARS = 80               # у схемы и изображения порог ниже: маленькая схема — тоже знание
 MAX_XLSX_ROWS = 20_000               # строк xlsx в транскрипте; остальное — «усечено»
 HEAD_CHARS = 1500                    # сколько знаков шапки читается за хешем и полями
 SKIPPED = EXTRACTED + "/.skipped.json"   # {путь оригинала: хеш} файлов, из которых транскрипта не вышло
@@ -159,6 +164,9 @@ PAGE_MARK = "\n\n<!-- стр. {} -->\n\n"
 
 # Что просить у зрячей модели. Формулировка решает дело: «перескажи» даёт пересказ, а
 # нужен транскрипт — движок дальше разбирает его как текст первоисточника.
+IMAGE_PROMPT = ("Прочитай изображение и верни текст, который на нём написан, в markdown. Сохрани заголовки, "
+                "списки и таблицы. Ничего не описывай, не пересказывай, не дополняй и не переводи — только "
+                "то, что написано. Если текста на изображении нет — пустой ответ.")
 OCR_PROMPT = ("Прочитай страницу документа и верни её текст в markdown. Сохрани заголовки, "
               "абзацы, списки и таблицы. Ничего не пересказывай, не дополняй и не переводи — "
               "только то, что написано на странице. Пустая страница — пустой ответ.")
@@ -236,6 +244,29 @@ def conv_pdf_builtin(src: str) -> str | None:
     return None
 
 
+def ocr_page(AG, cfg: dict, ring: list, model, b64: str, mime: str, prompt: str) -> tuple:
+    """Одна картинка → (текст, причина отказа): первый бэкенд кольца распознавания, давший непустой ответ.
+
+    Единственное место движка, где распознавание ходит на шлюз: страница pdf и изображение вложения
+    зовут его одинаково (в каталоге вызовов модели это одна запись)."""
+    text, why = "", ""
+    for backend in ring:
+        st, data, err, _dt = AG.http_json(
+            backend["url"] + "/chat/completions",
+            {"model": backend.get("model") or model, "max_tokens": 4000,
+             "messages": [{"role": "user", "content": [
+                 {"type": "text", "text": prompt},
+                 {"type": "image_url",
+                  "image_url": {"url": f"data:{mime};base64,{b64}"}}]}]},
+            backend["key"], cfg["request_timeout"])
+        if st == 200:
+            text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+            if text.strip():
+                break
+        why = err or f"пустой ответ (HTTP {st})"
+    return text, why
+
+
 def conv_pdf_ocr(src: str) -> str | None:
     """Скан → текст зрячей моделью. Последний рубеж каскада.
 
@@ -276,21 +307,7 @@ def conv_pdf_ocr(src: str) -> str | None:
     pages = []
     for i in range(limit):
         b64 = base64.b64encode(doc[i].get_pixmap(dpi=dpi).tobytes("jpeg")).decode()
-        text, why = "", ""
-        for backend in ring:
-            st, data, err, _dt = AG.http_json(
-                backend["url"] + "/chat/completions",
-                {"model": backend.get("model") or model, "max_tokens": 4000,
-                 "messages": [{"role": "user", "content": [
-                     {"type": "text", "text": OCR_PROMPT},
-                     {"type": "image_url",
-                      "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}]}]},
-                backend["key"], cfg["request_timeout"])
-            if st == 200:
-                text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
-                if text.strip():
-                    break
-            why = err or f"пустой ответ (HTTP {st})"
+        text, why = ocr_page(AG, cfg, ring, model, b64, "image/jpeg", OCR_PROMPT)
         if not text.strip() and why:
             print(f"  ✗ {name} стр. {i + 1}: {why}", file=sys.stderr)
         pages.append(mixed_script_fixed(text))
@@ -298,6 +315,64 @@ def conv_pdf_ocr(src: str) -> str | None:
     out = _pages_or_none(pages)
     _OCR_NOTE = f"ocr-{model}" if out else ""
     return out
+
+
+def conv_image_ocr(src: str) -> str | None:
+    """Изображение (png, jpg, webp, gif) → текст зрячей моделью. Звать только по настройке проекта `ingest: images`.
+
+    Кольцо распознавания то же, что у сканов pdf, и тоже без запасного чата: текстовая модель на картинку
+    отвечает выдумкой. Нет кольца — файл остаётся без текста, и отчёт называет причину."""
+    global _OCR_NOTE, LAST_WHY
+    ext = os.path.splitext(src)[1].lower()
+    if ext not in IMAGE_EXTS:
+        return None
+    try:
+        import base64
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import agent_core as AG  # type: ignore
+        cfg = AG.config()
+        ring = AG.ocr_ring(cfg)
+    except Exception:
+        ring = []
+    if not ring:
+        LAST_WHY = "распознавание не настроено (раздел «Модели» → OCR)"
+        return None
+    try:
+        with open(src, "rb") as f:
+            b64 = base64.b64encode(f.read(MAX_IMAGE_BYTES + 1)).decode()
+    except OSError:
+        return None
+    model = (cfg.get("ocr") or {}).get("model")
+    text, why = ocr_page(AG, cfg, ring, model, b64, MIME[ext], IMAGE_PROMPT)
+    if not text.strip():
+        LAST_WHY = why or "модель вернула пустой ответ"
+        return None
+    _OCR_NOTE = f"ocr-{model}"
+    return mixed_script_fixed(text)
+
+
+def conv_svg(src: str) -> str | None:
+    """svg — разметка, а не картинка: подписи (`title`, `desc`, `text`) читаются как текст, без модели."""
+    global LAST_WHY
+    try:
+        if os.path.getsize(src) > MAX_SVG_BYTES:
+            LAST_WHY = "svg больше предела"
+            return None
+        with open(src, "rb") as f:
+            root = DG.safe_parse(f.read(), MAX_SVG_BYTES)
+    except (OSError, DG.DiagramError) as e:
+        LAST_WHY = str(e) if isinstance(e, DG.DiagramError) else "svg не читается"
+        return None
+    lines = []
+    for el in root.iter():
+        if DG.ln(el.tag) in ("title", "desc", "text"):
+            text = DG.clean_text("".join(el.itertext()))
+            if text and text not in lines:
+                lines.append(text)
+    if not lines:
+        LAST_WHY = "в svg нет подписей"
+        return None
+    return "## Подписи в svg\n\n" + "\n".join("- " + line for line in lines)
 
 
 def conv_plain(src: str) -> str | None:
@@ -347,6 +422,16 @@ def convert(src: str, prefer: str, use_ocr: bool = True) -> tuple:
             return text, why
         LAST_WHY = why
         return None, None
+    ext = os.path.splitext(src)[1].lower()
+    if ext == ".svg":
+        text = conv_svg(src)
+        return (text, "svg") if text else (None, None)
+    if ext in IMAGE_EXTS:
+        if not use_ocr:
+            LAST_WHY = "распознавание выключено (--no-ocr)"
+            return None, None
+        text = conv_image_ocr(src)
+        return (text, _OCR_NOTE or "ocr") if text else (None, None)
     order = [c for c in CONVERTERS if use_ocr or c[0] != "ocr"]
     if prefer != "auto":
         order = [c for c in order if c[0].startswith(prefer)] + \
@@ -366,16 +451,21 @@ def is_diagram(path: str) -> bool:
     return bool(DG.kind_of(path))
 
 
+def is_image(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in IMAGE_EXTS or path.lower().endswith(".svg")
+
+
 def wanted(name: str) -> bool:
     return not name.startswith(("~$", "."))
 
 
-def targets(paths: list, root: str, diagrams: bool = True) -> list:
-    """Файлы к разбору: офисные и (по умолчанию) схемы — в явных путях и в папке `root` по умолчанию."""
+def targets(paths: list, root: str, diagrams: bool = True, images: bool = False) -> list:
+    """Файлы к разбору: офисные, (по умолчанию) схемы и (по настройке) изображения — в явных путях и в `root`."""
     found = []
 
     def ok(p: str) -> bool:
-        return os.path.splitext(p)[1].lower() in SUPPORTED or (diagrams and is_diagram(p))
+        return (os.path.splitext(p)[1].lower() in SUPPORTED or (diagrams and is_diagram(p))
+                or (images and is_image(p)))
 
     for p in paths or [root]:
         if os.path.isfile(p):
@@ -536,8 +626,9 @@ def render(src: str, text: str, converter: str, digest: str, extra: list | None 
     # документа, где цифра меняет смысл (статья закона, сумма, срок), это другой класс
     # риска, и человек должен видеть его до того, как процитирует транскрипт.
     if converter.startswith("ocr"):
+        what = "изображение" if os.path.splitext(src)[1].lower() in IMAGE_EXTS else "скан"
         warn = (f"> 👁️ **Распознано моделью.** В оригинале `{os.path.basename(src)}` нет "
-                f"текстового слоя — это скан, и текст ниже прочитан зрячей моделью "
+                f"текстового слоя — это {what}, и текст ниже прочитан зрячей моделью "
                 f"(`{converter[4:] or 'ocr'}`). Возможны ошибки в словах, числах, номерах "
                 f"статей и датах. Ни цитировать, ни сверять по этому файлу нельзя — "
                 f"только по оригиналу.")
@@ -565,7 +656,8 @@ def render(src: str, text: str, converter: str, digest: str, extra: list | None 
 def make_item(src: str, scope: str | None = None) -> dict:
     rel = _rel(src)
     scope = scope or _scope(rel)
-    item = {"src": src, "rel": rel, "scope": scope, "kind": "diagram" if is_diagram(src) else "office",
+    item = {"src": src, "rel": rel, "scope": scope,
+            "kind": "diagram" if is_diagram(src) else ("image" if is_image(src) else "office"),
             "page": "", "attachment": "", "short": False}
     if scope in ("attach", "work"):
         item["dst"], item["short"] = extracted_path(rel)
@@ -607,10 +699,10 @@ def discover(cfg: dict) -> tuple:
     items = []
     notes = []
     if os.path.isdir("Raw"):
-        for p in targets([], "Raw", diagrams=cfg["diagrams"]):
+        for p in targets([], "Raw", diagrams=cfg["diagrams"], images=cfg["images"]):
             items.append(make_item(p, "raw"))
     limit = attach_limit_bytes()
-    if (cfg["attachments"] or cfg["diagrams"]) and os.path.isdir("Sources"):
+    if (cfg["attachments"] or cfg["diagrams"] or cfg["images"]) and os.path.isdir("Sources"):
         seen: dict = {}
         for dirpath, dirnames, files in safe_walk("Sources"):
             dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))    # порядок обхода — один на всех
@@ -621,7 +713,9 @@ def discover(cfg: dict) -> tuple:
                 full = os.path.join(dirpath, f)
                 office = os.path.splitext(f)[1].lower() in SUPPORTED
                 diagram = is_diagram(full)
-                if not wanted(f) or not ((office and cfg["attachments"]) or (diagram and cfg["diagrams"])):
+                image = is_image(full)
+                if not wanted(f) or not ((office and cfg["attachments"]) or (diagram and cfg["diagrams"])
+                                         or (image and cfg["images"])):
                     continue
                 size = os.path.getsize(full)
                 if size == 0:
@@ -674,6 +768,7 @@ class Stats:
         self.skipped: list = []
         self.failed: list = []
         self.empty: list = []
+        self.unconfigured: list = []
         self.duplicates: list = []
         self.deferred: list = []
         self.low: list = []
@@ -763,14 +858,28 @@ def process(item: dict, a, stats: Stats, force: bool, skipped: dict) -> None:
     if a.dry_run:
         stats.done.append((src, dst, "—"))
         return
+    if item["kind"] == "image" and not src.lower().endswith(".svg"):
+        size = os.path.getsize(src)
+        if size < MIN_IMAGE_BYTES:                # значок: модель не зовём, и пробовать заново незачем
+            stats.empty.append(src)
+            skipped[item["rel"]] = digest
+            return
+        if size > MAX_IMAGE_BYTES:
+            stats.failed.append((src, "изображение больше предела (%d МБ)" % (MAX_IMAGE_BYTES // 1_048_576)))
+            return
     text, conv = convert(src, a.converter, use_ocr=not a.no_ocr)
     if not text:
+        if LAST_WHY.startswith("распознавание не настроено"):
+            # Изображения включены, а кольца распознавания нет: это незаконченная настройка, а не сбой команды —
+            # красный шаг остановил бы весь маршрут из-за необязательной возможности.
+            stats.unconfigured.append(src)
+            return
         stats.failed.append((src, LAST_WHY))
         return
     extracted = item["scope"] in ("attach", "work")
     if extracted:
         compact = len("".join(text.split()))
-        if compact < (MIN_DIAGRAM_CHARS if item["kind"] == "diagram" else MIN_DOC_CHARS):
+        if compact < (MIN_DIAGRAM_CHARS if item["kind"] in ("diagram", "image") else MIN_DOC_CHARS):
             stats.empty.append(src)               # логотип, иконка, пустая схема: транскрипта нет
             skipped[item["rel"]] = digest
             drop_stale(item, set(), False)
@@ -856,11 +965,13 @@ def main() -> int:
         cfg["attachments"] = False
     if a.no_diagrams:
         cfg["diagrams"] = False
+    if a.no_ocr:
+        cfg["images"] = False                 # без зрячей модели изображения не читаются вовсе
     cap = a.max_files if a.max_files > 0 else cfg["max_files"]
 
     notes: list = []
     if a.paths:
-        items = [make_item(p) for p in targets(a.paths, a.root, diagrams=True)]
+        items = [make_item(p) for p in targets(a.paths, a.root, diagrams=True, images=cfg["images"])]
         items = [i for i in items if i["scope"] != "skip"]
     else:
         if not os.path.isdir(a.root):
@@ -928,6 +1039,8 @@ def main() -> int:
         print(f"  ❌ {src} — {why or 'нет подходящего конвертера'}")
     if stats.empty:
         print(f"\nБез транскрипта (текста слишком мало — логотип, иконка, пустая схема): {len(stats.empty)}")
+    if stats.unconfigured:
+        print(f"Изображения без текста: распознавание не настроено (раздел «Модели» → OCR) — {len(stats.unconfigured)}")
     if stats.duplicates:
         print(f"Дубликаты по содержимому (один транскрипт на содержимое): {len(stats.duplicates)}")
     if stats.deferred:

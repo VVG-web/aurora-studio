@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import threading
 
 CONFIG = "aurora.config.yaml"
 DEFAULTS = {"attachments": True, "diagrams": True, "images": False, "max_files": 200}
@@ -156,3 +157,69 @@ def digest(text: str) -> str:
     start, end = block_span(text)
     body = text[start:end] if start >= 0 else ""
     return hashlib.sha1(body.replace("\r\n", "\n").encode("utf-8")).hexdigest()[:16]
+
+
+# ------------------------------------------------------------------ панель: состояние и запись
+
+_LOCK = threading.Lock()
+
+# Тексты для API; панель показывает подписи каталога по коду, а текст сервера — только если кода в каталоге нет.
+ERRORS = {
+    "unknown": "в настройках извлечения лишний ключ",
+    "attachments": "«вложения»: нужно да или нет",
+    "diagrams": "«схемы»: нужно да или нет",
+    "images": "«изображения»: нужно да или нет",
+    "max_files": "потолок файлов за запуск: целое число от 1 до %d" % MAX_FILES_CEILING,
+    "no_config": "в проекте нет aurora.config.yaml",
+    "not_utf8": "aurora.config.yaml не в кодировке UTF-8 — файл не тронут",
+    "write": "не удалось записать aurora.config.yaml",
+    "conflict": "настройки извлечения изменились на диске с момента открытия страницы",
+}
+
+
+def _read(project: str) -> tuple:
+    """(текст конфига, код отказа): текст не прочитан — None и код `no_config`, `not_utf8` или `write`."""
+    try:
+        with open(os.path.join(project, CONFIG), encoding="utf-8", newline="") as f:
+            return f.read(), ""
+    except FileNotFoundError:
+        return None, "no_config"
+    except UnicodeDecodeError:
+        return None, "not_utf8"
+    except OSError:
+        return None, "write"
+
+
+def state(project: str) -> dict:
+    """Группа «Извлечение знаний из вложений» в «Настройках проекта»: настройки, умолчания и слепок раздела.
+
+    `digest` отправляется назад при записи как `expect`: раздел за это время менялся — отказ `conflict`.
+    `explicit` — раздел `ingest:` уже есть в файле (иначе показаны умолчания)."""
+    text, problem = _read(project)
+    return {"settings": parse(text or ""), "defaults": dict(DEFAULTS), "digest": digest(text or ""),
+            "explicit": block_span(text or "")[0] >= 0, "ceiling": MAX_FILES_CEILING, "problem": problem}
+
+
+def save(project: str, answers, expect: str = "") -> dict:
+    """Записать раздел `ingest:` → {ok, settings, digest} либо {ok: False, code, error[, conflict | failed]}.
+
+    Остальные разделы, комментарии и окончания строк файла не затрагиваются ни байтом. `expect` — слепок
+    раздела, с которым страница его открыла (пусто — без проверки). Запись неделимая: файл целиком или
+    прежний; два сохранения разом друг друга не портят. Конфиг не в UTF-8 не трогается."""
+    clean, code = validate(answers) if isinstance(answers, dict) else (dict(DEFAULTS), "unknown")
+    if code:
+        return {"ok": False, "code": code, "error": ERRORS.get(code, code)}
+    from aurora_fs import write_atomic
+    with _LOCK:
+        old, problem = _read(project)
+        if problem:
+            return {"ok": False, "code": problem, "error": ERRORS[problem], "failed": problem == "write"}
+        if expect and expect != digest(old):
+            return {"ok": False, "code": "conflict", "conflict": True, "error": ERRORS["conflict"]}
+        new = replace(old, clean)
+        if new != old:
+            try:
+                write_atomic(os.path.join(project, CONFIG), new, newline="", fsync=False)
+            except (OSError, ValueError):
+                return {"ok": False, "code": "write", "failed": True, "error": ERRORS["write"]}
+    return {"ok": True, "settings": clean, "digest": digest(new)}
