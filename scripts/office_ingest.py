@@ -1,27 +1,40 @@
 #!/usr/bin/env python3
-"""office_ingest.py — офисные и бинарные первоисточники → markdown (фреймворк «Аврора»).
+"""office_ingest.py — офисные первоисточники, вложения страниц и схемы → markdown (фреймворк «Аврора»).
 
-Проблема: движок работает с markdown, а первоисточники приходят в docx/pdf/xlsx/pptx —
-ТЗ, инструкции заказчика, вопросы-ответы бизнеса, выгрузки. Без конвертации они не
-попадают в цикл: `ingest-raw` и `build` их не видят.
+Проблема: движок работает с markdown, а первоисточники приходят в docx/pdf/xlsx/pptx — ТЗ,
+инструкции заказчика, вопросы-ответы бизнеса, выгрузки; те же файлы приходят вложениями страниц
+Confluence, а часть знания лежит в схемах draw.io и моделях BPMN. Без конвертации они не попадают в
+цикл: `ingest-raw` и `build` их не видят.
 
-Что делает: рядом с оригиналом кладёт markdown-транскрипт с шапкой провенанса.
-**Оригинал остаётся нетронутым** — он и есть доказательство (инвариант 6); транскрипт —
-машинная копия для извлечения карточек, и это в нём написано.
+Что делает: кладёт markdown-транскрипт с шапкой провенанса. **Оригинал остаётся нетронутым** — он и
+есть доказательство (инвариант 6); транскрипт — машинная копия для извлечения карточек, и это в нём
+написано. Откуда берутся файлы и куда ложатся транскрипты:
 
-  python3 .aurora/scripts/office_ingest.py                    # разобрать весь Raw/
+  Raw/                          документы и схемы: транскрипт рядом с оригиналом
+  Sources/**/<страница>_assets/ вложения страниц: Raw/Extracted/<источник>/<путь страницы>/<имя>.md
+  Workspaces/                   схемы (draw.io, BPMN, DMN): Raw/Extracted/Workspaces/…
+  Зеркало источников не трогается: им владеет синк, и его `--prune` убрал бы чужие файлы.
+
+  python3 .aurora/scripts/office_ingest.py                    # Raw/, вложения страниц и схемы
   python3 .aurora/scripts/office_ingest.py Raw/contract/ТЗ.docx
   python3 .aurora/scripts/office_ingest.py --dry-run          # что будет сделано
   python3 .aurora/scripts/office_ingest.py --force            # перечитать уже собранные
 
+Что включено, задаёт раздел `ingest:` конфига (его ведут «Настройки проекта» в панели): вложения,
+схемы, потолок файлов за запуск. Распознавание изображений моделью по умолчанию выключено.
+
 Конвертеры (каскад, берётся первый доступный):
-  pandoc      — лучший markdown для docx/pptx (таблицы, заголовки)
-  markitdown  — универсальный (docx/xlsx/pptx/pdf)
-  встроенный  — без зависимостей: docx через zipfile+XML, xlsx через openpyxl,
-                pdf через pypdf/fitz/pdftotext
+  встроенный docx — без зависимостей: заголовки, списки, таблицы (в том числе с объединёнными
+                    ячейками), сноски, комментарии, исправления; результат один на любой машине
+  pandoc          — docx/pptx/odt/rtf → markdown
+  встроенные      — xlsx через openpyxl, pdf через pypdf/fitz/pdftotext (с якорями страниц)
+  markitdown      — универсальный
+  схемы           — draw.io, BPMN, DMN, mermaid → текст, без модели (diagram_text.py)
 Ничего из этого нет → скрипт честно скажет, какой файл не разобран и что поставить.
 
-Повторный запуск не переделывает работу: в транскрипте хранится хеш оригинала.
+Длинный документ делится на части `<имя>-часть-NN.md` (по заголовкам, у pdf без заголовков — по
+сорок страниц); транскрипт с пустым или мусорным текстом помечается `quality: low`, и разбор его не
+берёт молча. Повторный запуск не переделывает работу: в транскрипте хранится хеш оригинала.
 
 Панель: `kb:ingest-office`
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
@@ -30,20 +43,31 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
 import subprocess
 import sys
-import zipfile
-from xml.etree import ElementTree as ET
 
+import diagram_text as DG
+import docx_text as DT
+import ingest_config as IC
+import transcript_text as TT
 from aurora_common import TODAY, file_hash  # noqa: E402 — дата в UTC, одна на движок
-from aurora_common import link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
+from aurora_common import PATH_CHARS, link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
+from aurora_fs import write_atomic  # noqa: E402 — транскрипт пишется целиком или не трогается
+
 SUPPORTED = {".docx", ".xlsx", ".pptx", ".pdf", ".csv", ".txt", ".rtf", ".odt"}
+DIAGRAM_EXTS = {".drawio", ".bpmn", ".dmn", ".mmd"}
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".aurora", ".cursor", ".claude"}
-MAX_DOCX_XML = 200_000_000     # байт после распаковки: больше — не документ, а бомба
-W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+EXTRACTED = "Raw/Extracted"          # транскрипты вложений и схем вне Raw/
+MAX_TRANSCRIPT_CHARS = 200_000       # текст транскрипта вложения или схемы; больше — «усечено»
+MIN_DOC_CHARS = 200                  # вложение с меньшим текстом (логотип, иконка) транскрипта не получает
+MIN_DIAGRAM_CHARS = 80               # у схемы порог ниже: маленькая схема — тоже знание
+MAX_XLSX_ROWS = 20_000               # строк xlsx в транскрипте; остальное — «усечено»
+HEAD_CHARS = 1500                    # сколько знаков шапки читается за хешем и полями
+LAST_WHY = ""                        # почему последний `convert` отказал (для отчёта)
 
 
 def have(tool: str) -> bool:
@@ -76,73 +100,11 @@ def conv_markitdown(src: str) -> str | None:
 
 
 def conv_docx_builtin(src: str) -> str | None:
-    """docx без зависимостей: абзацы, заголовки и таблицы прямо из word/document.xml."""
+    """docx без зависимостей — см. `docx_text.py`. Документ приходит снаружи: XML с DOCTYPE/ENTITY,
+    бомба, битый архив и нечитаемая кодировка — это «не смогли», как у остальных конвертеров."""
     if not src.lower().endswith(".docx"):
         return None
-    try:
-        with zipfile.ZipFile(src) as z:
-            # Документ приходит снаружи: архив-бомба и XML с объявленными сущностями
-            # (миллиард смехов) кладут разбор. Настоящий word/document.xml не объявляет
-            # ни DOCTYPE, ни ENTITY, а гигабайты текста в нём бывают только у бомбы.
-            if z.getinfo("word/document.xml").file_size > MAX_DOCX_XML:
-                return None
-            xml = z.read("word/document.xml")
-    except Exception:
-        return None
-    # Проверка идёт по тексту, а не по байтам: в UTF-16 те же слова записаны через нули, и
-    # поиск байтов их не видел. Настоящий документ Word — UTF-8 без нулевых знаков.
-    try:
-        head = xml.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return None
-    if "\x00" in head or re.search(r"<!\s*(DOCTYPE|ENTITY)", head, re.I):
-        return None
-
-    def para_text(p) -> str:
-        return "".join(t.text or "" for t in p.iter(f"{W_NS}t"))
-
-    def para_md(p) -> str:
-        text = para_text(p).strip()
-        if not text:
-            return ""
-        style = p.find(f"{W_NS}pPr/{W_NS}pStyle")
-        val = style.get(f"{W_NS}val", "") if style is not None else ""
-        m = re.match(r"(?i)heading(\d)", val)
-        if m:
-            return "#" * min(int(m.group(1)), 6) + " " + text
-        return text
-
-    try:
-        root = ET.fromstring(xml)
-    except ET.ParseError:
-        return None             # битый XML — это «не смогли», как у остальных конвертеров
-    body = root.find(f"{W_NS}body")
-    if body is None:
-        return None
-    out: list = []
-    for el in body:
-        if el.tag == f"{W_NS}p":
-            md = para_md(el)
-            if md:
-                out.append(md)
-        elif el.tag == f"{W_NS}tbl":
-            rows = []
-            for tr in el.findall(f"{W_NS}tr"):
-                cells = [" ".join(para_text(p).split())
-                         for tc in tr.findall(f"{W_NS}tc") for p in [tc]]
-                cells = [" / ".join(filter(None, (para_text(p).strip()
-                                                  for p in tc.findall(f"{W_NS}p"))))
-                         for tc in tr.findall(f"{W_NS}tc")]
-                rows.append(cells)
-            if rows:
-                width = max(len(r) for r in rows)
-                rows = [r + [""] * (width - len(r)) for r in rows]
-                out.append("| " + " | ".join(rows[0]) + " |")
-                out.append("|" + "---|" * width)
-                for r in rows[1:]:
-                    out.append("| " + " | ".join(c.replace("|", "\\|") for c in r) + " |")
-                out.append("")
-    return "\n\n".join(out) if out else None
+    return DT.convert(src)
 
 
 def conv_xlsx_builtin(src: str) -> str | None:
@@ -157,20 +119,37 @@ def conv_xlsx_builtin(src: str) -> str | None:
     except Exception:
         return None
     out = []
-    for ws in wb.worksheets:
-        rows = [[("" if c is None else str(c)).strip() for c in row]
-                for row in ws.iter_rows(values_only=True)]
-        rows = [r for r in rows if any(r)]
-        if not rows:
-            continue
-        out.append(f"## Лист: {ws.title}\n")
-        width = max(len(r) for r in rows)
-        rows = [r + [""] * (width - len(r)) for r in rows]
-        out.append("| " + " | ".join(rows[0]) + " |")
-        out.append("|" + "---|" * width)
-        for r in rows[1:]:
-            out.append("| " + " | ".join(c.replace("|", "\\|") for c in r) + " |")
-        out.append("")
+    left = MAX_XLSX_ROWS
+    try:
+        for ws in wb.worksheets:
+            rows = []
+            for row in ws.iter_rows(values_only=True):
+                cells = [("" if c is None else str(c)).strip() for c in row]
+                if any(cells):
+                    rows.append(cells)
+                    left -= 1
+                    if left <= 0:
+                        break
+            if not rows:
+                if left <= 0:
+                    break
+                continue
+            out.append(f"## Лист: {ws.title}\n")
+            width = max(len(r) for r in rows)
+            rows = [r + [""] * (width - len(r)) for r in rows]
+            out.append("| " + " | ".join(rows[0]) + " |")
+            out.append("|" + "---|" * width)
+            for r in rows[1:]:
+                out.append("| " + " | ".join(c.replace("|", "\\|") for c in r) + " |")
+            out.append("")
+            if left <= 0:
+                out.append(f"> ⚠ Текст усечён: в транскрипт вошли первые {MAX_XLSX_ROWS} строк.")
+                break
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
     return "\n".join(out) if out else None
 
 
@@ -217,12 +196,16 @@ def mixed_script_fixed(text: str) -> str:
 
 
 def conv_pdf_builtin(src: str) -> str | None:
+    """pdf с текстовым слоем: страницы с якорями `<!-- стр. N -->`, без колонтитулов и номеров страниц."""
     if not src.lower().endswith(".pdf"):
         return None
     try:
         import fitz  # type: ignore
         doc = fitz.open(src)
-        text = _pages_or_none([p.get_text() for p in doc])
+        try:
+            text = _pages_or_none(TT.clean_pdf_pages([p.get_text() for p in doc]))
+        finally:
+            doc.close()
         if text:
             return text
     except Exception:
@@ -230,7 +213,7 @@ def conv_pdf_builtin(src: str) -> str | None:
     try:
         from pypdf import PdfReader  # type: ignore
         r = PdfReader(src)
-        text = _pages_or_none([(p.extract_text() or "") for p in r.pages])
+        text = _pages_or_none(TT.clean_pdf_pages([(p.extract_text() or "") for p in r.pages]))
         if text:
             return text
     except Exception:
@@ -240,7 +223,12 @@ def conv_pdf_builtin(src: str) -> str | None:
             out = subprocess.run(["pdftotext", "-layout", src, "-"],
                                  capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
             if out.returncode == 0 and out.stdout.strip():
-                return out.stdout
+                pages = out.stdout.split("\f")
+                if pages and not pages[-1].strip():
+                    pages.pop()
+                text = _pages_or_none(TT.clean_pdf_pages(pages))
+                if text:
+                    return text
         except Exception:
             pass
     return None
@@ -327,23 +315,35 @@ def conv_plain(src: str) -> str | None:
     return text
 
 
-# Распознавание стоит ПОСЛЕ всех парсеров: это единственный конвертер, который стоит
-# вызовов модели и минут работы, и звать его есть смысл лишь там, где текста в файле нет.
+# Встроенный docx стоит первым: его результат одинаков на любой машине и включает то, чего нет у
+# остальных (комментарии рецензента, принятые исправления, таблицы с объединением в построчной форме).
+# Парсеры pdf стоят ДО markitdown: у них якоря страниц и очистка колонтитулов. Распознавание стоит
+# ПОСЛЕ всех парсеров: это единственный конвертер, который стоит вызовов модели и минут работы, и звать
+# его есть смысл лишь там, где текста в файле нет.
 CONVERTERS = [
-    ("pandoc", conv_pandoc),
-    ("markitdown", conv_markitdown),
     ("builtin-docx", conv_docx_builtin),
+    ("pandoc", conv_pandoc),
     ("builtin-xlsx", conv_xlsx_builtin),
     ("builtin-pdf", conv_pdf_builtin),
+    ("markitdown", conv_markitdown),
     ("ocr", conv_pdf_ocr),
     ("plain", conv_plain),
 ]
 
 
 def convert(src: str, prefer: str, use_ocr: bool = True) -> tuple:
+    global LAST_WHY
+    LAST_WHY = ""
     # Ссылка на файл вне проекта (или на секрет) вложением не считается: иначе её цель
     # (`.txt`/`.csv` читаются как есть) легла бы в Raw/ обычным файлом и прошла бы все проверки.
     if link_escapes(src):
+        return None, None
+    kind = DG.kind_of(src)
+    if kind:
+        text, why = DG.describe(src)
+        if text:
+            return text, why
+        LAST_WHY = why
         return None, None
     order = [c for c in CONVERTERS if use_ocr or c[0] != "ocr"]
     if prefer != "auto":
@@ -360,41 +360,147 @@ def convert(src: str, prefer: str, use_ocr: bool = True) -> tuple:
 
 # ------------------------------------------------------------------ обход
 
-def targets(paths: list, root: str) -> list:
+def is_diagram(path: str) -> bool:
+    return bool(DG.kind_of(path))
+
+
+def wanted(name: str) -> bool:
+    return not name.startswith(("~$", "."))
+
+
+def targets(paths: list, root: str, diagrams: bool = True) -> list:
+    """Файлы к разбору: офисные и (по умолчанию) схемы — в явных путях и в папке `root` по умолчанию."""
     found = []
+
+    def ok(p: str) -> bool:
+        return os.path.splitext(p)[1].lower() in SUPPORTED or (diagrams and is_diagram(p))
+
     for p in paths or [root]:
         if os.path.isfile(p):
-            if os.path.splitext(p)[1].lower() in SUPPORTED and not link_escapes(p):
+            if ok(p) and not link_escapes(p):
                 found.append(p)
             continue
         for dirpath, dirnames, files in safe_walk(p):
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")
+                           and os.path.join(dirpath, d).replace("\\", "/") != EXTRACTED]
             for f in files:
-                if os.path.splitext(f)[1].lower() in SUPPORTED and not f.startswith("~$"):
-                    found.append(os.path.join(dirpath, f))
+                full = os.path.join(dirpath, f)
+                if wanted(f) and ok(full):
+                    found.append(full)
     return sorted(found)
 
 
+def _rel(path: str) -> str:
+    """Путь от корня проекта (рабочей папки) в posix-виде; вне проекта — как есть."""
+    try:
+        rel = os.path.relpath(path).replace("\\", "/")
+    except ValueError:
+        return path.replace("\\", "/")
+    return path.replace("\\", "/") if rel.startswith("..") else rel
+
+
+def _scope(rel: str) -> str:
+    """Где лежит файл: raw (Raw/), attach (вложение страницы), work (Workspaces/) или path (прочее)."""
+    parts = rel.split("/")
+    if rel.startswith(EXTRACTED + "/"):
+        return "skip"
+    if parts[0] == "Raw":
+        return "raw"
+    if parts[0] == "Sources" and len(parts) > 3 and any(p.endswith("_assets") for p in parts[2:-1]):
+        return "attach"
+    if parts[0] == "Workspaces":
+        return "work"
+    return "path"
+
+
+def _strip_assets(name: str) -> str:
+    return (name[:-len("_assets")] or "assets") if name.endswith("_assets") else name
+
+
+def extracted_path(rel: str) -> tuple:
+    """(путь транскрипта от корня проекта, сокращено ли имя) для вложения или схемы вне Raw/.
+
+    Raw/Extracted/<источник>/<путь вложения без `_assets`>/<полное имя вложения>.md. Имя вложения
+    сохраняется вместе с расширением, поэтому `x.drawio` и `x.png` не затирают расшифровки друг друга.
+    Не помещается в предел пути — имя сокращается, а на конце остаётся хеш полного имени.
+    """
+    parts = rel.split("/")
+    if parts[0] == "Sources":
+        kind, tail = parts[1], parts[2:]
+    elif parts[0] == "Workspaces":
+        kind, tail = "Workspaces", parts[1:]
+    else:
+        kind, tail = "Прочее", parts
+    dirs = [_strip_assets(d) for d in tail[:-1]]
+    name = tail[-1]
+    folder = "/".join([EXTRACTED, kind] + dirs)
+    full = f"{folder}/{name}.md"
+    if len(full) <= PATH_CHARS:
+        return full, False
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()
+    room = PATH_CHARS - len(folder) - 1 - len(".md") - 7
+    short = (name[:room].rstrip(". ") + "~" + digest[:6]) if room >= 8 else "~" + digest[:10]
+    return f"{folder}/{short}.md", True
+
+
+def page_of(rel: str) -> str:
+    """Страница-владелец вложения: `…/<X>_assets/<файл>` → `…/<X>.md`, если она есть в зеркале."""
+    parts = rel.split("/")
+    for i in range(len(parts) - 2, 1, -1):
+        if parts[i].endswith("_assets"):
+            page = "/".join(parts[:i] + [_strip_assets(parts[i]) + ".md"])
+            return page if os.path.isfile(page) else ""
+    return ""
+
+
 def transcript_path(src: str) -> str:
+    """Транскрипт рядом с оригиналом (Raw/ и явные пути): `X.md`, при занятом имени — `X.converted.md`.
+
+    Рядом лежат `X.docx` и `X.pdf`: их общий `X.md` каждый запуск переписывался бы по очереди. Занятое
+    чужой расшифровкой имя уступает полному — `X.pdf.md`."""
     stem, _ = os.path.splitext(src)
     cand = stem + ".md"
     if os.path.exists(cand):
         # рядом уже есть markdown с тем же именем: не трогаем чужое, пишем .converted.md
-        head = open(cand, encoding="utf-8", errors="ignore").read(400)
+        head = open(cand, encoding="utf-8", errors="ignore").read(HEAD_CHARS)
         if "converted_from:" not in head:
             return stem + ".converted.md"
+        m = re.search(r'^converted_from:\s*"?([^"\n]+)', head, re.M)
+        if m and os.path.basename(m.group(1).strip()) != os.path.basename(src):
+            return src + ".md"
     return cand
 
 
 def existing_hash(path: str) -> str | None:
     if not os.path.isfile(path):
         return None
-    m = re.search(r"^source_hash:\s*(\S+)", open(path, encoding="utf-8", errors="ignore").read(600), re.M)
+    m = re.search(r"^source_hash:\s*(\S+)", open(path, encoding="utf-8", errors="ignore").read(HEAD_CHARS), re.M)
     return m.group(1) if m else None
 
 
-def render(src: str, text: str, converter: str, digest: str) -> str:
-    title = os.path.splitext(os.path.basename(src))[0]
+def part_path(dst: str, n: int) -> str:
+    return dst[:-3] + "-часть-%02d.md" % n
+
+
+def is_fresh(dst: str, digest: str) -> bool:
+    """Транскрипт актуален: хеш оригинала тот же (одним файлом или целым набором частей)."""
+    if existing_hash(dst) == digest:
+        return True
+    first = part_path(dst, 1)
+    if existing_hash(first) != digest:
+        return False
+    head = open(first, encoding="utf-8", errors="ignore").read(HEAD_CHARS)
+    m = re.search(r"^parts:\s*(\d+)", head, re.M)
+    n = int(m.group(1)) if m else 0
+    return n > 1 and all(os.path.isfile(part_path(dst, i)) for i in range(1, n + 1))
+
+
+def render(src: str, text: str, converter: str, digest: str, extra: list | None = None,
+           title: str | None = None) -> str:
+    """Транскрипт: шапка провенанса, предупреждение, текст. `extra` — [(поле, значение)] после `status`.
+
+    `source_hash` стоит в первых строках шапки: по нему `existing_hash` узнаёт, что работа уже сделана."""
+    title = title or os.path.splitext(os.path.basename(src))[0]
     # Распознанный текст предупреждает о СВОЕЙ беде. Парсер теряет разметку, но буквы
     # берёт из файла; зрячая модель буквы УГАДЫВАЕТ по начертанию, и ошибается она в
     # словах и числах — «Принят» читается как «Приятт», «статьи» как «statute». Для
@@ -406,86 +512,390 @@ def render(src: str, text: str, converter: str, digest: str) -> str:
                 f"(`{converter[4:] or 'ocr'}`). Возможны ошибки в словах, числах, номерах "
                 f"статей и датах. Ни цитировать, ни сверять по этому файлу нельзя — "
                 f"только по оригиналу.")
+    elif converter in DG.DESCRIBERS:
+        warn = (f"> ⚙️ **Машинное описание схемы.** Истина — оригинал `{os.path.basename(src)}`; "
+                f"здесь перечислены узлы и связи, геометрия и оформление не передаются.")
     else:
         warn = (f"> ⚙️ **Машинная конвертация.** Истина — оригинал "
                 f"`{os.path.basename(src)}`; здесь возможны потери разметки, колонтитулов и "
                 f"картинок. Цитировать при верификации следует оригинал.")
+    fields = ""
+    for key, val in extra or []:
+        fields += (f"{key}: {val}\n" if isinstance(val, int) or re.fullmatch(r"[\w.\-]+", str(val))
+                   else f'{key}: "{str(val).replace(chr(34), chr(39))}"\n')
     return (f"---\ntitle: \"{title}\"\n"
             f"converted_from: \"{src.replace(chr(92), '/')}\"\n"
             f"converter: {converter}\nconverted: {TODAY}\nsource_hash: {digest}\n"
-            f"status: draft\n---\n\n"
+            f"status: draft\n{fields}---\n\n"
             f"{warn}\n\n"
             f"# {title}\n\n{text.strip()}\n")
 
 
+# ------------------------------------------------------------- план работы
+
+def make_item(src: str, scope: str | None = None) -> dict:
+    rel = _rel(src)
+    scope = scope or _scope(rel)
+    item = {"src": src, "rel": rel, "scope": scope, "kind": "diagram" if is_diagram(src) else "office",
+            "page": "", "attachment": "", "short": False}
+    if scope in ("attach", "work"):
+        item["dst"], item["short"] = extracted_path(rel)
+        item["attachment"] = os.path.basename(src)
+        if scope == "attach":
+            item["page"] = page_of(rel)
+    else:
+        item["dst"] = transcript_path(src)
+    return item
+
+
+def assign_unique(items: list) -> None:
+    """Разные оригиналы с одним именем транскрипта (`X.docx` и `X.txt` → `X.md`) получают разные имена:
+    первый по пути оставляет короткое, остальные уходят на полное — `X.txt.md`. Решается до записи, а не
+    когда файл уже лежит на диске: иначе первый запуск писал бы общий файл по очереди обоими."""
+    claimed: dict = {}
+    for item in sorted(items, key=lambda i: i["src"]):
+        key = os.path.normcase(os.path.normpath(item["dst"]))
+        if key in claimed and claimed[key] != item["src"]:
+            item["dst"] = item["src"] + ".md"
+        else:
+            claimed[key] = item["src"]
+
+
+def attach_limit_bytes() -> int:
+    """Предел размера вложения — тот же, что у синка Confluence (`attachment_max_mb`, 0 — без предела)."""
+    try:
+        from aurora_common import ATTACH_MAX_MB, confluence_block, yaml_word
+        text = open("aurora.config.yaml", encoding="utf-8", errors="replace").read()
+        raw = yaml_word(confluence_block(text), "attachment_max_mb", "")
+        mb = int(raw) if raw.isdigit() else ATTACH_MAX_MB
+    except Exception:
+        mb = 100
+    return mb * 1_000_000 if mb > 0 else 0
+
+
+def discover(cfg: dict) -> tuple:
+    """(элементы, примечания) по умолчанию: Raw/, вложения страниц и схемы Workspaces/ по настройкам проекта."""
+    items = []
+    notes = []
+    if os.path.isdir("Raw"):
+        for p in targets([], "Raw", diagrams=cfg["diagrams"]):
+            items.append(make_item(p, "raw"))
+    limit = attach_limit_bytes()
+    if (cfg["attachments"] or cfg["diagrams"]) and os.path.isdir("Sources"):
+        seen: dict = {}
+        for dirpath, dirnames, files in safe_walk("Sources"):
+            dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))    # порядок обхода — один на всех
+            rel_dir = _rel(dirpath)
+            if _scope(rel_dir + "/_") != "attach":
+                continue
+            for f in sorted(files):
+                full = os.path.join(dirpath, f)
+                office = os.path.splitext(f)[1].lower() in SUPPORTED
+                diagram = is_diagram(full)
+                if not wanted(f) or not ((office and cfg["attachments"]) or (diagram and cfg["diagrams"])):
+                    continue
+                size = os.path.getsize(full)
+                if size == 0:
+                    continue
+                if limit and size > limit:
+                    notes.append(f"пропущено (больше предела размера вложения): {_rel(full)}")
+                    continue
+                item = make_item(full, "attach")
+                digest = file_hash(full)
+                if digest in seen:
+                    item["duplicate_of"] = seen[digest]
+                else:
+                    seen[digest] = item["rel"]
+                items.append(item)
+    if cfg["diagrams"] and os.path.isdir("Workspaces"):
+        for p in targets([], "Workspaces", diagrams=True):
+            if is_diagram(p):
+                items.append(make_item(p, "work"))
+    return items, notes
+
+
+class Stats:
+    def __init__(self):
+        self.done: list = []
+        self.skipped: list = []
+        self.failed: list = []
+        self.empty: list = []
+        self.duplicates: list = []
+        self.deferred: list = []
+        self.low: list = []
+        self.shortened: list = []
+        self.removed: list = []
+        self.cut: list = []
+        self.chars = 0
+        self.transcripts = 0
+        self.attachments = 0
+
+
+def own_transcript(path: str) -> bool:
+    """Файл — наш транскрипт: в шапке `converted_from:` и `source_hash:`. Чужой markdown не трогаем."""
+    try:
+        head = open(path, encoding="utf-8", errors="ignore").read(HEAD_CHARS)
+    except OSError:
+        return False
+    return "converted_from:" in head and "source_hash:" in head
+
+
+def drop_stale(item: dict, keep: set, dry: bool) -> list:
+    """Убрать прежние файлы этого транскрипта (одиночный или части), которых в новом наборе нет."""
+    dst = item["dst"]
+    folder = os.path.dirname(dst) or "."
+    stem = os.path.basename(dst)[:-3]
+    gone = []
+    keep = {os.path.normpath(k) for k in keep}      # на Windows разделители в путях разные
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return gone
+    for name in names:
+        full = os.path.join(folder, name)
+        if os.path.normpath(full) in keep or not (
+                name == stem + ".md" or re.fullmatch(re.escape(stem) + r"-часть-\d+\.md", name)):
+            continue
+        if own_transcript(full):
+            if not dry:
+                try:
+                    os.remove(full)
+                except OSError:
+                    continue
+            gone.append(full)
+    return gone
+
+
+def write_transcript(item: dict, text: str, conv: str, digest: str, low: tuple) -> list:
+    """Записать транскрипт (одним файлом или частями) → список путей. Прежние лишние файлы убираются."""
+    parts = TT.split_parts(text)
+    n = len(parts)
+    dst = item["dst"]
+    paths = [dst] if n == 1 else [part_path(dst, i + 1) for i in range(n)]
+    title = os.path.splitext(item["attachment"] or os.path.basename(item["src"]))[0] \
+        if item["scope"] in ("attach", "work") else None
+    base_name = os.path.basename(dst)[:-3]
+    shown_src = item["rel"] if not item["rel"].startswith("..") else item["src"]
+    for i, (path, body) in enumerate(zip(paths, parts)):
+        extra: list = []
+        if low[0]:
+            extra += [("quality", "low"), ("quality_note", low[1])]
+        if item["page"]:
+            extra.append(("page", item["page"]))
+        if item["attachment"]:
+            extra.append(("attachment", item["attachment"]))
+        if n > 1:
+            extra += [("part", i + 1), ("parts", n), ("part_of", base_name)]
+            if i > 0:
+                extra.append(("prev", os.path.basename(paths[i - 1])))
+            if i + 1 < n:
+                extra.append(("next", os.path.basename(paths[i + 1])))
+        shown = (f"{title or os.path.splitext(os.path.basename(item['src']))[0]} — часть {i + 1} из {n}"
+                 if n > 1 else title)
+        write_atomic(path, render(shown_src, body, conv, digest, extra, shown), fsync=False)
+    drop_stale(item, set(paths), False)
+    return paths
+
+
+def process(item: dict, a, stats: Stats, force: bool) -> None:
+    src, dst = item["src"], item["dst"]
+    digest = file_hash(src)
+    if not force and is_fresh(dst, digest):
+        stats.skipped.append(src)
+        return
+    if a.dry_run:
+        stats.done.append((src, dst, "—"))
+        return
+    text, conv = convert(src, a.converter, use_ocr=not a.no_ocr)
+    if not text:
+        stats.failed.append((src, LAST_WHY))
+        return
+    extracted = item["scope"] in ("attach", "work")
+    if extracted:
+        compact = len("".join(text.split()))
+        if compact < (MIN_DIAGRAM_CHARS if item["kind"] == "diagram" else MIN_DOC_CHARS):
+            stats.empty.append(src)               # логотип, иконка, пустая схема: транскрипта нет
+            drop_stale(item, set(), False)
+            return
+        text, cut = TT.cap_text(text, MAX_TRANSCRIPT_CHARS)
+        if cut:
+            stats.cut.append(src)
+    tabular = os.path.splitext(src)[1].lower() in (".xlsx", ".xlsm", ".csv")
+    low = (False, "")                         # схема — структурный текст: «читаемость слов» к ней не применима
+    if item["kind"] != "diagram":
+        ok, why = TT.quality(text, tabular)
+        low = (not ok, why)
+    paths = write_transcript(item, text, conv, digest, low)
+    stats.done.append((src, paths[0], conv))
+    stats.transcripts += len(paths)
+    stats.chars += len(text)
+    if low[0]:
+        stats.low.append((paths[0], low[1]))
+    if item["short"]:
+        stats.shortened.append(paths[0])
+
+
+def clean_orphans(items: list, dry: bool) -> list:
+    """Транскрипты в Raw/Extracted, чьего оригинала больше нет или чей оригинал — дубликат другого.
+
+    Зеркала источника нет вовсе (не успел синк, папку убрали) — его транскрипты не трогаем: это не
+    «вложение удалили», а «зеркала сейчас нет». Чужой markdown (без нашей шапки) не удаляется."""
+    removed = []
+    if not os.path.isdir(EXTRACTED):
+        return removed
+    dupes = {i["rel"] for i in items if i.get("duplicate_of")}
+    for dirpath, dirnames, files in os.walk(EXTRACTED):
+        for f in sorted(files):
+            full = os.path.join(dirpath, f).replace("\\", "/")
+            if not f.endswith(".md") or not own_transcript(full):
+                continue
+            head = open(full, encoding="utf-8", errors="ignore").read(HEAD_CHARS)
+            m = re.search(r'^converted_from:\s*"([^"\n]+)"', head, re.M)
+            origin = m.group(1) if m else ""
+            kind = full[len(EXTRACTED) + 1:].split("/")[0]
+            mirror = "Workspaces" if kind == "Workspaces" else "Sources/" + kind
+            if not origin or not os.path.isdir(mirror):
+                continue
+            if not os.path.exists(origin) or origin in dupes:
+                if not dry:
+                    try:
+                        os.remove(full)
+                    except OSError:
+                        continue
+                removed.append(full)
+    if removed and not dry:
+        for dirpath, dirnames, files in os.walk(EXTRACTED, topdown=False):
+            if dirpath.replace("\\", "/") != EXTRACTED and not os.listdir(dirpath):
+                try:
+                    os.rmdir(dirpath)
+                except OSError:
+                    pass
+    return removed
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Офисные первоисточники → markdown-транскрипты")
-    ap.add_argument("paths", nargs="*", help="файлы или папки (по умолчанию — весь Raw/)")
+    ap = argparse.ArgumentParser(description="Офисные первоисточники, вложения страниц и схемы → markdown-транскрипты")
+    ap.add_argument("paths", nargs="*", help="файлы или папки (по умолчанию — Raw/, вложения страниц и схемы)")
     ap.add_argument("--root", default="Raw", help="что сканировать по умолчанию (Raw)")
     ap.add_argument("--converter", default="auto",
                     choices=["auto", "pandoc", "markitdown", "builtin", "ocr", "plain"],
                     help="чем конвертировать: auto, markitdown, pandoc, ocr")
     ap.add_argument("--no-ocr", action="store_true",
                     help="не звать зрячую модель: сканы останутся неразобранными")
+    ap.add_argument("--no-attachments", action="store_true",
+                    help="не разбирать вложения страниц (Sources/…/<страница>_assets)")
+    ap.add_argument("--no-diagrams", action="store_true",
+                    help="не разбирать схемы draw.io и модели BPMN")
+    ap.add_argument("--max-files", type=int, default=0, metavar="ЧИСЛО",
+                    help="потолок вложений и схем за запуск (по умолчанию — из настроек проекта)")
     ap.add_argument("--force", action="store_true", help="перечитать даже неизменившиеся")
     ap.add_argument("--dry-run", action="store_true", help="показать план, ничего не писать")
     a = ap.parse_args()
 
-    if not a.paths and not os.path.isdir(a.root):
-        print(f"office_ingest: нет папки {a.root}/ — запускайте из корня проекта", file=sys.stderr)
-        return 1
+    cfg = IC.settings(".")
+    if a.no_attachments:
+        cfg["attachments"] = False
+    if a.no_diagrams:
+        cfg["diagrams"] = False
+    cap = a.max_files if a.max_files > 0 else cfg["max_files"]
 
-    files = targets(a.paths, a.root)
-    if not files:
+    notes: list = []
+    if a.paths:
+        items = [make_item(p) for p in targets(a.paths, a.root, diagrams=True)]
+        items = [i for i in items if i["scope"] != "skip"]
+    else:
+        if not os.path.isdir(a.root):
+            print(f"office_ingest: нет папки {a.root}/ — запускайте из корня проекта", file=sys.stderr)
+            return 1
+        items, notes = discover(cfg)
+
+    if not items:
         print("office_ingest: офисных файлов не найдено — конвертировать нечего")
         return 0
+    assign_unique(items)
 
-    done, skipped, failed = [], [], []
-    for src in files:
-        dst = transcript_path(src)
-        digest = file_hash(src)
-        if not a.force and existing_hash(dst) == digest:
-            skipped.append(src)
+    stats = Stats()
+    budget = cap
+    for item in sorted(items, key=lambda i: ({"raw": 0, "path": 0, "attach": 1, "work": 2}.get(i["scope"], 3), i["src"])):
+        extracted = item["scope"] in ("attach", "work")
+        if extracted:
+            stats.attachments += 1
+        if item.get("duplicate_of"):
+            stats.duplicates.append((item["src"], item["duplicate_of"]))
             continue
-        if a.dry_run:
-            done.append((src, dst, "—"))
+        if extracted and budget <= 0 and not is_fresh(item["dst"], file_hash(item["src"])):
+            stats.deferred.append(item["src"])
             continue
-        text, conv = convert(src, a.converter, use_ocr=not a.no_ocr)
-        if not text:
-            failed.append(src)
-            continue
-        with open(dst, "w", encoding="utf-8") as f:
-            f.write(render(src, text, conv, digest))
-        done.append((src, dst, conv))
+        before = len(stats.skipped)
+        process(item, a, stats, a.force)
+        if extracted and len(stats.skipped) == before:
+            budget -= 1                       # потолок — на файлы, которые пришлось переводить, а не на пропущенные
 
+    if not a.paths and not a.dry_run:
+        stats.removed = clean_orphans(items, False)
+    elif not a.paths:
+        stats.removed = clean_orphans(items, True)
+
+    total = len(items) - len(stats.duplicates)
     print(f"# office_ingest — {TODAY}\n")
-    print(f"Файлов найдено: {len(files)} · собрано: {len(done)} · "
-          f"пропущено (не изменились): {len(skipped)} · не разобрано: {len(failed)}\n")
-    for src, dst, conv in done[:40]:
+    print(f"Файлов найдено: {total} · собрано: {len(stats.done)} · "
+          f"пропущено (не изменились): {len(stats.skipped)} · не разобрано: {len(stats.failed)}\n")
+    for src, dst, conv in stats.done[:40]:
         print(f"  ✅ {src}\n     → {dst}  [{conv}]")
-    if len(done) > 40:
-        print(f"  … ещё {len(done) - 40}")
-    for src in failed:
-        print(f"  ❌ {src} — нет подходящего конвертера")
-    if failed:
+    if len(stats.done) > 40:
+        print(f"  … ещё {len(stats.done) - 40}")
+    for src, why in stats.failed:
+        print(f"  ❌ {src} — {why or 'нет подходящего конвертера'}")
+    if stats.empty:
+        print(f"\nБез транскрипта (текста слишком мало — логотип, иконка, пустая схема): {len(stats.empty)}")
+    if stats.duplicates:
+        print(f"Дубликаты по содержимому (один транскрипт на содержимое): {len(stats.duplicates)}")
+    if stats.deferred:
+        print(f"Отложено до следующего запуска (потолок файлов за запуск — {cap}): {len(stats.deferred)}")
+    if stats.cut:
+        print(f"Текст усечён по потолку транскрипта ({MAX_TRANSCRIPT_CHARS} знаков): {len(stats.cut)}")
+    if stats.shortened:
+        print(f"Длинные пути: имя транскрипта сокращено до хеша — {len(stats.shortened)}")
+    for note in notes:
+        print(f"  ! {note}")
+    if stats.removed:
+        print(f"{'Будет убрано' if a.dry_run else 'Убрано'} транскриптов, у которых нет оригинала: {len(stats.removed)}")
+    if stats.low:
+        print(f"\nДокументов низкого качества: {len(stats.low)} — в разбор они не пойдут, пока текст не исправлен "
+              f"(`quality: low` в шапке):")
+        for path, why in stats.low[:10]:
+            print(f"  ⚠ {path} — {why}")
+    # итоги по всей базе, а не только по записанному в этот запуск: на повторном прогоне ничего не пишется,
+    # а транскрипты лежат и идут в разбор
+    held = TT.extracted_stats(".")
+    if stats.attachments or held["transcripts"]:
+        print(f"\nВложений: {stats.attachments} · транскриптов: {held['transcripts']} · знаков: {held['chars']}")
+    if stats.failed:
         print("\nЧтобы разобрать оставшееся, поставьте один из инструментов:")
         print("  brew install pandoc            # docx/pptx → markdown (лучшее качество)")
         print("  pip install markitdown         # универсальный конвертер")
         print("  pip install openpyxl pypdf     # xlsx и pdf встроенным конвертером")
     if a.dry_run:
         print("\n(dry-run) Ничего не записано.")
-    elif done:
+    elif stats.done:
         print("\nДальше: `/aurora-vault ingest-raw <транскрипт>` — извлечь карточки-кандидаты.")
         print("Оригиналы не изменялись: доказательство — они, транскрипт помечен как машинный.")
-    if failed and not a.dry_run:
-        # В итог маршрута — только неудачи: успешный перевод в текст ещё не разбор документа,
-        # и считать его «обработанным» значило бы посчитать один документ дважды.
+    if not a.dry_run and (stats.failed or stats.low or held["transcripts"] or stats.attachments):
+        # В итог маршрута — неудачи и счётчики вложений: успешный перевод в текст ещё не разбор
+        # документа, и считать его «обработанным» значило бы посчитать один документ дважды.
         import run_summary as RS
         s = RS.empty()
-        s["docs_failed"] = len(failed)
-        s["errors"]["документ не переведён в текст: нет подходящего конвертера"] = len(failed)
+        s["docs_failed"] = len(stats.failed)
+        if stats.failed:
+            s["errors"]["документ не переведён в текст: нет подходящего конвертера"] = len(stats.failed)
+        if stats.low:
+            s["errors"]["документ низкого качества: текст не читается, в разбор не идёт"] = len(stats.low)
+        s["attachments"] = stats.attachments
+        s["transcripts"] = held["transcripts"]
+        s["transcript_chars"] = held["chars"]
+        s["low_quality"] = len(TT.low_quality("."))
         print(RS.emit(s))
-    return 1 if failed else 0
+    return 1 if stats.failed else 0
 
 
 if __name__ == "__main__":
