@@ -99,6 +99,29 @@ def _int(v, default: int = 0, low: int = 0) -> int:
         return default
 
 
+def _declare_widths(providers: list, cap, llm_used=()) -> None:
+    """Ширина провайдера — не меньше 1: «0» (не объявлена) больше не бывает.
+
+    Ноль прежде значил «не объявлено», и смысл у него был двойной: пока ширину не объявил никто, провайдеры делили общий
+    потолок «Одновременно», а если её объявил другой провайдер — этому доставался один поток. Человек видел «0 потоков»
+    и не понимал, работает ли провайдер вообще (у коллеги основной с нулём «не работал»). Теперь ширина всегда число:
+    прежний ноль заменяется тем, что он давал на деле, так что параллельность старых настроек не меняется —
+    - ширину объявил хоть один провайдер: у остальных один поток;
+    - не объявил никто, потолок числом N: N делится поровну между провайдерами цепочек LLM, берущимися в параллельный
+      прогон (остаток — первым); провайдер только векторов или сканов потолок не делит;
+    - не объявил никто, потолок «авто»: по одному потоку, как «авто» считало и прежде."""
+    if not providers:
+        return
+    if not any(p["width"] > 0 for p in providers) and isinstance(cap, int) and cap > 1:
+        mine = [p for p in providers if p["id"] in llm_used] or providers
+        takers = [p for p in mine if p["parallel"]] or mine[:1]
+        base, extra = divmod(cap, len(takers))
+        for i, p in enumerate(takers):
+            p["width"] = base + (1 if i < extra else 0)
+    for p in providers:
+        p["width"] = max(1, p["width"])
+
+
 def normalize(data) -> tuple:
     """Привести настройку к схеме. → (настройка, [замечания]).
 
@@ -133,8 +156,8 @@ def normalize(data) -> tuple:
             "type": p.get("type") if p.get("type") in PROVIDER_TYPES else "openai",
             "url": str(p["url"]).strip().rstrip("/"),
             "key": str(p.get("key") or ""),
-            # Сколько запросов держит сервер: корпоративный — десяток, домашняя llama.cpp —
-            # один. 0 — не объявлено, тогда провайдер делит общий потолок прогона.
+            # Сколько запросов держит сервер: корпоративный — десяток, домашняя llama.cpp — один.
+            # Не меньше 1 (`_declare_widths` ниже): прежнее «0 — не объявлено» заменяется тем, что оно давало.
             "width": _int(p.get("width"), 0),
             # Берётся ли провайдер в параллельный прогон ради пропускной способности.
             "parallel": p.get("parallel", True) is not False,
@@ -201,6 +224,8 @@ def normalize(data) -> tuple:
     s["parallel"] = "auto" if par in ("auto", "авто", "0", "", "all") else _int(par, 1, 1)
     s["debug"] = bool(st.get("debug"))
     out["settings"] = s
+    llm_used = {b["provider"] for r in out["capabilities"]["llm"]["roles"] for b in r["backends"] if b["enabled"]}
+    _declare_widths(out["providers"], s["parallel"], llm_used)
     return out, notes
 
 

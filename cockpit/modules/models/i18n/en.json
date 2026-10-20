@@ -40,7 +40,7 @@
   "models.key_none": "no key",
   "models.key_drop": "Remove key",
   "models.p_width": "Requests at once",
-  "models.p_width_hint": "How many requests this server takes. 0 — not declared: the provider shares the run's overall cap.",
+  "models.p_width_hint": "How many requests this server takes — at least 1. That is how many threads of a parallel run the provider gets; the overall “At once” cap does not raise it. Not sure — “Measure gateways”.",
   "models.p_parallel": "use in parallel runs",
   "models.p_parallel_hint": "Untick for a slow fallback: it waits its turn in the chain and does not get a stream of tasks.",
   "models.p_template": "Own chat-template fields (JSON)",
@@ -147,5 +147,8 @@
   "models.p_health_path": "Check endpoint",
   "models.p_health_path_hint": "A path on the provider's server. Example: /models",
   "models.conflict": "The model setup changed on disk since the page was opened. Your edits are still on the page: press «Discard changes» to load the fresh setup, then make them again.",
-  "models.broken_ask": "The model setup file cannot be parsed (a hand edit?). Saving will replace it entirely; a copy stays beside it. Replace it?"
+  "models.broken_ask": "The model setup file cannot be parsed (a hand edit?). Saving will replace it entirely; a copy stays beside it. Replace it?",
+  "models.slots_about": "The primary of a role's chain gets tasks first; a provider has as many threads as its width (“Requests at once”), and the overall cap does not raise it.",
+  "models.p_slots": "threads in a run: {n}",
+  "models.p_slots_hint": "How many tasks of a parallel run start on this provider (the Writer role): it holds as many threads as its width. The primary of the chain goes first; a fallback gets the call when the primary does not answer."
 }
