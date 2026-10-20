@@ -344,7 +344,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 
 - **When.** The kb:ingest-office command: PDFs without a text layer from Raw/.
 - **Commands:** `kb:ingest-office`.
-- **Routes:** «Update the base».
+- **Routes:** «Update the base», «Repair the base», «Rebuild the base from scratch».
 
 | Role | What it does | Prompt |
 |---|---|---|

@@ -472,6 +472,39 @@ def check_long_paths(root: Path | None = None) -> list:
     return out
 
 
+_INVENTORY: dict = {}
+
+
+def extracted_inventory() -> dict:
+    """Вложения, транскрипты и чего не хватает (`office_ingest.inventory`); один раз за запуск, сбой — пусто."""
+    if "inv" not in _INVENTORY:
+        try:
+            import office_ingest as OI
+            _INVENTORY["inv"] = OI.inventory()
+        except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
+            _INVENTORY["inv"] = {}
+    return _INVENTORY["inv"]
+
+
+def check_extracted(root: Path | None = None) -> list:
+    """Вложения и схемы без транскрипта и транскрипты низкого качества. → до двух предупреждений.
+
+    Не ошибки: база работает и без них, но знание из таких файлов в неё не попадёт. Сводная строка
+    «вложений N, транскриптов M, знаков K» печатается рядом со справкой об агенте, а не здесь."""
+    out = []   # через .append: реестр переводов kit_i18n собирает сообщения доктора именно по вызовам append
+    inv = extracted_inventory()
+    loose, low = inv.get("loose") or [], inv.get("low") or []
+    if loose:
+        out.append(f"без транскрипта: {len(loose)} ({'; '.join(loose[:3])}{' …' if len(loose) > 3 else ''}) → знание "
+                   "из этих файлов в базу не попадёт: запустите `kb:ingest-office`; если файл остался в списке и после "
+                   "него, текста в нём слишком мало или нужного конвертера нет")
+    if low:
+        out.append(f"транскриптов низкого качества: {len(low)} ({'; '.join(p for p, _w in low[:3])}"
+                   f"{' …' if len(low) > 3 else ''}) → текст пуст или не читается, в разбор они не идут: исправьте "
+                   "оригинал или включите распознавание и запустите `kb:ingest-office --force`")
+    return out
+
+
 # Почему находка — блокер. Строка находки говорит «что» и «как исправить» (через «→»), но
 # не «почему это мешает»: человек видел «блокеры: 2», не понимал, что сломано и зачем
 # чинить, и не знал, куда нажать. Панель показывает все три части в отчёте «Блокеры»
@@ -952,6 +985,7 @@ def main() -> int:
 
     warns += check_portable_names()
     warns += check_long_paths()
+    warns += check_extracted()
     warns += check_pins()
     warns += check_released()
     warns += check_kit_hooks()
@@ -989,6 +1023,10 @@ def main() -> int:
             print("агент: не настроен (это не ошибка) — панель: раздел «Модели»")
     except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
         pass
+    inv = extracted_inventory()
+    if inv.get("attachments") or inv.get("transcripts"):
+        print(f"вложения: {inv.get('attachments', 0)} · транскриптов: {inv.get('transcripts', 0)} · "
+              f"знаков: {inv.get('chars', 0)} · перевод в текст: kb:ingest-office")
     # Связь — справка из сохранённого состояния: доктор сети не трогает. Выключенная проверка
     # (по умолчанию) молчит, чтобы не шуметь на каждом запуске.
     try:

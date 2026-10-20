@@ -871,9 +871,14 @@
    "reason": "настройка моделей local/models.json",
    "calls": 1
   },
-  "scripts/office_ingest.py:main": {
+  "scripts/office_ingest.py:save_skipped": {
    "kind": "other",
-   "reason": "текст из офисного файла в Raw/: источник, не карточка",
+   "reason": "память о вложениях без текста (логотип, пустая схема): служебный файл, не карточка",
+   "calls": 1
+  },
+  "scripts/office_ingest.py:write_transcript": {
+   "kind": "other",
+   "reason": "транскрипт офисного файла, вложения или схемы (Raw/): источник, не карточка",
    "calls": 1
   },
   "scripts/publish_doc.py:main": {

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -67,6 +68,7 @@ MIN_DOC_CHARS = 200                  # вложение с меньшим тек
 MIN_DIAGRAM_CHARS = 80               # у схемы порог ниже: маленькая схема — тоже знание
 MAX_XLSX_ROWS = 20_000               # строк xlsx в транскрипте; остальное — «усечено»
 HEAD_CHARS = 1500                    # сколько знаков шапки читается за хешем и полями
+SKIPPED = EXTRACTED + "/.skipped.json"   # {путь оригинала: хеш} файлов, из которых транскрипта не вышло
 LAST_WHY = ""                        # почему последний `convert` отказал (для отчёта)
 
 
@@ -478,6 +480,33 @@ def existing_hash(path: str) -> str | None:
     return m.group(1) if m else None
 
 
+def load_skipped() -> dict:
+    """{путь оригинала: хеш} — вложения и схемы, из которых текста вышло слишком мало (логотип, пустая схема).
+
+    Без памяти такой файл числился бы «без транскрипта» вечно: доктор и план ругались бы на него при каждом
+    запуске, а сканы пробовались бы распознать заново. Хеш другой — файл изменился, и он пробуется снова."""
+    try:
+        with open(SKIPPED, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_skipped(data: dict) -> None:
+    if data:
+        write_atomic(SKIPPED, json.dumps(data, ensure_ascii=False, indent=1, sort_keys=True) + "\n", fsync=False)
+    elif os.path.isfile(SKIPPED):
+        os.remove(SKIPPED)
+
+
+def mirror_present(rel: str) -> bool:
+    """Источник файла на месте: зеркало `Sources/<вид>/` или `Workspaces/`. Нет зеркала — судить об исчезновении
+    файла не по чему."""
+    parts = rel.split("/")
+    return os.path.isdir("Workspaces" if parts[0] == "Workspaces" else "/".join(parts[:2]))
+
+
 def part_path(dst: str, n: int) -> str:
     return dst[:-3] + "-часть-%02d.md" % n
 
@@ -614,6 +643,31 @@ def discover(cfg: dict) -> tuple:
     return items, notes
 
 
+def inventory(cfg: dict | None = None) -> dict:
+    """Что лежит и чего не хватает: {attachments, transcripts, chars, loose, low}. Рабочая папка — корень проекта.
+
+    `loose` — документы, вложения и схемы без актуального транскрипта (не переведены или изменились после
+    перевода); `low` — транскрипты с `quality: low`. План разбора, `kb:doctor` и сводка прогона считают одним
+    и тем же кодом, чтобы числа не расходились."""
+    items, _notes = discover(cfg or IC.settings("."))
+    assign_unique(items)
+    skipped = load_skipped()
+    loose = []
+    for it in items:
+        if it.get("duplicate_of") or it["scope"] == "work":
+            continue
+        try:
+            digest = file_hash(it["src"])
+            if not is_fresh(it["dst"], digest) and skipped.get(it["rel"]) != digest:
+                loose.append(it["rel"])
+        except OSError:
+            continue
+    held = TT.extracted_stats(".")
+    return {"attachments": sum(1 for it in items if it["scope"] in ("attach", "work")),
+            "transcripts": held["transcripts"], "chars": held["chars"], "loose": loose,
+            "low": TT.low_quality(".")}
+
+
 class Stats:
     def __init__(self):
         self.done: list = []
@@ -697,11 +751,14 @@ def write_transcript(item: dict, text: str, conv: str, digest: str, low: tuple) 
     return paths
 
 
-def process(item: dict, a, stats: Stats, force: bool) -> None:
+def process(item: dict, a, stats: Stats, force: bool, skipped: dict) -> None:
     src, dst = item["src"], item["dst"]
     digest = file_hash(src)
     if not force and is_fresh(dst, digest):
         stats.skipped.append(src)
+        return
+    if not force and skipped.get(item["rel"]) == digest:
+        stats.empty.append(src)               # уже пробовали: текста в нём нет, пока файл не изменится
         return
     if a.dry_run:
         stats.done.append((src, dst, "—"))
@@ -715,6 +772,7 @@ def process(item: dict, a, stats: Stats, force: bool) -> None:
         compact = len("".join(text.split()))
         if compact < (MIN_DIAGRAM_CHARS if item["kind"] == "diagram" else MIN_DOC_CHARS):
             stats.empty.append(src)               # логотип, иконка, пустая схема: транскрипта нет
+            skipped[item["rel"]] = digest
             drop_stale(item, set(), False)
             return
         text, cut = TT.cap_text(text, MAX_TRANSCRIPT_CHARS)
@@ -726,6 +784,7 @@ def process(item: dict, a, stats: Stats, force: bool) -> None:
         ok, why = TT.quality(text, tabular)
         low = (not ok, why)
     paths = write_transcript(item, text, conv, digest, low)
+    skipped.pop(item["rel"], None)
     stats.done.append((src, paths[0], conv))
     stats.transcripts += len(paths)
     stats.chars += len(text)
@@ -812,6 +871,11 @@ def main() -> int:
     if not items:
         # вложений не осталось вовсе — транскрипты исчезнувших всё равно убираем
         gone = clean_orphans([], a.dry_run) if not a.paths else []
+        if not a.paths and not a.dry_run:
+            stale = load_skipped()
+            kept = {r: h for r, h in stale.items() if os.path.exists(r) or not mirror_present(r)}
+            if kept != stale:
+                save_skipped(kept)
         print("office_ingest: офисных файлов не найдено — конвертировать нечего")
         if gone:
             print(f"{'Будет убрано' if a.dry_run else 'Убрано'} транскриптов, у которых нет оригинала: {len(gone)}")
@@ -819,6 +883,8 @@ def main() -> int:
     assign_unique(items)
 
     stats = Stats()
+    skipped = load_skipped()
+    skipped_was = dict(skipped)
     budget = cap
     for item in sorted(items, key=lambda i: ({"raw": 0, "path": 0, "attach": 1, "work": 2}.get(i["scope"], 3), i["src"])):
         extracted = item["scope"] in ("attach", "work")
@@ -827,11 +893,12 @@ def main() -> int:
         if item.get("duplicate_of"):
             stats.duplicates.append((item["src"], item["duplicate_of"]))
             continue
-        if extracted and budget <= 0 and not is_fresh(item["dst"], file_hash(item["src"])):
+        if extracted and budget <= 0 and not a.force and not (
+                is_fresh(item["dst"], file_hash(item["src"])) or skipped.get(item["rel"]) == file_hash(item["src"])):
             stats.deferred.append(item["src"])
             continue
         written = len(stats.done)
-        process(item, a, stats, a.force)
+        process(item, a, stats, a.force, skipped)
         if extracted and len(stats.done) > written:
             # Потолок считает записанные транскрипты. Пропущенные как неизменившиеся не в счёте, а пустые
             # (логотип) и неразобранные при каждом запуске пробуются заново: считай их, они занимали бы
@@ -842,6 +909,12 @@ def main() -> int:
         stats.removed = clean_orphans(items, False)
     elif not a.paths:
         stats.removed = clean_orphans(items, True)
+    if not a.paths:
+        # запись о файле, которого нет (зеркало на месте), больше не нужна
+        for rel in [r for r in skipped if not os.path.exists(r) and mirror_present(r)]:
+            del skipped[rel]
+    if skipped != skipped_was and not a.dry_run:
+        save_skipped(skipped)
 
     total = len(items) - len(stats.duplicates)
     print(f"# office_ingest — {TODAY}\n")

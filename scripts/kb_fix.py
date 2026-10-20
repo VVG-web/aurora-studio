@@ -1607,7 +1607,7 @@ def plan_unparsed_sources(cards: dict, plan: Plan, root: str) -> tuple:
                 except OSError:
                     continue
                 tpl = BP.is_template(src, text)
-                ptr = "" if tpl else BP.only_artifact_link(text)
+                ptr = "" if tpl else BP.only_artifact_link(text, src)
                 if not tpl and not ptr:
                     continue
                 name = normalize_title(BP.source_title(src, text))

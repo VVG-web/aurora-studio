@@ -35,7 +35,8 @@ DOC_FAIL = {"сбой", "отклонено критиком", "отклонен
 NUMBERS = ("seconds", "model_calls", "model_failed", "tokens_in", "tokens_out", "gen_seconds",
            "docs_done", "docs_skipped", "docs_failed",
            "cards_created", "cards_updated", "cards_marked", "cards_deleted", "cards_failed",
-           "adapter_bypass", "link_retried", "link_failed")
+           "adapter_bypass", "link_retried", "link_failed",
+           "attachments", "transcripts", "transcript_chars", "low_quality")
 
 def link_label(kind: str, lang: str = "ru") -> str:
     """Короткое название вида обрыва связи для строки итога — из таблицы причин движка
@@ -346,6 +347,13 @@ def render(s: dict, title: str = "Итог прогона", lang: str = "ru") ->
     L.append(f"  {w('Документы', 'Documents')}: {w('обработано', 'processed')} {_n(s.get('docs_done'))}"
              f" · {w('пропущено', 'skipped')} {_n(s.get('docs_skipped'))}"
              f" · {w('не удалось разобрать', 'could not be parsed')} {_n(s.get('docs_failed'))}")
+    if s.get("attachments") or s.get("transcripts"):
+        # вложения страниц и схемы: сколько нашлось, сколько транскриптов лежит в базе и сколько в них знаков
+        L.append(f"  {w('Вложения', 'Attachments')}: {w('найдено', 'found')} {_n(s.get('attachments'))}"
+                 f" · {w('транскриптов', 'transcripts')} {_n(s.get('transcripts'))}"
+                 f" · {w('знаков', 'characters')} {_n(s.get('transcript_chars'))}"
+                 + (f" · {w('низкого качества', 'low quality')} {_n(s.get('low_quality'))}"
+                    if s.get("low_quality") else ""))
     failed = f"{w('не удалось создать/обновить', 'could not create/update')} {_n(s.get('cards_failed'))}"
     cards = w("Карточки", "Cards")
     if s.get("cards_known"):
