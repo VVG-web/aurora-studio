@@ -270,7 +270,6 @@ def test_a_transcript_name_that_does_not_fit_the_path_limit_is_cut_to_a_hash_and
 
 @test
 def test_xlsx_and_pdf_attachments_get_transcripts_when_their_readers_are_present(tmp: Path):
-    OI = _mod("office_ingest")
     root, page, assets = _project(tmp)
     made = []
     try:
@@ -290,15 +289,19 @@ def test_xlsx_and_pdf_attachments_get_transcripts_when_their_readers_are_present
     bravo = ["Bravo requirement follows on the second page of the same document for the readers",
              "and it also continues with more words so that the whole text passes the empty limit"]
     pdf(assets / "документ.pdf", [alpha, bravo])
-    if OI.conv_pdf_builtin(str(assets / "документ.pdf")):
-        made.append("документ.pdf.md")
-    # Читателя pdf нет (CI без pypdf и pdftotext) — файл честно «не разобран», и скрипт выходит с кодом 1.
-    run_script("office_ingest.py", cwd=root, expect_rc=0 if "документ.pdf.md" in made else 1)
+    # Есть ли читатель pdf, решает сам запуск, а не проба в этом процессе: путь, рабочая папка и окружение
+    # подпроцесса другие (на Windows это разошлось). Читателя нет (CI без pypdf и pdftotext) — файл честно
+    # «не разобран», и скрипт выходит с кодом 1; остальные вложения при этом получают транскрипты.
+    cp = run_script("office_ingest.py", cwd=root)
     names = {p.name for p in (root / EXTRACTED).glob("*.md")}
     for name in made:
         assert name in names, (name, sorted(names))
-    if "документ.pdf.md" in made:
+    if "документ.pdf.md" in names:
+        assert cp.returncode == 0, cp.stdout
         body = (root / EXTRACTED / "документ.pdf.md").read_text(encoding="utf-8")
         assert "<!-- стр. 1 -->" in body and "<!-- стр. 2 -->" in body, body
+    else:
+        assert cp.returncode == 1 and "документ.pdf — нет подходящего конвертера" in cp.stdout, \
+            (cp.returncode, cp.stdout)
     if "таблица.xlsx.md" in made:
         assert "## Лист: Лист1" in (root / EXTRACTED / "таблица.xlsx.md").read_text(encoding="utf-8")
