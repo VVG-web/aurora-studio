@@ -210,6 +210,24 @@ def test_project_settings_switch_attachments_and_diagrams_independently(tmp: Pat
 
 
 @test
+def test_an_explicit_path_through_a_link_to_the_project_is_still_inside_the_project(tmp: Path):
+    """Проект открыт по ссылке (на macOS временные и пользовательские папки лежат за `/var → /private/var`):
+    рабочая папка процесса — настоящий путь, а человек назвал файл по ссылке. Файл внутри проекта и должен
+    остаться внутри: транскрипт вложения ложится в `Raw/Extracted/`, а не рядом с оригиналом в зеркале."""
+    root, page, assets = _project(tmp)
+    link = tmp / "через-ссылку"
+    try:
+        os.symlink(root, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        return      # без прав на ссылки (Windows) проверять нечего
+    run_script("office_ingest.py", str(link / "Sources/Confluence/Раздел/Страница верхнего уровня_assets/спецификация.docx"),
+               cwd=root, expect_rc=0)
+    assert [p.name for p in (root / EXTRACTED).glob("*.md")] == ["спецификация.docx.md"], \
+        sorted(p.relative_to(root).as_posix() for p in root.rglob("*.md") if "Extracted" in p.parts or "_assets" in str(p))
+    assert not list(assets.glob("*.md")), "транскрипт лёг в зеркало рядом с оригиналом"
+
+
+@test
 def test_diagrams_in_raw_and_workspaces_and_web_attachments_are_left_to_their_owners(tmp: Path):
     root = make_project(tmp)
     (root / "Raw/project/схема.bpmn").write_text(_bpmn_text(), encoding="utf-8")

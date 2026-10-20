@@ -486,6 +486,10 @@ def _rel(path: str) -> str:
     """Путь от корня проекта (рабочей папки) в posix-виде; вне проекта — как есть."""
     try:
         rel = os.path.relpath(path).replace("\\", "/")
+        if rel.startswith(".."):
+            # Файл назвали по ссылке на проект (на macOS `/var` — ссылка на `/private/var`), а рабочая папка
+            # процесса — настоящий путь: по имени он «снаружи», по сути внутри. Сверяем настоящие пути.
+            rel = os.path.relpath(os.path.realpath(path), os.path.realpath(os.getcwd())).replace("\\", "/")
     except ValueError:
         return path.replace("\\", "/")
     return path.replace("\\", "/") if rel.startswith("..") else rel
