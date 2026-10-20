@@ -135,6 +135,7 @@ scripts/sync_audit.py    => .aurora/scripts/sync_audit.py
 scripts/aurora_stats.py  => .aurora/scripts/aurora_stats.py
 scripts/aurora_todo.py       => .aurora/scripts/aurora_todo.py
 scripts/office_ingest.py => .aurora/scripts/office_ingest.py
+scripts/diagram_text.py  => .aurora/scripts/diagram_text.py
 scripts/web_export.py    => .aurora/scripts/web_export.py
 scripts/jira_status.py   => .aurora/scripts/jira_status.py
 scripts/aurora_hooks.py  => .aurora/scripts/aurora_hooks.py
