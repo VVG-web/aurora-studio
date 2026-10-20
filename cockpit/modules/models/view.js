@@ -17,6 +17,7 @@ const ENGINE_NAMES = {worker: "Писатель: разбор, тезисы, о�
 const DEFAULT_ROLE = {llm: "worker", ocr: "document", embeddings: "index"};
 const MASK = "••••••";
 let DATA = null, M = null, TAB = "providers", DIRTY = false, DRAG = null, PING = null;
+let SNAP = "";                       // настройка такой, какой её знает сервер: «несохранённое» — это отличие от неё
 let CALLS = null, FOCUS = "", CALL_FILTER = "";   // «Где работают»: каталог вызовов движка
 const LISTS = {};                    // id провайдера → имена моделей, спрошенные у него
 
@@ -34,9 +35,20 @@ export async function refresh(ctx, payload){
   if (!d || !d.models) return ctx.toast((d && d.error) || ctx.t("models.load_failed"), "err");
   DATA = d;
   M = JSON.parse(JSON.stringify(d.models));
+  fillDefaults();
+  SNAP = canon();
   DIRTY = false;
   draw(ctx);
 }
+
+// Поля, которые страница дописывает провайдеру при показе, а не человек: заполняем их до снимка, иначе
+// первый показ вкладки сам менял бы настройку и она казалась бы изменённой.
+function fillDefaults(){
+  M.providers.forEach(p => { if (!p.health) p.health = {check: "off", path: "/models"}; });
+}
+
+// Вид настройки для сравнения со снимком. Ключи с «_» — пометки страницы («бэкенд заводится из строки»), не данные.
+const canon = () => JSON.stringify(M, (k, v) => k.startsWith("_") ? undefined : v);
 
 function draw(ctx){
   drawNotes(ctx);
@@ -46,7 +58,9 @@ function draw(ctx){
 }
 
 function touch(ctx, redraw){
-  DIRTY = true;
+  // Признак выводится из сравнения со снимком, а не защёлкивается событием: браузер шлёт `input` и без правки
+  // (автозаполнение пароля, ввод через IME), и такое событие не должно оставлять «Сохранить» горящей.
+  DIRTY = canon() !== SNAP;
   if (redraw) drawBody(ctx);
   drawBar(ctx);
   drawTabs(ctx);
@@ -62,6 +76,14 @@ const newId = (base) => {
 };
 const usedBy = id => CAPS.reduce((n, c) => n + M.capabilities[c].roles
   .filter(r => r.backends.some(b => b.provider === id)).length, 0);
+const inLlm = id => M.capabilities.llm.roles.some(r => r.backends.some(b => b.provider === id && b.enabled !== false));
+// Ширина не объявлена, а у другого провайдера цепочек LLM объявлена: движок даст этому ровно один поток
+// параллельного прогона (`agent_core.pool`), и «основной» на деле работает на малую долю заданий.
+const widthLost = p => !(Number(p.width) > 0) && inLlm(p.id)
+  && M.providers.some(x => x.id !== p.id && Number(x.width) > 0 && inLlm(x.id));
+// «Кто сколько потоков получит» — по сохранённой настройке, как её видит движок.
+const slotSplit = () => (DATA.slot_split || [])
+  .map(([n, k]) => ((DATA.models.providers[n - 1] || {}).name || "№" + n) + "×" + k).join(", ") || "—";
 
 /* ---------------------------------------------------------------- шапка */
 
@@ -130,7 +152,12 @@ async function save(ctx, replaceBroken){
   if (!r || !r.ok) return ctx.toast((r && r.error) || t("models.save_failed"), "err");
   ctx.toast(t("models.saved"), "ok");
   (r.notes || []).forEach(n => ctx.toast(n, "warn"));
+  SNAP = canon();
   DIRTY = false;                 // сохранено: refresh обязан перечитать настройку с сервера
+  // Кнопка гаснет сразу, а не когда сервер ответит на повторное чтение: на Windows ответ идёт секунды
+  // (проверка venv и профилей связи), и всё это время «Сохранить» горела бы, будто запись не прошла.
+  drawBar(ctx);
+  drawTabs(ctx);
   await refresh(ctx);
 }
 
@@ -180,8 +207,10 @@ function providerForm(ctx, p, onDone){
   const type = el("select", {class: "btn"}, ...(DATA.types || ["openai"]).map(v =>
     el("option", {value: v, selected: p.type === v ? "" : null}, t("models.type." + v))));
   type.onchange = () => { p.type = type.value; touch(ctx); };
+  // `new-password`, а не `off`: Chrome и Edge игнорируют `off` у паролей и подставляют сохранённый пароль
+  // в поле ключа (и в соседнее «Название») событием `input` — настройка менялась сама.
   const key = el("input", {class: "btn mono", type: "password", style: "width:100%;font-weight:400",
-    autocomplete: "off",
+    autocomplete: "new-password",
     placeholder: p.key === MASK ? t("models.key_set") : t("models.key_none")});
   const hadKey = p.key === MASK;
   key.oninput = () => { p.key = key.value || (hadKey ? MASK : ""); touch(ctx); };
@@ -252,6 +281,9 @@ function providersTab(ctx){
   const box = el("div", {});
   box.append(el("p", {class: "muted", style: "font-size:13px;margin:0 0 12px"},
     t("models.providers_about")));
+  if (!DIRTY && M.providers.length > 1 && (DATA.slots || 0) > 0)
+    box.append(el("p", {class: "muted", style: "font-size:12.5px;margin:-4px 0 12px"},
+      t("models.run_slots", {n: DATA.slots, split: slotSplit()}), " · ", t("models.slots_about")));
   if (!M.providers.length)
     box.append(el("div", {class: "card", style: "padding:18px;margin-bottom:12px"},
       t("models.providers_empty")));
@@ -262,6 +294,11 @@ function providersTab(ctx){
         el("b", {}, p.name || t("models.p_unnamed")),
         el("span", {class: "chip mono"}, p.id),
         el("span", {class: "chip"}, t("models.used_in", {n: usedBy(p.id)})),
+        !DIRTY && inLlm(p.id) && (DATA.slots_by_provider || {})[p.id] !== undefined
+          ? el("span", {class: "chip " + (DATA.slots_by_provider[p.id] ? "ok" : "warn"), title: t("models.p_slots_hint")},
+              t("models.p_slots", {n: DATA.slots_by_provider[p.id]})) : null,
+        widthLost(p) ? el("span", {class: "chip warn", title: t("models.p_width_lost_hint")},
+                          t("models.p_width_lost")) : null,
         list ? el("span", {class: "chip ok"}, t("models.list_n", {n: list.length})) : null,
         el("span", {style: "flex:1"}),
         el("button", {class: "btn sm", onclick: () => fetchList(ctx, p, true)},
@@ -473,7 +510,7 @@ function backendRow(ctx, cap, r, b, bi){
   if (!b._new) return row;
   // Новый провайдер прямо из строки бэкенда: заводим, выбираем — и дальше по цепочке.
   const fresh = {id: "", name: "", type: "openai", url: "", key: "", width: 0, parallel: true,
-                 template: {}};
+                 template: {}, vpn: "", health: {check: "off", path: "/models"}};
   return el("div", {}, row, el("div", {class: "card", style: "padding:12px;margin:4px 0 8px 24px"},
     el("div", {class: "muted", style: "font-size:12px;margin-bottom:6px"}, t("models.new_provider_about")),
     providerForm(ctx, fresh, ok => {
@@ -525,9 +562,7 @@ function runSettings(ctx){
       el("button", {class: "btn sm", title: t("models.measure_hint"),
         onclick: () => ctx.runWatched("agent:width", [])}, t("models.measure"))),
     el("div", {class: "muted", style: "font-size:12px;margin-top:8px"},
-      t("models.run_slots", {n: DATA.slots || 0, split: (DATA.slot_split || [])
-        .map(([n, k]) => ((DATA.models.providers[n - 1] || {}).name || "№" + n) + "×" + k)
-        .join(", ") || "—"})));
+      t("models.run_slots", {n: DATA.slots || 0, split: slotSplit()})));
 }
 
 /* ---------------------------------------------------------------- где работают */

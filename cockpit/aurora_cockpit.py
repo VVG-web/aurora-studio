@@ -997,6 +997,8 @@ def models_state(projects: list) -> dict:
         # Сколько запросов пойдёт на самом деле: потолок прогона обрезает сумму ширин.
         "slots": len(pool),
         "slot_split": [[n, pool.count(n)] for n in sorted(set(pool))],
+        # То же по идентификатору провайдера (роль «Писатель»): страница пишет у карточки, сколько потоков он получит.
+        "slots_by_provider": {b["provider"]: pool.count(b["n"]) for b in cfg["backends"]},
         # Кольцо векторов — с отсеянными запасными другой модели: видно, куда пойдёт запрос.
         "embed_ring": [{"n": r["n"], "model": r.get("model", ""), "why": r["why"]}
                        for r in AG.embed_ring(cfg)],

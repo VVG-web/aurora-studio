@@ -2477,17 +2477,19 @@ def pool(cfg: dict, role: str = "worker") -> list:
         # способность — он её либо знает от человека, либо считает равной единице.
         cap = sum(b.get("width") or 1 for b in usable)
     cap = max(1, cap)
-    slots = []
-    for b in usable:
-        if b.get("width"):
-            slots += [b["n"]] * b["width"]
-    slots = slots[:cap]
-    free = [b for b in usable if not b.get("width")]
     if _width_declared(cfg):
-        # Ширину объявил хоть один шлюз (в любой роли) — необъявленному по слоту, в
-        # пределах потолка. Правило одно на пул и на семафор (`gateway_width`).
-        slots += [b["n"] for b in free][:max(0, cap - len(slots))]
-        return slots or [1]
+        # Ширину объявил хоть один шлюз (в любой роли) — объявленная даёт столько слотов, необъявленная
+        # один, в пределах потолка. Правило одно на пул и на семафор (`gateway_width`).
+        # Слоты идут в порядке цепочки: первый основной, его слоты первые, потолок обрезает хвост запасных.
+        # Раньше первыми шли все, кто объявил ширину, а необъявленные — следом: основной без объявленной
+        # ширины оказывался в хвосте пула и при потолке не выше ширины прежнего шлюза не получал заданий
+        # вовсе (при «авто» ему доставался последний слот), хотя «первый — основной» говорит обратное.
+        slots = []
+        for b in usable:
+            slots += [b["n"]] * (b.get("width") or 1)
+        return slots[:cap] or [1]
+    slots = []
+    free = usable
     i = 0
     while len(slots) < cap and free:
         slots.append(free[i % len(free)]["n"])

@@ -294,6 +294,14 @@ Shared by all roles: the cap of simultaneous requests ("auto" — the sum of pro
 timeout, the agent's steps and budget, the call method (`pydantic_ai` or direct HTTP). A failure on one card
 does not stop the run; three failures in a row do — that is the provider, not the cards.
 
+**How a parallel run splits tasks between providers.** A task's thread starts on the provider of its "slot"; slots are
+handed out in the order of the role's chain: the first is the primary, its slots come first, fallbacks follow. A
+provider gives as many slots as its width; **an undeclared width (0) is one slot if another provider declares a
+width**, and the cap is shared equally only when nobody declares one. A cap below the sum cuts the tail of the chain.
+So a new provider with no "Requests at once" set gets one thread out of many, even when it is made the primary. How
+many threads each gets is shown in "Models" (the "Providers" tab: chips on the cards and the "Actually at once" line);
+a call moves on to a fallback when the primary does not answer, whatever the slots.
+
 **Two different troubles — two different bars.** The red Pydantic AI bar ("Pydantic AI is selected, but model
 calls bypass it") appears only when the Pydantic AI path itself is faulty: the package is not installed or does
 not import, the version failed the compatibility check, the adapter process does not start, crashes or hangs, the
