@@ -616,7 +616,7 @@
    "reason": "синхронизация git проекта: служебные файлы вне базы знаний",
    "calls": 1
   },
-  "scripts/git_sync.py:trust_cert": {
+  "scripts/git_sync.py:save_cert": {
    "kind": "other",
    "reason": "синхронизация git проекта: служебные файлы вне базы знаний",
    "calls": 1
