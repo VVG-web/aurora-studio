@@ -3,6 +3,6 @@
 # (без этих ограничений); обновляет файл Dependabot (.github/dependabot.yml) или вручную.
 # Движку и пользователям те же версии навязывает requirements.txt (BL-SEC-21: зеркала сверяются байт в байт);
 # обновляя bs4 или markdownify, меняйте оба файла — проверка части 93 сверяет их.
-beautifulsoup4==4.13.4
-markdownify==1.2.2
-ruff==0.16.10
+beautifulsoup4==4.15.0
+markdownify==1.2.3
+ruff==0.17.0
