@@ -15,6 +15,8 @@
   python3 .aurora/scripts/kb_record.py --check                   # мастер-файлы и зеркала: шапка, папка, номера, поля цикла
   python3 .aurora/scripts/kb_record.py --mirror                  # зеркала: что будет создано, обновлено, снято в архив
   python3 .aurora/scripts/kb_record.py --mirror --apply          # построить и обновить зеркала в AuroraKnowledgeDB/
+  python3 .aurora/scripts/kb_record.py --migrate                 # рукописные записи из Decisions/Questions/Reference: план переноса
+  python3 .aurora/scripts/kb_record.py --migrate --apply         # перенести в Raw/ (`git mv`) и построить зеркала
 
 Номер новой записи выдаёт реестр идентификаторов (`id_registry`): максимум среди мастер-файлов, зеркал и архива, плюс один.
 Имя файла — `DR-NNNN-<суть>.md` и `Q-NNN-<суть>.md` по правилам нормализации имён (кириллица сохраняется).
@@ -28,6 +30,11 @@
 Мастер, в котором остались заготовки `{{…}}`, зеркалом не становится: он ещё не готов. Исчезнувший мастер: зеркало уходит
 в `_archive/` с записью в «История изменений». Запись идёт через единый вход записи карточек (`op=mirror`): не прошедшее
 шаблон зеркало не пишется. Повторный прогон ничего не меняет (дата сверки с источником в сравнении не участвует).
+
+Перенос рукописного (`--migrate`). Кандидаты — карточки `Decisions/`, `Questions/`, `Reference/` без `built: machine` и без
+живого `sources`. Шапка мастера собирается из прежней теми же правилами, что и зеркало (поля движка отбрасываются), тело
+переносится побайтно, файл — `git mv` (история сохраняется), затем строятся зеркала. Занятый целевой путь — отказ по этой
+карточке, остальные идут дальше. Без git перенос не выполняется.
 
 Сухой прогон по умолчанию; запись — с `--apply`; по незакоммиченному дереву — только с `--allow-dirty`. Команда не делает
 коммитов и не правит существующие мастер-файлы: она создаёт новые файлы по просьбе человека и строит производные.
@@ -56,12 +63,13 @@ from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (  # noqa: E402
-    KB_ROOT, NAME_BYTES, TODAY, body, card_filename, card_sources, frontmatter, git_guard, head_blank,
+    KB_ROOT, NAME_BYTES, OWN_LIFECYCLE, TODAY, body, card_filename, card_sources, frontmatter, git_guard, head_blank,
     head_cut_comment, is_service, list_field, quote_safe, read_card_text, safe_walk, split_frontmatter, utc_slug,
 )
 import aurora_fs  # noqa: E402 — атомарная запись: перевод строки нового файла — `\n`, прежний `\r\n` сохраняется
 import card_types as CT  # noqa: E402 — реестр, шаблоны, конструктор шапки, единый вход записи
 
+RAW = "Raw"
 RECORD_TYPES = ("decision", "question", "reference")      # типы, у которых в `Raw/` мастер-файл, а в базе зеркало
 CORRECTIONS_HOME = "Raw/corrections"
 # Прежние значения, если типа нет в реестре проекта (повреждённая установка): дом, раздел базы, префикс номера.
@@ -802,6 +810,86 @@ def print_mirror(res: dict, apply: bool) -> None:
         print(f"\nЗаписано: {res['written']}")
 
 
+# ----------------------------------------------------------------------------- --migrate
+
+def master_header(spec: Spec, text: str, rel: str) -> "tuple[str, list]":
+    """Шапка мастера из шапки рукописной карточки базы (§14.4): копируются поля мастера, поля движка отбрасываются.
+    → (шапка, замечания для отчёта)."""
+    fm = frontmatter(text)
+    notes = []
+    f: dict = {}
+    for key in COPY[spec.tid]:
+        raw = field_raw(fm, key)
+        if key == "title":
+            f["title"] = raw or h1_of(text) or os.path.basename(rel)[:-3]
+        elif key == "template":
+            continue
+        elif raw and not head_blank(raw):
+            f[key] = _field_value(key, raw)
+    f["type"] = spec.tid
+    if spec.tid == "decision":
+        status = f.get("status", "")
+        if status and status not in OWN_LIFECYCLE["decision"]:
+            cycle = ", ".join(OWN_LIFECYCLE["decision"])
+            notes.append(f"status «{status}» вне цикла решения ({cycle}) оставлен как есть")
+    if spec.tid == "reference":
+        f["kind"] = "dictionary"
+        if not f.get("owner"):
+            notes.append("владелец справочника неизвестен — поле owner пусто")
+    return CT.render_header(spec.tid, f), notes
+
+
+def run_migrate(root: str, reg, apply: bool) -> dict:
+    res = {"moved": [], "skipped": [], "notes": [], "mirrors": None}
+    by_spec = specs(reg)
+    for rel, home in pending(root, reg):
+        spec = next(s for s in by_spec.values() if s.home == home)
+        if spec.ct is not None and not spec.ct.enabled:
+            res["skipped"].append((rel, f"тип «{spec.tid}» выключен в настройках проекта"))
+            continue
+        text = read_text(os.path.join(root, rel))
+        target = f"{spec.home}/{os.path.basename(rel)}"
+        if os.path.exists(os.path.join(root, target)):
+            res["skipped"].append((rel, f"{target} уже есть — перенос отказан, ничего не потеряно"))
+            continue
+        header, notes = master_header(spec, text, rel)
+        res["moved"].append((rel, target))
+        res["notes"] += [(rel, n) for n in notes]
+        if not apply:
+            continue
+        src, dst = os.path.join(root, rel), os.path.join(root, target)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        cp = subprocess.run(["git", "mv", "--", rel, target], cwd=root, capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=120)
+        if cp.returncode != 0:
+            res["moved"].pop()
+            res["skipped"].append((rel, "git mv не удался: " + (cp.stderr.strip().splitlines() or ["?"])[-1][:200]))
+            continue
+        aurora_fs.write_atomic(dst, header + body(text), newline="keep")
+        if os.path.exists(src):
+            res["skipped"].append((rel, "прежний файл остался на месте"))
+    if apply and res["moved"]:
+        res["mirrors"] = run_mirror(root, reg, True)
+    return res
+
+
+def print_migrate(res: dict, apply: bool) -> None:
+    print(f"# Перенос рукописных записей в Raw — {TODAY}\n")
+    print(f"- переносится: {len(res['moved'])} · пропущено: {len(res['skipped'])}")
+    for src, dst in res["moved"][:20]:
+        print(f"  - {src} → {dst}")
+    for src, why in res["skipped"][:20]:
+        print(f"  ! пропущено {src}: {why}")
+    for src, note in res["notes"][:20]:
+        print(f"  · {src}: {note}")
+    if res.get("mirrors") is not None:
+        print_mirror(res["mirrors"], True)
+    elif not res["moved"] and not res["skipped"]:
+        print("\nРукописных записей в базе нет — делать нечего.")
+    elif not apply:
+        print("\n(dry-run) Ничего не записано. Повторите с --apply.")
+
+
 # ----------------------------------------------------------------------------- команда
 
 def print_check(found: list, as_json: bool) -> int:
@@ -839,14 +927,16 @@ def main(argv=None) -> int:
     ap.add_argument("--list", action="store_true", help="сколько записей по типам и состояниям")
     ap.add_argument("--check", action="store_true", help="проверить мастер-файлы и зеркала (код 1 — есть ошибки)")
     ap.add_argument("--mirror", action="store_true", help="построить и обновить зеркала записей в базе (без --apply — план)")
+    ap.add_argument("--migrate", action="store_true",
+                    help="перенести рукописные записи из Decisions/Questions/Reference в Raw/ и построить зеркала (без --apply — план)")
     ap.add_argument("--apply", action="store_true", help="записать изменения (иначе сухой прогон)")
     ap.add_argument("--allow-dirty", action="store_true", help="писать по незакоммиченному дереву (откат станет неполным)")
     ap.add_argument("--json", action="store_true", help="машинный вывод для --list и --check")
     ap.add_argument("--root", metavar="PATH", default=".", help="корень проекта (по умолчанию — текущая папка)")
     args = ap.parse_args(argv)
-    modes = [bool(args.new), args.list, args.check, args.mirror]
+    modes = [bool(args.new), args.list, args.check, args.mirror, args.migrate]
     if sum(modes) != 1:
-        ap.error("нужен ровно один режим: --new ТИП «суть», --list, --check или --mirror")
+        ap.error("нужен ровно один режим: --new ТИП «суть», --list, --check, --mirror или --migrate")
     if not hasattr(CT, "record_cycle_problems"):
         print("kb_record: копия card_types.py старше этого скрипта — обновите проект: `kit:update`", file=sys.stderr)
         return 2
@@ -884,7 +974,9 @@ def main(argv=None) -> int:
             print("kb_record: проект не под git — откат невозможен. Закоммитьте работу (`git init`) или осознанно "
                   "продолжите с --allow-dirty.", file=sys.stderr)
             return 2
-        if not git_guard(KB_ROOT, args.allow_dirty, "зеркала записей"):
+        if not git_guard(KB_ROOT, args.allow_dirty, "зеркала записей" if args.mirror else "перенос записей"):
+            return 2
+        if args.migrate and not git_guard(RAW, args.allow_dirty, "перенос записей"):
             return 2
     if args.mirror:
         res = run_mirror(root, reg, args.apply)
@@ -893,6 +985,17 @@ def main(argv=None) -> int:
         if args.apply:
             return 1 if (res["refused"] or res["skip"]) else 0
         return 1 if (todo or res["refused"] or res["skip"]) else 0
+    if args.migrate:
+        if args.apply and not in_git():
+            print("kb_record: перенос идёт командой `git mv`, а проект не под git — перенос не выполнен. Заведите git "
+                  "(`git init`) и закоммитьте работу.", file=sys.stderr)
+            return 2
+        res = run_migrate(root, reg, args.apply)
+        print_migrate(res, args.apply)
+        if args.apply:
+            mirrors = res.get("mirrors") or {}
+            return 1 if (res["skipped"] or mirrors.get("refused")) else 0
+        return 1 if (res["moved"] or res["skipped"]) else 0
     return 0
 
 
