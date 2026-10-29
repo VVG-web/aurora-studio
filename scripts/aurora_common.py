@@ -764,6 +764,11 @@ def trust_header(fm: dict, section: str = "", text: str = "") -> str:
     if status == "deprecated":
         succ = fm.get("superseded_by", "—")
         return f"[deprecated | заменено: {succ} | только исторический контекст]"
+    if is_cited_unit(fm):
+        # Единица закона или контракта: не «доверенный источник» словами движка, а дословный текст с готовой ссылкой для
+        # ответа — её ответ ставит после цитаты (правило 7 `PROMPT_ASK`).
+        cite = (fm.get("cite") or fm.get("title") or "").strip().strip('"')
+        return f"[{st} | дословный текст документа | {cite}]"
     why = (fm.get("trust_basis") or "").strip().strip('"')
     if status in TRUSTED:
         review_by = (fm.get("review_by") or "").strip()

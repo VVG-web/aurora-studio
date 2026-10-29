@@ -466,8 +466,8 @@
           "chosen": true,
           "prompt": "agent_runner.py:PROMPT_ASK",
           "what": {
-            "ru": "Ответ только по паку карточек, со ссылкой на каждое утверждение; уточняющий вопрос продолжает разговор.",
-            "en": "An answer only from the card pack, with a link for every claim; a follow-up question continues the conversation."
+            "ru": "Ответ только по паку карточек, со ссылкой на каждое утверждение; уточняющий вопрос продолжает разговор. Единицы законов и контрактов цитируются дословно в «ёлочках», и код проверяет, что цитата есть в карточке.",
+            "en": "An answer only from the card pack, with a link for every claim; a follow-up question continues the conversation. Units of laws and contracts are quoted word for word in guillemets, and the code checks that the quote is in the card."
           }
         },
         {

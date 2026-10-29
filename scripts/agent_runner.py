@@ -5553,13 +5553,12 @@ PROMPT_ASK = """Ты отвечаешь на вопрос аналитика п�
    по такому ответу пишут постановку, и ошибка уходит в разработку.
 2. После каждого утверждения — источник в квадратных скобках: [[Имя карточки]]. Без
    ссылки утверждение считается выдуманным.
-3. Смотри на шапку доверия карточки. `verified` — факт. `imported`, `draft` — материал
-   для оценки, о них пиши «по непроверенной карточке …». `deprecated` — история, годится
-   только чтобы объяснить, как было раньше. У Decision Record в шапке не доверие, а
-   состояние решения: `accepted` — действует; `rejected` и `superseded` — история, ею
-   объясняй «почему не так».
-4. Нашёл противоречие между двумя verified — не выбирай сам, назови обе карточки и
-   скажи, что это расхождение в базе.
+3. Смотри на шапку доверия карточки. `knowledge` — факт. `draft` — материал для оценки,
+   о нём пиши «по непроверенной карточке …». `deprecated` — история, годится только чтобы
+   объяснить, как было раньше. У Decision Record в шапке не доверие, а состояние решения:
+   `accepted` — действует; `rejected` и `superseded` — история, ею объясняй «почему не так».
+4. Нашёл противоречие между двумя карточками `knowledge` — не выбирай сам, назови обе
+   карточки и скажи, что это расхождение в базе.
 5. Если в контексте есть раздел «Состояние разработки (зеркало Jira…)» — это снимок
    внешней системы, а не карточка. Статус задачи берётся оттуда и только оттуда, а ключ
    задачи пиши как есть — `PRJ-000`, без двойных скобок: это не карточка базы, и ссылка
@@ -5567,7 +5566,12 @@ PROMPT_ASK = """Ты отвечаешь на вопрос аналитика п�
    снимка: статус меняется.
    Раздела нет — значит задачи нет в зеркале, так и ответь: «в зеркале Jira её нет».
 6. Пиши по-русски, коротко и по делу. Не пересказывай карточки целиком — отвечай на
-   заданный вопрос."""
+   заданный вопрос.
+7. Карточки с пометкой «дословный текст документа» цитируй дословно: фрагмент в «ёлочках»,
+   сразу после него `[[Имя карточки]]` и значение `cite` из пометки. Внутри кавычек не
+   пересказывай, не сокращай и не меняй порядок слов; пропуск между двумя фрагментами одной
+   карточки обозначай «[…]». Нет подходящей цитаты — скажи «в документе этого нет», не
+   домысливай."""
 
 
 PROMPT_MOMUS = """Ты Момус: проверяешь ответ на вопрос по базе знаний. Твоя работа — не
@@ -7062,6 +7066,10 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
     import ctx_pack as CP
     if re.search(r"^> ⚠️ " + re.escape(CP.WEAK_MARK), pack, re.M):
         out["weak_basis"] = True
+    # Единицы законов и контрактов в паке: ответ обязан цитировать их дословно (правило 7), и это проверяется кодом.
+    cited = cited_bodies(cwd, cards)
+    if cited:
+        out["cites"] = {"cards": sorted(cited), **check_quotes(text, cited)}
     if momus:
         out["momus"] = run_momus(cfg, pack, question, text, call,
                                  answered_in=float(a.get("seconds") or 0))
@@ -7091,6 +7099,53 @@ def base_names(cwd: str) -> set:
         # терялись, а ссылка `[[прежнее имя]]` из ответа попадала в «выдумано».
         names |= set(aliases(head_text(str(path))))
     return names
+
+
+# Цитата дословного текста документа в ответе: фрагмент в «ёлочках» не короче 25 знаков, за ним (возможно, после «(» или
+# «[ст. 5]») ссылка на карточку. Пропуск между двумя кусками одной карточки — «[…]».
+QUOTE_RE = re.compile(r"«(?P<q>[^»]{25,}?)»\s*\(?\s*(?:\[[^\]]*\]\s*)*\[\[(?P<card>[^\]|#\n]+)", re.S)
+ELLIPSIS_RE = re.compile(r"\[(?:\u2026|\.\.\.)\]")
+CITED_SECTION = "Documents"
+
+
+def cited_bodies(cwd: str, names: list) -> dict:
+    """{имя карточки: тело} для тех карточек пака, что — единицы цитируемых документов (`type: cited-document`).
+
+    Тело берётся из файла карточки: ответ цитирует то, что лежит в базе, а проверка сверяет с тем же."""
+    from aurora_common import frontmatter
+    out = {}
+    for name in names:
+        if not name or any(ch in name for ch in "/\\") or name.startswith("."):
+            continue                                   # имя из пака — имя файла карточки, но путь по нему строится только для имён
+        path = os.path.join(cwd, "AuroraKnowledgeDB", CITED_SECTION, name + ".md")
+        if not os.path.isfile(path) or link_escapes(path):
+            continue
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        if (frontmatter(text).get("type") or "").strip().strip('"') == "cited-document":
+            out[name] = body_of(text)
+    return out
+
+
+def check_quotes(answer: str, pack_cards: dict) -> dict:
+    """Дословны ли цитаты ответа. `pack_cards` — {имя карточки: тело} единиц цитируемых документов из пака.
+
+    Находит фрагменты в «ёлочках» не короче 25 знаков со ссылкой `[[Имя]]` на такую карточку и проверяет, что фрагмент —
+    подстрока её тела: пробельные знаки, тире и кавычки приведены к одному виду (`card_types.norm_strict`), регистр сохраняется;
+    фрагмент с «[…]» проверяется по частям. Ссылка на другую карточку цитатой документа не считается. Ответ не блокируется:
+    результат — число проверенных и список не найденных фрагментов (как у `classify_links`).
+    → {"checked": N, "missing": [{"quote": …, "card": …}]}."""
+    from aurora_common import fold_soft
+    bodies = {fold_soft(n): (n, CT.norm_strict(b)) for n, b in (pack_cards or {}).items()}
+    checked, missing = 0, []
+    for m in QUOTE_RE.finditer(answer or ""):
+        hit = bodies.get(fold_soft(m.group("card").strip()))
+        if hit is None:
+            continue
+        checked += 1
+        parts = [CT.norm_strict(p) for p in ELLIPSIS_RE.split(m.group("q"))]
+        if not all(p in hit[1] for p in parts if p):
+            missing.append({"quote": " ".join(m.group("q").split())[:240], "card": hit[0]})
+    return {"checked": checked, "missing": missing}
 
 
 def classify_links(text: str, cards: list, pack: str, cwd: str) -> dict:
@@ -7370,6 +7425,14 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
         # Пометку видно человеку, а не только если её повторит модель в тексте ответа.
         L += ["", "⚠️ **Слабая опора:** база нашла не всё, что спрошено, — ответ неполон, "
               "ненайденное названо в тексте выше (`kb:question`, если нужно закрыть пробел)."]
+    cites = res.get("cites")
+    if cites and (cites["checked"] or cites["cards"]):
+        bad = len(cites["missing"])
+        L += ["", ("⚠️ " if bad else "✅ " if cites["checked"] else "") + f"Цитаты: проверено {cites['checked']}, не найдено {bad}"
+              + ("" if cites["checked"] else " — в ответе нет дословных цитат из карточек документов")]
+        if bad:
+            L += ["", "Этих фрагментов нет дословно в названных карточках — не переносите их в документ, сверьте с текстом:",
+                  *[f"  - «{c['quote']}» → [[{c['card']}]]" for c in cites["missing"]]]
     mo = res.get("momus") or {}
     if mo:
         if not mo.get("ok"):
