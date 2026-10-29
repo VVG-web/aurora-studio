@@ -38,7 +38,7 @@ import os
 import re
 import sys
 
-from aurora_common import (TRUSTED, service_dirs, Card as BaseCard, aliases as card_aliases, body, card_sources, decision_slice, frontmatter,
+from aurora_common import (TRUSTED, service_dirs, Card as BaseCard, aliases as card_aliases, body, card_sources, card_type, decision_slice, frontmatter,
                            is_decision_card, is_meeting, is_placeholder, link_targets, read_card_text, related_targets,
                            status_rank, trust_header, untrusted, walk_md, UNTRUSTED_RULE)
 
@@ -84,6 +84,11 @@ def is_decision(c) -> bool:
     return is_decision_card(c.fm, c.section)
 
 
+def is_question(c) -> bool:
+    """Запись-вопрос (`type: question`): вопрос не факт, и его статус `draft` — не класс доверия, а константа типа."""
+    return card_type(c.fm, c.section) == "question"
+
+
 def from_meeting(c) -> bool:
     """Карточка держит знание из стенограммы встречи."""
     return any(is_meeting(s) for s in card_sources(c.text))
@@ -95,6 +100,8 @@ def mode_allows(c, mode: str, bootstrap: bool = False) -> bool:
         return False
     if is_decision(c):
         return c.status in DECISION_STATUSES[mode]
+    if is_question(c):
+        return mode == "evaluate"         # только материал для оценки; даже при bootstrap в строгий пак не идёт
     rule = MEETING_RULE.get(mode)
     if rule and from_meeting(c) and c.status != "deprecated":
         return True
@@ -850,6 +857,8 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
             return False
         if mode in DECISION_STATUSES and is_decision(c):
             return c.status in DECISION_STATUSES[mode]
+        if is_question(c):
+            return mode == "evaluate"
         if c.status in statuses:
             return True
         return bootstrap and c.status in ("", "imported", "draft", "in-review")

@@ -1701,7 +1701,7 @@ def _validate(text: str, path: str, reg: Registry, add, seen: dict, raw_ok: bool
         add("V-19", kline("sources"), "среди sources есть стенограмма встречи, а пометки «> 🎙 Из встречи» нет",
             "пометку ставит движок: kb:repair --meetings")
     if not machine and not sources and ct.cls != "map":
-        if ct.home and ct.id != "correction":
+        if ct.home and ct.id != "correction" and kind not in LEGACY_KINDS:
             add("V-20", kline("built"), f"рукописная карточка в базе: нет built: machine и нет sources — запись типа «{ct.id}» "
                 f"живёт в {ct.home}/",
                 f"перенесите её в {ct.home}/ (`kb:record --migrate`): в базе остаётся зеркало, которое строит движок")
@@ -1939,6 +1939,12 @@ def lint_section(project_root: str = ".", reg: "Registry | None" = None) -> list
              f"без шаблона: {st['legacy']} · с нарушениями: {st['with_violations']}"]
     for code, n in st["by_code"].items():
         lines.append(f"   {code} — {TITLES.get(code, '')}: {n}")
+    # Рукописная запись (решение, вопрос, справочник), оставшаяся в базе с прежних версий: её место — `Raw/`.
+    hand = [rel for rel, _tpl, found in results
+            if any(v.code == "V-20" and v.message.startswith("рукописная карточка в базе") for v in found)]
+    if hand:
+        names = ", ".join(os.path.basename(r)[:-3] for r in hand[:3]) + (" …" if len(hand) > 3 else "")
+        lines.append(f"   рукописных записей в базе: {len(hand)} ({names}) — перенесите в Raw/: `kb:record --migrate`")
     for problem in reg.problems[:3]:
         lines.append(f"   проблема реестра: {_calm(problem)}")
     if len(reg.problems) > 3:

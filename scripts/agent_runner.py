@@ -925,7 +925,7 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
         step["scope"] = "новая часть тезиса"
 
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
-    known = candidates_block(candidates_for(root, cfg, scope, limit=8))
+    known = candidates_block(candidates_for(root, cfg, scope, limit=8, appendable=True))
     title = (fm.get("title") or step["card"]).strip().strip('"')
     r = call(cfg, "planner", [{"role": "user", "content": with_terms(
         PROMPT_EXTRACT.format(title=title, known=known, thesis=(
@@ -3897,7 +3897,7 @@ HYB_TTL = 120.0          # база меняется по ходу прогон�
 
 
 def hybrid_rank(cwd: str, query: str, limit: int, skip: str = "",
-                stubs: bool = True) -> list:
+                stubs: bool = True, appendable: bool = False) -> list:
     """[(имя, раздел, о чём)] — карточки, близкие запросу по словам И по смыслу.
 
     Слова ловят имя собственное, вектора — смысл. Порознь каждый способ промахивается
@@ -3918,7 +3918,7 @@ def hybrid_rank(cwd: str, query: str, limit: int, skip: str = "",
         os.chdir(cwd or here)
         cards = _hyb_cards(cwd or here, P)
         return _pick(P.fuse(cards, query[:2000], limit=limit * 4),
-                     limit, skip, AC, stubs)
+                     limit, skip, AC, stubs, appendable)
     except Exception:                                          # noqa: BLE001
         return []          # подсказка не обязана работать: без неё разбор идёт как прежде
     finally:
@@ -3937,7 +3937,7 @@ def _hyb_cards(root: str, P) -> dict:
         return got[1]
 
 
-def _pick(ranked: list, limit: int, skip: str, AC, stubs: bool = True) -> list:
+def _pick(ranked: list, limit: int, skip: str, AC, stubs: bool = True, appendable: bool = False) -> list:
     """Отобрать годных в кандидаты. → [(имя, раздел, о чём)].
 
     Заготовки здесь НУЖНЫ, хотя из ответа человеку они исключены. Это разные вопросы:
@@ -3950,6 +3950,8 @@ def _pick(ranked: list, limit: int, skip: str, AC, stubs: bool = True) -> list:
     В строке кандидата заготовка помечена: модель должна понимать, что содержания там
     нет, и решать по имени и по тем, кто на неё ссылается.
 
+    `appendable` — кандидаты принимают знание (`into`): зеркало записи (`kb:record`) пересоздаётся из мастера в `Raw/`, дописанное
+    в него пропало бы, поэтому в такой список оно не входит. Для ссылок оно годится, как любая карточка.
     """
     out = []
     for weight, c in ranked:
@@ -3961,6 +3963,8 @@ def _pick(ranked: list, limit: int, skip: str, AC, stubs: bool = True) -> list:
         if "/_archive/" in rel or rel.split("/")[1:2] == ["MOC"]:
             continue
         if c.stem == skip:
+            continue
+        if appendable and AC.is_record_mirror(c.fm, c.text):
             continue
         stub = AC.is_placeholder(c.fm, c.text)
         if stub and not stubs:
@@ -3978,7 +3982,7 @@ def _pick(ranked: list, limit: int, skip: str, AC, stubs: bool = True) -> list:
 
 
 def candidates_for(cwd: str, cfg: dict, query: str, limit: int = CANDIDATES,
-                   stubs: bool = True) -> list:
+                   stubs: bool = True, appendable: bool = False) -> list:
     """[(имя, раздел, о чём)] — карточки базы, близкие к теме источника.
 
     Разбор идёт вслепую: модель видит текст источника и не видит базы. Встретив
@@ -3991,7 +3995,7 @@ def candidates_for(cwd: str, cfg: dict, query: str, limit: int = CANDIDATES,
     одним словам и список всё равно есть: подсказка улучшает разбор, но не является
     его условием.
     """
-    return hybrid_rank(cwd, query, limit, stubs=stubs)
+    return hybrid_rank(cwd, query, limit, stubs=stubs, appendable=appendable)
 
 
 def links_block(rows: list) -> str:
@@ -4595,7 +4599,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
     # является. Признак ставит зеркало (`feed: true` в шапке источника) — по разделу,
     # который назвал человек, а не по нашей догадке о содержании.
     feed_rule = FEED_RULE if source_is_feed(cwd, source) else ""
-    cands = candidates_block(candidates_for(cwd, cfg, listing))
+    cands = candidates_block(candidates_for(cwd, cfg, listing, appendable=True))
     # Название страницы-владельца под именем источника: у расшифровки вложения и у страницы глубокой ветки
     # в пути только номер, и без подсказки сущность называли по нему.
     import build_plan as BP
@@ -4959,7 +4963,7 @@ def solve_meeting(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         if step_end and time.time() >= step_end:
             return {"ok": False, "late": True}, []
         text = "\n\n".join(f"[{n}] {turns[n - 1]}" for n in range(a + 1, b + 1))
-        cands = candidates_block(candidates_for(cwd, cfg, text[:4000]))
+        cands = candidates_block(candidates_for(cwd, cfg, text[:4000], appendable=True))
         r = call(cfg, "planner", [{"role": "user", "content": with_terms(PROMPT_MEETING.format(
             part=k + 1, parts=len(windows), source=source, when=when, candidates=cands,
             turns=text, section_list=types_for_prompt(cwd), guide=guide_block(cwd)), text, cwd)}], deadline=min(step_end or float("inf"),
@@ -8000,7 +8004,7 @@ def distill_queue(cfg: dict, cwd: str, defer_refresh: bool = False) -> list:
     лишних пересборки из 423. Новые карточки идут сразу: по их тезисам вынос находит
     новые сущности для следующего оборота (1.138.0).
     """
-    from aurora_common import card_body, frontmatter, is_placeholder, walk_md
+    from aurora_common import card_body, frontmatter, is_placeholder, is_record_mirror, walk_md
     # Словарь и документ — типы, чьё правило 6 коротко (справочник — сотни знаков): запас под него небольшой, иначе на узком
     # окне бюджет обнулялся бы и «не влезающие» словари перестали бы попадать в очередь.
     window = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + 400 + 300)
@@ -8010,6 +8014,8 @@ def distill_queue(cfg: dict, cwd: str, defer_refresh: bool = False) -> list:
                      skip_archive=True):
         text = open(p, encoding="utf-8", errors="ignore").read()
         fm = frontmatter(text)
+        if is_record_mirror(fm, text):
+            continue                      # зеркало записи дословно повторяет мастер в Raw/: ни тезиса, ни разреза
         kind = (fm.get("kind") or "").strip().strip('"')
         if kind == "knowledge":
             # Заготовке писать тезис не из чего: в ней «знаний пока нет». Модель всё равно

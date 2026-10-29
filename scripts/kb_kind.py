@@ -36,7 +36,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (card_sources, frontmatter, link_escapes, name_lineage,  # noqa: E402
+from aurora_common import (card_sources, frontmatter, is_record_mirror, link_escapes, name_lineage,  # noqa: E402
                            split_frontmatter, walk_md, with_fields)
 from card_types import run_script, fit_kind, registry_for, try_write_card  # noqa: E402 — вид в пределах видов типа; вход записи
 
@@ -46,8 +46,9 @@ KINDS = ("dictionary", "document", "knowledge")
 
 # Разделы, где лежит именование, а не выводы: термины, справочники, перечисления.
 DICT_SECTIONS = {"Glossary", "Reference", "Statuses"}
-# Папки первоисточников: нормативный текст, который переносится дословно.
-DOC_ROOTS = ("Raw/contract", "Raw/customer", "Raw/project", "Raw/dictionaries")
+# Папки первоисточников: нормативный текст, который переносится дословно. Решения и вопросы — записи человека (`kb:record`):
+# их зеркало — дословный документ. `Raw/reference` сюда не входит: зеркало справочника — словарь (раздел `Reference`).
+DOC_ROOTS = ("Raw/contract", "Raw/customer", "Raw/project", "Raw/dictionaries", "Raw/decisions", "Raw/questions")
 # Слова в имени источника, по которым видно нормативный документ. «Контракт» — только в
 # правовом смысле: в ИТ-проекте это чаще интеграционный контракт, и «Маппинг контракта
 # ВАЛЮТА» становился документом, которому тезис не пишут никогда (PRJ-C). «Печатная форма»
@@ -154,6 +155,8 @@ def main() -> int:
         was = (fm.get("kind") or "").strip().strip('"')
         if was == "template":
             continue            # форма проекта (`kb:repair --unparsed`): тип ей дан при заведении
+        if is_record_mirror(fm, text):
+            continue            # зеркало записи: вид задан типом записи и мастером (`kb:record --mirror`), правило его не трогает
         stem = os.path.splitext(os.path.basename(path))[0]
         if human.get(stem):
             kind, why = human[stem], "так сказал человек (Raw/corrections)"

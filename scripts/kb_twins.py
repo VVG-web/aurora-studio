@@ -42,7 +42,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from aurora_common import (KB_ROOT, TRUSTED, card_body, inbound_counts,  # noqa: E402
-                           is_placeholder, load_cards, status_rank)
+                           is_placeholder, is_record_mirror, load_cards, status_rank)
 
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 SHINGLE = 8          # длина куска в словах
@@ -144,6 +144,7 @@ def main() -> int:
     moc = os.sep + "MOC" + os.sep
     cards = {p: c for p, c in load_cards().items()
              if not is_placeholder(c.fm, c.text) and c.status != "deprecated"
+             and not is_record_mirror(c.fm, c.text)      # зеркало записи — дословная копия мастера: слиянию не подлежит
              and moc not in os.sep + os.path.normpath(p) + os.sep}
     raw = {}
     for path, c in cards.items():

@@ -1440,7 +1440,8 @@ def test_parsing_is_shown_what_the_base_already_has(tmp: Path):
         "пустой список кандидатов всё равно печатается — это собьёт модель"
 
     src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
-    assert "candidates_block(candidates_for(cwd, cfg, listing))" in src, \
+    # `appendable=True`: в список «куда дописать» зеркало записи не входит (оно пересоздаётся из мастера в Raw/)
+    assert "candidates_block(candidates_for(cwd, cfg, listing, appendable=True))" in src, \
         "кандидаты не доезжают до промпта разбора"
     assert 'карточка — это сущность, а не пересказ документа' in src.lower(), \
         "правило не сказано в самом промпте — список кандидатов без него бесполезен"

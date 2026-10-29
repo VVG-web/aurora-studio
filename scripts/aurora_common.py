@@ -581,6 +581,22 @@ def is_decision_card(fm: dict, section: str = "") -> bool:
     return card_type(fm, section) == "decision" and status in OWN_LIFECYCLE["decision"]
 
 
+# Папки мастер-файлов записей (`kb:record`): решение, вопрос, рукописный справочник.
+RECORD_HOMES = ("Raw/decisions/", "Raw/questions/", "Raw/reference/")
+
+
+def is_record_mirror(fm: dict, text: str = "") -> bool:
+    """Карточка базы — зеркало записи: машинная (`built: machine`), все источники — мастер-файлы в `Raw/decisions|questions|reference`.
+
+    Зеркало дословно повторяет мастер и пересоздаётся из него, поэтому проходы, которые меняют тело, вид, имя или сливают
+    карточки (тезис, вынос, связывание текстом, слияние двойников, дописывание из разбора, пересчёт вида), его обходят.
+    """
+    if (fm.get("built") or "").strip().strip('"') != "machine":
+        return False
+    sources = card_sources(text or "")
+    return bool(sources) and all(s.replace("\\", "/").lstrip("./").startswith(RECORD_HOMES) for s in sources)
+
+
 def decision_header(fm: dict, text: str = "") -> str:
     """Шапка DR по состоянию решения — одна для `ctx_pack` и `spec_pack`. Решение не «знание
     из источника», а решение в определённом состоянии. У отклонённого — причина отказа, у

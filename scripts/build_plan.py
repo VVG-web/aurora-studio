@@ -39,7 +39,8 @@ from aurora_common import (HEAD_BLOCK_TAIL, KB_ROOT, aliases as card_aliases, ca
                            head_text,
                            card_sources, fold_hard, sources_block,
                            quote_safe, split_frontmatter, split_tail, translit_names, walk_md,
-                           is_meeting, meeting_turns, title_from_stem, with_meeting_mark)
+                           is_meeting, is_record_mirror, meeting_turns, title_from_stem, with_meeting_mark)
+from aurora_common import frontmatter as _head_fields  # noqa: E402
 
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
 from aurora_common import TODAY, file_hash, replace_file  # noqa: E402 — дата в UTC, одна на движок
@@ -49,6 +50,10 @@ from card_types import (UnknownCardType, fit_kind, registry_for, render_card,  #
 
 # Порядок групп — из build.md: терминология раньше того, что на неё ссылается.
 GROUPS = [
+    # Рукописные справочники человека лежат в `Raw/reference/` (мастер) и стоят в базе зеркалом (`built: machine`): зеркало —
+    # результат, `derived_card()` его отсеивает, а терминология из него в базе уже до разбора (шаг `kb:record --mirror`
+    # маршрутов). `Raw/reference` в группы НЕ входит: иначе из того же файла родилась бы вторая карточка. Сама группа остаётся
+    # для проектов, где рукописный справочник ещё не перенесён в `Raw/` (`kb:record --migrate`) — устаревающая.
     ("Reference", os.path.join(KB_ROOT, "Reference")),
     # `Raw/corrections` здесь НЕТ намеренно. Исправление — не источник, из которого
     # делают карточку: сделай его источником, и рядом с «Заявкой» появится карточка
@@ -1045,6 +1050,11 @@ def append_card(path: str, old_text: str, body: str, source: str, apply: bool,
     Текст блока не изменился — карточку не трогаем: тезис написан по этому же тексту, и
     снимать с него отметку значило бы гонять модель по неизменному знанию.
     """
+    if is_record_mirror(_head_fields(old_text), old_text):
+        # Зеркало записи пересоздаётся из мастера в Raw/ (`kb:record --mirror`): дописанное в него пропало бы.
+        print(f"build_plan: {os.path.basename(path)} — зеркало записи из Raw/, дописывать в него нельзя: знание о теме "
+              "заведите в карточке знаний, а запись правьте в её мастер-файле", file=sys.stderr)
+        return 1
     head, _sep, rest = (old_text.partition("\n---\n") if old_text.startswith("---")
                         else ("", "", old_text))
     mark = f"### {source}"
