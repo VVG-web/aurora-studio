@@ -3486,6 +3486,26 @@ def split_tail(after_quotes: str) -> tuple:
 # Заголовки хвоста карточки, как их читают split_tail и corrections_of: с начала строки.
 _CORRECTIONS_AT = re.compile(r"^" + re.escape(CORRECTIONS), re.M)
 _FOOTER_AT = re.compile(r"^" + re.escape(FOOTER), re.M)
+_NEXT_H2_AT = re.compile(r"^## ", re.M)
+
+
+def drop_footer(text: str) -> tuple:
+    """Текст карточки без раздела «История изменений» → (текст, число записей в нём).
+
+    Раздел — журнал правок самого движка («тезис пересобран — источник изменился…»), он стоит
+    в хвосте и к знанию не относится. Заголовок ищется тем же правилом, что читает `split_tail`:
+    с начала строки и ровно второго уровня; в дословном тексте чужой страницы такая строка
+    экранирована (`quote_safe`), поэтому настоящий журнал не спутать с чужим. Раздел кончается
+    следующим заголовком второго уровня («Слияние») или концом текста; остальное не меняется.
+    """
+    m = _FOOTER_AT.search(text or "")
+    if not m:
+        return text, 0
+    nxt = _NEXT_H2_AT.search(text, m.end())
+    end = nxt.start() if nxt else len(text)
+    entries = len(re.findall(r"(?m)^[ \t]*[-*] ", text[m.end():end]))
+    head = text[:m.start()].rstrip("\n")
+    return (head + ("\n\n" + text[end:] if nxt else "\n")), entries
 # Заголовок хвоста любого уровня и в цитате в чужом тексте: с него читатели по подстроке
 # (`FOOTER in text`) принимали бы чужую строку за служебный раздел карточки.
 _RESERVED_HEAD_RE = re.compile(

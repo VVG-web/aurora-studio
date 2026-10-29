@@ -33,12 +33,13 @@ Bootstrap: пока verified меньше порога из `aurora.config.yaml`
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import re
 import sys
 
-from aurora_common import (TRUSTED, service_dirs, Card as BaseCard, aliases as card_aliases, body, card_sources, card_type, decision_slice, frontmatter,
+from aurora_common import (TRUSTED, service_dirs, Card as BaseCard, aliases as card_aliases, body, card_sources, card_type, decision_slice, drop_footer, frontmatter,
                            is_decision_card, is_meeting, is_placeholder, link_targets, read_card_text, related_targets,
                            status_rank, trust_header, untrusted, walk_md, UNTRUSTED_RULE)
 
@@ -391,8 +392,14 @@ ENDINGS = ("ованием", "ования", "ованию", "ование", "а
            "е", "о", "ь", "й")
 
 
+@functools.lru_cache(maxsize=1 << 18)
 def norm(word: str) -> str:
-    """Слово → ключ поиска: регистр, ё/е и словоформа не должны разводить пару."""
+    """Слово → ключ поиска: регистр, ё/е и словоформа не должны разводить пару.
+
+    Функция чистая, а слов в базе мало: на тысяче карточек `words` звал её два с половиной
+    миллиона раз для нескольких десятков тысяч разных слов, и перебор окончаний съедал три
+    четверти времени сборки пака (живой замер: 17 с на вопрос «Спросить»). Результат помнится.
+    """
     w = word.lower().replace("ё", "е")
     if len(w) > 5:
         for end in ENDINGS:
@@ -1031,8 +1038,14 @@ def render_block(c: "Card", collapsed: bool = False) -> str:
     title = f"Название: {c.title}\n\n" if c.title and c.title != c.stem else ""
     if not collapsed:
         text = decision_slice(c.text) if is_decision(c) else body(c.text).strip()
+        # Журнал правок движка («тезис пересобран…») к вопросу не относится, а в живой базе занимал
+        # 28 % пака (230 из 820 тысяч знаков на сорока карточках) — и модель, отвечавшая, и Момус
+        # читали его целиком. Остаётся одна строка с числом записей: что журнал есть, видно.
+        text, journal = drop_footer(text)
+        if journal:
+            text = text.rstrip("\n") + f"\n\n_История изменений карточки в контекст не входит (записей: {journal})._"
         return (f"\n---\n\n## {c.stem}\n\n{c.header()}\n\n"
-                f"{untrusted(title + text, 'карточка ' + c.stem)}\n")
+                f"{untrusted(title + text.strip(), 'карточка ' + c.stem)}\n")
     gist = c.summary or first_sentence(c.text)
     return (f"\n---\n\n## {c.stem}\n\n{c.header()}\n\n"
             f"{untrusted(title + gist, 'карточка ' + c.stem)}\n\n"

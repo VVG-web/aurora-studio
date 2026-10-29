@@ -7033,6 +7033,7 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
         return {"ok": False, "answer": "", "cards": [], "seconds": 0.0,
                 "why": pack_refusal(r["out"])}
     pack = r["out"]
+    pack_seconds = time.time() - started
     # В паке заголовки второго уровня есть и внутри тел карточек: считать их значит
     # обещать человеку контекст втрое больше настоящего. Число даёт сам пак.
     m = re.search(r"карточек (\d+)", pack)
@@ -7074,6 +7075,12 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
         out["momus"] = run_momus(cfg, pack, question, text, call,
                                  answered_in=float(a.get("seconds") or 0))
     out["seconds"] = round(time.time() - started, 1)
+    # Куда ушло время: без этого «вопрос длился шесть минут» разбирают по логам трёх мест.
+    # `prompt` — сколько токенов модель прочла в запросе (по её счётчику; нет счётчика — оценка по знакам).
+    out["phases"] = {"pack": round(pack_seconds, 1), "answer": round(float(a.get("seconds") or 0), 1),
+                     "momus": round(float((out.get("momus") or {}).get("seconds") or 0), 1),
+                     "prompt_tokens": int(a.get("tokens_in") or 0) or int(len(prompt) / AG.CHARS_PER_TOKEN),
+                     "answer_tokens": int(a.get("tokens_out") or 0)}
     return out
 
 
@@ -7421,6 +7428,12 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
           f"_Карточек в контексте: {res.get('total') or len(res['cards'])} · "
           f"модель: {res['model']} "
           f"(бэкенд №{res['backend']}) · {res['seconds']} с_"]
+    ph = res.get("phases")
+    if ph:
+        L += ["", "_Время: пак " + AG.human_secs(ph["pack"]) + " · ответ " + AG.human_secs(ph["answer"])
+              + (" · проверка " + AG.human_secs(ph["momus"]) if ph.get("momus") else "")
+              + f" · в запросе ≈{ph['prompt_tokens'] // 1000} тыс. ток."
+              + (f", модель написала {ph['answer_tokens']} ток." if ph.get("answer_tokens") else "") + "_"]
     if res.get("weak_basis"):
         # Пометку видно человеку, а не только если её повторит модель в тексте ответа.
         L += ["", "⚠️ **Слабая опора:** база нашла не всё, что спрошено, — ответ неполон, "

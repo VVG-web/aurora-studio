@@ -480,13 +480,13 @@
         }
       ],
       "tools": {
-        "ru": "нет: пак знаний собирает движок гибридным поиском (слова и смысл)",
-        "en": "none: the engine builds the knowledge pack with hybrid search (words and meaning)"
+        "ru": "нет: пак знаний собирает движок гибридным поиском (слова и смысл); журнал правок карточек («История изменений») в пак не входит",
+        "en": "none: the engine builds the knowledge pack with hybrid search (words and meaning); the cards' edit journal (\"History of changes\") is not part of the pack"
       },
       "engine": "pydantic_ai",
       "after": {
-        "ru": "Движок разбирает ссылки ответа по базе; разговор пишется в meta/ask/.",
-        "en": "The engine resolves the answer's links against the base; the conversation is written to meta/ask/."
+        "ru": "Движок разбирает ссылки ответа по базе; разговор пишется в meta/ask/. В отчёте — строка «Время»: пак, ответ, проверка и токены запроса.",
+        "en": "The engine resolves the answer's links against the base; the conversation is written to meta/ask/. The report carries a \"Time\" line: pack, answer, check and request tokens."
       }
     },
     {

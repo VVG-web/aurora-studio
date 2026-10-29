@@ -215,9 +215,9 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 | Writer (worker) — chosen | An answer only from the card pack, with a link for every claim; a follow-up question continues the conversation. Units of laws and contracts are quoted word for word in guillemets, and the code checks that the quote is in the card. | `PROMPT_ASK` (agent_runner.py) |
 | Momus (qa) | Momus checks that the answer rests on the pack's cards. | `PROMPT_MOMUS` (agent_runner.py) |
 
-- **Tools:** none: the engine builds the knowledge pack with hybrid search (words and meaning).
+- **Tools:** none: the engine builds the knowledge pack with hybrid search (words and meaning); the cards' edit journal ("History of changes") is not part of the pack.
 - **Path:** Pydantic AI.
-- **Then:** The engine resolves the answer's links against the base; the conversation is written to meta/ask/.
+- **Then:** The engine resolves the answer's links against the base; the conversation is written to meta/ask/. The report carries a "Time" line: pack, answer, check and request tokens.
 
 <a id="make"></a>
 
