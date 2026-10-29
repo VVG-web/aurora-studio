@@ -87,6 +87,18 @@ cards: parsing offers only the sections of enabled types, and the check names th
 `update --apply`, `kb:cards --write --apply`), manual edits in it are lost. All of this is edited in "Project settings →
 Card types". Details — [card templates](../docs/en/card-templates.md).
 
+## Records: a human's own cards live in `Raw/`
+
+A **record** — a decision with its options, a question to the customer, a reference list kept by hand — is written by a
+human, cannot be derived from any source, and must outlive a rebuild. So the **master file** lies in `Raw/decisions/`,
+`Raw/questions/` or `Raw/reference/` (corrections — in `Raw/corrections/`), and the base holds its **mirror**: a card in
+`Decisions/`, `Questions/` or `Reference/` with `built: machine`, `sources` pointing at the master and the same body byte for
+byte. The mirror is built by `kb:record --mirror` (the routes do it before parsing) and is not edited — the panel editor shows
+it as read-only and names the master. `kb:record --new decision "gist"` creates a draft from the template and takes the number
+under a lock; `kb:record --check` checks masters and mirrors; `kb:record --migrate` moves hand-written records out of the base.
+A decision enters the strict context only when `accepted`, a `proposed` one goes with the mark "NOT A FACT"; a question is
+always `draft` and enters context only in the evaluation mode.
+
 ## Five statuses
 
 | `status` | Meaning |

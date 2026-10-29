@@ -49,6 +49,13 @@ type's template and checks it strictly, an edit of an existing one "by differenc
 card that passes its template gets the `template:` stamp. A violation in a stamped card is a `kb:lint` error; a card
 without `template:` in its head is "pre-template", and `kb:cards --check` names its deviations as warnings — until the migration is declared complete (`kb:conform`, `agent:conform`).
 
+## A human's records live in Raw
+
+Decisions, questions to the customer and reference lists kept by hand lie in `Raw/decisions/`, `Raw/questions/`,
+`Raw/reference/` (corrections — `Raw/corrections/`) and survive any rebuild. The base keeps their verbatim mirror — it is
+built by `kb:record --mirror` and is not edited: the master file is. A decision enters the strict context only when accepted,
+a question — only in the evaluation mode.
+
 ## Links are mandatory
 
 A card without links is found neither by a human nor by retrieval: it is on disk and not in the base. It is a lint

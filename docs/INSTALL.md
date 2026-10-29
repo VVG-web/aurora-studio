@@ -137,7 +137,7 @@ aurora.env.local.example      образец → .env.aurora.local (вне git)
 .claude/skills/               навыки проекта — общие, в git: sync-навыки confluence-sync-<Slug>,
                               jira-export-<Slug> и ваши
 Sources/                      зеркала подключённых модулей: Confluence, JIRA, Web
-Raw/{laws,contract,customer,project,meetings,examples,corrections}/
+Raw/{laws,contract,customer,project,meetings,examples,corrections,decisions,questions,reference}/
 AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Statuses, Reference,
                               Requirements, Specs, Questions, Decisions, MOC, _archive, _assets,
                               _inbox, meta (kb_updated.json — дата обновления базы, в git;

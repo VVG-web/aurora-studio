@@ -26,8 +26,8 @@ higher; code 1 ("worked and found things to fix") is the normal state of a livin
 
 | Button | Looks | Does |
 |---|---|---|
-| **Update the base** | outward | syncs the mirrors, parses sources in batches, writes theses, extracts others' definitions, links, computes trust, commits every lap |
-| **Fix the base** | inward | repairs links, merges duplicates, rebuilds maps and tables of contents, checks the schema, reviews quality, brings old cards to their templates (`kb:conform`, `agent:conform`); never goes to the sources |
+| **Update the base** | outward | syncs the mirrors, builds the mirrors of the records from `Raw/`, parses sources in batches, writes theses, extracts others' definitions, links, computes trust, commits every lap |
+| **Fix the base** | inward | brings back the mirrors of the records, repairs links, merges duplicates, rebuilds maps and tables of contents, checks the schema, reviews quality, brings old cards to their templates (`kb:conform`, `agent:conform`); never goes to the sources |
 
 There is a third, dangerous and rare: **Rebuild the base from scratch**. "Preview" runs any route without writing.
 

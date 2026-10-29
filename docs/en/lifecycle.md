@@ -83,7 +83,7 @@ stop in the middle left cards without kinds, theses and links.
 
 ```mermaid
 flowchart TD
-  A["Preparation<br>sync:confluence · sync:jira · sync:web<br>sync:audit · kb:ingest-office"] --> B["Cleaning up earlier parses<br>kb:repair --template · --copies<br>kb:build --reopen"]
+  A["Preparation<br>sync:confluence · sync:jira · sync:web<br>sync:audit · kb:record --mirror · kb:ingest-office"] --> B["Cleaning up earlier parses<br>kb:repair --template · --copies<br>kb:build --reopen"]
   B --> C
   subgraph LOOP["Loop — batch after batch"]
     C["agent:build<br>parse a batch of sources"] --> D["kb:correct · kb:kind<br>the human's word and the card kind"]
@@ -253,7 +253,7 @@ flowchart TD
 | # | Step | Command | How the result is marked | Condition for the next step | Mandatory |
 |---|---|---|---|---|---|
 | 1 | Source mirror | `sync:confluence`, `sync:jira`, `sync:web` | a file in `Sources/`, an entry in `sync_state.md` / `update_log.md` | sync without errors, `sync:audit` shows no MISSING | **yes** |
-| 2 | Own documents | put into `Raw/` by hand | nothing: `Raw/` is immutable by agreement | the file is in place and will not be edited | **yes** for contracts and meetings |
+| 2 | Own documents | put into `Raw/` by hand | nothing: evidence documents in `Raw/` are not edited after the fact; a human's records (decisions, questions, reference lists) go to `Raw/decisions\|questions\|reference`, their mirrors are built by `kb:record` | the file is in place and will not be edited | **yes** for contracts and meetings |
 | 3 | Office formats, attachments, diagrams | `kb:ingest-office` | a `.md` transcript next to the original in `Raw/`, or in `Raw/Extracted/` for page attachments and draw.io / BPMN diagrams | the transcript is readable, tables did not fall apart, no `quality: low` mark | yes, if the source is not Markdown |
 | 4 | Parse plan | `kb:build` | writes nothing, reads `manifest.json` | the plan has non-empty batches | **yes** |
 | 5 | Parsing | `agent:build` (or `kb:build` → assistant) | cards with `source:`, `built: machine`, `source_synced:` | the file is parsed **entirely** | **yes** |

@@ -85,7 +85,7 @@ The kind decides **who may edit the body**. It is the most expensive decision in
 The kind is set by `kb:kind` by a rule: the source folder, the base section, the shape of the text (a table of codes
 without prose is a dictionary). **A human's choice is stronger than the rule**: a human states it with a `kind:` field
 in a correction's header (`Raw/corrections/`); a `kind` written into a card is written by the engine, not by a human,
-and is recomputed on every run. A "contract" is a document only in the legal sense ("contract No.", "state
+and is recomputed on every run (the mirrors of records, §9, are the exception: their kind is set by the record's type). A "contract" is a document only in the legal sense ("contract No.", "state
 contract"): "Contract mapping CURRENCY" is a specification, not a paper. A table of an algorithm's steps and a table of
 a screen form's requirements are knowledge, not a dictionary.
 
@@ -211,41 +211,64 @@ what the engine honestly named in `ops:todo`.
 
 ## 9. Where hand-written things live
 
-Nowhere special — where everything else does, in the section by subject.
+**In `Raw/`.** The base is derived: a reset and a rebuild bring it back from `Sources/` and `Raw/`. Whatever a human writes
+and no source holds is a **record**: a decision with its options (`Raw/decisions/`), a question to the customer
+(`Raw/questions/`), a reference list kept by hand (`Raw/reference/`), a correction of a card (`Raw/corrections/`). A record
+lies where the base is built from, so it survives any rebuild. `Raw/` is the layer of the human and the customer: only the
+evidence folders are immutable in it (contract, meetings, laws, customer letters), while records live and grow.
 
-The temptation to create a separate folder for hand-written material is understandable: then it is visible what must
-not be touched. But a folder cannot know who wrote a card. The base is laid out **by subject**, and maps, links and
-search rest on that: a card about discrepancies lies next to other cards about discrepancies, whoever wrote them.
-Authorship cuts across subjects.
+What the base keeps of a record is a **mirror** — a card in `Decisions/`, `Questions/` or `Reference/` with `kind: document`
+(`dictionary` for a reference list), `built: machine` and `sources` pointing at the master file. The mirror's body is the
+master's body byte for byte; a mirror has no thesis, no linking, no extraction, no merge and no split. The mirror is built by
+`kb:record --mirror`: the routes "Update", "Fix" and "Rebuild" do it themselves, before parsing the sources, and a vanished
+master sends its mirror to the archive. **Edit the master:** the panel editor does not open a mirror for writing, and a hand
+edit would be lost at the next build. The engine never edits an existing master file; it creates new files only on a
+human's command (`kb:record --new`, `agent:decide`).
 
-A measurement on a live project of 1955 cards where such a folder existed (`Decisions/`, `Questions/`, `Reference/`):
-inside it **31** of 269 were irrecoverable, outside — **451**. The folder was wrong both ways.
+| Record | Master | Mirror | Trust and issue into context |
+|---|---|---|---|
+| decision | `Raw/decisions/DR-NNNN-<gist>.md` | `Decisions/` | its own cycle `proposed → accepted \| rejected → superseded`; only `accepted` enters the strict context, `proposed` goes with the mark "NOT A FACT" |
+| question | `Raw/questions/Q-NNN-<gist>.md` | `Questions/`, status always `draft` | not a fact, trust is not computed; the question's course is `q_status`; enters context only in the evaluation mode |
+| reference list | `Raw/reference/<name>.md` | `Reference/`, kind `dictionary` | a source under `Raw/` is a primary source, `kb:trust` sets `knowledge` |
+| correction | `Raw/corrections/<date>-<card>.md` | none: applied to the card | the human's word — the highest truth |
+
+The command `kb:record`: `--new <type> "gist"` creates a template draft (the number comes from the identifier registry), `--check`
+checks master files and mirrors, `--migrate` moves hand-written records out of the base into `Raw/`. The templates of records
+are `akdb_decision`, `akdb_question`, `akdb_reference`, `akdb_correction` ([guide](card-templates.md)).
+
+A record is recognised by **place and cycle**, not by authorship. A folder "for hand-written things" inside the base did not
+work: the base is laid out by subject, maps, links and search rest on that, and authorship cuts across subjects. A measurement
+on a live project of 1955 cards where such a folder existed (`Decisions/`, `Questions/`, `Reference/`): inside it **31** of
+269 were irrecoverable, outside — **451**. The folder was wrong both ways; a place in `Raw/` guesses nothing: a record is
+there because a human put it there.
 
 ### The mark is set by the machine, not by a human
 
-The second temptation is to consider hand-written everything that has no `source:`. That is also wrong, and just as
-easy to check: of 425 cards without a source **137** were created by `kb:repair --stubs` as stubs, **64** arrived in a
-mass commit, and hand-written ones are a handful. Protecting stubs from deletion is doubly harmful: a rebuild will not
-bring them back, and keeping blanks in the base is pointless — the linter catches them anyway.
+Do not consider hand-written everything that has no `source:`. Of 425 cards without a source **137** were created by
+`kb:repair --stubs` as stubs, **64** arrived in a mass commit, and hand-written ones are a handful. Protecting stubs from
+deletion is doubly harmful: a rebuild will not bring them back, and keeping blanks in the base is pointless — the linter
+catches them anyway.
 
-The correct mark is **positive**: every machine entry sets `built: machine` itself. Slicing, stubs, the agent. On a
-rebuilt base that is 965 of 965.
+The correct mark is **positive**: every machine entry sets `built: machine` itself. Slicing, stubs, the agent, the mirrors of
+records. On a rebuilt base that is 965 of 965.
 
 Hence three outcomes on reset, not two:
 
 | What kind of card | The mark | What `kb:reset` does |
 |---|---|---|
 | will be rebuilt | a live `source:` | wipes: otherwise a twin appears after the rebuild |
-| made by the machine | `built: machine` | wipes: the rebuild will make the same |
+| made by the machine | `built: machine` | wipes: the rebuild will make the same (the mirrors of records come back with `kb:record --mirror`) |
 | origin unknown | neither | **keeps and names it** |
 
-The third line is not "your work" but an honest "the engine does not know". See them by name: `kb:reset
---list-unknown`. If none is yours — `--drop-unknown`, and the base gets cleaner.
+The third line is not "your work" but an honest "the engine does not know". See them by name: `kb:reset --list-unknown`. If none
+is yours — `--drop-unknown`, and the base gets cleaner. A hand-written decision, question or reference list left in
+`Decisions/`, `Questions/`, `Reference/` from earlier versions is a record waiting for the move: `kb:record --migrate` moves it
+into `Raw/` with `git mv`, the body stays byte-for-byte the same; until then `kb:lint` warns and `kb:reset` names the card.
 
-From this a rule for a human: **writing by hand — write into the subject section**. Nothing needs marking, but do not
-count on the engine recognising your work by the absence of a mark: it recognises only machine work. And if a card
-grew out of a document — put the document in `Raw/` and parse it by an ordinary run: then it becomes recoverable,
-which is more reliable than guarding a single copy.
+From this a rule for a human: **a record goes into `Raw/` (`kb:record --new`); knowledge about a subject is not written by
+hand.** A wrong card is corrected by a document in `Raw/corrections/`, and a card that grew out of a document is a document in
+`Raw/` and an ordinary run: then it is recoverable, which is more reliable than guarding a single copy.
+
 
 ## 10. What the engine does when a source changes
 

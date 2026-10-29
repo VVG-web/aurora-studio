@@ -135,7 +135,7 @@ aurora.env.local.example      a sample → .env.aurora.local (outside git)
 .claude/skills/               the project's skills — shared, in git: sync skills confluence-sync-<Slug>,
                               jira-export-<Slug> and your own
 Sources/                      mirrors of connected modules: Confluence, JIRA, Web
-Raw/{laws,contract,customer,project,meetings,examples,corrections}/
+Raw/{laws,contract,customer,project,meetings,examples,corrections,decisions,questions,reference}/
 AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Statuses, Reference,
                               Requirements, Specs, Questions, Decisions, MOC, _archive, _assets,
                               _inbox, meta (kb_updated.json — the base update date, in git;

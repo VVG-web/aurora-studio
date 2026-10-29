@@ -85,7 +85,7 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-  A["Подготовка<br>sync:confluence · sync:jira · sync:web<br>sync:audit · kb:ingest-office"] --> B["Чистка прежних разборов<br>kb:repair --template · --copies<br>kb:build --reopen"]
+  A["Подготовка<br>sync:confluence · sync:jira · sync:web<br>sync:audit · kb:record --mirror · kb:ingest-office"] --> B["Чистка прежних разборов<br>kb:repair --template · --copies<br>kb:build --reopen"]
   B --> C
   subgraph LOOP["Цикл — партия за партией"]
     C["agent:build<br>разобрать партию источников"] --> D["kb:correct · kb:kind<br>слово человека и тип карточки"]
@@ -259,7 +259,7 @@ flowchart TD
 | # | Шаг | Команда | Чем отмечается результат | Условие следующего шага | Обязателен |
 |---|---|---|---|---|---|
 | 1 | Зеркало источника | `sync:confluence`, `sync:jira`, `sync:web` | файл в `Sources/`, запись в `sync_state.md` / `update_log.md` | синк без ошибок, `sync:audit` не показывает MISSING | **да** |
-| 2 | Свои документы | положить в `Raw/` руками | ничего: `Raw/` неизменяем по договорённости | файл на месте и правиться не будет | **да** для договоров и встреч |
+| 2 | Свои документы | положить в `Raw/` руками | ничего: документы-доказательства в `Raw/` не правят задним числом; записи человека (решения, вопросы, справочники) — в `Raw/decisions\|questions\|reference`, их зеркала строит `kb:record` | файл на месте и правиться не будет | **да** для договоров и встреч |
 | 3 | Офисные форматы, вложения, схемы | `kb:ingest-office` | `.md`-транскрипт рядом с оригиналом (`Raw/`) или в `Raw/Extracted/` (вложения страниц, схемы draw.io и BPMN) | транскрипт читаем, таблицы не рассыпались, нет `quality: low` | да, если исходник не markdown |
 | 4 | План разбора | `kb:build` | ничего не пишет, читает `manifest.json` | в плане есть непустые партии | **да** |
 | 5 | Разбор | `agent:build` (или `kb:build` → ассистент) | карточки со `source:`, `built: machine`, `source_synced:` | файл разобран **целиком** | **да** |
