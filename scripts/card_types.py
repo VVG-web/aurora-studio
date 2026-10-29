@@ -2001,6 +2001,75 @@ def missing_template_error(project_root: str, rel: str, text: str, reg: Registry
             "проходит шаблон, `agent:conform --apply` раскладывает остальные дословным переносом строк")
 
 
+def template_coverage(project_root: str = ".", reg: "Registry | None" = None) -> dict:
+    """Сколько карточек базы заведено по шаблону и где проект на пути к новой схеме. Читает только шапки (проверку
+    по шаблону не гоняет), поэтому дёшево на базе в тысячи карточек: панель держит это число на Мостике и в «Здоровье».
+
+    «По шаблону» — в шапке стоит `template:`: штамп ставит вход записи при заведении карточки, а `kb:conform` и
+    `agent:conform` — при приведении старой. Исключения те же, что у линтера после завершения миграции (`blockers` в
+    `kb_conform`): неуправляемые типы и рукописные записи, ждущие переноса в `Raw/`. Они в долю не входят, но названы.
+
+      total      карточек в базе (без архива, карт и служебных файлов)
+      stamped    со штампом `template:`
+      left       без штампа и без исключения: ещё надо привести (непрочитанная карточка — тоже здесь)
+      unmanaged  без штампа, неуправляемого типа; records — без штампа, рукописная запись
+      pct        доля `stamped` среди `stamped + left`, одна цифра после запятой; None — считать нечего
+      state      complete — миграция объявлена завершённой; ready — приводить нечего, объявления ещё нет;
+                 partial — штамп есть у части; none — ни у одной; empty — в базе нет карточек
+      types      шаблонов в реестре; 0 — доли нет, судить нечем (state «none», pct None)
+    """
+    root = str(project_root or ".")
+    reg = reg if reg is not None else safe_registry(root)
+    total = stamped = left = unmanaged = records = 0
+    for path in sorted(walk_md(os.path.join(root, KB_ROOT), skip_service=True, skip_archive=True)):
+        if not is_card_path(path):
+            continue
+        total += 1
+        text = read_card_text(path)
+        if text is None:
+            left += 1
+            continue
+        fm = frontmatter(text)
+        rel = os.path.relpath(path, root).replace("\\", "/")
+        if (fm.get("template") or "").strip():
+            stamped += 1
+        elif unmanaged_card(rel, fm, reg):
+            unmanaged += 1
+        elif pending_record(root, rel, text, reg):
+            records += 1
+        else:
+            left += 1
+    managed = stamped + left
+    complete = migration_complete(root)
+    state = ("complete" if complete else "empty" if not total else "ready" if stamped and not left
+             else "partial" if stamped else "none")
+    return {"total": total, "stamped": stamped, "left": left, "unmanaged": unmanaged, "records": records,
+            "pct": round(stamped * 100 / managed, 1) if managed and reg.types else None,
+            "state": state, "complete": complete, "types": len(reg.types)}
+
+
+COVERAGE_STATES = {
+    "complete": "миграция на шаблоны завершена",
+    "ready": "приводить нечего, миграция не объявлена завершённой (`kb:conform --finalize --apply`)",
+    "partial": "миграция идёт",
+    "none": "миграция не начата",
+    "empty": "в базе нет карточек",
+}
+
+
+def coverage_line(cov: dict) -> str:
+    """Одна строка о доле карточек по шаблону — для `kb:cards --stats` и `kit:doctor`."""
+    if cov["pct"] is None:
+        return f"по шаблону: считать нечего ({COVERAGE_STATES.get(cov['state'], cov['state'])})"
+    extra = []
+    if cov["unmanaged"]:
+        extra.append(f"неуправляемых типов {cov['unmanaged']}")
+    if cov["records"]:
+        extra.append(f"записей, ждущих переноса в Raw/, {cov['records']}")
+    return (f"по шаблону: {cov['stamped']} из {cov['stamped'] + cov['left']} ({cov['pct']} %) · осталось привести "
+            f"{cov['left']} · {COVERAGE_STATES.get(cov['state'], cov['state'])}" + (f" · вне доли: {', '.join(extra)}" if extra else ""))
+
+
 # ----------------------------------------------------------------------------- каталог типов карточек
 #
 # `AuroraKnowledgeDB/meta/card_types.md` — единый короткий список типов с описаниями для ассистентов и запросов (§6.4
@@ -3168,10 +3237,12 @@ def _cmd_stats(root: str, reg: Registry, args) -> int:
         print(f"kb:cards: нет папки {KB_ROOT}/ — запускайте из корня проекта", file=sys.stderr)
         return 2
     st = stats_of(check_cards(root, reg, (), "advisory", args.all), reg)
+    cov = template_coverage(root, reg)
     if args.json:
-        print(json.dumps(st, ensure_ascii=False, indent=1))
+        print(json.dumps({**st, "coverage": cov}, ensure_ascii=False, indent=1))
         return 0
     print(f"kb:cards --stats: карточек всего {st['cards']}")
+    print("  " + coverage_line(cov))
     print(f"  с шаблоном (template: в шапке): {st['stamped']}")
     for name, n in st["by_template"].items():
         print(f"    {name} — {n}")

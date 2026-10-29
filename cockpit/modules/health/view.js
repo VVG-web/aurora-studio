@@ -167,6 +167,7 @@ function baseCards(ctx, h, st){
   // запоминает остаток, и то, что починке не по силам, ведёт к списку решений.
   const fresh = lint.fresh ?? lint.errors ?? 0;
   const trace = h.trace || {};
+  const tp = h.templates || {};
   const fixOrDecide = () => fresh ? ctx.ui.goRoute("fix", t("health.go_fix"))
                                   : ctx.ui.goCmd("ops:todo", [], t("health.go_decide"));
   const blockers = (h.doctor && h.doctor.errors) || [];
@@ -195,6 +196,17 @@ function baseCards(ctx, h, st){
                          t("health.trust_meetings", {n: st.meetings})) : null),
       hint: t("health.trust_hint"),
       go: ctx.ui.goRoute("update", t("health.go_update"))}),
+    // Доля карточек, заведённых по шаблону: по ней видно, переведён ли проект на новую схему. Считает кит по
+    // шапкам, поэтому число есть и у проекта на старом движке. Нет доли (шаблонов нет, база пуста) — прочерк.
+    card("templates", {title: t("health.templates"),
+      value: tp.pct != null ? tp.pct + "%" : "—",
+      sub: tp.state ? ctx.ui.templatesState(tp) : t("health.templates_none"),
+      tone: tp.pct != null && tp.state !== "complete" ? "warn" : "",
+      hint: tp.pct != null ? ctx.ui.templatesHint(tp) : t("health.templates_hint"),
+      // Приводит карточки «Починить базу» (там стоят `kb:conform` и `agent:conform`); когда приводить нечего,
+      // остаётся объявить миграцию завершённой — кнопка открывает разведку без записи.
+      go: tp.left ? ctx.ui.goRoute("fix", t("health.go_templates"))
+        : tp.state === "ready" ? ctx.ui.goCmd("kb:conform", ["--finalize"], t("health.go_templates_finalize")) : null}),
     // Пустой `kinds` — это «движок проекта старый и типов не считает», а не «у всех
     // проставлен». Разница между «не измеряли» и «в порядке» — та самая догадка,
     // выданная за факт, за которую мы уже платили дважды.

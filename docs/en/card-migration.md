@@ -76,3 +76,19 @@ unmanaged types and hand-written records. If so, `--finalize --apply` writes `me
 remainder by codes and writes nothing. After the write `kb:lint` counts a card without `template:` as an error (kind
 `missing-template`), `kit:doctor` names the date of completion, and `ops:todo` shows the remainder as the engine's work
 rather than a human decision. To withdraw the declaration — delete `meta/conform_state.json`.
+
+## How to see whether a project is moved
+
+The **“templates N%”** indicator is the share of cards made from a template (`template:` stands in the head). It sits on the
+project tile on the Bridge and as a separate “Cards by template” tile in Health; in the terminal it is the “по шаблону” line
+of `kb:cards --stats` (and the `coverage` block of `--stats --json`).
+
+- It is counted over the cards the templates manage: unmanaged types and hand-written records waiting to move to `Raw/` are
+  left out of the share but named in the hint and in the command line.
+- The stages have words: **migration not started** (no card has the stamp), **migration under way**, **nothing left to
+  convert** (all stamped, the migration is not yet declared finished — `kb:conform --finalize --apply`), **migration
+  complete** (`meta/conform_state.json` is written).
+- The project is moved when the tile is green: 100% and the completion is declared. While it is yellow, the line under the
+  number says what to do: the tile leads to “Fix the base”, and when nothing is left to convert, to the completion check.
+- The kit counts it from the card heads (it does not run the template check), so the number exists for a project on an older
+  engine too and refreshes with the rest of Health: at panel start, on “Refresh” and after a command in the project.

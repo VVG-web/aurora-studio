@@ -451,7 +451,7 @@ const api = NOOP, openLink = NOOP, runStep = NOOP, runWatched = NOOP, busyElsewh
   reloadHealth = NOOP, runRoute = NOOP, poll = NOOP, restartPanel = NOOP, ago = NOOP, kb = NOOP, histWhen = NOOP, esc = NOOP,
   tick = NOOP, md = NOOP, mdLite = NOOP, rtime = NOOP, howLong = NOOP, metricCard = NOOP, metric = NOOP, goRoute = NOOP,
   goCmd = NOOP, kindChip = NOOP, skillLine = NOOP, copyButton = NOOP, engineWord = NOOP, markdownEditor = NOOP, hasPart = NOOP,
-  waitMark = NOOP, healthAt = NOOP, stampText = NOOP, kbInfo = NOOP, openIssue = NOOP, issueUrl = NOOP, openPath = NOOP,
+  waitMark = NOOP, healthAt = NOOP, stampText = NOOP, kbInfo = NOOP, templatesHint = NOOP, templatesState = NOOP, openIssue = NOOP, issueUrl = NOOP, openPath = NOOP,
   isEngineCmd = NOOP, hideDev = NOOP, openProject = NOOP, lastRun = NOOP, rcMark = NOOP, auraWhy = NOOP;
 const applyI18n = NOOP, confirmLeave = () => true, devOnlyView = () => false, devSectionsOn = () => false, profileHidden = () => false;
 const renderOverview = NOOP, renderProjBadge = NOOP, drawBridgeStamp = NOOP, navBadges = NOOP;

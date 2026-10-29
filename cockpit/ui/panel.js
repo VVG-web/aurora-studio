@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.187.6";
+const UI_VERSION = "1.188.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1738,11 +1738,18 @@ setInterval(() => { if (S.view === "overview" && !document.hidden) refreshActivi
 // план сборки, файлы — за секунды; линтер всей базы и дела человеку — десятки секунд.
 // Целиком подряд выходила минута, и всё это время «Здоровье» и Мостик стояли пустыми.
 // Теперь плитки стоят сразу, а каждая часть ложится в здоровье проекта, как придёт.
-const HEALTH_QUICK = ["files", "stats", "doctor", "mirrors", "build"];
+const HEALTH_QUICK = ["files", "stats", "doctor", "mirrors", "build", "templates"];
 const HEALTH_SLOW = ["lint", "todo"];
 const HEALTH_ALL = [...HEALTH_QUICK, ...HEALTH_SLOW];
 // Часть пришла. Здоровье без списка частей (ответ целиком) — всё на месте.
 const hasPart = (h, part) => !!h && (!h.loaded || h.loaded.includes(part));
+// Подсказка к доле карточек по шаблону: сколько из скольких и на каком этапе миграция (`template_coverage`).
+const templatesState = c => t("overview.templates_state_" + c.state);
+const templatesHint = c => [
+  t("overview.templates_hint", {done: c.stamped, total: c.stamped + c.left}),
+  templatesState(c),
+  c.unmanaged || c.records ? t("overview.templates_apart", {n: (c.unmanaged || 0) + (c.records || 0)}) : ""
+].filter(Boolean).join("\n");
 // Дата обновления базы (1.168.0) — общая для команды, из `kb_updated.json` в git проекта:
 // полное «Обновить базу» и следом «Починить базу». → {at, text, chip, title, stale}.
 // Источник — свежее из двух: здоровье проекта (после маршрута пересчитывается) или карточка.
@@ -1774,7 +1781,7 @@ function stampText(ms){
 }
 const waitMark = () => el("span", {class:"spin", title: t("overview.counting")});
 function healthFrame(p){
-  return {project: p.path, loaded: [], pending: [], stats: {}, todo: null, mirrors: {}, build: {},
+  return {project: p.path, loaded: [], pending: [], stats: {}, todo: null, mirrors: {}, build: {}, templates: {},
           doctor: {rc: 0, errors: [], blocker_why: [], warns: [], engine: "—", privacy: "report"},
           lint: {cards: null, errors: null, kinds: {}, baseline: null, fresh: null},
           agent: {}, sources: {installed: [], instances: []}, runs: {}, trace: {},
@@ -1930,6 +1937,13 @@ function renderOverview(){
                 title: t("overview.sources_hint",
                   {done: h.build.total - (h.build.left||0), total: h.build.total})},
                t("overview.sources", {pct: h.build.pct}))
+          : null,
+        // Доля карточек по шаблону: по ней видно, переведён ли проект на новую схему карточек.
+        // Нет числа (шаблонов нет в ките, база пуста, счёт упал) — плитки нет, а не «0%».
+        has("templates") && h.templates && h.templates.pct != null
+          ? el("span",{class:"chip "+(h.templates.state === "complete" ? "ok" : "warn"),
+                title: templatesHint(h.templates)},
+               t("overview.templates", {pct: h.templates.pct}))
           : null,
         p.git_branch ? el("span",{class:"chip mono"}, p.git_branch) : null,
         p.dirty ? el("span",{class:"chip warn"}, t("overview.uncommitted", {n: p.dirty}))
@@ -5476,7 +5490,7 @@ function moduleCtx(id, root){
     ui: {metricCard, metric, goRoute, goCmd, kindChip, skillLine, copyButton, engineWord,
          editor: markdownEditor,
          // Здоровье приходит частями: пришла ли часть и чем занять место под её число.
-         has: hasPart, wait: waitMark, healthAt, stampText, kbInfo, openIssue, issueUrl},
+         has: hasPart, wait: waitMark, healthAt, stampText, kbInfo, templatesHint, templatesState, openIssue, issueUrl},
     openPath, isEngineCmd, hideDev, openProject,
     // Достроить/обновить движок выбранного проекта на этой машине: ту же кнопку рисует полоса ядра.
     prepareEngine: () => prepareEngine(S.project),

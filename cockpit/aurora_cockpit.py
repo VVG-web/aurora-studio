@@ -3764,7 +3764,7 @@ def forget_version(project: str, report_id: str, stamp: str) -> dict:
 # крупном проекте, остальное — секунды. Целиком подряд выходила минута, и всё это время
 # «Здоровье» и Мостик стояли пустыми. Теперь панель спрашивает части отдельно и рисует
 # каждую, как придёт; целиком (без `part`) части считаются одновременно.
-HEALTH_PARTS = ("files", "stats", "doctor", "mirrors", "build", "lint", "todo")
+HEALTH_PARTS = ("files", "stats", "doctor", "mirrors", "build", "templates", "lint", "todo")
 
 
 def _health_stats(project: str, lang: str) -> dict:
@@ -3774,6 +3774,15 @@ def _health_stats(project: str, lang: str) -> dict:
     except Exception:
         stats = {"error": out.strip()[:400]}
     return {"stats": stats}
+
+
+def _health_templates(project: str, lang: str) -> dict:
+    """Доля карточек, заведённых по шаблону (`template:` в шапке): по ней видно, переведён ли проект на новую схему.
+    Считает кит, а не движок проекта, — поэтому число есть и у проекта на старом движке. Читает только шапки."""
+    try:
+        return {"templates": CARDS.template_coverage(project, CARDS.safe_registry(project, KIT))}
+    except Exception as e:  # noqa: BLE001 — показатель не повод ронять здоровье: нет числа — нет плитки
+        return {"templates": {"error": f"{type(e).__name__}: {str(e)[:200]}"}}
 
 
 def _health_lint(project: str, lang: str) -> dict:
@@ -3911,10 +3920,11 @@ def _health_files(project: str, lang: str) -> dict:
 HEALTH_FN = {"files": _health_files, "stats": _health_stats, "doctor": _health_doctor,
              "mirrors": _health_mirrors, "lint": _health_lint,
              "build": lambda project, lang: {"build": build_progress(project)},
+             "templates": _health_templates,
              "todo": lambda project, lang: {"todo": todo_count(project)}}
 
 
-HEALTH_QUICK = ("files", "stats", "doctor", "mirrors", "build")
+HEALTH_QUICK = ("files", "stats", "doctor", "mirrors", "build", "templates")
 HEALTH_SLOW = ("lint", "todo")
 # Части здоровья живут в памяти панели (1.166.0). Считались они на каждую загрузку
 # страницы — минуты на шесть проектов, — и Мостик при каждом заходе «обновлялся»
