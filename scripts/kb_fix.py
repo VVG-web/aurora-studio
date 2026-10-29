@@ -1575,7 +1575,7 @@ def plan_meeting_marks(cards: dict, plan: Plan) -> int:
 
 
 def plan_unparsed_sources(cards: dict, plan: Plan, root: str) -> tuple:
-    """Завести карточки под источники, которые разбор не берёт. → (шаблоны, указатели).
+    """Завести карточки под источники, которые разбор не берёт. → (шаблоны, указатели, источники без названия).
 
     Два вида таких источников, и оба несут знание, которое прежде пропадало.
 
@@ -1592,6 +1592,7 @@ def plan_unparsed_sources(cards: dict, plan: Plan, root: str) -> tuple:
     import build_plan as BP
 
     made_t, made_p = [], []
+    nameless: list = []
     taken = {fold_hard(c.stem) for c in cards.values()}
     for group, base in BP.GROUPS:
         if not os.path.isdir(base):
@@ -1611,7 +1612,12 @@ def plan_unparsed_sources(cards: dict, plan: Plan, root: str) -> tuple:
                 if not tpl and not ptr:
                     continue
                 name = normalize_title(BP.source_title(src, text))
-                if not name or fold_hard(name) in taken:
+                if not name:
+                    # Нет ни названия страницы в шапке, ни заголовка, а имя файла — её номер: карточку номером
+                    # не называем, а источник называем в отчёте
+                    nameless.append(src)
+                    continue
+                if fold_hard(name) in taken:
                     continue
                 section = "Reference" if tpl else "Concepts"
                 path = os.path.join(root, section, name + ".md").replace("\\", "/")
@@ -1635,7 +1641,7 @@ def plan_unparsed_sources(cards: dict, plan: Plan, root: str) -> tuple:
                             f"{ptr.strip()}\n\n"
                             "_Заготовка: сущность названа, содержание лежит вне базы._\n", root):
                         made_p.append(name)
-    return made_t, made_p
+    return made_t, made_p, nameless
 
 
 FORM_MARK = "_Шаблон проекта. Разбору не подлежит"
@@ -3584,11 +3590,16 @@ def main() -> int:
             for name, src in (trimmed + archived)[:15]:
                 head.append(f"- {name} ← {src}")
         if a.unparsed:
-            tpl, ptr = plan_unparsed_sources(cards, plan, a.root)
+            tpl, ptr, nameless = plan_unparsed_sources(cards, plan, a.root)
             head.append(f"## Источники вне разбора: шаблонов {len(tpl)}, "
                         f"указателей {len(ptr)}")
             for n in (tpl + ptr)[:15]:
                 head.append(f"- {n}")
+            if nameless:
+                head.append(f"## Без названия страницы — заготовка не заведена (имя файла — номер страницы): "
+                            f"{len(nameless)}")
+                for n in nameless[:15]:
+                    head.append(f"- {n}")
         if a.drop_jira:
             gone = plan_drop_jira(cards, plan)
             head.append(f"## Карточки из задач Jira: {len(gone)} в архив")

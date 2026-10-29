@@ -4241,7 +4241,9 @@ PROMPT_BUILD = """Ты разбираешь источник на карточк
   не открывая: «Курс ЦБ берётся на дату подачи, а не на дату оплаты» годится,
   «Карточка про курс валют» — нет;
 - имя карточки — то, что человек будет искать: суть темы, а не заголовок секции и не
-  имя файла. Никаких «Часть 1», «Раздел 3», «Таблица 2»;
+  имя файла. Никаких «Часть 1», «Раздел 3», «Таблица 2». Номер страницы Confluence
+  (цифры в имени файла или папки пути) именем не бывает; название страницы, если оно
+  указано под источником, подсказывает предмет;
 - имя пиши на языке источника и его буквами: транслит («Nachisleniya-KBK-OP» вместо
   «Начисления на КБК ОП») делает карточку недостижимой — в других карточках понятие
   названо кириллицей, и ссылка по нему не сойдётся;
@@ -4325,10 +4327,12 @@ PROMPT_BUILD_CRITIC = """Ты проверяешь разбор источник
 2. Осмысленны ли имена: по имени должно быть понятно, какое знание внутри. Не годятся
    имена, не называющие предмет: «Таблица 1», «Раздел 2», «Приложение», «Часть 3», а
    также имя файла в его файловом виде — с расширением, датой выгрузки, версией,
-   подчёркиваниями вместо пробелов («Otchet_v2_2026-08-final.docx»).
+   подчёркиваниями вместо пробелов («Otchet_v2_2026-08-final.docx»), и номер страницы
+   Confluence («123456», «page_123456»).
 
    СОВПАДЕНИЕ С НАЗВАНИЕМ СТРАНИЦЫ — НЕ ПОВОД ОТКЛОНИТЬ. В зеркале Confluence имя файла
-   и есть заголовок страницы, а заголовок обычно и называет предмет: «Варианты
+   обычно и есть заголовок страницы (у глубокой ветки — её номер, название тогда указано
+   под источником), а заголовок обычно и называет предмет: «Варианты
    расписания запуска алгоритмов» — хорошее имя карточки, хотя файл называется так же.
    Спрашивай себя не «похоже ли на имя файла», а «понятно ли по имени, о чём карточка».
 3. Подходит ли раздел базы каждой карточке.
@@ -4518,6 +4522,23 @@ def check_cards(cards: list, sections: list, allowed=None) -> str:
     return ""
 
 
+def id_named_card(cards: list, source: str, cwd: str) -> str:
+    """Карточка названа номером страницы Confluence → причина отказа или пусто. Проверка арифметикой, не мнением.
+
+    У источника с названием страницы в шапке номер именем быть не может: замечание называет страницу, и вторая
+    попытка идёт с подсказкой. Дописываемая (`into`) карточка уже названа в базе — её имя не проверяется."""
+    import build_plan as BP
+    for c in cards:
+        name = str(c.get("title") or "").strip()
+        if c.get("into") or not BP.named_by_page_id(name, source, cwd):
+            continue
+        title = BP.page_title_of(BP.owner_page(source, cwd), cwd)
+        return (f"карточка «{name}» названа номером страницы Confluence — это не имя сущности"
+                + (f"; страница называется «{title}», назови карточку по предмету темы" if title
+                   else "; назови карточку по предмету темы"))
+    return ""
+
+
 def merge_same_target(cards: list) -> list:
     """Склеить записи плана, ведущие в одну карточку, в одну — с общим списком секций.
 
@@ -4574,7 +4595,11 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
     # который назвал человек, а не по нашей догадке о содержании.
     feed_rule = FEED_RULE if source_is_feed(cwd, source) else ""
     cands = candidates_block(candidates_for(cwd, cfg, listing))
-    prompt = cands + with_terms(PROMPT_BUILD.format(source=source, sections=listing,
+    # Название страницы-владельца под именем источника: у расшифровки вложения и у страницы глубокой ветки
+    # в пути только номер, и без подсказки сущность называли по нему.
+    import build_plan as BP
+    shown = source + BP.page_note(source, cwd)
+    prompt = cands + with_terms(PROMPT_BUILD.format(source=shown, sections=listing,
                                                     section_list=types_for_prompt(cwd), guide=guide_block(cwd)),
                                 listing, cwd) + feed_rule
     attempt, note_back = 0, ""
@@ -4619,10 +4644,12 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
             step["content_fail"] = True
             return step
         why, from_check = check_cards(cards, sections, {sec for sec, _tid in build_sections(cwd)}), True
+        if not why:
+            why = id_named_card(cards, source, cwd)
         if not why and use_critic:
             from_check = False
             c = call(cfg, "critic", [{"role": "user", "content": PROMPT_BUILD_CRITIC.format(
-                source=source, sections=listing,
+                source=shown, sections=listing,
                 proposal=json.dumps(cards, ensure_ascii=False))}], deadline=deadline)
             if c["ok"]:
                 step["backends"].append((c["backend"], c["model"]))

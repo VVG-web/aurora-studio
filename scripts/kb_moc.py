@@ -299,20 +299,28 @@ def doc_map_names(sources: list) -> dict:
     «записано: 2» и ни одного «без изменений». Такие получают в имя папку; не помогла и она —
     короткий отпечаток пути.
     """
+    import build_plan as BP
+
     def make(label: str) -> tuple:
         title = "Документ · " + label
         return re.sub(r"[^\w\- ]", "", title).strip().replace(" ", "-") + ".md", title
 
     def own(src: str) -> str:
-        return os.path.basename(src).removesuffix(".md")
+        # Страница глубокой ветки лежит под своим номером (`123456.md`): карта «Документ · 123456» не говорит,
+        # о чём она. Название берётся из шапки страницы; у прочих имя файла — по-прежнему имя карты.
+        return BP.numbered_title(src)[:80].strip() or os.path.basename(src).removesuffix(".md")
 
     def parent(src: str) -> str:
-        return os.path.basename(os.path.dirname(src))
+        # Папка — страница с детьми (её файл `index.md`) или страница-владелец расшифровки вложения
+        page = BP.owner_page(src) if src.replace("\\", "/").startswith("Raw/Extracted/") \
+            else os.path.join(os.path.dirname(src), "index.md")
+        return (BP.numbered_title(page)[:80].strip() if page else "") or os.path.basename(os.path.dirname(src))
 
+    mine = {src: own(src) for src in sources}      # шапка читается один раз на источник
     count: dict = {}
     for src in sources:
-        count[make(own(src))[0]] = count.get(make(own(src))[0], 0) + 1
-    out = {src: make(own(src) if count[make(own(src))[0]] == 1 else parent(src) + " " + own(src))
+        count[make(mine[src])[0]] = count.get(make(mine[src])[0], 0) + 1
+    out = {src: make(mine[src] if count[make(mine[src])[0]] == 1 else parent(src) + " " + mine[src])
            for src in sources}
     taken: dict = {}
     for f, _t in out.values():
@@ -321,7 +329,7 @@ def doc_map_names(sources: list) -> dict:
         if taken[out[src][0]] > 1:
             import hashlib
             digest = hashlib.sha1(src.encode("utf-8")).hexdigest()[:6]
-            out[src] = make(parent(src) + " " + own(src) + " " + digest)
+            out[src] = make(parent(src) + " " + mine[src] + " " + digest)
     return out
 
 

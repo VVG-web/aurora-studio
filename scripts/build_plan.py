@@ -514,12 +514,19 @@ def only_artifact_link(text: str, path: str = "") -> str:
 
 
 def source_title(path: str, text: str = "") -> str:
-    """Имя источника для карточки: заголовок в тексте, иначе имя файла без кода."""
+    """Имя источника для карточки: заголовок в тексте, иначе имя файла без кода.
+
+    Имя файла страницы, чьё название в шапке потеряно, — это её номер (глубокая ветка зеркала): такое имя
+    названием не служит, и результат пуст — вызывающий не заводит карточку, а говорит об этом."""
     text = text or open(path, encoding="utf-8", errors="ignore").read()
     fm = re.search(r"(?im)^title:\s*\"?([^\"\n]+)", text[:800])
     head = re.search(r"(?m)^#\s+(.+)$", re.sub(r"(?s)^---.*?\n---\n", "", text))
-    raw = (fm.group(1) if fm else (head.group(1) if head
-                                   else os.path.basename(path)[:-3])).strip()
+    stem = os.path.basename(path)[:-3]
+    if not (fm or head):
+        pid = re.search(r"(?m)^page_id:\s*\"?(\d{4,})", text[:800])
+        if PAGE_ID_NAME_RE.fullmatch(stem) or (pid and stem == pid.group(1)):
+            return ""
+    raw = (fm.group(1) if fm else (head.group(1) if head else stem)).strip()
     clean, _codes = split_doc_code(raw.replace("_", " "))
     return (clean or raw).strip()
 
@@ -1132,6 +1139,88 @@ def page_id_of(path: str, root: str = "") -> str:
     return m.group(1) if m else ""
 
 
+# Страница без заголовка зеркало называет `page_<номер>` (`confluence_export.safe_name`).
+PAGE_ID_NAME_RE = re.compile(r"(?i)page[ _\-]?\d{4,}")
+
+
+def _head_of(path: str, root: str = "") -> str:
+    """Шапка файла (до закрывающей черты); пусто — файла нет или он не читается."""
+    full = path if (not root or os.path.isabs(path)) else os.path.join(root, path)
+    try:
+        return head_text(full).split("\n---\n", 1)[0]
+    except (OSError, UnicodeError):
+        return ""
+
+
+def owner_page(source: str, root: str = "") -> str:
+    """Страница Confluence, чьё знание несёт источник: он сам (в шапке `page_id`) или страница-владелец
+    транскрипта вложения (`page:`). Пусто — источник не страница и не её вложение, либо страницы нет на диске."""
+    if page_id_of(source, root):
+        return source
+    if source.replace("\\", "/").startswith("Raw/Extracted/"):
+        m = re.search(r'(?m)^page:\s*"?([^"\n]+?)"?\s*$', _head_of(source, root))
+        page = m.group(1) if m else ""
+        if page and os.path.isfile(page if (not root or os.path.isabs(page)) else os.path.join(root, page)):
+            return page
+    return ""
+
+
+def page_title_of(page: str, root: str = "") -> str:
+    """Название страницы — `title:` из шапки её файла в зеркале. Пусто — файла нет или названия в шапке нет.
+
+    Имя файла названием не служит: у страницы глубокой ветки оно — номер страницы (путь не помещался в
+    предел длины, `confluence_export.fit_part`), а заголовок остаётся только в шапке."""
+    m = re.search(r'(?m)^title:[ \t]*"?([^"\r\n]*?)"?[ \t\r]*$', _head_of(page, root))      # \r — зеркало, записанное на Windows
+    return m.group(1).strip() if m else ""
+
+
+def numbered_page(page: str, root: str = "") -> bool:
+    """Имя файла страницы (у страницы с детьми — её папки) — её номер в Confluence, а не заголовок."""
+    pid = page_id_of(page, root)
+    if not pid:
+        return False
+    parts = page.replace("\\", "/").split("/")
+    stem = os.path.splitext(parts[-1])[0]
+    if stem == "index" and len(parts) > 1:
+        stem = parts[-2]
+    return stem == pid or stem.casefold() == f"page_{pid}"
+
+
+def numbered_title(page: str, root: str = "") -> str:
+    """Название страницы, у которой в имени файла вместо него номер; у прочих и без названия — пусто."""
+    title = page_title_of(page, root) if numbered_page(page, root) else ""
+    return title if re.search(r"\w", title) else ""
+
+
+def page_note(source: str, root: str = "") -> str:
+    """Строка для запроса модели: как называется страница источника. Пусто — добавлять нечего.
+
+    Расшифровка схемы или вложения не повторяет название страницы: в пути оно — имя папки, а у страницы
+    глубокой ветки дерева — номер. Модель видела `Raw/Extracted/…/123456/Схема.drawio.md` и название
+    сущности брала из того, что видела. Страница с нормальным именем файла в подсказке не нуждается."""
+    page = owner_page(source, root)
+    title = page_title_of(page, root) if page else ""
+    if not title:
+        return ""
+    if page != source:
+        return (f"\nНазвание страницы Confluence, к которой относится вложение: «{title}»."
+                + (" Имя папки страницы в пути — её номер, а не название." if numbered_page(page, root) else ""))
+    if numbered_page(page, root):
+        return f"\nНазвание страницы в Confluence: «{title}». Имя файла в пути — номер страницы, а не название."
+    return ""
+
+
+def named_by_page_id(title: str, source: str, root: str = "") -> bool:
+    """Карточка названа номером страницы Confluence — `123456` или `page_123456`, — а не предметом."""
+    title = (title or "").strip()
+    if not title:
+        return False
+    if PAGE_ID_NAME_RE.fullmatch(title):
+        return True
+    page = owner_page(source, root)
+    return bool(page) and title == page_id_of(page, root)
+
+
 def drop_thesis_mark(head: str) -> str:
     """Снять отметку тезиса (`distilled`), запомнив её в `distilled_was`.
 
@@ -1531,6 +1620,14 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     # Имя файла вместо заголовка: модель видит карточки по именам файлов и так их и зовёт.
     # Файл получится тем же, а заголовок — человеческим.
     title = title_from_stem(title)
+    # Номер страницы Confluence именем сущности не бывает. Так называли карточки, когда видели только путь
+    # файла глубокой ветки (`…/123456.md`), а название страницы лежало лишь в шапке.
+    if named_by_page_id(title, source, root):
+        page_title = page_title_of(owner_page(source, root), root)
+        print(f"build_plan: имя «{title}» — номер страницы Confluence, а не название сущности. Назовите карточку по "
+              "предмету темы" + (f" (страница называется «{page_title}»)" if page_title else "") + ".",
+              file=sys.stderr)
+        return 1
     title, er_labels = split_er_label(title)
     if er_labels:
         target = find_card(title, root)
