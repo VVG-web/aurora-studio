@@ -77,8 +77,9 @@ taken and the config is filled in later — `python3 aurora.py setup <project>`.
 The panel does the same: "The kit's setup" → "Connect a new project". The panel has two paths that do not mix:
 **New local project** (a skeleton in a folder, git is connected later on the "Git" tab) and **From a git
 repository** (the repository is already on the server: paste the address or a `git clone` line, choose the login, the
-branch and the folder — the repository is cloned into a new or empty folder, and its settings are written to the
-project's Git at once). If the repository already holds an Aurora project, that is the project; if it is empty or holds
+branch, and **name the folder** — the repository is cloned into “projects folder + folder name”, a new or empty one,
+and its settings are written to the project's Git at once; the folder name is required: projects from different
+repositories often share the repository name and would take the same place without a folder of their own). If the repository already holds an Aurora project, that is the project; if it is empty or holds
 something else, the structure is deployed on top and existing files are not overwritten.
 
 ### Without questions (scripts, CI)

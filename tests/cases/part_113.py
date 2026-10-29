@@ -334,7 +334,7 @@ def test_the_shipped_rebuild_route_declares_its_tail_and_its_end(tmp: Path):
     assert all(real[i].get("lite") is None or i < at[0] for i in range(len(real))), "хвостовой шаг стоит после конца пересборки"
     assert [s["cmd"] for s in real[at[0] + 1:]] == ["ops:stats", "ops:todo"], real[at[0] + 1:]
     for rid, sc in routes.items():
-        if rid != "rebuild":
+        if rid not in ("rebuild", "update"):        # краткий хвост — у маршрутов с циклом (1.190.0: и у «Обновить»)
             assert not any(s.get("lite") for s in sc["steps"]), rid
 
 

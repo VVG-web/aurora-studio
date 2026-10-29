@@ -31,7 +31,11 @@ by the first sign-in; the same command on a running panel prints and opens a new
 
 The kit and projects need not lie side by side. The list of folders to search is edited right in the panel ("The kit's
 setup" → "Where the panel looks for projects") and stored in `~/.aurora/cockpit-roots.txt`; on the first launch the folder next
-to the kit goes there. A new project can be deployed into any folder — its parent is added to the list by itself.
+to the kit goes there. A new project can be deployed into any folder — its parent is added to the list by itself. A project not needed on the Bridge is removed from the list with “Remove from
+the panel list” in “Project settings”: the panel finds projects by itself, so “remove” means stop showing (files, git
+and settings stay); the path is written to `~/.aurora/cockpit-hidden.txt`, to bring it back use “Kit setup” → “Hidden
+projects”. For a project “from git” the person names the clone folder (projects folder + name); the repository name is
+only a hint.
 
 ```bash
 python3 cockpit/aurora_cockpit.py --port 9000             # another port

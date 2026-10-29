@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.189.0";
+const UI_VERSION = "1.190.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -4205,6 +4205,8 @@ async function renderSetup(){
         t("setup.roots_about", {file: roots.file || "~/.aurora/cockpit-roots.txt"})),
       rootsBox2));
 
+  await drawHiddenGroup(box);
+
   const newBox = newProjectCard();
   sgroup(box, "setup:new", t("setup.new_title")).append(newBox);
 
@@ -4223,9 +4225,10 @@ async function renderSetup(){
 const NEWP = {mode: "local", local: {}, git: null, root: "", draw: () => {}};
 const GIT_AUTHS = ["password", "token", "ssh", "system"];
 const newGit = () => NEWP.git || (NEWP.git = {text: "", parsed: null, busy: "", check: null, failure: null,
-  cert: null, lastAction: "", timer: null, branch: "", path: "", name: "", slug: "", space: "", jira: "",
+  cert: null, lastAction: "", timer: null, branch: "", folder: "", parent: "", repoName: "", name: "", slug: "",
+  space: "", jira: "",
   author_name: "", author_email: "",
-  branchTouched: false, pathTouched: false, authTouched: false,
+  branchTouched: false, authTouched: false,
   cred: {auth: "password", user: "", secret: "", ssh_key: ""}});
 // Строка вкладки «Git», а нет её (модуль выключен) — текст движка: разделы переводятся своими каталогами.
 const tg = (key, fallback, vars) => (I18N[key] !== undefined || RU[key] !== undefined)
@@ -4309,11 +4312,10 @@ async function parseNewGit(){
     g.cred = {...g.cred, auth: g.authTouched ? g.cred.auth : p.auth, user: p.user || g.cred.user,
               secret: p.secret || g.cred.secret};
     if (p.branch && !g.branchTouched) g.branch = p.branch;
-    if (!g.pathTouched){
-      const name = String(p.repo || p.url || "").replace(/[\\/]+$/, "").replace(/\.git$/i, "")
-        .split(/[\\/:]/).pop().replace(/[*?"<>|]/g, "");
-      g.path = NEWP.root && name ? NEWP.root + "/" + name : "";
-    }
+    // Имя репозитория — только подсказка: проекты из разных репозиториев нередко называются одинаково, а папку
+    // для каждого человек называет сам (1.190.0).
+    g.repoName = String(p.repo || p.url || "").replace(/[\\/]+$/, "").replace(/\.git$/i, "")
+      .split(/[\\/:]/).pop().replace(/[*?"<>|]/g, "");
   }
   drawNewGit();
 }
@@ -4324,6 +4326,21 @@ function newGitSettings(g){
   return {provider: p.provider, instance: p.instance, repo: p.repo, branch: g.branch.trim(),
           author_name: g.author_name.trim(), author_email: g.author_email.trim(),
           tls: {verify: true, ca_file: ""}};
+}
+
+// Итоговый путь клона: папка проектов + название папки (то же собирает сервер — `clone_target`).
+function newGitTargetPath(g){
+  const parent = (g.parent || NEWP.root || "").trim().replace(/[\\/]+$/, "");
+  const folder = (g.folder || "").trim();
+  return folder && parent ? parent + "/" + folder : "";
+}
+function newGitTargetText(g){
+  const path = newGitTargetPath(g);
+  return path ? t("setup.g_target", {path}) : t("setup.g_target_none");
+}
+function drawNewGitTarget(){
+  const n = $("#newGitTarget");
+  if (n) n.textContent = newGitTargetText(newGit());
 }
 
 function newGitRest(){
@@ -4368,13 +4385,20 @@ function newGitRest(){
   }
   const branch = text("branch", g.branch, {list:"newGitBranches"});
   branch.oninput = () => { g.branch = branch.value; g.branchTouched = true; };
-  const path = text("path", g.path, {placeholder: NEWP.root + "/" + "project"});
-  path.oninput = () => { g.path = path.value; g.pathTouched = true; };
+  const folder = text("folder", g.folder, {placeholder: "Northwind"});
+  folder.oninput = () => { g.folder = folder.value; touch(); drawNewGitTarget(); };
+  const parent = text("parent", g.parent || NEWP.root, {placeholder: NEWP.root});
+  parent.oninput = () => { g.parent = parent.value; touch(); drawNewGitTarget(); };
   const heads = ((g.check && g.check.steps || []).find(x => x.id === "git") || {}).branches || [];
   out.push(el("div",{class:"row",style:"gap:12px;flex-wrap:wrap"},
     field(t("setup.g_branch"), branch, t("setup.g_branch_hint")),
-    field(t("setup.g_path"), path, t("setup.g_path_hint")),
     el("datalist",{id:"newGitBranches"}, ...heads.map(b => el("option",{value:b})))));
+  // Куда клонировать: название папки задаёт человек (у проектов из разных репозиториев имя репозитория бывает одним),
+  // папка проектов — где они лежат. Итоговый путь виден сразу.
+  out.push(el("div",{class:"row",style:"gap:12px;flex-wrap:wrap"},
+    field(t("setup.g_folder"), folder, t("setup.g_folder_hint", {repo: g.repoName || "—"})),
+    field(t("setup.g_parent"), parent, t("setup.g_parent_hint"))));
+  out.push(el("div",{id:"newGitTarget",class:"muted",style:"font-size:12.5px;margin:-4px 0 10px"}, newGitTargetText(g)));
   const who = (key, label) => {
     const n = text(key, g[key]);
     n.oninput = () => { g[key] = n.value; };
@@ -4492,9 +4516,11 @@ async function createNewGit(){
   const g = newGit();
   if (g.busy) return;
   if (!g.parsed || !g.parsed.ok){ g.failure = {error: t("setup.g_need_url")}; return drawNewGit(); }
+  if (!g.folder.trim()){ g.failure = {error: t("setup.g_need_folder")}; return drawNewGit(); }
   g.busy = "create"; g.failure = null; g.lastAction = "create"; drawNewGit();
   const r = await api("/api/project/new",{method:"POST",quiet:true,body:JSON.stringify({
-    path: g.path.trim(), name: g.name.trim(), slug: g.slug.trim(), space: g.space.trim(), jira: g.jira.trim(),
+    folder: g.folder.trim(), parent: (g.parent || NEWP.root || "").trim(),
+    name: g.name.trim(), slug: g.slug.trim(), space: g.space.trim(), jira: g.jira.trim(),
     git: {settings: newGitSettings(g), credentials: g.cred}})});
   g.busy = "";
   if (!r || !r.ok){ g.failure = r || {error: t("setup.g_failed")}; return drawNewGit(); }
@@ -5322,6 +5348,7 @@ async function renderProject(){
 
   await renderModelsCard(box, "project");
   renderGitCard(box);
+  renderPanelCard(box);
   await renderKinds(box);
   try { await renderSourceAccess(box); }
   catch (e){ showFault(t("modules.refresh_failed", {id: "access", why: e.message})); }
@@ -5694,6 +5721,53 @@ function renderGitCard(box){
     el("div",{class:"row",style:"gap:10px"},
       p && p.git_alert ? el("span",{class:"chip bad"}, t("git_link.alert")) : null,
       el("button",{class:"btn sm primary", onclick:()=>show("gitsync")}, t("git_link.open")))));
+}
+
+// Проект в списке панели (1.190.0): панель находит проекты сама, поэтому «убрать» значит перестать показывать. Файлы, git и
+// настройки остаются; вернуть проект — «Настройка кита» → «Скрытые проекты». Слепок списка (`expect`) защищает от затирания.
+async function hideProject(p){
+  const cur = await api("/api/hidden", {quiet: true});
+  const res = await api("/api/hidden", {method: "POST", quiet: true,
+    body: JSON.stringify({hide: p.path, expect: cur.stamp})});
+  if (res.error) return toast(res.error, "warn");
+  toast(t("hidden.done", {name: p.name}), "ok");
+  S.project = null; S.health = null;
+  S.state = await api("/api/state");
+  renderOverview(); renderProjBadge();
+  show("overview");
+}
+function renderPanelCard(box){
+  const p = S.project;
+  sgroup(box, "project:panel", t("hidden.title")).append(el("div",{class:"card",style:"padding:16px 20px;margin-bottom:18px"},
+    el("p",{class:"muted",style:"font-size:13px;margin:0 0 10px"}, t("hidden.about")),
+    el("button",{class:"btn sm danger", onclick:()=>hideProject(p)}, t("hidden.btn"))));
+}
+// «Скрытые проекты» в настройке кита: список с кнопкой «Вернуть».
+async function drawHiddenGroup(box){
+  const body = sgroup(box, "setup:hidden", t("hidden.setup_title"));
+  const draw = async () => {
+    const d = await api("/api/hidden", {quiet: true});
+    body.innerHTML = "";
+    body.append(el("p",{class:"muted",style:"font-size:13px;margin:0 0 10px"}, t("hidden.setup_about")));
+    if (!(d.hidden || []).length){
+      body.append(el("div",{class:"muted"}, t("hidden.none")));
+      return;
+    }
+    d.hidden.forEach(h => body.append(el("div",{class:"row",style:"gap:8px;margin-bottom:6px"},
+      el("div",{style:"flex:1;min-width:0"},
+        el("div",{}, h.name),
+        el("code",{class:"mono",style:"font-size:12px;overflow-wrap:anywhere"}, h.path
+          + (h.exists ? "" : " · " + t("hidden.missing")))),
+      el("button",{class:"btn sm", onclick: async () => {
+        const res = await api("/api/hidden", {method: "POST", quiet: true,
+          body: JSON.stringify({show: h.path, expect: d.stamp})});
+        if (res.error && !res.conflict) return toast(res.error, "warn");
+        if (!res.conflict) toast(t("hidden.restored", {name: h.name}), "ok");
+        S.state = await api("/api/state"); renderOverview();
+        await draw();
+      }}, t("hidden.restore")))));
+  };
+  await draw();
 }
 
 /* ---------------- о проекте ---------------- */

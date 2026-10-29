@@ -3212,6 +3212,111 @@ def save_roots(roots: list) -> None:
         f.write("\n".join(uniq) + "\n")
 
 
+# ----------------------------------------------------- скрытые проекты (1.190.0)
+#
+# Панель не ведёт список проектов, а находит их по корням поиска, поэтому «убрать проект из панели» не стирает папку:
+# путь проекта записывается в этот файл, и `find_projects` его пропускает. Файлы проекта, git и настройки остаются; вернуть
+# проект — убрать путь из списка («Настройка кита» → «Скрытые проекты»). Список — на машине, как корни поиска.
+HIDDEN_FILE = os.path.join(os.path.expanduser("~"), ".aurora", "cockpit-hidden.txt")
+
+
+def load_hidden() -> list:
+    """Пути скрытых проектов (нормализованные, без повторов); нет файла — пусто."""
+    try:
+        with open(HIDDEN_FILE, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    return list(dict.fromkeys(norm(l) for l in lines if l.strip() and not l.lstrip().startswith("#")))
+
+
+def hidden_stamp(paths: list) -> str:
+    """Слепок списка для `expect`: страница, видевшая прежний список, не затрёт чужую правку."""
+    import hashlib
+    return hashlib.sha1("\n".join(sorted(paths)).encode("utf-8")).hexdigest()[:12]
+
+
+def save_hidden(paths: list) -> None:
+    os.makedirs(os.path.dirname(HIDDEN_FILE), exist_ok=True)
+    uniq = list(dict.fromkeys(norm(p) for p in paths))
+    write_text_atomic(HIDDEN_FILE, "# Проекты, убранные из списка панели Авроры — по одному пути в строке.\n"
+                      + "".join(p + "\n" for p in uniq))
+
+
+def hidden_state() -> dict:
+    """Ответ `/api/hidden`: скрытые проекты (путь, имя, есть ли папка) и слепок списка."""
+    rows = []
+    for path in load_hidden():
+        cfg = read_text(os.path.join(path, "aurora.config.yaml"))
+        rows.append({"path": path, "name": config_value(cfg, "name") or os.path.basename(path.rstrip(os.sep)) or path,
+                     "exists": os.path.isdir(path)})
+    return {"hidden": rows, "stamp": hidden_stamp([r["path"] for r in rows]), "file": HIDDEN_FILE}
+
+
+def hidden_edit(payload: dict, known: set) -> dict:
+    """Убрать проект из списка панели (`hide`) или вернуть (`show`). `known` — пути проектов, которые панель видит сейчас:
+    прятать можно только их (не произвольный путь). `expect` — слепок списка со страницы; не совпал — конфликт (409)."""
+    hide, show = str(payload.get("hide") or "").strip(), str(payload.get("show") or "").strip()
+    if bool(hide) == bool(show):
+        return {"error": "нужен ровно один из ключей: hide или show"}
+    cur = load_hidden()
+    expect = payload.get("expect")
+    if isinstance(expect, str) and expect != hidden_stamp(cur):
+        return {"conflict": True, "error": "список скрытых проектов изменился с тех пор, как вы его открыли", **hidden_state()}
+    if hide:
+        target = norm(hide)
+        if target not in known:
+            return {"error": f"такого проекта в списке панели нет: {target}"}
+        if target not in cur:
+            cur.append(target)
+    else:
+        cur = [p for p in cur if p != norm(show)]
+    save_hidden(cur)
+    return {"ok": True, **hidden_state()}
+
+
+# ------------------------------------------- папка для проекта из git (1.190.0)
+#
+# Проекты из разных репозиториев нередко называются в репозитории одинаково, а клонировать их надо в свои папки. Поэтому
+# проект «из git» получает название папки от человека, а не берёт имя репозитория: путь собирается как «папка проектов +
+# название папки». Название проверяется здесь, а не только на странице: через него нельзя выйти из папки проектов.
+FOLDER_BAD_CHARS = set('<>:"/\\|?*')
+FOLDER_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+FOLDER_MAX = 100
+
+
+def folder_name_problem(name: str) -> str:
+    """Почему название папки не годится; пусто — годится. Правила трёх систем сразу (Windows строже всех)."""
+    n = (name or "").strip()
+    if not n:
+        return "укажите название папки, в которую клонировать проект"
+    if any(c in FOLDER_BAD_CHARS or ord(c) < 32 for c in n):
+        return "в названии папки нельзя / \\ : * ? \" < > | и управляющие знаки: это одно название, а не путь"
+    if n in (".", "..") or n.endswith((".", " ")) or n.startswith("."):
+        return "название папки не может начинаться с точки или кончаться точкой и пробелом"
+    if n.split(".")[0].lower() in FOLDER_RESERVED:
+        return "это имя зарезервировано системой (Windows): выберите другое название папки"
+    if len(n) > FOLDER_MAX:
+        return f"название папки длиннее {FOLDER_MAX} знаков"
+    return ""
+
+
+def clone_target(payload: dict, roots: list) -> tuple:
+    """Куда клонировать проект из git. → (путь, причина отказа). Есть `folder` — путь собирается из `parent` (по умолчанию
+    первый корень поиска) и названия папки; нет — прежнее поле `path` (старые страницы и терминал)."""
+    folder = str(payload.get("folder") or "").strip()
+    if not folder:
+        raw = str(payload.get("path") or "").strip()
+        return (norm(raw), "") if raw else ("", "укажите название папки, в которую клонировать проект")
+    bad = folder_name_problem(folder)
+    if bad:
+        return "", bad
+    parent = str(payload.get("parent") or "").strip() or (roots[0] if roots else "")
+    if not parent:
+        return "", "нужна папка проектов: добавьте корень поиска в «Настройке кита»"
+    return norm(os.path.join(norm(parent), folder)), ""
+
+
 def writable_target(target: str) -> str:
     """→ причина отказа, либо пустая строка."""
     home = os.path.expanduser("~")
@@ -3228,7 +3333,7 @@ def writable_target(target: str) -> str:
 
 def find_projects(roots: list, depth: int = 3) -> list:
     out = []
-    seen = set()
+    seen = set(load_hidden())          # скрытые проекты (1.190.0) панель не показывает, как будто их нет
     for root in roots:
         root = os.path.abspath(os.path.expanduser(root))
         if not os.path.isdir(root):
@@ -6370,6 +6475,8 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/roots":
             self.send_json({"roots": [norm(r) for r in self.server.roots],
                             "file": ROOTS_FILE})
+        elif u.path == "/api/hidden":
+            self.send_json(hidden_state())
         elif u.path == "/api/card":
             project = (q.get("project") or [""])[0]
             self.send_json(card_text(project, (q.get("path") or [""])[0])
@@ -6891,6 +6998,10 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/roots":
             self.send_json(self._edit_roots(payload))
             return
+        if u.path == "/api/hidden":
+            res = hidden_edit(payload, {p["path"] for p in find_projects(self.server.roots)})
+            self.send_json(res, 409 if res.get("conflict") else 400 if res.get("error") else 200)
+            return
         if u.path in ("/api/cards", "/api/cards/guide", "/api/cards/guide/reset", "/api/cards/guide/check"):
             # «Типы карточек»: блок `cards:` конфига, файл инструкции, проверка её текста. Путь файла от страницы не
             # приходит: запись возможна только в `Prompts/KB_classify.md` выбранного проекта.
@@ -7301,11 +7412,14 @@ class Handler(BaseHTTPRequestHandler):
         raw = (payload.get("path") or "").strip()
         name = (payload.get("name") or "").strip()
         git = payload.get("git") if isinstance(payload.get("git"), dict) else None
-        if git and not raw:
-            return {"error": "нужна папка проекта"}
-        if not raw or (not name and not git):
-            return {"error": "нужны путь и название проекта"}
-        target = norm(raw)
+        if git:
+            target, why = clone_target(payload, self.server.roots)
+            if why:
+                return {"error": why}
+        else:
+            if not raw or not name:
+                return {"error": "нужны путь и название проекта"}
+            target = norm(raw)
         bad = writable_target(target)
         if bad:
             return {"error": bad}
