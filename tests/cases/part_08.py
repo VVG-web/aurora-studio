@@ -1266,8 +1266,8 @@ def test_the_cycle_stops_when_it_stops_converging(tmp: Path):
     # Цикл ведёт сервер (1.152.0): предохранитель — его.
     sys.path.insert(0, str(KIT / "cockpit"))
     import importlib
-    assert importlib.import_module("route_runner").CYCLE_LIMIT == 12, \
-        "предохранитель снова велик — несходящийся цикл будет выглядеть долгим прогоном"
+    assert 100 <= importlib.import_module("route_runner").CYCLE_LIMIT <= 1000, \
+        "у цикла нет аварийного потолка или он снова мал: большая пересборка оборвётся на середине (оборот — 24 источника)"
     assert "цикл не сошёлся за" in ui, \
         "упор в предохранитель не назван: человек не отличит его от честной работы"
     assert "какой источник не удалось отметить" in ui, \

@@ -176,7 +176,7 @@ def test_templates_share_is_drawn_on_the_bridge_and_in_health(tmp: Path):
     """Панель: часть в списке быстрых и в рамке здоровья; чип на плитке проекта и плитка в «Здоровье» — только при
     наличии доли; подписи есть на обоих языках, и состояния миграции названы все."""
     ui = ui_source()
-    assert '"build", "templates"]' in ui and "templates: {}" in ui
+    assert '"build", "templates"' in ui and "templates: {}" in ui
     tile = ui[ui.index("function renderOverview"):]
     tile = tile[:tile.index("drawActivity();")]
     assert 'has("templates")' in tile and "h.templates.pct != null" in tile and "templatesHint(h.templates)" in tile

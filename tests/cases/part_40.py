@@ -82,9 +82,13 @@ def _tagged_kit(tag: str, dest: Path) -> Path:
 
 
 def _new_project(kit: Path, root: Path, name: str = "Old", slug: str = "") -> Path:
-    """Проект, заведённый китом `kit` настоящей командой `new` (без терминала)."""
-    _py(kit / "aurora.py", "new", str(root), "--name", name, "--slug", slug or name, cwd=root.parent,
-        env=None if kit == KIT else OLD_KIT_ENV)
+    """Проект, заведённый китом `kit` настоящей командой `new` (без терминала).
+
+    `--non-interactive` — явно, а не «стандартный ввод не терминал»: прежние выпуски (1.140.0) решали это по `isatty()`
+    стандартного ввода, и на Python 3.14 для Windows пустое устройство (`DEVNULL`) считается терминалом — настройка проекта
+    лезла в `input()` и падала `EOFError` (не наша ошибка, выпуск менять нельзя). Флаг знают все проверяемые выпуски."""
+    _py(kit / "aurora.py", "new", str(root), "--name", name, "--slug", slug or name, "--non-interactive",
+        cwd=root.parent, env=None if kit == KIT else OLD_KIT_ENV)
     return root
 
 

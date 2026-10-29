@@ -7,7 +7,7 @@
 - шаги по порядку; остановка на коде 2 и выше и на убитом процессе (код меньше нуля), а на
   шаге-воротах (флаг `--gate` в scenarios.txt) — ещё и на коде 1: «ворота не пройдены»;
 - блок «цикл:» повторяется оборотами: остаток работы считается по видам, каждый оборот
-  фиксируется в git, застой и предохранитель в 12 оборотов останавливают маршрут;
+  фиксируется в git, остановка на застое («за оборот не убыло ничего») и аварийный потолок в 300 оборотов;
 - шаг, упавший по сети, ждёт бэкенды: 15 минут между попытками, 30 секунд, если шаг всё
   же сделал работу, — до восьми попыток; «Проверить сейчас» будит ожидание. При включённой проверке
   соединений (`conn_gate`) шагу, которому не хватает связи, не дают начаться: политика прогона
@@ -34,7 +34,8 @@ import traceback
 
 from datetime import datetime, timezone
 
-CYCLE_LIMIT = 12                 # дюжина оборотов — уже симптом, а не работа
+CYCLE_LIMIT = 300                # аварийный потолок оборотов (1.189.0). Честный предел цикла — «за оборот не убыло ничего»
+                                 # (застой): прежние 12 оборотов обрывали большую пересборку (оборот — 24 источника)
 OFFLINE_RETRY_S = 15 * 60        # между попытками достучаться до бэкендов
 FLAKY_RETRY_S = 30               # шлюз мигает, а не лежит: пробуем сразу
 # Потолка попыток нет (1.170.0): маршрут ждёт сеть, пока она не вернётся или человек не
@@ -231,7 +232,7 @@ def plan(ck, sc: dict, write: bool) -> list:
         if in_cycle:
             idx += 1
         out.append({"cmd": st["cmd"], "why": st.get("why", ""), "cycle": in_cycle,
-                    "cycleIdx": idx if in_cycle else 0, "pos": len(out),
+                    "cycleIdx": idx if in_cycle else 0, "pos": len(out), "lite": bool(st.get("lite")),
                     "args": [f for f in (st.get("flags") or []) if write or f != "--apply"]})
     return out
 
@@ -1078,6 +1079,7 @@ class RouteRun:
         self.net_policy = G.policy_for(self.net, svc) if (G and svc and svc.enabled) else ""
         if not self._net_precheck(steps):
             return self._finish(self.head0 or "", started)
+        self._rebuild_resume(steps)
         if not self.resumed:
             self._git("update", "before_route")
         self._paths_hint(steps)             # после обновления с сервера: конфиг уже тот, с которым идёт прогон
@@ -1104,6 +1106,8 @@ class RouteRun:
                 break
             self.lap = 0
             i = end
+        if (self.stalled or (self.failed and self.lap)) and not self.offline and not self.gate_failed:
+            self._lite_tail(steps)
         if (self.deferred or self.deferred_blocks) and not (self._stopping() or self.failed or self.stopped or self.stalled):
             if self.trigger == "cron" and self.parent:
                 # Повтор — дело цепочки расписания: она вернётся к проекту в конце, а остальные проекты не ждут связи.
@@ -1124,6 +1128,46 @@ class RouteRun:
         start, self.paths_final = paths_lines(self.ck, self.project, self.t)
         if start:
             self.say("warn", start)
+
+    def _rebuild_resume(self, steps: list) -> None:
+        """Опасный маршрут, который сносит базу («Пересобрать»), при начатой и не законченной пересборке снос
+        пропускает и идёт с цикла (1.189.0). Повтор такого маршрута (расписание, кнопка, терминал) раньше начинал со
+        сноса и стирал собранное. Начать заново осознанно можно командой `kb:reset --apply --restart`."""
+        if not (self.write and self.sc.get("destructive")):
+            return
+        try:
+            import kb_reset as KR
+            live = KR.in_progress(self.project)
+        except Exception:  # noqa: BLE001 — нет отметки или модуля: маршрут идёт как обычно
+            return
+        first = next((st["pos"] for st in steps if st["cycle"]), None)
+        if not live or first is None:
+            return
+        for st in steps:
+            if not st["cycle"] and st["pos"] < first:
+                self.skip.add(self.step_key(st))
+        self.resumed = True
+        self.say("warn", self.t("route.rebuild_resume", since=live.get("started") or "?", tag=live.get("tag") or "—"))
+
+    def _lite_tail(self, steps: list) -> None:
+        """Краткий хвост после остановки маршрута на застое или сбое посреди цикла (1.189.0): шаги с пометкой `хвост` в
+        `scenarios.txt` — связи, карты, трассировка, доверие, оглавления; без модели и за минуты. Без него база,
+        остановленная посреди пересборки, стоит без связей и доверия: так на живой базе доверие было 0 %. Остановка рукой
+        хвоста не запускает: «Остановить» значит остановить. Сбой шага хвоста вердикт маршрута не меняет."""
+        lite = [st for st in steps if st.get("lite") and not st["cycle"]]
+        if not lite or self._stopping() or self.stopped:
+            return
+        self.say("head", self.t("route.lite_tail", n=len(lite)))
+        keep_failed, self.lap = self.failed, 0
+        for st in lite:
+            if self._stopping():
+                break
+            res = self.run_one(st)
+            if res.get("ended"):
+                break
+            if res.get("rc"):
+                self.say("warn", self.t("route.lite_tail_step_failed", cmd=st["cmd"], rc=res.get("rc")))
+        self.failed = keep_failed
 
     def _cycle(self, steps: list, i: int, end: int) -> bool:
         """Блок цикла оборотами. → False, если маршрут дальше не идёт."""

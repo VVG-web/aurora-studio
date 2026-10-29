@@ -108,6 +108,22 @@ done by a human are marked in routes and are not run.
 shown on the project tile on the Bridge, in "Health", "Ask" and "Productivity": which base an answer or a document
 rests on. The run journal (`run_log.md`) belongs to one machine and does not go to git.
 
+**The cycle and its limit.** The cycle runs in laps while the remaining work shrinks each lap; it stops on a stall —
+"nothing decreased in a lap". The 12-lap cap is gone (a lap parses about 24 sources, so a big rebuild needs dozens of
+laps); an emergency cap of 300 laps remains. A route stopped on a stall or a failure in the middle of the cycle runs a
+**short tail** — the steps marked `хвост` in `scenarios.txt`: links, maps, trace, trust, tables of contents, without a
+model and within minutes — so that an unfinished base stays consistent and has its trust. A manual stop does not run the
+tail.
+
+**"Rebuild the base from scratch" can be continued and undone.** The wipe (`kb:reset --apply`) sets a tag
+`aurora/pre-rebuild-<date>` on the commit with the previous base and writes a "rebuild under way" mark
+(`.aurora/state/rebuild.json`). While the rebuild is not finished, a repeated wipe is refused, and the "Rebuild" route
+itself skips the wipe on such a mark and goes on from the cycle: a repeat by the schedule, the button or the terminal
+continues instead of erasing. The route's last step (`kb:reset --finish --apply`) clears the mark. An unfinished
+rebuild shows on the Bridge and in "Health" as a tile with two buttons: "Continue the rebuild" and "Restore the previous
+base" (`kb:reset --undo --apply` restores the base folder exactly from the tag in one commit; the rebuilt part stays in
+git history). To start over deliberately — `kb:reset --apply --restart`.
+
 ### Routes on a schedule and from the terminal
 
 The **Cron** section (the "Machine" group) puts routes and single commands on a timetable and chains them: "at 20:00

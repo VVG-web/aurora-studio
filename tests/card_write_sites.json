@@ -783,8 +783,18 @@
   },
   "scripts/kb_reset.py:main": {
    "kind": "other",
+   "reason": "копия базы перед сбросом по флагу --backup: служебная копия",
+   "calls": 1
+  },
+  "scripts/kb_reset.py:save_snapshot": {
+   "kind": "other",
    "reason": "снимок перед сбросом базы: служебный файл",
-   "calls": 2
+   "calls": 1
+  },
+  "scripts/kb_reset.py:write_state": {
+   "kind": "other",
+   "reason": "отметка «пересборка идёт»: служебный файл в папке движка проекта",
+   "calls": 1
   },
   "scripts/kb_retrieval.py:main": {
    "kind": "other",

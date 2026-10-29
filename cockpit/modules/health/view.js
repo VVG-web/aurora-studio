@@ -83,6 +83,19 @@ export async function refresh(ctx){
     }),
     el("div", {class:"muted", style:"font-size:12.5px;margin-top:8px"}, t("health.ratchet_note"))));
 
+  // Пересборка с нуля начата и не закончена: база неполна, и первое, что нужно знать, — как продолжить или вернуть
+  // прежнюю. Плитки есть, пока на проекте стоит отметка `kb:reset`.
+  const rb = h.rebuild || {};
+  if (rb.active){
+    const bd = h.build || {};
+    box.append(el("div", {class:"grid metrics", style:"margin-bottom:14px"},
+      ctx.ui.metricCard({title: t("health.rebuild_title"), value: bd.total ? bd.pct + "%" : "—", tone: "warn",
+        sub: t("health.rebuild_sub"), hint: ctx.ui.rebuildHint(rb, bd),
+        go: ctx.ui.goRoute("rebuild", t("health.rebuild_continue"))}),
+      ctx.ui.metricCard({title: t("health.rebuild_back_title"), value: rb.cards_before ?? "—",
+        sub: t("health.rebuild_back_sub", {tag: rb.tag || "—"}), hint: t("health.rebuild_back_hint"),
+        go: ctx.ui.goCmd("kb:reset", ["--undo", "--apply"], t("health.rebuild_undo"))})));
+  }
   box.append(baseCards(ctx, h, st));
   box.append(el("div", {class:"card", style:"padding:16px;margin-bottom:14px"},
     el("div", {style:"font-weight:700;margin-bottom:10px"}, t("health.statuses")),

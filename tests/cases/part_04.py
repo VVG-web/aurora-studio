@@ -243,6 +243,8 @@ def test_refusing_to_write_stops_the_route(tmp: Path):
     root = make_project(tmp)
     card(root, "Systems/Одна.md", "тело см. [[Две]]", status="knowledge")
     card(root, "Systems/Две.md", "тело см. [[Одна]]", status="knowledge")
+    # Сбросу есть что сносить (машинная карточка): иначе он честно скажет «удалять нечего» и до охраны не дойдёт
+    card(root, "Systems/Три.md", "тело", status="knowledge", built="machine")
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run(["git", "add", "-A"], cwd=root, check=True)
     subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",

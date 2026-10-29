@@ -2240,9 +2240,14 @@ def all_scenarios() -> list:
             cur["steps"].append({"manual": False, "cycle": parts[0],
                                  "why": parts[1] if len(parts) > 1 else ""})
         else:
-            cur["steps"].append({"manual": False, "cmd": parts[0],
-                                 "why": parts[1] if len(parts) > 1 else "",
-                                 "flags": (parts[2].split() if len(parts) > 2 else [])})
+            step = {"manual": False, "cmd": parts[0],
+                    "why": parts[1] if len(parts) > 1 else "",
+                    "flags": (parts[2].split() if len(parts) > 2 else [])}
+            if len(parts) > 3 and parts[3] == "хвост":
+                # Шаг краткого хвоста (1.189.0): без модели; маршрут, остановленный на застое или сбое посреди цикла,
+                # выполняет только такие шаги, чтобы база осталась согласованной и с доверием.
+                step["lite"] = True
+            cur["steps"].append(step)
     return out
 
 
@@ -3767,7 +3772,7 @@ def forget_version(project: str, report_id: str, stamp: str) -> dict:
 # крупном проекте, остальное — секунды. Целиком подряд выходила минута, и всё это время
 # «Здоровье» и Мостик стояли пустыми. Теперь панель спрашивает части отдельно и рисует
 # каждую, как придёт; целиком (без `part`) части считаются одновременно.
-HEALTH_PARTS = ("files", "stats", "doctor", "mirrors", "build", "templates", "lint", "todo")
+HEALTH_PARTS = ("files", "stats", "doctor", "mirrors", "build", "templates", "rebuild", "lint", "todo")
 
 
 def _health_stats(project: str, lang: str) -> dict:
@@ -3786,6 +3791,20 @@ def _health_templates(project: str, lang: str) -> dict:
         return {"templates": CARDS.template_coverage(project, CARDS.safe_registry(project, KIT))}
     except Exception as e:  # noqa: BLE001 — показатель не повод ронять здоровье: нет числа — нет плитки
         return {"templates": {"error": f"{type(e).__name__}: {str(e)[:200]}"}}
+
+
+def _health_rebuild(project: str, lang: str) -> dict:
+    """Начатая и не законченная пересборка с нуля (1.189.0): отметка `kb:reset`, если она есть. Читает один маленький
+    файл. Пусто — пересборки нет или она закончена; тогда плитки на Мостике и в «Здоровье» не рисуются."""
+    try:
+        import kb_reset as KR
+        live = KR.in_progress(project)
+    except Exception:  # noqa: BLE001 — отметка не читается: плитки нет, здоровье не страдает
+        return {"rebuild": {}}
+    if not live:
+        return {"rebuild": {}}
+    return {"rebuild": {"active": True, "started": live.get("started", ""), "tag": live.get("tag", ""),
+                        "commit": live.get("commit", ""), "cards_before": live.get("cards_before")}}
 
 
 def _health_lint(project: str, lang: str) -> dict:
@@ -3924,10 +3943,11 @@ HEALTH_FN = {"files": _health_files, "stats": _health_stats, "doctor": _health_d
              "mirrors": _health_mirrors, "lint": _health_lint,
              "build": lambda project, lang: {"build": build_progress(project)},
              "templates": _health_templates,
+             "rebuild": _health_rebuild,
              "todo": lambda project, lang: {"todo": todo_count(project)}}
 
 
-HEALTH_QUICK = ("files", "stats", "doctor", "mirrors", "build", "templates")
+HEALTH_QUICK = ("files", "stats", "doctor", "mirrors", "build", "templates", "rebuild")
 HEALTH_SLOW = ("lint", "todo")
 # Части здоровья живут в памяти панели (1.166.0). Считались они на каждую загрузку
 # страницы — минуты на шесть проектов, — и Мостик при каждом заходе «обновлялся»

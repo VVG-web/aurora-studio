@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.188.1";
+const UI_VERSION = "1.189.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1738,13 +1738,20 @@ setInterval(() => { if (S.view === "overview" && !document.hidden) refreshActivi
 // план сборки, файлы — за секунды; линтер всей базы и дела человеку — десятки секунд.
 // Целиком подряд выходила минута, и всё это время «Здоровье» и Мостик стояли пустыми.
 // Теперь плитки стоят сразу, а каждая часть ложится в здоровье проекта, как придёт.
-const HEALTH_QUICK = ["files", "stats", "doctor", "mirrors", "build", "templates"];
+const HEALTH_QUICK = ["files", "stats", "doctor", "mirrors", "build", "templates", "rebuild"];
 const HEALTH_SLOW = ["lint", "todo"];
 const HEALTH_ALL = [...HEALTH_QUICK, ...HEALTH_SLOW];
 // Часть пришла. Здоровье без списка частей (ответ целиком) — всё на месте.
 const hasPart = (h, part) => !!h && (!h.loaded || h.loaded.includes(part));
 // Подсказка к доле карточек по шаблону: сколько из скольких и на каком этапе миграция (`template_coverage`).
 const templatesState = c => t("overview.templates_state_" + c.state);
+// Подсказка к незаконченной пересборке (`kb:reset` пишет отметку): с чего началась, откуда вернуть прежнюю базу и
+// сколько источников уже разобрано (число берётся из плана сборки, часть «build»).
+const rebuildHint = (r, b) => [
+  t("overview.rebuild_hint", {since: r.started ? stampText(Date.parse(r.started)) : "?", tag: r.tag || "—",
+                              before: r.cards_before ?? "?"}),
+  b && b.total ? t("overview.rebuild_sources", {done: b.total - (b.left || 0), total: b.total}) : ""
+].filter(Boolean).join("\n");
 const templatesHint = c => [
   t("overview.templates_hint", {done: c.stamped, total: c.stamped + c.left}),
   templatesState(c),
@@ -1781,7 +1788,7 @@ function stampText(ms){
 }
 const waitMark = () => el("span", {class:"spin", title: t("overview.counting")});
 function healthFrame(p){
-  return {project: p.path, loaded: [], pending: [], stats: {}, todo: null, mirrors: {}, build: {}, templates: {},
+  return {project: p.path, loaded: [], pending: [], stats: {}, todo: null, mirrors: {}, build: {}, templates: {}, rebuild: {},
           doctor: {rc: 0, errors: [], blocker_why: [], warns: [], engine: "—", privacy: "report"},
           lint: {cards: null, errors: null, kinds: {}, baseline: null, fresh: null},
           agent: {}, sources: {installed: [], instances: []}, runs: {}, trace: {},
@@ -1886,7 +1893,8 @@ function renderOverview(){
   if (!S.state.projects.length){
     box.append(el("div",{class:"card",style:"padding:26px"},
       el("b",{}, t("overview.none_title")),
-      el("p",{class:"muted",style:"margin:8px 0 0"}, t("overview.none_about"))));
+      el("p",{class:"muted",style:"margin:8px 0 0"}, t("overview.none_about")),
+      el("button",{class:"btn primary",style:"margin-top:12px",onclick:openNewProject}, t("overview.add_project"))));
     return;
   }
   S.state.projects.forEach(p=>{
@@ -1945,6 +1953,10 @@ function renderOverview(){
                 title: templatesHint(h.templates)},
                t("overview.templates", {pct: h.templates.pct}))
           : null,
+        // Пересборка с нуля начата и не закончена: база сейчас неполна; подсказка называет, как продолжить или вернуть прежнюю.
+        has("rebuild") && h.rebuild && h.rebuild.active
+          ? el("span",{class:"chip warn", title: rebuildHint(h.rebuild, h.build)}, t("overview.rebuild"))
+          : null,
         p.git_branch ? el("span",{class:"chip mono"}, p.git_branch) : null,
         p.dirty ? el("span",{class:"chip warn"}, t("overview.uncommitted", {n: p.dirty}))
                 : el("span",{class:"chip ok"}, t("overview.tree_clean")),
@@ -1953,6 +1965,12 @@ function renderOverview(){
     tile.id = "tower-"+p.slug;
     box.append(tile);
   });
+  // Последняя плитка сетки — путь к новому проекту: чтобы его не искать в «Настройке кита» среди прочего.
+  box.append(el("button",{class:"card tower add", "aria-label": t("overview.add_project"),
+      title: t("overview.add_project_hint"), onclick: openNewProject},
+    el("div",{class:"plus","aria-hidden":"true"}, "+"),
+    el("div",{class:"name"}, t("overview.add_project")),
+    el("div",{class:"muted",style:"font-size:12.5px"}, t("overview.add_project_about"))));
   drawActivity();
   drawGlobalMetrics();
 }
@@ -2116,6 +2134,13 @@ async function busy(btn, fn){
   btn.innerHTML = ""; btn.append(el("span",{class:"spin"}), t("overview.counting"));
   try { await fn(); } finally { btn.disabled = false; btn.innerHTML = was; }
 }
+// Из Мостика — к настройкам добавления проекта: «Настройка кита» с раскрытой группой «Подключить новый проект» (локально
+// или из git). Группа раскрывается и прокручивается сама: `SGROUPS.focus` читает `sgroup` при построении страницы.
+function openNewProject(){
+  SGROUPS.focus = "setup:new";
+  show("setup");
+}
+$("#addProject").onclick = openNewProject;
 $("#refreshOverview").onclick = ()=> busy($("#refreshOverview"), async ()=>{
   // перечитываем и карточки проектов: ветка, незакоммиченное и версия движка меняются
   // ровно от той же работы, что и числа базы
@@ -5490,7 +5515,7 @@ function moduleCtx(id, root){
     ui: {metricCard, metric, goRoute, goCmd, kindChip, skillLine, copyButton, engineWord,
          editor: markdownEditor,
          // Здоровье приходит частями: пришла ли часть и чем занять место под её число.
-         has: hasPart, wait: waitMark, healthAt, stampText, kbInfo, templatesHint, templatesState, openIssue, issueUrl},
+         has: hasPart, wait: waitMark, healthAt, stampText, kbInfo, templatesHint, templatesState, rebuildHint, openIssue, issueUrl},
     openPath, isEngineCmd, hideDev, openProject,
     // Достроить/обновить движок выбранного проекта на этой машине: ту же кнопку рисует полоса ядра.
     prepareEngine: () => prepareEngine(S.project),

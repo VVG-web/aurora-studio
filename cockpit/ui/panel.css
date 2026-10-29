@@ -291,6 +291,12 @@ code.tick{font:var(--text-sm) var(--mono);background:var(--surface-2);padding:1p
   background:var(--aura,var(--primary));transition:opacity var(--motion-slow)}
 .tower:hover::after{opacity:calc(var(--tile-aura-opacity) * 1.5)}
 .tower .name{font-weight:700;font-size:var(--text-lg);margin-bottom:2px}
+/* Плитка «добавить новый проект»: пунктир и плюс — не проект, а действие; полосы тяжести и ауры у неё нет. */
+.tower.add{border-style:dashed;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;
+  gap:var(--sp-1);min-height:96px;cursor:pointer}
+.tower.add::before,.tower.add::after{display:none}
+.tower.add .plus{font-size:28px;line-height:1;color:var(--primary);font-weight:300}
+.tower.add:hover,.tower.add:focus-visible{border-color:var(--primary)}
 .tower .path{font:var(--text-xs) var(--mono);color:var(--text-muted);
   max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* Чипы переносятся, а не обрезаются: «линтер…» вместо «линтер 29» — это потерянное число. */

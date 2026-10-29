@@ -1666,7 +1666,7 @@ def test_route_works_until_the_work_is_done_and_saves_each_lap(tmp: Path):
         "оборот не фиксируется или упрётся в храповик — ночной прогон встанет посреди базы"
     assert 't("route.lap_unsaved"' in cycle, \
         "неудачная фиксация проходит молча — человек решит, что работа сохранена"
-    assert rr.CYCLE_LIMIT == 12, "у цикла нет предохранителя"
+    assert 100 <= rr.CYCLE_LIMIT <= 1000, "у цикла нет аварийного потолка (честный предел — застой)"
 
     # Вариаций прогона быть не должно: маршрут один и работает до конца.
     scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
