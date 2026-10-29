@@ -6,6 +6,10 @@
 `supersedes`; все входящие ссылки переписываются на преемника — иначе verified-карточки
 начинают ссылаться на устаревшее (инвариант frontmatter).
 
+Решение (Decision Record) заменяется иначе: оно живёт в `Raw/decisions/`, поэтому правятся мастер-файлы — прежнее
+получает `status: superseded` и `superseded_by`, новое — `supersedes`, — а зеркала в базе строит `kb:record --mirror`. Заменённое
+решение остаётся на месте (в архив не уезжает): через год по нему отвечают на «почему не так», и ссылки на него живы.
+
 Всё перечисленное — механика, решение «это устарело» принимает человек.
 
   python3 .aurora/scripts/kb_supersede.py <старая> <преемник>          # что будет сделано
@@ -28,7 +32,8 @@ import shutil
 import sys
 
 from aurora_common import frontmatter, rewrite_links, set_field, split_frontmatter
-from card_types import is_card_path, leaves_base, put_text, run_script, why_refused
+from card_types import is_card_path, leaves_base, put_text, registry_for, run_script, why_refused
+import kb_record as KR
 
 ROOT = "AuroraKnowledgeDB"
 ARCHIVE = os.path.join(ROOT, "_archive")
@@ -68,7 +73,12 @@ def main() -> int:
     if not os.path.isdir(ROOT):
         print(f"kb_supersede: нет {ROOT}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
-    old_path, new_path = find_card(a.old), find_card(a.new)
+    reg = registry_for(".")
+    # Решение живёт мастер-файлом в Raw/decisions/: его и заменяем; зеркало в базе — производное.
+    old_master = KR.find_master(".", reg, a.old, "decision")
+    new_master = KR.find_master(".", reg, a.new, "decision")
+    old_path = old_master or find_card(a.old)
+    new_path = new_master or find_card(a.new)
     if not old_path:
         print(f"kb_supersede: не найдена карточка {a.old}", file=sys.stderr)
         return 1
@@ -107,6 +117,7 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
+    masters = {p for p in (old_master, new_master) if p}
     writes, moves, relinked = {}, [], []
     reason = a.reason or "заменена преемником"
     dr_note = f" (см. [[{a.dr}]])" if a.dr else ""
@@ -120,7 +131,7 @@ def main() -> int:
         return 1
     # Решение живёт по своему циклу (proposed → accepted | rejected → superseded): шаблон `decision` не знает
     # статуса `deprecated`, и замещённое решение получает `superseded`.
-    gone = "superseded" if (old_fm.get("type") or "").strip() == "decision" else "deprecated"
+    gone = "superseded" if (old_master or (old_fm.get("type") or "").strip() == "decision") else "deprecated"
     head = set_field(head, "status", gone)
     head = set_field(head, "superseded_by", f'"[[{a.new}]]"')
     head = set_field(head, "updated", TODAY)
@@ -131,7 +142,7 @@ def main() -> int:
         line += f"\n  - Что делать с реализованным: {a.migration.strip()}"
     body = append_history(rest, line)
     writes[old_path] = "---" + head + body
-    if "/_archive/" not in old_path:
+    if "/_archive/" not in old_path and not old_master:
         moves.append((old_path, os.path.join(ARCHIVE, os.path.basename(old_path)).replace("\\", "/")))
 
     # 2. преемник → supersedes + история
@@ -146,8 +157,9 @@ def main() -> int:
         nrest = append_history(nrest, f"- {TODAY}: заменяет [[{a.old}]]{dr_note}.")
         writes[new_path] = "---" + nhead + nrest
 
-    # 3. входящие ссылки → на преемника
-    for dirpath, _, files in safe_walk(ROOT):
+    # 3. входящие ссылки → на преемника. Заменённое решение остаётся на месте и в архив не уезжает, поэтому ссылки на него
+    # живы и показывают, почему не так (мастера и зеркала решений ссылок не переписывают).
+    for dirpath, _, files in (safe_walk(ROOT) if not old_master else []):
         for f in files:
             if not f.endswith(".md"):
                 continue
@@ -162,7 +174,10 @@ def main() -> int:
 
     print(f"# Supersede — {TODAY}\n")
     print(f"{a.old} → {a.new}" + (f" · DR: {a.dr}" if a.dr else ""))
-    print(f"- устаревшая: deprecated + superseded_by, переезд в _archive/")
+    if old_master:
+        print(f"- устаревшее решение (мастер {old_master}): superseded + superseded_by, на месте; зеркало построит kb:record")
+    else:
+        print(f"- устаревшая: deprecated + superseded_by, переезд в _archive/")
     print(f"- преемник: supersedes + запись в «История»")
     print(f"- входящих ссылок переписано: {len(relinked)}")
     for p in relinked[:15]:
@@ -176,7 +191,8 @@ def main() -> int:
     # Запись — через единый вход шаблонов. Устаревшая и преемник записываются вместе: отказ любой из двух отменяет замену
     # целиком (пометка без преемника или преемник без пометки хуже, чем ничего). Остальные карточки — ссылки на
     # преемника — пишутся независимо: отказ одной из них не останавливает прочие.
-    pair = {p: why_refused(p, writes[p], op="repair") for p in (old_path, new_path) if p in writes and is_card_path(p)}
+    pair = {p: (KR.why_master_refused(".", reg, p, writes[p]) if p in masters else why_refused(p, writes[p], op="repair"))
+            for p in (old_path, new_path) if p in writes and (p in masters or is_card_path(p))}
     pair = {p: why for p, why in pair.items() if why}
     if pair:
         for p, why in pair.items():
@@ -186,7 +202,7 @@ def main() -> int:
         return 1
     refused = {}
     for p, t in writes.items():
-        why_not = put_text(p, t, op="repair")
+        why_not = KR.write_master(".", reg, p, t) if p in masters else put_text(p, t, op="repair")
         if why_not:
             refused[p] = why_not
             print(f"  ! не записана {p}: {why_not}", file=sys.stderr)
@@ -205,6 +221,9 @@ def main() -> int:
                   file=sys.stderr)
             continue
         shutil.move(src, dst)
+    if masters and not refused:
+        mirrored = KR.run_mirror(".", reg, True, only={"decision"})
+        print(f"- зеркала решений: записано {mirrored['written']}" + (f", отказано {len(mirrored['refused'])}" if mirrored["refused"] else ""))
     if refused:
         print(f"\nНе записано шаблоном типа: {len(refused)}", file=sys.stderr)
         return 1

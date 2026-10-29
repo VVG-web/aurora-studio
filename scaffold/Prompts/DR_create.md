@@ -1,7 +1,7 @@
 ---
 title: "Промпт: оформить Decision Record"
-template: Templates/decision_record_template.md
-output: AuroraKnowledgeDB/Decisions/
+template: TemplatesCommon/akdb_decision_v1.0.md
+output: Raw/decisions/
 skill: "/aurora-vault decide"
 ---
 
@@ -12,7 +12,8 @@ skill: "/aurora-vault decide"
 ---
 
 Ты — системный аналитик проекта {{ПРОЕКТ}}. Оформи Decision Record по шаблону
-`Templates/decision_record_template.md`.
+`TemplatesCommon/akdb_decision_v1.0.md`. Файл — мастер-запись в `Raw/decisions/`; в базе знаний
+(`AuroraKnowledgeDB/Decisions/`) остаётся его зеркало, которое строит движок, — зеркало не правь.
 
 Тема решения: {{тема}}
 
@@ -26,8 +27,8 @@ skill: "/aurora-vault decide"
 
 Требования:
 - Отклонённые варианты опиши так, чтобы через год был понятен ответ «почему не X».
-- Если это решение заменяет прежнее — найди старый DR в AuroraKnowledgeDB/Decisions/,
-  укажи его в supersedes и попроси меня подтвердить простановку ему status: superseded.
+- Если это решение заменяет прежнее — найди старый DR в Raw/decisions/,
+  укажи его в supersedes и попроси меня подтвердить простановку ему status: superseded (`kb:supersede`).
 - Перечисли карточки AuroraKnowledgeDB, которые надо обновить из-за этого решения.
-- Номер DR возьми командой `kb:next-id DR`: она выдаёт его под замком, два параллельных вызова
-  не получат один номер.
+- Заготовку и номер возьми командой `kb:record --new decision "<суть>"`: она выдаёт номер под замком, два
+  параллельных вызова не получат один номер, и создаёт файл `Raw/decisions/DR-NNNN-<суть>.md`.

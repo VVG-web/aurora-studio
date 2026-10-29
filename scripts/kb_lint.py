@@ -63,6 +63,23 @@ except ImportError:      # новый линтер рядом со старым 
 
     def missing_template_error(project_root, rel, text, reg):
         return ""
+try:
+    from card_types import record_cycle_problems
+except ImportError:      # то же: поля цикла вопроса судим прежним правилом
+    def record_cycle_problems(card_type, fm):
+        out = []
+        qs = fm.get("q_status", "")
+        if card_type != "question":
+            return out
+        if not qs:
+            out.append(("q_status", "карточка вопроса без q_status"))
+        if qs == "answered" and not (fm.get("answered") and fm.get("answer_source")):
+            out.append(("answered", "q_status answered без answered/answer_source (ответ «на словах» не доказательство)"))
+        if qs in ("open", "asked") and not fm.get("blocks", "").strip("[] "):
+            out.append(("blocks", "открытый вопрос без blocks — непонятно, что он держит"))
+        if qs == "asked" and not fm.get("asked"):
+            out.append(("asked", "q_status asked без даты asked"))
+        return out
 import run_summary as RS
 try:
     import kb_decide as KD
@@ -70,6 +87,8 @@ except ImportError:          # движок проекта, обновлённы
     KD = None
 
 ROOT = "AuroraKnowledgeDB"
+# Номер записи — до девяти цифр и не начало даты или дробного номера: так его читает реестр идентификаторов.
+RESERVED_RECORD_NAME = re.compile(r"(?i)^(?:DR|Q)-\d{1,9}(?!\d)(?!\.\d)(?!-\d\d-\d\d)")
 
 # Виды ошибок: (признак в тексте, id пункта вердикта ворот, заголовок группы, чем лечится). Человеку список
 # сгруппирован по виду (сотни одинаковых строк подряд читать нечем), ворота называют пункт по тому же виду.
@@ -114,6 +133,9 @@ KINDS = [
     ("тип `", "type-off-section", "тип не по разделу",
      "либо карточка лежит не в своём разделе, либо тип написан от руки: "
      "список типов — в `references/frontmatter.md`"),
+    ("(V-REC-1)", "reserved-record-name", "имена, занятые под записи",
+     "`DR-<номер>` и `Q-<номер>` принадлежат решениям и вопросам из `Raw/`: переименуйте карточку (`kb:repair --names` "
+     "или исправление), иначе зеркало записи с таким именем не создастся"),
     ("тело принятого решения", "decision-body-changed", "принятые решения правили",
      "принятое решение неизменяемо: верните прежний текст из истории проекта или заведите новое решение, "
      "заменяющее это, — `kb:supersede`; правка раздела «История» допустима"),
@@ -419,6 +441,12 @@ def main():
                 elif expected and actual != expected:
                     errors.append(f"{rel}: тип `{actual}` в разделе {section} — "
                                   f"ожидается `{expected}`")
+        # Имена `DR-…` и `Q-…` принадлежат записям (`Raw/decisions|questions`): карточка другого типа с таким именем
+        # заняла бы имя зеркала, и зеркало не создалось бы (V-REC-1).
+        if RESERVED_RECORD_NAME.match(stem) and card_type(fm, section) not in ("decision", "question") \
+                and section not in ("Decisions", "Questions") and "/_archive/" not in rel and not stem.startswith("_"):
+            errors.append(f"{rel}: имя `{stem}` занято под записи (V-REC-1): `DR-<номер>` — решения, `Q-<номер>` — вопросы; "
+                          "переименуйте карточку, иначе зеркало записи с таким именем не создастся")
         # Статус вне шкалы — это карточка, которую не пересчитал `kb:trust`, а не мнение
         # автора: шкала закрытая, и всё, что вне её, движок в контекст не пустит.
         # У типа со своим жизненным циклом (Decision Record) свой словарь статусов.
@@ -428,7 +456,8 @@ def main():
                 and status not in ("imported", "in-review", "verified", "canonical"):
             # У типа со своим циклом `kb:trust` статус не пересчитывает — совет «пересчитайте»
             # для него тупик, правят руками.
-            hint = ("у Decision Record статус правят руками, `kb:trust` его не пересчитывает"
+            hint = ("у записи статус задан типом (у решения его правят руками, у вопроса он всегда draft), "
+                    "`kb:trust` его не пересчитывает"
                    if own else "пересчитайте `kb:trust`")
             errors.append(f"{rel}: статус «{status}» вне шкалы "
                           f"({', '.join(STATUSES + own)}) — {hint}")
@@ -484,17 +513,10 @@ def main():
                                   f"{', '.join(unknown[:3])}")
 
         # карточки вопросов: ответ обязан иметь дату и источник, открытый — срок и адресата
+        # Правило одно с входом записи и `kb:record --check` (`card_types.record_cycle_problems`, V-17).
         if fm.get("type") == "question" or fm.get("q_id"):
-            qs = fm.get("q_status", "")
-            if not qs:
-                errors.append(f"{rel}: карточка вопроса без q_status")
-            if qs == "answered" and not (fm.get("answered") and fm.get("answer_source")):
-                errors.append(f"{rel}: q_status answered без answered/answer_source "
-                              f"(ответ «на словах» не доказательство)")
-            if qs in ("open", "asked") and not fm.get("blocks", "").strip("[] "):
-                errors.append(f"{rel}: открытый вопрос без blocks — непонятно, что он держит")
-            if qs == "asked" and not fm.get("asked"):
-                errors.append(f"{rel}: q_status asked без даты asked")
+            for _field, message in record_cycle_problems("question", fm):
+                errors.append(f"{rel}: {message}")
 
         # Журнал диалогов с базой (meta/ask/) — запись состоявшегося разговора, а не
         # знание. Он не переписывается: ссылка, которую модель поставила в тот день,

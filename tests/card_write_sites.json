@@ -776,6 +776,21 @@
    "reason": "переименование страницы зеркала источников (Sources/), не карточки",
    "calls": 3
   },
+  "scripts/kb_record.py:archive_mirror": {
+   "kind": "other",
+   "reason": "перенос зеркала записи, мастер которой исчез, в _archive (shutil.move); текст зеркала пишет вход записи (put_text)",
+   "calls": 1
+  },
+  "scripts/kb_record.py:new_record": {
+   "kind": "other",
+   "reason": "новый мастер-файл записи в Raw/<дом> по команде человека (kb:record --new): запись человека, а не карточка базы",
+   "calls": 1
+  },
+  "scripts/kb_record.py:write_master": {
+   "kind": "other",
+   "reason": "правка мастер-файла записи в Raw/ по команде человека (принять решение, заменить): запись, а не карточка базы; зеркало пишет вход записи",
+   "calls": 1
+  },
   "scripts/kb_remap.py:follow_moves": {
    "kind": "other",
    "reason": "журнал сбоев разбора и учёт разобранного; карточки пишет put_text",

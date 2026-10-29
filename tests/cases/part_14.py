@@ -1350,12 +1350,13 @@ def test_file_create_checks_the_real_path_through_a_folder_link(tmp: Path):
     ck = importlib.import_module("aurora_cockpit")
     importlib.reload(ck)
     root = tmp / "Proj"
-    for d in ("Workspaces", "Sources/Confluence", "AuroraKnowledgeDB/Cards", "AuroraKnowledgeDB/Decisions", "Artifacts"):
+    for d in ("Workspaces", "Sources/Confluence", "AuroraKnowledgeDB/Cards", "AuroraKnowledgeDB/Decisions", "Raw/decisions", "Artifacts"):
         (root / d).mkdir(parents=True)
     try:
         os.symlink(root / "Sources" / "Confluence", root / "Workspaces" / "lnk", target_is_directory=True)
         os.symlink(root / "AuroraKnowledgeDB" / "Cards", root / "Workspaces" / "kb", target_is_directory=True)
-        os.symlink(root / "AuroraKnowledgeDB" / "Decisions", root / "Workspaces" / "dec", target_is_directory=True)
+        os.symlink(root / "AuroraKnowledgeDB" / "Decisions", root / "Workspaces" / "mirror", target_is_directory=True)
+        os.symlink(root / "Raw" / "decisions", root / "Workspaces" / "dec", target_is_directory=True)
         # места, которые не «только чтение», но и не из разрешённых для создания: их отказывает
         # именно `why_no_create_real` в `file_create` (а не `why_readonly_real`)
         os.symlink(root / "Artifacts", root / "Workspaces" / "art", target_is_directory=True)
@@ -1363,6 +1364,7 @@ def test_file_create_checks_the_real_path_through_a_folder_link(tmp: Path):
     except OSError:
         return          # Windows без прав на ссылки: поведение без ссылок проверено в других тестах
     for rel, folder in (("Workspaces/lnk/new.md", "Sources/Confluence"), ("Workspaces/kb/new.md", "AuroraKnowledgeDB/Cards"),
+                        ("Workspaces/mirror/new.md", "AuroraKnowledgeDB/Decisions"),
                         ("Workspaces/art/new.md", "Artifacts"), ("Workspaces/rootlnk/new.md", ".")):
         res = ck.file_create(str(root), rel, "x")
         assert res.get("error") and not res.get("ok"), (rel, res)
@@ -1375,9 +1377,9 @@ def test_file_create_checks_the_real_path_through_a_folder_link(tmp: Path):
         full = ck.inside(str(root), rel)
         assert not ck.why_readonly_real(str(root), rel, full), rel
         assert ck.why_no_create_real(str(root), rel, full), rel
-    # законная ссылка — на место, где создавать можно (Decisions), — не ломается
+    # законная ссылка — на место, где создавать можно (мастер-файлы решений в Raw/decisions), — не ломается
     assert ck.file_create(str(root), "Workspaces/dec/ok.md", "x").get("ok")
-    assert (root / "AuroraKnowledgeDB" / "Decisions" / "ok.md").is_file()
+    assert (root / "Raw" / "decisions" / "ok.md").is_file()
     assert ck.file_create(str(root), "Workspaces/обычный.md", "x").get("ok")
     assert ck.why_no_create_real(str(root), "Workspaces/lnk/n.md", os.path.join(os.path.realpath(root), "Sources", "Confluence", "n.md"))
 

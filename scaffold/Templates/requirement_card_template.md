@@ -17,6 +17,8 @@ decisions: []             # ссылки на DR
 related: []
 ---
 
+<!-- Заменён `TemplatesCommon/akdb_requirement_v1.0.md`; файл оставлен для прежних проектов. -->
+
 # REQ-{{NNN}}: {{суть требования}}
 
 ## Формулировка

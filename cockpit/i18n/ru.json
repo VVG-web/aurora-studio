@@ -929,6 +929,7 @@
   "word.golden_orphan": "контрольные вопросы без карточки-источника",
   "word.dup_alias": "одинаковые alias у разных карточек",
   "word.decision_changed": "принятые решения правили",
+  "word.reserved_names": "имена, занятые под записи",
   "word.no_links": "карточки без связей",
   "word.header_leak": "поле шапки попало в текст карточки",
   "word.bad_status": "статус вне шкалы",

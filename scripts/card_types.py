@@ -12,9 +12,9 @@
   — `registry(project_root)` — эффективный реестр: шаблоны проекта (`Templates/`), шаблоны кита,
     доставленные в проект (`TemplatesCommon/`), запасной путь — шаблоны самого кита;
   — `parse_passport`, `load_template`, `template_file_name`, `prompt_extract`;
-  — `validate_card` — коды V-01…V-10, V-12, V-13, V-18, V-19, V-20, V-22…V-25 и (пакет CT-05, политика
-    связей) V-15 и V-16. Остальные коды принадлежат своим пакетам: V-14 (расхождения), V-17 (записи
-    в `Raw/`), V-21 (цитируемые документы); V-11 зарезервирован;
+  — `validate_card` — коды V-01…V-10, V-12, V-13, V-18, V-19, V-20, V-22…V-25, (пакет CT-05, политика
+    связей) V-15 и V-16 и (пакет записей в `Raw/`) V-17. Остальные коды принадлежат своим пакетам: V-14
+    (расхождения), V-21 (цитируемые документы); V-11 зарезервирован;
   — команда `kb:cards`: `--list`, `--show`, `--check`, `--stats`.
 Правила проекта (пакет CT-06): блок `cards:` конфига (`read_overrides`, `write_overrides`, `save_overrides`) —
 подпись, описание и выключатель типа для этого проекта, их `registry()` накладывает на реестр; каталог типов
@@ -181,7 +181,7 @@ DATE_FIELDS = ("created", "updated", "source_synced", "trust_checked", "distille
 SEVERITY = {
     "V-01": "error", "V-02": "error", "V-03": "error", "V-04": "error", "V-05": "error",
     "V-06": "error", "V-07": "warn", "V-08": "error", "V-09": "error", "V-10": "error",
-    "V-12": "error", "V-13": "error", "V-15": "warn", "V-16": "error", "V-18": "info", "V-19": "error",
+    "V-12": "error", "V-13": "error", "V-15": "warn", "V-16": "error", "V-17": "error", "V-18": "info", "V-19": "error",
     "V-20": "warn", "V-22": "error", "V-23": "error", "V-24": "warn", "V-25": "error",
 }
 TITLES = {
@@ -199,6 +199,7 @@ TITLES = {
     "V-13": "остатки шаблона в собственной части",
     "V-15": "исходящих ссылок меньше минимума типа",
     "V-16": "типизированное поле не на месте или значение — не ссылка",
+    "V-17": "запись: нет полей цикла или зеркало не указывает на мастер-файл",
     "V-18": "шаблон старее наибольшей версии типа",
     "V-19": "источник — встреча, а пометки встречи нет",
     "V-20": "происхождение неизвестно",
@@ -1700,8 +1701,22 @@ def _validate(text: str, path: str, reg: Registry, add, seen: dict, raw_ok: bool
         add("V-19", kline("sources"), "среди sources есть стенограмма встречи, а пометки «> 🎙 Из встречи» нет",
             "пометку ставит движок: kb:repair --meetings")
     if not machine and not sources and ct.cls != "map":
-        add("V-20", kline("built"), "нет built: machine и нет sources: происхождение карточки неизвестно",
-            "рукописную карточку ведут в Raw/; машинную собирает движок")
+        if ct.home and ct.id != "correction":
+            add("V-20", kline("built"), f"рукописная карточка в базе: нет built: machine и нет sources — запись типа «{ct.id}» "
+                f"живёт в {ct.home}/",
+                f"перенесите её в {ct.home}/ (`kb:record --migrate`): в базе остаётся зеркало, которое строит движок")
+        else:
+            add("V-20", kline("built"), "нет built: machine и нет sources: происхождение карточки неизвестно",
+                "рукописную карточку ведут в Raw/; машинную собирает движок")
+
+    # --- запись (V-17): поля цикла и связь зеркала с мастер-файлом
+    if ct.cls == "record":
+        for field_name, message in record_cycle_problems(ct.id, fm):
+            add("V-17", kline(field_name), message, f"поля цикла записи называет шаблон {ct.template_file}")
+        home = ct.home.strip("/")
+        if machine and home and sources and not all(x.replace("\\", "/").startswith(home + "/") for x in sources):
+            add("V-17", kline("sources"), f"зеркало записи «{ct.id}» не указывает на мастер-файл в {home}/",
+                "зеркало строит `kb:record --mirror` из файла в " + home + "/")
 
     # --- карта (V-22)
     if ct.cls == "map" and GENERATED_MARK not in rest:
@@ -1757,6 +1772,42 @@ def _check_dates(fm: dict, kline, add) -> None:
         value = (fm.get(key) or "").strip()
         if value and not head_blank(value) and not _date_ok(value):
             add("V-08", kline(key), f"{key}: «{value[:30]}» — не дата ГГГГ-ММ-ДД", "формат даты: 2026-10-12")
+
+
+QUESTION_STATUSES = ("open", "asked", "answered", "closed-no-answer")      # ход вопроса (`q_status`)
+
+
+def record_cycle_problems(card_type: str, fm: dict) -> list:
+    """Поля цикла записи, которых не хватает, — V-17: [(поле, сообщение)].
+
+    Решение — дата (`date`; у предложенного это дата предложения). Вопрос — `q_id` и `q_status`, а по ходу вопроса:
+    ответ требует `answered` и `answer_source` («на словах» ответом не считается), открытый и заданный вопрос — `blocks`
+    (что он держит), заданный — `asked`. То же правило читает `kb:lint` у карточки вопроса, а `kb:record --check` — у
+    мастер-файла: одно место правды вместо двух списков. Остальные типы записи полей цикла не имеют.
+    """
+    out = []
+    if card_type == "decision":
+        if _blank(fm, "date"):
+            out.append(("date", "у решения нет date: дата решения (у proposed — дата предложения)"))
+    elif card_type == "question":
+        if _blank(fm, "q_id"):
+            out.append(("q_id", "у вопроса нет q_id (Q-NNN)"))
+        status = head_cut_comment((fm.get("q_status") or "")).strip()
+        if not status:
+            out.append(("q_status", "у вопроса нет q_status: " + ", ".join(QUESTION_STATUSES)))
+        elif status not in QUESTION_STATUSES:
+            out.append(("q_status", f"q_status «{status[:30]}» вне хода вопроса: " + ", ".join(QUESTION_STATUSES)))
+        else:
+            if status == "answered":
+                if _blank(fm, "answered"):
+                    out.append(("answered", "q_status answered без даты answered"))
+                if not head_cut_comment(fm.get("answer_source") or "").strip():
+                    out.append(("answer_source", "q_status answered без answer_source: ответ «на словах» не доказательство"))
+            if status in ("open", "asked") and not (fm.get("blocks") or "").strip("[] "):
+                out.append(("blocks", "открытый вопрос без blocks: непонятно, что он держит"))
+            if status == "asked" and _blank(fm, "asked"):
+                out.append(("asked", "q_status asked без даты asked"))
+    return out
 
 
 CORRECTION_STATUSES = ("active", "archived")

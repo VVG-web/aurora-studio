@@ -348,10 +348,14 @@ READONLY = (
     ("Raw/Extracted", "машинные транскрипты вложений: правка не переживёт повторную конвертацию — правьте оригинал"),
     ("Sources", "зеркало внешней системы: правку сотрёт следующий синк"),
 )
-# База знаний выводится из источников — правится корректировкой, а не руками. Кроме
-# того, что ниоткуда не выводится: решения, вопросы и правила базы пишет человек.
-KB_WRITABLE = ("AuroraKnowledgeDB/Decisions", "AuroraKnowledgeDB/Questions",
-               "AuroraKnowledgeDB/meta")
+# База знаний выводится из источников — правится корректировкой, а не руками. Кроме правил базы
+# в `meta/`. Решения, вопросы и рукописные справочники пишет человек, но в `Raw/decisions|questions|reference`:
+# в базе от них остаётся зеркало, которое строит движок (`kb:record`), и правка зеркала пропала бы при следующей сборке.
+KB_WRITABLE = ("AuroraKnowledgeDB/meta",)
+# Разделы записей. Зеркало (`built: machine`, источник — мастер-файл в `Raw/…`) правят в мастере; рукописная карточка
+# без зеркальной метки, пока её не перенесли (`kb:record --migrate`), правится на месте, чтобы не остановить работу.
+MIRROR_FOLDERS = ("AuroraKnowledgeDB/Decisions", "AuroraKnowledgeDB/Questions", "AuroraKnowledgeDB/Reference")
+RECORD_HOMES = ("Raw/decisions", "Raw/questions", "Raw/reference")
 
 
 def inside(root: str, path: str) -> str:
@@ -381,6 +385,19 @@ def norm_rel(rel: str) -> str:
     return "" if rel == "." else rel
 
 
+def record_master(text: str) -> str:
+    """Мастер-файл записи, зеркалом которого служит карточка: путь из `sources` в `Raw/decisions|questions|reference`.
+    Пусто — карточка не зеркало записи (рукописная или выведенная из прочих источников)."""
+    if not re.search(r"^built:\s*machine\s*$", text or "", re.M):
+        return ""
+    from aurora_common import card_sources
+    for src in card_sources(text or ""):
+        low = src.replace("\\", "/")
+        if any(low.startswith(h + "/") for h in RECORD_HOMES):
+            return low
+    return ""
+
+
 def why_readonly(rel: str, text: str = "") -> str:
     """Почему этот файл нельзя править — словами, а не флагом.
 
@@ -395,6 +412,18 @@ def why_readonly(rel: str, text: str = "") -> str:
     if low.startswith("auroraknowledgedb/"):
         if any(low.startswith(w.lower() + "/") or low == w.lower() for w in KB_WRITABLE):
             return ""
+        folder = next((m for m in MIRROR_FOLDERS if low.startswith(m.lower() + "/")), "")
+        if folder:
+            master = record_master(text)
+            if master:
+                return (f"зеркало записи: правьте мастер-файл {master} — иначе следующая сборка сотрёт правку")
+            # рукописная карточка записи до переноса в `Raw/`: правится на месте. Текста нет (дерево файлов, путь без
+            # чтения) — решения и вопросы правимы, как были; справочник закрыт, как был.
+            if (text or "").strip():
+                if not re.search(r"^built:\s*machine\s*$", text, re.M):
+                    return ""
+            elif not folder.endswith("/Reference"):
+                return ""
         return ("карточка выведена из источников: правится корректирующим артефактом, "
                 "а не здесь — иначе следующая сборка сотрёт правку")
     if re.search(r"^kind:\s*document\s*$", text or "", re.M):
@@ -485,16 +514,19 @@ def file_tree(project: str, limit: int = FILES_LIMIT) -> dict:
             # ссылка с обычным именем на секрет — не текст: смотрим туда, куда она ведёт
             svc = (why_service_real(project, rel, path) if os.path.islink(path)
                    else why_service(rel))
+            # зеркало записи видно в дереве закрытым: для этого читается начало файла (только разделы записей)
+            head = (read_text(path, limit=4000) if name.endswith(".md") and not svc
+                    and rel.lower().startswith(tuple(m.lower() + "/" for m in MIRROR_FOLDERS)) else "")
             rows.append({"path": rel, "dir": rel_dir, "name": name, "size": size,
                          "text": is_text_file(name) and size <= MAX_EDIT and not svc,
-                         "readonly": why_readonly(rel)})
+                         "readonly": why_readonly(rel, head)})
     return {"root": root, "files": rows, "truncated": cut, "count": len(rows), "total": total,
             "recent": recent(project), "create_dirs": create_dirs(project)}
 
 
 # Где заводить файлы законно. Структура папок фиксирована движком, и «создать» в
 # `Sources/Confluence` означало бы файл, который сотрёт следующий синк.
-MAKEABLE = ("Workspaces", "AuroraKnowledgeDB/Decisions", "AuroraKnowledgeDB/Questions",
+MAKEABLE = ("Workspaces", "Raw/decisions", "Raw/questions", "Raw/reference",
             "Raw/corrections", "Raw/project", "Raw/examples", "Deliverables/work")
 
 

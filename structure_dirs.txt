@@ -14,6 +14,11 @@ Raw/project
 Raw/meetings
 Raw/examples
 Raw/corrections
+# Записи человека: решения, вопросы к заказчику, справочники, которые ведут руками. Файл здесь — мастер; в
+# `AuroraKnowledgeDB/Decisions|Questions|Reference` движок строит его дословное зеркало (`kb:record`).
+Raw/decisions
+Raw/questions
+Raw/reference
 # Транскрипты вложений страниц и схем (docx, xlsx, pdf, draw.io, BPMN): пишет `kb:ingest-office`,
 # человек сюда ничего не кладёт.
 Raw/Extracted

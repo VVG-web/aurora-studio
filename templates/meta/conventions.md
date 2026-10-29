@@ -66,8 +66,9 @@ Examples (adapt to your domain):
 - Case-only collisions → append stable ID (Confluence pageId / Jira key).
 
 ### Reference (AuroraKnowledgeDB/Reference/)
-- Living domain lists (`type: reference`): abbreviations, adjacent systems, roles.
-- Not Raw (Raw is immutable evidence).
+- Domain lists (`type: reference`): abbreviations, adjacent systems, roles.
+- Hand-maintained lists live in `Raw/reference/` (the master file); `AuroraKnowledgeDB/Reference/` holds their
+  mirrors and the lists derived from sources. Edit the master, never the mirror.
 
 ### Workspaces
 - One large task = one folder. Content is **not** knowledge (not fed into LLM context by default).

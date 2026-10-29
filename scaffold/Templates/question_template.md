@@ -19,6 +19,8 @@ updated:
 related: []
 ---
 
+<!-- Заменён `TemplatesCommon/akdb_question_v1.0.md`; файл оставлен для прежних проектов. -->
+
 # Q-NNN — <краткая суть вопроса>
 
 ## Вопрос

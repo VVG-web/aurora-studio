@@ -543,7 +543,9 @@ KNOWLEDGE = ("knowledge",)
 # Тип со своим жизненным циклом: его `status` — не класс доверия, а состояние самого
 # решения (proposed → accepted | rejected → superseded, frontmatter.md). Доверие такой
 # карточке не считается, и `kb:trust` её статус не пишет; линтер принимает этот словарь.
-OWN_LIFECYCLE = {"decision": ("proposed", "accepted", "rejected", "superseded")}
+# Вопрос — запись человека в `Raw/questions/`: его зеркало в базе всегда `draft` (вопрос не факт), а ход вопроса
+# ведёт поле `q_status`; доверие ему не считается и в долю доверенного он не входит.
+OWN_LIFECYCLE = {"decision": ("proposed", "accepted", "rejected", "superseded"), "question": ("draft",)}
 
 
 def card_type(fm: dict, section: str = "") -> str:

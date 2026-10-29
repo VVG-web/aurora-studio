@@ -307,7 +307,7 @@ error; `warn` goes into the report, `info` into the statistics. `kb:cards --chec
 | V-14 | error | a `## Расхождения` line does not follow the grammar | later: with the discrepancies section |
 | V-15 | warn | fewer outgoing links than `min_links` | works |
 | V-16 | error | a typed field is out of place or its value is not a link | works |
-| V-17 | error | a record: no cycle fields, the master file is not in `Raw/`, the mirror does not point to the master | later: with records in `Raw/` |
+| V-17 | error | a record: no cycle fields (`date` of a decision; `q_id`, `q_status` and the conditional fields of a question), the mirror does not point to the master file in `Raw/` | works |
 | V-18 | info | `template:` is older than the type's highest version | works |
 | V-19 | error | `sources` include a meeting transcript but the meeting mark is missing | works |
 | V-20 | warn | no `built: machine` and no `sources`: the origin is unknown | works |
@@ -393,8 +393,8 @@ its template, and the single write entry checks the head and the body.
 
 ## 10. What the next releases bring
 
-Not here yet and not described as ready: records in `Raw/decisions`, `Raw/questions`, `Raw/reference` and `kb:record`;
-cited documents (the `Documents` section, `kb:cite`); the `## Расхождения` section and the ladder "trust → question →
+Records (`decision`, `question`, a hand-kept `reference`) already live in `Raw/decisions|questions|reference`: a master file and a mirror in the base, the command
+`kb:record` (`knowledge-rules.md`, §9). Not here yet and not described as ready: cited documents (the `Documents` section, `kb:cite`); the `## Расхождения` section and the ladder "trust → question →
 correction". "A card only by a template" holds for new and edited cards, a touch (an edit, a thesis, repair) sets the
 stamp, and an old base is brought over by `kb:conform` and `agent:conform` ([migration](card-migration.md)); until the
 migration is declared complete, violations in unstamped cards are notes.

@@ -177,6 +177,16 @@ def ambiguous(owner: str, known: dict) -> str:
               "Разведите имена\n  (`kb:dedupe`, `kb:supersede`) или переименуйте одну.")
 
 
+def template_line() -> str:
+    """Строка `template: akdb_correction_v<версия>.md` для шапки нового исправления; пусто — шаблона исправления в проекте нет."""
+    try:
+        from card_types import registry_for
+        ct = registry_for(".").get("correction")
+    except Exception:                  # noqa: BLE001 — сбой реестра не должен мешать записать слово человека
+        return ""
+    return f"template: {ct.template_file}\n" if ct is not None else ""
+
+
 def cmd_new(owner: str, text: str) -> int:
     live = cards()
     known = named(live, [owner])
@@ -204,8 +214,11 @@ def cmd_new(owner: str, text: str) -> int:
     body = text.strip() or ("Опишите своими словами, что в карточке неверно и как на "
                             "самом деле.\n\nЭто читает модель при следующей сборке базы: "
                             "пишите так,\nкак объяснили бы коллеге, а не формой.")
+    # Шаблон исправления — по реестру проекта (наибольшая версия): так видно, по какой форме записано исправление.
+    # Прежние исправления поля не имеют и действуют как раньше; нет шаблона в проекте — поле не ставится.
+    tpl = template_line()
     with open(path, "w", encoding="utf-8") as f:
-        f.write(f"---\ncorrects: \"[[{owner}]]\"\ncreated: {TODAY}\nstatus: active\n"
+        f.write(f"---\ncorrects: \"[[{owner}]]\"\n{tpl}created: {TODAY}\nstatus: active\n"
                 f"---\n\n# Исправление: {owner}\n\n{body}\n")
     print(f"# Корректировка заведена\n\n`{path}`\n")
     print(f"Владелец: [[{owner}]] → `{known[owner][0]}`\n")

@@ -349,9 +349,11 @@ Object: Confluence page (via MCP or `Sources/Confluence/...`) or local file.
 Незнание — объект, а не строчка в переписке. Пока вопрос не оформлен, он не виден ни в
 трассировке, ни в DoR, и всплывает на приёмке.
 
-1. Create `AuroraKnowledgeDB/Questions/Q-NNN-<кратко>.md` from `Templates/question_template.md`
-   (NNN — номер выдаёт `kb:next-id Q`). Обязательно: `owner` (кто ведёт, не кто отвечает),
-   `asked_to`, `blocks` (какие REQ/SPEC стоят), `due`.
+1. Завести запись: `kb:record --new question "<суть>" --blocks "[[REQ-NNN]]"` — файл `Raw/questions/Q-NNN-<кратко>.md`
+   по шаблону `TemplatesCommon/akdb_question_v1.0.md` (номер выдаёт команда под замком). Вопрос — запись человека:
+   мастер лежит в `Raw/questions/`, в `AuroraKnowledgeDB/Questions/` движок строит его дословное зеркало
+   (`kb:record --mirror --apply`; маршруты «Обновить» и «Починить» делают это сами). Зеркало не правят. Обязательно:
+   `owner` (кто ведёт, не кто отвечает), `asked_to`, `blocks` (какие REQ/SPEC стоят), `due`.
 2. Одно неизвестное = одна карточка. Сформулировать так, чтобы можно было отправить
    заказчику без редактуры; приложить 2 гипотезы («A или B?» отвечается быстрее открытого вопроса).
 3. Проверить базу ДО создания: `ask` по теме — возможно, ответ уже есть в доверенной карточке
@@ -362,8 +364,9 @@ Object: Confluence page (via MCP or `Sources/Confluence/...`) or local file.
 
 ## answer <Q-NNN> — ответ получен
 
-1. Заполнить в карточке: `q_status: answered`, `answered`, `answer_source` (протокол
-   встречи, письмо, страница) и текст ответа. Без `answer_source` ответ не принимается —
+1. Заполнить в мастер-файле `Raw/questions/Q-NNN-….md` (не в зеркале): `q_status: answered`, `answered`,
+   `answer_source` (протокол встречи, письмо, страница) и текст ответа. Ответ-документ положить в `Raw/customer/`
+   или `Raw/project/`. Без `answer_source` ответ не принимается —
    «сказали на созвоне» через месяц не доказательство.
 2. **Разнести ответ** (главный шаг, без него вопрос закрыт формально):
    - уточнение требования → правка [[REQ-NNN]] (формулировка, `req_status`);
@@ -408,16 +411,19 @@ Object: Confluence page (via MCP or `Sources/Confluence/...`) or local file.
    решение не принять), затронутые карточки берутся только существующие. Без `--apply` — предпросмотр.
 1. Interview the analyst (or parse the provided text): контекст, рассмотренные варианты
    (минимум 2, включая отклонённые — с причинами), решение, следствия, затронутые карточки.
-2. Create `AuroraKnowledgeDB/Decisions/DR-NNNN-<суть>.md` from
-   `Templates/decision_record_template.md`, `status: proposed`; the number comes from
-   `kb:next-id DR`. Принятым решение становится только командой человека (шаг 3).
+2. Завести запись: `kb:record --new decision "<суть>"` — файл `Raw/decisions/DR-NNNN-<суть>.md` по шаблону
+   `TemplatesCommon/akdb_decision_v1.0.md`, `status: proposed`; номер выдаёт команда под замком. Решение — запись
+   человека: мастер лежит в `Raw/decisions/` и переживает любую пересборку, а в `AuroraKnowledgeDB/Decisions/` движок
+   строит его дословное зеркало (`kb:record --mirror --apply`). Зеркало не правят. Принятым решение становится только
+   командой человека (шаг 3).
 3. Принять: `kb:decide-accept DR-NNNN --by @имя` (отклонить — `--reject --reason «…»`). Команда
    проверяет форму (минимум два варианта, причина отказа у отклонённых, затронутые карточки есть
    в базе, нет `{{…}}` и раздела «Под вопросом»), ставит `accepted`, дату и отпечаток тела
-   (`accepted_fp`) и дописывает строку в «История». С этого момента тело неизменяемо: `kb:lint`
-   называет ошибкой тело, которое изменили. Журнал всех решений — `ops:decisions`.
-4. If it replaces an older DR: `kb:supersede` (старое получает `status: superseded`,
-   `superseded_by: [[DR-NNNN]]`) — the ONLY edit allowed to an accepted DR.
+   (`accepted_fp`) в мастер-файле, дописывает строку в «История» и обновляет зеркало. С этого момента тело
+   неизменяемо: `kb:lint` называет ошибкой тело, которое изменили. Журнал всех решений — `ops:decisions`.
+4. If it replaces an older DR: `kb:supersede` (в мастер-файле старого `status: superseded`,
+   `superseded_by: [[DR-NNNN]]`, в новом — `supersedes`; зеркала перестраиваются, заменённое решение остаётся на месте и
+   в `_archive/` не уезжает) — the ONLY edit allowed to an accepted DR.
 5. Update affected knowledge cards: link the DR under `## Обоснование`; if the decision
    changes current truth — run `supersede` on those cards.
 
@@ -425,7 +431,8 @@ Object: Confluence page (via MCP or `Sources/Confluence/...`) or local file.
 
 Механику выполняет `kb_supersede.py <старая> <преемник> --apply` (deprecated,
 `superseded_by`, история, переезд в `_archive/`, переписывание входящих ссылок).
-Человеку остаётся решение и текст карточки-преемника.
+Человеку остаётся решение и текст карточки-преемника. Исключение — Decision Record: его заменяют в
+`Raw/decisions/` (`superseded`, а не `deprecated`; в архив он не уезжает, ссылки на него не переписываются).
 
 1. Create/point to the successor card (status per its provenance).
 2. Old card: `status: deprecated`, `superseded_by: [[successor]]`, move file to

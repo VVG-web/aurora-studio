@@ -21,8 +21,10 @@
 переименование карточки, на которую ссылается решение, его не меняет. Правка по существу — новое решение,
 которое заменяет прежнее (`kb:supersede`).
 
-Решения лежат в `AuroraKnowledgeDB/Decisions/`; запись идёт через единый вход записи карточек
-(`card_types.write_card_text`), шаблон `akdb_decision` проверяет результат.
+Решения — записи человека: мастер-файл лежит в `Raw/decisions/` (`kb:record --new decision`), а в
+`AuroraKnowledgeDB/Decisions/` остаётся его дословное зеркало. Принимает и отклоняет скрипт мастер-файл, затем
+перестраивает зеркало; шаблон `akdb_decision` проверяет результат (зеркало должно пройти единый вход записи
+карточек). Рукописное решение, ещё не перенесённое в `Raw/` (`kb:record --migrate`), принимается на месте, как раньше.
 
 Панель: `kb:decide-accept` · `ops:decisions`
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
@@ -54,7 +56,13 @@ from aurora_common import (KB_ROOT, LINK_RE, MEETING_MARK, aliases as card_alias
                            frontmatter, link_targets, lock_read, lock_release, lock_take, safe_walk, utc_today,
                            with_fields)
 
+try:
+    import kb_record as KR        # мастер-файлы решений в Raw/decisions
+except ImportError:               # движок проекта, обновлённый не целиком: решения читаются там, где лежали
+    KR = None
+
 DECISIONS = f"{KB_ROOT}/Decisions"
+MASTERS = "Raw/decisions"
 ARCHIVE = f"{KB_ROOT}/_archive"
 STALE_DAYS = 14          # предложенное решение старше — просрочено: его принимают или отклоняют
 FINAL = ("accepted", "rejected", "superseded")
@@ -218,17 +226,39 @@ def dr_number(name: str) -> int:
     return int(m.group(1)) if m else -1
 
 
+def is_mirror(path: str) -> bool:
+    """Карточка базы — зеркало решения из `Raw/decisions/` (`built: machine`, источник — мастер-файл): читать и править
+    надо мастер, а не её."""
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            text = fh.read(6000)
+    except OSError:
+        return False
+    if (frontmatter(text).get("built") or "").strip() != "machine":
+        return False
+    from aurora_common import card_sources
+    return any(s.replace("\\", "/").startswith(MASTERS + "/") for s in card_sources(text))
+
+
+def is_master(root: str, path: str) -> bool:
+    return os.path.relpath(path, root).replace("\\", "/").startswith(MASTERS + "/")
+
+
 def decision_files(root: str = ".") -> list:
-    """[(путь, архив ли)] карточек-решений: `Decisions/` и архив базы (файлы `DR-…`)."""
+    """[(путь, архив ли)] решений: мастер-файлы `Raw/decisions/`, рукописные карточки `Decisions/` (до переноса в `Raw/`)
+    и архив базы (файлы `DR-…`). Зеркала в `Decisions/` не в счёт: их мастер уже в списке."""
     out = []
-    for rel, archived in ((DECISIONS, False), (ARCHIVE, True)):
+    for rel, archived in ((MASTERS, False), (DECISIONS, False), (ARCHIVE, True)):
         base = os.path.join(root, rel)
         if not os.path.isdir(base):
             continue
         for dirpath, _dirs, files in safe_walk(base):
             for f in sorted(files):
                 if f.endswith(".md") and dr_number(f) >= 0:
-                    out.append((os.path.join(dirpath, f), archived))
+                    path = os.path.join(dirpath, f)
+                    if rel == DECISIONS and is_mirror(path):
+                        continue
+                    out.append((path, archived))
     return sorted(out)
 
 
@@ -244,7 +274,7 @@ def find_dr(root: str, ident: str) -> tuple:
     live = [p for p in (exact or hits) if "/_archive/" not in p.replace("\\", "/")]
     hits = live or exact or hits
     if not hits:
-        return "", f"решения «{ident}» нет в {DECISIONS}/"
+        return "", f"решения «{ident}» нет в {MASTERS}/ и {DECISIONS}/"
     if len(hits) > 1:
         return "", "номеру отвечает несколько файлов: " + ", ".join(sorted(hits)) + " — повтор номера, разберите его"
     return hits[0], ""
@@ -360,13 +390,24 @@ def _decide_locked(root: str, path: str, by: str, reject: bool, reason: str) -> 
     fields = {"status": new_status, "date": today, "updated": today,
               "accepted_fp": body_fingerprint(text)}
     import card_types as CT
+    tail = ""
     try:
         new = add_history(with_fields(text, fields), event)
-        CT.write_card_text(path, new, op="body")
+        if KR is not None and is_master(root, path):
+            # мастер-файл в Raw/decisions: пишется он, зеркало в базе перестраивается из него
+            reg = CT.registry_for(root)
+            why = KR.write_master(root, reg, os.path.relpath(path, root).replace("\\", "/"), new)
+            if why:
+                return 1, [f"kb_decide: шаблон решения не принял запись: {why}"]
+            mirrored = KR.run_mirror(root, reg, True, only={"decision"})
+            tail = " Зеркало в базе обновлено." if not mirrored["refused"] else \
+                " Зеркало в базе не обновлено: " + "; ".join(f"{m}: {w}" for m, w in mirrored["refused"][:2])
+        else:
+            CT.write_card_text(path, new, op="body")
     except CT.TemplateViolation as e:
         return 1, [f"kb_decide: шаблон решения не принял запись: {e}"]
     return 0, [f"{name}: {status} → {new_status} ({who}, {today}); отпечаток тела записан — дальше решение "
-               "меняется только заменой (`kb:supersede`)."]
+               "меняется только заменой (`kb:supersede`)." + tail]
 
 
 def reseal(was: str, now: str, why: str) -> str:

@@ -3949,6 +3949,7 @@ def _pick(ranked: list, limit: int, skip: str, AC, stubs: bool = True) -> list:
 
     В строке кандидата заготовка помечена: модель должна понимать, что содержания там
     нет, и решать по имени и по тем, кто на неё ссылается.
+
     """
     out = []
     for weight, c in ranked:
@@ -6778,13 +6779,18 @@ def decide_source(cwd: str, ref: str) -> tuple:
     ref = (ref or "").strip()
     if not ref:
         return "", "", "", "нужен источник: --source «файл проекта» или «Q-NNN»"
-    base = os.path.join(cwd, "AuroraKnowledgeDB", "Questions")
+    # вопрос — запись человека: мастер лежит в Raw/questions, в базе его зеркало; рукописная карточка до переноса — в базе
+    bases = [os.path.join(cwd, "Raw", "questions"), os.path.join(cwd, "AuroraKnowledgeDB", "Questions")]
     m = re.match(r"(?i)^Q-(\d{1,9})$", ref)
     if m:
-        hits = [f for f in sorted(os.listdir(base) if os.path.isdir(base) else [])
-                if re.match(rf"(?i)^Q-0*{int(m.group(1))}(?!\d)", f) and f.endswith(".md")]
+        base, hits = bases[0], []
+        for base in bases:
+            hits = [f for f in sorted(os.listdir(base) if os.path.isdir(base) else [])
+                    if re.match(rf"(?i)^Q-0*{int(m.group(1))}(?!\d)", f) and f.endswith(".md")]
+            if hits:
+                break
         if not hits:
-            return "", "", "", f"вопроса {ref} нет в AuroraKnowledgeDB/Questions/"
+            return "", "", "", f"вопроса {ref} нет в Raw/questions/ и AuroraKnowledgeDB/Questions/"
         path = os.path.join(base, hits[0])
         text = read_text_file(path, DECIDE_SOURCE_LIMIT)
         from aurora_common import frontmatter as head_fields
@@ -6871,7 +6877,7 @@ def build_decision(cwd: str, ans: dict, source: str, label: str, card: str, owne
     where = f"[[{card}]]" if card else "`" + decide_clean(label, 160).replace("`", "'") + "`"
     cons = [decide_clean(c, 300) for c in decide_list(ans.get("consequences")) if decide_clean(c, 300)]
     out = ["---", f'title: "{ident}: {title.replace(chr(34), "")}"', f'aliases: ["{ident}"]', "tags: [decision]", "type: decision",
-           "template: akdb_decision_v1.0.md", "kind: document", "status: proposed", f"date: {today}", f'owner: "{owner}"',
+           "template: akdb_decision_v1.0.md", "status: proposed", f"date: {today}", f'owner: "{owner}"',
            "supersedes: []", "superseded_by:", "applies_to: []", f"created: {today}", f"updated: {today}", "---", "",
            f"# {ident}: {title}", "", "## Контекст", f"{decide_clean(ans.get('context'), 600)} Источник: {where}.", "",
            "## Рассмотренные варианты", ""] + rows + ["## Решение", decision or title, "", "## Следствия"]
@@ -6929,12 +6935,19 @@ def run_decide(cfg: dict, cwd: str, source: str, topic: str, owner: str, affects
            "source": label, "written": False, "path": ""}
     if not apply:
         return res
-    path = os.path.join(cwd, "AuroraKnowledgeDB", "Decisions", f"{built['id']}-{slug(built['title'])}.md")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    done, why = CT.try_write_card(path, built["text"], op="create")
-    if not done:
+    # Решение — запись человека: черновик по его команде ложится новым мастер-файлом в Raw/decisions, а в базе остаётся
+    # зеркало (`kb:record`). Существующие мастер-файлы не правятся: имя занято — отказ.
+    import kb_record as KR
+    rel = f"Raw/decisions/{built['id']}-{slug(built['title'])}.md"
+    path = os.path.join(cwd, rel)
+    if os.path.exists(path):
+        return {**res, "ok": False, "why": f"{rel} уже есть ({built['id']} занят и пропущен)"}
+    reg = CT.registry_for(cwd)
+    why = KR.write_master(cwd, reg, rel, built["text"])
+    if why:
         return {**res, "ok": False, "why": f"шаблон решения не принял запись ({built['id']} занят и пропущен): {why}"}
-    return {**res, "written": True, "path": os.path.relpath(path, cwd).replace("\\", "/")}
+    KR.run_mirror(cwd, reg, True, only={"decision"})
+    return {**res, "written": True, "path": rel}
 
 
 def report_decide(res: dict, apply: bool) -> str:

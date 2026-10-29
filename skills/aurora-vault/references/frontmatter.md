@@ -120,18 +120,21 @@ these cards by the `trace` workflow — never edit the table by hand.
 
 ## Reference extras (type: reference)
 
-Domain reference lists in `AuroraKnowledgeDB/Reference/`, hand-maintained by the team:
-abbreviations, adjacent-subsystem lists, participants and roles, code mappings.
-One list = one card (`type: reference`) with the normal lifecycle fields; owner keeps it
-current like any `knowledge` card. These are living cards — editing them is normal (unlike
-Raw/, which is immutable evidence). `build` may extract atomic Glossary cards FROM
-reference lists (they are manifest sources), but the list itself stays the editable master.
+Domain reference lists, hand-maintained by the team: abbreviations, adjacent-subsystem lists, participants and
+roles, code mappings. A list that is not derived from any source is a **record**: the master file lives in
+`Raw/reference/<имя>.md` (template `TemplatesCommon/akdb_reference_v1.0.md`, `kb:record --new reference "<название>"`),
+and `AuroraKnowledgeDB/Reference/` holds its verbatim mirror (`kind: dictionary`, `built: machine`,
+`sources: [Raw/reference/<имя>.md]`), built by `kb:record --mirror`. Edit the master, never the mirror — the next
+build rewrites it. The mirror is trusted like any source under `Raw/` (`kb:trust` writes its status).
+`build` may extract atomic Glossary cards FROM reference lists, but the list itself stays the master file.
+Reference cards derived from Confluence and documents are the engine's, not records.
 
 ## Question extras (type: question)
 
-Вопросы к заказчику (и к смежникам) — карточки в `AuroraKnowledgeDB/Questions/`,
-имя `Q-NNN-<кратко-суть>.md`. Смысл: незнание — это объект, а не строчка в чате.
-Пока вопрос открыт, он виден в трассировке и блокирует DoR спеки.
+Вопросы к заказчику (и к смежникам) — **записи** человека: мастер-файл `Raw/questions/Q-NNN-<кратко-суть>.md`
+(`kb:record --new question`), а в `AuroraKnowledgeDB/Questions/` — его дословное зеркало (`status: draft` всегда,
+ход вопроса — в `q_status`; доверие вопросу не считается). Смысл: незнание — это объект, а не строчка в чате.
+Пока вопрос открыт, он виден в трассировке и блокирует DoR спеки. Поля цикла читает V-17 (`kb:cards --check`).
 
 ```yaml
 type: question
@@ -149,12 +152,13 @@ blocks: ["[[REQ-042]]", "[[SPEC-012]]"]
 
 Правила:
 - `q_status: answered` требует `answered` и `answer_source` — ответ «на словах» не ответ.
-- Ответ не остаётся только в карточке вопроса: он идёт в REQ/спеку/DR, а карточка
+- Ответ не остаётся только в записи вопроса: он идёт в REQ/спеку/DR, а запись
   вопроса становится историей («когда и почему мы это узнали»).
 - `closed-no-answer` — заказчик не отвечает, работаем по допущению: допущение
   фиксируется DR, ссылка на него обязательна в теле.
-- Один вопрос = одно неизвестное. Пакет вопросов к встрече — это несколько карточек
-  плюс список в повестке, а не одна карточка «вопросы по заявкам».
+- Один вопрос = одно неизвестное. Пакет вопросов к встрече — это несколько записей
+  плюс список в повестке, а не одна запись «вопросы по заявкам».
+- Правят мастер-файл в `Raw/questions/`; зеркало пересоздаётся (`kb:record --mirror`) и правок не переживает.
 
 ## Acceptance extras (type: acceptance, артефакт)
 
@@ -177,6 +181,12 @@ based_on: []
 
 ## Decision Record extras (type: decision)
 
+Решение — **запись** человека: мастер-файл `Raw/decisions/DR-NNNN-<суть>.md` (`kb:record --new decision`), в
+`AuroraKnowledgeDB/Decisions/` — его дословное зеркало (`kind: document`, `built: machine`, `sources` называет
+мастер). Правят и принимают мастер (`kb:decide-accept`, `kb:supersede`); зеркало строит `kb:record --mirror`.
+`Raw/` — слой человека и заказчика: неизменяемы в нём только папки-доказательства (контракт, встречи, законы,
+письма заказчика), а записи живут и пополняются.
+
 ```yaml
 type: decision
 # цикл решения: proposed → accepted | rejected → superseded (комментарий — не на строке status)
@@ -195,7 +205,8 @@ DR rules (append-only):
   the targets of `[[…]]` links, so renaming a linked card does not change it); `kb:lint` reports a changed
   body of such a DR as an error. A DR accepted by hand before the command has no fingerprint and is not judged.
 - Never delete a DR. Rejected options stay inside the DR body forever.
-- Naming: `Decisions/DR-NNNN-<кратко-суть>.md`, NNNN — the next number from `kb:next-id DR` (under a lock; the archive is counted too).
+- Naming: `Raw/decisions/DR-NNNN-<кратко-суть>.md`, NNNN — the next number from `kb:record --new decision` / `kb:next-id DR`
+  (under a lock; mirrors and the archive are counted too). The mirror carries the same name.
 
 ## Spec extras (type: spec)
 
