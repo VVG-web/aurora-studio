@@ -25,6 +25,10 @@ conversation that exposed a gap in the base is a reason to write a card.
 - **Do not journal:** `--no-journal` skips the conversation file (this is what the MCP server uses: it only reads).
 - **"Why did we choose X? Why not Y?"** — `ctx:ask <question>` answers with quotes, including rejected and replaced
   Decision Records.
+- **A law or a contract article:** a card cut by `kb:cite` (type `cited-document`) goes into the context marked "verbatim text of
+  a document" with a ready reference. The answer quotes it word for word in guillemets with `[[card]]` after it, and the code
+  checks that the fragment is in the card: "Quotes: checked N, not found M". Not found means the model changed the text —
+  compare with the card before carrying the quote anywhere.
 
 ## Context packs
 

@@ -145,6 +145,36 @@ How the engine does it (since 1.100.32):
 Knowledge that drifted apart earlier is brought together by `kb:twins` and `agent:twins`. Requirements and what is not
 done yet — [knowledge-accumulation.md](knowledge-accumulation.md).
 
+### Cited documents: a law is cut by articles
+
+A law and a contract are valuable for their exact text, not for a retelling: people refer to an article or a clause by
+number. So such a source is parsed not by the model but by code, **without a model** — the `kb:cite` command. Cited are any
+`.md` in `Raw/laws/`, a document with `cited: true` in its head (`Raw/contract`, `Raw/customer`, `Raw/project`) and a
+contract, agreement or deal in `Raw/contract/` — by its name (a terms of reference, an explanatory note and acceptance tests
+are not). `cited: false` in the head switches it off for good: the document is parsed as an ordinary one. A law with
+`cited: false` goes to the ordinary parse too.
+
+How it is cut. At least three "Article N" lines — the unit is an article (chapters and sections stay in the path
+`Chapter 1 > ст. 5`, appendices are units of their own, the text before the first article is a "preamble" if it has 200
+characters or more). Otherwise, with at least three top-level headings ("5. Rights and duties of the parties") — a clause
+(`п. 5`; a section longer than 6000 characters is cut into `п. 5.1`, `п. 5.2`). Otherwise — the sections between markdown
+headings, and with none — one document. A unit longer than 6000 characters is divided by part numbers (`ст. 5 ч. 1–3`) or
+by paragraphs. The cut is deterministic: the same source gives the same units, names and texts.
+
+Each unit is a `cited-document` card in `Documents/` with `kind: document`: the text is the source's character for
+character, and the head holds the document, the unit (`ст. 5`), the path, the order, the previous and next units and a
+ready reference `cite`. The name is `<document>-ст-5`, `<document>-п-2-1`, `<document>-прил-1`. Such a card has no thesis,
+no linking, no merging and no human corrections: a law is not edited, a recognition error is fixed in the source. When the
+source changes, only the changed units are rewritten (a line in "Change history"), new ones are created, and those that
+vanished from the source go to `_archive/`. The `kb:cite` step stands in "Update", "Fix" and "Rebuild" before the sources are
+parsed; without `--apply` the command shows a plan.
+
+"Ask" quotes these cards word for word: a fragment in guillemets, right after it `[[card]]` and the `cite` value. The code
+checks that the fragment is in the card's body (spaces, dashes and quotes are reduced to one form, the case is kept; "[…]"
+splits a fragment into parts) and prints "Quotes: checked N, not found M". The answer is not blocked: the check is a hint to
+the reader. Limits: a source recognized by a model from a scan (`converter: ocr…`) cannot be quoted — put a text version; one
+current edition of a law; if ordinary cards were built from the same contract earlier, they stay next to the units.
+
 ## 5. The card's structure
 
 ```

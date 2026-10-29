@@ -91,11 +91,11 @@ Worth knowing about the table:
 
 - Unsure about the type — take `concept`; the borders of neighbouring types are worked out in the "Rules for the AI"
   block of every template and in the type-choosing instruction (below).
-- The `Documents` section of cited documents is not yet in the project's folder scheme and the engine creates no
-  cards of this type: the template describes the form in advance (section 10).
-- A decision, a question and a correction are **records**: a human writes them. The templates also describe the
-  master file in `Raw/`, but for now records live where they did: `Decisions/`, `Questions/`, `Raw/corrections/`.
-  A correction is never a card in the base: `kb:correct` writes it into the target card.
+- Units of laws and contracts are `cited-document` cards in the `Documents` section: `kb:cite` cuts `Raw/laws/` and documents
+  marked `cited: true` into articles and clauses without a model, the text is verbatim, "Ask" quotes it (`knowledge-rules.md`, §4).
+- A decision, a question and a correction are **records**: a human writes them, the master file lies in
+  `Raw/decisions|questions|corrections`, the base holds a mirror (`kb:record`). A correction is never a card in the base:
+  `kb:correct` writes it into the target card.
 - `spec` (the `Specs` section) stays a valid `type` value **with no template**: such cards are written by hand
   from `Templates/spec_template.md`, and the check does not judge them.
 - Not in the set: a rule, an interface and a data entity as separate cards (they are the "Rules" section of an entity,
@@ -394,7 +394,7 @@ its template, and the single write entry checks the head and the body.
 ## 10. What the next releases bring
 
 Records (`decision`, `question`, a hand-kept `reference`) already live in `Raw/decisions|questions|reference`: a master file and a mirror in the base, the command
-`kb:record` (`knowledge-rules.md`, §9). Not here yet and not described as ready: cited documents (the `Documents` section, `kb:cite`); the `## Расхождения` section and the ladder "trust → question →
+`kb:record` (`knowledge-rules.md`, §9). Not here yet and not described as ready: the `## Расхождения` section and the ladder "trust → question →
 correction". "A card only by a template" holds for new and edited cards, a touch (an edit, a thesis, repair) sets the
 stamp, and an old base is brought over by `kb:conform` and `agent:conform` ([migration](card-migration.md)); until the
 migration is declared complete, violations in unstamped cards are notes.

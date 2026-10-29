@@ -99,6 +99,18 @@ under a lock; `kb:record --check` checks masters and mirrors; `kb:record --migra
 A decision enters the strict context only when `accepted`, a `proposed` one goes with the mark "NOT A FACT"; a question is
 always `draft` and enters context only in the evaluation mode.
 
+## Cited documents: a law cut into articles
+
+A law, a state contract or an agreement is valuable for its exact text: people refer to an article or a clause by number.
+So such a source is not parsed by the model — `kb:cite` cuts it, **without a model**, into verbatim **units** (an article,
+a clause, an appendix) and each unit becomes a card of type `cited-document` in `Documents/`. The cited sources are any `.md`
+in `Raw/laws/`, a document with `cited: true` in its head, and a contract or agreement in `Raw/contract/` by its name
+(`cited: false` switches it off). The text of a unit is the source's byte for byte; the head carries the document, the unit
+(`ст. 5`), the path (`Chapter 1 > ст. 5`), the order, the neighbours and a ready reference `cite`. When the source changes, only
+the changed units are rewritten and the vanished ones go to the archive. "Ask" quotes a unit word for word in guillemets with
+`[[card]]` and `cite` after it, and the code checks that the fragment is really in the card: the line "Quotes: checked N, not
+found M". A source recognized by a model from a scan (`converter: ocr…`) is not cut — what was recognized cannot be quoted.
+
 ## Five statuses
 
 | `status` | Meaning |

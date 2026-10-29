@@ -85,7 +85,7 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-  A["Подготовка<br>sync:confluence · sync:jira · sync:web<br>sync:audit · kb:record --mirror · kb:ingest-office"] --> B["Чистка прежних разборов<br>kb:repair --template · --copies<br>kb:build --reopen"]
+  A["Подготовка<br>sync:confluence · sync:jira · sync:web<br>sync:audit · kb:record --mirror · kb:ingest-office · kb:cite"] --> B["Чистка прежних разборов<br>kb:repair --template · --copies<br>kb:build --reopen"]
   B --> C
   subgraph LOOP["Цикл — партия за партией"]
     C["agent:build<br>разобрать партию источников"] --> D["kb:correct · kb:kind<br>слово человека и тип карточки"]

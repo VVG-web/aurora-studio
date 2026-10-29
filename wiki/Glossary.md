@@ -23,6 +23,7 @@
 | **`Raw/`** | The layer of the human and the customer: evidence (contract, laws, customer material, meetings — immutable) and records (decisions, questions, reference lists, corrections) |
 | **Record** | What a human writes and no source holds: a decision, a question, a hand-kept reference list, a correction. The master file lies in `Raw/decisions|questions|reference|corrections`; it survives a rebuild. [The card](The-Card.md) |
 | **Mirror of a record** | The base's verbatim copy of a record master (`built: machine`, `sources` → the master), built by `kb:record --mirror`; it is read-only, the master is edited |
+| **Cited document** | A law, a state contract or an agreement that is quoted by article or clause: `kb:cite` cuts it, without a model, into verbatim **units** (cards of type `cited-document` in `Documents/`), and "Ask" quotes them word for word and checks the quote |
 | **Correction** | A human's note that a card is wrong, kept in `Raw/corrections/` and applied at every build (`kb:correct`) |
 | **Artifact** | A produced document in `Artifacts/`; never knowledge |
 | **`based_on`** | The cards an artifact stands on |

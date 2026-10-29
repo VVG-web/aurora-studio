@@ -139,7 +139,7 @@ aurora.env.local.example      образец → .env.aurora.local (вне git)
 Sources/                      зеркала подключённых модулей: Confluence, JIRA, Web
 Raw/{laws,contract,customer,project,meetings,examples,corrections,decisions,questions,reference}/
 AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Statuses, Reference,
-                              Requirements, Specs, Questions, Decisions, MOC, _archive, _assets,
+                              Requirements, Specs, Questions, Decisions, Documents, MOC, _archive, _assets,
                               _inbox, meta (kb_updated.json — дата обновления базы, в git;
                               card_types.md — каталог типов карточек, собирает движок;
                               conform_report.md, conform_state.json — отчёт и состояние миграции на шаблоны;

@@ -98,6 +98,10 @@ examples,corrections}`. By agreement it is **immutable** and counts as trusted w
 into Markdown transcripts next to the original by `kb:ingest-office`; a scan is read by a vision model if one is
 configured (there is deliberately no default model for scans — a guessed name gives a coherent fabrication).
 
+A law in `Raw/laws/`, a document marked `cited: true` and a contract or agreement in `Raw/contract/` are not parsed by the
+model: `kb:cite` cuts them into verbatim articles and clauses (see [the card](The-Card.md)). What a vision model read from a
+scan cannot be cut and quoted — put a text version next to it.
+
 ## Text from attachments and diagrams
 
 The same command reads the knowledge that sits in files, not in page text: attachments of Confluence pages (docx, xlsx,

@@ -3812,9 +3812,9 @@ def test_guide_is_documented(_t):
     выпусках»; дерево проекта и справочник команд называют файл и флаг."""
     for rel, heading, later, other in (
             ("docs/card-templates.md", "\n### Как выбрать тип: `Prompts/KB_classify.md`\n", "## 10. Что будет в следующих выпусках",
-             "цитируемые документы (раздел `Documents`, `kb:cite`)"),
+             "раздел `## Расхождения` и лестница"),
             ("docs/en/card-templates.md", "\n### How to pick a type: `Prompts/KB_classify.md`\n", "## 10. What the next releases bring",
-             "cited documents (the `Documents` section, `kb:cite`)")):
+             "the `## Расхождения` section and the ladder")):
         text = (KIT / rel).read_text(encoding="utf-8")
         assert text.count("\n") <= 400, f"{rel}: длиннее 400 строк"
         assert "`kb:cards --guide`" in text and "`card_types.classify_answer`" in text and "KB_classify.md.new" in text, rel
@@ -3826,6 +3826,7 @@ def test_guide_is_documented(_t):
         tail = text.split(later)[1]
         assert "KB_classify" not in tail, f"{rel}: инструкция всё ещё в списке «чего нет»"
         assert other in tail, f"{rel}: из списка «чего нет» ушло лишнее"
+        assert "kb:cite" not in tail, f"{rel}: цитируемые документы выпущены (kb:cite), а в списке «чего нет»"
         assert "(`kb:conform`)" not in tail, f"{rel}: миграция выпущена (kb:conform), а в списке «чего нет»"
         assert "`cards:`" not in tail and "card_types.md" not in tail, f"{rel}: блок cards: и каталог типов выпущены, а в списке «чего нет»"
     for rel in ("docs/INSTALL.md", "docs/en/INSTALL.md"):

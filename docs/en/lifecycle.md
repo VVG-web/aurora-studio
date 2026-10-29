@@ -83,7 +83,7 @@ stop in the middle left cards without kinds, theses and links.
 
 ```mermaid
 flowchart TD
-  A["Preparation<br>sync:confluence · sync:jira · sync:web<br>sync:audit · kb:record --mirror · kb:ingest-office"] --> B["Cleaning up earlier parses<br>kb:repair --template · --copies<br>kb:build --reopen"]
+  A["Preparation<br>sync:confluence · sync:jira · sync:web<br>sync:audit · kb:record --mirror · kb:ingest-office · kb:cite"] --> B["Cleaning up earlier parses<br>kb:repair --template · --copies<br>kb:build --reopen"]
   B --> C
   subgraph LOOP["Loop — batch after batch"]
     C["agent:build<br>parse a batch of sources"] --> D["kb:correct · kb:kind<br>the human's word and the card kind"]

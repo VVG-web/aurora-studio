@@ -137,7 +137,7 @@ aurora.env.local.example      a sample → .env.aurora.local (outside git)
 Sources/                      mirrors of connected modules: Confluence, JIRA, Web
 Raw/{laws,contract,customer,project,meetings,examples,corrections,decisions,questions,reference}/
 AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Statuses, Reference,
-                              Requirements, Specs, Questions, Decisions, MOC, _archive, _assets,
+                              Requirements, Specs, Questions, Decisions, Documents, MOC, _archive, _assets,
                               _inbox, meta (kb_updated.json — the base update date, in git;
                               card_types.md — the catalogue of card types, built by the engine;
                               conform_report.md, conform_state.json — the report and state of the template migration;

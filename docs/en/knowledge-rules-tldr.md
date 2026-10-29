@@ -49,6 +49,13 @@ type's template and checks it strictly, an edit of an existing one "by differenc
 card that passes its template gets the `template:` stamp. A violation in a stamped card is a `kb:lint` error; a card
 without `template:` in its head is "pre-template", and `kb:cards --check` names its deviations as warnings — until the migration is declared complete (`kb:conform`, `agent:conform`).
 
+## A law and a contract are cut by articles
+
+A law in `Raw/laws/`, a document with `cited: true` and a contract in `Raw/contract/` are not parsed by the model: `kb:cite` cuts
+them into articles, clauses and appendices and carries them verbatim into `Documents/` (`cited-document` cards). "Ask" quotes
+such a unit in guillemets with a link to the card, and the code checks the quote. A law is not edited: an error is fixed in
+the source.
+
 ## A human's records live in Raw
 
 Decisions, questions to the customer and reference lists kept by hand lie in `Raw/decisions/`, `Raw/questions/`,

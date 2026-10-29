@@ -415,6 +415,7 @@ code is 1, no traceback.
 | `AuroraKnowledgeDB/meta/embeddings.*` | the semantic index | no (rebuilt) |
 | `Sources/<Mirror>/sync_state.md`, `update_log.md` | the mirror's state | yes |
 | `Raw/decisions/`, `Raw/questions/`, `Raw/reference/` | a human's records (decisions, questions, hand-kept reference lists): master files; the base holds their verbatim mirrors (`kb:record`) | yes |
+| `AuroraKnowledgeDB/Documents/` | units of laws and contracts (articles, clauses, appendices): the verbatim text of `Raw/laws/` and of documents marked `cited: true`, cut by `kb:cite`; "Ask" quotes them | yes |
 | `Raw/Extracted/` | machine transcripts of page attachments and diagrams (`kb:ingest-office`): a source for parsing; the originals stay in `Sources/` and `Workspaces/` | yes |
 | `Raw/Extracted/.skipped.json` | hashes of attachments without text (a logo, an empty diagram), so that they are not tried again | yes |
 | `.aurora/cache/`, `runs/`, `state/`, `context/` | caches, the panel's run archive, routes' state, attachments | no |
