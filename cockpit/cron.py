@@ -95,6 +95,10 @@ def runs_dir() -> str:
 def busy_line(act: dict) -> str:
     """Чем занят проект, — строкой журнала пункта цепочки."""
     wait = f"жду, пока освободится: не дольше {BUSY_WAIT_S // 3600} ч, проверяю раз в {BUSY_POLL_S} с"
+    live = act.get("live_routes") or []
+    if live:
+        first = live[0] if isinstance(live[0], dict) else {}
+        return f"⏳ проект занят: идёт маршрут {first.get('title') or first.get('scId') or '?'} — {wait}"
     running = act.get("running") or []
     if running:
         first = running[0] if isinstance(running[0], dict) else {}
@@ -677,9 +681,24 @@ class Scheduler:
         trim_runs()
         return run
 
+    def _destructive(self, it: dict) -> bool:
+        """Пункт — опасный маршрут (`опасный` в заголовке `scenarios.txt`, например «Пересобрать базу с нуля»). Такой
+        маршрут сносит базу на первом шаге, поэтому повтор в конце цепочки его с начала не запускает: упавший ночью
+        снос и сборка не должны стирать собранное ещё раз. Продолжает такой маршрут человек или его следующий запуск."""
+        if it.get("kind") != "route":
+            return False
+        try:
+            sc = RR.scenario(self.ck, it.get("route", ""))
+        except Exception:  # noqa: BLE001 — нет описания маршрута: считаем обычным
+            return False
+        return bool(sc and sc.get("destructive"))
+
     def _busy(self, project: str) -> bool:
         act = self.ck.project_activity(project)
-        return bool(act.get("running")) or bool((act.get("agent") or {}).get("alive"))
+        # Идущий маршрут — тоже занятость: между его шагами нет ни команды, ни замка агента, и расписание,
+        # пришедшее в эту щель, начинало второй маршрут в том же проекте (20.10.2026 так стёрли базу).
+        return (bool(act.get("running")) or bool((act.get("agent") or {}).get("alive"))
+                or bool(act.get("live_routes")))
 
     def _wait_free(self, project: str, log=None) -> bool:
         """Дождаться, пока проект освободится. Ждать молча нельзя: после перезапуска панели
@@ -718,7 +737,7 @@ class Scheduler:
             if again and not halted:
                 retry = {it["project"] for it in again}
                 for it in run["items"]:
-                    if it["project"] in retry and it["status"] in BAD + ("deferred",):
+                    if it["project"] in retry and it["status"] in BAD + ("deferred",) and not self._destructive(it):
                         it["first"] = {"status": it["status"], "note": it.get("note", "")}
                         it.update(status="pending", note="", retry=True)
                 self._save(run)
@@ -788,7 +807,7 @@ class Scheduler:
                     halted = "chain_stopped"
                 else:
                     blocked.add(it["project"])
-                    if not retry:              # к проекту вернёмся в конце цепочки
+                    if not retry and not self._destructive(it):    # к проекту вернёмся в конце цепочки
                         it.update(status="deferred", note=it.get("note") or it["status"],
                                   failed_as=it["status"])
                         self._save(run)

@@ -610,7 +610,7 @@ def test_bridge_knows_what_runs_and_what_stopped(tmp: Path):
     quiet, busy = tmp / "quiet", tmp / "busy"
     for d in (quiet, busy):
         (d / ".aurora/state").mkdir(parents=True)
-    assert ck.project_activity(str(quiet)) == {"running": [], "agent": None, "route": None}, \
+    assert ck.project_activity(str(quiet)) == {"running": [], "agent": None, "route": None, "live_routes": []}, \
         "у тихого проекта нашлась работа, которой нет"
 
     ck.JOBS.clear()

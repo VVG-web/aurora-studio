@@ -403,6 +403,7 @@
     "недопустимый id прогона": "invalid run id",
     "прогон не найден": "run not found",
     "в проекте уже идёт маршрут": "a routine is already running in the project",
+    "в проекте уже идёт маршрут вне этой панели: {} (pid {}, с {})": "a routine is already running in the project outside this panel: {} (pid {}, since {})",
     "маршрут не найден — панель перезапускали, пока он шёл": "routine not found — the panel was restarted while it was running",
     "маршрут уже закончился": "the routine has already finished",
     "маршрута «{}» нет в cockpit/scenarios.txt": "there is no routine «{}» in cockpit/scenarios.txt",

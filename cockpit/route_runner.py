@@ -422,6 +422,22 @@ def _iso(ts: float | None = None) -> str:
                                   timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def route_lock_path(project: str) -> str:
+    """Замок маршрута проекта (1.188.1): один маршрут на проект на всю его длину. Лежит в проекте, как замок агента:
+    маршрут идёт в одной панели, в другой панели или в терминале, и видеть друг друга им надо через файл."""
+    from aurora_common import engine_dir
+    return os.path.join(project, engine_dir(project), "state", "route.lock")
+
+
+def route_holder(project: str) -> dict:
+    """Живой держатель замка маршрута (его запись: pid, run, route, title, since) или пусто. Ничего не пишет и не снимает."""
+    from aurora_common import lock_holder
+    try:
+        return lock_holder(route_lock_path(project))
+    except OSError:
+        return {}
+
+
 class RouteRun:
     """Один проход маршрута по одному проекту.
 
@@ -435,6 +451,7 @@ class RouteRun:
     force_check = False             # человек нажал «Проверить сейчас»: ближайший вердикт сперва перепроверит связь
     redo: tuple = ()                # ключи шагов, шедших на прежних данных из-за отложенного шага: их надо повторить
     stop = None                     # Event остановки; у каркаса проверок без __init__ его нет
+    locked = False                  # замок маршрута проекта взят этим прогоном (1.188.1)
 
     def __init__(self, ck, project: str, sc: dict, write: bool = True, lang: str = "ru",
                  log=None, stop=None, on_job=None, on_step=None, resume: dict | None = None,
@@ -498,6 +515,32 @@ class RouteRun:
         self.log(text)
 
     # ------------------------------------------------------------- один шаг
+
+    def _lock(self) -> dict:
+        """Взять замок маршрута проекта. → пусто, если взят; иначе запись держателя. Не смогли записать замок
+        (диск, права) — работать это не мешает: замок защищает от второго маршрута, а не от первого."""
+        from aurora_common import lock_take, utc_stamp
+        try:
+            taken, held = lock_take(route_lock_path(self.project),
+                                    {"run": self.run_id, "route": self.sc.get("id", ""),
+                                     "title": self.sc.get("title", ""), "since": utc_stamp()})
+        except OSError:
+            return {}
+        self.locked = taken
+        return {} if taken else (held or {"pid": 0})
+
+    def _unlock(self) -> None:
+        """Снять свой замок. Чужой не трогаем: два маршрута одной панели делят pid, поэтому смотрим на номер прогона."""
+        if not self.locked:
+            return
+        self.locked = False
+        from aurora_common import lock_read, lock_release_retry
+        path = route_lock_path(self.project)
+        try:
+            if lock_read(path).get("run") == self.run_id:
+                lock_release_retry(path)
+        except OSError:
+            pass
 
     def _stopping(self) -> bool:
         return bool(self.stop and self.stop.is_set())
@@ -1003,6 +1046,17 @@ class RouteRun:
     def run(self) -> dict:
         ck, t = self.ck, self.t
         steps = plan(ck, self.sc, self.write)
+        held = self._lock()
+        if held:
+            # Второй маршрут в проекте не начинаем: два писателя в одну базу — двойники и потерянные отметки. Кнопка
+            # проверяла это только в своей панели, расписание — только команды и агента, а между шагами идущего маршрута
+            # проект «свободен». Замок на диске видят все: кнопка, расписание, терминал, другая панель.
+            why = t("route.locked", title=held.get("title") or held.get("route") or "?",
+                    since=held.get("since") or "?", pid=held.get("pid") or "?")
+            self.say("err", "■ " + why)
+            self.no_run = True
+            return self._close({"ok": False, "reason": "failed", "failed": steps[0]["cmd"] if steps else "",
+                                "note": why, "steps": 0, "lines": [], "run_id": self.run_id, "found": []})
         self.total = len([s for s in steps if not s["cycle"]])
         for s in steps:
             sig = (s["cmd"] + " " + " ".join(s["args"])).strip()
@@ -1247,6 +1301,10 @@ class RouteRun:
             try:
                 return self._close(res)
             except Exception:  # noqa: BLE001 — не записалось: хотя бы снять признак «идёт»
+                try:
+                    self._unlock()
+                except Exception:  # noqa: BLE001 — замок снимается по возможности: признак «идёт» важнее
+                    pass
                 self.result, self.done_flag = res, True
                 return res
 
@@ -1258,6 +1316,7 @@ class RouteRun:
                          seconds=round(time.time() - self.started), steps=self.children)
         write_meta(self.base, self.meta)
         self.journal.close()
+        self._unlock()
         self.result = res
         self.done_flag = True
         return res

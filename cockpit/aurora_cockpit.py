@@ -2213,9 +2213,12 @@ def all_scenarios() -> list:
             # разные занятия и разные дни: держать их в одном списке значит заставлять
             # искать нужное среди чужого.
             tail = [x.strip() for x in (m.group(3) or "").split("|")]
+            # Третье поле — пометка «опасный» (1.188.1): маршрут сносит собранное на первом шаге, и повтор такого
+            # маршрута с начала расписание не запускает.
             cur = {"id": m.group(1), "title": m.group(2).strip(),
                    "when": tail[0] if tail else "",
                    "group": (tail[1] if len(tail) > 1 else "") or "база",
+                   "destructive": "опасный" in tail[2:],
                    "steps": []}
             out.append(cur)
             continue
@@ -4677,10 +4680,17 @@ def project_activity(project: str) -> dict:
         pass
     # Идущий маршрут пишет «сделанное» после каждого шага — на случай перезапуска панели.
     # Пока он жив, эта запись — не «остановлен», а ход работы: Мостик показывает задание.
-    st = None if routes_live(project) else read_route_state(project)
+    live = routes_live(project)
+    if not live:
+        # Маршрут из терминала или другой панели в этой панели не зарегистрирован, но держит замок маршрута.
+        held = RR.route_holder(project)
+        if held:
+            live = [{"id": held.get("run", ""), "scId": held.get("route", ""), "title": held.get("title", ""),
+                     "foreign": True, "pid": held.get("pid"), "since": held.get("since", "")}]
+    st = None if live else read_route_state(project)
     route = ({k: st.get(k) for k in ("title", "step", "reason", "at", "attempts", "nextRetryAt")}
              if st else None)
-    return {"running": running, "agent": agent, "route": route}
+    return {"running": running, "agent": agent, "route": route, "live_routes": live}
 
 
 def clear_route_state(project: str) -> dict:
@@ -7390,6 +7400,12 @@ def route_start(project: str, sc_id: str, write: bool, resume: dict | None = Non
             if r["project"] == project and not r["run"].done_flag:
                 return {"error": "в проекте уже идёт маршрут", "route": r["id"],
                         "scId": r["run"].sc.get("id"), "write": r["run"].write}
+    held = RR.route_holder(project)
+    if held:
+        # Маршрут идёт не в этой панели (терминал, другая панель): подключиться к его журналу отсюда нельзя.
+        return {"error": "в проекте уже идёт маршрут вне этой панели: %s (pid %s, с %s)"
+                         % (held.get("title") or held.get("route") or "?", held.get("pid") or "?", held.get("since") or "?"),
+                "foreign": True, "scId": held.get("route", "")}
     run = RR.RouteRun(sys.modules[__name__], project, sc, write, lang=lang, resume=resume,
                       trigger="button", net=net)
     rid = run.run_id
@@ -7585,8 +7601,8 @@ def route_action(rid: str, what: str) -> dict:
 
 def routes_live(project: str) -> list:
     with ROUTES_LOCK:
-        return [{"id": r["id"], "scId": r["run"].sc.get("id"), "write": r["run"].write,
-                 "started": r["started"]}
+        return [{"id": r["id"], "scId": r["run"].sc.get("id"), "title": r["run"].sc.get("title", ""),
+                 "write": r["run"].write, "started": r["started"]}
                 for r in ROUTES.values()
                 if r["project"] == project and not r["run"].done_flag]
 

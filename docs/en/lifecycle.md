@@ -121,11 +121,15 @@ but the panel itself must be running. Rules:
 - a route follows the same rules as the "Run" button: laps with a commit, stop on stall and failure, waiting for the
   network; a route stopped at night continues with "Resume route". A step has no time limit: a model thinking for
   long is not a reason to drop the work;
-- a project busy with other work makes the step wait up to two hours, then the step is skipped;
+- a project busy with other work makes the step wait up to two hours, then the step is skipped. Busy means a command in
+  the panel, a writing agent run, or **a running route**: a route holds the lock `.aurora/state/route.lock` for its whole
+  length, so a second route in the same project (schedule, button, terminal, another panel) does not start but waits;
 - a project is the unit of a chain. A project step failed (the command crashed, gateways do not answer, the route did
   not move the base by a single commit) — the remaining steps of that project are deferred: "Fix" after an update
   that did not happen is pointless. The chain goes on to the next project and at the end comes back to the deferred
-  ones once, continuing where they stopped. A second failure is the project's outcome;
+  ones once, continuing where they stopped. A second failure is the project's outcome. A route marked `опасный`
+  (dangerous) in `scenarios.txt` ("Rebuild the base from scratch") is not part of that return: its first step wipes the
+  base, and a repeat from the start would wipe what was built once more;
 - a failure does not wedge the scheduler. An unexpected exception in a step (not a regular failure) marks the item
   failed, with the reason and traceback in the step log, and follows the same "a project is the unit of a chain"
   rule; the route is closed with a record instead of staying "running". A failure to write the run to disk (disk

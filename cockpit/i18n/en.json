@@ -265,6 +265,7 @@
   "route.bar_step": "step {step} of {of}",
   "route.ask": "The route «{title}» has {steps} steps, {writes} of them write to the project:\n\n{list}\n\nEverything they do is visible in git: `git diff` shows it, `git reset --hard` takes it back.\nRun the route?",
   "route.resumed": "↻ the route «{title}» continues — what is already done is skipped",
+  "route.locked": "The route did not start: the project already has a route «{title}» running (since {since}, process {pid}). Two routes in one base spoil it; wait for the first to end or stop it.",
   "route.skip_step": "  ↳ step {step}/{of} skipped: «{cmd}» already ran in the previous attempt",
   "route.skip_lap_step": "  ↳ lap step {step}/{of} skipped: «{cmd}» ran before the stop",
   "route.lap_mark": " · lap {lap}",
