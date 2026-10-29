@@ -73,6 +73,7 @@
     "kb:kind": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "kb:conform": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "kb:record": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
+    "kb:cite": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "ops:questions": {"requires_sources": [], "requires_llm": true, "requires_internet": false, "offline_capable": false, "offline_variant": ""},
     "ops:report": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "agent:aliases": {"requires_sources": [], "requires_llm": true, "requires_internet": false, "offline_capable": false, "offline_variant": ""},

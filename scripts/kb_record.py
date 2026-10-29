@@ -892,7 +892,7 @@ def print_migrate(res: dict, apply: bool) -> None:
 
 # ----------------------------------------------------------------------------- команда
 
-def print_check(found: list, as_json: bool) -> int:
+def print_check(found: list, as_json: bool, title: str = "Записи в Raw — проверка") -> int:
     errors = sum(1 for f in found if f[0] == ERR)
     warns = sum(1 for f in found if f[0] == WARN)
     infos = sum(1 for f in found if f[0] == INFO)
@@ -901,7 +901,7 @@ def print_check(found: list, as_json: bool) -> int:
                           "findings": [dict(zip(("level", "code", "path", "message"), f)) for f in found]},
                          ensure_ascii=False, indent=1))
         return 1 if errors else 0
-    print("# Записи в Raw — проверка\n")
+    print(f"# {title}\n")
     marks = {ERR: "ОШИБКА", WARN: "предупреждение", INFO: "сведение"}
     for level, code, rel, message in found[:200]:
         print(f"- {marks[level]} {code} {rel}: {message}")

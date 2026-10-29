@@ -25,7 +25,8 @@
                             базы, в любом режиме сброса
 
 Заново из источников выведется не всё. `kb:build` читает `Raw/project`, `Raw/customer`,
-`Raw/contract`, `Sources/Confluence`, `Sources/JIRA`. Записи человека — решения, вопросы,
+`Raw/contract`, `Sources/Confluence`, `Sources/JIRA`; законы и контракты, которые цитируют (`Raw/laws`, помеченные
+`cited: true`), нарезает `kb:cite`, и единицы в `Documents/` вернутся им. Записи человека — решения, вопросы,
 рукописные справочники — лежат мастер-файлами в `Raw/decisions|questions|reference`: рукописного
 в базе нет, всё, что не вернётся из источников, лежит в `Raw/` и сбросом не затрагивается.
 Зеркала записей в `Decisions/`, `Questions/`, `Reference/` — карточки `built: machine`, и сброс их

@@ -34,6 +34,8 @@ AuroraKnowledgeDB/Requirements
 AuroraKnowledgeDB/Specs
 AuroraKnowledgeDB/Questions
 AuroraKnowledgeDB/Decisions
+# Единицы законов, государственных контрактов и договоров (статьи, пункты), нарезанные дословно: `kb:cite`.
+AuroraKnowledgeDB/Documents
 AuroraKnowledgeDB/MOC
 AuroraKnowledgeDB/_archive
 AuroraKnowledgeDB/_assets

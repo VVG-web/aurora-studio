@@ -83,6 +83,14 @@ def collect(section_dir: str) -> list:
         fm = frontmatter(text)
         stem = os.path.splitext(os.path.basename(path))[0]
         body_start = body_of(text)
+        desc = first_sentence(body_start)
+        if (fm.get("type") or "").strip().strip('"') == "cited-document":
+            # Единица закона или контракта: тело — дословный текст («1. Заявка — …»), а о чём она, говорит заголовок
+            # («ст. 5. Подтверждение заявки») — без названия документа, он общий для раздела.
+            title_now = (fm.get("title") or "").strip().strip('"')
+            prefix = (fm.get("doc") or "").strip().strip('"') + " — "
+            desc = (title_now[len(prefix):] if prefix.strip(" —") and title_now.startswith(prefix)
+                    else title_now.split(" — ", 1)[-1])[:120] or desc
         rows.append({
             "stem": stem,
             "title": fm.get("title", stem),
@@ -90,7 +98,7 @@ def collect(section_dir: str) -> list:
             # Владелец жил при прежней приёмке и сегодня пуст у всех новых карточек.
             # Тип полезнее: он говорит читателю, дословный это текст или тезис.
             "kind": (fm.get("kind") or "—").strip().strip('"'),
-            "desc": first_sentence(body_start),
+            "desc": desc,
             # Оглавление ссылается на карточку и по имени файла, и по синониму:
             # `[[DR-0001]]` — это ссылка на `DR-0001-Единственный-источник…`.
             "names": {stem} | set(card_aliases(text)),

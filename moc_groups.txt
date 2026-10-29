@@ -34,3 +34,4 @@
 Решения | type:decision; section:Decisions | Журнал решений: почему выбрали именно так.
 Вопросы | type:question; section:Questions | Незнание как объект: что спросили и что ответили.
 Справочники | type:reference; section:Reference | Своды и таблицы, которые ведут руками.
+Цитируемые документы | type:cited-document; section:Documents | Единицы нормативных документов: статьи и пункты. Карта документа — «Документ · <имя>».

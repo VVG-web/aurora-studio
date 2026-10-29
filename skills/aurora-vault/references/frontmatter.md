@@ -208,6 +208,22 @@ DR rules (append-only):
 - Naming: `Raw/decisions/DR-NNNN-<кратко-суть>.md`, NNNN — the next number from `kb:record --new decision` / `kb:next-id DR`
   (under a lock; mirrors and the archive are counted too). The mirror carries the same name.
 
+## Cited-document extras (type: cited-document)
+
+Единица закона, контракта или договора — статья, пункт, приложение: дословный текст из `Raw/laws/` или документа с `cited: true`. Карточки создаёт только `kb:cite` (раздел `Documents`), модель их не пишет и не правит, тезиса нет.
+
+```yaml
+type: cited-document
+kind: document            # всегда: тело дословно
+doc: "Закон о примерах"   # короткое имя документа; doc_title, doc_ref, edition — по тексту документа, если названы
+unit: "ст. 5"             # обозначение единицы; unit_kind: article | clause | appendix | preamble | section
+path: "Глава 2 > ст. 5"   # место в структуре; order — номер единицы в документе
+cite: "ст. 5, Закон о примерах (№ 1 от 01.02.2020)"   # готовая ссылка для ответа
+prev: "[[Закон-о-примерах-ст-4]]"                    # соседи по порядку (необязательно)
+```
+
+Имя карточки — `<документ>-ст-5`, `<документ>-п-2-1`, `<документ>-прил-1`; одинаковые номера в одном документе получают суффикс `-2`. Цитата в ответе — дословный фрагмент тела в «ёлочках», после него `[[карточка]]` и значение `cite`.
+
 ## Spec extras (type: spec)
 
 Specs live in `AuroraKnowledgeDB/Specs/`, named `SPEC-NNN-<фича>.md` (the next number from

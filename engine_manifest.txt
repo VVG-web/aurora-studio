@@ -105,6 +105,8 @@ scripts/kb_trust.py        => .aurora/scripts/kb_trust.py
 scripts/kb_kind.py         => .aurora/scripts/kb_kind.py
 scripts/kb_conform.py       => .aurora/scripts/kb_conform.py
 scripts/kb_record.py        => .aurora/scripts/kb_record.py
+scripts/kb_cited.py         => .aurora/scripts/kb_cited.py
+scripts/legal_slicer.py     => .aurora/scripts/legal_slicer.py
 scripts/agent_core.py    => .aurora/scripts/agent_core.py
 scripts/model_config.py  => .aurora/scripts/model_config.py
 # доступность соединений: профили VPN, probe, состояние; его читают команды `net:*`, агент, боты и синк

@@ -398,6 +398,17 @@ def record_master(text: str) -> str:
     return ""
 
 
+DOCUMENTS_FOLDER = "AuroraKnowledgeDB/Documents"
+
+
+def document_source(text: str) -> str:
+    """Источник единицы цитируемого документа (`sources` в шапке): путь в `Raw/`; пусто — текста нет или источника не названо."""
+    if not (text or "").strip():
+        return ""
+    from aurora_common import card_sources
+    return next((s.replace("\\", "/") for s in card_sources(text) if s.replace("\\", "/").startswith("Raw/")), "")
+
+
 def why_readonly(rel: str, text: str = "") -> str:
     """Почему этот файл нельзя править — словами, а не флагом.
 
@@ -412,6 +423,12 @@ def why_readonly(rel: str, text: str = "") -> str:
     if low.startswith("auroraknowledgedb/"):
         if any(low.startswith(w.lower() + "/") or low == w.lower() for w in KB_WRITABLE):
             return ""
+        if low.startswith(DOCUMENTS_FOLDER.lower() + "/"):
+            # единица закона или контракта (`kb:cite`): правка пропала бы при пересборке, а исправление человека к ней не применяется
+            source = document_source(text)
+            if source:
+                return f"единица цитируемого документа: закон и контракт не правят — ошибку исправляют в самом источнике {source}, а `kb:cite` обновит единицу"
+            return "единица цитируемого документа: закон и контракт не правят — ошибку исправляют в самом источнике в Raw/, а `kb:cite` обновит единицу"
         folder = next((m for m in MIRROR_FOLDERS if low.startswith(m.lower() + "/")), "")
         if folder:
             master = record_master(text)

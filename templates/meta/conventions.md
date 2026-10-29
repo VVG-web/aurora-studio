@@ -55,6 +55,7 @@ Examples (adapt to your domain):
 ### Files by type
 - AuroraKnowledgeDB cards: normalize separators to hyphen; prefixes `REQ-NNN-`, `DR-NNNN-`,
   `SPEC-NNN-`, `Q-NNN-` (вопросы к заказчику в `Questions/`).
+  Единицы цитируемых документов (`Documents/`): `<документ>-ст-N`, `<документ>-п-N`, `<документ>-прил-N` — имя ставит `kb:cite`, руками не заводятся.
 - Artifacts: `YYYY-MM-DD_<type>_<object>.md`; type ∈ {review, report, drift, garden,
   summary, context, draft-us, draft-ac}.
 - Deliverables: work — `<DOC>_v<version>.md`; released — `<DOC>_v<version>_<YYYY-MM-DD>.md`.

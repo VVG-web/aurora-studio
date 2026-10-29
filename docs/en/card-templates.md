@@ -311,7 +311,7 @@ error; `warn` goes into the report, `info` into the statistics. `kb:cards --chec
 | V-18 | info | `template:` is older than the type's highest version | works |
 | V-19 | error | `sources` include a meeting transcript but the meeting mark is missing | works |
 | V-20 | warn | no `built: machine` and no `sources`: the origin is unknown | works |
-| V-21 | error | a cited document: no `doc`, `unit` or `cite`, or the kind is not `document` | later: with cited documents |
+| V-21 | error | a cited document: no `doc`, `unit` or `cite`, or a human correction (`corrected_by`); a kind other than `document` is judged by V-05 | works |
 | V-22 | error | a map has no `<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ` mark | works |
 | V-23 | error | the `# Heading` of the own part is not equal to `title` | works |
 | V-24 | warn | a service section (`Не путать`, `Что относится к теме`) stands in the own part | works |

@@ -1872,7 +1872,8 @@ def test_moc_groups_no_unknown_types(_t):
     assert types <= known, f"в moc_groups.txt типы вне реестра: {sorted(types - known)}"
     assert not types & {"person", "org", "company", "place", "project", "entity"}
     assert groups["Люди"] == ["tag:person"] and groups["Организации"] == ["tag:org"] and groups["Места"] == ["tag:place"]
-    assert groups["Проекты"] == ["tag:project"] and groups["Данные"] == ["tag:erd"] and len(groups) == 16
+    assert groups["Проекты"] == ["tag:project"] and groups["Данные"] == ["tag:erd"] and len(groups) == 17
+    assert groups["Цитируемые документы"] == ["type:cited-document", "section:Documents"], groups["Цитируемые документы"]
     # читают файл тем же разбором, что и `kb:moc`, и метки по-прежнему собирают карточки в группы
     moc = _mod("kb_moc")
     read = {name: rules for name, rules, _cap in moc.read_groups()}
@@ -2680,7 +2681,7 @@ def test_card_templates_guide_matches_the_code_and_ships_with_the_engine(_t):
         assert done == set(C.SEVERITY), f"{rel}: «{works}» у {sorted(done)}, а код ставит {sorted(C.SEVERITY)}"
         for code in done:
             assert rows[code][0] == C.SEVERITY[code], f"{rel}: {code} — серьёзность {rows[code][0]}, в коде {C.SEVERITY[code]}"
-        assert {c for c, (_s, r) in rows.items() if r.startswith(later)} == {"V-14", "V-21"}, rel
+        assert {c for c, (_s, r) in rows.items() if r.startswith(later)} == {"V-14"}, rel
         assert rows["V-11"] == ("—", "—"), f"{rel}: V-11 зарезервирован"
         assert "kb:lint" in text and "kit:doctor" in text and ".new" in text, f"{rel}: нет связи с линтером, доктором или доставкой"
 

@@ -3951,7 +3951,8 @@ def _pick(ranked: list, limit: int, skip: str, AC, stubs: bool = True, appendabl
     нет, и решать по имени и по тем, кто на неё ссылается.
 
     `appendable` — кандидаты принимают знание (`into`): зеркало записи (`kb:record`) пересоздаётся из мастера в `Raw/`, дописанное
-    в него пропало бы, поэтому в такой список оно не входит. Для ссылок оно годится, как любая карточка.
+    в него пропало бы, а единица цитируемого документа, решение и вопрос закрыты (`aurora_common.is_closed_card`), поэтому в
+    такой список они не входят. Для ссылок они годятся, как любая карточка.
     """
     out = []
     for weight, c in ranked:
@@ -3964,7 +3965,7 @@ def _pick(ranked: list, limit: int, skip: str, AC, stubs: bool = True, appendabl
             continue
         if c.stem == skip:
             continue
-        if appendable and AC.is_record_mirror(c.fm, c.text):
+        if appendable and AC.is_closed_card(c.fm, c.text, c.section):
             continue
         stub = AC.is_placeholder(c.fm, c.text)
         if stub and not stubs:
@@ -8004,7 +8005,7 @@ def distill_queue(cfg: dict, cwd: str, defer_refresh: bool = False) -> list:
     лишних пересборки из 423. Новые карточки идут сразу: по их тезисам вынос находит
     новые сущности для следующего оборота (1.138.0).
     """
-    from aurora_common import card_body, frontmatter, is_placeholder, is_record_mirror, walk_md
+    from aurora_common import card_body, frontmatter, is_closed_card, is_placeholder, walk_md
     # Словарь и документ — типы, чьё правило 6 коротко (справочник — сотни знаков): запас под него небольшой, иначе на узком
     # окне бюджет обнулялся бы и «не влезающие» словари перестали бы попадать в очередь.
     window = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + 400 + 300)
@@ -8014,8 +8015,8 @@ def distill_queue(cfg: dict, cwd: str, defer_refresh: bool = False) -> list:
                      skip_archive=True):
         text = open(p, encoding="utf-8", errors="ignore").read()
         fm = frontmatter(text)
-        if is_record_mirror(fm, text):
-            continue                      # зеркало записи дословно повторяет мастер в Raw/: ни тезиса, ни разреза
+        if is_closed_card(fm, text):
+            continue                      # зеркало записи повторяет мастер в Raw/, единица документа — его источник: ни тезиса, ни разреза
         kind = (fm.get("kind") or "").strip().strip('"')
         if kind == "knowledge":
             # Заготовке писать тезис не из чего: в ней «знаний пока нет». Модель всё равно

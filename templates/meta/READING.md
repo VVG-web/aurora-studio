@@ -21,7 +21,7 @@
 `Concepts` (понятия домена), `Processes` (алгоритмы и процессы), `Glossary` (термины),
 `Systems` (системы и интеграции), `Roles`, `Statuses`, `Requirements` (требования
 заказчика), `Reference` (справочники), `Specs`, `Decisions` (зеркала решений из `Raw/decisions/`),
-`Questions` (зеркала вопросов к заказчику из `Raw/questions/`), `MOC`, `_archive`, `_assets`, `meta`.
+`Questions` (зеркала вопросов к заказчику из `Raw/questions/`), `Documents` (единицы законов и контрактов — статьи и пункты, дословно, их нарезает `kb:cite`), `MOC`, `_archive`, `_assets`, `meta`.
 
 ## 2. Три вида файлов, и путать их дорого
 

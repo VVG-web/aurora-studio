@@ -597,6 +597,22 @@ def is_record_mirror(fm: dict, text: str = "") -> bool:
     return bool(sources) and all(s.replace("\\", "/").lstrip("./").startswith(RECORD_HOMES) for s in sources)
 
 
+# Типы карточек, закрытых для дописывания, тезиса, выноса и слияния: единица цитируемого документа (слово закона или
+# контракта) и записи человека (решение, вопрос). Знание о теме заводят в карточке знаний, а эти карточки не меняют.
+CLOSED_TYPES = ("cited-document", "decision", "question")
+
+
+def is_closed_card(fm: dict, text: str = "", section: str = "") -> bool:
+    """Карточка закрыта: добавлять в неё нечего. Единица цитируемого документа, решение, вопрос — по типу (у DR прежних схем
+    тип даёт раздел) и любое зеркало записи из `Raw/` — по происхождению (`is_record_mirror`)."""
+    return card_type(fm, section) in CLOSED_TYPES or is_record_mirror(fm, text)
+
+
+def is_cited_unit(fm: dict) -> bool:
+    """Карточка — единица цитируемого документа (`kb:cite`): дословный текст статьи или пункта."""
+    return (fm.get("type") or "").strip().strip('"') == "cited-document"
+
+
 def decision_header(fm: dict, text: str = "") -> str:
     """Шапка DR по состоянию решения — одна для `ctx_pack` и `spec_pack`. Решение не «знание
     из источника», а решение в определённом состоянии. У отклонённого — причина отказа, у

@@ -696,6 +696,11 @@
    "reason": "отчёт по флагу --report; карточки требований пишет try_write_card",
    "calls": 1
   },
+  "scripts/kb_cited.py:archive_unit": {
+   "kind": "other",
+   "reason": "перенос единицы цитируемого документа, которой больше нет в источнике, в _archive (shutil.move); текст с записью в истории пишет вход записи (put_text)",
+   "calls": 1
+  },
   "scripts/kb_code_graph.py:main": {
    "kind": "other",
    "reason": "граф кода в meta/: служебный файл",

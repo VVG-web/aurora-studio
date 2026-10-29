@@ -12,8 +12,9 @@
   python3 .aurora/scripts/build_plan.py --status            # прогресс по манифесту
 
 Порядок обхода задан `build.md` (сначала терминология, потом то, что на неё ссылается):
-Reference → Statuses → Raw/project → Sources/Confluence → Sources/Web → Raw/Extracted (тексты
-вложений страниц) → встречи. Страницы идут раньше своих вложений: карточка страницы уже есть, когда
+Reference → Statuses → Raw/project → Raw/customer → Raw/contract → Raw/laws → Sources/Confluence → Sources/Web →
+Raw/Extracted (тексты вложений страниц) → встречи. Законы, контракты и договоры, которые цитируют по статьям и пунктам, в план
+не входят: их нарезает `kb:cite` (`legal_slicer`, `cited: true|false` в шапке источника). Страницы идут раньше своих вложений: карточка страницы уже есть, когда
 знание из вложения дописывается в неё, а не заводит рядом документ-двойник. Внутри группы —
 по возрастанию размера: мелкие источники дают карточки быстрее и наполняют глоссарий,
 на который опираются крупные.
@@ -39,12 +40,13 @@ from aurora_common import (HEAD_BLOCK_TAIL, KB_ROOT, aliases as card_aliases, ca
                            head_text,
                            card_sources, fold_hard, sources_block,
                            quote_safe, split_frontmatter, split_tail, translit_names, walk_md,
-                           is_meeting, is_record_mirror, meeting_turns, title_from_stem, with_meeting_mark)
+                           is_closed_card, is_meeting, is_record_mirror, meeting_turns, title_from_stem, with_meeting_mark)
 from aurora_common import frontmatter as _head_fields  # noqa: E402
 
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
 from aurora_common import TODAY, file_hash, replace_file  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
+import legal_slicer as LS  # noqa: E402 — какие источники цитируемые (`kb:cite`), а не материал для разбора
 from card_types import (UnknownCardType, fit_kind, registry_for, render_card,  # noqa: E402 — единый источник
                         section_type_table, try_write_card)  # «раздел → тип», шапка по шаблону и вход записи
 
@@ -63,6 +65,10 @@ GROUPS = [
     ("Raw/project", os.path.join("Raw", "project")),
     ("Raw/customer", os.path.join("Raw", "customer")),
     ("Raw/contract", os.path.join("Raw", "contract")),
+    # Законы и контракты, которые нужно цитировать, разбирает `kb:cite`, а не модель: `sources()` такие файлы пропускает
+    # (`legal_slicer.is_cited_source`). Здесь остаётся закон с `cited: false` в шапке — обычный документ, который разбирается
+    # как все. Без группы он не разбирался бы никем: `Raw/laws` раньше в план не входила вовсе.
+    ("Raw/laws", os.path.join("Raw", "laws")),
     ("Confluence", os.path.join("Sources", "Confluence")),
     # Веб-страницы — такой же документ, как страница вики: их наливает `sync:web` по
     # списку адресов, который задал человек. Вложения лежат в `_files/` и в план не
@@ -351,6 +357,10 @@ def sources() -> list:
                 # получать вердикт «пусто» и держать его в плане вечно. Его место —
                 # в базе целиком, под картой «Шаблоны» (`kb:moc`), без разбора.
                 if is_template(path):
+                    continue
+                # Закон и контракт, которые нужно цитировать, разбирает не модель, а `kb:cite`: единицы переносятся
+                # дословно. Обычным разбором такой источник превратился бы в пересказ.
+                if LS.is_cited_source(path, "", "."):
                     continue
                 out.append((group, path, size))
     return out
@@ -1050,10 +1060,15 @@ def append_card(path: str, old_text: str, body: str, source: str, apply: bool,
     Текст блока не изменился — карточку не трогаем: тезис написан по этому же тексту, и
     снимать с него отметку значило бы гонять модель по неизменному знанию.
     """
-    if is_record_mirror(_head_fields(old_text), old_text):
-        # Зеркало записи пересоздаётся из мастера в Raw/ (`kb:record --mirror`): дописанное в него пропало бы.
-        print(f"build_plan: {os.path.basename(path)} — зеркало записи из Raw/, дописывать в него нельзя: знание о теме "
-              "заведите в карточке знаний, а запись правьте в её мастер-файле", file=sys.stderr)
+    if is_closed_card(_head_fields(old_text), old_text):
+        name = os.path.basename(path)
+        if is_record_mirror(_head_fields(old_text), old_text):
+            # Зеркало записи пересоздаётся из мастера в Raw/ (`kb:record --mirror`): дописанное в него пропало бы.
+            print(f"build_plan: {name} — зеркало записи из Raw/, дописывать в него нельзя: знание о теме "
+                  "заведите в карточке знаний, а запись правьте в её мастер-файле", file=sys.stderr)
+        else:
+            print(f"build_plan: {name} — карточка закрыта: добавлять в неё нечего (единица цитируемого документа, решение "
+                  "или вопрос). Знание о теме заведите в карточке знаний", file=sys.stderr)
         return 1
     head, _sep, rest = (old_text.partition("\n---\n") if old_text.startswith("---")
                         else ("", "", old_text))
@@ -1808,6 +1823,8 @@ def thin_sources(manifest: dict, group: str) -> list:
         n = counts.get(path, 0)
         if n == 0 or not os.path.isfile(path):
             continue
+        if ((manifest["sources"][path] or {}).get("by")) == "kb:cite":
+            continue          # нарезан дословно по статьям и пунктам: «тонко» для него не бывает, перечитывать моделью нечего
         # Отозванную авторами страницу не перечитывают: её знание в базу не идёт вовсе.
         if retired_page(path):
             continue

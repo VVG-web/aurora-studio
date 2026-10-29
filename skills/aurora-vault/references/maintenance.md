@@ -837,7 +837,7 @@ python3 .aurora/scripts/kb_scrub.py --include-raw      # заглянуть и �
 `Raw/customer`, `Raw/contract`, `Sources/Confluence`, `Sources/JIRA`. Значит `Decisions/`,
 `Questions/` и правила базы (`meta/conventions.md`, `meta/golden_questions.md`) не вернутся
 ниоткуда, а `Reference/` — первая группа плана сборки, терминология для остальных
-источников.
+источников. Единицы цитируемых документов (`Documents/`) вернёт `kb:cite` из `Raw/laws/` и документов с `cited: true`: сброс их сносит как машинные карточки.
 
 **`--keep-handmade`** оставляет ровно эти четыре вещи: `Decisions/`, `Questions/`,
 `Reference/` и правила базы в `meta/`. Всё остальное уходит в обоих режимах — в том числе

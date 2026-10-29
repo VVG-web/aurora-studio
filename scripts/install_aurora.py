@@ -427,6 +427,12 @@ _Мета-вопросы:_
 ## Decisions
 - Индекс: [[Decisions/_index|Decisions]]
 
+## Questions
+- Индекс: [[Questions/_index|Questions]]
+
+## Documents
+- Индекс: [[Documents/_index|Documents]]
+
 ## MOC
 - Индекс: [[MOC/_index|MOC]]
 """
@@ -434,7 +440,7 @@ _Мета-вопросы:_
 
         for folder in [
             "Concepts", "Processes", "Glossary", "Systems", "Roles", "Statuses",
-            "Decisions", "Requirements", "Reference", "Specs", "MOC",
+            "Decisions", "Questions", "Documents", "Requirements", "Reference", "Specs", "MOC",
         ]:
             # Пометка генерации — не украшение: без неё `kb:index` считает заготовку
             # текстом человека и не трогает её никогда. Проект начинал жизнь с
