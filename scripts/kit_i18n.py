@@ -189,7 +189,7 @@ REASON_FUNCS = ("why_readonly", "why_service", "why_no_create", "graph_state", "
 # `agent_core` в каталог сообщений не входит.
 ENGINE_REASONS = {"aurora_common.py": ("mcp_check",),
                   "agent_core.py": ("mcp_probe", "mcp_no_kit"),
-                  # настоящий запуск graphify для «Установки» (`/api/install/access`, поле `why`)
+                  # настоящий запуск graphify для страницы «Установка» (поле `why` ответа о доступности)
                   "aurora_extras.py": ("run_probe",),
                   # причина отказа одного сервера проверки (`servers.<имя>.error`) рождается в адаптере
                   os.path.join("agents", "pydantic_ai_adapter.py"): ("mcp_probe",)}

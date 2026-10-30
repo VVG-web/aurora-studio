@@ -264,6 +264,8 @@ def test_the_panel_shows_the_adapter_alarm_on_every_page(tmp: Path):
         AG._write_alarm({"bot:ревью": {"at": "2026-10-07T07:00:00Z", "why": "venv не установлен",
                                        "project": "/x/PRJ", "calls": 3}})
         rows = ck.adapter_alarm()
+        # живая полоса называет пользователя панели (для кого проверено); в файле тревоги имени нет
+        assert rows and isinstance(rows[0].pop("user", None), str), rows
         # строка прежнего вида (без области и вида) читается как неисправность адаптера, лекарство — «Установка»
         assert rows == [{"path": "bot:ревью", "area": "adapter", "kind": "adapter_error", "sub": "",
                          "fix": "install", "args": {}, "at": "2026-10-07T07:00:00Z",
