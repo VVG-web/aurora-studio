@@ -59,7 +59,7 @@ KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
-from aurora_common import (ENGINE_DIRS, attachment_answers_problem, child_env, confluence_block,  # noqa: E402
+from aurora_common import (CODE_DIR, ENGINE_DIRS, attachment_answers_problem, child_env, confluence_block,  # noqa: E402
                            engine_dir, head_value,
                            ext_api_problem, ext_behind, ext_safe_relpath, is_folder_guide, kit_mcp_permission, load_manifest, local_view, mtime_stamp,
                            personal_kit_file, real_inside, real_rel, replace_file, same_origin, utc_slug, utc_stamp,
@@ -349,6 +349,7 @@ READONLY = (
     ("Raw/srs", "доказательная часть: согласованную спецификацию не правят задним числом — новая версия кладётся рядом"),
     ("Raw/Extracted", "машинные транскрипты вложений: правка не переживёт повторную конвертацию — правьте оригинал"),
     ("Sources", "зеркало внешней системы: правку сотрёт следующий синк"),
+    ("Code", "клон репозитория кода: правку сотрёт следующая синхронизация — код правят в его репозитории"),
 )
 # База знаний выводится из источников — правится корректировкой, а не руками. Кроме правил базы
 # в `meta/`. Решения, вопросы и рукописные справочники пишет человек, но в `Raw/decisions|questions|reference`:
@@ -517,6 +518,10 @@ def file_tree(project: str, limit: int = FILES_LIMIT) -> dict:
         rel_dir = os.path.relpath(cur, root).replace("\\", "/")
         if rel_dir == ".":
             rel_dir = ""
+        # Клоны репозиториев кода (`Code/<имя>/`) в дерево не разворачиваются: один клон — десятки тысяч файлов,
+        # и они съели бы предел строк ответа. Видны описание папки и сами репозитории — в разделе «Код».
+        if rel_dir.casefold() == CODE_DIR.casefold():
+            dirs[:] = []
         for name in sorted(files):
             if name in skip or name.startswith("."):
                 continue
@@ -546,7 +551,7 @@ def file_tree(project: str, limit: int = FILES_LIMIT) -> dict:
 # Где заводить файлы законно. Структура папок фиксирована движком, и «создать» в
 # `Sources/Confluence` означало бы файл, который сотрёт следующий синк.
 MAKEABLE = ("Workspaces", "Raw/decisions", "Raw/questions", "Raw/reference",
-            "Raw/corrections", "Raw/project", "Raw/examples", "Deliverables/work")
+            "Raw/corrections", "Raw/project", "Raw/examples", "Deliverables/work", "Artifacts/Backlog")
 
 
 # Единственный файл в корне проекта, который запись заводит сама: кнопка «.gitignore» раздела
@@ -3563,7 +3568,7 @@ def find_projects(roots: list, depth: int = 3) -> list:
             dirs[:] = [d for d in dirs if not d.startswith(".") and
                        d not in ("node_modules", "__pycache__", "Sources", "Raw",
                                  "AuroraKnowledgeDB", "Artifacts", "Deliverables",
-                                 "Workspaces", "Templates", "Prompts")]
+                                 "Workspaces", "Templates", "Prompts", CODE_DIR)]
             if dirpath.count(os.sep) - base_depth >= depth:
                 dirs[:] = []
             if "aurora.config.yaml" in files and dirpath not in seen:

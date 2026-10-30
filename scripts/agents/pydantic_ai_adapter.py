@@ -466,13 +466,20 @@ def resolve_project_path(root: str, rel: str) -> str:
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if here not in sys.path:        # list_dir зовёт функцию на каждую запись: без этой проверки sys.path разбухает
         sys.path.insert(0, here)
-    from aurora_common import read_verdict
+    from aurora_common import code_model_refusal, read_verdict
     base = os.path.abspath(root)
     joined = os.path.join(base, rel)
     why = read_verdict(joined, base, strict=False, every_file=True)
     if why:
         raise ValueError(_REFUSED[why])
-    return os.path.realpath(joined)
+    # Клон репозитория кода (`Code/<имя>/`): модели — только с разрешения репозитория. Сверяется и путь, как его
+    # прислали, и цель: ссылка из `Artifacts/` в клон — не обход.
+    real = os.path.realpath(joined)
+    for where, start in ((os.path.abspath(joined), base), (real, os.path.realpath(base))):
+        refusal = code_model_refusal(base, os.path.relpath(where, start))
+        if refusal:
+            raise ValueError(refusal)
+    return real
 
 
 def register_tools(agent, allowed: list) -> None:

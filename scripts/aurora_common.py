@@ -2413,6 +2413,47 @@ ENGINE_DIR = ".aurora"
 LEGACY_ENGINE_DIR = ".opencode"
 ENGINE_DIRS = (ENGINE_DIR, LEGACY_ENGINE_DIR)
 
+# Клоны репозиториев кода (`code:sync`, 1.195.0): только для чтения, содержимое вне git проекта. Обходчики корня
+# проекта в эту папку не заходят, а модель видит файлы клона только с разрешения репозитория (`code_repos:` → `models`).
+# «Чистая комната» — артефакты по коду, устроена как `Artifacts/`.
+CODE_DIR = "Code"
+CLEANROOM_DIR = "CleanRoom"
+
+
+def code_repo_of(rel: str) -> str:
+    """Имя репозитория кода, в клоне которого лежит путь `rel` (от корня проекта, любые черты): `Code/app/a.py` → `app`.
+
+    Сама папка `Code/`, её описание и пометка (`README.md`, `.gitkeep`) — пусто: это не клон. Регистр имени папки не
+    важен: на macOS и Windows `code/` — та же папка. Путь нормализуется: `Raw/../Code/app` — тоже клон."""
+    import posixpath
+    rel = posixpath.normpath(str(rel or "").replace("\\", "/").lstrip("/"))
+    parts = [p for p in rel.split("/") if p and p != "."]
+    if len(parts) < 2 or parts[0].casefold() != CODE_DIR.casefold() or parts[1] == "..":
+        return ""
+    if len(parts) == 2 and parts[1] in (FOLDER_GUIDE, ".gitkeep"):
+        return ""
+    return parts[1]
+
+
+def code_model_refusal(project: str, rel: str) -> str:
+    """Почему файл клона кода не отдаётся модели, — или пусто, если отдаётся (путь не в клоне или репозиторию это
+    разрешено переключателем «Модели» в разделе «Код»).
+
+    Владелец решил (30.10.2026): код уходит моделям только по разрешению у каждого репозитория, по умолчанию нельзя.
+    Граница одна для инструментов чтения модели и для вложений задания. Реестр не прочитался — нельзя: молчаливое
+    «можно» на сбое отдало бы код без спроса."""
+    name = code_repo_of(rel)
+    if not name:
+        return ""
+    try:
+        import code_repos
+        if code_repos.models_allowed(project, name):
+            return ""
+    except Exception:  # noqa: BLE001 — сбой чтения реестра закрывает, а не открывает
+        pass
+    return (f"код репозитория «{name}» моделям не отдаётся: разрешение даёт переключатель «Модели» "
+            "у репозитория в разделе «Код»")
+
 
 def engine_dir(project) -> str:
     """Папка движка проекта (имя от корня проекта): `.aurora`, а у проекта, который ещё не

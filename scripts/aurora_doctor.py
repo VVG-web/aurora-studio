@@ -78,7 +78,7 @@ STRUCTURE_FILE = ROOT / ".aurora" / "structure_dirs.txt"
 ENGINE_DIRS_TOP = {".git", ".aurora", ".claude", ".cursor", ".opencode", ".codex", ".gemini",
                    ".windsurf", ".agents"}
 # Внутри этих корней второй уровень задаётся движком (свои подпапки заводить нельзя).
-MANAGED_ROOTS = ("Artifacts", "AuroraKnowledgeDB", "Raw", "Sources", "Deliverables")
+MANAGED_ROOTS = ("Artifacts", "AuroraKnowledgeDB", "Raw", "Sources", "Deliverables", "CleanRoom")
 
 
 def artifact_dirs() -> dict:
@@ -409,6 +409,44 @@ def check_structure(verbose: bool = False):
     return errors, warns, lines
 
 
+def check_code_dirs() -> tuple:
+    """Папка `Code/` — клоны репозиториев кода (`code:sync`). → (ошибки, предупреждения).
+
+    Подпапку заводит реестр (`code_repos:` в aurora.config.yaml), а не человек: ничья папка — замечание, как ничьё
+    зеркало в `Sources/`. Репозиторий в реестре без клона — замечание: `code:sync` его склонирует. Клон, попавший в
+    индекс git проекта, — ошибка: правило `Code/*` в .gitignore задним числом не действует, а чужой код уезжал бы в
+    историю проекта при каждой фиксации."""
+    errors, warns = [], []
+    try:
+        import code_repos as CREPO
+        repos = CREPO.read_repos(str(ROOT))
+        stray = CREPO.stray_dirs(str(ROOT))
+    except Exception:  # noqa: BLE001 — старый движок или битый реестр: о клонах судить не по чему
+        repos, stray = None, []
+    if repos is not None:
+        if stray:
+            warns.append(f"Code/: папки без записи в реестре репозиториев: {', '.join(stray)} → подключите "
+                         "репозиторий в разделе «Код» или уберите папку: клоны заводит только code:sync")
+        lost = sorted(n for n in repos if not (CREPO.clone_path(str(ROOT), n) / ".git").exists())
+        if lost:
+            warns.append(f"репозитории кода в реестре без клона в Code/: {', '.join(lost)} → выполните code:sync --apply")
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", str(ROOT), "-c", "core.quotepath=false", "ls-files", "-z", "--", "Code"],
+                             capture_output=True, timeout=60)
+        tracked = [r for r in out.stdout.decode("utf-8", "replace").split("\0") if r] if out.returncode == 0 else []
+    except Exception:  # noqa: BLE001 — нет git: индекса нет
+        tracked = []
+    # Клон, добавленный `git add -A`, ложится в индекс одной записью-ссылкой (`Code/<имя>`), скопированный без `.git` —
+    # файлами: и то и другое — содержимое клона в истории проекта. Описание папки и её пометка — законные.
+    clones = sorted({r.split("/")[1] for r in tracked if "/" in r and r.split("/")[1] not in ("README.md", ".gitkeep")})
+    if clones:
+        errors.append(f"клоны кода лежат в индексе git проекта: {', '.join('Code/' + c for c in clones)} → "
+                      f"правило .gitignore не действует задним числом, уберите из индекса: "
+                      f"git rm -r --cached {' '.join('Code/' + c for c in clones)}")
+    return errors, warns
+
+
 def check_portable_names() -> list:
     """Имена, которые не пройдут на Windows, macOS или Linux. → предупреждения.
 
@@ -520,6 +558,8 @@ BLOCKER_WHY = {
         "числом: файлы продолжают уезжать в общий репозиторий, хотя закрыты",
     "структурные папки вне схемы движка": "содержимое нестандартной папки движок не видит: "
         "оно выпадает из базы, поиска и отчётов",
+    "клоны кода лежат в индексе git проекта": "чужой код уезжает в историю проекта с каждой фиксацией: "
+        "растёт репозиторий, а секреты и лицензии репозитория кода оказываются у всех, кому виден проект",
     "нет aurora.config.yaml": "без настройки движок не знает проекта — имени, источников, "
         "папок, — и ни одна команда не работает правильно",
     "aurora.config.yaml: project.name": "по имени и slug проект узнают панель, поиск для "
@@ -998,6 +1038,9 @@ def main() -> int:
     s_err, s_warn, s_lines = check_structure(structure_verbose)
     errors += s_err
     warns += s_warn
+    c_err, c_warn = check_code_dirs()
+    errors += c_err
+    warns += c_warn
 
     print("Aurora doctor —", ROOT)
     if engine_ver:

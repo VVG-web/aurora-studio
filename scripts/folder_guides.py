@@ -26,7 +26,7 @@ BLOCK_RE = re.compile(r"<!-- aurora:folder:begin.*?-->.*?<!-- aurora:folder:end 
 FIELDS = (("what", ""), ("put", "Что класть"), ("not", "Чего не класть"), ("who", "Кто пишет"),
           ("nested", "Вложенные папки"))
 # Корни, у которых второй уровень задаёт кит (`aurora_doctor.MANAGED_ROOTS`).
-MANAGED_ROOTS = ("Artifacts", "AuroraKnowledgeDB", "Raw", "Sources", "Deliverables")
+MANAGED_ROOTS = ("Artifacts", "AuroraKnowledgeDB", "Raw", "Sources", "Deliverables", "CleanRoom")
 
 
 def source(kit) -> Path:

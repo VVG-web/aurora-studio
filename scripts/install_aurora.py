@@ -128,6 +128,11 @@ AuroraKnowledgeDB/meta/graphify/
 # каждый восьмой коммит и вечно грязное дерево. Дата обновления базы для команды — в
 # AuroraKnowledgeDB/meta/kb_updated.json, она в git (1.168.0).
 AuroraKnowledgeDB/meta/run_log.md
+# Клоны репозиториев кода (`code:sync`): чужой код в историю проекта не едет — у каждого свой клон, состав
+# записан в aurora.config.yaml (`code_repos:`). В git остаются только описание папки и её пометка.
+Code/*
+!Code/.gitkeep
+!Code/README.md
 """
 
 

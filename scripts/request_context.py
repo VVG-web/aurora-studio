@@ -49,6 +49,9 @@ ANY_DEPTH_DIRS = {".git", ".ssh", ".aws", "node_modules", ".venv", "venv", "__py
                   ".sisyphus"}
 ROOT_DIRS = {"local", "runs", "state"}
 ENGINE_DIRS = (".aurora", ".opencode")      # копия `aurora_common.ENGINE_DIRS` (модуль легче: без импорта); равенство держит тест
+# Клоны репозиториев кода у корня проекта: в подсказки не идут, в задание — только с разрешения репозитория
+# (`aurora_common.code_model_refusal`). Копия `aurora_common.CODE_DIR`; равенство держит тест.
+CODE_DIR = "Code"
 NEVER_DIRS = ANY_DEPTH_DIRS | ROOT_DIRS
 SECRET_NAME = re.compile(r"^(\.env.*|.*\.(pem|key|p12|pfx|jks|keystore|kdbx|ppk)|id_(rsa|dsa|ed25519|ecdsa)\w*|"
                          r"\.?mcp\.json|[._]netrc|\.npmrc|\.pypirc|\.git-credentials|\.pgpass|\.dockercfg|"
@@ -164,6 +167,16 @@ def _read_verdict(path: str, boundary: str) -> str:
     return read_verdict(path, boundary, strict=True, every_file=True)
 
 
+def _code_refusal(cwd: str, rel: str) -> str:
+    """Файл клона кода без разрешения репозитория отдавать модели — причина отказа; иначе пусто (`aurora_common`)."""
+    import sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from aurora_common import code_model_refusal
+    return code_model_refusal(cwd, rel)
+
+
 def _read(full: str, cap: int) -> tuple:
     with open(full, "rb") as f:
         data = f.read(cap * 4 + 1)
@@ -194,8 +207,16 @@ def read_context(cwd: str, paths: list) -> tuple:
                 notes.append(f"«{rel}» — в папке {len(files)} текстовых файлов, взяты первые "
                              f"{FOLDER_FILES}")
                 files = files[:FOLDER_FILES]
+        refused: set = set()
         for f in files:
             frel = os.path.relpath(f, real_cwd).replace(os.sep, "/")
+            # Код репозитория уходит модели только с его разрешения: одна строка на репозиторий, а не на файл.
+            why = _code_refusal(cwd, frel)
+            if why:
+                if why not in refused:
+                    refused.add(why)
+                    notes.append(f"«{frel}» — {why}")
+                continue
             # os.walk выдаёт файлы-ссылки по имени ссылки: читает же open() цель. Граница одна на
             # движок (`aurora_common.read_verdict`), здесь в строгой мерке: секретное имя и
             # служебная папка закрыты и по имени ссылки, и по цели — и для `.md`-ссылки на
@@ -363,7 +384,9 @@ def suggest(cwd: str, query: str, mcp_names=(), kit: str = "", limit: int = 20) 
             out.append({"kind": "mcp", "value": "@" + n, "label": n})
     root = os.path.realpath(cwd)
     for base, dirs, names in os.walk(root):
-        dirs[:] = sorted(d for d in dirs if d.lower() not in NEVER_DIRS and not d.startswith("."))
+        # клоны кода (`Code/` у корня) в подсказки не идут: их файлы модель без разрешения репозитория не читает
+        dirs[:] = sorted(d for d in dirs if d.lower() not in NEVER_DIRS and not d.startswith(".")
+                         and not (base == root and d.casefold() == CODE_DIR.casefold()))
         rel_base = os.path.relpath(base, root)
         for d in dirs:
             rel = os.path.normpath(os.path.join(rel_base, d)).replace(os.sep, "/")
