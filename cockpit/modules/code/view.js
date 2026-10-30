@@ -9,6 +9,7 @@ const MASK = "••••••";
 const NO_CRED = {auth: "system", user: "", secret: "", ssh_key: "", ssh_key_text: ""};
 const FIELDS = ["url", "provider", "branch", "pin", "include", "exclude", "access", "models", "publish"];
 
+let CTX = null;
 let D = null, FORM = null, CREDS = {}, DIRTY = false, OPEN = "", PROJECT = "", ADD = null, MSG = null;
 
 export function mount(ctx){
@@ -47,6 +48,7 @@ async function load(ctx, keepForm){
 }
 
 function draw(ctx){
+  CTX = ctx;
   const box = ctx.$("#codeBody");
   box.innerHTML = "";
   if (MSG) box.append(message(ctx));
@@ -209,7 +211,14 @@ function authFields(ctx, c, provider, redraw){
 // нет — тогда остаётся одно поле.
 const pick = (ctx, input, opts) => ctx.ui && ctx.ui.pathField ? ctx.ui.pathField(input, opts) : input;
 
-function touch(){ DIRTY = true; }
+// Кнопки решаются при отрисовке, а ввод раздел не перерисовывает (поле потеряло бы фокус): правка сразу включает
+// «Сохранить» и «Отменить» и гасит синхронизацию того, что ещё не сохранено.
+function touch(){
+  DIRTY = true;
+  if (!CTX) return;
+  CTX.$$('[data-dirty="on"]').forEach(b => { b.disabled = false; });
+  CTX.$$('[data-dirty="off"]').forEach(b => { b.disabled = true; });
+}
 
 function field(ctx, label, control, hint){
   const {el} = ctx;
@@ -274,9 +283,9 @@ function repoCard(ctx, name){
   if (st.path_overflow) body.push(el("div", {class: "warnbox", style: "margin:8px 0"}, t("code.long_paths")));
   body.push(statsView(ctx, st.stats));
   body.push(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:10px"},
-    el("button", {class: "btn sm primary", disabled: saved && !DIRTY ? null : "", title: DIRTY ? t("code.save_first") : null,
+    el("button", {class: "btn sm primary", "data-dirty": "off", disabled: saved && !DIRTY ? null : "", title: DIRTY ? t("code.save_first") : null,
       onclick: () => runSync(ctx, name, false)}, t("code.sync")),
-    st.state === "dirty" || st.state === "foreign" ? el("button", {class: "btn sm", disabled: DIRTY ? "" : null,
+    st.state === "dirty" || st.state === "foreign" ? el("button", {class: "btn sm", "data-dirty": "off", disabled: DIRTY ? "" : null,
       onclick: () => runSync(ctx, name, true)}, t("code.reset")) : null,
     el("button", {class: "btn sm", onclick: () => { OPEN = OPEN === name ? "" : name; draw(ctx); }},
       OPEN === name ? t("code.edit_close") : t("code.edit")),
@@ -348,9 +357,9 @@ function editForm(ctx, name){
     permRow(ctx, rec, () => draw(ctx)),
     ...authFields(ctx, CREDS[name], rec.provider, () => draw(ctx)),
     el("div", {class: "row", style: "gap:8px;flex-wrap:wrap"},
-      el("button", {class: "btn sm primary", disabled: DIRTY ? null : "", onclick: () => save(ctx, false)}, t("code.save")),
+      el("button", {class: "btn sm primary", "data-dirty": "on", disabled: DIRTY ? null : "", onclick: () => save(ctx, false)}, t("code.save")),
       el("button", {class: "btn sm", onclick: () => checkRepo(ctx, name)}, t("code.check")),
-      el("button", {class: "btn sm", disabled: DIRTY ? null : "", onclick: () => { DIRTY = false; OPEN = ""; load(ctx, false); }},
+      el("button", {class: "btn sm", "data-dirty": "on", disabled: DIRTY ? null : "", onclick: () => { DIRTY = false; OPEN = ""; load(ctx, false); }},
         t("code.cancel"))),
     row.check ? checkView(ctx, row.check) : null);
 }
@@ -406,7 +415,7 @@ function footer(ctx){
   const {t, el} = ctx;
   const doc = ctx.lang === "en" ? "docs/en/code-room.md" : "docs/code-room.md";
   return el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:6px"},
-    el("button", {class: "btn sm primary", disabled: Object.keys(FORM).length && !DIRTY ? null : "",
+    el("button", {class: "btn sm primary", "data-dirty": "off", disabled: Object.keys(FORM).length && !DIRTY ? null : "",
       onclick: () => runSync(ctx, "", false)}, t("code.sync_all")),
     el("button", {class: "btn sm", onclick: () => ctx.runWatched("code:status", [])}, t("code.status")),
     el("button", {class: "btn sm", onclick: () => ctx.openDoc(doc)}, t("code.doc")));
