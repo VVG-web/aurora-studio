@@ -98,9 +98,11 @@ def _run(cmd: list, timeout: int = 60) -> subprocess.CompletedProcess:
 
 
 def installed_version(extra_id: str) -> str:
-    """Версия, стоящая в venv надстройки. Пусто — не стоит."""
+    """Версия, стоящая в venv надстройки. Пусто — не стоит.
+    `os.path.isfile`, а не `Path.is_file`: ссылка venv на Python из закрытого чужого профиля даёт отказ в доступе
+    (до Python 3.12 — исключение), а это «для вас не стоит», а не падение «Установки»."""
     vpy = venv_python(extra_id)
-    if not vpy.is_file():
+    if not os.path.isfile(vpy):
         return ""
     dist = EXTRAS[extra_id]["dist"]
     try:
@@ -622,14 +624,14 @@ def _install(extra_id: str, quarantine_days=None) -> dict:
     days = QUARANTINE_DAYS if quarantine_days is None else float(quarantine_days)
     log = []
     vpy = venv_python(extra_id)
-    if vpy.is_file():
+    if os.path.isfile(vpy):
         p = _run([str(vpy), "-I", "-c", "import sys; print('%d.%d' % sys.version_info[:2])"])
         have = tuple(int(x) for x in (p.stdout.strip() or "0.0").split("."))
         if have < ex["min_python"]:
             log.append(f"venv на Python {p.stdout.strip()} — пересоздаю: нужен "
                        f"{'.'.join(map(str, ex['min_python']))}+")
             shutil.rmtree(ex["venv"], ignore_errors=True)
-    if not vpy.is_file():
+    if not os.path.isfile(vpy):
         base = python_for(extra_id)
         if not base:
             need = ".".join(map(str, ex["min_python"]))
@@ -869,7 +871,7 @@ def safe_spec(pkg: str, days=None) -> tuple:
 def graph_mcp() -> dict:
     """{registered, name, command, args} — MCP-сервер графа базы, если graphify стоит."""
     vpy = venv_python("graphify")
-    if not vpy.is_file():
+    if not os.path.isfile(vpy):
         return {}
     try:
         servers = json.loads(kit_mcp_file().read_text(encoding="utf-8")).get("mcpServers") or {}
@@ -888,7 +890,7 @@ def register_graph_mcp() -> str:
     — в git он не уходит. Прежний файл остаётся рядом как `.bak`, оба — только владельцу.
     """
     vpy = venv_python("graphify")
-    if not vpy.is_file():
+    if not os.path.isfile(vpy):
         return "graphify не установлен"
     path = kit_mcp_file()
     data = {}

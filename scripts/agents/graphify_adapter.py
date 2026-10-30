@@ -30,7 +30,7 @@ def python() -> str:
     except ImportError:
         return ""
     vpy = EX.venv_python("graphify")
-    return str(vpy) if vpy.is_file() and EX.installed_version("graphify") else ""
+    return str(vpy) if os.path.isfile(vpy) and EX.installed_version("graphify") else ""
 
 
 def _call(script: str, payload: dict, timeout: int = 600) -> dict | None:
