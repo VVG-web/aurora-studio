@@ -860,3 +860,83 @@ def no_access(script: str, prefix: str) -> str:
     return (f"{script}: нет доступа. Положите в {ENV_LOCAL} (он в .gitignore):\n"
             f"  {prefix}_PAT=<персональный токен>\n"
             f"либо {prefix}_USER= и {prefix}_PASSWORD=")
+
+
+# ------------------------------------------------------------ операции коннектора
+
+class OpFailure(Exception):
+    """Отказ операции коннектора: вид (`kind`: auth, forbidden, not_found, bad_request, conflict, net, config,
+    unsafe, failed) и текст причины. Вид ядро (`connector_ops`) называет человеку на его языке, текст едет рядом."""
+
+    def __init__(self, kind: str, text: str):
+        super().__init__(text)
+        self.kind = kind
+
+
+def http_why(e: Exception) -> str:
+    """Причина сбоя словами сервера: тело ответа называет, что не так с запросом."""
+    import urllib.error
+    if isinstance(e, urllib.error.HTTPError):
+        try:
+            body = e.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            body = ""
+        try:
+            data = json.loads(body)
+            msgs = data.get("errorMessages") or []
+            msgs += [f"{k}: {v}" for k, v in (data.get("errors") or {}).items()]
+            if data.get("message"):
+                msgs.append(str(data["message"]))
+            if msgs:
+                return f"HTTP {e.code}: " + "; ".join(map(str, msgs))[:300]
+        except (ValueError, AttributeError):
+            pass
+        return f"HTTP {e.code}: {body[:200]}".strip()
+    return f"{type(e).__name__}: {e}"[:300]
+
+
+HTTP_KINDS = {400: "bad_request", 401: "auth", 403: "forbidden", 404: "not_found", 409: "conflict"}
+
+
+def failure_of(e: BaseException) -> tuple:
+    """Исключение запроса → (вид отказа, текст). Отказ сервера — по коду ответа, обрыв и таймаут — `net`."""
+    import urllib.error
+    if isinstance(e, OpFailure):
+        return e.kind, str(e)
+    if isinstance(e, UnsafeTarget):
+        return "unsafe", str(e)
+    if isinstance(e, urllib.error.HTTPError):
+        return HTTP_KINDS.get(e.code, "net" if e.code >= 500 or e.code == 429 else "bad_request"), http_why(e)
+    if isinstance(e, (urllib.error.URLError, TimeoutError, ConnectionError, OSError)):
+        return "net", f"{type(e).__name__}: {getattr(e, 'reason', None) or e}"[:300]
+    return "failed", f"{type(e).__name__}: {e}"[:300]
+
+
+def serve_ops(handlers: dict) -> int:
+    """Скрипт операций коннектора: запрос `{"op", "params", "project"}` со stdin → ответ одной строкой JSON в stdout.
+
+    Удача — `{"ok": true, "result": …}`, отказ — `{"ok": false, "kind": …, "error": …}`; код выхода 0 в обоих случаях
+    (отказ — это ответ, а не падение). `handlers` — {имя операции: функция(params, project) → result}; функция
+    сообщает об отказе исключением (`OpFailure` или сбоем запроса — вид выводит `failure_of`). Ответ — чистый ASCII
+    (`\\uXXXX`), чтобы его не испортила кодовая страница трубы на Windows."""
+    try:
+        req = json.loads(sys.stdin.read() or "{}")
+    except ValueError as e:
+        req = str(e)
+    if not isinstance(req, dict):
+        out = {"ok": False, "kind": "bad_request", "error": f"вход — не объект JSON: {req if isinstance(req, str) else ''}"}
+    else:
+        op, params = str(req.get("op") or ""), req.get("params")
+        fn = handlers.get(op)
+        if fn is None:
+            out = {"ok": False, "kind": "unsupported", "error": f"операции «{op}» нет; есть: {', '.join(handlers)}"}
+        else:
+            try:
+                out = {"ok": True, "result": fn(params if isinstance(params, dict) else {},
+                                                str(req.get("project") or "."))}
+            except Exception as e:  # noqa: BLE001 — отказ операции — ответ вызывающему, а не трейсбек
+                kind, text = failure_of(e)
+                out = {"ok": False, "kind": kind, "error": text}
+    sys.stdout.write(json.dumps(out) + "\n")
+    sys.stdout.flush()
+    return 0

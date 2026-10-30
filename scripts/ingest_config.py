@@ -43,27 +43,10 @@ def block_span(text: str) -> tuple:
     """(начало, конец) раздела `ingest:` в тексте или (-1, -1).
 
     Конец — сразу после последней строки с содержимым внутри раздела (с отступом). Пустые строки и
-    комментарии перед следующим разделом ему не принадлежат и при замене остаются на месте."""
-    text = text or ""
-    lines = text.splitlines(keepends=True)
-    offsets = []
-    pos = 0
-    for line in lines:
-        offsets.append(pos)
-        pos += len(line)
-    head = next((i for i, l in enumerate(lines) if re.match(r"ingest:[ \t]*(?:#.*)?\r?\n?$", l)), -1)
-    if head < 0:
-        return (-1, -1)
-    last = head
-    for i in range(head + 1, len(lines)):
-        line = lines[i]
-        if not line.strip():
-            continue                      # пустая строка может быть и внутри раздела
-        if line[0] in " \t":
-            last = i                      # строка с отступом (в том числе комментарий) — внутри раздела
-            continue
-        break                             # ключ или комментарий верхнего уровня: раздел кончился
-    return (offsets[head], offsets[last] + len(lines[last]))
+    комментарии перед следующим разделом ему не принадлежат и при замене остаются на месте. Правило одно на
+    писателей разделов конфига — `aurora_common.top_block_span`."""
+    from aurora_common import top_block_span
+    return top_block_span(text, "ingest")
 
 
 def parse(text: str) -> dict:

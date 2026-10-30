@@ -576,7 +576,7 @@ _Мета-вопросы:_
         self.log("== модули источников ==")
         # Лениво: установку зовёт и `update` из копии старого выпуска, где `aurora_common` в
         # памяти прежний; верхний импорт нового имени ронял бы здесь весь модуль.
-        from aurora_common import load_connector_manifest
+        from aurora_common import connector_scripts, load_connector_manifest
         for man in sorted((KIT_ROOT / "connectors").glob("*/connector.json")):
             # Кривой манифест (нет id, не JSON, корень не объект, api_version из будущего) —
             # строка в отчёт и пропуск одного модуля: остальные и вся установка идут дальше.
@@ -586,10 +586,9 @@ _Мета-вопросы:_
                     self.log(f"  skip (манифест не принят): {line}")
                 continue
             self.copy_file(man, f".aurora/connectors/{m['id']}.json")
-            script = (m.get("run") or {}).get("script", "")
-            if script:
-                # скрипт может лежать рядом с манифестом (доустановленный модуль) или
-                # в scripts/ kit'а (встроенный — его же импортируют панель и publish_doc)
+            for script in connector_scripts(m):
+                # скрипт (запуска или операций) может лежать рядом с манифестом (доустановленный модуль,
+                # операции встроенного) или в scripts/ kit'а (встроенный — его же импортируют панель и publish_doc)
                 src = man.parent / script
                 src = src if src.is_file() else KIT_ROOT / "scripts" / script
                 if src.is_file():

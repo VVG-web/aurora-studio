@@ -108,6 +108,9 @@ connectors/<id>/
   each product has its own (for Confluence, e.g., the list of sync roots is a list of dictionaries).
 - `mirror.legacy_path_key` exists only in the two oldest built-in modules: it enables them in projects where the
   `sources:` section does not exist yet.
+- `operations` (optional) — the module can do more than a mirror: the operations of a role, a task tracker (`tasks`)
+  or a wiki (`wiki`). Which role it plays, which operations it can do and which script runs them — see
+  ["Operations: task tracker and wiki"](#operations-task-tracker-and-wiki);
 - `access.mode` — how the source is reached by default: `internet` («no VPN, needs the internet», the web module), `vpn`,
   `local` or `mixed`. No field — the source counts as available, as always. A project overrides the mode with a
   `source_access:` block (in the panel: «Project settings → Source access mode»); see the
@@ -463,3 +466,213 @@ Required for accepting a module:
 - `--verify` passes (determinism);
 - there is no export date or version in file headers or names — otherwise every run gives a diff on the whole folder;
 - the state is written with full paths from the mirror root — `sync:audit` works by them.
+
+## Operations: task tracker and wiki
+
+A mirror reads a source into git. There is also the way back: create a task in the tracker for a document, link the
+published page to it, publish a document to the wiki. To keep the tracker and the wiki replaceable, the core does not
+know them by name: it knows a **role** and **operation names**, and the connector knows how to run an operation. If
+tomorrow another tracker replaces Jira, a connector that can do the same operations is installed and chosen in the
+project settings; Aurora's code does not change.
+
+| Role | What it is | Built-in connector |
+|---|---|---|
+| `tasks` | task tracker | `jira-dc` (Jira Server / Data Center, REST API v2) |
+| `wiki` | wiki | `confluence-dc` (Confluence Server / Data Center) |
+
+### Manifest: the `operations` field
+
+```json
+"operations": {
+  "role": "tasks",
+  "script": "jira_ops.py",
+  "ops": ["issue_types", "epics", "find_user", "create_issue", "link_page", "get_issue"],
+  "server": "base_url",
+  "defaults": {"project_key": "project_key"}
+}
+```
+
+- `role` — `tasks` or `wiki`; the role of the operations, not the trust role (the top-level `role`);
+- `script` — the operations script: a plain file name. It lies next to the manifest (`connectors/<id>/`) or in the kit's
+  `scripts/`; `update` and `install` put it into the project's `.aurora/scripts/` next to the export script
+  (`aurora_common.connector_scripts`), and `kit:doctor` lists it among the engine files;
+- `ops` — the operations the connector can do. For anything not in the list the core answers "cannot do" and does not
+  call the script;
+- `server` — which connector setting (in its `settings_block`) names the server: it is part of the cache key;
+- `defaults` — default operation parameters taken from the connector settings: `{"parameter": "setting key"}`. For
+  `jira-dc` the tracker project key comes from `atlassian.jira.project_key`.
+
+A manifest without `operations` (a project copy older than the field) still gets the role — by the service role
+(`tasktracker` for `tasks`, `projectwiki` for `wiki`) — and answers an operation with "cannot do — update the project
+engine".
+
+### Which connector is active
+
+The `connectors:` block in `aurora.config.yaml`:
+
+```yaml
+connectors:
+  tasks: jira-dc
+  wiki: confluence-dc
+```
+
+Without the block or the role line, the single installed connector that declares the role is used. If several declare
+it, the operation does not run until a human chooses ("several connectors declare the role"). A chosen connector that is
+not installed or does not declare the role is a refusal with the reason, not a silent substitute.
+
+The panel writes the block: `GET /api/connectors/roles?project=…` returns, per role, the active connector, where the
+choice comes from (`config` — the block, `single` — the only one), whom to choose from (with the operations the
+connector cannot do) and the block snapshot `digest`; `POST /api/connectors/roles/save` with
+`{project, roles: {role: id}, expect: <digest>}` writes the block. An empty id returns the role to the default choice.
+A stale (or missing) snapshot is a 409 answer and nothing is written. The write changes only the `connectors:` block:
+the rest of the config, comments and line endings stay byte for byte. The form in "Project settings" comes in the next
+release.
+
+Core: `scripts/connector_ops.py` — `active(project, role)` (the id of the active connector), `supports(project, role,
+op)`, `call(project, role, op, params, fresh=False)`, `state(project)`, `save(project, roles, expect)`. From a console:
+`python3 .aurora/scripts/connector_ops.py` (who is active) or
+`python3 .aurora/scripts/connector_ops.py --role tasks --op issue_types --params '{"project_key": "PRJA"}'`.
+
+### The call contract
+
+An operation is a separate process. The core runs `python3 <script>` in the project root and writes to stdin:
+
+```json
+{"op": "create_issue", "params": {"project_key": "PRJA", "type": "Story", "summary": "…"}, "project": "/path/to/project"}
+```
+
+The script prints one JSON line to stdout (the last line with an `ok` field is the answer):
+
+```json
+{"ok": true, "result": {"key": "PRJA-12", "url": "https://tracker.example.com/browse/PRJA-12"}}
+{"ok": false, "kind": "auth", "error": "the reason text from the server"}
+```
+
+The exit code is 0 on a refusal too: a refusal is an answer. The limit is 300 seconds per call, then a `net` refusal.
+A ready frame is `sources_core.serve_ops({name: function(params, project)})`: the function returns `result` and reports
+a refusal with `OpFailure(kind, text)` or a request failure — `sources_core.failure_of` derives the kind (401 → `auth`,
+403 → `forbidden`, 404 → `not_found`, 400 → `bad_request`, 409 → `conflict`, 5xx and a broken connection → `net`).
+
+**Refusal kinds** (`kind`). The core names the reason to a human from the `connector_ops.CAUSES` table in Russian and
+English, and passes the connector's text alongside as a detail (`detail`):
+
+| `kind` | What happened |
+|---|---|
+| `config` | the connector is not set up: no server address or another required setting |
+| `auth` | no sign-in (no key in the machine's env file) or the server rejected it |
+| `forbidden` | the key has no rights for the operation |
+| `not_found` | the server did not find what was asked for (an issue, a page, a person) |
+| `bad_request` | the server rejected the request; the parameters do not fit |
+| `conflict` | the server has another version (the page was edited after it was read) |
+| `net` | the server did not answer: network, VPN, timeout, 5xx |
+| `unsafe` | the key is not sent to this address (the address changed, plain http) |
+| `unsupported` | the connector has no such operation |
+| `failed` | another failure |
+
+The core adds its own: `bad_role`, `no_connector`, `ambiguous`, `unknown_connector`, `no_script`, `bad_response` (the
+script did not answer by the contract).
+
+The core's answer (`connector_ops.call`): `{"ok": true, "result": …, "connector": "<id>", "cached": false}` or
+`{"ok": false, "kind": …, "error": "<the reason in words>", "detail": "<the connector's text>", "connector": "<id>"}`.
+
+### Operations of the `tasks` role
+
+| Operation | Parameters | Answer (`result`) |
+|---|---|---|
+| `issue_types` | `project_key` | `{types: [{id, name, description}]}` — without sub-tasks |
+| `epics` | `project_key`, `limit` (default 200, up to 1000) | `{epics: [{key, title, status, done}]}` — not closed first |
+| `find_user` | `email` | `{name, key, display, email}`; `name` is what is set as the assignee |
+| `create_issue` | `project_key`, `type`, `summary`, `description`?, `assignee`?, `labels`?, `components`?, `epic`? | `{key, id, url, epic_via}` |
+| `link_page` | `issue_key`, `url`, `title`? | `{id, created}`; a repeat makes no second link (`created: false`) |
+| `get_issue` | `key` | `{key, summary, status, status_category, type, url}` |
+
+`labels` and `components` are lists of strings. `assignee` is the login from `find_user`. In `jira-dc` the epic is set
+through the Epic Link field: its id is found in `/rest/api/2/field` by the schema `com.pyxis.greenhopper.jira:gh-epic-link`
+(the fallback is the field name); without such a field the epic becomes the parent (`parent`, as in Jira Cloud), and the
+answer says so in `epic_via`. Creating an issue and a link is a single attempt: a retry after a broken connection would
+create a second one.
+
+**Cache.** `issue_types` and `epics` are cached for an hour in the project's `.aurora/state/cache/connectors/` (outside
+git, each machine has its own). The key is the connector, the server address (the `server` setting), the operation and
+the parameters; there are no access keys in the file name or inside. `call(..., fresh=True)` and
+`GET /api/task/options?fresh=1` fetch anew.
+
+### Operations of the `wiki` role
+
+Exactly what publishing (`ship:publish`) does with the wiki. A page in the answers is `{id, title, space, version, by,
+when, ancestors: [{id, title}], body, url}`; `body` is the wiki markup (storage in Confluence), absent if not asked for.
+
+| Operation | Parameters | Answer (`result`) |
+|---|---|---|
+| `find_page` | `space`, `title`, `body`? (default yes) | `{page: a page or null}` |
+| `get_page` | `page_id`, `body`? | the page with version, ancestors, space |
+| `children` | `page_id` | `{pages: [{id, title, version, …}], complete, gap, got}` — all pages of the list (`_links.next` continuations are read); `complete: false` and `gap` — the server did not give everything |
+| `create_page` | `space`, `title`, `body`, `parent_id`? | the created page |
+| `update_page` | `page_id`, `title`, `body`, `version`, `space`?, `parent_id`?, `message`? | the updated page; `version` is the version the caller saw; edited later — `conflict` |
+| `move_page` | `page_id`, `parent_id`, `version`?, `message`? | the page under the new parent; text and title as on the server |
+| `page_space` | `page_id` | `{id, title, space}` |
+
+### A task for a document: `ship:task`
+
+`ship:task <file>` is a plan: which tracker, project key, type, epic, title, assignee, labels, components, which page
+will be linked. `ship:task <file> --apply` creates the task through the active connector of the `tasks` role.
+
+Properties, in order: the command flags (`--project-key`, `--type`, `--assignee`, `--epic`, `--labels`, `--components`,
+`--summary`) → the `task:` block of the document header → the task properties of the kind (`artifacts.<kind>.task`) →
+the connector settings (`operations.defaults`):
+
+```yaml
+---
+type: us
+task:
+  project: PRJA
+  type: Story
+  epic: PRJA-7
+  labels: analytics, release-2
+---
+```
+
+The default assignee is the person with the project's `git config user.email` (`find_user`); if not found, the task is
+created unassigned, and this is said. An e-mail written in `assignee` is looked up too; not found — a refusal. The task
+title is the document title.
+
+After creation `task_key` and `task_url` go into the document header — with the same write as the publish stamp: whole
+or not at all, the file's BOM and line endings are kept. If the header has `published_url` (the document is published),
+the page is linked to the task (`link_page`). If `task_key` is already there, no second task is created: the command
+names the first one and only links the page.
+
+The result is a machine line `AURORA-TASK {...}`: `outcome` (`plan`, `ok`, `exists`, `blocked`), `rc`, `connector`,
+`task` (the properties), `key`, `url`, `page_url`, `linked`, `stamped`, `code` and `error` (the reason), `detail`,
+`notes`. The panel server: `GET /api/task/options?project=…&project_key=…` — task types and epics (from the cache;
+`fresh=1` — anew), `POST /api/task/create` with `{project, path, task: {…}}` — the same as `ship:task --apply`.
+
+### How to write your own connector
+
+1. A folder `connectors/<id>/`: `connector.json` with the `operations` field (role, script, list of operations) and the
+   operations script. The connector does not have to be able to mirror, but the manifest is shared with source
+   modules: `kind`, `mirror`, `run` are in it.
+2. The script is anything `python3` runs; the simplest is Python with the engine's frame:
+
+```python
+import sys
+from sources_core import OpFailure, serve_ops
+
+def issue_types(params, project):
+    key = params.get("project_key") or ""
+    if not key:
+        raise OpFailure("bad_request", "project_key is not set")
+    return {"types": [{"id": "1", "name": "Task", "description": ""}]}
+
+if __name__ == "__main__":
+    sys.exit(serve_ops({"issue_types": issue_types}))
+```
+
+   The core puts the folder of its scripts into `PYTHONPATH`, so `sources_core` and `aurora_common` import both from
+   `.aurora/scripts/` and from the connector folder in the kit. The script reads access keys itself
+   (`sources_core.read_secret(prefix, project)`) and gives them out neither in the answer nor into the cache.
+3. `aurora.py update <project> --apply` lays out the manifest and the script; the role connector is chosen in "Project
+   settings" (or in the `connectors:` block). A check without the panel —
+   `python3 .aurora/scripts/connector_ops.py --role tasks --op issue_types --params '{"project_key": "PRJA"}'`.
+
+A stand-in "other tracker" with the same contract is checked in `tests/cases/part_170.py`: a test connector in a
+temporary project creates a task through `ship:task`, and the core is not edited.

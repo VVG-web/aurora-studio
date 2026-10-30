@@ -117,6 +117,9 @@ connectors/<id>/
   синка — список словарей).
 - `mirror.legacy_path_key` есть только у двух встроенных модулей: он включает их в
   проектах, где секции `sources:` ещё нет.
+- `operations` (необязательно) — модуль умеет не только зеркало, но и операции роли: трекер задач (`tasks`) или вики
+  (`wiki`). Какую роль играет, какие операции умеет и каким скриптом их выполняет — в разделе
+  [«Операции: трекер задач и вики»](#операции-трекер-задач-и-вики);
 - `access.mode` — как источник достаётся по умолчанию: `internet` («без VPN, требует интернет», у веб-модуля), `vpn`,
   `local` или `mixed`. Нет поля — источник считается доступным, как всегда. Проект переопределяет режим блоком `source_access:`
   (в панели — «Настройки проекта → Режим доступа источников»); см. [проверку соединения](connectivity.md).
@@ -467,3 +470,207 @@ class Mirror(BoardMirror):
 - в шапке файлов нет даты экспорта и версий в именах файлов — иначе каждый прогон
   даёт дифф на всю папку;
 - состояние пишется полными путями от корня зеркала — по ним работает `sync:audit`.
+
+## Операции: трекер задач и вики
+
+Зеркало — это чтение источника в git. Есть и обратная дорога: завести задачу в трекере для документа, связать с ней
+опубликованную страницу, опубликовать документ в вики. Чтобы трекер или вики можно было заменить, ядро не знает их по
+имени: оно знает **роль** и **имена операций**, а как операцию выполнить — знает коннектор. Завтра вместо Jira другой
+трекер — ставится коннектор, который умеет те же операции, и выбирается в настройках проекта; код Авроры не меняется.
+
+| Роль | Что это | Встроенный коннектор |
+|---|---|---|
+| `tasks` | трекер задач | `jira-dc` (Jira Server / Data Center, REST API v2) |
+| `wiki` | вики | `confluence-dc` (Confluence Server / Data Center) |
+
+### Манифест: поле `operations`
+
+```json
+"operations": {
+  "role": "tasks",
+  "script": "jira_ops.py",
+  "ops": ["issue_types", "epics", "find_user", "create_issue", "link_page", "get_issue"],
+  "server": "base_url",
+  "defaults": {"project_key": "project_key"}
+}
+```
+
+- `role` — `tasks` или `wiki`; роль операций, а не роль доверия (`role` верхнего уровня);
+- `script` — скрипт операций: простое имя файла. Лежит рядом с манифестом (`connectors/<id>/`) или в `scripts/` кита;
+  `update` и `install` кладут его в `.aurora/scripts/` проекта рядом со скриптом выгрузки (`aurora_common.connector_scripts`),
+  а `kit:doctor` называет его среди файлов движка;
+- `ops` — какие операции коннектор умеет. Чего нет в списке, на то ядро отвечает «не умеет» и скрипт не зовёт;
+- `server` — какая настройка коннектора (в его блоке `settings_block`) называет сервер: она входит в ключ кэша;
+- `defaults` — параметры операций по умолчанию из настроек коннектора: `{"параметр": "ключ настройки"}`. У `jira-dc`
+  ключ проекта трекера берётся из `atlassian.jira.project_key`.
+
+Манифест без `operations` (копия в проекте старше поля) роль всё равно получает — по роли сервиса (`tasktracker` для
+`tasks`, `projectwiki` для `wiki`), а на операцию отвечает «не умеет — обновите движок проекта».
+
+### Какой коннектор активен
+
+Блок `connectors:` в `aurora.config.yaml`:
+
+```yaml
+connectors:
+  tasks: jira-dc
+  wiki: confluence-dc
+```
+
+Блока или строки роли нет — работает тот единственный установленный коннектор, что объявляет роль. Объявляют
+несколько — операция не идёт, пока человек не выберет («роль объявляют несколько коннекторов»). Выбран коннектор,
+которого нет или который роль не объявляет, — отказ с причиной, а не тихая подмена.
+
+Блок пишет панель: `GET /api/connectors/roles?project=…` отдаёт по каждой роли активный коннектор, откуда выбор
+(`config` — из блока, `single` — единственный), из кого выбирать (с операциями, которых коннектор не умеет) и слепок
+блока `digest`; `POST /api/connectors/roles/save` с `{project, roles: {роль: id}, expect: <digest>}` пишет блок.
+Пустой id возвращает роли выбор по умолчанию. Слепок разошёлся (или не прислан) — ответ 409 и ничего не записано.
+Запись меняет только блок `connectors:`: остальной конфиг, комментарии и окончания строк — байт в байт. Форма в
+«Настройках проекта» появится следующим выпуском.
+
+Ядро: `scripts/connector_ops.py` — `active(project, role)` (id активного коннектора), `supports(project, role, op)`,
+`call(project, role, op, params, fresh=False)`, `state(project)`, `save(project, roles, expect)`. Проверить из консоли:
+`python3 .aurora/scripts/connector_ops.py` (кто активен) или
+`python3 .aurora/scripts/connector_ops.py --role tasks --op issue_types --params '{"project_key": "PRJA"}'`.
+
+### Контракт вызова
+
+Операция — отдельный процесс. Ядро запускает `python3 <script>` в корне проекта и пишет на stdin:
+
+```json
+{"op": "create_issue", "params": {"project_key": "PRJA", "type": "Story", "summary": "…"}, "project": "/путь/к/проекту"}
+```
+
+Скрипт печатает в stdout одну строку JSON (последняя строка с полем `ok` и считается ответом):
+
+```json
+{"ok": true, "result": {"key": "PRJA-12", "url": "https://tracker.example.com/browse/PRJA-12"}}
+{"ok": false, "kind": "auth", "error": "текст причины от сервера"}
+```
+
+Код выхода — 0 и при отказе: отказ — это ответ. Предел — 300 секунд на вызов, дальше отказ `net`. Готовый каркас —
+`sources_core.serve_ops({имя: функция(params, project)})`: функция возвращает `result`, а об отказе сообщает исключением
+`OpFailure(kind, text)` или сбоем запроса — вид выводит `sources_core.failure_of` (401 → `auth`, 403 → `forbidden`,
+404 → `not_found`, 400 → `bad_request`, 409 → `conflict`, 5xx и обрыв → `net`).
+
+**Виды отказа** (`kind`). Ядро называет человеку причину по таблице `connector_ops.CAUSES` на русском и английском, а
+текст коннектора отдаёт рядом как подробность (`detail`):
+
+| `kind` | Что случилось |
+|---|---|
+| `config` | коннектор не настроен: нет адреса сервера или другой обязательной настройки |
+| `auth` | входа нет (ключа нет в `.env.aurora.local`) или сервер его не принял |
+| `forbidden` | у ключа нет прав на операцию |
+| `not_found` | сервер не нашёл то, о чём спросили (задачу, страницу, человека) |
+| `bad_request` | сервер отклонил запрос; параметры не годятся |
+| `conflict` | на сервере другая версия (страницу правили после того, как её прочли) |
+| `net` | сервер не ответил: сеть, VPN, таймаут, 5xx |
+| `unsafe` | ключ на этот адрес не отправляется (адрес сменился, открытый http) |
+| `unsupported` | операции нет у коннектора |
+| `failed` | прочий сбой |
+
+Ядро добавляет свои: `bad_role`, `no_connector`, `ambiguous`, `unknown_connector`, `no_script`, `bad_response` (скрипт
+ответил не по контракту).
+
+Ответ ядра (`connector_ops.call`): `{"ok": true, "result": …, "connector": "<id>", "cached": false}` либо
+`{"ok": false, "kind": …, "error": "<причина словами>", "detail": "<текст коннектора>", "connector": "<id>"}`.
+
+### Операции роли `tasks`
+
+| Операция | Параметры | Ответ (`result`) |
+|---|---|---|
+| `issue_types` | `project_key` | `{types: [{id, name, description}]}` — без подзадач |
+| `epics` | `project_key`, `limit` (по умолчанию 200, до 1000) | `{epics: [{key, title, status, done}]}` — не закрытые первыми |
+| `find_user` | `email` | `{name, key, display, email}`; `name` — то, что ставится исполнителем |
+| `create_issue` | `project_key`, `type`, `summary`, `description`?, `assignee`?, `labels`?, `components`?, `epic`? | `{key, id, url, epic_via}` |
+| `link_page` | `issue_key`, `url`, `title`? | `{id, created}`; повтор не заводит вторую ссылку (`created: false`) |
+| `get_issue` | `key` | `{key, summary, status, status_category, type, url}` |
+
+`labels` и `components` — списки строк. `assignee` — логин из `find_user`. У `jira-dc` эпик ставится полем Epic Link:
+его номер ищется в `/rest/api/2/field` по схеме `com.pyxis.greenhopper.jira:gh-epic-link` (запасной путь — имя поля); нет
+такого поля — эпик становится родителем (`parent`, как в Jira Cloud), и ответ говорит это полем `epic_via`. Создание
+задачи и ссылки — одной попыткой: повтор после обрыва завёл бы вторую.
+
+**Кэш.** `issue_types` и `epics` кэшируются на час в `.aurora/state/cache/connectors/` проекта (вне git, у каждой
+машины свой). Ключ — коннектор, адрес сервера (настройка `server`), операция и параметры; ключей доступа нет ни в
+имени файла, ни внутри. `call(..., fresh=True)` и `GET /api/task/options?fresh=1` берут заново.
+
+### Операции роли `wiki`
+
+Ровно то, что публикация (`ship:publish`) делает с вики. Страница в ответах — `{id, title, space, version, by, when,
+ancestors: [{id, title}], body, url}`; `body` — разметка вики (у Confluence — storage), её нет, если не просили.
+
+| Операция | Параметры | Ответ (`result`) |
+|---|---|---|
+| `find_page` | `space`, `title`, `body`? (по умолчанию да) | `{page: страница или null}` |
+| `get_page` | `page_id`, `body`? | страница с версией, предками, пространством |
+| `children` | `page_id` | `{pages: [{id, title, version, …}], complete, gap, got}` — все страницы списка (продолжения `_links.next` дочитываются); `complete: false` и `gap` — сервер отдал не всё |
+| `create_page` | `space`, `title`, `body`, `parent_id`? | созданная страница |
+| `update_page` | `page_id`, `title`, `body`, `version`, `space`?, `parent_id`?, `message`? | обновлённая страница; `version` — версия, которую видел вызывающий; правили позже — `conflict` |
+| `move_page` | `page_id`, `parent_id`, `version`?, `message`? | страница под новым родителем; текст и заголовок — как на сервере |
+| `page_space` | `page_id` | `{id, title, space}` |
+
+### Задача для документа: `ship:task`
+
+`ship:task <файл>` — план: какой трекер, ключ проекта, тип, эпик, заголовок, исполнитель, метки, компоненты, какая
+страница будет связана. `ship:task <файл> --apply` заводит задачу через активный коннектор роли `tasks`.
+
+Свойства — по порядку: флаги команды (`--project-key`, `--type`, `--assignee`, `--epic`, `--labels`, `--components`,
+`--summary`) → блок `task:` шапки документа → свойства задачи вида (`artifacts.<вид>.task`) → настройки коннектора
+(`operations.defaults`):
+
+```yaml
+---
+type: us
+task:
+  project: PRJA
+  type: Story
+  epic: PRJA-7
+  labels: analytics, release-2
+---
+```
+
+Исполнитель по умолчанию — человек с почтой `git config user.email` проекта (`find_user`); не нашёлся — задача
+заводится без исполнителя, и это сказано. Почта, записанная в `assignee`, тоже ищется; не нашлась — отказ. Заголовок
+задачи — заголовок документа.
+
+После создания в шапку документа ложатся `task_key` и `task_url` — той же записью, что у штампа публикации: целиком
+или никак, BOM и окончания строк файла сохраняются. В шапке есть `published_url` (документ опубликован) — страница
+связывается с задачей (`link_page`). `task_key` уже есть — вторая задача не заводится: команда называет первую и
+только досвязывает страницу.
+
+Итог — машинная строка `AURORA-TASK {...}`: `outcome` (`plan`, `ok`, `exists`, `blocked`), `rc`, `connector`, `task`
+(свойства), `key`, `url`, `page_url`, `linked`, `stamped`, `code` и `error` (причина), `detail`, `notes`. Сервер панели:
+`GET /api/task/options?project=…&project_key=…` — типы задач и эпики (из кэша; `fresh=1` — заново),
+`POST /api/task/create` с `{project, path, task: {…}}` — то же, что `ship:task --apply`.
+
+### Как написать свой коннектор
+
+1. Папка `connectors/<id>/`: `connector.json` с полем `operations` (роль, скрипт, список операций) и скрипт операций.
+   Зеркало коннектору не обязательно уметь, но манифест — общий для модулей источников: `kind`, `mirror`, `run`
+   в нём есть.
+2. Скрипт — на любом языке, который запускает `python3`; проще всего на Python с каркасом движка:
+
+```python
+import sys
+from sources_core import OpFailure, serve_ops
+
+def issue_types(params, project):
+    key = params.get("project_key") or ""
+    if not key:
+        raise OpFailure("bad_request", "не задан project_key")
+    return {"types": [{"id": "1", "name": "Task", "description": ""}]}
+
+if __name__ == "__main__":
+    sys.exit(serve_ops({"issue_types": issue_types}))
+```
+
+   Ядро ставит в `PYTHONPATH` папку своих скриптов, поэтому `sources_core` и `aurora_common` импортируются и из
+   `.aurora/scripts/`, и из папки коннектора в ките. Ключи доступа скрипт читает сам (`sources_core.read_secret(префикс,
+   project)`), а наружу — ни в ответ, ни в кэш — не отдаёт.
+3. `aurora.py update <проект> --apply` раскладывает манифест и скрипт; в «Настройках проекта» (или в блоке
+   `connectors:`) выбирается коннектор роли. Проверка без панели —
+   `python3 .aurora/scripts/connector_ops.py --role tasks --op issue_types --params '{"project_key": "PRJA"}'`.
+
+Подставной «другой трекер» с тем же контрактом проверяется в `tests/cases/part_170.py`: тестовый коннектор во временном
+проекте заводит задачу через `ship:task`, а ядро при этом не правится.

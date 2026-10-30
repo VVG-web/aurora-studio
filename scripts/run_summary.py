@@ -28,7 +28,9 @@ MARK_GATE = "AURORA-GATE "
 # blocked | misplaced), адресом, версией и причиной — по ней панель рисует кнопки «Перезаписать», «Взять под
 # управление», «Переместить по пути вида». Консоль её не показывает, как и две строки выше.
 MARK_PUBLISH = "AURORA-PUBLISH "
-MARKS = (MARK, MARK_GATE, MARK_PUBLISH)          # все машинные строки: консоль и журнал прогона их не показывают
+# Исход `ship:task` (задача в трекере для документа): `outcome` (plan | ok | exists | blocked), ключ и адрес задачи.
+MARK_TASK = "AURORA-TASK "
+MARKS = (MARK, MARK_GATE, MARK_PUBLISH, MARK_TASK)   # все машинные строки: консоль и журнал прогона их не показывают
 KB = "AuroraKnowledgeDB"
 
 # Статусы шагов агентов, где шаг — документ-источник (у шага есть `source`).

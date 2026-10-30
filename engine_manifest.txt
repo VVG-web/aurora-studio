@@ -8,7 +8,7 @@
 # Формат строки:  <путь-в-kit>  =>  <путь-в-проекте>
 # Спец-правила (в скобках после →) обрабатываются update-скриптом:
 #   (connectors) — модули источников: манифест каждого кладётся в .aurora/connectors/,
-#              скрипт запуска — в .aurora/scripts/, а тело sync-скилла размножается
+#              скрипты запуска и операций — в .aurora/scripts/, а тело sync-скилла размножается
 #              по существующим папкам скиллов проекта с сохранением slug в имени.
 #              Тело НЕ перезаписывается (проект дорабатывает его под свой контур) —
 #              новая версия ложится рядом как <файл>.new
@@ -62,6 +62,8 @@ scripts/sources_registry.py => .aurora/scripts/sources_registry.py
 scripts/fidelity.py         => .aurora/scripts/fidelity.py
 # общая часть синка
 scripts/sources_core.py     => .aurora/scripts/sources_core.py
+# операции коннекторов по роли (трекер задач, вики): ядро знает роли и имена операций, коннектор — как их выполнить
+scripts/connector_ops.py    => .aurora/scripts/connector_ops.py
 # длина путей на Windows, macOS и Linux: проверка настройки, подсказка при старте прогона, doctor
 scripts/path_budget.py      => .aurora/scripts/path_budget.py
 scripts/kb_lint.py       => .aurora/scripts/kb_lint.py
@@ -134,6 +136,7 @@ scripts/kb_reset.py      => .aurora/scripts/kb_reset.py
 scripts/kb_moc.py        => .aurora/scripts/kb_moc.py
 moc_groups.txt           => .aurora/moc_groups.txt
 scripts/publish_doc.py   => .aurora/scripts/publish_doc.py
+scripts/task_doc.py      => .aurora/scripts/task_doc.py
 scripts/review_run.py    => .aurora/scripts/review_run.py
 scripts/kit_commands.py  => .aurora/scripts/kit_commands.py
 scripts/kb_supersede.py  => .aurora/scripts/kb_supersede.py
@@ -197,7 +200,7 @@ commands.txt             => .aurora/commands.txt
 # зависимости команд от связи (источники, модель, работа без сети): их читают панель, маршруты и проверка перед запуском
 command_deps.json        => .aurora/command_deps.json
 
-# --- модули источников: манифест, скрипт запуска и шаблон sync-скилла ---
+# --- модули источников: манифест, скрипты запуска и операций, шаблон sync-скилла ---
 # Список не перечисляется поимённо: что лежит в connectors/, то и раскладывается.
 # Так доустановленный модуль попадает в проекты обычным `update`.
 connectors => (connectors)

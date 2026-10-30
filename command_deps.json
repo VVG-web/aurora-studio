@@ -58,6 +58,7 @@
     "make:validate": {"requires_sources": [], "requires_llm": true, "requires_internet": false, "offline_capable": false, "offline_variant": ""},
     "make:assemble": {"requires_sources": [], "requires_llm": true, "requires_internet": false, "offline_capable": false, "offline_variant": ""},
     "ship:publish": {"requires_sources": ["confluence-dc"], "requires_llm": false, "requires_internet": false, "offline_capable": false, "offline_variant": ""},
+    "ship:task": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": false, "offline_variant": ""},
     "ship:export": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "ship:release": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "ship:acceptance": {"requires_sources": [], "requires_llm": true, "requires_internet": false, "offline_capable": false, "offline_variant": ""},

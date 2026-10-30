@@ -451,14 +451,22 @@ def cause_problems() -> list:
     except ImportError:
         return []
     out = []
-    for cid, row in sorted(agent_core.CAUSES.items()):
-        holes = lambda t: sorted(re.findall(r"\{(\w+)\}", t))          # noqa: E731
-        if not str(row.get("en") or "").strip():
-            out.append(f"причина `{cid}`: нет английского текста (`en`) в agent_core.CAUSES")
-        elif holes(row["ru"]) != holes(row["en"]):
-            out.append(f"причина `{cid}`: подстановки в `ru` и `en` разные")
-        if row.get("label") and not str(row.get("label_en") or "").strip():
-            out.append(f"причина `{cid}`: нет английского названия (`label_en`)")
+    tables = [("agent_core", agent_core.CAUSES)]
+    # Таблицы того же вида у операций коннекторов и задачи документа: панель переводит их сообщения по ним же.
+    for name in ("connector_ops", "task_doc"):
+        try:
+            tables.append((name, getattr(__import__(name), "CAUSES", {})))
+        except ImportError:
+            continue
+    for module, causes in tables:
+        for cid, row in sorted(causes.items()):
+            holes = lambda t: sorted(re.findall(r"\{(\w+)\}", t))          # noqa: E731
+            if not str(row.get("en") or "").strip():
+                out.append(f"причина `{cid}`: нет английского текста (`en`) в {module}.CAUSES")
+            elif holes(row["ru"]) != holes(row["en"]):
+                out.append(f"причина `{cid}` ({module}): подстановки в `ru` и `en` разные")
+            if row.get("label") and not str(row.get("label_en") or "").strip():
+                out.append(f"причина `{cid}` ({module}): нет английского названия (`label_en`)")
     return out
 
 

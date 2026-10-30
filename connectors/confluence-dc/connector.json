@@ -17,6 +17,13 @@
     "command": "sync:confluence",
     "skill": "confluence-sync"
   },
+  "operations": {
+    "role": "wiki",
+    "script": "confluence_ops.py",
+    "ops": ["find_page", "get_page", "children", "create_page", "update_page", "move_page", "page_space"],
+    "server": "base_url",
+    "defaults": {"space": "space"}
+  },
   "auth": {
     "env_prefix": "CONFLUENCE",
     "what": "персональный токен Confluence (CONFLUENCE_PAT) либо CONFLUENCE_USER + CONFLUENCE_PASSWORD"

@@ -40,6 +40,7 @@ EXCUSES = {
     ("/api/cards", ".guide.text"): "текст инструкции «Как определить тип карточки» — файл проекта или кита, он русский, как и сами промпты",
     ("/api/cards", ".problems[]"): "замечания реестра типов — вывод `kb:cards`, он остаётся русским, как вывод линтера",
     ("/api/kinds", ".mcp[].about"): "описание MCP-сервера машины — слова человека из настройки сервера",
+    ("/api/task/options", ".detail"): "текст отказа от скрипта коннектора — его вывод, как вывод движка; причина ядра рядом (`error`) переведена",
 }
 
 
@@ -70,7 +71,8 @@ CRAWLED = (
     "/api/runlog", "/api/agent/pydantic", "/api/context/suggest", "/api/skin", "/api/cron",
     "/api/history", "/api/routes", "/api/bots", "/api/env", "/api/adapter/alarm", "/api/cards",
     "/api/net/state", "/api/net/brief", "/api/net/access", "/api/net/commands",
-    "/api/paths", "/api/ingest/settings", "/api/threads", "/api/code",
+    "/api/paths", "/api/ingest/settings", "/api/threads", "/api/code", "/api/connectors/roles",
+    "/api/task/options",
 )
 NOT_CRAWLED = {
     "/api/ping": "ответ — слово «ok», не текст",

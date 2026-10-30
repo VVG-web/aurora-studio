@@ -42,11 +42,14 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
         pass
 import urllib.parse
 
-from sources_core import (BoardMirror, RestApi, block, cited_by_cards, config_text, loss_summary,
-                          lose_path, no_access, path_overflow, report_stale, scalar, verify)
+from sources_core import (CONFIG, BoardMirror, OpFailure, RestApi, block, cited_by_cards, config_text,
+                          loss_summary, lose_path, no_access, path_overflow, report_stale, scalar, verify)
 from sources_core import read_secret as core_secret
 
 DEFAULT_OUT = "Sources/JIRA"
+# Поле «Epic Link» Jira Server / Data Center — custom field с плавающим номером; узнаётся по схеме поля, имя — запасной путь.
+EPIC_LINK_SCHEMA = "com.pyxis.greenhopper.jira:gh-epic-link"
+EPIC_LINK_NAMES = ("Epic Link", "Ссылка на эпик")
 PATH_MODEL = "issues"       # плоские файлы `<ключ>.md` — для проверки длины путей (`path_budget`)
 # Задачи, которые не поместились в путь этой системы (Windows без длинных путей): синк идёт дальше,
 # потеря названа строкой и счётчиком в сводке. Список прогона; сбрасывает `run_export()`.
@@ -66,9 +69,10 @@ STATE = Mirror.state_name
 
 # ------------------------------------------------------------------ настройки
 
-def read_config() -> dict:
+def read_config(root: str = "") -> dict:
+    """Адрес, ключ проекта и JQL — из aurora.config.yaml; `root` — корень проекта (пусто — текущая папка)."""
     cfg = {"base_url": "", "project_key": "", "jql": "", "out": DEFAULT_OUT}
-    text = config_text()
+    text = config_text(os.path.join(root, CONFIG)) if root else config_text()
     if not text:
         return cfg
     jira = block(text, "jira:", "auth:")
@@ -79,8 +83,29 @@ def read_config() -> dict:
     return cfg
 
 
-def read_secret() -> tuple:
-    return core_secret("JIRA")
+def read_secret(root: str = "") -> tuple:
+    return core_secret("JIRA", root)
+
+
+def connect(root: str = "") -> tuple:
+    """Вход в Jira одним правилом для синка и операций трекера (`jira_ops.py`): адрес — `atlassian.jira.base_url`
+    конфига, ключ — `JIRA_PAT` (или `JIRA_USER` + `JIRA_PASSWORD`) машины. → (Api, cfg, способ входа); адреса или
+    ключа нет — `OpFailure` вида `config` или `auth` с текстом для человека."""
+    cfg = read_config(root) if root else read_config()      # без корня — как синк: от текущей папки
+    if not cfg["base_url"]:
+        raise OpFailure("config", "jira_export: нет atlassian.jira.base_url в aurora.config.yaml")
+    auth, how = read_secret(root) if root else read_secret()
+    if not auth:
+        raise OpFailure("auth", no_access("jira_export", "JIRA"))
+    return Api(cfg["base_url"], auth, root), cfg, how
+
+
+def epic_field_id(fields: list) -> str:
+    """id поля «Epic Link» в ответе `/rest/api/2/field`: по схеме поля, иначе по имени; нет такого поля — пусто."""
+    rows = [f for f in fields or [] if isinstance(f, dict)]
+    hit = next((f for f in rows if (f.get("schema") or {}).get("custom") == EPIC_LINK_SCHEMA), None) \
+        or next((f for f in rows if f.get("name") in EPIC_LINK_NAMES), None)
+    return str(hit.get("id") or "") if hit else ""
 
 
 class Api(RestApi):
@@ -122,14 +147,11 @@ class Api(RestApi):
         return title
 
     def epic_field(self) -> str:
-        """id поля «Epic Link» — в Jira Server это custom field с плавающим номером."""
+        """id поля «Epic Link» — в Jira Server это custom field с плавающим номером (`epic_field_id`)."""
         try:
-            for f in self.get("/rest/api/2/field"):
-                if f.get("name") in ("Epic Link", "Ссылка на эпик"):
-                    return f["id"]
+            return epic_field_id(self.get("/rest/api/2/field"))
         except Exception:
-            pass
-        return ""
+            return ""
 
 
 # ------------------------------------------- вики-разметка Jira → markdown
@@ -323,17 +345,15 @@ def main() -> int:
     ap.add_argument("--verify", action="store_true", help="гейт детерминизма: два прогона и сверка")
     a = ap.parse_args()
 
-    cfg = read_config()
-    auth, kind = read_secret()
+    try:
+        api, cfg, kind = connect()
+    except OpFailure as e:
+        print(e, file=sys.stderr)
+        return 1
+    auth = api.auth
     out_dir = a.out or cfg["out"]
     jql = a.jql or cfg["jql"] or (f"project = {cfg['project_key']} ORDER BY updated DESC"
                                   if cfg["project_key"] else "")
-    if not cfg["base_url"]:
-        print("jira_export: нет atlassian.jira.base_url в aurora.config.yaml", file=sys.stderr)
-        return 1
-    if not auth:
-        print(no_access("jira_export", "JIRA"), file=sys.stderr)
-        return 1
     if not jql:
         print("jira_export: не задан JQL и нет project_key в конфиге", file=sys.stderr)
         return 1

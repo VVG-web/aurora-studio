@@ -17,6 +17,13 @@
     "command": "sync:jira",
     "skill": "jira-export"
   },
+  "operations": {
+    "role": "tasks",
+    "script": "jira_ops.py",
+    "ops": ["issue_types", "epics", "find_user", "create_issue", "link_page", "get_issue"],
+    "server": "base_url",
+    "defaults": {"project_key": "project_key"}
+  },
   "auth": {
     "env_prefix": "JIRA",
     "what": "персональный токен Jira (JIRA_PAT) либо JIRA_USER + JIRA_PASSWORD"

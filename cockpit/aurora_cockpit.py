@@ -1664,6 +1664,41 @@ def ingest_settings_save(project: str, payload: dict) -> dict:
     return res
 
 
+def connector_roles(project: str, lang: str = "") -> dict:
+    """Коннекторы ролей проекта (трекер задач, вики): кто активен и почему, из кого выбрать, слепок блока `connectors:`."""
+    import connector_ops as CO
+    out = CO.state(project)
+    titles = data_catalogue(lang or DEFAULT_LANG).get("connectors") or {}
+    for row in out["roles"].values():
+        for c in row["choices"]:
+            c["title"] = (titles.get(c["id"]) or {}).get("title") or c["title"]
+    return out
+
+
+def connector_roles_save(project: str, payload: dict, lang: str = "") -> dict:
+    """Записать блок `connectors:` конфига проекта; остальной конфиг не тронут, устаревший слепок — конфликт (409)."""
+    import connector_ops as CO
+    res = CO.save(project, payload.get("roles"), payload.get("expect"))
+    if res.get("ok"):
+        res["state"] = connector_roles(project, lang)
+    return res
+
+
+def task_options(project: str, q: dict) -> dict:
+    """Типы задач и эпики проекта трекера для формы задачи документа: из кэша на час, `fresh=1` — заново."""
+    import task_doc as TD
+    return TD.options(project, (q.get("project_key") or [""])[0], (q.get("fresh") or [""])[0] == "1")
+
+
+def task_create(project: str, payload: dict) -> dict:
+    """«Создать задачу» для документа — та же логика, что `ship:task --apply`."""
+    import task_doc as TD
+    over = payload.get("task") if isinstance(payload.get("task"), dict) else {}
+    res = TD.run(project, str(payload.get("path") or ""), apply=True, over=over)
+    res.pop("lines", None)
+    return res
+
+
 def net_commands(project: str) -> dict:
     """Зависимости команд для закладки «Команды»: что нужно (VPN-профили, модель, источники) и работает ли без сети."""
     import conn_gate as GATE
@@ -1885,7 +1920,17 @@ def _cause_messages(lang: str) -> dict:
     note = getattr(AG, "OTHERS_NOTE", None)
     if note:
         out[skel("{}" + note["ru"])] = skel("{}" + note["en"])
+    # Причины операций коннекторов и задачи документа — свои таблицы того же вида (`ru`, `en`).
+    for name in CAUSE_TABLES:
+        try:
+            rows = getattr(importlib.import_module(name), "CAUSES", {})
+        except ImportError:
+            continue
+        out.update({skel(row["ru"]): skel(row["en"]) for row in rows.values() if row.get("en")})
     return out
+
+
+CAUSE_TABLES = ("connector_ops", "task_doc")     # модули движка с таблицей причин `CAUSES` (ru и en)
 
 
 def _message_matchers(lang: str):
@@ -5085,7 +5130,7 @@ def _entries_of(project: str, rid: str) -> list:
         pass
     text = read_run_console(project, rid)
     return [{"k": "out", "s": l} for l in (text.get("text") or text.get("error") or "").splitlines()
-            if not l.startswith((RS.MARK, RS.MARK_GATE, RS.MARK_PUBLISH))]
+            if not l.startswith((RS.MARK, RS.MARK_GATE, RS.MARK_PUBLISH, RS.MARK_TASK))]
 
 
 def history_run(project: str, rid: str) -> dict:
@@ -7166,6 +7211,16 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(ingest_settings(project))
+        elif u.path == "/api/connectors/roles":
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(connector_roles(project, request_lang(q)))
+        elif u.path == "/api/task/options":
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(task_options(project, q))
         elif u.path == "/api/net/commands":
             project = (q.get("project") or [""])[0]
             self.send_json(net_commands(self._quiet_project(project)))
@@ -7705,6 +7760,21 @@ class Handler(BaseHTTPRequestHandler):
             res = ingest_settings_save(project, payload)
             code = 200 if res.get("ok") else 409 if res.get("conflict") else 500 if res.get("failed") else 400
             self.send_json(res, code)
+            return
+        if u.path == "/api/connectors/roles/save":
+            project = str(payload.get("project") or "")
+            if not self._known(project):
+                return
+            res = connector_roles_save(project, payload, request_lang(q))
+            code = 200 if res.get("ok") else 409 if res.get("conflict") else 500 if res.get("failed") else 400
+            self.send_json(res, code)
+            return
+        if u.path == "/api/task/create":
+            project = str(payload.get("project") or "")
+            if not self._known(project):
+                return
+            res = task_create(project, payload)
+            self.send_json(res, 200 if res.get("rc") == 0 else 400)
             return
         if u.path == "/api/net/probe":
             project = self._quiet_project(str(payload.get("project") or ""))

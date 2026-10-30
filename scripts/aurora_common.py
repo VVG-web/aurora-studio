@@ -304,11 +304,13 @@ EXT_SCHEMAS = {
         "required": {"id": str, "kind": str, "mirror": dict, "run": dict},
         "optional": {"title": str, "role": str, "what": str, "since": str, "auth": dict,
                      "settings_block": str, "settings": list, "requires": dict,
-                     "role_what": str, "api_version": int, "access": dict},
+                     "role_what": str, "api_version": int, "access": dict, "operations": dict},
         "nested": {"mirror": {"default_path": str, "state": str, "legacy_path_key": str},
                    "run": {"script": str, "command": str, "skill": str},
                    "auth": {"env_prefix": str, "what": str},
-                   "access": {"mode": str}},
+                   "access": {"mode": str},
+                   # операции роли (трекер задач, вики): кто их выполняет — `connector_ops.py`
+                   "operations": {"role": str, "script": str, "ops": list, "server": str, "defaults": dict}},
     },
     "module": {
         "required": {"id": str, "name": _EXT_I18N},
@@ -513,11 +515,22 @@ def load_connector_manifest(path):
         if run.get(key) and not ext_safe_name(run[key]):
             return None, ["%s: run.%s не годится в имя файла (простое имя без «/», «\\» и «..») — "
                           "пропущен" % (pre, key)]
+    ops_script = (m.get("operations") or {}).get("script")
+    if ops_script and not ext_safe_name(ops_script):
+        return None, ["%s: operations.script не годится в имя файла (простое имя без «/», «\\» и «..») — "
+                      "пропущен" % pre]
     default_path = (m.get("mirror") or {}).get("default_path")
     if default_path and not ext_safe_relpath(default_path):
         return None, ["%s: mirror.default_path не годится в путь внутри проекта (простые сегменты "
                       "через «/» — без «/» в начале, диска, «..» и управляющих знаков) — пропущен" % pre]
     return m, []
+
+
+def connector_scripts(m: dict) -> list:
+    """Скрипты модуля, которые раскладка кладёт в `.aurora/scripts/`: запуска (`run.script`) и операций
+    (`operations.script`), без повторов. Одно правило на `install`, `update` и список файлов движка."""
+    names = [(m.get("run") or {}).get("script") or "", (m.get("operations") or {}).get("script") or ""]
+    return list(dict.fromkeys(n for n in names if isinstance(n, str) and n))
 
 
 # `canonical` убран из схемы в 1.10.0 (ступень не использовалась ни в одном
@@ -3234,7 +3247,36 @@ def config_list(key: str) -> list:
     return [x.strip().strip("\"'") for x in m.group(1).split(",") if x.strip()] if m else []
 
 
-MCP_NAME_RE = re.compile(r"^[\w.\-]{1,64}$")
+def top_block_span(text: str, key: str) -> tuple:
+    """(начало, конец) раздела верхнего уровня `key:` конфига в тексте или (-1, -1).
+
+    Конец — сразу после последней строки с содержимым внутри раздела (с отступом). Пустые строки и комментарии
+    перед следующим разделом ему не принадлежат и при замене раздела остаются на месте. Одно правило на писателей
+    отдельных разделов (`ingest:`, `connectors:`): заменяется раздел, остальной файл — байт в байт."""
+    text = text or ""
+    lines = text.splitlines(keepends=True)
+    offsets = []
+    pos = 0
+    for line in lines:
+        offsets.append(pos)
+        pos += len(line)
+    head_re = re.compile(r"%s:[ \t]*(?:#.*)?\r?\n?$" % re.escape(key))
+    head = next((i for i, l in enumerate(lines) if head_re.match(l)), -1)
+    if head < 0:
+        return (-1, -1)
+    last = head
+    for i in range(head + 1, len(lines)):
+        line = lines[i]
+        if not line.strip():
+            continue                      # пустая строка может быть и внутри раздела
+        if line[0] in " \t":
+            last = i                      # строка с отступом (в том числе комментарий) — внутри раздела
+            continue
+        break                             # ключ или комментарий верхнего уровня: раздел кончился
+    return (offsets[head], offsets[last] + len(lines[last]))
+
+
+MCP_NAME_RE =re.compile(r"^[\w.\-]{1,64}$")
 MCP_MASK = "••••••"
 MCP_SECRET_MAPS = ("env", "headers")
 MCP_ROLES = ("worker", "planner", "critic", "qa")

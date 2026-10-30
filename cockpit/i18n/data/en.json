@@ -118,7 +118,8 @@
     "net:status": "Availability of connections: profiles (VPN), probes, the internet and the model providers, the kit's mode of work and the reasons; read-only, changes nothing — profiles and probes are set up in the panel, the «Connection check» section.",
     "net:probe": "Check the connection now: all probes (or `--only` — one profile or probe); the state is updated with anti-flapping; exit code 1 when the profiles in need are down. With the feature off it does nothing.",
     "code:sync": "Clones of the project's code repositories in `Code/`: clone, take what is new from the server and set the pinned revision or the branch tip — read-only, nothing is merged or pushed. Repositories are connected in the \"Code\" section (`code_repos:` in the config), sign-in works as in \"Project Git\", the secret stays outside the project. Without `--apply` — a plan, no network; a repository whose connection is down now is skipped with the reason; a clone with edits is left alone, `--reset --repo` resets it to the registry",
-    "code:status": "Code repositories: the revision and its date, how far behind the server branch, the last sync, languages and size (files and lines per language without external tools; dependencies, generated, binary and lock files are not counted), the \"models\" and \"publish\" permissions; no network needed"
+    "code:status": "Code repositories: the revision and its date, how far behind the server branch, the last sync, languages and size (files and lines per language without external tools; dependencies, generated, binary and lock files are not counted), the \"models\" and \"publish\" permissions; no network needed",
+    "ship:task": "A task in the tracker for an artifact document through the active task tracker connector (project settings): type, epic, assignee, labels and components come from the `task:` block of the document header, the task properties of the kind and the connector settings; the default assignee is the person with the project's git e-mail. Without `--apply` — a plan, nothing is written to the tracker; with `--apply` the task is created and `task_key` and `task_url` go into the document header (BOM and line endings are kept). The published page of the document is linked to the task; if the task already exists, no second one appears."
   },
   "scenarios": {
     "Обновить базу": "Update the base",
@@ -1130,7 +1131,15 @@
     "клонировать или обновить репозитории кода (без --apply — план)": "clone or update the code repositories (without --apply — a plan)",
     "с --sync и --repo: сбросить клон к реестру — правки и лишние файлы клона прочь, адрес из реестра": "with --sync and --repo: reset the clone to the registry — edits and extra files of the clone go, the address comes from the registry",
     "состояние: ревизия, отставание от сервера, языки и размер": "state: revision, lag behind the server, languages and size",
-    "только этот репозиторий из реестра": "only this repository of the registry"
+    "только этот репозиторий из реестра": "only this repository of the registry",
+    "ключ проекта в трекере (иначе — из шапки документа, вида или настроек)": "the project key in the tracker (otherwise from the document header, the kind or the settings)",
+    "тип задачи (иначе — из шапки документа или вида)": "the task type (otherwise from the document header or the kind)",
+    "исполнитель: логин или почта (иначе — из шапки, вида или git проекта)": "the assignee: a login or an e-mail (otherwise from the header, the kind or the project's git)",
+    "ключ эпика": "the epic key",
+    "метки через запятую": "labels, comma-separated",
+    "компоненты через запятую": "components, comma-separated",
+    "заголовок задачи (по умолчанию — заголовок документа)": "the task title (by default the document title)",
+    "завести задачу и записать её ключ в шапку (иначе только план)": "create the task and write its key into the header (otherwise only a plan)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

@@ -46,7 +46,7 @@ import sys
 import urllib.parse
 from datetime import date, timedelta
 
-from sources_core import (ASSET_DIR_RE, CONFIG, FileTooLarge, RestApi, UnsafeTarget, WikiMirror, block,
+from sources_core import (ASSET_DIR_RE, CONFIG, FileTooLarge, OpFailure, RestApi, UnsafeTarget, WikiMirror, block,
                           config_text, loss_summary, lose_path, nfc, no_access, drop_empty_dirs,
                           path_overflow, path_probe, report_stale, scalar, verify, word)
 from sources_core import read_secret as core_secret
@@ -154,6 +154,19 @@ def read_secret(root: str = "") -> tuple:
     return core_secret("CONFLUENCE", root)
 
 
+def connect(root: str = "") -> tuple:
+    """Вход в Confluence одним правилом для синка и операций вики (`confluence_ops.py`): адрес —
+    `atlassian.confluence.base_url` конфига, ключ — `CONFLUENCE_PAT` (или `CONFLUENCE_USER` + `CONFLUENCE_PASSWORD`)
+    машины. → (Api, cfg, способ входа); адреса или ключа нет — `OpFailure` вида `config` или `auth`."""
+    cfg = read_config(root) if root else read_config()      # без корня — как синк: от текущей папки
+    if not cfg["base_url"]:
+        raise OpFailure("config", "confluence_export: не найден atlassian.confluence.base_url в aurora.config.yaml")
+    auth, how = read_secret(root) if root else read_secret()
+    if not auth:
+        raise OpFailure("auth", no_access("confluence_export", "CONFLUENCE"))
+    return Api(cfg["base_url"], auth, root), cfg, how
+
+
 # --------------------------------------------------------------------- API
 
 def parse_ref(raw: str) -> tuple:
@@ -237,9 +250,11 @@ class Api(RestApi):
         return self.get(f"/rest/api/content/{page_id}"
                         "?expand=body.storage,version,space,ancestors")
 
-    def by_title(self, space: str, title: str) -> dict:
+    def by_title(self, space: str, title: str, expand: str = "") -> dict:
+        """Страница пространства с точным заголовком (первая из ответа) или {}; `expand` — что приложить к ответу."""
         q = urllib.parse.quote(title)
-        data = self.get(f"/rest/api/content?spaceKey={urllib.parse.quote(str(space), safe='')}&title={q}&limit=5")
+        more = f"&expand={expand}" if expand else ""
+        data = self.get(f"/rest/api/content?spaceKey={urllib.parse.quote(str(space), safe='')}&title={q}{more}&limit=5")
         hits = data.get("results", [])
         return hits[0] if hits else {}
 
@@ -1770,17 +1785,14 @@ def main() -> int:
                     help="только показать дерево корней с числом детей у страниц и отказами сервера; файлы не пишутся")
     a = ap.parse_args()
 
-    cfg = read_config()
+    try:
+        api, cfg, kind = connect()
+    except OpFailure as e:
+        print(e, file=sys.stderr)
+        return 1
+    auth = api.auth
     out = a.out or cfg["out"]
     roots = a.roots or cfg["roots"]
-    auth, kind = read_secret()
-    if not cfg["base_url"]:
-        print("confluence_export: не найден atlassian.confluence.base_url в aurora.config.yaml",
-              file=sys.stderr)
-        return 1
-    if not auth:
-        print(no_access("confluence_export", "CONFLUENCE"), file=sys.stderr)
-        return 1
     if not roots:
         print("confluence_export: не заданы корни синка — добавьте sync_roots в aurora.config.yaml "
               "или укажите --roots <page_id>", file=sys.stderr)

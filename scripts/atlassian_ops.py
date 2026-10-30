@@ -41,7 +41,7 @@ import urllib.error
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sources_core import CONFIG, block, config_text, read_secret  # noqa: E402
+from sources_core import CONFIG, block, config_text, http_why, read_secret  # noqa: E402,F401 — http_why зовут и снаружи
 
 OPS = ("check", "jira_search", "jira_issue", "jira_publish", "confluence_find",
        "confluence_page")
@@ -100,24 +100,7 @@ def confluence(root: str = ""):
     return Api(s["confluence_url"], auth, root)
 
 
-def http_why(e: Exception) -> str:
-    """Причина сбоя словами сервера: тело ответа Jira называет, что не так с запросом."""
-    if isinstance(e, urllib.error.HTTPError):
-        try:
-            body = e.read().decode("utf-8", "replace")
-        except Exception:  # noqa: BLE001
-            body = ""
-        try:
-            data = json.loads(body)
-            msgs = data.get("errorMessages") or []
-            msgs += [f"{k}: {v}" for k, v in (data.get("errors") or {}).items()]
-            if msgs:
-                return f"HTTP {e.code}: " + "; ".join(map(str, msgs))[:300]
-        except ValueError:
-            pass
-        return f"HTTP {e.code}: {body[:200]}".strip()
-    return f"{type(e).__name__}: {e}"[:300]
-
+# Причина сбоя словами сервера — `sources_core.http_why` (общая с операциями коннекторов).
 
 # ------------------------------------------------------------------ операции
 

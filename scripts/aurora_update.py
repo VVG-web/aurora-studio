@@ -37,7 +37,7 @@ import argparse, difflib, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from aurora_common import load_connector_manifest, replace_file, utc_today, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком; манифест коннектора без исключений
+from aurora_common import connector_scripts, load_connector_manifest, replace_file, utc_today, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком; манифест коннектора без исключений
 try:
     from aurora_common import ENGINE_BEHIND, engine_status, kit_engine_api, version_key  # noqa: E402 — версии и статус движка: одно определение
 except ImportError:
@@ -498,11 +498,10 @@ def plan(target: Path, f: dict):
                     continue
                 diff_or_new(f".aurora/connectors/{m['id']}.json",
                             man.read_text(encoding="utf-8"))
-                script = m.get("run", {}).get("script", "")
-                if script:
-                    # скрипт модуля может лежать рядом с манифестом (доустановленный
-                    # модуль) или в scripts/ kit'а (встроенный — его же импортируют
-                    # панель и publish_doc)
+                for script in connector_scripts(m):
+                    # скрипт модуля (запуска или операций) может лежать рядом с манифестом
+                    # (доустановленный модуль, операции встроенного) или в scripts/ kit'а
+                    # (встроенный — его же импортируют панель и publish_doc)
                     body = man.parent / script
                     body = body if body.is_file() else KIT / "scripts" / script
                     if body.is_file():
@@ -600,9 +599,9 @@ def engine_targets() -> list:
                 if m is None:
                     continue
                 out.append(f"{ENGINE}/connectors/{m['id']}.json")
-                script = m.get("run", {}).get("script", "")
-                if script and ((man.parent / script).is_file() or (KIT / "scripts" / script).is_file()):
-                    out.append(f"{ENGINE}/scripts/{script}")
+                for script in connector_scripts(m):
+                    if (man.parent / script).is_file() or (KIT / "scripts" / script).is_file():
+                        out.append(f"{ENGINE}/scripts/{script}")
     return list(dict.fromkeys(out))
 
 

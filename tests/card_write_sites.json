@@ -551,6 +551,16 @@
    "reason": "профили и адреса проверки машины (`local/connectivity.json`), не карточка",
    "calls": 2
   },
+  "scripts/connector_ops.py:cache_put": {
+   "kind": "other",
+   "reason": "кэш списков трекера задач (типы, эпики) на час в .aurora/state/cache/connectors проекта: состояние машины вне git, не карточка",
+   "calls": 1
+  },
+  "scripts/connector_ops.py:save": {
+   "kind": "other",
+   "reason": "блок connectors: в aurora.config.yaml (активный коннектор роли): конфиг, не карточка",
+   "calls": 1
+  },
   "scripts/ctx_pack.py:log_usage": {
    "kind": "other",
    "reason": "журнал использования карточек в .aurora/state",
