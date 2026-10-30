@@ -7430,7 +7430,7 @@ class Handler(BaseHTTPRequestHandler):
             import code_repos as CREPO
             self.send_json(CREPO.parse_clone(str(payload.get("text") or "")))
             return
-        if u.path in ("/api/code/repos", "/api/code/check"):
+        if u.path == "/api/code/repos" or u.path == "/api/code/check":
             project = payload.get("project", "")
             if not isinstance(project, str) or not project:
                 return self.send_json({"error": "проект не выбран"}, 400)

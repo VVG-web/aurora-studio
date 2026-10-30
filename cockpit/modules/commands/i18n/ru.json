@@ -21,6 +21,7 @@
   "commands.ns.git": "git: Git проекта",
   "commands.ns.bot": "bot: боты проекта",
   "commands.ns.net": "net: проверка соединения",
+  "commands.ns.code": "code: репозитории кода",
   "commands.net.type": "тип {types}",
   "commands.net.type_hint": "Ярлык для показа: 1 — зависит от источников или сети, 2 — от модели, 3 — ни от того, ни от другого. Решение о запуске ярлык не принимает.",
   "commands.net.vpn": "VPN: {names}",

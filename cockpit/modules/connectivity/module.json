@@ -9,5 +9,5 @@
   "order": 34,
   "needs": [],
   "commands": ["net:status", "net:probe"],
-  "for": "1.195.0"
+  "for": "1.196.0"
 }

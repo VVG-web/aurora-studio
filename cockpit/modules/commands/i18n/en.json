@@ -21,6 +21,7 @@
   "commands.ns.git": "git: project Git",
   "commands.ns.bot": "bot: project bots",
   "commands.ns.net": "net: connection check",
+  "commands.ns.code": "code: code repositories",
   "commands.net.type": "type {types}",
   "commands.net.type_hint": "A display label: 1 — depends on sources or the network, 2 — on the model, 3 — on neither. The label does not decide whether the command runs.",
   "commands.net.vpn": "VPN: {names}",

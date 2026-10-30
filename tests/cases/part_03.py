@@ -882,7 +882,7 @@ def test_the_agent_can_hold_a_conversation_and_use_tools(tmp: Path):
     # и в git. Найдено на живом коде уже после того, как инструменты были написаны.
     assert '"secret": "файл с доступами читать нельзя"' in ad, \
         "модель может прочитать токены проекта и вписать их в документ"
-    assert "from aurora_common import read_verdict" in ad \
+    assert re.search(r"from aurora_common import [^\n]*\bread_verdict\b", ad) \
         and "SECRET = (" not in ad and "HIDDEN" not in ad and "SECRET_NAME" not in ad.split(
             "def resolve_project_path")[1].split("def register_tools")[0], \
         "список файлов с доступами или служебных папок в адаптере снова своя копия: разойдётся с request_context"
