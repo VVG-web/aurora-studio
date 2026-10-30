@@ -2748,7 +2748,7 @@ def about() -> dict:
         "commit_date": git("log", "-1", "--format=%ad", "--date=short") or arch["date"],
         "author": git("log", "--reverse", "--format=%an", "-1") or KIT_AUTHOR,
         "license": "Apache-2.0" if os.path.isfile(os.path.join(KIT, "LICENSE")) else "—",
-        "commands": len(registry()),
+        "commands": registry_total(),
         "releases": [h[3:] for h in head],
     }
 
@@ -3499,12 +3499,30 @@ def mcp_kit_action(payload: dict) -> dict:
 # Сборка реестра — десятки секунд (`--help` у каждого скрипта), и два запроса подряд не
 # должны собирать его дважды: первый старт после обновления кита шёл полторы минуты.
 _REGISTRY_LOCK = threading.RLock()
+# Команды движка: живут в скрытом разделе «Разработка», а не в «Командах». Правило одно на
+# панель — по нему и список, и число команд на Мостике, в меню и в «О ките»: прежде каждый
+# считал сам, и Мостик показывал 111, а «Команды» — 110.
+ENGINE_CMDS = ("kit:skills",)
 
 
 def registry() -> list:
     """Реестр команд; сборку разделяют все потоки — см. `_registry`."""
     with _REGISTRY_LOCK:
         return _registry()
+
+
+def registry_total() -> int:
+    """Сколько команд у человека — ровно столько строк в разделе «Команды»."""
+    return sum(1 for r in registry() if not r.get("engine"))
+
+
+def _file_mark(path: str) -> tuple:
+    """(время правки, размер) файла: дешёвая метка, сменился ли он."""
+    try:
+        st = os.stat(path)
+        return st.st_mtime, st.st_size
+    except OSError:
+        return 0, 0
 
 
 def registry_ready() -> bool:
@@ -3524,7 +3542,12 @@ def _registry() -> list:
     # Кэш в памяти помнит, ДЛЯ КАКОГО кита и в каком виде собран реестр — как и ключ на
     # диске. Без этого реестр временного кита (без `dev:`) оставался в памяти процесса после
     # возврата `KIT`, и следующие проверки «из кита видно разработку» краснели через раз.
-    mem = (KIT, stamp, kit_is_source())
+    # И сам `commands.txt`: при обновлении кита git пишет VERSION раньше реестра, и собранный
+    # в этот миг список (старый или недописанный — так на Мостике бывало «70 команд») жил в
+    # памяти до следующей смены версии.
+    import kit_commands as K
+    reg_file = K.REGISTRY          # тот файл, что читает реестр, — `commands.txt` кита
+    mem = (KIT, stamp, kit_is_source(), _file_mark(reg_file))
     if "registry" in CACHE and CACHE.get("registry_stamp") == mem:
         return CACHE["registry"]
     CACHE["registry_stamp"] = mem
@@ -3542,7 +3565,7 @@ def _registry() -> list:
     newest = max((os.path.getmtime(os.path.join(scripts, f)) for f in os.listdir(scripts)
                   if f.endswith(".py")), default=0)
     key = (f"{kit_version()}|{stamp}|"
-           f"{os.path.getmtime(os.path.join(KIT, 'commands.txt'))}|"
+           f"{_file_mark(reg_file)[0]}|"
            f"src={int(kit_is_source())}|engine={ENGINE}|scripts={newest}")
     cached = read_text(REGISTRY_CACHE, limit=4_000_000)
     if cached:
@@ -3553,7 +3576,6 @@ def _registry() -> list:
                 return data["rows"]
         except (ValueError, KeyError):
             pass
-    import kit_commands as K
     # Реестр читает `kit_commands`, а модуль в `sys.modules` может оказаться чужим: в
     # одном процессе панель и тесты работают с несколькими деревьями, и первый импорт
     # выигрывает. Тогда в файл кита ложится реестр ЧУЖОГО дерева под ключом кита —
@@ -3592,13 +3614,22 @@ def _registry() -> list:
             "runnable": script.endswith(".py"),
             # флаги всегда читаются из kit'а, а запускается движок проекта — кроме этих
             "from_kit": script in KIT_SIDE,
+            "engine": r["ns"] == "dev" or r["cmd"] in ENGINE_CMDS,
         })
+    # Реестр переписали, пока его читали (обновление кита идёт), или его нет вовсе: список
+    # отдаём, но не запоминаем — следующий запрос соберёт его по дописанному файлу.
+    if not rows or _file_mark(reg_file) != mem[3]:
+        CACHE.pop("registry", None)
+        return rows
     CACHE["registry"] = rows
     if not ours:
         return rows        # чужое дерево: в память отдаём, на диск кита не пишем
     try:
-        with open(REGISTRY_CACHE, "w", encoding="utf-8") as f:
+        # Через временный файл: соседняя панель не прочтёт недописанный кэш.
+        tmp = f"{REGISTRY_CACHE}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"key": key, "rows": rows}, f, ensure_ascii=False)
+        os.replace(tmp, REGISTRY_CACHE)
     except OSError:
         pass        # кэш — ускорение, а не результат работы: не записался, так не записался
     return rows
@@ -6824,7 +6855,8 @@ class Handler(BaseHTTPRequestHandler):
             # кита собирается полминуты (`--help` полусотни скриптов), и пока он был внутри
             # общего ответа, Мостик всё это время стоял пустым.
             self.send_json({"env": localized_environment(environment(), request_lang(q)),
-                            "commands": localized_commands(registry(), request_lang(q))})
+                            "commands": localized_commands(registry(), request_lang(q)),
+                            "commands_total": registry_total()})
         elif u.path == "/api/state":
             projects = find_projects(self.server.roots)
             # Опрос отметок Мостика идёт по этому списку: обход папок стоит полсекунды,
@@ -6855,9 +6887,12 @@ class Handler(BaseHTTPRequestHandler):
                 # пасхалка «Разработка» открывается только там, где есть что разрабатывать
                 "dev_available": kit_is_source(),
                 # `part=core` — без реестра и окружения: их панель спрашивает следом.
+                # Ответ целиком несёт реестр и окружение: `extra` — чтобы плитки Мостика после
+                # такого ответа показывали числа, а не ждали второй половины, которая не придёт.
                 **({} if core else {
                     "env": localized_environment(environment(), request_lang(q)),
-                    "commands": localized_commands(registry(), request_lang(q))}),
+                    "commands": localized_commands(registry(), request_lang(q)),
+                    "commands_total": registry_total(), "extra": True}),
             })
         elif u.path == "/api/health":
             project = q.get("project", [""])[0]

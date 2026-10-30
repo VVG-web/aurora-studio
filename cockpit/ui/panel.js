@@ -732,7 +732,7 @@ function drawLangPicker(){
     // Описания команд приходят от сервера уже на языке интерфейса: без нового запроса
     // они остались бы прежними до перезагрузки страницы.
     const st = await api("/api/state?part=extra", {quiet:true});
-    if (st && st.commands){ S.state.commands = st.commands; S.state.env = st.env; }
+    if (st && st.commands){ S.state.commands = st.commands; S.state.commands_total = st.commands_total; S.state.env = st.env; }
     S.scenarios = null;     // маршруты тоже приходят на языке интерфейса — спросим заново
     // и итог «Здоровья»: находки доктора и описания источников — тоже на языке
     S.state.projects.forEach(x => { x.health = null; });
@@ -1979,8 +1979,9 @@ async function boot(){
   S.state.commands = [];
   S.extraP = api("/api/state?part=extra", {quiet: true}).then(x => {
     if (!x || x.error) return;
-    S.state.env = x.env; S.state.commands = x.commands; S.state.extra = true;
-    setBadge("commands", S.state.commands.length);
+    S.state.env = x.env; S.state.commands = x.commands; S.state.commands_total = x.commands_total;
+    S.state.extra = true;
+    setBadge("commands", S.state.commands_total);
     const miss = S.state.env.items.filter(i=>!i.ok).length;
     setBadge("install", miss || "", miss > 0);
     drawGlobalMetrics();
@@ -2571,7 +2572,7 @@ function drawGlobalMetrics(){
       !st ? "" : behind ? "warn" : "ok", behind ? updateAllProjects : null),
     metric(extra ? miss : waitMark(), t("overview.missing"), t("overview.missing_hint"),
       !extra ? "" : miss ? "warn" : "ok"),
-    metric(extra ? st.commands.length : waitMark(), t("overview.commands"),
+    metric(extra ? st.commands_total : waitMark(), t("overview.commands"),
       t("overview.commands_hint"), extra ? "ok" : ""),
   );
 }
@@ -2848,8 +2849,9 @@ const goCmd = (cmd, args, label) => ({label, llm: cmd, act: async () => {
 // Команды движка живут в скрытом разделе «Разработка»: в общем списке они были бы
 // шумом — аналитик их не запускает, а показать одно и то же в двух местах значит
 // разойтись при первой же правке.
-const ENGINE_CMDS = ["kit:skills"];
-const isEngineCmd = r => r.ns === "dev" || ENGINE_CMDS.includes(r.cmd);
+// Движковая ли команда, решает сервер (`ENGINE_CMDS` в aurora_cockpit.py, поле `engine` строки реестра): по тому же
+// правилу он считает и число команд для Мостика, меню и «О ките» (`commands_total`). Своего списка у панели нет.
+const isEngineCmd = r => !!(r && r.engine);
 
 // Чип исполнителя: скрипт, модель или скрипт с моделью. Живёт в ядре, потому что его
 // показывают двое — список команд и окно запуска. Уехал в раздел — и окно запуска

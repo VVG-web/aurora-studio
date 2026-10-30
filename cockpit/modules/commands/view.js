@@ -38,7 +38,8 @@ export async function refresh(ctx, typing){
   const all = ctx.state.commands.filter(r => !ctx.isEngineCmd(r));
   const rows = all.filter(r => !q ||
     (r.cmd + " " + r.alias + " " + r.what + " " + r.impl).toLowerCase().includes(q));
-  ctx.$("#cmdCount").textContent = t("commands.count", {shown: rows.length, total: all.length});
+  // «из N» — то же число, что на Мостике и в меню: его считает сервер по тому же правилу, что и список.
+  ctx.$("#cmdCount").textContent = t("commands.count", {shown: rows.length, total: ctx.state.commands_total ?? all.length});
 
   const box = ctx.$("#cmdList");
   box.innerHTML = "";

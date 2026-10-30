@@ -1676,10 +1676,13 @@ def test_every_command_is_reachable_in_the_panel(tmp: Path):
     rows = ck.registry()
     ui = panel_sources()
 
-    assert "ENGINE_CMDS" in ui and "isEngineCmd" in ui, \
-        "в панели нет правила, что считать движковой командой"
+    # Правило одно и живёт на сервере (`ENGINE_CMDS`, поле `engine` строки реестра): по нему же сервер считает
+    # число команд для Мостика, меню и «О ките».
+    assert "isEngineCmd = r => !!(r && r.engine)" in ui, "в панели нет правила, что считать движковой командой"
+    assert ck.ENGINE_CMDS == ("kit:skills",), ck.ENGINE_CMDS
     engine = [r for r in rows if r["ns"] == "dev" or r["cmd"] == "kit:skills"]
     assert engine, "движковые команды пропали из реестра панели"
+    assert [r["cmd"] for r in rows if r["engine"]] == [r["cmd"] for r in engine], "сервер метит движковые не те"
 
     # «Команды» показывают всё, кроме движковых, — и не требуют исключений по одной
     # Список команд уехал в раздел-папку и зовёт то же правило через ctx: важно, что

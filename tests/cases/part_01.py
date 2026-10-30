@@ -1240,7 +1240,10 @@ def test_cockpit_scenarios_skins_and_about(tmp: Path):
     # --- о проекте
     a = ck.about()
     assert a["kit"] == (KIT / "VERSION").read_text(encoding="utf-8").strip()
-    assert a["commands"] == len(known) and a["license"] == "Apache-2.0"
+    # «О ките» считает команды так же, как раздел «Команды» и Мостик: без движковых.
+    human = [r for r in ck.registry() if not r["engine"]]
+    assert a["commands"] == len(human) == ck.registry_total() < len(known), (a["commands"], len(human), len(known))
+    assert a["license"] == "Apache-2.0", a["license"]
 
 
 @test
