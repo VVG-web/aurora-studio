@@ -511,6 +511,11 @@
    "reason": "реестр репозиториев кода: блок code_repos: в aurora.config.yaml по записи из панели, атомарно",
    "calls": 1
   },
+  "scripts/code_sync.py:_write_state": {
+   "kind": "other",
+   "reason": "состояние синхронизации кода: .aurora/state/code/sync.json",
+   "calls": 1
+  },
   "scripts/confluence_export.py:Exporter.save_assets": {
    "kind": "other",
    "reason": "зеркало Confluence в Sources/: источник, не карточка",

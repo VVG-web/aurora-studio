@@ -113,8 +113,9 @@ scripts/model_config.py  => .aurora/scripts/model_config.py
 scripts/connectivity.py  => .aurora/scripts/connectivity.py
 scripts/conn_gate.py      => .aurora/scripts/conn_gate.py
 scripts/git_sync.py      => .aurora/scripts/git_sync.py
-# код проекта (раздел «Код»): реестр репозиториев `code_repos:`
+# код проекта (раздел «Код»): реестр репозиториев `code_repos:` и клоны в Code/ — `code:sync`, `code:status`
 scripts/code_repos.py    => .aurora/scripts/code_repos.py
+scripts/code_sync.py     => .aurora/scripts/code_sync.py
 scripts/bots.py          => .aurora/scripts/bots.py
 scripts/bot_context.py   => .aurora/scripts/bot_context.py
 scripts/atlassian_ops.py => .aurora/scripts/atlassian_ops.py

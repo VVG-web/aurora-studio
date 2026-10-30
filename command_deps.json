@@ -106,6 +106,8 @@
     "bot:list": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "net:status": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "net:probe": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
+    "code:sync": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": false, "offline_variant": ""},
+    "code:status": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "dev:qa-check": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "dev:qa-gap": {"requires_sources": [], "requires_llm": true, "requires_internet": false, "offline_capable": false, "offline_variant": ""},
     "dev:qa-cover": {"requires_sources": [], "requires_llm": true, "requires_internet": false, "offline_capable": false, "offline_variant": ""},

@@ -178,6 +178,13 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 | `net:status` | Availability of connections: profiles (VPN), probes, the internet and the model providers, the kit's mode of work and the reasons; read-only, changes nothing — profiles and probes are set up in the panel, the «Connection check» section. | script | 1.178.0 |
 | `net:probe` | Check the connection now: all probes (or `--only` — one profile or probe); the state is updated with anti-flapping; exit code 1 when the profiles in need are down. With the feature off it does nothing. | script | 1.178.0 |
 
+## `code:` — Project code: repositories, sync, languages and size
+
+| Command | What it does | Executor | Since |
+|---|---|---|---|
+| `code:sync` | Clones of the project's code repositories in `Code/`: clone, take what is new from the server and set the pinned revision or the branch tip — read-only, nothing is merged or pushed. Repositories are connected in the "Code" section (`code_repos:` in the config), sign-in works as in "Project Git", the secret stays outside the project. Without `--apply` — a plan, no network; a repository whose connection is down now is skipped with the reason; a clone with edits is left alone, `--reset --repo` resets it to the registry | script | 1.195.0 |
+| `code:status` | Code repositories: the revision and its date, how far behind the server branch, the last sync, languages and size (files and lines per language without external tools; dependencies, generated, binary and lock files are not counted), the "models" and "publish" permissions; no network needed | script | 1.195.0 |
+
 ## `dev:` — QA of the engine
 
 | Command | What it does | Executor | Since |

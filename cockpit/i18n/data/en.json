@@ -116,7 +116,9 @@
     "bot:check": "Check a bot without running it: the schedule (cron), MCP servers, skills and attachment paths — with the next runs.",
     "bot:list": "The project's bots: schedule and next run, the last run's outcome, problems.",
     "net:status": "Availability of connections: profiles (VPN), probes, the internet and the model providers, the kit's mode of work and the reasons; read-only, changes nothing — profiles and probes are set up in the panel, the «Connection check» section.",
-    "net:probe": "Check the connection now: all probes (or `--only` — one profile or probe); the state is updated with anti-flapping; exit code 1 when the profiles in need are down. With the feature off it does nothing."
+    "net:probe": "Check the connection now: all probes (or `--only` — one profile or probe); the state is updated with anti-flapping; exit code 1 when the profiles in need are down. With the feature off it does nothing.",
+    "code:sync": "Clones of the project's code repositories in `Code/`: clone, take what is new from the server and set the pinned revision or the branch tip — read-only, nothing is merged or pushed. Repositories are connected in the \"Code\" section (`code_repos:` in the config), sign-in works as in \"Project Git\", the secret stays outside the project. Without `--apply` — a plan, no network; a repository whose connection is down now is skipped with the reason; a clone with edits is left alone, `--reset --repo` resets it to the registry",
+    "code:status": "Code repositories: the revision and its date, how far behind the server branch, the last sync, languages and size (files and lines per language without external tools; dependencies, generated, binary and lock files are not counted), the \"models\" and \"publish\" permissions; no network needed"
   },
   "scenarios": {
     "Обновить базу": "Update the base",
@@ -238,7 +240,8 @@
     "Выгрузить в docx/pdf по фирменному шаблону": "Export to docx/pdf with the corporate template",
     "Опубликовать артефакт в Confluence как generated-страницу": "Publish the artifact to Confluence as a generated page",
     "Заморозить переданную версию: снимок, коммит, дата": "Freeze the handed-over version: snapshot, commit, date",
-    "Пересборка закончена: снять отметку «идёт»; прежнюю базу ещё можно вернуть командой kb:reset --undo --apply": "Rebuild finished: clear the “under way” mark; the previous base can still be restored with kb:reset --undo --apply"
+    "Пересборка закончена: снять отметку «идёт»; прежнюю базу ещё можно вернуть командой kb:reset --undo --apply": "Rebuild finished: clear the “under way” mark; the previous base can still be restored with kb:reset --undo --apply",
+    "Забрать свежий код репозиториев проекта в Code/: клон или обновление на закреплённую ревизию; без подключённых репозиториев шаг ничего не делает": "Take fresh code of the project's repositories into Code/: a clone or an update to the pinned revision; with no repositories connected the step does nothing"
   },
   "profiles": {
     "all": {
@@ -1106,7 +1109,12 @@
     "сказать, идёт ли пересборка": "say whether a rebuild is under way",
     "снести базу, даже если пересборка не закончена": "wipe the base even if a rebuild is not finished",
     "перенести свою страницу туда, куда ведёт путь вида; без флага страница, лежащая не там, обновляется на месте": "move your own page to where the kind's path leads; without the flag a page that is elsewhere is updated in place",
-    "вывод для человека — в stderr, в stdout — один JSON исхода (без --apply — план: пространство, корень, цепочка разделов, заголовок, действие, версия страницы, ворота)": "human output goes to stderr, stdout gets one JSON of the outcome (without --apply — the plan: space, root, chain of sections, title, action, page version, gates)"
+    "вывод для человека — в stderr, в stdout — один JSON исхода (без --apply — план: пространство, корень, цепочка разделов, заголовок, действие, версия страницы, ворота)": "human output goes to stderr, stdout gets one JSON of the outcome (without --apply — the plan: space, root, chain of sections, title, action, page version, gates)",
+    "записать: клонировать и обновить (без него — только план)": "write: clone and update (without it — only the plan)",
+    "клонировать или обновить репозитории кода (без --apply — план)": "clone or update the code repositories (without --apply — a plan)",
+    "с --sync и --repo: сбросить клон к реестру — правки и лишние файлы клона прочь, адрес из реестра": "with --sync and --repo: reset the clone to the registry — edits and extra files of the clone go, the address comes from the registry",
+    "состояние: ревизия, отставание от сервера, языки и размер": "state: revision, lag behind the server, languages and size",
+    "только этот репозиторий из реестра": "only this repository of the registry"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

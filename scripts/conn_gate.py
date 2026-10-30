@@ -557,6 +557,23 @@ def models_used(kit=None) -> list:
     return [p for p in CN.providers_of(kit, data) if p["id"] in used]
 
 
+def code_needs(project: str) -> dict:
+    """Вычисляемый источник «код»: профили и интернет репозиториев кода проекта (`code_repos:` → `access`).
+    Нет реестра или старый движок — ничего не нужно."""
+    if not project:
+        return {"profiles": [], "internet": False}
+    try:
+        import code_repos
+        return code_repos.net_needs(project)
+    except Exception:  # noqa: BLE001 — подсказка о связи не роняет проверку
+        return {"profiles": [], "internet": False}
+
+
+# Команды, чьи нужды в связи считаются по проекту, а не по `command_deps.json`: у каждого репозитория кода свой режим
+# доступа, а запись в файле на команду одна.
+COMPUTED_NEEDS = {"code:sync": code_needs}
+
+
 def required_for(project: str, svc=None) -> dict:
     """Что нужно делу проекта: {profiles, providers, internet} — по включённым источникам и провайдерам моделей.
 
@@ -567,6 +584,9 @@ def required_for(project: str, svc=None) -> dict:
         if need["profile"]:
             profiles.add(need["profile"])
         internet = internet or need["internet"]
+    code = code_needs(project)
+    profiles |= set(code["profiles"])
+    internet = internet or code["internet"]
     provs = models_used(getattr(svc, "kit", None))
     for p in provs:
         if p["profile"]:
@@ -660,6 +680,10 @@ def command_requirements(cmd: str, project: str, deps: dict | None = None, sourc
         internet = internet or n["internet"]
         rows.append({"id": s["id"], "module": s["module"], "mode": s["mode"], "profile": n["profile"],
                      "internet": n["internet"], "offline_cache": s["offline_cache"]})
+    if cmd in COMPUTED_NEEDS:
+        extra = COMPUTED_NEEDS[cmd](project)
+        profiles |= set(extra["profiles"])
+        internet = internet or extra["internet"]
     llm_profiles, llm_internet = [], False
     if d["requires_llm"]:
         provs = models_used() if providers is None else providers
@@ -667,7 +691,8 @@ def command_requirements(cmd: str, project: str, deps: dict | None = None, sourc
         llm_internet = any(not p["profile"] and not p["local"] for p in provs)
     return {"cmd": cmd, "profiles": sorted(profiles), "internet": bool(internet), "llm": d["requires_llm"],
             "llm_profiles": llm_profiles, "llm_internet": llm_internet, "sources": rows,
-            "offline_capable": d["offline_capable"], "offline_variant": d["offline_variant"], "types": net_types(d)}
+            "offline_capable": d["offline_capable"], "offline_variant": d["offline_variant"],
+            "types": sorted(set(net_types(d)) - {3} | {1}) if cmd in COMPUTED_NEEDS else net_types(d)}
 
 
 # ------------------------------------------------------------------ вердикт: можно ли начинать
