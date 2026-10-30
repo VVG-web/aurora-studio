@@ -26,6 +26,16 @@ by the first sign-in; the same command on a running panel prints and opens a new
 - **Density and speed.** There is one user, who is also the data owner and the one who presses "apply". They need density and
   answers to four questions without a terminal: what broke and how urgent it is; what must be done by hand and what a script
   will do; what is missing for things to work; which engine version is installed where.
+- **Choose instead of type.** A path to a folder or a file need not be remembered and typed: next to the field there is
+  "Choose…", and the panel's window shows folders and files — of the project (paths from its root; service folders and
+  files with credentials are not shown; the filter line also searches the whole project) or of the computer (the home
+  folder, Windows drives, macOS volumes; an SSH key — from `~/.ssh`). This is how you pick the folders where projects
+  are searched for, the folder of a new project and of a clone, an SSH key (a new project from git, "Git", "Code"), the
+  template, prompts and folder of an artifact kind, trusted sources, path values of command flags and of a Cron step,
+  masks by clone folders in "Code", bot attachments and task files in "Production". The MCP server names of an artifact
+  kind are ticked in the list of the available ones; a name that is not among them is marked "no such server". The field
+  stays — a path can be pasted by hand; the choice lands in the field and is saved by the same "Save" as typing. The
+  window writes nothing: a folder listing is `GET /api/fs/list`, names only.
 
 ## 2. Launch and finding projects
 

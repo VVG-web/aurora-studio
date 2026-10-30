@@ -129,6 +129,327 @@ function askNet(info){
     setTimeout(() => box.querySelector("button")?.focus(), 40);
   });
 }
+/* ---------------- окно выбора: «Выбор вместо ввода» ----------------
+
+   Путь к папке или файлу человек не вспоминает и не печатает, а выбирает в окне панели. Браузер абсолютного пути из
+   системного окна не отдаёт, поэтому окно своё: список одного уровня даёт сервер (`/api/fs/list`, только чтение).
+   Проект — пути от его корня, граница та же, что у «Файлов»; машина — абсолютные пути. Поле ввода остаётся (вставить
+   путь руками можно), а выбор кладёт значение в поле тем же событием `input`, что и набор: форма помечается
+   изменённой и пишется своим путём — со слепком и 409, мимо неё ничего не уходит. Подтверждающих окон нет: Esc,
+   щелчок мимо окна и «Отмена» просто закрывают. Имя MCP-сервера так же не печатают, а отмечают в списке (`pickMcp`). */
+const PICK = {close: null};
+const PICK_DIR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.6l2 2.2h8.4A1.5 1.5 0 0 1 21 8.7v9.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg>';
+const PICK_FILE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8z"/><path d="M14 3v5h5"/></svg>';
+// Ключ SSH: рядом с ним лежат открытые ключи, `known_hosts`, `config` — ключом они не бывают, в окне их нет.
+const SSH_NOT_KEY = /(\.pub|^known_hosts(\.old)?|^config|^authorized_keys2?|\.sock)$/i;
+const PICK_PRESETS = {
+  ssh: () => ({scope: "machine", want: "file", start: "~/.ssh", title: t("pick.title_ssh"),
+               filter: e => e.kind === "dir" || !SSH_NOT_KEY.test(e.name)}),
+};
+// Значение флага — путь, если так говорит его подсказка (`--report PATH`, `--file ПУТЬ`, `[paths ...]`). Подсказки —
+// метапеременные `--help` скриптов (переведённые таблицей `flag_args`). → {want, multi} или null.
+const PATH_WORDS = {dir: /^(dirs?|folders?|папк[аи]|root|out)$/i,
+                    file: /^(files?|файл[аы]?|reference|binary|template|document)$/i,
+                    any: /^(paths?|пут[ьи]|report)$/i};
+function pathMeta(meta){
+  const words = String(meta || "").split(/[^A-Za-zА-Яа-яЁё]+/).filter(Boolean);
+  for (const want of ["dir", "file", "any"])
+    if (words.some(w => PATH_WORDS[want].test(w))) return {want, multi: /\.\.\.|…/.test(String(meta))};
+  return null;
+}
+// Дописать выбранные пути к значению поля через `sep` (список путей, маски, аргументы): повтор не дописывается.
+const appendPaths = sep => (list, old) => {
+  const have = String(old || "").split(sep.trim() || /\s+/).map(x => x.trim()).filter(Boolean);
+  return [...have, ...list.filter(p => !have.includes(p))].join(sep);
+};
+
+function pickOpen(build){
+  if (PICK.close) PICK.close(null);
+  const ov = $("#pickOverlay"), box = $("#pickDialog"), back = document.activeElement;
+  return new Promise(done => {
+    const close = v => {
+      if (PICK.close !== close) return;
+      PICK.close = null;
+      ov.classList.remove("on"); box.innerHTML = "";
+      if (back && back.isConnected && back.focus) back.focus();
+      done(v);
+    };
+    PICK.close = close;
+    box.innerHTML = ""; box.onkeydown = null;
+    build(box, close);
+    ov.classList.add("on");
+  });
+}
+
+/* Окно выбора пути. `scope` — "project" (по умолчанию; `project` — путь проекта, иначе выбранный) или "machine";
+   `want` — "file", "dir" или "any"; `start` — где открыть (путь из поля, `~/.ssh`); `base` — дальше этой папки
+   проекта вверх не подниматься (клон в `Code/`); `filter(entry)` — какие строки показывать; `multi` — несколько
+   путей галочками; `detail` — отдать {path, kind}, а не строку; `title`. → путь, список путей или null. */
+function pickPath(opts){
+  const o = {scope: "project", want: "file", ...(opts || {})};
+  const project = o.scope === "project" ? (o.project || (S.project && S.project.path) || "") : "";
+  if (o.scope === "project" && !project){ toast(t("pick.no_project"), "warn"); return Promise.resolve(null); }
+  const base = String(o.base || "").replace(/[\\/]+$/, "");
+  const under = p => !base || p === base || p.startsWith(base + "/");
+  const accepts = kind => o.want === "any" || o.want === kind;
+  return pickOpen((box, close) => {
+    const st = {data: null, rows: [], found: [], sel: -1, picked: new Map(), hidden: !!o.hidden, err: "", seq: 0,
+                ask: 0, timer: null};
+    const title = o.title || (o.want === "dir" ? t("pick.title_dir") : o.want === "file" ? t("pick.title_file")
+                                                                       : t("pick.title_any"));
+    const tools = el("div", {class:"row", style:"gap:6px;flex-wrap:wrap;align-items:center"});
+    // Не <nav>: правила меню панели (`nav button`) растянули бы каждую ступень на всю ширину.
+    const crumbs = el("div", {class:"pick-crumbs", role:"navigation", "aria-label": t("pick.crumbs")});
+    const filter = el("input", {class:"btn", style:"width:100%;font-weight:400", autocomplete:"off", spellcheck:"false",
+      "aria-label": t("pick.filter"), placeholder: t(o.scope === "project" ? "pick.filter_project" : "pick.filter_here")});
+    const list = el("div", {class:"pick-list", role:"listbox", tabindex:"0", "aria-label": title,
+      "aria-multiselectable": o.multi ? "true" : null});
+    const note = el("div", {class:"muted pick-note"});
+    const ok = el("button", {class:"btn primary", onclick: () => finish(result())}, t("pick.choose"));
+    box.setAttribute("aria-label", title);
+    box.append(el("h2", {style:"margin:0"}, title),
+      el("div", {class:"muted", style:"font-size:12.5px"},
+        o.scope === "machine" ? t("pick.where_machine") : t("pick.where_project")),
+      tools, crumbs, filter, list, note,
+      el("div", {class:"row", style:"gap:8px;align-items:center"}, el("div", {class:"spacer"}),
+        el("button", {class:"btn", onclick: () => close(null)}, t("pick.cancel")), ok));
+
+    const result = () => {
+      if (o.multi && st.picked.size) return [...st.picked.values()];
+      const r = st.rows[st.sel];
+      if (r && accepts(r.kind)) return [r];
+      return o.want !== "file" && st.data ? [{path: st.data.path, kind: "dir"}] : [];
+    };
+    const valid = items => items.length > 0 && items.every(x => x.path !== "" && !(base && x.path === base));
+    const finish = items => {
+      if (!valid(items)) return;
+      const out = items.map(x => o.detail ? {path: x.path, kind: x.kind} : x.path);
+      close(o.multi ? out : out[0]);
+    };
+    const toggle = r => {
+      if (!accepts(r.kind)) return;
+      st.picked.has(r.path) ? st.picked.delete(r.path) : st.picked.set(r.path, {path: r.path, kind: r.kind});
+    };
+    const open = r => r.kind === "dir" ? load(r.path) : accepts(r.kind) && finish([r]);
+    const up = () => {
+      const d = st.data;
+      if (d && d.parent !== null && d.parent !== undefined && !(base && d.path === base)) load(d.parent);
+    };
+
+    const drawFooter = () => {
+      const items = result();
+      ok.disabled = !valid(items);
+      note.textContent = !items.length ? t(o.want === "file" ? "pick.need_file" : "pick.need_dir")
+        : items.length > 1 ? t("pick.will_n", {n: items.length})
+        : valid(items) ? t("pick.will", {path: items[0].path}) : t("pick.need_dir");
+    };
+    const drawList = () => {
+      const f = filter.value.trim().toLowerCase();
+      const here = ((st.data && st.data.entries) || [])
+        .filter(e => (!o.filter || o.filter(e)) && (!f || e.name.toLowerCase().includes(f)));
+      const seen = new Set(here.map(e => e.path));
+      st.rows = [...here, ...st.found.filter(e => !seen.has(e.path))];
+      if (st.sel >= st.rows.length) st.sel = st.rows.length - 1;
+      list.innerHTML = "";
+      if (st.err) list.append(el("div", {class:"warnbox", style:"margin:8px"}, st.err));
+      let head = false;
+      st.rows.forEach((r, i) => {
+        if (r.found && !head){ head = true; list.append(el("div", {class:"pick-head"}, t("pick.found"))); }
+        const on = st.picked.has(r.path);
+        list.append(el("div", {class:"pick-row" + (i === st.sel ? " sel" : ""), role:"option", id:"pick-row-" + i,
+            "aria-selected": String(i === st.sel || on), title: r.path,
+            onclick: () => mark(i), ondblclick: () => open(r)},
+          o.multi ? el("input", {type:"checkbox", tabindex:"-1", "aria-label": r.name,
+            checked: on ? "" : null, disabled: accepts(r.kind) ? null : "",
+            onclick: e => e.stopPropagation(), onchange: () => { toggle(r); drawList(); }}) : null,
+          el("span", {class:"pick-ico" + (r.kind === "dir" ? " dir" : ""), "aria-hidden":"true",
+                      html: r.kind === "dir" ? PICK_DIR : PICK_FILE}),
+          el("span", {class:"pk-name mono"}, r.found ? r.path : r.name),
+          r.kind === "file" && r.size !== null && r.size !== undefined ? el("span", {class:"pk-size"}, kb(r.size)) : null));
+      });
+      if (!st.rows.length && !st.err)
+        list.append(el("div", {class:"muted", style:"padding:10px 12px"}, t(f ? "pick.nothing" : "pick.empty")));
+      if (st.data && st.data.truncated)
+        list.append(el("div", {class:"muted", style:"padding:6px 12px;font-size:12px"}, t("pick.truncated")));
+      mark(st.sel);
+    };
+    // Отметить строку без перерисовки списка: второй щелчок двойного должен попасть в тот же узел.
+    const mark = i => {
+      st.sel = i;
+      $$(".pick-row", list).forEach((n, k) => {
+        n.classList.toggle("sel", k === i);
+        n.setAttribute("aria-selected", String(k === i || st.picked.has(st.rows[k].path)));
+      });
+      if (i >= 0){
+        list.setAttribute("aria-activedescendant", "pick-row-" + i);
+        $("#pick-row-" + i, list)?.scrollIntoView({block:"nearest"});
+      } else list.removeAttribute("aria-activedescendant");
+      drawFooter();
+    };
+    const drawHead = () => {
+      const d = st.data || {};
+      tools.innerHTML = "";
+      tools.append(el("button", {class:"btn sm", title: t("pick.up_hint"),
+        disabled: d.parent === null || d.parent === undefined || (base && d.path === base) ? "" : null, onclick: up},
+        "↑ " + t("pick.up")));
+      if (o.scope === "machine"){
+        (d.roots || []).forEach(r => tools.append(el("button", {class:"btn sm" + (d.path === r.path ? " primary" : ""),
+          title: r.path, onclick: () => load(r.path)}, r.kind === "home" ? t("pick.home") : r.name)));
+        // Внутри скрытой папки (`~/.ssh`) скрытое видно и без галочки — она стоит отмеченной и не снимается.
+        const forced = !!d.hidden && !st.hidden;
+        tools.append(el("label", {class:"row", style:"gap:6px;font-size:12px;margin-left:auto"},
+          el("input", {type:"checkbox", checked: st.hidden || forced ? "" : null, disabled: forced ? "" : null,
+            onchange: e => { st.hidden = e.target.checked; load(d.path); }}), t("pick.hidden")));
+      }
+      crumbs.innerHTML = "";
+      const chain = (d.crumbs || []).filter(c => under(c.path));
+      chain.forEach((c, i) => {
+        if (i && !/[\\/]$/.test(chain[i - 1].name)) crumbs.append(el("span", {class:"muted", "aria-hidden":"true"}, "/"));
+        crumbs.append(el("button", {class:"btn sm", "aria-current": i === chain.length - 1 ? "location" : null,
+          onclick: () => load(c.path)}, c.name));
+      });
+    };
+    const load = async path => {
+      const mine = ++st.seq;
+      clearTimeout(st.timer); st.ask++;
+      const q = new URLSearchParams({scope: o.scope, path: path || "", want: o.want});
+      if (project) q.set("project", project);
+      if (st.hidden) q.set("hidden", "1");
+      const d = await api("/api/fs/list?" + q.toString(), {quiet: true});
+      if (mine !== st.seq || PICK.close !== close) return;
+      if (!d || d.error){
+        // Путь из поля не открылся (вне проекта, вне клона, папки нет): окно начинается с корня, а не с ошибки.
+        if (!st.data && (path || "") !== base) return load(base);
+        st.err = (d && d.error) || t("pick.failed");
+        drawList(); return;
+      }
+      if (!under(d.path)){
+        // Папки `base` больше нет — сервер открыл папку выше неё: туда окно не пускает, говорит, что не вышло.
+        if ((path || "") !== base) return load(base);
+        st.err = t("pick.failed"); drawList(); return;
+      }
+      st.data = d; st.err = ""; st.found = []; filter.value = "";
+      st.sel = d.selected ? (d.entries || []).filter(e => !o.filter || o.filter(e)).findIndex(e => e.name === d.selected) : -1;
+      drawHead(); drawList();
+      filter.focus();
+    };
+
+    // Фильтр — по именам этой папки сразу; в проекте ниже ещё находки по всему проекту (подбор `@` из «Продуктивности»).
+    filter.oninput = () => {
+      st.sel = filter.value.trim() ? 0 : -1;
+      st.found = [];
+      drawList();
+      clearTimeout(st.timer);
+      const text = filter.value.trim();
+      if (o.scope !== "project" || text.length < 2) return;
+      const mine = ++st.ask;
+      st.timer = setTimeout(async () => {
+        const d = await api("/api/context/suggest?project=" + encodeURIComponent(project)
+          + "&q=" + encodeURIComponent("@" + text), {quiet: true});
+        if (mine !== st.ask || PICK.close !== close) return;
+        st.found = ((d && d.items) || []).filter(it => it.kind === "file" || it.kind === "dir")
+          .map(it => ({name: it.value.split("/").pop(), path: it.value, kind: it.kind, size: null, found: true}))
+          .filter(r => (o.want !== "dir" || r.kind === "dir") && under(r.path) && (!o.filter || o.filter(r)));
+        drawList();
+      }, 200);
+    };
+    // Клавиатура: стрелки — по строкам, Enter — открыть папку или выбрать файл (Ctrl/⌘+Enter — выбрать отмеченное
+    // или эту папку), Backspace в пустом фильтре — наверх, пробел — галочка. Esc закрывает окно (обработчик документа).
+    box.onkeydown = e => {
+      if (e.target !== filter && e.target !== list) return;
+      const n = st.rows.length, r = st.rows[st.sel];
+      if (e.key === "ArrowDown" || e.key === "ArrowUp"){
+        e.preventDefault();
+        if (n) mark(e.key === "ArrowDown" ? Math.min(n - 1, st.sel + 1) : Math.max(0, st.sel - 1));
+      } else if (e.key === "Enter"){
+        e.preventDefault();
+        if (e.metaKey || e.ctrlKey || !r) finish(result()); else open(r);
+      } else if (e.key === "Backspace" && e.target === filter && !filter.value){
+        e.preventDefault(); up();
+      } else if (e.key === " " && o.multi && e.target === list && r){
+        e.preventDefault(); toggle(r); drawList();
+      }
+    };
+    load(o.start || base || "");
+  });
+}
+
+/* Список доступных MCP-серверов галочками: имя не печатают, а отмечают. `have` — [{name, about, own}] доступных,
+   `picked` — записанные; записанное, которого среди доступных нет, стоит первым с пометкой «нет такого сервера».
+   → отмеченные имена (в порядке записи, новые — в конце) или null. */
+function pickMcp(opts){
+  const have = (opts && opts.have) || [], picked = (opts && opts.picked) || [];
+  return pickOpen((box, close) => {
+    const chosen = new Set(picked);
+    const known = new Set(have.map(s => s.name));
+    const rows = [...picked.filter(n => !known.has(n)).map(n => ({name: n, about: "", missing: true})), ...have];
+    const filter = rows.length > 8 ? el("input", {class:"btn", style:"width:100%;font-weight:400", autocomplete:"off",
+      placeholder: t("pick.mcp_filter"), "aria-label": t("pick.mcp_filter")}) : null;
+    const list = el("div", {class:"pick-list", role:"group", "aria-label": t("pick.mcp_title")});
+    const draw = () => {
+      const f = filter ? filter.value.trim().toLowerCase() : "";
+      list.innerHTML = "";
+      rows.filter(r => !f || (r.name + " " + r.about).toLowerCase().includes(f)).forEach(r => {
+        const about = r.own ? t("pick.mcp_aurora") : r.about;
+        list.append(el("label", {class:"pick-row"},
+          el("input", {type:"checkbox", checked: chosen.has(r.name) ? "" : null,
+            onchange: e => { e.target.checked ? chosen.add(r.name) : chosen.delete(r.name); }}),
+          el("span", {style:"display:flex;flex-direction:column;gap:2px;min-width:0"},
+            el("span", {class:"row", style:"gap:6px;flex-wrap:wrap"}, el("b", {class:"mono"}, r.name),
+              r.missing ? el("span", {class:"chip warn"}, t("pick.mcp_missing")) : null),
+            about ? el("span", {class:"muted", style:"font-size:12px"}, about) : null)));
+      });
+      if (!rows.length) list.append(el("div", {class:"muted", style:"padding:10px 12px"}, t("pick.mcp_none")));
+    };
+    if (filter) filter.oninput = draw;
+    box.setAttribute("aria-label", (opts && opts.title) || t("pick.mcp_title"));
+    box.append(el("h2", {style:"margin:0"}, (opts && opts.title) || t("pick.mcp_title")),
+      el("div", {class:"muted", style:"font-size:12.5px"}, t("pick.mcp_about")),
+      ...(filter ? [filter] : []), list,      // родной append пишет null строкой «null»
+      el("div", {class:"row", style:"gap:8px;align-items:center;flex-wrap:wrap"},
+        el("button", {class:"btn sm", onclick: () => { close(null); SGROUPS.focus = "setup:mcp"; show("setup"); }},
+          t("pick.mcp_setup")),
+        el("div", {class:"spacer"}),
+        el("button", {class:"btn", onclick: () => close(null)}, t("pick.cancel")),
+        el("button", {class:"btn primary", onclick: () => close([...picked.filter(n => chosen.has(n)),
+          ...rows.map(r => r.name).filter(n => chosen.has(n) && !picked.includes(n))])}, t("pick.mcp_apply"))));
+    draw();
+    setTimeout(() => { const first = filter || $("input", list); if (first) first.focus(); }, 30);
+  });
+}
+
+// Плашки поля `mcp` вида артефакта: строка «a, b» → [{name, known, about}]. `have` — доступные серверы ([{name, about,
+// own}] из `/api/kinds`); имени нет среди них — `known: false` и подпись «нет такого сервера».
+function mcpChips(value, have){
+  const by = new Map((have || []).map(x => [x.name, x]));
+  return String(value || "").split(/[,\s]+/).filter(Boolean).map(name => {
+    const s = by.get(name);
+    return {name, known: !!s, about: !s ? t("pick.mcp_missing") : s.own ? t("pick.mcp_aurora") : (s.about || "")};
+  });
+}
+
+/* Поле пути с кнопкой «Выбрать…» рядом. `opts` — как у `pickPath` (или функция, которая их вернёт в момент нажатия),
+   плюс `preset` — заготовка окна (`ssh` — ключ SSH в `~/.ssh`) и `put(список, прежнее значение) → новое значение`
+   для полей-списков (без него — замена).
+   Окно открывается на пути из поля; выбор кладётся в поле событием `input` — тем же путём, что набор. */
+function pathField(input, opts){
+  const btn = el("button", {class:"btn sm pick-btn", type:"button", title: t("pick.button_hint"),
+    onclick: async e => {
+      e.preventDefault(); e.stopPropagation();
+      const raw = (typeof opts === "function" ? opts() : opts) || {};
+      const o = {...(raw.preset && PICK_PRESETS[raw.preset] ? PICK_PRESETS[raw.preset]() : {}), ...raw};
+      const cur = String(input.value || "").trim();
+      const got = await pickPath({...o, start: (!o.put && cur) || o.start || ""});
+      const list = got === null || got === undefined ? [] : Array.isArray(got) ? got : [got];
+      if (!list.length) return;
+      input.value = o.put ? o.put(list, input.value) : list[0];
+      input.dispatchEvent(new Event("input", {bubbles: true}));
+      input.focus();
+    }},
+    el("span", {class:"pick-ico", "aria-hidden":"true", html: PICK_DIR}), t("pick.button"));
+  return el("div", {class:"pickrow"}, input, btn);
+}
+
 const tick = s => esc(s).replace(/`([^`]+)`/g, '<code class="tick">$1</code>');
 const esc = s => String(s??"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const api = async (path, opts={}) => {
@@ -2605,6 +2926,9 @@ function flagLine(f, hint, meta, required){
       field = el("input",{class:"btn sm",style:"width:100%;font-weight:400",
         placeholder: meta + (meta.includes("...") ? t("flag.space_separated") : ""),
         value: RUN.vals[f] || "", oninput:e=>RUN.vals[f]=e.target.value});
+      // Подсказка значения говорит о пути (`PATH`, `ФАЙЛ`, `DIR`…): путь проекта выбирают в окне.
+      const how = S.project && !isEngineCmd(RUN.row) ? pathMeta(meta) : null;
+      if (how) field = pathField(field, {want: how.want, multi: how.multi, put: how.multi ? appendPaths(" ") : null});
     }
     field = el("div",{style:"margin:2px 0 8px 26px;display:"+(RUN.flags.has(f)?"block":"none")}, field);
   }
@@ -2624,6 +2948,14 @@ function flagLine(f, hint, meta, required){
         dangerFlag(f) ? el("div",{class:"muted",style:"font-size:11.5px;color:var(--tier-inreview)"},
           dangerFlag(f)) : null)),
     field);
+}
+// Позиционный аргумент команды; аргумент-путь (`[PATH ...]`, `path`, `[files ...]`) — с кнопкой выбора пути проекта.
+function argField(r){
+  const input = el("input",{class:"btn",style:"width:100%;font-weight:400",
+    placeholder: argHint(r.cmd) || r.args,
+    oninput:e=>RUN.args=e.target.value});
+  const how = S.project && !isEngineCmd(r) ? pathMeta(r.args) : null;
+  return how ? pathField(input, {want: how.want, multi: how.multi, put: how.multi ? appendPaths(" ") : null}) : input;
 }
 function drawRun(){
   const r = RUN.row, d = $("#runDrawer");
@@ -2666,9 +2998,7 @@ function drawRun(){
       el("div",{class:"muted",style:"font-size:12px;margin-bottom:6px"},
         (opt ? t("run.arg_optional") : t("run.arg_required")) + r.args +
         (argHint(r.cmd) ? " — " + argHint(r.cmd) : "")),
-      el("input",{class:"btn",style:"width:100%;font-weight:400",
-        placeholder: argHint(r.cmd) || r.args,
-        oninput:e=>RUN.args=e.target.value})));
+      argField(r)));
   }
   const flags = r.flags.filter(f=>f!=="--apply");
   if (flags.length){
@@ -2851,6 +3181,27 @@ async function renderKinds(box){
       const field = (key, ph, width) => el("input",{class:"btn mono",
         style:`width:${width};font-size:12px`, value:rec[key]||"", placeholder:ph,
         oninput:e=>{ rec[key] = e.target.value; dirty(); }});
+      // Путь внутри проекта не печатают: «Выбрать…» открывает окно на папке поля (шаблоны, промпты, артефакты).
+      const pfield = (key, ph, width, want, start) => pathField(field(key, ph, width), {want, start});
+      // Имена MCP-серверов — плашками из списка доступных (`d.mcp`); записанное имя, которого среди них нет, —
+      // с пометкой «нет такого сервера». В конфиг уходит та же строка через запятую, что и раньше.
+      const mcpBox = el("div",{class:"row", style:"gap:4px;flex-wrap:wrap;align-items:center;min-height:30px",
+                               title: t("kinds.f_mcp")});
+      const drawMcp = () => {
+        const chips = mcpChips(rec.mcp, d.mcp), names = chips.map(c => c.name);
+        mcpBox.innerHTML = "";
+        chips.forEach(c => mcpBox.append(el("span",{class:"chip mono" + (c.known ? "" : " warn"), title: c.about || c.name},
+          c.name, c.known ? null : " · " + c.about,
+          el("button",{class:"chip-x", title: t("kinds.mcp_drop"), "aria-label": t("kinds.mcp_drop") + ": " + c.name,
+            onclick:()=>{ rec.mcp = names.filter(x => x !== c.name).join(", "); dirty(); drawMcp(); }}, "×"))));
+        if (!names.length) mcpBox.append(el("span",{class:"muted", style:"font-size:12px"}, t("kinds.mcp_empty")));
+        mcpBox.append(el("button",{class:"btn sm", onclick: async ()=>{
+          const got = await pickMcp({have: d.mcp || [], picked: names});
+          if (!got) return;
+          rec.mcp = got.join(", "); dirty(); drawMcp();
+        }}, t("kinds.mcp_pick")));
+      };
+      drawMcp();
       // Подпись над полем называет его роль: шаблон — для создания, промпт публикации — для публикации.
       const lab = (key, input, hint) => el("label",{class:"kfield"},
         el("span",{class:"kf-l"}, t("kinds.l_" + key)), input,
@@ -2877,10 +3228,11 @@ async function renderKinds(box){
         el("legend",{}, t("kinds.frame_create")),
         el("div",{class:"muted kf-about"}, t("kinds.frame_create_about")),
         el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;align-items:flex-end"},
-          lab("template", field("template", t("kinds.f_template"), "200px")),
-          lab("prompt", field("prompt", t("kinds.f_prompt"), "200px")),
-          lab("out", field("out", t("kinds.f_out"), "160px")),
-          lab("mcp", field("mcp", t("kinds.f_mcp"), "210px")),
+          lab("template", pfield("template", t("kinds.f_template"), "200px", "file", "Templates")),
+          lab("prompt", pfield("prompt", t("kinds.f_prompt"), "200px", "file", "Prompts")),
+          lab("out", pfield("out", t("kinds.f_out"), "160px", "dir", "Artifacts")),
+          // Не <label>: щелчок по подписи нажал бы первую кнопку внутри — «×» у плашки.
+          el("div",{class:"kfield"}, el("span",{class:"kf-l"}, t("kinds.l_mcp")), mcpBox),
           // Маска ключа Requirement Yogi: ключ заводит реестр, Аврора проверяет, что он написан по маске вида.
           el("span",{title: t("kinds.ref_mask_hint"), style:"flex:none"},
             lab("ref_mask", field("ref_mask", t("kinds.f_ref_mask"), "230px"))),
@@ -2919,7 +3271,7 @@ async function renderKinds(box){
           // Путь под корнем — цепочка разделов через «>», подстановки из шапки документа; заголовок — по шаблону.
           lab("publish_path", watch(field("publish_path", t("kinds.f_publish_path"), "260px")), t("kinds.publish_path_hint")),
           lab("publish_title", watch(field("publish_title", t("kinds.f_publish_title"), "200px"))),
-          lab("publish_prompt", field("publish_prompt", t("kinds.f_publish_prompt"), "220px"),
+          lab("publish_prompt", pfield("publish_prompt", t("kinds.f_publish_prompt"), "220px", "file", "Prompts"),
               t("kinds.publish_prompt_hint")),
           // Ревью по чек-листу перед публикацией: ворота `ship:publish` пускают наружу только свежее ревью.
           el("label",{class:"kfield", title: t("kinds.review_hint")},
@@ -4512,7 +4864,8 @@ async function renderSetup(){
           S.state = await api("/api/state"); renderOverview(); } }},"✕"))));
     const inp2 = el("input",{class:"btn mono",style:"flex:1;font-weight:400",
       placeholder: t("setup.root_ph")});
-    rootsBox2.append(el("div",{class:"row",style:"gap:8px;margin-top:4px"}, inp2,
+    rootsBox2.append(el("div",{class:"row",style:"gap:8px;margin-top:4px"},
+      el("div",{style:"flex:1;min-width:0"}, pathField(inp2, {scope:"machine", want:"dir"})),
       el("button",{class:"btn sm",onclick:async()=>{
         if (!inp2.value.trim()) return;
         const rr = await api("/api/roots",{method:"POST",body:JSON.stringify({add:inp2.value})});
@@ -4575,14 +4928,19 @@ function newProjectCard(){
 
 function newLocalForm(){
   const nf = NEWP.local;
-  const field = (key, label, ph, hint) => el("label",{style:"display:block;margin-bottom:10px"},
-    el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"}, label +
-      (hint ? " · " + hint : "")),
-    watch(el("input",{class:"btn",style:"width:100%;font-weight:400",placeholder:ph,value:nf[key]||"",
-      oninput:e=>nf[key]=e.target.value}), "new", t("dirty.new")));
+  // `pick` — поле пути: рядом кнопка «Выбрать…» (папка машины).
+  const field = (key, label, ph, hint, pick) => {
+    const input = watch(el("input",{class:"btn",style:"width:100%;font-weight:400",placeholder:ph,value:nf[key]||"",
+      oninput:e=>nf[key]=e.target.value}), "new", t("dirty.new"));
+    return el("label",{style:"display:block;margin-bottom:10px"},
+      el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"}, label +
+        (hint ? " · " + hint : "")),
+      pick ? pathField(input, pick) : input);
+  };
   return el("div",{},
     el("p",{class:"muted",style:"font-size:13px;margin:0 0 14px"}, t("setup.new_about")),
-    field("path", t("setup.f_path"), "" + NEWP.root + "/my-project"),
+    field("path", t("setup.f_path"), "" + NEWP.root + "/my-project", "",
+          {scope:"machine", want:"dir", start: NEWP.root}),
     field("name", t("setup.f_name"), "Northwind", t("setup.f_name_hint")),
     field("slug", t("setup.f_slug"), "Northwind", t("setup.f_slug_hint")),
     field("space", t("setup.f_space"), "NW", t("setup.later")),
@@ -4704,7 +5062,7 @@ function newGitRest(){
   } else if (c.auth === "ssh"){
     const key = text("ssh_key", c.ssh_key, {placeholder:"~/.ssh/id_ed25519"});
     key.oninput = () => { c.ssh_key = key.value.trim(); };
-    out.push(field(t("setup.g_ssh_key"), key));
+    out.push(field(t("setup.g_ssh_key"), pathField(key, {preset:"ssh"})));
   }
   const branch = text("branch", g.branch, {list:"newGitBranches"});
   branch.oninput = () => { g.branch = branch.value; g.branchTouched = true; };
@@ -4720,7 +5078,7 @@ function newGitRest(){
   // папка проектов — где они лежат. Итоговый путь виден сразу.
   out.push(el("div",{class:"row",style:"gap:12px;flex-wrap:wrap"},
     field(t("setup.g_folder"), folder, t("setup.g_folder_hint", {repo: g.repoName || "—"})),
-    field(t("setup.g_parent"), parent, t("setup.g_parent_hint"))));
+    field(t("setup.g_parent"), pathField(parent, {scope:"machine", want:"dir"}), t("setup.g_parent_hint"))));
   out.push(el("div",{id:"newGitTarget",class:"muted",style:"font-size:12.5px;margin:-4px 0 10px"}, newGitTargetText(g)));
   const who = (key, label) => {
     const n = text(key, g[key]);
@@ -5416,11 +5774,15 @@ async function renderProject(){
       }).filter(r => r.page_id);
     })(),
   };
-  const inp = (key, label, ph, hint) => el("label",{style:"display:block;margin-bottom:12px"},
-    el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"},
-      label + (hint ? " · " + hint : "")),
-    watch(el("input",{class:"btn",style:"width:100%;font-weight:400",placeholder:ph,
-      value:A[key]||"", oninput:e=>A[key]=e.target.value}), "form", t("dirty.form")));
+  // `pick` — поле путей проекта: рядом «Выбрать…», выбранное дописывается к списку.
+  const inp = (key, label, ph, hint, pick) => {
+    const input = watch(el("input",{class:"btn",style:"width:100%;font-weight:400",placeholder:ph,
+      value:A[key]||"", oninput:e=>A[key]=e.target.value}), "form", t("dirty.form"));
+    return el("label",{style:"display:block;margin-bottom:12px"},
+      el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"},
+        label + (hint ? " · " + hint : "")),
+      pick ? pathField(input, pick) : input);
+  };
 
   pathsSet(null);               // первый кадр — без находок прежнего проекта; настоящие придут запросом ниже
   const rootNotes = [], webNotes = [];
@@ -5544,8 +5906,10 @@ async function renderProject(){
     el("div",{class:"muted",style:"font-size:12px;margin:0 0 6px"}, t("proj.web_note")),
     webBox,
     el("div",{class:"sep"}),
+    // Список YAML в квадратных скобках: путь с запятой или двоеточием уходит в кавычках, иначе список разломится.
     inp("trusted_sources", t("proj.f_trusted_sources"), t("proj.f_trusted_sources_ph"),
-        t("proj.f_trusted_sources_hint")),
+        t("proj.f_trusted_sources_hint"), {want:"any", start:"Raw", multi:true,
+          put: (list, old) => appendPaths(", ")(list.map(p => /[,:#\[\]{}"']/.test(p) ? JSON.stringify(p) : p), old)}),
     inp("trusted_branches", t("proj.f_trusted_branches"), t("proj.f_trusted_branches_ph"),
         t("proj.f_trusted_branches_hint")),
     el("div",{class:"sep"}),
@@ -5866,6 +6230,8 @@ function moduleCtx(id, root){
          editor: markdownEditor,
          // Здоровье приходит частями: пришла ли часть и чем занять место под её число.
          has: hasPart, wait: waitMark, healthAt, stampText, kbInfo, templatesHint, templatesState, rebuildHint, openIssue, issueUrl,
+         // «Выбор вместо ввода»: окно выбора пути, поле пути с кнопкой «Выбрать…», путь ли значение флага по подсказке.
+         pickPath, pathField, pathMeta,
          // Публикация документа тем же путём, что в «Файлах»: редактор, карточка «что и куда уйдёт», кнопки по исходу.
          publishFile: async rel => { await openPath(rel); if (F.path === rel) await publishFromEditor(); },
          // Серая кнопка ведёт туда, где её чинят: `kinds` — «Настройки проекта → Артефакты», иначе «Настройки проекта».
@@ -6188,8 +6554,11 @@ $("#paletteOverlay").onclick = e => { if (e.target.id==="paletteOverlay") e.curr
 $("#netOverlay").onclick = e => { if (e.target.id==="netOverlay" && NET_CLOSE) NET_CLOSE(null); };
 document.addEventListener("keydown", e=>{
   if ((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==="k"){ e.preventDefault(); openPalette(); }
+  // Окно выбора лежит поверх окна запуска: Esc закрывает только его, окно под ним остаётся.
+  if (e.key==="Escape" && PICK.close){ PICK.close(null); return; }
   if (e.key==="Escape"){ if (NET_CLOSE) NET_CLOSE(null); closeRun(); closeMcp(); $("#paletteOverlay").classList.remove("on"); }
 });
+$("#pickOverlay").onclick = e => { if (e.target.id==="pickOverlay" && PICK.close) PICK.close(null); };
 
 /* ---------------- обработчики раздела «Файлы» ---------------- */
 $("#fileSearch")?.addEventListener("input", drawTree);

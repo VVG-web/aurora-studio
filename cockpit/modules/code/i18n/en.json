@@ -27,6 +27,7 @@
   "code.field.pin": "Pinned revision",
   "code.field.include": "Include beyond the defaults",
   "code.field.exclude": "Do not count as code",
+  "code.pick_mask": "A clone folder for the mask",
   "code.field.access": "Connection",
   "code.field.auth": "Sign-in",
   "code.field.user": "Login",

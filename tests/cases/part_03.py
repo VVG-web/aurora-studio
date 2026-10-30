@@ -1440,8 +1440,10 @@ def test_artifact_is_a_production_recipe_not_a_template(tmp: Path):
 
     # и форма показывает ровно те поля, что знает движок
     ui = panel_sources()
-    for f in ("prompt", "publish_url", "mcp"):
+    for f in ("prompt", "publish_url"):
         assert f'field("{f}"' in ui, f"поля {f} нет в форме — настроить его будет негде"
+    # Имена MCP вида — плашками из доступных серверов и окном «Выбрать MCP…», а не полем ввода (часть 166).
+    assert "mcpChips(rec.mcp, d.mcp)" in ui, "поля mcp нет в форме — настроить его будет негде"
     assert 'tfield("labels"' in ui and 'tfield("assignee"' in ui, \
         "свойств задачи нет в форме"
 

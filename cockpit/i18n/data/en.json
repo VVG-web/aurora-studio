@@ -673,7 +673,13 @@
     "процесс {} не ответил за {} с — «Установка» → {}": "the {} process did not answer within {} s — Install → {}",
     "процесс {} не запускается ({}) — «Установка» → {}": "the {} process does not start ({}) — Install → {}",
     "{} не импортируется в своём venv ({}) — «Установка» → {}, переустановить": "{} does not import in its venv ({}) — Install → {}, reinstall",
-    "процесс {} завершился сразу при запуске (код {}) — «Установка» → {}": "the {} process exited right at startup (code {}) — Install → {}"
+    "процесс {} завершился сразу при запуске (код {}) — «Установка» → {}": "the {} process exited right at startup (code {}) — Install → {}",
+    "неизвестная область выбора: {}": "unknown picker scope: {}",
+    "служебная папка или файл с доступами: в окне выбора их нет": "a service folder or a file with credentials: the picker does not show them",
+    "папки проекта нет на диске": "the project folder is not on the disk",
+    "нет доступа к папке: {}": "no access to the folder: {}",
+    "папка не читается: {} ({})": "the folder cannot be read: {} ({})",
+    "папки нет: {}": "the folder does not exist: {}"
   },
   "connectors": {
     "confluence-dc": {

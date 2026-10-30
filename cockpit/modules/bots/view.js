@@ -489,7 +489,15 @@ function attachmentsPanel(ctx){
   };
   input.onblur = () => setTimeout(() => { list.hidden = true; }, 150);
   wrap.append(input, list);
-  box.append(wrap);
+  // Не помнишь путь — выбери в окне: файлы и папки проекта, несколько сразу галочками.
+  const choose = ctx.ui && ctx.ui.pickPath ? el("button", {class: "btn sm", style: "flex:none",
+    onclick: async () => {
+      const got = await ctx.ui.pickPath({project: ctx.project.path, want: "any", multi: true, detail: true,
+                                         title: t("bots.attach_pick_title")});
+      (got || []).forEach(it => add({kind: it.kind, value: it.path}));
+    }}, t("bots.attach_pick")) : null;
+  box.append(el("div", {class: "row", style: "gap:6px;align-items:flex-start;flex-wrap:nowrap"},
+    el("div", {style: "flex:1;min-width:0"}, wrap), choose));
   return box;
 }
 

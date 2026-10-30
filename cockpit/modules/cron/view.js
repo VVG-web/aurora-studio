@@ -368,7 +368,11 @@ function stepEditor(ctx, task, st, i, redraw, select){
   // Бот конкретного проекта выбирается из его ботов; «все проекты» — только «все боты».
   const project = select(st.project, [["*", t("cron.all_projects")],
     ...(DATA.projects || []).map(p => [p.path, p.name])],
-    v => { st.project = v; if (st.kind === "bot") { st.bot = "*"; redraw(); } });
+    v => {
+      st.project = v;
+      if (st.kind === "bot") { st.bot = "*"; redraw(); }
+      else if (st.kind === "command") redraw();     // выбор пути зависит от проекта: «все проекты» — без кнопки
+    });
   let what;
   if (st.kind === "bot"){
     const bots = st.project === "*" ? [] : ((DATA.bots || {})[st.project] || []);
@@ -389,7 +393,15 @@ function stepEditor(ctx, task, st, i, redraw, select){
       placeholder: row && row.flags.length ? row.flags.slice(0, 4).join(" ") : t("cron.args_ph"),
       style: "flex:1;min-width:200px"});
     args.oninput = () => st.args = args.value.split(/\s+/).filter(Boolean);
-    what = [cmd, args];
+    // Флаг или аргумент команды — путь (по подсказке значения): путь проекта шага выбирают в окне и дописывают в конец.
+    // Пути разного вида у разных флагов — окно отдаёт и файл, и папку.
+    const wants = row && st.project !== "*" && ctx.ui && ctx.ui.pathMeta
+      ? [...new Set([...Object.values(row.flag_args || {}), row.args || ""].map(m => ctx.ui.pathMeta(m))
+          .filter(Boolean).map(h => h.want))] : [];
+    const field = wants.length ? ctx.ui.pathField(args, {project: st.project, want: wants.length === 1 ? wants[0] : "any",
+      multi: true, put: (list, old) => [String(old || "").trim(), ...list].filter(Boolean).join(" ")}) : args;
+    if (field !== args) field.style.cssText = "flex:1;min-width:240px";
+    what = [cmd, field];
   }
   const move = (d) => {
     const j = i + d;

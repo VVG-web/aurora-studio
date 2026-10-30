@@ -548,6 +548,156 @@ def file_tree(project: str, limit: int = FILES_LIMIT) -> dict:
             "recent": recent(project), "create_dirs": create_dirs(project)}
 
 
+# ---------------------------------------------------- окно выбора пути: «Выбор вместо ввода»
+#
+# Браузер абсолютного пути из системного окна не отдаёт, поэтому окно выбора своё, в панели, а список папок и файлов
+# одного уровня — отсюда. Только чтение: имена, вид и размер, ни байта содержимого. Проект — пути от его корня, граница
+# та же, что у «Файлов» (`inside` и `why_service_real`): выход за корень и ссылка наружу — отказ, служебное и файлы
+# с доступами не показываются вовсе. Машина — абсолютные пути: корни поиска проектов, папка клона, SSH-ключ.
+
+FS_LIST_LIMIT = 3000      # строк одного уровня: окно — не проводник, тысячи имён в нём ищут фильтром
+FS_REFUSE = {"outside": 403, "service": 403, "denied": 403, "missing": 404, "scope": 400, "not_dir": 400}
+
+
+def fs_machine_roots(system: str = "", exists=os.path.isdir) -> list:
+    """Откуда начинать на машине: домашняя папка; на Windows — диски, на macOS — тома (`/Volumes`), на прочих — `/`.
+
+    `system` и `exists` подставляет проверка: ветка Windows должна вызываться и на другой машине без вреда."""
+    system = system or platform.system()
+    out = [{"path": os.path.expanduser("~"), "name": "~", "kind": "home"}]
+    if system == "Windows":
+        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+            drive = letter + ":\\"
+            if exists(drive):
+                out.append({"path": drive, "name": letter + ":", "kind": "drive"})
+        return out
+    out.append({"path": "/", "name": "/", "kind": "root"})
+    if system == "Darwin" and exists("/Volumes"):
+        try:
+            names = sorted(os.listdir("/Volumes"), key=str.casefold)
+        except OSError:
+            names = []
+        out += [{"path": "/Volumes/" + n, "name": n, "kind": "volume"} for n in names if not n.startswith(".")]
+    return out
+
+
+def _fs_hidden(name: str, st) -> bool:
+    """Скрытое имя: с точки (POSIX) или с признаком «скрытый» (Windows)."""
+    return name.startswith(".") or bool(getattr(st, "st_file_attributes", 0) & 2)
+
+
+def _fs_entries(folder: str, want: str, show_hidden: bool, keep) -> tuple:
+    """Строки одного уровня: сначала папки, потом файлы, по имени. → (строки, обрезано ли).
+
+    `keep(name, full)` — путь строки для ответа или пусто (строку не показывать). Битая ссылка пропускается молча."""
+    import stat as _stat
+    rows = []
+    for name in os.listdir(folder):
+        full = os.path.join(folder, name)
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        is_dir = _stat.S_ISDIR(st.st_mode)
+        if (want == "dir" and not is_dir) or (_fs_hidden(name, st) and not show_hidden):
+            continue
+        path = keep(name, full)
+        if path:
+            rows.append({"name": name, "kind": "dir" if is_dir else "file",
+                         "size": None if is_dir else st.st_size, "path": path})
+    rows.sort(key=lambda r: (r["kind"] != "dir", r["name"].casefold()))
+    return rows[:FS_LIST_LIMIT], len(rows) > FS_LIST_LIMIT
+
+
+def fs_list(scope: str, project: str = "", path: str = "", want: str = "any", hidden: bool = False) -> dict:
+    """Один уровень папки для окна выбора. → {path, parent, entries: [{name, kind, size, path}], roots, crumbs,
+    selected} или {error, code}.
+
+    `want` — `file`, `dir` или `any`: при `dir` файлов нет. Путь, которого нет, или путь файла открывает ближайшую
+    существующую папку над ним (файл — выбранным): так поле с уже набранным путём открывает окно на своём месте."""
+    want = want if want in ("file", "dir", "any") else "any"
+    if scope == "project":
+        return _fs_list_project(project, path, want, hidden)
+    if scope == "machine":
+        return _fs_list_machine(path, want, hidden)
+    return {"error": f"неизвестная область выбора: {scope}", "code": "scope"}
+
+
+def _fs_list_project(project: str, path: str, want: str, hidden: bool) -> dict:
+    rel = norm_rel(path)
+    full = inside(project, rel) if rel != ".." and not rel.startswith("../") else ""
+    if not full:
+        return {"error": "путь выходит за пределы проекта", "code": "outside"}
+    if rel and why_service_real(project, rel, full):
+        return {"error": "служебная папка или файл с доступами: в окне выбора их нет", "code": "service"}
+    selected = ""
+    while not os.path.isdir(full):
+        if not selected and os.path.isfile(full):
+            selected = rel.rsplit("/", 1)[-1]
+        if not rel:
+            return {"error": "папки проекта нет на диске", "code": "missing"}
+        rel = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        full = inside(project, rel)
+
+    def keep(name, _full):
+        sub = f"{rel}/{name}" if rel else name
+        real = inside(project, sub)                  # ссылка наружу проекта — не строка окна
+        return sub if real and not why_service_real(project, sub, real) else ""
+    try:
+        rows, cut = _fs_entries(full, want, hidden, keep)
+    except PermissionError:
+        return {"error": f"нет доступа к папке: {rel or '.'}", "code": "denied"}
+    except OSError as e:
+        return {"error": f"папка не читается: {rel or '.'} ({type(e).__name__})", "code": "denied"}
+    parts = rel.split("/") if rel else []
+    name = os.path.basename(os.path.realpath(project))
+    return {"scope": "project", "path": rel, "parent": ("/".join(parts[:-1]) if parts else None),
+            "entries": rows, "truncated": cut, "selected": selected,
+            "roots": [{"path": "", "name": name, "kind": "project"}],
+            "crumbs": [{"path": "", "name": name}] + [{"path": "/".join(parts[:i + 1]), "name": p}
+                                                      for i, p in enumerate(parts)]}
+
+
+def _fs_list_machine(path: str, want: str, hidden: bool) -> dict:
+    home = os.path.expanduser("~")
+    raw = (path or "").strip()
+    target = os.path.expanduser(raw) if raw else home
+    target = os.path.normpath(target if os.path.isabs(target) else os.path.join(home, target))
+    selected = ""
+    while not os.path.isdir(target):
+        if not selected and os.path.isfile(target):
+            selected = os.path.basename(target)
+        up = os.path.dirname(target)
+        if up == target:
+            return {"error": f"папки нет: {raw}", "code": "missing"}
+        target = up
+    crumbs, cur = [], target
+    while True:
+        up = os.path.dirname(cur)
+        crumbs.append({"path": cur, "name": os.path.basename(cur) or cur})
+        if up == cur:
+            break
+        cur = up
+    crumbs.reverse()
+    # Внутри домашней папки цепочка начинается с «~»: ступени до неё человеку не нужны.
+    at = next((i for i, c in enumerate(crumbs) if os.path.normcase(c["path"]) == os.path.normcase(home)), -1)
+    if at > 0:
+        crumbs = [{"path": home, "name": "~"}] + crumbs[at + 1:]
+    # Скрытое видно по просьбе — или когда сама папка скрытая (`~/.ssh`): иначе ключа в ней не найти.
+    show = hidden or any(c["name"].startswith(".") for c in crumbs)
+    try:
+        rows, cut = _fs_entries(target, want if want == "dir" else ("file" if want == "file" else "any"), show,
+                                lambda _n, full: full)
+    except PermissionError:
+        return {"error": f"нет доступа к папке: {target}", "code": "denied"}
+    except OSError as e:
+        return {"error": f"папка не читается: {target} ({type(e).__name__})", "code": "denied"}
+    up = os.path.dirname(target)
+    return {"scope": "machine", "path": target, "parent": None if up == target else up, "entries": rows,
+            "truncated": cut, "selected": selected, "home": home, "hidden": show,
+            "roots": fs_machine_roots(), "crumbs": crumbs}
+
+
 # Где заводить файлы законно. Структура папок фиксирована движком, и «создать» в
 # `Sources/Confluence` означало бы файл, который сотрёт следующий синк.
 MAKEABLE = ("Workspaces", "Raw/decisions", "Raw/questions", "Raw/reference",
@@ -5382,6 +5532,20 @@ def kinds_read(project: str) -> dict:
                 if f.endswith(".md") and not is_folder_guide(f)) if os.path.isdir(os.path.join(project, "Templates")) else []}
 
 
+def kinds_mcp(project: str) -> list:
+    """MCP-серверы, из которых вид артефакта выбирает свои (поле `mcp`): те, что получит прогон, — серверы кита и
+    сервер самой Авроры (`mcp_config`). → [{name, own, about}]: описание — то, что человек написал в настройке
+    сервера; у сервера Авроры (`own`) его пишет панель своим каталогом строк."""
+    import agent_core as AG
+    try:
+        servers = AG.mcp_config(project, kit=KIT, with_aurora=True).get("mcpServers") or {}
+    except Exception:  # noqa: BLE001 — без списка форма показывает записанные имена как есть
+        return []
+    return [{"name": n, "own": n == AG.AURORA_MCP, "about": "" if n == AG.AURORA_MCP
+             else str((s or {}).get("about") or (s or {}).get("description") or "")}
+            for n, s in sorted(servers.items(), key=lambda x: x[0].casefold())]
+
+
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 import make_kinds as AG_KINDS          # noqa: E402 — список полей типа артефакта
 
@@ -6889,7 +7053,8 @@ class Handler(BaseHTTPRequestHandler):
                                                                               "publish_title", "out") if k in q}))
         elif u.path == "/api/kinds":
             project = (q.get("project") or [""])[0]
-            self.send_json(localized_kinds(kinds_read(project), request_lang(q))
+            # `mcp` — серверы, из которых форма вида выбирает поле `mcp` (окно «Выбрать MCP…»).
+            self.send_json(dict(localized_kinds(kinds_read(project), request_lang(q)), mcp=kinds_mcp(project))
                            if project and self._known(project) else {"error": "проект не выбран"})
         elif u.path == "/api/cards":
             # Типы карточек проекта: реестр, инструкция выбора типа, каталог. Сводка по базе (`stats=1`) читает все
@@ -7022,6 +7187,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(file_read(project, (q.get("path") or [""])[0])
                            if project and self._known(project)
                            else {"error": "проект не выбран"})
+        elif u.path == "/api/fs/list":
+            # Окно выбора пути: один уровень папки проекта или машины, только имена (`fs_list`).
+            scope = (q.get("scope") or ["project"])[0]
+            project = (q.get("project") or [""])[0]
+            if scope == "project" and not project:
+                self.send_json({"error": "проект не выбран"}, 400)
+                return
+            if scope == "project" and not self._known(project):
+                return
+            res = fs_list(scope, project, (q.get("path") or [""])[0], (q.get("want") or ["any"])[0],
+                          (q.get("hidden") or [""])[0] in ("1", "true"))
+            self.send_json(res, FS_REFUSE.get(res.get("code", ""), 200) if res.get("error") else 200)
         elif u.path == "/api/agent/models":
             self.send_json(backend_models((q.get("n") or ["1"])[0]))
         elif u.path == "/api/graph":

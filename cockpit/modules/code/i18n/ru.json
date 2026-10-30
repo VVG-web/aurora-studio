@@ -27,6 +27,7 @@
   "code.field.pin": "Закреплённая ревизия",
   "code.field.include": "Включать сверх умолчаний",
   "code.field.exclude": "Не считать кодом",
+  "code.pick_mask": "Папка клона для маски",
   "code.field.access": "Связь",
   "code.field.auth": "Вход",
   "code.field.user": "Логин",

@@ -585,6 +585,10 @@ function field(ctx, key, label, input, hint){
     input, hint ? el("div", {class: "muted", style: "font-size:11.5px;margin-top:3px"}, hint) : null, err);
 }
 
+// Поле пути с кнопкой «Выбрать…» — из ядра (`ctx.ui.pathField`); у ядра вкладки, открытой до обновления кита, её
+// нет — тогда остаётся одно поле.
+const pick = (ctx, input, opts) => ctx.ui && ctx.ui.pathField ? ctx.ui.pathField(input, opts) : input;
+
 function input(ctx, obj, key, attrs){
   const x = ctx.el("input", {class: "btn" + (attrs && attrs.mono ? " mono" : ""),
     style: "width:100%;font-weight:400", ...(attrs || {}), mono: null});
@@ -731,7 +735,8 @@ function authFields(ctx, c, provider, pre, instance){
         sec, had ? t("gitsync.h.secret_keep") : secretHint(ctx, c.auth, provider, instance))) : null,
     c.auth === "ssh" ? el("div", {},
       field(ctx, pre + "ssh_key", t("gitsync.field.ssh_key"),
-        input(ctx, c, "ssh_key", {mono: true, placeholder: "~/.ssh/id_ed25519"}), t("gitsync.h.ssh_key")),
+        pick(ctx, input(ctx, c, "ssh_key", {mono: true, placeholder: "~/.ssh/id_ed25519"}), {preset: "ssh"}),
+        t("gitsync.h.ssh_key")),
       field(ctx, pre + "ssh_key_text", t("gitsync.field.ssh_key_text"), keyText, t("gitsync.h.ssh_key_text"))) : null,
   ];
 }
@@ -942,7 +947,7 @@ function quickBody(ctx){
     const key = el("input", {class: "btn mono", style: "width:100%;font-weight:400",
       placeholder: "~/.ssh/id_ed25519", value: c.ssh_key || ""});
     key.oninput = () => { c.ssh_key = key.value.trim(); };
-    out.push(qField(ctx, t("gitsync.field.ssh_key"), key, t("gitsync.h.ssh_key")));
+    out.push(qField(ctx, t("gitsync.field.ssh_key"), pick(ctx, key, {preset: "ssh"}), t("gitsync.h.ssh_key")));
   }
   const target = el("select", {class: "btn", style: "width:100%"},
     ...["main", "mirror"].map(v => el("option", {value: v, selected: q.target === v ? "" : null},

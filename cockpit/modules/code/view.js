@@ -200,10 +200,14 @@ function authFields(ctx, c, provider, redraw){
     const key = el("input", {class: "btn mono", style: "width:100%;font-weight:400", placeholder: "~/.ssh/id_ed25519",
       value: c.ssh_key || ""});
     key.oninput = () => { c.ssh_key = key.value.trim(); touch(); };
-    out.push(field(ctx, t("code.field.ssh_key"), key, t("code.h.ssh_key")));
+    out.push(field(ctx, t("code.field.ssh_key"), pick(ctx, key, {preset: "ssh"}), t("code.h.ssh_key")));
   }
   return out;
 }
+
+// Поле пути с кнопкой «Выбрать…» — из ядра (`ctx.ui.pathField`); у ядра вкладки, открытой до обновления кита, её
+// нет — тогда остаётся одно поле.
+const pick = (ctx, input, opts) => ctx.ui && ctx.ui.pathField ? ctx.ui.pathField(input, opts) : input;
 
 function touch(){ DIRTY = true; }
 
@@ -317,6 +321,16 @@ function editForm(ctx, name){
   prov.onchange = () => { rec.provider = prov.value; touch(); };
   const modes = ["", "internet", "local", ...(D.profiles || []).map(p => "vpn:" + p)];
   if (rec.access && !modes.includes(rec.access)) modes.push(rec.access);
+  // Маска по папке клона: выбранная папка дописывается маской `папка/**` через запятую. Клона нет — выбирать не из чего,
+  // кнопки нет (маска набирается руками, как прежде).
+  const base = row.path || "Code/" + name;
+  const mask = (key, attrs) => row.cloned ? pick(ctx, input(key, attrs), {want: "dir", start: base, base, multi: true,
+    title: t("code.pick_mask"),
+    put: (list, old) => {
+      const have = String(old || "").split(",").map(x => x.trim()).filter(Boolean);
+      const add = list.map(p => p.slice(base.length + 1) + "/**").filter(m => !have.includes(m));
+      return [...have, ...add].join(", ");
+    }}) : input(key, attrs);
   const access = el("select", {class: "btn", style: "width:100%"},
     ...modes.map(v => el("option", {value: v, selected: rec.access === v ? "" : null},
       v.startsWith("vpn:") ? t("code.access.vpn", {name: v.slice(4)}) : t("code.access." + (v || "none")))));
@@ -328,8 +342,8 @@ function editForm(ctx, name){
       field(ctx, t("code.field.branch"), input("branch", {placeholder: "main"}), t("code.h.branch")),
       field(ctx, t("code.field.pin"), input("pin"), t("code.h.pin"))),
     el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;align-items:flex-start"},
-      field(ctx, t("code.field.include"), input("include"), t("code.h.include")),
-      field(ctx, t("code.field.exclude"), input("exclude", {placeholder: "**/generated/**, *.min.js"}), t("code.h.exclude"))),
+      field(ctx, t("code.field.include"), mask("include"), t("code.h.include")),
+      field(ctx, t("code.field.exclude"), mask("exclude", {placeholder: "**/generated/**, *.min.js"}), t("code.h.exclude"))),
     field(ctx, t("code.field.access"), access, t("code.h.access")),
     permRow(ctx, rec, () => draw(ctx)),
     ...authFields(ctx, CREDS[name], rec.provider, () => draw(ctx)),

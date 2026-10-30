@@ -42,6 +42,9 @@ are switched in the header.
 - **A run survives a closed tab.** Jobs live in the panel's process; reloading the page does not hide a working job. Starting
   the same command in the same project twice returns the running job instead of a second one.
 - **A stopped route resumes** where it stood, and a card on the Bridge says what is running and what stopped.
+- **A path is chosen, not typed.** Every field with a path to a folder or a file has "Choose…": the panel's window shows
+  the folders of the project or of the computer, with "Up", "Home", a filter and a project-wide search; Esc closes it. The
+  MCP server names of an artifact kind are ticked in the list of the available ones. Pasting a path by hand still works.
 - **Secrets never come back.** A token you enter is written to `.env.aurora.local`; the panel only ever shows
   "filled / empty".
 - **Nothing leaves the loopback.** The panel answers `127.0.0.1` only and refuses a foreign `Host` and a foreign page's

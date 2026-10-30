@@ -160,7 +160,9 @@ clone's state, the revision, the lag, the last sync, languages and size; "Sync",
 connection, permissions, sign-in, "Check the connection") and "Remove from the list" — the clone
 stays on disk: the engine does not take it upon itself to delete data. The sync runs as a panel job
 and is seen in the Console. At night — the step of the "Update the base" route or the
-`code:sync --apply` command in the "Cron" section.
+`code:sync --apply` command in the "Cron" section. Masks need not be typed: when the clone exists, "Choose…" next to
+the field opens the clone's folders, and the ticked folders are appended as `folder/**` masks; an SSH key is chosen in a
+window from `~/.ssh`.
 
 ## What comes next
 

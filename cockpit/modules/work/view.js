@@ -24,6 +24,10 @@ export function mount(ctx){
   file.accept = ACCEPT.join(",");
   ctx.$("#makeAttach").onclick = () => file.click();
   file.onchange = () => attach(ctx, [...file.files]).then(() => { file.value = ""; });
+  // Файл или папку проекта не печатают `@путём`, а выбирают в окне ядра; у ядра без окна кнопки нет.
+  const pick = ctx.$("#makePick");
+  if (ctx.ui && ctx.ui.pickPath) pick.onclick = () => pickRefs(ctx);
+  else pick.hidden = true;
   wireSuggest(ctx);
   drawRefs(ctx);
 }
@@ -50,6 +54,13 @@ function drawRefs(ctx){
     el("button", {class: "btn sm", style: "padding:0 6px;min-height:0", title: t("work.ref_remove"),
       "data-help": "work.help.ref_remove",
       onclick: () => { REFS = REFS.filter(x => x !== r); drawRefs(ctx); }}, "×"))));
+}
+
+async function pickRefs(ctx){
+  if (!ctx.project) return ctx.toast(ctx.t("work.pick_project"), "warn");
+  const got = await ctx.ui.pickPath({project: ctx.project.path, want: "any", multi: true, detail: true,
+                                     title: ctx.t("work.pick_title")});
+  (got || []).forEach(it => addRef(ctx, {path: it.path, label: it.kind === "dir" ? it.path + "/" : it.path, kind: it.kind}));
 }
 
 async function attach(ctx, files){

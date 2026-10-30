@@ -49,6 +49,8 @@
   "bots.attachments": "Attachments",
   "bots.attachments_about": "Project files and folders — as references, not copies. At run time their text goes to the bot, and it can read them in full.",
   "bots.attach_ph": "A project file or folder…",
+  "bots.attach_pick": "Choose…",
+  "bots.attach_pick_title": "Bot attachments: the project's files and folders",
   "bots.insert_link": "Insert link",
   "bots.insert_link_hint": "Insert a link to the attachment into the prompt — at the cursor",
   "bots.remove": "Remove",
