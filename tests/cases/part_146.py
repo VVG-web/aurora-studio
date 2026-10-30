@@ -110,7 +110,7 @@ def test_docs_and_catalogs_say_the_same_about_creation_and_publication(tmp: Path
     assert "creation prompt, parent and publishing prompt" in data["commands"]["make:kinds"]
     # новые сообщения сервера переведены (без них английская страница видела бы русский отказ)
     for msg in ("Опубликовать некуда: у вида этого документа не задана родительская страница в Confluence.",
-                "Опубликовать нельзя: в настройках проекта не заданы адрес Confluence и пространство.",
+                "Опубликовать нельзя: в настройках проекта не задан адрес Confluence.",
                 "виды артефактов изменились на диске с момента открытия"):
         assert data["messages"].get(msg), f"нет перевода сообщения: {msg}"
     # английские каталоги не содержат кириллицы в новых надписях формы и «Файлов»

@@ -225,7 +225,9 @@ class _Wiki:
     """Подставной Confluence на 127.0.0.1: страницы в памяти, журнал запросов. Настоящей записи нет."""
 
     def __init__(self):
-        self.pages: dict = {}
+        # корневая страница вида (`publish_url` → pageId=777): пространство публикация берёт у неё
+        self.pages: dict = {"777": {"id": "777", "title": "Истории", "version": {"number": 1}, "space": {"key": "T"},
+                                    "body": {"storage": {"value": ""}}, "ancestors": []}}
         self.log: list = []
         outer = self
 
@@ -254,8 +256,8 @@ class _Wiki:
             def do_POST(self):
                 payload = self._body()
                 outer.log.append(("POST", self.path, payload))
-                pid = str(4242 + len(outer.pages))
-                outer.pages[pid] = {"id": pid, "title": payload["title"], "version": {"number": 1},
+                pid = str(4241 + len(outer.pages))
+                outer.pages[pid] = {"id": pid, "title": payload["title"], "version": {"number": 1}, "space": payload["space"],
                                     "body": payload["body"], "ancestors": payload.get("ancestors", [])}
                 self._send(200, {"id": pid, "version": {"number": 1}})
 
@@ -435,13 +437,17 @@ console.log(JSON.stringify(log));
     assert out["visible"] == {"calls": 1, "reopen": ""}, out
     assert out["other"] == 1 and out["dirty"] == {"calls": 1, "toasts": 1}, out
     poll = _js_function(ui, "async function poll(")
-    assert 'rc === 0 && String(label).startsWith("ship:publish ")' in poll and "afterPublish(" in poll, \
+    assert 'String(label).startsWith("ship:publish ")' in poll and "publishDone(" in poll, \
         "завершение публикации не перечитывает открытый файл"
+    done = _js_function(ui, "function publishDone(")
+    assert "rc === 0 || (res && res.stamped)" in done and "afterPublish(rel)" in done, \
+        "файл, который скрипт проштамповал (в том числе при исходе «лежит не там»), не перечитывается"
     assert "F.reopen" in _js_function(ui, "async function renderFiles("), \
         "перечитывание, отложенное до возвращения в «Файлы», некому выполнить"
-    assert 'poll(res.job, 0, "ship:publish " + F.path)' in _js_function(ui, "async function publishFromEditor("), \
+    assert 'poll(res.job, 0, "ship:publish " + rel)' in _js_function(ui, "async function runPublish("), \
         "метка публикации из редактора разошлась с той, по которой ищется файл"
-    assert '"ship:publish " + f.rel' in panel_sources(), "метка публикации из «Продуктивности» разошлась"
+    # «Продуктивность» публикует тем же путём, что «Файлы»: метка и карточка одни
+    assert "ctx.ui.publishFile(f.rel)" in panel_sources(), "«Продуктивность» публикует мимо «Файлов»"
 
 
 @test

@@ -297,14 +297,15 @@ def test_finished_artifact_lands_in_the_editor_with_a_publish_button(tmp: Path):
         "документ открывается поверх экрана, на который человек уже ушёл"
     assert "function publishFromEditor" in ui and "/api/files/clean" in ui, \
         "публикация из редактора не показывает чистовик"
-    pub = ui[ui.index("async function publishFromEditor("):
-             ui.index("async function publishFromEditor(") + 3500]
+    # Поток публикации: план и чистовик → карточка «что и куда уйдёт» → отправка только кнопкой карточки.
+    pub = ui[ui.index("async function publishFromEditor("):ui.index("function publishDone(")]
     assert pub.index("api(\"/api/files/clean") < pub.index('cmd:"ship:publish"'), \
         "публикация уходит раньше, чем человек увидел, что именно уйдёт"
     assert "editor.publish_nomark" in ui, \
         "документ без маркера публикуется молча — уедет всё тело целиком"
-    assert "editor.publish_draft" in pub and '"--allow", "draft"' in pub, \
+    assert 'g.code === "draft"' in pub and '"pub.send_draft"' in pub and '["--allow", g.code]' in pub, \
         "черновик из редактора не публикуется: предохранитель выходных команд просит осознанного решения"
+    assert "confirm(" not in pub, "в потоке публикации снова окно подтверждения — решение кнопкой с надписью"
     # Видна ли кнопка, решает сервер (`file_read` → `publish`), а не глобал страницы: поведение — в part_144.py.
     assert "drawPublish(d)" in ui and "S.kinds" not in ui and "function publishTarget" not in ui, \
         "кнопка публикации снова гадает по виду, которого никто не присваивал, а не рисует ответ сервера"

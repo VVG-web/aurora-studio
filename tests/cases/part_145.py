@@ -53,7 +53,7 @@ CONFIG = (
     'atlassian:\n  confluence:\n    space: "T"\n    base_url: "https://wiki.example.com"\n\n'
     '# виды документов\n'
     'artifacts:\n'
-    '  # комментарий внутри секции (при записи секции теряется)\n'
+    '  # комментарий внутри секции (запись его сохраняет)\n'
     '  ac:\n    title: "Критерии приёмки"\n    template: Templates/AC.md\n    out: Artifacts/ac\n'
     '    prompt: Prompts/AC.md\n    publish_url: https://wiki.example.com/display/PRJ/AC\n    review: us\n'
     '    ref_mask: "<СТРАНА>.<ПРОЕКТ>.US-x.x.x"\n'
@@ -83,7 +83,8 @@ def test_publish_prompt_is_a_field_of_the_kind_and_creation_stays_apart(tmp: Pat
     assert "publish_prompt" in MK.FIELDS and "prompt" in MK.FIELDS
     assert set(MK.CREATE_FIELDS) | set(MK.PUBLISH_FIELDS) == set(MK.FIELDS) and not set(MK.CREATE_FIELDS) & set(MK.PUBLISH_FIELDS), \
         "поле вида не отнесено ни к созданию, ни к публикации — форма его не нарисует"
-    assert {"template", "prompt", "out"} <= set(MK.CREATE_FIELDS) and {"publish_url", "publish_prompt", "review"} == set(MK.PUBLISH_FIELDS)
+    assert {"template", "prompt", "out"} <= set(MK.CREATE_FIELDS) and \
+        {"publish_url", "publish_path", "publish_title", "publish_prompt", "review"} == set(MK.PUBLISH_FIELDS)
 
     root = _project(tmp, 'project:\n  name: "Т"\n')
     rec = {"title": "Критерии", "template": "Templates/AC.md", "out": "Artifacts/ac", "prompt": "Prompts/AC_create.md",

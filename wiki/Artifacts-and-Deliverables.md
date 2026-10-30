@@ -52,28 +52,63 @@ Every artifact carries **`based_on`** — the cards it stands on — so you can 
 
 An artifact kind declares two jobs, and the **Project settings → Artifacts** form draws them as two frames. **Creation is the
 template:** the form of the document, the creation prompt (extra instructions when creating), the result folder, MCP, the key
-mask. **Publishing is the parent and the prompt:** the parent page in Confluence (`publish_url`), the publishing prompt
-(`publish_prompt`, how to lay out the page) and the review before publishing. The publishing prompt only lays the page out: it
-does not rewrite the author's text. For now it is **saved and shown, but no model runs by it** — publishing goes without a
-model, and preparing the page by the prompt will switch on in one of the next releases. An empty publishing prompt means
-publishing as it was.
+mask. **Publishing is the parent and the prompt:** the kind's root page in Confluence (`publish_url`), the path of sections under
+it (`publish_path`), the page title template (`publish_title`), the publishing prompt (`publish_prompt`, how to lay out the
+page) and the review before publishing. The publishing prompt only lays the page out: it does not rewrite the author's text.
+For now it is **saved and shown, but no model runs by it** — publishing goes without a model, and preparing the page by the
+prompt will switch on in one of the next releases. An empty publishing prompt means publishing as it was.
 
-Open a document from a kind's result folder in **Files** and **"Publish"** stands next to "Save". The server computes the
-button's state: a grey button names the reason and leads to the right settings (the kind has no parent page, the Confluence
-address and space are not set); files outside the kinds' folders, base cards, `Sources/` and `Raw/` have no button. The parent
-of a new page is taken in this order: `--parent`, `publish_parent` in the document header, the kind's `publish_url`, the
-config's `confluence.publish_parent`; a page that exists already (`confluence_page_id`) is updated in place.
+**The path in Confluence is a chain:** the kind's root page → sections → the document's page. The levels of `publish_path` are
+separated by `>` (`Release {release} > {epic?}`), spaces around a level are trimmed; empty means the page goes right under the
+root. The page title follows `publish_title`, `{title}` by default. Placeholders: `{title}` (the document's first `# …`
+heading, otherwise the file name), `{file}` (the file name without the extension), `{kind}`, `{project}` (the project name)
+and `{field}` — any field of the document header (`{epic}`, `{release}`, `{jira}`). `{field?}` is optional: an empty value
+drops the level from the path (in the title — an empty string). A required field missing from the header stops publishing,
+and the reason names the field and the document. The space comes from the root page, not from `confluence.space`. Under the
+fields the form shows an example for the kind's latest document: "For the document US-7.md: Stories › Release 2.1 › PRJ-7 ›
+[US] Summary" — the server works it out with the same code as publishing, from the form's values, unsaved ones too.
+
+A missing section is created by publishing once (only when sending): a short banner "section created by Aurora for
+publications of the kind …" and a list of child pages; the engine never edits a created section again. A title is unique in a
+Confluence space: if a page with that title already lives under another parent, publishing stops with a link to it — it does
+not move other people's pages. The root is taken in this order: `--parent` (the exact place, the kind's path is not applied),
+the kind's `publish_url`, `publish_parent` in the document header (creating a document used to write it; it no longer does),
+the config's `confluence.publish_parent`.
+
+Open a document from a kind's result folder in **Files** and **"Publish"** stands next to "Save" (with unsaved changes —
+"Save and publish": the same click). The server computes the button's state: a grey button names the reason and leads to the
+right settings (no root, no field for the path, no Confluence address); files outside the kinds' folders, base cards,
+`Sources/` and `Raw/` have no button. "Productivity → Publish…" takes the same state and opens the document in Files.
+A click shows a card **"what goes where"**: the space, the root, the chain of sections (exists / will be created / refused),
+the title, create or update and the page version, the gates, the clean copy. Only a button of the card sends; there are no
+confirmation windows — every outward action is named by its button's label:
+
+| Outcome | What it means | Buttons |
+|---|---|---|
+| `ok` | the page was created or updated | "Open the page" |
+| `unchanged` | the same inputs (`published_input`) and the same page version — nothing sent, the file untouched | "Open the page" |
+| `conflict` | the page was edited after publishing (versions, author, date named); it is not wiped without a click | "Open the page", "Refresh the mirror", "Overwrite" (`--force`) |
+| `adopt` | the space has someone else's page with that title | "Open the page", "Take over" (`--adopt`) |
+| `misplaced` | your page is not where the kind's path leads; its content is updated in place | "Move along the kind's path" (`--move`) |
+| `blocked` | publishing is impossible; the reason in words | a button to the right settings group |
+
+Git is the truth, Confluence is the shop window: there is no auto-merge. A race (the page was saved while publishing ran)
+gives `conflict` again, not a blind write; a drop after the page was created does not breed a second one — a repeat finds it
+by the title and the banner.
 
 Publishing writes a stamp into the document header: `confluence_page_id`, `published`, `published_version`, `published_url`,
-`published_commit` and **`published_sha`** — the fingerprint of the clean text that went out. The panel's "the page is behind"
-mark goes by it: it lights up when the clean text is edited and does not light up from an edit to the assumptions, the header
-or whitespace; right after publishing, and after publishing again, it is off. A document published by an earlier kit version
-carries no fingerprint — the panel honestly says "unknown" until the next publishing. After publishing the open file is
-re-read, and the next "Save" gives no conflict.
+`published_commit`, **`published_sha`** — the fingerprint of the clean text that went out — and `published_input` (the
+fingerprint of the inputs: the clean text, the title, the parent, the converter version), `published_space`,
+`published_parent`. The stamp is written whole or not at all and keeps the file's byte order mark and line endings. The
+panel's "the page is behind" mark goes by `published_sha`: it lights up when the clean text is edited and does not light up
+from an edit to the assumptions, the header or whitespace; right after publishing, and after publishing again, it is off. A
+document published by an earlier kit version carries no fingerprint — the panel honestly says "unknown" until the next
+publishing. After publishing the open file is re-read, and the next "Save" gives no conflict.
 
 The registry of kinds is written only through this form and `POST /api/kinds` with a digest: if the section was edited
 elsewhere while the form was open, the write does not go through, and the form offers "Take the disk's" or "Keep mine". The
-rest of the config is not changed by a single byte.
+write changes only what the engine knows: unknown kind fields and comments inside the section stay; the rest of the config is
+not changed by a single byte.
 
 **`released/` is immutable.** The panel's editor opens it read-only. Without freezing you cannot prove what you
 delivered. Drafts live in `Deliverables/work/`; delivery packages and versions taken off work — in
