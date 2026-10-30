@@ -807,6 +807,7 @@ def file_read(project: str, rel: str) -> dict:
     only_lossy = lossy and not ro
     if only_lossy:
         ro = LOSSY_WHY
+    stale, stale_known = publish_stale(fm, text)
     return {"path": rel, "text": text, "size": size,
             "digest": sn["digest"], "encoding": sn["encoding"], "eol": sn["eol"],
             "eol_mixed": sn["mixed"], "lossy": lossy, "readonly_lossy": only_lossy,
@@ -814,7 +815,78 @@ def file_read(project: str, rel: str) -> dict:
             "git": git_file_state(project, rel),
             "published": fm.get("published", ""),
             "published_url": fm.get("published_url", "") or fm.get("confluence_page_id", ""),
-            "stale": bool(fm.get("published")) and file_changed_since_publish(project, rel, fm)}
+            "stale": stale, "stale_known": stale_known,
+            "publish": publish_info(project, rel, full, fm, text)}
+
+
+PUBLISH_CLOSED = ("auroraknowledgedb", "sources", "raw")      # внутренний слой доверия и зеркала: наружу не идут (как в `publish_doc`)
+
+
+def publish_stale(fm: dict, text: str) -> tuple:
+    """Отстала ли опубликованная страница → (отстала, известно ли).
+
+    Сравниваем отпечаток чистовика сейчас с `published_sha`, который записала публикация: правка текста, который
+    уходит наружу, меняет отпечаток; правка шапки, допущений и плана — нет, и сразу после публикации метка не горит.
+    Файл, опубликованный прежней версией кита, отпечатка не несёт: честный ответ — «неизвестно» (не отстала, но и не
+    проверено), а не метка, горевшая у каждого опубликованного файла из-за сравнения по коммиту."""
+    if not fm.get("published"):
+        return False, True
+    sha = (fm.get("published_sha") or "").strip()
+    if not sha:
+        return False, False
+    return clean_sha(text) != sha, True
+
+
+def publish_info(project: str, rel: str, full: str, fm: dict, text: str) -> dict:
+    """Состояние публикации файла, посчитанное сервером: что показать у кнопки «Опубликовать».
+
+    Страница не гадает по глобалам и не повторяет правила движка — она рисует ответ. `state`: `none` — публикация к
+    файлу неприменима (не `.md`, внутренний слой, папка вне видов и вне `Deliverables/work`), кнопки нет; `ready` —
+    можно; `blocked` — кнопка видна, но серая: `why` называет причину словами, `fix` — где её чинить (`kinds` —
+    «Настройки проекта → Артефакты», `project` — «Настройки проекта»). Вид и родитель берутся тем же кодом, что у
+    `ship:publish` (`make_kinds.kind_of`), порядок родителей — тоже (`--parent` кнопка не задаёт).
+    `gate` — коды, по которым ворота ревью не пустят наружу (кнопку не гасит: причину назовёт и команда; слова к кодам
+    у страницы в каталоге); `prompt` — промпт публикации вида (сохраняется, модель по нему пока не вызывается)."""
+    nr = norm_rel(rel)
+    if os.path.splitext(nr)[1].lower() != ".md" or nr.split("/")[0].casefold() in PUBLISH_CLOSED:
+        return {"state": "none"}
+    try:
+        kinds = AG_KINDS.read_kinds(project) or {}
+    except OSError:
+        kinds = {}
+    in_dir, _rec = AG_KINDS.kind_of(kinds, "", full, project)                   # лежит в папке результата вида
+    kid, rec = AG_KINDS.kind_of(kinds, fm.get("type") or "", "", project)        # `type:` шапки важнее папки (как у скрипта)
+    if not kid:
+        kid, rec = in_dir, kinds.get(in_dir) or {}
+    page = (fm.get("confluence_page_id") or "").strip().strip('"')
+    if not (in_dir or nr.startswith("Deliverables/work/") or page):
+        return {"state": "none"}
+    out = {"state": "ready", "kind": kid, "kind_title": rec.get("title") or kid,
+           "action": "update" if page else "create", "page": page,
+           "prompt": (rec.get("publish_prompt") or "").strip(), "review": AG_KINDS.review_profile(rec),
+           "parent": "", "parent_from": "", "why": "", "fix": "", "gate": []}
+    import confluence_export as CE
+    cfg = CE.read_config(project)
+    parents = (("publish_parent", fm.get("publish_parent")), ("publish_url", rec.get("publish_url")),
+               ("confluence", cfg.get("publish_parent")))
+    parent = next(((src, str(v).strip().strip("\"'")) for src, v in parents if str(v or "").strip().strip("\"'")), ("", ""))
+    out["parent_from"], out["parent"] = parent
+    if not (cfg.get("base_url") and cfg.get("space")):
+        out.update({"state": "blocked", "fix": "project",
+                    "why": "Опубликовать нельзя: в настройках проекта не заданы адрес Confluence и пространство."})
+    elif not page and not parent[1] and kid:
+        out.update({"state": "blocked", "fix": "kinds",
+                    "why": "Опубликовать некуда: у вида этого документа не задана родительская страница в Confluence."})
+    elif not page and not parent[1]:
+        out.update({"state": "blocked", "fix": "project",
+                    "why": "Опубликовать некуда: не задана родительская страница в Confluence, а у документа нет вида артефакта."})
+    if out["review"]:
+        try:
+            import review_run as RR
+            out["gate"] = [gid for gid, _why in RR.publish_gate(text)]
+        except Exception:  # noqa: BLE001 — ворота ревью нечем проверить: кнопку не гасим, причину назовёт команда
+            out["gate"] = []
+    return out
 
 
 def clean_preview(project: str, rel: str) -> dict:
@@ -4215,7 +4287,7 @@ def retrieval_state(project: str) -> dict:
 
 
 sys.path.insert(0, os.path.join(KIT, "scripts"))
-from aurora_common import frontmatter          # noqa: E402 — разбор шапки один на движок
+from aurora_common import clean_sha, frontmatter   # noqa: E402 — разбор шапки и отпечаток чистовика, один на движок
 
 PING_FILE = "ping-state.json"
 
@@ -5122,6 +5194,7 @@ def kinds_read(project: str) -> dict:
     importlib.reload(MK)
     kinds = MK.read_kinds(project)
     return {"kinds": kinds, "known": MK.KNOWN, "review_profiles": list(MK.REVIEW_PROFILES),
+            "digest": MK.registry_digest(kinds),
             "problems": [{"kind": k, "why": w} for k, w in MK.check(project, kinds)],
             "templates": sorted(
                 f for f in os.listdir(os.path.join(project, "Templates"))
@@ -5158,15 +5231,27 @@ def artifact_files(project: str, kind: str) -> list:
     return out
 
 
-def kinds_write(project: str, kinds: dict) -> dict:
+KINDS_LOCK = threading.Lock()               # два окна панели не пишут секцию `artifacts:` одновременно
+
+
+def kinds_write(project: str, kinds: dict, expect: str = "") -> dict:
     """Переписать секцию `artifacts:` в aurora.config.yaml, не трогая остальной конфиг.
 
-    Реестр правится из панели, а живёт в файле проекта: он в git, его видит любая IDE и
-    ассистент через MCP. Панель здесь — удобный ввод, а не хранилище: разойтись им негде.
-    """
+    Реестр правится из панели, а живёт в файле проекта: он в git, его видит любая IDE и ассистент через MCP. Панель
+    здесь — удобный ввод, а не хранилище: разойтись им негде.
+
+    `expect` — слепок реестра, который страница прочитала (`kinds_read` → `digest`, считается по тому, как секцию читает
+    движок: комментарии и пустые строки изменением не считаются). Если на диске уже другое — вторая вкладка или правка
+    руками, — запись не делается: `{"conflict": True, …}` и свежее состояние, как у «Типов карточек». Слепок не прислан —
+    запись без проверки («Записать моё поверх»). Остальной конфиг остаётся как был байт в байт: метка порядка байтов,
+    окончания строк, пустые строки между секциями; файл подменяется целиком, а не пишется на месте."""
+    if not isinstance(expect, str):
+        return {"error": "слепок expect должен быть строкой"}
     path = os.path.join(project, "aurora.config.yaml")
     if not os.path.isfile(path):
         return {"error": "в проекте нет aurora.config.yaml"}
+    if not isinstance(kinds, dict) or not all(isinstance(r, dict) or r is None for r in kinds.values()):
+        return {"error": "реестр видов — объект «вид → поля»"}
     bad = [k for k in kinds if not re.fullmatch(r"[a-z][a-z0-9\-]{1,30}", k)]
     if bad:
         return {"error": "имя типа — латиница, цифры и дефис: " + ", ".join(bad[:3])}
@@ -5176,39 +5261,42 @@ def kinds_write(project: str, kinds: dict) -> dict:
         why = AG_KINDS.out_problem(str((rec or {}).get("out") or ""))
         if why:
             return {"error": f"вид «{kind}»: папка результата — {why}"}
-    lines = ["artifacts:"]
-    for kind in sorted(kinds):
-        rec = kinds[kind] or {}
-        lines.append(f"  {kind}:")
-        # Поля описывает движок, а не панель: список один на всех — `make_kinds.FIELDS`.
-        # Иначе форма научится сохранять поле, которого чтение не знает, и настройка
-        # будет молча пропадать при следующем разборе конфига.
-        for field in AG_KINDS.FIELDS:
-            value = str(rec.get(field) or "").strip().strip('"')
-            lines.append(f'    {field}: "{value}"')
-        task = rec.get("task") or {}
-        if any(str(v).strip() for v in task.values()):
-            lines.append("    task:")
-            for field in AG_KINDS.TASK_FIELDS:
-                value = task.get(field)
-                if isinstance(value, list):
-                    value = ", ".join(str(x).strip() for x in value if str(x).strip())
-                value = str(value or "").strip().strip('"')
-                if value:
-                    lines.append(f'      {field}: "{value}"')
+    # Каждое значение пишется в одну строку конфига: перевод строки превратил бы остаток в чужое поле вида.
+    for kind, rec in sorted(kinds.items()):
+        task = (rec or {}).get("task") or {}
+        for field, value in list((rec or {}).items()) + (list(task.items()) if isinstance(task, dict) else []):
+            if field == "task":
+                continue
+            if isinstance(value, (list, tuple)):
+                value = ", ".join(str(x) for x in value)
+            if AG_KINDS.value_problem(value):
+                return {"error": f"вид «{kind}»: поле «{field}» — значение занимает несколько строк или содержит управляющие знаки"}
+    with KINDS_LOCK:
+        try:
+            with open(path, encoding="utf-8", newline="") as fh:
+                old = fh.read()
+        except UnicodeDecodeError:
+            return {"error": "aurora.config.yaml не в кодировке UTF-8 — файл не тронут"}
+        except OSError as e:
+            return {"error": f"не удалось прочитать aurora.config.yaml: {e.strerror or e}"}
+        if expect and expect != AG_KINDS.registry_digest(AG_KINDS.read_kinds(project)):
+            return {"conflict": True, "error": "виды артефактов изменились на диске с момента открытия",
+                    **kinds_read(project)}
+        new = AG_KINDS.write_kinds_block(old, kinds)
         # Папку результата создаём сразу: объявить её и не найти — та же ловушка,
         # что и с несуществующим шаблоном, только вскрывается в момент записи артефакта.
-        out = str(rec.get("out") or "").strip()
-        if out and not os.path.isabs(out):
-            os.makedirs(os.path.join(project, out), exist_ok=True)
-    text = read_text(path, limit=1_000_000)
-    block = re.search(r"^artifacts:\s*$[\s\S]*?(?=^\S|\Z)", text, re.M)
-    fresh = "\n".join(lines) + "\n"
-    text = (text[:block.start()] + fresh + text[block.end():]) if block \
-        else text.rstrip() + "\n\n" + fresh
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
-    return {"ok": True, "kinds": len(kinds), "target": path}
+        for rec in kinds.values():
+            out = str((rec or {}).get("out") or "").strip()
+            if out and not os.path.isabs(out):
+                os.makedirs(os.path.join(project, out), exist_ok=True)
+        if new != old:
+            try:
+                import aurora_fs
+                aurora_fs.write_atomic(path, new, newline="", makedirs=False)       # «\r\n» остаётся «\r\n», «\n» — «\n»
+            except OSError as e:
+                return {"error": f"не удалось записать aurora.config.yaml: {e.strerror or e}", "failed": True}
+        digest = AG_KINDS.registry_digest(AG_KINDS.read_kinds(project))
+    return {"ok": True, "kinds": len(kinds), "target": path, "digest": digest}
 
 
 # ----------------------------------------------------------------- типы карточек проекта
@@ -7078,8 +7166,11 @@ class Handler(BaseHTTPRequestHandler):
             project = payload.get("project", "")
             if not project or not self._known(project):
                 return self.send_json({"error": "проект не выбран"})
-            self.send_json(kinds_write(project, payload.get("kinds") or {}))
-            return
+            try:
+                res = kinds_write(project, payload.get("kinds") or {}, payload.get("expect", ""))
+            except Exception as e:  # noqa: BLE001 — страница получает отказ с причиной, а не оборванное соединение
+                res = {"error": f"виды артефактов не записаны: {type(e).__name__}", "failed": True}
+            return self.send_json(res, cards_status(res))
         if u.path == "/api/models/save":
             # Слепок обязателен для существующего файла: запрос без него (или с null, числом) не вправе молча
             # заменить чужую правку, он считается «страница видела пустое».

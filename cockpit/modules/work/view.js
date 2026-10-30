@@ -172,13 +172,19 @@ async function fillKinds(ctx){
   });
   const draw = () => {
     const rec = kinds[sel.value] || {};
-    const bits = [
+    // Два дела — две строки: что относится к созданию документа и что к его публикации в Confluence.
+    const create = [
       rec.template ? t("work.spec_template", {v: rec.template}) : t("work.spec_no_template"),
       rec.out ? t("work.spec_out", {v: rec.out}) : t("work.spec_no_out"),
       rec.prompt ? t("work.spec_prompt", {v: rec.prompt}) : t("work.spec_no_prompt"),
-      rec.publish_url ? t("work.spec_publish", {v: rec.publish_url}) : t("work.spec_no_publish"),
     ];
-    ctx.$("#makeSpec").textContent = bits.join(" · ");
+    const publish = [
+      rec.publish_url ? t("work.spec_publish", {v: rec.publish_url}) : t("work.spec_no_publish"),
+      rec.publish_prompt ? t("work.spec_publish_prompt", {v: rec.publish_prompt}) : t("work.spec_no_publish_prompt"),
+    ];
+    ctx.$("#makeSpec").replaceChildren(
+      el("div", {}, el("b", {}, t("work.spec_head_create") + " "), create.join(" · ")),
+      el("div", {}, el("b", {}, t("work.spec_head_publish") + " "), publish.join(" · ")));
     const ready = rec.template && rec.out;
     ctx.$("#makeGo").disabled = !ready;
     ctx.$("#makePublish").disabled = !rec.publish_url;

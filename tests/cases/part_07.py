@@ -305,8 +305,9 @@ def test_finished_artifact_lands_in_the_editor_with_a_publish_button(tmp: Path):
         "документ без маркера публикуется молча — уедет всё тело целиком"
     assert "editor.publish_draft" in pub and '"--allow", "draft"' in pub, \
         "черновик из редактора не публикуется: предохранитель выходных команд просит осознанного решения"
-    assert "function publishTarget" in ui, \
-        "кнопка публикации видна там, где публикация не применима"
+    # Видна ли кнопка, решает сервер (`file_read` → `publish`), а не глобал страницы: поведение — в part_144.py.
+    assert "drawPublish(d)" in ui and "S.kinds" not in ui and "function publishTarget" not in ui, \
+        "кнопка публикации снова гадает по виду, которого никто не присваивал, а не рисует ответ сервера"
     # «Незаконченные» обязаны заканчиваться действием, а не списком.
     assert ('onclick:()=>openPath(x.path)' in ui
             or 'onclick: () => ctx.openPath(x.path)' in ui), \

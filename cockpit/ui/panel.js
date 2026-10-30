@@ -457,7 +457,7 @@ async function drawRolePicker(){
 /* ---------------- граф базы ---------------- */
 /* ---------------- файлы проекта ---------------- */
 const F = { files:[], path:null, digest:"", ed:null, ro:"", loaded:false, orig:"", fm:"",
-            filter:"all", open:new Set(), recent:[], changed:new Set(), createDirs:[] };
+            filter:"all", open:new Set(), recent:[], changed:new Set(), createDirs:[], reopen:"" };
 // Порог живого предпросмотра в знаках. Не выдумка: на карточке в 11 КБ редактор сам
 // написал «требует 20901мс», а `_index.md` живой базы весит 171 КБ.
 const PREVIEW_LIMIT = 40000;
@@ -497,6 +497,7 @@ async function renderFiles(){
   drawFilters();
   drawTree();
   if (d.truncated) toast(t("files.truncated", {n:d.count, total:d.total}), "warn");
+  if (F.reopen) afterPublish(F.reopen);       // файл переписала публикация, пока «Файлы» были скрыты
 }
 
 const SHOW_LIMIT = 600;      // столько рисуем зараз: 1500 кнопок — 89 метров прокрутки
@@ -711,17 +712,10 @@ async function openFile(f){
   $("#fileDelete").hidden = !!F.ro || (d.path || "").startsWith("AuroraKnowledgeDB/");
   if (fixable) $("#fileFix").onclick = () => correctCard(d.path);
   $("#fileGit").textContent = d.git || "";
-  // «Опубликовать» показываем только там, где публикация применима: у видов артефактов
-  // с объявленным адресом и у документов из `Deliverables/work`. Кнопка, которая всегда
-  // на виду и почти всегда отказывает, учит не читать отказы.
-  F.publishable = publishTarget(d.path);
-  $("#filePub").hidden = !F.publishable;
-  $("#fileStale").hidden = !d.stale;
-  if (d.stale){
-    $("#fileStale").innerHTML = "";
-    $("#fileStale").append(t("editor.stale", {date: d.published}) + " ",
-      el("button",{class:"btn", onclick:()=>publishFromEditor()}, t("editor.publish")));
-  }
+  // «Опубликовать»: состояние считает сервер (`file_read` → `publish`), страница его рисует. Раньше она гадала
+  // по глобалу страницы со списком видов, который перестали присваивать при переносе раздела в модуль, — и кнопка пропала у всех
+  // артефактов видов. Запрет обязан заканчиваться действием: серая кнопка называет причину и ведёт в настройки.
+  drawPublish(d);
   $("#fileWarn").hidden = true;
   // Кодировка и окончания строк файла сервер сохранит как были; показываем отступление
   // от привычных utf-8/LF, чтобы «почему весь файл в диффе» не искали в редакторе.
@@ -1011,18 +1005,70 @@ function ensureVditor(){
   return VDITOR_READY;
 }
 
-function publishTarget(rel){
-  // Смотрим по реестру видов: папка артефакта с объявленным `publish_url` — и
-  // `Deliverables/work`, откуда публикуются собранные документы.
-  const r = (rel || "").replace(/\\/g, "/");
-  if (r.startsWith("Deliverables/work/")) return true;
-  const kinds = (S.kinds || {});
-  return Object.values(kinds).some(k => k.out && k.publish_url
-                                        && r.startsWith(k.out.replace(/\/$/, "") + "/"));
+/* Что показать у «Опубликовать» и у метки «страница отстала» по ответу `file_read`. Чистая функция: решает ответ
+   сервера, а не страница, — поэтому её можно проверить отдельно от разметки.
+   button: `hidden` — публикация к файлу неприменима; `blocked` — кнопка серая, `why` называет причину, `fix` — где её
+   чинить (`kinds` — «Настройки проекта → Артефакты», `project` — «Настройки проекта»); `ready` — можно.
+   stale: опубликован и с тех пор изменён его чистовик; unknown: опубликован прежней версией кита, отпечатка нет. */
+function publishView(d){
+  const pub = (d && d.publish) || {};
+  const state = pub.state === "ready" || pub.state === "blocked" ? pub.state : "hidden";
+  return {
+    button: state,
+    why: state === "blocked" ? (pub.why || "") : "",
+    fix: state === "blocked" ? (pub.fix || "") : "",
+    gate: state === "ready" && Array.isArray(pub.gate) ? pub.gate : [],
+    stale: !!(d && d.stale),
+    unknown: !!(d && d.published && d.stale_known === false),
+  };
+}
+
+function drawPublish(d){
+  const v = publishView(d);
+  F.publishable = v.button === "ready";
+  const btn = $("#filePub");
+  btn.hidden = v.button === "hidden";
+  btn.disabled = v.button === "blocked";
+  btn.title = v.why;
+  const note = $("#filePubNote");
+  note.innerHTML = "";
+  note.hidden = !(v.why || v.gate.length);
+  note.className = v.why ? "note warn" : "note";
+  if (v.why){
+    note.append(v.why + " ");
+    if (v.fix) note.append(el("button",{class:"btn sm", onclick:()=>{
+      SGROUPS.focus = v.fix === "kinds" ? "project:kinds" : "project:form";
+      show("project");
+    }}, t(v.fix === "kinds" ? "editor.publish_fix_kinds" : "editor.publish_fix_project")));
+  } else if (v.gate.length){
+    note.append(t("editor.publish_gate", {why: v.gate.map(c => t("editor.gate_" + c.replace(/-/g, "_"))).join("; ")}));
+  }
+  const stale = $("#fileStale");
+  stale.hidden = !(v.stale || v.unknown);
+  stale.innerHTML = "";
+  if (v.stale){
+    stale.append(t("editor.stale", {date: d.published}) + " ",
+      el("button",{class:"btn", onclick:()=>publishFromEditor(), disabled: v.button === "ready" ? null : ""}, t("editor.publish")));
+  } else if (v.unknown){
+    stale.append(t("editor.stale_unknown", {date: d.published}));
+  }
+}
+
+// Скрипт публикации переписал открытый файл штампом (страница, версия, отпечаток чистовика). Редактор держит прежний
+// текст и прежний слепок: следующее «Сохранить» дало бы ложный конфликт, а метка «страница отстала» не обновилась бы.
+// Перечитываем файл; несохранённое в редакторе не затираем — о нём говорим. Публикация идёт из консоли, а скрытый
+// редактор не пересобирают (Vditor в скрытом блоке мерит нулевую высоту): перечитаем, когда «Файлы» снова на виду.
+async function afterPublish(rel){
+  if (!F.path || F.path !== rel) return;
+  if (S.view !== "files"){ F.reopen = rel; return; }
+  F.reopen = "";
+  if (F.dirty) return toast(t("editor.published_dirty"), "warn");
+  const f = F.files.find(x => x.path === rel) || {path: rel, name: rel.split("/").pop(), text: true, readonly: ""};
+  await openFile(f);
 }
 
 async function publishFromEditor(){
-  if (!F.path) return;
+  if (!F.path || !F.publishable) return;
   if (F.dirty && !confirm(t("editor.publish_dirty"))) return;
   if (F.dirty) await saveFile();
   const d = await api("/api/files/clean?project=" + encodeURIComponent(S.project.path)
@@ -2547,26 +2593,57 @@ async function retryStep(){
    MCP; панель здесь только удобный ввод, а не второе хранилище. Виды документов заводит
    человек: движок не знает наперёд, какие формы потребует заказчик. */
 let KINDS = null;
+let KINDS_DIGEST = "";       // слепок реестра, который прочитала форма; сервер сверяет его при записи (409 — файл изменился)
 
+/* Форма вида — две рамки: «Создание» (шаблон, промпт создания, папка, MCP, маска, задача) и «Публикация в Confluence»
+   (родитель, промпт публикации, ревью). Шаблон отвечает за создание, промпт — за публикацию. Промпт создания и промпт
+   публикации — разные поля (`prompt` и `publish_prompt`): первое читает изготовление документа, второе пока только
+   хранится — подготовка страницы по нему включится позже, и подсказка поля говорит об этом прямо. */
 async function renderKinds(box){
   if (!S.project) return;
   const d = await api("/api/kinds?project=" + encodeURIComponent(S.project.path));
   if (d.error) return;
   KINDS = JSON.parse(JSON.stringify(d.kinds || {}));
+  KINDS_DIGEST = d.digest || "";
+  let drift = null;            // ответ сервера на расхождение: файл на диске изменился, пока форма была открыта
   const card = el("div",{class:"card",style:"padding:20px"});
+  const dirty = () => setDirty("kinds", t("dirty.kinds"), true);
+  const save = async force => {
+    const r = await api("/api/kinds",{method:"POST", quiet:true,
+      body:JSON.stringify({project:S.project.path, kinds:KINDS, expect: force ? "" : KINDS_DIGEST})});
+    if (r.conflict){ drift = r; draw(); return; }
+    if (r.ok){
+      KINDS_DIGEST = r.digest || KINDS_DIGEST; drift = null;
+      toast(t("kinds.saved", {file: r.target.split("/").pop(), n: r.kinds}));
+      setDirty("kinds", t("dirty.kinds"), false);
+      renderProjectAfterSave();
+    } else toast(r.error || t("kinds.not_saved"), "err");
+  };
   const draw = () => {
     card.innerHTML = "";
     card.append(el("p",{class:"muted",style:"font-size:13px;margin:0 0 10px"},
       t("kinds.about")));
     (d.problems||[]).forEach(p=>card.append(el("div",{class:"warnbox",style:"margin-bottom:8px"},
       `${p.kind}: ${p.why}`)));
+    if (drift) card.append(el("div",{class:"warnbox",style:"margin-bottom:10px"},
+      el("b",{}, t("kinds.drift")), " ", t("kinds.drift_help"),
+      el("div",{class:"row",style:"gap:8px;margin-top:8px"},
+        el("button",{class:"btn primary", onclick:()=>{
+          KINDS = JSON.parse(JSON.stringify(drift.kinds || {})); KINDS_DIGEST = drift.digest || "";
+          d.problems = drift.problems || []; drift = null;
+          setDirty("kinds", t("dirty.kinds"), false); draw();
+        }}, t("kinds.take_disk")),
+        el("button",{class:"btn", onclick:()=>save(true)}, t("kinds.keep_mine")))));
     const rows = el("div",{});
     Object.keys(KINDS).sort().forEach(kind=>{
       const rec = KINDS[kind];
       const field = (key, ph, width) => el("input",{class:"btn mono",
         style:`width:${width};font-size:12px`, value:rec[key]||"", placeholder:ph,
-        oninput:e=>{ rec[key] = e.target.value;
-                     setDirty("kinds", t("dirty.kinds"), true); }});
+        oninput:e=>{ rec[key] = e.target.value; dirty(); }});
+      // Подпись над полем называет его роль: шаблон — для создания, промпт публикации — для публикации.
+      const lab = (key, input, hint) => el("label",{class:"kfield"},
+        el("span",{class:"kf-l"}, t("kinds.l_" + key)), input,
+        hint ? el("span",{class:"kf-h"}, hint) : null);
       // Свойства задачи держим свёрнутыми: они нужны не всем типам и не каждый день,
       // а развёрнутый список из шести полей у девяти типов превращает форму в стену.
       rec.task = rec.task || {};
@@ -2574,8 +2651,7 @@ async function renderKinds(box){
         style:`width:${width};font-size:12px`,
         value: Array.isArray(rec.task[key]) ? rec.task[key].join(", ") : (rec.task[key]||""),
         placeholder:ph,
-        oninput:e=>{ rec.task[key] = e.target.value;
-                     setDirty("kinds", t("dirty.kinds"), true); }});
+        oninput:e=>{ rec.task[key] = e.target.value; dirty(); }});
       const taskBox = el("div",{hidden:true,style:"width:100%;padding:8px 0 4px 26px"},
         el("div",{class:"muted",style:"font-size:12px;margin-bottom:6px"},
           t("kinds.task_about")),
@@ -2586,42 +2662,52 @@ async function renderKinds(box){
           tfield("epic", t("kinds.f_epic"), "120px"),
           tfield("labels", t("kinds.f_labels"), "190px"),
           tfield("components", t("kinds.f_components"), "190px")));
+      const create = el("fieldset",{class:"kframe", "data-frame":"create"},
+        el("legend",{}, t("kinds.frame_create")),
+        el("div",{class:"muted kf-about"}, t("kinds.frame_create_about")),
+        el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;align-items:flex-end"},
+          lab("template", field("template", t("kinds.f_template"), "200px")),
+          lab("prompt", field("prompt", t("kinds.f_prompt"), "200px")),
+          lab("out", field("out", t("kinds.f_out"), "160px")),
+          lab("mcp", field("mcp", t("kinds.f_mcp"), "210px")),
+          // Маска ключа Requirement Yogi: ключ заводит реестр, Аврора проверяет, что он написан по маске вида.
+          el("span",{title: t("kinds.ref_mask_hint"), style:"flex:none"},
+            lab("ref_mask", field("ref_mask", t("kinds.f_ref_mask"), "230px"))),
+          // Правило включается видом документа, а не глобально: у ОПЗ стек — это предмет,
+          // и общее правило заставило бы критика ругаться на каждый такой документ.
+          el("label",{class:"row",style:"gap:6px;font-size:12px;flex:none",
+                title: t("kinds.tech_hint")},
+            el("input",{type:"checkbox",
+              checked:(String(rec.tech_agnostic||"").toLowerCase()==="true")?"":null,
+              onchange:e=>{ rec.tech_agnostic = e.target.checked ? "true" : ""; dirty(); }}),
+            t("kinds.tech_agnostic")),
+          el("button",{class:"btn sm", title: t("kinds.task_hint"),
+            onclick:e=>{ taskBox.hidden = !taskBox.hidden;
+                         e.target.textContent = taskBox.hidden ? t("kinds.task_open")
+                                                               : t("kinds.task_close"); }},
+            t("kinds.task_open"))),
+        taskBox);
+      const publish = el("fieldset",{class:"kframe", "data-frame":"publish"},
+        el("legend",{}, t("kinds.frame_publish")),
+        el("div",{class:"muted kf-about"}, t("kinds.frame_publish_about")),
+        el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;align-items:flex-end"},
+          lab("publish_url", field("publish_url", t("kinds.f_publish"), "260px")),
+          lab("publish_prompt", field("publish_prompt", t("kinds.f_publish_prompt"), "220px"),
+              t("kinds.publish_prompt_hint")),
+          // Ревью по чек-листу перед публикацией: ворота `ship:publish` пускают наружу только свежее ревью.
+          el("label",{class:"kfield", title: t("kinds.review_hint")},
+            el("span",{class:"kf-l"}, t("kinds.review")),
+            el("select",{class:"btn sm",style:"font-weight:400",
+              onchange:e=>{ rec.review = e.target.value; dirty(); }},
+              ...["", ...(d.review_profiles||[])].map(v=>el("option",{value:v, selected:(rec.review||"")===v?"":null},
+                v ? t("kinds.review_" + v) : t("kinds.review_off")))))));
       rows.append(el("div",{class:"list-item",style:"gap:8px;flex-wrap:wrap"},
         el("span",{class:"chip mono",style:"flex:none"}, kind),
-        field("title", t("kinds.f_title"), "170px"),
-        field("template", t("kinds.f_template"), "190px"),
-        field("prompt", t("kinds.f_prompt"), "180px"),
-        field("out", t("kinds.f_out"), "150px"),
-        field("publish_url", t("kinds.f_publish"), "230px"),
-        field("mcp", t("kinds.f_mcp"), "210px"),
-        // Маска ключа Requirement Yogi: ключ заводит реестр, Аврора проверяет, что он написан по маске вида.
-        el("span",{title: t("kinds.ref_mask_hint"), style:"flex:none"},
-          field("ref_mask", t("kinds.f_ref_mask"), "230px")),
-        // Правило включается видом документа, а не глобально: у ОПЗ стек — это предмет,
-        // и общее правило заставило бы критика ругаться на каждый такой документ.
-        el("label",{class:"row",style:"gap:6px;font-size:12px;flex:none",
-              title: t("kinds.tech_hint")},
-          el("input",{type:"checkbox",
-            checked:(String(rec.tech_agnostic||"").toLowerCase()==="true")?"":null,
-            onchange:e=>{ rec.tech_agnostic = e.target.checked ? "true" : "";
-                          setDirty("kinds", t("dirty.kinds"), true); }}),
-          t("kinds.tech_agnostic")),
-        // Ревью по чек-листу перед публикацией: ворота `ship:publish` пускают наружу только свежее ревью.
-        el("label",{class:"row",style:"gap:6px;font-size:12px;flex:none", title: t("kinds.review_hint")},
-          t("kinds.review"),
-          el("select",{class:"btn sm",style:"font-weight:400",
-            onchange:e=>{ rec.review = e.target.value; setDirty("kinds", t("dirty.kinds"), true); }},
-            ...["", ...(d.review_profiles||[])].map(v=>el("option",{value:v, selected:(rec.review||"")===v?"":null},
-              v ? t("kinds.review_" + v) : t("kinds.review_off"))))),
-        el("button",{class:"btn sm", title: t("kinds.task_hint"),
-          onclick:e=>{ taskBox.hidden = !taskBox.hidden;
-                       e.target.textContent = taskBox.hidden ? t("kinds.task_open")
-                                                             : t("kinds.task_close"); }},
-          t("kinds.task_open")),
+        lab("title", field("title", t("kinds.f_title"), "240px")),
+        el("span",{style:"flex:1"}),
         el("button",{class:"btn sm", title: t("kinds.drop"),
-          onclick:()=>{ delete KINDS[kind]; setDirty("kinds", t("dirty.kinds"), true);
-                        draw(); }},"×"),
-        taskBox));
+          onclick:()=>{ delete KINDS[kind]; dirty(); draw(); }},"×"),
+        el("div",{class:"kframes"}, create, publish)));
     });
     card.append(rows);
     const name = el("input",{class:"btn mono",style:"width:150px",
@@ -2634,17 +2720,10 @@ async function renderKinds(box){
           return toast(t("kinds.bad_name"), "warn");
         if (KINDS[key]) return toast(t("kinds.exists"), "warn");
         KINDS[key] = {title:"", template:"", prompt:"", out:"Artifacts/" + key,
-                      publish_url:"", mcp:"", tech_agnostic:"", review:"", ref_mask:"", task:{}};
-        name.value = ""; setDirty("kinds", t("dirty.kinds"), true); draw();
+                      publish_url:"", publish_prompt:"", mcp:"", tech_agnostic:"", review:"", ref_mask:"", task:{}};
+        name.value = ""; dirty(); draw();
       }}, t("kinds.add")),
-      saveButton("kinds", t("dirty.kinds"), t("kinds.save"), async ()=>{
-        const r = await api("/api/kinds",{method:"POST",
-          body:JSON.stringify({project:S.project.path, kinds:KINDS})});
-        if (r.ok){ toast(t("kinds.saved", {file: r.target.split("/").pop(), n: r.kinds}));
-                   setDirty("kinds", t("dirty.kinds"), false);
-                   renderProjectAfterSave();  }
-        else toast(r.error || t("kinds.not_saved"), "err");
-      }),
+      saveButton("kinds", t("dirty.kinds"), t("kinds.save"), ()=>save(false)),
       el("span",{class:"muted",style:"font-size:12px"}, t("kinds.out_note"))));
     if ((d.templates||[]).length)
       card.append(el("div",{class:"muted",style:"font-size:12px;margin-top:10px"},
@@ -3916,6 +3995,9 @@ async function poll(id, since, label, me){
   toast(rc===0 ? t("poll.done", {cmd: label})
                : t("poll.done_rc", {cmd: mark.what + ": " + label, rc}),
         rc===0 ? "ok" : rc===1 ? "warn" : "err");
+  // Публикация переписывает файл (штамп): открытый в «Файлах» документ перечитываем. Метка набирается в двух местах —
+  // из редактора и из «Продуктивности» — одинаково: «ship:publish <путь>».
+  if (rc === 0 && String(label).startsWith("ship:publish ")) afterPublish(String(label).slice("ship:publish ".length));
   // Задание ассистенту команда печатает сама; из прокручиваемой консоли его неудобно
   // выделять мышью — даём кнопку, которая кладёт блок целиком в буфер.
   LAST_TASKS = assistantTasks(CONSOLE_LINES);

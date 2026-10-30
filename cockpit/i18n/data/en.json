@@ -641,7 +641,15 @@
     "проект ведёт движок сам (aurora.update_ignore.txt) — обновление его не трогает": "the project keeps its engine itself (aurora.update_ignore.txt) — the update does not touch it",
     "движок или штамп проекта новее кита — обновление его не понизит": "the project's engine or stamp is newer than the kit — the update will not downgrade it",
     "без транскрипта: {} ({}{}) → знание из этих файлов в базу не попадёт: запустите `kb:ingest-office`; если файл остался в списке и после него, текста в нём слишком мало или нужного конвертера нет": "without a transcript: {} ({}{}) → the knowledge in these files will not reach the base: run `kb:ingest-office`; if a file stays in the list after it, it has too little text or the converter it needs is missing",
-    "транскриптов низкого качества: {} ({}{}) → текст пуст или не читается, в разбор они не идут: исправьте оригинал или включите распознавание и запустите `kb:ingest-office --force`": "low-quality transcripts: {} ({}{}) → the text is empty or unreadable and they are not parsed: fix the original or enable recognition and run `kb:ingest-office --force`"
+    "транскриптов низкого качества: {} ({}{}) → текст пуст или не читается, в разбор они не идут: исправьте оригинал или включите распознавание и запустите `kb:ingest-office --force`": "low-quality transcripts: {} ({}{}) → the text is empty or unreadable and they are not parsed: fix the original or enable recognition and run `kb:ingest-office --force`",
+    "Опубликовать некуда: не задана родительская страница в Confluence, а у документа нет вида артефакта.": "Nowhere to publish: no parent page in Confluence is set, and the document has no artifact kind.",
+    "Опубликовать некуда: у вида этого документа не задана родительская страница в Confluence.": "Nowhere to publish: this document's kind has no parent page in Confluence.",
+    "Опубликовать нельзя: в настройках проекта не заданы адрес Confluence и пространство.": "Cannot publish: the Confluence address and space are not set in the project's settings.",
+    "вид «{}»: поле «{}» — значение занимает несколько строк или содержит управляющие знаки": "kind «{}»: the field «{}» — the value takes several lines or contains control characters",
+    "виды артефактов изменились на диске с момента открытия": "the artifact kinds changed on disk since they were opened",
+    "виды артефактов не записаны: {}": "the artifact kinds were not written: {}",
+    "не удалось прочитать aurora.config.yaml: {}": "could not read aurora.config.yaml: {}",
+    "реестр видов — объект «вид → поля»": "the kinds registry is an object «kind → fields»"
   },
   "connectors": {
     "confluence-dc": {
@@ -1044,7 +1052,7 @@
     "корень зеркала (по умолчанию — зеркало вики проекта)": "mirror root (by default the project's wiki mirror)",
     "с --venv-install: без паузы после выпуска (проверка свежих версий в CI)": "with --venv-install: no wait after a release (checking fresh versions in CI)",
     "--release: документ не закоммичен — всё равно заморозить (в снимке пометка released_dirty)": "--release: the document is not committed — freeze it anyway (the snapshot is marked released_dirty)",
-    "page_id родителя для новой страницы (либо ссылка на неё); без него — publish_parent из шапки документа, затем confluence.publish_parent из конфига": "page_id of the parent for a new page (or a link to it); without it — publish_parent from the document header, then confluence.publish_parent from the config",
+    "page_id родителя для новой страницы (либо ссылка на неё); без него — publish_parent из шапки документа, затем publish_url вида артефакта, затем confluence.publish_parent из конфига": "page_id of the parent for a new page (or a link to it); without it — publish_parent from the document header, then the artifact kind's publish_url, then confluence.publish_parent from the config",
     "проверить сданные версии в Deliverables/released/: хеш, правки и удаления после коммита": "check the delivered versions in Deliverables/released/: hash, edits and deletions after the commit",
     "снять блокировку предохранителя выходных команд (КОД назван в его сообщении)": "lift a block of the outbound-commands guard (the CODE is named in its message)",
     "снять блокировку предохранителя выходных команд (КОД назван в его сообщении); review — опубликовать без свежего ревью (обход записывается в шапку)": "lift a block of the outbound-commands guard (the CODE is named in its message); review — publish without a fresh review (the bypass is recorded in the head)",

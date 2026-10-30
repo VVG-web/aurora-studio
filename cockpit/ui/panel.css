@@ -367,6 +367,15 @@ tr:last-child td{border-bottom:0}
 .sgroup{margin-bottom:18px}
 .sgroup-head{gap:10px;align-items:center;margin-bottom:10px}
 .sgroup-title{margin:0;cursor:pointer;user-select:none}
+/* Виды артефактов: у каждого вида две рамки — «Создание» и «Публикация в Confluence» */
+.kframes{display:flex;gap:var(--sp-3);flex-wrap:wrap;width:100%}
+.kframe{flex:1 1 360px;min-width:0;margin:0;padding:var(--sp-2) var(--sp-3) var(--sp-3);
+  border:1px solid var(--border);border-radius:var(--radius-sm)}
+.kframe>legend{font-weight:700;font-size:var(--text-sm);padding:0 6px}
+.kf-about{font-size:var(--text-xs);margin:0 0 var(--sp-2)}
+.kfield{display:flex;flex-direction:column;gap:3px;font-size:var(--text-xs);min-width:0}
+.kfield .kf-l{color:var(--text-muted)}
+.kfield .kf-h{color:var(--text-muted);max-width:34ch;line-height:1.35}
 /* MCP машины: карточки серверов и широкое окно для файла целиком */
 .mcp-card{display:flex;flex-direction:column;align-items:stretch;gap:var(--sp-2);
   text-align:left;padding:var(--sp-3) var(--sp-4);cursor:pointer;min-width:0}
