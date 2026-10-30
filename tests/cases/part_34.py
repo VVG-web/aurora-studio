@@ -146,7 +146,7 @@ def test_every_page_has_the_bug_button_and_about_has_both(tmp: Path):
     открытых обращений, с предупреждением не вставлять данные клиентов."""
     ui = ui_source()
     assert 'id="bugBtn"' in ui and '$("#bugBtn").onclick = () => openIssue("bug")' in ui
-    assert "openIssue, issueUrl}" in ui, "разделам не отдана функция обращения"
+    assert re.search(r"openIssue, issueUrl[,}]", ui), "разделам не отдана функция обращения"
     about = (COCKPIT / "modules" / "about" / "view.js").read_text(encoding="utf-8")
     assert 'ctx.ui.openIssue("bug")' in about and 'ctx.ui.openIssue("feature")' in about
     for lang in ("ru", "en"):

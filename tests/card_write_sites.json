@@ -926,9 +926,9 @@
    "reason": "транскрипт офисного файла, вложения или схемы (Raw/): источник, не карточка",
    "calls": 1
   },
-  "scripts/publish_doc.py:main": {
+  "scripts/publish_doc.py:write_stamped": {
    "kind": "other",
-   "reason": "выпуск документа в Deliverables/: не карточка",
+   "reason": "штамп публикации в шапке документа вида (Artifacts/, Deliverables/): не карточка",
    "calls": 1
   },
   "scripts/request_context.py:save_attachment": {
