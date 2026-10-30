@@ -18,7 +18,7 @@ into the chat by hand.
 | `kb_card` | read a card whole |
 | `kb_context` | assemble a context pack by topic (`generate` mode = trusted knowledge; while the base is young, bootstrap, marked drafts join the pack) |
 | `kb_index` | the table of contents of the base: a line per card, grouped by section |
-| `artifact_spec` | how to produce an artifact of this project: template, folder, prompt, the final-text boundary |
+| `artifact_spec` | how to produce an artifact of this project: template, folder, creation prompt, the final-text boundary (publishing is a separate section of the answer) |
 | `kb_ask` | ask the base: the project's model answers from the cards with links (slow — tens of seconds) |
 
 **It only reads.** The assistant does not pass git-guard and does not take part in trust — the engine computes trust

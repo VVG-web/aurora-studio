@@ -338,6 +338,11 @@ def test_publishing_stamps_the_fingerprint_and_the_parent_comes_from_the_kind(tm
         d = ck.file_read(str(root), rel)
         assert d["stale"] is False and AC.frontmatter(d["text"])["published_version"] == "2", d["text"][:300]
         assert AC.frontmatter(d["text"])["published_sha"] == AC.clean_sha(d["text"]), "отпечаток не обновился"
+        # «Сохранить» в редакторе сразу говорит, отстала ли страница: метка не ждёт, пока файл откроют заново
+        edited = ck.file_write(str(root), rel, d["text"].replace("четыре дня", "две недели"), expect=d["digest"])
+        assert edited.get("ok") and edited["stale"] is True and edited["publish"]["state"] == "ready", edited
+        restored = ck.file_write(str(root), rel, d["text"], expect=edited["digest"])
+        assert restored.get("ok") and restored["stale"] is False and restored["stale_known"] is True, restored
     finally:
         wiki.close()
 

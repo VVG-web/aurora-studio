@@ -53,7 +53,7 @@
     "ctx:ask": "An answer from the base with quotes; \"why not X\" — including rejected DRs.",
     "ctx:eval": "A regression run of golden questions after syncs and migrations.",
     "ctx:retro": "Lessons learned: what the base did not know when we were wrong.",
-    "make:kinds": "The project's artifact registry: template, result folder, project prompt, the \"no technologies\" rule per kind, the final-text boundary, a review before publishing (`review`) and a Requirement Yogi key mask (`ref_mask`).",
+    "make:kinds": "The project's artifact registry: template, result folder, creation prompt, parent and publishing prompt, the \"no technologies\" rule per kind, the final-text boundary, a review before publishing (`review`) and a Requirement Yogi key mask (`ref_mask`).",
     "make:create": "An artifact in `Artifacts/<type>/` — only a standard type from conventions.md. The manual path; the main one is `agent:make`.",
     "make:review": "Check an artifact's quality against the base.",
     "make:story-lint": "Artifact form by code, without a model or a network: template sections, the \"As / I want / So that\" formula, \"Implements\", precondition statuses, the Action / Reaction pair, at most 10 steps and 5 criteria groups, leftover `{{…}}`; profiles us, ac, spec; `--gate` — a verdict for a route (`--gate=warn` — the rollout mode).",

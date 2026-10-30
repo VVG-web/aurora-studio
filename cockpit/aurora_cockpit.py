@@ -807,15 +807,21 @@ def file_read(project: str, rel: str) -> dict:
     only_lossy = lossy and not ro
     if only_lossy:
         ro = LOSSY_WHY
-    stale, stale_known = publish_stale(fm, text)
     return {"path": rel, "text": text, "size": size,
             "digest": sn["digest"], "encoding": sn["encoding"], "eol": sn["eol"],
             "eol_mixed": sn["mixed"], "lossy": lossy, "readonly_lossy": only_lossy,
             "readonly": ro,
             "git": git_file_state(project, rel),
-            "published": fm.get("published", ""),
+            **publish_fields(project, rel, full, fm, text)}
+
+
+def publish_fields(project: str, rel: str, full: str, fm: dict, text: str) -> dict:
+    """Всё, что страница знает о публикации файла: дата, адрес, отстала ли страница и состояние кнопки. Отдают и чтение
+    файла, и его запись — после «Сохранить» метка «страница отстала» не ждёт, пока файл откроют заново."""
+    stale, known = publish_stale(fm, text)
+    return {"published": fm.get("published", ""),
             "published_url": fm.get("published_url", "") or fm.get("confluence_page_id", ""),
-            "stale": stale, "stale_known": stale_known,
+            "stale": stale, "stale_known": known,
             "publish": publish_info(project, rel, full, fm, text)}
 
 
@@ -1003,6 +1009,7 @@ def file_write(project: str, rel: str, text: str, expect: str = "") -> dict:
            "encoding": enc, "eol": eol, "git": git_file_state(project, rel)}
     if os.path.splitext(full)[1].lower() == ".md":
         out["lint"] = lint_one(project, rel)
+        out.update(publish_fields(project, rel, full, frontmatter(text), text))
     return out
 
 

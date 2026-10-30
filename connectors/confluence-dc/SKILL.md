@@ -48,7 +48,8 @@ python3 .aurora/scripts/sync_audit.py                   # целостность
    выгружать зеркало моделью. Сообщите об этом и поставьте зависимости:
    `pip install beautifulsoup4 markdownify` (или `uvx --with beautifulsoup4 --with markdownify`).
 4. Публикация НАРУЖУ (артефакт → страница) — отдельная процедура `ship:publish`
-   (`references/workflows.md`), а не этот скилл.
+   (`references/workflows.md`), а не этот скилл. Родитель страницы задан у вида артефакта (`publish_url` в `artifacts:`
+   проекта), кнопка «Опубликовать» живёт в «Файлах», а не здесь.
 5. Синк не трогает `AuroraKnowledgeDB/`: карточки появляются только через `build`.
 
 ## Про прежний LLM-синк

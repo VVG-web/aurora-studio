@@ -169,7 +169,11 @@ A dozen engine scripts refuse to work over an uncommitted tree, so "Commit" stan
 what is committed, not the whole base; "Commit anyway" lifts only it — nothing lifts the internal-names check.
 
 A finished artifact opens in the editor by itself; publishing goes from there and first shows the **final text** — the body
-up to the marker `<!-- ниже — производство, в чистовик не идёт -->`.
+up to the marker `<!-- ниже — производство, в чистовик не идёт -->`. The **"Publish"** button is visible for every file in a
+result folder of an artifact kind; the server computes its state, and a grey button names the reason (no parent page on the
+kind, no Confluence address) and leads to the right settings. The "the page is behind" mark follows a fingerprint of the clean
+text (`published_sha`), not the commit; after publishing the open file is re-read. A kind's settings form has two frames:
+"Creation" (template, creation prompt, folder) and "Publishing to Confluence" (parent, publishing prompt, review).
 
 ## 5. How it is built
 

@@ -662,6 +662,7 @@ async function openFile(f){
   $("#fileEnc").hidden = true;
   if (!f.text){
     destroyEditor();
+    F.publishable = false; $("#filePub").hidden = true; $("#filePubNote").hidden = true;       // кнопка и причина прежнего файла к этому не относятся
     $("#fileWarn").hidden = false; $("#fileWarn").textContent = t("files.binary");
     $("#fileSave").disabled = true; F.path = f.path; F.ro = t("files.not_text");
     return;
@@ -679,6 +680,7 @@ async function openFile(f){
     destroyEditor();
     $("#fileFm").hidden = true;
     $("#fileStale").hidden = true;
+    F.publishable = false; $("#filePub").hidden = true; $("#filePubNote").hidden = true;
     $("#fileWarn").hidden = false;
     $("#fileWarn").textContent = t("editor.too_big", {kb: Math.round(d.text.length / 1024)});
     $("#fileSave").disabled = true;
@@ -1152,6 +1154,7 @@ async function saveFile(){
   toast(t("editor.saved"));
   drawLint(d.lint);
   drawGit();
+  if (d.publish) drawPublish(d);        // правка чистовика зажигает «страница отстала» сразу, а не при следующем открытии
 }
 
 function drawLint(lint){
@@ -1173,7 +1176,7 @@ function resolveConflict(mine, disk){
       el("button",{class:"btn primary", onclick:async()=>{
         const d = await api("/api/files/write", {method:"POST", body: JSON.stringify(
           {project:S.project.path, path:F.path, text:mine})});
-        if (!d.error){ F.digest = d.digest; F.orig = mine; box.remove(); toast(t("editor.saved")); }
+        if (!d.error){ F.digest = d.digest; F.orig = mine; box.remove(); toast(t("editor.saved")); if (d.publish) drawPublish(d); }
       }}, t("editor.keep_mine")),
       el("button",{class:"btn", onclick:()=>{
         F.ed.setValue(disk); F.orig = disk; F.dirty = false;

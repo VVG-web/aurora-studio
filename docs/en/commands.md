@@ -92,7 +92,7 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 
 | Command | What it does | Executor | Since |
 |---|---|---|---|
-| `make:kinds` (`kinds`) | The project's artifact registry: template, result folder, project prompt, the "no technologies" rule per kind, the final-text boundary, a review before publishing (`review`) and a Requirement Yogi key mask (`ref_mask`). | script | 1.69.0 |
+| `make:kinds` (`kinds`) | The project's artifact registry: template, result folder, creation prompt, parent and publishing prompt, the "no technologies" rule per kind, the final-text boundary, a review before publishing (`review`) and a Requirement Yogi key mask (`ref_mask`). | script | 1.69.0 |
 | `make:create` (`create`) | An artifact in `Artifacts/<type>/` — only a standard type from conventions.md. The manual path; the main one is `agent:make`. | model | 1.1.0 |
 | `make:review` (`review`) | Check an artifact's quality against the base. | model | 1.0.0 |
 | `make:story-lint` (`story-lint`) | Artifact form by code, without a model or a network: template sections, the "As / I want / So that" formula, "Implements", precondition statuses, the Action / Reaction pair, at most 10 steps and 5 criteria groups, leftover `{{…}}`; profiles us, ac, spec; `--gate` — a verdict for a route (`--gate=warn` — the rollout mode). | script | 1.185.0 |

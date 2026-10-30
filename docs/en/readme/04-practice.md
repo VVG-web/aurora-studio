@@ -67,7 +67,7 @@ flowchart TD
 | Situation | Command | Result |
 |---|---|---|
 | Write a story, criteria, spec, algorithm | `agent:make` ("Production" → type → task) | a file by the project's template; stages — enrichment from the base, a plan with questions to you, worker, critic, Momus |
-| Find out which template and where | `make:kinds` | the registry of artifact kinds: template, folder, prompt, rules |
+| Find out which template and where | `make:kinds` | the registry of artifact kinds: template, folder, creation prompt, parent and publishing prompt, rules |
 | Check the quality of a story or criteria | `make:review <object>` | a verdict and remarks with quotes of the cards the text contradicts |
 | Check without a human, by a closed checklist | `make:review-auto` | three runs vote on each question, a script computes the score; `--page`, `--cql` |
 | Assemble a spec from requirements | `make:spec <topic>` | `SPEC-NNN` with status `draft` and a full `based_on` |

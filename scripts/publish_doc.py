@@ -324,9 +324,11 @@ def _kind_rec(fm: dict, path: str = "") -> dict:
     try:
         import make_kinds as MK
         kinds = MK.read_kinds(".") or {}
-        return MK.kind_of(kinds, fm.get("type") or "", path, ".")[1]       # то же правило, что у кнопки в панели
     except Exception:  # noqa: BLE001 — реестр видов необязателен
         return {}
+    # Старый `make_kinds` без `kind_of` (движок проекта обновлён не целиком) — отказ, а не пустой вид: пустой пропустил бы
+    # ворота ревью молча.
+    return MK.kind_of(kinds, fm.get("type") or "", path, ".")[1]       # то же правило, что у кнопки в панели
 
 
 def _kind_mask(fm: dict, path: str = "") -> str:

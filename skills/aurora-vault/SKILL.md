@@ -268,7 +268,7 @@ HTTP — только если не смог сам адаптер (venv не с
 | Command | What it does | Reference |
 |---|---|---|
 | `make:create <тип> <тема>` (`create`) | сгенерировать артефакт в `Artifacts/<тип>/` — **только стандартный тип**. Ручной путь: основной — `agent:make` | `references/workflows.md` |
-| `make:kinds` | реестр артефактов проекта: шаблон, папка, промпт, правило «без технологий» и граница чистовика. Объявляется в `aurora.config.yaml`, читается ассистентом через MCP (`artifact_spec`) | `references/workflows.md` |
+| `make:kinds` | реестр артефактов проекта: шаблон, папка, промпт создания, родитель и промпт публикации, правило «без технологий» и граница чистовика. Объявляется в `aurora.config.yaml`, читается ассистентом через MCP (`artifact_spec`) | `references/workflows.md` |
 | `make:review <US/AC>` (`review`) | проверка качества артефакта против базы знаний | `references/workflows.md` |
 | `make:story-lint` (`story-lint`) | форма артефактов кодом, без модели и сети: разделы шаблона, формула «Как / Я хочу / Чтобы», шаги, критерии, остатки `{{…}}`; профили us, ac, spec, `--gate` (`artifact_lint.py`) | `references/maintenance.md` |
 | `make:review-auto` (`review-auto`) | ревью истории или алгоритма без человека (`review_run.py`): модель отвечает «да / нет / н/п / не определить» на закрытый чек-лист `TemplatesCommon/review_v2.1.md`, прогоны голосуют по каждому вопросу, оценку и вердикт считает скрипт. `--page` — отчёт по странице с подсказками, `--cql` или `--pages-file` с `--as-of` — ретроспектива пакета со сводкой; `--apply` пишет в `Artifacts/reviews/` | `references/workflows.md` |
