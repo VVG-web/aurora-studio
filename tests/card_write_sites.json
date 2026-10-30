@@ -1,5 +1,10 @@
 {
  "card_max": 0,
+ "scripts/access_check.py:record_install": {
+  "kind": "other",
+  "reason": "запись «кто что поставил» в общей папке машины (installs/<пользователь>.json): не карточка",
+  "calls": 1
+ },
  "sites": {
   "cockpit/aurora_cockpit.py:Handler._write_config": {
    "kind": "other",
