@@ -105,9 +105,10 @@ def test_kinds_form_explains_every_field_in_both_languages(tmp: Path):
     ru, en = _cats()
     ui = panel_sources()
     form = _js_function(ui, "async function renderKinds(")
-    labs = re.findall(r'\blab\("(\w+)"', form)
+    # MCP — плашки, а не поле ввода (`mcpBox`, часть 166): подсказка стоит у подписи блока плашек, не через `lab`.
+    labs = re.findall(r'\blab\("(\w+)"', form) + re.findall(r'kindTip\(t\("kinds\.tip_(mcp)"\)\)', form)
     assert set(labs) == set(TIPS), f"поля формы и подсказки разошлись: {sorted(set(labs) ^ set(TIPS))}"
-    assert "input.title = text" in form and "kindTip(text)" in form, "подсказка поля и значок «?» говорят разное"
+    assert "inp.title = text" in form and "kindTip(text)" in form, "подсказка поля и значок «?» говорят разное"
     assert 'null, t("kinds.ref_mask_hint"))' in form
     for key in OTHER_TIPS.values():
         assert f'kindTip(t("{key}"))' in form, f"нет значка «?» с {key}"
@@ -161,7 +162,7 @@ def test_kinds_required_fields_are_starred_and_the_server_refuses_them_empty(tmp
     assert 'class:"muted kf-legend"' in form and ru["kinds.legend"].startswith("— обязательно") \
         and en["kinds.legend"].startswith("— required"), "нет легенды «* — обязательно»"
     assert ru["kinds.for_publish"] == "нужно для публикации" and en["kinds.for_publish"] == "needed for publishing"
-    assert "if (need) input.required = true;" in form and "bad.focus()" in form
+    assert "if (need) inp.required = true;" in form and "bad.focus()" in form
     assert ".kfield input:required:invalid" in (KIT / "cockpit/ui/panel.css").read_text(encoding="utf-8")
 
     root = make_project(tmp)

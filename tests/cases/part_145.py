@@ -342,7 +342,8 @@ def test_kinds_form_has_two_frames_and_names_the_role_of_template_and_prompt(tmp
     for key in ("template", "prompt", "out", "ref_mask"):
         assert f'field("{key}"' in create and f'field("{key}"' not in publish, f"поле {key} не в рамке «Создание»"
     # MCP — плашки и «Выбрать MCP…» (`mcpBox`), а не поле ввода (часть 166).
-    assert 't("kinds.l_mcp")), mcpBox)' in create and "mcpBox" not in publish, "поле mcp не в рамке «Создание»"
+    assert re.search(r't\("kinds\.l_mcp"\)(, " ", kindTip\(t\("kinds\.tip_mcp"\)\))?\), mcpBox\)', create) \
+        and "mcpBox" not in publish, "поле mcp не в рамке «Создание»"
     for key in ("publish_url", "publish_prompt"):
         assert f'field("{key}"' in publish and f'field("{key}"' not in create, f"поле {key} не в рамке «Публикация»"
     assert 't("kinds.review")' in publish and 't("kinds.review")' not in create and "tech_agnostic" in create
