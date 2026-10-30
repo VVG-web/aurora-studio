@@ -6648,8 +6648,8 @@ def write_artifact(cwd: str, st: dict) -> str:
             if not v:
                 continue
             head.append(f"  {k}: {', '.join(v) if isinstance(v, list) else v}")
-    if spec.get("publish_url"):
-        head.append(f'publish_parent: "{spec["publish_url"]}"')
+    # Родителя страницы в шапку не пишем: место публикации берёт `ship:publish` из настроек вида (`publish_url`,
+    # `publish_path`) в момент публикации. Записанный здесь адрес навсегда затенял бы смену настройки.
     head.append("---")
     # Модель нередко возвращает документ вместе с YAML-шапкой: она видит её в шаблоне и
     # честно повторяет. Приклеить свою поверх значит получить в файле две шапки — вторую

@@ -18,12 +18,21 @@ git и читается любой IDE:
         template: Templates/proektnoe_reshenie_template.md
         out: Deliverables/work
         publish_url: https://wiki.example.com/display/PRJ/Documents
+        publish_path: "Релиз {release} > {epic?}"
+        publish_title: "[ОПЗ] {title}"
         publish_prompt: Prompts/opz_publish.md
 
 Поля делятся на два дела. **Создание** документа — `template` (форма), `prompt` (дополнительные указания при
 создании), `out` (папка), `mcp`, `tech_agnostic`, `ref_mask`, `task`. **Публикация** в Confluence — `publish_url`
-(родительская страница), `publish_prompt` (как оформить готовую страницу) и `review` (ревью перед публикацией).
+(корневая страница вида), `publish_path` (цепочка разделов под корнем), `publish_title` (шаблон заголовка страницы),
+`publish_prompt` (как оформить готовую страницу) и `review` (ревью перед публикацией).
 Шаблон отвечает за создание, промпт публикации — за публикацию; промпт создания остаётся при создании.
+
+Путь в Confluence — цепочка: корень вида → разделы → страница документа. Уровни `publish_path` разделяются `>`,
+подстановки — `{title}` (первый заголовок `# …` документа, иначе имя файла), `{file}` (имя файла без расширения),
+`{kind}` (вид), `{project}` (имя проекта из конфига) и `{поле}` — любое скалярное поле шапки документа. `{поле?}` —
+необязательная подстановка: пустое значение выбрасывает уровень из пути (в заголовке — пустая строка). Обязательная
+подстановка без значения — публикация заблокирована с причиной, называющей поле и документ (`publish_target`).
 
   python3 .aurora/scripts/make_kinds.py            # таблица: тип → шаблон → папка
   python3 .aurora/scripts/make_kinds.py --kind ac  # один тип, машинно (для ассистента)
@@ -67,15 +76,18 @@ KNOWN = {
 # Поля типа артефакта. Шаблон и папка обязательны: без первого документ выйдет не по
 # форме (и ревью этого не поймает), без второй его некуда класть. Остальное
 # необязательно — промпта у типа может не быть, публиковать можно не всё.
-FIELDS = ("title", "template", "prompt", "out", "publish_url", "publish_prompt", "mcp", "tech_agnostic", "review",
-          "ref_mask")
+FIELDS = ("title", "template", "prompt", "out", "publish_url", "publish_path", "publish_title", "publish_prompt", "mcp",
+          "tech_agnostic", "review", "ref_mask")
 # `prompt` — промпт СОЗДАНИЯ: его читает изготовление документа (`agent:make`) и ассистенты через `artifact_spec`.
 # `publish_prompt` — промпт ПУБЛИКАЦИИ: как оформить готовый документ в страницу (оглавление, панели, макросы,
 # вёрстка); текст автора он не переписывает. Путь к файлу `Prompts/…`, как у `prompt`. Пока значение только
 # хранится и показывается: модель по нему ещё не вызывается, публикация идёт без неё (пустое поле — как всегда).
 # Поля создания и поля публикации; форма настроек рисует их двумя рамками, `--kind` — двумя разделами.
 CREATE_FIELDS = ("title", "template", "prompt", "out", "mcp", "tech_agnostic", "ref_mask")
-PUBLISH_FIELDS = ("publish_url", "publish_prompt", "review")
+PUBLISH_FIELDS = ("publish_url", "publish_path", "publish_title", "publish_prompt", "review")
+# `publish_path` — цепочка разделов под корневой страницей вида (`publish_url`): уровни через `>`, пробелы по краям
+# уровня обрезаются; пусто — документ ложится прямо под корень. `publish_title` — шаблон заголовка страницы, пусто —
+# `{title}`. Подстановки и правила — `publish_target` ниже; путь разрешает `ship:publish` (`publish_doc`).
 # `tech_agnostic` — включает правило «критерии без технологий» для этого вида документа.
 # Не глобально: у ОПЗ и проектного решения стек это предмет документа, и общее правило
 # заставило бы критика ругаться на каждый. Осмысленно у ac, us, test-case.
@@ -98,7 +110,7 @@ TASK_FIELDS = ("project", "type", "assignee", "labels", "components", "epic")
 
 
 def read_kinds(root: str = ".") -> dict:
-    """{тип: {title, template, prompt, out, publish_url, mcp, task}} из `artifacts:`.
+    """{тип: {поля из `FIELDS`, task}} из `artifacts:`.
 
     Разбираем сами, а не через YAML-библиотеку: ядро движка живёт без зависимостей, а
     формат здесь простой — два уровня вложенности и строковые значения.
@@ -161,6 +173,110 @@ def kind_of(kinds: dict, type_hint: str = "", path: str = "", root: str = ".") -
     return best[1], best[2]
 
 
+# ------------------------------------------------------------------ путь и заголовок страницы в Confluence
+
+TITLE_MAX = 255             # длиннее заголовок страницы Confluence не примет — ни у документа, ни у раздела
+PATH_SEP = ">"
+_SLOT = re.compile(r"\{([^{}\n]*)\}")
+BUILTIN_SLOTS = ("title", "file", "kind", "project")
+
+
+def slot_text(value) -> str:
+    """Значение подстановки: одна строка, пробелы схлопнуты (перевод строки в заголовке Confluence не нужен никому)."""
+    return " ".join(str(value if value is not None else "").split())
+
+
+def project_name(root: str = ".") -> str:
+    """Имя проекта — поле `name:` секции `project:` конфига; нет — пусто."""
+    path = os.path.join(root, CONFIG)
+    if not os.path.isfile(path):
+        return ""
+    text = open(path, encoding="utf-8", errors="ignore").read().lstrip("﻿")
+    block = re.search(r"^project:\s*$([\s\S]*?)(?=^\S|\Z)", text, re.M)
+    m = re.search(r"^\s+name:\s*(.*?)\s*$", block.group(1), re.M) if block else None
+    return slot_text(m.group(1).strip().strip("\"'")) if m else ""
+
+
+def publish_context(text: str, path: str, kind: str = "", project: str = "") -> dict:
+    """Чем заполняются подстановки пути и заголовка для документа: скалярные поля шапки и встроенные имена.
+
+    Встроенные — `{title}` (первый заголовок `# …` чистовика, иначе имя файла), `{file}` (имя файла без расширения),
+    `{kind}`, `{project}` — важнее одноимённых полей шапки: их смысл объявлен в форме и справке. Списки шапки
+    (`[a, b]`) подстановкой не служат."""
+    from aurora_common import body, clean_copy, frontmatter
+    text = (text or "").lstrip("﻿").replace("\r\n", "\n")
+    ctx = {k: slot_text(v) for k, v in frontmatter(text).items() if not str(v).strip().startswith("[")}
+    file = os.path.splitext(os.path.basename(str(path or "")))[0]
+    first = next((ln.lstrip("# ").strip() for ln in clean_copy(body(text)).splitlines() if ln.startswith("# ")), "")
+    ctx.update(title=slot_text(first) or file, file=file, kind=slot_text(kind), project=slot_text(project))
+    return ctx
+
+
+def fill_slots(template: str, ctx: dict) -> tuple:
+    """Подставить значения → (текст, [обязательные поля без значения], было ли пустым необязательное `{поле?}`)."""
+    missing: list = []
+    dropped = False
+
+    def rep(m):
+        nonlocal dropped
+        name = m.group(1).strip()
+        optional = name.endswith("?")
+        name = name.rstrip("?").strip()
+        value = slot_text((ctx or {}).get(name, ""))
+        if not value:
+            if optional:
+                dropped = True
+            elif name and name not in missing:
+                missing.append(name)
+        return value
+    return slot_text(_SLOT.sub(rep, str(template or ""))), missing, dropped
+
+
+def publish_target(rec: dict, ctx: dict) -> dict:
+    """Куда ляжет документ вида под корнем: уровни пути и заголовок страницы. Модель не нужна — только подстановка.
+
+    → {"levels": [заголовки разделов], "title": заголовок, "missing": [поля без значения], "problems": [(код, деталь)]}.
+    Уровень с пустой необязательной подстановкой выпадает из пути; обязательная без значения — `missing-field`
+    (публикация заблокирована, причина называет поле); пустой после подстановки заголовок — `empty-title`; длиннее
+    `TITLE_MAX` — `too-long`."""
+    levels: list = []
+    missing: list = []
+    problems: list = []
+    for raw in str((rec or {}).get("publish_path") or "").split(PATH_SEP):
+        if not raw.strip():
+            continue
+        value, miss, dropped = fill_slots(raw.strip(), ctx)
+        missing += [m for m in miss if m not in missing]
+        if miss or dropped or not value:
+            continue
+        if len(value) > TITLE_MAX:
+            problems.append(("too-long", value[:60]))
+        levels.append(value)
+    template = str((rec or {}).get("publish_title") or "").strip() or "{title}"
+    title, miss, _dropped = fill_slots(template, ctx)
+    missing += [m for m in miss if m not in missing]
+    if missing:
+        problems.insert(0, ("missing-field", ", ".join(missing)))
+    elif not title:
+        problems.append(("empty-title", template))
+    if len(title) > TITLE_MAX:
+        problems.append(("too-long", title[:60]))
+    return {"levels": levels, "title": title, "missing": missing, "problems": problems}
+
+
+def root_label(raw: str) -> str:
+    """Корень вида словами для примера в форме (без сети): заголовок из адреса `/display/…` или «страница N»."""
+    import urllib.parse
+    raw = str(raw or "").strip().strip("\"'")
+    m = re.search(r"/display/[^/?#]+/([^?#]+)", raw)
+    if m:
+        return urllib.parse.unquote_plus(m.group(1)).strip("/ ")
+    m = re.fullmatch(r"\d+", raw) or re.search(r"[?&]pageId=(\d+)", raw) or re.search(r"/pages/(\d+)(?:[/?#]|$)", raw)
+    if m:
+        return "#" + (m.group(1) if m.groups() else m.group(0))
+    return raw
+
+
 def registry_digest(kinds: dict) -> str:
     """Слепок реестра так, как его читает движок (`read_kinds`): поля и свойства задач, без комментариев, пустых
     строк и порядка записей. Панель отдаёт его странице при чтении и сверяет при записи — вторая вкладка или правка
@@ -204,17 +320,130 @@ def kinds_lines(kinds: dict) -> list:
     return lines
 
 
+def _field_line(indent: str, field: str, value) -> str:
+    """Строка поля так, как её пишет `kinds_lines`: значение в кавычках (разбор снимает внешние)."""
+    if isinstance(value, (list, tuple)):
+        value = ", ".join(str(x).strip() for x in value if str(x).strip())
+    return f'{indent}{field}: "{str(value or "").strip().strip(chr(34))}"'
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _kind_segments(old: list) -> tuple:
+    """Строки секции (без заголовка `artifacts:` и без «CR») → (вступление, [(вид, строки)], хвост).
+
+    Заголовок вида — строка с отступом не больше двух и без значения (как его видит `read_kinds`). Комментарии и
+    пустые строки перед заголовком, начиная с комментария с отступом не больше двух, относятся к следующему виду (их
+    пишут над видом); более глубокие — к текущему (комментарий к его полю)."""
+    intro: list = []
+    segs: list = []
+    pending: list = []
+    for line in old:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            pending.append(line)
+            continue
+        m = re.match(r"\s*([\w.\-]+)\s*:\s*(.*)$", line)
+        if m and _indent(line) <= 2 and not m.group(2).strip().strip('"'):
+            cut = next((i for i, ln in enumerate(pending) if ln.strip() and _indent(ln) <= 2), len(pending))
+            (segs[-1][1] if segs else intro).extend(pending[:cut])
+            segs.append((m.group(1), pending[cut:] + [line]))
+            pending = []
+            continue
+        (segs[-1][1] if segs else intro).extend(pending + [line])
+        pending = []
+    return intro, segs, pending
+
+
+def _task_value(value) -> str:
+    if isinstance(value, (list, tuple)):
+        value = ", ".join(str(x).strip() for x in value if str(x).strip())
+    return str(value or "").strip().strip('"')
+
+
+def _merge_kind(lines: list, rec: dict) -> list:
+    """Строки одного вида с новыми значениями. Известные поля (`FIELDS`) и свойства задачи (`TASK_FIELDS`) заменяются
+    на месте своих строк; недостающие заполненные — дописываются (поле — после последнего известного поля, свойство —
+    в конец блока `task:`); незнакомые поля и комментарии остаются как были; пустое свойство задачи уходит."""
+    rec = rec or {}
+    task = rec.get("task") or {}
+    head = next(i for i, ln in enumerate(lines) if ln.strip() and not ln.strip().startswith("#"))
+    base = _indent(lines[head])
+    out = lines[:head + 1]
+    written, task_written = set(), set()
+    field_indent = None
+    last_field = len(out) - 1              # после какой строки дописывать недостающие поля вида
+    task_indent = None                     # отступ строки `task:`, пока идёт её блок
+    for line in lines[head + 1:]:
+        m = re.match(r"(\s*)([\w.\-]+)\s*:\s*(.*)$", line)
+        if not line.strip() or line.lstrip().startswith("#") or not m:
+            out.append(line)
+            continue
+        indent = _indent(line)
+        if task_indent is not None and indent > task_indent:
+            key = m.group(2)
+            if key in TASK_FIELDS:
+                task_written.add(key)
+                if _task_value(task.get(key)):
+                    out.append(_field_line(m.group(1), key, _task_value(task.get(key))))
+            else:
+                out.append(line)
+            continue
+        task_indent = None
+        if indent > base and m.group(2) == "task" and not m.group(3).strip():
+            task_indent = indent
+            field_indent = field_indent or m.group(1)
+            out.append(line)
+        elif indent > base and m.group(2) in FIELDS:
+            field_indent = field_indent or m.group(1)
+            # поля, которого запись не прислала, она не стирает: строка остаётся как была
+            out.append(_field_line(m.group(1), m.group(2), rec.get(m.group(2))) if m.group(2) in rec else line)
+            written.add(m.group(2))
+            last_field = len(out) - 1
+        else:
+            out.append(line)
+    ind = field_indent or " " * (base + 2)
+    # недостающие поля — после последнего известного; пустые не дописываются: незаданное поле и так пусто
+    extra = [_field_line(ind, f, rec.get(f)) for f in FIELDS if f not in written and str(rec.get(f) or "").strip()]
+    out[last_field + 1:last_field + 1] = extra
+    tline = next((j for j, ln in enumerate(out) if j > head and _indent(ln) > base
+                  and re.fullmatch(r"\s*task\s*:\s*", ln)), None)
+    rest = [(k, _task_value(task.get(k))) for k in TASK_FIELDS if k not in task_written and _task_value(task.get(k))]
+    if tline is None and rest:
+        tail = []
+        while len(out) > head + 1 and not out[-1].strip():    # свойства задачи — к полям, а не за пустую строку
+            tail.insert(0, out.pop())
+        out += [ind + "task:"] + [_field_line(ind + "  ", k, v) for k, v in rest] + tail
+    elif tline is not None:
+        tind = _indent(out[tline])
+        stop = tline + 1
+        while stop < len(out) and (not out[stop].strip() or _indent(out[stop]) > tind):
+            stop += 1
+        while stop - 1 > tline and not out[stop - 1].strip():
+            stop -= 1
+        sub = next((out[j][:_indent(out[j])] for j in range(tline + 1, stop) if out[j].strip()), ind + "  ")
+        out[stop:stop] = [_field_line(sub, k, v) for k, v in rest]
+        stop += len(rest)
+        if not any(out[j].strip() for j in range(tline + 1, stop)):
+            del out[tline]                               # от задачи не осталось ни одного свойства
+    return out
+
+
 def write_kinds_block(config_text: str, kinds: dict) -> str:
-    """Текст конфига с переписанной секцией `artifacts:`; всё остальное — как было, байт в байт.
+    """Текст конфига с новой секцией `artifacts:`; всё остальное — как было, байт в байт.
 
     Метка порядка байтов, окончания строк (LF, CRLF), пустые строки между секциями и комментарии вне секции остаются
-    на месте; комментарии внутри секции теряются. Секции нет — она дописывается в конец файла в стиле его последней
-    строки. Запись идемпотентна: повторная запись того же реестра текста не меняет."""
-    bom = "\ufeff" if config_text.startswith("\ufeff") else ""
-    lines = config_text[len(bom):].split("\n")           # у строки CRLF «\r» остаётся на месте: её не трогаем
+    на месте. Внутри секции правится только то, что знает движок: известные поля вида и свойства задачи — на месте
+    своих строк; незнакомые поля вида (форма их не видит) и комментарии сохраняются; убранный вид уходит вместе с
+    комментариями над ним, новый дописывается в конец секции. Секции нет — она дописывается в конец файла в стиле
+    его последней строки. Запись идемпотентна: повторная запись того же реестра текста не меняет."""
+    bom = "﻿" if config_text.startswith("﻿") else ""
+    lines = config_text[len(bom):].split("\n")           # у строки CRLF «CR» остаётся на месте: её не трогаем
     start = next((i for i, ln in enumerate(lines) if re.fullmatch(r"artifacts:\s*", ln)), None)
-    block = kinds_lines(kinds)
     if start is None:
+        block = kinds_lines(kinds)
         last = next((ln for ln in reversed(lines) if ln.strip()), "")
         cr = "\r" if last.endswith("\r") else ""
         head = "\n".join(lines).rstrip("\r\n")
@@ -225,6 +454,16 @@ def write_kinds_block(config_text: str, kinds: dict) -> str:
     while end - 1 > start and not lines[end - 1].strip():   # пустые строки после секции — разделитель, не её часть
         end -= 1
     cr = "\r" if lines[start].endswith("\r") else ""
+    intro, segs, tail = _kind_segments([ln[:-1] if ln.endswith("\r") else ln for ln in lines[start + 1:end]])
+    block = ["artifacts:"] + intro
+    seen: set = set()
+    for kind, seg in segs:
+        if kind in kinds and kind not in seen:            # убранный формой вид уходит с комментариями над ним
+            seen.add(kind)
+            block += _merge_kind(seg, kinds[kind])
+    for kind in sorted(k for k in kinds if k not in seen):
+        block += kinds_lines({kind: kinds[kind]})[1:]
+    block += tail
     return bom + "\n".join(lines[:start] + [ln + cr for ln in block] + lines[end:])
 
 
@@ -281,6 +520,12 @@ def check(root: str, kinds: dict) -> list:
         mask_why = _mask_problem(rec.get("ref_mask") or "")
         if mask_why:
             bad.append((kind, f"маска ключа: {mask_why}"))
+        for field in ("publish_path", "publish_title"):
+            value = str(rec.get(field) or "")
+            if value.count("{") != value.count("}"):
+                bad.append((kind, f"{field}: незакрытая фигурная скобка в «{value}»"))
+            elif any(not m.strip().rstrip("?").strip() for m in _SLOT.findall(value)):
+                bad.append((kind, f"{field}: пустая подстановка {{}} в «{value}» — назовите поле шапки: {{epic}}"))
     return bad
 
 
@@ -332,10 +577,18 @@ def main() -> int:
               "черновике.\nБез маркера догадки уедут заказчику как часть спецификации, "
               "а с отступом\nмаркер не сработает: граница ищется точным совпадением "
               "строки.")
-        if rec.get("publish_url") or rec.get("publish_prompt") or review_profile(rec):
+        if any(rec.get(f) for f in ("publish_url", "publish_path", "publish_title", "publish_prompt")) or review_profile(rec):
             print("\n## Для публикации в Confluence\n")
         if rec.get("publish_url"):
             print(f"Публикуется в: {rec['publish_url']}")
+        if rec.get("publish_path") or rec.get("publish_title"):
+            # Путь и заголовок считает движок из шапки документа: ассистенту при создании важно одно — чтобы поля,
+            # которые они называют, в шапке были (иначе публикация остановится и назовёт поле).
+            fields = sorted({m.strip().rstrip("?").strip() for m in _SLOT.findall(
+                (rec.get("publish_path") or "") + " " + (rec.get("publish_title") or "")) if not m.strip().endswith("?")}
+                - set(BUILTIN_SLOTS))
+            print(f"Путь под корнем: {rec.get('publish_path') or '—'} · заголовок страницы: {rec.get('publish_title') or '{title}'}"
+                  + (f" — заполните в шапке документа: {', '.join(fields)}" if fields else ""))
         if rec.get("publish_prompt"):
             print(f"Промпт публикации: {rec['publish_prompt']} — как оформить готовую страницу; при создании документа "
                   "его не применяют (публикацию ведёт движок, подготовка страницы по этому промпту включится позже)")

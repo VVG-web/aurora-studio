@@ -24,6 +24,11 @@ import subprocess
 
 MARK = "AURORA-SUMMARY "
 MARK_GATE = "AURORA-GATE "
+# Исход публикации в Confluence (`ship:publish`): одна строка JSON с `outcome` (ok | unchanged | conflict | adopt |
+# blocked | misplaced), адресом, версией и причиной — по ней панель рисует кнопки «Перезаписать», «Взять под
+# управление», «Переместить по пути вида». Консоль её не показывает, как и две строки выше.
+MARK_PUBLISH = "AURORA-PUBLISH "
+MARKS = (MARK, MARK_GATE, MARK_PUBLISH)          # все машинные строки: консоль и журнал прогона их не показывают
 KB = "AuroraKnowledgeDB"
 
 # Статусы шагов агентов, где шаг — документ-источник (у шага есть `source`).
