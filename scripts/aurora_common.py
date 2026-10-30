@@ -2527,7 +2527,11 @@ def engine_status(project, kit_version: str, kit_api: int = 1) -> dict:
       у проекта без замка движка (`engine.lock.json`, ставится обновлением) — прежнее правило минора (расхождение
       минора в любую сторону).
     Версия движка — метка копии на машине (`engine_version.txt`), а нет её — замок движка, нет и его — штамп проекта
-    (он едет через git и говорит о версии у владельца, это нижняя оценка). Читает только файлы проекта.
+    (он едет через git и говорит о версии у владельца, это нижняя оценка). Копия на машине совпала с китом, а штамп
+    старше — проект отстал тоже (`stamp_behind`): «Подготовить проект» кладёт только `.aurora/`, а файлы проекта
+    (схема, шаблоны, навыки) и штамп ставит полное обновление. Сама копия при этом не устарела. Прежде такой проект шёл как `ok`: карточка показывала «движок 1.187.0»
+    при ките 1.197.0, а Мостик — «0 отстают». Гейт маршрутов он не останавливает: код движка у него свежий.
+    Читает только файлы проекта.
     """
     root = os.fspath(project)
     eng = engine_dir(root)
@@ -2560,7 +2564,7 @@ def engine_status(project, kit_version: str, kit_api: int = 1) -> dict:
     engine = good(small(eng + "/engine_version.txt")) or good(str(lock.get("version") or ""))
     kit = good(str(kit_version or ""))
     out = {"status": "unknown", "reason": "", "engine": engine, "stamp": stamp, "kit": kit, "engine_api": api,
-           "kit_api": int(kit_api or 1), "blocks": False, "stamp_ahead": False, "stamp_reason": ""}
+           "kit_api": int(kit_api or 1), "blocks": False, "stamp_ahead": False, "stamp_reason": "", "stamp_behind": False}
     pend = os.path.join(root, eng, "state", "update.pending")
     if os.path.isfile(pend):
         if _fs().is_locked(os.path.join(root, eng, "state", "update.lock")):
@@ -2583,12 +2587,20 @@ def engine_status(project, kit_version: str, kit_api: int = 1) -> dict:
         out.update(status="ahead", blocks=bool(api and api > out["kit_api"]) or (not api and vk[:2] != kk[:2]),
                    reason="движок проекта %s новее кита %s: нужно обновить кит, понижать движок проекта не нужно" % (have, kit))
         return out
-    if vk == kk:
+    if vk == kk and not (stamp and sk < kk):
         out.update(status="ok")
         return out
-    kind = "behind_minor" if vk[:2] != kk[:2] else "behind_patch"
-    out.update(status=kind, reason="движок проекта %s старше кита %s" % (have, kit),
-               blocks=(out["kit_api"] > api) if api else kind == "behind_minor")
+    if vk == kk:
+        # Копия движка свежая, проект — нет: код движка совместим, маршрут не останавливаем.
+        have = stamp
+        kind = "behind_minor" if sk[:2] != kk[:2] else "behind_patch"
+        out.update(status=kind, blocks=False, stamp_behind=True,
+                   reason="проект обновлён до %s, а кит — %s: копия движка на этой машине свежая, но файлы проекта и "
+                          "его штамп ставит только полное обновление движка проекта" % (stamp, kit))
+    else:
+        kind = "behind_minor" if vk[:2] != kk[:2] else "behind_patch"
+        out.update(status=kind, reason="движок проекта %s старше кита %s" % (have, kit),
+                   blocks=(out["kit_api"] > api) if api else kind == "behind_minor")
     if _engine_pinned(root):
         out.update(status="pinned", blocks=False, reason="проект ведёт движок сам (aurora.update_ignore.txt): версия %s, кит %s"
                                                           % (have, kit))

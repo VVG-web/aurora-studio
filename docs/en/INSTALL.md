@@ -787,7 +787,11 @@ engine newer than the kit is not downgraded: `update --apply` refuses (code 4) u
 Cron steps are stopped not by every new minor release but by an interrupted update and by a growth of `ENGINE_API`:
 the integer in the `ENGINE_API` file next to `VERSION`, which grows only on an incompatible change of the engine
 contract (commands and their flags, state file formats, the config schema, the `.aurora/` layout). A project without
-`engine.lock.json` (not yet updated by this version) lives by the previous minor rule.
+`engine.lock.json` (not yet updated by this version) lives by the previous minor rule. If the engine copy on the
+machine matches the kit but the project stamp (`aurora_version.txt`) is older, the project is behind too. This happens
+when the panel completed `.aurora/` by itself ("Prepare project", `kit:update --engine-only`): the project files and the
+stamp are set only by the full update. The card shows the stamp, the Bridge counts such a project as behind, "Update
+all" updates it, and it does not stop a route: its engine code is fresh.
 
 ## 8. The project has already piled up documents
 

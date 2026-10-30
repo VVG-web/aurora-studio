@@ -1718,6 +1718,36 @@ def test_every_command_is_reachable_in_the_panel(tmp: Path):
 
 
 @test
+def test_the_panel_registry_does_not_depend_on_the_folder_it_was_started_from(tmp: Path):
+    """Из папки кита панель видела 118 команд, из другой папки — 111: реестр решал про `dev:` по текущей папке
+    процесса. Теперь панель читает реестр целиком (`read_registry(with_dev=True)`) и сама решает по папке кита
+    (`kit_is_source`). Команда в консоли по-прежнему прячет `dev:` в папке проекта."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    import kit_commands as K
+    assert ck.kit_is_source(), "проверка ждёт кит-исходник: в нём команды dev: видны"
+    keep = (os.getcwd(), ck.REGISTRY_CACHE)
+    try:
+        os.chdir(tmp)
+        assert not any(r["ns"] == "dev" for r in K.read_registry()), "команда в консоли вне кита показала dev:"
+        assert any(r["ns"] == "dev" for r in K.read_registry(with_dev=True))
+        ck.REGISTRY_CACHE = str(tmp / "registry-cache.json")
+        ck.CACHE.pop("registry", None)
+        far = ck.registry()
+        os.chdir(KIT)
+        ck.CACHE.pop("registry", None)
+        near = ck.registry()
+        assert [r["cmd"] for r in far] == [r["cmd"] for r in near], "реестр панели зависит от папки запуска"
+        assert any(r["ns"] == "dev" for r in far), "панель кита не видит команды dev:"
+    finally:
+        os.chdir(keep[0])
+        ck.REGISTRY_CACHE = keep[1]
+        ck.CACHE.pop("registry", None)
+        ck.CACHE.pop("registry_stamp", None)
+
+
+@test
 def test_editor_cannot_reach_outside_the_project(tmp: Path):
     """Редактор — первая в панели возможность «записать что угодно куда угодно».
 

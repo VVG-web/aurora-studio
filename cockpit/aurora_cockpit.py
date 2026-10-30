@@ -3670,7 +3670,7 @@ def _registry() -> list:
                             os.path.join(KIT, "scripts")) \
         if os.path.isfile(getattr(K, "__file__", "") or "") else False
     from concurrent.futures import ThreadPoolExecutor
-    entries = K.read_registry()
+    entries = K.read_registry(with_dev=True)       # dev — по папке кита, а не по папке, откуда подняли панель
     if not kit_is_source():
         entries = [r for r in entries if r["ns"] != "dev"]
     # `--help` каждого скрипта — отдельный процесс: полсотни команд по очереди дают

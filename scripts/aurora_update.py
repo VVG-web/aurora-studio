@@ -690,7 +690,9 @@ def engine_state(target: Path) -> dict:
     es = engine_status(target, kit, kit_engine_api(KIT))
     out.update(status=es["status"], status_reason=es["reason"], stamp_ahead=es["stamp_ahead"],
                stamp_reason=es["stamp_reason"])
-    behind = es["status"] in ENGINE_BEHIND or es["status"] == "partial"
+    # Отстал только штамп проекта (копия совпала с китом): копия на месте, проекту нужно полное обновление, а не
+    # «Подготовить проект» — иначе панель достраивала бы свежую копию по кругу.
+    behind = (es["status"] in ENGINE_BEHIND and not es.get("stamp_behind")) or es["status"] == "partial"
     if files and len([m for m in missing if m != KIT_POINTER]) >= len(files):
         out["state"] = "missing"                  # ни одного файла манифеста: движка на машине нет
     elif missing:

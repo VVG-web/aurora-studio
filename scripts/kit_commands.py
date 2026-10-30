@@ -62,7 +62,11 @@ def in_kit() -> bool:
     return os.path.isfile("engine_manifest.txt") and not os.path.isfile("aurora.config.yaml")
 
 
-def read_registry() -> list:
+def read_registry(with_dev: "bool | None" = None) -> list:
+    """Строки реестра. Команды `dev:` — только в самом ките: для команды в консоли это решает текущая папка
+    (`in_kit`), а панель передаёт `with_dev=True` и решает сама, по папке кита (`kit_is_source`): иначе число команд
+    в панели зависело от того, из какой папки её подняли (118 или 111)."""
+    dev = in_kit() if with_dev is None else with_dev
     rows = []
     if not os.path.isfile(REGISTRY):
         return rows
@@ -75,7 +79,7 @@ def read_registry() -> list:
             print(f"kit:list: строка реестра не по формату: {line[:60]}…", file=sys.stderr)
             continue
         ns, cmd, alias, kind, impl, since, what = parts
-        if ns == "dev" and not in_kit():
+        if ns == "dev" and not dev:
             continue        # в проекте разрабатывать движок нечем — и незачем показывать
         rows.append({"ns": ns, "cmd": cmd, "alias": "" if alias == "—" else alias,
                      "kind": kind, "impl": impl, "since": since, "what": what})
