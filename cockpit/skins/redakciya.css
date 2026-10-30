@@ -34,6 +34,10 @@
   --nav-item-radius:2px; --nav-item-active-bg:transparent;
   --nav-marker-w:2px; --nav-marker-glow:none; --nav-marker:var(--text);
   --nav-bg:color-mix(in oklab,var(--surface-2) 60%,transparent);
+  /* Блоки групп меню — страницы разных сортов бумаги: «Машина» — белая, «Проект» — оливковая, в тон
+     зелёной краски скина, «Движок» — сиреневая, в тон второй. Рамка — та же линейка, что у таблиц. */
+  --nav-group-machine-bg:#FEFCF6; --nav-group-project-bg:#EDEFE3; --nav-group-engine-bg:#F2EAF8;
+  --nav-group-border:var(--border);
   --header-bg:color-mix(in oklab,var(--surface-1) 92%,transparent);
 
   --tile-rail-w:3px; --tile-aura-opacity:0; --tile-lift:0px;
@@ -58,4 +62,5 @@
   --console-bg:#0D0E11; --console-ink:#EDE6D8;
   --btn-primary-ink:#141519;
   --nav-marker:var(--primary);
+  --nav-group-machine-bg:#18191C; --nav-group-project-bg:#22251D; --nav-group-engine-bg:#251F2A;
 }

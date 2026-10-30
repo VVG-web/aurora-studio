@@ -234,8 +234,8 @@ def test_the_collapsed_menu_keeps_marks_as_small_badges(tmp):
 def test_built_in_menu_items_carry_icons_and_groups_have_their_own_background(_t):
     """У каждой встроенной кнопки меню (Мостик, Настройка кита, Настройки проекта, Файлы, Консоль) — строчный
     значок 24×24 без своих цветов, значки разные. Группа — блок с заголовком внутри: у «Машины», «Проекта» и
-    «Движка» свой фон из переменных `--nav-group-*-bg` (умолчание — `color-mix` от поверхности и цвета группы),
-    пустая группа не оставляет блока. Короткая подпись группы для свёрнутого меню — в каталогах обоих языков.
+    «Движка» свой фон из переменных `--nav-group-*-bg` (запас панели — шаги поверхности без краски, свои тона
+    задаёт скин), пустая группа не оставляет блока. Число на текущем пункте — цветом текста, а не пункта. Короткая подпись группы для свёрнутого меню — в каталогах обоих языков.
     Свёрнутый вид — класс на `<body>` (без перерисовки разметки), только на широком экране; на узком лента
     прежняя: группы прозрачны (`display:contents`), значков нет."""
     html, css = _html(), _css()
@@ -259,11 +259,14 @@ def test_built_in_menu_items_carry_icons_and_groups_have_their_own_background(_t
             assert f'data-i18n="{key}"' in block.group(1), (group, key)
             assert ru.get(key) and en.get(key), (group, key)
         var = f"--nav-group-{group}-bg"
-        assert re.search(re.escape(var) + r":color-mix\(in oklab,var\(--\w+\) \d+%,var\(--surface-1\)\);", css), var
+        assert re.search(re.escape(var) + r":(var\(--surface-[12]\)|color-mix\(in oklab,var\(--gold\) \d+%,"
+                         r"var\(--surface-1\)\));", css), var
     assert '.navgroup[data-group="project"]{background:var(--nav-group-project-bg)}' in css
     assert '.navgroup[data-group="engine"]{background:var(--nav-group-engine-bg)}' in css
     assert "background:var(--nav-group-machine-bg)" in css
     assert ".navgroup:not(:has(button:not([hidden]))){display:none}" in css, "пустая группа оставляет блок"
+    assert 'nav button[aria-current="true"] .count:not(.bad){color:var(--text)}' in css, \
+        "число на текущем пункте берёт цвет пункта и пропадает на своей плашке"
     mini = _media(css, "@media (min-width:981px){")
     for rule in ("body.nav-mini #app{grid-template-columns:var(--nav-mini-w) 1fr}",
                  "body.nav-mini nav .label{display:none}", "body.nav-mini nav .ico{width:22px;height:22px",
@@ -277,11 +280,41 @@ def test_built_in_menu_items_carry_icons_and_groups_have_their_own_background(_t
     assert 'document.body.classList.toggle("nav-mini", on);' in panel
 
 
+def _luminance(hx: str) -> float:
+    lin = lambda c: c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4  # noqa: E731
+    r, g, b = (lin(int(hx[i:i + 2], 16) / 255) for i in (1, 3, 5))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast(a: str, b: str) -> float:
+    hi, lo = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
 @test
-def test_the_contrast_skin_keeps_menu_groups_distinct(_t):
-    """«Контраст» переопределяет фон блоков групп заметнее умолчания и рамку блока — полной линией; смесь с фоном
-    страницы, поэтому одна запись годится светлой и тёмной теме. Остальные скины берут умолчание панели."""
-    skin = (KIT / "cockpit" / "skins" / "contrast.css").read_text(encoding="utf-8")
-    for group in ("machine", "project", "engine"):
-        assert re.search(r"--nav-group-%s-bg:color-mix\(in oklab,var\(--\w+\) 1\d%%,var\(--bg\)\);" % group, skin), group
-    assert "--nav-group-border:var(--border);" in skin
+def test_every_skin_tones_menu_groups_from_its_own_palette(_t):
+    """Тон блоков «Машина», «Проект», «Движок» каждый скин подбирает сам из своей палитры, в обеих темах:
+    бумага у «Зин» и «Редакции», металл у «Приборов», пастель у «Единорога», серые шаги у «Контраста». Три тона
+    темы разные, приглушённая подпись пункта на каждом читается (AA, 4,5:1), и пара «Машина»/«Проект» не
+    повторяется от скина к скину: общая формула (10 % первичного цвета и акцента) делала блоки резкими,
+    похожими во всех скинах и чужими для большинства из них."""
+    skins = sorted((KIT / "cockpit" / "skins").glob("*.css"))
+    assert skins
+    pairs = set()
+    for path in skins:
+        css = path.read_text(encoding="utf-8")
+        blocks = re.findall(r'^:root(\[data-theme="(?:light|dark)"\])?\{(.*?)^\}', css, re.S | re.M)
+        assert len(blocks) == 2, (path.name, len(blocks))
+        for sel, body in blocks:
+            where = f"{path.name} {sel or ':root'}"
+            muted = re.search(r"--text-muted:(#[0-9A-Fa-f]{6});", body)
+            assert muted, f"{where}: нет --text-muted"
+            tones = {}
+            for group in ("machine", "project", "engine"):
+                m = re.search(r"--nav-group-%s-bg:(#[0-9A-Fa-f]{6});" % group, body)
+                assert m, f"{where}: нет своего тона группы «{group}»"
+                tones[group] = m.group(1).upper()
+                assert _contrast(muted.group(1), tones[group]) >= 4.5, (where, group, tones[group])
+            assert len(set(tones.values())) == 3, f"{where}: тона групп совпадают: {tones}"
+            pairs.add((tones["machine"], tones["project"]))
+    assert len(pairs) == 2 * len(skins), "у двух скинов одинаковые тона групп — общая формула вместо своей палитры"

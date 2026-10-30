@@ -49,6 +49,9 @@
 
   --nav-item-radius:8px; --nav-item-active-bg:var(--gold); --nav-item-active-ink:#16150F;
   --nav-marker-w:0; --nav-marker-glow:none; --nav-bg:var(--surface-2);
+  /* Блоки групп меню — листы бумаги на крафте: «Машина» — белый лист, «Проект» — жёлтый, в тон
+     золота скина, «Движок» — зеленоватый. Тон бумаги, а не краска; рамка — чернилами, как у карточек. */
+  --nav-group-machine-bg:#F9F4E9; --nav-group-project-bg:#F7E9C3; --nav-group-engine-bg:#D9ECDC;
   --header-bg:var(--surface-2); --header-blur:none;
 
   /* плитка проекта: цветная полоса слева вместо размытого пятна */
@@ -81,4 +84,5 @@
   --shadow-pop:6px 6px 0 rgba(0,0,0,.75);
   --nav-item-active-ink:#16150F;
   --btn-primary-ink:#16150F;
+  --nav-group-machine-bg:#201E19; --nav-group-project-bg:#362C1A; --nav-group-engine-bg:#1E2A20;
 }

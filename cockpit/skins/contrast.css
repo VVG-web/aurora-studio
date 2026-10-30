@@ -35,11 +35,9 @@
 
   --nav-item-radius:5px; --nav-item-active-bg:#FFFFFF; --nav-item-active-ink:#000000;
   --nav-marker-w:4px; --nav-marker-glow:none; --nav-bg:#0D0D0D;
-  /* Блоки групп меню различимы и здесь: тон заметнее умолчания, рамка — полной линией.
-     Смесь с фоном, а не с поверхностью, поэтому одна запись годится обеим темам. */
-  --nav-group-machine-bg:color-mix(in oklab,var(--primary) 16%,var(--bg));
-  --nav-group-project-bg:color-mix(in oklab,var(--accent) 16%,var(--bg));
-  --nav-group-engine-bg:color-mix(in oklab,var(--gold) 18%,var(--bg));
+  /* Блоки групп меню без цвета — шаги серого и полная рамка: «Машина» — чёрная, «Проект» —
+     тёмно-серая, «Движок» — серая. Цвет в этом скине несёт смысл, а группа — не статус. */
+  --nav-group-machine-bg:#000000; --nav-group-project-bg:#202020; --nav-group-engine-bg:#313131;
   --nav-group-border:var(--border);
   --header-bg:#0D0D0D; --header-blur:none;
 
@@ -62,4 +60,5 @@
   --btn-primary-ink:#FFFFFF;
   --nav-item-active-bg:#000000; --nav-item-active-ink:#FFFFFF;
   --nav-bg:#FFFFFF; --header-bg:#FFFFFF;
+  --nav-group-machine-bg:#FFFFFF; --nav-group-project-bg:#E9E9E9; --nav-group-engine-bg:#D6D6D6;
 }

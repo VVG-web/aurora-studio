@@ -31,6 +31,10 @@
 
   --nav-item-active-bg:transparent; --nav-marker-w:3px;
   --nav-bg:color-mix(in oklab,var(--surface-1) 55%,transparent);
+  /* Блоки групп меню — металл приборной доски, различие тоном, а не цветом: «Машина» — воронёная
+     сталь, «Проект» — графит, «Движок» — с отливом фиолетового акцента. Рамка — волосяная линия. */
+  --nav-group-machine-bg:#0E1824; --nav-group-project-bg:#1C1F21; --nav-group-engine-bg:#1C1625;
+  --nav-group-border:var(--border);
 
   --tile-rail-w:3px; --tile-aura-opacity:0; --tile-lift:-2px;
 
@@ -53,4 +57,5 @@
   --card-shadow:0 1px 2px rgba(16,24,40,.06);
   --header-bg:color-mix(in oklab,#FFFFFF 88%,transparent);
   --nav-bg:color-mix(in oklab,#FFFFFF 70%,transparent);
+  --nav-group-machine-bg:#E9F0F9; --nav-group-project-bg:#F8F9FB; --nav-group-engine-bg:#F2EFFB;
 }

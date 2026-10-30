@@ -39,6 +39,9 @@
   --nav-item-radius:999px; --nav-item-active-bg:var(--surface-2);
   --nav-marker-w:4px; --nav-marker-glow:none;
   --nav-bg:color-mix(in oklab,var(--surface-2) 45%,transparent);
+  /* Блоки групп меню — пастельная тройка скина: «Машина» — сиреневая, «Проект» — мятная,
+     «Движок» — лимонная. Розовой нет: она слилась бы с полотном. */
+  --nav-group-machine-bg:#F1EBFF; --nav-group-project-bg:#DFF8ED; --nav-group-engine-bg:#FFF2D6;
   --header-bg:color-mix(in oklab,#FFFFFF 90%,transparent);
 
   --tile-rail-w:6px; --tile-aura-opacity:.10; --tile-lift:-3px;
@@ -61,5 +64,6 @@
   --console-bg:#140E1C; --console-ink:#F3E4F4;
   --btn-primary-ink:#1B1425;
   --header-bg:color-mix(in oklab,var(--surface-1) 88%,transparent);
+  --nav-group-machine-bg:#2D253D; --nav-group-project-bg:#1E2B29; --nav-group-engine-bg:#34271D;
   --aura-1:rgba(255,135,176,.10); --aura-2:rgba(201,166,255,.10);
 }

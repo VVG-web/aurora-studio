@@ -86,11 +86,12 @@
   --nav-item-radius:var(--radius-sm);
   --nav-item-active-bg:var(--surface-2); --nav-item-active-ink:var(--text);
   --nav-marker-w:3px; --nav-marker:var(--primary); --nav-marker-glow:0 0 12px var(--primary);
-  /* блоки групп меню: у каждой свой едва заметный фон — «Машина» в сторону первичного цвета,
-     «Проект» — акцента, «Движок» — золота; рамка блока и ширина свёрнутого меню */
-  --nav-group-machine-bg:color-mix(in oklab,var(--primary) 10%,var(--surface-1));
-  --nav-group-project-bg:color-mix(in oklab,var(--accent) 10%,var(--surface-1));
-  --nav-group-engine-bg:color-mix(in oklab,var(--gold) 12%,var(--surface-1));
+  /* блоки групп меню: у каждой свой фон. Тона подбирает скин из своей палитры — бумага, металл,
+     пастель; здесь запас для скина, который их не задал: шаги поверхности без краски. Дальше —
+     рамка блока и ширина свёрнутого меню */
+  --nav-group-machine-bg:var(--surface-1);
+  --nav-group-project-bg:var(--surface-2);
+  --nav-group-engine-bg:color-mix(in oklab,var(--gold) 8%,var(--surface-1));
   --nav-group-border:color-mix(in oklab,var(--border) 60%,transparent);
   --nav-group-radius:var(--radius-sm);
   --nav-mini-w:66px;
@@ -193,6 +194,9 @@ nav .count{margin-left:auto;font:var(--text-xs) var(--mono);padding:1px 6px;
   border-radius:var(--radius-pill);background:var(--surface-1);border:1px solid var(--border)}
 nav .count:empty{display:none}
 nav .count.bad{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 45%,var(--border))}
+/* Число на текущем пункте — своим цветом текста: цвет пункта задаёт скин (чёрный на золоте, белый на
+   чёрном), и на светлой плашке числа он пропадал. */
+nav button[aria-current="true"] .count:not(.bad){color:var(--text)}
 /* Группа меню — блок со своим фоном: заголовок и кнопки внутри. Отступ блока (4 px) — тот же,
    на который сдвинут маркер текущего пункта: маркер стоит у края блока. */
 .navgroup{display:flex;flex-direction:column;gap:1px;padding:4px;margin:0 0 var(--sp-2);
