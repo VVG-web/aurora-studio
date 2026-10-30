@@ -1,10 +1,5 @@
 {
  "card_max": 0,
- "scripts/access_check.py:record_install": {
-  "kind": "other",
-  "reason": "запись «кто что поставил» в общей папке машины (installs/<пользователь>.json): не карточка",
-  "calls": 1
- },
  "sites": {
   "cockpit/aurora_cockpit.py:Handler._write_config": {
    "kind": "other",
@@ -200,6 +195,11 @@
    "kind": "other",
    "reason": "отчёты аналитика: рабочие файлы выгрузки вне базы знаний",
    "calls": 1
+  },
+  "scripts/access_check.py:record_install": {
+   "kind": "other",
+   "reason": "запись «кто что поставил» в общей папке машины (installs/<пользователь>.json): временный файл и подмена целиком, не карточка",
+   "calls": 2
   },
   "scripts/agent_core.py:_cache_put": {
    "kind": "other",
