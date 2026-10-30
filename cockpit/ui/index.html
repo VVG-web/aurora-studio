@@ -16,6 +16,13 @@
 <body>
 <div id="app">
   <header>
+    <!-- Меню сворачивается до значков: на экране ноутбука «Файлам» нужна каждая колонка. Подпись
+         меняется с состоянием (`setNavMini` в panel.js), ключ каталога — вместе с ней. На узком
+         экране меню — лента сверху, и кнопки нет. -->
+    <button class="btn sm" id="navToggle" aria-controls="mainNav" aria-expanded="true"
+            aria-label="Свернуть меню" title="Свернуть меню"
+            data-i18n-aria="nav.collapse" data-i18n-title="nav.collapse"><svg viewBox="0 0 24 24"
+            aria-hidden="true"><path d="M4 6.5h16M4 12h16M4 17.5h16"/></svg></button>
     <div class="brand">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z" stroke="var(--primary)" stroke-width="1.5"/>
@@ -53,36 +60,42 @@
             data-i18n-title="theme.title" data-i18n-aria="theme.label">◐</button>
   </header>
 
-  <nav>
-    <div class="group" data-i18n="nav.group_machine">Машина</div>
-    <!-- Группа — контейнер, а не просто заголовок: модуль встаёт в неё по манифесту,
-         на своё место по `order`. `display:contents` оставляет кнопки прямыми детьми
-         меню, поэтому и лента на узком экране, и столбец на широком не меняются. -->
+  <nav id="mainNav">
+    <!-- Группа — блок: заголовок и кнопки внутри, у блока свой едва заметный фон
+         (`--nav-group-*-bg`), по нему видно, где «Машина», а где «Проект», и в свёрнутом меню
+         тоже. Модуль встаёт в группу по манифесту, на своё место по `order`. На узком экране
+         группа — `display:contents`, и лента сверху та же, что была.
+         Значок пункта — `.ico`: у встроенных разделов он здесь, у модуля — `icon.svg` в его
+         папке. Заголовок группы несёт две подписи: полную и короткую для свёрнутого меню. -->
     <div class="navgroup" data-group="machine">
+    <div class="group"><span class="long" data-i18n="nav.group_machine">Машина</span><span class="short"
+      data-i18n="nav.group_machine_short">Машина</span></div>
     <button data-view="overview" data-order="10" aria-current="true"
-      aria-label="Мостик: все проекты" data-i18n-aria="nav.overview_hint"><span class="label"
+      aria-label="Мостик: все проекты" data-i18n-aria="nav.overview_hint"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="9" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="5" rx="1.5"/><rect x="13.5" y="11" width="7.5" height="10" rx="1.5"/><rect x="3" y="15" width="7.5" height="6" rx="1.5"/></svg></span><span class="label"
       data-i18n="nav.overview">Мостик</span></button>
     <button data-view="setup" data-order="30" aria-label="Настройка кита и машины"
-      data-i18n-aria="nav.setup_hint"><span class="label"
+      data-i18n-aria="nav.setup_hint"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18.8 10.2 21.4 10.7 21.4 13.3 18.8 13.8 18.1 15.5 19.6 17.7 17.7 19.6 15.5 18.1 13.8 18.8 13.3 21.4 10.7 21.4 10.2 18.8 8.5 18.1 6.3 19.6 4.4 17.7 5.9 15.5 5.2 13.8 2.6 13.3 2.6 10.7 5.2 10.2 5.9 8.5 4.4 6.3 6.3 4.4 8.5 5.9 10.2 5.2 10.7 2.6 13.3 2.6 13.8 5.2 15.5 5.9 17.7 4.4 19.6 6.3 18.1 8.5z"/><circle cx="12" cy="12" r="3"/></svg></span><span class="label"
       data-i18n="nav.setup">Настройка кита</span></button>
     </div>
-    <div class="group" data-i18n="nav.group_project">Проект</div>
     <!-- Маршруты и работа по базе живут здесь, а не в «Машине»: каждый их шаг —
          команда в выбранном проекте. В группе машины они выглядели общесистемными,
          и человек открывал их, не выбрав проект. -->
     <div class="navgroup" data-group="project">
+    <div class="group"><span class="long" data-i18n="nav.group_project">Проект</span><span class="short"
+      data-i18n="nav.group_project_short">Проект</span></div>
     <button data-view="project" data-order="20" aria-label="Настройки проекта"
-      data-i18n-aria="nav.project_hint"><span class="label"
+      data-i18n-aria="nav.project_hint"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg></span><span class="label"
       data-i18n="nav.project">Настройки проекта</span></button>
     <button data-view="files" data-order="50" aria-label="Файлы проекта"
-      data-i18n-aria="nav.files_hint"><span class="label"
+      data-i18n-aria="nav.files_hint"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.5h7.5A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></svg></span><span class="label"
       data-i18n="nav.files">Файлы</span><span class="count" id="navFiles"></span></button>
     <button data-view="console" data-order="120" aria-label="Консоль"
-      data-i18n-aria="nav.console_hint"><span class="label"
+      data-i18n-aria="nav.console_hint"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17"/></svg></span><span class="label"
       data-i18n="nav.console">Консоль</span></button>
     </div>
-    <div class="group" id="devGroup" hidden data-i18n="nav.group_engine">Движок</div>
     <div class="navgroup" data-group="engine">
+    <div class="group" id="devGroup" hidden><span class="long" data-i18n="nav.group_engine">Движок</span><span
+      class="short" data-i18n="nav.group_engine_short">Движок</span></div>
     </div>
   </nav>
 

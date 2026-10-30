@@ -86,6 +86,14 @@
   --nav-item-radius:var(--radius-sm);
   --nav-item-active-bg:var(--surface-2); --nav-item-active-ink:var(--text);
   --nav-marker-w:3px; --nav-marker:var(--primary); --nav-marker-glow:0 0 12px var(--primary);
+  /* блоки групп меню: у каждой свой едва заметный фон — «Машина» в сторону первичного цвета,
+     «Проект» — акцента, «Движок» — золота; рамка блока и ширина свёрнутого меню */
+  --nav-group-machine-bg:color-mix(in oklab,var(--primary) 10%,var(--surface-1));
+  --nav-group-project-bg:color-mix(in oklab,var(--accent) 10%,var(--surface-1));
+  --nav-group-engine-bg:color-mix(in oklab,var(--gold) 12%,var(--surface-1));
+  --nav-group-border:color-mix(in oklab,var(--border) 60%,transparent);
+  --nav-group-radius:var(--radius-sm);
+  --nav-mini-w:66px;
 
   /* шапка */
   --header-bg:color-mix(in oklab,var(--surface-1) 72%,transparent);
@@ -167,25 +175,82 @@ header{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 var(-
 .spacer{flex:1}
 .kbd{font:var(--text-xs) var(--mono);border:1px solid var(--border);border-radius:var(--radius-xs);
   padding:3px 7px;color:var(--text-muted);background:var(--surface-2)}
-nav{border-right:var(--card-border-w) solid var(--border);padding:var(--sp-3) 10px;
+nav{border-right:var(--card-border-w) solid var(--border);padding:var(--sp-3) 6px;
   overflow:auto;background:var(--nav-bg)}
 :root[data-theme="light"] nav{background:var(--nav-bg)}
 nav .group{font-size:10px;letter-spacing:var(--eyebrow-ls);color:var(--text-muted);
-  text-transform:uppercase;margin:var(--sp-3) var(--sp-2) 6px}
+  text-transform:uppercase;margin:6px 6px 4px}
 nav button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
   padding:9px 10px;border-radius:var(--nav-item-radius);color:var(--text-muted);
   font-size:var(--text-md);position:relative}
 nav button:hover{background:var(--surface-2);color:var(--text)}
 nav button[aria-current="true"]{background:var(--nav-item-active-bg);
   color:var(--nav-item-active-ink);font-weight:600}
-nav button[aria-current="true"]::before{content:"";position:absolute;left:-10px;top:9px;bottom:9px;
+nav button[aria-current="true"]::before{content:"";position:absolute;left:-4px;top:9px;bottom:9px;
   width:var(--nav-marker-w);border-radius:0 3px 3px 0;background:var(--nav-marker);
   box-shadow:var(--nav-marker-glow)}
 nav .count{margin-left:auto;font:var(--text-xs) var(--mono);padding:1px 6px;
   border-radius:var(--radius-pill);background:var(--surface-1);border:1px solid var(--border)}
 nav .count:empty{display:none}
 nav .count.bad{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 45%,var(--border))}
-.navgroup{display:contents}
+/* Группа меню — блок со своим фоном: заголовок и кнопки внутри. Отступ блока (4 px) — тот же,
+   на который сдвинут маркер текущего пункта: маркер стоит у края блока. */
+.navgroup{display:flex;flex-direction:column;gap:1px;padding:4px;margin:0 0 var(--sp-2);
+  border:1px solid var(--nav-group-border);border-radius:var(--nav-group-radius);
+  background:var(--nav-group-machine-bg)}
+.navgroup[data-group="project"]{background:var(--nav-group-project-bg)}
+.navgroup[data-group="engine"]{background:var(--nav-group-engine-bg)}
+/* Группа без видимых пунктов («Движок», пока не открыта «Разработка», или всё спрятал профиль)
+   не оставляет пустого блока. */
+.navgroup:not(:has(button:not([hidden]))){display:none}
+nav .group .short{display:none}
+/* Значок пункта. В развёрнутом меню смысл несёт подпись: значок мелкий, тонкий и приглушённый. */
+nav .ico{display:inline-flex;flex:none;width:15px;height:15px;opacity:.72}
+nav .ico svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round}
+nav button:hover .ico,nav button[aria-current="true"] .ico{opacity:1}
+/* Модуль без своего `icon.svg` — первая буква названия в скруглённом квадрате. */
+nav .ico.letter{align-items:center;justify-content:center;border:1.4px solid currentColor;
+  border-radius:4px;font:700 9px/1 var(--sans)}
+/* Кнопка «бургер» в шапке: свернуть и развернуть меню. */
+#navToggle{width:34px;height:34px;padding:0;justify-content:center;margin-left:-6px;flex:none}
+#navToggle svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
+/* Подсказка у значка свёрнутого меню: название раздела справа. Одна на панель и в `body`:
+   меню прокручивается, и подсказка внутри него обрезалась бы по краю. */
+.nav-tip{position:fixed;z-index:2100;pointer-events:none;transform:translateY(-50%);
+  padding:5px 10px;border-radius:var(--radius-xs);background:var(--text);color:var(--bg);
+  font:600 var(--text-sm)/1.3 var(--sans);white-space:nowrap;box-shadow:var(--shadow-toast)}
+
+/* ── меню свёрнуто до значков (`body.nav-mini`, кнопка `#navToggle`) ──
+   Подписей нет, смысл несёт значок: он крупный и полновесный. Отметки не прячутся — они
+   становятся меткой у правого верхнего угла значка: число до 99 («99+» дальше), красная
+   остаётся красной, «!» и «↑» (есть обновление, отстаёт) — точкой. Заголовок группы —
+   короткая подпись мелким шрифтом. Всё это только на широком экране: на узком меню — лента. */
+@media (min-width:981px){
+  body.nav-mini #app{grid-template-columns:var(--nav-mini-w) 1fr}
+  body.nav-mini nav{overflow-x:hidden;scrollbar-width:none}
+  body.nav-mini nav::-webkit-scrollbar{display:none}
+  body.nav-mini nav button{justify-content:center;gap:0;padding:9px 0}
+  body.nav-mini nav .label{display:none}
+  body.nav-mini nav .ico{width:22px;height:22px;opacity:.9}
+  body.nav-mini nav .ico svg{stroke-width:2.1}
+  body.nav-mini nav button:hover .ico,body.nav-mini nav button[aria-current="true"] .ico{opacity:1}
+  body.nav-mini nav .ico.letter{font-size:12px;border-width:2px;border-radius:7px}
+  body.nav-mini nav .group{margin:2px 0 3px;text-align:center;letter-spacing:.04em}
+  body.nav-mini nav .group .long{display:none}
+  body.nav-mini nav .group .short{display:block;font-size:8px;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;padding-bottom:3px;border-bottom:1px solid var(--nav-group-border)}
+  body.nav-mini nav .count{position:absolute;top:2px;right:1px;margin:0;
+    min-width:14px;height:14px;padding:0 3px;font-size:8.5px;line-height:12px;text-align:center;
+    background:var(--surface-2);color:var(--text);border-color:var(--border);
+    box-shadow:0 0 0 1.5px var(--surface-1)}
+  body.nav-mini nav .count.bad{background:var(--danger);color:var(--bg);border-color:var(--danger)}
+  body.nav-mini nav .count.over{font-size:0}
+  body.nav-mini nav .count.over::after{content:"99+";font-size:8.5px}
+  body.nav-mini nav .count.flag{font-size:0;min-width:0;width:10px;height:10px;padding:0;
+    top:5px;right:7px;background:var(--tier-inreview);border-color:var(--tier-inreview)}
+  body.nav-mini nav .count.flag.bad{background:var(--danger);border-color:var(--danger)}
+}
 main{overflow:auto;padding:var(--sp-5) var(--sp-6) 60px;scroll-behavior:smooth}
 .view{display:none;animation:rise .22s ease}
 .view.on{display:block}
@@ -544,6 +609,9 @@ tr:last-child td{border-bottom:0}
     padding:var(--sp-2) var(--sp-3);scrollbar-width:none}
   nav::-webkit-scrollbar{display:none}
   nav button{width:auto;white-space:nowrap;padding:6px 11px}
+  /* Лента остаётся прежней: группы снова прозрачны, значков и кнопки «бургер» нет. */
+  .navgroup{display:contents}
+  nav .ico,#navToggle{display:none}
   nav button[aria-current="true"]::before{left:0;right:0;top:auto;bottom:-6px;width:auto;
     height:var(--nav-marker-w);border-radius:3px 3px 0 0}
   nav .group{margin:0 var(--sp-1) 0 var(--sp-2);font-size:9px;white-space:nowrap;opacity:.75}

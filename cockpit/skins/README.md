@@ -102,6 +102,7 @@ Unbounded, Literata, Nunito, Comfortaa, JetBrains Mono, IBM Plex Mono, лице�
 | `--chip-bg`, `--chip-border-w`, `--chip-radius`, `--chip-weight`, `--chip-ink` | чип статуса |
 | `--dot-size`, `--dot-radius`, `--dot-rotate`, `--dot-clip`, `--dot-ring` | форма точки статуса: ромб, квадрат, сердце |
 | `--nav-bg`, `--nav-item-radius`, `--nav-item-active-bg`, `--nav-item-active-ink`, `--nav-marker-w`, `--nav-marker`, `--nav-marker-glow` | меню и отметка текущего раздела |
+| `--nav-group-machine-bg`, `--nav-group-project-bg`, `--nav-group-engine-bg`, `--nav-group-border`, `--nav-group-radius`, `--nav-mini-w` | блоки групп меню («Машина», «Проект», «Движок»): свой едва заметный фон у каждой, рамка, скругление; ширина свёрнутого меню. Умолчание — смесь поверхности с первичным цветом, акцентом и золотом; «Контраст» делает тон заметнее и рамку полной линией |
 | `--header-bg`, `--header-blur` | шапка |
 | `--tile-rail-w`, `--tile-aura-opacity`, `--tile-lift` | плитка проекта: полоса тяжести, пятно ауры, подъём под курсором |
 | `--h1-font`, `--h1-size`, `--h1-weight`, `--h1-transform`, `--h1-ls`, `--h1-ink`, `--h1-shadow` | заголовок раздела |

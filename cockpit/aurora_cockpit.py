@@ -279,6 +279,8 @@ def modules() -> list:
             # Раздел в разработке: в меню только вместе с «Разработкой» (семь нажатий на
             # «О проекте»).
             "dev": m.get("dev") is True,
+            # Свой значок в меню — `icon.svg` в папке раздела; нет файла — панель рисует букву.
+            "icon": bool(module_file(name, "icon.svg")),
         }
         if shown is not None and name not in shown and name not in PROFILE_KEEPS:
             item["hidden"] = True

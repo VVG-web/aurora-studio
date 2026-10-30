@@ -35,6 +35,12 @@
 
   --nav-item-radius:5px; --nav-item-active-bg:#FFFFFF; --nav-item-active-ink:#000000;
   --nav-marker-w:4px; --nav-marker-glow:none; --nav-bg:#0D0D0D;
+  /* Блоки групп меню различимы и здесь: тон заметнее умолчания, рамка — полной линией.
+     Смесь с фоном, а не с поверхностью, поэтому одна запись годится обеим темам. */
+  --nav-group-machine-bg:color-mix(in oklab,var(--primary) 16%,var(--bg));
+  --nav-group-project-bg:color-mix(in oklab,var(--accent) 16%,var(--bg));
+  --nav-group-engine-bg:color-mix(in oklab,var(--gold) 18%,var(--bg));
+  --nav-group-border:var(--border);
   --header-bg:#0D0D0D; --header-blur:none;
 
   --tile-rail-w:8px; --tile-aura-opacity:0; --tile-lift:0px;

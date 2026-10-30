@@ -814,7 +814,7 @@ async function renderFiles(){
   F.createDirs = d.create_dirs || [];
   F.changed = new Set(((S.git && S.git.dirty) || []).map(r => r.path));
   // Счётчик — все файлы проекта, а не длина списка: список бывает короче.
-  $("#navFiles").textContent = d.total || F.files.length || "";
+  setBadge("files", d.total || F.files.length || "");
   drawFilters();
   drawTree();
   if (d.truncated) toast(t("files.truncated", {n:d.count, total:d.total}), "warn");
@@ -1925,6 +1925,54 @@ function navClick(b){
   show(view);
 }
 $$("nav button").forEach(b => b.onclick = () => navClick(b));
+
+/* ---------------- меню: свернуть до значков ---------------- */
+// На экране ноутбука меню отнимает у «Файлов» и остальных разделов 236 px. Свёрнутое оно — колонка
+// значков с подсказкой и отметками. Выбор — удобство этого браузера, а не настройка проекта:
+// он в localStorage; пока выбора не было, окно до 1280 px открывается со свёрнутым меню.
+// Хранилище бывает закрыто (приватное окно, запрет сайта) — тогда работает умолчание по ширине.
+const NAV_MINI_KEY = "aurora-nav-mini";
+const NAV_MINI_WIDTH = 1280;
+function navMiniSaved(){
+  try { return localStorage.getItem(NAV_MINI_KEY); } catch (e){ return null; }
+}
+function navMini(){ return document.body.classList.contains("nav-mini"); }
+function setNavMini(on, save){
+  document.body.classList.toggle("nav-mini", on);
+  const b = $("#navToggle");
+  b.setAttribute("aria-expanded", String(!on));
+  b.setAttribute("aria-label", b.title = t(on ? "nav.expand" : "nav.collapse"));
+  // Ключ подписи меняется вместе с состоянием: смена языка (`applyI18n`) возьмёт верный.
+  b.dataset.i18nAria = b.dataset.i18nTitle = on ? "nav.expand" : "nav.collapse";
+  if (save){ try { localStorage.setItem(NAV_MINI_KEY, on ? "1" : "0"); } catch (e){ /* выбор не запомнится */ } }
+  hideNavTip();
+}
+// Подсказка свёрнутого меню: название раздела справа от значка, сразу — и мышью, и с клавиатуры.
+// Текст — подпись пункта (`.label`): она уже на языке панели, у модуля — из манифеста.
+let NAV_TIP = null;
+function hideNavTip(){ if (NAV_TIP) NAV_TIP.hidden = true; }
+function showNavTip(b){
+  const label = b && b.querySelector(".label");
+  if (!label || !navMini() || matchMedia("(max-width:980px)").matches) return hideNavTip();
+  if (!NAV_TIP){ NAV_TIP = el("div", {class:"nav-tip", "aria-hidden":"true"}); document.body.append(NAV_TIP); }
+  const r = b.getBoundingClientRect();
+  NAV_TIP.textContent = label.textContent.trim();
+  NAV_TIP.style.left = (r.right + 10) + "px";
+  NAV_TIP.style.top = (r.top + r.height / 2) + "px";
+  NAV_TIP.hidden = false;
+}
+{
+  const nav = $("#mainNav");
+  nav.addEventListener("mouseover", e => showNavTip(e.target.closest("button")));
+  nav.addEventListener("mouseleave", hideNavTip);
+  nav.addEventListener("focusin", e => showNavTip(e.target.closest("button")));
+  nav.addEventListener("focusout", hideNavTip);
+  nav.addEventListener("scroll", hideNavTip);
+  addEventListener("resize", hideNavTip);             // узкое окно — лента, подсказке там не место
+  $("#navToggle").onclick = () => setNavMini(!navMini(), true);
+  const saved = navMiniSaved();
+  setNavMini(saved === null ? innerWidth <= NAV_MINI_WIDTH : saved === "1", false);
+}
 /* ---------------- обращение на GitHub ---------------- */
 // Шаблоны обращений кита — «Баг» и «Предложение» (`.github/ISSUE_TEMPLATE/`). Форма
 // открывается в браузере уже заполненной тем, что панель знает наверняка: версия кита и
@@ -2020,6 +2068,7 @@ async function boot(){
   renderHistory();
   loadSkins();
   await loadModules();   // меню собрано целиком до того, как адрес вернёт нас в раздел
+  showDevNav();          // заголовок «Движка»: его пункты — разделы-папки, они пришли только сейчас
   checkKitUpdate();      // новая версия Aurora — отметкой на «О проекте», не окном поверх работы
   prefetchHealth();
   const [v, slug] = (location.hash.slice(1)||"").split("|");
@@ -2675,6 +2724,9 @@ function setBadge(view, text, bad){
   if (!n) return;
   n.textContent = text || "";
   n.classList.toggle("bad", !!bad);
+  // Свёрнутое меню рисует отметку меткой у значка: число больше 99 — «99+», знак («!», «↑») — точкой.
+  n.classList.toggle("over", /^\d+$/.test(n.textContent) && Number(n.textContent) > 99);
+  n.classList.toggle("flag", !!n.textContent && !/^\d+$/.test(n.textContent));
 }
 
 function navBadges(p, h){
@@ -6248,12 +6300,41 @@ async function loadModules(){
   }
 }
 
+// Значок раздела, пока нет своего `icon.svg`: первая буква названия на языке панели.
+function navLetter(m){
+  return ([...moduleTitle(m).trim()][0] || "?").toUpperCase();
+}
+
+// Свой значок раздела — `icon.svg` в его папке (манифест ответа говорит `icon`). Вставляется в
+// разметку, а не картинкой: только так он берёт цвет пункта и толщину линии режима меню. Файл
+// свой, но разбирается как чужой: только svg, без скриптов, обработчиков и ссылок наружу.
+// Пока он идёт, место пустое (буква мелькала бы на каждой загрузке); не пришёл — буква.
+async function moduleIcon(box, m){
+  try {
+    const r = await fetch(`/modules/${m.id}/icon.svg`);
+    const svg = r.ok && new DOMParser().parseFromString(await r.text(), "image/svg+xml").documentElement;
+    if (!svg || svg.nodeName !== "svg" || svg.getElementsByTagName("parsererror").length) throw new Error("icon.svg");
+    for (const n of [svg, ...svg.querySelectorAll("*")]){
+      if (/^(script|foreignObject|image|use|style)$/i.test(n.nodeName)){ n.remove(); continue; }
+      for (const a of [...n.attributes]) if (/^on|href$/i.test(a.name)) n.removeAttribute(a.name);
+    }
+    box.replaceChildren(document.importNode(svg, true));
+  } catch (e){
+    box.className = "ico letter";
+    box.textContent = navLetter(m);
+  }
+}
+
 function addModuleNav(m){
   const group = $(`.navgroup[data-group="${m.group}"]`) || $('.navgroup[data-group="project"]');
   if (!group || $(`nav button[data-view="${m.id}"]`)) return;
+  const ico = m.icon ? el("span", {class:"ico", "aria-hidden":"true"})
+                     : el("span", {class:"ico letter", "aria-hidden":"true"}, navLetter(m));
   const btn = el("button", {"data-view": m.id, "data-order": m.order, "aria-label": moduleTitle(m)},
+    ico,
     el("span", {class:"label"}, moduleTitle(m)),
     el("span", {class:"count", id:"nav-" + m.id}));
+  if (m.icon) moduleIcon(ico, m);
   if (m.dev){            // раздел в разработке — виден вместе с «Разработкой»
     btn.dataset.devonly = "";
     btn.hidden = !devSectionsOn();
@@ -6401,8 +6482,12 @@ async function dispatchModules(event = "data"){
 // перечитываем их, иначе меню останется на прежнем языке до перезагрузки страницы.
 function relabelModules(){
   for (const [id, rec] of MODULES){
-    const label = $(`nav button[data-view="${id}"] .label`);
-    if (label) label.textContent = moduleTitle(rec.manifest);
+    const b = $(`nav button[data-view="${id}"]`);
+    if (!b) continue;
+    $(".label", b).textContent = moduleTitle(rec.manifest);
+    b.setAttribute("aria-label", moduleTitle(rec.manifest));     // её же читает диктор
+    const letter = $(".ico.letter", b);
+    if (letter) letter.textContent = navLetter(rec.manifest);
   }
 }
 

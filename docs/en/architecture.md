@@ -494,7 +494,7 @@ line in the same files. Tests, documentation and string catalogues are not the c
 | Kind (metric key) | What replaces code |
 |---|---|
 | Connector (`connector`) | a `connectors/<id>/` folder: `connector.json`, `SKILL.md`; the run script in `scripts/`. See [connectors.md](connectors.md) |
-| Panel section (`panel_module`) | a `cockpit/modules/<id>/` folder: `module.json`, `view.html`, `view.js`, `i18n/`. See the [section README](../../cockpit/modules/README.md) |
+| Panel section (`panel_module`) | a `cockpit/modules/<id>/` folder: `module.json`, `view.html`, `view.js`, `i18n/`, an optional menu icon `icon.svg`. See the [section README](../../cockpit/modules/README.md) |
 | Workplace profile (not in the metric) | a file `cockpit/profiles/<id>.json`: the list of visible routes and sections for a role; the choice is `local/profile.json` on the machine; with no choice the profile «all» applies, everything as before. The six roles (Analyst, Developer, Tester, Product Owner, Project Manager, Team Lead) work only behind the feature flag `profiles` (`local/features.json`, off by default; turned on in the Development section). See the [profiles README](../../cockpit/profiles/README.md) |
 | Skin (`skin`) | one `cockpit/skins/<id>.css` file with a header; reference only in the metric, not in the bar. See the [skins README](../../cockpit/skins/README.md) |
 | Git provider (`git_provider`) | a `gitproviders/<id>/` folder: `provider.json` and `adapter.py` |

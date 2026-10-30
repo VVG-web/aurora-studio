@@ -360,7 +360,9 @@ def _modules_before(ck, root: Path) -> list:
             "needs": [x for x in (m.get("needs") or []) if x in ("project", "kit")],
             "commands": list(m.get("commands") or []),
             "for": ver, "behind": ".".join(ver.split(".")[:2]) != ".".join(ck.kit_version().split(".")[:2]),
-            "about": m.get("about", {}), "dev": m.get("dev") is True})
+            "about": m.get("about", {}), "dev": m.get("dev") is True,
+            # поле, добавленное позже загрузчика: есть ли у раздела свой значок меню
+            "icon": (root / name / "icon.svg").is_file()})
     out.sort(key=lambda m: (ck.MODULE_GROUPS.index(m["group"]), m["order"], m["id"]))
     return out
 
