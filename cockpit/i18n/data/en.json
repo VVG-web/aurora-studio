@@ -62,7 +62,7 @@
     "make:spec-pack": "A spec bundle: grounds, DRs, abbreviations, DoR risks — one self-contained file.",
     "make:validate": "Compare a contractor's implementation and tests with the spec's scenarios.",
     "make:assemble": "Assemble a deliverable (OPZ/PMI/user guide) from the base by a template.",
-    "ship:publish": "An artifact → a generated Confluence page; knowledge cards do not go out. The body is cut at the marker line: \"Clarifications\", \"Assumptions\", \"In question\" stay in the analyst's draft. For an artifact kind with a declared review (`review: us or alg` in `artifacts:`) only an artifact with a fresh review \"ready to hand over\" goes out (`make:review-auto --file … --apply`): no review, a text changed after it, or a lower verdict — code 2 and a list of reasons; the bypass is `--allow review` (recorded in the head as `review_bypass`).",
+    "ship:publish": "An artifact → a generated Confluence page along the kind's path: the root page (`publish_url`) → sections (`publish_path`, missing ones are created only with `--apply`) → a page titled by a template (`publish_title`); the space comes from the root; knowledge cards do not go out. The body is cut at the marker line: \"Clarifications\", \"Assumptions\", \"In question\" stay in the analyst's draft. For an artifact kind with a declared review (`review: us or alg` in `artifacts:`) only an artifact with a fresh review \"ready to hand over\" goes out (`make:review-auto --file … --apply`): no review, a text changed after it, or a lower verdict — code 2 and a list of reasons; the bypass is `--allow review` (recorded in the head as `review_bypass`). A repeat without changes does not touch the page; a page edited after publishing stops it until `--force`; someone else's page with the same title — only `--adopt`; your own page off the path — `--move`.",
     "ship:export": "A deliverable → docx/pdf (pandoc, a corporate template).",
     "ship:release": "Freeze the delivered version: a snapshot, a base commit, a date.",
     "ship:acceptance": "Acceptance results and sorting out the customer's remarks.",
@@ -644,12 +644,22 @@
     "транскриптов низкого качества: {} ({}{}) → текст пуст или не читается, в разбор они не идут: исправьте оригинал или включите распознавание и запустите `kb:ingest-office --force`": "low-quality transcripts: {} ({}{}) → the text is empty or unreadable and they are not parsed: fix the original or enable recognition and run `kb:ingest-office --force`",
     "Опубликовать некуда: не задана родительская страница в Confluence, а у документа нет вида артефакта.": "Nowhere to publish: no parent page in Confluence is set, and the document has no artifact kind.",
     "Опубликовать некуда: у вида этого документа не задана родительская страница в Confluence.": "Nowhere to publish: this document's kind has no parent page in Confluence.",
-    "Опубликовать нельзя: в настройках проекта не заданы адрес Confluence и пространство.": "Cannot publish: the Confluence address and space are not set in the project's settings.",
+    "Опубликовать нельзя: в настройках проекта не задан адрес Confluence.": "Can't publish: the project settings have no Confluence address.",
     "вид «{}»: поле «{}» — значение занимает несколько строк или содержит управляющие знаки": "kind «{}»: the field «{}» — the value takes several lines or contains control characters",
     "виды артефактов изменились на диске с момента открытия": "the artifact kinds changed on disk since they were opened",
     "виды артефактов не записаны: {}": "the artifact kinds were not written: {}",
     "не удалось прочитать aurora.config.yaml: {}": "could not read aurora.config.yaml: {}",
-    "реестр видов — объект «вид → поля»": "the kinds registry is an object «kind → fields»"
+    "реестр видов — объект «вид → поля»": "the kinds registry is an object «kind → fields»",
+    "{}: незакрытая фигурная скобка в «{}»": "{}: an unclosed curly brace in “{}”",
+    "{}: пустая подстановка {} в «{}» — назовите поле шапки: {epic}": "{}: an empty placeholder {} in “{}” — name a header field: {epic}",
+    "Опубликовать нельзя: заголовок страницы или раздела длиннее 255 знаков — Confluence его не примет.": "Can't publish: the page or section title is longer than 255 characters — Confluence will not take it.",
+    "Опубликовать нельзя: заголовок страницы по шаблону вида «{}» выходит пустым.": "Can't publish: the page title by the template of the kind “{}” comes out empty.",
+    "Опубликовать нельзя: путь или заголовок страницы у вида «{}» требует поле «{}», а в шапке документа его нет. Впишите поле в шапку или сделайте подстановку необязательной.": "Can't publish: the page path or title of the kind “{}” needs the field “{}”, and the document header has none. Add the field to the header or make the placeholder optional.",
+    "в проекте нет скрипта публикации — обновите проект": "the project has no publishing script — update the project",
+    "движок проекта старше — план публикации не считается: обновите проект": "the project's engine is older — the publishing plan is not worked out: update the project",
+    "нет связи с Confluence — план публикации не посчитан": "no connection to Confluence — the publishing plan was not worked out",
+    "план публикации не посчитан: Confluence не ответил за 120 с": "the publishing plan was not worked out: Confluence did not answer within 120 s",
+    "план публикации не посчитан: {}": "the publishing plan was not worked out: {}"
   },
   "connectors": {
     "confluence-dc": {
@@ -897,7 +907,7 @@
     "режим ворот: риски передачи DoR дают код 1 и строку вердикта; ошибка входа — код 2; --gate=warn — предупреждение вместо кода 1": "gate mode: DoR handover risks give code 1 and a verdict line; an input error is code 2; --gate=warn gives a warning instead of code 1",
     "режим ворот: вердикт строкой AURORA-GATE; --gate=warn — предупреждение вместо кода 1": "gate mode: the verdict as an AURORA-GATE line; --gate=warn gives a warning instead of code 1",
     "режим ворот (одна страница): оценка ниже порога — вердикт fail и код 1, с оговорками — warn, сбой прогона — код 2; вердикт строкой AURORA-GATE; --gate=warn — предупреждение вместо кода 1": "gate mode (one page): a score below the threshold is verdict fail and code 1, with reservations warn, a failed run is code 2; the verdict as an AURORA-GATE line; --gate=warn gives a warning instead of code 1",
-    "заголовок страницы (по умолчанию — H1 или имя файла)": "the page title (default — H1 or the file name)",
+    "заголовок страницы (по умолчанию — по шаблону вида publish_title, иначе H1 или имя файла)": "page title (by default — by the kind's publish_title template, otherwise the H1 or the file name)",
     "перезаписать страницу, которую правили после вашей публикации": "overwrite a page that was edited after your publication",
     "взять под управление существующую страницу с таким заголовком": "take under management an existing page with that title",
     "отправить в Confluence (иначе только предпросмотр)": "send to Confluence (otherwise a preview only)",
@@ -1052,7 +1062,7 @@
     "корень зеркала (по умолчанию — зеркало вики проекта)": "mirror root (by default the project's wiki mirror)",
     "с --venv-install: без паузы после выпуска (проверка свежих версий в CI)": "with --venv-install: no wait after a release (checking fresh versions in CI)",
     "--release: документ не закоммичен — всё равно заморозить (в снимке пометка released_dirty)": "--release: the document is not committed — freeze it anyway (the snapshot is marked released_dirty)",
-    "page_id родителя для новой страницы (либо ссылка на неё); без него — publish_parent из шапки документа, затем publish_url вида артефакта, затем confluence.publish_parent из конфига": "page_id of the parent for a new page (or a link to it); without it — publish_parent from the document header, then the artifact kind's publish_url, then confluence.publish_parent from the config",
+    "page_id корневой страницы (либо ссылка на неё) — точное место, путь вида не применяется; без него — publish_url вида артефакта, затем publish_parent из шапки документа, затем confluence.publish_parent из конфига": "page_id of the root page (or a link to it) — the exact place, the kind's path is not applied; without it — the artifact kind's publish_url, then publish_parent from the document header, then confluence.publish_parent from the config",
     "проверить сданные версии в Deliverables/released/: хеш, правки и удаления после коммита": "check the delivered versions in Deliverables/released/: hash, edits and deletions after the commit",
     "снять блокировку предохранителя выходных команд (КОД назван в его сообщении)": "lift a block of the outbound-commands guard (the CODE is named in its message)",
     "снять блокировку предохранителя выходных команд (КОД назван в его сообщении); review — опубликовать без свежего ревью (обход записывается в шапку)": "lift a block of the outbound-commands guard (the CODE is named in its message); review — publish without a fresh review (the bypass is recorded in the head)",
@@ -1090,7 +1100,9 @@
     "с --status: ответ JSON": "with --status: JSON answer",
     "с --undo: из какого тега вернуть": "with --undo: which tag to restore from",
     "сказать, идёт ли пересборка": "say whether a rebuild is under way",
-    "снести базу, даже если пересборка не закончена": "wipe the base even if a rebuild is not finished"
+    "снести базу, даже если пересборка не закончена": "wipe the base even if a rebuild is not finished",
+    "перенести свою страницу туда, куда ведёт путь вида; без флага страница, лежащая не там, обновляется на месте": "move your own page to where the kind's path leads; without the flag a page that is elsewhere is updated in place",
+    "вывод для человека — в stderr, в stdout — один JSON исхода (без --apply — план: пространство, корень, цепочка разделов, заголовок, действие, версия страницы, ворота)": "human output goes to stderr, stdout gets one JSON of the outcome (without --apply — the plan: space, root, chain of sections, title, action, page version, gates)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

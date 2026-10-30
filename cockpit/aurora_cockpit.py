@@ -852,7 +852,10 @@ def publish_info(project: str, rel: str, full: str, fm: dict, text: str) -> dict
     файлу неприменима (не `.md`, внутренний слой, папка вне видов и вне `Deliverables/work`), кнопки нет; `ready` —
     можно; `blocked` — кнопка видна, но серая: `why` называет причину словами, `fix` — где её чинить (`kinds` —
     «Настройки проекта → Артефакты», `project` — «Настройки проекта»). Вид и родитель берутся тем же кодом, что у
-    `ship:publish` (`make_kinds.kind_of`), порядок родителей — тоже (`--parent` кнопка не задаёт).
+    `ship:publish` (`make_kinds.kind_of`), порядок корня — тоже: вид (`publish_url`), шапка (`publish_parent`, наследие),
+    конфиг (`--parent` кнопка не задаёт). Путь под корнем и заголовок страницы — по шаблонам вида
+    (`make_kinds.publish_target`, тот же код, что у скрипта): `path` — уровни, `title` — заголовок; обязательная
+    подстановка без значения в шапке документа — серая кнопка, причина называет поле (`fields`).
     `gate` — коды, по которым ворота ревью не пустят наружу (кнопку не гасит: причину назовёт и команда; слова к кодам
     у страницы в каталоге); `prompt` — промпт публикации вида (сохраняется, модель по нему пока не вызывается)."""
     nr = norm_rel(rel)
@@ -872,28 +875,115 @@ def publish_info(project: str, rel: str, full: str, fm: dict, text: str) -> dict
     out = {"state": "ready", "kind": kid, "kind_title": rec.get("title") or kid,
            "action": "update" if page else "create", "page": page,
            "prompt": (rec.get("publish_prompt") or "").strip(), "review": AG_KINDS.review_profile(rec),
-           "parent": "", "parent_from": "", "why": "", "fix": "", "gate": []}
+           "parent": "", "parent_from": "", "path": [], "title": "", "fields": [], "why": "", "fix": "", "gate": []}
     import confluence_export as CE
     cfg = CE.read_config(project)
-    parents = (("publish_parent", fm.get("publish_parent")), ("publish_url", rec.get("publish_url")),
+    parents = (("publish_url", rec.get("publish_url")), ("publish_parent", fm.get("publish_parent")),
                ("confluence", cfg.get("publish_parent")))
     parent = next(((src, str(v).strip().strip("\"'")) for src, v in parents if str(v or "").strip().strip("\"'")), ("", ""))
     out["parent_from"], out["parent"] = parent
-    if not (cfg.get("base_url") and cfg.get("space")):
+    target = AG_KINDS.publish_target(rec, AG_KINDS.publish_context(text, full, kid, AG_KINDS.project_name(project)))
+    out["path"], out["title"], out["fields"] = target["levels"], target["title"], target["missing"]
+    problem = (target["problems"] or [("", "")])[0]
+    if not cfg.get("base_url"):
         out.update({"state": "blocked", "fix": "project",
-                    "why": "Опубликовать нельзя: в настройках проекта не заданы адрес Confluence и пространство."})
+                    "why": "Опубликовать нельзя: в настройках проекта не задан адрес Confluence."})
     elif not page and not parent[1] and kid:
         out.update({"state": "blocked", "fix": "kinds",
                     "why": "Опубликовать некуда: у вида этого документа не задана родительская страница в Confluence."})
     elif not page and not parent[1]:
         out.update({"state": "blocked", "fix": "project",
                     "why": "Опубликовать некуда: не задана родительская страница в Confluence, а у документа нет вида артефакта."})
+    elif problem[0] == "missing-field":
+        out.update({"state": "blocked", "fix": "kinds",
+                    "why": f"Опубликовать нельзя: путь или заголовок страницы у вида «{kid}» требует поле «{problem[1]}», "
+                           "а в шапке документа его нет. Впишите поле в шапку или сделайте подстановку необязательной."})
+    elif problem[0] == "empty-title":
+        out.update({"state": "blocked", "fix": "kinds",
+                    "why": f"Опубликовать нельзя: заголовок страницы по шаблону вида «{kid}» выходит пустым."})
+    elif problem[0] == "too-long":
+        out.update({"state": "blocked", "fix": "kinds",
+                    "why": "Опубликовать нельзя: заголовок страницы или раздела длиннее 255 знаков — Confluence его не примет."})
     if out["review"]:
         try:
             import review_run as RR
             out["gate"] = [gid for gid, _why in RR.publish_gate(text)]
         except Exception:  # noqa: BLE001 — ворота ревью нечем проверить: кнопку не гасим, причину назовёт команда
             out["gate"] = []
+    return out
+
+
+def publish_plan(project: str, rel: str) -> dict:
+    """План публикации — сухой прогон `ship:publish <файл> --json`: пространство, корень, цепочка разделов (есть /
+    будет создан / отказ), заголовок, создание или обновление, версия страницы, ворота. Панель показывает его карточкой
+    «что и куда уйдёт» до отправки. Ничего не пишет ни в Confluence, ни в файл.
+
+    Связи нет — отказ с причиной (кнопка «Отправить» всё равно пройдёт проверку соединений сама). Движок проекта
+    старше выпуска, где у публикации появился план (`--json`), — `old: True`: страница показывает прежний предпросмотр."""
+    full = inside(project, rel)
+    if not full or not os.path.isfile(full):
+        return {"error": "файл не найден в этом проекте"}
+    svc = why_service_real(project, rel, full)
+    if svc:
+        return {"error": svc, "service": True}
+    script = script_path(project, "publish_doc.py")
+    try:
+        with open(script, encoding="utf-8", errors="replace") as f:
+            if '"--json"' not in f.read():
+                return {"old": True, "error": "движок проекта старше — план публикации не считается: обновите проект"}
+    except OSError:
+        return {"error": "в проекте нет скрипта публикации — обновите проект"}
+    if net_enabled():
+        chk = net_check_command(project, "ship:publish")
+        if not chk.get("ok"):
+            return {"error": "нет связи с Confluence — план публикации не посчитан", "net": chk.get("blocked") or []}
+    try:
+        p = subprocess.run([sys.executable, script, norm_rel(rel), "--json"], cwd=project, env=child_env(project),
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    except subprocess.TimeoutExpired:
+        return {"error": "план публикации не посчитан: Confluence не ответил за 120 с"}
+    except OSError as e:
+        return {"error": f"план публикации не посчитан: {e.strerror or e}"}
+    line = next((ln for ln in reversed((p.stdout or "").splitlines()) if ln.startswith("{")), "")
+    try:
+        plan = json.loads(line) if line else None
+    except ValueError:
+        plan = None
+    if not isinstance(plan, dict):
+        tail = [ln for ln in ((p.stderr or "") + "\n" + (p.stdout or "")).splitlines() if ln.strip()]
+        return {"error": "план публикации не посчитан: " + (tail[-1].strip()[:300] if tail else f"код {p.returncode}")}
+    plan["log"] = [ln for ln in (p.stderr or "").splitlines() if ln.strip()][-40:]
+    return {"plan": plan}
+
+
+def kinds_example(project: str, kind: str, overrides: dict) -> dict:
+    """Пример пути для формы видов: «для документа <последний документ вида>: Корень › Раздел › Заголовок».
+
+    Считает сервер тем же кодом, что публикация (`make_kinds.publish_target`), по значениям формы — несохранённым
+    тоже, — чтобы человек видел, куда ляжет страница, до публикации. Без сети: корень — заголовок из адреса или номер
+    страницы. Документа вида ещё нет — уровни и заголовок остаются шаблонами."""
+    kinds = AG_KINDS.read_kinds(project) or {}
+    rec = {**(kinds.get(kind) or {}), **{k: str(v) for k, v in (overrides or {}).items()
+                                          if k in ("publish_url", "publish_path", "publish_title", "out")}}
+    folder = os.path.join(project, (rec.get("out") or "").strip().strip("/")) if (rec.get("out") or "").strip() else ""
+    docs = []
+    if folder and os.path.isdir(folder) and not AG_KINDS.out_problem(rec.get("out") or ""):
+        for name in os.listdir(folder):
+            path = os.path.join(folder, name)
+            if name.endswith(".md") and not is_folder_guide(name) and os.path.isfile(path):
+                docs.append((os.path.getmtime(path), name, path))
+    out = {"kind": kind, "doc": "", "root": AG_KINDS.root_label(rec.get("publish_url") or ""), "levels": [],
+           "title": "", "missing": [], "problems": [c for _k, c in AG_KINDS.check(project, {kind: rec})
+                                                   if c.startswith(("publish_path", "publish_title"))]}
+    if not docs:
+        out["levels"] = [x.strip() for x in str(rec.get("publish_path") or "").split(AG_KINDS.PATH_SEP) if x.strip()]
+        out["title"] = str(rec.get("publish_title") or "").strip() or "{title}"
+        return out
+    _m, _name, path = max(docs)
+    ctx = AG_KINDS.publish_context(read_text(path, limit=MAX_EDIT), path, kind, AG_KINDS.project_name(project))
+    target = AG_KINDS.publish_target(rec, ctx)
+    out.update(doc=os.path.relpath(path, project).replace("\\", "/"), levels=target["levels"], title=target["title"],
+               missing=target["missing"])
     return out
 
 
@@ -4741,7 +4831,7 @@ def _entries_of(project: str, rid: str) -> list:
         pass
     text = read_run_console(project, rid)
     return [{"k": "out", "s": l} for l in (text.get("text") or text.get("error") or "").splitlines()
-            if not l.startswith((RS.MARK, RS.MARK_GATE))]
+            if not l.startswith((RS.MARK, RS.MARK_GATE, RS.MARK_PUBLISH))]
 
 
 def history_run(project: str, rid: str) -> dict:
@@ -5231,12 +5321,15 @@ def artifact_files(project: str, kind: str) -> list:
             m = re.match(r"^([\w_]+)\s*:\s*(.*)$", line)
             if m:
                 fm[m.group(1)] = m.group(2).strip().strip('"')
-        out.append({"name": name,
-                    "rel": os.path.relpath(path, project).replace("\\", "/"),
+        rel = os.path.relpath(path, project).replace("\\", "/")
+        # Состояние кнопки — то же, что у «Файлов» (`publish_info`): «Продуктивность» не решает сама, можно ли публиковать.
+        text = read_text(path, limit=MAX_EDIT)
+        out.append({"name": name, "rel": rel,
                     "status": fm.get("status", "—"),
                     "published": fm.get("published", ""),
                     "url": fm.get("published_url", ""),
-                    "size": os.path.getsize(path)})
+                    "size": os.path.getsize(path),
+                    "publish": publish_info(project, rel, path, frontmatter(text), text)})
     return out
 
 
@@ -6653,6 +6746,15 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json({"files": artifact_files(project, q.get("kind", [""])[0])})
+        elif u.path == "/api/kinds/example":
+            # Пример пути вида для формы: куда ляжет страница последнего документа вида (значения формы — из запроса).
+            project = (q.get("project") or [""])[0]
+            if not project or not self._known(project):
+                self.send_json({"error": "проект не выбран"}, 400)
+                return
+            self.send_json(kinds_example(project, (q.get("kind") or [""])[0],
+                                         {k: (q.get(k) or [""])[0] for k in ("publish_url", "publish_path",
+                                                                              "publish_title", "out") if k in q}))
         elif u.path == "/api/kinds":
             project = (q.get("project") or [""])[0]
             self.send_json(localized_kinds(kinds_read(project), request_lang(q))
@@ -7171,6 +7273,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001 — страница получает отказ с причиной, а не оборванное соединение
                 res = {"error": f"запрос к типам карточек не выполнен: {type(e).__name__}", "failed": True}
             return self.send_json(res, cards_status(res))
+        if u.path == "/api/publish/plan":
+            # План публикации: сухой прогон `ship:publish --json` — что и куда уйдёт. Ничего не пишет.
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(publish_plan(project, str(payload.get("path") or "")))
+            return
         if u.path == "/api/kinds":
             project = payload.get("project", "")
             if not project or not self._known(project):

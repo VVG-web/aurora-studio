@@ -759,8 +759,8 @@ class RouteRun:
 
         def on_lines(lines):
             for line in lines:
-                # машинные строки итога и вердикта ворот консоли не показываются
-                if not str(line).startswith((self.ck.RS.MARK, self.ck.RS.MARK_GATE)):
+                # машинные строки (итог, вердикт ворот, исход публикации) консоли не показываются
+                if not str(line).startswith(self.ck.RS.MARKS):
                     self.say("out", line)
         res = run_job(self.ck, self.project, cmd, args, stop=self.stop, on_job=on_job,
                       parent=self.run_id, on_lines=on_lines, net=self.net_policy)

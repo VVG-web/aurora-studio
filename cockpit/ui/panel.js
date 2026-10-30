@@ -657,6 +657,7 @@ async function deleteFile(){
 
 async function openFile(f){
   if (F.ed && F.dirty && !confirm(t("files.leave_dirty"))) return;
+  if ($("#filePubCard") && $("#filePubCard").dataset.rel !== f.path) $("#filePubCard").remove();   // карточка публикации — другого файла
   $("#fileNone").hidden = true; $("#fileEditor").hidden = false;
   $("#fileName").textContent = f.path;
   $("#fileEnc").hidden = true;
@@ -771,6 +772,8 @@ function markDirty(){
   if ($("#fileFmText") && !$("#fileFm").hidden) F.fm = $("#fileFmText").value;
   F.dirty = wholeText() !== F.orig;
   $("#fileSave").disabled = !F.dirty || !!F.ro;
+  // «Опубликовать» при несохранённом сохраняет тем же кликом — и говорит это надписью, а не окном подтверждения.
+  if ($("#filePub")) $("#filePub").textContent = t(F.dirty ? "editor.publish_save" : "editor.publish");
   setDirty("file:" + F.path, t("dirty.file", {path: F.path}), F.dirty);
 }
 
@@ -1032,6 +1035,7 @@ function drawPublish(d){
   btn.hidden = v.button === "hidden";
   btn.disabled = v.button === "blocked";
   btn.title = v.why;
+  btn.textContent = t(F.dirty ? "editor.publish_save" : "editor.publish");     // несохранённое уходит тем же кликом
   const note = $("#filePubNote");
   note.innerHTML = "";
   note.hidden = !(v.why || v.gate.length);
@@ -1069,42 +1073,204 @@ async function afterPublish(rel){
   await openFile(f);
 }
 
+/* Публикация из «Файлов» — каждое исходящее действие явным кликом кнопки с понятной надписью, без окон подтверждения.
+   1) «Опубликовать» (при несохранённом — «Сохранить и опубликовать»: сохраняет тем же кликом) считает план — сухой
+      прогон `ship:publish --json` на сервере (`/api/publish/plan`) — и показывает карточку «что и куда уйдёт»: пространство,
+      корень, цепочку разделов (есть / будет создан / отказ), заголовок, создание или обновление, ворота, чистовик.
+   2) Кнопки карточки зависят от исхода плана: «Отправить» (черновик — «Опубликовать черновик»), «Обновить на месте» и
+      «Переместить по пути вида» (`--move`), «Открыть страницу», «Обновить зеркало» (`sync:confluence`), «Перезаписать»
+      (`--force`), «Взять под управление» (`--adopt`); `blocked` — причина и кнопка в нужную группу настроек.
+   3) После отправки исход приходит машинной строкой `AURORA-PUBLISH` (`publishDone`) и рисуется той же карточкой. */
 async function publishFromEditor(){
   if (!F.path || !F.publishable) return;
-  if (F.dirty && !confirm(t("editor.publish_dirty"))) return;
-  if (F.dirty) await saveFile();
-  const d = await api("/api/files/clean?project=" + encodeURIComponent(S.project.path)
-                      + "&path=" + encodeURIComponent(F.path));
-  if (d.error) return toast(d.error, "err");
-  // Показываем ровно то, что уйдёт. Граница производства невидима в тексте, и человек
-  // должен увидеть её собственными глазами до отправки, а не на странице у заказчика.
-  // Черновик (status: draft) предохранитель выходных команд не отправит без --allow draft: нажатие «Опубликовать»
-  // под этим предупреждением и есть осознанное решение.
-  const head = ((F.orig || "").replace(/^\uFEFF/, "").match(/^---\r?\n([\s\S]*?)\r?\n---/) || [])[1] || "";
-  const isDraft = /^status:\s*["']?(?:draft|\u0447\u0435\u0440\u043d\u043e\u0432\u0438\u043a)["']?(?:\s+#.*)?\s*$/mi.test(head);
-  const box = el("div",{class:"card", style:"padding:14px;margin-bottom:10px"},
-    el("b",{}, t("editor.publish_preview")),
-    el("div",{class:"sub"}, d.marked
-      ? t("editor.publish_cut", {n: d.cut})
-      : t("editor.publish_nomark")),
-    isDraft ? el("div",{class:"sub", style:"color:var(--tier-inreview)"}, t("editor.publish_draft")) : null,
-    el("pre",{class:"mono", style:"white-space:pre-wrap;max-height:260px;overflow:auto;"
-      + "margin-top:8px;padding:8px;border-radius:8px;background:var(--surface-2)"}, d.clean),
-    el("div",{class:"row", style:"gap:8px;margin-top:10px"},
-      el("button",{class:"btn primary", onclick:async ()=>{
-        box.remove();
-        show("console");
-        // Предпросмотр выше показал ровно то, что уйдёт: без маркера — тело целиком. Нажатие «Опубликовать» после
-        // него — осознанное решение, которое предохранитель выходных команд просит словом --allow no-marker.
-        const args = [F.path, "--apply"];
-        if (!d.marked) args.push("--allow", "no-marker");
-        if (isDraft) args.push("--allow", "draft");
-        const res = await api("/api/run", {method:"POST", body: JSON.stringify(
-          {project:S.project.path, cmd:"ship:publish", args})});
-        if (res.job) poll(res.job, 0, "ship:publish " + F.path);
-      }}, t("editor.publish_go")),
-      el("button",{class:"btn", onclick:()=>box.remove()}, t("editor.publish_cancel"))));
+  // Несохранённое уходит тем же кликом: надпись кнопки говорит «Сохранить и опубликовать». Сохранение не удалось
+  // (расхождение с диском, отказ) — публикации нет: причину показал `saveFile`.
+  if (F.dirty){ await saveFile(); if (F.dirty || !F.publishable) return; }
+  const rel = F.path;
+  const box = publishCard(rel);
+  box.append(el("div",{class:"row", style:"gap:8px"}, el("span",{class:"spin"}), t("pub.planning")));
+  const q = "?project=" + encodeURIComponent(S.project.path) + "&path=" + encodeURIComponent(rel);
+  const [clean, res] = await Promise.all([
+    api("/api/files/clean" + q, {quiet:true}),
+    api("/api/publish/plan", {method:"POST", quiet:true, body: JSON.stringify({project:S.project.path, path:rel})})]);
+  if (F.path !== rel || !box.isConnected) return;
+  drawPublishCard(box, rel, (res && res.plan) || null, (res && !res.plan && res.error) || "", clean || {});
+}
+
+// Карточка публикации файла в «Файлах»: одна на файл, новая заменяет прежнюю.
+function publishCard(rel){
+  $("#filePubCard")?.remove();
+  const box = el("div",{id:"filePubCard", class:"card", "data-rel": rel, style:"padding:14px;margin-bottom:10px"});
   $("#filePane").prepend(box);
+  return box;
+}
+
+const PUB_LEVELS = ["exists", "create", "created", "refused"];     // состояние уровня пути: есть / будет создан / создан / отказ
+
+// Путь страницы словами: Пространство · Корень › Раздел (будет создан) › Заголовок.
+function publishPath(plan){
+  const parts = [];
+  if (plan.root && (plan.root.title || plan.root.id)) parts.push(el("b",{}, plan.root.title || "#" + plan.root.id));
+  (plan.chain || []).forEach(c => parts.push(el("span",{}, c.title + " ",
+    el("span",{class:"chip" + (c.state === "refused" ? " bad" : c.state === "exists" ? "" : " warn"),
+               style:"font-size:11px"}, t("pub.level_" + (PUB_LEVELS.includes(c.state) ? c.state : "exists"))))));
+  parts.push(el("b",{}, plan.title || ""));
+  const line = el("div",{class:"mono", style:"font-size:12.5px;margin-top:6px"});
+  if (plan.space) line.append(t("pub.space", {space: plan.space}) + " · ");
+  parts.forEach((p, i) => { if (i) line.append(" › "); line.append(p); });
+  return line;
+}
+
+// Ссылка на страницу Confluence — только http(s): адрес собран движком из `confluence.base_url`.
+function pageLink(url, label){
+  return /^https?:\/\//i.test(String(url || "")) ? el("a",{class:"btn", href:url, target:"_blank", rel:"noopener noreferrer"}, label) : null;
+}
+
+/* Почему публикация не идёт — словами каталога по коду исхода (`code`); незнакомый код — причина движка как есть. */
+function publishWhy(res){
+  const c = String(res.code || "");
+  const vars = {fields: (res.fields || []).join(", "), kind: res.kind || "", status: res.status || "", why: res.why || "",
+                page: (res.page && res.page.id) || ""};
+  if (c === "review") vars.why = (res.review || []).map(g => t("editor.gate_" + g.replace(/-/g, "_"))).join("; ");
+  if (c === "gate") vars.why = (res.gate || []).filter(g => g.level === "block" && !g.allowed)
+    .map(g => t("pub.gate_" + g.code.replace(/-/g, "_"))).join(" ");
+  const known = ["missing_field", "empty_title", "too_long", "no_parent", "root_missing", "root_unknown", "title_taken",
+                 "children_partial", "page_missing", "cross_space", "not_ours", "no_auth", "no_config", "no_space",
+                 "review", "gate", "http", "network", "unsafe", "stamp"];
+  const k = c.replace(/-/g, "_");
+  return known.includes(k) ? t("pub.why_" + k, vars) : (res.why || t("pub.why_unknown"));
+}
+
+/* Кнопки по исходу (плана или отправки). Каждая — явное действие; окон подтверждения нет. `send` — что делает основная
+   кнопка при `ok` плана: отправить с теми снятиями ворот, которые человек видит в карточке. */
+function publishActions(rel, res, opts){
+  const o = opts || {};
+  const out = [];
+  const open = (res.page && res.page.url) || res.url;
+  const go = (args, label, primary) => el("button",{class:"btn" + (primary ? " primary" : ""),
+    onclick:()=>runPublish(rel, args)}, label);
+  switch (res.outcome){
+    case "ok":
+      if (o.plan){
+        out.push(go(["--apply", ...(o.allow || [])], t(o.draft ? "pub.send_draft" : "pub.send"), true));
+        if (o.blockedGate) out[0].disabled = true;
+      } else if (open) out.push(pageLink(open, t("pub.open")));
+      break;
+    case "unchanged":
+      if (open) out.push(pageLink(open, t("pub.open")));
+      break;
+    case "conflict":
+      if (open) out.push(pageLink(open, t("pub.open")));
+      out.push(el("button",{class:"btn", onclick: async ()=>{
+        const r = await api("/api/run", {method:"POST", body: JSON.stringify({project:S.project.path, cmd:"sync:confluence", args:[]})});
+        if (r.job){ show("console"); poll(r.job, 0, "sync:confluence"); }
+      }}, t("pub.mirror")));
+      out.push(go(["--apply", "--force", ...(o.allow || [])], t("pub.force"), false));
+      break;
+    case "adopt":
+      if (open) out.push(pageLink(open, t("pub.open")));
+      out.push(go(["--apply", "--adopt", ...(o.allow || [])], t("pub.adopt"), false));
+      break;
+    case "misplaced":
+      if (o.plan) out.push(go(["--apply", ...(o.allow || [])], t("pub.update_here"), true));
+      out.push(go(["--apply", "--move", ...(o.allow || [])], t("pub.move"), !o.plan));
+      if (open) out.push(pageLink(open, t("pub.open")));
+      break;
+    case "blocked":
+      if (res.fix === "kinds" || res.fix === "project") out.push(el("button",{class:"btn", onclick:()=>{
+        SGROUPS.focus = res.fix === "kinds" ? "project:kinds" : "project:form";
+        show("project");
+      }}, t(res.fix === "kinds" ? "editor.publish_fix_kinds" : "editor.publish_fix_project")));
+      if (res.url) out.push(pageLink(res.url, t("pub.open_taken")));
+      break;
+  }
+  return out.filter(Boolean);
+}
+
+// Что сказать про исход одной строкой (план: «уйдёт так»; отправка: «вышло так»).
+function publishHeadline(res, plan){
+  const v = {url: res.url || "", version: res.version || (res.page && res.page.version) || "",
+             was: (res.conflict || {}).was || "", now: (res.conflict || {}).now || "", by: (res.conflict || {}).by || "",
+             when: (res.conflict || {}).when || "", title: (res.page && res.page.title) || res.title || "",
+             here: ((res.where || {}).now || {}).title || ((res.where || {}).now || {}).id || "",
+             there: (((res.where || {}).want || {}).path || []).join(" › "),
+             created: (res.created || []).join(", ")};
+  switch (res.outcome){
+    case "ok": return plan ? t(res.action === "update" ? "pub.plan_update" : "pub.plan_create", v)
+                           : t(res.moved ? "pub.done_moved" : "pub.done_ok", v) + (v.created ? " " + t("pub.done_created", v) : "");
+    case "unchanged": return t("pub.unchanged", v);
+    case "conflict": return t("pub.conflict", v);
+    case "adopt": return t("pub.adopt_why", v);
+    case "misplaced": return t(plan ? "pub.misplaced_plan" : "pub.misplaced_done", v);
+    case "blocked": return publishWhy(res);
+  }
+  return res.why || "";
+}
+
+function drawPublishCard(box, rel, plan, err, clean){
+  box.innerHTML = "";
+  box.append(el("b",{}, t("editor.publish_preview")));
+  // Ворота выходных команд: «нет границы чистовика» и «черновик» снимаются осознанно — этой карточкой и кнопкой
+  // с понятной надписью; остальное (остатки шаблона, персональные данные) чинится в документе.
+  const gates = plan ? (plan.gate || []).filter(g => g.level === "block") : [];
+  const allow = gates.filter(g => g.code === "no-marker" || g.code === "draft").map(g => ["--allow", g.code]).flat();
+  const draft = gates.some(g => g.code === "draft");
+  const hard = gates.filter(g => g.code !== "no-marker" && g.code !== "draft");
+  if (plan){
+    box.append(el("div",{class:"sub" + (plan.outcome === "blocked" || plan.outcome === "conflict" ? " warn" : "")},
+      publishHeadline(plan, true)));
+    if (plan.space || plan.root && plan.root.id) box.append(publishPath(plan));
+    if (plan.page && plan.page.id) box.append(el("div",{class:"muted", style:"font-size:12px"},
+      t("pub.page_now", {id: plan.page.id, version: plan.page.version || "?", by: plan.page.by || "—", when: plan.page.when || "—"})));
+    gates.forEach(g => box.append(el("div",{class:"sub", style:"color:var(--tier-inreview)"},
+      t("pub.gate_" + g.code.replace(/-/g, "_")))));
+  } else {
+    // Плана нет (нет связи, движок проекта старше): прежний предпросмотр и отправка — проверку пройдёт сама команда.
+    if (err) box.append(el("div",{class:"sub warn"}, t("pub.no_plan", {why: err})));
+    if (!clean.marked) allow.push("--allow", "no-marker");
+  }
+  box.append(el("div",{class:"sub"}, clean.marked ? t("editor.publish_cut", {n: clean.cut}) : t("editor.publish_nomark")));
+  box.append(el("details",{style:"margin-top:6px"}, el("summary",{}, t("pub.clean")),
+    el("pre",{class:"mono", style:"white-space:pre-wrap;max-height:260px;overflow:auto;"
+      + "margin-top:8px;padding:8px;border-radius:8px;background:var(--surface-2)"}, clean.clean || "")));
+  const row = el("div",{class:"row", style:"gap:8px;margin-top:10px;flex-wrap:wrap"});
+  if (plan) row.append(...publishActions(rel, plan, {plan: true, allow, draft, blockedGate: hard.length > 0}));
+  else row.append(el("button",{class:"btn primary", onclick:()=>runPublish(rel, ["--apply", ...allow])}, t("pub.send")));
+  row.append(el("button",{class:"btn", onclick:()=>box.remove()}, t("editor.publish_cancel")));
+  box.append(row);
+}
+
+// Отправка: ход — в «Консоли» (в фоне), исход — в той же карточке, когда команда кончится.
+async function runPublish(rel, args){
+  const res = await api("/api/run", {method:"POST", body: JSON.stringify(
+    {project:S.project.path, cmd:"ship:publish", args:[rel, ...args]})});
+  if (!res.job) return;
+  const box = $("#filePubCard");
+  if (box && box.dataset.rel === rel){
+    box.innerHTML = "";
+    box.append(el("div",{class:"row", style:"gap:8px"}, el("span",{class:"spin"}), t("pub.sending"),
+      el("button",{class:"btn sm", onclick:()=>show("console")}, t("pub.to_console"))));
+  }
+  poll(res.job, 0, "ship:publish " + rel);
+}
+
+// Команда публикации кончилась (из «Файлов» или из «Продуктивности»): файл перечитываем, если скрипт его проштамповал,
+// и рисуем исход карточкой у файла с кнопками по исходу.
+function publishDone(rel, res, rc){
+  if (rc === 0 || (res && res.stamped)) afterPublish(rel);
+  if (!res || !res.outcome) return;
+  // В «Файлах» открыт другой документ — исход строкой, а карточку с кнопками покажет «Опубликовать» у того файла.
+  if (F.path !== rel) return toast(rel + ": " + publishHeadline(res, false),
+                                   res.outcome === "ok" || res.outcome === "unchanged" ? "ok" : "warn");
+  const box = publishCard(rel);
+  box.append(el("b",{}, t("pub.result_title")),
+    el("div",{class:"sub" + (res.outcome === "ok" || res.outcome === "unchanged" ? "" : " warn")}, publishHeadline(res, false)));
+  if (res.space || (res.root && res.root.id)) box.append(publishPath(res));
+  const row = el("div",{class:"row", style:"gap:8px;margin-top:10px;flex-wrap:wrap"},
+    // повтор («Перезаписать», «Взять под управление», «Переместить») снимает те же ворота, что сняла отправка
+    ...publishActions(rel, res, {allow: (res.gate || []).filter(g => g.allowed).map(g => ["--allow", g.code]).flat()}),
+    el("button",{class:"btn", onclick:()=>box.remove()}, t("pub.close")));
+  box.append(row);
 }
 
 async function openPath(rel){
@@ -2596,7 +2762,16 @@ async function retryStep(){
    MCP; панель здесь только удобный ввод, а не второе хранилище. Виды документов заводит
    человек: движок не знает наперёд, какие формы потребует заказчик. */
 let KINDS = null;
-let KINDS_DIGEST = "";       // слепок реестра, который прочитала форма; сервер сверяет его при записи (409 — файл изменился)
+let KINDS_DIGEST = "";
+/* Пример пути вида строкой по ответу `/api/kinds/example`: для какого документа и куда ляжет его страница. Чистая
+   функция: решает ответ сервера, страница только печатает. */
+function kindExample(r){
+  if (!r || r.error) return "";
+  const path = [r.root || t("kinds.ex_no_root"), ...(r.levels || []), r.title || "{title}"].join(" › ");
+  const head = r.doc ? t("kinds.ex_doc", {doc: String(r.doc).split("/").pop(), path}) : t("kinds.ex_nodoc", {path});
+  const miss = (r.missing || []).length ? " " + t("kinds.ex_missing", {fields: r.missing.join(", ")}) : "";
+  return head + miss + ((r.problems || []).length ? " · " + r.problems.join("; ") : "");
+}       // слепок реестра, который прочитала форма; сервер сверяет его при записи (409 — файл изменился)
 
 /* Форма вида — две рамки: «Создание» (шаблон, промпт создания, папка, MCP, маска, задача) и «Публикация в Confluence»
    (родитель, промпт публикации, ревью). Шаблон отвечает за создание, промпт — за публикацию. Промпт создания и промпт
@@ -2690,11 +2865,27 @@ async function renderKinds(box){
                                                                : t("kinds.task_close"); }},
             t("kinds.task_open"))),
         taskBox);
+      // Пример пути считает сервер тем же кодом, что публикация: «для документа …: Корень › Раздел › Заголовок».
+      // Значения формы — несохранённые тоже — уходят запросом; ответ приходит, пока человек печатает (с паузой).
+      const example = el("div",{class:"muted kf-example", "data-kind": kind});
+      let exampleTimer = null;
+      const exampleNow = async () => {
+        const q = new URLSearchParams({project: S.project.path, kind, out: rec.out || "", publish_url: rec.publish_url || "",
+                                       publish_path: rec.publish_path || "", publish_title: rec.publish_title || ""});
+        example.textContent = kindExample(await api("/api/kinds/example?" + q.toString(), {quiet:true}));
+      };
+      const watch = input => { input.addEventListener("input", () => { clearTimeout(exampleTimer);
+                                                                       exampleTimer = setTimeout(exampleNow, 350); });
+                               return input; };
+      if (rec.publish_url || rec.publish_path || rec.publish_title) exampleNow();
       const publish = el("fieldset",{class:"kframe", "data-frame":"publish"},
         el("legend",{}, t("kinds.frame_publish")),
         el("div",{class:"muted kf-about"}, t("kinds.frame_publish_about")),
         el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;align-items:flex-end"},
-          lab("publish_url", field("publish_url", t("kinds.f_publish"), "260px")),
+          lab("publish_url", watch(field("publish_url", t("kinds.f_publish"), "260px"))),
+          // Путь под корнем — цепочка разделов через «>», подстановки из шапки документа; заголовок — по шаблону.
+          lab("publish_path", watch(field("publish_path", t("kinds.f_publish_path"), "260px")), t("kinds.publish_path_hint")),
+          lab("publish_title", watch(field("publish_title", t("kinds.f_publish_title"), "200px"))),
           lab("publish_prompt", field("publish_prompt", t("kinds.f_publish_prompt"), "220px"),
               t("kinds.publish_prompt_hint")),
           // Ревью по чек-листу перед публикацией: ворота `ship:publish` пускают наружу только свежее ревью.
@@ -2703,7 +2894,8 @@ async function renderKinds(box){
             el("select",{class:"btn sm",style:"font-weight:400",
               onchange:e=>{ rec.review = e.target.value; dirty(); }},
               ...["", ...(d.review_profiles||[])].map(v=>el("option",{value:v, selected:(rec.review||"")===v?"":null},
-                v ? t("kinds.review_" + v) : t("kinds.review_off")))))));
+                v ? t("kinds.review_" + v) : t("kinds.review_off")))))),
+        example);
       rows.append(el("div",{class:"list-item",style:"gap:8px;flex-wrap:wrap"},
         el("span",{class:"chip mono",style:"flex:none"}, kind),
         lab("title", field("title", t("kinds.f_title"), "240px")),
@@ -2723,7 +2915,8 @@ async function renderKinds(box){
           return toast(t("kinds.bad_name"), "warn");
         if (KINDS[key]) return toast(t("kinds.exists"), "warn");
         KINDS[key] = {title:"", template:"", prompt:"", out:"Artifacts/" + key,
-                      publish_url:"", publish_prompt:"", mcp:"", tech_agnostic:"", review:"", ref_mask:"", task:{}};
+                      publish_url:"", publish_path:"", publish_title:"", publish_prompt:"", mcp:"", tech_agnostic:"", review:"",
+                      ref_mask:"", task:{}};
         name.value = ""; dirty(); draw();
       }}, t("kinds.add")),
       saveButton("kinds", t("dirty.kinds"), t("kinds.save"), ()=>save(false)),
@@ -3978,6 +4171,10 @@ async function poll(id, since, label, me){
   (d.lines||[]).forEach(l=>{
     if (String(l).startsWith(SUMMARY_MARK)) return;   // машинная строка итога — для панели
     if (String(l).startsWith(GATE_MARK)) return;      // машинная строка вердикта ворот — тоже
+    if (String(l).startsWith(PUBLISH_MARK)){          // исход публикации: по нему рисуются кнопки «Перезаписать» и др.
+      try { PUBLISH_RESULT[id] = JSON.parse(String(l).slice(PUBLISH_MARK.length)); } catch (e) { /* строка оборвана */ }
+      return;
+    }
     CONSOLE_LINES.push(l);
     out.append(el("div",{class:lineClass(l)}, l));
   });
@@ -3998,9 +4195,13 @@ async function poll(id, since, label, me){
   toast(rc===0 ? t("poll.done", {cmd: label})
                : t("poll.done_rc", {cmd: mark.what + ": " + label, rc}),
         rc===0 ? "ok" : rc===1 ? "warn" : "err");
-  // Публикация переписывает файл (штамп): открытый в «Файлах» документ перечитываем. Метка набирается в двух местах —
-  // из редактора и из «Продуктивности» — одинаково: «ship:publish <путь>».
-  if (rc === 0 && String(label).startsWith("ship:publish ")) afterPublish(String(label).slice("ship:publish ".length));
+  // Публикация переписывает файл (штамп): открытый в «Файлах» документ перечитываем, а по исходу (`AURORA-PUBLISH`)
+  // рисуем кнопки: «Перезаписать», «Взять под управление», «Переместить по пути вида». Метка — «ship:publish <путь>».
+  if (String(label).startsWith("ship:publish ")){
+    const res = PUBLISH_RESULT[id] || null;
+    delete PUBLISH_RESULT[id];
+    publishDone(String(label).slice("ship:publish ".length), res, rc);
+  }
   // Задание ассистенту команда печатает сама; из прокручиваемой консоли его неудобно
   // выделять мышью — даём кнопку, которая кладёт блок целиком в буфер.
   LAST_TASKS = assistantTasks(CONSOLE_LINES);
@@ -4108,8 +4309,11 @@ function lastRun(cmd){ return runs()[cmd]; }
 // консоль не показывает, а итог маршрута собирает из неё числа шагов.
 const SUMMARY_MARK = "AURORA-SUMMARY ";
 const GATE_MARK = "AURORA-GATE ";       // вердикт ворот качества — тоже машинная строка
+const PUBLISH_MARK = "AURORA-PUBLISH "; // исход публикации в Confluence (`ship:publish`) — тоже
+const PUBLISH_RESULT = {};              // задание → исход публикации, пока опрос не дошёл до конца
 function consoleLine(out, l){
-  if (!String(l).startsWith(GATE_MARK) && !String(l).startsWith(SUMMARY_MARK)) out.append(el("div",{class:lineClass(l)}, l));
+  if (!String(l).startsWith(GATE_MARK) && !String(l).startsWith(SUMMARY_MARK) && !String(l).startsWith(PUBLISH_MARK))
+    out.append(el("div",{class:lineClass(l)}, l));
 }
 
 function histWhen(iso){
@@ -5628,7 +5832,11 @@ function moduleCtx(id, root){
     ui: {metricCard, metric, goRoute, goCmd, kindChip, skillLine, copyButton, engineWord,
          editor: markdownEditor,
          // Здоровье приходит частями: пришла ли часть и чем занять место под её число.
-         has: hasPart, wait: waitMark, healthAt, stampText, kbInfo, templatesHint, templatesState, rebuildHint, openIssue, issueUrl},
+         has: hasPart, wait: waitMark, healthAt, stampText, kbInfo, templatesHint, templatesState, rebuildHint, openIssue, issueUrl,
+         // Публикация документа тем же путём, что в «Файлах»: редактор, карточка «что и куда уйдёт», кнопки по исходу.
+         publishFile: async rel => { await openPath(rel); if (F.path === rel) await publishFromEditor(); },
+         // Серая кнопка ведёт туда, где её чинят: `kinds` — «Настройки проекта → Артефакты», иначе «Настройки проекта».
+         openSettings: fix => { SGROUPS.focus = fix === "kinds" ? "project:kinds" : "project:form"; show("project"); }},
     openPath, isEngineCmd, hideDev, openProject,
     // Достроить/обновить движок выбранного проекта на этой машине: ту же кнопку рисует полоса ядра.
     prepareEngine: () => prepareEngine(S.project),

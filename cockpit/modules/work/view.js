@@ -187,9 +187,10 @@ async function fillKinds(ctx){
       el("div", {}, el("b", {}, t("work.spec_head_publish") + " "), publish.join(" · ")));
     const ready = rec.template && rec.out;
     ctx.$("#makeGo").disabled = !ready;
-    ctx.$("#makePublish").disabled = !rec.publish_url;
-    ctx.$("#makePublish").title = rec.publish_url
-      ? t("work.publish_hint") : t("work.publish_no_url");
+    // Можно ли публиковать, решает сервер по каждому документу (то же состояние, что у кнопки в «Файлах»): корень
+    // бывает и в шапке документа, и в конфиге, а не только у вида.
+    ctx.$("#makePublish").disabled = !sel.value;
+    ctx.$("#makePublish").title = t("work.publish_hint");
   };
   sel.onchange = draw;
   draw();
@@ -268,8 +269,10 @@ function drawMake(ctx, lines){
 }
 
 // Публикация: выбрать из готового, а не набирать путь руками — первая же опечатка ушла
-// бы в Confluence чужой страницей. Уточняющий промпт остаётся заданием ассистенту:
-// правку текста перед отправкой делает тот, кто её видит.
+// бы в Confluence чужой страницей. Состояние у каждого документа считает сервер (`/api/artifacts` → `publish`, то же,
+// что у кнопки в «Файлах»); публикация идёт тем же путём, что в «Файлах»: документ открывается в редакторе с карточкой
+// «что и куда уйдёт» и кнопками по исходу. Черновик — причина словами и кнопка с явной надписью, без окна подтверждения.
+// Уточняющий промпт остаётся заданием ассистенту: правку текста перед отправкой делает тот, кто её видит.
 async function publish(ctx){
   const {t, el} = ctx;
   if (!ctx.project) return ctx.toast(t("work.pick_project"), "warn");
@@ -277,7 +280,7 @@ async function publish(ctx){
   const box = ctx.$("#makeDialog");
   box.innerHTML = "";
   const d = await ctx.api(`/api/artifacts?project=${encodeURIComponent(ctx.project.path)}`
-                          + `&kind=${kind}`);
+                          + `&kind=${encodeURIComponent(kind)}`);
   const files = d.files || [];
   if (!files.length)
     return box.append(el("div", {class: "card", style: "padding:18px"}, t("work.publish_empty")));
@@ -294,30 +297,44 @@ async function publish(ctx){
   const note = el("textarea", {class: "btn", rows: 2, placeholder: t("work.publish_note_ph"),
     style: "width:100%;font-weight:400;margin-top:10px;resize:vertical"});
   const hint = el("div", {class: "muted", style: "font-size:12px;margin-top:6px"});
+  const fix = el("div", {class: "row", style: "gap:8px;margin-top:6px", hidden: ""});
+  const go = el("button", {class: "btn primary", "data-help": "work.help.publish_go", onclick: () => {
+    const f = files.find(x => x.rel === sel.value) || {};
+    if (f.rel) ctx.ui.publishFile(f.rel);
+  }}, t("work.publish_go"));
   const draw = () => {
     const f = files.find(x => x.rel === sel.value) || {};
-    hint.textContent = f.status === "draft"
-      ? t("work.publish_draft_warn")
-      : (f.url ? t("work.publish_again", {url: f.url}) : t("work.publish_new"));
+    const pub = f.publish || {};
+    const draft = f.status === "draft";
+    fix.innerHTML = "";
+    fix.hidden = true;
+    go.disabled = pub.state !== "ready";
+    go.textContent = t(draft ? "work.publish_go_draft" : "work.publish_go");
+    if (pub.state === "blocked"){
+      hint.textContent = pub.why || "";
+      if (pub.fix){
+        fix.hidden = false;
+        fix.append(el("button", {class: "btn sm", onclick: () => ctx.ui.openSettings(pub.fix)},
+          t(pub.fix === "kinds" ? "work.publish_fix_kinds" : "work.publish_fix_project")));
+      }
+    } else if (pub.state !== "ready"){
+      hint.textContent = t("work.publish_none");
+    } else {
+      // Путь, который посчитал сервер: корень вида › разделы › заголовок — до всякой отправки.
+      const where = (pub.path || []).concat(pub.title ? [pub.title] : []).join(" › ");
+      hint.textContent = (draft ? t("work.publish_draft_warn") + " "
+        : (f.url ? t("work.publish_again", {url: f.url}) : t("work.publish_new")) + " ")
+        + (where ? t("work.publish_where", {where}) : "");
+    }
   };
   sel.onchange = draw;
   draw();
 
   box.append(el("div", {class: "card", style: "padding:18px"},
     el("div", {style: "font-weight:700;margin-bottom:8px"}, t("work.publish_title")),
-    sel, hint, note,
+    sel, hint, fix, note,
     el("div", {class: "row", style: "gap:10px;margin-top:10px"},
-      el("button", {class: "btn primary", "data-help": "work.help.publish_go", onclick: async () => {
-        const f = files.find(x => x.rel === sel.value) || {};
-        if (f.status === "draft" && !confirm(t("work.publish_draft_ask"))) return;
-        ctx.show("console");
-        // «Всё равно публиковать?» с ответом «да» и есть осознанное решение, которое предохранитель
-        // выходных команд просит словом --allow; без него черновик скрипт теперь не отправит.
-        const args = f.status === "draft" ? [f.rel, "--apply", "--allow", "draft"] : [f.rel, "--apply"];
-        const res = await ctx.api("/api/run", {method: "POST", body: JSON.stringify(
-          {project: ctx.project.path, cmd: "ship:publish", args})});
-        if (res.job) ctx.poll(res.job, 0, "ship:publish " + f.rel);
-      }}, t("work.publish_go")),
+      go,
       el("button", {class: "btn", "data-help": "work.help.copy_task", onclick: () => {
         const f = files.find(x => x.rel === sel.value) || {};
         const task = t("work.publish_task", {rel: f.rel})
