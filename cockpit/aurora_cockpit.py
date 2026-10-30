@@ -1690,6 +1690,45 @@ def task_options(project: str, q: dict) -> dict:
     return TD.options(project, (q.get("project_key") or [""])[0], (q.get("fresh") or [""])[0] == "1")
 
 
+def task_doc_state(project: str, q: dict, lang: str = "") -> dict:
+    """Блок «Задача» документа (`path`) или будущего документа вида (`kind`): трекер, умолчания вида и коннектора, блок
+    `task:` шапки, уже заведённая задача и слепок файла — по нему «Сохранить» пишет блок тем же путём, что редактор."""
+    import task_doc as TD
+    rel = (q.get("path") or [""])[0]
+    text, digest = "", ""
+    if rel:
+        cur = file_read(project, rel)
+        if cur.get("error"):
+            return cur
+        text, digest = cur["text"], cur["digest"]
+    out = TD.doc_state(project, rel, (q.get("kind") or [""])[0], text)
+    titles = data_catalogue(lang or DEFAULT_LANG).get("connectors") or {}
+    tr = out["tracker"]
+    tr["title"] = (titles.get(tr["id"]) or {}).get("title") or tr["title"]
+    return dict(out, path=rel, digest=digest)
+
+
+def task_doc_save(project: str, payload: dict) -> dict:
+    """«Сохранить» блока «Задача»: блок `task:` в шапку документа той же записью, что у редактора «Файлов» — слепок
+    (`expect`) обязателен, файл изменился на диске — 409 и ничего не записано."""
+    import task_doc as TD
+    rel = str(payload.get("path") or "")
+    cur = file_read(project, rel)
+    if cur.get("error"):
+        return cur
+    expect = payload.get("expect")
+    if not isinstance(expect, str) or not expect or expect != cur["digest"]:
+        return {"conflict": True, "error": "файл изменился на диске с момента открытия"}
+    task = payload.get("task") if isinstance(payload.get("task"), dict) else {}
+    new = TD.with_task(cur["text"], task)
+    if new == cur["text"]:
+        return {"ok": True, "digest": cur["digest"], "unchanged": True, "task": TD.task_block(new)}
+    res = file_write(project, rel, new, expect=expect)
+    if res.get("ok"):
+        res["task"] = TD.task_block(new)
+    return res
+
+
 def task_create(project: str, payload: dict) -> dict:
     """«Создать задачу» для документа — та же логика, что `ship:task --apply`."""
     import task_doc as TD
@@ -7221,6 +7260,11 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(task_options(project, q))
+        elif u.path == "/api/task/doc":
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(task_doc_state(project, q, request_lang(q)))
         elif u.path == "/api/net/commands":
             project = (q.get("project") or [""])[0]
             self.send_json(net_commands(self._quiet_project(project)))
@@ -7775,6 +7819,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             res = task_create(project, payload)
             self.send_json(res, 200 if res.get("rc") == 0 else 400)
+            return
+        if u.path == "/api/task/doc":
+            project = str(payload.get("project") or "")
+            if not self._known(project):
+                return
+            res = task_doc_save(project, payload)
+            self.send_json(res, 200 if res.get("ok") else 409 if res.get("conflict") else 400)
             return
         if u.path == "/api/net/probe":
             project = self._quiet_project(str(payload.get("project") or ""))

@@ -124,10 +124,11 @@ def git_email(root: str) -> str:
 
 
 def options(root: str, project_key: str = "", fresh: bool = False) -> dict:
-    """Списки для формы задачи: типы задач и эпики проекта трекера (из кэша на час; `fresh` — заново)."""
+    """Списки для формы задачи: типы задач и эпики проекта трекера (из кэша на час; `fresh` — заново) и исполнитель по
+    умолчанию — человек с почтой git проекта (`assignee`: почта и найденное имя; не нашёлся — имя пусто)."""
     key = (project_key or "").strip() or CO.defaults(root, ROLE).get("project_key", "")
     out = {"ok": False, "connector": CO.active(root, ROLE), "project_key": key, "types": [], "epics": [],
-           "cached": False}
+           "cached": False, "assignee": {"email": "", "name": "", "display": ""}}
     if not key:
         return dict(out, code="no_project_key", error=why("no_project_key"))
     for op, field in (("issue_types", "types"), ("epics", "epics")):
@@ -136,8 +137,72 @@ def options(root: str, project_key: str = "", fresh: bool = False) -> dict:
             return dict(out, code=got.get("kind", ""), error=got.get("error", ""), detail=got.get("detail", ""))
         out[field] = (got.get("result") or {}).get(field) or []
         out["cached"] = out["cached"] or bool(got.get("cached"))
+    email = git_email(root)
+    if email and CO.supports(root, ROLE, "find_user"):
+        got = CO.call(root, ROLE, "find_user", {"email": email})
+        who = (got.get("result") or {}) if got.get("ok") else {}
+        out["assignee"] = {"email": email, "name": str(who.get("name") or ""), "display": str(who.get("display") or "")}
+    elif email:
+        out["assignee"]["email"] = email
     out["ok"] = True
     return out
+
+
+def kind_defaults(root: str, kind_task: dict) -> dict:
+    """Свойства задачи по умолчанию для документа вида: свойства задачи вида и ключ проекта из настроек коннектора.
+    Эпика среди них нет: эпик выбирают у документа, а прежнее значение вида в конфиге остаётся и не действует."""
+    out = {f: (as_items(kind_task.get(f)) if f in LISTS else str(kind_task.get(f) or "").strip())
+           for f in FIELDS if f != "epic"}
+    out["project"] = out["project"] or CO.defaults(root, ROLE).get("project_key", "")
+    return out
+
+
+def with_task(text: str, task: dict) -> str:
+    """Текст документа с блоком `task:` шапки по `task` (пустые поля не пишутся, нет ни одного — блока нет); остальная
+    шапка и тело — как были. Шапки нет — она заводится."""
+    rows = []
+    for f in FIELDS:
+        v = (task or {}).get(f)
+        v = ", ".join(as_items(v)) if f in LISTS else " ".join(str(v or "").split())
+        if v:
+            rows.append(f"  {f}: {v}")
+    if split_frontmatter(text)[0] is None:
+        if not rows:
+            return text
+        text = "---\n---\n\n" + text.lstrip("\n")
+    head, rest = split_frontmatter(text)
+    keep, inside = [], False
+    for line in head.split("\n"):
+        if re.match(r"^task[ \t]*:[ \t]*(?:#.*)?$", line):
+            inside = True
+            continue
+        if inside and (not line.strip() or line[0] in " \t"):
+            continue                      # строки прежнего блока `task:`
+        inside = False
+        keep.append(line)
+    head = "\n".join(keep).rstrip("\n")
+    if rows:
+        head += "\n" + "\n".join(["task:"] + rows)
+    return "---" + head + rest
+
+
+def doc_state(root: str, rel: str = "", kind: str = "", text: str = "") -> dict:
+    """Блок «Задача» документа для панели: активный трекер, вид документа, свойства задачи по умолчанию (вид и настройки
+    коннектора), блок `task:` шапки и уже заведённая задача (`task_key`, `task_url`). Без документа — по виду `kind`
+    (окно создания артефакта). Сеть не нужна: списки и исполнителя по почте отдаёт `options`."""
+    import make_kinds as MK
+    kinds = MK.read_kinds(root) or {}
+    fm = frontmatter((text or "").lstrip("\ufeff").replace("\r\n", "\n")) if text else {}
+    if rel:
+        kid, rec = MK.kind_of(kinds, fm.get("type") or "", os.path.abspath(os.path.join(root, rel)), root)
+    else:
+        kid, rec = (kind, kinds.get(kind) or {}) if kind in kinds else ("", {})
+    m, fail, src = CO.pick(root, ROLE)
+    tracker = ({"id": m["id"], "title": str(m.get("title") or m["id"]), "ops": CO.ops_of(m), "from": src} if m
+               else {"id": "", "title": "", "ops": [], "from": "", "code": fail["kind"], "error": fail["error"]})
+    return {"kind": kid, "tracker": tracker, "defaults": kind_defaults(root, rec.get("task") or {}),
+            "task": task_block((text or "").lstrip("\ufeff").replace("\r\n", "\n")) if text else {},
+            "task_key": str(fm.get("task_key") or "").strip(), "task_url": str(fm.get("task_url") or "").strip()}
 
 
 def _closed(root: str, rel: str) -> bool:
@@ -182,7 +247,8 @@ def run(root: str, rel: str, apply: bool = False, over: dict | None = None) -> d
 
     import make_kinds as MK
     kind, rec = MK.kind_of(MK.read_kinds(root) or {}, fm.get("type") or "", os.path.abspath(full), root)
-    kind_task = rec.get("task") or {}
+    # Эпик вида больше не действует: его выбирают у документа (прежнее значение в конфиге остаётся и не читается).
+    kind_task = {k: v for k, v in (rec.get("task") or {}).items() if k != "epic"}
     doc_task = task_block(text)
     res["artifact_kind"] = kind
 

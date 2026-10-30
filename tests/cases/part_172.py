@@ -37,16 +37,16 @@ def _setup(tmp: Path, head: str = "type: us\n", body: str = "# Платёж за
 
 @test
 def test_ship_task_plan_names_the_task_and_writes_nothing(tmp: Path):
-    """Без `--apply` — план: трекер, ключ проекта (из настроек коннектора), тип, метки и эпик (из свойств задачи вида),
-    исполнитель (по почте git проекта), заголовок (заголовок документа). В трекер не уходит ни одной записи, файл не
-    тронут; итог — строка `AURORA-TASK` с исходом `plan`."""
+    """Без `--apply` — план: трекер, ключ проекта (из настроек коннектора), тип и метки (из свойств задачи вида; эпик вида
+    с 1.200.0 не действует — его выбирают у документа), исполнитель (по почте git проекта), заголовок (заголовок
+    документа). В трекер не уходит ни одной записи, файл не тронут; итог — строка `AURORA-TASK` с исходом `plan`."""
     tracker, root, path, environ = _setup(tmp)
     try:
         before = path.read_bytes()
         cp, res = T.ship_task(root, REL, environ=environ)
         assert cp.returncode == 0 and res["outcome"] == "plan" and res["rc"] == 0, (cp.stdout, cp.stderr)
         task = res["task"]
-        assert task["project"] == "PRJA" and task["type"] == "Story" and task["epic"] == "PRJA-2", task
+        assert task["project"] == "PRJA" and task["type"] == "Story" and task["epic"] == "", task
         assert task["labels"] == ["analytics"] and task["components"] == [], task
         assert task["assignee"] == "analyst" and task["assignee_from"] == "git", task
         assert task["assignee_email"] == "analyst@example.com" and task["summary"] == "Платёж за пять дней", task
@@ -151,10 +151,10 @@ def test_ship_task_refuses_with_a_reason_and_finds_no_assignee_without_failing(t
 @test
 def test_ship_task_machine_line_is_hidden_like_the_publish_line(_t):
     """`AURORA-TASK` — строка для кнопки панели: она в общем перечне машинных строк (консоль и журнал прогона её не
-    показывают), сервер прячет её из истории запуска, а реестр команд знает `ship:task` с версии 1.199.0."""
+    показывают), сервер прячет её из истории запуска, а реестр команд знает `ship:task` с версии 1.200.0."""
     RS, TD = T._mod("run_summary"), T._mod("task_doc")
     assert RS.MARK_TASK == TD.MARK_TASK == T.MARK and RS.MARK_TASK in RS.MARKS
     assert "RS.MARK_TASK" in (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     row = next(ln for ln in (KIT / "commands.txt").read_text(encoding="utf-8").splitlines()
                if ln.startswith("ship | ship:task |"))
-    assert "| task_doc.py | 1.199.0 |" in row, row
+    assert "| task_doc.py | 1.200.0 |" in row, row

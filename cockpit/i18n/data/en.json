@@ -1139,7 +1139,8 @@
     "метки через запятую": "labels, comma-separated",
     "компоненты через запятую": "components, comma-separated",
     "заголовок задачи (по умолчанию — заголовок документа)": "the task title (by default the document title)",
-    "завести задачу и записать её ключ в шапку (иначе только план)": "create the task and write its key into the header (otherwise only a plan)"
+    "завести задачу и записать её ключ в шапку (иначе только план)": "create the task and write its key into the header (otherwise only a plan)",
+    "свойство задачи нового документа (для --task make), в блок task: шапки: project, type, assignee, labels, components, epic; повторяется": "a task property of the new document (for --task make), into the task: block of the header: project, type, assignee, labels, components, epic; repeatable"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",
@@ -1168,7 +1169,8 @@
     "ТИПЫ": "TYPES",
     "ЧИСЛО": "N",
     "СТАТУС": "STATUS",
-    "[СУТЬ]": "[GIST]"
+    "[СУТЬ]": "[GIST]",
+    "ПОЛЕ=ЗНАЧЕНИЕ": "FIELD=VALUE"
   },
   "connector_texts": {
     "персональный токен Confluence (CONFLUENCE_PAT) либо CONFLUENCE_USER + CONFLUENCE_PASSWORD": "a Confluence personal token (CONFLUENCE_PAT) or CONFLUENCE_USER + CONFLUENCE_PASSWORD",

@@ -5938,6 +5938,24 @@ def grill_method(cwd: str = "") -> str:
     return ""
 
 
+TASK_FIELD_NAMES = ("project", "type", "assignee", "labels", "components", "epic")    # = make_kinds.TASK_FIELDS
+
+
+def parse_task_fields(items) -> tuple:
+    """`--task-field ПОЛЕ=ЗНАЧЕНИЕ` → ({поле: значение}, причина отказа). Метки и компоненты — через запятую, списком;
+    пустое значение — поле не задано."""
+    out = {}
+    for item in items or []:
+        field, sep, value = str(item).partition("=")
+        field = field.strip()
+        if not sep or field not in TASK_FIELD_NAMES:
+            return {}, f"--task-field «{str(item)[:60]}»: нужно ПОЛЕ=ЗНАЧЕНИЕ, поле — одно из {', '.join(TASK_FIELD_NAMES)}"
+        value = " ".join(value.split())
+        if value:
+            out[field] = [x.strip() for x in value.split(",") if x.strip()] if field in ("labels", "components") else value
+    return out, ""
+
+
 def make_spec(cwd: str, kind: str) -> dict:
     """Настройки типа артефакта из конфига проекта — с проверкой обязательного."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -6109,7 +6127,7 @@ def pack_refusal(out: str) -> str:
 
 
 def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
-             force_plan: bool, call=None, momus: bool = True, context=None, links=None) -> dict:
+             force_plan: bool, call=None, momus: bool = True, context=None, links=None, task=None) -> dict:
     """Производство артефакта: обогащение → план с вопросами → воркер → критик → Момус.
 
     Разбито на вызовы, потому что посередине стоит человек: планировщик задаёт вопросы и
@@ -6131,8 +6149,13 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             return {"ok": False, "why": spec["error"]}
         d = make_session_dir(cwd, kind)
         sid = d.name
+        # Свойства задачи вида без эпика: эпик выбирают у документа (прежнее значение вида в конфиге не действует).
+        spec["task"] = {k: v for k, v in (spec.get("task") or {}).items() if k != "epic"}
         st = {"sid": sid, "kind": kind, "idea": idea, "spec": spec,
               "stages": {}, "rounds": [], "plan": "", "started": utc_stamp()}
+    # Свойства задачи из окна создания (`--task-field`): сильнее свойств вида, ложатся в блок `task:` шапки документа.
+    for field, value in (task or {}).items():
+        st["spec"].setdefault("task", {})[field] = value
     # Файлы, папки и вложения аналитика живут в сессии: следующий раунд вопросов и писатель
     # видят то же, что видел планировщик. Новые ссылки при продолжении — добавляются.
     st["context"] = list(dict.fromkeys((st.get("context") or []) + list(context or [])))
@@ -8938,6 +8961,9 @@ def main() -> int:
     ap.add_argument("--context", metavar="ПУТЬ", action="append", default=[],
                     help="файл или папка проекта в контекст задачи (для --task make); "
                          "повторяется. Вложения панель кладёт в .aurora/context/")
+    ap.add_argument("--task-field", dest="task_fields", metavar="ПОЛЕ=ЗНАЧЕНИЕ", action="append", default=[],
+                    help="свойство задачи нового документа (для --task make), в блок task: шапки: project, type, "
+                         "assignee, labels, components, epic; повторяется")
     ap.add_argument("--source", metavar="ФАЙЛ|Q-NNN", default="",
                     help="источник решения (для --task decide): файл проекта или вопрос Q-NNN")
     ap.add_argument("--topic", metavar="ТЕКСТ", default="",
@@ -9043,8 +9069,12 @@ def main() -> int:
         if bad:
             print(f"agent_runner: {bad}", file=sys.stderr)
             return 1
+        task, bad = parse_task_fields(a.task_fields)
+        if bad:
+            print(f"agent_runner: {bad}", file=sys.stderr)
+            return 1
         res = run_make(cfg, cwd, a.kind, a.idea, a.session, a.answers, a.enough,
-                       momus=not a.no_momus, context=a.context, links=links)
+                       momus=not a.no_momus, context=a.context, links=links, task=task)
         if not res["ok"]:
             print(f"# Артефакт не сделан\n\n{res.get('why', '')}")
             return 2

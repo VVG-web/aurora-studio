@@ -915,7 +915,8 @@ def failure_of(e: BaseException) -> tuple:
 def serve_ops(handlers: dict) -> int:
     """Скрипт операций коннектора: запрос `{"op", "params", "project"}` со stdin → ответ одной строкой JSON в stdout.
 
-    Удача — `{"ok": true, "result": …}`, отказ — `{"ok": false, "kind": …, "error": …}`; код выхода 0 в обоих случаях
+    Удача — `{"ok": true, "result": …}`, отказ — `{"ok": false, "kind": …, "error": …}` (и `status` — код ответа
+    сервера, если отказал сервер, а не связь); код выхода 0 в обоих случаях
     (отказ — это ответ, а не падение). `handlers` — {имя операции: функция(params, project) → result}; функция
     сообщает об отказе исключением (`OpFailure` или сбоем запроса — вид выводит `failure_of`). Ответ — чистый ASCII
     (`\\uXXXX`), чтобы его не испортила кодовая страница трубы на Windows."""
@@ -937,6 +938,9 @@ def serve_ops(handlers: dict) -> int:
             except Exception as e:  # noqa: BLE001 — отказ операции — ответ вызывающему, а не трейсбек
                 kind, text = failure_of(e)
                 out = {"ok": False, "kind": kind, "error": text}
+                code = getattr(e, "code", None)
+                if isinstance(code, int) and not isinstance(code, bool):
+                    out["status"] = code            # код ответа сервера: по нему вызывающий отличает отказ от обрыва
     sys.stdout.write(json.dumps(out) + "\n")
     sys.stdout.flush()
     return 0

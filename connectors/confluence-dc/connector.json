@@ -20,9 +20,9 @@
   "operations": {
     "role": "wiki",
     "script": "confluence_ops.py",
-    "ops": ["find_page", "get_page", "children", "create_page", "update_page", "move_page", "page_space"],
+    "ops": ["site", "find_page", "get_page", "children", "create_page", "update_page", "move_page", "page_space"],
     "server": "base_url",
-    "defaults": {"space": "space"}
+    "defaults": {"space": "space", "parent": "publish_parent"}
   },
   "auth": {
     "env_prefix": "CONFLUENCE",

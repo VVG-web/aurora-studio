@@ -39,7 +39,11 @@ def _cats() -> tuple:
 TIPS = {"title": "kinds.tip_title", "template": "kinds.tip_template", "prompt": "kinds.tip_prompt", "out": "kinds.tip_out",
         "mcp": "kinds.tip_mcp", "ref_mask": "kinds.ref_mask_hint", "publish_url": "kinds.tip_publish_url",
         "publish_path": "kinds.tip_publish_path", "publish_title": "kinds.tip_publish_title",
-        "publish_prompt": "kinds.tip_publish_prompt"}
+        "publish_prompt": "kinds.tip_publish_prompt",
+        # рамка «Трекер задач» (1.200.0): те же правила подсказки — пример и обязательно ли, в обоих языках
+        "task_project": "kinds.tip_task_project", "task_type": "kinds.tip_task_type",
+        "task_assignee": "kinds.tip_task_assignee", "task_labels": "kinds.tip_task_labels",
+        "task_components": "kinds.tip_task_components"}
 OTHER_TIPS = {"new": "kinds.tip_new", "tech_agnostic": "kinds.tech_hint", "review": "kinds.review_hint"}
 
 

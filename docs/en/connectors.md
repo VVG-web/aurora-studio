@@ -525,8 +525,10 @@ choice comes from (`config` — the block, `single` — the only one), whom to c
 connector cannot do) and the block snapshot `digest`; `POST /api/connectors/roles/save` with
 `{project, roles: {role: id}, expect: <digest>}` writes the block. An empty id returns the role to the default choice.
 A stale (or missing) snapshot is a 409 answer and nothing is written. The write changes only the `connectors:` block:
-the rest of the config, comments and line endings stay byte for byte. The form in "Project settings" comes in the next
-release.
+the rest of the config, comments and line endings stay byte for byte. In the panel this is the group **Project settings →
+Task tracker and wiki**: a drop-down per role (it lists the connectors that declare the role; the "default" item is the only
+one with the role), a hint at each field, "Save" with the snapshot; a mismatch is a line with the reason and "Reload", no
+confirmation windows.
 
 Core: `scripts/connector_ops.py` — `active(project, role)` (the id of the active connector), `supports(project, role,
 op)`, `call(project, role, op, params, fresh=False)`, `state(project)`, `save(project, roles, expect)`. From a console:
@@ -552,6 +554,8 @@ The exit code is 0 on a refusal too: a refusal is an answer. The limit is 300 se
 A ready frame is `sources_core.serve_ops({name: function(params, project)})`: the function returns `result` and reports
 a refusal with `OpFailure(kind, text)` or a request failure — `sources_core.failure_of` derives the kind (401 → `auth`,
 403 → `forbidden`, 404 → `not_found`, 400 → `bad_request`, 409 → `conflict`, 5xx and a broken connection → `net`).
+When the server refused, `serve_ops` also puts the response code (`status`) into the answer: by it the caller tells "the
+server refused" from "the connection broke" (publishing tells the `http` and `network` outcomes apart this way).
 
 **Refusal kinds** (`kind`). The core names the reason to a human from the `connector_ops.CAUSES` table in Russian and
 English, and passes the connector's text alongside as a detail (`detail`):
@@ -599,11 +603,14 @@ the parameters; there are no access keys in the file name or inside. `call(..., 
 
 ### Operations of the `wiki` role
 
-Exactly what publishing (`ship:publish`) does with the wiki. A page in the answers is `{id, title, space, version, by,
-when, ancestors: [{id, title}], body, url}`; `body` is the wiki markup (storage in Confluence), absent if not asked for.
+Exactly what publishing (`ship:publish`) does with the wiki: since 1.200.0 publishing goes **only** through these
+operations of the active `wiki` connector (`publish_doc.Wiki` over `connector_ops`); there is no Confluence REST client in
+it. A page in the answers is `{id, title, space, version, by, when, ancestors: [{id, title}], body, url}`; `body` is the
+wiki markup (storage in Confluence), absent if not asked for.
 
 | Operation | Parameters | Answer (`result`) |
 |---|---|---|
+| `site` | — | `{server, space, parent, auth}` — the project's wiki settings without the network: the address, the default space and parent of new pages, the sign-in method (empty — no key); publishing says "no address" and "no access" by them before the first request |
 | `find_page` | `space`, `title`, `body`? (default yes) | `{page: a page or null}` |
 | `get_page` | `page_id`, `body`? | the page with version, ancestors, space |
 | `children` | `page_id` | `{pages: [{id, title, version, …}], complete, gap, got}` — all pages of the list (`_links.next` continuations are read); `complete: false` and `gap` — the server did not give everything |
@@ -644,7 +651,23 @@ names the first one and only links the page.
 The result is a machine line `AURORA-TASK {...}`: `outcome` (`plan`, `ok`, `exists`, `blocked`), `rc`, `connector`,
 `task` (the properties), `key`, `url`, `page_url`, `linked`, `stamped`, `code` and `error` (the reason), `detail`,
 `notes`. The panel server: `GET /api/task/options?project=…&project_key=…` — task types and epics (from the cache;
-`fresh=1` — anew), `POST /api/task/create` with `{project, path, task: {…}}` — the same as `ship:task --apply`.
+`fresh=1` — anew) and the default assignee (`assignee`: the git e-mail and the name found), `GET /api/task/doc?project=…&path=…`
+(or `&kind=…` for a future document) — the tracker, the kind's and the settings' defaults, the header's `task:` block,
+`task_key`, `task_url` and the file snapshot, `POST /api/task/doc` with `{project, path, task, expect}` — write the `task:`
+block with the same write as the "Files" editor (the snapshot is required, a mismatch is 409), `POST /api/task/create` with
+`{project, path, task: {…}}` — the same as `ship:task --apply`.
+
+**In the panel.** The **Task tracker** frame of the kinds form holds the kind's task defaults: project key, type (a list
+from the tracker, cached for an hour, "Refresh list"), assignee, labels, components; an empty field shows the default as a
+hint. A kind has no epic — it is chosen at the document; an old `epic` of the kind stays in the config (the write keeps the
+unknown) and has no effect. The **Task** block of a document — in "Files" (a document of a kind) and in "Production" (the
+document of the publish dialog and the create window): the same fields plus the epic from the list of the project's epics,
+"Save" (the `task:` block into the header), "Create a task in <tracker>" or the link "Open PRJA-123" if the task exists. In
+the create window the values go to the engine (`agent:make --task-field FIELD=VALUE`) and into the new document's header.
+
+**After publishing.** A document with `task_key` in the header gets a link to its page in the task after a successful
+publish — by the active tracker, if it can `link_page` (a repeat makes no second link). No tracker or it cannot — one line
+in the output, the publish is not affected; the result is the `task_link` field of the `AURORA-PUBLISH` line.
 
 ### How to write your own connector
 
@@ -675,4 +698,6 @@ if __name__ == "__main__":
    `python3 .aurora/scripts/connector_ops.py --role tasks --op issue_types --params '{"project_key": "PRJA"}'`.
 
 A stand-in "other tracker" with the same contract is checked in `tests/cases/part_170.py`: a test connector in a
-temporary project creates a task through `ship:task`, and the core is not edited.
+temporary project creates a task through `ship:task`, and the core is not edited. A stand-in "other wiki" is in
+`tests/cases/part_178.py`: its own `wiki` connector publishes a document through `ship:publish` (create, a repeat without
+changes, an edit, someone else's edit — a conflict).

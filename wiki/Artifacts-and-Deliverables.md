@@ -146,6 +146,29 @@ elsewhere while the form was open, the write does not go through, and the form o
 write changes only what the engine knows: unknown kind fields and comments inside the section stay; the rest of the config is
 not changed by a single byte.
 
+### A task in the tracker
+
+A document can have a task in the team's tracker. The tracker is a connector with the `tasks` role; which one works for the
+project is chosen in **Project settings → Task tracker and wiki** (one connector with the role is chosen by itself). Another
+tracker tomorrow means another connector with the same operations — Aurora's code does not change.
+
+- **The kind's defaults.** The kinds form has a third frame, **Task tracker**: project key, task type (a list from the
+  tracker, kept for an hour, "Refresh list"), assignee, labels, components. Empty fields are taken by default — the project
+  key from the tracker settings, the assignee is the person with the project's git e-mail; the default is shown as a hint in
+  the empty field. These fields create no task themselves. There is no epic here: the epic is chosen at the document.
+- **The "Task" block of a document** — in **Files** (a document of a kind) and in **Production** (the selected document of
+  the publish dialog and the create window). The same fields plus the **epic** from the list of the project's epics. "Save"
+  writes them into the document header (the `task:` block) with the same write as the editor: if the file changed on disk, the
+  block says so and offers "Reload". "Create a task in <tracker>" creates the task (the same as `ship:task --apply`) and writes
+  `task_key` and `task_url` into the header; once the task exists, the block shows "Open PRJA-123" instead of the button. In
+  the create window the values go into the new document's header.
+- **Publishing links the page.** After a successful publish, a document with `task_key` gets a link to its page in the task
+  (the tracker's `link_page`; a repeat makes no second link). No tracker — one line in the output, the publish is not
+  affected.
+
+From a terminal: `ship:task <file>` is a plan, `ship:task <file> --apply` creates the task. Details —
+[connectors](../docs/en/connectors.md#operations-task-tracker-and-wiki).
+
 **`released/` is immutable.** The panel's editor opens it read-only. Without freezing you cannot prove what you
 delivered. Drafts live in `Deliverables/work/`; delivery packages and versions taken off work — in
 `Deliverables/_archive/`.

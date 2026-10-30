@@ -62,7 +62,7 @@ BLOCK = "connectors"
 # ядро отвечает «не умеет», а не пробует наугад.
 ROLES = {
     "tasks": ("issue_types", "epics", "find_user", "create_issue", "link_page", "get_issue"),
-    "wiki": ("find_page", "get_page", "children", "create_page", "update_page", "move_page", "page_space"),
+    "wiki": ("site", "find_page", "get_page", "children", "create_page", "update_page", "move_page", "page_space"),
 }
 # Роль сервиса (`service_role` манифеста), по которой находится коннектор без поля `operations` (копия манифеста
 # старше поля): он в выборе есть, а операция отвечает «обновите движок проекта».
@@ -355,7 +355,8 @@ def cache_put(project: str, key: str, entry: dict) -> None:
 
 def call(project: str, role: str, op: str, params: dict | None = None, fresh: bool = False) -> dict:
     """Выполнить операцию роли у активного коннектора → `{ok: true, result, connector, cached}` либо
-    `{ok: false, kind, error, detail, connector}`. `error` — причина словами (`CAUSES`), `detail` — текст коннектора."""
+    `{ok: false, kind, error, detail, connector[, status]}`. `error` — причина словами (`CAUSES`), `detail` — текст
+    коннектора, `status` — код ответа сервера, если отказал сервер (обрыв связи кода не имеет)."""
     project = project or "."
     params = dict(params) if isinstance(params, dict) else {}
     m, fail, _src = pick(project, role)
@@ -378,8 +379,11 @@ def call(project: str, role: str, op: str, params: dict | None = None, fresh: bo
     got = _run(project, script, op, params)
     if not got.get("ok"):
         kind = got.get("kind") if got.get("kind") in CAUSES else "failed"
-        return {"ok": False, "kind": kind, "error": why(kind, id=cid, op=op, role=role),
-                "detail": str(got.get("error") or "")[:500], "connector": cid}
+        out = {"ok": False, "kind": kind, "error": why(kind, id=cid, op=op, role=role),
+               "detail": str(got.get("error") or "")[:500], "connector": cid}
+        if isinstance(got.get("status"), int) and not isinstance(got.get("status"), bool):
+            out["status"] = got["status"]           # код ответа сервера: отказ сервера, а не обрыв связи
+        return out
     out = {"ok": True, "result": got.get("result"), "connector": cid, "cached": False, "at": clock()}
     if key:
         cache_put(project, key, {"at": out["at"], "connector": cid, "server": server, "op": op, "params": params,

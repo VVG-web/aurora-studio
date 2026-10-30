@@ -6,7 +6,8 @@
 же, что у синка (`confluence_export.connect`): `atlassian.confluence.base_url` конфига и ключ машины `CONFLUENCE_PAT`
 (или `CONFLUENCE_USER` + `CONFLUENCE_PASSWORD`).
 
-Набор — ровно то, что публикация (`ship:publish`) делает с Confluence: найти страницу по заголовку, прочитать её
+Набор — ровно то, что публикация (`ship:publish`) делает с Confluence: настройки вики без сети (`site`: адрес,
+пространство, родитель по умолчанию, есть ли ключ), найти страницу по заголовку, прочитать её
 (версия, предки, тело, пространство), дети постранично с отчётом о полноте списка, создать, обновить с проверкой
 версии (чужая правка — отказ `conflict`), перенести под другого родителя, пространство страницы.
 
@@ -28,7 +29,7 @@ for _p in (_HERE, os.path.join(_HERE, "..", "..", "scripts")):
         sys.path.insert(0, os.path.abspath(_p))
 
 import aurora_common  # noqa: E402,F401 — защита версии Python
-from confluence_export import children_verdict, connect  # noqa: E402
+from confluence_export import children_verdict, connect, read_config, read_secret  # noqa: E402
 from sources_core import OpFailure, serve_ops  # noqa: E402
 
 FULL = "version,space,ancestors,body.storage"
@@ -90,6 +91,16 @@ def _version(value) -> int:
 
 def _read(api, pid: str, body: bool = True) -> dict:
     return api.get(f"/rest/api/content/{urllib.parse.quote(pid, safe='')}?expand={FULL if body else LIGHT}")
+
+
+def op_site(params: dict, root: str) -> dict:
+    """Настройки вики проекта без обращения к серверу: адрес, пространство и родитель новых страниц по умолчанию
+    (`atlassian.confluence`) и есть ли ключ на этой машине (`auth` — способ входа или пусто). Нет адреса — пустой
+    `server`: что с этим делать, решает вызывающий (публикация называет, какую настройку заполнить)."""
+    cfg = read_config(root)
+    _auth, how = read_secret(root)
+    return {"server": cfg.get("base_url") or "", "space": cfg.get("space") or "", "parent": cfg.get("publish_parent") or "",
+            "auth": how or ""}
 
 
 def op_find_page(params: dict, root: str) -> dict:
@@ -173,7 +184,7 @@ def _one_line(value) -> str:
     return " ".join(str(value or "").split())[:255]
 
 
-OPS = {"find_page": op_find_page, "get_page": op_get_page, "children": op_children, "create_page": op_create_page,
+OPS = {"site": op_site, "find_page": op_find_page, "get_page": op_get_page, "children": op_children, "create_page": op_create_page,
        "update_page": op_update_page, "move_page": op_move_page, "page_space": op_page_space}
 
 

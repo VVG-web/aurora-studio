@@ -223,6 +223,9 @@ def make_project(tmp: Path, git: bool = False) -> Path:
         m = json.loads(man.read_text(encoding="utf-8"))
         shutil.copy(man, root / ".aurora" / "connectors" / f"{m['id']}.json")
         (root / m["mirror"]["default_path"]).mkdir(parents=True, exist_ok=True)
+        ops = (m.get("operations") or {}).get("script")       # скрипт операций роли лежит рядом с манифестом
+        if ops and (man.parent / ops).is_file():
+            shutil.copy(man.parent / ops, root / ".aurora" / "scripts" / ops)
     (root / ".aurora" / "skills" / "aurora-vault").mkdir(parents=True, exist_ok=True)
     (root / ".aurora" / "skills" / "aurora-vault" / "SKILL.md").write_text("stub", encoding="utf-8")
     (root / "aurora.config.yaml").write_text(

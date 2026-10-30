@@ -121,6 +121,8 @@ def test_install_and_update_lay_out_connector_operations_scripts(tmp: Path):
     for cid, script in (("jira-dc", "jira_ops.py"), ("confluence-dc", "confluence_ops.py")):
         assert (target / ".aurora/scripts" / script).read_bytes() == (KIT / "connectors" / cid / script).read_bytes()
     root = make_project(tmp)
+    for script in ("jira_ops.py", "confluence_ops.py"):          # проект до обновления: скриптов операций ещё нет
+        (root / ".aurora/scripts" / script).unlink()
     plan = {c.path: c for c in AU.plan(root, AU.project_fields(root))}
     for cid, script in (("jira-dc", "jira_ops.py"), ("confluence-dc", "confluence_ops.py")):
         change = plan.get(f".aurora/scripts/{script}")

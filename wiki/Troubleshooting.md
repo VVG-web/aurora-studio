@@ -88,6 +88,19 @@ The **Install** header says who the check is for: "Checked for: user · home fol
 
 The red strip and the run summary say only one thing about it: "another user of this machine has an installation (record from …)". No name and no path, because the summary and the journal get shared. Who exactly installed it is shown only on **Install**. `kit:doctor` and `python .aurora/scripts/agent_core.py --venv-status` print the same.
 
+## Task tracker and wiki
+
+| Symptom | Cause and fix |
+|---|---|
+| **"several connectors declare the role «tasks»"** | Two installed connectors can be the task tracker (or the wiki), and the project did not choose. *Project settings → Task tracker and wiki*: choose one and save. |
+| **"the connector «…» is not set up"** | The tracker or wiki has no server address in the project settings (`atlassian.jira.base_url` for Jira, `atlassian.confluence.base_url` for Confluence). Fill it in *Project settings*. |
+| **"no sign-in or the server rejected it"** | No key on this machine (`JIRA_PAT` / `CONFLUENCE_PAT` in the machine's env file) or the server rejected it. The details line carries the server's words. |
+| **"cannot do the operation … — update the project engine"** | The project's copy of the connector is older than the operations: *Version → Prepare project* (or `aurora.py update <project> --apply`). |
+| **The type or epic list is empty, "the lists from the tracker were not received"** | No project key (neither at the kind, nor at the document, nor in the tracker settings) or the tracker did not answer. "Refresh list" asks again; the lists are otherwise kept for an hour. |
+| **"Create a task" is grey** | No tracker is chosen or it cannot create tasks; the hint on the button names the reason. |
+| **"The document changed on disk since it was opened" in the "Task" block** | The file was edited elsewhere (the editor, a publish, git). "Reload", then save again. In *Files*, save the text first: the block does not write while the editor has unsaved changes. |
+| **A second "Create a task" makes no second task** | That is intended: `task_key` in the header means the task exists. Remove `task_key` and `task_url` from the header to create a new one. |
+
 ## The panel
 
 | Symptom | Cause and fix |

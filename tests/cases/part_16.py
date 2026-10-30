@@ -72,7 +72,7 @@ CRAWLED = (
     "/api/history", "/api/routes", "/api/bots", "/api/env", "/api/adapter/alarm", "/api/cards",
     "/api/net/state", "/api/net/brief", "/api/net/access", "/api/net/commands",
     "/api/paths", "/api/ingest/settings", "/api/threads", "/api/code", "/api/connectors/roles",
-    "/api/task/options",
+    "/api/task/options", "/api/task/doc",
 )
 NOT_CRAWLED = {
     "/api/ping": "ответ — слово «ok», не текст",

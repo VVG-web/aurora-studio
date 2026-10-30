@@ -55,18 +55,16 @@ import json
 import os
 import re
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (GATE_CODES, KB_ROOT, TRUSTED, as_list, body as md_body, clean_copy, clean_sha,
                            config_value, git_commit, frontmatter, link_escapes, outward_check, outward_gate,
-                           safe_urlopen, set_field, split_frontmatter, utc_stamp, with_fields)
+                           set_field, split_frontmatter, utc_stamp, with_fields)
 
-from confluence_export import Api, children_verdict, read_config, read_secret
-from sources_core import UnsafeTarget
+import connector_ops as CO
 
+ROLE = "wiki"                            # публикация знает роль и операции, а не продукт: вики — коннектор проекта
 BANNER_MARK = "aurora-generated"
 SECTION_MARK = "aurora-section"          # баннер страницы-раздела: её создала публикация, документом она не считается
 MARK_PUBLISH = "AURORA-PUBLISH "         # = run_summary.MARK_PUBLISH: машинная строка исхода
@@ -79,31 +77,85 @@ LANG_MAP = {"py": "python", "python": "python", "js": "javascript", "ts": "javas
             "yaml": "yaml", "yml": "yaml", "xml": "xml", "html": "xml", "java": "java"}
 
 
-class Writer(Api):
-    """Api умеет только читать — публикация добавляет запись."""
+class WikiError(Exception):
+    """Отказ операции вики: вид (`kind`), код ответа сервера (`status` — если отказал сервер, а не связь), текст
+    коннектора (`detail`) и причина словами ядра (`why`)."""
 
-    def send(self, method: str, path: str, payload: dict) -> dict:
-        # Одна попытка, без повторов: повтор POST после обрыва создал бы вторую страницу. Повтор публикации находит
-        # первую по заголовку и баннеру и обновляет её.
-        req = urllib.request.Request(
-            self._url(path), method=method, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Authorization": self.auth, "Accept": "application/json",
-                     "Content-Type": "application/json",
-                     "User-Agent": "aurora-publish/1.0"})
-        with safe_urlopen(req, timeout=60) as r:
-            return json.load(r)
+    def __init__(self, got: dict):
+        super().__init__(str(got.get("detail") or got.get("error") or ""))
+        self.kind = str(got.get("kind") or "failed")
+        status = got.get("status")
+        self.status = status if isinstance(status, int) and not isinstance(status, bool) else None
+        self.detail = str(got.get("detail") or "")
+        self.why = str(got.get("error") or "")
+
+
+class Wiki:
+    """Вики проекта через активный коннектор роли `wiki` (`connector_ops`). Страница — словарь контракта роли:
+    `{id, title, space, version, by, when, ancestors, body, url}`. Отказ операции — `WikiError`.
+
+    Запись — одна попытка: повтор создания после обрыва завёл бы вторую страницу. Повтор публикации находит первую по
+    заголовку и баннеру и обновляет её."""
+
+    def __init__(self, root: str = "."):
+        self.root = root
+
+    def op(self, name: str, **params):
+        got = CO.call(self.root, ROLE, name, params)
+        if not got.get("ok"):
+            raise WikiError(got)
+        return got.get("result") or {}
 
     def find_by_title(self, space: str, title: str) -> dict:
-        q = urllib.parse.quote(title)
-        data = self.get(f"/rest/api/content?spaceKey={urllib.parse.quote(str(space), safe='')}&title={q}"
-                        "&expand=version,body.storage,ancestors,space&limit=5")
-        hits = data.get("results", [])
-        return hits[0] if hits else {}
+        return self.op("find_page", space=space, title=title).get("page") or {}
 
-    def page_full(self, page_id: str) -> dict:
+    def page_full(self, page_id) -> dict:
         """Страница с версией, пространством, предками и телом."""
-        return self.get(f"/rest/api/content/{urllib.parse.quote(str(page_id), safe='')}"
-                        "?expand=version,space,ancestors,body.storage")
+        return self.op("get_page", page_id=str(page_id))
+
+    def page_light(self, page_id) -> dict:
+        """Страница без тела: заголовок, версия, пространство."""
+        return self.op("get_page", page_id=str(page_id), body=False)
+
+    def children(self, page_id) -> tuple:
+        """([дочерние страницы], чем список неполон — пусто, если полон)."""
+        got = self.op("children", page_id=str(page_id))
+        return got.get("pages") or [], str(got.get("gap") or "")
+
+    def create(self, space: str, parent: str, title: str, body: str) -> dict:
+        return self.op("create_page", space=space, parent_id=str(parent), title=title, body=body)
+
+    def update(self, page_id, title: str, body: str, version: int, space: str, parent: str = "", message: str = "") -> dict:
+        params = {"page_id": str(page_id), "title": title, "body": body, "version": int(version), "space": space,
+                  "message": message}
+        if parent:
+            params["parent_id"] = str(parent)
+        return self.op("update_page", **params)
+
+
+def wiki_site(root: str = ".") -> dict:
+    """Что публикации нужно знать о вики проекта до первой записи: активный коннектор, адрес, пространство и родитель по
+    умолчанию, есть ли ключ на машине. Коннектор без операции `site` — значения из его настроек (`operations.defaults`),
+    а ключ проверит первая же операция."""
+    m, fail, _src = CO.pick(root, ROLE)
+    if fail:
+        return {"fail": fail}
+    name = str(m.get("title") or m["id"]).split(" (")[0]
+    prefix = str((m.get("auth") or {}).get("env_prefix") or "").strip()
+    out = {"id": m["id"], "name": name, "prefix": prefix, "server": "", "space": "", "parent": "", "auth": "?",
+           # какую настройку заполнить: последний уровень блока настроек коннектора и ключ сервера (`confluence.base_url`)
+           "where": f"{str(m.get('settings_block') or m['id']).split('.')[-1]}."
+                    f"{(m.get('operations') or {}).get('server') or 'base_url'}"}
+    if "site" in CO.ops_of(m):
+        got = CO.call(root, ROLE, "site", {})
+        if not got.get("ok"):
+            return {**out, "fail": got}
+        out.update({k: str((got.get("result") or {}).get(k) or "") for k in ("server", "space", "parent", "auth")})
+    else:
+        base = CO.defaults(root, ROLE)
+        out.update(server=CO.setting(root, m, str((m.get("operations") or {}).get("server") or "")),
+                   space=base.get("space", ""), parent=base.get("parent", ""))
+    return out
 
 
 # ------------------------------------------------------------ markdown → storage
@@ -449,43 +501,46 @@ def review_gate(text: str, fm: dict, path: str = "") -> list:
         return [("review-engine", "модуль ревью (review_run.py) недоступен или старый — обновите движок проекта")]
 
 
-# ------------------------------------------------------------------- путь в Confluence
+# ------------------------------------------------------------------- путь в вики
 
 def page_url(base_url: str, pid) -> str:
     return f"{base_url}/pages/viewpage.action?pageId={pid}"
 
 
 def storage_of(page: dict) -> str:
-    return ((page.get("body") or {}).get("storage") or {}).get("value", "") or ""
+    return str((page or {}).get("body") or "")
+
+
+def version_of(page: dict) -> str:
+    """Номер версии страницы строкой; нет — пусто."""
+    return str((page or {}).get("version") or "")
 
 
 def page_info(page: dict, base_url: str) -> dict:
     """Что панели нужно знать о странице: номер, заголовок, версия, пространство, адрес."""
     if not page:
         return {}
-    ver = page.get("version") or {}
-    return {"id": str(page.get("id") or ""), "title": page.get("title") or "", "version": str(ver.get("number", "")),
-            "space": (page.get("space") or {}).get("key") or "", "url": page_url(base_url, page.get("id")),
-            "by": (ver.get("by") or {}).get("displayName", ""), "when": (ver.get("when") or "")[:10]}
+    return {"id": str(page.get("id") or ""), "title": page.get("title") or "", "version": version_of(page),
+            "space": page.get("space") or "", "url": page_url(base_url, page.get("id")),
+            "by": page.get("by") or "", "when": str(page.get("when") or "")[:10]}
 
 
-def http_problem(e, what: str = "") -> tuple:
-    """Отказ сервера или сети словами → (код, причина). Тело ответа — в причину: в нём объяснение сервера."""
-    if isinstance(e, UnsafeTarget):
-        return "unsafe", str(e)
+def http_problem(e: WikiError, what: str = "", name: str = "вики") -> tuple:
+    """Отказ операции вики словами → (код, причина): `http` — отказал сервер (код ответа и его объяснение), `network` —
+    сервер не ответил, `unsafe` — ключ на этот адрес не уходит; остальное (коннектор не выбран, не настроен, не умеет) —
+    вид отказа ядра и его причина."""
     where = f" ({what})" if what else ""
-    code = getattr(e, "code", None)
-    if isinstance(code, int):
-        try:
-            detail = e.read().decode("utf-8", "ignore")[:300].strip()
-        except Exception:  # noqa: BLE001 — тело уже прочитано или его нет
-            detail = ""
-        words = {401: "токен не принят — проверьте CONFLUENCE_PAT в .env.aurora.local",
-                 403: "у токена нет прав на это действие",
-                 404: "страница не найдена или скрыта от этого токена",
-                 409: "страница на сервере уже другой версии"}.get(code, detail or "без пояснения")
-        return "http", f"Confluence отказал{where}: {code}, {words}"
-    return "network", f"Confluence не ответил{where}: {getattr(e, 'reason', None) or e}"
+    if e.kind == "unsafe":
+        return "unsafe", e.detail or e.why
+    if e.status is not None:
+        words = {401: "ключ не принят — проверьте ключ вики в .env.aurora.local",
+                 403: "у ключа нет прав на это действие",
+                 404: "страница не найдена или скрыта от этого ключа",
+                 409: "страница на сервере уже другой версии"}.get(e.status, e.detail or "без пояснения")
+        return "http", f"{name} отказал{where}: {e.status}, {words}"
+    if e.kind == "net":
+        return "network", f"{name} не ответил{where}: {e.detail or e.why}"
+    return e.kind, e.why + (f" ({e.detail})" if e.detail else "")
 
 
 def resolve_root(api, raw: str, where: str, base_url: str) -> tuple:
@@ -503,13 +558,13 @@ def resolve_root(api, raw: str, where: str, base_url: str) -> tuple:
     if not pid:
         return {}, ("root-unknown", f"родитель «{raw}» ({where}) не разобран — дайте номер страницы или её адрес с pageId")
     try:
-        page = api.get(f"/rest/api/content/{urllib.parse.quote(pid, safe='')}?expand=space,version")
-    except urllib.error.HTTPError as e:
-        if e.code in (403, 404):
-            return {}, ("root-missing", f"корневая страница {pid} ({where}) недоступна ({e.code}): её удалили, перенесли "
+        page = api.page_light(pid)
+    except WikiError as e:
+        if e.status in (403, 404):
+            return {}, ("root-missing", f"корневая страница {pid} ({where}) недоступна ({e.status}): её удалили, перенесли "
                                         "или она скрыта от этого токена")
         raise
-    return {"id": pid, "title": page.get("title") or "", "space": (page.get("space") or {}).get("key") or space,
+    return {"id": pid, "title": page.get("title") or "", "space": page.get("space") or space,
             "url": page_url(base_url, pid)}, None
 
 
@@ -526,8 +581,7 @@ def plan_chain(api, root: dict, levels: list, space: str, base_url: str) -> tupl
         chain.append(item)
         hit = None
         if cur:
-            kids, rep = api.children_report(cur)
-            gap = children_verdict(rep)
+            kids, gap = api.children(cur)
             if gap:
                 item["state"] = "refused"
                 return chain, None, ("children-partial", f"список дочерних страниц «{cur_title}» неполон ({gap}): "
@@ -557,9 +611,7 @@ def create_sections(api, chain: list, root_id: str, space: str, kind: str, base_
         if item["state"] == "exists":
             cur = item["id"]
             continue
-        payload = {"type": "page", "title": item["title"], "space": {"key": space}, "ancestors": [{"id": cur}],
-                   "body": {"storage": {"value": section_storage(kind), "representation": "storage"}}}
-        got = api.send("POST", "/rest/api/content", payload)
+        got = api.create(space, cur, item["title"], section_storage(kind))
         item.update(state="created", id=str(got.get("id") or ""), url=page_url(base_url, got.get("id")))
         print(f"  + раздел «{item['title']}» создан ({item['id']})")
         cur = item["id"]
@@ -668,11 +720,21 @@ def publish(a) -> dict:
     # план — это производство, и команде разработки они не нужны. Режем по маркеру, а
     # не по списку заголовков: список разошёлся бы с тем, кто их пишет.
     body = clean_copy(md_body(text))
-    cfg = read_config()
-    base_url, cfg_space = cfg["base_url"], cfg["space"]
+    # Вики проекта — активный коннектор роли `wiki`: адрес, пространство и родитель по умолчанию, есть ли ключ.
+    site = wiki_site(".")
+    if site.get("fail") and not site.get("id"):
+        fail = site["fail"]
+        print(f"publish: {fail['error']}", file=sys.stderr)
+        return done("blocked", 1, code=fail["kind"], fix="project", why=fail["error"])
+    if site.get("fail"):
+        code, why = http_problem(WikiError(site["fail"]), "", site["name"])
+        print(f"publish: {why}", file=sys.stderr)
+        return done("blocked", 1, code=code, fix="project", why=why)
+    base_url, cfg_space, name = site["server"], site["space"], site["name"]
+    cfg = {"publish_parent": site["parent"]}
     if not base_url:
-        print("publish: в aurora.config.yaml нет confluence.base_url — адреса Confluence", file=sys.stderr)
-        return done("blocked", 1, code="no-config", fix="project", why="в aurora.config.yaml нет confluence.base_url")
+        print(f"publish: в aurora.config.yaml нет {site['where']} — адреса {name}", file=sys.stderr)
+        return done("blocked", 1, code="no-config", fix="project", why=f"в aurora.config.yaml нет {site['where']}")
 
     import make_kinds as MK
     kid, rec = _kind(fm, path)
@@ -735,27 +797,27 @@ def publish(a) -> dict:
         codes = [g["code"] for g in res["gate"] if g["level"] == "block" and not g["allowed"]]
         return done("blocked", stuck, code="gate", why="предохранитель выходных команд: " + ", ".join(codes))
 
-    auth, how = read_secret()
-    if not auth:
-        print("\npublish: нет доступа к Confluence — задайте CONFLUENCE_PAT "
-              "в .env.aurora.local", file=sys.stderr)
+    how = site["auth"]
+    if not how:
+        key = f"{site['prefix']}_PAT" if site["prefix"] else "ключ вики"
+        why = f"нет доступа к {name} — задайте {key} в .env.aurora.local"
+        print(f"\npublish: {why}", file=sys.stderr)
         print("(dry-run) Ничего не отправлено.")
-        return done("blocked", 0 if not a.apply else 1, code="no-auth",
-                    why="нет доступа к Confluence — задайте CONFLUENCE_PAT в .env.aurora.local")
-    api = Writer(base_url, auth)
+        return done("blocked", 0 if not a.apply else 1, code="no-auth", why=why)
+    api = Wiki(".")
     try:
         return remote(a, api, res, done, fm=fm, text=text, bom=bom, eol=eol, path=path, kid=kid, title=title,
                       levels=target["levels"], raw_root=raw_root, where=where, base_url=base_url,
                       cfg_space=cfg_space, page_id=page_id, sha=sha, content=content, storage=storage,
-                      commit=commit, bypass=bypass, how=how)
-    except (UnsafeTarget, urllib.error.URLError, TimeoutError, ConnectionError) as e:
-        code, why = http_problem(e)
+                      commit=commit, bypass=bypass, how=how, name=name)
+    except WikiError as e:
+        code, why = http_problem(e, "", name)
         print(f"publish: {why}", file=sys.stderr)
-        return done("blocked", 1, code=code, why=why, status=getattr(e, "code", ""))
+        return done("blocked", 1, code=code, why=why, status=e.status if e.status is not None else "")
 
 
 def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, levels, raw_root, where, base_url,
-           cfg_space, page_id, sha, content, storage, commit, bypass, how) -> dict:
+           cfg_space, page_id, sha, content, storage, commit, bypass, how, name="вики") -> dict:
     """Всё, что требует сервера: страница, корень, цепочка, конфликт, запись, штамп."""
     fix_root = {"publish_url": "kinds", "publish_parent": "doc", "confluence": "project"}.get(ROOT_FROM.get(where, ""), "")
 
@@ -764,11 +826,13 @@ def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, lev
     if page_id:
         try:
             existing = api.page_full(page_id)
-        except urllib.error.HTTPError as e:
-            print(f"publish: страница {page_id} недоступна ({e.code}) — "
+        except WikiError as e:
+            if e.status is None:
+                raise                       # обрыв связи или отказ ядра — не «страницы нет»
+            print(f"publish: страница {page_id} недоступна ({e.status}) — "
                   "проверьте confluence_page_id", file=sys.stderr)
-            return done("blocked", 1, code="page-missing", page={"id": page_id}, status=e.code,
-                        why=f"страница {page_id} из шапки документа недоступна ({e.code}) — проверьте confluence_page_id")
+            return done("blocked", 1, code="page-missing", page={"id": page_id}, status=e.status,
+                        why=f"страница {page_id} из шапки документа недоступна ({e.status}) — проверьте confluence_page_id")
 
     # 2. Корень и цепочка разделов (только чтение).
     root, root_problem = ({}, None)
@@ -786,10 +850,10 @@ def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, lev
     if root_problem:
         print(f"⚠️ Путь вида не проверен: {root_problem[1]} — страница обновляется на месте")
         root = {}
-    page_space = (existing.get("space") or {}).get("key") or "" if existing else ""
+    page_space = (existing.get("space") or "") if existing else ""
     space = root.get("space") or page_space or cfg_space
     if not space:
-        why = "пространство Confluence неизвестно: у корневой страницы его нет, confluence.space в конфиге не задан"
+        why = f"пространство {name} неизвестно: у корневой страницы его нет, в настройках проекта оно не задано"
         print(f"publish: {why}", file=sys.stderr)
         return done("blocked", 1, code="no-space", why=why, fix="project")
     if root:
@@ -833,9 +897,9 @@ def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, lev
                 return done("blocked", 1, code="title-taken", why=why, url=page_url(base_url, found.get("id")),
                             fix="kinds")
             existing = found
-            if existing.get("ancestors") is None or not (existing.get("space") or {}).get("key"):
+            if existing.get("ancestors") is None or not existing.get("space"):
                 existing = api.page_full(existing["id"])
-            page_space = (existing.get("space") or {}).get("key") or space
+            page_space = existing.get("space") or space
 
     # 4. Где лежит страница и где должна.
     misplaced = cross = False
@@ -865,10 +929,10 @@ def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, lev
         # 5. Страницу могли править коллеги после нашей публикации. Перезаписать молча — значит однажды стереть чужую
         # работу, а узнают об этом через месяц. Сравниваем версию, которую опубликовали мы, с той, что лежит сейчас.
         was = (fm.get("published_version") or "").strip().strip('"')
-        now = str((existing.get("version") or {}).get("number", ""))
+        now = version_of(existing)
         if was and now and was != now and not a.force:
-            by = ((existing.get("version") or {}).get("by") or {}).get("displayName", "?")
-            when = ((existing.get("version") or {}).get("when") or "")[:10]
+            by = existing.get("by") or "?"
+            when = str(existing.get("when") or "")[:10]
             print(f"\npublish: страницу правили после вашей публикации — версия {was} → "
                   f"{now}, {by}, {when}.\n"
                   "Перезаписать чужую правку публикация сама не станет: посмотрите "
@@ -920,37 +984,29 @@ def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, lev
     try:
         if (not existing or move) and want is None:
             want = create_sections(api, chain, root["id"], space, kid, base_url)
-        payload = {"type": "page", "title": title, "space": {"key": page_space or space},
-                   "body": {"storage": {"value": storage, "representation": "storage"}}}
         if existing:
             pid = str(existing["id"])
-            payload["id"] = pid
-            payload["version"] = {"number": int((existing.get("version") or {}).get("number", 1)) + 1,
-                                  "message": f"aurora publish {commit or ''}".strip()}
-            if move:
-                payload["ancestors"] = [{"id": want}]
-            got = api.send("PUT", f"/rest/api/content/{pid}", payload)
+            got = api.update(pid, title, storage, int(existing.get("version") or 1), page_space or space,
+                             want if move else "", f"aurora publish {commit or ''}".strip())
         else:
-            payload["ancestors"] = [{"id": want}]
-            got = api.send("POST", "/rest/api/content", payload)
-    except urllib.error.HTTPError as e:
-        if e.code == 409 and existing:
+            got = api.create(page_space or space, want, title, storage)
+    except WikiError as e:
+        if e.kind == "conflict" and existing:
             # Гонка: страницу правили между проверкой и записью. Вслепую не пишем — перечитываем и называем правку.
             fresh = api.page_full(existing["id"])
-            ver = fresh.get("version") or {}
-            by, when = (ver.get("by") or {}).get("displayName", "?"), (ver.get("when") or "")[:10]
-            was = (fm.get("published_version") or "").strip().strip('"') or str((existing.get("version") or {}).get("number", ""))
-            print(f"\npublish: страницу правили, пока шла публикация — версия {ver.get('number', '?')}, {by}, {when}. "
+            by, when = fresh.get("by") or "?", str(fresh.get("when") or "")[:10]
+            was = (fm.get("published_version") or "").strip().strip('"') or version_of(existing)
+            print(f"\npublish: страницу правили, пока шла публикация — версия {version_of(fresh) or '?'}, {by}, {when}. "
                   "Ничего не записано: посмотрите страницу и повторите с --force, если ваша версия главнее.",
                   file=sys.stderr)
-            return done("conflict", 1, conflict={"was": was, "now": str(ver.get("number", "")), "by": by, "when": when},
+            return done("conflict", 1, conflict={"was": was, "now": version_of(fresh), "by": by, "when": when},
                         page=page_info(fresh, base_url), why="страницу правили, пока шла публикация")
-        code, why = http_problem(e, "запись")
+        code, why = http_problem(e, "запись", name)
         print(f"publish: {why}", file=sys.stderr)
-        return done("blocked", 1, code=code, why=why, status=e.code)
+        return done("blocked", 1, code=code, why=why, status=e.status if e.status is not None else "")
 
     pid = str(got.get("id") or (existing or {}).get("id") or "")
-    ver = (got.get("version") or {}).get("number", "?")
+    ver = version_of(got) or "?"
     url = page_url(base_url, pid)
     parent = str(want if (move or not existing) else (cur_parent.get("id") or ""))
     stamped = stamp(text, pid, commit, str(ver), url, sha, input_sha(sha, content, title, parent, doc_key(path)),
@@ -966,7 +1022,8 @@ def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, lev
     res["stamped"] = True
     print(f"\n✅ {url} (версия {ver}, доступ {how})")
     print(f"   В {path} записаны confluence_page_id / published / published_commit / published_sha / published_input.")
-    print("   Дальше: sync:confluence подхватит страницу в зеркало, затем sync:audit.")
+    print("   Дальше: синк вики подхватит страницу в зеркало, затем sync:audit.")
+    res["task_link"] = link_task(fm, url, title)
     page = {**page_info(existing, base_url), "id": pid, "version": str(ver), "url": url, "title": title} if existing \
         else {"id": pid, "version": str(ver), "url": url, "title": title, "space": space}
     if misplaced and not move:
@@ -975,6 +1032,26 @@ def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, lev
         return done("misplaced", 1, url=url, version=str(ver), page=page,
                     why="страница обновлена на месте, но лежит не там, куда ведёт путь вида")
     return done("ok", 0, url=url, version=str(ver), page=page, moved=move)
+
+
+def link_task(fm: dict, url: str, title: str) -> dict:
+    """Задача документа (`task_key` в шапке) получает ссылку на опубликованную страницу — у активного коннектора роли
+    `tasks`, если он умеет `link_page`; повтор вторую ссылку не заводит. Трекера нет или он не умеет — одна строка, и
+    публикация от этого не страдает. → {key, linked, why}."""
+    key = str(fm.get("task_key") or "").strip().strip('"')
+    if not key:
+        return {}
+    if not CO.supports(".", "tasks", "link_page"):
+        print(f"   Задача {key}: трекер задач не подключён или не умеет связывать страницы — связь не поставлена.")
+        return {"key": key, "linked": False, "why": "no-tracker"}
+    got = CO.call(".", "tasks", "link_page", {"issue_key": key, "url": url, "title": title})
+    if not got.get("ok"):
+        print(f"   ⚠️ Задача {key}: страница не связана — {got.get('error', '')}"
+              + (f" ({got['detail']})" if got.get("detail") else ""))
+        return {"key": key, "linked": False, "why": got.get("kind", "")}
+    fresh = (got.get("result") or {}).get("created", True)
+    print(f"   Задача {key}: страница связана" + ("" if fresh else " (связь уже была)") + ".")
+    return {"key": key, "linked": True, "why": ""}
 
 
 def where_text(where: dict) -> str:

@@ -980,6 +980,7 @@ async function openFile(f){
   if (F.ed && F.dirty && !confirm(t("files.leave_dirty"))) return;
   if ($("#filePubCard") && $("#filePubCard").dataset.rel !== f.path) $("#filePubCard").remove();   // карточка публикации — другого файла
   $("#fileNone").hidden = true; $("#fileEditor").hidden = false;
+  if ($("#fileTask")) $("#fileTask").innerHTML = "";                   // блок «Задача» — прежнего файла
   $("#fileName").textContent = f.path;
   $("#fileEnc").hidden = true;
   if (!f.text){
@@ -1040,6 +1041,7 @@ async function openFile(f){
   // по глобалу страницы со списком видов, который перестали присваивать при переносе раздела в модуль, — и кнопка пропала у всех
   // артефактов видов. Запрет обязан заканчиваться действием: серая кнопка называет причину и ведёт в настройки.
   drawPublish(d);
+  drawFileTask(d.path);
   $("#fileWarn").hidden = true;
   // Кодировка и окончания строк файла сервер сохранит как были; показываем отступление
   // от привычных utf-8/LF, чтобы «почему весь файл в диффе» не искали в редакторе.
@@ -1076,6 +1078,18 @@ async function openFile(f){
   drawTree();
   const mark = $('#fileTree button[aria-current="true"]');
   if (mark) mark.scrollIntoView({block:"nearest"});
+}
+
+// Блок «Задача» у документа вида в «Файлах»: пока в редакторе несохранённое, блок не пишет (шапка и текст разошлись бы);
+// записал — файл перечитывается тем же путём, что после публикации.
+async function drawFileTask(rel){
+  const host = $("#fileTask");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!rel || !rel.endsWith(".md")) return;
+  const box = await taskBlock({path: rel, guard: () => F.dirty ? t("tracker.save_editor_first") : "",
+                               onWrite: () => afterPublish(rel, t("tracker.written_dirty"))});
+  if (F.path === rel) host.replaceChildren(box);
 }
 
 function splitFrontmatter(text){
@@ -1385,11 +1399,11 @@ function drawPublish(d){
 // текст и прежний слепок: следующее «Сохранить» дало бы ложный конфликт, а метка «страница отстала» не обновилась бы.
 // Перечитываем файл; несохранённое в редакторе не затираем — о нём говорим. Публикация идёт из консоли, а скрытый
 // редактор не пересобирают (Vditor в скрытом блоке мерит нулевую высоту): перечитаем, когда «Файлы» снова на виду.
-async function afterPublish(rel){
+async function afterPublish(rel, dirtyNote){
   if (!F.path || F.path !== rel) return;
   if (S.view !== "files"){ F.reopen = rel; return; }
   F.reopen = "";
-  if (F.dirty) return toast(t("editor.published_dirty"), "warn");
+  if (F.dirty) return toast(dirtyNote || t("editor.published_dirty"), "warn");
   const f = F.files.find(x => x.path === rel) || {path: rel, name: rel.split("/").pop(), text: true, readonly: ""};
   await openFile(f);
 }
@@ -3215,8 +3229,150 @@ function kindTip(text){
   return el("span",{class:"kf-q", title: text, "aria-label": text, tabindex: "0"}, "?");
 }
 
-/* Форма вида — две рамки: «Создание» (шаблон, промпт создания, папка, MCP, маска, задача) и «Публикация в Confluence»
-   (родитель, промпт публикации, ревью). Шаблон отвечает за создание, промпт — за публикацию. Промпт создания и промпт
+/* ---------------- трекер задач: списки, блок «Задача» документа ----------------
+
+   Трекер — активный коннектор роли `tasks` проекта (`/api/connectors/roles`); панель его не знает по имени. Типы задач
+   и эпики приходят из `/api/task/options` (сервер держит их час, «Обновить список» — `fresh=1`); здесь — память страницы,
+   чтобы девять видов одной формы не спрашивали одно и то же девять раз. */
+const TASK_OPTS = new Map();
+function taskOptions(key, fresh){
+  const id = (S.project ? S.project.path : "") + "|" + (key || "");
+  if (fresh || !TASK_OPTS.has(id)){
+    const q = new URLSearchParams({project: S.project.path, project_key: key || ""});
+    if (fresh) q.set("fresh", "1");
+    TASK_OPTS.set(id, api("/api/task/options?" + q.toString(), {quiet:true}).then(r => r || {}));
+  }
+  return TASK_OPTS.get(id);
+}
+// Причина, по которой списков нет: слово ядра и текст коннектора.
+function trackerWhy(o){
+  const why = (o && (o.error || o.code)) || "";
+  return why ? t("tracker.why", {why: why + (o.detail ? " (" + o.detail + ")" : "")}) : "";
+}
+// Список типов задач в выпадающем поле; записанный тип, которого нет в списке, остаётся выбранным (пометка «нет в трекере»).
+function taskTypes(sel, types, current, empty){
+  const names = (types || []).map(x => x.name);
+  sel.replaceChildren(el("option",{value:"", selected: current ? null : ""}, empty),
+    ...names.map(n => el("option",{value:n, selected: n === current ? "" : null}, n)),
+    ...(current && !names.includes(current) ? [el("option",{value:current, selected:""}, current + " · " + t("tracker.not_in_tracker"))] : []));
+}
+// Эпики проекта: не закрытые первыми (порядок сервера), закрытые — с пометкой; «без эпика» — пустое значение.
+function taskEpics(sel, epics, current){
+  const keys = (epics || []).map(x => x.key);
+  sel.replaceChildren(el("option",{value:"", selected: current ? null : ""}, t("tracker.epic_none")),
+    ...(epics || []).map(e => el("option",{value:e.key, selected: e.key === current ? "" : null},
+      e.key + " — " + e.title + (e.done ? " · " + t("tracker.closed") : ""))),
+    ...(current && !keys.includes(current) ? [el("option",{value:current, selected:""}, current + " · " + t("tracker.not_in_tracker"))] : []));
+}
+
+/* Блок «Задача» документа — в «Файлах» и «Продуктивности». Поля: ключ проекта, тип и эпик (списки из трекера), исполнитель,
+   метки, компоненты; пустые берутся по умолчанию — из вида и настроек коннектора, умолчание видно подсказкой в поле.
+   «Сохранить» пишет блок `task:` в шапку документа тем же путём, что редактор «Файлов» (слепок; файл изменился — 409 и
+   кнопка «Перечитать»). «Создать задачу» заводит задачу в активном трекере (`/api/task/create`, то же, что
+   `ship:task --apply`); задача уже есть — вместо кнопки ссылка на неё. Без окон подтверждения.
+   `draft: true` — будущий документ (окно создания артефакта): ни сохранения, ни создания, значения отдаёт `box.values()`.
+   `guard()` — причина не писать сейчас (в «Файлах» — несохранённый текст); `onWrite(res)` — файл переписан. */
+async function taskBlock({path = "", kind = "", draft = false, guard = null, onWrite = null} = {}){
+  const box = el("details",{class:"taskblock card", "data-task": path || kind, style:"padding:10px 12px;margin-bottom:8px"});
+  box.values = () => ({});
+  if (!S.project) { box.hidden = true; return box; }
+  const q = new URLSearchParams({project: S.project.path, path, kind});
+  const d = await api("/api/task/doc?" + q.toString(), {quiet:true});
+  if (!d || d.error || !d.kind){ box.hidden = true; return box; }
+  const def = d.defaults || {};
+  const cur = {...(d.task || {})};
+  let digest = d.digest || "";
+  const list = v => Array.isArray(v) ? v.join(", ") : (v || "");
+  const touched = () => { if (!draft) saveBtn.disabled = false; };
+  const input = (key, ph) => el("input",{class:"btn mono", style:"font-size:12px;min-width:120px;font-weight:400",
+    value: list(cur[key]), placeholder: ph || "", title: t("tracker.tip_" + key),
+    oninput:e=>{ cur[key] = e.target.value; touched(); }});
+  const dflt = v => v ? t("tracker.default", {v: list(v)}) : "";
+  const project = input("project", dflt(def.project));
+  const assignee = input("assignee", dflt(def.assignee));
+  const labels = input("labels", dflt(def.labels));
+  const components = input("components", dflt(def.components));
+  const type = el("select",{class:"btn sm", style:"font-weight:400;min-width:140px", title: t("tracker.tip_type"),
+    onchange:e=>{ cur.type = e.target.value; touched(); }});
+  const epic = el("select",{class:"btn sm", style:"font-weight:400;min-width:200px;max-width:360px", title: t("tracker.tip_epic"),
+    onchange:e=>{ cur.epic = e.target.value; touched(); }});
+  const note = el("div",{class:"muted", style:"font-size:12px;margin-top:6px"});
+  const out = el("div",{class:"row", style:"gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px"});
+  const fill = async fresh => {
+    const o = await taskOptions((cur.project || "").trim() || def.project || "", fresh);
+    taskTypes(type, o.types, cur.type || "", def.type ? t("tracker.default", {v: def.type}) : t("tracker.type_unset"));
+    taskEpics(epic, o.epics, cur.epic || "");
+    const who = o.assignee || {};
+    if (!def.assignee) assignee.placeholder = who.name ? t("tracker.default", {v: who.display || who.name}) : "";
+    note.textContent = o.ok ? "" : trackerWhy(o);
+  };
+  let timer = null;
+  project.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => fill(false), 500); });
+  const field = (key, node) => el("label",{class:"kfield", "data-field": key},
+    el("span",{class:"kf-l"}, t("tracker.l_" + key), " ", kindTip(t("tracker.tip_" + key))), node);
+  const values = () => Object.fromEntries(Object.entries(cur).map(([k, v]) => [k, list(v).trim()]).filter(([, v]) => v));
+  box.values = values;
+  const saveBtn = el("button",{class:"btn", disabled:"", onclick: async () => {
+    const why = guard && guard();
+    if (why) return toast(why, "warn");
+    const r = await api("/api/task/doc", {method:"POST", quiet:true,
+      body: JSON.stringify({project: S.project.path, path, task: values(), expect: digest})});
+    if (r && r.ok){
+      digest = r.digest || digest; saveBtn.disabled = true;
+      toast(t("tracker.saved"), "ok");
+      if (onWrite && !r.unchanged) onWrite(r);
+      return;
+    }
+    if (r && r.conflict){
+      out.replaceChildren(el("span",{class:"warnbox"}, t("tracker.conflict")),
+        el("button",{class:"btn sm", onclick: async () => { box.replaceWith(await taskBlock({path, kind, draft, guard, onWrite})); }},
+          t("tracker.reload")));
+      return;
+    }
+    toast((r && r.error) || t("tracker.save_failed"), "err");
+  }}, t("tracker.save"));
+  const tr = d.tracker || {};
+  const canCreate = !!tr.id && (tr.ops || []).includes("create_issue");
+  const createBtn = el("button",{class:"btn primary", disabled: canCreate ? null : "",
+    title: canCreate ? "" : (tr.error || t("tracker.create_off")), onclick: async () => {
+      const why = guard && guard();
+      if (why) return toast(why, "warn");
+      createBtn.disabled = true;
+      out.replaceChildren(el("span",{class:"spin"}), " ", t("tracker.creating"));
+      const r = await api("/api/task/create", {method:"POST", quiet:true,
+        body: JSON.stringify({project: S.project.path, path, task: values()})});
+      createBtn.disabled = false;
+      const res = r || {};
+      if (res.outcome === "ok" || res.outcome === "exists"){
+        out.replaceChildren(el("span",{}, t(res.outcome === "ok" ? "tracker.created" : "tracker.exists", {key: res.key})),
+          res.url ? pageLink(res.url, t("tracker.open", {key: res.key})) : null);
+        createBtn.hidden = true;
+        if (onWrite && res.stamped) onWrite(res);
+        return;
+      }
+      out.replaceChildren(el("span",{class:"warnbox"}, t("tracker.failed", {why: (res.error || "") + (res.detail ? " (" + res.detail + ")" : "")})));
+    }}, t("tracker.create", {tracker: tr.title || "—"}));
+  box.append(
+    el("summary",{style:"cursor:pointer;font-weight:600"}, t("tracker.block") + (d.task_key ? " · " + d.task_key : "")),
+    el("div",{class:"muted", style:"font-size:12px;margin:6px 0 8px"}, t(draft ? "tracker.draft_about" : "tracker.block_about")),
+    el("div",{class:"row", style:"gap:10px;flex-wrap:wrap;align-items:flex-end"},
+      field("project", project), field("type", type),
+      el("button",{class:"btn sm", title: t("tracker.refresh_hint"), onclick:()=>fill(true)}, t("tracker.refresh")),
+      field("epic", epic), field("assignee", assignee), field("labels", labels), field("components", components)),
+    note);
+  if (!draft){
+    out.append(saveBtn);
+    if (d.task_key) out.append(d.task_url ? pageLink(d.task_url, t("tracker.open", {key: d.task_key}))
+                                          : el("span",{class:"chip mono"}, d.task_key));
+    else out.append(createBtn);
+    box.append(out);
+  }
+  fill(false);
+  return box;
+}
+
+/* Форма вида — три рамки: «Создание» (шаблон, промпт создания, папка, MCP, маска), «Публикация в Confluence»
+   (родитель, промпт публикации, ревью) и «Трекер задач» (свойства задачи, которую заводит кнопка у документа). Шаблон отвечает за создание, промпт — за публикацию. Промпт создания и промпт
    публикации — разные поля (`prompt` и `publish_prompt`): первое читает изготовление документа, второе пока только
    хранится — подготовка страницы по нему включится позже, и подсказка поля говорит об этом прямо. */
 async function renderKinds(box){
@@ -3302,24 +3458,45 @@ async function renderKinds(box){
             key === "publish_url" ? el("span",{class:"kf-pub"}, " · " + t("kinds.for_publish")) : null, " ", kindTip(text)),
           input, hint ? el("span",{class:"kf-h"}, hint) : null);
       };
-      // Свойства задачи держим свёрнутыми: они нужны не всем типам и не каждый день,
-      // а развёрнутый список из шести полей у девяти типов превращает форму в стену.
+      // Третья рамка — «Трекер задач»: свойства задачи, которую заводит кнопка «Создать задачу» у документа этого вида.
+      // Сами поля задачу не заводят. Эпика здесь нет — его выбирают у документа; прежнее значение `epic` вида остаётся в
+      // `rec.task` и уходит в конфиг как было (запись сохраняет незнакомое), но не показывается. Тип — из списка типов
+      // проекта трекера (кэш на час, «Обновить список»); ключ проекта и исполнитель пустыми берутся по умолчанию — из
+      // настроек коннектора и по почте git проекта, умолчание видно подсказкой в пустом поле.
       rec.task = rec.task || {};
       const tfield = (key, ph, width) => el("input",{class:"btn mono",
         style:`width:${width};font-size:12px`,
         value: Array.isArray(rec.task[key]) ? rec.task[key].join(", ") : (rec.task[key]||""),
         placeholder:ph,
         oninput:e=>{ rec.task[key] = e.target.value; dirty(); }});
-      const taskBox = el("div",{hidden:true,style:"width:100%;padding:8px 0 4px 26px"},
-        el("div",{class:"muted",style:"font-size:12px;margin-bottom:6px"},
-          t("kinds.task_about")),
-        el("div",{class:"row",style:"gap:8px;flex-wrap:wrap"},
-          tfield("project", t("kinds.f_project"), "120px"),
-          tfield("type", t("kinds.f_type"), "130px"),
-          tfield("assignee", t("kinds.f_assignee"), "150px"),
-          tfield("epic", t("kinds.f_epic"), "120px"),
-          tfield("labels", t("kinds.f_labels"), "190px"),
-          tfield("components", t("kinds.f_components"), "190px")));
+      const taskProject = tfield("project", t("kinds.f_project"), "120px");
+      const taskAssignee = tfield("assignee", t("kinds.f_assignee"), "170px");
+      const taskType = el("select",{class:"btn sm", style:"font-weight:400;min-width:150px",
+        onchange:e=>{ rec.task.type = e.target.value; dirty(); }});
+      const taskNote = el("div",{class:"muted kf-fields"});
+      const taskFill = async fresh => {
+        const base = await taskOptions("", fresh);
+        const o = (rec.task.project || "").trim() ? await taskOptions(rec.task.project.trim(), fresh) : base;
+        taskProject.placeholder = base.project_key ? t("tracker.default", {v: base.project_key}) : t("kinds.f_project");
+        const who = (base.assignee || {});
+        taskAssignee.placeholder = who.name ? t("tracker.default", {v: who.display || who.name}) : t("kinds.f_assignee");
+        taskTypes(taskType, o.types, rec.task.type || "", t("tracker.type_unset"));
+        taskNote.textContent = o.ok ? "" : trackerWhy(o);
+      };
+      let taskTimer = null;
+      taskProject.addEventListener("input", () => { clearTimeout(taskTimer); taskTimer = setTimeout(() => taskFill(false), 500); });
+      taskFill(false);
+      const tracker = el("fieldset",{class:"kframe", "data-frame":"tracker"},
+        el("legend",{}, t("kinds.frame_tracker")),
+        el("div",{class:"muted kf-about"}, t("kinds.frame_tracker_about")),
+        el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;align-items:flex-end"},
+          lab("task_project", taskProject),
+          lab("task_type", taskType),
+          el("button",{class:"btn sm", title: t("tracker.refresh_hint"), onclick:()=>taskFill(true)}, t("tracker.refresh")),
+          lab("task_assignee", taskAssignee),
+          lab("task_labels", tfield("labels", t("kinds.f_labels"), "190px")),
+          lab("task_components", tfield("components", t("kinds.f_components"), "190px"))),
+        taskNote);
       const create = el("fieldset",{class:"kframe", "data-frame":"create"},
         el("legend",{}, t("kinds.frame_create")),
         el("div",{class:"muted kf-about"}, t("kinds.frame_create_about")),
@@ -3338,13 +3515,7 @@ async function renderKinds(box){
             el("input",{type:"checkbox",
               checked:(String(rec.tech_agnostic||"").toLowerCase()==="true")?"":null,
               onchange:e=>{ rec.tech_agnostic = e.target.checked ? "true" : ""; dirty(); }}),
-            t("kinds.tech_agnostic"), " ", kindTip(t("kinds.tech_hint"))),
-          el("button",{class:"btn sm", title: t("kinds.task_hint"),
-            onclick:e=>{ taskBox.hidden = !taskBox.hidden;
-                         e.target.textContent = taskBox.hidden ? t("kinds.task_open")
-                                                               : t("kinds.task_close"); }},
-            t("kinds.task_open"))),
-        taskBox);
+            t("kinds.tech_agnostic"), " ", kindTip(t("kinds.tech_hint")))));
       // Пример пути считает сервер тем же кодом, что публикация: «для документа …: Корень › Раздел › Заголовок».
       // Значения формы — несохранённые тоже — уходят запросом; ответ приходит, пока человек печатает (с паузой).
       // Под примером — поля шапки, которые есть у документов вида, и предупреждение о поле шаблона, которого у них нет
@@ -3400,7 +3571,7 @@ async function renderKinds(box){
         el("span",{style:"flex:1"}),
         el("button",{class:"btn sm", title: t("kinds.drop"),
           onclick:()=>{ delete KINDS[kind]; dirty(); draw(); }},"×"),
-        el("div",{class:"kframes"}, create, publish)));
+        el("div",{class:"kframes"}, create, publish, tracker)));
     });
     card.append(rows);
     const name = el("input",{class:"btn mono",style:"width:150px",
@@ -3427,6 +3598,70 @@ async function renderKinds(box){
   };
   draw();
   sgroup(box, "project:kinds", t("kinds.title", {project: S.project.name})).append(card);
+}
+
+/* ---------------- коннекторы ролей: трекер задач и вики ----------------
+
+   Какой коннектор играет роль трекера задач и вики в проекте — блок `connectors:` конфига. Объявляет роль один коннектор —
+   он выбран сам (пункт «по умолчанию»); несколько — выбирает человек. Группа пишет только свой блок, со слепком: файл
+   изменился — 409 и строка с причиной, без окон подтверждения; правки соседних групп не сбрасываются. */
+async function renderConnectorRoles(box){
+  if (!S.project) return;
+  let d = await api("/api/connectors/roles?project=" + encodeURIComponent(S.project.path), {quiet:true});
+  if (!d || d.error || !d.roles) return;
+  const host = sgroup(box, "project:connectors", t("connrole.title", {project: S.project.name}));
+  const card = el("div", {class:"card", style:"padding:20px"});
+  host.append(card);
+  let cur = {}, digest = d.digest, drift = false;
+  const init = () => { cur = Object.fromEntries(Object.entries(d.roles).map(([r, row]) => [r, row.chosen || ""])); };
+  init();
+  const changed = () => Object.entries(d.roles).some(([r, row]) => (cur[r] || "") !== (row.chosen || ""));
+  const save = async () => {
+    const r = await api("/api/connectors/roles/save", {method:"POST", quiet:true,
+      body: JSON.stringify({project: S.project.path, roles: cur, expect: digest})});
+    if (r && r.ok){
+      d = r.state; digest = d.digest; drift = false; init();
+      TASK_OPTS.clear();                       // другой трекер — другие списки
+      setDirty("connectors", t("dirty.connectors"), false);
+      toast(t("connrole.saved"), "ok");
+      draw();
+      return;
+    }
+    if (r && r.conflict){ drift = true; draw(); return; }
+    toast((r && r.error) || t("connrole.save_failed"), "err");
+  };
+  const ROLES = [["tasks", t("connrole.l_tasks"), t("connrole.tip_tasks")], ["wiki", t("connrole.l_wiki"), t("connrole.tip_wiki")]];
+  const draw = () => {
+    card.innerHTML = "";
+    card.append(el("p", {class:"muted", style:"font-size:13px;margin:0 0 12px"}, t("connrole.about")));
+    if (drift) card.append(el("div",{class:"warnbox", style:"margin-bottom:10px"}, t("connrole.conflict"), " ",
+      el("button",{class:"btn sm", onclick: async () => {
+        const fresh = await api("/api/connectors/roles?project=" + encodeURIComponent(S.project.path), {quiet:true});
+        if (fresh && fresh.roles){ d = fresh; digest = d.digest; drift = false; init();
+                                  setDirty("connectors", t("dirty.connectors"), false); draw(); }
+      }}, t("connrole.reload"))));
+    const row = el("div", {class:"row", style:"gap:16px;flex-wrap:wrap;align-items:flex-start"});
+    ROLES.forEach(([role, label, tip]) => {
+      const info = d.roles[role] || {choices: []};
+      const single = info.choices.length === 1 ? info.choices[0] : null;
+      const sel = el("select", {class:"btn", "data-role": role, title: tip, style:"min-width:260px;font-weight:400",
+        onchange: e => { cur[role] = e.target.value; setDirty("connectors", t("dirty.connectors"), changed()); }},
+        el("option", {value:"", selected: cur[role] ? null : ""},
+          single ? t("connrole.auto", {name: single.title}) : t("connrole.none")),
+        ...info.choices.map(c => el("option", {value:c.id, selected: cur[role] === c.id ? "" : null},
+          c.title + ((c.missing || []).length ? " · " + t("connrole.missing", {ops: c.missing.join(", ")}) : ""))));
+      const act = info.choices.find(c => c.id === info.active);
+      const state = info.error ? info.error
+        : act ? t(info.from === "config" ? "connrole.from_config" : "connrole.from_single", {name: act.title}) : "";
+      row.append(el("label", {class:"kfield", "data-field": role},
+        el("span", {class:"kf-l"}, label, " ", kindTip(tip)), sel,
+        el("span", {class:"kf-h" + (info.error ? " kf-warn" : "")}, state)));
+    });
+    card.append(row, el("div", {class:"row", style:"margin-top:12px;gap:10px"},
+      saveButton("connectors", t("dirty.connectors"), t("connrole.save"), save),
+      el("span", {class:"muted", style:"font-size:12px"}, t("connrole.note"))));
+  };
+  draw();
 }
 
 /* ---------------- режим доступа источников ----------------
@@ -6151,6 +6386,8 @@ async function renderProject(){
   renderGitCard(box);
   renderPanelCard(box);
   await renderKinds(box);
+  try { await renderConnectorRoles(box); }
+  catch (e){ showFault(t("modules.refresh_failed", {id: "connectors", why: e.message})); }
   try { await renderSourceAccess(box); }
   catch (e){ showFault(t("modules.refresh_failed", {id: "access", why: e.message})); }
   try { await renderIngest(box); }
@@ -6378,7 +6615,9 @@ function moduleCtx(id, root){
          // Публикация документа тем же путём, что в «Файлах»: редактор, карточка «что и куда уйдёт», кнопки по исходу.
          publishFile: async rel => { await openPath(rel); if (F.path === rel) await publishFromEditor(); },
          // Серая кнопка ведёт туда, где её чинят: `kinds` — «Настройки проекта → Артефакты», иначе «Настройки проекта».
-         openSettings: fix => { SGROUPS.focus = fix === "kinds" ? "project:kinds" : "project:form"; show("project"); }},
+         openSettings: fix => { SGROUPS.focus = fix === "kinds" ? "project:kinds" : "project:form"; show("project"); },
+         // Блок «Задача» документа (или будущего документа вида): поля, списки трекера, «Сохранить», «Создать задачу».
+         taskBlock},
     openPath, isEngineCmd, hideDev, openProject,
     // Достроить/обновить движок выбранного проекта на этой машине: ту же кнопку рисует полоса ядра.
     prepareEngine: () => prepareEngine(S.project),

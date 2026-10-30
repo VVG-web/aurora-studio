@@ -11,6 +11,8 @@ let MAKE = null;               // {sid, kind} — идущее производ�
 // упоминания в тексте (`@путь`, `/навык`, `@сервер`) движок разбирает и сам.
 let REFS = [];
 let SUGGEST_STOP = null;       // гасит отложенный запрос подсказки и закрывает список (onHide)
+// Блок «Задача» будущего документа (окно создания): его значения уходят движку `--task-field` и ложатся в шапку документа.
+let MAKE_TASK = null;
 const ACCEPT = [".md", ".markdown", ".txt", ".rst", ".log", ".json", ".jsonl", ".yaml", ".yml",
   ".toml", ".ini", ".cfg", ".csv", ".tsv", ".xml", ".html", ".htm", ".svg", ".bpmn", ".puml",
   ".mmd", ".sql", ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt", ".go", ".rs", ".rb",
@@ -197,6 +199,7 @@ async function fillKinds(ctx){
     ctx.$("#makeSpec").replaceChildren(
       el("div", {}, el("b", {}, t("work.spec_head_create") + " "), create.join(" · ")),
       el("div", {}, el("b", {}, t("work.spec_head_publish") + " "), publish.join(" · ")));
+    drawMakeTask(ctx, sel.value);
     const ready = rec.template && rec.out;
     ctx.$("#makeGo").disabled = !ready;
     // Можно ли публиковать, решает сервер по каждому документу (то же состояние, что у кнопки в «Файлах»): корень
@@ -232,13 +235,29 @@ async function makeCall(ctx, args){
   return lines;
 }
 
+// Блок «Задача» в окне создания: свойства задачи нового документа (умолчания — из вида и настроек трекера, эпик — из
+// списка эпиков проекта). Сохранять и заводить здесь нечего: документа ещё нет, значения уходят движку при «Создать».
+async function drawMakeTask(ctx, kind){
+  const host = ctx.$("#makeTask");
+  if (!host || !ctx.ui.taskBlock) return;
+  host.innerHTML = "";
+  MAKE_TASK = null;
+  if (!ctx.project || !kind) return;
+  const box = await ctx.ui.taskBlock({kind, draft: true});
+  if (ctx.$("#makeKind").value !== kind) return;
+  MAKE_TASK = box;
+  host.replaceChildren(box);
+}
+
 async function startMake(ctx){
   if (!ctx.project) return ctx.toast(ctx.t("work.pick_project"), "warn");
   const idea = ctx.$("#makeIdea").value.trim();
   if (!idea) return ctx.$("#makeIdea").focus();
   MAKE = null;
   const context = REFS.flatMap(r => ["--context", r.path]);
-  const lines = await makeCall(ctx, ["--kind", ctx.$("#makeKind").value, "--idea", idea, ...context]);
+  const task = Object.entries(MAKE_TASK && MAKE_TASK.values ? MAKE_TASK.values() : {})
+    .flatMap(([k, v]) => ["--task-field", k + "=" + v]);
+  const lines = await makeCall(ctx, ["--kind", ctx.$("#makeKind").value, "--idea", idea, ...context, ...task]);
   if (lines) drawMake(ctx, lines);
 }
 
@@ -310,6 +329,14 @@ async function publish(ctx){
     style: "width:100%;font-weight:400;margin-top:10px;resize:vertical"});
   const hint = el("div", {class: "muted", style: "font-size:12px;margin-top:6px"});
   const fix = el("div", {class: "row", style: "gap:8px;margin-top:6px", hidden: ""});
+  // Блок «Задача» выбранного документа: свойства задачи, «Сохранить» в шапку, «Создать задачу» или ссылка на неё.
+  const taskHost = el("div", {style: "margin-top:10px"});
+  const drawTask = async rel => {
+    taskHost.innerHTML = "";
+    if (!rel || !ctx.ui.taskBlock) return;
+    const tb = await ctx.ui.taskBlock({path: rel});
+    if (sel.value === rel) taskHost.replaceChildren(tb);
+  };
   const go = el("button", {class: "btn primary", "data-help": "work.help.publish_go", onclick: () => {
     const f = files.find(x => x.rel === sel.value) || {};
     if (f.rel) ctx.ui.publishFile(f.rel);
@@ -339,12 +366,13 @@ async function publish(ctx){
         where ? t("work.publish_where", {where}) : ""].filter(Boolean).join(" · ");
     }
   };
-  sel.onchange = draw;
+  sel.onchange = () => { draw(); drawTask(sel.value); };
   draw();
+  drawTask(sel.value);
 
   box.append(el("div", {class: "card", style: "padding:18px"},
     el("div", {style: "font-weight:700;margin-bottom:8px"}, t("work.publish_title")),
-    sel, hint, fix, note,
+    sel, hint, fix, taskHost, note,
     el("div", {class: "row", style: "gap:10px;margin-top:10px"},
       go,
       el("button", {class: "btn", "data-help": "work.help.copy_task", onclick: () => {
