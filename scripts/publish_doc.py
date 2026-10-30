@@ -354,8 +354,8 @@ def section_storage(kind: str) -> str:
             f"<ac:rich-text-body><p>Раздел создан Авророй для публикаций {what}. "
             "Страницы ниже публикуются из git; сам раздел Аврора больше не меняет — его можно дополнить "
             "своим текстом.</p></ac:rich-text-body></ac:structured-macro>"
-            "<ac:structured-macro ac:name=\"children\"><ac:parameter ac:name=\"all\">true</ac:parameter>"
-            "</ac:structured-macro>")
+            # Без `all`: раздел перечисляет только своих детей, а не всё дерево под ним — уровни пути видны по очереди.
+            "<ac:structured-macro ac:name=\"children\"></ac:structured-macro>")
 
 
 def parent_from(raw: str):
