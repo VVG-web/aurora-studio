@@ -63,7 +63,7 @@ def _walk(obj, path=""):
 # ниже с причиной: новый путь обязан попасть в один из двух списков — проверка это требует.
 CRAWLED = (
     "/api/state", "/api/health", "/api/config", "/api/extras", "/api/mcp/kit", "/api/roots", "/api/hidden",
-    "/api/kinds", "/api/artifacts", "/api/about", "/api/agent", "/api/kit/status", "/api/git",
+    "/api/kinds", "/api/kinds/example", "/api/artifacts", "/api/about", "/api/agent", "/api/kit/status", "/api/git",
     "/api/git/head", "/api/activity", "/api/jobs", "/api/scenarios", "/api/skins", "/api/modules", "/api/profiles",
     "/api/files/tree", "/api/graph", "/api/ask/threads", "/api/i18n", "/api/route/state",
     "/api/runlog", "/api/agent/pydantic", "/api/context/suggest", "/api/skin", "/api/cron",
