@@ -44,7 +44,7 @@
   "models.p_heavy": "Heavy at once",
   "models.p_heavy_hint": "How many large requests this server takes at once. A gateway that refuses large requests with 529 (“queue is busy”) takes fewer of them than short ones. 0 — the engine learns the limit by itself on the first 529 and brings it back to the width as answers come. “Measure gateways” does not show this limit: it measures with short requests.",
   "models.p_heavy_tokens": "Heavy from, tokens",
-  "models.p_heavy_tokens_hint": "From what size a request counts as heavy (the engine's estimate: three characters per token). Ask the gateway owners from how many uncached tokens it refuses requests. 0 — 20,000.",
+  "models.p_heavy_tokens_hint": "From what size a request counts as heavy (the engine's estimate: three characters per token). Ask the gateway owners from how many uncached tokens a request is expensive for it. 0 — 32,768.",
   "models.p_parallel": "use in parallel runs",
   "models.p_parallel_hint": "Untick for a slow fallback: it waits its turn in the chain and does not get a stream of tasks.",
   "models.p_template": "Own chat-template fields (JSON)",

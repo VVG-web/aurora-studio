@@ -313,15 +313,18 @@ fallback when the primary does not answer, whatever the slots. Settings with an 
 to what the zero gave: while nobody declared one, the "At once" cap is split equally between the providers of the LLM
 chains, with "auto" one thread each; if another provider declares a width, one thread.
 
-**Heavy requests and the 529 refusal.** A gateway may keep a queue for short requests only: "more than two queued and
-more than N uncached tokens — refuse with 529". Then short requests go at the provider's full width, and heavy ones at
-most up to a limit. The provider field "Heavy at once" sets the limit, "Heavy from, tokens" the threshold (the engine's
-estimate: three characters per token; 0 — 20,000). If the field is empty (0), the engine learns the limit by itself:
-every 529 lowers the number of heavy requests at once by one, but not above the number of heavy ones still in flight,
-and everything not smaller than the refused request counts as heavy. After five answers to heavy requests the limit
-grows by one and is dropped once it reaches the width. The learned limit lives in the run's process and is learned
-again by a new run, so for a gateway with such a rule it is better to set the field. "Measure gateways" does not show
-this limit: it measures with short requests. While the gateway+model pair is paused after a 529, a call, as with a 429,
+**Heavy requests and the 529 refusal.** A gateway may sort requests by the number of uncached tokens. Cheap ones
+(usually under 32,768) go through without a refusal. Expensive ones, while a worker runs a large prefill, wait in a short
+queue (for example, two per worker), and beyond it get a 529 at once. Then short requests go at the provider's full
+width, and heavy ones at most up to a limit. The provider field "Heavy at once" sets the limit, "Heavy from, tokens" the
+threshold (the engine's estimate: three characters per token, the whole request including its cached part; 0 —
+32,768). If the limit field is empty (0), the engine learns the limit by itself: every 529 to a heavy request lowers the
+number of heavy requests at once by one, but not above the number of heavy ones still in flight. After five answers to
+heavy requests the limit grows by one and is dropped once it reaches the width. The learned limit lives in the run's
+process and is learned again by a new run, so for a gateway with such a rule it is better to set the field. A 529 can
+also come to a light request — when the whole gateway is busy (for example, the decoding memory of all its workers):
+then the engine waits and retries and leaves the heavy limit alone. "Measure gateways" does not show the heavy limit: it
+measures with short requests. While the gateway+model pair is paused after a 529, a call, as with a 429,
 may move on to the next in the chain; after the pause the primary is first again.
 
 **How many threads are working — in the panel header.** While a step with parallel work runs, the header shows a
@@ -384,7 +387,7 @@ The link alarm — the gateway is unreachable or refuses (Pydantic AI is fine):
 | a server error (HTTP 5xx) | a failure on the gateway's side | gateway status; the engine retries by itself |
 | the key or access was refused (HTTP 401/403) | the key or permissions | the key in the Models section; waiting will not help |
 | rate limit (HTTP 429) | the gateway asks to wait | the engine waits by itself; lower the width in Models |
-| gateway overloaded (HTTP 529) | the gateway's queue is full of large requests | the engine waits and narrows heavy requests by itself; to fix it, "Heavy at once" in Models |
+| gateway overloaded (HTTP 529) | the queue of large requests is full or the whole gateway is busy | the engine waits and retries, after a refused heavy request it narrows heavy requests by itself; to fix it, "Heavy at once" in Models |
 | the gateway answered 404 | no such model or path | the model name and address in the Models section |
 | the gateway answered with something that is not JSON | a proxy or a login page answers instead of the gateway | address, proxy, VPN |
 | could not reach the gateway | the cause cannot be named more precisely | network, VPN, gateway status; details in `failures.jsonl` |

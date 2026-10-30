@@ -785,13 +785,15 @@ CAUSES: dict = {
               "engine will wait and retry; lower the width in the Models section"},
     "overloaded": {"area": "link", "fix": "models",
         "label": "шлюз перегружен (529)", "label_en": "gateway overloaded (529)",
-        "ru": "бэкенд №{n} ({model}): шлюз перегружен и отклонил запрос (HTTP 529) — очередь "
-              "занята большими запросами; движок подождёт, повторит и сам уменьшит число тяжёлых "
-              "запросов разом; закрепить предел — «Тяжёлых одновременно» в разделе «Модели»",
+        "ru": "бэкенд №{n} ({model}): шлюз перегружен и отклонил запрос (HTTP 529) — полна "
+              "очередь больших запросов или занят весь шлюз; движок подождёт и повторит, а после "
+              "отказа тяжёлому сам уменьшит число тяжёлых запросов разом; закрепить предел — "
+              "«Тяжёлых одновременно» в разделе «Модели»",
         "en": "backend №{n} ({model}): the gateway is overloaded and refused the request (HTTP "
-              "529) — its queue is full of large requests; the engine will wait, retry and send "
-              "fewer heavy requests at once by itself; to fix the limit, set “Heavy at once” in "
-              "the Models section"},
+              "529) — its queue of large requests is full or the whole gateway is busy; the "
+              "engine will wait and retry, and after a refused heavy request it sends fewer heavy "
+              "requests at once by itself; to fix the limit, set “Heavy at once” in the Models "
+              "section"},
     "not_found": {"area": "link", "fix": "models",
         "label": "нет модели или пути (404)", "label_en": "no such model or path (404)",
         "ru": "бэкенд №{n} ({model}): шлюз ответил 404 — нет такой модели или пути: "
@@ -1984,25 +1986,33 @@ def cool_clear(key: tuple | None = None, n: int | None = None) -> None:
                 d.pop(k, None)
 
 
-# Тяжёлые запросы. Шлюз может держать очередь только для коротких: «в очереди больше двух, а
-# некэшированных токенов больше N — отказ 529». Короткие идут на всю ширину, тяжёлых разом — не
-# больше предела: заданного человеком («Тяжёлых одновременно» провайдера, тяжёлый — от
-# `heavy_tokens`) или выученного на отказе 529. Выученный предел каждый 529 снижает на один, но не
-# выше числа тяжёлых, оставшихся в пути (отказанный не в счёт), а порог — размер отказанного
-# запроса: всё не меньше него тяжёлое. После `HEAVY_GROW_AFTER` ответов на тяжёлые предел растёт на
-# один и снимается, дойдя до ширины шлюза. Живёт в процессе, как семафор ширины.
-HEAVY_TOKENS = 20000       # «тяжёлый — от» по умолчанию, когда предел задан, а порог нет
+# Тяжёлые запросы. Шлюз может делить запросы по некэшированным токенам: дешёвые (меньше 32 768)
+# идут без отказа, дорогие ждут в короткой очереди, пока у исполнителя идёт большой prefill, и
+# сверх неё получают 529. Короткие идут на всю ширину, тяжёлых разом — не больше предела:
+# заданного человеком («Тяжёлых одновременно» провайдера) или выученного на отказе 529. Тяжёлый —
+# от `heavy_tokens` провайдера, а без него от `HEAVY_TOKENS`, и для обоих пределов порог один.
+# Выученный предел каждый 529 на тяжёлый запрос снижает на один, но не выше числа тяжёлых,
+# оставшихся в пути (отказанный не в счёт). 529 на лёгкий запрос — занят весь шлюз (например,
+# память декодирования), размер тут ни при чём: пауза и повтор без сужения. После
+# `HEAVY_GROW_AFTER` ответов на тяжёлые предел растёт на один и снимается, дойдя до ширины шлюза.
+# Живёт в процессе, как семафор ширины.
+HEAVY_TOKENS = 32768       # «тяжёлый — от» по умолчанию: граница дорогих запросов у шлюзов с такой очередью
 HEAVY_GROW_AFTER = 5
 HEAVY_LEARNED: dict = {}   # {№ бэкенда: {"cap": тяжёлых разом, "from": от скольких токенов, "ok": ответов после 529}}
 SIZES: dict = {}           # {№ бэкенда: [оценка токенов каждого нашего запроса в пути]}
 _HEAVY = threading.Condition()
 
 
+def heavy_edge(b: dict) -> int:
+    """С какого размера (оценка движка, токенов) запрос к бэкенду тяжёлый."""
+    return int(b.get("heavy_tokens") or HEAVY_TOKENS)
+
+
 def heavy_rules(b: dict) -> list:
     """[(тяжёлых разом, от скольких токенов)] бэкенда: правило человека и выученное на 529."""
     out = []
     if b.get("heavy"):
-        out.append((int(b["heavy"]), int(b.get("heavy_tokens") or HEAVY_TOKENS)))
+        out.append((int(b["heavy"]), heavy_edge(b)))
     got = HEAVY_LEARNED.get(b["n"])
     if got:
         out.append((got["cap"], got["from"]))
@@ -2038,10 +2048,13 @@ def heavy_give(n, size: int) -> None:
 
 
 def heavy_overload(b: dict, size: int) -> tuple:
-    """Шлюз ответил 529 на запрос в `size` токенов (он ещё в пути) → (тяжёлых разом, от скольких токенов)."""
+    """Шлюз ответил 529 на запрос в `size` токенов (он ещё в пути) → (тяжёлых разом, от скольких токенов).
+    Запрос лёгкий — (None, порог): отказ не из-за очереди тяжёлых, предел не трогаем."""
+    edge = heavy_edge(b)
+    if size < edge:
+        return None, edge
     with _HEAVY:
         got = HEAVY_LEARNED.get(b["n"])
-        edge = min(size, got["from"]) if got else size
         held = sum(1 for s in SIZES.get(b["n"], []) if s >= edge)
         cap = max(1, min(held, got["cap"] if got else held) - 1)
         HEAVY_LEARNED[b["n"]] = {"cap": cap, "from": edge, "ok": 0}
@@ -3528,7 +3541,10 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         if st == 529:
                             cap, edge = heavy_overload(b, size)
                             asked = f" ({why})" if getattr(err, "retry_after", None) is not None else ""
-                            why = f"шлюз перегружен{asked}; тяжёлых (от ≈{edge} ток.) разом теперь не больше {cap}"
+                            why = (f"шлюз перегружен{asked}; тяжёлых (от ≈{edge} ток.) разом теперь не больше {cap}"
+                                   if cap else
+                                   f"шлюз перегружен{asked}; запрос лёгкий (≈{size} ток., тяжёлые — от {edge}), "
+                                   f"значит занят весь шлюз — предел тяжёлых не трогаю")
                         log.append(f"№{b['n']} {model}: HTTP {st} — {why}; пауза {int(wait)} с "
                                    f"(отказ {hits} подряд), карантин не ставлю")
                         say_live("⏳", role, f"№{b['n']} {model}: HTTP {st} — {why}; "

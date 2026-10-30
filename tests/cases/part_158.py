@@ -1,10 +1,11 @@
 """Проверки движка Aurora, часть 158: шлюз отвечает 529 «перегружен».
 
-Каркас и помощники — tests/harness.py. Рабочий шлюз отсекает пачку больших запросов: один-два встают в
-очередь, остальные получают HTTP 529 (очередь больше двух и некэшированных токенов больше N). Прежде 529
-шёл как сбой 5xx: третий подряд сажал основной шлюз в карантин на 15 минут, и работа уходила запасной
-модели. Теперь 529 — пауза без карантина, а движок сам сужает число тяжёлых запросов разом. Шлюзы — на
-127.0.0.1 и подставной транспорт; настоящий HOME не трогается.
+Каркас и помощники — tests/harness.py. Рабочий шлюз делит запросы по некэшированным токенам: дешёвые
+(меньше 32 768) идут без отказа, дорогие, пока у исполнителя идёт большой prefill, ждут в очереди по два на
+исполнителя, а сверх неё получают HTTP 529. 529 бывает и на любой запрос, когда занята память декодирования
+всего шлюза. Прежде 529 шёл как сбой 5xx: третий подряд сажал основной шлюз в карантин на 15 минут, и работа
+уходила запасной модели. Теперь 529 — пауза без карантина, а после отказа тяжёлому движок сам сужает число
+тяжёлых запросов разом. Шлюзы — на 127.0.0.1 и подставной транспорт; настоящий HOME не трогается.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from pathlib import Path
 from cases import part_36 as P36
 from harness import test
 
-BIG = "Текст карточки для разбора. " * 2500     # ≈ 70 000 знаков — тяжёлый запрос по оценке движка
+BIG = "Текст карточки для разбора. " * 4000     # ≈ 112 000 знаков (≈ 37 000 токенов) — тяжёлый по оценке движка
 
 
 def _forget(AG):
@@ -28,7 +29,8 @@ def _forget(AG):
 def test_a_529_is_a_pause_and_not_a_quarantine(tmp: Path):
     """Три 529 подряд — три паузы и ответ на том же основном шлюзе; провайдер не в карантине, в журнале —
     «шлюз перегружен» и «карантин не ставлю». Слова «too many tokens» в отказе не делают его «запросом
-    длиннее окна». Прежде третий 529 сажал шлюз в карантин на 15 минут."""
+    длиннее окна». Запрос короткий — значит, занят весь шлюз: предел тяжёлых не трогается. Прежде третий
+    529 сажал шлюз в карантин на 15 минут."""
     P36._path()
     import agent_core as AG
     busy = (529, {}, {"error": {"message": "queue is busy: too many tokens"}})
@@ -43,6 +45,7 @@ def test_a_529_is_a_pause_and_not_a_quarantine(tmp: Path):
             log = " ".join(r["log"])
             assert "шлюз перегружен" in log and "карантин не ставлю" in log, r["log"]
             assert "длиннее окна" not in log, "529 принят за запрос длиннее окна модели"
+            assert "предел тяжёлых не трогаю" in log and 1 not in AG.HEAVY_LEARNED, (r["log"], AG.HEAVY_LEARNED)
             assert len(sleeps) == 3, sleeps
     finally:
         gw.close()
@@ -65,39 +68,63 @@ def test_a_529_is_named_overload_and_says_what_to_set(tmp: Path):
 def test_a_burst_of_529_teaches_how_many_heavy_requests_the_gateway_takes(tmp: Path):
     """Шесть тяжёлых ушли разом, шлюз принял два и отказал четырём: каждый 529 снижает предел, и он
     становится два — столько, сколько шлюз держит, — пришли ли отказы до или после освобождения мест.
-    Короткий и меньший отказанного запросы предел не держит. Пять ответов на тяжёлые поднимают предел на
-    один; дойдя до ширины шлюза, выученное снимается."""
+    Тяжёлый — от порога движка (32 768), и запросы меньше него предел не держит. Пять ответов на тяжёлые
+    поднимают предел на один; дойдя до ширины шлюза, выученное снимается."""
     P36._path()
     import agent_core as AG
     b = {"n": 7}
     try:
         for give_at_once in (False, True):
             _forget(AG)
-            assert all(AG.heavy_take(b, 30000) for _ in range(6)), "без правила тяжёлые не пускаются"
+            assert all(AG.heavy_take(b, 40000) for _ in range(6)), "без правила тяжёлые не пускаются"
             caps = []
             for _ in range(4):
-                caps.append(AG.heavy_overload(b, 30000)[0])
+                caps.append(AG.heavy_overload(b, 40000)[0])
                 if give_at_once:
-                    AG.heavy_give(7, 30000)
+                    AG.heavy_give(7, 40000)
             if not give_at_once:
                 for _ in range(4):
-                    AG.heavy_give(7, 30000)
+                    AG.heavy_give(7, 40000)
             assert caps == [5, 4, 3, 2], (give_at_once, caps)
-            assert AG.HEAVY_LEARNED[7]["from"] == 30000, AG.HEAVY_LEARNED
-            assert not AG.heavy_take(b, 30000), "третий тяжёлый ушёл к шлюзу, который держит два"
-            assert AG.heavy_take(b, 900) and AG.heavy_take(b, 20000), "запрос меньше отказанного упёрся в предел"
+            assert AG.HEAVY_TOKENS == 32768 and AG.HEAVY_LEARNED[7]["from"] == AG.HEAVY_TOKENS, AG.HEAVY_LEARNED
+            assert not AG.heavy_take(b, 40000), "третий тяжёлый ушёл к шлюзу, который держит два"
+            assert AG.heavy_take(b, 900) and AG.heavy_take(b, 30000), "запрос меньше порога упёрся в предел"
             AG.heavy_give(7, 900)
-            AG.heavy_give(7, 20000)
-        for _ in range(2):
             AG.heavy_give(7, 30000)
+        for _ in range(2):
+            AG.heavy_give(7, 40000)
         for _ in range(AG.HEAVY_GROW_AFTER):
-            AG.heavy_answered(b, 30000, 4)
+            AG.heavy_answered(b, 40000, 4)
         assert AG.HEAVY_LEARNED[7]["cap"] == 3, AG.HEAVY_LEARNED
         AG.heavy_answered(b, 900, 4)
         assert AG.HEAVY_LEARNED[7]["ok"] == 0, "ответ на короткий запрос засчитан тяжёлому"
         for _ in range(AG.HEAVY_GROW_AFTER):
-            AG.heavy_answered(b, 30000, 4)
+            AG.heavy_answered(b, 40000, 4)
         assert 7 not in AG.HEAVY_LEARNED, "предел дошёл до ширины шлюза и не снят"
+    finally:
+        _forget(AG)
+
+
+@test
+def test_a_529_to_a_light_request_leaves_the_heavy_limit_alone(tmp: Path):
+    """529 на запрос меньше порога — занят весь шлюз (память декодирования у всех исполнителей), а не очередь
+    тяжёлых: предел не выучивается и не снижается. Порог из поля провайдера действует и на выученный предел:
+    при пороге 10 000 отказ запросу в 15 000 учит, тяжёлым считается всё от 10 000."""
+    P36._path()
+    import agent_core as AG
+    try:
+        b = {"n": 5}
+        assert all(AG.heavy_take(b, 30000) for _ in range(4))
+        assert AG.heavy_overload(b, 30000) == (None, AG.HEAVY_TOKENS) and 5 not in AG.HEAVY_LEARNED, AG.HEAVY_LEARNED
+        assert all(AG.heavy_take(b, 40000) for _ in range(5))
+        assert AG.heavy_overload(b, 40000) == (4, AG.HEAVY_TOKENS), AG.HEAVY_LEARNED
+        assert AG.heavy_overload(b, 900) == (None, AG.HEAVY_TOKENS) and AG.HEAVY_LEARNED[5]["cap"] == 4, \
+            "отказ лёгкому снизил выученный предел тяжёлых"
+        _forget(AG)
+        own = {"n": 6, "heavy_tokens": 10000}
+        assert all(AG.heavy_take(own, 15000) for _ in range(3))
+        assert AG.heavy_overload(own, 15000) == (2, 10000), AG.HEAVY_LEARNED
+        assert AG.heavy_take(own, 9000) and not AG.heavy_take(own, 12000), "порог из поля не держит выученный предел"
     finally:
         _forget(AG)
 

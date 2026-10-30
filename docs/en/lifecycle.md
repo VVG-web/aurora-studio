@@ -176,8 +176,8 @@ but the panel itself must be running. Rules:
   - A model call does not give up on a time limit, a busy slot, a dropped connection, a rate limit (429) or a 5xx
     error; it goes around the gateway ring until it gets an answer. After a 429 the gateway is left alone for as long
     as it asked (`Retry-After`), with no hint — for longer each time, with some randomness; only a dropped connection
-    and three 5xx in a row put a provider in quarantine; a 529 ("overloaded") is a pause, like a 429, and the engine
-    narrows heavy requests by itself.
+    and three 5xx in a row put a provider in quarantine; a 529 ("overloaded") is a pause, like a 429, and after a refused
+    heavy request the engine narrows heavy requests by itself.
   - The request time limit only guards against a hung connection. A gateway that did not make it in time gets twice
     the time on the next attempt and moves to the end of the ring, not into quarantine.
   - The route waits for the network until it is back and restarts a hung step with no limit.
