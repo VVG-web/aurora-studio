@@ -28,8 +28,8 @@
   },
   "cockpit/aurora_cockpit.py:_registry": {
    "kind": "other",
-   "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "reason": "панель: кэш реестра команд кита (временный файл и подмена целиком), не карточка",
+   "calls": 2
   },
   "cockpit/aurora_cockpit.py:_update_archive": {
    "kind": "other",
