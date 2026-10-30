@@ -1,0 +1,13 @@
+{
+  "id": "code",
+  "name": { "ru": "Код", "en": "Code" },
+  "about": {
+    "ru": "Репозитории кода проекта: подключение строкой git clone, клоны в Code/ только для чтения, синхронизация, языки и размер.",
+    "en": "The project's code repositories: connect with a git clone line, read-only clones in Code/, sync, languages and size."
+  },
+  "group": "project",
+  "order": 56,
+  "needs": ["project"],
+  "commands": ["code:sync", "code:status"],
+  "for": "1.193.0"
+}
