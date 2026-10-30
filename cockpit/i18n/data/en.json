@@ -666,7 +666,8 @@
     "Code/: папки без записи в реестре репозиториев: {} → подключите репозиторий в разделе «Код» или уберите папку: клоны заводит только code:sync": "Code/: folders without an entry in the repository registry: {} → connect the repository in the \"Code\" section or remove the folder: only code:sync makes clones",
     "клоны кода лежат в индексе git проекта: {} → правило .gitignore не действует задним числом, уберите из индекса: git rm -r --cached {}": "code clones are in the project's git index: {} → a .gitignore rule does not act retroactively, remove them from the index: git rm -r --cached {}",
     "репозитории кода в реестре без клона в Code/: {} → выполните code:sync --apply": "code repositories in the registry without a clone in Code/: {} → run code:sync --apply",
-    "чужой код уезжает в историю проекта с каждой фиксацией: растёт репозиторий, а секреты и лицензии репозитория кода оказываются у всех, кому виден проект": "foreign code goes into the project's history with every commit: the repository grows, and the code repository's secrets and licences reach everyone who can see the project"
+    "чужой код уезжает в историю проекта с каждой фиксацией: растёт репозиторий, а секреты и лицензии репозитория кода оказываются у всех, кому виден проект": "foreign code goes into the project's history with every commit: the repository grows, and the code repository's secrets and licences reach everyone who can see the project",
+    "регистр папок схемы расходится со схемой: {} → на Linux/CI это станут две папки; переименуйте: git mv {} {}_tmp && git mv {}_tmp {}": "the case of schema folders differs from the schema: {} → on Linux/CI these become two folders; rename: git mv {} {}_tmp && git mv {}_tmp {}"
   },
   "connectors": {
     "confluence-dc": {

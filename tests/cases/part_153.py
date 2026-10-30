@@ -125,6 +125,22 @@ def test_doctor_names_a_clone_tracked_by_the_project_index_and_accepts_the_new_f
 
 
 @test
+def test_doctor_names_a_backlog_folder_written_in_another_case(tmp: Path):
+    """`Artifacts/backlog` строчными при схемной `Artifacts/Backlog`: на macOS и Windows — одна папка, на Linux — две.
+    Doctor называет это случаем регистра с командой переименования, а не «папкой вне схемы»."""
+    root = make_project(tmp)
+    (root / "Artifacts/Backlog").rmdir()
+    (root / "Artifacts/backlog").mkdir()
+    (root / "Artifacts/backlog/Бэклог.md").write_text("# Структура\n", encoding="utf-8")
+    cp = subprocess.run([sys.executable, str(root / ".aurora/scripts/aurora_doctor.py")], cwd=str(root),
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    line = next((ln for ln in cp.stdout.splitlines() if "Artifacts/backlog" in ln), "")
+    assert "регистр папок схемы расходится со схемой: Artifacts/backlog ↔ Artifacts/Backlog" in line, cp.stdout[-1500:]
+    assert "git mv Artifacts/backlog Artifacts/backlog_tmp && git mv Artifacts/backlog_tmp Artifacts/Backlog" in line
+    assert "вне схемы" not in line, line
+
+
+@test
 def test_files_tree_folds_code_clones_and_keeps_them_read_only(tmp: Path):
     """«Файлы» не разворачивают клон (десятки тысяч строк съели бы предел ответа), а запись в `Code/` закрыта."""
     sys.path.insert(0, str(KIT / "cockpit"))

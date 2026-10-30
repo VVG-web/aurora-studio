@@ -338,7 +338,8 @@ def check_structure(verbose: bool = False):
     stale = sorted(set(git_ignored(probes, rules_only=True)) - set(ignored))
     extra_top = [n for n in candidates if n not in ignored and n not in stale]
     allowed_by_ignore = [n for n in candidates if n in ignored]
-    extra_sub, unclaimed = [], []
+    extra_sub, unclaimed, case_sub = [], [], []
+    known_ci = {k.casefold(): k for k in known}
     for root_name in MANAGED_ROOTS:
         root_dir = ROOT / root_name
         if not root_dir.is_dir():
@@ -349,6 +350,11 @@ def check_structure(verbose: bool = False):
             rel = f"{root_name}/{p.name}"
             if rel in known:
                 continue
+            # Та же папка схемы в другом регистре (`Artifacts/backlog` при схемной `Artifacts/Backlog`): на macOS и
+            # Windows это одна папка, на Linux и в CI — две, и файлы разъедутся. Называем отдельным случаем с починкой.
+            if rel.casefold() in known_ci:
+                case_sub.append((rel, known_ci[rel.casefold()]))
+                continue
             # Папку в Sources/ заводит модуль источника, а не схема. Ничья папка —
             # замечание, а не блокер: так выглядит и ручная выгрузка, и зеркало,
             # модуль которого ещё не подключили. Сборку это не ломает.
@@ -357,6 +363,10 @@ def check_structure(verbose: bool = False):
                 continue
             extra_sub.append(rel)
 
+    if case_sub:
+        a, b = case_sub[0]
+        errors.append(f"регистр папок схемы расходится со схемой: {', '.join(f'{x} ↔ {y}' for x, y in case_sub)} → "
+                      f"на Linux/CI это станут две папки; переименуйте: git mv {a} {a}_tmp && git mv {a}_tmp {b}")
     drift = check_case_drift(schema)
     if drift:
         errors.append("регистр папок схемы расходится с индексом git: " + "; ".join(drift) +

@@ -602,12 +602,14 @@ def test_doctor_names_each_kind_of_folder_outside_the_schema(tmp: Path):
 
     Живой случай на проекте: `Artifacts/Activity_Epic_US.md/`, пустые `Artifacts/backlog` и
     `Deliverables/drafts` — все трое шли одним блокером «структурные папки вне схемы» с
-    советом объявить их своими, то есть узаконить мусор.
+    советом объявить их своими, то есть узаконить мусор. С 1.195.0 `Artifacts/Backlog` — папка схемы
+    (бэклог человека), поэтому пустая чужая папка здесь — `Artifacts/roadmap`, а `backlog` строчными —
+    случай регистра (его называет отдельная проверка).
     """
     root = make_project(tmp)
     (root / "Artifacts" / "Реестр.md").mkdir()
     (root / "Artifacts" / "Реестр.md" / "работа.md").write_text("текст", encoding="utf-8")
-    (root / "Artifacts" / "backlog").mkdir()
+    (root / "Artifacts" / "roadmap").mkdir()
     (root / "Deliverables" / "drafts").mkdir()
     (root / "Deliverables" / "drafts" / "черновик.md").write_text("текст", encoding="utf-8")
     cp = run("aurora_doctor.py", "--structure", cwd=root, expect_rc=None)
@@ -615,8 +617,8 @@ def test_doctor_names_each_kind_of_folder_outside_the_schema(tmp: Path):
     warns = [l for l in cp.stdout.splitlines() if l.startswith("WARN")]
     assert any("путь файла принят за папку" in l and "Artifacts/Реестр.md" in l for l in errs), \
         f"каталог с именем файла не назван своим случаем:\n{cp.stdout}"
-    assert any("Artifacts/backlog" in l and "удалите" in l for l in warns) \
-        and not any("Artifacts/backlog" in l for l in errs), "пустая папка осталась блокером"
+    assert any("Artifacts/roadmap" in l and "удалите" in l for l in warns) \
+        and not any("Artifacts/roadmap" in l for l in errs), "пустая папка осталась блокером"
     other = next((l for l in errs if "Deliverables/drafts" in l), "")
     assert "ближе всего стандартная Artifacts/drafts" in other, \
         f"не названа ближайшая стандартная папка: {other}"
