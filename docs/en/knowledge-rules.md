@@ -149,7 +149,7 @@ done yet — [knowledge-accumulation.md](knowledge-accumulation.md).
 
 A law and a contract are valuable for their exact text, not for a retelling: people refer to an article or a clause by
 number. So such a source is parsed not by the model but by code, **without a model** — the `kb:cite` command. Cited are any
-`.md` in `Raw/laws/`, a document with `cited: true` in its head (`Raw/contract`, `Raw/customer`, `Raw/project`) and a
+`.md` in `Raw/laws/`, a document with `cited: true` in its head (`Raw/contract`, `Raw/customer`, `Raw/brd`, `Raw/srs`, `Raw/project`) and a
 contract, agreement or deal in `Raw/contract/` — by its name (a terms of reference, an explanatory note and acceptance tests
 are not). `cited: false` in the head switches it off for good: the document is parsed as an ordinary one. A law with
 `cited: false` goes to the ordinary parse too.

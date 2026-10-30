@@ -48,7 +48,8 @@ KINDS = ("dictionary", "document", "knowledge")
 DICT_SECTIONS = {"Glossary", "Reference", "Statuses"}
 # Папки первоисточников: нормативный текст, который переносится дословно. Решения и вопросы — записи человека (`kb:record`):
 # их зеркало — дословный документ. `Raw/reference` сюда не входит: зеркало справочника — словарь (раздел `Reference`).
-DOC_ROOTS = ("Raw/laws", "Raw/contract", "Raw/customer", "Raw/project", "Raw/dictionaries", "Raw/decisions", "Raw/questions")
+DOC_ROOTS = ("Raw/laws", "Raw/contract", "Raw/customer", "Raw/brd", "Raw/srs", "Raw/project", "Raw/dictionaries", "Raw/decisions",
+             "Raw/questions")
 # Слова в имени источника, по которым видно нормативный документ. «Контракт» — только в
 # правовом смысле: в ИТ-проекте это чаще интеграционный контракт, и «Маппинг контракта
 # ВАЛЮТА» становился документом, которому тезис не пишут никогда (PRJ-C). «Печатная форма»

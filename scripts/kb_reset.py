@@ -24,7 +24,7 @@
   meta/ask/                 разговоры вкладки «Спросить»: вопросы аналитика и ответы
                             базы, в любом режиме сброса
 
-Заново из источников выведется не всё. `kb:build` читает `Raw/project`, `Raw/customer`,
+Заново из источников выведется не всё. `kb:build` читает `Raw/project`, `Raw/customer`, `Raw/brd`, `Raw/srs`,
 `Raw/contract`, `Sources/Confluence`, `Sources/JIRA`; законы и контракты, которые цитируют (`Raw/laws`, помеченные
 `cited: true`), нарезает `kb:cite`, и единицы в `Documents/` вернутся им. Записи человека — решения, вопросы,
 рукописные справочники — лежат мастер-файлами в `Raw/decisions|questions|reference`: рукописного

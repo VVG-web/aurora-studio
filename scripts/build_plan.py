@@ -12,7 +12,7 @@
   python3 .aurora/scripts/build_plan.py --status            # прогресс по манифесту
 
 Порядок обхода задан `build.md` (сначала терминология, потом то, что на неё ссылается):
-Reference → Statuses → Raw/project → Raw/customer → Raw/contract → Raw/laws → Sources/Confluence → Sources/Web →
+Reference → Statuses → Raw/project → Raw/customer → Raw/brd → Raw/srs → Raw/contract → Raw/laws → Sources/Confluence → Sources/Web →
 Raw/Extracted (тексты вложений страниц) → встречи. Законы, контракты и договоры, которые цитируют по статьям и пунктам, в план
 не входят: их нарезает `kb:cite` (`legal_slicer`, `cited: true|false` в шапке источника). Страницы идут раньше своих вложений: карточка страницы уже есть, когда
 знание из вложения дописывается в неё, а не заводит рядом документ-двойник. Внутри группы —
@@ -64,6 +64,11 @@ GROUPS = [
     # ПОСЛЕ разбора, когда тела карточек уже переписаны моделью.
     ("Raw/project", os.path.join("Raw", "project")),
     ("Raw/customer", os.path.join("Raw", "customer")),
+    # Требования идут сверху вниз: бизнес-требования (BRD) раньше спецификации (SRS), которая их разворачивает, — в карточку
+    # сущности из SRS дописывается то, что BRD уже назвал, а не заводится рядом двойник. Оба раньше контракта: ТЗ контракта
+    # ссылается на термины требований.
+    ("Raw/brd", os.path.join("Raw", "brd")),
+    ("Raw/srs", os.path.join("Raw", "srs")),
     ("Raw/contract", os.path.join("Raw", "contract")),
     # Законы и контракты, которые нужно цитировать, разбирает `kb:cite`, а не модель: `sources()` такие файлы пропускает
     # (`legal_slicer.is_cited_source`). Здесь остаётся закон с `cited: false` в шапке — обычный документ, который разбирается

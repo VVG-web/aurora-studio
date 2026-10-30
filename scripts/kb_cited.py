@@ -14,7 +14,7 @@
   python3 .aurora/scripts/kb_cited.py --check               # единицы и источники: отстают ли, нет ли чужих имён
   python3 .aurora/scripts/kb_cited.py --json                # то же машинным выводом
 
-Что цитируемо. Любой `.md` в `Raw/laws/`; файл в `Raw/contract|customer|project/` с `cited: true` в шапке; файл в `Raw/contract/`,
+Что цитируемо. Любой `.md` в `Raw/laws/`; файл в `Raw/contract|customer|brd|srs|project/` с `cited: true` в шапке; файл в `Raw/contract/`,
 чьё имя называет контракт, договор или соглашение (но не техническое задание, пояснительную записку, ПМИ). Шапка `cited: false`
 снимает это окончательно. Источник, распознанный моделью по скану (`converter: ocr…`), не режется: распознанное цитировать
 нельзя, положите текстовую версию. Цитируемый источник `agent:build` больше не разбирает.

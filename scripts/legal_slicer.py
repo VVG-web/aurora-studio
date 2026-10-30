@@ -54,7 +54,7 @@ DASH = "–"
 CITED_NAME = re.compile(r"государственн\w*[ _-]+контракт|госконтракт|договор|соглашение", re.I)
 NOT_CITED_NAME = re.compile(r"техническое[ _-]+задание|\bТЗ\b|пояснительн|ПМИ", re.I)
 LAWS_HOME = "Raw/laws"
-MARKED_HOMES = ("Raw/contract", "Raw/customer", "Raw/project")      # цитируемым делает пометка `cited: true` в шапке
+MARKED_HOMES = ("Raw/contract", "Raw/customer", "Raw/brd", "Raw/srs", "Raw/project")   # цитируемым делает пометка `cited: true` в шапке
 NAME_HOME = "Raw/contract"                                          # …или имя документа
 CITED, PLAIN, OCR = "cited", "plain", "ocr"
 _TRUE = ("true", "yes", "да", "1")
@@ -82,7 +82,7 @@ def source_verdict(path: str, text: str = "", project_root: str = ".") -> tuple:
     """(вердикт, почему) для источника `path`. Правила идут сверху вниз:
 
     R-0 `cited: false` в шапке — не цитируемый окончательно; R-1 `.md` под `Raw/laws/` — цитируемый;
-    R-2 `.md` под `Raw/contract|customer|project/` с `cited: true` — цитируемый; R-3 `.md` под `Raw/contract/`, чьё имя называет
+    R-2 `.md` под `Raw/contract|customer|brd|srs|project/` с `cited: true` — цитируемый; R-3 `.md` под `Raw/contract/`, чьё имя называет
     контракт, договор или соглашение (но не ТЗ, пояснительную записку, ПМИ), — цитируемый; R-4 прочее, включая любые
     `Sources/…`, — обычный разбор; R-5 цитируемый источник, распознанный моделью по скану (`converter: ocr…`), — отказ:
     цитировать распознанное нельзя.

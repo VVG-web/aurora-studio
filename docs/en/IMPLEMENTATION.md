@@ -42,6 +42,8 @@ Lay down only real materials:
 | Laws, regulations | `Raw/laws/` |
 | Meeting transcripts and minutes | `Raw/meetings/` |
 | Customer materials: AS-IS, decks | `Raw/customer/` |
+| Business requirements (BRD) | `Raw/brd/` |
+| Software requirements specifications (SRS) | `Raw/srs/` |
 | Living project notes, concepts | `Raw/project/` |
 | Confluence and Jira mirrors, site pages | through sync → `Sources/` |
 

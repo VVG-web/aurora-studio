@@ -10,6 +10,9 @@ Sources
 Raw/laws
 Raw/contract
 Raw/customer
+# Требования как получены или согласованы: бизнес-требования (BRD) и спецификации требований к ПО (SRS).
+Raw/brd
+Raw/srs
 Raw/project
 Raw/meetings
 Raw/examples
