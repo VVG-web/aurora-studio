@@ -1086,6 +1086,7 @@
   "alarm.adapter_tail": "The bar goes away by itself once this path goes through the adapter again.",
   "alarm.adapter_open": "Install → Pydantic AI",
   "alarm.adapter_engine": "Version → Prepare project",
+  "alarm.adapter_user": "Checked for user {user}: Install shows what is installed and starts for this user.",
   "alarm.link_row": "{path} · {project} · {when} · failures in a row {calls}",
   "alarm.link_tail": "Pydantic AI is fine. Routes and the schedule wait for the network and repeat the call by themselves; the bar goes away once the backend answers.",
   "alarm.link_tail_cfg": "Waiting will not help here — fix the setting; the bar goes away once the backend answers.",

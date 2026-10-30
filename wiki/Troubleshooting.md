@@ -70,6 +70,24 @@ What the lines of `kb:ingest-office` (and the same lines in the run summary, the
 | **«нет подходящего конвертера»** (no suitable converter) | Neither the built-in reader nor `pandoc` / `markitdown` handles the format (for example a pptx without either installed). The line names the file; install a converter ([INSTALL](../docs/en/INSTALL.md)) or export the file to docx / pdf. |
 | **A refusal naming DOCTYPE or ENTITY, or "XML nesting is above N"** | The file is not safe to read: a document or diagram that declares external entities or is built as a bomb. It is refused on purpose and not converted; take the content from the original editor. |
 
+## Installed, but not for you
+
+A corporate laptop: everything on the **Install** page is green, yet while the base is being processed a strip says "Pydantic AI is selected, but model calls go around it". Usually this means Pydantic AI is installed, but for a different account. Someone once started the panel "as administrator" under a separate admin account, and the venv went into that account's profile. Your ordinary account does not have it.
+
+The **Install** header says who the check is for: "Checked for: user · home folder … · rights: standard / administrator". The Pydantic AI row says "works for you" only when the adapter actually started (answered "ready") the same way as in a run of the selected project: the same launch, the same environment, the same adapter file from `.aurora/scripts/agents/`. The answer stays in the panel's memory until **Check again** or an install.
+
+| Symptom | Cause and fix |
+|---|---|
+| **A yellow strip "The panel runs as X / with administrator rights"** | Everything you install from this panel goes into the profile of X and will not be visible when you open the panel the usual way. Close it and open it without "Run as administrator", under your own account. Installing does not need administrator rights. |
+| **"Pydantic AI 2.57.0 is installed for user X (installed …) in … — it is not available to you (Y)"** | Every install from the panel or the terminal leaves a record in the machine's shared folder: `%ProgramData%\AuroraStudio\installs\` (Windows), `/Users/Shared/AuroraStudio/installs/` (macOS), `/var/tmp/aurora-studio/installs/` (Linux). The row shows someone else's install. Install it for yourself with the **Install** button next to Pydantic AI: it installs into your home folder. From a terminal in the project folder: `python .aurora/scripts/agent_core.py --venv-install`. |
+| **"The version is visible, but it does not start for you: …"** | The package is in the venv, but the adapter process does not come up. The row names the exact cause. "the venv … is built on another user's Python or on a Python that no longer exists": the venv was created by a Python from someone else's profile, or that Python was removed later; install it for yourself with the **Install** button. "the adapter process exited right at startup": the venv is damaged; reinstall. |
+| **"PYTHONPATH is set in the environment — the engine removes it for the venv"** | PYTHONHOME and PYTHONPATH that a corporate environment sets for its own Python are not passed to venv processes (the adapter, graphify, pip). This is information, not an error: there is nothing to do. |
+| **"the venv … belongs to another user or is read-only"** (macOS, Linux) | The venv was installed with `sudo`: it works, but it cannot be updated without the owner's rights. Remove `~/.aurora/venv` with the owner's rights (`sudo rm -rf ~/.aurora/venv`) and install again from **Install** without `sudo`. |
+| **A Python package does not install: no rights to the package folder** | Python is installed for all users, and you have no administrator rights. **Install** shows the command with `--user`, and the button installs the same way, into your user folder. |
+| **git or pandoc on Windows without administrator rights** | `winget install --id Git.Git -e --scope user` and `winget install --id JohnMacFarlane.Pandoc -e --scope user`: both packages have a per-user installer in winget. |
+
+The red strip and the run summary say only one thing about it: "another user of this machine has an installation (record from …)". No name and no path, because the summary and the journal get shared. Who exactly installed it is shown only on **Install**. `kit:doctor` and `python .aurora/scripts/agent_core.py --venv-status` print the same.
+
 ## The panel
 
 | Symptom | Cause and fix |

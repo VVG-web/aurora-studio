@@ -1822,6 +1822,9 @@ function drawAdapterAlarm(rows){
       el("b",{}, t("alarm.adapter")),
       ...adapter.map(r => el("div",{}, t("alarm.adapter_row",
         {path: r.path, project: r.project || "—", when: when(r), calls: r.calls, why: r.why}))),
+      // Беда venv — для кого: «Установка» проверяет и ставит для пользователя панели (имени в файле тревоги нет).
+      ...[...new Set(adapter.map(r => r.user).filter(Boolean))].map(user =>
+        el("div",{class:"muted"}, t("alarm.adapter_user", {user}))),
       el("div",{}, t("alarm.adapter_tail"),
         // Чем лечить, говорит причина: нет файла адаптера в движке проекта — «Версия», нет или
         // сломан сам Pydantic AI — «Установка», иначе (прокси, сертификат) кнопки нет: правится снаружи.

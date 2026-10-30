@@ -1072,6 +1072,11 @@ def main() -> int:
                   + ((f" — {_gap}; вызовы идут мимо Pydantic AI" if _gap else f" ({_v})") if _ok
                      else " — venv не установлен, stdlib-фолбэк")
                   + " · настройка одна на кит · проверить: agent:ping")
+            # Версия пакета видна и в чужом venv, а прогон под другим пользователем шёл мимо Pydantic AI: для
+            # кого проверено и поднимаются ли надстройки так, как в прогоне, — то же, что в «Установке».
+            import access_check as _ac
+            for _line in _ac.report_lines(_ac.report()):
+                print("  " + _line)
         else:
             print("агент: не настроен (это не ошибка) — панель: раздел «Модели»")
     except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора

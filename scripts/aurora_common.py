@@ -3098,6 +3098,30 @@ def child_env(project: str = "", **extra) -> dict:
     return env
 
 
+# Переменные, которые чужой Python окружения навязывает venv надстройки. Корпоративная машина
+# ставит PYTHONHOME/PYTHONPATH для своего Python: venv с ними берёт чужую стандартную библиотеку
+# и чужие пакеты и не поднимается. «Установка» спрашивала venv с `-I` (они не действуют) и была
+# зелёной, а прогон запускал адаптер без `-I` и шёл мимо Pydantic AI.
+PYTHON_ENV_DROP = ("PYTHONHOME", "PYTHONPATH")
+
+
+def venv_env(base: dict | None = None, **extra) -> dict:
+    """Окружение процесса из venv надстройки (адаптер, самопроверка, зонды версии, graphify, pip):
+    `child_env()` (или `base`) без PYTHONHOME и PYTHONPATH. PYTHONUTF8 и PYTHONIOENCODING остаются —
+    поэтому не `-E`: без них труба на Windows вернулась бы к кодовой странице системы."""
+    env = dict(child_env() if base is None else base)
+    for k in [k for k in env if k.upper() in PYTHON_ENV_DROP]:
+        del env[k]
+    env.update(extra)
+    return env
+
+
+def python_env_set(env=None) -> list:
+    """Какие из снимаемых для venv переменных заданы в окружении этого процесса — только имена."""
+    env = os.environ if env is None else env
+    return [k for k in PYTHON_ENV_DROP if any(n.upper() == k and v for n, v in env.items())]
+
+
 # Скаляр конфига читает ОДНА функция на весь движок: настройка, панель, синки, отчёт.
 # Три формы записи: 'одинарные кавычки' (внутри `''` — это кавычка), "двойные" и без
 # кавычек. Одинарные — единственный способ хранить значение с `"` внутри (JQL с датой

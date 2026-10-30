@@ -80,6 +80,10 @@ def _own_home_for_the_run() -> None:
     os.environ["AURORA_TESTS_REAL_HOME"] = real
     os.environ["AURORA_TESTS_HOME"] = own
     os.environ["HOME"] = os.environ["USERPROFILE"] = own
+    # Общая папка машины (`access_check.shared_dir`: %ProgramData%, /Users/Shared, /var/tmp) — туда
+    # установка пишет «кто что поставил». Прогон пишет в свою: настоящие записи других пользователей
+    # он не трогает и своих туда не оставляет.
+    os.environ["AURORA_SHARED_DIR"] = os.path.join(own, "machine-shared")
     import atexit
     atexit.register(shutil.rmtree, own, True)
 

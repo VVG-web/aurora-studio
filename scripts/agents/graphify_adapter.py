@@ -42,8 +42,10 @@ def _call(script: str, payload: dict, timeout: int = 600) -> dict | None:
     # Свой кэш graphify пишет в `graphify-out/` текущей папки — в проекте это был бы мусор
     # в корне. Даём ему временную папку и убираем её после вызова.
     scratch = tempfile.mkdtemp(prefix="aurora-graphify-")
-    env = {k: v for k, v in os.environ.items() if not k.startswith("Malloc")}
-    env["GRAPHIFY_OUT"] = os.path.join(scratch, "graphify-out")
+    # PYTHONHOME/PYTHONPATH чужого Python окружения в venv graphify не передаём (`venv_env`)
+    from aurora_common import venv_env
+    env = venv_env({k: v for k, v in os.environ.items() if not k.startswith("Malloc")},
+                   GRAPHIFY_OUT=os.path.join(scratch, "graphify-out"))
     try:
         p = subprocess.run([vpy, "-c", script], input=json.dumps(payload, ensure_ascii=False),
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env,

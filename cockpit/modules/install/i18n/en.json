@@ -106,5 +106,22 @@
   "install.hs_note.continue": "A file of its own in ~/.continue/mcpServers/ — the shared config.yaml is not touched.",
   "install.hs_note.jcode": "jcode waits 30 s for a tool by default — the entry sets 1800 s: a review takes minutes.",
   "install.hs_note.pi": "pi connects MCP through the pi-mcp-extension extension — without it the entry has no effect.",
-  "install.hs_note.chatbox": "Not an agent but a chat client, yet it speaks MCP: the aurora server appears in “Settings → MCP”. Connect while Chatbox is closed — on exit it rewrites its settings file, and an entry made with the window open would be lost. A review takes minutes: if Chatbox cuts the call, raise the timeout in its settings."
+  "install.hs_note.chatbox": "Not an agent but a chat client, yet it speaks MCP: the aurora server appears in “Settings → MCP”. Connect while Chatbox is closed — on exit it rewrites its settings file, and an entry made with the window open would be lost. A review takes minutes: if Chatbox cuts the call, raise the timeout in its settings.",
+  "install.acc_for": "Checked for: {user} · home folder {home} · rights: {rights}",
+  "install.acc_admin": "administrator",
+  "install.acc_plain": "standard",
+  "install.acc_unknown": "unknown",
+  "install.acc_warn_admin": "The panel runs as {user} with administrator rights: everything you install from here goes into the profile of {user} ({home}) and may not be visible when you open the panel the usual way. Open the panel without \"Run as administrator\" and install from there — installing does not need administrator rights.",
+  "install.acc_warn_other": "The panel runs as {user} while {session} is signed in: everything you install from here goes into the profile of {user} ({home}) and will not be visible when you open the panel the usual way. Open the panel under your own account — installing does not need administrator rights.",
+  "install.acc_pyenv_one": "{names} is set in the environment — the engine removes it for the venv.",
+  "install.acc_pyenv_many": "{names} are set in the environment — the engine removes them for the venv.",
+  "install.acc_run_ok": "works for you ({user}) ✓",
+  "install.acc_run_seen": "The version is visible, but it does not start for you: {why}",
+  "install.acc_run_bad": "Does not start for you: {why}",
+  "install.acc_other": "{name} {v} is installed for user {user} (installed {at}{admin}) in {path} — it is not available to you ({me}): every user installs it for themselves.",
+  "install.acc_other_admin": ", with administrator rights",
+  "install.acc_how": "For you ({user}) the button installs into {path} — no administrator rights needed. From a terminal in the project folder:",
+  "install.acc_where_other": "Goes into {path} — the profile of {user}, the account the panel runs as",
+  "install.acc_user_site": "This Python's package folder is read-only: the button and the command install into your user folder (--user) — no administrator rights needed.",
+  "install.acc_bin_user": "Without administrator rights: {cmd}"
 }

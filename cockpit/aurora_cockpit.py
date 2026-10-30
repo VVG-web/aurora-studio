@@ -1706,6 +1706,10 @@ def _cause_messages(lang: str) -> dict:
             out[skel(row["ru"])] = skel(row["en"])
         if row.get("label") and row.get("label_en"):
             out[row["label"]] = row["label_en"]
+    # сведение «у другого пользователя этой машины есть установка» за любой причиной области venv
+    note = getattr(AG, "OTHERS_NOTE", None)
+    if note:
+        out[skel("{}" + note["ru"])] = skel("{}" + note["en"])
     return out
 
 
@@ -5119,18 +5123,35 @@ ENV_BIN = {"git": {"darwin": "brew install git", "nt": "winget install --id Git.
            "pandoc": {"darwin": "brew install pandoc",
                       "nt": "winget install --id JohnMacFarlane.Pandoc -e",
                       "linux": "sudo apt install pandoc"}}
+# Windows без прав администратора: у обоих пакетов в манифесте winget-pkgs есть установщик `Scope: user`
+# (git — Inno Setup в %LOCALAPPDATA%\Programs\Git, pandoc — MSI с ALLUSERS=2). Установщик git помечен
+# `elevatesSelf`: если он всё же спросит пароль администратора, ставить от чужой учётной записи не надо.
+ENV_BIN_USER = {"git": "winget install --id Git.Git -e --scope user",
+                "pandoc": "winget install --id JohnMacFarlane.Pandoc -e --scope user"}
 
 
 def platform_key() -> str:
     return "nt" if os.name == "nt" else "darwin" if sys.platform == "darwin" else "linux"
 
 
-def pip_command(pkg: str) -> str:
+def needs_user_site() -> bool:
+    """site-packages Python панели закрыт на запись (Python поставлен для всех, а вы без прав
+    администратора) — пакеты ставятся в папку пользователя (`--user`). В venv `--user` не бывает."""
+    import sysconfig
+    if sys.prefix != sys.base_prefix:
+        return False
+    target = sysconfig.get_paths().get("purelib") or ""
+    return bool(target) and not os.access(target, os.W_OK)
+
+
+def pip_command(pkg: str, user=None) -> str:
     """Установка в ТОТ Python, которым работает панель: `pip3` в терминале на Windows часто
-    принадлежит другому Python, и пакет «ставится», а панель его не видит."""
+    принадлежит другому Python, и пакет «ставится», а панель его не видит. Папка пакетов этого
+    Python закрыта на запись — с `--user`: права администратора не нужны."""
     exe = f'"{sys.executable}"' if " " in sys.executable else sys.executable
+    user = needs_user_site() if user is None else user
     # закреплённая китом версия (requirements.txt) — в самой команде: так её увидит и тот, кто ставит руками
-    return f"{exe} -m pip install {_extras().pinned_spec(pkg) or pkg}"
+    return f"{exe} -m pip install {'--user ' if user else ''}{_extras().pinned_spec(pkg) or pkg}"
 
 
 def refresh_import_paths() -> None:
@@ -5181,13 +5202,16 @@ def environment(fresh: bool = False) -> dict:
          "enables": "всё: движок работает на Python 3.11 и новее",
          "install": "" if py_level == "ok" else python_install_hint()},
         {"name": "git", "ok": bool(find_bin("git")), "kind": "bin",
-         "enables": "всё: движок работает поверх git", "install": ENV_BIN["git"][plat]},
+         "enables": "всё: движок работает поверх git", "install": ENV_BIN["git"][plat],
+         "install_user": ENV_BIN_USER["git"] if plat == "nt" else ""},
         {"name": "pandoc", "ok": bool(find_bin("pandoc")), "kind": "bin",
-         "enables": "ship:export — markdown → docx/pdf", "install": ENV_BIN["pandoc"][plat]},
+         "enables": "ship:export — markdown → docx/pdf", "install": ENV_BIN["pandoc"][plat],
+         "install_user": ENV_BIN_USER["pandoc"] if plat == "nt" else ""},
     ]
+    user = needs_user_site()
     for pkg, mods, what in ENV_PY:
-        items.append({"name": pkg, "ok": has_module(mods), "kind": "py", "pip": pkg,
-                      "enables": what, "install": pip_command(pkg)})
+        items.append({"name": pkg, "ok": has_module(mods), "kind": "py", "pip": pkg, "user": user,
+                      "enables": what, "install": pip_command(pkg, user)})
     # Строки «Atlassian MCP в Cursor» больше нет (1.162.0): это настройка одного редактора,
     # а не движка. Вместо неё — «Aurora MCP в харнессах»: какие ассистенты есть на машине и
     # подключён ли к ним сервер Авроры (`harness_mcp.py`).
@@ -5210,16 +5234,30 @@ def env_install(name: str) -> dict:
     specs = [spec] + [s for s in (_extras().pinned_spec(d) for d in ENV_COMPANIONS.get(pkg, ())) if s]
     # -P (Python 3.11+): папка запуска не первой в sys.path; на 3.10 флага нет, и pip запускается из папки кокпита
     safe = (["-P"] if sys.version_info >= (3, 11) else []) + ["-X", "utf8"]
+    user = needs_user_site()        # Python для всех, вы без прав администратора — в папку пользователя
     try:
-        p = subprocess.run([sys.executable, *safe, "-m", "pip", "install", *specs], capture_output=True,
+        p = subprocess.run([sys.executable, *safe, "-m", "pip", "install", *(["--user"] if user else []), *specs],
+                           capture_output=True,
                            cwd=os.path.dirname(os.path.abspath(__file__)),
                            text=True, encoding="utf-8", errors="replace", timeout=900)
         ok, tail = p.returncode == 0, (note + "\n" if note else "") + ((p.stdout or "") + (p.stderr or "")).strip()[-1500:]
     except (OSError, subprocess.SubprocessError) as e:
         ok, tail = False, f"{type(e).__name__}: {e}"
     env = environment(fresh=True)
+    CACHE.pop("access", None)
     seen = next((i["ok"] for i in env["items"] if i.get("pip") == pkg), False)
     code = "" if ok and seen else "not_seen" if ok else "pip_failed"
+    if ok and seen:             # кто что поставил — в общую папку машины (`access_check`)
+        import site
+        import sysconfig
+        from importlib import metadata
+        try:
+            ver = metadata.version(pkg)
+        except Exception:  # noqa: BLE001 — версия для записи, а не для работы
+            ver = ""
+        said = _extras().record_install(pkg, ver, site.getusersitepackages() if user
+                                        else sysconfig.get_paths().get("purelib") or "")
+        tail += ("\n" + said) if said else ""
     return {"ok": ok and seen, "code": code, "output": tail}
 
 
@@ -5838,6 +5876,7 @@ def agent_venv_install() -> dict:
         p = subprocess.run([sys.executable, os.path.join(KIT, "scripts", "agent_core.py"),
                             "--venv-install"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2400)
         CACHE.pop("env", None)      # строка в «Установке» обязана обновиться
+        CACHE.pop("access", None)   # и настоящий запуск — тоже
         return {"ok": p.returncode == 0, "log": (p.stdout + p.stderr).strip()[-600:]}
     except Exception as e:  # noqa: BLE001
         return {"error": f"установка не выполнена: {type(e).__name__}: {e}"}
@@ -5857,6 +5896,37 @@ def extras_state(fresh: bool = False) -> dict:
     Сеть спрашивается раз в шесть часов (кэш модуля), `fresh` — по кнопке «Проверить».
     """
     return {"extras": _extras().status(fresh=fresh)}
+
+
+_ACCESS_LOCK = threading.Lock()
+
+
+def run_adapter(project: str = "") -> str:
+    """Файл адаптера той копии движка, которой пойдёт прогон: `<проект>/.aurora/scripts/agents/…`, если у
+    проекта есть свой движок (`script_path`), иначе — кита."""
+    core = script_path(project, "agent_core.py") if project else os.path.join(KIT, "scripts", "agent_core.py")
+    return os.path.join(os.path.dirname(core), "agents", "pydantic_ai_adapter.py")
+
+
+def me() -> dict:
+    """Кто эта панель (`access_check.whoami`): пользователь процесса не меняется, пока панель жива."""
+    if "me" not in CACHE:
+        import access_check as AC
+        CACHE["me"] = AC.whoami()
+    return CACHE["me"]
+
+
+def install_access(project: str = "", fresh: bool = False) -> dict:
+    """Для кого проверено и работают ли надстройки ДЛЯ ЭТОГО пользователя — настоящим запуском, как в
+    прогоне выбранного проекта (`access_check.report`). Запуск адаптера стоит секунды, поэтому ответ
+    держится в памяти панели до «Проверить снова» (`fresh`) или установки из панели."""
+    with _ACCESS_LOCK:
+        got = CACHE.setdefault("access", {})
+        if fresh or project not in got:
+            import access_check as AC
+            got[project] = AC.report(run_adapter(project), project or None)
+            CACHE["me"] = got[project]["me"]
+        return got[project]
 
 
 def extras_check(extra_id: str) -> dict:
@@ -5882,6 +5952,7 @@ def extras_install(extra_id: str) -> dict:
         return {"error": f"неизвестная надстройка: {extra_id}"}
     res = EX.install(extra_id)
     CACHE.pop("env", None)          # строки «Установки» обязаны обновиться
+    CACHE.pop("access", None)       # и настоящий запуск — тоже
     return res
 
 
@@ -5918,7 +5989,11 @@ def adapter_alarm() -> list:
                          "sub": cause.sub, "fix": cause.fix, "args": dict(cause.args),
                          "at": row.get("at", ""), "why": str(cause),
                          "project": os.path.basename(str(row.get("project") or "")),
-                         "calls": _int_or_zero(row.get("calls"))})
+                         "calls": _int_or_zero(row.get("calls")),
+                         # беда venv лечится «Установкой» — и она для того, кто запустил панель (а с ней прогон):
+                         # имя называет живая полоса, в файле тревоги и итоге прогона его нет (`_shown_path`)
+                         **({"user": me().get("user") or ""} if cause.area == "adapter" and cause.fix == "install"
+                            else {})})
     return rows
 
 
@@ -6612,6 +6687,13 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/extras":
             self.send_json(localized_extras(extras_state(fresh=bool(q.get("fresh"))),
                                             request_lang(q)))
+        elif u.path == "/api/install/access":
+            # «Установка»: для кого проверено и поднимаются ли надстройки так, как в прогоне выбранного
+            # проекта (`install_access`). Запуск адаптера — секунды: ответ из памяти, `fresh` — заново.
+            project = (q.get("project") or [""])[0]
+            if project and not self._known(project):
+                return
+            self.send_json(install_access(project, fresh=bool(q.get("fresh"))))
         elif u.path == "/api/bots":
             project = (q.get("project") or [""])[0]
             if not self._known(project):

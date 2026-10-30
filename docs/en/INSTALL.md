@@ -357,6 +357,9 @@ The Pydantic AI alarm — the adapter path is faulty:
 | Message | What it means | What to do |
 |---|---|---|
 | `venv python: … not found` | Pydantic AI is not installed on this computer | Install → Pydantic AI |
+| `the venv … is built on another user's Python or on a Python that no longer exists` | the venv's base (`home` in `pyvenv.cfg`) is in someone else's profile, closed or removed: the venv will not start for you | Install → Pydantic AI, install it for yourself |
+| `the venv … belongs to another user or is read-only` (macOS, Linux) | the venv was installed with `sudo`: it works, but cannot be updated | remove it with the owner's rights and install again from Install |
+| `…; another user of this machine has an installation (record from …)` | you do not have Pydantic AI or it does not start, while another user installed it for themselves | see [Installed, but not for you](#installed-but-not-for-you) |
 | `adapter: .aurora/scripts/agents/… not found` | the project engine is incomplete (the Install page may be green) | Version → Prepare project; `… the kit is incomplete` — update the kit |
 | `package … is not installed in the venv`, `Pydantic AI does not import in the venv (…)` | the package is missing or damaged | Install → Pydantic AI, reinstall |
 | `Pydantic AI … failed the compatibility check …` | the new package version does not suit Aurora | Install → restore the previous version; `agent:pydantic` |
@@ -395,6 +398,51 @@ the path.
 The old `AURORA_AGENT_*`, `AURORA_EMBED_*`, `AURORA_OCR_*` variables of the kit's `.env.aurora.local` move into
 `models.json` by themselves, once (or `python3 scripts/model_config.py --migrate`); the file itself is not
 changed. In a project's `.env` they no longer apply — `doctor` names them.
+
+### Installed, but not for you
+
+Pydantic AI and graphify are installed into the home folder of the user the panel runs as
+(`~/.aurora/venv`, `~/.aurora/graphify`) and need no administrator rights. If the panel is started "as
+administrator" under a separate account, the install goes into that account's profile, and under your ordinary
+account the run goes around Pydantic AI, even though Install in that panel was green.
+
+So Install says who it checks for: "Checked for: user · home folder … · rights: standard / administrator". If
+the rights are elevated or the panel does not run as the person signed in, a strip on top says that everything you
+install from here goes into someone else's profile. The Pydantic AI row says "works for you" only if the adapter
+actually started the same way as in a run of the selected project: the same launch, the same environment, the
+adapter file from `<project>/.aurora/scripts/agents/`. Otherwise the row names the exact cause from the table
+above. graphify is checked the same way: by an import in its own venv, the way the engine calls it.
+
+Every successful install from the panel or the terminal leaves a record in a folder shared by the whole machine,
+one file per user:
+
+| System | Folder |
+|---|---|
+| Windows | `%ProgramData%\AuroraStudio\installs\<user>.json` |
+| macOS | `/Users/Shared/AuroraStudio/installs/` |
+| Linux | `/var/tmp/aurora-studio/installs/` |
+
+A record holds the component, version, path, user, whether administrator rights were used, and the UTC time. If
+you do not have a component or it does not start, while another user's record exists, Install says: "Pydantic AI
+2.57.0 is installed for user X (installed …, with administrator rights) in … — it is not available to you (Y):
+every user installs it for themselves". The run summary, the journal and `failures.jsonl` name nobody: they only
+say "another user of this machine has an installation (record from …)".
+
+How to install for yourself without administrator rights:
+
+- Pydantic AI and graphify: the **Install** button on Install, or in the project folder
+  `python .aurora/scripts/agent_core.py --venv-install` (graphify —
+  `python .aurora/scripts/aurora_extras.py --install graphify`);
+- the panel's Python packages: if this Python's package folder is read-only, the command and the button install
+  with `--user`;
+- git and pandoc on Windows: `winget install --id Git.Git -e --scope user`,
+  `winget install --id JohnMacFarlane.Pandoc -e --scope user` (both packages have a per-user installer, `Scope: user`, in
+  their winget manifests; the git installer is marked there as raising its own rights — if it still asks for an
+  administrator password, do not enter another account's password: git would land outside your profile).
+
+`PYTHONHOME` and `PYTHONPATH`, which a corporate environment sets for its own Python, are not passed to venv
+processes, while `PYTHONUTF8` and `PYTHONIOENCODING` stay. Install names only the variables, not their values.
+`kit:doctor` and `python .aurora/scripts/agent_core.py --venv-status` print the same as Install.
 
 ### Checking
 

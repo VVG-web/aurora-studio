@@ -673,7 +673,9 @@ def test_panel_installs_pinned_or_aged_python_packages(tmp: Path):
         EX.aged_version = lambda dist, days, now=0.0: (_ for _ in ()).throw(OSError("нет сети"))
         out = ck.env_install("lxml")
         assert seen[-1][-1] == "lxml" and "паузу после выпуска проверить не удалось" in out["output"], (seen, out)
-        assert "beautifulsoup4==" in ck.pip_command("beautifulsoup4") and ck.pip_command("lxml").endswith("install lxml")
+        assert "beautifulsoup4==" in ck.pip_command("beautifulsoup4") and ck.pip_command("lxml", False).endswith("install lxml")
+        # Python панели поставлен для всех, а папка его пакетов закрыта на запись — команда с `--user`
+        assert ck.pip_command("lxml", True).endswith("install --user lxml")
     finally:
         ck.subprocess.run, ck.environment, EX.aged_version = real_run, real_env, real_aged
         importlib.reload(ck)

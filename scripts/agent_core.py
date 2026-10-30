@@ -8,7 +8,7 @@
   python3 .aurora/scripts/agent_core.py --ping          # каждый бэкенд: жив, занят, пуст
   python3 .aurora/scripts/agent_core.py --probe-width   # сколько запросов держит шлюз
   python3 .aurora/scripts/agent_core.py --show          # собранная конфигурация (ключи маской)
-  python3 .aurora/scripts/agent_core.py --venv-status   # стоит ли Pydantic AI и какой версии
+  python3 .aurora/scripts/agent_core.py --venv-status   # стоит ли Pydantic AI, какой версии и запускается ли он для вас
   python3 .aurora/scripts/agent_core.py --venv-install  # поставить/обновить в ~/.aurora/venv
 
 Настройка моделей — одна на кит: `<кит>/local/models.json` (`model_config.py`): провайдеры,
@@ -46,7 +46,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from aurora_common import child_env, load_env, safe_urlopen
+from aurora_common import load_env, safe_urlopen, venv_env
 
 from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import engine_dir, utc_stamp  # noqa: E402
@@ -601,6 +601,18 @@ CAUSES: dict = {
     "venv": {"area": "adapter", "fix": "install",
         "ru": "venv python: {path} не найден — «Установка» → Pydantic AI",
         "en": "venv python: {path} not found — Install → Pydantic AI"},
+    # venv есть, но не для этого пользователя (`access_check`): основа — Python из чужого профиля, недоступный
+    # или удалённый; либо venv чужой (ставили через sudo) — работает, а обновить нельзя
+    "venv_foreign_base": {"area": "adapter", "fix": "install",
+        "ru": "venv {path} построен на Python другого пользователя или на Python, которого больше нет, — "
+              "для вас он не запустится: поставьте для себя: «Установка» → Pydantic AI",
+        "en": "the venv {path} is built on another user's Python or on a Python that no longer exists — "
+              "it will not start for you: install it for yourself: Install → Pydantic AI"},
+    "venv_not_yours": {"area": "adapter", "fix": "install",
+        "ru": "venv {path} принадлежит другому пользователю или закрыт на запись — работает, но обновить "
+              "без прав владельца нельзя: удалите его с правами владельца и поставьте заново из «Установки»",
+        "en": "the venv {path} belongs to another user or is read-only — it works, but it cannot be updated "
+              "without the owner's rights: remove it with the owner's rights and install again from Install"},
     "adapter_file.project": {"area": "adapter", "fix": "version",
         "ru": "адаптер: {path} не найден — движок проекта неполный: «Версия» → "
               "«Подготовить проект»",
@@ -841,6 +853,20 @@ def cause_id(kind: str, sub: str = "") -> str:
     return f"{kind}.{sub}" if sub else kind
 
 
+# Причины, при которых важно, что на машине есть чужая установка: venv нет, он не поднимается или не
+# импортирует пакет. К ним добавляется сведение `OTHERS_NOTE` (подстановка `others` — дата записи). Без
+# имени и пути: строка уходит в итог прогона, журнал и failures.jsonl, которыми делятся; кто именно
+# поставил, называет только «Установка» (`access_check`).
+VENV_CAUSES = frozenset({"venv", "venv_foreign_base", "import_failed.missing", "import_failed.broken",
+                         "process_start", "process_died.start", "process_hang.start"})
+OTHERS_NOTE = {"ru": "; у другого пользователя этой машины есть установка (запись от {others})",
+               "en": "; another user of this machine has an installation (record from {others})"}
+
+
+def _others_tail(args: dict, lang: str = "ru") -> str:
+    return OTHERS_NOTE["en" if lang == "en" else "ru"].format(others=args["others"]) if args.get("others") else ""
+
+
 class _Blank(dict):
     """Подстановки причины: чего не передали — вопросительный знак, а не исключение."""
 
@@ -865,7 +891,7 @@ class Why(str):
 
     def __new__(cls, kind: str, sub: str = "", /, **args):
         row = CAUSES[cause_id(kind, sub)]
-        self = super().__new__(cls, row["ru"].format_map(_Blank(args)))
+        self = super().__new__(cls, row["ru"].format_map(_Blank(args)) + _others_tail(args))
         self._set(kind, sub, row, args)
         return self
 
@@ -897,7 +923,7 @@ class Why(str):
         ref = CAUSES.get(args.get("ref"), {})
         if ref.get("label"):                         # сведение «повторён» называет вид оборвавшегося вызова
             args["label"] = ref["label_en"] if lang == "en" else ref["label"]
-        return row["en" if lang == "en" and row.get("en") else "ru"].format_map(_Blank(args))
+        return row["en" if lang == "en" and row.get("en") else "ru"].format_map(_Blank(args)) + _others_tail(args, lang)
 
     @property
     def ru(self) -> str:
@@ -1066,9 +1092,13 @@ def _adapter_file() -> Path:
     return Path(__file__).resolve().parent / "agents" / "pydantic_ai_adapter.py"
 
 
-def _adapter_argv() -> list:
-    vpy, adapter = _venv_python(), _adapter_file()
-    return [str(vpy), str(adapter)] if vpy.is_file() and adapter.is_file() else []
+def _adapter_argv(adapter=None) -> list:
+    """Как прогон запускает адаптер: питон venv и файл адаптера этой копии движка (`adapter` — другой
+    копии: «Установка» проверяет ту, которой пойдёт прогон проекта). Чего-то нет — пусто.
+    `os.path.isfile`, а не `Path.is_file`: ссылка venv на Python из закрытого чужого профиля даёт
+    отказ в доступе, а не «нет файла», и не должна ронять прогон."""
+    vpy, adapter = _venv_python(), Path(adapter) if adapter else _adapter_file()
+    return [str(vpy), str(adapter)] if os.path.isfile(vpy) and os.path.isfile(adapter) else []
 
 
 # Начала причин «адаптер не запускается»: по ним панель отличает лечение (venv — «Установка»,
@@ -1095,21 +1125,38 @@ def _shown_path(path) -> str:
     return "/".join(parts[-3:])
 
 
-def _venv_gap() -> Why:
-    return Why("venv", path=_shown_path(_venv_python()))
+def _base_problem() -> str:
+    """Чем основа venv плоха для этого пользователя (`access_check.venv_base_problem`); пусто — ничем."""
+    try:
+        import access_check as AC
+        return AC.venv_base_problem(VENV)
+    except Exception:  # noqa: BLE001 — справка о venv не роняет прогон
+        return ""
 
 
-def _adapter_gap() -> Why:
-    where = _shown_path(_adapter_file())
+def _venv_gap():
+    """Почему venv не годится этому пользователю ещё до запуска; None — запускать можно.
+
+    Основа venv пропала или закрыта — `venv_foreign_base`: на POSIX ссылка `bin/python` в таком venv
+    битая, и «не найден» увело бы человека искать файл, который на месте. Основа в чужом, но открытом
+    профиле запуск не запрещает — решает настоящий запуск (`_start_cause`)."""
+    if _base_problem() in ("missing", "denied"):
+        return Why("venv_foreign_base", path=_shown_path(VENV))
+    if not os.path.isfile(_venv_python()):
+        return Why("venv", path=_shown_path(_venv_python()))
+    return None
+
+
+def _adapter_gap(adapter=None) -> Why:
+    where = _shown_path(adapter or _adapter_file())
     return Why("adapter_file", "project" if where.startswith(".aurora/") else "kit", path=where)
 
 
-def _gap_causes() -> list:
-    gaps = []
-    if not _venv_python().is_file():
-        gaps.append(_venv_gap())
-    if not _adapter_file().is_file():
-        gaps.append(_adapter_gap())
+def _gap_causes(adapter=None) -> list:
+    gaps = [g for g in (_venv_gap(),) if g is not None]
+    adapter = Path(adapter) if adapter else _adapter_file()
+    if not os.path.isfile(adapter):
+        gaps.append(_adapter_gap(adapter))
     return gaps
 
 
@@ -1122,10 +1169,10 @@ def adapter_gap() -> str:
     return "; ".join(str(g) for g in _gap_causes())
 
 
-def adapter_gap_why():
+def adapter_gap_why(adapter=None):
     """То же, что `adapter_gap`, но причиной (`Why`) с видом и лекарством; None — всё на месте.
     Не хватает обоих — текст общий, вид и лекарство по первому (venv)."""
-    gaps = _gap_causes()
+    gaps = _gap_causes(adapter)
     if len(gaps) < 2:
         return gaps[0] if gaps else None
     return Why.raw("; ".join(str(g) for g in gaps), gaps[0].kind, gaps[0].sub, **gaps[0].args)
@@ -1176,7 +1223,7 @@ def adapter_selfcheck(version: str = "", force: bool = False) -> dict:
     try:
         p = subprocess.run(argv + ["--selfcheck"], stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, encoding="utf-8", timeout=180,
-                           env=child_env())
+                           env=venv_env())
         out = json.loads((p.stdout.strip().splitlines() or ["{}"])[-1])
     except (OSError, subprocess.SubprocessError, ValueError) as e:
         out = {"ok": False, "problems": [f"самопроверка не ответила: {type(e).__name__}"]}
@@ -1249,6 +1296,123 @@ def _hello_cause(hello: dict) -> Why:
     return Why("adapter_error", error=_scrub(hello.get("error") or "причина не названа"))
 
 
+def _spawn_adapter(argv: list, cwd=None):
+    """Процесс адаптера так, как его запускает прогон: без `-I` и в окружении venv (`venv_env`) —
+    PYTHONHOME и PYTHONPATH чужого Python сняты, кодировка трубы задана."""
+    return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                            encoding="utf-8", env=venv_env(), cwd=cwd)
+
+
+def _read_hello(proc, wait: float) -> tuple:
+    """Первая строка-приветствие процесса адаптера → (приветствие или {}, молчит ли процесс до сих пор).
+    Посторонние строки (баннеры библиотек) пропускаются."""
+    box: list = []
+
+    def first_hello() -> None:
+        for _ in range(50):
+            line = proc.stdout.readline()
+            if not line:
+                return
+            try:
+                got = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(got, dict) and "ready" in got:
+                box.append(got)
+                return
+    t = threading.Thread(target=first_hello, daemon=True)
+    t.start()
+    t.join(wait)
+    return (box[0] if box else {}), t.is_alive()
+
+
+def _start_failure(proc, hello: dict, hung: bool, wait: float) -> Why:
+    """Процесс адаптера не сказал «готов» → он снят, причина названа."""
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    if hello:
+        return _hello_cause(hello)
+    if hung:
+        return Why("process_hang", "start", sec=int(wait))
+    # Поток вывода закрылся, не сказав ни слова: процесс завершился сам, например
+    # из-за повреждённого venv. «Не ответил за 60 с» тут было бы неправдой.
+    try:
+        code = proc.wait(timeout=2)
+    except subprocess.SubprocessError:
+        code = "?"
+    return _start_cause(Why("process_died", "start", code=code))
+
+
+def _start_cause(why: Why) -> Why:
+    """Процесс venv не поднялся, а venv построен на Python из чужого профиля — причина в этом, а не в
+    «venv повреждён»: переустановка под тем же пользователем ничего бы не дала."""
+    if cause_id(why.kind, why.sub) in ("process_start", "process_died.start") and _base_problem():
+        return Why("venv_foreign_base", path=_shown_path(VENV))
+    return why
+
+
+_OTHERS_SEEN: dict = {}       # дата чужой записи на прогон: общую папку машины читаем один раз
+
+
+def _note_others(why):
+    """Причина области venv + «у другого пользователя этой машины есть установка (запись от …)» (`OTHERS_NOTE`)."""
+    if not isinstance(why, Why) or cause_id(why.kind, why.sub) not in VENV_CAUSES or why.args.get("others"):
+        return why
+    if "date" not in _OTHERS_SEEN:
+        try:
+            import access_check as AC
+            _OTHERS_SEEN["date"] = AC.others_date("pydantic-ai")
+        except Exception:  # noqa: BLE001 — сведение не роняет прогон
+            _OTHERS_SEEN["date"] = ""
+    date = _OTHERS_SEEN["date"]
+    if not date:
+        return why
+    if why.plain:
+        out = Why.raw(str(why) + _others_tail({"others": date}), why.kind, why.sub, **why.args, others=date)
+        return out
+    return Why(why.kind, why.sub, **why.args, others=date)
+
+
+def adapter_probe(adapter=None, cwd=None, wait: float = ADAPTER_START) -> dict:
+    """Настоящий запуск адаптера — тем же argv, в том же окружении и (`cwd`) в той же папке, что у прогона:
+    запустил → прочитал «готов» → закрыл трубу. → {ok, version, kind, sub, fix, why}.
+
+    «Установка» раньше спрашивала только версию пакета (`-I`: переменные окружения не действуют) — и была
+    зелёной, когда прогон адаптер поднять не мог. Самопроверку совместимости здесь не гоняем: у неё своя
+    строка («Проверить совместимость»), а ответ «готов» — то, что прогон получает первым."""
+    argv = _adapter_argv(adapter)
+    if not argv:
+        why = adapter_gap_why(adapter) or Why.raw("адаптер Pydantic AI не запускается")
+    else:
+        try:
+            proc = _spawn_adapter(argv, cwd)
+        except OSError as e:
+            why = _start_cause(Why("process_start", exc=type(e).__name__))
+        else:
+            try:
+                hello, hung = _read_hello(proc, wait)
+                if hello.get("ready"):
+                    try:
+                        proc.stdin.close()          # адаптер дочитал трубу — выходит сам
+                        proc.wait(timeout=10)
+                    except (OSError, subprocess.SubprocessError):
+                        proc.kill()
+                    return {"ok": True, "version": str(hello.get("version") or ""), "kind": "", "sub": "",
+                            "fix": "", "why": ""}
+                why = _start_failure(proc, hello, hung, wait)
+            finally:
+                for pipe in (proc.stdin, proc.stdout):
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
+    why = cause_of(why)
+    return {"ok": False, "version": "", "kind": why.kind, "sub": why.sub, "fix": why.fix, "why": str(why)}
+
+
 def adapter_hub():
     """→ (процесс, его ожидающие) либо (None, причина `Why`). Запускает процесс при первом зове.
 
@@ -1264,51 +1428,15 @@ def adapter_hub():
             return None, _HUB["broken"]
         argv = _adapter_argv()
         if not argv:
-            return None, adapter_gap_why() or Why.raw("адаптер Pydantic AI не запускается")
+            return None, _note_others(adapter_gap_why() or Why.raw("адаптер Pydantic AI не запускается"))
         try:
-            proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL, text=True, bufsize=1,
-                                    encoding="utf-8", env=child_env())
+            proc = _spawn_adapter(argv)
         except OSError as e:
-            _HUB["broken"] = Why("process_start", exc=type(e).__name__)
+            _HUB["broken"] = _note_others(_start_cause(Why("process_start", exc=type(e).__name__)))
             return None, _HUB["broken"]
-        box: list = []
-
-        def first_hello() -> None:
-            # Первая строка-приветствие; посторонние строки (баннеры библиотек) пропускаем.
-            for _ in range(50):
-                line = proc.stdout.readline()
-                if not line:
-                    return
-                try:
-                    got = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(got, dict) and "ready" in got:
-                    box.append(got)
-                    return
-        t = threading.Thread(target=first_hello, daemon=True)
-        t.start()
-        t.join(ADAPTER_START)
-        hello = box[0] if box else {}
+        hello, hung = _read_hello(proc, ADAPTER_START)
         if not hello.get("ready"):
-            hung = t.is_alive()             # нить ещё ждёт строку: процесс жив и молчит
-            try:
-                proc.kill()
-            except OSError:
-                pass
-            if hello:
-                _HUB["broken"] = _hello_cause(hello)
-            elif hung:
-                _HUB["broken"] = Why("process_hang", "start", sec=ADAPTER_START)
-            else:
-                # Поток вывода закрылся, не сказав ни слова: процесс завершился сам, например
-                # из-за повреждённого venv. «Не ответил за 60 с» тут было бы неправдой.
-                try:
-                    code = proc.wait(timeout=2)
-                except subprocess.SubprocessError:
-                    code = "?"
-                _HUB["broken"] = Why("process_died", "start", code=code)
+            _HUB["broken"] = _note_others(_start_failure(proc, hello, hung, ADAPTER_START))
             return None, _HUB["broken"]
         version = hello.get("version") or ""
         chk = adapter_selfcheck(version)
@@ -2769,7 +2897,7 @@ def mcp_probe(project: str, kit=None, timeout: float = 60, servers: dict | None 
     try:
         p = subprocess.run(argv + ["--mcp-probe"], input=json.dumps(
             {"mcpServers": servers, "timeout": timeout, "describe": describe}, ensure_ascii=False),
-            capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=project or None, env=child_env(),
+            capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=project or None, env=venv_env(),
             timeout=timeout + 30)
     except subprocess.TimeoutExpired:
         return {"error": f"проверка серверов не уложилась в {int(timeout + 30)} с"}
@@ -4042,12 +4170,12 @@ def embed_probe(cfg: dict) -> str:
 def venv_status() -> tuple:
     """→ (стоит ли pydantic-ai, версия)."""
     vpy = _venv_python()
-    if not vpy.is_file():
+    if not os.path.isfile(vpy):
         return False, ""
     try:
         p = subprocess.run([str(vpy), "-I", "-c",
                             "from importlib.metadata import version; print(version('pydantic-ai'))"],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, env=child_env())
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, env=venv_env())
         return (p.returncode == 0, p.stdout.strip())
     except Exception:  # noqa: BLE001
         return False, ""
@@ -4159,7 +4287,8 @@ def main() -> int:
                     help="настройки Pydantic AI: что уходит в шлюз по ролям")
     ap.add_argument("--check", action="store_true",
                     help="с --pydantic: заново проверить совместимость установленной версии")
-    ap.add_argument("--venv-status", action="store_true", help="стоит ли Pydantic AI")
+    ap.add_argument("--venv-status", action="store_true",
+                    help="стоит ли Pydantic AI и запускается ли он для этого пользователя")
     ap.add_argument("--venv-install", action="store_true",
                     help="поставить/обновить Pydantic AI в ~/.aurora/venv")
     ap.add_argument("--no-quarantine", action="store_true",
@@ -4177,10 +4306,16 @@ def main() -> int:
         return cmd_pydantic(a.json, a.check)
     if a.venv_status:
         ok, version = venv_status()
+        # Версия пакета (`-I`) — ещё не «работает»: для кого проверено и поднимается ли адаптер так,
+        # как в прогоне, — то же, что показывает «Установка» (`access_check.report`).
+        import access_check as AC
+        rep = AC.report()
         if a.json:
-            print(json.dumps({"ok": ok, "version": version, "path": str(VENV)}))
+            print(json.dumps({"ok": ok, "version": version, "path": str(VENV), "access": rep}, ensure_ascii=False))
         else:
             print(f"Pydantic AI: {'установлен, ' + version if ok else 'не установлен'} ({VENV})")
+            for line in AC.report_lines(rep):
+                print(line)
         return 0
     if a.venv_install:
         return cmd_venv_install(not a.no_quarantine)

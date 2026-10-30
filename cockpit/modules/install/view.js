@@ -8,10 +8,14 @@ export function mount(ctx){
   ctx.root.dataset.module = "install";
 }
 
-// Проверить заново, не перезапуская панель: после установки из терминала или winget.
+// Проверить заново, не перезапуская панель: после установки из терминала или winget. Настоящий
+// запуск надстроек — тоже заново: шапка «для кого» и строки надстроек строятся снова.
 async function recheck(ctx){
+  access(ctx, true);
+  if (CARDS){ CARDS.access = accessCard(ctx); CARDS.extras = extrasCard(ctx); }
   const r = await ctx.api("/api/env?fresh=1", {quiet: true});
-  if (r && r.env){ ctx.state.env = r.env; await refresh(ctx); }
+  if (r && r.env) ctx.state.env = r.env;
+  await refresh(ctx);
 }
 
 // Пакет — в Python панели (`python -m pip install`), затем проверка тем же Python.
@@ -36,9 +40,58 @@ let CARDS = null;
 
 function cards(ctx){
   if (!CARDS || CARDS.lang !== ctx.lang)
-    CARDS = {lang: ctx.lang, extras: extrasCard(ctx), gitmods: gitModsCard(ctx),
-             harness: harnessCard(ctx)};
+    CARDS = {lang: ctx.lang, project: projectKey(ctx), access: accessCard(ctx), extras: extrasCard(ctx),
+             gitmods: gitModsCard(ctx), harness: harnessCard(ctx)};
+  // Другой проект — другая копия движка, которой пойдёт прогон: «для вас» проверяется заново.
+  if (CARDS.project !== projectKey(ctx))
+    Object.assign(CARDS, {project: projectKey(ctx), access: accessCard(ctx), extras: extrasCard(ctx)});
   return CARDS;
+}
+
+/* Для кого проверено (1.196.0). Корпоративный ноутбук: панель однажды запустили «от имени
+   администратора» другой учётной записью — venv лёг в её профиль, и «Установка» была зелёной глазами
+   того процесса, а прогон под обычной учётной записью шёл мимо Pydantic AI. Сервер называет
+   пользователя процесса, права, снимаемые для venv переменные и запускает надстройки так, как прогон
+   выбранного проекта; ответ держится в памяти панели до «Проверить снова» или установки. */
+let ACCESS = null;
+
+const projectKey = ctx => ctx.project ? ctx.project.path : "";
+
+function access(ctx, fresh){
+  const key = projectKey(ctx);
+  if (!ACCESS || ACCESS.key !== key || fresh){
+    const q = [key ? "project=" + encodeURIComponent(key) : "", fresh ? "fresh=1" : ""].filter(Boolean).join("&");
+    ACCESS = {key, promise: ctx.api("/api/install/access" + (q ? "?" + q : ""), {quiet:true})};
+  }
+  return ACCESS.promise;
+}
+
+const rights = (t, me) => me.elevated === true ? t("install.acc_admin")
+  : me.elevated === false ? t("install.acc_plain") : t("install.acc_unknown");
+
+function accessCard(ctx){
+  const {t, el} = ctx;
+  const wrap = el("div", {style:"margin-bottom:12px"}, el("span", {class:"spin"}));
+  access(ctx, false).then(a => {
+    wrap.innerHTML = "";
+    if (!a || a.error || !a.me){
+      if (a && a.error) wrap.append(el("div", {class:"muted"}, a.error));
+      return;
+    }
+    const me = a.me;
+    wrap.append(el("div", {class:"muted", style:"font-size:12.5px"},
+      t("install.acc_for", {user: me.user || "?", home: me.home, rights: rights(t, me)})));
+    // Панель не от того, кто за ней сидит, или с правами администратора: поставленное отсюда ляжет в
+    // чужой профиль. Это полоса, а не вопрос: ставить или нет — решает человек.
+    if (me.foreign || me.elevated)
+      wrap.append(el("div", {class:"stalebar", style:"margin-top:8px"},
+        me.foreign ? t("install.acc_warn_other", {user: me.user || "?", session: me.session_user || "?", home: me.home})
+                   : t("install.acc_warn_admin", {user: me.user || "?", home: me.home})));
+    const env = a.python_env || [];
+    if (env.length) wrap.append(el("div", {class:"muted", style:"font-size:12.5px;margin-top:4px"},
+      t(env.length > 1 ? "install.acc_pyenv_many" : "install.acc_pyenv_one", {names: env.join(", ")})));
+  });
+  return wrap;
 }
 
 export async function refresh(ctx){
@@ -47,7 +100,7 @@ export async function refresh(ctx){
   // Постоянные блоки вынимаем до очистки: `innerHTML = ""` у родителя их не губит, но
   // так явно видно, что они переезжают, а не строятся заново.
   const keep = cards(ctx);
-  [keep.extras, keep.gitmods, keep.harness].forEach(n => n.remove());
+  [keep.access, keep.extras, keep.gitmods, keep.harness].forEach(n => n.remove());
   box.innerHTML = "";
   const e = ctx.state.env;
   box.append(el("div", {class:"row", style:"margin-bottom:6px;flex-wrap:wrap"},
@@ -56,8 +109,9 @@ export async function refresh(ctx){
     el("span", {class:"chip mono"}, ctx.state.kit.path)));
   // Пакеты проверяются и ставятся в Python панели: на Windows `pip3` в терминале часто
   // принадлежит другому Python, и «установленное» панель не видит.
-  if (e.python_path) box.append(el("div", {class:"muted", style:"font-size:12.5px;margin-bottom:14px"},
+  if (e.python_path) box.append(el("div", {class:"muted", style:"font-size:12.5px;margin-bottom:6px"},
     t("install.python_path", {path: e.python_path})));
+  box.append(keep.access);
 
   const card = el("div", {class:"card"});
   card.append(el("div", {class:"row", style:"gap:8px;align-items:center;margin-bottom:6px"},
@@ -72,7 +126,11 @@ export async function refresh(ctx){
         el("div", {class:"muted", style:"font-size:12.5px;margin-top:2px"},
           t("install.enables", {what: i.enables})),
         i.ok ? null : el("div", {class:"mono",
-          style:"font-size:12px;margin-top:6px;color:var(--text-muted);overflow-wrap:anywhere"}, i.install)),
+          style:"font-size:12px;margin-top:6px;color:var(--text-muted);overflow-wrap:anywhere"}, i.install),
+        // Без прав администратора: пакеты — в папку пользователя (`--user`), git и pandoc — winget для пользователя.
+        !i.ok && i.user ? el("div", {class:"muted", style:"font-size:12px;margin-top:4px"}, t("install.acc_user_site")) : null,
+        !i.ok && i.install_user ? el("div", {class:"muted", style:"font-size:12px;margin-top:4px;overflow-wrap:anywhere"},
+          t("install.acc_bin_user", {cmd: i.install_user})) : null),
       !i.ok && i.pip ? el("button", {class:"btn sm primary", style:"flex:none",
         onclick: ev => pipInstall(ctx, i, ev.target)}, t("install.do_install")) : null));
   });
@@ -119,9 +177,10 @@ function extrasCard(ctx){
       el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px"}, t("install.extras_about")));
     const body = el("div", {class:"card"}, el("span", {class:"spin"}));
     wrap.append(body);
-    const d = await ctx.api("/api/extras" + (fresh ? "?fresh=1" : ""), {quiet:true});
+    const [d, a] = await Promise.all([ctx.api("/api/extras" + (fresh ? "?fresh=1" : ""), {quiet:true}),
+                                      access(ctx, fresh)]);
     body.innerHTML = "";
-    (d.extras || []).forEach(x => body.append(extraRow(ctx, x, draw)));
+    (d.extras || []).forEach(x => body.append(extraRow(ctx, x, draw, a)));
     if (d.error) body.append(el("div", {class:"muted"}, d.error));
     body.append(el("div", {class:"row", style:"margin-top:8px"},
       el("button", {class:"btn sm", onclick: () => draw(true)}, t("install.ex_check"))));
@@ -225,9 +284,11 @@ function gitModLine(ctx, provider){
   return row;
 }
 
-function extraRow(ctx, x, redraw){
+function extraRow(ctx, x, redraw, a){
   const {t, el} = ctx;
   const have = x.installed;
+  const me = (a && a.me) || {};
+  const comp = (a && a.components && a.components[x.id]) || null;
   const ver = have ? t("install.ex_installed", {v: x.installed}) : t("install.ex_missing");
   const git = x.git ? t("install.ex_git", {v: x.git}) : "";
   const pypi = x.pypi && x.pypi !== x.git ? t("install.ex_pypi", {v: x.pypi}) : "";
@@ -235,7 +296,9 @@ function extraRow(ctx, x, redraw){
     : x.update ? t("install.ex_update", {v: x.target || x.pypi}) : t("install.ex_latest");
   const btn = el("button", {class:"btn sm" + (!have || x.update ? " primary" : ""),
     disabled: have && !x.update ? "" : null,
-    title: t("install.ex_where", {path: x.venv}),
+    // Права повышены или панель не от того, кто за ней сидит: подсказка говорит, в чей профиль ляжет установка.
+    title: me.elevated || me.foreign ? t("install.acc_where_other", {path: x.venv, user: me.user || "?"})
+                                     : t("install.ex_where", {path: x.venv}),
     onclick: async (e) => {
       e.target.disabled = true; e.target.textContent = t("install.ex_busy");
       const r = await ctx.api("/api/extras/install", {method:"POST",
@@ -259,11 +322,36 @@ function extraRow(ctx, x, redraw){
       x.pypi_behind ? el("div", {class:"muted", style:"font-size:12px"},
         t("install.ex_pypi_behind", {git: x.git, pypi: x.pypi})) : null,
       x.error ? el("div", {class:"muted", style:"font-size:12px"}, x.error) : null,
+      comp ? accessLines(ctx, x, comp, me) : null,
       x.mcp ? mcpHint(ctx, x.mcp) : null,
       x.id === "pydantic-ai" && have ? compatLine(ctx, x, redraw) : null,
       x.id === "pydantic-ai" ? pydanticHint(ctx) : null),
     btn);
   return row;
+}
+
+/* Работает ли надстройка ДЛЯ ВАС — настоящим запуском, как в прогоне (версия видна и чужому venv);
+   у кого она стоит, если не у вас; как поставить себе без прав администратора. */
+const CLI = {"pydantic-ai": "python .aurora/scripts/agent_core.py --venv-install",
+             "graphify": "python .aurora/scripts/aurora_extras.py --install graphify"};
+
+function accessLines(ctx, x, comp, me){
+  const {t, el} = ctx;
+  const run = comp.run || {};
+  const box = el("div", {style:"margin-top:4px;font-size:12.5px"});
+  if (run.ok) box.append(el("span", {class:"chip ok"}, t("install.acc_run_ok", {user: me.user || "?"})));
+  else if (x.installed || run.kind !== "venv")
+    box.append(el("div", {class:"chip warn", style:"white-space:normal"},
+      t(x.installed ? "install.acc_run_seen" : "install.acc_run_bad", {why: run.why || "?"})));
+  if (comp.note) box.append(el("div", {class:"muted", style:"margin-top:4px"}, comp.note));
+  (comp.others || []).forEach(o => box.append(el("div", {style:"margin-top:4px"},
+    t("install.acc_other", {name: x.title, v: o.version || "?", user: o.user || "?",
+      at: (o.at || "").slice(0, 10) || "?", admin: o.elevated ? t("install.acc_other_admin") : "",
+      path: o.path || "?", me: me.user || "?"}))));
+  box.append(el("div", {class:"muted", style:"margin-top:4px;overflow-wrap:anywhere"},
+    t("install.acc_how", {user: me.user || "?", path: x.venv}), " ",
+    CLI[x.id] ? el("span", {class:"mono"}, CLI[x.id]) : null));
+  return box;
 }
 
 function mcpHint(ctx, m){

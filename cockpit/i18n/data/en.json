@@ -667,7 +667,13 @@
     "клоны кода лежат в индексе git проекта: {} → правило .gitignore не действует задним числом, уберите из индекса: git rm -r --cached {}": "code clones are in the project's git index: {} → a .gitignore rule does not act retroactively, remove them from the index: git rm -r --cached {}",
     "репозитории кода в реестре без клона в Code/: {} → выполните code:sync --apply": "code repositories in the registry without a clone in Code/: {} → run code:sync --apply",
     "чужой код уезжает в историю проекта с каждой фиксацией: растёт репозиторий, а секреты и лицензии репозитория кода оказываются у всех, кому виден проект": "foreign code goes into the project's history with every commit: the repository grows, and the code repository's secrets and licences reach everyone who can see the project",
-    "регистр папок схемы расходится со схемой: {} → на Linux/CI это станут две папки; переименуйте: git mv {} {}_tmp && git mv {}_tmp {}": "the case of schema folders differs from the schema: {} → on Linux/CI these become two folders; rename: git mv {} {}_tmp && git mv {}_tmp {}"
+    "регистр папок схемы расходится со схемой: {} → на Linux/CI это станут две папки; переименуйте: git mv {} {}_tmp && git mv {}_tmp {}": "the case of schema folders differs from the schema: {} → on Linux/CI these become two folders; rename: git mv {} {}_tmp && git mv {}_tmp {}",
+    "venv {} построен на Python другого пользователя или на Python, которого больше нет, — для вас он не запустится: поставьте для себя: «Установка» → {}": "the {} venv is built on another user's Python or on a Python that no longer exists — it will not start for you: install it for yourself: Install → {}",
+    "venv {} не найден — «Установка» → {}": "the {} venv was not found — Install → {}",
+    "процесс {} не ответил за {} с — «Установка» → {}": "the {} process did not answer within {} s — Install → {}",
+    "процесс {} не запускается ({}) — «Установка» → {}": "the {} process does not start ({}) — Install → {}",
+    "{} не импортируется в своём venv ({}) — «Установка» → {}, переустановить": "{} does not import in its venv ({}) — Install → {}, reinstall",
+    "процесс {} завершился сразу при запуске (код {}) — «Установка» → {}": "the {} process exited right at startup (code {}) — Install → {}"
   },
   "connectors": {
     "confluence-dc": {
@@ -982,7 +988,7 @@
     "собранная конфигурация, ключи маской": "the assembled configuration, keys masked",
     "настройки Pydantic AI: что уходит в шлюз по ролям": "Pydantic AI settings: what goes to the gateway per role",
     "с --pydantic: заново проверить совместимость установленной версии": "with --pydantic: recheck the compatibility of the installed version",
-    "стоит ли Pydantic AI": "is Pydantic AI installed",
+    "стоит ли Pydantic AI и запускается ли он для этого пользователя": "is Pydantic AI installed and does it start for this user",
     "поставить/обновить Pydantic AI в ~/.aurora/venv": "install/update Pydantic AI in ~/.aurora/venv",
     "запустить MCP-серверы кита и назвать их инструменты": "start the kit's MCP servers and name their tools",
     "машинный вывод (для панели)": "machine output (for the panel)",

@@ -45,7 +45,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from aurora_common import replace_file  # noqa: E402
+from aurora_common import replace_file, venv_env  # noqa: E402
 
 HOME = Path.home() / ".aurora"
 CACHE = HOME / "extras-cache.json"
@@ -91,7 +91,9 @@ def venv_python(extra_id: str) -> Path:
 
 
 def _run(cmd: list, timeout: int = 60) -> subprocess.CompletedProcess:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("Malloc")}
+    # PYTHONHOME/PYTHONPATH чужого Python окружения в venv не попадают (`venv_env`): с ними pip и зонды
+    # venv видели бы чужую стандартную библиотеку и чужие пакеты
+    env = venv_env({k: v for k, v in os.environ.items() if not k.startswith("Malloc")})
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
 
 
@@ -702,6 +704,10 @@ def _install(extra_id: str, quarantine_days=None) -> dict:
             res["lock"] = save_lock(extra_id, chosen).name
         except OSError as e:
             log.append(f"снимок установки не сохранён: {e}")
+    if ok:          # кто что поставил — в общую папку машины: другой пользователь увидит, у кого стоит
+        said = record_install(extra_id, res["version"], ex["venv"])
+        if said:
+            log.append(said)
     skipped = next((x for x in log if x.startswith("⚠️ пауза зависимостей не применена")), "")
     if skipped:         # пауза мягкая: установка прошла без неё, и об этом сказано в итоге, а не только в середине журнала
         res["pause_skipped"] = skipped.partition(": ")[2]
@@ -714,6 +720,64 @@ def _install(extra_id: str, quarantine_days=None) -> dict:
                    else f"MCP-сервер графа не подключён: {why}")
     res["log"] = "\n".join(log)[-2000:]
     return res
+
+
+def record_install(extra_id: str, version: str, path) -> str:
+    """Запись «я поставил» в общую папку машины (`access_check.record_install`). → пусто или строка журнала."""
+    try:
+        import access_check as AC
+        return AC.record_install(extra_id, version, path)
+    except Exception as e:  # noqa: BLE001 — запись — сведение: установку она не роняет
+        return f"запись об установке не сохранена: {type(e).__name__}"
+
+
+# Настоящий запуск graphify так, как его зовёт движок (`agents/graphify_adapter.py`): без `-I`, в окружении venv,
+# во временной папке. Тексты — с названием надстройки; перевод — в каталоге сообщений панели.
+_RUN_PROBE = "import graphify, networkx; from importlib.metadata import version; print(version({dist!r}))"
+
+
+def run_probe(extra_id: str, timeout: int = 120) -> dict:
+    """Поднимается ли надстройка для этого пользователя → {ok, version, kind, sub, fix, why}.
+    Pydantic AI проверяет `agent_core.adapter_probe` (его зовёт прогон иначе — процессом адаптера).
+    Причины — словарями прямо здесь: их перевод сверяет `kit:i18n --check` (`ENGINE_REASONS`)."""
+    ex = EXTRAS[extra_id]
+    title, vpy = ex["title"], venv_python(extra_id)
+    no = {"ok": False, "version": "", "sub": "", "fix": "install"}
+    try:
+        import access_check as AC
+        base = AC.venv_base_problem(ex["venv"])
+    except Exception:  # noqa: BLE001
+        base = ""
+    foreign = {**no, "kind": "venv_foreign_base",
+               "why": f"venv {title} построен на Python другого пользователя или на Python, которого больше нет, — "
+                      f"для вас он не запустится: поставьте для себя: «Установка» → {title}"}
+    if base in ("missing", "denied"):
+        return foreign
+    if not os.path.isfile(vpy):
+        return {**no, "kind": "venv", "why": f"venv {title} не найден — «Установка» → {title}"}
+    scratch = tempfile.mkdtemp(prefix="aurora-probe-")
+    try:
+        p = subprocess.run([str(vpy), "-c", _RUN_PROBE.format(dist=ex["dist"])], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout, cwd=scratch,
+                           env=venv_env({k: v for k, v in os.environ.items() if not k.startswith("Malloc")},
+                                        GRAPHIFY_OUT=os.path.join(scratch, "graphify-out")))
+    except subprocess.TimeoutExpired:
+        return {**no, "kind": "process_hang", "why": f"процесс {title} не ответил за {timeout} с — «Установка» → {title}"}
+    except OSError as e:
+        return foreign if base else {**no, "kind": "process_start",
+                                     "why": f"процесс {title} не запускается ({type(e).__name__}) — «Установка» → {title}"}
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    if p.returncode == 0:
+        return {"ok": True, "version": (p.stdout.strip().splitlines() or [""])[-1], "kind": "", "sub": "",
+                "fix": "", "why": ""}
+    exc = re.findall(r"^(\w+(?:Error|Exception))\b", p.stderr or "", re.M)
+    if exc:
+        return {**no, "kind": "import_failed",
+                "why": f"{title} не импортируется в своём venv ({exc[-1]}) — «Установка» → {title}, переустановить"}
+    return foreign if base else {**no, "kind": "process_died",
+                                 "why": f"процесс {title} завершился сразу при запуске (код {p.returncode}) — "
+                                        f"«Установка» → {title}"}
 
 
 GRAPH_MCP = "aurora-graph"

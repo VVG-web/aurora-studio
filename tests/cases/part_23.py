@@ -91,7 +91,9 @@ def test_install_page_installs_into_the_panels_python(_t):
     env = ck.environment(fresh=True)
     assert env["python_path"] == sys.executable
     py = [i for i in env["items"] if i["kind"] == "py"]
-    assert py and all(i["pip"] and "-m pip install " + i["pip"] in i["install"] for i in py), py
+    # папка пакетов Python панели закрыта на запись (Python для всех, без прав администратора) — с `--user`
+    assert py and all(i["pip"] and "-m pip install " + ("--user " if i["user"] else "") + i["pip"] in i["install"]
+                      for i in py), py
     assert all(sys.executable in i["install"] for i in py), "команда ставит не в Python панели"
     assert ck.ENV_BIN["pandoc"]["nt"].startswith("winget install") and \
         ck.ENV_BIN["git"]["nt"].startswith("winget install"), "на Windows подсказка не та"
