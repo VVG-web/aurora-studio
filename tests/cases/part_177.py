@@ -91,8 +91,8 @@ def test_the_registry_follows_the_commands_file_and_never_keeps_a_half_written_o
         read = reg.keep[2]
         reg.write(ROWS)                                    # обновление кита началось: реестр переписывается
 
-        def torn():
-            got = read()
+        def torn(*args, **kwargs):                      # тот же вызов, что у настоящего (`with_dev=True` от панели)
+            got = read(*args, **kwargs)
             reg.write(ROWS + ["kb | kb:three | — | модель | procedure.md | 1.0.0 | третья"])
             return got[:1]
         K.read_registry = torn
