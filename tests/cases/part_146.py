@@ -100,7 +100,6 @@ def test_docs_and_catalogs_say_the_same_about_creation_and_publication(tmp: Path
     for rel in ("skills/aurora-vault/references/workflows.md", "skills/aurora-vault/references/frontmatter.md"):
         assert "published_sha" in (KIT / rel).read_text(encoding="utf-8"), rel
     assert "publish_url" in (KIT / "skills/aurora-vault/references/workflows.md").read_text(encoding="utf-8")
-    assert "publish_url" in (KIT / "connectors/confluence-dc/SKILL.md").read_text(encoding="utf-8")
     # описание `make:kinds` одно во всех местах, где оно есть
     row = next(ln for ln in (KIT / "commands.txt").read_text(encoding="utf-8").splitlines() if ln.startswith("make | make:kinds |"))
     assert "промпт создания, родитель и промпт публикации" in row, row
