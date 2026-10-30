@@ -5664,11 +5664,11 @@ def kinds_write(project: str, kinds: dict, expect: str = "") -> dict:
     # берётся с диска — запись его не стирает.
     known = AG_KINDS.read_kinds(project) or {}
     for kind, rec in sorted(kinds.items()):
-        value = lambda f: str((rec or {}).get(f, (known.get(kind) or {}).get(f, "")) or "").strip()   # noqa: E731
-        if not value("template"):
+        have = {**(known.get(kind) or {}), **(rec or {})}
+        if not str(have.get("template") or "").strip():
             return {"error": f"вид «{kind}»: не указан шаблон — без него документ выйдет не по форме", "kind": kind,
                     "field": "template"}
-        if not value("out"):
+        if not str(have.get("out") or "").strip():
             return {"error": f"вид «{kind}»: не указана папка результата — документу некуда лечь", "kind": kind,
                     "field": "out"}
     # Папку результата создаём ниже сразу — значит, проверяем её до записи, а не после:

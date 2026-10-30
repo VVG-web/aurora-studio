@@ -377,7 +377,8 @@ def test_files_counter_counts_every_file(tmp: Path):
     assert d["total"] == 30 and d["count"] == 10 and d["truncated"], d
     assert ck.FILES_LIMIT >= 20000, "предел списка снова мал для живых проектов"
     html = ui_source()
-    assert '$("#navFiles").textContent = d.total' in html, "счётчик снова считает длину списка"
+    # Отметку в меню ставит общий `setBadge` (свёрнутое меню рисует её меткой у значка) — число то же: все файлы.
+    assert 'setBadge("files", d.total' in html, "счётчик снова считает длину списка"
 
 
 @test
