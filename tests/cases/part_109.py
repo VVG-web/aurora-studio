@@ -189,14 +189,30 @@ const body = () => boxes["#modelsBody"].textContent;
   const widths = field("width");
   ok(widths.length === 2 && widths.every(w => w.attrs.type === "number" && String(w.attrs.min) === "1"),
      "поля ширины без min=1: " + widths.map(w => w.attrs.min));
-  // предел тяжёлых запросов: от нуля («не задано» — выучит движок), минус и мусор становятся нулём
+  // предел тяжёлых запросов: от нуля («не задано» — выучит движок), минус и мусор становятся нулём; ноль
+  // поле показывает пустым («авто»), а порог при нуле — умолчанием движка, которое назвал сервер
   const heavy = field("heavy"), edge = field("heavy_tokens");
   ok(heavy.length === 2 && edge.length === 2 && [...heavy, ...edge].every(w => w.attrs.type === "number" && String(w.attrs.min) === "0"),
      "поля тяжёлых запросов без min=0: " + [...heavy, ...edge].map(w => w.attrs.min));
-  for (const [typed, want] of [["-4", 0], ["", 0], ["2", 2]]){
+  ok(heavy.every(w => w.value === "" && w.attrs.placeholder === "models.p_heavy_auto"),
+     "незаданный предел тяжёлых показан не пустым полем «авто»: " + heavy.map(w => w.value));
+  ok(edge.every(w => w.value === String(DATA.heavy_tokens_default)), "порог при нуле не показывает умолчание движка: " + edge.map(w => w.value));
+  for (const [typed, want] of [["-4", ""], ["", ""], ["2", "2"]]){
     heavy[1].value = typed; await fire(heavy[1], "input"); await fire(heavy[1], "change");
-    ok(heavy[1].value === String(want), `в «Тяжёлых одновременно» набрали «${typed}», на уходе «${heavy[1].value}», ждали ${want}`);
+    ok(heavy[1].value === want, `в «Тяжёлых одновременно» набрали «${typed}», на уходе «${heavy[1].value}», ждали «${want}»`);
   }
+  edge[0].value = ""; await fire(edge[0], "input"); await fire(edge[0], "change");
+  ok(edge[0].value === String(DATA.heavy_tokens_default), "стёртый порог не вернулся к умолчанию движка: " + edge[0].value);
+  // у каждого поля карточки провайдера и у каждой её метки — справка при наведении
+  const lost = [], chips = [];
+  const look = (n, help) => { help = help || n.attrs["data-help"];
+    if (["input", "select", "textarea"].includes(n.tag) && !help) lost.push(n.attrs["data-field"] || n.attrs.placeholder || n.tag);
+    if (n.tag === "span" && String(n.className || "").startsWith("chip")) chips.push([n, help]);
+    for (const k of n.kids || []) if (k && k.tag) look(k, help); };
+  look(boxes["#modelsBody"]);
+  ok(!lost.length, "поля провайдера без справки: " + lost.join(", "));
+  ok(chips.length >= 4 && chips.every(([_n, help]) => help), "метки карточки без справки: " +
+     chips.filter(([_n, help]) => !help).map(([n]) => n.textContent).join(", "));
   edge[1].value = "32000"; await fire(edge[1], "input");
   const wide = widths[1];
   for (const [typed, want] of [["0", 1], ["", 1], ["-4", 1], ["2.9", 2], ["12", 12]]){
@@ -214,7 +230,8 @@ const body = () => boxes["#modelsBody"].textContent;
   await fire(all(boxes["#modelsBody"], n => n.tag === "button" && n.textContent === "models.add_provider")[0], "click");
   const after = field("width");
   ok(after.length === 3 && after[2].value === "1", "новый провайдер заведён с шириной «" + (after[2] && after[2].value) + "», ждали 1");
-  ok(field("heavy").length === 3 && field("heavy")[2].value === "0", "новый провайдер заведён без поля «Тяжёлых одновременно» или не с нулём");
+  ok(field("heavy").length === 3 && field("heavy")[2].value === "", "новый провайдер заведён без поля «Тяжёлых одновременно» или не пустым");
+  ok(field("heavy_tokens")[2].value === String(DATA.heavy_tokens_default), "у нового провайдера порог не равен умолчанию движка");
   console.log(JSON.stringify({fails}));
 })();
 """
@@ -240,7 +257,8 @@ def test_the_models_page_unsaved_mark_follows_the_data_not_the_event(tmp: Path):
         p["key"] = MC.MASK
     data = {"models": models, "error": "", "path": "/kit/local/models.json", "stamp": "s1", "types": list(MC.PROVIDER_TYPES),
             "projects": ["P"], "leftovers": [], "slots": 9, "slot_split": [[1, 8], [2, 1]],
-            "slots_by_provider": {"old": 8, "new": 1}, "net_profiles": [], "health_checks": list(MC.HEALTH_CHECKS)}
+            "slots_by_provider": {"old": 8, "new": 1}, "net_profiles": [], "health_checks": list(MC.HEALTH_CHECKS),
+            "heavy_tokens_default": _AG.HEAVY_TOKENS}
     (tmp / "data.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     (tmp / "view.mjs").write_text(view, encoding="utf-8")
     panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
@@ -259,17 +277,18 @@ def test_the_models_catalogues_name_the_thread_hints_and_do_not_promise_the_old_
     ru = json.loads((KIT / "cockpit/modules/models/i18n/ru.json").read_text(encoding="utf-8"))
     en = json.loads((KIT / "cockpit/modules/models/i18n/en.json").read_text(encoding="utf-8"))
     view = (KIT / "cockpit/modules/models/view.js").read_text(encoding="utf-8")
-    keys = ("models.p_slots", "models.p_slots_hint", "models.slots_about")
+    keys = ("models.p_slots", "models.slots_about")
     assert "models.p_width_lost" not in ru and "models.p_width_lost" not in en, "осталась строка про необъявленную ширину"
     for k in keys:
         assert k in ru and k in en, f"{k}: нет в одном из каталогов"
         assert re.search("[А-Яа-я]", ru[k]) and not re.search("[А-Яа-я]", en[k]), f"{k}: язык строки не тот"
         assert re.findall(r"\{(\w+)\}", ru[k]) == re.findall(r"\{(\w+)\}", en[k]), f"{k}: подстановки разошлись"
         assert f't("{k}"' in view, f"страница не спрашивает {k}"
+    assert '"data-help": "models.help.p_slots"' in view and ru.get("models.help.p_slots.what") and en.get("models.help.p_slots.what")
     # прежняя подсказка обещала «провайдер делит общий потолок» и при объявленной у другого ширине была неправдой
-    assert "не меньше 1" in ru["models.p_width_hint"] and "at least 1" in en["models.p_width_hint"], \
-        "подсказка ширины не говорит, что ширина — от 1"
-    assert "0 — не объявлено" not in ru["models.p_width_hint"] and "0 — not declared" not in en["models.p_width_hint"]
+    w_ru, w_en = ru["models.help.p_width.what"], en["models.help.p_width.what"]
+    assert "не меньше 1" in w_ru and "at least 1" in w_en, "подсказка ширины не говорит, что ширина — от 1"
+    assert "0 — не объявлено" not in w_ru and "0 — not declared" not in w_en
 
 
 def _raw_pool(providers: list, cap, used=("p1",)) -> list:

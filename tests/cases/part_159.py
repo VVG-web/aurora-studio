@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
+import sys
 from pathlib import Path
 
-from harness import KIT, set_home, test
+from harness import KIT, SCRIPTS, set_home, test
 
 URL = "https://llm.example.com/v1"
 
@@ -107,6 +109,46 @@ def test_the_models_form_shows_both_heavy_fields_in_both_languages(tmp: Path):
         "в форме провайдера нет полей тяжёлых запросов"
     for lang, measure in (("ru", "Замерить шлюзы"), ("en", "Measure gateways")):
         cat = json.loads((KIT / f"cockpit/modules/models/i18n/{lang}.json").read_text(encoding="utf-8"))
-        for key in ("models.p_heavy", "models.p_heavy_hint", "models.p_heavy_tokens", "models.p_heavy_tokens_hint"):
+        for key in ("models.p_heavy", "models.p_heavy_auto", "models.p_heavy_tokens", "models.help.p_heavy.what",
+                    "models.help.p_heavy_tokens.what"):
             assert cat.get(key), (lang, key)
-        assert "529" in cat["models.p_heavy_hint"] and measure in cat["models.p_heavy_hint"], (lang, cat["models.p_heavy_hint"])
+        heavy = " ".join(cat[f"models.help.p_heavy.{part}"] for part in ("what", "how", "result"))
+        assert "529" in heavy and measure in heavy, (lang, heavy)
+
+
+PROVIDER_HELP = ("p_id", "used_in", "p_slots", "list_n", "p_name", "p_type", "p_url", "p_key", "p_vpn", "p_health",
+                 "p_health_path", "p_width", "p_heavy", "p_heavy_tokens", "p_parallel", "p_template")
+
+
+@test
+def test_every_provider_field_and_mark_explains_itself_in_both_languages(tmp: Path):
+    """У каждого поля карточки провайдера и у меток «ID», «используется в ролях», «потоков в прогоне», «моделей»
+    — справка при наведении (`data-help`): что это, пример и на что влияет, на обоих языках. Порог тяжёлого
+    показан числом, которое действует (32 768 при пустом поле), — его отдаёт сервер, а не страница."""
+    view = (KIT / "cockpit/modules/models/view.js").read_text(encoding="utf-8")
+    cats = {lang: json.loads((KIT / f"cockpit/modules/models/i18n/{lang}.json").read_text(encoding="utf-8"))
+            for lang in ("ru", "en")}
+    for name in PROVIDER_HELP:
+        assert f'"data-help": "models.help.{name}"' in view, f"у «{name}» нет справки при наведении"
+        for lang, cat in cats.items():
+            for part in ("what", "how", "result"):
+                text = cat.get(f"models.help.{name}.{part}", "")
+                assert text, (lang, name, part)
+                # пример бывает адресом или JSON — язык видно по «что» и «на что влияет»
+                if lang == "en" or part != "how":
+                    assert bool(re.search("[А-Яа-яЁё]", text)) == (lang == "ru"), (lang, name, part, text)
+    assert "title: t(\"models.p_" not in view, "подсказки полей снова живут в title, а не в справке"
+    for lang, cat in cats.items():
+        assert "32" in cat["models.help.p_heavy_tokens.how"], (lang, cat["models.help.p_heavy_tokens.how"])
+    for p in (str(SCRIPTS), str(KIT / "cockpit")):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    ck = importlib.import_module("aurora_cockpit")
+    AG = importlib.import_module("agent_core")
+    MC = importlib.import_module("model_config")
+    saved = ck.models_data
+    ck.models_data = lambda: MC.empty()
+    try:
+        assert ck.models_state([])["heavy_tokens_default"] == AG.HEAVY_TOKENS == 32768
+    finally:
+        ck.models_data = saved

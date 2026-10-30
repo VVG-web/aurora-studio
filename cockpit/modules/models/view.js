@@ -186,22 +186,32 @@ function drawBody(ctx){
 const roleName = (ctx, r) => r.builtin && r.name === ENGINE_NAMES[r.id]
   ? ctx.t("models.role_default." + r.id) : r.name;
 
-const field = (ctx, label, input, hint) => ctx.el("label", {style: "display:block;flex:1;min-width:160px"},
-  ctx.el("div", {class: "muted", style: "font-size:11.5px;margin-bottom:3px"}, label), input,
+// Подпись поля. У поля со справкой (`data-help` — что это, пример и на что влияет) за подписью значок «ⓘ»:
+// справка всплывает, если задержать мышь над полем.
+const caption = (ctx, label, help, style) => ctx.el("div", {class: "muted", style: "font-size:11.5px" + (style || "")},
+  label, help ? ctx.el("span", {"aria-hidden": "true", style: "margin-left:4px;cursor:help"}, "ⓘ") : null);
+
+const field = (ctx, label, input, hint, help) => ctx.el("label",
+  {style: "display:block;flex:1;min-width:160px", ...(help || {})},
+  caption(ctx, label, help, ";margin-bottom:3px"), input,
   hint ? ctx.el("div", {class: "muted", style: "font-size:11px;margin-top:3px"}, hint) : null);
 
 function providerForm(ctx, p, onDone){
   // Один и тот же вид у провайдера во вкладке и у провайдера, заведённого из строки бэкенда.
   const {t, el} = ctx;
-  const inp = (k, attrs) => {
+  // `show` — как значение выглядит в поле: у тяжёлых ноль значит «не задано», и поле показывает, что тогда
+  // действует (пусто — предел выучит движок; порог — умолчание движка), а не голый ноль.
+  const inp = (k, attrs, show) => {
     const x = el("input", {class: "btn", style: "width:100%;font-weight:400", "data-field": k, ...attrs});
-    x.value = p[k] == null ? "" : String(p[k]);
+    const view = () => show ? show(p[k]) : p[k] == null ? "" : String(p[k]);
+    x.value = view();
     const num = attrs && attrs.type === "number", low = num ? Number(attrs.min) || 0 : 0;
     // Число не меньше своего «min»: ширина провайдера — от 1, ноль и пустое поле становятся единицей.
     x.oninput = () => { p[k] = num ? Math.max(low, Math.floor(Number(x.value)) || low) : x.value; touch(ctx); };
-    if (num) x.onchange = () => { x.value = String(p[k]); };
+    if (num) x.onchange = () => { x.value = view(); };
     return x;
   };
+  const edge = DATA.heavy_tokens_default || "";
   const type = el("select", {class: "btn"}, ...(DATA.types || ["openai"]).map(v =>
     el("option", {value: v, selected: p.type === v ? "" : null}, t("models.type." + v))));
   type.onchange = () => { p.type = type.value; touch(ctx); };
@@ -226,34 +236,36 @@ function providerForm(ctx, p, onDone){
   parallel.onchange = () => { p.parallel = parallel.checked; touch(ctx); };
   return el("div", {},
     el("div", {class: "row", style: "gap:10px;flex-wrap:wrap"},
-      field(ctx, t("models.p_name"), inp("name", {placeholder: t("models.p_name_ph")})),
-      field(ctx, t("models.p_type"), type)),
+      field(ctx, t("models.p_name"), inp("name", {placeholder: t("models.p_name_ph")}), "",
+        {"data-help": "models.help.p_name"}),
+      field(ctx, t("models.p_type"), type, "", {"data-help": "models.help.p_type"})),
     el("div", {class: "row", style: "gap:10px;flex-wrap:wrap;margin-top:8px"},
       field(ctx, t("models.p_url"), inp("url", {class: "btn mono",
-        placeholder: "https://llm.example.com/v1"})),
-      field(ctx, t("models.p_key"), key),
+        placeholder: "https://llm.example.com/v1"}), "", {"data-help": "models.help.p_url"}),
+      field(ctx, t("models.p_key"), key, "", {"data-help": "models.help.p_key"}),
       hadKey ? el("button", {class: "btn sm", style: "align-self:flex-end",
         onclick: () => { p.key = ""; touch(ctx, true); }}, t("models.key_drop")) : null),
     onDone ? null : netRow(ctx, p, touch),
     onDone ? null : el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;margin-top:8px;align-items:flex-end"},
-      el("label", {style: "display:block"},
-        el("div", {class: "muted", style: "font-size:11.5px", title: t("models.p_width_hint")},
-          t("models.p_width")),
+      el("label", {style: "display:block", "data-help": "models.help.p_width"},
+        caption(ctx, t("models.p_width"), true),
         inp("width", {type: "number", min: 1, style: "width:90px;font-weight:400"})),
-      // Тяжёлые запросы: шлюз, отсекающий большие запросы отказом 529, держит их меньше, чем короткие. 0 — предел
-      // выучит сам движок на первом 529.
-      el("label", {style: "display:block"},
-        el("div", {class: "muted", style: "font-size:11.5px", title: t("models.p_heavy_hint")},
-          t("models.p_heavy")),
-        inp("heavy", {type: "number", min: 0, style: "width:90px;font-weight:400"})),
-      el("label", {style: "display:block"},
-        el("div", {class: "muted", style: "font-size:11.5px", title: t("models.p_heavy_tokens_hint")},
-          t("models.p_heavy_tokens")),
-        inp("heavy_tokens", {type: "number", min: 0, step: 1000, style: "width:110px;font-weight:400"})),
-      el("label", {class: "row", style: "gap:6px", title: t("models.p_parallel_hint")},
-        parallel, t("models.p_parallel")),
-      el("details", {style: "flex:1;min-width:220px"},
-        el("summary", {class: "muted", style: "cursor:pointer"}, t("models.p_template")),
+      // Тяжёлые запросы: шлюз, отсекающий большие запросы отказом 529, держит их меньше, чем короткие. Пусто —
+      // предел выучит сам движок на первом 529; порог по умолчанию — тот, что назвал сервер (умолчание движка).
+      el("label", {style: "display:block", "data-help": "models.help.p_heavy"},
+        caption(ctx, t("models.p_heavy"), true),
+        inp("heavy", {type: "number", min: 0, style: "width:90px;font-weight:400",
+                      placeholder: t("models.p_heavy_auto")}, v => v ? String(v) : "")),
+      el("label", {style: "display:block", "data-help": "models.help.p_heavy_tokens"},
+        caption(ctx, t("models.p_heavy_tokens"), true),
+        inp("heavy_tokens", {type: "number", min: 0, step: 1024, style: "width:110px;font-weight:400",
+                             placeholder: String(edge)}, v => String(v || edge))),
+      el("label", {class: "row", style: "gap:6px", "data-help": "models.help.p_parallel"},
+        parallel, t("models.p_parallel"),
+        el("span", {class: "muted", "aria-hidden": "true", style: "cursor:help"}, "ⓘ")),
+      el("details", {style: "flex:1;min-width:220px", "data-help": "models.help.p_template"},
+        el("summary", {class: "muted", style: "cursor:pointer"},
+          t("models.p_template"), el("span", {"aria-hidden": "true", style: "margin-left:4px;cursor:help"}, "ⓘ")),
         tpl, tplBad)),
     onDone ? el("div", {class: "row", style: "gap:8px;margin-top:10px"},
       el("button", {class: "btn sm primary", onclick: () => onDone(true)}, t("models.p_add")),
@@ -279,9 +291,11 @@ function netRow(ctx, p, touchFn){
   path.value = health.path || "/models";
   path.oninput = () => { health.path = path.value; touchFn(ctx); };
   return el("div", {class: "row", style: "gap:10px;flex-wrap:wrap;margin-top:8px;align-items:flex-start"},
-    field(ctx, t("models.p_vpn"), prof, t("models.p_vpn_hint")),
-    field(ctx, t("models.p_health"), check, t("models.p_health_hint." + health.check)),
-    health.check !== "off" ? field(ctx, t("models.p_health_path"), path, t("models.p_health_path_hint")) : null);
+    field(ctx, t("models.p_vpn"), prof, t("models.p_vpn_hint"), {"data-help": "models.help.p_vpn"}),
+    field(ctx, t("models.p_health"), check, t("models.p_health_hint." + health.check),
+      {"data-help": "models.help.p_health"}),
+    health.check !== "off" ? field(ctx, t("models.p_health_path"), path, t("models.p_health_path_hint"),
+      {"data-help": "models.help.p_health_path"}) : null);
 }
 
 function providersTab(ctx){
@@ -300,12 +314,14 @@ function providersTab(ctx){
     box.append(el("div", {class: "card", style: "padding:16px;margin-bottom:12px"},
       el("div", {class: "row", style: "gap:8px;margin-bottom:10px"},
         el("b", {}, p.name || t("models.p_unnamed")),
-        el("span", {class: "chip mono"}, p.id),
-        el("span", {class: "chip"}, t("models.used_in", {n: usedBy(p.id)})),
+        // Метки карточки: что они значат — в справке при наведении.
+        el("span", {class: "chip mono", "data-help": "models.help.p_id"}, t("models.p_id", {id: p.id})),
+        el("span", {class: "chip", "data-help": "models.help.used_in"}, t("models.used_in", {n: usedBy(p.id)})),
         !DIRTY && inLlm(p.id) && (DATA.slots_by_provider || {})[p.id] !== undefined
-          ? el("span", {class: "chip " + (DATA.slots_by_provider[p.id] ? "ok" : "warn"), title: t("models.p_slots_hint")},
+          ? el("span", {class: "chip " + (DATA.slots_by_provider[p.id] ? "ok" : "warn"), "data-help": "models.help.p_slots"},
               t("models.p_slots", {n: DATA.slots_by_provider[p.id]})) : null,
-        list ? el("span", {class: "chip ok"}, t("models.list_n", {n: list.length})) : null,
+        list ? el("span", {class: "chip ok", "data-help": "models.help.list_n"},
+          t("models.list_n", {n: list.length})) : null,
         el("span", {style: "flex:1"}),
         el("button", {class: "btn sm", onclick: () => fetchList(ctx, p, true)},
           t("models.list_fetch")),

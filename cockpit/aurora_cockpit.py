@@ -1389,6 +1389,8 @@ def models_state(projects: list) -> dict:
         "error": data.get("error", ""),
         "path": str(MC.models_path(KIT)),
         "types": list(MC.PROVIDER_TYPES),
+        # Порог «Тяжёлый — от» при пустом поле: страница показывает то, что действует, а не ноль.
+        "heavy_tokens_default": AG.HEAVY_TOKENS,
         "engine_roles": {c: [r for r, _n in MC.ENGINE_ROLES[c]] for c in MC.CAPABILITIES},
         # Сколько запросов пойдёт на самом деле: потолок прогона обрезает сумму ширин.
         "slots": len(pool),
