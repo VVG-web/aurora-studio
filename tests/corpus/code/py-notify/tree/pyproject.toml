@@ -1,0 +1,4 @@
+[project]
+name = "py-notify"
+version = "0.1.0"
+description = "Synthetic notification service for Aurora Studio tests"

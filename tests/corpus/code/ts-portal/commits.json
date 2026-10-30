@@ -1,0 +1,9 @@
+{
+  "about": "Портал оператора (синтетика): TypeScript, контроллер списка и форма с валидаторами.",
+  "branch": "main",
+  "commits": [
+    {"date": "2026-03-01T12:00:00+00:00",
+     "message": "portal: order list and order form",
+     "add": ["package.json", "tsconfig.json", "src/main.ts", "src/orders.controller.ts", "src/order-form.ts"]}
+  ]
+}

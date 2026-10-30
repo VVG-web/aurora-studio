@@ -1,0 +1,5 @@
+orders:
+  visibility-seconds: 120
+spring:
+  kafka:
+    bootstrap-servers: kafka.example.com:9092

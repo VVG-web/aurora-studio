@@ -1,0 +1,7 @@
+{
+  "name": "ts-portal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Synthetic operator portal for Aurora Studio tests",
+  "main": "src/main.ts"
+}

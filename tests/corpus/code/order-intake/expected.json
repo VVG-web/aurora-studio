@@ -1,0 +1,22 @@
+{
+  "about": "Разметка фикстуры для проверок. languages — файлы кода по языкам (их называет code:status); stories — истина для проверки критериев по коду (выпуски C/D: это спецификация тестов, а не данные проектов).",
+  "languages": {"Java": 9, "XML": 2, "YAML": 1, "SQL": 1, "Markdown": 1},
+  "skipped": {},
+  "commits": 3,
+  "stories": {
+    "US-1.1": [
+      {"n": 1, "criterion": "Система принимает заявку по POST /api/orders и создаёт её в статусе «принята»", "truth": "done"},
+      {"n": 2, "criterion": "Ошибка валидации — ответ 400 со списком полей", "truth": "done"},
+      {"n": 3, "criterion": "Заявка видна оператору приёмки в течение 60 секунд", "truth": "contradicts"},
+      {"n": 4, "criterion": "Событие о принятой заявке уходит в топик orders.accepted", "truth": "done"},
+      {"n": 5, "criterion": "Дубль внешнего номера отклоняется с кодом DUPLICATE_ORDER", "truth": "partial"},
+      {"n": 6, "criterion": "Внешний номер сохраняется в orders.external_id и уникален", "truth": "done"},
+      {"n": 7, "criterion": "Приём доступен только роли «приёмка»", "truth": "not_found"},
+      {"n": 8, "criterion": "Оператору на экране показывается уведомление", "truth": "unverifiable"}
+    ],
+    "US-1.2": [
+      {"n": 1, "criterion": "Возврат хранится 5 дней", "truth": "contradicts"},
+      {"n": 2, "criterion": "Отмена возврата по DELETE /api/refunds/{id}", "truth": "partial"}
+    ]
+  }
+}

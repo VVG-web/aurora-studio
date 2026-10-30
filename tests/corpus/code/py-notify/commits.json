@@ -1,0 +1,12 @@
+{
+  "about": "Сервис уведомлений (синтетика): Python, маршруты-декораторы, модели, таблица через __tablename__, потребитель очереди.",
+  "branch": "main",
+  "commits": [
+    {"date": "2026-02-02T08:00:00+00:00",
+     "message": "notifications: models and the HTTP route",
+     "add": ["pyproject.toml", "app/__init__.py", "app/models.py", "app/main.py", "tests/test_main.py"]},
+    {"date": "2026-02-03T10:45:00+00:00",
+     "message": "notifications: consume accepted orders",
+     "add": ["app/consumer.py"]}
+  ]
+}

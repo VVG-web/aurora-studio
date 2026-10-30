@@ -1,0 +1,13 @@
+{
+  "about": "Репозиторий-шум (синтетика): из всего, что в нём лежит, кодом проекта считается только src/main.go. Чужие зависимости, сгенерированное, минифицированное, файл блокировки и двоичный файл в языки и размер не идут; окончания строк CRLF и кодировка cp1251 — для Windows.",
+  "branch": "main",
+  "commits": [
+    {"date": "2026-04-06T07:30:00+00:00",
+     "message": "stock check",
+     "add": ["src/main.go", "vendor/acme/lib.go", "node_modules/left-pad/index.js", "package-lock.json",
+             "gen/api_pb2.py", "web/app.min.js"],
+     "write": {"assets/logo.bin": {"hex": "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"},
+               "docs/notes.txt": {"text": "Stock is checked every morning.\nThe warehouse closes at six.\n", "eol": "crlf"},
+               "docs/legacy.txt": {"text": "Склад закрывается в шесть.\n", "encoding": "cp1251"}}}
+  ]
+}

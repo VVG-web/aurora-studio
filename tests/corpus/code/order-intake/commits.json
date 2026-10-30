@@ -1,0 +1,25 @@
+{
+  "about": "Сервис приёма заявок на поставку (синтетика, все имена выдуманы): Java/Spring-подобный код, SQL-миграция, конфигурация, второй модуль refund. Ключи задач в сообщениях — BENCH-1, BENCH-2, номера историй — US-1.1, US-1.2.",
+  "branch": "main",
+  "commits": [
+    {"date": "2026-01-12T09:00:00+00:00",
+     "message": "BENCH-1 US-1.1: order intake skeleton",
+     "add": ["pom.xml", "README.md",
+             "src/main/java/com/example/orders/OrderController.java",
+             "src/main/java/com/example/orders/OrderRequest.java",
+             "src/main/java/com/example/orders/OrderService.java",
+             "src/main/java/com/example/orders/OrderEntity.java",
+             "src/main/java/com/example/orders/OrderRepository.java",
+             "src/main/resources/db/migration/001-orders.sql"]},
+    {"date": "2026-01-14T15:30:00+00:00",
+     "message": "BENCH-1 US-1.1: publish the accepted event, visibility setting, duplicate test",
+     "add": ["src/main/java/com/example/orders/OrderEventPublisher.java",
+             "src/main/resources/application.yml",
+             "src/test/java/com/example/orders/OrderControllerTest.java"]},
+    {"date": "2026-01-20T11:15:00+00:00",
+     "message": "BENCH-2 US-1.2: refund module",
+     "add": ["refund/pom.xml",
+             "refund/src/main/java/com/example/refunds/RefundService.java",
+             "refund/src/test/java/com/example/refunds/RefundServiceTest.java"]}
+  ]
+}
