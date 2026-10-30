@@ -143,7 +143,9 @@ AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Sta
                               conform_report.md, conform_state.json — the report and state of the template migration;
                               run_log.md — this machine's run journal, outside git)
 Artifacts/{us,ac,algorithms,dictionaries,screens,contracts,mappings,role-model,diagrams,
-           acceptance,tests,reviews,reports,drafts,meetings}/
+           acceptance,tests,reviews,reports,drafts,meetings,Backlog}/
+CleanRoom/Backlog/            artifacts built from the code and their table of contents (the engine fills them)
+Code/                         clones of code repositories, read-only, outside the project's git ("Code" section)
 Deliverables/{work,work/spec-packs,released,_archive}/
 Workspaces/_archive/
 Scripts/                      the project's own scripts (handlers, one-off migrations)
@@ -562,6 +564,17 @@ server API and know the default branch and the clone URLs (Bitbucket — `/scm/`
 They are installed and updated on the "Install" page, next to the engine add-ons, into
 `~/.aurora/git-providers/`. Without a module, updating and sending work with any git server through
 git itself — this path is built into the engine and is updated together with the kit.
+
+## Project code
+
+The project's code repositories are connected in the **"Code"** panel section (project group, next to
+"Git") — with the same `git clone` line and the same sign-in as "Project Git": the secret is kept in
+`~/.aurora/git/credentials.json` under the clone's path `Code/<name>`. The registry is the
+`code_repos:` block in `aurora.config.yaml`, written only by the section's form (with a snapshot: a
+foreign edit is not overwritten). Clones live in `Code/<name>/`, read-only, outside the project's git;
+`code:sync --apply` clones and updates them, `code:status` names the revision, the lag, languages and
+size. Code goes to models only with the repository's permission (no by default). More in
+[code-room.md](code-room.md).
 
 ## Project bots
 

@@ -26,6 +26,10 @@
 | **Cited document** | A law, a state contract or an agreement that is quoted by article or clause: `kb:cite` cuts it, without a model, into verbatim **units** (cards of type `cited-document` in `Documents/`), and "Ask" quotes them word for word and checks the quote |
 | **Correction** | A human's note that a card is wrong, kept in `Raw/corrections/` and applied at every build (`kb:correct`) |
 | **Artifact** | A produced document in `Artifacts/`; never knowledge |
+| **Code repository** | An application repository whose clone lies in `Code/<name>/`, read-only and outside the project's git; listed in `code_repos:` of the config, synced by `code:sync`. [Project code](../docs/en/code-room.md) |
+| **Revision** | The commit a clone stands on (`pin` — a SHA or a tag, or the branch tip); every result about code is tied to it |
+| **Clean room** | Artifacts built from the code in `CleanRoom/` — "how it is built", each claim with a place in the code, to compare with the analysis ("how it should be"); arrives in a later release |
+| **Backlog** | The human's one-file backlog in `Artifacts/Backlog/` (activity → epic → story with artifact codes and issues); its code twin in `CleanRoom/Backlog/` is filled by the engine |
 | **`based_on`** | The cards an artifact stands on |
 | **Deliverable** | An artifact assembled for handover; `released/` holds frozen snapshots |
 | **DR (Decision Record)** | An append-only record of a decision with rejected options |

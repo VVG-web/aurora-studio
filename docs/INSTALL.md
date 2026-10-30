@@ -145,7 +145,9 @@ AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Sta
                               conform_report.md, conform_state.json — отчёт и состояние миграции на шаблоны;
                               run_log.md — журнал запусков этой машины, вне git)
 Artifacts/{us,ac,algorithms,dictionaries,screens,contracts,mappings,role-model,diagrams,
-           acceptance,tests,reviews,reports,drafts,meetings}/
+           acceptance,tests,reviews,reports,drafts,meetings,Backlog}/
+CleanRoom/Backlog/            артефакты по коду и их оглавление (заполнит движок)
+Code/                         клоны репозиториев кода, только для чтения, вне git проекта (раздел «Код»)
 Deliverables/{work,work/spec-packs,released,_archive}/
 Workspaces/_archive/
 Scripts/                      скрипты проекта (свои обработчики, разовые миграции)
@@ -556,6 +558,16 @@ e-mail, поэтому проверка API может не принять вх�
 Ставятся и обновляются на странице «Установка», рядом с надстройками движка, в
 `~/.aurora/git-providers/`. Без модуля обновление и отправка работают с любым git-сервером самим
 git — этот путь встроен в движок и обновляется вместе с китом.
+
+## Код проекта
+
+Репозитории кода проекта подключаются в разделе панели **«Код»** (группа проекта, рядом с «Git») —
+той же строкой `git clone` и тем же входом, что у «Git проекта»: секрет лежит в
+`~/.aurora/git/credentials.json` под ключом — путём клона `Code/<имя>`. Реестр — блок `code_repos:`
+в `aurora.config.yaml`, его пишет только форма раздела (со слепком: чужая правка не затирается).
+Клоны лежат в `Code/<имя>/`, только для чтения, в git проекта не идут; `code:sync --apply` клонирует
+и обновляет их, `code:status` называет ревизию, отставание, языки и размер. Код уходит моделям
+только с разрешения у репозитория (по умолчанию нельзя). Подробнее — [code-room.md](code-room.md).
 
 ## Боты проекта
 

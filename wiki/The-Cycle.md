@@ -31,6 +31,11 @@ higher; code 1 ("worked and found things to fix") is the normal state of a livin
 
 There is a third, dangerous and rare: **Rebuild the base from scratch**. "Preview" runs any route without writing.
 
+**Code next to the base.** Repositories connected in the "Code" section are cloned into `Code/` by `code:sync` — a step of
+"Update the base" right after the site mirror (with no repositories it does nothing). Code is evidence of how the system
+is built, not knowledge: it never becomes cards, and models see it only with the repository's permission.
+[Project code](../docs/en/code-room.md).
+
 **A run is cut into complete laps.** Every lap adds finished knowledge, not stubs: parse a batch, write theses, link,
 count trust, commit — and again. Switch it off in the middle of the night and what was parsed stays valid. (It used to
 run phases over the whole base, and a stop in the middle left cards without kinds, theses and links.)

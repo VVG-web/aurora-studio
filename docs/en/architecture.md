@@ -419,6 +419,12 @@ code is 1, no traceback.
 | `Raw/Extracted/` | machine transcripts of page attachments and diagrams (`kb:ingest-office`): a source for parsing; the originals stay in `Sources/` and `Workspaces/` | yes |
 | `Raw/Extracted/.skipped.json` | hashes of attachments without text (a logo, an empty diagram), so that they are not tried again | yes |
 | `.aurora/cache/`, `runs/`, `state/`, `context/` | caches, the panel's run archive, routes' state, attachments | no |
+| `Code/<name>/` | clones of code repositories, read-only (`code:sync`); only `Code/README.md` and `.gitkeep` are in git | **no** (`Code/*` in `.gitignore`) |
+| `aurora.config.yaml` → `code_repos:` | the code repository registry: address, branch, pinned revision, masks, connection, the "models" and "publish" permissions (written by the "Code" section with a snapshot) | yes |
+| `~/.aurora/git/credentials.json` | sign-in of "Project Git" and of the code repositories (keyed by the path of the project or of the clone `Code/<name>`), mode 600 | outside the project |
+| `.aurora/state/code/sync.json` | the last code sync: revisions, languages and size | no |
+| `CleanRoom/`, `CleanRoom/Backlog/` | artifacts built from the code (the "Clean room", laid out like `Artifacts/`) and their table of contents in backlog form — the engine fills them | yes |
+| `Artifacts/Backlog/` | the backlog a human keeps: one "activity → epic → story" file | yes |
 
 **Where knowledge comes from.** From documents in `Raw/` (signed, trusted by definition), from mirrors in `Sources/` (pages and
 issues, trust computed from issue statuses) and from transcripts in `Raw/Extracted/`: page attachments (docx, xlsx, pdf…) and
