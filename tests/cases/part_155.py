@@ -249,7 +249,7 @@ def test_code_commands_are_registered_everywhere_the_kit_looks(_t):
     """Реестр команд, зависимости от связи, шаг маршрута «Обновить базу», манифест движка, справочники и навык."""
     reg = (KIT / "commands.txt").read_text(encoding="utf-8")
     for cmd, impl in (("code:sync", "code_sync.py --sync"), ("code:status", "code_sync.py --status")):
-        assert f"| {cmd} | — | скрипт | {impl} | 1.195.0 |" in reg, cmd
+        assert f"| {cmd} | — | скрипт | {impl} | 1.196.0 |" in reg, cmd
         for doc in ("docs/commands.md", "docs/en/commands.md", "skills/aurora-vault/SKILL.md"):
             assert f"`{cmd}`" in (KIT / doc).read_text(encoding="utf-8"), (cmd, doc)
     deps = json.loads((KIT / "command_deps.json").read_text(encoding="utf-8"))["commands"]

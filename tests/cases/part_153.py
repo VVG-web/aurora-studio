@@ -71,7 +71,7 @@ def test_code_cleanroom_and_backlog_folders_are_in_the_schema_with_a_guide_and_c
 
 @test
 def test_code_gitignore_rules_are_merged_into_an_existing_project_once(tmp: Path):
-    """Проект, заведённый до 1.195.0: правила для клонов дописываются к его .gitignore построчно, чужие строки не
+    """Проект, заведённый до 1.196.0: правила для клонов дописываются к его .gitignore построчно, чужие строки не
     трогаются, а повторное слияние ничего не добавляет."""
     IA = _mod("install_aurora")
     gi = tmp / ".gitignore"

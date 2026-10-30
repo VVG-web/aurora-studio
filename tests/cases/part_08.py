@@ -602,7 +602,7 @@ def test_doctor_names_each_kind_of_folder_outside_the_schema(tmp: Path):
 
     Живой случай на проекте: `Artifacts/Activity_Epic_US.md/`, пустые `Artifacts/backlog` и
     `Deliverables/drafts` — все трое шли одним блокером «структурные папки вне схемы» с
-    советом объявить их своими, то есть узаконить мусор. С 1.195.0 `Artifacts/Backlog` — папка схемы
+    советом объявить их своими, то есть узаконить мусор. С 1.196.0 `Artifacts/Backlog` — папка схемы
     (бэклог человека), поэтому пустая чужая папка здесь — `Artifacts/roadmap`, а `backlog` строчными —
     случай регистра (его называет отдельная проверка).
     """

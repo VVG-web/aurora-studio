@@ -182,8 +182,8 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 
 | Command | What it does | Executor | Since |
 |---|---|---|---|
-| `code:sync` | Clones of the project's code repositories in `Code/`: clone, take what is new from the server and set the pinned revision or the branch tip — read-only, nothing is merged or pushed. Repositories are connected in the "Code" section (`code_repos:` in the config), sign-in works as in "Project Git", the secret stays outside the project. Without `--apply` — a plan, no network; a repository whose connection is down now is skipped with the reason; a clone with edits is left alone, `--reset --repo` resets it to the registry | script | 1.195.0 |
-| `code:status` | Code repositories: the revision and its date, how far behind the server branch, the last sync, languages and size (files and lines per language without external tools; dependencies, generated, binary and lock files are not counted), the "models" and "publish" permissions; no network needed | script | 1.195.0 |
+| `code:sync` | Clones of the project's code repositories in `Code/`: clone, take what is new from the server and set the pinned revision or the branch tip — read-only, nothing is merged or pushed. Repositories are connected in the "Code" section (`code_repos:` in the config), sign-in works as in "Project Git", the secret stays outside the project. Without `--apply` — a plan, no network; a repository whose connection is down now is skipped with the reason; a clone with edits is left alone, `--reset --repo` resets it to the registry | script | 1.196.0 |
+| `code:status` | Code repositories: the revision and its date, how far behind the server branch, the last sync, languages and size (files and lines per language without external tools; dependencies, generated, binary and lock files are not counted), the "models" and "publish" permissions; no network needed | script | 1.196.0 |
 
 ## `dev:` — QA of the engine
 
