@@ -180,6 +180,7 @@ async function fillKinds(ctx){
     ];
     const publish = [
       rec.publish_url ? t("work.spec_publish", {v: rec.publish_url}) : t("work.spec_no_publish"),
+      ...(rec.publish_path ? [t("work.spec_path", {v: rec.publish_path})] : []),
       rec.publish_prompt ? t("work.spec_publish_prompt", {v: rec.publish_prompt}) : t("work.spec_no_publish_prompt"),
     ];
     ctx.$("#makeSpec").replaceChildren(
@@ -322,9 +323,9 @@ async function publish(ctx){
     } else {
       // Путь, который посчитал сервер: корень вида › разделы › заголовок — до всякой отправки.
       const where = (pub.path || []).concat(pub.title ? [pub.title] : []).join(" › ");
-      hint.textContent = (draft ? t("work.publish_draft_warn") + " "
-        : (f.url ? t("work.publish_again", {url: f.url}) : t("work.publish_new")) + " ")
-        + (where ? t("work.publish_where", {where}) : "");
+      hint.textContent = [draft ? t("work.publish_draft_warn")
+        : (f.url ? t("work.publish_again", {url: f.url}) : t("work.publish_new")),
+        where ? t("work.publish_where", {where}) : ""].filter(Boolean).join(" · ");
     }
   };
   sel.onchange = draw;

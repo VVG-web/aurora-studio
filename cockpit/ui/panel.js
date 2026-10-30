@@ -1172,7 +1172,8 @@ function publishActions(rel, res, opts){
       out.push(go(["--apply", "--adopt", ...(o.allow || [])], t("pub.adopt"), false));
       break;
     case "misplaced":
-      if (o.plan) out.push(go(["--apply", ...(o.allow || [])], t("pub.update_here"), true));
+      // «Обновить на месте» — только когда есть что обновлять: те же входы и та же версия страницы ничего не отправят
+      if (o.plan && !res.unchanged) out.push(go(["--apply", ...(o.allow || [])], t("pub.update_here"), true));
       out.push(go(["--apply", "--move", ...(o.allow || [])], t("pub.move"), !o.plan));
       if (open) out.push(pageLink(open, t("pub.open")));
       break;
