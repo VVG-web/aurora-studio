@@ -10,8 +10,9 @@
   python3 .aurora/scripts/publish_doc.py Artifacts/reports/итог.md --apply
 
 Без `--apply` не отправляется ничего: печатается диагноз, страница-получатель и первые
-строки storage. Новая страница создаётся только с `--parent <page_id>` (или
-`confluence.publish_parent` в конфиге) — чтобы не рассыпать корни по пространству.
+строки storage. Новая страница создаётся только под родителем — `--parent <page_id>`, `publish_parent` в шапке документа,
+`publish_url` вида артефакта (`artifacts:` проекта) или `confluence.publish_parent` в конфиге, — чтобы не рассыпать корни
+по пространству.
 Существующая чужая страница берётся под управление только с `--adopt`: молча затирать
 то, что писал человек, публикация не должна.
 
@@ -41,7 +42,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (GATE_CODES, KB_ROOT, TRUSTED, as_list, body as md_body, clean_copy,
+from aurora_common import (GATE_CODES, KB_ROOT, TRUSTED, as_list, body as md_body, clean_copy, clean_sha,
                            git_commit, frontmatter, link_escapes, outward_check, safe_urlopen,
                            set_field, split_frontmatter, utc_stamp, with_fields)
 
@@ -250,15 +251,22 @@ def published_links(base_url: str) -> dict:
     return out
 
 
-def stamp(text: str, pid: str, commit: str, ver: str = "", url: str = "") -> str:
-    """Соответствие «файл ↔ страница» живёт в самом артефакте, иначе связь теряется."""
+def stamp(text: str, pid: str, commit: str, ver: str = "", url: str = "", sha: str = "") -> str:
+    """Соответствие «файл ↔ страница» живёт в самом артефакте, иначе связь теряется.
+
+    `published_sha` — отпечаток чистовика, который ушёл (`aurora_common.clean_sha`): по нему панель говорит, отстала ли
+    страница. По коммиту это не выяснить — файл на коммите публикации не содержит самого штампа, и метка горела бы
+    всегда. Отпечаток не зависит от шапки, поэтому штамп его не меняет. Не передан — поле не пишется (старый штамп)."""
     head, rest = split_frontmatter(text)
     if head is None:
         head, rest = "\n", "\n---\n\n" + text.lstrip("\n")
     from aurora_common import utc_today
-    for key, value in (("confluence_page_id", pid), ("published", utc_today()),
-                       ("published_version", str(ver)), ("published_url", url or "—"),
-                       ("published_commit", commit or "—")):
+    fields = [("confluence_page_id", pid), ("published", utc_today()),
+              ("published_version", str(ver)), ("published_url", url or "—"),
+              ("published_commit", commit or "—")]
+    if sha:
+        fields.append(("published_sha", sha))
+    for key, value in fields:
         head = set_field(head, key, value)
     return "---" + head.rstrip("\n") + rest
 
@@ -281,10 +289,12 @@ def parent_from(raw: str):
     return "", None
 
 
-def choose_parent(cli: str, fm: dict, cfg: dict) -> tuple:
+def choose_parent(cli: str, fm: dict, cfg: dict, kind_url: str = "") -> tuple:
     """Родитель новой страницы по порядку: `--parent` → `publish_parent` шапки (его пишет вид артефакта с
-    `publish_url`) → `confluence.publish_parent` конфига. → (значение, откуда); пусто — не задан."""
+    `publish_url` при создании документа) → `publish_url` вида документа (документ заведён руками или до того, как адрес
+    задали) → `confluence.publish_parent` конфига. → (значение, откуда); пусто — не задан."""
     for raw, where in ((cli, "--parent"), (fm.get("publish_parent"), "publish_parent в шапке документа"),
+                       (kind_url, "publish_url вида артефакта"),
                        (cfg.get("publish_parent"), "confluence.publish_parent в конфиге")):
         val = str(raw or "").strip().strip("\"'")
         if val:
@@ -314,20 +324,9 @@ def _kind_rec(fm: dict, path: str = "") -> dict:
     try:
         import make_kinds as MK
         kinds = MK.read_kinds(".") or {}
+        return MK.kind_of(kinds, fm.get("type") or "", path, ".")[1]       # то же правило, что у кнопки в панели
     except Exception:  # noqa: BLE001 — реестр видов необязателен
         return {}
-    kind = (fm.get("type") or "").strip().strip('"')
-    rec = kinds.get(kind) or kinds.get(kind.lower())
-    if rec or not path:
-        return rec or {}
-    here = os.path.normcase(os.path.realpath(path))
-    best = ("", {})
-    for r in kinds.values():
-        out = (r.get("out") or "").strip().strip("/")
-        base = os.path.normcase(os.path.realpath(out)) + os.sep if out else ""
-        if base and here.startswith(base) and len(base) > len(best[0]):
-            best = (base, r)
-    return best[1]
 
 
 def _kind_mask(fm: dict, path: str = "") -> str:
@@ -356,7 +355,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Опубликовать артефакт в Confluence")
     ap.add_argument("path", help="файл из Artifacts/ или Deliverables/")
     ap.add_argument("--parent", help="page_id родителя для новой страницы (либо ссылка на неё); без него — "
-                    "publish_parent из шапки документа, затем confluence.publish_parent из конфига")
+                    "publish_parent из шапки документа, затем publish_url вида артефакта, затем "
+                    "confluence.publish_parent из конфига")
     ap.add_argument("--allow", action="append", default=[], metavar="КОД", choices=sorted(GATE_CODES) + ["review"],
                     help="снять блокировку предохранителя выходных команд (КОД назван в его сообщении); "
                          "review — опубликовать без свежего ревью (обход записывается в шапку)")
@@ -421,6 +421,7 @@ def main() -> int:
     title = a.title or next((l.lstrip("# ").strip() for l in body.splitlines()
                              if l.startswith("# ")), os.path.splitext(os.path.basename(path))[0])
     commit = git_commit()
+    sha = clean_sha(text)
     storage = banner(path, commit) + to_storage(body, published_links(base_url))
     page_id = (fm.get("confluence_page_id") or "").strip().strip('"')
 
@@ -497,7 +498,7 @@ def main() -> int:
             print(f"\nСтраница не изменилась ({existing.get('id')}) — публиковать нечего.")
             return 0
     else:
-        raw_parent, where = choose_parent(a.parent or "", fm, cfg)
+        raw_parent, where = choose_parent(a.parent or "", fm, cfg, (_kind_rec(fm, path).get("publish_url") or "").strip())
         parent, lookup = parent_from(raw_parent)
         if not parent and lookup:
             # ссылка вида /display/SPACE/Заголовок: номер страницы знает только сервер
@@ -509,6 +510,7 @@ def main() -> int:
             return 1
         if not parent:
             print("\npublish: новой странице нужен родитель — укажите --parent <page_id>, "
+                  "publish_url у вида артефакта («Настройки проекта» → «Артефакты»), "
                   "publish_parent в шапке документа или confluence.publish_parent в конфиге",
                   file=sys.stderr)
             return 1
@@ -540,14 +542,14 @@ def main() -> int:
     pid = str(res.get("id", ""))
     ver = (res.get("version") or {}).get("number", "?")
     text = stamp(text, pid, commit, str(ver),
-                 f"{base_url}/pages/viewpage.action?pageId={pid}")
+                 f"{base_url}/pages/viewpage.action?pageId={pid}", sha)
     if bypass:
         text = with_fields(text, {"review_bypass": utc_stamp()})
     text = bom + text
     open(path, "w", encoding="utf-8").write(text)
 
     print(f"\n✅ {base_url}/pages/viewpage.action?pageId={pid} (версия {ver}, доступ {kind})")
-    print(f"   В {path} записаны confluence_page_id / published / published_commit.")
+    print(f"   В {path} записаны confluence_page_id / published / published_commit / published_sha.")
     print("   Дальше: sync:confluence подхватит страницу в зеркало, затем sync:audit.")
     return 0
 

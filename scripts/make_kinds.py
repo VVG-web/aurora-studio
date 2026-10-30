@@ -17,6 +17,13 @@ git и читается любой IDE:
         title: "Описание постановки задачи"
         template: Templates/proektnoe_reshenie_template.md
         out: Deliverables/work
+        publish_url: https://wiki.example.com/display/PRJ/Documents
+        publish_prompt: Prompts/opz_publish.md
+
+Поля делятся на два дела. **Создание** документа — `template` (форма), `prompt` (дополнительные указания при
+создании), `out` (папка), `mcp`, `tech_agnostic`, `ref_mask`, `task`. **Публикация** в Confluence — `publish_url`
+(родительская страница), `publish_prompt` (как оформить готовую страницу) и `review` (ревью перед публикацией).
+Шаблон отвечает за создание, промпт публикации — за публикацию; промпт создания остаётся при создании.
 
   python3 .aurora/scripts/make_kinds.py            # таблица: тип → шаблон → папка
   python3 .aurora/scripts/make_kinds.py --kind ac  # один тип, машинно (для ассистента)
@@ -31,10 +38,12 @@ git и читается любой IDE:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
+import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import MADE_MARK           # noqa: E402  — граница чистовика, одна на движок
@@ -58,7 +67,15 @@ KNOWN = {
 # Поля типа артефакта. Шаблон и папка обязательны: без первого документ выйдет не по
 # форме (и ревью этого не поймает), без второй его некуда класть. Остальное
 # необязательно — промпта у типа может не быть, публиковать можно не всё.
-FIELDS = ("title", "template", "prompt", "out", "publish_url", "mcp", "tech_agnostic", "review", "ref_mask")
+FIELDS = ("title", "template", "prompt", "out", "publish_url", "publish_prompt", "mcp", "tech_agnostic", "review",
+          "ref_mask")
+# `prompt` — промпт СОЗДАНИЯ: его читает изготовление документа (`agent:make`) и ассистенты через `artifact_spec`.
+# `publish_prompt` — промпт ПУБЛИКАЦИИ: как оформить готовый документ в страницу (оглавление, панели, макросы,
+# вёрстка); текст автора он не переписывает. Путь к файлу `Prompts/…`, как у `prompt`. Пока значение только
+# хранится и показывается: модель по нему ещё не вызывается, публикация идёт без неё (пустое поле — как всегда).
+# Поля создания и поля публикации; форма настроек рисует их двумя рамками, `--kind` — двумя разделами.
+CREATE_FIELDS = ("title", "template", "prompt", "out", "mcp", "tech_agnostic", "ref_mask")
+PUBLISH_FIELDS = ("publish_url", "publish_prompt", "review")
 # `tech_agnostic` — включает правило «критерии без технологий» для этого вида документа.
 # Не глобально: у ОПЗ и проектного решения стек это предмет документа, и общее правило
 # заставило бы критика ругаться на каждый. Осмысленно у ac, us, test-case.
@@ -119,6 +136,96 @@ def read_kinds(root: str = ".") -> dict:
             task_of = None
             kinds[current][key] = value
     return kinds
+
+
+def kind_of(kinds: dict, type_hint: str = "", path: str = "", root: str = ".") -> tuple:
+    """→ (идентификатор вида, его запись) для документа: по `type:` его шапки, иначе по папке результата.
+
+    Папок результата может быть вложено несколько (`Artifacts` и `Artifacts/us`) — берётся самая глубокая. Не нашёлся —
+    ("", {}). `path` — путь к файлу (от текущей папки или абсолютный), `root` — корень проекта, от которого считаются
+    `out` видов. Одно правило на публикацию из скрипта (`publish_doc`) и на состояние кнопки в панели: разойдись
+    они — кнопка обещала бы одно, а публикация брала бы другое."""
+    hint = (type_hint or "").strip().strip('"')
+    for key in (hint, hint.lower()):
+        if key and key in kinds:
+            return key, kinds[key]
+    if not path:
+        return "", {}
+    here = os.path.normcase(os.path.realpath(path))
+    best = ("", "", {})
+    for kid, rec in kinds.items():
+        out = (rec.get("out") or "").strip().strip("/")
+        base = os.path.normcase(os.path.realpath(os.path.join(root, out))) + os.sep if out else ""
+        if base and here.startswith(base) and len(base) > len(best[0]):
+            best = (base, kid, rec)
+    return best[1], best[2]
+
+
+def registry_digest(kinds: dict) -> str:
+    """Слепок реестра так, как его читает движок (`read_kinds`): поля и свойства задач, без комментариев, пустых
+    строк и порядка записей. Панель отдаёт его странице при чтении и сверяет при записи — вторая вкладка или правка
+    файла руками между чтением и записью называется расхождением, а не затирается молча."""
+    blob = json.dumps(kinds or {}, sort_keys=True, ensure_ascii=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def value_problem(value) -> str:
+    """Что не так со значением поля: оно пишется в одну строку конфига, и перевод строки или управляющий знак
+    (в том числе U+2028, U+0085, которыми `splitlines` тоже рвёт строку) превратил бы остаток значения в чужое поле.
+    Пусто — годится."""
+    text = str(value if value is not None else "")
+    if any(unicodedata.category(c) in ("Cc", "Zl", "Zp") and c != "\t" for c in text):
+        return "значение занимает несколько строк или содержит управляющие знаки"
+    return ""
+
+
+def kinds_lines(kinds: dict) -> list:
+    """Секция `artifacts:` строками (без окончаний строк): поля по `FIELDS`, пустые пишутся пустыми, свойства задачи —
+    только заполненные. Читается обратно `read_kinds` (проверка круга — в тестах)."""
+    lines = ["artifacts:"]
+    for kind in sorted(kinds):
+        rec = kinds[kind] or {}
+        lines.append(f"  {kind}:")
+        # Поля описывает движок, а не панель: список один на всех — `FIELDS`. Иначе форма научится сохранять поле,
+        # которого чтение не знает, и настройка будет молча пропадать при следующем разборе конфига.
+        for field in FIELDS:
+            value = str(rec.get(field) or "").strip().strip('"')
+            lines.append(f'    {field}: "{value}"')
+        task = rec.get("task") or {}
+        if any(str(v).strip() for v in task.values()):
+            lines.append("    task:")
+            for field in TASK_FIELDS:
+                value = task.get(field)
+                if isinstance(value, list):
+                    value = ", ".join(str(x).strip() for x in value if str(x).strip())
+                value = str(value or "").strip().strip('"')
+                if value:
+                    lines.append(f'      {field}: "{value}"')
+    return lines
+
+
+def write_kinds_block(config_text: str, kinds: dict) -> str:
+    """Текст конфига с переписанной секцией `artifacts:`; всё остальное — как было, байт в байт.
+
+    Метка порядка байтов, окончания строк (LF, CRLF), пустые строки между секциями и комментарии вне секции остаются
+    на месте; комментарии внутри секции теряются. Секции нет — она дописывается в конец файла в стиле его последней
+    строки. Запись идемпотентна: повторная запись того же реестра текста не меняет."""
+    bom = "\ufeff" if config_text.startswith("\ufeff") else ""
+    lines = config_text[len(bom):].split("\n")           # у строки CRLF «\r» остаётся на месте: её не трогаем
+    start = next((i for i, ln in enumerate(lines) if re.fullmatch(r"artifacts:\s*", ln)), None)
+    block = kinds_lines(kinds)
+    if start is None:
+        last = next((ln for ln in reversed(lines) if ln.strip()), "")
+        cr = "\r" if last.endswith("\r") else ""
+        head = "\n".join(lines).rstrip("\r\n")
+        return bom + (head + (cr + "\n") * 2 if head else "") + "\n".join(ln + cr for ln in block) + "\n"
+    end = start + 1
+    while end < len(lines) and (not lines[end].strip() or lines[end][0] in " \t"):
+        end += 1
+    while end - 1 > start and not lines[end - 1].strip():   # пустые строки после секции — разделитель, не её часть
+        end -= 1
+    cr = "\r" if lines[start].endswith("\r") else ""
+    return bom + "\n".join(lines[:start] + [ln + cr for ln in block] + lines[end:])
 
 
 def out_problem(out: str) -> str:
@@ -201,18 +308,16 @@ def main() -> int:
         # признак «без технологий» жил только в панели, и приложит разделы производства
         # к телу документа, потому что про границу ему никто не сказал.
         print(f"# {rec['title']} · тип `{a.kind}`\n")
+        # Два дела — два раздела: ассистент, который делает документ, читает «Для создания»; публикацию ведёт
+        # движок (`ship:publish`), и промпт публикации ассистенту при создании не навязывается.
+        print("## Для создания\n")
         print(f"Шаблон: {rec['template']}")
         print(f"Класть в: {rec['out']}/")
         if rec.get("prompt"):
-            print(f"Промпт проекта: {rec['prompt']} — читать вместе с шаблоном")
-        if rec.get("publish_url"):
-            print(f"Публикуется в: {rec['publish_url']}")
+            print(f"Промпт создания: {rec['prompt']} — читать вместе с шаблоном")
         if (rec.get("ref_mask") or "").strip() and not _mask_problem(rec["ref_mask"]):
             print(f"Ключ Requirement Yogi вида: маска `{rec['ref_mask'].strip()}` — ключ (например, в строке «Код» истории) "
                   "заводит реестр, не ассистент; не выдумывайте номер, а оставьте место под ключ")
-        if review_profile(rec):
-            print(f"Ревью перед публикацией: профиль {review_profile(rec)} — `make:review-auto --file <файл> --apply`; "
-                  "без свежего ревью «готова к передаче» `ship:publish` не пустит")
         if str(rec.get("tech_agnostic", "")).strip().lower() in ("true", "да", "yes", "1"):
             print("\nБез технологий: критерии этого вида пишутся в терминах поведения и "
                   "данных.\nНе называйте СУБД, брокеры, фреймворки и имена сервисов — "
@@ -227,6 +332,16 @@ def main() -> int:
               "черновике.\nБез маркера догадки уедут заказчику как часть спецификации, "
               "а с отступом\nмаркер не сработает: граница ищется точным совпадением "
               "строки.")
+        if rec.get("publish_url") or rec.get("publish_prompt") or review_profile(rec):
+            print("\n## Для публикации в Confluence\n")
+        if rec.get("publish_url"):
+            print(f"Публикуется в: {rec['publish_url']}")
+        if rec.get("publish_prompt"):
+            print(f"Промпт публикации: {rec['publish_prompt']} — как оформить готовую страницу; при создании документа "
+                  "его не применяют (публикацию ведёт движок, подготовка страницы по этому промпту включится позже)")
+        if review_profile(rec):
+            print(f"Ревью перед публикацией: профиль {review_profile(rec)} — `make:review-auto --file <файл> --apply`; "
+                  "без свежего ревью «готова к передаче» `ship:publish` не пустит")
         miss = [why for kind, why in check(a.root, {a.kind: rec})]
         for why in miss:
             print(f"⚠️  {why}")
@@ -256,8 +371,8 @@ def main() -> int:
     if agn:
         print("\nБез технологий (критерии в терминах поведения и данных, без имён "
               "СУБД,\nброкеров и фреймворков): " + ", ".join(f"`{k}`" for k in agn))
-    print("\nПодробности по одному типу — `--kind <тип>`: там же промпт проекта, адрес "
-          "публикации\nи граница чистовика.")
+    print("\nПодробности по одному типу — `--kind <тип>`: там же промпт создания, адрес и "
+          "промпт\nпубликации и граница чистовика.")
     if bad:
         print(f"\n## Не сходится с диском: {len(bad)}\n")
         for kind, why in bad:

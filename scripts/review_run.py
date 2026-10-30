@@ -850,10 +850,10 @@ def drop_unquoted(checks: dict, haystack: str) -> int:
 
 def subject_sha(text: str) -> str:
     """Отпечаток проверяемого: чистовик без шапки и разделов производства, пробелы сжаты. Правка того, что
-    уходит наружу, меняет отпечаток; правка допущений и плана — нет."""
-    from aurora_common import body as md_body, clean_copy
-    import hashlib
-    return hashlib.sha256(" ".join(clean_copy(md_body(text)).split()).encode("utf-8")).hexdigest()[:16]
+    уходит наружу, меняет отпечаток; правка допущений и плана — нет. Тот же отпечаток, что у публикации
+    (`published_sha`): считает один код — `aurora_common.clean_sha`."""
+    from aurora_common import clean_sha
+    return clean_sha(text)
 
 
 def file_profile(rel: str, text: str, forced: str = "") -> str:
