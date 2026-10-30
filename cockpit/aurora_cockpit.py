@@ -2071,6 +2071,45 @@ def gitsync_state(project: str) -> dict:
             "ticking": GITAUTO is not None and getattr(GITAUTO, "started", False)}
 
 
+def code_state(project: str) -> dict:
+    """Раздел «Код»: реестр репозиториев (вход — маской), его слепок для формы, замечания к записанному и состояние
+    клонов без сети — то же, что печатает `code:status`. Числа считает движок, раздел их только показывает."""
+    import code_repos as CREPO
+    st = CREPO.state(project)
+    try:
+        import code_sync as CSYNC
+        status = CSYNC.status(project)
+    except Exception as e:  # noqa: BLE001 — сломанный клон не роняет раздел: форма реестра нужна, чтобы его починить
+        status = {"repos": [], "failed": f"{type(e).__name__}: {e}"[:300]}
+    by = {r["name"]: r for r in status.get("repos") or []}
+    for row in st["repos"]:
+        row["status"] = by.get(row["name"]) or {}
+    if status.get("failed"):
+        st["status_failed"] = status["failed"]
+    try:
+        cfg = net_service().config()
+        st["profiles"] = [str(x.get("name")) for x in cfg.get("profiles") or [] if isinstance(x, dict) and x.get("name")]
+    except Exception:  # noqa: BLE001 — без проверки соединений режимы доступа выбираются без списка профилей
+        st["profiles"] = []
+    return st
+
+
+def code_action(action: str, project: str, payload: dict) -> tuple:
+    """Записи раздела «Код» → (ответ, код HTTP). Реестр пишется только со слепком (`expect`), расхождение — 409."""
+    import code_repos as CREPO
+    if action == "repos":
+        expect = payload.get("expect", "")
+        res = CREPO.save(project, payload.get("repos") if isinstance(payload.get("repos"), dict) else None,
+                         expect if isinstance(expect, str) else None, payload.get("credentials"))
+        if res.get("ok"):
+            res = {**res, "state": code_state(project)}
+        return res, (200 if res.get("ok") else 409 if res.get("conflict") else 500 if res.get("failed") else 400)
+    if action == "check":
+        return CREPO.check_remote(project, str(payload.get("name") or ""), payload.get("repo") or {},
+                                  payload.get("credentials") if isinstance(payload.get("credentials"), dict) else None), 200
+    return {"error": "неизвестный маршрут"}, 404
+
+
 def cert_action(url: str, payload: dict) -> dict:
     """Сертификат сервера по адресу: показать отпечаток или довериться ему по отпечатку (на этой машине)."""
     if not re.match(r"^https://", url or "", re.I):
@@ -6600,6 +6639,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(gitsync_state(project))
+        elif u.path == "/api/code":
+            # Раздел «Код»: реестр репозиториев и состояние клонов; сеть не трогается.
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(code_state(project))
         elif u.path == "/api/env":
             # «Проверить снова» на странице «Установка»: без перезапуска панели.
             self.send_json({"env": localized_environment(environment(fresh=bool(q.get("fresh"))),
@@ -7380,6 +7425,19 @@ class Handler(BaseHTTPRequestHandler):
             # Пакет Python из списка «Установки» — в Python панели (`env_install`).
             self.send_json(env_install(str(payload.get("name") or "")))
             return
+        if u.path == "/api/code/parse":
+            # Строка из `git clone` → сервер, адрес, ветка, вход и имя папки. Ничего не пишет.
+            import code_repos as CREPO
+            self.send_json(CREPO.parse_clone(str(payload.get("text") or "")))
+            return
+        if u.path in ("/api/code/repos", "/api/code/check"):
+            project = payload.get("project", "")
+            if not isinstance(project, str) or not project:
+                return self.send_json({"error": "проект не выбран"}, 400)
+            if not self._known(project):
+                return
+            res, code = code_action(u.path.rsplit("/", 1)[1], project, payload)
+            return self.send_json(res, code)
         if u.path == "/api/gitsync/parse":
             # Строка из `git clone` → сервер, репозиторий, ветка, логин. Ничего не пишет.
             self.send_json(GS.parse_clone(str(payload.get("text") or "")))

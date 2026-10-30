@@ -501,6 +501,16 @@
    "reason": "каталог типов meta/card_types.md: генерируемый служебный файл",
    "calls": 1
   },
+  "scripts/code_repos.py:check_remote": {
+   "kind": "other",
+   "reason": "проверка подключения к репозиторию кода: вставленный SSH-ключ — во временный файл на время проверки",
+   "calls": 1
+  },
+  "scripts/code_repos.py:save": {
+   "kind": "other",
+   "reason": "реестр репозиториев кода: блок code_repos: в aurora.config.yaml по записи из панели, атомарно",
+   "calls": 1
+  },
   "scripts/confluence_export.py:Exporter.save_assets": {
    "kind": "other",
    "reason": "зеркало Confluence в Sources/: источник, не карточка",
