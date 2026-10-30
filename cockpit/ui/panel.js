@@ -1683,6 +1683,7 @@ async function boot(){
   }
   drawAdapterAlarm(S.state.adapter_alarm);
   refreshNetBar();
+  refreshThreadsBar();
   showReaped(S.state.reaped);
   renderOverview();
   renderHistory();
@@ -1870,6 +1871,34 @@ async function refreshNetBar(){
 const NET_POLL_MS = 20000;
 setInterval(() => { if (!document.hidden) refreshNetBar(); }, NET_POLL_MS);
 $("#connBar").onclick = () => show("connectivity");
+
+/* ---------------- потоки параллельной работы ---------------- */
+// Сколько потоков у идущих шагов работает и сколько выпало: провайдер в карантине (ошибки 5xx, обрыв, молчание)
+// теряет все свои слоты, суженный после отказов 529 — слоты сверх предела тяжёлых запросов. «20 (−4)» — из 24
+// потоков шагов сейчас работают 20. Причины — в подсказке, нажатие открывает Консоль. Нет шага с потоками — нет кнопки.
+function threadsRow(r){
+  const name = r.name || ("№" + r.n);
+  if (r.kind === "heavy") return t("threads.row_heavy", {name, cut: r.cut, cap: r.cap, slots: r.slots});
+  const time = new Date(r.until * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  return t("threads.row_down", {name, cut: r.cut, time, why: r.label || t("threads.why_none")});
+}
+async function refreshThreadsBar(){
+  const bar = $("#threadsBar");
+  if (!bar) return;
+  let d = null;
+  try { d = await api("/api/threads", {quiet:true}); } catch (e) { return; }
+  if (!d || typeof d.slots !== "number") return;      // ответа нет (панель перезапускается): прежний вид остаётся
+  if (!d.slots){ bar.hidden = true; return; }
+  const cut = d.slots - d.now;
+  bar.hidden = false;
+  bar.className = "btn sm threadsbar" + (cut > 0 ? " warn" : "");
+  bar.textContent = cut > 0 ? t("threads.bar_cut", {n: d.now, cut}) : t("threads.bar", {n: d.now});
+  bar.title = [t("threads.title", {slots: d.slots, now: d.now, inflight: d.inflight}),
+               ...(d.rows || []).map(threadsRow)].join("\n");
+}
+const THREADS_POLL_MS = 5000;
+setInterval(() => { if (!document.hidden) refreshThreadsBar(); }, THREADS_POLL_MS);
+$("#threadsBar").onclick = () => show("console");
 
 /* ---------------- движок проекта на этой машине ---------------- */
 // Папка `.aurora/` — копия движка на этом компьютере, вне git: клон проекта приходит без неё.

@@ -322,6 +322,12 @@ again by a new run, so for a gateway with such a rule it is better to set the fi
 this limit: it measures with short requests. While the gateway+model pair is paused after a 529, a call, as with a 429,
 may move on to the next in the chain; after the pause the primary is first again.
 
+**How many threads are working — in the panel header.** While a step with parallel work runs, the header shows a
+"Threads: 24" button; if some threads fell out — "Threads: 20 (−4)". Threads fall out for a provider in quarantine (all its
+slots, until the quarantine ends) and above the learned heavy limit after a 529. A limit set in the "Heavy at once" field
+is a setting, not a loss, and is not counted in "−N". The button's tooltip names each provider, how many it lost and why;
+a click opens the Console. The number is the threads of the running steps: a step with less work than slots takes fewer.
+
 **Two different troubles — two different bars.** The red Pydantic AI bar ("Pydantic AI is selected, but model
 calls bypass it") appears only when the Pydantic AI path itself is faulty: the package is not installed or does
 not import, the version failed the compatibility check, the adapter process does not start, crashes or hangs, the

@@ -6850,6 +6850,9 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/live":
             # Всё, что идёт на машине: маршруты, команды, цепочка — по всем проектам.
             self.send_json(live_now())
+        elif u.path == "/api/threads":
+            # Сколько потоков параллельной работы идёт и сколько выпало — кнопка в шапке.
+            self.send_json(threads_all(request_lang(q)))
         elif u.path == "/api/cron/run":
             run_id = q.get("id", [""])[0]
             if not re.match(r"^[\w-]{1,64}$", run_id):
@@ -7915,6 +7918,34 @@ def pulse_of(job_id: str) -> dict | None:
     if not job or job.get("done"):
         return None
     return job_pulse(job)
+
+
+def threads_all(lang: str = "", now: float = 0.0) -> dict:
+    """Потоки параллельной работы всех живых шагов — для кнопки в шапке: {slots, now, inflight, rows}.
+
+    Каждый процесс шага кладёт в свой пульс слоты шага и выпавшие потоки с причиной
+    (`agent_core.threads_now`); здесь они складываются. Карантин, срок которого вышел после записи
+    пульса, уже не вычитается. Причина карантина — названием из таблицы причин движка на языке страницы."""
+    import agent_core as AG
+    now = now or time.time()
+    with JOBS_LOCK:
+        jobs = [j for j in JOBS.values() if not j.get("done")]
+    out = {"slots": 0, "now": 0, "inflight": 0, "rows": []}
+    for job in jobs:
+        for data in _pulse_files(job):
+            th = data.get("threads")
+            if not isinstance(th, dict) or not th.get("slots"):
+                continue
+            rows = [r for r in th.get("rows") or [] if isinstance(r, dict)
+                    and not (r.get("kind") == "down" and float(r.get("until") or 0) <= now)]
+            for r in rows:
+                cause = AG.CAUSES.get(str(r.get("why") or "")) or {}
+                r["label"] = cause.get("label_en" if lang == "en" else "label", "")
+            out["slots"] += int(th["slots"])
+            out["now"] += int(th["slots"]) - sum(int(r.get("cut") or 0) for r in rows)
+            out["inflight"] += len(data.get("inflight") or [])
+            out["rows"] += rows
+    return out
 
 
 def cron_pulse() -> dict | None:

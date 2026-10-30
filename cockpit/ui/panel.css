@@ -344,6 +344,8 @@ tr:last-child td{border-bottom:0}
 .connbar.ok{color:var(--primary);border-color:color-mix(in oklab,var(--primary) 45%,var(--border))}
 .connbar.warn{color:var(--tier-inreview);border-color:color-mix(in oklab,var(--tier-inreview) 45%,var(--border))}
 .connbar.bad{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 55%,var(--border))}
+.threadsbar{font-weight:600;font-variant-numeric:tabular-nums}
+.threadsbar.warn{color:var(--tier-inreview);border-color:color-mix(in oklab,var(--tier-inreview) 45%,var(--border))}
 .console .err{color:var(--danger)} .console .ok{color:var(--primary)}
 .console .warn{color:var(--tier-inreview)} .console .dim{opacity:.6}
 

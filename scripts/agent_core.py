@@ -1450,6 +1450,8 @@ def _pulse_save() -> None:
             "inflight": sorted(_PULSE["calls"].values(), key=lambda c: c["since"]),
             **{k: _PULSE[k] for k in ("answered", "failed", "last_answer", "last_fail", "why",
                                       "rings")}}
+    if _PULSE.get("threads"):
+        data["threads"] = threads_now(_PULSE["threads"])
     tmp = f"{path}.{threading.get_ident()}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -1460,6 +1462,38 @@ def _pulse_save() -> None:
             os.remove(tmp)
         except OSError:
             pass
+
+
+# Потоки параллельной работы в пульсе: сколько слотов у шага и сколько из них сейчас выпало. Провайдер в карантине
+# теряет все свои слоты, суженный после 529 — слоты сверх выученного предела тяжёлых. Панель складывает пульсы живых
+# шагов в кнопку шапки «20 (−4)»: из 24 потоков шага сейчас работают 20.
+def pulse_threads(cfg: dict, slots: list) -> None:
+    """Шаг начал работу на слотах `slots` (номер бэкенда на поток) — в пульс."""
+    names = {b["n"]: b.get("name") or "" for b in cfg.get("backends") or []}
+    with _PULSE_LOCK:
+        _PULSE["threads"] = {"slots": list(slots), "names": names}
+        _pulse_save()
+
+
+def threads_now(th: dict, now: float | None = None) -> dict:
+    """Слоты шага → {slots, now, rows}: строка на провайдера, у которого выпали потоки, с причиной."""
+    now = now or time.time()
+    per: dict = {}
+    for n in th.get("slots") or []:
+        per[n] = per.get(n, 0) + 1
+    rows = []
+    for n, k in per.items():
+        name = (th.get("names") or {}).get(n) or ""
+        until, got = DOWN.get(n, 0), HEAVY_LEARNED.get(n)
+        if until > now:
+            held = DOWN_WHY.get(n)
+            rows.append({"n": n, "name": name, "slots": k, "cut": k, "kind": "down", "until": until,
+                         "why": held[1].kind if held and held[0] == until else ""})
+        elif got and got["cap"] < k:
+            rows.append({"n": n, "name": name, "slots": k, "cut": k - got["cap"], "kind": "heavy",
+                         "cap": got["cap"], "from": got["from"]})
+    total = sum(per.values())
+    return {"slots": total, "now": total - sum(r["cut"] for r in rows), "rows": rows}
 
 
 def _pulse_drop() -> None:
