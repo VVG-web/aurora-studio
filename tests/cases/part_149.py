@@ -246,3 +246,36 @@ def test_server_errors_once_are_named_and_leave_the_file_intact(tmp: Path):
         assert res["outcome"] == "ok" and len(wiki.by_title("Релиз 1.0")) == 1, cp.stdout + cp.stderr
     finally:
         wiki.close()
+
+
+@test
+def test_two_documents_with_one_title_do_not_share_a_page(tmp: Path):
+    """У двух документов вышел один заголовок страницы: второй не «восстанавливает» чужую страницу Авроры как свою (так
+    выглядит обрыв после POST), а останавливается со ссылкой на неё — публикация первого документа цела. Тот же файл,
+    названный по-другому (`./…`), своим остаётся."""
+    wiki = W.Wiki()
+    try:
+        _rid, root, _path = _setup(tmp, wiki)
+        _cp, res = W.publish(root, REL, "--apply")
+        pid = res["page"]["id"]
+        body = wiki.pages[pid]["body"]
+        W.put(root, "Artifacts/us/US-2.md", W.doc(HEAD))                       # тот же заголовок «Итог»
+        cp, res = W.publish(root, "Artifacts/us/US-2.md", "--apply")
+        assert cp.returncode == 1 and res["outcome"] == "blocked" and res["code"] == "title-taken", cp.stdout + cp.stderr
+        assert "Artifacts/us/US-1.md" in res["why"] and res["url"].endswith(f"pageId={pid}"), res
+        assert wiki.pages[pid]["body"] == body and wiki.pages[pid]["version"] == 1, "чужая публикация затёрта"
+        # обрыв после POST у того же файла, названного иначе, — по-прежнему своя страница
+        W.put(root, "Artifacts/us/US-3.md", W.doc(HEAD, "# Третий\n\nТекст.\n"))
+        wiki.drop_after_post.add("Третий")
+        W.publish(root, "Artifacts/us/US-3.md", "--apply")
+        cp, res = W.publish(root, "./Artifacts/us/US-3.md", "--apply")
+        assert res["outcome"] == "ok" and res["action"] == "update" and len(wiki.by_title("Третий")) == 1, cp.stdout + cp.stderr
+        # заголовок документа совпал с разделом пути: раздел не правится ни так, ни с --adopt
+        W.put(root, "Artifacts/us/US-4.md", W.doc(HEAD, "# Релиз 1.0\n\nТекст.\n"))
+        section = wiki.by_title("Релиз 1.0")[0]
+        for extra in ((), ("--adopt",)):
+            cp, res = W.publish(root, "Artifacts/us/US-4.md", "--apply", *extra)
+            assert res["outcome"] == "blocked" and res["code"] == "title-taken", (extra, res["outcome"], cp.stderr)
+        assert wiki.pages[section["id"]]["version"] == 1 and "aurora-section" in wiki.pages[section["id"]]["body"]
+    finally:
+        wiki.close()

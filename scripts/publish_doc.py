@@ -262,6 +262,22 @@ def banner(path: str, commit: str) -> str:
             "</ac:structured-macro>")
 
 
+def doc_key(path: str) -> str:
+    """Путь документа для сравнения: от корня проекта, без `./` и с «/» (абсолютный путь — тоже от корня)."""
+    path = str(path or "")
+    try:
+        path = os.path.relpath(path) if os.path.isabs(path) else path
+    except ValueError:              # другой диск (Windows)
+        pass
+    return os.path.normpath(path).replace("\\", "/")
+
+
+def banner_path(storage: str) -> str:
+    """Путь файла из баннера страницы Авроры (`doc_key`); баннера или пути нет — пусто."""
+    m = re.search(r"Страница генерируется из git: <code>(.*?)</code>", storage or "")
+    return doc_key(html.unescape(m.group(1))) if m else ""
+
+
 # ------------------------------------------------------------------- published map
 
 def published_links(base_url: str) -> dict:
@@ -686,7 +702,7 @@ def publish(a) -> dict:
     commit = git_commit()
     sha = clean_sha(text)
     content = to_storage(body, published_links(base_url))
-    storage = banner(path, commit) + content
+    storage = banner(doc_key(path), commit) + content
     page_id = (fm.get("confluence_page_id") or "").strip().strip('"')
 
     print(f"# publish {path}")
@@ -787,6 +803,12 @@ def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, lev
     # обновляем) или чужая (берём под управление только явным --adopt).
     if not existing:
         found = api.find_by_title(space, title)
+        if found and SECTION_MARK in storage_of(found):
+            # Раздел пути, созданный публикацией, документом не становится и не правится — даже с --adopt.
+            why = (f"заголовок «{title}» в пространстве у раздела пути (id {found.get('id')}), созданного Авророй: "
+                   "разделы публикация не правит — задайте документу другой заголовок или шаблон publish_title вида")
+            print(f"\npublish: {why}", file=sys.stderr)
+            return done("blocked", 1, code="title-taken", why=why, url=page_url(base_url, found.get("id")), fix="kinds")
         if found:
             if BANNER_MARK not in storage_of(found) and not a.adopt:
                 why = (f"в пространстве уже есть страница «{title}» (id {found.get('id')}), и она не помечена как "
@@ -798,6 +820,15 @@ def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, lev
                       "повторите с --adopt, либо задайте другой --title.", file=sys.stderr)
                 return done("adopt", 1, page=page_info(found, base_url), url=page_url(base_url, found.get("id")),
                             why=why)
+            # Страница Авроры с этим заголовком, но из другого файла (у двух документов вышел один заголовок): это не
+            # обрыв после POST, а чужой документ — обновить её значило бы затереть ту публикацию.
+            theirs = banner_path(storage_of(found))
+            if BANNER_MARK in storage_of(found) and theirs and theirs != doc_key(path):
+                why = (f"заголовок «{title}» в пространстве уже у страницы другого документа ({theirs}, id "
+                       f"{found.get('id')}): задайте документу другой заголовок или шаблон publish_title вида")
+                print(f"\npublish: {why}", file=sys.stderr)
+                return done("blocked", 1, code="title-taken", why=why, url=page_url(base_url, found.get("id")),
+                            fix="kinds")
             existing = found
             if existing.get("ancestors") is None or not (existing.get("space") or {}).get("key"):
                 existing = api.page_full(existing["id"])
@@ -844,7 +875,7 @@ def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, lev
                         why=f"страницу правили после публикации: версия {was} → {now}")
 
         # 6. Повтор без изменений: те же входы и та же версия страницы — ничего не отправляем и файл не трогаем.
-        inp = input_sha(sha, content, title, str(cur_parent.get("id") or ""), path)
+        inp = input_sha(sha, content, title, str(cur_parent.get("id") or ""), doc_key(path))
         same = (fm.get("published_input") or "").strip() == inp and now == was
         legacy = not (fm.get("published_input") or "").strip() and storage_of(existing) == storage
         if not move and (same or legacy):
@@ -919,7 +950,7 @@ def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, lev
     ver = (got.get("version") or {}).get("number", "?")
     url = page_url(base_url, pid)
     parent = str(want if (move or not existing) else (cur_parent.get("id") or ""))
-    stamped = stamp(text, pid, commit, str(ver), url, sha, input_sha(sha, content, title, parent, path),
+    stamped = stamp(text, pid, commit, str(ver), url, sha, input_sha(sha, content, title, parent, doc_key(path)),
                     page_space or space, parent)
     if bypass:
         stamped = with_fields(stamped, {"review_bypass": utc_stamp()})
