@@ -443,6 +443,7 @@ DIRECT = [
     (401, "unauthorized", "auth"),
     (403, "forbidden", "auth"),
     (429, "слишком часто", "rate_limit"),
+    (529, "queue is busy", "overloaded"),
     (404, "no such model", "not_found"),
     (400, "bad request", ""),
     (422, "unprocessable", ""),
@@ -490,8 +491,8 @@ def test_the_engine_tells_every_link_failure_of_the_direct_path_apart(tmp: Path)
         texts[kind] = str(why)
     assert len(set(texts.values())) == len(texts), "два вида с одним текстом"
     assert "HTTP 503" in texts["server_error"] and "HTTP 429" in texts["rate_limit"]
-    # молчание и лимит — сервер жив: серия неудач их не считает
-    assert AG.LINK_REACHED_KINDS == {"silent", "rate_limit"}
+    # молчание, лимит и перегрузка — сервер жив: серия неудач их не считает
+    assert AG.LINK_REACHED_KINDS == {"silent", "rate_limit", "overloaded"}
     assert not AG.LINK_REACHED_KINDS & AG.LINK_ALARM_KINDS
 
 

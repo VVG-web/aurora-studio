@@ -185,8 +185,19 @@ const body = () => boxes["#modelsBody"].textContent;
   ok(!text.includes("p_width_lost"), "страница всё ещё говорит о необъявленной ширине");
   ok(text.includes('models.run_slots{"n":9,"split":"Старый×8, Новое имя×1"}'), "строка потоков над карточками: " + text.slice(0, 300));
   // ширина — не меньше 1: у поля min=1, а ноль, пустое и дробь не доходят до настройки
-  const widths = all(boxes["#modelsBody"], n => n.tag === "input" && n.attrs.type === "number");
-  ok(widths.length === 2 && widths.every(w => String(w.attrs.min) === "1"), "поля ширины без min=1: " + widths.map(w => w.attrs.min));
+  const field = name => all(boxes["#modelsBody"], n => n.tag === "input" && n.attrs["data-field"] === name);
+  const widths = field("width");
+  ok(widths.length === 2 && widths.every(w => w.attrs.type === "number" && String(w.attrs.min) === "1"),
+     "поля ширины без min=1: " + widths.map(w => w.attrs.min));
+  // предел тяжёлых запросов: от нуля («не задано» — выучит движок), минус и мусор становятся нулём
+  const heavy = field("heavy"), edge = field("heavy_tokens");
+  ok(heavy.length === 2 && edge.length === 2 && [...heavy, ...edge].every(w => w.attrs.type === "number" && String(w.attrs.min) === "0"),
+     "поля тяжёлых запросов без min=0: " + [...heavy, ...edge].map(w => w.attrs.min));
+  for (const [typed, want] of [["-4", 0], ["", 0], ["2", 2]]){
+    heavy[1].value = typed; await fire(heavy[1], "input"); await fire(heavy[1], "change");
+    ok(heavy[1].value === String(want), `в «Тяжёлых одновременно» набрали «${typed}», на уходе «${heavy[1].value}», ждали ${want}`);
+  }
+  edge[1].value = "32000"; await fire(edge[1], "input");
   const wide = widths[1];
   for (const [typed, want] of [["0", 1], ["", 1], ["-4", 1], ["2.9", 2], ["12", 12]]){
     wide.value = typed; await fire(wide, "input"); await fire(wide, "change");
@@ -197,10 +208,13 @@ const body = () => boxes["#modelsBody"].textContent;
   await saveBtn().ls.click[0]();
   const sentW = calls.filter(c => c[0] === "/api/models/save").at(-1)[1];
   ok(sentW.models.providers.every(p => p.width >= 1), "в запись ушла ширина меньше 1: " + JSON.stringify(sentW.models.providers.map(p => p.width)));
+  ok(sentW.models.providers[1].heavy === 2 && sentW.models.providers[1].heavy_tokens === 32000 && sentW.expect === DATA.stamp,
+     "предел тяжёлых не ушёл в запись со слепком: " + JSON.stringify(sentW.models.providers[1]));
   // новый провайдер заводится с шириной 1, а не 0
   await fire(all(boxes["#modelsBody"], n => n.tag === "button" && n.textContent === "models.add_provider")[0], "click");
-  const after = all(boxes["#modelsBody"], n => n.tag === "input" && n.attrs.type === "number");
+  const after = field("width");
   ok(after.length === 3 && after[2].value === "1", "новый провайдер заведён с шириной «" + (after[2] && after[2].value) + "», ждали 1");
+  ok(field("heavy").length === 3 && field("heavy")[2].value === "0", "новый провайдер заведён без поля «Тяжёлых одновременно» или не с нулём");
   console.log(JSON.stringify({fails}));
 })();
 """

@@ -194,7 +194,7 @@ function providerForm(ctx, p, onDone){
   // Один и тот же вид у провайдера во вкладке и у провайдера, заведённого из строки бэкенда.
   const {t, el} = ctx;
   const inp = (k, attrs) => {
-    const x = el("input", {class: "btn", style: "width:100%;font-weight:400", ...attrs});
+    const x = el("input", {class: "btn", style: "width:100%;font-weight:400", "data-field": k, ...attrs});
     x.value = p[k] == null ? "" : String(p[k]);
     const num = attrs && attrs.type === "number", low = num ? Number(attrs.min) || 0 : 0;
     // Число не меньше своего «min»: ширина провайдера — от 1, ноль и пустое поле становятся единицей.
@@ -240,6 +240,16 @@ function providerForm(ctx, p, onDone){
         el("div", {class: "muted", style: "font-size:11.5px", title: t("models.p_width_hint")},
           t("models.p_width")),
         inp("width", {type: "number", min: 1, style: "width:90px;font-weight:400"})),
+      // Тяжёлые запросы: шлюз, отсекающий большие запросы отказом 529, держит их меньше, чем короткие. 0 — предел
+      // выучит сам движок на первом 529.
+      el("label", {style: "display:block"},
+        el("div", {class: "muted", style: "font-size:11.5px", title: t("models.p_heavy_hint")},
+          t("models.p_heavy")),
+        inp("heavy", {type: "number", min: 0, style: "width:90px;font-weight:400"})),
+      el("label", {style: "display:block"},
+        el("div", {class: "muted", style: "font-size:11.5px", title: t("models.p_heavy_tokens_hint")},
+          t("models.p_heavy_tokens")),
+        inp("heavy_tokens", {type: "number", min: 0, step: 1000, style: "width:110px;font-weight:400"})),
       el("label", {class: "row", style: "gap:6px", title: t("models.p_parallel_hint")},
         parallel, t("models.p_parallel")),
       el("details", {style: "flex:1;min-width:220px"},
@@ -312,7 +322,8 @@ function providersTab(ctx){
   });
   box.append(el("button", {class: "btn", onclick: () => {
     M.providers.push({id: newId("provider"), name: "", type: "openai", url: "", key: "",
-                      width: 1, parallel: true, template: {}, vpn: "", health: {check: "off", path: "/models"}});
+                      width: 1, heavy: 0, heavy_tokens: 0, parallel: true, template: {}, vpn: "",
+                      health: {check: "off", path: "/models"}});
     touch(ctx, true);
   }}, t("models.add_provider")));
   return box;
@@ -505,8 +516,8 @@ function backendRow(ctx, cap, r, b, bi){
   });
   if (!b._new) return row;
   // Новый провайдер прямо из строки бэкенда: заводим, выбираем — и дальше по цепочке.
-  const fresh = {id: "", name: "", type: "openai", url: "", key: "", width: 1, parallel: true,
-                 template: {}, vpn: "", health: {check: "off", path: "/models"}};
+  const fresh = {id: "", name: "", type: "openai", url: "", key: "", width: 1, heavy: 0, heavy_tokens: 0,
+                 parallel: true, template: {}, vpn: "", health: {check: "off", path: "/models"}};
   return el("div", {}, row, el("div", {class: "card", style: "padding:12px;margin:4px 0 8px 24px"},
     el("div", {class: "muted", style: "font-size:12px;margin-bottom:6px"}, t("models.new_provider_about")),
     providerForm(ctx, fresh, ok => {

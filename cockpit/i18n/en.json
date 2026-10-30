@@ -1101,6 +1101,7 @@
   "alarm.link.server_error": "⛔ The model gateway answers with a server error (HTTP {status}): backend №{n}.",
   "alarm.link.auth": "⛔ The model gateway refuses the key or access (HTTP {status}): backend №{n}.",
   "alarm.link.rate_limit": "⛔ The model gateway limits the rate (HTTP 429): backend №{n}.",
+  "alarm.link.overloaded": "⛔ The model gateway is overloaded and refuses large requests (HTTP 529): backend №{n}.",
   "alarm.link.not_found": "⛔ The model gateway finds no such model or path (HTTP 404): backend №{n}.",
   "alarm.link.bad_reply": "⛔ The model gateway answers with something that is not JSON: backend №{n}.",
   "alarm.link.other": "⛔ The model gateway is unreachable: backend №{n}.",

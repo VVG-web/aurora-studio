@@ -771,6 +771,15 @@ CAUSES: dict = {
               " и повторит; снизьте ширину в разделе «Модели»",
         "en": "backend №{n} ({model}): the gateway limited the rate (HTTP 429) — the "
               "engine will wait and retry; lower the width in the Models section"},
+    "overloaded": {"area": "link", "fix": "models",
+        "label": "шлюз перегружен (529)", "label_en": "gateway overloaded (529)",
+        "ru": "бэкенд №{n} ({model}): шлюз перегружен и отклонил запрос (HTTP 529) — очередь "
+              "занята большими запросами; движок подождёт, повторит и сам уменьшит число тяжёлых "
+              "запросов разом; закрепить предел — «Тяжёлых одновременно» в разделе «Модели»",
+        "en": "backend №{n} ({model}): the gateway is overloaded and refused the request (HTTP "
+              "529) — its queue is full of large requests; the engine will wait, retry and send "
+              "fewer heavy requests at once by itself; to fix the limit, set “Heavy at once” in "
+              "the Models section"},
     "not_found": {"area": "link", "fix": "models",
         "label": "нет модели или пути (404)", "label_en": "no such model or path (404)",
         "ru": "бэкенд №{n} ({model}): шлюз ответил 404 — нет такой модели или пути: "
@@ -802,10 +811,10 @@ CAUSES: dict = {
               "fault"},
 }
 # Виды связи, которые считаются подряд на одном бэкенде и поднимают тревогу связи; остальное
-# из `link` — «сервер жив»: молчание по сроку и лимит скорости серию неудач обнуляют.
+# из `link` — «сервер жив»: молчание по сроку, лимит скорости и перегрузка (529) серию неудач обнуляют.
 LINK_ALARM_KINDS = frozenset({"dns", "refused", "connect_timeout", "unreachable", "tls", "proxy",
                               "reset", "server_error", "auth", "not_found", "bad_reply", "other"})
-LINK_REACHED_KINDS = frozenset({"silent", "rate_limit"})
+LINK_REACHED_KINDS = frozenset({"silent", "rate_limit", "overloaded"})
 # Обрывы, после которых бэкенд уходит в короткий карантин (`DOWN_LINK_FOR`): до сервера не дошли, и это чаще мигнувшая
 # сеть или VPN, чем смерть шлюза. Ответ шлюза (5xx, нечитаемое тело) и «настройка, а не связь» (ключ, 404) сюда не входят.
 LINK_FAST_KINDS = frozenset({"dns", "refused", "connect_timeout", "unreachable", "reset", "tls", "proxy", "other"})
@@ -993,7 +1002,9 @@ _LINK_TEXT = tuple((kind, re.compile(rx, re.I)) for kind, rx in (
     ("silent", r"timed out|timeout|readtimeout"),
     ("bad_reply", r"jsondecodeerror|expecting value|extra data|unterminated string|not valid json"),
 ))
-_LINK_STATUS = {401: "auth", 403: "auth", 404: "not_found", 408: "silent", 429: "rate_limit"}
+# 529 — «перегружен»: шлюз жив и отсекает лишнее, когда его очередь занята большими запросами.
+_LINK_STATUS = {401: "auth", 403: "auth", 404: "not_found", 408: "silent", 429: "rate_limit",
+                529: "overloaded"}
 
 
 def _error_text(err) -> str:
@@ -1809,6 +1820,84 @@ def cool_clear(key: tuple | None = None, n: int | None = None) -> None:
         for d in (COOL, COOL_HITS, ERR_HITS):
             for k in [k for k in d if key is None and n is None or k == key or (n is not None and k[0] == n)]:
                 d.pop(k, None)
+
+
+# Тяжёлые запросы. Шлюз может держать очередь только для коротких: «в очереди больше двух, а
+# некэшированных токенов больше N — отказ 529». Короткие идут на всю ширину, тяжёлых разом — не
+# больше предела: заданного человеком («Тяжёлых одновременно» провайдера, тяжёлый — от
+# `heavy_tokens`) или выученного на отказе 529. Выученный предел каждый 529 снижает на один, но не
+# выше числа тяжёлых, оставшихся в пути (отказанный не в счёт), а порог — размер отказанного
+# запроса: всё не меньше него тяжёлое. После `HEAVY_GROW_AFTER` ответов на тяжёлые предел растёт на
+# один и снимается, дойдя до ширины шлюза. Живёт в процессе, как семафор ширины.
+HEAVY_TOKENS = 20000       # «тяжёлый — от» по умолчанию, когда предел задан, а порог нет
+HEAVY_GROW_AFTER = 5
+HEAVY_LEARNED: dict = {}   # {№ бэкенда: {"cap": тяжёлых разом, "from": от скольких токенов, "ok": ответов после 529}}
+SIZES: dict = {}           # {№ бэкенда: [оценка токенов каждого нашего запроса в пути]}
+_HEAVY = threading.Condition()
+
+
+def heavy_rules(b: dict) -> list:
+    """[(тяжёлых разом, от скольких токенов)] бэкенда: правило человека и выученное на 529."""
+    out = []
+    if b.get("heavy"):
+        out.append((int(b["heavy"]), int(b.get("heavy_tokens") or HEAVY_TOKENS)))
+    got = HEAVY_LEARNED.get(b["n"])
+    if got:
+        out.append((got["cap"], got["from"]))
+    return out
+
+
+def _heavy_full(b: dict, size: int) -> bool:
+    """Под `_HEAVY`: упрётся ли запрос в `size` токенов в предел тяжёлых."""
+    flying = SIZES.get(b["n"], [])
+    return any(size >= edge and sum(1 for s in flying if s >= edge) >= cap
+               for cap, edge in heavy_rules(b))
+
+
+def heavy_take(b: dict, size: int, timeout: float = 0.0) -> bool:
+    """Занять место запросу в `size` токенов, ожидая до `timeout` с. Короткий проходит всегда."""
+    end = time.monotonic() + timeout
+    with _HEAVY:
+        while _heavy_full(b, size):
+            left = end - time.monotonic()
+            if left <= 0:
+                return False
+            _HEAVY.wait(left)
+        SIZES.setdefault(b["n"], []).append(size)
+        return True
+
+
+def heavy_give(n, size: int) -> None:
+    with _HEAVY:
+        flying = SIZES.get(n) or []
+        if size in flying:
+            flying.remove(size)
+        _HEAVY.notify_all()
+
+
+def heavy_overload(b: dict, size: int) -> tuple:
+    """Шлюз ответил 529 на запрос в `size` токенов (он ещё в пути) → (тяжёлых разом, от скольких токенов)."""
+    with _HEAVY:
+        got = HEAVY_LEARNED.get(b["n"])
+        edge = min(size, got["from"]) if got else size
+        held = sum(1 for s in SIZES.get(b["n"], []) if s >= edge)
+        cap = max(1, min(held, got["cap"] if got else held) - 1)
+        HEAVY_LEARNED[b["n"]] = {"cap": cap, "from": edge, "ok": 0}
+        return cap, edge
+
+
+def heavy_answered(b: dict, size: int, ceiling: int) -> None:
+    """Ответ на запрос в `size` токенов: выученный предел растёт к `ceiling` (ширина шлюза)."""
+    with _HEAVY:
+        got = HEAVY_LEARNED.get(b["n"])
+        if not got or size < got["from"]:
+            return
+        got["ok"] += 1
+        if got["ok"] >= HEAVY_GROW_AFTER:
+            got["cap"], got["ok"] = got["cap"] + 1, 0
+            if got["cap"] >= min(ceiling, int(b.get("heavy") or ceiling)):
+                HEAVY_LEARNED.pop(b["n"], None)
+            _HEAVY.notify_all()
 
 
 def quota_spent(st, err, body) -> bool:
@@ -3170,12 +3259,26 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             tried.add(b["n"])
             sem = _slot_semaphore(b, cfg)
             grant = max(0.5, min(FAIR_SHARE * req_timeout, left))
+            # Тяжёлый запрос сначала ждёт своё место (`heavy_take`), и только потом слот ширины: иначе
+            # ждущий тяжёлый держал бы слот, нужный коротким.
+            size = rough_tokens(payload["messages"])
+            if not heavy_take(b, size):
+                say_live("…", role, f"№{b['n']} {model}: тяжёлых запросов к шлюзу уже столько, сколько он "
+                                    f"держит, — жду до {human_secs(grant)}")
+                began = time.monotonic()
+                if not heavy_take(b, size, grant):
+                    log.append(f"№{b['n']} {model}: предел тяжёлых запросов занят — дальше по кольцу")
+                    can_recover = True
+                    other += 1
+                    continue
+                grant = max(0.5, grant - (time.monotonic() - began))
             got = sem.acquire(blocking=False)
             if not got:
                 say_live("…", role, f"№{b['n']} {model}: все слоты шлюза заняты — жду до "
                                     f"{human_secs(grant)}")
                 got = sem.acquire(timeout=grant)
             if not got:
+                heavy_give(b["n"], size)
                 log.append(f"№{b['n']} {model}: слот ширины занят — дальше по кольцу")
                 can_recover = True
                 other += 1
@@ -3227,8 +3330,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                             other += 1
                             can_recover = can_recover or persist
                             continue
-                    if st != 429 and looks_like_overflow(err, body):
-                        # (429 — всегда лимит скорости: «too many tokens» шлюзы пишут и про него.)
+                    if st not in (429, 529) and looks_like_overflow(err, body):
+                        # (429 — всегда лимит скорости, 529 — перегрузка: «too many tokens» шлюзы пишут и про них.)
                         # Провайдер жив и отказал по делу: запрос длиннее его окна. Гасить
                         # его на 15 минут — значит потерять рабочего провайдера из-за одной
                         # большой карточки, а следом по той же причине и всех остальных.
@@ -3246,10 +3349,12 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                                    + ". Это настройка, а не связь: карантин не ставлю"
                                    + (f". {lw.body}" if lw is not None and lw.kind in ("auth", "not_found")
                                       else ""))
-                    elif st == 429 or (st == 503 and getattr(err, "retry_after", None) is not None):
+                    elif st in (429, 529) or (st == 503 and getattr(err, "retry_after", None) is not None):
                         # Лимит скорости или «перегружен»: шлюз жив и просит подождать. Пауза
                         # у пары «шлюз + модель» (срок называет сам шлюз), без карантина:
-                        # провайдер остаётся основным, когда пауза кончится.
+                        # провайдер остаётся основным, когда пауза кончится. 529 — очередь шлюза
+                        # занята большими запросами: прежде он шёл как 5xx, и третий подряд сажал
+                        # основной шлюз в карантин на 15 минут. Теперь он ещё и сужает тяжёлые.
                         wait, hits = cool_down((b["n"], model), getattr(err, "retry_after", None))
                         other += 1
                         cool_waits.append(wait)
@@ -3258,6 +3363,10 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         why = (f"просит подождать {human_secs(err.retry_after)}"
                                if getattr(err, "retry_after", None) is not None
                                else "лимит скорости")
+                        if st == 529:
+                            cap, edge = heavy_overload(b, size)
+                            asked = f" ({why})" if getattr(err, "retry_after", None) is not None else ""
+                            why = f"шлюз перегружен{asked}; тяжёлых (от ≈{edge} ток.) разом теперь не больше {cap}"
                         log.append(f"№{b['n']} {model}: HTTP {st} — {why}; пауза {int(wait)} с "
                                    f"(отказ {hits} подряд), карантин не ставлю")
                         say_live("⏳", role, f"№{b['n']} {model}: HTTP {st} — {why}; "
@@ -3373,6 +3482,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     continue
                 DOWN.pop(b["n"], None)
                 cool_clear((b["n"], model))
+                heavy_answered(b, size, gateway_width(cfg, b["n"]))
                 SLOW.pop(b["n"], None)
                 LAST_OK[b["n"]] = time.time()
                 via = (body.get("aurora") or {}).get("via", "http")
@@ -3434,6 +3544,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 with _SEM_LOCK:
                     INFLIGHT[b["n"]] = INFLIGHT.get(b["n"], 1) - 1
                 sem.release()
+                heavy_give(b["n"], size)
             continue
         if not can_recover:
             log.append("круг не оставил надежды: отказы внятные или шлюзы в карантине "

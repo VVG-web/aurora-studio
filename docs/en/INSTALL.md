@@ -253,7 +253,8 @@ follows the need:
 
 1. **Providers** — connections: a name, a type (`openai`, `llama.cpp`, `vllm`, `sglang`, `ollama`, `tei`),
    the URL of an OpenAI-compatible API, a key, the width (how many requests it holds at once — "Measure
-   gateways" measures it), "in parallel" and the model's template fields (JSON, e.g.
+   gateways" measures it), the heavy-request limit ("Heavy at once" and "Heavy from, tokens", see below),
+   "in parallel" and the model's template fields (JSON, e.g.
    `{"reasoning_effort": "xhigh"}`). A work gateway and a home server live side by side.
 2. **LLM, OCR, embeddings** — three tabs built the same way. Each has **roles**: for LLM `worker` (routine
    steps), `planner` (boundaries), `critic` (a check before writing), `qa` (Momus); for OCR `document`; for
@@ -265,10 +266,10 @@ follows the need:
 
 When the primary does not answer, the call goes to the next in the chain, with its own model; an unavailable
 provider is left alone: for one minute after a connection drop (DNS, refused port, reset, certificate, proxy, unreachable network,
-connection timeout), for 15 minutes after the gateway answered badly (three 5xx errors in a row, a rate limit between them resets the count)
+connection timeout), for 15 minutes after the gateway answered badly (three 5xx errors in a row, 529 aside; a rate limit between them resets the count)
 or with any other unrecognised response code. The one-minute quarantine keeps a network or VPN blip from switching a gateway off for a quarter of an
 hour: the gateway is asked again after a minute, and three failures in a row (about 3 minutes of an outage) raise the red link bar. A
-rate limit (429, `Retry-After`, 503 "overloaded") does not put it in quarantine: only the gateway+model pair is
+rate limit (429, `Retry-After`, 503 "overloaded") and a 529 refusal ("overloaded") do not put it in quarantine: only the gateway+model pair is
 paused, for as long as the gateway said (with no hint — 5, 10, 20 s and so on up to two minutes, with some
 randomness; a hint of "0 s" is not a hint, and from the third refusal in a row the gateway's term is only a floor
 for the growth), and after that the primary is first again. An exhausted quota (`insufficient_quota`) is not cured by
@@ -309,6 +310,17 @@ shown in "Models" (the "Providers" tab: chips on the cards and the "Actually at 
 fallback when the primary does not answer, whatever the slots. Settings with an old zero get, when read, a width equal
 to what the zero gave: while nobody declared one, the "At once" cap is split equally between the providers of the LLM
 chains, with "auto" one thread each; if another provider declares a width, one thread.
+
+**Heavy requests and the 529 refusal.** A gateway may keep a queue for short requests only: "more than two queued and
+more than N uncached tokens — refuse with 529". Then short requests go at the provider's full width, and heavy ones at
+most up to a limit. The provider field "Heavy at once" sets the limit, "Heavy from, tokens" the threshold (the engine's
+estimate: three characters per token; 0 — 20,000). If the field is empty (0), the engine learns the limit by itself:
+every 529 lowers the number of heavy requests at once by one, but not above the number of heavy ones still in flight,
+and everything not smaller than the refused request counts as heavy. After five answers to heavy requests the limit
+grows by one and is dropped once it reaches the width. The learned limit lives in the run's process and is learned
+again by a new run, so for a gateway with such a rule it is better to set the field. "Measure gateways" does not show
+this limit: it measures with short requests. While the gateway+model pair is paused after a 529, a call, as with a 429,
+may move on to the next in the chain; after the pause the primary is first again.
 
 **Two different troubles — two different bars.** The red Pydantic AI bar ("Pydantic AI is selected, but model
 calls bypass it") appears only when the Pydantic AI path itself is faulty: the package is not installed or does
@@ -361,6 +373,7 @@ The link alarm — the gateway is unreachable or refuses (Pydantic AI is fine):
 | a server error (HTTP 5xx) | a failure on the gateway's side | gateway status; the engine retries by itself |
 | the key or access was refused (HTTP 401/403) | the key or permissions | the key in the Models section; waiting will not help |
 | rate limit (HTTP 429) | the gateway asks to wait | the engine waits by itself; lower the width in Models |
+| gateway overloaded (HTTP 529) | the gateway's queue is full of large requests | the engine waits and narrows heavy requests by itself; to fix it, "Heavy at once" in Models |
 | the gateway answered 404 | no such model or path | the model name and address in the Models section |
 | the gateway answered with something that is not JSON | a proxy or a login page answers instead of the gateway | address, proxy, VPN |
 | could not reach the gateway | the cause cannot be named more precisely | network, VPN, gateway status; details in `failures.jsonl` |

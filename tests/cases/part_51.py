@@ -183,7 +183,7 @@ def test_the_panel_draws_the_right_bar_for_the_adapter_and_for_the_link(tmp: Pat
     assert "drawAdapterAlarm(d.alarm)" in panel and "drawAdapterAlarm(S.state.adapter_alarm)" in panel
     kinds = sorted(AG.LINK_KINDS)
     models_fix = sorted(k for k in kinds if AG.CAUSES[k]["fix"] == "models")
-    assert models_fix == ["auth", "not_found", "rate_limit", "silent"], models_fix
+    assert models_fix == ["auth", "not_found", "overloaded", "rate_limit", "silent"], models_fix
     if not shutil.which("node"):
         return
     code = BAR_HARNESS.replace("@BAR@", func).replace("%KINDS%", json.dumps(kinds)) \

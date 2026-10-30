@@ -159,6 +159,11 @@ def normalize(data) -> tuple:
             # Сколько запросов держит сервер: корпоративный — десяток, домашняя llama.cpp — один.
             # Не меньше 1 (`_declare_widths` ниже): прежнее «0 — не объявлено» заменяется тем, что оно давало.
             "width": _int(p.get("width"), 0),
+            # Сколько тяжёлых запросов (от `heavy_tokens` токенов) сервер держит разом: шлюз, очередь которого
+            # отсекает большие запросы (529), держит меньше, чем короткие. 0 — отдельного предела нет: его выучит
+            # сам движок на первом 529 (`agent_core.heavy_overload`). Порог 0 — умолчание движка.
+            "heavy": _int(p.get("heavy"), 0),
+            "heavy_tokens": _int(p.get("heavy_tokens"), 0),
             # Берётся ли провайдер в параллельный прогон ради пропускной способности.
             "parallel": p.get("parallel", True) is not False,
             # Свои поля chat-шаблона (как extraBody у opencode): {"reasoning_effort": "xhigh"}.
@@ -303,7 +308,8 @@ def _carry_unknown(old: dict, clean: dict) -> None:
     for key, value in old.items():
         if key not in clean and key not in ("providers", "capabilities", "settings", "version"):
             clean[key] = value
-    known = {"id", "name", "type", "url", "key", "width", "parallel", "template", "vpn", "health"}
+    known = {"id", "name", "type", "url", "key", "width", "heavy", "heavy_tokens", "parallel", "template", "vpn",
+             "health"}
     rows = old.get("providers")
     was = {str(p.get("id")): p for p in (rows if isinstance(rows, list) else []) if isinstance(p, dict)}
     for p in clean["providers"]:
@@ -528,6 +534,7 @@ def to_config(data: dict) -> dict:
         return {"n": num[b["provider"]], "provider": p["id"], "name": p["name"],
                 "url": b.get("url") or p["url"], "key": p["key"], "model": b["model"],
                 "models": {}, "context": b.get("context", 0), "width": p["width"],
+                "heavy": p.get("heavy", 0), "heavy_tokens": p.get("heavy_tokens", 0),
                 "parallel": p["parallel"], "fallback": True, "chat": cap == "llm",
                 "template": p.get("template") or {}, "template_error": "", "vpn": p.get("vpn", ""),
                 "embed_model": b["model"] if cap == "embeddings" else "",
@@ -558,6 +565,7 @@ def to_config(data: dict) -> dict:
         backends.append({"n": n, "provider": p["id"], "name": p["name"], "url": p["url"],
                          "key": p["key"], "model": "", "models": models, "context": ctx,
                          "parallel": p["parallel"], "fallback": True, "width": p["width"],
+                         "heavy": p.get("heavy", 0), "heavy_tokens": p.get("heavy_tokens", 0),
                          "embed_model": embed["model"] if embed else "",
                          "embed_url": (embed.get("url") or p["url"]) if embed else p["url"],
                          "ocr_model": ocr["model"] if ocr else "",
