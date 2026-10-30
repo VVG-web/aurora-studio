@@ -171,3 +171,20 @@ def test_connector_and_task_causes_have_english_and_the_same_holes(_t):
     CO = T._mod("connector_ops")
     assert ck.translate_message(CO.why("net", id="jira-dc", op="epics"), "en") == \
         "the connector «jira-dc»: the server did not answer — check the network or the VPN"
+
+
+@test
+def test_connectors_block_follows_the_line_ending_of_the_line_it_joins(_t):
+    """Конфиг со смешанными окончаниями строк (с Windows, дописан на маке): новый блок `connectors:` продолжает окончание
+    последней строки, блок, который уже есть, сохраняет свои, — без `\\n\\r\\n` на стыке. Нашёл CI на Windows."""
+    import sys
+    sys.path.insert(0, str(KIT / "scripts"))
+    import connector_ops as C
+    mixed = 'a: 1\r\nb: 2\r\nothertrack:\n  url: "https://tracker.example.org"\n'
+    out = C.replace(mixed, {"tasks": "othertrack"})
+    assert out.startswith(mixed) and out.endswith("  tasks: othertrack\n") and "\n\r\n" not in out, repr(out[-120:])
+    crlf = C.replace("a: 1\r\n", {"tasks": "t"})
+    assert crlf.endswith("  tasks: t\r\n") and "\r\n\r\nconnectors:" in crlf, repr(crlf)
+    again = C.replace(crlf, {"tasks": "u"})
+    assert again.endswith("  tasks: u\r\n") and again.count("connectors:") == 1, repr(again)
+    assert "connectors" not in C.replace(again, {}), "пустой выбор не убрал блок"

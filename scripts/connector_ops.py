@@ -410,9 +410,12 @@ def render(chosen: dict) -> str:
 def replace(text: str, chosen: dict) -> str:
     """Конфиг с блоком `connectors:` по `chosen`; остальной текст — байт в байт, окончания строк — как в файле."""
     text = text or ""
-    nl = "\r\n" if "\r\n" in text else "\n"
-    new = render(chosen).replace("\n", nl)
     start, end = top_block_span(text, BLOCK)
+    # Окончания строк бывают смешанными (файл с Windows, дописанный на маке): блок, который уже есть, сохраняет свои,
+    # новый продолжает последнюю строку файла — к ней он и дописывается.
+    here = text[start:end] if start >= 0 else text.rstrip(" \t")[-2:]
+    nl = "\r\n" if "\r\n" in here else "\n" if "\n" in here else "\r\n" if "\r\n" in text else "\n"
+    new = render(chosen).replace("\n", nl)
     if start >= 0:
         before, after = text[:start], text[end:]
         if not new:                       # блок уходит вместе с отбивкой, которую ему ставила запись

@@ -493,15 +493,24 @@ def test_gate_and_scanners_survive_hostile_text_and_see_what_the_boundary_hides(
 
 @test
 def test_find_by_title_does_not_let_the_space_add_query_parameters(_t):
-    """Пространство из `publish_parent` шапки уходит в запрос кодированным: `A&limit=1` не добавляет параметр."""
+    """Пространство из `publish_parent` шапки уходит в запрос кодированным: `A&limit=1` не добавляет параметр.
+    С 1.200.0 публикация ищет страницу операцией вики `find_page` коннектора: она не пускает такое пространство вовсе,
+    а запрос строит тот же `Api.by_title` синка — с кодированием."""
+    import importlib.util
     import confluence_export as CE
-    import publish_doc as P
-    for cls in (P.Writer, CE.Api):
-        asked = []
-        api = object.__new__(cls)
-        api.get = lambda path, _a=asked: _a.append(path) or {}
-        (api.find_by_title if cls is P.Writer else api.by_title)("A&limit=1", "Т")
-        assert asked and "spaceKey=A%26limit%3D1&" in asked[0] and "spaceKey=A&limit" not in asked[0], asked
+    asked = []
+    api = object.__new__(CE.Api)
+    api.get = lambda path, _a=asked: _a.append(path) or {}
+    api.by_title("A&limit=1", "Т")
+    assert asked and "spaceKey=A%26limit%3D1&" in asked[0] and "spaceKey=A&limit" not in asked[0], asked
+    spec = importlib.util.spec_from_file_location("confluence_ops_t94", KIT / "connectors" / "confluence-dc" / "confluence_ops.py")
+    ops = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ops)
+    try:
+        ops._space("A&limit=1")
+        raise AssertionError("операция вики пустила пространство с параметром запроса")
+    except ops.OpFailure:
+        pass
 
 
 @test
