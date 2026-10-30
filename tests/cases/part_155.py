@@ -230,6 +230,21 @@ def test_code_status_names_languages_and_size_by_the_fixture_markup(tmp: Path):
 
 
 @test
+def test_code_status_recounts_when_the_registry_masks_change(tmp: Path):
+    """Языки и размер запомнены по ревизии и маскам: поменяли «Не считать кодом» — `code:status` считает заново, без
+    новой синхронизации."""
+    _work, remote = CF.server("order-intake", tmp / "srv")
+    root = _project(tmp, {"order-intake": {"url": str(remote)}})
+    assert _sync(root, "--sync", "--apply").returncode == 0
+    first = json.loads(_sync(root, "--status", "--json").stdout)["repos"][0]["stats"]
+    assert "Markdown" in first["languages"], first
+    C = _mod("code_repos")
+    assert C.save(root, {"order-intake": {"url": str(remote), "exclude": "*.md"}}, C.state(root)["digest"]).get("ok")
+    again = json.loads(_sync(root, "--status", "--json").stdout)["repos"][0]["stats"]
+    assert "Markdown" not in again["languages"] and again["skipped"].get("excluded") == 1, again
+
+
+@test
 def test_code_commands_are_registered_everywhere_the_kit_looks(_t):
     """Реестр команд, зависимости от связи, шаг маршрута «Обновить базу», манифест движка, справочники и навык."""
     reg = (KIT / "commands.txt").read_text(encoding="utf-8")

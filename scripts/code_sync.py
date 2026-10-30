@@ -299,6 +299,15 @@ def repo_stats(target: Path, rec: dict | None = None) -> dict:
             "skipped": {k: v for k, v in skipped.items() if v}, "longest_path": longest}
 
 
+def _masks_key(rec: dict) -> list:
+    return [rec.get("include") or "", rec.get("exclude") or ""]
+
+
+def stats_fresh(stats, rev: str, rec: dict) -> bool:
+    """Посчитанные языки и размер годятся: та же ревизия и те же маски реестра (маски поменяли — счёт другой)."""
+    return bool(stats) and stats.get("rev") == rev and stats.get("masks") == _masks_key(rec)
+
+
 # ---------------------------------------------------------------- проверка соединений
 
 def net_verdicts(repos: dict) -> dict:
@@ -507,8 +516,9 @@ def _sync_all(project, clean: dict, names: list, reset: bool, as_json: bool, had
         if res["ok"] and res.get("rev"):
             changed = entry.get("rev") != res["rev"]
             entry.update(rev=res["rev"], date=res.get("date", ""), target=res["target"], url=rec["url"])
-            if changed or (entry.get("stats") or {}).get("rev") != res["rev"]:
-                entry["stats"] = {"rev": res["rev"], **repo_stats(CREPO.clone_path(project, name), rec)}
+            if changed or not stats_fresh(entry.get("stats"), res["rev"], rec):
+                entry["stats"] = {"rev": res["rev"], "masks": _masks_key(rec),
+                                  **repo_stats(CREPO.clone_path(project, name), rec)}
             res["changed"] = changed
         results.append(res)
         _say(result_line(res))
@@ -565,7 +575,8 @@ def status(project, only: str = "") -> dict:
             row["tracking"] = branch
             row["behind"] = int(_ok(target, "rev-list", "--count", f"{cur['rev']}..{tip}") or 0) if tip else None
             cached = (st.get(name) or {}).get("stats") or {}
-            row["stats"] = cached if cached.get("rev") == cur["rev"] else {"rev": cur["rev"], **repo_stats(target, rec)}
+            row["stats"] = (cached if stats_fresh(cached, cur["rev"], rec)
+                            else {"rev": cur["rev"], "masks": _masks_key(rec), **repo_stats(target, rec)})
             longest = row["stats"].get("longest_path") or 0
             full = len(str(target.resolve())) + 1 + longest
             row["path_overflow"] = full > WIN_PATH

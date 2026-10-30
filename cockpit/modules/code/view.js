@@ -19,8 +19,9 @@ export async function refresh(ctx){
   if (!ctx.project) return;
   if (PROJECT !== ctx.project.path){
     PROJECT = ctx.project.path;
-    DIRTY = false; OPEN = ""; ADD = null; MSG = null; CREDS = {};
+    DIRTY = false; OPEN = ""; ADD = null; CREDS = {};
   }
+  MSG = null;                  // сообщение прошлой записи к новому показу раздела не относится
   await load(ctx, true);
 }
 
@@ -191,7 +192,7 @@ function authFields(ctx, c, provider, redraw){
     if (!had) sec.value = c.secret || "";
     sec.oninput = () => { c.secret = sec.value || (had ? MASK : ""); touch(); };
     const bb = provider === "bitbucket";
-    out.push(el("div", {class: "row", style: "gap:12px;flex-wrap:wrap"},
+    out.push(el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;align-items:flex-start"},
       field(ctx, t("code.field.user"), user, bb ? t("code.h.user_bitbucket") : t("code.h.user")),
       field(ctx, c.auth === "token" ? t("code.field.token") : t("code.field.password"), sec,
         had ? t("code.h.secret_keep") : bb ? t("code.h.secret_bitbucket") : t("code.h.secret"))));
@@ -218,11 +219,12 @@ function permRow(ctx, obj, onChange){
   const box = (key) => {
     const c = el("input", {type: "checkbox", checked: obj[key] ? "" : null});
     c.onchange = () => { obj[key] = c.checked; touch(); onChange(); };
-    return el("label", {class: "row", style: "gap:6px;align-items:flex-start;flex:1;min-width:260px;cursor:pointer"}, c,
-      el("div", {}, el("div", {}, t("code.perm." + key)),
+    return el("label", {style: "display:flex;gap:8px;align-items:flex-start;flex:1;min-width:260px;cursor:pointer"}, c,
+      el("div", {style: "flex:1"}, el("div", {}, t("code.perm." + key)),
         el("div", {class: "muted", style: "font-size:11.5px"}, t("code.perm." + key + "_hint"))));
   };
-  return el("div", {class: "row", style: "gap:14px;flex-wrap:wrap;margin:4px 0 12px"}, box("models"), box("publish"));
+  return el("div", {class: "row", style: "gap:14px;flex-wrap:wrap;align-items:flex-start;margin:4px 0 12px"},
+    box("models"), box("publish"));
 }
 
 function checkView(ctx, check){
@@ -321,11 +323,11 @@ function editForm(ctx, name){
   access.onchange = () => { rec.access = access.value; touch(); };
   return el("div", {style: "margin-top:14px;border-top:1px solid var(--border);padding-top:12px"},
     field(ctx, t("code.field.url"), input("url"), t("code.h.url")),
-    el("div", {class: "row", style: "gap:12px;flex-wrap:wrap"},
+    el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;align-items:flex-start"},
       field(ctx, t("code.field.provider"), prov, ""),
       field(ctx, t("code.field.branch"), input("branch", {placeholder: "main"}), t("code.h.branch")),
       field(ctx, t("code.field.pin"), input("pin"), t("code.h.pin"))),
-    el("div", {class: "row", style: "gap:12px;flex-wrap:wrap"},
+    el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;align-items:flex-start"},
       field(ctx, t("code.field.include"), input("include"), t("code.h.include")),
       field(ctx, t("code.field.exclude"), input("exclude", {placeholder: "**/generated/**, *.min.js"}), t("code.h.exclude"))),
     field(ctx, t("code.field.access"), access, t("code.h.access")),
