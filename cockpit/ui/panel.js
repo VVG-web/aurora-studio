@@ -1455,6 +1455,15 @@ function publishWhy(res){
   if (c === "review") vars.why = (res.review || []).map(g => t("editor.gate_" + g.replace(/-/g, "_"))).join("; ");
   if (c === "gate") vars.why = (res.gate || []).filter(g => g.level === "block" && !g.allowed)
     .map(g => t("pub.gate_" + g.code.replace(/-/g, "_"))).join(" ");
+  if (c === "missing-field"){
+    // Каждое поле в кавычках, поля шапки этого документа, встроенные подстановки; поле есть другим регистром — подсказка.
+    const slips = res.slips || [];
+    Object.assign(vars, {names: (res.fields || []).map(f => "«" + f + "»").join(", "),
+      have: (res.have || []).join(", ") || "—", first: (res.fields || [""])[0],
+      builtins: (res.builtins || []).map(b => "{" + b + "}").join(", "),
+      slip: slips.length ? " " + t("pub.why_missing_case", {have: slips.map(s => "«" + s[1] + "»").join(", "),
+                                                            want: slips.map(s => "{" + s[0] + "}").join(", ")}) : ""});
+  }
   const known = ["missing_field", "empty_title", "too_long", "no_parent", "root_missing", "root_unknown", "title_taken",
                  "children_partial", "page_missing", "cross_space", "not_ours", "no_auth", "no_config", "no_space",
                  "review", "gate", "http", "network", "unsafe", "stamp"];
@@ -3136,6 +3145,22 @@ function kindExample(r){
   return head + miss + ((r.problems || []).length ? " · " + r.problems.join("; ") : "");
 }       // слепок реестра, который прочитала форма; сервер сверяет его при записи (409 — файл изменился)
 
+/* Поля шапки у документов вида по тому же ответу: какие есть (объединение по последним документам, без значений) и на
+   какие поля ссылается шаблон, а у документов вида их нет ни у одного, — предупреждение. Документов нет — пусто. */
+function kindFields(r){
+  if (!r || r.error || !r.doc) return {have: "", warn: ""};
+  return {have: t("kinds.fields_have", {fields: (r.fields || []).join(", ") || "—"}),
+          warn: (r.unknown || []).length ? t("kinds.fields_unknown", {fields: r.unknown.map(f => "{" + f + "}").join(", ")}) : ""};
+}
+
+// Обязательные поля вида — те же, что требует сервер (`kinds_write`) и `make_kinds.check`: без шаблона документ выйдет
+// не по форме, без папки ему некуда лечь. Имя вида обязательно тоже; корень нужен только для публикации.
+const KIND_REQUIRED = ["template", "out"];
+// Значок «?» у подписи поля формы видов: тот же текст, что во всплывающей подсказке самого поля.
+function kindTip(text){
+  return el("span",{class:"kf-q", title: text, "aria-label": text, tabindex: "0"}, "?");
+}
+
 /* Форма вида — две рамки: «Создание» (шаблон, промпт создания, папка, MCP, маска, задача) и «Публикация в Confluence»
    (родитель, промпт публикации, ревью). Шаблон отвечает за создание, промпт — за публикацию. Промпт создания и промпт
    публикации — разные поля (`prompt` и `publish_prompt`): первое читает изготовление документа, второе пока только
@@ -3158,12 +3183,18 @@ async function renderKinds(box){
       toast(t("kinds.saved", {file: r.target.split("/").pop(), n: r.kinds}));
       setDirty("kinds", t("dirty.kinds"), false);
       renderProjectAfterSave();
-    } else toast(r.error || t("kinds.not_saved"), "err");
+    } else {
+      toast(r.error || t("kinds.not_saved"), "err");
+      // Отказ называет вид и поле — к нему и ведём; пустое обязательное поле подсвечено и так.
+      const bad = r.kind && r.field && card.querySelector(`[data-kind-row="${r.kind}"] [data-field="${r.field}"] input`);
+      if (bad) bad.focus();
+    }
   };
   const draw = () => {
     card.innerHTML = "";
     card.append(el("p",{class:"muted",style:"font-size:13px;margin:0 0 10px"},
       t("kinds.about")));
+    card.append(el("p",{class:"muted kf-legend"}, el("span",{class:"kf-req"}, "*"), " ", t("kinds.legend")));
     (d.problems||[]).forEach(p=>card.append(el("div",{class:"warnbox",style:"margin-bottom:8px"},
       `${p.kind}: ${p.why}`)));
     if (drift) card.append(el("div",{class:"warnbox",style:"margin-bottom:10px"},
@@ -3202,10 +3233,21 @@ async function renderKinds(box){
         }}, t("kinds.mcp_pick")));
       };
       drawMcp();
-      // Подпись над полем называет его роль: шаблон — для создания, промпт публикации — для публикации.
-      const lab = (key, input, hint) => el("label",{class:"kfield"},
-        el("span",{class:"kf-l"}, t("kinds.l_" + key)), input,
-        hint ? el("span",{class:"kf-h"}, hint) : null);
+      // Подпись над полем называет его роль: шаблон — для создания, промпт публикации — для публикации. У подписи —
+      // звёздочка обязательного поля, пометка «нужно для публикации» у корня и значок «?» с подсказкой поля (что это,
+      // на что влияет, пример, обязательно ли); тот же текст — во всплывающей подсказке самого поля.
+      const lab = (key, input, hint, tip) => {
+        const text = tip || t("kinds.tip_" + key);
+        const need = KIND_REQUIRED.includes(key);
+        // Поле пути приходит обёрнутым вместе с кнопкой «Выбрать…» (`pathField`): подсказка и «обязательно» — у самого поля.
+        const inp = input.matches("input,select,textarea") ? input : input.querySelector("input") || input;
+        inp.title = text;
+        if (need) inp.required = true;            // пустое обязательное поле подсвечено (`:invalid`)
+        return el("label",{class:"kfield", "data-field": key},
+          el("span",{class:"kf-l"}, t("kinds.l_" + key), need ? el("span",{class:"kf-req"}, " *") : null,
+            key === "publish_url" ? el("span",{class:"kf-pub"}, " · " + t("kinds.for_publish")) : null, " ", kindTip(text)),
+          input, hint ? el("span",{class:"kf-h"}, hint) : null);
+      };
       // Свойства задачи держим свёрнутыми: они нужны не всем типам и не каждый день,
       // а развёрнутый список из шести полей у девяти типов превращает форму в стену.
       rec.task = rec.task || {};
@@ -3232,10 +3274,9 @@ async function renderKinds(box){
           lab("prompt", pfield("prompt", t("kinds.f_prompt"), "200px", "file", "Prompts")),
           lab("out", pfield("out", t("kinds.f_out"), "160px", "dir", "Artifacts")),
           // Не <label>: щелчок по подписи нажал бы первую кнопку внутри — «×» у плашки.
-          el("div",{class:"kfield"}, el("span",{class:"kf-l"}, t("kinds.l_mcp")), mcpBox),
+          el("div",{class:"kfield", "data-field": "mcp"}, el("span",{class:"kf-l"}, t("kinds.l_mcp"), " ", kindTip(t("kinds.tip_mcp"))), mcpBox),
           // Маска ключа Requirement Yogi: ключ заводит реестр, Аврора проверяет, что он написан по маске вида.
-          el("span",{title: t("kinds.ref_mask_hint"), style:"flex:none"},
-            lab("ref_mask", field("ref_mask", t("kinds.f_ref_mask"), "230px"))),
+          lab("ref_mask", field("ref_mask", t("kinds.f_ref_mask"), "230px"), null, t("kinds.ref_mask_hint")),
           // Правило включается видом документа, а не глобально: у ОПЗ стек — это предмет,
           // и общее правило заставило бы критика ругаться на каждый такой документ.
           el("label",{class:"row",style:"gap:6px;font-size:12px;flex:none",
@@ -3243,7 +3284,7 @@ async function renderKinds(box){
             el("input",{type:"checkbox",
               checked:(String(rec.tech_agnostic||"").toLowerCase()==="true")?"":null,
               onchange:e=>{ rec.tech_agnostic = e.target.checked ? "true" : ""; dirty(); }}),
-            t("kinds.tech_agnostic")),
+            t("kinds.tech_agnostic"), " ", kindTip(t("kinds.tech_hint"))),
           el("button",{class:"btn sm", title: t("kinds.task_hint"),
             onclick:e=>{ taskBox.hidden = !taskBox.hidden;
                          e.target.textContent = taskBox.hidden ? t("kinds.task_open")
@@ -3252,36 +3293,54 @@ async function renderKinds(box){
         taskBox);
       // Пример пути считает сервер тем же кодом, что публикация: «для документа …: Корень › Раздел › Заголовок».
       // Значения формы — несохранённые тоже — уходят запросом; ответ приходит, пока человек печатает (с паузой).
+      // Под примером — поля шапки, которые есть у документов вида, и предупреждение о поле шаблона, которого у них нет
+      // ни у одного (сохранять оно не мешает). Запрос идёт и без пути: список полей нужен, пока путь ещё не написан.
       const example = el("div",{class:"muted kf-example", "data-kind": kind});
+      const fieldsHave = el("div",{class:"muted kf-fields"});
+      const fieldsWarn = el("div",{class:"kf-fields kf-warn", hidden:""});
       let exampleTimer = null;
       const exampleNow = async () => {
         const q = new URLSearchParams({project: S.project.path, kind, out: rec.out || "", publish_url: rec.publish_url || "",
                                        publish_path: rec.publish_path || "", publish_title: rec.publish_title || ""});
-        example.textContent = kindExample(await api("/api/kinds/example?" + q.toString(), {quiet:true}));
+        const r = await api("/api/kinds/example?" + q.toString(), {quiet:true});
+        const f = kindFields(r);
+        fieldsHave.textContent = f.have;
+        fieldsWarn.textContent = f.warn;
+        fieldsWarn.hidden = !f.warn;
+        example.textContent = kindExample(r);
       };
       const watch = input => { input.addEventListener("input", () => { clearTimeout(exampleTimer);
                                                                        exampleTimer = setTimeout(exampleNow, 350); });
                                return input; };
-      if (rec.publish_url || rec.publish_path || rec.publish_title) exampleNow();
+      exampleNow();
+      // Справка к пути и заголовку: корень, разделы, страница; «>»; встроенные подстановки с примером; поля шапки.
+      const slotsHelp = el("details",{class:"kf-help"},
+        el("summary",{}, t("kinds.path_help")),
+        el("p",{}, t("kinds.path_help_tree")),
+        el("p",{}, t("kinds.path_help_fields")),
+        el("p",{}, t("kinds.path_help_slots")),
+        el("ul",{}, ...(d.slots || []).map(s => el("li",{}, el("code",{}, "{" + s + "}"), " — ", t("kinds.slot_" + s)))),
+        el("p",{}, t("kinds.path_help_mirror")));
       const publish = el("fieldset",{class:"kframe", "data-frame":"publish"},
         el("legend",{}, t("kinds.frame_publish")),
         el("div",{class:"muted kf-about"}, t("kinds.frame_publish_about")),
         el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;align-items:flex-end"},
           lab("publish_url", watch(field("publish_url", t("kinds.f_publish"), "260px"))),
-          // Путь под корнем — цепочка разделов через «>», подстановки из шапки документа; заголовок — по шаблону.
+          // Путь под корнем — цепочка разделов через «>», подстановки из шапки документа и подпапок; заголовок — по шаблону.
           lab("publish_path", watch(field("publish_path", t("kinds.f_publish_path"), "260px")), t("kinds.publish_path_hint")),
-          lab("publish_title", watch(field("publish_title", t("kinds.f_publish_title"), "200px"))),
+          lab("publish_title", watch(field("publish_title", t("kinds.f_publish_title"), "200px")), t("kinds.publish_title_hint")),
           lab("publish_prompt", pfield("publish_prompt", t("kinds.f_publish_prompt"), "220px", "file", "Prompts"),
               t("kinds.publish_prompt_hint")),
           // Ревью по чек-листу перед публикацией: ворота `ship:publish` пускают наружу только свежее ревью.
           el("label",{class:"kfield", title: t("kinds.review_hint")},
-            el("span",{class:"kf-l"}, t("kinds.review")),
+            el("span",{class:"kf-l"}, t("kinds.review"), " ", kindTip(t("kinds.review_hint"))),
             el("select",{class:"btn sm",style:"font-weight:400",
               onchange:e=>{ rec.review = e.target.value; dirty(); }},
               ...["", ...(d.review_profiles||[])].map(v=>el("option",{value:v, selected:(rec.review||"")===v?"":null},
                 v ? t("kinds.review_" + v) : t("kinds.review_off")))))),
+        slotsHelp, fieldsHave, fieldsWarn,
         example);
-      rows.append(el("div",{class:"list-item",style:"gap:8px;flex-wrap:wrap"},
+      rows.append(el("div",{class:"list-item", "data-kind-row": kind, style:"gap:8px;flex-wrap:wrap"},
         el("span",{class:"chip mono",style:"flex:none"}, kind),
         lab("title", field("title", t("kinds.f_title"), "240px")),
         el("span",{style:"flex:1"}),
@@ -3291,9 +3350,10 @@ async function renderKinds(box){
     });
     card.append(rows);
     const name = el("input",{class:"btn mono",style:"width:150px",
-      placeholder: t("kinds.new_ph")});
-    card.append(el("div",{class:"row",style:"gap:10px;margin-top:12px;flex-wrap:wrap"},
-      name,
+      placeholder: t("kinds.new_ph"), title: t("kinds.tip_new")});
+    card.append(el("div",{class:"row",style:"gap:10px;margin-top:12px;flex-wrap:wrap;align-items:flex-end"},
+      el("label",{class:"kfield", "data-field": "new"},
+        el("span",{class:"kf-l"}, t("kinds.l_new"), el("span",{class:"kf-req"}, " *"), " ", kindTip(t("kinds.tip_new"))), name),
       el("button",{class:"btn sm",onclick:()=>{
         const key = (name.value||"").trim().toLowerCase();
         if (!/^[a-z][a-z0-9-]{1,30}$/.test(key))

@@ -29,10 +29,13 @@ git и читается любой IDE:
 Шаблон отвечает за создание, промпт публикации — за публикацию; промпт создания остаётся при создании.
 
 Путь в Confluence — цепочка: корень вида → разделы → страница документа. Уровни `publish_path` разделяются `>`,
-подстановки — `{title}` (первый заголовок `# …` документа, иначе имя файла), `{file}` (имя файла без расширения),
-`{kind}` (вид), `{project}` (имя проекта из конфига) и `{поле}` — любое скалярное поле шапки документа. `{поле?}` —
-необязательная подстановка: пустое значение выбрасывает уровень из пути (в заголовке — пустая строка). Обязательная
-подстановка без значения — публикация заблокирована с причиной, называющей поле и документ (`publish_target`).
+подстановки — `{title}` (первый заголовок `# …` документа, иначе имя файла), `{name}` (имя файла без расширения,
+«_» — пробел), `{file}` (имя файла без расширения как есть), `{folder}` (ближайшая подпапка внутри папки вида),
+`{folders}` (все подпапки от папки вида до файла — каждая отдельным уровнем, как через `>`), `{kind}` (вид),
+`{project}` (имя проекта из конфига) и `{поле}` — любое скалярное поле шапки документа. `{поле?}` — необязательная
+подстановка: пустое значение выбрасывает уровень из пути (в заголовке — пустая строка); `{folder}` и `{folders}`
+необязательны всегда (файл прямо в папке вида — уровня нет). Обязательная подстановка без значения — публикация
+заблокирована с причиной, называющей поля, поля шапки документа и что сделать (`publish_target`, `missing_why`).
 
   python3 .aurora/scripts/make_kinds.py            # таблица: тип → шаблон → папка
   python3 .aurora/scripts/make_kinds.py --kind ac  # один тип, машинно (для ассистента)
@@ -178,12 +181,86 @@ def kind_of(kinds: dict, type_hint: str = "", path: str = "", root: str = ".") -
 TITLE_MAX = 255             # длиннее заголовок страницы Confluence не примет — ни у документа, ни у раздела
 PATH_SEP = ">"
 _SLOT = re.compile(r"\{([^{}\n]*)\}")
-BUILTIN_SLOTS = ("title", "file", "kind", "project")
+BUILTIN_SLOTS = ("title", "name", "file", "folder", "folders", "kind", "project")
+FOLDER_SLOTS = ("folder", "folders")        # пусты у файла прямо в папке вида — уровень выпадает, как у `{поле?}`
+# Уровни внутри значения `{folders}`: знак из области частного использования — в имени папки его не бывает, а пробелом
+# он не считается (`slot_text` его не съест). Разрезает значение на уровни `publish_target`.
+LEVEL_SEP = "\ue000"
 
 
 def slot_text(value) -> str:
     """Значение подстановки: одна строка, пробелы схлопнуты (перевод строки в заголовке Confluence не нужен никому)."""
     return " ".join(str(value if value is not None else "").split())
+
+
+def slot_names(template: str) -> list:
+    """Имена подстановок шаблона по порядку, без повторов и без «?» (`Релиз {release} > {epic?}` → release, epic)."""
+    out: list = []
+    for m in _SLOT.findall(str(template or "")):
+        name = m.strip().rstrip("?").strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def name_text(name: str) -> str:
+    """Имя файла или папки словами: «_» — пробел, лишние пробелы схлопнуты (`Epic_1.2_Intake` → `Epic 1.2 Intake`)."""
+    return slot_text(str(name or "").replace("_", " "))
+
+
+def subfolders(path: str, out: str, root: str = ".") -> list:
+    """Подпапки между папкой вида (`out`, от корня проекта) и файлом, сверху вниз. Файл не в папке вида — пусто."""
+    out = str(out or "").strip().strip('"').strip("/")
+    if not out or not path:
+        return []
+    try:
+        rel = os.path.relpath(os.path.realpath(path), os.path.realpath(os.path.join(root, out)))
+    except ValueError:              # другой диск (Windows): файл не в папке вида
+        return []
+    parts = rel.replace("\\", "/").split("/")
+    return [] if parts[0] in ("..", ".") else parts[:-1]
+
+
+# Поля штампа публикации: их пишет сама публикация и меняет при каждой; в путь страницы они не годятся.
+def _stamp_field(key: str) -> bool:
+    return key == "confluence_page_id" or key.startswith("published")
+
+
+def header_fields(text: str) -> list:
+    """Поля шапки документа, годные для подстановки, в порядке шапки: скалярные, непустые, без штампа публикации и без
+    одноимённых встроенным (`title:` шапки подстановкой не служит — `{title}` берёт заголовок `# …`)."""
+    from aurora_common import frontmatter
+    fm = frontmatter((text or "").lstrip("﻿").replace("\r\n", "\n"))
+    return [k for k, v in fm.items() if str(v).strip() and not str(v).strip().startswith("[") and not _stamp_field(k)
+            and k not in BUILTIN_SLOTS]
+
+
+def case_slips(missing: list, fields: list) -> list:
+    """[(подстановка, как поле написано в шапке)] — поле есть, но другим регистром букв (`{Activity}` и `activity`)."""
+    low = {}
+    for f in list(fields or []) + list(BUILTIN_SLOTS):
+        low.setdefault(f.casefold(), f)
+    return [(m, low[m.casefold()]) for m in missing or [] if m.casefold() in low and low[m.casefold()] != m]
+
+
+def missing_why(kind: str, missing: list, fields: list, slips: list) -> str:
+    """Почему публикация остановлена на подстановке без значения — словами: какие поля нужны (каждое в кавычках), какие
+    поля в шапке ЭТОГО документа есть, какие подстановки встроены и что сделать (одно из трёх). Поле есть в шапке другим
+    регистром — подсказка. Текст один на сервер панели и `ship:publish`; перевод — по его образцу в каталоге данных."""
+    if slips:
+        have = ", ".join(f"«{h}»" for _m, h in slips)
+        want = ", ".join("{" + m + "}" for m, _h in slips)
+        return (f"{missing_why(kind, missing, fields, [])} Регистр букв важен: в шапке есть {have}, а шаблон вида "
+                f"просит {want} — напишите подстановку так же, как поле в шапке.")
+    names = ", ".join(f"«{m}»" for m in missing)
+    have = ", ".join(fields) or "—"
+    builtins = ", ".join("{" + b + "}" for b in BUILTIN_SLOTS)
+    first = missing[0] if missing else ""
+    return (f"Опубликовать нельзя: путь или заголовок страницы у вида «{kind}» требует полей, которых в шапке "
+            f"документа нет: {names}. Поля в шапке документа: {have}. Встроенные подстановки: {builtins}. "
+            f"Что сделать — одно из трёх: заменить подстановку у вида «{kind}» в «Настройки проекта → Артефакты» "
+            f"(поле «Путь под корнем» или «Заголовок страницы»); вписать поле в шапку документа; сделать подстановку "
+            f"необязательной: {{{first}?}}.")
 
 
 def project_name(root: str = ".") -> str:
@@ -197,23 +274,28 @@ def project_name(root: str = ".") -> str:
     return slot_text(m.group(1).strip().strip("\"'")) if m else ""
 
 
-def publish_context(text: str, path: str, kind: str = "", project: str = "") -> dict:
+def publish_context(text: str, path: str, kind: str = "", project: str = "", out: str = "", root: str = ".") -> dict:
     """Чем заполняются подстановки пути и заголовка для документа: скалярные поля шапки и встроенные имена.
 
-    Встроенные — `{title}` (первый заголовок `# …` чистовика, иначе имя файла), `{file}` (имя файла без расширения),
-    `{kind}`, `{project}` — важнее одноимённых полей шапки: их смысл объявлен в форме и справке. Списки шапки
-    (`[a, b]`) подстановкой не служат."""
+    Встроенные — `{title}` (первый заголовок `# …` чистовика, иначе имя файла), `{name}` (имя файла без расширения,
+    «_» — пробел), `{file}` (имя файла без расширения как есть), `{folder}` и `{folders}` (подпапки между папкой вида
+    `out` — от корня проекта `root` — и файлом: ближайшая и все, уровни `{folders}` разделены `LEVEL_SEP`), `{kind}`,
+    `{project}` — важнее одноимённых полей шапки: их смысл объявлен в форме и справке. Списки шапки (`[a, b]`)
+    подстановкой не служат."""
     from aurora_common import body, clean_copy, frontmatter
     text = (text or "").lstrip("﻿").replace("\r\n", "\n")
     ctx = {k: slot_text(v) for k, v in frontmatter(text).items() if not str(v).strip().startswith("[")}
     file = os.path.splitext(os.path.basename(str(path or "")))[0]
     first = next((ln.lstrip("# ").strip() for ln in clean_copy(body(text)).splitlines() if ln.startswith("# ")), "")
-    ctx.update(title=slot_text(first) or file, file=file, kind=slot_text(kind), project=slot_text(project))
+    dirs = [d for d in (name_text(x) for x in subfolders(path, out, root)) if d]
+    ctx.update(title=slot_text(first) or file, name=name_text(file), file=file, folder=dirs[-1] if dirs else "",
+               folders=LEVEL_SEP.join(dirs), kind=slot_text(kind), project=slot_text(project))
     return ctx
 
 
 def fill_slots(template: str, ctx: dict) -> tuple:
-    """Подставить значения → (текст, [обязательные поля без значения], было ли пустым необязательное `{поле?}`)."""
+    """Подставить значения → (текст, [обязательные поля без значения], было ли пустым необязательное `{поле?}`).
+    `{folder}` и `{folders}` необязательны всегда: файл прямо в папке вида подпапки не имеет."""
     missing: list = []
     dropped = False
 
@@ -222,6 +304,7 @@ def fill_slots(template: str, ctx: dict) -> tuple:
         name = m.group(1).strip()
         optional = name.endswith("?")
         name = name.rstrip("?").strip()
+        optional = optional or name in FOLDER_SLOTS
         value = slot_text((ctx or {}).get(name, ""))
         if not value:
             if optional:
@@ -238,7 +321,8 @@ def publish_target(rec: dict, ctx: dict) -> dict:
     → {"levels": [заголовки разделов], "title": заголовок, "missing": [поля без значения], "problems": [(код, деталь)]}.
     Уровень с пустой необязательной подстановкой выпадает из пути; обязательная без значения — `missing-field`
     (публикация заблокирована, причина называет поле); пустой после подстановки заголовок — `empty-title`; длиннее
-    `TITLE_MAX` — `too-long`."""
+    `TITLE_MAX` — `too-long`. `{folders}` в уровне даёт столько уровней, сколько подпапок (`Релиз {release} > {folders}`
+    → «Релиз 2.1» › «Activity A1 Core» › «Epic 1.2 Intake»); в заголовке подпапки идут через « / »."""
     levels: list = []
     missing: list = []
     problems: list = []
@@ -249,11 +333,15 @@ def publish_target(rec: dict, ctx: dict) -> dict:
         missing += [m for m in miss if m not in missing]
         if miss or dropped or not value:
             continue
-        if len(value) > TITLE_MAX:
-            problems.append(("too-long", value[:60]))
-        levels.append(value)
+        for part in (slot_text(x) for x in value.split(LEVEL_SEP)):
+            if not part:
+                continue
+            if len(part) > TITLE_MAX:
+                problems.append(("too-long", part[:60]))
+            levels.append(part)
     template = str((rec or {}).get("publish_title") or "").strip() or "{title}"
     title, miss, _dropped = fill_slots(template, ctx)
+    title = slot_text(title.replace(LEVEL_SEP, " / "))
     missing += [m for m in miss if m not in missing]
     if missing:
         problems.insert(0, ("missing-field", ", ".join(missing)))
@@ -589,6 +677,9 @@ def main() -> int:
                 - set(BUILTIN_SLOTS))
             print(f"Путь под корнем: {rec.get('publish_path') or '—'} · заголовок страницы: {rec.get('publish_title') or '{title}'}"
                   + (f" — заполните в шапке документа: {', '.join(fields)}" if fields else ""))
+            if {"folder", "folders"} & set(slot_names(f"{rec.get('publish_path') or ''} {rec.get('publish_title') or ''}")):
+                print(f"Подпапки внутри {rec['out']}/ становятся разделами пути ({{folders}}, {{folder}}): "
+                      "кладите документ в ту подпапку, под чьим разделом его страница должна лечь")
         if rec.get("publish_prompt"):
             print(f"Промпт публикации: {rec['publish_prompt']} — как оформить готовую страницу; при создании документа "
                   "его не применяют (публикацию ведёт движок, подготовка страницы по этому промпту включится позже)")

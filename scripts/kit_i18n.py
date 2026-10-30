@@ -331,7 +331,8 @@ def message_skeletons() -> set:
                             and sub.func.attr == "append" and sub.args):
                         add(sub.args[0])
     # Реестр видов артефактов: причины, по которым вид не годится, рождает `make_kinds.py` —
-    # `check` кладёт их вторым элементом пары, `out_problem` возвращает.
+    # `check` кладёт их вторым элементом пары, `out_problem` возвращает. Там же — причина серой
+    # кнопки «Опубликовать» при подстановке без значения (`missing_why`).
     kinds = os.path.join(KIT, "scripts", "make_kinds.py")
     if os.path.isfile(kinds):
         for node in ast.walk(ast.parse(open(kinds, encoding="utf-8").read())):
@@ -339,7 +340,7 @@ def message_skeletons() -> set:
                     and node.func.attr == "append" and node.args
                     and isinstance(node.args[0], ast.Tuple) and len(node.args[0].elts) == 2):
                 add(node.args[0].elts[1])
-            elif isinstance(node, ast.FunctionDef) and node.name == "out_problem":
+            elif isinstance(node, ast.FunctionDef) and node.name in ("out_problem", "missing_why"):
                 for sub in ast.walk(node):
                     if isinstance(sub, ast.Return) and sub.value is not None:
                         add(sub.value)

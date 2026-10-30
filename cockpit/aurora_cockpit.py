@@ -1037,7 +1037,8 @@ def publish_info(project: str, rel: str, full: str, fm: dict, text: str) -> dict
                ("confluence", cfg.get("publish_parent")))
     parent = next(((src, str(v).strip().strip("\"'")) for src, v in parents if str(v or "").strip().strip("\"'")), ("", ""))
     out["parent_from"], out["parent"] = parent
-    target = AG_KINDS.publish_target(rec, AG_KINDS.publish_context(text, full, kid, AG_KINDS.project_name(project)))
+    target = AG_KINDS.publish_target(rec, AG_KINDS.publish_context(text, full, kid, AG_KINDS.project_name(project),
+                                                                   rec.get("out") or "", project))
     out["path"], out["title"], out["fields"] = target["levels"], target["title"], target["missing"]
     problem = (target["problems"] or [("", "")])[0]
     if not cfg.get("base_url"):
@@ -1050,9 +1051,11 @@ def publish_info(project: str, rel: str, full: str, fm: dict, text: str) -> dict
         out.update({"state": "blocked", "fix": "project",
                     "why": "Опубликовать некуда: не задана родительская страница в Confluence, а у документа нет вида артефакта."})
     elif problem[0] == "missing-field":
-        out.update({"state": "blocked", "fix": "kinds",
-                    "why": f"Опубликовать нельзя: путь или заголовок страницы у вида «{kid}» требует поле «{problem[1]}», "
-                           "а в шапке документа его нет. Впишите поле в шапку или сделайте подстановку необязательной."})
+        # Причина называет каждое поле, поля шапки этого документа, встроенные подстановки и три выхода (`missing_why`).
+        have = AG_KINDS.header_fields(text)
+        out.update({"state": "blocked", "fix": "kinds", "have": have,
+                    "why": AG_KINDS.missing_why(kid, target["missing"], have,
+                                                AG_KINDS.case_slips(target["missing"], have))})
     elif problem[0] == "empty-title":
         out.update({"state": "blocked", "fix": "kinds",
                     "why": f"Опубликовать нельзя: заголовок страницы по шаблону вида «{kid}» выходит пустым."})
@@ -1111,31 +1114,49 @@ def publish_plan(project: str, rel: str) -> dict:
     return {"plan": plan}
 
 
+KINDS_EXAMPLE_DOCS = 20         # по скольким последним документам вида форма собирает поля шапки
+
+
 def kinds_example(project: str, kind: str, overrides: dict) -> dict:
     """Пример пути для формы видов: «для документа <последний документ вида>: Корень › Раздел › Заголовок».
 
     Считает сервер тем же кодом, что публикация (`make_kinds.publish_target`), по значениям формы — несохранённым
     тоже, — чтобы человек видел, куда ляжет страница, до публикации. Без сети: корень — заголовок из адреса или номер
-    страницы. Документа вида ещё нет — уровни и заголовок остаются шаблонами."""
+    страницы. Документа вида ещё нет — уровни и заголовок остаются шаблонами. Документы ищутся и в подпапках папки
+    вида (кроме папок других видов). `fields` — поля шапки, которые есть у последних документов вида (объединение, без
+    значений); `unknown` — поля, на которые ссылается шаблон, а у документов вида их нет ни у одного."""
     kinds = AG_KINDS.read_kinds(project) or {}
     rec = {**(kinds.get(kind) or {}), **{k: str(v) for k, v in (overrides or {}).items()
                                           if k in ("publish_url", "publish_path", "publish_title", "out")}}
-    folder = os.path.join(project, (rec.get("out") or "").strip().strip("/")) if (rec.get("out") or "").strip() else ""
+    rel_out = (rec.get("out") or "").strip().strip("/")
+    folder = os.path.join(project, rel_out) if rel_out else ""
+    others = {os.path.normcase(os.path.normpath(os.path.join(project, (r.get("out") or "").strip().strip("/"))))
+              for k, r in kinds.items() if k != kind and (r.get("out") or "").strip().strip("/")}
     docs = []
     if folder and os.path.isdir(folder) and not AG_KINDS.out_problem(rec.get("out") or ""):
-        for name in os.listdir(folder):
-            path = os.path.join(folder, name)
-            if name.endswith(".md") and not is_folder_guide(name) and os.path.isfile(path):
-                docs.append((os.path.getmtime(path), name, path))
+        for top, dirs, names in os.walk(folder):
+            dirs[:] = [d for d in dirs if not d.startswith(".")
+                       and os.path.normcase(os.path.normpath(os.path.join(top, d))) not in others]
+            for name in names:
+                path = os.path.join(top, name)
+                if name.endswith(".md") and not is_folder_guide(name) and os.path.isfile(path):
+                    docs.append((os.path.getmtime(path), name, path))
     out = {"kind": kind, "doc": "", "root": AG_KINDS.root_label(rec.get("publish_url") or ""), "levels": [],
-           "title": "", "missing": [], "problems": [c for _k, c in AG_KINDS.check(project, {kind: rec})
-                                                   if c.startswith(("publish_path", "publish_title"))]}
+           "title": "", "missing": [], "fields": [], "unknown": [],
+           "problems": [c for _k, c in AG_KINDS.check(project, {kind: rec})
+                        if c.startswith(("publish_path", "publish_title"))]}
     if not docs:
         out["levels"] = [x.strip() for x in str(rec.get("publish_path") or "").split(AG_KINDS.PATH_SEP) if x.strip()]
         out["title"] = str(rec.get("publish_title") or "").strip() or "{title}"
         return out
-    _m, _name, path = max(docs)
-    ctx = AG_KINDS.publish_context(read_text(path, limit=MAX_EDIT), path, kind, AG_KINDS.project_name(project))
+    docs.sort(reverse=True)
+    for _m, _name, path in docs[:KINDS_EXAMPLE_DOCS]:
+        out["fields"] += [f for f in AG_KINDS.header_fields(read_text(path, limit=MAX_EDIT)) if f not in out["fields"]]
+    wanted = AG_KINDS.slot_names(str(rec.get("publish_path") or "") + " " + str(rec.get("publish_title") or ""))
+    out["unknown"] = [m for m in wanted if m not in AG_KINDS.BUILTIN_SLOTS and m not in out["fields"]]
+    path = docs[0][2]
+    ctx = AG_KINDS.publish_context(read_text(path, limit=MAX_EDIT), path, kind, AG_KINDS.project_name(project),
+                                   rec.get("out") or "", project)
     target = AG_KINDS.publish_target(rec, ctx)
     out.update(doc=os.path.relpath(path, project).replace("\\", "/"), levels=target["levels"], title=target["title"],
                missing=target["missing"])
@@ -5525,6 +5546,7 @@ def kinds_read(project: str) -> dict:
     importlib.reload(MK)
     kinds = MK.read_kinds(project)
     return {"kinds": kinds, "known": MK.KNOWN, "review_profiles": list(MK.REVIEW_PROFILES),
+            "slots": list(MK.BUILTIN_SLOTS),          # встроенные подстановки пути и заголовка — для справки формы
             "digest": MK.registry_digest(kinds),
             "problems": [{"kind": k, "why": w} for k, w in MK.check(project, kinds)],
             "templates": sorted(
@@ -5603,6 +5625,17 @@ def kinds_write(project: str, kinds: dict, expect: str = "") -> dict:
     bad = [k for k in kinds if not re.fullmatch(r"[a-z][a-z0-9\-]{1,30}", k)]
     if bad:
         return {"error": "имя типа — латиница, цифры и дефис: " + ", ".join(bad[:3])}
+    # Обязательные поля вида (как у `make_kinds.check`): шаблон и папка результата. Поле, которого запись не прислала,
+    # берётся с диска — запись его не стирает.
+    known = AG_KINDS.read_kinds(project) or {}
+    for kind, rec in sorted(kinds.items()):
+        value = lambda f: str((rec or {}).get(f, (known.get(kind) or {}).get(f, "")) or "").strip()   # noqa: E731
+        if not value("template"):
+            return {"error": f"вид «{kind}»: не указан шаблон — без него документ выйдет не по форме", "kind": kind,
+                    "field": "template"}
+        if not value("out"):
+            return {"error": f"вид «{kind}»: не указана папка результата — документу некуда лечь", "kind": kind,
+                    "field": "out"}
     # Папку результата создаём ниже сразу — значит, проверяем её до записи, а не после:
     # путь к файлу в этом поле давал каталог с именем файла.
     for kind, rec in sorted(kinds.items()):

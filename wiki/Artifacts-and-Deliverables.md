@@ -58,15 +58,51 @@ page) and the review before publishing. The publishing prompt only lays the page
 For now it is **saved and shown, but no model runs by it** — publishing goes without a model, and preparing the page by the
 prompt will switch on in one of the next releases. An empty publishing prompt means publishing as it was.
 
+**The form's fields.** Required ones carry an asterisk (the legend "* — required" at the top of the form): the kind's name,
+"Template" and "Result folder". The server will not save a kind without a template or a folder — the reason names the kind and
+the field, and an empty required field is highlighted in the form. "Root page" is marked "needed for publishing": the kind
+works without it but is not published. The labels of the creation and publishing fields have a "?" mark: what the field is, what it affects, an example
+value and whether it is required; the same text pops up when hovering the field itself.
+
 **The path in Confluence is a chain:** the kind's root page → sections → the document's page. The levels of `publish_path` are
 separated by `>` (`Release {release} > {epic?}`), spaces around a level are trimmed; empty means the page goes right under the
-root. The page title follows `publish_title`, `{title}` by default. Placeholders: `{title}` (the document's first `# …`
-heading, otherwise the file name), `{file}` (the file name without the extension), `{kind}`, `{project}` (the project name)
-and `{field}` — any field of the document header (`{epic}`, `{release}`, `{jira}`). `{field?}` is optional: an empty value
-drops the level from the path (in the title — an empty string). A required field missing from the header stops publishing,
-and the reason names the field and the document. The space comes from the root page, not from `confluence.space`. Under the
-fields the form shows an example for the kind's latest document: "For the document US-7.md: Stories › Release 2.1 › PRJ-7 ›
-[US] Summary" — the server works it out with the same code as publishing, from the form's values, unsaved ones too.
+root. The page title follows `publish_title`, `{title}` by default. Every document has the built-in placeholders:
+
+| Placeholder | What it gives | Example |
+|---|---|---|
+| `{title}` | the document's first `# …` heading, otherwise the file name | Intake form |
+| `{name}` | the file name without `.md`, `_` becomes a space | `US-1.2.1_Intake.md` → US-1.2.1 Intake |
+| `{file}` | the file name without `.md` as is | US-1.2.1_Intake |
+| `{folder}` | the nearest subfolder inside the kind's folder; a file right in the kind's folder — no level | Epic 1.2 Intake |
+| `{folders}` | all subfolders from the kind's folder down to the file, each a level of its own, as if written with `>`; no subfolders — no level | Activity A1 Core › Epic 1.2 Intake |
+| `{kind}` | the document's kind | ac |
+| `{project}` | the project name from the settings | PRJ-A |
+
+In folder names for `{folder}`, `{folders}` and in `{name}` underscores become spaces and extra spaces collapse; in the title
+the `{folders}` subfolders are joined with " / ". `{field}` is any field of the document header (`{epic}`, `{release}`,
+`{jira}`), letter case matters. `{field?}` is optional: an empty value drops the level from the path (in the title — an empty
+string). The 255-character limit applies to every level.
+
+**Like the folders.** The kind's documents are laid out in subfolders:
+`Artifacts/ac/Activity_A1_Core/Epic_1.2_Intake/US-1.2.1_Intake.md` and `Artifacts/ac/Activity_A1_Core/AC-1.2.7_Rules.md`.
+Path `{folders}`, title `{title}` — and Confluence gets the same tree: the kind's root › Activity A1 Core › Epic 1.2 Intake ›
+the page. `{folders}` lives along with other levels: `Release {release} > {folders}`. Moved a file to another subfolder while
+its page is already published in the old place: publishing updates it in place with the outcome `misplaced` and moves it only
+with an explicit `--move` ("Move along the kind's path").
+
+A required field missing from the header stops publishing. The reason names every field separately in quotes, lists the
+fields this document's header does have and the built-in placeholders, and says what to do — one of three: replace the
+placeholder of the kind (the field "Path under the root" or "Page title" in Project settings → Artifacts), add the field to
+the document header, or make the placeholder optional (`{field?}`). If the header has the field in another letter case
+(`activity` instead of `{Activity}`), the reason says so too. The space comes from the root page, not from
+`confluence.space`.
+
+Under the path and title fields the form shows a short hint and an expandable "How to fill in the path and the title" (root,
+section, page; `>`; the built-in placeholders with an example each; `{field}` and `{field?}`; the "like the folders" example),
+a line "Documents of this kind have these header fields: …" — the union over the kind's latest documents, without values —
+and a warning when the template refers to a field that no document of the kind has (it does not stop saving). Below is an
+example for the kind's latest document, subfolders included: "For the document US-7.md: Stories › Release 2.1 › PRJ-7 › [US]
+Summary" — the server works it out with the same code as publishing, from the form's values, unsaved ones too.
 
 A missing section is created by publishing once (only when sending): a short banner "section created by Aurora for
 publications of the kind …" and a list of child pages; the engine never edits a created section again. A title is unique in a

@@ -15,11 +15,11 @@
 Путь в Confluence — цепочка: корневая страница → разделы → страница документа. Корень по порядку: `--parent <page_id>`
 (точное место, путь вида не применяется) → `publish_url` вида артефакта (`artifacts:` проекта) → `publish_parent` в
 шапке документа (наследие: прежде его писало создание документа) → `confluence.publish_parent` конфига. Под корнем —
-разделы из `publish_path` вида (уровни через `>`, подстановки из шапки документа), заголовок страницы — по
-`publish_title` (по умолчанию `{title}`). Пространство берётся у корневой страницы, а не из конфига. Раздела нет —
-он создаётся (только с `--apply`) страницей с баннером «раздел создан Авророй» и списком дочерних страниц; созданный
-раздел движок больше не правит. Заголовок в пространстве уникален: страница с таким заголовком под другим родителем —
-отказ со ссылкой на неё (чужие страницы не двигаем).
+разделы из `publish_path` вида (уровни через `>`, подстановки из шапки документа; `{folders}` — подпапки внутри папки
+вида, каждая своим уровнем), заголовок страницы — по `publish_title` (по умолчанию `{title}`). Пространство берётся у
+корневой страницы, а не из конфига. Раздела нет — он создаётся (только с `--apply`) страницей с баннером «раздел создан
+Авророй» и списком дочерних страниц; созданный раздел движок больше не правит. Заголовок в пространстве уникален:
+страница с таким заголовком под другим родителем — отказ со ссылкой на неё (чужие страницы не двигаем).
 
 Уже опубликованная страница (`confluence_page_id` в шапке), которая лежит не там, куда ведёт путь вида, обновляется на
 месте (исход `misplaced`, названы оба места); перенос — только явным `--move` и только своей страницы. Страницу правили
@@ -679,7 +679,7 @@ def publish(a) -> dict:
     res["kind"] = kid
     raw_root, where = choose_parent(a.parent or "", fm, cfg, (rec.get("publish_url") or "").strip())
     target = MK.publish_target(rec if where != "--parent" else {**rec, "publish_path": ""},
-                               MK.publish_context(text, path, kid, MK.project_name(".")))
+                               MK.publish_context(text, path, kid, MK.project_name("."), rec.get("out") or ""))
     if a.title:
         target["title"] = MK.slot_text(a.title)
         target["problems"] = [p for p in target["problems"] if p[0] not in ("empty-title",)]
@@ -688,16 +688,19 @@ def publish(a) -> dict:
     problems = target["problems"]
     if problems:
         code, detail = problems[0]
+        extra = {}
         if code == "missing-field":
-            why = (f"в шапке документа {path} нет поля «{detail}», а путь или заголовок страницы у вида «{kid}» его требует — "
-                   f"впишите поле в шапку или сделайте подстановку необязательной ({{{target['missing'][0]}?}})")
+            have = MK.header_fields(text)
+            slips = MK.case_slips(target["missing"], have)
+            why = f"{path}: {MK.missing_why(kid, target['missing'], have, slips)}"
+            extra = {"have": have, "slips": [list(s) for s in slips], "builtins": list(MK.BUILTIN_SLOTS)}
         elif code == "empty-title":
             why = f"заголовок страницы по шаблону «{detail}» вышел пустым — задайте publish_title вида «{kid}» или --title"
         else:
             why = f"заголовок «{detail}…» длиннее {MK.TITLE_MAX} знаков — Confluence его не примет"
         print(f"publish: {why}", file=sys.stderr)
         return done("blocked", 1, code=code, why=why, fix="doc" if code == "missing-field" else "kinds",
-                    fields=list(target["missing"]))
+                    fields=list(target["missing"]), **extra)
 
     commit = git_commit()
     sha = clean_sha(text)
