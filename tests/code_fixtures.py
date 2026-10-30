@@ -133,7 +133,10 @@ def build(name: str, dest) -> Path:
                tree=tree, add=c.get("add") or ())
         used |= set(c.get("add") or ())
     # Файл дерева, который ни один коммит не берёт, — забытый в сценарии: репозиторий вышел бы не таким, как задуман.
-    lying = sorted(p.relative_to(tree).as_posix() for p in tree.rglob("*") if p.is_file()) if tree.is_dir() else []
+    # Байт-код (`compileall` в CI проходит и по `tests/`) и служебные файлы системы (.DS_Store) — не дерево фикстуры.
+    lying = sorted(p.relative_to(tree).as_posix() for p in tree.rglob("*")
+                   if p.is_file() and "__pycache__" not in p.parts and not p.name.startswith(".")) \
+        if tree.is_dir() else []
     lost = [r for r in lying if r not in used]
     if lost:
         raise RuntimeError(f"{name}: в tree/ есть файлы вне сценария: {lost[:5]}")

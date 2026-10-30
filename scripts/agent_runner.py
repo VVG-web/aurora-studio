@@ -6778,13 +6778,14 @@ def decide_clean(text, limit: int = 600) -> str:
 def decide_readable(cwd: str, path: str) -> bool:
     """Можно ли отдать файл модели как источник: текст проекта (.md, .txt) по общей границе чтения — ссылки наружу,
     файлы с доступами и служебные папки закрыты. Путь приходит от человека или из карточки вопроса: не доверяем."""
-    from aurora_common import read_verdict
+    from aurora_common import code_model_refusal, read_verdict
     try:
-        inside = not os.path.relpath(path, cwd).replace("\\", "/").startswith("..")
+        rel = os.path.relpath(path, cwd).replace("\\", "/")
     except ValueError:                      # Windows: другой диск
         return False
-    return (inside and os.path.isfile(path) and path.lower().endswith((".md", ".txt"))
-            and not read_verdict(path, cwd, strict=True, every_file=True))
+    return (not rel.startswith("..") and os.path.isfile(path) and path.lower().endswith((".md", ".txt"))
+            and not read_verdict(path, cwd, strict=True, every_file=True)
+            and not code_model_refusal(cwd, rel))      # клон кода — модели только с разрешения репозитория
 
 
 def decide_source(cwd: str, ref: str) -> tuple:

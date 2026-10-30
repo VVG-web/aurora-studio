@@ -581,13 +581,17 @@ def t_review_page(project: str, args: dict) -> str:
 
 def project_file(project: str, args: dict) -> str:
     """Путь файла проекта из запроса: относительный, внутри проекта. Путь приходит от модели."""
-    from aurora_common import read_verdict, real_inside, real_rel
+    from aurora_common import code_model_refusal, read_verdict, real_inside, real_rel
     rel = need(args, "path", "файл проекта").replace("\\", "/").strip()
     full = real_inside(project, rel) if not os.path.isabs(rel) else ""
     if not full or not os.path.isfile(full):
         raise ToolError(f"{rel}: нужен файл внутри проекта (путь от корня проекта).")
     if read_verdict(os.path.join(project, rel), project, strict=True, every_file=True):
         raise ToolError(f"{rel}: файл за границей чтения проекта (ссылка наружу, доступы или служебная папка).")
+    # файл клона кода уходит модели (ревью) только с разрешения репозитория
+    refusal = code_model_refusal(project, rel) or code_model_refusal(project, real_rel(project, full))
+    if refusal:
+        raise ToolError(f"{rel}: {refusal}.")
     return real_rel(project, full)
 
 

@@ -223,12 +223,25 @@ def test_model_tools_and_task_attachments_see_code_only_with_the_repository_perm
 
     assert model_reads("Code/README.md"), "описание папки Code/ закрыто, как клон"
     assert not model_reads("Code/py-notify/app/main.py"), "клон без записи в реестре открыт модели"
+    MCP = importlib.import_module("aurora_mcp")
+    try:
+        MCP.project_file(str(root), {"path": "Code/py-notify/app/main.py"})
+    except MCP.ToolError as e:
+        assert "моделям не отдаётся" in str(e), e
+    else:
+        raise AssertionError("ревью через MCP взяло файл клона без разрешения репозитория")
+    AR = importlib.import_module("agent_runner")
+    (root / "Code/py-notify/NOTES.md").write_text("# Заметки\n", encoding="utf-8")
+    assert not AR.decide_readable(str(root), str(root / "Code/py-notify/NOTES.md")), \
+        "источник решения взят из клона без разрешения репозитория"
     assert C.save(root, {"py-notify": {"url": "/srv/py.git"}}, "").get("ok")
     assert not model_reads("Code/py-notify/app/main.py"), "по умолчанию «Моделям» должно быть нельзя"
     digest = C.state(root)["digest"]
     assert C.save(root, {"py-notify": {"url": "/srv/py.git", "models": True}}, digest).get("ok")
     assert model_reads("Code/py-notify/app/main.py") and model_reads("code/PY-NOTIFY/app/main.py"), \
         "разрешение репозитория не действует"
+    assert MCP.project_file(str(root), {"path": "Code/py-notify/app/main.py"}) == "Code/py-notify/app/main.py"
+    assert AR.decide_readable(str(root), str(root / "Code/py-notify/NOTES.md"))
     block, _notes = RC.read_context(str(root), ["Code/py-notify/app/consumer.py"])
     assert "orders.accepted" in block, "вложение из разрешённого клона не прочитано"
     digest = C.state(root)["digest"]
