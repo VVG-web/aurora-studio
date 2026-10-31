@@ -64,6 +64,15 @@ the field, and an empty required field is highlighted in the form. "Root page" i
 works without it but is not published. The labels of the creation and publishing fields have a "?" mark: what the field is, what it affects, an example
 value and whether it is required; the same text pops up when hovering the field itself.
 
+**The place of a particular document — chosen from the wiki tree.** The publishing card («Files» → «Publish») has a
+«Choose a place…» button: the dialog asks the active wiki connector for the root's child pages and lists them (a long
+list scrolls). The top level is chosen first; a chosen folder opens to show its nested pages and a «Put into the root
+of «…»» item. A folder without children is a leaf: choosing it saves the place at once and closes the dialog; otherwise
+the «Save» button saves it. The choice is written into the document header as the `publish_parent` field (page id) and
+is stronger than the kind's path: the kind path stays the general rule, while this is the exact place of this document.
+The page already lives in Confluence (`confluence_page_id`) — there is no choice, the place was set by publishing.
+Folder lists are cached for an hour; «Refresh list» asks again.
+
 **The path in Confluence is a chain:** the kind's root page → sections → the document's page. The levels of `publish_path` are
 separated by `>` (`Release {release} > {epic?}`), spaces around a level are trimmed; empty means the page goes right under the
 root. The page title follows `publish_title`, `{title}` by default. Every document has the built-in placeholders:

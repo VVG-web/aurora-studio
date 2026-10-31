@@ -613,7 +613,7 @@ wiki markup (storage in Confluence), absent if not asked for.
 | `site` | — | `{server, space, parent, auth}` — the project's wiki settings without the network: the address, the default space and parent of new pages, the sign-in method (empty — no key); publishing says "no address" and "no access" by them before the first request |
 | `find_page` | `space`, `title`, `body`? (default yes) | `{page: a page or null}` |
 | `get_page` | `page_id`, `body`? | the page with version, ancestors, space |
-| `children` | `page_id` | `{pages: [{id, title, version, …}], complete, gap, got}` — all pages of the list (`_links.next` continuations are read); `complete: false` and `gap` — the server did not give everything |
+| `children` | `page_id`, `deep`? (default no) | `{pages: [{id, title, version, …}], complete, gap, got}` — all pages of the list (`_links.next` continuations are read); `complete: false` and `gap` — the server did not give everything. `deep: true` (asked by the publish-place picker) adds `has_children` to every page (does it have its own children) — one cheap "limit=1" request per page; the publish-place picker tells a folder from a leaf without fetching the whole list |
 | `create_page` | `space`, `title`, `body`, `parent_id`? | the created page |
 | `update_page` | `page_id`, `title`, `body`, `version`, `space`?, `parent_id`?, `message`? | the updated page; `version` is the version the caller saw; edited later — `conflict` |
 | `move_page` | `page_id`, `parent_id`, `version`?, `message`? | the page under the new parent; text and title as on the server |

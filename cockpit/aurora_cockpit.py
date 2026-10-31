@@ -987,6 +987,70 @@ def publish_fields(project: str, rel: str, full: str, fm: dict, text: str) -> di
 PUBLISH_CLOSED = ("auroraknowledgedb", "sources", "raw")      # внутренний слой доверия и зеркала: наружу не идут (как в `publish_doc`)
 
 
+def publish_tree(project: str, rel: str, parent: str, fresh: str) -> dict:
+    """Дочерние страницы вики для окна выбора места публикации: активный коннектор роли `wiki`, операция `children`
+    с признаком `has_children` (папка это или лист) и кэшем на час, `fresh=1` — заново.
+
+    Откуда начинать спуск, решает не окно, а движок — тот же порядок корня, что у `ship:publish`: страница документа
+    (`confluence_page_id` не даёт выбора — страница уже лежит), иначе корень вида/шапки/конфига (`publish_info`).
+    `parent` в запросе — спуск внутрь выбранной папки: номер страницы. Ответ — страницы контракта роли `wiki`, причины
+    отказа — таблица причин коннектора (панель переводит их каталогом данных)."""
+    cur = file_read(project, rel)
+    if cur.get("error"):
+        return cur
+    fm = frontmatter(cur["text"])
+    root = str(parent or "").strip().strip("\"'")
+    if not root:
+        if (fm.get("confluence_page_id") or "").strip().strip('"'):
+            return {"fixed": True, "pages": [], "why": "страница уже лежит в Confluence — место задано публикацией"}
+        info = cur.get("publish") or {}
+        root = str(info.get("parent") or "").strip()
+        if not root:
+            why = info.get("why") or "не задана родительская страница вики"
+            return {"pages": [], "why": why, "fix": info.get("fix") or ""}
+    import connector_ops as CO
+    got = CO.call(project, "wiki", "children", {"page_id": root, "deep": True}, fresh=fresh == "1")
+    if not got.get("ok"):
+        return {"error": got.get("error") or "операция не выполнена", "detail": got.get("detail") or "",
+                "kind": got.get("kind") or ""}
+    pages = got.get("result") or {}
+    return {"root": root, "connector": got.get("connector") or "", "cached": bool(got.get("cached")),
+            "pages": pages.get("pages") or [], "complete": bool(pages.get("complete")), "gap": pages.get("gap") or ""}
+
+
+def publish_place_save(project: str, payload: dict) -> dict:
+    """Сохранить место публикации документа — поле `publish_parent` шапки (номер страницы): та же запись, что у
+    редактора «Файлов» — слепок (`expect`) обязателен, файл изменился на диске — 409 и ничего не записано.
+
+    Место выбирают окном из дерева вики, поэтому поле одно и в шапке, а не в настройках вида: вид задаёт путь для всех
+    документов разом, а это — точное место конкретного документа. `publish_parent` шапки старше `publish_url` вида,
+    это уже порядок `ship:publish` (`choose_parent`)."""
+    rel = str(payload.get("path") or "")
+    cur = file_read(project, rel)
+    if cur.get("error"):
+        return cur
+    expect = payload.get("expect")
+    if not isinstance(expect, str) or not expect or expect != cur["digest"]:
+        return {"conflict": True, "error": "файл изменился на диске с момента открытия"}
+    parent = str(payload.get("parent") or "").strip().strip("\"'")
+    if not re.fullmatch(r"\d{1,20}", parent):
+        return {"error": "место публикации — номер страницы вики, а не «" + parent[:40] + "»"}
+    # Шапку пишем тем же путём, что штамп публикации (`stamp`): чистый текст без BOM и с «\n»,
+    # BOM и CRLF при записи возвращает `file_write` — он знает их из файла на диске.
+    from aurora_common import set_field, split_frontmatter
+    text = cur["text"].lstrip("﻿")
+    head, rest = split_frontmatter(text)
+    if head is None:
+        return {"error": "у документа нет шапки — место публикации пишется только в шапку"}
+    new = "---" + set_field(head, "publish_parent", parent) + rest
+    if new == cur["text"]:
+        return {"ok": True, "digest": cur["digest"], "unchanged": True, "parent": parent}
+    res = file_write(project, rel, new, expect=expect)
+    if res.get("ok"):
+        res["parent"] = parent
+    return res
+
+
 def publish_stale(fm: dict, text: str) -> tuple:
     """Отстала ли опубликованная страница → (отстала, известно ли).
 
@@ -7260,6 +7324,13 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(task_options(project, q))
+        elif u.path == "/api/publish/tree":
+            # Дочерние страницы вики для окна выбора места публикации; `parent` — спуск внутрь выбранной папки.
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(publish_tree(project, (q.get("path") or [""])[0],
+                                        (q.get("parent") or [""])[0], (q.get("fresh") or [""])[0]))
         elif u.path == "/api/task/doc":
             project = (q.get("project") or [""])[0]
             if not self._known(project):
@@ -7812,6 +7883,14 @@ class Handler(BaseHTTPRequestHandler):
             res = connector_roles_save(project, payload, request_lang(q))
             code = 200 if res.get("ok") else 409 if res.get("conflict") else 500 if res.get("failed") else 400
             self.send_json(res, code)
+            return
+        if u.path == "/api/publish/place":
+            # Сохранить место публикации документа — поле `publish_parent` шапки; файл менялся — 409, ничего не записано.
+            project = str(payload.get("project") or "")
+            if not self._known(project):
+                return
+            res = publish_place_save(project, payload)
+            self.send_json(res, 200 if res.get("ok") else 409 if res.get("conflict") else 400)
             return
         if u.path == "/api/task/create":
             project = str(payload.get("project") or "")

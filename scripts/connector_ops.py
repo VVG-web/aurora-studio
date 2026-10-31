@@ -68,6 +68,10 @@ ROLES = {
 # старше поля): он в выборе есть, а операция отвечает «обновите движок проекта».
 SERVICE_OF = {"tasks": "tasktracker", "wiki": "projectwiki"}
 CACHED = {("tasks", "issue_types"), ("tasks", "epics")}
+# Кэш только для «глубоких» списков — тех, что строятся лишними запросами и нужны окну, а не публикации:
+# публикация обходит дерево и создаёт разделы, поэтому её список детей обязан быть свежим (созданный раздел
+# должен появиться в следующем же ответе).
+CACHED_DEEP = {("wiki", "children")}
 CACHE_TTL = 3600
 CACHE_DIR = os.path.join(".aurora", "state", "cache", "connectors")
 OP_TIMEOUT = 300
@@ -369,7 +373,7 @@ def call(project: str, role: str, op: str, params: dict | None = None, fresh: bo
     if not script:
         return dict(failure("no_script", id=cid), connector=cid)
     key = server = ""
-    if (role, op) in CACHED:
+    if (role, op) in CACHED or ((role, op) in CACHED_DEEP and params.get("deep") is True):
         server = setting(project, m, str((m.get("operations") or {}).get("server") or ""))
         blob = json.dumps([cid, server, op, params], ensure_ascii=False, sort_keys=True)
         key = f"{role}-{op}-" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:24]

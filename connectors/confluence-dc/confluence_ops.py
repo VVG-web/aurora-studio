@@ -121,8 +121,18 @@ def op_children(params: dict, root: str) -> dict:
     api, cfg, _how = connect(root)
     kids, rep = api.children_report(pid)
     gap = children_verdict(rep)
-    return {"pages": [view(k, cfg["base_url"]) for k in kids if isinstance(k, dict)], "complete": not gap,
-            "gap": gap, "got": rep.get("got", 0)}
+    pages = [view(k, cfg["base_url"]) for k in kids if isinstance(k, dict)]
+    # Есть ли у каждой страницы свои дети — дешёвый вопрос «limit=1» по каждому: пустой список детей и есть лист.
+    # Только по явному `deep: true` (его просит окно выбора места публикации): публикация и синк обходятся без
+    # лишних запросов — им вложенность списка не нужна.
+    if params.get("deep") is True:
+        for p in pages:
+            try:
+                one = api.get(f"/rest/api/content/{urllib.parse.quote(p['id'], safe='')}/child/page?limit=1")
+                p["has_children"] = bool(one.get("results") or [])
+            except Exception:  # noqa: BLE001 — признак не критичен: без него окно спросит список и увидит пустоту
+                p["has_children"] = None
+    return {"pages": pages, "complete": not gap, "gap": gap, "got": rep.get("got", 0)}
 
 
 def op_create_page(params: dict, root: str) -> dict:

@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.201.0";
+const UI_VERSION = "1.202.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1432,6 +1432,96 @@ async function publishFromEditor(){
   drawPublishCard(box, rel, (res && res.plan) || null, (res && !res.plan && res.error) || "", clean || {});
 }
 
+/* Окно выбора места публикации из дерева вики: папки грузятся запросами `/api/publish/tree` (дочерние страницы
+   выбранной, кэш на час у сервера). Папка без детей — лист: её выбор сохраняет место сразу и закрывает окно.
+   Папка с детьми — проваливаемся, и в её списке первым стоит «Положить в корень»: сохранить выбор, не проваливаясь.
+   Спуск — по одной папке за раз (сверху вниз), путь виден в строке заголовков. Список длинный — прокручивается
+   (`pick-list` уже с `overflow:auto`). `onPick(place)` получает `{id, title}` выбранной папки — сохранение делает
+   вызывающий: у карточки публикации — поле `publish_parent` шапки через `/api/publish/place`. */
+async function pickPublishPlace({path = "", start = "", onPick = null} = {}){
+  if (!S.project || !path) return null;
+  const chain = [];      // спуск: [{id, title}] от корня — крошки и «Положить в корень»
+  const load = (pid, fresh) => api("/api/publish/tree?" + new URLSearchParams(
+    {project: S.project.path, path, ...(pid ? {parent: pid} : {}), ...(fresh ? {fresh: "1"} : {})}), {quiet: true});
+  const pick = place => { if (onPick) onPick(place); close(place); };
+  // Выбор строки для «Сохранить»: подсветка и включённая кнопка; лист выбирается сразу без кнопки.
+  const select = (place, row) => {
+    save.disabled = "";
+    list.querySelectorAll(".pick-row.sel").forEach(x => x.classList.remove("sel"));
+    row.classList.add("sel");
+    sel = place;
+  };
+  const place = await pickOpen((box, close) => {
+    const crumbs = el("div", {class:"pick-crumbs", role:"navigation", "aria-label": t("pub.place_title")});
+    const list = el("div", {class:"pick-list", role:"listbox", "aria-label": t("pub.place_title"), tabindex:"0"});
+    const note = el("div", {class:"muted pick-note"});
+    let sel = null;                       // выбранная строка (в т.ч. «Положить в корень»): её и сохранит кнопка
+    const save = el("button", {class:"btn primary", disabled:"", onclick: () => {
+      const chosen = sel || chain.at(-1);
+      if (chosen) pick(chosen);
+    }}, t("pub.place_save"));
+    const refresh = el("button", {class:"btn sm", onclick: () => draw(chain.at(-1)?.id || "", true)}, t("tracker.refresh"));
+    box.setAttribute("aria-label", t("pub.place_title"));
+    box.append(el("h2", {style:"margin:0"}, t("pub.place_title")),
+      el("div", {class:"muted", style:"font-size:12.5px"}, t("pub.place_about")),
+      crumbs, list, note,
+      el("div", {class:"row", style:"gap:8px;align-items:center"}, refresh, el("div", {class:"spacer"}),
+        el("button", {class:"btn", onclick: () => close(null)}, t("pick.cancel")), save));
+    const draw = async (pid, fresh) => {
+      list.innerHTML = ""; note.textContent = ""; refresh.disabled = true;
+      list.append(el("div", {class:"pick-head", style:"border-top:0"}, el("span", {class:"spin"}), " ", t("pub.place_loading")));
+      const r = await load(pid, fresh);
+      refresh.disabled = false;
+      if (!box.isConnected) return;
+      list.innerHTML = "";
+      if (!r || r.error){ note.textContent = t("pub.place_err", {why: (r && (r.detail || r.error)) || "—"}); return; }
+      if (r.fixed){ note.textContent = (r && r.why) || ""; return; }
+      if (r.why){ note.textContent = r.why; return; }
+      const pages = r.pages || [];
+      sel = null;
+      // Крошки спуска: корень › выбранная › выбранная — клик возвращает уровень
+      crumbs.replaceChildren();
+      chain.forEach((c, i) => crumbs.append(
+        ...(i ? [" › "] : []),
+        el("button", {class:"btn sm", onclick: () => { chain.length = i + 1; draw(c.id); }}, c.title)));
+      const cur = chain.at(-1);
+      // «Положить в корень выбранной папки» — выбор без проваливания; он же запасной: «Сохранить» без выбранной строки
+      // сохраняет текущую папку. На верхнем уровне это корень вида (родитель первого уровня).
+      save.disabled = cur ? null : "";
+      if (cur){
+        const row = el("div", {class:"pick-row", role:"option", tabindex:"-1",
+          onclick: () => select({id: cur.id, title: cur.title}, row),
+          onkeydown: e => { if (e.key === "Enter" || e.key === " ") select({id: cur.id, title: cur.title}, row); }},
+          el("span", {class:"pk-name"}, el("b", {}, t("pub.place_root", {title: cur.title}))));
+        list.append(row);
+      }
+      if (!pages.length){
+        if (!cur) note.textContent = t("pub.place_none");
+        return;
+      }
+      pages.forEach(p => {
+        const kids = p.has_children;
+        const row = el("div", {class:"pick-row", role:"option", tabindex:"-1",
+          onclick: () => {
+            if (kids === false) return pick(p);          // лист — выбор сразу, окно закрывается
+            chain.push({id: p.id, title: p.title});
+            draw(p.id);
+          },
+          onkeydown: e => { if (e.key === "Enter" || e.key === " ") row.click(); }},
+          el("span", {class:"pk-name"}, p.title),
+          kids ? el("span", {class:"pk-size"}, "›") : null,
+          kids === null ? el("span", {class:"pk-size"}, "?") : null);
+        list.append(row);
+      });
+      if (!r.complete) note.textContent = t("pub.place_partial", {gap: r.gap || "—"});
+      const first = list.querySelector(".pick-row");
+      if (first) first.focus();
+    };
+    draw(start || "");
+  });
+  return place;
+}
+
 // Карточка публикации файла в «Файлах»: одна на файл, новая заменяет прежнюю.
 function publishCard(rel){
   $("#filePubCard")?.remove();
@@ -1574,13 +1664,34 @@ function drawPublishCard(box, rel, plan, err, clean){
     if (err) box.append(el("div",{class:"sub warn"}, t("pub.no_plan", {why: err})));
     if (!clean.marked) allow.push("--allow", "no-marker");
   }
-  box.append(el("div",{class:"sub"}, clean.marked ? t("editor.publish_cut", {n: clean.cut}) : t("editor.publish_nomark")));
+  box.append(el("div", {class:"sub"}, clean.marked ? t("editor.publish_cut", {n: clean.cut}) : t("editor.publish_nomark")));
   box.append(el("details",{style:"margin-top:6px"}, el("summary",{}, t("pub.clean")),
     el("pre",{class:"mono", style:"white-space:pre-wrap;max-height:260px;overflow:auto;"
       + "margin-top:8px;padding:8px;border-radius:8px;background:var(--surface-2)"}, clean.clean || "")));
   const row = el("div",{class:"row", style:"gap:8px;margin-top:10px;flex-wrap:wrap"});
   if (plan) row.append(...publishActions(rel, plan, {plan: true, allow, draft, blockedGate: hard.length > 0}));
   else row.append(el("button",{class:"btn primary", onclick:()=>runPublish(rel, ["--apply", ...allow])}, t("pub.send")));
+  // Точное место публикации — выбором из дерева вики: пишется полем publish_parent шапки и старше publish_url вида.
+  // Страница уже лежит (confluence_page_id) — выбора нет, окно скажет само; несохранённый текст — сохраняем тем же кликом.
+  row.append(el("button",{class:"btn", onclick: async () => {
+    if (F.dirty){ await saveFile(); if (F.dirty) return; }
+    const digest = F.digest || "";
+    await pickPublishPlace({
+      path: rel,
+      onPick: async place => {
+        if (!place || !place.id) return;
+        const r = await api("/api/publish/place", {method:"POST", quiet:true, body: JSON.stringify(
+          {project: S.project.path, path: rel, parent: place.id, expect: digest})});
+        if (r && r.ok){
+          toast(r.unchanged ? t("pub.place_unchanged") : t("pub.place_saved", {title: place.title}), "ok");
+          if (!r.unchanged) await afterPublish(rel);
+          publishFromEditor();
+          return;
+        }
+        if (r && r.conflict){ toast(t("pub.place_conflict"), "warn"); await afterPublish(rel); return; }
+        toast((r && r.error) || t("tracker.save_failed"), "err");
+      }});
+  }}, t("pub.place")));
   row.append(el("button",{class:"btn", onclick:()=>box.remove()}, t("editor.publish_cancel")));
   box.append(row);
 }
