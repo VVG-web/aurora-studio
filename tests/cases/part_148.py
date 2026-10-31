@@ -423,12 +423,12 @@ def test_a_title_taken_elsewhere_in_the_space_blocks_and_moves_nothing(tmp: Path
 
 
 @test
-def test_explicit_parent_is_the_exact_place_and_the_kind_beats_the_header(tmp: Path):
-    """Корень: `--parent` (точное место, путь вида не применяется) → `publish_url` вида → `publish_parent` шапки (наследие)
-    → конфиг. Шапка больше не затеняет настройку вида — её туда и не пишут."""
+def test_explicit_parent_is_the_exact_place_and_the_header_place_beats_the_kind(tmp: Path):
+    """Корень: `--parent` и `publish_parent` шапки — точное место (путь вида не применяется); иначе `publish_url` вида,
+    затем конфиг. Место, выбранное окном, не затеняется путём вида."""
     P = _mod("publish_doc")
     assert P.choose_parent("1", {"publish_parent": "2"}, {"publish_parent": "4"}, "3") == ("1", "--parent")
-    assert P.choose_parent("", {"publish_parent": "2"}, {"publish_parent": "4"}, "3") == ("3", "publish_url вида артефакта")
+    assert P.choose_parent("", {"publish_parent": "2"}, {"publish_parent": "4"}, "3") == ("2", "publish_parent в шапке документа")
     assert P.choose_parent("", {"publish_parent": "2"}, {"publish_parent": "4"}) == ("2", "publish_parent в шапке документа")
     assert P.choose_parent("", {}, {"publish_parent": "4"}) == ("4", "confluence.publish_parent в конфиге")
     wiki = Wiki()

@@ -1470,8 +1470,10 @@ async function pickPublishPlace({path = "", start = "", onPick = null} = {}){
     const draw = async (pid, fresh) => {
       list.innerHTML = ""; note.textContent = ""; refresh.disabled = true;
       list.append(el("div", {class:"pick-head", style:"border-top:0"}, el("span", {class:"spin"}), " ", t("pub.place_loading")));
-      const r = await load(pid, fresh);
-      refresh.disabled = false;
+      let r = null;
+      try { r = await load(pid, fresh); }
+      catch (e) { r = {error: String((e && e.message) || e || "")}; }
+      finally { refresh.disabled = false; }
       if (!box.isConnected) return;
       list.innerHTML = "";
       if (!r || r.error){ note.textContent = t("pub.place_err", {why: (r && (r.detail || r.error)) || "—"}); return; }
@@ -1645,11 +1647,12 @@ function publishHeadline(res, plan){
 function drawPublishCard(box, rel, plan, err, clean){
   box.innerHTML = "";
   box.append(el("b",{}, t("editor.publish_preview")));
-  // Ворота выходных команд: «нет границы чистовика» и «черновик» снимаются осознанно — этой карточкой и кнопкой
-  // с понятной надписью; остальное (остатки шаблона, персональные данные) чинится в документе.
+  // Ворота выходных команд: «черновик» и «нет границы чистовика» — свойства самого документа, а не повод для
+  // сообщений: публикуется тот документ, который человек открыл, по правилам его вида и промпта. Снимаются молча.
+  // Остальные (остатки шаблона, персональные данные) по-прежнему чинятся в документе и останавливают отправку.
   const gates = plan ? (plan.gate || []).filter(g => g.level === "block") : [];
   const allow = gates.filter(g => g.code === "no-marker" || g.code === "draft").map(g => ["--allow", g.code]).flat();
-  const draft = gates.some(g => g.code === "draft");
+  const draft = false;
   const hard = gates.filter(g => g.code !== "no-marker" && g.code !== "draft");
   if (plan){
     box.append(el("div",{class:"sub" + (plan.outcome === "blocked" || plan.outcome === "conflict" ? " warn" : "")},
@@ -1657,14 +1660,14 @@ function drawPublishCard(box, rel, plan, err, clean){
     if (plan.space || plan.root && plan.root.id) box.append(publishPath(plan));
     if (plan.page && plan.page.id) box.append(el("div",{class:"muted", style:"font-size:12px"},
       t("pub.page_now", {id: plan.page.id, version: plan.page.version || "?", by: plan.page.by || "—", when: plan.page.when || "—"})));
-    gates.forEach(g => box.append(el("div",{class:"sub", style:"color:var(--tier-inreview)"},
+    // Только то, что правда останавливает отправку; «черновик» и «нет маркера» молчат.
+    hard.forEach(g => box.append(el("div",{class:"sub", style:"color:var(--tier-inreview)"},
       t("pub.gate_" + g.code.replace(/-/g, "_")))));
   } else {
     // Плана нет (нет связи, движок проекта старше): прежний предпросмотр и отправка — проверку пройдёт сама команда.
     if (err) box.append(el("div",{class:"sub warn"}, t("pub.no_plan", {why: err})));
     if (!clean.marked) allow.push("--allow", "no-marker");
   }
-  box.append(el("div", {class:"sub"}, clean.marked ? t("editor.publish_cut", {n: clean.cut}) : t("editor.publish_nomark")));
   box.append(el("details",{style:"margin-top:6px"}, el("summary",{}, t("pub.clean")),
     el("pre",{class:"mono", style:"white-space:pre-wrap;max-height:260px;overflow:auto;"
       + "margin-top:8px;padding:8px;border-radius:8px;background:var(--surface-2)"}, clean.clean || "")));
@@ -3627,43 +3630,14 @@ async function renderKinds(box){
               checked:(String(rec.tech_agnostic||"").toLowerCase()==="true")?"":null,
               onchange:e=>{ rec.tech_agnostic = e.target.checked ? "true" : ""; dirty(); }}),
             t("kinds.tech_agnostic"), " ", kindTip(t("kinds.tech_hint")))));
-      // Пример пути считает сервер тем же кодом, что публикация: «для документа …: Корень › Раздел › Заголовок».
-      // Значения формы — несохранённые тоже — уходят запросом; ответ приходит, пока человек печатает (с паузой).
-      // Под примером — поля шапки, которые есть у документов вида, и предупреждение о поле шаблона, которого у них нет
-      // ни у одного (сохранять оно не мешает). Запрос идёт и без пути: список полей нужен, пока путь ещё не написан.
-      const example = el("div",{class:"muted kf-example", "data-kind": kind});
-      const fieldsHave = el("div",{class:"muted kf-fields"});
-      const fieldsWarn = el("div",{class:"kf-fields kf-warn", hidden:""});
-      let exampleTimer = null;
-      const exampleNow = async () => {
-        const q = new URLSearchParams({project: S.project.path, kind, out: rec.out || "", publish_url: rec.publish_url || "",
-                                       publish_path: rec.publish_path || "", publish_title: rec.publish_title || ""});
-        const r = await api("/api/kinds/example?" + q.toString(), {quiet:true});
-        const f = kindFields(r);
-        fieldsHave.textContent = f.have;
-        fieldsWarn.textContent = f.warn;
-        fieldsWarn.hidden = !f.warn;
-        example.textContent = kindExample(r);
-      };
-      const watch = input => { input.addEventListener("input", () => { clearTimeout(exampleTimer);
-                                                                       exampleTimer = setTimeout(exampleNow, 350); });
-                               return input; };
-      exampleNow();
-      // Справка к пути и заголовку: корень, разделы, страница; «>»; встроенные подстановки с примером; поля шапки.
-      const slotsHelp = el("details",{class:"kf-help"},
-        el("summary",{}, t("kinds.path_help")),
-        el("p",{}, t("kinds.path_help_tree")),
-        el("p",{}, t("kinds.path_help_fields")),
-        el("p",{}, t("kinds.path_help_slots")),
-        el("ul",{}, ...(d.slots || []).map(s => el("li",{}, el("code",{}, "{" + s + "}"), " — ", t("kinds.slot_" + s)))),
-        el("p",{}, t("kinds.path_help_mirror")));
+      // Место страницы в Confluence выбирается окном в карточке публикации («Выбрать место…»): общее поле пути у
+      // вида убрано — оно требовало знать подстановки и не совпадало с тем, как документы лежат в папках.
+      const watch = input => input;
       const publish = el("fieldset",{class:"kframe", "data-frame":"publish"},
         el("legend",{}, t("kinds.frame_publish")),
         el("div",{class:"muted kf-about"}, t("kinds.frame_publish_about")),
         el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;align-items:flex-end"},
           lab("publish_url", watch(field("publish_url", t("kinds.f_publish"), "260px"))),
-          // Путь под корнем — цепочка разделов через «>», подстановки из шапки документа и подпапок; заголовок — по шаблону.
-          lab("publish_path", watch(field("publish_path", t("kinds.f_publish_path"), "260px")), t("kinds.publish_path_hint")),
           lab("publish_title", watch(field("publish_title", t("kinds.f_publish_title"), "200px")), t("kinds.publish_title_hint")),
           lab("publish_prompt", pfield("publish_prompt", t("kinds.f_publish_prompt"), "220px", "file", "Prompts"),
               t("kinds.publish_prompt_hint")),
@@ -3674,8 +3648,7 @@ async function renderKinds(box){
               onchange:e=>{ rec.review = e.target.value; dirty(); }},
               ...["", ...(d.review_profiles||[])].map(v=>el("option",{value:v, selected:(rec.review||"")===v?"":null},
                 v ? t("kinds.review_" + v) : t("kinds.review_off")))))),
-        slotsHelp, fieldsHave, fieldsWarn,
-        example);
+        );
       rows.append(el("div",{class:"list-item", "data-kind-row": kind, style:"gap:8px;flex-wrap:wrap"},
         el("span",{class:"chip mono",style:"flex:none"}, kind),
         lab("title", field("title", t("kinds.f_title"), "240px")),

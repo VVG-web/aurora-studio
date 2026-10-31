@@ -13,8 +13,8 @@
 Без `--apply` не отправляется ничего: печатается диагноз, путь страницы и первые строки storage.
 
 Путь в Confluence — цепочка: корневая страница → разделы → страница документа. Корень по порядку: `--parent <page_id>`
-(точное место, путь вида не применяется) → `publish_url` вида артефакта (`artifacts:` проекта) → `publish_parent` в
-шапке документа (наследие: прежде его писало создание документа) → `confluence.publish_parent` конфига. Под корнем —
+и `publish_parent` в шапке документа (точное место — путь вида не применяется; шапку пишет окно выбора места) →
+`publish_url` вида артефакта (`artifacts:` проекта) → `confluence.publish_parent` конфига. Под корнем —
 разделы из `publish_path` вида (уровни через `>`, подстановки из шапки документа; `{folders}` — подпапки внутри папки
 вида, каждая своим уровнем), заголовок страницы — по `publish_title` (по умолчанию `{title}`). Пространство берётся у
 корневой страницы, а не из конфига. Раздела нет — он создаётся (только с `--apply`) страницей с баннером «раздел создан
@@ -430,14 +430,17 @@ def parent_from(raw: str):
 
 ROOT_FROM = {"--parent": "--parent", "publish_url вида артефакта": "publish_url",
              "publish_parent в шапке документа": "publish_parent", "confluence.publish_parent в конфиге": "confluence"}
+# Точное место документа: `--parent` и `publish_parent` шапки (его пишет окно выбора места). Для них путь вида
+# (`publish_path`) не применяется — иначе страница ушла бы не туда, куда её выбрали.
+EXACT_PLACE = ("--parent", "publish_parent в шапке документа")
 
 
 def choose_parent(cli: str, fm: dict, cfg: dict, kind_url: str = "") -> tuple:
-    """Корневая страница по порядку: `--parent` (точное место) → `publish_url` вида документа → `publish_parent` шапки
-    (наследие: его писало создание документа, и он навсегда затенял бы настройку вида) → `confluence.publish_parent`
-    конфига. → (значение, откуда); пусто — не задан."""
-    for raw, where in ((cli, "--parent"), (kind_url, "publish_url вида артефакта"),
-                       (fm.get("publish_parent"), "publish_parent в шапке документа"),
+    """Корневая страница по порядку: `--parent` (точное место) → `publish_parent` шапки документа (точное место: его
+    пишет окно выбора места и создание документа) → `publish_url` вида → `confluence.publish_parent` конфига.
+    → (значение, откуда); пусто — не задан."""
+    for raw, where in ((cli, "--parent"), (fm.get("publish_parent"), "publish_parent в шапке документа"),
+                       (kind_url, "publish_url вида артефакта"),
                        (cfg.get("publish_parent"), "confluence.publish_parent в конфиге")):
         val = str(raw or "").strip().strip("\"'")
         if val:
@@ -740,7 +743,7 @@ def publish(a) -> dict:
     kid, rec = _kind(fm, path)
     res["kind"] = kid
     raw_root, where = choose_parent(a.parent or "", fm, cfg, (rec.get("publish_url") or "").strip())
-    target = MK.publish_target(rec if where != "--parent" else {**rec, "publish_path": ""},
+    target = MK.publish_target({**rec, "publish_path": ""} if where in EXACT_PLACE else rec,
                                MK.publish_context(text, path, kid, MK.project_name("."), rec.get("out") or ""))
     if a.title:
         target["title"] = MK.slot_text(a.title)

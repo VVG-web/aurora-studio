@@ -1008,7 +1008,22 @@ def publish_tree(project: str, rel: str, parent: str, fresh: str) -> dict:
         if not root:
             why = info.get("why") or "не задана родительская страница вики"
             return {"pages": [], "why": why, "fix": info.get("fix") or ""}
+    # Корень в настройках — номер страницы или адрес (`publish_url` часто ссылкой): приводим к номеру тем же
+    # разбором, что публикация, иначе операция справедливо отвечает «нужен номер страницы».
     import connector_ops as CO
+    import publish_doc as PD
+    pid, named = PD.parent_from(root)
+    if not pid and named:
+        found = CO.call(project, "wiki", "find_page", {"space": named[0], "title": named[1], "body": False})
+        page = ((found.get("result") or {}).get("page") or {}) if found.get("ok") else {}
+        pid = str(page.get("id") or "")
+        if not pid:
+            return {"pages": [], "why": found.get("error") or f"корневая страница «{named[1]}» не найдена в вики",
+                    "detail": found.get("detail") or "", "fix": "kinds"}
+    if not pid:
+        return {"pages": [], "why": "корневая страница публикации не разобрана: нужен номер страницы или адрес с pageId",
+                "fix": "kinds"}
+    root = pid
     got = CO.call(project, "wiki", "children", {"page_id": root, "deep": True}, fresh=fresh == "1")
     if not got.get("ok"):
         return {"error": got.get("error") or "операция не выполнена", "detail": got.get("detail") or "",
@@ -1099,12 +1114,16 @@ def publish_info(project: str, rel: str, full: str, fm: dict, text: str) -> dict
            "parent": "", "parent_from": "", "path": [], "title": "", "fields": [], "why": "", "fix": "", "gate": []}
     import confluence_export as CE
     cfg = CE.read_config(project)
-    parents = (("publish_url", rec.get("publish_url")), ("publish_parent", fm.get("publish_parent")),
+    # Порядок тот же, что у `ship:publish`: `publish_parent` шапки — точное место документа (его пишет окно выбора
+    # места) и потому раньше пути вида.
+    parents = (("publish_parent", fm.get("publish_parent")), ("publish_url", rec.get("publish_url")),
                ("confluence", cfg.get("publish_parent")))
     parent = next(((src, str(v).strip().strip("\"'")) for src, v in parents if str(v or "").strip().strip("\"'")), ("", ""))
     out["parent_from"], out["parent"] = parent
-    target = AG_KINDS.publish_target(rec, AG_KINDS.publish_context(text, full, kid, AG_KINDS.project_name(project),
-                                                                   rec.get("out") or "", project))
+    exact = parent[0] == "publish_parent"
+    target = AG_KINDS.publish_target({**rec, "publish_path": ""} if exact else rec,
+                                    AG_KINDS.publish_context(text, full, kid, AG_KINDS.project_name(project),
+                                                             rec.get("out") or "", project))
     out["path"], out["title"], out["fields"] = target["levels"], target["title"], target["missing"]
     problem = (target["problems"] or [("", "")])[0]
     if not cfg.get("base_url"):

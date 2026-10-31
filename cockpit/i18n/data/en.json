@@ -687,7 +687,9 @@
     "место публикации — номер страницы вики, а не «{}»": "the publishing place must be a wiki page number, not «{}»",
     "операция не выполнена": "the operation was not performed",
     "страница уже лежит в Confluence — место задано публикацией": "the page already lives in Confluence — the place was set by publishing",
-    "у документа нет шапки — место публикации пишется только в шапку": "the document has no header — the publishing place is written only into the header"
+    "у документа нет шапки — место публикации пишется только в шапку": "the document has no header — the publishing place is written only into the header",
+    "корневая страница «{}» не найдена в вики": "the root page «{}» was not found in the wiki",
+    "корневая страница публикации не разобрана: нужен номер страницы или адрес с pageId": "the publishing root page was not understood: a page number or an address with pageId is needed"
   },
   "connectors": {
     "confluence-dc": {

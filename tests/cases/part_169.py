@@ -38,7 +38,7 @@ def _cats() -> tuple:
 # Поля формы видов → ключ подсказки. Свойства задачи — отдельный блок, в эту форму подсказок он не входит.
 TIPS = {"title": "kinds.tip_title", "template": "kinds.tip_template", "prompt": "kinds.tip_prompt", "out": "kinds.tip_out",
         "mcp": "kinds.tip_mcp", "ref_mask": "kinds.ref_mask_hint", "publish_url": "kinds.tip_publish_url",
-        "publish_path": "kinds.tip_publish_path", "publish_title": "kinds.tip_publish_title",
+        "publish_title": "kinds.tip_publish_title",
         "publish_prompt": "kinds.tip_publish_prompt",
         # рамка «Трекер задач» (1.200.0): те же правила подсказки — пример и обязательно ли, в обоих языках
         "task_project": "kinds.tip_task_project", "task_type": "kinds.tip_task_type",
@@ -124,22 +124,14 @@ def test_kinds_form_explains_every_field_in_both_languages(tmp: Path):
             if lang == "en":
                 assert not CYR.search(text.replace("«", "").replace("»", "")), (field, text)
         assert f"kinds.l_{field}" in ru or field in OTHER_TIPS, field
-    # справка к пути и заголовку
-    help_keys = ("kinds.path_help", "kinds.path_help_tree", "kinds.path_help_fields", "kinds.path_help_slots",
-                 "kinds.path_help_mirror", "kinds.publish_path_hint", "kinds.publish_title_hint", "kinds.fields_have",
-                 "kinds.fields_unknown") + tuple("kinds.slot_" + s for s in MK.BUILTIN_SLOTS)
-    for key in help_keys:
-        assert ru.get(key, "").strip() and en.get(key, "").strip() and not CYR.search(en[key]), key
-    for s in MK.BUILTIN_SLOTS:
-        assert ":" in ru["kinds.slot_" + s] and ":" in en["kinds.slot_" + s], f"у {{{s}}} нет примера"
-    assert all(w in ru["kinds.path_help_tree"] for w in ("Корень", "Раздел", "Страница", "«>»", "прямо под корень"))
-    assert all(w in en["kinds.path_help_tree"] for w in ("root", "section", "page", "“>”", "right under the root"))
-    assert "{поле?}" in ru["kinds.path_help_fields"] and "{field?}" in en["kinds.path_help_fields"]
-    for cat in (ru, en):
-        assert "{folders}" in cat["kinds.path_help_mirror"] and "{title}" in cat["kinds.path_help_mirror"]
-        assert "{folders}" in cat["kinds.publish_path_hint"] and "{fields}" in cat["kinds.fields_have"]
-    assert 'el("details",{class:"kf-help"}' in form and '(d.slots || []).map(' in form and 't("kinds.slot_" + s)' in form
-    assert "fieldsHave" in form and "fieldsWarn" in form and "kindFields(r)" in form
+    # Путь под корнем из формы убран (1.202.0): место выбирается окном в карточке публикации. Справки о подстановках
+    # пути и примера пути в форме больше нет, а заголовок страницы остаётся с подсказкой.
+    assert 'lab("publish_path"' not in form, "поле пути вернулось в форму вида"
+    assert 'el("details",{class:"kf-help"}' not in form and "kindFields(r)" not in form, "справка/пример пути вернулись"
+    assert "fieldsHave" not in form and "fieldsWarn" not in form, "поля шапки под примером пути вернулись"
+    assert "kinds.publish_title_hint" in ru and "kinds.publish_title_hint" in en, "подсказка заголовка пропала"
+    assert not [k for k in ru if k.startswith("kinds.path_help") or k.startswith("kinds.slot_")], "остались строки справки пути"
+    assert "kinds.f_publish_path" not in ru and "kinds.f_publish_path" not in en, "осталась подпись поля пути"
     assert P150._ck().kinds_read(str(make_project(tmp)))["slots"] == list(MK.BUILTIN_SLOTS)
     assert "confirm(" not in form and "alert(" not in form, "в форме видов окно подтверждения"
 

@@ -350,13 +350,13 @@ def test_publishing_stamps_the_fingerprint_and_the_parent_comes_from_the_kind(tm
 
 
 @test
-def test_the_kind_beats_the_header_and_the_header_beats_the_config(tmp: Path):
-    """Порядок корня (выпуск B): `--parent` → `publish_url` вида → шапка (`publish_parent`, наследие) → конфиг. Шапка
-    больше не затеняет настройку вида: создание документа её туда и не пишет."""
+def test_the_exact_place_beats_the_kind_and_the_kind_beats_the_config(tmp: Path):
+    """Порядок корня: `--parent` → `publish_parent` шапки (точное место; его пишет окно выбора места) → `publish_url`
+    вида → конфиг. Выбранное место не затеняется путём вида — иначе выбор в окне не действовал бы."""
     P = _mod("publish_doc")
     assert P.choose_parent("1", {"publish_parent": "2"}, {"publish_parent": "4"}, "3") == ("1", "--parent")
-    assert P.choose_parent("", {"publish_parent": "2"}, {"publish_parent": "4"}, "3") == ("3", "publish_url вида артефакта")
-    assert P.choose_parent("", {"publish_parent": "2"}, {"publish_parent": "4"})[0] == "2"
+    assert P.choose_parent("", {"publish_parent": "2"}, {"publish_parent": "4"}, "3") == ("2", "publish_parent в шапке документа")
+    assert P.choose_parent("", {}, {"publish_parent": "4"}, "3") == ("3", "publish_url вида артефакта")
     assert P.choose_parent("", {}, {"publish_parent": "4"}) == ("4", "confluence.publish_parent в конфиге")
     assert P.choose_parent("", {}, {}, "") == ("", "")
 

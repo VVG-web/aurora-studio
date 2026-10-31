@@ -169,3 +169,124 @@ def test_publish_place_texts_and_button_are_in_both_catalogs_and_the_script(tmp:
     assert 't("pub.place")' in card, "кнопки «Выбрать место…» нет в карточке публикации"
     assert "pickPublishPlace({" in card and "parent: place.id" in card, card[-400:]
     assert "has_children" in src, "лист/папка не различаются"
+
+
+# ------------------------------------------------------------------ регрессии выпуска 1.202.0
+# Каждая проверка ниже — найденная на живом проекте ошибка или требование владельца, а не выдуманный случай.
+
+@test
+def test_publish_tree_accepts_a_root_given_as_a_confluence_link(tmp: Path):
+    """Найдено на живом проекте: `publish_url` вида — ссылка `…/pages/viewpage.action?pageId=NNN`, и окно получало отказ
+    «page_id: нужен номер страницы, а не «https://…»» — пустое окно. Корень приводится к номеру тем же разбором, что
+    у публикации: ссылка с `pageId`, голый номер и `/display/ПРОСТРАНСТВО/Заголовок` (последний — поиском страницы)."""
+    restore = set_home(tmp / "home")
+    wiki = W.Wiki()
+    root = W.project(tmp, wiki.url, KIND_US)
+    rid = wiki.add("Корень", None, "DOC")
+    wiki.add("Релиз 2.1", rid, "DOC")
+    cfg = root / "aurora.config.yaml"
+    link = f"{wiki.url}/pages/viewpage.action?pageId={rid}"
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace("{root}", link), encoding="utf-8")
+    doc = root / "Artifacts" / "us" / "US-1.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("---\ntype: us\n---\n\n# Итог\n", encoding="utf-8")
+    srv, call = S._server(tmp)
+    try:
+        with T.env(**ENV):
+            st, d = call("GET", "/api/publish/tree" + _q(root, path="Artifacts/us/US-1.md"))
+            assert st == 200 and not d.get("error"), d
+            assert d["root"] == rid and [p["title"] for p in d["pages"]] == ["Релиз 2.1"], d
+            assert all(p.get("has_children") is False for p in d["pages"]), d
+            # ссылка /display/… номера не несёт — страницу ищут по пространству и заголовку
+            cfg.write_text(cfg.read_text(encoding="utf-8").replace(link, f"{wiki.url}/display/DOC/Корень"), encoding="utf-8")
+            st, named = call("GET", "/api/publish/tree" + _q(root, path="Artifacts/us/US-1.md"))
+            assert st == 200 and not named.get("error") and named["root"] == rid, named
+            # неразобранный корень — причина словами, а не пустой список без объяснения
+            cfg.write_text(cfg.read_text(encoding="utf-8").replace(f"{wiki.url}/display/DOC/Корень", "просто-строка"),
+                           encoding="utf-8")
+            st, bad = call("GET", "/api/publish/tree" + _q(root, path="Artifacts/us/US-1.md"))
+            assert st == 200 and bad["pages"] == [] and "не разобрана" in bad["why"], bad
+    finally:
+        srv.shutdown()
+        wiki.close()
+        restore()
+
+
+@test
+def test_publish_place_dialog_shows_a_reason_instead_of_an_empty_window(tmp: Path):
+    """Найдено на живом проекте: при отказе окно выбора места выглядело пустым. Отказ операции (нет доступа, нет связи) приходит
+    причиной и подробностью; окно показывает причину строкой, а не молчит; ответ без списка и без причины — тоже
+    причина, а не пустота."""
+    src = (Path(__file__).resolve().parent.parent.parent / "cockpit" / "ui" / "panel.js").read_text(encoding="utf-8")
+    dialog = src.split("async function pickPublishPlace")[1].split("\n}\n", 1)[0]
+    assert "pub.place_err" in dialog and "(r.detail || r.error)" in dialog, "окно молчит при отказе"
+    assert "if (!r || r.error)" in dialog and "if (r.why)" in dialog, dialog[:0]
+    assert "catch" in dialog or "try" in dialog, "сбой запроса оставит пустое окно"
+    server = (Path(__file__).resolve().parent.parent.parent / "cockpit" / "aurora_cockpit.py").read_text(encoding="utf-8")
+    body = server.split("def publish_tree(")[1].split("\ndef ")[0]
+    assert '"detail": got.get("detail")' in body.replace("'", '"') or 'detail": got.get("detail")' in body, \
+        "подробность отказа не доходит до окна"
+
+
+@test
+def test_publish_card_has_no_draft_or_marker_chatter_and_auto_allows_them(tmp: Path):
+    """Требование владельца (31.10): «зачем столько сообщений, что это черновик и draft» — публикуется открытый
+    документ по правилам вида и промпта. «Черновик» и «нет границы чистовика» снимаются молча (`--allow`), в карточке
+    остаются только те ворота, что правда останавливают отправку (остатки шаблона, персональные данные)."""
+    src = (Path(__file__).resolve().parent.parent.parent / "cockpit" / "ui" / "panel.js").read_text(encoding="utf-8")
+    card = src.split("function drawPublishCard")[1].split("\n}\n", 1)[0]
+    assert "const draft = false;" in card, "«черновик» снова просит отдельного клика"
+    assert "hard.forEach(g => box.append" in card, "сообщения ворот печатаются не по списку останавливающих"
+    assert "editor.publish_cut" not in card and "editor.publish_nomark" not in card, "лишние строки вернулись"
+    assert 'code === "no-marker" || g.code === "draft"' in card, "молчаливое снятие ворот потеряно"
+    import json
+    kit = Path(__file__).resolve().parent.parent.parent
+    for name in ("ru.json", "en.json"):
+        cat = json.loads((kit / "cockpit" / "i18n" / name).read_text(encoding="utf-8"))
+        assert "editor.publish_cut" not in cat and "editor.publish_nomark" not in cat, name
+
+
+@test
+def test_kind_form_has_no_root_path_field_and_the_place_is_chosen_in_publishing(tmp: Path):
+    """Требование владельца (31.10): поле «Path under the root» в настройках вида убрать — как его заполнять, непонятно,
+    и оно не отвечает реальному процессу. Место выбирается окном в карточке публикации и пишется в шапку; у формы
+    вида не осталось поля пути, справки о подстановках пути и примера пути."""
+    import json
+    kit = Path(__file__).resolve().parent.parent.parent
+    src = (kit / "cockpit" / "ui" / "panel.js").read_text(encoding="utf-8")
+    form = src.split("async function renderKinds(")[1].split("\n}\n", 1)[0]
+    assert 'lab("publish_path"' not in form, "поле пути вернулось в форму вида"
+    assert "kf-help" not in form and "kindFields(r)" not in form, "справка/пример пути вернулись в форму"
+    assert 'lab("publish_title"' in form, "заголовок страницы из формы пропал"
+    for name in ("ru.json", "en.json"):
+        cat = json.loads((kit / "cockpit" / "i18n" / name).read_text(encoding="utf-8"))
+        assert not [k for k in cat if k.startswith("kinds.path_help")], name
+        assert "kinds.f_publish_path" not in cat and "kinds.publish_path_hint" not in cat, name
+    # путь вида в конфиге остаётся совместимым, но точное место документа его вытесняет
+    assert "EXACT_PLACE" in (kit / "scripts" / "publish_doc.py").read_text(encoding="utf-8")
+    assert '"publish_parent", fm.get("publish_parent")' in (kit / "cockpit" / "aurora_cockpit.py").read_text(encoding="utf-8")
+
+
+@test
+def test_a_saved_place_is_exact_and_the_kind_path_no_longer_blocks_it(tmp: Path):
+    """Найдено на живом проекте: у вида путь `{Activity}` требовал поля, которого нет ни у одного ac-документа, и публикация
+    оставалась серой даже с выбранным местом. Место из шапки (`publish_parent`) — точное: путь вида не применяется,
+    ворота «нет поля» не срабатывают, уровней нет, страница идёт прямо под выбранную папку."""
+    restore = set_home(tmp / "home")
+    kinds_text = ('artifacts:\n  ac:\n    title: "AC"\n    template: "Templates/AC.md"\n    out: "Artifacts/ac"\n'
+                  '    publish_url: "1"\n    publish_path: "{Activity}"\n    publish_title: "{title}"\n')
+    root = W.project(tmp, "http://127.0.0.1:9", kinds_text)
+    doc = root / "Artifacts" / "ac" / "US-1.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("---\ntype: ac\npublish_parent: \"2\"\n---\n\n# Итог\n", encoding="utf-8")
+    srv, call = S._server(tmp)
+    try:
+        st, d = call("GET", "/api/files/read" + _q(root, path="Artifacts/ac/US-1.md"))
+        pub = d.get("publish") or {}
+        assert st == 200 and pub.get("state") == "ready", pub
+        assert pub["parent_from"] == "publish_parent" and pub["parent"] == "2", pub
+        assert pub["path"] == [] and not pub["fields"], pub
+        assert pub["title"] == "Итог", pub
+    finally:
+        srv.shutdown()
+        restore()

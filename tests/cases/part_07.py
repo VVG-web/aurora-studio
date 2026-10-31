@@ -301,10 +301,12 @@ def test_finished_artifact_lands_in_the_editor_with_a_publish_button(tmp: Path):
     pub = ui[ui.index("async function publishFromEditor("):ui.index("function publishDone(")]
     assert pub.index("api(\"/api/files/clean") < pub.index('cmd:"ship:publish"'), \
         "публикация уходит раньше, чем человек увидел, что именно уйдёт"
-    assert "editor.publish_nomark" in ui, \
-        "документ без маркера публикуется молча — уедет всё тело целиком"
-    assert 'g.code === "draft"' in pub and '"pub.send_draft"' in pub and '["--allow", g.code]' in pub, \
-        "черновик из редактора не публикуется: предохранитель выходных команд просит осознанного решения"
+    # 1.202.0: «черновик» и «нет маркера» — свойства документа, а не повод для сообщений; снимаются молча.
+    assert "editor.publish_nomark" not in ui and "editor.publish_cut" not in ui, \
+        "лишние сообщения о маркере/черновике вернулись в карточку"
+    assert 'code === "no-marker" || g.code === "draft"' in pub and 'const draft = false;' in pub, \
+        "черновик и отсутствие маркера снова требуют отдельного клика"
+    assert '["--allow", g.code]' in pub, "молчаливое снятие ворот потеряно"
     assert "confirm(" not in pub, "в потоке публикации снова окно подтверждения — решение кнопкой с надписью"
     # Видна ли кнопка, решает сервер (`file_read` → `publish`), а не глобал страницы: поведение — в part_144.py.
     assert "drawPublish(d)" in ui and "S.kinds" not in ui and "function publishTarget" not in ui, \
