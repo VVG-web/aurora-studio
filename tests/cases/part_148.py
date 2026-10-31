@@ -438,7 +438,8 @@ def test_explicit_parent_is_the_exact_place_and_the_header_place_beats_the_kind(
         root = project(tmp, wiki.url, KIND_US.format(root=rid))
         put(root, "Artifacts/us/US-5.md", doc(f"type: us\nstatus: ready\nrelease: \"1.0\"\npublish_parent: \"{exact}\"\n"))
         _cp, plan = publish(root, "Artifacts/us/US-5.md", "--json")
-        assert plan["root"]["id"] == rid and plan["root"]["from"] == "publish_url", "шапка затенила вид"
+        assert plan["root"]["id"] == exact and plan["root"]["from"] == "publish_parent", "выбранное место не главнее вида"
+        assert plan["chain"] == [], "путь вида применён поверх точного места"
         _cp, plan = publish(root, "Artifacts/us/US-5.md", "--json", "--parent", exact)
         assert plan["root"]["id"] == exact and plan["chain"] == [] and plan["root"]["from"] == "--parent", plan
     finally:

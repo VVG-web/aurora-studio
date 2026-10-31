@@ -96,7 +96,7 @@ def test_publish_folders_give_a_level_per_subfolder(tmp: Path):
 def test_publish_reason_names_each_missing_field_the_header_and_what_to_do(tmp: Path):
     """Шаблон вида ссылается на `{Activity}` и `{Epic}`, а в шапке их нет: причина называет каждое поле отдельно в кавычках
     (не «Activity, Epic» одним полем), перечисляет поля шапки ЭТОГО документа (без списков и штампа) и встроенные
-    подстановки, называет три выхода — заменить подстановку у вида (поле «Путь под корнем» или «Заголовок страницы»),
+    подстановки, называет выходы — выбрать место кнопкой «Выбрать место…» в карточке публикации,
     вписать поле в шапку, сделать подстановку необязательной; `activity` в шапке — подсказка про регистр. Так говорят
     серая кнопка в «Файлах» (на английской странице — по-английски, без русских остатков), `ship:publish --json` и карточка
     публикации на настоящих каталогах."""
@@ -112,8 +112,9 @@ def test_publish_reason_names_each_missing_field_the_header_and_what_to_do(tmp: 
     assert "«Activity», «Epic»" in why and "Activity, Epic" not in why, why
     assert "Поля в шапке документа: type, status, activity." in why and state["have"] == ["type", "status", "activity"], why
     assert all("{" + s + "}" in why for s in MK.BUILTIN_SLOTS), why
-    assert "«Путь под корнем» или «Заголовок страницы»" in why and "вписать поле в шапку документа" in why, why
-    assert "{Activity?}" in why and "«Настройки проекта → Артефакты»" in why, why
+    assert "«Выбрать место…»" in why and "вписать поле в шапку документа" in why, why
+    assert "{Activity?}" in why and "точное место документа" in why, why
+    assert "«Настройки проекта → Артефакты»" not in why, "совет ведёт в поле пути, которого в форме больше нет"
     assert "Регистр букв важен: в шапке есть «activity», а шаблон вида просит {Activity}" in why, why
     en = ck.translate_message(why, "en")
     assert en.startswith("Can't publish: the page path or title of the kind “ac”") and not CYR.search(en), en
@@ -221,8 +222,8 @@ def test_publish_folders_are_described_in_the_wiki_and_the_skill(tmp: Path):
     `{title}`; причина отказа и перенос переложенного файла описаны."""
     ru = " ".join((KIT / "wiki/ru/Artifacts-and-Deliverables.md").read_text(encoding="utf-8").split())
     en = " ".join((KIT / "wiki/Artifacts-and-Deliverables.md").read_text(encoding="utf-8").split())
-    for text, words in ((ru, ("Как в папках", "Путь `{folders}`, заголовок `{title}`", "одно из трёх", "регистром")),
-                        (en, ("Like the folders", "Path `{folders}`, title `{title}`", "one of three", "letter case"))):
+    for text, words in ((ru, ("Как в папках", "Путь `{folders}`, заголовок `{title}`", "одно из двух", "регистром")),
+                        (en, ("Like the folders", "Path `{folders}`, title `{title}`", "one of two", "letter case"))):
         for part in ("`{folders}`", "`{folder}`", "`{name}`", "`misplaced`", "`--move`", "Activity_A1_Core") + words:
             assert part in text, f"в вики нет «{part}»"
     flow = (KIT / "skills/aurora-vault/references/workflows.md").read_text(encoding="utf-8")

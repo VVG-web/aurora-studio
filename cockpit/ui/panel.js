@@ -1566,6 +1566,8 @@ function publishWhy(res){
     const slips = res.slips || [];
     Object.assign(vars, {names: (res.fields || []).map(f => "«" + f + "»").join(", "),
       have: (res.have || []).join(", ") || "—", first: (res.fields || [""])[0],
+      // Подстановка со знаком «?» — готовым куском: `t` подставил бы поле внутрь скобок и потерял «?».
+      optional: res.fields && res.fields[0] ? "{" + res.fields[0] + "?}" : "",
       builtins: (res.builtins || []).map(b => "{" + b + "}").join(", "),
       slip: slips.length ? " " + t("pub.why_missing_case", {have: slips.map(s => "«" + s[1] + "»").join(", "),
                                                             want: slips.map(s => "{" + s[0] + "}").join(", ")}) : ""});

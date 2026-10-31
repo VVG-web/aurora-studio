@@ -100,9 +100,9 @@ its page is already published in the old place: publishing updates it in place w
 with an explicit `--move` ("Move along the kind's path").
 
 A required field missing from the header stops publishing. The reason names every field separately in quotes, lists the
-fields this document's header does have and the built-in placeholders, and says what to do — one of three: replace the
-placeholder of the kind (the field "Path under the root" or "Page title" in Project settings → Artifacts), add the field to
-the document header, or make the placeholder optional (`{field?}`). If the header has the field in another letter case
+fields this document's header does have and the built-in placeholders, and says what to do — one of two: choose the
+publishing place with the «Choose a place…» button in the publishing card (the document's exact place; the kind's path is
+then not applied) or add the field to the document header; you may also make the placeholder optional (`{field?}`). If the header has the field in another letter case
 (`activity` instead of `{Activity}`), the reason says so too. The space comes from the root page, not from
 `confluence.space`.
 

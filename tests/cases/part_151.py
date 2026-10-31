@@ -175,27 +175,19 @@ def test_the_publish_line_stays_out_of_the_console(tmp: Path):
 
 
 @test
-def test_the_kinds_form_has_the_path_fields_and_an_example(tmp: Path):
-    """Рамка «Публикация в Confluence»: корень, путь разделов, шаблон заголовка, промпт публикации; под ними — пример пути,
-    который считает сервер (`/api/kinds/example`) по значениям формы. `kindExample` печатает ответ сервера."""
+def test_the_kinds_form_keeps_the_publishing_root_and_title_but_no_path(tmp: Path):
+    """Рамка «Публикация в Confluence» (1.202.0): корень, шаблон заголовка, промпт публикации. «Путь под корнем» убран:
+    место выбирается окном в карточке публикации, а общий путь вида не отвечал реальному процессу; справки о
+    подстановках пути и примера пути в форме тоже нет."""
     ui = panel_sources()
     form = _js_function(ui, "async function renderKinds(")
     publish = form[form.index('const publish = el("fieldset"'):form.index('rows.append(el("div",{class:"list-item"')]
-    for key in ("publish_url", "publish_path", "publish_title", "publish_prompt"):
+    for key in ("publish_url", "publish_title", "publish_prompt"):
         assert f'field("{key}"' in publish, f"поля {key} нет в рамке публикации"
-    assert "/api/kinds/example?" in form and "kindExample(" in form and "example)" in publish, "примера пути нет"
-    assert re.search(r'publish_path:"", publish_title:"", publish_prompt:"",\s*mcp:""', form), "новый вид без полей пути"
-    out = _node("const t = (k, v) => k + (v ? JSON.stringify(v) : \"\");\n" + _fn(ui, "function kindExample(") + """
-console.log(JSON.stringify({
-  doc: kindExample({doc: "Artifacts/us/US-7.md", root: "Истории", levels: ["Релиз 2.1", "PRJ-7"], title: "[US] Итог", missing: []}),
-  miss: kindExample({doc: "Artifacts/us/US-8.md", root: "", levels: [], title: "Итог", missing: ["release"]}),
-  none: kindExample({doc: "", root: "#7", levels: ["A", "{b}"], title: "{title}"}),
-  err: kindExample({error: "x"}),
-}));
-""", tmp)
-    assert out["doc"] == 'kinds.ex_doc{"doc":"US-7.md","path":"Истории › Релиз 2.1 › PRJ-7 › [US] Итог"}', out["doc"]
-    assert out["miss"].startswith('kinds.ex_doc{"doc":"US-8.md","path":"kinds.ex_no_root › Итог"}') and "kinds.ex_missing" in out["miss"], out
-    assert out["none"].startswith("kinds.ex_nodoc") and "#7 › A › {b} › {title}" in out["none"] and out["err"] == "", out
+    assert 'field("publish_path"' not in publish, "поле пути вернулось в рамку публикации"
+    assert "/api/kinds/example?" not in form and "kindExample(" not in form, "пример пути вернулся в форму"
+    assert re.search(r'publish_path:"", publish_title:"", publish_prompt:"",\s*mcp:""', form), \
+        "новый вид без полей пути"
 
 
 @test
