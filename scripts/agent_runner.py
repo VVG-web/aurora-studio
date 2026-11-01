@@ -6318,8 +6318,13 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     if (st.get("stages") or {}).get("enriched") and not st.get("compacted"):
         windows = [w for w in (b.get("context") or 0 for b in cfg.get("backends") or []) if w > 0]
         limit = min(windows) if windows else 0
-        need = AG.rough_tokens([{"content": template + prompt_extra + st["idea"] + (st.get("pack") or "")}])
-        budget = AG.prompt_budget_safe(cfg, reserve_chars=len(template) + len(prompt_extra) + len(st["idea"]) + 8000)
+        # Меряем САМЫЙ большой запрос цепочки — планировщика: его промпт, метод разбора и шапка тоже занимают окно.
+        # На живом проекте пак 686 839 знаков без этих частей выглядел как 261 471 токен и не будил нарезку, а
+        # шлюз с окном 262 144 получал 284 781 и отказывал.
+        plan_base = PROMPT_MAKE_PLAN + grill_method(cwd)
+        need = AG.rough_tokens([{"content": plan_base + template + prompt_extra + st["idea"] + (st.get("pack") or "")}])
+        budget = AG.prompt_budget_safe(cfg, reserve_chars=len(plan_base) + len(template) + len(prompt_extra)
+                                       + len(st["idea"]) + 8000)
         if limit and need + AG.ANSWER_ROOM > limit and budget:
             packed, parts, why_pack = compact_make_pack(cfg, st["pack"], st["idea"], budget, call, deadline=deadline)
             if why_pack:

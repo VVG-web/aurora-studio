@@ -154,3 +154,24 @@ def test_cyrillic_is_measured_safely_so_the_live_pack_actually_compacts(tmp: Pat
     assert len(packed) <= budget, (len(packed), budget)
     need = A.rough_tokens([{"content": packed}]) + A.ANSWER_ROOM
     assert need < 262144, f"даже после конспектов запрос не влезает: {need}"
+
+
+@test
+def test_the_trigger_counts_the_planner_prompt_and_the_grill_method(tmp: Path):
+    """Найдено на живом проекте: пак 686 839 знаков без промпта планировщика и метода разбора выглядел как 261 471 токен
+    при окне 262 144 — нарезка не просыпалась, а шлюз получал 284 781 токен и отказывал. Теперь в оценку входят
+    `PROMPT_MAKE_PLAN` и метод разбора: тот же пак виден как слишком большой."""
+    import sys
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+    pack = "Срок десять дней, проверка по отчёту. " * 19000
+    template = "# AC\n\n## Критерии приёмки\n" * 500
+    idea = "помоги сделать новую историю по постановке"
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_1_CONTEXT": "262144"})
+    plan_base = R.PROMPT_MAKE_PLAN + R.grill_method(str(KIT))
+    assert len(plan_base) > 3000, len(plan_base)
+    need = A.rough_tokens([{"content": plan_base + template + idea + pack}]) + A.ANSWER_ROOM
+    assert need > 262144, f"без промпта планировщика нарезка не проснётся: {need}"
+    without = A.rough_tokens([{"content": template + idea + pack}]) + A.ANSWER_ROOM
+    assert without < need, "промпт планировщика не учтён в оценке"
