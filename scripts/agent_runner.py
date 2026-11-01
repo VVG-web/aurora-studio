@@ -6129,7 +6129,7 @@ def pack_budget_args(cfg: dict, template: str, extra: str, idea: str, name: str)
                         f"самое широкое {widest} токенов, а воркеру с шаблоном целиком и "
                         f"минимальным паком нужно ≈{need} — нужна модель с окном ≥ {need} "
                         f"токенов или более короткий шаблон")
-    room = AG.prompt_budget(cfg, reserve_chars=base + 8000)    # 8000 — шапка пака и план
+    room = AG.prompt_budget_safe(cfg, reserve_chars=base + 8000)    # 8000 — шапка пака и план; 2,2 знака на токен у кириллицы
     return ["--budget", str(max(room, MIN_PACK))], ""
 
 
@@ -6316,8 +6316,11 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     # получает свой конспект (моделью, с опорой), и дальше идёт уже короткий пак. Делается и для
     # возобновлённой сессии: обогащённый пак старой версии мог быть записан без ограничения.
     if (st.get("stages") or {}).get("enriched") and not st.get("compacted"):
-        budget = AG.prompt_budget(cfg, reserve_chars=len(template) + len(prompt_extra) + len(st["idea"]) + 8000)
-        if budget and len(st.get("pack") or "") > budget:
+        windows = [w for w in (b.get("context") or 0 for b in cfg.get("backends") or []) if w > 0]
+        limit = min(windows) if windows else 0
+        need = AG.rough_tokens([{"content": template + prompt_extra + st["idea"] + (st.get("pack") or "")}])
+        budget = AG.prompt_budget_safe(cfg, reserve_chars=len(template) + len(prompt_extra) + len(st["idea"]) + 8000)
+        if limit and need + AG.ANSWER_ROOM > limit and budget:
             packed, parts, why_pack = compact_make_pack(cfg, st["pack"], st["idea"], budget, call, deadline=deadline)
             if why_pack:
                 return {"ok": False, "sid": sid, "why": why_pack}

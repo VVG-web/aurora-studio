@@ -122,3 +122,35 @@ def test_run_make_with_a_large_pack_compacts_it_and_continues_without_recompacti
     r2 = R.run_make(cfg, str(root), "", "", d.name, "", False, call=fake, momus=False)
     assert r2.get("ok"), f"возобновление упало: {r2.get('why')}"
     assert len(calls) == before, "возобновлённая сессия конспектировалась повторно"
+
+
+@test
+def test_cyrillic_is_measured_safely_so_the_live_pack_actually_compacts(tmp: Path):
+    """Найдено на живом проекте: пак 686 839 знаков оценивался по три знака на токен (229 тыс.) и проходил проверку
+    окна 262 144, а шлюз насчитал 284 781 токен и отказал. Теперь кириллица считается по 2,2 знака на токен, такой
+    пак заранее виден как слишком большой и нарезается; после конспектов запрос влезает в окно."""
+    import sys
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+    text = "Срок десять дней, проверка по отчёту. " * 19000
+    assert len(text) > 680000, len(text)
+    old = len(text) / A.CHARS_PER_TOKEN
+    new = A.rough_tokens([{"content": text}])
+    assert old < 262144 < new, (old, new)
+    assert new > old * 1.15, "кириллица считается не строже латиницы"
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_1_CONTEXT": "262144"})
+    assert A.prompt_budget_safe(cfg) == A.prompt_budget(cfg), "оба бюджета должны быть осторожными"
+    budget = A.prompt_budget_safe(cfg, reserve_chars=21000)
+    assert len(text) > budget
+    calls = []
+
+    def fake(cfg, role, messages, **kw):
+        calls.append(messages[0]["content"])
+        return {"ok": True, "text": "конспект: срок десять дней [[Заявка-1]]", "log": []}
+
+    packed, n, why = R.compact_make_pack(cfg, text, "срок заявки", budget, fake)
+    assert not why and n > 1, (n, why)
+    assert len(packed) <= budget, (len(packed), budget)
+    need = A.rough_tokens([{"content": packed}]) + A.ANSWER_ROOM
+    assert need < 262144, f"даже после конспектов запрос не влезает: {need}"

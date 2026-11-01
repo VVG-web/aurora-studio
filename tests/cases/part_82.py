@@ -197,7 +197,8 @@ def test_a_split_verdict_about_an_edited_card_is_not_parked(tmp: Path):
     AG, R, C = _mods()
     kb = tmp / "AuroraKnowledgeDB/Reference"
     kb.mkdir(parents=True)
-    para = lambda i: f"Термин {i}. Определение термина {i} и правила применения. " * 6
+    # Тело больше MAX_PARTS окон: словарь попадает в очередь, только если не влезает.
+    para = lambda i: f"Термин {i}. Определение термина {i} и правила применения. " * 25
     body = "\n\n".join(para(i) for i in range(1, 31))
     card_path = kb / "Справочник.md"
     card_path.write_text(f'---\nid: X\ntitle: "Справочник"\nkind: dictionary\nstatus: knowledge\ntype: reference\n'
@@ -209,7 +210,7 @@ def test_a_split_verdict_about_an_edited_card_is_not_parked(tmp: Path):
         return {"ok": True, "text": json.dumps(rows, ensure_ascii=False), "backend": 1, "model": "p", "tps": 9, "log": []}
 
     cfg = AG.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
-                           "AURORA_AGENT_BACKEND_1_CONTEXT": "3000"})
+                           "AURORA_AGENT_BACKEND_1_CONTEXT": "6000"})
     res = R.run_distill(cfg, str(tmp), apply=True, limit=5, momus=False, call=model)
     assert [s["status"] for s in res["steps"]] == [R.CHANGED], res["steps"]
     assert res["left"] == 1, "изменённая карточка засчитана обработанной"

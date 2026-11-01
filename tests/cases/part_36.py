@@ -510,7 +510,7 @@ def test_agent_make_gives_every_template_section_to_every_role(tmp: Path):
     cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
                           "AURORA_AGENT_BACKEND_1_CONTEXT": "20000"})
     whole = A.prompt_budget(cfg)
-    assert whole == 54000 and R.MIN_PACK <= budget <= whole - len(text), (budget, whole, len(text))
+    assert whole == 39600 and R.MIN_PACK <= budget <= whole - len(text), (budget, whole, len(text))  # 2,2 знака на токен
 
 
 @test

@@ -2519,14 +2519,41 @@ FAIR_SHARE = 0.6      # долю своего таймаута запасной 
 # разметкой один токен редко покрывает больше трёх символов. Мерка нужна не для отчёта,
 # а чтобы не отправлять заведомо непроходящий запрос: ошибка в меньшую сторону дешевле.
 CHARS_PER_TOKEN = 3.0
+# Кириллица в токенизаторах дороже латиницы: русский текст режется примерно по 2–2,5 знака на
+# токен, а не по три. Без отдельной мерки запрос на 687 000 знаков оценивался в 229 000 токенов
+# и уходил в шлюз с окном 262 144 — на деле 284 781, и производство падало «запрос длиннее окна».
+CHARS_PER_TOKEN_CYRILLIC = 2.2
+CHARS_PER_TOKEN_OTHER = 3.5
 # Место под ответ: контекст делится между запросом и ответом, и модель, которой некуда
 # отвечать, возвращает `finish_reason=length` с пустым текстом.
 ANSWER_ROOM = 2000
 
 
 def rough_tokens(messages: list) -> int:
-    """Осторожная оценка размера запроса в токенах. Именно оценка — так и называем."""
-    return int(sum(len(str(m.get("content") or "")) for m in messages) / CHARS_PER_TOKEN)
+    """Осторожная оценка размера запроса в токенах, с разной меркой для кириллицы и прочего текста.
+
+    Именно оценка — так и называем. Раньше все знаки считались по три на токен, и русский запрос
+    получался легче, чем он есть: 687 000 знаков пака звучали как 229 000 токенов при настоящих
+    284 781, а шлюз с окном 262 144 отказывал уже после отправки."""
+    cyr = other = 0
+    for m in messages:
+        for ch in str(m.get("content") or ""):
+            if "\u0400" <= ch <= "\u04ff":
+                cyr += 1
+            else:
+                other += 1
+    return int(cyr / CHARS_PER_TOKEN_CYRILLIC + other / CHARS_PER_TOKEN_OTHER)
+
+
+def prompt_budget_safe(cfg: dict, reserve_chars: int = 0) -> int:
+    """Бюджет куска с оговоркой на кириллицу: то же, что `prompt_budget`, но по 2,2 знака на токен.
+
+    Для мест, где в модель уходит русский текст целиком (пак производства): ошибка в меньшую
+    сторону здесь стоит дорого — запрос уходит и только потом получает отказ по длине."""
+    declared = [w for w in (b.get("context") or 0 for b in cfg.get("backends") or []) if w > 0]
+    if not declared:
+        return 0
+    return int(max(0, (min(declared) - ANSWER_ROOM) * CHARS_PER_TOKEN_CYRILLIC - reserve_chars))
 
 
 def fits(backend: dict, messages: list, max_tokens: int | None) -> tuple:
@@ -2550,6 +2577,9 @@ def fits(backend: dict, messages: list, max_tokens: int | None) -> tuple:
 def window_chars(backend: dict, overhead: int = 0) -> int:
     """Сколько символов содержимого держит ОДИН бэкенд. 0 — окно не объявлено.
 
+    Знаков на токен берём осторожную мерку (2,2), ту же, что у `rough_tokens`: иначе огрызок,
+    скроенный по трём знакам, после проверки `fits` окажется длиннее окна, и бэкенд промолчит.
+
     Пара к `fits`: та говорит «влезет ли», эта — «сколько влезет». Обе смотрят на окно
     конкретного шлюза, потому что резать раньше выбора бэкенда нечем: одно число на всё
     кольцо неверно в обе стороны — по широкому узкий получит непроходящий запрос, по
@@ -2558,7 +2588,7 @@ def window_chars(backend: dict, overhead: int = 0) -> int:
     limit = backend.get("context") or 0
     if not limit:
         return 0
-    return int(max(0, (limit - ANSWER_ROOM) * CHARS_PER_TOKEN - overhead))
+    return int(max(0, (limit - ANSWER_ROOM) * CHARS_PER_TOKEN_CYRILLIC - overhead))
 
 
 def prompt_budget(cfg: dict, reserve_chars: int = 0) -> int:
@@ -2578,7 +2608,7 @@ def prompt_budget(cfg: dict, reserve_chars: int = 0) -> int:
     declared = [w for w in (b.get("context") or 0 for b in cfg.get("backends") or []) if w > 0]
     if not declared:
         return 0
-    room = (min(declared) - ANSWER_ROOM) * CHARS_PER_TOKEN - reserve_chars
+    room = (min(declared) - ANSWER_ROOM) * CHARS_PER_TOKEN_CYRILLIC - reserve_chars
     return int(max(0, room))
 
 
