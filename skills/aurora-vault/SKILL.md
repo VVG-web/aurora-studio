@@ -362,6 +362,10 @@ HTTP — только если не смог сам адаптер (venv не с
 | `code:index` | индекс кода: файлы, символы, маршруты, таблицы и колонки, топики, конфигурация, тесты, метки требований, история коммитов; без `--apply` — план, `--rebuild` — заново, `--status` и `--secrets` — состояние и находки без значений | `docs/code-room.md` |
 | `code:find` | поиск по индексу кода: символы, файлы, маршруты, таблицы, топики, конфигурация, тесты, метки и коммиты; `--kind` сужает вид, `--json` — машинный вывод | `docs/code-room.md` |
 
+MCP-инструменты кода (только чтение): `code_search`, `code_symbol`, `code_file`. `code_file`
+отдаёт диапазон строк клона и только при разрешении «Моделям» у репозитория; секретные имена и
+значения закрыты.
+
 Модель знания (классы источников, связи, три типа карточек): `docs/knowledge-rules.md`.
 Frontmatter schema for ALL cards: `references/frontmatter.md`.
 Context assembly for ALL prompt-enrichment: `references/retrieval.md`.

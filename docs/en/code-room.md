@@ -190,6 +190,10 @@ The index does not change requirement statuses and does not issue verdicts: it s
 in the code with `file:line` coordinates and the revision. "Done by code" verdicts will arrive with
 checking acceptance criteria.
 
+For an assistant the index is available through MCP: `code_search` searches every kind of record,
+`code_symbol` finds a symbol, `code_file` reads a range of lines from a clone. `code_file` works only
+when the repository allows "To models" and masks secret names and values.
+
 ## The "Code" section
 
 In the project group, next to "Git". The "Connect a repository" card takes a `git clone` line, the

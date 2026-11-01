@@ -97,6 +97,31 @@ SCRIPTS = Path(__file__).resolve().parent
 LIMIT = 60_000            # ответ инструмента: дальше начинается не контекст, а свалка
 
 TOOLS = [
+    {"name": "code_search",
+     "description": "Поиск по индексу кода проекта: символы, файлы, маршруты, таблицы и "
+                    "колонки, топики, конфигурация, строки, тесты, метки требований и коммиты. "
+                    "Возвращает вид, имя, файл и строку. Модель и сеть не нужны.",
+     "inputSchema": {"type": "object", "required": ["query"], "properties": {
+         "query": {"type": "string", "description": "имя, путь, маршрут, таблица, ключ или текст"},
+         "kind": {"type": "string", "description": "сузить вид: symbol, file, route, table, column, topic, config, string, test, reqtag, commit"},
+         "repo": {"type": "string", "description": "только один репозиторий по имени"},
+         "limit": {"type": "integer", "description": "сколько результатов (до 100)"}}}},
+    {"name": "code_symbol",
+     "description": "Найти символ кода по имени или полному имени: файл, строки, подпись, "
+                    "документ-комментарий. Только чтение индекса.",
+     "inputSchema": {"type": "object", "required": ["name"], "properties": {
+         "name": {"type": "string", "description": "имя или qname символа"},
+         "repo": {"type": "string", "description": "только один репозиторий по имени"},
+         "limit": {"type": "integer", "description": "сколько символов (до 50)"}}}},
+    {"name": "code_file",
+     "description": "Прочитать диапазон строк файла из клона Code/. Отдаётся только если у "
+                    "репозитория включено разрешение «Моделям»; секретные имена и значения "
+                    "закрыты. Не больше 400 строк за вызов.",
+     "inputSchema": {"type": "object", "required": ["repo", "path"], "properties": {
+         "repo": {"type": "string", "description": "имя репозитория из раздела «Код»"},
+         "path": {"type": "string", "description": "путь внутри клона, через «/»"},
+         "start": {"type": "integer", "description": "первая строка (с 1)"},
+         "end": {"type": "integer", "description": "последняя строка (не больше start+399)"}}}},
     {"name": "kb_search",
      "description": "Найти карточки базы знаний по смыслу и словам. Возвращает имя, "
                     "статус доверия и суть каждой — по ним выбирают, что читать целиком.",
@@ -322,7 +347,7 @@ def call_tool_all(name: str, args: dict) -> str:
 
 
 ASK_TIMEOUT = 240       # kb_ask ждёт модель проекта; дольше ассистент всё равно не ждёт
-CONTEXT_MODES = TOOLS[2]["inputSchema"]["properties"]["mode"]["enum"]      # перечень один
+CONTEXT_MODES = next(t for t in TOOLS if t["name"] == "kb_context")["inputSchema"]["properties"]["mode"]["enum"]
 
 
 class ToolError(Exception):
@@ -663,7 +688,136 @@ def t_atlassian(op: str):
     return call
 
 
+def _code_repos(project: str, only: str = "") -> list:
+    import code_repos as CREPO
+    clean, _probs = CREPO.check(CREPO.read_repos(project))
+    if only:
+        hit = CREPO.find(clean, only)
+        if not hit:
+            raise ToolError(f"Репозитория «{only}» нет в реестре кода.")
+        return [hit]
+    return list(clean)
+
+
+def _code_index_path(project: str, name: str) -> str:
+    return os.path.join(project, aurora_common.engine_dir(project), "cache", "code", name, "index.sqlite")
+
+
+def t_code_search(project: str, args: dict) -> str:
+    """Поиск по индексам всех или одного репозитория. Только чтение."""
+    import codeidx.query as CQ
+    import codeidx.store as CIDX
+    text = str(args.get("query") or "").strip()
+    if not text:
+        raise ToolError("Пустой запрос: назовите имя, путь, маршрут, таблицу или ключ.")
+    kind = str(args.get("kind") or "")
+    if kind and kind not in CQ.KINDS:
+        raise ToolError(f"Вида «{kind}» нет. Доступны: " + ", ".join(CQ.KINDS))
+    try:
+        limit = max(1, min(100, int(args.get("limit") or 30)))
+    except (TypeError, ValueError):
+        limit = 30
+    rows, missing = [], []
+    for name in _code_repos(project, str(args.get("repo") or "")):
+        path = _code_index_path(project, name)
+        if not os.path.isfile(path):
+            missing.append(name)
+            continue
+        with CIDX.Store(path) as st:
+            rows.extend({"repo": name, **r} for r in CQ.find(st, text, kind=kind, limit=limit))
+    if not rows:
+        tail = (" Индекс не построен у: " + ", ".join(missing) + ".") if missing else ""
+        return f"По «{text}» ничего не найдено.{tail}"
+    out = [f"По «{text}» найдено {len(rows)}:"]
+    for r in rows[:limit]:
+        where = f"{r['file']}:{r['line']}" if r.get("file") else ""
+        out.append(f"- [{r['type']}] {r['repo']} · {r['name']}"
+                   + (f" — {r['detail']}" if r.get("detail") else "")
+                   + (f" ({where})" if where else ""))
+    if missing:
+        out.append("Индекс не построен у: " + ", ".join(missing))
+    return "\n".join(out)[:LIMIT]
+
+
+def t_code_symbol(project: str, args: dict) -> str:
+    """Символ по имени: файл, строки, подпись, документ-комментарий."""
+    import codeidx.query as CQ
+    import codeidx.store as CIDX
+    name = str(args.get("name") or "").strip()
+    if not name:
+        raise ToolError("Пустое имя символа.")
+    try:
+        limit = max(1, min(50, int(args.get("limit") or 20)))
+    except (TypeError, ValueError):
+        limit = 20
+    rows = []
+    for repo in _code_repos(project, str(args.get("repo") or "")):
+        path = _code_index_path(project, repo)
+        if not os.path.isfile(path):
+            continue
+        with CIDX.Store(path) as st:
+            for r in CQ.find(st, name, kind="symbol", limit=limit):
+                rows.append({"repo": repo, **r})
+    if not rows:
+        return f"Символ «{name}» в индексе не найден."
+    out = [f"Символ «{name}»:"]
+    for r in rows[:limit]:
+        out.append(f"- {r['name']} · {r['repo']} · {r['file']}:{r['line']}"
+                   + (f" — {r['detail']}" if r.get("detail") else ""))
+    return "\n".join(out)[:LIMIT]
+
+
+def t_code_file(project: str, args: dict) -> str:
+    """Диапазон строк файла клона. Секреты и репозитории без разрешения «Моделям» закрыты."""
+    import code_repos as CREPO
+    import request_context as RC
+    repo = str(args.get("repo") or "").strip()
+    rel = str(args.get("path") or "").replace("\\", "/").lstrip("/")
+    if not repo or not rel:
+        raise ToolError("Нужны имя репозитория и путь внутри клона.")
+    clean, _probs = CREPO.check(CREPO.read_repos(project))
+    name = CREPO.find(clean, repo)
+    if not name:
+        raise ToolError(f"Репозитория «{repo}» нет в реестре кода.")
+    if not CREPO.models_allowed(project, name):
+        raise ToolError("Этот репозиторий не разрешён моделям: включите «Моделям» в разделе «Код».")
+    if RC.secret_kind(rel, strict=True):
+        raise ToolError("Файл закрыт: секретное имя или служебная папка.")
+    clone = CREPO.clone_path(project, name)
+    root = os.path.realpath(str(clone))
+    full = os.path.realpath(os.path.join(root, *rel.split("/")))
+    if full != root and not full.startswith(root + os.sep):
+        raise ToolError("Путь выходит за пределы клона.")
+    if not os.path.isfile(full):
+        raise ToolError(f"Файла «{rel}» в клоне нет.")
+    try:
+        start = max(1, int(args.get("start") or 1))
+        end = int(args.get("end") or (start + 399))
+    except (TypeError, ValueError):
+        raise ToolError("Номера строк должны быть числами.")
+    end = min(end, start + 399)
+    if end < start:
+        raise ToolError("Конец диапазона раньше начала.")
+    try:
+        lines = Path(full).read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n").split("\n")
+    except OSError as e:
+        raise ToolError(f"Файл не прочитался: {e}")
+    chunk = lines[start - 1:end]
+    try:
+        for _rule, n, _mask in aurora_common.scan_secret_text("\n".join(chunk)):
+            if 1 <= n <= len(chunk):
+                chunk[n - 1] = "‹секрет скрыт›"
+    except Exception:  # noqa: BLE001 — старый движок без сканера: лучше не отдавать файл
+        raise ToolError("Сканер секретов недоступен: файл не отдаётся.")
+    out = [f"{name}/{rel}:{start}-{end}"]
+    out.extend(f"{start + i:>5}  {line}" for i, line in enumerate(chunk))
+    return "\n".join(out)[:LIMIT]
+
+
 WORK_TOOLS = {
+    "code_search": t_code_search,
+    "code_symbol": t_code_symbol,
+    "code_file": t_code_file,
     "time_now": t_time,
     "state_get": lambda p, a: t_state(p, a, "get"),
     "state_put": lambda p, a: t_state(p, a, "put"),
