@@ -6425,7 +6425,8 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         # Сторожу отдаём то, из чего модель могла бы составить запрос: задачу аналитика,
         # пак знаний и названия карточек. Шаблон не берём — он из общих слов, и по нему
         # заблокировалось бы всё.
-        r = call(cfg, "planner", [{"role": "user", "content": prompt}], deadline=deadline,
+        r = call(cfg, "planner", [{"role": "user", "content": prompt}],
+                 deadline=time.time() + AG.call_budget(cfg, "planner"),
                  tools=True, mcp_active=req["mcp"],
                  guard_text=[st["idea"], st["pack"]] + re.findall(r"^## (.+)$", st["pack"], re.M))
         if not r["ok"]:
@@ -6448,7 +6449,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                 "\n\nВЕРНИ ТОЛЬКО ПЛАН. Поле `questions` должно быть пустым списком. "
                 "Всё, что осталось невыясненным, назови прямо в тексте плана строкой "
                 "«не определено: …» — это честнее пустых разделов.")}],
-                deadline=deadline, tools=True, mcp_active=req["mcp"],
+                deadline=time.time() + AG.call_budget(cfg, "planner"), tools=True, mcp_active=req["mcp"],
                 guard_text=[st["idea"], st["pack"]])
             if r2["ok"]:
                 plan = ((parse_json(r2["text"]) or {}).get("plan") or "").strip()
@@ -6486,7 +6487,10 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         fail = check(content)
         if fail:
             return fail
-        r = call(cfg, "worker", [{"role": "user", "content": content}], deadline=deadline)
+        # Свой срок шага, а не остаток общего: документ пишется минутами, и общий срок прогона
+        # к критику уже истёк (живой прогон 01.11: «критик не ответил: дедлайн исчерпан»).
+        r = call(cfg, "worker", [{"role": "user", "content": content}],
+                 deadline=time.time() + AG.call_budget(cfg, "worker"))
         if not r["ok"]:
             return {"ok": False, "sid": sid, "why": model_fail_note(r) + size_note(r, content)}
         st["draft"] = (r["text"] or "").strip()
@@ -6509,7 +6513,8 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         fail = check(content)
         if fail:
             return fail
-        r = call(cfg, "critic", [{"role": "user", "content": content}], deadline=deadline)
+        r = call(cfg, "critic", [{"role": "user", "content": content}],
+                 deadline=time.time() + AG.call_budget(cfg, "critic"))
         if not r["ok"]:
             return {"ok": False, "sid": sid, "why": "критик не ответил, документ не проверен: "
                     + model_fail_note(r) + size_note(r, content)}

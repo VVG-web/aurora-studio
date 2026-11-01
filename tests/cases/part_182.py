@@ -326,3 +326,51 @@ def test_compaction_time_does_not_eat_the_deadline_of_the_next_step(tmp: Path):
     r = R.run_make(cfg, str(root), "", "", d.name, "", False, call=fake, momus=False)
     assert r.get("ok"), f"производство упало: {r.get('why')}"
     assert plan_deadline["v"] > _t.time(), "срок планировщика истёк за время нарезки"
+
+
+@test
+def test_every_make_stage_has_its_own_deadline_not_the_remainder_of_the_run(tmp: Path):
+    """Живой прогон 01.11: нарезка и план прошли, воркер писал документ минутами, и критик получил «дедлайн исчерпан:
+    ни один бэкенд не ответил» — общий срок шага был уже израсходован. Теперь у планировщика, воркера и критика
+    свой срок вызова роли, и долгий шаг не отменяет следующий."""
+    import sys, time as _t
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+    root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/AC.md").write_text("# AC\n\n## Критерии приёмки\n", encoding="utf-8")
+    cfg_path = root / "aurora.config.yaml"
+    cfg_path.write_text(cfg_path.read_text(encoding="utf-8").rstrip()
+                        + '\nartifacts:\n  ac:\n    title: "AC"\n    template: "Templates/AC.md"\n    out: "Artifacts/ac"\n',
+                        encoding="utf-8")
+    d = R.make_session_dir(str(root), "ac")
+    pack = "".join(f"## Заявка-{i}\n\n" + "Срок десять дней, проверка по отчёту. " * 900 for i in range(6))
+    R.save_session(str(root), d.name, {"sid": d.name, "kind": "ac", "idea": "срок заявки",
+                                      "spec": R.make_spec(str(root), "ac"), "pack": pack,
+                                      "stages": {"enriched": "2026-11-01T08:00:00Z"}, "rounds": [], "plan": ""})
+    roles = []
+
+    def fake(cfg, role, messages, **kw):
+        roles.append(role)
+        content = messages[0]["content"]
+        _t.sleep(1.2)                            # каждый шаг дольше общего срока прогона (1 с)
+        if "ЧАСТЬ пака знаний" in content:
+            return {"ok": True, "text": "конспект [[Заявка-1]]", "log": []}
+        if role == "planner":
+            return {"ok": True, "text": json.dumps({"questions": [], "assumptions": [], "plan": "1. Критерии"},
+                                                   ensure_ascii=False), "log": []}
+        if role == "critic":
+            return {"ok": True, "text": json.dumps({"ok": True, "issues": [], "coverage": {}}, ensure_ascii=False),
+                    "log": []}
+        return {"ok": True, "text": "# AC\n\nСрок.", "log": []}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_1_CONTEXT": "15000", "AURORA_AGENT_REQUEST_TIMEOUT": "1"})
+    orig = A.call_budget
+    A.call_budget = lambda cfg_, role: 4.0       # свой срок шага есть у каждой роли
+    try:
+        r = R.run_make(cfg, str(root), "", "", d.name, "", False, call=fake, momus=False)
+    finally:
+        A.call_budget = orig
+    assert r.get("ok"), f"производство упало на общем сроке: {r.get('why')}"
+    assert "critic" in roles, roles
