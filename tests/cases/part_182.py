@@ -284,3 +284,45 @@ def test_a_failed_chunk_is_split_and_retried_instead_of_losing_the_whole_pack(tm
     bad, _, why_bad = R.compact_make_pack({}, pack, "идея", 60000,
                                          lambda cfg, role, messages, **kw: {"ok": False, "text": "", "log": []})
     assert not bad and why_bad and "не получен" in why_bad, why_bad
+
+
+@test
+def test_compaction_time_does_not_eat_the_deadline_of_the_next_step(tmp: Path):
+    """Живой прогон 01.11: конспект трёх частей занял двенадцать минут, и планировщик получил «дедлайн исчерпан» —
+    общий срок шага истёк, пока шла нарезка. Время нарезки сдвигает срок, а не съедает его."""
+    import sys, time as _t
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+    root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/AC.md").write_text("# AC\n\n## Критерии приёмки\n", encoding="utf-8")
+    cfg_path = root / "aurora.config.yaml"
+    cfg_path.write_text(cfg_path.read_text(encoding="utf-8").rstrip()
+                        + '\nartifacts:\n  ac:\n    title: "AC"\n    template: "Templates/AC.md"\n    out: "Artifacts/ac"\n',
+                        encoding="utf-8")
+    d = R.make_session_dir(str(root), "ac")
+    pack = "".join(f"## Заявка-{i}\n\n" + "Срок десять дней, проверка по отчёту. " * 900 for i in range(6))
+    R.save_session(str(root), d.name, {"sid": d.name, "kind": "ac", "idea": "срок заявки",
+                                      "spec": R.make_spec(str(root), "ac"), "pack": pack,
+                                      "stages": {"enriched": "2026-11-01T08:00:00Z"}, "rounds": [], "plan": ""})
+    plan_deadline = {"v": 0}
+
+    def fake(cfg, role, messages, **kw):
+        content = messages[0]["content"]
+        if "ЧАСТЬ пака знаний" in content:
+            _t.sleep(1.2)                       # нарезка небыстрая — срок шага тикает
+            return {"ok": True, "text": "конспект [[Заявка-1]]", "log": []}
+        if role == "planner":
+            plan_deadline["v"] = kw.get("deadline") or 0
+            return {"ok": True, "text": json.dumps({"questions": [], "assumptions": [], "plan": "1. Критерии"},
+                                                   ensure_ascii=False), "log": []}
+        if role == "critic":
+            return {"ok": True, "text": json.dumps({"ok": True, "issues": [], "coverage": {}}, ensure_ascii=False),
+                    "log": []}
+        return {"ok": True, "text": "# AC\n\nСрок.", "log": []}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_1_CONTEXT": "15000", "AURORA_AGENT_REQUEST_TIMEOUT": "1"})
+    r = R.run_make(cfg, str(root), "", "", d.name, "", False, call=fake, momus=False)
+    assert r.get("ok"), f"производство упало: {r.get('why')}"
+    assert plan_deadline["v"] > _t.time(), "срок планировщика истёк за время нарезки"

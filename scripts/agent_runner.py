@@ -6354,6 +6354,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         budget = AG.prompt_budget_safe(cfg, reserve_chars=len(plan_base) + len(template) + len(prompt_extra)
                                        + len(st["idea"]) + 8000)
         if limit and need + AG.ANSWER_ROOM > limit and budget:
+            t_compact = time.time()
             packed, parts, why_pack = compact_make_pack(cfg, st["pack"], st["idea"], budget, call, deadline=deadline)
             if why_pack:
                 return {"ok": False, "sid": sid, "why": why_pack}
@@ -6361,6 +6362,9 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             st["pack"] = packed
             st["compacted"] = True
             save_session(cwd, sid, st)
+            # Нарезка — работа, а не простой: её время сдвигает общий срок шагов, иначе после
+            # двенадцати минут конспектов планировщик получал «дедлайн исчерпан» (живой прогон 01.11).
+            deadline += time.time() - t_compact
 
     def form(role: str, skeleton_ok: bool):
         """→ (блок шаблона для роли, проверка готового сообщения)."""
