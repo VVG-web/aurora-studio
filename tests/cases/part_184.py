@@ -1,13 +1,25 @@
-"""Проверки совместной работы: локальное состояние вне git, общие части без конфликтов."""
+#!/usr/bin/env python3
+"""part_184 — извлечение T0: Java/Spring, Python, TypeScript, SQL, конфигурация и метки.
+
+Пакет CR-09. Проверки идут на тех же синтетических репозиториях, что и CR-08, плюс
+отдельные файлы для мусора и меток требований. Сеть и модель не нужны.
+"""
 from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+import sqlite3
 import subprocess
 import sys
+from pathlib import Path
 
-from harness import SCRIPTS, test
+from harness import SCRIPTS, make_project, run, test
+
+sys.path.insert(0, str(SCRIPTS))
+import code_fixtures as CF  # noqa: E402
+import code_repos as CR  # noqa: E402
+import codeidx.store as store_mod  # noqa: E402
+import codeidx.scan as scan  # noqa: E402
 
 
 def _path():
@@ -23,6 +35,138 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
 def _commit(repo: Path, message: str):
     _git(repo, "add", "-A")
     _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", message)
+
+
+def _config(root: Path, repos: dict, extra: str = "") -> None:
+    path = root / "aurora.config.yaml"
+    text = path.read_text(encoding="utf-8") + extra
+    path.write_text(CR.write_block(text, repos), encoding="utf-8")
+
+
+def _cli(root: Path, *args, expect_rc=0):
+    return run("code_index.py", "--project", str(root), *args, cwd=root, expect_rc=expect_rc)
+
+
+def _db(root: Path, name: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(root / ".aurora" / "cache" / "code" / name / "index.sqlite"))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _rows(conn, sql, params=()):
+    return [dict(r) for r in conn.execute(sql, params)]
+
+
+@test
+def test_code_index_java_contract(_t):
+    """order-intake: маршруты, DTO, сущность, таблицы, топик, конфигурация и тесты."""
+    root = make_project(_t)
+    repo = CF.build("order-intake", root / "Code" / "order-intake")
+    _config(root, {"order-intake": {"url": CF.url_of(repo), "branch": "main", "provider": "generic"}})
+    _cli(root, "--index", "--apply")
+    with _db(root, "order-intake") as conn:
+        routes = {(r["method"], r["path"]) for r in _rows(conn, "SELECT method, path FROM routes")}
+        assert ("POST", "/api/orders") in routes, routes
+        assert ("DELETE", "/api/refunds/{id}") in routes, routes
+        order_route = _rows(conn, "SELECT * FROM routes WHERE method='POST' AND path='/api/orders'")[0]
+        assert order_route["request"] == "OrderRequest", order_route
+        assert "400" in order_route["status_codes"] and "200" in order_route["status_codes"], order_route
+        tables = {(r["table_name"], r["source"]) for r in _rows(conn, "SELECT table_name, source FROM db_tables")}
+        assert ("orders", "entity") in tables and ("orders", "migration") in tables, tables
+        cols = _rows(conn, "SELECT name, pk, is_unique FROM db_columns WHERE table_name='orders'")
+        assert any(r["name"] == "external_id" and r["is_unique"] for r in cols), cols
+        assert any(r["name"] == "id" and r["pk"] for r in cols), cols
+        assert any(r["name"] == "supplier" for r in cols), cols
+        topics = {(r["name"], r["role"]) for r in _rows(conn, "SELECT name, role FROM topics")}
+        assert ("orders.accepted", "producer") in topics, topics
+        keys = {r["key"] for r in _rows(conn, "SELECT key FROM configs")}
+        assert "orders.visibility-seconds" in keys, keys
+        assert "spring.kafka.bootstrap-servers" in keys, keys
+        tests = {r["target"] for r in _rows(conn, "SELECT target FROM tests")}
+        assert {"OrderController", "RefundService"} <= tests, tests
+        dto_fields = {r["name"] for r in _rows(
+            conn, "SELECT name FROM symbols WHERE kind='field' AND qname LIKE '%OrderRequest.%'")}
+        assert {"externalId", "supplier", "warehouse", "quantity"} <= dto_fields, dto_fields
+
+
+@test
+def test_code_index_python_ast_ranges(_t):
+    """Python: точные диапазоны `create` и поля моделей из `ast`."""
+    root = make_project(_t)
+    repo = CF.build("py-notify", root / "Code" / "py-notify")
+    _config(root, {"py-notify": {"url": CF.url_of(repo), "branch": "main", "provider": "generic"}})
+    _cli(root, "--index", "--apply")
+    with _db(root, "py-notify") as conn:
+        create = _rows(conn, "SELECT * FROM symbols WHERE name='create' AND kind='function'")[0]
+        assert (create["line_start"], create["line_end"]) == (15, 17), create
+        route = _rows(conn, "SELECT * FROM routes")[0]
+        assert (route["method"], route["path"]) == ("POST", "/api/notifications"), route
+        assert route["request"] == "NotificationIn", route
+        table = _rows(conn, "SELECT table_name FROM db_tables")[0]
+        assert table["table_name"] == "notifications", table
+        targets = {r["target"] for r in _rows(conn, "SELECT target FROM tests")}
+        assert "create" in targets, targets
+
+
+@test
+def test_code_index_typescript_routes_and_classes(_t):
+    """TypeScript: комментарий-маршрут, класс контроллера и интерфейс строки."""
+    root = make_project(_t)
+    repo = CF.build("ts-portal", root / "Code" / "ts-portal")
+    _config(root, {"ts-portal": {"url": CF.url_of(repo), "branch": "main", "provider": "generic"}})
+    _cli(root, "--index", "--apply")
+    with _db(root, "ts-portal") as conn:
+        route = _rows(conn, "SELECT * FROM routes")[0]
+        assert (route["method"], route["path"]) == ("GET", "/portal/orders"), route
+        assert route["handler"], route
+        names = {r["name"] for r in _rows(conn, "SELECT name FROM symbols WHERE kind IN ('class','interface')")}
+        assert {"OrdersController", "OrderRow"} <= names, names
+        fields = {r["name"] for r in _rows(
+            conn, "SELECT name FROM symbols WHERE kind='field' AND parent LIKE '%OrderRow'")}
+        assert {"externalId", "supplier", "status"} <= fields, fields
+
+
+@test
+def test_code_index_parse_error_does_not_stop(_t):
+    """Сломанный файл помечается `parse_error`, остальные разбираются."""
+    root = make_project(_t)
+    repo = CF.init(root / "Code" / "broken")
+    CF.commit(repo, "init", "2026-01-01T00:00:00+00:00",
+              files={"src/good.py": "def ok():\n    return 1\n", "src/broken.py": "def broken(:\n"})
+    _config(root, {"broken": {"url": CF.url_of(repo), "branch": "main", "provider": "generic"}})
+    _cli(root, "--index", "--apply")
+    with _db(root, "broken") as conn:
+        rows = {r["path"]: r["skipped"] for r in _rows(conn, "SELECT path, skipped FROM files")}
+        assert rows["src/broken.py"] == "parse_error", rows
+        assert rows["src/good.py"] == "", rows
+        assert _rows(conn, "SELECT name FROM symbols WHERE name='ok'")
+
+
+@test
+def test_code_index_reqtags(_t):
+    """Метки `REQ:`, коды артефактов, номера историй и известные ключи проекта."""
+    root = make_project(_t)
+    repo = CF.init(root / "Code" / "tagged")
+    CF.commit(repo, "init", "2026-01-01T00:00:00+00:00",
+              files={"src/a.py": "# REQ: BENCH-1\n# ALG-12 и US-1.1\n\ndef run():\n    return 1\n"})
+    _config(root, {"tagged": {"url": CF.url_of(repo), "branch": "main", "provider": "generic"}},
+            extra="jira_keys: [BENCH]\n")
+    _cli(root, "--index", "--apply")
+    with _db(root, "tagged") as conn:
+        keys = {r["key"] for r in _rows(conn, "SELECT key FROM reqtags")}
+        assert {"BENCH-1", "ALG-12", "US-1.1"} <= keys, keys
+
+
+@test
+def test_code_index_40_files_under_two_seconds(_t):
+    """Разбор 40 файлов укладывается в две секунды (T0, без модели)."""
+    root = make_project(_t)
+    repo = CF.gen_mono(root / "Code" / "small", n=40)
+    _config(root, {"small": {"url": CF.url_of(repo), "branch": "main", "provider": "generic"}})
+    with store_mod.Store(root / ".aurora" / "cache" / "code" / "small" / "index.sqlite") as st:
+        stats = scan.scan_repo(repo, st)
+        assert stats.files == 40, stats.files
+        assert stats.duration_s < 2.0, stats.duration_s
 
 
 @test
@@ -51,7 +195,6 @@ def test_every_local_state_rule_untracks_but_preserves_the_file(tmp: Path):
         assert target.read_text(encoding="utf-8") == f"local-{num}\n", rel
         assert not _git(repo, "ls-files", "--", rel).stdout.strip(), rel
     assert AU.untrack_local_state(repo) == [], "повторный update снова меняет index"
-    # Machine-files остаются на диске и читаются командами после untrack (панель, doctor).
     assert (repo / "AuroraKnowledgeDB/meta/aurora_version.txt").read_text(
         encoding="utf-8").startswith("local-"), "штамп версии потерялся с диска"
 

@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS files (
     skipped TEXT NOT NULL DEFAULT '',
     role_reason TEXT NOT NULL DEFAULT '',
     text_hash TEXT NOT NULL DEFAULT '',
-    extractor_ver TEXT NOT NULL DEFAULT ''
+    extractor_ver TEXT NOT NULL DEFAULT '',
+    extract_ver TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_files_blob ON files(blob);
 CREATE INDEX IF NOT EXISTS idx_files_role ON files(role);
@@ -163,6 +164,13 @@ CREATE TABLE IF NOT EXISTS secrets (
     mask TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (rule, path, line)
 );
+CREATE TABLE IF NOT EXISTS reqtags (
+    key TEXT NOT NULL,
+    file TEXT NOT NULL,
+    line INTEGER NOT NULL DEFAULT 0,
+    symbol TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS tokens (
     term TEXT NOT NULL,
     sym_id TEXT NOT NULL,
@@ -201,12 +209,16 @@ class Store:
         version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
         if version and version != model.SCHEMA_VERSION:
             self.conn.close()
-            try:
-                os.remove(str(self.path))
-            except OSError:
-                pass
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    os.remove(str(self.path) + suffix)
+                except OSError:
+                    pass
             self.conn = self._open()
         self.conn.executescript(SCHEMA)
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(files)")}
+        if "extract_ver" not in columns:
+            self.conn.execute("ALTER TABLE files ADD COLUMN extract_ver TEXT NOT NULL DEFAULT ''")
         self.conn.execute(f"PRAGMA user_version={model.SCHEMA_VERSION}")
         self.conn.commit()
         self._probe_fts()
@@ -287,13 +299,13 @@ class Store:
     def put_file(self, rec: model.FileRecord) -> None:
         self.conn.execute(
             "INSERT INTO files(path, blob, lang, role, module, bytes, lines, enc, skipped, role_reason, "
-            "text_hash, extractor_ver) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
+            "text_hash, extractor_ver, extract_ver) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(path) DO UPDATE SET blob=excluded.blob, lang=excluded.lang, role=excluded.role, "
             "module=excluded.module, bytes=excluded.bytes, lines=excluded.lines, enc=excluded.enc, "
             "skipped=excluded.skipped, role_reason=excluded.role_reason, text_hash=excluded.text_hash, "
-            "extractor_ver=excluded.extractor_ver",
+            "extractor_ver=excluded.extractor_ver, extract_ver=excluded.extract_ver",
             (rec.path, rec.blob, rec.lang, rec.role, rec.module, rec.size, rec.lines, rec.enc,
-             rec.skipped, rec.role_reason, rec.text_hash, model.INVENTORY_VER),
+             rec.skipped, rec.role_reason, rec.text_hash, model.INVENTORY_VER, rec.extract_ver),
         )
 
     def replace_inventory(self, files, rev: str, stats: model.ScanStats) -> None:
@@ -306,6 +318,9 @@ class Store:
             self.conn.executemany("INSERT OR IGNORE INTO new_paths(path) VALUES(?)", ((f.path,) for f in files))
             self.conn.execute("DELETE FROM files WHERE path NOT IN (SELECT path FROM new_paths)")
             self.conn.execute("DELETE FROM secrets WHERE path NOT IN (SELECT path FROM new_paths)")
+            for table in ("symbols", "edges", "routes", "db_tables", "db_columns", "topics",
+                          "configs", "strings", "tests", "reqtags"):
+                self.conn.execute(f"DELETE FROM {table} WHERE file NOT IN (SELECT path FROM new_paths)")
             for rec in files:
                 self.put_file(rec)
             self.conn.execute("DROP TABLE new_paths")
@@ -346,6 +361,108 @@ class Store:
         rows = self.conn.execute("SELECT rule, path, line, mask FROM secrets ORDER BY path, line, rule")
         return [dict(r) for r in rows]
 
+    # ------------------------------------------------------------ извлечённые записи
+
+    def get_extracted(self, blob: str, extractor: str, ver: str):
+        row = self.conn.execute(
+            "SELECT json FROM extracted WHERE blob=? AND extractor=? AND extractor_ver=?",
+            (blob, extractor, ver),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row["json"])
+        except ValueError:
+            return None
+
+    def put_extracted(self, blob: str, extractor: str, ver: str, records) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO extracted(blob, extractor, extractor_ver, json) VALUES(?,?,?,?)",
+            (blob, extractor, ver, json.dumps(records, ensure_ascii=False, sort_keys=True)),
+        )
+
+    def clear_extraction(self, path: str) -> None:
+        for table in ("symbols", "edges", "routes", "db_tables", "db_columns", "topics",
+                      "configs", "strings", "tests", "reqtags"):
+            self.conn.execute(f"DELETE FROM {table} WHERE file=?", (path,))
+
+    def replace_extraction(self, path: str, records) -> None:
+        """Заменить все извлечённые записи файла. Транзакцию закрывает вызывающий."""
+        self.clear_extraction(path)
+        for rec in records:
+            self._insert_record(rec)
+
+    def _insert_record(self, rec: dict) -> None:
+        kind = rec.get("rec")
+        file = rec.get("file", "")
+        src = rec.get("src", "")
+        conf = rec.get("conf", "EXTRACTED")
+        if kind == "symbol":
+            self.conn.execute(
+                "INSERT OR REPLACE INTO symbols(id, file, kind, name, qname, line_start, line_end, sig, doc, "
+                "visibility, annotations, parent, frag_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (rec.get("id", ""), file, rec.get("kind", ""), rec.get("name", ""), rec.get("qname", ""),
+                 int(rec.get("line_start") or 0), int(rec.get("line_end") or 0), rec.get("sig", ""),
+                 rec.get("doc", ""), rec.get("visibility", ""),
+                 json.dumps(rec.get("annotations") or [], ensure_ascii=False), rec.get("parent", ""),
+                 rec.get("frag_hash", "")),
+            )
+        elif kind == "edge":
+            self.conn.execute(
+                "INSERT OR REPLACE INTO edges(id, file, src_id, dst, rel, line, conf, src) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (rec.get("id", ""), file, rec.get("from", ""), rec.get("to", ""), rec.get("rel", ""),
+                 int(rec.get("line") or 0), conf, src),
+            )
+        elif kind == "route":
+            self.conn.execute(
+                "INSERT OR REPLACE INTO routes(id, file, method, path, handler, request, response, auth, "
+                "status_codes, line) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (rec.get("id", ""), file, rec.get("method", ""), rec.get("path", ""), rec.get("handler", ""),
+                 rec.get("request", ""), rec.get("response", ""), rec.get("auth", ""),
+                 json.dumps(rec.get("status_codes") or [], ensure_ascii=False), int(rec.get("line") or 0)),
+            )
+        elif kind == "table":
+            self.conn.execute(
+                "INSERT OR REPLACE INTO db_tables(table_name, file, source, line) VALUES(?,?,?,?)",
+                (rec.get("table", ""), file, rec.get("source", ""), int(rec.get("line") or 0)),
+            )
+        elif kind == "column":
+            self.conn.execute(
+                "INSERT INTO db_columns(table_name, name, file, type, pk, fk, nullable, is_unique, source, line) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (rec.get("table", ""), rec.get("name", ""), file, rec.get("type", ""),
+                 1 if rec.get("pk") else 0, rec.get("fk", ""), 0 if rec.get("nullable") is False else 1,
+                 1 if rec.get("unique") else 0, rec.get("source", ""), int(rec.get("line") or 0)),
+            )
+        elif kind == "topic":
+            self.conn.execute(
+                "INSERT INTO topics(name, file, role, symbol, payload, group_name, line) VALUES(?,?,?,?,?,?,?)",
+                (rec.get("name", ""), file, rec.get("role", ""), rec.get("symbol", ""),
+                 rec.get("payload", ""), rec.get("group", ""), int(rec.get("line") or 0)),
+            )
+        elif kind == "config":
+            self.conn.execute(
+                "INSERT INTO configs(key, file, default_value, profile, line, read_by) VALUES(?,?,?,?,?,?)",
+                (rec.get("key", ""), file, str(rec.get("default") or ""), rec.get("profile", ""),
+                 int(rec.get("line") or 0), json.dumps(rec.get("read_by") or [], ensure_ascii=False)),
+            )
+        elif kind == "string":
+            self.conn.execute(
+                "INSERT INTO strings(text, file, line, symbol) VALUES(?,?,?,?)",
+                (rec.get("text", ""), file, int(rec.get("line") or 0), rec.get("symbol", "")),
+            )
+        elif kind == "test":
+            self.conn.execute(
+                "INSERT INTO tests(symbol, target, file, line) VALUES(?,?,?,?)",
+                (rec.get("symbol", ""), rec.get("target", ""), file, int(rec.get("line") or 0)),
+            )
+        elif kind == "reqtag":
+            self.conn.execute(
+                "INSERT INTO reqtags(key, file, line, symbol, kind) VALUES(?,?,?,?,?)",
+                (rec.get("key", ""), file, int(rec.get("line") or 0), rec.get("symbol", ""), rec.get("kind", "")),
+            )
+
     # ------------------------------------------------------------ поисковые таблицы
 
     def put_path_terms(self, path: str, words) -> None:
@@ -377,7 +494,16 @@ class Store:
         files = self.conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         indexed = self.conn.execute("SELECT COUNT(*) FROM files WHERE skipped=''").fetchone()[0]
         secrets = self.conn.execute("SELECT COUNT(*) FROM secrets").fetchone()[0]
-        return {"files": int(files), "indexed": int(indexed), "secrets": int(secrets)}
+        return {
+            "files": int(files), "indexed": int(indexed), "secrets": int(secrets),
+            "symbols": int(self.conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]),
+            "routes": int(self.conn.execute("SELECT COUNT(*) FROM routes").fetchone()[0]),
+            "tables": int(self.conn.execute("SELECT COUNT(*) FROM db_tables").fetchone()[0]),
+            "topics": int(self.conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]),
+            "configs": int(self.conn.execute("SELECT COUNT(*) FROM configs").fetchone()[0]),
+            "tests": int(self.conn.execute("SELECT COUNT(*) FROM tests").fetchone()[0]),
+            "reqtags": int(self.conn.execute("SELECT COUNT(*) FROM reqtags").fetchone()[0]),
+        }
 
     def status(self) -> dict:
         return {

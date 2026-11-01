@@ -20,8 +20,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 try:
-    from . import model
+    from . import extract, model
 except ImportError:  # запуск файла напрямую из scripts/codeidx
+    import extract  # type: ignore
     import model  # type: ignore
 
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -215,7 +216,8 @@ def index_priority(rel: str, role: str) -> tuple:
 
 def _record(path: str, oid: str, role: str, reason: str, skip: str, size: int = 0) -> model.FileRecord:
     return model.FileRecord(path=path, blob=oid, lang=model.language_of(path), role=role,
-                            module=module_of(path), size=size, skipped=skip, role_reason=reason)
+                            module=module_of(path), size=size, skipped=skip, role_reason=reason,
+                            extract_ver=model.EXTRACTOR_VER)
 
 
 def _cached(store, path: str, oid: str, role: str):
@@ -224,10 +226,12 @@ def _cached(store, path: str, oid: str, role: str):
         return None
     if row["blob"] != oid or row["extractor_ver"] != model.INVENTORY_VER or row["role"] != role:
         return None
+    if row["extract_ver"] != model.EXTRACTOR_VER:
+        return None
     return row
 
 
-def _scan_one(path: str, oid: str, data: bytes, store, stats: model.ScanStats) -> model.FileRecord:
+def _scan_one(path: str, oid: str, data: bytes, store, stats: model.ScanStats, keys=()) -> model.FileRecord:
     """Разобрать один файл: роль, кодировка, строки, секреты. Значения секретов не сохраняются."""
     store.clear_secrets(path)
     skip, role, reason = model.classify(path, data[:8192])
@@ -242,11 +246,21 @@ def _scan_one(path: str, oid: str, data: bytes, store, stats: model.ScanStats) -
         for rule, line, mask in hits:
             store.put_secret(rule, path, line, mask)
         stats.secrets += len(hits)
-    return model.FileRecord(
+    rec = model.FileRecord(
         path=path, blob=oid, lang=model.language_of(path), role=role, module=module_of(path),
         size=len(data), lines=model.line_count(text), enc=enc, role_reason=reason,
-        text_hash=model.text_hash(safe_text),
+        text_hash=model.text_hash(safe_text), extract_ver=model.EXTRACTOR_VER,
     )
+    try:
+        extracted = extract.extract_file(path, safe_text, model.language_of(path), role, keys)
+    except Exception:  # noqa: BLE001 — один файл не должен ронять индекс
+        store.clear_extraction(path)
+        rec.extract_ver = ""
+        rec.skipped = "parse_error"
+        return rec
+    store.replace_extraction(path, extracted)
+    store.put_extracted(oid, extract.SRC, model.EXTRACTOR_VER, extracted)
+    return rec
 
 
 def _cached_record(row) -> model.FileRecord:
@@ -254,6 +268,7 @@ def _cached_record(row) -> model.FileRecord:
         path=row["path"], blob=row["blob"], lang=row["lang"], role=row["role"],
         module=row["module"], size=row["bytes"], lines=row["lines"], enc=row["enc"],
         skipped=row["skipped"], role_reason=row["role_reason"], text_hash=row["text_hash"],
+        extract_ver=row["extract_ver"],
     )
 
 
@@ -289,6 +304,7 @@ def _select_entries(entries, attrs, inc, exc, store, stats) -> tuple:
                 store.put_file(rec)
                 if rec.skipped:
                     store.clear_secrets(rec.path)
+                    store.clear_extraction(rec.path)
         if need_content:
             pending.append(entry)
         if reused:
@@ -310,7 +326,7 @@ def _limit_pending(pending, records, store, stats) -> list:
     return keep
 
 
-def _read_pending(repo, pending, store, stats, records, stop_after, progress, started) -> bool:
+def _read_pending(repo, pending, store, stats, records, stop_after, progress, started, keys=()) -> bool:
     """Читать пакетами; True — остановились по `stop_after`, готовые строки уже в базе."""
     for start in range(0, len(pending), BATCH):
         by_oid = {}
@@ -321,8 +337,9 @@ def _read_pending(repo, pending, store, stats, records, stop_after, progress, st
                 if data is None:
                     rec = _record(entry.path, oid, model.role_of(entry.path)[0],
                                   "объект не найден в git", "parse_error")
+                    rec.extract_ver = ""
                 else:
-                    rec = _scan_one(entry.path, oid, data, store, stats)
+                    rec = _scan_one(entry.path, oid, data, store, stats, keys)
                     if not rec.skipped:
                         stats.parsed += 1
                         store.put_path_terms(rec.path, model.path_words(rec.path))
@@ -352,7 +369,7 @@ def _finish_stats(records, stats) -> None:
 
 
 def scan_repo(repo_path, store, include: str = "", exclude: str = "", stop_after: int | None = None,
-              progress=None) -> model.ScanStats:
+              progress=None, keys=()) -> model.ScanStats:
     """Построить инвентарь одного клона. `store` уже открыт; запись пакетов — внутри.
 
     `stop_after` — только для проверки продолжения: после N разобранных файлов функция
@@ -371,7 +388,7 @@ def scan_repo(repo_path, store, include: str = "", exclude: str = "", stop_after
     exc = [_mask_rx(m) for m in (exclude or "").split(",") if m.strip()]
     records, pending = _select_entries(entries, attrs, inc, exc, store, stats)
     pending = _limit_pending(pending, records, store, stats)
-    if _read_pending(repo, pending, store, stats, records, stop_after, progress, started):
+    if _read_pending(repo, pending, store, stats, records, stop_after, progress, started, keys):
         return stats
     _finish_stats(records, stats)
     stats.duration_s = time.time() - started

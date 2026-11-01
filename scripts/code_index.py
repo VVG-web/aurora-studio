@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -72,6 +73,20 @@ def _fmt_int(n) -> str:
         return str(n)
 
 
+def config_keys(project) -> set:
+    """Ключи Jira из конфига проекта: только они считаются ключами, иначе `UTF-8` станет `UTF-8`."""
+    try:
+        text = (Path(project) / "aurora.config.yaml").read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    keys = set(re.findall(r"jira_keys\s*:\s*\[?([A-Za-z0-9_, -]+)", text))
+    keys = {k.strip().strip("\"'") for chunk in keys for k in chunk.split(",") if k.strip()}
+    m = re.search(r"project_key\s*:\s*[\"']?([A-Z][A-Z0-9]+)", text)
+    if m:
+        keys.add(m.group(1))
+    return {k for k in keys if re.match(r"^[A-Z][A-Z0-9]+$", k)}
+
+
 def selected(project, only: str) -> tuple:
     """(чистый реестр, имена, замечания, неизвестное имя)."""
     clean, probs = CREPO.check(CREPO.read_repos(project))
@@ -119,7 +134,7 @@ def run_plan(project, clean: dict, names: list, as_json: bool) -> int:
     return EXIT_OK if all(r["ok"] for r in rows) else EXIT_PART
 
 
-def _summary_line(name: str, stats: model.ScanStats) -> str:
+def _summary_line(name: str, stats: model.ScanStats, counts: dict | None = None) -> str:
     speed = stats.parsed / stats.duration_s if stats.duration_s > 0 else 0
     parts = [f"✓ {name}: ревизия {stats.rev[:8]}",
              f"файлов {_fmt_int(stats.files)}",
@@ -132,10 +147,16 @@ def _summary_line(name: str, stats: model.ScanStats) -> str:
         parts.append(f"секретов {_fmt_int(stats.secrets)}")
     if stats.skipped:
         parts.append("пропущено: " + ", ".join(f"{k} {v}" for k, v in sorted(stats.skipped.items())))
+    if counts:
+        found = [f"символов {_fmt_int(counts.get('symbols', 0))}",
+                 f"маршрутов {_fmt_int(counts.get('routes', 0))}",
+                 f"таблиц {_fmt_int(counts.get('tables', 0))}",
+                 f"топиков {_fmt_int(counts.get('topics', 0))}"]
+        parts.append(", ".join(found))
     return ", ".join(parts)
 
 
-def index_one(project, name: str, rec: dict, rebuild: bool) -> dict:
+def index_one(project, name: str, rec: dict, rebuild: bool, keys=()) -> dict:
     clone = CREPO.clone_path(project, name)
     if not clone.is_dir():
         return {"name": name, "ok": False, "problem": "клона нет: выполните code:sync"}
@@ -145,12 +166,13 @@ def index_one(project, name: str, rec: dict, rebuild: bool) -> dict:
     try:
         with store_mod.Store(path) as st:
             stats = scan.scan_repo(clone, st, include=rec.get("include") or "",
-                                   exclude=rec.get("exclude") or "")
+                                   exclude=rec.get("exclude") or "", keys=keys)
+            counts = st.counts()
             out = {"name": name, "ok": True, "rev": stats.rev, "files": stats.files,
                    "indexed": stats.indexed, "parsed": stats.parsed, "reused": stats.reused,
                    "secrets": stats.secrets, "duration_s": round(stats.duration_s, 3),
                    "skipped": stats.skipped, "languages": stats.languages,
-                   "index": str(path), "line": _summary_line(name, stats)}
+                   "counts": counts, "index": str(path), "line": _summary_line(name, stats, counts)}
             return out
     except (scan.GitError, scan.ScanRefused) as e:
         return {"name": name, "ok": False, "problem": str(e)}
@@ -174,7 +196,8 @@ def run_index(project, clean: dict, names: list, apply: bool, rebuild: bool, as_
         _say(f"✗ индексация кода уже идёт (процесс {holder.get('pid', '?')}) — дождитесь её конца")
         return EXIT_FAIL
     try:
-        rows = [index_one(project, n, clean[n], rebuild) for n in names]
+        keys = config_keys(project)
+        rows = [index_one(project, n, clean[n], rebuild, keys) for n in names]
     finally:
         lock_release(str(lock))
     if as_json:
@@ -244,6 +267,9 @@ def run_status(project, clean: dict, names: list, as_json: bool) -> int:
         _say(f"· {r['name']}: {r.get('index_rev', '')[:8] or '—'}, {tail}, "
              f"файлов {_fmt_int(r.get('files', 0))}, в индексе {_fmt_int(r.get('indexed', 0))}"
              + (f", секретов {_fmt_int(r.get('secrets', 0))}" if r.get("secrets") else "")
+             + (f", символов {_fmt_int(r.get('symbols', 0))}, маршрутов {_fmt_int(r.get('routes', 0))}, "
+                f"таблиц {_fmt_int(r.get('tables', 0))}, топиков {_fmt_int(r.get('topics', 0))}"
+                if r.get("symbols") or r.get("routes") or r.get("tables") or r.get("topics") else "")
              + (f", языки: {top}" if top else ""))
         if r.get("problem"):
             _say(f"    {r['problem']}")
