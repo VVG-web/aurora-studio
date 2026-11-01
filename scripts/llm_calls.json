@@ -507,9 +507,18 @@
       ],
       "code": [
         "agent_runner.py:run_make",
-        "agent_runner.py:run_momus"
+        "agent_runner.py:run_momus",
+        "agent_runner.py:compact_make_pack"
       ],
       "steps": [
+        {
+          "role": "planner",
+          "prompt": "agent_runner.py:PROMPT_PACK_COMPACT",
+          "what": {
+            "ru": "Пак больше окна модели: нарезка на части и конспект каждой части с опорой; дальше идёт уже короткий пак.",
+            "en": "The pack exceeds the model window: it is split into chunks and each chunk gets a grounded summary; a short pack goes on."
+          }
+        },
         {
           "role": "planner",
           "prompt": "agent_runner.py:PROMPT_MAKE_PLAN",

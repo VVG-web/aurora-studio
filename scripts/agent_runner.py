@@ -5798,6 +5798,27 @@ PROMPT_EXTRACT = """Ты читаешь карточку знания и ище�
    карточек говорят ровно о своём объекте."""
 
 
+PROMPT_PACK_COMPACT = """Аналитик готовит документ по такой задаче:
+
+{idea}
+
+Тебе дают ЧАСТЬ пака знаний — это {part} из {total}. Извлеки из неё только то, что
+нужно именно для этого документа, и выпиши конспект по делу, не длиннее {cap} знаков.
+
+Правила конспекта:
+
+1. Тезис — короткое утверждение, а за ним источник в квадратных скобках: [[Имя карточки]].
+2. Дословные места документов переноси дословно, без пересказа, и сразу отмечай карточку.
+3. Статусы доверия не теряй: если карточка `draft`, пиши «по непроверенной карточке …».
+4. Противоречия не выбирай сам: назови обе карточки, они пригодятся планировщику.
+5. Ничего не выдумывай: чего в этой части нет, того в конспекте быть не должно.
+6. Не пересказывай шаблон документа и не добавляй пояснений про свою работу — только
+   тезисы с источниками.
+
+ПАК:
+{pack}"""
+
+
 PROMPT_MAKE_PLAN = """{method}Ты планировщик. Аналитик хочет получить документ «{title}».
 
 Его задача своими словами:
@@ -6112,6 +6133,71 @@ def pack_budget_args(cfg: dict, template: str, extra: str, idea: str, name: str)
     return ["--budget", str(max(room, MIN_PACK))], ""
 
 
+def split_pack_for_budget(pack: str, budget: int) -> list:
+    """Разбить пак на части по карточкам (`## имя`) так, чтобы каждая часть не длиннее budget.
+
+    Одна карточка длиннее бюджета режется по строкам — иначе целая часть не влезла бы в окно,
+    и запрос упал бы на `fits`, как до этой правки. Порядок частей сохраняется: планировщик
+    читает их в том же порядке, в каком пак был собран."""
+    if budget <= 0:
+        return [pack]
+    cards = re.split(r"(?m)(?=^## )", pack or "")
+    parts, cur = [], ""
+    for card in cards:
+        if not card.strip():
+            continue
+        if len(card) > budget:
+            # одна большая: дорезать текущую часть, затем резать карточку по строкам
+            if cur:
+                parts.append(cur)
+                cur = ""
+            start = 0
+            while start < len(card):
+                piece = card[start:start + budget]
+                if start + budget < len(card):
+                    nl = piece.rfind("\n")
+                    if nl > 0:
+                        piece = piece[:nl + 1]
+                parts.append(piece)
+                start += len(piece)
+        elif cur and len(cur) + len(card) > budget:
+            parts.append(cur)
+            cur = card
+        else:
+            cur += card
+    if cur.strip():
+        parts.append(cur)
+    return [p for p in parts if p.strip()] or [pack[:budget]]
+
+
+def compact_make_pack(cfg: dict, pack: str, idea: str, budget: int, call, deadline: float = 0) -> tuple:
+    """Большой пак — порциями к модели: каждая часть получает свой конспект, вместо них идёт
+    один короткий пак. → (новый пак, «сколько частей», текст отказа).
+
+    Возвращает то же пак без изменений, если он уже влезает. Это не срез по длине: выброшенных
+    карточек нет — содержимое каждой части модель выбирает по задаче и пересказывает с опорой,
+    а планировщик дальше работает с конспектами, а не с целой пачкой."""
+    if budget <= 0 or len(pack or "") <= budget:
+        return pack, 0, ""
+    chunks = split_pack_for_budget(pack, budget)
+    if len(chunks) < 2:
+        return pack, 0, ""
+    # Сумма конспектов заранее меньше исходного пака: 0.8 бюджета, и не более одного куска на часть.
+    cap = max(600, int(budget * 0.8 / len(chunks)))
+    notes = []
+    for i, chunk in enumerate(chunks, 1):
+        prompt = PROMPT_PACK_COMPACT.format(idea=idea, part=i, total=len(chunks), cap=cap, pack=chunk)
+        r = call(cfg, "planner", [{"role": "user", "content": prompt}], deadline=deadline)
+        if not r.get("ok"):
+            return "", 0, (f"конспект части {i} из {len(chunks)} не получен: "
+                           + model_fail_note(r) if 'model_fail_note' in globals() else str(r))
+        note = (r.get("text") or "").strip()
+        if not note:
+            return "", 0, f"конспект части {i} из {len(chunks)} пустой"
+        notes.append(f"## Конспект части {i} из {len(chunks)}\n\n" + note[:cap])
+    return "\n\n".join(notes), len(chunks), ""
+
+
 MIN_PACK = 3000                # меньше этого пак бесполезен: пусть лучше уступит шаблону
 
 
@@ -6225,6 +6311,20 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         m = re.search(r"карточек (\d+)", r["out"])
         say(f"  обогащение: карточек {m.group(1) if m else '?'} → {st['path']}")
         save_session(cwd, sid, st)
+
+    # Пак больше окна модели — не режем его вслепую и не роняем работу на `fits`: каждая часть
+    # получает свой конспект (моделью, с опорой), и дальше идёт уже короткий пак. Делается и для
+    # возобновлённой сессии: обогащённый пак старой версии мог быть записан без ограничения.
+    if (st.get("stages") or {}).get("enriched") and not st.get("compacted"):
+        budget = AG.prompt_budget(cfg, reserve_chars=len(template) + len(prompt_extra) + len(st["idea"]) + 8000)
+        if budget and len(st.get("pack") or "") > budget:
+            packed, parts, why_pack = compact_make_pack(cfg, st["pack"], st["idea"], budget, call, deadline=deadline)
+            if why_pack:
+                return {"ok": False, "sid": sid, "why": why_pack}
+            say(f"  пак велик: {len(st['pack'])} знаков → конспект по частям ({parts}): {len(packed)} знаков")
+            st["pack"] = packed
+            st["compacted"] = True
+            save_session(cwd, sid, st)
 
     def form(role: str, skeleton_ok: bool):
         """→ (блок шаблона для роли, проверка готового сообщения)."""

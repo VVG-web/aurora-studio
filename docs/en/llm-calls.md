@@ -228,6 +228,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 
 | Role | What it does | Prompt |
 |---|---|---|
+| Planner (planner) | The pack exceeds the model window: it is split into chunks and each chunk gets a grounded summary; a short pack goes on. | `PROMPT_PACK_COMPACT` (agent_runner.py) |
 | Planner (planner) — with tools | Questions and the document plan. The only step with tools: it can search the base and the MCP chosen in the request. | `PROMPT_MAKE_PLAN` (agent_runner.py) |
 | Writer (worker) | The document by the plan and the kind's form. | `PROMPT_MAKE_WRITE` (agent_runner.py) |
 | Critic (critic) | Checking against the form and the plan. | `PROMPT_MAKE_CRITIC` (agent_runner.py) |
