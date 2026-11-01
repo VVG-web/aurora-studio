@@ -2469,6 +2469,45 @@ def gitsync_state(project: str) -> dict:
             "ticking": GITAUTO is not None and getattr(GITAUTO, "started", False)}
 
 
+def code_index_state(project: str) -> dict:
+    """Индекс кода по репозиториям: что построено и сколько сущностей. Только чтение."""
+    import code_repos as CREPO
+    from aurora_common import engine_dir
+    import codeidx.store as CIDX
+    try:
+        clean, _probs = CREPO.check(CREPO.read_repos(project))
+        rows = []
+        for name in clean:
+            path = os.path.join(project, engine_dir(project), "cache", "code", name, "index.sqlite")
+            row = {"name": name, "built": os.path.isfile(path)}
+            if row["built"]:
+                with CIDX.Store(path) as st:
+                    row.update(st.status())
+            rows.append(row)
+        return {"repos": rows}
+    except Exception as e:  # noqa: BLE001 — сломанный индекс не роняет раздел
+        return {"repos": [], "failed": f"{type(e).__name__}: {e}"[:300]}
+
+
+def code_find_state(project: str, text: str, kind: str = "", limit: int = 30) -> dict:
+    """Поиск по индексам всех репозиториев раздела «Код». Только чтение."""
+    import code_repos as CREPO
+    from aurora_common import engine_dir
+    import codeidx.query as CQ
+    import codeidx.store as CIDX
+    clean, _probs = CREPO.check(CREPO.read_repos(project))
+    rows, missing = [], []
+    for name in clean:
+        path = os.path.join(project, engine_dir(project), "cache", "code", name, "index.sqlite")
+        if not os.path.isfile(path):
+            missing.append(name)
+            continue
+        with CIDX.Store(path) as st:
+            for rec in CQ.find(st, text, kind=kind, limit=max(1, limit)):
+                rows.append({"repo": name, **rec})
+    return {"query": text, "results": rows[:max(1, limit)], "missing": missing}
+
+
 def code_state(project: str) -> dict:
     """Раздел «Код»: реестр репозиториев (вход — маской), его слепок для формы, замечания к записанному и состояние
     клонов без сети — то же, что печатает `code:status`. Числа считает движок, раздел их только показывает."""
@@ -2489,6 +2528,7 @@ def code_state(project: str) -> dict:
         st["profiles"] = [str(x.get("name")) for x in cfg.get("profiles") or [] if isinstance(x, dict) and x.get("name")]
     except Exception:  # noqa: BLE001 — без проверки соединений режимы доступа выбираются без списка профилей
         st["profiles"] = []
+    st["index"] = code_index_state(project)
     return st
 
 
@@ -7197,6 +7237,23 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(code_state(project))
+        elif u.path == "/api/code/index":
+            # Индекс кода: что построено и сколько сущностей; только чтение.
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(code_index_state(project))
+        elif u.path == "/api/code/find":
+            # Поиск по индексу кода: модель и сеть не нужны.
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            try:
+                limit = max(1, min(200, int((q.get("limit") or ["30"])[0])))
+            except ValueError:
+                limit = 30
+            self.send_json(code_find_state(project, (q.get("q") or [""])[0],
+                                           (q.get("kind") or [""])[0], limit))
         elif u.path == "/api/env":
             # «Проверить снова» на странице «Установка»: без перезапуска панели.
             self.send_json({"env": localized_environment(environment(fresh=bool(q.get("fresh"))),

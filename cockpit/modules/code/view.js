@@ -11,6 +11,11 @@ const FIELDS = ["url", "provider", "branch", "pin", "include", "exclude", "acces
 
 let CTX = null;
 let D = null, FORM = null, CREDS = {}, DIRTY = false, OPEN = "", PROJECT = "", ADD = null, MSG = null;
+let FIND = null;
+const KIND_KEYS = {symbol: "code.index.kind.symbol", file: "code.index.kind.file",
+  route: "code.index.kind.route", table: "code.index.kind.table", column: "code.index.kind.column",
+  topic: "code.index.kind.topic", config: "code.index.kind.config", string: "code.index.kind.string",
+  test: "code.index.kind.test", reqtag: "code.index.kind.reqtag", commit: "code.index.kind.commit"};
 
 export function mount(ctx){
   ctx.root.dataset.module = "code";
@@ -56,6 +61,7 @@ function draw(ctx){
   const names = Object.keys(FORM).sort((a, b) => a.localeCompare(b));
   if (!names.length) box.append(ctx.el("div", {class: "card muted", style: "padding:18px"}, ctx.t("code.empty")));
   names.forEach(n => box.append(repoCard(ctx, n)));
+  box.append(indexCard(ctx));
   box.append(footer(ctx));
 }
 
@@ -409,6 +415,80 @@ async function runSync(ctx, name, reset){
   if (res && res.busy) return;
   // Человек смотрит вывод в консоли — возвращать его силой нельзя; раздел обновляется молча.
   if (ctx.project && ctx.project.path === PROJECT) await load(ctx, true);
+}
+
+function indexCard(ctx){
+  const {t, el} = ctx;
+  const idx = (D && D.index) || {repos: []};
+  const box = el("div", {class: "card", style: "padding:16px 18px;margin-bottom:14px"});
+  box.append(el("b", {}, t("code.index.title")),
+    el("p", {class: "muted", style: "font-size:12.5px;margin:4px 0 10px"}, t("code.index.about")));
+  if (idx.failed) box.append(el("div", {class: "warnbox"}, t("code.index.failed", {error: idx.failed})));
+  const repos = idx.repos || [];
+  if (!repos.length) box.append(el("div", {class: "muted", style: "font-size:12.5px"}, t("code.empty")));
+  repos.forEach(r => {
+    const detail = r.built
+      ? [r.files, r.symbols, r.routes, r.tables, r.topics, r.commits].map(n => n || 0).join(" / ")
+      : t("code.index.not_built");
+    box.append(el("div", {class: "row", style: "gap:8px;align-items:center;margin:4px 0;flex-wrap:wrap"},
+      el("span", {class: "chip mono"}, r.name),
+      el("span", {class: "muted", style: "font-size:12.5px"}, detail)));
+  });
+  const q = el("input", {class: "btn", style: "flex:1;min-width:220px;font-weight:400",
+    placeholder: t("code.index.search")});
+  q.id = "codeFind";
+  q.value = FIND ? FIND.query : "";
+  const kind = el("select", {class: "btn", style: "font-weight:400"});
+  kind.id = "codeFindKind";
+  ["", "symbol", "file", "route", "table", "column", "topic", "config", "string", "test", "reqtag", "commit"]
+    .forEach(k => {
+      const o = el("option", {value: k}, k ? t(KIND_KEYS[k]) : t("code.index.all"));
+      if (FIND && FIND.kind === k) o.selected = true;
+      kind.append(o);
+    });
+  box.append(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:12px"},
+    q, kind,
+    el("button", {class: "btn", onclick: () => runFind(ctx)}, t("code.index.find")),
+    el("button", {class: "btn primary", onclick: () => buildIndex(ctx)}, t("code.index.build"))));
+  if (FIND && FIND.missing && FIND.missing.length)
+    box.append(el("div", {class: "note", style: "margin-top:8px"},
+      t("code.index.missing", {names: FIND.missing.join(", ")})));
+  if (FIND && FIND.error) box.append(el("div", {class: "warnbox", style: "margin-top:8px"}, FIND.error));
+  if (FIND && FIND.results){
+    if (!FIND.results.length) box.append(el("div", {class: "muted", style: "margin-top:10px"}, t("code.index.empty")));
+    else {
+      const list = el("div", {style: "margin-top:10px"});
+      FIND.results.forEach(r => {
+        const where = r.file ? `  ${r.file}${r.line ? ":" + r.line : ""}` : "";
+        list.append(el("div", {style: "font-size:12.5px;margin:3px 0"},
+          el("span", {class: "chip"}, r.type), " ",
+          el("span", {class: "mono"}, r.name),
+          r.detail ? " — " + r.detail : "",
+          where));
+      });
+      box.append(list);
+    }
+  }
+  return box;
+}
+
+async function buildIndex(ctx){
+  const res = await ctx.runWatched("code:index", ["--apply"]);
+  if (res && res.busy) return;
+  if (ctx.project && ctx.project.path === PROJECT) await load(ctx, true);
+}
+
+async function runFind(ctx){
+  const q = ctx.$("#codeFind"), kind = ctx.$("#codeFindKind");
+  FIND = {query: q ? q.value : "", kind: kind ? kind.value : "", results: null, error: "", missing: []};
+  if (!FIND.query.trim()){ FIND.results = []; return draw(ctx); }
+  const url = "/api/code/find?project=" + encodeURIComponent(ctx.project.path)
+    + "&q=" + encodeURIComponent(FIND.query) + "&kind=" + encodeURIComponent(FIND.kind);
+  const r = await ctx.api(url, {quiet: true}) || {};
+  FIND.results = r.results || [];
+  FIND.error = r.error || "";
+  FIND.missing = r.missing || [];
+  draw(ctx);
 }
 
 function footer(ctx){

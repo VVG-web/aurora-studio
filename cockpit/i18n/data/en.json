@@ -119,9 +119,12 @@
     "net:probe": "Check the connection now: all probes (or `--only` — one profile or probe); the state is updated with anti-flapping; exit code 1 when the profiles in need are down. With the feature off it does nothing.",
     "code:sync": "Clones of the project's code repositories in `Code/`: clone, take what is new from the server and set the pinned revision or the branch tip — read-only, nothing is merged or pushed. Repositories are connected in the \"Code\" section (`code_repos:` in the config), sign-in works as in \"Project Git\", the secret stays outside the project. Without `--apply` — a plan, no network; a repository whose connection is down now is skipped with the reason; a clone with edits is left alone, `--reset --repo` resets it to the registry",
     "code:status": "Code repositories: the revision and its date, how far behind the server branch, the last sync, languages and size (files and lines per language without external tools; dependencies, generated, binary and lock files are not counted), the \"models\" and \"publish\" permissions; no network needed",
+    "code:index": "Code index: file inventory from git objects, languages and roles, symbols, routes, SQL tables and columns, topics, configuration keys, tests, requirement tags and commit history in `.aurora/cache/code/<name>/index.sqlite`; secrets are masked, no model or network needed. Without `--apply` — a plan; `--rebuild` rebuilds, `--status` shows state, `--secrets` shows findings without values",
+    "code:find": "Search the code index: symbols, files, routes, tables and columns, topics, configuration, strings, tests, requirement tags and commits; `--kind` narrows the kind, `--json` is machine output, an empty result is not an error; no model or network needed",
     "ship:task": "A task in the tracker for an artifact document through the active task tracker connector (project settings): type, epic, assignee, labels and components come from the `task:` block of the document header, the task properties of the kind and the connector settings; the default assignee is the person with the project's git e-mail. Without `--apply` — a plan, nothing is written to the tracker; with `--apply` the task is created and `task_key` and `task_url` go into the document header (BOM and line endings are kept). The published page of the document is linked to the task; if the task already exists, no second one appears."
   },
   "scenarios": {
+    "Собрать или обновить индекс кода: файлы, символы, маршруты, таблицы, топики, конфигурация и история коммитов; без подключённых репозиториев шаг ничего не делает": "Build or update the code index: files, symbols, routes, tables, topics, configuration and commit history; with no repositories connected the step does nothing",
     "Обновить базу": "Update the base",
     "взять новое из источников и довести до знания: синхронизация, разбор партиями, тезисы, связи, доверие. Маршрут идёт, пока есть работа — хоть двенадцать часов, — и фиксирует каждый оборот в git: выключайте когда угодно, сделанное останется и переделывать его не придётся. В итоге: база знает всё, что появилось в источниках": "take what is new from the sources and bring it to knowledge: sync, parsing in batches, theses, links, trust. The route runs as long as there is work — even twelve hours — and commits every turn to git: switch it off whenever you like, what is done stays and nothing has to be redone. Result: the base knows everything that appeared in the sources",
     "Забрать свежие страницы Confluence и убрать из зеркала удалённые (не убирает, если выгрузка прошла с ошибками)": "Fetch fresh Confluence pages and remove deleted ones from the mirror (does not remove if the export finished with errors)",
@@ -724,6 +727,16 @@
     "PyPI не ответил: ": "PyPI did not answer: "
   },
   "flags": {
+    "корень проекта (по умолчанию текущая папка)": "project root (default: current folder)",
+    "только один репозиторий по имени": "only one repository by name",
+    "построить или обновить индекс": "build or update the index",
+    "состояние индекса без записи": "index state without writing",
+    "находки секретов без значений": "secret findings without values",
+    "удалить индекс и построить заново": "delete the index and build it again",
+    "записать индекс (без него — план)": "write the index (without it — a plan)",
+    "строка поиска (альтернатива позиционной)": "search string (alternative to the positional one)",
+    "вид записи": "record kind",
+    "сколько результатов (по умолчанию 50)": "how many results (default 50)",
     "с --golden-remap: записать выбранную цель строки (так пишет agent:golden)": "with --golden-remap: write the chosen target of a row (this is how agent:golden writes)",
     "с --golden-remap: какие строки эталона принять (первый кандидат)": "with --golden-remap: which golden rows to accept (the first candidate)",
     "с --golden-remap: перевести цели, сменившие имя (слияние, синоним), без модели": "with --golden-remap: move targets that changed their name (merge, synonym), without the model",

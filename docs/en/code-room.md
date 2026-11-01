@@ -4,12 +4,13 @@
 
 Aurora can keep **clones of the project's code repositories** next to the knowledge base. Code is
 neither knowledge nor an analyst's document: it is evidence of *how the system is built*. From it the
-engine learns a repository's revision, languages and size; the next releases add a code index,
-checking a story's acceptance criteria against the code and the "Clean room" — artifacts built from
-the code to compare with the analysis.
+engine learns a repository's revision, languages and size, builds an index and answers "where is this
+done"; checking a story's acceptance criteria against the code and the "Clean room" — artifacts built
+from the code to compare with the analysis — come in later releases.
 
-This release lays the ground: the `Code/` folder, the repository registry, the "Code" panel section
-and the `code:sync` and `code:status` commands. No model is called anywhere in it.
+This release gives the `Code/` folder, the repository registry, the "Code" panel section, sync, the
+code index and search over it: `code:sync`, `code:status`, `code:index`, `code:find`. No model is
+called anywhere: the index and search work on the standard library and SQLite.
 
 ## Folders
 
@@ -150,6 +151,45 @@ breaks, no external tools. Not counted as code and named separately: foreign dep
 names (`.env*`, `*.pem`…) and files above 512 KB. The clone's longest path that would not fit on
 Windows without long paths is flagged.
 
+### `code:index`
+
+Builds or updates the code index in `.aurora/cache/code/<name>/index.sqlite`. It reads **git objects**
+(`ls-tree`, `cat-file`), not the working folder: `core.autocrlf`, symlinks, name case and long Windows
+paths do not change the result. Without `--apply` — a plan: the revision and the number of files,
+nothing written.
+
+- **Inventory:** path, blob, language, role (`src`, `test`, `config`, `migration`, `doc`, `generated`,
+  `vendor`), size, lines, encoding. Dependencies, generated, minified, lock files, binaries and secret
+  names are not parsed and are named with the reason.
+- **Extracted:** symbols (classes, functions, methods, fields, constants), routes, SQL tables and
+  columns, topics, configuration keys, string constants, tests and requirement tags.
+- **History:** commits, files, renames and keys only from the project's known list (`jira_keys` and
+  `project_key`); authors are not stored.
+- **Secrets:** values are written neither to the index nor to logs; a line with a finding is masked,
+  the rule and line number are shown by `--secrets`.
+- **A repeat run** does not read unchanged files (same blob and extractor version), an interrupted
+  one resumes. `--rebuild` deletes the index and builds it again.
+- Limits: 300,000 files in the inventory, 60,000 parsed, 512 KB per file; the rest is marked
+  `over_limit` or `too_big` rather than silently dropped.
+
+### `code:find`
+
+Searches the index: symbols, files, routes, tables and columns, topics, configuration, strings,
+tests, requirement tags and commits. `--kind` narrows the kind, `--limit` sets the number of results,
+`--json` gives machine output. Ranking is simple: exact match, prefix, substring. An empty result is
+not an error. No model or network needed.
+
+## The code index
+
+The index is a cache, not knowledge: it can be deleted and rebuilt, and it is not part of the
+project's git. Storage is SQLite with WAL and FTS5 (a fallback search without FTS5). Tables: files,
+extracted records, symbols, edges, routes, tables and columns, topics, configuration, strings, tests,
+requirement tags, commits and secrets without values.
+
+The index does not change requirement statuses and does not issue verdicts: it shows what is visible
+in the code with `file:line` coordinates and the revision. "Done by code" verdicts will arrive with
+checking acceptance criteria.
+
 ## The "Code" section
 
 In the project group, next to "Git". The "Connect a repository" card takes a `git clone` line, the
@@ -166,6 +206,6 @@ window from `~/.ssh`.
 
 ## What comes next
 
-The code index and search (symbols, REST routes, tables, topics, configuration, commits), a story's
-requirements pack, checking acceptance criteria against the code and the "Clean room" are the next
-releases.
+A story's requirements pack, checking acceptance criteria against the code and the "Clean room" are
+the next releases. The index and search are already here; optional adapters (tree-sitter, graphify,
+ast-grep) will improve parsing accuracy and are installed separately, not as required dependencies.
