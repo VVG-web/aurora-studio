@@ -253,3 +253,34 @@ def test_installer_lays_the_project_check_wall_and_update_delivers_it(tmp: Path)
             cp = subprocess.run([bash, str(script), *args], capture_output=True, text=True,
                                 encoding="utf-8", errors="replace", timeout=60)
             assert cp.returncode == 0 and want in cp.stdout, (args, cp.returncode, cp.stdout[-300:], cp.stderr[-300:])
+
+
+@test
+def test_a_failed_chunk_is_split_and_retried_instead_of_losing_the_whole_pack(tmp: Path):
+    """Живой прогон 01.11: вторая часть конспекта упала на таймауте шлюза, и производство потеряло уже готовую первую.
+    Теперь неудачный кусок режется надвое и пробуется мельче (до двух уровней); отказ остаётся отказом только когда
+    не вышло и мельче."""
+    import sys
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_runner as R
+    facts = "факт по делу, срок десять дней.\n" * 400
+    pack = "".join(f"## Карточка {i}\n\n{facts}" for i in range(8))
+    calls = {"n": 0, "first": []}
+
+    def fake(cfg, role, messages, **kw):
+        calls["n"] += 1
+        content = messages[0]["content"]
+        if "ЧАСТЬ пака знаний" in content and len(content) > 12000:
+            calls["first"].append(len(content))
+            return {"ok": False, "text": "", "log": ["таймаут"]}
+        return {"ok": True, "text": "конспект [[Карточка 1]]", "log": []}
+
+    notes, parts, why = R.compact_make_pack({}, pack, "идея", 60000, fake)
+    assert not why, why
+    assert parts >= 2 and calls["first"], (parts, calls)
+    assert notes.count("## Конспект части") == parts
+    assert calls["n"] > len(calls["first"]), "неудачная часть не переспрошена мельче"
+    # всё мельче тоже не вышло — отказ называет часть, а не молчит
+    bad, _, why_bad = R.compact_make_pack({}, pack, "идея", 60000,
+                                         lambda cfg, role, messages, **kw: {"ok": False, "text": "", "log": []})
+    assert not bad and why_bad and "не получен" in why_bad, why_bad

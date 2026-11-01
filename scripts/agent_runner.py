@@ -6187,23 +6187,42 @@ def compact_make_pack(cfg: dict, pack: str, idea: str, budget: int, call, deadli
         return pack, 0, ""
     # Сумма конспектов заранее меньше исходного пака: 0.8 бюджета, и не более одного куска на часть.
     cap = max(600, int(budget * 0.8 / len(chunks)))
-    notes = []
     import time as _time
-    for i, chunk in enumerate(chunks, 1):
-        prompt = PROMPT_PACK_COMPACT.format(idea=idea, part=i, total=len(chunks), cap=cap, pack=chunk)
+
+    def note_of(chunk: str, i: int, total: int, depth: int = 0) -> tuple:
+        """Конспект куска; не вышло — делим кусок и пробуем мельче. → (текст, причина отказа)."""
+        prompt = PROMPT_PACK_COMPACT.format(idea=idea, part=i, total=total, cap=cap, pack=chunk)
         # Свой срок на каждую часть: общий срок прогона к этому месту может быть уже наполовину
         # израсходован, и вторая часть получала «дедлайн исчерпан», хотя шлюз жив (живой прогон 01.11).
         part_secs = AG.call_budget(cfg, "planner") if (cfg or {}).get("request_timeout") else 300.0
-        part_deadline = _time.time() + part_secs
         r = call(cfg, "planner", [{"role": "user", "content": prompt}],
-                 deadline=max(deadline, part_deadline))
-        if not r.get("ok"):
-            return "", 0, (f"конспект части {i} из {len(chunks)} не получен: "
-                           + model_fail_note(r) if 'model_fail_note' in globals() else str(r))
-        note = (r.get("text") or "").strip()
-        if not note:
-            return "", 0, f"конспект части {i} из {len(chunks)} пустой"
-        notes.append(f"## Конспект части {i} из {len(chunks)}\n\n" + note[:cap])
+                 deadline=max(deadline, _time.time() + part_secs))
+        note = (r.get("text") or "").strip() if r.get("ok") else ""
+        if note:
+            return note[:cap], ""
+        # Кусок не осилен (шлюз оборвал связь, модель не успела): режем его мельче и пробуем ещё.
+        # Так частичная неудача не отменяет всю работу — иначе живой прогон 01.11 падал на второй части
+        # из трёх из-за таймаута шлюза, хотя первая уже была готова.
+        if depth < 2 and len(chunk) > 4000:
+            halves = split_pack_for_budget(chunk, max(2000, len(chunk) // 2))
+            if len(halves) > 1:
+                got = []
+                for j, half in enumerate(halves, 1):
+                    text, why = note_of(half, j, len(halves), depth + 1)
+                    if why:
+                        return "", why
+                    got.append(text)
+                return "\n\n".join(got), ""
+        why = model_fail_note(r) if 'model_fail_note' in globals() else str(r)
+        return "", (f"конспект части {i} из {total} не получен: {why}" if not r.get("ok")
+                    else f"конспект части {i} из {total} пустой")
+
+    notes = []
+    for i, chunk in enumerate(chunks, 1):
+        note, why = note_of(chunk, i, len(chunks))
+        if why:
+            return "", 0, why
+        notes.append(f"## Конспект части {i} из {len(chunks)}\n\n" + note)
     return "\n\n".join(notes), len(chunks), ""
 
 
