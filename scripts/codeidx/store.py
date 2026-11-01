@@ -463,6 +463,40 @@ class Store:
                 (rec.get("key", ""), file, int(rec.get("line") or 0), rec.get("symbol", ""), rec.get("kind", "")),
             )
 
+    # ------------------------------------------------------------ история коммитов
+
+    def clear_history(self) -> None:
+        for table in ("commits", "commit_files", "commit_keys"):
+            self.conn.execute(f"DELETE FROM {table}")
+
+    def put_commit(self, sha: str, ts: str, subject: str) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO commits(sha, ts, subject) VALUES(?,?,?)",
+            (sha, ts, subject),
+        )
+
+    def put_commit_file(self, sha: str, path: str, status: str, old_path: str = "") -> None:
+        self.conn.execute(
+            "INSERT INTO commit_files(sha, path, status, old_path) VALUES(?,?,?,?)",
+            (sha, path, status, old_path),
+        )
+
+    def put_commit_key(self, sha: str, key: str, kind: str = "") -> None:
+        self.conn.execute(
+            "INSERT INTO commit_keys(sha, key, kind) VALUES(?,?,?)",
+            (sha, key, kind),
+        )
+
+    def commits_for_key(self, key: str) -> list:
+        rows = self.conn.execute(
+            "SELECT c.sha, c.ts, c.subject, f.path, f.status, f.old_path "
+            "FROM commits c JOIN commit_keys k ON k.sha=c.sha "
+            "LEFT JOIN commit_files f ON f.sha=c.sha "
+            "WHERE k.key=? ORDER BY c.ts, c.sha, f.path",
+            (key,),
+        )
+        return [dict(r) for r in rows]
+
     # ------------------------------------------------------------ поисковые таблицы
 
     def put_path_terms(self, path: str, words) -> None:
@@ -503,6 +537,8 @@ class Store:
             "configs": int(self.conn.execute("SELECT COUNT(*) FROM configs").fetchone()[0]),
             "tests": int(self.conn.execute("SELECT COUNT(*) FROM tests").fetchone()[0]),
             "reqtags": int(self.conn.execute("SELECT COUNT(*) FROM reqtags").fetchone()[0]),
+            "commits": int(self.conn.execute("SELECT COUNT(*) FROM commits").fetchone()[0]),
+            "commit_keys": int(self.conn.execute("SELECT COUNT(*) FROM commit_keys").fetchone()[0]),
         }
 
     def status(self) -> dict:

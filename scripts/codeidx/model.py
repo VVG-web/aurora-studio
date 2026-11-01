@@ -130,6 +130,8 @@ class ScanStats:
     lines: int = 0
     languages: dict = field(default_factory=dict)
     secrets: int = 0
+    commits: int = 0
+    commit_keys: int = 0
     duration_s: float = 0.0
     over_limit: int = 0
     interrupted: bool = False

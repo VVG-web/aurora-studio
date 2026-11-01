@@ -20,9 +20,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 try:
-    from . import extract, model
+    from . import extract, history, model
 except ImportError:  # запуск файла напрямую из scripts/codeidx
     import extract  # type: ignore
+    import history  # type: ignore
     import model  # type: ignore
 
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -97,6 +98,13 @@ class GitRepo:
         if cp.returncode:
             raise GitError(f"{self.path}: нет HEAD — репозиторий пуст")
         return cp.stdout.decode("ascii", "replace").strip()
+
+    def run(self, *args):
+        """Выполнить git-команду в репозитории; ошибка — `GitError`."""
+        cp = _run_git(self.path, list(args))
+        if cp.returncode:
+            raise GitError(f"{self.path}: git {' '.join(args)}: {cp.stderr.decode('utf-8', 'replace').strip()}")
+        return cp.stdout
 
     def is_ancestor(self, old: str, new: str) -> bool:
         """Старый коммит — предок нового. Переписанная история даёт False."""
@@ -394,5 +402,7 @@ def scan_repo(repo_path, store, include: str = "", exclude: str = "", stop_after
     stats.duration_s = time.time() - started
     store.replace_inventory(records, rev, stats)
     store.meta_set("indexed_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    stats.commits, stats.commit_keys = history.index_repo(repo, store, keys, rev)
+    store.meta_set_json("stats", stats.__dict__)
     store.commit()
     return stats

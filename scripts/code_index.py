@@ -151,7 +151,8 @@ def _summary_line(name: str, stats: model.ScanStats, counts: dict | None = None)
         found = [f"символов {_fmt_int(counts.get('symbols', 0))}",
                  f"маршрутов {_fmt_int(counts.get('routes', 0))}",
                  f"таблиц {_fmt_int(counts.get('tables', 0))}",
-                 f"топиков {_fmt_int(counts.get('topics', 0))}"]
+                 f"топиков {_fmt_int(counts.get('topics', 0))}",
+                 f"коммитов {_fmt_int(counts.get('commits', 0))}"]
         parts.append(", ".join(found))
     return ", ".join(parts)
 
@@ -268,8 +269,9 @@ def run_status(project, clean: dict, names: list, as_json: bool) -> int:
              f"файлов {_fmt_int(r.get('files', 0))}, в индексе {_fmt_int(r.get('indexed', 0))}"
              + (f", секретов {_fmt_int(r.get('secrets', 0))}" if r.get("secrets") else "")
              + (f", символов {_fmt_int(r.get('symbols', 0))}, маршрутов {_fmt_int(r.get('routes', 0))}, "
-                f"таблиц {_fmt_int(r.get('tables', 0))}, топиков {_fmt_int(r.get('topics', 0))}"
-                if r.get("symbols") or r.get("routes") or r.get("tables") or r.get("topics") else "")
+                f"таблиц {_fmt_int(r.get('tables', 0))}, топиков {_fmt_int(r.get('topics', 0))}, "
+                f"коммитов {_fmt_int(r.get('commits', 0))}"
+                if r.get("symbols") or r.get("routes") or r.get("tables") or r.get("topics") or r.get("commits") else "")
              + (f", языки: {top}" if top else ""))
         if r.get("problem"):
             _say(f"    {r['problem']}")
