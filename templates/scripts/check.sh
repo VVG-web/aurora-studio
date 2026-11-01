@@ -38,11 +38,14 @@ done
 pass=0 fail=0 skip=0
 fails=""
 
-run() { # $1 = имя, $2 = команда целиком
-  local name=$1 cmd=$2 script out rc
-  script=$(printf '%s\n' "$cmd" | tr ' ' '\n' | grep -E '\.py$' | head -1)
+run() { # $1 = имя, дальше — команда по словам (без eval: строки в eval — лишний риск)
+  local name=$1 script out rc
+  shift
+  local -a cmd=("$@")
+  script=""
+  for a in "${cmd[@]}"; do case "$a" in *.py) script=$a; break ;; esac; done
   if [ "$LIST" = "1" ]; then
-    printf '  %-26s %s\n' "$name" "$cmd"
+    printf '  %-26s %s\n' "$name" "${cmd[*]}"
     return 0
   fi
   if [ -z "$script" ] || [ ! -f "$script" ]; then
@@ -50,7 +53,7 @@ run() { # $1 = имя, $2 = команда целиком
     skip=$((skip + 1))
     return 0
   fi
-  out=$(eval "$cmd" 2>&1); rc=$?
+  out=$("${cmd[@]}" 2>&1); rc=$?
   if [ "$rc" = "0" ]; then
     printf '  PASS %-26s %s\n' "$name" "$(printf '%s\n' "$out" | tail -1 | cut -c1-62)"
     pass=$((pass + 1))
@@ -68,13 +71,13 @@ if [ ! -f .aurora/structure_dirs.txt ]; then
   exit 0
 fi
 
-run "готовность проекта"  "python3 $S/aurora_doctor.py"
-run "структура папок"     "python3 $S/aurora_doctor.py --structure"
-run "идентификаторы"      "python3 $S/id_registry.py --check"
-run "записи Raw"          "python3 $S/kb_record.py --check"
-run "форма артефактов"    "python3 $S/artifact_lint.py --gate"
-run "сценарии Gherkin"    "python3 $S/feature_ids.py"
-run "реестр QA"           "python3 $S/dev_qa.py --check"
+run "готовность проекта"  python3 "$S/aurora_doctor.py"
+run "структура папок"     python3 "$S/aurora_doctor.py" --structure
+run "идентификаторы"      python3 "$S/id_registry.py" --check
+run "записи Raw"          python3 "$S/kb_record.py" --check
+run "форма артефактов"    python3 "$S/artifact_lint.py" --gate
+run "сценарии Gherkin"    python3 "$S/feature_ids.py"
+run "реестр QA"           python3 "$S/dev_qa.py" --check
 
 # --- Качество кода: ub-mode (общий прогонщик ~/bin/ub-gates) ----------------
 # Гейты живут ВНЕ проекта, поэтому одинаково работают в любом проекте Авроры
@@ -142,7 +145,7 @@ else
       skip=$((skip + 1))
     else
       echo "  info база знаний: судим $(printf '%s\n' "$changed" | wc -l | tr -d ' ') изменённых карточек"
-      run "база знаний (изменённое)" "python3 $S/kb_lint.py --only-from $list"
+      run "база знаний (изменённое)" python3 "$S/kb_lint.py" --only-from "$list"
     fi
   fi
 fi

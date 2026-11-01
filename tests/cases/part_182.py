@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from harness import KIT, make_project, test
@@ -53,14 +54,19 @@ def test_compact_pack_calls_model_once_per_chunk_and_keeps_a_small_result(_t):
     facts = "факт по делу.\n" * 200
     pack = "".join(f"## Карточка {i}\n\n{facts}" for i in range(8))
     calls = []
+    deadlines = []
 
     def fake(cfg, role, messages, **kw):
         calls.append(messages[0]["content"])
+        deadlines.append(kw.get("deadline") or 0)
         return {"ok": True, "text": f"конспект с источником [[Карточка {len(calls)}]]", "log": []}
 
     packed, n, why = R.compact_make_pack({}, pack, "новая история", 2000, fake)
     assert not why, why
     assert n == len(calls) == len(R.split_pack_for_budget(pack, 2000)), (n, len(calls))
+    # У каждой части свой срок: общий дедлайн прогона к этому месту мог уже истечь.
+    import time as _t
+    assert all(d > _t.time() for d in deadlines), deadlines
     assert all("конспект" in c for c in calls), calls[0][:60]
     assert len(packed) < len(pack) / 4, (len(packed), len(pack))
     assert all(len(c) <= 2000 + 1200 for c in calls), "часть не помещается в бюджет"
@@ -175,3 +181,75 @@ def test_the_trigger_counts_the_planner_prompt_and_the_grill_method(tmp: Path):
     assert need > 262144, f"без промпта планировщика нарезка не проснётся: {need}"
     without = A.rough_tokens([{"content": template + idea + pack}]) + A.ANSWER_ROOM
     assert without < need, "промпт планировщика не учтён в оценке"
+
+
+@test
+def test_large_budget_splits_into_half_window_parts_and_each_gets_its_own_deadline(tmp: Path):
+    """Части нарезки берутся вдвое мельче окна: одна часть на полокна отвечала дольше общего срока прогона, и вторая
+    получала «дедлайн исчерпан» (живой прогон 01.11). Каждая часть получает свой срок, а не остаток общего."""
+    import sys
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+    facts = "факт по делу, срок десять дней.\n" * 900      # ~30 тыс. знаков
+    pack = "".join(f"## Карточка {i}\n\n{facts}" for i in range(4))   # ~120 тыс.
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_1_CONTEXT": "30000"})
+    budget = 60000
+    seen = []
+
+    def fake(cfg_, role, messages, **kw):
+        seen.append(kw.get("deadline") or 0)
+        return {"ok": True, "text": "конспект [[Карточка 1]]", "log": []}
+
+    packed, n, why = R.compact_make_pack(cfg, pack, "идея", budget, fake, deadline=0)
+    assert not why, why
+    assert n == len(R.split_pack_for_budget(pack, budget // 2)), n
+    assert n > len(R.split_pack_for_budget(pack, budget)), "части не стали мельче окна"
+    assert len(packed) <= budget
+    assert all(d > 0 for d in seen), seen
+
+
+# ------------------------------------------------------------------ стенка проверок проекта (75043bf)
+
+@test
+def test_installer_lays_the_project_check_wall_and_update_delivers_it(tmp: Path):
+    """Параллельный коммит 75043bf добавлял `templates/scripts/check.sh`, но установщик его не копировал и манифест
+    не доставлял — проект оставался без стенки. Теперь `aurora.py install` кладёт `Scripts/check.sh` с битом
+    исполнения, а `update` приносит его существующим проектам строкой манифеста `(launcher)`."""
+    import sys
+    sys.path.insert(0, str(KIT / "scripts"))
+    import install_aurora as IA
+    tpl = (KIT / "templates/scripts/check.sh").read_text(encoding="utf-8")
+    assert tpl.startswith("#!/usr/bin/env bash") and "check.sh: PASS" in tpl
+    assert "out=$(eval" not in tpl and '"${cmd[@]}"' in tpl, "строка команды снова уходит в eval"
+    inst = IA.Installer(target=tmp / "proj", name="Proj", slug=None, jira=None, confluence=None,
+                        force=False, dry_run=False)
+    (tmp / "proj").mkdir(parents=True, exist_ok=True)
+    inst.install_check_script()
+    path = tmp / "proj" / "Scripts" / "check.sh"
+    assert path.is_file(), "Scripts/check.sh не скопирован"
+    if os.name != "nt":                     # на Windows бита исполнения нет — chmod там только «только чтение»
+        assert path.stat().st_mode & 0o111, "Scripts/check.sh без +x"
+    assert "check.sh: PASS" in path.read_text(encoding="utf-8")
+    manifest = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
+    assert "templates/scripts/check.sh => (launcher) Scripts/check.sh" in manifest, "update не доставит стенку"
+    # повторный запуск не перезаписывает правку проекта
+    path.write_text("#!/usr/bin/env bash\necho моё\n", encoding="utf-8")
+    inst.install_check_script()
+    assert "моё" in path.read_text(encoding="utf-8"), "установщик затёр стенку, доработанную проектом"
+    # скрипт запускается и перечисляет проверки на проекте с деревом движка
+    import shutil, subprocess
+    proj = tmp / "p2"
+    (proj / ".aurora").mkdir(parents=True)
+    (proj / ".aurora/structure_dirs.txt").write_text("", encoding="utf-8")
+    (proj / "Scripts").mkdir()
+    script = proj / "Scripts/check.sh"
+    shutil.copy2(KIT / "templates/scripts/check.sh", script)
+    script.chmod(0o755)
+    bash = shutil.which("bash")
+    if bash:                                # на Windows без Git Bash проверять нечем — файл уже проверен
+        for args, want in ((["--list"], "готовность проекта"), (["--help"], "Режимы")):
+            # Windows-консоль декодирует вывод в cp1251: скрипт говорит по-русски в UTF-8 — задаём явно.
+            cp = subprocess.run([bash, str(script), *args], capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=60)
+            assert cp.returncode == 0 and want in cp.stdout, (args, cp.returncode, cp.stdout[-300:], cp.stderr[-300:])

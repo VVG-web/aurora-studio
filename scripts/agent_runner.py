@@ -6179,15 +6179,24 @@ def compact_make_pack(cfg: dict, pack: str, idea: str, budget: int, call, deadli
     а планировщик дальше работает с конспектами, а не с целой пачкой."""
     if budget <= 0 or len(pack or "") <= budget:
         return pack, 0, ""
-    chunks = split_pack_for_budget(pack, budget)
+    # Части берём вдвое мельче окна: одна часть на полокна отвечает заметно быстрее, а сумма
+    # конспектов всё равно остаётся меньше пака. Мельче 40 тыс. знаков не дробим — накладные расходы.
+    chunk_budget = budget // 2 if budget >= 40000 else budget
+    chunks = split_pack_for_budget(pack, chunk_budget)
     if len(chunks) < 2:
         return pack, 0, ""
     # Сумма конспектов заранее меньше исходного пака: 0.8 бюджета, и не более одного куска на часть.
     cap = max(600, int(budget * 0.8 / len(chunks)))
     notes = []
+    import time as _time
     for i, chunk in enumerate(chunks, 1):
         prompt = PROMPT_PACK_COMPACT.format(idea=idea, part=i, total=len(chunks), cap=cap, pack=chunk)
-        r = call(cfg, "planner", [{"role": "user", "content": prompt}], deadline=deadline)
+        # Свой срок на каждую часть: общий срок прогона к этому месту может быть уже наполовину
+        # израсходован, и вторая часть получала «дедлайн исчерпан», хотя шлюз жив (живой прогон 01.11).
+        part_secs = AG.call_budget(cfg, "planner") if (cfg or {}).get("request_timeout") else 300.0
+        part_deadline = _time.time() + part_secs
+        r = call(cfg, "planner", [{"role": "user", "content": prompt}],
+                 deadline=max(deadline, part_deadline))
         if not r.get("ok"):
             return "", 0, (f"конспект части {i} из {len(chunks)} не получен: "
                            + model_fail_note(r) if 'model_fail_note' in globals() else str(r))

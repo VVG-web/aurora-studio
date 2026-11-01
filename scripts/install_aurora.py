@@ -548,6 +548,23 @@ _Мета-вопросы:_
                 path.chmod(0o755)
             self.log(f"  wrote: {name}")
 
+    def install_check_script(self):
+        """Стенка проверок проекта `Scripts/check.sh` — из шаблона кита, с битом исполнения.
+
+        Без неё коммит-заготовка молчит: шаблон лежит в ките, установщик его не копировал, и проект
+        оставался без `./Scripts/check.sh`, хотя правило «правка готова после зелёной стенки» — общее.
+        """
+        self.log("== Scripts/check.sh ==")
+        src = KIT_ROOT / "templates/scripts/check.sh"
+        if not src.is_file():
+            self.log("  skip (нет шаблона в ките): Scripts/check.sh")
+            return
+        self.copy_file(src, "Scripts/check.sh")
+        if not self.dry_run:
+            path = self.target / "Scripts/check.sh"
+            if path.is_file():
+                path.chmod(0o755)
+
     def install_docs(self):
         """Документация для людей — ссылкой, а не копией.
 
@@ -677,6 +694,7 @@ created: {TODAY}
         self.install_templates_prompts()
         self.install_card_catalog()
         self.install_launchers()
+        self.install_check_script()
         self.install_docs()
         self.install_connectors()
         self.install_gitignore()

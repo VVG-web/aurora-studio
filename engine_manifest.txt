@@ -189,6 +189,7 @@ structure_dirs.txt       => .aurora/structure_dirs.txt
 
 # --- пусковые файлы в корне проекта (меню: doctor, stats, setup, панель) ---
 templates/launchers/start-aurora.command => (launcher) start-aurora.command
+templates/scripts/check.sh => (launcher) Scripts/check.sh
 templates/launchers/start-aurora.bat     => (launcher) start-aurora.bat
 
 # --- образец файла с личными доступами (сам .env.aurora.local движок не трогает) ---
