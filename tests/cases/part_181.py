@@ -307,6 +307,25 @@ def test_publish_converter_folds_wrapped_items_and_keeps_nested_lists_valid(tmp:
 
 
 @test
+def test_files_publish_button_opens_the_published_page(tmp: Path):
+    """Требование владельца: у уже опубликованного документа кнопка «Опубликовать» в «Файлах» становится
+    «Открыть ссылку» и ведёт на страницу, как кнопка в карточке сразу после публикации."""
+    import json
+    kit = Path(__file__).resolve().parent.parent.parent
+    src = (kit / "cockpit" / "ui" / "panel.js").read_text(encoding="utf-8")
+    draw = src.split("function drawPublish(")[1].split("\n}\n", 1)[0]
+    assert "editor.open_published" in draw and "dataset.open" in draw, "кнопка не становится ссылкой"
+    assert "F.publishedUrl" in draw and "published_url" in draw, "состояние страницы не читается"
+    assert 'window.open(url, "_blank", "noopener,noreferrer")' in src, "ссылка не открывается в новой вкладке"
+    mark = src.split("function markDirty(")[1].split("\n}\n", 1)[0]
+    assert "F.publishedUrl" in mark, "надпись ссылки затирается при правке"
+    base = kit / "cockpit" / "i18n"
+    for name in ("ru.json", "en.json"):
+        cat = json.loads((base / name).read_text(encoding="utf-8"))
+        assert cat.get("editor.open_published") and cat.get("editor.open_published_hint"), name
+
+
+@test
 def test_publish_card_has_no_draft_or_marker_chatter_and_auto_allows_them(tmp: Path):
     """Требование владельца (31.10): «зачем столько сообщений, что это черновик и draft» — публикуется открытый
     документ по правилам вида и промпта. «Черновик» и «нет границы чистовика» снимаются молча (`--allow`), в карточке

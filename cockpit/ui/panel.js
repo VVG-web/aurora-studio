@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.202.11";
+const UI_VERSION = "1.202.12";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -778,7 +778,8 @@ async function drawRolePicker(){
 /* ---------------- граф базы ---------------- */
 /* ---------------- файлы проекта ---------------- */
 const F = { files:[], path:null, digest:"", ed:null, ro:"", loaded:false, orig:"", fm:"",
-            filter:"all", open:new Set(), recent:[], changed:new Set(), createDirs:[], reopen:"" };
+            filter:"all", open:new Set(), recent:[], changed:new Set(), createDirs:[], reopen:"",
+            publishedUrl:"" };
 // Порог живого предпросмотра в знаках. Не выдумка: на карточке в 11 КБ редактор сам
 // написал «требует 20901мс», а `_index.md` живой базы весит 171 КБ.
 const PREVIEW_LIMIT = 40000;
@@ -981,6 +982,8 @@ async function openFile(f){
   if ($("#filePubCard") && $("#filePubCard").dataset.rel !== f.path) $("#filePubCard").remove();   // карточка публикации — другого файла
   $("#fileNone").hidden = true; $("#fileEditor").hidden = false;
   if ($("#fileTask")) $("#fileTask").innerHTML = "";                   // блок «Задача» — прежнего файла
+  F.publishedUrl = "";
+  if ($("#filePub")?.dataset) delete $("#filePub").dataset.open;
   $("#fileName").textContent = f.path;
   $("#fileEnc").hidden = true;
   if (!f.text){
@@ -1108,7 +1111,8 @@ function markDirty(){
   F.dirty = wholeText() !== F.orig;
   $("#fileSave").disabled = !F.dirty || !!F.ro;
   // «Опубликовать» при несохранённом сохраняет тем же кликом — и говорит это надписью, а не окном подтверждения.
-  if ($("#filePub")) $("#filePub").textContent = t(F.dirty ? "editor.publish_save" : "editor.publish");
+  if ($("#filePub")) $("#filePub").textContent = t(F.publishedUrl ? "editor.open_published"
+    : F.dirty ? "editor.publish_save" : "editor.publish");
   setDirty("file:" + F.path, t("dirty.file", {path: F.path}), F.dirty);
 }
 
@@ -1365,12 +1369,26 @@ function publishView(d){
 
 function drawPublish(d){
   const v = publishView(d);
+  const publishedUrl = String((d && d.published_url) || "");
+  v.openUrl = /^https?:\/\//i.test(publishedUrl) ? publishedUrl : "";
+  F.publishedUrl = v.openUrl;
   F.publishable = v.button === "ready";
   const btn = $("#filePub");
-  btn.hidden = v.button === "hidden";
-  btn.disabled = v.button === "blocked";
-  btn.title = v.why;
-  btn.textContent = t(F.dirty ? "editor.publish_save" : "editor.publish");     // несохранённое уходит тем же кликом
+  if (v.openUrl){
+    // Документ уже опубликован: главное действие — открыть страницу, а не публиковать её заново.
+    // Обновление остаётся в строке «страница отстала», когда файл изменился.
+    btn.hidden = false;
+    btn.disabled = false;
+    btn.title = t("editor.open_published_hint");
+    btn.textContent = t("editor.open_published");
+    if (btn.dataset) btn.dataset.open = v.openUrl;
+  } else {
+    if (btn.dataset) delete btn.dataset.open;
+    btn.hidden = v.button === "hidden";
+    btn.disabled = v.button === "blocked";
+    btn.title = v.why;
+    btn.textContent = t(F.dirty ? "editor.publish_save" : "editor.publish");   // несохранённое уходит тем же кликом
+  }
   const note = $("#filePubNote");
   note.innerHTML = "";
   note.hidden = !(v.why || v.gate.length);
@@ -7100,7 +7118,11 @@ $("#fileSearch")?.addEventListener("input", drawTree);
 $("#fileSave")?.addEventListener("click", saveFile);
 $("#fileFolder")?.addEventListener("click", ()=>revealFile("folder"));
 $("#fileOpen")?.addEventListener("click", ()=>revealFile("open"));
-$("#filePub")?.addEventListener("click", publishFromEditor);
+$("#filePub")?.addEventListener("click", () => {
+  const url = $("#filePub")?.dataset.open;
+  if (url && /^https?:\/\//i.test(url)){ window.open(url, "_blank", "noopener,noreferrer"); return; }
+  publishFromEditor();
+});
 $("#fileRename")?.addEventListener("click", renameFile);
 // Перетаскивание ширины: имена карточек длинные и у каждого проекта свои — одной
 // ширины на всех не бывает. Запоминаем выбранную, чтобы не настраивать каждый раз.
