@@ -501,3 +501,74 @@ console.log(JSON.stringify(log));
         f"ворота ревью погасили кнопку или промолчали: {out['gate']}"
     assert out["staleBtnEnabled"] is None, "при готовой публикации кнопка в метке «отстала» выключена"
     assert out["unknown"]["stale"] == {"hidden": False, "items": 1}, f"старый штамп: метка молчит, а не говорит «неизвестно»: {out['unknown']}"
+
+
+def _script_page(marker: str) -> str:
+    return (
+        "import json, sys\n"
+        "d = json.load(sys.stdin)\n"
+        f"print(json.dumps({{'title': d['title'], 'storage': '<p>{marker}</p>'}}, ensure_ascii=False))\n"
+    )
+
+
+@test
+def test_published_page_is_built_by_the_ready_script_and_script_change_republishes(tmp: Path):
+    """`auto` берёт готовый `Publish/<вид>.py`, запускает его без модели и ставит на страницу то, что вернул скрипт.
+    Правка скрипта меняет отпечаток входа: тот же документ публикуется заново, а не считается неизменным."""
+    AC = _mod("aurora_common")
+    wiki = _Wiki()
+    try:
+        kinds = KINDS.replace(f"{WIKI}/pages/viewpage.action?pageId=777", f"{wiki.url}/pages/viewpage.action?pageId=777")
+        root = _project(tmp, kinds, base_url=wiki.url)
+        rel = "Artifacts/us/US-1.md"
+        path = _put(root, rel, _doc())
+        (root / "Publish").mkdir()
+        script = root / "Publish" / "us.py"
+        script.write_text(_script_page("Скрипт 1"), encoding="utf-8")
+
+        cp = _publish(root, rel)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        (method, _p, payload), = wiki.writes()
+        assert method == "POST" and "Скрипт 1" in payload["body"]["storage"]["value"], payload
+        fm = AC.frontmatter(path.read_text(encoding="utf-8"))
+        assert fm["confluence_page_id"] == "4242" and fm["published_input"], fm
+
+        script.write_text(_script_page("Скрипт 2"), encoding="utf-8")
+        cp = _publish(root, rel)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        method, _p, payload = wiki.writes()[-1]
+        assert method == "PUT" and "Скрипт 2" in payload["body"]["storage"]["value"], payload
+        assert AC.frontmatter(path.read_text(encoding="utf-8"))["published_version"] == "2"
+    finally:
+        wiki.close()
+
+
+@test
+def test_script_engine_fails_loudly_on_broken_page_instead_of_publishing(tmp: Path):
+    """`publish_engine: script` — только скрипт: битый XHTML, пустой storage или отсутствие скрипта останавливают
+    публикацию с причиной до записи в Confluence. Молча подставить встроенный конвертер здесь нельзя."""
+    wiki = _Wiki()
+    try:
+        kinds = ("artifacts:\n"
+                 "  us:\n    title: \"История\"\n    template: \"Templates/US.md\"\n    out: \"Artifacts/us\"\n"
+                 "    publish_engine: script\n"
+                 f"    publish_url: \"{wiki.url}/pages/viewpage.action?pageId=777\"\n")
+        root = _project(tmp, kinds, base_url=wiki.url)
+        rel = "Artifacts/us/US-1.md"
+        _put(root, rel, _doc())
+        (root / "Publish").mkdir()
+        (root / "Publish" / "us.py").write_text(
+            "import json, sys\n"
+            "json.load(sys.stdin)\n"
+            "print(json.dumps({'title': 'Итог', 'storage': '<p>не закрыт'}))\n", encoding="utf-8")
+        cp = _publish(root, rel)
+        assert cp.returncode == 1, cp.stdout + cp.stderr
+        assert "не разбирается как XML" in cp.stderr, cp.stderr
+        assert wiki.writes() == [], "битая страница всё равно ушла в Confluence"
+
+        (root / "Publish" / "us.py").unlink()
+        cp = _publish(root, rel)
+        assert cp.returncode == 1 and "скрипта нет" in cp.stderr, cp.stdout + cp.stderr
+        assert wiki.writes() == [], "без скрипта публикация всё равно пошла"
+    finally:
+        wiki.close()

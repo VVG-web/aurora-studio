@@ -40,6 +40,9 @@ TIPS = {"title": "kinds.tip_title", "template": "kinds.tip_template", "prompt": 
         "mcp": "kinds.tip_mcp", "ref_mask": "kinds.ref_mask_hint", "publish_url": "kinds.tip_publish_url",
         "publish_title": "kinds.tip_publish_title",
         "publish_prompt": "kinds.tip_publish_prompt",
+        "publish_engine": "kinds.tip_publish_engine",
+        "publish_script": "kinds.tip_publish_script",
+        "publish_template": "kinds.tip_publish_template",
         # рамка «Трекер задач» (1.200.0): те же правила подсказки — пример и обязательно ли, в обоих языках
         "task_project": "kinds.tip_task_project", "task_type": "kinds.tip_task_type",
         "task_assignee": "kinds.tip_task_assignee", "task_labels": "kinds.tip_task_labels",

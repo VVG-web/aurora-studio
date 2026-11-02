@@ -53,10 +53,13 @@ Every artifact carries **`based_on`** — the cards it stands on — so you can 
 An artifact kind declares two jobs, and the **Project settings → Artifacts** form draws them as two frames. **Creation is the
 template:** the form of the document, the creation prompt (extra instructions when creating), the result folder, MCP, the key
 mask. **Publishing is the parent and the prompt:** the kind's root page in Confluence (`publish_url`), the path of sections under
-it (`publish_path`), the page title template (`publish_title`), the publishing prompt (`publish_prompt`, how to lay out the
-page) and the review before publishing. The publishing prompt only lays the page out: it does not rewrite the author's text.
-For now it is **saved and shown, but no model runs by it** — publishing goes without a model, and preparing the page by the
-prompt will switch on in one of the next releases. An empty publishing prompt means publishing as it was.
+it (`publish_path`), the page title template (`publish_title`), the review before publishing and the page build: the engine
+(`publish_engine`), the ready script (`publish_script`) and the skeleton (`publish_template`). The publishing prompt
+(`publish_prompt`) only lays the page out: it does not rewrite the author's text. The **"Create script"** button reads the
+prompt and skeleton with a model once and writes a deterministic `Publish/<kind>.py`; publishing runs it without tokens. The
+`auto` engine uses the ready script if present, otherwise the built-in builder; `script` is script only (broken XHTML or a
+missing script stops publishing); `prompt` calls the model on every publication. If the prompt or skeleton changed after the
+script was built, the form says the script is stale: it still runs, but should be rebuilt.
 
 **The form's fields.** Required ones carry an asterisk (the legend "* — required" at the top of the form): the kind's name,
 "Template" and "Result folder". The server will not save a kind without a template or a folder — the reason names the kind and

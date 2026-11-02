@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.202.13";
+const UI_VERSION = "1.202.14";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -3524,9 +3524,10 @@ async function taskBlock({path = "", kind = "", draft = false, guard = null, onW
 }
 
 /* Форма вида — три рамки: «Создание» (шаблон, промпт создания, папка, MCP, маска), «Публикация в Confluence»
-   (родитель, промпт публикации, ревью) и «Трекер задач» (свойства задачи, которую заводит кнопка у документа). Шаблон отвечает за создание, промпт — за публикацию. Промпт создания и промпт
-   публикации — разные поля (`prompt` и `publish_prompt`): первое читает изготовление документа, второе пока только
-   хранится — подготовка страницы по нему включится позже, и подсказка поля говорит об этом прямо. */
+   (родитель, движок сборки, промпт публикации, скрипт, заготовка, ревью) и «Трекер задач» (свойства задачи, которую
+   заводит кнопка у документа). Шаблон отвечает за создание, промпт — за публикацию. Промпт создания и промпт
+   публикации — разные поля (`prompt` и `publish_prompt`): первое читает изготовление документа, второе — сборку
+   страницы. Кнопка «Создать скрипт» один раз читает промпт и заготовку моделью и пишет детерминированный скрипт. */
 async function renderKinds(box){
   if (!S.project) return;
   const d = await api("/api/kinds?project=" + encodeURIComponent(S.project.path));
@@ -3711,6 +3712,43 @@ async function renderKinds(box){
         el("option",{value:"{file}", selected:titleMode === "{file}" ? "" : null}, t("kinds.title_file")),
         el("option",{value:"custom", selected:titleMode === "custom" ? "" : null}, t("kinds.title_custom")));
       titleSync();
+      // Движок сборки страницы: `auto` — готовый скрипт, если он есть; `script` — только скрипт; `prompt` — модель
+      // на каждой публикации. Скрипт и заготовка — входы генератора; их отпечатки показывают, устарел ли скрипт.
+      const engineRaw = String(rec.publish_engine || "auto");
+      const engine = el("select",{class:"btn sm", style:"font-weight:400",
+        onchange:e=>{ rec.publish_engine = e.target.value; dirty(); }},
+        ...["auto","script","prompt"].map(v=>el("option",{value:v, selected:engineRaw === v ? "" : null},
+          t("kinds.publish_engine_" + v))));
+      const scriptInfo = () => (d.scripts || {})[kind] || {state:"missing"};
+      const scriptState = el("span",{class:"muted", style:"font-size:12px;max-width:320px"});
+      const scriptBtn = el("button",{class:"btn sm", title:t("kinds.script_create_hint")}, t("kinds.script_create"));
+      const drawScript = (info = scriptInfo()) => {
+        const bits = [];
+        if (info.state === "ready") bits.push(t("kinds.script_ok"));
+        else if (info.state === "stale") bits.push(t("kinds.script_stale") + (info.why ? ": " + info.why : ""));
+        else bits.push(t("kinds.script_missing"));
+        if (info.generated_at) bits.push(info.generated_at.slice(0,10));
+        scriptState.textContent = bits.join(" · ");
+        scriptState.className = info.state === "ready" ? "muted" : "warn";
+      };
+      drawScript();
+      scriptBtn.onclick = async () => {
+        if (DIRTY.has("kinds")) return toast(t("kinds.script_save_first"), "warn");
+        scriptBtn.disabled = true;
+        scriptState.className = "muted";
+        scriptState.textContent = t("kinds.script_creating");
+        const r = await api("/api/publish/script/create",{method:"POST", quiet:true,
+          body:JSON.stringify({project:S.project.path, kind})});
+        scriptBtn.disabled = false;
+        if (!r || r.error){
+          drawScript(scriptInfo());
+          return toast((r && r.error) || t("kinds.script_create_failed"), "err");
+        }
+        d.scripts = d.scripts || {};
+        d.scripts[kind] = {state:"ready", generated_at:"", why:"", script:r.script};
+        drawScript(d.scripts[kind]);
+        toast(t("kinds.script_created", {script:r.script}));
+      };
       const publish = el("fieldset",{class:"kframe", "data-frame":"publish"},
         el("legend",{}, t("kinds.frame_publish")),
         el("div",{class:"muted kf-about"}, t("kinds.frame_publish_about")),
@@ -3722,6 +3760,14 @@ async function renderKinds(box){
             titleHint),
           lab("publish_prompt", pfield("publish_prompt", t("kinds.f_publish_prompt"), "220px", "file", "Prompts"),
               t("kinds.publish_prompt_hint")),
+          lab("publish_engine", engine, t("kinds.publish_engine_hint")),
+          lab("publish_script", field("publish_script", t("kinds.f_publish_script"), "170px"),
+              t("kinds.publish_script_hint")),
+          lab("publish_template", field("publish_template", t("kinds.f_publish_template"), "180px"),
+              t("kinds.publish_template_hint")),
+          el("div",{class:"kfield", "data-field":"publish_script_status"},
+            el("span",{class:"kf-l"}, t("kinds.script_title"), " ", kindTip(t("kinds.script_create_hint"))),
+            el("div",{class:"row",style:"gap:8px;align-items:center;flex-wrap:wrap"}, scriptBtn, scriptState)),
           // Ревью по чек-листу перед публикацией: ворота `ship:publish` пускают наружу только свежее ревью.
           el("label",{class:"kfield", title: t("kinds.review_hint")},
             el("span",{class:"kf-l"}, t("kinds.review"), " ", kindTip(t("kinds.review_hint"))),
@@ -3750,7 +3796,8 @@ async function renderKinds(box){
           return toast(t("kinds.bad_name"), "warn");
         if (KINDS[key]) return toast(t("kinds.exists"), "warn");
         KINDS[key] = {title:"", template:"", prompt:"", out:"Artifacts/" + key,
-                      publish_url:"", publish_path:"", publish_title:"", publish_prompt:"", mcp:"", tech_agnostic:"", review:"",
+                      publish_url:"", publish_path:"", publish_title:"", publish_prompt:"", publish_engine:"",
+                      publish_script:"", publish_template:"", mcp:"", tech_agnostic:"", review:"",
                       ref_mask:"", task:{}};
         name.value = ""; dirty(); draw();
       }}, t("kinds.add")),

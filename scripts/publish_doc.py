@@ -498,13 +498,16 @@ def write_stamped(path: str, text: str, bom: str, eol: str) -> None:
     aurora_fs.write_atomic(path, bom + data, newline="", makedirs=False)
 
 
-def input_sha(sha: str, storage: str, title: str, parent: str, path: str) -> str:
-    """Отпечаток входов публикации: чистовик, то, во что его превратил конвертер (с его версией и ссылками на другие
+def input_sha(sha: str, storage: str, title: str, parent: str, path: str, converter: str = "") -> str:
+    """Отпечаток входов публикации: чистовик, то, во что его превратил сборщик (с версией сборщика и ссылками на другие
     опубликованные артефакты), заголовок, родитель и путь файла. Баннер с коммитом в него не входит: коммит без
     правки текста страницу не трогает. Сравнивается с `published_input` шапки, а не с телом, которое вернул
-    сервер: Confluence дописывает в storage свои атрибуты, и равенства с ним может не наступить никогда."""
-    blob = "\n".join((CONVERTER, sha or "", hashlib.sha256(storage.encode("utf-8")).hexdigest(), title or "",
-                      str(parent or ""), (path or "").replace("\\", "/")))
+    сервер: Confluence дописывает в storage свои атрибуты, и равенства с ним может не наступить никогда.
+
+    `converter` — чем собрана страница. Встроенный конвертер — `CONVERTER`; готовый скрипт — его отпечаток, промпт —
+    отпечаток промпта. Скрипт поправили — отпечаток изменился, и страница перепубликуется, даже если текст тот же."""
+    blob = "\n".join((converter or CONVERTER, sha or "", hashlib.sha256(storage.encode("utf-8")).hexdigest(),
+                      title or "", str(parent or ""), (path or "").replace("\\", "/")))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
@@ -879,13 +882,104 @@ def publish(a) -> dict:
 
     commit = git_commit()
     sha = clean_sha(text)
-    ac_page = render_ac_page(body, title, fm) if kid == "ac" else ""
-    if ac_page:
-        content = storage = ac_page
-        print("Страница AC: обязательный скелет с историей, table-excerpt и excerpt.")
-    else:
-        content = to_storage(body, published_links(base_url))
-        storage = banner(doc_key(path), commit) + content
+    # Чем собирать страницу. `auto` — готовый скрипт, если он есть, иначе встроенная сборка; `script` — только скрипт;
+    # `prompt` — звать модель по промпту каждый раз (токены); `builtin` — всегда встроенный конвертер. Пустое поле
+    # остаётся `auto`: проекты без скрипта публикуются как раньше.
+    engine = str(rec.get("publish_engine") or "auto").strip().lower()
+    if engine not in ("auto", "script", "prompt", "builtin"):
+        print(f"publish: неизвестный publish_engine «{engine}» — собираю встроенным конвертером", file=sys.stderr)
+        engine = "builtin"
+    converter = CONVERTER
+    storage = content = ""
+    used_script = False
+    if engine in ("auto", "script", "prompt"):
+        import publish_script as PS
+        import publish_llm as LLM
+        if engine == "prompt":
+            prompt_rel = str(rec.get("publish_prompt") or "").strip()
+            if not prompt_rel:
+                why = "publish_engine=prompt, но у вида не задан publish_prompt — модель не по чему собирать страницу"
+                print(f"publish: {why}", file=sys.stderr)
+                return done("blocked", 1, code="no-prompt", why=why, fix="kinds")
+            prompt_path = os.path.join(os.getcwd(), prompt_rel)
+            if not os.path.isfile(prompt_path):
+                why = f"промпт публикации не найден: {prompt_rel}"
+                print(f"publish: {why}", file=sys.stderr)
+                return done("blocked", 1, code="no-prompt", why=why, fix="kinds")
+            _p, prompt_text, _prompt_sha = LLM._prompt_block(".", prompt_rel)
+            data = LLM.document_data(path, text, title, kid, MK.project_name("."))
+            r = LLM._call(LLM.build_render_messages(kid, rec, ".", data), thinking=True)
+            if not r.get("ok"):
+                why = f"модель не собрала страницу: {r.get('error') or 'нет ответа'}"
+                print(f"publish: {why}", file=sys.stderr)
+                return done("blocked", 1, code="model", why=why, fix="kinds")
+            page = LLM._last_json(r.get("text") or "")
+            if not isinstance(page, dict):
+                why = "модель вернула не JSON со страницей"
+                print(f"publish: {why}", file=sys.stderr)
+                return done("blocked", 1, code="model", why=why, fix="kinds")
+            page_title = str(page.get("title") or "").strip()
+            page_storage = str(page.get("storage") or "").strip()
+            problem = LLM.storage_problem(page_storage, kid)
+            if problem:
+                print(f"publish: {problem}", file=sys.stderr)
+                return done("blocked", 1, code="model", why=problem, fix="kinds")
+            title = str(fm.get("publish_title") or "").strip() or page_title or title
+            storage = content = page_storage
+            template_rel = str(rec.get("publish_template") or "").strip()
+            template_sha = ""
+            if template_rel:
+                _t, _template_text, template_sha = LLM._prompt_block(".", template_rel)
+            converter = "prompt:" + hashlib.sha256((prompt_text + "\n" + template_sha).encode("utf-8")).hexdigest()[:16]
+            print("Страница собрана моделью по промпту публикации.")
+        else:
+            try:
+                script = PS.script_rel(".", kid, rec)
+                script_path = os.path.join(os.getcwd(), script)
+                st = PS.status(".", kid, rec)
+            except (OSError, ValueError) as e:
+                why = f"скрипт страницы задан неверно: {e}"
+                if engine == "script":
+                    print(f"publish: {why}", file=sys.stderr)
+                    return done("blocked", 1, code="script", why=why, fix="kinds")
+                print(f"⚠️ {why} — собираю встроенным конвертером", file=sys.stderr)
+                st = {"state": "missing", "script": "", "why": why}
+                script, script_path = "", ""
+            res["script"] = st
+            if os.path.isfile(script_path):
+                if st.get("state") == "stale":
+                    print(f"⚠️ Скрипт страницы устарел: {st.get('why')} — публикация идёт им; пересоберите "
+                          "make:script или настройте publish_engine=prompt", file=sys.stderr)
+                data = LLM.document_data(path, text, title, kid, MK.project_name("."))
+                try:
+                    page = LLM.run_script(".", script, data)
+                    title = str(fm.get("publish_title") or "").strip() or str(page.get("title") or "").strip() or title
+                    storage = content = str(page.get("storage") or "")
+                    used_script = True
+                    converter = "script:" + hashlib.sha256(open(script_path, "r", encoding="utf-8").read().encode("utf-8")).hexdigest()[:16]
+                    print(f"Страница собрана скриптом {script}.")
+                except Exception as e:  # noqa: BLE001 — причина уходит в отказ или предупреждение
+                    why = f"скрипт страницы не отработал: {e}"
+                    if engine == "script":
+                        print(f"publish: {why}", file=sys.stderr)
+                        return done("blocked", 1, code="script", why=why, fix="kinds")
+                    print(f"⚠️ {why} — собираю встроенным конвертером", file=sys.stderr)
+            elif engine == "script":
+                why = f"publish_engine=script, но скрипта нет: {script} — создайте его в настройках вида"
+                print(f"publish: {why}", file=sys.stderr)
+                return done("blocked", 1, code="script", why=why, fix="kinds")
+    if not storage:
+        ac_page = render_ac_page(body, title, fm) if kid == "ac" else ""
+        if ac_page:
+            content = storage = ac_page
+            print("Страница AC: обязательный скелет с историей, table-excerpt и excerpt.")
+        else:
+            content = to_storage(body, published_links(base_url))
+            storage = banner(doc_key(path), commit) + content
+    if len(title) > MK.TITLE_MAX:
+        why = f"заголовок страницы «{title[:60]}…» длиннее {MK.TITLE_MAX} знаков — Confluence его не примет"
+        print(f"publish: {why}", file=sys.stderr)
+        return done("blocked", 1, code="title-long", why=why, fix="kinds")
     page_id = (fm.get("confluence_page_id") or "").strip().strip('"')
 
     print(f"# publish {path}")
@@ -927,7 +1021,7 @@ def publish(a) -> dict:
         return remote(a, api, res, done, fm=fm, text=text, bom=bom, eol=eol, path=path, kid=kid, title=title,
                       levels=target["levels"], raw_root=raw_root, where=where, base_url=base_url,
                       cfg_space=cfg_space, page_id=page_id, sha=sha, content=content, storage=storage,
-                      commit=commit, bypass=bypass, how=how, name=name)
+                      commit=commit, bypass=bypass, how=how, name=name, converter=converter)
     except WikiError as e:
         code, why = http_problem(e, "", name)
         print(f"publish: {why}", file=sys.stderr)
@@ -935,7 +1029,7 @@ def publish(a) -> dict:
 
 
 def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, levels, raw_root, where, base_url,
-           cfg_space, page_id, sha, content, storage, commit, bypass, how, name="вики") -> dict:
+           cfg_space, page_id, sha, content, storage, commit, bypass, how, name="вики", converter="") -> dict:
     """Всё, что требует сервера: страница, корень, цепочка, конфликт, запись, штамп."""
     fix_root = {"publish_url": "kinds", "publish_parent": "doc", "confluence": "project"}.get(ROOT_FROM.get(where, ""), "")
 
@@ -1060,7 +1154,7 @@ def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, lev
                         why=f"страницу правили после публикации: версия {was} → {now}")
 
         # 6. Повтор без изменений: те же входы и та же версия страницы — ничего не отправляем и файл не трогаем.
-        inp = input_sha(sha, content, title, str(cur_parent.get("id") or ""), doc_key(path))
+        inp = input_sha(sha, content, title, str(cur_parent.get("id") or ""), doc_key(path), converter)
         same = (fm.get("published_input") or "").strip() == inp and now == was
         legacy = not (fm.get("published_input") or "").strip() and storage_of(existing) == storage
         if not move and (same or legacy):
@@ -1127,7 +1221,7 @@ def remote(a, api, res: dict, done, *, fm, text, bom, eol, path, kid, title, lev
     ver = version_of(got) or "?"
     url = page_url(base_url, pid)
     parent = str(want if (move or not existing) else (cur_parent.get("id") or ""))
-    stamped = stamp(text, pid, commit, str(ver), url, sha, input_sha(sha, content, title, parent, doc_key(path)),
+    stamped = stamp(text, pid, commit, str(ver), url, sha, input_sha(sha, content, title, parent, doc_key(path), converter),
                     page_space or space, parent)
     if bypass:
         stamped = with_fields(stamped, {"review_bypass": utc_stamp()})

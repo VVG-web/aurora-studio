@@ -87,14 +87,16 @@ def test_write_kinds_block_is_exact_and_idempotent(tmp: Path):
 
 @test
 def test_docs_and_catalogs_say_the_same_about_creation_and_publication(tmp: Path):
-    """Вики (ru и en), навыки, реестр команд и каталоги называют промпт создания и промпт публикации, штамп `published_sha`
-    и честно говорят, что модель по промпту публикации пока не вызывается."""
+    """Вики (ru и en), навыки, реестр команд и каталоги называют промпт создания и промпт публикации, штамп `published_sha`,
+    движок сборки страницы, готовый скрипт и кнопку «Создать скрипт»."""
     ru = " ".join((KIT / "wiki/ru/Artifacts-and-Deliverables.md").read_text(encoding="utf-8").split())     # перенос строки — не повод для отказа
     en = " ".join((KIT / "wiki/Artifacts-and-Deliverables.md").read_text(encoding="utf-8").split())
     for text, parts in ((ru, ("`publish_prompt`", "`publish_url`", "`published_sha`", "Настройки проекта → Артефакты",
-                              "модель по нему не вызывается", "Взять с диска", "Создание — шаблон", "родитель и промпт")),
+                              "`publish_engine`", "`publish_script`", "«Создать скрипт»", "Взять с диска",
+                              "Создание — шаблон", "родитель и промпт")),
                         (en, ("`publish_prompt`", "`publish_url`", "`published_sha`", "Project settings → Artifacts",
-                              "no model runs by it", "Take the disk's", "Creation is the template", "the parent and the prompt"))):
+                              "`publish_engine`", "`publish_script`", "\"Create script\"", "Take the disk's",
+                              "Creation is the template", "the parent and the prompt"))):
         for part in parts:
             assert part in text, f"в вики нет «{part}»"
     for rel in ("skills/aurora-vault/references/workflows.md", "skills/aurora-vault/references/frontmatter.md"):

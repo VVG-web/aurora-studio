@@ -273,6 +273,11 @@
     }
   },
   "messages": {
+    "в движке нет генератора скриптов публикации — обновите Аврору": "the engine has no publishing script generator — update Aurora",
+    "вид артефакта — латиница, цифры и дефис": "the artifact kind must use Latin letters, digits and a hyphen",
+    "генератор не вернул отчёт: {}": "the generator returned no report: {}",
+    "генератор скриптов не запустился: {}": "the script generator did not start: {}",
+    "модель не собрала скрипт за 15 минут — попробуйте ещё раз": "the model did not build the script within 15 minutes — try again",
     "длинные пути: строк конфига {} не поместятся в путь на Windows, macOS или Linux ({}{}) → запуск возможен, но не всё будет загружено; какие файлы и что сократить — `kit:paths`": "long paths: {} config lines will not fit into a path on Windows, macOS or Linux ({}{}) → you can run, but not everything will be loaded; which files and what to shorten — `kit:paths`",
     "значение права — true или false": "the value of the right must be true or false",
     "не удалось записать local/mcp.json: {}": "could not write local/mcp.json: {}",

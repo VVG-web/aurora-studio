@@ -1,10 +1,10 @@
 """Проверки движка Aurora, часть 145. Каркас и помощники — tests/harness.py.
 
-Поле `publish_prompt` вида артефакта и форма «Артефакты» (выпуск A «Confluence»): для создания документа — шаблон, для
-публикации — промпт; форма рисует две рамки («Создание» и «Публикация в Confluence»), промпт публикации сохраняется и
-показывается, а модель по нему пока не вызывается — и подсказка поля говорит об этом словами. Запись реестра идёт через
-форму и `POST /api/kinds` со слепком `expect`: расхождение — 409, соседние секции конфига байт в байт, ничего заполненного
-не пропадает. Модель и сеть не используются; проекты — только во временных папках.
+Поля публикации вида артефакта и форма «Артефакты» (выпуск A «Confluence»): для создания документа — шаблон, для
+публикации — промпт, движок сборки (`auto` / `script` / `prompt`), готовый скрипт и заготовка. Модель по промпту собирает
+скрипт страницы один раз, а публикация запускает его без токенов; подсказка поля говорит это словами. Запись реестра идёт
+через форму и `POST /api/kinds` со слепком `expect`: расхождение — 409, соседние секции конфига байт в байт, ничего
+заполненного не пропадает. Сеть и настоящие модели не используются; проекты — только во временных папках.
 """
 from __future__ import annotations
 
@@ -84,7 +84,8 @@ def test_publish_prompt_is_a_field_of_the_kind_and_creation_stays_apart(tmp: Pat
     assert set(MK.CREATE_FIELDS) | set(MK.PUBLISH_FIELDS) == set(MK.FIELDS) and not set(MK.CREATE_FIELDS) & set(MK.PUBLISH_FIELDS), \
         "поле вида не отнесено ни к созданию, ни к публикации — форма его не нарисует"
     assert {"template", "prompt", "out"} <= set(MK.CREATE_FIELDS) and \
-        {"publish_url", "publish_path", "publish_title", "publish_prompt", "review"} == set(MK.PUBLISH_FIELDS)
+        {"publish_url", "publish_path", "publish_title", "publish_prompt", "publish_engine", "publish_script",
+         "publish_template", "review"} == set(MK.PUBLISH_FIELDS)
 
     root = _project(tmp, 'project:\n  name: "Т"\n')
     rec = {"title": "Критерии", "template": "Templates/AC.md", "out": "Artifacts/ac", "prompt": "Prompts/AC_create.md",
@@ -346,11 +347,13 @@ def test_kinds_form_has_two_frames_and_names_the_role_of_template_and_prompt(tmp
         and "mcpBox" not in publish, "поле mcp не в рамке «Создание»"
     for key in ("publish_url", "publish_prompt"):
         assert f'field("{key}"' in publish and f'field("{key}"' not in create, f"поле {key} не в рамке «Публикация»"
+    assert 'lab("publish_engine", engine' in publish and 'field("publish_script"' in publish \
+        and 'field("publish_template"' in publish, "в рамке публикации нет движка, скрипта или заготовки"
     assert 't("kinds.review")' in publish and 't("kinds.review")' not in create and "tech_agnostic" in create
     assert 'data-frame":"create"' in create and 'data-frame":"publish"' in publish
     assert 't("kinds.frame_create")' in create and 't("kinds.frame_publish")' in publish
-    assert re.search(r'publish_prompt:"",\s*mcp:""', form) and re.search(r'review:"",[^}]*task:\{\}', form), \
-        "новый вид создаётся без поля publish_prompt"
+    assert re.search(r'publish_prompt:"",\s*publish_engine:""', form) and re.search(r'review:"",[^}]*task:\{\}', form), \
+        "новый вид создаётся без поля publish_prompt или движка публикации"
     # слепок уходит с запросом, расхождение показано и разрешимо обоими способами
     assert 'expect: force ? "" : KINDS_DIGEST' in form and "r.conflict" in form and "kinds.take_disk" in form and "kinds.keep_mine" in form
     assert "d.digest" in form and "r.digest" in form, "слепок не обновляется после чтения и записи"
@@ -358,7 +361,8 @@ def test_kinds_form_has_two_frames_and_names_the_role_of_template_and_prompt(tmp
     ru = json.loads((KIT / "cockpit/i18n/ru.json").read_text(encoding="utf-8"))
     en = json.loads((KIT / "cockpit/i18n/en.json").read_text(encoding="utf-8"))
     used = {k for k in re.findall(r't\("(kinds\.[a-z_]+)"', form) if not k.endswith("_")} | {f"kinds.l_{k}" for k in
-           ("title", "template", "prompt", "out", "mcp", "ref_mask", "publish_url", "publish_prompt")}
+           ("title", "template", "prompt", "out", "mcp", "ref_mask", "publish_url", "publish_prompt",
+            "publish_engine", "publish_script", "publish_template")}
     for lang, cat in (("ru", ru), ("en", en)):
         missing = sorted(k for k in used if k not in cat)
         assert not missing, f"нет надписей формы видов ({lang}): {missing}"
@@ -375,19 +379,47 @@ def test_kinds_form_has_two_frames_and_names_the_role_of_template_and_prompt(tmp
 
 
 @test
-def test_publish_prompt_hint_is_honest_that_no_model_runs_yet(tmp: Path):
-    """Подсказка поля говорит человеческим языком: сохраняется, подготовка страницы включится позже, пока публикация без
-    модели. Пока это правда, она живёт в обоих каталогах; в публикации модель не вызывается."""
+def test_publish_prompt_drives_the_model_and_the_catalog(tmp: Path):
+    """Подсказка поля говорит, что модель один раз собирает скрипт страницы, а публикация потом идёт без токенов.
+    Вызов модели в публикации описан в каталоге (`publish_llm.py:_call`), а не спрятан: смена промпта видна в
+    «Модели → Где работают»."""
     ru = json.loads((KIT / "cockpit/i18n/ru.json").read_text(encoding="utf-8"))
     en = json.loads((KIT / "cockpit/i18n/en.json").read_text(encoding="utf-8"))
     hint_ru, hint_en = ru["kinds.publish_prompt_hint"], en["kinds.publish_prompt_hint"]
-    assert "Сохраняется" in hint_ru and "ближайших выпусков" in hint_ru and "без модели" in hint_ru, hint_ru
-    assert "Saved" in hint_en and "next releases" in hint_en and "without a model" in hint_en, hint_en
+    assert "модель" in hint_ru and "скрипт" in hint_ru and "токен" in hint_ru, hint_ru
+    assert "model" in hint_en and "script" in hint_en and "token" in hint_en, hint_en
     publish = (SCRIPTS / "publish_doc.py").read_text(encoding="utf-8")
-    assert "call_role" not in publish and "agent_core" not in publish and "publish_prompt" not in publish, \
-        "публикация начала вызывать модель, а подсказка поля всё ещё говорит «без модели»"
+    assert "publish_prompt" in publish and "publish_llm" in publish and "publish_engine" in publish, \
+        "публикация не читает промпт публикации и движок вида"
     llm = json.loads((SCRIPTS / "llm_calls.json").read_text(encoding="utf-8"))
-    assert "ship:publish" not in json.dumps(llm, ensure_ascii=False), "в каталоге вызовов моделей появилась публикация"
+    call = next((c for c in llm["calls"] if c["id"] == "publish"), None)
+    assert call and "ship:publish" in call["commands"] and "publish_llm.py:_call" in call["code"], \
+        "в каталоге вызовов моделей нет сборки страницы публикации"
+
+
+@test
+def test_kinds_read_reports_the_script_state_and_the_form_can_build_one(tmp: Path):
+    """Состояние скрипта приходит отдельной картой `scripts` (не полем вида, иначе оно уедет в конфиг). Кнопка
+    «Создать скрипт» зовёт `/api/publish/script/create`; битые отпечатки честно дают `stale`, полные — `ready`."""
+    ck = _ck()
+    PS = _mod("publish_script")
+    root = _project(tmp, CONFIG)
+    (root / "Publish").mkdir()
+    code = "import json, sys\nprint(json.dumps({'title': 'x', 'storage': '<p>x</p>'}))\n"
+    (root / "Publish" / "ac.py").write_text(code, encoding="utf-8")
+    state = ck.kinds_read(str(root))
+    assert state["scripts"]["ac"]["state"] == "stale" and "отпечатков" in state["scripts"]["ac"]["why"], state["scripts"]
+    meta = {"script": "Publish/ac.py", "script_sha": PS._sha(code), "prompt": "", "prompt_sha": "",
+            "template": "", "template_sha": "", "generated_at": "2026-11-02T00:00:00Z"}
+    (root / "Publish" / "ac.meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    assert ck.kinds_read(str(root))["scripts"]["ac"]["state"] == "ready"
+
+    form = panel_sources()
+    assert "/api/publish/script/create" in form and "kinds.script_created" in form and "kinds.script_stale" in form, \
+        "в форме видов нет кнопки сборки скрипта или её состояния"
+    server = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert "def publish_script_create(" in server and 'u.path == "/api/publish/script/create"' in server, \
+        "у панели нет маршрута сборки скрипта"
 
 
 @test

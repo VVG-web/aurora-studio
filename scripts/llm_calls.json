@@ -860,6 +860,48 @@
       }
     },
     {
+      "id": "publish",
+      "title": {
+        "ru": "Сборка страницы Confluence",
+        "en": "Building a Confluence page"
+      },
+      "when": {
+        "ru": "Команда ship:publish при publish_engine: prompt — модель собирает страницу по промпту публикации; кнопка «Создать скрипт» и ship:publish при publish_engine: script — разовая сборка скрипта страницы по тому же промпту. По умолчанию auto берёт готовый скрипт и модель не зовёт.",
+        "en": "The ship:publish command with publish_engine: prompt — the model builds the page from the publishing prompt; the \"Create script\" button and ship:publish with publish_engine: script — a one-time build of the page script from the same prompt. By default auto uses a ready script and does not call the model."
+      },
+      "commands": [
+        "ship:publish"
+      ],
+      "code": [
+        "publish_llm.py:_call"
+      ],
+      "steps": [
+        {
+          "role": "worker",
+          "chosen": true,
+          "prompt": "publish_llm.py:build_script_messages",
+          "what": {
+            "ru": "Один раз собрать скрипт страницы по промпту публикации, заготовке и последнему документу вида; скрипт проверяется дважды на детерминизм и обязательные разделы и только потом записывается.",
+            "en": "Build the page script once from the publishing prompt, the skeleton and the latest document of the kind; the script is checked twice for determinism and required sections and only then written."
+          }
+        },
+        {
+          "role": "worker",
+          "chosen": true,
+          "prompt": "publish_llm.py:build_render_messages",
+          "what": {
+            "ru": "Режим prompt: собрать страницу сейчас по промпту публикации и документу, без готового скрипта. Каждая публикация тратит токены.",
+            "en": "Prompt mode: build the page now from the publishing prompt and the document, without a ready script. Every publication spends tokens."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
       "id": "embeddings",
       "title": {
         "ru": "Индекс смысла (эмбеддинги)",

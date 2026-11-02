@@ -1208,6 +1208,39 @@ def publish_plan(project: str, rel: str) -> dict:
     return {"plan": plan}
 
 
+def publish_script_create(project: str, kind: str, apply: bool = True) -> dict:
+    """Собрать скрипт страницы вида по промпту публикации. Генератор берётся из кита, а не из проекта: кнопка
+    работает и до обновления движка проекта. Модель читает промпт, заготовку и последний документ вида, проверяет
+    скрипт дважды и только потом (при `apply`) пишет `Publish/<вид>.py` и отпечатки."""
+    kind = str(kind or "").strip()
+    if not re.fullmatch(r"[a-z][a-z0-9\-]{1,30}", kind):
+        return {"error": "вид артефакта — латиница, цифры и дефис"}
+    script = os.path.join(KIT, "scripts", "publish_script.py")
+    if not os.path.isfile(script):
+        return {"error": "в движке нет генератора скриптов публикации — обновите Аврору"}
+    cmd = [sys.executable, script, "--kind", kind, "--project", project, "--json"]
+    if apply:
+        cmd.append("--apply")
+    try:
+        p = subprocess.run(cmd, cwd=project, env=child_env(project), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=900)
+    except subprocess.TimeoutExpired:
+        return {"error": "модель не собрала скрипт за 15 минут — попробуйте ещё раз"}
+    except OSError as e:
+        return {"error": f"генератор скриптов не запустился: {e.strerror or e}"}
+    line = next((ln for ln in reversed((p.stdout or "").splitlines()) if ln.lstrip().startswith("{")), "")
+    try:
+        res = json.loads(line) if line else None
+    except ValueError:
+        res = None
+    if not isinstance(res, dict):
+        tail = (p.stderr or p.stdout or "").strip().splitlines()
+        return {"error": "генератор не вернул отчёт: " + (tail[-1] if tail else f"код {p.returncode}")}
+    if not res.get("ok"):
+        return {"error": str(res.get("why") or "скрипт не проверен"), **res}
+    return res
+
+
 KINDS_EXAMPLE_DOCS = 20         # по скольким последним документам вида форма собирает поля шапки
 
 
@@ -2193,7 +2226,17 @@ def localized_kinds(data: dict, lang: str) -> dict:
         if tr.get(k) and rec.get("title") == known.get(k):
             rec = {**rec, "title": tr[k]}
         kinds[k] = rec
-    return {**data, "known": {k: tr.get(k) or v for k, v in known.items()}, "kinds": kinds}
+    # Причины состояния скрипта приходят кодами: русский текст остаётся для ru, английский собирается здесь.
+    scripts = data.get("scripts") or {}
+    if lang != "ru" and scripts:
+        why_en = {"missing": "no script", "no-meta": "no fingerprints: the script was added or moved by hand",
+                  "prompt-changed": "the publishing prompt changed after the script was built",
+                  "template-changed": "the page skeleton changed after the script was built",
+                  "script-changed": "the script itself changed after it was built",
+                  "no-script-sha": "the fingerprints have no script hash"}
+        scripts = {k: ({**st, "why": "; ".join(why_en.get(c, c) for c in st.get("why_codes") or [])}
+                       if st.get("why_codes") else st) for k, st in scripts.items()}
+    return {**data, "known": {k: tr.get(k) or v for k, v in known.items()}, "kinds": kinds, "scripts": scripts}
 
 
 def localized_skins(rows: list, lang: str) -> list:
@@ -5757,8 +5800,22 @@ def kinds_read(project: str) -> dict:
     import importlib
     importlib.reload(MK)
     kinds = MK.read_kinds(project)
+    # Состояние скрипта страницы — отдельной картой, а не полем вида: форма отправляет `kinds` назад целиком, и
+    # служебный `script_status` уехал бы в aurora.config.yaml чужим полем.
+    scripts = {}
+    try:
+        import publish_script as PS
+        importlib.reload(PS)
+        for kind, rec in kinds.items():
+            try:
+                scripts[kind] = PS.status(project, kind, rec or {})
+            except (OSError, ValueError):       # кривой путь в поле вида не прячет состояние остальных
+                continue
+    except Exception:  # noqa: BLE001 — без скриптов форма показывает только движок и поля
+        scripts = {}
     return {"kinds": kinds, "known": MK.KNOWN, "review_profiles": list(MK.REVIEW_PROFILES),
             "slots": list(MK.BUILTIN_SLOTS),          # встроенные подстановки пути и заголовка — для справки формы
+            "scripts": scripts,
             "digest": MK.registry_digest(kinds),
             "problems": [{"kind": k, "why": w} for k, w in MK.check(project, kinds)],
             "templates": sorted(
@@ -7863,6 +7920,14 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(publish_plan(project, str(payload.get("path") or "")))
+            return
+        if u.path == "/api/publish/script/create":
+            # Разовая сборка скрипта страницы по промпту вида. Может идти минуту: модель читает промпт и образец.
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            res = publish_script_create(project, str(payload.get("kind") or ""), apply=payload.get("apply") is not False)
+            self.send_json(res, 200 if res.get("ok") else 400)
             return
         if u.path == "/api/kinds":
             project = payload.get("project", "")

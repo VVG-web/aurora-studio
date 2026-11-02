@@ -25,7 +25,9 @@ git и читается любой IDE:
 Поля делятся на два дела. **Создание** документа — `template` (форма), `prompt` (дополнительные указания при
 создании), `out` (папка), `mcp`, `tech_agnostic`, `ref_mask`, `task`. **Публикация** в Confluence — `publish_url`
 (корневая страница вида), `publish_path` (цепочка разделов под корнем), `publish_title` (шаблон заголовка страницы),
-`publish_prompt` (как оформить готовую страницу) и `review` (ревью перед публикацией).
+`publish_prompt` (как оформить готовую страницу), `publish_engine` (auto / script / prompt), `publish_script` (готовый
+детерминированный скрипт страницы), `publish_template` (заготовка-скелет для проверки скрипта) и `review` (ревью перед
+публикацией).
 Шаблон отвечает за создание, промпт публикации — за публикацию; промпт создания остаётся при создании.
 
 Путь в Confluence — цепочка: корень вида → разделы → страница документа. Уровни `publish_path` разделяются `>`,
@@ -79,15 +81,19 @@ KNOWN = {
 # Поля типа артефакта. Шаблон и папка обязательны: без первого документ выйдет не по
 # форме (и ревью этого не поймает), без второй его некуда класть. Остальное
 # необязательно — промпта у типа может не быть, публиковать можно не всё.
-FIELDS = ("title", "template", "prompt", "out", "publish_url", "publish_path", "publish_title", "publish_prompt", "mcp",
-          "tech_agnostic", "review", "ref_mask")
+FIELDS = ("title", "template", "prompt", "out", "publish_url", "publish_path", "publish_title", "publish_prompt",
+          "publish_engine", "publish_script", "publish_template", "mcp", "tech_agnostic", "review", "ref_mask")
 # `prompt` — промпт СОЗДАНИЯ: его читает изготовление документа (`agent:make`) и ассистенты через `artifact_spec`.
 # `publish_prompt` — промпт ПУБЛИКАЦИИ: как оформить готовый документ в страницу (оглавление, панели, макросы,
-# вёрстка); текст автора он не переписывает. Путь к файлу `Prompts/…`, как у `prompt`. Пока значение только
-# хранится и показывается: модель по нему ещё не вызывается, публикация идёт без неё (пустое поле — как всегда).
+# вёрстка); текст автора он не переписывает. Путь к файлу `Prompts/…`, как у `prompt`.
+# `publish_engine` — чем собирать страницу: `auto` (готовый скрипт, если он есть, иначе встроенная сборка),
+# `script` (только скрипт) или `prompt` (каждый раз звать модель по промпту публикации — тратит токены).
+# `publish_script` — путь к готовому скрипту, который модель сделала по промпту один раз; пусто — `Publish/<вид>.py`.
+# `publish_template` — заготовка страницы (скелет), по которой проверяют и правят скрипт; пусто — скелет из промпта.
 # Поля создания и поля публикации; форма настроек рисует их двумя рамками, `--kind` — двумя разделами.
 CREATE_FIELDS = ("title", "template", "prompt", "out", "mcp", "tech_agnostic", "ref_mask")
-PUBLISH_FIELDS = ("publish_url", "publish_path", "publish_title", "publish_prompt", "review")
+PUBLISH_FIELDS = ("publish_url", "publish_path", "publish_title", "publish_prompt", "publish_engine", "publish_script",
+                  "publish_template", "review")
 # `publish_path` — цепочка разделов под корневой страницей вида (`publish_url`): уровни через `>`, пробелы по краям
 # уровня обрезаются; пусто — документ ложится прямо под корень. `publish_title` — шаблон заголовка страницы, пусто —
 # `{title}`. Подстановки и правила — `publish_target` ниже; путь разрешает `ship:publish` (`publish_doc`).
@@ -98,6 +104,15 @@ PUBLISH_FIELDS = ("publish_url", "publish_path", "publish_title", "publish_promp
 # алгоритм; пусто — ревью не требуется). Ворота `ship:publish` пускают наружу только артефакт со свежим ревью
 # «готова к передаче» (`make:review-auto --file … --apply`); обход — `--allow review`, он записывается.
 REVIEW_PROFILES = ("us", "alg")
+
+# Обязательные разделы страницы вида при публикации. Встроенный скелет AC собирает `publish_doc`; готовый скрипт и
+# режим prompt проверяют тот же список через `required_sections`, чтобы страница без скелета не ушла молча.
+AC_SECTIONS = ("Задача на разработку истории", "История изменений", "Описание", "Критерии приемки")
+
+
+def required_sections(kind: str) -> tuple:
+    """Разделы, без которых страница вида не считается готовой. Пусто — вид не требует своего скелета."""
+    return AC_SECTIONS if str(kind or "").strip() == "ac" else ()
 
 
 def review_profile(rec: dict) -> str:
@@ -674,7 +689,8 @@ def main() -> int:
               "черновике.\nБез маркера догадки уедут заказчику как часть спецификации, "
               "а с отступом\nмаркер не сработает: граница ищется точным совпадением "
               "строки.")
-        if any(rec.get(f) for f in ("publish_url", "publish_path", "publish_title", "publish_prompt")) or review_profile(rec):
+        if any(rec.get(f) for f in ("publish_url", "publish_path", "publish_title", "publish_prompt", "publish_engine",
+                                    "publish_script", "publish_template")) or review_profile(rec):
             print("\n## Для публикации в Confluence\n")
         if rec.get("publish_url"):
             print(f"Публикуется в: {rec['publish_url']}")
@@ -691,7 +707,12 @@ def main() -> int:
                       "кладите документ в ту подпапку, под чьим разделом его страница должна лечь")
         if rec.get("publish_prompt"):
             print(f"Промпт публикации: {rec['publish_prompt']} — как оформить готовую страницу; при создании документа "
-                  "его не применяют (публикацию ведёт движок, подготовка страницы по этому промпту включится позже)")
+                  "его не применяют, по нему собирают скрипт страницы или саму страницу в режиме prompt")
+        if rec.get("publish_engine") or rec.get("publish_script") or rec.get("publish_template"):
+            eng = str(rec.get("publish_engine") or "auto").strip()
+            script = str(rec.get("publish_script") or "").strip() or f"Publish/{a.kind}.py"
+            print(f"Сборка страницы: {eng} · скрипт: {script}"
+                  + (f" · заготовка: {rec['publish_template']}" if rec.get("publish_template") else ""))
         if review_profile(rec):
             print(f"Ревью перед публикацией: профиль {review_profile(rec)} — `make:review-auto --file <файл> --apply`; "
                   "без свежего ревью «готова к передаче» `ship:publish` не пустит")

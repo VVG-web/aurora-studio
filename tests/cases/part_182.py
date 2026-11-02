@@ -392,3 +392,57 @@ def test_document_header_publish_title_beats_the_kind_template(tmp: Path):
     assert t["missing"] == [] and t["problems"] == [], t
     plain = MK.publish_target(rec, {"title": "Описание"})
     assert plain["title"] == "Описание", plain
+
+
+@test
+def test_publish_script_generator_checks_determinism_and_marks_stale_inputs(tmp: Path):
+    """Генератор скриптов: модель читает промпт и образец один раз, скрипт проверяется двумя запусками и обязательными
+    разделами AC; без проверки файл не пишется. Правка промпта или самого скрипта после генерации даёт `stale`."""
+    import sys
+    sys.path.insert(0, str(KIT / "scripts"))
+    import publish_llm as LLM
+    import publish_script as PS
+
+    root = make_project(tmp)
+    (root / "Prompts").mkdir(exist_ok=True)
+    prompt = root / "Prompts" / "ac_publish.md"
+    prompt.write_text("Собери страницу AC по скелету.", encoding="utf-8")
+    (root / "Templates" / "AC.md").write_text("шаблон", encoding="utf-8")
+    (root / "Artifacts" / "ac").mkdir(parents=True, exist_ok=True)
+    (root / "Artifacts" / "ac" / "AC-1.md").write_text(
+        '---\ntitle: "AC-1"\npublish_title: "AC-1. Проверка"\n---\n\n# AC-1\n', encoding="utf-8")
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8") +
+                   'artifacts:\n  ac:\n    title: "Критерии"\n    template: "Templates/AC.md"\n'
+                   '    out: "Artifacts/ac"\n    publish_prompt: "Prompts/ac_publish.md"\n', encoding="utf-8")
+    code = (
+        "import json, sys\n"
+        "d = json.load(sys.stdin)\n"
+        "t = d['frontmatter'].get('publish_title') or d['title']\n"
+        "s = ('<h1>Задача на разработку истории</h1><h1>История изменений</h1>'\n"
+        "     '<h1>Описание</h1><h1>Критерии приемки</h1>')\n"
+        "print(json.dumps({'title': t, 'storage': s}, ensure_ascii=False))\n"
+    )
+    orig = LLM._call
+    LLM._call = lambda *a, **k: {"ok": True, "text": code, "model": "fake", "error": ""}
+    try:
+        res = PS.generate("ac", str(root), apply=True)
+        assert res["ok"] and (root / "Publish" / "ac.py").is_file(), res
+        st = PS.status(str(root), "ac", {"publish_prompt": "Prompts/ac_publish.md", "out": "Artifacts/ac"})
+        assert st["state"] == "ready" and st["generated_at"], st
+        prompt.write_text("Собери страницу AC по новому скелету.", encoding="utf-8")
+        st = PS.status(str(root), "ac", {"publish_prompt": "Prompts/ac_publish.md", "out": "Artifacts/ac"})
+        assert st["state"] == "stale" and "промпт" in st["why"], st
+        prompt.write_text("Собери страницу AC по скелету.", encoding="utf-8")
+        (root / "Publish" / "ac.py").write_text(code + "\n# правка\n", encoding="utf-8")
+        st = PS.status(str(root), "ac", {"publish_prompt": "Prompts/ac_publish.md", "out": "Artifacts/ac"})
+        assert st["state"] == "stale" and "скрипт" in st["why"], st
+
+        bad = code.replace("Критерии приемки", "Что-то другое")
+        LLM._call = lambda *a, **k: {"ok": True, "text": bad, "model": "fake", "error": ""}
+        before = (root / "Publish" / "ac.py").read_text(encoding="utf-8")
+        refused = PS.generate("ac", str(root), apply=True, attempts=1)
+        assert not refused["ok"] and "Критерии приемки" in refused["why"], refused
+        assert (root / "Publish" / "ac.py").read_text(encoding="utf-8") == before, "непроверенный скрипт перезаписал рабочий"
+    finally:
+        LLM._call = orig

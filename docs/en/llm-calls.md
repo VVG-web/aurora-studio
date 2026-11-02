@@ -25,6 +25,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 - [Gateway width probe](#width)
 - [Live connection check](#probe)
 - [Scan recognition](#ocr)
+- [Building a Confluence page](#publish)
 - [Meaning index (embeddings)](#embeddings)
 
 <a id="build"></a>
@@ -354,6 +355,22 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 - **Tools:** none.
 - **Path:** direct HTTP, bypassing Pydantic AI.
 - **Why direct:** the request carries a page image; the adapter path for images is not built yet.
+
+<a id="publish"></a>
+
+## Building a Confluence page
+
+- **When.** The ship:publish command with publish_engine: prompt — the model builds the page from the publishing prompt; the "Create script" button and ship:publish with publish_engine: script — a one-time build of the page script from the same prompt. By default auto uses a ready script and does not call the model.
+- **Commands:** `ship:publish`.
+- **Routes:** «Hand over documents».
+
+| Role | What it does | Prompt |
+|---|---|---|
+| Writer (worker) — chosen | Build the page script once from the publishing prompt, the skeleton and the latest document of the kind; the script is checked twice for determinism and required sections and only then written. | `build_script_messages` (publish_llm.py) |
+| Writer (worker) — chosen | Prompt mode: build the page now from the publishing prompt and the document, without a ready script. Every publication spends tokens. | `build_render_messages` (publish_llm.py) |
+
+- **Tools:** none.
+- **Path:** Pydantic AI.
 
 <a id="embeddings"></a>
 
