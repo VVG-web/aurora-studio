@@ -92,7 +92,8 @@ def sample_document(project: str, kind: str, rec: dict) -> tuple[str, str]:
 def _sample_title(project: str, kind: str, rec: dict, path: str, text: str) -> str:
     """Заголовок образца тем же кодом, что публикация: поле publish_title шапки или шаблон вида."""
     try:
-        ctx = MK.publish_context(text, path, kind, MK.project_name(project), rec.get("out") or "", project)
+        sample = str((_root(project) / path).resolve())
+        ctx = MK.publish_context(text, sample, kind, MK.project_name(project), rec.get("out") or "", str(_root(project)))
         target = MK.publish_target(rec, ctx)
         title = str(target.get("title") or "").strip()
         if title:
@@ -225,16 +226,29 @@ def status(project: str, kind: str, rec: dict) -> dict:
         why.append("отпечатков нет: скрипт положили вручную или перенесли")
         codes.append("no-meta")
     else:
-        checks = (("prompt_sha", _file_text(project, str(meta.get("prompt") or "")), "промпт публикации"),
-                  ("template_sha", _file_text(project, str(meta.get("template") or "")) if meta.get("template") else "",
-                   "заготовка страницы"),
-                  ("script_sha", _file_text(project, script), "сам скрипт"))
-        for key, text, label in checks:
-            want = str(meta.get(key) or "")
+        try:
+            prompt_now = _rel(project, rec.get("publish_prompt") or "") if rec.get("publish_prompt") else ""
+        except ValueError:
+            prompt_now = str(rec.get("publish_prompt") or "")
+        try:
+            template_now = _rel(project, rec.get("publish_template") or "") if rec.get("publish_template") else ""
+        except ValueError:
+            template_now = str(rec.get("publish_template") or "")
+        checks = (("prompt", prompt_now, str(meta.get("prompt") or ""), "prompt_sha", "промпт публикации"),
+                  ("template", template_now, str(meta.get("template") or ""), "template_sha", "заготовка страницы"),
+                  ("script", script, str(meta.get("script") or script), "script_sha", "сам скрипт"))
+        for what, now_rel, was_rel, sha_key, label in checks:
+            if now_rel != was_rel:
+                why.append(f"{label} заменён после создания скрипта")
+                codes.append({"prompt": "prompt-changed", "template": "template-changed",
+                              "script": "script-changed"}[what])
+                continue
+            want = str(meta.get(sha_key) or "")
+            text = _file_text(project, now_rel) if now_rel else ""
             if want and _sha(text) != want:
                 why.append(f"{label} изменился после создания скрипта")
-                codes.append({"prompt_sha": "prompt-changed", "template_sha": "template-changed",
-                              "script_sha": "script-changed"}[key])
+                codes.append({"prompt": "prompt-changed", "template": "template-changed",
+                              "script": "script-changed"}[what])
         if not str(meta.get("script_sha") or "").strip():
             why.append("в отпечатках нет хеша скрипта")
             codes.append("no-script-sha")

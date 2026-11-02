@@ -434,6 +434,12 @@ def test_publish_script_generator_checks_determinism_and_marks_stale_inputs(tmp:
         st = PS.status(str(root), "ac", {"publish_prompt": "Prompts/ac_publish.md", "out": "Artifacts/ac"})
         assert st["state"] == "stale" and "промпт" in st["why"], st
         prompt.write_text("Собери страницу AC по скелету.", encoding="utf-8")
+        cfg.write_text(cfg.read_text(encoding="utf-8") + '    publish_template: "Templates/AC.md"\n', encoding="utf-8")
+        st = PS.status(str(root), "ac", {"publish_prompt": "Prompts/ac_publish.md", "out": "Artifacts/ac",
+                                         "publish_template": "Templates/AC.md"})
+        assert st["state"] == "stale" and "заготовка" in st["why"], st
+        cfg.write_text(cfg.read_text(encoding="utf-8").replace('    publish_template: "Templates/AC.md"\n', ""),
+                       encoding="utf-8")
         (root / "Publish" / "ac.py").write_text(code + "\n# правка\n", encoding="utf-8")
         st = PS.status(str(root), "ac", {"publish_prompt": "Prompts/ac_publish.md", "out": "Artifacts/ac"})
         assert st["state"] == "stale" and "скрипт" in st["why"], st
