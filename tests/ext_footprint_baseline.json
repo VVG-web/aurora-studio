@@ -5,7 +5,7 @@
     "panel_module": 2,
     "git_provider": 2,
     "llm_provider": 3,
-    "artifact_kind": 8,
+    "artifact_kind": 9,
     "assistant": 4
   }
 }

@@ -54,13 +54,15 @@ import html
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.parse
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (GATE_CODES, KB_ROOT, TRUSTED, as_list, body as md_body, clean_copy, clean_sha,
                            config_value, git_commit, frontmatter, link_escapes, outward_check, outward_gate,
-                           set_field, split_frontmatter, utc_stamp, with_fields)
+                           set_field, split_frontmatter, utc_stamp, utc_today, with_fields)
 
 import connector_ops as CO
 
@@ -245,6 +247,69 @@ def fold_wrapped(md: str) -> str:
             continue
         out.append(line)
     return "\n".join(out)
+
+
+def _git_author() -> str:
+    """Имя автора из настройки git: в истории страницы нужен человек, а не пустая ячейка."""
+    try:
+        got = subprocess.run(["git", "config", "user.name"], capture_output=True, text=True, timeout=5)
+        return got.stdout.strip() if got.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def render_ac_page(md: str, title: str, fm: dict) -> str:
+    """Страница AC по обязательному скелету `Prompts/AC_publish_confluence.md`: история, table-excerpt, excerpt.
+
+    Обычная публикация раньше отдавала в Confluence тело артефакта как есть: без истории изменений, без макросов и с
+    `h2` вместо `h3`. Для вида `ac` собираем страницу детерминированно, без модели. Нет описания или критериев —
+    пустая строка: вызывающий откатывается на обычный конвертер."""
+    rows = {}
+    for line in md.splitlines():
+        m = re.match(r"^\|\s*\*\*(Как|Я хочу|Чтобы)\*\*\s*\|\s*(.*?)\s*\|\s*$", line)
+        if m:
+            rows[m.group(1)] = m.group(2)
+    crit = re.search(r"^#{1,2}[ \t]+Критерии приемки[ \t]*$(.*?)(?=^#{1,2}[ \t]+\S|\Z)", md, re.M | re.S)
+    if not rows or not crit:
+        return ""
+    criteria = re.sub(r"^##[ \t]+", "### ", crit.group(1), flags=re.M)
+    criteria = re.sub(r"^\s*\*\*Проверка:\*\*.*(?:\n|$)", "", criteria, flags=re.M).strip()
+    if not criteria:
+        return ""
+    prefix = re.match(r"(AC-\d+(?:\.\d+)+)", title)
+    prefix = (prefix.group(1) if prefix else title.split(" ", 1)[0]).rstrip(".") + "."
+    short = re.sub(r"^(?:AC|US)-\d+(?:\.\d+)+\s*[.:]?\s*", "", title) or title
+    date = str(fm.get("updated") or fm.get("created") or utc_today()).strip()
+    author = str(fm.get("author") or fm.get("published_by") or _git_author() or "Автор").strip()
+    userkey = str(fm.get("author_userkey") or "").strip()
+    author_cell = (f'<ac:link><ri:user ri:userkey="{html.escape(userkey)}" /></ac:link>'
+                   if userkey else html.escape(author))
+    macro1 = str(uuid.uuid5(uuid.NAMESPACE_URL, title + "#table-excerpt"))
+    macro2 = str(uuid.uuid5(uuid.NAMESPACE_URL, title + "#excerpt"))
+    return (
+        "<h1>Задача на разработку истории</h1>"
+        "<h1>История изменений</h1>"
+        '<table class="wrapped" data-layout="default"><thead><tr>'
+        "<th><p><strong>Версия</strong></p></th><th><p><strong>Дата</strong></p></th>"
+        "<th><p><strong>Описание изменений</strong></p></th><th><p><strong>Автор</strong></p></th>"
+        "</tr></thead><tbody><tr><td><p>1.0</p></td>"
+        f'<td><div class="content-wrapper"><p><time datetime="{html.escape(date)}" /> </p></div></td>'
+        f'<td><div class="content-wrapper"><p>Первый драфт. {html.escape(short)}</p></div></td>'
+        f'<td><div class="content-wrapper"><p>{author_cell}</p></div></td>'
+        "</tr></tbody></table>"
+        "<h1>Описание</h1>"
+        f'<ac:structured-macro ac:name="table-excerpt" ac:schema-version="1" ac:macro-id="{macro1}">'
+        f'<ac:parameter ac:name="name">{html.escape(prefix)}</ac:parameter><ac:rich-text-body>'
+        '<table class="wrapped"><tbody>'
+        + "".join(f'<tr><th><p><strong>{k}</strong></p></th><td><p>{inline(rows[k])}</p></td></tr>'
+                  for k in ("Как", "Я хочу", "Чтобы"))
+        + "</tbody></table></ac:rich-text-body></ac:structured-macro>"
+        "<h1>Критерии приемки</h1>"
+        f'<ac:structured-macro ac:name="excerpt" ac:schema-version="1" ac:macro-id="{macro2}">'
+        '<ac:parameter ac:name="atlassian-macro-output-type">INLINE</ac:parameter>'
+        f"<ac:rich-text-body>{to_storage(criteria, {})}</ac:rich-text-body>"
+        "</ac:structured-macro><p><br /></p>"
+    )
 
 
 def to_storage(md: str, links: dict) -> str:
@@ -814,8 +879,13 @@ def publish(a) -> dict:
 
     commit = git_commit()
     sha = clean_sha(text)
-    content = to_storage(body, published_links(base_url))
-    storage = banner(doc_key(path), commit) + content
+    ac_page = render_ac_page(body, title, fm) if kid == "ac" else ""
+    if ac_page:
+        content = storage = ac_page
+        print("Страница AC: обязательный скелет с историей, table-excerpt и excerpt.")
+    else:
+        content = to_storage(body, published_links(base_url))
+        storage = banner(doc_key(path), commit) + content
     page_id = (fm.get("confluence_page_id") or "").strip().strip('"')
 
     print(f"# publish {path}")

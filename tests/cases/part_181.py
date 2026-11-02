@@ -307,6 +307,35 @@ def test_publish_converter_folds_wrapped_items_and_keeps_nested_lists_valid(tmp:
 
 
 @test
+def test_ac_page_renderer_builds_the_house_skeleton(tmp: Path):
+    """Обычная публикация AC должна давать ту же страницу, что ручная: история, table-excerpt, excerpt и h3.
+    Раньше конвертер отдавал тело артефакта как есть, и в Confluence не было ни истории, ни макросов."""
+    import sys
+    import xml.etree.ElementTree as ET
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
+    import publish_doc as PD
+    md = ("# Описание\n\n"
+          "| **Как** | Налогоплательщик |\n"
+          "| **Я хочу** | Подать документ |\n"
+          "| **Чтобы** | Получить результат |\n\n"
+          "## Критерии приемки\n\n"
+          "### Условия\n\n"
+          "1. Документ подписан.\n\n"
+          "## Взаимосвязь с другими US\n\n"
+          "- Не публиковать этот раздел.\n")
+    page = PD.render_ac_page(md, "AC-1.2.3. Проверка страницы", {"created": "2026-01-02", "author": "Иван"})
+    ET.fromstring('<r xmlns:ac="http://example.com/content" xmlns:ri="http://example.com/resource/identifier">'
+                  + page + "</r>")
+    h1 = __import__("re").findall(r"<h1>(.*?)</h1>", page)
+    assert h1 == ["Задача на разработку истории", "История изменений", "Описание", "Критерии приемки"], h1
+    assert "table-excerpt" in page and 'ac:name="excerpt"' in page, "макросов нет"
+    assert "Первый драфт. Проверка страницы" in page and "Иван" in page and "2026-01-02" in page
+    assert "Взаимосвязь" not in page, "производственный раздел попал на страницу"
+    src = (Path(__file__).resolve().parent.parent.parent / "scripts" / "publish_doc.py").read_text(encoding="utf-8")
+    assert "render_ac_page(body, title, fm)" in src, "обычная публикация не зовёт сборку страницы AC"
+
+
+@test
 def test_files_publish_button_opens_the_published_page(tmp: Path):
     """Требование владельца: у уже опубликованного документа кнопка «Опубликовать» в «Файлах» становится
     «Открыть ссылку» и ведёт на страницу, как кнопка в карточке сразу после публикации."""
