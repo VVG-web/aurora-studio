@@ -906,7 +906,7 @@ def publish(a) -> dict:
                 why = f"промпт публикации не найден: {prompt_rel}"
                 print(f"publish: {why}", file=sys.stderr)
                 return done("blocked", 1, code="no-prompt", why=why, fix="kinds")
-            _p, prompt_text, _prompt_sha = LLM._prompt_block(".", prompt_rel)
+            prompt_text = LLM._prompt_block(".", prompt_rel)[1]
             data = LLM.document_data(path, text, title, kid, MK.project_name("."))
             r = LLM._call(LLM.build_render_messages(kid, rec, ".", data), thinking=True)
             if not r.get("ok"):
@@ -929,7 +929,7 @@ def publish(a) -> dict:
             template_rel = str(rec.get("publish_template") or "").strip()
             template_sha = ""
             if template_rel:
-                _t, _template_text, template_sha = LLM._prompt_block(".", template_rel)
+                template_sha = LLM._prompt_block(".", template_rel)[2]
             converter = "prompt:" + hashlib.sha256((prompt_text + "\n" + template_sha).encode("utf-8")).hexdigest()[:16]
             print("Страница собрана моделью по промпту публикации.")
         else:
