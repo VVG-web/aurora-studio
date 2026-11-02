@@ -2529,6 +2529,18 @@ def code_artifacts_state(project: str, lang: str = "ru") -> dict:
                                            "message": f"{type(e).__name__}: {e}"[:300]}]}
 
 
+def code_pack_state(project: str, story: str = "", lang: str = "ru") -> dict:
+    """Пакет требований истории: список историй и, если назван номер, сам пакет. Только чтение."""
+    try:
+        import code_pack as CP
+        stories = CP.list_stories(project)
+        pack = CP.build_pack(project, story) if story else None
+        return {"stories": stories, "pack": pack}
+    except Exception as e:  # noqa: BLE001 — сломанный источник не роняет раздел
+        return {"stories": [], "pack": None,
+                "error": f"{type(e).__name__}: {e}"[:300]}
+
+
 def code_state(project: str, lang: str = "ru") -> dict:
     """Раздел «Код»: реестр репозиториев (вход — маской), его слепок для формы, замечания к записанному и состояние
     клонов без сети — то же, что печатает `code:status`. Числа считает движок, раздел их только показывает."""
@@ -7282,6 +7294,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(code_artifacts_state(project, request_lang(q)))
+        elif u.path == "/api/code/pack":
+            # Пакет требований истории: источники, критерии, связи и пробелы; только чтение.
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(code_pack_state(project, (q.get("story") or [""])[0], request_lang(q)))
         elif u.path == "/api/env":
             # «Проверить снова» на странице «Установка»: без перезапуска панели.
             self.send_json({"env": localized_environment(environment(fresh=bool(q.get("fresh"))),

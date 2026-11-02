@@ -181,5 +181,16 @@
   "code.artifacts.off": "disabled",
   "code.artifacts.empty": "No preset kinds. Update the kit or put a template into TemplatesCode/.",
   "code.artifacts.check": "Check the settings",
-  "code.artifacts.list": "Show the kinds"
+  "code.artifacts.list": "Show the kinds",
+  "code.pack.title": "Story requirements pack",
+  "code.pack.about": "Confluence and Jira sources, acceptance criteria with stable ids, related artifacts and gaps. The pack is built without a model and changes nothing.",
+  "code.pack.empty": "No stories found. Add Sources/Confluence pages, Sources/JIRA issues or Artifacts/us|ac files with a US-… id.",
+  "code.pack.build": "Build pack",
+  "code.pack.list": "List stories",
+  "code.pack.show": "Show in console",
+  "code.pack.criteria": "criteria",
+  "code.pack.related": "related",
+  "code.pack.complete": "complete",
+  "code.pack.incomplete": "incomplete",
+  "code.pack.not_found": "Story not found."
 }

@@ -242,6 +242,27 @@ python3 .aurora/scripts/code_artifacts.py --show cr-api
 No project settings are needed for the kinds: editing a template or prompt in the folder is the
 setting.
 
+## Story requirements pack: `code:pack`
+
+The pack collects everything tied to a `US-1.1` id: Confluence pages, Jira issues, `Artifacts/us|ac`
+files and requirement cards. Acceptance criteria are parsed from the "Acceptance criteria" /
+"Критерии приёмки" section: numbered lists, `- [ ]` items, a "criterion — how to check" table and
+Gherkin `Scenario:`. Each criterion gets a stable id `US-1.1/<group>/<n>#<text hash>`, tokens
+(numbers, dates, codes, versions) and draft atomic parts. Related artifacts carry provenance:
+`EXTRACTED` when the link comes from the header (`covers`, `implements`, `ref_key`), `INFERRED` when
+it is only a mention in the text.
+
+Gaps name what is missing for verification: no criteria, no related artifacts, no
+algorithm/contract/mapping, no Jira issue, or a criterion that references an artifact that does not
+exist. The pack changes nothing and calls no model.
+
+```bash
+python3 .aurora/scripts/code_pack.py --list
+python3 .aurora/scripts/code_pack.py --story US-1.1
+python3 .aurora/scripts/code_pack.py --story US-1.1 --json
+python3 .aurora/scripts/code_pack.py --story US-1.1 --out Artifacts/requirements/US-1.1.md
+```
+
 ## The "Code" section
 
 In the project group, next to "Git". The "Connect a repository" card takes a `git clone` line, the
@@ -258,6 +279,6 @@ window from `~/.ssh`.
 
 ## What comes next
 
-A story's requirements pack, checking acceptance criteria against the code and the "Clean room" are
-the next releases. The index and search are already here; optional adapters (tree-sitter, graphify,
+Checking acceptance criteria against the code and the "Clean room" are the next releases. The story
+requirements pack, the index and search are already here; optional adapters (tree-sitter, graphify,
 ast-grep) will improve parsing accuracy and are installed separately, not as required dependencies.

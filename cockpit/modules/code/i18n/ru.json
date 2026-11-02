@@ -181,5 +181,16 @@
   "code.artifacts.off": "выключен",
   "code.artifacts.empty": "Преднастроенных видов нет. Обновите кит или положите шаблон в TemplatesCode/.",
   "code.artifacts.check": "Проверить настройки",
-  "code.artifacts.list": "Показать виды"
+  "code.artifacts.list": "Показать виды",
+  "code.pack.title": "Пакет требований истории",
+  "code.pack.about": "Источники Confluence и Jira, критерии приёмки с устойчивыми id, связанные артефакты и пробелы. Пакет собирается без модели и ничего не меняет.",
+  "code.pack.empty": "Историй не найдено. Нужны страницы Sources/Confluence, задачи Sources/JIRA или артефакты Artifacts/us|ac с номером US-…",
+  "code.pack.build": "Собрать пакет",
+  "code.pack.list": "Список историй",
+  "code.pack.show": "Показать в консоли",
+  "code.pack.criteria": "критериев",
+  "code.pack.related": "связано",
+  "code.pack.complete": "полон",
+  "code.pack.incomplete": "неполон",
+  "code.pack.not_found": "История не найдена."
 }

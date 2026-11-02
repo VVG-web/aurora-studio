@@ -11,7 +11,7 @@ const FIELDS = ["url", "provider", "branch", "pin", "include", "exclude", "acces
 
 let CTX = null;
 let D = null, FORM = null, CREDS = {}, DIRTY = false, OPEN = "", PROJECT = "", ADD = null, MSG = null;
-let FIND = null;
+let FIND = null, PACK = null;
 const KIND_KEYS = {symbol: "code.index.kind.symbol", file: "code.index.kind.file",
   route: "code.index.kind.route", table: "code.index.kind.table", column: "code.index.kind.column",
   topic: "code.index.kind.topic", config: "code.index.kind.config", string: "code.index.kind.string",
@@ -43,6 +43,9 @@ async function load(ctx, keepForm){
     return;
   }
   D = d;
+  const p = await ctx.api("/api/code/pack?project=" + encodeURIComponent(path), {quiet: true});
+  if (!ctx.project || ctx.project.path !== path) return;
+  PACK = p && !p.error ? p : {stories: [], error: (p && p.error) || ""};
   if (!(keepForm && DIRTY)){
     FORM = {};
     d.repos.forEach(r => { FORM[r.name] = Object.fromEntries(FIELDS.map(f => [f, r[f]])); });
@@ -63,6 +66,7 @@ function draw(ctx){
   names.forEach(n => box.append(repoCard(ctx, n)));
   box.append(indexCard(ctx));
   box.append(artifactsCard(ctx));
+  box.append(packCard(ctx));
   box.append(footer(ctx));
 }
 
@@ -518,6 +522,58 @@ function artifactsCard(ctx){
     el("button", {class: "btn", onclick: () => ctx.runWatched("code:artifacts", [])},
       t("code.artifacts.list"))));
   return box;
+}
+
+function packCard(ctx){
+  const {t, el} = ctx;
+  const data = PACK || {stories: []};
+  const box = el("div", {class: "card", style: "padding:16px 18px;margin-bottom:14px"});
+  box.append(el("b", {}, t("code.pack.title")),
+    el("p", {class: "muted", style: "font-size:12.5px;margin:4px 0 10px"}, t("code.pack.about")));
+  if (data.error) box.append(el("div", {class: "warnbox", style: "margin-bottom:8px"}, data.error));
+  const stories = data.stories || [];
+  if (!stories.length){
+    box.append(el("div", {class: "muted", style: "font-size:12.5px"}, t("code.pack.empty")));
+  } else {
+    const sel = el("select", {class: "input", id: "codePackStory"});
+    stories.forEach(s => sel.append(el("option", {value: s.story},
+      `${s.story} — ${s.title} (${s.criteria})`)));
+    box.append(el("div", {class: "row", style: "gap:8px;align-items:center;flex-wrap:wrap"},
+      sel, el("button", {class: "btn", onclick: () => runPack(ctx)}, t("code.pack.build"))));
+  }
+  const pack = data.pack;
+  if (pack){
+    if (!pack.found){
+      box.append(el("div", {class: "warnbox", style: "margin-top:10px"}, t("code.pack.not_found")));
+    } else {
+      box.append(el("div", {style: "margin-top:10px"},
+        el("b", {}, pack.story + " · " + pack.title),
+        el("span", {class: "muted", style: "font-size:12.5px"},
+          ` · ${pack.complete ? t("code.pack.complete") : t("code.pack.incomplete")} · ` +
+          `${(pack.criteria || []).length} ${t("code.pack.criteria")} · ` +
+          `${(pack.related || []).length} ${t("code.pack.related")}`)));
+      (pack.criteria || []).forEach(c => box.append(el("div", {style: "font-size:12.5px;margin:4px 0"},
+        el("span", {class: "mono", style: "font-size:11px"}, c.id + " "), c.text)));
+      (pack.gaps || []).forEach(g => box.append(el("div", {class: "warnbox", style: "margin-top:4px"},
+        `${g.code}: ${g.text}`)));
+    }
+  }
+  box.append(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:12px"},
+    el("button", {class: "btn", onclick: () => ctx.runWatched("code:pack", ["--list"])},
+      t("code.pack.list")),
+    ...(pack && pack.found ? [el("button", {class: "btn",
+      onclick: () => ctx.runWatched("code:pack", ["--story", pack.story])}, t("code.pack.show"))] : [])));
+  return box;
+}
+
+async function runPack(ctx){
+  const sel = ctx.$("#codePackStory");
+  const story = sel ? sel.value : "";
+  if (!story) return;
+  const r = await ctx.api("/api/code/pack?project=" + encodeURIComponent(ctx.project.path)
+    + "&story=" + encodeURIComponent(story), {quiet: true}) || {};
+  PACK = {...(PACK || {}), ...r};
+  draw(ctx);
 }
 
 function footer(ctx){
