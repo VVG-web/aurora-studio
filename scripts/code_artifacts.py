@@ -35,6 +35,21 @@ PROMPTS = "PromptCode"
 SCOPES = ("symbol", "route", "controller", "module", "table", "topic", "pair", "component", "service")
 PURITIES = ("traceable", "strict")
 DEFAULT_OUT = "Artifacts/drafts/code"
+TITLES_EN = {
+    "cr-api": "API specification from code",
+    "cr-data": "Data schema from code",
+    "cr-events": "Events and topics from code",
+    "cr-config": "Configuration from code",
+    "cr-module": "Module card from code",
+    "cr-algorithm": "Algorithm from code",
+    "cr-rules": "Business rules from code",
+    "cr-crud": "CRUD matrix from code",
+    "cr-tests": "Test map from code",
+    "cr-screen": "Screen form from code",
+    "cr-mapping": "Data mapping from code",
+    "cr-sequence": "Call sequence from code",
+    "cr-adr": "Decision reconstruction from code",
+}
 
 
 def _bool(value, default=False) -> bool:
@@ -68,6 +83,7 @@ def _read_template(path: Path, source: str) -> dict:
     return {
         "kind": kind,
         "title": str(meta.get("title") or kind).strip(),
+        "title_en": str(meta.get("title_en") or TITLES_EN.get(kind) or kind).strip(),
         "version": str(meta.get("version") or "1.0").strip(),
         "enabled": _bool(meta.get("enabled"), True),
         "scope": str(meta.get("scope") or "module").strip() or "module",

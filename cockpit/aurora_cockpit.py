@@ -2508,7 +2508,7 @@ def code_find_state(project: str, text: str, kind: str = "", limit: int = 30) ->
     return {"query": text, "results": rows[:max(1, limit)], "missing": missing}
 
 
-def code_artifacts_state(project: str) -> dict:
+def code_artifacts_state(project: str, lang: str = "ru") -> dict:
     """Виды артефактов по коду из TemplatesCode/PromptCode: что включено и куда пишется."""
     try:
         import code_artifacts as CA
@@ -2516,6 +2516,7 @@ def code_artifacts_state(project: str) -> dict:
         out = []
         for rec in rows.values():
             row = {k: v for k, v in rec.items() if k != "body"}
+            row["title"] = rec["title_en"] if lang == "en" else rec["title"]
             for field in ("template_path", "prompt_path"):
                 try:
                     row[field] = os.path.relpath(row[field], project)
@@ -2528,7 +2529,7 @@ def code_artifacts_state(project: str) -> dict:
                                            "message": f"{type(e).__name__}: {e}"[:300]}]}
 
 
-def code_state(project: str) -> dict:
+def code_state(project: str, lang: str = "ru") -> dict:
     """Раздел «Код»: реестр репозиториев (вход — маской), его слепок для формы, замечания к записанному и состояние
     клонов без сети — то же, что печатает `code:status`. Числа считает движок, раздел их только показывает."""
     import code_repos as CREPO
@@ -2549,7 +2550,7 @@ def code_state(project: str) -> dict:
     except Exception:  # noqa: BLE001 — без проверки соединений режимы доступа выбираются без списка профилей
         st["profiles"] = []
     st["index"] = code_index_state(project)
-    st["artifacts"] = code_artifacts_state(project)
+    st["artifacts"] = code_artifacts_state(project, lang)
     return st
 
 
@@ -7257,7 +7258,7 @@ class Handler(BaseHTTPRequestHandler):
             project = (q.get("project") or [""])[0]
             if not self._known(project):
                 return
-            self.send_json(code_state(project))
+            self.send_json(code_state(project, request_lang(q)))
         elif u.path == "/api/code/index":
             # Индекс кода: что построено и сколько сущностей; только чтение.
             project = (q.get("project") or [""])[0]
@@ -7280,7 +7281,7 @@ class Handler(BaseHTTPRequestHandler):
             project = (q.get("project") or [""])[0]
             if not self._known(project):
                 return
-            self.send_json(code_artifacts_state(project))
+            self.send_json(code_artifacts_state(project, request_lang(q)))
         elif u.path == "/api/env":
             # «Проверить снова» на странице «Установка»: без перезапуска панели.
             self.send_json({"env": localized_environment(environment(fresh=bool(q.get("fresh"))),
