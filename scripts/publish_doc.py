@@ -891,7 +891,6 @@ def publish(a) -> dict:
         engine = "builtin"
     converter = CONVERTER
     storage = content = ""
-    used_script = False
     if engine in ("auto", "script", "prompt"):
         import publish_script as PS
         import publish_llm as LLM
@@ -955,7 +954,6 @@ def publish(a) -> dict:
                     page = LLM.run_script(".", script, data)
                     title = str(fm.get("publish_title") or "").strip() or str(page.get("title") or "").strip() or title
                     storage = content = str(page.get("storage") or "")
-                    used_script = True
                     converter = "script:" + hashlib.sha256(open(script_path, "r", encoding="utf-8").read().encode("utf-8")).hexdigest()[:16]
                     print(f"Страница собрана скриптом {script}.")
                 except Exception as e:  # noqa: BLE001 — причина уходит в отказ или предупреждение
