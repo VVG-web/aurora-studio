@@ -341,10 +341,17 @@ def publish_target(rec: dict, ctx: dict) -> dict:
             if len(part) > TITLE_MAX:
                 problems.append(("too-long", part[:60]))
             levels.append(part)
-    template = str((rec or {}).get("publish_title") or "").strip() or "{title}"
-    title, miss, _dropped = fill_slots(template, ctx)
-    title = slot_text(title.replace(LEVEL_SEP, " / "))
-    missing += [m for m in miss if m not in missing]
+    # Точный заголовок конкретного документа: поле `publish_title:` шапки сильнее шаблона вида.
+    # Так документ с собственным номером (AC-4.3.15) не зависит от того, что первым заголовком
+    # в теле стоит «# Описание»: шаблон вида дал бы «Описание», а не номер истории.
+    exact_title = slot_text((ctx or {}).get("publish_title") or "")
+    if exact_title:
+        title = exact_title
+    else:
+        template = str((rec or {}).get("publish_title") or "").strip() or "{title}"
+        title, miss, _dropped = fill_slots(template, ctx)
+        title = slot_text(title.replace(LEVEL_SEP, " / "))
+        missing += [m for m in miss if m not in missing]
     if missing:
         problems.insert(0, ("missing-field", ", ".join(missing)))
     elif not title:

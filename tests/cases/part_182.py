@@ -374,3 +374,21 @@ def test_every_make_stage_has_its_own_deadline_not_the_remainder_of_the_run(tmp:
         A.call_budget = orig
     assert r.get("ok"), f"производство упало на общем сроке: {r.get('why')}"
     assert "critic" in roles, roles
+
+
+@test
+def test_document_header_publish_title_beats_the_kind_template(tmp: Path):
+    """У документа с собственным номером (AC-4.3.15) заголовок страницы берётся из поля `publish_title:` шапки, а не из
+    шаблона вида: шаблон `{title}` давал первый заголовок тела «Описание» вместо номера истории. Поле есть — оно и есть
+    заголовок; нет — работает шаблон вида."""
+    import sys
+    sys.path.insert(0, str(KIT / "scripts"))
+    import make_kinds as MK
+    rec = {"publish_title": "{title}", "publish_path": "{folders}"}
+    ctx = {"title": "Описание", "folders": "Activity H4\u241eEpic 4.3",
+           "publish_title": "AC-4.3.15. Конфигурируемое переключение отправки"}
+    t = MK.publish_target(rec, ctx)
+    assert t["title"] == "AC-4.3.15. Конфигурируемое переключение отправки", t
+    assert t["missing"] == [] and t["problems"] == [], t
+    plain = MK.publish_target(rec, {"title": "Описание"})
+    assert plain["title"] == "Описание", plain
