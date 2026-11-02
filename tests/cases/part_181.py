@@ -113,6 +113,37 @@ def test_publish_tree_panel_api_walks_from_the_kind_root_and_refuses_without_one
 
 
 @test
+def test_publish_tree_base_flag_starts_at_kind_root_not_at_the_saved_place(tmp: Path):
+    """Окно выбора места начинает спуск с корня вида (`base=1`), а не с сохранённого `publish_parent`: иначе после
+    выбора папки она становится корнем окна и вернуться выше нельзя. Без флага API по-прежнему отдаёт точное место."""
+    restore = set_home(tmp / "home")
+    wiki = W.Wiki()
+    root = W.project(tmp, wiki.url, KIND_US)
+    rid = wiki.add("Корень", None, "DOC")
+    folder = wiki.add("Релиз 2.1", rid, "DOC")
+    wiki.add("Раздел", folder, "DOC")
+    wiki.add("Лист", rid, "DOC")
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace("{root}", rid), encoding="utf-8")
+    doc = root / "Artifacts" / "us" / "US-1.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(f"---\ntype: us\npublish_parent: {folder}\n---\n\n# Итог\n", encoding="utf-8")
+    srv, call = S._server(tmp)
+    try:
+        with T.env(**ENV):
+            st, saved = call("GET", "/api/publish/tree" + _q(root, path="Artifacts/us/US-1.md"))
+            assert st == 200 and saved["root"] == folder, saved
+            assert [p["title"] for p in saved["pages"]] == ["Раздел"], saved
+            st, base = call("GET", "/api/publish/tree" + _q(root, path="Artifacts/us/US-1.md", base="1"))
+            assert st == 200 and base["root"] == rid, base
+            assert {p["title"] for p in base["pages"]} == {"Релиз 2.1", "Лист"}, base
+    finally:
+        srv.shutdown()
+        wiki.close()
+        restore()
+
+
+@test
 def test_publish_place_panel_api_writes_the_header_with_a_snapshot_and_409(tmp: Path):
     """`POST /api/publish/place` — поле `publish_parent` шапки той же записью, что редактор: слепок обязателен,
     файл менялся — 409 и файл не тронут; не-номер — 400; повтор тем же номером — `unchanged`, файл не тронут;
@@ -169,6 +200,31 @@ def test_publish_place_texts_and_button_are_in_both_catalogs_and_the_script(tmp:
     assert 't("pub.place")' in card, "кнопки «Выбрать место…» нет в карточке публикации"
     assert "pickPublishPlace({" in card and "parent: place.id" in card, card[-400:]
     assert "has_children" in src, "лист/папка не различаются"
+    dialog = src.split("async function pickPublishPlace")[1].split("\n}\n", 1)[0]
+    assert "pub.place_up" in dialog and "chain.pop()" in dialog, "из папки нельзя вернуться на уровень выше"
+    assert 'base: "1"' in dialog and "pub.place_base_root" in dialog, "окно не начинает с корня вида"
+    for k in ("pub.place_up", "pub.place_base", "pub.place_base_root"):
+        assert k in ru and k in en, k
+
+
+@test
+def test_kinds_page_title_is_a_named_choice_with_file_name_and_tooltips(tmp: Path):
+    """Требование владельца: заголовок страницы выбирается понятным списком, а не свободным шаблоном; вариант «имя
+    файла» заменяет «_» пробелами, у каждого варианта есть подсказка, как именно получится название."""
+    import json
+    kit = Path(__file__).resolve().parent.parent.parent
+    base = kit / "cockpit" / "i18n"
+    ru = json.loads((base / "ru.json").read_text(encoding="utf-8"))
+    en = json.loads((base / "en.json").read_text(encoding="utf-8"))
+    keys = ("kinds.title_default", "kinds.title_h1", "kinds.title_name", "kinds.title_file", "kinds.title_custom",
+            "kinds.title_tip_default", "kinds.title_tip_h1", "kinds.title_tip_name", "kinds.title_tip_file",
+            "kinds.title_tip_custom")
+    assert all(k in ru and k in en for k in keys), [k for k in keys if k not in ru or k not in en]
+    src = (kit / "cockpit" / "ui" / "panel.js").read_text(encoding="utf-8")
+    block = src.split("const titlePresets")[1].split("const publish =", 1)[0]
+    assert '"{name}"' in block and '"{file}"' in block, "нет вариантов имени файла"
+    assert 't("kinds.title_name")' in block and 't("kinds.title_tip_" + key)' in block, "нет подписи или подсказки"
+    assert "titleHint.textContent" in block and "titleTip.title" in block, "подсказка не обновляется по выбору"
 
 
 # ------------------------------------------------------------------ регрессии выпуска 1.202.0
@@ -229,6 +285,28 @@ def test_publish_place_dialog_shows_a_reason_instead_of_an_empty_window(tmp: Pat
 
 
 @test
+def test_publish_converter_folds_wrapped_items_and_keeps_nested_lists_valid(tmp: Path):
+    """Найдено на живой публикации AC-4.3.15: жёсткий перенос продолжения пункта и вложенный список через пустую
+    строку давали `Unexpected close tag </li>; expected </ol>` и Confluence отвечал 400. Переносы склеиваются, пустая
+    строка перед вложенным списком не закрывает родительский, XHTML остаётся разбираемым."""
+    import sys
+    import xml.etree.ElementTree as ET
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
+    import publish_doc as PD
+    md = ("1. Система логирует каждую отправку:\n\n"
+          "   1. Признак документа.\n"
+          "   2. Значение параметра.\n"
+          "2. Система логирует изменение: прежнее значение, новое значение,\n"
+          "   дату, время и инициатора изменения.\n\n"
+          "3. Журнал хранится 5 лет.\n")
+    html = PD.to_storage(md, {})
+    ET.fromstring('<r xmlns:ac="http://example.com/content" xmlns:ri="http://example.com/resource/identifier">'
+                  + html + "</r>")
+    assert "Система логирует каждую отправку:<ol>" in html, html
+    assert "прежнее значение, новое значение, дату, время" in html, "перенос пункта остался отдельным абзацем"
+
+
+@test
 def test_publish_card_has_no_draft_or_marker_chatter_and_auto_allows_them(tmp: Path):
     """Требование владельца (31.10): «зачем столько сообщений, что это черновик и draft» — публикуется открытый
     документ по правилам вида и промпта. «Черновик» и «нет границы чистовика» снимаются молча (`--allow`), в карточке
@@ -257,7 +335,7 @@ def test_kind_form_has_no_root_path_field_and_the_place_is_chosen_in_publishing(
     form = src.split("async function renderKinds(")[1].split("\n}\n", 1)[0]
     assert 'lab("publish_path"' not in form, "поле пути вернулось в форму вида"
     assert "kf-help" not in form and "kindFields(r)" not in form, "справка/пример пути вернулись в форму"
-    assert 'lab("publish_title"' in form, "заголовок страницы из формы пропал"
+    assert '"data-field":"publish_title"' in form and "titlePresets" in form, "заголовок страницы из формы пропал"
     for name in ("ru.json", "en.json"):
         cat = json.loads((kit / "cockpit" / "i18n" / name).read_text(encoding="utf-8"))
         assert not [k for k in cat if k.startswith("kinds.path_help")], name

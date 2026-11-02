@@ -182,8 +182,10 @@ def test_the_kinds_form_keeps_the_publishing_root_and_title_but_no_path(tmp: Pat
     ui = panel_sources()
     form = _js_function(ui, "async function renderKinds(")
     publish = form[form.index('const publish = el("fieldset"'):form.index('rows.append(el("div",{class:"list-item"')]
-    for key in ("publish_url", "publish_title", "publish_prompt"):
+    for key in ("publish_url", "publish_prompt"):
         assert f'field("{key}"' in publish, f"поля {key} нет в рамке публикации"
+    assert '"data-field":"publish_title"' in publish and "titleSelect" in publish, \
+        "выбора заголовка страницы нет в рамке публикации"
     assert 'field("publish_path"' not in publish, "поле пути вернулось в рамку публикации"
     assert "/api/kinds/example?" not in form and "kindExample(" not in form, "пример пути вернулся в форму"
     assert re.search(r'publish_path:"", publish_title:"", publish_prompt:"",\s*mcp:""', form), \

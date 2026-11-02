@@ -350,6 +350,25 @@ def _host(url: str) -> str:
         return ""
 
 
+def https_origin(url: str) -> str:
+    """HTTPS-адрес сервера для проверки и доверия сертификату.
+
+    Строка `git clone` может быть SSH (`git@host:group/repo.git`) или `ssh://…`: у неё нет TLS-порта, и
+    `ssl.get_server_certificate` ходил бы на 22. Для сертификата нужен тот же сервер по HTTPS. `http://` —
+    это тот же сервер, который обычно перенаправляет на HTTPS: сертификат проверяется у HTTPS-адреса."""
+    raw = str(url or "").strip()
+    if re.match(r"^https://", raw, re.I):
+        return raw
+    if URL_RX.match(raw):
+        u = urllib.parse.urlparse(raw)
+        host = u.hostname or ""
+        if not host:
+            return ""
+        return f"https://{host}:{u.port}" if u.port else f"https://{host}"
+    host = _host(raw)
+    return f"https://{host}" if host else ""
+
+
 def guess_provider(url: str) -> str:
     host = _host(url).lower()
     if host == "github.com" or host.endswith(".github.com") or host.startswith("github."):
@@ -670,7 +689,10 @@ def trusted_ca(url: str) -> str:
 
     Доверие принадлежит серверу (хост и порт), а не проекту: проекта ещё может не быть (создание из git),
     быть не под git (нечего хранить), а у быстрого подключения свой черновик настройки без пути к файлу."""
-    if not re.match(r"^https://", url or "", re.I):
+    if not URL_RX.match(url or ""):
+        return ""
+    url = https_origin(url)
+    if not url:
         return ""
     try:
         u = urllib.parse.urlparse(url)
@@ -2028,8 +2050,9 @@ def _check(project, s: dict, c: dict) -> dict:
     if adapter and path:
         cfg = {"instance": s["instance"], "repo": path, "auth": c["auth"],
                "user": c["user"], "secret": c["secret"] if c["auth"] in ("token", "password") else ""}
+        api_url = https_origin(s["instance"] or url) or s["instance"] or url
         try:
-            api = adapter.check(cfg, make_http(effective_tls(s["tls"], s["instance"] or url)))
+            api = adapter.check(cfg, make_http(effective_tls(s["tls"], api_url)))
         except Exception as e:                               # noqa: BLE001
             api = {"ok": False, "code": "unknown", "detail": f"{type(e).__name__}: {e}"}
         repo = api.get("repo") or {}
@@ -2043,7 +2066,7 @@ def _check(project, s: dict, c: dict) -> dict:
             prob = problem(api["code"], api.get("detail", ""))
     elif s["provider"] != "generic":
         steps.append({"id": "api", "ok": None, "detail": mod.get("state", "")})
-    base = s["instance"] or (_origin(url) if URL_RX.match(url) else "")
+    base = https_origin(s["instance"] or "") or (_origin(url) if URL_RX.match(url) else "")
     if s["provider"] == "generic" and base:
         found = detect_provider(base, effective_tls(s["tls"], base))
         if found:
@@ -2104,7 +2127,10 @@ def detect_provider(base: str, tls: dict | None = None) -> str:
 
 def cert_info(url: str) -> dict:
     """Сертификат сервера — для доверия по отпечатку. Ничего не сохраняет."""
-    u = urllib.parse.urlparse(url if "://" in url else "https://" + url)
+    https = https_origin(url)
+    if not https:
+        return {"ok": False, "error": "сертификат проверяется только у адреса https://"}
+    u = urllib.parse.urlparse(https)
     host, port = u.hostname, u.port or 443
     if not host:
         return {"ok": False, "error": "в адресе нет сервера"}

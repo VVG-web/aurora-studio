@@ -987,14 +987,15 @@ def publish_fields(project: str, rel: str, full: str, fm: dict, text: str) -> di
 PUBLISH_CLOSED = ("auroraknowledgedb", "sources", "raw")      # внутренний слой доверия и зеркала: наружу не идут (как в `publish_doc`)
 
 
-def publish_tree(project: str, rel: str, parent: str, fresh: str) -> dict:
+def publish_tree(project: str, rel: str, parent: str, fresh: str, base: str = "") -> dict:
     """Дочерние страницы вики для окна выбора места публикации: активный коннектор роли `wiki`, операция `children`
     с признаком `has_children` (папка это или лист) и кэшем на час, `fresh=1` — заново.
 
     Откуда начинать спуск, решает не окно, а движок — тот же порядок корня, что у `ship:publish`: страница документа
     (`confluence_page_id` не даёт выбора — страница уже лежит), иначе корень вида/шапки/конфига (`publish_info`).
-    `parent` в запросе — спуск внутрь выбранной папки: номер страницы. Ответ — страницы контракта роли `wiki`, причины
-    отказа — таблица причин коннектора (панель переводит их каталогом данных)."""
+    `parent` в запросе — спуск внутрь выбранной папки: номер страницы. `base=1` — начать с корня вида/конфига, а не с
+    точного места документа: иначе сохранённый `publish_parent` становится корнем окна и выше него не подняться. Ответ —
+    страницы контракта роли `wiki`, причины отказа — таблица причин коннектора (панель переводит их каталогом данных)."""
     cur = file_read(project, rel)
     if cur.get("error"):
         return cur
@@ -1004,10 +1005,11 @@ def publish_tree(project: str, rel: str, parent: str, fresh: str) -> dict:
         if (fm.get("confluence_page_id") or "").strip().strip('"'):
             return {"fixed": True, "pages": [], "why": "страница уже лежит в Confluence — место задано публикацией"}
         info = cur.get("publish") or {}
-        root = str(info.get("parent") or "").strip()
+        root = str(info.get("base_parent" if base == "1" else "parent") or "").strip()
         if not root:
-            why = info.get("why") or "не задана родительская страница вики"
-            return {"pages": [], "why": why, "fix": info.get("fix") or ""}
+            why = ("у вида не задана корневая страница публикации" if base == "1"
+                   else info.get("why") or "не задана родительская страница вики")
+            return {"pages": [], "why": why, "fix": info.get("fix") or ("kinds" if base == "1" else "")}
     # Корень в настройках — номер страницы или адрес (`publish_url` часто ссылкой): приводим к номеру тем же
     # разбором, что публикация, иначе операция справедливо отвечает «нужен номер страницы».
     import connector_ops as CO
@@ -1111,9 +1113,16 @@ def publish_info(project: str, rel: str, full: str, fm: dict, text: str) -> dict
     out = {"state": "ready", "kind": kid, "kind_title": rec.get("title") or kid,
            "action": "update" if page else "create", "page": page,
            "prompt": (rec.get("publish_prompt") or "").strip(), "review": AG_KINDS.review_profile(rec),
-           "parent": "", "parent_from": "", "path": [], "title": "", "fields": [], "why": "", "fix": "", "gate": []}
+           "parent": "", "parent_from": "", "base_parent": "", "base_from": "",
+           "path": [], "title": "", "fields": [], "why": "", "fix": "", "gate": []}
     import confluence_export as CE
     cfg = CE.read_config(project)
+    # Корень вида/конфига — отдельно от точного места документа: окно выбора места начинает спуск с него, чтобы
+    # после сохранения `publish_parent` можно было вернуться выше и выбрать другое место, а не остаться в папке.
+    base = next(((src, str(v).strip().strip("\"'")) for src, v in (
+        ("publish_url", rec.get("publish_url")), ("confluence", cfg.get("publish_parent")))
+        if str(v or "").strip().strip("\"'")), ("", ""))
+    out["base_from"], out["base_parent"] = base
     # Порядок тот же, что у `ship:publish`: `publish_parent` шапки — точное место документа (его пишет окно выбора
     # места) и потому раньше пути вида.
     parents = (("publish_parent", fm.get("publish_parent")), ("publish_url", rec.get("publish_url")),
@@ -2458,11 +2467,12 @@ def code_action(action: str, project: str, payload: dict) -> tuple:
 
 def cert_action(url: str, payload: dict) -> dict:
     """Сертификат сервера по адресу: показать отпечаток или довериться ему по отпечатку (на этой машине)."""
-    if not re.match(r"^https://", url or "", re.I):
+    https = GS.https_origin(url)
+    if not https:
         return {"ok": False, "error": "сертификат проверяется только у адреса https://"}
     if payload.get("action") == "trust":
-        return {**GS.save_cert(url, str(payload.get("sha256") or "")), "scope": "machine"}
-    info = GS.cert_info(url)
+        return {**GS.save_cert(https, str(payload.get("sha256") or "")), "scope": "machine"}
+    info = GS.cert_info(https)
     info.pop("pem", None)
     return info
 
@@ -2471,10 +2481,10 @@ def gitsync_cert(project: str, payload: dict) -> dict:
     """Сертификат сервера проекта: показать отпечаток или довериться ему по отпечатку."""
     s = GS.load(project)
     url = str(payload.get("url") or s.get("instance") or GS.repo_url(s, GS.cred_load(project)))
-    if payload.get("action") == "trust" and payload.get("scope") != "machine" \
-            and re.match(r"^https://", url or "", re.I):
+    https = GS.https_origin(url)
+    if payload.get("action") == "trust" and payload.get("scope") != "machine" and https:
         # Сервер проекта: доверие ещё и записывается в настройку Git проекта, если он под git.
-        return GS.trust_cert(project, url, str(payload.get("sha256") or ""),
+        return GS.trust_cert(project, https, str(payload.get("sha256") or ""),
                              str(payload.get("remote") or "") or None)
     return cert_action(url, payload)
 
@@ -7349,7 +7359,8 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(publish_tree(project, (q.get("path") or [""])[0],
-                                        (q.get("parent") or [""])[0], (q.get("fresh") or [""])[0]))
+                                        (q.get("parent") or [""])[0], (q.get("fresh") or [""])[0],
+                                        (q.get("base") or [""])[0]))
         elif u.path == "/api/task/doc":
             project = (q.get("project") or [""])[0]
             if not self._known(project):

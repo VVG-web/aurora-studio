@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.202.10";
+const UI_VERSION = "1.202.11";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1441,31 +1441,38 @@ async function publishFromEditor(){
 async function pickPublishPlace({path = "", start = "", onPick = null} = {}){
   if (!S.project || !path) return null;
   const chain = [];      // спуск: [{id, title}] от корня — крошки и «Положить в корень»
+  let baseId = "";       // корень вида/конфига: с него начинается окно и к нему возвращает «Корень»
   const load = (pid, fresh) => api("/api/publish/tree?" + new URLSearchParams(
-    {project: S.project.path, path, ...(pid ? {parent: pid} : {}), ...(fresh ? {fresh: "1"} : {})}), {quiet: true});
-  const pick = place => { if (onPick) onPick(place); close(place); };
-  // Выбор строки для «Сохранить»: подсветка и включённая кнопка; лист выбирается сразу без кнопки.
-  const select = (place, row) => {
-    save.disabled = "";
-    list.querySelectorAll(".pick-row.sel").forEach(x => x.classList.remove("sel"));
-    row.classList.add("sel");
-    sel = place;
-  };
+    {project: S.project.path, path, ...(pid ? {parent: pid} : {base: "1"}), ...(fresh ? {fresh: "1"} : {})}),
+    {quiet: true});
   const place = await pickOpen((box, close) => {
     const crumbs = el("div", {class:"pick-crumbs", role:"navigation", "aria-label": t("pub.place_title")});
     const list = el("div", {class:"pick-list", role:"listbox", "aria-label": t("pub.place_title"), tabindex:"0"});
     const note = el("div", {class:"muted pick-note"});
     let sel = null;                       // выбранная строка (в т.ч. «Положить в корень»): её и сохранит кнопка
+    const pick = place => { if (onPick) onPick(place); close(place); };
     const save = el("button", {class:"btn primary", disabled:"", onclick: () => {
-      const chosen = sel || chain.at(-1);
+      const chosen = sel || chain.at(-1) || (!chain.length && baseId ? {id: baseId, title: t("pub.place_base")} : null);
       if (chosen) pick(chosen);
     }}, t("pub.place_save"));
+    // Выбор строки для «Сохранить»: подсветка и включённая кнопка; лист выбирается сразу без кнопки.
+    const select = (place, row) => {
+      save.disabled = "";
+      list.querySelectorAll(".pick-row.sel").forEach(x => x.classList.remove("sel"));
+      row.classList.add("sel");
+      sel = place;
+    };
     const refresh = el("button", {class:"btn sm", onclick: () => draw(chain.at(-1)?.id || "", true)}, t("tracker.refresh"));
+    const up = el("button", {class:"btn sm", onclick: () => {
+      if (!chain.length) return;
+      chain.pop();
+      draw(chain.at(-1)?.id || "");
+    }}, "↑ " + t("pub.place_up"));
     box.setAttribute("aria-label", t("pub.place_title"));
     box.append(el("h2", {style:"margin:0"}, t("pub.place_title")),
       el("div", {class:"muted", style:"font-size:12.5px"}, t("pub.place_about")),
       crumbs, list, note,
-      el("div", {class:"row", style:"gap:8px;align-items:center"}, refresh, el("div", {class:"spacer"}),
+      el("div", {class:"row", style:"gap:8px;align-items:center"}, up, refresh, el("div", {class:"spacer"}),
         el("button", {class:"btn", onclick: () => close(null)}, t("pick.cancel")), save));
     const draw = async (pid, fresh) => {
       list.innerHTML = ""; note.textContent = ""; refresh.disabled = true;
@@ -1480,17 +1487,28 @@ async function pickPublishPlace({path = "", start = "", onPick = null} = {}){
       if (r.fixed){ note.textContent = (r && r.why) || ""; return; }
       if (r.why){ note.textContent = r.why; return; }
       const pages = r.pages || [];
+      if (!pid) baseId = String(r.root || baseId);
       sel = null;
-      // Крошки спуска: корень › выбранная › выбранная — клик возвращает уровень
+      // Крошки спуска: Корень › выбранная › выбранная — клик возвращает уровень. Корень — корень вида, а не
+      // сохранённое место документа: иначе после выбора папки окно открывалось в ней и выше не поднималось.
       crumbs.replaceChildren();
+      crumbs.append(el("button", {class:"btn sm", disabled: chain.length ? null : "",
+        onclick: () => { chain.length = 0; draw(""); }}, t("pub.place_base")));
       chain.forEach((c, i) => crumbs.append(
-        ...(i ? [" › "] : []),
+        " › ",
         el("button", {class:"btn sm", onclick: () => { chain.length = i + 1; draw(c.id); }}, c.title)));
       const cur = chain.at(-1);
       // «Положить в корень выбранной папки» — выбор без проваливания; он же запасной: «Сохранить» без выбранной строки
       // сохраняет текущую папку. На верхнем уровне это корень вида (родитель первого уровня).
-      save.disabled = cur ? null : "";
-      if (cur){
+      up.disabled = chain.length ? null : "";
+      save.disabled = (cur || (!chain.length && baseId)) ? null : "";
+      if (!chain.length && baseId){
+        const row = el("div", {class:"pick-row", role:"option", tabindex:"-1",
+          onclick: () => select({id: baseId, title: t("pub.place_base")}, row),
+          onkeydown: e => { if (e.key === "Enter" || e.key === " ") select({id: baseId, title: t("pub.place_base")}, row); }},
+          el("span", {class:"pk-name"}, el("b", {}, t("pub.place_base_root"))));
+        list.append(row);
+      } else if (cur){
         const row = el("div", {class:"pick-row", role:"option", tabindex:"-1",
           onclick: () => select({id: cur.id, title: cur.title}, row),
           onkeydown: e => { if (e.key === "Enter" || e.key === " ") select({id: cur.id, title: cur.title}, row); }},
@@ -1498,7 +1516,7 @@ async function pickPublishPlace({path = "", start = "", onPick = null} = {}){
         list.append(row);
       }
       if (!pages.length){
-        if (!cur) note.textContent = t("pub.place_none");
+        if (!cur && !baseId) note.textContent = t("pub.place_none");
         return;
       }
       pages.forEach(p => {
@@ -3635,12 +3653,55 @@ async function renderKinds(box){
       // Место страницы в Confluence выбирается окном в карточке публикации («Выбрать место…»): общее поле пути у
       // вида убрано — оно требовало знать подстановки и не совпадало с тем, как документы лежат в папках.
       const watch = input => input;
+      // Заголовок страницы: не свободный шаблон в первую очередь, а понятный выбор источника. `{name}` — имя файла
+      // без расширения, «_» → пробел; `{file}` — как есть; `{title}` — первый заголовок «# …». Свой шаблон остаётся
+      // последним пунктом, чтобы прежние записи `[AC] {name}` не терялись.
+      const titlePresets = ["", "{title}", "{name}", "{file}"];
+      const titleRaw = String(rec.publish_title || "");
+      const titleMode = titlePresets.includes(titleRaw) ? titleRaw : "custom";
+      const titleTip = kindTip(t("kinds.tip_publish_title"));
+      const titleHint = el("span",{class:"kf-h"});
+      const titleInput = el("input",{class:"btn mono", style:"width:200px;font-size:12px;font-weight:400",
+        value:titleRaw, placeholder:t("kinds.f_publish_title"), hidden:titleMode !== "custom" ? "" : null,
+        oninput:e=>{ rec.publish_title = e.target.value; dirty(); }});
+      const titleSync = () => {
+        const mode = titleSelect.value;
+        const key = mode === "{title}" ? "h1" : mode === "{name}" ? "name" : mode === "{file}" ? "file"
+          : mode === "custom" ? "custom" : "default";
+        const text = t("kinds.title_tip_" + key);
+        titleTip.title = text;
+        titleTip.setAttribute("aria-label", text);
+        titleHint.textContent = text;
+        titleInput.hidden = mode !== "custom";
+      };
+      const titleSelect = el("select",{class:"btn sm", style:"font-weight:400",
+        onchange:e=>{
+          const v = e.target.value;
+          if (v === "custom"){
+            titleInput.hidden = false;
+            titleInput.focus();
+          } else {
+            rec.publish_title = v;
+            titleInput.value = v;
+          }
+          titleSync();
+          dirty();
+        }},
+        el("option",{value:"", selected:titleMode === "" ? "" : null}, t("kinds.title_default")),
+        el("option",{value:"{title}", selected:titleMode === "{title}" ? "" : null}, t("kinds.title_h1")),
+        el("option",{value:"{name}", selected:titleMode === "{name}" ? "" : null}, t("kinds.title_name")),
+        el("option",{value:"{file}", selected:titleMode === "{file}" ? "" : null}, t("kinds.title_file")),
+        el("option",{value:"custom", selected:titleMode === "custom" ? "" : null}, t("kinds.title_custom")));
+      titleSync();
       const publish = el("fieldset",{class:"kframe", "data-frame":"publish"},
         el("legend",{}, t("kinds.frame_publish")),
         el("div",{class:"muted kf-about"}, t("kinds.frame_publish_about")),
         el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;align-items:flex-end"},
           lab("publish_url", watch(field("publish_url", t("kinds.f_publish"), "260px"))),
-          lab("publish_title", watch(field("publish_title", t("kinds.f_publish_title"), "200px")), t("kinds.publish_title_hint")),
+          el("label",{class:"kfield", "data-field":"publish_title"},
+            el("span",{class:"kf-l"}, t("kinds.l_publish_title"), " ", titleTip),
+            el("div",{class:"row",style:"gap:6px;align-items:center"}, titleSelect, titleInput),
+            titleHint),
           lab("publish_prompt", pfield("publish_prompt", t("kinds.f_publish_prompt"), "220px", "file", "Prompts"),
               t("kinds.publish_prompt_hint")),
           // Ревью по чек-листу перед публикацией: ворота `ship:publish` пускают наружу только свежее ревью.
@@ -5597,16 +5658,18 @@ function newGitCert(g){
 async function certNewShow(){
   const g = newGit();
   g.cert = {busy: true}; drawNewGit();
+  const certUrl = (g.parsed && (g.parsed.instance || g.parsed.url)) || "";
   const r = await api("/api/project/git/cert",{method:"POST",quiet:true,
-    body:JSON.stringify({action:"show", url:g.parsed.url})});
+    body:JSON.stringify({action:"show", url:certUrl})});
   g.cert = r || {ok:false}; drawNewGit();
 }
 
 // Доверие запоминается на машине; то, что просило довериться (проверка или создание), повторяется само.
 async function certNewTrust(){
   const g = newGit();
+  const certUrl = (g.parsed && (g.parsed.instance || g.parsed.url)) || "";
   const r = await api("/api/project/git/cert",{method:"POST",quiet:true,
-    body:JSON.stringify({action:"trust", sha256:g.cert.sha256, url:g.parsed.url})});
+    body:JSON.stringify({action:"trust", sha256:g.cert.sha256, url:certUrl})});
   g.cert = null;
   if (!r || !r.ok){
     toast((r && r.error) || t("setup.g_cert_failed"), "err");

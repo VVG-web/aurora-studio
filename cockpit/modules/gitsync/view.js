@@ -1034,10 +1034,10 @@ async function connectQuick(ctx, force){
 // Сертификат основного сервера или дополнительного (`remote`) — по его адресу.
 function certUrl(remote){
   const https = v => /^https:\/\//i.test(v || "") ? v : "";
-  if (!remote) return FORM.instance || https(FORM.repo) || D.status.remote_url;
+  if (!remote) return https(FORM.instance) || https(FORM.repo) || https(D.status.remote_url) || FORM.instance || "";
   const m = (FORM.mirrors || []).find(x => x.remote === remote) || {};
   const st = (D.status.mirrors || []).find(x => x.remote === remote) || {};
-  return m.instance || st.url || https(m.repo) || "";
+  return https(m.instance) || https(st.url) || https(m.repo) || m.instance || st.url || "";
 }
 
 async function certShow(ctx, remote){
@@ -1099,17 +1099,19 @@ async function quickCertShow(ctx){
   const q = quick();
   q.cert = {busy: true};
   drawQuick(ctx);
+  const certUrl = q.parsed.instance || q.parsed.url;
   const r = await ctx.api("/api/gitsync/cert", {method: "POST", quiet: true,
-    body: JSON.stringify({project: ctx.project.path, action: "show", url: q.parsed.url})});
+    body: JSON.stringify({project: ctx.project.path, action: "show", url: certUrl})});
   q.cert = r || {ok: false};
   drawQuick(ctx);
 }
 
 async function quickCertTrust(ctx){
   const q = quick();
+  const certUrl = q.parsed.instance || q.parsed.url;
   const r = await ctx.api("/api/gitsync/cert", {method: "POST", quiet: true,
     body: JSON.stringify({project: ctx.project.path, action: "trust", scope: "machine",
-                          sha256: q.cert.sha256, url: q.parsed.url})});
+                          sha256: q.cert.sha256, url: certUrl})});
   certToast(ctx, r);
   q.cert = null;
   if (!r || !r.ok) return drawQuick(ctx);

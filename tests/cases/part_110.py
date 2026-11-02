@@ -70,6 +70,35 @@ def _settings(repo, **extra) -> dict:
 # ------------------------------------------------------------------------------------------------ сертификат
 
 @test
+def test_ssh_clone_url_checks_and_trusts_the_https_origin(tmp: Path):
+    """Строка `git clone` может быть SSH: у неё нет TLS-порта, и кнопка «Доверять сертификату» отвечала «только у
+    https://», хотя проверка провайдера падала на самоподписанном сертификате того же сервера. Для сертификата берётся
+    HTTPS-адрес того же хоста; явный `http://` сертификата не имеет."""
+    GS, AC = _gs(), _ck()
+    assert GS.https_origin("git@git.example.com:team/proj.git") == "https://git.example.com"
+    assert GS.https_origin("ssh://git@git.example.com:2222/team/proj.git") == "https://git.example.com"
+    assert GS.https_origin("HTTPS://git.example.com:8443/team/proj.git") == "HTTPS://git.example.com:8443/team/proj.git"
+    assert GS.https_origin("http://git.example.com/team/proj.git") == "https://git.example.com"
+    assert GS.https_origin("http://git.example.com:8080/team/proj.git") == "https://git.example.com:8080"
+    assert GS.https_origin("/srv/repo.git") == ""
+    seen = []
+    saved_info = GS.cert_info
+    try:
+        GS.cert_info = lambda u: seen.append(u) or {"ok": True, "host": "git.example.com", "port": 443,
+                                                    "sha256": "AA:BB"}
+        r = AC.cert_action("git@git.example.com:team/proj.git", {"action": "show"})
+        assert r["ok"], r
+        assert seen == ["https://git.example.com"], seen
+    finally:
+        GS.cert_info = saved_info
+    ui = (KIT / "cockpit" / "ui" / "panel.js").read_text(encoding="utf-8")
+    assert "g.parsed.instance || g.parsed.url" in ui, "кнопка доверия снова отправляет SSH-адрес"
+    view = (KIT / "cockpit" / "modules" / "gitsync" / "view.js").read_text(encoding="utf-8")
+    assert "q.parsed.instance || q.parsed.url" in view and "https(FORM.instance)" in view, \
+        "вкладка Git или быстрое подключение снова отправляют SSH-адрес"
+
+
+@test
 def test_trusting_a_certificate_is_kept_for_the_machine_and_reaches_a_project_without_git(tmp: Path):
     """Прежде доверие записывалось только в `.git/aurora/git.json`: у проекта ещё без git (папку создали, git
     подключают потом) записывать было некуда, кнопка отвечала «сертификат сохранён», а ничего не менялось."""
@@ -89,6 +118,8 @@ def test_trusting_a_certificate_is_kept_for_the_machine_and_reaches_a_project_wi
         r = GS.trust_cert(plain, url, "AA:BB")
         assert r["ok"] and r["scope"] == "machine" and Path(r["path"]).is_file(), r
         assert GS.trusted_ca(url) == r["path"] and GS.trusted_ca(url.replace("proj", "other")) == r["path"]
+        assert GS.trusted_ca("http://git.example.com:3100/team/proj.git") == r["path"], \
+            "http-адрес, который перенаправляет на https, остался без сертификата"
         assert not GS.trusted_ca("https://git.example.com:3101/x.git"), "доверие одного порта чужому серверу"
         assert not GS.trusted_ca("git@git.example.com:team/proj.git"), "ssh-адрес не про сертификат"
         assert ":" not in GS.cert_file("::1", 8943).name, "в имени файла остался двоеточие адреса IPv6"

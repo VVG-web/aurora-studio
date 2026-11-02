@@ -202,6 +202,51 @@ def inline(text: str) -> str:
     return re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], text)
 
 
+LIST_LINE = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$")
+
+
+def fold_wrapped(md: str) -> str:
+    """Склеить жёсткие переносы внутри пунктов списка и абзацев, не трогая код, таблицы и заголовки.
+
+    Аналитические документы часто перенесены руками: продолжение пункта идёт с отступом, а вложенный
+    список отделён пустой строкой. Без склейки конвертер закрывал `<ol>` перед вложенным списком и
+    отдавал Confluence невалидный XHTML (`Unexpected close tag </li>; expected </ol>`)."""
+    lines = md.splitlines()
+    out: list[str] = []
+    in_code = False
+
+    def block_start(s: str) -> bool:
+        t = s.lstrip()
+        return (not t or t.startswith(("#", "```", "|")) or bool(re.match(r"^(---+|\*\*\*+)\s*$", t)))
+
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            in_code = not in_code
+            out.append(line)
+            continue
+        if in_code:
+            out.append(line)
+            continue
+        if not line.strip():
+            # Пустая строка перед вложенным списком не закрывает родительский список.
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            nested = LIST_LINE.match(lines[j]) if j < len(lines) else None
+            if nested and len(nested.group(1)) > 0:
+                continue
+            out.append("")
+            continue
+        if LIST_LINE.match(line):
+            out.append(line)
+            continue
+        if line[:1] in (" ", "\t") and out and out[-1].strip() and not block_start(out[-1]):
+            out[-1] = out[-1].rstrip() + " " + line.strip()
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def to_storage(md: str, links: dict) -> str:
     """Markdown → Confluence storage XHTML.
 
@@ -209,7 +254,7 @@ def to_storage(md: str, links: dict) -> str:
     у него свои, а на выходе нужен байт-стабильный результат (иначе каждая публикация
     поднимает версию страницы на пустом месте).
     """
-    md = resolve_wiki(md, links)
+    md = fold_wrapped(resolve_wiki(md, links))
     out: list = []
     lines = md.splitlines()
     i, list_stack = 0, []
@@ -787,8 +832,8 @@ def publish(a) -> dict:
         except ImportError:
             has_key = False
         if not has_key:
-            print(f"⚠️ В документе нет ключа по маске вида (маска «{mask}»): страница уйдёт без ключа "
-                  "Requirement Yogi — впишите ключ, который заведёт реестр, в строку «Код»")
+            print(f"⚠️ В документе нет ключа по маске вида (шаблон «{mask}»). Публикация не блокируется: "
+                  "страница уйдёт без ключа. Впишите ключ, который заведёт реестр, в Confluence после публикации.")
     if (fm.get("review") or "").strip() in ("", "none", "no"):
         print("⚠️ В артефакте нет отметки о ревью (`review:`) — публикуются документы "
               "после проверки человеком")

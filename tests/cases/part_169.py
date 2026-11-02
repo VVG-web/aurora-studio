@@ -111,7 +111,10 @@ def test_kinds_form_explains_every_field_in_both_languages(tmp: Path):
     form = _js_function(ui, "async function renderKinds(")
     # MCP — плашки, а не поле ввода (`mcpBox`, часть 166): подсказка стоит у подписи блока плашек, не через `lab`.
     labs = re.findall(r'\blab\("(\w+)"', form) + re.findall(r'kindTip\(t\("kinds\.tip_(mcp)"\)\)', form)
+    if '"data-field":"publish_title"' in form:          # заголовок страницы — выбор, а не поле ввода: своя подпись и «?»
+        labs.append("publish_title")
     assert set(labs) == set(TIPS), f"поля формы и подсказки разошлись: {sorted(set(labs) ^ set(TIPS))}"
+    assert 't("kinds.title_tip_" + key)' in form, "у выбора заголовка нет подсказки, как получится название"
     assert "inp.title = text" in form and "kindTip(text)" in form, "подсказка поля и значок «?» говорят разное"
     assert 'null, t("kinds.ref_mask_hint"))' in form
     for key in OTHER_TIPS.values():
@@ -129,7 +132,8 @@ def test_kinds_form_explains_every_field_in_both_languages(tmp: Path):
     assert 'lab("publish_path"' not in form, "поле пути вернулось в форму вида"
     assert 'el("details",{class:"kf-help"}' not in form and "kindFields(r)" not in form, "справка/пример пути вернулись"
     assert "fieldsHave" not in form and "fieldsWarn" not in form, "поля шапки под примером пути вернулись"
-    assert "kinds.publish_title_hint" in ru and "kinds.publish_title_hint" in en, "подсказка заголовка пропала"
+    assert "kinds.title_tip_default" in ru and "kinds.title_tip_default" in en, "подсказка заголовка пропала"
+    assert "kinds.title_tip_name" in ru and "kinds.title_tip_name" in en, "у имени файла нет подсказки"
     assert not [k for k in ru if k.startswith("kinds.path_help") or k.startswith("kinds.slot_")], "остались строки справки пути"
     assert "kinds.f_publish_path" not in ru and "kinds.f_publish_path" not in en, "осталась подпись поля пути"
     assert P150._ck().kinds_read(str(make_project(tmp)))["slots"] == list(MK.BUILTIN_SLOTS)
