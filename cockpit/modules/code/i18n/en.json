@@ -174,5 +174,12 @@
   "code.index.kind.string": "string",
   "code.index.kind.test": "test",
   "code.index.kind.reqtag": "requirement tag",
-  "code.index.kind.commit": "commit"
+  "code.index.kind.commit": "commit",
+  "code.artifacts.title": "Artifacts from code",
+  "code.artifacts.about": "Document kinds that can be built from code. The template defines the form, the prompt defines the writing rules. Configuration lives in TemplatesCode/ and PromptCode/, not in project settings.",
+  "code.artifacts.on": "enabled",
+  "code.artifacts.off": "disabled",
+  "code.artifacts.empty": "No preset kinds. Update the kit or put a template into TemplatesCode/.",
+  "code.artifacts.check": "Check the settings",
+  "code.artifacts.list": "Show the kinds"
 }

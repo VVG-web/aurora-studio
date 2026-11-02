@@ -2508,6 +2508,26 @@ def code_find_state(project: str, text: str, kind: str = "", limit: int = 30) ->
     return {"query": text, "results": rows[:max(1, limit)], "missing": missing}
 
 
+def code_artifacts_state(project: str) -> dict:
+    """Виды артефактов по коду из TemplatesCode/PromptCode: что включено и куда пишется."""
+    try:
+        import code_artifacts as CA
+        rows, problems = CA.check(project)
+        out = []
+        for rec in rows.values():
+            row = {k: v for k, v in rec.items() if k != "body"}
+            for field in ("template_path", "prompt_path"):
+                try:
+                    row[field] = os.path.relpath(row[field], project)
+                except ValueError:
+                    pass
+            out.append(row)
+        return {"kinds": out, "problems": problems}
+    except Exception as e:  # noqa: BLE001 — сломанный реестр не роняет раздел
+        return {"kinds": [], "problems": [{"kind": "", "field": "", "code": "failed",
+                                           "message": f"{type(e).__name__}: {e}"[:300]}]}
+
+
 def code_state(project: str) -> dict:
     """Раздел «Код»: реестр репозиториев (вход — маской), его слепок для формы, замечания к записанному и состояние
     клонов без сети — то же, что печатает `code:status`. Числа считает движок, раздел их только показывает."""
@@ -2529,6 +2549,7 @@ def code_state(project: str) -> dict:
     except Exception:  # noqa: BLE001 — без проверки соединений режимы доступа выбираются без списка профилей
         st["profiles"] = []
     st["index"] = code_index_state(project)
+    st["artifacts"] = code_artifacts_state(project)
     return st
 
 
@@ -7254,6 +7275,12 @@ class Handler(BaseHTTPRequestHandler):
                 limit = 30
             self.send_json(code_find_state(project, (q.get("q") or [""])[0],
                                            (q.get("kind") or [""])[0], limit))
+        elif u.path == "/api/code/artifacts":
+            # Виды артефактов по коду: паспорт, шаблон, промпт, папка; только чтение.
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(code_artifacts_state(project))
         elif u.path == "/api/env":
             # «Проверить снова» на странице «Установка»: без перезапуска панели.
             self.send_json({"env": localized_environment(environment(fresh=bool(q.get("fresh"))),

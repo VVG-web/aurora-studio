@@ -8,6 +8,6 @@
   "group": "project",
   "order": 56,
   "needs": ["project"],
-  "commands": ["code:sync", "code:status", "code:index", "code:find"],
+  "commands": ["code:sync", "code:status", "code:index", "code:find", "code:artifacts"],
   "for": "1.202.16"
 }

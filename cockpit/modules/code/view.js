@@ -62,6 +62,7 @@ function draw(ctx){
   if (!names.length) box.append(ctx.el("div", {class: "card muted", style: "padding:18px"}, ctx.t("code.empty")));
   names.forEach(n => box.append(repoCard(ctx, n)));
   box.append(indexCard(ctx));
+  box.append(artifactsCard(ctx));
   box.append(footer(ctx));
 }
 
@@ -489,6 +490,34 @@ async function runFind(ctx){
   FIND.error = r.error || "";
   FIND.missing = r.missing || [];
   draw(ctx);
+}
+
+function artifactsCard(ctx){
+  const {t, el} = ctx;
+  const data = (D && D.artifacts) || {kinds: [], problems: []};
+  const box = el("div", {class: "card", style: "padding:16px 18px;margin-bottom:14px"});
+  box.append(el("b", {}, t("code.artifacts.title")),
+    el("p", {class: "muted", style: "font-size:12.5px;margin:4px 0 10px"}, t("code.artifacts.about")));
+  const kinds = data.kinds || [];
+  if (!kinds.length) box.append(el("div", {class: "muted", style: "font-size:12.5px"},
+    t("code.artifacts.empty")));
+  kinds.forEach(k => {
+    const enabled = k.enabled ? t("code.artifacts.on") : t("code.artifacts.off");
+    box.append(el("div", {class: "row", style: "gap:8px;align-items:center;margin:4px 0;flex-wrap:wrap"},
+      el("span", {class: "chip"}, enabled),
+      el("span", {class: "mono"}, k.kind),
+      el("span", {class: "muted", style: "font-size:12.5px"}, k.title || ""),
+      el("span", {class: "muted", style: "font-size:12px"},
+        `${k.template_path || ""} → ${k.prompt_path || ""} · ${k.out || ""}`)));
+  });
+  (data.problems || []).forEach(p => box.append(el("div", {class: "warnbox", style: "margin-top:6px"},
+    `${p.kind}: ${p.message || p.code}`)));
+  box.append(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:12px"},
+    el("button", {class: "btn", onclick: () => ctx.runWatched("code:artifacts", ["--check"])},
+      t("code.artifacts.check")),
+    el("button", {class: "btn", onclick: () => ctx.runWatched("code:artifacts", [])},
+      t("code.artifacts.list"))));
+  return box;
 }
 
 function footer(ctx){

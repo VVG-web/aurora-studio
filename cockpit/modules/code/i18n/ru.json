@@ -174,5 +174,12 @@
   "code.index.kind.string": "строка",
   "code.index.kind.test": "тест",
   "code.index.kind.reqtag": "метка требования",
-  "code.index.kind.commit": "коммит"
+  "code.index.kind.commit": "коммит",
+  "code.artifacts.title": "Артефакты по коду",
+  "code.artifacts.about": "Виды документов, которые можно собрать по коду. Шаблон задаёт форму, промпт — правила письма. Настройка живёт в папках TemplatesCode/ и PromptCode/, а не в настройках проекта.",
+  "code.artifacts.on": "включён",
+  "code.artifacts.off": "выключен",
+  "code.artifacts.empty": "Преднастроенных видов нет. Обновите кит или положите шаблон в TemplatesCode/.",
+  "code.artifacts.check": "Проверить настройки",
+  "code.artifacts.list": "Показать виды"
 }

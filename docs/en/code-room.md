@@ -194,6 +194,54 @@ For an assistant the index is available through MCP: `code_search` searches ever
 `code_symbol` finds a symbol, `code_file` reads a range of lines from a clone. `code_file` works only
 when the repository allows "To models" and masks secret names and values.
 
+## Artifacts from code: `TemplatesCode/` and `PromptCode/`
+
+A project configures which documents can be built from code with **folders**, not with entities in
+`aurora.config.yaml`. The kit ships preset kinds; a project overrides one with a file that has the
+same `kind`.
+
+```text
+TemplatesCode/cr-api_v1.0.md   the kind's passport and document form
+PromptCode/cr-api.md           writing rules for this kind
+```
+
+The template passport has `kind`, `title`, `version`, `enabled`, `scope`, `out`, `prompt`,
+`purity`, `order`. `enabled: "false"` disables a kind without deleting the file. `prompt` is
+optional and defaults to `PromptCode/<kind>.md`. A project overrides a kit kind with a file that has
+the same `kind`; a new kind is a new file with a new `kind`.
+
+Preset kinds:
+
+| Kind | What it gives | Enabled |
+|---|---|---|
+| `cr-api` | HTTP API: routes, DTOs, codes, validation, auth | yes |
+| `cr-data` | data schema: tables, columns, keys, relations, reads/writes | yes |
+| `cr-events` | events and topics: producer, consumer, payload, guarantees | yes |
+| `cr-config` | configuration: key, value, where read, what it affects | yes |
+| `cr-module` | module card: purpose, interface, dependencies, tests | yes |
+| `cr-algorithm` | algorithm: inputs, steps, branches, errors, outputs | yes |
+| `cr-rules` | business rules: condition, effect, place, confidence | yes |
+| `cr-crud` | handler x table CRUD matrix | yes |
+| `cr-tests` | test map and gaps | yes |
+| `cr-screen` | screen form: fields, actions, transitions | no |
+| `cr-mapping` | DTO to entity to external format mapping | no |
+| `cr-sequence` | mermaid sequence from an entry point | no |
+| `cr-adr` | reconstructed decision, a hypothesis | no |
+
+The forms follow OpenAPI, DbML, AsyncAPI, C4/arc42, 12-factor config and ADR practice. One rule for
+all: every statement has a `[cN]` reference, no invented names or values, and the "What could not be
+established from the code" section is mandatory. Prompts state these rules as text, visible and
+editable.
+
+```bash
+python3 .aurora/scripts/code_artifacts.py --list
+python3 .aurora/scripts/code_artifacts.py --check
+python3 .aurora/scripts/code_artifacts.py --show cr-api
+```
+
+No project settings are needed for the kinds: editing a template or prompt in the folder is the
+setting.
+
 ## The "Code" section
 
 In the project group, next to "Git". The "Connect a repository" card takes a `git clone` line, the
