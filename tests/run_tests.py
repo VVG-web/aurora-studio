@@ -56,10 +56,11 @@ def test_smoke_invariants_always_run_with_filter(_t):
     """Пустой фильтр: rc 1 + warning «не подошёл», но инварианты всё равно прогнаны (урок T5)."""
     cp = subprocess.run([sys.executable, __file__, "--only=zzz_no_match_zzz"],
                       capture_output=True, text=True, encoding="utf-8", errors="replace", env={**os.environ, "AURORA_TESTS_ISOLATED": "1"})
-    assert cp.returncode == 1, cp.stdout
-    assert "не подошёл" in cp.stdout, cp.stdout
+    out = cp.stdout + cp.stderr
+    assert cp.returncode == 1, out
+    assert "не подошёл" in out, out
     for name in INVARIANTS:
-        assert name in cp.stdout, (name, cp.stdout)
+        assert name in out, (name, out)
 
 
 @test
@@ -67,10 +68,11 @@ def test_smoke_runs_only_invariants(_t):
     """--smoke гоняет только инварианты, без тяжёлых интеграционных проверок."""
     cp = subprocess.run([sys.executable, __file__, "--smoke"],
                       capture_output=True, text=True, encoding="utf-8", errors="replace", env={**os.environ, "AURORA_TESTS_ISOLATED": "1"})
-    assert cp.returncode == 0, cp.stdout
+    out = cp.stdout + cp.stderr
+    assert cp.returncode == 0, out
     for name in INVARIANTS:
-        assert name in cp.stdout, (name, cp.stdout)
-    assert "aliases serial fallback without parallelism" not in cp.stdout, cp.stdout
+        assert name in out, (name, out)
+    assert "aliases serial fallback without parallelism" not in out, out
 
 
 # ---------------------------------+ import-драйвер: исполняет отобранные проверки
