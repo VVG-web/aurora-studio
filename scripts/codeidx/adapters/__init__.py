@@ -6,4 +6,4 @@
 """
 from __future__ import annotations
 
-__all__ = ["stdlib_py", "stdlib_jvm", "stdlib_web", "stdlib_misc", "sql_files", "spec_files"]
+__all__ = ["stdlib_py", "stdlib_jvm", "stdlib_web", "stdlib_misc", "sql_files", "spec_files", "external"]
