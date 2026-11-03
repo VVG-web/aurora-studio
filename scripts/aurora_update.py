@@ -1102,23 +1102,48 @@ def refresh_gitignore(target: Path) -> list:
 
 
 RUNLOG_REL = "AuroraKnowledgeDB/meta/run_log.md"
+RECENT_FILES_REL = "AuroraKnowledgeDB/meta/recent-files.json"
+LOCAL_STATE_RELS = (
+    RUNLOG_REL,
+    RECENT_FILES_REL,
+    "AuroraKnowledgeDB/meta/retrieval-last.json",
+    "AuroraKnowledgeDB/meta/graph.json",
+    "AuroraKnowledgeDB/.obsidian/workspace.json",
+    "AuroraKnowledgeDB/.obsidian/workspace-mobile.json",
+    "AuroraKnowledgeDB/.obsidian/app.json",
+    "AuroraKnowledgeDB/.obsidian/appearance.json",
+    "AuroraKnowledgeDB/.obsidian/graph.json",
+    "AuroraKnowledgeDB/.obsidian/hotkeys.json",
+    "AuroraKnowledgeDB/.obsidian/bookmarks.json",
+    "AuroraKnowledgeDB/.obsidian/starred.json",
+    "AuroraKnowledgeDB/.obsidian/plugins/recent-files-obsidian/data.json",
+    "AuroraKnowledgeDB/meta/aurora_version.txt",
+    "start-aurora.bat",
+    "start-aurora.command",
+)
 
 
-def untrack_runlog(target: Path) -> bool:
-    """Снять журнал запусков с учёта git, оставив файл на диске (1.168.0).
+def untrack_runlog(target: Path, rel: str = RUNLOG_REL) -> bool:
+    """Снять локальный файл с учёта git, оставив его на диске.
 
-    Правило .gitignore не снимает с учёта то, что уже в истории: журнал продолжал бы
-    меняться в каждом коммите. Здесь кит сам решил вывести его из git — и снимает сам,
-    только этот файл. Удаление из индекса уйдёт со следующим коммитом проекта."""
+    По умолчанию это журнал запусков (1.168.0); тот же безопасный шаг нужен личной истории
+    открытий панели. Правило .gitignore не снимает с учёта то, что уже в истории: файл продолжал
+    бы меняться в каждом коммите. Кит снимает только явно переданный им файл. Удаление из
+    индекса уйдёт со следующим коммитом проекта."""
     try:
         tracked = subprocess.run(["git", "-C", str(target), "ls-files", "--error-unmatch", "--",
-                                  RUNLOG_REL], capture_output=True, timeout=30).returncode == 0
+                                  rel], capture_output=True, timeout=30).returncode == 0
         if not tracked:
             return False
-        return subprocess.run(["git", "-C", str(target), "rm", "--cached", "-q", "--", RUNLOG_REL],
+        return subprocess.run(["git", "-C", str(target), "rm", "--cached", "-q", "--", rel],
                               capture_output=True, timeout=30).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+def untrack_local_state(target: Path) -> list[str]:
+    """Снять с index только объявленные китом локальные файлы, сохранив их на диске."""
+    return [rel for rel in LOCAL_STATE_RELS if untrack_runlog(target, rel)]
 
 
 def backfill_kb_updated(target: Path) -> str:
@@ -1335,8 +1360,9 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
                 hook = refresh_hooks(target)
                 if hook:
                     print(f"   Хук обновлён ({hook})")
-                if untrack_runlog(target):
-                    print("   Журнал запусков снят с учёта git (файл на месте)")
+                local_untracked = untrack_local_state(target)
+                if local_untracked:
+                    print(f"   Локальные файлы сняты с учёта git ({len(local_untracked)}; на диске сохранены)")
                 kb_date = backfill_kb_updated(target)
                 if kb_date:
                     print(f"   Дата обновления базы из истории прогонов: {kb_date}")
@@ -1461,7 +1487,7 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
     catalog_done = rebuild_catalog(target, ignored)        # после шаблонов и конфига: каталог собирается по ним
     refreshed = refresh_hooks(target)
     ignored = refresh_gitignore(target)
-    untracked = untrack_runlog(target)
+    untracked = untrack_local_state(target)
     kb_date = backfill_kb_updated(target)
     attrs = refresh_gitattributes(target)
     stamp_engine(target, kv)
@@ -1471,7 +1497,8 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
           f"{len(seeds)} .new-файлов, {len(retired)} удалено"
           + (f", хук обновлён ({refreshed})" if refreshed else "")
           + (f", в .gitignore дописано правил: {len(ignored)}" if ignored else "")
-          + (", журнал запусков снят с учёта git (файл на месте)" if untracked else "")
+          + (f", локальных файлов снято с учёта git: {len(untracked)} (на диске сохранены)"
+             if untracked else "")
           + (f", дата обновления базы из истории прогонов: {kb_date}" if kb_date else "")
           + (f", в .gitattributes дописано правил: {len(attrs)}" if attrs else "")
           + (f", конфиг: {', '.join(cfg_done)}" if cfg_done else "")
