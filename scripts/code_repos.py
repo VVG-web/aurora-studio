@@ -297,6 +297,22 @@ def check(repos: dict) -> tuple:
     return out, probs
 
 
+def selected(project, only: str) -> tuple:
+    """(проверенный реестр, выбранные имена, замечания, неизвестное имя).
+
+    Одна реализация для `code:index` и `code:sync`: выбор репозитория не должен
+    расходиться между индексом и синхронизацией.
+    """
+    clean, probs = check(read_repos(project))
+    names = list(clean)
+    if only:
+        hit = find(clean, only)
+        if not hit:
+            return clean, [], probs, only
+        names = [hit]
+    return clean, names, probs, ""
+
+
 def _yaml_str(value: str) -> str:
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 

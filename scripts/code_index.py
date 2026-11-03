@@ -87,18 +87,6 @@ def config_keys(project) -> set:
     return {k for k in keys if re.match(r"^[A-Z][A-Z0-9]+$", k)}
 
 
-def selected(project, only: str) -> tuple:
-    """(чистый реестр, имена, замечания, неизвестное имя)."""
-    clean, probs = CREPO.check(CREPO.read_repos(project))
-    names = list(clean)
-    if only:
-        hit = CREPO.find(clean, only)
-        if not hit:
-            return clean, [], probs, only
-        names = [hit]
-    return clean, names, probs, ""
-
-
 def plan_repo(project, name: str, rec: dict) -> dict:
     """План без записи: ревизия, состав, наличие индекса."""
     clone = CREPO.clone_path(project, name)
@@ -325,7 +313,7 @@ def main(argv=None) -> int:
     p.add_argument("--json", action="store_true", help="машинный вывод")
     args = p.parse_args(argv)
     project = Path(args.project).resolve()
-    clean, names, probs, unknown = selected(project, args.repo)
+    clean, names, probs, unknown = CREPO.selected(project, args.repo)
     if unknown:
         _say(f"✗ репозитория «{unknown}» нет в реестре кода — подключите его в разделе «Код»")
         return EXIT_FAIL

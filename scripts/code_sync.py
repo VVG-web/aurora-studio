@@ -425,18 +425,6 @@ def _reset(target: Path, url: str) -> None:
 
 # ---------------------------------------------------------------- команды
 
-def selected(project, only: str) -> tuple:
-    """(реестр после проверки, выбранные имена, замечания реестра, неизвестное имя)."""
-    clean, probs = CREPO.check(CREPO.read_repos(project))
-    names = list(clean)
-    if only:
-        hit = CREPO.find(clean, only)
-        if not hit:
-            return clean, [], probs, only
-        names = [hit]
-    return clean, names, probs, ""
-
-
 def plan_line(project, name: str, rec: dict, reset: bool) -> str:
     cur = clone_state(project, name, rec)
     goal = f"ревизию {rec['pin']}" if rec.get("pin") else (f"вершину ветки {rec['branch']}" if rec.get("branch")
@@ -457,7 +445,7 @@ def plan_line(project, name: str, rec: dict, reset: bool) -> str:
 
 
 def run_sync(project, only: str = "", apply: bool = False, reset: bool = False, as_json: bool = False) -> int:
-    clean, names, probs, unknown = selected(project, only)
+    clean, names, probs, unknown = CREPO.selected(project, only)
     if unknown:
         _say(f"✗ репозитория «{unknown}» нет в реестре кода — подключите его в разделе «Код»")
         return 2
@@ -557,7 +545,7 @@ def result_line(res: dict) -> str:
 def status(project, only: str = "") -> dict:
     """Состояние без сети: по каждому репозиторию — клон, ревизия, отставание от ветки сервера на момент последнего
     обновления, последняя синхронизация, языки и размер. → {repos: [...], problems: [...]}."""
-    clean, names, probs, unknown = selected(project, only)
+    clean, names, probs, unknown = CREPO.selected(project, only)
     st = read_state(project).get("repos") or {}
     rows = []
     for name in names:
