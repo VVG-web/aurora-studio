@@ -138,7 +138,8 @@ Sources/                      mirrors of connected modules: Confluence, JIRA, We
 Raw/{laws,contract,customer,project,meetings,examples,corrections,decisions,questions,reference}/
 AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Statuses, Reference,
                               Requirements, Specs, Questions, Decisions, Documents, MOC, _archive, _assets,
-                              _inbox, meta (kb_updated.json — the base update date, in git;
+                              _inbox, meta (kb_updated.d/<user>.json — base update marks, in git;
+                              search-quality.d/<user>.json — the shared measurement history in parts;
                               card_types.md — the catalogue of card types, built by the engine;
                               conform_report.md, conform_state.json — the report and state of the template migration;
                               run_log.md — this machine's run journal, outside git)
@@ -171,6 +172,13 @@ every person keeps their agent's settings, plans and cache locally. The project 
 update` moves it to `.aurora/` by itself: the engine's data goes there too, the run journal to
 `AuroraKnowledgeDB/meta/`, project skills to `.claude/skills/`, the project's own scripts to
 `Scripts/`, OpenCode's own files stay.
+
+**Personal state is not synchronised.** `meta/recent-files.json`, `meta/retrieval-last.json`,
+the derived `meta/graph.json`, and Obsidian's layout, appearance and personal bookmarks are
+covered by `.gitignore`. Shared measurement and update histories are not ignored: each person
+writes their own part in `search-quality.d/` or `kb_updated.d/`, while the engine reads those
+parts together with the legacy shared file. The part name comes from the Git identity;
+`AURORA_USER` overrides it explicitly.
 
 **A teammate joins an existing project.** `.aurora/` is the engine copy on this computer and it does not
 travel in git: a clone arrives without it (or with an incomplete one, if the kit has released something since).

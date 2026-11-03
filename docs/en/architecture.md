@@ -285,8 +285,10 @@ sequenceDiagram
 A claim without support is **not carried** into an artifact even if it looks reasonable. A card with such a
 claim gets an `unsupported:` mark and lands in `ops:todo` — the only work the scheme leaves to a human.
 
-Run journals live in `AuroraKnowledgeDB/meta/agent-runs/` (the last thirty per task are kept; idle runs are one
-line in a shared file). Conversations with the base are in `meta/ask/` and go to git together with the cards.
+Run journals live in `AuroraKnowledgeDB/meta/agent-runs/` (the last thirty per task are kept).
+New journal names include the actor, and idle runs are appended to that actor's file under
+`agent-runs/_пустые/`: parallel work no longer competes for one filename or append-only file.
+Conversations with the base are in `meta/ask/` and go to git together with the cards.
 
 ### Reasoning and quality
 
