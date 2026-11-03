@@ -1080,6 +1080,11 @@
    "kind": "other",
    "reason": "пакет требований истории пишется в Markdown для проверки по коду; не карточка",
    "calls": 1
+  },
+  "scripts/code_check.py:main": {
+   "kind": "other",
+   "reason": "отчёт проверки критериев по коду пишется в Markdown; не карточка",
+   "calls": 1
   }
  }
 }
