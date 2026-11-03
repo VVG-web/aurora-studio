@@ -17,5 +17,5 @@
     "kit:update",
     "kit:doctor"
   ],
-  "for": "1.203.1"
+  "for": "1.204.0"
 }

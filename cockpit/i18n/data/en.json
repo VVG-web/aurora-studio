@@ -123,6 +123,7 @@
     "code:find": "Search the code index: symbols, files, routes, tables and columns, topics, configuration, strings, tests, requirement tags and commits; `--kind` narrows the kind, `--json` is machine output, an empty result is not an error; no model or network needed",
     "code:artifacts": "Code artifact kinds from `TemplatesCode/` and `PromptCode/`: what can be built, with which template, prompt and output folder; `--check` names a template or prompt without a file and an invalid folder, `--show` prints the form and paths; no project settings are needed for the kinds",
     "code:pack": "A story requirements pack without a model: Confluence/Jira/artifact sources, acceptance criteria with stable ids and tokens, related artifacts with provenance, and gaps; `--list` lists stories, `--story` builds a pack, `--json` is machine output, `--out` writes Markdown",
+    "code:check": "Check a story's acceptance criteria against the code index without a model: routes, tables, topics, symbols, strings and tests as `file:line` evidence; verdicts are found, partial, not found, plus missing tokens; `--json` is machine output, `--out` writes Markdown",
     "ship:task": "A task in the tracker for an artifact document through the active task tracker connector (project settings): type, epic, assignee, labels and components come from the `task:` block of the document header, the task properties of the kind and the connector settings; the default assignee is the person with the project's git e-mail. Without `--apply` — a plan, nothing is written to the tracker; with `--apply` the task is created and `task_key` and `task_url` go into the document header (BOM and line endings are kept). The published page of the document is linked to the task; if the task already exists, no second one appears."
   },
   "scenarios": {
@@ -746,6 +747,8 @@
     "список историй": "list of stories",
     "номер истории, например US-1.1": "story id, for example US-1.1",
     "записать Markdown в файл": "write Markdown to a file",
+    "номер истории": "story id",
+    "записать Markdown": "write Markdown",
     "с --golden-remap: записать выбранную цель строки (так пишет agent:golden)": "with --golden-remap: write the chosen target of a row (this is how agent:golden writes)",
     "с --golden-remap: какие строки эталона принять (первый кандидат)": "with --golden-remap: which golden rows to accept (the first candidate)",
     "с --golden-remap: перевести цели, сменившие имя (слияние, синоним), без модели": "with --golden-remap: move targets that changed their name (merge, synonym), without the model",

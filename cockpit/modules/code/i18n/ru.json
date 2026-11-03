@@ -188,6 +188,7 @@
   "code.pack.build": "Собрать пакет",
   "code.pack.list": "Список историй",
   "code.pack.show": "Показать в консоли",
+  "code.pack.check": "Проверить по коду",
   "code.pack.criteria": "критериев",
   "code.pack.related": "связано",
   "code.pack.complete": "полон",

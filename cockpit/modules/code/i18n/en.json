@@ -188,6 +188,7 @@
   "code.pack.build": "Build pack",
   "code.pack.list": "List stories",
   "code.pack.show": "Show in console",
+  "code.pack.check": "Check against code",
   "code.pack.criteria": "criteria",
   "code.pack.related": "related",
   "code.pack.complete": "complete",

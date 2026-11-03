@@ -562,7 +562,10 @@ function packCard(ctx){
     el("button", {class: "btn", onclick: () => ctx.runWatched("code:pack", ["--list"])},
       t("code.pack.list")),
     ...(pack && pack.found ? [el("button", {class: "btn",
-      onclick: () => ctx.runWatched("code:pack", ["--story", pack.story])}, t("code.pack.show"))] : [])));
+      onclick: () => ctx.runWatched("code:pack", ["--story", pack.story])}, t("code.pack.show")),
+      el("button", {class: "btn",
+        onclick: () => ctx.runWatched("code:check", ["--story", pack.story])},
+        t("code.pack.check"))] : [])));
   return box;
 }
 

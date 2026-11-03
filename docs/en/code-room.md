@@ -284,6 +284,21 @@ Slots: `graphify`, `tree-sitter`, `ast-grep`, `lizard`. No command means the slo
 and the index stays on stdlib. A slot error falls back to stdlib and does not fail the file.
 `codeidx/measure.py` compares time and record count before an adapter is enabled.
 
+## Checking criteria against code: `code:check`
+
+`code:check --story US-1.1` takes criteria from `code:pack` and looks for evidence in the code
+index: routes, tables, topics, symbols, strings and tests. Each criterion gets one of three
+verdicts: `found` (evidence and all numbers/codes), `partial` (evidence, some tokens missing),
+`not found` (no fact in the index). Evidence is a `file:line` coordinate; it is not a verdict
+that the criterion is done. No model or network is needed. `--json` is machine output,
+`--out` writes Markdown.
+
+```bash
+python3 .aurora/scripts/code_check.py --story US-1.1
+python3 .aurora/scripts/code_check.py --story US-1.1 --json
+python3 .aurora/scripts/code_check.py --story US-1.1 --out Artifacts/checks/US-1.1.md
+```
+
 ## The "Code" section
 
 In the project group, next to "Git". The "Connect a repository" card takes a `git clone` line, the
@@ -300,6 +315,6 @@ window from `~/.ssh`.
 
 ## What comes next
 
-Checking acceptance criteria against the code and the "Clean room" are the next releases. The
-index, search, story requirements pack, artifacts, graph and optional adapters are already
-here; next come criterion checking and Clean Room document generation.
+The "Clean room" is the next release. The index, search, story requirements pack, artifacts,
+graph, optional adapters and criterion checking are already here; next come Clean Room
+document generation, the passport and staleness.
