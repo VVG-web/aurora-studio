@@ -1964,6 +1964,11 @@ def _has_markers(folder: str) -> bool:
     return any(os.path.isdir(os.path.join(folder, m)) for m in _PROJECT_MARKERS)
 
 
+def _has_strong_markers(folder: str) -> bool:
+    """Проект, а не просто домашняя `~/.aurora`: есть база или зеркало источников."""
+    return any(os.path.isdir(os.path.join(folder, m)) for m in ("AuroraKnowledgeDB", "Sources"))
+
+
 def _under_real(rr: str, ff: str) -> bool:
     """`ff` — сам корень `rr` или лежит под ним; оба уже после `realpath`.
 
@@ -2012,8 +2017,9 @@ def project_root_of(path: str, boundary: str = "", lexical: bool = False) -> str
     По умолчанию путь берётся по `realpath`. Для проверки ссылок нужен `lexical`: путь без
     разрешения ссылок, как он записан (`os.path.islink` смотрит только последнюю компоненту,
     поэтому каталоги между файлом и корнем смотрит `_project_base`). Папка с маркерами внутри
-    каталога-ссылки, лежащего в другом проекте, — чужой проект, а не граница. Системные
-    ссылки выше корня (`/tmp`, `/var` на macOS) не в счёт.
+    каталога-ссылки, лежащего в другом проекте, — чужой проект, а не граница. Сама ссылка
+    с маркерами — корень (проект открыт по пути-ссылке). Системные ссылки выше корня
+    (`/tmp`, `/var` на macOS) не в счёт.
     """
     if boundary:
         return os.path.abspath(boundary)
@@ -2029,18 +2035,22 @@ def project_root_of(path: str, boundary: str = "", lexical: bool = False) -> str
     chain = _dir_chain(start)
     if lexical:
         is_link = [os.path.islink(d) for d in chain]
-        # сама ссылка корнем проекта не бывает: маркеры видны у её цели, то есть чужие
-        marked = [i for i, d in enumerate(chain) if not is_link[i] and _has_markers(d)]
-        for i in marked:
-            # папка с маркерами внутри каталога-ссылки, лежащего в другом проекте, — не корень
-            if not any(is_link[j] and any(m > j for m in marked) for j in range(i + 1, len(chain))):
-                return chain[i]
-        # Проекта выше нет. Сам проверяемый каталог (`chain[0]`) корнем не бывает, а ссылка выше
-        # него с маркерами — бывает: проект открыт по пути-ссылке (облачное хранилище), и
-        # ссылки внутри него — свои, а не побег наружу.
-        for i in range(1, len(chain)):
-            if is_link[i] and _has_markers(chain[i]):
-                return chain[i]
+        # Идём от файла вверх и берём ближайший корень. Ссылка с маркерами — корень проекта,
+        # открытого по пути-ссылке. Папка с маркерами внутри такой ссылки — чужой проект,
+        # а маркеры выше ссылки без маркеров (например, `~/.aurora`) к этому пути не относятся.
+        for i, d in enumerate(chain):
+            if is_link[i]:
+                if _has_markers(d):
+                    # Ссылка с маркерами внутри сильного проекта — его корень, а не сама ссылка.
+                    for up in chain[i + 1:]:
+                        if not os.path.islink(up) and _has_strong_markers(up):
+                            return up
+                    return d
+                continue
+            if _has_markers(d) and not any(is_link[i + 1:]):
+                return d
+            if _has_markers(d) and _has_strong_markers(d) and any(is_link[i + 1:]):
+                return d
         # И ссылки с маркерами нет, а сама папка — ссылка: граница — её родитель, цель за ним «наружу»
         return chain[1] if is_link[0] and len(chain) > 1 else start
     marked = [i for i, d in enumerate(chain) if _has_markers(d)]
@@ -2062,7 +2072,9 @@ def _project_base(path: str, boundary: str = "", linked: bool = False) -> tuple:
     base = project_root_of(path, boundary, lexical=True)
     if base not in chain:
         return base, False
-    return base, any(is_link[:chain.index(base)])
+    # Корень проекта сам может быть ссылкой (проект открыт по пути-ссылке): файл внутри
+    # такого корня всё равно лежит в каталоге-ссылке и должен проверяться по цели.
+    return base, any(is_link[:chain.index(base) + 1])
 
 
 def read_verdict(path: str, boundary: str = "", strict: bool = False,
