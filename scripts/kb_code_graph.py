@@ -131,6 +131,54 @@ def code_layer(root: str) -> dict:
                       for e in got.get("edges", [])]}
 
 
+def index_layer(root: str) -> dict:
+    """Таблицы, маршруты и топики из индекса кода (`code:index`), если он построен.
+
+    Индекс — единственный источник, который знает код без обхода `Code/` в этом скрипте.
+    Нет индекса или репозиториев — пустой слой, граф собирается как раньше.
+    """
+    out = {"repos": [], "tables": {}, "routes": [], "topics": []}
+    try:
+        import code_repos as CR
+        from aurora_common import engine_dir
+        import codeidx.store as store_mod
+    except ImportError:
+        return out
+    try:
+        clean, _probs = CR.check(CR.read_repos(root))
+    except Exception:  # noqa: BLE001 — сломанный реестр не роняет граф
+        return out
+    for name in clean:
+        db = os.path.join(root, engine_dir(root), "cache", "code", name, "index.sqlite")
+        if not os.path.isfile(db):
+            continue
+        try:
+            with store_mod.Store(db) as st:
+                for row in st.conn.execute(
+                        "SELECT table_name, file, source, line FROM db_tables "
+                        "ORDER BY table_name, file"):
+                    rec = out["tables"].setdefault(row["table_name"], {"uses": 0, "sources": []})
+                    rec["uses"] += 1
+                    if row["file"] not in rec["sources"]:
+                        rec["sources"].append(row["file"])
+                for row in st.conn.execute(
+                        "SELECT method, path, handler, file, line FROM routes "
+                        "ORDER BY path, method"):
+                    rec = dict(row)
+                    rec["repo"] = name
+                    out["routes"].append(rec)
+                for row in st.conn.execute(
+                        "SELECT name, file, role, symbol, line FROM topics "
+                        "ORDER BY name, file"):
+                    rec = dict(row)
+                    rec["repo"] = name
+                    out["topics"].append(rec)
+            out["repos"].append(name)
+        except Exception:  # noqa: BLE001 — битый индекс одного репозитория не роняет остальные
+            continue
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Код и SQL проекта в графе базы")
     ap.add_argument("--apply", action="store_true", help=f"записать {OUT.replace(os.sep, '/')}")
@@ -142,12 +190,22 @@ def main() -> int:
         return 1
     sources = sql_sources(root)
     tables, pairs = parse_sql(sources)
+    index = index_layer(root)
+    for name, rec in index["tables"].items():
+        cur = tables.setdefault(name, {"uses": 0, "sources": []})
+        cur["uses"] += rec["uses"]
+        for src in rec["sources"]:
+            if src not in cur["sources"]:
+                cur["sources"].append(src)
     mentions = card_mentions(root, sorted(tables))
     code = code_layer(root)
     print(f"# Код и SQL в графе базы — {TODAY}\n")
     print(f"SQL: источников {len(sources)} · таблиц {len(tables)} · пар таблиц в одном "
           f"запросе {len(pairs)} · таблиц, названных в карточках: {len(mentions)} "
           f"(упоминаний {sum(len(v) for v in mentions.values())})")
+    if index["repos"]:
+        print(f"Индекс кода ({', '.join(index['repos'])}): маршрутов {len(index['routes'])} · "
+              f"топиков {len(index['topics'])} · таблиц {len(index['tables'])}")
     for t, cards in sorted(mentions.items(), key=lambda x: -len(x[1]))[:10]:
         print(f"  - {t}: " + ", ".join(f"[[{c}]]" for c in cards[:4])
               + (f" … ещё {len(cards) - 4}" if len(cards) > 4 else ""))
@@ -161,6 +219,9 @@ def main() -> int:
     data = {"built": TODAY,
             "tables": {t: dict(v, cards=mentions.get(t, [])) for t, v in sorted(tables.items())},
             "joins": [{"a": a_, "b": b_, "queries": n} for (a_, b_), n in sorted(pairs.items())],
+            "index": {"repos": index["repos"]},
+            "routes": index["routes"],
+            "topics": index["topics"],
             "code": code}
     with open(os.path.join(root, OUT), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1, sort_keys=True)

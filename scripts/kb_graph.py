@@ -1232,6 +1232,20 @@ def export_graph(data: dict) -> dict:
                           "confidence": e.get("confidence") or "EXTRACTED",
                           "confidence_score": 1.0 if (e.get("confidence") or "EXTRACTED")
                           == "EXTRACTED" else 0.85, "source_file": ""})
+        for r in code.get("routes") or []:
+            rid = "route:" + str(r.get("repo") or "") + ":" + str(r.get("method") or "") + " " + str(r.get("path") or "")
+            nodes.append({"id": rid, "label": (r.get("method") or "") + " " + (r.get("path") or ""),
+                          "file_type": "code", "kind": "route",
+                          "source_file": r.get("file") or "", "status": "",
+                          "section": "Маршруты", "community": None})
+        for t in code.get("topics") or []:
+            tid = "topic:" + str(t.get("repo") or "") + ":" + str(t.get("name") or "")
+            nodes.append({"id": tid, "label": t.get("name") or "",
+                          "file_type": "code", "kind": "topic",
+                          "source_file": t.get("file") or "", "status": "",
+                          "section": "Топики", "community": None})
+        done["routes"] = len(code.get("routes") or [])
+        done["topics"] = len(code.get("topics") or [])
         done["code"] = len(code.get("tables") or {}) + len(layer.get("nodes") or [])
     os.makedirs(os.path.dirname(GRAPH_EXPORT), exist_ok=True)
     try:
