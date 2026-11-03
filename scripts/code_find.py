@@ -38,17 +38,6 @@ def index_path(project, name: str) -> Path:
     return Path(project) / engine_dir(project) / "cache" / "code" / name / "index.sqlite"
 
 
-def selected(project, only: str) -> tuple:
-    clean, probs = CREPO.check(CREPO.read_repos(project))
-    names = list(clean)
-    if only:
-        hit = CREPO.find(clean, only)
-        if not hit:
-            return clean, [], probs, only
-        names = [hit]
-    return clean, names, probs, ""
-
-
 def _say(*a) -> None:
     print(*a, flush=True)
 
@@ -94,7 +83,7 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     project = Path(args.project).resolve()
     text = args.query_opt or args.query
-    clean, names, probs, unknown = selected(project, args.repo)
+    clean, names, probs, unknown = CREPO.selected(project, args.repo)
     if unknown:
         _say(f"✗ репозитория «{unknown}» нет в реестре кода — подключите его в разделе «Код»")
         return EXIT_FAIL
