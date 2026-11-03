@@ -755,6 +755,55 @@ def test_git_credential_helper_answers_only_its_own_host(tmp: Path):
 
 
 @test
+def test_git_ldap_auth_uses_a_plain_login_and_survives_an_http_redirect(tmp: Path):
+    """LDAP в GitLab — это обычный логин без домена и пароль, отдельного протокола у git нет. После
+    переадресации `http://` на `https://` git присылает хост с портом 443; помощник обязан узнать
+    сервер и в этом виде, иначе просит логин заново. Логин и пароль обязательны."""
+    GS = _gs()
+    assert "ldap" in GS.AUTHS
+    restore = set_home(tmp / "home")
+    try:
+        s = {"provider": "gitlab", "instance": "http://git.example.com", "repo": "team/a"}
+        c = {"auth": "ldap", "user": "gerasimov", "secret": "ldap-pass-123"}
+        env = GS._env()
+        args = GS.auth_config(s, c, env)
+        assert env["AURORA_GIT_HOST"] == "git.example.com", env.get("AURORA_GIT_HOST")
+
+        def ask(host: str) -> str:
+            r = subprocess.run(["git", *args, "credential", "fill"], capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", env=env,
+                               input=f"protocol=https\nhost={host}\n\n", timeout=30)
+            return r.stdout
+        got = ask("git.example.com:443")
+        assert "username=gerasimov" in got and "password=ldap-pass-123" in got, got
+        assert "ldap-pass-123" not in ask("evil.example.com:443"), "пароль ушёл на чужой хост"
+
+        project = _repo(tmp / "p")
+        _, probs = GS.cred_merge(str(project), {"auth": "ldap", "user": "", "secret": ""})
+        assert {p["field"] for p in probs} == {"user", "secret"}, probs
+        merged, probs = GS.cred_merge(str(project), {"auth": "ldap", "user": "gerasimov", "secret": "x"})
+        assert merged["auth"] == "ldap" and not probs, (merged, probs)
+    finally:
+        restore()
+
+
+@test
+def test_ldap_is_offered_in_the_git_settings_and_the_new_project_form(tmp: Path):
+    """LDAP виден в обоих местах, где вводят вход: карточка «Git» и создание проекта из git.
+    Логин и пароль показываются теми же полями, что у Standard, а подсказка говорит про логин без домена."""
+    view = (KIT / "cockpit/modules/gitsync/view.js").read_text(encoding="utf-8")
+    assert 'c.auth === "ldap"' in view and 'gitsync.h.user.ldap' in view, "в карточке Git нет LDAP"
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    assert 'const GIT_AUTHS = ["password", "token", "ldap", "ssh", "system"]' in panel, \
+        "в создании проекта из git нет LDAP"
+    for lang in ("ru", "en"):
+        git = json.loads((KIT / f"cockpit/modules/gitsync/i18n/{lang}.json").read_text(encoding="utf-8"))
+        core = json.loads((KIT / f"cockpit/i18n/{lang}.json").read_text(encoding="utf-8"))
+        assert git.get("gitsync.auth.ldap") and git.get("gitsync.h.auth.ldap") and git.get("gitsync.h.user.ldap"), lang
+        assert core.get("setup.g_auth_ldap"), lang
+
+
+@test
 def test_git_check_does_not_reuse_the_saved_secret_for_another_server(tmp: Path):
     """«Проверить подключение» с другим сервером в форме сохранённый ключ не получает:
     маска или пустое поле — это «взять сохранённый», но только для сохранённого сервера."""

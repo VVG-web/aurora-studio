@@ -66,7 +66,7 @@ from aurora_common import kit_root, lock_release, lock_take, safe_urlopen  # noq
 
 MASK = "••••••"
 PROVIDERS = ("github", "gitlab", "bitbucket", "gitea", "generic")
-AUTHS = ("system", "token", "password", "ssh")
+AUTHS = ("system", "token", "password", "ldap", "ssh")
 STRATEGIES = ("ff-only", "merge", "rebase")
 UPDATE_ON = ("open", "interval", "before_route")
 PUSH_ON = ("after_route", "after_commit", "interval")
@@ -126,7 +126,7 @@ PROBLEMS = {
                      "Перейдите на ветку из настройки или сделайте открытую веткой проекта.",
                      ["checkout_branch", "use_current_branch"]),
     "auth": ("Сервер не принял вход",
-             "Проверьте логин и токен (или пароль) в настройке Git: токен мог истечь или "
+             "Проверьте логин и токен (или пароль LDAP/Standard) в настройке Git: токен мог истечь или "
              "не иметь прав на репозиторий.", ["open_credentials", "check"]),
     "forbidden": ("Не хватает прав",
                   "Вход принят, но прав на это действие нет: попросите у владельца "
@@ -645,7 +645,9 @@ def github_versions(slug: str, branch: str = "master", fresh: bool = False,
 HELPER = ('!f() { test "$1" = get || exit 0; h=; '
           'while IFS== read -r k v; do test "$k" = host && h=$v; done; '
           'test -n "$AURORA_GIT_HOST" || exit 0; '
-          'h=$(printf "%s" "$h" | tr A-Z a-z); test "$h" = "$AURORA_GIT_HOST" || exit 0; '
+          'h=$(printf "%s" "$h" | tr A-Z a-z); '
+          # Git после переадресации http→https присылает хост с портом 443, а адрес вида задан без порта.
+          'test "$h" = "$AURORA_GIT_HOST" || test "$h" = "$AURORA_GIT_HOST:443" || exit 0; '
           'printf "%s\\n" "username=$AURORA_GIT_USER" "password=$AURORA_GIT_PASS"; }; f')
 
 
@@ -732,7 +734,7 @@ def auth_config(s: dict, c: dict, env: dict) -> list:
         # сертификатов, прокси) молча отменял бы выбранный им сертификат сервера, и «доверие» ничего не меняло.
         env.pop("GIT_SSL_CAINFO", None)
     auth = c.get("auth") or "system"
-    if auth in ("token", "password") and c.get("secret"):
+    if auth in ("token", "password", "ldap") and c.get("secret"):
         env["AURORA_GIT_USER"] = c.get("user") or default_user(s)
         env["AURORA_GIT_PASS"] = c["secret"]
         env["AURORA_GIT_HOST"] = hostport(repo_url(s, c))
@@ -1042,9 +1044,9 @@ def cred_merge(project, given: dict | None, remote: str | None = None,
             probs.append({"field": "ssh_key_text", "code": "key_format"})
         else:
             c["ssh_key"] = str(_store_key(project, text, remote))
-    if c["auth"] in ("token", "password") and not c["secret"]:
+    if c["auth"] in ("token", "password", "ldap") and not c["secret"]:
         probs.append({"field": "secret", "code": "required"})
-    if c["auth"] == "password" and not c["user"]:
+    if c["auth"] in ("password", "ldap") and not c["user"]:
         probs.append({"field": "user", "code": "required"})
     if c["auth"] == "ssh" and c["ssh_key"] and not Path(c["ssh_key"]).is_file():
         probs.append({"field": "ssh_key", "code": "missing"})
@@ -2049,7 +2051,7 @@ def _check(project, s: dict, c: dict) -> dict:
     path = s["repo"] if not is_url(s["repo"]) else ""
     if adapter and path:
         cfg = {"instance": s["instance"], "repo": path, "auth": c["auth"],
-               "user": c["user"], "secret": c["secret"] if c["auth"] in ("token", "password") else ""}
+               "user": c["user"], "secret": c["secret"] if c["auth"] in ("token", "password", "ldap") else ""}
         api_url = https_origin(s["instance"] or url) or s["instance"] or url
         try:
             api = adapter.check(cfg, make_http(effective_tls(s["tls"], api_url)))

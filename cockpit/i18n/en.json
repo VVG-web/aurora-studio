@@ -723,6 +723,7 @@
   "setup.g_auth_system": "As set up in git on this machine",
   "setup.g_auth_token": "Access token",
   "setup.g_auth_password": "Login and password",
+  "setup.g_auth_ldap": "LDAP (username and password)",
   "setup.g_auth_ssh": "SSH key",
   "setup.g_user": "Login",
   "setup.g_token": "Access token",

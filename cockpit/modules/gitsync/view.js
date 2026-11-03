@@ -519,8 +519,8 @@ function validate(){
   const unknown = [...(f.message || "").matchAll(PLACEHOLDER)].map(m => m[1])
     .filter(x => !D.options.placeholders.includes(x));
   if (unknown.length) e.message = "placeholder";
-  if ((c.auth === "token" || c.auth === "password") && !c.secret) e.secret = "required";
-  if (c.auth === "password" && !c.user) e.user = "required";
+  if ((c.auth === "token" || c.auth === "password" || c.auth === "ldap") && !c.secret) e.secret = "required";
+  if ((c.auth === "password" || c.auth === "ldap") && !c.user) e.user = "required";
   if (c.auth === "token" && !c.user && !["gitlab", "github"].includes(f.provider)
       && !(f.provider === "bitbucket" && /bitbucket\.org/.test(f.instance || ""))) e.user = "required_for_token";
   if (c.ssh_key_text && !/PRIVATE KEY/.test(c.ssh_key_text)) e.ssh_key_text = "key_format";
@@ -538,8 +538,9 @@ function validate(){
       else if (!m.instance && m.provider !== "github") e[pre + "instance"] = "required";
     }
     const mc = MCRED[i] || NO_CRED;
-    if ((mc.auth === "token" || mc.auth === "password") && !mc.secret) e[pre + "secret"] = "required";
-    if (mc.auth === "password" && !mc.user) e[pre + "user"] = "required";
+    if ((mc.auth === "token" || mc.auth === "password" || mc.auth === "ldap") && !mc.secret)
+      e[pre + "secret"] = "required";
+    if ((mc.auth === "password" || mc.auth === "ldap") && !mc.user) e[pre + "user"] = "required";
   });
   return e;
 }
@@ -702,11 +703,13 @@ const bbCloud = (provider, instance) => provider === "bitbucket"
   && /^(https?:\/\/)?(www\.)?bitbucket\.org(\/|:|$)/i.test(instance || "");
 
 function secretHint(ctx, auth, provider, instance){
+  if (auth === "ldap") return ctx.t("gitsync.h.password");
   if (bbCloud(provider, instance)) return ctx.t("gitsync.h.bbcloud." + (auth === "token" ? "token" : "password"));
   return auth === "token" ? ctx.t("gitsync.h.token." + provider) : ctx.t("gitsync.h.password");
 }
 
 function userHint(ctx, auth, provider, instance){
+  if (auth === "ldap") return ctx.t("gitsync.h.user.ldap");
   if (bbCloud(provider, instance) && auth === "password") return ctx.t("gitsync.h.bbcloud.user");
   return ctx.t("gitsync.h.user." + (auth === "token" ? "token" : "password"));
 }
@@ -728,7 +731,8 @@ function authFields(ctx, c, provider, pre, instance){
     el("div", {style: "margin-top:10px"},
       field(ctx, pre + "auth", t("gitsync.field.auth"),
         select(ctx, c, "auth", o.auths, v => t("gitsync.auth." + v), true), t("gitsync.h.auth." + c.auth))),
-    c.auth === "token" || c.auth === "password" ? el("div", {class: "row", style: "gap:12px;flex-wrap:wrap"},
+    c.auth === "token" || c.auth === "password" || c.auth === "ldap"
+      ? el("div", {class: "row", style: "gap:12px;flex-wrap:wrap"},
       field(ctx, pre + "user", t("gitsync.field.user"), input(ctx, c, "user", {autocomplete: "off"}),
         userHint(ctx, c.auth, provider, instance)),
       field(ctx, pre + "secret", c.auth === "token" ? t("gitsync.field.token") : t("gitsync.field.password"),
@@ -932,7 +936,7 @@ function quickBody(ctx){
     ...D.options.auths.map(v => el("option", {value: v, selected: c.auth === v ? "" : null}, t("gitsync.auth." + v))));
   method.onchange = () => { c.auth = method.value; q.check = null; drawQuick(ctx); };
   out.push(qField(ctx, t("gitsync.field.auth"), method, t("gitsync.h.auth." + c.auth)));
-  if (c.auth === "password" || c.auth === "token"){
+  if (c.auth === "password" || c.auth === "token" || c.auth === "ldap"){
     const user = el("input", {class: "btn", style: "width:100%;font-weight:400", autocomplete: "off", value: c.user || ""});
     user.oninput = () => { c.user = user.value.trim(); };
     const sec = el("input", {class: "btn mono", type: "password", autocomplete: "new-password",

@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.202.14";
+const UI_VERSION = "1.202.15";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -5460,7 +5460,7 @@ async function renderSetup(){
    на вкладке «Git» проекта. Из git — репозиторий уже на сервере: движок клонирует его в новую папку и сразу
    записывает настройку Git проекта (адрес, вход, ветку), так что подключать второй раз нечего. */
 const NEWP = {mode: "local", local: {}, git: null, root: "", draw: () => {}};
-const GIT_AUTHS = ["password", "token", "ssh", "system"];
+const GIT_AUTHS = ["password", "token", "ldap", "ssh", "system"];
 const newGit = () => NEWP.git || (NEWP.git = {text: "", parsed: null, busy: "", check: null, failure: null,
   cert: null, lastAction: "", timer: null, branch: "", folder: "", parent: "", repoName: "", name: "", slug: "",
   space: "", jira: "",
@@ -5610,7 +5610,7 @@ function newGitRest(){
     ...GIT_AUTHS.map(v => el("option",{value:v, selected: c.auth === v ? "" : null}, t("setup.g_auth_" + v))));
   method.onchange = () => { c.auth = method.value; g.authTouched = true; g.check = null; touch(); drawNewGit(); };
   out.push(field(t("setup.g_auth"), method));
-  if (c.auth === "password" || c.auth === "token"){
+  if (c.auth === "password" || c.auth === "token" || c.auth === "ldap"){
     const user = text("user", c.user);
     user.oninput = () => { c.user = user.value.trim(); };
     const sec = el("input",{class:"btn mono",type:"password",autocomplete:"new-password",

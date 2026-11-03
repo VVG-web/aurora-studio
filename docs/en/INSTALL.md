@@ -551,7 +551,7 @@ environment variable through its own credential mechanism.
 | Provider | GitHub, GitLab, Bitbucket, Gitea or another git server (no module) |
 | Server address | your own server with its port: `https://git.example.com:3000` |
 | Repository | `owner/name` (GitLab — with subgroups, Bitbucket — `KEY/repository`) or a full address: `https://…`, `git@…`, a network folder |
-| How to sign in | as set up in git on this machine (keychain, ssh-agent) · access token · username and password · SSH key |
+| How to sign in | as set up in git on this machine (keychain, ssh-agent) · access token · username and password · LDAP (username and password) · SSH key |
 | Branch, server name | the project branch (empty — the one open now) and the remote's name (usually `origin`) |
 | Author, message template | the commit author's name and email; placeholders `{project} {date} {time} {branch} {count} {files} {trigger}` |
 | How to update | fast-forward only (the default, the safest), merge, or yours on top of the server's |
@@ -563,10 +563,15 @@ to fill in what it found: the login, the default branch, the provider by the ser
 **Connect with a git clone line** is the first card of the setup. Copy the clone line from the
 repository page (the Clone button) and paste it whole: the provider, server, repository, branch (`-b`)
 and login are parsed by themselves — for a self-hosted Bitbucket both the `/scm/…` path and SSH on port
-7999. Then the sign-in method (login and password, token, SSH key or as set up on the machine), the
+7999. Then the sign-in method (login and password, LDAP, token, SSH key or as set up on the machine), the
 password and "Check and connect": the check uses the same sign-in, then the server is saved as the main
 one (`origin`) or an additional one, and "Push the project to this server" pushes it right away. A
 password from the line is not written into the address — it goes to the password field.
+
+**GitLab with LDAP.** Choose "LDAP (username and password)" and enter the username without the
+domain, as in the GitLab sign-in form, and the LDAP password. Git has no separate protocol:
+GitLab checks this pair through LDAP. The connection check goes through git, so an API `404`
+is not treated as a refusal: GitLab's API and git may accept an LDAP password differently.
 
 **bitbucket.org:** the account password does not work for git. The login is the Bitbucket username (not
 the e-mail, case matters; it is in the git clone line), and instead of the password — an API token:
