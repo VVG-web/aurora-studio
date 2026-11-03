@@ -475,6 +475,156 @@ def test_compare_benchmarks_variants_offline(tmp: Path):
 
 
 @test
+def test_actor_identity_is_reproducible_and_path_safe(tmp: Path):
+    """Actor не раскрывает email, различает ключи и не даёт имени выйти из shard-папки."""
+    import importlib
+    from unittest.mock import patch
+    sys.path.insert(0, str(SCRIPTS))
+    A = importlib.import_module("aurora_actor")
+    project = tmp / "project"
+    project.mkdir()
+    rel = "AuroraKnowledgeDB/meta/search-quality.d"
+
+    with patch.dict(os.environ, {"AURORA_USER": "Alice / Иван"}):
+        alice_id, display = A.actor(project, "ignored")
+        alice_file = A.shard_file(project, rel)
+    with patch.dict(os.environ, {"AURORA_USER": "Bob"}):
+        bob_id, bob_display = A.actor(project)
+        bob_file = A.shard_file(project, rel)
+    assert display == "Alice / Иван" and bob_display == "Bob"
+    assert alice_id != bob_id and alice_file != bob_file
+    assert re.fullmatch(r"[a-z0-9]+-[0-9a-f]{8,64}", alice_id), alice_id
+    assert Path(alice_file).is_absolute()
+    # resolve() нормализует /tmp → /private/tmp: сравнение делаем по нормализованным путям.
+    assert Path(alice_file) == (project / rel / f"{alice_id}.json").resolve()
+    assert Path(bob_file).name == f"{bob_id}.json"
+
+    with patch.dict(os.environ, {"AURORA_USER": "../../Иванов@example.com"}):
+        hostile_id, _ = A.actor(project)
+        hostile = Path(A.shard_file(project, rel))
+    assert ".." not in hostile_id and "@" not in hostile_id and "/" not in hostile_id
+    # resolve() нормализует /tmp → /private/tmp на macOS: корень тоже приводим после resolve.
+    assert hostile.parent == (project / rel).resolve() and hostile.name == f"{hostile_id}.json"
+    try:
+        A.shard_file(project, "../outside")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("relative_directory позволил выйти за пределы проекта")
+
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Same Name"], cwd=project, check=True)
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("AURORA_USER", None)
+        subprocess.run(["git", "config", "user.email", "one@example.com"], cwd=project, check=True)
+        one_id, one_name = A.actor(project, "Same Name")
+        subprocess.run(["git", "config", "user.email", "two@example.com"], cwd=project, check=True)
+        two_id, two_name = A.actor(project, "Same Name")
+    assert one_name == two_name == "Same Name" and one_id != two_id
+    assert "one@example.com" not in one_id and "two@example.com" not in two_id
+
+
+@test
+def test_search_quality_history_merges_legacy_and_valid_shards(tmp: Path):
+    """Legacy только читается; части сливаются, дубли сходятся, битый JSON не мешает."""
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    Q = importlib.import_module("kb_search_quality")
+    assert Q.HISTORY == os.path.join(Q.KB_ROOT, "meta", "search-quality.json")
+    meta = tmp / "project" / "AuroraKnowledgeDB" / "meta"
+    shards = meta / "search-quality.d"
+    shards.mkdir(parents=True)
+    legacy = meta / "search-quality.json"
+    duplicate = {"дата": "2026-01-03", "R@1": 0.3, "id": "shared"}
+    legacy.write_text(json.dumps({"runs": [duplicate, {"дата": "2026-01-01", "R@1": 0.1}]}),
+                      encoding="utf-8")
+    legacy_bytes = legacy.read_bytes()
+    (shards / "alice.json").write_text(json.dumps({"runs": [
+        duplicate, {"timestamp": "2026-01-04T00:00:00Z", "R@1": 0.4, "id": "alice"}]}),
+        encoding="utf-8")
+    (shards / "bob.json").write_text(json.dumps({"runs": [
+        {"timestamp": "2026-01-02T00:00:00Z", "R@1": 0.2, "id": "bob"}]}), encoding="utf-8")
+    (shards / "broken.json").write_text("{not json", encoding="utf-8")
+    (shards / "ignored.txt").write_text("{}", encoding="utf-8")
+
+    old_history = Q.HISTORY
+    try:
+        Q.HISTORY = str(legacy)
+        merged = Q.history()
+        assert merged == Q.history(), "повторное чтение недетерминировано"
+    finally:
+        Q.HISTORY = old_history
+    assert [r["R@1"] for r in merged["runs"]] == [0.1, 0.2, 0.3, 0.4], merged
+    assert len(merged["runs"]) == 4, "канонический дубль legacy и части не свёрнут"
+    assert legacy.read_bytes() == legacy_bytes, "чтение переписало публичный legacy-файл"
+
+
+@test
+def test_search_quality_writes_only_own_capped_shard(tmp: Path):
+    """Два AURORA_USER пишут разные части; metadata новая, legacy/чужие части неизменны, own limit=50."""
+    import importlib
+    from unittest.mock import patch
+    sys.path.insert(0, str(SCRIPTS))
+    A = importlib.import_module("aurora_actor")
+    Q = importlib.import_module("kb_search_quality")
+    project = tmp / "project"
+    meta = project / "AuroraKnowledgeDB" / "meta"
+    meta.mkdir(parents=True)
+    legacy = meta / "search-quality.json"
+    legacy.write_text(json.dumps({"runs": [{"дата": "2025-01-01", "R@1": 0.1}]}), encoding="utf-8")
+    legacy_bytes = legacy.read_bytes()
+    old_history = Q.HISTORY
+    try:
+        Q.HISTORY = str(legacy)
+        with patch.dict(os.environ, {"AURORA_USER": "Alice"}):
+            alice_file, n = Q.append_history({"дата": "2026-11-01", "R@1": 0.5})
+            expected_alice = Path(A.shard_file(project, "AuroraKnowledgeDB/meta/search-quality.d"))
+            assert n == 1
+            Q.append_history({"дата": "2026-11-02", "R@1": 0.6})
+        alice_path = Path(alice_file)
+        assert alice_path == expected_alice
+        alice_runs = json.loads(alice_path.read_text(encoding="utf-8"))["runs"]
+        assert len(alice_runs) == 2
+        assert len({r["id"] for r in alice_runs}) == 2
+        for run in alice_runs:
+            assert run["author"] == "Alice" and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", run["timestamp"]), run
+        alice_bytes = alice_path.read_bytes()
+        with patch.dict(os.environ, {"AURORA_USER": "Alice"}), \
+                patch.object(Q.json, "dump", side_effect=OSError("disk full")):
+            try:
+                Q.append_history({"дата": "2026-11-02", "R@1": 0.55})
+            except OSError:
+                pass
+            else:
+                raise AssertionError("сбой записи был молча проглочен")
+        assert alice_path.read_bytes() == alice_bytes, "неатомарная запись повредила старую часть"
+        assert not list(alice_path.parent.glob(".search-quality-*.tmp")), "остался временный файл"
+
+        with patch.dict(os.environ, {"AURORA_USER": "Bob"}):
+            bob_file, _ = Q.append_history({"дата": "2026-11-02", "R@1": 0.7})
+        bob_path = Path(bob_file)
+        assert bob_path != alice_path and bob_path.is_file()
+        assert alice_path.read_bytes() == alice_bytes, "Bob переписал чужую часть"
+        bob_bytes = bob_path.read_bytes()
+        assert len(Q.history()["runs"]) == 4
+
+        old_runs = [{"timestamp": f"2026-01-01T00:00:{i:02d}Z", "id": f"old-{i:02d}"}
+                    for i in range(50)]
+        alice_path.write_text(json.dumps({"runs": old_runs}), encoding="utf-8")
+        with patch.dict(os.environ, {"AURORA_USER": "Alice"}):
+            Q.append_history({"дата": "2026-11-02", "R@1": 0.8})
+        capped = json.loads(alice_path.read_text(encoding="utf-8"))["runs"]
+        assert len(capped) == 50, "ограничение 50 не применено к собственной части"
+        ids = {r["id"] for r in capped}
+        assert "old-00" not in ids and "old-49" in ids and capped[-1]["R@1"] == 0.8
+        assert len(Q.history()["runs"]) == 52, "лимит собственной части удалил legacy или чужой замер"
+    finally:
+        Q.HISTORY = old_history
+    assert legacy.read_bytes() == legacy_bytes, "запись новой части изменила legacy"
+    assert bob_path.read_bytes() == bob_bytes, "лимит Alice удалил чужие записи"
+
+
+@test
 def test_retrieval_flag_rejects_unknown_keys(tmp: Path):
     """--retrieval с опечаткой в ключе — отказ, а не молчаливый пропуск.
 

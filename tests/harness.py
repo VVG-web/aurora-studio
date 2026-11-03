@@ -66,7 +66,14 @@ def _own_home_for_the_run() -> None:
     if os.environ.get("AURORA_TESTS_HOME"):
         return
     real = os.path.expanduser("~")
-    own = tempfile.mkdtemp(prefix="aurora-tests-home-")
+    # Собственный home прогона — вне настоящего домашнего каталога: TMPDIR бывает под `~`
+    # (папка scratch ассистента), а границы проекта ищут вверх по цепочке маркеров и
+    # «съели» бы домашний каталог владельца как корень. Прогон живёт самостоятельной
+    # границей: если временная папка машины внутри настоящего home — корень на /tmp.
+    homebase = tempfile.gettempdir() if not tempfile.gettempdir().startswith(real + os.sep) else tempfile.mkdtemp(prefix="aurora-tmp-")
+    if homebase.startswith(real + os.sep):
+        homebase = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
+    own = tempfile.mkdtemp(prefix="aurora-tests-home-", dir=homebase)
     cfg = os.environ.get("GIT_CONFIG_GLOBAL") or os.path.join(real, ".gitconfig")
     if os.path.isfile(cfg):
         keep = os.path.join(own, ".gitconfig-copy")

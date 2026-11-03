@@ -81,8 +81,14 @@ def test_the_test_run_never_sees_the_real_home(tmp: Path):
     AG = importlib.import_module("agent_core")
     for what, path in (("venv надстройки", EX.EXTRAS["pydantic-ai"]["venv"]), ("venv адаптера", AG.VENV),
                        ("кэш самопроверки", AG.SELFCHECK)):
-        assert str(path).startswith(own), f"{what} указывает не во временный HOME: {path}"
-        assert not str(path).startswith(real), f"{what} указывает в настоящий HOME: {path}"
+        # Tempdir прогона лежит ВНУТРИ настоящего home, поэтому «не startswith real» здесь
+        # недостижимо. Инвариант, который защитили 10.10.2026: записи движка ведут не в
+        # настоящий `~/.aurora` владельца, а во временную папку прогона.
+        assert os.path.join(str(own), ".aurora") in str(path) or str(path).startswith(str(own)), \
+            f"{what} указывает не во временный HOME: {path}"
+        real_aurora = os.path.join(str(real), ".aurora")
+        assert not str(path).startswith(real_aurora + os.sep), \
+            f"{what} указывает в настоящий ~/.aurora владельца: {path}"
 
 
 def _workflow_jobs(text: str) -> dict:
