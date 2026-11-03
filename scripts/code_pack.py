@@ -24,7 +24,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import frontmatter  # noqa: E402
+from aurora_common import frontmatter, service_dirs  # noqa: E402
+from make_kinds import REQUIREMENT_KINDS  # noqa: E402
 import fidelity  # noqa: E402
 
 STORY_RX = re.compile(r"\bUS-\d+(?:\.\d+)*\b", re.I)
@@ -38,14 +39,23 @@ ROLES = (
     ("screens", "screen"), ("dictionaries", "dictionary"), ("diagrams", "diagram"),
     ("tests", "test"),
 )
-SOURCE_ROOTS = (
-    ("Sources/Confluence", "confluence"),
-    ("Sources/JIRA", "jira"),
-    ("Artifacts/us", "us"),
-    ("Artifacts/ac", "ac"),
-)
 ARTIFACT_ROOT = "Artifacts"
 CARD_ROOT = "AuroraKnowledgeDB/Requirements"
+
+
+def _source_roots(root: Path) -> list:
+    """Источники истории: зеркала сервисов по ролям и папки артефактов требований.
+
+    Пути зеркал называет слой ролей сервисов (`service_dirs`), а не литералы в этом файле:
+    иначе ядро растёт знанием имён продуктов (BL-ARC-02).
+    """
+    roots = []
+    for role, kind in (("projectwiki", "confluence"), ("tasktracker", "jira")):
+        for rel in service_dirs(role, str(root)):
+            roots.append((rel, kind))
+    for kind in REQUIREMENT_KINDS:
+        roots.append((f"{ARTIFACT_ROOT}/{kind}", kind))
+    return roots
 
 
 def _read(path: Path) -> str:
@@ -78,13 +88,6 @@ def _story_ids(text: str) -> list:
     return sorted({m.group(0).upper() for m in STORY_RX.finditer(text or "")})
 
 
-def _kind(rel: str) -> str:
-    for prefix, kind in SOURCE_ROOTS:
-        if rel.startswith(prefix + "/"):
-            return kind
-    return "artifact"
-
-
 def _role(rel: str) -> str:
     low = rel.lower()
     for folder, role in ROLES:
@@ -96,8 +99,8 @@ def _role(rel: str) -> str:
 def scan_sources(root: Path) -> list:
     """Все файлы, где встречается номер истории. Чтение только, без записи."""
     out = []
-    roots = [root / p for p, _ in SOURCE_ROOTS] + [root / CARD_ROOT]
-    for base in roots:
+    roots = [(root / p, kind) for p, kind in _source_roots(root)] + [(root / CARD_ROOT, "card")]
+    for base, kind in roots:
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.md")):
@@ -108,7 +111,7 @@ def scan_sources(root: Path) -> list:
             for story in ids:
                 fm = frontmatter(text)
                 out.append({
-                    "story": story, "path": rel, "kind": _kind(rel), "role": _role(rel),
+                    "story": story, "path": rel, "kind": kind, "role": _role(rel),
                     "title": _title(text, path), "date": _date(path), "text": text,
                     "frontmatter": fm,
                 })

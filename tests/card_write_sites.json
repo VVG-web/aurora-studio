@@ -1075,6 +1075,11 @@
    "kind": "other",
    "reason": "страницы вики кита (документы)",
    "calls": 1
+  },
+  "scripts/code_pack.py:main": {
+   "kind": "other",
+   "reason": "пакет требований истории пишется в Markdown для проверки по коду; не карточка",
+   "calls": 1
   }
  }
 }
