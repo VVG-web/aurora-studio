@@ -140,7 +140,8 @@ Sources/                      зеркала подключённых модул
 Raw/{laws,contract,customer,project,meetings,examples,corrections,decisions,questions,reference}/
 AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Statuses, Reference,
                               Requirements, Specs, Questions, Decisions, Documents, MOC, _archive, _assets,
-                              _inbox, meta (kb_updated.json — дата обновления базы, в git;
+                              _inbox, meta (kb_updated.d/<участник>.json — даты обновления базы, в git;
+                              search-quality.d/<участник>.json — общая история замеров по частям;
                               card_types.md — каталог типов карточек, собирает движок;
                               conform_report.md, conform_state.json — отчёт и состояние миграции на шаблоны;
                               run_log.md — журнал запусков этой машины, вне git)
@@ -171,6 +172,12 @@ start-aurora.command · start-aurora.bat      пусковые файлы
 До 1.158.0 движок жил в `.opencode/` и ездил по git; `aurora.py update` переносит его в `.aurora/`
 сам: данные движка — туда же, журнал запусков — в `AuroraKnowledgeDB/meta/`, навыки проекта — в
 `.claude/skills/`, свои скрипты проекта — в `Scripts/`, файлы самого OpenCode остаются на месте.
+
+**Личное состояние не синхронизируется.** `meta/recent-files.json`, `meta/retrieval-last.json`,
+производный `meta/graph.json`, а также раскладка, вид и личные закладки Obsidian закрыты
+`.gitignore`. Общие истории замеров и обновлений не исключаются: каждый участник пишет свою
+часть в `search-quality.d/` или `kb_updated.d/`, а движок читает их вместе с прежним общим файлом.
+Имя части определяется по Git-пользователю; `AURORA_USER` задаёт его явно.
 **Коллега подключается к готовому проекту.** `.aurora/` — копия движка на этом компьютере, и в git она не
 едет: клон приходит без неё (или с неполной, если кит с тех пор выпустил новое). Достаточно склонировать
 проект и открыть его в панели: при выборе проекта панель сама достраивает `.aurora/` из кита —

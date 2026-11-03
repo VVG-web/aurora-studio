@@ -77,27 +77,25 @@ def settings(root: str = "", kit=None) -> dict:
             "jira_write": kit_mcp_permission("jira_write", kit)}
 
 
+def _api(api_cls, service: str, url: str, root: str):
+    label = "Jira" if service == "JIRA" else "Confluence"
+    if not url:
+        raise OpError(f"в aurora.config.yaml нет {service.lower()}.base_url — {label} проекту не "
+                      + ("подключена" if service == "JIRA" else "подключён"))
+    auth, _how = read_secret(service, root)
+    if not auth:
+        raise OpError(f"нет ключа {label}: {service}_PAT в .env.aurora.local проекта")
+    return api_cls(url, auth, root)
+
+
 def jira(root: str = ""):
     from jira_export import Api
-    s = settings(root)
-    if not s["jira_url"]:
-        raise OpError("в aurora.config.yaml нет jira.base_url — Jira проекту не подключена")
-    auth, _how = read_secret("JIRA", root)
-    if not auth:
-        raise OpError("нет ключа Jira: JIRA_PAT в .env.aurora.local проекта")
-    return Api(s["jira_url"], auth, root)
+    return _api(Api, "JIRA", settings(root)["jira_url"], root)
 
 
 def confluence(root: str = ""):
     from confluence_export import Api
-    s = settings(root)
-    if not s["confluence_url"]:
-        raise OpError("в aurora.config.yaml нет confluence.base_url — Confluence проекту не "
-                      "подключён")
-    auth, _how = read_secret("CONFLUENCE", root)
-    if not auth:
-        raise OpError("нет ключа Confluence: CONFLUENCE_PAT в .env.aurora.local проекта")
-    return Api(s["confluence_url"], auth, root)
+    return _api(Api, "CONFLUENCE", settings(root)["confluence_url"], root)
 
 
 # Причина сбоя словами сервера — `sources_core.http_why` (общая с операциями коннекторов).
@@ -387,6 +385,10 @@ def run(req: dict, root: str = "") -> dict:
 
 
 def main() -> int:
+    if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
+        print("использование: atlassian_ops.py < request.json\n"
+              "Операции: " + ", ".join(OPS))
+        return 0
     try:
         req = json.loads(sys.stdin.read() or "{}")
     except ValueError as e:

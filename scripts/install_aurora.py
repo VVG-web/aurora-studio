@@ -126,8 +126,30 @@ AuroraKnowledgeDB/meta/embeddings.json
 AuroraKnowledgeDB/meta/graphify/
 # Журнал запусков панели — по строке на команду, меняется каждым запуском: в git он давал
 # каждый восьмой коммит и вечно грязное дерево. Дата обновления базы для команды — в
-# AuroraKnowledgeDB/meta/kb_updated.json, она в git (1.168.0).
+# AuroraKnowledgeDB/meta/kb_updated.d/, она в git по частям участников.
 AuroraKnowledgeDB/meta/run_log.md
+# Последние открытые в панели файлы: личная история на этой машине, не общее состояние проекта.
+AuroraKnowledgeDB/meta/recent-files.json
+# Штамп версии движка, записанный этой машиной при update: у каждого участника свой
+# шаг обновления, а панель берёт штамп из копии движка в .aurora/ (не в git).
+AuroraKnowledgeDB/meta/aurora_version.txt
+# Пусковые файлы этой машины: движок ставит их при установке, они не исходник проекта.
+start-aurora.bat
+start-aurora.command
+# Локальная точка сравнения выдачи (`kb:retrieval --save`), не общий эталон проекта.
+AuroraKnowledgeDB/meta/retrieval-last.json
+# Производный граф карточек: пересобирается из базы командой kb:graph.
+AuroraKnowledgeDB/meta/graph.json
+# Персональное состояние Obsidian. Состав плагинов, их код и темы остаются общими.
+AuroraKnowledgeDB/.obsidian/workspace.json
+AuroraKnowledgeDB/.obsidian/workspace-mobile.json
+AuroraKnowledgeDB/.obsidian/app.json
+AuroraKnowledgeDB/.obsidian/appearance.json
+AuroraKnowledgeDB/.obsidian/graph.json
+AuroraKnowledgeDB/.obsidian/hotkeys.json
+AuroraKnowledgeDB/.obsidian/bookmarks.json
+AuroraKnowledgeDB/.obsidian/starred.json
+AuroraKnowledgeDB/.obsidian/plugins/recent-files-obsidian/data.json
 # Клоны репозиториев кода (`code:sync`): чужой код в историю проекта не едет — у каждого свой клон, состав
 # записан в aurora.config.yaml (`code_repos:`). В git остаются только описание папки и её пометка.
 Code/*

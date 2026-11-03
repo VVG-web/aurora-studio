@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
 import subprocess
 import sys
 
@@ -43,8 +44,53 @@ def test_the_base_update_date_is_update_then_fix(tmp: Path):
     assert KU.read(p)["updated"] == "2026-10-02T11:00:00Z"
     assert KU.mark(p, "fix", at="2026-10-04T09:00:00Z")["updated"] == "2026-10-04T09:00:00Z"
     assert KU.mark(p, "build") is None
-    saved = json.loads((p / KU.REL).read_text(encoding="utf-8"))
+    saved = json.loads(Path(KU.shard_path(p)).read_text(encoding="utf-8"))
     assert saved["update"]["at"] == "2026-10-04T08:00:00Z"
+
+
+@test
+def test_kb_updated_merges_legacy_and_two_user_shards(tmp: Path):
+    """Два участника пишут разные части; legacy остаётся нетронутым, а чтение собирает
+    последние независимые записи маршрутов независимо от порядка и битых соседних файлов."""
+    _path()
+    import kb_updated as KU
+    p = tmp / "proj"
+    legacy = p / KU.REL
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({
+        "updated": "2026-10-01T12:00:00Z",
+        "update": {"at": "2026-10-01T10:00:00Z", "who": "Legacy", "kit": "1", "run": "old-u"},
+        "fix": {"at": "2026-10-01T12:00:00Z", "who": "Legacy", "kit": "1", "run": "old-f"},
+    }), encoding="utf-8")
+    legacy_before = legacy.read_bytes()
+    previous_user = os.environ.get("AURORA_USER")
+    try:
+        os.environ["AURORA_USER"] = "Алиса"
+        alice = KU.mark(p, "update", who="Алиса", at="2026-10-03T10:00:00Z")
+        alice_path = Path(KU.shard_path(p))
+        alice_before = alice_path.read_bytes()
+
+        os.environ["AURORA_USER"] = "Борис"
+        bob = KU.mark(p, "fix", who="Борис", at="2026-10-04T11:00:00Z")
+        bob_path = Path(KU.shard_path(p))
+        assert alice_path != bob_path and alice_path.parent == bob_path.parent
+        assert alice_path.parent.name == "kb_updated.d"
+        assert alice_path.read_bytes() == alice_before, "чужая часть перезаписана"
+        assert legacy.read_bytes() == legacy_before, "legacy-файл перезаписан"
+
+        expected = {"updated": "2026-10-04T11:00:00Z",
+                    "update": alice["update"], "fix": bob["fix"]}
+        assert bob == expected
+        assert KU.read(p) == expected
+        assert KU.read(p) == expected, "повторное объединение не детерминировано"
+        (bob_path.parent / "broken.json").write_text("{broken", encoding="utf-8")
+        assert KU.read(p) == expected, "битая часть заблокировала объединение"
+        assert legacy.read_bytes() == legacy_before
+    finally:
+        if previous_user is None:
+            os.environ.pop("AURORA_USER", None)
+        else:
+            os.environ["AURORA_USER"] = previous_user
 
 
 @test
@@ -66,6 +112,8 @@ def test_the_date_comes_from_run_history_where_it_is_missing(tmp: Path):
     rec = KU.backfill(tmp / "proj", str(runs))
     assert rec["updated"] == "2026-10-05T13:00:00Z", rec
     assert rec["update"]["at"] == "2026-10-06T10:00:00Z" and rec["fix"]["run"] == "d-route", rec
+    assert not (tmp / "proj" / KU.REL).exists(), "backfill перезаписал legacy"
+    assert Path(KU.shard_path(tmp / "proj")).is_file(), "backfill не создал часть участника"
     assert KU.backfill(tmp / "proj", str(runs)) is None, "существующую дату переписали историей"
 
 
@@ -98,17 +146,20 @@ def test_a_passed_update_and_fix_record_the_date_in_the_route_commit(tmp: Path):
 
 @test
 def test_the_run_journal_leaves_git_and_the_date_shows_everywhere(tmp: Path):
-    """Журнал запусков — под правилом кита в .gitignore, обновление движка снимает его с
-    учёта git, оставляя файл на диске. Дату обновления базы показывают плитка проекта на
-    Мостике, «Здоровье», «Спросить» и «Продуктивность»."""
+    """Журнал запусков и личная история открытий — под правилами кита в .gitignore,
+    обновление движка снимает их с учёта git, оставляя файлы на диске. Дату обновления базы
+    показывают плитка проекта на Мостике, «Здоровье», «Спросить» и «Продуктивность»."""
     _path()
     import install_aurora as IA
     import aurora_update as AU
     assert "AuroraKnowledgeDB/meta/run_log.md" in IA.GITIGNORE_BLOCK.splitlines()
+    assert "AuroraKnowledgeDB/meta/recent-files.json" in IA.GITIGNORE_BLOCK.splitlines()
     repo = tmp / "repo"
     (repo / "AuroraKnowledgeDB" / "meta").mkdir(parents=True)
     log = repo / "AuroraKnowledgeDB" / "meta" / "run_log.md"
     log.write_text("| kb:lint | x |\n", encoding="utf-8")
+    recent = repo / "AuroraKnowledgeDB" / "meta" / "recent-files.json"
+    recent.write_text('["MOC/Home.md"]', encoding="utf-8")
 
     def git(*a):
         return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True)
@@ -119,6 +170,12 @@ def test_the_run_journal_leaves_git_and_the_date_shows_everywhere(tmp: Path):
     assert log.is_file(), "журнал удалён с диска"
     assert not git("ls-files", "--", "AuroraKnowledgeDB/meta/run_log.md").stdout.strip()
     assert AU.untrack_runlog(repo) is False, "снятый журнал снимается второй раз"
+    assert AU.untrack_runlog(repo, AU.RECENT_FILES_REL) is True
+    assert recent.is_file(), "личная история открытий удалена с диска"
+    assert recent.read_text(encoding="utf-8") == '["MOC/Home.md"]', "содержимое истории изменено"
+    assert not git("ls-files", "--", AU.RECENT_FILES_REL).stdout.strip()
+    assert AU.untrack_runlog(repo, AU.RECENT_FILES_REL) is False, \
+        "снятая история открытий снимается второй раз"
     ui = ui_source()
     assert "function kbInfo(" in ui and "kbInfo(p)" in ui, "плитка проекта без даты обновления базы"
     views = {m: (COCKPIT / "modules" / m / "view.js").read_text(encoding="utf-8")

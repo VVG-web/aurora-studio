@@ -15,7 +15,8 @@
 и его итог. Проект, где файла ещё нет, получает дату из истории прогонов этой машины
 (`backfill`, при обновлении движка).
 
-Файл `AuroraKnowledgeDB/meta/kb_updated.json`:
+Legacy-файл `AuroraKnowledgeDB/meta/kb_updated.json` только читается. Новые отметки
+лежат в `AuroraKnowledgeDB/meta/kb_updated.d/<actor>.json` в прежнем формате:
     {"updated": "2026-10-08T17:41:19Z",            ← полное обновление базы
      "update": {"at", "who", "kit", "run"},         ← последнее успешное «Обновить базу»
      "fix":    {"at", "who", "kit", "run"}}         ← последнее успешное «Починить базу»
@@ -25,12 +26,16 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+from aurora_actor import shard_file  # noqa: E402
+
 REL = os.path.join("AuroraKnowledgeDB", "meta", "kb_updated.json")
+SHARD_REL = os.path.join(os.path.dirname(REL), "kb_updated.d")
 ROUTES = ("update", "fix")
 
 
@@ -38,13 +43,58 @@ def path(project) -> str:
     return os.path.join(str(project), REL)
 
 
-def read(project) -> dict:
+def shard_path(project) -> str:
+    return shard_file(project, SHARD_REL)
+
+
+def _is_iso(value) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
     try:
-        with open(path(project), encoding="utf-8") as f:
+        datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    except ValueError:
+        return False
+    return True
+
+
+def _read_part(target: str) -> dict:
+    try:
+        with open(target, encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def read(project) -> dict:
+    targets = [path(project)]
+    folder = os.path.join(str(project), SHARD_REL)
+    try:
+        targets.extend(os.path.join(folder, name) for name in sorted(os.listdir(folder))
+                       if name.endswith(".json"))
+    except OSError:
+        pass
+    updated = []
+    best = {}
+    for target in targets:
+        data = _read_part(target)
+        if _is_iso(data.get("updated")):
+            updated.append(data["updated"])
+        for route in ROUTES:
+            row = data.get(route)
+            if not isinstance(row, dict) or not _is_iso(row.get("at")):
+                continue
+            key = (row["at"], json.dumps(row, ensure_ascii=False, sort_keys=True,
+                                         separators=(",", ":")))
+            if route not in best or key > best[route][0]:
+                best[route] = (key, row)
+    rec = {}
+    if updated:
+        rec["updated"] = max(updated)
+    for route in ROUTES:
+        if route in best:
+            rec[route] = best[route][1]
+    return rec
 
 
 def _apply(rec: dict, route: str, row: dict) -> dict:
@@ -58,7 +108,7 @@ def _apply(rec: dict, route: str, row: dict) -> dict:
 
 
 def _write(project, rec: dict) -> None:
-    target = path(project)
+    target = shard_path(project)
     os.makedirs(os.path.dirname(target), exist_ok=True)
     tmp = target + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -85,7 +135,7 @@ def backfill(project, runs_dir: str) -> dict | None:
     """Файла нет — собрать дату из истории прогонов этой машины (`.aurora/runs/*/meta.json`):
     пройденные с записью «Обновить» и «Починить» по времени конца. Файл есть или собирать
     не из чего — None."""
-    if os.path.isfile(path(project)):
+    if read(project):
         return None
     rows = []
     try:

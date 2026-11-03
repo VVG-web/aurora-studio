@@ -5054,7 +5054,7 @@ def last_agent_run(project: str) -> dict:
 
 # С 1.158.0 журнал — в `AuroraKnowledgeDB/meta/`; с 1.168.0 он вне git (правило кита в
 # .gitignore): менялся каждым запуском и давал каждый восьмой коммит проекта. Общее для
-# команды — дата обновления базы (`kb_updated.json`), она в git.
+# команды — дата обновления базы (`kb_updated.d/`), она в git по частям участников.
 RUNLOG = os.path.join("AuroraKnowledgeDB", "meta", "run_log.md")
 RUNLOG_LEGACY = os.path.join(".opencode", "run_log.md")
 def runlog_path(project: str) -> str:
@@ -5068,7 +5068,7 @@ RUNLOG_HEAD = """# Журнал запусков
 
 Кто и когда последний раз запускал команду Авроры в этом проекте — на этой машине. Файл
 вне git: меняется каждым запуском. Когда база обновлялась в последний раз, для всей команды
-говорит `AuroraKnowledgeDB/meta/kb_updated.json` — он в git.
+говорит `AuroraKnowledgeDB/meta/kb_updated.d/` — части участников в git.
 
 Пишет панель (Cockpit) после каждого запуска — по строке на команду, последний прогон.
 Запуски из терминала сюда не попадают: у них нет общей точки, через которую проходят все

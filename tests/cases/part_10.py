@@ -1060,10 +1060,10 @@ def test_idle_run_leaves_a_line_not_a_journal(tmp: Path):
     runs = root / "AuroraKnowledgeDB" / "meta" / "agent-runs"
     runs.mkdir(parents=True, exist_ok=True)
 
-    AR.note_empty_run(runs, "2026-09-09_2320", "distill")
-    AR.note_empty_run(runs, "2026-09-09_2325", "twins")
+    AR.note_empty_run(runs, "2026-09-09_2320", "distill", str(root))
+    empty_log = AR.note_empty_run(runs, "2026-09-09_2325", "twins", str(root))
     assert not list(runs.glob("*_distill.md")), "холостой прогон завёл отдельный журнал"
-    text = (runs / AR.EMPTY_LOG).read_text(encoding="utf-8")
+    text = empty_log.read_text(encoding="utf-8")
     assert "2026-09-09 23:20 · distill" in text, f"время не читается: {text}"
     marks = [l for l in text.splitlines() if l.startswith("- ")]
     assert len(marks) == 2, f"отмечены не оба холостых прогона: {marks}"
@@ -1076,6 +1076,48 @@ def test_idle_run_leaves_a_line_not_a_journal(tmp: Path):
     assert dropped == 5, f"удалено {dropped}, ждали 5"
     assert len(list(runs.glob("*_distill.md"))) == AR.KEEP_RUNS
     assert list(runs.glob("*_twins.md")), "чистка задела журналы другой задачи"
+
+
+@test
+def test_agent_run_journals_are_per_user(tmp: Path):
+    """Два участника пишут разные полные и холостые журналы, legacy не трогают."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AR = importlib.import_module("agent_runner")
+
+    root = make_project(tmp)
+    runs = root / "AuroraKnowledgeDB" / "meta" / "agent-runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    legacy = runs / AR.EMPTY_LOG
+    legacy.write_text("# Старые холостые прогоны\n\n- legacy\n", encoding="utf-8")
+    was_user = os.environ.get("AURORA_USER")
+    journals = []
+    empty_logs = []
+    try:
+        for who, stamp in (("Алиса", "2026-11-02_1900"), ("Боб", "2026-11-02_1901")):
+            os.environ["AURORA_USER"] = who
+            journals.append(AR.write_run_journal(str(root), runs, stamp, "distill", f"# {who}"))
+            empty_logs.append(AR.note_empty_run(runs, stamp, "distill", str(root)))
+    finally:
+        if was_user is None:
+            os.environ.pop("AURORA_USER", None)
+        else:
+            os.environ["AURORA_USER"] = was_user
+
+    assert journals[0] != journals[1], "два AURORA_USER получили общий полный журнал"
+    for path, (who, stamp) in zip(journals, (("Алиса", "2026-11-02_1900"),
+                                             ("Боб", "2026-11-02_1901"))):
+        assert path.parent == runs and path.is_file(), path
+        assert re.fullmatch(re.escape(stamp) + r"_.+_distill\.md", path.name), path.name
+        assert path.read_text(encoding="utf-8") == f"# {who}\n"
+
+    assert empty_logs[0] != empty_logs[1], "два AURORA_USER получили общий журнал холостых прогонов"
+    for path, stamp in zip(empty_logs, ("2026-11-02_1900", "2026-11-02_1901")):
+        assert path.parent == runs / "_пустые" and path.is_file(), path
+        day, hhmm = stamp.split("_")
+        assert f"- {day} {hhmm[:2]}:{hhmm[2:]} · distill" in path.read_text(encoding="utf-8")
+    assert legacy.read_text(encoding="utf-8") == "# Старые холостые прогоны\n\n- legacy\n", \
+        "legacy _пустые.md изменён или удалён"
 
 
 @test

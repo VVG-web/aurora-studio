@@ -966,7 +966,7 @@
     "запомнить эту выдачу как точку сравнения": "remember this output as the comparison point",
     "сколько карточек взять в выборку (0 — все)": "how many cards to take into the sample (0 — all)",
     "ещё и эталонные вопросы из meta/golden_questions.md": "plus the golden questions from meta/golden_questions.md",
-    "записать замер в историю meta/search-quality.json": "write the measurement into the history meta/search-quality.json",
+    "записать замер в свою часть meta/search-quality.d/": "write the measurement into your own part meta/search-quality.d/",
     "предложить, куда переехали пропавшие цели эталона (пишет только строки из --accept вместе с --apply)": "suggest where the golden targets that vanished moved to (writes only the lines from --accept together with --apply)",
     "A/B-замер вариантов ретрива через запятую: base, related, backlinks, collapsed, pagerank или свои k=v+k=v. Ничего не записывает": "an A/B measurement of retrieval variants, comma-separated: base, related, backlinks, collapsed, pagerank or your own k=v+k=v. Writes nothing",
     "сколько карточек должны назвать понятие, чтобы считать его пробелом (по умолчанию 3)": "how many cards must name a concept for it to count as a gap (default 3)",

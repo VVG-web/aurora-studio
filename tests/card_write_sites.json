@@ -236,15 +236,15 @@
    "reason": "журнал диалога «Спросить» meta/ask: не карточка",
    "calls": 2
   },
-  "scripts/agent_runner.py:main": {
-   "kind": "other",
-   "reason": "журнал прогона агента",
-   "calls": 1
-  },
   "scripts/agent_runner.py:note_empty_run": {
    "kind": "other",
-   "reason": "журнал холостых прогонов агента",
+   "reason": "журнал холостых прогонов агента в часть участника",
    "calls": 2
+  },
+  "scripts/agent_runner.py:write_run_journal": {
+   "kind": "other",
+   "reason": "журнал прогона агента в часть участника",
+   "calls": 1
   },
   "scripts/agent_runner.py:park_card": {
    "kind": "other",
@@ -881,10 +881,10 @@
    "reason": "эталоны и история качества поиска: служебные файлы",
    "calls": 1
   },
-  "scripts/kb_search_quality.py:main": {
+  "scripts/kb_search_quality.py:_write_json_atomic": {
    "kind": "other",
-   "reason": "эталоны и история качества поиска: служебные файлы",
-   "calls": 1
+   "reason": "замеры качества поиска в часть участника: не карточка",
+   "calls": 2
   },
   "scripts/kb_supersede.py:main": {
    "kind": "other",
