@@ -30,7 +30,7 @@
 руками, зато они меряют то, чего самопоиск не видит: понимает ли база вопрос, заданный
 не её словами.
 
-Прогон записывает результат в `meta/search-quality.json` и печатает **разницу с прошлым
+Прогон записывает результат в свою часть `meta/search-quality.d/` и печатает **разницу с прошлым
 разом**: одно число без истории говорит мало, а «R@1 упал с 0.81 до 0.62 после пополнения»
 говорит всё.
 
@@ -54,17 +54,19 @@ import random
 import re
 import statistics
 import sys
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import agent_core as AG                                           # noqa: E402
 import kb_embed as EMB                                            # noqa: E402
+from aurora_actor import actor, shard_file                        # noqa: E402
 from aurora_common import (KB_ROOT, body as body_of, frontmatter,  # noqa: E402
                            is_placeholder, walk_md)
 
 HISTORY = os.path.join(KB_ROOT, "meta", "search-quality.json")
 GOLDEN = os.path.join(KB_ROOT, "meta", "golden_questions.md")
-from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import TODAY, replace_file, utc_stamp  # noqa: E402
 SEED = 20260902          # выборка одна и та же между прогонами: иначе разница врёт
 TOP = 10                 # глубина выдачи, по которой считаем позицию
 
@@ -583,12 +585,76 @@ def compare(specs: list, pairs: list, golden: list, cfg: dict, model: str) -> in
     return 0
 
 
-def history() -> dict:
+def _shard_directory() -> str:
+    return os.path.join(os.path.dirname(HISTORY), "search-quality.d")
+
+
+def _history_project() -> str:
+    """Корень проекта из публичного legacy-пути, включая подменённый путь в unit-тестах."""
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(HISTORY))))
+
+
+def _read_runs(path: str) -> list:
+    """Только список объектов runs; битый или чужой по форме JSON пропускаем целиком."""
     try:
-        with open(HISTORY, encoding="utf-8") as f:
-            return json.load(f)
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
     except (OSError, ValueError):
-        return {"runs": []}
+        return []
+    if not isinstance(data, dict) or not isinstance(data.get("runs"), list):
+        return []
+    return [run for run in data["runs"] if isinstance(run, dict)]
+
+
+def _canonical(run: dict) -> str:
+    return json.dumps(run, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _merge_runs(runs: list) -> list:
+    """Dedup каноническим JSON и полный детерминированный порядок без зависимости от имён файлов."""
+    unique = {_canonical(run): run for run in runs}
+
+    def key(run: dict) -> tuple:
+        return (str(run.get("дата") or run.get("timestamp") or ""),
+                str(run.get("timestamp") or ""), str(run.get("id") or ""), _canonical(run))
+
+    return sorted(unique.values(), key=key)
+
+
+def history() -> dict:
+    """Объединённая история: legacy только читается, все валидные пользовательские части добавляются."""
+    paths = [HISTORY]
+    directory = _shard_directory()
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        names = []
+    paths.extend(os.path.join(directory, name) for name in names
+                 if name.endswith(".json") and os.path.isfile(os.path.join(directory, name)))
+    return {"runs": _merge_runs([run for path in paths for run in _read_runs(path)])}
+
+
+def _write_json_atomic(path: str, data: dict) -> None:
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+        f.write("\n")
+    replace_file(temporary, path)
+
+
+def append_history(run: dict, who: str = "") -> tuple[str, int]:
+    """Добавить замер с авторством только в свою часть; 50 последних относятся лишь к ней."""
+    project = _history_project()
+    _actor_id, display_name = actor(project, who)
+    relative = os.path.join(KB_ROOT, "meta", "search-quality.d")
+    path = shard_file(project, relative, who)
+    record = dict(run)
+    record.update({"author": display_name, "timestamp": utc_stamp(), "id": str(uuid.uuid4())})
+    runs = _merge_runs([*_read_runs(path), record])[-50:]
+    _write_json_atomic(path, {"runs": runs})
+    return path, len(runs)
 
 
 def diff_line(now: dict, prev: dict) -> str:
@@ -613,7 +679,7 @@ def main() -> int:
     ap.add_argument("--golden", action="store_true",
                     help="ещё и эталонные вопросы из meta/golden_questions.md")
     ap.add_argument("--apply", action="store_true",
-                    help="записать замер в историю meta/search-quality.json")
+                    help="записать замер в свою часть meta/search-quality.d/")
     ap.add_argument("--golden-remap", action="store_true",
                     help="предложить, куда переехали пропавшие цели эталона (пишет только "
                          "строки из --accept вместе с --apply)")
@@ -789,18 +855,14 @@ def main() -> int:
               "сделан поиском по словам и в историю не записан.")
         return 0
     if a.apply:
-        h = history()
-        h.setdefault("runs", []).append({
+        run = {
             "дата": TODAY, "карточек": res["карточек"],
             "R@1": res["R@1"], "R@5": res["R@5"], "MRR": res["MRR"],
             "запас": res["запас"], "не нашлись": len(res["не нашлись"]),
             **({"эталон_R@1": gold["R@1"]} if gold else {}),
-        })
-        h["runs"] = h["runs"][-50:]
-        os.makedirs(os.path.dirname(HISTORY), exist_ok=True)
-        with open(HISTORY, "w", encoding="utf-8") as f:
-            json.dump(h, f, ensure_ascii=False, indent=1)
-        print(f"\n✅ Замер записан: {HISTORY} (прогонов в истории: {len(h['runs'])})")
+        }
+        path, count = append_history(run)
+        print(f"\n✅ Замер записан: {path} (ваших прогонов в истории: {count})")
     else:
         print("\n(dry-run) В историю не записано. Записать: `--apply`")
     return 0

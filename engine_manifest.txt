@@ -50,6 +50,8 @@ scripts/aurora_common.py => .aurora/scripts/aurora_common.py
 # kb_trust, kb_moc, kb_trace, kb_supersede, agent_runner и другие) — поэтому сразу за общим модулем: обрыв обновления
 # между записями не должен оставить хуку pre-commit ImportError (kb_graph подключает модуль лениво)
 scripts/card_types.py    => .aurora/scripts/card_types.py
+# стабильная безопасная идентичность участника для пользовательских частей общих журналов
+scripts/aurora_actor.py  => .aurora/scripts/aurora_actor.py
 # машинная строка вердикта ворот и общие помощники флага `--gate` (gate_argv, gate_mode, gate_exit); их жёстко
 # импортируют kb_lint, kb_trace, artifact_lint и spec_pack — поэтому тоже раньше них: обрыв обновления между
 # записями не должен оставить хуку pre-commit и шагам маршрута AttributeError на старом run_summary

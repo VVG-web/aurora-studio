@@ -66,6 +66,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
 import card_types as CT  # noqa: E402 — единый вход записи карточки: шаблон обязателен
 import fidelity as FID  # noqa: E402 — механический слой под Момусом: числа, цитаты, вердикт (BL-KBA-05)
+from aurora_actor import actor  # noqa: E402
 from aurora_common import (QUOTES, aliases, body as body_of, fold, head_text,  # noqa: E402
                            link_escapes, replace_file, write_text_atomic)
 
@@ -75,7 +76,8 @@ RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
 # а откат старше недели бесполезен: поверх давно легли другие коммиты. На живой базе
 # таких файлов накопилось 381 против 392 живых карточек — половина стала протоколом.
 KEEP_RUNS = 30
-EMPTY_LOG = "_пустые.md"
+EMPTY_LOG = "_пустые.md"       # legacy: только сохраняем, новых строк сюда не пишем
+EMPTY_DIR = "_пустые"
 
 
 def tree_fingerprint(cwd: str) -> str:
@@ -90,21 +92,33 @@ def tree_fingerprint(cwd: str) -> str:
     return head + "\n" + git("status", "--porcelain", cwd=cwd)[1]
 
 
-def note_empty_run(runs: Path, stamp: str, task: str) -> None:
-    """Холостой прогон — строкой в общий файл, а не отдельным журналом.
+def write_run_journal(project: str, runs: Path, stamp: str, task: str, text: str) -> Path:
+    """Записать полный журнал в часть участника, сохранив task последним сегментом."""
+    actor_id, _display_name = actor(project)
+    path = runs / f"{stamp}_{actor_id}_{task}.md"
+    path.write_text(text + "\n", encoding="utf-8")
+    return path
+
+
+def note_empty_run(runs: Path, stamp: str, task: str, project: str = "") -> Path:
+    """Холостой прогон — строкой в файл участника, а не отдельным журналом.
 
     Маршрут гоняет одни и те же задачи оборот за оборотом, и каждый оборот, которому
     нечего делать, писал полноценный файл «переписано: 0 · осталось: 0». Сто двадцать
     три таких файла из трёхсот восьмидесяти одного. Знать, что прогон был и был пустым,
-    полезно; заводить под это карточку в базе — нет.
+    полезно; заводить под это карточку в базе — нет. Общий legacy `_пустые.md` остаётся
+    на месте, а новые строки идут только в часть текущего участника.
     """
-    path = runs / EMPTY_LOG
+    actor_id, _display_name = actor(project or os.getcwd())
+    path = runs / EMPTY_DIR / f"{actor_id}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         path.write_text("# Холостые прогоны\n\nПрогон был, работы не нашлось. "
                         "Отдельный журнал такому не заводится.\n\n", encoding="utf-8")
     with open(path, "a", encoding="utf-8") as f:
         day, hhmm = stamp.split("_")
         f.write(f"- {day} {hhmm[:2]}:{hhmm[2:]} · {task} — работы не нашлось\n")
+    return path
 
 
 def prune_runs(runs: Path, task: str) -> int:
@@ -9532,11 +9546,11 @@ def main() -> int:
     # Предпросмотр журнал получает всегда: ради него его и запускают. Молчим только о
     # прогоне в записи, который ничего не изменил, — рассказывать о нём нечего.
     if a.apply and tree_fingerprint(cwd) == before:
-        note_empty_run(runs, stamp, a.task)
-        print(f"\nРаботы не нашлось — отмечено в {RUNS_DIR}/{EMPTY_LOG}")
+        empty_log = note_empty_run(runs, stamp, a.task, cwd)
+        print(f"\nРаботы не нашлось — отмечено в {empty_log.relative_to(cwd).as_posix()}")
     else:
-        (runs / f"{stamp}_{a.task}.md").write_text(text + "\n", encoding="utf-8")
-        print(f"\nЖурнал прогона: {RUNS_DIR}/{stamp}_{a.task}.md")
+        journal = write_run_journal(cwd, runs, stamp, a.task, text)
+        print(f"\nЖурнал прогона: {journal.relative_to(cwd).as_posix()}")
         if dropped := prune_runs(runs, a.task):
             print(f"Журналов старше последних {KEEP_RUNS} удалено: {dropped}")
 
