@@ -662,6 +662,9 @@ def main(argv=None) -> int:
         except (AttributeError, ValueError, OSError):
             pass
     args = list(sys.argv[1:] if argv is None else argv)
+    if args in (["-h"], ["--help"]):
+        print("использование: legal_slicer.py ФАЙЛ.md")
+        return 0
     if len(args) != 1:
         print("использование: legal_slicer.py ФАЙЛ.md", file=sys.stderr)
         return 2
