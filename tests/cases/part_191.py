@@ -2,12 +2,15 @@
 """part_191 — контракт необязательного адаптера: JSON/JSONL, лимит, ошибки, таймаут."""
 from __future__ import annotations
 
+import os
+import shlex
 import sys
 
 from harness import SCRIPTS, test
 
 sys.path.insert(0, str(SCRIPTS))
 from codeidx.adapters import external  # noqa: E402
+import codeidx.extract as extract  # noqa: E402
 
 
 def _cmd(code: str) -> list:
@@ -66,3 +69,21 @@ def test_external_adapter_rejects_bad_contract(_t):
 def test_external_adapter_empty_stdout_is_empty_result(_t):
     """Пустой stdout — законный ответ «ничего не нашёл», а не ошибка."""
     assert external.run(_cmd("pass"), path="a", text="x", lang="Python", role="src") == []
+
+
+@test
+def test_enabled_optional_adapter_extends_extract_file(_t):
+    """Команда слота в окружении добавляет записи, без неё результат только stdlib."""
+    code = ("import json,sys; d=json.load(sys.stdin);"
+            "print(json.dumps([{'rec':'symbol','name':'extra','line_start':1}]))")
+    old = os.environ.get("AURORA_CODE_GRAPHIFY")
+    os.environ["AURORA_CODE_GRAPHIFY"] = shlex.join(_cmd(code))
+    try:
+        rows = extract.extract_file("a.py", "def run():\n    pass\n", "Python", "src")
+        assert any(r.get("src") == "adapter:graphify" and r.get("name") == "extra"
+                   for r in rows), rows
+    finally:
+        if old is None:
+            os.environ.pop("AURORA_CODE_GRAPHIFY", None)
+        else:
+            os.environ["AURORA_CODE_GRAPHIFY"] = old

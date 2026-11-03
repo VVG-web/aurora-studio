@@ -10,9 +10,9 @@ from __future__ import annotations
 import re
 
 try:
-    from .adapters import spec_files, sql_files, stdlib_jvm, stdlib_misc, stdlib_py, stdlib_web
+    from .adapters import optional, spec_files, sql_files, stdlib_jvm, stdlib_misc, stdlib_py, stdlib_web
 except ImportError:  # запуск файла напрямую
-    from adapters import spec_files, sql_files, stdlib_jvm, stdlib_misc, stdlib_py, stdlib_web  # type: ignore
+    from adapters import optional, spec_files, sql_files, stdlib_jvm, stdlib_misc, stdlib_py, stdlib_web  # type: ignore
 
 SRC = "stdlib"
 REQ_RX = re.compile(r"\b(?:REQ|REQUIREMENT)\s*:\s*([A-Za-z][A-Za-z0-9_.-]{1,40})")
@@ -88,6 +88,12 @@ def extract_file(path: str, text: str, lang: str, role: str = "src", keys=()) ->
         rec.setdefault("file", path)
         rec.setdefault("src", SRC)
         rec.setdefault("conf", "EXTRACTED")
+    # Необязательные адаптеры (graphify, tree-sitter, ast-grep, lizard) добавляют записи
+    # только если их команда задана в окружении; ошибка слота не роняет файл.
+    try:
+        records.extend(optional.all(path, text, lang, role))
+    except Exception:  # noqa: BLE001 — адаптер не вправе уронить индекс
+        pass
     if role in ("src", "test"):
         records.extend(reqtags(path, text, records, keys))
     return records
