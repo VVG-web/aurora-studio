@@ -263,6 +263,27 @@ python3 .aurora/scripts/code_pack.py --story US-1.1 --json
 python3 .aurora/scripts/code_pack.py --story US-1.1 --out Artifacts/requirements/US-1.1.md
 ```
 
+## Optional adapters and the graph: 1.203.1
+
+`kb:code-graph` no longer walks `Code/` for tables, routes and topics: it reads them from the
+`code:index` index, and `kb:graph-export` adds route and topic nodes to
+`meta/graphify/graph.json`. Without clones or an index the graph is built as before, from SQL
+and wiki mirror pages.
+
+Optional adapters can add more precise parsing. Their packages are not bundled or imported:
+a slot is enabled by a command in the environment, receives JSON `{path,text,lang,role}` on
+stdin and returns JSON/JSONL records of schema v1.
+
+```bash
+AURORA_CODE_GRAPHIFY='python3 /path/adapter.py' \
+AURORA_CODE_TREESITTER='...' \
+python3 .aurora/scripts/code_index.py --index --apply
+```
+
+Slots: `graphify`, `tree-sitter`, `ast-grep`, `lizard`. No command means the slot is silent
+and the index stays on stdlib. A slot error falls back to stdlib and does not fail the file.
+`codeidx/measure.py` compares time and record count before an adapter is enabled.
+
 ## The "Code" section
 
 In the project group, next to "Git". The "Connect a repository" card takes a `git clone` line, the
@@ -279,6 +300,6 @@ window from `~/.ssh`.
 
 ## What comes next
 
-Checking acceptance criteria against the code and the "Clean room" are the next releases. The story
-requirements pack, the index and search are already here; optional adapters (tree-sitter, graphify,
-ast-grep) will improve parsing accuracy and are installed separately, not as required dependencies.
+Checking acceptance criteria against the code and the "Clean room" are the next releases. The
+index, search, story requirements pack, artifacts, graph and optional adapters are already
+here; next come criterion checking and Clean Room document generation.

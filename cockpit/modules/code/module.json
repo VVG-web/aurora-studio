@@ -9,5 +9,5 @@
   "order": 56,
   "needs": ["project"],
   "commands": ["code:sync", "code:status", "code:index", "code:find", "code:artifacts", "code:pack"],
-  "for": "1.203.0"
+  "for": "1.203.1"
 }
