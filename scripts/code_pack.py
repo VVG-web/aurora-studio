@@ -34,11 +34,7 @@ HEAD_RX = re.compile(r"^(#{1,4})\s+(.+?)\s*$")
 ITEM_RX = re.compile(r"^\s*(?:\d+[.)]|[-*+•]|\[[ xX]\])\s+(.+?)\s*$")
 GHERKIN_RX = re.compile(r"^\s*(?:Сценарий|Scenario)\s*:\s*(.+?)\s*$", re.I)
 TABLE_RX = re.compile(r"^\s*\|(.+)\|\s*$")
-ROLES = (
-    ("algorithms", "algorithm"), ("contracts", "contract"), ("mappings", "mapping"),
-    ("screens", "screen"), ("dictionaries", "dictionary"), ("diagrams", "diagram"),
-    ("tests", "test"),
-)
+ROLE_FOLDERS = ("algorithms", "contracts", "mappings", "screens", "dictionaries", "diagrams", "tests")
 ARTIFACT_ROOT = "Artifacts"
 CARD_ROOT = "AuroraKnowledgeDB/Requirements"
 
@@ -90,9 +86,11 @@ def _story_ids(text: str) -> list:
 
 def _role(rel: str) -> str:
     low = rel.lower()
-    for folder, role in ROLES:
+    for folder in ROLE_FOLDERS:
         if f"/{folder}/" in low or low.startswith(f"{ARTIFACT_ROOT.lower()}/{folder}/"):
-            return role
+            if folder.endswith("ies"):
+                return folder[:-3] + "y"
+            return folder[:-1] if folder.endswith("s") else folder
     return "artifact"
 
 
@@ -233,7 +231,8 @@ def _gaps(sources: list, criteria: list, related: list) -> list:
     if not related:
         gaps.append({"code": "no_related", "text": "Нет связанных артефактов: проверка пойдёт только по тексту критериев."})
     roles = {r["role"] for r in related}
-    for need, label in (("algorithm", "алгоритм"), ("contract", "контракт"), ("mapping", "маппинг")):
+    for folder, label in (("algorithms", "алгоритм"), ("contracts", "контракт"), ("mappings", "маппинг")):
+        need = folder[:-3] + "y" if folder.endswith("ies") else folder[:-1]
         if need not in roles:
             gaps.append({"code": f"no_{need}", "text": f"Нет связанного артефакта: {label}."})
     if not any(s["kind"] == "jira" for s in sources):
