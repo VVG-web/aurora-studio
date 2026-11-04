@@ -258,6 +258,42 @@ def test_two_git_users_merge_their_update_marks_without_a_conflict(tmp: Path):
 
 
 @test
+def test_update_brings_new_gitignore_rules_without_overwriting_project_choices(tmp: Path):
+    """Проект, который заведён давно, при kit:update получает новые LOCAL правила,
+    не теряя собственные правила и содержимое личных файлов; обновление идемпотентно."""
+    _path()
+    import aurora_update as AU
+    import install_aurora as IA
+
+    repo = tmp / "repo"
+    (repo / "AuroraKnowledgeDB/meta").mkdir(parents=True)
+    (repo / "start-aurora.bat").write_text("@echo off\n", encoding="utf-8")
+    (repo / "AuroraKnowledgeDB/meta/recent-files.json").write_text(
+        '["Concepts/Home.md"]', encoding="utf-8")
+    gitignore = repo / ".gitignore"
+    gitignore.write_text("# мои правила проекта\nprivate-output/\n*.bak\n", encoding="utf-8")
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Owner")
+    _git(repo, "config", "user.email", "owner@example.com")
+    _commit(repo, "initial project before new ignore rules")
+
+    added = AU.refresh_gitignore(repo)
+    assert "start-aurora.bat" in added and "AuroraKnowledgeDB/meta/recent-files.json" in added, added
+    text = gitignore.read_text(encoding="utf-8")
+    assert "private-output/" in text and "*.bak" in text, "правки проекта потеряны"
+    assert text.startswith("# мои правила проекта"), "пользовательский комментарий перезаписан"
+    for rel in ("AuroraKnowledgeDB/meta/recent-files.json", "start-aurora.bat",
+                "AuroraKnowledgeDB/meta/aurora_version.txt"):
+        assert rel in IA.GITIGNORE_BLOCK.splitlines(), f"не игнорируется китом: {rel}"
+
+    # Повторное обновление не должно добавлять дубликатов и сохраняет содержимое.
+    before = gitignore.read_bytes()
+    assert AU.refresh_gitignore(repo) == [], "повторное update снова дописывает gitignore"
+    assert gitignore.read_bytes() == before
+    assert (repo / "AuroraKnowledgeDB/meta/recent-files.json").read_text(
+        encoding="utf-8") == '["Concepts/Home.md"]'
+
+@test
 def test_service_scripts_answer_help_without_input_or_files(tmp: Path):
     """Обязательный обход scripts/*.py --help не падает на служебных CLI."""
     for name in ("atlassian_ops.py", "legal_slicer.py"):
