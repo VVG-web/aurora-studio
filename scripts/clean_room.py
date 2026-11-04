@@ -11,6 +11,8 @@
 
 Паспорт `CleanRoom/meta/passport.json` хранит ревизию и время; `--check` называет устаревшие
 и отсутствующие документы. Модель и сеть не нужны.
+
+Панель: `code:cleanroom`.
 """
 from __future__ import annotations
 
