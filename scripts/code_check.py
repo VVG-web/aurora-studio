@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""code_check.py — проверка критериев приёмки по индексу кода, без модели и судьи.
+"""code_check.py — проверка критериев приёмки по индексу кода, детерминированно и с арбитром.
 
 Пакет требований (`code:pack`) даёт критерии. Индекс (`code:index`) даёт факты: маршруты,
 таблицы, топики, символы, строки, тесты. Скрипт сопоставляет критерий с фактами и выдаёт
 доказательства `файл:строка`, а не вердикт «сделано». Чего нет в индексе, то и не найдено;
 это повод проверить код, а не доказательство отсутствия.
 
+Модель — только арбитр спорных критериев (`partial`/`not_found`) и только по запросу
+`--agent`: она не видит код, опирается на собранные доказательства, обязана дать цитаты
+`файл:строка` из списка и не может отменить детерминированный `found`.
+
   python3 .aurora/scripts/code_check.py --story US-1.1
   python3 .aurora/scripts/code_check.py --story US-1.1 --json
+  python3 .aurora/scripts/code_check.py --story US-1.1 --agent --max-calls 3
   python3 .aurora/scripts/code_check.py --story US-1.1 --out Artifacts/checks/US-1.1.md
 
 Панель: `code:check`.
@@ -19,6 +24,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -193,6 +199,106 @@ def check_story(project: str, story: str) -> dict:
             "stale": _stale(project, indexes)}
 
 
+AGENT_VERDICTS = ("found", "partial", "not_found", "unsure")
+AGENT_PROMPT = (
+    "Ты арбитр критериев приёмки. Решай только по перечисленным доказательствам; нельзя "
+    "выдумывать файлы и строки. Ответ — JSON: "
+    "{\"verdict\":\"found|partial|not_found|unsure\",\"citations\":[\"file:line\"],"
+    "\"why\":\"кратко\"}. found допустим только с цитатами из списка."
+)
+
+
+def _coords(evidence: list) -> set:
+    return {f"{e.get('file', '')}:{e.get('line', '')}" for e in evidence}
+
+
+def _agent_messages(criterion: dict) -> list:
+    evidence = criterion.get("evidence") or []
+    lines = [f"Критерий: {criterion.get('text', '')}",
+             f"Детерминированный вердикт: {criterion.get('verdict', '')}",
+             f"Не найдено: {', '.join(criterion.get('missing') or []) or 'нет'}",
+             "Доказательства:"]
+    for e in evidence:
+        lines.append(f"- {e.get('file')}:{e.get('line')} · {e.get('kind')} · {e.get('quote')}")
+    if not evidence:
+        lines.append("- нет")
+    return [
+        {"role": "system", "content": AGENT_PROMPT},
+        {"role": "user", "content": "\n".join(lines)},
+    ]
+
+
+def _parse_answer(answer: dict) -> dict:
+    """Ответ модели в одном виде: вердикт, цитаты, причина или ошибка."""
+    out = {"ok": False, "verdict": "", "citations": [], "why": "", "error": ""}
+    if not answer.get("ok"):
+        out["error"] = str(answer.get("error") or "модель не ответила")
+        return out
+    try:
+        data = json.loads(str(answer.get("text") or ""))
+        verdict = str(data.get("verdict") or "")
+        citations = [str(c) for c in (data.get("citations") or [])]
+        why = str(data.get("why") or "")
+    except (ValueError, TypeError, AttributeError) as exc:
+        out["error"] = f"ответ не JSON: {exc}"
+        return out
+    if verdict not in AGENT_VERDICTS:
+        out["error"] = f"неизвестный вердикт: {verdict}"
+        return out
+    out.update({"ok": True, "verdict": verdict, "citations": citations, "why": why})
+    return out
+
+
+def _accepts(agent: dict, criterion: dict) -> bool:
+    """found принимается только с непустыми цитатами из собранных доказательств."""
+    citations = agent.get("citations") or []
+    return (agent.get("ok") and agent.get("verdict") == "found" and bool(citations)
+            and set(citations) <= _coords(criterion.get("evidence") or []))
+
+
+def judge(report: dict, ask, max_calls: int = 5, deadline: float = 300) -> dict:
+    """Модельный арбитр только для спорных критериев; детерминированные факты не трогает."""
+    calls = accepted = 0
+    rows = []
+    for criterion in report.get("criteria") or []:
+        base = criterion.get("verdict") or "not_found"
+        if base not in ("partial", "not_found"):
+            rows.append({**criterion, "final_verdict": base})
+            continue
+        if calls >= max_calls:
+            rows.append({**criterion, "final_verdict": base,
+                         "agent": {"skipped": "max_calls"}})
+            continue
+        calls += 1
+        agent = _parse_answer(ask(_agent_messages(criterion), deadline))
+        agent["accepted"] = _accepts(agent, criterion)
+        if agent["accepted"]:
+            accepted += 1
+        rows.append({**criterion, "agent": agent,
+                     "final_verdict": "found" if agent["accepted"] else base})
+    summary = dict(report.get("summary") or {})
+    summary.update({
+        "found": sum(r.get("final_verdict") == "found" for r in rows),
+        "partial": sum(r.get("final_verdict") == "partial" for r in rows),
+        "not_found": sum(r.get("final_verdict") == "not_found" for r in rows),
+        "total": len(rows),
+    })
+    return {**report, "criteria": rows, "summary": summary,
+            "agent": {"calls": calls, "accepted": accepted}}
+
+
+def _ask(messages: list, deadline: float = 300) -> dict:
+    try:
+        import agent_core as AG
+        r = AG.call_role(AG.config(), "worker", messages, thinking=True, max_tokens=2000,
+                         deadline=time.time() + deadline)
+    except Exception as exc:  # noqa: BLE001 — арбитр не должен ронять отчёт
+        return {"ok": False, "text": "", "error": f"{type(exc).__name__}: {exc}"}
+    if not r.get("ok"):
+        return {"ok": False, "text": "", "error": str(r.get("error") or r.get("why") or "нет ответа")}
+    return {"ok": True, "text": str(r.get("text") or ""), "error": ""}
+
+
 def render_md(report: dict) -> str:
     lines = [f"# {report['story']}. Проверка критериев по коду", ""]
     if not report.get("found"):
@@ -205,9 +311,16 @@ def render_md(report: dict) -> str:
             f"{x['repo']} {x['why']}" for x in report["stale"]))
         lines.append("")
     for crit in report["criteria"]:
-        icon = {"found": "✅", "partial": "◐", "not_found": "·"}[crit["verdict"]]
+        verdict = crit.get("final_verdict") or crit["verdict"]
+        icon = {"found": "✅", "partial": "◐", "not_found": "·"}[verdict]
         lines.append(f"## {icon} {crit['text']}")
         lines.append("")
+        if crit.get("agent", {}).get("accepted"):
+            lines.append("Агент: подтвердил found · " + ", ".join(crit["agent"].get("citations") or []))
+            lines.append("")
+        elif crit.get("agent", {}).get("error"):
+            lines.append("Агент: не принят · " + crit["agent"]["error"])
+            lines.append("")
         if crit.get("missing"):
             lines.append(f"Не найдено: {', '.join(crit['missing'])}")
             lines.append("")
@@ -230,9 +343,17 @@ def main(argv=None) -> int:
     p.add_argument("--out", default="", help="записать Markdown")
     p.add_argument("--fail-on", choices=("none", "partial", "not_found"), default="none",
                    help="код 1 при частичном или ненайденном критерии")
+    p.add_argument("--agent", action="store_true",
+                   help="модельный арбитр только для спорных критериев")
+    p.add_argument("--max-calls", type=int, default=5,
+                   help="сколько критериев отдать модели")
+    p.add_argument("--deadline", type=float, default=300,
+                   help="секунд на один вызов модели")
     a = p.parse_args(argv)
     root = Path(a.project).resolve()
     report = check_story(str(root), a.story)
+    if a.agent and report.get("found"):
+        report = judge(report, _ask, max(0, a.max_calls), a.deadline)
     if a.json:
         print(json.dumps(report, ensure_ascii=False, indent=1))
     else:
@@ -246,8 +367,9 @@ def main(argv=None) -> int:
             print(text)
     threshold = {"none": set(), "partial": {"partial", "not_found"},
                  "not_found": {"not_found"}}[a.fail_on]
-    bad = not report.get("found") or any(c["verdict"] in threshold
-                                           for c in report.get("criteria") or [])
+    bad = not report.get("found") or any(
+        (c.get("final_verdict") or c["verdict"]) in threshold
+        for c in report.get("criteria") or [])
     return 1 if bad else 0
 
 

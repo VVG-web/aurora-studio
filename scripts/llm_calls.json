@@ -936,6 +936,42 @@
         "ru": "эмбеддинги — не разговор с моделью, Pydantic AI их не ведёт",
         "en": "embeddings are not a conversation with a model; Pydantic AI does not handle them"
       }
+    },
+    {
+      "id": "codecheck",
+      "title": {
+        "ru": "Арбитр критериев приёмки по коду",
+        "en": "Acceptance criteria arbiter over code"
+      },
+      "when": {
+        "ru": "Команда code:check с --agent: только спорные критерии (partial/not_found), не больше --max-calls за прогон.",
+        "en": "The code:check command with --agent: disputed criteria only (partial/not_found), at most --max-calls per run."
+      },
+      "commands": [
+        "code:check"
+      ],
+      "code": [
+        "code_check.py:_ask"
+      ],
+      "steps": [
+        {
+          "role": "worker",
+          "prompt": "code_check.py:AGENT_PROMPT",
+          "what": {
+            "ru": "Решить спорный критерий по собранным доказательствам: модель не видит код, обязана дать цитаты file:line из списка, found без цитат не принимается; детерминированный found не переопределяется.",
+            "en": "Decide a disputed criterion from the collected evidence: the model does not see the code, must cite file:line from the list, found without citations is rejected; a deterministic found is never overridden."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет: модель получает только критерий и доказательства",
+        "en": "none: the model receives only the criterion and the evidence"
+      },
+      "engine": "pydantic_ai",
+      "after": {
+        "ru": "Принятый found меняет вердикт и счётчики; ошибка или выдуманная цитата оставляют детерминированный ответ.",
+        "en": "An accepted found changes the verdict and counters; an error or invented citation keeps the deterministic answer."
+      }
     }
   ]
 }

@@ -27,6 +27,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 - [Scan recognition](#ocr)
 - [Building a Confluence page](#publish)
 - [Meaning index (embeddings)](#embeddings)
+- [Acceptance criteria arbiter over code](#codecheck)
 
 <a id="build"></a>
 
@@ -387,3 +388,18 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 - **Tools:** none.
 - **Path:** direct HTTP, bypassing Pydantic AI.
 - **Why direct:** embeddings are not a conversation with a model; Pydantic AI does not handle them.
+
+<a id="codecheck"></a>
+
+## Acceptance criteria arbiter over code
+
+- **When.** The code:check command with --agent: disputed criteria only (partial/not_found), at most --max-calls per run.
+- **Commands:** `code:check`.
+
+| Role | What it does | Prompt |
+|---|---|---|
+| Writer (worker) | Decide a disputed criterion from the collected evidence: the model does not see the code, must cite file:line from the list, found without citations is rejected; a deterministic found is never overridden. | `AGENT_PROMPT` (code_check.py) |
+
+- **Tools:** none: the model receives only the criterion and the evidence.
+- **Path:** Pydantic AI.
+- **Then:** An accepted found changes the verdict and counters; an error or invented citation keeps the deterministic answer.
