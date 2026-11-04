@@ -29,8 +29,10 @@
 - [x] `tests/cases/part_196.py`: union источников, более новый entry побеждает, удаление при неизменной второй стороне, union cards, правило `.gitattributes`, настройка git config.
 - [x] `docs/git-collaboration.md`: граница LOCAL/SHARD/SHARED и merge manifest.
 - [x] `VERSION` 1.208.0, `CHANGELOG.md`, `docs/commands.md`, cockpit modules/skins/panel.
-- [ ] Полный гейт, тег `v1.208.0`, ветка `rel/code-1.208.0`, push.
-- [ ] Отметить выполнение в этом файле.
+- [x] Полный гейт, тег `v1.208.0`, ветка `rel/code-1.208.0`, push.
+- [x] Отметить выполнение в этом файле.
+
+**Результат 1.208.0:** коммит `c740d615`, тег `v1.208.0`, ветка `rel/code-1.208.0`; полный гейт 2446/2446, 0 падений.
 
 ### 1.208.1 — per-user state: QA, docs и финальная регрессия
 
