@@ -125,10 +125,12 @@
     "code:pack": "A story requirements pack without a model: Confluence/Jira/artifact sources, acceptance criteria with stable ids and tokens, related artifacts with provenance, and gaps; `--list` lists stories, `--story` builds a pack, `--json` is machine output, `--out` writes Markdown",
     "code:check": "Check a story's acceptance criteria against the code index without a model: routes, tables, topics, symbols, strings and tests as `file:line` evidence; verdicts are found, partial, not found, plus missing tokens; `--json` is machine output, `--out` writes Markdown",
     "code:cleanroom": "Clean Room artifacts from code without a model: `CleanRoom/<kind>/<repo>.md` documents with facts and `[cN]` references, a passport with revision and time, `--check` names stale and missing documents",
+    "code:health": "Code index health: clone and index revision, freshness, files, routes, tables, topics; `--check` returns 1 for a missing or stale index, `--json` is machine output",
     "ship:task": "A task in the tracker for an artifact document through the active task tracker connector (project settings): type, epic, assignee, labels and components come from the `task:` block of the document header, the task properties of the kind and the connector settings; the default assignee is the person with the project's git e-mail. Without `--apply` — a plan, nothing is written to the tracker; with `--apply` the task is created and `task_key` and `task_url` go into the document header (BOM and line endings are kept). The published page of the document is linked to the task; if the task already exists, no second one appears."
   },
   "scenarios": {
     "Собрать или обновить индекс кода: файлы, символы, маршруты, таблицы, топики, конфигурация и история коммитов; без подключённых репозиториев шаг ничего не делает": "Build or update the code index: files, symbols, routes, tables, topics, configuration and commit history; with no repositories connected the step does nothing",
+    "Проверить свежесть индексов кода: отсутствие и устаревание дают код 1": "Check code index freshness: a missing or stale index exits 1",
     "Обновить базу": "Update the base",
     "взять новое из источников и довести до знания: синхронизация, разбор партиями, тезисы, связи, доверие. Маршрут идёт, пока есть работа — хоть двенадцать часов, — и фиксирует каждый оборот в git: выключайте когда угодно, сделанное останется и переделывать его не придётся. В итоге: база знает всё, что появилось в источниках": "take what is new from the sources and bring it to knowledge: sync, parsing in batches, theses, links, trust. The route runs as long as there is work — even twelve hours — and commits every turn to git: switch it off whenever you like, what is done stays and nothing has to be redone. Result: the base knows everything that appeared in the sources",
     "Забрать свежие страницы Confluence и убрать из зеркала удалённые (не убирает, если выгрузка прошла с ошибками)": "Fetch fresh Confluence pages and remove deleted ones from the mirror (does not remove if the export finished with errors)",
@@ -750,6 +752,7 @@
     "записать Markdown в файл": "write Markdown to a file",
     "номер истории": "story id",
     "записать Markdown": "write Markdown",
+    "код 1, если индекс отсутствует или устарел": "exit 1 if the index is missing or stale",
     "записать документы и паспорт": "write documents and passport",
     "проверить паспорт и устаревание": "check the passport and staleness",
     "с --golden-remap: записать выбранную цель строки (так пишет agent:golden)": "with --golden-remap: write the chosen target of a row (this is how agent:golden writes)",

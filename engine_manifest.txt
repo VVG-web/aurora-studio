@@ -126,6 +126,7 @@ scripts/code_artifacts.py => .aurora/scripts/code_artifacts.py
 scripts/code_pack.py      => .aurora/scripts/code_pack.py
 scripts/code_check.py     => .aurora/scripts/code_check.py
 scripts/clean_room.py     => .aurora/scripts/clean_room.py
+scripts/code_health.py    => .aurora/scripts/code_health.py
 scripts/codeidx/__init__.py        => .aurora/scripts/codeidx/__init__.py
 scripts/codeidx/model.py           => .aurora/scripts/codeidx/model.py
 scripts/codeidx/ids.py             => .aurora/scripts/codeidx/ids.py

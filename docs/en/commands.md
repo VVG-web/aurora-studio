@@ -191,6 +191,7 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 | `code:pack` | A story requirements pack without a model: Confluence/Jira/artifact sources, acceptance criteria with stable ids and tokens, related artifacts with provenance, and gaps; `--list` lists stories, `--story` builds a pack, `--json` is machine output, `--out` writes Markdown | script | 1.203.0 |
 | `code:check` | Check a story's acceptance criteria against the code index without a model: routes, tables, topics, symbols, strings and tests as `file:line` evidence; verdicts are found, partial, not found, plus missing tokens; `--json` is machine output, `--out` writes Markdown | script | 1.204.0 |
 | `code:cleanroom` | Clean Room artifacts from code without a model: `CleanRoom/<kind>/<repo>.md` documents with facts and `[cN]` references, a passport with revision and time, `--check` names stale and missing documents | script | 1.205.0 |
+| `code:health` | Code index health: clone and index revision, freshness, files, routes, tables, topics; `--check` returns 1 for a missing or stale index, `--json` is machine output | script | 1.206.0 |
 
 ## `dev:` — QA of the engine
 

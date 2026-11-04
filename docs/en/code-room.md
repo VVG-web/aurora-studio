@@ -318,6 +318,19 @@ python3 .aurora/scripts/clean_room.py --json
 Publication stays with the existing `ship:publish` for a chosen document: Clean Room does not
 write to Confluence by itself.
 
+## Index health: `code:health`
+
+`code:health` reports clone and index revision, freshness, files, routes, tables and topics for
+each repository. `--check` exits 1 when an index is missing or behind the clone: this is the
+cron step "Check code index freshness", not a panel error. Rebuilding stays with
+`code:index --apply`; the command only reads.
+
+```bash
+python3 .aurora/scripts/code_health.py
+python3 .aurora/scripts/code_health.py --check
+python3 .aurora/scripts/code_health.py --json
+```
+
 ## The "Code" section
 
 In the project group, next to "Git". The "Connect a repository" card takes a `git clone` line, the
@@ -335,5 +348,5 @@ window from `~/.ssh`.
 ## What comes next
 
 The index, search, story requirements pack, artifacts, graph, optional adapters, criterion
-checking and Clean Room are already here; next comes operations: cron recheck, health,
-embeddings and multi-repository work.
+checking, Clean Room and index health are already here. Embeddings and semantic search remain
+a separate phase: without a model they do not add quality, and a hash is not a substitute.

@@ -31,7 +31,8 @@ def test_code_section_is_a_module_folder_next_to_git_with_its_commands(_t):
     git = next(x for x in ck.modules() if x["id"] == "gitsync")
     assert m["group"] == "project" and m["order"] == git["order"] + 1 and m["needs"] == ["project"], m
     assert m["commands"] == ["code:sync", "code:status", "code:index", "code:find",
-                             "code:artifacts", "code:pack", "code:check", "code:cleanroom"], m["commands"]
+                             "code:artifacts", "code:pack", "code:check", "code:cleanroom",
+                             "code:health"], m["commands"]
     assert m["for"] == git["for"], "версия ядра раздела разошлась с соседями"
     raw = json.loads((MOD / "module.json").read_text(encoding="utf-8"))
     assert not raw.get("dev"), "раздел спрятан в «Разработку»: реестр кода нечем править, кроме файла"

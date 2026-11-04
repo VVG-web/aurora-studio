@@ -563,6 +563,8 @@ function packCard(ctx){
       t("code.pack.list")),
     el("button", {class: "btn", onclick: () => ctx.runWatched("code:cleanroom", ["--apply"])},
       t("code.pack.cleanroom")),
+    el("button", {class: "btn", onclick: () => ctx.runWatched("code:health", ["--check"])},
+      t("code.pack.health")),
     ...(pack && pack.found ? [el("button", {class: "btn",
       onclick: () => ctx.runWatched("code:pack", ["--story", pack.story])}, t("code.pack.show")),
       el("button", {class: "btn",
