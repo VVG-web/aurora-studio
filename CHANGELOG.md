@@ -4,6 +4,15 @@ Semver. Обновление движка в работающем проекте
 (сначала dry-run, затем `--apply`). Обновляются только пути из `engine_manifest.txt`;
 контент проекта не трогается. Ломающие изменения схемы помечены **BREAKING** с шагом миграции.
 
+## 1.209.2 — build_failures merge, doctor и два клона
+
+- **`scripts/merge_failures.py`:** `build_failures.json` сливается по ключам источников; более поздний `at` побеждает, удаление при неизменной второй стороне сохраняется, битый JSON — код 1.
+- **`.gitattributes` и install/update:** правило `merge=aurora-build-failures` и git driver.
+- **`aurora_doctor`:** проверяет правила `.gitattributes` и драйверы `aurora-manifest`, `aurora-lint-baseline`, `aurora-lint-residue`, `aurora-build-failures`; называет отсутствующие.
+- **Тесты:** `part_200` (merge и doctor), `part_201` (два клона, разные источники, pull без конфликта).
+- **Документация:** раздел «Раскатка на существующий проект».
+- **Версия:** 1.209.2.
+
 ## 1.209.1 — manifest cards по id и классификация diagnostics
 
 - **`merge_manifest.py`:** карточки сводятся по `id`/`name`/`path`; при совпадении побеждает более новый `updated`/`processed`/`at`; удаление при неизменной второй стороне сохраняется; без ключа — union по каноническому JSON.

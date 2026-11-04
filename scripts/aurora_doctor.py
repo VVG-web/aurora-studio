@@ -616,6 +616,37 @@ def check_kit_hooks() -> list:
     return out
 
 
+def check_merge_drivers() -> list:
+    """Предупреждения о правилах и git-драйверах доменного merge общих файлов.
+
+    Правила в `.gitattributes` и `merge.<driver>.driver` в git проекта ставит
+    установка/`kit:update`. Если их нет, параллельные правки `manifest.json`,
+    lint-храповика и `build_failures.json` снова дадут конфликт.
+    """
+    out = []
+    attrs = ROOT / ".gitattributes"
+    text = attrs.read_text(encoding="utf-8") if attrs.is_file() else ""
+    drivers = (
+        ("AuroraKnowledgeDB/meta/manifest.json", "aurora-manifest"),
+        ("AuroraKnowledgeDB/meta/lint_baseline.txt", "aurora-lint-baseline"),
+        ("AuroraKnowledgeDB/meta/lint_residue.json", "aurora-lint-residue"),
+        ("AuroraKnowledgeDB/meta/build_failures.json", "aurora-build-failures"),
+    )
+    for path, driver in drivers:
+        if f"{path} merge={driver}" not in text:
+            out.append(f".gitattributes: нет правила merge={driver} для {path} — выполните kit:update")
+        try:
+            import subprocess
+            cp = subprocess.run(["git", "-C", str(ROOT), "config", "--get",
+                                 f"merge.{driver}.driver"],
+                                capture_output=True, timeout=20)
+            if cp.returncode != 0:
+                out.append(f"git: не настроен merge.{driver}.driver — выполните kit:update")
+        except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
+            pass
+    return out
+
+
 def check_mirror_heads() -> list:
     """Предупреждение о зеркалах `Sources/` с подозрительной шапкой (BL-SEC-13).
 
@@ -1039,6 +1070,7 @@ def main() -> int:
     warns += check_pins()
     warns += check_released()
     warns += check_kit_hooks()
+    warns += check_merge_drivers()
     warns += check_mirror_heads()
     warns += check_linked_roots()
     warns += check_web_token_binding()

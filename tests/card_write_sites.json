@@ -936,12 +936,22 @@
    "reason": "справочник вызовов моделей (документ)",
    "calls": 1
   },
+  "scripts/merge_common.py:write_json": {
+   "kind": "other",
+   "reason": "общая атомарная запись JSON для merge-драйверов, не карточка",
+   "calls": 1
+  },
+  "scripts/merge_failures.py:main": {
+   "kind": "other",
+   "reason": "merge-драйвер build_failures.json: запись объединённого файла, не карточка",
+   "calls": 1
+  },
   "scripts/merge_lint.py:_atomic_write": {
    "kind": "other",
    "reason": "merge-драйвер lint_baseline/lint_residue: запись объединённого файла, не карточка",
    "calls": 1
   },
-  "scripts/merge_manifest.py:_write": {
+  "scripts/merge_manifest.py:main": {
    "kind": "other",
    "reason": "merge-драйвер manifest.json: запись объединённого JSON, не карточка",
    "calls": 1

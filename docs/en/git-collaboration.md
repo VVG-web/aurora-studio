@@ -81,3 +81,9 @@ conflict to a human.
 - `AuroraKnowledgeDB/meta/build_failures.json` is **SHARED**. Two participants whose different sources failed to parse add different keys. It needs a merge by source key; whole-file last-write-wins would lose failures. The driver is the next step (1.209.2).
 - `AuroraKnowledgeDB/meta/unsupported.json` and `unsupported.md` are **SHARED** but rare: a registry of unsupported claims. No merge driver yet; change only after a separate format review.
 - `trace/*` is **UNSURE**: there are no confirmed tracked runtime files in the kit; leave it alone so diagnostics are not lost.
+
+## Rollout to an existing project
+
+- `kit:update` adds the `.gitattributes` rules and configures the git drivers `aurora-manifest`, `aurora-lint-baseline`, `aurora-lint-residue`, `aurora-build-failures`; repeated runs are idempotent.
+- `kit:doctor` warns when a rule or driver is missing.
+- Older projects keep their data: LOCAL files are untracked without deletion, SHARD readers merge legacy with participant shards, and `manifest.json` / `build_failures.json` merge by key.

@@ -176,6 +176,7 @@ GITATTRIBUTES_MERGE_BLOCK = """
 AuroraKnowledgeDB/meta/manifest.json merge=aurora-manifest
 AuroraKnowledgeDB/meta/lint_baseline.txt merge=aurora-lint-baseline
 AuroraKnowledgeDB/meta/lint_residue.json merge=aurora-lint-residue
+AuroraKnowledgeDB/meta/build_failures.json merge=aurora-build-failures
 """
 
 
@@ -239,6 +240,9 @@ def configure_merge_driver(target) -> bool:
         ("merge.aurora-lint-residue.name", "Aurora lint residue merge"),
         ("merge.aurora-lint-residue.driver",
          "python3 .aurora/scripts/merge_lint.py residue %O %A %B %L %P"),
+        ("merge.aurora-build-failures.name", "Aurora build failures merge"),
+        ("merge.aurora-build-failures.driver",
+         "python3 .aurora/scripts/merge_failures.py %O %A %B %L %P"),
     )
     try:
         for key, value in drivers:

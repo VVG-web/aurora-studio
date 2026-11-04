@@ -19,26 +19,14 @@ Git вызывает этот драйвер при конфликте мани�
 from __future__ import annotations
 
 import json
-import os
 import sys
-import tempfile
 
 try:  # защита версии Python: на старом интерпретаторе — понятный текст, не traceback
     import aurora_common  # noqa: F401
 except ImportError:
     pass
 
-
-def _read(path: str) -> dict:
-    if not path or not os.path.isfile(path):
-        return {}
-    raw = open(path, encoding="utf-8").read()
-    if not raw.strip():
-        return {}
-    data = json.loads(raw)
-    if not isinstance(data, dict):
-        raise ValueError(f"{path}: манифест не словарь")
-    return data
+from merge_common import read_json, write_json
 
 
 def _canonical(value) -> str:
@@ -167,20 +155,6 @@ def _merge_dict(base: dict, ours: dict, theirs: dict) -> dict:
     return out
 
 
-def _write(path: str, data: dict) -> None:
-    directory = os.path.dirname(os.path.abspath(path)) or "."
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".manifest-merge-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=1, sort_keys=True)
-            f.write("\n")
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-
-
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) < 3:
@@ -188,14 +162,14 @@ def main(argv=None) -> int:
         return 1
     base_path, ours_path, theirs_path = args[0], args[1], args[2]
     try:
-        base = _read(base_path)
-        ours = _read(ours_path)
-        theirs = _read(theirs_path)
+        base = read_json(base_path, "манифест")
+        ours = read_json(ours_path, "манифест")
+        theirs = read_json(theirs_path, "манифест")
     except (OSError, ValueError) as exc:
         print(f"merge_manifest: {exc}", file=sys.stderr)
         return 1
     merged = _merge_dict(base, ours, theirs)
-    _write(ours_path, merged)
+    write_json(ours_path, merged, ".manifest-merge-")
     return 0
 
 

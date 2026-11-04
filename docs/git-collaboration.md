@@ -80,3 +80,9 @@ legacy-файл и все валидные части, дедуплицируе�
 - `AuroraKnowledgeDB/meta/build_failures.json` — **SHARED**. Два участника, у которых не разобрались разные источники, дописывают разные ключи. Нужен merge по ключам источника; whole-file last-write-wins потерял бы сбои. Драйвер — следующий шаг (1.209.2).
 - `AuroraKnowledgeDB/meta/unsupported.json` и `unsupported.md` — **SHARED**, но редкие: реестр утверждений без опоры. Пока без merge-драйвера; менять только после отдельного разбора формата.
 - `trace/*` — **UNSURE**: подтверждённых tracked runtime-файлов в ките нет; не трогаем, чтобы не потерять диагностику.
+
+## Раскатка на существующий проект
+
+- `kit:update` добавляет правила `.gitattributes` и настраивает git-драйверы `aurora-manifest`, `aurora-lint-baseline`, `aurora-lint-residue`, `aurora-build-failures`; повтор идемпотентен.
+- `kit:doctor` предупреждает, если правило или драйвер отсутствуют.
+- Старые проекты не теряют данные: LOCAL-файлы снимаются с index без удаления, SHARD читают legacy вместе с частями, `manifest.json` и `build_failures.json` сливаются по ключам.

@@ -282,6 +282,8 @@
     }
   },
   "messages": {
+    ".gitattributes: нет правила merge={} для {} — выполните kit:update": ".gitattributes: no merge={} rule for {} — run kit:update",
+    "git: не настроен merge.{}.driver — выполните kit:update": "git: merge.{}.driver is not configured — run kit:update",
     "в движке нет генератора скриптов публикации — обновите Аврору": "the engine has no publishing script generator — update Aurora",
     "вид артефакта — латиница, цифры и дефис": "the artifact kind must use Latin letters, digits and a hyphen",
     "генератор не вернул отчёт: {}": "the generator returned no report: {}",
