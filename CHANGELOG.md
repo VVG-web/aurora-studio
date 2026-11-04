@@ -4,6 +4,13 @@ Semver. Обновление движка в работающем проекте
 (сначала dry-run, затем `--apply`). Обновляются только пути из `engine_manifest.txt`;
 контент проекта не трогается. Ломающие изменения схемы помечены **BREAKING** с шагом миграции.
 
+## 1.209.1 — manifest cards по id и классификация diagnostics
+
+- **`merge_manifest.py`:** карточки сводятся по `id`/`name`/`path`; при совпадении побеждает более новый `updated`/`processed`/`at`; удаление при неизменной второй стороне сохраняется; без ключа — union по каноническому JSON.
+- **Классификация diagnostics:** `build_failures.json` — SHARED (merge по ключам источника — 1.209.2), `unsupported.json`/`unsupported.md` — SHARED без драйвера до разбора формата, `trace/*` — UNSURE, не трогаем.
+- **Тесты:** `part_199` — cards по id, удаление, union без id, классификация в RU/EN документации.
+- **Версия:** 1.209.1.
+
 ## 1.209.0 — lint_baseline и lint_residue: merge по смыслу
 
 - **`scripts/merge_lint.py`:** baseline — минимум (храповик может только опускаться); residue — union списков, дедупликация и сортировка. Битый JSON — код 1, конфликт остаётся человеку.

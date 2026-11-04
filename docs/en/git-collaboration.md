@@ -75,3 +75,9 @@ conflict to a human.
 - `AuroraKnowledgeDB/meta/lint_baseline.txt` is the error-count ratchet. The merge takes the minimum: the bar can only go down.
 - `AuroraKnowledgeDB/meta/lint_residue.json` is the remainder after "Fix the base". The merge unions the lists, deduplicates and sorts them.
 - The `merge.aurora-lint-baseline` and `merge.aurora-lint-residue` drivers are configured by install and `kit:update`; the rules live in `.gitattributes`.
+
+## diagnostics: build_failures, unsupported, trace
+
+- `AuroraKnowledgeDB/meta/build_failures.json` is **SHARED**. Two participants whose different sources failed to parse add different keys. It needs a merge by source key; whole-file last-write-wins would lose failures. The driver is the next step (1.209.2).
+- `AuroraKnowledgeDB/meta/unsupported.json` and `unsupported.md` are **SHARED** but rare: a registry of unsupported claims. No merge driver yet; change only after a separate format review.
+- `trace/*` is **UNSURE**: there are no confirmed tracked runtime files in the kit; leave it alone so diagnostics are not lost.

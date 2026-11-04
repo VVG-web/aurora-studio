@@ -74,3 +74,9 @@ legacy-файл и все валидные части, дедуплицируе�
 - `AuroraKnowledgeDB/meta/lint_baseline.txt` — храповик числа ошибок. Merge берёт минимум: планка может только опускаться.
 - `AuroraKnowledgeDB/meta/lint_residue.json` — остаток после «Починить базу». Merge объединяет списки, убирает дубликаты и сортирует.
 - Драйверы `merge.aurora-lint-baseline` и `merge.aurora-lint-residue` настраиваются установкой и `kit:update`; правила лежат в `.gitattributes`.
+
+## diagnostics: build_failures, unsupported, trace
+
+- `AuroraKnowledgeDB/meta/build_failures.json` — **SHARED**. Два участника, у которых не разобрались разные источники, дописывают разные ключи. Нужен merge по ключам источника; whole-file last-write-wins потерял бы сбои. Драйвер — следующий шаг (1.209.2).
+- `AuroraKnowledgeDB/meta/unsupported.json` и `unsupported.md` — **SHARED**, но редкие: реестр утверждений без опоры. Пока без merge-драйвера; менять только после отдельного разбора формата.
+- `trace/*` — **UNSURE**: подтверждённых tracked runtime-файлов в ките нет; не трогаем, чтобы не потерять диагностику.

@@ -79,6 +79,40 @@ def _merge_sources(base: dict, ours: dict, theirs: dict) -> dict:
     return out
 
 
+def _card_key(item) -> str:
+    """Стабильный ключ карточки: id/name/path; пусто — объединяем по содержимому."""
+    if isinstance(item, dict):
+        for key in ("id", "name", "path"):
+            value = item.get(key)
+            if value:
+                return str(value)
+    return ""
+
+
+def _newer_card(left, right) -> bool:
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    for key in ("updated", "processed", "at", "date", "mtime"):
+        a, b = str(left.get(key) or ""), str(right.get(key) or "")
+        if a != b:
+            return a > b
+    return False
+
+
+def _pick_card(base, ours, theirs):
+    if ours == theirs:
+        return ours
+    if ours == base:
+        return theirs
+    if theirs == base:
+        return ours
+    if ours is None:
+        return theirs
+    if theirs is None:
+        return ours
+    return ours if _newer_card(ours, theirs) else theirs
+
+
 def _merge_cards(base, ours, theirs):
     if ours == theirs:
         return ours
@@ -88,8 +122,19 @@ def _merge_cards(base, ours, theirs):
         return ours
     if not isinstance(ours, list) or not isinstance(theirs, list):
         return ours
-    unique = {_canonical(item): item for item in [*ours, *theirs]}
-    return [unique[key] for key in sorted(unique)]
+    base = base if isinstance(base, list) else []
+    base_map = {_card_key(i): i for i in base if _card_key(i)}
+    ours_map = {_card_key(i): i for i in ours if _card_key(i)}
+    theirs_map = {_card_key(i): i for i in theirs if _card_key(i)}
+    out = {}
+    for key in sorted(set(base_map) | set(ours_map) | set(theirs_map)):
+        value = _pick_card(base_map.get(key), ours_map.get(key), theirs_map.get(key))
+        if value is not None:
+            out[key] = value
+    unkeyed = {_canonical(i): i for i in [*ours, *theirs] if not _card_key(i)}
+    result = list(out.values()) + [unkeyed[k] for k in sorted(unkeyed)]
+    result.sort(key=lambda item: (_card_key(item), _canonical(item)))
+    return result
 
 
 def _merge_value(base, ours, theirs):
