@@ -54,3 +54,4 @@
 ## 4. Следующий план
 
 Следующие релизы: **1.209.0** (lint_baseline/lint_residue merge), 1.209.1, 1.209.2 — см. `RELEASE_PLAN_NEXT.md`.
+- **1.210.0** — `code:check` 2.0: имена, `--fail-on`, stale-индекс (см. `RELEASE_PLAN_NEXT.md`).

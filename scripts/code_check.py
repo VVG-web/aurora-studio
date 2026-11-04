@@ -25,12 +25,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import code_pack as CP  # noqa: E402
 import code_repos as CREPO  # noqa: E402
 from aurora_common import engine_dir  # noqa: E402
+import codeidx.scan as scan  # noqa: E402
 import codeidx.store as store_mod  # noqa: E402
 
 METHOD_RX = re.compile(r"\b(GET|POST|PUT|DELETE|PATCH)\s+(/[^\s,.;]+)", re.I)
 PATH_RX = re.compile(r"(?<![\w])/(?:[A-Za-z0-9_{}./-]+)")
 QUOTED_RX = re.compile(r"`([^`]{1,120})`|\"([^\"]{1,120})\"|«([^»]{1,120})»")
 NAME_RX = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b")
+TABLE_ID_RX = re.compile(r"\b[a-z][a-z0-9]*_[a-z0-9_]+\b")
+DOTTED_RX = re.compile(r"\b[a-z][a-z0-9]*(?:\.[a-z0-9]+)+\b")
+VERSION_RX = re.compile(r"^v?\d+(?:\.\d+)+$", re.I)
 
 
 def _indexes(project: str) -> list:
@@ -120,21 +124,59 @@ def _evidence_for(criterion: dict, indexes: list) -> list:
     return uniq[:12]
 
 
-def _missing(criterion: dict, evidence: list) -> list:
-    """Токены критерия, которых нет в найденных доказательствах (числа, коды, версии, даты)."""
-    hay = " ".join(f'{e.get("quote", "")} {e.get("file", "")}' for e in evidence).casefold()
+def _required(criterion: dict) -> list:
+    """Имена, которые критерий называет: цитаты, таблицы, топики и маршруты."""
+    text = criterion.get("text") or ""
+    values = list(_quoted(text))
+    values += [m.group(0) for m in TABLE_ID_RX.finditer(text)]
+    values += [m.group(0) for m in DOTTED_RX.finditer(text) if not VERSION_RX.match(m.group(0))]
+    values += [m.group(2).rstrip(".,;") for m in METHOD_RX.finditer(text)]
+    return sorted({value for value in values if value.strip()})
+
+
+def _missing_tokens(criterion: dict, hay: str, seen: set) -> list:
     out = []
     for tok in criterion.get("tokens") or []:
         value = str(tok.get("value") or "")
-        if value and value.casefold() not in hay:
-            out.append(tok.get("text") or value)
+        text = tok.get("text") or value
+        if value and value.casefold() not in hay and text not in seen:
+            out.append(text)
+            seen.add(text)
+    return out
+
+
+def _missing(criterion: dict, evidence: list) -> list:
+    """Токены и имена критерия, которых нет в найденных доказательствах."""
+    hay = " ".join(f'{e.get("quote", "")} {e.get("file", "")}' for e in evidence).casefold()
+    seen = set()
+    out = _missing_tokens(criterion, hay, seen)
+    for value in _required(criterion):
+        if value.casefold() not in hay and value not in seen:
+            out.append(value)
+            seen.add(value)
+    return out
+
+
+def _stale(project: str, indexes: list) -> list:
+    """Индексы, отставшие от HEAD клона: проверка идёт по старым фактам."""
+    out = []
+    for name, st in indexes:
+        try:
+            status = st.status()
+            rev = status.get("repo_rev") or status.get("index_rev") or ""
+            clone = CREPO.clone_path(project, name)
+            head = scan.GitRepo(clone).head() if clone.is_dir() else ""
+            if rev and head and rev != head:
+                out.append({"repo": name, "why": f"{rev[:12]} → {head[:12]}"})
+        except Exception:  # noqa: BLE001 — устаревание не должно ронять проверку
+            continue
     return out
 
 
 def check_story(project: str, story: str) -> dict:
     pack = CP.build_pack(project, story)
     if not pack.get("found"):
-        return {"story": story.upper(), "found": False, "criteria": [], "summary": {}}
+        return {"story": story.upper(), "found": False, "criteria": [], "summary": {}, "stale": []}
     indexes = _indexes(project)
     rows = []
     for criterion in pack.get("criteria") or []:
@@ -147,7 +189,8 @@ def check_story(project: str, story: str) -> dict:
                "partial": sum(r["verdict"] == "partial" for r in rows),
                "not_found": sum(r["verdict"] == "not_found" for r in rows),
                "repos": [name for name, _ in indexes]}
-    return {"story": story.upper(), "found": True, "criteria": rows, "summary": summary}
+    return {"story": story.upper(), "found": True, "criteria": rows, "summary": summary,
+            "stale": _stale(project, indexes)}
 
 
 def render_md(report: dict) -> str:
@@ -157,6 +200,10 @@ def render_md(report: dict) -> str:
     s = report["summary"]
     lines += [f"Критериев {s['total']}: найдено {s['found']}, частично {s['partial']}, "
               f"не найдено {s['not_found']}. Индекс: {', '.join(s['repos']) or 'нет'}.", ""]
+    if report.get("stale"):
+        lines.append("⚠ Индекс отстал от клона: " + "; ".join(
+            f"{x['repo']} {x['why']}" for x in report["stale"]))
+        lines.append("")
     for crit in report["criteria"]:
         icon = {"found": "✅", "partial": "◐", "not_found": "·"}[crit["verdict"]]
         lines.append(f"## {icon} {crit['text']}")
@@ -181,6 +228,8 @@ def main(argv=None) -> int:
     p.add_argument("--story", required=True, help="номер истории")
     p.add_argument("--json", action="store_true", help="машинный вывод")
     p.add_argument("--out", default="", help="записать Markdown")
+    p.add_argument("--fail-on", choices=("none", "partial", "not_found"), default="none",
+                   help="код 1 при частичном или ненайденном критерии")
     a = p.parse_args(argv)
     root = Path(a.project).resolve()
     report = check_story(str(root), a.story)
@@ -195,7 +244,11 @@ def main(argv=None) -> int:
             print(f"Записано: {a.out}")
         else:
             print(text)
-    return 0 if report.get("found") else 1
+    threshold = {"none": set(), "partial": {"partial", "not_found"},
+                 "not_found": {"not_found"}}[a.fail_on]
+    bad = not report.get("found") or any(c["verdict"] in threshold
+                                           for c in report.get("criteria") or [])
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":

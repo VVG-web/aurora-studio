@@ -735,6 +735,7 @@
     "PyPI не ответил: ": "PyPI did not answer: "
   },
   "flags": {
+    "код 1 при частичном или ненайденном критерии": "exit 1 on a partial or missing criterion",
     "корень проекта (по умолчанию текущая папка)": "project root (default: current folder)",
     "только один репозиторий по имени": "only one repository by name",
     "построить или обновить индекс": "build or update the index",
