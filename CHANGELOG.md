@@ -4,6 +4,13 @@ Semver. Обновление движка в работающем проекте
 (сначала dry-run, затем `--apply`). Обновляются только пути из `engine_manifest.txt`;
 контент проекта не трогается. Ломающие изменения схемы помечены **BREAKING** с шагом миграции.
 
+## 1.208.0 — manifest.json: merge по ключам источников
+
+- **`scripts/merge_manifest.py`:** трёхсторонний merge `AuroraKnowledgeDB/meta/manifest.json` по ключам `sources`. Если сторона не меняла запись, побеждает изменение другой; если обе меняли — более поздний `processed`; удаление при неизменной второй стороне сохраняется. `cards` объединяются по каноническому JSON, `updated` и `version` берут максимум.
+- **`.gitattributes`:** правило `AuroraKnowledgeDB/meta/manifest.json merge=aurora-manifest`. `install_aurora.py` и `aurora_update.py` настраивают git driver `merge.aurora-manifest.driver` в проекте; без git шаг тихо пропускается.
+- **Тесты:** `part_196` — union источников и карточек, более новый entry, удаление, правило `.gitattributes`, настройка driver.
+- **Документация:** `docs/git-collaboration.md` и `docs/en/git-collaboration.md` — граница LOCAL/SHARD/SHARED и merge manifest.
+
 ## 1.207.0 — gitignore-review: правило для агента и сценарий TS-013
 
 - **Классификация до коммита.** В `templates/agents/AGENTS.md.template` добавлено обязательное правило `gitignore-review`: каждый новый служебный файл агент сначала относит к `LOCAL` (эта машина → ignore), `SHARD` (общие append-only данные → части по участнику) или `SHARED` (обычный merge). Нельзя чинить конфликт просто игнорированием: общие знания не исчезают из git.

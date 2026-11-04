@@ -101,6 +101,7 @@ scripts/kb_corrections.py => .aurora/scripts/kb_corrections.py
 scripts/kb_retrieval.py  => .aurora/scripts/kb_retrieval.py
 scripts/kb_remap.py      => .aurora/scripts/kb_remap.py
 scripts/build_plan.py    => .aurora/scripts/build_plan.py
+scripts/merge_manifest.py => .aurora/scripts/merge_manifest.py
 scripts/spec_pack.py     => .aurora/scripts/spec_pack.py
 scripts/kb_index.py      => .aurora/scripts/kb_index.py
 scripts/kb_trace.py      => .aurora/scripts/kb_trace.py

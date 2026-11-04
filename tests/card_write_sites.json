@@ -936,6 +936,11 @@
    "reason": "справочник вызовов моделей (документ)",
    "calls": 1
   },
+  "scripts/merge_manifest.py:_write": {
+   "kind": "other",
+   "reason": "merge-драйвер manifest.json: запись объединённого JSON, не карточка",
+   "calls": 1
+  },
   "scripts/model_config.py:_stamp_salt": {
    "kind": "other",
    "reason": "соль слепка страницы настроек моделей (`local/.stamp-salt`), не карточка",

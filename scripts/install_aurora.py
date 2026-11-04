@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -166,6 +167,15 @@ GITATTRIBUTES_BLOCK = """
 /start-aurora.bat -text
 """
 
+# Отдельный блок: правило merge-драйвера manifest.json. Держим его отдельно от
+# GITATTRIBUTES_BLOCK, потому что refresh_gitattributes исторически возвращает ровно
+# одно правило launcher и это поведение закреплено тестом part_17.
+GITATTRIBUTES_MERGE_BLOCK = """
+# Манифест разбора — не текст, а учёт источников: доменный merge по ключам, чтобы два
+# участника, разобравшие разные источники, не получали конфликт на общем файле.
+AuroraKnowledgeDB/meta/manifest.json merge=aurora-manifest
+"""
+
 
 def merge_gitignore(path, block: str = "") -> list:
     """Дописать в .gitignore недостающие правила кита. → какие строки добавлены.
@@ -208,6 +218,28 @@ def merge_gitignore(path, block: str = "") -> list:
         else:
             write_text_atomic(path, text)
     return [ln for ln in add if not ln.strip().startswith("#")]
+
+
+def configure_merge_driver(target) -> bool:
+    """Настроить git merge driver для manifest.json; без git — тихо пропустить.
+
+    Драйвер вызывается из корня проекта, поэтому путь к скрипту относительный:
+    `.aurora/scripts/merge_manifest.py`. Повторная настройка идемпотентна.
+    """
+    target = Path(target)
+    try:
+        for key, value in (
+            ("merge.aurora-manifest.name", "Aurora manifest merge"),
+            ("merge.aurora-manifest.driver",
+             "python3 .aurora/scripts/merge_manifest.py %O %A %B %L %P"),
+        ):
+            cp = subprocess.run(["git", "-C", str(target), "config", key, value],
+                                capture_output=True, timeout=30)
+            if cp.returncode != 0:
+                return False
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 class Installer:
@@ -664,9 +696,13 @@ _Мета-вопросы:_
         added = merge_gitignore(gi)
         self.log(f"  appended: .gitignore ({len(added)} правил)" if added
                  else "  skip (exists): .gitignore")
-        attrs = merge_gitignore(self.target / ".gitattributes", GITATTRIBUTES_BLOCK)
+        # ".gitattributes", GITATTRIBUTES_BLOCK — правило launcher; оба блока пишутся одной записью.
+        attrs = merge_gitignore(self.target / ".gitattributes",
+                                GITATTRIBUTES_BLOCK + GITATTRIBUTES_MERGE_BLOCK)
         self.log(f"  appended: .gitattributes ({len(attrs)} правил)" if attrs
                  else "  skip (exists): .gitattributes")
+        if configure_merge_driver(self.target):
+            self.log("  configured: merge driver for manifest.json")
 
     def write_report(self):
         report = f"""---

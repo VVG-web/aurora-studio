@@ -1177,6 +1177,33 @@ def refresh_gitattributes(target: Path) -> list:
         return []
 
 
+def refresh_all_gitattributes(target: Path) -> list:
+    """Дописать в .gitattributes оба правила кита одной атомарной записью."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    try:
+        from install_aurora import merge_gitignore, GITATTRIBUTES_BLOCK, GITATTRIBUTES_MERGE_BLOCK
+    except Exception:
+        return []
+    try:
+        return merge_gitignore(target / ".gitattributes",
+                               GITATTRIBUTES_BLOCK + GITATTRIBUTES_MERGE_BLOCK)
+    except (OSError, UnicodeDecodeError):
+        return []
+
+
+def refresh_merge_driver(target: Path) -> bool:
+    """Настроить git merge driver для manifest.json; без git — тихо пропустить."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    try:
+        from install_aurora import configure_merge_driver
+    except Exception:
+        return False
+    try:
+        return configure_merge_driver(target)
+    except Exception:
+        return False
+
+
 def config_defaults(target: Path, ignore: list) -> tuple:
     """(новый текст, что записать) — значения доверия по умолчанию для конфига проекта.
 
@@ -1353,9 +1380,12 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
             #
             # Прогон, не дошедший до штампа (`pv != kv`), не сделал и остальных хвостовых шагов:
             # хук, снятие журнала с учёта git, дата обновления базы. Все они идемпотентны.
-            late = refresh_gitignore(target) + refresh_gitattributes(target)
+            # refresh_gitattributes(target) — правило launcher; оба правила пишет
+            # refresh_all_gitattributes одной атомарной записью.
+            late = refresh_gitignore(target) + refresh_all_gitattributes(target)
             if late:
                 print(f"   Дописано правил .gitignore/.gitattributes: {len(late)}")
+            refresh_merge_driver(target)
             if pv != kv:
                 hook = refresh_hooks(target)
                 if hook:
@@ -1489,7 +1519,8 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
     ignored = refresh_gitignore(target)
     untracked = untrack_local_state(target)
     kb_date = backfill_kb_updated(target)
-    attrs = refresh_gitattributes(target)
+    attrs = refresh_all_gitattributes(target)
+    refresh_merge_driver(target)
     stamp_engine(target, kv)
     seal_engine(target, kv)                # замок движка с хешами файлов; метка update.pending снимается
     stamp_version(target, kv)              # штамп проекта — последним: по нему видно, что обновление дошло до конца
