@@ -49,6 +49,9 @@ def test_clean_room_generates_docs_passport_and_finds_stale(_t):
     run("clean_room.py", "--project", str(root), "--check", cwd=root)
 
     CF.commit(repo, "next", "2026-01-02T00:00:00+00:00", files={"src/Next.java": "class Next {}\n"})
+    early = run("clean_room.py", "--project", str(root), "--check", "--json",
+                cwd=root, expect_rc=1)
+    assert "код" in json.loads(early.stdout)["stale"][0]["why"], early.stdout
     run("code_index.py", "--project", str(root), "--index", "--apply", cwd=root)
     stale = run("clean_room.py", "--project", str(root), "--check", "--json",
                 cwd=root, expect_rc=1)

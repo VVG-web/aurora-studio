@@ -41,6 +41,18 @@ def test_code_graph_takes_routes_topics_tables_from_index(_t):
             "  public void on(String event) {\n"
             "  }\n"
             "}\n"),
+        "src/RefundController.java": (
+            "package demo;\n"
+            "@RestController\n"
+            "public class RefundController {\n"
+            "  @PostMapping(\"/refunds\")\n"
+            "  public String refund() { return \"ok\"; }\n"
+            "}\n"),
+        "src/Payable.java": (
+            "package demo;\n"
+            "public interface Payable {\n"
+            "  String pay(int amount);\n"
+            "}\n"),
         "db/schema.sql": "CREATE TABLE order_log (id INT);\n",
     })
     _config(root, {"orders": {"url": CF.url_of(repo), "branch": "main", "provider": "generic"}})
@@ -50,6 +62,12 @@ def test_code_graph_takes_routes_topics_tables_from_index(_t):
     code = json.loads((root / "AuroraKnowledgeDB/meta/graphify/code.json").read_text(encoding="utf-8"))
     assert code["index"]["repos"] == ["orders"], code["index"]
     assert any(r["method"] == "GET" and r["path"] == "/api/orders" for r in code["routes"]), code["routes"]
+    assert any(r["method"] == "POST" and r["path"] == "/refunds" for r in code["routes"]), \
+        "маршрут из однострочного метода не попал в индекс: " + str(code["routes"])
+    found = json.loads(run("code_find.py", "--project", str(root), "pay", "--json",
+                           cwd=root, expect_rc=0).stdout)
+    assert any(r["type"] == "symbol" and r["name"].endswith(".pay")
+               for r in found["results"]), "метод интерфейса не извлечён: " + str(found["results"])
     assert any(t["name"] == "orders.accepted" for t in code["topics"]), code["topics"]
     assert "order_log" in code["tables"], code["tables"]
 
@@ -59,3 +77,10 @@ def test_code_graph_takes_routes_topics_tables_from_index(_t):
     assert "route" in kinds and "topic" in kinds, kinds
     labels = {n.get("label") for n in graph["nodes"]}
     assert "GET /api/orders" in labels and "orders.accepted" in labels, labels
+    assert "POST /refunds" in labels, "однострочный маршрут не попал в граф: " + str(labels)
+    rels = {(link.get("source"), link.get("relation"), link.get("target"))
+            for link in graph.get("links") or []}
+    assert ("repo:orders", "содержит маршрут",
+            "route:orders:GET /api/orders") in rels, "маршрут не связан с репозиторием"
+    assert ("repo:orders", "содержит топик",
+            "topic:orders:orders.accepted") in rels, "топик не связан с репозиторием"

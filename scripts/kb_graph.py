@@ -1205,6 +1205,12 @@ def export_graph(data: dict) -> dict:
         except (OSError, ValueError):
             code = {}
         ids = {n["id"] for n in nodes}
+        for repo_name in code.get("index", {}).get("repos", []):
+            repo_id = "repo:" + repo_name
+            if repo_id not in ids:
+                nodes.append({"id": repo_id, "label": repo_name, "file_type": "code", "kind": "repo",
+                              "source_file": "", "status": "", "section": "Репозитории", "community": None})
+                ids.add(repo_id)
         for t, rec in sorted((code.get("tables") or {}).items()):
             tid = "table:" + t
             nodes.append({"id": tid, "label": t, "file_type": "code", "kind": "table",
@@ -1238,12 +1244,20 @@ def export_graph(data: dict) -> dict:
                           "file_type": "code", "kind": "route",
                           "source_file": r.get("file") or "", "status": "",
                           "section": "Маршруты", "community": None})
+            repo_id = "repo:" + str(r.get("repo") or "")
+            if repo_id in ids:
+                links.append({"source": repo_id, "target": rid, "relation": "содержит маршрут",
+                              "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": ""})
         for t in code.get("topics") or []:
             tid = "topic:" + str(t.get("repo") or "") + ":" + str(t.get("name") or "")
             nodes.append({"id": tid, "label": t.get("name") or "",
                           "file_type": "code", "kind": "topic",
                           "source_file": t.get("file") or "", "status": "",
                           "section": "Топики", "community": None})
+            repo_id = "repo:" + str(t.get("repo") or "")
+            if repo_id in ids:
+                links.append({"source": repo_id, "target": tid, "relation": "содержит топик",
+                              "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": ""})
         done["routes"] = len(code.get("routes") or [])
         done["topics"] = len(code.get("topics") or [])
         done["code"] = len(code.get("tables") or {}) + len(layer.get("nodes") or [])

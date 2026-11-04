@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 SCHEMA_VERSION = 1                  # версия схемы индекса; меняется — индекс строится заново
 INVENTORY_VER = "inventory-v1"      # версия инвентаря; меняется — файлы перечитываются
-EXTRACTOR_VER = "extract-v1"        # версия извлекателей; меняется — записи пересобираются
+EXTRACTOR_VER = "extract-v2"        # версия извлекателей; меняется — записи пересобираются
 MAX_FILE_KB = 512                   # больше — `skipped: too_big`
 MAX_INVENTORY_FILES = 300_000       # больше — отказ, а не молчаливая часть
 MAX_INDEX_FILES = 60_000            # больше — остальные `skipped: over_limit`

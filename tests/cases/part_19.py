@@ -365,3 +365,21 @@ def test_every_module_a_shipped_script_imports_is_shipped(_t):
     assert len(shipped) > 40, "манифест движка не прочитан"
     assert not missing, ("модули кита не едут в проект, а их импортируют уезжающие скрипты — "
                          f"впишите в engine_manifest.txt: {dict((k, sorted(v)) for k, v in missing.items())}")
+
+
+@test
+def test_every_codeidx_module_is_shipped(_t):
+    """Пакет `codeidx` едет в проект целиком, а не только те модули, что помнит автор.
+
+    1.206.0 вышел без `adapters/optional.py` и `adapters/external.py`: тесты шли из
+    `scripts/`, где они есть, а в установленном проекте `code:index` падал на импорте.
+    Проверка перечисляет файлы пакета, а не доверяет списку в манифесте.
+    """
+    manifest = {ln.split("=>", 1)[0].strip()
+                for ln in (KIT / "engine_manifest.txt").read_text(encoding="utf-8").splitlines()
+                if "=>" in ln and not ln.lstrip().startswith("#")}
+    package = KIT / "scripts" / "codeidx"
+    files = {p.relative_to(KIT).as_posix() for p in package.rglob("*.py")}
+    assert files, "пакет codeidx не найден"
+    missing = sorted(files - manifest)
+    assert not missing, f"модули codeidx не едут в проект: {missing}"

@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import code_artifacts as CA  # noqa: E402
 import code_repos as CREPO  # noqa: E402
 from aurora_common import TODAY, engine_dir  # noqa: E402
+import codeidx.scan as scan  # noqa: E402
 import codeidx.store as store_mod  # noqa: E402
 
 OUT = "CleanRoom"
@@ -147,6 +148,16 @@ def check(project: str) -> dict:
         if not (root / doc["path"]).is_file():
             missing.append(doc["path"])
     for name, rec in (passport.get("repos") or {}).items():
+        head = ""
+        try:
+            clone = CREPO.clone_path(project, name)
+            if clone.is_dir():
+                head = scan.GitRepo(clone).head()
+        except Exception:  # noqa: BLE001
+            head = ""
+        if head and rec.get("rev") and head != rec["rev"]:
+            stale.append({"repo": name, "why": f"код {rec['rev'][:12]} → {head[:12]}"})
+            continue
         db = os.path.join(project, engine_dir(project), "cache", "code", name, "index.sqlite")
         if not os.path.isfile(db):
             stale.append({"repo": name, "why": "индекса нет"})
@@ -157,7 +168,7 @@ def check(project: str) -> dict:
         except Exception:  # noqa: BLE001
             rev = ""
         if rev and rec.get("rev") and rev != rec["rev"]:
-            stale.append({"repo": name, "why": f"{rec['rev'][:12]} → {rev[:12]}"})
+            stale.append({"repo": name, "why": f"индекс {rec['rev'][:12]} → {rev[:12]}"})
     return {"ok": not missing and not stale, "missing": missing, "stale": stale}
 
 

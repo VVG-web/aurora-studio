@@ -25,9 +25,9 @@ CLASS_RX = re.compile(
     r"\b(class|interface|enum|record)\s+(\w+)")
 JAVA_METHOD = re.compile(
     r"^\s*(?:(?:public|private|protected|static|final|abstract|synchronized|native|default|strictfp|async)\s+)+"
-    r"([\w<>\[\],.?\s]+?)\s+(\w+)\s*\(([^)]*)\)\s*(?:throws [^{]+)?\{?\s*$")
+    r"([\w<>\[\],.?\s]+?)\s+(\w+)\s*\(([^)]*)\)\s*(?:throws [^{;]+)?\s*(?:\{.*\}|;|\{)?\s*$")
 JAVA_METHOD_ANY = re.compile(
-    r"^\s*([\w<>\[\],.?]+)\s+(\w+)\s*\(([^)]*)\)\s*(?:throws [^{]+)?\{?\s*$")
+    r"^\s*([\w<>\[\],.?]+)\s+(\w+)\s*\(([^)]*)\)\s*(?:throws [^{;]+)?\s*(?:\{.*\}|;|\{)?\s*$")
 CTOR_RX = re.compile(r"^\s*(?:public|private|protected)\s+(\w+)\s*\(([^)]*)\)\s*\{?\s*$")
 KOTLIN_METHOD = re.compile(
     r"^\s*(?:(?:public|private|protected|internal|open|override|suspend|inline|operator)\s+)*"
@@ -248,10 +248,12 @@ def extract(path: str, text: str, role: str = "src", lang: str = "Java") -> list
                         m = JAVA_METHOD_ANY.match(line)
                         if m:
                             ret, name, args = m.group(1).strip(), m.group(2), m.group(3)
-        if not name or name in CONTROL:
+        if not name or name in CONTROL or ret.strip() in CONTROL:
             continue
         anns = annotations(lines, i)
         end = brace_end(lines, i)
+        if strip(line).endswith(";") and "{" not in line:
+            end = i + 1
         parent = cls["qname"] if cls else ""
         rec = sym(name, "method" if parent else "function", parent, i + 1, end, strip(line), anns)
         body = "\n".join(lines[i:end])
