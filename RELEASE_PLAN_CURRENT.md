@@ -37,8 +37,8 @@
 ### 1.208.1 — per-user state: QA, docs и финальная регрессия
 
 - [x] `docs/git-collaboration.md`: итоговая граница, TS-013, откат, смешанные версии.
-- [ ] Новый тест: документация и версия согласованы, ключевые термины на месте.
-- [ ] `VERSION` 1.208.1, `CHANGELOG.md`, `docs/commands.md`, cockpit modules/skins/panel.
+- [x] Новый тест: документация и версия согласованы, ключевые термины на месте.
+- [x] `VERSION` 1.208.1, `CHANGELOG.md`, `docs/commands.md`, cockpit modules/skins/panel.
 - [ ] Полный гейт, тег `v1.208.1`, ветка `rel/code-1.208.1`, push.
 - [ ] Отметить выполнение в этом файле.
 

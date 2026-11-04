@@ -61,3 +61,11 @@ conflict to a human.
   file but not the new shards; a full rollback needs an explicit consolidation.
 - The `manifest.json` merge also works for older projects: the rule and driver are added
   by `kit:update`, and repeated runs are idempotent.
+
+## Checks
+
+- `part_184`: LOCAL rules, untrack without deletion, two git users, gitignore.
+- `part_33`: `kb_updated` legacy plus two participant shards.
+- `part_13`: actor identity and `search-quality` shards.
+- `part_196`: `manifest.json` merge by source keys.
+- QA scenario TS-013: gitignore and per-user state hygiene (TC-090…TC-093).
