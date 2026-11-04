@@ -561,6 +561,8 @@ function packCard(ctx){
   box.append(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:12px"},
     el("button", {class: "btn", onclick: () => ctx.runWatched("code:pack", ["--list"])},
       t("code.pack.list")),
+    el("button", {class: "btn", onclick: () => ctx.runWatched("code:cleanroom", ["--apply"])},
+      t("code.pack.cleanroom")),
     ...(pack && pack.found ? [el("button", {class: "btn",
       onclick: () => ctx.runWatched("code:pack", ["--story", pack.story])}, t("code.pack.show")),
       el("button", {class: "btn",

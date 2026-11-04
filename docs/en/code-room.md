@@ -299,6 +299,25 @@ python3 .aurora/scripts/code_check.py --story US-1.1 --json
 python3 .aurora/scripts/code_check.py --story US-1.1 --out Artifacts/checks/US-1.1.md
 ```
 
+## Clean Room: `code:cleanroom`
+
+`code:cleanroom --apply` builds "how it is made" documents per repository and kind:
+`CleanRoom/<kind>/<repository>.md`. Facts come from the code index; every statement has a
+`[cN]` reference to `file:line`, and the "What could not be established from the code" section
+is mandatory. No model or network is needed.
+
+`CleanRoom/meta/passport.json` stores the repository revision, index time and document list.
+`--check` names stale and missing documents and exits 1 when a rebuild is due.
+
+```bash
+python3 .aurora/scripts/clean_room.py --apply
+python3 .aurora/scripts/clean_room.py --check
+python3 .aurora/scripts/clean_room.py --json
+```
+
+Publication stays with the existing `ship:publish` for a chosen document: Clean Room does not
+write to Confluence by itself.
+
 ## The "Code" section
 
 In the project group, next to "Git". The "Connect a repository" card takes a `git clone` line, the
@@ -315,6 +334,6 @@ window from `~/.ssh`.
 
 ## What comes next
 
-The "Clean room" is the next release. The index, search, story requirements pack, artifacts,
-graph, optional adapters and criterion checking are already here; next come Clean Room
-document generation, the passport and staleness.
+The index, search, story requirements pack, artifacts, graph, optional adapters, criterion
+checking and Clean Room are already here; next comes operations: cron recheck, health,
+embeddings and multi-repository work.

@@ -1085,6 +1085,11 @@
    "kind": "other",
    "reason": "отчёт проверки критериев по коду пишется в Markdown; не карточка",
    "calls": 1
+  },
+  "scripts/clean_room.py:write": {
+   "kind": "other",
+   "reason": "документы Clean Room и паспорт пишутся в CleanRoom/; не карточка",
+   "calls": 2
   }
  }
 }
