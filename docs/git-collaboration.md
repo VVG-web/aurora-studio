@@ -68,3 +68,9 @@ legacy-файл и все валидные части, дедуплицируе�
 - `part_13`: идентичность участника и части `search-quality`.
 - `part_196`: merge `manifest.json` по ключам источников.
 - QA-сценарий TS-013: гигиена gitignore и пользовательских частей (TC-090…TC-093).
+
+## lint_baseline и lint_residue
+
+- `AuroraKnowledgeDB/meta/lint_baseline.txt` — храповик числа ошибок. Merge берёт минимум: планка может только опускаться.
+- `AuroraKnowledgeDB/meta/lint_residue.json` — остаток после «Починить базу». Merge объединяет списки, убирает дубликаты и сортирует.
+- Драйверы `merge.aurora-lint-baseline` и `merge.aurora-lint-residue` настраиваются установкой и `kit:update`; правила лежат в `.gitattributes`.

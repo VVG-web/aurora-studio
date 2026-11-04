@@ -4,6 +4,13 @@ Semver. Обновление движка в работающем проекте
 (сначала dry-run, затем `--apply`). Обновляются только пути из `engine_manifest.txt`;
 контент проекта не трогается. Ломающие изменения схемы помечены **BREAKING** с шагом миграции.
 
+## 1.209.0 — lint_baseline и lint_residue: merge по смыслу
+
+- **`scripts/merge_lint.py`:** baseline — минимум (храповик может только опускаться); residue — union списков, дедупликация и сортировка. Битый JSON — код 1, конфликт остаётся человеку.
+- **`.gitattributes`:** правила `merge=aurora-lint-baseline` и `merge=aurora-lint-residue`; `install_aurora.py` и `aurora_update.py` настраивают оба git driver.
+- **Тесты:** `part_198` — минимум, отсутствующая сторона, union residue, битый JSON, правила и git config.
+- **Документация:** разделы в `docs/git-collaboration.md` и `docs/en/git-collaboration.md`.
+
 ## 1.208.1 — per-user state: QA, docs и финальная регрессия
 
 - **Документация:** `docs/git-collaboration.md` и `docs/en/git-collaboration.md` описывают LOCAL/SHARD/SHARED, merge `manifest.json`, откат и смешанные версии; добавлен раздел проверок и TS-013.

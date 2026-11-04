@@ -174,6 +174,8 @@ GITATTRIBUTES_MERGE_BLOCK = """
 # Манифест разбора — не текст, а учёт источников: доменный merge по ключам, чтобы два
 # участника, разобравшие разные источники, не получали конфликт на общем файле.
 AuroraKnowledgeDB/meta/manifest.json merge=aurora-manifest
+AuroraKnowledgeDB/meta/lint_baseline.txt merge=aurora-lint-baseline
+AuroraKnowledgeDB/meta/lint_residue.json merge=aurora-lint-residue
 """
 
 
@@ -221,18 +223,25 @@ def merge_gitignore(path, block: str = "") -> list:
 
 
 def configure_merge_driver(target) -> bool:
-    """Настроить git merge driver для manifest.json; без git — тихо пропустить.
+    """Настроить git merge driver для manifest.json и lint-файлов; без git — тихо пропустить.
 
-    Драйвер вызывается из корня проекта, поэтому путь к скрипту относительный:
-    `.aurora/scripts/merge_manifest.py`. Повторная настройка идемпотентна.
+    Драйверы вызываются из корня проекта, поэтому пути к скриптам относительные.
+    Повторная настройка идемпотентна.
     """
     target = Path(target)
+    drivers = (
+        ("merge.aurora-manifest.name", "Aurora manifest merge"),
+        ("merge.aurora-manifest.driver",
+         "python3 .aurora/scripts/merge_manifest.py %O %A %B %L %P"),
+        ("merge.aurora-lint-baseline.name", "Aurora lint baseline merge"),
+        ("merge.aurora-lint-baseline.driver",
+         "python3 .aurora/scripts/merge_lint.py baseline %O %A %B %L %P"),
+        ("merge.aurora-lint-residue.name", "Aurora lint residue merge"),
+        ("merge.aurora-lint-residue.driver",
+         "python3 .aurora/scripts/merge_lint.py residue %O %A %B %L %P"),
+    )
     try:
-        for key, value in (
-            ("merge.aurora-manifest.name", "Aurora manifest merge"),
-            ("merge.aurora-manifest.driver",
-             "python3 .aurora/scripts/merge_manifest.py %O %A %B %L %P"),
-        ):
+        for key, value in drivers:
             cp = subprocess.run(["git", "-C", str(target), "config", key, value],
                                 capture_output=True, timeout=30)
             if cp.returncode != 0:

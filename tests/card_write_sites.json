@@ -936,6 +936,11 @@
    "reason": "справочник вызовов моделей (документ)",
    "calls": 1
   },
+  "scripts/merge_lint.py:_atomic_write": {
+   "kind": "other",
+   "reason": "merge-драйвер lint_baseline/lint_residue: запись объединённого файла, не карточка",
+   "calls": 1
+  },
   "scripts/merge_manifest.py:_write": {
    "kind": "other",
    "reason": "merge-драйвер manifest.json: запись объединённого JSON, не карточка",

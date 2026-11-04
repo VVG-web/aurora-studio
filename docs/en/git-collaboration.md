@@ -69,3 +69,9 @@ conflict to a human.
 - `part_13`: actor identity and `search-quality` shards.
 - `part_196`: `manifest.json` merge by source keys.
 - QA scenario TS-013: gitignore and per-user state hygiene (TC-090…TC-093).
+
+## lint_baseline and lint_residue
+
+- `AuroraKnowledgeDB/meta/lint_baseline.txt` is the error-count ratchet. The merge takes the minimum: the bar can only go down.
+- `AuroraKnowledgeDB/meta/lint_residue.json` is the remainder after "Fix the base". The merge unions the lists, deduplicates and sorts them.
+- The `merge.aurora-lint-baseline` and `merge.aurora-lint-residue` drivers are configured by install and `kit:update`; the rules live in `.gitattributes`.
