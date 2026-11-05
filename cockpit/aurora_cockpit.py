@@ -2059,7 +2059,7 @@ def request_lang(q: dict) -> str:
 # подстановка записана как `{}` (так её видит `kit_i18n.message_skeletons`). Строка с
 # подстановками ищется по образцу: что подставлено — берётся из русского текста и тоже
 # переводится, если это сообщение (причина отказа вложена в «Маршрут не начат: …»).
-MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait", "python_error")
+MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait", "python_error", "readonly")
 MESSAGE_LISTS = ("errors", "warns", "blocker_why", "notes", "warn")  # находки доктора и предупреждения раздела: список сообщений под одним ключом
 _MATCHERS: dict = {}
 

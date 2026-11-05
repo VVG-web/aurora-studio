@@ -177,7 +177,7 @@ def keys_of(data: dict) -> set:
 # подстановка в нём — `{}`. Что считать сообщением, решает этот перечень: ключи ответа, текст
 # `raise` и возврат функций, которые отдают причину отказа. Сервер знает те же ключи
 # (`MESSAGE_KEYS`) — их совпадение сверяет проверка.
-MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait", "python_error")
+MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait", "python_error", "readonly")
 REASON_FUNCS = ("why_readonly", "why_service", "why_no_create", "graph_state", "mcp_unmask",
                 "writable_target", "version_gap", "build", "models_key_note",
                 "_python_refusal", "doctor_start_failure", "restart_probe_failure",
