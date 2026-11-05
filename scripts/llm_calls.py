@@ -54,7 +54,7 @@ DOCS = {"ru": KIT / "docs" / "llm-calls.md", "en": KIT / "docs" / "en" / "llm-ca
 SCAN_DIRS = [KIT / "scripts", KIT / "scripts" / "agents", KIT / "cockpit"]
 LLM_ROLES = ("worker", "planner", "critic", "qa")
 # Сам путь к модели: транспорт и адаптер шлют запросы по должности, это не места вызова.
-ENGINE_FUNCS = {"agent_core.py:call_role", "agent_core.py:_call_role"}
+ENGINE_FUNCS = {"agent_core.py:call_role", "agent_core.py:_call_role", "agent_core.py:ask_role"}
 ENGINE_HTTP_FILES = {"agent_core.py", "pydantic_ai_adapter.py"}
 HTTP_PATHS = ("/chat/completions", "/embeddings")
 
@@ -73,9 +73,9 @@ def _is_model_call(node: ast.Call) -> bool:
     else:
         names = [f]
     for v in names:
-        if isinstance(v, ast.Name) and v.id in ("call", "call_role"):
+        if isinstance(v, ast.Name) and v.id in ("call", "call_role", "ask_role"):
             return True
-        if isinstance(v, ast.Attribute) and v.attr == "call_role":
+        if isinstance(v, ast.Attribute) and v.attr in ("call_role", "ask_role"):
             return True
     return False
 

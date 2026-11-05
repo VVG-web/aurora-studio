@@ -290,7 +290,7 @@ and the index stays on stdlib. A slot error falls back to stdlib and does not fa
 index: routes, tables, topics, symbols, strings and tests. Each criterion gets one of three
 verdicts: `found` (evidence and all numbers/codes), `partial` (evidence, some tokens missing),
 `not found` (no fact in the index). Evidence is a `file:line` coordinate; it is not a verdict
-that the criterion is done. No model or network is needed. `--json` is machine output,
+that the criterion is done. Without `--agent` no model or network is needed. `--json` is machine output,
 `--out` writes Markdown.
 
 ```bash
@@ -306,17 +306,26 @@ python3 .aurora/scripts/code_check.py --story US-1.1 --out Artifacts/checks/US-1
 `[cN]` reference to `file:line`, and the "What could not be established from the code" section
 is mandatory. No model or network is needed.
 
+With `--agent` the model writes only `cr-module`, `cr-algorithm` and `cr-rules`: it sees
+numbered index facts, must cite them as `[cN]`, and must fill the "What could not be established
+from the code" section. An answer without citations, with an invented reference or without that
+section is rejected; the deterministic document stays with the reason. The model is called only
+when `code_repos.<repo>.models: true`, and a model document is written only when
+`code_repos.<repo>.publish: true`.
+
 `CleanRoom/meta/passport.json` stores the repository revision, index time and document list.
 `--check` names stale and missing documents and exits 1 when a rebuild is due.
 
 ```bash
 python3 .aurora/scripts/clean_room.py --apply
+python3 .aurora/scripts/clean_room.py --agent --apply
 python3 .aurora/scripts/clean_room.py --check
 python3 .aurora/scripts/clean_room.py --json
 ```
 
 Publication stays with the existing `ship:publish` for a chosen document: Clean Room does not
-write to Confluence by itself.
+write to Confluence by itself. `ship:publish` checks `publish: true` on the repository of a Clean
+Room document and refuses without it.
 
 ## Index health: `code:health`
 

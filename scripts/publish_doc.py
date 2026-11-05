@@ -64,6 +64,7 @@ from aurora_common import (GATE_CODES, KB_ROOT, TRUSTED, as_list, body as md_bod
                            config_value, git_commit, frontmatter, link_escapes, outward_check, outward_gate,
                            set_field, split_frontmatter, utc_stamp, utc_today, with_fields)
 
+import code_repos as CR
 import connector_ops as CO
 
 ROLE = "wiki"                            # публикация знает роль и операции, а не продукт: вики — коннектор проекта
@@ -778,6 +779,11 @@ def main() -> int:
     return int(res.get("rc", 1))
 
 
+def code_publish_allowed(project: str, repo: str) -> tuple:
+    """Clean Room публикуется только по коду с code_repos.<repo>.publish: true."""
+    return CR.publish_allowed(project, repo)
+
+
 def publish(a) -> dict:
     """Публикация одного файла → исход: `outcome`, `rc` (код выхода) и всё, что панели нужно для кнопок."""
     res = {"outcome": "", "rc": 1, "apply": bool(a.apply), "path": a.path.replace("\\", "/"), "kind": "", "title": "",
@@ -820,6 +826,12 @@ def publish(a) -> dict:
     eol = "\r\n" if "\r\n" in raw else "\n"          # штамп пишется окончаниями строк файла, а не системы
     text = raw.lstrip("﻿").replace("\r\n", "\n")   # BOM перед шапкой прятал бы её от разбора, а с ней — ворота
     fm = frontmatter(text)
+    if os.path.normpath(path).replace("\\", "/").startswith("CleanRoom/"):
+        allowed, why = code_publish_allowed(".", str(fm.get("source_repo") or ""))
+        if not allowed:
+            print(f"publish: {path} — публикация Clean Room запрещена: {why}", file=sys.stderr)
+            return done("blocked", 1, code="no-publish", fix="project",
+                        why=f"публикация Clean Room запрещена: {why}")
     gate = review_gate(text, fm, path)
     bypass = bool(gate) and "review" in a.allow
     res["review"] = [gid for gid, _why in gate]

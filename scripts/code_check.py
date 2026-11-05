@@ -256,7 +256,7 @@ def _accepts(agent: dict, criterion: dict) -> bool:
             and set(citations) <= _coords(criterion.get("evidence") or []))
 
 
-def judge(report: dict, ask, max_calls: int = 5, deadline: float = 300) -> dict:
+def judge(report: dict, ask=None, max_calls: int = 5, deadline: float = 300) -> dict:
     """Модельный арбитр только для спорных критериев; детерминированные факты не трогает."""
     calls = accepted = 0
     rows = []
@@ -270,7 +270,12 @@ def judge(report: dict, ask, max_calls: int = 5, deadline: float = 300) -> dict:
                          "agent": {"skipped": "max_calls"}})
             continue
         calls += 1
-        agent = _parse_answer(ask(_agent_messages(criterion), deadline))
+        if ask is None:
+            import agent_core as AG
+            answer = AG.ask_role(_agent_messages(criterion), "worker", deadline, max_tokens=2000)
+        else:
+            answer = ask(_agent_messages(criterion), deadline)
+        agent = _parse_answer(answer)
         agent["accepted"] = _accepts(agent, criterion)
         if agent["accepted"]:
             accepted += 1
@@ -285,18 +290,6 @@ def judge(report: dict, ask, max_calls: int = 5, deadline: float = 300) -> dict:
     })
     return {**report, "criteria": rows, "summary": summary,
             "agent": {"calls": calls, "accepted": accepted}}
-
-
-def _ask(messages: list, deadline: float = 300) -> dict:
-    try:
-        import agent_core as AG
-        r = AG.call_role(AG.config(), "worker", messages, thinking=True, max_tokens=2000,
-                         deadline=time.time() + deadline)
-    except Exception as exc:  # noqa: BLE001 — арбитр не должен ронять отчёт
-        return {"ok": False, "text": "", "error": f"{type(exc).__name__}: {exc}"}
-    if not r.get("ok"):
-        return {"ok": False, "text": "", "error": str(r.get("error") or r.get("why") or "нет ответа")}
-    return {"ok": True, "text": str(r.get("text") or ""), "error": ""}
 
 
 def render_md(report: dict) -> str:
@@ -353,7 +346,7 @@ def main(argv=None) -> int:
     root = Path(a.project).resolve()
     report = check_story(str(root), a.story)
     if a.agent and report.get("found"):
-        report = judge(report, _ask, max(0, a.max_calls), a.deadline)
+        report = judge(report, None, max(0, a.max_calls), a.deadline)
     if a.json:
         print(json.dumps(report, ensure_ascii=False, indent=1))
     else:

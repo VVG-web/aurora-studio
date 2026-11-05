@@ -28,6 +28,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 - [Building a Confluence page](#publish)
 - [Meaning index (embeddings)](#embeddings)
 - [Acceptance criteria arbiter over code](#codecheck)
+- [Clean Room synthesis from code](#cleanroom)
 
 <a id="build"></a>
 
@@ -403,3 +404,18 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 - **Tools:** none: the model receives only the criterion and the evidence.
 - **Path:** Pydantic AI.
 - **Then:** An accepted found changes the verdict and counters; an error or invented citation keeps the deterministic answer.
+
+<a id="cleanroom"></a>
+
+## Clean Room synthesis from code
+
+- **When.** The code:cleanroom command with --agent: only cr-module, cr-algorithm, cr-rules, one call per document; requires models: true and publish: true on the repository.
+- **Commands:** `code:cleanroom`.
+
+| Role | What it does | Prompt |
+|---|---|---|
+| Writer (worker) | Write the 'What is visible from the code' and 'What could not be established from the code' sections from numbered index facts. Every statement must cite [cN]; invented files, lines and reasons are forbidden. | `AGENT_PROMPT` (clean_room.py) |
+
+- **Tools:** none: the model receives only index facts.
+- **Path:** Pydantic AI.
+- **Then:** The engine validates citations; an answer without citations or the mandatory section is rejected, and the deterministic document stays.

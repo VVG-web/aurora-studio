@@ -3129,6 +3129,19 @@ def _note_net_blocked(skipped: dict, providers: list) -> dict:
     return row
 
 
+def ask_role(messages: list, role: str, deadline: float = 300, max_tokens: int = 2000) -> dict:
+    """Один вызов роли с рассуждениями; ответ в одном виде: ok, text, error."""
+    try:
+        r = call_role(config(), role, messages, thinking=True, max_tokens=max_tokens,
+                      deadline=time.time() + deadline)
+    except Exception as exc:  # noqa: BLE001 — вызывающий сам решает, что делать с отказом
+        return {"ok": False, "text": "", "error": f"{type(exc).__name__}: {exc}"}
+    if not r.get("ok"):
+        return {"ok": False, "text": "",
+                "error": str(r.get("error") or r.get("why") or "нет ответа")}
+    return {"ok": True, "text": str(r.get("text") or ""), "error": ""}
+
+
 def call_role(cfg: dict, role: str, messages: list, transport=None,
               deadline: float | None = None, sleep=time.sleep,
               thinking: bool | None = None, max_tokens: int | None = None,

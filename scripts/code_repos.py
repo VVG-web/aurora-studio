@@ -174,6 +174,18 @@ def models_allowed(project, name: str) -> bool:
     return rec.get("models") is True
 
 
+def publish_allowed(project, name: str, rec: dict | None = None) -> tuple:
+    """Можно ли публиковать артефакты по коду `name`: только при `publish: true`."""
+    if rec is None:
+        repos = read_repos(project)
+        rec = repos.get(find(repos, name)) or {}
+    if not rec:
+        return False, f"репозитория {name} нет в code_repos"
+    if rec.get("publish") is not True:
+        return False, f"code_repos.{name}.publish: false"
+    return True, ""
+
+
 def access_needs(rec: dict) -> dict:
     """Что нужно репозиторию по сети (поле `access`): {profile, internet}. Пусто и `local` — сеть не проверяется."""
     access = str((rec or {}).get("access") or "").strip()

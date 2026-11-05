@@ -951,7 +951,7 @@
         "code:check"
       ],
       "code": [
-        "code_check.py:_ask"
+        "code_check.py:judge"
       ],
       "steps": [
         {
@@ -971,6 +971,42 @@
       "after": {
         "ru": "Принятый found меняет вердикт и счётчики; ошибка или выдуманная цитата оставляют детерминированный ответ.",
         "en": "An accepted found changes the verdict and counters; an error or invented citation keeps the deterministic answer."
+      }
+    },
+    {
+      "id": "cleanroom",
+      "title": {
+        "ru": "Синтез Clean Room по коду",
+        "en": "Clean Room synthesis from code"
+      },
+      "when": {
+        "ru": "Команда code:cleanroom с --agent: только виды cr-module, cr-algorithm, cr-rules, по одному вызову на документ; нужны models: true и publish: true у репозитория.",
+        "en": "The code:cleanroom command with --agent: only cr-module, cr-algorithm, cr-rules, one call per document; requires models: true and publish: true on the repository."
+      },
+      "commands": [
+        "code:cleanroom"
+      ],
+      "code": [
+        "clean_room.py:synthesize"
+      ],
+      "steps": [
+        {
+          "role": "worker",
+          "prompt": "clean_room.py:AGENT_PROMPT",
+          "what": {
+            "ru": "Написать разделы «Что видно по коду» и «Что не удалось установить по коду» по пронумерованным фактам индекса. Каждое утверждение обязано ссылаться на [cN]; выдуманные файлы, строки и причины запрещены.",
+            "en": "Write the 'What is visible from the code' and 'What could not be established from the code' sections from numbered index facts. Every statement must cite [cN]; invented files, lines and reasons are forbidden."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет: модель получает только факты индекса",
+        "en": "none: the model receives only index facts"
+      },
+      "engine": "pydantic_ai",
+      "after": {
+        "ru": "Цитаты проверяются движком; ответ без цитат или обязательного раздела отменяется, остаётся детерминированный документ.",
+        "en": "The engine validates citations; an answer without citations or the mandatory section is rejected, and the deterministic document stays."
       }
     }
   ]

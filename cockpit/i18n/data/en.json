@@ -124,7 +124,7 @@
     "code:artifacts": "Code artifact kinds from `TemplatesCode/` and `PromptCode/`: what can be built, with which template, prompt and output folder; `--check` names a template or prompt without a file and an invalid folder, `--show` prints the form and paths; no project settings are needed for the kinds",
     "code:pack": "A story requirements pack without a model: Confluence/Jira/artifact sources, acceptance criteria with stable ids and tokens, related artifacts with provenance, and gaps; `--list` lists stories, `--story` builds a pack, `--json` is machine output, `--out` writes Markdown",
     "code:check": "Check a story's acceptance criteria against the code index without a model: routes, tables, topics, symbols, strings and tests as `file:line` evidence; verdicts are found, partial, not found, plus missing tokens; `--fail-on none/partial/not_found`; `--agent` lets a model arbitrate only disputed criteria (citations are mandatory, `--max-calls`, `--deadline`); `--json` is machine output, `--out` writes Markdown",
-    "code:cleanroom": "Clean Room artifacts from code without a model: `CleanRoom/<kind>/<repo>.md` documents with facts and `[cN]` references, a passport with revision and time, `--check` names stale and missing documents",
+    "code:cleanroom": "Clean Room artifacts from code: `CleanRoom/<kind>/<repo>.md` documents with facts and `[cN]` references, a passport with revision and time; `--agent` lets a model write `cr-module`/`cr-algorithm`/`cr-rules` from index facts only, `[cN]` citations and the 'What could not be established from the code' section are mandatory, and `publish: true` is required; `--check` names stale and missing documents",
     "code:health": "Code index health: clone and index revision, freshness, files, routes, tables, topics; `--check` returns 1 for a missing or stale index, `--json` is machine output",
     "ship:task": "A task in the tracker for an artifact document through the active task tracker connector (project settings): type, epic, assignee, labels and components come from the `task:` block of the document header, the task properties of the kind and the connector settings; the default assignee is the person with the project's git e-mail. Without `--apply` — a plan, nothing is written to the tracker; with `--apply` the task is created and `task_key` and `task_url` go into the document header (BOM and line endings are kept). The published page of the document is linked to the task; if the task already exists, no second one appears."
   },
@@ -1188,7 +1188,8 @@
     "свойство задачи нового документа (для --task make), в блок task: шапки: project, type, assignee, labels, components, epic; повторяется": "a task property of the new document (for --task make), into the task: block of the header: project, type, assignee, labels, components, epic; repeatable",
     "модельный арбитр только для спорных критериев": "model arbiter for disputed criteria only",
     "сколько критериев отдать модели": "how many criteria to give the model",
-    "секунд на один вызов модели": "seconds per model call"
+    "секунд на один вызов модели": "seconds per model call",
+    "синтез cr-module/cr-algorithm/cr-rules моделью по фактам индекса": "model synthesis of cr-module/cr-algorithm/cr-rules from index facts"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",
