@@ -75,11 +75,11 @@ def test_cleanroom_agent_refuses_publish_false(tmp: Path):
 def test_publish_doc_requires_repo_publish_true(tmp: Path):
     """ship:publish отказывает Clean Room документу без code_repos.<repo>.publish: true."""
     root = make_project(tmp)
-    _config(root, {"orders": {"url": "https://example.invalid/orders.git", "branch": "main",
+    _config(root, {"orders": {"url": "https://example.com/orders.git", "branch": "main",
                               "provider": "generic"}})
     ok, why = PD.code_publish_allowed(str(root), "orders")
     assert not ok and "publish: false" in why, why
-    _config(root, {"orders": {"url": "https://example.invalid/orders.git", "branch": "main",
+    _config(root, {"orders": {"url": "https://example.com/orders.git", "branch": "main",
                               "provider": "generic", "publish": True}})
     assert PD.code_publish_allowed(str(root), "orders") == (True, "")
 
