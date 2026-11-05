@@ -32,7 +32,8 @@ def _symbol_at(records, line: int) -> str:
     for rec in records:
         if rec.get("rec") != "symbol":
             continue
-        start, end = int(rec.get("line_start") or 0), int(rec.get("line_end") or start)
+        start = int(rec.get("line_start") or 0)
+        end = int(rec.get("line_end") or start)
         if start <= line <= end:
             return rec.get("id", "")
     return ""

@@ -59,7 +59,7 @@ def main() -> int:
             return 1
         lang = model.language_of(str(path))
         stdlib_ms, stdlib_n = _without_optional(
-            lambda: _run(str(path), text, lang, a.repeat))
+            lambda path=path, text=text, lang=lang: _run(str(path), text, lang, a.repeat))
         adapter_ms, adapter_n = _run(str(path), text, lang, a.repeat)
         out.append({"file": str(path), "lang": lang, "repeat": max(1, a.repeat),
                     "stdlib_ms": stdlib_ms, "stdlib_records": stdlib_n,

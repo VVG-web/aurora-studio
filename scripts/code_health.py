@@ -47,7 +47,6 @@ def state(project: str) -> dict:
     except Exception as e:  # noqa: BLE001
         return {"repos": [], "failed": f"{type(e).__name__}: {e}"}
     for name in clean:
-        rec = CREPO.read_repos(project).get(name) or {}
         clone = CREPO.clone_path(project, name)
         db = os.path.join(project, engine_dir(project), "cache", "code", name, "index.sqlite")
         row = {"name": name, "clone": str(clone), "index": db, "built": os.path.isfile(db),

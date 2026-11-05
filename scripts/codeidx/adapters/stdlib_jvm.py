@@ -213,7 +213,7 @@ def extract(path: str, text: str, role: str = "src", lang: str = "Java") -> list
             if typ in ("return", "new", "throw"):
                 continue
             anns = annotations(lines, i)
-            field_rec = sym(name, "field", cls["qname"], i + 1, i + 1, strip(line), anns)
+            sym(name, "field", cls["qname"], i + 1, i + 1, strip(line), anns)
             if table:
                 col_name, col_attrs = _column_name(anns, name)
                 add({"rec": "column", "file": path, "table": table, "name": col_name, "type": typ,
@@ -228,26 +228,26 @@ def extract(path: str, text: str, role: str = "src", lang: str = "Java") -> list
         if is_comment(line):
             continue
         cls = _class_at(classes, i + 1)
-        name = ret = args = ""
+        name = ret = _args = ""
         m = KOTLIN_METHOD.match(line) if lang == "Kotlin" or " fun " in line else None
         if m:
-            name, args, ret = m.group(1), m.group(2), (m.group(3) or "")
+            name, _args, ret = m.group(1), m.group(2), (m.group(3) or "")
         else:
             m = GO_METHOD.match(line) if line.lstrip().startswith("func ") else None
             if m:
-                name, args, ret = m.group(1), m.group(2), m.group(3).strip()
+                name, _args, ret = m.group(1), m.group(2), m.group(3).strip()
             else:
                 m = JAVA_METHOD.match(line)
                 if m:
-                    ret, name, args = m.group(1).strip(), m.group(2), m.group(3)
+                    ret, name, _args = m.group(1).strip(), m.group(2), m.group(3)
                 else:
                     m = CTOR_RX.match(line)
                     if m and cls and m.group(1) == cls["name"]:
-                        name, args, ret = m.group(1), m.group(2), ""
+                        name, _args, ret = m.group(1), m.group(2), ""
                     elif m is None:
                         m = JAVA_METHOD_ANY.match(line)
                         if m:
-                            ret, name, args = m.group(1).strip(), m.group(2), m.group(3)
+                            ret, name, _args = m.group(1).strip(), m.group(2), m.group(3)
         if not name or name in CONTROL or ret.strip() in CONTROL:
             continue
         anns = annotations(lines, i)
