@@ -44,7 +44,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Ровно тот коммит, что прошёл проверки. Полная история нужна, чтобы найти
           # коммит, поднявший VERSION.
