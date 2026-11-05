@@ -298,7 +298,9 @@ jobs:
     # пути и оболочка другие, а CI до сих пор macOS не покрывал. Пока неблокирующее
     # (continue-on-error): сделать блокирующим, когда задание станет стабильно зелёным.
     runs-on: macos-latest
-    timeout-minutes: 30
+    # Полный набор на macOS идёт дольше 30 минут; отмена по таймауту делает итог workflow
+    # cancelled, и release.yml, который ждёт только success, молча не выпускает версию.
+    timeout-minutes: 90
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
