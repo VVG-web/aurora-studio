@@ -12,6 +12,7 @@ const FIELDS = ["url", "provider", "branch", "pin", "include", "exclude", "acces
 let CTX = null;
 let D = null, FORM = null, CREDS = {}, DIRTY = false, OPEN = "", PROJECT = "", ADD = null, MSG = null;
 let FIND = null, PACK = null;
+let ART = null;
 const KIND_KEYS = {symbol: "code.index.kind.symbol", file: "code.index.kind.file",
   route: "code.index.kind.route", table: "code.index.kind.table", column: "code.index.kind.column",
   topic: "code.index.kind.topic", config: "code.index.kind.config", string: "code.index.kind.string",
@@ -25,7 +26,7 @@ export async function refresh(ctx){
   if (!ctx.project) return;
   if (PROJECT !== ctx.project.path){
     PROJECT = ctx.project.path;
-    DIRTY = false; OPEN = ""; ADD = null; CREDS = {};
+    DIRTY = false; OPEN = ""; ADD = null; CREDS = {}; ART = null;
   }
   MSG = null;                  // сообщение прошлой записи к новому показу раздела не относится
   await load(ctx, true);
@@ -43,6 +44,12 @@ async function load(ctx, keepForm){
     return;
   }
   D = d;
+  if (!ART || ART.project !== path || ART.digest !== (d.artifacts || {}).digest) {
+    ART = {project: path, digest: (d.artifacts || {}).digest || "", rows: {}};
+    ((d.artifacts || {}).kinds || []).forEach(k => {
+      ART.rows[k.kind] = {out: k.out || "", template: k.template_path || "", enabled: !!k.enabled};
+    });
+  }
   const p = await ctx.api("/api/code/pack?project=" + encodeURIComponent(path), {quiet: true});
   if (!ctx.project || ctx.project.path !== path) return;
   PACK = p && !p.error ? p : {stories: [], error: (p && p.error) || ""};
@@ -505,23 +512,91 @@ function artifactsCard(ctx){
   const kinds = data.kinds || [];
   if (!kinds.length) box.append(el("div", {class: "muted", style: "font-size:12.5px"},
     t("code.artifacts.empty")));
-  kinds.forEach(k => {
-    const enabled = k.enabled ? t("code.artifacts.on") : t("code.artifacts.off");
-    box.append(el("div", {class: "row", style: "gap:8px;align-items:center;margin:4px 0;flex-wrap:wrap"},
-      el("span", {class: "chip"}, enabled),
-      el("span", {class: "mono"}, k.kind),
-      el("span", {class: "muted", style: "font-size:12.5px"}, k.title || ""),
-      el("span", {class: "muted", style: "font-size:12px"},
-        `${k.template_path || ""} → ${k.prompt_path || ""} · ${k.out || ""}`)));
+  if (ART) Object.keys(ART.rows).sort().forEach(kind => {
+    const row = ART.rows[kind], original = kinds.find(k => k.kind === kind) || {};
+    const out = el("input", {class: "btn mono", style: "flex:1;min-width:190px;font-weight:400",
+      value: row.out || "", placeholder: "ArtifactsCode/" + kind});
+    out.oninput = () => { row.out = out.value.trim(); };
+    const tpl = el("input", {class: "btn mono", style: "flex:1;min-width:190px;font-weight:400",
+      value: row.template || ""});
+    tpl.oninput = () => { row.template = tpl.value.trim(); };
+    const on = el("input", {type: "checkbox"});
+    on.checked = row.enabled !== false;
+    on.onchange = () => { row.enabled = on.checked; };
+    box.append(el("div", {class: "row", style: "gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap"},
+      el("span", {class: "mono", style: "min-width:90px"}, kind),
+      field(ctx, t("code.artifacts.path"), out, t("code.artifacts.path_hint")),
+      field(ctx, t("code.artifacts.template"), pick(ctx, tpl,
+        {project: ctx.project.path, want: "file", title: t("code.artifacts.pick_template")}),
+        t("code.artifacts.template_hint")),
+      el("label", {class: "row", style: "gap:6px;align-items:center;font-size:12.5px"},
+        on, t("code.artifacts.enabled"))));
+    if (original.problems) original.problems.forEach(p => box.append(el("div", {class: "warnbox"},
+      `${kind}: ${p.message || p.code}`)));
   });
   (data.problems || []).forEach(p => box.append(el("div", {class: "warnbox", style: "margin-top:6px"},
     `${p.kind}: ${p.message || p.code}`)));
   box.append(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:12px"},
+    el("button", {class: "btn primary", onclick: () => saveArtifacts(ctx)}, t("code.artifacts.save")),
+    el("button", {class: "btn", onclick: () => addArtifact(ctx)}, t("code.artifacts.add")),
     el("button", {class: "btn", onclick: () => ctx.runWatched("code:artifacts", ["--check"])},
       t("code.artifacts.check")),
     el("button", {class: "btn", onclick: () => ctx.runWatched("code:artifacts", [])},
       t("code.artifacts.list"))));
   return box;
+}
+
+async function saveArtifacts(ctx){
+  if (!ART) return;
+  // В форме лежат и пути китовых шаблонов (они вне проекта). Писать их в проектные
+  // переопределения нельзя: сохраняем только поля, которые человек действительно изменил.
+  const kinds = {};
+  Object.keys(ART.rows).forEach(kind => {
+    const row = ART.rows[kind];
+    const orig = ((D && D.artifacts && D.artifacts.kinds) || []).find(k => k.kind === kind);
+    const patch = orig ? {} : {out: row.out || "", template: row.template || "",
+                               enabled: row.enabled !== false};
+    if (orig){
+      if ((row.out || "") !== (orig.out || "")) patch.out = row.out || "";
+      if ((row.template || "") !== (orig.template_path || "")) patch.template = row.template || "";
+      if ((row.enabled !== false) !== !!orig.enabled) patch.enabled = row.enabled !== false;
+    }
+    if (Object.keys(patch).length) kinds[kind] = patch;
+  });
+  if (!Object.keys(kinds).length){
+    ctx.toast(ctx.t("code.artifacts.saved"), "ok");
+    return;
+  }
+  const r = await ctx.api("/api/code/artifacts", {method: "POST", quiet: true,
+    body: JSON.stringify({project: ctx.project.path, kinds, expect: ART.digest})});
+  if (r && r.conflict){
+    // Пока форма была открыта, блок настроек изменили на диске. Не затираем чужую
+    // правку и не оставляем человека с непонятным «не сохранено»: перечитываем.
+    ART = null;
+    ctx.toast(ctx.t("code.artifacts.conflict"), "warn");
+    await load(ctx, true);
+    return;
+  }
+  if (!r || !r.ok){
+    ctx.toast((r && r.error) || ctx.t("code.artifacts.save_failed"), "err");
+    return;
+  }
+  if (r.state && D) D.artifacts = r.state;
+  ART = null;
+  ctx.toast(ctx.t("code.artifacts.saved"), "ok");
+  await load(ctx, true);
+}
+
+async function addArtifact(ctx){
+  const got = await ctx.ui.pickPath({project: ctx.project.path, want: "file",
+    title: ctx.t("code.artifacts.pick_template")});
+  if (!got) return;
+  const path = Array.isArray(got) ? got[0] : got;
+  const file = String(path || "").split("/").pop() || "";
+  const kind = file.replace(/\.md$/i, "").split("_v", 1)[0];
+  if (!kind || !ART) return;
+  ART.rows[kind] = {out: "ArtifactsCode/" + kind, template: path, enabled: true};
+  draw(ctx);
 }
 
 function packCard(ctx){

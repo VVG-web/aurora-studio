@@ -18,6 +18,9 @@ export async function renderRoutes(ctx, group, box){
   // Сценарии читаем один раз, а рисуем каждый раз: отметки последнего запуска меняются
   // от прогонов и от смены проекта, поэтому кэшировать саму разметку нельзя.
   const d = await ctx.scenarios();
+  // Состояние остановленного прогона читается до очистки: иначе два одновременных
+  // обновления раздела успевают оба вставить карточку после `innerHTML = ""`.
+  const stopped = group === "база" ? await stoppedCard(ctx) : null;  // данные движка
   box.innerHTML = "";
   // Каждый шаг маршрута — команда в проекте. Без выбранного проекта список кнопок
   // выглядит рабочим, но первая же из них скажет «сначала выберите проект».
@@ -28,9 +31,42 @@ export async function renderRoutes(ctx, group, box){
         onclick: () => ctx.show("overview")}, t("routes.to_bridge"))));
     return;
   }
+  if (stopped) box.append(stopped);
   // Профиль машины прячет маршруты (`hidden`), но не запрещает: запуск по id им доступен.
   (d.scenarios || []).filter(sc => !sc.hidden && (sc.group || "база") === group)   // данные движка
     .forEach(sc => box.append(routeCard(ctx, sc)));
+}
+
+/* Остановленный прогон — рядом с маршрутами, а не только в «Консоли»: человек приходит
+   в «Быстрый старт», чтобы продолжить работу, и не должен искать вчерашнюю кнопку в
+   другом разделе. Живой прогон не показываем: у него своя карточка в «Консоли». */
+async function stoppedCard(ctx){
+  if (!ctx.project) return null;
+  const project = encodeURIComponent(ctx.project.path);
+  const got = await ctx.api("/api/route/state?project=" + project, {quiet: true});
+  const state = got && got.state;
+  if (!state || !state.scId) return null;
+  const live = await ctx.api("/api/routes?project=" + project, {quiet: true});
+  if (live && (live.routes || []).length) return null;
+  const d = await ctx.scenarios();
+  const sc = (d.scenarios || []).find(s => s.id === state.scId);
+  if (!sc) return null;
+  const {t, el} = ctx;
+  const reasonKey = "act.reason_" + (state.reason || "other");
+  const why = t(reasonKey) === reasonKey ? t("act.reason_other") : t(reasonKey);
+  const when = state.at ? ctx.fmt.when(state.at) : "";
+  return el("div", {class: "card", style: "padding:18px;margin-bottom:16px;border-color:var(--tier-inreview)"},
+    el("div", {class: "row", style: "gap:8px;align-items:center;flex-wrap:wrap"},
+      el("b", {style: "font-size:15px"}, t("quickstart.resume_title")),
+      el("span", {class: "chip warn"}, why),
+      state.step ? el("span", {class: "chip"}, t("quickstart.resume_step", {n: state.step})) : null,
+      when ? el("span", {class: "muted", style: "font-size:12.5px"}, when) : null),
+    el("p", {class: "muted", style: "font-size:13px;margin:6px 0 10px"},
+      t("quickstart.resume_about", {title: state.title || sc.title})),
+    el("button", {class: "btn primary", onclick: () => ctx.runRoute(sc, state.write !== false, {
+      skipSigs: state.done || [], attempts: state.attempts || 0, cycleAt: state.cycleAt || null})},
+      t("resume.stopped_at", {title: state.title || sc.title, slug: ctx.project.slug,
+                              when, why})));
 }
 
 function routeCard(ctx, sc){

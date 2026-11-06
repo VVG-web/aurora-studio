@@ -2523,10 +2523,24 @@ def code_artifacts_state(project: str, lang: str = "ru") -> dict:
                 except ValueError:
                     pass
             out.append(row)
-        return {"kinds": out, "problems": problems}
+        return {"kinds": out, "problems": problems,
+                "digest": CA.overrides_digest(project),
+                "overrides": CA.read_overrides(project)}
     except Exception as e:  # noqa: BLE001 — сломанный реестр не роняет раздел
         return {"kinds": [], "problems": [{"kind": "", "field": "", "code": "failed",
                                            "message": f"{type(e).__name__}: {e}"[:300]}]}
+
+
+def code_artifacts_save(project: str, kinds, expect: str = "", lang: str = "ru") -> tuple:
+    """Сохранить проектные переопределения видов Code; устаревший слепок — 409."""
+    try:
+        import code_artifacts as CA
+        res = CA.save(project, kinds if isinstance(kinds, dict) else None, str(expect or ""))
+    except Exception as e:  # noqa: BLE001 — форма получает причину, а не оборванный ответ
+        return {"ok": False, "code": "failed", "error": f"{type(e).__name__}: {e}"[:300]}, 400
+    if not res.get("ok"):
+        return res, 409 if res.get("conflict") else 400
+    return {**res, "state": code_artifacts_state(project, lang)}, 200
 
 
 def code_pack_state(project: str, story: str = "", lang: str = "ru") -> dict:
@@ -8167,6 +8181,44 @@ class Handler(BaseHTTPRequestHandler):
                 return
             res, code = code_action(u.path.rsplit("/", 1)[1], project, payload)
             return self.send_json(res, code)
+        if u.path == "/api/code/artifacts":
+            project = payload.get("project", "")
+            if not isinstance(project, str) or not project:
+                return self.send_json({"error": "проект не выбран"}, 400)
+            if not self._known(project):
+                return
+            res, code = code_artifacts_save(project, payload.get("kinds"),
+                                            str(payload.get("expect") or ""), request_lang(q))
+            return self.send_json(res, code)
+        if u.path == "/api/requirements/check":
+            project = payload.get("project", "")
+            if not isinstance(project, str) or not project:
+                return self.send_json({"error": "проект не выбран"}, 400)
+            if not self._known(project):
+                return
+            paths = payload.get("paths")
+            if not isinstance(paths, list):
+                return self.send_json({"error": "paths должен быть списком"}, 400)
+            try:
+                import requirements_check as RQ
+                return self.send_json(RQ.check(project, paths))
+            except Exception as e:  # noqa: BLE001 — форма получает причину, а не оборванный ответ
+                return self.send_json({"error": f"{type(e).__name__}: {e}"[:300]}, 400)
+        if u.path == "/api/requirements/export":
+            project = payload.get("project", "")
+            if not isinstance(project, str) or not project:
+                return self.send_json({"error": "проект не выбран"}, 400)
+            if not self._known(project):
+                return
+            paths = payload.get("paths")
+            if not isinstance(paths, list):
+                return self.send_json({"error": "paths должен быть списком"}, 400)
+            try:
+                import requirements_check as RQ
+                return self.send_json(RQ.write_report(project, paths,
+                                                      str(payload.get("out") or "")))
+            except Exception as e:  # noqa: BLE001
+                return self.send_json({"error": f"{type(e).__name__}: {e}"[:300]}, 400)
         if u.path == "/api/gitsync/parse":
             # Строка из `git clone` → сервер, репозиторий, ветка, логин. Ничего не пишет.
             self.send_json(GS.parse_clone(str(payload.get("text") or "")))

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """code_artifacts.py — какие артефакты можно собрать по коду, по каким шаблонам и промптам.
 
-Настройка живёт в папках, а не в `aurora.config.yaml`:
+Основа настройки живёт в папках:
 
   TemplatesCode/<вид>_v1.0.md   паспорт вида и форма документа
   PromptCode/<вид>.md           правила письма для этого вида
 
 Кит привозит преднастроенные виды. Проект переопределяет любой из них файлом с тем же
 `kind` в своей `TemplatesCode/`, добавляет новые или выключает ненужные `enabled: "false"`.
-Правка настроек проекта для этого не нужна.
+Панель Code дополнительно хранит проектные переопределения `out`, `template`, `prompt` и
+`enabled` в блоке `code_artifacts:` файла `aurora.config.yaml`; они применяются поверх
+шаблонов и не переписывают остальной конфиг.
 
   python3 .aurora/scripts/code_artifacts.py --list
   python3 .aurora/scripts/code_artifacts.py --kind cr-api
@@ -21,8 +23,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -32,9 +36,13 @@ from aurora_common import frontmatter  # noqa: E402
 KIT = Path(__file__).resolve().parents[1]
 TEMPLATES = "TemplatesCode"
 PROMPTS = "PromptCode"
+CONFIG = "aurora.config.yaml"
+OVERRIDES = "code_artifacts"
+OVERRIDE_FIELDS = ("out", "template", "prompt", "enabled")
+ARTIFACT_ROOTS = ("Artifacts", "ArtifactsCode", "CleanRoom")
 SCOPES = ("symbol", "route", "controller", "module", "table", "topic", "pair", "component", "service")
 PURITIES = ("traceable", "strict")
-DEFAULT_OUT = "Artifacts/drafts/code"
+DEFAULT_OUT = "ArtifactsCode"
 TITLES_EN = {
     "cr-api": "API specification from code",
     "cr-data": "Data schema from code",
@@ -87,7 +95,7 @@ def _read_template(path: Path, source: str) -> dict:
         "version": str(meta.get("version") or "1.0").strip(),
         "enabled": _bool(meta.get("enabled"), True),
         "scope": str(meta.get("scope") or "module").strip() or "module",
-        "out": str(meta.get("out") or DEFAULT_OUT).strip() or DEFAULT_OUT,
+        "out": str(meta.get("out") or f"{DEFAULT_OUT}/{kind}").strip() or f"{DEFAULT_OUT}/{kind}",
         "prompt": str(meta.get("prompt") or f"{PROMPTS}/{kind}.md").strip(),
         "purity": str(meta.get("purity") or "traceable").strip() or "traceable",
         "order": _int(meta.get("order"), 100),
@@ -141,6 +149,224 @@ def _prompt_path(root: Path, rec: dict) -> tuple:
     return str(candidates[0]), False
 
 
+_OVERRIDES_RX = re.compile(
+    r"(?ms)^code_artifacts:[ \t]*(?:#.*)?\r?\n"
+    r"(?:[ \t]+.*\r?\n|[ \t]*\r?\n)*(?=^\S|\Z)")
+_KIND_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _unquote(raw: str) -> str:
+    raw = str(raw or "").strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        return raw[1:-1]
+    return re.sub(r"\s+#.*$", "", raw).strip()
+
+
+def _bool_or_none(value):
+    text = _unquote(value).lower()
+    if text in ("true", "yes", "on", "1", "да"):
+        return True
+    if text in ("false", "no", "off", "0", "нет"):
+        return False
+    return None
+
+
+def read_overrides(root=".") -> dict:
+    """{kind: {out/template/prompt/enabled}} из блока `code_artifacts:` проекта."""
+    path = Path(root) / CONFIG
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines)
+                  if re.fullmatch(r"code_artifacts:[ \t]*(?:#.*)?", line.rstrip("\r"))), None)
+    if start is None:
+        return {}
+    out: dict = {}
+    current = ""
+    for line in lines[start + 1:]:
+        line = line.rstrip("\r")
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line[:1] not in (" ", "\t"):
+            break
+        indent = len(line) - len(line.lstrip())
+        m = re.match(r"\s*([\w.-]+)\s*:\s*(.*)$", line)
+        if not m:
+            continue
+        key, value = m.group(1), m.group(2)
+        if indent <= 2 and not value.strip():
+            current = key
+            out.setdefault(current, {})
+        elif current and indent >= 4 and key in OVERRIDE_FIELDS:
+            if key == "enabled":
+                flag = _bool_or_none(value)
+                if flag is not None:
+                    out[current][key] = flag
+            else:
+                raw = _unquote(value)
+                if raw:
+                    out[current][key] = raw
+    return {kind: rec for kind, rec in out.items() if rec}
+
+
+def overrides_digest(root=".") -> str:
+    """Слепок блока настроек: комментарии и порядок полей не считаются изменением."""
+    data = json.dumps(read_overrides(root), ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+def _relative_file(root: Path, raw: str, field: str) -> tuple:
+    """(относительный путь, проблема) для файла шаблона/промпта проекта."""
+    raw = str(raw or "").strip().replace("\\", "/")
+    if not raw:
+        return "", ""
+    path = Path(raw)
+    if path.is_absolute() or ".." in path.parts:
+        return "", f"{field}: путь должен быть внутри проекта"
+    path = root / path
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return "", f"{field}: путь выходит за пределы проекта"
+    if path.suffix.lower() != ".md":
+        return "", f"{field}: нужен .md-файл"
+    if not path.is_file():
+        return "", f"{field}: файл не найден"
+    return path.relative_to(root).as_posix(), ""
+
+
+def out_problem(out: str) -> str:
+    """Пусто — папка допустима. Путь только внутри Artifacts/, ArtifactsCode/ или CleanRoom/."""
+    text = str(out or "").strip().strip('"').replace("\\", "/").rstrip("/")
+    if not text:
+        return ""
+    if os.path.isabs(text) or text.startswith("/") or re.match(r"^[A-Za-z]:", text):
+        return "путь абсолютный, а папка результата лежит внутри проекта"
+    if ".." in text.split("/"):
+        return "путь выходит за пределы проекта"
+    if not any(text == root or text.startswith(root + "/") for root in ARTIFACT_ROOTS):
+        return "папка результата должна быть внутри Artifacts/, ArtifactsCode/ или CleanRoom/"
+    if re.search(r"\.[A-Za-z][A-Za-z0-9]{1,4}$", text.split("/")[-1]):
+        return "путь похож на файл, а не на папку"
+    return ""
+
+
+def _apply_overrides(root: Path, rows: dict) -> tuple:
+    overrides = read_overrides(root)
+    problems = []
+    for kind, ov in overrides.items():
+        rec = rows.get(kind)
+        template = ov.get("template")
+        if template:
+            rel, why = _relative_file(root, template, "template")
+            if why:
+                problems.append({"kind": kind, "field": "template", "code": "template", "message": why})
+                continue
+            try:
+                rec = _read_template(root / rel, "project")
+                rec["kind"] = kind
+            except OSError as e:
+                problems.append({"kind": kind, "field": "template", "code": "unreadable",
+                                 "message": f"{rel}: {e}"})
+                continue
+        if rec is None:
+            problems.append({"kind": kind, "field": "kind", "code": "unknown",
+                             "message": "вид не найден и шаблон не задан"})
+            continue
+        rec = dict(rec)
+        if ov.get("out"):
+            rec["out"] = ov["out"]
+        if ov.get("prompt"):
+            rec["prompt"] = ov["prompt"]
+        if "enabled" in ov:
+            rec["enabled"] = ov["enabled"]
+        rows[kind] = rec
+    for rec in rows.values():
+        rec["prompt_path"], rec["prompt_exists"] = _prompt_path(root, rec)
+    return rows, problems
+
+
+def _render_overrides(overrides: dict) -> str:
+    lines = ["code_artifacts:"]
+    for kind in sorted(overrides):
+        lines.append(f"  {kind}:")
+        for field in OVERRIDE_FIELDS:
+            if field not in overrides[kind]:
+                continue
+            value = overrides[kind][field]
+            if field == "enabled":
+                value = "true" if value else "false"
+            lines.append(f"    {field}: {value}")
+    return "\n".join(lines) + "\n"
+
+
+def save(root=".", kinds=None, expect: str = "") -> dict:
+    """Дописать поля в блок `code_artifacts:`; остальной конфиг не меняется.
+
+    Панель присылает только изменённые поля вида, поэтому прежние переопределения
+    сохраняются. Пустое значение `out`/`template`/`prompt` снимает это переопределение.
+    """
+    root = Path(root)
+    if not isinstance(kinds, dict):
+        return {"ok": False, "code": "kinds", "error": "нужен объект видов"}
+    digest = overrides_digest(root)
+    if expect and expect != digest:
+        return {"ok": False, "conflict": True, "code": "conflict", "digest": digest}
+    clean = {kind: dict(rec) for kind, rec in read_overrides(root).items()}
+    for kind, raw in kinds.items():
+        if not _KIND_RX.fullmatch(str(kind or "")):
+            return {"ok": False, "code": "kind", "error": f"негодное имя вида: {kind}"}
+        rec = raw if isinstance(raw, dict) else {}
+        ov = clean.setdefault(kind, {})
+        if "out" in rec:
+            out = str(rec.get("out") or "").strip()
+            if not out:
+                ov.pop("out", None)
+            else:
+                why = out_problem(out)
+                if why:
+                    return {"ok": False, "code": "out", "error": f"{kind}: {why}"}
+                ov["out"] = out
+        for field in ("template", "prompt"):
+            if field not in rec:
+                continue
+            value = str(rec.get(field) or "").strip()
+            if not value:
+                ov.pop(field, None)
+            else:
+                rel, why = _relative_file(root, value, field)
+                if why:
+                    return {"ok": False, "code": field, "error": f"{kind}: {why}"}
+                ov[field] = rel
+        if "enabled" in rec:
+            ov["enabled"] = bool(rec["enabled"])
+        if not ov:
+            clean.pop(kind, None)
+    text = ""
+    path = root / CONFIG
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        pass
+    block = _render_overrides(clean)
+    match = _OVERRIDES_RX.search(text)
+    if match:
+        text = text[:match.start()] + block + text[match.end():]
+    else:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        if text and not text.endswith("\n\n"):
+            text += "\n"
+        text += block
+    try:
+        path.write_text(text, encoding="utf-8")
+    except OSError as e:
+        return {"ok": False, "code": "write", "error": str(e)}
+    return {"ok": True, "digest": overrides_digest(root)}
+
+
 def effective_kinds(root=".") -> tuple:
     """({kind: запись}, замечания). Сначала кит, затем проект поверх по `kind`."""
     kit, problems = _read_dir(KIT / "scaffold" / TEMPLATES, "kit")
@@ -148,8 +374,8 @@ def effective_kinds(root=".") -> tuple:
     problems += probs
     merged = dict(kit)
     merged.update(project)
-    for rec in merged.values():
-        rec["prompt_path"], rec["prompt_exists"] = _prompt_path(Path(root), rec)
+    merged, probs = _apply_overrides(Path(root), merged)
+    problems += probs
     return dict(sorted(merged.items(), key=lambda kv: (kv[1]["order"], kv[0]))), problems
 
 
@@ -163,11 +389,10 @@ def check(root=".") -> tuple:
         if rec["purity"] not in PURITIES:
             problems.append({"kind": rec["kind"], "field": "purity", "code": "purity",
                              "message": f"неизвестная purity «{rec['purity']}»; допустимы: {', '.join(PURITIES)}"})
-        out = Path(rec["out"])
-        if out.is_absolute() or ".." in out.parts or not str(rec["out"]).replace("\\", "/").startswith(
-                ("Artifacts/", "CleanRoom/")):
+        why = out_problem(rec["out"])
+        if why:
             problems.append({"kind": rec["kind"], "field": "out", "code": "out",
-                             "message": f"папка результата «{rec['out']}» должна быть внутри Artifacts/ или CleanRoom/"})
+                             "message": f"папка результата «{rec['out']}»: {why}"})
         if not rec["prompt_exists"]:
             problems.append({"kind": rec["kind"], "field": "prompt", "code": "no_prompt",
                              "message": f"нет промпта {rec['prompt_path']}"})

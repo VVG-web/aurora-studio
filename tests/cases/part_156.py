@@ -49,7 +49,7 @@ def test_code_section_calls_only_server_endpoints_that_exist_and_hides_secrets(_
     ck_src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     called = set(re.findall(r'"(/api/[\w/]+)', js))
     assert called == {"/api/code", "/api/code/parse", "/api/code/check", "/api/code/repos",
-                      "/api/code/find", "/api/code/pack"}, called
+                      "/api/code/find", "/api/code/pack", "/api/code/artifacts"}, called
     for path in called:
         assert f'"{path}"' in ck_src, f"сервер панели не обслуживает {path}"
     assert re.search(r"^export const lifecycle = 1;", js, re.M), "раздел без ленивого обновления"

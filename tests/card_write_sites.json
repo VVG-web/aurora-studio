@@ -1110,6 +1110,16 @@
    "kind": "other",
    "reason": "документы Clean Room и паспорт пишутся в CleanRoom/; не карточка",
    "calls": 2
+  },
+  "scripts/code_artifacts.py:save": {
+   "kind": "other",
+   "reason": "проектные overrides артефактов пишутся в aurora.config.yaml; не карточка",
+   "calls": 1
+  },
+  "scripts/requirements_check.py:write_report": {
+   "kind": "other",
+   "reason": "Markdown-отчёт проверки требований пишется в ArtifactsCode/; не карточка",
+   "calls": 1
   }
  }
 }

@@ -121,7 +121,7 @@
     "code:status": "Code repositories: the revision and its date, how far behind the server branch, the last sync, languages and size (files and lines per language without external tools; dependencies, generated, binary and lock files are not counted), the \"models\" and \"publish\" permissions; no network needed",
     "code:index": "Code index: file inventory from git objects, languages and roles, symbols, routes, SQL tables and columns, topics, configuration keys, tests, requirement tags and commit history in `.aurora/cache/code/<name>/index.sqlite`; secrets are masked, no model or network needed. Without `--apply` — a plan; `--rebuild` rebuilds, `--status` shows state, `--secrets` shows findings without values",
     "code:find": "Search the code index: symbols, files, routes, tables and columns, topics, configuration, strings, tests, requirement tags and commits; `--kind` narrows the kind, `--json` is machine output, an empty result is not an error; no model or network needed",
-    "code:artifacts": "Code artifact kinds from `TemplatesCode/` and `PromptCode/`: what can be built, with which template, prompt and output folder; `--check` names a template or prompt without a file and an invalid folder, `--show` prints the form and paths; no project settings are needed for the kinds",
+    "code:artifacts": "Code artifact kinds from `TemplatesCode/` and `PromptCode/`: what can be built, with which template, prompt and output folder; project `code_artifacts:` overrides path, template and enabled state, default path is `ArtifactsCode/<kind>`; `--check` names a template or prompt without a file and an invalid folder, `--show` prints the form and paths",
     "code:pack": "A story requirements pack without a model: Confluence/Jira/artifact sources, acceptance criteria with stable ids and tokens, related artifacts with provenance, and gaps; `--list` lists stories, `--story` builds a pack, `--json` is machine output, `--out` writes Markdown",
     "code:check": "Check a story's acceptance criteria against the code index without a model: routes, tables, topics, symbols, strings and tests as `file:line` evidence; verdicts are found, partial, not found, plus missing tokens; `--fail-on none/partial/not_found`; `--agent` lets a model arbitrate only disputed criteria (citations are mandatory, `--max-calls`, `--deadline`); `--json` is machine output, `--out` writes Markdown",
     "code:cleanroom": "Clean Room artifacts from code: `CleanRoom/<kind>/<repo>.md` documents with facts and `[cN]` references, a passport with revision and time; `--agent` lets a model write `cr-module`/`cr-algorithm`/`cr-rules` from index facts only, `[cN]` citations and the 'What could not be established from the code' section are mandatory, and `publish: true` is required; `--check` names stale and missing documents",
@@ -282,6 +282,7 @@
     }
   },
   "messages": {
+    "paths должен быть списком": "paths must be a list",
     ".gitattributes: нет правила merge={} для {} — выполните kit:update": ".gitattributes: no merge={} rule for {} — run kit:update",
     "git: не настроен merge.{}.driver — выполните kit:update": "git: merge.{}.driver is not configured — run kit:update",
     "в движке нет генератора скриптов публикации — обновите Аврору": "the engine has no publishing script generator — update Aurora",

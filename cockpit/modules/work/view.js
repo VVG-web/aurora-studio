@@ -13,6 +13,7 @@ let REFS = [];
 let SUGGEST_STOP = null;       // гасит отложенный запрос подсказки и закрывает список (onHide)
 // Блок «Задача» будущего документа (окно создания): его значения уходят движку `--task-field` и ложатся в шапку документа.
 let MAKE_TASK = null;
+let REQ_PATHS = [];            // документы/папки проверки реализованности требований
 const ACCEPT = [".md", ".markdown", ".txt", ".rst", ".log", ".json", ".jsonl", ".yaml", ".yml",
   ".toml", ".ini", ".cfg", ".csv", ".tsv", ".xml", ".html", ".htm", ".svg", ".bpmn", ".puml",
   ".mmd", ".sql", ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt", ".go", ".rs", ".rb",
@@ -32,6 +33,94 @@ export function mount(ctx){
   else pick.hidden = true;
   wireSuggest(ctx);
   drawRefs(ctx);
+  const reqPick = ctx.$("#reqPick"), reqGo = ctx.$("#reqGo"), reqExport = ctx.$("#reqExport");
+  if (reqPick) reqPick.onclick = () => pickReq(ctx);
+  if (reqGo) reqGo.onclick = () => runReqCheck(ctx);
+  if (reqExport) reqExport.onclick = () => exportReq(ctx);
+  drawReqPaths(ctx);
+}
+
+// ---- проверка реализованности требований ----
+
+function drawReqPaths(ctx){
+  const box = ctx.$("#reqPaths");
+  if (!box) return;
+  const {t, el} = ctx;
+  box.innerHTML = "";
+  REQ_PATHS.forEach(path => box.append(el("span", {class: "chip mono", style: "gap:5px"},
+    path,
+    el("button", {class: "btn sm", style: "padding:0 5px;min-height:0", title: t("work.req.remove"),
+      onclick: () => { REQ_PATHS = REQ_PATHS.filter(x => x !== path); drawReqPaths(ctx); }}, "×"))));
+  if (!REQ_PATHS.length){
+    box.append(el("span", {class: "muted", style: "font-size:12.5px"}, t("work.req.empty")));
+  }
+}
+
+async function pickReq(ctx){
+  if (!ctx.project) return ctx.toast(ctx.t("work.pick_project"), "warn");
+  const got = await ctx.ui.pickPath({project: ctx.project.path, want: "any", multi: true,
+    detail: true, title: ctx.t("work.req.pick_title")});
+  (got || []).forEach(it => {
+    const path = it.path || it;
+    if (!REQ_PATHS.includes(path)) REQ_PATHS.push(path);
+  });
+  drawReqPaths(ctx);
+}
+
+async function runReqCheck(ctx){
+  const out = ctx.$("#reqResult"), status = ctx.$("#reqStatus");
+  if (!ctx.project) return ctx.toast(ctx.t("work.pick_project"), "warn");
+  if (!REQ_PATHS.length) return ctx.toast(ctx.t("work.req.no_paths"), "warn");
+  if (status) status.textContent = ctx.t("work.req.checking");
+  if (out) out.innerHTML = "";
+  const d = await ctx.api("/api/requirements/check", {method: "POST", quiet: true,
+    body: JSON.stringify({project: ctx.project.path, paths: REQ_PATHS})});
+  if (!d || d.error){
+    if (status) status.textContent = (d && d.error) || ctx.t("work.req.failed");
+    return;
+  }
+  const s = d.summary || {};
+  if (status) status.textContent = ctx.t("work.req.summary", {total: s.total || 0,
+    found: s.found || 0, partial: s.partial || 0, missing: s.not_found || 0,
+    percent: s.percent || 0});
+  if (!out) return;
+  if (d.index_error){
+    out.append(ctx.el("div", {class: "warnbox"}, ctx.t("work.req.index_error", {why: d.index_error})));
+  }
+  (d.documents || []).forEach(doc => {
+    out.append(ctx.el("div", {style: "margin-top:10px"},
+      ctx.el("b", {}, doc.title || doc.path),
+      ctx.el("span", {class: "muted", style: "font-size:12px"}, " · " + doc.path)));
+    if (doc.error){ out.append(ctx.el("div", {class: "warnbox"}, doc.error)); return; }
+    const head = ctx.el("thead", {}, ctx.el("tr", {},
+      ["#", ctx.t("work.req.col_text"), ctx.t("work.req.col_verdict"),
+       ctx.t("work.req.col_where"), ctx.t("work.req.col_comment")]
+        .map(x => ctx.el("th", {}, x))));
+    const rows = (doc.requirements || []).map(row => {
+      const where = (row.evidence || []).slice(0, 2)
+        .map(e => e.file + ":" + e.line).join(", ") || "—";
+      return ctx.el("tr", {},
+        ctx.el("td", {class: "mono"}, row.id),
+        ctx.el("td", {}, row.text),
+        ctx.el("td", {}, ctx.t("work.req." + row.verdict)),
+        ctx.el("td", {class: "mono", style: "font-size:11px"}, where),
+        ctx.el("td", {class: "muted", style: "font-size:11.5px"},
+          (row.missing || []).join(", ") || "—"));
+    });
+    const table = ctx.el("table", {class: "table", style: "margin-top:6px;width:100%"},
+      head, ctx.el("tbody", {}, ...rows));
+    out.append(table);
+  });
+  if (!(d.documents || []).length) out.append(ctx.el("div", {class: "muted"}, ctx.t("work.req.none")));
+}
+
+async function exportReq(ctx){
+  if (!ctx.project) return ctx.toast(ctx.t("work.pick_project"), "warn");
+  if (!REQ_PATHS.length) return ctx.toast(ctx.t("work.req.no_paths"), "warn");
+  const d = await ctx.api("/api/requirements/export", {method: "POST", quiet: true,
+    body: JSON.stringify({project: ctx.project.path, paths: REQ_PATHS})});
+  if (!d || d.error) return ctx.toast((d && d.error) || ctx.t("work.req.export_failed"), "err");
+  ctx.toast(ctx.t("work.req.exported", {path: d.path}), "ok");
 }
 
 // ---- ссылки и вложения ----
