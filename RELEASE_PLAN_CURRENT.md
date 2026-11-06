@@ -64,3 +64,9 @@
 карточка продолжения остановленного прогона. Релиз выпущен из коммита `2b3d2c73`,
 тег `v1.212.0`; GitHub Release и CI `engine-tests` успешны. Описание и тесты:
 `CHANGELOG.md`, `part_206`–`part_208`, `docs/testing-cockpit-1.212.0.md`.
+
+## 6. Релиз 1.212.1
+
+`1.212.1` — cockpit: один ответ `/api/kinds`, вложенные AC в «Продуктивности» и корневой
+`Code/*` в `.gitignore`. Коммит `584a7a0e`, тег `v1.212.1`; GitHub Release и CI
+`engine-tests` проверяются после пуша. Описание и тесты: `CHANGELOG.md`, `part_209`.
