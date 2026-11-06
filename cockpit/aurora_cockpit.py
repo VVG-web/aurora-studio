@@ -5936,25 +5936,38 @@ def artifact_files(project: str, kind: str) -> list:
     if not rec.get("out") or not os.path.isdir(folder):
         return []
     out = []
-    for name in sorted(os.listdir(folder)):
-        if not name.endswith(".md") or is_folder_guide(name):
-            continue
-        path = os.path.join(folder, name)
-        head = read_text(path, limit=4000)
-        fm = {}
-        for line in head.splitlines():
-            m = re.match(r"^([\w_]+)\s*:\s*(.*)$", line)
-            if m:
-                fm[m.group(1)] = m.group(2).strip().strip('"')
-        rel = os.path.relpath(path, project).replace("\\", "/")
-        # Состояние кнопки — то же, что у «Файлов» (`publish_info`): «Продуктивность» не решает сама, можно ли публиковать.
-        text = read_text(path, limit=MAX_EDIT)
-        out.append({"name": name, "rel": rel,
-                    "status": fm.get("status", "—"),
-                    "published": fm.get("published", ""),
-                    "url": fm.get("published_url", ""),
-                    "size": os.path.getsize(path),
-                    "publish": publish_info(project, rel, path, frontmatter(text), text)})
+    # Подпапки того же вида — часть «Продуктивности»: AC в Activity/Epic и т.п.
+    # Папки других видов, вложенные в эту, не подмешиваются.
+    kinds = AG_KINDS.read_kinds(project) or {}
+    other = [os.path.normpath(os.path.join(project, rec.get("out") or ""))
+             for key, rec in kinds.items()
+             if key != kind and rec.get("out")
+             and os.path.normpath(os.path.join(project, rec.get("out") or "")).startswith(
+                 os.path.normpath(folder) + os.sep)]
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = sorted(d for d in dirs
+                         if not any(os.path.normpath(os.path.join(root, d)) == p
+                                    or os.path.normpath(os.path.join(root, d)).startswith(p + os.sep)
+                                    for p in other))
+        for name in sorted(files):
+            if not name.endswith(".md") or is_folder_guide(name):
+                continue
+            path = os.path.join(root, name)
+            head = read_text(path, limit=4000)
+            fm = {}
+            for line in head.splitlines():
+                m = re.match(r"^([\w_]+)\s*:\s*(.*)$", line)
+                if m:
+                    fm[m.group(1)] = m.group(2).strip().strip('"')
+            rel = os.path.relpath(path, project).replace("\\", "/")
+            # Состояние кнопки — то же, что у «Файлов» (`publish_info`): «Продуктивность» не решает сама, можно ли публиковать.
+            text = read_text(path, limit=MAX_EDIT)
+            out.append({"name": name, "rel": rel,
+                        "status": fm.get("status", "—"),
+                        "published": fm.get("published", ""),
+                        "url": fm.get("published_url", ""),
+                        "size": os.path.getsize(path),
+                        "publish": publish_info(project, rel, path, frontmatter(text), text)})
     return out
 
 
@@ -7476,9 +7489,13 @@ class Handler(BaseHTTPRequestHandler):
                                                                               "publish_title", "out") if k in q}))
         elif u.path == "/api/kinds":
             project = (q.get("project") or [""])[0]
+            if not project:
+                self.send_json({"error": "проект не выбран"}, 400)
+                return
+            if not self._known(project):
+                return
             # `mcp` — серверы, из которых форма вида выбирает поле `mcp` (окно «Выбрать MCP…»).
-            self.send_json(dict(localized_kinds(kinds_read(project), request_lang(q)), mcp=kinds_mcp(project))
-                           if project and self._known(project) else {"error": "проект не выбран"})
+            self.send_json(dict(localized_kinds(kinds_read(project), request_lang(q)), mcp=kinds_mcp(project)))
         elif u.path == "/api/cards":
             # Типы карточек проекта: реестр, инструкция выбора типа, каталог. Сводка по базе (`stats=1`) читает все
             # карточки, поэтому приходит отдельным запросом — страница настроек не ждёт её.

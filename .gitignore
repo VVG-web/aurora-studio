@@ -60,3 +60,9 @@ ping-state.json
 .sisyphus/
 agent/
 .aurora-install.json
+
+# Код проектов-потребителей в корне кита не публикуется: установщик добавляет
+# это правило в проект, но сам кит без него мог закоммитить чужой код.
+Code/*
+!Code/.gitkeep
+!Code/README.md
