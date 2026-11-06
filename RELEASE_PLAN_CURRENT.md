@@ -68,5 +68,5 @@
 ## 6. Релиз 1.212.1
 
 `1.212.1` — cockpit: один ответ `/api/kinds`, вложенные AC в «Продуктивности» и корневой
-`Code/*` в `.gitignore`. Коммит `584a7a0e`, тег `v1.212.1`; GitHub Release и CI
-`engine-tests` проверяются после пуша. Описание и тесты: `CHANGELOG.md`, `part_209`.
+`Code/*` в `.gitignore`. Коммит `7971ae3f`, тег `v1.212.1`; GitHub Release и CI
+`engine-tests` успешны. Описание и тесты: `CHANGELOG.md`, `part_209`.
