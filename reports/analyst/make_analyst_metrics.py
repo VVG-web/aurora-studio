@@ -109,6 +109,7 @@ BUCKETS = {"stories": 0, "others": 0, "rework_stories": 0, "rework_others": 0}
 weeks_data = collections.defaultdict(lambda: dict(BUCKETS))
 persons_set = set()  # assignee в переходах в «Аналитика - готово»
 rework_raw = []      # повторные сдачи: что вернули, откуда и кто сдавал заново
+returned_open_raw = []  # B.1: вернули из «Аналитика - готово» и не сдали заново
 
 
 def deliveries(issue):
@@ -184,6 +185,46 @@ for key, issue in full.items():
                                "issue_type": typ, "returned_from": returned_from(issue, at)})
 
 # ---------------------------------------------------------------------------
+# 1b) returned_open_raw: вернули из «Аналитика - готово» и не сдали заново
+# ---------------------------------------------------------------------------
+# Красный сектор показывает только те возвраты, после которых задачу сдали
+# заново. Задача, которую вернули и с тех пор не сдавали, в него не попадает:
+# второй сдачи нет, а правило считает переходы в «Аналитика - готово». Работа
+# при этом обнулена и висит — для руководителя это «тихая» потеря. Поэтому
+# такие задачи собираются отдельным списком с неделей возврата и исполнителем.
+for key, issue in full.items():
+    typ = issue_types.get(key, "?")
+    if typ == "BA-SA Task":
+        continue
+
+    pending = None
+    for tr in issue.get("status_history", []):
+        a = RANK.get(tr.get("from"))
+        b = RANK.get(tr["to"])
+        if a is None or b is None:
+            continue
+        if b >= RANK[READY]:
+            # сдали заново или ушло вперёд — возврат закрыт
+            pending = None
+        elif a >= RANK[READY]:
+            # вернули из «Аналитика - готово» или более позднего этапа
+            pending = tr
+
+    if pending is None:
+        continue
+
+    at = pending["at"]
+    returned_open_raw.append({
+        "issue": key,
+        "week": iso_week(at),
+        "year": iso_year(at),
+        "assignee": get_assignee_at(key, at),
+        "issue_type": typ,
+        "returned_from": pending.get("from"),
+        "returned_to": pending.get("to"),
+    })
+
+# ---------------------------------------------------------------------------
 # 2) transitions_raw: длительности переходов между этапами (только Истории)
 # ---------------------------------------------------------------------------
 transitions_raw = []
@@ -256,6 +297,9 @@ output = {
     # По ним дашборд подписывает красный сектор — иначе столбик «возвратов 3»
     # виден, но разобраться в нём нечем.
     "rework_raw": rework_raw,
+    # B.1: вернули из «Аналитика - готово» и не сдали заново. Отдельный список,
+    # потому что в rework_raw такие задачи не попадают: у них нет второй сдачи.
+    "returned_open_raw": returned_open_raw,
 }
 
 # ---------------------------------------------------------------------------

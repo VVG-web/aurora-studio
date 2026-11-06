@@ -907,6 +907,16 @@ def test_analyst_rework_is_counted_apart_for_each_person(tmp: Path):
         "P-3": ("Инцидент", "Аналитик Б", [("Анализ", READY, at("03-03")),
                                             (READY, "Анализ", at("03-11")),
                                             ("Анализ", READY, at("03-24"))]),
+        # B.1: сдан в неделю 14, возвращён и НЕ сдан заново — завис
+        "P-4": ("История", "Аналитик Б", [("Анализ", READY, at("04-02")),
+                                           (READY, "Анализ", at("04-03"))]),
+        # B.1: сдан в неделю 14, возвращён, но потом закрыт (не завис)
+        "P-5": ("История", "Аналитик Б", [("Анализ", READY, at("04-02")),
+                                           (READY, "Анализ", at("04-03")),
+                                           ("Анализ", "Закрыто", at("04-10"))]),
+        # B.1: BA-SA Task не должен попадать в returned_open_raw
+        "P-6": ("BA-SA Task", "Аналитик Б", [("Анализ", READY, at("04-02")),
+                                              (READY, "Анализ", at("04-03"))]),
     }
     issues, full = [], {}
     for key, (typ, who, trs) in hist.items():
@@ -930,6 +940,11 @@ def test_analyst_rework_is_counted_apart_for_each_person(tmp: Path):
     b = m["weekly_by_person"]["Аналитик Б"]["13"]
     assert b.get("rework_others") == 1 and not b.get("rework_stories"), \
         f"возврат инцидента у сотрудника лёг в ведро историй: {b}"
+    # B.1: задача, которую вернули и не сдали заново, попадает в returned_open_raw.
+    # Вернули и закрыли — не попадает. BA-SA Task — не попадает.
+    ro = {r["issue"]: r for r in m.get("returned_open_raw", [])}
+    assert set(ro) == {"P-4"}, f"зависшие после возврата посчитаны неверно: {ro}"
+    assert ro["P-4"]["week"] == "14" and ro["P-4"]["returned_from"] == READY, ro["P-4"]
 
 
 @test

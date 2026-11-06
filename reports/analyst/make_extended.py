@@ -95,6 +95,8 @@ def prepare(y):
     # Подсказка красного сектора фильтрует возвраты по тем же ФИО, что и столбцы.
     for r in jira_data.get("rework_raw", []):
         r["assignee"] = canon(r.get("assignee"))
+    for r in jira_data.get("returned_open_raw", []):
+        r["assignee"] = canon(r.get("assignee"))
 
     if jira_data.get("weekly_by_person"):
         merged = {}
@@ -465,6 +467,7 @@ td.max-val{color:#f87171;font-weight:600}
   <div class="kpi"><div class="n" id="kpi-others">—</div><div class="l">прочих артефактов → «Аналитика готово»</div></div>
   <div class="kpi"><div class="n" id="kpi-rework">—</div><div class="l">сдано заново после возврата</div></div>
   <div class="kpi"><div class="n" id="kpi-total">—</div><div class="l">всего переходов</div></div>
+  <div class="kpi" id="kpi-hanging-box"><div class="n" id="kpi-hanging">—</div><div class="l">зависших после возврата</div></div>
 </div>
 
 <!-- Блок 1 -->
@@ -1276,6 +1279,23 @@ function updateBlock1() {
     document.getElementById('kpi-rework').textContent = fmtNum(sumRW);
     document.getElementById('kpi-total').textContent = fmtNum(sumS + sumO + sumBA + sumRW);
   }
+
+  // Зависшие после возврата: вернули и не сдали заново. Считается по тем же
+  // фильтрам, что и остальные KPI, чтобы цифра сходилась с тем, что видно.
+  const hangingRows = (DATA.jira.returned_open_raw || []).filter(r => {
+    if (!fOk(filters.week, r.week)) return false;
+    if (!fOk(filters.person, r.assignee)) return false;
+    if (!fOk(filters.type, r.issue_type === 'История' ? 'История' : 'Прочие')) return false;
+    const role = DATA.jira.role_of[r.assignee] || DATA.roster[r.assignee] || 'Не назначен';
+    return fOk(filters.role, role);
+  });
+  const hangingEl = document.getElementById('kpi-hanging');
+  hangingEl.textContent = fmtNum(hangingRows.length);
+  document.getElementById('kpi-hanging-box').title = hangingRows.length
+    ? 'Вернули и не сдали заново:\n' + hangingRows.slice(0, 12).map(r =>
+        r.issue + (r.returned_from ? ' — из «' + r.returned_from + '»' : '')).join('\n')
+      + (hangingRows.length > 12 ? '\n… ещё ' + (hangingRows.length - 12) : '')
+    : '';
   
   const datasets = [
     {label: 'Истории', data: stories, backgroundColor: '#4ade80', stack: 's'},

@@ -13,6 +13,7 @@ let CTX = null;
 let D = null, FORM = null, CREDS = {}, DIRTY = false, OPEN = "", PROJECT = "", ADD = null, MSG = null;
 let FIND = null, PACK = null;
 let ART = null;
+let POLL_TIMER = null;
 const KIND_KEYS = {symbol: "code.index.kind.symbol", file: "code.index.kind.file",
   route: "code.index.kind.route", table: "code.index.kind.table", column: "code.index.kind.column",
   topic: "code.index.kind.topic", config: "code.index.kind.config", string: "code.index.kind.string",
@@ -29,6 +30,7 @@ export async function refresh(ctx){
     DIRTY = false; OPEN = ""; ADD = null; CREDS = {}; ART = null;
   }
   MSG = null;                  // сообщение прошлой записи к новому показу раздела не относится
+  if (POLL_TIMER) { clearTimeout(POLL_TIMER); POLL_TIMER = null; }
   await load(ctx, true);
 }
 
@@ -60,6 +62,13 @@ async function load(ctx, keepForm){
     DIRTY = false;
   }
   draw(ctx);
+  // Полный расчёт состояния идёт в фоне: опросить через 3 секунды, если проект не сменился.
+  if (d.loading && !POLL_TIMER) {
+    POLL_TIMER = setTimeout(() => {
+      POLL_TIMER = null;
+      if (ctx.project && ctx.project.path === path) load(ctx, keepForm);
+    }, 3000);
+  }
 }
 
 function draw(ctx){

@@ -7395,14 +7395,23 @@ def classify_links(text: str, cards: list, pack: str, cwd: str) -> dict:
 # занял пять минут, проверке отпустили те же пять — и её объявили несостоявшейся.
 MOMUS_SHARE = 1.5     # во столько раз щедрее, чем стоил сам ответ
 MOMUS_CAP = 2.0       # но не больше стольких `request_timeout`: человек ждёт
+MOMUS_FLOOR = 90.0    # проверка текста — не генерация: ей не нужен весь request_timeout
+MOMUS_ABS_CAP = 240.0  # и дольше четырёх минут человек не ждёт
 
 
 def momus_timeout(cfg: dict, answered_in: float) -> float:
-    """Сколько дать проверке, зная, во сколько обошёлся ответ. → секунды на запрос."""
+    """Сколько дать проверке, зная, во сколько обошёлся ответ. → секунды на запрос.
+
+    Пол прежней формулы был `base` (весь `request_timeout`, по умолчанию 300 с): даже
+    быстрый ответ получал пятиминутную проверку, и «Момус не успел» превращалось в
+    ожидание до десяти минут. Проверка готового текста стоит того же порядка, что и
+    ответ, поэтому пол — девяносто секунд, а потолок — четыре минуты.
+    """
     base = AG.call_budget(cfg, "qa")
+    floor = min(base, MOMUS_FLOOR)
     if answered_in <= 0:
-        return base
-    return round(min(base * MOMUS_CAP, max(base, answered_in * MOMUS_SHARE)), 1)
+        return floor
+    return round(min(MOMUS_ABS_CAP, base * MOMUS_CAP, max(floor, answered_in * MOMUS_SHARE)), 1)
 
 
 # Проверка тезиса идёт с основного шлюза кольца, а не со слота, который тезис писал. Раньше

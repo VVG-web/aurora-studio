@@ -1431,52 +1431,54 @@ def test_a_slow_backend_is_not_a_dead_one(tmp: Path):
 
 @test
 def test_the_check_gets_as_long_as_the_answer_took(tmp: Path):
-    """Момусу отпущено по цене ответа, а не по одной цифре из настройки.
+    """Момусу отпущено по цене ответа, но с жёсткими полом и потолком.
 
     Он читает тот же пак плюс сам ответ — работа того же порядка, промпт даже больше.
     Модель, которой ответ дался за пять минут, в пять минут проверки не уложится никогда,
     и предел на запрос это не обойти: дедлайна мало, запрос режется по `request_timeout`.
-    Поэтому проверка получает свой предел — щедрее, но с потолком: человек ждёт.
+    Но и пол по всему `request_timeout` (300 с) был слишком щедр: даже быстрый ответ
+    получал пятиминутную проверку, и «Момус не успел» превращалось в ожидание до десяти
+    минут. Поэтому пол — 90 с, потолок — 240 с: проверка готового текста не генерация.
     """
     sys.path.insert(0, str(KIT / "scripts"))
     import importlib
     R = importlib.import_module("agent_runner")
 
     cfg = {"request_timeout": 300, "thinking": False}
-    assert R.momus_timeout(cfg, 0) == 300, "без замера ответа берём настройку как была"
+    assert R.momus_timeout(cfg, 0) == 90, "без замера ответа пол проверки — 90 с, а не весь request_timeout"
     # Момус с рассуждениями — от срока рассуждающего вызова (1.118.0): до 24 тыс. токенов
-    # проверки на PRJ-A, больше 300 с под нагрузкой шлюза.
+    # проверки на PRJ-A. Но пол всё равно 90 с: проверка готового текста не генерация.
     A = importlib.import_module("agent_core")
     saved = dict(A.USAGE)
     try:
         A.USAGE.update(tokens_out=0, gen_seconds=0.0)
-        assert R.momus_timeout({"request_timeout": 300}, 0) == 1200, \
-            "рассуждающему Момусу дан срок без рассуждений — проверка оборвётся на середине"
+        assert R.momus_timeout({"request_timeout": 300}, 0) == 90, \
+            "рассуждающему Момусу дан пол без рассуждений — проверка оборвётся на середине"
     finally:
         A.USAGE.clear(); A.USAGE.update(saved)
-    assert R.momus_timeout(cfg, 40) == 300, "быстрый ответ не должен УРЕЗАТЬ проверку"
-    assert R.momus_timeout(cfg, 280) == 420, "медленный ответ не поднял предел проверки"
-    assert R.momus_timeout(cfg, 5000) == 600, "потолок не держит: человек ждёт ответа"
+    assert R.momus_timeout(cfg, 40) == 90, "быстрый ответ не должен УРЕЗАТЬ проверку ниже 90 с"
+    assert R.momus_timeout(cfg, 280) == 240, "медленный ответ не поднял предел проверки выше потолка"
+    assert R.momus_timeout(cfg, 5000) == 240, "потолок 240 с не держит: человек ждёт ответа"
 
     # и этот предел действительно доезжает до вызова
     seen = {}
 
     def fake_call(cfg, role, messages, **kw):
         seen.update(kw); seen["role"] = role
-        return {"ok": False, "log": ["№2 m: не уложился в 420 с"], "timed_out": True}
+        return {"ok": False, "log": ["№2 m: не уложился в 240 с"], "timed_out": True}
 
     mo = R.run_momus(cfg, "пак", "вопрос", "ответ", fake_call, answered_in=280)
     assert seen["role"] == "qa", seen
-    assert seen.get("request_timeout") == 420, \
+    assert seen.get("request_timeout") == 240, \
         f"предел на запрос не передан — вызов снова обрежется по настройке: {seen}"
-    assert seen["deadline"] > time.time() + 400, "дедлайн остался коротким"
-    assert mo["timed_out"] and mo["given"] == 420, mo
+    assert seen["deadline"] > time.time() + 200, "дедлайн остался коротким"
+    assert mo["timed_out"] and mo["given"] == 240, mo
 
     # отчёт называет причину сроком, а не недоступностью
     text = R.report_ask({"ok": True, "answer": "текст", "cards": ["К"], "total": 1,
                          "model": "m", "backend": 2, "seconds": 534.3, "momus": mo},
                         "вопрос", cfg)
-    assert "не успел" in text and "420" in text, text
+    assert "не успел" in text and "240" in text, text
     assert "срок запроса" in text and "«Модели»" in text, "человеку не назван рычаг"
     assert "не проверил ответ" not in text, \
         "медленную проверку по-прежнему объявляют несостоявшейся без причины"

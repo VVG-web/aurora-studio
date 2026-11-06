@@ -98,6 +98,15 @@ JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
 KEEP_DONE_JOBS = 40      # законченные задания, которые ещё можно открыть в консоли
 
+# Кэш состояния раздела «Код»: полный расчёт `code_state` (обход клонов, языки, индекс,
+# артефакты) занимает минуты на большом репозитории. Первый запрос отдаёт форму сразу,
+# считает фоновый поток и кладёт результат сюда. Панель опрашивает `/api/code`, пока
+# `loading` не сменится на готовое состояние.
+_CODE_STATE_CACHE: dict = {}          # {project: {"state": dict, "at": float}}
+_CODE_STATE_LOCK = threading.Lock()
+_CODE_STATE_TTL = 300.0               # 5 минут — свежесть кэша
+_CODE_STATE_BUSY: dict = {}           # {project: True} — фоновый расчёт идёт
+
 
 def trim_jobs(keep: int = KEEP_DONE_JOBS) -> int:
     """Забыть самые старые законченные задания сверх `keep`. → сколько забыто.
@@ -2555,7 +2564,7 @@ def code_pack_state(project: str, story: str = "", lang: str = "ru") -> dict:
                 "error": f"{type(e).__name__}: {e}"[:300]}
 
 
-def code_state(project: str, lang: str = "ru") -> dict:
+def _code_state_full(project: str, lang: str = "ru") -> dict:
     """Раздел «Код»: реестр репозиториев (вход — маской), его слепок для формы, замечания к записанному и состояние
     клонов без сети — то же, что печатает `code:status`. Числа считает движок, раздел их только показывает."""
     import code_repos as CREPO
@@ -2580,6 +2589,46 @@ def code_state(project: str, lang: str = "ru") -> dict:
     return st
 
 
+def _code_state_bg(project: str, lang: str = "ru") -> None:
+    """Фоновый расчёт полного состояния «Код»: кладёт результат в кэш и снимает флаг занятости."""
+    try:
+        st = _code_state_full(project, lang)
+        with _CODE_STATE_LOCK:
+            _CODE_STATE_CACHE[project] = {"state": st, "at": time.time()}
+    except Exception:  # noqa: BLE001 — фоновый поток не должен ронять панель
+        pass
+    finally:
+        with _CODE_STATE_LOCK:
+            _CODE_STATE_BUSY.pop(project, None)
+
+
+def code_state(project: str, lang: str = "ru") -> dict:
+    """Раздел «Код»: форма отдаётся сразу, тяжёлый расчёт идёт в фоне.
+
+    Если кэш свежий — возвращается он. Иначе отдаётся базовое состояние с `loading: True`
+    и запускается фоновый поток, который положит полный результат в кэш. Панель
+    опрашивает `/api/code`, пока `loading` не сменится на готовое состояние.
+    """
+    import code_repos as CREPO
+    now = time.time()
+    with _CODE_STATE_LOCK:
+        entry = _CODE_STATE_CACHE.get(project)
+        busy = _CODE_STATE_BUSY.get(project)
+    if entry and now - entry["at"] < _CODE_STATE_TTL:
+        return entry["state"]
+    # Кэш устарел или его нет: базовое состояние сразу, полный расчёт — в фоне.
+    st = CREPO.state(project)
+    st["index"] = {"repos": []}
+    st["artifacts"] = {"kinds": [], "problems": [], "digest": "", "overrides": {}}
+    st["profiles"] = []
+    st["loading"] = True
+    if not busy:
+        with _CODE_STATE_LOCK:
+            _CODE_STATE_BUSY[project] = True
+        threading.Thread(target=_code_state_bg, args=(project, lang), daemon=True).start()
+    return st
+
+
 def code_action(action: str, project: str, payload: dict) -> tuple:
     """Записи раздела «Код» → (ответ, код HTTP). Реестр пишется только со слепком (`expect`), расхождение — 409."""
     import code_repos as CREPO
@@ -2588,6 +2637,9 @@ def code_action(action: str, project: str, payload: dict) -> tuple:
         res = CREPO.save(project, payload.get("repos") if isinstance(payload.get("repos"), dict) else None,
                          expect if isinstance(expect, str) else None, payload.get("credentials"))
         if res.get("ok"):
+            # Реестр изменился: старый снимок состояния больше не годится.
+            with _CODE_STATE_LOCK:
+                _CODE_STATE_CACHE.pop(project, None)
             res = {**res, "state": code_state(project)}
         return res, (200 if res.get("ok") else 409 if res.get("conflict") else 500 if res.get("failed") else 400)
     if action == "check":
