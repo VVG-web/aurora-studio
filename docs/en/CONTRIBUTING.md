@@ -291,7 +291,9 @@ own in the project's `Templates/`. The passport, the check codes and the `kb:car
   `put_map`), and the head of a new card is built by `render_card`. A direct write (`open(…, "w")`, `write_text`,
   `os.replace` …) into a card does not pass the ratchet test `tests/card_write_sites.py`; a new place that writes
   something other than a card is added to `tests/card_write_sites.json` with a reason (`python3
-  tests/card_write_sites.py --snapshot --write`). A template refusal is not a failure: the script writes the reason, goes
+  tests/card_write_sites.py --snapshot --write`) and a mandatory `git` field: `none` (not part of the git exchange),
+  `local` (this machine: ignore + untrack), `shard` (shared data in per-user parts), `shared` (a common file with an
+  ordinary merge). Without that answer `--check` fails. A template refusal is not a failure: the script writes the reason, goes
   on and ends with exit code 1 (`card_types.run_script`; `kb:scrub` ends with 2 on a refusal: personal data is left).
 - **A released template is not edited — a new version comes out.** The seed rule delivers an edit to old projects only as
   `<file>.new`, so a fix or an extension of `akdb_*_v1.0.md` is a new file `v1.1` (or `v2.0`) with the passport field

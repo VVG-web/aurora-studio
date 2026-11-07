@@ -293,7 +293,9 @@ sys.exit(1)
 - **Скрипт, который пишет карточки базы, пишет их через `card_types.write_card_text`** (или `try_write_card`, `put_text`,
   `put_map`), а шапку новой карточки строит `render_card`. Прямая запись (`open(…, "w")`, `write_text`, `os.replace` …) в
   карточку не проходит тест-храповик `tests/card_write_sites.py`; новое место записи не карточки заносится в
-  `tests/card_write_sites.json` с причиной (`python3 tests/card_write_sites.py --snapshot --write`). Отказ шаблона — не
+  `tests/card_write_sites.json` с причиной (`python3 tests/card_write_sites.py --snapshot --write`) и обязательным
+  полем `git`: `none` (не участвует в git-обмене), `local` (машина: ignore + untrack), `shard` (общие данные по частям
+  участника), `shared` (общий файл, обычный merge). Без ответа на этот вопрос `--check` красный. Отказ шаблона — не
   сбой: скрипт пишет причину, идёт дальше и кончается кодом 1 (`card_types.run_script`; `kb:scrub` при отказе — код 2: персональные данные остались).
 - **Выпущенный шаблон не правят — выходит новая версия.** Правило seed доставляет правку в старые проекты только как
   `<файл>.new`, поэтому исправление или расширение `akdb_*_v1.0.md` — новый файл `v1.1` (или `v2.0`) с полем паспорта

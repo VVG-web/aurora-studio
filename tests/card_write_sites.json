@@ -1,1124 +1,1355 @@
 {
  "card_max": 0,
+ "git_classes_required": true,
  "sites": {
   "cockpit/aurora_cockpit.py:Handler._write_config": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 2
+   "calls": 2,
+   "git": "shared"
   },
   "cockpit/aurora_cockpit.py:Handler._write_sources": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "cockpit/aurora_cockpit.py:Handler._write_tokens": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "cockpit/aurora_cockpit.py:Handler.do_POST": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 2
+   "calls": 2,
+   "git": "shared"
   },
   "cockpit/aurora_cockpit.py:_cards_guide_commit": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "cockpit/aurora_cockpit.py:_registry": {
    "kind": "other",
    "reason": "панель: кэш реестра команд кита (временный файл и подмена целиком), не карточка",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "cockpit/aurora_cockpit.py:_update_archive": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 3
+   "calls": 3,
+   "git": "none"
   },
   "cockpit/aurora_cockpit.py:_update_archive.keep_copy": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "cockpit/aurora_cockpit.py:_update_running.work": {
    "kind": "other",
    "reason": "панель: список «что идёт» (cockpit/.running.json) под замком; не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "cockpit/aurora_cockpit.py:feature_set": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "cockpit/aurora_cockpit.py:file_create": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "cockpit/aurora_cockpit.py:file_rename": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "cockpit/aurora_cockpit.py:file_write": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 2
+   "calls": 2,
+   "git": "shared"
   },
   "cockpit/aurora_cockpit.py:keep_version": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "cockpit/aurora_cockpit.py:kinds_write": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "cockpit/aurora_cockpit.py:open_in_browser": {
    "kind": "other",
    "reason": "временная страница-переход для браузера: служебный файл вне базы",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "cockpit/aurora_cockpit.py:ping_state": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "cockpit/aurora_cockpit.py:profile_choose": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "cockpit/aurora_cockpit.py:recent": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "cockpit/aurora_cockpit.py:record_engine_run": {
    "kind": "other",
    "reason": "журнал запуска копии движка проекта на этой машине: служебный файл вне базы",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "cockpit/aurora_cockpit.py:save_hidden": {
    "kind": "other",
    "reason": "список скрытых проектов на машине: служебный файл в домашней папке",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "cockpit/aurora_cockpit.py:save_roots": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "cockpit/aurora_cockpit.py:start_job.worker": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "cockpit/aurora_cockpit.py:write_route_state": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "cockpit/aurora_cockpit.py:write_runlog": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "cockpit/aurora_cockpit.py:write_session": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "cockpit/cron.py:_write_json": {
    "kind": "other",
    "reason": "расписание Cron: служебное состояние",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "cockpit/route_runner.py:Journal.__init__": {
    "kind": "other",
    "reason": "журнал и состояние маршрута: служебные файлы",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "cockpit/route_runner.py:RouteRun._finish": {
    "kind": "other",
    "reason": "журнал и состояние маршрута: служебные файлы",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "cockpit/route_runner.py:write_meta": {
    "kind": "other",
    "reason": "журнал и состояние маршрута: служебные файлы",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "reports/analyst/fetch_confluence_metadata.py:main": {
    "kind": "other",
    "reason": "отчёты аналитика: рабочие файлы выгрузки вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "reports/analyst/fetch_full.py:<module>": {
    "kind": "other",
    "reason": "отчёты аналитика: рабочие файлы выгрузки вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "reports/analyst/fetch_issues.py:<module>": {
    "kind": "other",
    "reason": "отчёты аналитика: рабочие файлы выгрузки вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "reports/analyst/fetch_subtasks.py:<module>": {
    "kind": "other",
    "reason": "отчёты аналитика: рабочие файлы выгрузки вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "reports/analyst/make_analyst_metrics.py:<module>": {
    "kind": "other",
    "reason": "отчёты аналитика: рабочие файлы выгрузки вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "reports/analyst/make_extended.py:<module>": {
    "kind": "other",
    "reason": "отчёты аналитика: рабочие файлы выгрузки вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "reports/analyst/process_confluence.py:<module>": {
    "kind": "other",
    "reason": "отчёты аналитика: рабочие файлы выгрузки вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "reports/analyst/update_analyst_metrics.py:<module>": {
    "kind": "other",
    "reason": "отчёты аналитика: рабочие файлы выгрузки вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "reports/analyst/verify_weekly_by_person.py:<module>": {
    "kind": "other",
    "reason": "отчёты аналитика: рабочие файлы выгрузки вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/access_check.py:record_install": {
    "kind": "other",
    "reason": "запись «кто что поставил» в общей папке машины (installs/<пользователь>.json): временный файл и подмена целиком, не карточка",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/agent_core.py:_cache_put": {
    "kind": "other",
    "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/agent_core.py:_pulse_save": {
    "kind": "other",
    "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/agent_core.py:_write_alarm": {
    "kind": "other",
    "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/agent_core.py:adapter_selfcheck": {
    "kind": "other",
    "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/agent_core.py:record_failure": {
    "kind": "other",
    "reason": "журнал сбоев failures.jsonl",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/agent_core.py:write_mcp_file": {
    "kind": "other",
    "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP",
-   "calls": 3
+   "calls": 3,
+   "git": "local"
   },
   "scripts/agent_runner.py:append_turn": {
    "kind": "other",
    "reason": "журнал диалога «Спросить» meta/ask: не карточка",
-   "calls": 2
+   "calls": 2,
+   "git": "shared"
   },
   "scripts/agent_runner.py:note_empty_run": {
    "kind": "other",
    "reason": "журнал холостых прогонов агента в часть участника",
-   "calls": 2
+   "calls": 2,
+   "git": "shard"
   },
   "scripts/agent_runner.py:write_run_journal": {
    "kind": "other",
    "reason": "журнал прогона агента в часть участника",
-   "calls": 1
+   "calls": 1,
+   "git": "shard"
   },
   "scripts/agent_runner.py:park_card": {
    "kind": "other",
    "reason": "память об отложенных карточках .aurora/state",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/agent_runner.py:record_unsupported": {
    "kind": "other",
    "reason": "журнал утверждений без опоры .aurora/state",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/agent_runner.py:save_clash_seen": {
    "kind": "other",
    "reason": "память о просмотренных противоречиях в .aurora/state",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/agent_runner.py:save_session": {
    "kind": "other",
    "reason": "сессия мастера артефакта .aurora/state",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/agent_runner.py:service_template": {
    "kind": "other",
    "reason": "память о служебных блоках шаблона страницы в .aurora/state",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/agent_runner.py:write_artifact": {
    "kind": "other",
    "reason": "артефакт Artifacts/: производный документ, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/agents/pydantic_ai_adapter.py:log_outbound": {
    "kind": "other",
    "reason": "журнал вызовов модели: служебный файл",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/agents/pydantic_ai_adapter.py:register_output.save_output": {
    "kind": "other",
    "reason": "журнал вызовов модели: служебный файл",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/aurora_common.py:_lock_break": {
    "kind": "other",
    "reason": "замок процесса: служебный файл-охрана",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/aurora_common.py:keep_private_copy": {
    "kind": "other",
    "reason": "личная копия служебного файла проекта (хранится вне базы знаний), не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_common.py:lock_take": {
    "kind": "other",
    "reason": "замок процесса: служебный файл",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/aurora_common.py:replace_file": {
    "kind": "other",
    "reason": "подмена файла с повтором на Windows; сама карточек не пишет",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_common.py:template_blocks": {
    "kind": "other",
    "reason": "кэш блоков шаблона страницы в .aurora/state",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/aurora_common.py:write_if_changed": {
    "kind": "other",
    "reason": "общая запись генерируемого файла; карточку через неё не пишут",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_common.py:write_text_atomic": {
    "kind": "other",
    "reason": "общая атомарная запись файла проекта; карточку через неё не пишут",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_extras.py:_install": {
    "kind": "other",
    "reason": "снимок установки надстройки: временный файл для pip (вне базы знаний)",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_extras.py:latest": {
    "kind": "other",
    "reason": "надстройки движка вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_extras.py:plan_lock": {
    "kind": "other",
    "reason": "временные отчёт и ограничения pip при решении набора надстройки (вне базы знаний)",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_extras.py:register_graph_mcp": {
    "kind": "other",
    "reason": "надстройки движка вне базы знаний",
-   "calls": 3
+   "calls": 3,
+   "git": "none"
   },
   "scripts/aurora_extras.py:restore": {
    "kind": "other",
    "reason": "откат venv надстройки: перенос каталога (вне базы знаний)",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/aurora_extras.py:save_lock": {
    "kind": "other",
    "reason": "снимок установки надстройки в ~/.aurora/locks (вне базы знаний)",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_fs.py:_quarantine": {
    "kind": "other",
    "reason": "перенос повреждённого файла состояния в .corrupt; карточек не касается",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/aurora_fs.py:replace_file": {
    "kind": "other",
    "reason": "ядро надёжности: подмена файла с повтором на Windows; сама карточек не пишет",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_fs.py:write_atomic": {
    "kind": "other",
    "reason": "ядро надёжности: временный файл, fsync и подмена; карточки пишет только card_types.write_card_text",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/aurora_fs.py:write_json": {
    "kind": "other",
    "reason": "ядро надёжности: JSON-состояние через write_atomic; карточек не пишет",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_hooks.py:_install_push_hook": {
    "kind": "other",
    "reason": "хуки git проекта: файлы вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_hooks.py:main": {
    "kind": "other",
    "reason": "хуки git проекта: файлы вне базы знаний",
-   "calls": 6
+   "calls": 6,
+   "git": "shared"
   },
   "scripts/aurora_mcp.py:_state_save": {
    "kind": "other",
    "reason": "состояние MCP-сервера: служебный файл",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/aurora_setup.py:reconcile_sync_skills": {
    "kind": "other",
    "reason": "конфиг и навыки проекта: файлы вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_setup.py:write_config": {
    "kind": "other",
    "reason": "конфиг и навыки проекта: файлы вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_stats.py:append_metrics": {
    "kind": "other",
    "reason": "метрики и отчёт статистики: служебные файлы",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/aurora_stats.py:main": {
    "kind": "other",
    "reason": "метрики и отчёт статистики: служебные файлы",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/aurora_update.py:_run": {
    "kind": "other",
    "reason": "доставка файлов кита в проект; карточки базы не пишет",
-   "calls": 3
+   "calls": 3,
+   "git": "none"
   },
   "scripts/aurora_update.py:_write_engine_file": {
    "kind": "other",
    "reason": "файл копии движка на этой машине: служебный файл вне базы",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/aurora_update.py:engine_prepare": {
    "kind": "other",
    "reason": "подготовка копии движка на этой машине: служебные файлы вне базы",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/aurora_update.py:relayout_moves": {
    "kind": "other",
    "reason": "доставка файлов кита в проект: вне базы знаний",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/aurora_update.py:relayout_rewrite": {
    "kind": "other",
    "reason": "перекладка файлов проекта при обновлении движка (пути в конфигах), не карточки",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_update.py:stamp_engine": {
    "kind": "other",
    "reason": "метка версии копии движка: служебный файл вне базы",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/aurora_update.py:stamp_version": {
    "kind": "other",
    "reason": "доставка файлов кита в проект: вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/bot_coach.py:save": {
    "kind": "other",
    "reason": "состояние ботов: служебный файл",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/bots.py:_report": {
    "kind": "other",
    "reason": "боты проекта (bots/): не карточки",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/bots.py:_write_state": {
    "kind": "other",
    "reason": "боты проекта (bots/): не карточки",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/bots.py:create_example": {
    "kind": "other",
    "reason": "боты проекта (bots/): не карточки",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/bots.py:rename": {
    "kind": "other",
    "reason": "боты проекта (bots/): не карточки",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/bots.py:write": {
    "kind": "other",
    "reason": "боты проекта (bots/): не карточки",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/build_plan.py:record_failure": {
    "kind": "other",
    "reason": "журнал сбоев разбора .aurora/state",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/build_plan.py:save_manifest": {
    "kind": "other",
    "reason": "манифест разбора .aurora/state/build_manifest.json",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/card_types.py:_write_text_exact": {
    "kind": "other",
    "reason": "конфиг проекта (блок cards:), не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/card_types.py:put_text": {
    "kind": "other",
    "reason": "служебный файл базы (не карточка) через атомарную запись; карточку отправляет во вход шаблонов",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/card_types.py:write_atomic": {
    "kind": "other",
    "reason": "сам вход записи карточки: временный файл и подмена; через него пишут все карточки",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/card_types.py:write_card_text": {
    "kind": "other",
    "reason": "сам единственный вход записи карточки: проверка по шаблону и атомарная запись",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/card_types.py:write_catalog": {
    "kind": "other",
    "reason": "каталог типов meta/card_types.md: генерируемый служебный файл",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/code_repos.py:check_remote": {
    "kind": "other",
    "reason": "проверка подключения к репозиторию кода: вставленный SSH-ключ — во временный файл на время проверки",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/code_repos.py:save": {
    "kind": "other",
    "reason": "реестр репозиториев кода: блок code_repos: в aurora.config.yaml по записи из панели, атомарно",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/code_sync.py:_write_state": {
    "kind": "other",
    "reason": "состояние синхронизации кода: .aurora/state/code/sync.json",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/confluence_export.py:Exporter.save_assets": {
    "kind": "other",
    "reason": "зеркало Confluence в Sources/: источник, не карточка",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/confluence_export.py:Exporter.walk": {
    "kind": "other",
    "reason": "зеркало Confluence в Sources/: источник, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/confluence_export.py:save_page_cache": {
    "kind": "other",
    "reason": "зеркало Confluence в Sources/: источник, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/conn_gate.py:_write_exact": {
    "kind": "other",
    "reason": "состояние ожидающих запусков и проверки соединений (`~/.aurora`), не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/connectivity.py:_write_state": {
    "kind": "other",
    "reason": "состояние проверок соединений (`~/.aurora/connectivity-state.json`), не карточка",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/connectivity.py:save": {
    "kind": "other",
    "reason": "профили и адреса проверки машины (`local/connectivity.json`), не карточка",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/connector_ops.py:cache_put": {
    "kind": "other",
    "reason": "кэш списков трекера задач (типы, эпики) на час в .aurora/state/cache/connectors проекта: состояние машины вне git, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/connector_ops.py:save": {
    "kind": "other",
    "reason": "блок connectors: в aurora.config.yaml (активный коннектор роли): конфиг, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/ctx_pack.py:log_usage": {
    "kind": "other",
    "reason": "журнал использования карточек в .aurora/state",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/ctx_pack.py:main": {
    "kind": "other",
    "reason": "сохранённый пакет контекста в Artifacts/drafts",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/dev_qa.py:cmd_new": {
    "kind": "other",
    "reason": "журнал QA кухни разработки: вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/dev_qa.py:cmd_run": {
    "kind": "other",
    "reason": "журнал QA кухни разработки: вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/dev_qa.py:retrieval_report": {
    "kind": "other",
    "reason": "журнал QA кухни разработки: вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/engine_txn.py:_record": {
    "kind": "other",
    "reason": "копия файла движка в снимок (~/.aurora/engine-backups/); карточек не касается",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/engine_txn.py:extend_snapshot": {
    "kind": "other",
    "reason": "дополнение манифеста снимка движка; карточек не касается",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/engine_txn.py:mark_pending": {
    "kind": "other",
    "reason": "метка оборванного обновления движка (.aurora/state/update.pending); не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/engine_txn.py:restore": {
    "kind": "other",
    "reason": "откат файлов движка (.aurora/) из снимка; карточек не касается",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/engine_txn.py:snapshot": {
    "kind": "other",
    "reason": "снимок файлов движка проекта в ~/.aurora/engine-backups/; карточек не касается",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/engine_txn.py:write_lock": {
    "kind": "other",
    "reason": "хеши файлов движка (.aurora/engine.lock.json); не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/feature_ids.py:assign": {
    "kind": "other",
    "reason": "файлы сценариев Gherkin (Artifacts/tests): теги @id, не карточки базы",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/folder_guides.py:apply": {
    "kind": "other",
    "reason": "справки папок README.md: служебные файлы",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/git_sync.py:_store_key": {
    "kind": "other",
    "reason": "синхронизация git проекта: служебные файлы вне базы знаний",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/git_sync.py:_write_json": {
    "kind": "other",
    "reason": "синхронизация git проекта: служебные файлы вне базы знаний",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/git_sync.py:check": {
    "kind": "other",
    "reason": "синхронизация git проекта: служебные файлы вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/git_sync.py:install_module": {
    "kind": "other",
    "reason": "синхронизация git проекта: служебные файлы вне базы знаний",
-   "calls": 3
+   "calls": 3,
+   "git": "local"
   },
   "scripts/git_sync.py:record": {
    "kind": "other",
    "reason": "синхронизация git проекта: служебные файлы вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/git_sync.py:save_cert": {
    "kind": "other",
    "reason": "синхронизация git проекта: служебные файлы вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/harness_mcp.py:_save_manifest": {
    "kind": "other",
    "reason": "настройки внешних ассистентов: вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/harness_mcp.py:add": {
    "kind": "other",
    "reason": "настройки внешних ассистентов: вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/harness_mcp.py:add_by_edit": {
    "kind": "other",
    "reason": "настройки внешних ассистентов: вне базы знаний",
-   "calls": 3
+   "calls": 3,
+   "git": "none"
   },
   "scripts/harness_mcp.py:backup": {
    "kind": "other",
    "reason": "настройки внешних ассистентов: вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/harness_mcp.py:restore": {
    "kind": "other",
    "reason": "настройки внешних ассистентов: вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/id_registry.py:_ledger_write": {
    "kind": "other",
    "reason": "отметка выданных номеров в .aurora/state/ids: служебное состояние движка, не карточка",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/ingest_config.py:save": {
    "kind": "other",
    "reason": "раздел ingest: в aurora.config.yaml (настройки извлечения из вложений): конфиг, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/install_aurora.py:Installer.copy_file": {
    "kind": "other",
    "reason": "установка проекта: файлы вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/install_aurora.py:Installer.install_launchers": {
    "kind": "other",
    "reason": "установка проекта: файлы вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/install_aurora.py:Installer.write": {
    "kind": "other",
    "reason": "установка проекта: файлы вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/install_aurora.py:merge_gitignore": {
    "kind": "other",
    "reason": "установка проекта: файлы вне базы знаний",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/install_skills.py:replace_skill": {
    "kind": "other",
    "reason": "навыки ассистентов: вне базы знаний",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/jira_export.py:run_export": {
    "kind": "other",
    "reason": "зеркало задач Jira в Sources/",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/jira_status.py:main": {
    "kind": "other",
    "reason": "отчёт по флагу --report; карточки требований пишет try_write_card",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_cited.py:archive_unit": {
    "kind": "other",
    "reason": "перенос единицы цитируемого документа, которой больше нет в источнике, в _archive (shutil.move); текст с записью в истории пишет вход записи (put_text)",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_code_graph.py:main": {
    "kind": "other",
    "reason": "граф кода в meta/: служебный файл",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_corrections.py:cmd_new": {
    "kind": "other",
    "reason": "новое исправление человека в Raw/corrections: запись, а не карточка базы",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_corrections.py:main": {
    "kind": "other",
    "reason": "файлы исправлений человека в Raw/corrections (запись, а не карточка базы); карточки — через вход записи",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/kb_embed.py:save_index": {
    "kind": "other",
    "reason": "семантический индекс .aurora/state: служебный файл",
-   "calls": 4
+   "calls": 4,
+   "git": "local"
   },
   "scripts/kb_fix.py:apply_plan": {
    "kind": "other",
    "reason": "переименования и переносы карточек в _archive; содержимое карточек пишет put_text, файлы вне базы (Templates/Prompts) — атомарно",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/kb_fix.py:main": {
    "kind": "other",
    "reason": "отчёт по флагу --report",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_gaps.py:main": {
    "kind": "other",
    "reason": "отчёт по флагу --report",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_graph.py:export_graph": {
    "kind": "other",
    "reason": "meta/graph-export.json и настройки графа Obsidian; страницы тем пишет try_write_card",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/kb_graph.py:graph_page": {
    "kind": "other",
    "reason": "страница графа в meta/",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_graph.py:main": {
    "kind": "other",
    "reason": "файлы --json и --report по просьбе человека; карту «Связи» пишет try_write_card",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/kb_graph.py:save_cards_stamp": {
    "kind": "other",
    "reason": "отпечаток графа в .aurora/state",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/kb_graph.py:write_cards_graph": {
    "kind": "other",
    "reason": "meta/graph.json: служебный файл",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_graph.py:write_insights": {
    "kind": "other",
    "reason": "meta/graph-insights.md: служебный отчёт",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/kb_index.py:main": {
    "kind": "other",
    "reason": "index.md и _index.md разделов: служебные файлы, не карточки",
-   "calls": 2
+   "calls": 2,
+   "git": "shared"
   },
   "scripts/kb_lint.py:main": {
    "kind": "other",
    "reason": "остаток линтера в meta/",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/kb_names.py:apply_mirror": {
    "kind": "other",
    "reason": "переименование страницы зеркала источников (Sources/), не карточки",
-   "calls": 3
+   "calls": 3,
+   "git": "none"
   },
   "scripts/kb_record.py:archive_mirror": {
    "kind": "other",
    "reason": "перенос зеркала записи, мастер которой исчез, в _archive (shutil.move); текст зеркала пишет вход записи (put_text)",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_record.py:new_record": {
    "kind": "other",
    "reason": "новый мастер-файл записи в Raw/<дом> по команде человека (kb:record --new): запись человека, а не карточка базы",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_record.py:run_migrate": {
    "kind": "other",
    "reason": "мастер-файл записи в Raw/<дом> после git mv рукописной карточки (kb:record --migrate): запись человека, а не карточка базы",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_record.py:write_master": {
    "kind": "other",
    "reason": "правка мастер-файла записи в Raw/ по команде человека (принять решение, заменить): запись, а не карточка базы; зеркало пишет вход записи",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_remap.py:follow_moves": {
    "kind": "other",
    "reason": "журнал сбоев разбора и учёт разобранного; карточки пишет put_text",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/kb_remap.py:main": {
    "kind": "other",
    "reason": "отчёт по флагу --report",
-   "calls": 3
+   "calls": 3,
+   "git": "shared"
   },
   "scripts/kb_reset.py:main": {
    "kind": "other",
    "reason": "копия базы перед сбросом по флагу --backup: служебная копия",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_reset.py:save_snapshot": {
    "kind": "other",
    "reason": "снимок перед сбросом базы: служебный файл",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/kb_reset.py:write_state": {
    "kind": "other",
    "reason": "отметка «пересборка идёт»: служебный файл в папке движка проекта",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/kb_retrieval.py:main": {
    "kind": "other",
    "reason": "состояние оценки поиска: служебный файл",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/kb_scrub.py:main": {
    "kind": "other",
    "reason": "маскирование ПДн в файлах вне базы знаний (Artifacts, Workspaces, Deliverables/work); карточки — через try_write_card",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_search_quality.py:golden_follow": {
    "kind": "other",
    "reason": "эталоны и история качества поиска: служебные файлы",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/kb_search_quality.py:golden_remap": {
    "kind": "other",
    "reason": "эталоны и история качества поиска: служебные файлы",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/kb_search_quality.py:golden_set": {
    "kind": "other",
    "reason": "эталоны и история качества поиска: служебные файлы",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/kb_search_quality.py:_write_json_atomic": {
    "kind": "other",
    "reason": "замеры качества поиска в часть участника: не карточка",
-   "calls": 2
+   "calls": 2,
+   "git": "shard"
   },
   "scripts/kb_supersede.py:main": {
    "kind": "other",
    "reason": "перенос замещённой карточки в _archive; пометки в карточках пишет try_write_card",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_trace_table.py:main": {
    "kind": "other",
    "reason": "таблица и свод трассировки в json; карту MOC/Трассировка пишет put_map",
-   "calls": 2
+   "calls": 2,
+   "git": "shared"
   },
   "scripts/kb_translit.py:main": {
    "kind": "other",
    "reason": "переименование карточки после записи её синонима через вход",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_translit.py:undo_identifiers": {
    "kind": "other",
    "reason": "переименование карточки после записи через вход",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_translit.py:write_dict": {
    "kind": "other",
    "reason": "словарь имён meta/translit: служебная таблица, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/kb_twins.py:main": {
    "kind": "other",
    "reason": "отчёт по флагу --report",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/kb_updated.py:_write": {
    "kind": "other",
    "reason": "дата обновления базы kb_updated.json: служебный файл",
-   "calls": 2
+   "calls": 2,
+   "git": "shard"
   },
   "scripts/kit_commands.py:main": {
    "kind": "other",
    "reason": "справочник команд кита (документ)",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/kit_i18n.py:main": {
    "kind": "other",
    "reason": "каталоги строк кита",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/llm_calls.py:main": {
    "kind": "other",
    "reason": "справочник вызовов моделей (документ)",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/merge_common.py:write_json": {
    "kind": "other",
    "reason": "общая атомарная запись JSON для merge-драйверов, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/merge_failures.py:main": {
    "kind": "other",
    "reason": "merge-драйвер build_failures.json: запись объединённого файла, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/merge_lint.py:_atomic_write": {
    "kind": "other",
    "reason": "merge-драйвер lint_baseline/lint_residue: запись объединённого файла, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/merge_manifest.py:main": {
    "kind": "other",
    "reason": "merge-драйвер manifest.json: запись объединённого JSON, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/model_config.py:_stamp_salt": {
    "kind": "other",
    "reason": "соль слепка страницы настроек моделей (`local/.stamp-salt`), не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/model_config.py:save": {
    "kind": "other",
    "reason": "настройка моделей local/models.json",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/office_ingest.py:save_skipped": {
    "kind": "other",
    "reason": "память о вложениях без текста (логотип, пустая схема): служебный файл, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/office_ingest.py:write_transcript": {
    "kind": "other",
    "reason": "транскрипт офисного файла, вложения или схемы (Raw/): источник, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/publish_doc.py:write_stamped": {
    "kind": "other",
    "reason": "штамп публикации в шапке документа вида (Artifacts/, Deliverables/): не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/publish_llm.py:validate_script": {
    "kind": "other",
    "reason": "временный файл проверки собранного скрипта страницы; удаляется сразу после двух запусков",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/publish_script.py:generate": {
    "kind": "other",
    "reason": "готовый скрипт страницы и его отпечатки (Publish/<вид>.py и .meta.json): не карточка",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/request_context.py:save_attachment": {
    "kind": "other",
    "reason": "вложения запроса: служебные файлы",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/review_run.py:Reader.page": {
    "kind": "other",
    "reason": "отчёты ревью: производные документы, не карточки",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/review_run.py:main": {
    "kind": "other",
    "reason": "отчёты ревью: производные документы, не карточки",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/review_run.py:main.work": {
    "kind": "other",
    "reason": "отчёты ревью: производные документы, не карточки",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/review_run.py:review_file_main": {
    "kind": "other",
    "reason": "отчёты ревью: производные документы, не карточки",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/review_run.py:save_report": {
    "kind": "other",
    "reason": "отчёты ревью: производные документы, не карточки",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/review_run.py:stamp_review": {
    "kind": "other",
    "reason": "шапка собственного артефакта (Artifacts/, Deliverables/work/) с итогом ревью: не карточка базы",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/review_run.py:summarize": {
    "kind": "other",
    "reason": "отчёты ревью: производные документы, не карточки",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/ship_doc.py:export": {
    "kind": "other",
    "reason": "экспорт документа в html: очистка готового файла от опасных адресов, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/ship_doc.py:main": {
    "kind": "other",
    "reason": "выпуск документа в Deliverables/: не карточка",
-   "calls": 3
+   "calls": 3,
+   "git": "none"
   },
   "scripts/sources_core.py:Mirror.write_state": {
    "kind": "other",
    "reason": "служебное состояние зеркал источников",
-   "calls": 1
+   "calls": 1,
+   "git": "local"
   },
   "scripts/sources_core.py:WikiMirror.align_case": {
    "kind": "other",
    "reason": "переименование страницы зеркала источников (Sources/)",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/sources_core.py:_store_trusted": {
    "kind": "other",
    "reason": "служебное состояние зеркал источников",
-   "calls": 2
+   "calls": 2,
+   "git": "local"
   },
   "scripts/spec_pack.py:main": {
    "kind": "other",
    "reason": "пакет спецификации в Artifacts/: не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/sync_audit.py:main": {
    "kind": "other",
    "reason": "отчёт по флагу --report",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/web_export.py:convert_documents": {
    "kind": "other",
    "reason": "веб-зеркало в Sources/: источник, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/web_export.py:fetch_asset": {
    "kind": "other",
    "reason": "веб-зеркало в Sources/: источник, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/web_export.py:promote_documents": {
    "kind": "other",
    "reason": "документ из веб-зеркала в Raw/: источник, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/web_export.py:run.store": {
    "kind": "other",
    "reason": "веб-зеркало в Sources/: источник, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/web_export.py:save_page_cache": {
    "kind": "other",
    "reason": "веб-зеркало в Sources/: источник, не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/wiki_build.py:_write": {
    "kind": "other",
    "reason": "страницы вики кита (документы)",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/code_pack.py:main": {
    "kind": "other",
    "reason": "пакет требований истории пишется в Markdown для проверки по коду; не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "shared"
   },
   "scripts/code_check.py:main": {
    "kind": "other",
    "reason": "отчёт проверки критериев по коду пишется в Markdown; не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/clean_room.py:write": {
    "kind": "other",
    "reason": "документы Clean Room и паспорт пишутся в CleanRoom/; не карточка",
-   "calls": 2
+   "calls": 2,
+   "git": "none"
   },
   "scripts/code_artifacts.py:save": {
    "kind": "other",
    "reason": "проектные overrides артефактов пишутся в aurora.config.yaml; не карточка",
-   "calls": 1
+   "calls": 1,
+   "git": "none"
   },
   "scripts/requirements_check.py:write_report": {
    "kind": "other",
    "reason": "Markdown-отчёт проверки требований пишется в ArtifactsCode/; не карточка",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/code_groups.py:save": {
+   "kind": "other",
+   "git": "shared",
+   "reason": "блок code_groups в aurora.config.yaml: общий конфиг проекта",
    "calls": 1
   }
  }

@@ -936,6 +936,46 @@ def test_card_write_sites_ratchet(tmp: Path):
 
 
 @test
+def test_new_writer_requires_git_classification(tmp: Path):
+    """Новый writer обязан назвать git-класс: без него ratchet красный, с none/local/shard/shared зелёный."""
+    W = importlib.import_module("card_write_sites")
+    root = tmp / "repo"
+    (root / "AuroraKnowledgeDB/meta").mkdir(parents=True)
+    (root / "scripts").mkdir()
+    (root / "scripts" / "state_writer.py").write_text(
+        "def save_state(path, text):\n"
+        "    open(path, 'w', encoding='utf-8').write(text)\n",
+        encoding="utf-8",
+    )
+    lines = W.scan_lines(root)
+    found = {k: v[0] for k, v in lines.items()}
+    key = "scripts/state_writer.py:save_state"
+    empty = {"card_max": 0, "git_classes_required": True, "sites": {}}
+    assert any("не названо" in p for p in W.verdict(found, empty, lines))
+    unclassified = {"card_max": 0, "git_classes_required": True,
+                    "sites": {key: {"kind": "other", "reason": "test writer", "calls": 1}}}
+    problems = W.verdict(found, unclassified, lines)
+    assert any("не указан git-класс" in p for p in problems), problems
+
+    for git_class in ("none", "local", "shard", "shared"):
+        data = {"card_max": 0, "git_classes_required": True,
+                "sites": {key: {"kind": "other", "reason": "test writer", "git": git_class, "calls": 1}}}
+        assert W.verdict(found, data, lines) == [], (git_class, W.verdict(found, data, lines))
+    no_reason = {"card_max": 0, "git_classes_required": True,
+                 "sites": {key: {"kind": "other", "reason": "", "git": "shard", "calls": 1}}}
+    assert any("shard без reason" in p for p in W.verdict(found, no_reason, lines))
+
+
+@test
+def test_old_write_site_registry_without_new_field_still_loads(tmp: Path):
+    """Старые пользовательские копии реестра без git_classes_required продолжают читаться."""
+    W = importlib.import_module("card_write_sites")
+    data = W.load()
+    assert data.get("git_classes_required") is True
+    assert all(rec.get("git") in W.GIT_CLASSES for rec in data["sites"].values())
+
+
+@test
 def test_card_write_sites_new_direct_write_in_a_script_turns_red(tmp: Path):
     """Новое прямое место записи в скрипте движка краснит проверку на настоящем списке допускаемых мест."""
     S = _sites()

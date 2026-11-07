@@ -15,7 +15,10 @@
 
 Список допускаемых мест — `tests/card_write_sites.json`: на каждое место `kind` — `card` (пишет файл карточки базы
 напрямую) или `other` (пишет не карточку: состояние, журнал, конфиг, документ, сам вход записи) — и `reason`, почему
-так. Проверка краснеет, когда: (а) в коде есть место записи, которого нет в файле, или в нём стало больше вызовов
+так. У каждого места при `git_classes_required: true` обязателен `git`: `none` — файл не попадает в git-обмен,
+`local` — только эта машина (правило `.gitignore` + untrack), `shard` — общие данные по частям участника,
+`shared` — общий файл с обычным merge. Новый writer без ответа на этот вопрос не проходит проверку. Она краснеет,
+когда: (а) в коде есть место записи, которого нет в файле, или в нём стало больше вызовов
 записи; (б) в файле есть место, которого в коде уже нет; (в) число мест `card` не равно `card_max` (выросло — прямая
 запись карточки не допускается; снизилось — планку надо затянуть, иначе вернуть десять мест будет можно); (г) файл
 не разобрался (`SyntaxError`) — молча пропустить его значило бы потерять его места.
@@ -43,6 +46,7 @@ SCAN_DIRS = ("scripts", "cockpit", "reports")
 SCAN_FILES = ("aurora.py",)
 SKIP_PARTS = ("__pycache__", "vendor")
 KINDS = ("card", "other")
+GIT_CLASSES = ("none", "local", "shard", "shared")
 
 # Вызовы по имени (`write_if_changed(...)`, `aurora_common.replace_file(...)`, а после `from shutil import move` — `move(...)`).
 WRITE_FUNCS = frozenset(("write_if_changed", "replace_file", "write_text_atomic", "write_atomic", "write_json",
@@ -189,6 +193,15 @@ def verdict(found: dict, data: dict, lines: "dict | None" = None) -> list:
             problems.append(f"{key}: kind «{kind}» — ожидается card или other")
         elif kind == "other" and not str((rec or {}).get("reason", "")).strip():
             problems.append(f"{key}: у места kind: other нет reason")
+        if data.get("git_classes_required"):
+            git = (rec or {}).get("git")
+            if git not in GIT_CLASSES:
+                problems.append(
+                    f"{key}: не указан git-класс (none/local/shard/shared) — новый writer обязан ответить, "
+                    "как его файлы живут в git: local → ignore, shard → часть участника, shared → общий merge"
+                )
+            elif git == "shard" and not str((rec or {}).get("reason", "")).strip():
+                problems.append(f"{key}: git: shard без reason — назовите, что именно пишется по частям")
         if lines is not None and key in lines and (rec or {}).get("calls") is not None:
             if len(lines[key]) > int((rec or {}).get("calls")):
                 problems.append(f"{key}: вызовов записи стало {len(lines[key])} вместо {rec['calls']} "
@@ -215,12 +228,16 @@ def snapshot(found: dict, data: dict, lines: "dict | None" = None) -> dict:
         if key.endswith(":<SyntaxError>"):
             continue
         old = data.get("sites", {}).get(key)
-        rec = dict(old) if old else {"kind": "?", "reason": ""}
+        rec = dict(old) if old else {"kind": "?", "git": "?", "reason": ""}
+        rec.setdefault("git", "?")
         if lines is not None and key in lines:
             rec["calls"] = len(lines[key])
         sites[key] = rec
     cards = sum(1 for r in sites.values() if r.get("kind") == "card")
-    return {"card_max": cards, "sites": sites}
+    out = {"card_max": cards, "sites": sites}
+    if data.get("git_classes_required"):
+        out["git_classes_required"] = True
+    return out
 
 
 def main(argv: list) -> int:
