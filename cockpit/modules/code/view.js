@@ -13,6 +13,7 @@ let CTX = null;
 let D = null, FORM = null, CREDS = {}, DIRTY = false, OPEN = "", PROJECT = "", ADD = null, MSG = null;
 let FIND = null, PACK = null;
 let ART = null;
+let GURL = "", GNAME = "", GINCLUDE = true, GTOKEN = "", GDISC = null, GSEL = null;
 let POLL_TIMER = null;
 const KIND_KEYS = {symbol: "code.index.kind.symbol", file: "code.index.kind.file",
   route: "code.index.kind.route", table: "code.index.kind.table", column: "code.index.kind.column",
@@ -28,6 +29,7 @@ export async function refresh(ctx){
   if (PROJECT !== ctx.project.path){
     PROJECT = ctx.project.path;
     DIRTY = false; OPEN = ""; ADD = null; CREDS = {}; ART = null;
+    GURL = ""; GNAME = ""; GINCLUDE = true; GTOKEN = ""; GDISC = null; GSEL = null;
   }
   MSG = null;                  // сообщение прошлой записи к новому показу раздела не относится
   if (POLL_TIMER) { clearTimeout(POLL_TIMER); POLL_TIMER = null; }
@@ -75,7 +77,10 @@ function draw(ctx){
   CTX = ctx;
   const box = ctx.$("#codeBody");
   box.innerHTML = "";
+  // Фоновый расчёт упал: показать причину, иначе раздел выглядит пустым без объяснения.
+  if (D && D.failed) box.append(ctx.el("div", {class: "warnbox"}, ctx.t("code.load_failed") + ": " + D.failed));
   if (MSG) box.append(message(ctx));
+  box.append(groupsCard(ctx));
   box.append(addCard(ctx));
   const names = Object.keys(FORM).sort((a, b) => a.localeCompare(b));
   if (!names.length) box.append(ctx.el("div", {class: "card muted", style: "padding:18px"}, ctx.t("code.empty")));
@@ -84,6 +89,140 @@ function draw(ctx){
   box.append(artifactsCard(ctx));
   box.append(packCard(ctx));
   box.append(footer(ctx));
+}
+
+/* ---------------------------------------------------------------- GitLab-группы */
+
+// Группа — источник списка репозиториев. Сеть трогает только discovery: page
+// открывается без запросов, а список приходит по кнопке «Найти репозитории».
+function groupsCard(ctx){
+  const {t, el} = ctx;
+  const data = (D && D.groups) || {groups: [], problems: []};
+  const card = el("div", {class: "card", style: "padding:16px 18px;margin-bottom:14px"},
+    el("b", {}, t("code.groups.title")),
+    el("p", {class: "muted", style: "font-size:12.5px;margin:4px 0 10px"}, t("code.groups.about")));
+  (data.problems || []).forEach(p => card.append(el("div", {class: "warnbox", style: "margin-bottom:8px"},
+    (p.name ? p.name + ": " : "") + (p.message || p.code || t("code.groups.bad")))));
+  (data.groups || []).forEach(g => {
+    const selected = (g.selected || []).length;
+    card.append(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0"},
+      el("b", {class: "mono"}, g.name),
+      el("span", {class: "chip mono"}, g.url),
+      el("span", {class: "chip"}, t("code.groups.selected_n", {n: selected})),
+      g.include_subgroups ? el("span", {class: "chip"}, t("code.groups.subgroups")) : null,
+      el("button", {class: "btn sm", onclick: () => {
+        GNAME = g.name; GURL = g.url; GINCLUDE = !!g.include_subgroups; GTOKEN = "";
+        groupDiscover(ctx);
+      }}, t("code.groups.open"))));
+  });
+  const url = el("input", {class: "btn mono", style: "width:100%;font-weight:400", autocomplete: "off",
+    placeholder: "https://gitlab.example.com/group/subgroup"});
+  url.value = GURL;
+  url.oninput = () => { GURL = url.value.trim(); };
+  const name = el("input", {class: "btn mono", style: "width:100%;font-weight:400", autocomplete: "off",
+    placeholder: t("code.groups.name_ph")});
+  name.value = GNAME;
+  name.oninput = () => { GNAME = name.value.trim(); };
+  const incl = el("input", {type: "checkbox", checked: GINCLUDE ? "" : null});
+  incl.onchange = () => { GINCLUDE = incl.checked; };
+  const token = el("input", {class: "btn mono", type: "password", autocomplete: "new-password",
+    style: "width:100%;font-weight:400", placeholder: t("code.groups.token_ph")});
+  token.value = GTOKEN;
+  token.oninput = () => { GTOKEN = token.value; };
+  card.append(el("div", {class: "row", style: "gap:10px;flex-wrap:wrap;align-items:flex-start;margin-top:10px"},
+    field(ctx, t("code.groups.url"), url, t("code.groups.url_hint")),
+    field(ctx, t("code.groups.name"), name, t("code.groups.name_hint")),
+    el("label", {style: "display:flex;gap:8px;align-items:center;margin:22px 0 0;flex:1;min-width:220px"},
+      incl, el("span", {style: "font-size:12.5px"}, t("code.groups.include")))),
+  field(ctx, t("code.groups.token"), token, t("code.groups.token_hint")),
+  el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center"},
+    el("button", {class: "btn primary", disabled: GDISC && GDISC.busy ? "" : null,
+      onclick: () => groupDiscover(ctx)}, t("code.groups.discover")),
+    GDISC && GDISC.busy ? el("span", {class: "spin"}) : null));
+  if (GDISC && !GDISC.busy) card.append(discoveryView(ctx));
+  return card;
+}
+
+function discoveryView(ctx){
+  const {t, el} = ctx;
+  if (!GDISC.ok){
+    const out = [el("div", {class: "warnbox", style: "margin-top:12px"},
+      t("code.groups.failed") + ": " + (GDISC.error || "error"),
+      GDISC.hint ? el("div", {style: "font-size:12.5px;margin-top:4px"}, GDISC.hint) : null,
+      GDISC.detail ? el("div", {class: "muted mono", style: "font-size:11.5px;margin-top:4px"}, GDISC.detail) : null)];
+    (GDISC.problems || []).forEach(p => out.push(el("div", {style: "font-size:12.5px"},
+      "· " + (p.name ? p.name + ": " : "") + (p.code || ""))));
+    return el("div", {}, ...out);
+  }
+  const projects = GDISC.projects || [];
+  const rows = projects.map(p => {
+    const cb = el("input", {type: "checkbox", checked: GSEL.has(p.path) ? "" : null});
+    cb.onchange = () => {
+      if (cb.checked) GSEL.add(p.path); else GSEL.delete(p.path);
+      const btn = ctx.$("#groupSave");
+      if (btn) btn.textContent = t("code.groups.save_n", {n: GSEL.size});
+    };
+    return el("label", {style: "display:flex;gap:9px;align-items:flex-start;padding:7px 0;border-top:1px solid var(--border);cursor:pointer"},
+      cb,
+      el("div", {style: "flex:1;min-width:0"},
+        el("div", {class: "row", style: "gap:7px;flex-wrap:wrap;align-items:center"},
+          el("span", {class: "mono", style: "font-size:12.5px;overflow-wrap:anywhere"}, p.path),
+          p.new ? el("span", {class: "chip ok"}, t("code.groups.new")) : null,
+          p.default_branch ? el("span", {class: "chip"}, p.default_branch) : null),
+        el("div", {class: "muted", style: "font-size:11.5px"},
+          [p.last_activity_at ? t("code.groups.activity", {date: String(p.last_activity_at).slice(0, 10)}) : "",
+           p.created_at ? t("code.groups.created", {date: String(p.created_at).slice(0, 10)}) : ""]
+            .filter(Boolean).join(" · "))));
+  });
+  const out = [el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px"},
+    el("b", {}, t("code.groups.found", {n: projects.length})),
+    GDISC.new ? el("span", {class: "chip ok"}, t("code.groups.new_n", {n: GDISC.new})) : null,
+    GDISC.auth ? el("span", {class: "chip ok"}, t("code.groups.authed")) : el("span", {class: "chip warn"}, t("code.groups.noauth")))];
+  if (!projects.length) out.push(el("div", {class: "muted", style: "margin-top:8px"}, t("code.groups.empty")));
+  out.push(el("div", {style: "max-height:380px;overflow:auto;margin-top:6px"}, ...rows));
+  out.push(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center"},
+    el("button", {class: "btn primary", id: "groupSave",
+      onclick: () => saveGroup(ctx)}, t("code.groups.save_n", {n: GSEL.size})),
+    el("button", {class: "btn", onclick: () => { GDISC = null; draw(ctx); }}, t("code.groups.close"))));
+  return el("div", {}, ...out);
+}
+
+async function groupDiscover(ctx){
+  const name = GNAME || (GURL ? GURL.replace(/\/+$/, "").split("/").pop().replace(/\.git$/i, "") : "");
+  if (!GURL){ ctx.toast(ctx.t("code.groups.url_required"), "err"); return; }
+  if (!name){ ctx.toast(ctx.t("code.groups.name_required"), "err"); return; }
+  GDISC = {busy: true};
+  draw(ctx);
+  const existing = ((D && D.groups && D.groups.groups) || []).find(g => g.name === name);
+  const r = await ctx.api("/api/code/groups/discover", {method: "POST", quiet: true, body: JSON.stringify({
+    project: ctx.project.path, name, url: GURL, include_subgroups: GINCLUDE,
+    credentials: GTOKEN ? {auth: "token", user: "", secret: GTOKEN} : null})}) || {ok: false, error: "network"};
+  GDISC = r;
+  GSEL = new Set(r && r.ok ? ((existing && existing.selected) || []).filter(p =>
+    (r.projects || []).some(x => x.path === p)) : []);
+  draw(ctx);
+}
+
+async function saveGroup(ctx){
+  if (!GDISC || !GDISC.ok) return;
+  if (DIRTY){
+    MSG = {kind: "err", text: ctx.t("code.groups.save_dirty")};
+    draw(ctx);
+    return;
+  }
+  const r = await ctx.api("/api/code/groups/save", {method: "POST", quiet: true, body: JSON.stringify({
+    project: ctx.project.path, name: GNAME || GDISC.group.name, url: GURL,
+    include_subgroups: GINCLUDE, selected: [...GSEL], projects: GDISC.projects || [],
+    repo_expect: (D && D.digest) || "",
+    credentials: GTOKEN ? {auth: "token", user: "", secret: GTOKEN} : null})}) || {ok: false};
+  if (!r.ok){
+    MSG = {kind: "err", text: ctx.t("code.groups.save_failed") + ": " + (r.error || "error")};
+    draw(ctx);
+    return;
+  }
+  ctx.toast(ctx.t("code.groups.saved", {n: r.repos || 0}));
+  GDISC = null; GTOKEN = "";
+  await load(ctx, false);
 }
 
 /* ---------------------------------------------------------------- сообщения */
@@ -208,11 +347,11 @@ async function addRepo(ctx, force){
 function authFields(ctx, c, provider, redraw){
   const {t, el} = ctx;
   const method = el("select", {class: "btn", style: "width:100%"},
-    ...((D && D.options && D.options.auths) || ["system", "token", "password", "ssh"])
+    ...((D && D.options && D.options.auths) || ["system", "token", "password", "ldap", "ssh"])
       .map(v => el("option", {value: v, selected: c.auth === v ? "" : null}, t("code.auth." + v))));
   method.onchange = () => { c.auth = method.value; touch(); redraw(); };
   const out = [field(ctx, t("code.field.auth"), method, t("code.h.auth." + c.auth))];
-  if (c.auth === "token" || c.auth === "password"){
+  if (c.auth === "token" || c.auth === "password" || c.auth === "ldap"){
     const user = el("input", {class: "btn", style: "width:100%;font-weight:400", autocomplete: "off", value: c.user || ""});
     user.oninput = () => { c.user = user.value.trim(); touch(); };
     const had = c.secret === MASK;
@@ -222,9 +361,13 @@ function authFields(ctx, c, provider, redraw){
     sec.oninput = () => { c.secret = sec.value || (had ? MASK : ""); touch(); };
     const bb = provider === "bitbucket";
     out.push(el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;align-items:flex-start"},
-      field(ctx, t("code.field.user"), user, bb ? t("code.h.user_bitbucket") : t("code.h.user")),
+      field(ctx, t("code.field.user"), user,
+        c.auth === "ldap" ? t("code.h.user.ldap")
+          : bb ? t("code.h.user_bitbucket") : t("code.h.user")),
       field(ctx, c.auth === "token" ? t("code.field.token") : t("code.field.password"), sec,
-        had ? t("code.h.secret_keep") : bb ? t("code.h.secret_bitbucket") : t("code.h.secret"))));
+        had ? t("code.h.secret_keep")
+          : c.auth === "ldap" ? t("code.h.secret_ldap")
+          : bb ? t("code.h.secret_bitbucket") : t("code.h.secret"))));
   } else if (c.auth === "ssh"){
     const key = el("input", {class: "btn mono", style: "width:100%;font-weight:400", placeholder: "~/.ssh/id_ed25519",
       value: c.ssh_key || ""});
@@ -417,6 +560,10 @@ async function save(ctx, force){
     DIRTY = false; CREDS = {};
     if (r.state){ D = r.state; FORM = {}; D.repos.forEach(x => { FORM[x.name] = Object.fromEntries(FIELDS.map(f => [f, x[f]])); }); }
     draw(ctx);
+    // После сохранения полный расчёт состояния идёт в фоне: code_state отдаёт
+    // loading:true с пустыми artifacts/index/profiles. Без повторного load() карточки
+    // артефактов, индекса и профилей останутся пустыми до ручного обновления.
+    if (r.state && r.state.loading) load(ctx, true);
     return true;
   }
   if (r && r.conflict) MSG = {kind: "err", text: ctx.t("code.conflict"), conflict: true};

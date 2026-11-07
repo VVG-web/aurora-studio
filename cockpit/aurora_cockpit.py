@@ -2552,6 +2552,16 @@ def code_artifacts_save(project: str, kinds, expect: str = "", lang: str = "ru")
     return {**res, "state": code_artifacts_state(project, lang)}, 200
 
 
+def _code_groups_state(project: str) -> dict:
+    """Метаданные GitLab-групп без сети: URL, выбранные, known и слепок формы."""
+    try:
+        import code_groups as CG
+        return CG.state(project)
+    except Exception as e:  # noqa: BLE001 — сломанный блок групп не роняет весь раздел Code
+        return {"groups": [], "digest": "", "problems": [{"name": "", "field": "", "code": "failed",
+                                                           "message": f"{type(e).__name__}: {e}"[:300]}]}
+
+
 def code_pack_state(project: str, story: str = "", lang: str = "ru") -> dict:
     """Пакет требований истории: список историй и, если назван номер, сам пакет. Только чтение."""
     try:
@@ -2586,6 +2596,29 @@ def _code_state_full(project: str, lang: str = "ru") -> dict:
         st["profiles"] = []
     st["index"] = code_index_state(project)
     st["artifacts"] = code_artifacts_state(project, lang)
+    st["groups"] = _code_groups_state(project)
+    return st
+
+
+def _code_state_fallback(project: str, error: str) -> dict:
+    """Минимальное состояние, когда полный расчёт упал: панель перестаёт опрашивать.
+
+    Раньше исключение в фоне глоталось: кэш оставался пустым, `code_state` снова
+    возвращал `loading: true`, и панель опрашивала сломанный проект вечно. Теперь
+    ошибка кэшируется как готовое состояние с `loading: false` и текстом причины.
+    """
+    try:
+        import code_repos as CREPO
+        st = CREPO.state(project)
+    except Exception:  # noqa: BLE001 — даже реестр не прочитался: отдаём пустой скелет
+        st = {"repos": [], "digest": "", "problems": [],
+              "options": {"providers": [], "auths": []}}
+    st["index"] = {"repos": []}
+    st["artifacts"] = {"kinds": [], "problems": [], "digest": "", "overrides": {}}
+    st["groups"] = {"groups": [], "digest": "", "problems": []}
+    st["profiles"] = []
+    st["loading"] = False
+    st["failed"] = error
     return st
 
 
@@ -2593,13 +2626,14 @@ def _code_state_bg(project: str, lang: str = "ru") -> None:
     """Фоновый расчёт полного состояния «Код»: кладёт результат в кэш и снимает флаг занятости."""
     try:
         st = _code_state_full(project, lang)
-        with _CODE_STATE_LOCK:
-            _CODE_STATE_CACHE[project] = {"state": st, "at": time.time()}
-    except Exception:  # noqa: BLE001 — фоновый поток не должен ронять панель
-        pass
-    finally:
-        with _CODE_STATE_LOCK:
-            _CODE_STATE_BUSY.pop(project, None)
+        at = time.time()
+    except Exception as e:  # noqa: BLE001 — фоновый поток не должен ронять панель
+        st = _code_state_fallback(project, f"{type(e).__name__}: {e}"[:300])
+        # Не долбить сломанный проект каждые три секунды: повтор через 30 с.
+        at = time.time() - _CODE_STATE_TTL + 30.0
+    with _CODE_STATE_LOCK:
+        _CODE_STATE_CACHE[project] = {"state": st, "at": at}
+        _CODE_STATE_BUSY.pop(project, None)
 
 
 def code_state(project: str, lang: str = "ru") -> dict:
@@ -2620,6 +2654,7 @@ def code_state(project: str, lang: str = "ru") -> dict:
     st = CREPO.state(project)
     st["index"] = {"repos": []}
     st["artifacts"] = {"kinds": [], "problems": [], "digest": "", "overrides": {}}
+    st["groups"] = _code_groups_state(project)
     st["profiles"] = []
     st["loading"] = True
     if not busy:
@@ -2646,6 +2681,43 @@ def code_action(action: str, project: str, payload: dict) -> tuple:
         return CREPO.check_remote(project, str(payload.get("name") or ""), payload.get("repo") or {},
                                   payload.get("credentials") if isinstance(payload.get("credentials"), dict) else None), 200
     return {"error": "неизвестный маршрут"}, 404
+
+
+def code_group_action(action: str, project: str, payload: dict) -> tuple:
+    """GitLab-группы Code: discovery и сохранение выбора. Сеть только в discovery."""
+    try:
+        import code_groups as CG
+        url = str(payload.get("url") or "").strip()
+        name = str(payload.get("name") or "").strip()
+        if not name and url:
+            name = url.rstrip("/").rsplit("/", 1)[-1]
+            if name.lower().endswith(".git"):
+                name = name[:-4]
+        why = CG.name_problem(name)
+        if why:
+            return {"ok": False, "error": why, "field": "name"}, 400
+        include = payload.get("include_subgroups", True)
+        if isinstance(include, str):
+            include = include.strip().lower() not in ("false", "0", "no", "off", "")
+        if action == "discover":
+            if not url:
+                return {"ok": False, "error": "url_required", "field": "url"}, 400
+            res = CG.discover(project, name, url, bool(include), payload.get("credentials"))
+        elif action == "save":
+            projects = payload.get("projects")
+            res = CG.save_selection(project, name, url, payload.get("selected") or [],
+                                    bool(include), str(payload.get("repo_expect") or ""),
+                                    payload.get("credentials"),
+                                    projects if isinstance(projects, list) else [])
+        else:
+            return {"error": "неизвестный маршрут"}, 404
+        if res.get("ok"):
+            with _CODE_STATE_LOCK:
+                _CODE_STATE_CACHE.pop(project, None)
+        code = 200 if res.get("ok") else 409 if res.get("conflict") else 400
+        return res, code
+    except Exception as e:  # noqa: BLE001 — форма получает причину, а не оборванный ответ
+        return {"ok": False, "error": "failed", "detail": f"{type(e).__name__}: {e}"[:300]}, 400
 
 
 def cert_action(url: str, payload: dict) -> dict:
@@ -8249,6 +8321,22 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             res, code = code_action(u.path.rsplit("/", 1)[1], project, payload)
+            return self.send_json(res, code)
+        if u.path == "/api/code/groups/discover":
+            project = payload.get("project", "")
+            if not isinstance(project, str) or not project:
+                return self.send_json({"error": "проект не выбран"}, 400)
+            if not self._known(project):
+                return
+            res, code = code_group_action("discover", project, payload)
+            return self.send_json(res, code)
+        if u.path == "/api/code/groups/save":
+            project = payload.get("project", "")
+            if not isinstance(project, str) or not project:
+                return self.send_json({"error": "проект не выбран"}, 400)
+            if not self._known(project):
+                return
+            res, code = code_group_action("save", project, payload)
             return self.send_json(res, code)
         if u.path == "/api/code/artifacts":
             project = payload.get("project", "")

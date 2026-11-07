@@ -92,6 +92,50 @@ def test_code_artifact_partial_save_keeps_other_overrides(_t):
 
 
 @test
+def test_code_state_fallback_stops_polling_on_full_failure(tmp: Path):
+    """Сбой фонового расчёта не оставляет панель в вечном опросе.
+
+    `_code_state_bg` раньше глотала исключение: кэш оставался пустым, `code_state`
+    снова отдавал `loading: true`, и панель опрашивала сломанный проект без конца.
+    Теперь ошибка кэшируется как готовое состояние с `loading: false` и причиной.
+    """
+    root = make_project(tmp)
+    key = str(root)
+    with CK._CODE_STATE_LOCK:
+        CK._CODE_STATE_CACHE.pop(key, None)
+        CK._CODE_STATE_BUSY.pop(key, None)
+    saved = CK._code_state_full
+
+    def boom(*_a, **_k):
+        raise RuntimeError("boom")
+
+    CK._code_state_full = boom
+    try:
+        CK._code_state_bg(key)
+    finally:
+        CK._code_state_full = saved
+    entry = CK._CODE_STATE_CACHE.get(key)
+    assert entry and entry["state"]["loading"] is False, entry
+    assert "RuntimeError" in entry["state"]["failed"], entry
+    st = CK.code_state(key)
+    assert st["loading"] is False and "RuntimeError" in st["failed"], st
+
+
+@test
+def test_code_registry_save_reloads_async_state(_t):
+    """Сохранение реестра не оставляет карточки Code пустыми.
+
+    С 1.212.2 `code_state` отдаёт форму сразу с `loading: true`, а artifacts/index/profiles
+    считает в фоне. `save()` брала этот быстрый ответ и не запускала опрос, поэтому после
+    сохранения репозитория карточки артефактов и индекса оставались пустыми до ручного
+    обновления. Повторный `load()` возобновляет опрос.
+    """
+    source = (KIT / "cockpit/modules/code/view.js").read_text(encoding="utf-8")
+    save = source.split("async function save(ctx, force){", 1)[1].split("\n}\n", 1)[0]
+    assert "r.state.loading" in save and "load(ctx, true)" in save, save
+
+
+@test
 def test_code_artifact_ui_uses_the_settings_endpoint(_t):
     source = (KIT / "cockpit/modules/code/view.js").read_text(encoding="utf-8")
     for token in ("/api/code/artifacts", "saveArtifacts", "code.artifacts.save",

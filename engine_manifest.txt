@@ -123,6 +123,7 @@ scripts/conn_gate.py      => .aurora/scripts/conn_gate.py
 scripts/git_sync.py      => .aurora/scripts/git_sync.py
 # код проекта (раздел «Код»): реестр репозиториев `code_repos:` и клоны в Code/ — `code:sync`, `code:status`
 scripts/code_repos.py    => .aurora/scripts/code_repos.py
+scripts/code_groups.py   => .aurora/scripts/code_groups.py
 scripts/code_sync.py     => .aurora/scripts/code_sync.py
 scripts/code_index.py    => .aurora/scripts/code_index.py
 scripts/code_find.py     => .aurora/scripts/code_find.py
