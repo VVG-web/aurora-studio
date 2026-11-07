@@ -90,7 +90,7 @@ FIELDS = ("title", "template", "prompt", "out", "publish_url", "publish_path", "
 # вёрстка); текст автора он не переписывает. Путь к файлу `Prompts/…`, как у `prompt`.
 # `publish_engine` — чем собирать страницу: `auto` (готовый скрипт, если он есть, иначе встроенная сборка),
 # `script` (только скрипт) или `prompt` (каждый раз звать модель по промпту публикации — тратит токены).
-# `publish_script` — путь к готовому скрипту, который модель сделала по промпту один раз; пусто — `Publish/<вид>.py`.
+# `publish_script` — путь к готовому скрипту, который модель сделала по промпту один раз; пусто — `Scripts/Generated/<вид>.py`.
 # `publish_template` — заготовка страницы (скелет), по которой проверяют и правят скрипт; пусто — скелет из промпта.
 # Поля создания и поля публикации; форма настроек рисует их двумя рамками, `--kind` — двумя разделами.
 CREATE_FIELDS = ("title", "template", "prompt", "out", "mcp", "tech_agnostic", "ref_mask")
@@ -712,7 +712,7 @@ def main() -> int:
                   "его не применяют, по нему собирают скрипт страницы или саму страницу в режиме prompt")
         if rec.get("publish_engine") or rec.get("publish_script") or rec.get("publish_template"):
             eng = str(rec.get("publish_engine") or "auto").strip()
-            script = str(rec.get("publish_script") or "").strip() or f"Publish/{a.kind}.py"
+            script = str(rec.get("publish_script") or "").strip() or f"Scripts/Generated/{a.kind}.py"
             print(f"Сборка страницы: {eng} · скрипт: {script}"
                   + (f" · заготовка: {rec['publish_template']}" if rec.get("publish_template") else ""))
         if review_profile(rec):

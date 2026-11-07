@@ -404,14 +404,14 @@ def test_kinds_read_reports_the_script_state_and_the_form_can_build_one(tmp: Pat
     ck = _ck()
     PS = _mod("publish_script")
     root = _project(tmp, CONFIG)
-    (root / "Publish").mkdir()
+    (root / "Scripts" / "Generated").mkdir(parents=True, exist_ok=True)
     code = "import json, sys\nprint(json.dumps({'title': 'x', 'storage': '<p>x</p>'}))\n"
-    (root / "Publish" / "ac.py").write_text(code, encoding="utf-8")
+    (root / "Scripts" / "Generated" / "ac.py").write_text(code, encoding="utf-8")
     state = ck.kinds_read(str(root))
     assert state["scripts"]["ac"]["state"] == "stale" and "отпечатков" in state["scripts"]["ac"]["why"], state["scripts"]
-    meta = {"script": "Publish/ac.py", "script_sha": PS._sha(code), "prompt": "", "prompt_sha": "",
+    meta = {"script": "Scripts/Generated/ac.py", "script_sha": PS._sha(code), "prompt": "", "prompt_sha": "",
             "template": "", "template_sha": "", "generated_at": "2026-11-02T00:00:00Z"}
-    (root / "Publish" / "ac.meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    (root / "Scripts" / "Generated" / "ac.meta.json").write_text(json.dumps(meta), encoding="utf-8")
     assert ck.kinds_read(str(root))["scripts"]["ac"]["state"] == "ready"
 
     form = panel_sources()

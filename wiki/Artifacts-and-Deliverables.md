@@ -56,7 +56,7 @@ mask. **Publishing is the parent and the prompt:** the kind's root page in Confl
 it (`publish_path`), the page title template (`publish_title`), the review before publishing and the page build: the engine
 (`publish_engine`), the ready script (`publish_script`) and the skeleton (`publish_template`). The publishing prompt
 (`publish_prompt`) only lays the page out: it does not rewrite the author's text. The **"Create script"** button reads the
-prompt and skeleton with a model once and writes a deterministic `Publish/<kind>.py`; publishing runs it without tokens. The
+prompt and skeleton with a model once and writes a deterministic `Scripts/Generated/<kind>.py`; publishing runs it without tokens. The
 `auto` engine uses the ready script if present, otherwise the built-in builder; `script` is script only (broken XHTML or a
 missing script stops publishing); `prompt` calls the model on every publication. If the prompt or skeleton changed after the
 script was built, the form says the script is stale: it still runs, but should be rebuilt.

@@ -427,7 +427,7 @@ def test_publish_script_generator_checks_determinism_and_marks_stale_inputs(tmp:
     LLM._call = lambda *a, **k: {"ok": True, "text": code, "model": "fake", "error": ""}
     try:
         res = PS.generate("ac", str(root), apply=True)
-        assert res["ok"] and (root / "Publish" / "ac.py").is_file(), res
+        assert res["ok"] and (root / "Scripts" / "Generated" / "ac.py").is_file(), res
         st = PS.status(str(root), "ac", {"publish_prompt": "Prompts/ac_publish.md", "out": "Artifacts/ac"})
         assert st["state"] == "ready" and st["generated_at"], st
         prompt.write_text("Собери страницу AC по новому скелету.", encoding="utf-8")
@@ -440,15 +440,39 @@ def test_publish_script_generator_checks_determinism_and_marks_stale_inputs(tmp:
         assert st["state"] == "stale" and "заготовка" in st["why"], st
         cfg.write_text(cfg.read_text(encoding="utf-8").replace('    publish_template: "Templates/AC.md"\n', ""),
                        encoding="utf-8")
-        (root / "Publish" / "ac.py").write_text(code + "\n# правка\n", encoding="utf-8")
+        (root / "Scripts" / "Generated" / "ac.py").write_text(code + "\n# правка\n", encoding="utf-8")
         st = PS.status(str(root), "ac", {"publish_prompt": "Prompts/ac_publish.md", "out": "Artifacts/ac"})
         assert st["state"] == "stale" and "скрипт" in st["why"], st
 
         bad = code.replace("Критерии приемки", "Что-то другое")
         LLM._call = lambda *a, **k: {"ok": True, "text": bad, "model": "fake", "error": ""}
-        before = (root / "Publish" / "ac.py").read_text(encoding="utf-8")
+        before = (root / "Scripts" / "Generated" / "ac.py").read_text(encoding="utf-8")
         refused = PS.generate("ac", str(root), apply=True, attempts=1)
         assert not refused["ok"] and "Критерии приемки" in refused["why"], refused
-        assert (root / "Publish" / "ac.py").read_text(encoding="utf-8") == before, "непроверенный скрипт перезаписал рабочий"
+        assert (root / "Scripts" / "Generated" / "ac.py").read_text(encoding="utf-8") == before, "непроверенный скрипт перезаписал рабочий"
     finally:
         LLM._call = orig
+
+
+@test
+def test_generated_publish_scripts_target_scripts_generated_with_legacy_fallback(tmp: Path):
+    """Новые скрипты пишутся в `Scripts/Generated`, а старый `Publish/` читается, пока нового файла нет."""
+    import sys
+    sys.path.insert(0, str(KIT / "scripts"))
+    import publish_script as PS
+
+    root = make_project(tmp)
+    rec = {"publish_prompt": "Prompts/ac_publish.md"}
+    assert PS.default_script("ac") == "Scripts/Generated/ac.py"
+    assert PS.target_script_rel(str(root), "ac", rec) == "Scripts/Generated/ac.py"
+    assert PS.script_rel(str(root), "ac", rec) == "Scripts/Generated/ac.py"
+
+    (root / "Publish").mkdir()
+    (root / "Publish" / "ac.py").write_text("print('legacy')\n", encoding="utf-8")
+    assert PS.script_rel(str(root), "ac", rec) == "Publish/ac.py"
+    assert PS.status(str(root), "ac", rec)["legacy"] is True
+
+    (root / "Scripts" / "Generated").mkdir(parents=True, exist_ok=True)
+    (root / "Scripts" / "Generated" / "ac.py").write_text("print('new')\n", encoding="utf-8")
+    assert PS.script_rel(str(root), "ac", rec) == "Scripts/Generated/ac.py"
+    assert PS.status(str(root), "ac", rec)["legacy"] is False

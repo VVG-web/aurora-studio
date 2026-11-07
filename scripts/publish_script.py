@@ -3,7 +3,7 @@
 
 Промпт публикации описывает, как оформить готовый документ в страницу Confluence. Держать модель на каждой публикации
 дорого; держать только промпт — страница расходится с ним. Поэтому модель читает промпт и заготовку ОДИН раз и пишет
-скрипт, который затем повторяет оформление без токенов. Скрипт лежит в проекте (`Publish/<вид>.py`), рядом — отпечатки
+скрипт, который затем повторяет оформление без токенов. Скрипт лежит в проекте (`Scripts/Generated/<вид>.py`), рядом — отпечатки
 входов (`.meta.json`): промпт или заготовку поправили — публикация скажет, что скрипт устарел.
 
   python3 .aurora/scripts/publish_script.py --kind ac --project .            # проверить и показать, что будет
@@ -48,17 +48,41 @@ def _rel(project: str, rel: str) -> str:
     return relpath.as_posix()
 
 
+SCRIPT_DIR = "Scripts/Generated"
+
+
 def default_script(kind: str) -> str:
+    return f"{SCRIPT_DIR}/{kind}.py"
+
+
+def legacy_script(kind: str) -> str:
+    """Старое место до 1.215.0: читаем, чтобы проекты не теряли уже собранные скрипты."""
     return f"Publish/{kind}.py"
 
 
-def script_rel(project: str, kind: str, rec: dict) -> str:
-    """Где лежит скрипт вида: поле `publish_script`, иначе `Publish/<вид>.py`."""
+def target_script_rel(project: str, kind: str, rec: dict) -> str:
+    """Куда писать новый скрипт: поле вида, иначе `Scripts/Generated/<вид>.py`."""
     return _rel(project, rec.get("publish_script") or default_script(kind))
 
 
+def script_rel(project: str, kind: str, rec: dict) -> str:
+    """Где читать скрипт вида.
+
+    Поле `publish_script` сильнее. Без него сначала смотрим `Scripts/Generated/<вид>.py`;
+    старый `Publish/<вид>.py` читаем, если нового файла ещё нет. Новые скрипты всегда
+    пишутся через `target_script_rel`, поэтому проект постепенно переезжает сам.
+    """
+    if str(rec.get("publish_script") or "").strip():
+        return _rel(project, rec.get("publish_script"))
+    new = _rel(project, default_script(kind))
+    old = _rel(project, legacy_script(kind))
+    if (_root(project) / new).is_file() or not (_root(project) / old).is_file():
+        return new
+    return old
+
+
 def meta_rel(project: str, kind: str, rec: dict) -> str:
-    """Отпечатки рядом со скриптом: `Publish/ac.py` → `Publish/ac.meta.json`."""
+    """Отпечатки рядом со скриптом: `Scripts/Generated/ac.py` → `Scripts/Generated/ac.meta.json`."""
     s = script_rel(project, kind, rec)
     return (s[:-3] if s.endswith(".py") else s) + ".meta.json"
 
@@ -155,7 +179,7 @@ def generate(kind: str, project: str = ".", script_path: str = "", apply: bool =
     if not check.get("ok"):
         return {"ok": False, "kind": kind, "why": "; ".join(errors) or "скрипт не проверен",
                 "attempts": last.get("attempt", 0), "model": last.get("model", ""), "errors": errors}
-    target_rel = _rel(project, script_path) if script_path else script_rel(project, kind, rec)
+    target_rel = _rel(project, script_path) if script_path else target_script_rel(project, kind, rec)
     meta_target = (target_rel[:-3] if target_rel.endswith(".py") else target_rel) + ".meta.json"
     prompt_text = _file_text(project, prompt_rel)
     template_text = _file_text(project, template_rel) if template_rel else ""
@@ -214,12 +238,14 @@ def status(project: str, kind: str, rec: dict) -> dict:
     `state`: `missing` — скрипта нет; `ready` — есть и входы те же; `stale` — промпт/заготовка/скрипт изменились после
     создания. `why` называет, что именно изменилось, чтобы человек понимал, зачем жать «Создать скрипт» снова."""
     script = script_rel(project, kind, rec)
+    legacy = bool(script == _rel(project, legacy_script(kind))
+                  and not str(rec.get("publish_script") or "").strip())
     s_path = _root(project) / script
     meta = read_meta(project, kind, rec)
     present = s_path.is_file()
     if not present:
-        return {"state": "missing", "script": script, "meta": "", "why": "скрипта нет", "why_codes": ["missing"],
-                "generated_at": ""}
+        return {"state": "missing", "script": script, "legacy": legacy, "meta": "",
+                "why": "скрипта нет", "why_codes": ["missing"], "generated_at": ""}
     why = []
     codes = []
     if not meta:
@@ -253,6 +279,7 @@ def status(project: str, kind: str, rec: dict) -> dict:
             why.append("в отпечатках нет хеша скрипта")
             codes.append("no-script-sha")
     return {"state": "stale" if why else "ready", "script": script,
+            "legacy": legacy,
             "meta": meta_rel(project, kind, rec) if meta else "", "why": "; ".join(why), "why_codes": codes,
             "generated_at": str(meta.get("generated_at") or "")}
 
@@ -261,7 +288,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Собрать скрипт страницы вида по промпту публикации")
     ap.add_argument("--kind", required=True, help="вид артефакта из artifacts проекта")
     ap.add_argument("--project", default=".", help="корень проекта (по умолчанию текущий)")
-    ap.add_argument("--script", default="", help="куда писать скрипт (по умолчанию publish_script вида или Publish/<вид>.py)")
+    ap.add_argument("--script", default="", help="куда писать скрипт (по умолчанию publish_script вида или Scripts/Generated/<вид>.py)")
     ap.add_argument("--apply", action="store_true", help="записать скрипт и отпечатки (без флага — только проверка)")
     ap.add_argument("--attempts", type=int, default=2, help="сколько раз просить модель исправить скрипт")
     ap.add_argument("--json", action="store_true", help="машинный отчёт в stdout")

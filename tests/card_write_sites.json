@@ -1186,7 +1186,7 @@
   },
   "scripts/publish_script.py:generate": {
    "kind": "other",
-   "reason": "готовый скрипт страницы и его отпечатки (Publish/<вид>.py и .meta.json): не карточка",
+   "reason": "готовый скрипт страницы и его отпечатки (Scripts/Generated/<вид>.py и .meta.json): не карточка",
    "calls": 2,
    "git": "none"
   },

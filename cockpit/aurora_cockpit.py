@@ -1220,7 +1220,7 @@ def publish_plan(project: str, rel: str) -> dict:
 def publish_script_create(project: str, kind: str, apply: bool = True) -> dict:
     """Собрать скрипт страницы вида по промпту публикации. Генератор берётся из кита, а не из проекта: кнопка
     работает и до обновления движка проекта. Модель читает промпт, заготовку и последний документ вида, проверяет
-    скрипт дважды и только потом (при `apply`) пишет `Publish/<вид>.py` и отпечатки."""
+    скрипт дважды и только потом (при `apply`) пишет `Scripts/Generated/<вид>.py` и отпечатки."""
     kind = str(kind or "").strip()
     if not re.fullmatch(r"[a-z][a-z0-9\-]{1,30}", kind):
         return {"error": "вид артефакта — латиница, цифры и дефис"}
