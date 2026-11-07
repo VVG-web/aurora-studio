@@ -790,7 +790,9 @@ def test_project_templates_do_not_drift_from_the_trust_model(tmp: Path):
     assert len(files) > 10, "шаблоны кита не найдены"
     old = re.compile(r"kb_queue|kb:queue|kb:verify|verify-гейт|verified-карточ|верифицированн|"
                      r"^status:\s*(verified|imported)|^verified:|^review_by:", re.M)
-    scripts = {p.name for p in (KIT / "scripts").rglob("*.py")} | {"aurora.py"}
+    scripts = ({p.name for p in (KIT / "scripts").rglob("*.py")}
+               | {p.name for p in (KIT / "tests").glob("*.py")}
+               | {"aurora.py"})
     bad = []
     for p in files:
         text = p.read_text(encoding="utf-8", errors="ignore")
