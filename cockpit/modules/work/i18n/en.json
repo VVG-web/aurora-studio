@@ -104,6 +104,11 @@
   "work.req.pick_title": "Document or folder with requirements",
   "work.req.go": "Check against code",
   "work.req.export": "Export to Markdown",
+  "work.req.agent": "Ask the model about uncertain items (LLM)",
+  "work.req.agent_calls": "at most",
+  "work.req.agent_hint": "The model sees only indexed evidence, never the code; found without citations is rejected.",
+  "work.req.checking_agent": "Checking deterministically, then asking the model about uncertain items…",
+  "work.req.agent_summary": "Model: calls {calls}, accepted {accepted}, skipped {skipped}, errors {errors}.",
   "work.req.exported": "Report saved: {path}",
   "work.req.export_failed": "Could not save the report.",
   "work.req.remove": "Remove from the check",
@@ -121,6 +126,8 @@
   "work.req.found": "found",
   "work.req.partial": "partial",
   "work.req.not_found": "not found",
+  "work.req.agent_why": "LLM: {why}",
+  "work.req.agent_error": "LLM: {error}",
   "work.kb": "The document is built on the knowledge base updated {when}.",
   "work.kb_never": "The knowledge base has not been fully updated yet: the document is built on what it holds now."
 }

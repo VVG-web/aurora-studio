@@ -8358,7 +8358,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "paths должен быть списком"}, 400)
             try:
                 import requirements_check as RQ
-                return self.send_json(RQ.check(project, paths))
+                max_calls = payload.get("max_calls", 10)
+                max_calls = max(0, min(100, int(max_calls))) if isinstance(max_calls, (int, float, str)) else 10
+                deadline = payload.get("deadline", 300)
+                deadline = max(1.0, min(900.0, float(deadline))) if isinstance(deadline, (int, float, str)) else 300.0
+                return self.send_json(RQ.check(project, paths, bool(payload.get("agent")),
+                                               max_calls, deadline))
             except Exception as e:  # noqa: BLE001 — форма получает причину, а не оборванный ответ
                 return self.send_json({"error": f"{type(e).__name__}: {e}"[:300]}, 400)
         if u.path == "/api/requirements/export":
@@ -8372,8 +8377,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "paths должен быть списком"}, 400)
             try:
                 import requirements_check as RQ
+                max_calls = payload.get("max_calls", 10)
+                max_calls = max(0, min(100, int(max_calls))) if isinstance(max_calls, (int, float, str)) else 10
+                deadline = payload.get("deadline", 300)
+                deadline = max(1.0, min(900.0, float(deadline))) if isinstance(deadline, (int, float, str)) else 300.0
                 return self.send_json(RQ.write_report(project, paths,
-                                                      str(payload.get("out") or "")))
+                                                      str(payload.get("out") or ""),
+                                                      bool(payload.get("agent")),
+                                                      max_calls, deadline))
             except Exception as e:  # noqa: BLE001
                 return self.send_json({"error": f"{type(e).__name__}: {e}"[:300]}, 400)
         if u.path == "/api/gitsync/parse":

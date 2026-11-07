@@ -53,6 +53,13 @@
     <button class="btn sm" id="reqPick" data-i18n="work.req.pick">Выбрать документ или папку…</button>
     <button class="btn sm primary" id="reqGo" data-i18n="work.req.go">Проверить по коду</button>
     <button class="btn sm" id="reqExport" data-i18n="work.req.export">Экспорт в Markdown</button>
+    <label class="row" title="work.req.agent_hint" style="gap:6px;align-items:center;font-size:12.5px">
+      <input type="checkbox" id="reqAgent">
+      <span data-i18n="work.req.agent">Спросить модель о спорных (LLM)</span>
+      <span class="muted" data-i18n="work.req.agent_calls">не больше</span>
+      <input type="number" id="reqAgentCalls" min="0" max="100" value="10"
+             style="width:58px;padding:2px 4px" title="work.req.agent_calls">
+    </label>
     <span class="muted" id="reqStatus" style="font-size:12.5px"></span>
   </div>
   <div id="reqResult" style="margin-top:12px"></div>

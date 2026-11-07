@@ -28,6 +28,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 - [Building a Confluence page](#publish)
 - [Meaning index (embeddings)](#embeddings)
 - [Acceptance criteria arbiter over code](#codecheck)
+- [Requirements arbiter in Productivity](#requirementscheck)
 - [Clean Room synthesis from code](#cleanroom)
 
 <a id="build"></a>
@@ -404,6 +405,20 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 - **Tools:** none: the model receives only the criterion and the evidence.
 - **Path:** Pydantic AI.
 - **Then:** An accepted found changes the verdict and counters; an error or invented citation keeps the deterministic answer.
+
+<a id="requirementscheck"></a>
+
+## Requirements arbiter in Productivity
+
+- **When.** Requirements check with the LLM checkbox on: disputed requirements only (partial/not_found), up to the configured call limit.
+
+| Role | What it does | Prompt |
+|---|---|---|
+| Writer (worker) | Decide a disputed requirement from the collected evidence: the model does not see the code, found is accepted only with file:line citations, partial/not_found need an explanation; a deterministic found is never overridden. | `AGENT_PROMPT` (code_check.py) |
+
+- **Tools:** none: the model receives only the requirement and indexed evidence.
+- **Path:** Pydantic AI.
+- **Then:** An accepted verdict changes the table and percentage; a model error, invented citation or unsure keeps the deterministic answer.
 
 <a id="cleanroom"></a>
 

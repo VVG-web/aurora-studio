@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """requirements_check.py — проверка реализованности требований из Markdown по коду.
 
-MVP: разбирает требования из выбранного документа или папки, проверяет каждое по уже
-построенным индексам Code тем же детерминированным слоем, что `code:check`, и считает
-процент. Модель не нужна; спорные вердикты можно потом отдать `code:check --agent`.
+Сначала разбирает требования из выбранного документа или папки и проверяет каждое по
+уже построенным индексам Code тем же детерминированным слоем, что `code:check`.
+`--agent` добавляет модельный арбитр для спорных вердиктов: модель видит только
+собранные доказательства, не получает код и не может выдумать `file:line`.
+Без `--agent` поведение остаётся прежним.
 
   python3 .aurora/scripts/requirements_check.py --project . --path Artifacts/spec.md
   python3 .aurora/scripts/requirements_check.py --project . --path Artifacts --json
+  python3 .aurora/scripts/requirements_check.py --project . --path Artifacts --agent
 
 Панель: `requirements/check`.
 """
@@ -86,12 +89,81 @@ def parse_requirements(text: str, rel: str = "") -> list:
 def summarize(rows: list) -> dict:
     """Итог по требованиям: found/partial/not_found и процент (partial — половина)."""
     total = len(rows)
-    found = sum(r.get("verdict") == "found" for r in rows)
-    partial = sum(r.get("verdict") == "partial" for r in rows)
-    missing = sum(r.get("verdict") == "not_found" for r in rows)
+    verdicts = [r.get("final_verdict") or r.get("verdict") for r in rows]
+    found = sum(v == "found" for v in verdicts)
+    partial = sum(v == "partial" for v in verdicts)
+    missing = sum(v == "not_found" for v in verdicts)
     score = (found + 0.5 * partial) / total * 100 if total else 0.0
     return {"total": total, "found": found, "partial": partial,
             "not_found": missing, "percent": round(score, 1)}
+
+
+def _agent_verdict(agent: dict, row: dict) -> bool:
+    """Можно ли принять ответ модели.
+
+    `found` — только с цитатами из собранных доказательств; `partial`/`not_found` —
+    только с объяснением. `unsure` и отказ модели оставляют детерминированный вердикт.
+    """
+    if not agent.get("ok") or agent.get("verdict") not in ("found", "partial", "not_found"):
+        return False
+    citations = agent.get("citations") or []
+    allowed = CC._coords(row.get("evidence") or [])
+    if agent["verdict"] == "found":
+        return bool(citations) and set(citations) <= allowed
+    if not str(agent.get("why") or "").strip():
+        return False
+    return not citations or set(citations) <= allowed
+
+
+def judge_requirements(result: dict, ask=None, max_calls: int = 10,
+                       deadline: float = 300) -> dict:
+    """Модельный арбитр спорных требований.
+
+    Детерминированный `found` не трогаем. Для `partial`/`not_found` модель получает
+    только доказательства и может подтвердить `found` с цитатами либо уточнить
+    `partial`/`not_found` с объяснением. Ошибка модели не отменяет детерминированный
+    отчёт: строка остаётся с исходным вердиктом и причиной отказа.
+    """
+    rows = []
+    for di, doc in enumerate(result.get("documents") or []):
+        for ri, row in enumerate(doc.get("requirements") or []):
+            rows.append({**row, "_doc": di, "_row": ri})
+    calls = accepted = errors = skipped = 0
+    for row in rows:
+        base = row.get("verdict") or "not_found"
+        row["final_verdict"] = base
+        if base == "found":
+            continue
+        if calls >= max(0, int(max_calls)):
+            row["agent"] = {"skipped": "max_calls"}
+            skipped += 1
+            continue
+        calls += 1
+        messages = CC._agent_messages({**row, "verdict": base})
+        if ask is None:
+            import agent_core as AG
+            answer = AG.ask_role(messages, "worker", deadline, max_tokens=2000)
+        else:
+            answer = ask(messages, deadline)
+        agent = CC._parse_answer(answer)
+        agent["accepted"] = _agent_verdict(agent, row)
+        row["agent"] = agent
+        if agent.get("accepted"):
+            accepted += 1
+            row["final_verdict"] = agent["verdict"]
+        elif not agent.get("ok"):
+            errors += 1
+    for row in rows:
+        doc = (result.get("documents") or [])[row["_doc"]]
+        target = (doc.get("requirements") or [])[row["_row"]]
+        target.update({k: v for k, v in row.items() if k not in ("_doc", "_row")})
+    for doc in result.get("documents") or []:
+        doc["summary"] = summarize(doc.get("requirements") or [])
+    all_rows = [r for d in result.get("documents") or [] for r in d.get("requirements") or []]
+    result["summary"] = summarize(all_rows)
+    result["agent"] = {"calls": calls, "accepted": accepted,
+                       "skipped": skipped, "errors": errors}
+    return result
 
 
 def _paths(project: str, raw_paths) -> list:
@@ -115,7 +187,8 @@ def _paths(project: str, raw_paths) -> list:
     return out
 
 
-def check(project: str, paths) -> dict:
+def check(project: str, paths, agent: bool = False, max_calls: int = 10,
+          deadline: float = 300, ask=None) -> dict:
     """Проверить документы/папки по индексам Code; без индексов — not_found, не падение."""
     root = Path(project).resolve()
     index_error = ""
@@ -144,8 +217,11 @@ def check(project: str, paths) -> dict:
         docs.append({"path": rel, "title": title, "requirements": rows,
                      "summary": summarize(rows)})
     all_rows = [r for d in docs for r in d.get("requirements") or []]
-    return {"documents": docs, "summary": summarize(all_rows),
-            "indexed_repos": [name for name, _ in indexes], "index_error": index_error}
+    result = {"documents": docs, "summary": summarize(all_rows),
+              "indexed_repos": [name for name, _ in indexes], "index_error": index_error}
+    if agent:
+        result = judge_requirements(result, ask, max_calls, deadline)
+    return result
 
 
 def _report_path(project: str, out: str = "") -> Path:
@@ -174,9 +250,10 @@ def _report_path(project: str, out: str = "") -> Path:
     return target
 
 
-def write_report(project: str, paths, out: str = "") -> dict:
+def write_report(project: str, paths, out: str = "", agent: bool = False,
+                 max_calls: int = 10, deadline: float = 300, ask=None) -> dict:
     """Проверить требования и сохранить Markdown-отчёт; документы не меняются."""
-    result = check(project, paths)
+    result = check(project, paths, agent, max_calls, deadline, ask)
     target = _report_path(project, out)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(render_md(result), encoding="utf-8")
@@ -191,6 +268,10 @@ def render_md(result: dict) -> str:
              f"не найдено: {s['not_found']}; итог: {s['percent']}%.", ""]
     if result.get("index_error"):
         lines += [f"Индекс Code не прочитался: {result['index_error']}", ""]
+    if result.get("agent"):
+        ag = result["agent"]
+        lines += [f"Модель: вызовов {ag.get('calls', 0)}; принято {ag.get('accepted', 0)}; "
+                  f"пропущено {ag.get('skipped', 0)}; ошибок {ag.get('errors', 0)}.", ""]
     for doc in result.get("documents") or []:
         lines += [f"## {doc.get('title') or doc['path']}", ""]
         lines += [f"Источник: `{doc['path']}`", ""]
@@ -202,7 +283,17 @@ def render_md(result: dict) -> str:
             where = ", ".join(f"`{e['file']}:{e['line']}`" for e in (row.get("evidence") or [])[:2])
             text = str(row["text"]).replace("|", "\\|")
             missing = ", ".join(row.get("missing") or []).replace("|", "\\|") or "—"
-            lines.append(f"| {row['id']} | {text} | {row['verdict']} | {where or '—'} | {missing} |")
+            verdict = row.get("final_verdict") or row.get("verdict") or "not_found"
+            agent = row.get("agent") or {}
+            note = ""
+            if agent.get("accepted"):
+                note = "LLM: " + str(agent.get("why") or agent.get("verdict") or "")
+            elif agent.get("error"):
+                note = "LLM: не принят, " + str(agent.get("error") or "")
+            elif agent.get("skipped"):
+                note = "LLM: пропущен, " + str(agent.get("skipped"))
+            comment = missing + (("; " + note) if note else "")
+            lines.append(f"| {row['id']} | {text} | {verdict} | {where or '—'} | {comment} |")
         lines.append("")
     return "\n".join(lines)
 
@@ -213,16 +304,22 @@ def main(argv=None) -> int:
     ap.add_argument("--path", action="append", default=[], help="документ или папка (можно несколько)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--out", default="")
+    ap.add_argument("--agent", action="store_true",
+                    help="модельный арбитр для спорных требований")
+    ap.add_argument("--max-calls", type=int, default=10,
+                    help="сколько спорных требований отдать модели")
+    ap.add_argument("--deadline", type=float, default=300,
+                    help="секунд на один вызов модели")
     a = ap.parse_args(argv)
     if a.out:
         try:
-            res = write_report(a.project, a.path, a.out)
+            res = write_report(a.project, a.path, a.out, a.agent, a.max_calls, a.deadline)
         except (OSError, ValueError) as e:
             print(f"Ошибка: {e}", file=sys.stderr)
             return 1
         print(f"Записано: {res['path']}")
         return 0
-    result = check(a.project, a.path)
+    result = check(a.project, a.path, a.agent, a.max_calls, a.deadline)
     text = json.dumps(result, ensure_ascii=False, indent=1) if a.json else render_md(result)
     print(text)
     return 0

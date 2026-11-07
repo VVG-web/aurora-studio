@@ -37,6 +37,7 @@ export function mount(ctx){
   if (reqPick) reqPick.onclick = () => pickReq(ctx);
   if (reqGo) reqGo.onclick = () => runReqCheck(ctx);
   if (reqExport) reqExport.onclick = () => exportReq(ctx);
+  if (ctx.$("#reqAgent")) ctx.$("#reqAgent").title = ctx.t("work.req.agent_hint");
   drawReqPaths(ctx);
 }
 
@@ -71,10 +72,11 @@ async function runReqCheck(ctx){
   const out = ctx.$("#reqResult"), status = ctx.$("#reqStatus");
   if (!ctx.project) return ctx.toast(ctx.t("work.pick_project"), "warn");
   if (!REQ_PATHS.length) return ctx.toast(ctx.t("work.req.no_paths"), "warn");
-  if (status) status.textContent = ctx.t("work.req.checking");
+  const agent = reqAgent(ctx);
+  if (status) status.textContent = ctx.t(agent.agent ? "work.req.checking_agent" : "work.req.checking");
   if (out) out.innerHTML = "";
   const d = await ctx.api("/api/requirements/check", {method: "POST", quiet: true,
-    body: JSON.stringify({project: ctx.project.path, paths: REQ_PATHS})});
+    body: JSON.stringify({project: ctx.project.path, paths: REQ_PATHS, ...agent})});
   if (!d || d.error){
     if (status) status.textContent = (d && d.error) || ctx.t("work.req.failed");
     return;
@@ -86,6 +88,12 @@ async function runReqCheck(ctx){
   if (!out) return;
   if (d.index_error){
     out.append(ctx.el("div", {class: "warnbox"}, ctx.t("work.req.index_error", {why: d.index_error})));
+  }
+  if (d.agent){
+    const ag = d.agent;
+    out.append(ctx.el("div", {class: "muted", style: "font-size:12.5px;margin-top:6px"},
+      ctx.t("work.req.agent_summary", {calls: ag.calls || 0, accepted: ag.accepted || 0,
+        skipped: ag.skipped || 0, errors: ag.errors || 0})));
   }
   (d.documents || []).forEach(doc => {
     out.append(ctx.el("div", {style: "margin-top:10px"},
@@ -99,13 +107,18 @@ async function runReqCheck(ctx){
     const rows = (doc.requirements || []).map(row => {
       const where = (row.evidence || []).slice(0, 2)
         .map(e => e.file + ":" + e.line).join(", ") || "—";
+      const verdict = row.final_verdict || row.verdict;
+      const agent = row.agent || {};
+      const note = agent.accepted ? ctx.t("work.req.agent_why", {why: agent.why || agent.verdict})
+        : agent.error ? ctx.t("work.req.agent_error", {error: agent.error})
+        : agent.skipped ? ctx.t("work.req.agent_error", {error: agent.skipped}) : "";
+      const comment = [(row.missing || []).join(", ") || "—", note].filter(Boolean).join("; ");
       return ctx.el("tr", {},
         ctx.el("td", {class: "mono"}, row.id),
         ctx.el("td", {}, row.text),
-        ctx.el("td", {}, ctx.t("work.req." + row.verdict)),
+        ctx.el("td", {}, ctx.t("work.req." + verdict)),
         ctx.el("td", {class: "mono", style: "font-size:11px"}, where),
-        ctx.el("td", {class: "muted", style: "font-size:11.5px"},
-          (row.missing || []).join(", ") || "—"));
+        ctx.el("td", {class: "muted", style: "font-size:11.5px"}, comment));
     });
     const table = ctx.el("table", {class: "table", style: "margin-top:6px;width:100%"},
       head, ctx.el("tbody", {}, ...rows));
@@ -117,10 +130,18 @@ async function runReqCheck(ctx){
 async function exportReq(ctx){
   if (!ctx.project) return ctx.toast(ctx.t("work.pick_project"), "warn");
   if (!REQ_PATHS.length) return ctx.toast(ctx.t("work.req.no_paths"), "warn");
+  const agent = reqAgent(ctx);
   const d = await ctx.api("/api/requirements/export", {method: "POST", quiet: true,
-    body: JSON.stringify({project: ctx.project.path, paths: REQ_PATHS})});
+    body: JSON.stringify({project: ctx.project.path, paths: REQ_PATHS, ...agent})});
   if (!d || d.error) return ctx.toast((d && d.error) || ctx.t("work.req.export_failed"), "err");
   ctx.toast(ctx.t("work.req.exported", {path: d.path}), "ok");
+}
+
+function reqAgent(ctx){
+  const on = !!(ctx.$("#reqAgent") && ctx.$("#reqAgent").checked);
+  const raw = parseInt((ctx.$("#reqAgentCalls") || {}).value || "10", 10);
+  const max = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : 10;
+  return {agent: on, max_calls: max};
 }
 
 // ---- ссылки и вложения ----

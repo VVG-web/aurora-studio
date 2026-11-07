@@ -974,6 +974,40 @@
       }
     },
     {
+      "id": "requirementscheck",
+      "title": {
+        "ru": "LLM-арбитр требований в «Продуктивности»",
+        "en": "Requirements arbiter in Productivity"
+      },
+      "when": {
+        "ru": "Проверка требований с включённой галочкой LLM: только спорные требования (partial/not_found), не больше заданного лимита вызовов.",
+        "en": "Requirements check with the LLM checkbox on: disputed requirements only (partial/not_found), up to the configured call limit."
+      },
+      "commands": [],
+      "code": [
+        "requirements_check.py:judge_requirements"
+      ],
+      "steps": [
+        {
+          "role": "worker",
+          "prompt": "code_check.py:AGENT_PROMPT",
+          "what": {
+            "ru": "Решить спорное требование по собранным доказательствам: модель не видит код, found принимается только с цитатами file:line, partial/not_found требуют объяснения; детерминированный found не переопределяется.",
+            "en": "Decide a disputed requirement from the collected evidence: the model does not see the code, found is accepted only with file:line citations, partial/not_found need an explanation; a deterministic found is never overridden."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет: модель получает только требование и доказательства из индекса",
+        "en": "none: the model receives only the requirement and indexed evidence"
+      },
+      "engine": "pydantic_ai",
+      "after": {
+        "ru": "Принятый вердикт меняет итоговую таблицу и процент; ошибка модели, выдуманная цитата или unsure оставляют детерминированный ответ.",
+        "en": "An accepted verdict changes the table and percentage; a model error, invented citation or unsure keeps the deterministic answer."
+      }
+    },
+    {
       "id": "cleanroom",
       "title": {
         "ru": "Синтез Clean Room по коду",

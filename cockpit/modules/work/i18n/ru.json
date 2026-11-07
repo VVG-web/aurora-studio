@@ -104,6 +104,11 @@
   "work.req.pick_title": "Документ или папка с требованиями",
   "work.req.go": "Проверить по коду",
   "work.req.export": "Экспорт в Markdown",
+  "work.req.agent": "Спросить модель о спорных (LLM)",
+  "work.req.agent_calls": "не больше",
+  "work.req.agent_hint": "Модель получит только доказательства из индекса и не увидит код; found без цитат не принимается.",
+  "work.req.checking_agent": "Проверяю детерминированно, затем спрашиваю модель о спорных…",
+  "work.req.agent_summary": "Модель: вызовов {calls}, принято {accepted}, пропущено {skipped}, ошибок {errors}.",
   "work.req.exported": "Отчёт сохранён: {path}",
   "work.req.export_failed": "Не удалось сохранить отчёт.",
   "work.req.remove": "Убрать из проверки",
@@ -121,6 +126,8 @@
   "work.req.found": "найдено",
   "work.req.partial": "частично",
   "work.req.not_found": "не найдено",
+  "work.req.agent_why": "LLM: {why}",
+  "work.req.agent_error": "LLM: {error}",
   "work.kb": "Документ соберётся на базе знаний, обновлённой {when}.",
   "work.kb_never": "База знаний ещё не обновлялась целиком: документ соберётся на том, что в ней есть сейчас."
 }
