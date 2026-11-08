@@ -359,6 +359,8 @@ function addBody(ctx){
       detectText(ctx, a.error || p),
       (a.error && a.error.hint) || p.hint
         ? el("div", {style: "font-size:12.5px;margin-top:4px"}, (a.error && a.error.hint) || p.hint) : null));
+    const detail = (a.error && a.error.detail) || p.detail;
+    if (detail) out.push(el("div", {class: "muted mono", style: "font-size:11.5px;margin-top:4px"}, detail));
     out.push(...authFields(ctx, a.cred, p.provider, () => drawAdd(ctx)));
     out.push(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center"},
       el("button", {class: "btn primary", disabled: a.busy ? "" : null,
@@ -430,6 +432,8 @@ function groupAddBody(ctx){
       incl, el("span", {style: "font-size:12.5px"}, t("code.groups.include")))));
   out.push(...authFields(ctx, GCRED, "gitlab", () => drawAdd(ctx),
     {dirty: false, auths: ["system", "token", "password", "ldap"]}));
+  out.push(el("div", {class: "muted", style: "font-size:11.5px;margin:-2px 0 10px"},
+    t("code.add.group_api_hint")));
   out.push(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center"},
     el("button", {class: "btn", disabled: add().busy ? "" : null,
       onclick: () => parseAdd(ctx)}, t("code.add.detect")),

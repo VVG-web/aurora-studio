@@ -173,6 +173,43 @@ python3 scripts/kit_i18n.py --check         # completeness of the panel's transl
 | The live base | `python3 tests/smoke_live.py <project>` | "nothing moved on this project": a snapshot of numbers and names in the project's own `meta/smoke_snapshot.json` (`--update` after a deliberate edit) |
 | The life cycle | the same run, `tests/cases/part_40.py` | "an update does not break the project": a project created by a past release (`git archive` of a tag into a temp folder; without tags the scenario is skipped, in CI it is required) is updated by the current kit, an `update` cut off at the write of the config, `.gitignore`, `.gitattributes` and the version stamp and at a sample of the others, two `update`s at once, a repeated `update` that changes nothing, a person's executable script and files not in UTF-8 (config, ignore list, a schema folder `README.md` in cp1251) stay as they were |
 
+### RAGAS for Ask and Productivity
+
+If a change affects how knowledge is retrieved from the knowledge base for the
+"Ask" or "Productivity" sections, run the extended RAGAS test on a real project
+before committing and opening a PR. This applies to changes in
+`scripts/answer_core.py`, `scripts/production_core.py`, `scripts/agent_runner.py`,
+`scripts/reliable_core.py`, `scripts/ctx_pack.py`, `scripts/context_*.py`,
+`scripts/kb_*.py`, `scripts/sources_*.py`, `scripts/quality_eval.py`,
+`scripts/quality_golden.json`, `cockpit/aurora_cockpit.py`, and to data loading inside
+`cockpit/modules/ask/view.js` or `cockpit/modules/work/view.js`.
+
+Pure design does not require RAGAS: CSS, HTML, i18n, skins, and `view.js` changes
+that only alter appearance, text, or layout. If `view.js` changes data loading, the
+API, retrieval, or answer assembly, it is not design.
+
+```bash
+# once: a separate environment, the main Python is untouched
+python3 -m venv .venv-ragas
+.venv-ragas/bin/pip install -r tests/requirements-ragas.txt
+
+# does this diff require RAGAS?
+python3 tests/ragas_impact.py --base origin/master
+
+# extended run: real retrieval over the project knowledge base
+RAGAS_LLM_MODEL="<model>" RAGAS_LLM_BASE_URL="<url>" \
+RAGAS_EMBED_MODEL="<model>" RAGAS_EMBED_BASE_URL="<url>" \
+.venv-ragas/bin/python tests/ragas_eval.py \
+  --project /path/to/project --mode both \
+  --out Development/RAGAS_RESULTS.json
+```
+
+`--mode both` runs both retrieval modes: `ask` for Ask and `generate` for
+Productivity. RAGAS uses an LLM judge and embeddings, so it is not part of the regular
+CI: CI has no models and the result depends on the chosen model. The test is mandatory
+locally before a PR, and its result is attached to the change description. The regular
+`scripts/quality_eval.py --gate` remains deterministic and continues to run in CI.
+
 The corpus is rebuilt by `python3 tests/make_corpus.py` and lies in git. Found a new pathology in the field — add it to the
 corpus, otherwise it will come back. A bug found by hand is closed by a check that fails **without** your fix; the cause is
 established first, not guessed from the symptom.

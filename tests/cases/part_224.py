@@ -14,6 +14,7 @@ sys.path.insert(0, str(KIT / "scripts"))
 sys.path.insert(0, str(KIT / "cockpit"))
 import code_groups as CG  # noqa: E402
 import code_repos as CR  # noqa: E402
+import git_sync as GS  # noqa: E402
 import aurora_cockpit as CK  # noqa: E402
 
 GROUP_URL = "https://gitlab.example.com/rf/team"
@@ -127,3 +128,21 @@ def test_detect_endpoint_is_wired(_t):
                   "codeAddUrl", "code.add.plus_hint", "authFields(ctx, GCRED"):
         assert token in view, token
     assert view.count('id: "codeAddUrl"') == 1, "должно быть одно поле ссылки"
+
+
+@test
+def test_group_http_uses_the_trusted_certificate_and_names_cert_errors(_t):
+    old_effective, old_make, old_http = GS.effective_tls, GS.make_http, CG._http
+    seen = {}
+    try:
+        GS.effective_tls = lambda tls, url: {"verify": True, "ca_file": "/tmp/gitlab.pem"}
+        GS.make_http = lambda tls: seen.update(tls or {}) or (
+            lambda url, headers, timeout: (0, None, "cert: unable to get local issuer", {}))
+        CG._http = CG._DEFAULT_HTTP
+        CG._http_for("https://gitlab.example/rf/team")
+        assert seen == {"verify": True, "ca_file": "/tmp/gitlab.pem"}, seen
+        CG._http = lambda: GS.make_http(None)
+        kind, why = CG._gitlab_kind("/tmp", "https://gitlab.example/rf/team")
+        assert kind == "cert" and why.get("error") == "gitlab_cert", (kind, why)
+    finally:
+        GS.effective_tls, GS.make_http, CG._http = old_effective, old_make, old_http

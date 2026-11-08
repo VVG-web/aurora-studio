@@ -1,0 +1,7 @@
+# Необязательные зависимости расширенного RAGAS-теста.
+# Основной движок и обычный CI их не ставят.
+ragas==0.4.3
+langchain==0.3.30
+langchain-core==0.3.86
+langchain-community==0.3.31
+langchain-openai==0.3.35

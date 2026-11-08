@@ -5,6 +5,7 @@
 __pycache__/
 *.pyc
 .ruff_cache/
+.venv-ragas/
 ~$*
 *.log
 /tmp/

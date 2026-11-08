@@ -284,6 +284,16 @@ def _http():
     return GS.make_http(None)
 
 
+_DEFAULT_HTTP = _http
+
+
+def _http_for(url: str):
+    """HTTP с доверенным сертификатом сервера; тестовая подмена `_http` важнее."""
+    if _http is not _DEFAULT_HTTP:
+        return _http()
+    return GS.make_http(GS.effective_tls(None, url))
+
+
 def _api_base(url: str) -> tuple:
     p = urllib.parse.urlparse(url)
     origin = f"{p.scheme}://{p.netloc}"
@@ -330,7 +340,7 @@ def _gitlab_kind(project, url: str, credentials=None, name: str = "detect") -> t
     if not path:
         return "unknown", {"error": "bad_url"}
     headers, _ = _auth_headers(project, name, credentials, url)
-    http = _http()
+    http = _http_for(url)
     quoted = urllib.parse.quote(path, safe="")
     status, _data, err, _hdrs = http(f"{base}/projects/{quoted}", headers, API_TIMEOUT)
     if status == 200:
@@ -338,6 +348,8 @@ def _gitlab_kind(project, url: str, credentials=None, name: str = "detect") -> t
     if status in (401, 403):
         return "auth", {"error": "gitlab_auth"}
     if status == 0:
+        if str(err).startswith("cert:"):
+            return "cert", {"error": "gitlab_cert", "detail": err}
         return "unreachable", {"error": "gitlab_unreachable", "detail": err}
     status, _data, err, _hdrs = http(f"{base}/groups/{quoted}", headers, API_TIMEOUT)
     if status == 200:
@@ -345,6 +357,8 @@ def _gitlab_kind(project, url: str, credentials=None, name: str = "detect") -> t
     if status in (401, 403):
         return "auth", {"error": "gitlab_auth"}
     if status == 0:
+        if str(err).startswith("cert:"):
+            return "cert", {"error": "gitlab_cert", "detail": err}
         return "unreachable", {"error": "gitlab_unreachable", "detail": err}
     return "unknown", {}
 
@@ -397,6 +411,9 @@ def detect(project, text: str, credentials=None) -> dict:
         return {**parsed, "kind": "unknown", "error": "gitlab_auth",
                 "hint": "нужен вход GitLab с доступом к группе или репозиторию", "name": name,
                 "duplicate": duplicate}
+    if kind == "cert":
+        return {**parsed, "kind": "unknown", "error": "gitlab_cert",
+                "detail": why.get("detail") or "", "name": name, "duplicate": duplicate}
     if kind == "unreachable":
         return {**parsed, "kind": "unknown", **why, "name": name, "duplicate": duplicate}
     return {**parsed, "kind": "unknown", "error": "gitlab_not_found",
@@ -470,7 +487,7 @@ def fetch_projects(project, name: str, group=None, credentials=None, now=None) -
     if not group_path:
         return {"ok": False, "error": "group_path_required"}
     headers, used_cred = _auth_headers(project, name, credentials, rec["url"])
-    http = _http()
+    http = _http_for(rec["url"])
     rows, page = [], 1
     next_page = "1"
     while next_page and page <= PAGE_LIMIT:
@@ -484,6 +501,9 @@ def fetch_projects(project, name: str, group=None, credentials=None, now=None) -
         url = f"{base}/groups/{urllib.parse.quote(group_path, safe='')}/projects?{query}"
         status, data, err, hdrs = http(url, headers, API_TIMEOUT)
         if status == 0:
+            if str(err).startswith("cert:"):
+                return {"ok": False, "error": "gitlab_cert", "detail": err[:300],
+                        "hint": "доверьтесь сертификату GitLab в разделе Git/Connectivity и повторите"}
             return {"ok": False, "error": "gitlab_unreachable", "detail": err[:300],
                     "hint": "проверьте URL и доступ к GitLab"}
         if status in (401, 403):

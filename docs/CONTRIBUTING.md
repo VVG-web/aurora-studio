@@ -178,6 +178,43 @@ python3 scripts/kit_i18n.py --check         # полнота переводов 
 | Живая база | `python3 tests/smoke_live.py <проект>` | «на этом проекте ничего не поехало»: снимок чисел и имён в `meta/smoke_snapshot.json` самого проекта (`--update` после осознанной правки) |
 | Жизненный цикл | тот же прогон, `tests/cases/part_40.py` | «обновление не ломает проект»: проект, заведённый прежним выпуском (`git archive` тега во временную папку; без тегов сценарий пропускается, в CI он обязателен), обновляется текущим китом, обрыв `update` на записи конфига, `.gitignore`, `.gitattributes` и штампа версии и на выборке остальных, два `update` разом, повторный `update` без изменений, исполняемый скрипт человека и файлы не в UTF-8 (конфиг, список исключений, `README.md` папки схемы в cp1251) остаются как были |
 
+### RAGAS для «Спросить» и «Продуктивности»
+
+Если меняется получение данных из базы знаний для разделов «Спросить» или
+«Продуктивность», перед коммитом и PR запускайте расширенный RAGAS-тест на реальном
+проекте. Это правило действует для изменений в `scripts/answer_core.py`,
+`scripts/production_core.py`, `scripts/agent_runner.py`, `scripts/reliable_core.py`,
+`scripts/ctx_pack.py`, `scripts/context_*.py`, `scripts/kb_*.py`, `scripts/sources_*.py`,
+`scripts/quality_eval.py`, `scripts/quality_golden.json`, `cockpit/aurora_cockpit.py`
+и в загрузке данных внутри `cockpit/modules/ask/view.js` или
+`cockpit/modules/work/view.js`.
+
+Чистый дизайн RAGAS не требует: CSS, HTML, i18n, скины и правки `view.js`, которые
+меняют только вид, текст или расположение. Если в `view.js` меняется загрузка данных,
+API, поиск или сборка ответа, это уже не дизайн.
+
+```bash
+# один раз: отдельное окружение, основной Python не меняется
+python3 -m venv .venv-ragas
+.venv-ragas/bin/pip install -r tests/requirements-ragas.txt
+
+# проверить, требует ли diff RAGAS
+python3 tests/ragas_impact.py --base origin/master
+
+# расширенный прогон: реальный поиск по базе проекта
+RAGAS_LLM_MODEL="<модель>" RAGAS_LLM_BASE_URL="<url>" \
+RAGAS_EMBED_MODEL="<модель>" RAGAS_EMBED_BASE_URL="<url>" \
+.venv-ragas/bin/python tests/ragas_eval.py \
+  --project /path/to/project --mode both \
+  --out Development/RAGAS_RESULTS.json
+```
+
+`--mode both` прогоняет оба режима поиска: `ask` для «Спросить» и `generate` для
+«Продуктивности». RAGAS использует LLM-судью и эмбеддинги, поэтому не входит в обычный
+CI: в CI нет моделей, а результат зависит от выбранной модели. Тест обязателен локально
+перед PR, его результат прикладывается к описанию изменения. Обычный
+`scripts/quality_eval.py --gate` остаётся детерминированным и продолжает работать в CI.
+
 Корпус пересобирается `python3 tests/make_corpus.py` и лежит в git. Нашли новую патологию в бою —
 допишите её в корпус, иначе она вернётся. Ошибка, найденная руками, закрывается проверкой, которая
 падает **без** вашей правки; причину сначала устанавливают, а не угадывают по симптому.
