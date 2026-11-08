@@ -12,6 +12,7 @@ from harness import KIT, test
 
 sys.path.insert(0, str(KIT / "tests"))
 import ragas_impact as RI  # noqa: E402
+import ragas_eval as RE  # noqa: E402
 
 
 @test
@@ -61,3 +62,20 @@ def test_new_code_messages_have_both_translations(_t):
         data = json.loads((KIT / "cockpit/modules/code/i18n" / f"{lang}.json")
                           .read_text(encoding="utf-8"))
         assert not [k for k in keys if not data.get(k)], (lang, sorted(keys))
+
+
+@test
+def test_project_golden_questions_are_read_from_the_project(_t):
+    root = _t / "project"
+    meta = root / "AuroraKnowledgeDB" / "meta"
+    meta.mkdir(parents=True)
+    (meta / "golden_questions.md").write_text(
+        "| # | Вопрос | Эталон | Карточки |\n"
+        "|---|---|---|---|\n"
+        "| 1 | Какой срок? | Десять дней | [[Сроки]] |\n"
+        "| 2 | Кто проверяет? | Момус | [[Проверка]] |\n", encoding="utf-8")
+    rows = RE.project_golden(str(root))
+    assert rows == [
+        {"id": "G-1", "question": "Какой срок?", "reference": "Десять дней"},
+        {"id": "G-2", "question": "Кто проверяет?", "reference": "Момус"},
+    ], rows

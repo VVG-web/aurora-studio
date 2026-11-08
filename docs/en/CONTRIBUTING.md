@@ -210,6 +210,10 @@ CI: CI has no models and the result depends on the chosen model. The test is man
 locally before a PR, and its result is attached to the change description. The regular
 `scripts/quality_eval.py --gate` remains deterministic and continues to run in CI.
 
+By default the questions come from the project's own
+`AuroraKnowledgeDB/meta/golden_questions.md`; if there are none, the kit's golden set is
+used. The test therefore checks the project's knowledge base, not unrelated examples.
+
 The corpus is rebuilt by `python3 tests/make_corpus.py` and lies in git. Found a new pathology in the field — add it to the
 corpus, otherwise it will come back. A bug found by hand is closed by a check that fails **without** your fix; the cause is
 established first, not guessed from the symptom.

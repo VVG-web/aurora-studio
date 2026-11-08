@@ -36,19 +36,49 @@ def contexts(pack: str) -> list[str]:
     return ["## " + p.strip() for p in parts[1:] if p.strip()] or [str(pack or "")]
 
 
-def _retrieve(project: str, question: str, mode: str) -> list[str]:
+def project_golden(project: str) -> list[dict]:
+    """Вопросы из AuroraKnowledgeDB/meta/golden_questions.md проекта, если они есть."""
+    path = Path(project) / "AuroraKnowledgeDB" / "meta" / "golden_questions.md"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        if not line.strip().startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 3 or not cells[0].isdigit():
+            continue
+        question, reference = cells[1], cells[2]
+        if question and reference:
+            out.append({"id": f"G-{cells[0]}", "question": question, "reference": reference})
+    return out
+
+
+def load_cases(golden: str, project: str) -> list[dict]:
+    if golden:
+        return json.loads(Path(golden).read_text(encoding="utf-8"))["cases"]
+    cases = project_golden(project) if project else []
+    if cases:
+        return cases
+    return json.loads(GOLDEN.read_text(encoding="utf-8"))["cases"]
+
+
+def _retrieve(project: str, question: str, mode: str, max_cards: int, chars: int) -> list[str]:
     import answer_core as AC
-    found = AC.search_context(project, question, mode=mode, max_cards=40)
+    found = AC.search_context(project, question, mode=mode, max_cards=max_cards)
     if not found.get("ok"):
         raise RuntimeError(f"поиск не дал пак: {found.get('why') or found.get('error')}")
-    return contexts(found.get("pack") or "")
+    return [c[:chars] for c in contexts(found.get("pack") or "")]
 
 
-def _dataset(cases, project: str, mode: str) -> dict:
+def _dataset(cases, project: str, mode: str, max_cards: int = 12, chars: int = 3000) -> dict:
     return {
         "question": [c["question"] for c in cases],
         "answer": [c["reference"] for c in cases],
-        "contexts": [_retrieve(project, c["question"], mode) if project else contexts(c["pack"])
+        "contexts": [_retrieve(project, c["question"], mode, max_cards, chars)
+                     if project else [x[:chars] for x in contexts(c["pack"])]
                      for c in cases],
         "ground_truth": [c["reference"] for c in cases],
     }
@@ -66,10 +96,15 @@ def _means(rows, metrics) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Расширенный RAGAS-прогон Code")
-    ap.add_argument("--golden", default=str(GOLDEN))
+    ap.add_argument("--golden", default="",
+                    help="JSON золотого набора; пусто — эталоны проекта или kit")
     ap.add_argument("--project", default=os.environ.get("AURORA_RAGAS_PROJECT", ""))
     ap.add_argument("--mode", choices=("ask", "product", "both"), default="both")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--max-cards", type=int, default=8,
+                    help="сколько карточек брать из проекта (по умолчанию 8)")
+    ap.add_argument("--context-chars", type=int, default=2000,
+                    help="предел символов одной карточки в RAGAS (по умолчанию 2000)")
     ap.add_argument("--out", default="")
     ap.add_argument("--changed", action="store_true",
                     help="сначала проверить, нужен ли RAGAS по изменённым файлам")
@@ -108,7 +143,6 @@ def main() -> int:
         from ragas.llms import LangchainLLMWrapper
         from ragas.metrics import (
             Faithfulness,
-            LLMContextPrecisionWithReference,
             LLMContextRecall,
             ResponseRelevancy,
         )
@@ -118,7 +152,7 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
-    cases = json.loads(Path(a.golden).read_text(encoding="utf-8"))["cases"]
+    cases = load_cases(a.golden, a.project)
     if a.limit:
         cases = cases[:a.limit]
     modes = [("ask", "ask"), ("product", "generate")] if a.mode == "both" else [
@@ -134,11 +168,10 @@ def main() -> int:
         Faithfulness(),
         ResponseRelevancy(strictness=1),
         LLMContextRecall(),
-        LLMContextPrecisionWithReference(),
     ]
     out = {"project": a.project, "cases": len(cases), "modes": {}}
     for label, mode in modes:
-        data = _dataset(cases, a.project, mode)
+        data = _dataset(cases, a.project, mode, max(1, a.max_cards), max(500, a.context_chars))
         result = evaluate(
             Dataset.from_dict(data), metrics=metrics, llm=llm, embeddings=emb,
             raise_exceptions=False, show_progress=False, batch_size=1,
@@ -146,6 +179,9 @@ def main() -> int:
         )
         rows = result.scores
         out["modes"][label] = {"rows": rows, "means": _means(rows, metrics)}
+        if any(any(isinstance(v, float) and math.isnan(v) for v in row.values()) for row in rows):
+            print("RAGAS: часть метрик не посчитана (NaN), прогон не засчитан", file=sys.stderr)
+            return 1
     text = json.dumps(out, ensure_ascii=False, indent=2, default=float)
     if a.out:
         Path(a.out).write_text(text + "\n", encoding="utf-8")
