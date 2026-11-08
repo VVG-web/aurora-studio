@@ -11,7 +11,7 @@ import importlib
 import sys
 from pathlib import Path
 
-from harness import SCRIPTS, card, make_project, run, test
+from harness import KIT, SCRIPTS, card, make_project, run, test
 
 JOURNAL = ("## История изменений\n\n"
            "- 2026-10-01: тезис пересобран — источник изменился (`Raw/project/Регламент.md`). Добавлены метрики источника.\n"
@@ -150,10 +150,15 @@ def test_ask_names_where_the_time_went(tmp: Path):
     assert ph["pack"] >= 0.0 and ph["momus"] >= 0.0 and res["momus"]["clean"], (ph, res.get("momus"))
     cfg = {"request_timeout": 600}
     report = R.report_ask(dict(res, phases=dict(ph, pack=17.0, momus=42.0)), "Какой срок подтверждения заявки?", cfg)
+    assert f"всего {res['seconds']} с_" in report, report
     line = next(x for x in report.splitlines() if x.startswith("_Время:"))
-    assert line == "_Время: пак 17 с · ответ 2 мин 05 с · проверка 42 с · в запросе ≈91 тыс. ток., модель написала 3800 ток._", line
+    assert line == "_Время: пак 17 с · ответ 2 мин 05 с · проверка 42 с · вход 91000 ток., модель написала 3800 ток._", line
     solo = R.report_ask(dict(_ask(root, momus=False)), "вопрос", cfg)
     assert "проверка" not in next(x for x in solo.splitlines() if x.startswith("_Время:")), solo
     # токенов от модели нет — запрос оценивается по длине текста, а «модель написала» не печатается
     est = R.report_ask(dict(res, phases=dict(ph, prompt_tokens=60_000, answer_tokens=0)), "вопрос", cfg)
-    assert "в запросе ≈60 тыс. ток._" in est and "модель написала" not in est, est
+    assert "вход 60000 ток._" in est and "модель написала" not in est, est
+    core = (KIT / "scripts/agent_core.py").read_text(encoding="utf-8")
+    assert "оценка входа ≈" in core and "лимит {human_secs" in core, \
+        "живая строка снова выдаёт лимит за прошедшее время или оценку входа за факт"
+    assert "ток. · срок {human_secs" not in core, "лимит запроса снова назван сроком обработки"

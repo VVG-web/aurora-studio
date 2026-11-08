@@ -7612,12 +7612,12 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
     L += [res["answer"], "", "---", "",
           f"_Карточек в контексте: {res.get('total') or len(res['cards'])} · "
           f"модель: {res['model']} "
-          f"(бэкенд №{res['backend']}) · {res['seconds']} с_"]
+          f"(бэкенд №{res['backend']}) · всего {res['seconds']} с_"]
     ph = res.get("phases")
     if ph:
         L += ["", "_Время: пак " + AG.human_secs(ph["pack"]) + " · ответ " + AG.human_secs(ph["answer"])
               + (" · проверка " + AG.human_secs(ph["momus"]) if ph.get("momus") else "")
-              + f" · в запросе ≈{ph['prompt_tokens'] // 1000} тыс. ток."
+              + (f" · вход {ph['prompt_tokens']} ток." if ph.get("prompt_tokens") else "")
               + (f", модель написала {ph['answer_tokens']} ток." if ph.get("answer_tokens") else "") + "_"]
     if res.get("weak_basis"):
         # Пометку видно человеку, а не только если её повторит модель в тексте ответа.

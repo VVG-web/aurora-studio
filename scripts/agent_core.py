@@ -3513,8 +3513,9 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             try:
                 attempts += 1
                 limit = req_timeout * grow.get(b["n"], 1.0)
-                say_live("↗", role, f"запрос → №{b['n']} {model} · ≈{rough_tokens(payload['messages'])} "
-                                    f"ток. · срок {human_secs(min(left, limit))}")
+                say_live("↗", role, f"запрос → №{b['n']} {model} · "
+                                    f"оценка входа ≈{rough_tokens(payload['messages'])} ток. · "
+                                    f"лимит {human_secs(min(left, limit))}")
                 t_req = time.monotonic()
                 st, body, err, dt = transport("chat", b, payload,
                                               max(5.0, min(left, limit)))
