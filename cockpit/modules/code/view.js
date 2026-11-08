@@ -29,6 +29,7 @@ export async function refresh(ctx){
   if (!ctx.project) return;
   if (PROJECT !== ctx.project.path){
     PROJECT = ctx.project.path;
+    if (ADD) ADD.seq += 1;
     DIRTY = false; OPEN = ""; ADD = null; CREDS = {}; ART = null;
     GURL = ""; GNAME = ""; GINCLUDE = true; GDISC = null; GSEL = null;
     GCRED = {auth: "system", user: "", secret: ""};
@@ -181,6 +182,7 @@ async function groupDiscover(ctx){
 
 function openGroup(ctx, g){
   clearTimeout((ADD && ADD.timer) || null);
+  if (ADD) ADD.seq += 1;
   const a = blankAdd();
   a.text = g.url; a.kind = "group"; a.name = g.name;
   ADD = a;
@@ -285,6 +287,7 @@ function addCard(ctx){
 
 function resetAdd(ctx){
   const a = add();
+  a.seq += 1;
   clearTimeout(a.timer);
   ADD = null; GURL = ""; GNAME = ""; GINCLUDE = true; GDISC = null; GSEL = null;
   GCRED = {...NO_CRED};
