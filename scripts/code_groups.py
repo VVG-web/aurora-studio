@@ -317,7 +317,9 @@ def _auth_headers(project, name: str, credentials=None, url: str = "") -> tuple:
         return {}, {}
     auth = str((c or {}).get("auth") or "token")
     user = str((c or {}).get("user") or "")
-    if auth == "password" and user:
+    if auth in ("password", "ldap"):
+        if not user:
+            return {}, c
         token = base64.b64encode(f"{user}:{secret}".encode("utf-8")).decode("ascii")
         return {"Authorization": "Basic " + token}, c
     return {"PRIVATE-TOKEN": secret}, c
@@ -380,7 +382,7 @@ def fetch_projects(project, name: str, group=None, credentials=None, now=None) -
                     "hint": "проверьте URL и доступ к GitLab"}
         if status in (401, 403):
             return {"ok": False, "error": "gitlab_auth", "status": status,
-                    "hint": "нужен токен GitLab с доступом к группе (Code → вход репозитория)"}
+                    "hint": "нужен вход GitLab с доступом к группе (Code → вход репозитория)"}
         if status == 404:
             return {"ok": False, "error": "gitlab_group_not_found", "status": 404}
         if status != 200 or not isinstance(data, list):

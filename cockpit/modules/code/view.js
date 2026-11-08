@@ -13,7 +13,8 @@ let CTX = null;
 let D = null, FORM = null, CREDS = {}, DIRTY = false, OPEN = "", PROJECT = "", ADD = null, MSG = null;
 let FIND = null, PACK = null;
 let ART = null;
-let GURL = "", GNAME = "", GINCLUDE = true, GTOKEN = "", GDISC = null, GSEL = null;
+let GURL = "", GNAME = "", GINCLUDE = true, GDISC = null, GSEL = null;
+let GCRED = {auth: "system", user: "", secret: ""};
 let POLL_TIMER = null;
 const KIND_KEYS = {symbol: "code.index.kind.symbol", file: "code.index.kind.file",
   route: "code.index.kind.route", table: "code.index.kind.table", column: "code.index.kind.column",
@@ -29,7 +30,8 @@ export async function refresh(ctx){
   if (PROJECT !== ctx.project.path){
     PROJECT = ctx.project.path;
     DIRTY = false; OPEN = ""; ADD = null; CREDS = {}; ART = null;
-    GURL = ""; GNAME = ""; GINCLUDE = true; GTOKEN = ""; GDISC = null; GSEL = null;
+    GURL = ""; GNAME = ""; GINCLUDE = true; GDISC = null; GSEL = null;
+    GCRED = {auth: "system", user: "", secret: ""};
   }
   MSG = null;                  // сообщение прошлой записи к новому показу раздела не относится
   if (POLL_TIMER) { clearTimeout(POLL_TIMER); POLL_TIMER = null; }
@@ -111,7 +113,8 @@ function groupsCard(ctx){
       el("span", {class: "chip"}, t("code.groups.selected_n", {n: selected})),
       g.include_subgroups ? el("span", {class: "chip"}, t("code.groups.subgroups")) : null,
       el("button", {class: "btn sm", onclick: () => {
-        GNAME = g.name; GURL = g.url; GINCLUDE = !!g.include_subgroups; GTOKEN = "";
+        GNAME = g.name; GURL = g.url; GINCLUDE = !!g.include_subgroups;
+        GCRED = {auth: GCRED.auth || "system", user: "", secret: ""};
         groupDiscover(ctx);
       }}, t("code.groups.open"))));
   });
@@ -125,16 +128,13 @@ function groupsCard(ctx){
   name.oninput = () => { GNAME = name.value.trim(); };
   const incl = el("input", {type: "checkbox", checked: GINCLUDE ? "" : null});
   incl.onchange = () => { GINCLUDE = incl.checked; };
-  const token = el("input", {class: "btn mono", type: "password", autocomplete: "new-password",
-    style: "width:100%;font-weight:400", placeholder: t("code.groups.token_ph")});
-  token.value = GTOKEN;
-  token.oninput = () => { GTOKEN = token.value; };
   card.append(el("div", {class: "row", style: "gap:10px;flex-wrap:wrap;align-items:flex-start;margin-top:10px"},
     field(ctx, t("code.groups.url"), url, t("code.groups.url_hint")),
     field(ctx, t("code.groups.name"), name, t("code.groups.name_hint")),
     el("label", {style: "display:flex;gap:8px;align-items:center;margin:22px 0 0;flex:1;min-width:220px"},
       incl, el("span", {style: "font-size:12.5px"}, t("code.groups.include")))),
-  field(ctx, t("code.groups.token"), token, t("code.groups.token_hint")),
+  ...authFields(ctx, GCRED, "gitlab", () => draw(ctx),
+    {dirty: false, auths: ["system", "token", "password", "ldap"]}),
   el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center"},
     el("button", {class: "btn primary", disabled: GDISC && GDISC.busy ? "" : null,
       onclick: () => groupDiscover(ctx)}, t("code.groups.discover")),
@@ -194,9 +194,11 @@ async function groupDiscover(ctx){
   GDISC = {busy: true};
   draw(ctx);
   const existing = ((D && D.groups && D.groups.groups) || []).find(g => g.name === name);
+  const credentials = GCRED.auth === "system" || !GCRED.secret ? null
+    : {auth: GCRED.auth, user: GCRED.user, secret: GCRED.secret};
   const r = await ctx.api("/api/code/groups/discover", {method: "POST", quiet: true, body: JSON.stringify({
     project: ctx.project.path, name, url: GURL, include_subgroups: GINCLUDE,
-    credentials: GTOKEN ? {auth: "token", user: "", secret: GTOKEN} : null})}) || {ok: false, error: "network"};
+    credentials})}) || {ok: false, error: "network"};
   GDISC = r;
   GSEL = new Set(r && r.ok ? ((existing && existing.selected) || []).filter(p =>
     (r.projects || []).some(x => x.path === p)) : []);
@@ -210,18 +212,20 @@ async function saveGroup(ctx){
     draw(ctx);
     return;
   }
+  const credentials = GCRED.auth === "system" || !GCRED.secret ? null
+    : {auth: GCRED.auth, user: GCRED.user, secret: GCRED.secret};
   const r = await ctx.api("/api/code/groups/save", {method: "POST", quiet: true, body: JSON.stringify({
     project: ctx.project.path, name: GNAME || GDISC.group.name, url: GURL,
     include_subgroups: GINCLUDE, selected: [...GSEL], projects: GDISC.projects || [],
     repo_expect: (D && D.digest) || "",
-    credentials: GTOKEN ? {auth: "token", user: "", secret: GTOKEN} : null})}) || {ok: false};
+    credentials})}) || {ok: false};
   if (!r.ok){
     MSG = {kind: "err", text: ctx.t("code.groups.save_failed") + ": " + (r.error || "error")};
     draw(ctx);
     return;
   }
   ctx.toast(ctx.t("code.groups.saved", {n: r.repos || 0}));
-  GDISC = null; GTOKEN = "";
+  GDISC = null; GCRED = {auth: "system", user: "", secret: ""};
   await load(ctx, false);
 }
 
@@ -344,21 +348,23 @@ async function addRepo(ctx, force){
 
 /* ---------------------------------------------------------------- вход */
 
-function authFields(ctx, c, provider, redraw){
+function authFields(ctx, c, provider, redraw, opts = {}){
   const {t, el} = ctx;
+  const auths = opts.auths || ((D && D.options && D.options.auths)
+    || ["system", "token", "password", "ldap", "ssh"]);
+  const mark = opts.dirty === false ? () => {} : touch;
   const method = el("select", {class: "btn", style: "width:100%"},
-    ...((D && D.options && D.options.auths) || ["system", "token", "password", "ldap", "ssh"])
-      .map(v => el("option", {value: v, selected: c.auth === v ? "" : null}, t("code.auth." + v))));
-  method.onchange = () => { c.auth = method.value; touch(); redraw(); };
+    ...auths.map(v => el("option", {value: v, selected: c.auth === v ? "" : null}, t("code.auth." + v))));
+  method.onchange = () => { c.auth = method.value; mark(); redraw(); };
   const out = [field(ctx, t("code.field.auth"), method, t("code.h.auth." + c.auth))];
   if (c.auth === "token" || c.auth === "password" || c.auth === "ldap"){
     const user = el("input", {class: "btn", style: "width:100%;font-weight:400", autocomplete: "off", value: c.user || ""});
-    user.oninput = () => { c.user = user.value.trim(); touch(); };
+    user.oninput = () => { c.user = user.value.trim(); mark(); };
     const had = c.secret === MASK;
     const sec = el("input", {class: "btn mono", type: "password", autocomplete: "new-password",
       style: "width:100%;font-weight:400", placeholder: had ? t("code.secret_set") : ""});
     if (!had) sec.value = c.secret || "";
-    sec.oninput = () => { c.secret = sec.value || (had ? MASK : ""); touch(); };
+    sec.oninput = () => { c.secret = sec.value || (had ? MASK : ""); mark(); };
     const bb = provider === "bitbucket";
     out.push(el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;align-items:flex-start"},
       field(ctx, t("code.field.user"), user,

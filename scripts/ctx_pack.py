@@ -468,10 +468,13 @@ def loose_ids(text: str) -> list:
             for m in LOOSE_ID_RE.finditer(text) if m.group(1).isupper()]
 
 
-def words(text: str) -> list:
+@functools.lru_cache(maxsize=20000)
+def _words_cached(text: str) -> list:
     """Слова длиннее двух букв, приведённые к ключу поиска, без стоп-слов.
 
     Идентификаторы с точкой («AC-4.4.3») идут целыми токенами на своём месте в тексте.
+    Чистая функция от текста, поэтому разбор кешируется на один процесс: один и тот же
+    текст карточки нужен и measure_rarity, и _word_profile, и повторному score.
     """
     low = text.lower().replace("ё", "е")
     out, pos = [], 0
@@ -486,6 +489,11 @@ def words(text: str) -> list:
         out.extend(_id_tokens(m.group(1)))
         pos = m.end()
     return out
+
+
+def words(text: str) -> list:
+    """Копия разбора из кеша: вызывающий вправе менять свой список."""
+    return list(_words_cached(text))
 
 
 def query_words(topic: str) -> list:
