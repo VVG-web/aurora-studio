@@ -64,10 +64,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
+import answer_core as answer_core  # noqa: E402 — переиспользуемое ядро обоснованного ответа
 import card_types as CT  # noqa: E402 — единый вход записи карточки: шаблон обязателен
 import fidelity as FID  # noqa: E402 — механический слой под Момусом: числа, цитаты, вердикт (BL-KBA-05)
+import production_core as PC  # noqa: E402 — надстройка «Продуктивности» над ядром
+import reliable_core as reliability  # noqa: E402 — сроки и понятные ошибки процедур
 from aurora_actor import actor  # noqa: E402
-from aurora_common import (QUOTES, aliases, body as body_of, fold, head_text,  # noqa: E402
+from aurora_common import (QUOTES, aliases, body as body_of, fold,  # noqa: E402
                            link_escapes, replace_file, write_text_atomic)
 
 RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
@@ -6270,11 +6273,17 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     if sid:
         st = load_session(cwd, sid)
         if not st:
-            return {"ok": False, "why": f"сессии {sid} нет — начните заново"}
+            why = f"сессии {sid} нет — начните заново"
+            return {"ok": False, "stage": "error", "status": "error", "why": why,
+                    "error": reliability.human_error("session_missing", why,
+                                                     "создайте документ заново")}
     else:
         spec = make_spec(cwd, kind)
         if spec.get("error"):
-            return {"ok": False, "why": spec["error"]}
+            why = spec["error"]
+            return {"ok": False, "stage": "error", "status": "error", "why": why,
+                    "error": reliability.human_error("make_spec", why,
+                                                     "исправьте настройки вида артефакта")}
         d = make_session_dir(cwd, kind)
         sid = d.name
         # Свойства задачи вида без эпика: эпик выбирают у документа (прежнее значение вида в конфиге не действует).
@@ -6302,6 +6311,38 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
 
     spec = st["spec"]
     stages = st["stages"]
+
+    def abort(stage: str, why: str, error: dict | None = None) -> dict:
+        """Отказ процедуры в одном контракте: путь к частичному файлу, если он уже есть."""
+        path = str(st.get("path") or "")
+        return {"ok": False, "sid": sid, "stage": stage,
+                "status": "partial" if path else "error", "path": path,
+                "why": str(why or "процедура не дала результата")[:700],
+                "error": error or reliability.human_error(
+                    "make_failed", why or "производство не завершилось",
+                    "повторите шаг с той же сессией или проверьте настройки вида"),
+                "state": st}
+
+    def persist(stage: str) -> dict | None:
+        """Записать артефакт; ошибку записи вернуть, а не выпустить исключением."""
+        try:
+            st["path"] = write_artifact(cwd, st)
+            return None
+        except Exception as exc:  # noqa: BLE001 - файл мог не записаться
+            why = f"не удалось записать артефакт: {type(exc).__name__}: {exc}"
+            return abort(stage, why, reliability.human_error(
+                "artifact_write", why, "проверьте папку результата и права на запись"))
+
+    def limited(stage: str, fn, budget: float) -> dict:
+        """Вызов роли под внешним сторожем: даже транспорт без своего срока не держит шаг."""
+        result = reliability.run_stage(stage, fn, deadline=time.time() + budget,
+                                       timeout=budget)
+        if result.ok:
+            return result.value
+        err = result.error or {}
+        return {"ok": False, "log": [err.get("message") or f"этап {stage} не ответил"],
+                "timed_out": result.timed_out, "why": err.get("message") or ""}
+
     ctx_cfg: dict = {}
     CR = CB = CS = None
     try:
@@ -6316,9 +6357,9 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     template = read_text_file(os.path.join(cwd, spec["template"]), TEMPLATE_LIMIT + 1)
     if len(template) > TEMPLATE_LIMIT:
         # Молчаливый срез — то самое, от чего ушли: форма без хвоста проверяется никем.
-        return {"ok": False, "sid": sid, "why": (
+        return abort("enrichment", (
             f"шаблон «{spec['template']}» длиннее {TEMPLATE_LIMIT:,} знаков".replace(",", " ")
-            + " — сократите его или разбейте на версии, документ по огрызку формы не пишу")}
+            + " — сократите его или разбейте на версии, документ по огрызку формы не пишу"))
     prompt_extra = ""
     if spec.get("prompt") and os.path.isfile(os.path.join(cwd, spec["prompt"])):
         prompt_extra = ("Промпт проекта для этого вида документа:\n"
@@ -6336,31 +6377,35 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     pack_args, why_narrow = pack_budget_args(cfg, template, prompt_extra, st["idea"],
                                              spec["template"])
     if why_narrow:
-        return {"ok": False, "sid": sid, "why": why_narrow}
+        return abort("enrichment", why_narrow)
 
     # --- 1. обогащение: тот же механизм, что отвечает в «Спросить»
     if not stages.get("enriched"):
         # Идея — постановка нового, а не вопрос к базе: она опирается на известную сущность
         # и просит то, чего в базе ещё нет, поэтому доля найденных слов тут не повод для
         # отказа (`abstain=0`). Пометка «Слабая опора» в паке остаётся.
-        pack_cmd = [st["idea"], "--mode", "generate", "--no-log"]
-        r = run_command(cwd, "ctx_pack.py", pack_cmd + ["--retrieval", "abstain=0"] + pack_args)
-        if not r["ok"] and "неизвестные ключи --retrieval" in r["out"]:
+        search = PC.search(
+            cwd, st["idea"], mode="generate", runner=run_command,
+            refusal=pack_refusal, deadline=deadline,
+            extra_args=["--retrieval", "abstain=0"] + pack_args)
+        if not search["ok"] and "неизвестные ключи --retrieval" in search.get("why", ""):
             # Движок проекта старше этой правки и ключа `abstain` не знает: отказа «в базе
             # этого нет» в нём тоже нет, так что повтор без флага — то же поведение.
-            r = run_command(cwd, "ctx_pack.py", pack_cmd + pack_args)
-        if not r["ok"] or "## " not in r["out"]:
-            return {"ok": False, "sid": sid, "why": pack_refusal(r["out"])}
-        st["pack"] = r["out"]
+            search = PC.search(cwd, st["idea"], mode="generate", runner=run_command,
+                               refusal=pack_refusal, deadline=deadline,
+                               extra_args=pack_args)
+        if not search["ok"]:
+            return abort("enrichment", search.get("why") or "пак не собран")
+        st["pack"] = search["pack"]
         stages["enriched"] = utc_stamp()
         st.setdefault("draft", "")
         st.setdefault("clarifications", [])
         st.setdefault("assumptions", [])
         # Файл появляется здесь, а не после воркера: дальше в него пишутся ответы
         # человека, и они не должны жить в служебной папке, куда никто не ходит.
-        st["path"] = write_artifact(cwd, st)
-        m = re.search(r"карточек (\d+)", r["out"])
-        say(f"  обогащение: карточек {m.group(1) if m else '?'} → {st['path']}")
+        if (err := persist("enrichment")):
+            return err
+        say(f"  обогащение: карточек {search.get('total') or '?'} → {st['path']}")
         save_session(cwd, sid, st)
 
     # Оглавление, хранилище и рабочий набор. Включается только проектом с
@@ -6410,7 +6455,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             t_compact = time.time()
             packed, parts, why_pack = compact_make_pack(cfg, st["pack"], st["idea"], budget, call, deadline=deadline)
             if why_pack:
-                return {"ok": False, "sid": sid, "why": why_pack}
+                return abort("enrichment", why_pack)
             say(f"  пак велик: {len(st['pack'])} знаков → конспект по частям ({parts}): {len(packed)} знаков")
             st["pack"] = packed
             st["compacted"] = True
@@ -6472,7 +6517,8 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             st.setdefault("clarifications", []).append(
                 {"q": "; ".join(q.get("q", "") for q in asked)[:400] or "вопросы раунда",
                  "a": answers})
-            st["path"] = write_artifact(cwd, st)
+            if (err := persist("planning")):
+                return err
             save_session(cwd, sid, st)
         seen = "\n\n".join(
             f"Раунд {i + 1}. Вопросы: {json.dumps(rd.get('questions') or [], ensure_ascii=False)}\n"
@@ -6485,7 +6531,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             answers=(f"Уже выяснено:\n{seen}\n\n" if seen else ""))
         fail = check(prompt)
         if fail:
-            return fail
+            return abort("planning", fail.get("why") or "форма не дошла до планировщика", fail)
         if force_plan:
             prompt += ("\n\nАналитик просит закончить расспрос: верни план по тому, что "
                        "уже известно, и назови в нём прямо, что осталось невыясненным.")
@@ -6495,21 +6541,27 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         # Сторожу отдаём то, из чего модель могла бы составить запрос: задачу аналитика,
         # пак знаний и названия карточек. Шаблон не берём — он из общих слов, и по нему
         # заблокировалось бы всё.
-        r = call(cfg, "planner", [{"role": "user", "content": prompt}],
-                 deadline=time.time() + AG.call_budget(cfg, "planner"),
-                 tools=planner_tools, mcp_active=planner_mcp,
-                 context_store=planner_store, input_limit=planner_limit,
-                 guard_text=[st["idea"], planner_context] + re.findall(r"^## (.+)$", planner_context, re.M))
+        r = limited("planner", lambda: call(
+            cfg, "planner", [{"role": "user", "content": prompt}],
+            deadline=time.time() + AG.call_budget(cfg, "planner"),
+            tools=planner_tools, mcp_active=planner_mcp,
+            context_store=planner_store, input_limit=planner_limit,
+            guard_text=[st["idea"], planner_context] + re.findall(r"^## (.+)$", planner_context, re.M)),
+            AG.call_budget(cfg, "planner"))
         if (not r.get("ok") or not (r.get("text") or "").strip()) and planner_tools:
             # tool_limit не должен повторять тот же цикл: второй заход идёт без
             # инструментов, по уже собранному плану и паку.
-            r = call(cfg, "planner", [{"role": "user", "content": prompt}],
-                     deadline=time.time() + AG.call_budget(cfg, "planner"),
-                     tools=False, mcp_active=[], context_store="", input_limit=planner_limit,
-                     guard_text=[st["idea"], planner_context])
+            r = limited("planner", lambda: call(
+                cfg, "planner", [{"role": "user", "content": prompt}],
+                deadline=time.time() + AG.call_budget(cfg, "planner"),
+                tools=False, mcp_active=[], context_store="", input_limit=planner_limit,
+                guard_text=[st["idea"], planner_context]),
+                AG.call_budget(cfg, "planner"))
         if not r["ok"]:
-            return {"ok": False, "sid": sid, "why": model_fail_note(r) + size_note(r, prompt)}
+            return abort("planning", model_fail_note(r) + size_note(r, prompt))
         ans = parse_json(r["text"]) or {}
+        grill = PC.grill_round(ans, force=force_plan)
+        st["grill"] = grill
         questions = ans.get("questions") or []
         plan = (ans.get("plan") or "").strip()
         if questions and not force_plan:
@@ -6523,20 +6575,21 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             # ещё вопросов. Просим ровно план и ничего больше — одной попыткой, а не
             # бесконечно: если и она не сработала, честнее сказать, чем сочинить план.
             # Найдено на живом прогоне: модель вернула пятый раунд вопросов вместо плана.
-            r2 = call(cfg, "planner", [{"role": "user", "content": prompt + (
-                "\n\nВЕРНИ ТОЛЬКО ПЛАН. Поле `questions` должно быть пустым списком. "
-                "Всё, что осталось невыясненным, назови прямо в тексте плана строкой "
-                "«не определено: …» — это честнее пустых разделов.")}],
+            r2 = limited("planner", lambda: call(
+                cfg, "planner", [{"role": "user", "content": prompt + (
+                    "\n\nВЕРНИ ТОЛЬКО ПЛАН. Поле `questions` должно быть пустым списком. "
+                    "Всё, что осталось невыясненным, назови прямо в тексте плана строкой "
+                    "«не определено: …» — это честнее пустых разделов.")}],
                 deadline=time.time() + AG.call_budget(cfg, "planner"),
                 tools=planner_tools, mcp_active=planner_mcp,
                 context_store=planner_store, input_limit=planner_limit,
-                guard_text=[st["idea"], planner_context])
+                guard_text=[st["idea"], planner_context]),
+                AG.call_budget(cfg, "planner"))
             if r2["ok"]:
                 plan = ((parse_json(r2["text"]) or {}).get("plan") or "").strip()
         if not plan:
-            return {"ok": False, "sid": sid,
-                    "why": ("планировщик не вернул плана даже по прямой просьбе. "
-                            "Ответьте на его вопросы — по ним он план и построит.")}
+            return abort("planning", ("планировщик не вернул плана даже по прямой просьбе. "
+                                      "Ответьте на его вопросы — по ним он план и построит."))
         if force_plan:
             # Вопросы, оставшиеся без ответа, — это принятые решения, и они обязаны быть
             # видны. «Не спросили» и «решила модель» — разные источники: первое
@@ -6566,19 +6619,26 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             agnostic=AGNOSTIC_WRITE if agnostic else "")
         fail = check(content)
         if fail:
-            return fail
+            return abort("drafted", fail.get("why") or "форма не дошла до воркера", fail)
         # Свой срок шага, а не остаток общего: документ пишется минутами, и общий срок прогона
         # к критику уже истёк (живой прогон 01.11: «критик не ответил: дедлайн исчерпан»).
-        r = call(cfg, "worker", [{"role": "user", "content": content}],
-                 deadline=time.time() + AG.call_budget(cfg, "worker"),
-                 input_limit=worker_limit)
+        r = PC.answer_artifact(
+            st["idea"], pack=worker_context, prompt=content, cfg=cfg, cwd=cwd,
+            call=call, role="worker", input_limit=worker_limit,
+            deadline=time.time() + AG.call_budget(cfg, "worker"))
         if not r["ok"]:
-            return {"ok": False, "sid": sid, "why": model_fail_note(r) + size_note(r, content)}
-        st["draft"] = (r["text"] or "").strip()
-        if not st["draft"]:
-            return {"ok": False, "sid": sid, "why": "воркер вернул пустой документ"}
+            why = r.get("why") or "воркер не дал документа"
+            if "не отправляю" in why:
+                why += size_note({"log": [why]}, content)
+            return abort("drafted", why, r.get("error"))
+        st["draft"] = (r.get("answer") or "").strip()
+        st["core"] = {"used": True, "status": r.get("status"),
+                      "cards": len(r.get("cards") or []),
+                      "citations": r.get("citations") or {},
+                      "degraded": r.get("degraded") or []}
         stages["drafted"] = utc_stamp()
-        st["path"] = write_artifact(cwd, st)
+        if (err := persist("drafted")):
+            return err
         save_session(cwd, sid, st)
         say(f"  черновик: {len(st['draft'])} знаков → {st['path']}")
 
@@ -6593,25 +6653,26 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             agnostic_check=AGNOSTIC_CHECK if agnostic else "")
         fail = check(content)
         if fail:
-            return fail
-        r = call(cfg, "critic", [{"role": "user", "content": content}],
-                 deadline=time.time() + AG.call_budget(cfg, "critic"),
-                 input_limit=critic_limit)
+            return abort("reviewed", fail.get("why") or "форма не дошла до критика", fail)
+        r = limited("critic", lambda: call(
+            cfg, "critic", [{"role": "user", "content": content}],
+            deadline=time.time() + AG.call_budget(cfg, "critic"),
+            input_limit=critic_limit), AG.call_budget(cfg, "critic"))
         if not r["ok"]:
-            return {"ok": False, "sid": sid, "why": "критик не ответил, документ не проверен: "
-                    + model_fail_note(r) + size_note(r, content)}
+            return abort("reviewed", "критик не ответил, документ не проверен: "
+                        + model_fail_note(r) + size_note(r, content))
         verdict = parse_json(r["text"])
         if not isinstance(verdict, dict):
             # Мусор вместо вердикта — не «замечаний нет»: иначе документ уйдёт в `ready`.
-            return {"ok": False, "sid": sid,
-                    "why": "критик не вернул вердикта, документ не проверен — повторите шаг"}
+            return abort("reviewed", "критик не вернул вердикта, документ не проверен — повторите шаг")
         st["issues"] = verdict.get("issues") or []
         # Покрытие заполняет критик, а не планировщик: это свойство документа, а не
         # опроса. Планировщик мог спросить про крайние случаи, получить ответ и всё
         # равно не дойти до них в плане.
         st["coverage"] = clean_coverage(verdict.get("coverage"))
         stages["reviewed"] = utc_stamp()
-        st["path"] = write_artifact(cwd, st)
+        if (err := persist("reviewed")):
+            return err
         save_session(cwd, sid, st)
         say(f"  критик: замечаний {len(st['issues'])}")
 
@@ -6624,17 +6685,19 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                     momus_pack = CR.cited(store, st["pack"], st.get("draft") or "", ctx_cfg)
             except Exception:
                 momus_pack = st["pack"]
-        mo = run_momus(cfg, momus_pack, f"Документ «{spec.get('title') or st['kind']}»",
-                       st["draft"], call, input_limit=momus_limit)
+        mo = limited("momus", lambda: run_momus(
+            cfg, momus_pack, f"Документ «{spec.get('title') or st['kind']}»",
+            st["draft"], call, input_limit=momus_limit), AG.call_budget(cfg, "qa"))
         st["momus"] = mo
         if not mo.get("ok"):
             # Проверка не состоялась — этап не пройден, иначе документ станет `ready`
             # без единой проверки на выдумки.
             save_session(cwd, sid, st)
-            return {"ok": False, "sid": sid,
-                    "why": "Момус не проверил документ: " + (mo.get("why") or "нет вердикта")}
+            return abort("checked", "Момус не проверил документ: "
+                        + (mo.get("why") or "нет вердикта"))
         stages["checked"] = utc_stamp()
-        st["path"] = write_artifact(cwd, st)
+        if (err := persist("checked")):
+            return err
         save_session(cwd, sid, st)
         say(f"  Момус: {'чисто' if mo.get('clean') else 'без опоры ' + str(mo.get('unsupported', 0))}")
 
@@ -7279,228 +7342,39 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
             call=None, history: list = (), momus: bool = True, role: str = "worker") -> dict:
     """Вопрос к базе: пак собирает движок, отвечает модель, ответ проверяется.
 
-    В уточнении контекст собирается по всему разговору, а не по последней фразе: «а если
-    он ИП?» сама по себе не находит в базе ничего — тему держит предыдущий вопрос.
-
-    Проверок две, и они разной природы. Механическая разбирает ссылки ответа по базе и
-    паку — она дешёвая и не спорит. Момус (`momus=False` отключает) читает ответ второй
-    моделью и ищет утверждения без опоры в контексте: те, у которых ссылки нет вовсе.
+    Ядро `answer_core` делает поиск, рабочий набор, вызов и механические проверки.
+    Здесь остаются только правила «Спросить»: тема уточнения, промпт, история и Момус.
+    Это тот же путь, которым пользуется «Продуктивность», поэтому проверки и контракт
+    ошибки больше не живут в двух копиях.
     """
     call = call or AG.call_role
-    started = time.time()
     topic = " ".join([t["q"] for t in list(history)[-2:]] + [question]) if history else question
-    args = [topic, "--mode", mode, "--max-cards", str(max_cards), "--no-log"]
-    r = run_command(cwd, "ctx_pack.py", args)
-    if not r["ok"] or "## " not in r["out"]:
-        return {"ok": False, "answer": "", "cards": [], "seconds": 0.0,
-                "why": pack_refusal(r["out"])}
-    pack = r["out"]
-    pack_seconds = time.time() - started
-    # В паке заголовки второго уровня есть и внутри тел карточек: считать их значит
-    # обещать человеку контекст втрое больше настоящего. Число даёт сам пак.
-    m = re.search(r"карточек (\d+)", pack)
-    total = int(m.group(1)) if m else 0
-    # Имя карточки — до тире: заголовок блока пака теперь «имя — title». Карточки берутся по структуре пака
-    # (заголовки вне ограждения тела), а не по каждой строке «## »: раздел страницы внутри тела карточки
-    # карточкой пака не был, а ссылку на него проверка принимала за «в паке».
-    cards = FID.pack_cards(pack)
 
-    ask_pack = pack
-    momus_pack = pack
-    ctx_cfg: dict = {}
-    CR = CB = CS = None
-    ctx_metrics: dict = {}
-    try:
-        import context_budget as CB
-        import context_runtime as CR
-        import context_store as CS
-        ctx_cfg = CR.config(cwd)
-    except Exception:
-        ctx_cfg = {}
-    if ctx_cfg.get("enabled") and CR and CS and CB:
-        try:
-            with CR.open_ask(cwd, "default") as store:
-                ids = store.put_pack(pack)
-                ask_pack = store.planner_pack(pack, max_full=int(ctx_cfg.get("ask_full_cards") or 10))
-                momus_pack = store.planner_pack(pack, max_full=int(ctx_cfg.get("critic_cards") or 8))
-                if (ctx_cfg.get("compression") or {}).get("enabled"):
-                    compact = store.maybe_compress(
-                        ids, CB.window(cfg), ctx_cfg,
-                        compressor=CR.compressor_callable(call, cfg), level="ask")
-                    if compact and compact.get("summary"):
-                        ctx_metrics["compressed"] = True
-                        ctx_metrics["summary_tokens"] = compact.get("tokens", 0)
-                ctx_metrics.update({
-                    "pack_tokens": CB.estimate_tokens(pack),
-                    "ask_tokens": CB.estimate_tokens(ask_pack),
-                    "momus_tokens": CB.estimate_tokens(momus_pack),
-                })
-        except Exception as exc:  # noqa: BLE001
-            ctx_metrics["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
-            ask_pack, momus_pack = pack, pack
+    def build_prompt(pack: str, _question: str, _history) -> str:
+        text = PROMPT_ASK.format(pack=pack, question=_question)
+        return text + (PROMPT_ASK_HINT if _history else "")
 
-    prompt = PROMPT_ASK.format(pack=ask_pack, question=question)
-    # Разговор передаётся МЕХАНИЗМОМ истории, а не пересказом в промпте. Текстовый
-    # вариант резал историю до четырёх пар и обрезал ответы до 700 знаков — на длинном
-    # разговоре модель видела разное в зависимости от того, каким путём к ней пришли.
-    # Два способа нести одно и то же расходятся всегда; остался один.
-    if history:
-        prompt += PROMPT_ASK_HINT
-    worker_limit = (CR.input_limit(cfg, role, ctx_cfg) if CR and ctx_cfg.get("enabled") else 0)
-    momus_limit = (CR.input_limit(cfg, "qa", ctx_cfg) if CR and ctx_cfg.get("enabled") else 0)
-    a = call(cfg, role, [{"role": "user", "content": prompt}],
-             deadline=time.time() + cfg["request_timeout"],
-             history=turns_as_messages(history), input_limit=worker_limit)
-    if not a["ok"]:
-        return {"ok": False, "answer": "", "cards": cards, "seconds": round(time.time() - started, 1),
-                "why": model_fail_note(a)}
-    text = (a["text"] or "").strip()
-    links = classify_links(text, cards, pack, cwd)
-    out = {"ok": True, "answer": text, "cards": cards, "total": total,
-           "ghosts": links["invented"], "mentioned": links["mentioned"],
-           "outside": links["outside"], "backend": a["backend"], "model": a["model"]}
-    # Слабая опора (пометка в паке, её ставит `ctx_pack.confidence`): ответ дан по неполной
-    # выдаче — потребителю (панель, бот) это видно без разбора текста пака.
-    # Якорь — строка-пометка пака, а не слова в теле карточки: в wiki-базе фраза встречается.
-    import ctx_pack as CP
-    if re.search(r"^> ⚠️ " + re.escape(CP.WEAK_MARK), pack, re.M):
-        out["weak_basis"] = True
-    # Единицы законов и контрактов в паке: ответ обязан цитировать их дословно (правило 7), и это проверяется кодом.
-    cited = cited_bodies(cwd, cards)
-    if cited:
-        out["cites"] = {"cards": sorted(cited), **check_quotes(text, cited)}
-    if momus:
-        out["momus"] = run_momus(cfg, momus_pack, question, text, call,
-                                 answered_in=float(a.get("seconds") or 0),
-                                 input_limit=momus_limit)
-    if ctx_metrics:
-        out["context"] = ctx_metrics
-    out["seconds"] = round(time.time() - started, 1)
-    # Куда ушло время: без этого «вопрос длился шесть минут» разбирают по логам трёх мест.
-    # `prompt` — сколько токенов модель прочла в запросе (по её счётчику; нет счётчика — оценка по знакам).
-    out["phases"] = {"pack": round(pack_seconds, 1), "answer": round(float(a.get("seconds") or 0), 1),
-                     "momus": round(float((out.get("momus") or {}).get("seconds") or 0), 1),
-                     "prompt_tokens": int(a.get("tokens_in") or 0) or int(len(prompt) / AG.CHARS_PER_TOKEN),
-                     "answer_tokens": int(a.get("tokens_out") or 0)}
-    return out
+    def momus_check(answer_text: str, pack: str, asked: str) -> dict:
+        return run_momus(cfg, pack, asked, answer_text, call, answered_in=0.0)
+
+    return answer_core.answer(
+        topic, cfg=cfg, cwd=cwd, call=call, prompt_builder=build_prompt,
+        mode=mode, max_cards=max_cards, history=turns_as_messages(history),
+        role=role, momus=momus, verifier=(momus_check if momus else None),
+        runner=run_command, refusal=pack_refusal, context_thread="default",
+        deadline=time.time() + float(cfg.get("request_timeout") or 300),
+    )
 
 
-def base_names(cwd: str) -> set:
-    """Имена и синонимы всех карточек базы — чтобы отличить «не в паке» от «выдумано».
-
-    Разница принципиальная. `AC-4.7.1` в ответе, когда карточка в базе есть, а в пак не
-    попала, — это промах отбора: имя модель взяла из таблицы внутри другой карточки, и
-    человеку надо не «проверять особенно внимательно», а спросить точнее. `CP-3.2.10`, у
-    которого карточки нет вообще, — заготовка, её завести. И только имя, которого нет
-    нигде, — выдумка по памяти.
-    """
-    root = Path(cwd) / "AuroraKnowledgeDB"
-    names = set()
-    if not root.is_dir():
-        return names
-    for path in root.rglob("*.md"):
-        if "/meta/" in path.as_posix() or path.name.startswith("_"):
-            continue
-        names.add(path.stem)
-        # Синонимы читает тот же разбор шапки, что и везде (`aurora_common.aliases`): блочная
-        # запись, которую пишет переименование, и шапка длиннее окна в 600 знаков иначе
-        # терялись, а ссылка `[[прежнее имя]]` из ответа попадала в «выдумано».
-        names |= set(aliases(head_text(str(path))))
-    return names
-
-
-# Цитата дословного текста документа в ответе: фрагмент в «ёлочках» не короче 25 знаков, за ним (возможно, после «(» или
-# «[ст. 5]») ссылка на карточку. Пропуск между двумя кусками одной карточки — «[…]».
-QUOTE_RE = re.compile(r"«(?P<q>[^»]{25,}?)»\s*\(?\s*(?:\[[^\]]*\]\s*)*\[\[(?P<card>[^\]|#\n]+)", re.S)
-ELLIPSIS_RE = re.compile(r"\[(?:\u2026|\.\.\.)\]")
-CITED_SECTION = "Documents"
-
-
-def cited_bodies(cwd: str, names: list) -> dict:
-    """{имя карточки: тело} для тех карточек пака, что — единицы цитируемых документов (`type: cited-document`).
-
-    Тело берётся из файла карточки: ответ цитирует то, что лежит в базе, а проверка сверяет с тем же."""
-    from aurora_common import frontmatter
-    out = {}
-    for name in names:
-        if not name or any(ch in name for ch in "/\\") or name.startswith("."):
-            continue                                   # имя из пака — имя файла карточки, но путь по нему строится только для имён
-        path = os.path.join(cwd, "AuroraKnowledgeDB", CITED_SECTION, name + ".md")
-        if not os.path.isfile(path) or link_escapes(path):
-            continue
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
-        if (frontmatter(text).get("type") or "").strip().strip('"') == "cited-document":
-            out[name] = body_of(text)
-    return out
-
-
-def check_quotes(answer: str, pack_cards: dict) -> dict:
-    """Дословны ли цитаты ответа. `pack_cards` — {имя карточки: тело} единиц цитируемых документов из пака.
-
-    Находит фрагменты в «ёлочках» не короче 25 знаков со ссылкой `[[Имя]]` на такую карточку и проверяет, что фрагмент —
-    подстрока её тела: пробельные знаки, тире и кавычки приведены к одному виду (`card_types.norm_strict`), регистр сохраняется;
-    фрагмент с «[…]» проверяется по частям. Ссылка на другую карточку цитатой документа не считается. Ответ не блокируется:
-    результат — число проверенных и список не найденных фрагментов (как у `classify_links`).
-    → {"checked": N, "missing": [{"quote": …, "card": …}]}."""
-    from aurora_common import fold_soft
-    bodies = {fold_soft(n): (n, CT.norm_strict(b)) for n, b in (pack_cards or {}).items()}
-    checked, missing = 0, []
-    for m in QUOTE_RE.finditer(answer or ""):
-        hit = bodies.get(fold_soft(m.group("card").strip()))
-        if hit is None:
-            continue
-        checked += 1
-        parts = [CT.norm_strict(p) for p in ELLIPSIS_RE.split(m.group("q"))]
-        if not all(p in hit[1] for p in parts if p):
-            missing.append({"quote": " ".join(m.group("q").split())[:240], "card": hit[0]})
-    return {"checked": checked, "missing": missing}
-
-
-def classify_links(text: str, cards: list, pack: str, cwd: str) -> dict:
-    """Ссылки ответа по трём корзинам: не в паке, нет карточки, выдумано.
-
-    Раньше всё это называлось одним словом «модель могла назвать их по памяти», и в списке
-    рядом стояли карточка, которая в базе есть, идентификатор из таблицы внутри карточки и
-    настоящая выдумка. Предупреждение, которое одинаково пугает в трёх разных случаях,
-    перестают читать — а два из трёх случаев лечатся командой, а не вниманием.
-    """
-    from aurora_common import fold_soft
-    named = {n.strip() for n in re.findall(r"\[\[([^\]|#]+)", text)}
-    known = {fold_soft(c) for c in cards}
-    # ключи задач из зеркала; начало длиннейшего кода (`ALG-3` в `ALG-3.14`, `US-4` в `US-4-7`) ключом не считается
-    issues = set(re.findall(r"\b([A-Z][A-Z0-9]+-\d+)(?![\w]|[.\-]\d)", pack))
-    base = base_names(cwd)
-    base_f = {fold_soft(b) for b in base}
-
-    def by_code(name: str, names) -> bool:
-        """`[[ALG-3.14]]` вместо `ALG-3.14 Учёт операции`: имя — начало карточки, и код в нём закончен: следом пробел или
-        знак препинания, а не продолжение номера (`[[ALG-3]]` — не `ALG-3.14…`, `[[US-4]]` — не `US-4-7`).
-        Усечённое слово (`Заявка-на-поставк`) и случайная подстрока (`Баланс` внутри другого имени) под это не
-        подходят: раньше любая подстрока считалась «своей» (KB2-05, AR2-14). Точное сравнение — `fold_soft`:
-        `fold_hard` стирал точки, и выдуманный `ALG-31.4` совпадал с настоящим `ALG-3.14`."""
-        low = fold(name).strip()
-        if not re.search(r"\d", low):
-            return False
-        for c in names:
-            full = fold(c)
-            if not full.startswith(low):
-                continue
-            rest = full[len(low):]
-            if not rest or rest[0] in " _:·—" or (rest[0] in ".-" and not re.match(r"[.-]?\d", rest)):
-                return True
-        return False
-
-    outside, mentioned, invented = [], [], []
-    for n in sorted(named):
-        if fold_soft(n) in known or n in issues or by_code(n, cards):
-            continue
-        if fold_soft(n) in base_f or by_code(n, base):
-            outside.append(n)                 # карточка есть, но в контекст не попала
-        elif n.lower() in pack.lower():
-            mentioned.append(n)               # упомянута внутри карточки, своей карточки нет
-        else:
-            invented.append(n)                # ни в паке, ни в базе — по памяти
-    return {"outside": outside, "mentioned": mentioned, "invented": invented}
+# Проверки ссылок и цитат живут в answer_core. Алиасы сохраняют старые точки входа
+# тестов и внешних вызовов, но второй реализации больше нет.
+base_names = answer_core.base_names
+cited_bodies = answer_core.cited_bodies
+check_quotes = answer_core.check_quotes
+classify_links = answer_core.classify_links
+QUOTE_RE = answer_core.QUOTE_RE
+ELLIPSIS_RE = answer_core.ELLIPSIS_RE
+CITED_SECTION = answer_core.CITED_SECTION
 
 
 # Момус читает тот же пак плюс сам ответ — работа того же порядка, что и ответ, только

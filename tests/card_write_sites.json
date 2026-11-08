@@ -1357,6 +1357,12 @@
    "git": "shared",
    "reason": "блок code_groups в aurora.config.yaml: общий конфиг проекта",
    "calls": 1
+  },
+  "scripts/quality_eval.py:write_baseline": {
+   "kind": "other",
+   "reason": "JSON baseline золотого набора пишется в scripts/ или Development/; не карточка",
+   "calls": 1,
+   "git": "shared"
   }
  }
 }

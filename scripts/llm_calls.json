@@ -457,7 +457,7 @@
         "ask"
       ],
       "code": [
-        "agent_runner.py:run_ask",
+        "answer_core.py:generate",
         "agent_runner.py:run_momus"
       ],
       "steps": [
@@ -567,6 +567,7 @@
         },
         {
           "role": "worker",
+          "chosen": true,
           "prompt": "agent_runner.py:PROMPT_MAKE_WRITE",
           "what": {
             "ru": "Документ по плану и форме вида.",

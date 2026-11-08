@@ -121,6 +121,9 @@ scripts/model_config.py  => .aurora/scripts/model_config.py
 scripts/context_budget.py => .aurora/scripts/context_budget.py
 scripts/context_store.py  => .aurora/scripts/context_store.py
 scripts/context_runtime.py => .aurora/scripts/context_runtime.py
+scripts/reliable_core.py  => .aurora/scripts/reliable_core.py
+scripts/answer_core.py    => .aurora/scripts/answer_core.py
+scripts/production_core.py => .aurora/scripts/production_core.py
 # доступность соединений: профили VPN, probe, состояние; его читают команды `net:*`, агент, боты и синк
 scripts/connectivity.py  => .aurora/scripts/connectivity.py
 scripts/conn_gate.py      => .aurora/scripts/conn_gate.py

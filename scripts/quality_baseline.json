@@ -1,0 +1,91 @@
+{
+  "version": "1.217.0",
+  "commit": "cfd23d60cf463389b2ff6af04fbfb481ba6723ca",
+  "source": "answer_core",
+  "cases": [
+    {
+      "id": "Q-001",
+      "metrics": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.5,
+        "context_recall": 1.0,
+        "context_precision": 0.5,
+        "artifact_completeness": 1.0
+      },
+      "answer": "Срок рассмотрения заявки - 10 рабочих дней с даты регистрации [[Заявка-1]].",
+      "missing_facts": []
+    },
+    {
+      "id": "Q-002",
+      "metrics": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.4444,
+        "context_recall": 1.0,
+        "context_precision": 0.5,
+        "artifact_completeness": 1.0
+      },
+      "answer": "Возврат согласуют руководитель и бухгалтерия [[Возврат-обеспечения]].",
+      "missing_facts": []
+    },
+    {
+      "id": "Q-003",
+      "metrics": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.4286,
+        "context_recall": 1.0,
+        "context_precision": 0.5,
+        "artifact_completeness": 1.0
+      },
+      "answer": "При отрицательном остатке перевод запрещён, а журнал попыток сохраняется [[Баланс]].",
+      "missing_facts": []
+    },
+    {
+      "id": "Q-004",
+      "metrics": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.4444,
+        "context_recall": 1.0,
+        "context_precision": 0.5,
+        "artifact_completeness": 1.0
+      },
+      "answer": "ER.Tran хранит 17 полей и ссылку на баланс [[ER.Tran]].",
+      "missing_facts": []
+    },
+    {
+      "id": "Q-005",
+      "metrics": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.4615,
+        "context_recall": 1.0,
+        "context_precision": 0.5,
+        "artifact_completeness": 1.0
+      },
+      "answer": "Журнал хранит 42 операции за последние 30 дней [[Журнал-операций]].",
+      "missing_facts": []
+    },
+    {
+      "id": "Q-006",
+      "metrics": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.6154,
+        "context_recall": 1.0,
+        "context_precision": 0.5,
+        "artifact_completeness": 1.0
+      },
+      "answer": "После согласования заявку изменить нельзя, нужна новая заявка [[Заявка-1]].",
+      "missing_facts": []
+    }
+  ],
+  "metrics": {
+    "faithfulness": 1.0,
+    "answer_relevancy": 0.4824,
+    "context_recall": 1.0,
+    "context_precision": 0.5,
+    "artifact_completeness": 1.0
+  },
+  "ragas": {
+    "installed": false,
+    "version": "",
+    "note": "RAGAS не установлен; используются детерминированные определения метрик."
+  }
+}

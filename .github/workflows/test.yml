@@ -30,6 +30,8 @@ jobs:
         run: python3 -m pip install --quiet -r requirements.txt -c .github/requirements-ci.txt
       - name: Version, CHANGELOG and panel agree
         run: python3 tests/check_release.py
+      - name: Quality golden gate
+        run: python3 scripts/quality_eval.py --gate --baseline scripts/quality_baseline.json
       - name: Smoke (source-scan invariants)
         run: python3 tests/run_tests.py --smoke
       # Проверки «внутренних названий нет в отслеживаемых файлах и в сообщениях коммитов» (part_01) без
