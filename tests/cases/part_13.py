@@ -304,8 +304,9 @@ def test_make_takes_attachments_skills_and_named_mcp_into_the_task(tmp: Path):
     assert got["mcp"] == ["tavily"], f"названный сервер не подключается сразу: {got['mcp']}"
     src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
     body = src[src.index("def run_make("):src.index("def report_make(")]
-    assert "prompt_extra += req[\"extra\"]" in body and body.count("mcp_active=req[\"mcp\"]") == 2, \
-        "задание планировщика и писателя без контекста или сервер не передан"
+    assert "prompt_extra += req[\"extra\"]" in body and "needs_mcp" in body \
+        and body.count("mcp_active=planner_mcp") >= 2, \
+        "задание планировщика без контекста или политика MCP не доходит до вызова"
     assert '"--context"' in src, "у agent:make нет --context"
 
 
@@ -4675,4 +4676,3 @@ def test_script_entry_points_stop_with_text_on_an_old_python(tmp: Path):
         if cp.returncode != 2 or "слишком старый" not in cp.stderr or "Traceback" in cp.stderr:
             bad.append((path.name, cp.returncode, cp.stderr[-120:]))
     assert not bad, bad
-

@@ -16,6 +16,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 - [Latin names](#translit)
 - [Golden questions: lost targets](#golden)
 - [Ask the base](#ask)
+- [Context compression](#compress)
 - [Artifact (Productivity)](#make)
 - [A decision from a source (draft)](#decide)
 - [Review of a story or an algorithm](#review)
@@ -222,6 +223,22 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 - **Tools:** none: the engine builds the knowledge pack with hybrid search (words and meaning); the cards' edit journal ("History of changes") is not part of the pack.
 - **Path:** Pydantic AI.
 - **Then:** The engine resolves the answer's links against the base; the conversation is written to meta/ask/. The report carries a "Time" line: pack, answer, check and request tokens.
+
+<a id="compress"></a>
+
+## Context compression
+
+- **When.** The compression threshold in agent:make or agent:ask; only when the compressor role has its own chain.
+- **Commands:** `agent:make`, `agent:ask`.
+- **Routes:** «Write an artifact».
+
+| Role | What it does | Prompt |
+|---|---|---|
+| Compressor (compressor) | Compress a pack fragment into a summary with claims, sources and open questions. Numbers, card names and decisions are kept; on failure the extractive fallback remains. | `COMPRESS_PROMPT` (context_runtime.py) |
+
+- **Tools:** none: the input is a ready fragment, the output is only the summary.
+- **Path:** Pydantic AI.
+- **Then:** The summary is cached by the fragment and threshold hash; the source text stays in the store and is available through ctx_get.
 
 <a id="make"></a>
 

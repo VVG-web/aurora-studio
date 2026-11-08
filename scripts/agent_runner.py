@@ -6302,6 +6302,15 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
 
     spec = st["spec"]
     stages = st["stages"]
+    ctx_cfg: dict = {}
+    CR = CB = CS = None
+    try:
+        import context_budget as CB
+        import context_runtime as CR
+        import context_store as CS
+        ctx_cfg = CR.config(cwd)
+    except Exception:
+        ctx_cfg = {}
     say(f"Артефакт: {spec.get('title') or st['kind']} · сессия {sid}")
     req = request_asks(cwd, st, spec)
     template = read_text_file(os.path.join(cwd, spec["template"]), TEMPLATE_LIMIT + 1)
@@ -6354,6 +6363,36 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         say(f"  обогащение: карточек {m.group(1) if m else '?'} → {st['path']}")
         save_session(cwd, sid, st)
 
+    # Оглавление, хранилище и рабочий набор. Включается только проектом с
+    # context_architecture.enabled: старые проекты живут прежним путём.
+    if ctx_cfg.get("enabled") and st.get("pack") and CR and CB and CS:
+        try:
+            store = CS.ContextStore(st.get("context_store") or CS.make_store_path(cwd, sid))
+            st["context_store"] = str(store.path)
+            if not st.get("planner_pack"):
+                prepared = CR.prepare_pack(store, st["pack"], ctx_cfg)
+                st["context_ids"] = prepared["ids"]
+                st["planner_pack"] = prepared["planner"]
+                st["worker_pack"] = prepared["worker"]
+                if (ctx_cfg.get("compression") or {}).get("enabled"):
+                    compact = store.maybe_compress(
+                        prepared["ids"], CB.window(cfg), ctx_cfg,
+                        compressor=CR.compressor_callable(call, cfg), level="pack")
+                    if compact:
+                        st["context_summary"] = compact.get("summary") or ""
+                        st["context_compressed"] = True
+                st["context_metrics"] = {
+                    "pack_tokens": CB.estimate_tokens(st["pack"]),
+                    "planner_tokens": CB.estimate_tokens(st.get("planner_pack") or ""),
+                    "worker_tokens": CB.estimate_tokens(st.get("worker_pack") or ""),
+                    "compressed": bool(st.get("context_compressed")),
+                }
+                save_session(cwd, sid, st)
+            store.close()
+        except Exception as exc:  # noqa: BLE001 — контекстный слой не должен ронять старый путь
+            st["context_error"] = f"{type(exc).__name__}: {str(exc)[:180]}"
+            save_session(cwd, sid, st)
+
     # Пак больше окна модели — не режем его вслепую и не роняем работу на `fits`: каждая часть
     # получает свой конспект (моделью, с опорой), и дальше идёт уже короткий пак. Делается и для
     # возобновлённой сессии: обогащённый пак старой версии мог быть записан без ограничения.
@@ -6404,6 +6443,23 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                 f"нужна модель с окном ≥ {need} токенов]")
 
     # --- 2. план: раунды вопросов, пока человек не скажет «хватит»
+    planner_context = st.get("planner_pack") or st["pack"]
+    worker_context = st.get("worker_pack") or st["pack"]
+    planner_tools = True
+    planner_mcp = req["mcp"]
+    planner_store = ""
+    planner_limit = 0
+    worker_limit = 0
+    critic_limit = 0
+    momus_limit = 0
+    if ctx_cfg.get("enabled") and CR:
+        planner_tools = CR.needs_tools(st, spec, ctx_cfg)
+        planner_mcp = req["mcp"] if CR.needs_mcp(st, spec, req, ctx_cfg) else []
+        planner_store = st.get("context_store") or ""
+        planner_limit = CR.input_limit(cfg, "planner", ctx_cfg, tools=planner_tools)
+        worker_limit = CR.input_limit(cfg, "worker", ctx_cfg)
+        critic_limit = CR.input_limit(cfg, "critic", ctx_cfg)
+        momus_limit = CR.input_limit(cfg, "qa", ctx_cfg)
     if not stages.get("planned"):
         if answers:
             st["rounds"].append({"answers": answers})
@@ -6425,7 +6481,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         form_plan, check = form("planner", True)
         prompt = PROMPT_MAKE_PLAN.format(
             method=grill_method(), title=spec.get("title") or st["kind"], idea=st["idea"],
-            template=form_plan, extra=prompt_extra, pack=st["pack"],
+            template=form_plan, extra=prompt_extra, pack=planner_context,
             answers=(f"Уже выяснено:\n{seen}\n\n" if seen else ""))
         fail = check(prompt)
         if fail:
@@ -6441,8 +6497,16 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         # заблокировалось бы всё.
         r = call(cfg, "planner", [{"role": "user", "content": prompt}],
                  deadline=time.time() + AG.call_budget(cfg, "planner"),
-                 tools=True, mcp_active=req["mcp"],
-                 guard_text=[st["idea"], st["pack"]] + re.findall(r"^## (.+)$", st["pack"], re.M))
+                 tools=planner_tools, mcp_active=planner_mcp,
+                 context_store=planner_store, input_limit=planner_limit,
+                 guard_text=[st["idea"], planner_context] + re.findall(r"^## (.+)$", planner_context, re.M))
+        if (not r.get("ok") or not (r.get("text") or "").strip()) and planner_tools:
+            # tool_limit не должен повторять тот же цикл: второй заход идёт без
+            # инструментов, по уже собранному плану и паку.
+            r = call(cfg, "planner", [{"role": "user", "content": prompt}],
+                     deadline=time.time() + AG.call_budget(cfg, "planner"),
+                     tools=False, mcp_active=[], context_store="", input_limit=planner_limit,
+                     guard_text=[st["idea"], planner_context])
         if not r["ok"]:
             return {"ok": False, "sid": sid, "why": model_fail_note(r) + size_note(r, prompt)}
         ans = parse_json(r["text"]) or {}
@@ -6463,8 +6527,10 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                 "\n\nВЕРНИ ТОЛЬКО ПЛАН. Поле `questions` должно быть пустым списком. "
                 "Всё, что осталось невыясненным, назови прямо в тексте плана строкой "
                 "«не определено: …» — это честнее пустых разделов.")}],
-                deadline=time.time() + AG.call_budget(cfg, "planner"), tools=True, mcp_active=req["mcp"],
-                guard_text=[st["idea"], st["pack"]])
+                deadline=time.time() + AG.call_budget(cfg, "planner"),
+                tools=planner_tools, mcp_active=planner_mcp,
+                context_store=planner_store, input_limit=planner_limit,
+                guard_text=[st["idea"], planner_context])
             if r2["ok"]:
                 plan = ((parse_json(r2["text"]) or {}).get("plan") or "").strip()
         if not plan:
@@ -6496,7 +6562,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         form_work, check = form("worker", False)
         content = PROMPT_MAKE_WRITE.format(
             title=spec.get("title") or st["kind"], plan=st["plan"], template=form_work,
-            extra=prompt_extra, pack=st["pack"],
+            extra=prompt_extra, pack=worker_context,
             agnostic=AGNOSTIC_WRITE if agnostic else "")
         fail = check(content)
         if fail:
@@ -6504,7 +6570,8 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         # Свой срок шага, а не остаток общего: документ пишется минутами, и общий срок прогона
         # к критику уже истёк (живой прогон 01.11: «критик не ответил: дедлайн исчерпан»).
         r = call(cfg, "worker", [{"role": "user", "content": content}],
-                 deadline=time.time() + AG.call_budget(cfg, "worker"))
+                 deadline=time.time() + AG.call_budget(cfg, "worker"),
+                 input_limit=worker_limit)
         if not r["ok"]:
             return {"ok": False, "sid": sid, "why": model_fail_note(r) + size_note(r, content)}
         st["draft"] = (r["text"] or "").strip()
@@ -6528,7 +6595,8 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         if fail:
             return fail
         r = call(cfg, "critic", [{"role": "user", "content": content}],
-                 deadline=time.time() + AG.call_budget(cfg, "critic"))
+                 deadline=time.time() + AG.call_budget(cfg, "critic"),
+                 input_limit=critic_limit)
         if not r["ok"]:
             return {"ok": False, "sid": sid, "why": "критик не ответил, документ не проверен: "
                     + model_fail_note(r) + size_note(r, content)}
@@ -6549,8 +6617,15 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
 
     # --- 5. Момус: не выдумано ли. Опора — пак знаний, и только он
     if momus and not stages.get("checked"):
-        mo = run_momus(cfg, st["pack"], f"Документ «{spec.get('title') or st['kind']}»",
-                       st["draft"], call)
+        momus_pack = st["pack"]
+        if ctx_cfg.get("enabled") and st.get("context_store") and CR and CS:
+            try:
+                with CS.ContextStore(st["context_store"]) as store:
+                    momus_pack = CR.cited(store, st["pack"], st.get("draft") or "", ctx_cfg)
+            except Exception:
+                momus_pack = st["pack"]
+        mo = run_momus(cfg, momus_pack, f"Документ «{spec.get('title') or st['kind']}»",
+                       st["draft"], call, input_limit=momus_limit)
         st["momus"] = mo
         if not mo.get("ok"):
             # Проверка не состоялась — этап не пройден, иначе документ станет `ready`
@@ -7230,16 +7305,52 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
     # карточкой пака не был, а ссылку на него проверка принимала за «в паке».
     cards = FID.pack_cards(pack)
 
-    prompt = PROMPT_ASK.format(pack=pack, question=question)
+    ask_pack = pack
+    momus_pack = pack
+    ctx_cfg: dict = {}
+    CR = CB = CS = None
+    ctx_metrics: dict = {}
+    try:
+        import context_budget as CB
+        import context_runtime as CR
+        import context_store as CS
+        ctx_cfg = CR.config(cwd)
+    except Exception:
+        ctx_cfg = {}
+    if ctx_cfg.get("enabled") and CR and CS and CB:
+        try:
+            with CR.open_ask(cwd, "default") as store:
+                ids = store.put_pack(pack)
+                ask_pack = store.planner_pack(pack, max_full=int(ctx_cfg.get("ask_full_cards") or 10))
+                momus_pack = store.planner_pack(pack, max_full=int(ctx_cfg.get("critic_cards") or 8))
+                if (ctx_cfg.get("compression") or {}).get("enabled"):
+                    compact = store.maybe_compress(
+                        ids, CB.window(cfg), ctx_cfg,
+                        compressor=CR.compressor_callable(call, cfg), level="ask")
+                    if compact and compact.get("summary"):
+                        ctx_metrics["compressed"] = True
+                        ctx_metrics["summary_tokens"] = compact.get("tokens", 0)
+                ctx_metrics.update({
+                    "pack_tokens": CB.estimate_tokens(pack),
+                    "ask_tokens": CB.estimate_tokens(ask_pack),
+                    "momus_tokens": CB.estimate_tokens(momus_pack),
+                })
+        except Exception as exc:  # noqa: BLE001
+            ctx_metrics["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+            ask_pack, momus_pack = pack, pack
+
+    prompt = PROMPT_ASK.format(pack=ask_pack, question=question)
     # Разговор передаётся МЕХАНИЗМОМ истории, а не пересказом в промпте. Текстовый
     # вариант резал историю до четырёх пар и обрезал ответы до 700 знаков — на длинном
     # разговоре модель видела разное в зависимости от того, каким путём к ней пришли.
     # Два способа нести одно и то же расходятся всегда; остался один.
     if history:
         prompt += PROMPT_ASK_HINT
+    worker_limit = (CR.input_limit(cfg, role, ctx_cfg) if CR and ctx_cfg.get("enabled") else 0)
+    momus_limit = (CR.input_limit(cfg, "qa", ctx_cfg) if CR and ctx_cfg.get("enabled") else 0)
     a = call(cfg, role, [{"role": "user", "content": prompt}],
              deadline=time.time() + cfg["request_timeout"],
-             history=turns_as_messages(history))
+             history=turns_as_messages(history), input_limit=worker_limit)
     if not a["ok"]:
         return {"ok": False, "answer": "", "cards": cards, "seconds": round(time.time() - started, 1),
                 "why": model_fail_note(a)}
@@ -7259,8 +7370,11 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
     if cited:
         out["cites"] = {"cards": sorted(cited), **check_quotes(text, cited)}
     if momus:
-        out["momus"] = run_momus(cfg, pack, question, text, call,
-                                 answered_in=float(a.get("seconds") or 0))
+        out["momus"] = run_momus(cfg, momus_pack, question, text, call,
+                                 answered_in=float(a.get("seconds") or 0),
+                                 input_limit=momus_limit)
+    if ctx_metrics:
+        out["context"] = ctx_metrics
     out["seconds"] = round(time.time() - started, 1)
     # Куда ушло время: без этого «вопрос длился шесть минут» разбирают по логам трёх мест.
     # `prompt` — сколько токенов модель прочла в запросе (по её счётчику; нет счётчика — оценка по знакам).
@@ -7422,7 +7536,7 @@ MOMUS_PREFER = 0
 
 
 def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
-              prefer: int = 0, answered_in: float = 0.0) -> dict:
+              prefer: int = 0, answered_in: float = 0.0, input_limit: int = 0) -> dict:
     """Момус: вторая модель разбирает ответ по утверждениям и ищет то, что без опоры.
 
     Механическая проверка ловит только ссылки. Утверждение без ссылки — «возврат
@@ -7439,7 +7553,8 @@ def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
     rt = momus_timeout(cfg, answered_in)
     v = call(cfg, "qa", [{"role": "user", "content": PROMPT_MOMUS.format(
         pack=pack, question=question, answer=answer)}],
-        deadline=time.time() + rt, prefer=prefer, request_timeout=rt)
+        deadline=time.time() + rt, prefer=prefer, request_timeout=rt,
+        input_limit=input_limit)
     if not v["ok"]:
         return {"ok": False, "why": model_fail_note(v), "seconds": 0.0,
                 "timed_out": bool(v.get("timed_out")), "given": rt,

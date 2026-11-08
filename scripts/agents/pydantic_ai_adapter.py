@@ -482,7 +482,7 @@ def resolve_project_path(root: str, rel: str) -> str:
     return real
 
 
-def register_tools(agent, allowed: list) -> None:
+def register_tools(agent, allowed: list, store_path: str = "") -> None:
     """Инструменты модели — все на чтение и все внутри проекта.
 
     Ни одного на запись, и это не осторожность, а правило движка: файл создаёт код по
@@ -562,6 +562,54 @@ def register_tools(agent, allowed: list) -> None:
     def artifact_spec(kind: str = "") -> str:
         """Настройки вида документа: шаблон, промпт, папка результата, куда публиковать."""
         return engine("make_kinds.py", ["--kind", kind] if kind else [])
+
+    if store_path:
+        try:
+            here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if here not in sys.path:
+                sys.path.insert(0, here)
+            import context_store as CS
+            path = store_path if os.path.isabs(store_path) else os.path.join(root, store_path)
+            store = CS.ContextStore(path)
+
+            @agent.tool_plain
+            def ctx_search(query: str, kinds: str = "", limit: int = 8) -> str:
+                """Найти карточки в хранилище контекста. Возвращает id, суть и доверие."""
+                kinds_list = [k.strip() for k in (kinds or "").split(",") if k.strip()]
+                return json.dumps(store.search(query, kinds_list, max(1, min(50, int(limit)))),
+                                  ensure_ascii=False)
+
+            @agent.tool_plain
+            def ctx_get(item_id: str, section: str = "", max_chars: int = 3000) -> str:
+                """Достать точный фрагмент карточки или результата инструмента по id."""
+                return json.dumps(store.get(item_id, section, max(0, min(20000, int(max_chars)))),
+                                  ensure_ascii=False)
+
+            @agent.tool_plain
+            def ctx_expand(item_id: str) -> str:
+                """Показать родителя и дочерние записи карточки."""
+                return json.dumps(store.expand(item_id), ensure_ascii=False)
+
+            @agent.tool_plain
+            def ctx_pin(item_id: str) -> str:
+                """Оставить карточку в рабочем наборе до конца шага."""
+                return "закреплена" if store.pin(item_id) else "нет такой записи"
+
+            @agent.tool_plain
+            def ctx_drop(item_id: str) -> str:
+                """Убрать карточку из рабочего набора."""
+                return "снята" if store.drop(item_id) else "её не было в рабочем наборе"
+
+            @agent.tool_plain
+            def ctx_summarize(ids: str, target_chars: int = 2000) -> str:
+                """Сжать перечисленные через запятую id. Полный текст остаётся в хранилище."""
+                wanted = [i.strip() for i in (ids or "").split(",") if i.strip()]
+                return json.dumps(store.summarize(wanted, target_chars=max(256, int(target_chars))),
+                                  ensure_ascii=False)
+        except Exception:
+            # Хранилище не обязано быть у каждого проекта: без него остаются
+            # обычные инструменты чтения.
+            pass
 
 
 def register_output(agent, outdir: str) -> None:
@@ -1042,7 +1090,7 @@ def runtime():
         agent = Agent(ChatModel(task["model"], provider=provider, profile=profile),
                       output_type=Optional[str], toolsets=toolsets or None)
         if task.get("tools"):
-            register_tools(agent, task["tools"])
+            register_tools(agent, task["tools"], task.get("context_store") or "")
         if task.get("outdir"):
             register_output(agent, task["outdir"])
         if key is not None:
@@ -1103,11 +1151,17 @@ def runtime():
         if task.get("timeout"):
             settings["timeout"] = float(task["timeout"])
         limit = int(task.get("tool_calls") or 0)
+        input_limit = int(task.get("input_limit") or 0)
+        limits = {}
+        if limit:
+            limits["tool_calls_limit"] = limit
+        if input_limit:
+            limits["per_request_input_tokens_limit"] = input_limit
         with capture_run_messages() as seen:
             try:
                 result = await agent.run(
                     prompt, message_history=history or None,
-                    usage_limits=UsageLimits(tool_calls_limit=limit) if limit else None,
+                    usage_limits=UsageLimits(**limits) if limits else None,
                     model_settings=settings, **extra)
             except HTTPError as e:
                 return http_error(e)
@@ -1116,8 +1170,10 @@ def runtime():
                 # повтор прямым HTTP шёл бы уже без инструментов, и модель честно отвечала
                 # «инструмента нет» — такой ответ уходил бы как настоящий (28.09.2026).
                 last = last_response(seen)
+                finish = ("input_limit" if "input" in str(e).lower()
+                          or "token" in str(e).lower() else "tool_limit")
                 return {"ok": True, "text": "", "reasoning": thinking_of(last),
-                        "finish": "tool_limit", "usage": usage_of(last.usage) if last else {},
+                        "finish": finish, "usage": usage_of(last.usage) if last else {},
                         "error": str(e)[:200]}
             except Unexpected as e:
                 last = last_response(seen)

@@ -490,6 +490,43 @@
       }
     },
     {
+      "id": "compress",
+      "title": {
+        "ru": "Сжатие контекста",
+        "en": "Context compression"
+      },
+      "when": {
+        "ru": "Порог сжатия в agent:make или agent:ask; только если у роли compressor есть собственная цепочка.",
+        "en": "The compression threshold in agent:make or agent:ask; only when the compressor role has its own chain."
+      },
+      "commands": [
+        "agent:make",
+        "agent:ask"
+      ],
+      "code": [
+        "context_runtime.py:compressor_callable"
+      ],
+      "steps": [
+        {
+          "role": "compressor",
+          "prompt": "context_runtime.py:COMPRESS_PROMPT",
+          "what": {
+            "ru": "Сжать фрагмент пака в конспект с утверждениями, источниками и открытыми вопросами. Числа, имена карточек и решения сохраняются; при ошибке остаётся экстрактивный fallback.",
+            "en": "Compress a pack fragment into a summary with claims, sources and open questions. Numbers, card names and decisions are kept; on failure the extractive fallback remains."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет: на вход идёт готовый фрагмент, на выходе только конспект",
+        "en": "none: the input is a ready fragment, the output is only the summary"
+      },
+      "engine": "pydantic_ai",
+      "after": {
+        "ru": "Конспект кэшируется по хешу фрагмента и порога; исходный текст остаётся в хранилище и доступен через ctx_get.",
+        "en": "The summary is cached by the fragment and threshold hash; the source text stays in the store and is available through ctx_get."
+      }
+    },
+    {
       "id": "make",
       "title": {
         "ru": "Артефакт (Продуктивность)",

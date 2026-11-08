@@ -1544,7 +1544,8 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
 
 # Поля payload, которые понимает только внутренний адаптер. В HTTP-запрос они не идут.
 ADAPTER_ONLY = frozenset({"guard", "role", "tools_root", "mcp", "mcp_active", "outdir",
-                          "tool_calls", "adapter", "needs_adapter"})
+                          "tool_calls", "adapter", "needs_adapter",
+                          "context_store", "input_limit"})
 
 
 # Пульс прогона (1.170.0): какие запросы к моделям идут прямо сейчас. Ответ модели приходит
@@ -3149,7 +3150,8 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
               tools: bool = False, guard_text: list | None = None,
               trim: tuple | None = None, request_timeout: float | None = None,
               mcp_active: list | None = None, mcp_only: list | None = None,
-              outdir: str = "", tool_calls: int = 0, kb_root: str = "") -> dict:
+              outdir: str = "", tool_calls: int = 0, kb_root: str = "",
+              context_store: str = "", input_limit: int = 0) -> dict:
     """Один вызов модели — сначала из кэша ответов, если такой вызов уже был.
 
     В кэш идут только одиночные вызовы настоящим транспортом: без истории разговора,
@@ -3160,7 +3162,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
     think = role_thinks(cfg, role) if thinking is None else thinking
     key = ""
     if (_cache_on() and transport is None and not history and not tools and not trim
-            and not mcp_active and not outdir):
+            and not mcp_active and not outdir and not context_store and not input_limit):
         key = _cache_key(cfg, role, messages, think, max_tokens)
         hit = _cache_get(key)
         if hit and hit.get("text"):
@@ -3175,7 +3177,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
     try:
         r = _call_role(cfg, role, messages, transport, deadline, sleep, thinking, max_tokens,
                        prefer, history, tools, guard_text, trim, request_timeout, mcp_active,
-                       mcp_only, outdir, tool_calls, kb_root)
+                       mcp_only, outdir, tool_calls, kb_root, context_store, input_limit)
     finally:
         pulse_ring(-1)
     if key and r.get("ok") and (r.get("text") or "").strip() and not r.get("cut"):
@@ -3190,7 +3192,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
               tools: bool = False, guard_text: list | None = None,
               trim: tuple | None = None, request_timeout: float | None = None,
               mcp_active: list | None = None, mcp_only: list | None = None,
-              outdir: str = "", tool_calls: int = 0, kb_root: str = "") -> dict:
+              outdir: str = "", tool_calls: int = 0, kb_root: str = "",
+              context_store: str = "", input_limit: int = 0) -> dict:
     """Один вызов модели через кольцо бэкендов.
 
     `mcp_active` — MCP-серверы, которые подключаются сразу (человек назвал их в запросе или
@@ -3244,7 +3247,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     want = cfg.get("adapter") or "pydantic_ai"
     live = transport is default_transport
     watch = live and want == "pydantic_ai"
-    needs_adapter = bool(tools or mcp_active or outdir)
+    needs_adapter = bool(tools or mcp_active or outdir or context_store or input_limit)
     # Что за вызов — для журнала сбоев: размер запроса, срок, режим. Ключей и адресов нет.
     req = {"role": role, "thinking": bool(think), "max_tokens": max_tokens,
            "request_timeout": int(req_timeout),
@@ -3452,6 +3455,10 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 payload["role"] = role
             if max_tokens:
                 payload["max_tokens"] = max_tokens
+            if context_store:
+                payload["context_store"] = str(context_store)
+            if input_limit:
+                payload["input_limit"] = int(input_limit)
             # Дедлайн общий на весь вызов, и первый бэкенд его съедает целиком: пока
             # он думает свои `request_timeout`, до запасного доходит `deadline - now`,
             # то есть пять секунд. Локальная модель — медленная по определению, за пять

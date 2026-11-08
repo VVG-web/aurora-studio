@@ -52,7 +52,7 @@ DATA_EN = KIT / "cockpit" / "i18n" / "data" / "en.json"
 DOCS = {"ru": KIT / "docs" / "llm-calls.md", "en": KIT / "docs" / "en" / "llm-calls.md"}
 # Где искать вызовы: движок и сервер панели. Тесты подменяют `call` своими — их не смотрим.
 SCAN_DIRS = [KIT / "scripts", KIT / "scripts" / "agents", KIT / "cockpit"]
-LLM_ROLES = ("worker", "planner", "critic", "qa")
+LLM_ROLES = ("worker", "planner", "critic", "qa", "compressor")
 # Сам путь к модели: транспорт и адаптер шлют запросы по должности, это не места вызова.
 ENGINE_FUNCS = {"agent_core.py:call_role", "agent_core.py:_call_role", "agent_core.py:ask_role"}
 ENGINE_HTTP_FILES = {"agent_core.py", "pydantic_ai_adapter.py"}
@@ -273,6 +273,7 @@ TEXT = {
                   "работают»."),
         "role_names": {"worker": "Писатель (worker)", "planner": "Планировщик (planner)",
                        "critic": "Критик (critic)", "qa": "Момус (qa)",
+                       "compressor": "Компрессор (compressor)",
                        "document": "Сканы документов (OCR)", "index": "Индекс базы знаний (эмбеддинги)",
                        "": "—"},
         "engine": {"pydantic_ai": "Pydantic AI", "http": "прямой HTTP, мимо Pydantic AI"},
@@ -296,6 +297,7 @@ TEXT = {
                   "\"Models → Where they work\"."),
         "role_names": {"worker": "Writer (worker)", "planner": "Planner (planner)",
                        "critic": "Critic (critic)", "qa": "Momus (qa)",
+                       "compressor": "Compressor (compressor)",
                        "document": "Document scans (OCR)", "index": "Knowledge base index (embeddings)",
                        "": "—"},
         "engine": {"pydantic_ai": "Pydantic AI", "http": "direct HTTP, bypassing Pydantic AI"},

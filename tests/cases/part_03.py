@@ -889,15 +889,18 @@ def test_the_agent_can_hold_a_conversation_and_use_tools(tmp: Path):
     assert '"service": "служебная папка: читать нечего"' in ad, \
         "модель ходит в .git и .ssh — там нет знания, но есть чем навредить"
 
-    # планировщик получает инструменты, воркер — нет: у него есть план и пак, а лишний
-    # поиск на этом шаге размывает основания документа
+    # Планировщик получает инструменты только по требованию (context_architecture),
+    # воркер — никогда: у него есть план и пак, а лишний поиск размывает основания.
     run = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
     # именно планировщик производства: тот, что размечает источник, работает по описи
     # абзацев, и инструменты ему не нужны
     planner = run[run.index("def run_make("):run.index("def read_text_file(")]
-    assert "tools=True" in planner, "планировщик производства не может доискать недостающее"
+    assert "planner_tools" in planner and "needs_tools" in planner, \
+        "планировщик производства не может доискать недостающее"
+    assert "tools=planner_tools" in planner, "политика инструментов не доходит до вызова"
     writer = planner[planner.index("PROMPT_MAKE_WRITE.format"):][:400]
-    assert "tools=True" not in writer, "воркеру даны инструменты — основания размоются"
+    assert "tools=True" not in writer and "tools=planner_tools" not in writer, \
+        "воркеру даны инструменты — основания размоются"
 
     # и навык разбора берётся из файла, а не из копии в промпте
     assert "def grill_method(" in run and "aurora-grill" in run, \

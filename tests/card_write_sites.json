@@ -1340,6 +1340,12 @@
    "calls": 1,
    "git": "none"
   },
+  "scripts/context_quality.py:main": {
+   "kind": "other",
+   "reason": "JSON-отчёт needle-теста по --out; вне базы знаний и вне git-карточек",
+   "calls": 1,
+   "git": "none"
+  },
   "scripts/requirements_check.py:write_report": {
    "kind": "other",
    "reason": "Markdown-отчёт проверки требований пишется в ArtifactsCode/; не карточка",

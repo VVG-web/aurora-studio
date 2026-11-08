@@ -117,6 +117,10 @@ scripts/kb_cited.py         => .aurora/scripts/kb_cited.py
 scripts/legal_slicer.py     => .aurora/scripts/legal_slicer.py
 scripts/agent_core.py    => .aurora/scripts/agent_core.py
 scripts/model_config.py  => .aurora/scripts/model_config.py
+# управление контекстом: бюджет, хранилище и связка стадий (agent_runner)
+scripts/context_budget.py => .aurora/scripts/context_budget.py
+scripts/context_store.py  => .aurora/scripts/context_store.py
+scripts/context_runtime.py => .aurora/scripts/context_runtime.py
 # доступность соединений: профили VPN, probe, состояние; его читают команды `net:*`, агент, боты и синк
 scripts/connectivity.py  => .aurora/scripts/connectivity.py
 scripts/conn_gate.py      => .aurora/scripts/conn_gate.py

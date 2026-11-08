@@ -118,6 +118,23 @@ reports:
     data_dir: .aurora/cache/reports/analyst
     output: Artifacts/reports/{project}_analyst_extended.html
 
+# Управление контекстом модели. Секции нет — работают прежние 40 полных карточек.
+# Включите, если проект большой и пак не должен занимать всё окно модели.
+# context_architecture:
+#   enabled: true
+#   compression:
+#     enabled: true
+#     threshold: 0.50          # доля окна модели, после которой включается сжатие
+#     threshold_tokens: 0      # абсолютный порог; 0 — только доля окна
+#     target_ratio: 0.25       # целевой размер конспекта от окна
+#   reserves:
+#     planner: 24000           # место под ответ планировщика
+#     worker: 24000
+#     critic: 10000
+#     qa: 10000
+#     tools: 24000             # схемы инструментов и MCP
+#     safety: 10000
+
 bootstrap:
   verified_threshold_pct: 20
 
