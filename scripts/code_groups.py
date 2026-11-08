@@ -364,7 +364,7 @@ def detect(project, text: str, credentials=None) -> dict:
     name = str(parsed.get("name") or url.rstrip("/").rsplit("/", 1)[-1])
     duplicate = _find_repo(project, url)
     existing_group_name, existing_group = _find_group(project, url)
-    if parsed.get("provider") != "gitlab" or parsed.get("auth") == "ssh" or _repo_hint(url):
+    if parsed.get("provider") != GS.PROVIDERS[1] or parsed.get("auth") == "ssh" or _repo_hint(url):
         return {**parsed, "kind": "repo", "name": name, "duplicate": duplicate}
     kind, why = _gitlab_kind(project, url, credentials, existing_group_name or name)
     if kind == "repo":
