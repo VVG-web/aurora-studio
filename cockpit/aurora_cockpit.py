@@ -2720,6 +2720,16 @@ def code_group_action(action: str, project: str, payload: dict) -> tuple:
         return {"ok": False, "error": "failed", "detail": f"{type(e).__name__}: {e}"[:300]}, 400
 
 
+def code_detect_action(project: str, payload: dict) -> tuple:
+    """Одна ссылка Code: репозиторий или группа GitLab. Сеть только на чтение."""
+    try:
+        import code_groups as CG
+        res = CG.detect(project, str(payload.get("text") or ""), payload.get("credentials"))
+        return res, 200
+    except Exception as e:  # noqa: BLE001 — форма получает причину, а не оборванный ответ
+        return {"ok": False, "error": "failed", "detail": f"{type(e).__name__}: {e}"[:300]}, 400
+
+
 def cert_action(url: str, payload: dict) -> dict:
     """Сертификат сервера по адресу: показать отпечаток или довериться ему по отпечатку (на этой машине)."""
     https = GS.https_origin(url)
@@ -8310,7 +8320,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(env_install(str(payload.get("name") or "")))
             return
         if u.path == "/api/code/parse":
-            # Строка из `git clone` → сервер, адрес, ветка, вход и имя папки. Ничего не пишет.
+            # Строка из `git clone` → сервер, адрес, ветка, вход и имя папки. С проектом
+            # сервер ещё и решает, репозиторий это или GitLab-группа. Ничего не пишет.
+            project = payload.get("project", "")
+            if isinstance(project, str) and project:
+                if not self._known(project):
+                    return
+                res, code = code_detect_action(project, payload)
+                return self.send_json(res, code)
             import code_repos as CREPO
             self.send_json(CREPO.parse_clone(str(payload.get("text") or "")))
             return

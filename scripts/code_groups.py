@@ -298,6 +298,112 @@ def cred_remote(name: str, url: str) -> str:
     return f"group:{name}@{GS.hostport(url or '') or 'unknown'}"
 
 
+def _url_key(url: str) -> str:
+    """Один и тот же адрес без хвоста `.git` и учётных данных — для поиска дубля."""
+    return GS.strip_userinfo(str(url or "")).strip().rstrip("/").removesuffix(".git").lower()
+
+
+def _find_repo(project, url: str) -> str:
+    key = _url_key(url)
+    for name, rec in CREPO.read_repos(project).items():
+        if key and _url_key(rec.get("url") or "") == key:
+            return name
+    return ""
+
+
+def _find_group(project, url: str) -> tuple:
+    key = _url_key(url)
+    for name, rec in read_groups(project).items():
+        if key and _url_key(rec.get("url") or "") == key:
+            return name, rec
+    return "", {}
+
+
+def _repo_hint(url: str) -> bool:
+    """Явный адрес git-репозитория: `.git` на конце. Без него GitLab может быть и группой."""
+    return urllib.parse.urlparse(str(url or "")).path.lower().endswith(".git")
+
+
+def _gitlab_kind(project, url: str, credentials=None, name: str = "detect") -> tuple:
+    """Есть ли по адресу проект или группа GitLab. Второй элемент — причина неизвестности."""
+    base, path = _api_base(url)
+    if not path:
+        return "unknown", {"error": "bad_url"}
+    headers, _ = _auth_headers(project, name, credentials, url)
+    http = _http()
+    quoted = urllib.parse.quote(path, safe="")
+    status, _data, err, _hdrs = http(f"{base}/projects/{quoted}", headers, API_TIMEOUT)
+    if status == 200:
+        return "repo", {}
+    if status in (401, 403):
+        return "auth", {"error": "gitlab_auth"}
+    if status == 0:
+        return "unreachable", {"error": "gitlab_unreachable", "detail": err}
+    status, _data, err, _hdrs = http(f"{base}/groups/{quoted}", headers, API_TIMEOUT)
+    if status == 200:
+        return "group", {}
+    if status in (401, 403):
+        return "auth", {"error": "gitlab_auth"}
+    if status == 0:
+        return "unreachable", {"error": "gitlab_unreachable", "detail": err}
+    return "unknown", {}
+
+
+def detect(project, text: str, credentials=None) -> dict:
+    """Одна ссылка → репозиторий или папка GitLab с проектами. Ничего не пишет.
+
+    Для GitLab без `.git` проверяем оба адреса через API: проект и группу. Это
+    отличает `group/project` от `group/subgroup` без угадывания по числу сегментов.
+    Приватный адрес без верного входа вернёт `kind=unknown` и причину; форма
+    попросит вход и повторит проверку.
+    """
+    parsed = CREPO.parse_clone(text)
+    if not parsed.get("ok"):
+        return parsed
+    url = str(parsed.get("url") or "")
+    name = str(parsed.get("name") or url.rstrip("/").rsplit("/", 1)[-1])
+    duplicate = _find_repo(project, url)
+    existing_group_name, existing_group = _find_group(project, url)
+    if parsed.get("provider") != "gitlab" or parsed.get("auth") == "ssh" or _repo_hint(url):
+        return {**parsed, "kind": "repo", "name": name, "duplicate": duplicate}
+    kind, why = _gitlab_kind(project, url, credentials, existing_group_name or name)
+    if kind == "repo":
+        return {**parsed, "kind": "repo", "name": name, "duplicate": duplicate}
+    if kind == "group":
+        groups = read_groups(project)
+        group_name, existing = existing_group_name, existing_group
+        if not group_name:
+            group_name = name
+            base_name, n = group_name, 2
+            while group_name in groups:
+                group_name = f"{base_name}-{n}"
+                n += 1
+        group = {**(existing or blank()), "url": url,
+                 "include_subgroups": existing.get("include_subgroups", True) if existing else True}
+        res = fetch_projects(project, group_name, group, credentials)
+        if res.get("ok"):
+            projects = res.get("projects") or []
+            paths = {str(p.get("path") or "") for p in projects}
+            return {**parsed, "kind": "group", "name": group_name, "group_name": group_name,
+                    "group": res.get("group") or group, "projects": projects,
+                    "selected": [p for p in group.get("selected", []) if p in paths],
+                    "new": res.get("new") or 0, "auth": bool(res.get("auth")),
+                    "existing": bool(existing), "duplicate": "",
+                    "include_subgroups": bool(group.get("include_subgroups", True))}
+        return {**parsed, "kind": "unknown", "error": res.get("error") or "gitlab_unknown",
+                "hint": res.get("hint") or "", "detail": res.get("detail") or "",
+                "name": name, "duplicate": duplicate}
+    if kind == "auth":
+        return {**parsed, "kind": "unknown", "error": "gitlab_auth",
+                "hint": "нужен вход GitLab с доступом к группе или репозиторию", "name": name,
+                "duplicate": duplicate}
+    if kind == "unreachable":
+        return {**parsed, "kind": "unknown", **why, "name": name, "duplicate": duplicate}
+    return {**parsed, "kind": "unknown", "error": "gitlab_not_found",
+            "hint": "проверьте адрес или выберите вход и повторите", "name": name,
+            "duplicate": duplicate}
+
+
 def _auth_headers(project, name: str, credentials=None, url: str = "") -> tuple:
     """(заголовки, вход) из формы или из хранилища. Секрет наружу не отдаётся."""
     c = credentials if isinstance(credentials, dict) else None

@@ -95,8 +95,8 @@ function draw(ctx){
 
 /* ---------------------------------------------------------------- GitLab-группы */
 
-// Группа — источник списка репозиториев. Сеть трогает только discovery: page
-// открывается без запросов, а список приходит по кнопке «Найти репозитории».
+// Уже подключённые папки. Добавление — ниже, одной ссылкой: сервер сам решает,
+// репозиторий это или группа, а форма показывает нужные поля.
 function groupsCard(ctx){
   const {t, el} = ctx;
   const data = (D && D.groups) || {groups: [], problems: []};
@@ -112,34 +112,8 @@ function groupsCard(ctx){
       el("span", {class: "chip mono"}, g.url),
       el("span", {class: "chip"}, t("code.groups.selected_n", {n: selected})),
       g.include_subgroups ? el("span", {class: "chip"}, t("code.groups.subgroups")) : null,
-      el("button", {class: "btn sm", onclick: () => {
-        GNAME = g.name; GURL = g.url; GINCLUDE = !!g.include_subgroups;
-        GCRED = {auth: GCRED.auth || "system", user: "", secret: ""};
-        groupDiscover(ctx);
-      }}, t("code.groups.open"))));
+      el("button", {class: "btn sm", onclick: () => openGroup(ctx, g)}, t("code.groups.open"))));
   });
-  const url = el("input", {class: "btn mono", style: "width:100%;font-weight:400", autocomplete: "off",
-    placeholder: "https://gitlab.example.com/group/subgroup"});
-  url.value = GURL;
-  url.oninput = () => { GURL = url.value.trim(); };
-  const name = el("input", {class: "btn mono", style: "width:100%;font-weight:400", autocomplete: "off",
-    placeholder: t("code.groups.name_ph")});
-  name.value = GNAME;
-  name.oninput = () => { GNAME = name.value.trim(); };
-  const incl = el("input", {type: "checkbox", checked: GINCLUDE ? "" : null});
-  incl.onchange = () => { GINCLUDE = incl.checked; };
-  card.append(el("div", {class: "row", style: "gap:10px;flex-wrap:wrap;align-items:flex-start;margin-top:10px"},
-    field(ctx, t("code.groups.url"), url, t("code.groups.url_hint")),
-    field(ctx, t("code.groups.name"), name, t("code.groups.name_hint")),
-    el("label", {style: "display:flex;gap:8px;align-items:center;margin:22px 0 0;flex:1;min-width:220px"},
-      incl, el("span", {style: "font-size:12.5px"}, t("code.groups.include")))),
-  ...authFields(ctx, GCRED, "gitlab", () => draw(ctx),
-    {dirty: false, auths: ["system", "token", "password", "ldap"]}),
-  el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center"},
-    el("button", {class: "btn primary", disabled: GDISC && GDISC.busy ? "" : null,
-      onclick: () => groupDiscover(ctx)}, t("code.groups.discover")),
-    GDISC && GDISC.busy ? el("span", {class: "spin"}) : null));
-  if (GDISC && !GDISC.busy) card.append(discoveryView(ctx));
   return card;
 }
 
@@ -205,6 +179,17 @@ async function groupDiscover(ctx){
   draw(ctx);
 }
 
+function openGroup(ctx, g){
+  clearTimeout((ADD && ADD.timer) || null);
+  const a = blankAdd();
+  a.text = g.url; a.kind = "group"; a.name = g.name;
+  ADD = a;
+  GURL = g.url; GNAME = g.name; GINCLUDE = !!g.include_subgroups;
+  GCRED = a.cred; GDISC = null; GSEL = null;
+  draw(ctx);
+  parseAdd(ctx);
+}
+
 async function saveGroup(ctx){
   if (!GDISC || !GDISC.ok) return;
   if (DIRTY){
@@ -225,7 +210,7 @@ async function saveGroup(ctx){
     return;
   }
   ctx.toast(ctx.t("code.groups.saved", {n: r.repos || 0}));
-  GDISC = null; GCRED = {auth: "system", user: "", secret: ""};
+  GDISC = null; GCRED = {auth: "system", user: "", secret: ""}; ADD = null;
   await load(ctx, false);
 }
 
@@ -262,24 +247,49 @@ function problemText(ctx, p){
 
 /* ---------------------------------------------------------------- добавление строкой git clone */
 
-const add = () => ADD || (ADD = {text: "", parsed: null, name: "", cred: {...NO_CRED}, models: false, publish: false,
-  busy: false, check: null, timer: null});
+function blankAdd(){
+  return {text: "", parsed: null, kind: "", name: "", cred: {...NO_CRED},
+    models: false, publish: false, busy: false, check: null, timer: null,
+    duplicate: "", error: null, seq: 0};
+}
+
+const add = () => ADD || (ADD = blankAdd());
 
 function addCard(ctx){
   const {t, el} = ctx;
   const a = add();
-  const text = el("input", {class: "btn mono", style: "width:100%;font-weight:400", autocomplete: "off",
+  const text = el("input", {class: "btn mono", id: "codeAddUrl", style: "width:100%;font-weight:400", autocomplete: "off",
     placeholder: "git clone https://git.example.com/team/service.git"});
   text.value = a.text;
   text.oninput = () => {
-    a.text = text.value; a.check = null;
+    a.text = text.value; a.check = null; a.parsed = null; a.kind = ""; a.error = null;
+    a.duplicate = ""; a.name = ""; a.busy = false; a.seq += 1;
+    a.cred = {...NO_CRED};
+    GURL = ""; GNAME = ""; GINCLUDE = true; GDISC = null; GSEL = null; GCRED = a.cred;
     clearTimeout(a.timer);
-    a.timer = setTimeout(() => parseAdd(ctx), 300);
+    a.timer = setTimeout(() => parseAdd(ctx), 500);
+    drawAdd(ctx);
+  };
+  text.onkeydown = (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault(); clearTimeout(a.timer); parseAdd(ctx);
   };
   return el("div", {class: "card", style: "padding:16px 18px;margin-bottom:14px"},
-    el("b", {}, t("code.add.title")),
+    el("div", {class: "row", style: "justify-content:space-between;align-items:center;gap:8px"},
+      el("b", {}, t("code.add.title")),
+      el("button", {class: "btn sm", title: t("code.add.plus_hint"), "aria-label": t("code.add.plus_hint"),
+        onclick: () => resetAdd(ctx)}, "+")),
     el("p", {class: "muted", style: "font-size:12.5px;margin:4px 0 10px"}, t("code.add.about")),
     text, el("div", {id: "codeAdd"}, ...addBody(ctx)));
+}
+
+function resetAdd(ctx){
+  const a = add();
+  clearTimeout(a.timer);
+  ADD = null; GURL = ""; GNAME = ""; GINCLUDE = true; GDISC = null; GSEL = null;
+  GCRED = {...NO_CRED};
+  draw(ctx);
+  setTimeout(() => { const el = ctx.$("#codeAddUrl"); if (el) el.focus(); }, 0);
 }
 
 function drawAdd(ctx){
@@ -289,12 +299,39 @@ function drawAdd(ctx){
 
 async function parseAdd(ctx){
   const a = add();
-  if (!a.text.trim()){ a.parsed = null; return drawAdd(ctx); }
-  const r = await ctx.api("/api/code/parse", {method: "POST", quiet: true, body: JSON.stringify({text: a.text})});
-  a.parsed = r || {ok: false, code: "bad_url"};
-  if (a.parsed.ok){
-    a.cred = {...a.cred, auth: a.parsed.auth, user: a.parsed.user || a.cred.user, secret: a.parsed.secret || a.cred.secret};
-    if (!a.name) a.name = a.parsed.name || "";
+  const text = a.text.trim();
+  if (!text){ a.busy = false; a.parsed = null; a.kind = ""; a.error = null; drawAdd(ctx); return; }
+  const seq = a.seq = (a.seq || 0) + 1;
+  a.busy = true; a.parsed = null; a.kind = ""; a.error = null; a.check = null; a.duplicate = "";
+  drawAdd(ctx);
+  const credentials = a.cred.auth === "system" || !a.cred.secret ? null
+    : {auth: a.cred.auth, user: a.cred.user, secret: a.cred.secret};
+  const r = await ctx.api("/api/code/parse", {method: "POST", quiet: true, body: JSON.stringify({
+    project: ctx.project.path, text, credentials})}) || {ok: false, error: "network"};
+  if (a.seq !== seq || a.text.trim() !== text) return;  // пока шёл запрос, ссылку уже заменили
+  a.busy = false;
+  if (!r.ok){
+    a.error = r;
+    drawAdd(ctx);
+    return;
+  }
+  a.parsed = r;
+  a.kind = r.kind || "repo";
+  if (r.auth && a.cred.auth === "system" && !a.cred.secret
+      && (r.secret_in_url || r.auth === "ssh")) a.cred.auth = r.auth;
+  if (r.user && !a.cred.user) a.cred.user = r.user;
+  if (r.secret && !a.cred.secret) a.cred.secret = r.secret;
+  if (r.name && !a.name) a.name = r.name;
+  if (a.kind === "group"){
+    GURL = r.url || text;
+    if (!GNAME) GNAME = r.group_name || r.name || GNAME;
+    GINCLUDE = r.include_subgroups !== false;
+    GCRED = a.cred;
+    GDISC = {...r, ok: true};
+    GSEL = new Set(r.selected || []);
+  } else {
+    GDISC = null; GSEL = null;
+    a.duplicate = r.kind === "repo" ? (r.duplicate || "") : "";
   }
   drawAdd(ctx);
 }
@@ -302,23 +339,99 @@ async function parseAdd(ctx){
 function addBody(ctx){
   const {t, el} = ctx;
   const a = add(), p = a.parsed;
-  if (!p) return [];
+  if (!p){
+    if (a.error){
+      return [el("div", {style: "font-size:12.5px;color:var(--danger);margin-top:8px",
+        class: "warnbox"}, addError(ctx, a.error)),
+        el("button", {class: "btn sm", style: "margin-top:8px",
+          onclick: () => parseAdd(ctx)}, t("code.add.detect"))];
+    }
+    return a.busy ? [el("span", {class: "spin", style: "margin-top:10px"})] : [];
+  }
   if (!p.ok) return [el("div", {style: "font-size:12.5px;color:var(--danger);margin-top:8px"}, errText(ctx, p.code))];
-  const out = [el("div", {class: "row", style: "gap:6px;flex-wrap:wrap;margin:10px 0"},
-    el("span", {class: "chip ok"}, t("code.prov." + p.provider)),
-    el("span", {class: "chip mono"}, p.url),
-    p.branch ? el("span", {class: "chip"}, t("code.branch_chip", {branch: p.branch})) : null)];
+  if (a.kind === "group") return groupAddBody(ctx);
+  if (a.kind !== "repo"){
+    const out = [detectChips(ctx, a)];
+    out.push(el("div", {class: "warnbox", style: "margin-top:4px"},
+      detectText(ctx, a.error || p),
+      (a.error && a.error.hint) || p.hint
+        ? el("div", {style: "font-size:12.5px;margin-top:4px"}, (a.error && a.error.hint) || p.hint) : null));
+    out.push(...authFields(ctx, a.cred, p.provider, () => drawAdd(ctx)));
+    out.push(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center"},
+      el("button", {class: "btn primary", disabled: a.busy ? "" : null,
+        onclick: () => parseAdd(ctx)}, t("code.add.detect")),
+      a.busy ? el("span", {class: "spin"}) : null));
+    return out;
+  }
+  return repoAddBody(ctx);
+}
+
+function detectChips(ctx, a){
+  const {t, el} = ctx;
+  const p = a.parsed || {};
+  const kind = a.kind === "group" ? t("code.add.kind_group")
+    : a.kind === "repo" ? t("code.add.kind_repo") : t("code.add.kind_unknown");
+  return el("div", {class: "row", style: "gap:6px;flex-wrap:wrap;margin:10px 0"},
+    el("span", {class: "chip " + (a.kind === "group" ? "ok" : "")}, kind),
+    p.provider ? el("span", {class: "chip"}, t("code.prov." + p.provider)) : null,
+    p.url ? el("span", {class: "chip mono"}, p.url) : null,
+    p.branch ? el("span", {class: "chip"}, t("code.branch_chip", {branch: p.branch})) : null,
+    a.kind === "group" && p.existing ? el("span", {class: "chip warn"}, t("code.add.existing_folder")) : null,
+    a.duplicate ? el("span", {class: "chip warn"}, t("code.add.duplicate_chip", {name: a.duplicate})) : null);
+}
+
+function detectText(ctx, r){
+  const code = String((r && (r.error || r.code)) || "failed");
+  const key = "code.detect." + code;
+  const text = ctx.t(key);
+  return text === key ? ctx.t("code.detect.failed") : text;
+}
+
+function addError(ctx, r){
+  const code = String((r && (r.code || r.error)) || "");
+  const known = code ? errText(ctx, code) : code;
+  return known && known !== code ? known : detectText(ctx, r);
+}
+
+function repoAddBody(ctx){
+  const {t, el} = ctx;
+  const a = add(), p = a.parsed;
+  const out = [detectChips(ctx, a)];
   if (p.secret_in_url) out.push(el("div", {class: "note", style: "margin-bottom:10px"}, t("code.add.secret_moved")));
+  if (a.duplicate) out.push(el("div", {class: "warnbox", style: "margin-bottom:10px"},
+    t("code.add.duplicate", {name: a.duplicate})));
   const name = el("input", {class: "btn mono", style: "width:100%;font-weight:400", value: a.name});
   name.oninput = () => { a.name = name.value.trim(); };
   out.push(field(ctx, t("code.field.name"), name, t("code.h.name")));
   out.push(...authFields(ctx, a.cred, p.provider, () => drawAdd(ctx)));
   out.push(permRow(ctx, a, () => {}));
   out.push(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center"},
-    el("button", {class: "btn primary", disabled: a.busy ? "" : null, onclick: () => addRepo(ctx, false)}, t("code.add.go")),
+    el("button", {class: "btn primary", disabled: a.busy || a.duplicate ? "" : null, onclick: () => addRepo(ctx, false)}, t("code.add.go")),
     a.busy ? el("span", {class: "spin"}) : null,
     a.check && !a.check.ok && !a.busy ? el("button", {class: "btn", onclick: () => addRepo(ctx, true)}, t("code.add.anyway")) : null));
   if (a.check) out.push(checkView(ctx, a.check));
+  return out;
+}
+
+function groupAddBody(ctx){
+  const {t, el} = ctx;
+  const out = [detectChips(ctx, add())];
+  out.push(el("div", {class: "note", style: "margin-bottom:10px"}, t("code.add.group_hint")));
+  const name = el("input", {class: "btn mono", style: "width:100%;font-weight:400", value: GNAME});
+  name.oninput = () => { GNAME = name.value.trim(); };
+  const incl = el("input", {type: "checkbox", checked: GINCLUDE ? "" : null});
+  incl.onchange = () => { GINCLUDE = incl.checked; };
+  out.push(el("div", {class: "row", style: "gap:10px;flex-wrap:wrap;align-items:flex-start"},
+    field(ctx, t("code.groups.name"), name, t("code.groups.name_hint")),
+    el("label", {style: "display:flex;gap:8px;align-items:center;margin:22px 0 0;flex:1;min-width:220px"},
+      incl, el("span", {style: "font-size:12.5px"}, t("code.groups.include")))));
+  out.push(...authFields(ctx, GCRED, "gitlab", () => drawAdd(ctx),
+    {dirty: false, auths: ["system", "token", "password", "ldap"]}));
+  out.push(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center"},
+    el("button", {class: "btn", disabled: add().busy ? "" : null,
+      onclick: () => parseAdd(ctx)}, t("code.add.detect")),
+    add().busy ? el("span", {class: "spin"}) : null));
+  if (GDISC && !GDISC.busy) out.push(discoveryView(ctx));
   return out;
 }
 
@@ -328,6 +441,12 @@ async function addRepo(ctx, force){
   if (!a.name){ MSG = {kind: "err", text: ctx.t("code.err.name_empty")}; return draw(ctx); }
   if (Object.keys(FORM).some(n => n.toLowerCase() === a.name.toLowerCase())){
     MSG = {kind: "err", text: ctx.t("code.err.name_duplicate")}; return draw(ctx);
+  }
+  const norm = u => String(u || "").trim().replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
+  const duplicate = a.duplicate || Object.entries(FORM).find(([, rec]) => norm(rec.url) === norm(p.url));
+  if (duplicate){
+    MSG = {kind: "err", text: ctx.t("code.add.duplicate", {name: Array.isArray(duplicate) ? duplicate[0] : duplicate})};
+    return draw(ctx);
   }
   const rec = {url: p.url, provider: p.provider, branch: p.branch || "", pin: "", include: "", exclude: "",
                access: "", models: a.models, publish: a.publish};
