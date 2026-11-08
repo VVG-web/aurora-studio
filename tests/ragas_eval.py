@@ -24,6 +24,12 @@ KIT = Path(__file__).resolve().parent.parent
 GOLDEN = KIT / "scripts" / "quality_golden.json"
 sys.path.insert(0, str(KIT / "scripts"))
 
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 
 def contexts(pack: str) -> list[str]:
     parts = re.split(r"(?m)^##\s+", str(pack or ""))

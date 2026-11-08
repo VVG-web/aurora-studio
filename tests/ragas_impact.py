@@ -8,6 +8,13 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
 
 # Код, который меняет поиск, сборку пака, ответ или запись артефакта.
 TRIGGERS = (
