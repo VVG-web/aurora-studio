@@ -362,6 +362,13 @@ function addBody(ctx){
     const detail = (a.error && a.error.detail) || p.detail;
     if (detail) out.push(el("div", {class: "muted mono", style: "font-size:11.5px;margin-top:4px"}, detail));
     out.push(...authFields(ctx, a.cred, p.provider, () => drawAdd(ctx)));
+    out.push(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin:4px 0 10px"},
+      el("button", {class: "btn sm", onclick: () => {
+        a.kind = "repo";
+        a.parsed = {...p, kind: "repo"};
+        a.error = null;
+        drawAdd(ctx);
+      }}, t("code.add.as_repo"))));
     out.push(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center"},
       el("button", {class: "btn primary", disabled: a.busy ? "" : null,
         onclick: () => parseAdd(ctx)}, t("code.add.detect")),

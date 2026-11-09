@@ -125,7 +125,7 @@ def test_detect_endpoint_is_wired(_t):
     assert code == 200 and res.get("kind") == "repo", (res, code)
     view = (KIT / "cockpit/modules/code/view.js").read_text(encoding="utf-8")
     for token in ("/api/code/parse", "kind === \"group\"", "kind === \"repo\"", "code.add.detect",
-                  "codeAddUrl", "code.add.plus_hint", "authFields(ctx, GCRED"):
+                  "codeAddUrl", "code.add.plus_hint", "code.add.as_repo", "authFields(ctx, GCRED"):
         assert token in view, token
     assert view.count('id: "codeAddUrl"') == 1, "должно быть одно поле ссылки"
 

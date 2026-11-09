@@ -13,6 +13,7 @@
   "code.add.about": "Вставьте одну ссылку: Aurora сама поймёт, репозиторий это или папка GitLab, покажет вход и дальнейшие настройки. Подходит GitHub, GitLab, Bitbucket, Gitea и свой сервер.",
   "code.add.plus_hint": "Добавить ещё одну ссылку",
   "code.add.detect": "Проверить ссылку",
+  "code.add.as_repo": "Это репозиторий, проверить через git",
   "code.add.kind_repo": "Репозиторий",
   "code.add.kind_group": "Папка с репозиториями",
   "code.add.kind_unknown": "Пока не определено",

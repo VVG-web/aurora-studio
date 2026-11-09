@@ -13,6 +13,7 @@
   "code.add.about": "Paste one link: Aurora works out whether it is a repository or a GitLab folder, then shows the sign-in and the next settings. GitHub, GitLab, Bitbucket, Gitea and your own server work.",
   "code.add.plus_hint": "Add another link",
   "code.add.detect": "Check link",
+  "code.add.as_repo": "This is a repository, check through git",
   "code.add.kind_repo": "Repository",
   "code.add.kind_group": "Folder of repositories",
   "code.add.kind_unknown": "Not detected yet",
