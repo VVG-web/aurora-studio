@@ -46,7 +46,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from aurora_common import load_env, safe_urlopen, venv_env
+from aurora_common import load_env, lock_release, lock_take, safe_urlopen, venv_env
 
 from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import engine_dir, utc_stamp  # noqa: E402
@@ -2437,20 +2437,144 @@ def record_failure(subject: str, why: str, r: dict | None = None, stage: str = "
 LAST_OK: dict = {}    # {номер: когда он в последний раз ОТВЕТИЛ} — тоже в процессе
 RETRY_FLAG = Path.home() / ".aurora" / "retry-primary"
 
-# Жёсткий лимит параллельности на бэкенд: семафор размера `width`, по одному на №.
+# Жёсткий лимит параллельности на бэкенд: `width` мест, по одному на №.
 # Объявленная ширина — это предел ШЛЮЗА, и нарушить его нельзя даже если много потоков
 # прогона сошлось на одном бэкенде после фолловера. Ширина не объявлена — делим общий
-# потолок, как в `pool`. Хранится в процессе, а не в конфиге: конфиг может пересобираться,
-# а сервер один.
-_SEM: dict = {}        # {№ бэкенда: threading.Semaphore}
+# потолок, как в `pool`.
+#
+# Раньше это был `threading.Semaphore` процесса. Панель запускает каждый проект отдельным
+# процессом, поэтому два проекта вместе обходили ширину шлюза: каждый считал, что у него
+# все места свободны. Теперь места лежат файлами в общем каталоге машины; мёртвый процесс
+# не держит место, `lock_take` снимает его замок. В тестах без явного каталога остаётся
+# локальный честный пул: тесты не должны зависеть от чужих запущенных проектов.
+_SEM: dict = {}        # {№ бэкенда: _FairSlots | _SharedSlots}
 _SEM_LOCK = threading.Lock()
 # Сколько наших запросов сейчас в сети у каждого бэкенда. Молчание по сроку, пока к нему же
 # висят другие наши запросы, — очередь на его стороне, а не смерть (см. карантин в call_role).
 INFLIGHT: dict = {}
 
 
-def _slot_semaphore(backend: dict, cfg: dict) -> threading.Semaphore:
-    """Семафор для № бэкенда, один на процесс. Размер — сколько слотов раздал `pool`.
+class _FairSlots:
+    """Локальный пул мест с очередью по проектам. Для тестов и для одного процесса."""
+
+    def __init__(self, width: int):
+        self.width = max(1, int(width))
+        self.used = 0
+        self.waiters: list = []
+        self.last_project = ""
+        self.cond = threading.Condition()
+
+    @property
+    def _value(self) -> int:
+        with self.cond:
+            return max(0, self.width - self.used)
+
+    def _grant(self) -> None:
+        while self.used < self.width and self.waiters:
+            # Сначала проект, отличный от последнего получившего место: один длинный
+            # проект не должен забирать все освободившиеся места подряд.
+            at = next((i for i, w in enumerate(self.waiters)
+                       if w["project"] != self.last_project), 0)
+            waiter = self.waiters.pop(at)
+            waiter["granted"] = True
+            self.used += 1
+            self.last_project = waiter["project"]
+
+    def acquire(self, blocking: bool = True, timeout: float | None = None,
+                project: str = "") -> bool:
+        project = str(project or "")
+        end = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+        with self.cond:
+            if self.used < self.width:
+                self.used += 1
+                self.last_project = project
+                return True
+            if not blocking:
+                return False
+            waiter = {"project": project, "granted": False}
+            self.waiters.append(waiter)
+            while not waiter["granted"]:
+                left = None if end is None else end - time.monotonic()
+                if left is not None and left <= 0:
+                    if waiter["granted"]:
+                        return True
+                    try:
+                        self.waiters.remove(waiter)
+                    except ValueError:
+                        pass
+                    return False
+                self.cond.wait(left)
+            return True
+
+    def release(self, project: str = "") -> None:
+        with self.cond:
+            if self.used <= 0:
+                return
+            self.used -= 1
+            self._grant()
+            self.cond.notify_all()
+
+
+class _SharedSlots:
+    """Места LLM в общем каталоге машины: один предел шлюза на все процессы.
+
+    Файл `slot-N.lock` — место. `lock_take` атомарен и снимает замок мёртвого процесса,
+    поэтому упавший проект не запирает шлюз. `release` снимает только свой файл.
+    """
+
+    def __init__(self, width: int, directory):
+        self.width = max(1, int(width))
+        self.dir = Path(directory)
+        self._local = threading.local()
+
+    def _path(self, i: int) -> Path:
+        return self.dir / f"slot-{i:02d}.lock"
+
+    @property
+    def _value(self) -> int:
+        return sum(1 for i in range(self.width) if not self._path(i).exists())
+
+    def acquire(self, blocking: bool = True, timeout: float | None = None,
+                project: str = "") -> bool:
+        end = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+        # Разные проекты начинают с разных мест, иначе все ждут один slot-00.
+        start = sum(ord(c) for c in str(project or "")) % self.width
+        while True:
+            for step in range(self.width):
+                path = self._path((start + step) % self.width)
+                try:
+                    taken, _held = lock_take(path, {"project": project, "kind": "llm"})
+                except OSError:
+                    # Каталог недоступен: не превращаем рабочий вызов в отказ.
+                    self._local.path = ""
+                    return True
+                if taken:
+                    self._local.path = str(path)
+                    return True
+            if not blocking:
+                return False
+            left = None if end is None else end - time.monotonic()
+            if left is not None and left <= 0:
+                return False
+            time.sleep(min(0.1, left) if left is not None else 0.1)
+
+    def release(self, project: str = "") -> None:
+        path = getattr(self._local, "path", "")
+        self._local.path = ""
+        if path:
+            lock_release(path)
+
+
+def _slots_dir() -> Path:
+    """Общий каталог мест LLM. Переменная нужна тестам и необязательным изолированным прогонам."""
+    raw = os.environ.get("AURORA_LLM_SLOTS_DIR", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".aurora" / "state" / "llm-slots"
+
+
+def _slot_semaphore(backend: dict, cfg: dict):
+    """Пул мест для № бэкенда. Размер — сколько слотов раздал `pool`.
 
     Считать ширину здесь второй раз значит завести вторую версию правила и однажды их
     развести — что и случилось: `width or 1` схлопывал в один запрос бэкенд без
@@ -2460,14 +2584,19 @@ def _slot_semaphore(backend: dict, cfg: dict) -> threading.Semaphore:
     `PARALLEL=0` слотов не получает вовсе — ему остаётся один, и это правильно:
     кольцу он доступен, в параллель не идёт.
 
-    Разделяем на процесс, а не на прогон: семафор обязан стоять на пути каждого выхода в
-    сеть, иначе две партии запросов в одном процессе пройдут через `pool` по отдельности и
-    вместе превысят ширину шлюза."""
+    Места общие для процессов машины: панель запускает проект отдельным процессом, и
+    процессный семафор позволял двум проектам вместе превысить ширину шлюза. В тестах
+    без `AURORA_LLM_SLOTS_DIR` остаётся локальный пул, чтобы проверки не зависели от
+    чужих запущенных проектов."""
     key = backend["n"]
     with _SEM_LOCK:
         sem = _SEM.get(key)
         if sem is None:
-            sem = threading.Semaphore(gateway_width(cfg, key))
+            width = gateway_width(cfg, key)
+            if os.environ.get("AURORA_TESTS_ISOLATED") and not os.environ.get("AURORA_LLM_SLOTS_DIR"):
+                sem = _FairSlots(width)
+            else:
+                sem = _SharedSlots(width, _slots_dir() / f"backend-{key}")
             _SEM[key] = sem
         return sem
 
@@ -3151,7 +3280,8 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
               trim: tuple | None = None, request_timeout: float | None = None,
               mcp_active: list | None = None, mcp_only: list | None = None,
               outdir: str = "", tool_calls: int = 0, kb_root: str = "",
-              context_store: str = "", input_limit: int = 0) -> dict:
+              context_store: str = "", input_limit: int = 0,
+              project: str = "") -> dict:
     """Один вызов модели — сначала из кэша ответов, если такой вызов уже был.
 
     В кэш идут только одиночные вызовы настоящим транспортом: без истории разговора,
@@ -3177,7 +3307,8 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
     try:
         r = _call_role(cfg, role, messages, transport, deadline, sleep, thinking, max_tokens,
                        prefer, history, tools, guard_text, trim, request_timeout, mcp_active,
-                       mcp_only, outdir, tool_calls, kb_root, context_store, input_limit)
+                       mcp_only, outdir, tool_calls, kb_root, context_store, input_limit,
+                       project=project)
     finally:
         pulse_ring(-1)
     if key and r.get("ok") and (r.get("text") or "").strip() and not r.get("cut"):
@@ -3193,7 +3324,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
               trim: tuple | None = None, request_timeout: float | None = None,
               mcp_active: list | None = None, mcp_only: list | None = None,
               outdir: str = "", tool_calls: int = 0, kb_root: str = "",
-              context_store: str = "", input_limit: int = 0) -> dict:
+              context_store: str = "", input_limit: int = 0,
+              project: str = "") -> dict:
     """Один вызов модели через кольцо бэкендов.
 
     `mcp_active` — MCP-серверы, которые подключаются сразу (человек назвал их в запросе или
@@ -3224,6 +3356,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     начать: параллельный прогон раздаёт задания по слотам, и каждое идёт на свой шлюз.
     """
     transport = transport or default_transport
+    project_key = os.path.abspath(project or os.getcwd())
     persist = bool(cfg.get("persist")) or persist_mode()
     # Умеет ли вызов ждать: проверка связи, подставившая `NO_WAIT`, паузы пары не переждёт, и
     # «шлюз просил подождать» для неё — итог, а не надежда на следующий круг.
@@ -3497,11 +3630,11 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     other += 1
                     continue
                 grant = max(0.5, grant - (time.monotonic() - began))
-            got = sem.acquire(blocking=False)
+            got = sem.acquire(blocking=False, project=project_key)
             if not got:
                 say_live("…", role, f"№{b['n']} {model}: все слоты шлюза заняты — жду до "
                                     f"{human_secs(grant)}")
-                got = sem.acquire(timeout=grant)
+                got = sem.acquire(timeout=grant, project=project_key)
             if not got:
                 heavy_give(b["n"], size)
                 log.append(f"№{b['n']} {model}: слот ширины занят — дальше по кольцу")

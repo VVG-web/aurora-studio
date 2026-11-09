@@ -54,6 +54,7 @@ flowchart TD
 | [Модули источников](connectors.md) | [Source modules](en/connectors.md) | как подключить источник · how to plug in a source |
 | [Справочник команд](commands.md) | [Command reference](en/commands.md) | все команды · every command |
 | [Вызовы моделей](llm-calls.md) | [Model calls](en/llm-calls.md) | где какие роли и модели, промпты, инструменты · where which roles and models, prompts, tools |
+| [Параллельная работа](parallel-work.md) | [Parallel work](en/parallel-work.md) | вкладки, проекты, общие места LLM · tabs, projects, shared LLM slots |
 
 ## Устройство и разработка · Internals
 
