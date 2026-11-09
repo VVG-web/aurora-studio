@@ -729,7 +729,8 @@ function indexCard(ctx){
   const idx = (D && D.index) || {repos: []};
   const box = el("div", {class: "card", style: "padding:16px 18px;margin-bottom:14px"});
   box.append(el("b", {}, t("code.index.title")),
-    el("p", {class: "muted", style: "font-size:12.5px;margin:4px 0 10px"}, t("code.index.about")));
+    el("p", {class: "muted", style: "font-size:12.5px;margin:4px 0 10px"}, t("code.index.about")),
+    el("p", {class: "muted", style: "font-size:11.5px;margin:-4px 0 8px"}, t("code.index.build_hint")));
   if (idx.failed) box.append(el("div", {class: "warnbox"}, t("code.index.failed", {error: idx.failed})));
   const repos = idx.repos || [];
   if (!repos.length) box.append(el("div", {class: "muted", style: "font-size:12.5px"}, t("code.empty")));
@@ -756,7 +757,8 @@ function indexCard(ctx){
   box.append(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:12px"},
     q, kind,
     el("button", {class: "btn", onclick: () => runFind(ctx)}, t("code.index.find")),
-    el("button", {class: "btn primary", onclick: () => buildIndex(ctx)}, t("code.index.build"))));
+    el("button", {class: "btn primary", title: t("code.index.build_hint"),
+      onclick: () => buildIndex(ctx)}, t("code.index.build"))));
   if (FIND && FIND.missing && FIND.missing.length)
     box.append(el("div", {class: "note", style: "margin-top:8px"},
       t("code.index.missing", {names: FIND.missing.join(", ")})));
@@ -929,9 +931,10 @@ function packCard(ctx){
     }
   }
   box.append(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:12px"},
-    el("button", {class: "btn", onclick: () => ctx.runWatched("code:pack", ["--list"])},
+    el("button", {class: "btn", onclick: () => refreshPack(ctx)},
       t("code.pack.list")),
-    el("button", {class: "btn", onclick: () => ctx.runWatched("code:cleanroom", ["--apply"])},
+    el("button", {class: "btn", title: t("code.cleanroom.hint"),
+      onclick: () => ctx.runWatched("code:cleanroom", ["--apply"])},
       t("code.pack.cleanroom")),
     el("button", {class: "btn", onclick: () => ctx.runWatched("code:health", ["--check"])},
       t("code.pack.health")),
@@ -940,7 +943,16 @@ function packCard(ctx){
       el("button", {class: "btn",
         onclick: () => ctx.runWatched("code:check", ["--story", pack.story])},
         t("code.pack.check"))] : [])));
+  box.append(el("div", {class: "muted", style: "font-size:11.5px;margin-top:8px"},
+    t("code.cleanroom.graphify")));
   return box;
+}
+
+async function refreshPack(ctx){
+  const r = await ctx.api("/api/code/pack?project=" + encodeURIComponent(ctx.project.path),
+                          {quiet: true}) || {};
+  PACK = r && !r.error ? r : {stories: [], error: (r && r.error) || ""};
+  draw(ctx);
 }
 
 async function runPack(ctx){

@@ -127,7 +127,20 @@ def _read_dir(path: Path, source: str):
     return rows, problems
 
 
-def _prompt_path(root: Path, rec: dict) -> tuple:
+def _kit_root(root=".") -> Path:
+    """Каталог кита: в репозитории — рядом со scripts, в проекте — из kit_path.txt."""
+    here = Path(__file__).resolve().parents[1]
+    if (here / "scaffold" / TEMPLATES).is_dir():
+        return here
+    hint = Path(root) / ".aurora" / "kit_path.txt"
+    try:
+        kit = Path(hint.read_text(encoding="utf-8").strip()).expanduser()
+    except (OSError, UnicodeDecodeError):
+        return here
+    return kit if (kit / "scaffold" / TEMPLATES).is_dir() else here
+
+
+def _prompt_path(root: Path, rec: dict, kit_root: Path | None = None) -> tuple:
     """(путь к промпту, есть ли файл). Проект переопределяет китовый промпт тем же именем."""
     raw = str(rec.get("prompt") or "").strip()
     if not raw:
@@ -139,9 +152,9 @@ def _prompt_path(root: Path, rec: dict) -> tuple:
     else:
         candidates.append(Path(root) / rel)
         if rel.parts and rel.parts[0] == PROMPTS:
-            candidates.append(KIT / "scaffold" / rel)
+            candidates.append((kit_root or KIT) / "scaffold" / rel)
         else:
-            candidates.append(KIT / "scaffold" / PROMPTS / rel.name)
+            candidates.append((kit_root or KIT) / "scaffold" / PROMPTS / rel.name)
             candidates.append(Path(root) / PROMPTS / rel.name)
     for path in candidates:
         if path.is_file():
@@ -369,13 +382,16 @@ def save(root=".", kinds=None, expect: str = "") -> dict:
 
 def effective_kinds(root=".") -> tuple:
     """({kind: запись}, замечания). Сначала кит, затем проект поверх по `kind`."""
-    kit, problems = _read_dir(KIT / "scaffold" / TEMPLATES, "kit")
+    kit_root = _kit_root(root)
+    kit, problems = _read_dir(kit_root / "scaffold" / TEMPLATES, "kit")
     project, probs = _read_dir(Path(root) / TEMPLATES, "project")
     problems += probs
     merged = dict(kit)
     merged.update(project)
     merged, probs = _apply_overrides(Path(root), merged)
     problems += probs
+    for rec in merged.values():
+        rec["prompt_path"], rec["prompt_exists"] = _prompt_path(Path(root), rec, kit_root)
     return dict(sorted(merged.items(), key=lambda kv: (kv[1]["order"], kv[0]))), problems
 
 

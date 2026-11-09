@@ -8,10 +8,11 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
-from harness import SCRIPTS, make_project, run, test
+from harness import KIT, SCRIPTS, make_project, run, test
 
 sys.path.insert(0, str(SCRIPTS))
 import code_artifacts as CA  # noqa: E402
@@ -65,3 +66,20 @@ def test_code_artifacts_check_names_missing_prompt_and_bad_out(_t):
     rows, problems = CA.check(root)
     assert any(p["kind"] == "cr-bad" and p["code"] == "no_prompt" for p in problems), problems
     assert any(p["kind"] == "cr-bad" and p["code"] == "out" for p in problems), problems
+
+
+@test
+def test_installed_engine_finds_kit_templates_via_kit_path(_t):
+    """Проект с пустым TemplatesCode видит шаблоны кита через .aurora/kit_path.txt."""
+    root = make_project(_t)
+    (root / ".aurora" / "kit_path.txt").write_text(str(KIT), encoding="utf-8")
+    cp = subprocess.run(
+        [sys.executable, str(root / ".aurora/scripts/code_artifacts.py"),
+         "--project", str(root), "--json"],
+        cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=60)
+    assert cp.returncode == 0, cp.stderr
+    data = json.loads(cp.stdout)
+    assert "cr-api" in data["kinds"] and "cr-screen" in data["kinds"], data
+    assert data["kinds"]["cr-api"]["prompt_exists"] is True, data["kinds"]["cr-api"]
+    assert data["problems"] == [], data["problems"]

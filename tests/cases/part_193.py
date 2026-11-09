@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -46,6 +48,7 @@ def test_clean_room_generates_docs_passport_and_finds_stale(_t):
     assert "GET /api/orders" in text and "[c1]" in text and "Что не удалось установить" in text, text
     passport = json.loads((root / "CleanRoom/meta/passport.json").read_text(encoding="utf-8"))
     assert passport["repos"]["orders"]["rev"] and passport["docs"], passport
+    assert passport["enabled"] > 0 and passport["problems"] == [], passport
     run("clean_room.py", "--project", str(root), "--check", cwd=root)
 
     CF.commit(repo, "next", "2026-01-02T00:00:00+00:00", files={"src/Next.java": "class Next {}\n"})
@@ -56,3 +59,18 @@ def test_clean_room_generates_docs_passport_and_finds_stale(_t):
     stale = run("clean_room.py", "--project", str(root), "--check", "--json",
                 cwd=root, expect_rc=1)
     assert json.loads(stale.stdout)["stale"], stale.stdout
+
+
+@test
+def test_clean_room_apply_without_docs_names_reason(_t):
+    """Установленный движок без шаблонов не пишет пустой паспорт, а называет причину."""
+    root = make_project(_t)
+    cp = subprocess.run(
+        [sys.executable, str(root / ".aurora/scripts/clean_room.py"),
+         "--project", str(root), "--apply"],
+        cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "PYTHONPATH": str(SCRIPTS)},
+        timeout=60)
+    assert cp.returncode == 1, cp.stdout + cp.stderr
+    assert "не собрал ни одного документа" in cp.stderr, cp.stderr
+    assert not (root / "CleanRoom/meta/passport.json").exists()

@@ -242,6 +242,10 @@ python3 .aurora/scripts/code_artifacts.py --show cr-api
 No project settings are needed for the kinds: editing a template or prompt in the folder is the
 setting.
 
+An installed engine reads kit templates through the path in `.aurora/kit_path.txt`: an empty
+project `TemplatesCode/` does not cancel the kit kinds. A project overrides only the kinds for
+which it has placed a file with the same `kind`.
+
 ## Story requirements pack: `code:pack`
 
 The pack collects everything tied to a `US-1.1` id: Confluence pages, Jira issues, `Artifacts/us|ac`
@@ -326,6 +330,19 @@ python3 .aurora/scripts/clean_room.py --json
 Publication stays with the existing `ship:publish` for a chosen document: Clean Room does not
 write to Confluence by itself. `ship:publish` checks `publish: true` on the repository of a Clean
 Room document and refuses without it.
+
+### Graphify: an optional accelerator, not a requirement
+
+Clean Room does not need Graphify and does not write documents through it. Graphify is an add-on
+for code parsing and the knowledge graph: when installed from "Setup" -> "Engine add-ons", the
+`agents/graphify_adapter.py` adapter provides `cluster`, a graph MCP server and tree-sitter code
+parsing; `kb:code-graph` adds those nodes to
+`AuroraKnowledgeDB/meta/graphify/code.json`, and the command in `AURORA_CODE_GRAPHIFY` enables the
+optional code index slot.
+
+Without Graphify the code index is built with the standard library, and Clean Room builds the same
+documents from the same facts. The `kb:code-graph` report names the reason for a skip; there is no
+silent failure.
 
 ## Index health: `code:health`
 

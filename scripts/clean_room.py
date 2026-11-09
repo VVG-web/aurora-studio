@@ -168,7 +168,7 @@ def _render(name: str, kind: str, title: str, rev: str, facts: list) -> str:
 
 
 def build(project: str, agent: bool = False, ask=None, deadline: float = 300) -> dict:
-    kinds, _problems = CA.check(project)
+    kinds, problems = CA.check(project)
     enabled = [rec for rec in kinds.values() if rec.get("enabled")]
     indexes = _indexes(project)
     repos = CREPO.read_repos(project)
@@ -200,7 +200,8 @@ def build(project: str, agent: bool = False, ask=None, deadline: float = 300) ->
                                                     rev, facts, text)
                         doc["agent"] = {"ok": True, "cites": len(set(_cited(text)))}
             docs.append(doc)
-    return {"built": TODAY, "docs": docs, "blocked": blocked,
+    return {"built": TODAY, "docs": docs, "blocked": blocked, "problems": problems,
+            "enabled": len(enabled),
             "repos": {name: status for name, _st, status in indexes}}
 
 
@@ -211,6 +212,8 @@ def write(project: str, data: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(doc["text"], encoding="utf-8")
     passport = {"built": data["built"],
+                "enabled": data.get("enabled", 0),
+                "problems": data.get("problems") or [],
                 "repos": {name: {"rev": st.get("repo_rev") or st.get("index_rev") or "",
                                  "indexed_at": st.get("indexed_at") or "",
                                  "status": "built"}
@@ -288,6 +291,12 @@ def main(argv=None) -> int:
         print(f"Репозиториев {len(data['repos'])} · документов {len(data['docs'])}")
         for d in data["docs"]:
             print(f"  - {d['path']}: фактов {d['facts']}")
+    if a.apply and not data["docs"]:
+        print("Clean Room не собрал ни одного документа: проверьте TemplatesCode, "
+              "включённые виды и индекс кода.", file=sys.stderr)
+        if data.get("problems"):
+            print(json.dumps(data["problems"], ensure_ascii=False, indent=1), file=sys.stderr)
+        return 1
     if a.apply:
         write(root, data)
         print(f"Записано: {OUT}/ и {PASSPORT}")
