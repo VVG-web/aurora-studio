@@ -3305,10 +3305,11 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
     # быть, но вызов жив: пульс прогона это знает (`pulse_ring`).
     pulse_ring(+1)
     try:
+        kwargs = {"project": project} if project else {}
         r = _call_role(cfg, role, messages, transport, deadline, sleep, thinking, max_tokens,
                        prefer, history, tools, guard_text, trim, request_timeout, mcp_active,
                        mcp_only, outdir, tool_calls, kb_root, context_store, input_limit,
-                       project=project)
+                       **kwargs)
     finally:
         pulse_ring(-1)
     if key and r.get("ok") and (r.get("text") or "").strip() and not r.get("cut"):
