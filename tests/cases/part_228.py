@@ -132,7 +132,7 @@ def test_call_role_uses_the_project_as_the_slot_key(_t):
     finally:
         AG._slot_semaphore = old
     assert res.get("ok"), res
-    assert seen and seen[0].endswith("/tmp/project-a"), seen
+    assert seen and Path(seen[0]).name == "project-a", seen
 
 
 @test
