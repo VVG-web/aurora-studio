@@ -36,7 +36,7 @@ import sys
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import case_clashes, path_problems, service_dirs  # noqa: E402
+from aurora_common import case_clashes, path_problems, python_executable, service_dirs  # noqa: E402
 
 SCHEMES = "## Схемы страницы"
 ATTACHMENTS = "## Вложения страницы"      # файлы, на которые ссылается тело страницы
@@ -410,7 +410,7 @@ def main() -> int:
             changed = True
         print()
 
-    fix = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "kb_fix.py"),
+    fix = [python_executable(), os.path.join(os.path.dirname(os.path.abspath(__file__)), "kb_fix.py"),
            "--portable-names", "--links"] + (["--apply", "--allow-dirty"] if a.apply else [])
     cp = subprocess.run(fix, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     lines = [l for l in cp.stdout.splitlines()
@@ -444,7 +444,7 @@ def main() -> int:
     if a.apply:
         # Граф базы — по новым путям: иначе сервер графа (MCP) и страница графа отвечали бы
         # по старым до следующего маршрута. Выгрузка дешёвая и ничего не переписывает зря.
-        g = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+        g = subprocess.run([python_executable(), os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                          "kb_graph.py"), "--export"],
                            cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
         print("## Граф базы пересобран по новым путям\n" if g.returncode == 0 else

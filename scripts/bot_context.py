@@ -29,7 +29,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from aurora_common import UNTRUSTED_RULE, engine_fenced_pack, untrusted  # noqa: E402 — граница данных и инструкций
+from aurora_common import UNTRUSTED_RULE, engine_fenced_pack, python_executable, untrusted  # noqa: E402 — граница данных и инструкций; один интерпретатор на подсистему
 
 MODES = ("generate", "evaluate", "off")
 MAX_LINKS = 8
@@ -177,7 +177,7 @@ def search(kb_root: str, concepts: list, mode: str, budget: int = PACK_BUDGET) -
     # с кодом 1, а старая переменная только предупреждает и отдаёт пак.
     spec = ",".join(x for x in (os.environ.get("AURORA_RETRIEVAL", ""), "abstain=0") if x)
     try:
-        p = subprocess.run([sys.executable, script, "--mode", mode, "--no-log",
+        p = subprocess.run([python_executable(), script, "--mode", mode, "--no-log",
                             "--budget", str(budget), "--", topic], cwd=kb_root,
                            env={**os.environ, "AURORA_RETRIEVAL": spec},
                            capture_output=True, text=True,

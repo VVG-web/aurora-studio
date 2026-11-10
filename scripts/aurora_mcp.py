@@ -372,7 +372,7 @@ def run(project: str, script: str, args: list, timeout: int = 120, fail_from: in
     if not os.path.isfile(path):
         path = str(SCRIPTS / script)
     try:
-        p = subprocess.run([sys.executable, path, *args], cwd=project, input=stdin,
+        p = subprocess.run([aurora_common.python_executable(), path, *args], cwd=project, input=stdin,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         raise ToolError(f"Команда {script} не ответила за {timeout} с.") from None
@@ -1032,10 +1032,11 @@ def client_configs() -> dict:
     Python, что панель. OpenCode — ключ `mcp` (type local, command массивом); Claude Code и
     Cursor — `mcpServers`."""
     script = str(SCRIPTS / "aurora_mcp.py")
+    python = aurora_common.python_executable()
     return {
         "opencode": {"mcp": {"aurora": {"type": "local", "enabled": True,
-                                        "command": [sys.executable, script, "--all"]}}},
-        "mcpServers": {"mcpServers": {"aurora": {"command": sys.executable,
+                                        "command": [python, script, "--all"]}}},
+        "mcpServers": {"mcpServers": {"aurora": {"command": python,
                                                  "args": [script, "--all"]}}},
         "projects": sorted(project_map()),
     }
@@ -1043,10 +1044,11 @@ def client_configs() -> dict:
 
 def config_block(projects: list) -> dict:
     """{mcpServers: …} на все проекты сразу: по серверу на базу, имя со слагом."""
+    python = aurora_common.python_executable()
     servers = {}
     for path in projects:
         servers["aurora-" + slug(path)] = {
-            "command": sys.executable,
+            "command": python,
             "args": [os.path.join(path, ".aurora", "scripts", "aurora_mcp.py"),
                      "--project", path]}
     return {"mcpServers": servers}

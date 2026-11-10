@@ -1135,7 +1135,7 @@ def current_errors() -> int | None:
     if not lint.is_file():
         return None
     try:
-        out = subprocess.run([sys.executable, str(lint), "--summary"],
+        out = subprocess.run([aurora_common.python_executable(), str(lint), "--summary"],
                              capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     except Exception:
         return None

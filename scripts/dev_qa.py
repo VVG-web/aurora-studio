@@ -41,7 +41,7 @@ QA = KIT / "Development" / "QA"
 CASES, SCEN, RUNS = QA / "cases", QA / "scenarios", QA / "runs"
 TEMPLATES = KIT / "skills" / "aurora-dev" / "references"
 try:
-    from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+    from aurora_common import TODAY, python_executable  # noqa: E402 — дата в UTC, одна на движок; один интерпретатор на подсистему
 except ImportError:
     # Вне кита движка рядом нет — и контур разработки там всё равно откажет («не кит»).
     # Своей даты не заводим: правило времени одно, и оно в aurora_common.
@@ -288,7 +288,7 @@ def cmd_run(what: str, apply_record: bool) -> int:
         print("    пропущены: прогон уже идёт внутри автотестов\n")
         cp = None
     else:
-        cp = subprocess.run([sys.executable, str(KIT / "tests/run_tests.py")],
+        cp = subprocess.run([python_executable(), str(KIT / "tests/run_tests.py")],
                             cwd=str(KIT), capture_output=True, text=True, encoding="utf-8", errors="replace",
                             env={**os.environ, "AURORA_QA_RUNNING": "1"})
     if cp is not None:
@@ -430,7 +430,7 @@ def retrieval_report(save: bool = False) -> int:
     if not CORPUS.is_dir():
         print(f"dev_qa: нет эталонного корпуса {CORPUS}", file=sys.stderr)
         return 1
-    args = [sys.executable, str(KIT / "scripts" / "kb_retrieval.py"), "--json",
+    args = [python_executable(), str(KIT / "scripts" / "kb_retrieval.py"), "--json",
             "--no-semantic"]
     for q in CORPUS_QUERIES:
         args += ["--query", q]

@@ -29,7 +29,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from aurora_common import local_now  # noqa: E402 — показ человеку: по часам системы
+from aurora_common import local_now, python_executable  # noqa: E402 — показ человеку: по часам системы; один интерпретатор на подсистему
 RESIDUE = os.path.join("AuroraKnowledgeDB", "meta", "lint_residue.json")
 
 # Разделы отчёта линтера, где решает человек. Остался один — эталон: он измеряет качество
@@ -88,7 +88,7 @@ def template_rest():
 
 def run(script: str, *args, stdout_only: bool = False) -> str:
     try:
-        p = subprocess.run([sys.executable, os.path.join(HERE, script), *args],
+        p = subprocess.run([python_executable(), os.path.join(HERE, script), *args],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         return (p.stdout or "") if stdout_only else (p.stdout or "") + (p.stderr or "")
     except Exception as e:                                    # noqa: BLE001
@@ -241,7 +241,7 @@ def main() -> int:
                         "«Доверенные источники» и «Доверенные ветки вики».",
                         "«Настройки проекта» → «Проект»"))
     try:
-        r = subprocess.run([sys.executable, os.path.join(HERE, "kb_kind.py")],
+        r = subprocess.run([python_executable(), os.path.join(HERE, "kb_kind.py")],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         no_kind = num(r.stdout or "", r"Проставить: (\d+)")
     except Exception:                                    # noqa: BLE001

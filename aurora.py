@@ -80,8 +80,22 @@ KIT = Path(__file__).resolve().parent
 SCRIPTS = KIT / "scripts"
 
 
+def _python() -> str:
+    """Интерпретатор подкоманд: тот же, что выбрала конфигурация runtime.
+
+    Запуск с PATH-питона (`python3 aurora.py …`) не должен уводить подкоманды на другой
+    интерпретатор: `aurora_common.python_executable()` читает `~/.aurora/config.json`
+    и возвращает `runtime.effective_python`, а до первого выбора — текущий процесс.
+    """
+    try:
+        from aurora_common import python_executable
+        return python_executable()
+    except Exception:  # noqa: BLE001 — движок ещё не разложен: работаем своим
+        return sys.executable
+
+
 def sh(args: list[str]) -> int:
-    return subprocess.call([sys.executable, *args])
+    return subprocess.call([_python(), *args])
 
 
 def cmd_new(target: str, extra: list[str]) -> int:
@@ -171,7 +185,7 @@ def cmd_tool(name: str, target: str, extra: list[str]) -> int:
     script = tgt / ".aurora/scripts" / file
     if not script.is_file():
         script = SCRIPTS / file
-    return subprocess.call([sys.executable, str(script), *fixed, *extra], cwd=str(tgt))
+    return subprocess.call([_python(), str(script), *fixed, *extra], cwd=str(tgt))
 
 
 def cmd_update(target: str, extra: list[str]) -> int:

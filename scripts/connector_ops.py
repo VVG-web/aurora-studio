@@ -315,7 +315,7 @@ def _run(project: str, script: str, op: str, params: dict) -> dict:
     req = json.dumps({"op": op, "params": params, "project": os.path.abspath(project or ".")})
     extra = {"creationflags": subprocess.CREATE_NO_WINDOW} if hasattr(subprocess, "CREATE_NO_WINDOW") else {}
     try:
-        cp = subprocess.run([sys.executable, script], input=req, cwd=project or ".", env=env, capture_output=True,
+        cp = subprocess.run([aurora_common.python_executable(), script], input=req, cwd=project or ".", env=env, capture_output=True,
                             text=True, encoding="utf-8", errors="replace", timeout=OP_TIMEOUT, **extra)
     except subprocess.TimeoutExpired:
         return {"ok": False, "kind": "net", "error": f"операция «{op}» не ответила за {OP_TIMEOUT} с"}

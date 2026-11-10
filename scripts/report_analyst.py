@@ -78,7 +78,7 @@ def run(script: str, step: str, year: int | None = None) -> bool:
         env["AURORA_REPORT_YEAR"] = str(year)
     else:
         env.pop("AURORA_REPORT_YEAR", None)
-    rc = subprocess.run([sys.executable, os.path.join(HERE, script)],
+    rc = subprocess.run([aurora_common.python_executable(), os.path.join(HERE, script)],
                         cwd=paths.PROJECT_ROOT, env=env).returncode
     if rc != 0:
         print(f"❌ {script} завершился с кодом {rc}", file=sys.stderr)
@@ -180,7 +180,7 @@ def main() -> int:
 
     print(f"\n✅ Готово: {os.path.relpath(paths.OUTPUT_PATH, paths.PROJECT_ROOT)}")
     if a.serve:
-        subprocess.run([sys.executable, os.path.join(HERE, "serve_dashboard.py"), "--html"],
+        subprocess.run([aurora_common.python_executable(), os.path.join(HERE, "serve_dashboard.py"), "--html"],
                        cwd=paths.PROJECT_ROOT)
     return 0
 

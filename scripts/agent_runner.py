@@ -133,7 +133,7 @@ def prune_runs(runs: Path, task: str) -> int:
         except OSError:
             pass
     return len(old)
-from aurora_common import (local_now, local_view, lock_holder, lock_release,  # noqa: E402,F401
+from aurora_common import (local_now, local_view, lock_holder, lock_release, python_executable,  # noqa: E402,F401
                            lock_take, pid_alive, utc_label, utc_slug, utc_stamp, utc_today)
 TODAY_STR = utc_today()
 ASK_DIR = Path("AuroraKnowledgeDB") / "meta" / "ask"
@@ -460,7 +460,7 @@ def run_command(cwd: str, script: str, args: list, timeout: int = 300) -> dict:
     if not os.path.isfile(path):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script)
     try:
-        p = subprocess.run([sys.executable, path, *args], cwd=cwd,
+        p = subprocess.run([python_executable(), path, *args], cwd=cwd,
                            capture_output=True, text=True, encoding="utf-8", errors="replace",
                            timeout=timeout)
     except subprocess.TimeoutExpired as e:

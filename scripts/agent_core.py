@@ -46,10 +46,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from aurora_common import load_env, lock_release, lock_take, safe_urlopen, venv_env
+from aurora_common import load_env, lock_release, lock_take, python_executable, safe_urlopen, venv_env
 
 from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import engine_dir, utc_stamp  # noqa: E402
+import aurora_runtime as RT  # noqa: E402 — единый Python всех подсистем
 ROLES = ("worker", "planner", "critic", "qa")
 CONNECT_TIMEOUT = 3          # секунд на установку соединения: мёртвый бэкенд не держит кольцо
 
@@ -601,6 +602,9 @@ CAUSES: dict = {
     "venv": {"area": "adapter", "fix": "install",
         "ru": "venv python: {path} не найден — «Установка» → Pydantic AI",
         "en": "venv python: {path} not found — Install → Pydantic AI"},
+    "runtime": {"area": "adapter", "fix": "install",
+        "ru": "Python не настроен: {why} — «Установка» → Python",
+        "en": "Python is not configured: {why} — Install → Python"},
     # venv есть, но не для этого пользователя (`access_check`): основа — Python из чужого профиля, недоступный
     # или удалённый; либо venv чужой (ставили через sudo) — работает, а обновить нельзя
     "venv_foreign_base": {"area": "adapter", "fix": "install",
@@ -860,7 +864,8 @@ def cause_id(kind: str, sub: str = "") -> str:
 # имени и пути: строка уходит в итог прогона, журнал и failures.jsonl, которыми делятся; кто именно
 # поставил, называет только «Установка» (`access_check`).
 VENV_CAUSES = frozenset({"venv", "venv_foreign_base", "import_failed.missing", "import_failed.broken",
-                         "process_start", "process_died.start", "process_hang.start"})
+                         "process_start", "process_died.start", "process_hang.start",
+                         "runtime"})
 OTHERS_NOTE = {"ru": "; у другого пользователя этой машины есть установка (запись от {others})",
                "en": "; another user of this machine has an installation (record from {others})"}
 
@@ -1087,7 +1092,35 @@ def classify_failure(err, status=None, n=None, model: str = ""):
 
 
 def _venv_python() -> Path:
+    """Интерпретатор подсистемы: effective_python из runtime, иначе прежний venv.
+
+    Пока конфигурации нет, движок обязан подняться (иначе некому показать экран выбора).
+    Как только runtime записан, путь берётся только оттуда — `bin/python3.<minor>` больше
+    не собирается из версии.
+    """
+    try:
+        got = RT.current()
+        if got.get("configured") and got.get("effective_python"):
+            return Path(got["effective_python"])
+    except Exception:  # noqa: BLE001 — старый движок без модуля runtime
+        pass
     return VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def _runtime_status() -> dict:
+    """Сводка runtime без исключения: панель и прогон должны объяснить отказ, а не упасть."""
+    try:
+        return RT.current()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _runtime_gap():
+    """Причина, по которой runtime не годится; None — конфигурации нет или она в порядке."""
+    got = _runtime_status()
+    if got.get("configured") and not got.get("ok"):
+        return Why("runtime", why=got.get("reason") or "не настроена")
+    return None
 
 
 def _adapter_file() -> Path:
@@ -1099,6 +1132,8 @@ def _adapter_argv(adapter=None) -> list:
     копии: «Установка» проверяет ту, которой пойдёт прогон проекта). Чего-то нет — пусто.
     `os.path.isfile`, а не `Path.is_file`: ссылка venv на Python из закрытого чужого профиля даёт
     отказ в доступе, а не «нет файла», и не должна ронять прогон."""
+    if _runtime_gap():
+        return []
     vpy, adapter = _venv_python(), Path(adapter) if adapter else _adapter_file()
     return [str(vpy), str(adapter)] if os.path.isfile(vpy) and os.path.isfile(adapter) else []
 
@@ -1129,9 +1164,13 @@ def _shown_path(path) -> str:
 
 def _base_problem() -> str:
     """Чем основа venv плоха для этого пользователя (`access_check.venv_base_problem`); пусто — ничем."""
+    got = _runtime_status()
+    if got.get("configured") and not got.get("isolated"):
+        return ""            # runtime выбрал глобальный Python: venv у подсистемы нет
+    venv = Path((got.get("runtime") or {}).get("venv_path") or VENV)
     try:
         import access_check as AC
-        return AC.venv_base_problem(VENV)
+        return AC.venv_base_problem(venv)
     except Exception:  # noqa: BLE001 — справка о venv не роняет прогон
         return ""
 
@@ -1142,8 +1181,12 @@ def _venv_gap():
     Основа venv пропала или закрыта — `venv_foreign_base`: на POSIX ссылка `bin/python` в таком venv
     битая, и «не найден» увело бы человека искать файл, который на месте. Основа в чужом, но открытом
     профиле запуск не запрещает — решает настоящий запуск (`_start_cause`)."""
+    runtime_gap = _runtime_gap()
+    if runtime_gap is not None:
+        return runtime_gap
+    venv = Path((_runtime_status().get("runtime") or {}).get("venv_path") or VENV)
     if _base_problem() in ("missing", "denied"):
-        return Why("venv_foreign_base", path=_shown_path(VENV))
+        return Why("venv_foreign_base", path=_shown_path(venv))
     if not os.path.isfile(_venv_python()):
         return Why("venv", path=_shown_path(_venv_python()))
     return None
@@ -1352,7 +1395,8 @@ def _start_cause(why: Why) -> Why:
     """Процесс venv не поднялся, а venv построен на Python из чужого профиля — причина в этом, а не в
     «venv повреждён»: переустановка под тем же пользователем ничего бы не дала."""
     if cause_id(why.kind, why.sub) in ("process_start", "process_died.start") and _base_problem():
-        return Why("venv_foreign_base", path=_shown_path(VENV))
+        venv = Path((_runtime_status().get("runtime") or {}).get("venv_path") or VENV)
+        return Why("venv_foreign_base", path=_shown_path(venv))
     return why
 
 
@@ -2996,7 +3040,7 @@ def aurora_mcp_spec(project: str) -> dict:
     here = os.path.dirname(os.path.abspath(__file__))
     mine = os.path.join(project, ".aurora", "scripts", "aurora_mcp.py")
     path = mine if os.path.isfile(mine) else os.path.join(here, "aurora_mcp.py")
-    return {"command": sys.executable, "args": [path, "--project", project],
+    return {"command": python_executable(), "args": [path, "--project", project],
             "about": "Аврора: база знаний проекта, ревью историй и алгоритмов, Jira и "
                      "Confluence проекта, время, память между прогонами, замок"}
 
@@ -4370,6 +4414,9 @@ def embed_probe(cfg: dict) -> str:
 
 def venv_status() -> tuple:
     """→ (стоит ли pydantic-ai, версия)."""
+    got = _runtime_status()
+    if got.get("configured") and not got.get("ok"):
+        return False, ""
     vpy = _venv_python()
     if not os.path.isfile(vpy):
         return False, ""
@@ -4390,6 +4437,17 @@ def pydantic_settings(cfg: dict, venv: tuple | None = None) -> dict:
     настройки клиента. Раньше это можно было узнать, только прочитав код адаптера.
     """
     ok, version = venv if venv is not None else venv_status()
+    rt = _runtime_status()
+    rt_cfg = rt.get("runtime") or {}
+    fallback_why = ""
+    if cfg.get("adapter") != "pydantic_ai":
+        fallback_why = "выбран прямой HTTP (AURORA_AGENT_ADAPTER)"
+    elif not ok:
+        fallback_why = "Pydantic AI не установлен или не запускается"
+    elif rt.get("configured") and not rt.get("ok"):
+        fallback_why = rt.get("reason") or "runtime Python не настроен"
+    elif ADAPTER.get("fallback_why"):
+        fallback_why = ADAPTER["fallback_why"]
     backends = []
     for b in cfg.get("backends") or []:
         if b.get("chat") is False:
@@ -4414,7 +4472,24 @@ def pydantic_settings(cfg: dict, venv: tuple | None = None) -> dict:
                    if chk.get("version") == version and version else None),
         # Идёт ли работа через Pydantic AI на самом деле: выбран и стоит.
         "active": cfg.get("adapter") == "pydantic_ai" and ok,
-        "venv": {"ok": ok, "version": version, "path": str(VENV)},
+        "venv": {"ok": ok, "version": version,
+                 "path": rt_cfg.get("venv_path") or str(VENV),
+                 "effective_python": rt.get("effective_python") or str(_venv_python())},
+        "effective_python": rt.get("effective_python") or str(_venv_python()),
+        "fallback_why": fallback_why,
+        "runtime": {
+            "configured": bool(rt.get("configured")),
+            "ok": bool(rt.get("ok")),
+            "reason": rt.get("reason") or "",
+            "source": rt_cfg.get("source") or "",
+            "base_python": rt_cfg.get("base_python") or "",
+            "effective_python": rt.get("effective_python") or "",
+            "isolated": bool(rt_cfg.get("isolated")),
+            "externally_managed": bool(rt_cfg.get("externally_managed")),
+            "venv_path": rt_cfg.get("venv_path") or "",
+            "validated_at": rt_cfg.get("validated_at") or "",
+            "pydantic_ai_version": rt_cfg.get("pydantic_ai_version") or "",
+        },
         "thinking": {r: role_thinks(cfg, r) for r in ROLES},
         "client": {"max_retries": 0, "max_tokens_field": "max_tokens",
                    "system_messages": 1, "metadata": "strings_only",

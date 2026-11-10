@@ -39,7 +39,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 # `aurora_common` при импорте переводит вывод в UTF-8 (Windows: cp1251 в трубе падал на
 # русских буквах) и даёт время по общему правилу движка.
-from aurora_common import utc_slug  # noqa: E402
+from aurora_common import python_executable, utc_slug  # noqa: E402
 
 CATALOG = HERE / "harnesses.json"
 NAME = "aurora"
@@ -135,7 +135,7 @@ def bin_version(path: str, args: list) -> str:
 def server_command(kit: str = "") -> tuple:
     """(команда, аргументы) сервера Авроры: все проекты машины, проект — в вызове."""
     kit = kit or str(HERE.parent)
-    return sys.executable, [os.path.join(kit, "scripts", "aurora_mcp.py"), "--all"]
+    return python_executable(), [os.path.join(kit, "scripts", "aurora_mcp.py"), "--all"]
 
 
 def entry(h: dict, command: str, args: list) -> dict:

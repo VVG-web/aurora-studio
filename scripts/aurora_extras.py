@@ -46,6 +46,7 @@ import urllib.request
 from pathlib import Path
 
 from aurora_common import replace_file, venv_env  # noqa: E402
+import aurora_runtime as RT  # noqa: E402 — единый Python всех подсистем
 
 HOME = Path.home() / ".aurora"
 CACHE = HOME / "extras-cache.json"
@@ -86,6 +87,21 @@ EXTRAS = {
 
 
 def venv_python(extra_id: str) -> Path:
+    """Рабочий Python надстройки. Путь не собирается из версии: сначала runtime, затем
+    фактический файл venv, и только потом привычное имя (`bin/python`)."""
+    if extra_id == "pydantic-ai":
+        try:
+            got = RT.current()
+            if got.get("configured") and got.get("ok") and got.get("effective_python"):
+                return Path(got["effective_python"])
+        except Exception:  # noqa: BLE001 — старый движок без runtime
+            pass
+    try:
+        found = RT.find_venv_python(EXTRAS[extra_id]["venv"])
+        if found:
+            return Path(found)
+    except Exception:  # noqa: BLE001
+        pass
     venv = EXTRAS[extra_id]["venv"]
     return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
@@ -225,6 +241,15 @@ def python_for(extra_id: str) -> str:
     Ниже 3.10 движок не запускается вовсе (защита версии в aurora_common останавливает процесс
     при импорте), поэтому поиск другого интерпретатора здесь недостижим и не нужен."""
     need = EXTRAS[extra_id]["min_python"]
+    try:
+        got = RT.current()
+        if got.get("configured") and got.get("ok"):
+            eff = got.get("effective_python") or ""
+            version = _vt((got.get("effective") or {}).get("version"))
+            if eff and version[:2] >= need:
+                return eff
+    except Exception:  # noqa: BLE001 — старый движок без runtime
+        pass
     return sys.executable if sys.version_info[:2] >= need else ""
 
 
@@ -628,6 +653,15 @@ def _install(extra_id: str, quarantine_days=None) -> dict:
         p = _run([str(vpy), "-I", "-c", "import sys; print('%d.%d' % sys.version_info[:2])"])
         have = tuple(int(x) for x in (p.stdout.strip() or "0.0").split("."))
         if have < ex["min_python"]:
+            try:
+                rt = RT.current()
+            except Exception:  # noqa: BLE001
+                rt = {}
+            if extra_id == "pydantic-ai" and rt.get("configured") and rt.get("isolated"):
+                return {"ok": False, "version": installed_version(extra_id),
+                        "log": f"Python {p.stdout.strip()} в runtime старше "
+                               f"{'.'.join(map(str, ex['min_python']))}+ — смените runtime "
+                               "в «Установке» → Python и повторите"}
             log.append(f"venv на Python {p.stdout.strip()} — пересоздаю: нужен "
                        f"{'.'.join(map(str, ex['min_python']))}+")
             shutil.rmtree(ex["venv"], ignore_errors=True)
@@ -639,10 +673,11 @@ def _install(extra_id: str, quarantine_days=None) -> dict:
             return {"ok": False, "version": "", "log": f"нет Python {need}+ — поставьте его "
                     f"({python_install_hint()}) и нажмите снова"}
         log.append(f"создаю venv {ex['venv']} на {base}")
-        ex["venv"].parent.mkdir(parents=True, exist_ok=True)
-        p = _run([base, "-I", "-X", "utf8", "-m", "venv", str(ex["venv"])], timeout=300)
-        if p.returncode != 0:
-            return {"ok": False, "version": "", "log": "\n".join(log + [p.stderr[-400:]])}
+        made = RT.create_venv(base, ex["venv"], timeout=300)
+        if not made.get("ok"):
+            return {"ok": False, "version": "", "log": "\n".join(
+                log + [str(made.get("error") or "venv не создан")[-400:]])}
+        vpy = Path(made["effective"])
     before = installed_version(extra_id)
     # Снимок того, что стоит сейчас: если снимков ещё не было (venv ставили прежние выпуски), откат
     # по нему вернёт venv целиком, а не один верхний пакет.

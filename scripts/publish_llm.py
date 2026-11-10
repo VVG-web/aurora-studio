@@ -21,7 +21,7 @@ import xml.etree.ElementTree as ET
 from html.entities import name2codepoint
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import MADE_MARK  # noqa: E402 — граница чистовика, одна на движок
+from aurora_common import MADE_MARK, python_executable  # noqa: E402 — граница чистовика, одна на движок; один интерпретатор на подсистему
 
 SCRIPT_VERSION = 1
 ROLE = "worker"
@@ -138,7 +138,7 @@ def run_script(project: str, script: str, data: dict, timeout: int = 120) -> dic
     env["PYTHONPATH"] = scripts_dir + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["PYTHONIOENCODING"] = "utf-8"          # Windows-консоль иначе читает UTF-8 JSON как cp1251
     try:
-        got = subprocess.run([sys.executable, path], input=json.dumps(data, ensure_ascii=False),
+        got = subprocess.run([python_executable(), path], input=json.dumps(data, ensure_ascii=False),
                              capture_output=True, text=True, encoding="utf-8", errors="replace",
                              cwd=root, env=env, timeout=timeout)
     except subprocess.TimeoutExpired:

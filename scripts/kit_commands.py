@@ -103,7 +103,7 @@ def help_text(impl: str) -> str:
     out = ""
     if script.endswith(".py") and os.path.isfile(path):
         try:
-            out = subprocess.run([sys.executable, path, "--help"], capture_output=True,
+            out = subprocess.run([aurora_common.python_executable(), path, "--help"], capture_output=True,
                                  text=True, encoding="utf-8", errors="replace", timeout=30).stdout
         except Exception:  # noqa: BLE001
             out = ""
@@ -317,7 +317,7 @@ def args_of(impl: str) -> str:
     if not script.endswith(".py") or not os.path.isfile(path):
         return ""
     try:
-        out = subprocess.run([sys.executable, path, "--help"], capture_output=True,
+        out = subprocess.run([aurora_common.python_executable(), path, "--help"], capture_output=True,
                              text=True, encoding="utf-8", errors="replace", timeout=30).stdout
     except Exception:
         return ""

@@ -37,7 +37,7 @@ import argparse, difflib, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from aurora_common import connector_scripts, load_connector_manifest, replace_file, utc_today, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком; манифест коннектора без исключений
+from aurora_common import connector_scripts, load_connector_manifest, python_executable, replace_file, utc_today, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком; манифест коннектора без исключений; один интерпретатор на подсистему
 try:
     from aurora_common import ENGINE_BEHIND, engine_status, kit_engine_api, version_key  # noqa: E402 — версии и статус движка: одно определение
 except ImportError:
@@ -1036,7 +1036,7 @@ def refresh_hooks(target: Path) -> str:
         return ""            # чужой хук — не наше дело
     m = re.search(r"режим:\s*([a-z]+)", text)
     mode = m.group(1) if m else "ratchet"
-    cp = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"),
+    cp = subprocess.run([python_executable(), str(KIT / "scripts/aurora_hooks.py"),
                          "--install", "--mode", mode, "--force"],
                         cwd=str(target), capture_output=True, text=True, encoding="utf-8", errors="replace")
     return mode if cp.returncode == 0 else ""

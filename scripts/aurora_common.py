@@ -102,8 +102,22 @@ def python_status(vi=None, platform=None):
     vi = tuple(sys.version_info[:3] if vi is None else vi)
     level = python_level(vi)
     if level == "ok":
-        return level, "Python %s (%s)" % (_py_ver(vi[:3]), sys.executable)
+        return level, "Python %s (%s)" % (_py_ver(vi[:3]), python_executable())
     return level, python_message(vi, platform)
+
+
+def python_executable() -> str:
+    """Единственный интерпретатор подсистемы: runtime.effective_python, иначе текущий процесс.
+
+    Ни один инструмент не зовёт `python3` из PATH: путь берётся из конфигурации runtime
+    (`aurora_runtime`), а до первого выбора — из процесса, который уже запущен. Панель и
+    установщик обязаны подняться даже без конфигурации, поэтому здесь нет исключения.
+    """
+    try:
+        import aurora_runtime as RT
+        return RT.python_or_self()
+    except Exception:  # noqa: BLE001 — модуль ещё не разложен или старый движок
+        return sys.executable
 
 
 def require_python(vi=None, platform=None, stream=None):

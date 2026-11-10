@@ -25,7 +25,7 @@ from pathlib import Path
 
 import card_types as CT
 import fidelity as FID
-from aurora_common import aliases, body as body_of, fold, frontmatter, head_text, link_escapes
+from aurora_common import aliases, body as body_of, fold, frontmatter, head_text, link_escapes, python_executable
 
 try:
     from reliable_core import (deadline_from, human_error, merge_degraded, remaining,
@@ -75,7 +75,7 @@ def _run_script(cwd: str, script: str, args: list, timeout: int = 300) -> dict:
     if not path.is_file():
         path = Path(__file__).resolve().parent / script
     try:
-        p = subprocess.run([sys.executable, str(path), *args], cwd=cwd,
+        p = subprocess.run([python_executable(), str(path), *args], cwd=cwd,
                            capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired as exc:
