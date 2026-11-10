@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -529,7 +530,7 @@ def configure(source: str = "", base_python: str = "", isolated=None,
         "python_version": found.get("version", ""),
         "isolated": isolated,
         "externally_managed": bool(found.get("externally_managed")),
-        "validated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "validated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "pydantic_ai_version": "",
     }
     if check_pydantic:
