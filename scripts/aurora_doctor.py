@@ -989,6 +989,33 @@ def check_python(errors: list, warns: list, vi=None, platform=None) -> None:
         errors.append(text)
 
 
+def check_runtime(errors: list, warns: list) -> None:
+    """Единый Python подсистемы: выбран ли, проходит ли проверку и чем именно.
+
+    Без этого доктор печатал OK по процессу, даже когда записанная конфигурация
+    runtime сломана и панель уже показывает блокирующий экран.
+    """
+    try:
+        import aurora_runtime as RT
+    except ImportError:
+        return
+    got = RT.current(force=True)
+    if not got.get("configured"):
+        warns.append("Python подсистемы не выбран — «Установка» → Python; "
+                     "агент, MCP и инструменты используют текущий процесс")
+        return
+    if not got.get("ok"):
+        errors.append(f"Python подсистемы не проходит проверку: {got.get('reason')} — "
+                      "«Установка» → Python")
+        return
+    runtime = got.get("runtime") or {}
+    pyd = got.get("pydantic") or {}
+    print(f"OK: Python подсистемы {runtime.get('python_version') or '?'} "
+          f"({got.get('effective_python') or '?'})"
+          + (f", Pydantic AI {pyd.get('version')}" if pyd.get("ok")
+             else ", Pydantic AI не установлен"))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Готовность проекта Aurora к работе")
     ap.add_argument("--structure", action="store_true",
@@ -999,6 +1026,7 @@ def main() -> int:
     warns: list[str] = []
 
     check_python(errors, warns)
+    check_runtime(errors, warns)
 
     if not CONFIG.exists():
         errors.append("нет aurora.config.yaml → скопируйте из Aurora kit templates/")

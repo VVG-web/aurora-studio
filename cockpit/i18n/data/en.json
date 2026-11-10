@@ -709,7 +709,9 @@
     "Опубликовать нельзя: путь или заголовок страницы у вида «{}» требует полей, которых в шапке документа нет: {}. Поля в шапке документа: {}. Встроенные подстановки: {}. Что сделать — одно из двух: выбрать место публикации кнопкой «Выбрать место…» в карточке публикации (точное место документа; у вида «{}» путь тогда не применяется) или вписать поле в шапку документа; можно и сделать подстановку необязательной: {{}?}.": "Can't publish: the page path or title of the kind “{}” needs fields that the document header does not have: {}. Fields in the document header: {}. Built-in placeholders: {}. What to do — one of two: choose the publishing place with the «Choose a place…» button in the publishing card (the document's exact place; the path of the kind “{}” is then not applied) or add the field to the document header; you may also make the placeholder optional: {{}?}.",
     "runtime недоступен: {}: {}": "runtime unavailable: {}: {}",
     "runtime ещё не выбран": "runtime is not chosen yet",
-    "Pydantic AI не установлен или не запускается": "Pydantic AI is not installed or does not start"
+    "Pydantic AI не установлен или не запускается": "Pydantic AI is not installed or does not start",
+    "Python подсистемы не выбран — «Установка» → Python; агент, MCP и инструменты используют текущий процесс": "The subsystem Python is not chosen — Install → Python; the agent, MCP and tools use the current process",
+    "Python подсистемы не проходит проверку: {} — «Установка» → Python": "The subsystem Python fails validation: {} — Install → Python"
   },
   "connectors": {
     "confluence-dc": {

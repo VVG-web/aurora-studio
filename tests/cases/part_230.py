@@ -298,6 +298,45 @@ def test_aurora_home_moves_the_whole_machine_state(tmp: Path):
 
 
 @test
+def test_doctor_reports_runtime_state(tmp: Path):
+    """Доктор не должен печатать OK по процессу, если записанная конфигурация runtime
+    сломана; без конфигурации он обязан предупредить, а не молчать."""
+    broken = tmp / "doctor-broken"
+    broken.mkdir()
+    (broken / "config.json").write_text(json.dumps({
+        "version": 1,
+        "runtime": {"source": "custom", "base_python": "/nonexistent/python3",
+                    "effective_python": "/nonexistent/python3", "venv_path": "",
+                    "python_version": "3.15.2", "isolated": False,
+                    "externally_managed": False,
+                    "validated_at": "2026-11-10T00:00:00Z", "pydantic_ai_version": ""},
+    }, ensure_ascii=False), encoding="utf-8")
+    code = (
+        "import json, sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import aurora_doctor as DR\n"
+        "errors, warns = [], []\n"
+        "DR.check_runtime(errors, warns)\n"
+        "print(json.dumps({'errors': errors, 'warns': warns}))\n"
+    )
+    p = subprocess.run([sys.executable, "-I", "-c", code, str(SCRIPTS)],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env={**os.environ, "AURORA_HOME": str(broken)}, timeout=120)
+    assert p.returncode == 0, (p.stderr or "")[-1500:]
+    data = json.loads((p.stdout or "").strip().splitlines()[-1])
+    assert data["errors"] and "Python подсистемы" in data["errors"][0], data
+
+    empty = tmp / "doctor-empty"
+    empty.mkdir()
+    p = subprocess.run([sys.executable, "-I", "-c", code, str(SCRIPTS)],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env={**os.environ, "AURORA_HOME": str(empty)}, timeout=120)
+    assert p.returncode == 0, (p.stderr or "")[-1500:]
+    data = json.loads((p.stdout or "").strip().splitlines()[-1])
+    assert not data["errors"] and any("не выбран" in w for w in data["warns"]), data
+
+
+@test
 def test_runtime_detects_the_install_source(tmp: Path):
     cases = {
         "/opt/homebrew/bin/python3.15": "homebrew",
