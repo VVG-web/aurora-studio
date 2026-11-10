@@ -2068,8 +2068,10 @@ def request_lang(q: dict) -> str:
 # подстановка записана как `{}` (так её видит `kit_i18n.message_skeletons`). Строка с
 # подстановками ищется по образцу: что подставлено — берётся из русского текста и тоже
 # переводится, если это сообщение (причина отказа вложена в «Маршрут не начат: …»).
-MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait", "python_error", "readonly",
-                "reason", "fallback_why")
+MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait", "python_error", "readonly")
+# Причины runtime приходят из `aurora_runtime`/`agent_core` и тоже показываются человеку.
+# Держим их отдельно: общий перечень ключей сверяется с `kit_i18n.MESSAGE_KEYS`.
+MESSAGE_EXTRA = ("reason", "fallback_why")
 MESSAGE_LISTS = ("errors", "warns", "blocker_why", "notes", "warn")  # находки доктора и предупреждения раздела: список сообщений под одним ключом
 _MATCHERS: dict = {}
 
@@ -2145,7 +2147,7 @@ def translate_payload(payload, lang: str, depth: int = 0):
     if isinstance(payload, dict):
         out = {}
         for k, v in payload.items():
-            if k in MESSAGE_KEYS and isinstance(v, str):
+            if (k in MESSAGE_KEYS or k in MESSAGE_EXTRA) and isinstance(v, str):
                 out[k] = translate_message(v, lang)
             elif k in MESSAGE_LISTS and isinstance(v, list):
                 out[k] = [translate_message(x, lang) if isinstance(x, str) else x for x in v]
