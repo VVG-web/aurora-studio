@@ -1169,8 +1169,9 @@ def test_the_cause_table_is_complete_and_every_text_is_translated(tmp: Path):
     AG = _ag()
     sys.path.insert(0, str(KIT / "cockpit"))
     ck = importlib.import_module("aurora_cockpit")
+    ck._MATCHERS.clear()          # кэш мог собраться до появления новых причин
     known = {"path", "module", "exc", "version", "first", "code", "times", "sec", "error", "detail", "n",
-             "model", "status", "label", "count"}
+             "model", "status", "label", "count", "why"}
     for cid, row in AG.CAUSES.items():
         assert row["area"] in ("adapter", "link") and row["fix"] in ("", "install", "version", "models"), cid
         assert set(re.findall(r"\{(\w+)\}", row["ru"])) <= known, (cid, row["ru"])
@@ -1180,7 +1181,7 @@ def test_the_cause_table_is_complete_and_every_text_is_translated(tmp: Path):
         kind, _dot, sub = cid.partition(".")
         why = AG.Why(kind, sub, n=3, model="m-1", path="p", module="mod", exc="E", version="1.0",
                      first="f", code=7, times=3, sec=60, error="e", detail="d", status=502,
-                     label=AG.CAUSES["dns"]["label"], ref="dns")
+                     label=AG.CAUSES["dns"]["label"], ref="dns", why="runtime ещё не выбран")
         en = ck.translate_message(str(why), "en")
         assert not re.search("[а-яА-ЯёЁ]", en.replace("№", "")), (cid, en)
         assert str(why) != en, cid

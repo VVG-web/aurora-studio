@@ -45,14 +45,14 @@ skills/aurora-vault/references/maintenance.md  => .aurora/skills/aurora-vault/re
 scripts/aurora_fs.py     => .aurora/scripts/aurora_fs.py
 # общий модуль примитивов: его импортируют остальные скрипты
 scripts/aurora_common.py => .aurora/scripts/aurora_common.py
-# единый Python подсистемы: выбор, проверка, venv и Pydantic AI в одном интерпретаторе;
-# его импортирует aurora_common, поэтому он тоже раньше остальных
-scripts/aurora_runtime.py => .aurora/scripts/aurora_runtime.py
 # реестр типов карточек, паспорт шаблона, проверка карточки по шаблону (`kb:cards`) и единый вход записи карточек
 # базы; его жёстко импортируют kb_lint и все скрипты, которые пишут карточки (kb_fix, build_plan, kb_schema, kb_kind,
 # kb_trust, kb_moc, kb_trace, kb_supersede, agent_runner и другие) — поэтому сразу за общим модулем: обрыв обновления
 # между записями не должен оставить хуку pre-commit ImportError (kb_graph подключает модуль лениво)
 scripts/card_types.py    => .aurora/scripts/card_types.py
+# единый Python подсистемы: выбор, проверка, venv и Pydantic AI в одном интерпретаторе;
+# aurora_common подключает его лениво, поэтому сразу за реестром типов
+scripts/aurora_runtime.py => .aurora/scripts/aurora_runtime.py
 # стабильная безопасная идентичность участника для пользовательских частей общих журналов
 scripts/aurora_actor.py  => .aurora/scripts/aurora_actor.py
 # машинная строка вердикта ворот и общие помощники флага `--gate` (gate_argv, gate_mode, gate_exit); их жёстко

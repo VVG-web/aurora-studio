@@ -603,8 +603,8 @@ CAUSES: dict = {
         "ru": "venv python: {path} не найден — «Установка» → Pydantic AI",
         "en": "venv python: {path} not found — Install → Pydantic AI"},
     "runtime": {"area": "adapter", "fix": "install",
-        "ru": "Python не настроен: {why} — «Установка» → Python",
-        "en": "Python is not configured: {why} — Install → Python"},
+        "ru": "Python не настроен — «Установка» → Python",
+        "en": "Python is not configured — Install → Python"},
     # venv есть, но не для этого пользователя (`access_check`): основа — Python из чужого профиля, недоступный
     # или удалённый; либо venv чужой (ставили через sudo) — работает, а обновить нельзя
     "venv_foreign_base": {"area": "adapter", "fix": "install",
