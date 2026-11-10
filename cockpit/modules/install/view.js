@@ -18,6 +18,127 @@ async function recheck(ctx){
   await refresh(ctx);
 }
 
+/* Python подсистемы: один интерпретатор для установщика, проверки совместимости,
+   agent_core.py, MCP-серверов и инструментов. Карточка показывает выбранное, найденные
+   интерпретаторы и даёт выбрать вручную. Ошибки здесь не автоскрываются: причина отказа
+   установки должна остаться на экране, пока её не прочитают. */
+function runtimeCard(ctx){
+  const {t, el} = ctx;
+  const wrap = el("div", {style:"margin-top:18px"});
+  const draw = async (fresh) => {
+    wrap.innerHTML = "";
+    wrap.append(el("h2", {}, t("install.rt_title")),
+      el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px"}, t("install.rt_about")));
+    const body = el("div", {class:"card"}, el("span", {class:"spin"}));
+    wrap.append(body);
+    const d = await ctx.api("/api/runtime" + (fresh ? "?fresh=1" : ""), {quiet:true});
+    body.innerHTML = "";
+    if (!d || d.error){
+      body.append(el("div", {class:"muted"}, (d && d.error) || t("install.rt_unknown")));
+      return;
+    }
+    const rt = d.runtime || {};
+    const base = d.base || {};
+    const pyd = d.pydantic || {};
+    const mode = rt.isolated ? t("install.rt_isolated") : t("install.rt_global");
+    const src = rt.source || (base.source || "");
+    const line = (label, value, mono) => el("div", {style:"font-size:12.5px;margin-top:4px"},
+      el("span", {class:"muted"}, label + ": "),
+      mono ? el("span", {class:"mono", style:"overflow-wrap:anywhere"}, value || "—")
+           : el("span", {}, value || "—"));
+    body.append(el("div", {class:"row", style:"gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:4px"},
+      el("span", {class:"chip " + (d.ok ? "ok" : "warn")},
+        d.ok ? t("install.rt_ok") : t("install.rt_bad")),
+      el("span", {class:"chip " + (d.configured ? "ok" : "warn")},
+        d.configured ? t("install.rt_configured") : t("install.rt_not_configured"))));
+    if (d.reason) body.append(el("div", {class:"muted", style:"font-size:12.5px;margin-top:4px;overflow-wrap:anywhere"},
+      t("install.rt_why", {why: d.reason})));
+    line(t("install.rt_effective"), d.effective_python, true);
+    line(t("install.rt_base"), rt.base_python, true);
+    line(t("install.rt_source"), src);
+    line(t("install.rt_mode"), mode);
+    line(t("install.rt_pydantic"),
+      pyd && pyd.ok ? (pyd.version || "?") : t("install.rt_pydantic_missing"));
+    if (rt.externally_managed)
+      body.append(el("div", {class:"muted", style:"font-size:12px;margin-top:4px"},
+        t("install.rt_managed")));
+    // Панель, запущенная до смены конфигурации, работает под прежним Python. Это не ошибка
+    // конфигурации, но объясняет, почему «поставилось, а не видно».
+    const env = ctx.state.env || {};
+    if (env.python_process && d.effective_python && env.python_process !== d.effective_python)
+      body.append(el("div", {class:"muted", style:"font-size:12px;margin-top:4px"},
+        t("install.rt_stale", {process: env.python_process, effective: d.effective_python})));
+
+    const row = el("div", {class:"row", style:"gap:8px;margin-top:10px;flex-wrap:wrap"});
+    row.append(el("button", {class:"btn sm", onclick: () => draw(true)}, t("install.rt_check")));
+    row.append(el("button", {class:"btn sm" + (!d.configured || !d.ok ? " primary" : ""),
+      onclick: async (ev) => {
+        ev.target.disabled = true; ev.target.textContent = t("install.ex_busy");
+        const r = await ctx.api("/api/runtime", {method:"POST", quiet:true,
+          body: JSON.stringify({action: "bootstrap"})});
+        if (r && r.ok){
+          ctx.toast(t("install.rt_done", {path: (r.runtime || {}).effective_python || "?"}), "ok");
+        } else {
+          ctx.toast(t("install.rt_error", {why: (r && (r.error || r.reason)) || "?"}), "err", {sticky:true});
+        }
+        draw(true);
+      }}, t("install.rt_bootstrap")));
+    row.append(el("button", {class:"btn sm",
+      onclick: async (ev) => {
+        ev.target.disabled = true; ev.target.textContent = t("install.ex_busy");
+        const r = await ctx.api("/api/runtime", {method:"POST", quiet:true,
+          body: JSON.stringify({action: "install_pydantic"})});
+        const ok = r && r.ok && (r.pydantic || {}).ok;
+        ctx.toast(ok ? t("install.rt_pydantic_done", {version: ((r.pydantic || {}).version || "?")})
+                     : t("install.rt_pydantic_failed", {why: (r && (r.error || (r.pydantic || {}).error)) || "?"}),
+                 ok ? "ok" : "err", {sticky: !ok});
+        draw(true);
+      }}, t("install.rt_install_pydantic")));
+    body.append(row);
+
+    const cands = ((d.candidates || {}).valid) || [];
+    if (cands.length){
+      const box = el("details", {style:"margin-top:10px"});
+      box.append(el("summary", {style:"font-size:12.5px;cursor:pointer"},
+        t("install.rt_choose", {n: cands.length})));
+      box.append(el("div", {class:"muted", style:"font-size:12px;margin:6px 0"},
+        t("install.rt_choose_about")));
+      const isolate = el("input", {type:"checkbox", checked: rt.isolated === false ? null : "checked"});
+      box.append(el("label", {style:"display:flex;align-items:center;gap:6px;font-size:12.5px;margin:4px 0"},
+        isolate, t("install.rt_isolated_hint")));
+      cands.forEach(c => {
+        const b = el("button", {class:"btn sm", style:"margin:2px 6px 2px 0",
+          title: c.reason || "",
+          onclick: async (ev) => {
+            ev.target.disabled = true;
+            const r = await ctx.api("/api/runtime", {method:"POST", quiet:true,
+              body: JSON.stringify({action:"configure", source: c.source, base: c.executable,
+                                    isolated: !!isolate.checked})});
+            if (r && r.ok){
+              ctx.toast(t("install.rt_done", {path: (r.runtime || {}).effective_python || "?"}), "ok");
+              draw(true);
+            } else {
+              ev.target.disabled = false;
+              ctx.toast(t("install.rt_error", {why: (r && (r.error || r.reason)) || "?"}), "err", {sticky:true});
+            }
+          }},
+          [c.source, c.version].filter(Boolean).join(" · ") + " — " + (c.executable || "?"));
+        box.append(b);
+      });
+      body.append(box);
+    } else {
+      body.append(el("div", {class:"muted", style:"font-size:12px;margin-top:8px"},
+        t("install.rt_none")));
+    }
+  };
+  // Первое открытие раздела — сразу со списком интерпретаторов: до записи конфигурации
+  // без кандидатов карточка не даёт выбрать базу, а «Настроить автоматически» не всегда
+  // подходит (например, нужен конкретный pre-release 3.15). Обход запускается один раз
+  // на карточку, а не на каждую перерисовку состояния.
+  draw(true);
+  return wrap;
+}
+
 // Пакет — в Python панели (`python -m pip install`), затем проверка тем же Python.
 async function pipInstall(ctx, item, btn){
   btn.disabled = true;
@@ -26,7 +147,7 @@ async function pipInstall(ctx, item, btn){
     body: JSON.stringify({name: item.pip})});
   if (r && r.ok) ctx.toast(ctx.t("install.installed_ok", {name: item.name}), "ok");
   else ctx.toast(ctx.t("install.err." + ((r && r.code) || "pip_failed"), {name: item.name})
-                 + (r && r.output ? "\n" + r.output.slice(-400) : ""), "err");
+                 + (r && r.output ? "\n" + r.output.slice(-400) : ""), "err", {sticky:true});
   await recheck(ctx);
 }
 
@@ -40,11 +161,13 @@ let CARDS = null;
 
 function cards(ctx){
   if (!CARDS || CARDS.lang !== ctx.lang)
-    CARDS = {lang: ctx.lang, project: projectKey(ctx), access: accessCard(ctx), extras: extrasCard(ctx),
+    CARDS = {lang: ctx.lang, project: projectKey(ctx), runtime: runtimeCard(ctx),
+             access: accessCard(ctx), extras: extrasCard(ctx),
              gitmods: gitModsCard(ctx), harness: harnessCard(ctx)};
   // Другой проект — другая копия движка, которой пойдёт прогон: «для вас» проверяется заново.
   if (CARDS.project !== projectKey(ctx))
-    Object.assign(CARDS, {project: projectKey(ctx), access: accessCard(ctx), extras: extrasCard(ctx)});
+    Object.assign(CARDS, {project: projectKey(ctx), runtime: runtimeCard(ctx),
+                          access: accessCard(ctx), extras: extrasCard(ctx)});
   return CARDS;
 }
 
@@ -100,7 +223,7 @@ export async function refresh(ctx){
   // Постоянные блоки вынимаем до очистки: `innerHTML = ""` у родителя их не губит, но
   // так явно видно, что они переезжают, а не строятся заново.
   const keep = cards(ctx);
-  [keep.access, keep.extras, keep.gitmods, keep.harness].forEach(n => n.remove());
+  [keep.runtime, keep.access, keep.extras, keep.gitmods, keep.harness].forEach(n => n.remove());
   box.innerHTML = "";
   const e = ctx.state.env;
   box.append(el("div", {class:"row", style:"margin-bottom:6px;flex-wrap:wrap"},
@@ -111,6 +234,8 @@ export async function refresh(ctx){
   // принадлежит другому Python, и «установленное» панель не видит.
   if (e.python_path) box.append(el("div", {class:"muted", style:"font-size:12.5px;margin-bottom:6px"},
     t("install.python_path", {path: e.python_path})));
+  // Python — первым: пока он не выбран и не проверен, остальное ставить некуда.
+  box.append(keep.runtime);
   box.append(keep.access);
 
   const card = el("div", {class:"card"});
@@ -203,7 +328,8 @@ async function installGitMod(ctx, id, after){
   const r = await ctx.api("/api/gitmods/install", {method:"POST", quiet:true,
     body: JSON.stringify({id})});
   ctx.toast(r && r.ok ? ctx.t("install.gm_done", {name: id, v: r.version})
-                      : (r && r.error) || ctx.t("install.gm_failed"), r && r.ok ? "ok" : "err");
+                      : (r && r.error) || ctx.t("install.gm_failed"), r && r.ok ? "ok" : "err",
+            {sticky: !(r && r.ok)});
   after(false);
 }
 
@@ -305,7 +431,7 @@ function extraRow(ctx, x, redraw, a){
         body: JSON.stringify({id: x.id}), quiet:true});
       ctx.toast(r.ok ? t("install.ex_done", {name: x.title, v: r.version})
                      : (r.error || t("install.ex_failed", {log: (r.log || "").slice(-200)})),
-                r.ok ? "ok" : "err");
+                r.ok ? "ok" : "err", {sticky: !r.ok});
       redraw(true);
     }}, label);
   const row = el("div", {class:"list-item", style:"align-items:flex-start"},
@@ -383,7 +509,7 @@ function compatLine(ctx, x, redraw){
         body: JSON.stringify({id: x.id}), quiet:true});
       ctx.toast(r.ok ? t("install.ex_compat_ok", {at: ""}) :
                 (r.error || t("install.ex_compat_bad", {why: (r.problems || []).join("; ")})),
-                r.ok ? "ok" : "err");
+                r.ok ? "ok" : "err", {sticky: !r.ok});
       redraw(false);
     }}, t("install.ex_compat_check")));
 }
@@ -407,8 +533,14 @@ function pydanticHint(ctx){
     if (d.error){ box.append(el("div", {class:"muted"}, d.error)); return; }
     box.append(el("div", {class:"chip " + (d.active ? "ok" : "warn"), style:"margin-bottom:6px"},
       d.active ? t("install.ex_settings_on", {v: d.venv.version})
-               : t("install.ex_settings_off", {why: d.venv.ok ? t("install.ex_not_selected")
-                                                               : t("install.ex_not_installed")})));
+               : t("install.ex_settings_off", {why: d.fallback_why || (d.venv.ok
+                   ? t("install.ex_not_selected") : t("install.ex_not_installed"))})));
+    if (d.effective_python)
+      box.append(el("div", {class:"muted mono", style:"font-size:12px;margin-bottom:4px;overflow-wrap:anywhere"},
+        t("install.ex_settings_python", {path: d.effective_python})));
+    if (!d.active && d.fallback_why)
+      box.append(el("div", {class:"chip warn", style:"margin-bottom:6px;white-space:normal"},
+        t("install.ex_settings_blocked", {why: d.fallback_why})));
     box.append(el("div", {class:"muted", style:"font-size:12px;margin-bottom:4px"},
       t("install.ex_settings_about")));
     box.append(el("div", {class:"muted", style:"font-size:12px;margin-bottom:8px"},
@@ -497,7 +629,8 @@ function harnessRow(ctx, h, redraw){
     btn.disabled = false;
     ctx.toast(r && r.ok ? (what === "add" ? t("install.hs_added", {name: h.name})
                                           : t("install.hs_restored", {name: h.name}))
-                        : (r && r.error) || t("install.hs_failed"), r && r.ok ? "ok" : "err");
+                        : (r && r.error) || t("install.hs_failed"), r && r.ok ? "ok" : "err",
+              {sticky: !(r && r.ok)});
     redraw();
   };
   const note = t("install.hs_note." + h.id);

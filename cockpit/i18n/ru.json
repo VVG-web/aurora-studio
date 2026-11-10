@@ -1496,5 +1496,20 @@
   "connrole.conflict": "Настройку изменили на диске с момента открытия страницы — перечитайте её, затем выберите снова.",
   "connrole.reload": "Перечитать",
   "connrole.note": "Другой трекер или вики — другой коннектор с той же ролью; код Авроры при этом не меняется.",
-  "dirty.connectors": "коннекторы ролей"
+  "dirty.connectors": "коннекторы ролей",
+  "toast.close": "Закрыть",
+  "runtime.bar": "Python: {what}",
+  "runtime.bar_none": "Python не настроен",
+  "runtime.bar_hint": "Python подсистемы: {why}. Нажмите, чтобы открыть «Установку».",
+  "runtime.bar_hint_ok": "Python подсистемы: {what}. Рабочий интерпретатор: {path}. Нажмите, чтобы открыть «Установку».",
+  "runtime.mode_venv": "venv",
+  "runtime.mode_global": "глобально",
+  "runtime.unknown": "неизвестно",
+  "runtime.gate_title": "Python подсистемы не работает",
+  "runtime.gate_why": "Записанная конфигурация не проходит проверку: {why}",
+  "runtime.gate_block": "Пока это не исправлено, установщик, проверка совместимости, agent_core.py, MCP-серверы и инструменты не работают. Выберите рабочий интерпретатор в «Установке».",
+  "runtime.gate_effective": "Записанный рабочий Python: {path}",
+  "runtime.open_install": "Открыть установку",
+  "runtime.check_again": "Проверить снова",
+  "runtime.check_ok": "Python подсистемы работает"
 }

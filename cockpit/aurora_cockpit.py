@@ -62,7 +62,7 @@ sys.path.insert(0, os.path.join(KIT, "scripts"))
 from aurora_common import (CODE_DIR, ENGINE_DIRS, attachment_answers_problem, child_env, confluence_block,  # noqa: E402
                            engine_dir, head_value,
                            ext_api_problem, ext_behind, ext_safe_relpath, is_folder_guide, kit_mcp_permission, load_manifest, local_view, mtime_stamp,
-                           personal_kit_file, real_inside, real_rel, replace_file, same_origin, utc_slug, utc_stamp,
+                           personal_kit_file, python_executable, real_inside, real_rel, replace_file, same_origin, utc_slug, utc_stamp,
                            write_text_atomic, yaml_scalar, yaml_word)
 from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
                            mcp_check, mcp_mask_args, mcp_masked)
@@ -1199,7 +1199,7 @@ def publish_plan(project: str, rel: str) -> dict:
         if not chk.get("ok"):
             return {"error": "нет связи с Confluence — план публикации не посчитан", "net": chk.get("blocked") or []}
     try:
-        p = subprocess.run([sys.executable, script, norm_rel(rel), "--json"], cwd=project, env=child_env(project),
+        p = subprocess.run([python_executable(), script, norm_rel(rel), "--json"], cwd=project, env=child_env(project),
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     except subprocess.TimeoutExpired:
         return {"error": "план публикации не посчитан: Confluence не ответил за 120 с"}
@@ -1227,7 +1227,7 @@ def publish_script_create(project: str, kind: str, apply: bool = True) -> dict:
     script = os.path.join(KIT, "scripts", "publish_script.py")
     if not os.path.isfile(script):
         return {"error": "в движке нет генератора скриптов публикации — обновите Аврору"}
-    cmd = [sys.executable, script, "--kind", kind, "--project", project, "--json"]
+    cmd = [python_executable(), script, "--kind", kind, "--project", project, "--json"]
     if apply:
         cmd.append("--apply")
     try:
@@ -1431,7 +1431,7 @@ def lint_one(project: str, rel: str) -> dict:
     # при своей поломке висел до потолка в две минуты — а файл к тому моменту уже
     # записан. Человек видел ошибку после успешного сохранения и сохранял снова.
     try:
-        r = subprocess.run([sys.executable, script, "--only", rel],
+        r = subprocess.run([python_executable(), script, "--only", rel],
                            cwd=project, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     except subprocess.TimeoutExpired:
         return {"rc": None, "lines": ["линтер не ответил за 20 секунд — файл сохранён, "
@@ -1903,7 +1903,7 @@ def corrections_state(project: str) -> dict:
     if not os.path.isfile(script) or not os.path.isdir(folder):
         return {"count": 0, "ask": 0, "items": []}
     try:
-        r = subprocess.run([sys.executable, script, "--check"], cwd=project,
+        r = subprocess.run([python_executable(), script, "--check"], cwd=project,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     except (OSError, subprocess.SubprocessError):
         return {"count": 0, "ask": 0, "items": []}
@@ -1934,7 +1934,7 @@ def graph_state(project: str, rebuild: bool = False) -> dict:
             return "в проекте нет kb_graph.py — обновите движок проекта"
         before = os.path.getmtime(path) if os.path.isfile(path) else 0
         try:
-            r = subprocess.run([sys.executable, script, "--cards-json", path,
+            r = subprocess.run([python_executable(), script, "--cards-json", path,
                                 "--allow-dirty"],
                                cwd=project, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         except (OSError, subprocess.SubprocessError) as e:
@@ -3490,7 +3490,7 @@ def _refresh_kit_hooks() -> str:
     if not os.path.exists(os.path.join(KIT, ".git")) or not os.path.isfile(script):
         return ""
     try:
-        cp = subprocess.run([sys.executable, script, "--refresh"], cwd=KIT, capture_output=True,
+        cp = subprocess.run([python_executable(), script, "--refresh"], cwd=KIT, capture_output=True,
                             text=True, encoding="utf-8", errors="replace", timeout=60)
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -3850,7 +3850,7 @@ def aurora_mcp_configs() -> dict:
     if "aurora_mcp" in CACHE:
         return CACHE["aurora_mcp"]
     try:
-        p = subprocess.run([sys.executable, os.path.join(KIT, "scripts", "aurora_mcp.py"),
+        p = subprocess.run([python_executable(), os.path.join(KIT, "scripts", "aurora_mcp.py"),
                             "--all", "--configs"], capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=30)
         out = json.loads(p.stdout.strip().splitlines()[-1]) if p.returncode == 0 else {}
@@ -4440,7 +4440,7 @@ def update_all_projects(roots: list, apply: bool) -> dict:
             skipped.append({"name": p.get("name") or p["path"], "path": p["path"], "status": "busy",
                             "note": f"в проекте идёт запуск ({busy[0]}) — обновление после него"})
             continue
-        args = [sys.executable, os.path.join(KIT, "scripts", "aurora_update.py"), p["path"]]
+        args = [python_executable(), os.path.join(KIT, "scripts", "aurora_update.py"), p["path"]]
         if apply:
             args.append("--apply")
         cp = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
@@ -4655,7 +4655,7 @@ def run_capture(project: str, script: str, args: list, timeout: int = 300) -> tu
     if not os.path.isfile(path):
         return 127, f"нет скрипта {script}"
     try:
-        p = subprocess.run([sys.executable, path, *args], cwd=project,
+        p = subprocess.run([python_executable(), path, *args], cwd=project,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except subprocess.TimeoutExpired:
@@ -4684,7 +4684,7 @@ def report_state(project: str) -> dict:
              "'events': paths.EVENTS_PATH, 'data_dir': paths.DATA_DIR}))")
     p = None
     try:
-        p = subprocess.run([sys.executable, "-c", probe, pkg], cwd=project,
+        p = subprocess.run([python_executable(), "-c", probe, pkg], cwd=project,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         cfg = json.loads(p.stdout[p.stdout.index("{"):p.stdout.rindex("}") + 1])
     except Exception as e:
@@ -5782,9 +5782,27 @@ def platform_key() -> str:
     return "nt" if os.name == "nt" else "darwin" if sys.platform == "darwin" else "linux"
 
 
-def needs_user_site() -> bool:
-    """site-packages Python панели закрыт на запись (Python поставлен для всех, а вы без прав
-    администратора) — пакеты ставятся в папку пользователя (`--user`). В venv `--user` не бывает."""
+def needs_user_site(target: str = "") -> bool:
+    """site-packages выбранного Python закрыт на запись (Python поставлен для всех, а вы без прав
+    администратора) — пакеты ставятся в папку пользователя (`--user`). В venv `--user` не бывает,
+    поэтому проверяется runtime Python, а не процесс панели."""
+    target = target or python_executable()
+    if os.path.realpath(target) == os.path.realpath(sys.executable):
+        # Тот же интерпретатор: смотрим его собственные пути, не поднимая runtime.
+        import sysconfig
+        if sys.prefix != sys.base_prefix:
+            return False
+        path = sysconfig.get_paths().get("purelib") or ""
+        return bool(path) and not os.access(path, os.W_OK)
+    import aurora_runtime as RT
+    got = RT.current()
+    if got.get("configured") and got.get("ok"):
+        runtime = got.get("runtime") or {}
+        base = got.get("base") or {}
+        if runtime.get("isolated") or base.get("venv"):
+            return False
+        if "writable" in base:
+            return not base.get("writable")
     import sysconfig
     if sys.prefix != sys.base_prefix:
         return False
@@ -5793,11 +5811,12 @@ def needs_user_site() -> bool:
 
 
 def pip_command(pkg: str, user=None) -> str:
-    """Установка в ТОТ Python, которым работает панель: `pip3` в терминале на Windows часто
+    """Установка в ТОТ Python, которым работает движок: `pip3` в терминале на Windows часто
     принадлежит другому Python, и пакет «ставится», а панель его не видит. Папка пакетов этого
     Python закрыта на запись — с `--user`: права администратора не нужны."""
-    exe = f'"{sys.executable}"' if " " in sys.executable else sys.executable
-    user = needs_user_site() if user is None else user
+    exe_path = python_executable()
+    exe = f'"{exe_path}"' if " " in exe_path else exe_path
+    user = needs_user_site(exe_path) if user is None else user
     # закреплённая китом версия (requirements.txt) — в самой команде: так её увидит и тот, кто ставит руками
     return f"{exe} -m pip install {'--user ' if user else ''}{_extras().pinned_spec(pkg) or pkg}"
 
@@ -5814,6 +5833,52 @@ def refresh_import_paths() -> None:
         pass
     importlib.invalidate_caches()
 
+def runtime_state(include_candidates: bool = False) -> dict:
+    """Единый Python подсистемы: что выбрано, годится ли оно и чем именно.
+
+    Читается из `~/.aurora/config.json` и перепроверяется запуском. Ошибку модуля не
+    превращаем в исключение: панель обязана показать состояние, даже если runtime
+    разложен старой версией кита.
+    """
+    try:
+        import aurora_runtime as RT
+        return RT.status(include_candidates=include_candidates)
+    except Exception as e:  # noqa: BLE001 — панель не должна падать из-за диагностики
+        return {"configured": False, "ok": False,
+                "reason": f"runtime недоступен: {type(e).__name__}: {e}",
+                "effective_python": "", "runtime": {}, "base": {}, "pydantic": {}}
+
+
+def runtime_action(payload: dict) -> dict:
+    """Действие с единой конфигурацией Python из панели.
+
+    `bootstrap` — первый запуск целиком (найти, проверить, создать venv, поставить и
+    проверить Pydantic AI); `configure` — явный выбор человека; `install_pydantic` —
+    поставить заново в effective_python; `check` — перепроверить без записи.
+    """
+    try:
+        import aurora_runtime as RT
+    except Exception as e:  # noqa: BLE001 — панель объяснит, а не упадёт
+        return {"ok": False, "error": f"runtime недоступен: {type(e).__name__}: {e}"}
+    action = str(payload.get("action") or "status")
+    try:
+        if action == "bootstrap":
+            return RT.bootstrap(check_pydantic=True, install=True)
+        if action == "configure":
+            return RT.configure(str(payload.get("source") or ""), str(payload.get("base") or ""),
+                                isolated=payload.get("isolated"),
+                                path=str(payload.get("venv") or "") or None,
+                                check_pydantic=True)
+        if action == "install_pydantic":
+            return RT.install_pydantic(python=str(payload.get("python") or ""))
+        if action == "check":
+            info = RT.pydantic_info(str(payload.get("python") or ""))
+            return {"ok": bool(info.get("ok")), "pydantic": info,
+                    "runtime": RT.status(include_candidates=True)}
+    except Exception as e:  # noqa: BLE001 — отказ установки показывается человеку
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return RT.status(include_candidates=True)
+
 
 def environment(fresh: bool = False) -> dict:
     """Что установлено на машине и какие команды от этого зависят.
@@ -5823,14 +5888,17 @@ def environment(fresh: bool = False) -> dict:
     знать только «есть или нет». Результат держим, пока не попросят проверить заново
     (`fresh`): кнопка «Проверить снова» и установка пакета из панели.
 
-    Пакеты проверяются в Python панели — его путь страница показывает, и команда
-    установки ставит именно в него. Программы ищутся и вне PATH (`find_bin`): на Windows
-    winget дописывает PATH только новым окнам.
+    Пакеты проверяются в Python подсистемы — его путь страница показывает, и команда
+    установки ставит именно в него: путь берётся из runtime (`effective_python`), а не
+    из PATH. Программы ищутся и вне PATH (`find_bin`): на Windows winget дописывает PATH
+    только новым окнам.
     """
     if "env" in CACHE and not fresh:
         return CACHE["env"]
-    from aurora_common import find_bin, python_status, python_install_hint
+    from aurora_common import find_bin, python_executable, python_status, python_install_hint
     refresh_import_paths()
+    python_path = python_executable()
+    rt = runtime_state()
 
     def has_module(names):
         for name in names:
@@ -5863,17 +5931,18 @@ def environment(fresh: bool = False) -> dict:
     # Строки «Atlassian MCP в Cursor» больше нет (1.162.0): это настройка одного редактора,
     # а не движка. Вместо неё — «Aurora MCP в харнессах»: какие ассистенты есть на машине и
     # подключён ли к ним сервер Авроры (`harness_mcp.py`).
-    out = {"python": sys.version.split()[0], "python_path": sys.executable,
-           "platform": plat, "items": items}
+    out = {"python": sys.version.split()[0], "python_path": python_path,
+           "python_process": sys.executable, "platform": plat, "items": items,
+           "runtime": rt}
     CACHE["env"] = out
     return out
 
 
 def env_install(name: str) -> dict:
-    """Поставить пакет Python из списка страницы — в Python панели. → {ok, code, output}.
+    """Поставить пакет Python из списка страницы — в Python подсистемы. → {ok, code, output}.
     Ставится только известное: имя приходит со страницы и в командную строку не уходит."""
-    pkg = next((p for p, _m, _w in ENV_PY if p == name), "")
-    if not pkg:
+    pkg, modules = next(((p, m) for p, m, _w in ENV_PY if p == name), ("", ()))
+    if not pkg or not modules:
         return {"ok": False, "code": "unknown", "output": ""}
     # Версия — закреплённая китом либо самый новый выпуск старше паузы (BL-SEC-21): панель ставит в Python,
     # которым работает, и «последнее, что вышло час назад» туда не берётся.
@@ -5881,32 +5950,76 @@ def env_install(name: str) -> dict:
     # markdownify тянет beautifulsoup4: без своей закреплённой версии pip взял бы самую свежую
     specs = [spec] + [s for s in (_extras().pinned_spec(d) for d in ENV_COMPANIONS.get(pkg, ())) if s]
     # -P (Python 3.11+): папка запуска не первой в sys.path; на 3.10 флага нет, и pip запускается из папки кокпита
-    safe = (["-P"] if sys.version_info >= (3, 11) else []) + ["-X", "utf8"]
-    user = needs_user_site()        # Python для всех, вы без прав администратора — в папку пользователя
+    from aurora_common import python_executable
+    python = python_executable()
+    if os.path.realpath(python) == os.path.realpath(sys.executable):
+        # Тот же интерпретатор, что и у панели: версия и пути уже известны, лишний запуск не нужен.
+        import sysconfig
+        import site
+        py_ver = sys.version_info[:2]
+        try:
+            user_site = site.getusersitepackages() or ""
+        except Exception:  # noqa: BLE001 — путь нужен только для записи факта установки
+            user_site = ""
+        probe = {"version": "%d.%d" % py_ver,
+                 "purelib": sysconfig.get_paths().get("purelib") or "",
+                 "user_site": user_site}
+    else:
+        import aurora_runtime as RT
+        probe = RT.validate_python(python)
+        try:
+            py_ver = tuple(int(x) for x in (probe.get("version") or "0.0").split(".")[:2])
+        except ValueError:
+            py_ver = (0, 0)
+    safe = (["-P"] if py_ver >= (3, 11) else []) + ["-X", "utf8"]
+    user = needs_user_site(python)  # Python для всех, вы без прав администратора — в папку пользователя
     try:
-        p = subprocess.run([sys.executable, *safe, "-m", "pip", "install", *(["--user"] if user else []), *specs],
+        p = subprocess.run([python, *safe, "-m", "pip", "install", *(["--user"] if user else []), *specs],
                            capture_output=True,
                            cwd=os.path.dirname(os.path.abspath(__file__)),
                            text=True, encoding="utf-8", errors="replace", timeout=900)
         ok, tail = p.returncode == 0, (note + "\n" if note else "") + ((p.stdout or "") + (p.stderr or "")).strip()[-1500:]
     except (OSError, subprocess.SubprocessError) as e:
         ok, tail = False, f"{type(e).__name__}: {e}"
-    env = environment(fresh=True)
+    environment(fresh=True)      # сбросить кэш: следующая отрисовка покажет новое состояние
     CACHE.pop("access", None)
-    seen = next((i["ok"] for i in env["items"] if i.get("pip") == pkg), False)
+    # «Увиден» — в том же интерпретаторе, куда ставили: проверка импорта в процессе панели
+    # и установка в другой Python — ровно тот дефект, из-за которого Pydantic AI «не ставился».
+    has = _python_module(python, modules, pkg)
+    seen = bool(has.get("ok"))
     code = "" if ok and seen else "not_seen" if ok else "pip_failed"
     if ok and seen:             # кто что поставил — в общую папку машины (`access_check`)
-        import site
-        import sysconfig
-        from importlib import metadata
-        try:
-            ver = metadata.version(pkg)
-        except Exception:  # noqa: BLE001 — версия для записи, а не для работы
-            ver = ""
-        said = _extras().record_install(pkg, ver, site.getusersitepackages() if user
-                                        else sysconfig.get_paths().get("purelib") or "")
+        ver = str(has.get("version") or "")
+        said = _extras().record_install(pkg, ver,
+                                        probe.get("user_site") if user else probe.get("purelib") or "")
         tail += ("\n" + said) if said else ""
     return {"ok": ok and seen, "code": code, "output": tail}
+
+
+def _python_module(python: str, modules, distribution: str = "") -> dict:
+    """Есть ли модуль и какая версия — в конкретном интерпретаторе, запуском, а не в процессе панели."""
+    probe = ("import importlib.util, json, sys\n"
+             "mods = json.loads(sys.argv[1])\n"
+             "found = [m for m in mods if importlib.util.find_spec(m)]\n"
+             "ver = ''\n"
+             "if found:\n"
+             " try:\n"
+             "  from importlib import metadata\n"
+             "  ver = metadata.version(sys.argv[2] or found[0])\n"
+             " except Exception:\n"
+             "  pass\n"
+             "print(json.dumps({'ok': bool(found), 'version': ver,\n"
+             "                  'module': found[0] if found else ''}))\n")
+    try:
+        p = subprocess.run([python, "-I", "-c", probe, json.dumps(list(modules)), distribution],
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return {"ok": False, "version": ""}
+    try:
+        return json.loads((p.stdout or "").strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        return {"ok": False, "version": ""}
 
 
 # ----------------------------------------------------------------- встроенный агент
@@ -6564,7 +6677,7 @@ def agent_ping(project: str) -> dict:
     """Живой прогон цепочки. Подпроцессом и с cwd проекта: наслоение .env — как у агента."""
     script = script_path(project or KIT, "agent_core.py")
     try:
-        p = subprocess.run([sys.executable, script, "--ping", "--json"],
+        p = subprocess.run([python_executable(), script, "--ping", "--json"],
                            cwd=project or KIT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
         return json.loads(p.stdout.strip().splitlines()[-1])
     except Exception as e:  # noqa: BLE001
@@ -6574,7 +6687,7 @@ def agent_ping(project: str) -> dict:
 def agent_venv_install() -> dict:
     """Поставить/обновить Pydantic AI. Синхронно: локальная панель, пользователь ждёт."""
     try:
-        p = subprocess.run([sys.executable, os.path.join(KIT, "scripts", "agent_core.py"),
+        p = subprocess.run([python_executable(), os.path.join(KIT, "scripts", "agent_core.py"),
                             "--venv-install"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2400)
         CACHE.pop("env", None)      # строка в «Установке» обязана обновиться
         CACHE.pop("access", None)   # и настоящий запуск — тоже
@@ -6920,7 +7033,7 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
             if job["cancel"].is_set():          # «Прервать» пришло, пока процесса ещё не было: команда не стартует
                 job["rc"] = -15
                 return
-            p = subprocess.Popen([sys.executable, path, *args], cwd=project, env=env,
+            p = subprocess.Popen([python_executable(), path, *args], cwd=project, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, encoding="utf-8", errors="replace", bufsize=1)
             job["proc"] = p     # чтобы человек мог прервать прогон, а не ждать часами
@@ -7353,6 +7466,9 @@ class Handler(BaseHTTPRequestHandler):
                 # вызовы идут мимо него (1.161.0), и нет связи с бэкендом — это разные полосы (область
                 # в каждой строке). Опрашивается и отдельно, раз в 20 с.
                 "adapter_alarm": adapter_alarm(),
+                # Единая конфигурация Python: источник, база, effective_python и результат
+                # перепроверки. Панель по ней решает, показывать ли блокирующий экран выбора.
+                "runtime": runtime_state(),
                 # Что панель сняла на старте: брошенные процессы прежней — один раз тостом.
                 "reaped": {"at": STARTED, "items": REAPED},
                 # пасхалка «Разработка» открывается только там, где есть что разрабатывать
@@ -7465,6 +7581,10 @@ class Handler(BaseHTTPRequestHandler):
             # «Проверить снова» на странице «Установка»: без перезапуска панели.
             self.send_json({"env": localized_environment(environment(fresh=bool(q.get("fresh"))),
                                                          request_lang(q))})
+        elif u.path == "/api/runtime":
+            # Состояние единой конфигурации Python и найденные интерпретаторы. `fresh=1` —
+            # обойти все кандидаты заново: это дорого (запуск каждого), поэтому по кнопке.
+            self.send_json(runtime_state(include_candidates=bool(q.get("fresh"))))
         elif u.path == "/api/mcp/kit":
             # Серверы машины: значения секретов заменены маской — см. `mcp_mask`.
             self.send_json(mcp_kit_state())
@@ -8319,6 +8439,10 @@ class Handler(BaseHTTPRequestHandler):
             # Пакет Python из списка «Установки» — в Python панели (`env_install`).
             self.send_json(env_install(str(payload.get("name") or "")))
             return
+        if u.path == "/api/runtime":
+            # Единая конфигурация Python: выбрать, проверить, поставить Pydantic AI.
+            self.send_json(runtime_action(payload))
+            return
         if u.path == "/api/code/parse":
             # Строка из `git clone` → сервер, адрес, ветка, вход и имя папки. С проектом
             # сервер ещё и решает, репозиторий это или GitLab-группа. Ничего не пишет.
@@ -8659,7 +8783,7 @@ class Handler(BaseHTTPRequestHandler):
         if bad:
             return {"error": bad}
         try:
-            p = subprocess.run([sys.executable, path, "--target", project, "--json", "-"],
+            p = subprocess.run([python_executable(), path, "--target", project, "--json", "-"],
                                input=json.dumps(answers, ensure_ascii=False),
                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
         except Exception as e:
@@ -8750,7 +8874,7 @@ class Handler(BaseHTTPRequestHandler):
                           ("--confluence-space", "space")):
             if (payload.get(key) or "").strip():
                 args += [flag, payload[key].strip()]
-        return subprocess.run([sys.executable, *args], capture_output=True,
+        return subprocess.run([python_executable(), *args], capture_output=True,
                               text=True, encoding="utf-8", errors="replace", timeout=300)
 
     def _clone_project(self, target: str, name: str, git: dict, payload: dict) -> dict:
@@ -9273,7 +9397,7 @@ def restart_self(port: int) -> dict:
     # не перезапускаем и не обещаем.
     try:
         probe = subprocess.run(
-            [sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import aurora_common",
+            [python_executable(), "-c", "import sys; sys.path.insert(0, sys.argv[1]); import aurora_common",
              os.path.join(KIT, "scripts")],
             cwd=KIT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     except (OSError, subprocess.SubprocessError):
@@ -9285,7 +9409,7 @@ def restart_self(port: int) -> dict:
         return {"error": restart_probe_failure(tail, probe.returncode)}
     env = dict(os.environ, AURORA_COCKPIT_TOKEN=TOKEN)
     try:
-        subprocess.Popen([sys.executable, entry, "cockpit", "--port", str(port),
+        subprocess.Popen([python_executable(), entry, "cockpit", "--port", str(port),
                           "--restart", "--force", "--no-browser"],
                          cwd=KIT, env=env, start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

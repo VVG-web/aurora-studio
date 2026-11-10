@@ -1496,5 +1496,20 @@
   "connrole.conflict": "The setting changed on disk since the page was opened — reload it, then choose again.",
   "connrole.reload": "Reload",
   "connrole.note": "Another tracker or wiki is another connector with the same role; Aurora's code does not change.",
-  "dirty.connectors": "role connectors"
+  "dirty.connectors": "role connectors",
+  "toast.close": "Close",
+  "runtime.bar": "Python: {what}",
+  "runtime.bar_none": "Python is not configured",
+  "runtime.bar_hint": "Subsystem Python: {why}. Click to open Install.",
+  "runtime.bar_hint_ok": "Subsystem Python: {what}. Effective interpreter: {path}. Click to open Install.",
+  "runtime.mode_venv": "venv",
+  "runtime.mode_global": "global",
+  "runtime.unknown": "unknown",
+  "runtime.gate_title": "Subsystem Python is not working",
+  "runtime.gate_why": "The saved configuration fails validation: {why}",
+  "runtime.gate_block": "Until this is fixed, the installer, compatibility check, agent_core.py, MCP servers and tools do not work. Choose a working interpreter in Install.",
+  "runtime.gate_effective": "Saved effective Python: {path}",
+  "runtime.open_install": "Open Install",
+  "runtime.check_again": "Check again",
+  "runtime.check_ok": "Subsystem Python is working"
 }

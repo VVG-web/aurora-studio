@@ -31,6 +31,10 @@
       AURORA <small id="kitver">cockpit</small>
     </div>
     <button class="btn sm projbadge none" id="projBadge"><span class="dot"></span><span class="nm" data-i18n="badge.none">Проект не выбран</span></button>
+    <!-- Python подсистемы: один интерпретатор для установщика, агента, MCP и инструментов.
+         Виден всегда: человек должен знать, каким Python работает то, что он видит. -->
+    <button class="btn sm rtbar" id="runtimeBar" hidden data-i18n-title="runtime.bar_hint"
+            title="Python подсистемы — нажмите, чтобы открыть «Установку»"></button>
     <!-- Ход маршрута виден отовсюду: прогон запускают и уходят на другую вкладку —
          спросить базу, посмотреть зеркала. Привязать ход к консоли значит спрятать его. -->
     <button class="btn sm routebar" id="routeBar" hidden

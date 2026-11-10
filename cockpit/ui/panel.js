@@ -528,10 +528,22 @@ async function openLink(path){
   if (!d.url){ if (w) w.close(); return; }
   if (w) w.location.href = d.url; else window.open(d.url, "_blank", "noopener");
 }
-function toast(msg, kind="ok"){
+// Тост: по умолчанию 15 секунд — ошибку человек должен успеть прочитать. Ошибки установки и
+// совместимости не прячутся вовсе (`sticky`): их закрывают вручную, иначе причина отказа
+// исчезает раньше, чем человек дойдёт до кнопки «Подробнее».
+const TOAST_MS = 15000;
+function toast(msg, kind="ok", opts={}){
   const t = el("div",{class:"toast "+kind}, msg);
   $("#toasts").append(t);
-  setTimeout(()=>{ t.style.opacity=0; setTimeout(()=>t.remove(),250); }, 4200);
+  if (opts && opts.sticky){
+    t.classList.add("sticky");
+    const close = el("button",{class:"toast-close", title: t("toast.close"), "aria-label": t("toast.close")}, "✕");
+    close.onclick = () => t.remove();
+    t.append(close);
+    return t;
+  }
+  const ms = Number((opts && opts.timeout) || TOAST_MS);
+  setTimeout(()=>{ t.style.opacity=0; setTimeout(()=>t.remove(),250); }, ms);
 }
 
 // Исключение в отрисовке не должно проходить молча. Страница настроек проекта обрывалась
@@ -549,6 +561,66 @@ function showFault(msg){
 window.addEventListener("error", e => showFault(e.message));
 window.addEventListener("unhandledrejection", e =>
   showFault(e.reason && (e.reason.message || e.reason)));
+
+/* Единая конфигурация Python. Панель показывает её всегда — источник, версию и режим —
+   и не даёт работать, если записанная конфигурация перестала проходить проверку.
+   Тихого отката на прямой HTTP или другой интерпретатор здесь нет: причина видна. */
+function runtimeText(rt){
+  const r = (rt && rt.runtime) || {};
+  const v = r.python_version || "";
+  const src = r.source || "";
+  const mode = r.isolated ? t("runtime.mode_venv") : t("runtime.mode_global");
+  return [v ? "Python " + v : "", src, mode].filter(Boolean).join(" · ");
+}
+
+function drawRuntimeBar(rt){
+  const bar = $("#runtimeBar");
+  if (!bar) return;
+  const configured = !!(rt && rt.configured);
+  const ok = !!(rt && rt.ok);
+  if (!configured){
+    bar.hidden = false;
+    bar.textContent = t("runtime.bar_none");
+    bar.title = t("runtime.bar_hint", {why: (rt && rt.reason) || t("runtime.unknown")});
+    bar.classList.remove("ok", "warn");
+    bar.classList.add("warn");
+    return;
+  }
+  bar.hidden = false;
+  bar.textContent = t("runtime.bar", {what: runtimeText(rt) || t("runtime.unknown")});
+  bar.title = ok ? t("runtime.bar_hint_ok", {what: runtimeText(rt) || t("runtime.unknown"),
+                                              path: rt.effective_python || "—"})
+                 : t("runtime.bar_hint", {why: rt.reason || t("runtime.unknown")});
+  bar.classList.toggle("ok", ok);
+  bar.classList.toggle("warn", !ok);
+}
+
+function runtimeGate(rt){
+  const old = $("#runtimeGate");
+  if (old) old.remove();
+  const g = el("div", {class:"runtime-gate", id:"runtimeGate"});
+  const card = el("div", {class:"card"});
+  const why = el("div", {class:"runtime-why muted", style:"white-space:pre-wrap;overflow-wrap:anywhere"});
+  const setWhy = w => { why.textContent = t("runtime.gate_why", {why: w || t("runtime.unknown")}); };
+  setWhy(rt.reason);
+  card.append(el("h2", {}, t("runtime.gate_title")));
+  card.append(why);
+  card.append(el("p", {class:"muted", style:"font-size:13px;margin-top:8px"}, t("runtime.gate_block")));
+  card.append(el("div", {class:"mono", style:"font-size:12px;overflow-wrap:anywhere;margin-top:8px"},
+    t("runtime.gate_effective", {path: (rt && rt.effective_python) || "—"})));
+  const row = el("div", {class:"row"});
+  row.append(el("button", {class:"btn", onclick: () => { g.remove(); show("install"); }},
+    t("runtime.open_install")));
+  row.append(el("button", {class:"btn primary", onclick: async () => {
+    const d = await api("/api/runtime", {quiet:true});
+    if (d && d.ok){ g.remove(); toast(t("runtime.check_ok"), "ok"); location.reload(); }
+    else setWhy((d && d.reason) || t("runtime.unknown"));
+  }}, t("runtime.check_again")));
+  card.append(row);
+  g.append(card);
+  document.body.append(g);
+  return g;
+}
 
 
 /* ---------------- языки ---------------- */
@@ -2189,6 +2261,12 @@ async function boot(){
   // обновления кита собирается полминуты (`--help` полусотни скриптов), и пока он шёл в
   // общем ответе, Мостик стоял пустым. Теперь он догружается в фоне.
   S.state = await api("/api/state?part=core");
+  // Единая конфигурация Python — до всего остального: если записанная конфигурация не
+  // проходит проверку, ни установщик, ни агент, ни MCP не работают. Экран не закрывается
+  // сам и не прячет причину.
+  drawRuntimeBar(S.state.runtime);
+  const rt0 = S.state.runtime || {};
+  if (rt0.configured && !rt0.ok){ runtimeGate(rt0); return; }
   S.state.env = {items: []};
   S.state.commands = [];
   S.extraP = api("/api/state?part=extra", {quiet: true}).then(x => {
@@ -2832,6 +2910,9 @@ function renderProjBadge(){
   b.title = p ? p.path + t("badge.engine", {engine: p.engine}) : t("badge.hint");
 }
 $("#projBadge").onclick = ()=>show("overview");
+// Python подсистемы — прямо в «Установку», к карточке выбора. Раздел откроется и без
+// проекта: конфигурация одна на машину, а не на проект.
+$("#runtimeBar").onclick = ()=>show("install");
 async function pick(p, go=true){
   S.project = p;
   // Журнал запусков тянем СРАЗУ, до тяжёлого здоровья: он читается мгновенно, а

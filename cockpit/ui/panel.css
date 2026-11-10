@@ -413,6 +413,11 @@ tr:last-child td{border-bottom:0}
 .connbar.ok{color:var(--primary);border-color:color-mix(in oklab,var(--primary) 45%,var(--border))}
 .connbar.warn{color:var(--tier-inreview);border-color:color-mix(in oklab,var(--tier-inreview) 45%,var(--border))}
 .connbar.bad{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 55%,var(--border))}
+/* Python подсистемы: виден всегда, потому что от него зависит всё остальное.
+   Цвет повторяет состояния connbar: рабочая конфигурация, сомнительная, отсутствует. */
+.rtbar{font-weight:600;font-variant-numeric:tabular-nums}
+.rtbar.ok{color:var(--primary);border-color:color-mix(in oklab,var(--primary) 45%,var(--border))}
+.rtbar.warn{color:var(--tier-inreview);border-color:color-mix(in oklab,var(--tier-inreview) 45%,var(--border))}
 .threadsbar{font-weight:600;font-variant-numeric:tabular-nums}
 .threadsbar.warn{color:var(--tier-inreview);border-color:color-mix(in oklab,var(--tier-inreview) 45%,var(--border))}
 .console .err{color:var(--danger)} .console .ok{color:var(--primary)}
@@ -525,6 +530,19 @@ tr:last-child td{border-bottom:0}
 .toast.ok{border-color:color-mix(in oklab,var(--primary) 50%,var(--border))}
 .toast.err{border-color:color-mix(in oklab,var(--danger) 50%,var(--border))}
 .toast.warn{border-color:color-mix(in oklab,var(--tier-inreview) 50%,var(--border))}
+/* Ошибка установки или совместимости не исчезает сама: её закрывают кнопкой. */
+.toast.sticky{display:flex;align-items:flex-start;gap:var(--sp-2);white-space:pre-wrap;max-width:52ch}
+.toast-close{flex:none;border:0;background:none;color:var(--text-muted);cursor:pointer;
+  font-size:var(--text-lg);line-height:1;padding:0 var(--sp-1)}
+.toast-close:hover{color:var(--text)}
+
+/* Блокирующий экран выбора Python: конфигурация записана, но не проходит проверку.
+   Ни одна подсистема не работает, пока человек не выберет рабочий интерпретатор. */
+.runtime-gate{position:fixed;inset:0;z-index:120;display:flex;align-items:center;
+  justify-content:center;padding:var(--sp-5);background:var(--bg)}
+.runtime-gate .card{max-width:640px;width:100%;padding:var(--sp-5)}
+.runtime-gate h2{margin:0 0 var(--sp-3)}
+.runtime-gate .row{gap:var(--sp-2);flex-wrap:wrap;align-items:center;margin-top:var(--sp-4)}
 
 /* документация */
 .doc{max-width:80ch;font-size:14.5px}
