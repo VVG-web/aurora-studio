@@ -156,6 +156,31 @@ def test_runtime_config_is_the_single_truth(tmp: Path):
 
 
 @test
+def test_bootstrap_does_not_save_when_pydantic_fails(tmp: Path):
+    """Сбой установки Pydantic AI не должен записывать конфигурацию: иначе панель
+    подумает, что runtime готов, а агент останется без адаптера."""
+    home = tmp / "bootstrap-home"
+    venv = tmp / "bootstrap-venv"
+    code = (
+        "import json, sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import aurora_runtime as RT\n"
+        "RT.install_pydantic = lambda **kw: {'ok': False, 'error': 'pip упал', "
+        "'pydantic': {'ok': False}}\n"
+        "r = RT.bootstrap(install=True, path=sys.argv[2])\n"
+        "print(json.dumps({'ok': r.get('ok'), 'error': r.get('error', ''),\n"
+        "                  'config': RT.CONFIG.exists()}))\n"
+    )
+    p = subprocess.run([sys.executable, "-I", "-c", code, str(SCRIPTS), str(venv)],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env={**os.environ, "AURORA_HOME": str(home)}, timeout=300)
+    assert p.returncode == 0, (p.stderr or "")[-1500:]
+    data = json.loads((p.stdout or "").strip().splitlines()[-1])
+    assert not data["ok"] and "Pydantic" in data["error"], data
+    assert data["config"] is False, data
+
+
+@test
 def test_runtime_pep668_goes_to_venv(tmp: Path):
     """Homebrew и PEP 668 запрещают глобальную установку: выбор «глобально» не отменяет venv."""
     original = RT.best, RT.create_venv
