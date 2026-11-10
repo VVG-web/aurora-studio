@@ -38,6 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from aurora_common import connector_scripts, load_connector_manifest, python_executable, replace_file, utc_today, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком; манифест коннектора без исключений; один интерпретатор на подсистему
+from aurora_common import configure_merge_driver as configure_merge_driver_common  # noqa: E402
 try:
     from aurora_common import ENGINE_BEHIND, engine_status, kit_engine_api, version_key  # noqa: E402 — версии и статус движка: одно определение
 except ImportError:
@@ -751,35 +752,7 @@ def configure_merge_driver(target: Path) -> bool:
     Драйвер вызывает git, а не движок, но интерпретатор должен быть тем же, что у
     подсистемы: иначе на машине с двумя Python merge идёт не тем, чем всё остальное.
     """
-    python = python_executable()
-    exe = f'"{python}"' if " " in python else python
-
-    def driver(script: str, *args: str) -> str:
-        return " ".join([exe, script, *args])
-
-    drivers = (
-        ("merge.aurora-manifest.name", "Aurora manifest merge"),
-        ("merge.aurora-manifest.driver", driver(".aurora/scripts/merge_manifest.py",
-                                                "%O", "%A", "%B", "%L", "%P")),
-        ("merge.aurora-lint-baseline.name", "Aurora lint baseline merge"),
-        ("merge.aurora-lint-baseline.driver", driver(".aurora/scripts/merge_lint.py",
-                                                     "baseline", "%O", "%A", "%B", "%L", "%P")),
-        ("merge.aurora-lint-residue.name", "Aurora lint residue merge"),
-        ("merge.aurora-lint-residue.driver", driver(".aurora/scripts/merge_lint.py",
-                                                    "residue", "%O", "%A", "%B", "%L", "%P")),
-        ("merge.aurora-build-failures.name", "Aurora build failures merge"),
-        ("merge.aurora-build-failures.driver", driver(".aurora/scripts/merge_failures.py",
-                                                      "%O", "%A", "%B", "%L", "%P")),
-    )
-    try:
-        for key, value in drivers:
-            cp = subprocess.run(["git", "-C", str(target), "config", key, value],
-                                capture_output=True, timeout=30)
-            if cp.returncode != 0:
-                return False
-        return True
-    except (OSError, subprocess.SubprocessError):
-        return False
+    return configure_merge_driver_common(target)
 
 
 def apply_engine(target: Path, items: list, gone: list, ver: str, from_ver: str, effects=(), extra=()) -> dict:

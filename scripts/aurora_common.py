@@ -120,6 +120,43 @@ def python_executable() -> str:
         return sys.executable
 
 
+def configure_merge_driver(target, python: str = "") -> bool:
+    """Настроить git merge drivers проекта на один интерпретатор подсистемы.
+
+    Драйвер вызывает git, а не движок, но Python в нём должен быть тем же, что у
+    остальных подсистем: `python3` из PATH на машине с двумя Python — чужой.
+    """
+    python = python or python_executable()
+    exe = f'"{python}"' if " " in python else python
+
+    def driver(script: str, *args: str) -> str:
+        return " ".join([exe, script, *args])
+
+    drivers = (
+        ("merge.aurora-manifest.name", "Aurora manifest merge"),
+        ("merge.aurora-manifest.driver", driver(".aurora/scripts/merge_manifest.py",
+                                                "%O", "%A", "%B", "%L", "%P")),
+        ("merge.aurora-lint-baseline.name", "Aurora lint baseline merge"),
+        ("merge.aurora-lint-baseline.driver", driver(".aurora/scripts/merge_lint.py",
+                                                     "baseline", "%O", "%A", "%B", "%L", "%P")),
+        ("merge.aurora-lint-residue.name", "Aurora lint residue merge"),
+        ("merge.aurora-lint-residue.driver", driver(".aurora/scripts/merge_lint.py",
+                                                    "residue", "%O", "%A", "%B", "%L", "%P")),
+        ("merge.aurora-build-failures.name", "Aurora build failures merge"),
+        ("merge.aurora-build-failures.driver", driver(".aurora/scripts/merge_failures.py",
+                                                      "%O", "%A", "%B", "%L", "%P")),
+    )
+    try:
+        for key, value in drivers:
+            cp = subprocess.run(["git", "-C", str(target), "config", key, value],
+                                capture_output=True, timeout=30)
+            if cp.returncode != 0:
+                return False
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def require_python(vi=None, platform=None, stream=None):
     """Защита версии: на слишком старом Python — понятный текст и выход с кодом 2.
     Вызывается при импорте этого модуля (его берут почти все скрипты движка) и из aurora.py."""
