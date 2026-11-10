@@ -186,6 +186,30 @@ def test_runtime_pep668_goes_to_venv(tmp: Path):
 
 
 @test
+def test_pip_install_explains_pep668(tmp: Path):
+    """pip в управляемом системой Python отвечает externally-managed; runtime обязан
+    сказать это словами и предложить venv, а не отдать сырой хвост pip."""
+    if os.name != "posix":
+        return
+    fake = tmp / "python3.15"
+    if not _exe(fake, "#!/bin/sh\n"
+                      "if [ \"$2\" = \"-c\" ]; then\n"
+                      "  printf '%s\\n' '{\"executable\": \"'" + str(fake) + "'\", "
+                      "\"real\": \"'" + str(fake) + "'\", \"version\": \"3.15.2\", "
+                      "\"venv\": false, \"writable\": false, \"externally_managed\": false, "
+                      "\"prefix\": \"/x\", \"base_prefix\": \"/x\"}'\n"
+                      "  exit 0\n"
+                      "fi\n"
+                      "echo 'error: externally-managed-environment' >&2\n"
+                      "exit 1\n"):
+        return
+    got = RT.pip_install(str(fake), ["pydantic-ai"], timeout=30)
+    assert not got["ok"], got
+    assert got["externally_managed"], got
+    assert "PEP 668" in got["error"] and "venv" in got["error"], got["error"]
+
+
+@test
 def test_panel_does_not_pass_user_to_a_venv(tmp: Path):
     """`bin/python` в venv — симлинк на базовый Python. `realpath` их не различает,
     поэтому панель обязана спросить сам интерпретатор: иначе в venv уйдёт `--user`,
