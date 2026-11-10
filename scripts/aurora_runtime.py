@@ -18,13 +18,16 @@
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -77,6 +80,7 @@ PROBE = (
     " 'version': '%d.%d.%d' % sys.version_info[:3],\n"
     " 'prefix': sys.prefix,\n"
     " 'base_prefix': sys.base_prefix,\n"
+    " 'base_executable': getattr(sys, '_base_executable', ''),\n"
     " 'venv': sys.prefix != sys.base_prefix,\n"
     " 'writable': os.access(purelib, os.W_OK),\n"
     " 'purelib': purelib,\n"
@@ -99,9 +103,112 @@ PYDANTIC_PROBE = (
 )
 _CURRENT: dict = {"at": 0.0, "stamp": None, "result": None}
 
+# Установка Pydantic AI и пересоздание venv не должны идти одновременно: pip, читающий
+# `cacert.pem` из каталога, который в этот момент переименовывают, падает «invalid path»
+# и оставляет человека с непонятной ошибкой. Блокировка общая для потоков панели и для
+# отдельного процесса (CLI/установщик), вложенные вызовы bootstrap → configure не ждут сами себя.
+_LOCK = threading.RLock()
+_LOCK_LOCAL = threading.local()
+RUNTIME_LOCK = HOME / "runtime.lock"
+LOCK_WAIT = 10.0
+LOCK_STALE = 1800.0
+
 
 class RuntimeError_(RuntimeError):
     """Конфигурация есть, но она не проходит проверку. Тихий откат запрещён."""
+
+
+def _lock_file(timeout: float) -> bool:
+    """Файловая блокировка на время установки/пересоздания venv.
+
+    Внутри одного процесса её держит `_LOCK`; файл нужен, когда панель и установщик
+    работают одновременно. Замок старше получаса считается брошенным: установка не
+    длится столько, а ждать вечно из-за упавшего процесса нельзя.
+    """
+    try:
+        HOME.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    deadline = time.time() + max(0.0, timeout)
+    while True:
+        try:
+            fd = os.open(str(RUNTIME_LOCK), os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        except FileExistsError:
+            try:
+                if time.time() - RUNTIME_LOCK.stat().st_mtime > LOCK_STALE:
+                    RUNTIME_LOCK.unlink()
+                    continue
+            except OSError:
+                pass
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.2)
+            continue
+        except OSError:
+            return False
+        try:
+            os.write(fd, f"{os.getpid()}\n".encode("ascii", "replace"))
+        except OSError:
+            pass
+        _LOCK_LOCAL.fd = fd
+        return True
+
+
+def _unlock_file() -> None:
+    fd = getattr(_LOCK_LOCAL, "fd", None)
+    _LOCK_LOCAL.fd = None
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    try:
+        RUNTIME_LOCK.unlink()
+    except OSError:
+        pass
+
+
+@contextmanager
+def runtime_lock(timeout: float = LOCK_WAIT):
+    """Пропустить одну операцию с runtime; False — другая уже идёт.
+
+    Вложенный вызов в том же потоке (bootstrap → configure → create_venv) не пытается
+    взять файл второй раз: иначе установка ждала бы саму себя.
+    """
+    _LOCK.acquire()
+    depth = getattr(_LOCK_LOCAL, "depth", 0)
+    if depth:
+        _LOCK_LOCAL.depth = depth + 1
+        try:
+            yield True
+        finally:
+            _LOCK_LOCAL.depth = depth
+            _LOCK.release()
+        return
+    if not _lock_file(timeout):
+        _LOCK.release()
+        yield False
+        return
+    _LOCK_LOCAL.depth = 1
+    try:
+        yield True
+    finally:
+        _LOCK_LOCAL.depth = 0
+        _unlock_file()
+        _LOCK.release()
+
+
+def _locked(fn):
+    """Публичная операция, которая меняет окружение: одна за раз."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with runtime_lock() as locked:
+            if not locked:
+                return {"ok": False, "busy": True,
+                        "error": "другая операция с Python уже выполняется; "
+                                 "подождите её окончания"}
+            return fn(*args, **kwargs)
+    return wrapper
 
 
 def _env() -> dict:
@@ -177,7 +284,8 @@ def validate_python(path, timeout: float = _PROBE_TIMEOUT) -> dict:
     raw = str(path or "").strip()
     out = {"path": raw, "executable": "", "real": "", "version": "", "source": detect_source(raw),
            "externally_managed": False, "venv": False, "valid": False, "reason": "",
-           "writable": False, "purelib": "", "user_site": "", "broken_link": False, "level": "error"}
+           "writable": False, "purelib": "", "user_site": "", "broken_link": False, "level": "error",
+           "prefix": "", "base_prefix": "", "base_executable": ""}
     if not raw:
         out["reason"] = "путь к Python не задан"
         return out
@@ -203,6 +311,9 @@ def validate_python(path, timeout: float = _PROBE_TIMEOUT) -> dict:
         "version": str(data.get("version") or ""),
         "externally_managed": bool(data.get("externally_managed")),
         "venv": bool(data.get("venv")),
+        "prefix": str(data.get("prefix") or ""),
+        "base_prefix": str(data.get("base_prefix") or ""),
+        "base_executable": str(data.get("base_executable") or ""),
         "writable": bool(data.get("writable")),
         "purelib": str(data.get("purelib") or ""),
         "user_site": str(data.get("user_site") or ""),
@@ -401,44 +512,152 @@ def find_venv_python(path) -> Path | None:
     return None
 
 
-def create_venv(base: str, path=None, timeout: float = 300) -> dict:
+def venv_root(path) -> str:
+    """Корень venv по `pyvenv.cfg`. Пусто — путь не является окружением."""
+    p = Path(str(path or ""))
+    parent = p.parent
+    if parent.name.lower() in ("bin", "scripts") and (parent.parent / "pyvenv.cfg").is_file():
+        return str(parent.parent)
+    if (p / "pyvenv.cfg").is_file():
+        return str(p)
+    return ""
+
+
+def _venv_base(path) -> str:
+    """Базовый интерпретатор из `pyvenv.cfg`: им проверяется, та ли это база."""
+    root = venv_root(path)
+    if not root:
+        return ""
+    try:
+        text = (Path(root) / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    home = executable = ""
+    for line in text.splitlines():
+        if "=" not in line:
+            continue
+        key, value = (x.strip() for x in line.split("=", 1))
+        if key == "home":
+            home = value
+        elif key == "executable":
+            executable = value
+    if executable and os.path.isfile(executable):
+        return executable
+    if home:
+        names = ("python.exe", "python3.exe") if os.name == "nt" else ("python3", "python")
+        for name in names:
+            candidate = Path(home) / name
+            if candidate.is_file():
+                return str(candidate)
+    return ""
+
+
+def _same_base(base: dict, target: Path) -> bool:
+    """Существующий venv построен на той же базе, что выбрана сейчас?"""
+    current = find_venv_python(target)
+    if not current:
+        return False
+    got = validate_python(str(current))
+    if not got.get("valid"):
+        return False
+    raw_base = base.get("base_prefix") or base.get("prefix") or ""
+    raw_venv = got.get("base_prefix") or got.get("prefix") or ""
+    if raw_base and raw_venv:
+        return os.path.normcase(os.path.realpath(raw_base)) == os.path.normcase(
+            os.path.realpath(raw_venv))
+    cfg_base = _venv_base(target)
+    return bool(cfg_base) and os.path.normcase(os.path.realpath(cfg_base)) == os.path.normcase(
+        os.path.realpath(base.get("executable") or ""))
+
+
+def _backup_venv(target: Path) -> str:
+    """Переименовать окружение, а не удалить: пакеты человека должны пережить смену базы."""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    candidate = target.with_name(target.name + ".bak-" + stamp)
+    n = 1
+    while candidate.exists():
+        candidate = target.with_name(target.name + f".bak-{stamp}-{n}")
+        n += 1
+    os.replace(target, candidate)
+    return str(candidate)
+
+
+def _restore_venv(target: Path, backup: str) -> bool:
+    """Вернуть старое окружение после неудачного создания нового. True — вернули."""
+    shutil.rmtree(target, ignore_errors=True)
+    if not backup:
+        return True
+    try:
+        os.replace(backup, target)
+        return True
+    except OSError:
+        return False
+
+
+def create_venv(base: str, path=None, timeout: float = 300, reuse: bool = True) -> dict:
     """Создать venv только из проверенной базы и вернуть фактический effective_python.
 
-    При сбое каталог удаляется, чтобы не оставался «полурабочий» venv. Если в готовом venv
-    нет ни одного живого интерпретатора, это тоже сбой: повреждённые ссылки не считаем
-    успехом.
+    Существующее окружение не удаляется: если база та же, оно переиспользуется; если
+    другая или сломано, каталог переименовывается в `venv.bak-<время>` и остаётся на
+    диске. Раньше `rmtree` стирал вместе с каталогом установленный Pydantic AI — смена
+    интерпретатора не должна быть потерей данных. При сбое нового venv старое окружение
+    возвращается на место.
     """
     target = Path(path or venv_path())
     checked = validate_python(base)
     if not checked["valid"]:
         return {"ok": False, "error": f"база Python не прошла проверку: {checked['reason']}",
-                "base": checked, "venv": str(target), "effective": "", "links": []}
+                "base": checked, "venv": str(target), "effective": "", "links": [],
+                "reused": False, "backup": ""}
+    existed = target.exists()
+    backup = ""
+    if existed and reuse and _same_base(checked, target):
+        current = find_venv_python(target)
+        if current:
+            return {"ok": True, "error": "", "base": checked, "venv": str(target),
+                    "effective": str(current), "links": [], "reused": True, "backup": ""}
+    if existed:
+        try:
+            backup = _backup_venv(target)
+        except OSError as e:
+            return {"ok": False,
+                    "error": "не удалось сохранить существующее окружение "
+                             f"{target}: {type(e).__name__}: {e}",
+                    "base": checked, "venv": str(target), "effective": "", "links": [],
+                    "reused": False, "backup": ""}
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            shutil.rmtree(target, ignore_errors=True)
         p = _run(checked["executable"], ["-I", "-X", "utf8", "-m", "venv", str(target)],
                  timeout=timeout)
     except (OSError, subprocess.SubprocessError) as e:
-        shutil.rmtree(target, ignore_errors=True)
+        restored = _restore_venv(target, backup)
         return {"ok": False, "error": f"venv не создан: {type(e).__name__}: {e}",
-                "base": checked, "venv": str(target), "effective": "", "links": []}
+                "base": checked, "venv": str(target), "effective": "", "links": [],
+                "reused": False, "backup": "" if restored else backup}
     if p.returncode != 0:
-        shutil.rmtree(target, ignore_errors=True)
-        return {"ok": False, "error": (p.stderr or p.stdout or "venv завершился с ошибкой")[-1000:],
-                "base": checked, "venv": str(target), "effective": "", "links": []}
+        restored = _restore_venv(target, backup)
+        text = (p.stderr or p.stdout or "venv завершился с ошибкой")[-1000:]
+        if backup and not restored:
+            text += f"\nстарое окружение сохранено: {backup}"
+        return {"ok": False, "error": text, "base": checked, "venv": str(target),
+                "effective": "", "links": [], "reused": False,
+                "backup": "" if restored else backup}
     eff = find_venv_python(target)
     if not eff:
         links = []
         for name in venv_candidates(target):
             links.append({"path": name, "target": os.path.realpath(name),
                           "exists": os.path.exists(name)})
-        shutil.rmtree(target, ignore_errors=True)
-        return {"ok": False, "error": "venv создан, но ни один его Python не запускается: "
-                "висячие ссылки или неконсистентная база",
-                "base": checked, "venv": str(target), "effective": "", "links": links}
+        restored = _restore_venv(target, backup)
+        text = ("venv создан, но ни один его Python не запускается: "
+                "висячие ссылки или неконсистентная база")
+        if backup and not restored:
+            text += f"; старое окружение сохранено: {backup}"
+        return {"ok": False, "error": text, "base": checked, "venv": str(target),
+                "effective": "", "links": links, "reused": False,
+                "backup": "" if restored else backup}
     return {"ok": True, "error": "", "base": checked, "venv": str(target),
-            "effective": str(eff), "links": []}
+            "effective": str(eff), "links": [], "reused": False, "backup": backup}
 
 
 def read_config() -> dict:
@@ -476,6 +695,12 @@ def _drop_cache() -> None:
     _CURRENT["result"] = None
 
 
+def _needs_reload(effective: str) -> bool:
+    """Панель запущена не тем Python, который записан в конфигурации."""
+    return bool(effective) and os.path.normcase(os.path.realpath(effective)) != os.path.normcase(
+        os.path.realpath(sys.executable))
+
+
 def pydantic_info(python: str = "") -> dict:
     """Проверить `pydantic_ai.providers` и версию в конкретном интерпретаторе."""
     exe = python or (current().get("effective_python") or sys.executable)
@@ -505,43 +730,68 @@ def configure(source: str = "", base_python: str = "", isolated=None,
 
     Homebrew и PEP 668 принудительно переводятся в venv: глобальная установка в них
     запрещена. Для остальных `isolated` задаёт человек, по умолчанию — True (единый
-    интерпретатор для всех подсистем).
+    интерпретатор для всех подсистем). Если человек выбрал готовый venv, он используется
+    напрямую: вложенный venv не создаётся и его пакеты не теряются.
     """
     found = best(source, base_python)
     if not found or not found.get("valid"):
         return {"ok": False, "error": "подходящий Python не найден", "candidates": candidates()}
-    src = found.get("source") or detect_source(found["executable"])
-    auto_isolated = src == "homebrew" or bool(found.get("externally_managed"))
-    isolated = True if auto_isolated else (True if isolated is None else bool(isolated))
-    target = Path(path or venv_path())
-    effective = found["executable"]
-    if isolated:
-        made = create_venv(found["executable"], target)
-        if not made["ok"]:
-            return {"ok": False, "error": made["error"], "base": found, "venv": str(target),
-                    "links": made.get("links") or [], "candidates": candidates()}
-        effective = made["effective"]
-    cfg = read_config()
-    runtime = {
-        "source": src,
-        "base_python": found["executable"],
-        "venv_path": str(target) if isolated else "",
-        "effective_python": effective,
-        "python_version": found.get("version", ""),
-        "isolated": isolated,
-        "externally_managed": bool(found.get("externally_managed")),
-        "validated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "pydantic_ai_version": "",
-    }
-    if check_pydantic:
-        info = pydantic_info(effective)
-        runtime["pydantic_ai_version"] = info.get("version", "") if info.get("ok") else ""
-    if write:
-        cfg["version"] = CONFIG_VERSION
-        cfg["runtime"] = runtime
-        _write_config(cfg)
-        _drop_cache()
-    return {"ok": True, "runtime": runtime, "base": found}
+    with runtime_lock() as locked:
+        if not locked:
+            return {"ok": False, "busy": True,
+                    "error": "другая операция с Python уже выполняется; подождите её окончания"}
+        src = found.get("source") or detect_source(found["executable"])
+        target = Path(path or venv_path())
+        reused = False
+        backup = ""
+        if found.get("venv"):
+            # Готовое окружение — это и есть effective_python. Создавать venv внутри venv
+            # значит потерять установленные в нём пакеты и получить третью копию Python.
+            src = "venv"
+            root = venv_root(found["executable"]) or str(found.get("prefix") or "")
+            if not root:
+                return {"ok": False, "error": "выбран venv, но не найден его корень "
+                        "(pyvenv.cfg): путь не похож на окружение", "base": found}
+            effective = found["executable"]
+            base_python = found.get("base_executable") or _venv_base(effective) or effective
+            isolated = True
+            target = Path(root)
+            reused = True
+        else:
+            auto_isolated = src == "homebrew" or bool(found.get("externally_managed"))
+            isolated = True if auto_isolated else (True if isolated is None else bool(isolated))
+            effective = found["executable"]
+            if isolated:
+                made = create_venv(found["executable"], target)
+                if not made["ok"]:
+                    return {"ok": False, "error": made["error"], "base": found, "venv": str(target),
+                            "links": made.get("links") or [], "backup": made.get("backup") or "",
+                            "candidates": candidates()}
+                effective = made["effective"]
+                reused = bool(made.get("reused"))
+                backup = made.get("backup") or ""
+        cfg = read_config()
+        runtime = {
+            "source": src,
+            "base_python": base_python,
+            "venv_path": str(target) if isolated else "",
+            "effective_python": effective,
+            "python_version": found.get("version", ""),
+            "isolated": isolated,
+            "externally_managed": bool(found.get("externally_managed")),
+            "validated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "pydantic_ai_version": "",
+        }
+        if check_pydantic:
+            info = pydantic_info(effective)
+            runtime["pydantic_ai_version"] = info.get("version", "") if info.get("ok") else ""
+        if write:
+            cfg["version"] = CONFIG_VERSION
+            cfg["runtime"] = runtime
+            _write_config(cfg)
+            _drop_cache()
+        return {"ok": True, "runtime": runtime, "base": found, "reused": reused,
+                "backup": backup}
 
 
 def current(force: bool = False) -> dict:
@@ -560,6 +810,7 @@ def current(force: bool = False) -> dict:
         result = {"configured": False, "ok": False, "reason": "runtime ещё не выбран",
                   "effective_python": "", "runtime": {}, "base": {},
                   "effective": {}, "pydantic": {},
+                  "process_python": sys.executable, "needs_reload": False,
                   "bootstrap": {"valid": ok, "executable": sys.executable,
                                 "version": "%d.%d.%d" % sys.version_info[:3],
                                 "reason": "" if ok else "текущий Python не годится"}}
@@ -578,7 +829,8 @@ def current(force: bool = False) -> dict:
     result = {"configured": True, "ok": not reason, "reason": reason,
               "runtime": rt, "base": base, "effective": eff,
               "effective_python": eff.get("executable") or "",
-              "pydantic": pyd}
+              "pydantic": pyd, "process_python": sys.executable,
+              "needs_reload": _needs_reload(eff.get("executable") or "")}
     _CURRENT.update({"at": time.time(), "stamp": stamp, "result": result})
     return result
 
@@ -637,6 +889,8 @@ def status(include_candidates: bool = False, force: bool = False) -> dict:
         "effective_python": got.get("effective_python") or "",
         "base": got.get("base") or {},
         "pydantic": got.get("pydantic") or {},
+        "process_python": got.get("process_python") or sys.executable,
+        "needs_reload": bool(got.get("needs_reload")),
         "platform": sys.platform,
         "os": os.name,
         "config_version": cfg.get("version", 0),
@@ -646,6 +900,7 @@ def status(include_candidates: bool = False, force: bool = False) -> dict:
     return out
 
 
+@_locked
 def bootstrap(path=None, check_pydantic: bool = False, install: bool = False,
               force: bool = False) -> dict:
     """Первый запуск одной цепочкой: найти → проверить → venv → проверить venv → поставить
@@ -670,7 +925,9 @@ def bootstrap(path=None, check_pydantic: bool = False, install: bool = False,
                         "error": "Pydantic AI не установлен или не импортируется: "
                                  + str(installed.get("error") or info.get("error")
                                        or "причина неизвестна"),
-                        "runtime": runtime, "pydantic": info, "python": effective}
+                        "runtime": runtime, "pydantic": info, "python": effective,
+                        "output": installed.get("output") or "",
+                        "repaired": bool(installed.get("repaired"))}
             runtime["pydantic_ai_version"] = info.get("version", "")
             cfg = read_config()
             cfg["version"] = CONFIG_VERSION
@@ -678,7 +935,7 @@ def bootstrap(path=None, check_pydantic: bool = False, install: bool = False,
             _write_config(cfg)
             _drop_cache()
         return {"ok": True, "runtime": runtime, "base": got.get("base") or {},
-                "existing": True, "pydantic": info}
+                "existing": True, "pydantic": info, "reused": True, "backup": ""}
     found = validate_python(sys.executable)
     if not found.get("valid"):
         # Текущий процесс мог быть запущен через рабочую ссылку, хотя sys.executable
@@ -706,6 +963,9 @@ def bootstrap(path=None, check_pydantic: bool = False, install: bool = False,
                              + str(installed.get("error") or info.get("error") or "причина неизвестна"),
                     "runtime": runtime, "base": found, "pydantic": info,
                     "python": installed.get("python") or effective,
+                    "output": installed.get("output") or "",
+                    "repaired": bool(installed.get("repaired")),
+                    "reused": bool(made.get("reused")), "backup": made.get("backup") or "",
                     "candidates": candidates()}
         runtime["pydantic_ai_version"] = info.get("version", "")
     if check_pydantic and not runtime.get("pydantic_ai_version"):
@@ -716,33 +976,103 @@ def bootstrap(path=None, check_pydantic: bool = False, install: bool = False,
     cfg["runtime"] = runtime
     _write_config(cfg)
     _drop_cache()
-    return {"ok": True, "runtime": runtime, "base": found, "pydantic": pydantic_info(effective)}
+    return {"ok": True, "runtime": runtime, "base": found, "pydantic": pydantic_info(effective),
+            "reused": bool(made.get("reused")), "backup": made.get("backup") or ""}
+
+
+def _pip_error_line(text: str) -> str:
+    """Короткая причина для экрана: последняя строка `ERROR:`, а не двухкилобайтный лог."""
+    lines = [x.strip() for x in str(text or "").splitlines() if x.strip()]
+    for line in reversed(lines):
+        if line.upper().startswith("ERROR:"):
+            return line[:600]
+    return (lines[-1][:600] if lines else "pip завершился с ошибкой")
+
+
+def _has_pip(exe: str) -> bool:
+    try:
+        p = _run(exe, ["-I", "-c", "import pip"], timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return p.returncode == 0
+
+
+def _ensure_pip(exe: str, timeout: float = 180) -> dict:
+    """Вернуть pip в окружение: uv-venv часто создаётся без него, а сломанный
+    `cacert.pem` внутри pip лечится только переустановкой самого pip."""
+    try:
+        p = _run(exe, ["-I", "-X", "utf8", "-m", "ensurepip", "--upgrade"], timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"ok": False, "error": f"ensurepip: {type(e).__name__}: {e}"}
+    text = ((p.stdout or "") + (p.stderr or "")).strip()
+    if p.returncode != 0:
+        return {"ok": False, "error": "ensurepip: " + _pip_error_line(text), "output": text[-4000:]}
+    return {"ok": True, "error": "", "output": text[-4000:]}
+
+
+def _pip_run(exe: str, specs: list, timeout: float) -> dict:
+    try:
+        p = subprocess.run([exe, "-I", "-X", "utf8", "-m", "pip", "install",
+                            "--disable-pip-version-check", "--no-input", *specs],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=timeout, env=child_env())
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}", "output": ""}
+    text = ((p.stdout or "") + (p.stderr or "")).strip()
+    return {"ok": p.returncode == 0, "error": "" if p.returncode == 0 else _pip_error_line(text),
+            "output": text[-4000:]}
 
 
 def pip_install(python: str, specs: list, timeout: float = 1800) -> dict:
-    """Установка в конкретный интерпретатор с понятным PEP 668. Без `python3` из PATH."""
+    """Установка в конкретный интерпретатор с понятным PEP 668. Без `python3` из PATH.
+
+    Ошибки pip бывают двух видов, которые человек не должен расшифровывать сам:
+    в venv нет pip (обычное дело для uv) и у pip повреждён CA-бандл (после гонки с
+    пересозданием venv). Оба лечатся `ensurepip` и одним повтором; на экран идёт
+    последняя строка `ERROR:`, полный лог остаётся в `output`.
+    """
     checked = validate_python(python)
     if not checked.get("valid"):
         return {"ok": False, "error": f"Python не прошёл проверку: {checked['reason']}",
-                "externally_managed": False}
-    env = child_env()
-    try:
-        p = subprocess.run([checked["executable"], "-I", "-X", "utf8", "-m", "pip",
-                            "install", *specs], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=timeout, env=env)
-    except (OSError, subprocess.SubprocessError) as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {e}",
-                "externally_managed": checked["externally_managed"]}
-    text = ((p.stdout or "") + (p.stderr or "")).strip()
-    if p.returncode != 0 and ("externally-managed" in text.lower()
-                              or "externally managed" in text.lower()):
+                "externally_managed": False, "output": ""}
+    if checked["externally_managed"] and not checked.get("venv"):
         return {"ok": False, "error": "PEP 668: этот Python управляется системой. "
                 "Переключите runtime в venv и повторите.",
-                "externally_managed": True, "output": text[-2000:]}
-    return {"ok": p.returncode == 0, "error": "" if p.returncode == 0 else text[-2000:],
-            "externally_managed": checked["externally_managed"], "output": text[-2000:]}
+                "externally_managed": True, "output": ""}
+    exe = checked["executable"]
+    repaired = False
+    if not _has_pip(exe):
+        made = _ensure_pip(exe)
+        if not made["ok"]:
+            return {"ok": False, "error": "в этом окружении нет pip, и восстановить его "
+                    "не удалось: " + made["error"], "externally_managed": False,
+                    "output": made.get("output") or "", "repaired": False}
+        repaired = True
+    res = _pip_run(exe, specs, timeout)
+    low = (res.get("output") or "").lower()
+    if not res["ok"] and ("externally-managed" in low or "externally managed" in low):
+        return {"ok": False, "error": "PEP 668: этот Python управляется системой. "
+                "Переключите runtime в venv и повторите.",
+                "externally_managed": True, "output": res.get("output") or "",
+                "repaired": repaired}
+    if not res["ok"] and ("tls ca certificate bundle" in low or "cacert.pem" in low
+                          or "no module named pip" in low):
+        made = _ensure_pip(exe)
+        if not made["ok"]:
+            return {"ok": False, "error": _pip_error_line(res.get("output") or "")
+                    + " (восстановить pip через ensurepip не удалось: " + made["error"] + ")",
+                    "externally_managed": False, "output": res.get("output") or "",
+                    "repaired": False}
+        repaired = True
+        res = _pip_run(exe, specs, timeout)
+    if not res["ok"]:
+        return {"ok": False, "error": res["error"], "externally_managed": False,
+                "output": res.get("output") or "", "repaired": repaired}
+    return {"ok": True, "error": "", "externally_managed": False,
+            "output": res.get("output") or "", "repaired": repaired}
 
 
+@_locked
 def install_pydantic(specs: list | None = None, timeout: float = 1800,
                      python: str = "") -> dict:
     """Поставить Pydantic AI в effective_python и проверить провайдеры.
@@ -758,7 +1088,8 @@ def install_pydantic(specs: list | None = None, timeout: float = 1800,
     info = pydantic_info(exe)
     cfg = read_config()
     rt = cfg.get("runtime") or {}
-    if rt.get("effective_python") and os.path.realpath(rt["effective_python"]) == os.path.realpath(exe):
+    if rt.get("effective_python") and os.path.normcase(
+            os.path.realpath(rt["effective_python"])) == os.path.normcase(os.path.realpath(exe)):
         # Установка из карточки, а не через bootstrap: конфигурация уже записана, но
         # версия Pydantic AI в ней должна обновиться — иначе следующий статус соврёт.
         rt = dict(rt)

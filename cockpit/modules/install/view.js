@@ -25,6 +25,9 @@ async function recheck(ctx){
 function runtimeCard(ctx){
   const {t, el} = ctx;
   const wrap = el("div", {style:"margin-top:18px"});
+  // Последняя ошибка действия живёт в карточке, а не в тосте: полный лог pip
+  // (тысячи строк) нельзя показывать на пол-экрана, но и терять его незачем.
+  let lastError = "", lastOutput = "", lastBackup = "", lastReused = false;
   const draw = async (fresh) => {
     wrap.innerHTML = "";
     wrap.append(el("h2", {}, t("install.rt_title")),
@@ -59,39 +62,89 @@ function runtimeCard(ctx){
     line(t("install.rt_mode"), mode);
     line(t("install.rt_pydantic"),
       pyd && pyd.ok ? (pyd.version || "?") : t("install.rt_pydantic_missing"));
-    if (rt.externally_managed)
+    if (rt.externally_managed && rt.source !== "venv")
       body.append(el("div", {class:"muted", style:"font-size:12px;margin-top:4px"},
         t("install.rt_managed")));
+    if (rt.source === "venv")
+      body.append(el("div", {class:"muted", style:"font-size:12px;margin-top:4px"},
+        t("install.rt_direct_venv")));
     // Панель, запущенная до смены конфигурации, работает под прежним Python. Это не ошибка
     // конфигурации, но объясняет, почему «поставилось, а не видно».
-    const env = ctx.state.env || {};
-    if (env.python_process && d.effective_python && env.python_process !== d.effective_python)
+    const stale = !!(d.needs_reload
+      || (d.process_python && d.effective_python && d.process_python !== d.effective_python));
+    if (stale){
+      const box = el("div", {class:"warnbox", style:"font-size:12.5px;margin-top:8px"});
+      box.append(el("div", {}, t("install.rt_stale",
+        {process: d.process_python || "?", effective: d.effective_python || "?"})));
+      box.append(el("div", {class:"muted", style:"font-size:12px;margin-top:4px"},
+        t("install.rt_reload_about")));
+      box.append(el("button", {class:"btn sm primary", style:"margin-top:8px",
+        onclick: async (ev) => {
+          ev.target.disabled = true;
+          ev.target.textContent = t("install.ex_busy");
+          await ctx.restartPanel({patient:true});
+        }}, t("install.rt_reload")));
+      body.append(box);
+    }
+    if (lastReused)
       body.append(el("div", {class:"muted", style:"font-size:12px;margin-top:4px"},
-        t("install.rt_stale", {process: env.python_process, effective: d.effective_python})));
+        t("install.rt_reused")));
+    if (lastBackup)
+      body.append(el("div", {class:"muted", style:"font-size:12px;margin-top:4px;overflow-wrap:anywhere"},
+        t("install.rt_backup", {path: lastBackup})));
+    if (lastError){
+      const box = el("div", {class:"warnbox", style:"font-size:12.5px;margin-top:8px"});
+      box.append(el("div", {style:"overflow-wrap:anywhere"}, lastError));
+      if (lastOutput){
+        const det = el("details", {style:"margin-top:6px"});
+        det.append(el("summary", {}, t("install.rt_details")));
+        det.append(el("pre", {class:"mono",
+          style:"max-height:28vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0 0"},
+          lastOutput));
+        box.append(det);
+      }
+      box.append(el("button", {class:"btn sm", style:"margin-top:6px",
+        onclick: () => { lastError = ""; lastOutput = ""; draw(true); }},
+        t("install.rt_dismiss")));
+      body.append(box);
+    }
 
     const row = el("div", {class:"row", style:"gap:8px;margin-top:10px;flex-wrap:wrap"});
     row.append(el("button", {class:"btn sm", onclick: () => draw(true)}, t("install.rt_check")));
     row.append(el("button", {class:"btn sm" + (!d.configured || !d.ok ? " primary" : ""),
       onclick: async (ev) => {
         ev.target.disabled = true; ev.target.textContent = t("install.ex_busy");
+        lastError = ""; lastOutput = ""; lastBackup = ""; lastReused = false;
         const r = await ctx.api("/api/runtime", {method:"POST", quiet:true,
           body: JSON.stringify({action: "bootstrap"})});
         if (r && r.ok){
+          lastOutput = r.output || "";
+          lastBackup = r.backup || "";
+          lastReused = !!r.reused;
           ctx.toast(t("install.rt_done", {path: (r.runtime || {}).effective_python || "?"}), "ok");
         } else {
-          ctx.toast(t("install.rt_error", {why: (r && (r.error || r.reason)) || "?"}), "err", {sticky:true});
+          lastError = (r && (r.error || r.reason)) || "?";
+          lastOutput = (r && r.output) || "";
+          lastBackup = (r && r.backup) || "";
+          ctx.toast(t("install.rt_error", {why: lastError}), "err", {sticky:true});
         }
         draw(true);
       }}, t("install.rt_bootstrap")));
     row.append(el("button", {class:"btn sm",
       onclick: async (ev) => {
         ev.target.disabled = true; ev.target.textContent = t("install.ex_busy");
+        lastError = ""; lastOutput = ""; lastBackup = ""; lastReused = false;
         const r = await ctx.api("/api/runtime", {method:"POST", quiet:true,
           body: JSON.stringify({action: "install_pydantic"})});
         const ok = r && r.ok && (r.pydantic || {}).ok;
-        ctx.toast(ok ? t("install.rt_pydantic_done", {version: ((r.pydantic || {}).version || "?")})
-                     : t("install.rt_pydantic_failed", {why: (r && (r.error || (r.pydantic || {}).error)) || "?"}),
-                 ok ? "ok" : "err", {sticky: !ok});
+        lastOutput = (r && r.output) || "";
+        lastBackup = (r && r.backup) || "";
+        lastReused = !!(r && r.reused);
+        if (ok) ctx.toast(t("install.rt_pydantic_done", {version: ((r.pydantic || {}).version || "?")}), "ok");
+        else {
+          lastError = (r && (r.error || (r.pydantic || {}).error)) || "?";
+          ctx.toast(t("install.rt_pydantic_failed", {why: lastError}), "err", {sticky:true});
+        }
         draw(true);
       }}, t("install.rt_install_pydantic")));
     body.append(row);
@@ -108,21 +161,30 @@ function runtimeCard(ctx){
         isolate, t("install.rt_isolated_hint")));
       cands.forEach(c => {
         const b = el("button", {class:"btn sm", style:"margin:2px 6px 2px 0",
-          title: c.reason || "",
+          title: c.venv ? t("install.rt_direct_venv") : (c.reason || ""),
           onclick: async (ev) => {
             ev.target.disabled = true;
+            lastError = ""; lastOutput = ""; lastBackup = ""; lastReused = false;
             const r = await ctx.api("/api/runtime", {method:"POST", quiet:true,
               body: JSON.stringify({action:"configure", source: c.source, base: c.executable,
                                     isolated: !!isolate.checked})});
             if (r && r.ok){
+              lastOutput = r.output || "";
+              lastBackup = r.backup || "";
+              lastReused = !!r.reused;
               ctx.toast(t("install.rt_done", {path: (r.runtime || {}).effective_python || "?"}), "ok");
               draw(true);
             } else {
               ev.target.disabled = false;
-              ctx.toast(t("install.rt_error", {why: (r && (r.error || r.reason)) || "?"}), "err", {sticky:true});
+              lastError = (r && (r.error || r.reason)) || "?";
+              lastOutput = (r && r.output) || "";
+              lastBackup = (r && r.backup) || "";
+              ctx.toast(t("install.rt_error", {why: lastError}), "err", {sticky:true});
+              draw(true);
             }
           }},
-          [c.source, c.version].filter(Boolean).join(" · ") + " — " + (c.executable || "?"));
+          [c.source, c.version].filter(Boolean).join(" · ") + " — " + (c.executable || "?")
+            + (c.venv ? " · " + t("install.rt_candidate_venv") : ""));
         box.append(b);
       });
       body.append(box);

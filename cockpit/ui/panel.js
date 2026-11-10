@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.220.12";
+const UI_VERSION = "1.220.13";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -533,17 +533,24 @@ async function openLink(path){
 // исчезает раньше, чем человек дойдёт до кнопки «Подробнее».
 const TOAST_MS = 15000;
 function toast(msg, kind="ok", opts={}){
-  const t = el("div",{class:"toast "+kind}, msg);
-  $("#toasts").append(t);
+  // Двухкилобайтный лог pip на пол-экрана не читается и прячет крестик за краем
+  // окна. Показываем причину коротко, полный вывод — в карточке Python.
+  const text = String(msg == null ? "" : msg);
+  const max = (opts && opts.sticky) ? 500 : 1200;
+  const shown = text.length > max ? text.slice(0, max) + "…" : text;
+  const to = el("div",{class:"toast "+kind},
+    el("span", {class:"toast-text"}, shown));
+  $("#toasts").append(to);
   if (opts && opts.sticky){
-    t.classList.add("sticky");
+    to.classList.add("sticky");
     const close = el("button",{class:"toast-close", title: t("toast.close"), "aria-label": t("toast.close")}, "✕");
-    close.onclick = () => t.remove();
-    t.append(close);
-    return t;
+    close.onclick = () => to.remove();
+    to.append(close);
+    return to;
   }
   const ms = Number((opts && opts.timeout) || TOAST_MS);
-  setTimeout(()=>{ t.style.opacity=0; setTimeout(()=>t.remove(),250); }, ms);
+  setTimeout(()=>{ to.style.opacity=0; setTimeout(()=>to.remove(),250); }, ms);
+  return to;
 }
 
 // Исключение в отрисовке не должно проходить молча. Страница настроек проекта обрывалась
@@ -573,11 +580,14 @@ function runtimeText(rt){
   return [v ? "Python " + v : "", src, mode].filter(Boolean).join(" · ");
 }
 
+let GATE_DISMISSED = "";
+
 function drawRuntimeBar(rt){
   const bar = $("#runtimeBar");
   if (!bar) return;
   const configured = !!(rt && rt.configured);
   const ok = !!(rt && rt.ok);
+  if (!configured || ok) GATE_DISMISSED = "";
   if (!configured){
     bar.hidden = false;
     bar.textContent = t("runtime.bar_none");
@@ -596,24 +606,57 @@ function drawRuntimeBar(rt){
 }
 
 function runtimeGate(rt){
+  // Закрытый экран не должен воскресать на каждом опросе состояния. Пока причина и
+  // выбранный Python те же, человек уже прочитал её; полоса Python остаётся красной.
+  const sig = String((rt && rt.reason) || "") + "|" + String((rt && rt.effective_python) || "");
+  if (GATE_DISMISSED === sig) return null;
   const old = $("#runtimeGate");
   if (old) old.remove();
   const g = el("div", {class:"runtime-gate", id:"runtimeGate"});
   const card = el("div", {class:"card"});
   const why = el("div", {class:"runtime-why muted", style:"white-space:pre-wrap;overflow-wrap:anywhere"});
-  const setWhy = w => { why.textContent = t("runtime.gate_why", {why: w || t("runtime.unknown")}); };
+  let full = null;
+  const setWhy = w => {
+    const text = String(w || t("runtime.unknown"));
+    why.textContent = t("runtime.gate_why",
+      {why: text.length > 1200 ? text.slice(0, 1200) + "…" : text});
+    if (full) full.textContent = text;
+  };
   setWhy(rt.reason);
-  card.append(el("h2", {}, t("runtime.gate_title")));
+  const head = el("div", {class:"row gate-head"});
+  head.append(el("h2", {}, t("runtime.gate_title")));
+  const close = el("button", {class:"toast-close gate-close",
+    title: t("runtime.gate_close"), "aria-label": t("runtime.gate_close")}, "✕");
+  // boot() останавливается на этом экране, поэтому «просто закрыть» оставило бы
+  // полупустую страницу. Закрытие ведёт туда, где это исправляется.
+  close.onclick = () => { GATE_DISMISSED = sig; g.remove(); show("install"); };
+  head.append(close);
+  card.append(head);
   card.append(why);
+  if (String(rt.reason || "").length > 1200){
+    const box = el("details", {class:"gate-details"});
+    box.append(el("summary", {}, t("runtime.gate_details")));
+    full = el("pre", {class:"mono", style:"white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0 0"},
+      String(rt.reason || ""));
+    box.append(full);
+    card.append(box);
+  }
   card.append(el("p", {class:"muted", style:"font-size:13px;margin-top:8px"}, t("runtime.gate_block")));
   card.append(el("div", {class:"mono", style:"font-size:12px;overflow-wrap:anywhere;margin-top:8px"},
     t("runtime.gate_effective", {path: (rt && rt.effective_python) || "—"})));
   const row = el("div", {class:"row"});
   row.append(el("button", {class:"btn", onclick: () => { g.remove(); show("install"); }},
     t("runtime.open_install")));
+  row.append(el("button", {class:"btn", onclick: () => restartPanel({patient:true})},
+    t("runtime.gate_reload")));
   row.append(el("button", {class:"btn primary", onclick: async () => {
     const d = await api("/api/runtime?fresh=1", {quiet:true});
-    if (d && d.ok){ g.remove(); toast(t("runtime.check_ok"), "ok"); location.reload(); }
+    if (d && d.ok){
+      GATE_DISMISSED = "";
+      g.remove();
+      toast(t("runtime.check_ok"), "ok");
+      restartPanel({patient:true});
+    }
     else setWhy((d && d.reason) || t("runtime.unknown"));
   }}, t("runtime.check_again")));
   card.append(row);

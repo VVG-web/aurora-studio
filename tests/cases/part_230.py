@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from harness import KIT, SCRIPTS, test
@@ -31,6 +33,17 @@ def _exe(path: Path, body: str) -> bool:
     except (OSError, NotImplementedError):
         return False
     return True
+
+
+@contextmanager
+def _runtime_home(tmp: Path):
+    """Блокировка runtime живёт в HOME; проверка не должна создавать её в настоящем."""
+    old_home, old_lock = RT.HOME, RT.RUNTIME_LOCK
+    RT.HOME, RT.RUNTIME_LOCK = tmp, tmp / "runtime.lock"
+    try:
+        yield tmp
+    finally:
+        RT.HOME, RT.RUNTIME_LOCK = old_home, old_lock
 
 
 @test
@@ -111,6 +124,137 @@ def test_runtime_venv_comes_from_a_validated_base(tmp: Path):
     bad = RT.create_venv(str(tmp / "no-such-python"), nowhere)
     assert not bad["ok"], bad
     assert not nowhere.exists(), "каталог venv остался после отказа базы"
+
+
+@test
+def test_runtime_keeps_packages_when_reusing_or_replacing_venv(tmp: Path):
+    """Смена Python не должна стирать установленные пакеты.
+
+    Раньше `create_venv` делал `rmtree` существующего каталога: настройка runtime
+    удаляла установленный Pydantic AI. Теперь та же база переиспользуется, а другая
+    или принудительная замена оставляет старое окружение рядом как venv.bak-<время>.
+    """
+    target = tmp / "keep-venv"
+    first = RT.create_venv(sys.executable, target)
+    assert first["ok"], first["error"]
+    assert not first.get("reused"), first
+    marker = target / "installed-package.txt"
+    marker.write_text("pydantic-ai", encoding="utf-8")
+
+    again = RT.create_venv(sys.executable, target)
+    assert again["ok"] and again.get("reused"), again
+    assert marker.read_text(encoding="utf-8") == "pydantic-ai", "пакеты пропали при повторном выборе"
+
+    forced = RT.create_venv(sys.executable, target, reuse=False)
+    assert forced["ok"], forced["error"]
+    backup = Path(forced.get("backup") or "")
+    assert backup.is_dir(), forced
+    assert (backup / "installed-package.txt").read_text(encoding="utf-8") == "pydantic-ai", \
+        "старое окружение не сохранено"
+    assert (target / "pyvenv.cfg").is_file(), "новое окружение не создано"
+
+
+@test
+def test_runtime_uses_a_selected_venv_directly(tmp: Path):
+    """Выбранный готовый venv — это окружение, а не база для ещё одного venv."""
+    venv = tmp / "direct-venv"
+    made = RT.create_venv(sys.executable, venv)
+    assert made["ok"], made["error"]
+    with _runtime_home(tmp / "direct-home"):
+        got = RT.configure("", made["effective"], write=False)
+    assert got["ok"], got
+    assert got.get("reused") is True, got
+    runtime = got["runtime"]
+    assert runtime["effective_python"] == made["effective"], runtime
+    assert os.path.realpath(runtime["venv_path"]) == os.path.realpath(str(venv)), runtime
+    assert runtime["isolated"] is True, runtime
+    assert runtime["source"] == "venv", runtime
+    assert runtime["base_python"], runtime
+
+
+@test
+def test_runtime_restores_the_old_venv_when_the_new_one_fails(tmp: Path):
+    """Сбой создания нового окружения не должен оставлять человека без старого."""
+    if os.name != "posix":
+        return
+    target = tmp / "restore-venv"
+    made = RT.create_venv(sys.executable, target)
+    assert made["ok"], made["error"]
+    marker = target / "keep.txt"
+    marker.write_text("packages", encoding="utf-8")
+    fake = tmp / "python-fail"
+    probe = json.dumps({
+        "executable": str(fake), "real": str(fake), "version": "3.13.0",
+        "prefix": str(tmp / "fake-prefix"), "base_prefix": str(tmp / "fake-prefix"),
+        "base_executable": str(fake), "venv": True, "writable": True,
+        "purelib": str(tmp / "fake-purelib"), "user_site": "",
+        "externally_managed": False,
+    })
+    body = (
+        "#!/bin/sh\n"
+        f'if [ "$2" = "-c" ]; then printf \'%s\\n\' {shlex.quote(probe)}; exit 0; fi\n'
+        "echo 'new venv failed' >&2\n"
+        "exit 1\n"
+    )
+    assert _exe(fake, body), "не удалось создать тестовый интерпретатор"
+    got = RT.create_venv(str(fake), target)
+    assert not got["ok"], got
+    assert not got.get("backup"), got
+    assert marker.read_text(encoding="utf-8") == "packages", "старое окружение не вернулось"
+    assert (target / "pyvenv.cfg").is_file(), target
+
+
+@test
+def test_runtime_pip_repairs_missing_pip_and_ca_bundle(tmp: Path):
+    """pip в venv может отсутствовать (uv) или потерять `cacert.pem` (гонка).
+    Оба случая лечатся ensurepip и одним повтором, а на экран идёт одна строка."""
+    if os.name != "posix":
+        return
+    assert RT._pip_error_line("Collecting x\nERROR: cacert.pem invalid\ncached").startswith("ERROR:")
+    assert "Collecting" not in RT._pip_error_line("Collecting x\nERROR: cacert.pem invalid\ncached")
+    assert RT._needs_reload(sys.executable) is False
+    assert RT._needs_reload(str(tmp / "another-python")) is True
+
+    for has_pip, ok_on in ((1, 1), (0, 2)):
+        case = tmp / f"pip-{has_pip}-{ok_on}"
+        case.mkdir()
+        log = case / "calls.log"
+        fake = case / "python-venv"
+        probe = json.dumps({
+            "executable": str(fake), "real": str(fake), "version": "3.13.0",
+            "prefix": str(case / "prefix"), "base_prefix": str(case / "prefix"),
+            "base_executable": str(fake), "venv": True, "writable": True,
+            "purelib": str(case / "purelib"), "user_site": "",
+            "externally_managed": False,
+        })
+        body = (
+            "#!/bin/sh\n"
+            f"log={shlex.quote(str(log))}\n"
+            'case "$3" in\n'
+            f'  "import pip") exit {has_pip};;\n'
+            f'  *"import json"*) printf \'%s\\n\' {shlex.quote(probe)}; exit 0;;\n'
+            "esac\n"
+            'if [ "$4" = "-m" ] && [ "$5" = "ensurepip" ]; then\n'
+            '  echo "ensurepip" >> "$log"; echo "Successfully installed pip"; exit 0\n'
+            "fi\n"
+            'if [ "$4" = "-m" ] && [ "$5" = "pip" ]; then\n'
+            '  echo "pip-install" >> "$log"\n'
+            '  n=$(grep -c \'^pip-install$\' "$log" 2>/dev/null || true)\n'
+            f'  if [ "$n" -lt {ok_on} ]; then\n'
+            "    echo 'ERROR: Could not install packages due to an OSError: "
+            "Could not find a suitable TLS CA certificate bundle, invalid path: /x/cacert.pem' >&2\n"
+            "    exit 1\n"
+            "  fi\n"
+            '  echo "Successfully installed pydantic-ai"; exit 0\n'
+            "fi\n"
+            "exit 0\n"
+        )
+        assert _exe(fake, body), "не удалось создать тестовый интерпретатор"
+        got = RT.pip_install(str(fake), ["pydantic-ai"], timeout=30)
+        assert got["ok"] and got.get("repaired"), got
+        calls = log.read_text(encoding="utf-8").splitlines()
+        assert "ensurepip" in calls, calls
+        assert calls.count("pip-install") == ok_on, calls
 
 
 @test
@@ -198,9 +342,10 @@ def test_runtime_pep668_goes_to_venv(tmp: Path):
 
     RT.best, RT.create_venv = fake_best, fake_create
     try:
-        forced = RT.configure("", "", isolated=False, write=False)
-        kind[0] = "custom"
-        custom = RT.configure("", "", isolated=False, write=False)
+        with _runtime_home(tmp / "pep668-home"):
+            forced = RT.configure("", "", isolated=False, write=False)
+            kind[0] = "custom"
+            custom = RT.configure("", "", isolated=False, write=False)
     finally:
         RT.best, RT.create_venv = original
     assert forced["ok"], forced
@@ -334,6 +479,46 @@ def test_doctor_reports_runtime_state(tmp: Path):
     assert p.returncode == 0, (p.stderr or "")[-1500:]
     data = json.loads((p.stdout or "").strip().splitlines()[-1])
     assert not data["errors"] and any("не выбран" in w for w in data["warns"]), data
+
+
+@test
+def test_runtime_gate_can_be_closed_and_the_panel_restarted(tmp: Path):
+    """Экран ошибки не должен требовать перезагрузки браузера.
+
+    У блокирующего экрана были только «Открыть установку» и «Проверить снова»:
+    длинная причина растягивала карточку, кнопки уходили за край, крестика не было.
+    Теперь есть закрытие, перезапуск панели и прокручиваемые детали; карточка Python
+    предлагает перезагрузку, когда процесс панели остался на прежнем интерпретаторе.
+    """
+    js = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    for needle in ("runtime.gate_close", "runtime.gate_reload", "GATE_DISMISSED",
+                   "restartPanel({patient:true})"):
+        assert needle in js, needle
+    # Раньше локальная переменная `t` в toast() затеняла перевод: `t("toast.close")`
+    # падал, и sticky-ошибка оставалась без крестика. Проверяем, что имя не вернулось.
+    toast_src = js.split("function toast(", 1)[1].split("// Исключение", 1)[0]
+    assert "const to = el" in toast_src and "t(\"toast.close\")" in toast_src, toast_src[:400]
+    css = (KIT / "cockpit/ui/panel.css").read_text(encoding="utf-8")
+    gate = css.split(".runtime-gate{", 1)[1].split("/* документация */", 1)[0]
+    assert "max-height" in gate and "overflow:auto" in gate, gate
+    assert ".toast.sticky .toast-text" in css and "max-height" in css, "тост не ограничен по высоте"
+
+    view = (KIT / "cockpit/modules/install/view.js").read_text(encoding="utf-8")
+    for needle in ("install.rt_reload", "install.rt_reload_about", "ctx.restartPanel",
+                   "install.rt_details", "lastBackup", "install.rt_backup"):
+        assert needle in view, needle
+
+    for lang in ("ru", "en"):
+        install = json.loads((KIT / "cockpit/modules/install/i18n" / f"{lang}.json")
+                             .read_text(encoding="utf-8"))
+        for key in ("install.rt_reload", "install.rt_reload_about", "install.rt_reused",
+                    "install.rt_backup", "install.rt_direct_venv",
+                    "install.rt_candidate_venv", "install.rt_details",
+                    "install.rt_dismiss"):
+            assert key in install, (lang, key)
+        panel = json.loads((KIT / "cockpit/i18n" / f"{lang}.json").read_text(encoding="utf-8"))
+        for key in ("runtime.gate_close", "runtime.gate_reload", "runtime.gate_details"):
+            assert key in panel, (lang, key)
 
 
 @test

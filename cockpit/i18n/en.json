@@ -1511,5 +1511,8 @@
   "runtime.gate_effective": "Saved effective Python: {path}",
   "runtime.open_install": "Open Install",
   "runtime.check_again": "Check again",
-  "runtime.check_ok": "Subsystem Python is working"
+  "runtime.check_ok": "Subsystem Python is working",
+  "runtime.gate_close": "Close",
+  "runtime.gate_reload": "Restart the panel",
+  "runtime.gate_details": "Details"
 }

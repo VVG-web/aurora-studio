@@ -125,7 +125,7 @@
   "install.acc_user_site": "Папка пакетов этого Python закрыта на запись: кнопка и команда ставят в вашу папку пользователя (--user) — права администратора не нужны.",
   "install.acc_bin_user": "Без прав администратора: {cmd}",
   "install.rt_title": "Python подсистемы",
-  "install.rt_about": "Один интерпретатор для установщика, проверки совместимости, agent_core.py, MCP-серверов и инструментов. Выбирается один раз и сохраняется в ~/.aurora/config.json. Смена конфигурации инвалидирует venv и установленные пакеты.",
+  "install.rt_about": "Один интерпретатор для установщика, проверки совместимости, agent_core.py, MCP-серверов и инструментов. Выбирается один раз и сохраняется в ~/.aurora/config.json. Существующее окружение не удаляется: при смене базы оно сохраняется рядом как venv.bak-<время>, а выбранный готовый venv используется напрямую.",
   "install.rt_ok": "работает",
   "install.rt_bad": "не проходит проверку",
   "install.rt_configured": "конфигурация записана",
@@ -153,6 +153,14 @@
   "install.rt_pydantic_done": "Pydantic AI установлен: {version}",
   "install.rt_pydantic_failed": "Pydantic AI не установлен: {why}",
   "install.rt_stale": "Панель запущена под другим Python ({process}); перезапустите её, чтобы всё пошло через {effective}.",
+  "install.rt_reload": "Перезагрузить панель",
+  "install.rt_reload_about": "Python изменён. Панель перезапустится и продолжит работу в новом окружении.",
+  "install.rt_reused": "Используется существующее окружение: установленные в нём пакеты сохранены.",
+  "install.rt_backup": "Старое окружение сохранено: {path}",
+  "install.rt_direct_venv": "Готовое окружение используется напрямую, без создания вложенного venv.",
+  "install.rt_candidate_venv": "готовое окружение",
+  "install.rt_details": "Подробности установки",
+  "install.rt_dismiss": "Скрыть",
   "install.ex_settings_python": "Рабочий Python: {path}",
   "install.ex_settings_blocked": "Pydantic AI недоступен: {why}. Вызовы с инструментами и MCP прямым HTTP не принимаются — исправьте установку."
 }

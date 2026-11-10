@@ -125,7 +125,7 @@
   "install.acc_user_site": "This Python's package folder is read-only: the button and the command install into your user folder (--user) — no administrator rights needed.",
   "install.acc_bin_user": "Without administrator rights: {cmd}",
   "install.rt_title": "Subsystem Python",
-  "install.rt_about": "One interpreter for the installer, compatibility check, agent_core.py, MCP servers and tools. Chosen once and saved in ~/.aurora/config.json. Changing it invalidates the venv and installed packages.",
+  "install.rt_about": "One interpreter for the installer, compatibility check, agent_core.py, MCP servers and tools. Chosen once and saved in ~/.aurora/config.json. An existing environment is not deleted: when the base changes it is kept nearby as venv.bak-<time>, and a selected ready venv is used directly.",
   "install.rt_ok": "working",
   "install.rt_bad": "fails validation",
   "install.rt_configured": "configuration saved",
@@ -153,6 +153,14 @@
   "install.rt_pydantic_done": "Pydantic AI installed: {version}",
   "install.rt_pydantic_failed": "Pydantic AI was not installed: {why}",
   "install.rt_stale": "The panel is running under a different Python ({process}); restart it so everything goes through {effective}.",
+  "install.rt_reload": "Restart the panel",
+  "install.rt_reload_about": "Python changed. The panel will restart and continue in the new environment.",
+  "install.rt_reused": "Using the existing environment: packages installed there are preserved.",
+  "install.rt_backup": "Previous environment preserved: {path}",
+  "install.rt_direct_venv": "This ready environment is used directly, without creating a nested venv.",
+  "install.rt_candidate_venv": "ready environment",
+  "install.rt_details": "Installation details",
+  "install.rt_dismiss": "Dismiss",
   "install.ex_settings_python": "Effective Python: {path}",
   "install.ex_settings_blocked": "Pydantic AI is unavailable: {why}. Tool and MCP calls are not accepted over plain HTTP — fix the installation."
 }

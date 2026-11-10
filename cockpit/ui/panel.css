@@ -532,6 +532,8 @@ tr:last-child td{border-bottom:0}
 .toast.warn{border-color:color-mix(in oklab,var(--tier-inreview) 50%,var(--border))}
 /* Ошибка установки или совместимости не исчезает сама: её закрывают кнопкой. */
 .toast.sticky{display:flex;align-items:flex-start;gap:var(--sp-2);white-space:pre-wrap;max-width:52ch}
+.toast-text{overflow-wrap:anywhere;min-width:0}
+.toast.sticky .toast-text{max-height:32vh;overflow:auto}
 .toast-close{flex:none;border:0;background:none;color:var(--text-muted);cursor:pointer;
   font-size:var(--text-lg);line-height:1;padding:0 var(--sp-1)}
 .toast-close:hover{color:var(--text)}
@@ -540,9 +542,16 @@ tr:last-child td{border-bottom:0}
    Ни одна подсистема не работает, пока человек не выберет рабочий интерпретатор. */
 .runtime-gate{position:fixed;inset:0;z-index:120;display:flex;align-items:center;
   justify-content:center;padding:var(--sp-5);background:var(--bg)}
-.runtime-gate .card{max-width:640px;width:100%;padding:var(--sp-5)}
+.runtime-gate .card{max-width:640px;width:100%;padding:var(--sp-5);
+  max-height:calc(100vh - 2*var(--sp-5));overflow:auto}
 .runtime-gate h2{margin:0 0 var(--sp-3)}
 .runtime-gate .row{gap:var(--sp-2);flex-wrap:wrap;align-items:center;margin-top:var(--sp-4)}
+.runtime-gate .gate-head{justify-content:space-between;align-items:flex-start;margin-top:0}
+.runtime-gate .gate-head h2{margin-bottom:0}
+.runtime-gate .gate-close{font-size:var(--text-lg)}
+.runtime-gate .runtime-why{max-height:30vh;overflow:auto}
+.runtime-gate .gate-details{margin-top:var(--sp-3);font-size:var(--text-sm)}
+.runtime-gate .gate-details pre{max-height:24vh;overflow:auto;margin:6px 0 0}
 
 /* документация */
 .doc{max-width:80ch;font-size:14.5px}

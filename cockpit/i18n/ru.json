@@ -1511,5 +1511,8 @@
   "runtime.gate_effective": "Записанный рабочий Python: {path}",
   "runtime.open_install": "Открыть установку",
   "runtime.check_again": "Проверить снова",
-  "runtime.check_ok": "Python подсистемы работает"
+  "runtime.check_ok": "Python подсистемы работает",
+  "runtime.gate_close": "Закрыть",
+  "runtime.gate_reload": "Перезагрузить панель",
+  "runtime.gate_details": "Подробности"
 }
