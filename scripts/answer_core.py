@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 
