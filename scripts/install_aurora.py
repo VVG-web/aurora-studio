@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 KIT_ROOT = Path(__file__).resolve().parents[1]
-from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import TODAY, python_executable  # noqa: E402 — дата в UTC, одна на движок; один интерпретатор на подсистему
 
 def manifest_pairs() -> list:
     """[(файл в kit, путь в проекте)] из engine_manifest.txt — тот же список, по которому
@@ -230,19 +230,25 @@ def configure_merge_driver(target) -> bool:
     Повторная настройка идемпотентна.
     """
     target = Path(target)
+    python = python_executable()
+    exe = f'"{python}"' if " " in python else python
+
+    def driver(script: str, *args: str) -> str:
+        return " ".join([exe, script, *args])
+
     drivers = (
         ("merge.aurora-manifest.name", "Aurora manifest merge"),
-        ("merge.aurora-manifest.driver",
-         "python3 .aurora/scripts/merge_manifest.py %O %A %B %L %P"),
+        ("merge.aurora-manifest.driver", driver(".aurora/scripts/merge_manifest.py",
+                                                "%O", "%A", "%B", "%L", "%P")),
         ("merge.aurora-lint-baseline.name", "Aurora lint baseline merge"),
-        ("merge.aurora-lint-baseline.driver",
-         "python3 .aurora/scripts/merge_lint.py baseline %O %A %B %L %P"),
+        ("merge.aurora-lint-baseline.driver", driver(".aurora/scripts/merge_lint.py",
+                                                     "baseline", "%O", "%A", "%B", "%L", "%P")),
         ("merge.aurora-lint-residue.name", "Aurora lint residue merge"),
-        ("merge.aurora-lint-residue.driver",
-         "python3 .aurora/scripts/merge_lint.py residue %O %A %B %L %P"),
+        ("merge.aurora-lint-residue.driver", driver(".aurora/scripts/merge_lint.py",
+                                                    "residue", "%O", "%A", "%B", "%L", "%P")),
         ("merge.aurora-build-failures.name", "Aurora build failures merge"),
-        ("merge.aurora-build-failures.driver",
-         "python3 .aurora/scripts/merge_failures.py %O %A %B %L %P"),
+        ("merge.aurora-build-failures.driver", driver(".aurora/scripts/merge_failures.py",
+                                                      "%O", "%A", "%B", "%L", "%P")),
     )
     try:
         for key, value in drivers:

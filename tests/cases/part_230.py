@@ -337,6 +337,23 @@ def test_doctor_reports_runtime_state(tmp: Path):
 
 
 @test
+def test_merge_driver_uses_the_runtime_python(tmp: Path):
+    """git merge driver не должен звать `python3` из PATH: он идёт тем же
+    интерпретатором, что и подсистема."""
+    sys.path.insert(0, str(SCRIPTS))
+    import install_aurora as IA  # noqa: E402
+    repo = tmp / "merge-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    assert IA.configure_merge_driver(repo) is True
+    value = subprocess.run(["git", "-C", str(repo), "config", "--get",
+                            "merge.aurora-manifest.driver"],
+                           capture_output=True, text=True, encoding="utf-8").stdout.strip()
+    assert not value.startswith("python3 "), value
+    assert value.startswith(sys.executable) or value.startswith(f'"{sys.executable}"'), value
+
+
+@test
 def test_runtime_detects_the_install_source(tmp: Path):
     cases = {
         "/opt/homebrew/bin/python3.15": "homebrew",

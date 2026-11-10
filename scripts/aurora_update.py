@@ -745,6 +745,43 @@ def check_engine_set(target: Path, items, extra=()) -> list:
     return ETX.verify_overlay(staged, target / ENGINE / "scripts", {p.stem for p in (KIT / "scripts").glob("*.py")})
 
 
+def configure_merge_driver(target: Path) -> bool:
+    """Настроить git merge drivers на effective_python, а не `python3` из PATH.
+
+    Драйвер вызывает git, а не движок, но интерпретатор должен быть тем же, что у
+    подсистемы: иначе на машине с двумя Python merge идёт не тем, чем всё остальное.
+    """
+    python = python_executable()
+    exe = f'"{python}"' if " " in python else python
+
+    def driver(script: str, *args: str) -> str:
+        return " ".join([exe, script, *args])
+
+    drivers = (
+        ("merge.aurora-manifest.name", "Aurora manifest merge"),
+        ("merge.aurora-manifest.driver", driver(".aurora/scripts/merge_manifest.py",
+                                                "%O", "%A", "%B", "%L", "%P")),
+        ("merge.aurora-lint-baseline.name", "Aurora lint baseline merge"),
+        ("merge.aurora-lint-baseline.driver", driver(".aurora/scripts/merge_lint.py",
+                                                     "baseline", "%O", "%A", "%B", "%L", "%P")),
+        ("merge.aurora-lint-residue.name", "Aurora lint residue merge"),
+        ("merge.aurora-lint-residue.driver", driver(".aurora/scripts/merge_lint.py",
+                                                    "residue", "%O", "%A", "%B", "%L", "%P")),
+        ("merge.aurora-build-failures.name", "Aurora build failures merge"),
+        ("merge.aurora-build-failures.driver", driver(".aurora/scripts/merge_failures.py",
+                                                      "%O", "%A", "%B", "%L", "%P")),
+    )
+    try:
+        for key, value in drivers:
+            cp = subprocess.run(["git", "-C", str(target), "config", key, value],
+                                capture_output=True, timeout=30)
+            if cp.returncode != 0:
+                return False
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def apply_engine(target: Path, items: list, gone: list, ver: str, from_ver: str, effects=(), extra=()) -> dict:
     """Положить файлы движка проекта как одну операцию: проверка → снимок → метка → запись → сверка → (при сбое) откат.
 
@@ -796,6 +833,7 @@ def apply_engine(target: Path, items: list, gone: list, ver: str, from_ver: str,
         if not back:
             ETX.clear_pending(target)       # движок вернулся целиком; метка остаётся только у неоконченного отката
         return res
+    configure_merge_driver(target)
     return {**res, "ok": True}
 
 
