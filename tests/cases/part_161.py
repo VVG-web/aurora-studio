@@ -266,7 +266,11 @@ def test_successful_install_leaves_a_record_for_other_users(tmp: Path):
             assert (row["version"], row["path"], row["user"]) == ("9.9.9", str(venv), me["user"]), row
             # пакет Python из «Установки» — тот же журнал
             real = (ck.subprocess.run, ck.environment)
-            ck.subprocess.run = lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 0, "ok", "")
+            def fake_run(cmd, *a, **k):
+                if any("importlib.util.find_spec" in str(c) for c in cmd):
+                    return subprocess.CompletedProcess(cmd, 0, '{"ok": true, "version": "1.2.3"}', "")
+                return subprocess.CompletedProcess(cmd, 0, "ok", "")
+            ck.subprocess.run = fake_run
             ck.environment = lambda fresh=False: {"items": [{"pip": "lxml", "ok": True}]}
             try:
                 out = ck.env_install("lxml")

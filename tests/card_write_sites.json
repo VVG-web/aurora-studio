@@ -386,6 +386,12 @@
    "calls": 1,
    "git": "none"
   },
+  "scripts/aurora_runtime.py:_write_config": {
+   "kind": "other",
+   "reason": "конфигурация runtime (~/.aurora/config.json): служебный файл вне базы знаний, не карточка",
+   "calls": 2,
+   "git": "none"
+  },
   "scripts/aurora_extras.py:_install": {
    "kind": "other",
    "reason": "снимок установки надстройки: временный файл для pip (вне базы знаний)",
