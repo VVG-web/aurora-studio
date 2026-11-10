@@ -52,6 +52,8 @@ jobs:
           # коммит, поднявший VERSION.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
+      - name: Права токена
+        run: gh api "repos/$GH_REPO" --jq '.permissions'
       - name: Выпустить версию из VERSION
         shell: bash
         run: |
