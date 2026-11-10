@@ -709,7 +709,7 @@ def main(argv=None) -> int:
     p.add_argument("--deadline", type=float, default=300,
                    help="секунд на один вызов модели")
     p.add_argument("--no-source", action="store_true",
-                   help="не писать полный снимок исходников в CleanRoom/cr-source/")
+                   help="не писать снимок исходников в CleanRoom/cr-source/")
     a = p.parse_args(argv)
     root = str(Path(a.project).resolve())
     if a.check:

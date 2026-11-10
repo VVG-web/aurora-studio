@@ -990,6 +990,7 @@
     "дата передачи (по умолчанию сегодня)": "the handover date (default today)",
     "переданный бинарник (docx/pdf) — копируется рядом": "the handed-over binary (docx/pdf) — copied alongside",
     "записать снапшот (иначе только что будет заморожено)": "write the snapshot (otherwise only what would be frozen)",
+    "не писать снимок исходников в CleanRoom/cr-source/": "do not write the source snapshot to CleanRoom/cr-source/",
     "очередь верификации: что проверять первым по связям и продуктам": "the verification queue: what to check first by links and products",
     "строк в очереди (по умолчанию 30)": "lines in the queue (default 30)",
     "фильтр очереди по разделу или подстроке имени": "filter the queue by section or a substring of the name",
