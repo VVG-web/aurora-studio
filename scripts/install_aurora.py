@@ -27,8 +27,7 @@ import sys
 from pathlib import Path
 
 KIT_ROOT = Path(__file__).resolve().parents[1]
-from aurora_common import (TODAY,  # noqa: E402 — дата в UTC, одна на движок
-                           configure_merge_driver as configure_merge_driver_common)
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 def manifest_pairs() -> list:
     """[(файл в kit, путь в проекте)] из engine_manifest.txt — тот же список, по которому
@@ -229,7 +228,10 @@ def configure_merge_driver(target) -> bool:
     Драйверы вызываются из корня проекта, поэтому пути к скриптам относительные.
     Повторная настройка идемпотентна.
     """
-    return configure_merge_driver_common(target)
+    # Импорт внутри: установщик подключает и старая копия `update` из проекта, где
+    # `aurora_common` ещё не знает этой функции. Верхний импорт ронял весь модуль.
+    from aurora_common import configure_merge_driver as common
+    return common(target)
 
 
 class Installer:
