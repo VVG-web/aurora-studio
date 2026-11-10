@@ -5841,7 +5841,7 @@ def refresh_import_paths() -> None:
         pass
     importlib.invalidate_caches()
 
-def runtime_state(include_candidates: bool = False) -> dict:
+def runtime_state(include_candidates: bool = False, force: bool = False) -> dict:
     """Единый Python подсистемы: что выбрано, годится ли оно и чем именно.
 
     Читается из `~/.aurora/config.json` и перепроверяется запуском. Ошибку модуля не
@@ -5850,7 +5850,7 @@ def runtime_state(include_candidates: bool = False) -> dict:
     """
     try:
         import aurora_runtime as RT
-        return RT.status(include_candidates=include_candidates)
+        return RT.status(include_candidates=include_candidates, force=force)
     except Exception as e:  # noqa: BLE001 — панель не должна падать из-за диагностики
         return {"configured": False, "ok": False,
                 "reason": f"runtime недоступен: {type(e).__name__}: {e}",
@@ -5880,9 +5880,9 @@ def runtime_action(payload: dict) -> dict:
         if action == "install_pydantic":
             return RT.install_pydantic(python=str(payload.get("python") or ""))
         if action == "check":
-            info = RT.pydantic_info(str(payload.get("python") or ""))
-            return {"ok": bool(info.get("ok")), "pydantic": info,
-                    "runtime": RT.status(include_candidates=True)}
+            rt = RT.status(include_candidates=True, force=True)
+            info = RT.pydantic_info(str(payload.get("python") or rt.get("effective_python") or ""))
+            return {"ok": bool(info.get("ok")), "pydantic": info, "runtime": rt}
     except Exception as e:  # noqa: BLE001 — отказ установки показывается человеку
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     return RT.status(include_candidates=True)
@@ -5906,7 +5906,7 @@ def environment(fresh: bool = False) -> dict:
     from aurora_common import find_bin, python_executable, python_status, python_install_hint
     refresh_import_paths()
     python_path = python_executable()
-    rt = runtime_state()
+    rt = runtime_state(force=fresh)
 
     def has_module(names):
         for name in names:
@@ -7592,7 +7592,8 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/runtime":
             # Состояние единой конфигурации Python и найденные интерпретаторы. `fresh=1` —
             # обойти все кандидаты заново: это дорого (запуск каждого), поэтому по кнопке.
-            self.send_json(runtime_state(include_candidates=bool(q.get("fresh"))))
+            self.send_json(runtime_state(include_candidates=bool(q.get("fresh")),
+                                         force=bool(q.get("fresh"))))
         elif u.path == "/api/mcp/kit":
             # Серверы машины: значения секретов заменены маской — см. `mcp_mask`.
             self.send_json(mcp_kit_state())

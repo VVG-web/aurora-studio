@@ -624,9 +624,9 @@ def child_env(base=None, **extra) -> dict:
     return env
 
 
-def status(include_candidates: bool = False) -> dict:
+def status(include_candidates: bool = False, force: bool = False) -> dict:
     """Сводка для панели и CLI. По умолчанию без обхода всех интерпретаторов: это дорого."""
-    got = current()
+    got = current(force=force)
     cfg = read_config()
     out = {
         "config": str(CONFIG),

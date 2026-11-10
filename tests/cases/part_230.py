@@ -209,6 +209,27 @@ def test_runtime_keeps_its_own_environment(tmp: Path):
 
 
 @test
+def test_status_force_bypasses_the_cache(tmp: Path):
+    """Кнопка «Проверить снова» должна перепроверить конфигурацию, а не отдать
+    закэшированное состояние: force доходит до current()."""
+    original = RT.current
+    calls = []
+
+    def fake_current(force: bool = False) -> dict:
+        calls.append(force)
+        return {"configured": False, "ok": False, "reason": "", "runtime": {},
+                "base": {}, "effective_python": "", "pydantic": {}}
+
+    RT.current = fake_current
+    try:
+        RT.status()
+        RT.status(force=True)
+    finally:
+        RT.current = original
+    assert calls == [False, True], calls
+
+
+@test
 def test_aurora_home_moves_the_whole_machine_state(tmp: Path):
     """`AURORA_HOME` двигает не только config.json: venv, кэши и состояние агента
     должны идти за ним, иначе проверка runtime пишет в настоящую домашнюю папку."""
