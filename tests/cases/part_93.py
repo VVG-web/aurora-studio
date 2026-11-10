@@ -655,24 +655,28 @@ def test_panel_installs_pinned_or_aged_python_packages(tmp: Path):
 
     def spy(cmd, *a, **kw):
         seen.append([str(c) for c in cmd])
+        if any("importlib.util.find_spec" in str(c) for c in cmd):
+            return subprocess.CompletedProcess(cmd, 0, '{"ok": true, "version": "1.2.3"}', "")
         return subprocess.CompletedProcess(cmd, 0, "ok", "")
     ck.subprocess.run = spy
     ck.environment = lambda fresh=False: {"items": [{"pip": "lxml", "ok": True}, {"pip": "beautifulsoup4", "ok": True}]}
     EX.aged_version = lambda dist, days, now=0.0: "5.0.0"
+    def pip_cmds():
+        return [c for c in seen if "-m" in c and "pip" in c]
     try:
         out = ck.env_install("beautifulsoup4")
-        assert out["ok"] and seen[-1][-1] == f"beautifulsoup4=={EX.requirements_pins()['beautifulsoup4']}", seen
+        assert out["ok"] and pip_cmds()[-1][-1] == f"beautifulsoup4=={EX.requirements_pins()['beautifulsoup4']}", seen
         out = ck.env_install("lxml")
-        assert out["ok"] and seen[-1][-1] == "lxml<=5.0.0", seen
+        assert out["ok"] and pip_cmds()[-1][-1] == "lxml<=5.0.0", seen
         # -P только там, где он есть (Python 3.11+); markdownify ставится вместе с закреплённым beautifulsoup4
-        assert ("-P" in seen[-1]) == (sys.version_info >= (3, 11)), seen[-1]
+        assert ("-P" in pip_cmds()[-1]) == (sys.version_info >= (3, 11)), pip_cmds()[-1]
         pins = EX.requirements_pins()
         ck.environment = lambda fresh=False: {"items": [{"pip": "markdownify", "ok": True}]}
         out = ck.env_install("markdownify")
-        assert seen[-1][-2:] == [f"markdownify=={pins['markdownify']}", f"beautifulsoup4=={pins['beautifulsoup4']}"], seen[-1]
+        assert pip_cmds()[-1][-2:] == [f"markdownify=={pins['markdownify']}", f"beautifulsoup4=={pins['beautifulsoup4']}"], pip_cmds()[-1]
         EX.aged_version = lambda dist, days, now=0.0: (_ for _ in ()).throw(OSError("нет сети"))
         out = ck.env_install("lxml")
-        assert seen[-1][-1] == "lxml" and "паузу после выпуска проверить не удалось" in out["output"], (seen, out)
+        assert pip_cmds()[-1][-1] == "lxml" and "паузу после выпуска проверить не удалось" in out["output"], (seen, out)
         assert "beautifulsoup4==" in ck.pip_command("beautifulsoup4") and ck.pip_command("lxml", False).endswith("install lxml")
         # Python панели поставлен для всех, а папка его пакетов закрыта на запись — команда с `--user`
         assert ck.pip_command("lxml", True).endswith("install --user lxml")
