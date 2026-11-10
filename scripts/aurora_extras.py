@@ -48,7 +48,7 @@ from pathlib import Path
 from aurora_common import replace_file, venv_env  # noqa: E402
 import aurora_runtime as RT  # noqa: E402 — единый Python всех подсистем
 
-HOME = Path.home() / ".aurora"
+HOME = RT.HOME
 CACHE = HOME / "extras-cache.json"
 CACHE_TTL = 6 * 3600            # как у проверки версии кита: сеть трогаем редко
 # Цепочка поставок (BL-SEC-21): надстройки ставятся в venv на машине, где лежат токены Jira и Confluence,

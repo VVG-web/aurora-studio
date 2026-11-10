@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from harness import SCRIPTS, test
+from harness import KIT, SCRIPTS, test
 
 sys.path.insert(0, str(SCRIPTS))
 import aurora_runtime as RT  # noqa: E402
@@ -186,11 +186,44 @@ def test_runtime_pep668_goes_to_venv(tmp: Path):
 
 
 @test
+def test_panel_does_not_pass_user_to_a_venv(tmp: Path):
+    """`bin/python` в venv — симлинк на базовый Python. `realpath` их не различает,
+    поэтому панель обязана спросить сам интерпретатор: иначе в venv уйдёт `--user`,
+    а pip в venv его запрещает."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_cockpit as ck  # noqa: E402
+    made = RT.create_venv(sys.executable, tmp / "panel-venv")
+    assert made["ok"], made["error"]
+    effective = made["effective"]
+    assert Path(effective).resolve() == Path(sys.executable).resolve(), "venv должен ссылаться на базу"
+    assert ck.needs_user_site(effective) is False, effective
+
+
+@test
 def test_runtime_keeps_its_own_environment(tmp: Path):
     env = RT.child_env({"PYTHONHOME": "/wrong", "PYTHONPATH": "/wrong", "PATH": "/bin"})
     assert "PYTHONHOME" not in env and "PYTHONPATH" not in env, env
     assert env["PYTHONUTF8"] == "1" and env["PYTHONIOENCODING"] == "utf-8", env
     assert env["PATH"] == "/bin", "остальное окружение должно сохраниться"
+
+
+@test
+def test_aurora_home_moves_the_whole_machine_state(tmp: Path):
+    """`AURORA_HOME` двигает не только config.json: venv, кэши и состояние агента
+    должны идти за ним, иначе проверка runtime пишет в настоящую домашнюю папку."""
+    home = tmp / "machine-home"
+    code = (
+        "import json, sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import agent_core as AG, aurora_extras as EX, git_sync as GS\n"
+        "print(json.dumps([str(AG.VENV), str(EX.HOME), str(GS.aurora_home())]))\n"
+    )
+    p = subprocess.run([sys.executable, "-I", "-c", code, str(SCRIPTS)],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env={**os.environ, "AURORA_HOME": str(home)}, timeout=120)
+    assert p.returncode == 0, (p.stderr or "")[-1500:]
+    paths = json.loads((p.stdout or "").strip().splitlines()[-1])
+    assert paths == [str(home / "venv"), str(home), str(home)], paths
 
 
 @test

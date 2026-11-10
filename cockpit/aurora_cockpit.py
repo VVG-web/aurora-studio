@@ -5790,7 +5790,7 @@ def needs_user_site(target: str = "") -> bool:
     администратора) — пакеты ставятся в папку пользователя (`--user`). В venv `--user` не бывает,
     поэтому проверяется runtime Python, а не процесс панели."""
     target = target or python_executable()
-    if os.path.realpath(target) == os.path.realpath(sys.executable):
+    if target == sys.executable:
         # Тот же интерпретатор: смотрим его собственные пути, не поднимая runtime.
         import sysconfig
         if sys.prefix != sys.base_prefix:
@@ -5806,6 +5806,11 @@ def needs_user_site(target: str = "") -> bool:
             return False
         if "writable" in base:
             return not base.get("writable")
+    # `bin/python` в venv — симлинк на базовый Python, поэтому `realpath` не отличает venv
+    # от глобальной установки. Спрашиваем сам интерпретатор: он знает свой `sys.prefix`.
+    checked = RT.validate_python(target)
+    if checked.get("valid"):
+        return not checked.get("venv") and not checked.get("writable")
     import sysconfig
     if sys.prefix != sys.base_prefix:
         return False

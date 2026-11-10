@@ -1011,7 +1011,7 @@ def version(project: str = "") -> str:
 def known_projects(here: str) -> list:
     """Проекты Авроры, известные панели, плюс текущий. Для готовой строки подключения."""
     roots, found = [], []
-    saved = Path.home() / ".aurora" / "cockpit-roots.txt"
+    saved = Path(os.environ.get("AURORA_HOME") or (Path.home() / ".aurora")) / "cockpit-roots.txt"
     if saved.is_file():
         roots = [l.strip() for l in saved.read_text(encoding="utf-8").splitlines()
                  if l.strip() and not l.startswith("#")]

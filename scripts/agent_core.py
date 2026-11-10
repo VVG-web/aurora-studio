@@ -62,7 +62,7 @@ def NO_WAIT(seconds) -> None:
     как `sleep`. Вызов с ней нетерпеливый: лимит или сбой сервера для него — отказ с причиной
     в журнале, а не повод крутить кольцо до срока (пауза пары ничего не ждёт и не пройдёт)."""
     return None
-VENV = Path.home() / ".aurora" / "venv"
+VENV = RT.DEFAULT_VENV
 # Какой адаптер выбран и почему пришлось откатиться: заполняется при разборе конфига,
 # читается отчётом прогона. Глобальное состояние здесь честнее, чем протаскивать флаг
 # через каждый вызов транспорта.
@@ -1228,7 +1228,7 @@ def adapter_gap_why(adapter=None):
 # прямым HTTP, а человек думал бы, что всё идёт через Pydantic AI. Поэтому новая версия
 # (или новый адаптер) один раз проходит `--selfcheck` — поддельный шлюз SGLang, весь путь
 # адаптера, форма запроса на проводе, — и результат запоминается до следующей смены.
-SELFCHECK = Path.home() / ".aurora" / "cache" / "pydantic-selfcheck.json"
+SELFCHECK = RT.HOME / "cache" / "pydantic-selfcheck.json"
 
 
 def _adapter_sha() -> str:
@@ -2174,7 +2174,7 @@ def alarm_path() -> Path:
     """Тревоги вызова модели — общие на машину: их пишет любой процесс движка, а показывает панель
     красной полосой поверх любого раздела. Две области в одном файле: «Pydantic AI выбран, но не
     используется» (ключ — путь вызова) и «нет связи с бэкендом» (ключ `link:<№ бэкенда>`)."""
-    return Path.home() / ".aurora" / "adapter-alarm.json"
+    return RT.HOME / "adapter-alarm.json"
 
 
 def read_alarm() -> dict:
@@ -2479,7 +2479,7 @@ def record_failure(subject: str, why: str, r: dict | None = None, stage: str = "
     except OSError:
         pass
 LAST_OK: dict = {}    # {номер: когда он в последний раз ОТВЕТИЛ} — тоже в процессе
-RETRY_FLAG = Path.home() / ".aurora" / "retry-primary"
+RETRY_FLAG = RT.HOME / "retry-primary"
 
 # Жёсткий лимит параллельности на бэкенд: `width` мест, по одному на №.
 # Объявленная ширина — это предел ШЛЮЗА, и нарушить его нельзя даже если много потоков
@@ -2614,7 +2614,7 @@ def _slots_dir() -> Path:
     raw = os.environ.get("AURORA_LLM_SLOTS_DIR", "").strip()
     if raw:
         return Path(raw).expanduser()
-    return Path.home() / ".aurora" / "state" / "llm-slots"
+    return RT.HOME / "state" / "llm-slots"
 
 
 def _slot_semaphore(backend: dict, cfg: dict):
@@ -3225,7 +3225,7 @@ def call_budget(cfg: dict, role: str) -> float:
 # Тот же вызов с тем же заданием — тот же ответ, и платить за него второй раз незачем:
 # встреча, сорвавшаяся на одном окне, переразбиралась целиком; пересборка базы с нуля и
 # повторные прогоны «Починить» оплачивали всё заново.
-LLM_CACHE = Path.home() / ".aurora" / "cache" / "llm"
+LLM_CACHE = RT.HOME / "cache" / "llm"
 LLM_CACHE_DAYS = 30
 
 

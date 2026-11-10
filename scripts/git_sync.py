@@ -263,7 +263,7 @@ def utc_iso(ts: float | None = None) -> str:
 
 
 def aurora_home() -> Path:
-    return Path.home() / ".aurora"
+    return Path(os.environ.get("AURORA_HOME") or (Path.home() / ".aurora"))
 
 
 def _vt(v: str) -> tuple:
