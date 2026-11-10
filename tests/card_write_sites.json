@@ -392,6 +392,24 @@
    "calls": 2,
    "git": "none"
   },
+  "scripts/aurora_runtime.py:_lock_file": {
+   "kind": "other",
+   "reason": "файл блокировки runtime (~/.aurora/runtime.lock): служебный замок, не карточка",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/aurora_runtime.py:_backup_venv": {
+   "kind": "other",
+   "reason": "переименование старого venv в venv.bak-<время>: сохранение окружения, не карточка",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/aurora_runtime.py:_restore_venv": {
+   "kind": "other",
+   "reason": "возврат старого venv после сбоя нового: служебный каталог, не карточка",
+   "calls": 1,
+   "git": "none"
+  },
   "scripts/aurora_extras.py:_install": {
    "kind": "other",
    "reason": "снимок установки надстройки: временный файл для pip (вне базы знаний)",
