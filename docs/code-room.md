@@ -302,7 +302,16 @@ python3 .aurora/scripts/code_check.py --story US-1.1 --out Artifacts/checks/US-1
 `code:cleanroom --apply` собирает документы «как сделано» по каждому репозиторию и виду:
 `CleanRoom/<вид>/<репозиторий>.md`. Факты берутся из индекса кода, у каждого утверждения
 ссылка `[cN]` на `файл:строка`; раздел «Что не удалось установить по коду» обязателен.
-Модель и сеть не нужны.
+Модель и сеть не нужны. Документы содержат состав репозитория, публичный интерфейс,
+модули, данные, конфигурацию, тесты и команды сборки, а не только список строк индекса.
+
+Кроме описаний, Clean Room пишет полный снимок исходников по модулям в
+`CleanRoom/cr-source/<репозиторий>/<модуль>.md`. Снимок хранит файлы без пересказа и
+служит материалом для восстановления проекта; `manifest.md` перечисляет все файлы
+индекса с SHA-256 и отмечает, что вошло в снимок, а что осталось бинарным. Отключить
+снимок можно `--no-source`.
+Папки `CleanRoom/<вид>`, `CleanRoom/meta` и `CleanRoom/cr-source` входят в допустимую
+структуру проекта, `kit:doctor` их не считает нарушением.
 
 `CleanRoom/meta/passport.json` хранит ревизию репозитория, время индекса и список документов.
 `--check` называет устаревшие и отсутствующие документы и возвращает 1, если пора пересобрать.
@@ -316,6 +325,7 @@ python3 .aurora/scripts/code_check.py --story US-1.1 --out Artifacts/checks/US-1
 
 ```bash
 python3 .aurora/scripts/clean_room.py --apply
+python3 .aurora/scripts/clean_room.py --apply --no-source
 python3 .aurora/scripts/clean_room.py --agent --apply
 python3 .aurora/scripts/clean_room.py --check
 python3 .aurora/scripts/clean_room.py --json

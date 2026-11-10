@@ -254,7 +254,7 @@
   "code.pack.show": "Показать в консоли",
   "code.pack.check": "Проверить по коду",
   "code.pack.cleanroom": "Собрать Clean Room",
-  "code.cleanroom.hint": "Соберёт CleanRoom/<вид>/<репозиторий>.md по включённым видам и текущему индексу, затем CleanRoom/meta/passport.json. Без индекса и шаблонов ничего не создаст и назовёт причину.",
+  "code.cleanroom.hint": "Соберёт CleanRoom/<вид>/<репозиторий>.md по включённым видам и текущему индексу, полный снимок исходников в CleanRoom/cr-source/ и CleanRoom/meta/passport.json. Без индекса и шаблонов ничего не создаст и назовёт причину.",
   "code.cleanroom.graphify": "Graphify не обязателен: без него индекс и Clean Room работают на стандартной библиотеке.",
   "code.pack.health": "Здоровье индексов",
   "code.pack.criteria": "критериев",

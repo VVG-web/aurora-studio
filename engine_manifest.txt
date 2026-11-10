@@ -153,6 +153,7 @@ scripts/codeidx/adapters/common.py    => .aurora/scripts/codeidx/adapters/common
 scripts/codeidx/adapters/stdlib_py.py => .aurora/scripts/codeidx/adapters/stdlib_py.py
 scripts/codeidx/adapters/stdlib_jvm.py => .aurora/scripts/codeidx/adapters/stdlib_jvm.py
 scripts/codeidx/adapters/stdlib_web.py => .aurora/scripts/codeidx/adapters/stdlib_web.py
+scripts/codeidx/adapters/stdlib_swift.py => .aurora/scripts/codeidx/adapters/stdlib_swift.py
 scripts/codeidx/adapters/stdlib_misc.py => .aurora/scripts/codeidx/adapters/stdlib_misc.py
 scripts/codeidx/adapters/sql_files.py  => .aurora/scripts/codeidx/adapters/sql_files.py
 scripts/codeidx/adapters/spec_files.py => .aurora/scripts/codeidx/adapters/spec_files.py

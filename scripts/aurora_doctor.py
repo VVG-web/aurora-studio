@@ -100,6 +100,25 @@ def artifact_dirs() -> dict:
         path = (rec.get("out") or "").strip().strip('"').rstrip("/")
         if path and not os.path.isabs(path):
             out[path] = kind
+    # Виды Clean Room задаются не реестром make_kinds, а `code_artifacts:`:
+    # их папки (CleanRoom/cr-api, ArtifactsCode/cr-module и т.п.) — такие же
+    # законные папки проекта, как папки видов документов.
+    try:
+        import code_artifacts as CA
+        kinds, _problems = CA.check(str(ROOT))
+    except Exception:  # noqa: BLE001 — сломанный реестр не прячет остальные папки
+        return out
+    for kind, rec in (kinds or {}).items():
+        path = str(rec.get("out") or "").strip().replace("\\", "/").rstrip("/")
+        if path and not os.path.isabs(path) and ".." not in path.split("/"):
+            out[path] = kind
+        # Clean Room пишет документы рядом с паспортом, а не в `out` вида:
+        # у него своя папка `CleanRoom/<вид>`, и она тоже законна.
+        clean = f"CleanRoom/{kind}".rstrip("/")
+        if clean != "CleanRoom/" and ".." not in clean.split("/"):
+            out[clean] = kind
+    out["CleanRoom/meta"] = "meta"
+    out["CleanRoom/cr-source"] = "source"
     return out
 
 

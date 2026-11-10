@@ -254,7 +254,7 @@
   "code.pack.show": "Show in console",
   "code.pack.check": "Check against code",
   "code.pack.cleanroom": "Build Clean Room",
-  "code.cleanroom.hint": "Builds CleanRoom/<kind>/<repository>.md for the enabled kinds and the current index, then CleanRoom/meta/passport.json. Without an index or templates it creates nothing and names the reason.",
+  "code.cleanroom.hint": "Builds CleanRoom/<kind>/<repository>.md for the enabled kinds and the current index, a full source snapshot in CleanRoom/cr-source/, and CleanRoom/meta/passport.json. Without an index or templates it creates nothing and names the reason.",
   "code.cleanroom.graphify": "Graphify is optional: without it the index and Clean Room run on the standard library.",
   "code.pack.health": "Index health",
   "code.pack.criteria": "criteria",

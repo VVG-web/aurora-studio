@@ -73,6 +73,8 @@ ArtifactsCode
 # в форме бэклога, его заполняет движок.
 CleanRoom
 CleanRoom/Backlog
+# Служебные данные Clean Room: паспорт сборки, ревизия индекса и список документов.
+CleanRoom/meta
 
 Deliverables/work
 Deliverables/work/spec-packs

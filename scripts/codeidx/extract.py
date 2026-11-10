@@ -10,9 +10,9 @@ from __future__ import annotations
 import re
 
 try:
-    from .adapters import optional, spec_files, sql_files, stdlib_jvm, stdlib_misc, stdlib_py, stdlib_web
+    from .adapters import optional, spec_files, sql_files, stdlib_jvm, stdlib_misc, stdlib_py, stdlib_swift, stdlib_web
 except ImportError:  # запуск файла напрямую
-    from adapters import optional, spec_files, sql_files, stdlib_jvm, stdlib_misc, stdlib_py, stdlib_web  # type: ignore
+    from adapters import optional, spec_files, sql_files, stdlib_jvm, stdlib_misc, stdlib_py, stdlib_swift, stdlib_web  # type: ignore
 
 SRC = "stdlib"
 REQ_RX = re.compile(r"\b(?:REQ|REQUIREMENT)\s*:\s*([A-Za-z][A-Za-z0-9_.-]{1,40})")
@@ -78,6 +78,8 @@ def extract_file(path: str, text: str, lang: str, role: str = "src", keys=()) ->
         records = stdlib_jvm.extract(path, text, role, lang)
     elif lang in ("TypeScript", "JavaScript", "Vue", "Svelte"):
         records = stdlib_web.extract(path, text, role, lang)
+    elif lang == "Swift":
+        records = stdlib_swift.extract(path, text, role, lang)
     elif lang in ("SQL", "PL/SQL"):
         records = sql_files.extract(path, text, role)
     elif lang in ("YAML", "Properties", "JSON", "TOML", "INI", "Maven POM", "Gradle",

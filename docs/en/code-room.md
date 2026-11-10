@@ -308,7 +308,16 @@ python3 .aurora/scripts/code_check.py --story US-1.1 --out Artifacts/checks/US-1
 `code:cleanroom --apply` builds "how it is made" documents per repository and kind:
 `CleanRoom/<kind>/<repository>.md`. Facts come from the code index; every statement has a
 `[cN]` reference to `file:line`, and the "What could not be established from the code" section
-is mandatory. No model or network is needed.
+is mandatory. No model or network is needed. Documents include the repository inventory,
+public interface, modules, data, configuration, tests, and build commands, not only an index
+list.
+
+In addition to descriptions, Clean Room writes a complete source snapshot per module to
+`CleanRoom/cr-source/<repository>/<module>.md`. The snapshot keeps files verbatim and is the
+material for restoring the project; `manifest.md` lists every index file with SHA-256 and
+marks what is included and what remains binary. Disable the snapshot with `--no-source`. The folders
+`CleanRoom/<kind>`, `CleanRoom/meta`, and `CleanRoom/cr-source` are part of the allowed
+project structure; `kit:doctor` does not report them as violations.
 
 With `--agent` the model writes only `cr-module`, `cr-algorithm` and `cr-rules`: it sees
 numbered index facts, must cite them as `[cN]`, and must fill the "What could not be established
@@ -322,6 +331,7 @@ when `code_repos.<repo>.models: true`, and a model document is written only when
 
 ```bash
 python3 .aurora/scripts/clean_room.py --apply
+python3 .aurora/scripts/clean_room.py --apply --no-source
 python3 .aurora/scripts/clean_room.py --agent --apply
 python3 .aurora/scripts/clean_room.py --check
 python3 .aurora/scripts/clean_room.py --json
