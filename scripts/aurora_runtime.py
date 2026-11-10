@@ -754,9 +754,19 @@ def install_pydantic(specs: list | None = None, timeout: float = 1800,
     """
     exe = python or python_or_self()
     res = pip_install(exe, list(specs or ["pydantic-ai"]), timeout=timeout)
-    if not res.get("ok"):
-        return {**res, "python": exe, "pydantic": pydantic_info(exe)}
-    return {**res, "python": exe, "pydantic": pydantic_info(exe)}
+    info = pydantic_info(exe)
+    cfg = read_config()
+    rt = cfg.get("runtime") or {}
+    if rt.get("effective_python") and os.path.realpath(rt["effective_python"]) == os.path.realpath(exe):
+        # Установка из карточки, а не через bootstrap: конфигурация уже записана, но
+        # версия Pydantic AI в ней должна обновиться — иначе следующий статус соврёт.
+        rt = dict(rt)
+        rt["pydantic_ai_version"] = info.get("version", "") if info.get("ok") else ""
+        cfg["version"] = CONFIG_VERSION
+        cfg["runtime"] = rt
+        _write_config(cfg)
+        _drop_cache()
+    return {**res, "python": exe, "pydantic": info}
 
 
 def _main(argv=None) -> int:
