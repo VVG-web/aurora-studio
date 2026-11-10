@@ -707,7 +707,9 @@
     "корневая страница «{}» не найдена в вики": "the root page «{}» was not found in the wiki",
     "корневая страница публикации не разобрана: нужен номер страницы или адрес с pageId": "the publishing root page was not understood: a page number or an address with pageId is needed",
     "Опубликовать нельзя: путь или заголовок страницы у вида «{}» требует полей, которых в шапке документа нет: {}. Поля в шапке документа: {}. Встроенные подстановки: {}. Что сделать — одно из двух: выбрать место публикации кнопкой «Выбрать место…» в карточке публикации (точное место документа; у вида «{}» путь тогда не применяется) или вписать поле в шапку документа; можно и сделать подстановку необязательной: {{}?}.": "Can't publish: the page path or title of the kind “{}” needs fields that the document header does not have: {}. Fields in the document header: {}. Built-in placeholders: {}. What to do — one of two: choose the publishing place with the «Choose a place…» button in the publishing card (the document's exact place; the path of the kind “{}” is then not applied) or add the field to the document header; you may also make the placeholder optional: {{}?}.",
-    "runtime недоступен: {}: {}": "runtime unavailable: {}: {}"
+    "runtime недоступен: {}: {}": "runtime unavailable: {}: {}",
+    "runtime ещё не выбран": "runtime is not chosen yet",
+    "Pydantic AI не установлен или не запускается": "Pydantic AI is not installed or does not start"
   },
   "connectors": {
     "confluence-dc": {
