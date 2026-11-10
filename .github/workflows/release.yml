@@ -20,8 +20,10 @@ on:
     branches: [master]
   workflow_dispatch:
 
+# Верхний уровень — потолок для всех заданий. Здесь он обязан быть write: задание ниже
+# создаёт тег и Release, а job-level `contents: write` не может поднять потолок.
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: release
