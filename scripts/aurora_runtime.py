@@ -572,7 +572,9 @@ def _same_base(base: dict, target: Path) -> bool:
 
 def _backup_venv(target: Path) -> str:
     """Переименовать окружение, а не удалить: пакеты человека должны пережить смену базы."""
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # Единое правило времени: запись в UTC, показ — местный. Имя бэкапа тоже не должно
+    # зависеть от часового пояса машины.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     candidate = target.with_name(target.name + ".bak-" + stamp)
     n = 1
     while candidate.exists():

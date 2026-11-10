@@ -165,7 +165,9 @@ def test_runtime_uses_a_selected_venv_directly(tmp: Path):
     assert got["ok"], got
     assert got.get("reused") is True, got
     runtime = got["runtime"]
-    assert runtime["effective_python"] == made["effective"], runtime
+    # На macOS `/var` — ссылка на `/private/var`: интерпретатор называет канонический
+    # путь, и сравнивать строки путей нельзя.
+    assert os.path.realpath(runtime["effective_python"]) == os.path.realpath(made["effective"]), runtime
     assert os.path.realpath(runtime["venv_path"]) == os.path.realpath(str(venv)), runtime
     assert runtime["isolated"] is True, runtime
     assert runtime["source"] == "venv", runtime
