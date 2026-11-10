@@ -195,7 +195,8 @@ def test_panel_does_not_pass_user_to_a_venv(tmp: Path):
     made = RT.create_venv(sys.executable, tmp / "panel-venv")
     assert made["ok"], made["error"]
     effective = made["effective"]
-    assert Path(effective).resolve() == Path(sys.executable).resolve(), "venv должен ссылаться на базу"
+    # На POSIX `bin/python` — симлинк на базу, на Windows — копия. Проверяем результат,
+    # а не тип файла: панель обязана увидеть venv в обоих случаях.
     assert ck.needs_user_site(effective) is False, effective
 
 
