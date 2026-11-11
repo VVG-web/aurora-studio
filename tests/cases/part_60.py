@@ -342,7 +342,7 @@ def test_connectivity_https_probe_retries_self_signed_without_leaking_keys(_t):
     real = CN.urllib.request.build_opener
     CN.urllib.request.build_opener = build
     try:
-        res = CN._check_http({"url": "https://confluence.internal/pages/1",
+        res = CN._check_http({"url": "https://example.com/pages/1",
                               "expect_body": "aurora"}, 2)
         assert res["ok"] and res.get("tls_unverified") is True, res
         assert len(calls) == 2, calls
@@ -350,13 +350,13 @@ def test_connectivity_https_probe_retries_self_signed_without_leaking_keys(_t):
             "повтор пошёл без непроверяющего HTTPSHandler"
         state = CN._blank_state()
         cfg = _cfg(probes=[{"id": "p1", "profile": "VPN-1", "type": "http",
-                            "url": "https://confluence.internal/pages/1"}])
+                            "url": "https://example.com/pages/1"}])
         CN.apply_round(state, cfg, "VPN-1", [{"id": "p1", "profile": "VPN-1"}],
                        {"p1": res}, 1_800_000_000.0)
         assert state["probes"]["p1"]["tls_unverified"] is True, state["probes"]["p1"]
 
         calls.clear()
-        res = CN._check_http({"url": "https://provider.internal/models",
+        res = CN._check_http({"url": "https://example.com/models",
                               "_headers": {"Authorization": "Bearer secret"}}, 2)
         assert not res["ok"] and res["code"] == "tls", res
         assert len(calls) == 1, "probe с ключом пошёл без проверки сертификата"
