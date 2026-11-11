@@ -74,7 +74,7 @@ def _facts(st, kind: str) -> list:
     if kind in ("cr-api", "cr-module"):
         for r in st.conn.execute("SELECT method, path, handler, file, line FROM routes ORDER BY path"):
             rows.append((f'{r["method"]} {r["path"]}', r["file"], r["line"]))
-    if kind in ("cr-data", "cr-crud"):
+    if kind in ("cr-data", "cr-crud", "cr-json", "cr-dictionary"):
         for r in st.conn.execute("SELECT table_name, source, file, line FROM db_tables "
                                  "ORDER BY table_name"):
             rows.append((f'{r["table_name"]} ({r["source"] or "код"})', r["file"], r["line"]))
@@ -84,17 +84,18 @@ def _facts(st, kind: str) -> list:
     if kind == "cr-events":
         for r in st.conn.execute("SELECT name, role, payload, file, line FROM topics ORDER BY name"):
             rows.append((f'{r["name"]} ({r["role"] or "событие"})', r["file"], r["line"]))
-    if kind in ("cr-algorithm", "cr-rules", "cr-module"):
+    if kind in ("cr-algorithm", "cr-rules", "cr-module", "cr-product", "cr-us", "cr-uc",
+                "cr-ac", "cr-test-plan", "cr-trace", "cr-adr"):
         for r in st.conn.execute("SELECT name, qname, kind, sig, file, line_start FROM symbols "
                                  "ORDER BY file, line_start"):
             rows.append((r["qname"] or r["name"], r["file"], r["line_start"]))
-    if kind == "cr-tests":
+    if kind in ("cr-tests", "cr-ac", "cr-test-plan", "cr-trace"):
         for r in st.conn.execute("SELECT symbol, target, file, line FROM tests ORDER BY symbol"):
             rows.append((r["target"] or r["symbol"], r["file"], r["line"]))
-    if kind == "cr-config":
+    if kind in ("cr-config", "cr-dictionary", "cr-nfr", "cr-release"):
         for r in st.conn.execute("SELECT key, default_value, file, line FROM configs ORDER BY key"):
             rows.append((r["key"], r["file"], r["line"]))
-    if kind in ("cr-screen", "cr-sequence"):
+    if kind in ("cr-screen", "cr-sequence", "cr-ui", "cr-gui", "cr-us", "cr-uc"):
         for r in st.conn.execute("SELECT name, qname, kind, file, line_start FROM symbols "
                                  "WHERE kind IN ('view','app','screen','form','window','function','method','initializer') "
                                  "ORDER BY file, line_start"):
@@ -326,7 +327,167 @@ def _module_sections(ctx: CodeContext) -> list[str]:
     return out
 
 
+def _line_rows(ctx: CodeContext, pattern: str, limit: int = 120) -> list:
+    """Строки исходников, которые подтверждают раздел; без догадок."""
+    try:
+        rx = re.compile(pattern, re.I)
+    except re.error:
+        return []
+    rows = []
+    for f in ctx.source_files():
+        for n, line in enumerate(ctx.lines(f["path"]), 1):
+            if rx.search(line):
+                rows.append([f["path"], n, line.strip()[:220]])
+                if len(rows) >= limit:
+                    return rows
+    return rows
+
+
+def _module_rows(ctx: CodeContext) -> list:
+    """Модули и их главные сущности: основа карточки продукта и историй."""
+    rows = []
+    for module, files in ctx.modules().items():
+        symbols = []
+        for f in files:
+            symbols += ctx.symbols_of(f["path"], {"class", "struct", "enum", "protocol",
+                                                  "interface", "view", "app", "function",
+                                                  "method", "initializer"})
+        names = ", ".join(f"`{s['qname'] or s['name']}`" for s in symbols[:6])
+        rows.append([module, len(files), names or "—", f"{files[0]['path']}:1"])
+    return rows
+
+
+def _view_rows(ctx: CodeContext) -> list:
+    views = [s for s in ctx.symbols
+             if s["kind"] in ("view", "app", "screen", "window", "form", "component")]
+    return [[f"`{s['qname'] or s['name']}`", s["kind"], s.get("sig") or "",
+             f"{s['file']}:{s['line_start']}"] for s in views[:200]]
+
+
 def _kind_sections(kind: str, ctx: CodeContext, facts: list) -> list[str]:
+    if kind == "cr-product":
+        out = ["", "## Возможности продукта", ""]
+        out += _table(["Модуль", "Файлов", "Главные сущности", "Ссылка"], _module_rows(ctx))
+        out += ["", "## Платформы и границы", ""]
+        out += _table(["Файл", "Строка", "Признак"],
+                      _line_rows(ctx, r"(macOS|Windows|platform|minimum|requires|target framework|"
+                                       r"SwiftUI|WinForms|net48|\.NET)", 80))
+        out += ["", "## Что подтвердить у продукта", "",
+                "Цели, пользователи, приоритеты и границы вне кода. Этот документ — "
+                "черновик по фактам репозитория, а не продуктовое решение.", ""]
+        return out
+    if kind == "cr-us":
+        out = ["", "## Роли и пользователи", ""]
+        out += _table(["Файл", "Строка", "Признак"],
+                      _line_rows(ctx, r"\b(role|user|operator|admin|client|customer|persona)\b", 80))
+        out += ["", "## Истории-кандидаты", ""]
+        out += _table(["Модуль", "Файлов", "Главные сущности", "Ссылка"], _module_rows(ctx))
+        out += ["", "## Сценарии-кандидаты", ""]
+        out += _table(["Экран/компонент", "Вид", "Сигнатура", "Ссылка"], _view_rows(ctx))
+        out += ["", "## Что подтвердить у продукта", "",
+                "Роли, цели, ценность, приоритет и критерии приёмки. Без этого документ "
+                "остаётся черновиком, а не User Story.", ""]
+        return out
+    if kind == "cr-uc":
+        out = ["", "## Акторы и цели", ""]
+        out += _table(["Файл", "Строка", "Признак"],
+                      _line_rows(ctx, r"\b(role|user|operator|admin|client|customer|persona|actor)\b", 80))
+        out += ["", "## Основной сценарий", ""]
+        out += _table(["Экран/точка входа", "Вид", "Сигнатура", "Ссылка"], _view_rows(ctx))
+        out += ["", "## Альтернативные исходы", ""]
+        out += _table(["Файл", "Строка", "Условие или ошибка"],
+                      _line_rows(ctx, r"\b(guard|catch|throw|error|failed|unavailable|denied|"
+                                       r"precondition|assert)\b", 120))
+        out += ["", "## Что подтвердить у продукта", "",
+                "Цель актора, триггер, предусловия и постусловия. Код показывает ветки, "
+                "но не называет бизнес-цель Use Case.", ""]
+        return out
+    if kind == "cr-ac":
+        out = ["", "## Критерии-кандидаты", ""]
+        out += _table(["Файл", "Строка", "Проверка в коде"],
+                      _line_rows(ctx, r"\b(guard|if|throw|precondition|assert|require|check)\b", 220))
+        out += _kind_sections("cr-tests", ctx, facts)
+        out += ["", "## Что подтвердить у продукта", "",
+                "Один критерий — одна проверяемая формулировка. Условия кода ниже — "
+                "кандидаты, а не готовые Acceptance Criteria.", ""]
+        return out
+    if kind in ("cr-ui", "cr-gui"):
+        out = _kind_sections("cr-screen", ctx, facts)
+        out += ["", "## Состояния и доступность", ""]
+        out += _table(["Файл", "Строка", "Признак"],
+                      _line_rows(ctx, r"(disabled|loading|error|empty|focus|keyboard|"
+                                       r"accessibility|placeholder|validation|alert)", 160))
+        out += ["", "## Что подтвердить у дизайна", "",
+                "Макеты, состояния, тексты, фокус, клавиатура, адаптивность и доступность. "
+                "Код задаёт поведение, но не заменяет UI/GUI-спецификацию.", ""]
+        return out
+    if kind == "cr-json":
+        out = _kind_sections("cr-data", ctx, facts)
+        out += ["", "## JSON и сериализация", ""]
+        out += _table(["Файл", "Строка", "Признак"],
+                      _line_rows(ctx, r"(JSONEncoder|JSONDecoder|Codable|Serializable|"
+                                       r"JsonProperty|json|schema|DTO|dto)", 160))
+        out += ["", "## Что подтвердить у контракта", "",
+                "JSON Schema/OpenAPI, обязательные поля, примеры, ошибки и обратная "
+                "совместимость. Код показывает типы, но не является контрактом.", ""]
+        return out
+    if kind == "cr-dictionary":
+        out = _kind_sections("cr-data", ctx, facts)
+        out += _kind_sections("cr-config", ctx, facts)
+        out += ["", "## Термины, роли и статусы", ""]
+        out += _table(["Файл", "Строка", "Признак"],
+                      _line_rows(ctx, r"\b(term|glossary|status|state|role|role model|"
+                                       r"dictionary|reference)\b", 120))
+        out += ["", "## Что подтвердить у аналитика", "",
+                "Бизнес-определения, типы, enum, владелец, источник истины и правила "
+                "валидации. Ключи конфигурации и поля кода — только сырьё словаря.", ""]
+        return out
+    if kind == "cr-nfr":
+        out = ["", "## Ограничения и приватность", ""]
+        out += _table(["Файл", "Строка", "Признак"],
+                      _line_rows(ctx, r"(permission|privacy|security|notari|sign|update|"
+                                       r"minimum|macOS|Windows|consent|keychain|sandbox|"
+                                       r"entitlement|Gatekeeper)", 160))
+        out += ["", "## Что подтвердить у владельца", "",
+                "Производительность, доступность, безопасность, приватность, поддерживаемые "
+                "ОС, подпись и распространение. Это не выводятся из кода автоматически.", ""]
+        return out
+    if kind == "cr-test-plan":
+        out = _kind_sections("cr-tests", ctx, facts)
+        out += ["", "## Приёмочные проверки-кандидаты", ""]
+        out += _table(["Файл", "Строка", "Проверка"],
+                      _line_rows(ctx, r"\b(guard|if|throw|precondition|assert|require|check)\b", 160))
+        out += ["", "## Что подтвердить у QA", "",
+                "Тестовые данные, окружения, ручные сценарии и критерии входа/выхода. "
+                "Существующие тесты — не весь план приёмки.", ""]
+        return out
+    if kind == "cr-release":
+        out = ["", "## Релизные артефакты", ""]
+        out += _table(["Файл", "Строка", "Признак"],
+                      _line_rows(ctx, r"(DMG|installer|Setup\.exe|release|feed|notari|"
+                                       r"sign|GitHub|Pages|Velopack|version)", 160))
+        out += ["", "## Что подтвердить у владельца", "",
+                "Сертификаты, нотаризация, приватный ключ обновлений, установщик и "
+                "публикация. Без них документ описывает только найденные шаги.", ""]
+        return out
+    if kind == "cr-trace":
+        out = ["", "## Матрица трассировки (кандидаты)", ""]
+        rows = [[f"`{t['symbol']}`", t.get("target") or "", f"{t['file']}:{t['line']}"]
+                for t in ctx.tests[:200]]
+        out += _table(["Тест/проверка", "Что покрывает", "Ссылка"], rows)
+        out += ["", "## Что подтвердить у аналитика", "",
+                "ID требований, US/UC/AC и связи с API/UI/тестами. Код даёт координаты, "
+                "но не номера требований.", ""]
+        return out
+    if kind == "cr-adr":
+        out = ["", "## Кандидаты решений", ""]
+        out += _table(["Файл", "Строка", "Признак решения"],
+                      _line_rows(ctx, r"(decision|choose|because|why|trade-off|ADR|"
+                                       r"instead|alternative|prefer)", 120))
+        out += ["", "## Что подтвердить у архитектора", "",
+                "Контекст, альтернативы, последствия и дата решения. Комментарии и README "
+                "дают подсказки, но не заменяют ADR.", ""]
+        return out
     if kind == "cr-module":
         return _module_sections(ctx)
     if kind == "cr-api":

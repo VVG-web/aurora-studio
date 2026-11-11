@@ -2,6 +2,7 @@
 """part_229 — Clean Room: содержательные документы, Swift, снимок исходников и структура."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ sys.path.insert(0, str(SCRIPTS))
 import code_fixtures as CF  # noqa: E402
 import code_repos as CR  # noqa: E402
 import clean_room as CLEAN  # noqa: E402
+import code_artifacts as CA  # noqa: E402
 
 
 def _config(root: Path, repos: dict) -> None:
@@ -70,6 +72,31 @@ def test_clean_room_without_api_explains_why_and_keeps_build(tmp: Path):
     api = (root / "CleanRoom/cr-api/orders.md").read_text(encoding="utf-8")
     assert "HTTP-маршрутов в индексе нет" in api, api[:2500]
     assert "swift build" in api, "в API-документе нет команд сборки"
+
+
+@test
+def test_clean_room_writes_handoff_artifacts_and_honors_enabled(tmp: Path):
+    """Набор для передачи команде: продукт, US/UC/AC, UI/GUI, JSON, словарь, NFR,
+    план тестов, релиз и трассировка. Выключенный вид не попадает в паспорт."""
+    root = _swift_project(tmp)
+    run("code_index.py", "--project", str(root), "--index", "--apply", cwd=root)
+    run("clean_room.py", "--project", str(root), "--apply", cwd=root)
+    passport = json.loads((root / "CleanRoom/meta/passport.json").read_text(encoding="utf-8"))
+    kinds = {doc["kind"] for doc in passport["docs"]}
+    expected = {"cr-product", "cr-us", "cr-uc", "cr-ac", "cr-ui", "cr-gui", "cr-json",
+                "cr-dictionary", "cr-nfr", "cr-test-plan", "cr-release", "cr-trace"}
+    assert expected <= kinds, sorted(expected - kinds)
+    for kind in sorted(expected):
+        doc = root / "CleanRoom" / kind / "orders.md"
+        assert doc.is_file(), kind
+        text = doc.read_text(encoding="utf-8")
+        assert "Что не удалось установить по коду" in text, kind
+    disabled = CA.save(root, {"cr-us": {"enabled": False}}, CA.overrides_digest(root))
+    assert disabled.get("ok") is True, disabled
+    run("clean_room.py", "--project", str(root), "--apply", cwd=root)
+    passport = json.loads((root / "CleanRoom/meta/passport.json").read_text(encoding="utf-8"))
+    kinds = {doc["kind"] for doc in passport["docs"]}
+    assert "cr-us" not in kinds, "выключенный cr-us всё ещё в паспорте"
 
 
 @test

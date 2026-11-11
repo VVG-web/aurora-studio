@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """part_210 — настройки артефактов Code только в разделе Code.
 
-Проверяем, что форма проекта не содержит второго редактора `code_artifacts:`:
-она показывает только пометку «управляется в разделе Code», а сам редактор,
-API и i18n живут в модуле Code.
+Проверяем, что форма проекта не содержит ни второго редактора `code_artifacts:`,
+ни перечня видов Code: сам редактор, API и i18n живут в модуле Code.
 """
 from __future__ import annotations
 
@@ -16,10 +15,10 @@ from harness import KIT, test
 def test_code_artifact_settings_live_only_in_code(_t):
     panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
     code = (KIT / "cockpit/modules/code/view.js").read_text(encoding="utf-8")
-    # В настройках проекта нет второго редактора code-артефактов, только явная отсылка.
+    # В настройках проекта нет ни второго редактора, ни перечня Code-артефактов.
     assert "code_artifacts" not in panel, "в panel.js снова появился редактор code_artifacts"
     assert "code.artifacts" not in panel, "в panel.js снова появились поля code.artifacts"
-    assert "kinds.code_note" in panel, "в настройках проекта нет пометки, где менять Code"
+    assert "kinds.code_note" not in panel, "в настройках проекта снова перечень Code-артефактов"
     # Редактор и сохранение остаются в Code.
     for token in ("/api/code/artifacts", "saveArtifacts", "code.artifacts.save",
                   "code.artifacts.add", "code.artifacts.enabled"):
@@ -34,7 +33,7 @@ def test_code_artifact_settings_live_only_in_code(_t):
     for lang in ("ru", "en"):
         data = json.loads((KIT / "cockpit/i18n" / f"{lang}.json")
                           .read_text(encoding="utf-8"))
-        assert data.get("kinds.code_note"), (lang, "kinds.code_note")
+        assert "kinds.code_note" not in data, (lang, "kinds.code_note")
 
 
 @test

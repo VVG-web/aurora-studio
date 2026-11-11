@@ -34,12 +34,12 @@ def _template(kind: str, enabled: str = "true", out: str = "Artifacts/contracts/
 
 @test
 def test_code_artifacts_presets_and_project_override(_t):
-    """Кит даёт 13 видов, 9 включены; проект переопределяет вид и добавляет свой."""
+    """Кит даёт 25 видов, 21 включён; проект переопределяет вид и добавляет свой."""
     root = make_project(_t)
     assert (root / "TemplatesCode").is_dir() and (root / "PromptCode").is_dir()
     cp = run("code_artifacts.py", "--project", str(root), "--list", cwd=root, expect_rc=0)
     assert "cr-api" in cp.stdout and "cr-screen" in cp.stdout, cp.stdout
-    assert "Видов: 13; включено: 9" in cp.stdout, cp.stdout
+    assert "Видов: 25; включено: 21" in cp.stdout, cp.stdout
     assert "cr-api" in run("code_artifacts.py", "--project", str(root), "--show", "cr-api",
                           cwd=root, expect_rc=0).stdout
     _write(root / "TemplatesCode" / "cr-api_v2.0.md", _template("cr-api", "false", "CleanRoom/code/api"))

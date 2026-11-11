@@ -57,6 +57,18 @@ TITLES_EN = {
     "cr-mapping": "Data mapping from code",
     "cr-sequence": "Call sequence from code",
     "cr-adr": "Decision reconstruction from code",
+    "cr-product": "Product brief from code",
+    "cr-us": "User stories from code",
+    "cr-uc": "Use cases from code",
+    "cr-ac": "Acceptance criteria from code",
+    "cr-ui": "UI specification from code",
+    "cr-gui": "GUI specification from code",
+    "cr-json": "JSON contracts from code",
+    "cr-dictionary": "Data dictionary from code",
+    "cr-nfr": "Non-functional constraints from code",
+    "cr-test-plan": "Test plan from code",
+    "cr-release": "Release and operations from code",
+    "cr-trace": "Traceability matrix from code",
 }
 
 

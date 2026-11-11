@@ -227,11 +227,29 @@ Preset kinds:
 | `cr-mapping` | DTO to entity to external format mapping | no |
 | `cr-sequence` | mermaid sequence from an entry point | no |
 | `cr-adr` | reconstructed decision, a hypothesis | no |
+| `cr-product` | product brief: capabilities, platforms, boundaries | yes |
+| `cr-us` | candidate user stories: roles, scenarios, links | yes |
+| `cr-uc` | candidate use cases: actors, main and alternate flows | yes |
+| `cr-ac` | candidate acceptance criteria and existing tests | yes |
+| `cr-ui` | UI specification: screens, fields, states, accessibility | yes |
+| `cr-gui` | GUI specification: windows, controls, transitions | yes |
+| `cr-json` | candidate JSON contracts: models, fields, serialization | yes |
+| `cr-dictionary` | data dictionary: terms, entities, fields, statuses | yes |
+| `cr-nfr` | non-functional constraints: platform, privacy, release | yes |
+| `cr-test-plan` | test plan: tests, data, acceptance | yes |
+| `cr-release` | build, signing, installer and updates | yes |
+| `cr-trace` | traceability matrix of tests, criteria and code | yes |
 
 The forms follow OpenAPI, DbML, AsyncAPI, C4/arc42, 12-factor config and ADR practice. One rule for
 all: every statement has a `[cN]` reference, no invented names or values, and the "What could not be
 established from the code" section is mandatory. Prompts state these rules as text, visible and
 editable.
+
+`cr-product`, `cr-us`, `cr-uc`, `cr-ac`, `cr-ui`, `cr-gui`, `cr-json`, `cr-dictionary`,
+`cr-nfr`, `cr-test-plan`, `cr-release` and `cr-trace` are **drafts for handoff**, not signed
+specifications. They provide facts, links and ready sections, but roles, priorities, designs and
+contracts need human confirmation. `cr-source` remains an appendix to Clean Room, not a substitute
+for these documents.
 
 ```bash
 python3 .aurora/scripts/code_artifacts.py --list

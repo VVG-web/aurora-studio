@@ -106,6 +106,7 @@ _CODE_STATE_CACHE: dict = {}          # {project: {"state": dict, "at": float}}
 _CODE_STATE_LOCK = threading.Lock()
 _CODE_STATE_TTL = 300.0               # 5 минут — свежесть кэша
 _CODE_STATE_BUSY: dict = {}           # {project: True} — фоновый расчёт идёт
+_CODE_STATE_GEN: dict = {}            # {project: int} — правка формы отменяет старый фоновый расчёт
 
 
 def trim_jobs(keep: int = KEEP_DONE_JOBS) -> int:
@@ -2552,6 +2553,12 @@ def code_artifacts_save(project: str, kinds, expect: str = "", lang: str = "ru")
         return {"ok": False, "code": "failed", "error": f"{type(e).__name__}: {e}"[:300]}, 400
     if not res.get("ok"):
         return res, 409 if res.get("conflict") else 400
+    # Настройки видов изменились: кэш полного состояния «Код» больше не правда.
+    # Без этого следующая отрисовка возвращала старые галочки, и сохранение
+    # выглядело так, будто ни на что не влияет.
+    with _CODE_STATE_LOCK:
+        _CODE_STATE_CACHE.pop(project, None)
+        _CODE_STATE_GEN[project] = _CODE_STATE_GEN.get(project, 0) + 1
     return {**res, "state": code_artifacts_state(project, lang)}, 200
 
 
@@ -2625,7 +2632,7 @@ def _code_state_fallback(project: str, error: str) -> dict:
     return st
 
 
-def _code_state_bg(project: str, lang: str = "ru") -> None:
+def _code_state_bg(project: str, lang: str = "ru", gen: int | None = None) -> None:
     """Фоновый расчёт полного состояния «Код»: кладёт результат в кэш и снимает флаг занятости."""
     try:
         st = _code_state_full(project, lang)
@@ -2635,6 +2642,11 @@ def _code_state_bg(project: str, lang: str = "ru") -> None:
         # Не долбить сломанный проект каждые три секунды: повтор через 30 с.
         at = time.time() - _CODE_STATE_TTL + 30.0
     with _CODE_STATE_LOCK:
+        # Пока считали, человек сохранил настройки: старый результат уже не правда.
+        # Не кладём его в кэш, иначе следующая отрисовка вернёт прежние галочки.
+        if gen is not None and _CODE_STATE_GEN.get(project, 0) != gen:
+            _CODE_STATE_BUSY.pop(project, None)
+            return
         _CODE_STATE_CACHE[project] = {"state": st, "at": at}
         _CODE_STATE_BUSY.pop(project, None)
 
@@ -2663,7 +2675,8 @@ def code_state(project: str, lang: str = "ru") -> dict:
     if not busy:
         with _CODE_STATE_LOCK:
             _CODE_STATE_BUSY[project] = True
-        threading.Thread(target=_code_state_bg, args=(project, lang), daemon=True).start()
+            gen = _CODE_STATE_GEN.get(project, 0)
+        threading.Thread(target=_code_state_bg, args=(project, lang, gen), daemon=True).start()
     return st
 
 
@@ -2678,6 +2691,7 @@ def code_action(action: str, project: str, payload: dict) -> tuple:
             # Реестр изменился: старый снимок состояния больше не годится.
             with _CODE_STATE_LOCK:
                 _CODE_STATE_CACHE.pop(project, None)
+                _CODE_STATE_GEN[project] = _CODE_STATE_GEN.get(project, 0) + 1
             res = {**res, "state": code_state(project)}
         return res, (200 if res.get("ok") else 409 if res.get("conflict") else 500 if res.get("failed") else 400)
     if action == "check":
@@ -2717,6 +2731,7 @@ def code_group_action(action: str, project: str, payload: dict) -> tuple:
         if res.get("ok"):
             with _CODE_STATE_LOCK:
                 _CODE_STATE_CACHE.pop(project, None)
+                _CODE_STATE_GEN[project] = _CODE_STATE_GEN.get(project, 0) + 1
         code = 200 if res.get("ok") else 409 if res.get("conflict") else 400
         return res, code
     except Exception as e:  # noqa: BLE001 — форма получает причину, а не оборванный ответ

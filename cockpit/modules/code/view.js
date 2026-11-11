@@ -41,6 +41,14 @@ export async function refresh(ctx){
 
 const clone = x => JSON.parse(JSON.stringify(x));
 
+function setArtifacts(path, state){
+  ART = {project: path, digest: (state || {}).digest || "", rows: {}};
+  ((state || {}).kinds || []).forEach(k => {
+    ART.rows[k.kind] = {out: k.out || "", template: k.template_path || "",
+                        enabled: !!k.enabled};
+  });
+}
+
 async function load(ctx, keepForm){
   const path = ctx.project.path;
   const d = await ctx.api("/api/code?project=" + encodeURIComponent(path), {quiet: true});
@@ -51,12 +59,8 @@ async function load(ctx, keepForm){
     return;
   }
   D = d;
-  if (!ART || ART.project !== path || ART.digest !== (d.artifacts || {}).digest) {
-    ART = {project: path, digest: (d.artifacts || {}).digest || "", rows: {}};
-    ((d.artifacts || {}).kinds || []).forEach(k => {
-      ART.rows[k.kind] = {out: k.out || "", template: k.template_path || "", enabled: !!k.enabled};
-    });
-  }
+  if (!ART || ART.project !== path || ART.digest !== (d.artifacts || {}).digest)
+    setArtifacts(path, d.artifacts || {});
   const p = await ctx.api("/api/code/pack?project=" + encodeURIComponent(path), {quiet: true});
   if (!ctx.project || ctx.project.path !== path) return;
   PACK = p && !p.error ? p : {stories: [], error: (p && p.error) || ""};
@@ -878,10 +882,16 @@ async function saveArtifacts(ctx){
     ctx.toast((r && r.error) || ctx.t("code.artifacts.save_failed"), "err");
     return;
   }
-  if (r.state && D) D.artifacts = r.state;
-  ART = null;
+  if (r.state){
+    if (D) D.artifacts = r.state;
+    setArtifacts(ctx.project.path, r.state);
+  } else {
+    ART = null;
+  }
   ctx.toast(ctx.t("code.artifacts.saved"), "ok");
-  await load(ctx, true);
+  // Состояние пришло в ответе на сохранение: полная перезагрузка вернула бы
+  // кэш раздела и старые галочки, а форма должна показать ровно то, что записано.
+  draw(ctx);
 }
 
 async function addArtifact(ctx){

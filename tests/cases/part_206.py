@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 from harness import KIT, make_project, test
@@ -144,6 +145,33 @@ def test_code_artifact_ui_uses_the_settings_endpoint(_t):
     for lang in ("ru", "en"):
         data = (KIT / "cockpit/modules/code/i18n" / f"{lang}.json").read_text(encoding="utf-8")
         assert '"code.artifacts.save"' in data and '"code.artifacts.conflict"' in data, lang
+
+
+@test
+def test_code_artifact_save_invalidates_the_full_state_cache(_t):
+    """Сохранение галочки не должно возвращать старый кэш раздела Code.
+
+    Раньше `code_artifacts_save` писала конфигурацию, но не сбрасывала
+    `_CODE_STATE_CACHE`: следующая отрисовка брала старые `kinds`, и галочка
+    выглядела «не сохранённой». Проверяем и сброс, и смену поколения, чтобы
+    старый фоновый расчёт не вернул прежнее состояние.
+    """
+    root = make_project(_t)
+    key = str(root)
+    _write(root / "PromptCode" / "my-doc.md", "Свой промпт.\n")
+    _write(root / "TemplatesCode" / "my-doc_v1.0.md", _template("my-doc"))
+    state = CK.code_artifacts_state(key, "ru")
+    with CK._CODE_STATE_LOCK:
+        CK._CODE_STATE_CACHE[key] = {"state": {"artifacts": state}, "at": time.time()}
+        CK._CODE_STATE_GEN[key] = 5
+    res, status = CK.code_artifacts_save(
+        key, {"my-doc": {"enabled": False}}, state["digest"], "ru")
+    assert status == 200 and res.get("ok") is True, (status, res)
+    with CK._CODE_STATE_LOCK:
+        assert key not in CK._CODE_STATE_CACHE, "старый кэш Code пережил сохранение"
+        assert CK._CODE_STATE_GEN[key] == 6, "поколение кэша не сменилось"
+    kinds = {row["kind"]: row for row in res["state"]["kinds"]}
+    assert kinds["my-doc"]["enabled"] is False, kinds["my-doc"]
 
 
 @test

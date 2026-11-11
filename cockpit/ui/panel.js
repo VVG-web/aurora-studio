@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.220.16";
+const UI_VERSION = "1.220.17";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -3684,10 +3684,6 @@ async function renderKinds(box){
     card.innerHTML = "";
     card.append(el("p",{class:"muted",style:"font-size:13px;margin:0 0 10px"},
       t("kinds.about")));
-    // Артефакты Code — отдельный реестр и отдельная карточка Code.
-    // Здесь только пометка, чтобы человек не искал второй редактор в настройках проекта.
-    card.append(el("p",{class:"muted",style:"font-size:12px;margin:-4px 0 10px"},
-      t("kinds.code_note")));
     card.append(el("p",{class:"muted kf-legend"}, el("span",{class:"kf-req"}, "*"), " ", t("kinds.legend")));
     (d.problems||[]).forEach(p=>card.append(el("div",{class:"warnbox",style:"margin-bottom:8px"},
       `${p.kind}: ${p.why}`)));
