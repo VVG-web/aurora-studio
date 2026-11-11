@@ -230,6 +230,16 @@ request and no keys) and shows who trusts the certificate. A trusted Python can 
 chosen at once. uv has its own certificate store; the system Python, Homebrew, MacPorts
 and python.org usually trust a corporate certificate.
 
+### MCP servers on `uvx`
+
+If an MCP server is started as `uvx mcp-atlassian` (the setup used by Cursor, Claude
+Desktop and other clients), it runs in a separate uv environment on a uv-managed
+Python, for example `~/.local/share/uv/python/cpython-3.13.11...`. It is not Aurora's
+Python and not MacPorts: choosing a Python in Install and Aurora's connection check do
+not affect it. If the MCP server does not trust a corporate certificate, start it with
+`uvx --python /path/to/system-python ...` or add the root certificate to uv's store.
+MCP keys must not be passed into Aurora's shared TLS check.
+
 ## What is stored where
 
 - Profiles and probes — in the kit, `local/connectivity.json` (on the machine, never goes to git, no secrets). It is a storage
