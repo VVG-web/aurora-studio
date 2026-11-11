@@ -81,6 +81,7 @@ def test_net_panel_state_endpoint_gives_config_stamp_limits_and_snapshot(tmp: Pa
         assert set(d["policies"]) == {"fail_fast", "partial", "queue", "partial_queue"} and d["config"]["policy"]["auto"] == "partial_queue", \
             "политика прогонов без связи по умолчанию — не partial + queue"
         assert d["path"].startswith(str(net.kit)), "путь файла настройки указывает не на временный кит"
+        assert "runtime" in d, "состояние панели не отдаёт Python для подписи TLS"
         assert not net.file.exists(), "чтение состояния создало файл настройки"
     finally:
         net.close()
@@ -229,6 +230,33 @@ def test_net_panel_probe_endpoint_checks_a_draft_before_saving_and_writes_nothin
     finally:
         stub.shutdown()
         stub.server_close()
+        net.close()
+
+
+@test
+def test_net_panel_tls_diagnostic_endpoint_uses_runtime_and_refuses_non_https(tmp: Path):
+    """`/api/net/tls`: маршрут доходит до certificate_trust и не пропускает не-HTTPS адрес."""
+    net = _Net(tmp)
+    import aurora_runtime as RT
+    real = RT.certificate_trust
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {"ok": True, "url": url, "recommended": "/fake/macports/python",
+                "rows": [{"executable": "/fake/macports/python", "trusted": True}]}
+
+    RT.certificate_trust = fake
+    try:
+        st, d = net.call("POST", "/api/net/tls", {"url": "https://example.com/login"})
+        assert st == 200 and d["ok"] and d["recommended"] == "/fake/macports/python", d
+        assert calls == ["https://example.com/login"], calls
+    finally:
+        RT.certificate_trust = real
+    try:
+        st, d = net.call("POST", "/api/net/tls", {"url": "http://example.com/"})
+        assert st == 200 and d["ok"] is False and "HTTPS" in d["error"], d
+    finally:
         net.close()
 
 

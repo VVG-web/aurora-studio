@@ -684,3 +684,28 @@ def test_certificate_trust_recommends_a_python_that_accepts_the_certificate(tmp:
     assert [x["trusted"] for x in got["rows"]] == [True, False], got["rows"]
     assert len(calls) == 2, calls
     assert RT.certificate_trust("http://example.com")["ok"] is False
+
+
+@test
+def test_certificate_trust_starts_with_the_active_venv(tmp: Path):
+    """Активный venv не должен исчезать из диагностики из-за realpath-схлопывания с базой."""
+    made = RT.create_venv(sys.executable, tmp / "active-tls-venv")
+    assert made["ok"], made["error"]
+    active = RT.validate_python(made["effective"])
+    base = RT.validate_python(sys.executable)
+    real_current, real_candidates, real_run = RT.current, RT.candidates, RT.subprocess.run
+
+    def fake_run(argv, **kw):
+        return RT.subprocess.CompletedProcess(argv, 0, '{"ok": true, "error": ""}', "")
+
+    RT.current = lambda: {"effective": active, "base": base}
+    RT.candidates = lambda **kw: {"valid": [base]}
+    RT.subprocess.run = fake_run
+    try:
+        got = RT.certificate_trust("https://example.com", max_rows=5)
+    finally:
+        RT.current, RT.candidates, RT.subprocess.run = real_current, real_candidates, real_run
+    assert got["ok"], got
+    assert got["rows"][0]["executable"] == active["executable"], got["rows"]
+    assert got["recommended"] == active["executable"], got
+    assert any(row["executable"] == base["executable"] for row in got["rows"]), got["rows"]

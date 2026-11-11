@@ -494,7 +494,7 @@ def certificate_trust(url: str, rows: list | None = None, timeout: float = 8.0,
     target = str(url or "").strip()
     if not target.lower().startswith("https://"):
         return {"ok": False, "error": "адрес не HTTPS", "url": target, "rows": [], "recommended": ""}
-    source_rows = rows if rows is not None else candidates(include_invalid=False)["valid"]
+    source_rows = _trust_rows(rows)
     seen, tested = set(), []
     for row in list(source_rows)[:max_rows]:
         if not isinstance(row, dict):
@@ -502,7 +502,9 @@ def certificate_trust(url: str, rows: list | None = None, timeout: float = 8.0,
         exe = str(row.get("executable") or "")
         if not exe:
             continue
-        key = os.path.normcase(os.path.realpath(os.path.abspath(exe)))
+        root = venv_root(exe)
+        key = (os.path.normcase(os.path.realpath(os.path.abspath(exe))),
+               os.path.normcase(os.path.realpath(root)) if root else "")
         if key in seen:
             continue
         seen.add(key)
@@ -519,6 +521,27 @@ def certificate_trust(url: str, rows: list | None = None, timeout: float = 8.0,
                        "venv": bool(row.get("venv")), "trusted": trusted, "error": error[:300]})
     recommended = next((x["executable"] for x in tested if x["trusted"]), "")
     return {"ok": True, "url": target, "rows": tested, "recommended": recommended}
+
+
+def _trust_rows(rows: list | None = None) -> list:
+    """Кандидаты для диагностики: сначала активный Python и его база, затем найденные.
+
+    `candidates()` схлопывает venv и его базовый Python по realpath, потому что на POSIX
+    `venv/bin/python` — ссылка на базу. Для сертификата это разные окружения: у venv
+    может быть свой набор пакетов, и человеку важно видеть именно активный путь.
+    """
+    if rows is not None:
+        return list(rows)
+    source = candidates(include_invalid=False)["valid"]
+    extra = []
+    try:
+        got = current()
+        for row in (got.get("effective"), got.get("base")):
+            if isinstance(row, dict) and row.get("valid") and row.get("executable"):
+                extra.append(row)
+    except Exception:  # noqa: BLE001 — диагностика не должна падать из-за runtime
+        pass
+    return extra + source
 
 
 def venv_path() -> Path:
