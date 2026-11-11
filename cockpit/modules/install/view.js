@@ -59,7 +59,7 @@ function runtimeCard(ctx){
     line(t("install.rt_effective"), d.effective_python, true);
     line(t("install.rt_base"), rt.base_python, true);
     line(t("install.rt_source"), src);
-    line(t("install.rt_mode"), mode);
+    if (rt.source !== "venv") line(t("install.rt_mode"), mode);
     line(t("install.rt_pydantic"),
       pyd && pyd.ok ? (pyd.version || "?") : t("install.rt_pydantic_missing"));
     if (rt.externally_managed && rt.source !== "venv")

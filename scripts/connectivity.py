@@ -46,6 +46,7 @@ import math
 import os
 import re
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -724,6 +725,21 @@ def _check_tcp(p: dict, timeout: float) -> dict:
     return _result(True, started, "ok")
 
 
+def _certificate_error(exc) -> bool:
+    """Отказ именно проверки сертификата, а не «сервер не отвечает».
+
+    Корпоративный Confluence часто отдаёт самоподписанный сертификат. Браузер ему
+    верит из хранилища ОС, а Python из uv-venv — нет: получается `CERTIFICATE_VERIFY_FAILED`,
+    и проверка VPN ошибочно говорит «связи нет». Сертификат проверяется отдельно от
+    доступности: TLS-рукопожатие уже доказало, что до сервера дошли.
+    """
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return True
+    text = str(reason or exc).lower()
+    return "certificate_verify_failed" in text or "certificate verify failed" in text
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Переход по перенаправлению — это уже другой адрес: проверка отвечает за тот, что назван."""
 
@@ -731,24 +747,46 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _check_http(p: dict, timeout: float) -> dict:
-    started = time.monotonic()
-    headers = {"User-Agent": "aurora-connectivity/1", "Accept": "*/*"}
-    headers.update(p.get("_headers") or {})
-    req = urllib.request.Request(p["url"], headers=headers, method="GET")
+def _open_http(p: dict, req, timeout: float, unverified: bool = False):
+    """Один HTTP-запрос. `unverified` — только для probe без секретов.
+
+    Ключ провайдера нельзя отправлять по непроверенному TLS: там MITM увидит его.
+    Поэтому повтор без проверки сертификата разрешён лишь probe без `_headers`.
+    """
     handlers = [_NoRedirect()]
+    if unverified:
+        handlers.append(urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
     if p.get("_headers") and p["url"].lower().startswith("http://"):
         # Проверка с ключом по открытому каналу идёт напрямую: прокси из окружения увидел бы ключ, и проверка мерила бы
         # прокси, а не провайдера. Без ключа (и по https, где прокси видит только туннель) прокси окружения соблюдается.
         handlers.append(urllib.request.ProxyHandler({}))
     opener = urllib.request.build_opener(*handlers)
+    try:
+        return opener.open(req, timeout=timeout)
+    except urllib.error.HTTPError as e:      # 3xx без перехода, 4xx, 5xx — тоже ответ
+        return e
+
+
+def _check_http(p: dict, timeout: float) -> dict:
+    started = time.monotonic()
+    headers = {"User-Agent": "aurora-connectivity/1", "Accept": "*/*"}
+    headers.update(p.get("_headers") or {})
+    req = urllib.request.Request(p["url"], headers=headers, method="GET")
     want = p.get("expect_status") or STATUS_DEFAULT
     body = b""
+    unverified = False
     try:
         try:
-            resp = opener.open(req, timeout=timeout)
-        except urllib.error.HTTPError as e:      # 3xx без перехода, 4xx, 5xx — тоже ответ
-            resp = e
+            resp = _open_http(p, req, timeout)
+        except (OSError, ValueError) as e:
+            # Самоподписанный сертификат внутреннего сервиса не должен выглядеть как
+            # «VPN недоступен». Повторяем без проверки только там, где нет секретов.
+            if (not p.get("_headers") and str(p.get("url") or "").lower().startswith("https://")
+                    and _certificate_error(e)):
+                resp = _open_http(p, req, timeout, unverified=True)
+                unverified = True
+            else:
+                raise
         try:
             status = int(getattr(resp, "status", None) or resp.getcode())
             if p.get("expect_body"):
@@ -760,12 +798,19 @@ def _check_http(p: dict, timeout: float) -> dict:
         for secret in (p.get("_headers") or {}).values():
             if secret and len(str(secret)) > 3:
                 detail = detail.replace(str(secret), "***")        # ключ в тексте чужой ошибки не остаётся нигде
-        return _result(False, started, code, detail)
+        res = _result(False, started, code, detail)
+        if unverified:
+            res["tls_unverified"] = True
+        return res
     if not status_matches(status, want):
         return _result(False, started, "status", f"HTTP {status}")
     if p.get("expect_body") and p["expect_body"] not in body.decode("utf-8", "replace"):
         return _result(False, started, "body", f"HTTP {status}")
-    return _result(True, started, "ok", f"HTTP {status}")
+    res = _result(True, started, "ok", f"HTTP {status}")
+    if unverified:
+        res["tls_unverified"] = True
+        res["detail"] = f"HTTP {status} · TLS certificate not trusted"
+    return res
 
 
 def icmp_argv(host: str, timeout: float, system: str | None = None) -> list:
@@ -984,7 +1029,7 @@ def apply_round(state: dict, cfg: dict, profile: str, probes: list, results: dic
         state["probes"][p["id"]] = {"ok": None if (res.get("late") or res.get("inconclusive")) else bool(res.get("ok")),
                                     "code": res.get("code", ""),
                                     "ms": res.get("ms", 0), "detail": str(res.get("detail") or "")[:160], "at": stamp,
-                                    "profile": profile}
+                                    "profile": profile, "tls_unverified": bool(res.get("tls_unverified"))}
         healthy += 1 if res.get("ok") else 0
     if late:
         return []

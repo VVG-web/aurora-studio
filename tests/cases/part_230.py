@@ -216,6 +216,11 @@ def test_runtime_pip_repairs_missing_pip_and_ca_bundle(tmp: Path):
     assert "Collecting" not in RT._pip_error_line("Collecting x\nERROR: cacert.pem invalid\ncached")
     assert RT._needs_reload(sys.executable) is False
     assert RT._needs_reload(str(tmp / "another-python")) is True
+    # На POSIX `venv/bin/python` — ссылка на базу: realpath их не различает. Панель,
+    # запущенная базой, обязана увидеть, что записан venv, и предложить перезагрузку.
+    made = RT.create_venv(sys.executable, tmp / "reload-venv")
+    assert made["ok"], made["error"]
+    assert RT._needs_reload(made["effective"]) is True, made["effective"]
 
     for has_pip, ok_on in ((1, 1), (0, 2)):
         case = tmp / f"pip-{has_pip}-{ok_on}"
@@ -529,6 +534,20 @@ def test_cockpit_buttons_have_explanatory_tooltips(tmp: Path):
                     "install.rt_candidate_hint", "install.rt_candidate_venv_hint",
                     "install.fix_hint", "install.do_install_hint"):
             assert key in install, (lang, key)
+
+
+@test
+def test_runtime_bar_names_one_venv(tmp: Path):
+    """В шапке не должно быть «venv · venv»: версия и режим, источник — в «Установке»."""
+    js = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    block = js.split("function runtimeText", 1)[1].split("let GATE_DISMISSED", 1)[0]
+    assert "const src" not in block, block
+    assert 'r.isolated ? t("runtime.mode_venv")' in block, block
+    assert '[v ? "Python " + v : "", mode]' in block, block
+
+    view = (KIT / "cockpit/modules/install/view.js").read_text(encoding="utf-8")
+    assert 'if (rt.source !== "venv") line(t("install.rt_mode"), mode);' in view, \
+        "карточка установки снова показывает режим venv дважды"
 
 
 @test

@@ -698,8 +698,22 @@ def _drop_cache() -> None:
 
 
 def _needs_reload(effective: str) -> bool:
-    """Панель запущена не тем Python, который записан в конфигурации."""
-    return bool(effective) and os.path.normcase(os.path.realpath(effective)) != os.path.normcase(
+    """Панель запущена не тем Python, который записан в конфигурации.
+
+    На POSIX `venv/bin/python` — ссылка на базовый интерпретатор, поэтому `realpath`
+    не различает «панель в venv» и «панель в базе». Сравниваем корни окружений:
+    `pyvenv.cfg` есть только у venv. Если один из путей — venv, а другой нет, это
+    всегда разные окружения, даже когда оба ведут на один бинарник.
+    """
+    if not effective:
+        return False
+    eff_root = venv_root(effective)
+    proc_root = venv_root(sys.executable)
+    if eff_root or proc_root:
+        return not (eff_root and proc_root
+                    and os.path.normcase(os.path.realpath(eff_root))
+                    == os.path.normcase(os.path.realpath(proc_root)))
+    return os.path.normcase(os.path.realpath(effective)) != os.path.normcase(
         os.path.realpath(sys.executable))
 
 
