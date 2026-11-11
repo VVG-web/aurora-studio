@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.220.21";
+const UI_VERSION = "1.220.22";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -576,9 +576,11 @@ function runtimeText(rt){
   const r = (rt && rt.runtime) || {};
   const v = r.python_version || "";
   const mode = r.isolated ? t("runtime.mode_venv") : t("runtime.mode_global");
-  // Источник (`custom`, `homebrew`, `venv`) уже назван в «Установке». В шапке
-  // достаточно версии и режима: иначе прямой venv показывался как «venv · venv».
-  return [v ? "Python " + v : "", mode].filter(Boolean).join(" · ");
+  const install = r.install ? t("install.kind." + r.install) : "";
+  // Версия, режим и в скобках — чем поставлен Python. Иначе uv-venv и MacPorts-venv
+  // выглядят одинаково, хотя доверие к сертификатам у них разное.
+  return [v ? "Python " + v : "", mode, install ? "(" + install + ")" : ""]
+    .filter(Boolean).join(" · ");
 }
 
 let GATE_DISMISSED = "";

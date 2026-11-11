@@ -1711,6 +1711,7 @@ def net_state(project: str = "") -> dict:
     cfg = svc.config()
     return {"config": cfg, "stamp": CN.file_stamp(KIT), "snapshot": svc.snapshot(net_required(project)),
             "path": str(CN.config_path(KIT) or ""), "error": cfg.get("error", ""),
+            "runtime": net_runtime(),
             "limits": {"probes": CN.MAX_PROBES, "interval": CN.LIMITS["interval"], "timeout": CN.LIMITS["timeout"],
                        "fail_after": CN.LIMITS["fail_after"], "ok_after": CN.LIMITS["ok_after"],
                        "quorum": CN.LIMITS["quorum"]},
@@ -1759,6 +1760,26 @@ def net_probe(payload: dict) -> dict:
     only = str(payload.get("profile") or "") or None
     svc.check(only=only, budget=None, force=True)
     return {"snapshot": svc.snapshot(net_required(str(payload.get("project") or "")))}
+
+
+def net_runtime() -> dict:
+    """Чем запущена панель и что записано в runtime: для подписи «кто не доверяет сертификату»."""
+    try:
+        import aurora_runtime as RT
+        st = RT.status()
+        rt = st.get("runtime") or {}
+        return {"process": st.get("process_python") or "", "effective": st.get("effective_python") or "",
+                "install": rt.get("install") or "",
+                "process_install": RT.detect_install(st.get("process_python") or ""),
+                "needs_reload": bool(st.get("needs_reload"))}
+    except Exception:  # noqa: BLE001 — раздел связи важнее подписи
+        return {}
+
+
+def net_tls(payload: dict) -> dict:
+    """Диагностика: какой из найденных Python доверяет сертификату адреса."""
+    import aurora_runtime as RT
+    return RT.certificate_trust(str(payload.get("url") or ""))
 
 
 def net_access(project: str, lang: str = "") -> dict:
@@ -8416,6 +8437,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/net/probe":
             project = self._quiet_project(str(payload.get("project") or ""))
             self.send_json(net_probe(dict(payload, project=project)))
+            return
+        if u.path == "/api/net/tls":
+            self.send_json(net_tls(payload))
             return
         if u.path == "/api/features/set":
             # Фиче-флаг машины (роли для профилей) — переключатель раздела «Разработка».

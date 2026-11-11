@@ -45,6 +45,7 @@ function runtimeCard(ctx){
     const pyd = d.pydantic || {};
     const mode = rt.isolated ? t("install.rt_isolated") : t("install.rt_global");
     const src = rt.source || (base.source || "");
+    const install = rt.install ? t("install.kind." + rt.install) : "";
     const line = (label, value, mono) => el("div", {style:"font-size:12.5px;margin-top:4px"},
       el("span", {class:"muted"}, label + ": "),
       mono ? el("span", {class:"mono", style:"overflow-wrap:anywhere"}, value || "—")
@@ -56,9 +57,11 @@ function runtimeCard(ctx){
         d.configured ? t("install.rt_configured") : t("install.rt_not_configured"))));
     if (d.reason) body.append(el("div", {class:"muted", style:"font-size:12.5px;margin-top:4px;overflow-wrap:anywhere"},
       t("install.rt_why", {why: d.reason})));
-    line(t("install.rt_effective"), d.effective_python, true);
+    line(t("install.rt_effective"), d.effective_python
+      + (install ? " (" + install + (rt.python_version ? " " + rt.python_version : "") + ")" : ""), true);
     line(t("install.rt_base"), rt.base_python, true);
     line(t("install.rt_source"), src);
+    if (install) line(t("install.rt_install"), install);
     if (rt.source !== "venv") line(t("install.rt_mode"), mode);
     line(t("install.rt_pydantic"),
       pyd && pyd.ok ? (pyd.version || "?") : t("install.rt_pydantic_missing"));
@@ -189,7 +192,8 @@ function runtimeCard(ctx){
               draw(true);
             }
           }},
-          [c.source, c.version].filter(Boolean).join(" · ") + " — " + (c.executable || "?")
+          [(c.install ? t("install.kind." + c.install) : c.source), c.version].filter(Boolean).join(" · ")
+            + " — " + (c.executable || "?")
             + (c.venv ? " · " + t("install.rt_candidate_venv") : ""));
         box.append(b);
       });

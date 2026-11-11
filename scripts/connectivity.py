@@ -690,6 +690,26 @@ def trend(entry) -> dict:
 # Вид обрыва, названный движком (`agent_core.link_kind`), → код результата проверки. Остальное — «other».
 _ENGINE_KIND_CODE = {"dns": "dns", "refused": "refused", "unreachable": "unreachable", "tls": "tls", "reset": "reset",
                      "connect_timeout": "timeout", "silent": "timeout"}
+_ORIGIN = None
+
+
+def _origin() -> dict:
+    """Кто именно выполнял probe: путь Python и тип его установки.
+
+    Без этого предупреждение «сертификат не доверен» не говорит, кому не доверен:
+    uv-venv и системный Python имеют разные хранилища корневых сертификатов.
+    """
+    global _ORIGIN
+    if _ORIGIN is None:
+        python = sys.executable
+        try:
+            import aurora_runtime as RT
+            install = RT.detect_install(python)
+        except Exception:  # noqa: BLE001 — старая копия движка без runtime
+            install = "custom"
+        _ORIGIN = {"python": python, "install": install,
+                   "python_version": "%d.%d.%d" % sys.version_info[:3]}
+    return dict(_ORIGIN)
 
 
 def classify_error(exc) -> tuple:
@@ -878,6 +898,7 @@ def run_probe(p: dict, timeout: float, checkers=None) -> dict:
             if secret and len(str(secret)) > 3:
                 detail = detail.replace(str(secret), "***").replace(str(secret).removeprefix("Bearer "), "***")
         res = {"ok": False, "code": "other", "ms": 0, "detail": detail[:120], "inconclusive": True}
+    res.update({k: v for k, v in _origin().items() if k not in res})
     return res
 
 
@@ -1029,7 +1050,9 @@ def apply_round(state: dict, cfg: dict, profile: str, probes: list, results: dic
         state["probes"][p["id"]] = {"ok": None if (res.get("late") or res.get("inconclusive")) else bool(res.get("ok")),
                                     "code": res.get("code", ""),
                                     "ms": res.get("ms", 0), "detail": str(res.get("detail") or "")[:160], "at": stamp,
-                                    "profile": profile, "tls_unverified": bool(res.get("tls_unverified"))}
+                                    "profile": profile, "tls_unverified": bool(res.get("tls_unverified")),
+                                    "python": str(res.get("python") or ""), "install": str(res.get("install") or ""),
+                                    "python_version": str(res.get("python_version") or "")}
         healthy += 1 if res.get("ok") else 0
     if late:
         return []

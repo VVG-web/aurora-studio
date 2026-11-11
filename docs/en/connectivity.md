@@ -209,6 +209,27 @@ Read and check only — the settings are written by the panel:
 - `net:probe` — check now: all probes or `--only` (a profile or a probe). Exit code 1 when the profiles in need are down. With
   the check off it does nothing.
 
+## Python, certificate and VPN
+
+The header and the Install card name the install type next to the version:
+`Python 3.13.13 · venv (MacPorts)`, `.../venv (MacPorts 3.13.13)`. The type is detected
+from the path and the venv base: python.org, Homebrew, MacPorts, uv, pyenv, Conda,
+Microsoft Store, system or a custom Python. It is a human-readable label, not a guess
+about the interpreter.
+
+An HTTPS probe may get `CERTIFICATE_VERIFY_FAILED` even though the page opens in a
+browser. This is not a VPN drop: Python may use a different root certificate store than
+the system. For a probe **without a key**, the check is retried without certificate
+verification and the profile counts as available; the result is marked `tls_unverified`
+and no keys are sent. For a probe **with a key**, there is no such retry: the key never
+goes over unverified TLS.
+
+The panel names the Python that performed the check and its install type. The "Which
+Python trusts it" button tests only the TLS handshake with every found Python (no HTTP
+request and no keys) and shows who trusts the certificate. A trusted Python can be
+chosen at once. uv has its own certificate store; the system Python, Homebrew, MacPorts
+and python.org usually trust a corporate certificate.
+
 ## What is stored where
 
 - Profiles and probes — in the kit, `local/connectivity.json` (on the machine, never goes to git, no secrets). It is a storage

@@ -365,6 +365,28 @@ def test_connectivity_https_probe_retries_self_signed_without_leaking_keys(_t):
 
 
 @test
+def test_connectivity_probe_names_the_python_that_checked_it(_t):
+    """Результат говорит, под каким Python шла проверка: иначе «сертификат не доверен» ни о ком."""
+    CN = _cn()
+    res = CN.run_probe({"type": "tcp", "host": "127.0.0.1", "port": 1}, 1,
+                       checkers={"tcp": lambda p, t: {"ok": True, "code": "ok", "ms": 1, "detail": ""}})
+    assert res["python"] and res["install"], res
+    assert res["install"] in ("custom", "homebrew", "macports", "python.org", "system", "store",
+                              "uv", "pyenv", "conda", "venv"), res["install"]
+
+    view = (KIT / "cockpit/modules/connectivity/view.js").read_text(encoding="utf-8")
+    for needle in ("tls_unverified", "/api/net/tls", "connectivity.tls_warn",
+                   "connectivity.tls_diagnose", "tlsNotice"):
+        assert needle in view, needle
+    for lang in ("ru", "en"):
+        data = json.loads((KIT / "cockpit/modules/connectivity/i18n" / f"{lang}.json")
+                          .read_text(encoding="utf-8"))
+        for key in ("connectivity.tls_warn", "connectivity.tls_safe", "connectivity.tls_fix",
+                    "connectivity.tls_uv", "connectivity.tls_diagnose", "connectivity.tls_choose"):
+            assert key in data, (lang, key)
+
+
+@test
 def test_connectivity_icmp_goes_through_system_ping_without_privileges(_t):
     """ICMP — системный `ping` подпроцессом, одним пакетом: ключи по ОС; отсутствие ping — понятный код."""
     CN = _cn()

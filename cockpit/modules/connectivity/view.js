@@ -14,6 +14,7 @@ const POLL_MS = 10000;
 let DATA = null, C = null, DIRTY = false, TIMER = null, WIZ = null, WIZ_OFF = false;
 const RES = {};                              // id probe → результат ручной проверки
 const LIVE = {profiles: {}, probes: {}};     // узлы, которые обновляет опрос, не трогая поля ввода
+const TLS = {};                              // url → диагностика «какой Python доверяет сертификату»
 
 const clone = o => JSON.parse(JSON.stringify(o));
 
@@ -125,9 +126,96 @@ function resultChip(ctx, r){
   if (r.ok === null || r.ok === undefined) return ctx.el("span", {class: "chip"}, ctx.t("connectivity.res_none"));
   const extra = r.code === "status" || r.code === "body" || r.code === "other" || r.code === "tls"
     ? (r.detail ? " · " + r.detail : "") : "";
-  return ctx.el("span", {class: "chip " + (r.ok ? "ok" : "bad")},
+  return ctx.el("span", {class: "chip " + (r.ok ? (r.tls_unverified ? "warn" : "ok") : "bad")},
     r.ok ? ctx.t("connectivity.res_ok", {ms: r.ms == null ? 0 : r.ms})
          : ctx.t("connectivity.code." + (r.code || "other")) + extra);
+}
+
+function tlsWho(ctx, r){
+  const rt = (DATA && DATA.runtime) || {};
+  const code = r.install || rt.process_install || rt.install || "";
+  const install = code ? ctx.t("install.kind." + code) : "";
+  const version = r.python_version ? " " + r.python_version : "";
+  const python = r.python || rt.process || rt.effective || "";
+  const name = (install + version).trim() || python || ctx.t("connectivity.tls_unknown");
+  return python && install ? name + " · " + python : name;
+}
+
+function tlsNotice(ctx, r, p){
+  const {t, el} = ctx;
+  const box = el("div", {class: "warnbox", style: "display:block;margin-top:6px;font-size:12px"});
+  box.append(el("div", {}, t("connectivity.tls_warn", {python: tlsWho(ctx, r)})));
+  box.append(el("div", {class: "muted", style: "margin-top:4px"}, t("connectivity.tls_why", {python: tlsWho(ctx, r)})));
+  box.append(el("div", {class: "muted", style: "margin-top:4px"}, t("connectivity.tls_safe")));
+  const rt = (DATA && DATA.runtime) || {};
+  const code = r.install || rt.process_install || rt.install || "";
+  box.append(el("div", {class: "muted", style: "margin-top:4px"},
+    t("connectivity.tls_fix") + (code === "uv" ? " " + t("connectivity.tls_uv") : "")));
+  box.append(el("div", {class: "row", style: "gap:8px;margin-top:8px"},
+    el("button", {class: "btn sm", onclick: () => ctx.show("install")}, t("connectivity.tls_open")),
+    p && p.url ? el("button", {class: "btn sm", onclick: () => diagnose(ctx, p)}, t("connectivity.tls_diagnose")) : null));
+  const diag = p && p.url ? TLS[p.url] : null;
+  if (diag) box.append(diagBox(ctx, diag, r));
+  return box;
+}
+
+async function diagnose(ctx, p){
+  const {t} = ctx;
+  TLS[p.url] = {busy: true};
+  paintProbe(ctx, p.id);
+  const d = await ctx.api("/api/net/tls", {method: "POST", quiet: true,
+    body: JSON.stringify({url: p.url})});
+  if (!d || !d.ok){
+    TLS[p.url] = {error: (d && d.error) || t("connectivity.tls_unknown")};
+  } else {
+    TLS[p.url] = {rows: d.rows || [], recommended: d.recommended || ""};
+  }
+  paintProbe(ctx, p.id);
+}
+
+function diagBox(ctx, d, current){
+  const {t, el} = ctx;
+  const box = el("div", {class: "tls-diag", style: "margin-top:6px;font-size:12px"});
+  if (d.busy){
+    box.append(el("div", {class: "muted"}, t("connectivity.tls_busy")));
+    return box;
+  }
+  if (d.error){
+    box.append(el("div", {class: "muted"}, t("connectivity.tls_diagnose_failed", {why: d.error})));
+    return box;
+  }
+  const rows = d.rows || [];
+  if (!rows.length || !rows.some(x => x.trusted)){
+    box.append(el("div", {class: "muted"}, t("connectivity.tls_no_trusted")));
+    return box;
+  }
+  rows.forEach(row => {
+    const who = [(row.install ? t("install.kind." + row.install) : row.source), row.version]
+      .filter(Boolean).join(" ");
+    const label = row.trusted ? t("connectivity.tls_trusted")
+      : row.error ? t("connectivity.tls_unknown") : t("connectivity.tls_untrusted");
+    const same = current && row.executable === current.python;
+    const choose = row.trusted && !same
+      ? el("button", {class: "btn sm", onclick: () => choosePython(ctx, row)}, t("connectivity.tls_choose"))
+      : (same ? el("span", {class: "muted"}, t("connectivity.tls_current")) : null);
+    box.append(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px"},
+      el("span", {class: "chip " + (row.trusted ? "ok" : "warn")}, label),
+      el("span", {class: "mono", style: "overflow-wrap:anywhere"}, (who ? who + " · " : "") + row.executable),
+      choose));
+  });
+  return box;
+}
+
+async function choosePython(ctx, row){
+  const {t} = ctx;
+  const r = await ctx.api("/api/runtime", {method: "POST", quiet: true,
+    body: JSON.stringify({action: "configure", source: row.source, base: row.executable, isolated: true})});
+  if (r && r.ok){
+    ctx.toast(t("connectivity.tls_chosen", {path: ((r.runtime || {}).effective_python || row.executable)}), "ok");
+    ctx.show("install");
+  } else {
+    ctx.toast((r && (r.error || r.reason)) || t("connectivity.tls_diagnose_failed", {why: "?"}), "err");
+  }
 }
 
 function normText(ctx, p){
@@ -367,7 +455,7 @@ function probeRow(ctx, p){
     if (p.type === "tcp")
       cells.push(field(ctx, t("connectivity.f_port"), num(ctx, p, "port", {placeholder: "443", min: 1, max: 65535}), t("connectivity.h_port")));
   }
-  const res = el("span", {});
+  const res = el("div", {style: "display:flex;flex-direction:column;gap:4px;min-width:0"});
   LIVE.probes[p.id] = {node: res, p};
   paintProbe(ctx, p.id);
   const adv = el("details", {style: "margin-top:6px"},
@@ -394,6 +482,7 @@ function paintProbe(ctx, id){
   live.node.innerHTML = "";
   const r = RES[id] || snapProbe(id);
   live.node.append(resultChip(ctx, r));
+  if (r && r.tls_unverified) live.node.append(tlsNotice(ctx, r, live.p));
   if (r && r.at && !r.busy) live.node.append(el("span", {class: "muted", style: "margin-left:6px;font-size:11.5px"}, ctx.fmt.when(r.at)));
   if (RES[id] && RES[id].ok && !RES[id].busy)
     live.node.append(el("span", {class: "muted", style: "margin-left:6px;font-size:11.5px"}, ctx.t("connectivity.norm_label") + " " + normText(ctx, live.p)));

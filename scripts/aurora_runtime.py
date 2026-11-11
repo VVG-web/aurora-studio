@@ -89,6 +89,21 @@ PROBE = (
     "     os.path.join(stdlib, 'EXTERNALLY-MANAGED')),\n"
     "}))\n"
 )
+TLS_PROBE = (
+    "import json, socket, ssl, sys, urllib.parse\n"
+    "url = sys.argv[1]\n"
+    "try:\n"
+    " p = urllib.parse.urlsplit(url)\n"
+    " if p.scheme != 'https' or not p.hostname:\n"
+    "  raise ValueError('not an https URL')\n"
+    " ctx = ssl.create_default_context()\n"
+    " with socket.create_connection((p.hostname, p.port or 443), timeout=5) as s:\n"
+    "  with ctx.wrap_socket(s, server_hostname=p.hostname):\n"
+    "   pass\n"
+    " print(json.dumps({'ok': True, 'error': ''}))\n"
+    "except Exception as e:\n"
+    " print(json.dumps({'ok': False, 'error': (type(e).__name__ + ': ' + str(e))[:300]}))\n"
+)
 PYDANTIC_PROBE = (
     "import json\n"
     "try:\n"
@@ -283,6 +298,7 @@ def validate_python(path, timeout: float = _PROBE_TIMEOUT) -> dict:
     """
     raw = str(path or "").strip()
     out = {"path": raw, "executable": "", "real": "", "version": "", "source": detect_source(raw),
+           "install": "custom",
            "externally_managed": False, "venv": False, "valid": False, "reason": "",
            "writable": False, "purelib": "", "user_site": "", "broken_link": False, "level": "error",
            "prefix": "", "base_prefix": "", "base_executable": ""}
@@ -319,6 +335,7 @@ def validate_python(path, timeout: float = _PROBE_TIMEOUT) -> dict:
         "user_site": str(data.get("user_site") or ""),
     })
     out["source"] = detect_source(exe or raw)
+    out["install"] = detect_install(exe or raw)
     out["level"] = _version_level(out["version"])
     # Главная проверка: sys.executable, названный базой, должен существовать. У python.org
     # 3.15.2 он может указывать на отсутствующий python3.15, хотя процесс запущен через python3.
@@ -466,6 +483,44 @@ def best(source: str = "", path: str = "") -> dict:
     return found[0] if found else {}
 
 
+def certificate_trust(url: str, rows: list | None = None, timeout: float = 8.0,
+                      max_rows: int = 8) -> dict:
+    """Какой из найденных Python доверяет сертификату адреса.
+
+    Проверяется только TLS-рукопожатие, без HTTP-запроса и без ключей: это диагностика
+    «почему проверка VPN сказала, что сертификат не доверен», а не доступ к сервису.
+    `rows` можно передать готовыми (тесты): каждый — описание из `validate_python`.
+    """
+    target = str(url or "").strip()
+    if not target.lower().startswith("https://"):
+        return {"ok": False, "error": "адрес не HTTPS", "url": target, "rows": [], "recommended": ""}
+    source_rows = rows if rows is not None else candidates(include_invalid=False)["valid"]
+    seen, tested = set(), []
+    for row in list(source_rows)[:max_rows]:
+        if not isinstance(row, dict):
+            continue
+        exe = str(row.get("executable") or "")
+        if not exe:
+            continue
+        key = os.path.normcase(os.path.realpath(os.path.abspath(exe)))
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            p = subprocess.run([exe, "-I", "-X", "utf8", "-c", TLS_PROBE, target],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=timeout, env=child_env())
+            data = json.loads((p.stdout or "").strip().splitlines()[-1])
+            trusted, error = bool(data.get("ok")), str(data.get("error") or "")
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError) as e:
+            trusted, error = False, f"{type(e).__name__}: {e}"
+        tested.append({"executable": exe, "version": str(row.get("version") or ""),
+                       "source": str(row.get("source") or ""), "install": str(row.get("install") or ""),
+                       "venv": bool(row.get("venv")), "trusted": trusted, "error": error[:300]})
+    recommended = next((x["executable"] for x in tested if x["trusted"]), "")
+    return {"ok": True, "url": target, "rows": tested, "recommended": recommended}
+
+
 def venv_path() -> Path:
     return DEFAULT_VENV
 
@@ -550,6 +605,39 @@ def _venv_base(path) -> str:
             if candidate.is_file():
                 return str(candidate)
     return ""
+
+
+def detect_install(path: str) -> str:
+    """Тип установки Python по пути: python.org, Homebrew, MacPorts, uv, pyenv, Conda, Store.
+
+    Для venv возвращается тип его базы: человеку важно не «venv», а «venv на MacPorts»
+    или «venv на uv»: у них разные хранилища корневых сертификатов. Это подпись для
+    человека, а не способ угадать интерпретатор.
+    """
+    p = str(path or "").replace("\\", "/").casefold()
+    if not p:
+        return "custom"
+    if venv_root(p):
+        base = _venv_base(p)
+        return detect_install(base) if base else "venv"
+    if "/.local/share/uv/" in p or "/uv/python/" in p:
+        return "uv"
+    if "/opt/local/" in p or "/macports/" in p:
+        return "macports"
+    if "/.pyenv/" in p:
+        return "pyenv"
+    if "/miniconda" in p or "/anaconda" in p or "/conda/" in p:
+        return "conda"
+    if "/opt/homebrew/" in p or "/usr/local/cellar/" in p or "/homebrew/" in p:
+        return "homebrew"
+    if ("/library/frameworks/python.framework/" in p or "/programs/python/python" in p
+            or "/program files/python" in p or "/appdata/local/programs/python/" in p):
+        return "python.org"
+    if "/windowsapps/" in p:
+        return "store"
+    if p in ("/usr/bin/python3", "/usr/bin/python") or "/system/library/frameworks/" in p:
+        return "system"
+    return "custom"
 
 
 def _same_base(base: dict, target: Path) -> bool:
@@ -789,6 +877,7 @@ def configure(source: str = "", base_python: str = "", isolated=None,
         cfg = read_config()
         runtime = {
             "source": src,
+            "install": detect_install(effective),
             "base_python": base_python,
             "venv_path": str(target) if isolated else "",
             "effective_python": effective,
@@ -842,6 +931,8 @@ def current(force: bool = False) -> dict:
     elif rt.get("isolated") and not eff.get("venv"):
         reason = "в конфигурации выбран venv, но effective_python не является venv"
     pyd = pydantic_info(eff["executable"]) if eff.get("valid") else {"ok": False, "error": reason}
+    rt = dict(rt)
+    rt["install"] = eff.get("install") or base.get("install") or detect_install(eff.get("executable") or "")
     result = {"configured": True, "ok": not reason, "reason": reason,
               "runtime": rt, "base": base, "effective": eff,
               "effective_python": eff.get("executable") or "",

@@ -538,14 +538,18 @@ def test_cockpit_buttons_have_explanatory_tooltips(tmp: Path):
 
 @test
 def test_runtime_bar_names_one_venv(tmp: Path):
-    """В шапке не должно быть «venv · venv»: версия и режим, источник — в «Установке»."""
+    """В шапке не должно быть «venv · venv»: версия, режим и в скобках тип установки."""
     js = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
     block = js.split("function runtimeText", 1)[1].split("let GATE_DISMISSED", 1)[0]
     assert "const src" not in block, block
     assert 'r.isolated ? t("runtime.mode_venv")' in block, block
-    assert '[v ? "Python " + v : "", mode]' in block, block
+    assert 'const install = r.install ? t("install.kind." + r.install)' in block, block
+    assert '"(" + install + ")"' in block, block
 
     view = (KIT / "cockpit/modules/install/view.js").read_text(encoding="utf-8")
+    assert 'const install = rt.install ? t("install.kind." + rt.install)' in view, view[:500]
+    assert 'd.effective_python\n      + (install ? " (" + install' in view, \
+        "рабочий Python в карточке не называет установку"
     assert 'if (rt.source !== "venv") line(t("install.rt_mode"), mode);' in view, \
         "карточка установки снова показывает режим venv дважды"
 
@@ -622,3 +626,61 @@ def test_runtime_detects_the_install_source(tmp: Path):
     for path, want in cases.items():
         got = RT.detect_source(path)
         assert got == want, f"{path}: {got} вместо {want}"
+
+
+@test
+def test_runtime_detects_the_install_kind(tmp: Path):
+    """Тип установки — универсальная подпись, а не догадка о конкретной машине."""
+    cases = {
+        "/opt/homebrew/bin/python3.15": "homebrew",
+        "/usr/local/Cellar/python@3.13/bin/python3": "homebrew",
+        "/opt/local/bin/python3": "macports",
+        "/Library/Frameworks/Python.framework/Versions/3.15/bin/python3": "python.org",
+        "C:\\Program Files\\Python\\Python315\\python.exe": "python.org",
+        "C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\python3.exe": "store",
+        "/usr/bin/python3": "system",
+        "/Users/u/.local/share/uv/python/cpython-3.13.11-macos-x86_64-none/bin/python3.13": "uv",
+        "/Users/u/.pyenv/versions/3.13.1/bin/python3": "pyenv",
+        "/opt/miniconda3/bin/python3": "conda",
+    }
+    for path, want in cases.items():
+        got = RT.detect_install(path)
+        assert got == want, f"{path}: {got} вместо {want}"
+
+    made = RT.create_venv(sys.executable, tmp / "install-kind-venv")
+    assert made["ok"], made["error"]
+    got = RT.validate_python(made["effective"])
+    assert got["install"] == RT.detect_install(sys.executable), got
+    assert got["install"] in ("custom", "homebrew", "macports", "python.org", "system", "store",
+                              "uv", "pyenv", "conda"), got
+
+
+@test
+def test_certificate_trust_recommends_a_python_that_accepts_the_certificate(tmp: Path):
+    """Диагностика показывает, какой Python доверяет сертификату, и предлагает его."""
+    real = RT.subprocess.run
+    calls = []
+
+    def fake(argv, **kw):
+        calls.append(argv)
+        if "uv" in argv[0]:
+            return RT.subprocess.CompletedProcess(
+                argv, 0, '{"ok": false, "error": "CERTIFICATE_VERIFY_FAILED"}', "")
+        return RT.subprocess.CompletedProcess(argv, 0, '{"ok": true, "error": ""}', "")
+
+    rows = [
+        {"executable": "/fake/macports/python3", "version": "3.13.13", "source": "custom",
+         "install": "macports", "venv": False},
+        {"executable": "/fake/uv/python3", "version": "3.13.11", "source": "venv",
+         "install": "uv", "venv": True},
+    ]
+    RT.subprocess.run = fake
+    try:
+        got = RT.certificate_trust("https://example.com", rows=rows)
+    finally:
+        RT.subprocess.run = real
+    assert got["ok"], got
+    assert got["recommended"] == "/fake/macports/python3", got
+    assert [x["trusted"] for x in got["rows"]] == [True, False], got["rows"]
+    assert len(calls) == 2, calls
+    assert RT.certificate_trust("http://example.com")["ok"] is False
