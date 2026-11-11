@@ -709,3 +709,28 @@ def test_certificate_trust_starts_with_the_active_venv(tmp: Path):
     assert got["rows"][0]["executable"] == active["executable"], got["rows"]
     assert got["recommended"] == active["executable"], got
     assert any(row["executable"] == base["executable"] for row in got["rows"]), got["rows"]
+
+
+@test
+def test_certificate_trust_reports_no_trusted_python_on_timeout(tmp: Path):
+    """Если ни один Python не ответил, диагностика честно не рекомендует никого."""
+    real = RT.subprocess.run
+
+    def timeout(argv, **kw):
+        raise RT.subprocess.TimeoutExpired(argv, 1.0)
+
+    rows = [
+        {"executable": "/fake/macports/python3", "version": "3.13.13", "source": "custom",
+         "install": "macports", "venv": False},
+        {"executable": "/fake/uv/python3", "version": "3.13.11", "source": "venv",
+         "install": "uv", "venv": True},
+    ]
+    RT.subprocess.run = timeout
+    try:
+        got = RT.certificate_trust("https://example.com", rows=rows)
+    finally:
+        RT.subprocess.run = real
+    assert got["ok"] is True, got
+    assert got["recommended"] == "", got
+    assert all(row["trusted"] is False for row in got["rows"]), got["rows"]
+    assert all("TimeoutExpired" in row["error"] for row in got["rows"]), got["rows"]
