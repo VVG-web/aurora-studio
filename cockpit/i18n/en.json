@@ -926,7 +926,7 @@
   "nav.setup": "The kit's setup",
   "nav.setup_hint": "The setup of the kit and the machine: Python, dependencies, access and updates.",
   "nav.project": "The project's settings",
-  "nav.project_hint": "The project's settings: model, roles, MCP, publishing and access.",
+  "nav.project_hint": "Model, roles, access and publishing for the selected project.",
   "nav.files_hint": "The project's files: view, edit, publish and history.",
   "nav.console": "The console",
   "nav.console_hint": "The console: progress and output of running commands, launch history.",
