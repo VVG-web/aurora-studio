@@ -484,6 +484,54 @@ def test_doctor_reports_runtime_state(tmp: Path):
 
 
 @test
+def test_cockpit_buttons_have_explanatory_tooltips(tmp: Path):
+    """Кнопки cockpit объясняют, что произойдёт, а не повторяют подпись.
+
+    Новый пользователь видит «Настроить автоматически», «Поставить Pydantic AI»,
+    «Перезагрузить панель» и не знает, чем они отличаются. Подсказка должна назвать
+    действие и его последствия; ключи обязаны быть в обоих каталогах.
+    """
+    index = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    for key in ("badge.hint", "nav.overview_hint", "nav.setup_hint", "nav.project_hint",
+                "nav.files_hint", "nav.console_hint", "palette.hint", "project.reload_hint",
+                "console.stop_hint", "console.clear_hint"):
+        assert f'data-i18n-title="{key}"' in index, key
+
+    js = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    for key in ("runtime.gate_close_hint", "runtime.open_install_hint",
+                "runtime.gate_reload_hint", "runtime.check_again_hint"):
+        assert f't("{key}")' in js, key
+    assert "function moduleAbout" in js and "title: moduleAbout(m) || moduleTitle(m)" in js, \
+        "пункты меню модулей остались без пояснения"
+    assert "b.title = moduleAbout(rec.manifest) || moduleTitle(rec.manifest)" in js, \
+        "подсказка меню не переводится при смене языка"
+
+    view = (KIT / "cockpit/modules/install/view.js").read_text(encoding="utf-8")
+    for key in ("install.rt_check_hint", "install.rt_bootstrap_hint",
+                "install.rt_install_pydantic_hint", "install.rt_reload_hint",
+                "install.rt_dismiss_hint", "install.rt_details_hint",
+                "install.rt_candidate_hint", "install.rt_candidate_venv_hint",
+                "install.fix_hint", "install.do_install_hint"):
+        assert f't("{key}")' in view, key
+
+    for lang in ("ru", "en"):
+        panel = json.loads((KIT / "cockpit/i18n" / f"{lang}.json").read_text(encoding="utf-8"))
+        for key in ("palette.hint", "project.reload_hint", "console.stop_hint",
+                    "console.clear_hint", "runtime.gate_close_hint",
+                    "runtime.open_install_hint", "runtime.gate_reload_hint",
+                    "runtime.check_again_hint"):
+            assert key in panel, (lang, key)
+        install = json.loads((KIT / "cockpit/modules/install/i18n" / f"{lang}.json")
+                             .read_text(encoding="utf-8"))
+        for key in ("install.rt_check_hint", "install.rt_bootstrap_hint",
+                    "install.rt_install_pydantic_hint", "install.rt_reload_hint",
+                    "install.rt_dismiss_hint", "install.rt_details_hint",
+                    "install.rt_candidate_hint", "install.rt_candidate_venv_hint",
+                    "install.fix_hint", "install.do_install_hint"):
+            assert key in install, (lang, key)
+
+
+@test
 def test_runtime_gate_can_be_closed_and_the_panel_restarted(tmp: Path):
     """Экран ошибки не должен требовать перезагрузки браузера.
 

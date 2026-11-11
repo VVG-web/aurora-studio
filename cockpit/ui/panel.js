@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.220.14";
+const UI_VERSION = "1.220.15";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -626,7 +626,7 @@ function runtimeGate(rt){
   const head = el("div", {class:"row gate-head"});
   head.append(el("h2", {}, t("runtime.gate_title")));
   const close = el("button", {class:"toast-close gate-close",
-    title: t("runtime.gate_close"), "aria-label": t("runtime.gate_close")}, "✕");
+    title: t("runtime.gate_close_hint"), "aria-label": t("runtime.gate_close")}, "✕");
   // boot() останавливается на этом экране, поэтому «просто закрыть» оставило бы
   // полупустую страницу. Закрытие ведёт туда, где это исправляется.
   close.onclick = () => { GATE_DISMISSED = sig; g.remove(); show("install"); };
@@ -645,20 +645,23 @@ function runtimeGate(rt){
   card.append(el("div", {class:"mono", style:"font-size:12px;overflow-wrap:anywhere;margin-top:8px"},
     t("runtime.gate_effective", {path: (rt && rt.effective_python) || "—"})));
   const row = el("div", {class:"row"});
-  row.append(el("button", {class:"btn", onclick: () => { g.remove(); show("install"); }},
+  row.append(el("button", {class:"btn", title: t("runtime.open_install_hint"),
+    onclick: () => { g.remove(); show("install"); }},
     t("runtime.open_install")));
-  row.append(el("button", {class:"btn", onclick: () => restartPanel({patient:true})},
+  row.append(el("button", {class:"btn", title: t("runtime.gate_reload_hint"),
+    onclick: () => restartPanel({patient:true})},
     t("runtime.gate_reload")));
-  row.append(el("button", {class:"btn primary", onclick: async () => {
-    const d = await api("/api/runtime?fresh=1", {quiet:true});
-    if (d && d.ok){
-      GATE_DISMISSED = "";
-      g.remove();
-      toast(t("runtime.check_ok"), "ok");
-      restartPanel({patient:true});
-    }
-    else setWhy((d && d.reason) || t("runtime.unknown"));
-  }}, t("runtime.check_again")));
+  row.append(el("button", {class:"btn primary", title: t("runtime.check_again_hint"),
+    onclick: async () => {
+      const d = await api("/api/runtime?fresh=1", {quiet:true});
+      if (d && d.ok){
+        GATE_DISMISSED = "";
+        g.remove();
+        toast(t("runtime.check_ok"), "ok");
+        restartPanel({patient:true});
+      }
+      else setWhy((d && d.reason) || t("runtime.unknown"));
+    }}, t("runtime.check_again")));
   card.append(row);
   g.append(card);
   document.body.append(g);
@@ -6854,6 +6857,11 @@ function moduleTitle(m){
   return (m.name && (m.name[S.lang] || m.name.ru)) || m.id;
 }
 
+function moduleAbout(m){
+  const a = m && m.about;
+  return (a && (a[S.lang] || a.ru)) || "";
+}
+
 async function loadModules(){
   // Старый процесс сервера про модули не знает: файлы на диске новые, а отвечает
   // прежний код. Панель обязана подняться и в этом виде — с полосой «обновилась на
@@ -6909,7 +6917,8 @@ function addModuleNav(m){
   if (!group || $(`nav button[data-view="${m.id}"]`)) return;
   const ico = m.icon ? el("span", {class:"ico", "aria-hidden":"true"})
                      : el("span", {class:"ico letter", "aria-hidden":"true"}, navLetter(m));
-  const btn = el("button", {"data-view": m.id, "data-order": m.order, "aria-label": moduleTitle(m)},
+  const btn = el("button", {"data-view": m.id, "data-order": m.order,
+    "aria-label": moduleTitle(m), title: moduleAbout(m) || moduleTitle(m)},
     ico,
     el("span", {class:"label"}, moduleTitle(m)),
     el("span", {class:"count", id:"nav-" + m.id}));
@@ -7067,6 +7076,7 @@ function relabelModules(){
     if (!b) continue;
     $(".label", b).textContent = moduleTitle(rec.manifest);
     b.setAttribute("aria-label", moduleTitle(rec.manifest));     // её же читает диктор
+    b.title = moduleAbout(rec.manifest) || moduleTitle(rec.manifest);
     const letter = $(".ico.letter", b);
     if (letter) letter.textContent = navLetter(rec.manifest);
   }

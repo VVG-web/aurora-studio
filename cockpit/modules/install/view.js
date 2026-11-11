@@ -79,6 +79,7 @@ function runtimeCard(ctx){
       box.append(el("div", {class:"muted", style:"font-size:12px;margin-top:4px"},
         t("install.rt_reload_about")));
       box.append(el("button", {class:"btn sm primary", style:"margin-top:8px",
+        title: t("install.rt_reload_hint"),
         onclick: async (ev) => {
           ev.target.disabled = true;
           ev.target.textContent = t("install.ex_busy");
@@ -97,21 +98,24 @@ function runtimeCard(ctx){
       box.append(el("div", {style:"overflow-wrap:anywhere"}, lastError));
       if (lastOutput){
         const det = el("details", {style:"margin-top:6px"});
-        det.append(el("summary", {}, t("install.rt_details")));
+        det.append(el("summary", {title: t("install.rt_details_hint")}, t("install.rt_details")));
         det.append(el("pre", {class:"mono",
           style:"max-height:28vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0 0"},
           lastOutput));
         box.append(det);
       }
       box.append(el("button", {class:"btn sm", style:"margin-top:6px",
+        title: t("install.rt_dismiss_hint"),
         onclick: () => { lastError = ""; lastOutput = ""; draw(true); }},
         t("install.rt_dismiss")));
       body.append(box);
     }
 
     const row = el("div", {class:"row", style:"gap:8px;margin-top:10px;flex-wrap:wrap"});
-    row.append(el("button", {class:"btn sm", onclick: () => draw(true)}, t("install.rt_check")));
+    row.append(el("button", {class:"btn sm", title: t("install.rt_check_hint"),
+      onclick: () => draw(true)}, t("install.rt_check")));
     row.append(el("button", {class:"btn sm" + (!d.configured || !d.ok ? " primary" : ""),
+      title: t("install.rt_bootstrap_hint"),
       onclick: async (ev) => {
         ev.target.disabled = true; ev.target.textContent = t("install.ex_busy");
         lastError = ""; lastOutput = ""; lastBackup = ""; lastReused = false;
@@ -130,7 +134,7 @@ function runtimeCard(ctx){
         }
         draw(true);
       }}, t("install.rt_bootstrap")));
-    row.append(el("button", {class:"btn sm",
+    row.append(el("button", {class:"btn sm", title: t("install.rt_install_pydantic_hint"),
       onclick: async (ev) => {
         ev.target.disabled = true; ev.target.textContent = t("install.ex_busy");
         lastError = ""; lastOutput = ""; lastBackup = ""; lastReused = false;
@@ -161,7 +165,9 @@ function runtimeCard(ctx){
         isolate, t("install.rt_isolated_hint")));
       cands.forEach(c => {
         const b = el("button", {class:"btn sm", style:"margin:2px 6px 2px 0",
-          title: c.venv ? t("install.rt_direct_venv") : (c.reason || ""),
+          title: c.venv
+            ? t("install.rt_candidate_venv_hint")
+            : t("install.rt_candidate_hint") + (c.reason ? " " + c.reason : ""),
           onclick: async (ev) => {
             ev.target.disabled = true;
             lastError = ""; lastOutput = ""; lastBackup = ""; lastReused = false;
@@ -303,7 +309,8 @@ export async function refresh(ctx){
   const card = el("div", {class:"card"});
   card.append(el("div", {class:"row", style:"gap:8px;align-items:center;margin-bottom:6px"},
     el("span", {class:"muted", style:"flex:1;font-size:12.5px"}, t("install.recheck_hint")),
-    el("button", {class:"btn sm", onclick: () => recheck(ctx)}, t("install.recheck"))));
+    el("button", {class:"btn sm", title: t("install.recheck_hint"),
+      onclick: () => recheck(ctx)}, t("install.recheck"))));
   e.items.forEach(i => {
     card.append(el("div", {class:"list-item"},
       el("span", {class:"chip " + (i.ok ? "ok" : "warn"), style:"flex:none"},
@@ -319,6 +326,7 @@ export async function refresh(ctx){
         !i.ok && i.install_user ? el("div", {class:"muted", style:"font-size:12px;margin-top:4px;overflow-wrap:anywhere"},
           t("install.acc_bin_user", {cmd: i.install_user})) : null),
       !i.ok && i.pip ? el("button", {class:"btn sm primary", style:"flex:none",
+        title: t("install.do_install_hint"),
         onclick: ev => pipInstall(ctx, i, ev.target)}, t("install.do_install")) : null));
   });
   box.append(card);
@@ -333,7 +341,8 @@ export async function refresh(ctx){
       ok ? "✓" : t("install.missing")),
     el("div", {style:"flex:1"}, el("div", {style:"font-weight:600"}, name),
       el("div", {class:"muted", style:"font-size:12.5px"}, what)),
-    cmd ? el("button", {class:"btn sm", onclick: () => ctx.openRun(cmd)}, t("install.fix")) : null);
+    cmd ? el("button", {class:"btn sm", title: t("install.fix_hint"),
+      onclick: () => ctx.openRun(cmd)}, t("install.fix")) : null);
   pc.append(line(p.has_env, t("install.env_file"), t("install.env_file_what")));
   pc.append(line(p.confluence_token, t("install.conf_token"), "sync:confluence, ship:publish"));
   pc.append(line(p.jira_token, t("install.jira_token"), "sync:jira, sync:jira-status"));

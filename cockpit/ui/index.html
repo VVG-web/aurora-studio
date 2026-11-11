@@ -30,7 +30,8 @@
       </svg>
       AURORA <small id="kitver">cockpit</small>
     </div>
-    <button class="btn sm projbadge none" id="projBadge"><span class="dot"></span><span class="nm" data-i18n="badge.none">Проект не выбран</span></button>
+    <button class="btn sm projbadge none" id="projBadge" data-i18n-title="badge.hint"
+            title="Выбрать или сменить проект: команды, здоровье и зеркала работают с выбранным проектом"><span class="dot"></span><span class="nm" data-i18n="badge.none">Проект не выбран</span></button>
     <!-- Python подсистемы: один интерпретатор для установщика, агента, MCP и инструментов.
          Виден всегда: человек должен знать, каким Python работает то, что он видит. -->
     <button class="btn sm rtbar" id="runtimeBar" hidden data-i18n-title="runtime.bar_hint"
@@ -51,7 +52,8 @@
             data-i18n-title="net.bar_hint"
             title="Состояние соединений — нажмите, чтобы открыть раздел"></button>
     <div class="spacer"></div>
-    <button class="btn sm" id="paletteBtn"><span data-i18n="palette.btn">Команды</span>
+    <button class="btn sm" id="paletteBtn" data-i18n-title="palette.hint"
+            title="Открыть палитру команд: поиск по командам, разделам и проектам (⌘K / Ctrl+K)"><span data-i18n="palette.btn">Команды</span>
       <span class="kbd">⌘K</span></button>
     <select class="btn sm" id="skinSel" title="Оформление" aria-label="Скин"
             data-i18n-title="skin.title" data-i18n-aria="skin.label"
@@ -75,10 +77,12 @@
     <div class="group"><span class="long" data-i18n="nav.group_machine">Машина</span><span class="short"
       data-i18n="nav.group_machine_short">Машина</span></div>
     <button data-view="overview" data-order="10" aria-current="true"
-      aria-label="Мостик: все проекты" data-i18n-aria="nav.overview_hint"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="9" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="5" rx="1.5"/><rect x="13.5" y="11" width="7.5" height="10" rx="1.5"/><rect x="3" y="15" width="7.5" height="6" rx="1.5"/></svg></span><span class="label"
+      aria-label="Мостик: все проекты" data-i18n-aria="nav.overview_hint"
+      data-i18n-title="nav.overview_hint" title="Мостик: все проекты, их здоровье и последние запуски."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="9" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="5" rx="1.5"/><rect x="13.5" y="11" width="7.5" height="10" rx="1.5"/><rect x="3" y="15" width="7.5" height="6" rx="1.5"/></svg></span><span class="label"
       data-i18n="nav.overview">Мостик</span></button>
     <button data-view="setup" data-order="30" aria-label="Настройка кита и машины"
-      data-i18n-aria="nav.setup_hint"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18.8 10.2 21.4 10.7 21.4 13.3 18.8 13.8 18.1 15.5 19.6 17.7 17.7 19.6 15.5 18.1 13.8 18.8 13.3 21.4 10.7 21.4 10.2 18.8 8.5 18.1 6.3 19.6 4.4 17.7 5.9 15.5 5.2 13.8 2.6 13.3 2.6 10.7 5.2 10.2 5.9 8.5 4.4 6.3 6.3 4.4 8.5 5.9 10.2 5.2 10.7 2.6 13.3 2.6 13.8 5.2 15.5 5.9 17.7 4.4 19.6 6.3 18.1 8.5z"/><circle cx="12" cy="12" r="3"/></svg></span><span class="label"
+      data-i18n-aria="nav.setup_hint" data-i18n-title="nav.setup_hint"
+      title="Настройка кита и машины: Python, зависимости, доступы и обновление."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18.8 10.2 21.4 10.7 21.4 13.3 18.8 13.8 18.1 15.5 19.6 17.7 17.7 19.6 15.5 18.1 13.8 18.8 13.3 21.4 10.7 21.4 10.2 18.8 8.5 18.1 6.3 19.6 4.4 17.7 5.9 15.5 5.2 13.8 2.6 13.3 2.6 10.7 5.2 10.2 5.9 8.5 4.4 6.3 6.3 4.4 8.5 5.9 10.2 5.2 10.7 2.6 13.3 2.6 13.8 5.2 15.5 5.9 17.7 4.4 19.6 6.3 18.1 8.5z"/><circle cx="12" cy="12" r="3"/></svg></span><span class="label"
       data-i18n="nav.setup">Настройка кита</span></button>
     </div>
     <!-- Маршруты и работа по базе живут здесь, а не в «Машине»: каждый их шаг —
@@ -88,13 +92,16 @@
     <div class="group"><span class="long" data-i18n="nav.group_project">Проект</span><span class="short"
       data-i18n="nav.group_project_short">Проект</span></div>
     <button data-view="project" data-order="20" aria-label="Настройки проекта"
-      data-i18n-aria="nav.project_hint"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg></span><span class="label"
+      data-i18n-aria="nav.project_hint" data-i18n-title="nav.project_hint"
+      title="Настройки проекта: модель, роли, MCP, публикация и доступы."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg></span><span class="label"
       data-i18n="nav.project">Настройки проекта</span></button>
     <button data-view="files" data-order="50" aria-label="Файлы проекта"
-      data-i18n-aria="nav.files_hint"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.5h7.5A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></svg></span><span class="label"
+      data-i18n-aria="nav.files_hint" data-i18n-title="nav.files_hint"
+      title="Файлы проекта: просмотр, правка, публикация и история."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.5h7.5A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></svg></span><span class="label"
       data-i18n="nav.files">Файлы</span><span class="count" id="navFiles"></span></button>
     <button data-view="console" data-order="120" aria-label="Консоль"
-      data-i18n-aria="nav.console_hint"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17"/></svg></span><span class="label"
+      data-i18n-aria="nav.console_hint" data-i18n-title="nav.console_hint"
+      title="Консоль: ход и вывод запущенных команд, история запусков."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17"/></svg></span><span class="label"
       data-i18n="nav.console">Консоль</span></button>
     </div>
     <div class="navgroup" data-group="engine">
@@ -135,14 +142,18 @@
       <div class="row" style="margin-bottom:12px">
         <span class="chip mono" id="consoleCmd">—</span>
         <span class="chip" id="consoleRc" data-i18n="console.idle">не запускалось</span>
-        <button class="btn" id="consoleStop" hidden data-i18n="console.stop">Прервать</button>
+        <button class="btn" id="consoleStop" hidden data-i18n="console.stop"
+          data-i18n-title="console.stop_hint"
+          title="Прервать текущий прогон: уже полученные результаты и записанные карточки останутся">Прервать</button>
         <div class="row-right">
           <span id="consoleApply"></span>
           <span id="consoleTask"></span>
           <button class="btn sm" id="retryPrimary" data-i18n="console.retry"
             data-i18n-title="console.retry_title"
             title="Снять отметку «не отвечает» с основного провайдера и проверить его на следующем источнике">Вернуться на основного</button>
-          <button class="btn sm" id="clearConsole" data-i18n="console.clear">Очистить</button>
+          <button class="btn sm" id="clearConsole" data-i18n="console.clear"
+            data-i18n-title="console.clear_hint"
+            title="Очистить окно консоли; история прогонов останется в файлах проекта">Очистить</button>
           <button class="btn sm" id="exportMd" data-i18n="console.export"
             data-i18n-title="console.export_title"
             title="Выгрузить текущий вывод консоли в .md-файл">В .md</button>
@@ -173,7 +184,9 @@
       <div class="row">
         <h1 data-i18n="project.h1">Настройки проекта</h1>
         <div class="spacer"></div>
-        <button class="btn sm" id="projectReload" data-i18n="project.reload">↻ Обновить</button>
+        <button class="btn sm" id="projectReload" data-i18n="project.reload"
+          data-i18n-title="project.reload_hint"
+          title="Перечитать файлы проекта с диска; если в редакторе есть несохранённые правки, панель спросит, что делать">↻ Обновить</button>
       </div>
       <p class="sub" data-i18n="project.about">Всё, что принадлежит выбранному проекту: доступы,
         конфиг, артефакты и переопределения агента. Общее для всех проектов — в «Настройке
