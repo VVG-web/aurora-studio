@@ -1116,7 +1116,7 @@
     "ответить ролью из раздела «Модели» (для --task ask; по умолчанию worker)": "answer with a role from the «Models» section (for --task ask; worker by default)",
     "Спросить через план, делегирование, роли и манифест (для --task ask)": "Ask through a plan, delegation, roles and a manifest (for --task ask)",
     "продолжить прерванный пайплайн по plan.json и manifest.json (для --task ask --pipeline; нужен --thread или сохранённый id)": "resume an interrupted pipeline from plan.json and manifest.json (for --task ask --pipeline; needs --thread or a saved id)",
-    "печатать ASK_EVENT JSON-строки для панели (для --task ask --pipeline)": "print ASK_EVENT JSON lines for the panel (for --task ask --pipeline)",
+    "печатать ASK_EVENT/MAKE_EVENT JSON-строки для панели (для --task ask --pipeline и --task make)": "print ASK_EVENT/MAKE_EVENT JSON lines for the panel (for --task ask --pipeline and --task make)",
     "сколько вопросов пайплайна хранить (по умолчанию 50)": "how many pipeline questions to keep (50 by default)",
     "не обогащать вопрос семантическим индексом проекта: гибридный поиск заменить только словами (для --task ask)": "do not enrich the question with the project's semantic index: replace hybrid search with words only (for --task ask)",
     "оценить готовые ответы на чек-лист: JSON на входе, итог JSON-ом": "score ready checklist answers: JSON in, the outcome as JSON",
