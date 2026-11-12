@@ -169,6 +169,55 @@ context_architecture:
 
 
 @test
+def test_pipeline_keeps_a_partial_answer_when_one_step_fails(tmp: Path):
+    import ask_pipeline as P
+
+    root = _project(tmp)
+
+    def call(cfg, role, messages, **kw):
+        prompt = "\n".join(str(m.get("content") or "") for m in messages)
+        if role == "planner" and "Синтезируй" not in prompt:
+            return {"ok": True, "backend": 1, "model": "p", "log": [],
+                    "text": json.dumps({"title": "П", "steps": [
+                        {"id": "s1", "title": "Один"}, {"id": "s2", "title": "Два"}]})}
+        if role == "worker" and "ПЛАН, ПУНКТ s2" in prompt:
+            return {"ok": False, "log": ["№1 m: connection refused"],
+                    "error": {"code": "llm_unavailable", "message": "писатель недоступен"}}
+        return _fake(cfg, role, messages, **kw)
+
+    res = P.run(_cfg(), str(root), "вопрос", pack="# Пак\n\n## Заявка-0\n\nСрок 10 дней.",
+                call=call, thread_id="partial-test", momus=True)
+    assert res["ok"] and res["status"] == "partial", res
+    assert "Частичный результат" in res["answer"], res["answer"]
+    assert any(s.get("status") == "failed" for s in res["steps"]), res["steps"]
+
+
+@test
+def test_pipeline_project_context_uses_hybrid_and_can_fall_back_to_words(tmp: Path):
+    import ask_pipeline as P
+    import answer_core as AC
+
+    root = _project(tmp)
+    seen = []
+    real = AC.search_context
+
+    def fake_search(cwd, question, **kw):
+        seen.append(kw.get("extra_args"))
+        return {"ok": True, "pack": "# Пак\n\n## Заявка-0\n\nСрок 10 дней.",
+                "cards": ["Заявка-0"], "total": 1, "why": "", "seconds": 0.0}
+
+    AC.search_context = fake_search
+    try:
+        P.run(_cfg(), str(root), "срок?", call=_fake, thread_id="hybrid-test")
+        P.run(_cfg(), str(root), "срок?", call=_fake, thread_id="words-test",
+              enrich=False)
+    finally:
+        AC.search_context = real
+    assert seen[0] == (), seen
+    assert seen[1] == ("--no-semantic",), seen
+
+
+@test
 def test_ask_pipeline_warns_about_missing_roles_and_uses_a_fallback(tmp: Path):
     import ask_pipeline as P
 
@@ -289,6 +338,7 @@ def test_pipeline_cancel_leaves_a_clear_state(tmp: Path):
 @test
 def test_pipeline_pauses_and_resumes_between_steps(tmp: Path):
     import threading
+
     import ask_pipeline as P
     import ask_state as S
 
@@ -393,6 +443,7 @@ def test_pipeline_api_hides_pack_and_writes_control(tmp: Path):
     state.write_answer("Ответ [[Заявка-0]].", status="done")
     sys.path.insert(0, str(KIT / "cockpit"))
     import importlib
+
     import aurora_cockpit as CK
     importlib.reload(CK)
     got = CK.ask_pipeline_state(str(root), "api-test")

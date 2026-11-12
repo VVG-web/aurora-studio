@@ -384,8 +384,8 @@ def _prepare_pack(pack: str, cfg: dict, cwd: str | Path, call, state: ask_state.
     """
     try:
         import context_budget as CB
-        import context_store as CS
         import context_runtime as CR
+        import context_store as CS
     except Exception:  # noqa: BLE001
         return pack, {"enabled": False}
     try:
@@ -429,7 +429,7 @@ def _prepare_pack(pack: str, cfg: dict, cwd: str | Path, call, state: ask_state.
             try:
                 store.close()
             except Exception:  # noqa: BLE001
-                pass
+                pass  # noqa: S110 - closing a cache store is best effort
 
 
 def _plan_prompt(question: str, pack: str) -> str:
