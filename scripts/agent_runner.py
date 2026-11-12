@@ -7431,8 +7431,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
 
     st.setdefault("pipeline", {})["completed_once"] = True
     run.update_manifest(completed_once=True)
-    final_status = ("done" if stages.get("checked") and not st.get("issues")
-                    and not int((st.get("momus") or {}).get("unsupported") or 0)
+    final_status = ("done" if (run.manifest().get("artifact") or {}).get("status") == "ready"
                     else "partial")
     run.update_state(status=final_status, current="", completed_once=True,
                      best_version=best_version)

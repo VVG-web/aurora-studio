@@ -502,7 +502,6 @@ class MakeRun:
                      artifact_path: str = "") -> dict:
         with self._lock:
             self.ensure()
-            write_json(self.report_json, data)
             manifest = self.manifest()
             report = {"json": str(self.report_json.relative_to(self.dir)),
                       "md": "", "status": str(data.get("status") or "")}
@@ -510,6 +509,9 @@ class MakeRun:
                 path = self.manager_report_path(artifact_path)
                 atomic_write(path, manager_md.strip() + "\n")
                 report["md"] = str(path.relative_to(self.cwd)).replace("\\", "/")
+            payload = dict(data)
+            payload["report_md"] = report["md"]
+            write_json(self.report_json, payload)
             manifest["report"] = report
             write_json(self.manifest_path, manifest)
             self.event("report", "отчёт сохранён", md=report["md"],
