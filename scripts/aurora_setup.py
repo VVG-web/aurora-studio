@@ -50,6 +50,7 @@ def read_config(path: Path) -> dict:
         "trust_statuses": "", "assumption_statuses": "",
         "trusted_sources": "", "trusted_branches": "",
         "threshold": "20",
+        "keep_questions": "50",
     }
     if not path.is_file():
         return cfg
@@ -102,6 +103,12 @@ def read_config(path: Path) -> dict:
         cfg[key] = m.group(1).strip() if m else ""
     cfg["threshold"] = scalar("verified_threshold_pct", "20")
     cfg["scrub"] = scalar("scrub", "report")
+    # «Спросить» хранит план и промежуточные файлы рядом с вопросом. Лимит — часть
+    # настройки проекта: без него каталог растёт вместе с числом вопросов.
+    am = re.search(r"(?ms)^ask_pipeline:\s*$(.*?)(?=^\S|\Z)", text)
+    ablock = am.group(1) if am else ""
+    keep = yaml_scalar(ablock, "keep_questions", "50") if ablock else "50"
+    cfg["keep_questions"] = keep if str(keep).isdigit() else "50"
     return cfg
 
 
@@ -465,6 +472,10 @@ privacy:
 
 bootstrap:
   verified_threshold_pct: {c['threshold']}
+
+ask_pipeline:
+  # Сколько вопросов «Спросить» хранить вместе с планом и шагами.
+  keep_questions: {c.get('keep_questions') or "50"}
 """
     old_text, example = cards_example(old_text)
     path.write_text(carry_unmanaged(old_text, text + example), encoding="utf-8")
@@ -528,6 +539,9 @@ def run_answers(target: Path, answers: dict) -> int:
                 "jira_jql", "scrub", "threshold"):
         if key in answers and str(answers[key]).strip():
             c[key] = str(answers[key]).strip()
+    if "keep_questions" in answers:
+        value = str(answers["keep_questions"] or "").strip()
+        c["keep_questions"] = value if value.isdigit() and int(value) > 0 else "50"
     # Вложения Confluence: режим из трёх слов и предел файла в МБ (целое, 0 — без предела). Проверка
     # до записи: опечатка не должна молча дать самый разрешающий режим. Пусто — ключа нет, действует
     # умолчание; значение, равное умолчанию, ключ не заводит (прежний конфиг остаётся как был).

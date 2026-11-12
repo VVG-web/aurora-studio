@@ -126,6 +126,10 @@ scripts/context_store.py  => .aurora/scripts/context_store.py
 scripts/context_runtime.py => .aurora/scripts/context_runtime.py
 scripts/reliable_core.py  => .aurora/scripts/reliable_core.py
 scripts/answer_core.py    => .aurora/scripts/answer_core.py
+# «Спросить» с планом и ролями: состояние вопроса и сам оркестратор; оба нужны
+# agent_runner в проекте, иначе ветка --pipeline падает на ImportError
+scripts/ask_state.py      => .aurora/scripts/ask_state.py
+scripts/ask_pipeline.py   => .aurora/scripts/ask_pipeline.py
 scripts/production_core.py => .aurora/scripts/production_core.py
 # доступность соединений: профили VPN, probe, состояние; его читают команды `net:*`, агент, боты и синк
 scripts/connectivity.py  => .aurora/scripts/connectivity.py

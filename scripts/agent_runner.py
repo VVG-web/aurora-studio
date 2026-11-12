@@ -7678,6 +7678,32 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
     return "\n".join(L)
 
 
+def report_pipeline(res: dict, question: str) -> str:
+    """Человеческий отчёт для ветки --pipeline: ответ, план, шаги, метрики."""
+    lines = [f"# Ответ базы — {utc_label()}", "", f"**Вопрос:** {question}", ""]
+    if not res.get("ok"):
+        err = res.get("error") or {}
+        lines += [f"✗ Ответа нет: {err.get('message') or res.get('why') or 'причина неизвестна'}",
+                  "", "План и состояние сохранены: " + str(res.get("state_id") or "—")]
+        return "\n".join(lines)
+    lines += [str(res.get("answer") or ""), "", "---", ""]
+    steps = res.get("steps") or []
+    done = sum(1 for s in steps if s.get("status") in ("done", "partial"))
+    lines.append(f"План: `{res.get('plan_path')}` · шагов {done}/{len(steps)} · "
+                 f"общее время {res.get('metrics', {}).get('total_seconds', res.get('seconds', 0))} с")
+    if res.get("warnings"):
+        lines += ["", "## Предупреждения", ""] + [f"- {w}" for w in res["warnings"]]
+    metrics = res.get("metrics") or {}
+    if metrics:
+        lines += ["", "## Метрики", "",
+                  f"- успешных шагов: {metrics.get('success_rate')}",
+                  f"- ошибок: {metrics.get('errors', 0)} · повторов/фоллбэков: {metrics.get('retries', 0)}",
+                  f"- контекст: {metrics.get('context_tokens', 0)} токенов · "
+                  f"пул: {metrics.get('pool', {}).get('width', 0)}",
+                  f"- модели: {', '.join(metrics.get('models') or []) or '—'}"]
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------- задача: тезисы
 
 # Больше трёх кусков — это уже не карточка, а документ: тезис тезисов вырождается в
@@ -9146,6 +9172,18 @@ def main() -> int:
                     help="ответить ролью из раздела «Модели» (для --task ask; по умолчанию worker)")
     ap.add_argument("--model", default="", metavar="ПРОВАЙДЕР/МОДЕЛЬ",
                     help="ответить ровно этой моделью провайдера, без запасных (для --task ask)")
+    ap.add_argument("--pipeline", action="store_true",
+                    help="Спросить через план, делегирование, роли и манифест (для --task ask)")
+    ap.add_argument("--resume", action="store_true",
+                    help="продолжить прерванный пайплайн по plan.json и manifest.json "
+                         "(для --task ask --pipeline; нужен --thread или сохранённый id)")
+    ap.add_argument("--emit-events", action="store_true",
+                    help="печатать ASK_EVENT JSON-строки для панели (для --task ask --pipeline)")
+    ap.add_argument("--keep-questions", type=int, default=0, metavar="N",
+                    help="сколько вопросов пайплайна хранить (по умолчанию 50)")
+    ap.add_argument("--no-semantic", action="store_true",
+                    help="не обогащать вопрос семантическим индексом проекта: "
+                         "гибридный поиск заменить только словами (для --task ask)")
     ap.add_argument("--defer-refresh", action="store_true",
                     help="тезисы: дописанные карточки с прежним тезисом ждут конца цикла "
                          "маршрута — внутри цикла пишутся только новые")
@@ -9263,6 +9301,35 @@ def main() -> int:
         except ValueError as e:
             print(f"agent_runner: {e}", file=sys.stderr)
             return 1
+        if a.pipeline:
+            import ask_pipeline as AP
+            import ask_state as AS
+            state_id = a.thread or path.stem
+            state = AS.AskState(cwd, state_id, a.question,
+                                keep=a.keep_questions or 0)
+            journal = thread_path(cwd, state.id)
+            pipeline_history = read_thread(journal) if a.thread else []
+
+            def emit(event):
+                if a.emit_events:
+                    print("ASK_EVENT " + json.dumps(event, ensure_ascii=False), flush=True)
+
+            res = AP.run(cfg, cwd, a.question, call=AG.call_role,
+                         mode=a.mode, max_cards=a.limit or 40,
+                         history=pipeline_history, thread_id=state.id,
+                         keep=a.keep_questions or 0, momus=not a.no_momus,
+                         emit=emit, resume=a.resume, state=state,
+                         enrich=not a.no_semantic)
+            print(report_pipeline(res, a.question))
+            if res.get("ok") and not a.no_journal:
+                metrics = res.get("metrics") or {}
+                note = (f"пайплайн · шагов {len(res.get('steps') or [])} · "
+                        f"{metrics.get('total_seconds', res.get('seconds', 0))} с")
+                p = append_turn(journal, a.question, res.get("answer") or "",
+                                note, a.mode)
+                print(f"\nРазговор: `{p.relative_to(cwd)}` "
+                      f"(вопросов в нём: {len(pipeline_history) + 1})")
+            return 0 if res.get("ok") else 1
         res = run_ask(cfg, cwd, a.question, a.mode, a.limit or 40, history=history,
                       momus=not a.no_momus, role=role)
         text = report_ask(res, a.question, cfg)
