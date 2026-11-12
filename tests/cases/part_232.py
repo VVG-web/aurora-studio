@@ -223,6 +223,33 @@ def test_make_hard_deadline_stops_after_the_planner(tmp: Path):
 
 
 @test
+def test_make_falls_back_without_tools_when_the_adapter_refuses(tmp: Path):
+    root = _project(tmp)
+    import agent_runner as R
+    tools_seen = []
+
+    def fake(cfg, role, messages, **kw):
+        if role == "planner":
+            tools_seen.append(bool(kw.get("tools")))
+            if kw.get("tools"):
+                return {"ok": False, "backend": 1, "model": "m", "log": [
+                    "Pydantic AI не сработал — вызов с инструментами не принят"]}
+            return _planner()
+        if role == "worker":
+            return _base("worker", "# AC\n\nСрок десять дней [[Заявка-0]].")
+        if role == "critic":
+            return _base("critic", json.dumps({"ok": True, "issues": []}))
+        raise AssertionError(role)
+
+    res = R.run_make(_cfg(), str(root), "ac", "срок заявки", "", "", True,
+                     call=fake, momus=False)
+    assert res["ok"], res
+    assert tools_seen[0] is True and tools_seen[-1] is False, tools_seen
+    assert R.report_make({"sid": "s", "stage": "planning", "questions": [],
+                          "state": res["state"]}).startswith("# Артефакт")
+
+
+@test
 def test_make_state_isolates_runs_and_never_returns_pack(tmp: Path):
     root = _project(tmp)
     import make_state as MS

@@ -7137,10 +7137,19 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             context_store=planner_store, input_limit=planner_limit,
             guard_text=[st["idea"], planner_context] + re.findall(r"^## (.+)$", planner_context, re.M)),
             remaining(), role="planner")
+        adapter_fail = any(
+            "Pydantic" in str(x) or "инструмент" in str(x)
+            for x in (r.get("log") or []) + [str((r.get("error") or {}).get("message") or "")])
         if ((not r.get("ok") or not (r.get("text") or "").strip()) and planner_tools
-                and not pipeline.get("stop_reason")):
+                and (not pipeline.get("stop_reason") or adapter_fail)):
             # tool_limit не должен повторять тот же цикл: второй заход идёт без
             # инструментов, по уже собранному плану и паку.
+            if adapter_fail:
+                # Прямой HTTP без Pydantic AI не принимает инструменты. Это не
+                # зацикливание: тот же запрос без инструментов допустим.
+                pipeline.pop("attempts_planner", None)
+                pipeline.pop("last_planner", None)
+                pipeline.pop("stop_reason", None)
             r = limited("planner", lambda: call(
                 cfg, "planner", [{"role": "user", "content": prompt}],
                 deadline=deadline,
@@ -7460,7 +7469,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
 def report_make(res: dict) -> str:
     """Отчёт производства. Панель разбирает его же, поэтому формат стабилен."""
     L = [f"# Артефакт · {utc_label()}", "", f"Сессия: `{res['sid']}`", ""]
-    if res.get("stage") == "planning":
+    if res.get("stage") == "planning" and res.get("questions"):
         L += ["Планировщик спрашивает — ответьте, и он продолжит. На каждый вопрос есть "
               "рекомендация: с ней можно согласиться одним словом.", ""]
         for i, q in enumerate(res["questions"], 1):
