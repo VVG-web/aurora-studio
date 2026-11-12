@@ -236,9 +236,12 @@ def _env() -> dict:
 
 
 def _run(path, args, timeout: float = _PROBE_TIMEOUT) -> subprocess.CompletedProcess:
+    # Панель может жить с отозванным stdin (её запустил предыдущий перезапуск, а терминал
+    # закрылся). Python в ребёнке падает ещё до нашей пробы: `init_sys_streams: Bad file
+    # descriptor`. Проверка интерпретатора не должна зависеть от stdin вызывающего.
     return subprocess.run([str(path), *args], capture_output=True, text=True,
                           encoding="utf-8", errors="replace", timeout=timeout,
-                          env=_env())
+                          env=_env(), stdin=subprocess.DEVNULL)
 
 
 def _probe_path(path) -> str:
@@ -403,7 +406,8 @@ def _py_launcher_paths() -> list:
         return []
     try:
         p = subprocess.run(["py", "-0p"], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=10, env=_env())
+                           encoding="utf-8", errors="replace", timeout=10, env=_env(),
+                           stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return []
     out = []
@@ -511,7 +515,7 @@ def certificate_trust(url: str, rows: list | None = None, timeout: float = 8.0,
         try:
             p = subprocess.run([exe, "-I", "-X", "utf8", "-c", TLS_PROBE, target],
                                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               timeout=timeout, env=child_env())
+                               timeout=timeout, env=child_env(), stdin=subprocess.DEVNULL)
             data = json.loads((p.stdout or "").strip().splitlines()[-1])
             trusted, error = bool(data.get("ok")), str(data.get("error") or "")
         except (OSError, subprocess.SubprocessError, ValueError, IndexError) as e:
@@ -1145,7 +1149,7 @@ def _pip_run(exe: str, specs: list, timeout: float) -> dict:
         p = subprocess.run([exe, "-I", "-X", "utf8", "-m", "pip", "install",
                             "--disable-pip-version-check", "--no-input", *specs],
                            capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           timeout=timeout, env=child_env())
+                           timeout=timeout, env=child_env(), stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}", "output": ""}
     text = ((p.stdout or "") + (p.stderr or "")).strip()

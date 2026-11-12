@@ -9447,7 +9447,8 @@ def restart_self(port: int) -> dict:
         probe = subprocess.run(
             [python_executable(), "-c", "import sys; sys.path.insert(0, sys.argv[1]); import aurora_common",
              os.path.join(KIT, "scripts")],
-            cwd=KIT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+            cwd=KIT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
+            stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         probe = None                     # проба не вышла — не мешаем перезапуску
     # Любой ненулевой код значит, что новая aurora_common не импортируется: 2 — защита версии
@@ -9460,6 +9461,7 @@ def restart_self(port: int) -> dict:
         subprocess.Popen([python_executable(), entry, "cockpit", "--port", str(port),
                           "--restart", "--force", "--no-browser"],
                          cwd=KIT, env=env, start_new_session=True,
+                         stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as e:
         return {"error": f"не удалось запустить новую панель: {e}"}

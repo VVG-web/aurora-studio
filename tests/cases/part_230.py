@@ -57,6 +57,45 @@ def test_runtime_accepts_the_running_interpreter(tmp: Path):
 
 
 @test
+def test_runtime_probe_works_when_the_parent_stdin_is_revoked(tmp: Path):
+    """Проверка Python не должна зависеть от stdin панели.
+
+    Панель, запущенная предыдущим перезапуском, может остаться с отозванным stdin после
+    закрытия терминала. Раньше проба наследовала этот дескриптор, и любой Python падал на
+    `init_sys_streams: Bad file descriptor` ещё до запуска. Это выглядело как «базовый
+    Python не проходит проверку», хотя интерпретатор был цел.
+    """
+    if os.name != "posix":
+        return
+    fake = tmp / "python3.13"
+    body = (
+        "#!/bin/sh\n"
+        # Проба обязана дать ребёнку читаемый stdin. Закрытый fd 0 — та же болезнь,
+        # из-за которой панель с отозванным stdin объявляла целый Python нерабочим.
+        "[ -r /dev/fd/0 ] || exit 7\n"
+        "printf '%s\\n' '{\"executable\": \"'$0'\", \"real\": \"'$0'\", "
+        "\"version\": \"3.13.13\", \"venv\": false, \"writable\": false, "
+        "\"externally_managed\": false, \"prefix\": \"/x\", \"base_prefix\": \"/x\"}'\n"
+    )
+    if not _exe(fake, body):
+        return
+    code = (
+        "import json, os, sys\n"
+        "os.close(0)\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import aurora_runtime as r\n"
+        "got = r.validate_python(sys.argv[2])\n"
+        "print(json.dumps({'valid': got['valid'], 'reason': got['reason']}))\n"
+    )
+    cp = subprocess.run([sys.executable, "-c", code, str(SCRIPTS), str(fake)],
+                        capture_output=True, text=True, encoding="utf-8", errors="replace",
+                        timeout=30)
+    assert cp.returncode == 0, (cp.returncode, cp.stdout, cp.stderr)
+    got = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert got["valid"], got
+
+
+@test
 def test_runtime_refuses_a_missing_or_broken_interpreter(tmp: Path):
     missing = tmp / "missing-python3.15"
     got = RT.validate_python(str(missing))

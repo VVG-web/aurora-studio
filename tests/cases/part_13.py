@@ -4125,13 +4125,16 @@ def test_restart_self_does_not_promise_a_panel_that_cannot_start(tmp: Path):
                       encoding="utf-8")
     ck, restore = _cockpit_on(kit)
     started = []
+    probes = []
     real_popen = subprocess.Popen
 
     def fake_popen(*a, **k):
         # subprocess.run (проба) тоже идёт через Popen: подменяем только запуск панели
         if "--restart" in a[0]:
-            started.append(a)
+            started.append((a, k))
             return None
+        if "-c" in a[0]:
+            probes.append(k)
         return real_popen(*a, **k)
 
     subprocess.Popen = fake_popen
@@ -4148,6 +4151,10 @@ def test_restart_self_does_not_promise_a_panel_that_cannot_start(tmp: Path):
         common.write_text("X = 1\n", encoding="utf-8")                  # проба проходит — запуск идёт
         r = ck.restart_self(8765)
         assert r.get("ok") and started, (r, started)
+        # Панель могла остаться без stdin после закрытия терминала. Наследовать отозванный
+        # дескриптор нельзя: новый Python падает на init_sys_streams ещё до своего кода.
+        assert started[0][1].get("stdin") == subprocess.DEVNULL, started[0]
+        assert probes and all(k.get("stdin") == subprocess.DEVNULL for k in probes), probes
     finally:
         subprocess.Popen = real_popen
         restore()
