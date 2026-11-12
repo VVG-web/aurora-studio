@@ -388,8 +388,11 @@ function runStatus(ctx, status){
   return ctx.t("work.status." + status);
 }
 
-function runElapsed(run){
-  const sec = Math.max(0, Math.round((Date.now() - (run.startedAt || Date.now())) / 1000));
+export function runElapsed(run){
+  // У завершённого запуска время считается до последнего обновления, а не до сейчас:
+  // иначе после F5 «прошло» растёт вместе с возрастом вкладки.
+  const end = run.finishedAt || (RUN_BUSY.has(run.status) ? Date.now() : run.lastAt || Date.now());
+  const sec = Math.max(0, Math.round((end - (run.startedAt || end)) / 1000));
   return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
 }
 
@@ -407,13 +410,15 @@ function makeNewRun(ctx, kind, title){
   return {key: "local-" + RUN_SEQ, sid: "", job: "", kind, title,
           status: "starting", plan: [], current: "", log: [], questions: [],
           metrics: null, warnings: [], reportText: "", report: "", artifact: "",
-          startedAt: Date.now(), lastAt: Date.now(), rendered: false, reportLines: []};
+          startedAt: Date.now(), lastAt: Date.now(), finishedAt: 0, hydrated: true,
+          rendered: false, reportLines: []};
 }
 
 // Вызов производства — тот же путь, что у любой команды: панель не знает другого способа
 // запускать движок. Запуск идёт фоном, поэтому со страницы можно начать второй артефакт.
 async function makeCall(ctx, args, run){
   run.status = "starting";
+  run.finishedAt = 0;
   run.reportLines = [];
   run.reportText = "";
   run.error = "";
@@ -485,6 +490,27 @@ async function hydrateRun(ctx, run){
   run.metrics = (d.report && d.report.metrics) || run.metrics;
   run.warnings = (d.state && d.state.warnings) || run.warnings;
   if (run.state && run.state !== "running" && run.status === "done") run.status = run.state;
+  // Журнал после F5 собирается из сохранённых событий. Гоняем их на копии, чтобы
+  // восстановление не переписывало статус и время завершения живыми часами.
+  const replay = {plan: [], log: []};
+  (d.events || []).forEach(event => {
+    // В файле событий plan хранит число шагов, а в live-событии — массив. Готовый
+    // message есть у обоих, поэтому он и становится строкой журнала; остальное
+    // разбирает applyMakeEvent, не роняя восстановление на незнакомом виде.
+    if (typeof event.message === "string" && event.message){
+      replay.log = (replay.log || []).concat(event.message).slice(-80);
+      return;
+    }
+    try { applyMakeEvent(replay, event); }
+    catch (_e) { /* одно событие не должно стирать весь журнал */ }
+  });
+  if (replay.log.length) run.log = replay.log;
+  const updated = Date.parse((d.state && d.state.updated) || "") || 0;
+  if (updated){
+    run.lastAt = updated;
+    if (!RUN_BUSY.has(run.state)) run.finishedAt = updated;
+  }
+  run.hydrated = true;
 }
 
 function renderRuns(ctx){
@@ -664,7 +690,7 @@ async function enoughRun(ctx, run){
   await makeCall(ctx, ["--session", run.sid, "--enough"], run);
 }
 
-async function loadRuns(ctx){
+export async function loadRuns(ctx){
   const project = ctx.project ? ctx.project.path : "";
   if (project !== SHOWN_PROJECT){
     RUNS.clear(); ACTIVE = ""; SHOWN_PROJECT = project;
@@ -680,7 +706,10 @@ async function loadRuns(ctx){
              status: row.status || "unknown", plan: [], current: row.stage || "", log: [],
              questions: [], metrics: null, warnings: [], reportText: "", report: row.report || "",
              artifact: row.artifact || "", startedAt: Date.parse(row.started || "") || Date.now(),
-             lastAt: Date.parse(row.updated || "") || Date.now(), rendered: false, reportLines: []};
+             lastAt: Date.parse(row.updated || "") || Date.now(),
+             finishedAt: RUN_BUSY.has(row.status) ? 0 : Date.parse(row.updated || "") || 0,
+             hydrated: false,
+             rendered: false, reportLines: []};
       RUNS.set(key, run);
     } else if (!run.job){
       run.kind = row.kind || run.kind;
@@ -690,7 +719,20 @@ async function loadRuns(ctx){
       run.report = row.report || run.report;
     }
   });
+  // План, журнал и метрики лежат в состоянии запуска, а не в списке. Без этого
+  // после F5 остаётся только заголовок, хотя работа уже сделана.
+  for (const run of RUNS.values()){
+    if (!run.sid || run.hydrated) continue;
+    try { await hydrateRun(ctx, run); }
+    catch (_e) { /* список уже показан; следующий refresh повторит */ }
+  }
   renderRuns(ctx);
+}
+
+// Снимок для проверок раздела: состояние карты запусков не должно быть видно
+// production-коду, но тесту нужен именно результат loadRuns.
+export function runsSnapshot(){
+  return [...RUNS.values()];
 }
 
 // Публикация: выбрать из готового, а не набирать путь руками — первая же опечатка ушла

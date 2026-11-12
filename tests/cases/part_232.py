@@ -297,6 +297,63 @@ console.log(JSON.stringify({{a, b, plan: run.plan}}));
 
 
 @test
+def test_make_ui_loads_existing_run_state_and_finish_time(tmp: Path):
+    node = shutil.which("node")
+    if not node:
+        return
+    view = KIT / "cockpit/modules/work/view.js"
+    script = f"""
+import {{loadRuns, runsSnapshot, runElapsed}} from {json.dumps(view.as_uri())};
+const calls = [];
+const ctx = {{
+  project: {{path: "/p"}},
+  $: () => null,
+  api: async url => {{
+    calls.push(url);
+    if (url.includes("/api/make/runs")) return {{runs: [{{
+      sid: "ac-1", kind: "ac", title: "AC", status: "partial",
+      started: "2026-11-12T22:29:42Z", updated: "2026-11-12T22:41:35Z",
+      artifact: "Artifacts/ac/a.md", report: "Artifacts/reports/make/r.md"}}]}};
+    if (url.includes("/api/make/state")) return {{
+      plan: {{steps: [{{id: "s1", title: "Раздел", status: "partial"}}]}},
+      state: {{status: "partial", updated: "2026-11-12T22:41:35Z", questions: [], warnings: []}},
+      artifact: {{path: "Artifacts/ac/a.md"}},
+      report_md: "Artifacts/reports/make/r.md",
+      report: {{metrics: {{calls: 9, tokens_in: 10, tokens_out: 5, models: ["m"]}}}},
+      events: [
+        {{kind: "plan", steps: 2, message: "предварительный план сохранён", source: "template"}},
+        {{kind: "draft", version: 1, message: "версия 1: 100 знаков"}},
+        {{kind: "check", role: "critic", message: "v1: critic done"}},
+        {{kind: "stage", stage: "writer", chars: 100}},
+        {{kind: "report", status: "partial", message: "отчёт сохранён"}}
+      ]}};
+    return {{}};
+  }}
+}};
+await loadRuns(ctx);
+const [run] = runsSnapshot();
+console.log(JSON.stringify({{run, elapsed: runElapsed(run), calls}}));
+"""
+    cp = subprocess.run([node, "--input-type=module", "-e", script], capture_output=True,
+                        text=True, encoding="utf-8", errors="replace", timeout=30)
+    assert cp.returncode == 0, cp.stderr
+    got = json.loads(cp.stdout.strip().splitlines()[-1])
+    run = got["run"]
+    assert run["plan"][0]["title"] == "Раздел", run
+    assert run["plan"][0]["status"] == "partial", run
+    assert run["metrics"]["calls"] == 9, run
+    assert run["report"] == "Artifacts/reports/make/r.md", run
+    assert "предварительный план сохранён" in run["log"], run
+    assert "версия 1: 100 знаков" in run["log"], run
+    assert "отчёт сохранён" in run["log"], run
+    assert any("writer" in line for line in run["log"]), run
+    assert run.get("hydrated") is True, run
+    assert got["elapsed"] == "11:53", got
+    assert any("/api/make/runs" in url for url in got["calls"]), got
+    assert any("/api/make/state" in url for url in got["calls"]), got
+
+
+@test
 def test_make_api_returns_runs_without_pack_and_controls_state(tmp: Path):
     root = _project(tmp)
     import make_state as MS
