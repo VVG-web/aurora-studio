@@ -284,6 +284,72 @@
    "calls": 2,
    "git": "shared"
   },
+  "scripts/ask_state.py:atomic_write": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: план, шаги и журналы в локальном .aurora/cache, не карточка",
+   "calls": 2,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.create": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: plan.json и план Markdown в локальном кэше",
+   "calls": 2,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.update_state": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: state.json вопроса",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.set_plan": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: версия плана и манифест",
+   "calls": 2,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.event": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: журнал событий вопроса",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.write_step": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: результат шага",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.mark_step": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: манифест шага",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.mark_plan_item": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: статус пункта плана",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.write_answer": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: итоговый ответ в локальном кэше",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.validate_resume": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: карантин и манифест при восстановлении",
+   "calls": 2,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.set_control": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: pause/cancel команда панели",
+   "calls": 1,
+   "git": "none"
+  },
   "scripts/agent_runner.py:note_empty_run": {
    "kind": "other",
    "reason": "журнал холостых прогонов агента в часть участника",
