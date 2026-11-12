@@ -427,11 +427,12 @@ class AskState:
                 removed.append(path.name)
             except OSError:
                 pass
-        removed += prune_journals(self.cwd, self.keep)
+        removed += prune_journals(self.cwd, self.keep, protect=self.id)
         return removed
 
 
-def prune_journals(cwd: str | Path, keep: int = DEFAULT_KEEP) -> list[str]:
+def prune_journals(cwd: str | Path, keep: int = DEFAULT_KEEP,
+                   protect: str = "") -> list[str]:
     """Keep only the newest question journals in `AuroraKnowledgeDB/meta/ask`.
 
     The cache and the team journal are two stores of the same question. The
@@ -443,7 +444,8 @@ def prune_journals(cwd: str | Path, keep: int = DEFAULT_KEEP) -> list[str]:
     if not root.is_dir():
         return []
     keep = max(1, int(keep or DEFAULT_KEEP))
-    rows = sorted((p for p in root.glob("*.md") if p.is_file()),
+    rows = sorted((p for p in root.glob("*.md") if p.is_file()
+                   and (not protect or p.stem != protect)),
                   key=lambda p: p.stat().st_mtime, reverse=True)
     removed = []
     for path in rows[keep:]:

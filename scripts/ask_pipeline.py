@@ -721,7 +721,8 @@ def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
               "steps": [{k: v for k, v in step.items() if k != "pack"}
                         for step in plan.get("steps") or []],
               "plan_path": _rel(state.plan_path, cwd),
-              "manifest_path": _rel(state.manifest_path, cwd)})
+              "manifest_path": _rel(state.manifest_path, cwd),
+              "warnings": warnings})
     # A resumed run keeps already valid steps; a fresh run starts with pending.
     done = {s.get("plan_item_id"): s for s in state.manifest().get("steps") or []
             if s.get("status") in ("done", "partial") and s.get("sha256")}

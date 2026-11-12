@@ -327,10 +327,13 @@ function handlePipeEvent(ctx, ev){
   if (kind === "plan"){
     PIPE.id = String(event.id || "");
     PIPE.plan = (event.steps || []).map(s => ({...s, status: "pending"}));
+    PIPE.warnings = event.warnings || [];
     PIPE.status = "running";
     pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_running")});
     drawPipelinePlan(ctx);
     setPipeButtons(ctx, "running", Boolean(PIPE.id));
+    const warn = pipeEl(ctx, "askWarn");
+    if (warn) warn.textContent = (PIPE.warnings || []).join(" · ");
     workLine(ctx, ctx.t("ask.delegated", {n: PIPE.plan.length}));
     return;
   }
