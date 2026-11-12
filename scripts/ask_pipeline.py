@@ -30,6 +30,7 @@ from pathlib import Path
 
 import answer_core as AC
 import ask_state
+from pipeline_state import number, section_scalars
 
 try:
     import agent_core as AG
@@ -144,52 +145,17 @@ def pipeline_config(cfg: dict | None = None, cwd: str | Path = ".") -> dict:
     """
     raw = dict((cfg or {}).get("ask_pipeline") or {})
     if not raw:
-        raw = _project_pipeline_config(cwd)
-    total = _number(raw.get("total_seconds") or raw.get("total_timeout"), DEFAULT_TOTAL)
+        raw = section_scalars(cwd, "ask_pipeline")
+    total = number(raw.get("total_seconds") or raw.get("total_timeout"), DEFAULT_TOTAL)
     total = max(0.05, min(float(TOTAL_CAP), total))
-    step = _number(raw.get("step_seconds") or raw.get("step_timeout"), DEFAULT_STEP)
+    step = number(raw.get("step_seconds") or raw.get("step_timeout"), DEFAULT_STEP)
     step = max(0.05, min(total, step))
-    workers = int(_number(raw.get("max_workers") or raw.get("parallel"), DEFAULT_WORKERS))
+    workers = int(number(raw.get("max_workers") or raw.get("parallel"), DEFAULT_WORKERS))
     workers = max(1, min(16, workers, MAX_STEPS))
-    keep = int(_number(raw.get("keep_questions"), ask_state.DEFAULT_KEEP))
+    keep = int(number(raw.get("keep_questions"), ask_state.DEFAULT_KEEP))
     return {"total_seconds": total, "step_seconds": step,
             "max_workers": workers, "keep_questions": max(1, keep),
             "long_seconds": LONG_SECONDS}
-
-
-def _number(value, default: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
-
-
-def _project_pipeline_config(cwd: str | Path) -> dict:
-    """A tiny YAML reader for the optional project section.
-
-    The project already has several hand-rolled YAML readers; this one only reads
-    scalar keys of `ask_pipeline`, so it cannot silently interpret unrelated
-    structure.
-    """
-    path = Path(cwd) / "aurora.config.yaml"
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return {}
-    out, inside = {}, False
-    for line in lines:
-        if re.match(r"^ask_pipeline\s*:\s*$", line):
-            inside = True
-            continue
-        if inside:
-            if line.strip() and not line.startswith((" ", "\t")):
-                break
-            if not line.strip() or line.lstrip().startswith("#"):
-                continue
-            m = re.match(r"^\s+([\w-]+)\s*:\s*(.*?)\s*$", line)
-            if m:
-                out[m.group(1)] = m.group(2).strip().strip('"').strip("'")
-    return out
 
 
 def _remaining(deadline: float) -> float:

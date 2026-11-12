@@ -6,7 +6,11 @@
 
 import {renderRoutes} from "../quickstart/routes.js";
 
-let MAKE = null;               // {sid, kind} — идущее производство
+let RUNS = new Map();          // sid или временный ключ → запуск артефакта
+let ACTIVE = "";               // какой запуск показан в диалоге
+let RUN_SEQ = 0;
+let SHOWN_PROJECT = "";
+let MAKE_TICKER = null;
 // Ссылки и вложения задачи: {path, label, kind: file|dir|attach}. Уходят движку `--context`;
 // упоминания в тексте (`@путь`, `/навык`, `@сервер`) движок разбирает и сам.
 let REFS = [];
@@ -261,6 +265,8 @@ export async function refresh(ctx){
     kbLine.style.color = kb.stale || !kb.at ? "var(--tier-inreview)" : "";
   }
   await fillKinds(ctx);
+  await loadRuns(ctx);
+  if ([...RUNS.values()].some(r => RUN_BUSY.has(r.status))) ensureTicker(ctx);
   await renderRoutes(ctx, "продуктивность", ctx.$("#workBody"));   // данные движка
 }
 
@@ -321,28 +327,275 @@ async function fillKinds(ctx){
   draw();
 }
 
-// Вызов производства — тот же путь, что у любой команды: панель не знает другого способа
-// запускать движок, и это правильно, иначе появился бы второй.
-async function makeCall(ctx, args){
-  const {t, el} = ctx;
-  const box = ctx.$("#makeDialog");
-  box.innerHTML = "";
-  box.append(el("div", {class: "card", style: "padding:14px"},
-    el("span", {class: "spin"}),
-    el("span", {style: "margin-left:8px"}, t("work.making"))));
-  const res = await ctx.api("/api/run", {method: "POST", body: JSON.stringify(
-    {project: ctx.project.path, cmd: "agent:make", args})});
-  if (!res.job){ box.innerHTML = ""; return null; }
-  let since = 0, lines = [];
-  for (;;){
-    const d = await ctx.api(`/api/job?id=${res.job}&since=${since}`, {quiet: true});
-    if (!d || d.error){ box.innerHTML = ""; ctx.toast(t("work.job_lost"), "err"); return null; }
-    lines = lines.concat(d.lines || []);
-    since = d.next;
-    if (d.done) break;
-    await new Promise(ok => setTimeout(ok, 600));
+const RUN_BUSY = new Set(["starting", "planning", "running", "paused"]);
+const RUN_CONTINUE = new Set(["partial", "error", "cancelled"]);
+const MAX_PARALLEL_RUNS = 3;
+
+export function makePipelineButtons(status, hasState = true, hasReport = false){
+  const busy = RUN_BUSY.has(status);
+  return {
+    cancel: busy,
+    pause: status === "running" || status === "paused",
+    resume: status === "paused",
+    continue: hasState && RUN_CONTINUE.has(status),
+    report: Boolean(hasReport),
+    open: hasState,
+  };
+}
+
+export function applyMakeEvent(run, event){
+  if (!run || !event) return run;
+  const kind = event.kind;
+  const log = text => {
+    run.log = (run.log || []).concat(String(text || "")).slice(-80);
+    run.lastAt = Date.now();
+  };
+  if (kind === "run"){
+    run.sid = event.sid || run.sid;
+    run.status = "running";
+    log("run");
+  } else if (kind === "plan"){
+    run.plan = (event.steps || []).map(s => ({...s, status: s.status || "pending"}));
+    run.status = "running";
+    log("plan " + run.plan.length);
+  } else if (kind === "stage"){
+    run.current = event.stage || run.current;
+    run.status = "running";
+    log(event.stage + (event.chars ? " · " + event.chars : ""));
+  } else if (kind === "check"){
+    run.current = event.stage || run.current;
+    run.status = "running";
+    log((event.stage || "check") + ": " + (event.status || "done")
+      + (event.issues != null ? " · issues " + event.issues : "")
+      + (event.unsupported != null ? " · unsupported " + event.unsupported : ""));
+  } else if (kind === "done"){
+    run.status = event.status || "done";
+    run.artifact = event.artifact || run.artifact;
+    run.report = event.report || run.report;
+    run.metrics = event.metrics || run.metrics;
+    log(run.status);
+  } else if (kind === "error"){
+    run.status = event.status || "error";
+    run.error = event.message || event.error || "";
+    run.artifact = event.artifact || run.artifact;
+    run.report = event.report || run.report;
+    log(run.status + (run.error ? " · " + run.error : ""));
   }
-  return lines;
+  return run;
+}
+
+function runStatus(ctx, status){
+  return ctx.t("work.status." + status);
+}
+
+function runElapsed(run){
+  const sec = Math.max(0, Math.round((Date.now() - (run.startedAt || Date.now())) / 1000));
+  return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
+}
+
+function ensureTicker(ctx){
+  if (MAKE_TICKER) return;
+  MAKE_TICKER = setInterval(() => {
+    if (!RUNS.size) return;
+    renderRuns(ctx);
+    if (ACTIVE) drawRun(ctx);
+  }, 1000);
+}
+
+function makeNewRun(ctx, kind, title){
+  RUN_SEQ += 1;
+  return {key: "local-" + RUN_SEQ, sid: "", job: "", kind, title,
+          status: "starting", plan: [], current: "", log: [], questions: [],
+          metrics: null, warnings: [], reportText: "", report: "", artifact: "",
+          startedAt: Date.now(), lastAt: Date.now(), rendered: false, reportLines: []};
+}
+
+// Вызов производства — тот же путь, что у любой команды: панель не знает другого способа
+// запускать движок. Запуск идёт фоном, поэтому со страницы можно начать второй артефакт.
+async function makeCall(ctx, args, run){
+  run.status = "starting";
+  run.reportLines = [];
+  run.reportText = "";
+  run.error = "";
+  run.rendered = false;
+  renderRuns(ctx);
+  if (ACTIVE === run.key) drawRun(ctx);
+  const res = await ctx.api("/api/run", {method: "POST", body: JSON.stringify(
+    {project: ctx.project.path, cmd: "agent:make", args: args.concat(["--emit-events"])})});
+  if (!res || !res.job){
+    run.status = "error";
+    run.error = ctx.t("work.job_lost");
+    renderRuns(ctx); if (ACTIVE === run.key) drawRun(ctx);
+    return null;
+  }
+  run.job = res.job;
+  ensureTicker(ctx);
+  pollRun(ctx, run);
+  return res.job;
+}
+
+async function pollRun(ctx, run){
+  let since = 0;
+  for (;;){
+    const d = await ctx.api(`/api/job?id=${run.job}&since=${since}`, {quiet: true});
+    if (!d || d.error){
+      run.status = "error";
+      run.error = ctx.t("work.job_lost");
+      renderRuns(ctx); if (ACTIVE === run.key) drawRun(ctx);
+      return;
+    }
+    for (const line of d.lines || []){
+      if (line.startsWith("MAKE_EVENT ")){
+        try { applyMakeEvent(run, JSON.parse(line.slice(11))); }
+        catch (_e) { run.log = (run.log || []).concat(line); }
+      } else {
+        run.reportLines.push(line);
+      }
+    }
+    if (run.sid && run.key !== run.sid){
+      const old = run.key;
+      RUNS.delete(old);
+      run.key = run.sid;
+      RUNS.set(run.key, run);
+      if (ACTIVE === old) ACTIVE = run.key;
+    }
+    since = d.next || since + (d.lines || []).length;
+    if (d.done){
+      run.reportText = run.reportLines.join("\n").trim();
+      if (!run.status || run.status === "starting") run.status = "done";
+      await hydrateRun(ctx, run);
+      renderRuns(ctx); if (ACTIVE === run.key) drawRun(ctx);
+      return;
+    }
+    renderRuns(ctx); if (ACTIVE === run.key) drawRun(ctx);
+    await new Promise(ok => setTimeout(ok, 700));
+  }
+}
+
+async function hydrateRun(ctx, run){
+  if (!run.sid) return;
+  const d = await ctx.api(`/api/make/state?project=${encodeURIComponent(ctx.project.path)}`
+    + `&sid=${encodeURIComponent(run.sid)}`, {quiet: true});
+  if (!d || d.error) return;
+  run.plan = (d.plan && d.plan.steps) || run.plan || [];
+  run.state = (d.state && d.state.status) || run.state;
+  run.questions = (d.state && d.state.questions) || run.questions || [];
+  run.artifact = (d.artifact && d.artifact.path) || run.artifact;
+  run.report = d.report_md || run.report;
+  run.metrics = (d.report && d.report.metrics) || run.metrics;
+  run.warnings = (d.state && d.state.warnings) || run.warnings;
+  if (run.state && run.state !== "running" && run.status === "done") run.status = run.state;
+}
+
+function renderRuns(ctx){
+  const box = ctx.$("#makeRuns");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!RUNS.size){ box.hidden = true; return; }
+  box.hidden = false;
+  const rows = [...RUNS.values()].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+  rows.forEach(run => {
+    const label = (run.kind || ctx.t("work.artifact")) + " · " + (run.title || run.sid || ctx.t("work.new_run"))
+      + " · " + runStatus(ctx, run.status);
+    const b = ctx.el("button", {class: "btn sm" + (run.key === ACTIVE ? " primary" : ""),
+      title: label, onclick: () => { ACTIVE = run.key; drawRun(ctx); }}, label);
+    box.append(b);
+  });
+  if (!ACTIVE && rows.length){ ACTIVE = rows[0].key; drawRun(ctx); }
+}
+
+function drawRun(ctx){
+  const run = RUNS.get(ACTIVE);
+  const box = ctx.$("#makeDialog");
+  if (!box) return;
+  if (!run){ box.innerHTML = ""; return; }
+  const {t, el} = ctx;
+  const done = run.artifact
+    || ((run.reportText || "").match(/Документ: `([^`]+)`/) || [])[1] || "";
+  box.innerHTML = "";
+  const head = el("div", {class: "row", style: "gap:10px;align-items:center;flex-wrap:wrap"},
+    el("b", {}, run.title || run.kind || t("work.artifact")),
+    el("span", {class: "chip"}, runStatus(ctx, run.status)),
+    el("span", {class: "muted", style: "font-size:12px"}, t("work.elapsed", {time: runElapsed(run)})),
+    el("span", {class: "muted", style: "font-size:12px"},
+      t("work.last_event", {when: Math.max(0, Math.round((Date.now() - run.lastAt) / 1000))})));
+  box.append(el("div", {class: "card", style: "padding:16px"}, head));
+  if (run.plan && run.plan.length){
+    const done = run.plan.filter(s => s.status === "done" || s.status === "partial").length;
+    const plan = el("div", {class: "card", style: "padding:12px;margin-top:8px"},
+      el("div", {class: "muted", style: "font-size:12px;margin-bottom:5px"},
+        t("work.plan_summary", {done, total: run.plan.length})));
+    run.plan.forEach((step, i) => {
+      const mark = step.status === "done" ? "✅" : step.status === "partial" ? "◐"
+        : step.status === "failed" ? "✗" : step.status === "running" ? "▶" : "☐";
+      plan.append(el("div", {style: "font-size:12.5px"}, mark + " " + (i + 1) + ". "
+        + (step.title || step.id)));
+    });
+    box.append(plan);
+  }
+  if (run.log && run.log.length){
+    const log = el("div", {class: "card", style: "padding:12px;margin-top:8px;max-height:190px;overflow:auto"},
+      el("div", {class: "muted", style: "font-size:12px;margin-bottom:5px"}, t("work.worklog")));
+    run.log.slice(-14).forEach(line => log.append(el("div", {style: "font-size:12px"}, line)));
+    box.append(log);
+  }
+  if (run.metrics){
+    box.append(el("div", {class: "muted", style: "font-size:12px;margin-top:8px"},
+      t("work.metrics", {calls: run.metrics.calls || 0, seconds: run.metrics.seconds || 0,
+        tokens: (run.metrics.tokens_in || 0) + (run.metrics.tokens_out || 0),
+        models: (run.metrics.models || []).join(", ") || "—"})));
+  }
+  if (run.warnings && run.warnings.length){
+    box.append(el("div", {class: "warnbox"}, run.warnings.join(" · ")));
+  }
+  if (run.error){
+    box.append(el("div", {class: "warnbox"}, run.error));
+  }
+  if (run.status === "starting"){
+    box.append(el("div", {class: "muted", style: "font-size:12px;margin-top:8px"},
+      t("work.making")));
+  }
+  if (run.status === "planning"){
+    if (run.questions && run.questions.length){
+      const q = el("div", {class: "card", style: "padding:12px;margin-top:8px"});
+      run.questions.forEach((item, i) => q.append(el("div", {style: "font-size:12.5px"},
+        (i + 1) + ". " + (item.q || item) + (item.rec ? " → " + item.rec : ""))));
+      box.append(q);
+    }
+    const ans = el("textarea", {class: "btn", rows: 3, placeholder: t("work.answers_ph"),
+      style: "width:100%;font-weight:400;margin-top:8px;resize:vertical"});
+    box.append(ans, el("div", {class: "row", style: "gap:8px;margin-top:8px"},
+      el("button", {class: "btn primary", "data-help": "work.help.answer",
+        onclick: () => answerRun(ctx, run, ans.value.trim())},
+        t("work.answer")),
+      el("button", {class: "btn", title: t("work.enough_hint"),
+        "data-help": "work.help.enough",
+        onclick: () => enoughRun(ctx, run)}, t("work.enough"))));
+  }
+  if (run.reportText && !RUN_BUSY.has(run.status)){
+    const body = run.reportText.split("\n").filter(l => !/^MAKE_EVENT /.test(l)).join("\n");
+    box.append(el("div", {class: "card", style: "padding:16px;margin-top:8px"},
+      el("div", {class: "ansbody", style: "white-space:pre-wrap", html: ctx.fmt.mdLite(body)})));
+  }
+  if (run.status === "done" && done && !run.opened){
+    run.opened = true;
+    setTimeout(() => { if (ctx.view === "work") ctx.openPath(done); }, 400);
+  }
+  const on = makePipelineButtons(run.status, Boolean(run.sid), Boolean(run.report));
+  const row = el("div", {class: "row", style: "gap:8px;margin-top:10px;flex-wrap:wrap"});
+  if (on.cancel) row.append(el("button", {class: "btn", onclick: () => controlRun(ctx, run, "cancel")},
+    t("work.cancel")));
+  if (on.pause) row.append(el("button", {class: "btn", onclick: () => controlRun(ctx, run, run.status === "paused" ? "resume" : "pause")},
+    t(run.status === "paused" ? "work.resume" : "work.pause")));
+  if (on.continue) row.append(el("button", {class: "btn primary", onclick: () => continueRun(ctx, run)},
+    t("work.continue")));
+  if (done) row.append(el("button", {class: "btn", "data-help": "work.help.open_done",
+    onclick: () => ctx.openPath(done)},
+    t("work.open_in_editor")));
+  if (on.report) row.append(el("button", {class: "btn", onclick: () => ctx.openPath(run.report)},
+    t("work.open_report")));
+  box.append(row);
+  run.rendered = true;
 }
 
 // Блок «Задача» в окне создания: свойства задачи нового документа (умолчания — из вида и настроек трекера, эпик — из
@@ -363,50 +616,81 @@ async function startMake(ctx){
   if (!ctx.project) return ctx.toast(ctx.t("work.pick_project"), "warn");
   const idea = ctx.$("#makeIdea").value.trim();
   if (!idea) return ctx.$("#makeIdea").focus();
-  MAKE = null;
+  const busy = [...RUNS.values()].filter(r => RUN_BUSY.has(r.status)).length;
+  if (busy >= MAX_PARALLEL_RUNS) return ctx.toast(ctx.t("work.run_limit", {n: MAX_PARALLEL_RUNS}), "warn");
+  const kind = ctx.$("#makeKind").value;
+  const run = makeNewRun(ctx, kind, kind);
+  RUNS.set(run.key, run);
+  ACTIVE = run.key;
+  renderRuns(ctx);
+  drawRun(ctx);
   const context = REFS.flatMap(r => ["--context", r.path]);
   const task = Object.entries(MAKE_TASK && MAKE_TASK.values ? MAKE_TASK.values() : {})
     .flatMap(([k, v]) => ["--task-field", k + "=" + v]);
-  const lines = await makeCall(ctx, ["--kind", ctx.$("#makeKind").value, "--idea", idea, ...context, ...task]);
-  if (lines) drawMake(ctx, lines);
+  await makeCall(ctx, ["--kind", kind, "--idea", idea, ...context, ...task], run);
 }
 
-function drawMake(ctx, lines){
-  const {t, el} = ctx;
-  const box = ctx.$("#makeDialog");
-  box.innerHTML = "";
-  const text = (lines || []).join("\n");
-  const sid = (text.match(/Сессия: `([^`]+)`/) || [])[1];              // данные движка
-  if (sid) MAKE = {sid, kind: ctx.$("#makeKind").value};
-  const body = text.split("\n").filter(l => !/^Артефакт: |^  /.test(l)).join("\n").trim();  // данные движка
-  box.append(el("div", {class: "card", style: "padding:18px"},
-    el("div", {class: "ansbody", style: "white-space:pre-wrap", html: ctx.fmt.mdLite(body)})));
-  // Планировщик спрашивает — значит человеку есть что ответить, и поле для ответа должно
-  // быть здесь же. «Хватит, работай» доступна с первого раунда: сколько раундов нужно
-  // этой задаче, знает тот, кто её ставил.
-  const done = (text.match(/Документ: `([^`]+)`/) || [])[1];           // данные движка
-  if (done && /Момус|checked/.test(text) && !/Планировщик спрашивает/.test(text)){   // данные движка
-    box.append(el("div", {class: "row", style: "gap:10px;margin-top:10px"},
-      el("button", {class: "btn primary", "data-help": "work.help.open_done", onclick: () => ctx.openPath(done)},
-        t("work.open_in_editor"))));
-    // Открываем сами: человек просил, чтобы готовый документ сразу оказывался в
-    // редакторе. Кнопка рядом — на случай, если он уже ушёл на другой экран.
-    setTimeout(() => { if (ctx.view === "work") ctx.openPath(done); }, 400);
+async function controlRun(ctx, run, action){
+  if (!run.sid){
+    if (action === "cancel" && run.job)
+      await ctx.api("/api/job/stop", {method: "POST", body: JSON.stringify({id: run.job})});
+    run.status = action === "cancel" ? "cancelled" : run.status;
+    renderRuns(ctx); if (ACTIVE === run.key) drawRun(ctx);
+    return;
   }
-  if (/Планировщик спрашивает/.test(text)){                            // данные движка
-    const ans = el("textarea", {class: "btn", rows: 3, placeholder: t("work.answers_ph"),
-      style: "width:100%;font-weight:400;margin-top:10px;resize:vertical"});
-    box.append(ans, el("div", {class: "row", style: "gap:10px;margin-top:8px"},
-      el("button", {class: "btn primary", "data-help": "work.help.answer", onclick: async () => {
-        const l = await makeCall(ctx, ["--session", MAKE.sid, "--answers", ans.value.trim()]);
-        if (l) drawMake(ctx, l);
-      }}, t("work.answer")),
-      el("button", {class: "btn", title: t("work.enough_hint"), "data-help": "work.help.enough",
-        onclick: async () => {
-        const l = await makeCall(ctx, ["--session", MAKE.sid, "--enough"]);
-        if (l) drawMake(ctx, l);
-      }}, t("work.enough"))));
+  const d = await ctx.api("/api/make/control", {method: "POST", body: JSON.stringify({
+    project: ctx.project.path, sid: run.sid, action})});
+  if (!d || d.error) return ctx.toast((d && d.error) || ctx.t("work.control_failed"), "err");
+  if (action === "cancel") run.status = "cancelled";
+  else if (action === "pause") run.status = "paused";
+  else if (action === "resume") run.status = "running";
+  renderRuns(ctx); if (ACTIVE === run.key) drawRun(ctx);
+}
+
+async function continueRun(ctx, run){
+  if (!run.sid) return;
+  await controlRun(ctx, run, "continue");
+  await makeCall(ctx, ["--session", run.sid], run);
+}
+
+async function answerRun(ctx, run, answers){
+  if (!run.sid) return;
+  if (!answers) return ctx.toast(ctx.t("work.answer_empty"), "warn");
+  await makeCall(ctx, ["--session", run.sid, "--answers", answers], run);
+}
+
+async function enoughRun(ctx, run){
+  if (!run.sid) return;
+  await makeCall(ctx, ["--session", run.sid, "--enough"], run);
+}
+
+async function loadRuns(ctx){
+  const project = ctx.project ? ctx.project.path : "";
+  if (project !== SHOWN_PROJECT){
+    RUNS.clear(); ACTIVE = ""; SHOWN_PROJECT = project;
   }
+  if (!project){ renderRuns(ctx); return; }
+  const d = await ctx.api(`/api/make/runs?project=${encodeURIComponent(project)}`, {quiet: true});
+  (d && d.runs || []).forEach(row => {
+    const key = row.sid;
+    let run = RUNS.get(key);
+    if (!run){
+      RUN_SEQ += 1;
+      run = {key, sid: key, job: "", kind: row.kind || "", title: row.title || key,
+             status: row.status || "unknown", plan: [], current: row.stage || "", log: [],
+             questions: [], metrics: null, warnings: [], reportText: "", report: row.report || "",
+             artifact: row.artifact || "", startedAt: Date.parse(row.started || "") || Date.now(),
+             lastAt: Date.parse(row.updated || "") || Date.now(), rendered: false, reportLines: []};
+      RUNS.set(key, run);
+    } else if (!run.job){
+      run.kind = row.kind || run.kind;
+      run.title = row.title || run.title;
+      run.status = row.status || run.status;
+      run.artifact = row.artifact || run.artifact;
+      run.report = row.report || run.report;
+    }
+  });
+  renderRuns(ctx);
 }
 
 // Публикация: выбрать из готового, а не набирать путь руками — первая же опечатка ушла
@@ -498,7 +782,10 @@ async function publish(ctx){
 
 // Подсказки по `@` и `/` нужны только на виду. Опрос задания (`makeCall`) и ответ планировщика
 // уходом не прерываются: результат ложится прямо в разметку раздела и ждёт возвращения.
-export function onHide(){ if (SUGGEST_STOP) SUGGEST_STOP(); }
+export function onHide(){
+  if (SUGGEST_STOP) SUGGEST_STOP();
+  if (MAKE_TICKER){ clearInterval(MAKE_TICKER); MAKE_TICKER = null; }
+}
 
 export const lifecycle = 1;
 export default {mount, refresh, onHide};

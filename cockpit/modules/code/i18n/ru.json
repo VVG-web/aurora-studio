@@ -213,7 +213,6 @@
   "code.groups.selected_n": "выбрано: {n}",
   "code.groups.subgroups": "с подгруппами",
   "code.groups.open": "Открыть выбор",
-  "code.groups.url_hint": "Например https://gitlab.example.com/group/subgroup; токен в URL не нужен.",
   "code.groups.name": "Имя группы в проекте",
   "code.groups.name_hint": "Короткое имя для aurora.config.yaml; пусто — последний сегмент URL.",
   "code.groups.include": "Включая подгруппы",

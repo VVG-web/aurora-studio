@@ -213,7 +213,6 @@
   "code.groups.selected_n": "selected: {n}",
   "code.groups.subgroups": "with subgroups",
   "code.groups.open": "Open selection",
-  "code.groups.url_hint": "For example https://gitlab.example.com/group/subgroup; no token in the URL.",
   "code.groups.name": "Group name in the project",
   "code.groups.name_hint": "A short name for aurora.config.yaml; empty means the last URL segment.",
   "code.groups.include": "Include subgroups",

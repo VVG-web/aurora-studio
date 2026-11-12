@@ -6205,6 +6205,49 @@ def ask_pipeline_control(project: str, payload: dict) -> dict:
     return {"ok": True, "control": state.set_control(cancel=True)}
 
 
+def make_runs_state(project: str) -> dict:
+    """Список запусков артефактов для консоли «Продуктивности»."""
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    import make_state as MS
+    import importlib
+    importlib.reload(MS)
+    return {"runs": MS.list_runs(project)}
+
+
+def make_pipeline_state(project: str, sid: str) -> dict:
+    """План, манифест, попытки и отчёт одного артефакта."""
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    import make_state as MS
+    import importlib
+    importlib.reload(MS)
+    return MS.read_run(project, sid)
+
+
+def make_pipeline_control(project: str, payload: dict) -> dict:
+    """Пауза, отмена или продолжение артефакта без убийства процесса."""
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    import make_state as MS
+    import importlib
+    importlib.reload(MS)
+    sid = str(payload.get("sid") or payload.get("id") or "").strip()
+    action = str(payload.get("action") or "").strip().lower()
+    if not sid or "/" in sid or sid.startswith("."):
+        return {"error": "недопустимый id сессии"}
+    if action not in ("pause", "resume", "cancel", "continue"):
+        return {"error": "действие: pause, resume, cancel или continue"}
+    run = MS.MakeRun(project, sid)
+    if not run.state_path.is_file():
+        return {"error": "запуска нет"}
+    if action == "pause":
+        return {"ok": True, "control": run.set_control(pause=True)}
+    if action == "resume":
+        return {"ok": True, "control": run.set_control(pause=False)}
+    if action == "cancel":
+        return {"ok": True, "control": run.set_control(cancel=True)}
+    return {"ok": True, "control": run.set_control(pause=False, cancel=False,
+                                                   continue_run=True)}
+
+
 def kinds_read(project: str) -> dict:
     """Реестр артефактов проекта + что из объявленного не существует на диске."""
     sys.path.insert(0, os.path.join(KIT, "scripts"))
@@ -7854,6 +7897,16 @@ class Handler(BaseHTTPRequestHandler):
             if not project or not self._known(project):
                 return
             self.send_json(ask_pipeline_state(project, (q.get("id") or [""])[0]))
+        elif u.path == "/api/make/runs":
+            project = (q.get("project") or [""])[0]
+            if not project or not self._known(project):
+                return
+            self.send_json(make_runs_state(project))
+        elif u.path == "/api/make/state":
+            project = (q.get("project") or [""])[0]
+            if not project or not self._known(project):
+                return
+            self.send_json(make_pipeline_state(project, (q.get("sid") or [""])[0]))
         elif u.path == "/api/agent":
             self.send_json(agent_state(q.get("project", [""])[0]))
         elif u.path == "/api/models":
@@ -8667,6 +8720,13 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             res = ask_pipeline_control(project, payload)
+            self.send_json(res, 400 if res.get("error") else 200)
+            return
+        if u.path == "/api/make/control":
+            project = str(payload.get("project") or "")
+            if not self._known(project):
+                return
+            res = make_pipeline_control(project, payload)
             self.send_json(res, 400 if res.get("error") else 200)
             return
         if u.path == "/api/run":

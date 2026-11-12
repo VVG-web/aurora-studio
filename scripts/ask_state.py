@@ -22,67 +22,27 @@ is still written to the journal by the caller.
 """
 from __future__ import annotations
 
-import hashlib
-import json
-import os
-import re
 import shutil
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pipeline_state import (
+    RunStore,
+    atomic_write,
+    plan_markdown as _plan_markdown,
+    read_json,
+    safe_id,
+    sha256,
+    tail_events,
+    utc_now,
+    write_json,
+)
+
 SCHEMA_VERSION = 1
 ROOT = Path(".aurora") / "cache" / "ask"
 DEFAULT_KEEP = 50
 QUARANTINE = "quarantine"
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def sha256(text: str) -> str:
-    return hashlib.sha256(str(text or "").encode("utf-8", "replace")).hexdigest()
-
-
-def safe_id(text: str, limit: int = 48) -> str:
-    value = re.sub(r"[^\w.-]+", "-", str(text or "").strip().lower(), flags=re.UNICODE)
-    value = value.strip("-._")[:limit]
-    return value or "question"
-
-
-def atomic_write(path: str | Path, text: str, *, mode: int | None = None) -> Path:
-    """Write text completely or leave the previous file untouched.
-
-    `.tmp` + `os.replace` is deliberate: the UI and the resume path may read a
-    file while a model call is still finishing. A half-written manifest is worse
-    than an older one, because it silently loses completed work.
-    """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-        f.write(str(text))
-        f.flush()
-        os.fsync(f.fileno())
-    if mode is not None:
-        try:
-            os.chmod(tmp, mode)
-        except OSError:
-            pass
-    os.replace(tmp, path)
-    return path
-
-
-def read_json(path: str | Path, default=None):
-    try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return default
-
-
-def write_json(path: str | Path, data, *, mode: int | None = None) -> Path:
-    return atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n", mode=mode)
 
 
 def root_for(cwd: str | Path) -> Path:
@@ -94,19 +54,11 @@ def _stamp_id() -> str:
 
 
 def plan_markdown(plan: dict) -> str:
-    title = str((plan or {}).get("title") or "План ответа")
-    lines = [f"# План: {title}", ""]
-    steps = list((plan or {}).get("steps") or [])
-    for i, step in enumerate(steps, 1):
-        status = str(step.get("status") or "pending")
-        mark = {"done": "x", "partial": "~", "failed": "!", "running": ">"}.get(status, " ")
-        lines.append(f"- [{mark}] {i}. {step.get('title') or step.get('id') or 'Шаг'}")
-        if step.get("brief"):
-            lines.append(f"  {str(step['brief']).strip()}")
-    lines.append("")
-    lines.append("_Обновляется пайплайном «Спросить». Пункт с `x` завершён, `~` частичный, "
-                 "`!` ошибка, `>` выполняется._")
-    return "\n".join(lines) + "\n"
+    return _plan_markdown(
+        plan,
+        note=("_Обновляется пайплайном «Спросить». Пункт с `x` завершён, `~` частичный, "
+              "`!` ошибка, `>` выполняется._"),
+    )
 
 
 class AskState:
@@ -120,6 +72,7 @@ class AskState:
         self.dir = self.root / self.id
         self.keep = max(1, int(keep or DEFAULT_KEEP))
         self._lock = threading.RLock()
+        self.store = RunStore(self.root, self.id)
 
     # ------------------------------------------------------------ paths
     @property
@@ -200,16 +153,10 @@ class AskState:
             return plan
 
     def state(self) -> dict:
-        return read_json(self.state_path, {}) or {}
+        return self.store.state()
 
     def update_state(self, **fields) -> dict:
-        with self._lock:
-            state = self.state()
-            state.update(fields)
-            state.setdefault("id", self.id)
-            state["updated"] = utc_now()
-            write_json(self.state_path, state)
-            return state
+        return self.store.update_state(**fields)
 
     def plan(self) -> dict:
         return read_json(self.plan_json, {}) or {}
@@ -261,10 +208,7 @@ class AskState:
         return read_json(self.manifest_path, {}) or {}
 
     def event(self, kind: str, message: str, **fields) -> None:
-        row = {"at": utc_now(), "kind": kind, "message": str(message)[:1000], **fields}
-        self.dir.mkdir(parents=True, exist_ok=True)
-        with open(self.events_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        self.store.event(kind, message, **fields)
 
     # ------------------------------------------------------------ steps
     def write_step(self, item_id: str, text: str, *, role: str = "worker",
@@ -392,19 +336,10 @@ class AskState:
 
     # ------------------------------------------------------------ control
     def control(self) -> dict:
-        got = read_json(self.control_path, {}) or {}
-        return {"pause": bool(got.get("pause")), "cancel": bool(got.get("cancel")),
-                "updated": got.get("updated", "")}
+        return self.store.control()
 
     def set_control(self, *, pause: bool | None = None, cancel: bool | None = None) -> dict:
-        got = self.control()
-        if pause is not None:
-            got["pause"] = bool(pause)
-        if cancel is not None:
-            got["cancel"] = bool(cancel)
-        got["updated"] = utc_now()
-        write_json(self.control_path, got)
-        return got
+        return self.store.set_control(pause=pause, cancel=cancel)
 
     # ------------------------------------------------------------ retention
     def prune(self) -> list[str]:
@@ -481,14 +416,7 @@ def read_state(cwd: str | Path, question_id: str) -> dict:
 
 
 def _tail_events(path: Path, limit: int = 80) -> list:
-    if not path.is_file():
-        return []
-    try:
-        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
-                if line.strip()]
-    except (OSError, ValueError):
-        return []
-    return rows[-limit:]
+    return tail_events(path, limit)
 
 
 def list_questions(cwd: str | Path, limit: int = 20) -> list:
