@@ -806,6 +806,8 @@
   "proj.scrub_note": "Приватность (kb:scrub) · off — закрытый контур, report — показывать, mask — маскировать",
   "proj.f_threshold": "Порог bootstrap, % verified",
   "proj.f_threshold_hint": "ниже порога непроверенное допускается в контекст",
+  "proj.f_keep_questions": "Сколько вопросов «Спросить» хранить",
+  "proj.f_keep_questions_hint": "старые вопросы удаляются вместе с планом, шагами и манифестом",
   "proj.save": "Сохранить настройки",
   "proj.resolving": "Разрешаю ссылки…",
   "proj.saved": "Настройки записаны",

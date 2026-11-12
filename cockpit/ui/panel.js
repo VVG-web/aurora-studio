@@ -6448,6 +6448,7 @@ async function renderProject(){
     trusted_sources: (cfgRaw.text.match(/trusted_sources:\s*\[([^\]]*)\]/)||[])[1]||"",
     trusted_branches: (cfgRaw.text.match(/trusted_branches:\s*\[([^\]]*)\]/)||[])[1]||"",
     scrub: get("scrub","report"), threshold: get("verified_threshold_pct","20"),
+    keep_questions: (cfgRaw.text.match(/ask_pipeline:\s*\n\s*keep_questions:\s*(\d+)/)||[])[1]||"50",
     // важно принимать не только цифры: корень, который не удалось разрешить, всё равно
     // должен показаться в форме — иначе «сохранено», а строки нет, и человек в тупике
     // Веб-страницы — СВОЙ список, не смешанный с корнями Confluence: это разные
@@ -6613,6 +6614,8 @@ async function renderProject(){
         ...["report","off","mask"].map(v=>el("option",{value:v, selected:A.scrub===v?"":null}, v))),
         "form", t("dirty.form"))),
     inp("threshold", t("proj.f_threshold"), "20", t("proj.f_threshold_hint")),
+    inp("keep_questions", t("proj.f_keep_questions"), "50",
+        t("proj.f_keep_questions_hint")),
     el("div",{class:"row",style:"margin-top:8px"},
       saveButton("form", t("dirty.form"), t("proj.save"), async e=>{
         e.target.disabled = true;

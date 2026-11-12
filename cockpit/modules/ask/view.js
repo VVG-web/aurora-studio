@@ -10,6 +10,113 @@
 let ASKING = false;
 let THREAD = null;          // открытый разговор: id и число вопросов в нём
 let SHOWN = "";             // проект, для которого нарисован разговор
+let PIPE = {id:"", status:"idle", job:"", question:"", plan:[], current:0,
+            warnings:[], metrics:null, answer:"", lines:[], timer:0};
+
+const PIPE_BUSY = new Set(["planning", "running", "paused"]);
+const PIPE_RETRY = new Set(["error", "cancelled", "partial"]);
+
+function pipeEl(ctx, id, props = {}){
+  const node = ctx.$("#" + id);
+  if (node) Object.assign(node, props);
+  return node;
+}
+
+export function pipelineButtons(state, hasState = true){
+  // Матрица одна на отрисовку и на тест: во время работы «Новый запрос» и
+  // «Попробовать снова» не должны уводить от живого прогона, а после —
+  // наоборот, должны быть доступны.
+  const busy = PIPE_BUSY.has(state);
+  return {
+    new: !busy,
+    cancel: hasState && pipeBusyState(state),
+    pause: hasState && (state === "running" || state === "paused"),
+    retry: hasState && PIPE_RETRY.has(state),
+  };
+}
+
+export function pipelineButtonState(state){ return pipelineButtons(state, true); }
+
+function pipeBusyState(state){ return PIPE_BUSY.has(state); }
+
+function setPipeButtons(ctx, state, hasState = true){
+  const on = pipeBusyState(state);
+  const m = pipeBusyState(state) ? {cancel:true, pause:true, retry:false}
+                                 : {cancel:false, pause:false, retry:PIPE_RETRY.has(state)};
+  for (const [id, show] of [["askCancel", m.cancel], ["askPause", showPause(state)],
+                             ["askRetry", m.retry]]) {
+    const btn = pipeEl(ctx, id);
+    if (btn) btn.hidden = !hasState || !show;
+  }
+  const pause = pipeEl(ctx, "askPause");
+  if (pause) pause.textContent = state === "paused"
+      ? ctx.t("ask.resume") : ctx.t("ask.pause");
+  const newBtn = pipeEl(ctx, "askNew");
+  if (newBtn) newBtn.disabled = on;
+}
+
+function showPause(state){ return state === "running" || state === "paused"; }
+
+function resetPipeline(ctx){
+  if (PIPE.timer) clearInterval(PIPE.timer);
+  PIPE = {id:"", status:"idle", job:"", question:"", plan:[], current:0,
+          warnings:[], metrics:null, answer:"", lines:[], timer:0};
+  const box = pipeEl(ctx, "askPipelineBox");
+  if (box) box.hidden = true;
+  for (const id of ["askPlanBox", "askLong"]) {
+    const node = pipeEl(ctx, id); if (node) node.hidden = true;
+  }
+  setPipeButtons(ctx, "idle", false);
+}
+
+function workLine(ctx, text){
+  const node = pipeEl(ctx, "askWork");
+  if (!node) return;
+  const line = document.createElement("div");
+  line.textContent = new Date().toLocaleTimeString(ctx.lang === "en" ? "en-GB" : "ru-RU")
+                     + " · " + text;
+  node.append(line);
+  node.scrollTop = node.scrollHeight;
+}
+
+function drawPipelinePlan(ctx){
+  const box = pipeEl(ctx, "askPlanBox"), out = pipeEl(ctx, "askPlan");
+  if (!box || !out) return;
+  if (!PIPE.plan.length){ box.hidden = true; return; }
+  box.hidden = false;
+  const done = PIPE.plan.filter(s => s.status === "done" || s.status === "partial").length;
+  const cur = PIPE.plan[PIPE.current] || PIPE.plan.find(s => s.status === "running");
+  const idx = cur ? PIPE.plan.indexOf(cur) + 1 : Math.min(done + 1, PIPE.plan.length);
+  const sum = pipeEl(ctx, "askPlanSummary");
+  if (sum) sum.textContent = ctx.t("ask.plan_summary_line", {
+    current: idx, total: PIPE.plan.length, title: cur ? cur.title : "—"});
+  out.replaceChildren();
+  PIPE.plan.forEach((step, i) => {
+    const row = document.createElement("div");
+    const mark = step.status === "done" ? "✅" : step.status === "partial" ? "◐"
+               : step.status === "failed" ? "✗" : step.status === "running" ? "▶" : "☐";
+    row.textContent = `${mark} ${i + 1}. ${step.title || step.id}`
+                    + (step.brief ? ` — ${step.brief}` : "");
+    out.append(row);
+  });
+}
+
+function drawPipelineMetrics(ctx){
+  const box = pipeEl(ctx, "askMetrics");
+  if (!box) return;
+  const m = PIPE.metrics;
+  if (!m){ box.textContent = ""; return; }
+  const pool = m.pool || {};
+  box.textContent = ctx.t("ask.metrics", {
+    seconds: Math.round(m.total_seconds || 0),
+    ok: Math.round((m.success_rate || 0) * 100),
+    errors: m.errors || 0,
+    retries: m.retries || 0,
+    tokens: m.context_tokens || 0,
+    pool: pool.width || 0,
+    models: (m.models || []).join(", ") || "—",
+  });
+}
 
 export function mount(ctx){
   ctx.root.dataset.module = "ask";
@@ -21,9 +128,14 @@ export function mount(ctx){
   ctx.$("#askNew").onclick = () => {
     THREAD = null;
     ctx.$("#askBody").innerHTML = "";
+    resetPipeline(ctx);
     drawThreadHint(ctx);
     drawExport(ctx);
   };
+  if (ctx.$("#askCancel")) ctx.$("#askCancel").onclick = () => controlPipe(ctx, "cancel");
+  if (ctx.$("#askPause")) ctx.$("#askPause").onclick = () =>
+    controlPipe(ctx, PIPE.status === "paused" ? "resume" : "pause");
+  if (ctx.$("#askRetry")) ctx.$("#askRetry").onclick = () => retryPipe(ctx);
   ctx.$("#askExport").onclick = () => exportMd(ctx);
   ctx.$("#askPing").onclick = e => pingPrimary(ctx, e.target);
   ctx.$("#askPrimary").onclick = async () => {
@@ -73,11 +185,15 @@ async function askBase(ctx){
   if (pick.startsWith("role:")) args.push("--role", pick.slice(5));
   else if (pick.startsWith("model:")) args.push("--model", pick.slice(6));
   if (THREAD) args.push("--thread", THREAD.id);
+  if (ctx.$("#askProject") && !ctx.$("#askProject").checked) args.push("--no-semantic");
   const item = el("div", {class: "card", style: "padding:18px;margin-top:14px"},
     el("div", {style: "font-weight:700"}, (THREAD ? t("ask.refine_prefix") : "") + q),
     el("div", {class: "muted", style: "font-size:12.5px;margin-top:4px"},
       THREAD ? t("ask.asking_thread") : t("ask.asking")));
   box.prepend(item);
+
+  const pipeline = ctx.$("#askPipeline") && ctx.$("#askPipeline").checked;
+  if (pipeline) return askPipeline(ctx, q, args, item, box);
 
   const res = await ctx.api("/api/run", {method: "POST", body: JSON.stringify(
     {project: ctx.project.path, cmd: "agent:ask", args})});
@@ -120,6 +236,207 @@ async function askBase(ctx){
   drawThreadHint(ctx);
   drawExport(ctx);
   await renderHistory(ctx);
+}
+
+async function askPipeline(ctx, question, args, item, box){
+  const {t} = ctx;
+  if (PIPE.timer) clearInterval(PIPE.timer);
+  PIPE = {id:"", status:"planning", job:"", question, plan:[], current:0,
+          warnings:[], metrics:null, answer:"", lines:[], args:[...args],
+          startedAt: Date.now(), timer: 0};
+  PIPE.timer = setInterval(() => {
+    if (pipeBusyState(PIPE.status) && Date.now() - PIPE.startedAt > 600000)
+      nodeHidden(pipeEl(ctx, "askLong"), false);
+  }, 10000);
+  const boxPanel = pipeEl(ctx, "askPipelineBox");
+  if (boxPanel) boxPanel.hidden = false;
+  if (ctx.$("#askWork")) ctx.$("#askWork").replaceChildren();
+  if (ctx.$("#askWarn")) ctx.$("#askWarn").textContent = "";
+  if (ctx.$("#askPlan")) ctx.$("#askPlan").replaceChildren();
+  pipeEl(ctx, "askPipelineState", {textContent: t("ask.pipeline_planning")});
+  setPipeButtons(ctx, "planning", true);
+  let res;
+  try {
+    res = await ctx.api("/api/run", {method: "POST", body: JSON.stringify(
+      {project: ctx.project.path, cmd: "agent:ask",
+       args: [...args, "--pipeline", "--emit-events"]})});
+  } catch (e) { res = {error: String(e && e.message || e)}; }
+  if (!res || res.error || !res.job){
+    clearInterval(PIPE.timer); PIPE.timer = 0;
+    ASKING = false;
+    PIPE.status = "error";
+    const why = (res && (res.error || res.net_blocked?.blocked)) || ctx.t("ask.no_answer");
+    pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_error")});
+    if (ctx.$("#askWarn")) ctx.$("#askWarn").textContent = String(why);
+    setPipeButtons(ctx, "error", true);
+    item.append(ctx.el("div", {class:"muted", style:"margin-top:8px"}, String(why)));
+    return;
+  }
+  PIPE.job = res.job;
+  let since = 0;
+  for (;;){
+    let d;
+    try { d = await ctx.api(`/api/job?id=${encodeURIComponent(res.job)}&since=${since}`,
+                             {quiet: true}); }
+    catch (e) { d = {lines: [], done: true, error: String(e && e.message || e)}; }
+    for (const line of (d.lines || [])){
+      if (line.startsWith("ASK_EVENT ")){
+        try { handlePipeEvent(ctx, JSON.parse(line.slice(10))); } catch (e) { /* не тот формат */ }
+      } else {
+        PIPE.lines.push(line);
+      }
+    }
+    since = d.next || since;
+    if (d.done) break;
+    await new Promise(ok => setTimeout(ok, 500));
+  }
+  ASKING = false;
+  clearInterval(PIPE.timer); PIPE.timer = 0;
+  if (!PIPE.answer && PIPE.status !== "done" && PIPE.status !== "partial"){
+    PIPE.status = "error";
+    pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_error")});
+    if (ctx.$("#askWarn") && !ctx.$("#askWarn").textContent)
+      ctx.$("#askWarn").textContent = ctx.t("ask.no_answer");
+  }
+  if (!PIPE.answer){
+    PIPE.answer = PIPE.lines.filter(l => !/^# Ответ базы|^\*\*Вопрос:|^Разговор: |^Уточнить, не/.test(l))
+      .join("\n").trim();   // данные движка: служебная шапка отчёта
+  }
+  const said = (PIPE.lines.find(l => /^Разговор: /.test(l)) || "").match(/`([^`]+)`/);
+  if (!PIPE.id && said) PIPE.id = said[1].split("/").pop().replace(/\.md$/, "");
+  if (PIPE.lines.length && PIPE.status === "planning") PIPE.status = "done";
+  if (PIPE.id) THREAD = {id: PIPE.id};
+  item.dataset.q = question;
+  item.dataset.a = PIPE.answer || (ctx.$("#askWarn")?.textContent || "");
+  item.dataset.at = new Date().toLocaleString(ctx.lang === "en" ? "en-GB" : "ru-RU");
+  item.innerHTML = "";
+  item.append(ctx.el("div", {style:"font-weight:700"}, question),
+    ctx.el("div", {class:"ansbody", style:"margin-top:10px;white-space:pre-wrap",
+                   html: ctx.fmt.mdLite(PIPE.answer || ctx.t("ask.no_answer"))}));
+  if (PIPE.answer) ctx.$("#askText").value = "";
+  drawThreadHint(ctx);
+  drawExport(ctx);
+  setPipeButtons(ctx, PIPE.status, Boolean(PIPE.id));
+  await renderHistory(ctx);
+}
+
+function handlePipeEvent(ctx, ev){
+  if (!ev || !PIPE) return;
+  const event = ev;
+  const kind = event.kind;
+  if (kind === "plan"){
+    PIPE.id = String(event.id || "");
+    PIPE.plan = (event.steps || []).map(s => ({...s, status: "pending"}));
+    PIPE.status = "running";
+    pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_running")});
+    drawPipelinePlan(ctx);
+    setPipeButtons(ctx, "running", Boolean(PIPE.id));
+    workLine(ctx, ctx.t("ask.delegated", {n: PIPE.plan.length}));
+    return;
+  }
+  if (kind === "step_start"){
+    const i = PIPE.plan.findIndex(s => s.id === event.step);
+    if (i >= 0){ PIPE.plan[i].status = "running"; PIPE.current = i; }
+    drawPipelinePlan(ctx);
+    workLine(ctx, ctx.t("ask.step_start", {step: event.step, role: event.role || "worker",
+                                            slot: event.slot ?? "—"}));
+    return;
+  }
+  if (kind === "step_done" || kind === "step_error"){
+    const i = PIPE.plan.findIndex(s => s.id === event.step);
+    if (i >= 0) PIPE.plan[i].status = kind === "step_done" ? "done" : "failed";
+    drawPipelinePlan(ctx);
+    const head = kind === "step_done"
+      ? ctx.t("ask.step_done", {role: event.role || "worker", model: event.model || "—",
+                                 seconds: event.seconds ?? 0, tokens: event.tokens || 0})
+      : ctx.t("ask.step_error", {step: event.step, error: event.message || event.error || ""});
+    workLine(ctx, head);
+    if (event.preview) workLine(ctx, "… " + String(event.preview).slice(0, 300));
+    return;
+  }
+  if (kind === "check"){
+    workLine(ctx, ctx.t("ask.check", {role: event.role || "", status: event.status || ""}));
+    return;
+  }
+  if (kind === "paused"){
+    PIPE.status = "paused";
+    pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_paused")});
+    setPipeButtons(ctx, "paused", Boolean(PIPE.id));
+    return;
+  }
+  if (kind === "synth"){
+    workLine(ctx, ctx.t("ask.synth", {status: event.status || ""}));
+    return;
+  }
+  if (kind === "done"){
+    PIPE.answer = String(event.answer || PIPE.answer || "");
+    PIPE.metrics = event.metrics || null;
+    PIPE.warnings = event.warnings || [];
+    PIPE.status = event.status === "done" ? "done" : "partial";
+    pipeEl(ctx, "askPipelineState", {textContent:
+      PIPE.status === "done" ? ctx.t("ask.pipeline_done") : ctx.t("ask.pipeline_partial")});
+    if (event.steps){
+      PIPE.plan = (PIPE.plan || []).map((s, i) => ({...s, status:
+        (event.steps.find(x => x.id === s.id) || {}).status || s.status}));
+    }
+    drawPipelinePlan(ctx);
+    drawPipelineMetrics(ctx);
+    const warn = pipeEl(ctx, "askWarn");
+    if (warn) warn.textContent = (PIPE.warnings || []).join(" · ");
+    const long = pipeEl(ctx, "askLong");
+    if (long) nodeHidden(long, !(metricsLong(PIPE.metrics)));
+    setPipeButtons(ctx, PIPE.status, Boolean(PIPE.id));
+    return;
+  }
+  if (kind === "error"){
+    PIPE.status = "error";
+    pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_error")});
+    if (ctx.$("#askWarn")) ctx.$("#askWarn").textContent = event.message || event.error || "";
+    setPipeButtons(ctx, "error", Boolean(PIPE.id));
+  }
+}
+
+function nodeHidden(node, hidden){ if (node) node.hidden = Boolean(hidden); }
+
+function metricsLong(m){ return Boolean(m && (m.long || Number(m.total_seconds || 0) > 600)); }
+
+async function controlPipe(ctx, action){
+  if (!PIPE.id && !PIPE.job){
+    if (action === "cancel" && PIPE.job)
+      return ctx.api("/api/job/stop", {method:"POST", body: JSON.stringify({id: PIPE.job})});
+    return;
+  }
+  if (!PIPE.id && PIPE.job && action === "cancel")
+    return ctx.api("/api/job/stop", {method:"POST", body: JSON.stringify({id: PIPE.job})});
+  if (!PIPE.id) return;
+  const r = await ctx.api("/api/ask/control", {method:"POST", body: JSON.stringify(
+    {project: ctx.project.path, id: PIPE.id, action})});
+  if (r && r.ok){
+    if (action === "pause"){ PIPE.status = "paused"; setPipeButtons(ctx, "paused", true);
+      pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_paused")}); }
+    if (action === "resume"){ PIPE.status = "running"; setPipeButtons(ctx, "running", true);
+      pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_running")}); }
+    if (action === "cancel"){ PIPE.status = "cancelled"; setPipeButtons(ctx, "cancelled", true);
+      pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_cancelled")}); }
+  } else {
+    ctx.toast((r && r.error) || ctx.t("ask.no_answer"), "warn");
+  }
+}
+
+async function retryPipe(ctx){
+  if (!PIPE.question || !PIPE.args || !PIPE.id || ASKING) return;
+  const body = ctx.$("#askBody");
+  const item = ctx.el("div", {class:"card", style:"padding:18px;margin-top:14px"},
+    ctx.el("div", {style:"font-weight:700"}, PIPE.question),
+    ctx.el("div", {class:"muted", style:"font-size:12.5px;margin-top:4px"},
+           ctx.t("ask.retrying")));
+  body.prepend(item);
+  PIPE.status = "planning";
+  PIPE.answer = "";
+  ASKING = true;
+  await askPipeline(ctx, PIPE.question,
+                    [...PIPE.args.filter(x => x !== "--resume"), "--resume",
+                     "--thread", PIPE.id], item, body);
 }
 
 // Подпись «кто ответил» хранит не готовый текст, а то, из чего он собран: язык интерфейса

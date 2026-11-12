@@ -6172,6 +6172,39 @@ def ask_thread(project: str, tid: str) -> dict:
             "path": os.path.relpath(str(path), project).replace("\\", "/")}
 
 
+def ask_pipeline_state(project: str, question_id: str) -> dict:
+    """План, манифест, шаги и события одного вопроса пайплайна."""
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    import ask_state as AS
+    import importlib
+    importlib.reload(AS)
+    if not question_id or "/" in question_id or question_id.startswith("."):
+        return {"error": "недопустимый id вопроса"}
+    return AS.read_state(project, question_id)
+
+
+def ask_pipeline_control(project: str, payload: dict) -> dict:
+    """Пауза/продолжить/отмена — файл рядом с вопросом, без убийства процесса."""
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    import ask_state as AS
+    import importlib
+    importlib.reload(AS)
+    question_id = str(payload.get("id") or "").strip()
+    action = str(payload.get("action") or "").strip().lower()
+    if not question_id or "/" in question_id or question_id.startswith("."):
+        return {"error": "недопустимый id вопроса"}
+    if action not in ("pause", "resume", "cancel"):
+        return {"error": "действие: pause, resume или cancel"}
+    state = AS.AskState(project, question_id)
+    if not state.dir.is_dir():
+        return {"error": "вопроса нет"}
+    if action == "pause":
+        return {"ok": True, "control": state.set_control(pause=True)}
+    if action == "resume":
+        return {"ok": True, "control": state.set_control(pause=False)}
+    return {"ok": True, "control": state.set_control(cancel=True)}
+
+
 def kinds_read(project: str) -> dict:
     """Реестр артефактов проекта + что из объявленного не существует на диске."""
     sys.path.insert(0, os.path.join(KIT, "scripts"))
@@ -7816,6 +7849,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(ask_thread(project, (q.get("id") or [""])[0])
                            if project and self._known(project)
                            else {"error": "проект не выбран"})
+        elif u.path == "/api/ask/state":
+            project = (q.get("project") or [""])[0]
+            if not project or not self._known(project):
+                return
+            self.send_json(ask_pipeline_state(project, (q.get("id") or [""])[0]))
         elif u.path == "/api/agent":
             self.send_json(agent_state(q.get("project", [""])[0]))
         elif u.path == "/api/models":
@@ -8623,6 +8661,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             res = engine_prepare_action(project)
             self.send_json(res, 409 if res.get("error") else 200)
+            return
+        if u.path == "/api/ask/control":
+            project = str(payload.get("project") or "")
+            if not self._known(project):
+                return
+            res = ask_pipeline_control(project, payload)
+            self.send_json(res, 400 if res.get("error") else 200)
             return
         if u.path == "/api/run":
             project = payload.get("project", "")

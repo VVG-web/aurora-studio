@@ -806,6 +806,8 @@
   "proj.scrub_note": "Privacy (kb:scrub) · off — a closed circuit, report — show it, mask — mask it",
   "proj.f_threshold": "The bootstrap threshold, % verified",
   "proj.f_threshold_hint": "below the threshold the unchecked is let into the context",
+  "proj.f_keep_questions": "How many «Ask» questions to keep",
+  "proj.f_keep_questions_hint": "old questions are removed together with the plan, steps and manifest",
   "proj.save": "Save the settings",
   "proj.resolving": "Resolving the links…",
   "proj.saved": "The settings are written",

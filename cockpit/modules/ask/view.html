@@ -24,6 +24,12 @@
       <select id="askBackend" style="font:inherit;margin-left:6px">
         <option value="0" data-i18n="ask.ring">роль «Писатель» — по цепочке (основная, при отказе — запасная)</option>
       </select></label>
+    <label class="muted" style="font-size:13px;display:flex;gap:5px;align-items:center">
+      <input type="checkbox" id="askPipeline" checked>
+      <span data-i18n="ask.pipeline">План и роли</span></label>
+    <label class="muted" style="font-size:13px;display:flex;gap:5px;align-items:center">
+      <input type="checkbox" id="askProject" checked>
+      <span data-i18n="ask.project_context">Спросить о проекте</span></label>
     <span id="askBackendNote" hidden style="font-size:12.5px;color:var(--danger)"></span>
     <span class="muted" style="font-size:12.5px" data-i18n="ask.hint_enter">Ctrl+Enter — спросить</span>
     <span class="row-right">
@@ -43,6 +49,29 @@
   <div id="askThreadHint" class="muted" style="font-size:12.5px;margin-top:8px" hidden></div>
 </div>
 <div id="askBody"></div>
+<div id="askPipelineBox" hidden>
+  <div class="card" style="padding:14px 16px;margin-top:14px">
+    <div class="row" style="gap:10px;align-items:center;flex-wrap:wrap">
+      <strong id="askPipelineState" data-i18n="ask.pipeline_idle">Пайплайн не запущен</strong>
+      <span id="askLong" hidden class="chip" style="color:var(--tier-inreview)"
+            data-i18n="ask.long">долго · более 10 минут</span>
+      <span class="row-right">
+        <button class="btn sm" id="askPause" hidden data-i18n="ask.pause">Пауза</button>
+        <button class="btn sm" id="askRetry" hidden data-i18n="ask.retry">Попробовать снова</button>
+        <button class="btn sm" id="askCancel" hidden data-i18n="ask.cancel">Отменить запрос</button>
+      </span>
+    </div>
+    <details id="askPlanBox" hidden style="margin-top:10px">
+      <summary id="askPlanSummary" data-i18n="ask.plan_summary">Текущий пункт</summary>
+      <div id="askPlan" class="muted"
+           style="max-height:210px;overflow:auto;margin-top:8px;font-size:12.5px"></div>
+    </details>
+    <div id="askWork" class="mono"
+         style="max-height:180px;overflow:auto;margin-top:10px;font-size:11.5px;white-space:pre-wrap"></div>
+    <div id="askMetrics" class="muted" style="font-size:12px;margin-top:8px"></div>
+    <div id="askWarn" style="font-size:12px;color:var(--danger);margin-top:6px"></div>
+  </div>
+</div>
 <h2 style="margin-top:22px" data-i18n="ask.history_title">История вопросов</h2>
 <p class="sub" data-i18n="ask.history_about">Общая на всю команду: разговоры лежат в базе
   и приходят с синхронизацией. Откройте разговор, чтобы прочитать его целиком и задать
