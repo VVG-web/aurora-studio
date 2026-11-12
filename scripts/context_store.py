@@ -24,6 +24,55 @@ import time
 from pathlib import Path
 
 SCHEMA_VERSION = 1
+PROTECTED_HEAD = "### Защищённые фрагменты (не сокращать)"
+LAW_WORDS = re.compile(
+    r"(?i)(закон|законодатель|норматив|постановлен|распоряжен|приказ|кодекс|"
+    r"статья|статьи|пункт|подпункт|гост|снип|санпин|регламент|правил|"
+    r"№\s*\d|номер\s+\d)")
+QUOTE_RE = re.compile(r"«[^»\n]{12,}»|„[^“”\n]{12,}“|“[^”\n]{12,}”")
+
+
+def protected_excerpts(text: str, limit: int = 24) -> list[str]:
+    """Фрагменты, которые нельзя пересказывать при сжатии.
+
+    Это не «важные слова», а проверяемые единицы: цитаты в кавычках, строки
+    цитат (`> ...`), предложения с реквизитами закона/нормы и явной пометкой
+    `дословно`/`cite`. Компрессор может потерять их, поэтому они идут в
+    конспект отдельным блоком дословно. Список ограничен, чтобы защита не
+    превратилась в копию всего контекста.
+    """
+    text = str(text or "")
+    out: list[str] = []
+
+    def add(value: str) -> None:
+        value = " ".join(str(value or "").split()).strip(" -")
+        if len(value) >= 8 and value not in out:
+            out.append(value)
+
+    for m in QUOTE_RE.finditer(text):
+        add(m.group(0))
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(">"):
+            add(stripped.lstrip("> ").strip())
+        if re.search(r"(?i)(дословн|цитат|cite|cited)", stripped):
+            add(stripped)
+    for sentence in re.split(r"(?<=[.!?])\s+|\n{2,}", text):
+        if LAW_WORDS.search(sentence):
+            add(sentence)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out[:max(1, int(limit))]
+
+
+def with_protected(summary: str, text: str) -> str:
+    """Дописать к конспекту дословные фрагменты, которые нельзя терять."""
+    fragments = protected_excerpts(text)
+    if not fragments:
+        return str(summary or "")
+    tail = "\n".join(f"- {x}" for x in fragments)
+    head = str(summary or "").rstrip()
+    return (head + "\n\n" if head else "") + PROTECTED_HEAD + "\n" + tail
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
   id TEXT PRIMARY KEY,
@@ -311,7 +360,7 @@ class ContextStore:
 
     def _cache_key(self, ids: list[str], level: str, target: int, model: str) -> str:
         body = "\n".join(f"{i}:{self.item(i).get('hash', '')}" for i in sorted(ids) if self.item(i))
-        return _hash(f"{SCHEMA_VERSION}|{level}|{target}|{model}|{body}")
+        return _hash(f"{SCHEMA_VERSION}|protect-1|{level}|{target}|{model}|{body}")
 
     def _cached(self, key: str) -> dict | None:
         row = self.conn.execute("SELECT summary_json FROM summaries WHERE key=?", (key,)).fetchone()
@@ -327,13 +376,14 @@ class ContextStore:
         """Конспект записей с кэшем. Компрессор: callable(text, target_chars) -> dict|str."""
         ids = [i for i in dict.fromkeys(ids) if self.item(i)]
         target_chars = max(256, int(target_chars or 2000))
+        items = [self.item(i) for i in ids]
+        text = "\n\n".join(f"## {i['id']}\n{i['text']}" for i in items if i)
         key = self._cache_key(ids, level, target_chars, model)
         cached = self._cached(key)
         if cached:
+            cached["summary"] = with_protected(cached.get("summary"), text)
             cached["cached"] = True
             return cached
-        items = [self.item(i) for i in ids]
-        text = "\n\n".join(f"## {i['id']}\n{i['text']}" for i in items if i)
         result = None
         if compressor:
             try:
@@ -346,8 +396,10 @@ class ContextStore:
                 result = None
         if not result:
             result = self._extractive(items, target_chars)
+        result["summary"] = with_protected(result.get("summary"), text)
         result.setdefault("claims", [])
         result.setdefault("open_questions", [])
+        result["protected"] = protected_excerpts(text)
         result["tokens"] = _tokens(result.get("summary") or "")
         result["ids"] = ids
         result["level"] = level
