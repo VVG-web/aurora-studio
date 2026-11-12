@@ -6676,9 +6676,11 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             run.event("report_error", f"отчёт не записан: {type(exc).__name__}: {exc}")
         save_session(cwd, sid, st)
         emit_event("error", sid=sid, stage=stage, status=final_status,
-                   message=str(why or "")[:700], artifact=path)
+                   message=str(why or "")[:700], artifact=path,
+                   report=(st.get("report") or {}).get("md", ""))
         return {"ok": False, "sid": sid, "stage": stage,
                 "status": "partial" if path else "error", "path": path,
+                "report": st.get("report") or {},
                 "why": str(why or "процедура не дала результата")[:700],
                 "error": error or reliability.human_error(
                     "make_failed", why or "производство не завершилось",

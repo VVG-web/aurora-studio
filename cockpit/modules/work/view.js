@@ -378,6 +378,7 @@ export function applyMakeEvent(run, event){
     run.status = event.status || "error";
     run.error = event.message || event.error || "";
     run.artifact = event.artifact || run.artifact;
+    run.report = event.report || run.report;
     log(run.status + (run.error ? " · " + run.error : ""));
   }
   return run;
