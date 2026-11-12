@@ -367,6 +367,13 @@ function handlePipeEvent(ctx, ev){
     setPipeButtons(ctx, "paused", Boolean(PIPE.id));
     return;
   }
+  if (kind === "cancelled"){
+    PIPE.status = "cancelled";
+    pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_cancelled")});
+    if (ctx.$("#askWarn")) ctx.$("#askWarn").textContent = event.message || "";
+    setPipeButtons(ctx, "cancelled", Boolean(PIPE.id));
+    return;
+  }
   if (kind === "synth"){
     workLine(ctx, ctx.t("ask.synth", {status: event.status || ""}));
     return;

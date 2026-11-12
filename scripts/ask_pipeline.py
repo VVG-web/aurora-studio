@@ -426,10 +426,7 @@ def _prepare_pack(pack: str, cfg: dict, cwd: str | Path, call, state: ask_state.
                       "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
     finally:
         if store is not None:
-            try:
-                store.close()
-            except Exception:  # noqa: BLE001
-                pass  # noqa: S110 - closing a cache store is best effort
+            store.close()
 
 
 def _plan_prompt(question: str, pack: str) -> str:
@@ -681,6 +678,10 @@ def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
                                        extra_args=() if enrich else ("--no-semantic",))
             if not found.get("ok"):
                 message = found.get("why") or "поиск не дал карточек"
+                if emit:
+                    emit({"kind": "error",
+                          "error": (found.get("error") or {}).get("code", "search_empty"),
+                          "message": message, "state_id": ""})
                 return {**_plan_failure(message, None, warnings),
                         "error": found.get("error") or _error("search_empty", message,
                                                               "уточните вопрос")}
@@ -710,6 +711,9 @@ def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
             else:
                 warnings.append("планировщик не ответил: план собран по фрагментам контекста")
             if _remaining(deadline) <= 0:
+                if emit:
+                    emit({"kind": "error", "error": "deadline",
+                          "message": "общий срок ответа истёк", "state_id": state.id})
                 return {**_plan_failure("общий срок ответа истёк до первого шага", state, warnings),
                         "error": _error("deadline", "общий срок ответа истёк",
                                         "повторите запрос позже")}
@@ -764,6 +768,9 @@ def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
     if state.control().get("cancel"):
         state.update_state(status="cancelled", current="")
         state.event("cancel", "вопрос отменён пользователем")
+        if emit:
+            emit({"kind": "cancelled", "error": "cancelled",
+                  "message": "вопрос отменён пользователем", "state_id": state.id})
         return {"ok": False, "status": "cancelled", "answer": "", "steps": steps,
                 "warnings": warnings, "state_id": state.id,
                 "plan_path": _rel(state.plan_path, cwd),
@@ -773,6 +780,9 @@ def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
     if _remaining(deadline) <= 0:
         state.update_state(status="error", current="")
         state.event("error", "общий срок ответа истёк")
+        if emit:
+            emit({"kind": "error", "error": "deadline",
+                  "message": "общий срок ответа истёк, 20 минут", "state_id": state.id})
         return {"ok": False, "status": "error", "answer": "", "steps": steps,
                 "warnings": warnings, "state_id": state.id,
                 "plan_path": _rel(state.plan_path, cwd),
@@ -785,6 +795,9 @@ def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
                             state, warnings, warn_lock, emit)
     if not answer:
         state.update_state(status="error", current="", error="нет результатов шагов")
+        if emit:
+            emit({"kind": "error", "message": "ни один пункт не дал результата",
+                  "error": "no_answer", "state_id": state.id})
         return {"ok": False, "status": "error", "answer": "", "steps": steps,
                 "warnings": warnings, "state_id": state.id,
                 "plan_path": _rel(state.plan_path, cwd),

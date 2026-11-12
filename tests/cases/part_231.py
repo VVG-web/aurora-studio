@@ -194,8 +194,8 @@ def test_pipeline_keeps_a_partial_answer_when_one_step_fails(tmp: Path):
 
 @test
 def test_pipeline_project_context_uses_hybrid_and_can_fall_back_to_words(tmp: Path):
-    import ask_pipeline as P
     import answer_core as AC
+    import ask_pipeline as P
 
     root = _project(tmp)
     seen = []
