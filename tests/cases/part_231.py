@@ -97,6 +97,8 @@ def test_ask_pipeline_creates_plan_and_hash_manifest_before_the_answer(tmp: Path
         assert len(step["sha256"]) == 64, step
         assert step["role"] in ("worker", "critic", "qa"), step
     assert "Итог" in res["answer"] and res["metrics"]["total_seconds"] >= 0, res
+    assert "Проверки по шагам" in res["answer"] and "Момус: чисто" in res["answer"], \
+        res["answer"]
     assert res["plan_created_before_answer"] is True, res
 
 

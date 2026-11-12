@@ -637,7 +637,29 @@ def _synthesize(cfg: dict, question: str, plan: dict, steps: list, call,
         answer += "\n\n## Частичный результат\n\n" + "\n".join(
             f"- {s.get('title')}: {((s.get('error') or {}).get('message') or s.get('status'))}"
             for s in failed)
+    answer += _checks_section(steps)
     return answer, "partial" if failed else "full"
+
+
+def _checks_section(steps: list) -> str:
+    """Marks each plan item's Writer/Critic/Momus outcome under the final answer."""
+    rows = []
+    for step in steps:
+        marks = []
+        for check in step.get("checks") or []:
+            role = str(check.get("role") or "")
+            if role == "critic":
+                marks.append("Критик: " + ("опора" if check.get("clean") else "замечания"))
+            elif role == "qa":
+                if not check.get("ok"):
+                    marks.append("Момус: без вердикта")
+                elif check.get("clean"):
+                    marks.append("Момус: чисто")
+                else:
+                    marks.append(f"Момус: без опоры {int(check.get('unsupported') or 0)}")
+        rows.append(f"- {step.get('title') or step.get('id')}: "
+                    + (", ".join(marks) if marks else "проверок нет"))
+    return "\n\n## Проверки по шагам\n\n" + "\n".join(rows) if rows else ""
 
 
 def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
