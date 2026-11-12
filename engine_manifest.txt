@@ -130,6 +130,10 @@ scripts/answer_core.py    => .aurora/scripts/answer_core.py
 # agent_runner в проекте, иначе ветка --pipeline падает на ImportError
 scripts/ask_state.py      => .aurora/scripts/ask_state.py
 scripts/ask_pipeline.py   => .aurora/scripts/ask_pipeline.py
+# общий durable-слой и состояние «Продуктивности»: без них agent:make не
+# импортируется в проекте, а панель не читает /api/make/*
+scripts/pipeline_state.py => .aurora/scripts/pipeline_state.py
+scripts/make_state.py     => .aurora/scripts/make_state.py
 scripts/production_core.py => .aurora/scripts/production_core.py
 # доступность соединений: профили VPN, probe, состояние; его читают команды `net:*`, агент, боты и синк
 scripts/connectivity.py  => .aurora/scripts/connectivity.py

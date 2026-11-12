@@ -67,6 +67,7 @@ import agent_core as AG  # noqa: E402
 import answer_core as answer_core  # noqa: E402 — переиспользуемое ядро обоснованного ответа
 import card_types as CT  # noqa: E402 — единый вход записи карточки: шаблон обязателен
 import fidelity as FID  # noqa: E402 — механический слой под Момусом: числа, цитаты, вердикт (BL-KBA-05)
+import make_state as MS  # noqa: E402 — состояние, попытки и отчёты «Продуктивности»
 import production_core as PC  # noqa: E402 — надстройка «Продуктивности» над ядром
 import reliable_core as reliability  # noqa: E402 — сроки и понятные ошибки процедур
 from aurora_actor import actor  # noqa: E402
@@ -5855,14 +5856,18 @@ PROMPT_MAKE_PLAN = """{method}Ты планировщик. Аналитик хо
 Верни JSON:
 {{"questions": [{{"q": "вопрос", "why": "почему это меняет документ", "rec": "рекомендую"}}],
   "assumptions": ["решение, которое ты приняла молча, не спрашивая"],
-  "plan": "план документа по разделам — заполняй, только когда вопросов больше нет"}}
+  "plan": "план документа по разделам — заполняй, только когда вопросов больше нет",
+  "steps": [{{"id": "step-1", "title": "короткое название раздела",
+             "brief": "что именно должно быть в разделе", "section": "заголовок шаблона"}}]}}
 
 `assumptions` — то, что ты решила сама и о чём не стала спрашивать: срок хранения,
 обработка ошибки, способ интеграции. Это не недостаток, а нормальная работа с
 умолчанием — но читатель документа должен видеть, где выясненное, а где принятое.
 
 Пока остаются вопросы, `plan` оставь пустым. Когда всё ясно — верни пустой `questions` и
-план: по разделу шаблона на строку, с указанием, из каких карточек берётся содержание."""
+план: по разделу шаблона на строку, с указанием, из каких карточек берётся содержание.
+`steps` — те же разделы коротким списком для панели: 2–8 пунктов, без выдуманных
+разделов. Это разметка progress, а не отдельный текст документа."""
 
 PROMPT_MAKE_WRITE = """Напиши документ «{title}» по плану и форме.
 
@@ -5900,9 +5905,14 @@ PROMPT_MAKE_CRITIC = """Проверь документ «{title}» на соо�
 Документ:
 {draft}
 
+Отчёт Момуса о утверждениях без опоры:
+{momus}
+
 Верни JSON:
 {{"ok": true|false,
   "issues": ["что не так, по одному пункту"],
+  "steps": [{{"id": "step-1", "status": "done|partial|failed",
+             "note": "что проверено или чего не хватает"}}],
   "coverage": {{"объём": "полно|частично|пробел", "крайние случаи": "…",
               "термины": "…", "признаки завершения": "…", "ограничения": "…"}}}}
 
@@ -5915,6 +5925,34 @@ PROMPT_MAKE_CRITIC = """Проверь документ «{title}» на соо�
 «крайние случаи» — что при ошибке, пустоте, отказе; «термины» — названо ли одинаково;
 «признаки завершения» — по чему поймём, что сделано; «ограничения» — чего делать нельзя
 и почему. Это не оценка качества, а карта пробелов: пробел — нормальный ответ."""
+
+
+PROMPT_MAKE_REVISE = """Исправь документ «{title}» по замечаниям критика и Момуса.
+
+План, по которому документ собран:
+{plan}
+
+Форма документа:
+{template}
+
+Текущий документ:
+{draft}
+
+Замечания критика:
+{issues}
+
+Замечания Момуса о утверждениях без опоры:
+{momus}
+
+Правила:
+1. Верни весь документ целиком, а не только изменённые места.
+2. Устрани каждое замечание, если для него есть основание в знании базы.
+3. Не добавляй фактов, которых нет в документе или в знании. Где знания не хватило,
+   напиши «не определено — вопрос к заказчику».
+4. Сохрани разделы и порядок шаблона, ссылки [[…]], числа, сроки и коды дословно.
+5. Не удаляй уже проверенные разделы без причины.
+
+Верни только текст документа, без пояснений."""
 
 
 def make_session_dir(cwd: str, kind: str) -> Path:
@@ -5953,8 +5991,8 @@ def load_session(cwd: str, sid: str) -> dict:
 def save_session(cwd: str, sid: str, data: dict) -> None:
     d = session_dir(cwd, sid)
     d.mkdir(parents=True, exist_ok=True)
-    (d / "session.json").write_text(json.dumps(data, ensure_ascii=False, indent=1),
-                                    encoding="utf-8")
+    write_text_atomic(d / "session.json",
+                      json.dumps(data, ensure_ascii=False, indent=1))
 
 
 def grill_method(cwd: str = "") -> str:
@@ -6257,8 +6295,235 @@ def pack_refusal(out: str) -> str:
     return out[:600] if out.startswith("ctx_pack:") else out[-300:]
 
 
+def make_plan_steps(template: str, plan_text: str = "", limit: int = 12) -> list[dict]:
+    """Разделы шаблона как пункты плана. Нужны до первого вызова писателя."""
+    heads = template_headings(template)
+    sections = [h for h in heads if h.startswith("##")]
+    if not sections:
+        sections = heads
+    steps = []
+    for i, heading in enumerate(sections[:max(1, limit)], 1):
+        title = re.sub(r"^#{1,6}\s+", "", heading).strip()
+        title = re.sub(r"\s+—\s+ОПЦИОНАЛЬНО$", "", title).strip()
+        if not title:
+            continue
+        steps.append({"id": f"section-{i}", "title": title[:160],
+                      "brief": "Проверить раздел шаблона", "section": title[:160]})
+    if not steps:
+        for i, line in enumerate([x.strip() for x in str(plan_text or "").splitlines()
+                                  if re.match(r"^\d+[.)]\s+\S", x.strip())][:limit], 1):
+            title = re.sub(r"^\d+[.)]\s+", "", line).strip()
+            steps.append({"id": f"step-{i}", "title": title[:160],
+                          "brief": "Пункт плана", "section": ""})
+    if not steps:
+        steps = [{"id": "step-1", "title": "Что входит", "brief": "Границы документа",
+                  "section": ""},
+                 {"id": "step-2", "title": "Основное содержание", "brief": "Разделы документа",
+                  "section": ""},
+                 {"id": "step-3", "title": "Проверка", "brief": "Как проверить результат",
+                  "section": ""}]
+    return steps[:max(1, limit)]
+
+
+def normalize_make_steps(raw, fallback: list[dict], limit: int = 12) -> list[dict]:
+    """Ответ планировщика или критика → безопасный список пунктов плана."""
+    items = raw if isinstance(raw, list) else []
+    out, seen = [], set()
+    for i, item in enumerate(items[:max(1, limit)], 1):
+        if isinstance(item, str):
+            item = {"title": item}
+        if not isinstance(item, dict):
+            continue
+        title = " ".join(str(item.get("title") or item.get("section") or "").split())[:160]
+        if not title:
+            continue
+        ident = str(item.get("id") or f"step-{i}").strip()
+        ident = re.sub(r"[^\w.-]+", "-", ident, flags=re.UNICODE).strip("-._") or f"step-{i}"
+        if ident in seen:
+            ident = f"{ident}-{i}"
+        seen.add(ident)
+        status = str(item.get("status") or "pending")
+        if status not in ("pending", "done", "partial", "failed", "not_checked", "blocked",
+                          "running", "skipped"):
+            status = "pending"
+        out.append({
+            "id": ident,
+            "title": title,
+            "brief": " ".join(str(item.get("brief") or item.get("note") or "").split())[:800],
+            "section": " ".join(str(item.get("section") or "").split())[:160],
+            "status": status,
+        })
+    if out:
+        return out
+    return [dict(step) for step in fallback[:max(1, limit)]]
+
+
+def critic_step_statuses(verdict: dict, plan: dict) -> tuple[dict, dict]:
+    """Вердикт критика по пунктам плана: без разметки честно «не проверено»."""
+    raw = verdict.get("steps") if isinstance(verdict, dict) else []
+    by_id, by_title = {}, {}
+    for i, item in enumerate(raw if isinstance(raw, list) else [], 1):
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "not_checked")
+        if status not in ("done", "partial", "failed", "not_checked", "blocked"):
+            status = "not_checked"
+        entry = (status, " ".join(str(item.get("note") or "").split())[:400])
+        if item.get("id"):
+            by_id[str(item["id"])] = entry
+        title = " ".join(str(item.get("title") or item.get("section") or "").split())
+        if title:
+            by_title[title.casefold()] = entry
+        by_id.setdefault(f"#{i}", entry)
+    statuses, notes = {}, {}
+    for step in plan.get("steps") or []:
+        key = str(step.get("id"))
+        entry = by_id.get(key)
+        if not entry and step.get("section"):
+            entry = by_title.get(str(step["section"]).casefold())
+        status, note = entry or ("not_checked", "критик не разметил пункт")
+        statuses[key] = status
+        notes[key] = note
+    return statuses, notes
+
+
+def make_draft_score(verdict: dict, momus: dict, text: str) -> dict:
+    """Детерминированная оценка версии: не даёт затереть хороший черновик худшим."""
+    verdict = verdict if isinstance(verdict, dict) else {}
+    momus = momus if isinstance(momus, dict) else {}
+    issues = len([x for x in verdict.get("issues") or [] if str(x).strip()])
+    coverage = verdict.get("coverage") if isinstance(verdict.get("coverage"), dict) else {}
+    filled = sum(1 for value in coverage.values()
+                 if str(value).strip() and str(value).strip() != "пробел")
+    unsupported = int(momus.get("unsupported") or 0) if momus.get("ok") else 0
+    sections = len(re.findall(r"^#{1,6}\s+\S", str(text or ""), re.M))
+    score = ((100 if verdict.get("ok") and not issues else 0)
+             - 12 * issues + 8 * filled - 20 * unsupported + min(20, sections))
+    return {"score": score, "issues": issues, "filled": filled,
+            "unsupported": unsupported, "sections": sections}
+
+
+def momus_report_text(momus: dict, limit: int = 8000) -> str:
+    """Текст Момуса для критика и отчёта: утверждения без опоры, не весь служебный лог."""
+    data = momus if isinstance(momus, dict) else {}
+    if not data.get("ok"):
+        return data.get("why") or "Момус не дал вердикта"
+    return str(data.get("text") or data.get("report") or "")[:limit]
+
+
+def make_report_data(run, st: dict, settings: dict, *, status: str, reason: str = "",
+                     usage=None, elapsed: float = 0) -> dict:
+    """Данные отчёта без промптов, пака и ключей."""
+    manifest = run.manifest()
+    plan = run.plan()
+    mo = st.get("momus") or {}
+    return {
+        "schema": 1,
+        "sid": run.sid,
+        "kind": st.get("kind") or run.kind,
+        "title": (st.get("spec") or {}).get("title") or run.title,
+        "status": status,
+        "reason": str(reason or "")[:1000],
+        "artifact": st.get("path") or (manifest.get("artifact") or {}).get("path", ""),
+        "report_md": (manifest.get("report") or {}).get("md", ""),
+        "plan": plan,
+        "stages": st.get("stages") or {},
+        "issues": list(st.get("issues") or []),
+        "momus": {"ok": bool(mo.get("ok")), "clean": bool(mo.get("clean")),
+                  "unsupported": int(mo.get("unsupported") or 0),
+                  "why": str(mo.get("why") or "")},
+        "gaps": list(st.get("gaps") or []),
+        "assumptions": list(st.get("assumptions") or []),
+        "attempts": manifest.get("attempts") or [],
+        "drafts": [{k: v for k, v in d.items() if k != "text"}
+                   for d in manifest.get("drafts") or []],
+        "best": manifest.get("best") or {},
+        "metrics": (usage.summary() if usage is not None else {}),
+        "elapsed_seconds": round(float(elapsed or 0), 2),
+        "settings": {k: v for k, v in settings.items() if k != "report_dir"},
+        "created": MS.utc_now(),
+    }
+
+
+def manager_report_markdown(data: dict) -> str:
+    """Отчёт руководителю: что сделали, чем закончилось, сколько это заняло."""
+    status = str(data.get("status") or "")
+    title = str(data.get("title") or data.get("sid") or "Артефакт")
+    lines = [f"# Отчёт о производстве: {title}", "",
+             f"- Сессия: `{data.get('sid')}`",
+             f"- Вид: `{data.get('kind')}`",
+             f"- Статус: **{status}**",
+             f"- Артефакт: `{data.get('artifact') or 'не создан'}`",
+             f"- Отчёт создан: {data.get('created')}", ""]
+    if data.get("reason"):
+        lines += ["## Почему работа остановлена", "", str(data["reason"]), ""]
+    lines += ["## Итог", ""]
+    if status == "done":
+        lines.append("Документ собран и прошёл проверки. Можно открывать и передавать.")
+    elif status == "planning":
+        lines.append("Планировщик ждёт ответы аналитика. Работа сохранена, вопросов "
+                     f"{len(data.get('plan', {}).get('steps') or [])} пунктов плана.")
+    elif data.get("artifact"):
+        lines.append("Сохранён лучший полученный черновик. Документ имеет статус draft "
+                     "и требует проверки перед передачей.")
+    else:
+        lines.append("Содержательный документ не создан. Сохранены план и причина.")
+    lines.append("")
+    steps = data.get("plan", {}).get("steps") or []
+    if steps:
+        lines += ["## План и проверки", "", "| Пункт | Статус | Замечание |", "|---|---|---|"]
+        for step in steps:
+            lines.append(f"| {step.get('title') or step.get('id')} | "
+                         f"{step.get('status') or 'pending'} | "
+                         f"{step.get('check_note') or ''} |")
+        lines.append("")
+    issues = data.get("issues") or []
+    if issues:
+        lines += ["## Замечания критика", ""] + [f"- {x}" for x in issues] + [""]
+    mo = data.get("momus") or {}
+    if mo.get("ok"):
+        lines += ["## Момус", ""]
+        lines.append("Чисто." if mo.get("clean")
+                     else f"Без опоры: {mo.get('unsupported', 0)} утверждений. "
+                          "Они перечислены в документе и требуют проверки.")
+        lines.append("")
+    elif mo.get("why"):
+        lines += ["## Момус", "", f"Проверка не завершена: {mo.get('why')}", ""]
+    gaps = data.get("gaps") or []
+    if gaps:
+        lines += ["## Чего не хватает", ""] + [f"- {x}" for x in gaps] + [""]
+    metrics = data.get("metrics") or {}
+    if metrics:
+        lines += ["## Ресурсы", "",
+                  f"- Время: {data.get('elapsed_seconds', 0)} с",
+                  f"- Вызовов модели: {metrics.get('calls', 0)}",
+                  f"- Токены: вход {metrics.get('tokens_in', 0)}, "
+                  f"выход {metrics.get('tokens_out', 0)}"
+                  + (" (оценка/нет данных)" if metrics.get("tokens_estimated") else ""),
+                  f"- Модели: {', '.join(metrics.get('models') or []) or 'нет данных'}",
+                  f"- Запасные модели: {metrics.get('fallbacks', 0)}",
+                  f"- Ошибки: {metrics.get('errors', 0)}", ""]
+    lines += ["## Для руководителя", "",
+              "Документ собран по базе знаний проекта. Если статус draft, перед передачей "
+              "нужно разобрать замечания и утверждения без опоры, перечисленные выше.", ""]
+    return "\n".join(lines)
+
+
+def write_run_report(run, st: dict, settings: dict, *, status: str, reason: str = "",
+                     usage=None, elapsed: float = 0) -> dict:
+    data = make_report_data(run, st, settings, status=status, reason=reason,
+                            usage=usage, elapsed=elapsed)
+    md = manager_report_markdown(data)
+    report = run.write_report(data, manager_md=md, artifact_path=st.get("path") or "")
+    data["report_md"] = report.get("md", "")
+    st["report"] = report
+    st["metrics"] = data.get("metrics") or {}
+    return report
+
+
 def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
-             force_plan: bool, call=None, momus: bool = True, context=None, links=None, task=None) -> dict:
+             force_plan: bool, call=None, momus: bool = True, context=None, links=None,
+             task=None, emit=None) -> dict:
     """Производство артефакта: обогащение → план с вопросами → воркер → критик → Момус.
 
     Разбито на вызовы, потому что посередине стоит человек: планировщик задаёт вопросы и
@@ -6267,7 +6532,13 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     """
     call = call or AG.call_role
     started = time.time()
-    deadline = started + cfg["request_timeout"]
+    def emit_event(event_kind: str, **fields) -> None:
+        if emit is None:
+            return
+        try:
+            emit({"kind": str(event_kind), **fields})
+        except Exception:
+            pass
 
     # --- сессия: новая или продолжение
     if sid:
@@ -6311,10 +6582,101 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
 
     spec = st["spec"]
     stages = st["stages"]
+    settings = MS.pipeline_config(cfg, cwd)
+    deadline = started + settings["hard_timeout_seconds"]
+    run = MS.make_run(cwd, sid, kind=str(st.get("kind") or kind),
+                      title=str(spec.get("title") or st.get("kind") or kind),
+                      settings=settings)
+    run.create(meta={"kind": str(st.get("kind") or kind),
+                     "title": str(spec.get("title") or st.get("kind") or kind),
+                     "idea": str(st.get("idea") or idea)})
+    usage = MS.UsageCollector()
+    pipeline = st.setdefault("pipeline", {})
+    had_pipeline = bool(pipeline)
+    pipeline.update({"started": MS.utc_now(), "settings": settings,
+                     "deadline_seconds": settings["hard_timeout_seconds"]})
+    if had_pipeline:
+        for key in [k for k in pipeline if str(k).startswith(("attempts_", "last_"))]:
+            pipeline.pop(key, None)
+    if run.manifest().get("drafts"):
+        checked = run.validate_resume()
+        pipeline["resume"] = checked
+        for version, reason in (checked.get("drafts") or {}).items():
+            if reason:
+                say(f"  восстановление: черновик v{version} сброшен ({reason})")
+    run.update_state(status="running", current="enrichment",
+                     kind=str(st.get("kind") or kind),
+                     title=str(spec.get("title") or st.get("kind") or kind),
+                     started=MS.utc_now())
+    if run.control().get("continue"):
+        run.set_control(continue_run=False, pause=False, cancel=False)
+        pipeline["repairs_done"] = 0
+        pipeline.pop("completed_once", None)
+        for key in [k for k in pipeline if str(k).startswith(("attempts_", "last_"))]:
+            pipeline.pop(key, None)
+        st.pop("critic_verdict", None)
+        run.event("continue", "работа продолжена после остановки")
+    elif pipeline.get("completed_once") and not (st.get("stages") or {}).get("checked"):
+        # Повтор после ошибки или частичного результата: старые счётчики не должны
+        # запрещать новую попытку, но готовый документ повторно не проверяем.
+        pipeline["repairs_done"] = 0
+        for key in [k for k in pipeline if str(k).startswith(("attempts_", "last_"))]:
+            pipeline.pop(key, None)
+        st.pop("critic_verdict", None)
+    emit_event("run", sid=sid, status="running", kind=str(st.get("kind") or kind))
+
+    def call(*a, **kw):                       # noqa: F811 — тот же вызов, со счётчиком
+        stage = str(kw.pop("_stage", "") or pipeline.get("current") or "")
+        attempt = int(kw.pop("_attempt", 1) or 1)
+        st["model_calls"] = int(st.get("model_calls") or 0) + 1
+        result = inner_call(*a, **kw)
+        usage.add(stage, str(a[1] if len(a) > 1 else kw.get("role") or ""), result,
+                  attempt=attempt)
+        return result
+
+    def stop_now(stage: str) -> dict | None:
+        """Пауза, отмена и общий 60-минутный предел проверяются между вызовами."""
+        while True:
+            ctl = run.control()
+            if ctl.get("cancel"):
+                run.update_state(status="cancelled", current=stage)
+                run.event("cancelled", "работа отменена пользователем", stage=stage)
+                return abort("cancelled", "работа отменена пользователем",
+                             reliability.human_error("cancelled", "работа отменена",
+                                                     "запустите артефакт снова"))
+            if not ctl.get("pause"):
+                break
+            run.update_state(status="paused", current=stage)
+            if time.time() >= deadline:
+                return abort("timeout", "общий предел 60 минут истёк во время паузы",
+                             reliability.human_error("timeout", "истёк общий предел",
+                                                     "продолжите с сохранённого места"))
+            time.sleep(0.2)
+        if time.time() >= deadline:
+            return abort("timeout", "общий предел 60 минут истёк",
+                         reliability.human_error("timeout", "истёк общий предел",
+                                                 "продолжите с сохранённого места"))
+        return None
 
     def abort(stage: str, why: str, error: dict | None = None) -> dict:
         """Отказ процедуры в одном контракте: путь к частичному файлу, если он уже есть."""
         path = str(st.get("path") or "")
+        final_status = ("cancelled" if stage == "cancelled"
+                        else "partial" if path else "error")
+        pipeline["completed_once"] = True
+        run.update_state(status=final_status,
+                         current=stage, error=str(why or "")[:700],
+                         completed_once=True)
+        run.update_manifest(completed_once=True)
+        try:
+            write_run_report(run, st, settings, status=final_status,
+                             reason=str(why or ""), usage=usage,
+                             elapsed=time.time() - started)
+        except Exception as exc:  # noqa: BLE001 — отчёт не должен скрывать причину отказа
+            run.event("report_error", f"отчёт не записан: {type(exc).__name__}: {exc}")
+        save_session(cwd, sid, st)
+        emit_event("error", sid=sid, stage=stage, status=final_status,
+                   message=str(why or "")[:700], artifact=path)
         return {"ok": False, "sid": sid, "stage": stage,
                 "status": "partial" if path else "error", "path": path,
                 "why": str(why or "процедура не дала результата")[:700],
@@ -6327,21 +6689,82 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         """Записать артефакт; ошибку записи вернуть, а не выпустить исключением."""
         try:
             st["path"] = write_artifact(cwd, st)
+            run.set_stage(stage)
+            run.set_artifact(st["path"], status=(
+                "ready" if "status: ready" in read_text_file(
+                    os.path.join(cwd, st["path"]), 2000) else "draft"))
             return None
         except Exception as exc:  # noqa: BLE001 - файл мог не записаться
             why = f"не удалось записать артефакт: {type(exc).__name__}: {exc}"
             return abort(stage, why, reliability.human_error(
                 "artifact_write", why, "проверьте папку результата и права на запись"))
 
-    def limited(stage: str, fn, budget: float) -> dict:
-        """Вызов роли под внешним сторожем: даже транспорт без своего срока не держит шаг."""
-        result = reliability.run_stage(stage, fn, deadline=time.time() + budget,
-                                       timeout=budget)
-        if result.ok:
-            return result.value
-        err = result.error or {}
-        return {"ok": False, "log": [err.get("message") or f"этап {stage} не ответил"],
-                "timed_out": result.timed_out, "why": err.get("message") or ""}
+    def limited(stage: str, fn, budget: float, role: str = "") -> dict:
+        """Повтор только при сбое, с ограничением одинаковых ошибок и отсутствия прогресса.
+
+        Это не бюджет длительности этапа: успешный долгий вызов принимается. Повторяем
+        только неудачу, а одинаковый текст ошибки дважды останавливает цикл.
+        """
+        last, same_sig, same_count, no_progress = {}, "", 0, 0
+        used_key = f"attempts_{stage}"
+        used = int(pipeline.get(used_key) or 0)
+        if used >= int(settings["max_attempts_per_stage"]):
+            return pipeline.get(f"last_{stage}") or {
+                "ok": False, "why": f"этап {stage}: исчерпаны попытки",
+                "error": {"code": "attempts", "message": f"этап {stage}: исчерпаны попытки"}}
+        for attempt in range(1, int(settings["max_attempts_per_stage"]) + 1):
+            if used >= int(settings["max_attempts_per_stage"]):
+                break
+            used += 1
+            pipeline[used_key] = used
+            stopped = stop_now(stage)
+            if stopped:
+                return stopped
+            pipeline["current"] = stage
+            run.update_state(current=stage, status="running")
+            result = reliability.run_stage(
+                stage, fn, deadline=min(deadline, time.time() + max(0.05, budget)),
+                timeout=max(0.05, budget))
+            value = result.value if result.ok else {
+                "ok": False, "log": [(result.error or {}).get("message")
+                                     or f"этап {stage} не ответил"],
+                "timed_out": result.timed_out,
+                "why": (result.error or {}).get("message") or "",
+                "error": result.error or {},
+            }
+            if not isinstance(value, dict):
+                value = {"ok": False, "log": ["роль вернула не объект"], "why": "не объект"}
+            run.add_attempt({"stage": stage, "role": role or stage,
+                             "model": value.get("model"), "provider": value.get("provider"),
+                             "seconds": value.get("seconds"),
+                             "tokens_in": value.get("tokens_in"),
+                             "tokens_out": value.get("tokens_out"),
+                             "ok": value.get("ok"),
+                             "error": value.get("why") or " ".join(value.get("log") or [])})
+            if value.get("ok"):
+                pipeline["last_progress"] = MS.utc_now()
+                return value
+            pipeline[f"last_{stage}"] = value
+            sig = " ".join(str(x) for x in (value.get("log") or [value.get("why") or ""]))
+            sig = sig[:800]
+            same_count = same_count + 1 if sig and sig == same_sig else (1 if sig else 0)
+            same_sig = sig or same_sig
+            text = str(value.get("text") or "")
+            if text and text == str(last.get("text") or ""):
+                no_progress += 1
+            elif not text:
+                no_progress += 1
+            else:
+                no_progress = 0
+            last = value
+            if same_count >= int(settings["max_same_error"]):
+                pipeline["stop_reason"] = "одинаковая ошибка"
+                break
+            if no_progress >= int(settings["max_no_progress"]):
+                pipeline["stop_reason"] = "нет нового результата"
+                break
+        return last or {"ok": False, "log": [f"этап {stage} не ответил"],
+                        "why": f"этап {stage} не ответил"}
 
     ctx_cfg: dict = {}
     CR = CB = CS = None
@@ -6360,6 +6783,21 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         return abort("enrichment", (
             f"шаблон «{spec['template']}» длиннее {TEMPLATE_LIMIT:,} знаков".replace(",", " ")
             + " — сократите его или разбейте на версии, документ по огрызку формы не пишу"))
+    # План появляется до первого вызова писателя и переживает падение планировщика.
+    # Это разметка progress: разделы шаблона, которые критик потом проверит.
+    st.setdefault("draft", "")
+    st.setdefault("clarifications", [])
+    st.setdefault("assumptions", [])
+    if not (run.plan().get("steps") or []):
+        fallback_steps = make_plan_steps(template, st.get("plan") or "")
+        run.set_plan({"title": str(spec.get("title") or st.get("kind") or kind),
+                      "steps": fallback_steps,
+                      "question": str(st.get("idea") or idea)},
+                     source="template", question=str(st.get("idea") or idea))
+        run.event("plan", "предварительный план сохранён до писателя",
+                  steps=len(fallback_steps), source="template")
+    else:
+        run.event("resume", "план восстановлен", steps=len(run.plan().get("steps") or []))
     prompt_extra = ""
     if spec.get("prompt") and os.path.isfile(os.path.join(cwd, spec["prompt"])):
         prompt_extra = ("Промпт проекта для этого вида документа:\n"
@@ -6394,9 +6832,19 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             search = PC.search(cwd, st["idea"], mode="generate", runner=run_command,
                                refusal=pack_refusal, deadline=deadline,
                                extra_args=pack_args)
-        if not search["ok"]:
-            return abort("enrichment", search.get("why") or "пак не собран")
+        if not search["ok"] or not str(search.get("pack") or "").strip():
+            why = search.get("why") or "в базе не найдено ни одной карточки"
+            st["pack"] = ""
+            st["gaps"] = [str(why)[:600]]
+            run.set_pack("")
+            # C: содержательный документ без знания не пишем, но сохраняем заготовку
+            # с задачей и списком пробелов, чтобы работа не исчезла.
+            if (err := persist("enrichment")):
+                return err
+            save_session(cwd, sid, st)
+            return abort("enrichment", why)
         st["pack"] = search["pack"]
+        run.set_pack(st["pack"])
         stages["enriched"] = utc_stamp()
         st.setdefault("draft", "")
         st.setdefault("clarifications", [])
@@ -6487,6 +6935,133 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         return (f" [шаблон «{spec['template']}» — {len(template)} знаков, идёт воркеру целиком; "
                 f"нужна модель с окном ≥ {need} токенов]")
 
+    def momus_check(draft: str, version: int, stage: str = "momus_initial") -> dict:
+        """Момус не отменяет работу: при сбое это предупреждение, а не потеря черновика."""
+        if not momus:
+            return {"ok": False, "skipped": True, "why": "Момус отключён"}
+        stopped = stop_now(stage)
+        if stopped:
+            return stopped
+        pack_for_check = st.get("pack") or ""
+        if ctx_cfg.get("enabled") and st.get("context_store") and CR and CS:
+            try:
+                with CS.ContextStore(st["context_store"]) as store:
+                    pack_for_check = CR.cited(store, pack_for_check, draft, ctx_cfg)
+            except Exception:
+                pack_for_check = st.get("pack") or ""
+        mo = limited(stage, lambda: run_momus(
+            cfg, pack_for_check, f"Документ «{spec.get('title') or st.get('kind')}»",
+            draft, call, input_limit=momus_limit), AG.call_budget(cfg, "qa"), role="qa")
+        if not isinstance(mo, dict):
+            mo = {"ok": False, "why": "Момус вернул не объект"}
+        run.write_check(version, "momus" if stage == "momus_final" else stage,
+                        str(mo.get("text") or mo.get("why") or ""), data=mo,
+                        model=str(mo.get("model") or ""), provider=str(mo.get("backend") or ""),
+                        seconds=float(mo.get("seconds") or 0),
+                        status="done" if mo.get("ok") else "failed",
+                        error="" if mo.get("ok") else str(mo.get("why") or ""))
+        return mo
+
+    def writer_version(version: int, *, parent: int = 0, issues: list | None = None,
+                       momus_text: str = "") -> dict:
+        """Одна версия документа. Writer всегда один, поэтому шаблон и голос не расходятся."""
+        if version == 1:
+            form_work, check = form("worker", False)
+            content = PROMPT_MAKE_WRITE.format(
+                title=spec.get("title") or st["kind"], plan=st["plan"], template=form_work,
+                extra=prompt_extra, pack=worker_context,
+                agnostic=AGNOSTIC_WRITE if bool(str(spec.get("tech_agnostic") or "").strip().lower()
+                                                 in ("1", "true", "да", "yes")) else "")
+            stage = "drafting"
+        else:
+            form_work, check = form("worker", False)
+            content = PROMPT_MAKE_REVISE.format(
+                title=spec.get("title") or st["kind"], plan=st["plan"],
+                template=form_work, draft=st.get("draft") or "",
+                issues="\n".join(f"- {x}" for x in (issues or [])) or "- нет",
+                momus=momus_text or "нет")
+            stage = f"revision_{version}"
+        fail = check(content)
+        if fail:
+            return {"ok": False, "why": fail.get("why") or "форма не дошла до писателя",
+                    "error": fail}
+        last, same, count = {}, "", 0
+        for attempt in range(1, int(settings["max_attempts_per_stage"]) + 1):
+            stopped = stop_now(stage)
+            if stopped:
+                return stopped
+            pipeline["current"] = stage
+            run.update_state(current=stage, status="running", version=version)
+            remaining = max(1.0, deadline - time.time())
+            result = reliability.run_stage(
+                stage, lambda: PC.answer_artifact(
+                    st["idea"], pack=worker_context, prompt=content, cfg=cfg, cwd=cwd,
+                    call=call, role="worker", input_limit=worker_limit, deadline=deadline),
+                deadline=deadline, timeout=remaining)
+            if result.ok and isinstance(result.value, dict):
+                value = result.value
+            else:
+                err = result.error or {}
+                value = {"ok": False, "why": err.get("message") or "писатель не ответил",
+                         "error": err, "log": [err.get("message") or "нет ответа"]}
+            phases = value.get("phases") if isinstance(value.get("phases"), dict) else {}
+            run.add_attempt({"stage": stage, "role": "worker",
+                             "model": value.get("model"),
+                             "provider": value.get("backend") or value.get("provider"),
+                             "seconds": value.get("seconds") or phases.get("answer"),
+                             "tokens_in": phases.get("prompt_tokens") or value.get("tokens_in"),
+                             "tokens_out": phases.get("answer_tokens") or value.get("tokens_out"),
+                             "ok": value.get("ok"),
+                             "error": value.get("why") or " ".join(value.get("log") or [])})
+            if value.get("ok") and str(value.get("answer") or "").strip():
+                return value
+            if not value.get("ok") and "не отправляю" in str(value.get("why") or ""):
+                value["why"] = str(value.get("why") or "") + size_note(
+                    {"log": [str(value.get("why") or "")]}, content)
+            sig = " ".join(str(x) for x in (value.get("log") or [value.get("why") or ""]))[:800]
+            count = count + 1 if sig and sig == same else (1 if sig else 0)
+            same = sig or same
+            last = value
+            if count >= int(settings["max_same_error"]):
+                pipeline["stop_reason"] = "одинаковая ошибка писателя"
+                break
+        return last or {"ok": False, "why": "писатель не дал документа"}
+
+    def critic_check(version: int, momus_text: str = "") -> dict:
+        """Критик получает и замечания Момуса: нерешённое не должно потеряться."""
+        agnostic = bool(str(spec.get("tech_agnostic") or "").strip().lower()
+                        in ("1", "true", "да", "yes"))
+        form_crit, check = form("critic", True)
+        content = PROMPT_MAKE_CRITIC.format(
+            title=spec.get("title") or st["kind"], template=form_crit,
+            plan=st["plan"], draft=st.get("draft") or "",
+            momus=momus_text or "нет",
+            agnostic_check=AGNOSTIC_CHECK if agnostic else "")
+        fail = check(content)
+        if fail:
+            return {"ok": False, "why": fail.get("why") or "форма не дошла до критика",
+                    "error": fail}
+        r = limited("critic", lambda: call(
+            cfg, "critic", [{"role": "user", "content": content}],
+            deadline=deadline, input_limit=critic_limit),
+            AG.call_budget(cfg, "critic"), role="critic")
+        if not r.get("ok"):
+            return {"ok": False, "why": "критик не ответил",
+                    "error": r.get("error") or {"message": r.get("why") or "нет ответа"},
+                    "raw": r}
+        verdict = parse_json(r.get("text"))
+        if not isinstance(verdict, dict):
+            return {"ok": False, "why": "критик не вернул вердикта",
+                    "error": reliability.human_error("critic_invalid",
+                                                     "критик не вернул вердикта",
+                                                     "повторите шаг")}
+        run.write_check(version, "critic", str(r.get("text") or ""), data=verdict,
+                        model=str(r.get("model") or ""),
+                        provider=str(r.get("backend") or ""),
+                        seconds=float(r.get("seconds") or 0))
+        return {"ok": True, "verdict": verdict, "text": str(r.get("text") or ""),
+                "model": r.get("model"), "provider": r.get("backend")}
+
     # --- 2. план: раунды вопросов, пока человек не скажет «хватит»
     planner_context = st.get("planner_pack") or st["pack"]
     worker_context = st.get("worker_pack") or st["pack"]
@@ -6506,6 +7081,12 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         critic_limit = CR.input_limit(cfg, "critic", ctx_cfg)
         momus_limit = CR.input_limit(cfg, "qa", ctx_cfg)
     if not stages.get("planned"):
+        asked_rounds = len([rd for rd in st.get("rounds") or [] if rd.get("questions")])
+        if asked_rounds >= int(settings["max_question_rounds"]) and not force_plan:
+            force_plan = True
+            st.setdefault("assumptions", []).append(
+                {"text": f"планировщик остановлен после {asked_rounds} раундов вопросов",
+                 "by": "защита от зацикливания"})
         if answers:
             st["rounds"].append({"answers": answers})
             # Пара «вопрос → ответ» уходит в документ немедленно, до всякого воркера:
@@ -6547,8 +7128,9 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             tools=planner_tools, mcp_active=planner_mcp,
             context_store=planner_store, input_limit=planner_limit,
             guard_text=[st["idea"], planner_context] + re.findall(r"^## (.+)$", planner_context, re.M)),
-            AG.call_budget(cfg, "planner"))
-        if (not r.get("ok") or not (r.get("text") or "").strip()) and planner_tools:
+            AG.call_budget(cfg, "planner"), role="planner")
+        if ((not r.get("ok") or not (r.get("text") or "").strip()) and planner_tools
+                and not pipeline.get("stop_reason")):
             # tool_limit не должен повторять тот же цикл: второй заход идёт без
             # инструментов, по уже собранному плану и паку.
             r = limited("planner", lambda: call(
@@ -6556,9 +7138,12 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                 deadline=time.time() + AG.call_budget(cfg, "planner"),
                 tools=False, mcp_active=[], context_store="", input_limit=planner_limit,
                 guard_text=[st["idea"], planner_context]),
-                AG.call_budget(cfg, "planner"))
+                AG.call_budget(cfg, "planner"), role="planner")
         if not r["ok"]:
-            return abort("planning", model_fail_note(r) + size_note(r, prompt))
+            if (err := persist("planning")):
+                return err
+            return abort("planning", model_fail_note(r) + size_note(r, prompt),
+                         r.get("error"))
         ans = parse_json(r["text"]) or {}
         grill = PC.grill_round(ans, force=force_plan)
         st["grill"] = grill
@@ -6568,7 +7153,15 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             st["rounds"].append({"questions": questions})
             save_session(cwd, sid, st)
             say(f"  планировщик спрашивает: {len(questions)}")
+            run.update_state(status="planning", current="planning", questions=len(questions))
+            try:
+                write_run_report(run, st, settings, status="planning",
+                                 reason="планировщик ждёт ответы аналитика",
+                                 usage=usage, elapsed=time.time() - started)
+            except Exception as exc:  # noqa: BLE001
+                run.event("report_error", f"отчёт не записан: {type(exc).__name__}: {exc}")
             return {"ok": True, "sid": sid, "stage": "planning", "questions": questions,
+                    "state": st, "report": st.get("report") or {},
                     "seconds": round(time.time() - started, 1)}
         if not plan and force_plan:
             # «Хватит, работай» не должна упираться в то, что модель по инерции вернула
@@ -6584,12 +7177,18 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                 tools=planner_tools, mcp_active=planner_mcp,
                 context_store=planner_store, input_limit=planner_limit,
                 guard_text=[st["idea"], planner_context]),
-                AG.call_budget(cfg, "planner"))
+                AG.call_budget(cfg, "planner"), role="planner")
             if r2["ok"]:
-                plan = ((parse_json(r2["text"]) or {}).get("plan") or "").strip()
+                ans2 = parse_json(r2["text"]) or {}
+                plan = (ans2.get("plan") or "").strip()
+                if ans2.get("steps"):
+                    ans = ans2
         if not plan:
-            return abort("planning", ("планировщик не вернул плана даже по прямой просьбе. "
-                                      "Ответьте на его вопросы — по ним он план и построит."))
+            fallback = make_plan_steps(template, st.get("plan") or "")
+            plan = "\n".join(f"{i}. {step['title']}" for i, step in enumerate(fallback, 1))
+            st.setdefault("assumptions", []).append(
+                {"text": "планировщик не вернул план, взят план по разделам шаблона",
+                 "by": "защита от пустого плана"})
         if force_plan:
             # Вопросы, оставшиеся без ответа, — это принятые решения, и они обязаны быть
             # видны. «Не спросили» и «решила модель» — разные источники: первое
@@ -6604,103 +7203,247 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             st.setdefault("assumptions", []).append(
                 {"text": str(a)[:300], "by": "решила модель"})
         st["plan"] = plan
+        base_steps = make_plan_steps(template, plan)
+        plan_steps = normalize_make_steps(ans.get("steps"), base_steps)
+        run.set_plan({"title": str(spec.get("title") or st.get("kind") or kind),
+                      "steps": plan_steps,
+                      "question": str(st.get("idea") or idea)},
+                     source="planner" if ans.get("steps") else "template",
+                     question=str(st.get("idea") or idea))
+        run.event("plan", "план утверждён", steps=len(plan_steps),
+                  source="planner" if ans.get("steps") else "template")
+        emit_event("plan", sid=sid, steps=plan_steps,
+                   source="planner" if ans.get("steps") else "template")
         stages["planned"] = utc_stamp()
+        run.set_stage("planned")
         save_session(cwd, sid, st)
         say("  план готов")
 
-    # --- 3. воркер: документ по плану и форме
+    # --- 3. writer: одна версия документа, затем Момус и критик
+    if stages.get("drafted") and not str(st.get("draft") or "").strip():
+        stages.pop("drafted", None)
     if not stages.get("drafted"):
-        agnostic = bool(str(spec.get("tech_agnostic") or "").strip().lower()
-                        in ("1", "true", "да", "yes"))
-        form_work, check = form("worker", False)
-        content = PROMPT_MAKE_WRITE.format(
-            title=spec.get("title") or st["kind"], plan=st["plan"], template=form_work,
-            extra=prompt_extra, pack=worker_context,
-            agnostic=AGNOSTIC_WRITE if agnostic else "")
-        fail = check(content)
-        if fail:
-            return abort("drafted", fail.get("why") or "форма не дошла до воркера", fail)
-        # Свой срок шага, а не остаток общего: документ пишется минутами, и общий срок прогона
-        # к критику уже истёк (живой прогон 01.11: «критик не ответил: дедлайн исчерпан»).
-        r = PC.answer_artifact(
-            st["idea"], pack=worker_context, prompt=content, cfg=cfg, cwd=cwd,
-            call=call, role="worker", input_limit=worker_limit,
-            deadline=time.time() + AG.call_budget(cfg, "worker"))
-        if not r["ok"]:
-            why = r.get("why") or "воркер не дал документа"
-            if "не отправляю" in why:
-                why += size_note({"log": [why]}, content)
-            return abort("drafted", why, r.get("error"))
-        st["draft"] = (r.get("answer") or "").strip()
-        st["core"] = {"used": True, "status": r.get("status"),
-                      "cards": len(r.get("cards") or []),
-                      "citations": r.get("citations") or {},
-                      "degraded": r.get("degraded") or []}
+        w = writer_version(1)
+        if not w.get("ok"):
+            if (err := persist("drafted")):
+                return err
+            why = w.get("why") or "писатель не дал документа"
+            return abort("drafted", why, w.get("error"))
+        st["draft"] = str(w.get("answer") or "").strip()
+        st["core"] = {"used": True, "status": w.get("status"),
+                      "cards": len(w.get("cards") or []),
+                      "citations": w.get("citations") or {},
+                      "degraded": w.get("degraded") or []}
+        run.write_draft(1, st["draft"], model=str(w.get("model") or ""),
+                        provider=str(w.get("backend") or w.get("provider") or ""),
+                        seconds=float(w.get("seconds") or 0), status="candidate",
+                        reason="первый черновик")
+        run.set_best(1, reason="первый черновик")
+        st["best_version"] = 1
         stages["drafted"] = utc_stamp()
+        run.set_stage("drafted")
         if (err := persist("drafted")):
             return err
         save_session(cwd, sid, st)
         say(f"  черновик: {len(st['draft'])} знаков → {st['path']}")
+        emit_event("stage", stage="drafted", status="done",
+                   chars=len(st["draft"]), version=1)
+    elif st.get("draft") and not run.manifest().get("drafts"):
+        run.write_draft(1, st["draft"], status="candidate", reason="восстановлен")
+        run.set_best(1, reason="восстановлен")
+    elif st.get("draft") and not run.best_draft():
+        run.set_best(1, reason="восстановлен")
 
-    # --- 4. критик: форма и полнота по плану
-    if not stages.get("reviewed"):
-        agnostic = bool(str(spec.get("tech_agnostic") or "").strip().lower()
-                        in ("1", "true", "да", "yes"))
-        form_crit, check = form("critic", True)
-        content = PROMPT_MAKE_CRITIC.format(
-            title=spec.get("title") or st["kind"], template=form_crit,
-            plan=st["plan"], draft=st["draft"],
-            agnostic_check=AGNOSTIC_CHECK if agnostic else "")
-        fail = check(content)
-        if fail:
-            return abort("reviewed", fail.get("why") or "форма не дошла до критика", fail)
-        r = limited("critic", lambda: call(
-            cfg, "critic", [{"role": "user", "content": content}],
-            deadline=time.time() + AG.call_budget(cfg, "critic"),
-            input_limit=critic_limit), AG.call_budget(cfg, "critic"))
-        if not r["ok"]:
-            return abort("reviewed", "критик не ответил, документ не проверен: "
-                        + model_fail_note(r) + size_note(r, content))
-        verdict = parse_json(r["text"])
-        if not isinstance(verdict, dict):
-            # Мусор вместо вердикта — не «замечаний нет»: иначе документ уйдёт в `ready`.
-            return abort("reviewed", "критик не вернул вердикта, документ не проверен — повторите шаг")
-        st["issues"] = verdict.get("issues") or []
-        # Покрытие заполняет критик, а не планировщик: это свойство документа, а не
-        # опроса. Планировщик мог спросить про крайние случаи, получить ответ и всё
-        # равно не дойти до них в плане.
+    # --- 4. Момус до критика: его замечания критик обязан учесть
+    if momus and not st.get("momus_initial"):
+        mo1 = momus_check(st.get("draft") or "", 1, "momus_initial")
+        if mo1.get("sid"):
+            if (err := persist("momus_initial")):
+                return err
+            return mo1
+        st["momus_initial"] = mo1
+        save_session(cwd, sid, st)
+        emit_event("check", stage="momus_initial",
+                   status="clean" if mo1.get("clean") else "issues",
+                   unsupported=int(mo1.get("unsupported") or 0))
+        say(f"  Момус до критика: {'чисто' if mo1.get('clean') else mo1.get('why') or 'есть замечания'}")
+    mo1 = st.get("momus_initial") or {}
+    momus_text = momus_report_text(mo1)
+
+    def apply_critic(version: int, verdict: dict) -> tuple[list, dict]:
+        issues = [str(x)[:500] for x in (verdict.get("issues") or []) if str(x).strip()]
+        st["issues"] = issues
         st["coverage"] = clean_coverage(verdict.get("coverage"))
+        st["critic_verdict"] = verdict
+        score = make_draft_score(verdict, mo1, st.get("draft") or "")
+        statuses, notes = critic_step_statuses(verdict, run.plan())
+        if all(value == "not_checked" for value in statuses.values()):
+            statuses = {key: "not_checked" for key in statuses}
+        run.mark_plan(statuses, notes)
+        history = st.setdefault("draft_history", {})
+        history[str(version)] = {"issues": issues, "coverage": st["coverage"],
+                                 "verdict": verdict, "score": score,
+                                 "status": "done" if verdict.get("ok") and not issues
+                                 else "partial"}
+        return issues, score
+
+    def critic_satisfied(verdict: dict, issues: list) -> bool:
+        # Первый Момус остаётся советом критику: окончательное решение по опоре
+        # принимает финальный Момус после того, как критик закончил замечания.
+        return bool(verdict.get("ok")) and not issues
+
+    best_version = int(st.get("best_version") or 1)
+    best_score = st.get("best_score")
+    repairs_done = int((st.get("pipeline") or {}).get("repairs_done") or 0)
+    completed_before = bool((st.get("pipeline") or {}).get("completed_once")
+                            or stages.get("checked"))
+    verdict = st.get("critic_verdict") if isinstance(st.get("critic_verdict"), dict) else {}
+    issues = list(st.get("issues") or [])
+    if not stages.get("reviewed") or not verdict:
+        c = critic_check(best_version, momus_text)
+        if not c.get("ok"):
+            if (err := persist("reviewed")):
+                return err
+            return abort("reviewed", "критик не ответил, документ не проверен: "
+                         + str(c.get("why") or "нет вердикта"), c.get("error"))
+        verdict = c["verdict"]
+        issues, score = apply_critic(best_version, verdict)
+        best_score = score["score"]
         stages["reviewed"] = utc_stamp()
+        run.set_stage("review")
+        emit_event("check", stage="reviewed", status="done", issues=len(issues),
+                   version=best_version)
+        say(f"  критик: замечаний {len(issues)}")
+
+    satisfied = critic_satisfied(verdict, issues)
+    # При повторном запуске уже проверенного черновика не запускаем ремонт заново.
+    force_final = bool(completed_before and st.get("draft") and not satisfied)
+    while not satisfied and not force_final and repairs_done < int(settings["max_repairs"]):
+        version = best_version + 1
+        w = writer_version(version, parent=best_version, issues=issues,
+                           momus_text=momus_text)
+        if not w.get("ok"):
+            if (err := persist("reviewed")):
+                return err
+            return abort("reviewed", "писатель не исправил документ: "
+                         + str(w.get("why") or "нет ответа"), w.get("error"))
+        st["draft"] = str(w.get("answer") or "").strip()
+        run.write_draft(version, st["draft"], model=str(w.get("model") or ""),
+                        provider=str(w.get("backend") or w.get("provider") or ""),
+                        seconds=float(w.get("seconds") or 0), parent=best_version,
+                        reason=f"исправление после критика, версия {version}")
+        run.set_stage(f"revision_{version}")
+        save_session(cwd, sid, st)
+        emit_event("stage", stage=f"revision_{version}", status="done",
+                   chars=len(st["draft"]), version=version)
+        c = critic_check(version, momus_text)
+        if not c.get("ok"):
+            if (err := persist("reviewed")):
+                return err
+            return abort("reviewed", "критик не проверил исправленный документ: "
+                         + str(c.get("why") or "нет вердикта"), c.get("error"))
+        verdict = c["verdict"]
+        new_issues, new_score = apply_critic(version, verdict)
+        save_session(cwd, sid, st)
+        repairs_done += 1
+        st.setdefault("pipeline", {})["repairs_done"] = repairs_done
+        if best_score is None or new_score["score"] >= int(best_score):
+            best_version, best_score, issues = version, new_score["score"], new_issues
+            run.set_best(version, reason=f"лучшая версия после проверки {version}")
+            st["best_version"], st["best_score"] = best_version, best_score
+        else:
+            # Новая версия хуже: возвращаем лучшую и прекращаем ремонт.
+            old = (st.get("draft_history") or {}).get(str(best_version)) or {}
+            st["draft"] = run.read_draft(best_version) or st.get("draft") or ""
+            st["issues"] = list(old.get("issues") or issues)
+            st["coverage"] = old.get("coverage") or st.get("coverage") or {}
+            st["critic_verdict"] = old.get("verdict") or verdict
+            old_statuses, old_notes = critic_step_statuses(
+                st["critic_verdict"], run.plan())
+            run.mark_plan(old_statuses, old_notes)
+            issues = list(st["issues"])
+            st.setdefault("pipeline", {})["repair_stopped"] = "новая версия хуже"
+            break
+        satisfied = critic_satisfied(verdict, issues)
+        stages["reviewed"] = utc_stamp()
+        run.set_stage("review")
+        emit_event("check", stage="reviewed", status="done", issues=len(issues),
+                   version=version)
+        say(f"  исправление {version}: замечаний {len(issues)}")
+
+    st["best_version"] = best_version
+    st["best_score"] = best_score
+    st.setdefault("pipeline", {})["repairs_done"] = repairs_done
+    if not satisfied and not force_final:
         if (err := persist("reviewed")):
             return err
-        save_session(cwd, sid, st)
-        say(f"  критик: замечаний {len(st['issues'])}")
-
-    # --- 5. Момус: не выдумано ли. Опора — пак знаний, и только он
-    if momus and not stages.get("checked"):
-        momus_pack = st["pack"]
-        if ctx_cfg.get("enabled") and st.get("context_store") and CR and CS:
-            try:
-                with CS.ContextStore(st["context_store"]) as store:
-                    momus_pack = CR.cited(store, st["pack"], st.get("draft") or "", ctx_cfg)
-            except Exception:
-                momus_pack = st["pack"]
-        mo = limited("momus", lambda: run_momus(
-            cfg, momus_pack, f"Документ «{spec.get('title') or st['kind']}»",
-            st["draft"], call, input_limit=momus_limit), AG.call_budget(cfg, "qa"))
-        st["momus"] = mo
-        if not mo.get("ok"):
-            # Проверка не состоялась — этап не пройден, иначе документ станет `ready`
-            # без единой проверки на выдумки.
-            save_session(cwd, sid, st)
-            return abort("checked", "Момус не проверил документ: "
-                        + (mo.get("why") or "нет вердикта"))
+        # Критик не принял документ после двух исправлений: не запускаем финальный
+        # Момус, но возвращаем лучший черновик и отчёт, а не теряем работу.
+        if not st.get("momus") and st.get("momus_initial"):
+            st["momus"] = st["momus_initial"]
         stages["checked"] = utc_stamp()
+        st["final_check"] = "critic_rejected"
+        run.set_stage("checked")
+        st.setdefault("pipeline", {})["completed_once"] = True
         if (err := persist("checked")):
             return err
         save_session(cwd, sid, st)
-        say(f"  Момус: {'чисто' if mo.get('clean') else 'без опоры ' + str(mo.get('unsupported', 0))}")
+        run.update_manifest(completed_once=True)
+        run.update_state(status="partial", current="", completed_once=True,
+                         best_version=best_version)
+        try:
+            write_run_report(run, st, settings, status="partial",
+                             reason="критик не принял документ после исправлений",
+                             usage=usage, elapsed=time.time() - started)
+        except Exception as exc:  # noqa: BLE001
+            run.event("report_error", f"отчёт не записан: {type(exc).__name__}: {exc}")
+        emit_event("done", sid=sid, status="partial", artifact=st.get("path") or "",
+                   report=(st.get("report") or {}).get("md", ""),
+                   seconds=round(time.time() - started, 1))
+        return {"ok": True, "sid": sid, "stage": "done", "state": st,
+                "seconds": round(time.time() - started, 1)}
 
+    # --- 5. финальный Момус только после того, как критик доволен
+    if momus:
+        mo2 = momus_check(st.get("draft") or "", best_version, "momus_final")
+        if mo2.get("sid"):
+            if (err := persist("momus_final")):
+                return err
+            return mo2
+        st["momus"] = mo2
+        if not mo2.get("ok"):
+            if (err := persist("momus_final")):
+                return err
+            return abort("checked", "Момус не проверил документ: "
+                         + str(mo2.get("why") or "нет вердикта"))
+        stages["checked"] = utc_stamp()
+        run.set_stage("checked")
+        if (err := persist("checked")):
+            return err
+        save_session(cwd, sid, st)
+        emit_event("check", stage="momus_final",
+                   status="clean" if mo2.get("clean") else "issues",
+                   unsupported=int(mo2.get("unsupported") or 0))
+        say(f"  Момус: {'чисто' if mo2.get('clean') else 'без опоры ' + str(mo2.get('unsupported', 0))}")
+    else:
+        st.setdefault("momus", {"ok": False, "skipped": True, "why": "Момус отключён"})
+        save_session(cwd, sid, st)
+
+    st.setdefault("pipeline", {})["completed_once"] = True
+    run.update_manifest(completed_once=True)
+    final_status = ("done" if stages.get("checked") and not st.get("issues")
+                    and not int((st.get("momus") or {}).get("unsupported") or 0)
+                    else "partial")
+    run.update_state(status=final_status, current="", completed_once=True,
+                     best_version=best_version)
+    try:
+        write_run_report(run, st, settings, status=final_status,
+                         usage=usage, elapsed=time.time() - started)
+    except Exception as exc:  # noqa: BLE001
+        run.event("report_error", f"отчёт не записан: {type(exc).__name__}: {exc}")
+    emit_event("done", sid=sid, status=final_status,
+               artifact=st.get("path") or "", report=(st.get("report") or {}).get("md", ""),
+               seconds=round(time.time() - started, 1))
     return {"ok": True, "sid": sid, "stage": "done", "state": st,
             "seconds": round(time.time() - started, 1)}
 
@@ -6720,6 +7463,13 @@ def report_make(res: dict) -> str:
             L.append("")
         L += ["Кнопка «Хватит, работай» строит план по тому, что уже известно, и называет "
               "в нём невыясненное."]
+        report = (res.get("state") or {}).get("report") or res.get("report") or {}
+        if report.get("md"):
+            L += ["", f"Отчёт: `{report['md']}`"]
+        metrics = (res.get("state") or {}).get("metrics") or {}
+        if metrics:
+            L += ["", f"Планирование: {metrics.get('calls', 0)} вызовов, "
+                      f"{metrics.get('tokens_in', 0) + metrics.get('tokens_out', 0)} токенов."]
         return "\n".join(L)
 
     st = res.get("state") or {}
@@ -6742,6 +7492,21 @@ def report_make(res: dict) -> str:
     if not stages.get("checked"):
         L += ["", "Цепочка не пройдена до конца: документ лежит со `status: draft`. "
                   "Продолжить — тем же `--session`."]
+    if st.get("final_check") == "critic_rejected":
+        L += ["", "Критик не принял документ после двух исправлений: сохранён лучший "
+                  "черновик, финальный Момус не запускался."]
+    report = st.get("report") or {}
+    if report.get("md"):
+        L += ["", f"Отчёт: `{report['md']}`"]
+    metrics = st.get("metrics") or {}
+    if metrics:
+        L += ["", "## Отчёт о работе", "",
+              f"Время: {res.get('seconds', 0)} с · вызовов: {metrics.get('calls', 0)} · "
+              f"токены: вход {metrics.get('tokens_in', 0)}, "
+              f"выход {metrics.get('tokens_out', 0)}"
+              + (" (оценка/нет данных)" if metrics.get("tokens_estimated") else ""),
+              f"Модели: {', '.join(metrics.get('models') or []) or 'нет данных'} · "
+              f"запасных: {metrics.get('fallbacks', 0)}"]
     return "\n".join(L)
 
 
@@ -7023,10 +7788,16 @@ def write_artifact(cwd: str, st: dict) -> str:
         if invented:
             made += ["Ссылки на карточки, которых не было в контексте: "
                      + ", ".join(f"`[[{c}]]`" for c in invented[:10]), ""]
+    if st.get("gaps"):
+        made += ["## Чего не хватает", "",
+                 "Документ не написан: в базе не нашлось знания для содержательной части. "
+                 "Ниже причина, по которой производство остановилось.", ""]
+        made += [f"- {str(x)[:1000]}" for x in st.get("gaps") or []]
+        made.append("")
     if st.get("plan"):
         made += ["## План, по которому собран", "", st["plan"].rstrip(), ""]
     body += made
-    open(path, "w", encoding="utf-8").write("\n".join(head) + "\n\n" + "\n".join(body))
+    write_text_atomic(path, "\n".join(head) + "\n\n" + "\n".join(body))
     return os.path.relpath(path, cwd)
 
 
@@ -9269,9 +10040,15 @@ def main() -> int:
             print(f"agent_runner: {bad}", file=sys.stderr)
             return 1
         res = run_make(cfg, cwd, a.kind, a.idea, a.session, a.answers, a.enough,
-                       momus=not a.no_momus, context=a.context, links=links, task=task)
+                       momus=not a.no_momus, context=a.context, links=links,
+                       emit=(lambda ev: print("MAKE_EVENT " + json.dumps(
+                           ev, ensure_ascii=False), flush=True)) if a.emit_events else None,
+                       task=task)
         if not res["ok"]:
-            print(f"# Артефакт не сделан\n\n{res.get('why', '')}")
+            if res.get("path") or res.get("state"):
+                print(report_make(res))
+            else:
+                print(f"# Артефакт не сделан\n\n{res.get('why', '')}")
             return 2
         print(report_make(res))
         return 0

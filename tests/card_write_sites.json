@@ -1,6 +1,5 @@
 {
  "card_max": 0,
- "git_classes_required": true,
  "sites": {
   "cockpit/aurora_cockpit.py:Handler._write_config": {
    "kind": "other",
@@ -284,82 +283,10 @@
    "calls": 2,
    "git": "shared"
   },
-  "scripts/ask_state.py:atomic_write": {
-   "kind": "other",
-   "reason": "состояние «Спросить»: план, шаги и журналы в локальном .aurora/cache, не карточка",
-   "calls": 2,
-   "git": "none"
-  },
-  "scripts/ask_state.py:AskState.create": {
-   "kind": "other",
-   "reason": "состояние «Спросить»: plan.json и план Markdown в локальном кэше",
-   "calls": 2,
-   "git": "none"
-  },
-  "scripts/ask_state.py:AskState.update_state": {
-   "kind": "other",
-   "reason": "состояние «Спросить»: state.json вопроса",
-   "calls": 1,
-   "git": "none"
-  },
-  "scripts/ask_state.py:AskState.set_plan": {
-   "kind": "other",
-   "reason": "состояние «Спросить»: версия плана и манифест",
-   "calls": 2,
-   "git": "none"
-  },
-  "scripts/ask_state.py:AskState.event": {
-   "kind": "other",
-   "reason": "состояние «Спросить»: журнал событий вопроса",
-   "calls": 1,
-   "git": "none"
-  },
-  "scripts/ask_state.py:AskState.write_step": {
-   "kind": "other",
-   "reason": "состояние «Спросить»: результат шага",
-   "calls": 1,
-   "git": "none"
-  },
-  "scripts/ask_state.py:AskState.mark_step": {
-   "kind": "other",
-   "reason": "состояние «Спросить»: манифест шага",
-   "calls": 1,
-   "git": "none"
-  },
-  "scripts/ask_state.py:AskState.mark_plan_item": {
-   "kind": "other",
-   "reason": "состояние «Спросить»: статус пункта плана",
-   "calls": 1,
-   "git": "none"
-  },
-  "scripts/ask_state.py:AskState.write_answer": {
-   "kind": "other",
-   "reason": "состояние «Спросить»: итоговый ответ в локальном кэше",
-   "calls": 1,
-   "git": "none"
-  },
-  "scripts/ask_state.py:AskState.validate_resume": {
-   "kind": "other",
-   "reason": "состояние «Спросить»: карантин и манифест при восстановлении",
-   "calls": 2,
-   "git": "none"
-  },
-  "scripts/ask_state.py:AskState.set_control": {
-   "kind": "other",
-   "reason": "состояние «Спросить»: pause/cancel команда панели",
-   "calls": 1,
-   "git": "none"
-  },
   "scripts/agent_runner.py:note_empty_run": {
    "kind": "other",
    "reason": "журнал холостых прогонов агента в часть участника",
    "calls": 2,
-   "git": "shard"
-  },
-  "scripts/agent_runner.py:write_run_journal": {
-   "kind": "other",
-   "reason": "журнал прогона агента в часть участника",
-   "calls": 1,
    "git": "shard"
   },
   "scripts/agent_runner.py:park_card": {
@@ -398,6 +325,12 @@
    "calls": 1,
    "git": "none"
   },
+  "scripts/agent_runner.py:write_run_journal": {
+   "kind": "other",
+   "reason": "журнал прогона агента в часть участника",
+   "calls": 1,
+   "git": "shard"
+  },
   "scripts/agents/pydantic_ai_adapter.py:log_outbound": {
    "kind": "other",
    "reason": "журнал вызовов модели: служебный файл",
@@ -409,6 +342,48 @@
    "reason": "журнал вызовов модели: служебный файл",
    "calls": 1,
    "git": "local"
+  },
+  "scripts/ask_state.py:AskState.create": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: plan.json и план Markdown в локальном кэше",
+   "calls": 2,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.mark_plan_item": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: статус пункта плана",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.mark_step": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: манифест шага",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.set_plan": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: версия плана и манифест",
+   "calls": 2,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.validate_resume": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: карантин и манифест при восстановлении",
+   "calls": 2,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.write_answer": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: итоговый ответ в локальном кэше",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/ask_state.py:AskState.write_step": {
+   "kind": "other",
+   "reason": "состояние «Спросить»: результат шага",
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_common.py:_lock_break": {
    "kind": "other",
@@ -449,30 +424,6 @@
   "scripts/aurora_common.py:write_text_atomic": {
    "kind": "other",
    "reason": "общая атомарная запись файла проекта; карточку через неё не пишут",
-   "calls": 1,
-   "git": "none"
-  },
-  "scripts/aurora_runtime.py:_write_config": {
-   "kind": "other",
-   "reason": "конфигурация runtime (~/.aurora/config.json): служебный файл вне базы знаний, не карточка",
-   "calls": 2,
-   "git": "none"
-  },
-  "scripts/aurora_runtime.py:_lock_file": {
-   "kind": "other",
-   "reason": "файл блокировки runtime (~/.aurora/runtime.lock): служебный замок, не карточка",
-   "calls": 1,
-   "git": "none"
-  },
-  "scripts/aurora_runtime.py:_backup_venv": {
-   "kind": "other",
-   "reason": "переименование старого venv в venv.bak-<время>: сохранение окружения, не карточка",
-   "calls": 1,
-   "git": "none"
-  },
-  "scripts/aurora_runtime.py:_restore_venv": {
-   "kind": "other",
-   "reason": "возврат старого venv после сбоя нового: служебный каталог, не карточка",
    "calls": 1,
    "git": "none"
   },
@@ -553,6 +504,30 @@
    "reason": "состояние MCP-сервера: служебный файл",
    "calls": 2,
    "git": "local"
+  },
+  "scripts/aurora_runtime.py:_backup_venv": {
+   "kind": "other",
+   "reason": "переименование старого venv в venv.bak-<время>: сохранение окружения, не карточка",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/aurora_runtime.py:_lock_file": {
+   "kind": "other",
+   "reason": "файл блокировки runtime (~/.aurora/runtime.lock): служебный замок, не карточка",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/aurora_runtime.py:_restore_venv": {
+   "kind": "other",
+   "reason": "возврат старого venv после сбоя нового: служебный каталог, не карточка",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/aurora_runtime.py:_write_config": {
+   "kind": "other",
+   "reason": "конфигурация runtime (~/.aurora/config.json): служебный файл вне базы знаний, не карточка",
+   "calls": 2,
+   "git": "none"
   },
   "scripts/aurora_setup.py:reconcile_sync_skills": {
    "kind": "other",
@@ -698,6 +673,36 @@
    "calls": 1,
    "git": "shared"
   },
+  "scripts/clean_room.py:write": {
+   "kind": "other",
+   "reason": "документы Clean Room и паспорт пишутся в CleanRoom/; не карточка",
+   "calls": 2,
+   "git": "none"
+  },
+  "scripts/code_artifacts.py:save": {
+   "kind": "other",
+   "reason": "проектные overrides артефактов пишутся в aurora.config.yaml; не карточка",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/code_check.py:main": {
+   "kind": "other",
+   "reason": "отчёт проверки критериев по коду пишется в Markdown; не карточка",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/code_groups.py:save": {
+   "kind": "other",
+   "git": "shared",
+   "reason": "блок code_groups в aurora.config.yaml: общий конфиг проекта",
+   "calls": 1
+  },
+  "scripts/code_pack.py:main": {
+   "kind": "other",
+   "reason": "пакет требований истории пишется в Markdown для проверки по коду; не карточка",
+   "calls": 1,
+   "git": "shared"
+  },
   "scripts/code_repos.py:check_remote": {
    "kind": "other",
    "reason": "проверка подключения к репозиторию кода: вставленный SSH-ключ — во временный файл на время проверки",
@@ -761,6 +766,12 @@
   "scripts/connector_ops.py:save": {
    "kind": "other",
    "reason": "блок connectors: в aurora.config.yaml (активный коннектор роли): конфиг, не карточка",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/context_quality.py:main": {
+   "kind": "other",
+   "reason": "JSON-отчёт needle-теста по --out; вне базы знаний и вне git-карточек",
    "calls": 1,
    "git": "none"
   },
@@ -1130,6 +1141,12 @@
    "calls": 1,
    "git": "none"
   },
+  "scripts/kb_search_quality.py:_write_json_atomic": {
+   "kind": "other",
+   "reason": "замеры качества поиска в часть участника: не карточка",
+   "calls": 2,
+   "git": "shard"
+  },
   "scripts/kb_search_quality.py:golden_follow": {
    "kind": "other",
    "reason": "эталоны и история качества поиска: служебные файлы",
@@ -1147,12 +1164,6 @@
    "reason": "эталоны и история качества поиска: служебные файлы",
    "calls": 1,
    "git": "shared"
-  },
-  "scripts/kb_search_quality.py:_write_json_atomic": {
-   "kind": "other",
-   "reason": "замеры качества поиска в часть участника: не карточка",
-   "calls": 2,
-   "git": "shard"
   },
   "scripts/kb_supersede.py:main": {
    "kind": "other",
@@ -1214,6 +1225,84 @@
    "calls": 1,
    "git": "none"
   },
+  "scripts/make_state.py:MakeRun.add_attempt": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 1
+  },
+  "scripts/make_state.py:MakeRun.create": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 1
+  },
+  "scripts/make_state.py:MakeRun.mark_plan": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 1
+  },
+  "scripts/make_state.py:MakeRun.save_manifest": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 1
+  },
+  "scripts/make_state.py:MakeRun.set_artifact": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 1
+  },
+  "scripts/make_state.py:MakeRun.set_best": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 1
+  },
+  "scripts/make_state.py:MakeRun.set_plan": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 2
+  },
+  "scripts/make_state.py:MakeRun.set_stage": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 1
+  },
+  "scripts/make_state.py:MakeRun.update_manifest": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 1
+  },
+  "scripts/make_state.py:MakeRun.validate_resume": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 1
+  },
+  "scripts/make_state.py:MakeRun.write_check": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 2
+  },
+  "scripts/make_state.py:MakeRun.write_draft": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 1
+  },
+  "scripts/make_state.py:MakeRun.write_report": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 2
+  },
   "scripts/merge_common.py:write_json": {
    "kind": "other",
    "reason": "общая атомарная запись JSON для merge-драйверов, не карточка",
@@ -1262,6 +1351,30 @@
    "calls": 1,
    "git": "none"
   },
+  "scripts/pipeline_state.py:RunStore.event": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 1
+  },
+  "scripts/pipeline_state.py:RunStore.set_control": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 1
+  },
+  "scripts/pipeline_state.py:RunStore.update_state": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 1
+  },
+  "scripts/pipeline_state.py:atomic_write": {
+   "kind": "other",
+   "git": "none",
+   "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
+   "calls": 2
+  },
   "scripts/publish_doc.py:write_stamped": {
    "kind": "other",
    "reason": "штамп публикации в шапке документа вида (Artifacts/, Deliverables/): не карточка",
@@ -1280,11 +1393,23 @@
    "calls": 2,
    "git": "none"
   },
+  "scripts/quality_eval.py:write_baseline": {
+   "kind": "other",
+   "reason": "JSON baseline золотого набора пишется в scripts/ или Development/; не карточка",
+   "calls": 1,
+   "git": "shared"
+  },
   "scripts/request_context.py:save_attachment": {
    "kind": "other",
    "reason": "вложения запроса: служебные файлы",
    "calls": 1,
    "git": "local"
+  },
+  "scripts/requirements_check.py:write_report": {
+   "kind": "other",
+   "reason": "Markdown-отчёт проверки требований пишется в ArtifactsCode/; не карточка",
+   "calls": 1,
+   "git": "none"
   },
   "scripts/review_run.py:Reader.page": {
    "kind": "other",
@@ -1405,54 +1530,7 @@
    "reason": "страницы вики кита (документы)",
    "calls": 1,
    "git": "none"
-  },
-  "scripts/code_pack.py:main": {
-   "kind": "other",
-   "reason": "пакет требований истории пишется в Markdown для проверки по коду; не карточка",
-   "calls": 1,
-   "git": "shared"
-  },
-  "scripts/code_check.py:main": {
-   "kind": "other",
-   "reason": "отчёт проверки критериев по коду пишется в Markdown; не карточка",
-   "calls": 1,
-   "git": "none"
-  },
-  "scripts/clean_room.py:write": {
-   "kind": "other",
-   "reason": "документы Clean Room и паспорт пишутся в CleanRoom/; не карточка",
-   "calls": 2,
-   "git": "none"
-  },
-  "scripts/code_artifacts.py:save": {
-   "kind": "other",
-   "reason": "проектные overrides артефактов пишутся в aurora.config.yaml; не карточка",
-   "calls": 1,
-   "git": "none"
-  },
-  "scripts/context_quality.py:main": {
-   "kind": "other",
-   "reason": "JSON-отчёт needle-теста по --out; вне базы знаний и вне git-карточек",
-   "calls": 1,
-   "git": "none"
-  },
-  "scripts/requirements_check.py:write_report": {
-   "kind": "other",
-   "reason": "Markdown-отчёт проверки требований пишется в ArtifactsCode/; не карточка",
-   "calls": 1,
-   "git": "none"
-  },
-  "scripts/code_groups.py:save": {
-   "kind": "other",
-   "git": "shared",
-   "reason": "блок code_groups в aurora.config.yaml: общий конфиг проекта",
-   "calls": 1
-  },
-  "scripts/quality_eval.py:write_baseline": {
-   "kind": "other",
-   "reason": "JSON baseline золотого набора пишется в scripts/ или Development/; не карточка",
-   "calls": 1,
-   "git": "shared"
   }
- }
+ },
+ "git_classes_required": true
 }
