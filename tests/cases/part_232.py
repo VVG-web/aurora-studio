@@ -178,6 +178,29 @@ def test_make_stops_the_same_planner_error_instead_of_looping(tmp: Path):
 
 
 @test
+def test_make_cancel_stops_before_the_writer_and_keeps_a_report(tmp: Path):
+    root = _project(tmp)
+    import agent_runner as R
+    import make_state as MS
+    called = []
+
+    def fake(cfg, role, messages, **kw):
+        if role == "planner":
+            for path in (root / "Workspaces").glob("*/run"):
+                MS.MakeRun(root, path.parent.name).set_control(cancel=True)
+            return _planner()
+        called.append(role)
+        raise AssertionError(role)
+
+    res = R.run_make(_cfg(), str(root), "ac", "срок заявки", "", "", True,
+                     call=fake, momus=False)
+    assert not res["ok"] and res["status"] in ("cancelled", "partial"), res
+    assert not called, called
+    report = (res.get("state") or {}).get("report") or {}
+    assert report.get("md") and (root / report["md"]).is_file(), report
+
+
+@test
 def test_make_state_isolates_runs_and_never_returns_pack(tmp: Path):
     root = _project(tmp)
     import make_state as MS

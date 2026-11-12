@@ -9949,7 +9949,8 @@ def main() -> int:
                     help="продолжить прерванный пайплайн по plan.json и manifest.json "
                          "(для --task ask --pipeline; нужен --thread или сохранённый id)")
     ap.add_argument("--emit-events", action="store_true",
-                    help="печатать ASK_EVENT JSON-строки для панели (для --task ask --pipeline)")
+                    help="печатать ASK_EVENT/MAKE_EVENT JSON-строки для панели "
+                         "(для --task ask --pipeline и --task make)")
     ap.add_argument("--keep-questions", type=int, default=0, metavar="N",
                     help="сколько вопросов пайплайна хранить (по умолчанию 50)")
     ap.add_argument("--no-semantic", action="store_true",
