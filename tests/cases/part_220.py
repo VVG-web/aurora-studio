@@ -218,7 +218,7 @@ def test_run_make_turns_a_write_failure_into_a_message(tmp: Path):
 
 
 @test
-def test_run_make_stops_a_hanging_planner_within_its_stage_deadline(tmp: Path):
+def test_run_make_stops_a_hanging_planner_within_the_overall_deadline(tmp: Path):
     root = make_project(tmp)
     (root / "Templates").mkdir(exist_ok=True)
     (root / "Templates/AC.md").write_text("# AC\n\n## Критерии приёмки\n", encoding="utf-8")
@@ -229,7 +229,6 @@ def test_run_make_stops_a_hanging_planner_within_its_stage_deadline(tmp: Path):
                         encoding="utf-8")
     for i in range(3):
         card(root, f"Concepts/Заявка-{i}.md", "Срок заявки десять дней.", status="knowledge")
-    import agent_core as A
     import agent_runner as R
 
     def slow_planner(cfg, role, messages, **kw):
@@ -238,14 +237,11 @@ def test_run_make_stops_a_hanging_planner_within_its_stage_deadline(tmp: Path):
         return {"ok": True, "text": json.dumps({"questions": [], "plan": "1. Критерии"}),
                 "backend": 1, "model": "m", "log": []}
 
-    real = A.call_budget
-    A.call_budget = lambda cfg_, role: 0.2
+    cfg = _cfg()
+    cfg.setdefault("make_pipeline", {})["hard_timeout_seconds"] = 0.5
     t0 = time.time()
-    try:
-        res = R.run_make(_cfg(), str(root), "ac", "срок заявки", "", "", True,
-                         call=slow_planner, momus=False)
-    finally:
-        A.call_budget = real
+    res = R.run_make(cfg, str(root), "ac", "срок заявки", "", "", True,
+                     call=slow_planner, momus=False)
     assert not res["ok"] and res["stage"] == "planning", res
     assert time.time() - t0 < 2.5
     assert "не уложился" in res["why"] or res["error"]["code"] == "timeout", res

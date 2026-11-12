@@ -6636,6 +6636,8 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
 
     def stop_now(stage: str) -> dict | None:
         """Пауза, отмена и общий 60-минутный предел проверяются между вызовами."""
+        nonlocal deadline
+        paused_at = 0.0
         while True:
             ctl = run.control()
             if ctl.get("cancel"):
@@ -6646,17 +6648,21 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                                                      "запустите артефакт снова"))
             if not ctl.get("pause"):
                 break
+            if not paused_at:
+                paused_at = time.time()
             run.update_state(status="paused", current=stage)
-            if time.time() >= deadline:
-                return abort("timeout", "общий предел 60 минут истёк во время паузы",
-                             reliability.human_error("timeout", "истёк общий предел",
-                                                     "продолжите с сохранённого места"))
             time.sleep(0.2)
+        if paused_at:
+            deadline += time.time() - paused_at
         if time.time() >= deadline:
             return abort("timeout", "общий предел 60 минут истёк",
                          reliability.human_error("timeout", "истёк общий предел",
                                                  "продолжите с сохранённого места"))
         return None
+
+    def remaining() -> float:
+        """Сколько осталось от общего предела; этапы своего лимита не имеют."""
+        return max(1.0, deadline - time.time())
 
     def abort(stage: str, why: str, error: dict | None = None) -> dict:
         """Отказ процедуры в одном контракте: путь к частичному файлу, если он уже есть."""
@@ -6953,7 +6959,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                 pack_for_check = st.get("pack") or ""
         mo = limited(stage, lambda: run_momus(
             cfg, pack_for_check, f"Документ «{spec.get('title') or st.get('kind')}»",
-            draft, call, input_limit=momus_limit), AG.call_budget(cfg, "qa"), role="qa")
+            draft, call, input_limit=momus_limit), remaining(), role="qa")
         if not isinstance(mo, dict):
             mo = {"ok": False, "why": "Момус вернул не объект"}
         run.write_check(version, "momus" if stage == "momus_final" else stage,
@@ -7046,7 +7052,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         r = limited("critic", lambda: call(
             cfg, "critic", [{"role": "user", "content": content}],
             deadline=deadline, input_limit=critic_limit),
-            AG.call_budget(cfg, "critic"), role="critic")
+            remaining(), role="critic")
         if not r.get("ok"):
             return {"ok": False, "why": "критик не ответил",
                     "error": r.get("error") or {"message": r.get("why") or "нет ответа"},
@@ -7126,26 +7132,28 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         # заблокировалось бы всё.
         r = limited("planner", lambda: call(
             cfg, "planner", [{"role": "user", "content": prompt}],
-            deadline=time.time() + AG.call_budget(cfg, "planner"),
+            deadline=deadline,
             tools=planner_tools, mcp_active=planner_mcp,
             context_store=planner_store, input_limit=planner_limit,
             guard_text=[st["idea"], planner_context] + re.findall(r"^## (.+)$", planner_context, re.M)),
-            AG.call_budget(cfg, "planner"), role="planner")
+            remaining(), role="planner")
         if ((not r.get("ok") or not (r.get("text") or "").strip()) and planner_tools
                 and not pipeline.get("stop_reason")):
             # tool_limit не должен повторять тот же цикл: второй заход идёт без
             # инструментов, по уже собранному плану и паку.
             r = limited("planner", lambda: call(
                 cfg, "planner", [{"role": "user", "content": prompt}],
-                deadline=time.time() + AG.call_budget(cfg, "planner"),
+                deadline=deadline,
                 tools=False, mcp_active=[], context_store="", input_limit=planner_limit,
                 guard_text=[st["idea"], planner_context]),
-                AG.call_budget(cfg, "planner"), role="planner")
+                remaining(), role="planner")
         if not r["ok"]:
             if (err := persist("planning")):
                 return err
-            return abort("planning", model_fail_note(r) + size_note(r, prompt),
-                         r.get("error"))
+            why = (model_fail_note(r)
+                   or str((r.get("error") or {}).get("reason") or "")
+                   or "планировщик не дал результата")
+            return abort("planning", why + size_note(r, prompt), r.get("error"))
         ans = parse_json(r["text"]) or {}
         grill = PC.grill_round(ans, force=force_plan)
         st["grill"] = grill
@@ -7175,11 +7183,11 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                     "\n\nВЕРНИ ТОЛЬКО ПЛАН. Поле `questions` должно быть пустым списком. "
                     "Всё, что осталось невыясненным, назови прямо в тексте плана строкой "
                     "«не определено: …» — это честнее пустых разделов.")}],
-                deadline=time.time() + AG.call_budget(cfg, "planner"),
+                deadline=deadline,
                 tools=planner_tools, mcp_active=planner_mcp,
                 context_store=planner_store, input_limit=planner_limit,
                 guard_text=[st["idea"], planner_context]),
-                AG.call_budget(cfg, "planner"), role="planner")
+                remaining(), role="planner")
             if r2["ok"]:
                 ans2 = parse_json(r2["text"]) or {}
                 plan = (ans2.get("plan") or "").strip()

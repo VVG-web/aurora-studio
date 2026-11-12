@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -249,6 +250,17 @@ class MakeRun:
 
     def control(self) -> dict:
         return self.store.control()
+
+    def deadline(self) -> float:
+        """Предел активной работы запуска, а не ожидания человека."""
+        state = self.state()
+        seconds = int((state.get("settings") or {}).get("hard_timeout_seconds") or 3600)
+        try:
+            started = datetime.fromisoformat(
+                str(state.get("started") or "").replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            started = time.time()
+        return started + max(0, seconds)
 
     def set_control(self, *, pause: bool | None = None, cancel: bool | None = None,
                     continue_run: bool | None = None) -> dict:

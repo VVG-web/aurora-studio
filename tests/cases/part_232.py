@@ -201,6 +201,28 @@ def test_make_cancel_stops_before_the_writer_and_keeps_a_report(tmp: Path):
 
 
 @test
+def test_make_hard_deadline_stops_after_the_planner(tmp: Path):
+    root = _project(tmp)
+    import time
+    import agent_runner as R
+    cfg = _cfg()
+    cfg.setdefault("make_pipeline", {})["hard_timeout_seconds"] = 1
+    called = []
+
+    def fake(cfg, role, messages, **kw):
+        called.append(role)
+        if role == "planner":
+            time.sleep(1.1)
+            return _planner()
+        raise AssertionError(role)
+
+    res = R.run_make(cfg, str(root), "ac", "срок заявки", "", "", True,
+                     call=fake, momus=False)
+    assert not res["ok"] and (res.get("error") or {}).get("code") == "timeout", res
+    assert called == ["planner"], called
+
+
+@test
 def test_make_state_isolates_runs_and_never_returns_pack(tmp: Path):
     root = _project(tmp)
     import make_state as MS
