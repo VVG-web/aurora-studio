@@ -2027,12 +2027,16 @@ def plan_gone_sources(cards: dict, plan: Plan) -> tuple:
             if len(parts) > 1:
                 fixed.append(c.stem)
             for x in parts:
-                if not x.startswith(("Sources/", "Raw/")) or re.search(r"\s\(", x):
+                if not x.startswith(("Sources/", "Raw/")):
                     notes.append(f"запись источника «{x}» — не путь к файлу, снята")
                     fixed.append(c.stem)
                     continue
                 if os.path.exists(x):
                     new_srcs.append(x)
+                    continue
+                if re.search(r"\s\(", x):
+                    notes.append(f"запись источника «{x}» — не путь к файлу, снята")
+                    fixed.append(c.stem)
                     continue
                 other = (x + "/index.md") if os.path.isfile(x + "/index.md") else code_twin(x)
                 if not other and theme(c) and not x.endswith(".md"):
