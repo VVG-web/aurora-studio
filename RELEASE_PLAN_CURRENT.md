@@ -400,3 +400,10 @@ make-набор 46/46, полный suite и CI. Описание: `CHANGELOG.md
 `input_limit=0`, русский fallback убран из кода панели, `part_217` обновлён
 под новый контракт. Тесты `part_217`, каталоги строк, make-набор 46/46,
 полный suite и CI. Описание: `CHANGELOG.md`.
+
+## 48. Релиз 1.221.6
+
+`1.221.6` - диагностика расхождения `AURORA_HOME`: `--venv-status` и fallback
+называют home и фактический Python, «Установка» предупреждает о project env
+override. Тесты `part_230`, `part_232`, make-набор 46/46, каталоги строк,
+полный suite и CI. Описание: `CHANGELOG.md`.

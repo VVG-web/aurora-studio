@@ -34,7 +34,9 @@ function runtimeCard(ctx){
       el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px"}, t("install.rt_about")));
     const body = el("div", {class:"card"}, el("span", {class:"spin"}));
     wrap.append(body);
-    const d = await ctx.api("/api/runtime" + (fresh ? "?fresh=1" : ""), {quiet:true});
+    const projectQuery = ctx.project
+      ? "?project=" + encodeURIComponent(ctx.project.path) : "";
+    const d = await ctx.api("/api/runtime" + projectQuery + (fresh ? (projectQuery ? "&" : "?") + "fresh=1" : ""), {quiet:true});
     body.innerHTML = "";
     if (!d || d.error){
       body.append(el("div", {class:"muted"}, (d && d.error) || t("install.rt_unknown")));
@@ -59,6 +61,7 @@ function runtimeCard(ctx){
       t("install.rt_why", {why: d.reason})));
     line(t("install.rt_effective"), d.effective_python
       + (install ? " (" + install + (rt.python_version ? " " + rt.python_version : "") + ")" : ""), true);
+    line(t("install.rt_home"), d.home, true);
     line(t("install.rt_base"), rt.base_python, true);
     line(t("install.rt_source"), src);
     if (install) line(t("install.rt_install"), install);
@@ -71,6 +74,14 @@ function runtimeCard(ctx){
     if (rt.source === "venv")
       body.append(el("div", {class:"muted", style:"font-size:12px;margin-top:4px"},
         t("install.rt_direct_venv")));
+    if (d.home_mismatch){
+      const box = el("div", {class:"warnbox", style:"font-size:12.5px;margin-top:8px"});
+      box.append(el("div", {}, t("install.rt_home_mismatch",
+        {home: d.home || "?", project_home: d.project_home || "?"})));
+      box.append(el("div", {class:"muted", style:"font-size:12px;margin-top:4px"},
+        t("install.rt_home_hint")));
+      body.append(box);
+    }
     // Панель, запущенная до смены конфигурации, работает под прежним Python. Это не ошибка
     // конфигурации, но объясняет, почему «поставилось, а не видно».
     const stale = !!(d.needs_reload

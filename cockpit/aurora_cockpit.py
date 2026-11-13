@@ -5877,20 +5877,45 @@ def refresh_import_paths() -> None:
         pass
     importlib.invalidate_caches()
 
-def runtime_state(include_candidates: bool = False, force: bool = False) -> dict:
+def project_home_override(project: str) -> str:
+    """Какой `AURORA_HOME` получит дочерний прогон этого проекта.
+
+    Панель читает свой home, а агент — окружение после `child_env(project)`: файл
+    `.env.aurora.local` проекта может увести его в другой home. Тогда «Установка»
+    показывает зелёный Pydantic AI, а прогон ищет venv в другом месте.
+    """
+    if not project:
+        return ""
+    try:
+        return str(child_env(project).get("AURORA_HOME") or "")
+    except Exception:  # noqa: BLE001 — диагностика не должна ронять страницу установки
+        return ""
+
+
+def runtime_state(include_candidates: bool = False, force: bool = False,
+                  project: str = "") -> dict:
     """Единый Python подсистемы: что выбрано, годится ли оно и чем именно.
 
     Читается из `~/.aurora/config.json` и перепроверяется запуском. Ошибку модуля не
     превращаем в исключение: панель обязана показать состояние, даже если runtime
     разложен старой версией кита.
     """
+    home = ""
     try:
         import aurora_runtime as RT
-        return RT.status(include_candidates=include_candidates, force=force)
+        home = str(RT.HOME)
+        got = RT.status(include_candidates=include_candidates, force=force)
     except Exception as e:  # noqa: BLE001 — панель не должна падать из-за диагностики
-        return {"configured": False, "ok": False,
-                "reason": f"runtime недоступен: {type(e).__name__}: {e}",
-                "effective_python": "", "runtime": {}, "base": {}, "pydantic": {}}
+        got = {"configured": False, "ok": False,
+               "reason": f"runtime недоступен: {type(e).__name__}: {e}",
+               "effective_python": "", "runtime": {}, "base": {}, "pydantic": {}}
+    project_home = project_home_override(project)
+    got["home"] = home
+    got["project_home"] = project_home
+    got["home_mismatch"] = bool(
+        project_home and home
+        and os.path.abspath(project_home) != os.path.abspath(home))
+    return got
 
 
 def runtime_action(payload: dict) -> dict:
@@ -6096,7 +6121,8 @@ def agent_state(project: str = "") -> dict:
                   "ring": [{"n": r["n"], "why": r["why"]} for r in AG.embed_ring(cfg)]},
         "ocr": {"model": (cfg.get("ocr") or {}).get("model", ""),
                 "ring": [{"n": r["n"], "why": r["why"]} for r in AG.ocr_ring(cfg)]},
-        "venv": dict(zip(("ok", "version"), AG.venv_status()), path=str(AG.VENV)),
+        "venv": dict(zip(("ok", "version"), AG.venv_status()),
+                      path=AG.venv_display_path()),
         # Выбор «роль или модель» в «Спросить» и у бота: роли — цепочкой с запасными,
         # модель — ровно она. Имя роли движка, которое не меняли, — пустое: панель пишет
         # его на языке интерфейса.
@@ -7704,8 +7730,10 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/runtime":
             # Состояние единой конфигурации Python и найденные интерпретаторы. `fresh=1` —
             # обойти все кандидаты заново: это дорого (запуск каждого), поэтому по кнопке.
+            project = (q.get("project") or [""])[0]
             self.send_json(runtime_state(include_candidates=bool(q.get("fresh")),
-                                         force=bool(q.get("fresh"))))
+                                         force=bool(q.get("fresh")),
+                                         project=project if project and self._known(project) else ""))
         elif u.path == "/api/mcp/kit":
             # Серверы машины: значения секретов заменены маской — см. `mcp_mask`.
             self.send_json(mcp_kit_state())

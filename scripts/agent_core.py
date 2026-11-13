@@ -1107,6 +1107,18 @@ def _venv_python() -> Path:
     return VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
+def venv_display_path() -> str:
+    """Где на самом деле лежит Python, которым пойдёт адаптер.
+
+    `VENV` — только путь по умолчанию. После выбора runtime эффективный Python может
+    быть в другом venv или вообще глобальным; показывать при этом `~/.aurora/venv`
+    значит отправлять человека искать пакет не там.
+    """
+    vpy = _venv_python()
+    root = vpy.parent.parent
+    return str(root) if (root / "pyvenv.cfg").is_file() else str(vpy)
+
+
 def _runtime_status() -> dict:
     """Сводка runtime без исключения: панель и прогон должны объяснить отказ, а не упасть."""
     try:
@@ -1162,6 +1174,22 @@ def _shown_path(path) -> str:
     return "/".join(parts[-3:])
 
 
+def other_home_hint() -> str:
+    """Подсказка, если AURORA_HOME ушёл в другой home, а обычный venv на месте.
+
+    Это ровно тот случай, когда «Установка» зелёная (она смотрит свой home), а прогон
+    в проекте с другим `AURORA_HOME` не находит Pydantic AI.
+    """
+    home = Path(os.environ.get("AURORA_HOME") or (Path.home() / ".aurora"))
+    usual = Path.home() / ".aurora"
+    if os.path.abspath(str(home)) == os.path.abspath(str(usual)):
+        return ""
+    usual_python = usual / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if usual_python.is_file() and not _venv_python().is_file():
+        return f"в {_shown_path(usual_python)} Pydantic AI есть — проверьте AURORA_HOME"
+    return ""
+
+
 def _base_problem() -> str:
     """Чем основа venv плоха для этого пользователя (`access_check.venv_base_problem`); пусто — ничем."""
     got = _runtime_status()
@@ -1211,7 +1239,9 @@ def adapter_gap() -> str:
     Раньше оба случая — нет venv и нет файла адаптера в `.aurora/scripts/agents/` — назывались
     одинаково («venv не установлен»), и человек с неполным движком проекта шёл переустанавливать
     Pydantic AI, который стоял и был зелёным на странице «Установка»."""
-    return "; ".join(str(g) for g in _gap_causes())
+    text = "; ".join(str(g) for g in _gap_causes())
+    hint = other_home_hint()
+    return f"{text}; {hint}" if hint else text
 
 
 def adapter_gap_why(adapter=None):
@@ -4473,7 +4503,7 @@ def pydantic_settings(cfg: dict, venv: tuple | None = None) -> dict:
         # Идёт ли работа через Pydantic AI на самом деле: выбран и стоит.
         "active": cfg.get("adapter") == "pydantic_ai" and ok,
         "venv": {"ok": ok, "version": version,
-                 "path": rt_cfg.get("venv_path") or str(VENV),
+                 "path": venv_display_path(),
                  "effective_python": rt.get("effective_python") or str(_venv_python())},
         "effective_python": rt.get("effective_python") or str(_venv_python()),
         "fallback_why": fallback_why,
@@ -4587,9 +4617,23 @@ def main() -> int:
         import access_check as AC
         rep = AC.report()
         if a.json:
-            print(json.dumps({"ok": ok, "version": version, "path": str(VENV), "access": rep}, ensure_ascii=False))
+            print(json.dumps({
+                "ok": ok, "version": version,
+                "path": venv_display_path(),
+                "effective_python": str(_venv_python()),
+                "home": str(RT.HOME),
+                "adapter_gap": adapter_gap(),
+                "other_home_hint": other_home_hint(),
+                "access": rep,
+            }, ensure_ascii=False))
         else:
-            print(f"Pydantic AI: {'установлен, ' + version if ok else 'не установлен'} ({VENV})")
+            print(f"Pydantic AI: {'установлен, ' + version if ok else 'не установлен'}"
+                  f" ({venv_display_path()})")
+            print(f"AURORA_HOME: {RT.HOME}")
+            print(f"Python адаптера: {_venv_python()}")
+            gap = adapter_gap()
+            if gap:
+                print(f"Причина: {gap}")
             for line in AC.report_lines(rep):
                 print(line)
         return 0

@@ -257,6 +257,8 @@ def test_make_falls_back_without_tools_when_the_adapter_refuses(tmp: Path):
     fallback = [e for e in events if e.get("kind") == "adapter_fallback"]
     assert fallback and "инструменты отключены" in fallback[0]["message"], events
     assert "venv/bin/python" in fallback[0]["message"], fallback
+    assert "AURORA_HOME=" in fallback[0]["message"], fallback
+    assert "python=" in fallback[0]["message"], fallback
     assert R.report_make({"sid": "s", "stage": "planning", "questions": [],
                           "state": res["state"]}).startswith("# Артефакт")
 

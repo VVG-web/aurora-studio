@@ -6538,8 +6538,18 @@ def adapter_tool_note(result: dict) -> str:
         why = why[:300].rstrip() + "…"
     model = str(result.get("model") or "").strip()
     head = f"{model}: " if model else ""
+    where = ""
+    try:
+        home = str(AG.RT.HOME)
+        where = f" [AURORA_HOME={AG._shown_path(home)}; python={AG._shown_path(AG._venv_python())}"
+        gap = AG.adapter_gap()
+        if gap:
+            where += f"; {gap}"
+        where += "]"
+    except Exception:  # noqa: BLE001 — диагностика не должна подменять причину отказа
+        where = ""
     return (f"{head}Pydantic AI недоступен ({why}); "
-            "инструменты отключены, повторяю без инструментов.")
+            f"инструменты отключены, повторяю без инструментов.{where}")
 
 
 def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,

@@ -489,6 +489,41 @@ def test_aurora_home_moves_the_whole_machine_state(tmp: Path):
 
 
 @test
+def test_install_names_project_home_override(tmp: Path):
+    """Панель обязана видеть, что `.env.aurora.local` проекта уводит агента в другой home.
+
+    Это ровно случай «в Установке Pydantic AI зелёный, а прогон просит установить»:
+    установка проверяет home панели, а дочерний агент идёт в home из файла проекта.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_cockpit as AC  # noqa: E402
+    project = tmp / "project"
+    project.mkdir()
+    key = "AURORA" + "_HOME"
+    (project / ".env.aurora.local").write_text(f"{key}=/tmp/other-home\n", encoding="utf-8")
+    assert AC.project_home_override(str(project)) == "/tmp/other-home"
+    data = AC.runtime_state(project=str(project))
+    assert data["home"] and data["project_home"] == "/tmp/other-home", data
+    assert data["home_mismatch"] is True, data
+
+
+@test
+def test_venv_display_path_uses_effective_python(tmp: Path):
+    """Путь в отчёте — фактический venv, а не `~/.aurora/venv` по умолчанию."""
+    import agent_core as AG  # noqa: E402
+    root = tmp / "custom-venv"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin/python").write_text("", encoding="utf-8")
+    (root / "pyvenv.cfg").write_text("home = /base\n", encoding="utf-8")
+    original = AG._venv_python
+    AG._venv_python = lambda: root / "bin/python"
+    try:
+        assert AG.venv_display_path() == str(root), AG.venv_display_path()
+    finally:
+        AG._venv_python = original
+
+
+@test
 def test_doctor_reports_runtime_state(tmp: Path):
     """Доктор не должен печатать OK по процессу, если записанная конфигурация runtime
     сломана; без конфигурации он обязан предупредить, а не молчать."""
