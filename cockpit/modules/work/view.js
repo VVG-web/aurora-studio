@@ -343,11 +343,18 @@ export function makePipelineButtons(status, hasState = true, hasReport = false){
   };
 }
 
+function logLine(text, at){
+  const date = at ? new Date(at) : new Date();
+  const stamp = Number.isNaN(date.getTime()) ? ""
+    : date.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) + " ";
+  return stamp + String(text || "");
+}
+
 export function applyMakeEvent(run, event){
   if (!run || !event) return run;
   const kind = event.kind;
   const log = text => {
-    run.log = (run.log || []).concat(String(text || "")).slice(-80);
+    run.log = (run.log || []).concat(logLine(text)).slice(-80);
     run.lastAt = Date.now();
   };
   if (kind === "run"){
@@ -368,14 +375,18 @@ export function applyMakeEvent(run, event){
     log((event.stage || "check") + ": " + (event.status || "done")
       + (event.issues != null ? " · issues " + event.issues : "")
       + (event.unsupported != null ? " · unsupported " + event.unsupported : ""));
+  } else if (kind === "adapter_fallback"){
+    log(event.message || "инструменты отключены");
   } else if (kind === "done"){
     run.status = event.status || "done";
+    run.finishedAt = Date.now();
     run.artifact = event.artifact || run.artifact;
     run.report = event.report || run.report;
     run.metrics = event.metrics || run.metrics;
     log(run.status);
   } else if (kind === "error"){
     run.status = event.status || "error";
+    run.finishedAt = Date.now();
     run.error = event.message || event.error || "";
     run.artifact = event.artifact || run.artifact;
     run.report = event.report || run.report;
@@ -396,6 +407,13 @@ export function runElapsed(run){
   return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
 }
 
+export function runTimeLabel(ctx, run){
+  const finished = Boolean(run.finishedAt) && !RUN_BUSY.has(run.status);
+  return finished
+    ? ctx.t("work.finished_at", {time: ctx.ui.stampText(run.finishedAt)})
+    : ctx.t("work.last_event", {when: Math.max(0, Math.round((Date.now() - run.lastAt) / 1000))});
+}
+
 function ensureTicker(ctx){
   if (MAKE_TICKER) return;
   MAKE_TICKER = setInterval(() => {
@@ -411,6 +429,7 @@ function makeNewRun(ctx, kind, title){
           status: "starting", plan: [], current: "", log: [], questions: [],
           metrics: null, warnings: [], reportText: "", report: "", artifact: "",
           startedAt: Date.now(), lastAt: Date.now(), finishedAt: 0, hydrated: true,
+          updated: "",
           rendered: false, reportLines: []};
 }
 
@@ -498,7 +517,7 @@ async function hydrateRun(ctx, run){
     // message есть у обоих, поэтому он и становится строкой журнала; остальное
     // разбирает applyMakeEvent, не роняя восстановление на незнакомом виде.
     if (typeof event.message === "string" && event.message){
-      replay.log = (replay.log || []).concat(event.message).slice(-80);
+      replay.log = (replay.log || []).concat(logLine(event.message, event.at)).slice(-80);
       return;
     }
     try { applyMakeEvent(replay, event); }
@@ -510,6 +529,7 @@ async function hydrateRun(ctx, run){
     run.lastAt = updated;
     if (!RUN_BUSY.has(run.state)) run.finishedAt = updated;
   }
+  run.updated = (d.state && d.state.updated) || run.updated;
   run.hydrated = true;
 }
 
@@ -543,8 +563,7 @@ function drawRun(ctx){
     el("b", {}, run.title || run.kind || t("work.artifact")),
     el("span", {class: "chip"}, runStatus(ctx, run.status)),
     el("span", {class: "muted", style: "font-size:12px"}, t("work.elapsed", {time: runElapsed(run)})),
-    el("span", {class: "muted", style: "font-size:12px"},
-      t("work.last_event", {when: Math.max(0, Math.round((Date.now() - run.lastAt) / 1000))})));
+    el("span", {class: "muted", style: "font-size:12px"}, runTimeLabel(ctx, run)));
   box.append(el("div", {class: "card", style: "padding:16px"}, head));
   if (run.plan && run.plan.length){
     const done = run.plan.filter(s => s.status === "done" || s.status === "partial").length;
@@ -661,6 +680,7 @@ async function controlRun(ctx, run, action){
     if (action === "cancel" && run.job)
       await ctx.api("/api/job/stop", {method: "POST", body: JSON.stringify({id: run.job})});
     run.status = action === "cancel" ? "cancelled" : run.status;
+    if (action === "cancel") run.finishedAt = Date.now();
     renderRuns(ctx); if (ACTIVE === run.key) drawRun(ctx);
     return;
   }
@@ -670,6 +690,7 @@ async function controlRun(ctx, run, action){
   if (action === "cancel") run.status = "cancelled";
   else if (action === "pause") run.status = "paused";
   else if (action === "resume") run.status = "running";
+  if (action === "cancel") run.finishedAt = Date.now();
   renderRuns(ctx); if (ACTIVE === run.key) drawRun(ctx);
 }
 
@@ -708,15 +729,24 @@ export async function loadRuns(ctx){
              artifact: row.artifact || "", startedAt: Date.parse(row.started || "") || Date.now(),
              lastAt: Date.parse(row.updated || "") || Date.now(),
              finishedAt: RUN_BUSY.has(row.status) ? 0 : Date.parse(row.updated || "") || 0,
+             updated: row.updated || "",
              hydrated: false,
              rendered: false, reportLines: []};
       RUNS.set(key, run);
     } else if (!run.job){
+      const changed = Boolean(row.updated) && row.updated !== run.updated;
       run.kind = row.kind || run.kind;
       run.title = row.title || run.title;
       run.status = row.status || run.status;
       run.artifact = row.artifact || run.artifact;
       run.report = row.report || run.report;
+      if (!RUN_BUSY.has(run.status)) run.finishedAt = run.finishedAt || Date.parse(row.updated || "") || 0;
+      // Запуск мог измениться в другой вкладке. Перечитываем состояние, когда
+      // сервер говорит, что оно новее, а не один раз за всю жизнь карточки.
+      if (changed){
+        run.updated = row.updated;
+        run.hydrated = false;
+      }
     }
   });
   // План, журнал и метрики лежат в состоянии запуска, а не в списке. Без этого

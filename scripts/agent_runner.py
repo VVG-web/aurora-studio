@@ -6521,6 +6521,27 @@ def write_run_report(run, st: dict, settings: dict, *, status: str, reason: str 
     return report
 
 
+def adapter_tool_note(result: dict) -> str:
+    """Почему вызов с инструментами остался без Pydantic AI — коротко для журнала.
+
+    Причина уже есть в `bypass` или в строке лога, но раньше она жила только внутри
+    результата вызова. Человеку в панели нужно видеть, что инструменты отключены и
+    почему, а не только «модель ответила без инструментов».
+    """
+    bypass = str(result.get("bypass") or "").strip()
+    logs = [str(x) for x in (result.get("log") or [])]
+    marker = next((x for x in logs if "Pydantic" in x or "инструмент" in x.lower()), "")
+    why = bypass or marker
+    if not why:
+        return ""
+    if len(why) > 300:
+        why = why[:300].rstrip() + "…"
+    model = str(result.get("model") or "").strip()
+    head = f"{model}: " if model else ""
+    return (f"{head}Pydantic AI недоступен ({why}); "
+            "инструменты отключены, повторяю без инструментов.")
+
+
 def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
              force_plan: bool, call=None, momus: bool = True, context=None, links=None,
              task=None, emit=None) -> dict:
@@ -7137,13 +7158,19 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             context_store=planner_store, input_limit=planner_limit,
             guard_text=[st["idea"], planner_context] + re.findall(r"^## (.+)$", planner_context, re.M)),
             remaining(), role="planner")
-        adapter_fail = any(
+        adapter_fail = bool(str(r.get("bypass") or "").strip()) or any(
             "Pydantic" in str(x) or "инструмент" in str(x)
             for x in (r.get("log") or []) + [str((r.get("error") or {}).get("message") or "")])
         if ((not r.get("ok") or not (r.get("text") or "").strip()) and planner_tools
                 and (not pipeline.get("stop_reason") or adapter_fail)):
             # tool_limit не должен повторять тот же цикл: второй заход идёт без
             # инструментов, по уже собранному плану и паку.
+            note = adapter_tool_note(r) or (
+                "первый вызов с инструментами не удался; "
+                "инструменты отключены, повторяю без инструментов.")
+            say("  " + note)
+            run.event("adapter_fallback", note)
+            emit_event("adapter_fallback", message=note)
             if adapter_fail:
                 # Прямой HTTP без Pydantic AI не принимает инструменты. Это не
                 # зацикливание: тот же запрос без инструментов допустим.
@@ -7153,7 +7180,9 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             r = limited("planner", lambda: call(
                 cfg, "planner", [{"role": "user", "content": prompt}],
                 deadline=deadline,
-                tools=False, mcp_active=[], context_store="", input_limit=planner_limit,
+                # input_limit — ограничение Pydantic AI; прямой HTTP его не исполняет,
+                # и с ним повтор снова потребовал бы адаптер.
+                tools=False, mcp_active=[], context_store="", input_limit=0,
                 guard_text=[st["idea"], planner_context]),
                 remaining(), role="planner")
         if not r["ok"]:

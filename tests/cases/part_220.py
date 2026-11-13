@@ -233,17 +233,19 @@ def test_run_make_stops_a_hanging_planner_within_the_overall_deadline(tmp: Path)
 
     def slow_planner(cfg, role, messages, **kw):
         if role == "planner":
-            time.sleep(2)
+            time.sleep(6)
         return {"ok": True, "text": json.dumps({"questions": [], "plan": "1. Критерии"}),
                 "backend": 1, "model": "m", "log": []}
 
     cfg = _cfg()
-    cfg.setdefault("make_pipeline", {})["hard_timeout_seconds"] = 0.5
+    # Обогащение идёт до планировщика: дедлайн должен пережить его, иначе проверка
+    # ловит медленный старт, а не зависший planning.
+    cfg.setdefault("make_pipeline", {})["hard_timeout_seconds"] = 5
     t0 = time.time()
     res = R.run_make(cfg, str(root), "ac", "срок заявки", "", "", True,
                      call=slow_planner, momus=False)
     assert not res["ok"] and res["stage"] == "planning", res
-    assert time.time() - t0 < 2.5
+    assert time.time() - t0 < 7
     assert "не уложился" in res["why"] or res["error"]["code"] == "timeout", res
 
 

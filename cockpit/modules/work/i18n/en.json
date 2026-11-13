@@ -39,6 +39,7 @@
   "work.new_run": "new",
   "work.elapsed": "elapsed {time}",
   "work.last_event": "last event {when}s ago",
+  "work.finished_at": "finished {time}",
   "work.plan_summary": "Plan: {done} of {total} checked",
   "work.worklog": "Work log",
   "work.metrics": "Calls: {calls} · {seconds}s · tokens: {tokens} · models: {models}",

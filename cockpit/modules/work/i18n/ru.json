@@ -39,6 +39,7 @@
   "work.new_run": "новый",
   "work.elapsed": "прошло {time}",
   "work.last_event": "последнее событие {when} с назад",
+  "work.finished_at": "завершено {time}",
   "work.plan_summary": "План: проверено {done} из {total}",
   "work.worklog": "Ход работы",
   "work.metrics": "Вызовов: {calls} · {seconds} с · токенов: {tokens} · модели: {models}",

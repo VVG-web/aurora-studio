@@ -206,13 +206,15 @@ def test_make_hard_deadline_stops_after_the_planner(tmp: Path):
     import time
     import agent_runner as R
     cfg = _cfg()
-    cfg.setdefault("make_pipeline", {})["hard_timeout_seconds"] = 1
+    # Обогащение идёт до планировщика и само занимает около секунды. Дедлайн должен
+    # пережить его, иначе тест проверяет не зависший планировщик, а медленный старт.
+    cfg.setdefault("make_pipeline", {})["hard_timeout_seconds"] = 5
     called = []
 
     def fake(cfg, role, messages, **kw):
         called.append(role)
         if role == "planner":
-            time.sleep(1.1)
+            time.sleep(6)
             return _planner()
         raise AssertionError(role)
 
@@ -227,13 +229,16 @@ def test_make_falls_back_without_tools_when_the_adapter_refuses(tmp: Path):
     root = _project(tmp)
     import agent_runner as R
     tools_seen = []
+    limits_seen = []
 
     def fake(cfg, role, messages, **kw):
         if role == "planner":
             tools_seen.append(bool(kw.get("tools")))
+            limits_seen.append(kw.get("input_limit"))
             if kw.get("tools"):
-                return {"ok": False, "backend": 1, "model": "m", "log": [
-                    "Pydantic AI не сработал — вызов с инструментами не принят"]}
+                return {"ok": False, "backend": 1, "model": "m",
+                        "bypass": "venv python: venv/bin/python не найден",
+                        "log": ["Pydantic AI не сработал — вызов с инструментами не принят"]}
             return _planner()
         if role == "worker":
             return _base("worker", "# AC\n\nСрок десять дней [[Заявка-0]].")
@@ -245,6 +250,13 @@ def test_make_falls_back_without_tools_when_the_adapter_refuses(tmp: Path):
                      call=fake, momus=False)
     assert res["ok"], res
     assert tools_seen[0] is True and tools_seen[-1] is False, tools_seen
+    assert limits_seen[-1] == 0, limits_seen
+    events = [json.loads(line) for line in
+              (root / "Workspaces" / res["sid"] / "run/events.jsonl").read_text(
+                  encoding="utf-8").splitlines()]
+    fallback = [e for e in events if e.get("kind") == "adapter_fallback"]
+    assert fallback and "инструменты отключены" in fallback[0]["message"], events
+    assert "venv/bin/python" in fallback[0]["message"], fallback
     assert R.report_make({"sid": "s", "stage": "planning", "questions": [],
                           "state": res["state"]}).startswith("# Артефакт")
 
@@ -285,7 +297,9 @@ import {{makePipelineButtons, applyMakeEvent}} from {json.dumps(view.as_uri())};
 const a = makePipelineButtons("running", true, false);
 const b = makePipelineButtons("partial", true, true);
 const run = applyMakeEvent({{plan: [], log: []}}, {{kind: "plan", steps: [{{id: "s1", title: "Раздел"}}]}});
-console.log(JSON.stringify({{a, b, plan: run.plan}}));
+const fb = applyMakeEvent({{plan: [], log: []}}, {{kind: "adapter_fallback",
+  message: "инструменты отключены: нет Pydantic AI"}});
+console.log(JSON.stringify({{a, b, plan: run.plan, fb}}));
 """
     cp = subprocess.run([node, "--input-type=module", "-e", script], capture_output=True,
                         text=True, encoding="utf-8", errors="replace", timeout=30)
@@ -294,6 +308,7 @@ console.log(JSON.stringify({{a, b, plan: run.plan}}));
     assert got["a"]["cancel"] and got["a"]["pause"] and not got["a"]["continue"], got
     assert got["b"]["continue"] and got["b"]["report"], got
     assert got["plan"][0]["title"] == "Раздел", got
+    assert "инструменты отключены" in got["fb"]["log"][0], got
 
 
 @test
@@ -303,20 +318,31 @@ def test_make_ui_loads_existing_run_state_and_finish_time(tmp: Path):
         return
     view = KIT / "cockpit/modules/work/view.js"
     script = f"""
-import {{loadRuns, runsSnapshot, runElapsed}} from {json.dumps(view.as_uri())};
+import {{loadRuns, runsSnapshot, runElapsed, runTimeLabel}} from {json.dumps(view.as_uri())};
 const calls = [];
+let round = 0;
 const ctx = {{
   project: {{path: "/p"}},
   $: () => null,
+  t: (key, vars = {{}}) => key === "work.finished_at"
+    ? "завершено " + vars.time : "последнее событие " + vars.when + " с назад",
+  ui: {{stampText: () => "13.11 10:00"}},
   api: async url => {{
     calls.push(url);
-    if (url.includes("/api/make/runs")) return {{runs: [{{
-      sid: "ac-1", kind: "ac", title: "AC", status: "partial",
-      started: "2026-11-12T22:29:42Z", updated: "2026-11-12T22:41:35Z",
-      artifact: "Artifacts/ac/a.md", report: "Artifacts/reports/make/r.md"}}]}};
+    if (url.includes("/api/make/runs")) {{
+      round += 1;
+      return {{runs: [{{
+        sid: "ac-1", kind: "ac", title: "AC", status: "partial",
+        started: "2026-11-12T22:29:42Z",
+        updated: round === 1 ? "2026-11-12T22:41:35Z" : "2026-11-12T22:45:00Z",
+        artifact: "Artifacts/ac/a.md", report: "Artifacts/reports/make/r.md"}}]}};
+    }}
     if (url.includes("/api/make/state")) return {{
-      plan: {{steps: [{{id: "s1", title: "Раздел", status: "partial"}}]}},
-      state: {{status: "partial", updated: "2026-11-12T22:41:35Z", questions: [], warnings: []}},
+      plan: {{steps: [{{id: "s1", title: round === 1 ? "Раздел" : "Раздел 2",
+                       status: "partial"}}]}},
+      state: {{status: "partial",
+               updated: round === 1 ? "2026-11-12T22:41:35Z" : "2026-11-12T22:45:00Z",
+               questions: [], warnings: []}},
       artifact: {{path: "Artifacts/ac/a.md"}},
       report_md: "Artifacts/reports/make/r.md",
       report: {{metrics: {{calls: 9, tokens_in: 10, tokens_out: 5, models: ["m"]}}}},
@@ -332,7 +358,16 @@ const ctx = {{
 }};
 await loadRuns(ctx);
 const [run] = runsSnapshot();
-console.log(JSON.stringify({{run, elapsed: runElapsed(run), calls}}));
+const firstRun = JSON.parse(JSON.stringify(run));
+const firstPlan = run.plan[0].title;
+const elapsed = runElapsed(run);
+const finishedLabel = runTimeLabel(ctx, run);
+const runningLabel = runTimeLabel(ctx, {{...run, status: "running", finishedAt: 0,
+                                         lastAt: Date.now()}});
+await loadRuns(ctx);
+const [again] = runsSnapshot();
+console.log(JSON.stringify({{run: firstRun, again, firstPlan, elapsed,
+                             finishedLabel, runningLabel, calls}}));
 """
     cp = subprocess.run([node, "--input-type=module", "-e", script], capture_output=True,
                         text=True, encoding="utf-8", errors="replace", timeout=30)
@@ -343,14 +378,20 @@ console.log(JSON.stringify({{run, elapsed: runElapsed(run), calls}}));
     assert run["plan"][0]["status"] == "partial", run
     assert run["metrics"]["calls"] == 9, run
     assert run["report"] == "Artifacts/reports/make/r.md", run
-    assert "предварительный план сохранён" in run["log"], run
-    assert "версия 1: 100 знаков" in run["log"], run
-    assert "отчёт сохранён" in run["log"], run
+    assert any("предварительный план сохранён" in line for line in run["log"]), run
+    assert any("версия 1: 100 знаков" in line for line in run["log"]), run
+    assert any("отчёт сохранён" in line for line in run["log"]), run
     assert any("writer" in line for line in run["log"]), run
+    assert any(line[:5].count(":") == 1 for line in run["log"]), run
     assert run.get("hydrated") is True, run
     assert got["elapsed"] == "11:53", got
+    assert got["firstPlan"] == "Раздел", got
+    assert got["again"]["plan"][0]["title"] == "Раздел 2", got
+    assert got["again"]["updated"] == "2026-11-12T22:45:00Z", got
+    assert got["finishedLabel"] == "завершено 13.11 10:00", got
+    assert "последнее событие" in got["runningLabel"], got
     assert any("/api/make/runs" in url for url in got["calls"]), got
-    assert any("/api/make/state" in url for url in got["calls"]), got
+    assert sum("/api/make/state" in url for url in got["calls"]) == 2, got
 
 
 @test
