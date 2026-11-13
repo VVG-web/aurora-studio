@@ -31,6 +31,12 @@
    "calls": 1,
    "git": "shared"
   },
+  "cockpit/aurora_cockpit.py:drop_project_home": {
+   "kind": "other",
+   "reason": "кнопка «Убрать AURORA_HOME из проекта»: правит .env.aurora.local проекта по команде человека, не карточка",
+   "calls": 2,
+   "git": "none"
+  },
   "cockpit/aurora_cockpit.py:_registry": {
    "kind": "other",
    "reason": "панель: кэш реестра команд кита (временный файл и подмена целиком), не карточка",
