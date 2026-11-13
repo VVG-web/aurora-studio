@@ -376,7 +376,7 @@ export function applyMakeEvent(run, event){
       + (event.issues != null ? " · issues " + event.issues : "")
       + (event.unsupported != null ? " · unsupported " + event.unsupported : ""));
   } else if (kind === "adapter_fallback"){
-    log(event.message || "инструменты отключены");
+    log(event.message || "adapter_fallback");
   } else if (kind === "done"){
     run.status = event.status || "done";
     run.finishedAt = Date.now();

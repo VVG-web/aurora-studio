@@ -48,7 +48,9 @@ def test_tool_limit_retries_planner_without_tools(_t):
     assert planners[0][1].get("tools") is True, planners[0][1]
     assert planners[1][1].get("tools") is False, planners[1][1]
     assert planners[1][1].get("mcp_active") == [], planners[1][1]
-    assert int(planners[1][1].get("input_limit") or 0) > 0, planners[1][1]
+    # input_limit — ограничение Pydantic AI; прямой HTTP его не исполняет.
+    # С ним повтор снова потребовал бы адаптер и не дошёл до модели.
+    assert int(planners[1][1].get("input_limit") or 0) == 0, planners[1][1]
 
 
 @test
