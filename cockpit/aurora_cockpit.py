@@ -5892,6 +5892,27 @@ def project_home_override(project: str) -> str:
         return ""
 
 
+def drop_project_home(project: str) -> dict:
+    """Убрать `AURORA_HOME` из `.env.aurora.local` проекта, сохранив остальные строки.
+
+    Это действие для предупреждения в «Установке»: человек видит расхождение home и
+    может вернуть проект к home панели одной кнопкой, не открывая скрытый файл вручную.
+    """
+    path = os.path.join(project, ".env.aurora.local")
+    if os.path.islink(path) or not os.path.isfile(path):
+        return {"ok": False, "error": "файла .env.aurora.local проекта нет"}
+    text = read_text(path)
+    lines = text.splitlines(keepends=True)
+    kept = [line for line in lines if not line.lstrip().startswith("AURORA_HOME=")]
+    if len(kept) == len(lines):
+        return {"ok": True, "changed": False, "project_home": project_home_override(project)}
+    backup = f"{path}.bak-{utc_slug()}"
+    shutil.copy2(path, backup)
+    write_text_atomic(path, "".join(kept))
+    return {"ok": True, "changed": True, "backup": os.path.basename(backup),
+            "project_home": project_home_override(project)}
+
+
 def runtime_state(include_candidates: bool = False, force: bool = False,
                   project: str = "") -> dict:
     """Единый Python подсистемы: что выбрано, годится ли оно и чем именно.
@@ -8608,6 +8629,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/runtime":
             # Единая конфигурация Python: выбрать, проверить, поставить Pydantic AI.
+            if payload.get("action") == "drop_project_home":
+                project = str(payload.get("project") or "")
+                if not self._known(project):
+                    self.send_json({"ok": False, "error": "проект не выбран"}, 400)
+                    return
+                self.send_json(drop_project_home(project))
+                return
             self.send_json(runtime_action(payload))
             return
         if u.path == "/api/code/parse":

@@ -282,6 +282,7 @@
     }
   },
   "messages": {
+    "файла .env.aurora.local проекта нет": "the project has no .env.aurora.local file",
     "paths должен быть списком": "paths must be a list",
     ".gitattributes: нет правила merge={} для {} — выполните kit:update": ".gitattributes: no merge={} rule for {} — run kit:update",
     "git: не настроен merge.{}.driver — выполните kit:update": "git: merge.{}.driver is not configured — run kit:update",

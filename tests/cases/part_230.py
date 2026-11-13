@@ -508,6 +508,26 @@ def test_install_names_project_home_override(tmp: Path):
 
 
 @test
+def test_install_can_drop_project_home_override(tmp: Path):
+    """Кнопка в «Установке» убирает только AURORA_HOME и сохраняет остальные строки."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_cockpit as AC  # noqa: E402
+    project = tmp / "project"
+    project.mkdir()
+    key = "AURORA" + "_HOME"
+    env = project / ".env.aurora.local"
+    env.write_text(f"{key}=/tmp/other-home\nCONFLUENCE_PERSONAL_TOKEN=secret\n",
+                   encoding="utf-8")
+    got = AC.drop_project_home(str(project))
+    assert got["ok"] and got["changed"], got
+    text = env.read_text(encoding="utf-8")
+    assert key not in text and "CONFLUENCE_PERSONAL_TOKEN=secret" in text, text
+    assert (project / got["backup"]).is_file(), got
+    again = AC.drop_project_home(str(project))
+    assert again["ok"] and again["changed"] is False, again
+
+
+@test
 def test_venv_display_path_uses_effective_python(tmp: Path):
     """Путь в отчёте — фактический venv, а не `~/.aurora/venv` по умолчанию."""
     import agent_core as AG  # noqa: E402

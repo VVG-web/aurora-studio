@@ -80,6 +80,22 @@ function runtimeCard(ctx){
         {home: d.home || "?", project_home: d.project_home || "?"})));
       box.append(el("div", {class:"muted", style:"font-size:12px;margin-top:4px"},
         t("install.rt_home_hint")));
+      if (ctx.project){
+        box.append(el("button", {class:"btn sm primary", style:"margin-top:8px",
+          title: t("install.rt_home_drop_hint"),
+          onclick: async (ev) => {
+            if (!confirm(t("install.rt_home_drop_ask", {project: ctx.project.path}))) return;
+            ev.target.disabled = true;
+            const r = await ctx.api("/api/runtime", {method:"POST", quiet:true,
+              body: JSON.stringify({action:"drop_project_home", project: ctx.project.path})});
+            if (!r || r.error || r.ok === false){
+              ev.target.disabled = false;
+              return ctx.toast((r && r.error) || t("install.rt_home_drop_failed"), "err", {sticky:true});
+            }
+            ctx.toast(t("install.rt_home_dropped"), "ok");
+            draw(true);
+          }}, t("install.rt_home_drop")));
+      }
       body.append(box);
     }
     // Панель, запущенная до смены конфигурации, работает под прежним Python. Это не ошибка
