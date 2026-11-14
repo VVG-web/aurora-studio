@@ -71,6 +71,7 @@ import request_context as RC                     # noqa: E402 — граница
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cron as CRON                              # noqa: E402 — расписание: раздел «Cron»
 import route_runner as RR                        # noqa: E402 — маршрут: кнопка, расписание, терминал
+import task_scheduler as TS                      # noqa: E402 — ресурсы, очередь и параллельные задачи
 import watchdog as WD                             # noqa: E402 — сторож зависших после обрыва связи шагов
 import kb_updated as KBU                          # noqa: E402 — дата обновления базы (1.168.0)
 import git_sync as GS                            # noqa: E402 — Git проекта: настройка, состояние
@@ -97,6 +98,8 @@ ENGINE = os.path.getmtime(os.path.abspath(__file__))
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
 KEEP_DONE_JOBS = 40      # законченные задания, которые ещё можно открыть в консоли
+TASKS = TS.TaskScheduler(store_path=None if os.environ.get("AURORA_TESTS_ISOLATED") else
+                         os.path.join(os.path.expanduser("~"), ".aurora", "task-queue.json"))
 
 # Кэш состояния раздела «Код»: полный расчёт `code_state` (обход клонов, языки, индекс,
 # артефакты) занимает минуты на большом репозитории. Первый запрос отдаёт форму сразу,
@@ -5742,7 +5745,9 @@ def project_activity(project: str) -> dict:
     from aurora_common import lock_read
     with JOBS_LOCK:
         running = sorted(({"id": j["id"], "cmd": j["cmd"], "args": j["args"],
-                           "started": j["started"]}
+                           "started": j["started"], "state": j.get("state", "running"),
+                           "queue_reason": j.get("queue_reason", ""),
+                           "resources": j.get("resources") or []}
                           for j in JOBS.values()
                           if not j["done"] and j["project"] == project),
                          key=lambda j: j["started"])
@@ -7131,7 +7136,9 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
     run_id = utc_slug() + "-" + job_id[:6]
     job = {"id": job_id, "cmd": cmd, "args": args, "project": project, "rc": None,
            "out": [], "started": time.time(), "done": False, "run_id": run_id,
-           "parent": parent, "last_out": time.time(), "cancel": threading.Event()}
+           "parent": parent, "last_out": time.time(), "cancel": threading.Event(),
+           "state": "queued", "resources": list(TS.resources_for(cmd, args)),
+           "queue_reason": "", "queued_at": time.time()}
     with JOBS_LOCK:
         # Та же команда с теми же аргументами в том же проекте уже идёт — второй процесс рядом не
         # заводим, а отдаём идущее задание: двойной щелчок, вторая вкладка или повтор после
@@ -7139,7 +7146,8 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
         # и запись — под одним замком, иначе два запроса одновременно оба не найдут друг друга.
         for running in JOBS.values():
             if (not running["done"] and running["project"] == project
-                    and running["cmd"] == cmd and running["args"] == args):
+                    and running["cmd"] == cmd and running["args"] == args
+                    and (running.get("parent") or "") == (parent or "")):
                 return running["id"]
         trim_jobs()
         JOBS[job_id] = job
@@ -7147,6 +7155,10 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
     def worker():
         run_log = None
         try:
+            with JOBS_LOCK:
+                job["state"] = "running"
+                job["started"] = time.time()
+                job["queue_reason"] = ""
             # Архив прогона — до запуска, а не после. Раньше папка появлялась только у
             # запустившегося процесса, и шаг, упавший на самом запуске, не оставлял ничего:
             # в PRJ-A 21.09 kb:embed и дважды sync:confluence встали с кодом 2 без вывода
@@ -7235,6 +7247,7 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
                     pass
             job["done"] = True
             job["finished"] = time.time()
+            job["state"] = "done"
             meta = RR.read_meta(os.path.join(runs_dir(project), run_id))
             if meta:
                 meta.update(status="done", rc=job["rc"], finished=utc_stamp(),
@@ -7245,9 +7258,42 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
             mark_running(job["id"], cmd, project, False)
             write_runlog(project, cmd, job["rc"], (cmd + " " + " ".join(args)).strip(),
                          int(job["finished"] - job["started"]))
+            TASKS.release(job_id)
 
-    threading.Thread(target=worker, daemon=True).start()
+    def launch():
+        threading.Thread(target=worker, daemon=True).start()
+
+    task = TS.make_task(job_id, project, cmd, args, parent=parent, start=launch)
+    state = TASKS.submit(task)
+    with JOBS_LOCK:
+        if not job["done"] and job["state"] == "queued":
+            job["state"] = state
+            if state == "queued":
+                job["queue_reason"] = task.conflict
+                job_push(job, f"⏳ ждёт ресурс: {task.conflict or 'очередь'}")
     return job_id
+
+
+def restore_queued_jobs() -> list[str]:
+    """Поднять очередь, пережившую перезапуск панели. Шаги маршрутов не восстанавливаем:
+    их родитель уже закрыт, а сам маршрут продолжается своим состоянием."""
+    store = TASKS.store_path()
+    if not store:
+        return []
+    out = []
+    for row in TS.TaskScheduler.read_store(store):
+        spec = row.get("spec") if isinstance(row, dict) else None
+        if not isinstance(spec, dict) or spec.get("parent"):
+            continue
+        project = str(spec.get("project") or "")
+        cmd = str(spec.get("cmd") or "")
+        if not project or not cmd or not os.path.isdir(project):
+            continue
+        try:
+            out.append(start_job(project, cmd, [str(a) for a in spec.get("args") or []]))
+        except (OSError, ValueError):
+            continue
+    return out
 
 
 # --------------------------------------------------------------------- сервер
@@ -8151,10 +8197,16 @@ class Handler(BaseHTTPRequestHandler):
             project = (q.get("project") or [""])[0]
             with JOBS_LOCK:
                 live = [{"id": j["id"], "cmd": j["cmd"], "args": j["args"],
-                         "started": j["started"], "lines": j.get("base", 0) + len(j["out"])}
+                         "started": j["started"], "lines": j.get("base", 0) + len(j["out"]),
+                         "state": j.get("state", "running"), "parent": j.get("parent", ""),
+                         "queue_reason": j.get("queue_reason", ""),
+                         "resources": j.get("resources") or []}
                         for j in JOBS.values()
                         if not j["done"] and (not project or j["project"] == project)]
             self.send_json({"jobs": sorted(live, key=lambda j: j["started"])})
+        elif u.path == "/api/tasks":
+            project = (q.get("project") or [""])[0]
+            self.send_json(TASKS.snapshot(project if project and self._known(project) else ""))
         elif u.path == "/api/job":
             since = int(q.get("since", ["0"])[0])
             with JOBS_LOCK:
@@ -8165,7 +8217,9 @@ class Handler(BaseHTTPRequestHandler):
                 lines, nxt = job_slice(job, since)
                 reply = {"id": job["id"], "lines": lines, "next": nxt,
                          "done": job["done"], "rc": job["rc"], "cmd": job["cmd"],
-                         "args": job["args"]}
+                         "args": job["args"], "state": job.get("state", ""),
+                         "queue_reason": job.get("queue_reason", ""),
+                         "resources": job.get("resources") or []}
             # Пульс — вне замка заданий: он читает файлы папки прогона.
             reply["pulse"] = None if reply["done"] else job_pulse(job)
             self.send_json(reply)
@@ -8785,6 +8839,23 @@ class Handler(BaseHTTPRequestHandler):
             res = make_pipeline_control(project, payload)
             self.send_json(res, 400 if res.get("error") else 200)
             return
+        if u.path == "/api/task/check":
+            project = str(payload.get("project") or "")
+            if not self._known(project):
+                return
+            cmd = str(payload.get("cmd") or "")
+            args = [str(x) for x in payload.get("args", [])]
+            kind = "route" if payload.get("kind") == "route" else "job"
+            resources = ("kb-write",) if kind == "route" else TS.resources_for(cmd, args)
+            task = TS.Task(id="check", project=os.path.realpath(project), resources=resources,
+                           kind=kind, spec={"cmd": cmd, "args": args})
+            conflict = TASKS.preview(task)
+            self.send_json({"resources": list(resources), "conflict": conflict,
+                            "can_start": not conflict})
+            return
+        if u.path == "/api/task/stop":
+            self.send_json(stop_job(str(payload.get("id") or ""), request_lang(q)))
+            return
         if u.path == "/api/run":
             project = payload.get("project", "")
             row = command_by_name(payload.get("cmd", ""))
@@ -8823,7 +8894,13 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self.send_json({"error": str(e)}, 400)
                 return
-            self.send_json({"job": job_id})
+            with JOBS_LOCK:
+                job = JOBS.get(job_id) or {}
+                state = job.get("state", "running")
+                reason = job.get("queue_reason", "")
+                resources = job.get("resources") or []
+            self.send_json({"job": job_id, "state": state, "queued": state == "queued",
+                            "queue_reason": reason, "resources": resources})
         else:
             self.send_json({"error": "неизвестный маршрут"}, 404)
 
@@ -9142,6 +9219,29 @@ def _prune_routes() -> None:
         ROUTES.pop(r["id"], None)
 
 
+def task_acquire(task_id: str, project: str, resources: tuple = ("kb-write",),
+                 kind: str = "route", on_queue=None, should_stop=None) -> bool:
+    """Зарегистрировать маршрут как задачу и дождаться ресурсов.
+
+    Маршрут держит `kb-write` всю длину, его шаги наследуют этот ресурс. Поэтому
+    клон кода идёт параллельно, а второй писатель в базу встаёт в очередь.
+    """
+    task = TS.Task(id=task_id, project=os.path.realpath(project), resources=tuple(resources),
+                   kind=kind, spec={"project": os.path.realpath(project), "cmd": "",
+                                    "args": [], "kind": kind, "parent": ""})
+    conflict = TASKS.preview(task)
+    if conflict and on_queue:
+        try:
+            on_queue(conflict)
+        except Exception:  # noqa: BLE001 — журнал не должен мешать ожиданию
+            pass
+    return TASKS.acquire(task, should_stop=should_stop)
+
+
+def task_release(task_id: str) -> None:
+    TASKS.release(task_id)
+
+
 def route_start(project: str, sc_id: str, write: bool, resume: dict | None = None,
                 lang: str = DEFAULT_LANG, net: str = "") -> dict:
     """Начать маршрут в процессе панели. → {route: id} или {error}.
@@ -9231,6 +9331,13 @@ def job_pulse(job: dict, now: float = 0.0) -> dict:
     к моделям нет; gone — процесса шага нет.
     """
     now = now or time.time()
+    if job.get("state") == "queued":
+        started = job.get("queued_at") or job.get("started") or now
+        return {"alive": False, "running": int(now - started),
+                "quiet": int(now - (job.get("last_out") or started)),
+                "calls": 0, "answered": 0, "failed": 0, "answer_ago": None,
+                "rings": 0, "watchdog": False, "state": "queued",
+                "queue_reason": job.get("queue_reason") or ""}
     proc = job.get("proc")
     alive = (proc is not None and proc.poll() is None) or (proc is None and bool(job.get("waiting")))
     started = job.get("started") or now
@@ -9338,7 +9445,10 @@ def live_now() -> dict:
                   for r in sorted(routes, key=lambda r: r["started"])]
     with JOBS_LOCK:
         jobs = [{"id": j["id"], "project": j["project"], "cmd": j["cmd"], "args": j["args"],
-                 "started": j["started"], "lines": j.get("base", 0) + len(j["out"])}
+                 "started": j["started"], "lines": j.get("base", 0) + len(j["out"]),
+                 "state": j.get("state", "running"), "parent": j.get("parent", ""),
+                 "queue_reason": j.get("queue_reason", ""),
+                 "resources": j.get("resources") or []}
                 for j in JOBS.values() if not j["done"] and j.get("parent") not in in_route]
     for j in jobs:
         j["name"] = name(j["project"])
@@ -9351,7 +9461,8 @@ def live_now() -> dict:
         cron = {"id": cur.get("id"), "name": cur.get("name"), "started": cur.get("started"),
                 "done": sum(1 for it in items if it.get("status") not in ("pending", "running")),
                 "total": len(items), "now": sch.item_label(now) if now else ""}
-    return {"routes": out_routes, "jobs": sorted(jobs, key=lambda j: j["started"]), "cron": cron}
+    return {"routes": out_routes, "jobs": sorted(jobs, key=lambda j: j["started"]), "cron": cron,
+            "tasks": TASKS.snapshot()}
 
 
 def route_live(rid: str, since: int) -> dict:
@@ -9556,6 +9667,18 @@ def stop_job(job_id: str, lang: str = "") -> dict:
         job = JOBS.get(job_id)
     if not job:
         return {"error": "такого задания нет — возможно, оно уже закончилось"}
+    strings = i18n_catalogue(lang or DEFAULT_LANG).get("strings") or {}
+
+    def t(key):                    # ключи пишутся целиком: проверка каталога (kit_i18n) ищет их как t("…")
+        return strings.get(key, key)
+    if not job.get("done") and job.get("state") == "queued" and TASKS.cancel(job_id):
+        with JOBS_LOCK:
+            job["done"] = True
+            job["state"] = "stopped"
+            job["rc"] = -15
+            job["finished"] = time.time()
+            job_push(job, t("job.stopped"))
+        return {"ok": True, "queued": True}
     proc = job.get("proc")
     if not proc and not job.get("done") and job.get("cancel") is not None:
         # Процесса ещё нет: задание стоит в очереди за связью или как раз стартует. Остановка запоминается, и команда
@@ -9582,10 +9705,6 @@ def stop_job(job_id: str, lang: str = "") -> dict:
         # не удался. На Windows сигнал не доставляется, раннер старого проекта обработчика не имеет,
         # а sync и kb:* — не агент.
         said = any(AGENT_COMMIT_LINE.match(str(x)) for x in job["out"])
-    strings = i18n_catalogue(lang or DEFAULT_LANG).get("strings") or {}
-
-    def t(key):                    # ключи пишутся целиком: проверка каталога (kit_i18n) ищет их как t("…")
-        return strings.get(key, key)
     with JOBS_LOCK:
         job_push(job, t("job.stopped_agent") if said else t("job.stopped"))
     return {"ok": True}
@@ -9961,6 +10080,9 @@ def main() -> int:
     global SCHED
     SCHED = CRON.Scheduler(sys.modules[__name__], lambda: find_projects(srv.roots))
     SCHED.start()
+    restored = restore_queued_jobs()
+    if restored:
+        print(f"Восстановлено задач из очереди: {len(restored)}")
     # Автоматика Git проектов — тоже в этом процессе, как и расписание.
     global GITAUTO
     GITAUTO = GITA.GitAuto(sys.modules[__name__], lambda: find_projects(srv.roots))

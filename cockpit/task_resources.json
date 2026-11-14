@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "max_parallel": 4,
+  "default": ["exclusive"],
+  "read_only": [
+    "code:status",
+    "code:health",
+    "code:find",
+    "kb:lint",
+    "kb:map",
+    "kb:status",
+    "kit:doctor",
+    "kit:paths",
+    "kit:list",
+    "kit:mcp",
+    "sync:sources",
+    "sync:audit",
+    "sync:diff",
+    "agent:width"
+  ],
+  "commands": {
+    "code:sync": ["code:{repo}"],
+    "code:index": ["code:{repo}"],
+    "code:artifacts": ["code:{repo}"],
+    "code:cleanroom": ["code:{repo}"],
+    "code:check": ["code:{repo}"],
+    "code:pack": ["code:{repo}"],
+    "git:commit": ["git-index"],
+    "git:push": ["git-index"],
+    "git:pull": ["git-index"],
+    "git:checkpoint": ["git-index"],
+    "kit:update": ["engine-update"],
+    "update": ["engine-update"],
+    "kit:skills": ["kit-shared"]
+  },
+  "prefixes": {
+    "agent:": ["kb-write"],
+    "kb:": ["kb-write"],
+    "git:": ["git-index"],
+    "sync:": ["source:{cmd}"],
+    "dev:": ["kit-exclusive"]
+  }
+}

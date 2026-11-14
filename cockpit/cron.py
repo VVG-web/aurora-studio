@@ -693,21 +693,25 @@ class Scheduler:
             return False
         return bool(sc and sc.get("destructive"))
 
-    def _busy(self, project: str) -> bool:
-        act = self.ck.project_activity(project)
-        # Идущий маршрут — тоже занятость: между его шагами нет ни команды, ни замка агента, и расписание,
-        # пришедшее в эту щель, начинало второй маршрут в том же проекте (20.10.2026 так стёрли базу).
-        return (bool(act.get("running")) or bool((act.get("agent") or {}).get("alive"))
-                or bool(act.get("live_routes")))
+    def _busy(self, project: str, kind: str = "command") -> bool:
+        """Ждёт ли цепочка. Команда не ждёт: её ставит в очередь планировщик панели.
 
-    def _wait_free(self, project: str, log=None) -> bool:
+        Маршрут ждёт только другой маршрут: `route.lock` один на проект. Ручную
+        команду или агента маршрут переждёт сам через ресурс `kb-write`.
+        """
+        if kind != "route":
+            return False
+        act = self.ck.project_activity(project)
+        return bool(act.get("live_routes"))
+
+    def _wait_free(self, project: str, log=None, kind: str = "command") -> bool:
         """Дождаться, пока проект освободится. Ждать молча нельзя: после перезапуска панели
         шаг прежней цепочки (07.10.2026 — `agent:extract` в PRJ-A) продолжал работать
         сиротой, а пункт новой стоял «идёт» без единой строки, и человек не знал, кому
         верить — Cron или Консоли."""
         end = time.time() + BUSY_WAIT_S
         said = False
-        while self._busy(project):
+        while self._busy(project, kind):
             if not said and log:
                 said = True
                 log(busy_line(self.ck.project_activity(project)))
@@ -844,7 +848,7 @@ class Scheduler:
         self.say("")
         self.say(f"━━ {self.item_label(it)} ━━")
         project = it["project"]
-        if not self._wait_free(project, log):
+        if not self._wait_free(project, log, it["kind"]):
             it.update(status="stopped" if self.stop_event.is_set() else "skipped",
                       note="" if self.stop_event.is_set() else "busy", finished=now_iso())
             return
@@ -1012,7 +1016,7 @@ class Scheduler:
         if not ok:
             it.update(status="stopped", finished=now_iso())
             return True
-        if not self._wait_free(it["project"], log):            # за время ожидания проект мог занять запуск руками
+        if not self._wait_free(it["project"], log, it["kind"]):  # за время ожидания проект мог занять маршрут
             it.update(status="stopped" if self.stop_event.is_set() else "skipped",
                       note="" if self.stop_event.is_set() else "busy", finished=now_iso())
             return True

@@ -2392,12 +2392,15 @@ function activityChips(act, now){
   // Идущее важнее остановленного: задание могло как раз продолжить этот маршрут.
   if (running.length){
     const mins = Math.max(0, Math.round((now/1000 - running[0].started) / 60));
+    const queued = running[0].state === "queued";
     return [{cls:"ok live",
-      text: t("act.running", {cmd: running[0].cmd})
+      text: (queued ? t("act.queued", {cmd: running[0].cmd})
+                    : t("act.running", {cmd: running[0].cmd}))
             + (running.length > 1 ? t("act.and_more", {n: running.length - 1}) : "")
             + (mins ? t("act.mins", {n: mins}) : t("act.just_now")),
       title: running.map(r => `${r.cmd} ${(r.args||[]).join(" ")}`.trim()
-               + t("act.since", {time: clock(r.started * 1000)})).join("\n")
+               + t("act.since", {time: clock(r.started * 1000)})
+               + (r.state === "queued" && r.queue_reason ? " · " + r.queue_reason : "")).join("\n")
              + t("act.by_panel") + routeNote}];
   }
   if (agent && agent.alive) return [{cls:"ok live",
@@ -3422,7 +3425,7 @@ async function fire(apply){
     if (v) m.includes("...") ? args.push(...v.split(/\s+/)) : args.push(v);
   }
   if (apply) args.push("--apply");
-  if (apply && await busyElsewhere(r.cmd)) return;
+  if (apply && await busyElsewhere(r.cmd, r.cmd, args, "job")) return;
   closeRun(); show("console");
   PENDING_APPLY = null; LAST_TASKS = []; drawTaskButton();
   $("#consoleApply").innerHTML = "";
@@ -3459,7 +3462,7 @@ async function fire(apply){
 async function retryStep(){
   const st = S.lastStep;
   if (!st) return;
-  if (st.args.includes("--apply") && await busyElsewhere(st.cmd)) return;
+  if (st.args.includes("--apply") && await busyElsewhere(st.cmd, st.cmd, st.args, "job")) return;
   show("console");
   PENDING_APPLY = null; LAST_TASKS = []; drawTaskButton();
   $("#consoleApply").innerHTML = "";
@@ -4576,25 +4579,41 @@ async function drawLiveJobs(){
   const d = await liveAll();
   box.replaceChildren();
   const mins = s => Math.max(0, Math.round((Date.now()/1000 - s) / 60));
-  const card = (title, sub, shown, go) => box.append(el("div",{class:"card row",
+  const card = (title, sub, shown, go, extra) => box.append(el("div",{class:"card row",
       style:"padding:10px 12px;margin-bottom:10px;gap:12px;align-items:center"},
     el("div",{style:"flex:1;min-width:0"},
       el("div",{style:"font-weight:600"}, title),
       el("div",{class:"muted",style:"font-size:12px;margin-top:2px"}, sub)),
     shown ? el("span",{class:"chip ok"}, t("live.shown"))
-          : el("button",{class:"btn", onclick: go}, t("live.show"))));
+          : el("button",{class:"btn", onclick: go}, t("live.show")),
+    extra || null));
   if (d.cron) card(t("live.cron", {name: d.cron.name}),
     t("live.cron_sub", {now: d.cron.now || "—", done: d.cron.done, total: d.cron.total}),
     isShown("cron"), () => followCron());
-  (d.routes || []).forEach(r => card(
-    t("live.route", {name: r.name, title: r.title}) + (r.trigger === "cron" ? " · cron" : ""),
-    r.bar && r.bar.cmd ? t("live.route_sub", {cmd: r.bar.cmd, mins: mins(r.started)})
-                       : t("live.started", {mins: mins(r.started)}),
-    isShown("route", r.id), () => attachRoute(r.id, {title: r.title, id: r.scId}, r.write, false)));
-  (d.jobs || []).forEach(j => card(
-    t("live.job", {name: j.name, cmd: (j.cmd + " " + (j.args||[]).join(" ")).trim()}),
-    t("live.details", {mins: mins(j.started), lines: j.lines}),
-    isShown("job", j.id), () => attachJob(j.id)));
+  const taskById = {};
+  ((d.tasks && d.tasks.active) || []).concat((d.tasks && d.tasks.queued) || [])
+    .forEach(x => { taskById[x.id] = x; });
+  (d.routes || []).forEach(r => {
+    const tq = taskById[r.id];
+    card(
+      t("live.route", {name: r.name, title: r.title}) + (r.trigger === "cron" ? " · cron" : ""),
+      tq && tq.state === "queued"
+        ? t("live.queue_reason", {why: tq.conflict || t("live.queue_unknown")})
+        : r.bar && r.bar.cmd ? t("live.route_sub", {cmd: r.bar.cmd, mins: mins(r.started)})
+                             : t("live.started", {mins: mins(r.started)}),
+      isShown("route", r.id), () => attachRoute(r.id, {title: r.title, id: r.scId}, r.write, false));
+  });
+  (d.jobs || []).forEach(j => {
+    const queued = j.state === "queued";
+    const cmd = (j.cmd + " " + (j.args||[]).join(" ")).trim();
+    card(
+      queued ? t("live.job_queued", {name: j.name, cmd})
+             : t("live.job", {name: j.name, cmd}),
+      queued ? t("live.queue_reason", {why: j.queue_reason || t("live.queue_unknown")})
+             : t("live.details", {mins: mins(j.started), lines: j.lines}),
+      isShown("job", j.id), () => attachJob(j.id),
+      el("button",{class:"btn sm", onclick: () => stopJob(j.id)}, t("live.stop")));
+  });
   if ((d.routes || []).length || (d.jobs || []).length)
     box.append(el("div",{class:"muted",style:"font-size:12.5px;margin-bottom:10px"},
       t("live.route_warning")));
@@ -4624,13 +4643,15 @@ async function autoFollow(){
 // маршрута и цепочки (`job_pulse` на сервере): жив ли процесс, когда была последняя строка,
 // какие запросы к моделям идут и сколько им осталось до срока. Колесо крутится, пока шаг
 // жив, а время проверки меняется на каждом опросе — это видно и без анимации.
-const PULSE_TONE = {ok: "ok", wait: "ok", late: "warn", quiet: "warn", gone: "bad"};
+const PULSE_TONE = {ok: "ok", wait: "ok", queued: "warn", late: "warn", quiet: "warn", gone: "bad"};
 const PULSE_HEAD = {ok: q => t("pulse.ok", {quiet: q}), wait: q => t("pulse.wait", {quiet: q}),
+                    queued: q => t("pulse.queued", {quiet: q}),
                     late: q => t("pulse.late", {quiet: q}), quiet: q => t("pulse.quiet", {quiet: q}),
                     gone: () => t("pulse.gone")};
 function pulseParts(p){
   const parts = [(PULSE_HEAD[p.state] || PULSE_HEAD.quiet)(howLong(p.quiet)),
                  t("pulse.running", {t: howLong(p.running)})];
+  if (p.state === "queued" && p.queue_reason) parts.push(p.queue_reason);
   if (p.calls) parts.push(t("pulse.calls", {n: p.calls, oldest: howLong(p.oldest || 0),
     limit: p.limit ? howLong(p.limit) : "—", where: p.where || "—"}));
   if (p.rings) parts.push(t("pulse.rings", {n: p.rings}));
@@ -4700,6 +4721,7 @@ async function attachJob(id){
   const me = ++FOLLOW;
   SHOWN = {kind: "job", id};
   if (S.view !== "console") show("console");
+  armStop(id);
   const out = $("#consoleOut"); out.innerHTML = "";
   $("#consoleCmd").textContent = t("job.attached", {id});
   drawLiveJobs();
@@ -4708,7 +4730,7 @@ async function attachJob(id){
     const d = await api(`/api/job?id=${id}&since=${since}`, {quiet:true});
     if (me !== FOLLOW) return;
     if (!d || d.error) { $("#consoleRc").textContent = t("job.not_found"); SHOWN = null;
-                         drawPulse(null); return; }
+                         armStop(null); drawPulse(null); return; }
     (d.lines||[]).forEach(l=>consoleLine(out, l));
     watchScroll(out); stickToBottom(out); since = d.next;
     drawPulse(d.done ? null : d.pulse, me);
@@ -4717,21 +4739,31 @@ async function attachJob(id){
       $("#consoleRc").textContent = t("run.rc", {rc: d.rc});
       $("#consoleRc").className = "chip " + (failed(d.rc) ? "bad" : d.rc === 1 ? "warn" : "ok");
       SHOWN = null;
+      armStop(null);
       drawLiveJobs();
       return;
     }
-    $("#consoleRc").textContent = t("run.running");
+    const queued = d.state === "queued";
+    $("#consoleRc").textContent = queued ? t("live.queued_chip") : t("run.running");
+    $("#consoleRc").className = "chip" + (queued ? " warn" : "");
     await new Promise(ok=>setTimeout(ok, 450));
   }
 }
 
-// Второй запуск поверх работающего — не очередь, а гонка. Спрашиваем до, а не объясняем
-// после: два `agent:build` на одном проекте дерутся за git-чекпойнт и портят откат.
-async function busyElsewhere(what){
+// Независящие задачи идут сразу. Конфликтующая встаёт в очередь по ресурсу:
+// человек видит причину и решает, ставить ли её. Это не гонка и не остановка первой.
+async function busyElsewhere(what, cmd = "", args = [], kind = "job"){
+  if (!S.project) return false;
+  const d = await api("/api/task/check", {method:"POST", quiet:true,
+    body: JSON.stringify({project:S.project.path, cmd, args, kind})});
+  if (d && d.can_start) return false;
+  if (d && d.conflict)
+    return !confirm(t("job.busy_ask", {what, why: d.conflict}));
+  // Старая панель без /api/task/check: прежний предохранитель, чтобы не запускать вслепую.
   const jobs = await liveJobs();
   if (!jobs.length) return false;
   const list = jobs.map(j=>"  " + j.cmd + " " + (j.args||[]).join(" ")).join("\n");
-  return !confirm(t("job.busy_ask", {list, what}));
+  return !confirm(t("job.busy_ask_old", {list, what}));
 }
 
 // Консоль прокручивается сама, пока человек смотрит конец. Стоит ему отмотать вверх —
@@ -4780,6 +4812,15 @@ function armStop(jobId){
     if (r.error) toast(r.error, "warn");
     else toast(t("console.stopped"));
   };
+}
+
+async function stopJob(id){
+  if (!confirm(t("console.stop_ask"))) return;
+  const r = await api("/api/task/stop", {method:"POST", quiet:true,
+    body: JSON.stringify({id})});
+  if (r && r.error) toast(r.error, "warn");
+  else toast(t("console.stopped"));
+  drawLiveJobs();
 }
 
 async function runStep(cmd, args){
@@ -4849,7 +4890,7 @@ function fixButton(what){
   if (!r || !r.runnable) return null;
   return el("button",{class:"btn sm", onclick:async ()=>{
     if (!confirm(t("fix.ask", {cmd: fix.cmd, args: fix.args.join(" ")}))) return;
-    if (await busyElsewhere(fix.cmd)) return;
+    if (await busyElsewhere(fix.cmd, fix.cmd, fix.args, "job")) return;
     const {rc} = await runStep(fix.cmd, fix.args);
     toast(failed(rc) ? t("fix.failed", {cmd: fix.cmd, rc}) : t("fix.done", {cmd: fix.cmd}),
           failed(rc) ? "err" : "ok");
@@ -4992,7 +5033,7 @@ function routeSteps(sc, write){
 
 async function runRoute(sc, write, resume){
   if (!S.project) return toast(t("route.pick_project"), "warn");
-  if (await busyElsewhere(sc.title)) return;
+  if (await busyElsewhere(sc.title, "", [], "route")) return;
   const steps = routeSteps(sc, write);
   const writes = steps.filter(st=>st.args.includes("--apply"));
   if (!resume && write && writes.length && !confirm(t("route.ask", {title: sc.title,
@@ -7087,7 +7128,7 @@ function relabelModules(){
 // Запуск, за которым человек смотрит в консоли. Вынесено из «Отчётов»: так же ведёт
 // себя любой раздел, откуда запускают долгую команду, — консоль одна на панель.
 async function runWatched(cmd, args = []){
-  if (await busyElsewhere(cmd)) return {rc: -1, busy: true};
+  if (await busyElsewhere(cmd, cmd, args, "job")) return {rc: -1, busy: true};
   show("console");
   $("#consoleApply").innerHTML = "";
   $("#consoleOut").innerHTML = "";

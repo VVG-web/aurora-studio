@@ -48,7 +48,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import code_repos as CREPO  # noqa: E402
 import git_sync as GS  # noqa: E402
-from aurora_common import CODE_DIR, engine_dir, lock_release, lock_take, utc_stamp  # noqa: E402
+from aurora_common import CODE_DIR, engine_dir, lock_holder, lock_release, lock_take, utc_stamp  # noqa: E402
 
 NET_TIMEOUT = 3600                 # клон большого репозитория — десятки минут; маршрут ждёт без предела, git — час
 CLONE_CFG = ["--config", "core.autocrlf=false", "--config", "core.longpaths=true"]
@@ -119,8 +119,48 @@ def state_file(project) -> Path:
     return Path(project) / engine_dir(project) / "state" / "code" / "sync.json"
 
 
-def lock_file(project) -> Path:
-    return Path(project) / engine_dir(project) / "state" / "code.lock"
+def safe_lock_name(name: str) -> str:
+    """Имя репозитория в имени замка: без разделителей пути и спецсимволов."""
+    import re
+    return re.sub(r"[^0-9A-Za-z_.-]+", "_", str(name or "")).strip("._") or "repo"
+
+
+def lock_file(project, repo: str = "") -> Path:
+    """Замок синка: общий `code.lock` или отдельный `code-<repo>.lock`."""
+    base = Path(project) / engine_dir(project) / "state"
+    return base / ("code.lock" if not repo else f"code-{safe_lock_name(repo)}.lock")
+
+
+def _take_sync_locks(project, names: list, only: str) -> tuple[list[Path], str]:
+    """Взять замки на синк. → (взятые, причина отказа).
+
+    Синк всех берёт общий замок и замки репозиториев в отсортированном порядке.
+    Синк одного сначала проверяет общий, затем берёт только свой. Два разных
+    репозитория поэтому идут параллельно, а общий синк ждёт любой из них.
+    """
+    if only:
+        common = lock_file(project)
+        held = lock_holder(str(common))
+        if held:
+            return [], f"синхронизация всех репозиториев уже идёт (процесс {held.get('pid', '?')})"
+        paths = [lock_file(project, only)]
+    else:
+        paths = [lock_file(project)] + [lock_file(project, n) for n in sorted(set(names))]
+    paths = list(dict.fromkeys(paths))
+    taken: list[Path] = []
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ok, holder = lock_take(str(path), {"task": "code:sync", "repo": only or "all"})
+        if not ok:
+            for got in reversed(taken):
+                lock_release(str(got))
+            if path == lock_file(project):
+                return [], f"синхронизация всех репозиториев уже идёт (процесс {holder.get('pid', '?')})"
+            label = path.name.removeprefix("code-").removesuffix(".lock")
+            return [], (f"синхронизация репозитория «{label}» уже идёт "
+                        f"(процесс {holder.get('pid', '?')})")
+        taken.append(path)
+    return taken, ""
 
 
 def read_state(project) -> dict:
@@ -473,16 +513,15 @@ def run_sync(project, only: str = "", apply: bool = False, reset: bool = False, 
         p = GS.problem("no_git")
         _say(f"✗ {p['title']} — {p['fix']}")
         return 2
-    lock = lock_file(project)
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    taken, holder = lock_take(str(lock), {"task": "code:sync"})
-    if not taken:
-        _say(f"✗ синхронизация кода уже идёт (процесс {holder.get('pid', '?')}) — дождитесь её конца")
+    locks, why = _take_sync_locks(project, names, only)
+    if not locks:
+        _say(f"✗ {why} — дождитесь её конца")
         return 2
     try:
         return _sync_all(project, clean, names, reset, as_json, bool(bad))
     finally:
-        lock_release(str(lock))
+        for path in reversed(locks):
+            lock_release(str(path))
 
 
 def _sync_all(project, clean: dict, names: list, reset: bool, as_json: bool, had_bad: bool) -> int:

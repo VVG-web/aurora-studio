@@ -187,6 +187,12 @@
    "calls": 1,
    "git": "local"
   },
+  "cockpit/task_scheduler.py:TaskScheduler._save_locked": {
+   "kind": "other",
+   "reason": "очередь задач панели: служебный JSON в домашней папке, запись через временный файл и подмену",
+   "calls": 2,
+   "git": "none"
+  },
   "reports/analyst/fetch_confluence_metadata.py:main": {
    "kind": "other",
    "reason": "отчёты аналитика: рабочие файлы выгрузки вне базы знаний",

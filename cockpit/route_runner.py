@@ -453,6 +453,7 @@ class RouteRun:
     redo: tuple = ()                # ключи шагов, шедших на прежних данных из-за отложенного шага: их надо повторить
     stop = None                     # Event остановки; у каркаса проверок без __init__ его нет
     locked = False                  # замок маршрута проекта взят этим прогоном (1.188.1)
+    task_held = False               # ресурс kb-write взят планировщиком на всю длину
 
     def __init__(self, ck, project: str, sc: dict, write: bool = True, lang: str = "ru",
                  log=None, stop=None, on_job=None, on_step=None, resume: dict | None = None,
@@ -1074,6 +1075,20 @@ class RouteRun:
             res = {"ok": False, "reason": "failed", "failed": steps[0]["cmd"] if steps else "",
                    "note": why, "steps": 0, "lines": [], "run_id": self.run_id, "found": []}
             return self._close(res)
+        acquire = getattr(ck, "task_acquire", None)
+        if acquire:
+            def queued(conflict):
+                self.say("warn", t("route.wait_resource", conflict=conflict))
+            if not acquire(self.run_id, self.project, ("kb-write",), kind="route",
+                           on_queue=queued, should_stop=self._stopping):
+                self.stopped = True
+                why = t("route.stopped_in_queue")
+                self.say("err", "■ " + why)
+                return self._close({"ok": False, "reason": "stopped",
+                                    "failed": steps[0]["cmd"] if steps else "",
+                                    "note": why, "steps": 0, "lines": [],
+                                    "run_id": self.run_id, "found": []})
+            self.task_held = True
         G, svc = net_gate(), self._net_svc()
         # Политика нужна только включённой проверке: выключенная ничего не решает и в окружение шага не попадает.
         self.net_policy = G.policy_for(self.net, svc) if (G and svc and svc.enabled) else ""
@@ -1360,6 +1375,14 @@ class RouteRun:
                          seconds=round(time.time() - self.started), steps=self.children)
         write_meta(self.base, self.meta)
         self.journal.close()
+        if self.task_held:
+            release = getattr(self.ck, "task_release", None)
+            if release:
+                try:
+                    release(self.run_id)
+                except Exception:  # noqa: BLE001 — закрытие важнее освобождения ресурса
+                    pass
+            self.task_held = False
         self._unlock()
         self.result = res
         self.done_flag = True
