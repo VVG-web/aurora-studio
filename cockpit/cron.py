@@ -50,6 +50,7 @@ import traceback
 from datetime import datetime, timedelta
 
 import route_runner as RR
+import task_scheduler as TS
 
 try:
     import bots as BOTS               # движок: боты проектов (scripts/bots.py)
@@ -693,7 +694,7 @@ class Scheduler:
             return False
         return bool(sc and sc.get("destructive"))
 
-    def _busy(self, project: str, kind: str = "command") -> bool:
+    def _busy(self, project: str, kind: str = "command", resources: tuple = ()) -> bool:
         """Ждёт ли цепочка. Команда не ждёт: её ставит в очередь планировщик панели.
 
         Маршрут ждёт только другой маршрут: `route.lock` один на проект. Ручную
@@ -702,25 +703,30 @@ class Scheduler:
         if kind != "route":
             return False
         act = self.ck.project_activity(project)
-        if act.get("live_routes") or (act.get("agent") or {}).get("alive"):
+        if (act.get("agent") or {}).get("alive") and \
+                TS.resources_conflict(resources, ("kb-write",)):
             return True
-        blocking = ("kb-write", "git-index", "engine-update", "exclusive", "kit-exclusive")
+        for row in act.get("live_routes") or []:
+            if not isinstance(row, dict):
+                continue
+            if TS.resources_conflict(resources, row.get("resources") or ("kb-write",)):
+                return True
         for row in act.get("running") or []:
             if not isinstance(row, dict):
                 continue
-            for res in row.get("resources") or []:
-                if str(res) in blocking or str(res).startswith("source:"):
-                    return True
+            if TS.resources_conflict(resources, row.get("resources") or ()):
+                return True
         return False
 
-    def _wait_free(self, project: str, log=None, kind: str = "command") -> bool:
+    def _wait_free(self, project: str, log=None, kind: str = "command",
+                   resources: tuple = ()) -> bool:
         """Дождаться, пока проект освободится. Ждать молча нельзя: после перезапуска панели
         шаг прежней цепочки (07.10.2026 — `agent:extract` в PRJ-A) продолжал работать
         сиротой, а пункт новой стоял «идёт» без единой строки, и человек не знал, кому
         верить — Cron или Консоли."""
         end = time.time() + BUSY_WAIT_S
         said = False
-        while self._busy(project, kind):
+        while self._busy(project, kind, resources):
             if not said and log:
                 said = True
                 log(busy_line(self.ck.project_activity(project)))
@@ -857,15 +863,19 @@ class Scheduler:
         self.say("")
         self.say(f"━━ {self.item_label(it)} ━━")
         project = it["project"]
-        if not self._wait_free(project, log, it["kind"]):
-            it.update(status="stopped" if self.stop_event.is_set() else "skipped",
-                      note="" if self.stop_event.is_set() else "busy", finished=now_iso())
-            return
+        sc = None
+        resources = ()
         if it["kind"] == "route":
             sc = RR.scenario(ck, it["route"])
             if not sc:
                 it.update(status="failed", note="no_route", finished=now_iso())
                 return
+            resources = RR.route_resources(ck, sc, it.get("write", True))
+        if not self._wait_free(project, log, it["kind"], resources):
+            it.update(status="stopped" if self.stop_event.is_set() else "skipped",
+                      note="" if self.stop_event.is_set() else "busy", finished=now_iso())
+            return
+        if it["kind"] == "route":
             resume = {"skipSigs": it["done"]} if it.get("done") else None
             net = task.get("net", "")
             if it.get("retry"):

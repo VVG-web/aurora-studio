@@ -5766,8 +5766,16 @@ def project_activity(project: str) -> dict:
     # Идущий маршрут пишет «сделанное» после каждого шага — на случай перезапуска панели.
     # Пока он жив, эта запись — не «остановлен», а ход работы: Мостик показывает задание.
     live = routes_live(project)
+    known = {r["id"] for r in live}
+    for row in RR.route_live(project):
+        if row.get("run") in known:
+            continue
+        live.append({"id": row.get("run", ""), "scId": row.get("route", ""),
+                     "title": row.get("title", ""), "foreign": True,
+                     "pid": row.get("pid"), "since": row.get("since", ""),
+                     "resources": row.get("resources") or []})
     if not live:
-        # Маршрут из терминала или другой панели в этой панели не зарегистрирован, но держит замок маршрута.
+        # Старый маршрут из терминала держит только route.lock, реестра ещё нет.
         held = RR.route_holder(project)
         if held:
             live = [{"id": held.get("run", ""), "scId": held.get("route", ""), "title": held.get("title", ""),
@@ -9252,17 +9260,24 @@ def route_start(project: str, sc_id: str, write: bool, resume: dict | None = Non
     sc = RR.scenario(sys.modules[__name__], sc_id)
     if not sc:
         return {"error": f"маршрута «{sc_id}» нет в cockpit/scenarios.txt"}
+    resources = RR.route_resources(sys.modules[__name__], sc, write)
     with ROUTES_LOCK:
         for r in ROUTES.values():
-            if r["project"] == project and not r["run"].done_flag:
-                return {"error": "в проекте уже идёт маршрут", "route": r["id"],
+            if (r["project"] == project and not r["run"].done_flag
+                    and r["run"].sc.get("id") == sc_id):
+                return {"error": "этот маршрут уже идёт", "route": r["id"],
                         "scId": r["run"].sc.get("id"), "write": r["run"].write}
-    held = RR.route_holder(project)
+    for row in RR.route_live(project):
+        if row.get("route") == sc_id:
+            return {"error": "этот маршрут уже идёт вне этой панели: %s (pid %s, с %s)"
+                             % (row.get("title") or sc_id, row.get("pid") or "?", row.get("since") or "?"),
+                    "foreign": True, "scId": sc_id}
+    held = RR.route_conflict(project, resources)
     if held:
-        # Маршрут идёт не в этой панели (терминал, другая панель): подключиться к его журналу отсюда нельзя.
-        return {"error": "в проекте уже идёт маршрут вне этой панели: %s (pid %s, с %s)"
-                         % (held.get("title") or held.get("route") or "?", held.get("pid") or "?", held.get("since") or "?"),
-                "foreign": True, "scId": held.get("route", "")}
+        return {"error": "маршрут не начат: %s уже держит %s"
+                         % (held.get("title") or held.get("route") or "маршрут",
+                            held.get("conflict") or "ресурс"),
+                "foreign": True, "conflict": held}
     run = RR.RouteRun(sys.modules[__name__], project, sc, write, lang=lang, resume=resume,
                       trigger="button", net=net)
     rid = run.run_id
@@ -9498,7 +9513,8 @@ def route_action(rid: str, what: str) -> dict:
 def routes_live(project: str) -> list:
     with ROUTES_LOCK:
         return [{"id": r["id"], "scId": r["run"].sc.get("id"), "title": r["run"].sc.get("title", ""),
-                 "write": r["run"].write, "started": r["started"]}
+                 "write": r["run"].write, "started": r["started"],
+                 "resources": list(getattr(r["run"], "resources", ()))}
                 for r in ROUTES.values()
                 if r["project"] == project and not r["run"].done_flag]
 

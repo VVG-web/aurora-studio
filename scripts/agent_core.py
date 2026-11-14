@@ -3395,9 +3395,10 @@ def _cache_ring(cfg: dict, role: str, think) -> list:
 def _cache_key(cfg: dict, role: str, messages: list, think, max_tokens,
                output_model: str = "") -> str:
     import hashlib
-    # v:2 — ключ по кольцу роли; записи v:1 строились по `backends` и в ключ не
-    # попадают: после выпуска их ответы не подхватываются.
-    blob = json.dumps({"v": 2, "role": role, "ring": _cache_ring(cfg, role, think),
+    # v:3 — BuildCard получил `to` и `summary`; ответы v:2 той же формы могли быть
+    # сохранены без раздела, и подхватывать их после 1.223.1 нельзя. Записи v:1
+    # строились по `backends` и в ключ не попадали.
+    blob = json.dumps({"v": 3, "role": role, "ring": _cache_ring(cfg, role, think),
                        "think": bool(think), "output_model": output_model,
                        "max": max_tokens, "messages": messages},
                       ensure_ascii=False, sort_keys=True)
