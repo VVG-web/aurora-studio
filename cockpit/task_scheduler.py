@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import threading
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 DEFAULT_MAX_PARALLEL = 4
-STORE_VERSION = 1
+STORE_VERSION = 2
 
 
 def _scripts_dir() -> None:
@@ -49,7 +50,13 @@ def _lock_holder(path: Path) -> dict:
 
 def safe_lock_name(name: str) -> str:
     """Имя репозитория в имени файла замка: без разделителей пути и спецсимволов."""
-    return re.sub(r"[^0-9A-Za-z_.-]+", "_", str(name or "")).strip("._") or "repo"
+    raw = str(name or "")
+    if not raw:
+        return "repo"
+    clean = re.sub(r"[^0-9A-Za-z_.-]+", "_", raw).strip("._") or "repo"
+    if clean != raw or any(ord(ch) > 127 for ch in raw):
+        clean = f"{clean}-{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:8]}"
+    return clean
 
 
 def repo_from_args(args: list | tuple) -> str:
@@ -396,14 +403,14 @@ class TaskScheduler:
     def _save_locked(self) -> None:
         if not self._store:
             return
-        rows = []
-        for t in self._queued:
-            if t.parent:
-                continue                  # шаг маршрута без родителя не восстанавливается
-            rows.append({"id": t.id, "project": t.project, "resources": list(t.resources),
-                         "kind": t.kind, "parent": t.parent, "created": t.created,
-                         "spec": dict(t.spec)})
-        data = {"version": STORE_VERSION, "queued": rows}
+        def row(t):
+            return {"id": t.id, "project": t.project, "resources": list(t.resources),
+                    "kind": t.kind, "parent": t.parent, "created": t.created,
+                    "spec": dict(t.spec)}
+        queued = [row(t) for t in self._queued if not t.parent]
+        active = [row(t) for t in self._active.values()
+                  if t.kind == "job" and t.spec.get("run_id")]
+        data = {"version": STORE_VERSION, "active": active, "queued": queued}
         try:
             self._store.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._store.with_suffix(self._store.suffix + ".tmp")
@@ -420,6 +427,33 @@ class TaskScheduler:
             return []
         rows = data.get("queued") if isinstance(data, dict) else None
         return [r for r in rows or [] if isinstance(r, dict) and not r.get("parent")]
+
+    @staticmethod
+    def read_active(path: str | Path) -> list[dict]:
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        rows = data.get("active") if isinstance(data, dict) else None
+        return [r for r in rows or [] if isinstance(r, dict)]
+
+    @staticmethod
+    def clear_active(path: str | Path) -> None:
+        """После записи `interrupted` активные задачи больше не считаются живыми."""
+        path = Path(path)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        data["active"] = []
+        try:
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            pass
 
 
 def make_task(task_id: str, project: str, cmd: str, args: list | tuple = (), *,

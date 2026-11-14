@@ -138,9 +138,11 @@ def test_the_scheduler_treats_a_running_route_as_busy(tmp: Path):
             return self.act
     ck = _Ck()
     sched = cron.Scheduler(ck, lambda: [])
-    assert sched._busy("/p/A", "route") is False
+    assert sched._busy("/p/A", "route", ("kb-write",)) is False
     ck.act = {"running": [], "agent": None, "route": None, "live_routes": [{"scId": "update", "title": "Обновить базу"}]}
-    assert sched._busy("/p/A", "route") is True
+    assert sched._busy("/p/A", "route", ("kb-write",)) is True
+    assert sched._busy("/p/A", "route", ("code:repo",)) is False, \
+        "маршрут кода не должен ждать писателя базы"
     assert sched._busy("/p/A", "command") is False, \
         "команда не должна ждать весь проект: её ставит в очередь планировщик"
     line = cron.busy_line(ck.act)

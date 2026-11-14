@@ -121,8 +121,15 @@ def state_file(project) -> Path:
 
 def safe_lock_name(name: str) -> str:
     """Имя репозитория в имени замка: без разделителей пути и спецсимволов."""
+    import hashlib
     import re
-    return re.sub(r"[^0-9A-Za-z_.-]+", "_", str(name or "")).strip("._") or "repo"
+    raw = str(name or "")
+    if not raw:
+        return "repo"
+    clean = re.sub(r"[^0-9A-Za-z_.-]+", "_", raw).strip("._") or "repo"
+    if clean != raw or any(ord(ch) > 127 for ch in raw):
+        clean = f"{clean}-{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:8]}"
+    return clean
 
 
 def lock_file(project, repo: str = "") -> Path:

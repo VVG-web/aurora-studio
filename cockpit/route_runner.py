@@ -31,6 +31,7 @@ import secrets
 import threading
 import time
 import traceback
+import task_scheduler as TS
 
 from datetime import datetime, timezone
 
@@ -430,13 +431,130 @@ def route_lock_path(project: str) -> str:
     return os.path.join(project, engine_dir(project), "state", "route.lock")
 
 
+def route_registry_path(project: str) -> str:
+    """Реестр живых маршрутов проекта: несколько маршрутов с разными ресурсами."""
+    from aurora_common import engine_dir
+    return os.path.join(project, engine_dir(project), "state", "routes.json")
+
+
+def _route_rows(project: str) -> list:
+    """Живые записи реестра; запись мёртвого процесса не считается."""
+    from aurora_common import pid_alive
+    try:
+        with open(route_registry_path(project), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    rows = data.get("routes") if isinstance(data, dict) else data
+    out = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            pid = int(row.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid > 0 and not pid_alive(pid):
+            continue
+        out.append(row)
+    return out
+
+
+def route_live(project: str) -> list:
+    """Все живые маршруты проекта, включая чужие панели и терминал."""
+    return _route_rows(project)
+
+
 def route_holder(project: str) -> dict:
     """Живой держатель замка маршрута (его запись: pid, run, route, title, since) или пусто. Ничего не пишет и не снимает."""
     from aurora_common import lock_holder
+    rows = route_live(project)
+    if rows:
+        return rows[0]
     try:
         return lock_holder(route_lock_path(project))
     except OSError:
         return {}
+
+
+def _route_write_rows(project: str, rows: list) -> None:
+    import aurora_fs
+    aurora_fs.write_json(route_registry_path(project), {"routes": rows}, indent=1)
+
+
+def route_claim(project: str, run_id: str, route: str, title: str,
+                resources: tuple) -> tuple:
+    """Занять ресурсы маршрута в общем реестре. → (занято, запись держателя)."""
+    from aurora_common import lock_release, lock_take, utc_stamp
+    path = route_registry_path(project)
+    lock = path + ".lock"
+    payload = {"run": run_id, "route": route, "title": title, "pid": os.getpid(),
+               "since": utc_stamp(), "resources": list(resources)}
+    for _ in range(100):
+        try:
+            taken, _held = lock_take(lock, {"task": "route-registry"})
+        except OSError:
+            return True, payload          # реестр не пишется: маршрут не должен из-за этого стоять
+        if not taken:
+            time.sleep(0.05)
+            continue
+        try:
+            rows = [r for r in _route_rows(project) if r.get("run") != run_id]
+            for row in rows:
+                hit = TS.resources_conflict(resources, row.get("resources") or ("kb-write",))
+                if hit:
+                    return False, dict(row, conflict=hit)
+            rows.append(payload)
+            _route_write_rows(project, rows)
+            return True, payload
+        finally:
+            lock_release(lock)
+    return False, {"pid": 0, "conflict": "routes.lock"}
+
+
+def route_release(project: str, run_id: str) -> None:
+    """Убрать маршрут из реестра; чужую запись не трогаем."""
+    from aurora_common import lock_release, lock_take
+    path = route_registry_path(project)
+    lock = path + ".lock"
+    for _ in range(100):
+        try:
+            taken, _held = lock_take(lock, {"task": "route-registry"})
+        except OSError:
+            return
+        if not taken:
+            time.sleep(0.05)
+            continue
+        try:
+            rows = [r for r in _route_rows(project) if r.get("run") != run_id]
+            _route_write_rows(project, rows)
+        finally:
+            lock_release(lock)
+        return
+
+
+def route_conflict(project: str, resources: tuple) -> dict:
+    """Кто уже держит ресурс нового маршрута. Пусто — можно начинать."""
+    for row in route_live(project):
+        hit = TS.resources_conflict(resources, row.get("resources") or ("kb-write",))
+        if hit:
+            return dict(row, conflict=hit)
+    if "kb-write" in resources:
+        from aurora_common import lock_holder
+        held = lock_holder(route_lock_path(project))
+        if held:
+            return dict(held, conflict="kb-write")
+    return {}
+
+
+def route_resources(ck, sc: dict, write: bool = True) -> tuple:
+    """Ресурсы маршрута по его шагам. Пустой маршрут — прежний один писатель базы."""
+    out = []
+    for st in plan(ck, sc, write):
+        for r in TS.resources_for(st["cmd"], st["args"]):
+            if r not in out:
+                out.append(r)
+    return tuple(sorted(out)) if out else ("kb-write",)
 
 
 class RouteRun:
@@ -454,11 +572,14 @@ class RouteRun:
     stop = None                     # Event остановки; у каркаса проверок без __init__ его нет
     locked = False                  # замок маршрута проекта взят этим прогоном (1.188.1)
     task_held = False               # ресурс kb-write взят планировщиком на всю длину
+    registry_held = False           # запись маршрута в общем реестре
 
     def __init__(self, ck, project: str, sc: dict, write: bool = True, lang: str = "ru",
                  log=None, stop=None, on_job=None, on_step=None, resume: dict | None = None,
                  trigger: str = "cli", parent: str = "", net: str = ""):
         self.ck, self.project, self.sc, self.write = ck, project, sc, write
+        self.resources = route_resources(ck, sc, write)
+        self.kb_lock = "kb-write" in self.resources
         # Политика прогона без связи: задание Cron или выбор человека в диалоге; пусто — из настройки кита.
         self.net, self.net_policy = net, ""
         self.deferred: list = []               # шаги, которым не хватило связи: повторим после восстановления
@@ -521,6 +642,8 @@ class RouteRun:
     def _lock(self) -> dict:
         """Взять замок маршрута проекта. → пусто, если взят; иначе запись держателя. Не смогли записать замок
         (диск, права) — работать это не мешает: замок защищает от второго маршрута, а не от первого."""
+        if not self.kb_lock:
+            return {}
         from aurora_common import lock_take, utc_stamp
         try:
             taken, held = lock_take(route_lock_path(self.project),
@@ -1028,7 +1151,19 @@ class RouteRun:
             self.say("note", self.t("route.kb_update_needs_fix"))
 
     def _commit(self, message: str) -> dict:
-        return self.ck.git_commit(self.project, message, None, True)
+        """Коммит маршрута. Два маршрута не должны одновременно трогать git-индекс:
+        короткий `OpLock` сериализует их и в этой панели, и из терминала."""
+        if not os.path.exists(os.path.join(self.project, ".git")):
+            return self.ck.git_commit(self.project, message, None, True)
+        import git_sync as GS
+        for _ in range(600):
+            if self._stopping():
+                return {"error": "остановлено"}
+            with GS.OpLock(self.project, "route-commit") as lock:
+                if lock.ok:
+                    return self.ck.git_commit(self.project, message, None, True)
+            time.sleep(0.1)
+        return {"error": "git занят другим процессом"}
 
     def _git(self, action: str, trigger: str) -> None:
         """Автоматика Git проекта перед маршрутом и после него — если она включена.
@@ -1059,6 +1194,16 @@ class RouteRun:
             self.no_run = True
             return self._close({"ok": False, "reason": "failed", "failed": steps[0]["cmd"] if steps else "",
                                 "note": why, "steps": 0, "lines": [], "run_id": self.run_id, "found": []})
+        claimed, holder = route_claim(self.project, self.run_id, self.sc.get("id", ""),
+                                      self.sc.get("title", ""), self.resources)
+        if not claimed:
+            why = t("route.locked", title=holder.get("title") or holder.get("route") or "?",
+                    since=holder.get("since") or "?", pid=holder.get("pid") or "?")
+            self.say("err", "■ " + why)
+            self.no_run = True
+            return self._close({"ok": False, "reason": "failed", "failed": steps[0]["cmd"] if steps else "",
+                                "note": why, "steps": 0, "lines": [], "run_id": self.run_id, "found": []})
+        self.registry_held = True
         self.total = len([s for s in steps if not s["cycle"]])
         for s in steps:
             sig = (s["cmd"] + " " + " ".join(s["args"])).strip()
@@ -1079,7 +1224,7 @@ class RouteRun:
         if acquire:
             def queued(conflict):
                 self.say("warn", t("route.wait_resource", conflict=conflict))
-            if not acquire(self.run_id, self.project, ("kb-write",), kind="route",
+            if not acquire(self.run_id, self.project, self.resources, kind="route",
                            on_queue=queued, should_stop=self._stopping):
                 self.stopped = True
                 why = t("route.stopped_in_queue")
@@ -1375,6 +1520,12 @@ class RouteRun:
                          seconds=round(time.time() - self.started), steps=self.children)
         write_meta(self.base, self.meta)
         self.journal.close()
+        if self.registry_held:
+            try:
+                route_release(self.project, self.run_id)
+            except Exception:  # noqa: BLE001 — закрытие важнее записи реестра
+                pass
+            self.registry_held = False
         if self.task_held:
             release = getattr(self.ck, "task_release", None)
             if release:

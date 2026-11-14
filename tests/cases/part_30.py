@@ -116,7 +116,7 @@ def test_a_chain_item_says_whom_it_waits_for(tmp: Path):
     saved = CRON.BUSY_POLL_S
     CRON.BUSY_POLL_S = 0
     try:
-        assert sch._wait_free("/p", said.append, "route") is True
+        assert sch._wait_free("/p", said.append, "route", ("kb-write",)) is True
     finally:
         CRON.BUSY_POLL_S = saved
     assert len(said) == 2 and "agent:extract" in said[0] and "свободен" in said[1], said

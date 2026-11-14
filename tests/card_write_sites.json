@@ -97,6 +97,12 @@
    "calls": 1,
    "git": "shared"
   },
+  "cockpit/aurora_cockpit.py:mark_interrupted_jobs": {
+   "kind": "other",
+   "reason": "история прерванной задачи: meta.json и console.log в архиве прогона",
+   "calls": 2,
+   "git": "local"
+  },
   "cockpit/aurora_cockpit.py:open_in_browser": {
    "kind": "other",
    "reason": "временная страница-переход для браузера: служебный файл вне базы",
@@ -187,9 +193,21 @@
    "calls": 1,
    "git": "local"
   },
+  "cockpit/route_runner.py:_route_write_rows": {
+   "kind": "other",
+   "reason": "реестр живых маршрутов: служебный JSON состояния проекта",
+   "calls": 1,
+   "git": "local"
+  },
   "cockpit/task_scheduler.py:TaskScheduler._save_locked": {
    "kind": "other",
    "reason": "очередь задач панели: служебный JSON в домашней папке, запись через временный файл и подмену",
+   "calls": 2,
+   "git": "none"
+  },
+  "cockpit/task_scheduler.py:TaskScheduler.clear_active": {
+   "kind": "other",
+   "reason": "снятие отметки активных задач после записи interrupted: временный файл и подмена",
    "calls": 2,
    "git": "none"
   },

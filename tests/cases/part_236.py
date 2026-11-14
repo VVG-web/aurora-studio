@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
@@ -334,3 +335,101 @@ def test_route_and_code_clone_run_together(tmp: Path):
                     starts.append(float(line.split()[1]))
         assert len(starts) == 2, starts
         assert max(starts) - min(starts) < 0.5, f"маршрут и клон шли не параллельно: {starts}"
+
+
+@test
+def test_two_routes_with_disjoint_resources_run_together(tmp: Path):
+    for CK, root in _panel(tmp):
+        import route_runner as RR
+
+        def route(scid, repo):
+            return {"id": scid, "title": f"Код {repo}", "when": "", "group": "база",
+                    "steps": [{"cmd": "code:sync", "why": "", "manual": False, "cycle": "",
+                               "flags": ["--apply", f"--repo={repo}"]}]}
+
+        run_a = RR.RouteRun(CK, str(root), route("ra", "A"), True)
+        run_b = RR.RouteRun(CK, str(root), route("rb", "B"), True)
+        results: dict = {}
+
+        def go(run, key, results=results):
+            results[key] = run.safe_run()
+
+        ta = threading.Thread(target=go, args=(run_a, "a"), daemon=True)
+        tb = threading.Thread(target=go, args=(run_b, "b"), daemon=True)
+        ta.start(); tb.start()
+        ta.join(10); tb.join(10)
+        assert run_a.done_flag and run_b.done_flag, results
+        assert results.get("a", {}).get("ok") and results.get("b", {}).get("ok"), results
+        starts = []
+        for run in (run_a, run_b):
+            for e in run.journal.entries:
+                s = str(e.get("s") or "")
+                if s.startswith("start "):
+                    starts.append(float(s.split()[1]))
+        assert len(starts) == 2, starts
+        assert max(starts) - min(starts) < 0.5, f"маршруты шли не параллельно: {starts}"
+
+
+@test
+def test_two_routes_with_the_same_resource_do_not_run_together(tmp: Path):
+    for CK, root in _panel(tmp):
+        import route_runner as RR
+        sc = {"id": "same", "title": "Тот же код", "when": "", "group": "база",
+              "steps": [{"cmd": "code:sync", "why": "", "manual": False, "cycle": "",
+                         "flags": ["--apply", "--repo=A"]}]}
+        run_a = RR.RouteRun(CK, str(root), dict(sc, id="same-a"), True)
+        run_b = RR.RouteRun(CK, str(root), dict(sc, id="same-b"), True)
+        results: dict = {}
+        gate = threading.Barrier(2)
+
+        def go(run, key, gate=gate, results=results):
+            gate.wait()
+            results[key] = run.safe_run()
+
+        ta = threading.Thread(target=go, args=(run_a, "a"), daemon=True)
+        tb = threading.Thread(target=go, args=(run_b, "b"), daemon=True)
+        ta.start(); tb.start()
+        ta.join(10); tb.join(10)
+        oks = sorted(bool((results.get(k) or {}).get("ok")) for k in ("a", "b"))
+        assert oks == [False, True], results
+        loser = results["a"] if not results["a"].get("ok") else results["b"]
+        assert "уже идёт" in loser.get("note", "") or "держит" in loser.get("note", ""), loser
+
+
+@test
+def test_interrupted_job_is_recorded_on_restart(tmp: Path):
+    import aurora_cockpit as CK
+    import route_runner as RR
+    root = make_project(tmp)
+    store = tmp / "queue.json"
+    run_id = "20260101-000000-abc"
+    base = Path(CK.runs_dir(str(root))) / run_id
+    base.mkdir(parents=True)
+    RR.write_meta(str(base), {"kind": "command", "id": run_id, "title": "kb:links",
+                              "cmd": "kb:links", "args": ["--apply"],
+                              "started": "2026-01-01T00:00:00Z", "status": "running"})
+    spec = {"project": os.path.realpath(str(root)), "cmd": "kb:links",
+            "args": ["--apply"], "run_id": run_id}
+    store.write_text(json.dumps({"version": 2,
+                                 "active": [{"id": "job1", "project": spec["project"], "spec": spec}],
+                                 "queued": []}, ensure_ascii=False), encoding="utf-8")
+    saved = CK.TASKS
+    CK.TASKS = TS.TaskScheduler(store_path=store)
+    try:
+        assert CK.mark_interrupted_jobs() == 1
+    finally:
+        CK.TASKS = saved
+    meta = RR.read_meta(str(base))
+    assert meta.get("status") == "interrupted" and "перезапущена" in meta.get("note", ""), meta
+    assert "задача прервана" in (base / "console.log").read_text(encoding="utf-8")
+    assert TS.TaskScheduler.read_active(store) == []
+
+
+@test
+def test_non_ascii_repo_locks_are_distinct(tmp: Path):
+    import code_sync as CS
+    a = TS.safe_lock_name("Репозиторий")
+    b = TS.safe_lock_name("Другой")
+    assert a != b and a != "repo" and b != "repo", (a, b)
+    assert CS.safe_lock_name("Репозиторий") == a, "имена замков панели и скрипта разошлись"
+    assert TS.safe_lock_name("A") == "A"
