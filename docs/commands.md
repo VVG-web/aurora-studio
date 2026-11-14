@@ -232,4 +232,3 @@
 | `python3 aurora.py update <target>` | обновить движок до версии kit; `--apply` пишет, `--structure-only` — только папки |
 
 Любую команду обслуживания можно звать и из kit'а: `python3 aurora.py <команда> <target> [флаги]`.
-
