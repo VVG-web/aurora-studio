@@ -302,7 +302,9 @@ def test_panel_run_asks_before_starting_a_command_that_lacks_the_network(tmp: Pa
         assert st == 409 and nb.get("cmd") == "sync:confluence" and nb["choices"] == ["queue", "cancel"] and not started, (st, d, started)
         assert nb["blocked"][0]["name"] == "VPN-1" and nb["blocked"][0]["source"] == "Confluence", nb
         st, d = call("POST", "/api/run", dict(body, net="queue"))
-        assert st == 200 and d == {"job": "job1"} and started == [("sync:confluence", True)], (st, d, started)
+        # Ответ несёт и состояние очереди: задание могло встать за ресурсом, и панель
+        # рисует это сразу, не дожидаясь отдельного опроса.
+        assert st == 200 and d.get("job") == "job1" and started == [("sync:confluence", True)], (st, d, started)
         started.clear()
         st, d = call("POST", "/api/run", dict(body, route=True))                 # шаг маршрута идёт без диалога: у него политика
         assert st == 200 and started == [("sync:confluence", False)], (st, d, started)
