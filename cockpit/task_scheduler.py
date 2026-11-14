@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 DEFAULT_MAX_PARALLEL = 4
-STORE_VERSION = 2
+STORE_VERSION = 1
 
 
 def _scripts_dir() -> None:
@@ -396,14 +396,14 @@ class TaskScheduler:
     def _save_locked(self) -> None:
         if not self._store:
             return
-        def row(t):
-            return {"id": t.id, "project": t.project, "resources": list(t.resources),
-                    "kind": t.kind, "parent": t.parent, "created": t.created,
-                    "spec": dict(t.spec)}
-        queued = [row(t) for t in self._queued if not t.parent]
-        active = [row(t) for t in self._active.values()
-                  if t.kind == "job" and t.spec.get("run_id")]
-        data = {"version": STORE_VERSION, "active": active, "queued": queued}
+        rows = []
+        for t in self._queued:
+            if t.parent:
+                continue                  # шаг маршрута без родителя не восстанавливается
+            rows.append({"id": t.id, "project": t.project, "resources": list(t.resources),
+                         "kind": t.kind, "parent": t.parent, "created": t.created,
+                         "spec": dict(t.spec)})
+        data = {"version": STORE_VERSION, "queued": rows}
         try:
             self._store.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._store.with_suffix(self._store.suffix + ".tmp")
@@ -420,15 +420,6 @@ class TaskScheduler:
             return []
         rows = data.get("queued") if isinstance(data, dict) else None
         return [r for r in rows or [] if isinstance(r, dict) and not r.get("parent")]
-
-    @staticmethod
-    def read_active(path: str | Path) -> list[dict]:
-        try:
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return []
-        rows = data.get("active") if isinstance(data, dict) else None
-        return [r for r in rows or [] if isinstance(r, dict)]
 
 
 def make_task(task_id: str, project: str, cmd: str, args: list | tuple = (), *,
