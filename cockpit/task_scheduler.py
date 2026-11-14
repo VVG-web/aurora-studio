@@ -138,6 +138,11 @@ def lock_paths_for(project: str, resources: list | tuple, cmd: str = "",
             add(state / f"code-{safe_lock_name(r.split(':', 1)[1])}.lock")
         elif r == "engine-update":
             add(state / "update.lock")
+    if cmd.startswith("agent:"):
+        # Шаг агента наследует kb-write маршрута, но свой agent.lock берёт сам.
+        # Чужой пишущий прогон из терминала должен остановить и его.
+        add(Path(project) / ".aurora" / "state" / "agent.lock")
+        add(Path(project) / ".opencode" / "state" / "agent.lock")
     if cmd == "code:index":
         add(state / "code-index.lock")
     return tuple(out)

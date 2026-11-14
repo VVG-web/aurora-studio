@@ -112,6 +112,26 @@ def test_a_job_sees_an_external_agent_lock(tmp: Path):
 
 
 @test
+def test_an_agent_step_still_sees_the_external_agent_lock(tmp: Path):
+    import aurora_common as AC
+    root = tmp / "project"
+    (root / ".aurora" / "state").mkdir(parents=True)
+    lock = root / ".aurora" / "state" / "agent.lock"
+    s = TS.TaskScheduler(max_parallel=4, rules={})
+    parent = _task("route", str(root), ("kb-write",))
+    assert s.submit(parent) == "running", s.snapshot()
+    taken, _ = AC.lock_take(str(lock), {"task": "cli"})
+    assert taken, "внешний замок агента не взят"
+    try:
+        step = TS.Task(id="step", project=os.path.realpath(root), resources=(),
+                       parent="route", spec={"cmd": "agent:build", "args": ["--apply"]})
+        assert "agent.lock" in s.preview(step), s.preview(step)
+    finally:
+        s.release("route")
+        AC.lock_release(str(lock))
+
+
+@test
 def test_queue_is_saved_without_route_children(tmp: Path):
     store = tmp / "queue.json"
     s = TS.TaskScheduler(max_parallel=1, store_path=store, rules={})
