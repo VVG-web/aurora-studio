@@ -364,7 +364,23 @@ def test_common_templates_folder_is_part_of_the_schema(tmp: Path):
     folder = KIT / "scaffold/TemplatesCommon"
     assert (folder / "README.md").is_file(), \
         "нет описания папки: модель не узнает, что здесь шаблоны и как их читать"
-    templates = sorted(p for p in folder.glob("*.md") if p.name != "README.md")
+
+    def shipped(p: Path) -> bool:
+        """Файл входит в поставку, а не лежит локальным черновиком рядом с ней.
+
+        В рабочей копии кита рядом с шаблонами живут личные черновики, исключённые
+        через `.git/info/exclude`. Паспорта у них нет и быть не должно, а проверка
+        обязана судить то, что уедет в проект. В архиве без `.git` считаем, что едет всё.
+        """
+        try:
+            cp = subprocess.run(["git", "-C", str(KIT), "ls-files", "--error-unmatch",
+                                 p.relative_to(KIT).as_posix()], capture_output=True)
+        except OSError:
+            return True
+        return cp.returncode != 1
+
+    templates = sorted(p for p in folder.glob("*.md")
+                       if p.name != "README.md" and shipped(p))
     assert templates, "папка общих шаблонов пуста — брать за основу нечего"
 
     # Паспорт шаблона: по нему модель выбирает файл под нужный артефакт и версию.

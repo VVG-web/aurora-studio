@@ -28,7 +28,7 @@
     `max_tokens` рассуждения съедают всё и `content=None` при `finish_reason=length`;
   • формы ошибок две: `{"error": {...}}` и `{"code": ..., "message": ...}`.
 
-Панель: `agent:ping`, `agent:width`, `agent:pydantic`
+Панель: `agent:ping`, `agent:width`, `agent:pydantic`, `agent:fast`
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ from aurora_common import load_env, lock_release, lock_take, python_executable, 
 from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import engine_dir, utc_stamp  # noqa: E402
 import aurora_runtime as RT  # noqa: E402 — единый Python всех подсистем
-ROLES = ("worker", "planner", "critic", "qa")
+ROLES = ("worker", "planner", "critic", "qa", "fast")
 CONNECT_TIMEOUT = 3          # секунд на установку соединения: мёртвый бэкенд не держит кольцо
 
 RING_PAUSE = 10              # пауза между полными кругами по цепочке
@@ -1571,6 +1571,8 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
             # Папка, куда бот кладёт файлы результата: инструмент записи есть только у него.
             "outdir": payload.get("outdir") or "",
             "tool_calls": (payload.get("tool_calls") or TOOL_CALLS) if tools else 0}
+    if payload.get("output_model"):
+        task["output_model"] = str(payload["output_model"])
     slot = {"done": threading.Event(), "out": None}
     with _HUB_LOCK:
         _HUB["seq"] += 1
@@ -1617,13 +1619,14 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
             "usage": out.get("usage") or {},
             # Чем шёл вызов и что модель вызывала: бот без единого вызова инструмента при
             # своих MCP — не «отработал», а «ответил текстом» (6.10.2026).
-            "aurora": {"via": "pydantic_ai", "tools_called": list(out.get("tools_called") or [])}}
+            "aurora": {"via": "pydantic_ai", "structure": out.get("structured") or "",
+                       "tools_called": list(out.get("tools_called") or [])}}
     return 200, body, "", dt
 
 
 # Поля payload, которые понимает только внутренний адаптер. В HTTP-запрос они не идут.
 ADAPTER_ONLY = frozenset({"guard", "role", "tools_root", "mcp", "mcp_active", "outdir",
-                          "tool_calls", "adapter", "needs_adapter",
+                          "tool_calls", "adapter", "needs_adapter", "output_model",
                           "context_store", "input_limit"})
 
 
@@ -2888,7 +2891,117 @@ def pin_model(cfg: dict, spec: str, roles=("worker",)) -> dict:
 def role_chain(cfg: dict, role: str) -> list:
     """Бэкенды роли по порядку (настройка кита). Пустая роль — роль `worker`."""
     llm = (cfg.get("chains") or {}).get("llm") or {}
+    if role == "fast" and (cfg.get("fast") or {}).get("auto"):
+        own = list(llm.get("fast") or [])
+        win = fast_choice(cfg)
+        if not win:
+            return own or list(llm.get("worker") or [])
+        same = lambda b: (b.get("url"), b.get("model")) == (win.get("url"), win.get("model"))
+        rest = [b for b in own if not same(b)]
+        worker = [b for b in (llm.get("worker") or []) if not same(b)]
+        return [win] + rest + worker
     return list(llm.get(role) or llm.get("worker") or [])
+
+
+# Авто-выбор быстрой модели. Кандидаты — все включённые чат-модели всех ролей: человек
+# уже объявил их в настройке, и «самая быстрая из доступных» не должна требовать ещё
+# одного списка. Замер — короткий запрос без рассуждений; выбор живёт 20 минут.
+FAST_TTL = 1200.0
+FAST_CACHE = RT.HOME / "cache" / "fast-model.json"
+_FAST_MEM: dict = {"at": 0.0, "backend": None}
+_FAST_LOCK = threading.Lock()
+
+
+def fast_candidates(cfg: dict) -> list:
+    """Уникальные чат-бэкенды всех ролей: {url, model}. Порядок — как в настройке."""
+    out, seen = [], set()
+    for chain in ((cfg.get("chains") or {}).get("llm") or {}).values():
+        for b in chain or []:
+            key = (b.get("url"), b.get("model"))
+            if b.get("model") and key not in seen and b.get("chat", True):
+                seen.add(key)
+                out.append(b)
+    return out
+
+
+def _probe_fast_one(b: dict, timeout: float = 5.0) -> tuple:
+    """Один замер: (годен, секунды, модель, причина)."""
+    payload = {"model": b["model"],
+               "messages": [{"role": "user", "content": "ответь одним словом: готов"}],
+               "max_tokens": 8, "temperature": 0}
+    st, body, err, dt = http_json(b["url"].rstrip("/") + "/chat/completions",
+                                  payload, b.get("key", ""), timeout)
+    choice = ((body or {}).get("choices") or [{}])[0] if isinstance(body, dict) else {}
+    msg = choice.get("message") or {}
+    ok = st == 200 and bool(msg.get("content") or msg.get("reasoning_content"))
+    return ok, dt, str(b.get("model") or ""), (str(err or "")[:120] if not ok else "")
+
+
+def fast_choice(cfg: dict, force: bool = False) -> dict | None:
+    """Самая быстрая доступная модель. None — авто выключено или все молчат."""
+    if not (cfg.get("fast") or {}).get("auto"):
+        return None
+    cands = fast_candidates(cfg)
+    if not cands:
+        return None
+    # Замер идёт один: десять потоков прогона не должны одновременно опрашивать шлюзы
+    # и переписывать один кеш. Второй вошедший дождётся и получит готовый выбор.
+    with _FAST_LOCK:
+        now = time.time()
+        if not force and now - _FAST_MEM["at"] <= FAST_TTL and _FAST_MEM.get("backend"):
+            return _FAST_MEM["backend"]
+        if not force:
+            try:
+                data = json.loads(FAST_CACHE.read_text(encoding="utf-8"))
+                if now - float(data.get("at") or 0) <= FAST_TTL:
+                    hit = next((b for b in cands
+                                if (b.get("url"), b.get("model")) ==
+                                (data.get("url"), data.get("model"))), None)
+                    if hit:
+                        _FAST_MEM.update(at=now, backend=hit)
+                        return hit
+            except (OSError, ValueError):
+                pass
+        from concurrent.futures import ThreadPoolExecutor
+        rows = []
+        with ThreadPoolExecutor(max_workers=min(8, len(cands))) as ex:
+            futures = {ex.submit(_probe_fast_one, b): b for b in cands}
+            for f in futures:
+                try:
+                    ok, dt, _model, why = f.result()
+                except Exception as e:                          # noqa: BLE001
+                    ok, dt, why = False, 0.0, f"{type(e).__name__}: {e}"
+                if ok:
+                    rows.append((dt, futures[f], why))
+        if not rows:
+            return None
+        rows.sort(key=lambda r: r[0])
+        win = dict(rows[0][1])
+        _FAST_MEM.update(at=now, backend=win)
+        try:
+            FAST_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            FAST_CACHE.write_text(json.dumps(
+                {"at": now, "url": win.get("url"), "model": win.get("model"),
+                 "provider": win.get("provider"), "seconds": round(rows[0][0], 3),
+                 "candidates": [{"url": r[1].get("url"), "model": r[1].get("model"),
+                                 "seconds": round(r[0], 3)} for r in rows]},
+                ensure_ascii=False, indent=1), encoding="utf-8")
+        except OSError:
+            pass
+        return win
+
+
+def fast_forget(backend: dict) -> None:
+    """Выбранная модель ошиблась — забыть выбор, следующий вызов замерит заново."""
+    with _FAST_LOCK:
+        win = _FAST_MEM.get("backend") or {}
+        if (win.get("url"), win.get("model")) != (backend.get("url"), backend.get("model")):
+            return
+        _FAST_MEM.update(at=0.0, backend=None)
+        try:
+            FAST_CACHE.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def ring_order(cfg: dict, prefer: int = 0, role: str | None = None) -> list:
@@ -3279,12 +3392,13 @@ def _cache_ring(cfg: dict, role: str, think) -> list:
             for b in ring_order(cfg, 0, role)]
 
 
-def _cache_key(cfg: dict, role: str, messages: list, think, max_tokens) -> str:
+def _cache_key(cfg: dict, role: str, messages: list, think, max_tokens,
+               output_model: str = "") -> str:
     import hashlib
     # v:2 — ключ по кольцу роли; записи v:1 строились по `backends` и в ключ не
     # попадают: после выпуска их ответы не подхватываются.
     blob = json.dumps({"v": 2, "role": role, "ring": _cache_ring(cfg, role, think),
-                       "think": bool(think),
+                       "think": bool(think), "output_model": output_model,
                        "max": max_tokens, "messages": messages},
                       ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -3306,7 +3420,7 @@ def _cache_get(key: str) -> dict | None:
 
 
 def _cache_put(key: str, r: dict) -> None:
-    keep = {k: r[k] for k in ("text", "reasoning", "backend", "model") if k in r}
+    keep = {k: r[k] for k in ("text", "reasoning", "backend", "model", "structured") if k in r}
     path = LLM_CACHE / key[:2] / f"{key}.json"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -3360,7 +3474,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
               mcp_active: list | None = None, mcp_only: list | None = None,
               outdir: str = "", tool_calls: int = 0, kb_root: str = "",
               context_store: str = "", input_limit: int = 0,
-              project: str = "") -> dict:
+              project: str = "", output_model: str = "") -> dict:
     """Один вызов модели — сначала из кэша ответов, если такой вызов уже был.
 
     В кэш идут только одиночные вызовы настоящим транспортом: без истории разговора,
@@ -3372,7 +3486,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
     key = ""
     if (_cache_on() and transport is None and not history and not tools and not trim
             and not mcp_active and not outdir and not context_store and not input_limit):
-        key = _cache_key(cfg, role, messages, think, max_tokens)
+        key = _cache_key(cfg, role, messages, think, max_tokens, output_model)
         hit = _cache_get(key)
         if hit and hit.get("text"):
             with _USAGE_LOCK:
@@ -3385,6 +3499,10 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
     pulse_ring(+1)
     try:
         kwargs = {"project": project} if project else {}
+        # `output_model` передаём только структурированному вызову: старый транспорт и
+        # подменённые вызовы в тестах не знают этого поля.
+        if output_model:
+            kwargs["output_model"] = output_model
         r = _call_role(cfg, role, messages, transport, deadline, sleep, thinking, max_tokens,
                        prefer, history, tools, guard_text, trim, request_timeout, mcp_active,
                        mcp_only, outdir, tool_calls, kb_root, context_store, input_limit,
@@ -3405,7 +3523,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
               mcp_active: list | None = None, mcp_only: list | None = None,
               outdir: str = "", tool_calls: int = 0, kb_root: str = "",
               context_store: str = "", input_limit: int = 0,
-              project: str = "") -> dict:
+              project: str = "", output_model: str = "") -> dict:
     """Один вызов модели через кольцо бэкендов.
 
     `mcp_active` — MCP-серверы, которые подключаются сразу (человек назвал их в запросе или
@@ -3672,6 +3790,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 payload["context_store"] = str(context_store)
             if input_limit:
                 payload["input_limit"] = int(input_limit)
+            if output_model:
+                payload["output_model"] = str(output_model)
             # Дедлайн общий на весь вызов, и первый бэкенд его съедает целиком: пока
             # он думает свои `request_timeout`, до запасного доходит `deadline - now`,
             # то есть пять секунд. Локальная модель — медленная по определению, за пять
@@ -3740,6 +3860,9 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     st, body, err, dt = transport("chat", b, payload,
                                                   max(5.0, deadline - time.time()))
                 if st != 200 or not isinstance(body, dict):
+                    # Выбранная авто-модель ошиблась — выбор больше не годится: следующий
+                    # вызов замерит доступные заново, а не будет 20 минут ходить в мёртвую.
+                    fast_forget(b)
                     # Связь это или отказ по делу: серия неудач на бэкенде, тревога связи, и
                     # реальная причина вместо «не ответил».
                     lw = link_note(b, model, st, err, live, t_req)
@@ -3985,6 +4108,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         "tokens_out": out_tokens,
                         "tps": round(out_tokens / dt, 1) if out_tokens and dt > 0 else 0.0,
                         "via": via, "bypass": bypass, "finish": finish,
+                        "structured": str((body.get("aurora") or {}).get("structure") or ""),
                         "req": dict(req, attempts=attempts, rings=ring),
                         "tools_called": list((body.get("aurora") or {}).get("tools_called") or [])}
             finally:
@@ -4590,6 +4714,40 @@ def cmd_venv_install(quarantine: bool = True) -> int:
     return 0 if res["ok"] else 1
 
 
+def cmd_fast(as_json: bool, force: bool = False) -> int:
+    """`agent:fast`: кто выбран авто-выбором и сколько шёл замер."""
+    cfg = config()
+    cands = fast_candidates(cfg)
+    win = fast_choice(cfg, force=force)
+    rows = []
+    try:
+        data = json.loads(FAST_CACHE.read_text(encoding="utf-8"))
+        rows = data.get("candidates") or []
+    except (OSError, ValueError):
+        pass
+    if as_json:
+        print(json.dumps({"auto": bool((cfg.get("fast") or {}).get("auto")),
+                          "winner": ({k: win.get(k) for k in ("provider", "model", "n")}
+                                     if win else None),
+                          "candidates": rows,
+                          "configured": [{"provider": b.get("provider"),
+                                          "model": b.get("model")} for b in cands]},
+                         ensure_ascii=False))
+        return 0
+    print(f"Быстрая модель: {'авто' if (cfg.get('fast') or {}).get('auto') else 'явная'}")
+    if win:
+        print(f"  выбрана: {win.get('provider')} / {win.get('model')} (шлюз №{win.get('n')})")
+    else:
+        print("  не выбрана: авто выключено или ни одна модель не ответила")
+    for row in rows:
+        print(f"  {row.get('seconds')} с · {row.get('model')}")
+    missing = [b for b in cands if not any(
+        (b.get("model") == r.get("model") and b.get("url") == r.get("url")) for r in rows)]
+    for b in missing[:12]:
+        print(f"  — · {b.get('model')} (не ответила)")
+    return 0 if win else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Встроенный агент: конфигурация и проверка цепочки")
     ap.add_argument("--ping", action="store_true",
@@ -4601,6 +4759,10 @@ def main() -> int:
     ap.add_argument("--show", action="store_true", help="собранная конфигурация, ключи маской")
     ap.add_argument("--pydantic", action="store_true",
                     help="настройки Pydantic AI: что уходит в шлюз по ролям")
+    ap.add_argument("--fast", action="store_true",
+                    help="какая модель выбрана быстрой (авто) и сколько шёл замер")
+    ap.add_argument("--force", action="store_true",
+                    help="с --fast: замерить заново, не читая кеш 20 минут")
     ap.add_argument("--check", action="store_true",
                     help="с --pydantic: заново проверить совместимость установленной версии")
     ap.add_argument("--venv-status", action="store_true",
@@ -4620,6 +4782,8 @@ def main() -> int:
         return cmd_probe(a.json, heavy=a.heavy)
     if a.pydantic:
         return cmd_pydantic(a.json, a.check)
+    if a.fast:
+        return cmd_fast(a.json, a.force)
     if a.venv_status:
         ok, version = venv_status()
         # Версия пакета (`-I`) — ещё не «работает»: для кого проверено и поднимается ли адаптер так,

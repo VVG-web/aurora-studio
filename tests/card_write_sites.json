@@ -259,6 +259,12 @@
    "calls": 2,
    "git": "local"
   },
+  "scripts/agent_core.py:fast_choice": {
+   "kind": "other",
+   "reason": "служебное состояние агента: кеш выбора быстрой модели (20 минут)",
+   "calls": 1,
+   "git": "local"
+  },
   "scripts/agent_core.py:_pulse_save": {
    "kind": "other",
    "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP",

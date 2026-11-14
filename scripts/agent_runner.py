@@ -954,14 +954,15 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
             scope if scope is thesis else "(только новые предложения переписанного тезиса; "
             "остальное уже осмотрено)\n\n" + scope)[:8000]),
         scope, root)}], deadline=deadline or (time.time() + AG.call_budget(cfg, "planner")),
-        prefer=prefer)
+        prefer=prefer, output_model="ExtractResult")
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
         fail_step(step, model_fail_note(r), r, key="note")
         return step
-    plan = (parse_json(r["text"]) or {}).get("extract")
+    data, shape_why = checked_json(r["text"], "ExtractResult")
+    plan = (data or {}).get("extract")
     if plan is None:
-        fail_step(step, "модель ответила не JSON", r, key="note")
+        fail_step(step, shape_why or "модель ответила не JSON", r, key="note")
         return step
     step.update(apply_extract_plan(root, path, text, thesis, plan, apply))
     return step
@@ -1544,7 +1545,7 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
             title=title, thesis=got, known=links_block(near))}]
         r = call(cfg, "worker", ask,
                  deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")),
-                 prefer=prefer)
+                 prefer=prefer, output_model="RelinkResult")
         step["backends"].append(r.get("backend"))
         if not r["ok"]:
             if not placed:
@@ -1552,10 +1553,10 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
                 return step
             failed = "модель не ответила: " + model_fail_note(r)
         else:
-            data = parse_json(r.get("text") or "")
+            data, shape_why = checked_json(r.get("text") or "", "RelinkResult")
             pairs = data.get("links") if isinstance(data, dict) else None
             if not isinstance(pairs, list):
-                failed = "ответ модели не разобран как JSON"
+                failed = shape_why or "ответ модели не разобран как JSON"
             else:
                 allowed = {n for n, _s, _b in near}
                 # Пары вставляются по одной, и каждая сверяется с текстом: пара, которая
@@ -2877,6 +2878,21 @@ PROMPT_TWINS = """Ты решаешь судьбу карточек, котор�
 {{"merge": false, "why": "<чем они отличаются, одна фраза>"}}"""
 
 
+PROMPT_TWINS_BATCH = """Ниже — несколько независимых групп карточек с похожим текстом.
+Для каждой реши: одна это сущность или разные, и если одна — какую оставить.
+
+{groups}
+
+Правила те же, что для одной группы:
+1. Разные названия одного объекта — одна сущность.
+2. Объект и действие над ним, общее правило и частный случай — разные.
+3. Оставлять ту, чьё имя точнее называет сущность, а не самую длинную.
+4. Сомневаешься — не сливай.
+
+Ответь строго JSON:
+{{"groups": [{{"id": 1, "same": true, "keep": "<имя из группы>", "why": "<одна фраза>"}}]}}"""
+
+
 PROMPT_TRANSLIT = """Карточка названа латиницей, а её содержание — на русском. Это
 транслит: русское имя записали латинскими буквами при выгрузке из источника.
 
@@ -2897,6 +2913,20 @@ PROMPT_TRANSLIT = """Карточка названа латиницей, а её
 Ответ — строго JSON: {{"cyrillic": "<имя по-русски или пустая строка>"}}"""
 
 
+PROMPT_TRANSLIT_BATCH = """Ниже — карточки, названные латиницей, а их содержание на русском.
+Для каждой верни русское имя или пометь, что переводить нечего.
+
+{items}
+
+Правила те же, что для одной карточки:
+- код артефакта и латинскую аббревиатуру оставь как есть;
+- английские слова и идентификаторы не переводятся: not_translit = true;
+- имя — то же понятие, а не пересказ.
+
+Ответ — строго JSON:
+{{"items": [{{"id": 1, "cyrillic": "<имя или пусто>", "not_translit": false}}]}}"""
+
+
 def solve_translit(cfg: dict, path: str, call=None, deadline: float = 0.0) -> dict:
     """Спросить у модели русское имя для транслитерованной карточки. → шаг отчёта."""
     from aurora_common import card_body, frontmatter
@@ -2907,9 +2937,9 @@ def solve_translit(cfg: dict, path: str, call=None, deadline: float = 0.0) -> di
     fm = frontmatter(text)
     title = (fm.get("title") or stem).strip().strip('"')
     body = " ".join(card_body(text).split())[:600]
-    r = call(cfg, "worker", [{"role": "user", "content": PROMPT_TRANSLIT.format(
+    r = call(cfg, "fast", [{"role": "user", "content": PROMPT_TRANSLIT.format(
         stem=stem, title=title, body=body)}],
-        deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")))
+        deadline=deadline or (time.time() + AG.call_budget(cfg, "fast")))
     step["backends"].append((r.get("backend"), r.get("model")))
     if not r["ok"]:
         fail_step(step, model_fail_note(r), r, key="why")
@@ -2929,6 +2959,56 @@ def solve_translit(cfg: dict, path: str, call=None, deadline: float = 0.0) -> di
         return step
     step.update(status="переведено", cyrillic=said)
     return step
+
+
+BATCH_TRANSLIT = 20
+
+
+def solve_translit_batch(cfg: dict, paths: list, call=None, deadline: float = 0.0):
+    """Перевести до 20 имён одним вызовом. → список шагов или None (тогда по одному).
+
+    Ошибка батча не приговор: не разобрался ответ, пропал id, модель перепутала
+    нумерацию — эти имена уходят в одиночный путь, и качество остаётся прежним.
+    """
+    from aurora_common import card_body, frontmatter
+    call = call or AG.call_role
+    items, steps = [], []
+    for i, path in enumerate(paths, 1):
+        stem = os.path.basename(path)[:-3]
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        fm = frontmatter(text)
+        items.append({"id": i, "stem": stem,
+                      "title": (fm.get("title") or stem).strip().strip('"'),
+                      "body": " ".join(card_body(text).split())[:500]})
+        steps.append({"stem": stem, "cyrillic": "", "status": "пропущена",
+                      "why": "", "backends": []})
+    r = call(cfg, "fast", [{"role": "user", "content": PROMPT_TRANSLIT_BATCH.format(
+        items=json.dumps(items, ensure_ascii=False))}],
+        deadline=deadline or (time.time() + AG.call_budget(cfg, "fast")),
+        output_model="TranslitBatch")
+    if not r.get("ok"):
+        return None
+    data, _why = checked_json(r.get("text") or "", "TranslitBatch")
+    if not data:
+        return None
+    got = {int(x["id"]): x for x in data.get("items") or []
+           if isinstance(x, dict) and isinstance(x.get("id"), int)}
+    for i, step in enumerate(steps, 1):
+        x = got.get(i)
+        step["backends"].append((r.get("backend"), r.get("model")))
+        if not x:
+            step.update(status="сбой", why="имени нет в ответе батча")
+            continue
+        said = str(x.get("cyrillic") or "").strip()
+        if x.get("not_translit"):
+            step.update(status="не транслит", why="английские слова или идентификатор")
+        elif not said:
+            step.update(status="сбой", why="в ответе батча нет имени")
+        elif not re.search(r"[а-яА-ЯёЁ]", said):
+            step.update(status="сбой", why=f"в ответе нет кириллицы: «{said[:60]}»")
+        else:
+            step.update(status="переведено", cyrillic=said)
+    return steps
 
 
 def run_translit(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> dict:
@@ -2952,22 +3032,61 @@ def run_translit(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) ->
     total = min(len(todo), limit or cfg["max_steps"])
     say(f"Карточек с латинским именем без перевода: {len(todo)} · в этот прогон: {total}")
     steps = []
-    for i, path in enumerate(todo[:total], 1):
-        if time.time() > budget:
-            steps.append({"stem": "", "cyrillic": "", "status": "стоп",
-                          "why": f"бюджет {cfg['budget_min']} мин исчерпан", "backends": []})
-            break
-        st = safe_unit(solve_translit, rel_or_abs(path),
-                       {"stem": os.path.basename(path)[:-3], "cyrillic": ""},
-                       cfg, path, call, deadline=budget)
+
+    def accept(st: dict, n: int) -> None:
         steps.append(st)
-        say(f"  {progress(i, total, started)} · {st['stem']} → "
+        say(f"  {progress(n, total, started)} · {st['stem']} → "
             + (st["cyrillic"] or st["status"]) + where(st))
         if st["status"] == "переведено" and not KT.is_identifier(st["stem"]):
             rows[st["stem"]] = st["cyrillic"]
         elif st["status"] == "не транслит":
             # Вердикт запоминается: без него те же имена уходили модели на каждом ремонте.
             rows[st["stem"]] = KT.NOT_TRANSLIT
+
+    # Батч — под флагом: 20 имён одним вызовом. Ошибка батча уходит в одиночный путь,
+    # поэтому качество не зависит от того, включён ли он.
+    batch = os.environ.get("AURORA_AGENT_BATCH_TRANSLIT") == "1"
+    if batch and total > 1:
+        for start in range(0, total, BATCH_TRANSLIT):
+            if time.time() > budget:
+                steps.append({"stem": "", "cyrillic": "", "status": "стоп",
+                              "why": f"бюджет {cfg['budget_min']} мин исчерпан",
+                              "backends": []})
+                break
+            chunk = todo[start:start + BATCH_TRANSLIT]
+            try:
+                got = solve_translit_batch(cfg, chunk, call, deadline=budget)
+            except Exception as e:                              # noqa: BLE001
+                say(f"  батч имён не вышел ({type(e).__name__}) — по одному")
+                got = None
+            if got is None:
+                got = [safe_unit(solve_translit, rel_or_abs(path),
+                                 {"stem": os.path.basename(path)[:-3], "cyrillic": ""},
+                                 cfg, path, call, deadline=budget) for path in chunk]
+            else:
+                # Ответ батча бывает частичным: имя потерялось или пришло без кириллицы.
+                # Такие имена доспрашиваем по одному — один битый пункт не тянет за собой
+                # остальные девятнадцать.
+                for idx, st in enumerate(got):
+                    if st.get("status") != "сбой" or time.time() > budget:
+                        continue
+                    got[idx] = safe_unit(solve_translit, rel_or_abs(chunk[idx]),
+                                         {"stem": os.path.basename(chunk[idx])[:-3],
+                                          "cyrillic": ""},
+                                         cfg, chunk[idx], call, deadline=budget)
+            for offset, st in enumerate(got):
+                accept(st, start + offset + 1)
+    else:
+        for i, path in enumerate(todo[:total], 1):
+            if time.time() > budget:
+                steps.append({"stem": "", "cyrillic": "", "status": "стоп",
+                              "why": f"бюджет {cfg['budget_min']} мин исчерпан",
+                              "backends": []})
+                break
+            st = safe_unit(solve_translit, rel_or_abs(path),
+                           {"stem": os.path.basename(path)[:-3], "cyrillic": ""},
+                           cfg, path, call, deadline=budget)
+            accept(st, i)
     if apply and steps:
         KT.write_dict(rows, dict_path)
     done = sum(1 for s in steps if s["status"] == "переведено")
@@ -3126,14 +3245,24 @@ def solve_twins(cfg: dict, cwd: str, group: list, apply: bool, call=None,
         # такой вердикт записывался в карточки раздела «Не путать» и закрывал группу навсегда.
         fail_step(step, "ответ модели не разобран: нет решения «merge»", r, key="why")
         return step
+    return apply_twins_verdict(cwd, group, step, verdict, apply, r=r)
+
+
+def apply_twins_verdict(cwd: str, group: list, step: dict, verdict: dict,
+                        apply: bool, r=None) -> dict:
+    """Записать решение по группе: развести, оставить или слить. Общее у одного и батча."""
     step["why"] = str(verdict.get("why") or "")[:200]
-    if not verdict["merge"]:
+    if not verdict.get("merge"):
         if apply:
             step["apart"] = mark_apart(cwd, group, step["why"])
         return step
     keep = str(verdict.get("keep") or "").strip()
     if keep not in group:
-        fail_step(step, f"названа карточка не из группы: «{keep}»", r, key="why")
+        why = f"названа карточка не из группы: «{keep}»"
+        if r is not None:
+            fail_step(step, why, r, key="why")
+        else:
+            step.update(status="сбой", why=why)
         return step
     step["keep"] = keep
     losers = [n for n in group if n != keep]
@@ -3150,20 +3279,116 @@ def solve_twins(cfg: dict, cwd: str, group: list, apply: bool, call=None,
     return step
 
 
+BATCH_TWINS = 5
+
+
+def _twin_rows(cwd: str, group: list) -> list:
+    """Тексты карточек группы для промпта: имя, раздел, статус, начало тела."""
+    from aurora_common import KB_ROOT, card_body, frontmatter
+    import build_plan as BP
+    rows = []
+    for name in group[:12]:
+        path = BP.find_card(name, cwd)
+        if not path:
+            continue
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        fm = frontmatter(text)
+        rows.append(f"### {name}\n"
+                    f"раздел: {os.path.relpath(os.path.dirname(path), os.path.join(cwd, KB_ROOT))}"
+                    f" · статус: {(fm.get('status') or '—').strip()}\n\n"
+                    + " ".join(card_body(text).split())[:900])
+    return rows
+
+
+def solve_twins_batch(cfg: dict, cwd: str, groups: list, apply: bool,
+                      call=None, deadline: float = 0.0):
+    """Решить до 5 групп одним вызовом. → список шагов или None (тогда по одной)."""
+    call = call or AG.call_role
+    items, blocks = [], []
+    for i, group in enumerate(groups, 1):
+        rows = _twin_rows(cwd, group)
+        if len(rows) < 2:
+            items.append({"id": i, "group": group, "rows": rows})
+            continue
+        items.append({"id": i, "group": group, "rows": rows})
+        blocks.append(f"## Группа {i}\n\n" + "\n\n".join(rows))
+    if not blocks:
+        return None
+    r = call(cfg, "critic", [{"role": "user", "content": PROMPT_TWINS_BATCH.format(
+        groups="\n\n".join(blocks))}],
+        deadline=deadline or (time.time() + AG.call_budget(cfg, "critic")),
+        output_model="TwinsBatch")
+    if not r.get("ok"):
+        return None
+    data, _why = checked_json(r.get("text") or "", "TwinsBatch")
+    if not data:
+        return None
+    got = {int(x["id"]): x for x in data.get("groups") or []
+           if isinstance(x, dict) and isinstance(x.get("id"), int)}
+    steps = []
+    for item in items:
+        group, rows = item["group"], item["rows"]
+        step = {"group": group, "status": "оставлено", "keep": "", "why": "",
+                "backends": [r.get("backend")]}
+        if len(rows) < 2:
+            step.update(status="пропущена", why="карточек группы уже нет")
+            steps.append(step)
+            continue
+        x = got.get(item["id"])
+        if not x:
+            step.update(status="сбой", why="группы нет в ответе батча")
+            steps.append(step)
+            continue
+        verdict = {"merge": bool(x.get("same")), "keep": str(x.get("keep") or ""),
+                   "why": str(x.get("why") or "")}
+        steps.append(apply_twins_verdict(cwd, group, step, verdict, apply, r=r))
+    return steps
+
+
 def run_twins(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> dict:
     """Пройти по группам двойников и решить каждую моделью. → сводка."""
     started = time.time()
     budget = started + cfg["budget_min"] * 60
     groups = twin_groups(cwd, limit=limit)
     steps = []
-    for i, g in enumerate(groups, 1):
-        if time.time() > budget:
-            steps.append({"group": [], "status": "стоп", "keep": "", "why":
-                          f"бюджет {cfg['budget_min']} мин исчерпан, осталось "
-                          f"{len(groups) - i + 1}", "backends": []})
-            break
-        steps.append(safe_unit(solve_twins, ", ".join(str(x) for x in g)[:200],
-                               {"group": g, "keep": ""}, cfg, cwd, g, apply, call, deadline=budget))
+    batch = os.environ.get("AURORA_AGENT_BATCH_TWINS") == "1"
+    if batch:
+        for start in range(0, len(groups), BATCH_TWINS):
+            if time.time() > budget:
+                steps.append({"group": [], "status": "стоп", "keep": "", "why":
+                              f"бюджет {cfg['budget_min']} мин исчерпан, осталось "
+                              f"{len(groups) - start}", "backends": []})
+                break
+            chunk = groups[start:start + BATCH_TWINS]
+            try:
+                got = solve_twins_batch(cfg, cwd, chunk, apply, call, deadline=budget)
+            except Exception as e:                              # noqa: BLE001
+                say(f"  батч двойников не вышел ({type(e).__name__}) — по одной")
+                got = None
+            if got is None:
+                got = [safe_unit(solve_twins, ", ".join(str(x) for x in g)[:200],
+                                 {"group": g, "keep": ""}, cfg, cwd, g, apply, call,
+                                 deadline=budget) for g in chunk]
+            else:
+                # Группа, которой не нашлось места в ответе (или модель назвала карточку
+                # не из неё), решается отдельно: батч не имеет права молча её потерять.
+                for idx, st in enumerate(got):
+                    if st.get("status") != "сбой" or time.time() > budget:
+                        continue
+                    got[idx] = safe_unit(solve_twins, ", ".join(str(x) for x in chunk[idx])[:200],
+                                         {"group": chunk[idx], "keep": ""}, cfg, cwd,
+                                         chunk[idx], apply, call, deadline=budget)
+            steps.extend(got)
+    else:
+        for i, g in enumerate(groups, 1):
+            if time.time() > budget:
+                steps.append({"group": [], "status": "стоп", "keep": "", "why":
+                              f"бюджет {cfg['budget_min']} мин исчерпан, осталось "
+                              f"{len(groups) - i + 1}", "backends": []})
+                break
+            steps.append(safe_unit(solve_twins, ", ".join(str(x) for x in g)[:200],
+                                   {"group": g, "keep": ""}, cfg, cwd, g, apply, call,
+                                   deadline=budget))
     merged = sum(1 for s in steps if s["status"] in ("слито", "слил бы"))
     return {"steps": steps, "groups": len(groups), "merged": merged,
             "apart": sum(s.get("apart") or 0 for s in steps),
@@ -3485,6 +3710,25 @@ def parse_json(text: str) -> dict | None:
         if isinstance(obj, dict):
             return obj
     return None
+
+
+def checked_json(text: str, model: str) -> tuple[dict | None, str]:
+    """Разобрать JSON и проверить форму. → (данные, причина отказа).
+
+    Форма — из `agent_schemas`, один перечень на адаптер и прямой HTTP. Проверка
+    снисходительная: обязательные поля и типы, лишние пояснения рядом разрешены.
+    """
+    data = parse_json(text)
+    if data is None:
+        return None, "ответ модели не разобран как JSON"
+    if not model:
+        return data, ""
+    try:
+        import agent_schemas
+        ok, why = agent_schemas.validate(model, data)
+    except Exception:                                  # noqa: BLE001
+        return data, ""       # старая копия кита без схем — работаем как прежде
+    return (data, "") if ok else (None, f"ответ не прошёл форму {model}: {why}")
 
 
 def card_excerpt(cwd: str, rel: str, chars: int = 700) -> str:
@@ -3962,7 +4206,11 @@ def hybrid_rank(cwd: str, query: str, limit: int, skip: str = "",
     try:
         os.chdir(cwd or here)
         cards = _hyb_cards(cwd or here, P)
-        return _pick(P.fuse(cards, query[:2000], limit=limit * 4),
+        try:
+            rr = AG.config().get("rerank") or {}
+        except Exception:                                      # noqa: BLE001
+            rr = {}
+        return _pick(P.fuse(cards, query[:2000], limit=limit * 4, rerank=rr),
                      limit, skip, AC, stubs, appendable)
     except Exception:                                          # noqa: BLE001
         return []          # подсказка не обязана работать: без неё разбор идёт как прежде
@@ -4270,12 +4518,33 @@ def type_rules_line(cwd: str, card_type: str, lead: str = TYPE_RULES_LEAD) -> st
     return f"{lead}{rules}" if rules else ""
 
 
+PROMPT_DATA_MARK = "\n\n@@ДАННЫЕ@@\n\n"
+
+
+def prompt_messages(text: str, prefix: str = "") -> list:
+    """Промпт → сообщения. Под флагом стабильная часть уходит в system, данные — в user.
+
+    Prefix caching на шлюзе работает по началу запроса. Пока правила, шаблон и примеры
+    стоят первыми и не меняются от вызова к вызову, они кешируются; источник, карточки и
+    словарь проекта идут в user и кеш не ломают. Без флага поведение прежнее: одна
+    реплика пользователя.
+    """
+    static, dynamic = "", text.strip()
+    if PROMPT_DATA_MARK in text:
+        before, after = text.split(PROMPT_DATA_MARK, 1)
+        if os.environ.get("AURORA_AGENT_PREFIX_SPLIT") == "1":
+            static, dynamic = before.strip(), after.strip()
+        else:
+            # Без флага промпт остаётся одной репликой, но служебная метка границы
+            # модели не нужна: она — разметка движка, а не часть задания.
+            dynamic = (before.strip() + "\n\n" + after.strip()).strip()
+    user = (prefix + "\n" + dynamic).strip() if prefix else dynamic
+    return ([{"role": "system", "content": static},
+             {"role": "user", "content": user}] if static
+            else [{"role": "user", "content": user}])
+
+
 PROMPT_BUILD = """Ты разбираешь источник на карточки знаний.
-
-Источник: {source}
-Ниже — его секции (номер, заголовок, размер, начало текста):
-
-{sections}
 
 Тело карточек переносит скрипт — писать текст не нужно. Реши ровно две вещи:
 **где границы темы** и **как она называется**.
@@ -4339,7 +4608,14 @@ PROMPT_BUILD = """Ты разбираешь источник на карточк
 не целиком — обрыв на «…» это не отсутствие содержимого, а показ по первым символам.
 Если тема видна — собирай карточку.
 
-{{"empty": "<почему знания не вышло, одна фраза>"}}"""
+{{"empty": "<почему знания не вышло, одна фраза>"}}
+
+@@ДАННЫЕ@@
+
+Источник: {source}
+Ниже — его секции (номер, заголовок, размер, начало текста):
+
+{sections}"""
 
 PROMPT_NO_SECTIONS = """Ты решаешь судьбу источника, у которого нет структуры.
 
@@ -4665,31 +4941,36 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
     # в пути только номер, и без подсказки сущность называли по нему.
     import build_plan as BP
     shown = source + BP.page_note(source, cwd)
-    prompt = cands + with_terms(PROMPT_BUILD.format(source=shown, sections=listing,
-                                                    section_list=types_for_prompt(cwd), guide=guide_block(cwd)),
-                                listing, cwd) + feed_rule
+    prompt = with_terms(PROMPT_BUILD.format(source=shown, sections=listing,
+                                            section_list=types_for_prompt(cwd),
+                                            guide=guide_block(cwd)), listing, cwd)
+    messages = prompt_messages(prompt, prefix=cands + feed_rule)
     attempt, note_back = 0, ""
     while True:
         attempt += 1
-        r = call(cfg, "worker", [{"role": "user", "content": prompt + note_back}],
-                 deadline=deadline)
+        msgs = [dict(m) for m in messages]
+        msgs[-1]["content"] += note_back
+        r = call(cfg, "worker", msgs,
+                 deadline=deadline, output_model="BuildPlan")
         if not r["ok"]:
             fail_step(step, model_fail_note(r), r, key="note")
             return step
         step["backends"].append((r["backend"], r["model"]))
         step["tps"] = r.get("tps") or step.get("tps") or 0
         step["degraded"] = step["degraded"] or r["backend"] != 1
-        plan = parse_json(r["text"])
+        plan, shape_why = checked_json(r["text"], "BuildPlan")
         if not plan or not (plan.get("cards") or plan.get("empty")):
             # Неразобранный ответ — не приговор источнику: модель чаще всего завернула JSON
             # в рассуждение. Переспрашиваем один раз, прямо назвав, что не так. И кладём в
             # отчёт начало ответа: без него сбой нельзя разобрать — ни человеку, ни нам.
             if attempt < 2:
-                note_back = ("\n\nПРОШЛЫЙ ОТВЕТ НЕ РАЗОБРАН: нужен ровно один JSON-объект "
-                             "по схеме выше — без рассуждений, пояснений и текста вокруг.")
+                note_back = ("\n\nПРОШЛЫЙ ОТВЕТ НЕ ПРОШЁЛ ФОРМУ: "
+                             + (shape_why or "нужен ровно один JSON-объект по схеме выше")
+                             + ". Без рассуждений, пояснений и текста вокруг.")
                 continue
             sample = re.sub(r"\s+", " ", r["text"] or "").strip()[:160]
-            fail_step(step, r=r, key="note", why="ответ модели не разобран как JSON"
+            fail_step(step, r=r, key="note",
+                      why=(shape_why or "ответ модели не разобран как JSON")
                         + (f" · начало ответа: «{sample}»" if sample else " · ответ пуст"))
             step["content_fail"] = True
             return step
@@ -4724,11 +5005,12 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
             if target:
                 c = call(cfg, "critic", [{"role": "user", "content": PROMPT_BUILD_CRITIC.format(
                     source=shown, sections=listing,
-                    proposal=json.dumps(target, ensure_ascii=False))}], deadline=deadline)
+                    proposal=json.dumps(target, ensure_ascii=False))}], deadline=deadline,
+                    output_model="CriticVerdict")
                 if c["ok"]:
                     step["backends"].append((c["backend"], c["model"]))
                     step["degraded"] = step["degraded"] or c["backend"] != 1
-                    v = parse_json(c["text"]) or {}
+                    v = checked_json(c["text"], "CriticVerdict")[0] or {}
                     if v.get("ok") is False:
                         why = v.get("why") or "критик не согласен"
         if not why:
@@ -5534,6 +5816,13 @@ def verdict_build(res: dict, apply: bool) -> tuple:
 
 
 # ------------------------------------------------------------------ задача: вопрос к базе
+
+DISTILL_JSON_RULE = """
+
+Верни строго один JSON-объект и ничего вокруг:
+{{"thesis": "готовый тезис", "changed": "что изменилось в источнике", "empty": ""}}
+Если знания в тексте нет — {{"thesis": "", "changed": "", "empty": "почему знания нет"}}."""
+
 
 PROMPT_REDISTILL = """Источник карточки «{title}» изменился, и тезис надо пересобрать.
 
@@ -8950,13 +9239,17 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
             step["note"] += "; планировщик границ не нашёл — разрежьте руками (`kb:split`)"
         return step
 
-    def once(prompt: str) -> dict:
+    def once(prompt: str, output_model: str = "") -> dict:
         r = call(cfg, "worker", [{"role": "user", "content": prompt}], deadline=deadline,
-                 prefer=prefer)
+                 prefer=prefer, output_model=output_model)
         if r["ok"]:
             step["backends"].append((r["backend"], r["model"]))
             step["tps"] = r.get("tps") or 0
         return r
+
+    # JSON-форма тезиса — под флагом: включим после прогона тестов, чтобы не менять
+    # поведение по умолчанию. Текстовая форма остаётся откатом на любой ошибке схемы.
+    json_thesis = os.environ.get("AURORA_AGENT_STRUCTURED_DISTILL") == "1"
 
     # Тезис уже был — значит источник изменился (иначе карточка сюда не попала бы), и
     # переписать его молча нельзя: прежний тезис невосстановим, его писала модель, которой
@@ -8974,14 +9267,27 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     check_pack = parts[0]          # на чём проверяется итог: источник (один кусок) либо выписки (несколько)
     if len(parts) == 1 and was_thesis:
         a = once(with_terms(PROMPT_REDISTILL.format(
-            title=title, was=was_thesis[:4000], body=parts[0], type_rules=rules_re) + note_back, parts[0], root))
+            title=title, was=was_thesis[:4000], body=parts[0], type_rules=rules_re)
+            + (DISTILL_JSON_RULE if json_thesis else "") + note_back, parts[0], root),
+            output_model="DistillResult" if json_thesis else "")
         if not a["ok"]:
             fail_step(step, model_fail_note(a), a, key="note")
             return step
         raw = (a["text"] or "").strip()
-        m = re.split(r"^\s*ИЗМЕНИЛОСЬ:\s*$", raw, maxsplit=1, flags=re.M)
-        thesis = re.sub(r"^\s*ТЕЗИС:\s*$", "", m[0], count=1, flags=re.M).strip()
-        changed = (m[1].strip() if len(m) > 1 else "")
+        if json_thesis:
+            data, _why = checked_json(raw, "DistillResult")
+            if data and data.get("empty") and not data.get("thesis"):
+                step.update(status="знания нет", note=str(data["empty"])[:200])
+                return step
+            if data and data.get("thesis"):
+                thesis = str(data["thesis"]).strip()
+                changed = str(data.get("changed") or "").strip()
+            else:
+                json_thesis = False          # форма не пришла — разбираем как прежде
+        if not json_thesis:
+            m = re.split(r"^\s*ИЗМЕНИЛОСЬ:\s*$", raw, maxsplit=1, flags=re.M)
+            thesis = re.sub(r"^\s*ТЕЗИС:\s*$", "", m[0], count=1, flags=re.M).strip()
+            changed = (m[1].strip() if len(m) > 1 else "")
         step["redistilled"] = True
         # Модель сама сказала «по сути без изменений» — прежний тезис верен, и он уже
         # проверен Момусом, вынесен и связан. Новая формулировка того же ничего не даёт,
@@ -9006,12 +9312,23 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         # начинает ссылаться на карточки как на источники («согласно …», «описано в …»),
         # и строгий Момус находит в тезисах втрое больше утверждений без опоры. Связи
         # ставит отдельный проход, где движок доказывает, что текст не изменился.
-        a = once(with_terms(PROMPT_DISTILL.format(title=title, body=parts[0], type_rules=rules) + note_back,
-                            parts[0], root))
+        a = once(with_terms(PROMPT_DISTILL.format(title=title, body=parts[0], type_rules=rules)
+                            + (DISTILL_JSON_RULE if json_thesis else "") + note_back,
+                            parts[0], root),
+                 output_model="DistillResult" if json_thesis else "")
         if not a["ok"]:
             fail_step(step, model_fail_note(a), a, key="note")
             return step
         thesis = (a["text"] or "").strip()
+        if json_thesis:
+            data, _why = checked_json(thesis, "DistillResult")
+            if data and data.get("empty") and not data.get("thesis"):
+                step.update(status="знания нет", note=str(data["empty"])[:200])
+                return step
+            if data and data.get("thesis"):
+                thesis = str(data["thesis"]).strip()
+            else:
+                json_thesis = False
     else:
         # Map-reduce: выписка по каждому куску, потом свод. Момус проверяет и куски, и
         # итог — иначе опора теряется ровно там, где её труднее всего заметить.

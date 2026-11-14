@@ -93,6 +93,7 @@
     "agent:width": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": false, "offline_variant": ""},
     "agent:pydantic": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "agent:ping": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": false, "offline_variant": ""},
+    "agent:fast": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": false, "offline_variant": ""},
     "agent:probe": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": false, "offline_variant": ""},
     "dev:qa-list": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},
     "dev:qa-retrieval": {"requires_sources": [], "requires_llm": false, "requires_internet": false, "offline_capable": true, "offline_variant": ""},

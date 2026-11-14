@@ -152,7 +152,7 @@ def ranked(question: str, cfg: dict, model: str, close: dict | None = None) -> l
     # промах там, где человеку ответили верно, — на живой базе карточку обошла страница
     # «Пустышки», то есть навигация, которую в ответ всё равно не подставят.
     out = []
-    for w, c in P.fuse(_CARDS, question, close, limit=TOP * 4):
+    for w, c in P.fuse(_CARDS, question, close, limit=TOP * 4, rerank=_RERANK):
         if (c.status or "").strip() == "index" or is_placeholder(c.fm, c.text):
             continue
         out.append((c.stem, round(w, 4)))
@@ -162,6 +162,7 @@ def ranked(question: str, cfg: dict, model: str, close: dict | None = None) -> l
 
 
 _CARDS = None            # обзор базы для выборки: собирается один раз на прогон
+_RERANK = {}             # настройка реранкера: из конфига один раз на прогон
 
 
 def measure(pairs: list, cfg: dict, model: str, say=print, closes: dict | None = None) -> dict:
@@ -726,6 +727,7 @@ def main() -> int:
     # той, которой собран индекс, иначе `kb_embed.search` молча вернёт пустоту.
     cfg = AG.config()
     model = cfg["embed"]["model"]
+    _RERANK.update(cfg.get("rerank") or {})
 
     # Отказ вместо нуля. `kb_embed.search` на чужой модели возвращает пустоту молча —
     # и замер напечатал бы «R@1 0.0», то есть «поиск сломан», хотя сломана настройка.

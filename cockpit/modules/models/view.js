@@ -12,6 +12,7 @@ const ENGINE_NAMES = {worker: "Писатель: разбор, тезисы, о�
                       planner: "Планировщик: планы, вынос, встречи",           // данные движка
                       critic: "Критик: проверка решений",                      // данные движка
                       qa: "Момус: проверка опоры и ревью",                     // данные движка
+                      fast: "Быстрая модель: дешёвые задачи",                  // данные движка
                       document: "Сканы документов", index: "Индекс базы знаний"}; // данные движка
 // Роль, на которую уходят задачи пустых ролей движка (model_config.DEFAULT_ROLE).
 const DEFAULT_ROLE = {llm: "worker", ocr: "document", embeddings: "index"};
@@ -410,6 +411,12 @@ function roleCard(ctx, cap, r, ri){
     el("input", {type: "checkbox", checked: r.thinking !== false ? "" : null,
       onchange: e => { r.thinking = e.target.checked; touch(ctx); }}),
     t("models.thinking")) : null;
+  const auto = cap === "llm" && r.id === "fast"
+    ? el("label", {class: "row", style: "gap:6px;font-size:12.5px",
+        title: t("models.auto_hint")},
+      el("input", {type: "checkbox", checked: r.auto !== false ? "" : null,
+        onchange: e => { r.auto = e.target.checked; touch(ctx); }}),
+      t("models.auto")) : null;
   const list = el("div", {});
   r.backends.forEach((b, bi) => list.append(backendRow(ctx, cap, r, b, bi)));
   if (!r.backends.length){
@@ -427,7 +434,7 @@ function roleCard(ctx, cap, r, ri){
       el("span", {class: "chip mono", title: t("models.role_id_hint")}, r.id),
       el("span", {class: "chip" + (r.builtin ? " gold" : "")},
         r.builtin ? t("models.role_engine") : t("models.role_own")),
-      think,
+      think, auto,
       r.builtin ? null : el("button", {class: "btn sm danger", onclick: () => {
         if (!confirm(t("models.role_drop_ask", {name: r.name}))) return;
         M.capabilities[cap].roles.splice(ri, 1);

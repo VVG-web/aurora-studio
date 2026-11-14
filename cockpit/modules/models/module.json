@@ -8,6 +8,6 @@
   "group": "machine",
   "order": 32,
   "needs": [],
-  "commands": ["agent:ping", "agent:width", "agent:pydantic"],
-  "for": "1.222.0"
+  "commands": ["agent:ping", "agent:width", "agent:pydantic", "agent:fast"],
+  "for": "1.223.0"
 }

@@ -2376,6 +2376,12 @@ def test_checking_a_pid_never_stops_the_process(tmp: Path):
     sys.path.insert(0, str(SCRIPTS))
     from aurora_common import pid_alive
     import agent_runner
+    # Другой тест мог перезагрузить `aurora_common` раньше (проверка отказа веб-коннектора):
+    # тогда в старом `agent_runner` осталась ссылка на прежнюю функцию, и сравнение
+    # тождества зависело бы от порядка шардов. Перезагружаем модуль — проверяем код,
+    # а не историю импортов.
+    import importlib
+    importlib.reload(agent_runner)
     assert agent_runner.pid_alive is pid_alive, "у замка и панели должна быть одна проверка"
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:

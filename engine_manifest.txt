@@ -119,6 +119,8 @@ scripts/kb_record.py        => .aurora/scripts/kb_record.py
 scripts/kb_cited.py         => .aurora/scripts/kb_cited.py
 scripts/legal_slicer.py     => .aurora/scripts/legal_slicer.py
 scripts/agent_core.py    => .aurora/scripts/agent_core.py
+# формы ответа модели: общие для движка (проверка без Pydantic) и адаптера Pydantic AI
+scripts/agent_schemas.py => .aurora/scripts/agent_schemas.py
 scripts/model_config.py  => .aurora/scripts/model_config.py
 # управление контекстом: бюджет, хранилище и связка стадий (agent_runner)
 scripts/context_budget.py => .aurora/scripts/context_budget.py

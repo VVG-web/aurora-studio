@@ -56,7 +56,10 @@ def test_the_catalogue_check_catches_a_new_call_and_a_wrong_role(_t):
     assert any("solve_new" in p for p in problems(found=extra)), "новое место вызова прошло молча"
     bad = copy.deepcopy(cat)
     twins = next(c for c in bad["calls"] if c["id"] == "twins")
-    twins["steps"][0]["role"] = "planner"
+    # У вызова может быть несколько путей (одиночный и батч): меняем роль у всех,
+    # иначе второй шаг продолжит «покрывать» critic, и проверка промолчит.
+    for step in twins["steps"]:
+        step["role"] = "planner"
     got = problems(cat=bad)
     assert any("twins" in p and "planner" in p for p in got), got
     assert any("twins" in p and "critic" in p for p in got), "роль кода без описания прошла молча"

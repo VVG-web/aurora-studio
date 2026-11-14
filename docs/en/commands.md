@@ -151,6 +151,7 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 | `agent:width` | Measure how many simultaneous requests each gateway holds: raise the load while throughput grows. | script | 1.99.2 |
 | `agent:pydantic` | Pydantic AI settings: what goes to the gateway per role — model, reasoning on or off, chat-template fields and the timeout, whether the installed version passed the compatibility check. | script | 1.139.0 |
 | `agent:ping` | Check the model chain by a live request: every backend, roles, speed; an empty answer counts as a refusal. | script | 1.56.0 |
+| `agent:fast` (`fast`) | Fast model for cheap tasks: in “auto” it measures the available models of all roles, picks the fastest and keeps the choice for 20 minutes; `--force` measures again. Shows each time and who did not answer. | script | 1.223.0 |
 | `agent:probe` (`probe`) | A live connectivity check: asks every gateway now; tells "no connection", "wrong key" and "no such model" apart and shows the model list; `--why` checks the request layer by layer. | script | 1.100.27 |
 
 ## `git:` — Project Git: server, update, push

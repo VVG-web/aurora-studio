@@ -543,6 +543,7 @@ RARITY: dict = {}          # {слово: во скольких карточка
 # потому, что звал `score` (и разбор тела) для всех, хотя совпадение есть у сотен.
 POSTINGS: dict = {}        # {слово: {номер карточки}}
 _POSTINGS_FOR: dict | None = None   # словарь, для которого построен индекс (тождество)
+_TABLES: tuple = (RARITY, POSTINGS, _POSTINGS_FOR)   # снимок: читается одной операцией
 LAST_FUSE = {"scanned": 0, "total": 0}
 
 
@@ -555,12 +556,13 @@ def measure_rarity(cards: dict) -> None:
     прочитана, и потому ничего не стоит.
 
     Заодно здесь строится инвертированный индекс для `fuse`: обход тот же, а второй
-    проход по базе на каждый запрос больше не нужен.
+    проход по базе на каждый запрос больше не нужен. Оба словаря собираются локально и
+    подменяются целиком: `fuse` в другом потоке держит снимок и не увидит полупустую
+    таблицу, пока идёт пересборка.
     """
-    global _POSTINGS_FOR
-    RARITY.clear()
-    POSTINGS.clear()
-    RARITY["__total__"] = max(1, len(cards))
+    global RARITY, POSTINGS, _POSTINGS_FOR, _TABLES
+    rarity = {"__total__": max(1, len(cards))}
+    postings: dict = {}
     for i, c in enumerate(cards.values()):
         # Частоты — по прежним полям: вес слова не должен меняться от того, что мы
         # завели указатель. А сам указатель обязан покрывать ВСЁ, чем пользуется
@@ -582,38 +584,49 @@ def measure_rarity(cards: dict) -> None:
         spread = (set(words(c.stem.replace("-", " ").replace("_", " ")))
                   | set(words(c.title.replace("-", " ").replace("_", " "))))
         for w in seen_words:
-            RARITY[w] = RARITY.get(w, 0) + 1
+            rarity[w] = rarity.get(w, 0) + 1
         for w in seen_words | spread | extra | alias | tag:
-            POSTINGS.setdefault(w, set()).add(i)
-    _POSTINGS_FOR = cards
+            postings.setdefault(w, set()).add(i)
+    RARITY, POSTINGS, _POSTINGS_FOR = rarity, postings, cards
+    _TABLES = (rarity, postings, cards)
 
 
-def _candidate_ids(cards: dict, ask: list) -> list | None:
+def _candidate_ids(cards: dict, ask: list, postings: dict | None = None,
+                   posted_for: dict | None = None) -> list | None:
     """Номера карточек, где есть хоть одно слово запроса. None — индекса нет.
 
     `score` не может быть больше нуля без совпадения хотя бы одного слова: всё
     остальное — премии за согласие и точный номер. Значит, карточки вне объединения
     указателей дают ноль и в слияние не попадают. Порядок и веса не меняются,
     меняется только перебор: сотни вместо тысяч.
+
+    `postings`/`posted_for` — снимок, снятый вызывающим: пересборка индекса в другом
+    потоке не должна подменить таблицу посреди одного запроса.
     """
-    if _POSTINGS_FOR is not cards or not POSTINGS:
+    table = POSTINGS if postings is None else postings
+    owner = _POSTINGS_FOR if posted_for is None else posted_for
+    if owner is not cards or not table:
         return None
     ids: set = set()
     for w in ask:
-        ids.update(POSTINGS.get(w, ()))
+        ids.update(table.get(w, ()))
     return sorted(ids)
 
 
-def weight(word: str) -> float:
+def weight(word: str, rarity: dict | None = None) -> float:
     """Множитель слова: редкое весит до двух раз больше частого, частое — вдвое меньше.
 
     Границы намеренно узкие. Полный IDF даёт разброс в десятки раз, и тогда одна опечатка
     в запросе (слово, которого нет в базе) перевешивает всё остальное.
+
+    `rarity` — снимок таблицы на время одного `fuse`: пересборка индекса в другом потоке
+    подменяет глобальную таблицу целиком, но уже начатый запрос считает по своей.
     """
-    total = RARITY.get("__total__", 0)
+    table = RARITY if rarity is None else rarity
+    total = table.get("__total__", 0)
     if not total:
         return 1.0
-    seen = RARITY.get(word, 0)
+    seen = table.get(word, 0)
     if not seen:
         return 1.0          # слова нет в базе: судить не по чему, вес обычный
     share = seen / total
@@ -679,7 +692,7 @@ def _has_exact_id(card: "Card", ask: list) -> bool:
 
 
 def score(card: Card, topic: str, close: dict | None = None,
-          ask: list | None = None) -> int:
+          ask: list | None = None, rarity: dict | None = None) -> int:
     """Насколько карточка отвечает теме: заголовок > алиас > теги > тело.
 
     Считаем по СЛОВАМ, а не по фразе целиком. Пока сравнивалась вся строка, живой
@@ -719,7 +732,7 @@ def score(card: Card, topic: str, close: dict | None = None,
         if w in seen:
             part += min(seen[w], 4); got = True
         # Редкое слово сужает поиск сильнее частого — значит и весит больше.
-        s += part * weight(w)
+        s += part * weight(w, rarity)
         hits += got
     # Совпало всё, что спрашивали, — карточка про это, а не «упомянула слово».
     if hits == len(ask):
@@ -743,7 +756,7 @@ AGREE = 0.15
 
 
 def fuse(cards: dict, topic: str, close: dict | None = None,
-         limit: int = 40) -> list:
+         limit: int = 40, rerank: dict | None = None) -> list:
     """[(вес, карточка)] — слова и смысл, приведённые к одной шкале.
 
     Гибрид складывал очки: к словам добавлялась премия за близость, не больше тридцати
@@ -768,14 +781,17 @@ def fuse(cards: dict, topic: str, close: dict | None = None,
     lex = {}
     best = 0
     ask = query_words(topic)
+    # Один запрос — один снимок: пересборка индекса в другом потоке подменяет globals
+    # целиком, и начатый запрос не должен увидеть половину новой таблицы.
+    rarity, postings, posted_for = _TABLES
     order = list(cards.values())
-    ids = _candidate_ids(cards, ask)
+    ids = _candidate_ids(cards, ask, postings, posted_for)
     # Индекс есть — сверяем только карточки с хотя бы одним словом запроса. Карточка без
     # совпадения всё равно получает ноль и в слияние не входит, поэтому выдача та же.
     pool = ([order[i] for i in ids] if ids is not None else order)
     LAST_FUSE.update(scanned=len(pool), total=len(order))
     for c in pool:
-        w = score(c, topic, ask=ask)
+        w = score(c, topic, ask=ask, rarity=rarity)
         if w > 0:
             lex[c.stem] = w
             best = max(best, w)
@@ -816,8 +832,27 @@ def fuse(cards: dict, topic: str, close: dict | None = None,
         for n in exact:
             if got[n] <= other:
                 got[n] = other + 1e-6 * max(got[n], 1e-3)
-    return sorted(((w, at[n]) for n, w in got.items()),
-                  key=lambda x: (-x[0], x[1].stem))
+    ordered = sorted(((w, at[n]) for n, w in got.items()),
+                     key=lambda x: (-x[0], x[1].stem))
+    # Реранкер переставляет верх выдачи по паре «запрос — текст карточки». Он видит
+    # только top-40: переранжировать всю базу значит заплатить за то, что и так
+    # отсеяно. Ошибка или отсутствие ручки — прежний порядок, не отказ поиска.
+    if rerank and rerank.get("enabled", True) and len(ordered) > 1:
+        try:
+            import kb_embed as E
+            top = ordered[:40]
+            docs = [(c.stem, "\n".join(x for x in (c.title, c.summary, c.text[:1600]) if x))
+                    for _w, c in top]
+            rows = E.rerank(topic, docs, {"rerank": rerank}, limit=40)
+            if rows:
+                by = {c.stem: c for _w, c in top}
+                moved = [(score, by[name]) for name, score in rows if name in by]
+                shown = {c.stem for _s, c in moved}
+                ordered = (moved + [(w, c) for w, c in top if c.stem not in shown]
+                           + ordered[40:])
+        except Exception:                                      # noqa: BLE001
+            pass
+    return ordered
 
 # Вопросительные и служебные слова: они есть в любом вопросе и не говорят, о чём он, так
 # что «не найдено» о них — шум, а не признак отсутствия знания.

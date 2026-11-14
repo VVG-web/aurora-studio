@@ -51,7 +51,8 @@ ENGINE_ROLES = {
     "llm": (("worker", "Писатель: разбор, тезисы, ответы"),
             ("planner", "Планировщик: планы, вынос, встречи"),
             ("critic", "Критик: проверка решений"), ("qa", "Момус: проверка опоры и ревью"),
-            ("compressor", "Компрессор контекста: конспекты и оглавления")),
+            ("compressor", "Компрессор контекста: конспекты и оглавления"),
+            ("fast", "Быстрая модель: дешёвые задачи")),
     "ocr": (("document", "Сканы документов"),),
     "embeddings": (("index", "Индекс базы знаний"),),
 }
@@ -208,14 +209,19 @@ def normalize(data) -> tuple:
             role = {"id": rid, "name": name,
                     "builtin": rid in dict(ENGINE_ROLES[cap]), "backends": backends}
             if cap == "llm":
-                role["thinking"] = r.get("thinking", True) is not False
+                role["thinking"] = r.get("thinking", rid != "fast") is not False
+                # «Авто» — только у быстрой роли: перед прогоном движок замерит
+                # доступные модели и возьмёт самую быструю. У остальных ролей выбор
+                # явный, и поле им не нужно.
+                role["auto"] = (r.get("auto", rid == "fast") is not False) if rid == "fast" else False
             roles.append(role)
         # Роли движка есть всегда: удалённую возвращаем пустой — задача без роли упала бы.
         for rid, name in ENGINE_ROLES[cap]:
             if rid not in seen:
                 roles.insert(len([x for x in roles if x["builtin"]]),
                              {"id": rid, "name": name, "builtin": True, "backends": [],
-                              **({"thinking": True} if cap == "llm" else {})})
+                              **({"thinking": rid != "fast"} if cap == "llm" else {}),
+                              **({"auto": True} if cap == "llm" and rid == "fast" else {})})
         out["capabilities"][cap] = {"roles": roles}
         if cap == "ocr":
             out["capabilities"]["ocr"]["dpi"] = max(72, _int(src.get("dpi"), 130))
@@ -575,6 +581,8 @@ def to_config(data: dict) -> dict:
                          "vpn": p.get("vpn", ""), "chat": llm_in})
     first_e = (chain(data, "embeddings", "index") or [None])[0]
     first_o = (chain(data, "ocr", "document") or [None])[0]
+    # Бэкенд роли хранит провайдера и модель, а адрес и ключ живут у провайдера.
+    e_prov = next((p for p in provs if first_e and p["id"] == first_e["provider"]), None)
     s = data["settings"]
     import agent_core as AG
     return {
@@ -594,6 +602,16 @@ def to_config(data: dict) -> dict:
         "request_timeout": s["request_timeout"],
         "parallel": AG.parallel_cap(s["parallel"]),
         "debug": s["debug"],
+        "fast": {"auto": next((r.get("auto", True) is not False
+                               for r in data["capabilities"]["llm"]["roles"]
+                               if r["id"] == "fast"), True)},
+        "rerank": {
+            "enabled": str(os.environ.get("AURORA_RERANK", "1")).strip().lower()
+                       not in ("0", "false", "no", "off"),
+            "url": ((first_e.get("url") or e_prov["url"]) if first_e and e_prov else ""),
+            "key": ((first_e.get("key") or e_prov["key"]) if first_e and e_prov else ""),
+            "model": (os.environ.get("AURORA_RERANK_MODEL") or "").strip(),
+        },
         "backends": backends,
     }
 

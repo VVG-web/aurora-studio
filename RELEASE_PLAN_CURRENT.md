@@ -440,3 +440,14 @@ make-набор 46/46, полный suite и CI. Описание: `CHANGELOG.md
 уходит в конец кольца на час. Pydantic AI проверен живым `--ping` на живом проекте
 (`adapter: pydantic_ai`, 5/5 бэкендов). Тесты `part_234`, полный suite,
 `check_release` и CI. Описание: `CHANGELOG.md`.
+
+## 53. Релиз 1.223.0
+
+`1.223.0` - формы ответа, быстрая роль, батчи и реранкер. Общие Pydantic-формы
+`agent_schemas` для адаптера и прямого HTTP (`build`, `critic`, `extract`, `relink`;
+`distill` под флагом). Роль `fast` с режимом «Авто»: замер всех доступных чат-моделей,
+выбор самой быстрой, кеш 20 минут, `agent:fast`, карточка в «Моделях». `PROMPT_BUILD`
+разделён на system/user под флагом prefix cache. Батчи `translit` (20 имён) и `twins`
+(5 групп) под флагами. Контекстные заголовки кусков `kb:embed` и реранкер
+`bge-reranker-v2-m3-en-ru` через `/rerank` с откатом `AURORA_RERANK=0`. Тест
+`part_237`, полный suite, `check_release` и CI.

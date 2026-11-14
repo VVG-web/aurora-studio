@@ -101,14 +101,16 @@ def test_prefilter_is_not_rebuilt_for_a_small_top_up(tmp):
     sys.path.insert(0, str(SCRIPTS))
     import kb_embed as E
 
-    assert E.prefilter_due(False, 3, 0, 5000, False) is False, \
+    assert E.prefilter_plan(False, 3, 0, 5000, False) == "drop", \
         "малая досборка снова строит бесполезный предфильтр"
-    assert E.prefilter_due(False, 900, 0, 5000, False) is True, \
+    assert E.prefilter_plan(False, 900, 0, 5000, False) == "build", \
         "большая досборка не пересчитывает слой"
-    assert E.prefilter_due(True, 1, 0, 5000, True) is True, \
+    assert E.prefilter_plan(True, 1, 0, 5000, True) == "build", \
         "--all обязан пересчитать предфильтр"
-    assert E.prefilter_due(False, 3, 0, 5000, True) is False, \
+    assert E.prefilter_plan(False, 0, 0, 5000, True) == "reuse", \
         "годный прежний слой пересобирается без причины"
+    assert E.prefilter_plan(False, 3, 0, 5000, True) == "drop", \
+        "изменившиеся вектора оставили старые проекции — слой обязан быть снят"
 
 
 @test
@@ -169,3 +171,39 @@ def test_a_model_that_missed_its_timeout_stays_last_for_the_run(tmp):
     src = (SCRIPTS / "agent_core.py").read_text(encoding="utf-8")
     assert 'SLOW[b["n"]] = time.time() + SLOW_TIMEOUT_FOR' in src, \
         "таймаут снова отправляет модель в конец кольца только на 15 минут"
+
+
+@test
+def test_postings_cover_every_field_score_reads(tmp):
+    """Указатель покрывает те же поля, что score: иначе карточка молча выпадет."""
+    sys.path.insert(0, str(SCRIPTS))
+    import ctx_pack as P
+
+    card = _fake("AC-4.4.3-Просмотр-реестра", "общее слово")
+    card.aliases = ["Реестр заявок"]
+    card.tags = "реестр"
+    card.fm = {"jira": "PRJ-480"}
+    cards = {card.stem: card}
+    P.measure_rarity(cards)
+    head, brief, alias, tag, seen, _ids = P._word_profile(card)
+    order = list(cards)
+    for w in set(head) | brief | alias | tag | set(seen):
+        assert card.stem in {order[i] for i in P.POSTINGS.get(w, ())}, \
+            f"слово «{w}» есть в профиле, но не в указателе"
+
+
+@test
+def test_measure_rarity_swaps_tables_instead_of_clearing_them(tmp):
+    """Пересборка не оставляет другой поток с полупустой таблицей."""
+    sys.path.insert(0, str(SCRIPTS))
+    import ctx_pack as P
+
+    first = {"Старая": _fake("Старая", "старое слово")}
+    P.measure_rarity(first)
+    old_rarity, old_postings = P.RARITY, P.POSTINGS
+    second = {"Новая": _fake("Новая", "новое слово")}
+    P.measure_rarity(second)
+    assert P.RARITY is not old_rarity and P.POSTINGS is not old_postings, \
+        "таблицы пересобраны на месте — читатель увидит половину"
+    assert old_rarity.get("__total__") == 1 and "стар" in old_postings, \
+        "прежний снимок испорчен пересборкой"

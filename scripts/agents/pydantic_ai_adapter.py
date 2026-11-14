@@ -725,7 +725,11 @@ def shared_agent_key(task: dict):
     """
     if task.get("tools") or (task.get("mcp") or {}).get("mcpServers"):
         return None
-    return (task["url"], task.get("key") or "", task["model"])
+    key = (task["url"], task.get("key") or "", task["model"])
+    # Форма ответа — часть агента: два вызова одной модели с разными схемами не делят
+    # агента. Ключ без схемы остаётся прежним трёхэлементным.
+    output_model = str(task.get("output_model") or "")
+    return key + (output_model,) if output_model else key
 
 
 def tolerant_request(raw: bytes) -> bytes:
@@ -1085,10 +1089,23 @@ def runtime():
         base = getattr(provider, "model_profile", lambda _m: {})(task["model"]) or {}
         profile = {**base, "openai_chat_supports_max_completion_tokens": False,
                    "openai_chat_supports_multiple_system_messages": False}
+        # Форма ответа: движок называет её именем из `agent_schemas`, а не присылает
+        # класс. Только для вызовов без инструментов: структурированный ответ и цикл
+        # инструментов в одном задании конфликтуют, а планировщику нужен цикл.
+        output_model = str(task.get("output_model") or "")
+        model_cls = None
+        if output_model and not task.get("tools") and not (task.get("mcp") or {}).get("mcpServers"):
+            try:
+                sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                from agent_schemas import MODELS
+                model_cls = MODELS.get(output_model)
+            except Exception:                    # noqa: BLE001 — старая копия кита
+                model_cls = None
         # `Optional[str]`: пустой ответ — не повод для повторного запроса, а ответ, который
         # движок разберёт сам (рассуждения съели лимит, шаблон на сервере и т. п.).
         agent = Agent(ChatModel(task["model"], provider=provider, profile=profile),
-                      output_type=Optional[str], toolsets=toolsets or None)
+                      output_type=model_cls or Optional[str], toolsets=toolsets or None,
+                      retries=1 if model_cls else 0)
         if task.get("tools"):
             register_tools(agent, task["tools"], task.get("context_store") or "")
         if task.get("outdir"):
@@ -1122,6 +1139,7 @@ def runtime():
 
     async def run_task(task: dict) -> dict:
         agent, state = agent_for(task)
+        output_model = str(task.get("output_model") or "")
         # Сразу подключены — только названные человеком или типом артефакта; остальные
         # модель подключит сама.
         allowed = set(servers_for_role(task.get("mcp") or {}, task.get("role") or ""))
@@ -1203,8 +1221,14 @@ def runtime():
                     return {"ok": False, "where": "server", "kind": kind, "error": str(msg)[:300]}
                 raise
         last = last_response(result.all_messages())
-        return {"ok": True, "text": (result.output or "").strip(),
+        out = result.output
+        if output_model and out is not None and hasattr(out, "model_dump_json"):
+            text = out.model_dump_json()
+        else:
+            text = (out or "").strip()
+        return {"ok": True, "text": text,
                 "reasoning": thinking_of(last),
+                "structured": output_model if output_model and out is not None else "",
                 "finish": (getattr(last, "finish_reason", None) if last is not None else None)
                 or "stop",
                 "usage": usage_of(result.usage),

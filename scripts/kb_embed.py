@@ -36,6 +36,7 @@ import json
 import math
 import os
 import random
+import re
 import struct
 import sys
 import threading
@@ -74,6 +75,12 @@ PF_SAMPLE = 512             # строк в подвыборке итераци�
 PF_EPS = 1e-6               # запас на округление: связка консервативна, хиты не теряем
 
 
+def _section_at(text: str, pos: int) -> str:
+    """Последний заголовок `##` перед позицией куска — его раздел."""
+    heads = re.findall(r"(?m)^##\s+(.+?)\s*$", text[:pos])
+    return heads[-1].strip() if heads else ""
+
+
 def card_texts(root: str = KB_ROOT) -> dict:
     """{имя карточки: текст для вектора}. Заголовок и синонимы весомее хвоста тела."""
     out = {}
@@ -98,16 +105,19 @@ def card_texts(root: str = KB_ROOT) -> dict:
                 (fm.get("aliases") or "").strip("[]"),
             ) if x)
             whole = body(text)
+            step = max(1, PIECE - PIECE_OVERLAP)
             for i, part in enumerate(pieces(whole)):
-                # Ключ индекса — КУСОК карточки, а не карточка. Так вся длинная карточка
-                # оказывается в индексе, а не первые полторы тысячи знаков: на живой базе
-                # 56% карточек длиннее куска, а девятый дециль — впятеро длиннее, то есть
-                # больше половины базы искалось по началу и молчало об остальном.
+                # Кусок без своего раздела теряет, о чём он: «его сумма», «в этом
+                # разделе». Заголовок `##` перед началом куска возвращает этот контекст
+                # без вызова модели. Длина не режется до PIECE: иначе заголовок съедал
+                # хвост куска, и знание пропадало из индекса.
+                sec = _section_at(whole, i * step)
+                piece_head = head + (f" · {sec}" if sec else "")
                 #
                 # Заголовок и синонимы приписываются к КАЖДОМУ куску: иначе второй кусок
                 # теряет, о чём он вообще, и находится как безымянный абзац.
                 out[f[:-3] if i == 0 else f"{f[:-3]}{PIECE_SEP}{i}"] = \
-                    (head + "\n" + part)[:PIECE]
+                    (piece_head + "\n" + part)[:PIECE + 500]
     return out
 
 
@@ -399,22 +409,27 @@ PF_USEFUL_AT = 0.70        # доля базы, которую предфиль�
 PF_MIN_STALE = 64          # меньше кусков — пересборка слоя дороже, чем даст
 
 
-def prefilter_due(all_flag: bool, stale: int, gone: int, cards: int,
-                  pf_valid: bool) -> bool:
-    """Стоит ли пересчитывать предфильтр на этом прогоне.
+def prefilter_plan(all_flag: bool, stale: int, gone: int, cards: int,
+                   pf_valid: bool) -> str:
+    """Что делать с предфильтром на этом прогоне: build, reuse или drop.
 
     Слой производный: его польза зависит от осей базы, а не от трёх новых векторов.
     Живой замер: `--apply` с тремя устаревшими кусками строил предфильтр 10,15 с, после
     чего `prefilter_pays_off` говорил «кандидатов 100 % базы» — работа выбрасывалась.
-    Прежний предфильтр при этом остаётся годным, пока не изменилось число строк: его
-    читает `load_prefilter` и сам отказывается, если строки разъехались. Пересчитываем
-    только `--all`, после большой досборки и когда прежнего слоя нет и база уже велика.
+
+    Переиспользовать прежний слой можно ТОЛЬКО когда не изменился ни один вектор и не
+    сдвинулась ни одна строка: проекции лежат по номерам строк. Если вектора изменились,
+    старые проекции врут, и слой нужно снять (drop), а не пересчитывать на малой
+    досборке. Пересчёт (build) — по `--all`, после большой досборки и когда прежнего
+    слоя нет, а база уже велика.
     """
     if all_flag or not cards:
-        return True
-    if pf_valid:
-        return False
-    return (stale + gone) >= max(PF_MIN_STALE, cards // 10)
+        return "build"
+    if pf_valid and not stale and not gone:
+        return "reuse"
+    if (stale + gone) >= max(PF_MIN_STALE, cards // 10):
+        return "build"
+    return "drop"
 
 
 def prefilter_pays_off(out: array.array, dim: int, rows: int, pf) -> tuple:
@@ -482,6 +497,62 @@ def save_index(model: str, dim: int, cards: dict, out: "array.array", pf) -> Non
                    "cards": cards, "pf": len(axes), "bin": digest},
                   f, ensure_ascii=False, indent=1, sort_keys=True)
     replace_file(tmp, INDEX)
+
+
+_RERANK_MODEL: dict = {}
+
+
+def rerank_model(cfg: dict) -> str:
+    """Модель реранкера: из настройки либо первая с «rerank» в списке шлюза."""
+    r = cfg.get("rerank") or {}
+    if r.get("model"):
+        return str(r["model"])
+    url = str(r.get("url") or "").rstrip("/")
+    if not url:
+        return ""
+    if url in _RERANK_MODEL:
+        return _RERANK_MODEL[url]
+    model = ""
+    st, body, _err, _dt = AG.http_json(url + "/models", None, r.get("key", ""), 10)
+    if st == 200 and isinstance(body, dict):
+        ids = [str(x.get("id") or "") for x in body.get("data") or [] if isinstance(x, dict)]
+        model = next((x for x in ids if "rerank" in x.lower()), "")
+    _RERANK_MODEL[url] = model
+    return model
+
+
+def rerank(query: str, docs: list, cfg: dict, limit: int = 20):
+    """Переставить документы по релевантности. → [(имя, счёт)] или None.
+
+    `docs` — [(имя, текст)]. Ошибка сети, чужая ручка, пустой ответ — None: поиск
+    остаётся прежним, а не падает из-за необязательного слоя.
+    """
+    r = cfg.get("rerank") or {}
+    if not r.get("enabled", True) or len(docs) < 2:
+        return None
+    url = str(r.get("url") or "").rstrip("/")
+    model = rerank_model(cfg)
+    if not url or not model:
+        return None
+    payload = {"model": model, "query": str(query)[:2000],
+               "documents": [" ".join(str(text or "").split())[:1800]
+                             for _name, text in docs]}
+    st, body, _err, _dt = AG.http_json(url + "/rerank", payload, r.get("key", ""), 20)
+    if st != 200 or not isinstance(body, dict):
+        return None
+    rows = []
+    for item in body.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("index"))
+            score = float(item.get("relevance_score"))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < len(docs):
+            rows.append((docs[idx][0], score))
+    rows.sort(key=lambda x: -x[1])
+    return rows[:limit] or None
 
 
 def search(query: str, cfg: dict, model: str, limit: int = 40) -> list:
@@ -692,17 +763,22 @@ def main() -> int:
     # номера уже чужие, и такой слой хуже отсутствующего.
     same_rows = (bool(old_pf) and not gone and len(cards) == len(idx["cards"])
                  and all(n in idx["cards"] for n in cards))
-    if prefilter_due(a.all, len(stale), len(gone), len(cards), same_rows):
+    plan = prefilter_plan(a.all, len(stale), len(gone), len(cards), same_rows)
+    if plan == "build":
         pf = build_prefilter(out, dim, len(cards))
         # Записываем предфильтр, только если он себя оправдал на этих самых векторах:
         # бесполезный слой не нейтрален — он стоит арифметики и чтения с диска на каждый поиск.
         pays, share, why = prefilter_pays_off(out, dim, len(cards), pf)
         if not pays:
             pf = None
-    else:
+    elif plan == "reuse":
         pf = old_pf
-        why = ("прежний слой годен: досборка меньше порога" if pf
-               else "слой не окупается на этой базе — не пересчитываем")
+        why = "прежний слой годен: вектора и строки не изменились"
+    else:
+        # Старые проекции для изменившихся векторов врут; полный перебор честнее и дешевле
+        # десяти секунд пересборки, которую всё равно придётся выбросить.
+        pf = None
+        why = "вектора изменились — слой снят, пересборка на малой досборке не окупается"
     save_index(model, dim, cards, out, pf)
     print(f"\n✅ Индекс собран: карточек {len({piece_owner(k) for k in cards})} "
           f"(кусков {len(cards)}), размерность {dim}, модель {model}"

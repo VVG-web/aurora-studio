@@ -294,7 +294,8 @@
         "agent:twins"
       ],
       "code": [
-        "agent_runner.py:solve_twins"
+        "agent_runner.py:solve_twins",
+        "agent_runner.py:solve_twins_batch"
       ],
       "steps": [
         {
@@ -303,6 +304,14 @@
           "what": {
             "ru": "Судьба карточек об одном и том же: слить, развести или оставить.",
             "en": "The fate of cards about the same thing: merge, separate or keep."
+          }
+        },
+        {
+          "role": "critic",
+          "prompt": "agent_runner.py:PROMPT_TWINS_BATCH",
+          "what": {
+            "ru": "То же для пяти групп одним вызовом: каждая получает номер и решение.",
+            "en": "The same for five groups in one call: each gets an id and a verdict."
           }
         }
       ],
@@ -390,15 +399,24 @@
         "agent:translit"
       ],
       "code": [
-        "agent_runner.py:solve_translit"
+        "agent_runner.py:solve_translit",
+        "agent_runner.py:solve_translit_batch"
       ],
       "steps": [
         {
-          "role": "worker",
+          "role": "fast",
           "prompt": "agent_runner.py:PROMPT_TRANSLIT",
           "what": {
             "ru": "Русское имя для карточки, названной латиницей.",
             "en": "A Russian name for a card named in Latin letters."
+          }
+        },
+        {
+          "role": "fast",
+          "prompt": "agent_runner.py:PROMPT_TRANSLIT_BATCH",
+          "what": {
+            "ru": "До двадцати имён одним вызовом: ответ размечен номерами.",
+            "en": "Up to twenty names in one call: the answer is keyed by id."
           }
         }
       ],

@@ -144,6 +144,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 | Role | What it does | Prompt |
 |---|---|---|
 | Critic (critic) | The fate of cards about the same thing: merge, separate or keep. | `PROMPT_TWINS` (agent_runner.py) |
+| Critic (critic) | The same for five groups in one call: each gets an id and a verdict. | `PROMPT_TWINS_BATCH` (agent_runner.py) |
 
 - **Tools:** none.
 - **Path:** Pydantic AI.
@@ -187,7 +188,8 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 
 | Role | What it does | Prompt |
 |---|---|---|
-| Writer (worker) | A Russian name for a card named in Latin letters. | `PROMPT_TRANSLIT` (agent_runner.py) |
+| Fast model (fast) | A Russian name for a card named in Latin letters. | `PROMPT_TRANSLIT` (agent_runner.py) |
+| Fast model (fast) | Up to twenty names in one call: the answer is keyed by id. | `PROMPT_TRANSLIT_BATCH` (agent_runner.py) |
 
 - **Tools:** none.
 - **Path:** Pydantic AI.
