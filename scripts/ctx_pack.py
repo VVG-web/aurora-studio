@@ -536,6 +536,14 @@ def semantic(topic: str, limit: int) -> dict:
 
 
 RARITY: dict = {}          # {слово: во скольких карточках встречается}
+# Инвертированный индекс «слово → номера карточек». `measure_rarity` и так обходит все
+# слова всех карточек; строить рядом ещё и обратный указатель почти ничего не стоит, а
+# `fuse` получает ровно тех кандидатов, у кого есть хоть одно слово запроса, вместо
+# разбора всей базы на каждый вызов. Первый `fuse` на 2661 карточке стоил 2,18 с именно
+# потому, что звал `score` (и разбор тела) для всех, хотя совпадение есть у сотен.
+POSTINGS: dict = {}        # {слово: {номер карточки}}
+_POSTINGS_FOR: dict | None = None   # словарь, для которого построен индекс (тождество)
+LAST_FUSE = {"scanned": 0, "total": 0}
 
 
 def measure_rarity(cards: dict) -> None:
@@ -545,12 +553,55 @@ def measure_rarity(cards: dict) -> None:
     второй карточке, а второе выделяет одну. Частое слово почти не сужает поиск — значит
     и вес его должен быть меньше. Это обычный IDF, только считается по базе, которая уже
     прочитана, и потому ничего не стоит.
+
+    Заодно здесь строится инвертированный индекс для `fuse`: обход тот же, а второй
+    проход по базе на каждый запрос больше не нужен.
     """
+    global _POSTINGS_FOR
     RARITY.clear()
+    POSTINGS.clear()
     RARITY["__total__"] = max(1, len(cards))
-    for c in cards.values():
-        for w in set(words(c.stem) + words(c.title) + words(c.summary) + words(c.text)):
+    for i, c in enumerate(cards.values()):
+        # Частоты — по прежним полям: вес слова не должен меняться от того, что мы
+        # завели указатель. А сам указатель обязан покрывать ВСЁ, чем пользуется
+        # `score`: имя и заголовок с разжатыми дефисами, номера (`ids`, `loose_ids`),
+        # поля-ключи, алиасы, теги и тело. Раньше здесь были только `words()`, и
+        # карточка, найденная по «AC 4.4.3» из `loose_ids`, в указатель не попадала.
+        seen_words = set(words(c.stem) + words(c.title) + words(c.summary) + words(c.text))
+        extra = set(ids(c.stem)) | set(ids(c.title))
+        extra |= set(loose_ids(c.stem)) | set(loose_ids(c.title))
+        for key in ID_FIELDS:
+            raw = str((getattr(c, "fm", None) or {}).get(key) or "")
+            extra |= set(ids(raw)) | set(loose_ids(raw))
+        alias = {w for a in c.aliases for w in words(a)}
+        alias |= {t for a in c.aliases for t in ids(a) + loose_ids(a)}
+        tag = set(words(c.tags))
+        # Имя и заголовок `_word_profile` разжимает по дефисам: «AC-4.4.1-Просмотр-
+        # реестра-Заявок» находит запрос «просмотр реестра». В весе слова эти формы
+        # не участвуют (частоты остаются прежними), но в указателе они обязаны быть.
+        spread = (set(words(c.stem.replace("-", " ").replace("_", " ")))
+                  | set(words(c.title.replace("-", " ").replace("_", " "))))
+        for w in seen_words:
             RARITY[w] = RARITY.get(w, 0) + 1
+        for w in seen_words | spread | extra | alias | tag:
+            POSTINGS.setdefault(w, set()).add(i)
+    _POSTINGS_FOR = cards
+
+
+def _candidate_ids(cards: dict, ask: list) -> list | None:
+    """Номера карточек, где есть хоть одно слово запроса. None — индекса нет.
+
+    `score` не может быть больше нуля без совпадения хотя бы одного слова: всё
+    остальное — премии за согласие и точный номер. Значит, карточки вне объединения
+    указателей дают ноль и в слияние не попадают. Порядок и веса не меняются,
+    меняется только перебор: сотни вместо тысяч.
+    """
+    if _POSTINGS_FOR is not cards or not POSTINGS:
+        return None
+    ids: set = set()
+    for w in ask:
+        ids.update(POSTINGS.get(w, ()))
+    return sorted(ids)
 
 
 def weight(word: str) -> float:
@@ -582,6 +633,9 @@ def _word_profile(card: "Card") -> tuple:
     спрашивают выборку пачками по одному обзору базы. Кешируем разбор на объекте
     карточки; от перезаписи текста страхует отпечаток (длина + crc32): карточки
     движок не правит по месту, но кеш, который не видит замену, — это ловушка.
+
+    Словарь частот тела собирается один раз на карточку и живёт в кеше профиля: на
+    повторных запросах это дешевле, чем пересчитывать вхождения по списку.
     """
     import zlib
     stamp = (len(card.text), zlib.crc32(card.text.encode("utf-8", errors="ignore")))
@@ -714,7 +768,13 @@ def fuse(cards: dict, topic: str, close: dict | None = None,
     lex = {}
     best = 0
     ask = query_words(topic)
-    for c in cards.values():
+    order = list(cards.values())
+    ids = _candidate_ids(cards, ask)
+    # Индекс есть — сверяем только карточки с хотя бы одним словом запроса. Карточка без
+    # совпадения всё равно получает ноль и в слияние не входит, поэтому выдача та же.
+    pool = ([order[i] for i in ids] if ids is not None else order)
+    LAST_FUSE.update(scanned=len(pool), total=len(order))
+    for c in pool:
         w = score(c, topic, ask=ask)
         if w > 0:
             lex[c.stem] = w

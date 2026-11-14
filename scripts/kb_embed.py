@@ -396,6 +396,25 @@ def build_prefilter(out: array.array, dim: int, rows: int):
 
 
 PF_USEFUL_AT = 0.70        # доля базы, которую предфильтр обязан отсечь, чтобы остаться
+PF_MIN_STALE = 64          # меньше кусков — пересборка слоя дороже, чем даст
+
+
+def prefilter_due(all_flag: bool, stale: int, gone: int, cards: int,
+                  pf_valid: bool) -> bool:
+    """Стоит ли пересчитывать предфильтр на этом прогоне.
+
+    Слой производный: его польза зависит от осей базы, а не от трёх новых векторов.
+    Живой замер: `--apply` с тремя устаревшими кусками строил предфильтр 10,15 с, после
+    чего `prefilter_pays_off` говорил «кандидатов 100 % базы» — работа выбрасывалась.
+    Прежний предфильтр при этом остаётся годным, пока не изменилось число строк: его
+    читает `load_prefilter` и сам отказывается, если строки разъехались. Пересчитываем
+    только `--all`, после большой досборки и когда прежнего слоя нет и база уже велика.
+    """
+    if all_flag or not cards:
+        return True
+    if pf_valid:
+        return False
+    return (stale + gone) >= max(PF_MIN_STALE, cards // 10)
 
 
 def prefilter_pays_off(out: array.array, dim: int, rows: int, pf) -> tuple:
@@ -667,12 +686,23 @@ def main() -> int:
         cards[name] = {"hash": mark, "row": len(out) // dim}
         out.extend(vec)
 
-    pf = build_prefilter(out, dim, len(cards))
-    # Записываем предфильтр, только если он себя оправдал на этих самых векторах:
-    # бесполезный слой не нейтрален — он стоит арифметики и чтения с диска на каждый поиск.
-    pays, share, why = prefilter_pays_off(out, dim, len(cards), pf)
-    if not pays:
-        pf = None
+    old_pf = load_prefilter(dim, len(cards)) if idx["cards"] else None
+    # Прежний слой годен, только если не сдвинулась ни одна строка: его проекции лежат
+    # по номерам строк. Совпало число строк, но карточка выбыла и другая добавилась —
+    # номера уже чужие, и такой слой хуже отсутствующего.
+    same_rows = (bool(old_pf) and not gone and len(cards) == len(idx["cards"])
+                 and all(n in idx["cards"] for n in cards))
+    if prefilter_due(a.all, len(stale), len(gone), len(cards), same_rows):
+        pf = build_prefilter(out, dim, len(cards))
+        # Записываем предфильтр, только если он себя оправдал на этих самых векторах:
+        # бесполезный слой не нейтрален — он стоит арифметики и чтения с диска на каждый поиск.
+        pays, share, why = prefilter_pays_off(out, dim, len(cards), pf)
+        if not pays:
+            pf = None
+    else:
+        pf = old_pf
+        why = ("прежний слой годен: досборка меньше порога" if pf
+               else "слой не окупается на этой базе — не пересчитываем")
     save_index(model, dim, cards, out, pf)
     print(f"\n✅ Индекс собран: карточек {len({piece_owner(k) for k in cards})} "
           f"(кусков {len(cards)}), размерность {dim}, модель {model}"

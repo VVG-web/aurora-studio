@@ -3754,7 +3754,7 @@ def until_done(cwd: str, a, task: str, run_batch, report, headline, passed,
     return {"res": res, "results": results, "batches": batch, "texts": texts, "stopped": stopped}
 
 
-def lap_steps(cfg: dict) -> int:
+def lap_steps(cfg: dict, pending: int = 0) -> int:
     """Сколько источников разбирать за один запуск разбора: не меньше полной волны пула.
 
     Лимит шагов (15 по умолчанию) ставили, когда разбор шёл в один поток. При пуле в 24
@@ -3762,9 +3762,18 @@ def lap_steps(cfg: dict) -> int:
     каждый оборот заново гонит типы, тезисы, вынос, индекс, связи и карты (PRJ-B
     24.09.2026). Источники одной волны друг друга всё равно не видят: индекс для следующей
     партии обновляется между оборотами — так что волна целиком ничего не теряет.
+
+    `pending` — сколько источников ждёт в плане. Если их больше одной волны, партия
+    растягивается до двух волн (и не больше 96): второй оборот стоит не только разбора,
+    но и полного круга тезисов, выноса, связей и карт. Живой прогон 08.11.2026: 24 источника
+    за 17 минут, а следующий круг по 7 карточкам — ещё 9 минут; две волны подряд дешевле
+    двух кругов. Предел `budget_min` при этом остаётся главным: партия не бесконечна.
     """
     width = AG.effective_width(cfg)
-    return max(cfg["max_steps"], width)
+    wave = max(cfg["max_steps"], width)
+    if pending <= wave:
+        return wave
+    return min(pending, max(wave, min(2 * width, 96)))
 
 
 def distill_every(cfg: dict) -> int:
@@ -3915,7 +3924,21 @@ CAND_SUMMARY = 110      # длина фразы о сути в списке ка
 # ранжирования разошлась бы с настоящей, поэтому берём ту.
 _HYB: dict = {}          # {корень проекта: (когда собрано, карточки ctx_pack)}
 _HYB_LOCK = threading.Lock()
-HYB_TTL = 120.0          # база меняется по ходу прогона — обзор освежаем
+# Обзор базы живёт до конца партии, а не две минуты. Замер на 2661 карточке:
+# load_cards + measure_rarity — 5,5 с, и прежний TTL 120 с заставлял пересобирать обзор
+# восемь раз за один `agent:build` (17 минут). Источники одной волны друг друга всё
+# равно не видят (см. `lap_steps`), поэтому устаревание внутри партии ничего не ломает;
+# между партиями кеш снимает `drop_hyb_cache` — следующая волна видит записанное.
+HYB_TTL = 1800.0
+
+
+def drop_hyb_cache(root: str = "") -> None:
+    """Снять обзор базы: перед новой партией он должен увидеть записанные карточки."""
+    with _HYB_LOCK:
+        if root:
+            _HYB.pop(os.path.abspath(root), None)
+        else:
+            _HYB.clear()
 
 
 def hybrid_rank(cwd: str, query: str, limit: int, skip: str = "",
@@ -3949,6 +3972,7 @@ def hybrid_rank(cwd: str, query: str, limit: int, skip: str = "",
 
 def _hyb_cards(root: str, P) -> dict:
     """Обзор базы для гибридной выборки. Собирается раз на прогон, освежается по TTL."""
+    root = os.path.abspath(root)
     with _HYB_LOCK:
         got = _HYB.get(root)
         if not got or time.time() - got[0] > HYB_TTL:
@@ -4508,6 +4532,20 @@ def section_set(spec: str) -> set:
     return out
 
 
+def critic_cards(cards: list, critic_new: bool = False) -> list:
+    """Что показывать критику. `--critic-new` — только новые карточки.
+
+    Предмет критика — имя и нарезка НОВОЙ сущности. Дописывание в существующую
+    карточку (`into`) проверяет арифметика: карточка есть, секции в источнике есть,
+    а текст дописывается дословно. Обновление зрелой базы перестаёт платить вторым
+    вызовом на каждый источник, где знание легло в уже известную карточку.
+    Без флага возвращаются все карточки — прежнее поведение `--critic`.
+    """
+    if not critic_new:
+        return cards
+    return [c for c in cards if not str(c.get("into") or "").strip()]
+
+
 def check_cards(cards: list, sections: list, allowed=None) -> str:
     """Проверить разбор арифметикой, а не мнением модели. → причина отказа или пусто.
 
@@ -4593,7 +4631,7 @@ def merge_same_target(cards: list) -> list:
 
 def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
                  use_critic: bool, call=None, deadline: float | None = None,
-                 step_end: float = 0.0) -> dict:
+                 step_end: float = 0.0, critic_new: bool = False) -> dict:
     """Разобрать один источник на карточки. → шаг для отчёта."""
     call = call or AG.call_role
     from aurora_common import is_meeting
@@ -4676,15 +4714,23 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
             why = id_named_card(cards, source, cwd)
         if not why and use_critic:
             from_check = False
-            c = call(cfg, "critic", [{"role": "user", "content": PROMPT_BUILD_CRITIC.format(
-                source=shown, sections=listing,
-                proposal=json.dumps(cards, ensure_ascii=False))}], deadline=deadline)
-            if c["ok"]:
-                step["backends"].append((c["backend"], c["model"]))
-                step["degraded"] = step["degraded"] or c["backend"] != 1
-                v = parse_json(c["text"]) or {}
-                if v.get("ok") is False:
-                    why = v.get("why") or "критик не согласен"
+            # Дописывание в существующую карточку (`into`) критик не судит: его предмет —
+            # имя и нарезка НОВОЙ сущности, а целью дописывания уже занимается
+            # арифметика (карточка существует, секции в источнике есть). Так обновление
+            # зрелой базы перестаёт платить вторым вызовом на каждый источник, где
+            # знание легло в уже известную карточку. `--critic` (без `--critic-new`)
+            # оставляет прежнее поведение для тех, кому нужен полный контроль.
+            target = critic_cards(cards, critic_new)
+            if target:
+                c = call(cfg, "critic", [{"role": "user", "content": PROMPT_BUILD_CRITIC.format(
+                    source=shown, sections=listing,
+                    proposal=json.dumps(target, ensure_ascii=False))}], deadline=deadline)
+                if c["ok"]:
+                    step["backends"].append((c["backend"], c["model"]))
+                    step["degraded"] = step["degraded"] or c["backend"] != 1
+                    v = parse_json(c["text"]) or {}
+                    if v.get("ok") is False:
+                        why = v.get("why") or "критик не согласен"
         if not why:
             break
         # Замечание — это не приговор, а обратная связь: разбор бывает верным по сути и
@@ -5287,7 +5333,7 @@ def accept_empty(cfg: dict, cwd: str, source: str, whole: str, note: str, step: 
 
 
 def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
-              partition: int = 1, call=None) -> dict:
+              partition: int = 1, call=None, critic_new: bool = False) -> dict:
     started = time.time()
     budget = started + cfg["budget_min"] * 60
     (before_left, before_done), before_errors = build_left(cwd), lint_errors(cwd, orphans=False)
@@ -5295,8 +5341,15 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
     if limit:
         sources = sources[:limit]
 
-    cap = lap_steps(cfg)
+    # Новая партия — новый обзор базы: карточки прошлой партии уже записаны и должны
+    # попадать в кандидаты. Внутри партии обзор живёт (см. `HYB_TTL`): источники одной
+    # волны друг друга намеренно не видят.
+    drop_hyb_cache(cwd)
+    cap = lap_steps(cfg, len(sources))
     total = min(len(sources), cap)
+    # Флаг передаётся только когда включён: подменённый в тестах `solve_source` со старой
+    # сигнатурой не должен падать на лишнем именованном аргументе.
+    source_flags = {"critic_new": True} if critic_new else {}
     slots, width = parallel_width(cfg, total)
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -5320,7 +5373,8 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
         # Начало источника — видно сразу, а не только его конец (1.170.0).
         AG.work_on(source)
         say(f"  ▸ взят в работу: {source.rsplit('/', 1)[-1][:60]}")
-        step = solve_source_safe(cfg, cwd, group, source, apply, use_critic, call=call,
+        step = solve_source_safe(cfg, cwd, group, source, apply, use_critic,
+                                 **source_flags, call=call,
                                  deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")),
                                  step_end=budget)
         return index, (group, source, _kb), step
@@ -5348,7 +5402,8 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
             say(f"  {progress(len(steps), total, started)} · поток 1 · "
                 f"{source.rsplit('/', 1)[-1][:60]} …")
             AG.work_on(source)
-            step = solve_source_safe(cfg, cwd, group, source, apply, use_critic, call=call,
+            step = solve_source_safe(cfg, cwd, group, source, apply, use_critic,
+                                     **source_flags, call=call,
                                      deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")),
                                      step_end=budget)
             steps.append(step)
@@ -10025,6 +10080,10 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="записывать в базу (иначе предпросмотр)")
     ap.add_argument("--critic", action="store_true",
                     help="проверять решение второй моделью до записи (для прода — обязательно)")
+    ap.add_argument("--critic-new", action="store_true",
+                    help="проверять второй моделью только НОВЫЕ карточки: дописывание в "
+                         "существующую карточку проверяет арифметика. Обновление зрелой "
+                         "базы не платит вторым вызовом на каждый источник")
     ap.add_argument("--limit", type=int, default=0, metavar="N",
                     help="взять только первые N конфликтов/источников (для пробы)")
     ap.add_argument("--partition", type=int, default=0, metavar="N",
@@ -10231,9 +10290,10 @@ def main() -> int:
             left_before, done_before = build_left(cwd)
             say(f"\n=== партия {batch} · осталось источников: {left_before} · "
                 f"до конца окна {human_time(max(0, deadline - time.time()))}")
-            res = run_build(cfg, cwd, a.apply, a.critic, a.limit, a.partition)
+            res = run_build(cfg, cwd, a.apply, a.critic or a.critic_new, a.limit,
+                            a.partition, critic_new=a.critic_new)
             steps_all += res.get("steps", [])
-            texts.append(report_build(res, cp, a.apply, a.critic, cfg))
+            texts.append(report_build(res, cp, a.apply, a.critic or a.critic_new, cfg))
             if a.apply:
                 commit_result(cwd, "agent:build",
                               f"партия {batch}: " + verdict_build(res, True)[1][:100],
@@ -10424,8 +10484,9 @@ def main() -> int:
         res = run_conform(cfg, cwd, a.apply, a.limit)
         text = report_conform(res, a.apply)
     elif a.task == "build":
-        res = run_build(cfg, cwd, a.apply, a.critic, a.limit, a.partition)
-        text = report_build(res, cp, a.apply, a.critic, cfg)
+        res = run_build(cfg, cwd, a.apply, a.critic or a.critic_new, a.limit,
+                        a.partition, critic_new=a.critic_new)
+        text = report_build(res, cp, a.apply, a.critic or a.critic_new, cfg)
     else:
         res = run_aliases(cfg, cwd, a.apply, a.critic, a.limit)
         text = report(res, cp, a.apply, a.critic, cfg)
