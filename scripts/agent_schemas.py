@@ -28,6 +28,10 @@ if HAVE_PYDANTIC:
         model_config = ConfigDict(extra="allow")
         title: str = ""
         into: str = ""
+        # Раздел базы и одна фраза о сути: их просит PROMPT_BUILD. Без полей в
+        # Pydantic-схеме модель не видит их в описании ответа и заполняет как придётся.
+        to: str = ""
+        summary: str = ""
         sections: str = ""
 
     class BuildPlan(BaseModel):
@@ -130,6 +134,9 @@ def _valid_build(data: dict) -> tuple[bool, str]:
             return False, "у карточки нет ни title, ни into"
         if not _str(card.get("sections", "")):
             return False, "sections не строка"
+        for field in ("to", "summary"):
+            if not _str(card.get(field, "")):
+                return False, f"{field} не строка"
     return True, ""
 
 

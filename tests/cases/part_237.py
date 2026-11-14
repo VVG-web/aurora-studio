@@ -21,6 +21,9 @@ def test_schemas_accept_the_engine_shapes(tmp):
 
     assert S.validate("BuildPlan", {"cards": [{"title": "X", "sections": "1"}]})[0]
     assert S.validate("BuildPlan", {"cards": [{"sections": "1"}]})[0] is False
+    assert S.validate("BuildPlan", {"cards": [{"title": "X", "sections": "1",
+                                               "to": "Concepts", "summary": "о чём"}]})[0]
+    assert S.validate("BuildPlan", {"cards": [{"title": "X", "sections": "1", "to": 1}]})[0] is False
     assert S.validate("BuildPlan", {"empty": "одно оглавление"})[0]
     assert S.validate("CriticVerdict", {"ok": True, "why": "", "issues": []})[0]
     assert S.validate("CriticVerdict", {"ok": "да", "why": "", "issues": []})[0] is False
