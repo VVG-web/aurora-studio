@@ -8130,9 +8130,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"routes": routes_live(project)})
         elif u.path == "/api/cron":
             # Расписание — свойство машины: проекты все, а не выбранный на Мостике.
-            st = scheduler().state()
-            st["projects"] = [{"name": p["name"], "path": p["path"]}
-                              for p in find_projects(self.server.roots)]
+            projects = [{"name": p["name"], "path": p["path"]}
+                        for p in find_projects(self.server.roots)]
+            st = scheduler().state(projects)
+            st["projects"] = projects
             # Боты проектов — для шага «бот» цепочки: проект → его боты (1.163.0).
             st["bots"] = {p["path"]: bots_brief(p["path"]) for p in st["projects"]}
             # Cron запускает, а не показывает: ему нужны все маршруты, профиль их лишь прячет.

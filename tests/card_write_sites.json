@@ -1561,6 +1561,12 @@
    "calls": 1,
    "git": "none"
   },
+  "scripts/kb_raptor.py:build": {
+   "kind": "other",
+   "reason": "производный индекс meta/raptor.json, не карточка",
+   "calls": 2,
+   "git": "none"
+  },
   "scripts/wiki_build.py:_write": {
    "kind": "other",
    "reason": "страницы вики кита (документы)",

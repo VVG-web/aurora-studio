@@ -73,6 +73,37 @@ def test_prompt_messages_keeps_a_stable_system_prefix(tmp):
 
 
 @test
+def test_critic_and_relink_split_prompts_are_opt_in(tmp):
+    """Старые промпты остаются одной репликой; split-варианты — только по флагу."""
+    sys.path.insert(0, str(SCRIPTS))
+    import agent_runner as R
+
+    old = os.environ.get("AURORA_AGENT_PREFIX_SPLIT")
+    os.environ.pop("AURORA_AGENT_PREFIX_SPLIT", None)
+    try:
+        legacy = R.prompt_messages(R.PROMPT_BUILD_CRITIC.format(
+            source="S", sections="1", proposal="{}"))
+        assert len(legacy) == 1 and legacy[0]["role"] == "user"
+        assert "Источник: S" in legacy[0]["content"]
+        os.environ["AURORA_AGENT_PREFIX_SPLIT"] = "1"
+        split = R.prompt_messages(R.PROMPT_BUILD_CRITIC_SPLIT.format(
+            source="S", sections="1", proposal="{}"))
+        assert [m["role"] for m in split] == ["system", "user"]
+        assert "Источник: S" not in split[0]["content"]
+        assert "Источник: S" in split[1]["content"]
+        rel = R.prompt_messages(R.PROMPT_RELINK_SPLIT.format(
+            title="T", thesis="Тезис", known="- `A`\n"))
+        assert [m["role"] for m in rel] == ["system", "user"]
+        assert "Карточка: T" not in rel[0]["content"]
+        assert "Карточка: T" in rel[1]["content"]
+    finally:
+        if old is None:
+            os.environ.pop("AURORA_AGENT_PREFIX_SPLIT", None)
+        else:
+            os.environ["AURORA_AGENT_PREFIX_SPLIT"] = old
+
+
+@test
 def test_raptor_builds_a_tree_from_moc_without_a_model(tmp):
     """RAPTOR собирает обзор из MOC и тезисов и находит узел по запросу."""
     root = make_project(tmp)
@@ -96,6 +127,21 @@ def test_raptor_builds_a_tree_from_moc_without_a_model(tmp):
     card(root, "Concepts/Карточка-В.md", "Третья карточка.", status="knowledge")
     cp = run("kb_raptor.py", "--check", cwd=root)
     assert cp.returncode == 1 and "устарело" in cp.stdout, cp.stdout
+
+
+@test
+def test_raptor_query_matches_epik_word_forms_and_stopwords(tmp):
+    """«какие системы входят в эпик» находит карту `Epic`, а не карточку с тем же словом."""
+    root = make_project(tmp)
+    card(root, "Systems/Ядро-системы.md", "Ядро системы описано здесь.", status="knowledge")
+    card(root, "MOC/Epic.md", "## Состав\n\n- [[Ядро-системы]]\n", status="index")
+
+    cp = run("kb_raptor.py", "--build", "--apply", cwd=root)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    cp = run("kb_raptor.py", "--query", "какие системы входят в эпик", "--json", cwd=root)
+    assert cp.returncode == 0, cp.stderr
+    rows = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert rows and rows[0]["id"] == "moc:Epic", rows
 
 
 @test

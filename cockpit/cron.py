@@ -1079,7 +1079,12 @@ class Scheduler:
             what = (str(it.get("cmd") or "") + " " + " ".join(it.get("args") or [])).strip()
         return f"{it.get('project_name') or os.path.basename(it.get('project', ''))} · {what}"
 
-    def state(self) -> dict:
+    def state(self, projects: list | None = None) -> dict:
+        """Состояние расписания; `projects` — уже найденные проекты панели.
+
+        Панель передаёт тот же список, который отдаёт в ответе: иначе `/api/cron`
+        повторно обходил глобальные корни и на большом дереве не отвечал.
+        """
         with self.lock:
             cur = brief(self.current) if self.current else None
             queue = [q[0] for q in self.queue]
@@ -1093,7 +1098,8 @@ class Scheduler:
         for t in tasks:
             t["next"] = next_run(t)
             t["last"] = last.get(t["id"])
-        for t in bot_tasks(self.projects_fn(), self.ck.DEFAULT_LANG):
+        for t in bot_tasks(projects if projects is not None else self.projects_fn(),
+                           self.ck.DEFAULT_LANG):
             t["next"] = bot_next(t)
             t["last"] = last.get(t["id"])
             tasks.append(t)

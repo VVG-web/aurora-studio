@@ -110,6 +110,7 @@ class _World:
         for d in (AG.DOWN, AG.DOWN_WHY, AG.SLOW, AG.LAST_OK, AG.COOL, AG.COOL_HITS, AG.ERR_HITS,
                   AG.LINK_RUN, AG.GAP_RUN, AG._PROBE):
             d.clear()
+        AG._write_alarm({})
         self.env.__exit__()
         self.restore_home()
 

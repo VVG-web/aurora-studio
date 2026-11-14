@@ -50,7 +50,7 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
     AG, ck = _mods()
     restore = set_home(tmp / "home")
     try:
-        assert ck.adapter_alarm() == []
+        assert ck.adapter_alarm() == [], ck.adapter_alarm()
         net = AG.Why("client_net", "tls", n=2, model="m-1", detail="")
         auth = AG.link_why("auth", 3, "m-2", 401)
         dns = AG.link_why("dns", 1, "m-3")
