@@ -1605,7 +1605,7 @@ def test_running_command_survives_a_page_reload(tmp: Path):
     Задание живёт в процессе панели, консоль — в открытой странице. Перезагрузили её
     (обновили kit, открыли заново) — команда работает, а консоль пуста: человек делает
     единственный разумный вывод «оборвалось» и запускает второй маршрут поверх первого.
-    Очереди у панели нет: два задания идут одновременно и дерутся за git и зеркала.
+    Конфликтующая задача встаёт в очередь по ресурсу, а не идёт молча поверх первой.
     """
     sys.path.insert(0, str(KIT / "cockpit"))
     import importlib
@@ -1627,10 +1627,10 @@ def test_running_command_survives_a_page_reload(tmp: Path):
     assert "/api/jobs?project=" in ui, "панель не спрашивает, что выполняется прямо сейчас"
     assert 'id="consoleLive"' in ui and "function attachJob" in ui, \
         "к работающему заданию нельзя подключиться — его вывод потерян навсегда"
-    assert "busyElsewhere" in ui and "не ставит задания в очередь" in ui, \
-        "второй запуск поверх работающего идёт молча, а это гонка, а не очередь"
+    assert "busyElsewhere" in ui and "встанет в очередь" in ui, \
+        "второй запуск поверх работающего не объясняет очередь по ресурсу"
     run = ui[ui.index("async function runRoute("):ui.index("async function attachRoute(")]
-    assert run.index("await busyElsewhere(sc.title)") < run.index('"/api/route/run"'), \
+    assert run.index('await busyElsewhere(sc.title, "", [], "route")') < run.index('"/api/route/run"'), \
         "маршрут спрашивает про занятость после того, как начал"
 
 
