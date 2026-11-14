@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from harness import SCRIPTS, card, make_project, test
+from harness import SCRIPTS, card, make_project, run, test
 
 
 @test
@@ -70,6 +70,32 @@ def test_prompt_messages_keeps_a_stable_system_prefix(tmp):
     assert first[1]["content"].startswith("кандидаты")
     assert "ИСТОЧНИК: A" in first[1]["content"] and "ИСТОЧНИК: B" in second[1]["content"]
     assert "@@ДАННЫЕ@@" not in first[1]["content"], "метка осталась в реплике"
+
+
+@test
+def test_raptor_builds_a_tree_from_moc_without_a_model(tmp):
+    """RAPTOR собирает обзор из MOC и тезисов и находит узел по запросу."""
+    root = make_project(tmp)
+    card(root, "Concepts/Карточка-А.md", "Первая карточка о ядре системы.",
+         status="knowledge")
+    card(root, "Concepts/Карточка-Б.md", "Вторая карточка о границах системы.",
+         status="knowledge")
+    card(root, "MOC/Карта-ядра.md",
+         "## Состав\n\n- [[Карточка-А]]\n- [[Карточка-Б]]\n", status="index")
+
+    cp = run("kb_raptor.py", "--build", "--apply", cwd=root)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    data = json.loads((root / "AuroraKnowledgeDB/meta/raptor.json").read_text(encoding="utf-8"))
+    assert any(n["id"] == "moc:Карта-ядра" and
+               {"Карточка-А", "Карточка-Б"} <= set(n["cards"]) for n in data["nodes"]), data
+    cp = run("kb_raptor.py", "--query", "Карточка-А", "--json", cwd=root)
+    assert cp.returncode == 0, cp.stderr
+    rows = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert rows and rows[0]["id"] == "moc:Карта-ядра", rows
+    assert "Карточка-А" in rows[0]["cards"], rows[0]
+    card(root, "Concepts/Карточка-В.md", "Третья карточка.", status="knowledge")
+    cp = run("kb_raptor.py", "--check", cwd=root)
+    assert cp.returncode == 1 and "устарело" in cp.stdout, cp.stdout
 
 
 @test

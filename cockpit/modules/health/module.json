@@ -8,7 +8,7 @@
   "group": "project",
   "order": 10,
   "needs": ["project"],
-  "commands": ["kb:lint", "kb:repair", "kb:embed", "kb:kind", "ops:trace", "ops:trace-table",
+  "commands": ["kb:lint", "kb:repair", "kb:embed", "kb:kind", "kb:raptor", "ops:trace", "ops:trace-table",
                "ops:todo", "ops:retrieval", "make:spec-pack", "sync:jira-status",
                "kit:remap-sources"],
   "for": "1.224.1"
