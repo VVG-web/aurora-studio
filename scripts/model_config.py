@@ -606,7 +606,10 @@ def to_config(data: dict) -> dict:
                                for r in data["capabilities"]["llm"]["roles"]
                                if r["id"] == "fast"), True)},
         "rerank": {
-            "enabled": str(os.environ.get("AURORA_RERANK", "1")).strip().lower()
+            # На живой базе реранкер ухудшил самопоиск: R@1 0.90→0.79, MRR 0.95→0.873,
+            # время 2м49→5м12. По умолчанию выключен; включает человек:
+            # `AURORA_RERANK=1` после замера на своей базе.
+            "enabled": str(os.environ.get("AURORA_RERANK", "0")).strip().lower()
                        not in ("0", "false", "no", "off"),
             "url": ((first_e.get("url") or e_prov["url"]) if first_e and e_prov else ""),
             "key": ((first_e.get("key") or e_prov["key"]) if first_e and e_prov else ""),

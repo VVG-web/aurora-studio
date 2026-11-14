@@ -122,6 +122,39 @@ def test_model_config_adds_the_fast_role_and_keeps_auto(tmp):
                          "settings": {}})[0]
     fast = next(r for r in data["capabilities"]["llm"]["roles"] if r["id"] == "fast")
     assert fast["auto"] is True and fast["thinking"] is False, fast
+    cfg = MC.to_config(data)
+    assert cfg["rerank"]["enabled"] is False, \
+        "реранкер снова включён по умолчанию без замера на живой базе"
+
+
+@test
+def test_translit_batch_is_on_by_default(tmp):
+    """Два имени уходят одним батчевым вызовом без отдельного флага."""
+    sys.path.insert(0, str(SCRIPTS))
+    import agent_runner as R
+
+    root = make_project(tmp)
+    paths = [card(root, f"Concepts/Karta-{i}.md", f"русский текст {i}", status="knowledge")
+             for i in range(2)]
+    calls = []
+
+    def fake(cfg, role, messages, **kw):
+        calls.append(kw.get("output_model"))
+        payload = {"items": [{"id": i + 1, "cyrillic": f"Карточка-{i}"}
+                             for i in range(len(paths))]}
+        return {"ok": True, "text": json.dumps(payload, ensure_ascii=False),
+                "backend": 1, "model": "m", "tps": 9, "log": []}
+
+    old = os.environ.get("AURORA_AGENT_BATCH_TRANSLIT")
+    os.environ.pop("AURORA_AGENT_BATCH_TRANSLIT", None)
+    try:
+        res = R.run_translit({"budget_min": 5, "max_steps": 10}, str(root),
+                             apply=False, call=fake)
+    finally:
+        if old is not None:
+            os.environ["AURORA_AGENT_BATCH_TRANSLIT"] = old
+    assert calls == ["TranslitBatch"], calls
+    assert [s["status"] for s in res["steps"]] == ["переведено", "переведено"], res["steps"]
 
 
 @test
@@ -243,6 +276,21 @@ def test_a_lost_twins_group_is_asked_again_alone(tmp):
             os.environ["AURORA_AGENT_BATCH_TWINS"] = old_flag
     assert [s["status"] for s in res["steps"]] == ["слил бы", "оставлено"], res["steps"]
     assert calls == ["TwinsBatch", "single"], calls
+
+
+@test
+def test_a_prepared_twins_base_gives_ten_groups(tmp):
+    """Десять пар с уникальными шинглами находятся как десять групп, а не как шум."""
+    sys.path.insert(0, str(SCRIPTS))
+    import agent_runner as R
+
+    root = make_project(tmp)
+    for g in range(1, 11):
+        body = " ".join(f"слово{g:02d}x{i:03d}" for i in range(120))
+        card(root, f"Concepts/Дубль-{g:02d}-А.md", body, status="knowledge")
+        card(root, f"Concepts/Дубль-{g:02d}-Б.md", body, status="knowledge")
+    groups = R.twin_groups(str(root))
+    assert len(groups) == 10 and all(len(g) == 2 for g in groups), groups
 
 
 @test

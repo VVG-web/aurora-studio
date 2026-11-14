@@ -3462,7 +3462,8 @@ def test_a_crash_in_one_unit_of_a_sequential_loop_is_a_failed_step(tmp: Path):
         ok_twin = {"group": ["Б", "В"], "status": "оставлено", "keep": "", "why": "", "backends": []}
         with patch.object(R, "twin_groups", lambda cwd, limit=0: [["А", "Б"], ["Б", "В"]]), \
                 patch.object(R, "solve_twins", boom_on_first(ok_twin)):
-            res = R.run_twins(cfg, str(root), False)
+            with patch.dict(os.environ, {"AURORA_AGENT_BATCH_TWINS": "0"}):
+                res = R.run_twins(cfg, str(root), False)
         assert [s["status"] for s in res["steps"]] == ["сбой", "оставлено"], res["steps"]
         assert "KeyError" in res["steps"][0]["why"] and res["steps"][0]["group"] == ["А", "Б"]
         assert R.report_twins(res, False)

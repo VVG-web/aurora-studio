@@ -2920,7 +2920,9 @@ PROMPT_TRANSLIT_BATCH = """Ниже — карточки, названные л�
 
 Правила те же, что для одной карточки:
 - код артефакта и латинскую аббревиатуру оставь как есть;
-- английские слова и идентификаторы не переводятся: not_translit = true;
+- «Card-09» — это транслит русского «Карточка 9», а не английское слово: переводи;
+- not_translit = true только когда и заголовок, и тело — английский текст,
+  код или технический идентификатор;
 - имя — то же понятие, а не пересказ.
 
 Ответ — строго JSON:
@@ -3043,9 +3045,10 @@ def run_translit(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) ->
             # Вердикт запоминается: без него те же имена уходили модели на каждом ремонте.
             rows[st["stem"]] = KT.NOT_TRANSLIT
 
-    # Батч — под флагом: 20 имён одним вызовом. Ошибка батча уходит в одиночный путь,
-    # поэтому качество не зависит от того, включён ли он.
-    batch = os.environ.get("AURORA_AGENT_BATCH_TRANSLIT") == "1"
+    # Батч включён по умолчанию: живой замер на 20 карточках дал 20/20 переводов
+    # одним вызовом против 14/20 шестнадцатью. Ошибка батча уходит в одиночный путь,
+    # а `AURORA_AGENT_BATCH_TRANSLIT=0` возвращает прежний путь.
+    batch = os.environ.get("AURORA_AGENT_BATCH_TRANSLIT", "1") != "0"
     if batch and total > 1:
         for start in range(0, total, BATCH_TRANSLIT):
             if time.time() > budget:
@@ -3351,7 +3354,9 @@ def run_twins(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> di
     budget = started + cfg["budget_min"] * 60
     groups = twin_groups(cwd, limit=limit)
     steps = []
-    batch = os.environ.get("AURORA_AGENT_BATCH_TWINS") == "1"
+    # Батч включён по умолчанию: живой замер на пяти группах дал те же 5 слияний,
+    # один вызов вместо пяти и вдвое меньше времени. `=0` возвращает одиночный путь.
+    batch = os.environ.get("AURORA_AGENT_BATCH_TWINS", "1") != "0"
     if batch:
         for start in range(0, len(groups), BATCH_TWINS):
             if time.time() > budget:
