@@ -702,7 +702,16 @@ class Scheduler:
         if kind != "route":
             return False
         act = self.ck.project_activity(project)
-        return bool(act.get("live_routes"))
+        if act.get("live_routes") or (act.get("agent") or {}).get("alive"):
+            return True
+        blocking = ("kb-write", "git-index", "engine-update", "exclusive", "kit-exclusive")
+        for row in act.get("running") or []:
+            if not isinstance(row, dict):
+                continue
+            for res in row.get("resources") or []:
+                if str(res) in blocking or str(res).startswith("source:"):
+                    return True
+        return False
 
     def _wait_free(self, project: str, log=None, kind: str = "command") -> bool:
         """Дождаться, пока проект освободится. Ждать молча нельзя: после перезапуска панели

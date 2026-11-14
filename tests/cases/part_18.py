@@ -387,7 +387,8 @@ def test_the_schedule_does_not_catch_up_a_whole_day_late(tmp: Path):
 @test
 def test_a_failed_step_stops_the_chain_only_when_asked(tmp: Path):
     """«Шаг не прошёл — цепочка встаёт»: остальные шаги пропущены с причиной; по умолчанию
-    цепочка идёт дальше. Занятый проект ждёт, потом пропускается."""
+    цепочка идёт дальше. Занятая команда больше не блокирует маршрут целиком: конфликт
+    ждёт на ресурсе, а независимая работа идёт рядом (это проверяет part_236)."""
     restore = set_home(tmp / "home")
     try:
         projects = [{"name": "A", "path": str(tmp / "a")}, {"name": "B", "path": str(tmp / "b")}]
@@ -415,7 +416,7 @@ def test_a_failed_step_stops_the_chain_only_when_asked(tmp: Path):
             _wait(sched)
             items = cron.list_runs()[0]["items"]
             assert [(i["status"], i["note"]) for i in items] == \
-                [("skipped", "busy"), ("passed", "")], items
+                [("passed", ""), ("passed", "")], items
         finally:
             cron.BUSY_WAIT_S, cron.BUSY_POLL_S = saved
     finally:
