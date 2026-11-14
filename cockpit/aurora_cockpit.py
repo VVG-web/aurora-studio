@@ -9307,10 +9307,16 @@ def route_start(project: str, sc_id: str, write: bool, resume: dict | None = Non
     resources = RR.route_resources(sys.modules[__name__], sc, write)
     with ROUTES_LOCK:
         for r in ROUTES.values():
-            if (r["project"] == project and not r["run"].done_flag
-                    and r["run"].sc.get("id") == sc_id):
+            if r["project"] != project or r["run"].done_flag:
+                continue
+            if r["run"].sc.get("id") == sc_id:
                 return {"error": "этот маршрут уже идёт", "route": r["id"],
                         "scId": r["run"].sc.get("id"), "write": r["run"].write}
+            hit = TS.resources_conflict(resources, getattr(r["run"], "resources", ("kb-write",)))
+            if hit:
+                return {"error": "маршрут не начат: %s уже держит %s"
+                                 % (r["run"].sc.get("title") or r["run"].sc.get("id") or "маршрут", hit),
+                        "conflict": {"run": r["id"], "conflict": hit}}
     for row in RR.route_live(project):
         if row.get("route") == sc_id:
             return {"error": "этот маршрут уже идёт вне этой панели: %s (pid %s, с %s)"

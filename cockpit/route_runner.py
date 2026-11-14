@@ -550,7 +550,11 @@ def route_conflict(project: str, resources: tuple) -> dict:
 def route_resources(ck, sc: dict, write: bool = True) -> tuple:
     """Ресурсы маршрута по его шагам. Пустой маршрут — прежний один писатель базы."""
     out = []
-    for st in plan(ck, sc, write):
+    try:
+        steps = plan(ck, sc, write)
+    except Exception:  # noqa: BLE001 — каркас без реестра команд: ресурс неизвестен, бережём базу
+        return ("kb-write",)
+    for st in steps:
         for r in TS.resources_for(st["cmd"], st["args"]):
             if r not in out:
                 out.append(r)
