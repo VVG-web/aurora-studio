@@ -56,7 +56,10 @@ import diagram_text as DG
 import docx_text as DT
 import ingest_config as IC
 import transcript_text as TT
-import xlsx_text as XT
+try:
+    import xlsx_text as XT
+except ImportError:          # проект обновился наполовину: остаётся openpyxl
+    XT = None
 from aurora_common import TODAY, file_hash  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import PATH_CHARS, link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
 from aurora_fs import write_atomic  # noqa: E402 — транскрипт пишется целиком или не трогается
@@ -119,7 +122,7 @@ def conv_docx_builtin(src: str) -> str | None:
 def conv_xlsx_builtin(src: str) -> str | None:
     if not src.lower().endswith((".xlsx", ".xlsm")):
         return None
-    text = XT.convert(src)
+    text = XT.convert(src) if XT else None
     if text:
         return text
     # Запасной путь: если встроенный разбор не понял нестандартную книгу,
