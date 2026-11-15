@@ -9222,6 +9222,26 @@ FEEDBACK_NOTE = ("\n\nПРОШЛЫЙ ТЕЗИС НЕ ПРИНЯТ ШАБЛОНО
                  "Напиши тезис заново, исправив именно это; правила выше те же.")
 
 
+def structured_thesis(raw: str) -> dict | None:
+    """Разобрать JSON-ответ distill без записи пустого или битого текста.
+
+    Возвращает `{thesis, changed, empty}` для валидной формы, `None` для не-JSON
+    и `{thesis: "", changed: "", empty: <причина>}` для пустого ответа. Пустая
+    причина не становится тезисом и не уходит в карточку.
+    """
+    data, _why = checked_json(raw or "", "DistillResult")
+    if data is None:
+        if (raw or "").lstrip().startswith("{"):
+            return {"error": "ответ JSON не разобран", "thesis": "", "changed": "", "empty": ""}
+        return None
+    thesis = str(data.get("thesis") or "").strip()
+    changed = str(data.get("changed") or "").strip()
+    empty = str(data.get("empty") or "").strip()
+    if not thesis:
+        return {"thesis": "", "changed": "", "empty": empty or "модель вернула пустой тезис без причины"}
+    return {"thesis": thesis, "changed": changed, "empty": ""}
+
+
 def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
                  deadline: float = 0.0, prefer: int = 0, feedback: str = "") -> dict:
     """Переписать одну карточку `kind: knowledge` в тезис. → шаг для отчёта.
@@ -9358,19 +9378,25 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
             return step
         raw = (a["text"] or "").strip()
         if json_thesis:
-            data, _why = checked_json(raw, "DistillResult")
-            if data and data.get("empty") and not data.get("thesis"):
-                step.update(status="знания нет", note=str(data["empty"])[:200])
+            parsed = structured_thesis(raw)
+            if parsed and parsed.get("error"):
+                step.update(status="сбой", note=parsed["error"])
                 return step
-            if data and data.get("thesis"):
-                thesis = str(data["thesis"]).strip()
-                changed = str(data.get("changed") or "").strip()
+            if parsed is not None and not parsed["thesis"]:
+                step.update(status="знания нет", note=parsed["empty"][:200])
+                return step
+            if parsed is not None:
+                thesis = parsed["thesis"]
+                changed = parsed["changed"]
             else:
                 json_thesis = False          # форма не пришла — разбираем как прежде
         if not json_thesis:
             m = re.split(r"^\s*ИЗМЕНИЛОСЬ:\s*$", raw, maxsplit=1, flags=re.M)
             thesis = re.sub(r"^\s*ТЕЗИС:\s*$", "", m[0], count=1, flags=re.M).strip()
             changed = (m[1].strip() if len(m) > 1 else "")
+            if thesis.lstrip().startswith("{"):
+                step.update(status="сбой", note="ответ JSON не разобран")
+                return step
         step["redistilled"] = True
         # Модель сама сказала «по сути без изменений» — прежний тезис верен, и он уже
         # проверен Момусом, вынесен и связан. Новая формулировка того же ничего не даёт,
@@ -9404,14 +9430,20 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
             return step
         thesis = (a["text"] or "").strip()
         if json_thesis:
-            data, _why = checked_json(thesis, "DistillResult")
-            if data and data.get("empty") and not data.get("thesis"):
-                step.update(status="знания нет", note=str(data["empty"])[:200])
+            parsed = structured_thesis(thesis)
+            if parsed and parsed.get("error"):
+                step.update(status="сбой", note=parsed["error"])
                 return step
-            if data and data.get("thesis"):
-                thesis = str(data["thesis"]).strip()
+            if parsed is not None and not parsed["thesis"]:
+                step.update(status="знания нет", note=parsed["empty"][:200])
+                return step
+            if parsed is not None:
+                thesis = parsed["thesis"]
             else:
                 json_thesis = False
+        if not json_thesis and thesis.lstrip().startswith("{"):
+            step.update(status="сбой", note="ответ JSON не разобран")
+            return step
     else:
         # Map-reduce: выписка по каждому куску, потом свод. Момус проверяет и куски, и
         # итог — иначе опора теряется ровно там, где её труднее всего заметить.

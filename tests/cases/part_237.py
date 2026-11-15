@@ -104,6 +104,51 @@ def test_critic_and_relink_split_prompts_are_opt_in(tmp):
 
 
 @test
+def test_structured_distill_empty_and_broken_answers_are_not_theses(tmp):
+    """Пустой JSON не становится тезисом: причина остаётся причиной, битый ответ — сбоем."""
+    sys.path.insert(0, str(SCRIPTS))
+    import agent_runner as R
+
+    ok = R.structured_thesis('{"thesis": "Тезис", "changed": "правка"}')
+    assert ok == {"thesis": "Тезис", "changed": "правка", "empty": ""}, ok
+    blank = R.structured_thesis('{"thesis": "", "changed": "", "empty": ""}')
+    assert blank and blank["thesis"] == "" and "без причины" in blank["empty"], blank
+    reason = R.structured_thesis('{"thesis": "", "empty": "только вёрстка"}')
+    assert reason and reason["empty"] == "только вёрстка", reason
+    broken = R.structured_thesis('{"thesis": ')
+    assert broken and broken.get("error"), broken
+    assert R.structured_thesis("обычный текст") is None
+
+
+@test
+def test_structured_distill_empty_answer_does_not_reach_the_card(tmp):
+    """Пустой JSON не попадает в тело карточки даже при включённом флаге."""
+    sys.path.insert(0, str(SCRIPTS))
+    import agent_runner as R
+
+    root = make_project(tmp)
+    path = card(root, "Concepts/Проверка.md", "Это исходный текст карточки.",
+                status="knowledge", kind="knowledge")
+
+    def fake(cfg, role, messages, **kw):
+        return {"ok": True, "backend": 1, "model": "m", "tps": 1, "log": [],
+                "text": '{"thesis":"","changed":"","empty":""}'}
+
+    old = os.environ.get("AURORA_AGENT_STRUCTURED_DISTILL")
+    os.environ["AURORA_AGENT_STRUCTURED_DISTILL"] = "1"
+    try:
+        step = R.distill_card({"request_timeout": 60}, str(path), call=fake, momus=False)
+    finally:
+        if old is None:
+            os.environ.pop("AURORA_AGENT_STRUCTURED_DISTILL", None)
+        else:
+            os.environ["AURORA_AGENT_STRUCTURED_DISTILL"] = old
+    assert step["status"] == "знания нет", step
+    assert step.get("head") is None, "пустой ответ дошёл до записи"
+    assert '{"thesis"' not in path.read_text(encoding="utf-8")
+
+
+@test
 def test_raptor_builds_a_tree_from_moc_without_a_model(tmp):
     """RAPTOR собирает обзор из MOC и тезисов и находит узел по запросу."""
     root = make_project(tmp)
