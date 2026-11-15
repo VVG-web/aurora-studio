@@ -64,7 +64,8 @@ RENAMED = {"worker": ("Разбор и тезисы",), "planner": ("Плани�
 # Роль, которой отвечает возможность, когда задача зовёт роль без бэкендов.
 DEFAULT_ROLE = {"llm": "worker", "ocr": "document", "embeddings": "index"}
 SETTINGS_DEFAULT = {"adapter": "pydantic_ai", "max_steps": 15, "budget_min": 20,
-                    "request_timeout": 300, "parallel": "auto", "debug": False}
+                    "request_timeout": 300, "parallel": "auto", "debug": False,
+                    "rerank": False}
 OCR_DEFAULT = {"dpi": 130, "max_pages": 60}
 
 
@@ -235,6 +236,7 @@ def normalize(data) -> tuple:
     par = str(st.get("parallel", "auto")).strip().lower()
     s["parallel"] = "auto" if par in ("auto", "авто", "0", "", "all") else _int(par, 1, 1)
     s["debug"] = bool(st.get("debug"))
+    s["rerank"] = bool(st.get("rerank"))
     out["settings"] = s
     llm_used = {b["provider"] for r in out["capabilities"]["llm"]["roles"] for b in r["backends"] if b["enabled"]}
     _declare_widths(out["providers"], s["parallel"], llm_used)
@@ -607,10 +609,12 @@ def to_config(data: dict) -> dict:
                                if r["id"] == "fast"), True)},
         "rerank": {
             # На живой базе реранкер ухудшил самопоиск: R@1 0.90→0.79, MRR 0.95→0.873,
-            # время 2м49→5м12. По умолчанию выключен; включает человек:
-            # `AURORA_RERANK=1` после замера на своей базе.
-            "enabled": str(os.environ.get("AURORA_RERANK", "0")).strip().lower()
-                       not in ("0", "false", "no", "off"),
+            # время 2м49→5м12. По умолчанию выключен; включает человек в настройке
+            # моделей или переменной `AURORA_RERANK=1` после замера на своей базе.
+            # Переменная сильнее настройки: ею можно разово проверить режим, не меняя файл.
+            "enabled": (str(os.environ.get("AURORA_RERANK")).strip().lower()
+                        not in ("0", "false", "no", "off"))
+                       if "AURORA_RERANK" in os.environ else bool(s.get("rerank")),
             "url": ((first_e.get("url") or e_prov["url"]) if first_e and e_prov else ""),
             "key": ((first_e.get("key") or e_prov["key"]) if first_e and e_prov else ""),
             "model": (os.environ.get("AURORA_RERANK_MODEL") or "").strip(),

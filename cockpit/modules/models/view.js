@@ -575,6 +575,8 @@ function runSettings(ctx){
   adapter.onchange = () => { s.adapter = adapter.value; touch(ctx); };
   const debug = el("input", {type: "checkbox", checked: s.debug ? "" : null,
     onchange: e => { s.debug = e.target.checked; touch(ctx); }});
+  const rerank = el("input", {type: "checkbox", checked: s.rerank ? "" : null,
+    onchange: e => { s.rerank = e.target.checked; touch(ctx); }});
   return el("details", {class: "card", style: "padding:14px 16px;margin-top:16px"},
     el("summary", {style: "cursor:pointer;font-weight:600"}, t("models.run_title")),
     el("p", {class: "muted", style: "font-size:12.5px"}, t("models.run_about")),
@@ -586,6 +588,9 @@ function runSettings(ctx){
       el("label", {class: "row", style: "gap:6px"}, t("models.run_adapter"), adapter),
       el("label", {class: "row", style: "gap:6px", title: t("models.run_debug_hint")},
         debug, t("models.run_debug"))),
+    el("div", {class: "row", style: "gap:10px;margin-top:10px"},
+      el("label", {class: "row", style: "gap:6px", title: t("models.rerank_hint")},
+        rerank, t("models.rerank"))),
     el("div", {class: "row", style: "gap:10px;margin-top:10px"},
       // Ширину сервера человек знать не обязан: замер посылает растущие пачки запросов и
       // говорит, сколько шлюз держит на самом деле.

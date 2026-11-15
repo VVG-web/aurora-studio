@@ -83,6 +83,17 @@ jobs:
             2) TAG_ARGS=(--target "$(git log -1 --format=%H -- VERSION)") ;;
             *) echo "::error::Не удалось спросить у GitHub про тег $TAG (код $rc)"; exit 1 ;;
           esac
+          if [ "${TAG_ARGS[0]}" = "--verify-tag" ]; then
+            TAG_COMMIT="$(git rev-parse "$TAG^{commit}")"
+          else
+            TAG_COMMIT="${TAG_ARGS[1]}"
+          fi
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" "$HEAD_SHA"; then
+            echo "::error::Метка $TAG указывает на коммит, которого нет в проверенной истории"
+            exit 1
+          fi
+          POST_TAG="$(git log --no-merges --format='- %h %s' "$TAG_COMMIT..$HEAD_SHA")"
 
           # Заголовок и текст — запись этой версии из CHANGELOG.md, как у прежних выпусков.
           # Без записи выпуск не создаём: пустая страница хуже отсутствующей.
@@ -110,6 +121,16 @@ jobs:
           with open(os.path.join(tmp, "release_notes.md"), "w", encoding="utf-8") as f:
               f.write(body + "\n")
           PY
+          if [ -n "$POST_TAG" ]; then
+            {
+              echo
+              echo "### После метки"
+              echo
+              echo "Метка указывает на коммит выпуска. После него в master вошли:"
+              echo
+              printf '%s\n' "$POST_TAG"
+            } >> "$RUNNER_TEMP/release_notes.md"
+          fi
 
           gh release create "$TAG" "${TAG_ARGS[@]}" \
             --title "$(cat "$RUNNER_TEMP/release_title.txt")" \

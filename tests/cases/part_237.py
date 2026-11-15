@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from harness import SCRIPTS, card, make_project, run, test
+from harness import KIT, SCRIPTS, card, make_project, run, test
 
 
 @test
@@ -244,6 +244,30 @@ def test_model_config_adds_the_fast_role_and_keeps_auto(tmp):
     cfg = MC.to_config(data)
     assert cfg["rerank"]["enabled"] is False, \
         "реранкер снова включён по умолчанию без замера на живой базе"
+    data["settings"]["rerank"] = True
+    assert MC.to_config(data)["rerank"]["enabled"] is True, \
+        "настройка кита не включает реранкер"
+    old = os.environ.get("AURORA_RERANK")
+    os.environ["AURORA_RERANK"] = "0"
+    try:
+        assert MC.to_config(data)["rerank"]["enabled"] is False, \
+            "переменная окружения не сильнее настройки"
+    finally:
+        if old is None:
+            os.environ.pop("AURORA_RERANK", None)
+        else:
+            os.environ["AURORA_RERANK"] = old
+
+
+@test
+def test_models_page_has_a_reranker_switch_with_a_hint(tmp):
+    """Переключатель есть в настройках прогона, подсказка объясняет, когда он полезен."""
+    view = (KIT / "cockpit/modules/models/view.js").read_text(encoding="utf-8")
+    assert "models.rerank" in view and "models.rerank_hint" in view, \
+        "в настройках моделей нет переключателя реранкера или подсказки"
+    for lang in ("ru", "en"):
+        data = json.loads((KIT / f"cockpit/modules/models/i18n/{lang}.json").read_text(encoding="utf-8"))
+        assert data.get("models.rerank") and data.get("models.rerank_hint"), lang
 
 
 @test
@@ -462,14 +486,17 @@ def test_fuse_uses_rerank_only_for_the_top(tmp):
             self.text, self.summary, self.aliases, self.tags = text, "", [], ""
             self.fm = {}
 
-    cards = {n: Fake(n, f"{n} общий текст") for n in ("А", "Б", "В")}
+    cards = {n: Fake(n, "общий текст") for n in ("Альфа", "Бета", "Гамма")}
     P.measure_rarity(cards)
     old = E.rerank
     E.rerank = lambda q, docs, cfg, limit=20: [(docs[-1][0], 0.9)] + [
         (n, 0.1) for n, _t in docs[:-1]]
     try:
-        got = [c.stem for _w, c in P.fuse(cards, "общий текст", {},
+        got = [c.stem for _w, c in P.fuse(cards, "Альфа общий текст", {},
                                           rerank={"enabled": True})]
+        blended = [c.stem for _w, c in P.fuse(cards, "Альфа общий текст", {},
+                                              rerank={"enabled": True, "blend": 0.3})]
     finally:
         E.rerank = old
-    assert got[0] == "В", got
+    assert got[0] == "Гамма", got
+    assert blended[0] == "Альфа", blended

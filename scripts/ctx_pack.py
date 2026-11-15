@@ -846,10 +846,25 @@ def fuse(cards: dict, topic: str, close: dict | None = None,
             rows = E.rerank(topic, docs, {"rerank": rerank}, limit=40)
             if rows:
                 by = {c.stem: c for _w, c in top}
-                moved = [(score, by[name]) for name, score in rows if name in by]
-                shown = {c.stem for _s, c in moved}
-                ordered = (moved + [(w, c) for w, c in top if c.stem not in shown]
-                           + ordered[40:])
+                blend = rerank.get("blend")
+                if isinstance(blend, (int, float)) and 0 < blend < 1:
+                    # Не заменять сильный лексический сигнал целиком: смешиваем
+                    # нормированный старый вес и нормированный счёт реранкера.
+                    base_max = max((w for w, _c in top), default=0.0) or 1.0
+                    rer_max = max((s for n, s in rows if n in by), default=0.0) or 1.0
+                    mixed = [((1 - blend) * next(w for w, c in top if c.stem == name) / base_max
+                              + blend * score / rer_max, by[name])
+                             for name, score in rows if name in by]
+                    shown = {c.stem for _w, c in mixed}
+                    mixed += [((1 - blend) * w / base_max, c) for w, c in top
+                              if c.stem not in shown]
+                    ordered = (sorted(mixed, key=lambda x: (-x[0], x[1].stem))
+                               + ordered[40:])
+                else:
+                    moved = [(score, by[name]) for name, score in rows if name in by]
+                    shown = {c.stem for _s, c in moved}
+                    ordered = (moved + [(w, c) for w, c in top if c.stem not in shown]
+                               + ordered[40:])
         except Exception:                                      # noqa: BLE001
             pass
     return ordered

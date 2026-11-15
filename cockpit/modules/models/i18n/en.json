@@ -112,6 +112,8 @@
   "models.role_default.index": "Knowledge base index",
   "models.run_debug": "Debug",
   "models.run_debug_hint": "The agent run stops at the first error instead of going on through the cards. For finding a cause, not for work.",
+  "models.rerank": "Reranker: reorder the top of search results",
+  "models.rerank_hint": "Useful on a large knowledge base when the question is long and ambiguous, and the right card is often not first but stays in the top ten. Expect a more accurate first result and a 1.3–1.5x slower search. On 60 questions the first result rose from 0.733 to 0.783, while the fifth fell from 0.867 to 0.850. Off by default.",
   "models.ping_failed": "The check did not answer — the panel is unreachable or was interrupted.",
   "models.role_empty_default.llm": "No backends — the agent has nothing to run on: pick a provider and a model.",
   "models.role_empty_default.ocr": "No backends — scan recognition is off. Name the model explicitly: a guessed name gives not a refusal but a coherent fabrication.",
