@@ -206,6 +206,7 @@ scripts/aurora_todo.py       => .aurora/scripts/aurora_todo.py
 scripts/xml_safe.py      => .aurora/scripts/xml_safe.py
 scripts/diagram_text.py  => .aurora/scripts/diagram_text.py
 scripts/docx_text.py     => .aurora/scripts/docx_text.py
+scripts/xlsx_text.py     => .aurora/scripts/xlsx_text.py
 scripts/transcript_text.py => .aurora/scripts/transcript_text.py
 scripts/ingest_config.py => .aurora/scripts/ingest_config.py
 scripts/office_ingest.py => .aurora/scripts/office_ingest.py

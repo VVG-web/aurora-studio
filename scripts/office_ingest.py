@@ -27,7 +27,8 @@ Confluence, а часть знания лежит в схемах draw.io и м�
   встроенный docx — без зависимостей: заголовки, списки, таблицы (в том числе с объединёнными
                     ячейками), сноски, комментарии, исправления; результат один на любой машине
   pandoc          — docx/pptx/odt/rtf → markdown
-  встроенные      — xlsx через openpyxl, pdf через pypdf/fitz/pdftotext (с якорями страниц)
+  встроенные      — xlsx через xlsx_text (openpyxl запасной), pdf через pypdf/fitz/pdftotext
+                    (с якорями страниц)
   markitdown      — универсальный
   схемы           — draw.io, BPMN, DMN, mermaid → текст, без модели (diagram_text.py)
 Ничего из этого нет → скрипт честно скажет, какой файл не разобран и что поставить.
@@ -55,6 +56,7 @@ import diagram_text as DG
 import docx_text as DT
 import ingest_config as IC
 import transcript_text as TT
+import xlsx_text as XT
 from aurora_common import TODAY, file_hash  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import PATH_CHARS, link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
 from aurora_fs import write_atomic  # noqa: E402 — транскрипт пишется целиком или не трогается
@@ -117,6 +119,11 @@ def conv_docx_builtin(src: str) -> str | None:
 def conv_xlsx_builtin(src: str) -> str | None:
     if not src.lower().endswith((".xlsx", ".xlsm")):
         return None
+    text = XT.convert(src)
+    if text:
+        return text
+    # Запасной путь: если встроенный разбор не понял нестандартную книгу,
+    # пробуем openpyxl. Пакет не обязателен: на чистой установке работает первый.
     try:
         import openpyxl  # type: ignore
     except Exception:

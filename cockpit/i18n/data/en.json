@@ -18,7 +18,7 @@
     "sync:diff": "Drift: a source changed after the knowledge was built.",
     "sync:jira-status": "The reverse flow: issue statuses → candidates for `req_status`, issues without requirements, links by mention.",
     "kb:build": "Card extraction: plan, batches and ledger by script, the extraction itself by the model; `--slice`, `--card`, `--append`, `--reopen`, `--thin`.",
-    "kb:ingest-office": "docx/pdf/xlsx/pptx from `Raw/`, page attachments and draw.io/BPMN diagrams → Markdown transcripts (next to the original or in `Raw/Extracted/`); scans are read by a vision model if configured.",
+    "kb:ingest-office": "docx/pdf/xlsx/pptx from `Raw/`, page attachments and draw.io/BPMN diagrams → Markdown transcripts (next to the original or in `Raw/Extracted/`); xlsx is read by a built-in converter without openpyxl, the package remains a fallback; scans are read by a vision model if configured.",
     "kb:ingest": "A document from `Raw/` → cards linked to the primary source; the branch is chosen by the document: a spec → REQ with `tz_ref`, a meeting transcript → summary, DR, REQ and facts.",
     "kb:repair": "Repair: broken links, homoglyphs, legacy frontmatter, fields outside the schema, stubs for links; modes by flag (`--titles`, `--terms`, `--gone-sources`, `--template`, `--copies`, `--aliases`, `--sections`, …). Renaming and moving steps of one run combine on a single card (name from the rename, folder from the move); a taken or contradicting destination is left in the report. Preview without `--apply`.",
     "kb:names": "File and folder names by the strictest rules of Windows, macOS and Linux: long Confluence paths, card names with links, case-only differences.",

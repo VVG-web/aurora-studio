@@ -292,12 +292,14 @@ def test_xlsx_and_pdf_attachments_get_transcripts_when_their_readers_are_present
     made = []
     try:
         import openpyxl  # type: ignore
+        from datetime import date as _date
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Лист1"
         ws.append(["Поле", "Описание"])
         for i in range(8):
             ws.append(["Поле %d" % i, "Описание поля %d подсистемы PRJ-A и правил его заполнения" % i])
+        ws.append(["Дата", _date(2021, 7, 1)])
         wb.save(assets / "таблица.xlsx")
         made.append("таблица.xlsx.md")
     except ImportError:
@@ -322,4 +324,5 @@ def test_xlsx_and_pdf_attachments_get_transcripts_when_their_readers_are_present
         assert cp.returncode == 1 and "документ.pdf — нет подходящего конвертера" in cp.stdout, \
             (cp.returncode, cp.stdout)
     if "таблица.xlsx.md" in made:
-        assert "## Лист: Лист1" in (root / EXTRACTED / "таблица.xlsx.md").read_text(encoding="utf-8")
+        body = (root / EXTRACTED / "таблица.xlsx.md").read_text(encoding="utf-8")
+        assert "## Лист: Лист1" in body and "2021-07-01" in body, body
