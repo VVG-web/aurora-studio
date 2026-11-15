@@ -115,6 +115,8 @@ def test_structured_distill_empty_and_broken_answers_are_not_theses(tmp):
     assert blank and blank["thesis"] == "" and "без причины" in blank["empty"], blank
     reason = R.structured_thesis('{"thesis": "", "empty": "только вёрстка"}')
     assert reason and reason["empty"] == "только вёрстка", reason
+    placeholder = R.structured_thesis('{"thesis": "...", "empty": ""}')
+    assert placeholder and placeholder["thesis"] == "" and "заглушку" in placeholder["empty"], placeholder
     broken = R.structured_thesis('{"thesis": ')
     assert broken and broken.get("error"), broken
     assert R.structured_thesis("обычный текст") is None

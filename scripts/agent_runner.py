@@ -9237,8 +9237,10 @@ def structured_thesis(raw: str) -> dict | None:
     thesis = str(data.get("thesis") or "").strip()
     changed = str(data.get("changed") or "").strip()
     empty = str(data.get("empty") or "").strip()
-    if not thesis:
-        return {"thesis": "", "changed": "", "empty": empty or "модель вернула пустой тезис без причины"}
+    if not thesis or not thesis.strip(" .…—-"):
+        reason = empty or ("модель вернула заглушку вместо тезиса" if thesis else
+                           "модель вернула пустой тезис без причины")
+        return {"thesis": "", "changed": "", "empty": reason}
     return {"thesis": thesis, "changed": changed, "empty": ""}
 
 
