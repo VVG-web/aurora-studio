@@ -7016,6 +7016,13 @@ def adapter_alarm() -> list:
                 continue                  # строку тревоги правили руками: панель из-за неё не падает
             if cause.area == "link" and AG.alarm_age(row) > AG.LINK_ALARM_TTL:
                 continue                  # забытая тревога связи (бэкенд убран из настройки) не висит вечно
+            project_path = str(row.get("project") or "")
+            if (cause.area == "link" and project_path and not os.path.isdir(project_path)
+                    and AG.alarm_age(row) > AG.LINK_ALARM_DEAD_PROJECT):
+                # Проект удалён или его диск отключён давно: ответа этому бэкенду уже
+                # не будет, и красная полоса на всей машине — ложная.
+                AG.forget_alarm(key)
+                continue
             rows.append({"path": str(row.get("path") or key), "area": cause.area, "kind": cause.kind,
                          "sub": cause.sub, "fix": cause.fix, "args": dict(cause.args),
                          "at": row.get("at", ""), "why": str(cause),

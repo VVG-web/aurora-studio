@@ -856,6 +856,9 @@ ALARM_AFTER = 3
 # Тревога связи, которую никто не снял (бэкенд убрали из настройки, прогонов больше нет), через столько
 # секунд панель уже не показывает: у живой тревоги `at` обновляется с каждой новой неудачей.
 LINK_ALARM_TTL = 12 * 3600
+# Удалённый проект не должен держать красную полосу на всей машине. Час — запас
+# на отключённый диск или сетевую папку, которая сейчас не смонтирована.
+LINK_ALARM_DEAD_PROJECT = 3600
 LINK_FAILURE = "обрыв связи"         # вид сбоя вызова в `USAGE["errors"]`; причина — в `USAGE["link_why"]`
 LINK_HUMAN_KINDS = frozenset({"auth", "not_found"})   # чинятся человеком (ключ, имя модели), а не ожиданием
 
@@ -2368,6 +2371,16 @@ def link_ok(n, keep_probe: bool = False) -> None:
     with _ALARM_LOCK:
         data = read_alarm()
         if data.pop(_link_key(n), None) is not None:
+            _write_alarm(data)
+
+
+def forget_alarm(key: str) -> None:
+    """Снять одну тревогу по ключу: проект исчез, ждать ответа бэкенда некому."""
+    if not alarm_path().is_file():
+        return
+    with _ALARM_LOCK:
+        data = read_alarm()
+        if data.pop(key, None) is not None:
             _write_alarm(data)
 
 

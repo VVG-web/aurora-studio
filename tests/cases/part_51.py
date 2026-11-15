@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 from harness import KIT, SCRIPTS, set_home, test  # noqa: F401
 
@@ -89,6 +90,14 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
                          "agent:плохой": {"at": "x", "why": 5, "kind": "dns", "args": "не словарь"}})
         paths = sorted(r["path"] for r in ck.adapter_alarm())
         assert "bot:давний" not in paths and "bot:живой" in paths, paths
+        # Проект удалён, а тревога моложе суток: час на отключённый диск уже прошёл,
+        # значит ответа не будет, и полоса снимается вместе с записью.
+        AG._write_alarm({"link:7": _row(
+            AG, AG.link_why("dns", 7, "m"), path="bot:мёртвый",
+            project=str(tmp / "gone-project"),
+            at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 7200)))})
+        paths = sorted(r["path"] for r in ck.adapter_alarm())
+        assert "bot:мёртвый" not in paths and "link:7" not in AG.read_alarm(), (paths, AG.read_alarm())
     finally:
         AG._write_alarm({})
         restore()
