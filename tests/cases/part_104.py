@@ -326,3 +326,35 @@ def test_xlsx_and_pdf_attachments_get_transcripts_when_their_readers_are_present
     if "таблица.xlsx.md" in made:
         body = (root / EXTRACTED / "таблица.xlsx.md").read_text(encoding="utf-8")
         assert "## Лист: Лист1" in body and "2021-07-01" in body, body
+
+
+@test
+def test_xlsx_text_reads_a_table_without_openpyxl(tmp: Path):
+    """Встроенный xlsx читает строки и дату, даже когда пакета openpyxl нет."""
+    import zipfile
+    sys.path.insert(0, str(SCRIPTS))
+    import xlsx_text as X
+
+    path = tmp / "таблица.xlsx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("xl/workbook.xml",
+                   '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                   'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                   '<sheets><sheet name="Лист1" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        z.writestr("xl/_rels/workbook.xml.rels",
+                   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Id="rId1" Target="worksheets/sheet1.xml" '
+                   'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"/>'
+                   '</Relationships>')
+        z.writestr("xl/styles.xml",
+                   '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                   '<cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="14"/></cellXfs></styleSheet>')
+        z.writestr("xl/worksheets/sheet1.xml",
+                   '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+                   '<row r="1"><c r="A1" t="inlineStr"><is><t>Код</t></is></c>'
+                   '<c r="B1" t="inlineStr"><is><t>Дата</t></is></c></row>'
+                   '<row r="2"><c r="A2"><v>8418102001</v></c><c r="B2" s="1"><v>44378</v></c></row>'
+                   '</sheetData></worksheet>')
+    text = X.convert(str(path))
+    assert text and "## Лист: Лист1" in text, text
+    assert "8418102001" in text and "2021-07-01" in text, text
