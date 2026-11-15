@@ -2,12 +2,12 @@
   "id": "ask",
   "name": { "ru": "Спросить", "en": "Ask" },
   "about": {
-    "ru": "Вопрос своими словами: движок собирает контекст из карточек, модель отвечает только по ним.",
-    "en": "A question in your own words: the engine assembles context from cards, the model answers from them only."
+    "ru": "Вопрос своими словами: движок собирает контекст из карточек, модель отвечает только по ним. Рядом с вопросом можно выбрать качество поиска и обзор базы.",
+    "en": "A question in your own words: the engine assembles context from cards, the model answers from them only. Next to the question you can choose search quality and the base overview."
   },
   "group": "project",
   "order": 70,
   "needs": ["project"],
-  "commands": ["agent:ask"],
-  "for": "1.229.0"
+  "commands": ["agent:ask", "kb:raptor"],
+  "for": "1.230.0"
 }

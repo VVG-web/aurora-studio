@@ -10,6 +10,7 @@
 let ASKING = false;
 let THREAD = null;          // открытый разговор: id и число вопросов в нём
 let SHOWN = "";             // проект, для которого нарисован разговор
+let QUALITY = null;         // выбор «качество поиска»: null — ещё не трогали
 let PIPE = {id:"", status:"idle", job:"", question:"", plan:[], current:0,
             warnings:[], metrics:null, answer:"", lines:[], timer:0};
 
@@ -122,6 +123,9 @@ export function mount(ctx){
   ctx.root.dataset.module = "ask";
 
   ctx.$("#askGo").onclick = () => askBase(ctx);
+  if (ctx.$("#askQuality")) ctx.$("#askQuality").addEventListener("change", e => {
+    QUALITY = Boolean(e.target.checked);
+  });
   ctx.$("#askText").addEventListener("keydown", e => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") askBase(ctx);
   });
@@ -142,6 +146,8 @@ export function mount(ctx){
     const r = await ctx.api("/api/agent/retry-primary", {method: "POST", body: "{}"});
     if (r && r.ok) ctx.toast(r.note || ctx.t("ask.primary_note"), "ok");
   };
+  if (ctx.$("#askRaptorRefresh")) ctx.$("#askRaptorRefresh").onclick = e =>
+    refreshRaptor(ctx, e.target);
 }
 
 export async function refresh(ctx){
@@ -168,6 +174,86 @@ export async function refresh(ctx){
   drawThreadHint(ctx);
   drawExport(ctx);
   await fillBackends(ctx);
+  await fillQuality(ctx);
+  await fillRaptor(ctx);
+}
+
+async function fillQuality(ctx){
+  // Галочка повторяет настройку кита до первого касания. После него выбор
+  // человека сильнее: иначе следующий refresh молча вернул бы прежнее значение.
+  const box = ctx.$("#askQuality");
+  if (!box) return;
+  if (QUALITY !== null){ box.checked = QUALITY; return; }
+  try {
+    const d = await ctx.api("/api/models", {quiet: true});
+    const on = Boolean(d && d.models && d.models.settings && d.models.settings.rerank);
+    box.checked = on;
+    QUALITY = on;
+  } catch (e) { box.checked = false; QUALITY = false; }
+}
+
+async function fillRaptor(ctx){
+  const stat = ctx.$("#askRaptorStat"), line = ctx.$("#askRaptorMetrics");
+  if (!stat || !line || !ctx.project) return;
+  stat.hidden = false;
+  try {
+    const d = await ctx.api("/api/raptor?project=" + encodeURIComponent(ctx.project.path),
+                             {quiet: true});
+    const m = d && d.metrics;
+    if (!m){
+      line.textContent = ctx.t("ask.raptor_metrics_none");
+      return;
+    }
+    const top = m.top1 || {}, gate = m.gate || {};
+    line.textContent = ctx.t("ask.raptor_metrics", {
+      paraphrase: Math.round((top.paraphrase || 0) * (top.n_paraphrase || 0)),
+      paraphraseTotal: top.n_paraphrase || 0,
+      all: Math.round((top.all || 0) * (m.questions || 0)),
+      total: m.questions || 0,
+      target: Math.round((gate.target || 0.75) * 100),
+      mark: gate.passed ? ctx.t("ask.raptor_metrics_ok")
+                        : ctx.t("ask.raptor_metrics_bad"),
+    });
+    line.title = m.generated_at ? ctx.t("ask.raptor_metrics_when", {when: m.generated_at}) : "";
+  } catch (e) {
+    line.textContent = ctx.t("ask.raptor_metrics_none");
+  }
+}
+
+async function refreshRaptor(ctx, btn){
+  btn.disabled = true;
+  try {
+    const res = await ctx.api("/api/run", {method: "POST", body: JSON.stringify(
+      {project: ctx.project.path, cmd: "kb:raptor",
+       args: ["--metrics"]})});
+    if (!res || !res.job){
+      ctx.toast((res && (res.error || res.net_blocked?.blocked)) || ctx.t("ask.no_answer"), "err");
+      return;
+    }
+    let since = 0, lines = [], last = null;
+    for (;;){
+      const d = await ctx.api(`/api/job?id=${encodeURIComponent(res.job)}&since=${since}`,
+                               {quiet: true});
+      since = (d && d.next) || since;
+      lines = lines.concat((d && d.lines) || []);
+      last = d || last;
+      if (!d || d.done) break;
+      await new Promise(ok => setTimeout(ok, 400));
+    }
+    if (last && last.rc){
+      ctx.toast(ctx.t("ask.raptor_failed", {why: last.rc}), "err");
+      return;
+    }
+    await fillRaptor(ctx);
+    const skipped = lines.some(l => l.includes("RAPTOR_METRICS_SKIPPED"));
+    ctx.toast(skipped
+                 ? ctx.t("ask.raptor_skipped") : ctx.t("ask.raptor_refreshed"),
+             skipped ? "warn" : "ok");
+  } catch (e) {
+    ctx.toast(ctx.t("ask.raptor_failed", {why: String(e && e.message || e)}), "err");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function askBase(ctx){
@@ -186,6 +272,11 @@ async function askBase(ctx){
   else if (pick.startsWith("model:")) args.push("--model", pick.slice(6));
   if (THREAD) args.push("--thread", THREAD.id);
   if (ctx.$("#askProject") && !ctx.$("#askProject").checked) args.push("--no-semantic");
+  // Качество/скорость — на один вопрос: включённый реранкер смешивает 70/30,
+  // выключенный не зовёт его вовсе, даже если он включён в настройке моделей.
+  const quality = ctx.$("#askQuality");
+  if (quality) args.push(quality.checked ? "--rerank" : "--no-rerank");
+  if (ctx.$("#askRaptor") && ctx.$("#askRaptor").checked) args.push("--raptor");
   const item = el("div", {class: "card", style: "padding:18px;margin-top:14px"},
     el("div", {style: "font-weight:700"}, (THREAD ? t("ask.refine_prefix") : "") + q),
     el("div", {class: "muted", style: "font-size:12.5px;margin-top:4px"},

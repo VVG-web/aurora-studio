@@ -6265,6 +6265,43 @@ def ask_pipeline_control(project: str, payload: dict) -> dict:
     return {"ok": True, "control": state.set_control(cancel=True)}
 
 
+def raptor_state(project: str) -> dict:
+    """Сводка обзора базы для раздела «Спросить»: метрики, дерево, файл вопросов.
+
+    Панель не пересчитывает замер при каждом открытии: это чтение готового
+    `meta/raptor_metrics.json`. Пересчёт запускается кнопкой и идёт обычным
+    заданием `kb:raptor --metrics`.
+    """
+    meta = os.path.join(project, "AuroraKnowledgeDB", "meta")
+
+    def read_json(name: str):
+        try:
+            return json.loads(read_text(os.path.join(meta, name), limit=2_000_000))
+        except (OSError, ValueError):
+            return None
+
+    metrics = read_json("raptor_metrics.json")
+    if isinstance(metrics, dict):
+        metrics = {k: metrics.get(k) for k in
+                   ("generated_at", "questions", "vectors", "top1", "classifier",
+                    "gate", "source") if k in metrics}
+    tree = read_json("raptor.json")
+    questions = ""
+    for rel in (os.path.join("AuroraKnowledgeDB", "meta", "raptor_questions.json"),
+                os.path.join("Development", "quality-checks", "raptor_global_50.json"),
+                os.path.join("Development", "quality-checks", "raptor_questions.json")):
+        if os.path.isfile(os.path.join(project, rel)):
+            questions = rel.replace("\\", "/")
+            break
+    return {
+        "metrics": metrics,
+        "tree": ({"nodes": len(tree.get("nodes") or []),
+                  "cards": len(tree.get("cards") or {})}
+                 if isinstance(tree, dict) else None),
+        "questions": questions,
+    }
+
+
 def make_runs_state(project: str) -> dict:
     """Список запусков артефактов для консоли «Продуктивности»."""
     sys.path.insert(0, os.path.join(KIT, "scripts"))
@@ -8044,6 +8081,10 @@ class Handler(BaseHTTPRequestHandler):
             if not project or not self._known(project):
                 return
             self.send_json(ask_pipeline_state(project, (q.get("id") or [""])[0]))
+        elif u.path == "/api/raptor":
+            project = (q.get("project") or [""])[0]
+            self.send_json(raptor_state(project) if project and self._known(project)
+                           else {"error": "проект не выбран"})
         elif u.path == "/api/make/runs":
             project = (q.get("project") or [""])[0]
             if not project or not self._known(project):

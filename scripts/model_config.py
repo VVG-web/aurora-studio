@@ -587,6 +587,14 @@ def to_config(data: dict) -> dict:
     e_prov = next((p for p in provs if first_e and p["id"] == first_e["provider"]), None)
     s = data["settings"]
     import agent_core as AG
+    # Замер на 60 золотых вопросах: полная замена поднимала первый результат
+    # (R@1 0.733→0.783), но роняла R@5 (0.867→0.850), а MRR рос слабее
+    # (0.802→0.814). Смешивание 70/30 оставляло сильный словесный сигнал и
+    # выигрывало по всем трём: R@1 0.783, R@5 0.883, MRR 0.825. Поэтому
+    # включаем именно blend, а не замену выдачи.
+    rerank_on = ((str(os.environ.get("AURORA_RERANK")).strip().lower()
+                  not in ("0", "false", "no", "off"))
+                 if "AURORA_RERANK" in os.environ else bool(s.get("rerank")))
     return {
         "source": "models",
         "chains": chains,
@@ -608,13 +616,13 @@ def to_config(data: dict) -> dict:
                                for r in data["capabilities"]["llm"]["roles"]
                                if r["id"] == "fast"), True)},
         "rerank": {
-            # На живой базе реранкер ухудшил самопоиск: R@1 0.90→0.79, MRR 0.95→0.873,
-            # время 2м49→5м12. По умолчанию выключен; включает человек в настройке
-            # моделей или переменной `AURORA_RERANK=1` после замера на своей базе.
-            # Переменная сильнее настройки: ею можно разово проверить режим, не меняя файл.
-            "enabled": (str(os.environ.get("AURORA_RERANK")).strip().lower()
-                        not in ("0", "false", "no", "off"))
-                       if "AURORA_RERANK" in os.environ else bool(s.get("rerank")),
+            # По умолчанию выключен; включает человек в настройке моделей или
+            # переменной `AURORA_RERANK=1` после замера на своей базе. Переменная
+            # сильнее настройки: ею можно разово проверить режим, не меняя файл.
+            "enabled": rerank_on,
+            # 0.3 — доля реранкера в итоговом порядке. Остальные 0.7 остаются
+            # словесному поиску: полная замена на этом замере проигрывала.
+            "blend": 0.3 if rerank_on else 0.0,
             "url": ((first_e.get("url") or e_prov["url"]) if first_e and e_prov else ""),
             "key": ((first_e.get("key") or e_prov["key"]) if first_e and e_prov else ""),
             "model": (os.environ.get("AURORA_RERANK_MODEL") or "").strip(),

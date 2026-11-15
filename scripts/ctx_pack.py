@@ -535,6 +535,27 @@ def semantic(topic: str, limit: int) -> dict:
         return {}
 
 
+def rerank_config(enabled: bool | None = None, blend: float | None = None) -> dict:
+    """Настройка реранкера: из конфига кита, поверх — выбор на один вопрос.
+
+    `enabled=None` означает «как в настройке моделей». Явный `--rerank` включает
+    измеренное смешивание 70/30, `--no-rerank` выключает его на этот запрос.
+    """
+    try:
+        import agent_core as AG
+        rr = dict(AG.config().get("rerank") or {})
+    except Exception:            # noqa: BLE001 — без настройки остаётся словесный поиск
+        rr = {}
+    if enabled is not None:
+        rr["enabled"] = bool(enabled)
+        rr["blend"] = 0.3 if enabled else 0.0
+    if blend is not None:
+        rr["blend"] = float(blend)
+        if enabled is None:
+            rr["enabled"] = True
+    return rr
+
+
 RARITY: dict = {}          # {слово: во скольких карточках встречается}
 # Инвертированный индекс «слово → номера карточек». `measure_rarity` и так обходит все
 # слова всех карточек; строить рядом ещё и обратный указатель почти ничего не стоит, а
@@ -960,7 +981,8 @@ def trust_hidden(c: "Card") -> bool:
 
 def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
             release: str, max_cards: int, close: dict | None = None,
-            mode: str = "", info: dict | None = None) -> tuple:
+            mode: str = "", info: dict | None = None,
+            rerank: dict | None = None) -> tuple:
     """Seed по теме → один переход по ссылкам. → (карточки, исключено по релизу, соседи).
 
     «Соседи» — имена карточек, вошедших переходом, а не совпадением с запросом: при
@@ -990,7 +1012,7 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
 
     if close is None:
         close = semantic(topic, max_cards * 2)      # то же, что `fuse` делал сам при None
-    seeds = fuse(cards, topic, close, limit=max_cards * 2)
+    seeds = fuse(cards, topic, close, limit=max_cards * 2, rerank=rerank)
     chosen, seen, dropped = [], set(), []
     hidden, released, replaced, decided = [], [], [], []
     seed_cap = max(1, max_cards - int(RETRIEVAL.get("graph_slots") or 0))
@@ -1293,6 +1315,14 @@ def main() -> int:
     ap.add_argument("--no-log", action="store_true", help="не писать в meta/usage.log")
     ap.add_argument("--no-semantic", action="store_true",
                     help="только слова: не спрашивать семантический индекс (kb:embed)")
+    rr = ap.add_mutually_exclusive_group()
+    rr.add_argument("--rerank", dest="rerank", action="store_const", const=True, default=None,
+                    help="переставить верх поиска реранкером на этот запрос "
+                         "(смешивание 70/30)")
+    rr.add_argument("--no-rerank", dest="rerank", action="store_const", const=False,
+                    help="не звать реранкер на этот запрос, даже если он включён в настройке")
+    ap.add_argument("--rerank-blend", type=float, default=None, metavar="0..1",
+                    help="доля реранкера в порядке: 0.3 — измеренное смешивание 70/30")
     ap.add_argument("--retrieval", default="", metavar="k=v,…",
                     help="переключатели ретрива на этот запуск: hop_related=1, "
                          "hop_backlinks=1, neighbor_full=0, pagerank=0.25")
@@ -1353,7 +1383,8 @@ def main() -> int:
     close = {} if a.no_semantic else None
     info: dict = {}
     chosen, dropped, neighbors = collect(cards, a.topic, MODE_STATUSES[a.mode], bootstrap,
-                                         release, a.max_cards, close, a.mode, info)
+                                         release, a.max_cards, close, a.mode, info,
+                                         rerank=rerank_config(a.rerank, a.rerank_blend))
     jira = jira_state(a.topic)
     hidden = info.get("hidden") or []
     notes = refusal_notes(info, a.mode, release)

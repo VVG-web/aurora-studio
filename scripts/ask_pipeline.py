@@ -632,7 +632,8 @@ def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
         call=None, mode: str = "ask", max_cards: int = 40, history=(),
         role: str = "worker", thread_id: str = "", keep: int = 0,
         momus: bool = True, emit=None, resume: bool = False,
-        state: ask_state.AskState | None = None, enrich: bool = True) -> dict:
+        state: ask_state.AskState | None = None, enrich: bool = True,
+        raptor: bool = False) -> dict:
     """Run the plan → delegate → check → synthesize pipeline.
 
     `pack` is optional: without it the normal `ctx_pack` search is used. `call`
@@ -651,6 +652,7 @@ def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
     warnings = _role_warnings(cfg)
     warn_lock = threading.Lock()
     context_meta: dict = {}
+    raptor_meta: dict = {}
     if resume and state.dir.is_dir():
         checked = state.validate_resume()
         if checked.get("orphans"):
@@ -662,8 +664,11 @@ def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
     else:
         if not pack:
             found = AC.search_context(cwd, question, mode=mode, max_cards=max_cards,
-                                       deadline=deadline,
-                                       extra_args=() if enrich else ("--no-semantic",))
+                                      deadline=deadline,
+                                      extra_args=() if enrich else ("--no-semantic",),
+                                      cfg=cfg, raptor=raptor,
+                                      rerank=(cfg.get("rerank") or {}).get("enabled"),
+                                      rerank_blend=(cfg.get("rerank") or {}).get("blend"))
             if not found.get("ok"):
                 message = found.get("why") or "поиск не дал карточек"
                 if emit:
@@ -674,6 +679,7 @@ def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
                         "error": found.get("error") or _error("search_empty", message,
                                                               "уточните вопрос")}
             pack = found["pack"]
+            raptor_meta = found.get("raptor") or {}
         # The preliminary plan is saved before the planner call: if the planner
         # times out, the UI still has plan.md/manifest.json to retry from.
         plan = _decorate_plan(_normalize_plan({}, question, pack), pack)
@@ -810,6 +816,7 @@ def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
         "long": is_long(time.time() - started),
         "project_context": bool(enrich),
         "context": context_meta,
+        "raptor": raptor_meta,
     }
     state.update_state(status="done" if not warnings else "partial", current="",
                        metrics=metrics, warnings=warnings)
@@ -819,7 +826,7 @@ def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
         emit({"kind": "done", "status": "done" if not warnings else "partial",
               "answer": answer, "state_id": state.id,
               "answer_path": _rel(state.answer_path, cwd), "metrics": metrics,
-              "warnings": warnings, "steps": steps})
+              "warnings": warnings, "steps": steps, "raptor": raptor_meta})
     return {
         "ok": True, "status": "partial" if (warnings or failed) else "full",
         "answer": answer, "answer_path": _rel(state.answer_path, cwd),
@@ -828,7 +835,7 @@ def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
         "state_path": _rel(state.state_path, cwd), "state_id": state.id,
         "plan": plan.get("steps") or [], "steps": steps, "warnings": warnings,
         "metrics": metrics, "plan_created_before_answer": plan_created,
-        "mode": mode, "question": question, "seconds": total,
+        "mode": mode, "question": question, "seconds": total, "raptor": raptor_meta,
     }
 
 

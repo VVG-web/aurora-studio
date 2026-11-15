@@ -8594,7 +8594,8 @@ def ask_cfg(cfg: dict, role: str, backend: int = 0, model: str = "",
 
 
 def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
-            call=None, history: list = (), momus: bool = True, role: str = "worker") -> dict:
+            call=None, history: list = (), momus: bool = True, role: str = "worker",
+            raptor: bool = False) -> dict:
     """Вопрос к базе: пак собирает движок, отвечает модель, ответ проверяется.
 
     Ядро `answer_core` делает поиск, рабочий набор, вызов и механические проверки.
@@ -8612,11 +8613,13 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
     def momus_check(answer_text: str, pack: str, asked: str) -> dict:
         return run_momus(cfg, pack, asked, answer_text, call, answered_in=0.0)
 
+    rr = cfg.get("rerank") or {}
     return answer_core.answer(
         topic, cfg=cfg, cwd=cwd, call=call, prompt_builder=build_prompt,
         mode=mode, max_cards=max_cards, history=turns_as_messages(history),
         role=role, momus=momus, verifier=(momus_check if momus else None),
         runner=run_command, refusal=pack_refusal, context_thread="default",
+        raptor=raptor, rerank=rr.get("enabled"), rerank_blend=rr.get("blend"),
         deadline=time.time() + float(cfg.get("request_timeout") or 300),
     )
 
@@ -8868,6 +8871,10 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
           f"_Карточек в контексте: {res.get('total') or len(res['cards'])} · "
           f"модель: {res['model']} "
           f"(бэкенд №{res['backend']}) · всего {res['seconds']} с_"]
+    rp = res.get("raptor") or {}
+    if rp.get("used"):
+        L += ["", f"_Поиск: добавлен обзор «{rp.get('title')}» "
+              f"({len(rp.get('cards') or [])} карточек)._"]
     ph = res.get("phases")
     if ph:
         L += ["", "_Время: пак " + AG.human_secs(ph["pack"]) + " · ответ " + AG.human_secs(ph["answer"])
@@ -8946,6 +8953,10 @@ def report_pipeline(res: dict, question: str) -> str:
     done = sum(1 for s in steps if s.get("status") in ("done", "partial"))
     lines.append(f"План: `{res.get('plan_path')}` · шагов {done}/{len(steps)} · "
                  f"общее время {res.get('metrics', {}).get('total_seconds', res.get('seconds', 0))} с")
+    rp = res.get("raptor") or {}
+    if rp.get("used"):
+        lines.append(f"Поиск: добавлен обзор «{rp.get('title')}» "
+                     f"({len(rp.get('cards') or [])} карточек).")
     if res.get("warnings"):
         lines += ["", "## Предупреждения", ""] + [f"- {w}" for w in res["warnings"]]
     metrics = res.get("metrics") or {}
@@ -10502,6 +10513,16 @@ def main() -> int:
     ap.add_argument("--no-semantic", action="store_true",
                     help="не обогащать вопрос семантическим индексом проекта: "
                          "гибридный поиск заменить только словами (для --task ask)")
+    rerank = ap.add_mutually_exclusive_group()
+    rerank.add_argument("--rerank", action="store_true",
+                        help="переставить верх поиска реранкером на этот вопрос "
+                             "(смешивание 70/30, для --task ask)")
+    rerank.add_argument("--no-rerank", action="store_true",
+                        help="не звать реранкер на этот вопрос, даже если он включён "
+                             "в настройке моделей (для --task ask)")
+    ap.add_argument("--raptor", action="store_true",
+                    help="для общего вопроса добавить обзор базы (дерево RAPTOR) "
+                         "к обычному поиску (для --task ask)")
     ap.add_argument("--defer-refresh", action="store_true",
                     help="тезисы: дописанные карточки с прежним тезисом ждут конца цикла "
                          "маршрута — внутри цикла пишутся только новые")
@@ -10629,6 +10650,12 @@ def main() -> int:
         except ValueError as e:
             print(f"agent_runner: {e}", file=sys.stderr)
             return 1
+        # Выбор в форме «Спросить» сильнее настройки кита: человек решает
+        # качество/скорость на один вопрос, не меняя файл моделей.
+        if a.rerank or a.no_rerank:
+            cfg = {**cfg, "rerank": {**(cfg.get("rerank") or {}),
+                                     "enabled": bool(a.rerank),
+                                     "blend": 0.3 if a.rerank else 0.0}}
         if a.pipeline:
             import ask_pipeline as AP
             import ask_state as AS
@@ -10647,7 +10674,7 @@ def main() -> int:
                          history=pipeline_history, thread_id=state.id,
                          keep=a.keep_questions or 0, momus=not a.no_momus,
                          emit=emit, resume=a.resume, state=state,
-                         enrich=not a.no_semantic)
+                         enrich=not a.no_semantic, raptor=a.raptor)
             print(report_pipeline(res, a.question))
             if res.get("ok") and not a.no_journal:
                 metrics = res.get("metrics") or {}
@@ -10659,7 +10686,7 @@ def main() -> int:
                       f"(вопросов в нём: {len(pipeline_history) + 1})")
             return 0 if res.get("ok") else 1
         res = run_ask(cfg, cwd, a.question, a.mode, a.limit or 40, history=history,
-                      momus=not a.no_momus, role=role)
+                      momus=not a.no_momus, role=role, raptor=a.raptor)
         text = report_ask(res, a.question, cfg)
         print(text)
         if res["ok"] and not a.no_journal:

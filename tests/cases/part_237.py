@@ -500,3 +500,188 @@ def test_fuse_uses_rerank_only_for_the_top(tmp):
         E.rerank = old
     assert got[0] == "Гамма", got
     assert blended[0] == "Альфа", blended
+
+
+@test
+def test_raptor_paraphrases_and_global_classifier(tmp):
+    """Пересказ находит раздел, а точный вопрос не уходит в обзор."""
+    root = make_project(tmp)
+    card(root, "Systems/Ядро.md", "Ядро системы описано здесь.", status="knowledge")
+    card(root, "MOC/Системы.md", "## Состав\n\n- [[Ядро]]\n", status="index")
+    cp = run("kb_raptor.py", "--build", "--apply", cwd=root)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+
+    cp = run("kb_raptor.py", "--query", "какие сервисы есть в решении", "--json", cwd=root)
+    rows = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert rows and rows[0]["id"] == "moc:Системы", rows
+
+    cp = run("kb_raptor.py", "--query", "какие сервисы есть в решении",
+             "--global", "--json", cwd=root)
+    assert json.loads(cp.stdout.strip().splitlines()[-2])["global"] is True, cp.stdout
+    cp = run("kb_raptor.py", "--query", "как настроить систему", "--global", "--json", cwd=root)
+    assert json.loads(cp.stdout.strip().splitlines()[-2])["global"] is False, cp.stdout
+    cp = run("kb_raptor.py", "--query", "какие карточки про US 6.5.1",
+             "--global", "--json", cwd=root)
+    assert json.loads(cp.stdout.strip().splitlines()[-2])["global"] is False, cp.stdout
+
+
+@test
+def test_raptor_uses_vector_scores_when_the_index_exists(_t):
+    """Без общих слов узел находит семантический индекс, а не только словарь."""
+    sys.path.insert(0, str(SCRIPTS))
+    import kb_embed as E
+    import kb_raptor as R
+
+    old_load, old_search = R.load, E.search
+    R.load = lambda: {"nodes": [
+        {"id": "moc:Альфа", "title": "Альфа", "level": 1, "text": "Альфа", "cards": ["a"]},
+        {"id": "moc:Бета", "title": "Бета", "level": 1, "text": "Бета", "cards": ["b"]},
+    ]}
+    E.search = lambda q, cfg, model, limit=40: [("b", 0.9)]
+    try:
+        rows = R.rank("нечто", cfg={"embed": {"model": "m"}}, vectors=True)
+    finally:
+        R.load, E.search = old_load, old_search
+    assert rows and rows[0][1]["title"] == "Бета", rows
+
+
+@test
+def test_raptor_eval_writes_metrics_and_checks_the_gate(tmp):
+    """Замер пишет число пересказов и отдельно проверяет порог 75 из 100."""
+    root = make_project(tmp)
+    card(root, "Systems/Ядро.md", "Ядро системы описано здесь.", status="knowledge")
+    card(root, "MOC/Системы.md", "## Состав\n\n- [[Ядро]]\n", status="index")
+    assert run("kb_raptor.py", "--build", "--apply", cwd=root).returncode == 0
+    questions = root / "questions.json"
+    questions.write_text(json.dumps([
+        {"id": 1, "question": "что входит в Системы", "expected_node": "Системы"},
+        {"id": 2, "question": "какие сервисы есть", "expected_node": "Системы"},
+    ], ensure_ascii=False), encoding="utf-8")
+    cp = run("kb_raptor_eval.py", "--questions", str(questions),
+             "--paraphrase-from", "2", "--apply", cwd=root)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    data = json.loads((root / "AuroraKnowledgeDB/meta/raptor_metrics.json")
+                      .read_text(encoding="utf-8"))
+    assert data["top1"]["paraphrase"] == 1.0, data
+    assert data["gate"]["passed"] is True, data
+
+
+@test
+def test_raptor_metrics_skips_without_questions_instead_of_failing(tmp):
+    """Маршрут починки не краснеет, если файла вопросов ещё нет."""
+    root = make_project(tmp)
+    card(root, "Systems/Ядро.md", "Ядро системы описано здесь.", status="knowledge")
+    card(root, "MOC/Системы.md", "## Состав\n\n- [[Ядро]]\n", status="index")
+    cp = run("kb_raptor.py", "--metrics", "--apply", cwd=root)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert "замер пропущен" in cp.stdout, cp.stdout
+
+
+@test
+def test_ask_route_prepends_only_new_overview_cards(tmp):
+    """Обзор добавляется к обычному паку, а уже найденная карточка не дублируется."""
+    sys.path.insert(0, str(SCRIPTS))
+    import answer_core as AC
+
+    root = make_project(tmp)
+    seen = []
+
+    def runner(cwd, script, args, **kw):
+        return {"ok": True, "out": "# Пак (карточек 1)\n\n## Обычная\n\nтекст"}
+
+    def overview(question, cfg, skip=()):
+        seen.append(set(skip))
+        return {"used": True, "title": "Системы", "cards": ["Ядро"],
+                "pack": "# Обзор базы: Системы\n\n## Ядро\n\nтекст\n"}
+
+    old = AC._raptor_context
+    AC._raptor_context = overview
+    try:
+        got = AC.search_context(str(root), "какие системы", runner=runner,
+                                cfg={}, raptor=True)
+    finally:
+        AC._raptor_context = old
+    assert seen == [{"Обычная"}], seen
+    assert got["ok"] and got["pack"].startswith("# Обзор базы"), got
+    assert got["cards"] == ["Ядро", "Обычная"], got["cards"]
+
+
+@test
+def test_search_context_carries_rerank_choice_to_ctx_pack(_t):
+    """Выбор «качество/скорость» доходит до отдельного процесса сборки пака."""
+    sys.path.insert(0, str(SCRIPTS))
+    import answer_core as AC
+
+    seen = []
+
+    def runner(cwd, script, args, **kw):
+        seen.append(args)
+        return {"ok": True, "out": "# Пак (карточек 1)\n\n## Карточка\n\nтекст"}
+
+    AC.search_context(".", "вопрос", runner=runner, rerank=True, rerank_blend=0.3)
+    AC.search_context(".", "вопрос", runner=runner, rerank=False)
+    assert "--rerank" in seen[0] and "--rerank-blend" in seen[0], seen[0]
+    assert "--no-rerank" in seen[1], seen[1]
+
+
+@test
+def test_ctx_pack_rerank_choice_uses_the_measured_blend(_t):
+    """Явное «качество» включает 70/30, явное «скорость» выключает реранкер."""
+    sys.path.insert(0, str(SCRIPTS))
+    import ctx_pack as P
+
+    on = P.rerank_config(enabled=True)
+    off = P.rerank_config(enabled=False)
+    custom = P.rerank_config(blend=0.5)
+    assert on["enabled"] is True and on["blend"] == 0.3, on
+    assert off["enabled"] is False and off["blend"] == 0.0, off
+    assert custom["enabled"] is True and custom["blend"] == 0.5, custom
+
+
+@test
+def test_ask_page_has_quality_and_overview_switches(tmp):
+    """Оба выбора стоят в форме вопроса, а не только в отдельной команде."""
+    page = (KIT / "cockpit/modules/ask/view.html").read_text(encoding="utf-8")
+    js = (KIT / "cockpit/modules/ask/view.js").read_text(encoding="utf-8")
+    assert 'id="askQuality"' in page and 'id="askRaptor"' in page, page
+    assert "--rerank" in js and "--raptor" in js, js
+    for lang in ("ru", "en"):
+        data = json.loads((KIT / f"cockpit/modules/ask/i18n/{lang}.json").read_text(encoding="utf-8"))
+        for key in ("ask.quality", "ask.quality_hint", "ask.raptor",
+                    "ask.raptor_hint", "ask.raptor_metrics"):
+            assert data.get(key), (lang, key)
+
+
+@test
+def test_reranker_switch_uses_measured_blend(tmp):
+    """Включённый реранкер не заменяет выдачу, а смешивается 70/30."""
+    sys.path.insert(0, str(SCRIPTS))
+    import model_config as MC
+
+    data = MC.normalize({"version": 1, "providers": [],
+                         "capabilities": {"llm": {"roles": []}},
+                         "settings": {"rerank": True}})[0]
+    cfg = MC.to_config(data)
+    assert cfg["rerank"]["enabled"] is True and cfg["rerank"]["blend"] == 0.3, cfg["rerank"]
+
+
+@test
+def test_raptor_state_reads_metrics_for_the_ask_panel(tmp):
+    """Панель получает сводку обзора без пересчёта и без тела всех вопросов."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_cockpit as C
+
+    root = make_project(tmp)
+    meta = root / "AuroraKnowledgeDB" / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "raptor.json").write_text(json.dumps({"nodes": [{"id": "moc:X"}],
+                                                   "cards": {"X": "moc:X"}}), encoding="utf-8")
+    (meta / "raptor_metrics.json").write_text(json.dumps({
+        "generated_at": "2026-11-15T00:00:00Z", "questions": 20,
+        "top1": {"all": 0.75, "paraphrase": 0.75, "n_paraphrase": 20},
+        "gate": {"target": 0.75, "passed": True}, "rows": [{"question": "не надо"}]}),
+        encoding="utf-8")
+    got = C.raptor_state(str(root))
+    assert got["tree"] == {"nodes": 1, "cards": 1}, got
+    assert got["metrics"]["top1"]["paraphrase"] == 0.75, got
+    assert "rows" not in got["metrics"], "панели отдано тело всех вопросов"

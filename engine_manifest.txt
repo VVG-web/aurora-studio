@@ -92,6 +92,7 @@ scripts/kb_search_quality.py => .aurora/scripts/kb_search_quality.py
 scripts/kb_translit.py   => .aurora/scripts/kb_translit.py
 scripts/kb_twins.py      => .aurora/scripts/kb_twins.py
 scripts/kb_raptor.py     => .aurora/scripts/kb_raptor.py
+scripts/kb_raptor_eval.py => .aurora/scripts/kb_raptor_eval.py
 scripts/kb_gaps.py       => .aurora/scripts/kb_gaps.py
 scripts/agent_probe.py   => .aurora/scripts/agent_probe.py
 scripts/make_kinds.py    => .aurora/scripts/make_kinds.py

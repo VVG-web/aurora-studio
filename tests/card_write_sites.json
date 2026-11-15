@@ -1567,6 +1567,12 @@
    "calls": 2,
    "git": "none"
   },
+  "scripts/kb_raptor_eval.py:save": {
+   "kind": "other",
+   "reason": "производный замер meta/raptor_metrics.json, не карточка",
+   "calls": 2,
+   "git": "local"
+  },
   "scripts/wiki_build.py:_write": {
    "kind": "other",
    "reason": "страницы вики кита (документы)",

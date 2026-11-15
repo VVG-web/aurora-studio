@@ -97,7 +97,9 @@ def _refusal(out: str, fallback: str = "поиск не дал карточек"
 
 def search_context(cwd: str, question: str, *, mode: str = "ask", max_cards: int = 40,
                    budget: int = 0, runner=None, refusal=None, deadline=None,
-                   extra_args=()) -> dict:
+                   extra_args=(), cfg: dict | None = None,
+                   raptor: bool = False, rerank: bool | None = None,
+                   rerank_blend: float | None = None) -> dict:
     """Собрать пак карточек по вопросу. → {ok, pack, cards, total, why, seconds}.
 
     `runner` - совместимый с `agent_runner.run_command`; в тестах его подменяют, чтобы
@@ -108,6 +110,10 @@ def search_context(cwd: str, question: str, *, mode: str = "ask", max_cards: int
     args = [question, "--mode", mode, "--max-cards", str(max_cards), "--no-log"]
     if budget:
         args += ["--budget", str(budget)]
+    if rerank is not None:
+        args.append("--rerank" if rerank else "--no-rerank")
+    if rerank_blend is not None:
+        args += ["--rerank-blend", str(rerank_blend)]
     args += [str(x) for x in extra_args or ()]
     left = remaining(deadline)
     if left <= 0:
@@ -129,7 +135,17 @@ def search_context(cwd: str, question: str, *, mode: str = "ask", max_cards: int
                 "seconds": round(time.time() - started, 2),
                 "error": human_error("search_failed", reason, "проверьте базу знаний и повторите")}
     out = str((r or {}).get("out") or "")
+    raptor_info: dict = {}
     if not (r or {}).get("ok") or "## " not in out:
+        # Обычный поиск не нашёл карточек, но общий вопрос может иметь
+        # готовый обзор: тогда отвечаем по нему, а не отказываем.
+        if raptor:
+            raptor_info = _raptor_context(question, cfg)
+            if raptor_info.get("pack"):
+                cards = FID.pack_cards(raptor_info["pack"])
+                return {"ok": True, "pack": raptor_info["pack"], "cards": cards,
+                        "total": len(cards), "why": "", "raptor": raptor_info,
+                        "seconds": round(time.time() - started, 2)}
         why = (refusal(out) if refusal else _refusal(out))
         if (r or {}).get("timeout"):
             why = str((r or {}).get("why") or why)
@@ -139,9 +155,26 @@ def search_context(cwd: str, question: str, *, mode: str = "ask", max_cards: int
                                      "уточните вопрос или заведите карточку в базе")}
     cards = FID.pack_cards(out)
     m = re.search(r"карточек (\d+)", out)
+    if raptor:
+        raptor_info = _raptor_context(question, cfg, skip=set(cards))
+        if raptor_info.get("pack"):
+            out = raptor_info["pack"] + "\n\n" + out
+            cards = FID.pack_cards(out)
+            m = None
     return {"ok": True, "pack": out, "cards": cards,
             "total": int(m.group(1)) if m else len(cards),
-            "why": "", "seconds": round(time.time() - started, 2)}
+            "why": "", "raptor": raptor_info,
+            "seconds": round(time.time() - started, 2)}
+
+
+def _raptor_context(question: str, cfg: dict | None, skip=()) -> dict:
+    """Пак обзора, если вопрос общий; сбой обзора не отменяет обычный поиск."""
+    try:
+        import kb_raptor as R
+        return R.context(question, cfg=cfg, skip=skip, vectors=True)
+    except Exception as exc:  # noqa: BLE001 — обзор не должен ронять ответ
+        return {"used": False, "why": f"обзор не построен: {type(exc).__name__}",
+                "pack": "", "cards": []}
 
 
 def prepare_context(pack: str, cfg: dict, cwd: str, call, *, thread: str = "default",
@@ -382,7 +415,8 @@ def answer(question: str, *, cfg: dict, cwd: str, call, prompt: str | None = Non
            verifier=None, runner=None, refusal=None, prepare: bool = True,
            context_thread: str = "default", context_store=None,
            prompt_builder=None, deadline: float | None = None,
-           policy: dict | None = None) -> dict:
+           policy: dict | None = None, raptor: bool = False,
+           rerank: bool | None = None, rerank_blend: float | None = None) -> dict:
     """Полный путь обоснованного ответа по контракту.
 
     `prompt` - готовый промпт; `prompt_builder(pack, question, history)` - если промпт
@@ -403,7 +437,9 @@ def answer(question: str, *, cfg: dict, cwd: str, call, prompt: str | None = Non
                              seconds=time.time() - started, phases={"pack": 0.0})
     if pack is None:
         found = search_context(cwd, question, mode=mode, max_cards=max_cards,
-                               runner=runner, refusal=refusal, deadline=deadline)
+                               runner=runner, refusal=refusal, deadline=deadline,
+                               cfg=cfg, raptor=raptor, rerank=rerank,
+                               rerank_blend=rerank_blend)
         phases["pack"] = found.get("seconds", 0.0)
         if not found["ok"]:
             return _error_result(found.get("error") or human_error(
@@ -412,9 +448,11 @@ def answer(question: str, *, cfg: dict, cwd: str, call, prompt: str | None = Non
                 seconds=time.time() - started, phases=phases)
         pack = found["pack"]
         cards, total = found["cards"], found["total"]
+        raptor_info = found.get("raptor") or {}
     else:
         cards = FID.pack_cards(pack)
         total = len(cards)
+        raptor_info = {}
         phases["pack"] = 0.0
     if prepare:
         prepared = prepare_context(pack, cfg, cwd, call, thread=context_thread,
@@ -480,6 +518,8 @@ def answer(question: str, *, cfg: dict, cwd: str, call, prompt: str | None = Non
                           answer_tokens=int((a or {}).get("tokens_out") or 0),
                           momus=round(float(((checks.get("momus") or {}).get("seconds") or 0)), 2)),
            "seconds": round(time.time() - started, 2)}
+    if raptor_info:
+        out["raptor"] = raptor_info
     if checks.get("cites"):
         out["cites"] = checks["cites"]
     if checks.get("momus"):
