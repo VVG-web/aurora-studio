@@ -289,7 +289,7 @@
    "calls": 2,
    "git": "local"
   },
-  "scripts/agent_core.py:_write_alarm": {
+  "scripts/agent_core.py:_write_json": {
    "kind": "other",
    "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP",
    "calls": 2,
