@@ -69,6 +69,13 @@ def test_the_panel_sums_threads_of_live_steps_and_drops_an_expired_quarantine(tm
         down = [r for r in ru["rows"] if r["kind"] == "down"][0]
         assert down["label"] == "ошибка сервера (5xx)", down
         assert [r for r in en["rows"] if r["kind"] == "down"][0]["label"] == "server error (5xx)", en["rows"]
+        # Только запросы, без объявленных потоков: шапка должна показать «Запросы: 2», а не спрятаться.
+        ck.JOBS.clear()
+        ck.JOBS.update({"j4": {"id": "j4", "project": str(proj), "run_id": "run-4", "done": False}})
+        (runs / "run-4").mkdir()
+        _pulse(runs / "run-4", "pulse-5.json", None, inflight=2)
+        only_calls = ck.threads_all("ru", now=now)
+        assert (only_calls["slots"], only_calls["inflight"]) == (0, 2), only_calls
         ck.JOBS.clear()
         assert ck.threads_all("ru", now=now) == {"slots": 0, "now": 0, "inflight": 0, "rows": []}
     finally:
