@@ -724,6 +724,7 @@ def review_page(cfg: dict, cl: dict, reader: Reader, page_id: str, *, profile: s
     `verify_quotes` — ответ «no» принимается, только если его цитата найдена в тексте страницы или связанных
     страниц; иначе он снимается до «unknown» (выдуманное доказательство дефектом не считается)."""
     call = call or _default_call()
+    _pulse_slots(cfg, slots)
     started = time.time()
     page = reader.page(page_id)
     rec = {"page_id": page_id, "template": cl["file"], "template_version": cl["version"],
@@ -1457,6 +1458,17 @@ def _default_call():
     return AG.call_role
 
 
+def _pulse_slots(cfg: dict, slots: list | None) -> None:
+    """Ширина пула ревью — в пульс шага: шапка панели показывает потоки, а не только запросы."""
+    if not slots:
+        return
+    try:
+        import agent_core as AG
+        AG.pulse_threads(cfg, list(slots))
+    except Exception:  # noqa: BLE001 - пульс не должен ронять ревью
+        pass
+
+
 def _stop(msg: str, gate: str = "") -> None:
     """Остановка с причиной: прежде код 1 (`sys.exit(строка)`); в режиме ворот — код 2, «не смог
     отработать» не смешивается с замечаниями."""
@@ -1667,6 +1679,7 @@ def main() -> int:
     budget_min = args.budget_min or cfg["budget_min"]
     deadline = time.time() + budget_min * 60
     slots = AG.pool(cfg)
+    _pulse_slots(cfg, slots)
     lock, stop = threading.Lock(), threading.Event()
     state = {"done": 0, "fail_streak": 0, "why": ""}
     started = time.time()

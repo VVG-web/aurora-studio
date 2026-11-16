@@ -82,9 +82,16 @@ def test_ask_pipeline_creates_plan_and_hash_manifest_before_the_answer(tmp: Path
 
     root = _project(tmp)
     pack = "# Пак (карточек 1)\n\n## Заявка-0\n\nСрок десять дней. «срок не сокращается»."
-    res = P.run(_cfg(), str(root), "Какой срок у заявки?", pack=pack,
-                call=_fake, thread_id="pipeline-test", momus=True)
+    recorded = []
+    saved_pulse = P.AG.pulse_threads
+    P.AG.pulse_threads = lambda _cfg, slots: recorded.append(list(slots))
+    try:
+        res = P.run(_cfg(), str(root), "Какой срок у заявки?", pack=pack,
+                    call=_fake, thread_id="pipeline-test", momus=True)
+    finally:
+        P.AG.pulse_threads = saved_pulse
     assert res["ok"], res
+    assert recorded == [res["metrics"]["pool"]["slots"]], (recorded, res["metrics"]["pool"])
     plan = Path(root) / res["plan_path"]
     manifest = Path(root) / res["manifest_path"]
     answer = Path(root) / res["answer_path"]

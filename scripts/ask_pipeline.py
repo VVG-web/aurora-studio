@@ -736,6 +736,11 @@ def run(cfg: dict, cwd: str | Path, question: str, *, pack: str = "",
         else:
             pending.append(step)
     slots = _slots(cfg, len(pending), settings)
+    if AG is not None and slots:
+        try:
+            AG.pulse_threads(cfg, slots)     # шапка панели: ширина пула этого вопроса
+        except Exception:  # noqa: BLE001 - пульс не должен ронять ответ
+            pass
     try:
         with ThreadPoolExecutor(max_workers=max(1, len(slots) or 1),
                                 thread_name_prefix="ask-step") as pool:

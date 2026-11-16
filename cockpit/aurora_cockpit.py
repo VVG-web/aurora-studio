@@ -9543,8 +9543,10 @@ def threads_all(lang: str = "", now: float = 0.0) -> dict:
     """Потоки параллельной работы всех живых шагов — для кнопки в шапке: {slots, now, inflight, rows}.
 
     Каждый процесс шага кладёт в свой пульс слоты шага и выпавшие потоки с причиной
-    (`agent_core.threads_now`); здесь они складываются. Карантин, срок которого вышел после записи
-    пульса, уже не вычитается. Причина карантина — названием из таблицы причин движка на языке страницы."""
+    (`agent_core.threads_now`); здесь они складываются. Запросы к моделям считаются у любого
+    живого шага: Momus и одиночные ответы не объявляют пул потоков, но их вызовы видны.
+    Карантин, срок которого вышел после записи пульса, уже не вычитается. Причина карантина —
+    названием из таблицы причин движка на языке страницы."""
     import agent_core as AG
     now = now or time.time()
     with JOBS_LOCK:
@@ -9552,6 +9554,10 @@ def threads_all(lang: str = "", now: float = 0.0) -> dict:
     out = {"slots": 0, "now": 0, "inflight": 0, "rows": []}
     for job in jobs:
         for data in _pulse_files(job):
+            # Запросы к моделям считаются у любого живого шага, даже если он не объявил
+            # пул потоков: Momus, одиночный ответ Ask и другие вызовы идут без слотов,
+            # но панель должна показать, что модель сейчас работает.
+            out["inflight"] += len(data.get("inflight") or [])
             th = data.get("threads")
             if not isinstance(th, dict) or not th.get("slots"):
                 continue
@@ -9562,7 +9568,6 @@ def threads_all(lang: str = "", now: float = 0.0) -> dict:
                 r["label"] = cause.get("label_en" if lang == "en" else "label", "")
             out["slots"] += int(th["slots"])
             out["now"] += int(th["slots"]) - sum(int(r.get("cut") or 0) for r in rows)
-            out["inflight"] += len(data.get("inflight") or [])
             out["rows"] += rows
     return out
 

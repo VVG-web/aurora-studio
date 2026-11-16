@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.230.3";
+const UI_VERSION = "1.230.4";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -2576,7 +2576,17 @@ async function refreshThreadsBar(){
   let d = null;
   try { d = await api("/api/threads", {quiet:true}); } catch (e) { return; }
   if (!d || typeof d.slots !== "number") return;      // ответа нет (панель перезапускается): прежний вид остаётся
-  if (!d.slots){ bar.hidden = true; return; }
+  const inflight = d.inflight || 0;
+  if (!d.slots && !inflight){ bar.hidden = true; return; }
+  if (!d.slots){
+    // Шаг не объявил пул потоков, но модель сейчас работает: Momus, одиночный ответ Ask,
+    // разбор одной карточки. Показываем именно запросы, а не выдуманный «поток».
+    bar.hidden = false;
+    bar.className = "btn sm threadsbar";
+    bar.textContent = t("threads.bar_calls", {n: inflight});
+    bar.title = t("threads.title_calls", {n: inflight});
+    return;
+  }
   const cut = d.slots - d.now;
   bar.hidden = false;
   bar.className = "btn sm threadsbar" + (cut > 0 ? " warn" : "");
