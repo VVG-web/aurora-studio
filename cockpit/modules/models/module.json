@@ -9,5 +9,5 @@
   "order": 32,
   "needs": [],
   "commands": ["agent:ping", "agent:width", "agent:pydantic", "agent:fast"],
-  "for": "1.230.2"
+  "for": "1.231.1"
 }

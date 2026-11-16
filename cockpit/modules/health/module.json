@@ -11,5 +11,5 @@
   "commands": ["kb:lint", "kb:repair", "kb:embed", "kb:kind", "kb:raptor", "ops:trace", "ops:trace-table",
                "ops:todo", "ops:retrieval", "make:spec-pack", "sync:jira-status",
                "kit:remap-sources"],
-  "for": "1.230.2"
+  "for": "1.231.1"
 }

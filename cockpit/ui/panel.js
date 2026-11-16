@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.231.0";
+const UI_VERSION = "1.231.1";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 let LAST_ERROR = null;          // последняя показанная ошибка: кнопка «Лог» в шапке
 
@@ -478,7 +478,7 @@ const api = async (path, opts={}) => {
   if (r.status === 403 && d.code === "session"){ showAuthGate(); return d; }
   if (d.error){
     if (!opts.quiet){
-      rememberError(d.error, {source:"api", path});
+      if (typeof rememberError === "function") rememberError(d.error, {source:"api", path});
       toast(d.error, "err");
     }
   }
