@@ -592,7 +592,7 @@ def test_cockpit_buttons_have_explanatory_tooltips(tmp: Path):
     """
     index = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
     for key in ("badge.hint", "nav.overview_hint", "nav.setup_hint", "nav.project_hint",
-                "nav.files_hint", "nav.console_hint", "palette.hint", "project.reload_hint",
+                "nav.files_hint", "nav.console_hint", "diag.header_title", "project.reload_hint",
                 "console.stop_hint", "console.clear_hint"):
         assert f'data-i18n-title="{key}"' in index, key
 
@@ -615,7 +615,7 @@ def test_cockpit_buttons_have_explanatory_tooltips(tmp: Path):
 
     for lang in ("ru", "en"):
         panel = json.loads((KIT / "cockpit/i18n" / f"{lang}.json").read_text(encoding="utf-8"))
-        for key in ("palette.hint", "project.reload_hint", "console.stop_hint",
+        for key in ("palette.hint", "diag.header_title", "project.reload_hint", "console.stop_hint",
                     "console.clear_hint", "runtime.gate_close_hint",
                     "runtime.open_install_hint", "runtime.gate_reload_hint",
                     "runtime.check_again_hint"):
