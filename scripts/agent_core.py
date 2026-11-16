@@ -859,6 +859,9 @@ LINK_ALARM_TTL = 12 * 3600
 # Удалённый проект не должен держать красную полосу на всей машине. Час — запас
 # на отключённый диск или сетевую папку, которая сейчас не смонтирована.
 LINK_ALARM_DEAD_PROJECT = 3600
+# «Скрыть» на полосе связи прячет эту тревогу на сутки, но не выключает проверку:
+# ответ бэкенда снимает скрытие сразу, а новый отказ после срока снова покажет полосу.
+LINK_ALARM_SNOOZE = 24 * 3600
 LINK_FAILURE = "обрыв связи"         # вид сбоя вызова в `USAGE["errors"]`; причина — в `USAGE["link_why"]`
 LINK_HUMAN_KINDS = frozenset({"auth", "not_found"})   # чинятся человеком (ключ, имя модели), а не ожиданием
 
@@ -2218,6 +2221,11 @@ def alarm_path() -> Path:
     return RT.HOME / "adapter-alarm.json"
 
 
+def alarm_snooze_path() -> Path:
+    """Скрытые тревоги связи: {ключ: момент, до которого не показывать} — общие на машину."""
+    return RT.HOME / "adapter-alarm-snooze.json"
+
+
 def read_alarm() -> dict:
     """{ключ: {at, why, project, calls, area, kind, sub, fix, args, path}} — где сейчас тревога. Пусто —
     нигде. Строка без `area` и `kind` (написана до 1.176.0) — область adapter: `alarm_cause`."""
@@ -2229,18 +2237,74 @@ def read_alarm() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _write_alarm(data: dict) -> None:
-    p = alarm_path()
+def read_alarm_snooze() -> dict:
+    """{ключ: until} — только ещё действующие скрытия; просроченные и битые строки отброшены."""
+    try:
+        with open(alarm_snooze_path(), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    now = time.time()
+    out = {}
+    for key, until in (data.items() if isinstance(data, dict) else ()):
+        try:
+            until = float(until)
+        except (TypeError, ValueError):
+            continue
+        if until > now:
+            out[str(key)] = until
+    return out
+
+
+def alarm_snoozed(key: str) -> bool:
+    """Тревога `key` скрыта человеком и ещё не истекла."""
+    with _ALARM_LOCK:
+        return str(key) in read_alarm_snooze()
+
+
+def _write_json(path: Path, data: dict) -> None:
+    """Записать JSON атомарно; тревога — сигнал, а не работа: ошибка записи не роняет вызов."""
     try:
         if not data:
-            p.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
             return
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".tmp")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-        replace_file(tmp, p)
+        replace_file(tmp, path)
     except OSError:
-        pass        # тревога — сигнал, а не работа: не записалась, вызов от этого не падает
+        pass
+
+
+def _write_alarm_snooze(data: dict) -> None:
+    _write_json(alarm_snooze_path(), data)
+
+
+def snooze_alarm(key: str, seconds: int = LINK_ALARM_SNOOZE) -> None:
+    """Скрыть тревогу `key` на `seconds` и снять её текущую запись.
+
+    Это не выключает проверку: новый отказ снова запишет тревогу, её просто не покажут до срока.
+    Ответ бэкенда снимает скрытие (`link_ok`), чтобы следующая беда была видна сразу."""
+    if not key:
+        return
+    with _ALARM_LOCK:
+        data = read_alarm_snooze()
+        if seconds > 0:
+            data[str(key)] = time.time() + int(seconds)
+        _write_alarm_snooze(data)
+    forget_alarm(key)
+
+
+def clear_alarm_snooze(key: str) -> None:
+    """Снять скрытие: бэкенд ответил или человек снова хочет видеть его тревоги."""
+    with _ALARM_LOCK:
+        data = read_alarm_snooze()
+        if data.pop(str(key), None) is not None:
+            _write_alarm_snooze(data)
+
+
+def _write_alarm(data: dict) -> None:
+    _write_json(alarm_path(), data)
 
 
 _ALARM_LOCK = threading.Lock()
@@ -2366,6 +2430,7 @@ def link_ok(n, keep_probe: bool = False) -> None:
     if not keep_probe:
         with _PROBE_GUARD:
             _PROBE.pop(n, None)
+    clear_alarm_snooze(_link_key(n))
     if not alarm_path().is_file():
         return
     with _ALARM_LOCK:

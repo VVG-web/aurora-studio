@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.230.2";
+const UI_VERSION = "1.230.3";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -2487,6 +2487,9 @@ function drawAdapterAlarm(rows){
       ...link.map(r => el("div",{},
         el("b",{}, t("alarm.link." + r.kind, Object.assign({n:"?", status:""}, r.args || {}))),
         " ", t("alarm.link_row", {path: r.path, project: r.project || "—", when: when(r), calls: r.calls}),
+        ...(r.key ? [el("button",{class:"btn sm", style:"margin-left:8px",
+          title:t("alarm.link_dismiss_title"), onclick:()=>forgetLinkAlarm(r.key)},
+          t("alarm.link_dismiss"))] : []),
         el("div",{class:"muted"}, r.why))),
       el("div",{}, [wait ? t("alarm.link_tail") : "", cfg ? t("alarm.link_tail_cfg") : ""]
           .filter(Boolean).join(" "),
@@ -2511,6 +2514,12 @@ function drawAdapterAlarm(rows){
           ? [el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("install")},
               t("alarm.adapter_open"))] : []))));
   }
+}
+async function forgetLinkAlarm(key){
+  let d = null;
+  try { d = await api("/api/adapter/alarm/forget",
+    {method:"POST", body:JSON.stringify({key})}); } catch (e) { return; }
+  if (d && d.alarm) drawAdapterAlarm(d.alarm);
 }
 async function refreshAdapterAlarm(){
   let d = null;

@@ -6998,18 +6998,23 @@ def _int_or_zero(value) -> int:
 
 
 def adapter_alarm() -> list:
-    """Тревоги вызова модели, которые пишет движок (`agent_core`): [{path, area, kind, sub, fix,
+    """Тревоги вызова модели, которые пишет движок (`agent_core`): [{key, path, area, kind, sub, fix,
     args, at, why, project, calls}].
 
     `area`: `adapter` — Pydantic AI выбран, а вызовы идут мимо него (`note_bypass`), снимает первый
     же вызов того же пути, прошедший через адаптер; `link` — нет связи с бэкендом
     (`link_note`), снимает первый же ответ этого бэкенда. `kind` — вид по таблице причин движка,
-    `fix` — куда ведёт кнопка: `install`, `version`, `models` или ничего. Строка без вида
+    `fix` — куда ведёт кнопка: `install`, `version`, `models` или ничего. `key` — ключ записи в
+    файле тревог: по нему панель снимает одну полосу, не трогая соседние. Строка без вида
     (написана до 1.176.0) читается как неисправность адаптера, вид — по тексту."""
     import agent_core as AG
+    # Кит могли обновить наполовину: старый agent_core не знает скрытия — полоса просто останется видимой.
+    snoozed = AG.read_alarm_snooze() if hasattr(AG, "read_alarm_snooze") else {}
     rows = []
     for key, row in sorted(AG.read_alarm().items()):
         if isinstance(row, dict):
+            if key in snoozed:
+                continue              # человек скрыл эту тревогу на сутки; проверка идёт своим чередом
             try:
                 cause = AG.alarm_cause(row)
             except (TypeError, ValueError, KeyError):
@@ -7023,7 +7028,8 @@ def adapter_alarm() -> list:
                 # не будет, и красная полоса на всей машине — ложная.
                 AG.forget_alarm(key)
                 continue
-            rows.append({"path": str(row.get("path") or key), "area": cause.area, "kind": cause.kind,
+            rows.append({"key": key, "path": str(row.get("path") or key), "area": cause.area,
+                         "kind": cause.kind,
                          "sub": cause.sub, "fix": cause.fix, "args": dict(cause.args),
                          "at": row.get("at", ""), "why": str(cause),
                          "project": os.path.basename(str(row.get("project") or "")),
@@ -7033,6 +7039,23 @@ def adapter_alarm() -> list:
                          **({"user": me().get("user") or ""} if cause.area == "adapter" and cause.fix == "install"
                             else {})})
     return rows
+
+
+def forget_link_alarm(key: str) -> bool:
+    """Скрыть тревогу связи по ключу `link:N` на сутки; тревогу адаптера этим путём не снять.
+
+    Ждать ответа бэкенда некому: он убран из настройки или вызовы давно идут через основной.
+    Тогда полоса висела бы до суток, хотя решение уже принято человеком. Новый отказ того же
+    бэкенда снова запишет тревогу, но панель не покажет её до срока; ответ бэкенда снимает
+    скрытие сразу — проверка не выключается."""
+    if not re.fullmatch(r"link:\d+", str(key or "")):
+        return False
+    import agent_core as AG
+    if hasattr(AG, "snooze_alarm"):
+        AG.snooze_alarm(key)
+    else:
+        AG.forget_alarm(key)
+    return True
 
 
 def bots_brief(project: str) -> list:
@@ -8386,6 +8409,13 @@ class Handler(BaseHTTPRequestHandler):
             url = issue_link(str(payload.get("path") or ""))
             self.send_json({"url": url} if url else {"error": "для этого адреса билет не выдаётся"},
                            200 if url else 400)
+            return
+        if u.path == "/api/adapter/alarm/forget":
+            # «Скрыть» на полосе связи: снимает одну запись, а не выключает проверку.
+            if not forget_link_alarm(str(payload.get("key") or "")):
+                self.send_json({"error": "снять можно только тревогу связи link:N"}, 400)
+                return
+            self.send_json({"alarm": adapter_alarm()})
             return
         if u.path == "/api/mcp/probe":
             # Запускает чужие серверы MCP — действие, а не чтение, поэтому не GET.

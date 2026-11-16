@@ -45,9 +45,10 @@ def _row(AG, why, **extra):
 
 @test
 def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
-    """`adapter_alarm()` отдаёт по строке на тревогу: область (adapter | link), вид, подвид, лекарство
-    (`fix`), подстановки и текст; строка прежнего вида читается как неисправность адаптера; текст
-    переводится на английский на выходе сервера. Тревоги связи показывает та же точка, что и прежние."""
+    """`adapter_alarm()` отдаёт по строке на тревогу: ключ записи, область (adapter | link), вид,
+    подвид, лекарство (`fix`), подстановки и текст; строка прежнего вида читается как неисправность
+    адаптера; текст переводится на английский на выходе сервера. Тревоги связи показывает та же точка,
+    что и прежние; `forget_link_alarm` снимает только `link:N`."""
     AG, ck = _mods()
     restore = set_home(tmp / "home")
     try:
@@ -66,6 +67,9 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
         rows = {r["path"] + "|" + r["area"]: r for r in ck.adapter_alarm()}
         assert set(rows) == {"agent:build|adapter", "bot:ревью|adapter", "bot:старый|adapter",
                              "bot:ревью|link", "agent:build|link", "agent:venv|adapter"}, set(rows)
+        # у строки есть ключ записи: по нему панель снимает именно эту тревогу, а не все сразу
+        assert rows["bot:ревью|link"]["key"] == "link:3", rows["bot:ревью|link"]
+        assert rows["agent:build|link"]["key"] == "link:1", rows["agent:build|link"]
         a = rows["agent:build|adapter"]
         assert (a["kind"], a["sub"], a["fix"]) == ("client_net", "tls", ""), a
         assert a["args"]["n"] == 2 and a["project"] == "PRJ-A" and a["calls"] == 3, a
@@ -98,19 +102,39 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
             at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 7200)))})
         paths = sorted(r["path"] for r in ck.adapter_alarm())
         assert "bot:мёртвый" not in paths and "link:7" not in AG.read_alarm(), (paths, AG.read_alarm())
+        # «Скрыть» снимает только тревогу связи и прячет её на сутки: тревогу адаптера
+        # этим же запросом не убрать.
+        AG._write_alarm({"link:4": _row(AG, AG.link_why("dns", 4, "m"), path="bot:скрыть"),
+                         "agent:build": _row(AG, net, path="agent:build")})
+        assert ck.forget_link_alarm("link:4") is True
+        assert "link:4" not in AG.read_alarm() and "agent:build" in AG.read_alarm(), AG.read_alarm()
+        assert AG.alarm_snoozed("link:4") is True
+        # Отказ повторился, пока человек не хочет видеть полосу: запись в файле есть, панель её не показывает.
+        AG._write_alarm({"link:4": _row(AG, AG.link_why("dns", 4, "m"), path="bot:снова"),
+                         "agent:build": _row(AG, net, path="agent:build")})
+        assert "link:4" not in [r["key"] for r in ck.adapter_alarm()], ck.adapter_alarm()
+        assert "agent:build" in [r["key"] for r in ck.adapter_alarm()], ck.adapter_alarm()
+        assert ck.forget_link_alarm("agent:build") is False
+        assert "agent:build" in AG.read_alarm(), AG.read_alarm()
+        # Ответил — скрытие снято: следующая беда того же бэкенда снова видна.
+        AG.link_ok(4, keep_probe=True)
+        assert AG.alarm_snoozed("link:4") is False
     finally:
         AG._write_alarm({})
         restore()
     src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     assert '"adapter_alarm": adapter_alarm(),' in src and 'u.path == "/api/adapter/alarm"' in src
     assert 'self.send_json({"alarm": adapter_alarm()})' in src
+    assert 'u.path == "/api/adapter/alarm/forget"' in src
 
 
 BAR_HARNESS = r"""
 let seq = 0, bars = {};
 const t = (k, v) => k + (v ? JSON.stringify(v) : "");
 const shown = [];
+const posted = [];
 const show = (v) => shown.push(v);
+const api = (path, opts) => { posted.push({path, opts}); return Promise.resolve({alarm: []}); };
 const histWhen = (x) => "в " + x;
 const el = (tag, attrs, ...kids) => {
   const n = {tag, attrs: attrs || {}, kids: kids.flat().filter(k => k !== null && k !== false && k !== undefined), id: ++seq};
@@ -133,6 +157,7 @@ const KINDS = %KINDS%;
 const MODELS_FIX = %MODELS%;
 const link = (kind, n) => ({path: "agent:build", area: "link", kind, fix: MODELS_FIX.includes(kind) ? "models" : "",
   why: "бэкенд №" + n + ": текст " + kind, project: "PRJ-A", calls: 3, at: "2026-10-18T10:19:00Z",
+  key: "link:" + n,
   args: {n, model: "m", status: kind === "auth" ? 401 : kind === "server_error" ? 502 : ""}});
 (() => {
   // только неисправность адаптера: своя полоса, кнопки по лекарству (Установка | Версия), без кнопки у client_net
@@ -150,17 +175,21 @@ const link = (kind, n) => ({path: "agent:build", area: "link", kind, fix: MODELS
   // обрыв связи, каждый вид: своя полоса, заголовок по виду, ни слова про Pydantic AI в кнопках
   for (const kind of KINDS){
     shown.length = 0;
+    posted.length = 0;
     drawAdapterAlarm([link(kind, 4)]);
     check(!!bars.linkbar && !bars.adapterbar, kind + ": полоса связи есть, полосы адаптера нет");
     const bar = bars.linkbar, txt = text(bar);
     check(txt.includes("alarm.link." + kind) && txt.includes('"n":4'), kind + ": заголовок по виду с номером бэкенда");
     check(!txt.includes("alarm.adapter"), kind + ": в полосе связи нет надписей про адаптер");
-    const want = MODELS_FIX.includes(kind) ? ["alarm.link_models"] : [];
+    const want = ["alarm.link_dismiss", ...(MODELS_FIX.includes(kind) ? ["alarm.link_models"] : [])];
     check(JSON.stringify(names(bar)) === JSON.stringify(want), kind + ": кнопки " + JSON.stringify(names(bar)));
     check(!names(bar).some(n => n.includes("alarm.adapter")), kind + ": кнопки про Pydantic AI в полосе связи");
     check(text(bar).includes(MODELS_FIX.includes(kind) ? "alarm.link_tail_cfg" : "alarm.link_tail"), kind + ": хвост по лекарству");
     buttons(bar).forEach(b => b.attrs.onclick());
-    check(shown.length === want.length && shown.every(v => v === "models"), kind + ": кнопка ведёт в «Модели»");
+    const modelButtons = MODELS_FIX.includes(kind) ? 1 : 0;
+    check(shown.length === modelButtons && shown.every(v => v === "models"), kind + ": кнопка ведёт в «Модели»");
+    check(posted.length === 1 && posted[0].path === "/api/adapter/alarm/forget"
+          && JSON.parse(posted[0].opts.body).key === "link:4", kind + ": «Скрыть» шлёт ключ тревоги");
   }
   // обе беды сразу: две полосы, у каждой своё
   drawAdapterAlarm([ADAPTER[0], link("dns", 1), link("auth", 2)]);

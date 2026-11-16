@@ -1167,6 +1167,8 @@
   "alarm.link_tail": "Pydantic AI is fine. Routes and the schedule wait for the network and repeat the call by themselves; the bar goes away once the backend answers.",
   "alarm.link_tail_cfg": "Waiting will not help here — fix the setting; the bar goes away once the backend answers.",
   "alarm.link_models": "Models section",
+  "alarm.link_dismiss": "Hide for a day",
+  "alarm.link_dismiss_title": "Do not show this warning for 24 hours. Checks continue; if the backend answers, the hiding is removed sooner.",
   "alarm.link.dns": "⛔ The model gateway is unreachable: the gateway name does not resolve (DNS), backend №{n}.",
   "alarm.link.refused": "⛔ The model gateway is unreachable: backend №{n} refuses the connection.",
   "alarm.link.connect_timeout": "⛔ The model gateway is unreachable: connection to backend №{n} timed out.",
