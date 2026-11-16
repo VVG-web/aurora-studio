@@ -9,5 +9,6 @@
   "order": 90,
   "needs": ["project"],
   "commands": [],
-  "for": "1.231.1"
+  "dev": true,
+  "for": "1.231.2"
 }

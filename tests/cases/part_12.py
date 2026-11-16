@@ -2165,7 +2165,7 @@ def test_the_build_oracle_does_not_blame_new_cards_for_having_no_links_yet(tmp: 
 
 @test
 def test_unfinished_sections_open_together_with_the_dev_section(tmp: Path):
-    """«Граф» и «Отчёты» ещё в разработке: в меню их нет, пока не открыта «Разработка».
+    """«Граф», «Отчёты» и «Команды» доступны только с «Разработкой»: в обычном меню их нет.
 
     Просьба пользователя 23.09.2026: скрыть их так же, как «Разработку», и открывать вместе
     с ней — семью нажатиями на «О проекте». Встроенный раздел помечается в разметке
@@ -2180,6 +2180,13 @@ def test_unfinished_sections_open_together_with_the_dev_section(tmp: Path):
     assert 'nav button[data-devonly]' in nav, "разделы в разработке не открываются с «Разработкой»"
     assert "if (m.dev)" in ui and "btn.hidden = !devSectionsOn()" in ui, \
         "модуль с `dev` попадает в меню сразу"
+    html = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert 'id="paletteBtn"' not in html, "кнопка команд вернулась в шапку"
+    assert 'if (paletteBtn) paletteBtn.onclick = openPalette' in ui, \
+        "страница падает без удалённой кнопки палитры"
+    palette = ui[ui.index("function openPalette("):ui.index("function drawPalette(")]
+    assert "devSectionsOn()" in palette and "S.state.commands.map" in palette, \
+        "палитра показывает команды без режима разработчика"
     show = ui[ui.index("function show(view"):ui.index("let ABOUT_TAPS")]
     assert "devOnlyView(view) && !devSectionsOn()" in show, "в закрытый раздел пускает адрес страницы"
     assert '$("#fileGraph").hidden = !inKb || !devSectionsOn()' in ui, \
@@ -2189,7 +2196,7 @@ def test_unfinished_sections_open_together_with_the_dev_section(tmp: Path):
     import importlib
     ck = importlib.import_module("aurora_cockpit")
     mods = {m["id"]: m for m in ck.modules()}
-    unfinished = ("reports", "graph", "dev")
+    unfinished = ("reports", "graph", "dev", "commands")
     for mod in unfinished:
         assert mods[mod].get("dev") is True, f"«{mod}» не помечен разделом в разработке"
     assert not any(m.get("dev") for i, m in mods.items() if i not in unfinished), \

@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.231.1";
+const UI_VERSION = "1.231.2";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 let LAST_ERROR = null;          // последняя показанная ошибка: кнопка «Лог» в шапке
 
@@ -7403,7 +7403,10 @@ function openPalette(){
     {nm: t("palette.update_kit"), ds: t("palette.section"), go: () => show("about")},
     ...S.state.projects.map(p=>({nm:p.name, ds: t("palette.project", {path: p.path}),
                                 go:()=>pick(p)})),
-    ...S.state.commands.map(c=>({nm:c.cmd, ds:c.what, llm:c.cmd, go:()=>openRun(c.cmd)})),
+    // Команды — раздел разработки: обычному человеку палитра оставляет разделы и проекты.
+    ...(devSectionsOn()
+      ? S.state.commands.map(c=>({nm:c.cmd, ds:c.what, llm:c.cmd, go:()=>openRun(c.cmd)}))
+      : []),
   ];
   $("#paletteOverlay").classList.add("on");
   const inp = $("#paletteInput"); inp.value=""; inp.focus(); drawPalette("");
@@ -7429,7 +7432,8 @@ $("#paletteInput").addEventListener("keydown", e=>{
   if (e.key==="Enter"){ items[PAL.sel]?.click(); }
   if (e.key==="Escape"){ $("#paletteOverlay").classList.remove("on"); }
 });
-$("#paletteBtn").onclick = openPalette;
+const paletteBtn = $("#paletteBtn");
+if (paletteBtn) paletteBtn.onclick = openPalette;   // кнопки в шапке больше нет, ⌘K остаётся
 $("#paletteOverlay").onclick = e => { if (e.target.id==="paletteOverlay") e.currentTarget.classList.remove("on"); };
 $("#netOverlay").onclick = e => { if (e.target.id==="netOverlay" && NET_CLOSE) NET_CLOSE(null); };
 document.addEventListener("keydown", e=>{
