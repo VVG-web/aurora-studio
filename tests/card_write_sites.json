@@ -295,6 +295,12 @@
    "calls": 2,
    "git": "local"
   },
+  "scripts/agent_core.py:_adapter_log": {
+   "kind": "other",
+   "reason": "журнал stderr/stdout адаптера Pydantic AI в домашней папке Авроры, вне проекта",
+   "calls": 2,
+   "git": "local"
+  },
   "scripts/agent_core.py:adapter_selfcheck": {
    "kind": "other",
    "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP",

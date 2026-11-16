@@ -7677,6 +7677,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_bytes(self, body: bytes, content_type: str, filename: str) -> None:
+        """Файл для скачивания: архив диагностики не JSON и не проходит через перевод."""
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_safety_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
     # Типы известны заранее: раздаём только то, из чего состоит собранная библиотека.
     # Списком, а не через mimetypes: угадывание типа по расширению на чужом дереве —
     # лишняя степень свободы там, где она не нужна.
@@ -8409,6 +8421,41 @@ class Handler(BaseHTTPRequestHandler):
             url = issue_link(str(payload.get("path") or ""))
             self.send_json({"url": url} if url else {"error": "для этого адреса билет не выдаётся"},
                            200 if url else 400)
+            return
+        if u.path == "/api/diagnostics":
+            project = str(payload.get("project") or "")
+            if project and not self._known(project):
+                self.send_json({"error": "проект не выбран"}, 400)
+                return
+            job_id = str(payload.get("job_id") or "")
+            run_id = str(payload.get("run_id") or "")
+            with JOBS_LOCK:
+                job = JOBS.get(job_id) if job_id else None
+            if job:
+                project = str(job.get("project") or project)
+                run_id = run_id or str(job.get("run_id") or "")
+            context = {
+                "source": str(payload.get("source") or "panel"),
+                "message": str(payload.get("message") or "")[:4000],
+                "key": str(payload.get("key") or ""),
+                "area": str(payload.get("area") or ""),
+                "kind": str(payload.get("kind") or ""),
+                "sub": str(payload.get("sub") or ""),
+                "why": str(payload.get("why") or "")[:4000],
+                "path": str(payload.get("path") or "")[:500],
+                "view": str(payload.get("view") or "")[:80],
+                "browser": str(payload.get("browser") or "")[:500],
+                "job_id": job_id,
+            }
+            deep = bool(payload.get("deep")) or context["area"] == "adapter"
+            try:
+                import diagnostics as D
+                filename, blob = D.build(project, context, run_id=run_id, deep=deep)
+            except Exception as e:  # noqa: BLE001 — архив не должен ронять панель
+                self.send_json({"error": "не удалось собрать диагностику",
+                                "detail": f"{type(e).__name__}: {e}"[:300]}, 500)
+                return
+            self.send_bytes(blob, "application/zip", filename)
             return
         if u.path == "/api/adapter/alarm/forget":
             # «Скрыть» на полосе связи: снимает одну запись, а не выключает проверку.

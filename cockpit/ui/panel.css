@@ -537,6 +537,10 @@ tr:last-child td{border-bottom:0}
 .toast-close{flex:none;border:0;background:none;color:var(--text-muted);cursor:pointer;
   font-size:var(--text-lg);line-height:1;padding:0 var(--sp-1)}
 .toast-close:hover{color:var(--text)}
+.toast-diag{flex:none;align-self:flex-start;margin-left:var(--sp-2);border:1px solid var(--border);
+  background:var(--surface-2);color:var(--text-muted);border-radius:var(--radius-xs);
+  cursor:pointer;font-size:var(--text-sm);padding:2px var(--sp-2);line-height:1.4}
+.toast-diag:hover{color:var(--text);border-color:var(--primary)}
 
 /* Блокирующий экран выбора Python: конфигурация записана, но не проходит проверку.
    Ни одна подсистема не работает, пока человек не выберет рабочий интерпретатор. */

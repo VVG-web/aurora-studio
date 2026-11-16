@@ -133,8 +133,10 @@ let seq = 0, bars = {};
 const t = (k, v) => k + (v ? JSON.stringify(v) : "");
 const shown = [];
 const posted = [];
+const diag = [];
 const show = (v) => shown.push(v);
 const api = (path, opts) => { posted.push({path, opts}); return Promise.resolve({alarm: []}); };
+const downloadDiagnostics = (ctx) => diag.push(ctx);
 const histWhen = (x) => "в " + x;
 const el = (tag, attrs, ...kids) => {
   const n = {tag, attrs: attrs || {}, kids: kids.flat().filter(k => k !== null && k !== false && k !== undefined), id: ++seq};
@@ -165,13 +167,15 @@ const link = (kind, n) => ({path: "agent:build", area: "link", kind, fix: MODELS
   check(!!bars.adapterbar && !bars.linkbar, "adapter: есть полоса адаптера и нет полосы связи");
   const bar = bars.adapterbar;
   check(text(bar).includes("alarm.adapter") && text(bar).includes("bot:сеть"), "adapter: заголовок и строки");
-  check(JSON.stringify(names(bar)) === JSON.stringify(["alarm.adapter_engine", "alarm.adapter_open"]),
+  check(JSON.stringify(names(bar)) === JSON.stringify(["alarm.adapter_engine", "alarm.adapter_open", "diag.btn"]),
         "adapter: кнопки «Версия» и «Установка» по лекарствам, got " + JSON.stringify(names(bar)));
   buttons(bar).forEach(b => b.attrs.onclick());
   check(JSON.stringify(shown) === JSON.stringify(["version", "install"]), "adapter: кнопки ведут куда сказано");
+  check(diag.length === 1 && diag[0].source === "adapter_alarm", "adapter: кнопка лога");
   // расхождение клиента адаптера без лекарства из кнопок: кнопок нет вовсе
   drawAdapterAlarm([ADAPTER[2]]);
-  check(names(bars.adapterbar).length === 0, "client_net: кнопок про Установку нет");
+  check(JSON.stringify(names(bars.adapterbar)) === JSON.stringify(["diag.btn"]),
+        "client_net: кнопки про Установку нет, лог есть");
   // обрыв связи, каждый вид: своя полоса, заголовок по виду, ни слова про Pydantic AI в кнопках
   for (const kind of KINDS){
     shown.length = 0;
@@ -181,7 +185,8 @@ const link = (kind, n) => ({path: "agent:build", area: "link", kind, fix: MODELS
     const bar = bars.linkbar, txt = text(bar);
     check(txt.includes("alarm.link." + kind) && txt.includes('"n":4'), kind + ": заголовок по виду с номером бэкенда");
     check(!txt.includes("alarm.adapter"), kind + ": в полосе связи нет надписей про адаптер");
-    const want = ["alarm.link_dismiss", ...(MODELS_FIX.includes(kind) ? ["alarm.link_models"] : [])];
+    const want = ["alarm.link_dismiss", ...(MODELS_FIX.includes(kind) ? ["alarm.link_models"] : []),
+                  "diag.btn"];
     check(JSON.stringify(names(bar)) === JSON.stringify(want), kind + ": кнопки " + JSON.stringify(names(bar)));
     check(!names(bar).some(n => n.includes("alarm.adapter")), kind + ": кнопки про Pydantic AI в полосе связи");
     check(text(bar).includes(MODELS_FIX.includes(kind) ? "alarm.link_tail_cfg" : "alarm.link_tail"), kind + ": хвост по лекарству");

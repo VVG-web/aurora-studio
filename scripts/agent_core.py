@@ -571,6 +571,10 @@ _HUB_LOCK = threading.Lock()        # запуск процесса и учёт 
 _HUB_WRITE = threading.Lock()       # строка задания уходит в трубу целиком
 ADAPTER_START = 60                  # секунд на запуск venv и импорт фреймворка
 ADAPTER_DEATHS = 3                  # столько падений за прогон — и адаптер больше не зовём
+# Последние строки stderr/stdout процесса адаптера: без них ошибка импорта на Windows
+# выглядит как «процесс умер», и причину приходится угадывать. Лежит в домашней папке
+# Авроры, вне проекта: в git не попадает и с чужими правками не конфликтует.
+ADAPTER_LOG_MAX = 2 * 1024 * 1024
 # Приставка поломки самого адаптера. По ней транспорт отличает «сервер отказал» (решает
 # кольцо, как при HTTP) от «адаптер не смог» (тот же вызов уходит прямым HTTP).
 ADAPTER_FAIL = "адаптер Pydantic AI: "
@@ -1336,8 +1340,10 @@ def _hub_reader(proc, pending: dict) -> None:
         try:
             out = json.loads(line)
         except ValueError:
+            _adapter_log(f"stdout[{getattr(proc, 'pid', '?')}] {line}")
             continue
         if not isinstance(out, dict):       # посторонняя строка вроде «1» или «[]» — не ответ
+            _adapter_log(f"stdout[{getattr(proc, 'pid', '?')}] {line}")
             continue
         with _HUB_LOCK:
             slot = pending.pop(out.get("id"), None)
@@ -1382,12 +1388,80 @@ def _hello_cause(hello: dict) -> Why:
     return Why("adapter_error", error=_scrub(hello.get("error") or "причина не названа"))
 
 
+_ADAPTER_LOG_LOCK = threading.Lock()
+
+
+def adapter_log_path() -> Path:
+    """Журнал процесса адаптера: домашняя папка Авроры, не проект — в git не попадает."""
+    return RT.HOME / "logs" / "adapter.log"
+
+
+def _log_scrub(text: str) -> str:
+    """Убрать из строки журнала ключи, токены и логин:пароль прокси."""
+    line = str(text or "").replace(str(Path.home()), "~")
+    line = re.sub(r"(?i)\b(api[_-]?key|authorization|bearer|token|secret|password)\b"
+                  r"(\s*[:=]\s*|\s+)[^\s,;]+", r"\1\2***", line)
+    line = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "sk-***", line)
+    line = re.sub(r"\b(?:ghp_|gho_|ghu_|ghs_|github_pat_|xox[baprs]-|AIza)"
+                  r"[A-Za-z0-9_-]{10,}", "<key>", line)
+    line = re.sub(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*", "<private-key>", line)
+    line = re.sub(r"(https?://)[^/\s:@]+:[^/\s@]+@", r"\1***@", line)
+    return line.rstrip()[:4000]
+
+
+def _adapter_log(text: str) -> None:
+    """Дописать строку в журнал адаптера. Ошибка записи не должна ронять вызов."""
+    path = adapter_log_path()
+    try:
+        with _ADAPTER_LOG_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.is_file() and path.stat().st_size > ADAPTER_LOG_MAX:
+                old = path.with_name("adapter.1.log")
+                try:
+                    old.unlink(missing_ok=True)
+                    path.replace(old)
+                except OSError:
+                    path.write_text("", encoding="utf-8")
+            from aurora_common import utc_stamp
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(f"{utc_stamp()} {_log_scrub(text)}\n")
+    except OSError:
+        pass
+
+
+def adapter_log_tail(limit: int = 400) -> str:
+    """Последние строки журнала адаптера — для архива диагностики."""
+    try:
+        lines = adapter_log_path().read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(lines[-max(1, int(limit)):])
+
+
+def _adapter_stderr_reader(proc) -> None:
+    """Читать stderr адаптера, пока процесс жив: раньше он уходил в DEVNULL."""
+    try:
+        for line in proc.stderr:
+            _adapter_log(f"stderr[{proc.pid}] {line}")
+    except (OSError, ValueError):
+        pass
+
+
 def _spawn_adapter(argv: list, cwd=None):
     """Процесс адаптера так, как его запускает прогон: без `-I` и в окружении venv (`venv_env`) —
     PYTHONHOME и PYTHONPATH чужого Python сняты, кодировка трубы задана."""
-    return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True, bufsize=1,
-                            encoding="utf-8", env=venv_env(), cwd=cwd)
+    env = venv_env()
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, bufsize=1,
+                            encoding="utf-8", errors="replace", env=env, cwd=cwd)
+    threading.Thread(target=_adapter_stderr_reader, args=(proc,), daemon=True).start()
+    env_keys = ("PYTHONUTF8", "PYTHONIOENCODING", "PYTHONHOME", "PYTHONPATH",
+                "VIRTUAL_ENV", "AURORA_HOME")
+    _adapter_log("start pid=%s argv=%s cwd=%s env=%s" % (
+        proc.pid, [os.path.basename(argv[0])] + [os.path.basename(x) for x in argv[1:]],
+        cwd or os.getcwd(),
+        {k: ("задан" if env.get(k) else "") for k in env_keys if env.get(k)}))
+    return proc
 
 
 def _read_hello(proc, wait: float) -> tuple:
@@ -1403,8 +1477,11 @@ def _read_hello(proc, wait: float) -> tuple:
             try:
                 got = json.loads(line)
             except ValueError:
+                _adapter_log(f"stdout[{getattr(proc, 'pid', '?')}] {line}")
                 continue
             if isinstance(got, dict) and "ready" in got:
+                _adapter_log(f"hello[{getattr(proc, 'pid', '?')}] "
+                             + json.dumps(got, ensure_ascii=False)[:1000])
                 box.append(got)
                 return
     t = threading.Thread(target=first_hello, daemon=True)
@@ -1471,13 +1548,16 @@ def adapter_probe(adapter=None, cwd=None, wait: float = ADAPTER_START) -> dict:
     зелёной, когда прогон адаптер поднять не мог. Самопроверку совместимости здесь не гоняем: у неё своя
     строка («Проверить совместимость»), а ответ «готов» — то, что прогон получает первым."""
     argv = _adapter_argv(adapter)
+    hello: dict = {}
     if not argv:
         why = adapter_gap_why(adapter) or Why.raw("адаптер Pydantic AI не запускается")
     else:
         try:
             proc = _spawn_adapter(argv, cwd)
         except OSError as e:
-            why = _start_cause(Why("process_start", exc=type(e).__name__))
+            why = _start_cause(Why("process_start", exc=type(e).__name__,
+                                   winerror=getattr(e, "winerror", ""),
+                                   errno=getattr(e, "errno", "")))
         else:
             try:
                 hello, hung = _read_hello(proc, wait)
@@ -1488,7 +1568,7 @@ def adapter_probe(adapter=None, cwd=None, wait: float = ADAPTER_START) -> dict:
                     except (OSError, subprocess.SubprocessError):
                         proc.kill()
                     return {"ok": True, "version": str(hello.get("version") or ""), "kind": "", "sub": "",
-                            "fix": "", "why": ""}
+                            "fix": "", "why": "", "hello": hello}
                 why = _start_failure(proc, hello, hung, wait)
             finally:
                 for pipe in (proc.stdin, proc.stdout):
@@ -1497,7 +1577,8 @@ def adapter_probe(adapter=None, cwd=None, wait: float = ADAPTER_START) -> dict:
                     except OSError:
                         pass
     why = cause_of(why)
-    return {"ok": False, "version": "", "kind": why.kind, "sub": why.sub, "fix": why.fix, "why": str(why)}
+    return {"ok": False, "version": "", "kind": why.kind, "sub": why.sub, "fix": why.fix,
+            "why": str(why), "hello": hello, "cause": dict(getattr(why, "args", {}))}
 
 
 def adapter_hub():
@@ -1519,7 +1600,9 @@ def adapter_hub():
         try:
             proc = _spawn_adapter(argv)
         except OSError as e:
-            _HUB["broken"] = _note_others(_start_cause(Why("process_start", exc=type(e).__name__)))
+            _HUB["broken"] = _note_others(_start_cause(Why(
+                "process_start", exc=type(e).__name__,
+                winerror=getattr(e, "winerror", ""), errno=getattr(e, "errno", ""))))
             return None, _HUB["broken"]
         hello, hung = _read_hello(proc, ADAPTER_START)
         if not hello.get("ready"):

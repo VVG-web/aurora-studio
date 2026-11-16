@@ -436,6 +436,7 @@
     "конфиг не записан: {}": "the config was not written: {}",
     "нет такой папки: {}": "there is no such folder: {}",
     "тело запроса не разобрано": "the request body was not parsed",
+    "не удалось собрать диагностику": "could not collect diagnostics",
     "снять можно только тревогу связи link:N": "only a link:N connectivity alarm can be dismissed",
     "недопустимый id прогона": "invalid run id",
     "недопустимый id вопроса": "invalid question id",

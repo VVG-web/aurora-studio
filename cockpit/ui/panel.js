@@ -9,8 +9,13 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.230.5";
+const UI_VERSION = "1.231.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
+let LAST_ERROR = null;          // последняя показанная ошибка: кнопка «Лог» в шапке
+
+function rememberError(message, extra={}){
+  LAST_ERROR = {message:String(message ?? ""), at:Date.now(), ...extra};
+}
 
 const $ = (s,r=document)=>r.querySelector(s);
 const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
@@ -471,7 +476,12 @@ const api = async (path, opts={}) => {
   // Токен не принят — панель запущена заново или вкладка старая: поток отказов превращается
   // в одно понятное окно «обновите страницу», а не в тост на каждый опрос.
   if (r.status === 403 && d.code === "session"){ showAuthGate(); return d; }
-  if (d.error && !opts.quiet) toast(d.error, "err");
+  if (d.error){
+    if (!opts.quiet){
+      rememberError(d.error, {source:"api", path});
+      toast(d.error, "err");
+    }
+  }
   return d;
 };
 
@@ -536,10 +546,17 @@ function toast(msg, kind="ok", opts={}){
   // Двухкилобайтный лог pip на пол-экрана не читается и прячет крестик за краем
   // окна. Показываем причину коротко, полный вывод — в карточке Python.
   const text = String(msg == null ? "" : msg);
+  if (kind === "err") rememberError(text, {source:"toast"});
   const max = (opts && opts.sticky) ? 500 : 1200;
   const shown = text.length > max ? text.slice(0, max) + "…" : text;
   const to = el("div",{class:"toast "+kind},
     el("span", {class:"toast-text"}, shown));
+  if (kind === "err"){
+    const btn = el("button",{class:"toast-diag", title:t("diag.hint"),
+      "aria-label":t("diag.btn")}, t("diag.btn"));
+    btn.onclick = () => downloadDiagnostics({source:"toast", message:text, btn});
+    to.append(btn);
+  }
   $("#toasts").append(to);
   if (opts && opts.sticky){
     to.classList.add("sticky");
@@ -548,7 +565,7 @@ function toast(msg, kind="ok", opts={}){
     to.append(close);
     return to;
   }
-  const ms = Number((opts && opts.timeout) || TOAST_MS);
+  const ms = Number((opts && opts.timeout) || (kind === "err" ? 12000 : TOAST_MS));
   setTimeout(()=>{ to.style.opacity=0; setTimeout(()=>to.remove(),250); }, ms);
   return to;
 }
@@ -561,6 +578,7 @@ function showFault(msg){
   msg = String(msg || t("fault.unknown"));
   if (msg === LAST_FAULT) return;                 // одна поломка — одно сообщение
   LAST_FAULT = msg;
+  rememberError(msg, {source:"fault"});
   setTimeout(()=>{ if (LAST_FAULT === msg) LAST_FAULT = ""; }, 5000);
   console.error("Сбой на странице:", msg);
   toast(t("fault.toast", {why: msg}), "err");
@@ -2287,10 +2305,56 @@ function issueUrl(kind){
   q.set("extra", where);
   return repo.replace(/\/+$/, "") + "/issues/new?" + q.toString();
 }
+// Архив диагностики: сервер собирает zip в памяти, страница отдаёт его файлом.
+// Ничего не пишется в проект, поэтому делить лог между пользователями не нужно.
+async function downloadDiagnostics(ctx={}){
+  const btn = ctx.btn || null;
+  const old = btn ? btn.textContent : "";
+  if (btn){ btn.disabled = true; btn.textContent = t("diag.building"); }
+  try {
+    const project = (S.project && S.project.path) || "";
+    const body = {
+      source: ctx.source || "header", message: ctx.message || "",
+      key: ctx.key || "", area: ctx.area || "", kind: ctx.kind || "",
+      sub: ctx.sub || "", why: ctx.why || "", path: ctx.path || "",
+      view: S.view || "", project, browser: navigator.userAgent,
+      job_id: ctx.job_id || "",
+      run_id: ctx.run_id || "", deep: !!ctx.deep,
+    };
+    const r = await fetch("/api/diagnostics", {method:"POST",
+      headers:{"Content-Type":"application/json", "X-Aurora-Token":TOKEN},
+      body:JSON.stringify(body)});
+    if (r.status === 403){ showAuthGate(); return; }
+    if (!r.ok){
+      let d = {};
+      try { d = await r.json(); } catch (e) { /* not JSON */ }
+      toast(t("diag.failed", {why: d.error || r.status}), "err");
+      return;
+    }
+    const blob = await r.blob();
+    const cd = r.headers.get("Content-Disposition") || "";
+    const m = /filename="?([^";]+)/.exec(cd);
+    const name = m ? m[1] : "aurora-diagnostics.zip";
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+    toast(t("diag.saved"), "ok");
+  } catch (e) {
+    toast(t("diag.failed", {why: e.message || e}), "err");
+  } finally {
+    if (btn){ btn.disabled = false; btn.textContent = old; }
+  }
+}
 function openIssue(kind){
   window.open(issueUrl(kind), "_blank", "noopener");
 }
 $("#bugBtn").onclick = () => openIssue("bug");
+$("#diagBtn").onclick = () => downloadDiagnostics({
+  source:"header", message: (LAST_ERROR && LAST_ERROR.message) || "",
+  area: (LAST_ERROR && LAST_ERROR.area) || "", key: (LAST_ERROR && LAST_ERROR.key) || "",
+});
 $("#themeBtn").onclick = ()=>{
   const now = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = now;
@@ -2477,6 +2541,12 @@ function drawAdapterAlarm(rows){
     if (old) old.remove();
   }
   if (!rows || !rows.length) return;
+  const diagButton = (ctx) => {
+    const b = el("button",{class:"btn sm", style:"margin-left:8px",
+      title:t("diag.hint"), "aria-label":t("diag.btn"),
+      onclick:()=>downloadDiagnostics({...ctx, btn:b})}, t("diag.btn"));
+    return b;
+  };
   const adapter = rows.filter(r => r.area !== "link");
   const link = rows.filter(r => r.area === "link");
   const when = r => r.at ? histWhen(r.at) : "—";
@@ -2494,7 +2564,10 @@ function drawAdapterAlarm(rows){
       el("div",{}, [wait ? t("alarm.link_tail") : "", cfg ? t("alarm.link_tail_cfg") : ""]
           .filter(Boolean).join(" "),
         ...(cfg ? [el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("models")},
-          t("alarm.link_models"))] : []))));
+          t("alarm.link_models"))] : []),
+        diagButton({source:"link_alarm", key: link[0].key, area:"link",
+                    kind: link[0].kind, sub: link[0].sub, why: link[0].why,
+                    path: link[0].path, message: link[0].why}))));
   }
   if (adapter.length){
     $("main").prepend(el("div",{id:"adapterbar", class:"stalebar alarm"},
@@ -2512,7 +2585,10 @@ function drawAdapterAlarm(rows){
               t("alarm.adapter_engine"))] : []),
         ...(adapter.some(r => r.fix === "install")
           ? [el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("install")},
-              t("alarm.adapter_open"))] : []))));
+              t("alarm.adapter_open"))] : []),
+        diagButton({source:"adapter_alarm", key: adapter[0].key, area:"adapter",
+                    kind: adapter[0].kind, sub: adapter[0].sub, why: adapter[0].why,
+                    path: adapter[0].path, message: adapter[0].why}))));
   }
 }
 async function forgetLinkAlarm(key){
@@ -5592,6 +5668,10 @@ $("#exportMd").onclick = ()=>{
   setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
   toast(t("console.exported"), "ok");
 };
+$("#diagConsole").onclick = ()=> downloadDiagnostics({
+  source:"console", message: $("#consoleCmd").textContent || "",
+  job_id: (S.lastStep && S.lastStep.job) || "", btn: $("#diagConsole"),
+});
 // Полоса хода — не украшение: по ней возвращаются к прогону с любой вкладки.
 $("#routeBar").onclick = ()=> show("console");
 
