@@ -9552,6 +9552,10 @@ def threads_all(lang: str = "", now: float = 0.0) -> dict:
     with JOBS_LOCK:
         jobs = [j for j in JOBS.values() if not j.get("done")]
     out = {"slots": 0, "now": 0, "inflight": 0, "rows": []}
+    # Разбор бота идёт в самом процессе панели, без папки прогона и пульса: его
+    # активная реплика тоже запрос к модели, и её видно в шапке.
+    with COACH_LOCK:
+        out["inflight"] += len(COACH_BUSY)
     for job in jobs:
         for data in _pulse_files(job):
             # Запросы к моделям считаются у любого живого шага, даже если он не объявил

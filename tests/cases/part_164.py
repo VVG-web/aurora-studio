@@ -76,6 +76,16 @@ def test_the_panel_sums_threads_of_live_steps_and_drops_an_expired_quarantine(tm
         _pulse(runs / "run-4", "pulse-5.json", None, inflight=2)
         only_calls = ck.threads_all("ru", now=now)
         assert (only_calls["slots"], only_calls["inflight"]) == (0, 2), only_calls
+        # Разбор бота живёт в процессе панели, без пульса: его реплика тоже видна.
+        ck.JOBS.clear()
+        with ck.COACH_LOCK:
+            ck.COACH_BUSY[("prj", "bots/a.md")] = time.time()
+        try:
+            coach = ck.threads_all("ru", now=now)
+        finally:
+            with ck.COACH_LOCK:
+                ck.COACH_BUSY.clear()
+        assert (coach["slots"], coach["inflight"]) == (0, 1), coach
         ck.JOBS.clear()
         assert ck.threads_all("ru", now=now) == {"slots": 0, "now": 0, "inflight": 0, "rows": []}
     finally:
