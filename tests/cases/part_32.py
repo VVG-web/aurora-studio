@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import sys
 import time
 
@@ -60,8 +61,9 @@ def test_a_chain_streams_into_the_console(tmp: Path):
 
 @test
 def test_the_console_lists_everything_running_on_the_machine(tmp: Path):
-    """«Что идёт»: маршруты и команды всех проектов, а не выбранного; шаг маршрута — внутри
-    маршрута, а не отдельной строкой; цепочка — с текущим пунктом и ходом."""
+    """«Что идёт»: маршруты и команды всех проектов, а не выбранного; шаг маршрута приходит
+    с родителем, чтобы панель нарисовала его внутри, а не отдельной строкой; цепочка — с
+    текущим пунктом и ходом."""
     _path()
     import aurora_cockpit as ck
     (tmp / "a").mkdir()
@@ -72,6 +74,7 @@ def test_the_console_lists_everything_running_on_the_machine(tmp: Path):
         done_flag = False
         sc = {"title": "Обновить базу", "id": "update"}
         write, trigger, bar = True, "cron", {"cmd": "agent:build"}
+        parent = "cron-test"
     with ck.ROUTES_LOCK:
         ck.ROUTES["r-test"] = {"id": "r-test", "project": str(tmp / "a"), "run": Run(),
                                "started": time.time()}
@@ -86,8 +89,10 @@ def test_the_console_lists_everything_running_on_the_machine(tmp: Path):
         d = ck.live_now()
         r = next(x for x in d["routes"] if x["id"] == "r-test")
         assert r["name"] == "Альфа" and r["title"] == "Обновить базу" and r["trigger"] == "cron", r
+        assert r["parent"] == "cron-test", r
         ids = [j["id"] for j in d["jobs"]]
-        assert "j-own" in ids and "j-step" not in ids, ids
+        assert "j-own" in ids and "j-step" in ids, ids
+        assert next(j for j in d["jobs"] if j["id"] == "j-step")["parent"] == "r-test"
         assert next(j for j in d["jobs"] if j["id"] == "j-own")["name"] == "b"
     finally:
         with ck.ROUTES_LOCK:
@@ -95,6 +100,68 @@ def test_the_console_lists_everything_running_on_the_machine(tmp: Path):
         with ck.JOBS_LOCK:
             ck.JOBS.pop("j-step", None)
             ck.JOBS.pop("j-own", None)
+
+
+@test
+def test_the_console_tree_nests_cron_route_and_command(_t):
+    """Три уровня — три уровня, а не три соседа: cron → маршрут → команда. Связь берётся из
+    `parent`; если старый сервер не прислал родителя маршрута, маршрут с `trigger=cron`
+    всё равно попадает внутрь текущей цепочки. Чужая команда остаётся корнем."""
+    ui = ui_source()
+    start = ui.index("function liveTree(d){")
+    end = ui.index("const LIVE_COLLAPSED", start)
+    source = ui[start:end]
+    if not shutil.which("node"):
+        return
+    script = """
+const assert = require("assert");
+""" + source + """
+const d = {
+  cron: {id: "c-1", name: "Ночное обновление", now: "Обновить базу", done: 1, total: 2,
+         started: "2026-11-16T10:00:00Z"},
+  routes: [
+    {id: "r-1", parent: "c-1", trigger: "cron", started: 2, title: "Обновить базу"},
+    {id: "r-2", parent: "", trigger: "cron", started: 3, title: "Починить базу"},
+  ],
+  jobs: [
+    {id: "j-1", parent: "r-1", started: 4, cmd: "git:update"},
+    {id: "j-2", parent: "", started: 5, cmd: "kb:lint"},
+  ],
+};
+const tree = liveTree(d);
+assert.strictEqual(tree.roots.length, 2, "корней должно быть два: cron и своя команда");
+assert.strictEqual(tree.roots[0].key, "cron:c-1");
+const cron = tree.nodes.get("cron:c-1");
+assert.deepStrictEqual(cron.children.map(x => x.key), ["route:r-1", "route:r-2"]);
+assert.deepStrictEqual(tree.nodes.get("route:r-1").children.map(x => x.key), ["job:j-1"]);
+assert.deepStrictEqual(tree.nodes.get("route:r-2").children, []);
+assert.strictEqual(tree.roots[1].key, "job:j-2");
+console.log("live tree ok");
+"""
+    import subprocess
+    run = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0 and "live tree ok" in run.stdout, run.stderr or run.stdout
+
+
+@test
+def test_console_cards_collapse_by_level(_t):
+    """Свернуть можно цепочку целиком или один маршрут: у карточки с детьми есть кнопка,
+    состояние помнит ключ узла и не сбрасывается следующим опросом. Дети лежат в отдельном
+    контейнере с линией, поэтому видно, кто внутри кого."""
+    ui = ui_source()
+    live = ui[ui.index("function liveTree(d){"):ui.index("async function autoFollow(")]
+    assert "LIVE_COLLAPSED" in live and "LIVE_COLLAPSED.add(node.key)" in live, \
+        "у свёрнутых узлов нет состояния"
+    assert 'class:"live-toggle"' in live and '"aria-expanded"' in live, \
+        "у уровня с детьми нет кнопки-шеврона"
+    assert 'class:"live-children"' in live and "kids.hidden = next" in live, \
+        "дети не прячутся отдельным контейнером"
+    assert 'data-live-key' in live and 't("live.parent"' in live, \
+        "вложенность не подписана для наведения"
+    css = (COCKPIT / "ui" / "panel.css").read_text(encoding="utf-8")
+    assert ".live-children{" in css and "border-left" in css, "у детей нет линии вложенности"
+    assert ".live-toggle" in css and ".live-dot" in css, "шеврон и лист не выровнены"
+    assert '.live-toggle[aria-expanded="false"]' in css, "свёрнутый шеврон не повёрнут"
 
 
 @test

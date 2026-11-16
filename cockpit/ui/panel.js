@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.231.2";
+const UI_VERSION = "1.231.3";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 let LAST_ERROR = null;          // последняя показанная ошибка: кнопка «Лог» в шапке
 
@@ -4668,48 +4668,126 @@ const isShown = (kind, id) => !!SHOWN && SHOWN.kind === kind && (id == null || S
 async function liveAll(){
   try { return await api("/api/live", {quiet:true}) || {}; } catch (e) { return {}; }
 }
+// Текущие задачи — дерево, а не три равные карточки: cron ведёт маршрут, маршрут ведёт
+// команду. Связь приходит с сервера (`parent`), а здесь только раскладывается по уровням.
+// Чистая функция без DOM: её проверяют отдельно от отрисовки.
+function liveTree(d){
+  const nodes = new Map();
+  const add = (kind, id, parent, started, data) => {
+    const key = kind + ":" + (id || "");
+    const node = {key, kind, id: id || "", parent: parent || "", data,
+                  started: Number(started) || 0, children: []};
+    nodes.set(key, node);
+    return node;
+  };
+  const cron = d.cron
+    ? add("cron", d.cron.id || "now", "", Date.parse(d.cron.started || "") / 1000, d.cron)
+    : null;
+  (d.routes || []).forEach(r => add("route", r.id,
+    r.parent || (r.trigger === "cron" && cron ? cron.id : ""), r.started, r));
+  (d.jobs || []).forEach(j => add("job", j.id, j.parent || "", j.started, j));
+  for (const node of nodes.values()){
+    if (!node.parent) continue;
+    const parent = nodes.get("route:" + node.parent) || nodes.get("cron:" + node.parent);
+    const fallback = node.kind === "route" && node.data.trigger === "cron" ? cron : null;
+    const owner = parent || fallback;
+    if (owner && owner !== node){ node.owner = owner; owner.children.push(node); }
+  }
+  const roots = [...nodes.values()].filter(n => !n.owner);
+  roots.sort((a, b) => (a.kind === "cron" ? -1 : a.started) - (b.kind === "cron" ? -1 : b.started));
+  roots.forEach(n => n.children.sort((a, b) => a.started - b.started));
+  return {roots, nodes};
+}
+const LIVE_COLLAPSED = new Set();   // свёрнутые узлы: переживают перерисовку каждые несколько секунд
 async function drawLiveJobs(){
   const box = $("#consoleLive");
   if (!box) return;
   const d = await liveAll();
   box.replaceChildren();
   const mins = s => Math.max(0, Math.round((Date.now()/1000 - s) / 60));
-  const card = (title, sub, shown, go, extra) => box.append(el("div",{class:"card row",
-      style:"padding:10px 12px;margin-bottom:10px;gap:12px;align-items:center"},
-    el("div",{style:"flex:1;min-width:0"},
-      el("div",{style:"font-weight:600"}, title),
-      el("div",{class:"muted",style:"font-size:12px;margin-top:2px"}, sub)),
-    shown ? el("span",{class:"chip ok"}, t("live.shown"))
-          : el("button",{class:"btn", onclick: go}, t("live.show")),
-    extra || null));
-  if (d.cron) card(t("live.cron", {name: d.cron.name}),
-    t("live.cron_sub", {now: d.cron.now || "—", done: d.cron.done, total: d.cron.total}),
-    isShown("cron"), () => followCron());
   const taskById = {};
   ((d.tasks && d.tasks.active) || []).concat((d.tasks && d.tasks.queued) || [])
     .forEach(x => { taskById[x.id] = x; });
-  (d.routes || []).forEach(r => {
-    const tq = taskById[r.id];
-    card(
-      t("live.route", {name: r.name, title: r.title}) + (r.trigger === "cron" ? " · cron" : ""),
-      tq && tq.state === "queued"
+  const tree = liveTree(d);
+  const present = (node) => {
+    if (node.kind === "cron"){
+      node.title = t("live.cron", {name: node.data.name});
+      node.sub = t("live.cron_sub", {now: node.data.now || "—", done: node.data.done,
+                                     total: node.data.total});
+      node.shown = isShown("cron");
+      node.go = () => followCron();
+      return;
+    }
+    if (node.kind === "route"){
+      const r = node.data, tq = taskById[r.id];
+      node.title = t("live.route", {name: r.name, title: r.title}) +
+        (r.trigger === "cron" && !node.parent ? " · cron" : "");
+      const childJob = node.children.some(child => child.kind === "job");
+      node.sub = tq && tq.state === "queued"
         ? t("live.queue_reason", {why: tq.conflict || t("live.queue_unknown")})
-        : r.bar && r.bar.cmd ? t("live.route_sub", {cmd: r.bar.cmd, mins: mins(r.started)})
-                             : t("live.started", {mins: mins(r.started)}),
-      isShown("route", r.id), () => attachRoute(r.id, {title: r.title, id: r.scId}, r.write, false));
-  });
-  (d.jobs || []).forEach(j => {
-    const queued = j.state === "queued";
-    const cmd = (j.cmd + " " + (j.args||[]).join(" ")).trim();
-    card(
-      queued ? t("live.job_queued", {name: j.name, cmd})
-             : t("live.job", {name: j.name, cmd}),
-      queued ? t("live.queue_reason", {why: j.queue_reason || t("live.queue_unknown")})
-             : t("live.details", {mins: mins(j.started), lines: j.lines}),
-      isShown("job", j.id), () => attachJob(j.id),
-      el("button",{class:"btn sm", onclick: () => stopJob(j.id)}, t("live.stop")));
-  });
-  if ((d.routes || []).length || (d.jobs || []).length)
+        : childJob ? t("live.started", {mins: mins(r.started)})
+                   : r.bar && r.bar.cmd
+                     ? t("live.route_sub", {cmd: r.bar.cmd, mins: mins(r.started)})
+                     : t("live.started", {mins: mins(r.started)});
+      node.shown = isShown("route", r.id);
+      node.go = () => attachRoute(r.id, {title: r.title, id: r.scId}, r.write, false);
+      return;
+    }
+    const j = node.data, queued = j.state === "queued";
+    const cmd = (j.cmd + " " + (j.args || []).join(" ")).trim();
+    node.title = queued ? t("live.job_queued", {name: j.name, cmd})
+                        : t("live.job", {name: j.name, cmd});
+    node.sub = queued ? t("live.queue_reason", {why: j.queue_reason || t("live.queue_unknown")})
+                      : t("live.details", {mins: mins(j.started), lines: j.lines});
+    node.shown = isShown("job", j.id);
+    node.go = () => attachJob(j.id);
+    node.extra = el("button",{class:"btn sm", onclick: () => stopJob(j.id)}, t("live.stop"));
+  };
+  const visit = (node, parentTitle) => {
+    present(node);
+    node.parentTitle = parentTitle || "";
+    node.children.forEach(child => visit(child, node.title));
+  };
+  tree.roots.forEach(node => visit(node, ""));
+  const card = (node) => {
+    const collapsed = LIVE_COLLAPSED.has(node.key);
+    const kids = node.children.length ? el("div",{class:"live-children", role:"group"}) : null;
+    const toggle = node.children.length
+      ? el("button",{class:"live-toggle", "aria-expanded": String(!collapsed),
+          "aria-label": t(collapsed ? "live.expand" : "live.collapse"),
+          title: t(collapsed ? "live.expand" : "live.collapse"),
+          onclick: () => {
+            const next = !LIVE_COLLAPSED.has(node.key);
+            if (next) LIVE_COLLAPSED.add(node.key); else LIVE_COLLAPSED.delete(node.key);
+            kids.hidden = next;
+            toggle.title = t(next ? "live.expand" : "live.collapse");
+            toggle.setAttribute("aria-label", toggle.title);
+            toggle.setAttribute("aria-expanded", String(!next));
+          }})
+      : el("span",{class:"live-dot", "aria-hidden":"true"});
+    const row = el("div",{class:"card row live-card",
+      title: node.parentTitle ? t("live.parent", {parent: node.parentTitle}) : null},
+      el("div",{style:"flex:1;min-width:0"},
+        el("div",{style:"display:flex;align-items:center;gap:var(--sp-2)"},
+          toggle, el("div",{style:"font-weight:600"}, node.title)),
+        el("div",{class:"muted",style:"font-size:12px;margin-top:2px"}, node.sub)),
+      node.shown ? el("span",{class:"chip ok"}, t("live.shown"))
+                 : el("button",{class:"btn", onclick: node.go}, t("live.show")),
+      node.extra || null);
+    if (kids) kids.hidden = collapsed;
+    return {row, kids};
+  };
+  const render = (node) => {
+    const {row, kids} = card(node);
+    const wrap = el("div",{class:"live-node", "data-live-key": node.key}, row);
+    if (kids){
+      node.children.forEach(child => kids.append(render(child)));
+      wrap.append(kids);
+    }
+    return wrap;
+  };
+  tree.roots.forEach(node => box.append(render(node)));
+  if (tree.roots.length)
     box.append(el("div",{class:"muted",style:"font-size:12.5px;margin-bottom:10px"},
       t("live.route_warning")));
   return d;

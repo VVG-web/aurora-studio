@@ -9636,17 +9636,17 @@ def cron_pulse() -> dict | None:
 def live_now() -> dict:
     """Что идёт на машине прямо сейчас — для Консоли: маршруты и команды всех проектов и
     цепочка расписания. Консоль показывала только задания выбранного проекта, и во время
-    цепочки, идущей по другим, была пустой (1.167.0). Шаги маршрута — внутри маршрута, а не
-    отдельными строками: их вывод и так в его журнале."""
+    цепочки, идущей по другим, была пустой (1.167.0). Шаг маршрута приходит с родителем и
+    рисуется внутри маршрута (1.231.3), а не отдельной равной карточкой."""
     def name(path: str) -> str:
         return config_value(read_text(os.path.join(path, "aurora.config.yaml")), "name") \
             or os.path.basename(path)
     with ROUTES_LOCK:
         routes = [r for r in ROUTES.values() if not r["run"].done_flag]
-    in_route = {r["id"] for r in routes}
     out_routes = [{"id": r["id"], "project": r["project"], "name": name(r["project"]),
                    "title": r["run"].sc.get("title", ""), "scId": r["run"].sc.get("id", ""),
                    "write": r["run"].write, "trigger": r["run"].trigger,
+                   "parent": getattr(r["run"], "parent", "") or "",
                    "started": r["started"], "bar": r["run"].bar}
                   for r in sorted(routes, key=lambda r: r["started"])]
     with JOBS_LOCK:
@@ -9655,7 +9655,7 @@ def live_now() -> dict:
                  "state": j.get("state", "running"), "parent": j.get("parent", ""),
                  "queue_reason": j.get("queue_reason", ""),
                  "resources": j.get("resources") or []}
-                for j in JOBS.values() if not j["done"] and j.get("parent") not in in_route]
+                for j in JOBS.values() if not j["done"]]
     for j in jobs:
         j["name"] = name(j["project"])
     sch = scheduler()

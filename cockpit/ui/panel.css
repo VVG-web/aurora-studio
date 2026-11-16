@@ -334,6 +334,24 @@ input.btn,select.btn,textarea.btn{text-transform:none;letter-spacing:normal;font
 /* Длинная команда не должна ломать строку целиком: она сжимается с многоточием. */
 #consoleCmd{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   max-width:min(60ch,42vw)}
+/* Текущие задачи: вложенность видна линией и отступом, а не тремя равными карточками.
+   Свернуть можно любой уровень с детьми; состояние переживает перерисовку раз в несколько
+   секунд. Точка у листа держит заголовки на одной вертикали с кнопкой-шевроном. */
+.live-card{margin-bottom:var(--sp-2)}
+.live-toggle,.live-dot{flex:none;width:var(--sp-5);height:var(--sp-5);display:inline-flex;
+  align-items:center;justify-content:center;padding:0;border:1px solid transparent;
+  border-radius:var(--radius-xs);background:transparent;color:var(--text-muted)}
+.live-toggle{cursor:pointer;font-size:0}
+.live-toggle::before{content:"";width:0;height:0;border-left:4px solid transparent;
+  border-right:4px solid transparent;border-top:5px solid currentColor;
+  transition:transform var(--motion-fast)}
+.live-toggle[aria-expanded="false"]::before{transform:rotate(-90deg)}
+.live-toggle:hover{color:var(--text);background:var(--surface-2);border-color:var(--border)}
+.live-dot::before{content:"";width:5px;height:5px;border-radius:50%;
+  background:var(--text-muted);opacity:.55}
+.live-children{margin-left:var(--sp-5);padding-left:var(--sp-3);border-left:1px solid var(--border);
+  margin-top:calc(var(--sp-1) * -1);margin-bottom:var(--sp-2)}
+.live-children .live-node:last-child>.live-card{margin-bottom:0}
 /* Маршрут, который включает в себя остальные, и маршрут, который сносит базу: первый
    зовёт нажать, второй — подумать. Разной рамкой, а не только словами в подписи. */
 .card.route-all{border-color:color-mix(in oklab,var(--primary) 55%,var(--border));
