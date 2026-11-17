@@ -24,7 +24,7 @@ def test_numpy_is_a_dependency_and_a_visible_install_row(_t):
     """numpy назван в зависимостях и в списке «Установки», иначе кнопки не будет."""
     req = (KIT / "requirements.txt").read_text(encoding="utf-8")
     line = next((ln.strip() for ln in req.splitlines() if ln.strip().startswith("numpy")), "")
-    assert re.fullmatch(r"numpy==\d+(\.\d+)+", line), line
+    assert re.fullmatch(r"numpy>=\d+(\.\d+)+,<\d+", line), line
     ck = importlib.import_module("aurora_cockpit")
     rows = {pkg: (mods, what) for pkg, mods, what in ck.ENV_PY}
     assert "numpy" in rows and rows["numpy"][0] == ("numpy",), rows

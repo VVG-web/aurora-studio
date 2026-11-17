@@ -624,16 +624,20 @@ def test_status_offers_the_release_the_install_will_actually_take(tmp: Path):
 
 @test
 def test_engine_dependencies_are_pinned_and_agree_with_ci(tmp: Path):
-    """requirements.txt закрепляет bs4, markdownify и numpy теми же версиями, что CI;
-    незакреплённой строки нет."""
+    """requirements.txt закрепляет bs4 и markdownify теми же версиями, что CI; numpy —
+    единственное исключение: диапазон под Python 3.10…3.14, на разбор зеркал он не влияет."""
     EX = importlib.import_module("aurora_extras")
     req = KIT / "requirements.txt"
     lines = [ln.strip() for ln in req.read_text(encoding="utf-8").splitlines()
              if ln.strip() and not ln.strip().startswith("#")]
-    assert lines and all(re.fullmatch(r"[A-Za-z0-9][\w.\-]*==\d+(\.\d+)+", ln) for ln in lines), lines
+    pinned_lines = [ln for ln in lines if not ln.startswith("numpy")]
+    assert pinned_lines and all(re.fullmatch(r"[A-Za-z0-9][\w.\-]*==\d+(\.\d+)+", ln)
+                               for ln in pinned_lines), lines
+    numpy = [ln for ln in lines if ln.startswith("numpy")]
+    assert len(numpy) == 1 and re.fullmatch(r"numpy>=\d+(\.\d+)+,<\d+", numpy[0]), lines
     pins = EX.requirements_pins(req)
     ci = EX.requirements_pins(KIT / ".github" / "requirements-ci.txt")
-    assert set(pins) == {"beautifulsoup4", "markdownify", "numpy"}, pins
+    assert set(pins) == {"beautifulsoup4", "markdownify"}, pins
     for name, ver in pins.items():
         assert ci.get(name) == ver, f"{name}: requirements.txt {ver}, CI {ci.get(name)} — обновляйте оба файла"
     assert EX.requirements_pins(tmp / "нет-такого.txt") == {}
