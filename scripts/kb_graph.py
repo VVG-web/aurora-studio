@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import operator
 import os
 import re
 import sys
@@ -510,6 +511,29 @@ def communities(pairs: dict, cut: set | None = None) -> dict:
     return label
 
 
+def pair_warning(count: int, dim: int) -> str:
+    """Сколько умножений стоит попарный счёт и как это назвать человеку.
+
+    Предупреждение обязано считаться от нынешней базы, а не от 1712 карточек 2024 года:
+    на 8331 карточке по 1024 измерения это 35.5 млрд умножений и часы, а не «минуты».
+    """
+    ops = count * (count - 1) // 2 * dim
+    if ops >= 5_000_000_000:
+        scale = "часы"
+    elif ops >= 300_000_000:
+        scale = "десятки минут"
+    elif ops >= 30_000_000:
+        scale = "минуты"
+    else:
+        scale = "секунды"
+    amount = (f"{ops / 1_000_000_000:.1f} млрд" if ops >= 1_000_000_000 else
+              f"{ops / 1_000_000:.0f} млн" if ops >= 1_000_000 else
+              f"{ops / 1_000:.0f} тыс")
+    return (f"  (numpy не установлен: {count} карточек × {dim} измерений, "
+            f"{amount} умножений, это {scale}. Поставьте numpy — та же матрица "
+            "считается за доли секунды)")
+
+
 def look_alike(root: str, top: int = 25) -> list:
     """Пары карточек, которые говорят об одном. → [(близость, имя, имя), …].
 
@@ -551,13 +575,16 @@ def look_alike(root: str, top: int = 25) -> list:
             i, j = int(iu[0][h]), int(iu[1][h])
             out.append((round(float(sim[i, j]), 3), names[i], names[j]))
     except ImportError:
-        print("  (numpy не установлен — считаю попарно, это может занять минуты)",
-              file=sys.stderr)
+        print(pair_warning(len(names), dim), file=sys.stderr)
+        mul = operator.mul
         for i in range(len(names)):
             oi = rows[i] * dim
+            left = vec[oi:oi + dim]
             for j in range(i + 1, len(names)):
                 oj = rows[j] * dim
-                s = sum(vec[oi + k] * vec[oj + k] for k in range(dim))
+                # Тот же счёт, но умножение и сложение идут в C: цикл по индексам на живой
+                # базе занимал часы, map/operator срезает это примерно втрое.
+                s = sum(map(mul, left, vec[oj:oj + dim]))
                 if s >= LOOK_ALIKE:
                     out.append((round(s, 3), names[i], names[j]))
     out.sort(reverse=True)

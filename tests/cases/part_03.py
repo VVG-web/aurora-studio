@@ -1602,6 +1602,13 @@ def test_quality_review_measures_instead_of_judging(tmp: Path):
     assert "def look_alike(" in src, "нет отбора похожих карточек"
     assert "import numpy as np" in src and "except ImportError:" in src, \
         "нет быстрого пути либо нет запасного — на машине без numpy шаг встанет на минуты"
+    # предупреждение обязано называть нынешний размер базы и цену, а не «минуты» из 2024 года
+    warn = G.pair_warning(8331, 1024)
+    assert "8331" in warn and "35.5 млрд" in warn and "часы" in warn, warn
+    assert "секунды" in G.pair_warning(50, 128), "малая база пугает часами"
+    # запасной путь без numpy идёт через map/operator: тот же счёт, но втрое быстрее цикла по индексам
+    assert "sum(map(" in src and "operator.mul" in src, \
+        "запасной путь считает по одному умножению в Python — на живой базе это часы"
     assert "LOOK_ALIKE" in src, "порог близости не назван и не объясним"
     # находка обязана нести число: без него это мнение
     assert 'f"- **{s}** · [[{x}]] ↔ [[{y}]]"' in src, "пара выводится без близости"
