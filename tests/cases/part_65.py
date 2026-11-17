@@ -225,8 +225,10 @@ def test_agent_run_waits_for_the_link_by_the_check_and_falls_back_to_the_old_pau
     finally:
         off.close()
     src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    # С 1.231.7 третий цикл — перепроверка карточек: при обрыве она ждёт связь и повторяет ту же карточку.
     assert src.count("if not wait_for_link(deadline, waits):") == 2, "оба цикла ожидания связи должны идти через проверку соединений"
-    assert src.count("time.sleep(OFFLINE_WAIT)") == 2, "прежняя пауза должна остаться запасным путём"
+    assert src.count("if not wait_for_link(deadline, link_tries):") == 1, "перепроверка ждёт связь через проверку соединений"
+    assert src.count("time.sleep(OFFLINE_WAIT)") == 3, "прежняя пауза должна остаться запасным путём во всех циклах"
 
 
 @test

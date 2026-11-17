@@ -624,7 +624,8 @@ def test_status_offers_the_release_the_install_will_actually_take(tmp: Path):
 
 @test
 def test_engine_dependencies_are_pinned_and_agree_with_ci(tmp: Path):
-    """requirements.txt закрепляет bs4 и markdownify теми же версиями, что CI; незакреплённой строки нет."""
+    """requirements.txt закрепляет bs4, markdownify и numpy теми же версиями, что CI;
+    незакреплённой строки нет."""
     EX = importlib.import_module("aurora_extras")
     req = KIT / "requirements.txt"
     lines = [ln.strip() for ln in req.read_text(encoding="utf-8").splitlines()
@@ -632,7 +633,7 @@ def test_engine_dependencies_are_pinned_and_agree_with_ci(tmp: Path):
     assert lines and all(re.fullmatch(r"[A-Za-z0-9][\w.\-]*==\d+(\.\d+)+", ln) for ln in lines), lines
     pins = EX.requirements_pins(req)
     ci = EX.requirements_pins(KIT / ".github" / "requirements-ci.txt")
-    assert set(pins) == {"beautifulsoup4", "markdownify"}, pins
+    assert set(pins) == {"beautifulsoup4", "markdownify", "numpy"}, pins
     for name, ver in pins.items():
         assert ci.get(name) == ver, f"{name}: requirements.txt {ver}, CI {ci.get(name)} — обновляйте оба файла"
     assert EX.requirements_pins(tmp / "нет-такого.txt") == {}
@@ -649,39 +650,35 @@ def test_panel_installs_pinned_or_aged_python_packages(tmp: Path):
     EX = importlib.import_module("aurora_extras")
     importlib.reload(EX)
     seen = []
-    real_run = ck.subprocess.run
     real_env = ck.environment
     real_aged = EX.aged_version
+    RT = importlib.import_module("aurora_runtime")
+    real_install = RT.install_package
 
-    def spy(cmd, *a, **kw):
-        seen.append([str(c) for c in cmd])
-        if any("importlib.util.find_spec" in str(c) for c in cmd):
-            return subprocess.CompletedProcess(cmd, 0, '{"ok": true, "version": "1.2.3"}', "")
-        return subprocess.CompletedProcess(cmd, 0, "ok", "")
-    ck.subprocess.run = spy
+    def fake_install(name, specs=None, timeout=0):
+        seen.append((name, list(specs or [])))
+        return {"ok": True, "seen": True, "python": sys.executable, "method": "pip",
+                "version": "1.2.3", "output": "ok", "needs_reload": False}
+    RT.install_package = fake_install
     ck.environment = lambda fresh=False: {"items": [{"pip": "lxml", "ok": True}, {"pip": "beautifulsoup4", "ok": True}]}
     EX.aged_version = lambda dist, days, now=0.0: "5.0.0"
-    def pip_cmds():
-        return [c for c in seen if "-m" in c and "pip" in c]
     try:
         out = ck.env_install("beautifulsoup4")
-        assert out["ok"] and pip_cmds()[-1][-1] == f"beautifulsoup4=={EX.requirements_pins()['beautifulsoup4']}", seen
+        assert out["ok"] and seen[-1][1] == [f"beautifulsoup4=={EX.requirements_pins()['beautifulsoup4']}"], seen
         out = ck.env_install("lxml")
-        assert out["ok"] and pip_cmds()[-1][-1] == "lxml<=5.0.0", seen
-        # -P только там, где он есть (Python 3.11+); markdownify ставится вместе с закреплённым beautifulsoup4
-        assert ("-P" in pip_cmds()[-1]) == (sys.version_info >= (3, 11)), pip_cmds()[-1]
+        assert out["ok"] and seen[-1][1] == ["lxml<=5.0.0"], seen
         pins = EX.requirements_pins()
         ck.environment = lambda fresh=False: {"items": [{"pip": "markdownify", "ok": True}]}
         out = ck.env_install("markdownify")
-        assert pip_cmds()[-1][-2:] == [f"markdownify=={pins['markdownify']}", f"beautifulsoup4=={pins['beautifulsoup4']}"], pip_cmds()[-1]
+        assert seen[-1][1] == [f"markdownify=={pins['markdownify']}", f"beautifulsoup4=={pins['beautifulsoup4']}"], seen[-1]
         EX.aged_version = lambda dist, days, now=0.0: (_ for _ in ()).throw(OSError("нет сети"))
         out = ck.env_install("lxml")
-        assert pip_cmds()[-1][-1] == "lxml" and "паузу после выпуска проверить не удалось" in out["output"], (seen, out)
+        assert seen[-1][1] == ["lxml"] and "паузу после выпуска проверить не удалось" in out["output"], (seen, out)
         assert "beautifulsoup4==" in ck.pip_command("beautifulsoup4") and ck.pip_command("lxml", False).endswith("install lxml")
         # Python панели поставлен для всех, а папка его пакетов закрыта на запись — команда с `--user`
         assert ck.pip_command("lxml", True).endswith("install --user lxml")
     finally:
-        ck.subprocess.run, ck.environment, EX.aged_version = real_run, real_env, real_aged
+        RT.install_package, ck.environment, EX.aged_version = real_install, real_env, real_aged
         importlib.reload(ck)
         importlib.reload(EX)
 

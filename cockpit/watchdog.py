@@ -8,14 +8,17 @@
 молчащие: вывод шага — его пульс. Шаг молчит дольше QUIET — сторож спрашивает связь: модель
 (первый провайдер чата) и Jira/Confluence проекта. Дальше два случая:
 
-- связь пропадала, вернулась, а шаг за GRACE после возвращения так и не сказал ни слова —
-  он ждёт ответа на запрос, отправленный до обрыва; этот ответ не придёт никогда;
+- связь пропадала — сторож не снимает шаг, а приостанавливает его дерево (`SIGSTOP`) и
+  ждёт восстановления; связь вернулась — снимает паузу (`SIGCONT`), и шаг продолжает с
+  того же места. Если за GRACE после продолжения шаг так и не сказал ни слова, он ждёт
+  ответа на запрос, отправленный до обрыва; этот ответ не придёт никогда;
 - связь цела, а шаг молчит дольше HARD — это дольше любого запроса к модели (срок одного
   запроса — минуты), то есть ответа тоже не будет.
 
 Тогда сторож снимает процесс шага вместе с дочерними (адаптер модели, git), убирает
 брошенный `index.lock` и помечает задание «зависло»; маршрут и цепочка запускают шаг заново
-(без потолка: маршрут и цепочка доводят дело до конца, пока человек не прервёт). Долгое
+(без потолка: маршрут и цепочка доводят дело до конца, пока человек не прервёт). До 1.231.7
+шаг снимался сразу при обрыве; теперь он переживает обрыв на паузе, и работа не теряется. Долгое
 размышление модели при живой связи сторож не трогает: пока ответ возможен, работа не
 бросается. С 1.170.0 он видит это по пульсу шага (`job_pulse`): запрос к модели в своём сроке
 или вызов, ждущий слот шлюза, — это работа, а не зависание, сколько бы шаг ни молчал.
@@ -37,6 +40,58 @@ TICK = 30              # шаг сторожа
 PROBE_TIMEOUT = 10
 
 
+def _tree_pids(pid: int) -> list:
+    """Процесс и все его потомки по `ps`. Пусто — дерево не прочли или Windows."""
+    if pid <= 1 or sys.platform == "win32":
+        return []
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True,
+                             timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    kids: dict = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+    tree, todo = [], [pid]
+    while todo:
+        p = todo.pop()
+        tree.append(p)
+        todo += kids.get(p, [])
+    return tree
+
+
+def _signal_tree(pid: int, name: str, leaves_first: bool) -> bool:
+    """Поднять сигнал `SIG<name>` корню и всем потомкам. `leaves_first` — снимаем/будим детей
+    раньше родителя, чтобы он не успел позвать новых."""
+    if sys.platform == "win32" or pid <= 1:
+        return False
+    import signal
+    tree = _tree_pids(pid)
+    if not tree:
+        return False
+    sig = getattr(signal, "SIG" + name)
+    order = list(reversed(tree)) if leaves_first else tree
+    for p in order:
+        try:
+            os.kill(p, sig)
+        except OSError:
+            pass
+    return True
+
+
+def suspend_tree(pid: int) -> bool:
+    """Приостановить процесс и всех потомков. macOS/Linux — `SIGSTOP`; Windows — не умеем
+    (там задание ждёт связь внутри агента). → удалось ли приостановить."""
+    return _signal_tree(pid, "STOP", True)
+
+
+def resume_tree(pid: int) -> bool:
+    """Снять паузу с процесса и всех потомков (`SIGCONT`). → был ли хоть один живой."""
+    return _signal_tree(pid, "CONT", False)
+
+
 # Сколько секунд раннер агента получает на фиксацию сделанного (SIGTERM → `git commit`), прежде
 # чем снимут дерево. SIGKILL посреди git оставляет `.git/index.lock` — следующий шаг не запишет.
 STOP_GRACE = 15.0
@@ -53,7 +108,12 @@ def kill_tree(pid: int, grace: float = 0.0) -> None:
 
 def stop_tree(pid: int) -> None:
     """Остановка процесса движка по решению панели (выход, зависший шаг, брошенный процесс):
-    мягко, с окном `STOP_GRACE` на коммит сделанного, потом дерево целиком."""
+    сначала снимаем паузу, иначе SIGTERM приостановленному не дойдёт; мягко, с окном
+    `STOP_GRACE` на коммит сделанного, потом дерево целиком."""
+    try:
+        resume_tree(pid)
+    except Exception:  # noqa: BLE001 — пауза не должна мешать остановке
+        pass
     kill_tree(pid, grace=STOP_GRACE)
 
 
@@ -234,11 +294,15 @@ def probe(project: str) -> dict:
 
 
 class Watchdog:
-    """Смотрит на задания панели раз в TICK секунд. Решение — `verdict`, действие — `kill`."""
+    """Смотрит на задания панели раз в TICK секунд.
+
+    Обрыв связи — пауза: дерево шага получает `SIGSTOP`, а после восстановления — `SIGCONT`.
+    Снимается шаг только тогда, когда после продолжения он за `GRACE` так и не ожил, или
+    когда при живой связи он молчит дольше `HARD`. """
 
     def __init__(self, ck, probe_fn=probe, clock=time.time):
         self.ck, self.probe_fn, self.clock = ck, probe_fn, clock
-        self.track: dict = {}          # id задания → {down_seen, up_since, down}
+        self.track: dict = {}          # id задания → {down_seen, up_since, down, resumed_at}
         self.probes: dict = {}         # проект → (когда, ответ)
         self.stop_event = threading.Event()
 
@@ -264,8 +328,15 @@ class Watchdog:
     def verdict(self, job: dict) -> str:
         """Пусто — шаг жив или может ожить; иначе — почему ответа уже не будет."""
         now = self.clock()
-        quiet = now - (job.get("last_out") or job.get("started") or now)
-        st = self.track.setdefault(job["id"], {"down_seen": False, "up_since": 0.0, "down": []})
+        st = self.track.setdefault(job["id"], {"down_seen": False, "up_since": 0.0,
+                                                "down": [], "resumed_at": 0.0})
+        # Шаг сам сказал слово после продолжения — обрыв пережит, серия закрыта.
+        if (st.get("down_seen") and (st.get("up_since") or 0) > 0
+                and (job.get("last_out") or 0) >= st["up_since"]):
+            st.update(down_seen=False, up_since=0.0, down=[], resumed_at=0.0)
+        since = max(job.get("last_out") or 0, job.get("started") or 0,
+                    st.get("resumed_at") or 0)
+        quiet = now - since if since else 0.0
         if quiet < QUIET:
             return ""
         net = self._probe(job.get("project", ""))
@@ -292,6 +363,32 @@ class Watchdog:
                     "запроса к модели: ответа не будет")
         return ""
 
+    def pause(self, job: dict) -> None:
+        """Обрыв подтверждён: приостановить дерево шага, не теряя сделанное."""
+        proc = job.get("proc")
+        if proc is None or proc.poll() is not None:
+            return
+        if not suspend_tree(proc.pid):
+            return
+        now = self.clock()
+        why = ", ".join(self.track.get(job["id"], {}).get("down") or []) or "связь"
+        job.update(paused=True, pause_why=why, paused_at=now, paused_pid=proc.pid)
+        self._say(job, f"⏸ сторож: связи нет ({why}) — приостановил шаг; продолжу с этого же "
+                       "места, когда связь вернётся. VPN можно подключить и не искать, что шло.")
+
+    def resume(self, job: dict) -> None:
+        """Связь вернулась: снять паузу и дать шагу `GRACE` на первое слово."""
+        pid = int(job.get("paused_pid") or 0)
+        if pid and not resume_tree(pid):
+            return
+        now = self.clock()
+        st = self.track.setdefault(job["id"], {"down_seen": False, "up_since": 0.0,
+                                                "down": [], "resumed_at": 0.0})
+        st.update(down_seen=True, up_since=now, resumed_at=now,
+                  down=st.get("down") or [job.get("pause_why") or "связь"])
+        job.update(paused=False, resumed_at=now, last_resume=now)
+        self._say(job, "▶ сторож: связь вернулась — продолжаю шаг с места остановки.")
+
     def _waits_for_model(self, job: dict) -> bool:
         """Шаг ждёт модель в сроке своего запроса или ждёт слот шлюза — это работа."""
         pulse = getattr(self.ck, "job_pulse", None)
@@ -304,6 +401,7 @@ class Watchdog:
 
     def kill(self, job: dict, why: str) -> None:
         job["hung"] = why
+        job["paused"] = False
         self._say(job, f"■ сторож: шаг завис — {why}. Снимаю процесс; маршрут запустит "
                        "шаг заново.")
         proc = job.get("proc")
@@ -316,13 +414,30 @@ class Watchdog:
     def tick(self) -> None:
         with self.ck.JOBS_LOCK:
             jobs = [j for j in self.ck.JOBS.values()
-                    if not j.get("done") and j.get("parent") and not j.get("hung")]
+                    if not j.get("done") and not j.get("hung")
+                    and (j.get("parent") or j.get("pausable") or j.get("net_policy"))]
         live = {j["id"] for j in jobs}
         self.track = {k: v for k, v in self.track.items() if k in live}
         for job in jobs:
+            proc = job.get("proc")
+            if job.get("paused"):
+                if proc is None or proc.poll() is not None:
+                    job["paused"] = False
+                    continue
+                net = self._probe(job.get("project", ""))
+                if net["ok"]:
+                    self.resume(job)
+                continue
             why = self.verdict(job)
             if why:
                 self.kill(job, why)
+                continue
+            st = self.track.get(job["id"]) or {}
+            if (st.get("down_seen") and proc is not None and proc.poll() is None
+                    and not self._waits_for_model(job)
+                    and self.clock() - max(job.get("last_out") or 0,
+                                           job.get("started") or 0) >= QUIET):
+                self.pause(job)
 
     def run(self) -> None:
         while not self.stop_event.wait(TICK):

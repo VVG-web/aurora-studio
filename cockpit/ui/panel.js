@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.231.6";
+const UI_VERSION = "1.231.7";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 let LAST_ERROR = null;          // последняя показанная ошибка: кнопка «Лог» в шапке
 
@@ -4733,11 +4733,13 @@ async function drawLiveJobs(){
       node.go = () => attachRoute(r.id, {title: r.title, id: r.scId}, r.write, false);
       return;
     }
-    const j = node.data, queued = j.state === "queued";
+    const j = node.data, queued = j.state === "queued", paused = !!j.paused;
     const cmd = (j.cmd + " " + (j.args || []).join(" ")).trim();
-    node.title = queued ? t("live.job_queued", {name: j.name, cmd})
+    node.title = paused ? t("live.job_paused", {name: j.name, cmd})
+                : queued ? t("live.job_queued", {name: j.name, cmd})
                         : t("live.job", {name: j.name, cmd});
-    node.sub = queued ? t("live.queue_reason", {why: j.queue_reason || t("live.queue_unknown")})
+    node.sub = paused ? t("live.paused_reason", {why: j.pause_why || t("live.queue_unknown")})
+               : queued ? t("live.queue_reason", {why: j.queue_reason || t("live.queue_unknown")})
                       : t("live.details", {mins: mins(j.started), lines: j.lines});
     node.shown = isShown("job", j.id);
     node.go = () => attachJob(j.id);
@@ -4816,15 +4818,17 @@ async function autoFollow(){
 // маршрута и цепочки (`job_pulse` на сервере): жив ли процесс, когда была последняя строка,
 // какие запросы к моделям идут и сколько им осталось до срока. Колесо крутится, пока шаг
 // жив, а время проверки меняется на каждом опросе — это видно и без анимации.
-const PULSE_TONE = {ok: "ok", wait: "ok", queued: "warn", late: "warn", quiet: "warn", gone: "bad"};
+const PULSE_TONE = {ok: "ok", wait: "ok", queued: "warn", late: "warn", quiet: "warn", paused: "warn", gone: "bad"};
 const PULSE_HEAD = {ok: q => t("pulse.ok", {quiet: q}), wait: q => t("pulse.wait", {quiet: q}),
                     queued: q => t("pulse.queued", {quiet: q}),
+                    paused: q => t("pulse.paused", {quiet: q}),
                     late: q => t("pulse.late", {quiet: q}), quiet: q => t("pulse.quiet", {quiet: q}),
                     gone: () => t("pulse.gone")};
 function pulseParts(p){
   const parts = [(PULSE_HEAD[p.state] || PULSE_HEAD.quiet)(howLong(p.quiet)),
                  t("pulse.running", {t: howLong(p.running)})];
   if (p.state === "queued" && p.queue_reason) parts.push(p.queue_reason);
+  if (p.state === "paused") parts.push(t("pulse.paused_hint", {why: p.pause_why || "—"}));
   if (p.calls) parts.push(t("pulse.calls", {n: p.calls, oldest: howLong(p.oldest || 0),
     limit: p.limit ? howLong(p.limit) : "—", where: p.where || "—"}));
   if (p.rings) parts.push(t("pulse.rings", {n: p.rings}));

@@ -104,6 +104,29 @@ def write_run_journal(project: str, runs: Path, stamp: str, task: str, text: str
     return path
 
 
+def log_usage(project: str, task: str, summary: dict, started: float, seconds: float) -> None:
+    """Отдать «Замерам» расход токенов по ролям и моделям. Сведение, а не результат:
+    ошибка записи не должна ронять прогон."""
+    try:
+        import usage_log as UL
+        run_dir = os.environ.get("AURORA_RUN_DIR", "")
+        run_id = os.path.basename(os.path.normpath(run_dir)) if run_dir else (
+            utc_slug("%Y%m%d-%H%M%S") + "-" + re.sub(r"[^A-Za-z0-9_.-]+", "-", task)[:60])
+        UL.record(project, run_id, {
+            "kind": "agent", "task": task, "started": utc_stamp(started) if started else "",
+            "seconds": seconds,
+            "calls": summary.get("model_calls") or 0,
+            "tokens_in": summary.get("tokens_in") or 0,
+            "tokens_out": summary.get("tokens_out") or 0,
+            "errors": sum((summary.get("errors") or {}).values()),
+            "by_role": summary.get("by_role") or {},
+            "by_model": summary.get("by_model") or {},
+            "by_pair": summary.get("by_pair") or {},
+        })
+    except Exception:  # noqa: BLE001 — замер не имеет права ломать прогон
+        pass
+
+
 def note_empty_run(runs: Path, stamp: str, task: str, project: str = "") -> Path:
     """Холостой прогон — строкой в файл участника, а не отдельным журналом.
 
@@ -9937,43 +9960,56 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
         todo = todo[:limit]
     say(f"Карточек с пометкой «без опоры»: {total} · в этот прогон: {len(todo)}")
 
-    # Связь пропала или модель молчит по сроку — это не свойство карточки: следующие
-    # двести проверок дадут ту же причину и те же часы ожидания. Пять таких отказов
-    # подряд останавливают прогон; уже запущенные карточки доделываются, очередь
-    # получает «сбой» без нового вызова модели.
-    stop = threading.Event()
-    stop_after = 5
+    # Обрыв связи — не свойство карточки. Не останавливаем очередь после пяти отказов
+    # (1.231.7): ждём восстановления и повторяем ТУ ЖЕ карточку. Пока связи нет, новые
+    # вызовы не начинаются; пользователь подключает VPN, работа продолжается с этого места.
+    # Молчание по сроку при живой связи — не обрыв: две попытки, потом честный «сбой»,
+    # чтобы одна медленная карточка не держала всю очередь.
 
     def one(path: str) -> tuple:
-        if stop.is_set():
-            return path, {"status": "сбой",
-                          "note": "проверка остановлена: связь с моделями пропала или они не отвечают"}
-        sig = _card_sig(path)
-        text = open(path, encoding="utf-8", errors="ignore").read()
-        head, body = split_frontmatter(text)
-        body = body[4:] if (body or "").startswith("\n---") else (body or "")
-        if QUOTES not in body:
-            return path, {"status": "нет источника"}
-        thesis, quotes = body.split(QUOTES, 1)
-        quotes, footer = split_tail(quotes)
-        human = corrections_of(footer)
-        lead = HUMAN_LEAD.format(text=human) if human else ""
-        title = (frontmatter(text).get("title") or os.path.basename(path)[:-3]).strip().strip('"')
-        budget = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_MOMUS) + len(thesis) + 400)
-        # Источник мог не влезть в окно и быть нарезан: утверждение без опоры — то, чего нет ни в одном куске
-        # (раньше смотрели только первый, и ложная пометка карточки из двух-трёх кусков не снималась никогда).
-        packs = [lead + c for c in chunks(quotes.strip(), budget)] or [lead]
-        pack = packs[0]
-        mo = run_momus_chunks(cfg, packs, f"Тезис карточки «{title}»",
-                              plain_links(thesis.strip(), readable=True), call, MOMUS_PREFER)
-        if not mo.get("ok"):
+        slow_tries = 0
+        link_tries = 0
+        while True:
+            sig = _card_sig(path)
+            text = open(path, encoding="utf-8", errors="ignore").read()
+            head, body = split_frontmatter(text)
+            body = body[4:] if (body or "").startswith("\n---") else (body or "")
+            if QUOTES not in body:
+                return path, {"status": "нет источника"}
+            thesis, quotes = body.split(QUOTES, 1)
+            quotes, footer = split_tail(quotes)
+            human = corrections_of(footer)
+            lead = HUMAN_LEAD.format(text=human) if human else ""
+            title = (frontmatter(text).get("title") or os.path.basename(path)[:-3]).strip().strip('"')
+            budget = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_MOMUS) + len(thesis) + 400)
+            # Источник мог не влезть в окно и быть нарезан: утверждение без опоры — то, чего нет ни в одном куске
+            # (раньше смотрели только первый, и ложная пометка карточки из двух-трёх кусков не снималась никогда).
+            packs = [lead + c for c in chunks(quotes.strip(), budget)] or [lead]
+            pack = packs[0]
+            mo = run_momus_chunks(cfg, packs, f"Тезис карточки «{title}»",
+                                  plain_links(thesis.strip(), readable=True), call, MOMUS_PREFER)
+            if mo.get("ok"):
+                return path, {"status": "чисто" if mo.get("clean") else "без опоры", "sig": sig,
+                              "count": mo.get("unsupported", 0), "claims": momus_claims(mo.get("text"))}
             step = fail_step({}, mo.get("why", "") or "проверка не состоялась",
                              mo.get("call"), subject=path,
                              extra_chars={"pack": len(pack), "thesis": len(thesis)})
             step["link"] = bool((mo.get("call") or {}).get("link"))
+            if step["link"]:
+                link_tries += 1
+                say(f"  ⏸ {os.path.basename(path)[:-3]} · связи нет ({link_tries}-й раз) — "
+                    "жду восстановления, карточка остаётся в работе")
+                deadline = time.time() + (24 * 3600 if AG.persist_mode() else 2 * 3600)
+                if not wait_for_link(deadline, link_tries):
+                    time.sleep(OFFLINE_WAIT)
+                continue
+            if step.get("slow") and slow_tries < 2:
+                slow_tries += 1
+                say(f"  ⏳ {os.path.basename(path)[:-3]} · модель не уложилась в срок — "
+                    f"повторю ({slow_tries}/2)")
+                time.sleep(LINK_POLL)
+                continue
             return path, step
-        return path, {"status": "чисто" if mo.get("clean") else "без опоры", "sig": sig,
-                      "count": mo.get("unsupported", 0), "claims": momus_claims(mo.get("text"))}
 
     def safe_one(path: str) -> tuple:
         """`one` с границей исключений: нечитаемая карточка — шаг «сбой», а не конец прогона
@@ -9987,7 +10023,6 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
 
     width = max(1, parallel_width(cfg, len(todo), "qa")[1]) if todo else 1
     steps = []
-    streak = 0
     from concurrent.futures import as_completed
     with ThreadPoolExecutor(max_workers=width) as pool:
         # По мере готовности, а не по порядку: большая первая карточка держала весь отчёт
@@ -9996,12 +10031,6 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
             path, st = fut.result()
             st["card"] = os.path.basename(path)
             steps.append(st)
-            if st.get("link") or st.get("slow"):
-                streak += 1
-                if streak >= stop_after:
-                    stop.set()
-            else:
-                streak = 0
             say(f"  [{i}/{len(todo)}] {st['card'][:-3]} → {st['status']}"
                 + (f" {st['count']}" if st.get("count") else "")
                 + (f": {st['note'][:160]}" if st["status"] == "сбой" and st.get("note") else ""))
@@ -10826,6 +10855,7 @@ def main() -> int:
         print("\n" + "\n".join(RS.render(summ, "Итог прогона agent:distill --recheck")
                                + fails_line(cwd)))
         print(RS.emit(summ))
+        log_usage(cwd, "distill --recheck", summ, t_start, time.time() - t_start)
         if a.apply:
             done = commit_result(cwd, "agent:distill",
                                  f"перепроверка без опоры: чисто {res['clean']}, "
@@ -10979,6 +11009,7 @@ def main() -> int:
     summary_lines = RS.render(summ, f"Итог прогона agent:{a.task}") + fails_line(cwd)
     print("\n" + "\n".join(summary_lines))
     print(RS.emit(summ))
+    log_usage(cwd, a.task, summ, t_start, time.time() - t_start)
     text += "\n\n" + "\n".join(summary_lines)
 
     runs = Path(cwd) / RUNS_DIR

@@ -3780,13 +3780,12 @@ def test_a_recheck_of_unsupported_claims_survives_one_unreadable_card(tmp: Path)
 
 
 @test
-def test_a_recheck_stops_after_a_run_of_link_failures(tmp: Path):
-    """`agent:distill --recheck`: связь пропала — очередь не долбит мёртвые шлюзы двести раз.
+def test_a_recheck_waits_for_link_and_continues_the_same_card(tmp: Path):
+    """`agent:distill --recheck`: обрыв связи не останавливает очередь и не теряет карточку.
 
-    На живом прогоне 17.11.2026 из 212 карточек 342 вызова не дошли до шлюза, а 19
-    ждали срок с ростом до 12 минут. Причина у всех была одна — связи нет. Пять таких
-    отказов подряд останавливают очередь, остальные карточки получают «сбой» без вызова
-    модели: часы ожидания не превращаются в новый час на каждой карточке.
+    На живом прогоне 17.11.2026 из 212 карточек 342 вызова не дошли до шлюза. С 1.231.7
+    такие отказы — пауза: очередь ждёт восстановления VPN и повторяет ТУ ЖЕ карточку.
+    Пользователь только подключает VPN, а не ищет, что именно шло.
     """
     import importlib
     from unittest.mock import patch
@@ -3805,17 +3804,21 @@ def test_a_recheck_stops_after_a_run_of_link_failures(tmp: Path):
 
     def fake(cfg, role, messages, **kw):
         calls.append(messages[0]["content"])
-        return {"ok": False, "log": ["№1 m: нет маршрута до шлюза"],
-                "link": {"kind": "route"}, "timed_out": False}
+        if len(calls) <= 6:
+            return {"ok": False, "log": ["№1 m: нет маршрута до шлюза"],
+                    "link": {"kind": "route"}, "timed_out": False}
+        return {"ok": True, "text": "ОПОРА «ежемесячно»\nВЕРДИКТ: ЧИСТО", "backend": 1,
+                "model": "qa", "log": []}
 
     cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
-    with patch.object(R, "parallel_width", lambda cfg_, count, role: (1, 1)):
+    with patch.object(R, "parallel_width", lambda cfg_, count, role: (1, 1)), \
+            patch.object(R, "wait_for_link", lambda deadline, tried=0: True):
         with _RunDir(tmp / "run"):
             res = R.recheck_unsupported(cfg, str(root), False, call=fake)
-    assert len(calls) in (5, 6), f"после пяти отказов связи сделано ещё {len(calls) - 5} вызовов"
-    stopped = [s for s in res["steps"] if "остановлена" in (s.get("note") or "")]
-    assert len(res["steps"]) == 8 and len(stopped) >= 2, res["steps"]
-    assert res["failed"] == 8, res
+    assert len(calls) == 14, f"шесть обрывов и восемь карточек — ждали 14 вызовов, было {len(calls)}"
+    assert res["clean"] == 8 and res["failed"] == 0, res
+    assert len(res["steps"]) == 8, res["steps"]
+    assert not any("остановлена" in (s.get("note") or "") for s in res["steps"]), res["steps"]
 
 
 @test

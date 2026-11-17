@@ -265,17 +265,17 @@ def test_successful_install_leaves_a_record_for_other_users(tmp: Path):
             row = mine["components"][eid]
             assert (row["version"], row["path"], row["user"]) == ("9.9.9", str(venv), me["user"]), row
             # пакет Python из «Установки» — тот же журнал
-            real = (ck.subprocess.run, ck.environment)
-            def fake_run(cmd, *a, **k):
-                if any("importlib.util.find_spec" in str(c) for c in cmd):
-                    return subprocess.CompletedProcess(cmd, 0, '{"ok": true, "version": "1.2.3"}', "")
-                return subprocess.CompletedProcess(cmd, 0, "ok", "")
-            ck.subprocess.run = fake_run
+            RT = importlib.import_module("aurora_runtime")
+            real = (RT.install_package, ck.environment)
+            def fake_install(name, specs=None, timeout=0):
+                return {"ok": True, "seen": True, "python": sys.executable, "method": "pip",
+                        "version": "1.2.3", "output": "ok", "needs_reload": False}
+            RT.install_package = fake_install
             ck.environment = lambda fresh=False: {"items": [{"pip": "lxml", "ok": True}]}
             try:
                 out = ck.env_install("lxml")
             finally:
-                ck.subprocess.run, ck.environment = real
+                RT.install_package, ck.environment = real
             assert out["ok"], out
             mine = json.loads((tmp / "machine" / "installs" / (AC._file_name(me["user"]) + ".json"))
                               .read_text(encoding="utf-8"))

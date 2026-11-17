@@ -1206,6 +1206,78 @@ def pip_install(python: str, specs: list, timeout: float = 1800) -> dict:
             "output": res.get("output") or "", "repaired": repaired}
 
 
+def package_info(python: str, module: str, distribution: str = "") -> dict:
+    """Есть ли модуль и какая версия — в конкретном интерпретаторе, запуском."""
+    probe = ("import importlib.util, json, sys\n"
+             "mods = json.loads(sys.argv[1])\n"
+             "found = [m for m in mods if importlib.util.find_spec(m)]\n"
+             "ver = ''\n"
+             "if found:\n"
+             " try:\n"
+             "  from importlib import metadata\n"
+             "  ver = metadata.version(sys.argv[2] or found[0])\n"
+             " except Exception:\n"
+             "  pass\n"
+             "print(json.dumps({'ok': bool(found), 'version': ver,\n"
+             "                  'module': found[0] if found else ''}))\n")
+    try:
+        p = _run(python, ["-I", "-c", probe, json.dumps([module]), distribution], timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"ok": False, "version": "", "module": "", "error": f"{type(e).__name__}: {e}"}
+    try:
+        data = json.loads((p.stdout or "").strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        return {"ok": False, "version": "", "module": "",
+                "error": (p.stderr or "проверка не ответила")[-500:]}
+    return {"ok": bool(data.get("ok")), "version": str(data.get("version") or ""),
+            "module": str(data.get("module") or "")}
+
+
+@_locked
+def install_package(name: str, python: str = "", specs: list | None = None,
+                    timeout: float = 1800) -> dict:
+    """Поставить один пакет в правильное окружение, а не в чужой системный Python.
+
+    Порядок: venv — `pip` (с `ensurepip`, если uv-venv без pip); не venv и Python
+    управляется системой или Homebrew — сначала создать/переизбрать venv на той же базе,
+    потом ставить в него. PEP 668 никогда не обходится `--break-system-packages`: это
+    ломало бы системный Python и не помогало venv.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", str(name or "")):
+        return {"ok": False, "error": "имя пакета не разрешено", "code": "unknown"}
+    exe = python or python_or_self()
+    checked = validate_python(exe)
+    if not checked.get("valid"):
+        return {"ok": False, "error": "Python не прошёл проверку: " + checked.get("reason", "?"),
+                "python": exe, "method": "none"}
+    method = "pip"
+    note = ""
+    if not checked.get("venv"):
+        # Системный, Homebrew или python.org без окружения: pip туда либо запрещён (PEP 668),
+        # либо он смешает пакеты движка с чужими. Переизбираем единый venv на той же базе.
+        got = configure(source=checked.get("source") or "", base_python=checked.get("executable") or exe,
+                        isolated=True, check_pydantic=False)
+        if not got.get("ok"):
+            return {"ok": False, "error": "не удалось создать venv: " + str(got.get("error") or "?"),
+                    "python": exe, "method": "venv", "output": got.get("error") or ""}
+        exe = got.get("runtime", {}).get("effective_python") or exe
+        method = "venv+pip"
+        note = "создано окружение: " + exe
+    res = pip_install(exe, list(specs or [name]), timeout=timeout)
+    info = package_info(exe, str(name)) if res.get("ok") else {"ok": False, "version": "", "module": ""}
+    out = dict(res)
+    installed = validate_python(exe)
+    out.update({"python": exe, "method": method, "module": info.get("module", ""),
+                "version": info.get("version", ""), "seen": bool(info.get("ok")),
+                "purelib": installed.get("purelib") or "",
+                "needs_reload": bool(current().get("needs_reload")),
+                "output": ((note + "\n") if note else "") + str(res.get("output") or "")})
+    if res.get("ok") and not info.get("ok"):
+        out["ok"] = False
+        out["error"] = "пакет установлен, но проверка импорта не видит его в " + exe
+    return out
+
+
 @_locked
 def install_pydantic(specs: list | None = None, timeout: float = 1800,
                      python: str = "") -> dict:

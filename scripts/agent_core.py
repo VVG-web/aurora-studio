@@ -2266,6 +2266,7 @@ def quota_spent(st, err, body) -> bool:
 # каждое отдельно.
 USAGE: dict = {"calls": 0, "failed": 0, "tokens_in": 0, "tokens_out": 0, "gen_seconds": 0.0,
                "errors": {}, "cached": 0, "bypass": 0, "bypass_why": "",
+               "by_role": {}, "by_model": {}, "by_pair": {},
                "link_retried": 0, "link_retried_kind": "", "link_failed": 0, "link_why": ""}
 _USAGE_LOCK = threading.Lock()
 
@@ -4262,6 +4263,15 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     USAGE["tokens_in"] += int(usage.get("prompt_tokens") or 0)
                     USAGE["tokens_out"] += out_tokens
                     USAGE["gen_seconds"] += dt if out_tokens else 0.0
+                    for bucket, key in ((USAGE["by_role"], role), (USAGE["by_model"], model),
+                                        (USAGE["by_pair"], f"{role or '—'}|{model or '—'}")):
+                        row = bucket.setdefault(str(key or "—"), {"calls": 0, "tokens_in": 0,
+                                                                  "tokens_out": 0,
+                                                                  "seconds": 0.0})
+                        row["calls"] += 1
+                        row["tokens_in"] += int(usage.get("prompt_tokens") or 0)
+                        row["tokens_out"] += out_tokens
+                        row["seconds"] = round(row["seconds"] + (dt if out_tokens else 0.0), 2)
                 return {"ok": True, "text": text, "reasoning": reasoning, "backend": b["n"],
                         "seen": seen_chars, "cut": cut_chars,
                         "model": model, "seconds": round(dt, 2), "waited": round(waited, 1),

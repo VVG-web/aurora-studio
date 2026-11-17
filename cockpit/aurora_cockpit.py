@@ -4707,6 +4707,33 @@ def run_capture(project: str, script: str, args: list, timeout: int = 300) -> tu
         return 1, f"{script}: {e}"
 
 
+def metrics_state(projects, days: int = 7) -> dict:
+    """«Замеры»: сеть/ VPN по прогонам и токены по проектам, ролям и моделям.
+
+    Это не «Отчёты» (те — дашборды Jira/Confluence проекта): здесь эксплуатационные
+    замеры всего кита, без выбранного проекта."""
+    try:
+        import net_report as NR
+        import usage_log as UL
+    except ImportError as e:  # noqa: BLE001 — старый движок: раздел скажет, чего не хватает
+        return {"error": f"модули замеров не установлены: {e}", "net": [], "tokens": {}}
+    days = max(0, int(days or 0))
+    since = (time.time() - days * 86400) if days else 0.0
+    try:
+        net = NR.list_reports(projects, since=since, limit=200)
+    except Exception as e:  # noqa: BLE001 — один битый снимок не прячет остальные
+        net = []
+        err = f"отчёты сети не прочитаны: {type(e).__name__}: {e}"
+    else:
+        err = ""
+    try:
+        tokens = UL.summary(projects, days=days)
+    except Exception as e:  # noqa: BLE001
+        tokens = {"error": f"учёт токенов не прочитан: {type(e).__name__}: {e}"}
+    return {"days": days, "since": since, "net": net, "tokens": tokens,
+            "error": err}
+
+
 def report_state(project: str) -> dict:
     """Что панель знает про отчёты проекта: собран ли, чем настроен, чего не хватает.
 
@@ -5815,7 +5842,8 @@ ENV_PY = (("beautifulsoup4", ("bs4",), "sync:confluence — разбор storage
           ("lxml", ("lxml",), "sync:confluence — быстрый парсер"),
           ("markitdown", ("markitdown",), "kb:ingest-office — docx/pptx → markdown"),
           ("openpyxl", ("openpyxl",), "kb:ingest-office — xlsx"),
-          ("pypdf", ("pypdf", "fitz"), "kb:ingest-office — pdf"))
+          ("pypdf", ("pypdf", "fitz"), "kb:ingest-office — pdf"),
+          ("numpy", ("numpy",), "kb:map --insights — поиск похожих карточек; без него в разы медленнее"))
 # Пакеты, чья закреплённая версия ставится вместе с этим: иначе pip возьмёт зависимость самой свежей.
 ENV_COMPANIONS = {"markdownify": ("beautifulsoup4",), "markitdown": ("beautifulsoup4", "markdownify")}
 # Программы: как поставить на каждой системе. На Windows — winget: он есть в Windows 11.
@@ -6048,56 +6076,24 @@ def env_install(name: str) -> dict:
     pkg, modules = next(((p, m) for p, m, _w in ENV_PY if p == name), ("", ()))
     if not pkg or not modules:
         return {"ok": False, "code": "unknown", "output": ""}
-    # Версия — закреплённая китом либо самый новый выпуск старше паузы (BL-SEC-21): панель ставит в Python,
-    # которым работает, и «последнее, что вышло час назад» туда не берётся.
+    # Версия — закреплённая китом либо самый новый выпуск старше паузы (BL-SEC-21).
     spec, note = _extras().safe_spec(pkg)
     # markdownify тянет beautifulsoup4: без своей закреплённой версии pip взял бы самую свежую
     specs = [spec] + [s for s in (_extras().pinned_spec(d) for d in ENV_COMPANIONS.get(pkg, ())) if s]
-    # -P (Python 3.11+): папка запуска не первой в sys.path; на 3.10 флага нет, и pip запускается из папки кокпита
-    from aurora_common import python_executable
-    python = python_executable()
-    if os.path.realpath(python) == os.path.realpath(sys.executable):
-        # Тот же интерпретатор, что и у панели: версия и пути уже известны, лишний запуск не нужен.
-        import sysconfig
-        import site
-        py_ver = sys.version_info[:2]
-        try:
-            user_site = site.getusersitepackages() or ""
-        except Exception:  # noqa: BLE001 — путь нужен только для записи факта установки
-            user_site = ""
-        probe = {"version": "%d.%d" % py_ver,
-                 "purelib": sysconfig.get_paths().get("purelib") or "",
-                 "user_site": user_site}
-    else:
-        import aurora_runtime as RT
-        probe = RT.validate_python(python)
-        try:
-            py_ver = tuple(int(x) for x in (probe.get("version") or "0.0").split(".")[:2])
-        except ValueError:
-            py_ver = (0, 0)
-    safe = (["-P"] if py_ver >= (3, 11) else []) + ["-X", "utf8"]
-    user = needs_user_site(python)  # Python для всех, вы без прав администратора — в папку пользователя
-    try:
-        p = subprocess.run([python, *safe, "-m", "pip", "install", *(["--user"] if user else []), *specs],
-                           capture_output=True,
-                           cwd=os.path.dirname(os.path.abspath(__file__)),
-                           text=True, encoding="utf-8", errors="replace", timeout=900)
-        ok, tail = p.returncode == 0, (note + "\n" if note else "") + ((p.stdout or "") + (p.stderr or "")).strip()[-1500:]
-    except (OSError, subprocess.SubprocessError) as e:
-        ok, tail = False, f"{type(e).__name__}: {e}"
+    import aurora_runtime as RT
+    res = RT.install_package(pkg, specs=specs, timeout=900)
+    ok = bool(res.get("ok") and res.get("seen"))
+    tail = ((note + "\n") if note else "") + str(res.get("output") or res.get("error") or "")[-1500:]
     environment(fresh=True)      # сбросить кэш: следующая отрисовка покажет новое состояние
     CACHE.pop("access", None)
-    # «Увиден» — в том же интерпретаторе, куда ставили: проверка импорта в процессе панели
-    # и установка в другой Python — ровно тот дефект, из-за которого Pydantic AI «не ставился».
-    has = _python_module(python, modules, pkg)
-    seen = bool(has.get("ok"))
-    code = "" if ok and seen else "not_seen" if ok else "pip_failed"
-    if ok and seen:             # кто что поставил — в общую папку машины (`access_check`)
-        ver = str(has.get("version") or "")
-        said = _extras().record_install(pkg, ver,
-                                        probe.get("user_site") if user else probe.get("purelib") or "")
+    code = "" if ok else ("not_seen" if res.get("ok") else "pip_failed")
+    if ok:                       # кто что поставил — в общую папку машины (`access_check`)
+        ver = str(res.get("version") or "")
+        said = _extras().record_install(pkg, ver, str(res.get("purelib") or res.get("python") or ""))
         tail += ("\n" + said) if said else ""
-    return {"ok": ok and seen, "code": code, "output": tail}
+    return {"ok": ok, "code": code, "output": tail,
+            "python": res.get("python", ""), "method": res.get("method", ""),
+            "version": res.get("version", ""), "needs_reload": bool(res.get("needs_reload"))}
 
 
 def _python_module(python: str, modules, distribution: str = "") -> dict:
@@ -7216,6 +7212,10 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
            "run_dir": run_dir, "net_long": 0,
            "parent": parent, "last_out": time.time(), "cancel": threading.Event(),
            "state": "queued", "resources": list(TS.resources_for(cmd, args)),
+           # Долгий шаг, которому нужна связь: при обрыве сторож приостановит его, а не
+           # снимет. Шаг маршрута/цепочки — всегда; одиночные агент, синк и карта — тоже.
+           "pausable": bool(parent or net_policy or cmd.startswith(
+               ("agent:", "sync:", "kb:map", "kb:embed", "kb:repair"))),
            "queue_reason": "", "queued_at": time.time()}
     with JOBS_LOCK:
         # Та же команда с теми же аргументами в том же проекте уже идёт — второй процесс рядом не
@@ -8045,6 +8045,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json({"state": read_route_state(project)})
+        elif u.path == "/api/metrics":
+            try:
+                days = int((q.get("days") or ["7"])[0])
+            except ValueError:
+                days = 7
+            self.send_json(metrics_state(find_projects(self.server.roots), days))
         elif u.path == "/api/report":
             project = q.get("project", [""])[0]
             if not self._known(project):
@@ -8379,6 +8385,8 @@ class Handler(BaseHTTPRequestHandler):
                          "started": j["started"], "lines": j.get("base", 0) + len(j["out"]),
                          "state": j.get("state", "running"), "parent": j.get("parent", ""),
                          "queue_reason": j.get("queue_reason", ""),
+                         "paused": bool(j.get("paused")), "pause_why": j.get("pause_why", ""),
+                         "paused_at": j.get("paused_at") or 0,
                          "resources": j.get("resources") or []}
                         for j in JOBS.values()
                         if not j["done"] and (not project or j["project"] == project)]
@@ -8398,6 +8406,8 @@ class Handler(BaseHTTPRequestHandler):
                          "done": job["done"], "rc": job["rc"], "cmd": job["cmd"],
                          "args": job["args"], "state": job.get("state", ""),
                          "queue_reason": job.get("queue_reason", ""),
+                         "paused": bool(job.get("paused")), "pause_why": job.get("pause_why", ""),
+                         "paused_at": job.get("paused_at") or 0,
                          "resources": job.get("resources") or []}
             # Пульс — вне замка заданий: он читает файлы папки прогона.
             reply["pulse"] = None if reply["done"] else job_pulse(job)
@@ -9571,6 +9581,14 @@ def job_pulse(job: dict, now: float = 0.0) -> dict:
     к моделям нет; gone — процесса шага нет.
     """
     now = now or time.time()
+    if job.get("paused"):
+        started = job.get("started") or now
+        return {"alive": True, "running": int(now - started),
+                "quiet": int(now - (job.get("last_out") or started)),
+                "calls": 0, "answered": 0, "failed": 0, "answer_ago": None,
+                "rings": 0, "watchdog": True, "state": "paused",
+                "pause_why": job.get("pause_why") or "",
+                "paused_at": job.get("paused_at") or 0}
     if job.get("state") == "queued":
         started = job.get("queued_at") or job.get("started") or now
         return {"alive": False, "running": int(now - started),
@@ -9697,6 +9715,8 @@ def live_now() -> dict:
                  "started": j["started"], "lines": j.get("base", 0) + len(j["out"]),
                  "state": j.get("state", "running"), "parent": j.get("parent", ""),
                  "queue_reason": j.get("queue_reason", ""),
+                 "paused": bool(j.get("paused")), "pause_why": j.get("pause_why", ""),
+                 "paused_at": j.get("paused_at") or 0,
                  "resources": j.get("resources") or []}
                 for j in JOBS.values() if not j["done"]]
     for j in jobs:
@@ -9937,6 +9957,14 @@ def stop_job(job_id: str, lang: str = "") -> dict:
         return {"ok": True}
     if job.get("done") or not proc:
         return {"error": "задание уже закончилось"}
+    if job.get("paused"):
+        # Приостановленному SIGTERM не дойдёт, пока его не разбудить. Снимаем паузу — и
+        # только потом просим уйти, чтобы раннер успел зафиксировать сделанное.
+        try:
+            WD.resume_tree(proc.pid)
+        except Exception:  # noqa: BLE001 — пауза не должна мешать остановке
+            pass
+        job["paused"] = False
     try:
         proc.terminate()
         for _ in range(int(STOP_GRACE / 0.05)):

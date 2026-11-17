@@ -5,4 +5,5 @@
 # обновляя bs4 или markdownify, меняйте оба файла — проверка части 93 сверяет их.
 beautifulsoup4==4.13.4
 markdownify==1.2.2
+numpy==2.3.2
 ruff==0.16.10

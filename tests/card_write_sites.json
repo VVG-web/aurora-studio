@@ -1596,6 +1596,12 @@
    "reason": "страницы вики кита (документы)",
    "calls": 1,
    "git": "none"
+  },
+  "scripts/usage_log.py:record": {
+   "kind": "other",
+   "reason": "замеры: расход токенов прогона в meta/usage.d по частям участника, не карточка",
+   "calls": 1,
+   "git": "shard"
   }
  },
  "git_classes_required": true

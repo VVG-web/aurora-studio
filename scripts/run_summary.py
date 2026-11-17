@@ -61,6 +61,9 @@ def empty() -> dict:
     s = {k: 0 for k in NUMBERS}
     s["gen_seconds"] = 0.0
     s["errors"] = {}
+    s["by_role"] = {}
+    s["by_model"] = {}
+    s["by_pair"] = {}
     s["cards_known"] = False
     s["link_kind"] = ""
     return s
@@ -87,6 +90,12 @@ def from_agent(steps, usage: dict | None, seconds: float, delta: dict | None) ->
     s["tokens_out"] = int(u.get("tokens_out") or 0)
     s["model_cached"] = int(u.get("cached") or 0)
     s["gen_seconds"] = round(float(u.get("gen_seconds") or 0.0), 2)
+    s["by_role"] = {str(k): dict(v) for k, v in (u.get("by_role") or {}).items()
+                     if isinstance(v, dict)}
+    s["by_model"] = {str(k): dict(v) for k, v in (u.get("by_model") or {}).items()
+                      if isinstance(v, dict)}
+    s["by_pair"] = {str(k): dict(v) for k, v in (u.get("by_pair") or {}).items()
+                     if isinstance(v, dict)}
     # Вызовы мимо Pydantic AI при выбранном адаптере — первой строкой итога и ошибкой с
     # причиной: прогон без инструментов и MCP не должен выглядеть обычным (1.161.0).
     if u.get("bypass"):
@@ -254,6 +263,15 @@ def merge(items) -> dict:
             _err(s, kind, int(n or 0))
         s["cards_known"] = s["cards_known"] or bool(it.get("cards_known"))
         s["link_kind"] = it.get("link_kind") or s["link_kind"]
+        for field in ("by_role", "by_model", "by_pair"):
+            for name, row in (it.get(field) or {}).items():
+                if not isinstance(row, dict):
+                    continue
+                dst = s[field].setdefault(str(name), {"calls": 0, "tokens_in": 0,
+                                                      "tokens_out": 0, "seconds": 0.0})
+                for k in ("calls", "tokens_in", "tokens_out"):
+                    dst[k] = dst.get(k, 0) + int(row.get(k) or 0)
+                dst["seconds"] = round(dst.get("seconds", 0.0) + float(row.get("seconds") or 0), 2)
     return s
 
 

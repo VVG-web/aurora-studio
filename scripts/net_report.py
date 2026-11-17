@@ -65,6 +65,54 @@ def _show(data: dict) -> str:
     return "\n".join(lines)
 
 
+def list_reports(projects, since: float = 0.0, limit: int = 200) -> list:
+    """Снимки сети по всем проектам для раздела «Замеры»: одна строка на прогон.
+
+    Читает только общие части участников (`net-runs.d`), пути и адреса наружу не отдаёт.
+    Свежие сверху."""
+    out = []
+    for project in projects or []:
+        root = Path(project).expanduser().resolve().joinpath(*NO.SHARED_DIR)
+        if not root.is_dir():
+            continue
+        try:
+            parts = [p for p in root.iterdir() if p.is_dir()]
+        except OSError:
+            continue
+        for part in parts:
+            for path in part.glob("*.json"):
+                try:
+                    if since and path.stat().st_mtime < since:
+                        continue
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                summary = data.get("summary") or NO.summarize(data)
+                snaps = [s for s in data.get("snapshots") or [] if isinstance(s, dict)]
+                vpn = sorted({str(s.get("name") or "")
+                              for snap in snaps
+                              for s in ((snap.get("system_vpn") or {}).get("services") or [])
+                              if s.get("name")})
+                out.append({
+                    "project": os.path.basename(os.path.normpath(str(project))),
+                    "run": str(data.get("id") or path.stem),
+                    "cmd": str(data.get("cmd") or ""),
+                    "at": str((snaps[-1] if snaps else {}).get("at") or ""),
+                    "seconds": int(summary.get("seconds") or 0),
+                    "snapshots": int(summary.get("snapshots") or 0),
+                    "blocked_s": int(summary.get("blocked_s") or 0),
+                    "reason": str(summary.get("reason") or ""),
+                    "network_required": bool(summary.get("network_required")),
+                    "profiles": summary.get("profiles") or {},
+                    "providers": summary.get("providers") or {},
+                    "vpn": vpn,
+                })
+    out.sort(key=lambda r: (r.get("at") or ""), reverse=True)
+    return out[:max(0, int(limit or 0))] if limit else out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="net_report.py",
                                  description="Почему прогон шёл долго: сеть, VPN и провайдеры.")

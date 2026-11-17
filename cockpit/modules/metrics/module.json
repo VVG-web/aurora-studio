@@ -1,0 +1,13 @@
+{
+  "id": "metrics",
+  "name": { "ru": "Замеры", "en": "Measurements" },
+  "about": {
+    "ru": "Эксплуатационные замеры кита: связь и VPN вокруг прогонов, расход токенов по проектам, ролям агента и моделям. Это не отчёты для руководителя — те лежат в разделе «Отчёты» проекта.",
+    "en": "Kit operations measurements: connection and VPN around runs, token usage by project, agent role and model. These are not manager reports — those live in the project's Reports section."
+  },
+  "group": "machine",
+  "order": 36,
+  "needs": [],
+  "commands": ["net:report"],
+  "for": "1.231.7"
+}
