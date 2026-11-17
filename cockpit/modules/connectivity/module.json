@@ -8,6 +8,6 @@
   "group": "machine",
   "order": 34,
   "needs": [],
-  "commands": ["net:status", "net:probe"],
-  "for": "1.231.3"
+  "commands": ["net:status", "net:probe", "net:report"],
+  "for": "1.231.4"
 }

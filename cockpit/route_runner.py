@@ -635,6 +635,13 @@ class RouteRun:
                      "parent": parent, "started": _iso(self.started),
                      "who": _who(ck, project), "kit": _kit(ck), "status": "running"}
         write_meta(self.base, self.meta)
+        try:
+            import net_observe as NO
+            NO.start("route", project, self.run_id, self.base,
+                     "route:" + str(sc.get("id") or ""), parent,
+                     steps=[s.get("cmd") for s in sc.get("steps") or [] if s.get("cmd")])
+        except Exception:  # noqa: BLE001 — снимок сети не имеет права ломать маршрут
+            pass
 
     def say(self, kind: str, text: str) -> None:
         """Строка журнала: в консоль страницы, в файл прогона и тому, кто ведёт маршрут."""
@@ -1519,6 +1526,17 @@ class RouteRun:
     def _close(self, res: dict) -> dict:
         """Конец прогона: итог в `meta.json`, журнал закрыт, ожидающие увидят `done`."""
         self.bar, self.wait, self.job = {}, {}, ""
+        try:
+            import net_observe as NO
+            net = NO.finish("route", self.project, self.run_id, self.base,
+                            "route:" + str(self.sc.get("id") or ""), self.parent,
+                            started=self.started,
+                            steps=[s.get("cmd") for s in self.sc.get("steps") or [] if s.get("cmd")],
+                            share=True)
+            if net.get("summary"):
+                self.meta["net"] = net["summary"]
+        except Exception:  # noqa: BLE001 — снимок сети не имеет права ломать закрытие
+            pass
         self.meta.update(status=res["reason"], ok=res["ok"], failed=res.get("failed", ""),
                          note=res.get("note", ""), finished=_iso(),
                          seconds=round(time.time() - self.started), steps=self.children)

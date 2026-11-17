@@ -73,6 +73,7 @@ import cron as CRON                              # noqa: E402 — расписа
 import route_runner as RR                        # noqa: E402 — маршрут: кнопка, расписание, терминал
 import task_scheduler as TS                      # noqa: E402 — ресурсы, очередь и параллельные задачи
 import watchdog as WD                             # noqa: E402 — сторож зависших после обрыва связи шагов
+import net_observe as NO                          # noqa: E402 — снимки сети и VPN вокруг прогонов
 import kb_updated as KBU                          # noqa: E402 — дата обновления базы (1.168.0)
 import git_sync as GS                            # noqa: E402 — Git проекта: настройка, состояние
 import git_auto as GITA                          # noqa: E402 — автоматика Git: события и тик
@@ -7209,8 +7210,10 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
     args = _args_for_old_script(path, args)
     job_id = secrets.token_hex(8)
     run_id = utc_slug() + "-" + job_id[:6]
+    run_dir = os.path.join(runs_dir(project), run_id)
     job = {"id": job_id, "cmd": cmd, "args": args, "project": project, "rc": None,
            "out": [], "started": time.time(), "done": False, "run_id": run_id,
+           "run_dir": run_dir, "net_long": 0,
            "parent": parent, "last_out": time.time(), "cancel": threading.Event(),
            "state": "queued", "resources": list(TS.resources_for(cmd, args)),
            "queue_reason": "", "queued_at": time.time()}
@@ -7238,7 +7241,7 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
             # запустившегося процесса, и шаг, упавший на самом запуске, не оставлял ничего:
             # в PRJ-A 21.09 kb:embed и дважды sync:confluence встали с кодом 2 без вывода
             # и без журнала — разобрать, что случилось, было не по чему.
-            run_cdir = os.path.join(runs_dir(project), run_id)
+            run_cdir = run_dir
             try:
                 os.makedirs(run_cdir, exist_ok=True)
                 run_log = open(os.path.join(run_cdir, "console.log"), "w", encoding="utf-8")
@@ -7251,6 +7254,10 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
                                      "cmd": cmd, "args": args, "started": utc_stamp(),
                                      "who": who(project), "kit": kit_version(),
                                      "status": "running"})
+            try:
+                NO.start("job", project, run_id, run_cdir, cmd, parent)
+            except Exception:  # noqa: BLE001 — снимок сети не имеет права ломать запуск
+                pass
             # Python буферизует stdout, когда на том конце не терминал: длинная команда
             # (синк на семьсот страниц, прогон агента) молчала минутами, а потом
             # вываливала всё разом. Человек в это время не знает, работает она или висит.
@@ -7323,21 +7330,57 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
             job["done"] = True
             job["finished"] = time.time()
             job["state"] = "done"
+            mark_running(job["id"], cmd, project, False)
+            write_runlog(project, cmd, job["rc"], (cmd + " " + " ".join(args)).strip(),
+                         int(job["finished"] - job["started"]))
+            net_summary = {}
+            try:
+                net_data = NO.finish("job", project, run_id, run_dir, cmd, parent,
+                                     started=job["started"])
+                net_summary = net_data.get("summary") or {}
+            except Exception:  # noqa: BLE001
+                pass
             meta = RR.read_meta(os.path.join(runs_dir(project), run_id))
             if meta:
                 meta.update(status="done", rc=job["rc"], finished=utc_stamp(),
                             seconds=int(job["finished"] - job["started"]))
+                if net_summary:
+                    meta["net"] = net_summary
                 RR.write_meta(os.path.join(runs_dir(project), run_id), meta)
             if run_log is not None:
                 trim_runs(project)
-            mark_running(job["id"], cmd, project, False)
-            write_runlog(project, cmd, job["rc"], (cmd + " " + " ".join(args)).strip(),
-                         int(job["finished"] - job["started"]))
             TASKS.release(job_id)
 
     def launch():
         threading.Thread(target=worker, daemon=True).start()
 
+    def _net_jobs():
+        with JOBS_LOCK:
+            return [dict(j) for j in JOBS.values()]
+
+    def _net_routes():
+        with ROUTES_LOCK:
+            return [dict(r) for r in ROUTES.values()]
+
+    def _net_long(job_view, snap):
+        if job_view.get("route"):
+            route = job_view["route"]
+            run = route.get("run") if isinstance(route, dict) else None
+            if run is not None and hasattr(run, "say") and not getattr(run, "done_flag", False):
+                try:
+                    run.say("note", NO.line(snap))
+                except Exception:  # noqa: BLE001
+                    pass
+            return
+        with JOBS_LOCK:
+            actual = JOBS.get(str(job_view.get("id") or ""))
+            if actual is not None and not actual.get("done"):
+                RR.job_push(actual, NO.line(snap))
+
+    try:
+        NO.ensure_started(_net_jobs, _net_routes, _net_long)
+    except Exception:  # noqa: BLE001 — наблюдатель не имеет права ломать запуск
+        pass
     task = TS.make_task(job_id, project, cmd, args, parent=parent, start=launch)
     state = TASKS.submit(task)
     with JOBS_LOCK:

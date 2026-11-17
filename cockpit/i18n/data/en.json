@@ -119,6 +119,7 @@
     "bot:list": "The project's bots: schedule and next run, the last run's outcome, problems.",
     "net:status": "Availability of connections: profiles (VPN), probes, the internet and the model providers, the kit's mode of work and the reasons; read-only, changes nothing — profiles and probes are set up in the panel, the «Connection check» section.",
     "net:probe": "Check the connection now: all probes (or `--only` — one profile or probe); the state is updated with anti-flapping; exit code 1 when the profiles in need are down. With the feature off it does nothing.",
+    "net:report": "Why a run took long: network snapshots at the start, at the end and every 12 minutes of a long operation — profiles, system VPNs and model providers; seconds lost and what exactly blocked the step; read-only, touches neither the network nor the model.",
     "code:sync": "Clones of the project's code repositories in `Code/`: clone, take what is new from the server and set the pinned revision or the branch tip — read-only, nothing is merged or pushed. Repositories are connected in the \"Code\" section (`code_repos:` in the config), sign-in works as in \"Project Git\", the secret stays outside the project. Without `--apply` — a plan, no network; a repository whose connection is down now is skipped with the reason; a clone with edits is left alone, `--reset --repo` resets it to the registry",
     "code:status": "Code repositories: the revision and its date, how far behind the server branch, the last sync, languages and size (files and lines per language without external tools; dependencies, generated, binary and lock files are not counted), the \"models\" and \"publish\" permissions; no network needed",
     "code:index": "Code index: file inventory from git objects, languages and roles, symbols, routes, SQL tables and columns, topics, configuration keys, tests, requirement tags and commit history in `.aurora/cache/code/<name>/index.sqlite`; secrets are masked, no model or network needed. Without `--apply` — a plan; `--rebuild` rebuilds, `--status` shows state, `--secrets` shows findings without values",
@@ -765,6 +766,7 @@
     "PyPI не ответил: ": "PyPI did not answer: "
   },
   "flags": {
+    "номер прогона из архива": "run id from the archive",
     "показать, считается ли вопрос общим": "show whether the question counts as broad",
     "добавить к словесному поиску готовый семантический индекс": "add the existing semantic index to the word search",
     "после сборки обновить meta/raptor_metrics.json": "refresh meta/raptor_metrics.json after the build",

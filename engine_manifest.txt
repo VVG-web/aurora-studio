@@ -142,6 +142,8 @@ scripts/production_core.py => .aurora/scripts/production_core.py
 # доступность соединений: профили VPN, probe, состояние; его читают команды `net:*`, агент, боты и синк
 scripts/connectivity.py  => .aurora/scripts/connectivity.py
 scripts/conn_gate.py      => .aurora/scripts/conn_gate.py
+scripts/net_observe.py    => .aurora/scripts/net_observe.py
+scripts/net_report.py     => .aurora/scripts/net_report.py
 scripts/git_sync.py      => .aurora/scripts/git_sync.py
 # код проекта (раздел «Код»): реестр репозиториев `code_repos:` и клоны в Code/ — `code:sync`, `code:status`
 scripts/code_repos.py    => .aurora/scripts/code_repos.py

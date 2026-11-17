@@ -253,6 +253,23 @@ MCP keys must not be passed into Aurora's shared TLS check.
 - The data in the state is fresh for one interval; stale data is re-checked right before a run (all probes at once, within
   three seconds). Data older than three intervals counts as unknown.
 
+## Run snapshots and the system VPN
+
+A network snapshot is taken at the start and the end of every operation, and every 12 minutes for an operation longer than
+12 minutes. It answers “was the step waiting for the network or for local work” with evidence:
+
+- `net.json` in the run archive (`<project>/.aurora/runs/<id>/`) is the detailed snapshot and never goes to git;
+- `AuroraKnowledgeDB/meta/net-runs.d/<actor>-<machine>/<id>.json` is the result shared through git. Every actor and machine
+  has its own folder, so two people never write one file and a merge does not conflict;
+- `~/.aurora/connectivity-events.jsonl` keeps profile and global transitions beyond the last 200 events in the state file.
+
+The snapshot keeps three different things apart: probe-profile availability, connected system VPNs (with names — they show
+which LLM provider lost its link) and model-provider availability. System VPN names are part of the answer, not noise: a
+probe may answer through another tunnel while the expected system VPN is disconnected.
+
+`net:report --project <project> --run <id>` reads the snapshots and shows the duration, snapshots and seconds lost because
+of profiles or providers.
+
 ## Appendix: storage format
 
 An example of `local/connectivity.json` (the addresses and names are made up):

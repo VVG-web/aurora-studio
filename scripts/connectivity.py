@@ -68,6 +68,8 @@ from aurora_common import keep_private_copy, lock_release_retry, lock_take, pars
 VERSION = 1
 CONFIG_FILE = ("local", "connectivity.json")
 STATE_NAME = "connectivity-state.json"
+EVENTS_NAME = "connectivity-events.jsonl"
+EVENTS_MAX = 2 * 1024 * 1024       # журнал переходов не растёт бесконечно; старый кусок — рядом
 INTERNET = "internet"                 # встроенный профиль: интернет вообще
 PROVIDER_PREFIX = "provider:"         # служебный профиль проверки ручки провайдера (в настройке не бывает)
 PROBE_TYPES = ("tcp", "http", "icmp")
@@ -132,6 +134,54 @@ def state_path() -> Path:
     if forced:
         return Path(forced)
     return Path(os.path.expanduser("~")) / ".aurora" / STATE_NAME
+
+
+def events_path(state_file=None) -> Path:
+    """Журнал переходов: рядом с состоянием, чтобы тесты не писали в настоящий `~/.aurora`.
+
+    `AURORA_CONNECTIVITY_EVENTS` — явный путь для тестов и нестандартной установки.
+    """
+    forced = os.environ.get("AURORA_CONNECTIVITY_EVENTS")
+    if forced:
+        return Path(forced)
+    base = Path(state_file) if state_file else state_path()
+    return base.with_name(EVENTS_NAME)
+
+
+def append_events(events: list, state_file=None) -> None:
+    """Дописать переходы в JSONL, не трогая ограниченный журнал внутри состояния.
+
+    События машинные: профили и глобальное состояние. Системные VPN и провайдеры
+    попадают в снимки прогонов (`net_observe.py`), где у них есть контекст команды.
+    """
+    events = [e for e in (events or []) if isinstance(e, dict)]
+    if not events:
+        return
+    path = events_path(state_file)
+    lock = str(path) + ".lock"
+    held = False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            held, _info = lock_take(lock, stale_s=60)
+        except OSError:
+            held = False
+        try:
+            if path.is_file() and path.stat().st_size > EVENTS_MAX:
+                replace_file(str(path), str(path) + ".1")
+            with open(path, "a", encoding="utf-8") as f:
+                for ev in events:
+                    f.write(json.dumps(ev, ensure_ascii=False, sort_keys=True) + "\n")
+                f.flush()
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        except OSError:
+            pass
+    finally:
+        if held:
+            lock_release_retry(lock)
 
 
 # ------------------------------------------------------------------ настройка
@@ -1240,6 +1290,10 @@ class AvailabilityService:
                 self._subs.remove(fn)
 
     def _emit(self, events: list) -> None:
+        try:
+            append_events(events, self.state_file)
+        except Exception:  # noqa: BLE001 — журнал переходов не имеет права ломать проверку
+            pass
         with self._lock:
             subs = list(self._subs)
         for ev in events:

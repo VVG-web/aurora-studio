@@ -644,16 +644,24 @@ def test_connectivity_snapshot_does_not_leak_addresses_or_query_strings(tmp: Pat
 
 @test
 def test_net_commands_are_registered_read_only_and_shipped(_t):
-    """`net:status` и `net:probe` — в реестре, их скрипт едет в проекты; команды записи настроек нет (всё — в панели)."""
+    """`net:status`, `net:probe` и `net:report` — в реестре, их скрипты едут в проекты; команды записи настроек нет."""
     reg = (KIT / "commands.txt").read_text(encoding="utf-8")
     rows = [ln for ln in reg.splitlines() if ln.startswith("net |")]
     cmds = sorted(r.split("|")[1].strip() for r in rows)
-    assert cmds == ["net:probe", "net:status"], f"в наборе net: должны быть только чтение и проверка: {cmds}"
-    assert all("connectivity.py" in r for r in rows), "команды net: ведут не в connectivity.py"
+    assert cmds == ["net:probe", "net:report", "net:status"], \
+        f"в наборе net: должны быть только чтение и проверка: {cmds}"
+    by_cmd = {r.split("|")[1].strip(): r for r in rows}
+    assert "connectivity.py" in by_cmd["net:status"] and "connectivity.py" in by_cmd["net:probe"], \
+        "status/probe ведут не в connectivity.py"
+    assert "net_report.py" in by_cmd["net:report"], "отчёт ведёт не в net_report.py"
     import re
     man = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
     assert re.search(r"^scripts/connectivity\.py\s+=>\s+\.aurora/scripts/connectivity\.py$", man, re.M), \
         "connectivity.py не едет в проекты"
+    assert re.search(r"^scripts/net_report\.py\s+=>\s+\.aurora/scripts/net_report\.py$", man, re.M), \
+        "net_report.py не едет в проекты"
+    assert re.search(r"^scripts/net_observe\.py\s+=>\s+\.aurora/scripts/net_observe\.py$", man, re.M), \
+        "net_observe.py не едет в проекты"
     doc = (KIT / "scripts" / "connectivity.py").read_text(encoding="utf-8")
     assert "Панель: `net:status`, `net:probe`" in doc, "в докстринге нет строки «Панель:» с командами"
     src = doc
