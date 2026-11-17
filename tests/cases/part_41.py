@@ -3780,6 +3780,45 @@ def test_a_recheck_of_unsupported_claims_survives_one_unreadable_card(tmp: Path)
 
 
 @test
+def test_a_recheck_stops_after_a_run_of_link_failures(tmp: Path):
+    """`agent:distill --recheck`: связь пропала — очередь не долбит мёртвые шлюзы двести раз.
+
+    На живом прогоне 17.11.2026 из 212 карточек 342 вызова не дошли до шлюза, а 19
+    ждали срок с ростом до 12 минут. Причина у всех была одна — связи нет. Пять таких
+    отказов подряд останавливают очередь, остальные карточки получают «сбой» без вызова
+    модели: часы ожидания не превращаются в новый час на каждой карточке.
+    """
+    import importlib
+    from unittest.mock import patch
+    A = importlib.import_module("agent_core")
+    R = _runner()
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB/Concepts"
+    kb.mkdir(parents=True, exist_ok=True)
+    for i in range(8):
+        (kb / f"Карточка-{i}.md").write_text(
+            f'---\ntitle: "Карточка-{i}"\nkind: knowledge\nstatus: draft\ntype: concept\n'
+            f'unsupported: 1\n---\n\nКарточка {i} подаётся ежемесячно.\n\n{R.QUOTES}\n'
+            'Отчёт подаётся ежемесячно.\n', encoding="utf-8")
+
+    calls = []
+
+    def fake(cfg, role, messages, **kw):
+        calls.append(messages[0]["content"])
+        return {"ok": False, "log": ["№1 m: нет маршрута до шлюза"],
+                "link": {"kind": "route"}, "timed_out": False}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    with patch.object(R, "parallel_width", lambda cfg_, count, role: (1, 1)):
+        with _RunDir(tmp / "run"):
+            res = R.recheck_unsupported(cfg, str(root), False, call=fake)
+    assert len(calls) in (5, 6), f"после пяти отказов связи сделано ещё {len(calls) - 5} вызовов"
+    stopped = [s for s in res["steps"] if "остановлена" in (s.get("note") or "")]
+    assert len(res["steps"]) == 8 and len(stopped) >= 2, res["steps"]
+    assert res["failed"] == 8, res
+
+
+@test
 def test_a_plan_covering_a_small_part_of_the_source_does_not_mark_it_done(tmp: Path):
     """Планировщик назвал один диапазон из многих абзацев (или строки с ошибками) — источник
     остаётся в плане, шаг — сбой по содержанию; полный охват и умеренная потеря — как прежде."""

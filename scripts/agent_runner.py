@@ -9937,7 +9937,17 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
         todo = todo[:limit]
     say(f"Карточек с пометкой «без опоры»: {total} · в этот прогон: {len(todo)}")
 
+    # Связь пропала или модель молчит по сроку — это не свойство карточки: следующие
+    # двести проверок дадут ту же причину и те же часы ожидания. Пять таких отказов
+    # подряд останавливают прогон; уже запущенные карточки доделываются, очередь
+    # получает «сбой» без нового вызова модели.
+    stop = threading.Event()
+    stop_after = 5
+
     def one(path: str) -> tuple:
+        if stop.is_set():
+            return path, {"status": "сбой",
+                          "note": "проверка остановлена: связь с моделями пропала или они не отвечают"}
         sig = _card_sig(path)
         text = open(path, encoding="utf-8", errors="ignore").read()
         head, body = split_frontmatter(text)
@@ -9957,9 +9967,11 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
         mo = run_momus_chunks(cfg, packs, f"Тезис карточки «{title}»",
                               plain_links(thesis.strip(), readable=True), call, MOMUS_PREFER)
         if not mo.get("ok"):
-            return path, fail_step({}, mo.get("why", "") or "проверка не состоялась",
-                                   mo.get("call"), subject=path,
-                                   extra_chars={"pack": len(pack), "thesis": len(thesis)})
+            step = fail_step({}, mo.get("why", "") or "проверка не состоялась",
+                             mo.get("call"), subject=path,
+                             extra_chars={"pack": len(pack), "thesis": len(thesis)})
+            step["link"] = bool((mo.get("call") or {}).get("link"))
+            return path, step
         return path, {"status": "чисто" if mo.get("clean") else "без опоры", "sig": sig,
                       "count": mo.get("unsupported", 0), "claims": momus_claims(mo.get("text"))}
 
@@ -9975,6 +9987,7 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
 
     width = max(1, parallel_width(cfg, len(todo), "qa")[1]) if todo else 1
     steps = []
+    streak = 0
     from concurrent.futures import as_completed
     with ThreadPoolExecutor(max_workers=width) as pool:
         # По мере готовности, а не по порядку: большая первая карточка держала весь отчёт
@@ -9983,6 +9996,12 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
             path, st = fut.result()
             st["card"] = os.path.basename(path)
             steps.append(st)
+            if st.get("link") or st.get("slow"):
+                streak += 1
+                if streak >= stop_after:
+                    stop.set()
+            else:
+                streak = 0
             say(f"  [{i}/{len(todo)}] {st['card'][:-3]} → {st['status']}"
                 + (f" {st['count']}" if st.get("count") else "")
                 + (f": {st['note'][:160]}" if st["status"] == "сбой" and st.get("note") else ""))
