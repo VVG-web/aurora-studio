@@ -787,6 +787,12 @@
    "calls": 1,
    "git": "local"
   },
+  "scripts/connectivity.py:append_events": {
+   "kind": "other",
+   "reason": "журнал переходов связи в `~/.aurora/connectivity-events.jsonl` с ротацией: событие машины, не карточка",
+   "calls": 2,
+   "git": "none"
+  },
   "scripts/connectivity.py:_write_state": {
    "kind": "other",
    "reason": "состояние проверок соединений (`~/.aurora/connectivity-state.json`), не карточка",
@@ -1578,6 +1584,12 @@
    "reason": "производный замер meta/raptor_metrics.json, не карточка",
    "calls": 2,
    "git": "local"
+  },
+  "scripts/net_observe.py:_write": {
+   "kind": "other",
+   "reason": "снимок сети и VPN за прогон: `meta/net.json` проекта (машина) и общий файл `AuroraKnowledgeDB/meta/net-runs.d/<участник>-<машина>/` — по частям участника, не карточка",
+   "calls": 1,
+   "git": "shard"
   },
   "scripts/wiki_build.py:_write": {
    "kind": "other",
