@@ -256,7 +256,7 @@ def generate(prompt: str, *, cfg: dict, cwd: str, call, role: str = "worker",
              history: list | None = None, input_limit: int = 0,
              deadline: float | None = None, max_tokens: int | None = None) -> dict:
     """Один вызов модели с нормализованным результатом; исключение не выходит наружу."""
-    deadline = deadline or (time.time() + float(cfg.get("request_timeout") or 300))
+    deadline = deadline or (time.time() + float(cfg.get("request_timeout") or 600))
     kwargs = {"deadline": deadline, "input_limit": int(input_limit or 0)}
     if history:
         kwargs["history"] = list(history)
@@ -266,7 +266,7 @@ def generate(prompt: str, *, cfg: dict, cwd: str, call, role: str = "worker",
                                             **kwargs),
                       deadline=deadline, timeout=stage_timeout(
                           deadline, remaining(deadline) if deadline else
-                          float(cfg.get("request_timeout") or 300)))
+                          float(cfg.get("request_timeout") or 600)))
     if not stage.ok:
         error = stage.error or human_error("llm_failed", "вызов модели не завершился",
                                            "повторите запрос")

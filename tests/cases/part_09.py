@@ -1438,47 +1438,58 @@ def test_the_check_gets_as_long_as_the_answer_took(tmp: Path):
     и предел на запрос это не обойти: дедлайна мало, запрос режется по `request_timeout`.
     Но и пол по всему `request_timeout` (300 с) был слишком щедр: даже быстрый ответ
     получал пятиминутную проверку, и «Момус не успел» превращалось в ожидание до десяти
-    минут. Поэтому пол — 90 с, потолок — 240 с: проверка готового текста не генерация.
+    минут. Пол 90 с оказался слишком скуп: на живых данных 15–18.11 из 843 попыток qa
+    49 % успешных шли дольше 90 с (p90 — 179 с, p99 — 359 с), и 335 первых заходов
+    обрывались по сроку. Правило запаса: пол = 2 × p90 = 360 с, потолок = 2,5 × p99 = 900 с.
+    Проверка готового текста не генерация, но и не мгновенная: медленная модель не должна
+    обрываться за то, что она медленная.
     """
     sys.path.insert(0, str(KIT / "scripts"))
     import importlib
     R = importlib.import_module("agent_runner")
 
     cfg = {"request_timeout": 300, "thinking": False}
-    assert R.momus_timeout(cfg, 0) == 90, "без замера ответа пол проверки — 90 с, а не весь request_timeout"
+    A0 = importlib.import_module("agent_core")
+    saved0 = dict(A0.USAGE)
+    A0.USAGE.update(tokens_out=0, gen_seconds=0.0)
+    try:
+        assert R.momus_timeout(cfg, 0) == 360, "без замера ответа пол проверки — 360 с (2 × p90 живых проверок), а не весь request_timeout"
+    finally:
+        A0.USAGE.clear(); A0.USAGE.update(saved0)
     # Момус с рассуждениями — от срока рассуждающего вызова (1.118.0): до 24 тыс. токенов
-    # проверки на PRJ-A. Но пол всё равно 90 с: проверка готового текста не генерация.
+    # проверки на PRJ-A. Но пол всё равно 360 с: проверка готового текста не генерация.
     A = importlib.import_module("agent_core")
     saved = dict(A.USAGE)
     try:
         A.USAGE.update(tokens_out=0, gen_seconds=0.0)
-        assert R.momus_timeout({"request_timeout": 300}, 0) == 90, \
+        assert R.momus_timeout({"request_timeout": 300}, 0) == 360, \
             "рассуждающему Момусу дан пол без рассуждений — проверка оборвётся на середине"
     finally:
         A.USAGE.clear(); A.USAGE.update(saved)
-    assert R.momus_timeout(cfg, 40) == 90, "быстрый ответ не должен УРЕЗАТЬ проверку ниже 90 с"
-    assert R.momus_timeout(cfg, 280) == 240, "медленный ответ не поднял предел проверки выше потолка"
-    assert R.momus_timeout(cfg, 5000) == 240, "потолок 240 с не держит: человек ждёт ответа"
+    assert R.momus_timeout(cfg, 40) == 360, "быстрый ответ не должен УРЕЗАТЬ проверку ниже 360 с"
+    assert R.momus_timeout(cfg, 280) == 420, "медленный ответ не поднял предел проверки по доле"
+    assert R.momus_timeout({"request_timeout": 600}, 5000) == 1800, \
+        "потолок 1800 с не держит: человек ждёт ответа"
 
     # и этот предел действительно доезжает до вызова
     seen = {}
 
     def fake_call(cfg, role, messages, **kw):
         seen.update(kw); seen["role"] = role
-        return {"ok": False, "log": ["№2 m: не уложился в 240 с"], "timed_out": True}
+        return {"ok": False, "log": ["№2 m: не уложился в 420 с"], "timed_out": True}
 
     mo = R.run_momus(cfg, "пак", "вопрос", "ответ", fake_call, answered_in=280)
     assert seen["role"] == "qa", seen
-    assert seen.get("request_timeout") == 240, \
+    assert seen.get("request_timeout") == 420, \
         f"предел на запрос не передан — вызов снова обрежется по настройке: {seen}"
-    assert seen["deadline"] > time.time() + 200, "дедлайн остался коротким"
-    assert mo["timed_out"] and mo["given"] == 240, mo
+    assert seen["deadline"] > time.time() + 380, "дедлайн остался коротким"
+    assert mo["timed_out"] and mo["given"] == 420, mo
 
     # отчёт называет причину сроком, а не недоступностью
     text = R.report_ask({"ok": True, "answer": "текст", "cards": ["К"], "total": 1,
                          "model": "m", "backend": 2, "seconds": 534.3, "momus": mo},
                         "вопрос", cfg)
-    assert "не успел" in text and "240" in text, text
+    assert "не успел" in text and "420" in text, text
     assert "срок запроса" in text and "«Модели»" in text, "человеку не назван рычаг"
     assert "не проверил ответ" not in text, \
         "медленную проверку по-прежнему объявляют несостоявшейся без причины"
