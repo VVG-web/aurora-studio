@@ -103,6 +103,111 @@ def test_a_call_that_bypasses_pydantic_ai_is_loud_and_tool_calls_are_refused(tmp
 
 
 @test
+def test_an_adapter_break_is_loud_and_never_quarantines_a_healthy_gateway(tmp: Path):
+    """Отказ самого Pydantic AI — не повод выключать шлюз и не повод молчать.
+
+    CI 1.231.9 покраснел ровно здесь: на Windows venv нет, адаптер не работает, прямой резерв
+    тоже не ответил — и вызов ушёл в карантин на пятнадцать минут как «не отвечал». Следующий
+    вызов (та самая проверка «обход виден сразу») получал «№1: не отвечал, вернёмся через 900 с»
+    и падал, не сделав ни одной попытки: ни тревоги, ни журнала, ни причины.
+
+    Теперь: карантина нет (шлюз не при чём), тревога и запись в журнале сбоев — есть, всё это
+    за один круг, без ожидания срока, а следующий вызов с живым адаптером проходит.
+    """
+    AG, _R = _mods()
+    import run_summary as RS
+    restore = set_home(tmp / "home")
+    run = tmp / "run"
+    run.mkdir()
+    saved = (AG.pydantic_transport, AG.http_json, dict(AG.ADAPTER), dict(AG.USAGE),
+             dict(AG.RUN_TASK), dict(AG.FAILS), set(AG._BYPASS_SAID), dict(AG.DOWN),
+             dict(AG.DOWN_WHY), dict(AG.read_alarm()))
+    try:
+        with _Env(AURORA_RUN_DIR=str(run), AURORA_AGENT_CACHE="0"):
+            AG.RUN_TASK["name"] = "agent:test"
+            AG.USAGE.update(bypass=0, bypass_why="")
+            AG.DOWN.clear()
+            AG.DOWN_WHY.clear()
+            # Адаптер сломан (venv не стоит: причина известна движку), прямой резерв не ответил
+            # ничем внятным. Именно так это выглядит на машине без venv и без сети до шлюза.
+            venv = AG.cause_of("venv python: .aurora/venv/bin/python не найден")
+            AG.pydantic_transport = lambda b, p, t: (None, None, AG.AdapterFail(
+                AG.ADAPTER_FAIL + str(venv), cause=venv), 0.0)
+            AG.http_json = lambda url, body, key, timeout: (None, None, "прервано", 0.01)
+            cfg = _cfg(AG)
+            r = AG.call_role(cfg, "worker", [{"role": "user", "content": "вопрос"}])
+            assert not r["ok"], r
+            assert 1 not in AG.DOWN, ("отказ адаптера выключил живой шлюз", AG.DOWN)
+            assert r["req"]["rings"] == 1, ("вызов крутил кольцо вместо одного круга", r["req"])
+            assert AG.USAGE["bypass"] >= 1 and "venv" in AG.USAGE["bypass_why"], AG.USAGE
+            alarm = AG.read_alarm()
+            assert "agent:test" in alarm and "venv" in alarm["agent:test"]["why"], alarm
+            recs = [json.loads(x) for x in (run / AG.FAIL_FILE).read_text(encoding="utf-8").splitlines()]
+            assert any(x["stage"] == "мимо Pydantic AI" for x in recs), recs
+            lines = RS.render(RS.from_agent([], AG.USAGE, 1.0, None))
+            assert any("Мимо Pydantic AI" in x for x in lines), lines
+            # Карантина нет — и следующий вызов с живым адаптером проходит, а не «вернётся через 900 с».
+            AG.pydantic_transport = lambda b, p, t: (
+                200, {"choices": [{"message": {"content": "ответ"}}], "aurora": {"via": "pydantic_ai"}},
+                "", 0.1)
+            again = AG.call_role(cfg, "worker", [{"role": "user", "content": "вопрос 2"}])
+            assert again["ok"] and again["via"] == "pydantic_ai", again["log"]
+    finally:
+        (AG.pydantic_transport, AG.http_json) = saved[:2]
+        for d, old in ((AG.ADAPTER, saved[2]), (AG.USAGE, saved[3]), (AG.RUN_TASK, saved[4]),
+                       (AG.FAILS, saved[5]), (AG.DOWN, saved[7]), (AG.DOWN_WHY, saved[8])):
+            d.clear()
+            d.update(old)
+        AG._BYPASS_SAID.clear()
+        AG._BYPASS_SAID.update(saved[6])
+        AG._write_alarm(saved[9])      # тревога — файл на всю машину: чужая проверка не должна её видеть
+        restore()
+
+
+@test
+def test_a_quarantine_without_a_reason_is_named_as_such_and_the_harness_clears_it(tmp: Path):
+    """Пропуск бэкенда не имеет права звучать «не отвечал» без причины.
+
+    Карантин ставит движок в словаре процесса, и проверка, оставившая его за собой, выключала
+    бэкенд следующей — та читала «не отвечал, вернёмся через 900 с» и не делала попыток. Поэтому
+    на границе проверок состояние кольца сбрасывается, а если карантин всё же без причины —
+    вызов обязан это сказать, а не выдавать себя за мёртвый шлюз.
+    """
+    AG, _R = _mods()
+    from harness import forget_engine_state
+    saved = (dict(AG.DOWN), dict(AG.DOWN_WHY), AG.http_json)
+    try:
+        AG.DOWN.clear()
+        AG.DOWN_WHY.clear()
+        AG.http_json = lambda url, body, key, timeout: (200, json.loads(json.dumps(
+            {"choices": [{"message": {"content": "ответ"}, "finish_reason": "stop"}]})), "", 0.1)
+        with _Env(AURORA_AGENT_CACHE="0"):
+            cfg = _cfg(AG)
+            # Карантин без причины — так его ставил движок до 1.231.10 за отказ адаптера.
+            AG.DOWN[1] = AG.time.time() + 900
+            r = AG.call_role(cfg, "worker", [{"role": "user", "content": "раз"}], sleep=AG.NO_WAIT)
+            skip = [x for x in r["log"] if "не отвечал, вернёмся через" in x]
+            assert skip and "Причина не записана" in skip[0], r["log"]
+            assert not r["ok"], "карантин без причины выдал ответ"
+            # Тот же карантин, но с причиной: она и названа.
+            AG.DOWN_WHY[1] = (AG.DOWN[1], AG.Why.raw("отказ в соединении", "refused"))
+            r2 = AG.call_role(cfg, "worker", [{"role": "user", "content": "два"}], sleep=AG.NO_WAIT)
+            skip2 = [x for x in r2["log"] if "не отвечал, вернёмся через" in x]
+            assert skip2 and "отказ в соединении" in skip2[0], r2["log"]
+            # Граница проверок снимает чужой карантин: следующая не зависит от соседа.
+            forget_engine_state()
+            assert not AG.DOWN and not AG.DOWN_WHY, (AG.DOWN, AG.DOWN_WHY)
+            r3 = AG.call_role(cfg, "worker", [{"role": "user", "content": "три"}], sleep=AG.NO_WAIT)
+            assert r3["ok"] and r3["text"] == "ответ", r3["log"]
+    finally:
+        AG.DOWN.clear()
+        AG.DOWN.update(saved[0])
+        AG.DOWN_WHY.clear()
+        AG.DOWN_WHY.update(saved[1])
+        AG.http_json = saved[2]
+
+
+@test
 def test_the_adapter_follows_the_call_settings_not_a_process_switch(tmp: Path):
     """Какой адаптер нужен вызову, решает его настройка: переключатель процесса, оставшийся
     прямым HTTP, больше не уводит вызов мимо Pydantic AI (так было с 1.153.0 по 1.160.0)."""
