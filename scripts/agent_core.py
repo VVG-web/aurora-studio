@@ -1915,10 +1915,24 @@ def default_transport(kind: str, backend: dict, payload: dict | None, timeout: f
         pulse_end(n, st == 200 and not err, err)
 
 
+_ADAPTER_LAST = threading.local()   # поломка пути Pydantic AI на последнем запросе ЭТОГО потока
+
+
+def adapter_last():
+    """Чем в этом потоке сломался путь Pydantic AI на последнем запросе (`None` — не ломался).
+
+    Нужно кольцу: когда адаптер сломан и прямой резерв тоже не ответил, в кортеже транспорта
+    остаётся только отказ шлюза, а причина поломки — нет. Без неё кольцо считало такой отказ
+    бедой шлюза и выключало его на пятнадцать минут (`ADAPTER["fallback_why"]` не годится: поле
+    процесса, соседний вызов его обнуляет)."""
+    return getattr(_ADAPTER_LAST, "why", None)
+
+
 def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -> tuple:
     if kind == "slots":
         root = backend["url"].rsplit("/v1", 1)[0]
         return http_json(root + "/slots", None, backend["key"], CONNECT_TIMEOUT)
+    _ADAPTER_LAST.why = None          # причина прошлого запроса этого потока к этому не относится
     # Каждый вызов модели — через Pydantic AI, когда он выбран: одиночный пересказ так же,
     # как разговор с инструментами. Ответ сервера (и отказ тоже) возвращается как есть;
     # прямой HTTP — только как явный резерв, когда сломан сам адаптер (venv не стоит, процесс
@@ -1947,6 +1961,7 @@ def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -
         link, hard = _adapter_failure(err)
         if hard is not None:
             ADAPTER["fallback_why"] = hard
+            _ADAPTER_LAST.why = hard
     if link is not None:
         done, hard = _adapter_drop(backend, payload, timeout, link, dt, entered, needs)
         if done is not None:
@@ -1955,6 +1970,7 @@ def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -
         # куда доходит проверка движка, и это доказано): дальше — как при любой его поломке. Прямой
         # запрос — явный резерв, причина едет в ответе, а вызов с инструментами такой ответ не примет.
         ADAPTER["fallback_why"] = hard
+        _ADAPTER_LAST.why = hard
     # В шлюз уходит запрос по стандарту. Внутренние поля адресованы адаптеру, а не
     # серверу: `guard`/`role`/`tools_root`/`mcp` — сторожу и инструментам. Строгий шлюз
     # на неизвестное поле отвечает `400 Unrecognized request argument`, а движок объявлял
@@ -3944,7 +3960,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 held = held[1] if held and held[0] == until else None     # причина именно этого карантина
                 log.append(f"№{b['n']}: не отвечал, вернёмся через "
                            f"{int(until - time.time())} с (кнопка снимает сразу)"
-                           + (f". Причина: {held.body}" if held is not None else ""))
+                           + (f". Причина: {held.body}" if held is not None
+                              else ". Причина не записана — снял бы карантин кнопкой, но проверь, кто его поставил"))
                 if held is not None:
                     why_seen.append(held)
                 # Ждать карантин умеет только терпеливый вызов: подставивший `NO_WAIT` паузы не переждёт, и
@@ -4089,6 +4106,9 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                                     f"оценка входа ≈{rough_tokens(payload['messages'])} ток. · "
                                     f"лимит {human_secs(min(left, limit))}")
                 t_req = time.monotonic()
+                # Причина поломки адаптера — своя у каждой попытки: подставной транспорт (тесты,
+                # замеры) её не пишет, и прошлая не должна достаться этому вызову.
+                _ADAPTER_LAST.why = None
                 st, body, err, dt = transport("chat", b, payload,
                                               max(5.0, min(left, limit)))
                 if st == 400 and rejects_template(err, body):
@@ -4098,6 +4118,10 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                                f"умолчанию, включить их на этом шлюзе нечем")
                     st, body, err, dt = transport("chat", b, payload,
                                                   max(5.0, deadline - time.time()))
+                # Сломка самого пути Pydantic AI на ЭТОМ запросе (venv не стоит, процесс упал,
+                # версия не прошла проверку). В кортеже её нет: если прямой резерв тоже не ответил,
+                # там остаётся отказ шлюза.
+                hard = adapter_last()
                 if st != 200 or not isinstance(body, dict):
                     # Выбранная авто-модель ошиблась — выбор больше не годится: следующий
                     # вызов замерит доступные заново, а не будет 20 минут ходить в мёртвую.
@@ -4106,6 +4130,16 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     # реальная причина вместо «не ответил».
                     lw = link_note(b, model, st, err, live, t_req)
                     cause = getattr(err, "cause", None)
+                    # Отказ самого пути Pydantic AI: `link_note` на нём уже говорит «не про связь»
+                    # (`err.cause`), и карантин шлюзу за это не полагается. Иначе один отказ адаптера
+                    # (прокси, сертификат, клиент) выключал бэкенд на 15 минут, а следующий вызов
+                    # получал «не отвечал, вернёмся через 900 с» вместо громкой причины — так и
+                    # покраснел CI 1.231.9.
+                    adapter_side = cause is not None or hard is not None
+                    # Причину поломки пути кольцо называет само: `note_bypass` ниже срабатывает
+                    # только на `cause` (клиент адаптера), а venv и версия приходят отдельно.
+                    if hard is not None and cause is None:
+                        note_bypass(hard, needs_adapter, answered=False)
                     if lw is not None and lw.kind in LINK_ALARM_KINDS:
                         why_seen.append(lw)
                         fresh_link_fail.append(lw.kind)
@@ -4242,6 +4276,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                                 DOWN_WHY[b["n"]] = (DOWN[b["n"]], lw)
                             else:
                                 DOWN[b["n"]] = time.time() + DOWN_FOR
+                                DOWN_WHY[b["n"]] = (DOWN[b["n"]], lw if lw is not None
+                                                    else cause_of(str(err or "не уложился в срок")))
                         real = "" if really_slow else (lw.body if lw is not None else str(cause))
                         say_live("⟳", role, f"№{b['n']} {model} " + (f"не ответил за {human_secs(limit)}"
                                                                        if really_slow else real[:120])
@@ -4260,19 +4296,24 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                                       f" (к нему ещё {ours} наших запросов — это очередь, "
                                       f"карантин не ставлю)" if ours else ""))
                     else:
-                        # Бэкенд жив, если не дошёл только адаптер (`client_net`): в карантин его не
-                        # сажаем — прямые вызовы без инструментов к нему идут. Пока расхождение не
-                        # доказано (`armed`), вызов повторяется; доказано — ждать нечего, чинится
-                        # прокси или сертификат, и вызов отказывает с названной причиной.
-                        adapter_side = cause is not None and cause.kind == "client_net"
+                        # Бэкенд жив, если не дошёл только адаптер: в карантин его не сажаем — прямые
+                        # вызовы без инструментов к нему идут. Пока расхождение не доказано (`armed`),
+                        # вызов повторяется; доказано — ждать нечего, чинится прокси или сертификат.
                         if not adapter_side:
                             DOWN[b["n"]] = time.time() + down_for(lw)
-                            if lw is not None and lw.kind in LINK_ALARM_KINDS:
-                                DOWN_WHY[b["n"]] = (DOWN[b["n"]], lw)
+                            # Причину карантина пишем всегда. Без неё пропуск бэкенда звучал «не
+                            # отвечал», и следующий вызов падал «ни один бэкенд не ответил
+                            # осмысленно» без единой зацепки — так и выглядел красный CI 1.231.9.
+                            DOWN_WHY[b["n"]] = (DOWN[b["n"]], lw if lw is not None
+                                                else cause_of(str(err or f"HTTP {st}")))
                         # Что не так на самом деле: вид обрыва (DNS, отказ порта, сертификат,
                         # сброс…) или поломка адаптера — а сырой текст ошибки остаётся в скобках.
                         real = (lw.body if lw is not None
                                 else str(cause) if cause is not None else "")
+                        if adapter_side and real == "":
+                            # Внятной причины у прямого пути нет, а у адаптера — есть: пусть и
+                            # строка журнала называет её, а не «причину назвать не удалось».
+                            real = str(cause)
                         log.append(f"№{b['n']} {model}: "
                                    + (f"{real} ({str(err)[:160]})" if real and err and str(err) != real
                                       else real or str(err or f'HTTP {st}')))
@@ -4281,7 +4322,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                                             + (" — подожду и повторю" if persist else ""))
                         # Обрыв связи, 5xx — временное: маршрут дождётся, когда шлюз вернётся.
                         other += 1
-                        can_recover = can_recover or (persist and not (adapter_side and cause.armed))
+                        can_recover = can_recover or (persist and not (
+                            cause is not None and cause.kind == "client_net" and cause.armed))
                     continue
                 if live:
                     link_ok(b["n"])      # бэкенд ответил: серия неудач связи обнулена, тревога снята
