@@ -4038,7 +4038,11 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             # `request_timeout × число бэкендов`, и это честная цена запасного пути.
             left = deadline - time.time()
             fair = req_timeout * FAIR_SHARE
-            if left < fair and b["n"] not in tried:
+            # Запасной срок нужен затем, чтобы у вызова остался путь на ДРУГОЙ бэкенд.
+            # На кольце из одного бэкенда другого пути нет: продление здесь просто
+            # растягивает вызов за дедлайн, который назвал вызывающий, — и вместо
+            # «одна попытка и итог» получается тридцать кругов ожидания карантина.
+            if len(order) > 1 and left < fair and b["n"] not in tried:
                 deadline += fair
                 left = deadline - time.time()
                 log.append(f"№{b['n']}: даю запасному свой срок ({int(fair)} с)")
