@@ -1184,14 +1184,19 @@ def test_first_thesis_is_not_a_redistill_and_false_history_is_repaired(tmp: Path
 
 
 @test
-def test_thinking_calls_get_a_deadline_that_fits_the_thinking(tmp: Path):
-    """Срок вызова с рассуждениями — по скорости шлюза, а не жёсткие 300 с.
+def test_every_role_gets_a_deadline_that_fits_its_work(tmp: Path):
+    """Срок вызова — у каждой роли свой, по ожидаемому выходу и замеренной скорости шлюза.
 
     Замер PRJ-A 22.09.2026 без обрыва: рассуждение с тезисом — 7–26 тыс. токенов, 160–470 с
     при ~50 ток/с под нагрузкой. Жёсткий срок в 300 с обрывал половину тезисов на
     середине: работа выбрасывалась, попытка шла заново, уходила на запасную машину с
     другой моделью или карточка падала «сбоем» до следующего оборота. На 16 карточках
     вызовы тезиса шли 8200 с, из них генерации — 2000.
+
+    Прежняя формула знала только «рассуждает / нет»: медленная модель без рассуждений
+    получала жёсткое число и обрывалась ровно потому, что была медленной. Теперь срок
+    считается для всех ролей одинаково: `CONNECT_RESERVE + ROLE_OUT_TOKENS / tps`,
+    не ниже пола роли и не выше её потолка.
     """
     sys.path.insert(0, str(SCRIPTS))
     import importlib
@@ -1202,27 +1207,35 @@ def test_thinking_calls_get_a_deadline_that_fits_the_thinking(tmp: Path):
     saved = dict(A.USAGE)
     try:
         A.USAGE.update(tokens_out=0, gen_seconds=0.0)
-        assert A.request_timeout_for(cfg, False) == 300, "срок без рассуждений изменился"
-        assert A.request_timeout_for(cfg, True) == 1200, \
-            "без замера скорости срок не потолок — днём первые длинные тезисы оборвутся"
+        # Замера скорости ещё нет — считаем по осторожной DEFAULT_TPS = 40.
+        assert A.request_timeout_for(cfg, "fast") == 300, "короткая роль получила срок не по настройке"
+        assert A.request_timeout_for(cfg, "worker") == 620, \
+            "без замера скорости у разбора нет запаса на тяжёлый тезис (24 тыс. токенов)"
+        assert A.request_timeout_for(cfg, "qa") == 520, \
+            "у проверки нет своего срока по ожидаемому выходу"
         A.USAGE.update(tokens_out=50 * 600, gen_seconds=600.0)        # 50 ток/с
-        assert A.request_timeout_for(cfg, True) == 600, "срок не по скорости шлюза"
+        assert A.request_timeout_for(cfg, "worker") == 500, "срок не по скорости шлюза"
+        assert A.request_timeout_for(cfg, "qa") == 420, "у qa срок не по скорости шлюза"
         A.USAGE.update(tokens_out=5 * 600, gen_seconds=600.0)         # 5 ток/с — шлюз еле жив
-        assert A.request_timeout_for(cfg, True) == 1200, \
-            "у срока нет потолка — зависший шлюз держал бы слот вечно"
+        assert A.request_timeout_for(cfg, "worker") == 1800, \
+            "медленный разбор упёрся в прежний потолок, а не в общий предел"
+        assert A.request_timeout_for(cfg, "qa") == 1800, \
+            "медленная проверка упёрлась в прежний потолок 900"
         A.USAGE.update(tokens_out=500 * 600, gen_seconds=600.0)       # быстрый шлюз
-        assert A.request_timeout_for(cfg, True) == 300, "срок стал короче настроенного"
+        assert A.request_timeout_for(cfg, "worker") == 300, "срок стал короче пола роли"
+        assert A.request_timeout_for(cfg, "qa") == 360, "пол qa (2 × p90) не держится"
         off = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://x/v1",
+                              "AURORA_AGENT_REQUEST_TIMEOUT": "300",
                               "AURORA_AGENT_THINKING_WORKER": "0"})
-        assert A.call_budget(off, "worker") == off["request_timeout"], \
-            "роли без рассуждений дан срок рассуждающей"
+        assert A.call_budget(off, "worker") == A.call_budget(cfg, "worker"), \
+            "срок роли зависит от общего переключателя рассуждений, а не от самой роли"
     finally:
         A.USAGE.clear(); A.USAGE.update(saved)
     src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
     assert 'time.time() + cfg["request_timeout"])' not in src, \
         "срок шага снова жёсткий — рассуждение оборвётся на середине"
     core = (SCRIPTS / "agent_core.py").read_text(encoding="utf-8")
-    assert "request_timeout or request_timeout_for(cfg, think)" in core, \
+    assert "request_timeout or request_timeout_for(cfg, role)" in core, \
         "вызов модели берёт срок мимо общего правила"
 
 

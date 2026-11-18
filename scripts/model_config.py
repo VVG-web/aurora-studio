@@ -63,8 +63,8 @@ RENAMED = {"worker": ("Разбор и тезисы",), "planner": ("Плани�
            "critic": ("Критик (Момус)",), "qa": ("Ответы на вопросы",)}
 # Роль, которой отвечает возможность, когда задача зовёт роль без бэкендов.
 DEFAULT_ROLE = {"llm": "worker", "ocr": "document", "embeddings": "index"}
-SETTINGS_DEFAULT = {"adapter": "pydantic_ai", "max_steps": 15, "budget_min": 20,
-                    "request_timeout": 300, "parallel": "auto", "debug": False,
+SETTINGS_DEFAULT = {"adapter": "pydantic_ai", "max_steps": 15, "budget_min": 40,
+                    "request_timeout": 600, "parallel": "auto", "debug": False,
                     "rerank": False}
 OCR_DEFAULT = {"dpi": 130, "max_pages": 60}
 

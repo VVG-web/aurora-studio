@@ -365,8 +365,12 @@ def parse_config(env: dict) -> dict:
         "thinking_roles": {r: env.get(f"AURORA_AGENT_THINKING_{r.upper()}", "")
                            for r in ROLES},
         "max_steps": int(env.get("AURORA_AGENT_MAX_STEPS", "15") or 15),
-        "budget_min": int(env.get("AURORA_AGENT_BUDGET_MIN", "20") or 20),
-        "request_timeout": int(env.get("AURORA_AGENT_REQUEST_TIMEOUT", "300") or 300),
+        # Бюджет интерактивного шага. Один запрос может честно идти до `HARD_CAP` (30 минут),
+        # поэтому 20 минут резали медленный ответ раньше его собственного срока: человек
+        # получал «бюджет исчерпан» там, где модель ещё считала. 40 минут — это полный
+        # запрос (30) плюс очередь на слот, повтор и остаток шага.
+        "budget_min": int(env.get("AURORA_AGENT_BUDGET_MIN", "40") or 40),
+        "request_timeout": int(env.get("AURORA_AGENT_REQUEST_TIMEOUT", "600") or 600),
         # Сколько карточек разбирать одновременно. Каждый вызов — это ожидание ответа
         # шлюза, а не работа процессора: пока модель думает над одной карточкой, машина
         # простаивает. Умолчание 1 — прежнее поведение; ставить больше, чем шлюз держит
@@ -529,7 +533,13 @@ def retry_hint(headers, now: float | None = None) -> float | None:
 
 
 def http_json(url: str, payload: dict | None, key: str, timeout: float) -> tuple:
-    """→ (status|None, body|None, ошибка-строкой, секунд)."""
+    """→ (status|None, body|None, ошибка-строкой, секунд).
+
+    `timeout` — это ПРОСТОЙ, а не общий срок: socket-таймаут urllib срабатывает на каждой
+    блокирующей операции (connect, отправка, каждый recv), поэтому ответ, который течёт
+    байтами, обрывается только если замолчал дольше срока. Немой сервер обрывается по
+    этому же сроку — но это уже «нет байт», а не «слишком долго считал».
+    """
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -2082,6 +2092,32 @@ def busy(backend: dict, transport) -> bool:
     return bool(slots) and all(s.get("is_processing") for s in slots)
 
 
+def working(backend: dict, model: str, timeout: float = CONNECT_TIMEOUT) -> bool:
+    """Идёт ли на шлюзе работа по этой модели — тогда молчание это медленность, а не смерть.
+
+    Срок запроса отвечает на вопрос «сколько я готов ждать», а не «жив ли сервер». Когда
+    срок вышел, полезно знать, что именно случилось: модель всё ещё генерирует (llama-swap
+    показывает её в `/running`, llama.cpp — занятым слотом) или ответ уже потерян. Разница
+    видна человеку в журнале и решает, ставить ли шлюз в карантин.
+
+    Это вопрос, а не запрос модели: ничего не грузит и не занимает слот. Молчание самой
+    проверки — тоже ответ «не подтвердил».
+    """
+    root = backend["url"].rsplit("/v1", 1)[0]
+    short = (model or "").rsplit("/", 1)[-1].strip().lower()
+    st, body, _err, _dt = http_json(root + "/running", None, backend["key"], timeout)
+    if st == 200 and isinstance(body, dict):
+        rows = [x for x in (body.get("running") or []) if isinstance(x, dict)]
+        if rows:
+            names = {str(x.get("model") or x.get("id") or "") for x in rows}
+            names = {n.rsplit("/", 1)[-1].strip().lower() for n in names if n}
+            return bool(short) and any(short == n or short in n for n in names)
+    st, body, _err, _dt = http_json(root + "/slots", None, backend["key"], timeout)
+    if st == 200 and isinstance(body, list):
+        return any(s.get("is_processing") for s in body if isinstance(s, dict))
+    return False
+
+
 DOWN_FOR = 900        # столько не трогаем провайдера, который не ответил: 15 минут
 # Обрыв связи (`LINK_FAST_KINDS`) — минута: мигнувшая сеть или VPN не должна выключать шлюз на четверть часа. Пропуск
 # на карантине неудачей не считается, поэтому три неудачи подряд для тревоги связи набираются за ≈3 минуты аварии.
@@ -3489,10 +3525,36 @@ def looks_like_timeout(err) -> bool:
     return "timeout" in s or "timed out" in s
 
 
-# Сколько выходных токенов занимает рассуждение с ответом на длинной карточке. Замер
-# PRJ-A 22.09.2026 без обрыва: 7–26 тыс. — 160–470 с при ~50 ток/с под нагрузкой шлюза.
+# Сколько выходных токенов роль просит у модели. Медиана выхода обманывает: у разбора это
+# 51 токен, а тяжёлый тезис — 36 тыс. Поэтому берём не медиану, а тяжёлый хвост по замерам
+# 15–18.11 (b1-timings.md): qa — 11 894 медиана / 34 353 максимум, разбор — до 36 077.
+ROLE_OUT_TOKENS = {"qa": 20000, "worker": 24000, "planner": 2000, "critic": 800,
+                   "compressor": 8000, "fast": 200, "document": 400, "index": 0}
+# Пол срока: ниже него не опускаемся, даже если модель только что отвечала мгновенно.
+# qa: p90 успешной проверки 179 с, поэтому пол 360 — вдвое больше наблюдаемого p90.
+ROLE_FLOOR = {"qa": 360, "worker": 300, "planner": 180, "critic": 120,
+              "compressor": 300, "fast": 60, "document": 180, "index": 180}
+# Жёсткий верхний предел на ОДИН запрос: дольше получаса не ждём никого и никогда.
+HARD_CAP = 1800.0
+# Потолок роли. У генерационных ролей это общий жёсткий предел: p99 живых замеров считается
+# по ответам, которые уложились в прежние сроки, поэтому он занижает медленный хвост — 20–34
+# тыс. токенов на 10–15 ток/с это 1300–3400 с. Потолок 600/900 обрывал бы такую модель за
+# то, что она медленная, а это ровно то, что решено не делать. Поэтому qa, worker, planner,
+# critic, compressor упираются только в HARD_CAP. Короткие роли (fast, document, index)
+# остаются на 600: у них выход — сотни токенов, и 10 минут на них более чем достаточно.
+ROLE_CAP = {"qa": HARD_CAP, "worker": HARD_CAP, "planner": HARD_CAP, "critic": HARD_CAP,
+            "compressor": HARD_CAP, "fast": 600, "document": 600, "index": 600}
+# Запас на соединение, TLS, очередь на слот шлюза и первый байт ответа.
+CONNECT_RESERVE = 20.0
+# Скорость, пока своих замеров нет. Живые замеры 15–18.11: 53–163 ток/с, медиана 124;
+# 40 — осторожная оценка, чтобы срок в начале прогона был с запасом, а не в обрез.
+DEFAULT_TPS = 40.0
+# Сколько выходных токенов занимает рассуждение с ответом на длинной карточке (замер
+# PRJ-A 22.09.2026). Оставлено как справочная величина для ROLE_OUT_TOKENS.
 THINK_TOKENS = 30000
-THINK_CAP = 4.0        # не дольше стольких `request_timeout`: зависший шлюз не держит слот вечно
+# Множитель к настройке, которым раньше жили рассуждающие роли. Оставлен для совместимости
+# и как нижняя граница потолка: потолок роли не ниже 2 × `request_timeout`.
+THINK_CAP = 2.0
 
 
 def role_thinks(cfg: dict, role: str) -> bool:
@@ -3501,34 +3563,44 @@ def role_thinks(cfg: dict, role: str) -> bool:
     return (own not in ("0", "false", "no")) if own != "" else bool(cfg.get("thinking", True))
 
 
-def request_timeout_for(cfg: dict, think: bool) -> float:
-    """Срок одного запроса. С рассуждениями — по скорости шлюза, а не жёсткий.
-
-    `request_timeout` задуман сторожем от зависшего шлюза, а стал обрывать работу: на
-    PRJ-A половина тезисов с рассуждениями не укладывалась в 300 с — рассуждение длиной
-    7–26 тыс. токенов обрывалось на середине, выбрасывалось и начиналось заново, или
-    уходило на запасную машину с другой моделью, или карточка падала «сбоем» до
-    следующего оборота. Три четверти времени тезисов уходило в оборванные попытки.
-
-    Скорость — средняя по уже сделанным вызовам этого прогона; пока их нет — потолок.
-    Сверху — `THINK_CAP` сроков: сторож от зависшего шлюза остаётся.
-    """
-    base = float(cfg["request_timeout"])
-    if not think:
-        return base
+def _measured_tps() -> float:
+    """Скорость генерации, замеренная в этом прогоне. 0 — замеров ещё нет."""
     with _USAGE_LOCK:
         tokens, secs = USAGE["tokens_out"], USAGE["gen_seconds"]
-    tps = tokens / secs if secs >= 60 and tokens else 0.0
-    # Скорости ещё нет (начало прогона) — потолок, а не два срока: днём на PRJ-A 22.09.2026
-    # два срока (600 с) оборвали 2 из первых 15 тезисов. Первая же минута генерации даёт
-    # замер, и срок встаёт по нему.
-    need = THINK_TOKENS / tps if tps else base * THINK_CAP
-    return round(min(base * THINK_CAP, max(base, need)), 1)
+    return tokens / secs if secs >= 60 and tokens else 0.0
+
+
+def request_timeout_for(cfg: dict, role: str) -> float:
+    """Срок одного запроса — свой у каждой роли и по скорости шлюза, а не один на всех.
+
+    Правило запаса: срок не опускается ниже пола роли и не поднимается выше её потолка;
+    внутри этих границ он считается по ожидаемому выходу и замеренной скорости —
+    `CONNECT_RESERVE + ROLE_OUT_TOKENS[role] / tps`. Пока скорость не замерена, берётся
+    `DEFAULT_TPS`: осторожно, с запасом.
+
+    Прежняя формула знала только «рассуждает / нет»: рассуждающие получали `base * 4`,
+    остальные — `base`, и медленная модель обрывалась ровно потому, что была медленной.
+    Теперь медленный шлюз сам поднимает срок (до `HARD_CAP`), а быстрый не держит слот
+    лишние минуты.
+
+    Пол и потолок заданы на роль, а не выведены на месте: потолок — это правило запаса
+    `max(2 × прежний срок, 2,5 × p99 живых замеров)`, посчитанное по данным 15–18.11.
+    """
+    base = float(cfg["request_timeout"])
+    floor = max(base, float(ROLE_FLOOR.get(role, base)))
+    cap = min(HARD_CAP, max(base * THINK_CAP,
+                            float(ROLE_CAP.get(role, base * THINK_CAP))))
+    out_tokens = float(ROLE_OUT_TOKENS.get(role, THINK_TOKENS))
+    if out_tokens <= 0:
+        return round(min(cap, floor), 1)
+    tps = _measured_tps() or DEFAULT_TPS
+    need = CONNECT_RESERVE + out_tokens / tps
+    return round(min(cap, max(floor, need)), 1)
 
 
 def call_budget(cfg: dict, role: str) -> float:
     """Срок вызова роли — для дедлайнов шагов, которые зовут модель."""
-    return request_timeout_for(cfg, role_thinks(cfg, role))
+    return request_timeout_for(cfg, role)
 
 
 # Кэш ответов модели по содержимому задания (1.138.0, как семантический кэш graphify).
@@ -3727,7 +3799,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     # там, где уже знает цену работы: Момус читает тот же пак плюс ответ, и на модели,
     # которой ответ дался за пять минут, проверка в те же пять минут не укладывается
     # никогда. Дедлайн этого не решает — запрос всё равно режется по `request_timeout`.
-    req_timeout = float(request_timeout or request_timeout_for(cfg, think))
+    req_timeout = float(request_timeout or request_timeout_for(cfg, role))
     deadline = deadline or (time.time() + req_timeout)
     if persist:
         # Маршрут доводит до конца: срок вызова — бесконечность, срок запроса — страж
@@ -4151,9 +4223,15 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         # ответить (83 потока на один слот), сажал его в карантин на 15 минут.
                         with _SEM_LOCK:
                             ours = INFLIGHT.get(b["n"], 1) - 1
+                        # Срок вышел — но это не значит «мёртв». Спрашиваем шлюз, идёт ли по
+                        # этой модели работа: llama-swap называет её в `/running`, llama.cpp
+                        # держит занятым слот. Тогда молчание это медленность, и в карантин
+                        # такого не сажаем — иначе медленная модель объявляется недоступной
+                        # ровно в тот момент, когда она считает.
+                        alive = bool(working(b, model)) if (live and really_slow) else False
                         # Маршрут, доводящий дело до конца, медленного не выключает: он уходит
                         # в конец кольца (`SLOW`) и получает вдвое больший срок, а не карантин.
-                        if not fresh and not ours and not persist:
+                        if not fresh and not ours and not persist and not alive:
                             if lw is not None and lw.kind == "connect_timeout":
                                 # Соединение не установилось — это обрыв связи, а не медленный ответ: короткий карантин.
                                 DOWN[b["n"]] = time.time() + down_for(lw)
@@ -4169,6 +4247,10 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                                                              if really_slow else real)
                                    + (f" — следующая попытка на нём получит "
                                       f"{int(limit * PERSIST_GROWTH)} с" if persist else "")
+                                   + (" (шлюз подтверждает: модель ещё работает — это медленно, "
+                                      "а не мертво)" if alive else
+                                      " (шлюз работу не подтвердил: ответ, похоже, потерян)"
+                                      if really_slow and live else "")
                                    + (" (но отвечал только что — карантин не ставлю)"
                                       if fresh else
                                       f" (к нему ещё {ours} наших запросов — это очередь, "
@@ -4792,7 +4874,7 @@ def pydantic_settings(cfg: dict, venv: tuple | None = None) -> dict:
         for r in ROLES:
             think = role_thinks(cfg, r)
             roles[r] = {"model": role_model(b, r), "thinking": think,
-                        "timeout": int(request_timeout_for(cfg, think)),
+                        "timeout": int(request_timeout_for(cfg, r)),
                         "extra_body": {"chat_template_kwargs": request_template(b, think)}}
         backends.append({"n": b["n"], "url": b["url"], "key_set": bool(b.get("key")),
                          "template": b.get("template") or {},
