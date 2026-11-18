@@ -38,6 +38,7 @@ from harness import (  # noqa: F401
     RESULTS,
     SHARD,
     SMOKE,
+    forget_engine_state,
     select_tests,
     test,
     why,
@@ -102,6 +103,9 @@ try:
         # (она ищет `engine_manifest.txt` относительно рабочей папки) не видела команд `dev:`.
         # Падала при этом не виновница, а третья проверка спустя сотню. Возвращаем после каждой.
         _cwd = os.getcwd()
+        # Карантины и паузы кольца живут в словарях движка, а не в вызове: без сброса проверка
+        # зависит от соседа и от порядка, а порядок в долях прогона на Windows свой (1.231.9).
+        forget_engine_state()
         try:
             _fn(run_td)
             RESULTS.append((_n, None))
