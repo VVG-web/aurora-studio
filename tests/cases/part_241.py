@@ -25,10 +25,31 @@ def test_numpy_is_a_dependency_and_a_visible_install_row(_t):
     req = (KIT / "requirements.txt").read_text(encoding="utf-8")
     line = next((ln.strip() for ln in req.splitlines() if ln.strip().startswith("numpy")), "")
     assert re.fullmatch(r"numpy>=\d+(\.\d+)+,<\d+", line), line
+    m = re.fullmatch(r"numpy>=(\d+)\.(\d+),<(\d+)", line)
+    assert m and m.group(1) == "2" and m.group(3) == "3", \
+        "диапазон numpy должен покрывать Python 3.10 (2.2.x) и 3.14 (2.3.x)"
     ck = importlib.import_module("aurora_cockpit")
     rows = {pkg: (mods, what) for pkg, mods, what in ck.ENV_PY}
     assert "numpy" in rows and rows["numpy"][0] == ("numpy",), rows
     assert "kb:map" in rows["numpy"][1], rows["numpy"]
+
+
+@test
+def test_every_install_row_is_explained_in_english(_t):
+    """Строка «Установки» без английского перевода оставляет русский текст в английской панели.
+
+    Так было с numpy: строка появилась в ENV_PY, а перевода в cockpit/i18n/data/en.json не
+    было — обход английской панели краснел на `/api/state .env.items[].enables`. Проверяем
+    не файл, а тот же путь, которым панель отдаёт строку человеку.
+    """
+    ck = importlib.import_module("aurora_cockpit")
+    env = {"items": [{"name": pkg, "enables": what, "install": ""}
+                     for pkg, _mods, what in ck.ENV_PY]}
+    out = ck.localized_environment(env, "en")
+    for row in out["items"]:
+        assert not re.search("[а-яА-ЯёЁ]", row["enables"]), row
+    numpy_row = next(r for r in out["items"] if r["name"] == "numpy")
+    assert "similar cards" in numpy_row["enables"], numpy_row
 
 
 @test

@@ -104,7 +104,8 @@ def record(project: str, run_id: str, data: dict, who: str = "") -> dict:
         "run": str(run_id),
         "kind": _clean((data or {}).get("kind") or "agent"),
         "task": _clean((data or {}).get("task") or ""),
-        "started": str((data or {}).get("started") or ""),
+        "started": (utc_stamp((data or {}).get("started"))
+                    if (data or {}).get("started") not in (None, "") else ""),
         "seconds": round(float((data or {}).get("seconds") or 0), 2),
         "calls": int((data or {}).get("calls") or 0),
         "tokens_in": int((data or {}).get("tokens_in") or 0),

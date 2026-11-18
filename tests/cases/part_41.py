@@ -3816,6 +3816,9 @@ def test_a_recheck_waits_for_link_and_continues_the_same_card(tmp: Path):
         with _RunDir(tmp / "run"):
             res = R.recheck_unsupported(cfg, str(root), False, call=fake)
     assert len(calls) == 14, f"шесть обрывов и восемь карточек — ждали 14 вызовов, было {len(calls)}"
+    first = calls[0]
+    assert sum(1 for c in calls if c == first) == 7, \
+        "обрыв не повторял ту же карточку: очередь перешла к следующей"
     assert res["clean"] == 8 and res["failed"] == 0, res
     assert len(res["steps"]) == 8, res["steps"]
     assert not any("остановлена" in (s.get("note") or "") for s in res["steps"]), res["steps"]

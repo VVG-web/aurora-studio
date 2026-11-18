@@ -205,3 +205,24 @@ def test_contributing_states_roles_and_anonymised_bug_notes_in_both_languages(tm
         "не названо, что ещё не переведено на роли"
     assert "ещё не внедрён" not in ru and "is not implemented yet" not in en, \
         "словарь ролей снова подан как не внедрённый"
+
+
+@test
+def test_release_tags_the_version_commit_and_lists_later_fixes(_t):
+    """Метка выпуска ставится на коммит, поднявший VERSION, а более поздние исправления
+    перечисляются в заметках, а не переписывают метку.
+
+    Случай 1.231.7: после релизного коммита понадобился диапазон numpy под Python 3.10…3.14.
+    Метка осталась на коммите версии, а `deps: …` попал в блок «После метки». Проверка держит
+    это правило: `--target` берётся из истории VERSION, `POST_TAG` считается до HEAD, force-push
+    и перезапись метки запрещены.
+    """
+    text = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    assert '--target "$(git log -1 --format=%H -- VERSION)"' in text, \
+        "метка снова ставится на HEAD, а не на коммит версии"
+    assert "POST_TAG=" in text and "### После метки" in text, \
+        "коммиты после метки не попадают в заметки выпуска"
+    assert 'git merge-base --is-ancestor "$TAG_COMMIT" "$HEAD_SHA"' in text, \
+        "нет проверки, что метка лежит в проверенной истории"
+    assert "--force" not in text and "push --tags" not in text, \
+        "выпуск не должен переписывать метку или пушить теги вручную"
