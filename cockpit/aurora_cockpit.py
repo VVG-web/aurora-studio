@@ -4707,6 +4707,21 @@ def run_capture(project: str, script: str, args: list, timeout: int = 300) -> tu
         return 1, f"{script}: {e}"
 
 
+def _project_paths(projects) -> list:
+    """Пути проектов из того, что отдаёт панель: строки или карточки `find_projects`.
+
+    `/api/metrics` зовёт `find_projects`, а тот возвращает карточки (`{"path": ...}`), не
+    строки. Передать карточку в `Path()` — TypeError, и раздел «Замеры» показывал
+    «отчёты сети не прочитаны» вместо чисел. Принимаем оба вида и убираем повторы.
+    """
+    out = []
+    for project in projects or []:
+        path = project.get("path") if isinstance(project, dict) else project
+        if path:
+            out.append(str(path))
+    return list(dict.fromkeys(out))
+
+
 def metrics_state(projects, days: int = 7) -> dict:
     """«Замеры»: сеть/ VPN по прогонам и токены по проектам, ролям и моделям.
 
@@ -4717,6 +4732,7 @@ def metrics_state(projects, days: int = 7) -> dict:
         import usage_log as UL
     except ImportError as e:  # noqa: BLE001 — старый движок: раздел скажет, чего не хватает
         return {"error": f"модули замеров не установлены: {e}", "net": [], "tokens": {}}
+    projects = _project_paths(projects)
     days = max(0, int(days or 0))
     since = (time.time() - days * 86400) if days else 0.0
     try:

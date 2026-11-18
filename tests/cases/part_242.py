@@ -31,7 +31,7 @@ def test_metrics_section_sits_after_cron_and_needs_no_project(_t):
     """Манифест: machine/36 — между Cron (35) и Справкой (40), без выбранного проекта."""
     man = json.loads((KIT / "cockpit/modules/metrics/module.json").read_text(encoding="utf-8"))
     assert man["id"] == "metrics" and man["group"] == "machine" and man["order"] == 36, man
-    assert man["needs"] == [] and man["for"] == "1.231.7", man
+    assert man["needs"] == [] and man["for"] == "1.231.8", man
     assert man["name"]["ru"] == "Замеры", man
     src = panel_sources()
     for need in ("/api/metrics", "metrics.net_title", "metrics.tokens_title", "metrics.col.model"):
@@ -194,3 +194,22 @@ def test_metrics_state_reads_net_and_tokens_without_project(tmp: Path):
     assert got["net"] and got["tokens"]["records"] == 1, got
     assert got["tokens"]["rows"][0]["role"] == "planner", got
     assert str(tmp) not in json.dumps(got, ensure_ascii=False), got
+
+
+@test
+def test_metrics_state_accepts_project_cards_from_the_panel(tmp: Path):
+    """`/api/metrics` передаёт карточки `find_projects`, а не строки путей.
+
+    Случай 1.231.7: открытие вкладки «Замеры» показывало «отчёты сети не прочитаны:
+    TypeError ... not 'dict'» — `Path()` получал карточку проекта. Проверяем оба вида:
+    карточки от панели и строки, которыми пользуются тесты и CLI.
+    """
+    import aurora_cockpit as ck
+    root = make_project(tmp)
+    cards = ck.find_projects([str(tmp)])
+    assert cards and cards[0]["path"] == str(root), cards
+    for projects in (cards, [str(root)]):
+        got = ck.metrics_state(projects, days=7)
+        assert got["error"] == "", got
+        assert not (got.get("tokens") or {}).get("error"), got["tokens"]
+        assert got["days"] == 7 and got["tokens"]["records"] == 0, got
