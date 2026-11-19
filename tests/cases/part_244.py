@@ -793,7 +793,8 @@ def test_runtime_truth_stderr_generation_survives_parallel_restart(tmp: Path):
         old_pending, new_pending = {"old": old_slot}, {"new": new_slot}
         new_proc = NewProc()
         with A._HUB_LOCK:
-            A._HUB.update(proc=new_proc, pending=new_pending, proc_gen=new_gen, deaths=0)
+            A._HUB.update(proc=new_proc, pending=new_pending, proc_gen=new_gen, deaths=0,
+                          broken="", dead={})
         # Старый читатель закрылся уже после замены процесса: он вправе отказать своим
         # слотам, но не новым и не считать смерть нового процесса.
         A._hub_reader(OldProc(), old_pending, old_gen)
@@ -803,7 +804,9 @@ def test_runtime_truth_stderr_generation_survives_parallel_restart(tmp: Path):
         assert (out.get("code"), out.get("pid"), out.get("pending")) == (7, 101, 1), out
         assert "old:19" in str(out.get("stderr") or ""), out
         assert new_slot["out"] is None, new_slot
-        assert A._HUB["deaths"] == 0, A._HUB["deaths"]
+        # Смерть старого процесса считается, но живой новый остаётся текущим.
+        assert A._HUB["deaths"] == 1, A._HUB["deaths"]
+        assert A._HUB["proc"] is new_proc and not A._HUB["broken"], A._HUB
         # Даже если старому читателю по ошибке дали словарь нового процесса, слоты
         # нового он не очищает и не отказывает им.
         A._hub_reader(OldProc(), new_pending, old_gen)
@@ -852,6 +855,147 @@ def test_runtime_truth_faulthandler_stderr_survives_a_native_crash(tmp: Path):
                 except (OSError, ValueError):
                     pass
         A.RT.HOME = old_home
+        A._HUB.clear()
+        A._HUB.update(old_hub)
+
+
+@test
+def test_runtime_truth_three_replaced_deaths_arm_alarm_without_breaking_live_process(tmp: Path):
+    """Три смерти до подсчёта старым читателем дают deaths=3 и тревогу, но не ломают живой новый."""
+    A, _RC, _P, _D = _modules()
+    import threading
+    from collections import deque
+
+    old_home, old_task = A.RT.HOME, dict(A.RUN_TASK)
+    old_hub = dict(A._HUB)
+    old_hub["stderr"] = deque(A._HUB.get("stderr") or [], maxlen=200)
+    old_hub["stderr_by_gen"] = dict(A._HUB.get("stderr_by_gen") or {})
+    old_hub["stderr_by_gen"][int(old_hub.get("stderr_gen") or 0)] = old_hub["stderr"]
+    old_hub["proc_gen_by_id"] = dict(A._HUB.get("proc_gen_by_id") or {})
+    old_hub["dead"] = dict(A._HUB.get("dead") or {})
+    old_pipe, old_record = dict(A._PIPE_RUN), A.record_failure
+    A.RT.HOME = tmp / "home"
+    A.RT.HOME.mkdir()
+    A.RUN_TASK["name"] = "bot:old-generations"
+    A.record_failure = lambda *a, **k: None
+    A._write_alarm({})
+    A._PIPE_RUN.clear()
+
+    class LiveProc:
+        pid = 900
+        stdout = []
+        code = None
+
+        def poll(self):
+            return self.code
+
+    class DeadProc:
+        def __init__(self, pid: int):
+            self.pid = pid
+            self.stdout = []
+
+        def poll(self):
+            return 7
+
+    new_proc = LiveProc()
+    new_slot = {"done": threading.Event(), "out": None}
+    new_pending = {"new": new_slot}
+    with A._HUB_LOCK:
+        A._HUB.update(proc=new_proc, pending=new_pending, proc_gen=100, deaths=0,
+                      broken="", dead={})
+    try:
+        for i in range(3):
+            old_proc = DeadProc(1000 + i)
+            slot = {"done": threading.Event(), "out": None}
+            A._hub_reader(old_proc, {"old": slot}, 200 + i)
+            cause = A._out_cause(slot["out"] or {}, "")
+            assert cause.kind == "process_died" and cause.sub == "closed", cause
+            A.note_bypass(cause, answered=False)
+            assert A._HUB["proc"] is new_proc and not A._HUB["broken"], A._HUB
+            if i < 2:
+                assert "bot:old-generations" not in A.read_alarm(), A.read_alarm()
+        assert A._HUB["deaths"] == 3, A._HUB["deaths"]
+        row = A.read_alarm()["bot:old-generations"]
+        assert row["args"].get("deaths") == 3, row
+
+        # Живой новый процесс не выключен старой смертью; его собственная смерть
+        # добивает порог и только тогда ставит `broken`.
+        new_proc.code = 9
+        A._hub_reader(new_proc, new_pending, 100)
+        assert A._HUB["deaths"] == 4, A._HUB["deaths"]
+        assert A._HUB["broken"] and A._HUB["broken"].kind == "process_died", A._HUB["broken"]
+    finally:
+        A.RT.HOME, A.RUN_TASK, A.record_failure = old_home, old_task, old_record
+        A._PIPE_RUN.clear()
+        A._PIPE_RUN.update(old_pipe)
+        A._write_alarm({})
+        A._HUB.clear()
+        A._HUB.update(old_hub)
+
+
+@test
+def test_runtime_truth_old_pipe_write_counts_death_without_clearing_new(tmp: Path):
+    """Ошибка записи в трубу уже заменённого процесса считается, но новый остаётся текущим."""
+    A, _RC, _P, _D = _modules()
+    from collections import deque
+
+    old_home, old_task = A.RT.HOME, dict(A.RUN_TASK)
+    old_hub = dict(A._HUB)
+    old_hub["stderr"] = deque(A._HUB.get("stderr") or [], maxlen=200)
+    old_hub["stderr_by_gen"] = dict(A._HUB.get("stderr_by_gen") or {})
+    old_hub["stderr_by_gen"][int(old_hub.get("stderr_gen") or 0)] = old_hub["stderr"]
+    old_hub["proc_gen_by_id"] = dict(A._HUB.get("proc_gen_by_id") or {})
+    old_hub["dead"] = dict(A._HUB.get("dead") or {})
+    old_hub_fn, old_record = A.adapter_hub, A.record_failure
+    A.RT.HOME = tmp / "home"
+    A.RT.HOME.mkdir()
+    A.RUN_TASK["name"] = "bot:old-pipe"
+    A.record_failure = lambda *a, **k: None
+    A._write_alarm({})
+
+    class Broken:
+        def write(self, line):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            pass
+
+    class OldPipe:
+        pid = 901
+        stdin = Broken()
+        stdout = []
+        stderr = []
+
+        def poll(self):
+            return 3
+
+    class LiveProc:
+        pid = 902
+        stdout = []
+
+        def poll(self):
+            return None
+
+    old, new = OldPipe(), LiveProc()
+    old_pending = {}
+    with A._HUB_LOCK:
+        A._HUB.update(proc=new, pending={}, proc_gen=300, deaths=0, broken="", dead={})
+        A._HUB["proc_gen_by_id"][id(old)] = 301
+    A.adapter_hub = lambda: (old, old_pending)
+    try:
+        _st, _body, err, _dt = A.pydantic_transport(
+            {"url": "http://one/v1", "key": "k", "n": 1},
+            {"model": "m", "messages": [{"role": "user", "content": "x"}]}, 2)
+        assert isinstance(err, A.AdapterFail) and err.cause is not None, err
+        cause = err.cause
+        assert (cause.kind, cause.sub) == ("process_died", "pipe"), cause
+        assert cause.args.get("deaths") == 1 and cause.args.get("code") == 3, cause.args
+        assert A._HUB["deaths"] == 1 and A._HUB["proc"] is new, A._HUB
+        assert not A._HUB["broken"], A._HUB["broken"]
+    finally:
+        A.adapter_hub, A.record_failure = old_hub_fn, old_record
+        A.RT.HOME, A.RUN_TASK = old_home, old_task
+        A._write_alarm({})
         A._HUB.clear()
         A._HUB.update(old_hub)
 

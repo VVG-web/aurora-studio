@@ -584,7 +584,8 @@ def http_json(url: str, payload: dict | None, key: str, timeout: float) -> tuple
 _HUB_STDERR = deque(maxlen=200)
 _HUB: dict = {"proc": None, "pending": {}, "seq": 0, "broken": "", "deaths": 0,
               "version": "", "stderr": _HUB_STDERR, "stderr_gen": 0,
-              "stderr_by_gen": {0: _HUB_STDERR}, "proc_gen": 0, "proc_gen_by_id": {}}
+              "stderr_by_gen": {0: _HUB_STDERR}, "proc_gen": 0, "proc_gen_by_id": {},
+              "dead": {}}
 _HUB_LOCK = threading.Lock()        # запуск процесса и учёт ожидающих
 _HUB_WRITE = threading.Lock()       # строка задания уходит в трубу целиком
 ADAPTER_START = 60                  # секунд на запуск venv и импорт фреймворка
@@ -681,15 +682,33 @@ def _hub_gen_of_locked(proc) -> int:
     return int(_HUB.get("proc_gen") or 0)
 
 
-def _hub_count_death_locked(proc) -> int:
-    """Учесть смерть процесса ровно один раз; вызывается под `_HUB_LOCK`."""
-    if _HUB.get("proc") is not proc:
-        return int(_HUB.get("deaths") or 0)
-    _HUB["proc"] = None
-    _HUB["deaths"] = int(_HUB.get("deaths") or 0) + 1
-    if _HUB["deaths"] >= ADAPTER_DEATHS:
+def _hub_count_death_locked(proc, generation=None) -> int:
+    """Учесть смерть процесса ровно один раз; вызывается под `_HUB_LOCK`.
+
+    Считать нужно и смерть уже заменённого процесса: новый мог подняться раньше, чем
+    старый читатель дошёл до замка. Иначе порог «три смерти» теряет событие. Текущий
+    процесс при этом не трогаем: `_HUB["proc"]` остаётся живым, `broken` не ставим.
+    """
+    gen = int(generation if generation is not None else _hub_gen_of_locked(proc))
+    dead = _HUB.get("dead")
+    if not isinstance(dead, dict):
+        dead = _HUB["dead"] = {}
+    key = id(proc)
+    current = _HUB.get("proc") is proc and int(_HUB.get("proc_gen") or 0) == gen
+    # Держим сам объект, а не только id: Python может переиспользовать id после
+    # сборки мусора, и смерть нового процесса потерялась бы как «уже учтённая».
+    if dead.get(key) is not proc:
+        dead[key] = proc
+        _HUB["deaths"] = int(_HUB.get("deaths") or 0) + 1
+        for old in list(dead)[:-64]:
+            del dead[old]
+    if current:
+        _HUB["proc"] = None
+    # Порог останавливает вызовы только когда умер текущий процесс или живого нового
+    # ещё нет. Живой новый процесс старый смертью не выключаем.
+    if int(_HUB.get("deaths") or 0) >= ADAPTER_DEATHS and (current or _HUB.get("proc") is None):
         _HUB["broken"] = Why("process_died", "repeated", times=_HUB["deaths"])
-    return _HUB["deaths"]
+    return int(_HUB.get("deaths") or 0)
 
 
 def _proc_death_code(proc):
@@ -1599,10 +1618,10 @@ def _hub_reader(proc, pending: dict, generation=None) -> None:
     with _HUB_LOCK:
         gen = int(generation if generation is not None else _HUB.get("proc_gen") or 0)
         # Считать смерть вправе только читатель живого процесса своего поколения: старый
-        # читатель, доживший до конца уже заменённого процесса, не трогает счётчик нового.
+        # читатель, доживший до конца уже заменённого процесса, считает смерть своего
+        # процесса, но не трогает текущий и его ожидания.
         current = _HUB.get("proc") is proc and int(_HUB.get("proc_gen") or 0) == gen
-        if current:
-            _hub_count_death_locked(proc)
+        deaths = _hub_count_death_locked(proc, gen)
         # У каждого процесса свой словарь ожиданий. Если старый читатель ошибся и ему
         # передали словарь нового процесса, слоты нового не трогаем; свой — чистим.
         owned = _HUB.get("pending") is not pending or current
@@ -1612,7 +1631,7 @@ def _hub_reader(proc, pending: dict, generation=None) -> None:
         stderr_tail = _hub_stderr_tail_locked(gen=gen)
     common = {"kind": "process_died", "sub": "closed",
               "code": "?" if code is None else code, "pid": getattr(proc, "pid", ""),
-              "pending": len(left), "stderr": stderr_tail}
+              "pending": len(left), "stderr": stderr_tail, "deaths": deaths}
     for slot in left:
         slot["out"] = {"ok": False, "where": "adapter", "error": "процесс адаптера закрылся",
                        **common}
@@ -1949,7 +1968,7 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
         _join_stderr(proc)
         with _HUB_LOCK:
             pending.pop(rid, None)
-            deaths = _hub_count_death_locked(proc)
+            deaths = _hub_count_death_locked(proc, _hub_gen_of_locked(proc))
             left = len(pending)
             # Хвост снимаем под тем же замком, что и смерть: новый процесс не затрёт кольцо,
             # а старый читатель не допишет в него чужую строку (своё поколение).
@@ -2616,7 +2635,7 @@ _RETRY_SAID: set = set()       # (№ бэкенда, вид) — о каких 
 # раз адаптер не дошёл при живой контрольной проверке движка без единого прохода через адаптер.
 LINK_RUN: dict = {}            # {№ бэкенда: {"fails": число, "kind": последний вид, "at": момент}}
 GAP_RUN: dict = {}             # {№ бэкенда: {"count": число, "at": момент}}
-_PIPE_RUN: dict = {}           # {путь: {"base", "last", "count"} — смерти канала после успеха}
+_PIPE_RUN: dict = {}           # {путь: {"base", "last", "count"} — смерти процесса после успеха}
 _STREAK_LOCK = threading.Lock()
 
 
@@ -2744,30 +2763,30 @@ def note_bypass(why, needs_tools: bool = False, answered: bool = True) -> None:
     cause = cause_of(why)
     text = str(cause)
     path = run_path()
-    pipe = cause_id(cause.kind, cause.sub) == "process_died.pipe"
-    pipe_deaths = pipe_count = 0
-    if pipe:
+    death = cause.kind == "process_died" and cause.sub in ("pipe", "closed")
+    death_no = death_count = 0
+    if death:
         try:
-            pipe_deaths = int(cause.args.get("deaths") or 0)
+            death_no = int(cause.args.get("deaths") or 0)
         except (TypeError, ValueError):
-            pipe_deaths = 0
+            death_no = 0
         with _STREAK_LOCK:
             # Считаем смерти, а не вызовы: девять вызовов, заставших одну мёртвую трубу,
             # не должны выглядеть как три падения. Номер смерти растёт только вместе с
             # новым процессом (`deaths` из `_hub_count_death_locked`).
-            if pipe_deaths > 0:
+            if death_no > 0:
                 state = _PIPE_RUN.get(path)
                 if not isinstance(state, dict):
                     # Первая замеченная смерть после успеха — уже первая в новой серии.
-                    state = {"base": pipe_deaths - 1, "last": pipe_deaths - 1, "count": 0}
+                    state = {"base": death_no - 1, "last": death_no - 1, "count": 0}
                 base = int(state.get("base") or 0)
                 last = max(int(state.get("last") or 0), base)
-                if pipe_deaths > last:
-                    state["count"] = int(state.get("count") or 0) + (pipe_deaths - last)
-                state["last"] = max(last, pipe_deaths)
+                if death_no > last:
+                    state["count"] = int(state.get("count") or 0) + (death_no - last)
+                state["last"] = max(last, death_no)
                 state["base"] = base
                 _PIPE_RUN[path] = state
-                pipe_count = int(state["count"])
+                death_count = int(state["count"])
     with _USAGE_LOCK:
         USAGE["bypass"] += 1
         USAGE["bypass_why"] = text
@@ -2788,12 +2807,13 @@ def note_bypass(why, needs_tools: bool = False, answered: bool = True) -> None:
         data = read_alarm()
         row = data.get(path) or {}
         calls = int(row.get("calls") or 0) + 1
-        # Одиночная смерть трубы самовосстанавливается: тревога — только с ALARM_AFTER-й смерти
-        # подряд, а не с ALARM_AFTER-го вызова в одну мёртвую трубу.
-        if pipe and pipe_count < ALARM_AFTER:
+        # Одиночная смерть процесса самовосстанавливается: тревога — только с ALARM_AFTER-й
+        # смерти подряд, а не с ALARM_AFTER-го вызова в одну мёртвую трубу. Смерть без
+        # номера (старая строка) не доказана как одиночная — её показываем сразу.
+        if death and death_no > 0 and death_count < ALARM_AFTER:
             return
-        if pipe:
-            calls = max(calls, pipe_count)
+        if death and death_no > 0:
+            calls = max(calls, death_count)
         data[path] = {**cause.row(), "at": utc_stamp(), "project": os.getcwd(), "path": path,
                       "calls": calls}
         _write_alarm(data)
