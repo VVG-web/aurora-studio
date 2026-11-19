@@ -97,20 +97,40 @@ def engine_dir(project: str) -> str:
 
 
 def adapter_info(project: str = "") -> dict:
-    """Настоящий файл адаптера, его sha и источник: движок проекта или кит.
+    """Настоящий файл адаптера, его sha и источник: `project`, `kit` или `missing`.
 
     У проекта со своей копией движка запуск идёт её адаптером. Копия есть, а файла в
-    ней нет — настоящим остаётся китовый: неполная копия не должна превращать живой
-    адаптер в «не найден». `source` называет, чей файл найден: `project` или `kit`.
-    Путь не собирается у потребителей: раскладка `.aurora/scripts/agents` и наследие
-    `.opencode` известны только здесь и `aurora_common.engine_dir`.
+    ней нет — настоящим для запуска становится китовый (при совместимых версиях), и
+    диагностика называет именно его. Китовый корень берётся у движка
+    (`agent_core._roots()[0]`): в процессе проекта он читает `kit_path.txt`, а не
+    подменяется путём этой копии.
+
+    `source=kit` означает только настоящий китовый файл. Если кита нет или `_roots()`
+    назвал китом сам проект, ответ — `source=missing` с тем путём, которого не хватает.
+    Прогон подставляет китовый адаптер при неполной копии проекта, если версии движков
+    совместимы (`agent_core._adapter_argv`); здесь для этого — путь и sha.
     """
+    own = None
     if project:
-        scripts = Path(project) / engine_dir(project) / "scripts"
-        own = scripts.joinpath(*ADAPTER_REL)
+        own = Path(project) / engine_dir(project) / "scripts"
+        own = own.joinpath(*ADAPTER_REL)
         if own.is_file():
             return _info(own, "project")
-    return _info(Path(AG._adapter_file()), "kit")
+    kit_root = Path(AG._roots()[0])
+    kit_file = kit_root / "scripts"
+    kit_file = kit_file.joinpath(*ADAPTER_REL)
+    same = _same_path(project, kit_root) if project else False
+    if kit_file.is_file() and not same:
+        return _info(kit_file, "kit")
+    return _info(own or kit_file, "missing")
+
+
+def _same_path(left, right) -> bool:
+    """Один и тот же каталог (сравнение без ложных различий из-за ссылок)."""
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except OSError:
+        return Path(left).absolute() == Path(right).absolute()
 
 
 def engine_info(project: str) -> dict:

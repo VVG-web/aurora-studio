@@ -56,6 +56,11 @@ ENGINE_ROLES = {
     "ocr": (("document", "Сканы документов"),),
     "embeddings": (("index", "Индекс базы знаний"),),
 }
+# Роли, у которых может быть СВОЯ модель в настройке: полный набор LLM. Движок исторически
+# знает пять (`agent_core.ROLES`), но компрессор он зовёт (`context_runtime`), и отдельная
+# модель компрессора — законная настройка. Список один на настройку и перенос из `.env`:
+# перебор пяти ролей молча терял `MODEL_COMPRESSOR` и записывал настройку без него.
+CONFIG_ROLES = tuple(rid for rid, _name in ENGINE_ROLES["llm"])
 # Прежние имена ролей движка (до 1.162.0). Имена не говорили, что роль делает: Момус шёл
 # ролью «Ответы на вопросы», роль «Критик (Момус)» Момусом не пользовалась, а «Спросить»
 # отвечала ролью «Разбор и тезисы». Не переименованная человеком роль получает новое имя.
@@ -469,7 +474,7 @@ def from_env(env: dict) -> dict:
         pid[b["n"]] = p["id"]
         out["providers"].append(p)
     roles = {c: {r["id"]: r for r in out["capabilities"][c]["roles"]} for c in CAPABILITIES}
-    for r in AG.ROLES:
+    for r in CONFIG_ROLES:
         roles["llm"][r]["thinking"] = AG.role_thinks(cfg, r)
         for b in cfg["backends"]:
             model = AG.role_model(b, r)
@@ -560,7 +565,7 @@ def to_config(data: dict) -> dict:
     for p in provs:
         n = num[p["id"]]
         models = {}
-        for rid, _name in ENGINE_ROLES["llm"]:
+        for rid in CONFIG_ROLES:
             hit = next((b for b in chain(data, "llm", rid) if b["provider"] == p["id"]), None)
             if hit:
                 models[rid] = hit["model"]

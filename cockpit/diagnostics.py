@@ -217,10 +217,20 @@ print(json.dumps({"python": sys.executable, "version": sys.version,
 
 
 def _adapter_facts(AG, project: str, deep: bool) -> dict:
+    # Один ответ об адаптере на весь архив: тот же файл и та же sha, что в
+    # `project.adapter_file`. Иначе человек видит два разных адаптера в одном zip
+    # (китовый здесь, проекский ниже) и не понимает, какой запускался.
+    found = RTC.adapter_info(project) if project else RTC.adapter_info()
+    try:
+        argv = (AG._adapter_argv(found["path"]) if found.get("source") == "project"
+                else AG._adapter_argv())
+    except Exception as e:  # noqa: BLE001
+        argv = [f"{type(e).__name__}: {e}"]
     out = {
-        "argv": _clean(_safe(AG, "_adapter_argv", []), project),
-        "file": _text(_safe(AG, "_adapter_file", ""), project),
-        "sha": _safe(AG, "_adapter_sha", ""),
+        "argv": _clean(argv, project),
+        "file": _text(found.get("path") or "", project),
+        "sha": found.get("sha") or "",
+        "source": found.get("source") or "",
         "gap": _text(_safe(AG, "adapter_gap", ""), project),
         "other_home": _text(_safe(AG, "other_home_hint", ""), project),
         "venv": _safe(AG, "venv_status", (False, "")),
@@ -244,9 +254,8 @@ def _adapter_facts(AG, project: str, deep: bool) -> dict:
     if deep:
         try:
             # Адаптер — только через каталог: у проекта со своей копией движка запуск идёт
-            # её файлом, без копии — файлом кита. Собранный руками `.aurora/scripts/agents/…`
-            # не знал ни кита, ни прежней папки `.opencode`.
-            found = RTC.adapter_info(project) if project else {"source": "kit"}
+            # её файлом, без неё — китовым при совместимых версиях. Собранный руками
+            # `.aurora/scripts/agents/…` не знал ни кита, ни прежней папки `.opencode`.
             target = found.get("path") if found.get("source") == "project" else None
             out["probe"] = _clean(AG.adapter_probe(target, project or None, wait=15), project)
         except Exception as e:  # noqa: BLE001
@@ -340,7 +349,8 @@ def _project_facts(project: str) -> dict:
         "engine_version": _version(root / RTC.engine_dir(project) / "engine_version.txt"),
         "engine_file": {"exists": core["exists"], "sha": core["sha"]},
         "adapter_file": {"exists": adapter["exists"], "sha": adapter["sha"],
-                         "path": adapter["path"], "source": adapter["source"]},
+                         "path": _text(adapter["path"], project),
+                         "source": adapter["source"]},
         "kit_version": _version(KIT / "VERSION"),
     }
 

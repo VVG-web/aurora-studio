@@ -51,6 +51,7 @@ from aurora_common import load_env, lock_release, lock_take, python_executable, 
 from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import engine_dir, utc_stamp  # noqa: E402
 import aurora_runtime as RT  # noqa: E402 — единый Python всех подсистем
+from model_config import CONFIG_ROLES  # noqa: E402 — полный набор ролей настройки, включая compressor
 ROLES = ("worker", "planner", "critic", "qa", "fast")
 CONNECT_TIMEOUT = 3          # секунд на установку соединения: мёртвый бэкенд не держит кольцо
 
@@ -260,7 +261,7 @@ def parse_config(env: dict) -> dict:
         if not env.get(f"AURORA_AGENT_BACKEND_{n}_URL"):
             continue
         prefix = f"AURORA_AGENT_BACKEND_{n}_"
-        models = {r: env.get(prefix + "MODEL_" + r.upper(), "") for r in ROLES}
+        models = {r: env.get(prefix + "MODEL_" + r.upper(), "") for r in CONFIG_ROLES}
         backends.append({
             "n": n,
             "url": env[prefix + "URL"].rstrip("/"),
@@ -363,7 +364,7 @@ def parse_config(env: dict) -> dict:
         # качества на скорость, решение человека. Момусу выключать нельзя совсем: без
         # рассуждений он не нашёл ни одного из девяти утверждений, найденных с ними.
         "thinking_roles": {r: env.get(f"AURORA_AGENT_THINKING_{r.upper()}", "")
-                           for r in ROLES},
+                           for r in CONFIG_ROLES},
         "max_steps": int(env.get("AURORA_AGENT_MAX_STEPS", "15") or 15),
         # Бюджет интерактивного шага. Один запрос может честно идти до `HARD_CAP` (30 минут),
         # поэтому 20 минут резали медленный ответ раньше его собственного срока: человек
@@ -1168,15 +1169,62 @@ def _adapter_file() -> Path:
     return Path(__file__).resolve().parent / "agents" / "pydantic_ai_adapter.py"
 
 
+def _kit_adapter_file() -> tuple:
+    """(китовый адаптер | None, причина отказа). Только при совместимой версии движка.
+
+    Своя копия движка может приехать без адаптера — неполное обновление. Тогда прогон
+    берёт китовый файл, но только когда версии совместимы: контракт движка (`ENGINE_API`)
+    совпал либо версия проекта равна китовой. Иначе — честная причина, а не тихая
+    подмена и не тихий прямой HTTP.
+    """
+    kit, project = _roots()
+    if not project:
+        return None, ""          # это кит, а не проект: своего адаптера подменять нечем
+    kit_file = Path(kit) / "scripts" / "agents" / "pydantic_ai_adapter.py"
+    if not os.path.isfile(kit_file):
+        return None, ""
+    try:
+        from aurora_common import engine_status, kit_engine_api
+        kit_version = (Path(kit) / "VERSION").read_text(encoding="utf-8").strip()
+        st = engine_status(project, kit_version, kit_engine_api(kit))
+    except Exception as e:  # noqa: BLE001 — проверка версии не должна ронять вызов модели
+        return None, f"адаптер: китовый адаптер не проверен по версии ({type(e).__name__}: {e})"
+    same_api = bool(st.get("engine_api")) and st.get("engine_api") == st.get("kit_api")
+    if st.get("status") == "ok" or same_api:
+        return kit_file, ""
+    return None, ("адаптер: китовый адаптер не подставлен — движок проекта "
+                  f"{st.get('engine') or 'не назван'} и кит {st.get('kit') or kit_version or 'не назван'} "
+                  f"несовместимы ({st.get('status') or 'unknown'}). Обновите движок проекта.")
+
+
+def _adapter_choice(adapter=None) -> tuple:
+    """(файл адаптера | None, причина). Явно названный файл не подменяется."""
+    if adapter is not None:
+        path = Path(adapter)
+        return (path, "") if os.path.isfile(path) else (None, "")
+    own = _adapter_file()
+    if os.path.isfile(own):
+        return own, ""
+    kit_file, why = _kit_adapter_file()
+    if kit_file is not None:
+        return kit_file, ""
+    return None, why
+
+
 def _adapter_argv(adapter=None) -> list:
-    """Как прогон запускает адаптер: питон venv и файл адаптера этой копии движка (`adapter` — другой
-    копии: «Установка» проверяет ту, которой пойдёт прогон проекта). Чего-то нет — пусто.
-    `os.path.isfile`, а не `Path.is_file`: ссылка venv на Python из закрытого чужого профиля даёт
-    отказ в доступе, а не «нет файла», и не должна ронять прогон."""
+    """Как прогон запускает адаптер: питон venv и файл адаптера (`adapter` — другой копии).
+
+    Своей копии адаптера может не быть: неполное обновление проекта. Тогда берём китовый
+    файл — но только при совместимой версии движков (`_kit_adapter_file`). Несовместимость
+    названа в `adapter_gap`, а не проглочена: тихий переход на прямой HTTP выдавал бы
+    сломанный адаптер за рабочий путь.
+    """
     if _runtime_gap():
         return []
-    vpy, adapter = _venv_python(), Path(adapter) if adapter else _adapter_file()
-    return [str(vpy), str(adapter)] if os.path.isfile(vpy) and os.path.isfile(adapter) else []
+    vpy = _venv_python()
+    chosen, _why = _adapter_choice(adapter)
+    return ([str(vpy), str(chosen)]
+            if os.path.isfile(vpy) and chosen is not None and os.path.isfile(chosen) else [])
 
 
 # Начала причин «адаптер не запускается»: по ним панель отличает лечение (venv — «Установка»,
@@ -1256,9 +1304,14 @@ def _adapter_gap(adapter=None) -> Why:
 
 def _gap_causes(adapter=None) -> list:
     gaps = [g for g in (_venv_gap(),) if g is not None]
-    adapter = Path(adapter) if adapter else _adapter_file()
-    if not os.path.isfile(adapter):
-        gaps.append(_adapter_gap(adapter))
+    if adapter is not None:
+        path = Path(adapter)
+        if not os.path.isfile(path):
+            gaps.append(_adapter_gap(path))
+        return gaps
+    chosen, why = _adapter_choice()
+    if chosen is None:
+        gaps.append(Why.raw(why) if why else _adapter_gap(_adapter_file()))
     return gaps
 
 
@@ -4921,7 +4974,7 @@ def pydantic_settings(cfg: dict, venv: tuple | None = None) -> dict:
         if b.get("chat") is False:
             continue
         roles = {}
-        for r in ROLES:
+        for r in CONFIG_ROLES:
             think = role_thinks(cfg, r)
             roles[r] = {"model": role_model(b, r), "thinking": think,
                         "timeout": int(request_timeout_for(cfg, r)),
@@ -4958,7 +5011,7 @@ def pydantic_settings(cfg: dict, venv: tuple | None = None) -> dict:
             "validated_at": rt_cfg.get("validated_at") or "",
             "pydantic_ai_version": rt_cfg.get("pydantic_ai_version") or "",
         },
-        "thinking": {r: role_thinks(cfg, r) for r in ROLES},
+        "thinking": {r: role_thinks(cfg, r) for r in CONFIG_ROLES},
         "client": {"max_retries": 0, "max_tokens_field": "max_tokens",
                    "system_messages": 1, "metadata": "strings_only",
                    "tool_calls": TOOL_CALLS, "processes": 1},

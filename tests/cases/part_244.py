@@ -97,6 +97,54 @@ def test_runtime_truth_probe_asks_every_role_skips_empty_models_and_dedupes(tmp:
 
 
 @test
+def test_runtime_truth_probe_and_migration_keep_the_compressor_model(tmp: Path):
+    """Отдельная модель компрессора видна и при переносе `.env`, и в проверке связи.
+
+    `agent_core.ROLES` исторически пять ролей, но движок зовёт `compressor`. Перебор
+    пяти молча терял `MODEL_COMPRESSOR`: проверка связи объявляла шлюз без модели, а
+    перенос в `local/models.json` записывал настройку без компрессора.
+    """
+    A, RC, P, _D = _modules()
+    MC = importlib.import_module("model_config")
+    assert tuple(MC.CONFIG_ROLES) == RC.roles(), \
+        f"набор ролей настройки разошёлся с runtime: {MC.CONFIG_ROLES} != {RC.roles()}"
+
+    only_comp = {"AURORA_AGENT_BACKEND_1_URL": "http://one/v1",
+                 "AURORA_AGENT_BACKEND_1_MODEL_COMPRESSOR": "comp"}
+    old = A.raw_config
+    A.raw_config = lambda: only_comp
+    try:
+        rows, skipped = P.plan()
+    finally:
+        A.raw_config = old
+    assert [(r["n"], r["model"]) for r in rows] == [(1, "comp")], rows
+    assert rows[0]["roles"] == ["compressor"], rows
+    assert skipped == [], skipped
+
+    both = {"AURORA_AGENT_BACKEND_1_URL": "http://one/v1",
+            "AURORA_AGENT_BACKEND_1_MODEL": "общая",
+            "AURORA_AGENT_BACKEND_1_MODEL_COMPRESSOR": "comp"}
+    old = A.raw_config
+    A.raw_config = lambda: both
+    try:
+        rows, _skipped = P.plan()
+    finally:
+        A.raw_config = old
+    assert [(r["n"], r["model"]) for r in rows] == [(1, "общая"), (1, "comp")], rows
+    comp = next(r for r in rows if r["model"] == "comp")
+    assert comp["roles"] == ["compressor"], comp
+
+    # Перенос прежней настройки в local/models.json сохраняет компрессор.
+    cfg = MC.to_config(MC.from_env(only_comp))
+    assert cfg["backends"][0]["models"]["compressor"] == "comp", cfg["backends"][0]["models"]
+    assert cfg["chains"]["llm"]["compressor"][0]["model"] == "comp", \
+        cfg["chains"]["llm"]["compressor"]
+    cfg = MC.to_config(MC.from_env(both))
+    assert cfg["backends"][0]["models"]["compressor"] == "comp", cfg["backends"][0]["models"]
+    assert cfg["chains"]["llm"]["worker"][0]["model"] == "общая", cfg["chains"]["llm"]["worker"]
+
+
+@test
 def test_runtime_truth_catalog_owns_roles_and_adapter_path_for_every_component(tmp: Path):
     """Проверка связи, архив диагностики и движок видят один набор ролей и один файл адаптера."""
     A, RC, _P, D = _modules()
@@ -127,7 +175,7 @@ def test_runtime_truth_catalog_owns_roles_and_adapter_path_for_every_component(t
     assert got["source"] == "project" and got["exists"], got
     assert Path(got["path"]) == adapter.resolve(), got
     facts = D._project_facts(str(project))
-    assert facts["adapter_file"]["path"] == got["path"], (facts, got)
+    assert facts["adapter_file"]["path"] == D._text(got["path"], str(project)), (facts, got)
     assert facts["adapter_file"]["sha"] == got["sha"] and got["sha"], (facts, got)
     assert facts["engine_file"]["exists"] and facts["engine_file"]["sha"], facts
 
@@ -171,6 +219,103 @@ def _P_rows() -> list:
     """Строки опроса при подменённой настройке: отдельно, чтобы не тащить P через тест."""
     P = importlib.import_module("agent_probe")
     return P.plan()[0]
+
+
+@test
+def test_runtime_truth_project_process_names_the_real_adapter(tmp: Path):
+    """Процесс проекта: без своего адаптера настоящий файл — китовый, и запуск берёт его.
+
+    Каталог, импортированный из `<проект>/.aurora/scripts`, раньше отдавал путь своей
+    копии с `source=kit` — прямая ложь о владельце. Китовый корень берётся из
+    `kit_path.txt` через `agent_core._roots()[0]`, а `_adapter_argv` подставляет китовый
+    адаптер, когда версии движков совместимы. Несовместимость — честная причина, не
+    тихий прямой HTTP.
+    """
+    from harness import make_project
+    project = make_project(tmp)
+    scripts = project / ".aurora" / "scripts"
+    kit_ptr = project / ".aurora" / "kit_path.txt"
+    kit_ptr.write_text(str(KIT) + "\n", encoding="utf-8")
+    kit_version = (KIT / "VERSION").read_text(encoding="utf-8").strip()
+    (project / ".aurora" / "engine_version.txt").write_text(kit_version + "\n", encoding="utf-8")
+    # Прогону нужен питон venv: его наличие — не предмет этой проверки, но argv без него пуст.
+    vpy = Path.home() / ".aurora" / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    vpy.parent.mkdir(parents=True, exist_ok=True)
+    vpy.write_text("", encoding="utf-8")
+    code = ("import json, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import agent_core as AG, runtime_catalog as RC\n"
+            "print(json.dumps({'info': RC.adapter_info(), 'argv': AG._adapter_argv(),"
+            " 'gap': AG.adapter_gap(), 'kit': str(AG._roots()[0])}, ensure_ascii=False))\n")
+
+    cp = _project_python(project, scripts, code)
+    got = json.loads(cp.stdout.strip().splitlines()[-1])
+    kit_adapter = (KIT / "scripts" / "agents" / "pydantic_ai_adapter.py").resolve()
+    assert Path(got["info"]["path"]) == kit_adapter, got
+    assert got["info"]["source"] == "kit" and got["info"]["exists"], got
+    assert Path(got["kit"]) == KIT.resolve(), got
+    assert got["argv"] and Path(got["argv"][-1]) == kit_adapter, \
+        f"запуск не взял китовый адаптер: {got['argv']}"
+    assert not got["gap"], got["gap"]
+
+    # Версии разошлись: метаданные всё ещё называют китовый файл, а запуск честно отказывает.
+    (project / ".aurora" / "engine_version.txt").write_text("0.0.1\n", encoding="utf-8")
+    cp = _project_python(project, scripts, code)
+    got = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert got["info"]["source"] == "kit" and got["info"]["exists"], got
+    assert got["argv"] == [], f"несовместимый адаптер подставлен молча: {got['argv']}"
+    assert "несовместим" in got["gap"] and "Обновите движок проекта" in got["gap"], got["gap"]
+
+    # Кит не найден: честное «missing», а не проекский путь под именем kit.
+    empty = tmp / "empty-kit"
+    empty.mkdir()
+    kit_ptr.write_text(str(empty) + "\n", encoding="utf-8")
+    cp = _project_python(project, scripts, code)
+    got = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert got["info"]["source"] == "missing", got
+    assert got["info"]["exists"] is False, got
+    assert str(empty) in got["info"]["path"], got
+    assert got["argv"] == [], got
+
+
+def _project_python(project: Path, scripts: Path, code: str) -> subprocess.CompletedProcess:
+    cp = subprocess.run([sys.executable, "-c", code, str(scripts)], cwd=str(project),
+                        capture_output=True, text=True, encoding="utf-8", errors="replace",
+                        timeout=120)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    return cp
+
+
+@test
+def test_runtime_truth_archive_shows_one_adapter(tmp: Path):
+    """`adapter.file/sha` и `project.adapter_file` — один файл и одна длина sha."""
+    A, RC, _P, D = _modules()
+    project = tmp / "Project"
+    scripts = project / ".aurora" / "scripts"
+    (scripts / "agents").mkdir(parents=True)
+    (scripts / "agents" / "pydantic_ai_adapter.py").write_text("# project\n", encoding="utf-8")
+    (scripts / "agent_core.py").write_text("# project\n", encoding="utf-8")
+    info = RC.adapter_info(str(project))
+    facts = D._adapter_facts(A, str(project), deep=False)
+    project_facts = D._project_facts(str(project))
+    assert facts["source"] == project_facts["adapter_file"]["source"] == "project", \
+        (facts, project_facts)
+    assert facts["file"] == project_facts["adapter_file"]["path"], (facts, project_facts)
+    assert facts["sha"] == project_facts["adapter_file"]["sha"] == info["sha"], \
+        (facts, project_facts, info)
+    assert len(facts["sha"]) == 16, facts["sha"]
+
+    # Проект без адаптера при живом ките: оба ответа китовые.
+    incomplete = tmp / "Incomplete"
+    (incomplete / ".aurora" / "scripts").mkdir(parents=True)
+    kit = RC.adapter_info()
+    facts = D._adapter_facts(A, str(incomplete), deep=False)
+    project_facts = D._project_facts(str(incomplete))
+    assert facts["source"] == project_facts["adapter_file"]["source"] == "kit", \
+        (facts, project_facts)
+    assert facts["file"] == project_facts["adapter_file"]["path"], (facts, project_facts)
+    assert facts["sha"] == project_facts["adapter_file"]["sha"] == kit["sha"], \
+        (facts, project_facts, kit)
 
 
 @test
