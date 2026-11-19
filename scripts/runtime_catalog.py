@@ -96,33 +96,54 @@ def engine_dir(project: str) -> str:
     return AC.engine_dir(project)
 
 
+def _own_project() -> str:
+    """Проект, если этот модуль — копия движка проекта (`.aurora`/`.opencode`)."""
+    try:
+        here = Path(AG.__file__).resolve().parent
+        if here.parent.name in (".aurora", ".opencode"):
+            return str(here.parent.parent)
+    except Exception:  # noqa: BLE001 — метаданные не должны ронять архив
+        pass
+    return ""
+
+
 def adapter_info(project: str = "") -> dict:
-    """Настоящий файл адаптера, его sha и источник: `project`, `kit` или `missing`.
+    """Настоящий файл адаптера, его sha, источник и разрешён ли запуск.
 
-    У проекта со своей копией движка запуск идёт её адаптером. Копия есть, а файла в
-    ней нет — настоящим для запуска становится китовый (при совместимых версиях), и
-    диагностика называет именно его. Китовый корень берётся у движка
-    (`agent_core._roots()[0]`): в процессе проекта он читает `kit_path.txt`, а не
-    подменяется путём этой копии.
+    Поля: `path`, `exists`, `sha(16)`, `source` (`project` | `kit` | `missing`),
+    `compatible` (китовый адаптер совместим с движком проекта; `None` — вопрос не
+    стоит), `fallback_allowed` (запуск действительно возьмёт китовый файл) и `reason`.
+    `source=kit` означает только «файл кита существует», а не «будет запущен»:
+    несовместимая версия даёт `source=kit`, `exists=True`, `fallback_allowed=False`.
 
-    `source=kit` означает только настоящий китовый файл. Если кита нет или `_roots()`
-    назвал китом сам проект, ответ — `source=missing` с тем путём, которого не хватает.
-    Прогон подставляет китовый адаптер при неполной копии проекта, если версии движков
-    совместимы (`agent_core._adapter_argv`); здесь для этого — путь и sha.
+    Китовый корень берётся у движка (`agent_core._roots()[0]`): в процессе проекта он
+    читает `kit_path.txt`, а не подменяется путём этой копии. Если кита нет или
+    `_roots()` назвал китом сам проект, ответ — `source=missing` с причиной
+    «китовый адаптер не найден, кит: …», а не проекским `.aurora`.
     """
     own = None
+    project = project or _own_project()
     if project:
         own = Path(project) / engine_dir(project) / "scripts"
         own = own.joinpath(*ADAPTER_REL)
         if own.is_file():
-            return _info(own, "project")
-    kit_root = Path(AG._roots()[0])
-    kit_file = kit_root / "scripts"
-    kit_file = kit_file.joinpath(*ADAPTER_REL)
-    same = _same_path(project, kit_root) if project else False
-    if kit_file.is_file() and not same:
-        return _info(kit_file, "kit")
-    return _info(own or kit_file, "missing")
+            info = _info(own, "project")
+            info.update(compatible=None, fallback_allowed=None, reason="")
+            return info
+    state = AG.kit_adapter_state(project or None)
+    kit_file = Path(state["path"])
+    same = _same_path(project, state["kit"]) if project else False
+    if state["exists"] and not same:
+        info = _info(kit_file, "kit")
+        info.update(compatible=state["compatible"],
+                    fallback_allowed=state["fallback_allowed"],
+                    reason=state["reason"])
+        return info
+    info = _info(kit_file, "missing")
+    info.update(compatible=False, fallback_allowed=False,
+                reason=state["reason"]
+                or f"адаптер: китовый адаптер не найден, кит: {state['kit']}")
+    return info
 
 
 def _same_path(left, right) -> bool:

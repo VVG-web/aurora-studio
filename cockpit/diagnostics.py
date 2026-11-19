@@ -216,29 +216,75 @@ print(json.dumps({"python": sys.executable, "version": sys.version,
     return out
 
 
-def _adapter_facts(AG, project: str, deep: bool) -> dict:
-    # Один ответ об адаптере на весь архив: тот же файл и та же sha, что в
-    # `project.adapter_file`. Иначе человек видит два разных адаптера в одном zip
-    # (китовый здесь, проекский ниже) и не понимает, какой запускался.
-    found = RTC.adapter_info(project) if project else RTC.adapter_info()
+def _project_adapter(project: str, deep: bool) -> dict:
+    """Ответ движка проекта о запуске адаптера. Пусто — своей копии движка нет.
+
+    Панель живёт процессом кита: её версия, кит и venv — не те, что у прогона проекта.
+    Поэтому argv, причина и проверка запуска считаются копией движка проекта — тем же
+    путём, каким пойдёт сам прогон.
+    """
+    if not project:
+        return {}
+    core = RTC.engine_info(project)
+    if not core.get("exists"):
+        return {}
+    argv = [sys.executable, core["path"], "--adapter-facts"]
+    if deep:
+        argv.append("--adapter-probe")
+    r = _run(argv, project, None, 90)
+    out = (r.get("out") or "").strip()
     try:
-        argv = (AG._adapter_argv(found["path"]) if found.get("source") == "project"
-                else AG._adapter_argv())
-    except Exception as e:  # noqa: BLE001
-        argv = [f"{type(e).__name__}: {e}"]
+        got = json.loads(out.splitlines()[-1] if out else "{}")
+    except ValueError:
+        got = {}
+    if not r.get("ok") or not isinstance(got, dict):
+        why = r.get("error") or (r.get("err") or "").strip() or f"код {r.get('rc')}"
+        return {"error": f"движок проекта не ответил об адаптере: {why}"}
+    return got
+
+
+def _adapter_facts(AG, project: str, deep: bool, decision: dict | None = None) -> dict:
+    # Один ответ об адаптере на весь архив: тот же файл и та же sha, что в
+    # `project.adapter_file`, и тот же запуск (argv/gap/probe), каким пойдёт проект.
+    decision = decision if isinstance(decision, dict) else {}
+    found = decision.get("info") if isinstance(decision.get("info"), dict) else None
+    if found is None:
+        found = RTC.adapter_info(project) if project else RTC.adapter_info()
+    if isinstance(decision.get("argv"), list):
+        argv = decision["argv"]
+    else:
+        try:
+            argv = (AG._adapter_argv(found["path"]) if found.get("source") == "project"
+                    else AG._adapter_argv())
+        except Exception as e:  # noqa: BLE001
+            argv = [f"{type(e).__name__}: {e}"]
+    gap = decision.get("gap") if isinstance(decision.get("gap"), str) \
+        else _safe(AG, "adapter_gap", "")
+    # Ключ самопроверки — не sha адаптера (12 символов против 16); называем его честно.
+    selfcheck = _safe(AG, "last_selfcheck", {})
+    if isinstance(selfcheck, dict) and "key" in selfcheck:
+        selfcheck = {**{k: v for k, v in selfcheck.items() if k != "key"},
+                     "cache_key": selfcheck["key"]}
     out = {
         "argv": _clean(argv, project),
         "file": _text(found.get("path") or "", project),
+        "exists": found.get("exists"),
         "sha": found.get("sha") or "",
         "source": found.get("source") or "",
-        "gap": _text(_safe(AG, "adapter_gap", ""), project),
+        "compatible": found.get("compatible"),
+        "fallback_allowed": found.get("fallback_allowed"),
+        "reason": _text(found.get("reason") or "", project),
+        "decision_source": "project" if decision and not decision.get("error") else "panel",
+        "gap": _text(gap, project),
         "other_home": _text(_safe(AG, "other_home_hint", ""), project),
         "venv": _safe(AG, "venv_status", (False, "")),
         "venv_path": _text(_safe(AG, "venv_display_path", ""), project),
         "runtime": _clean(_safe(AG, "_runtime_status", {}), project),
-        "selfcheck": _clean(_safe(AG, "last_selfcheck", {}), project),
+        "selfcheck": _clean(selfcheck, project),
         "state": _clean(getattr(AG, "ADAPTER", {}), project),
     }
+    if decision.get("error"):
+        out["decision_error"] = _text(decision["error"], project)
     try:
         out["pydantic"] = _clean(AG.pydantic_settings(AG.config()), project)
     except Exception as e:  # noqa: BLE001
@@ -253,11 +299,12 @@ def _adapter_facts(AG, project: str, deep: bool) -> dict:
         }
     if deep:
         try:
-            # Адаптер — только через каталог: у проекта со своей копией движка запуск идёт
-            # её файлом, без неё — китовым при совместимых версиях. Собранный руками
-            # `.aurora/scripts/agents/…` не знал ни кита, ни прежней папки `.opencode`.
-            target = found.get("path") if found.get("source") == "project" else None
-            out["probe"] = _clean(AG.adapter_probe(target, project or None, wait=15), project)
+            if isinstance(decision.get("probe"), dict):
+                out["probe"] = _clean(decision["probe"], project)
+            else:
+                # Панель без копии движка проекта: проверяем свой (китовый) адаптер.
+                target = found.get("path") if found.get("source") == "project" else None
+                out["probe"] = _clean(AG.adapter_probe(target, project or None, wait=15), project)
         except Exception as e:  # noqa: BLE001
             out["probe"] = {"error": f"{type(e).__name__}: {e}"}
     return out
@@ -337,12 +384,12 @@ def _run_facts(project: str, run_id: str, context: dict) -> dict:
     return out
 
 
-def _project_facts(project: str) -> dict:
+def _project_facts(project: str, adapter: dict | None = None) -> dict:
     if not project:
         return {}
     root = Path(project)
     core = RTC.engine_info(project)
-    adapter = RTC.adapter_info(project)
+    adapter = adapter if isinstance(adapter, dict) else RTC.adapter_info(project)
     return {
         "path": "<project>", "path_shape": _path_shape(project),
         "engine_dir": RTC.engine_dir(project),
@@ -350,7 +397,10 @@ def _project_facts(project: str) -> dict:
         "engine_file": {"exists": core["exists"], "sha": core["sha"]},
         "adapter_file": {"exists": adapter["exists"], "sha": adapter["sha"],
                          "path": _text(adapter["path"], project),
-                         "source": adapter["source"]},
+                         "source": adapter["source"],
+                         "compatible": adapter.get("compatible"),
+                         "fallback_allowed": adapter.get("fallback_allowed"),
+                         "reason": _text(adapter.get("reason") or "", project)},
         "kit_version": _version(KIT / "VERSION"),
     }
 
@@ -382,16 +432,17 @@ def collect(project: str = "", context: dict | None = None, run_id: str = "",
                        _text(str(getattr(getattr(AG, "RT", None), "HOME", ""))))
     context["project"] = "<project>" if project else ""
     alarm = _alarm_facts(AG, {**context, "project": project})
+    decision = _project_adapter(project, deep)
     data = {
         "schema": 1,
         "generated": _stamp(),
         "context": _clean(context, project),
         "system": _clean(_system(), project),
         "env": _clean(_env_facts(), project),
-        "project": _project_facts(project),
+        "project": _project_facts(project, decision.get("info")),
         "ui_version": _ui_version(),
         "alarm": alarm,
-        "adapter": _adapter_facts(AG, project, deep),
+        "adapter": _adapter_facts(AG, project, deep, decision),
         "run": _run_facts(project, run_id, context),
         "adapter_log": _text(_safe(AG, "adapter_log_tail", ""), project, 120_000),
     }

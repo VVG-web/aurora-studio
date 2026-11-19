@@ -1169,32 +1169,88 @@ def _adapter_file() -> Path:
     return Path(__file__).resolve().parent / "agents" / "pydantic_ai_adapter.py"
 
 
-def _kit_adapter_file() -> tuple:
-    """(китовый адаптер | None, причина отказа). Только при совместимой версии движка.
+def _project_kit(project) -> Path | None:
+    """Кит, которым обновлялся проект: его `kit_path.txt`, а нет — сам проект.
 
-    Своя копия движка может приехать без адаптера — неполное обновление. Тогда прогон
-    берёт китовый файл, но только когда версии совместимы: контракт движка (`ENGINE_API`)
-    совпал либо версия проекта равна китовой. Иначе — честная причина, а не тихая
-    подмена и не тихий прямой HTTP.
+    `None` — своей копии движка у проекта нет: тогда запуск идёт китом панели, и
+    сравнивать версии не с чем.
     """
-    kit, project = _roots()
-    if not project:
-        return None, ""          # это кит, а не проект: своего адаптера подменять нечем
+    root = Path(project)
+    try:
+        import aurora_common as AC
+        engine = root / AC.engine_dir(root)
+    except Exception:  # noqa: BLE001 — метаданные не должны ронять архив
+        engine = root / ".aurora"
+    if not (engine / "scripts" / "agent_core.py").is_file():
+        return None
+    ptr = engine / "kit_path.txt"
+    try:
+        return Path(ptr.read_text(encoding="utf-8").strip()) if ptr.is_file() else root
+    except OSError:
+        return root
+
+
+def kit_adapter_state(project=None) -> dict:
+    """Китовый адаптер и разрешён ли он этой копии движка.
+
+    → {kit, path, exists, compatible, fallback_allowed, reason}. `exists` — файл есть;
+    `fallback_allowed` — запуск действительно может его взять. Это разные вещи: у
+    проекта с несовместимой версией китовый файл существует, но подмены нет.
+
+    `project` — явный проект для метаданных панели: версия и кит берутся из него, а не
+    из папки, откуда запущена панель. Сам прогон зовёт без аргумента — тогда проект и
+    кит уже известны `_roots()`.
+    """
+    kit, own = _roots()
+    if project:
+        target = Path(project).resolve()
+        found = _project_kit(target)
+        if found is None:
+            target = None      # своей копии движка нет: это запуск кита панели
+        else:
+            kit = found
+    else:
+        # Панель из папки проекта — не проект: у кита свой адаптер, сравнивать нечего.
+        here = Path(__file__).resolve().parent
+        target = own if here.parent.name in (".aurora", ".opencode") else None
     kit_file = Path(kit) / "scripts" / "agents" / "pydantic_ai_adapter.py"
-    if not os.path.isfile(kit_file):
-        return None, ""
+    out = {"kit": str(Path(kit)), "path": str(kit_file), "exists": os.path.isfile(kit_file),
+           "compatible": False, "fallback_allowed": False, "reason": ""}
+    if not out["exists"]:
+        out["reason"] = f"адаптер: китовый адаптер не найден, кит: {out['kit']}"
+        return out
+    if not target:
+        # Процесс кита: сравнивать не с чем, файл кита — это и есть свой адаптер.
+        out["compatible"] = out["fallback_allowed"] = True
+        return out
     try:
         from aurora_common import engine_status, kit_engine_api
         kit_version = (Path(kit) / "VERSION").read_text(encoding="utf-8").strip()
-        st = engine_status(project, kit_version, kit_engine_api(kit))
+        st = engine_status(target, kit_version, kit_engine_api(kit))
     except Exception as e:  # noqa: BLE001 — проверка версии не должна ронять вызов модели
-        return None, f"адаптер: китовый адаптер не проверен по версии ({type(e).__name__}: {e})"
+        out["reason"] = ("адаптер: китовый адаптер не проверен по версии "
+                         f"({type(e).__name__}: {e})")
+        return out
     same_api = bool(st.get("engine_api")) and st.get("engine_api") == st.get("kit_api")
-    if st.get("status") == "ok" or same_api:
-        return kit_file, ""
-    return None, ("адаптер: китовый адаптер не подставлен — движок проекта "
-                  f"{st.get('engine') or 'не назван'} и кит {st.get('kit') or kit_version or 'не назван'} "
-                  f"несовместимы ({st.get('status') or 'unknown'}). Обновите движок проекта.")
+    out["compatible"] = st.get("status") == "ok" or same_api
+    out["fallback_allowed"] = out["compatible"]
+    if not out["compatible"]:
+        out["reason"] = ("адаптер: китовый адаптер не подставлен — движок проекта "
+                         f"{st.get('engine') or 'не назван'} и кит "
+                         f"{st.get('kit') or kit_version or 'не назван'} несовместимы "
+                         f"({st.get('status') or 'unknown'}). Обновите движок проекта.")
+    return out
+
+
+def _kit_adapter_file() -> tuple:
+    """(китовый адаптер | None, причина). Для запуска: только в проекте и при совместимости."""
+    _kit, project = _roots()
+    if not project:
+        return None, ""          # это кит, а не проект: своего адаптера подменять нечем
+    st = kit_adapter_state()
+    if st["fallback_allowed"]:
+        return Path(st["path"]), ""
+    return None, st["reason"]
 
 
 def _adapter_choice(adapter=None) -> tuple:
@@ -5105,6 +5161,27 @@ def cmd_fast(as_json: bool, force: bool = False) -> int:
     return 0 if win else 1
 
 
+def adapter_facts(deep: bool = False) -> dict:
+    """Факты запуска адаптера в ЭТОМ движке — для архива из процесса проекта.
+
+    Считает то же, что пойдёт в прогон: файл и sha из каталога runtime, argv и причину
+    обхода — из этого процесса (его версия, кит, venv). Панель спрашивает этот ответ у
+    движка проекта, а не угадывает по своему окружению.
+    """
+    import runtime_catalog as RC
+    info = RC.adapter_info()
+    out = {"info": info, "argv": _adapter_argv(), "gap": adapter_gap()}
+    if deep:
+        target = info.get("path") if info.get("source") == "project" else None
+        out["probe"] = adapter_probe(target, _roots()[1], wait=15)
+    return out
+
+
+def cmd_adapter_facts(deep: bool = False) -> int:
+    print(json.dumps(adapter_facts(deep), ensure_ascii=False, default=str))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Встроенный агент: конфигурация и проверка цепочки")
     ap.add_argument("--ping", action="store_true",
@@ -5130,8 +5207,15 @@ def main() -> int:
                     help="с --venv-install: без паузы после выпуска (проверка свежих версий в CI)")
     ap.add_argument("--mcp-probe", action="store_true",
                     help="запустить MCP-серверы кита и назвать их инструменты")
+    ap.add_argument("--adapter-facts", action="store_true",
+                    help="факты запуска адаптера JSON (для архива диагностики)")
+    ap.add_argument("--adapter-probe", action="store_true",
+                    help="с --adapter-facts: ещё и запустить адаптер")
     ap.add_argument("--json", action="store_true", help="машинный вывод (для панели)")
     a = ap.parse_args()
+
+    if a.adapter_facts:
+        return cmd_adapter_facts(a.adapter_probe)
 
     if a.ping:
         return cmd_ping(a.json)

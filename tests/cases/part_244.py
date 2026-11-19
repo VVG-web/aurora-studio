@@ -145,6 +145,29 @@ def test_runtime_truth_probe_and_migration_keep_the_compressor_model(tmp: Path):
     assert cfg["backends"][0]["models"]["compressor"] == "comp", cfg["backends"][0]["models"]
     assert cfg["chains"]["llm"]["worker"][0]["model"] == "общая", cfg["chains"]["llm"]["worker"]
 
+    # Полный рабочий путь, а не только перенос: MC.load → AG.config → P.plan.
+    kit = tmp / "kit"
+    (kit / "local").mkdir(parents=True)
+    (kit / ".env.aurora.local").write_text(
+        "AURORA_AGENT_BACKEND_1_URL=http://one/v1\n"
+        "AURORA_AGENT_BACKEND_1_MODEL_COMPRESSOR=comp\n", encoding="utf-8")
+    old_roots = A._roots
+    isolated = os.environ.pop("AURORA_TESTS_ISOLATED", None)
+    A._roots = lambda: (kit, None)
+    try:
+        data = MC.load(kit, A.kit_env(kit))
+        assert data["providers"], data
+        assert MC.to_config(data)["backends"][0]["models"].get("compressor") == "comp", data
+        assert (kit / "local" / "models.json").is_file(), "перенос не записал models.json"
+        cfg = A.config()
+        assert cfg["backends"][0]["models"].get("compressor") == "comp", cfg
+        rows, _skipped = P.plan()
+    finally:
+        A._roots = old_roots
+        if isolated is not None:
+            os.environ["AURORA_TESTS_ISOLATED"] = isolated
+    assert [(r["n"], r["model"]) for r in rows] == [(1, "comp")], rows
+
 
 @test
 def test_runtime_truth_catalog_owns_roles_and_adapter_path_for_every_component(tmp: Path):
@@ -255,16 +278,32 @@ def test_runtime_truth_project_process_names_the_real_adapter(tmp: Path):
     kit_adapter = (KIT / "scripts" / "agents" / "pydantic_ai_adapter.py").resolve()
     assert Path(got["info"]["path"]) == kit_adapter, got
     assert got["info"]["source"] == "kit" and got["info"]["exists"], got
+    assert got["info"]["compatible"] is True, got["info"]
+    assert got["info"]["fallback_allowed"] is True, got["info"]
+    assert not got["info"]["reason"], got["info"]
     assert Path(got["kit"]) == KIT.resolve(), got
     assert got["argv"] and Path(got["argv"][-1]) == kit_adapter, \
         f"запуск не взял китовый адаптер: {got['argv']}"
     assert not got["gap"], got["gap"]
+
+    # Тот же ответ даёт машинный режим движка: панель спрашивает именно его.
+    cli = subprocess.run([sys.executable, str(scripts / "agent_core.py"), "--adapter-facts"],
+                         cwd=str(project), capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", timeout=120)
+    assert cli.returncode == 0, cli.stdout + cli.stderr
+    cli_got = json.loads(cli.stdout.strip().splitlines()[-1])
+    assert Path(cli_got["info"]["path"]) == kit_adapter, cli_got
+    assert cli_got["info"]["fallback_allowed"] is True, cli_got["info"]
+    assert cli_got["argv"] == got["argv"], (cli_got["argv"], got["argv"])
 
     # Версии разошлись: метаданные всё ещё называют китовый файл, а запуск честно отказывает.
     (project / ".aurora" / "engine_version.txt").write_text("0.0.1\n", encoding="utf-8")
     cp = _project_python(project, scripts, code)
     got = json.loads(cp.stdout.strip().splitlines()[-1])
     assert got["info"]["source"] == "kit" and got["info"]["exists"], got
+    assert got["info"]["compatible"] is False, got["info"]
+    assert got["info"]["fallback_allowed"] is False, got["info"]
+    assert "несовместим" in got["info"]["reason"], got["info"]
     assert got["argv"] == [], f"несовместимый адаптер подставлен молча: {got['argv']}"
     assert "несовместим" in got["gap"] and "Обновите движок проекта" in got["gap"], got["gap"]
 
@@ -277,7 +316,25 @@ def test_runtime_truth_project_process_names_the_real_adapter(tmp: Path):
     assert got["info"]["source"] == "missing", got
     assert got["info"]["exists"] is False, got
     assert str(empty) in got["info"]["path"], got
+    assert "китовый адаптер не найден" in got["info"]["reason"], got["info"]
+    assert str(empty) in got["info"]["reason"], got["info"]
+    assert ".aurora/scripts/agents" not in got["info"]["reason"], got["info"]
     assert got["argv"] == [], got
+    assert "китовый адаптер не найден" in got["gap"] and str(empty) in got["gap"], got["gap"]
+    assert ".aurora/scripts/agents" not in got["gap"], got["gap"]
+
+    # Свой адаптер проекта: тот же машинный ответ называет именно его, а не кит.
+    own = scripts / "agents" / "pydantic_ai_adapter.py"
+    own.parent.mkdir(parents=True, exist_ok=True)
+    own.write_text("# own\n", encoding="utf-8")
+    cli = subprocess.run([sys.executable, str(scripts / "agent_core.py"), "--adapter-facts"],
+                         cwd=str(project), capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", timeout=120)
+    assert cli.returncode == 0, cli.stdout + cli.stderr
+    cli_got = json.loads(cli.stdout.strip().splitlines()[-1])
+    assert cli_got["info"]["source"] == "project", cli_got["info"]
+    assert Path(cli_got["info"]["path"]) == own.resolve(), cli_got["info"]
+    assert cli_got["argv"] and Path(cli_got["argv"][-1]) == own.resolve(), cli_got["argv"]
 
 
 def _project_python(project: Path, scripts: Path, code: str) -> subprocess.CompletedProcess:
@@ -290,7 +347,12 @@ def _project_python(project: Path, scripts: Path, code: str) -> subprocess.Compl
 
 @test
 def test_runtime_truth_archive_shows_one_adapter(tmp: Path):
-    """`adapter.file/sha` и `project.adapter_file` — один файл и одна длина sha."""
+    """Архив повторяет решение проекта: тот же файл, sha, argv и причина.
+
+    Панель живёт процессом кита. Если бы она считала `argv`/`gap` сама, несовместимый
+    проект показывал бы в архиве работающий китовый запуск, хотя проект от него
+    отказывается. Поэтому архив спрашивает движок проекта (`--adapter-facts`).
+    """
     A, RC, _P, D = _modules()
     project = tmp / "Project"
     scripts = project / ".aurora" / "scripts"
@@ -306,6 +368,8 @@ def test_runtime_truth_archive_shows_one_adapter(tmp: Path):
     assert facts["sha"] == project_facts["adapter_file"]["sha"] == info["sha"], \
         (facts, project_facts, info)
     assert len(facts["sha"]) == 16, facts["sha"]
+    assert facts["compatible"] is None, facts
+    assert facts["fallback_allowed"] is None, facts
 
     # Проект без адаптера при живом ките: оба ответа китовые.
     incomplete = tmp / "Incomplete"
@@ -318,6 +382,76 @@ def test_runtime_truth_archive_shows_one_adapter(tmp: Path):
     assert facts["file"] == project_facts["adapter_file"]["path"], (facts, project_facts)
     assert facts["sha"] == project_facts["adapter_file"]["sha"] == kit["sha"], \
         (facts, project_facts, kit)
+
+    # Проект со своей копией движка, но несовместимой версией: архив обязан повторить
+    # отказ проекта, а не показать китовый запуск панели.
+    from harness import make_project
+    nested = tmp / "incompatible"
+    nested.mkdir()
+    incompatible = make_project(nested)
+    (incompatible / ".aurora" / "kit_path.txt").write_text(str(KIT) + "\n", encoding="utf-8")
+    (incompatible / ".aurora" / "engine_version.txt").write_text("0.0.1\n", encoding="utf-8")
+    vpy = Path.home() / ".aurora" / "venv" / ("Scripts/python.exe" if os.name == "nt"
+                                               else "bin/python")
+    vpy.parent.mkdir(parents=True, exist_ok=True)
+    vpy.write_text("", encoding="utf-8")
+
+    # Тот же ответ из процесса панели: явный проект, а не папка запуска панели.
+    panel_info = RC.adapter_info(str(incompatible))
+    assert panel_info["source"] == "kit" and panel_info["exists"] is True, panel_info
+    assert panel_info["compatible"] is False, panel_info
+    assert panel_info["fallback_allowed"] is False, panel_info
+    assert "несовместим" in panel_info["reason"], panel_info
+
+    decision = D._project_adapter(str(incompatible), deep=True)
+    assert not decision.get("error"), decision
+    assert decision["argv"] == [], decision
+    assert "несовместим" in decision["gap"], decision["gap"]
+    facts = D._adapter_facts(A, str(incompatible), deep=True, decision=decision)
+    project_facts = D._project_facts(str(incompatible), decision["info"])
+    assert facts["decision_source"] == "project", facts
+    assert facts["argv"] == decision["argv"] == [], (facts, decision)
+    assert facts["gap"] == decision["gap"], (facts, decision)
+    assert facts["file"] == project_facts["adapter_file"]["path"], (facts, project_facts)
+    assert facts["sha"] == project_facts["adapter_file"]["sha"], (facts, project_facts)
+    assert facts["source"] == project_facts["adapter_file"]["source"] == "kit", \
+        (facts, project_facts)
+    assert facts["compatible"] is False, facts
+    assert facts["fallback_allowed"] is False, facts
+    assert "несовместим" in facts["reason"], facts["reason"]
+    assert facts["probe"]["ok"] is False, facts["probe"]
+    assert "несовместим" in facts["probe"]["why"], facts["probe"]
+
+    # Весь архив, а не только его части: тот же отказ проекта и один файл адаптера.
+    archive = D.collect(str(incompatible), deep=False)
+    assert archive["adapter"]["decision_source"] == "project", archive["adapter"]
+    assert archive["adapter"]["argv"] == [], archive["adapter"]
+    assert "несовместим" in archive["adapter"]["gap"], archive["adapter"]
+    assert archive["adapter"]["file"] == archive["project"]["adapter_file"]["path"], \
+        (archive["adapter"], archive["project"])
+    assert archive["adapter"]["sha"] == archive["project"]["adapter_file"]["sha"], \
+        (archive["adapter"], archive["project"])
+
+    # Кит пропал: архив называет именно китовый путь, а не проекский `.aurora`.
+    empty = tmp / "empty-kit"
+    empty.mkdir()
+    (incompatible / ".aurora" / "kit_path.txt").write_text(str(empty) + "\n", encoding="utf-8")
+    archive = D.collect(str(incompatible), deep=False)
+    assert archive["adapter"]["source"] == "missing", archive["adapter"]
+    assert "китовый адаптер не найден" in archive["adapter"]["gap"], archive["adapter"]
+    assert "empty-kit" in archive["adapter"]["gap"], archive["adapter"]
+    assert ".aurora/scripts/agents" not in archive["adapter"]["gap"], archive["adapter"]
+
+    # Ключ самопроверки — не sha адаптера: в архиве не должно быть двух длин под именем key.
+    old_selfcheck = A.last_selfcheck
+    A.last_selfcheck = lambda: {"version": "1.2.3", "key": "1.2.3|abcdef123456"}
+    try:
+        facts = D._adapter_facts(A, str(incompatible), deep=False, decision=decision)
+    finally:
+        A.last_selfcheck = old_selfcheck
+    assert facts["selfcheck"] == {"version": "1.2.3", "cache_key": "1.2.3|abcdef123456"}, \
+        facts["selfcheck"]
+    assert "key" not in facts["selfcheck"], facts["selfcheck"]
 
 
 @test
