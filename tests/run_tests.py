@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
-import shutil
 import subprocess
 import sys
 import traceback
@@ -27,7 +26,6 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
         _s.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError, OSError):
         pass
-import tempfile
 
 import harness  # noqa: F401 — каркас; заодно кладёт tests/ в sys.path
 from harness import (  # noqa: F401
@@ -47,7 +45,7 @@ from harness import (  # noqa: F401
 # Проверки лежат в tests/cases/part_NN.py; импорт регистрирует их в harness.REGISTRY по порядку.
 import importlib  # noqa: E402
 
-for _part in ['part_01', 'part_02', 'part_03', 'part_04', 'part_05', 'part_06', 'part_07', 'part_08', 'part_09', 'part_10', 'part_11', 'part_12', 'part_13', 'part_14', 'part_15', 'part_16', 'part_17', 'part_18', 'part_19', 'part_20', 'part_21', 'part_22', 'part_23', 'part_24', 'part_25', 'part_26', 'part_27', 'part_28', 'part_29', 'part_30', 'part_31', 'part_32', 'part_33', 'part_34', 'part_35', 'part_36', 'part_37', 'part_38', 'part_39', 'part_40', 'part_41', 'part_42', 'part_43', 'part_44', 'part_45', 'part_46', 'part_47', 'part_48', 'part_49', 'part_50', 'part_51', 'part_60', 'part_61', 'part_62', 'part_63', 'part_64', 'part_65', 'part_66', 'part_67', 'part_70', 'part_71', 'part_72', 'part_80', 'part_81', 'part_82', 'part_83', 'part_84', 'part_85', 'part_90', 'part_91', 'part_92', 'part_93', 'part_94', 'part_95', 'part_96', 'part_97', 'part_98', 'part_99', 'part_100', 'part_101', 'part_102', 'part_103', 'part_104', 'part_105', 'part_106', 'part_107', 'part_108', 'part_109', 'part_110', 'part_111', 'part_112', 'part_113', 'part_114', 'part_115', 'part_116', 'part_117', 'part_120', 'part_121', 'part_122', 'part_130', 'part_141', 'part_143', 'part_144', 'part_145', 'part_146', 'part_147', 'part_148', 'part_149', 'part_150', 'part_151', 'part_152', 'part_153', 'part_154', 'part_155', 'part_156', 'part_158', 'part_159', 'part_160', 'part_161', 'part_163', 'part_164', 'part_165', 'part_166', 'part_168', 'part_169', 'part_170', 'part_171', 'part_172', 'part_173', 'part_174', 'part_175', 'part_176', 'part_177', 'part_178', 'part_179', 'part_180', 'part_181', 'part_182', 'part_183', 'part_184', 'part_185', 'part_186', 'part_187', 'part_188', 'part_189', 'part_190', 'part_191', 'part_192', 'part_193', 'part_194', 'part_195', 'part_196', 'part_197', 'part_198', 'part_199', 'part_200', 'part_201', 'part_202', 'part_203', 'part_204', 'part_205', 'part_206', 'part_207', 'part_208', 'part_209', 'part_210', 'part_211', 'part_212', 'part_213', 'part_214', 'part_215', 'part_216', 'part_217', 'part_218', 'part_219', 'part_220', 'part_221', 'part_222', 'part_223', 'part_224', 'part_225', 'part_226', 'part_227', 'part_228', 'part_229', 'part_230', 'part_231', 'part_232', 'part_233', 'part_234', 'part_236', 'part_237', 'part_238', 'part_239', 'part_240', 'part_241', 'part_242', 'part_243']:
+for _part in ['part_01', 'part_02', 'part_03', 'part_04', 'part_05', 'part_06', 'part_07', 'part_08', 'part_09', 'part_10', 'part_11', 'part_12', 'part_13', 'part_14', 'part_15', 'part_16', 'part_17', 'part_18', 'part_19', 'part_20', 'part_21', 'part_22', 'part_23', 'part_24', 'part_25', 'part_26', 'part_27', 'part_28', 'part_29', 'part_30', 'part_31', 'part_32', 'part_33', 'part_34', 'part_35', 'part_36', 'part_37', 'part_38', 'part_39', 'part_40', 'part_41', 'part_42', 'part_43', 'part_44', 'part_45', 'part_46', 'part_47', 'part_48', 'part_49', 'part_50', 'part_51', 'part_60', 'part_61', 'part_62', 'part_63', 'part_64', 'part_65', 'part_66', 'part_67', 'part_70', 'part_71', 'part_72', 'part_80', 'part_81', 'part_82', 'part_83', 'part_84', 'part_85', 'part_90', 'part_91', 'part_92', 'part_93', 'part_94', 'part_95', 'part_96', 'part_97', 'part_98', 'part_99', 'part_100', 'part_101', 'part_102', 'part_103', 'part_104', 'part_105', 'part_106', 'part_107', 'part_108', 'part_109', 'part_110', 'part_111', 'part_112', 'part_113', 'part_114', 'part_115', 'part_116', 'part_117', 'part_120', 'part_121', 'part_122', 'part_130', 'part_141', 'part_143', 'part_144', 'part_145', 'part_146', 'part_147', 'part_148', 'part_149', 'part_150', 'part_151', 'part_152', 'part_153', 'part_154', 'part_155', 'part_156', 'part_158', 'part_159', 'part_160', 'part_161', 'part_163', 'part_164', 'part_165', 'part_166', 'part_168', 'part_169', 'part_170', 'part_171', 'part_172', 'part_173', 'part_174', 'part_175', 'part_176', 'part_177', 'part_178', 'part_179', 'part_180', 'part_181', 'part_182', 'part_183', 'part_184', 'part_185', 'part_186', 'part_187', 'part_188', 'part_189', 'part_190', 'part_191', 'part_192', 'part_193', 'part_194', 'part_195', 'part_196', 'part_197', 'part_198', 'part_199', 'part_200', 'part_201', 'part_202', 'part_203', 'part_204', 'part_205', 'part_206', 'part_207', 'part_208', 'part_209', 'part_210', 'part_211', 'part_212', 'part_213', 'part_214', 'part_215', 'part_216', 'part_217', 'part_218', 'part_219', 'part_220', 'part_221', 'part_222', 'part_223', 'part_224', 'part_225', 'part_226', 'part_227', 'part_228', 'part_229', 'part_230', 'part_231', 'part_232', 'part_233', 'part_234', 'part_236', 'part_237', 'part_238', 'part_239', 'part_240', 'part_241', 'part_242', 'part_243', 'part_244']:
     importlib.import_module("cases." + _part)
 
 # ------------------------------------------------------------------- smoke-мета-тесты
@@ -80,18 +78,23 @@ def test_smoke_runs_only_invariants(_t):
 # (декоратор лишь регистрирует; исполнение здесь — чтобы --only/--smoke/--no-invariants
 # решали состав до прогона).
 selected = select_tests(only=ONLY, smoke=SMOKE, no_invariants=NO_INVARIANTS, shard=SHARD)
+# Прогон строит проекты и git-заготовки во временном каталоге. На почти полном диске он
+# падает посреди работы и оставляет мусор: лучше отказаться до первой записи и назвать
+# порог числом (5 ГБ).
+harness.require_free_space()
 FILTER_MISSED = bool(ONLY) and not SMOKE and not any(not is_inv for _n, _f, is_inv in selected)
 # Рабочая папка проверок снимается тихо: на Windows её держит открытым любой дочерний процесс,
 # не успевший выйти, и `rmtree` падал на самой последней строке — после всех проверок, но
 # до итога: красный прогон приходил без списка того, что именно красное.
-td = tempfile.mkdtemp(prefix="aurora-tests-")
+# Создаёт её каркас и помнит, что она своя: `cleanup_temp_dirs` удаляет только такие папки.
+td = harness.temp_dir(prefix="aurora-tests-")
 # TMPDIR бывает под настоящим `~` (папка scratch ассистента): границы проекта ищут вверх
 # по цепочке маркеров и принимали бы владельческую папку за корень. Рабочая папка кейсов
 # должна быть самостоятельной границей: если TMPDIR внутри home — работа на /tmp.
 _real_home = os.path.expanduser("~")
-if td.startswith(_real_home + os.sep) and os.path.isdir("/tmp"):
-    shutil.rmtree(td, ignore_errors=True)
-    td = tempfile.mkdtemp(prefix="aurora-tests-", dir="/tmp")
+if str(td).startswith(_real_home + os.sep) and os.path.isdir("/tmp"):
+    harness.remove_temp_dir(td)
+    td = harness.temp_dir(prefix="aurora-tests-", parent="/tmp")
 try:
     for _n, _fn, _is_inv in selected:
         run_td = Path(td) / f"case-{len(RESULTS)}"
@@ -124,7 +127,9 @@ try:
             os.chdir(_cwd)
             harness.run_cleanups()
 finally:
-    shutil.rmtree(td, ignore_errors=True)
+    # Только созданное прогоном: домашняя папка, git-конфиг и рабочая папка кейсов.
+    # Чужие каталоги в этот список не попадают.
+    harness.cleanup_temp_dirs()
 
 
 def main() -> int:

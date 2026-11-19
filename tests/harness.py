@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import ast
+import atexit
 import json
 import os
 import re
@@ -20,6 +21,71 @@ KIT = Path(__file__).resolve().parents[1]
 # Кухня разработки — `Development/` кита, вне git. Проверки, которым она нужна, на чистой
 # копии кита (в том числе в проверке GitHub) сверяют только то, что едет в git.
 KITCHEN = KIT / "Development" / "QA"
+
+# Каталоги, созданные каркасом для прогона. Убираются только они: каталог, названный
+# владельцем (`AURORA_TESTS_HOME`, чужая папка рядом с TMPDIR), в список не попадает и
+# не удаляется ни уборкой, ни в finally раннера. Прогон — гость на машине, а не хозяин.
+_TEMP_DIRS: list = []
+
+# Прогон строит проекты, git-заготовки и домашнюю папку во временном каталоге. На почти
+# полном диске он падает посреди проверок и оставляет мусор — лучше отказаться сразу и
+# назвать порог числом.
+MIN_FREE_BYTES = 5 * 1024 ** 3
+
+
+def temp_dir(prefix: str = "aurora-tests-", parent=None) -> Path:
+    """Временный каталог, принадлежащий прогону; убирается `cleanup_temp_dirs`."""
+    path = Path(tempfile.mkdtemp(prefix=prefix, dir=str(parent) if parent else None))
+    _TEMP_DIRS.append(path)
+    return path
+
+
+def remove_temp_dir(path) -> bool:
+    """Удалить каталог, только если его создал каркас. → удалён ли он.
+
+    Чужой каталог не трогается даже по просьбе: право на удаление даёт создание, а не
+    имя на диске.
+    """
+    path = Path(path)
+    for known in list(_TEMP_DIRS):
+        if known == path:
+            _TEMP_DIRS.remove(known)
+            shutil.rmtree(known, ignore_errors=True)
+            return True
+    return False
+
+
+def cleanup_temp_dirs() -> None:
+    """Убрать всё, что создал прогон, в порядке, обратном созданию."""
+    while _TEMP_DIRS:
+        shutil.rmtree(_TEMP_DIRS.pop(), ignore_errors=True)
+
+
+atexit.register(cleanup_temp_dirs)     # страховка: finally раннера может не дойти
+
+
+def free_space_error(path=None, minimum: int = MIN_FREE_BYTES, free_bytes=None) -> str:
+    """Почему прогон не стоит начинать, или пусто. `free_bytes` — чтобы проверить порог."""
+    target = Path(path or tempfile.gettempdir())
+    if free_bytes is None:
+        try:
+            free_bytes = shutil.disk_usage(str(target)).free
+        except OSError as e:
+            return f"не удалось узнать свободное место в {target}: {type(e).__name__}: {e}"
+    if free_bytes >= minimum:
+        return ""
+    return (f"Мало свободного места для прогона тестов: {free_bytes / 1024 ** 3:.1f} ГБ "
+            f"свободно в {target}, нужно не меньше {minimum / 1024 ** 3:.0f} ГБ. "
+            "Прогон строит проекты, git-заготовки и домашнюю папку во временном каталоге; "
+            "на почти полном диске он упадёт посреди проверок и оставит мусор. "
+            "Освободите диск или перенесите TMPDIR и повторите.")
+
+
+def require_free_space(path=None, minimum: int = MIN_FREE_BYTES, free_bytes=None) -> None:
+    """Остановить прогон до создания каталогов, если места меньше порога."""
+    problem = free_space_error(path, minimum, free_bytes)
+    if problem:
+        raise SystemExit(problem)
 
 
 def _git_author_for_fixtures() -> None:
@@ -42,7 +108,7 @@ def _git_author_for_fixtures() -> None:
     who = os.environ.get("GITHUB_ACTOR") or getpass.getuser() or "user"
     mail = (f"{who}@users.noreply.github.com" if os.environ.get("GITHUB_ACTOR")
             else f"{who}@localhost")
-    cfg = Path(tempfile.mkdtemp(prefix="aurora-tests-git-")) / "gitconfig"
+    cfg = temp_dir(prefix="aurora-tests-git-") / "gitconfig"
     cfg.write_text(f"[user]\n\tname = {who}\n\temail = {mail}\n", encoding="utf-8")
     os.environ["GIT_CONFIG_GLOBAL"] = str(cfg)
 
@@ -70,10 +136,10 @@ def _own_home_for_the_run() -> None:
     # (папка scratch ассистента), а границы проекта ищут вверх по цепочке маркеров и
     # «съели» бы домашний каталог владельца как корень. Прогон живёт самостоятельной
     # границей: если временная папка машины внутри настоящего home — корень на /tmp.
-    homebase = tempfile.gettempdir() if not tempfile.gettempdir().startswith(real + os.sep) else tempfile.mkdtemp(prefix="aurora-tmp-")
-    if homebase.startswith(real + os.sep):
+    homebase = tempfile.gettempdir() if not tempfile.gettempdir().startswith(real + os.sep) else temp_dir(prefix="aurora-tmp-")
+    if str(homebase).startswith(real + os.sep):
         homebase = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
-    own = tempfile.mkdtemp(prefix="aurora-tests-home-", dir=homebase)
+    own = temp_dir(prefix="aurora-tests-home-", parent=homebase)
     cfg = os.environ.get("GIT_CONFIG_GLOBAL") or os.path.join(real, ".gitconfig")
     if os.path.isfile(cfg):
         keep = os.path.join(own, ".gitconfig-copy")
@@ -85,16 +151,17 @@ def _own_home_for_the_run() -> None:
         import site
         os.environ["PYTHONUSERBASE"] = site.getuserbase()
     os.environ["AURORA_TESTS_REAL_HOME"] = real
-    os.environ["AURORA_TESTS_HOME"] = own
-    os.environ["HOME"] = os.environ["USERPROFILE"] = own
+    os.environ["AURORA_TESTS_HOME"] = str(own)
+    os.environ["HOME"] = os.environ["USERPROFILE"] = str(own)
     # Общая папка машины (`access_check.shared_dir`: %ProgramData%, /Users/Shared, /var/tmp) — туда
     # установка пишет «кто что поставил». Прогон пишет в свою: настоящие записи других пользователей
     # он не трогает и своих туда не оставляет.
     os.environ["AURORA_SHARED_DIR"] = os.path.join(own, "machine-shared")
-    import atexit
-    atexit.register(shutil.rmtree, own, True)
+    # Домашняя папка прогона и git-конфиг убираются `cleanup_temp_dirs` — он уже висит
+    # на atexit и зовётся раннером в finally.
 
 
+require_free_space()        # до создания домашней папки и git-конфига прогона
 _own_home_for_the_run()
 SCRIPTS = KIT / "scripts"
 VERBOSE = "-v" in sys.argv
