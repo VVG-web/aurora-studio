@@ -686,6 +686,16 @@ def test_report_ask_survives_split_clean_and_partial_zero(_t: Path):
          for s in R.MOMUS_ASPECTS], "Ответ.")
     assert part["ok"] and part["partial"] and part["unsupported"] == 0, part
     text2 = R.report_ask({**res, "momus": part}, "Вопрос?", cfg)
+    # Полная проверка с находками говорит по-старому: «без опоры — N» — это контракт
+    # отчёта (part_08), а не пожелание. Новые слова — только для частичной проверки.
+    hit = R.merge_momus_aspects(
+        [{"id": s["id"], "ok": True, "checked": 2, "seconds": 0.1,
+          "findings": ([{"claim": "срок не назван", "why": "нет", "severity": "high"}]
+                       if s["id"] == "support" else [])}
+         for s in R.MOMUS_ASPECTS], "Ответ.")
+    text_hit = R.report_ask({**res, "momus": hit}, "Вопрос?", cfg)
+    assert "Момус: без опоры — 1" in text_hit, text_hit[-600:]
+    assert "проверка частичная" not in text_hit, text_hit[-600:]
     assert "проверка частичная, находок нет" in text2, text2[-600:]
     assert "без опоры — 0" not in text2 and "БЕЗ ОПОРЫ 0" not in text2, text2[-600:]
     assert "сверен частично" in text2, text2[-600:]
