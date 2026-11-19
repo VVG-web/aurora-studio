@@ -1172,7 +1172,8 @@ def test_the_cause_table_is_complete_and_every_text_is_translated(tmp: Path):
     sys.path.insert(0, str(KIT / "cockpit"))
     ck = importlib.import_module("aurora_cockpit")
     ck._MATCHERS.clear()          # кэш мог собраться до появления новых причин
-    known = {"path", "module", "exc", "version", "first", "code", "times", "sec", "error", "detail", "n",
+    known = {"path", "module", "exc", "version", "first", "code", "pid", "pending", "stderr",
+             "deaths", "times", "sec", "error", "detail", "n",
              "model", "status", "label", "count", "why"}
     for cid, row in AG.CAUSES.items():
         assert row["area"] in ("adapter", "link") and row["fix"] in ("", "install", "version", "models"), cid

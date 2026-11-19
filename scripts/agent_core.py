@@ -2528,7 +2528,7 @@ _RETRY_SAID: set = set()       # (№ бэкенда, вид) — о каких 
 # раз адаптер не дошёл при живой контрольной проверке движка без единого прохода через адаптер.
 LINK_RUN: dict = {}            # {№ бэкенда: {"fails": число, "kind": последний вид, "at": момент}}
 GAP_RUN: dict = {}             # {№ бэкенда: {"count": число, "at": момент}}
-_PIPE_RUN: dict = {}           # {путь: сколько смертей канала подряд без успешного прохода}
+_PIPE_RUN: dict = {}           # {путь: {"base", "last", "count"} — смерти канала после успеха}
 _STREAK_LOCK = threading.Lock()
 
 
@@ -2657,11 +2657,29 @@ def note_bypass(why, needs_tools: bool = False, answered: bool = True) -> None:
     text = str(cause)
     path = run_path()
     pipe = cause_id(cause.kind, cause.sub) == "process_died.pipe"
-    pipe_calls = 0
+    pipe_deaths = pipe_count = 0
     if pipe:
+        try:
+            pipe_deaths = int(cause.args.get("deaths") or 0)
+        except (TypeError, ValueError):
+            pipe_deaths = 0
         with _STREAK_LOCK:
-            pipe_calls = int(_PIPE_RUN.get(path) or 0) + 1
-            _PIPE_RUN[path] = pipe_calls
+            # Считаем смерти, а не вызовы: девять вызовов, заставших одну мёртвую трубу,
+            # не должны выглядеть как три падения. Номер смерти растёт только вместе с
+            # новым процессом (`deaths` из `_hub_count_death_locked`).
+            if pipe_deaths > 0:
+                state = _PIPE_RUN.get(path)
+                if not isinstance(state, dict):
+                    # Первая замеченная смерть после успеха — уже первая в новой серии.
+                    state = {"base": pipe_deaths - 1, "last": pipe_deaths - 1, "count": 0}
+                base = int(state.get("base") or 0)
+                last = max(int(state.get("last") or 0), base)
+                if pipe_deaths > last:
+                    state["count"] = int(state.get("count") or 0) + (pipe_deaths - last)
+                state["last"] = max(last, pipe_deaths)
+                state["base"] = base
+                _PIPE_RUN[path] = state
+                pipe_count = int(state["count"])
     with _USAGE_LOCK:
         USAGE["bypass"] += 1
         USAGE["bypass_why"] = text
@@ -2681,12 +2699,13 @@ def note_bypass(why, needs_tools: bool = False, answered: bool = True) -> None:
     with _ALARM_LOCK:
         data = read_alarm()
         row = data.get(path) or {}
-        calls = pipe_calls if pipe else int(row.get("calls") or 0) + 1
-        # Одиночная смерть трубы самовосстанавливается: тревога — только с ALARM_AFTER-й подряд.
-        if pipe and calls < ALARM_AFTER:
+        calls = int(row.get("calls") or 0) + 1
+        # Одиночная смерть трубы самовосстанавливается: тревога — только с ALARM_AFTER-й смерти
+        # подряд, а не с ALARM_AFTER-го вызова в одну мёртвую трубу.
+        if pipe and pipe_count < ALARM_AFTER:
             return
         if pipe:
-            calls = max(calls, int(row.get("calls") or 0))
+            calls = max(calls, pipe_count)
         data[path] = {**cause.row(), "at": utc_stamp(), "project": os.getcwd(), "path": path,
                       "calls": calls}
         _write_alarm(data)

@@ -652,7 +652,11 @@ def test_runtime_truth_adapter_pipe_keeps_death_facts_and_counts_once(tmp: Path)
     old_home, old_task = A.RT.HOME, dict(A.RUN_TASK)
     old_hub = dict(A._HUB)
     old_hub["stderr"] = deque(A._HUB.get("stderr") or [], maxlen=200)
+    old_hub["stderr_by_gen"] = dict(A._HUB.get("stderr_by_gen") or {})
+    old_hub["stderr_by_gen"][int(old_hub.get("stderr_gen") or 0)] = old_hub["stderr"]
+    old_hub["proc_gen_by_id"] = dict(A._HUB.get("proc_gen_by_id") or {})
     old_pipe, old_hub_fn, old_record = dict(A._PIPE_RUN), A.adapter_hub, A.record_failure
+    old_bypass = A.USAGE.get("bypass", 0)
     A.RT.HOME = tmp / "home"
     A.RT.HOME.mkdir()
     A.RUN_TASK["name"] = "bot:pipe9"
@@ -695,9 +699,9 @@ def test_runtime_truth_adapter_pipe_keeps_death_facts_and_counts_once(tmp: Path)
     assert isinstance(first.args.get("pending"), int), first.args
     assert "boom" in (first.args.get("stderr") or ""), first.args
     assert first.fix == "", first.fix
-    row = alarm["bot:pipe9"]
-    assert row["calls"] == 9 and row["fix"] == "", row
-    assert "boom" in (row["args"].get("stderr") or ""), row
+    # Одна смерть на девять вызовов: это не три падения, тревоги быть не должно.
+    assert "bot:pipe9" not in alarm, alarm
+    assert A.USAGE.get("bypass", 0) == old_bypass + 9, A.USAGE.get("bypass")
 
 
 @test
@@ -711,18 +715,21 @@ def test_runtime_truth_adapter_pipe_alarm_waits_for_third_failure(tmp: Path):
     A.RUN_TASK["name"] = "bot:threshold"
     A.record_failure = lambda *a, **k: None
     A._PIPE_RUN.clear()
-    why = A.Why("process_died", "pipe", exc="BrokenPipeError", code=3, pid=1, pending=0, stderr="boom")
+    def why(n: int):
+        return A.Why("process_died", "pipe", exc="BrokenPipeError", code=3, pid=1,
+                     pending=0, stderr="boom", deaths=n)
+
     try:
-        for _ in range(A.ALARM_AFTER - 1):
-            A.note_bypass(why, answered=False)
+        for n in range(1, A.ALARM_AFTER):
+            A.note_bypass(why(n), answered=False)
             assert "bot:threshold" not in A.read_alarm(), A.read_alarm()
-        A.note_bypass(why, answered=False)
+        A.note_bypass(why(A.ALARM_AFTER), answered=False)
         row = A.read_alarm()["bot:threshold"]
         assert row["calls"] == A.ALARM_AFTER, row
-        A.note_bypass(why, answered=False)
+        A.note_bypass(why(A.ALARM_AFTER), answered=False)
         assert A.read_alarm()["bot:threshold"]["calls"] == A.ALARM_AFTER + 1
         A.clear_bypass()
-        A.note_bypass(why, answered=False)
+        A.note_bypass(why(1), answered=False)
         assert "bot:threshold" not in A.read_alarm(), A.read_alarm()
     finally:
         A.RT.HOME, A.RUN_TASK, A.record_failure = old_home, old_task, old_record
