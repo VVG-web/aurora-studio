@@ -9193,12 +9193,27 @@ def run_momus_chunks(cfg: dict, packs: list, question: str, answer: str, call=No
     утверждения, — и так до конца: найденное в любом куске опорой считается. Противоречие («ПРОТИВОРЕЧИЕ …») куском
     без противоречия не снимается: оно остаётся. Нет названных утверждений (Момус дал одно число) — сузить нечем,
     остаётся результат первого куска. Сбой на одном из следующих кусков — проверка не состоялась (`ok=False`), а не
-    утверждения первого куска, выданные за итог."""
-    # Куски сужают только «без опоры» и «противоречие»: на синтетическом тексте
-    # («Утверждения для проверки: …») `coverage` и `quotes` смысла не имеют.
+    утверждения первого куска, выданные за итог.
+
+    **Контракт направлений.** Первый кусок — настоящий ответ на вопрос, поэтому он
+    проверяется всеми четырьмя направлениями (`quotes` и `coverage` включены). Следующие
+    куски проверяют синтетический список «Утверждения для проверки: …», где цитат и
+    покрытия нет по построению, поэтому они спрашивают только `support` и
+    `contradictions`. Итоговая правда считается по ОБЪЕДИНЁННЫМ `degraded`/`gaps` всех
+    кусков: частичный второй кусок так же ломает «чисто», как и первый.
+    """
+    # На синтетическом тексте («Утверждения для проверки: …») `coverage` и `quotes`
+    # смысла не имеют: покрытие честно нашло бы «не покрыто» на каждой строке списка.
     facets = ("support", "contradictions")
     first = run_momus(cfg, packs[0], question, answer, call, prefer,
-                      answered_in=answered_in, aspects=facets)
+                      answered_in=answered_in)
+    degraded = list(first.get("degraded") or [])
+    gaps = list(first.get("gaps") or [])
+
+    def absorb(part: dict) -> None:
+        degraded.extend(x for x in (part.get("degraded") or []) if x not in degraded)
+        gaps.extend(g for g in (part.get("gaps") or []) if g not in gaps)
+
     if len(packs) < 2 or not first.get("ok") or first.get("clean"):
         return first
     named = momus_claims(first.get("text"))
@@ -9214,9 +9229,12 @@ def run_momus_chunks(cfg: dict, packs: list, question: str, answer: str, call=No
                           "Утверждения для проверки:\n" + "\n".join("- " + c.split(": ", 1)[-1] for c in left),
                           call, prefer, answered_in=answered_in, aspects=facets)
         if not again.get("ok"):
+            absorb(again)
             return {"ok": False, "why": "часть источника не проверена: " + (again.get("why") or "нет вердикта"),
                     "seconds": first.get("seconds", 0.0), "timed_out": bool(again.get("timed_out")),
-                    "given": again.get("given"), "call": again.get("call")}
+                    "given": again.get("given"), "call": again.get("call"),
+                    "degraded": degraded, "gaps": gaps}
+        absorb(again)
         if again.get("clean"):
             left = []
             break
@@ -9224,11 +9242,11 @@ def run_momus_chunks(cfg: dict, packs: list, question: str, answer: str, call=No
         left = momus_claims(again.get("text")) or left[:max(1, int(again.get("unsupported") or 1))]
     rest = fixed + left
     total = len(rest) + unnamed
-    # Правда берётся из ОБЩЕЙ формулы, а не из «нет находок — значит чисто»: первый кусок
-    # мог быть частичным (направление не ответило или нашлись пропуски), и тогда
-    # отсутствие оставшихся находок ничего не подтверждает.
-    truth = momus_truth(bool(first.get("ok")), total,
-                        first.get("degraded") or (), first.get("gaps") or ())
+    # Правда берётся из ОБЩЕЙ формулы, а не из «нет находок — значит чисто», и по
+    # ОБЪЕДИНЁННЫМ признакам неполноты: частичный кусок (направление не ответило или
+    # нашлись пропуски) обесценивает и «чисто», и «полную проверку» — даже если он был
+    # последним, а не первым.
+    truth = momus_truth(bool(first.get("ok")), total, degraded, gaps)
     body = list(rest)
     if truth["degraded"]:
         body.append("часть проверки не состоялась: " + ", ".join(truth["degraded"]))
