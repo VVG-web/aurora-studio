@@ -896,3 +896,80 @@ def test_a_partial_momus_makes_the_whole_answer_partial(_t: Path):
     out2 = C.answer("Вопрос?", cfg=cfg, cwd=str(_t), call=call, pack="ПАК",
                     prompt="Ответь.", verifier=full)
     assert out2["status"] == "full" and not out2["degraded"], (out2["status"], out2["degraded"])
+
+
+@test
+def test_split_has_a_common_deadline_and_cancels_the_tail(_t: Path):
+    """Направления не тянут этап дольше общего срока, а незавершённые названы.
+
+    Четыре направления по 1800 с при ширине 3 давали до 3600 с: `ThreadPoolExecutor`
+    ждал все задачи, отмены не было, и внешний таймаут бросал поток, который продолжал
+    держать слот шлюза. Теперь у проверки один общий срок, остаток передаётся каждому
+    направлению, а не успевшие попадают в `degraded`.
+    """
+    R = importlib.import_module("agent_runner")
+    cfg = _momus_cfg(split=True)
+    started = time.time()
+
+    def call(cfg, role, msgs, **kw):
+        time.sleep(0.4)
+        text = msgs[0]["content"]
+        aspect = next(s["id"] for s in R.MOMUS_ASPECTS if f'"aspect": "{s["id"]}"' in text)
+        return _answer(aspect, [])
+
+    out = R.run_momus(cfg, "ПАК", "Вопрос?", "Ответ.", call=call,
+                      deadline=time.time() + 0.5)
+    spent = time.time() - started
+    assert spent < 1.6, f"проверка вернулась через {spent:.1f} с при общем сроке 0.5 с"
+    assert out["partial"] is True and out["complete"] is False, out
+    assert out["degraded"], out["degraded"]
+    assert any("общий срок" in (out["aspects"][x].get("why") or "")
+               or out["aspects"][x]["ok"] is False for x in out["degraded"]), out["aspects"]
+    assert sum(1 for x in out["degraded"] if x) == len(out["degraded"])
+
+    # Ни один поток не должен остаться работать после возврата: считаем живые вызовы.
+    live = {"now": 0, "peak": 0}
+    lock = threading.Lock()
+
+    def slow(cfg, role, msgs, **kw):
+        with lock:
+            live["now"] += 1
+            live["peak"] = max(live["peak"], live["now"])
+        try:
+            time.sleep(0.5)
+            return _answer("support", [])
+        finally:
+            with lock:
+                live["now"] -= 1
+
+    R.run_momus(cfg, "ПАК", "Вопрос?", "Ответ.", call=slow, deadline=time.time() + 0.3)
+    time.sleep(0.7)
+    assert live["now"] == 0, f"после возврата осталось {live['now']} активных вызовов"
+
+
+@test
+def test_the_stage_timeout_names_the_limit_that_actually_stood(_t: Path):
+    """Таймаут этапа называет фактический предел, а не `request_timeout` из настройки.
+
+    Отчёт брал `mo.get('given') or cfg['request_timeout']`, а `verify` не клал `given` —
+    и человек читал «не уложилась в 600 с» там, где стояло 0.1 с (или 1800 в обычном
+    случае) и учился не тому рычагу.
+    """
+    C = importlib.import_module("answer_core")
+    R = importlib.import_module("agent_runner")
+
+    def sleepy(answer, pack, question, answered_in=None):
+        time.sleep(1.0)
+        return {"ok": True, "text": "ВЕРДИКТ: ЧИСТО", "unsupported": 0, "clean": True}
+
+    checks = C.verify("Ответ.", pack="ПАК", cards=[], cwd=str(_t), verifier=sleepy,
+                      verify_timeout=0.2)
+    mo = checks["momus"]
+    assert not mo["ok"] and mo["timed_out"], mo
+    assert 0 < mo["given"] <= 0.5, mo
+
+    report = R.report_ask({"ok": True, "answer": "Ответ.", "cards": [], "total": 0,
+                           "model": "m", "backend": 1, "seconds": 1.0, "momus": mo},
+                          "Вопрос?", _momus_cfg(split=False))
+    assert "0 с" in report or "0.2 с" in report, report[-400:]
+    assert "600 с" not in report, "отчёт назвал настройку вместо фактического предела"

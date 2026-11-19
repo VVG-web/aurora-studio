@@ -415,11 +415,15 @@ def verify(answer: str, *, pack: str, cards: list, cwd: str,
     degraded: list[str] = []
     if verifier is not None:
         cap = min(VERIFY_CAP, float(verify_timeout or VERIFY_CAP))
+        limit = stage_timeout(deadline, cap)
         stage = run_stage("verify", lambda: _verifier_call(
                               verifier, answer, momus_pack or pack, question, answered_in),
-                          deadline=deadline, timeout=stage_timeout(deadline, cap))
+                          deadline=deadline, timeout=limit)
         if not stage.ok:
+            # `given` — фактический предел этапа: отчёт называет человеку то число, которое
+            # действительно стояло, а не `request_timeout` из настройки.
             checks["momus"] = {"ok": False, "timed_out": bool(stage.timed_out),
+                               "given": round(float(limit), 1),
                                "why": (stage.error or {}).get("reason") or "проверка не ответила"}
             degraded.append("momus_timeout" if stage.timed_out else "momus_failed")
         else:

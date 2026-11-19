@@ -8719,7 +8719,8 @@ MOMUS_PREFER = 0
 
 
 def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
-              prefer: int = 0, answered_in: float = 0.0, input_limit: int = 0) -> dict:
+              prefer: int = 0, answered_in: float = 0.0, input_limit: int = 0,
+              deadline: float | None = None) -> dict:
     """Момус: вторая модель разбирает ответ по утверждениям и ищет то, что без опоры.
 
     Механическая проверка ловит только ссылки. Утверждение без ссылки — «возврат
@@ -8737,7 +8738,7 @@ def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
         # Проверка по направлениям: несколько коротких вызовов вместо одного большого.
         # Флаг выключен по умолчанию — старый Момус остаётся эталоном для сравнения.
         return run_momus_split(cfg, pack, question, answer, call, prefer, answered_in,
-                               input_limit)
+                               input_limit, deadline=deadline)
     rt = momus_timeout(cfg, answered_in)
     v = call(cfg, "qa", [{"role": "user", "content": PROMPT_MOMUS.format(
         pack=pack, question=question, answer=answer)}],
@@ -8895,11 +8896,15 @@ def parse_momus_aspect(text: str, spec: dict) -> dict:
 
 def run_momus_aspect(cfg: dict, spec: dict, pack: str, question: str, answer: str,
                      call=None, prefer: int = 0, answered_in: float = 0.0,
-                     input_limit: int = 0) -> dict:
-    """Одно направление: свой срок, свой вызов, свой разбор."""
+                     input_limit: int = 0, timeout: float | None = None) -> dict:
+    """Одно направление: свой срок, свой вызов, свой разбор.
+
+    `timeout` — остаток ОБЩЕГО срока проверки: направление не имеет права жить дольше,
+    чем весь этап, даже если его собственный срок больше.
+    """
     call = call or AG.call_role
     started = time.time()
-    rt = momus_timeout(cfg, answered_in)
+    rt = round(float(timeout), 1) if timeout else momus_timeout(cfg, answered_in)
     prompt = momus_aspect_prompt(spec, pack, question, answer)
     v = call(cfg, "qa", [{"role": "user", "content": prompt}],
              deadline=time.time() + rt, prefer=prefer, request_timeout=rt,
@@ -9068,7 +9073,7 @@ def merge_momus_aspects(results: list, answer: str) -> dict:
 
 def run_momus_split(cfg: dict, pack: str, question: str, answer: str, call=None,
                     prefer: int = 0, answered_in: float = 0.0,
-                    input_limit: int = 0) -> dict:
+                    input_limit: int = 0, deadline: float | None = None) -> dict:
     """Момус по направлениям: несколько коротких проверок разом, каждая своим сроком.
 
     Разбиение нужно ради трёх вещей: короткий выход модели (срок перестаёт быть узким
@@ -9081,20 +9086,44 @@ def run_momus_split(cfg: dict, pack: str, question: str, answer: str, call=None,
     (text/unsupported/clean). Новые ключи (`split`, `complete`, `partial`, `aspects`,
     `gaps`, `degraded`) только добавляются.
     """
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import TimeoutError as FuturesTimeout
     call = call or AG.call_role
     started = time.time()
     width = max(1, min(MOMUS_SPLIT_WIDTH, len(MOMUS_ASPECTS)))
-    with ThreadPoolExecutor(max_workers=width) as pool:
-        jobs = [pool.submit(run_momus_aspect, cfg, spec, pack, question, answer, call,
-                            prefer, answered_in, input_limit) for spec in MOMUS_ASPECTS]
-        results = []
-        for spec, job in zip(MOMUS_ASPECTS, jobs):
-            try:
-                results.append(job.result())
-            except Exception as exc:  # noqa: BLE001 — сбой направления не рушит проверку
-                results.append({"id": spec["id"], "ok": False,
-                                "why": f"{type(exc).__name__}: {exc}", "seconds": 0.0})
+    # Общий срок: направления не могут тянуть этап дольше `MOMUS_ABS_CAP` вместе.
+    # Без него четыре направления по 1800 с при ширине 3 давали до 3600 с, а внешний
+    # таймаут бросал поток, продолжавший держать слот шлюза.
+    total_deadline = min(float(deadline or float("inf")), started + MOMUS_ABS_CAP)
+    pool = ThreadPoolExecutor(max_workers=width)
+    jobs = {}
+    results: list = []
+    try:
+        for spec in MOMUS_ASPECTS:
+            left = max(1.0, total_deadline - time.time())
+            jobs[pool.submit(run_momus_aspect, cfg, spec, pack, question, answer, call,
+                             prefer, answered_in, input_limit,
+                             min(momus_timeout(cfg, answered_in), left))] = spec["id"]
+        try:
+            for job in as_completed(jobs, timeout=max(0.1, total_deadline - time.time())):
+                spec_id = jobs[job]
+                try:
+                    results.append(job.result())
+                except Exception as exc:  # noqa: BLE001 — сбой направления не рушит проверку
+                    results.append({"id": spec_id, "ok": False,
+                                    "why": f"{type(exc).__name__}: {exc}", "seconds": 0.0})
+        except FuturesTimeout:
+            pass
+    finally:
+        # Не ждём «хвост»: его срок уже ограничен остатком общего, а держать этап
+        # дольше общего предела нельзя.
+        pool.shutdown(wait=False, cancel_futures=True)
+    done = {r.get("id") for r in results}
+    for spec in MOMUS_ASPECTS:
+        if spec["id"] not in done:
+            results.append({"id": spec["id"], "ok": False,
+                            "why": "направление не уложилось в общий срок проверки",
+                            "seconds": 0.0})
     out = merge_momus_aspects(results, answer)
     out["seconds"] = round(time.time() - started, 1)
     out["parallel"] = width
