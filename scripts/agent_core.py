@@ -381,6 +381,10 @@ def parse_config(env: dict) -> dict:
         # опечатки хуже медленной работы.
         "parallel": parallel_cap(env.get("AURORA_AGENT_PARALLEL", "1")),
         "debug": env.get("AURORA_AGENT_DEBUG", "0") in ("1", "true", "yes"),
+        # Момус по направлениям: несколько коротких проверок вместо одного большого вызова.
+        # По умолчанию выключено: пока разбитый Момус не сравнён со старым на живых
+        # карточках, эталон — прежний; включает `AURORA_AGENT_MOMUS_SPLIT=1`.
+        "momus_split": env.get("AURORA_AGENT_MOMUS_SPLIT", "0") in ("1", "true", "yes"),
         "backends": backends,
     }
 

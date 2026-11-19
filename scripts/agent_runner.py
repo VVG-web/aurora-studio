@@ -7932,7 +7932,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         emit_event("check", stage="momus_final",
                    status="clean" if mo2.get("clean") else "issues",
                    unsupported=int(mo2.get("unsupported") or 0))
-        say(f"  Момус: {'чисто' if mo2.get('clean') else 'без опоры ' + str(mo2.get('unsupported', 0))}")
+        say(f"  Момус: {momus_summary(mo2)}")
     else:
         st.setdefault("momus", {"ok": False, "skipped": True, "why": "Момус отключён"})
         save_session(cwd, sid, st)
@@ -7993,8 +7993,8 @@ def report_make(res: dict) -> str:
         L += ["", f"Критик нашёл замечаний: {len(st['issues'])} — они в самом документе."]
     mo = st.get("momus") or {}
     if mo.get("ok"):
-        L += ["", ("Момус: чисто" if mo.get("clean")
-                   else f"⛔ Момус: без опоры {mo.get('unsupported', 0)} — раздел «Под "
+        L += ["", (f"Момус: {momus_summary(mo)}" if not mo.get("unsupported")
+                   else f"⛔ Момус: {momus_summary(mo)} — раздел «Под "
                         f"вопросом» в документе. В чистовик это не переносится.")]
     if not stages.get("checked"):
         L += ["", "Цепочка не пройдена до конца: документ лежит со `status: draft`. "
@@ -8633,14 +8633,20 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
         text = PROMPT_ASK.format(pack=pack, question=_question)
         return text + (PROMPT_ASK_HINT if _history else "")
 
-    def momus_check(answer_text: str, pack: str, asked: str) -> dict:
-        return run_momus(cfg, pack, asked, answer_text, call, answered_in=0.0)
+    def momus_check(answer_text: str, pack: str, asked: str,
+                    answered_in: float | None = None) -> dict:
+        # Срок проверки считается от того, во что обошёлся сам ответ: `answer_core` знает
+        # это время и передаёт его сюда (раньше здесь стоял жёсткий ноль, и часовая
+        # генерация проверялась по тому же полу, что и десятисекундная).
+        return run_momus(cfg, pack, asked, answer_text, call,
+                         answered_in=float(answered_in or 0.0))
 
     rr = cfg.get("rerank") or {}
     return answer_core.answer(
         topic, cfg=cfg, cwd=cwd, call=call, prompt_builder=build_prompt,
         mode=mode, max_cards=max_cards, history=turns_as_messages(history),
         role=role, momus=momus, verifier=(momus_check if momus else None),
+        verify_timeout=MOMUS_ABS_CAP,
         runner=run_command, refusal=pack_refusal, context_thread="default",
         raptor=raptor, rerank=rr.get("enabled"), rerank_blend=rr.get("blend"),
         # Ответ и проверка — две работы с разными сроками. Общий дедлайн = срок ответа плюс
@@ -8679,6 +8685,10 @@ MOMUS_FLOOR = 360.0   # проверка текста — не генераци�
 # Потолок — общий жёсткий предел, как у остальных генерационных ролей: проверка длинного
 # ответа на медленной модели честно идёт десятки минут, и обрывать её за это нельзя.
 MOMUS_ABS_CAP = 1800.0
+# Запас на запуск проверки: очередь шлюза, холодный слот, первый байт. Без него срок,
+# посчитанный от времени ответа, даёт «ровно столько же» — и проверка обрывается на
+# ровном месте. Пять минут — это p90 очереди на слот плюс запас на разбор.
+MOMUS_BUFFER = 300.0
 
 
 def momus_timeout(cfg: dict, answered_in: float) -> float:
@@ -8694,7 +8704,11 @@ def momus_timeout(cfg: dict, answered_in: float) -> float:
     floor = min(base, MOMUS_FLOOR)
     if answered_in <= 0:
         return floor
-    return round(min(MOMUS_ABS_CAP, base * MOMUS_CAP, max(floor, answered_in * MOMUS_SHARE)), 1)
+    # Время самого ответа плюс буфер: проверка начинается не мгновенно (очередь шлюза,
+    # холодный слот), и без него быстрый ответ получал срок «в обрез». Потолок — общий
+    # предел запроса, ниже пола не опускаемся.
+    need = answered_in * MOMUS_SHARE + MOMUS_BUFFER
+    return round(min(MOMUS_ABS_CAP, base * MOMUS_CAP, max(floor, need)), 1)
 
 
 # Проверка тезиса идёт с основного шлюза кольца, а не со слота, который тезис писал. Раньше
@@ -8719,6 +8733,11 @@ def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
     """
     call = call or AG.call_role
     started = time.time()
+    if cfg.get("momus_split"):
+        # Проверка по направлениям: несколько коротких вызовов вместо одного большого.
+        # Флаг выключен по умолчанию — старый Момус остаётся эталоном для сравнения.
+        return run_momus_split(cfg, pack, question, answer, call, prefer, answered_in,
+                               input_limit)
     rt = momus_timeout(cfg, answered_in)
     v = call(cfg, "qa", [{"role": "user", "content": PROMPT_MOMUS.format(
         pack=pack, question=question, answer=answer)}],
@@ -8753,6 +8772,319 @@ def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
             out["suspect"] = True       # ни одна из цитат опоры не найдена в контексте: «чисто» доверия не заслуживает
     if not m:
         out["call"] = {k: x for k, x in v.items() if k != "url"}
+    return out
+
+
+# --------------------------------------------------------------- Момус по частям
+#
+# Один большой вызов Момуса отвечает свободным текстом на десятки тысяч токенов: и срок,
+# и формат, и судьба всей проверки зависят от одной беды. Здесь та же работа разложена на
+# направления: каждое спрашивает ОДНО, отвечает строгим JSON и живёт своим сроком. Включается
+# настройкой `momus_split`, по умолчанию выключено — пока разбитый Момус не сравнён со старым
+# на живых карточках, эталон остаётся прежним.
+
+MOMUS_SPLIT_WIDTH = 3      # сколько направлений идут разом: тот же шлюз, что отвечает человеку
+
+MOMUS_ASPECTS = (
+    {"id": "support", "label": "НЕТ ОПОРЫ", "limit": 12,
+     "task": "Найди утверждения ответа, которых НЕТ в контексте — ни дословно, ни следствием.\n"
+             "«Похоже на правду» и «так обычно бывает» — это тоже без опоры. Пересказ — опора,\n"
+             "если факт тот же; новое число, срок, условие или роль — нет. Расшифровка\n"
+             "сокращения, которого контекст не расшифровывает, — тоже нет."},
+    {"id": "contradictions", "label": "ПРОТИВОРЕЧИЕ", "limit": 12,
+     "task": "Найди утверждения ответа, которые ПРОТИВОРЕЧАТ контексту: он говорит иначе.\n"
+             "В `why` одной строкой приведи, что именно говорит контекст."},
+    {"id": "quotes", "label": "НЕТ ОПОРЫ", "limit": 12,
+     "task": "Проверь приведённые в ответе цитаты и ссылки: есть ли они в контексте дословно.\n"
+             "Цитата, которой в контексте нет, — выдуманное подтверждение. В `claim` — цитата\n"
+             "или имя карточки из ответа, в `why` — чего именно не нашлось."},
+    {"id": "coverage", "label": "ПРОПУЩЕНО", "limit": 8,
+     "task": "Скажи, что вопрос требовал, а ответ пропустил. Это не ложь и не без опоры —\n"
+             "неполнота. В `claim` — что именно пропущено, в `why` — почему вопрос этого требует.\n"
+             "Если ответ покрывает вопрос, верни пустой список."},
+)
+
+MOMUS_ASPECT_PROMPT = """Ты Момус: проверяешь ответ на вопрос по базе знаний. Сейчас у тебя
+ОДНО направление проверки, остальные проверяет другой вызов — не берись за них.
+
+НАПРАВЛЕНИЕ: {task}
+
+КОНТЕКСТ (всё, на что опираться можно; больше ничего не существует):
+
+{pack}
+
+ВОПРОС: {question}
+
+ОТВЕТ НА ПРОВЕРКУ:
+
+{answer}
+
+Ответь ОДНИМ JSON-объектом, без текста вокруг:
+
+{{"aspect": "{id}", "checked": <сколько утверждений посмотрел, число>,
+  "findings": [{{"claim": "<утверждение или цитата, до 240 знаков>",
+                 "why": "<причина, до 160 знаков>", "severity": "high"}}],
+  "note": "<одна строка, если нужно>"}}
+
+Правила: находок не больше {limit}; `severity` — `high`, если утверждение уйдёт в постановку
+как факт, иначе `low`; сказать нечего — `findings` пустой, `checked` всё равно числом;
+никакого текста вне JSON."""
+
+
+def momus_aspect_prompt(spec: dict, pack: str, question: str, answer: str) -> str:
+    """Промпт одного направления. Задание — три строки, остальное общее: модель не растекается."""
+    return MOMUS_ASPECT_PROMPT.format(task=spec["task"], pack=pack, question=question,
+                                      answer=answer, id=spec["id"], limit=int(spec["limit"]))
+
+
+def _short(text, limit: int) -> str:
+    """Одна строка без переводов и хвостов: находка — цитата утверждения, а не абзац."""
+    s = re.sub(r"\s+", " ", str(text or "")).strip().strip("-—:;,.")
+    return s[:limit].strip()
+
+
+def parse_momus_aspect(text: str, spec: dict) -> dict:
+    """Ответ направления → {ok, checked, findings, note} либо {ok: False, why}.
+
+    Строго по схеме: объект один, `aspect` совпадает с заказанным, находки — словари с
+    непустым `claim`. Всё, что не по схеме, — не «чисто», а «направление не состоялось»:
+    иначе модель, ответив прозой, молча выдавала бы пустую проверку за отсутствие находок.
+    """
+    raw = str(text or "")
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        return {"ok": False, "why": "ответ направления не JSON", "raw": raw[:400]}
+    try:
+        data = json.loads(raw[start:end + 1])
+    except (ValueError, TypeError) as exc:
+        return {"ok": False, "why": f"JSON не разобран: {exc}", "raw": raw[:400]}
+    if not isinstance(data, dict):
+        return {"ok": False, "why": "ответ направления не объект", "raw": raw[:400]}
+    if str(data.get("aspect") or "") != spec["id"]:
+        return {"ok": False, "why": f"направление в ответе чужое: {data.get('aspect')!r}",
+                "raw": raw[:400]}
+    if not isinstance(data.get("findings"), list):
+        # Пустой список — законный ответ «здесь чисто»; отсутствие списка — ответ не по схеме.
+        return {"ok": False, "why": "findings не список", "raw": raw[:400]}
+    findings = []
+    for item in data["findings"][:int(spec["limit"])]:
+        if not isinstance(item, dict):
+            continue
+        claim = _short(item.get("claim"), 240)
+        if not claim:
+            continue
+        severity = str(item.get("severity") or "low").strip().lower()
+        findings.append({"claim": claim, "why": _short(item.get("why"), 160),
+                         "severity": severity if severity in ("high", "low") else "low"})
+    try:
+        checked = int(data.get("checked") or 0)
+    except (TypeError, ValueError):
+        return {"ok": False, "why": f"checked не число: {data.get('checked')!r}", "raw": raw[:400]}
+    if checked <= 0:
+        # «Посмотрел 0 утверждений» — это не проверка: пустой список находок при нуле
+        # просмотренного выдавал бы себя за «чисто».
+        return {"ok": False, "why": "ни одного утверждения не проверено (checked=0)", "raw": raw[:400]}
+    return {"ok": True, "checked": checked, "findings": findings,
+            "note": _short(data.get("note"), 200)}
+
+
+def run_momus_aspect(cfg: dict, spec: dict, pack: str, question: str, answer: str,
+                     call=None, prefer: int = 0, answered_in: float = 0.0,
+                     input_limit: int = 0) -> dict:
+    """Одно направление: свой срок, свой вызов, свой разбор."""
+    call = call or AG.call_role
+    started = time.time()
+    rt = momus_timeout(cfg, answered_in)
+    prompt = momus_aspect_prompt(spec, pack, question, answer)
+    v = call(cfg, "qa", [{"role": "user", "content": prompt}],
+             deadline=time.time() + rt, prefer=prefer, request_timeout=rt,
+             input_limit=input_limit)
+    if not v.get("ok"):
+        return {"id": spec["id"], "ok": False, "why": model_fail_note(v),
+                "timed_out": bool(v.get("timed_out")), "given": rt,
+                "seconds": round(time.time() - started, 1), "call": v}
+    parsed = parse_momus_aspect(v.get("text") or "", spec)
+    out = dict(parsed, id=spec["id"], given=rt, model=v.get("model"),
+               backend=v.get("backend"), seconds=round(time.time() - started, 1))
+    if not parsed.get("ok"):
+        out["call"] = v        # ответ уходит в журнал сбоев: «не JSON» без текста не разобрать
+    return out
+
+
+def _claim_key(text: str) -> str:
+    """Ключ дедупа: без регистра, пунктуации и лишних пробелов — одно утверждение из двух
+    направлений должно считаться один раз."""
+    return re.sub(r"[^0-9a-zа-яё]+", "", str(text or "").lower())
+
+
+def _momus_line(label: str, claim: str, why: str) -> str:
+    """Строка разбора в прежнем виде: `МЕТКА: утверждение — причина`."""
+    return f"{label}: {claim}" + (f" — {why}" if why else "")
+
+
+def merge_momus_aspects(results: list, answer: str) -> dict:
+    """Детерминированно свести направления в прежний контракт `run_momus`.
+
+    Порядок находок — порядок направлений в `MOMUS_ASPECTS`, внутри направления — порядок
+    модели. Одинаковое утверждение из разных направлений попадает в итог один раз (первое
+    по этому порядку), но причины складываются: если одно направление назвало утверждение
+    без опоры, а другое — противоречием, метка становится сильнее, а оба объяснения
+    остаются. Пропуски (`coverage`) живут в своём пространстве: это неполнота, а не ложь,
+    и в «без опоры» они не идут.
+
+    Правда о результате (truth table):
+
+    | что вышло | ok | complete | partial | clean |
+    |---|---|---|---|---|
+    | все направления ответили, находок нет | да | да | нет | да |
+    | все ответили, находки есть | да | да | нет | нет |
+    | часть ответила или есть пропуски | да | нет/да | да | нет |
+    | ни одно не ответило | нет | нет | нет | нет |
+
+    `clean` потому и требует `complete` без пропусков: «чисто» — это утверждение о полной
+    проверке, а не о той, где половина направлений не состоялась.
+    """
+    by_id = {r.get("id"): r for r in results if isinstance(r, dict)}
+    findings: list = []
+    gaps: list = []
+    pos: dict = {"findings": {}, "gaps": {}}      # ключ → индекс в СВОЁМ списке
+    whys: dict = {"findings": {}, "gaps": {}}     # ключ → все названные причины
+    ok_ids, bad_ids = [], []
+    checked = 0
+    for spec in MOMUS_ASPECTS:
+        r = by_id.get(spec["id"]) or {"id": spec["id"], "ok": False, "why": "направление не запущено"}
+        if not r.get("ok"):
+            bad_ids.append(spec["id"])
+            continue
+        ok_ids.append(spec["id"])
+        checked += int(r.get("checked") or 0)
+        bucket = "gaps" if spec["id"] == "coverage" else "findings"
+        target = gaps if bucket == "gaps" else findings
+        for item in r.get("findings") or []:
+            key = _claim_key(item.get("claim"))
+            if not key:
+                continue
+            why = str(item.get("why") or "")
+            if key in pos[bucket]:
+                idx = pos[bucket][key]
+                if why and why not in whys[bucket][key]:
+                    whys[bucket][key].append(why)
+                label = ("ПРОТИВОРЕЧИЕ" if bucket == "findings" and spec["label"] == "ПРОТИВОРЕЧИЕ"
+                         else spec["label"])
+                target[idx] = _momus_line(label, item["claim"], " / ".join(whys[bucket][key]))
+                continue
+            pos[bucket][key] = len(target)
+            whys[bucket][key] = [why] if why else []
+            target.append(_momus_line(spec["label"], item["claim"], why))
+    unsupported = len(findings)
+    complete = not bad_ids
+    partial = bool(ok_ids) and (bool(bad_ids) or bool(gaps))
+    clean = bool(ok_ids) and unsupported == 0 and not partial
+    degraded = list(bad_ids) if ok_ids else []
+    body = list(findings)
+    if gaps:
+        body += [""] + list(gaps)
+    if degraded:
+        body.append("часть проверки не состоялась: " + ", ".join(degraded))
+    if ok_ids:
+        # «ЧИСТО» и «без опоры 0» при неполной проверке запрещены: человек читает вердикт
+        # как утверждение о проверенном, а не как «я посмотрел половину и промолчал».
+        if clean:
+            body.append("ВЕРДИКТ: ЧИСТО")
+        elif unsupported and partial:
+            body.append(f"ВЕРДИКТ: БЕЗ ОПОРЫ {unsupported} (проверка частичная)")
+        elif unsupported:
+            body.append(f"ВЕРДИКТ: БЕЗ ОПОРЫ {unsupported}")
+        else:
+            body.append("ВЕРДИКТ: ЧАСТИЧНО — находок нет")
+    out = {"ok": bool(ok_ids), "clean": clean, "unsupported": unsupported,
+           "gaps": list(gaps), "degraded": degraded, "complete": complete,
+           "partial": partial, "text": "\n".join(body), "split": True, "checked": checked,
+           "aspects": {}}
+    for spec in MOMUS_ASPECTS:
+        r = by_id.get(spec["id"]) or {}
+        out["aspects"][spec["id"]] = {"ok": bool(r.get("ok")),
+                                      "checked": int(r.get("checked") or 0),
+                                      "findings": len(r.get("findings") or []),
+                                      "seconds": float(r.get("seconds") or 0.0),
+                                      "why": str(r.get("why") or "")}
+    total = round(sum(float(r.get("seconds") or 0) for r in results if isinstance(r, dict)), 1)
+    out["seconds"] = total
+    timed = [r for r in results if isinstance(r, dict) and r.get("timed_out")]
+    if timed:
+        out["timed_out"] = True
+        out["given"] = timed[-1].get("given")
+    if not ok_ids:
+        out["why"] = "ни одно направление проверки не ответило: " + ", ".join(bad_ids)
+        bad = next((by_id.get(i, {}) for i in bad_ids if by_id.get(i, {}).get("call")), {})
+        if bad.get("call"):
+            out["call"] = bad["call"]
+    elif degraded:
+        out["why"] = "часть направлений не состоялась: " + ", ".join(degraded)
+        bad = next((by_id.get(i, {}) for i in degraded if by_id.get(i, {}).get("call")), {})
+        if bad.get("call"):
+            out["call"] = bad["call"]
+    else:
+        out["why"] = ""
+    return out
+
+
+def run_momus_split(cfg: dict, pack: str, question: str, answer: str, call=None,
+                    prefer: int = 0, answered_in: float = 0.0,
+                    input_limit: int = 0) -> dict:
+    """Момус по направлениям: несколько коротких проверок разом, каждая своим сроком.
+
+    Разбиение нужно ради трёх вещей: короткий выход модели (срок перестаёт быть узким
+    местом), независимость направлений (одно упало — остальные живы) и строгая схема
+    ответа вместо простыни свободного текста.
+
+    Потребители результата те же, что у старого Момуса, и получают те же ключи:
+    `answer_core.verify` (ok/degraded), карточный конвейер (`momus_section`, `unsupported`,
+    `text`, `quotes`, `suspect`), отчёт «Спросить» (`momus_summary`), `run_momus_chunks`
+    (text/unsupported/clean). Новые ключи (`split`, `complete`, `partial`, `aspects`,
+    `gaps`, `degraded`) только добавляются.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    call = call or AG.call_role
+    started = time.time()
+    width = max(1, min(MOMUS_SPLIT_WIDTH, len(MOMUS_ASPECTS)))
+    with ThreadPoolExecutor(max_workers=width) as pool:
+        jobs = [pool.submit(run_momus_aspect, cfg, spec, pack, question, answer, call,
+                            prefer, answered_in, input_limit) for spec in MOMUS_ASPECTS]
+        results = []
+        for spec, job in zip(MOMUS_ASPECTS, jobs):
+            try:
+                results.append(job.result())
+            except Exception as exc:  # noqa: BLE001 — сбой направления не рушит проверку
+                results.append({"id": spec["id"], "ok": False,
+                                "why": f"{type(exc).__name__}: {exc}", "seconds": 0.0})
+    out = merge_momus_aspects(results, answer)
+    out["seconds"] = round(time.time() - started, 1)
+    out["parallel"] = width
+    # Модель и шлюз — как у старого Момуса: первый ответивший, в фиксированном порядке.
+    for r in results:
+        if r.get("ok") and r.get("model"):
+            out["model"] = r.get("model")
+            out["backend"] = r.get("backend")
+            break
+    if out.get("ok"):
+        # Цитаты — из направления `quotes`: старый Момус перечислял цитаты опоры в своём
+        # разборе (`ОПОРА «…»`), а у направлений такой строки нет; зато направление само
+        # называет цитаты, которых в источнике не нашлось. Ключ и его смысл сохранены:
+        # `checked` — сколько утверждений посмотрели, `missing` — каких цитат нет.
+        q_rows = [f for r in results if r.get("id") == "quotes" and r.get("ok")
+                  for f in (r.get("findings") or []) if f.get("claim")]
+        q_checked = int((out["aspects"].get("quotes") or {}).get("checked") or 0)
+        out["quotes"] = {"checked": q_checked, "missing": [str(f["claim"])[:160] for f in q_rows]}
+        if q_checked and len(q_rows) >= q_checked:
+            out["suspect"] = True       # все просмотренные цитаты не нашлись в источнике
+        m = FID.parse_verdict(out["text"])
+        if m:
+            listed = len(momus_claims(out["text"]))
+            unsupported, mismatch = FID.reconcile(m["n"], listed)
+            out["unsupported"] = unsupported
+            if mismatch:
+                out["verdict_mismatch"] = {"said": m["n"], "listed": listed}
     return out
 
 
@@ -8816,6 +9148,23 @@ def momus_claims(text: str) -> list:
     return out
 
 
+def momus_summary(mo: dict) -> str:
+    """Как назвать проверку человеку: «чисто» / «без опоры N» / «проверка частичная …».
+
+    Ключ `clean` один не годится: при частичной проверке он `False` и без находок, и
+    прежняя строка «без опоры 0» читалась как «Момус сказал, что всё хорошо», хотя
+    половина направлений не состоялась. Здесь это названо прямо.
+    """
+    if not mo.get("ok"):
+        return "не состоялась: " + (str(mo.get("why") or "нет вердикта").strip() or "нет вердикта")
+    n = int(mo.get("unsupported") or 0)
+    if mo.get("clean"):
+        return "чисто"
+    if mo.get("partial") or mo.get("degraded") or mo.get("gaps"):
+        return "проверка частичная, " + (f"без опоры {n}" if n else "находок нет")
+    return f"без опоры {n}"
+
+
 def momus_section(mo: dict) -> list:
     """Тело раздела «Под вопросом» из ответа Момуса: строки документа.
 
@@ -8835,6 +9184,11 @@ def momus_section(mo: dict) -> list:
     elif mo.get("unsupported"):
         out += [f"Момус насчитал утверждений без опоры: {mo['unsupported']}, "
                 "но не перечислил их в ожидаемом виде — смотри разбор ниже.", ""]
+    if mo.get("gaps"):
+        out += [f"- ПРОПУЩЕНО: {g.split(': ', 1)[-1]}" for g in mo["gaps"]] + [""]
+    if mo.get("degraded"):
+        out += [f"Проверка частичная: не состоялись направления {', '.join(mo['degraded'])}. "
+                "Отсутствие находок у них ничего не подтверждает.", ""]
     if text:
         # Внутри ограды не должно быть своей ограды: она закрыла бы блок раньше времени.
         out += ["<details>", "<summary>Разбор Момуса</summary>", "", "~~~text",
@@ -8946,19 +9300,29 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
                 L += ["", f"⚠️ **Момус не проверил ответ**: {mo.get('why', 'причина неизвестна')}. "
                       "Ответ ниже никем не сверен — читайте как черновик."]
         elif mo.get("clean"):
+            # Имя модели и время — необязательные сведения: разбитый Момус может не назвать
+            # модель (все направления ответили одной), и отчёт не имеет права падать на этом.
+            who = str(mo.get("model") or "модель проверки")
+            secs = mo.get("seconds")
             L += ["", f"✅ **Момус: чисто** — каждое утверждение нашло опору в контексте "
-                  f"(проверил {mo['model']}, {mo['seconds']} с)."]
+                  f"(проверил {who}" + (f", {secs} с" if secs not in (None, "") else "") + ")."]
             if mo.get("suspect"):
                 L += ["", "⚠️ Но ни одной из цитат, на которые сослался Момус, в контексте нет "
                       f"({len(mo['quotes']['missing'])} из {mo['quotes']['checked']}): «чисто» стоит перепроверить глазами."]
+        elif not int(mo.get("unsupported") or 0):
+            # Частичная проверка без находок: молчать нельзя, «без опоры — 0» тоже нельзя —
+            # это читается как «Момус всё проверил и всё хорошо».
+            L += ["", f"⚠️ **Момус: {momus_summary(mo)}** — часть направлений не состоялась, "
+                  "и отсутствие находок у них ничего не подтверждает. Ответ сверен частично: "
+                  "спорные места проверьте глазами."]
         else:
             # Без HTML-свёрток: этот текст читают и в панели, и в журнале разговоров в
             # Obsidian, и в терминале. Разметка, которую понимает только один из трёх,
             # превращается в мусор у остальных двух.
-            L += ["", f"⛔ **Момус: без опоры — {mo['unsupported']}**. Утверждения ниже "
+            L += ["", f"⛔ **Момус: {momus_summary(mo)}**. Утверждения ниже "
                   "контекст не подтверждает: их нельзя переносить в постановку.", "",
                   "**Разбор Момуса:**", ""]
-            L += ["> " + line if line.strip() else ">" for line in mo["text"].splitlines()]
+            L += ["> " + line if line.strip() else ">" for line in str(mo.get("text") or "").splitlines()]
             if mo.get("verdict_mismatch"):
                 said, listed = mo["verdict_mismatch"]["said"], mo["verdict_mismatch"]["listed"]
                 L += ["", f"_Вердикт Момуса называл {said}, а в разборе названо {listed}: взято большее._"]

@@ -368,9 +368,37 @@ def classify_links(text: str, cards: list, pack: str, cwd: str) -> dict:
     return {"outside": outside, "mentioned": mentioned, "invented": invented}
 
 
+def _verifier_call(verifier, answer: str, pack: str, question: str, answered_in: float):
+    """Позвать проверку, передав ей время ответа, если она это умеет.
+
+    `answered_in` нужен Момусу для срока: проверка стоит того же порядка, что и ответ, и
+    часовая генерация не должна проверяться по полу десятисекундной. Проверки, написанные
+    до этой правки (и подставные в тестах), принимают три аргумента — их зовём как раньше.
+    """
+    import inspect
+    try:
+        params = inspect.signature(verifier).parameters
+        takes = "answered_in" in params or any(p.kind is p.VAR_KEYWORD
+                                               for p in params.values())
+    except (TypeError, ValueError):
+        takes = False
+    if takes:
+        return verifier(answer, pack, question, answered_in=answered_in)
+    return verifier(answer, pack, question)
+
+
+# Потолок этапа проверки. Раньше здесь стояло 240 с — и резало Момуса раньше его
+# собственного срока: `momus_timeout` даёт до 1800 с, а внешний `run_stage` обрывал вызов
+# на 240-й секунде, и весь запас был фиктивным. Потолок совпадает с `MOMUS_ABS_CAP` и
+# `ROLE_CAP["qa"]`; вызывающий может сузить его (`verify_timeout`), но не расширить выше —
+# жёсткий предел запроса один на движок.
+VERIFY_CAP = 1800.0
+
+
 def verify(answer: str, *, pack: str, cards: list, cwd: str,
            verifier=None, momus_pack: str | None = None, question: str = "",
-           deadline: float | None = None) -> dict:
+           deadline: float | None = None, answered_in: float = 0.0,
+           verify_timeout: float | None = None) -> dict:
     """Механические проверки ответа и необязательный Момус.
 
     `verifier(answer, pack, question)` возвращает результат `run_momus`. Его ошибка не
@@ -386,8 +414,10 @@ def verify(answer: str, *, pack: str, cards: list, cwd: str,
     checks = {"links": links, "cites": cites, "momus": None}
     degraded: list[str] = []
     if verifier is not None:
-        stage = run_stage("verify", lambda: verifier(answer, momus_pack or pack, question),
-                          deadline=deadline, timeout=stage_timeout(deadline, 240.0))
+        cap = min(VERIFY_CAP, float(verify_timeout or VERIFY_CAP))
+        stage = run_stage("verify", lambda: _verifier_call(
+                              verifier, answer, momus_pack or pack, question, answered_in),
+                          deadline=deadline, timeout=stage_timeout(deadline, cap))
         if not stage.ok:
             checks["momus"] = {"ok": False, "timed_out": bool(stage.timed_out),
                                "why": (stage.error or {}).get("reason") or "проверка не ответила"}
@@ -416,7 +446,8 @@ def answer(question: str, *, cfg: dict, cwd: str, call, prompt: str | None = Non
            context_thread: str = "default", context_store=None,
            prompt_builder=None, deadline: float | None = None,
            policy: dict | None = None, raptor: bool = False,
-           rerank: bool | None = None, rerank_blend: float | None = None) -> dict:
+           rerank: bool | None = None, rerank_blend: float | None = None,
+           verify_timeout: float | None = None) -> dict:
     """Полный путь обоснованного ответа по контракту.
 
     `prompt` - готовый промпт; `prompt_builder(pack, question, history)` - если промпт
@@ -498,9 +529,12 @@ def answer(question: str, *, cfg: dict, cwd: str, call, prompt: str | None = Non
                              seconds=time.time() - started, phases=phases)
     a = gen["raw"]
     text = gen["text"]
+    # Время самого ответа (не всего шага): по нему Момус получает свой срок.
+    answered_in = float((a or {}).get("seconds") or 0.0)
     checks = verify(text, pack=pack, cards=cards, cwd=cwd,
                     verifier=(verifier if momus else None), momus_pack=momus_pack,
-                    question=question, deadline=deadline)
+                    question=question, deadline=deadline, answered_in=answered_in,
+                    verify_timeout=verify_timeout)
     degraded = merge_degraded(degraded, checks.get("degraded"))
     links = checks["links"]
     out = {"ok": True, "status": "partial" if degraded else "full",
