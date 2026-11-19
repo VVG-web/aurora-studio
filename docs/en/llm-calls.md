@@ -16,6 +16,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 - [Latin names](#translit)
 - [Golden questions: lost targets](#golden)
 - [Ask the base](#ask)
+- [Momus by aspect](#momus-split)
 - [Context compression](#compress)
 - [Artifact (Productivity)](#make)
 - [A decision from a source (draft)](#decide)
@@ -225,6 +226,22 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 - **Tools:** none: the engine builds the knowledge pack with hybrid search (words and meaning); the cards' edit journal ("History of changes") is not part of the pack.
 - **Path:** Pydantic AI.
 - **Then:** The engine resolves the answer's links against the base; the conversation is written to meta/ask/. The report carries a "Time" line: pack, answer, check and request tokens.
+
+<a id="momus-split"></a>
+
+## Momus by aspect
+
+- **When.** The agent:ask, agent:distill and agent:make commands — when the `momus_split` setting is on (off by default).
+- **Commands:** `agent:ask`, `agent:distill`, `agent:make`.
+- **Routes:** «Update the base», «Repair the base», «Rebuild the base from scratch», «Write an artifact».
+
+| Role | What it does | Prompt |
+|---|---|---|
+| Momus (qa) | One check aspect per call: support, contradictions, quotes or question coverage. The answer is strict JSON and the aggregator builds the verdict deterministically, so one failed aspect neither voids the check nor passes for 'clean'. | `MOMUS_ASPECT_PROMPT` (agent_runner.py) |
+
+- **Tools:** none: the engine puts the pack, the question and the answer into the task.
+- **Path:** Pydantic AI.
+- **Then:** The aggregator merges findings by claim; a partial check makes the answer partial and names the reason.
 
 <a id="compress"></a>
 

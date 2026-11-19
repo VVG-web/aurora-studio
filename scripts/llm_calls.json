@@ -509,6 +509,44 @@
       }
     },
     {
+      "id": "momus-split",
+      "title": {
+        "ru": "Момус по направлениям",
+        "en": "Momus by aspect"
+      },
+      "when": {
+        "ru": "Команды agent:ask, agent:distill, agent:make — когда включена настройка `momus_split` (по умолчанию выключена).",
+        "en": "The agent:ask, agent:distill and agent:make commands — when the `momus_split` setting is on (off by default)."
+      },
+      "commands": [
+        "agent:ask",
+        "agent:distill",
+        "agent:make"
+      ],
+      "code": [
+        "agent_runner.py:run_momus_aspect"
+      ],
+      "steps": [
+        {
+          "role": "qa",
+          "prompt": "agent_runner.py:MOMUS_ASPECT_PROMPT",
+          "what": {
+            "ru": "Одно направление проверки за вызов: опора, противоречия, цитаты или покрытие вопроса. Ответ — строгий JSON, агрегатор собирает итог детерминированно, поэтому сбой одного направления не обнуляет проверку и не выдаётся за «чисто».",
+            "en": "One check aspect per call: support, contradictions, quotes or question coverage. The answer is strict JSON and the aggregator builds the verdict deterministically, so one failed aspect neither voids the check nor passes for 'clean'."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет: пак, вопрос и ответ движок кладёт в задание",
+        "en": "none: the engine puts the pack, the question and the answer into the task"
+      },
+      "engine": "pydantic_ai",
+      "after": {
+        "ru": "Агрегатор склеивает находки по утверждению; частичная проверка делает ответ частичным и называет причину.",
+        "en": "The aggregator merges findings by claim; a partial check makes the answer partial and names the reason."
+      }
+    },
+    {
       "id": "compress",
       "title": {
         "ru": "Сжатие контекста",
