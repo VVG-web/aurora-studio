@@ -48,7 +48,7 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
     """`adapter_alarm()` отдаёт по строке на тревогу: ключ записи, область (adapter | link), вид,
     подвид, лекарство (`fix`), подстановки и текст; строка прежнего вида читается как неисправность
     адаптера; текст переводится на английский на выходе сервера. Тревоги связи показывает та же точка,
-    что и прежние; `forget_link_alarm` снимает только `link:N`."""
+    что и прежние; `forget_link_alarm` снимает `link:N`, `bot:*` и `agent:*` на сутки."""
     AG, ck = _mods()
     restore = set_home(tmp / "home")
     try:
@@ -65,8 +65,9 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
             "link:1": _row(AG, dns, path="agent:build"),
             "agent:venv": _row(AG, AG._venv_gap(), path="agent:venv")})
         rows = {r["path"] + "|" + r["area"]: r for r in ck.adapter_alarm()}
-        assert set(rows) == {"agent:build|adapter", "bot:ревью|adapter", "bot:старый|adapter",
+        assert set(rows) == {"agent:build|adapter", "bot:ревью|adapter",
                              "bot:ревью|link", "agent:build|link", "agent:venv|adapter"}, set(rows)
+        assert "bot:старый" not in AG.read_alarm(), "просроченная тревога адаптера не удалена"
         # у строки есть ключ записи: по нему панель снимает именно эту тревогу, а не все сразу
         assert rows["bot:ревью|link"]["key"] == "link:3", rows["bot:ревью|link"]
         assert rows["agent:build|link"]["key"] == "link:1", rows["agent:build|link"]
@@ -74,8 +75,6 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
         assert (a["kind"], a["sub"], a["fix"]) == ("client_net", "tls", ""), a
         assert a["args"]["n"] == 2 and a["project"] == "PRJ-A" and a["calls"] == 3, a
         assert rows["bot:ревью|adapter"]["fix"] == "version" and rows["agent:venv|adapter"]["fix"] == "install"
-        old = rows["bot:старый|adapter"]
-        assert (old["kind"], old["fix"], old["why"]) == ("adapter_error", "install", "venv не установлен"), old
         auth_row = rows["bot:ревью|link"]
         assert (auth_row["kind"], auth_row["fix"], auth_row["args"]["status"]) == ("auth", "models", 401), auth_row
         dns_row = rows["agent:build|link"]
@@ -102,10 +101,11 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
             at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 7200)))})
         paths = sorted(r["path"] for r in ck.adapter_alarm())
         assert "bot:мёртвый" not in paths and "link:7" not in AG.read_alarm(), (paths, AG.read_alarm())
-        # «Скрыть» снимает только тревогу связи и прячет её на сутки: тревогу адаптера
-        # этим же запросом не убрать.
+        # «Скрыть» снимает тревогу связи, бота и агента и прячет её на сутки; незнакомый
+        # ключ не трогает.
         AG._write_alarm({"link:4": _row(AG, AG.link_why("dns", 4, "m"), path="bot:скрыть"),
-                         "agent:build": _row(AG, net, path="agent:build")})
+                         "agent:build": _row(AG, net, path="agent:build"),
+                         "bot:скрыть": _row(AG, net, path="bot:скрыть")})
         assert ck.forget_link_alarm("link:4") is True
         assert "link:4" not in AG.read_alarm() and "agent:build" in AG.read_alarm(), AG.read_alarm()
         assert AG.alarm_snoozed("link:4") is True
@@ -114,13 +114,21 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
                          "agent:build": _row(AG, net, path="agent:build")})
         assert "link:4" not in [r["key"] for r in ck.adapter_alarm()], ck.adapter_alarm()
         assert "agent:build" in [r["key"] for r in ck.adapter_alarm()], ck.adapter_alarm()
-        assert ck.forget_link_alarm("agent:build") is False
-        assert "agent:build" in AG.read_alarm(), AG.read_alarm()
+        assert ck.forget_link_alarm("agent:build") is True
+        assert AG.alarm_snoozed("agent:build") is True
+        assert "agent:build" not in AG.read_alarm(), AG.read_alarm()
+        assert "agent:build" not in [r["key"] for r in ck.adapter_alarm()], ck.adapter_alarm()
+        assert ck.forget_link_alarm("bot:скрыть") is True
+        assert AG.alarm_snoozed("bot:скрыть") is True
+        assert "bot:скрыть" not in AG.read_alarm(), AG.read_alarm()
+        assert "bot:скрыть" not in [r["key"] for r in ck.adapter_alarm()], ck.adapter_alarm()
+        assert ck.forget_link_alarm("project:x") is False
         # Ответил — скрытие снято: следующая беда того же бэкенда снова видна.
         AG.link_ok(4, keep_probe=True)
         assert AG.alarm_snoozed("link:4") is False
     finally:
         AG._write_alarm({})
+        AG._write_alarm_snooze({})
         restore()
     src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     assert '"adapter_alarm": adapter_alarm(),' in src and 'u.path == "/api/adapter/alarm"' in src

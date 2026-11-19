@@ -7037,6 +7037,7 @@ def adapter_alarm() -> list:
             if cause.area == "adapter" and hasattr(AG, "adapter_alarm_fresh") \
                     and not AG.adapter_alarm_fresh(row):
                 AG.forget_alarm(key)      # разовый сбой адаптера не держит полосу неделю
+                continue
             project_path = str(row.get("project") or "")
             if (cause.area == "link" and project_path and not os.path.isdir(project_path)
                     and AG.alarm_age(row) > AG.LINK_ALARM_DEAD_PROJECT):

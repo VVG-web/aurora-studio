@@ -366,7 +366,8 @@ def test_the_panel_shows_the_adapter_alarm_on_every_page(tmp: Path):
     try:
         import aurora_cockpit as ck
         assert ck.adapter_alarm() == []
-        AG._write_alarm({"bot:ревью": {"at": "2026-10-07T07:00:00Z", "why": "venv не установлен",
+        at = AG.utc_stamp()
+        AG._write_alarm({"bot:ревью": {"at": at, "why": "venv не установлен",
                                        "project": "/x/PRJ", "calls": 3}})
         rows = ck.adapter_alarm()
         # живая полоса называет пользователя панели (для кого проверено); в файле тревоги имени нет
@@ -374,8 +375,12 @@ def test_the_panel_shows_the_adapter_alarm_on_every_page(tmp: Path):
         # строка прежнего вида (без области и вида) читается как неисправность адаптера, лекарство — «Установка»
         assert rows == [{"key": "bot:ревью", "path": "bot:ревью", "area": "adapter",
                          "kind": "adapter_error", "sub": "",
-                         "fix": "install", "args": {}, "at": "2026-10-07T07:00:00Z",
+                         "fix": "install", "args": {}, "at": at,
                          "why": "venv не установлен", "project": "PRJ", "calls": 3}], rows
+        # Просроченная тревога не показывается уже в этом проходе и снимается с диска.
+        AG._write_alarm({"bot:ревью": {"at": "2026-10-07T07:00:00Z", "why": "venv не установлен",
+                                       "project": "/x/PRJ", "calls": 3}})
+        assert ck.adapter_alarm() == [] and "bot:ревью" not in AG.read_alarm(), AG.read_alarm()
     finally:
         AG._write_alarm({})
         restore()

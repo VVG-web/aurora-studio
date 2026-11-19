@@ -136,9 +136,10 @@ def test_run_summary_and_alarm_keep_the_whole_adapter_gap(tmp: Path):
         line = RS.from_agent([], {"bypass": 2, "bypass_why": gap}, 1.0, None)["errors"]
         shown = next(k for k in line if k.startswith("⛔ мимо Pydantic AI"))
         assert "…" not in shown and shown.endswith("«Подготовить проект»"), shown
-        AC._write_alarm({"agent:a": {"at": "2026-10-17T10:00:00Z", "why": gap, "project": "P", "calls": 1},
-                         "agent:b": {"at": "2026-10-17T10:00:00Z", "why": AC._venv_gap(), "project": "P", "calls": 1},
-                         "agent:c": {"at": "2026-10-17T10:00:00Z", "why": "процесс падал 3 раза", "project": "P", "calls": 1}})
+        at = AC.utc_stamp()
+        AC._write_alarm({"agent:a": {"at": at, "why": gap, "project": "P", "calls": 1},
+                         "agent:b": {"at": at, "why": AC._venv_gap(), "project": "P", "calls": 1},
+                         "agent:c": {"at": at, "why": "процесс падал 3 раза", "project": "P", "calls": 1}})
         fixes = {r["path"]: r["fix"] for r in ck.adapter_alarm()}
         # лекарство: файл адаптера — «Версия», venv и неназванная поломка адаптера — «Установка»
         assert fixes == {"agent:a": "version", "agent:b": "install", "agent:c": "install"}, fixes
