@@ -816,23 +816,18 @@ def test_chunks_do_not_report_clean_over_a_partial_check(_t: Path):
         text = msgs[0]["content"]
         aspect = next(s["id"] for s in R.MOMUS_ASPECTS if f'"aspect": "{s["id"]}"' in text)
         narrowed = "Утверждения для проверки:" in text
-        if aspect == "quotes" and not narrowed:
-            # Первый кусок потерял направление цитат; второй отвечает по схеме — иначе он
-            # не может подтвердить и находку, и проверка честно останется с ней.
+        if aspect == "support" and not narrowed:
+            # Первый кусок потерял главное направление: модель отошла от схемы.
             return {"ok": True, "model": "m", "backend": 1, "seconds": 0.1, "text": "не JSON"}
-        if aspect != "support":
-            return _answer(aspect, [])
-        if narrowed:
-            return _answer(aspect, [])           # второй кусок находку снял
-        return _answer(aspect, [{"claim": "срок не назван", "why": "в первом куске нет",
-                                 "severity": "high"}])
+        return _answer(aspect, [])
 
-    first = R.run_momus(cfg, "ПАК-1", "Вопрос?", "Ответ.", call=call)
-    assert first["partial"] is True and first["degraded"] == ["quotes"], first
+    first = R.run_momus(cfg, "ПАК-1", "Вопрос?", "Ответ.", call=call,
+                        aspects=("support", "contradictions"))
+    assert first["partial"] is True and first["degraded"] == ["support"], first
     out = R.run_momus_chunks(cfg, ["ПАК-1", "ПАК-2"], "Вопрос?", "Ответ.", call=call)
     assert out["unsupported"] == 0, out["unsupported"]
     assert out["clean"] is False and out["partial"] is True, out
-    assert out["degraded"] == ["quotes"], out["degraded"]
+    assert out["degraded"] == ["support"], out["degraded"]
     assert out["text"].splitlines()[-1] == "ВЕРДИКТ: ЧАСТИЧНО — находок нет", out["text"]
     assert R.momus_summary(out) == "проверка частичная, находок нет", R.momus_summary(out)
     report = R.report_ask({"ok": True, "answer": "Ответ.", "cards": [], "total": 0,
@@ -840,23 +835,21 @@ def test_chunks_do_not_report_clean_over_a_partial_check(_t: Path):
                           "Вопрос?", cfg)
     assert "чисто" not in report.lower(), report[-500:]
 
-    # Пропуски первого куска тоже не дают «чисто».
+    # Пропуски покрытия остаются за полной проверкой: куски их не спрашивают вовсе,
+    # поэтому «чисто» второго куска не перебивает найденный первым пропуск.
     def call_gaps(cfg, role, msgs, **kw):
         text = msgs[0]["content"]
         aspect = next(s["id"] for s in R.MOMUS_ASPECTS if f'"aspect": "{s["id"]}"' in text)
-        narrowed = "Утверждения для проверки:" in text
-        if aspect == "coverage" and not narrowed:
+        if aspect == "coverage":
             return _answer(aspect, [{"claim": "продление", "why": "вопрос про него",
                                      "severity": "low"}])
-        if aspect == "support":
-            return _answer(aspect, [] if narrowed else
-                           [{"claim": "срок не назван", "why": "нет", "severity": "high"}])
         return _answer(aspect, [])
 
+    full = R.run_momus(cfg, "ПАК", "Вопрос?", "Ответ.", call=call_gaps)
+    assert full["gaps"] and full["partial"] is True and full["clean"] is False, full
     out2 = R.run_momus_chunks(cfg, ["ПАК-1", "ПАК-2"], "Вопрос?", "Ответ.", call=call_gaps)
-    assert out2["unsupported"] == 0 and out2["clean"] is False, out2
-    assert out2["gaps"], out2["gaps"]
-    assert out2["text"].splitlines()[-1] == "ВЕРДИКТ: ЧАСТИЧНО — находок нет", out2["text"]
+    assert out2["gaps"] == [], out2["gaps"]
+    assert out2["clean"] is True and out2["partial"] is False, out2
 
 
 @test
@@ -973,3 +966,90 @@ def test_the_stage_timeout_names_the_limit_that_actually_stood(_t: Path):
                           "Вопрос?", _momus_cfg(split=False))
     assert "0 с" in report or "0.2 с" in report, report[-400:]
     assert "600 с" not in report, "отчёт назвал настройку вместо фактического предела"
+
+
+@test
+def test_split_names_what_it_could_not_check(_t: Path):
+    """Отчёт называет, какие направления не состоялись, и не печатает пустую модель.
+
+    «Часть направлений не состоялась» без имён не говорит аналитику, что перепроверять
+    руками. Плюс `model`/`backend` в результате могут отсутствовать (все направления
+    упали) — ключи обязаны быть, иначе отчёт и панель читают их через `.get` наугад.
+    """
+    R = importlib.import_module("agent_runner")
+    cfg = _momus_cfg(split=True)
+
+    def call(cfg, role, msgs, **kw):
+        text = msgs[0]["content"]
+        if '"aspect": "quotes"' in text:
+            raise RuntimeError("битый fragment")
+        aspect = next(s["id"] for s in R.MOMUS_ASPECTS if f'"aspect": "{s["id"]}"' in text)
+        findings = [] if aspect != "support" else [
+            {"claim": "Срок — 5 дней", "why": "срок в контексте не назван"}]
+        return _answer(aspect, findings)
+
+    out = R.run_momus(cfg, "ПАК", "Вопрос?", "Ответ.", call=call)
+    assert out["model"] == "m" and out["backend"] == 1, (out["model"], out["backend"])
+    assert R.momus_why(out) == "не состоялись: цитаты", R.momus_why(out)
+
+    res = {"ok": True, "answer": "Ответ.", "cards": [], "total": 0, "model": "m",
+           "backend": 1, "seconds": 1.0, "momus": out}
+    text = R.report_ask(res, "Вопрос?", cfg)
+    assert "цитаты" in text, text[-800:]
+    assert "без опоры 1" in text, text[-800:]
+
+    # Все направления упали: ключей нет, но типы остаются предсказуемыми.
+    def dead(cfg, role, msgs, **kw):
+        raise RuntimeError("шлюз недоступен")
+
+    out2 = R.run_momus(cfg, "ПАК", "Вопрос?", "Ответ.", call=dead)
+    assert out2["model"] == "" and out2["backend"] == 0, (out2["model"], out2["backend"])
+    # Полный отказ — «не состоялась», а не «частичная»: разницы для читателя нет, но
+    # `degraded` обязан назвать все направления, иначе непонятно, что именно не проверено.
+    assert out2["ok"] is False and out2["partial"] is False and out2["clean"] is False, out2
+    assert out2["degraded"] == [s["id"] for s in R.MOMUS_ASPECTS], out2["degraded"]
+    assert "опора" in R.momus_why(out2), R.momus_why(out2)
+
+
+@test
+def test_chunked_check_does_not_ask_for_quotes_or_coverage(_t: Path):
+    """Проверка по кускам сужает направления, а не гоняет все четыре по синтетике.
+
+    Второй и следующий куски проверяют список «Утверждения для проверки: …». Требовать там
+    цитаты и покрытие бессмысленно: `coverage` честно вернёт «не покрыто» на каждой строке
+    списка, и ответ станет частичным на ровном месте.
+    """
+    R = importlib.import_module("agent_runner")
+    cfg = _momus_cfg(split=True)
+    asked = []
+
+    def call(cfg, role, msgs, **kw):
+        text = msgs[0]["content"]
+        asked.append(next(s["id"] for s in R.MOMUS_ASPECTS if f'"aspect": "{s["id"]}"' in text))
+        return _answer(asked[-1], [])
+
+    out = R.run_momus_chunks(cfg, ["ПАК1", "ПАК2"], "Вопрос?", "Ответ.", call=call,
+                             answered_in=280.0)
+    assert set(asked) == {"support", "contradictions"}, asked
+    assert sorted(out["aspects"]) == ["contradictions", "support"], out["aspects"]
+    assert out["partial"] is False and out["clean"] is True, out
+
+
+@test
+def test_checked_counts_the_answer_once_not_once_per_aspect(_t: Path):
+    """`checked` — сколько утверждений ответа просмотрено, а не сумма просмотров.
+
+    Три модельных направления смотрят один и тот же ответ. Сумма давала «проверено 15»
+    там, где пять утверждений посмотрели трижды, и по этому числу человек судил о полноте.
+    """
+    R = importlib.import_module("agent_runner")
+    cfg = _momus_cfg(split=True)
+
+    def call(cfg, role, msgs, **kw):
+        text = msgs[0]["content"]
+        aspect = next(s["id"] for s in R.MOMUS_ASPECTS if f'"aspect": "{s["id"]}"' in text)
+        return _answer(aspect, [], checked=7)
+
+    out = R.run_momus(cfg, "ПАК", "Вопрос?", "Ответ.", call=call)
+    assert out["checked"] == 7, out["checked"]
+    assert all(a["checked"] == 7 for a in out["aspects"].values()), out["aspects"]
