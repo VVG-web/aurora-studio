@@ -98,6 +98,17 @@ def _read_tail(path: Path, limit: int = MAX_TEXT) -> str:
     return data.decode("utf-8", "replace")
 
 
+def _file_stat(path: Path, project: str = "") -> dict:
+    """Размер и mtime файла: архив должен говорить, был ли журнал и когда его трогали."""
+    try:
+        st = path.stat()
+    except OSError:
+        return {"exists": False, "size": 0, "mtime": "", "path": _text(str(path), project)}
+    return {"exists": True, "size": st.st_size,
+            "mtime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime)),
+            "path": _text(str(path), project)}
+
+
 def _run(argv: list[str], cwd: str | None, env: dict | None, timeout: float) -> dict:
     try:
         p = subprocess.run(argv, cwd=cwd or None, env=env, capture_output=True,
@@ -405,6 +416,7 @@ def _run_facts(project: str, run_id: str, context: dict) -> dict:
     if not rid:
         return out
     base = Path(project) / RTC.engine_dir(project) / "runs" / rid
+    out["failures_file"] = _file_stat(base / "failures.jsonl", project)
     out["console"] = _text(_read_tail(base / "console.log", MAX_CONSOLE), project)
     try:
         lines = (base / "failures.jsonl").read_text(encoding="utf-8", errors="replace").splitlines()
@@ -498,6 +510,21 @@ def collect(project: str = "", context: dict | None = None, run_id: str = "",
                                                    120_000), project)
         except Exception:  # noqa: BLE001
             pass
+    home = Path(getattr(getattr(AG, "RT", None), "HOME", ""))
+    logs = home / "logs"
+    data["adapter_logs"] = {"adapter.log": _file_stat(logs / "adapter.log", project),
+                            "adapter.1.log": _file_stat(logs / "adapter.1.log", project)}
+    data["adapter_log_1"] = _text(_read_tail(logs / "adapter.1.log", 120_000), project)
+    try:
+        alarm_file = Path(AG.alarm_path()) if callable(getattr(AG, "alarm_path", None)) \
+            else home / "adapter-alarm.json"
+    except Exception:  # noqa: BLE001
+        alarm_file = home / "adapter-alarm.json"
+    data["alarm_file"] = {"stat": _file_stat(alarm_file, project),
+                          "rows": _clean(raw_alarm, project)}
+    selfcheck_file = Path(getattr(AG, "SELFCHECK", home / "cache" / "pydantic-selfcheck.json"))
+    data["selfcheck_file"] = {"stat": _file_stat(selfcheck_file, project),
+                              "data": _clean(_safe(AG, "last_selfcheck", {}), project)}
     try:
         data["venv"] = _clean(_venv_facts(AG), project)
     except Exception as e:  # noqa: BLE001
@@ -523,6 +550,12 @@ def _summary(data: dict) -> str:
     p = data.get("project") or {}
     c = data.get("context") or {}
     state = a.get("state") if isinstance(a.get("state"), dict) else {}
+    run = data.get("run") or {}
+    logs = data.get("adapter_logs") or {}
+    log1 = logs.get("adapter.1.log") or {}
+    fail_stat = run.get("failures_file") or {}
+    alarm_stat = (data.get("alarm_file") or {}).get("stat") or {}
+    self_stat = (data.get("selfcheck_file") or {}).get("stat") or {}
     lines = [
         "# Aurora diagnostics", "",
         f"Собрано: {data.get('generated')}",
@@ -544,13 +577,20 @@ def _summary(data: dict) -> str:
         f"Проверка запуска: {a.get('probe') or 'в этот раз не запускалась'}",
         f"Причина обхода: {a.get('gap') or state.get('fallback_why') or '—'}",
         "", "## Запуск", "",
-        f"run_id: {(data.get('run') or {}).get('run_id') or '—'}",
-        f"Журнал адаптера: {len(data.get('adapter_log') or '')} символов",
-        f"Сбоев в хвосте: {len((data.get('run') or {}).get('failures') or [])}",
+        f"run_id: {run.get('run_id') or '—'}",
+        f"Журнал адаптера: {len(data.get('adapter_log') or '')} символов; "
+        f"adapter.1.log: {log1.get('size', 0)} Б, mtime {log1.get('mtime') or '—'}",
+        f"Сбоев в хвосте: {len(run.get('failures') or [])}; failures.jsonl: "
+        f"{fail_stat.get('size', 0)} Б, mtime {fail_stat.get('mtime') or '—'}",
+        f"Тревога адаптера: mtime {alarm_stat.get('mtime') or '—'}; "
+        f"самопроверка: mtime {self_stat.get('mtime') or '—'}",
+        "Журнал адаптера снят после проверки запуска: старт самой пробы может быть в конце.",
         "", "## Что внутри", "",
-        "`diagnostics.json` — полные данные, `adapter.log` — stderr/stdout адаптера, "
-        "`run/console.log` — хвост консоли, `run/failures.jsonl` — сбои без тел ответов, "
-        "`venv.json` — пакеты и импорт, `env.json` — только нужные переменные с маской.",
+        "`diagnostics.json` — полные данные, `adapter.log` и `adapter.1.log` — "
+        "stderr/stdout адаптера (текущий и прежний), `adapter-alarm.json` — сырая тревога, "
+        "`adapter-selfcheck.json` — последняя самопроверка, `run/console.log` — хвост "
+        "консоли, `run/failures.jsonl` — сбои без тел ответов, `venv.json` — пакеты и "
+        "импорт, `env.json` — только нужные переменные с маской.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -583,6 +623,9 @@ def build(project: str = "", context: dict | None = None, run_id: str = "",
         "summary.md": _summary(data),
         "diagnostics.json": json.dumps(data, ensure_ascii=False, indent=1),
         "adapter.log": data.pop("adapter_log", ""),
+        "adapter.1.log": data.pop("adapter_log_1", ""),
+        "adapter-alarm.json": json.dumps(data.get("alarm_file") or {}, ensure_ascii=False, indent=1),
+        "adapter-selfcheck.json": json.dumps(data.get("selfcheck_file") or {}, ensure_ascii=False, indent=1),
         "env.json": json.dumps(data.get("env") or {}, ensure_ascii=False, indent=1),
         "venv.json": json.dumps(data.get("venv") or {}, ensure_ascii=False, indent=1),
     }

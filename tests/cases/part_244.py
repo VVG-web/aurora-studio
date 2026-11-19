@@ -767,3 +767,48 @@ def test_runtime_truth_adapter_alarm_ttl_and_snooze_for_bot_and_agent(tmp: Path)
         assert A.alarm_snoozed("bot:analiz") is False
     finally:
         A.RT.HOME = old_home
+@test
+def test_runtime_truth_archive_keeps_rotation_alarm_and_selfcheck(tmp: Path):
+    """Архив несёт adapter.1.log, mtime файлов, сырую тревогу и самопроверку."""
+    A, _RC, _P, D = _modules()
+    import io
+    import json as J
+    import zipfile
+    from harness import make_project
+    old_home, old_selfcheck = A.RT.HOME, A.SELFCHECK
+    home = tmp / "home"
+    (home / "logs").mkdir(parents=True)
+    (home / "cache").mkdir(parents=True)
+    (home / "logs" / "adapter.log").write_text("current\n", encoding="utf-8")
+    (home / "logs" / "adapter.1.log").write_text("rotated\n", encoding="utf-8")
+    alarm_file = home / "adapter-alarm.json"
+    alarm_file.write_text(J.dumps({"bot:x": {"at": A.utc_stamp(), "why": "boom"}}), encoding="utf-8")
+    (home / "cache" / "pydantic-selfcheck.json").write_text(
+        J.dumps({"version": "9.9.9", "ok": True}), encoding="utf-8")
+    A.RT.HOME, A.SELFCHECK = home, home / "cache" / "pydantic-selfcheck.json"
+    nested = tmp / "diag"
+    nested.mkdir()
+    project = make_project(nested)
+    run = project / ".aurora" / "runs" / "r1"
+    run.mkdir(parents=True)
+    (run / "console.log").write_text("console\n", encoding="utf-8")
+    (run / "failures.jsonl").write_text(J.dumps({"why": "test failure"}) + "\n", encoding="utf-8")
+    try:
+        _name, blob = D.build(str(project), {"key": "bot:x"}, run_id="r1", deep=False)
+    finally:
+        A.RT.HOME, A.SELFCHECK = old_home, old_selfcheck
+    with zipfile.ZipFile(io.BytesIO(blob)) as z:
+        names = set(z.namelist())
+        assert {"adapter.log", "adapter.1.log", "adapter-alarm.json",
+                "adapter-selfcheck.json", "run/failures.jsonl"} <= names, names
+        assert z.read("adapter.1.log").decode() == "rotated\n"
+        assert "test failure" in z.read("run/failures.jsonl").decode()
+        assert "9.9.9" in z.read("adapter-selfcheck.json").decode()
+        assert "bot:x" in z.read("adapter-alarm.json").decode()
+        summary = z.read("summary.md").decode()
+        assert "adapter.1.log" in summary and "после проверки запуска" in summary, summary
+        data = J.loads(z.read("diagnostics.json"))
+        assert data["adapter_logs"]["adapter.1.log"]["size"] == len("rotated\n")
+        assert data["adapter_logs"]["adapter.log"]["mtime"], data["adapter_logs"]
+        assert data["alarm_file"]["stat"]["mtime"], data["alarm_file"]
+        assert data["selfcheck_file"]["stat"]["mtime"], data["selfcheck_file"]
