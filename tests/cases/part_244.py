@@ -425,8 +425,8 @@ def test_runtime_truth_archive_shows_one_adapter(tmp: Path):
     # Весь архив, а не только его части: тот же отказ проекта и один файл адаптера.
     archive = D.collect(str(incompatible), deep=False)
     assert archive["adapter"]["decision_source"] == "project", archive["adapter"]
-    assert archive["adapter"]["argv"] == [], archive["adapter"]
-    assert "несовместим" in archive["adapter"]["gap"], archive["adapter"]
+    assert archive["adapter"]["argv"] == decision["argv"] == [], (archive["adapter"], decision)
+    assert archive["adapter"]["gap"] == decision["gap"], (archive["adapter"], decision)
     assert archive["adapter"]["file"] == archive["project"]["adapter_file"]["path"], \
         (archive["adapter"], archive["project"])
     assert archive["adapter"]["sha"] == archive["project"]["adapter_file"]["sha"], \
