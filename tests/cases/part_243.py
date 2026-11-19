@@ -752,3 +752,50 @@ def test_the_flag_reaches_the_working_config_through_the_model_settings(_t: Path
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+@test
+def test_bad_findings_items_and_a_weaker_label_do_not_flip_the_truth(_t: Path):
+    """Мусор внутри `findings` — не «чисто», а метка противоречия не понижается цитатой.
+
+    Два остатка прежних блокеров:
+    * элементы списка проверяются поимённо: строка, пустой `claim`, числовой `claim` —
+      направление не состоялось, а не «находок нет» (иначе модель отвечает мусором и
+      получает «чисто»);
+    * `ПРОТИВОРЕЧИЕ` сильнее `НЕТ ОПОРЫ`: одно и то же утверждение, названное сначала
+      противоречием, а потом цитатой, остаётся противоречием, и все причины сохранены.
+    """
+    R = importlib.import_module("agent_runner")
+    spec = R.MOMUS_ASPECTS[0]
+    cases = [
+        (["not-a-dict"], "не объект"),
+        ([{"claim": ""}], "без строкового claim"),
+        ([{"claim": 123}], "без строкового claim"),
+        ([{"claim": "нормально", "why": 5}], "why не строка"),
+    ]
+    for findings, needle in cases:
+        got = R.parse_momus_aspect(json.dumps({"aspect": spec["id"], "checked": 4,
+                                               "findings": findings}, ensure_ascii=False), spec)
+        assert got["ok"] is False and needle in got["why"], (findings, got)
+    ok = R.parse_momus_aspect(json.dumps({"aspect": spec["id"], "checked": 4,
+                                          "findings": [{"claim": "срок", "why": ""}]},
+                                         ensure_ascii=False), spec)
+    assert ok["ok"] is True and ok["findings"][0]["claim"] == "срок", ok
+
+    claim = "возврат за 10 дней"
+    results = [
+        {"id": "support", "ok": True, "checked": 3, "seconds": 0.1,
+         "findings": [{"claim": claim, "why": "срока нет", "severity": "high"}]},
+        {"id": "contradictions", "ok": True, "checked": 3, "seconds": 0.1,
+         "findings": [{"claim": "Возврат за 10 дней!", "why": "в контексте месяц",
+                       "severity": "high"}]},
+        {"id": "quotes", "ok": True, "checked": 1, "seconds": 0.1,
+         "findings": [{"claim": "«возврат за 10 дней»", "why": "цитаты нет",
+                       "severity": "high"}]},
+    ]
+    out = R.merge_momus_aspects(results, "Ответ.")
+    assert out["unsupported"] == 1, out["unsupported"]
+    line = next(x for x in out["text"].splitlines() if "возврат за 10 дней" in x.lower())
+    assert line.startswith("ПРОТИВОРЕЧИЕ: "), line
+    for why in ("срока нет", "в контексте месяц", "цитаты нет"):
+        assert why in line, (why, line)

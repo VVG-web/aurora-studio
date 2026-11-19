@@ -8867,14 +8867,19 @@ def parse_momus_aspect(text: str, spec: dict) -> dict:
         # Пустой список — законный ответ «здесь чисто»; отсутствие списка — ответ не по схеме.
         return {"ok": False, "why": "findings не список", "raw": raw[:400]}
     findings = []
-    for item in data["findings"][:int(spec["limit"])]:
+    for pos, item in enumerate(data["findings"][:int(spec["limit"])], 1):
+        # Схема проверяется ПОЭЛЕМЕНТНО: молча выбросить мусор — значит выдать пустой
+        # список находок за «чисто». Ответ не по схеме — направление не состоялось.
         if not isinstance(item, dict):
-            continue
-        claim = _short(item.get("claim"), 240)
-        if not claim:
-            continue
+            return {"ok": False, "why": f"находка №{pos} не объект: {type(item).__name__}",
+                    "raw": raw[:400]}
+        claim, why = item.get("claim"), item.get("why")
+        if not isinstance(claim, str) or not claim.strip():
+            return {"ok": False, "why": f"находка №{pos} без строкового claim", "raw": raw[:400]}
+        if why is not None and not isinstance(why, str):
+            return {"ok": False, "why": f"находка №{pos}: why не строка", "raw": raw[:400]}
         severity = str(item.get("severity") or "low").strip().lower()
-        findings.append({"claim": claim, "why": _short(item.get("why"), 160),
+        findings.append({"claim": _short(claim, 240), "why": _short(why, 160),
                          "severity": severity if severity in ("high", "low") else "low"})
     try:
         checked = int(data.get("checked") or 0)
@@ -8922,6 +8927,14 @@ def _momus_line(label: str, claim: str, why: str) -> str:
     return f"{label}: {claim}" + (f" — {why}" if why else "")
 
 
+LABEL_RANK = {"НЕТ ОПОРЫ": 0, "ПРОПУЩЕНО": 0, "ПРОТИВОРЕЧИЕ": 1}
+
+
+def _stronger_label(current: str, new: str) -> str:
+    """Метка не понижается: противоречие сильнее «нет опоры», порядок направлений не судья."""
+    return new if LABEL_RANK.get(new, 0) > LABEL_RANK.get(current, 0) else current
+
+
 def merge_momus_aspects(results: list, answer: str) -> dict:
     """Детерминированно свести направления в прежний контракт `run_momus`.
 
@@ -8949,6 +8962,7 @@ def merge_momus_aspects(results: list, answer: str) -> dict:
     gaps: list = []
     pos: dict = {"findings": {}, "gaps": {}}      # ключ → индекс в СВОЁМ списке
     whys: dict = {"findings": {}, "gaps": {}}     # ключ → все названные причины
+    labels: dict = {"findings": {}, "gaps": {}}   # ключ → метка (сильная не понижается)
     ok_ids, bad_ids = [], []
     checked = 0
     for spec in MOMUS_ASPECTS:
@@ -8969,12 +8983,15 @@ def merge_momus_aspects(results: list, answer: str) -> dict:
                 idx = pos[bucket][key]
                 if why and why not in whys[bucket][key]:
                     whys[bucket][key].append(why)
-                label = ("ПРОТИВОРЕЧИЕ" if bucket == "findings" and spec["label"] == "ПРОТИВОРЕЧИЕ"
-                         else spec["label"])
+                # Метка не понижается: если утверждение уже названо противоречием, цитата
+                # или «нет опоры» его не ослабляют — противоречие весит больше.
+                label = _stronger_label(labels[bucket][key], spec["label"])
+                labels[bucket][key] = label
                 target[idx] = _momus_line(label, item["claim"], " / ".join(whys[bucket][key]))
                 continue
             pos[bucket][key] = len(target)
             whys[bucket][key] = [why] if why else []
+            labels[bucket][key] = spec["label"]
             target.append(_momus_line(spec["label"], item["claim"], why))
     unsupported = len(findings)
     complete = not bad_ids
