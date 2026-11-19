@@ -136,7 +136,8 @@ def verdict(code, body: str, err: str) -> tuple:
     named_model = "model" in low or "модел" in low
     if named_model and ("not found" in low or "not exist" in low or "unknown" in low
                         or "не найдена" in low or "не найден" in low or "no router" in low
-                        or "no model" in low or "could not be identified" in low):
+                        or "no model" in low or "missing model" in low
+                        or "could not be identified" in low):
         return "✗", "модель", f"HTTP {code}: шлюз не знает такой модели"
     if code == 404:
         short = " ".join((body or "").split())[:120]

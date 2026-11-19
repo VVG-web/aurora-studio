@@ -86,9 +86,11 @@ def test_runtime_truth_probe_asks_every_role_skips_empty_models_and_dedupes(tmp:
 
     # 404 сам по себе не значит «нет модели»: у неверного адреса та же страница.
     kinds = {"router": P.verdict(404, '{"error":"no router for requested model"}', "")[1],
+             "missing": P.verdict(404, '{"error":"Missing model field"}', "")[1],
              "page": P.verdict(404, "404 page not found", "")[1],
              "net": P.verdict(None, "", "URLError: timed out")[1]}
-    assert kinds == {"router": "модель", "page": "адрес", "net": "сеть"}, kinds
+    assert kinds == {"router": "модель", "missing": "модель",
+                     "page": "адрес", "net": "сеть"}, kinds
 
     src = (SCRIPTS / "agent_probe.py").read_text(encoding="utf-8")
     assert "runtime_catalog" in src, "проверка связи завела свой список ролей"
