@@ -799,3 +799,61 @@ def test_bad_findings_items_and_a_weaker_label_do_not_flip_the_truth(_t: Path):
     assert line.startswith("ПРОТИВОРЕЧИЕ: "), line
     for why in ("срока нет", "в контексте месяц", "цитаты нет"):
         assert why in line, (why, line)
+
+
+@test
+def test_chunks_do_not_report_clean_over_a_partial_check(_t: Path):
+    """Проверка по кускам не выдаёт «чисто», если первый кусок был частичным.
+
+    Прежний `clean = not total` считался только по числу оставшихся находок. Первый кусок
+    мог потерять направление (`degraded`) или найти пропуски (`gaps`), а второй снять
+    единственную находку — и человек получал «чисто» при живых признаках неполноты.
+    """
+    R = importlib.import_module("agent_runner")
+    cfg = _momus_cfg(split=True)
+
+    def call(cfg, role, msgs, **kw):
+        text = msgs[0]["content"]
+        aspect = next(s["id"] for s in R.MOMUS_ASPECTS if f'"aspect": "{s["id"]}"' in text)
+        narrowed = "Утверждения для проверки:" in text
+        if aspect == "quotes" and not narrowed:
+            # Первый кусок потерял направление цитат; второй отвечает по схеме — иначе он
+            # не может подтвердить и находку, и проверка честно останется с ней.
+            return {"ok": True, "model": "m", "backend": 1, "seconds": 0.1, "text": "не JSON"}
+        if aspect != "support":
+            return _answer(aspect, [])
+        if narrowed:
+            return _answer(aspect, [])           # второй кусок находку снял
+        return _answer(aspect, [{"claim": "срок не назван", "why": "в первом куске нет",
+                                 "severity": "high"}])
+
+    first = R.run_momus(cfg, "ПАК-1", "Вопрос?", "Ответ.", call=call)
+    assert first["partial"] is True and first["degraded"] == ["quotes"], first
+    out = R.run_momus_chunks(cfg, ["ПАК-1", "ПАК-2"], "Вопрос?", "Ответ.", call=call)
+    assert out["unsupported"] == 0, out["unsupported"]
+    assert out["clean"] is False and out["partial"] is True, out
+    assert out["degraded"] == ["quotes"], out["degraded"]
+    assert out["text"].splitlines()[-1] == "ВЕРДИКТ: ЧАСТИЧНО — находок нет", out["text"]
+    assert R.momus_summary(out) == "проверка частичная, находок нет", R.momus_summary(out)
+    report = R.report_ask({"ok": True, "answer": "Ответ.", "cards": [], "total": 0,
+                           "model": "m", "backend": 1, "seconds": 1.0, "momus": out},
+                          "Вопрос?", cfg)
+    assert "чисто" not in report.lower(), report[-500:]
+
+    # Пропуски первого куска тоже не дают «чисто».
+    def call_gaps(cfg, role, msgs, **kw):
+        text = msgs[0]["content"]
+        aspect = next(s["id"] for s in R.MOMUS_ASPECTS if f'"aspect": "{s["id"]}"' in text)
+        narrowed = "Утверждения для проверки:" in text
+        if aspect == "coverage" and not narrowed:
+            return _answer(aspect, [{"claim": "продление", "why": "вопрос про него",
+                                     "severity": "low"}])
+        if aspect == "support":
+            return _answer(aspect, [] if narrowed else
+                           [{"claim": "срок не назван", "why": "нет", "severity": "high"}])
+        return _answer(aspect, [])
+
+    out2 = R.run_momus_chunks(cfg, ["ПАК-1", "ПАК-2"], "Вопрос?", "Ответ.", call=call_gaps)
+    assert out2["unsupported"] == 0 and out2["clean"] is False, out2
+    assert out2["gaps"], out2["gaps"]
+    assert out2["text"].splitlines()[-1] == "ВЕРДИКТ: ЧАСТИЧНО — находок нет", out2["text"]

@@ -8927,6 +8927,34 @@ def _momus_line(label: str, claim: str, why: str) -> str:
     return f"{label}: {claim}" + (f" — {why}" if why else "")
 
 
+def momus_truth(ok: bool, unsupported: int, degraded=(), gaps=()) -> dict:
+    """Правда о проверке в одном месте: ok / complete / partial / clean.
+
+    Одна формула на весь движок: агрегатор направлений, проверка по кускам источника и
+    отчёт. Иначе куски пересчитывали `clean` по числу находок и возвращали «чисто» при
+    живом `degraded` — человек читал «всё хорошо» там, где половина не проверена.
+    """
+    degraded, gaps = list(degraded or []), list(gaps or [])
+    unsupported = max(0, int(unsupported or 0))
+    complete = bool(ok) and not degraded
+    partial = bool(ok) and (bool(degraded) or bool(gaps))
+    return {"ok": bool(ok), "complete": complete, "partial": partial,
+            "clean": bool(ok) and unsupported == 0 and not partial,
+            "degraded": degraded, "gaps": gaps, "unsupported": unsupported}
+
+
+def momus_verdict(truth: dict, unsupported: int) -> str:
+    """Строка вердикта по правде проверки. Пустая — когда проверка не состоялась вовсе."""
+    if not truth.get("ok"):
+        return ""
+    if truth.get("clean"):
+        return "ВЕРДИКТ: ЧИСТО"
+    if unsupported:
+        return ("ВЕРДИКТ: БЕЗ ОПОРЫ " + str(unsupported)
+                + (" (проверка частичная)" if truth.get("partial") else ""))
+    return "ВЕРДИКТ: ЧАСТИЧНО — находок нет"
+
+
 LABEL_RANK = {"НЕТ ОПОРЫ": 0, "ПРОПУЩЕНО": 0, "ПРОТИВОРЕЧИЕ": 1}
 
 
@@ -8994,29 +9022,20 @@ def merge_momus_aspects(results: list, answer: str) -> dict:
             labels[bucket][key] = spec["label"]
             target.append(_momus_line(spec["label"], item["claim"], why))
     unsupported = len(findings)
-    complete = not bad_ids
-    partial = bool(ok_ids) and (bool(bad_ids) or bool(gaps))
-    clean = bool(ok_ids) and unsupported == 0 and not partial
-    degraded = list(bad_ids) if ok_ids else []
+    truth = momus_truth(bool(ok_ids), unsupported,
+                        list(bad_ids) if ok_ids else [], gaps)
     body = list(findings)
     if gaps:
         body += [""] + list(gaps)
-    if degraded:
-        body.append("часть проверки не состоялась: " + ", ".join(degraded))
-    if ok_ids:
-        # «ЧИСТО» и «без опоры 0» при неполной проверке запрещены: человек читает вердикт
-        # как утверждение о проверенном, а не как «я посмотрел половину и промолчал».
-        if clean:
-            body.append("ВЕРДИКТ: ЧИСТО")
-        elif unsupported and partial:
-            body.append(f"ВЕРДИКТ: БЕЗ ОПОРЫ {unsupported} (проверка частичная)")
-        elif unsupported:
-            body.append(f"ВЕРДИКТ: БЕЗ ОПОРЫ {unsupported}")
-        else:
-            body.append("ВЕРДИКТ: ЧАСТИЧНО — находок нет")
-    out = {"ok": bool(ok_ids), "clean": clean, "unsupported": unsupported,
-           "gaps": list(gaps), "degraded": degraded, "complete": complete,
-           "partial": partial, "text": "\n".join(body), "split": True, "checked": checked,
+    if truth["degraded"]:
+        body.append("часть проверки не состоялась: " + ", ".join(truth["degraded"]))
+    verdict = momus_verdict(truth, unsupported)
+    if verdict:
+        body.append(verdict)
+    out = {"ok": truth["ok"], "clean": truth["clean"], "unsupported": unsupported,
+           "gaps": truth["gaps"], "degraded": truth["degraded"],
+           "complete": truth["complete"], "partial": truth["partial"],
+           "text": "\n".join(body), "split": True, "checked": checked,
            "aspects": {}}
     for spec in MOMUS_ASPECTS:
         r = by_id.get(spec["id"]) or {}
@@ -9036,9 +9055,10 @@ def merge_momus_aspects(results: list, answer: str) -> dict:
         bad = next((by_id.get(i, {}) for i in bad_ids if by_id.get(i, {}).get("call")), {})
         if bad.get("call"):
             out["call"] = bad["call"]
-    elif degraded:
-        out["why"] = "часть направлений не состоялась: " + ", ".join(degraded)
-        bad = next((by_id.get(i, {}) for i in degraded if by_id.get(i, {}).get("call")), {})
+    elif truth["degraded"]:
+        out["why"] = "часть направлений не состоялась: " + ", ".join(truth["degraded"])
+        bad = next((by_id.get(i, {}) for i in truth["degraded"]
+                    if by_id.get(i, {}).get("call")), {})
         if bad.get("call"):
             out["call"] = bad["call"]
     else:
@@ -9139,9 +9159,19 @@ def run_momus_chunks(cfg: dict, packs: list, question: str, answer: str, call=No
         left = momus_claims(again.get("text")) or left[:max(1, int(again.get("unsupported") or 1))]
     rest = fixed + left
     total = len(rest) + unnamed
+    # Правда берётся из ОБЩЕЙ формулы, а не из «нет находок — значит чисто»: первый кусок
+    # мог быть частичным (направление не ответило или нашлись пропуски), и тогда
+    # отсутствие оставшихся находок ничего не подтверждает.
+    truth = momus_truth(bool(first.get("ok")), total,
+                        first.get("degraded") or (), first.get("gaps") or ())
+    body = list(rest)
+    if truth["degraded"]:
+        body.append("часть проверки не состоялась: " + ", ".join(truth["degraded"]))
+    verdict = momus_verdict(truth, total)
+    if verdict:
+        body.append(verdict)
     out = {k: v for k, v in first.items() if k not in ("quotes", "suspect", "verdict_mismatch")}
-    out.update(unsupported=total, clean=not total,
-               text="\n".join(rest) + f"\nВЕРДИКТ: {'БЕЗ ОПОРЫ ' + str(total) if total else 'ЧИСТО'}")
+    out.update(truth, text="\n".join(body))
     return out
 
 
@@ -9175,10 +9205,12 @@ def momus_summary(mo: dict) -> str:
     if not mo.get("ok"):
         return "не состоялась: " + (str(mo.get("why") or "нет вердикта").strip() or "нет вердикта")
     n = int(mo.get("unsupported") or 0)
-    if mo.get("clean"):
-        return "чисто"
+    # Неполнота проверяется РАНЬШЕ «чисто»: даже если поля противоречат друг другу
+    # (старый результат, склейка кусков), слово «чисто» не должно перебивать degraded.
     if mo.get("partial") or mo.get("degraded") or mo.get("gaps"):
         return "проверка частичная, " + (f"без опоры {n}" if n else "находок нет")
+    if mo.get("clean"):
+        return "чисто"
     return f"без опоры {n}"
 
 
