@@ -1213,6 +1213,12 @@ def kit_adapter_state(project=None) -> dict:
         # Панель из папки проекта — не проект: у кита свой адаптер, сравнивать нечего.
         here = Path(__file__).resolve().parent
         target = own if here.parent.name in (".aurora", ".opencode") else None
+    # Короткое имя Windows (RUNNER~1) в причине сбивает с толку и не совпадает с путём,
+    # который видит человек; `resolve()` даёт длинную форму.
+    try:
+        kit = Path(kit).resolve()
+    except OSError:
+        kit = Path(kit).absolute()
     kit_file = Path(kit) / "scripts" / "agents" / "pydantic_ai_adapter.py"
     out = {"kit": str(Path(kit)), "path": str(kit_file), "exists": os.path.isfile(kit_file),
            "compatible": False, "fallback_allowed": False, "reason": ""}

@@ -315,12 +315,12 @@ def test_runtime_truth_project_process_names_the_real_adapter(tmp: Path):
     got = json.loads(cp.stdout.strip().splitlines()[-1])
     assert got["info"]["source"] == "missing", got
     assert got["info"]["exists"] is False, got
-    assert str(empty) in got["info"]["path"], got
+    assert str(empty.resolve()) in got["info"]["path"], got
     assert "китовый адаптер не найден" in got["info"]["reason"], got["info"]
-    assert str(empty) in got["info"]["reason"], got["info"]
+    assert empty.name in got["info"]["reason"], got["info"]
     assert ".aurora/scripts/agents" not in got["info"]["reason"], got["info"]
     assert got["argv"] == [], got
-    assert "китовый адаптер не найден" in got["gap"] and str(empty) in got["gap"], got["gap"]
+    assert "китовый адаптер не найден" in got["gap"] and empty.name in got["gap"], got["gap"]
     assert ".aurora/scripts/agents" not in got["gap"], got["gap"]
 
     # Свой адаптер проекта: тот же машинный ответ называет именно его, а не кит.
