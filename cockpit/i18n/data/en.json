@@ -1248,7 +1248,9 @@
     "модельный арбитр только для спорных критериев": "model arbiter for disputed criteria only",
     "сколько критериев отдать модели": "how many criteria to give the model",
     "секунд на один вызов модели": "seconds per model call",
-    "синтез cr-module/cr-algorithm/cr-rules моделью по фактам индекса": "model synthesis of cr-module/cr-algorithm/cr-rules from index facts"
+    "синтез cr-module/cr-algorithm/cr-rules моделью по фактам индекса": "model synthesis of cr-module/cr-algorithm/cr-rules from index facts",
+    "факты запуска адаптера JSON (для архива диагностики)": "adapter launch facts as JSON (for the diagnostics archive)",
+    "с --adapter-facts: ещё и запустить адаптер": "with --adapter-facts: also start the adapter"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",
