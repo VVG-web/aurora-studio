@@ -1865,11 +1865,12 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
             pending.pop(rid, None)
             deaths = _hub_count_death_locked(proc)
             left = len(pending)
+        stderr_tail = _hub_stderr_tail()      # до ожидания кода: новый процесс не должен затереть хвост
         code = _proc_death_code(proc)
         cause = Why("process_died", "pipe", exc=type(e).__name__,
                     code="?" if code is None else code,
                     pid=getattr(proc, "pid", ""), pending=left,
-                    stderr=_hub_stderr_tail(), deaths=deaths)
+                    stderr=stderr_tail, deaths=deaths)
         return None, None, AdapterFail(ADAPTER_FAIL + str(cause), cause=cause), time.time() - t0
     # У вызова с инструментами несколько запросов к модели — и срок на каждый.
     wait = timeout * (1 + task["tool_calls"]) + 30
