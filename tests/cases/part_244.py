@@ -1049,8 +1049,10 @@ def test_runtime_truth_archive_keeps_rotation_alarm_and_selfcheck(tmp: Path):
     home = tmp / "home"
     (home / "logs").mkdir(parents=True)
     (home / "cache").mkdir(parents=True)
-    (home / "logs" / "adapter.log").write_text("current\n", encoding="utf-8")
-    (home / "logs" / "adapter.1.log").write_text("rotated\n", encoding="utf-8")
+    # Журналы кладём байтами: `write_text` на Windows превращает "\n" в "\r\n",
+    # и размер файла становится на байт больше — ниже сверяются именно байты.
+    (home / "logs" / "adapter.log").write_bytes(b"current\n")
+    (home / "logs" / "adapter.1.log").write_bytes(b"rotated\n")
     alarm_file = home / "adapter-alarm.json"
     alarm_file.write_text(J.dumps({"bot:x": {"at": A.utc_stamp(), "why": "boom"}}), encoding="utf-8")
     (home / "cache" / "pydantic-selfcheck.json").write_text(
@@ -1071,7 +1073,7 @@ def test_runtime_truth_archive_keeps_rotation_alarm_and_selfcheck(tmp: Path):
         names = set(z.namelist())
         assert {"adapter.log", "adapter.1.log", "adapter-alarm.json",
                 "adapter-selfcheck.json", "run/failures.jsonl"} <= names, names
-        assert z.read("adapter.1.log").decode() == "rotated\n"
+        assert z.read("adapter.1.log").decode() == "rotated\n", repr(z.read("adapter.1.log"))
         assert "test failure" in z.read("run/failures.jsonl").decode()
         assert "9.9.9" in z.read("adapter-selfcheck.json").decode()
         assert "bot:x" in z.read("adapter-alarm.json").decode()
@@ -1079,8 +1081,8 @@ def test_runtime_truth_archive_keeps_rotation_alarm_and_selfcheck(tmp: Path):
         assert "adapter.1.log" in summary and "после проверки запуска" in summary, summary
         readme = z.read("README.md").decode()
         data = J.loads(z.read("diagnostics.json"))
-        assert data["adapter_logs"]["adapter.log"]["size"] == len("current\n")
-        assert data["adapter_logs"]["adapter.1.log"]["size"] == len("rotated\n")
+        assert data["adapter_logs"]["adapter.log"]["size"] == len("current\n"), data["adapter_logs"]
+        assert data["adapter_logs"]["adapter.1.log"]["size"] == len("rotated\n"), data["adapter_logs"]
         assert data["adapter_logs"]["adapter.log"]["mtime"], data["adapter_logs"]
         current = data["adapter_logs"]["adapter.log"]
         old = data["adapter_logs"]["adapter.1.log"]
