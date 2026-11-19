@@ -8920,7 +8920,8 @@ def run_momus_aspect(cfg: dict, spec: dict, pack: str, question: str, answer: st
             # Стартовать уже нечем: пока направление ждало очередь, срок этапа вышел.
             # Минимальный осмысленный вызов не влезает в остаток — лучше честно сказать
             # «не проверено», чем начать и вернуться уже после этапа.
-            return {"id": spec["id"], "ok": False, "timed_out": True, "given": 0.0,
+            return {"id": spec["id"], "ok": False, "timed_out": True,
+                    "given": round(max(0.0, left), 1),
                     "why": "не уложилось в общий срок проверки (не стартовало)",
                     "seconds": 0.0}
         # Небольшой зазор, чтобы вызов успел вернуться ДО общего дедлайна: слот шлюза
@@ -9088,6 +9089,10 @@ def merge_momus_aspects(results: list, answer: str) -> dict:
                                       "checked": int(r.get("checked") or 0),
                                       "findings": len(r.get("findings") or []),
                                       "seconds": float(r.get("seconds") or 0.0),
+                                      # Причина сбоя должна быть видна и в строке направления:
+                                      # «не уложилось в срок» и «не ответило» — разные беды.
+                                      "timed_out": bool(r.get("timed_out")),
+                                      "given": r.get("given"),
                                       "note": str(r.get("note") or ""),
                                       "why": str(r.get("why") or "")}
     total = round(sum(float(r.get("seconds") or 0) for r in results if isinstance(r, dict)), 1)
@@ -9130,6 +9135,15 @@ def run_momus_split(cfg: dict, pack: str, question: str, answer: str, call=None,
     `text`, `quotes`, `suspect`), отчёт «Спросить» (`momus_summary`), `run_momus_chunks`
     (text/unsupported/clean). Новые ключи (`split`, `complete`, `partial`, `aspects`,
     `gaps`, `degraded`) только добавляются.
+
+    **Контракт отмены — кооперативный.** `ThreadPoolExecutor` не умеет останавливать
+    запущенный поток: `cancel_futures` снимает только очередь. Этап возвращается по
+    общему сроку в любом случае, а уже начатый вызов обязан сам уложиться в свой
+    `request_timeout`/`deadline`. Поэтому `call_role`, которому передан абсолютный
+    дедлайн, ОБЯЗАН его уважать (таймаут HTTP-запроса, а не «подождём ещё»): иначе
+    поток переживёт этап и будет держать слот шлюза. Вызов, игнорирующий срок, отменён
+    не будет — такой вызов попадает в результат как таймаут (`timed_out`, `given`) и
+    называется в отчёте причиной «не успел», а не «недоступен».
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from concurrent.futures import TimeoutError as FuturesTimeout
@@ -9178,10 +9192,22 @@ def run_momus_split(cfg: dict, pack: str, question: str, answer: str, call=None,
     done = {r.get("id") for r in results}
     for spec in specs:
         if spec["id"] not in done:
-            results.append({"id": spec["id"], "ok": False,
+            # Направление стартовало, но не вернулось даже за грейс. Это ТАЙМАУТ, а не
+            # «модель недоступна»: без `timed_out` answer_core пишет `momus_failed`, и
+            # человек ищет поломку шлюза там, где надо поднять срок. `given` — сколько
+            # времени этап отпускал на себя всего; ноль тут не годится, отчёт принял бы
+            # его за «нет данных» и назвал `request_timeout` из настройки.
+            results.append({"id": spec["id"], "ok": False, "timed_out": True,
+                            "given": round(max(0.0, total_deadline - started), 1),
                             "why": "направление не уложилось в общий срок проверки",
-                            "seconds": 0.0})
+                            "seconds": round(time.time() - started, 1)})
     out = merge_momus_aspects(results, answer)
+    if out.get("timed_out"):
+        # В отчёт идёт срок, который стоял на ВЕСЬ этап, а не остаток, доставшийся одному
+        # направлению: человек читает «модель не уложилась в N с» и поднимает срок запроса,
+        # поэтому N должно быть тем числом, которое он может поднять.
+        out["given"] = round(max(float(out.get("given") or 0.0),
+                                 max(0.0, total_deadline - started)), 1)
     out["seconds"] = round(time.time() - started, 1)
     out["parallel"] = width
     # Модель и шлюз — как у старого Момуса: первый ответивший, в фиксированном порядке.
@@ -9234,9 +9260,28 @@ def run_momus_chunks(cfg: dict, packs: list, question: str, answer: str, call=No
     degraded = list(first.get("degraded") or [])
     gaps = list(first.get("gaps") or [])
 
+    aspects = dict(first.get("aspects") or {})
+
     def absorb(part: dict) -> None:
         degraded.extend(x for x in (part.get("degraded") or []) if x not in degraded)
         gaps.extend(g for g in (part.get("gaps") or []) if g not in gaps)
+        # `aspects` собирается по ВСЕМ кускам: направление, потерянное на втором куске,
+        # иначе выглядело бы состоявшимся, а `checked`/`seconds` были бы только по первому.
+        for aid, row in (part.get("aspects") or {}).items():
+            seen = aspects.get(aid)
+            if not seen:
+                aspects[aid] = dict(row)
+                continue
+            merged = dict(seen)
+            merged["ok"] = bool(seen.get("ok")) and bool(row.get("ok"))
+            merged["checked"] = max(int(seen.get("checked") or 0), int(row.get("checked") or 0))
+            merged["findings"] = int(seen.get("findings") or 0) + int(row.get("findings") or 0)
+            merged["seconds"] = round(float(seen.get("seconds") or 0.0)
+                                      + float(row.get("seconds") or 0.0), 1)
+            merged["why"] = seen.get("why") or row.get("why") or ""
+            merged["note"] = seen.get("note") or row.get("note") or ""
+            merged["chunks"] = int(seen.get("chunks") or 1) + 1
+            aspects[aid] = merged
 
     if len(packs) < 2 or not first.get("ok") or first.get("clean"):
         return first
@@ -9278,7 +9323,7 @@ def run_momus_chunks(cfg: dict, packs: list, question: str, answer: str, call=No
     if verdict:
         body.append(verdict)
     out = {k: v for k, v in first.items() if k not in ("quotes", "suspect", "verdict_mismatch")}
-    out.update(truth, text="\n".join(body))
+    out.update(truth, text="\n".join(body), aspects=aspects)
     return out
 
 

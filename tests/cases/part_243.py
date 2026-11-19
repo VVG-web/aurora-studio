@@ -949,6 +949,45 @@ def test_split_has_a_common_deadline_and_cancels_the_tail(_t: Path):
 
 
 @test
+def test_a_call_that_ignores_its_timeout_is_reported_as_a_timeout(_t: Path):
+    """Отмена кооперативная: медленный вызов не остановить, но причину назвать обязаны.
+
+    `ThreadPoolExecutor` снимает только очередь; запущенный поток переживёт этап, если сам
+    не уважает срок. Требовать «ноль активных вызовов» для такого вызова нельзя, а вот
+    вернуться вовремя и сказать человеку про срок — можно и нужно. Без `timed_out`
+    `answer_core` писала `momus_failed`, и человек искал поломку шлюза вместо срока.
+    """
+    R = importlib.import_module("agent_runner")
+    C = importlib.import_module("answer_core")
+    cfg = _momus_cfg(split=True)
+    span = 1.6
+    started = time.time()
+
+    def slow(cfg, role, msgs, **kw):
+        time.sleep(2.0)                       # срок игнорируется намеренно
+        return _answer("support", [])
+
+    out = R.run_momus(cfg, "ПАК", "Вопрос?", "Ответ.", call=slow,
+                      deadline=started + span)
+    assert time.time() - started <= span + 0.8, "этап ждал вызов, который его не уважает"
+    assert out["ok"] is False and out["timed_out"] is True, out
+    assert out["given"] and out["given"] >= span - 0.1, out["given"]
+    assert all(a.get("timed_out") for a in out["aspects"].values()), out["aspects"]
+    assert any("общий срок" in (a.get("why") or "") for a in out["aspects"].values()), out
+
+    checks = C.verify("Ответ.", pack="ПАК", cards=[], cwd=str(_t),
+                      verifier=lambda *a, **k: out)
+    assert "momus_timeout" in checks["degraded"], checks["degraded"]
+
+    report = R.report_ask({"ok": True, "answer": "Ответ.", "cards": [], "total": 0,
+                           "model": "m", "backend": 1, "seconds": 1.0,
+                           "momus": checks["momus"]}, "Вопрос?", cfg)
+    assert "не успел проверить" in report, report[-500:]
+    assert f"{int(out['given'])} с" in report, report[-500:]
+    assert "не проверил ответ" not in report, report[-500:]
+
+
+@test
 def test_the_stage_timeout_names_the_limit_that_actually_stood(_t: Path):
     """Таймаут этапа называет фактический предел, а не `request_timeout` из настройки.
 
@@ -1084,6 +1123,11 @@ def test_a_partial_later_chunk_is_not_lost(_t: Path):
 
     out = R.run_momus_chunks(cfg, ["ПАК1", "ПАК2"], "Вопрос?", "Ответ.", call=call)
     assert out["degraded"] == ["support"], out["degraded"]
+    # `aspects` собирается по всем кускам: потеря направления на втором видна в его строке,
+    # иначе он выглядел бы состоявшимся, а `checked` относился бы только к первому.
+    assert out["aspects"]["support"]["ok"] is False, out["aspects"]["support"]
+    assert out["aspects"]["support"]["chunks"] == 2, out["aspects"]["support"]
+    assert out["aspects"]["contradictions"]["ok"] is True, out["aspects"]["contradictions"]
     assert out["complete"] is False and out["partial"] is True, out
     assert out["clean"] is False, out
     assert out["text"].splitlines()[-1] == "ВЕРДИКТ: БЕЗ ОПОРЫ 1 (проверка частичная)", out["text"]
