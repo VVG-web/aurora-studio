@@ -31,7 +31,7 @@ def test_metrics_section_sits_after_cron_and_needs_no_project(_t):
     """Манифест: machine/36 — между Cron (35) и Справкой (40), без выбранного проекта."""
     man = json.loads((KIT / "cockpit/modules/metrics/module.json").read_text(encoding="utf-8"))
     assert man["id"] == "metrics" and man["group"] == "machine" and man["order"] == 36, man
-    assert man["needs"] == [] and man["for"] == "1.231.9", man
+    assert man["needs"] == [] and man["for"] == "1.231.10", man
     assert man["name"]["ru"] == "Замеры", man
     src = panel_sources()
     for need in ("/api/metrics", "metrics.net_title", "metrics.tokens_title", "metrics.col.model"):
