@@ -5170,7 +5170,9 @@ def adapter_facts(deep: bool = False) -> dict:
     """
     import runtime_catalog as RC
     info = RC.adapter_info()
-    out = {"info": info, "argv": _adapter_argv(), "gap": adapter_gap()}
+    check = last_selfcheck()
+    out = {"info": info, "argv": _adapter_argv(), "gap": adapter_gap(),
+           "selfcheck": check if isinstance(check, dict) else {}}
     if deep:
         target = info.get("path") if info.get("source") == "project" else None
         out["probe"] = adapter_probe(target, _roots()[1], wait=15)

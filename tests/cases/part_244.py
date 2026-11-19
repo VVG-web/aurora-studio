@@ -431,6 +431,7 @@ def test_runtime_truth_archive_shows_one_adapter(tmp: Path):
         (archive["adapter"], archive["project"])
     assert archive["adapter"]["sha"] == archive["project"]["adapter_file"]["sha"], \
         (archive["adapter"], archive["project"])
+    assert archive["adapter"]["selfcheck_source"] == "project", archive["adapter"]
 
     # Кит пропал: архив называет именно китовый путь, а не проекский `.aurora`.
     empty = tmp / "empty-kit"
@@ -443,12 +444,21 @@ def test_runtime_truth_archive_shows_one_adapter(tmp: Path):
     assert ".aurora/scripts/agents" not in archive["adapter"]["gap"], archive["adapter"]
 
     # Ключ самопроверки — не sha адаптера: в архиве не должно быть двух длин под именем key.
+    project_decision = {**decision, "selfcheck": {"version": "9.9.9",
+                                                   "key": "9.9.9|project12345"}}
+    facts = D._adapter_facts(A, str(incompatible), deep=False, decision=project_decision)
+    assert facts["selfcheck_source"] == "project", facts
+    assert facts["selfcheck"] == {"version": "9.9.9", "cache_key": "9.9.9|project12345"}, \
+        facts["selfcheck"]
+
+    # Старый движок без своего кэша: тот же ключ, но с честной пометкой «panel».
     old_selfcheck = A.last_selfcheck
     A.last_selfcheck = lambda: {"version": "1.2.3", "key": "1.2.3|abcdef123456"}
     try:
-        facts = D._adapter_facts(A, str(incompatible), deep=False, decision=decision)
+        facts = D._adapter_facts(A, str(incompatible), deep=False)
     finally:
         A.last_selfcheck = old_selfcheck
+    assert facts["selfcheck_source"] == "panel", facts
     assert facts["selfcheck"] == {"version": "1.2.3", "cache_key": "1.2.3|abcdef123456"}, \
         facts["selfcheck"]
     assert "key" not in facts["selfcheck"], facts["selfcheck"]
@@ -572,3 +582,45 @@ def test_runtime_truth_run_refuses_to_start_when_the_disk_is_almost_full(tmp: Pa
     runner = (KIT / "tests" / "run_tests.py").read_text(encoding="utf-8")
     assert "require_free_space()" in runner, "раннер не проверяет место на старте"
     assert harness.MIN_FREE_BYTES == 5 * 1024 ** 3, harness.MIN_FREE_BYTES
+
+
+@test
+def test_runtime_truth_archive_survives_incomplete_project_answer(tmp: Path):
+    """Неполный JSON проекта не валит архив: безопасный путь панели и причина.
+
+    Архив нужен как раз у сломанного проекта. Синтаксически верный, но неполный
+    ответ (`{"info": {}}`, `info` без `exists`/`sha`, `argv` не список) не должен
+    давать `KeyError`: он идёт тем же путём, что и молчащий движок, —
+    `decision_source=panel` и `decision_error`.
+    """
+    A, _RC, _P, D = _modules()
+    from harness import make_project
+    nested = tmp / "broken"
+    nested.mkdir()
+    project = make_project(nested)
+    core = project / ".aurora" / "scripts" / "agent_core.py"
+    payloads = [
+        {"info": {}},
+        {"info": {"path": "<x>", "source": "kit"}, "argv": [], "gap": ""},
+        {"info": {"path": "<x>", "exists": True, "sha": "", "source": "kit"},
+         "argv": "not-a-list", "gap": ""},
+        {"info": {"path": "<x>", "exists": True, "sha": "", "source": "kit"},
+         "argv": [], "gap": 3},
+    ]
+    for payload in payloads:
+        raw = json.dumps(payload, ensure_ascii=False)
+        core.write_text("import sys\nsys.stdout.write(" + repr(raw) + ")\n", encoding="utf-8")
+        decision = D._project_adapter(str(project), deep=False)
+        assert "неполный ответ" in str(decision.get("error")), (payload, decision)
+        archive = D.collect(str(project), deep=False)
+        assert archive["adapter"]["decision_source"] == "panel", (payload, archive["adapter"])
+        assert archive["adapter"]["selfcheck_source"] == "panel", (payload, archive["adapter"])
+        assert "неполный ответ" in archive["adapter"]["decision_error"], \
+            (payload, archive["adapter"])
+        assert "exists" in archive["project"]["adapter_file"], (payload, archive["project"])
+
+    # Безопасные функции не падают и на неполном словаре, переданном напрямую.
+    facts = D._adapter_facts(A, str(project), deep=False, decision={"info": {}})
+    assert facts["decision_source"] == "panel", facts
+    project_facts = D._project_facts(str(project), {})
+    assert "exists" in project_facts["adapter_file"], project_facts

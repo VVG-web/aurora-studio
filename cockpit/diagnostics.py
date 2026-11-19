@@ -216,6 +216,45 @@ print(json.dumps({"python": sys.executable, "version": sys.version,
     return out
 
 
+_ADAPTER_KEYS = ("path", "exists", "sha", "source")
+
+
+def _adapter_record(value) -> dict:
+    """Факты адаптера безопасно: недостающее поле не роняет сборку архива."""
+    src = value if isinstance(value, dict) else {}
+
+    def text(key: str) -> str:
+        v = src.get(key)
+        return v if isinstance(v, str) else ""
+
+    compatible, fallback = src.get("compatible"), src.get("fallback_allowed")
+    return {"path": text("path"),
+            "exists": src.get("exists") if isinstance(src.get("exists"), bool) else False,
+            "sha": text("sha"), "source": text("source"),
+            "compatible": compatible if isinstance(compatible, bool) else None,
+            "fallback_allowed": fallback if isinstance(fallback, bool) else None,
+            "reason": text("reason")}
+
+
+def _adapter_info_complete(info) -> bool:
+    """Словарь `info` содержит путь, наличие, sha и источник нужных типов."""
+    return (isinstance(info, dict) and all(k in info for k in _ADAPTER_KEYS)
+            and all(isinstance(info.get(k), str) for k in ("path", "sha", "source"))
+            and isinstance(info.get("exists"), bool))
+
+
+def _adapter_answer_ok(got) -> bool:
+    """Ответ движка проекта полон: info, argv и gap (probe, если он есть)."""
+    if not isinstance(got, dict) or not _adapter_info_complete(got.get("info")):
+        return False
+    argv = got.get("argv")
+    if not isinstance(argv, list) or not all(isinstance(x, str) for x in argv):
+        return False
+    if not isinstance(got.get("gap"), str):
+        return False
+    return got.get("probe") is None or isinstance(got.get("probe"), dict)
+
+
 def _project_adapter(project: str, deep: bool) -> dict:
     """Ответ движка проекта о запуске адаптера. Пусто — своей копии движка нет.
 
@@ -240,6 +279,8 @@ def _project_adapter(project: str, deep: bool) -> dict:
     if not r.get("ok") or not isinstance(got, dict):
         why = r.get("error") or (r.get("err") or "").strip() or f"код {r.get('rc')}"
         return {"error": f"движок проекта не ответил об адаптере: {why}"}
+    if not _adapter_answer_ok(got):
+        return {"error": "движок проекта вернул неполный ответ об адаптере"}
     return got
 
 
@@ -247,21 +288,24 @@ def _adapter_facts(AG, project: str, deep: bool, decision: dict | None = None) -
     # Один ответ об адаптере на весь архив: тот же файл и та же sha, что в
     # `project.adapter_file`, и тот же запуск (argv/gap/probe), каким пойдёт проект.
     decision = decision if isinstance(decision, dict) else {}
-    found = decision.get("info") if isinstance(decision.get("info"), dict) else None
-    if found is None:
-        found = RTC.adapter_info(project) if project else RTC.adapter_info()
-    if isinstance(decision.get("argv"), list):
-        argv = decision["argv"]
+    trusted = _adapter_answer_ok(decision)
+    if trusted:
+        found = _adapter_record(decision["info"])
+        argv, gap = decision["argv"], decision["gap"]
     else:
+        found = _adapter_record(RTC.adapter_info(project) if project else RTC.adapter_info())
         try:
             argv = (AG._adapter_argv(found["path"]) if found.get("source") == "project"
                     else AG._adapter_argv())
         except Exception as e:  # noqa: BLE001
             argv = [f"{type(e).__name__}: {e}"]
-    gap = decision.get("gap") if isinstance(decision.get("gap"), str) \
-        else _safe(AG, "adapter_gap", "")
+        gap = _safe(AG, "adapter_gap", "")
     # Ключ самопроверки — не sha адаптера (12 символов против 16); называем его честно.
-    selfcheck = _safe(AG, "last_selfcheck", {})
+    # Источник виден: у проекта свой кэш, у старого движка его нет — берём панельный.
+    if trusted and isinstance(decision.get("selfcheck"), dict):
+        selfcheck, selfcheck_source = decision["selfcheck"], "project"
+    else:
+        selfcheck, selfcheck_source = _safe(AG, "last_selfcheck", {}), "panel"
     if isinstance(selfcheck, dict) and "key" in selfcheck:
         selfcheck = {**{k: v for k, v in selfcheck.items() if k != "key"},
                      "cache_key": selfcheck["key"]}
@@ -274,13 +318,14 @@ def _adapter_facts(AG, project: str, deep: bool, decision: dict | None = None) -
         "compatible": found.get("compatible"),
         "fallback_allowed": found.get("fallback_allowed"),
         "reason": _text(found.get("reason") or "", project),
-        "decision_source": "project" if decision and not decision.get("error") else "panel",
+        "decision_source": "project" if trusted else "panel",
         "gap": _text(gap, project),
         "other_home": _text(_safe(AG, "other_home_hint", ""), project),
         "venv": _safe(AG, "venv_status", (False, "")),
         "venv_path": _text(_safe(AG, "venv_display_path", ""), project),
         "runtime": _clean(_safe(AG, "_runtime_status", {}), project),
         "selfcheck": _clean(selfcheck, project),
+        "selfcheck_source": selfcheck_source,
         "state": _clean(getattr(AG, "ADAPTER", {}), project),
     }
     if decision.get("error"):
@@ -299,7 +344,7 @@ def _adapter_facts(AG, project: str, deep: bool, decision: dict | None = None) -
         }
     if deep:
         try:
-            if isinstance(decision.get("probe"), dict):
+            if trusted and isinstance(decision.get("probe"), dict):
                 out["probe"] = _clean(decision["probe"], project)
             else:
                 # Панель без копии движка проекта: проверяем свой (китовый) адаптер.
@@ -389,7 +434,8 @@ def _project_facts(project: str, adapter: dict | None = None) -> dict:
         return {}
     root = Path(project)
     core = RTC.engine_info(project)
-    adapter = adapter if isinstance(adapter, dict) else RTC.adapter_info(project)
+    adapter = _adapter_record(adapter) if _adapter_info_complete(adapter) \
+        else _adapter_record(RTC.adapter_info(project))
     return {
         "path": "<project>", "path_shape": _path_shape(project),
         "engine_dir": RTC.engine_dir(project),
