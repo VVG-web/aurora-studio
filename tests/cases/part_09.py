@@ -1440,9 +1440,10 @@ def test_the_check_gets_as_long_as_the_answer_took(tmp: Path):
     получал пятиминутную проверку, и «Момус не успел» превращалось в ожидание до десяти
     минут. Пол 90 с оказался слишком скуп: на живых данных 15–18.11 из 843 попыток qa
     49 % успешных шли дольше 90 с (p90 — 179 с, p99 — 359 с), и 335 первых заходов
-    обрывались по сроку. Правило запаса: пол = 2 × p90 = 360 с, потолок = 2,5 × p99 = 900 с.
-    Проверка готового текста не генерация, но и не мгновенная: медленная модель не должна
-    обрываться за то, что она медленная.
+    обрывались по сроку. Правило запаса: пол = 2 × p90 = 360 с, потолок — общий предел
+    запроса 1800 с; срок считается от фактического времени ответа плюс буфер 300 с на
+    очередь шлюза и первый байт (`MOMUS_BUFFER`). Проверка готового текста не генерация,
+    но и не мгновенная: медленная модель не должна обрываться за то, что она медленная.
     """
     sys.path.insert(0, str(KIT / "scripts"))
     import importlib
@@ -1467,7 +1468,8 @@ def test_the_check_gets_as_long_as_the_answer_took(tmp: Path):
     finally:
         A.USAGE.clear(); A.USAGE.update(saved)
     assert R.momus_timeout(cfg, 40) == 360, "быстрый ответ не должен УРЕЗАТЬ проверку ниже 360 с"
-    assert R.momus_timeout(cfg, 280) == 420, "медленный ответ не поднял предел проверки по доле"
+    # 280 × 1.5 + 300 (буфер) = 720: буфер считается ДО потолка и не заменяет долю.
+    assert R.momus_timeout(cfg, 280) == 720, "медленный ответ не поднял предел проверки по доле"
     assert R.momus_timeout({"request_timeout": 600}, 5000) == 1800, \
         "потолок 1800 с не держит: человек ждёт ответа"
 
@@ -1476,20 +1478,20 @@ def test_the_check_gets_as_long_as_the_answer_took(tmp: Path):
 
     def fake_call(cfg, role, messages, **kw):
         seen.update(kw); seen["role"] = role
-        return {"ok": False, "log": ["№2 m: не уложился в 420 с"], "timed_out": True}
+        return {"ok": False, "log": ["№2 m: не уложился в 720 с"], "timed_out": True}
 
     mo = R.run_momus(cfg, "пак", "вопрос", "ответ", fake_call, answered_in=280)
     assert seen["role"] == "qa", seen
-    assert seen.get("request_timeout") == 420, \
+    assert seen.get("request_timeout") == 720, \
         f"предел на запрос не передан — вызов снова обрежется по настройке: {seen}"
-    assert seen["deadline"] > time.time() + 380, "дедлайн остался коротким"
-    assert mo["timed_out"] and mo["given"] == 420, mo
+    assert seen["deadline"] > time.time() + 680, "дедлайн остался коротким"
+    assert mo["timed_out"] and mo["given"] == 720, mo
 
     # отчёт называет причину сроком, а не недоступностью
     text = R.report_ask({"ok": True, "answer": "текст", "cards": ["К"], "total": 1,
                          "model": "m", "backend": 2, "seconds": 534.3, "momus": mo},
                         "вопрос", cfg)
-    assert "не успел" in text and "420" in text, text
+    assert "не успел" in text and "720" in text, text
     assert "срок запроса" in text and "«Модели»" in text, "человеку не назван рычаг"
     assert "не проверил ответ" not in text, \
         "медленную проверку по-прежнему объявляют несостоявшейся без причины"
