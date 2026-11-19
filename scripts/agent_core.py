@@ -1600,11 +1600,15 @@ def _hub_reader(proc, pending: dict, generation=None) -> None:
         gen = int(generation if generation is not None else _HUB.get("proc_gen") or 0)
         # Считать смерть вправе только читатель живого процесса своего поколения: старый
         # читатель, доживший до конца уже заменённого процесса, не трогает счётчик нового.
-        if _HUB.get("proc") is proc and int(_HUB.get("proc_gen") or 0) == gen:
+        current = _HUB.get("proc") is proc and int(_HUB.get("proc_gen") or 0) == gen
+        if current:
             _hub_count_death_locked(proc)
-        left = list(pending.values())
-        # Чистим только своё ожидание; чужой (новый) процесс хранит свой словарь отдельно.
-        pending.clear()
+        # У каждого процесса свой словарь ожиданий. Если старый читатель ошибся и ему
+        # передали словарь нового процесса, слоты нового не трогаем; свой — чистим.
+        owned = _HUB.get("pending") is not pending or current
+        left = list(pending.values()) if owned else []
+        if owned:
+            pending.clear()
         stderr_tail = _hub_stderr_tail_locked(gen=gen)
     common = {"kind": "process_died", "sub": "closed",
               "code": "?" if code is None else code, "pid": getattr(proc, "pid", ""),

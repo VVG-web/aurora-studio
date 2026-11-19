@@ -804,6 +804,10 @@ def test_runtime_truth_stderr_generation_survives_parallel_restart(tmp: Path):
         assert "old:19" in str(out.get("stderr") or ""), out
         assert new_slot["out"] is None, new_slot
         assert A._HUB["deaths"] == 0, A._HUB["deaths"]
+        # Даже если старому читателю по ошибке дали словарь нового процесса, слоты
+        # нового он не очищает и не отказывает им.
+        A._hub_reader(OldProc(), new_pending, old_gen)
+        assert new_pending == {"new": new_slot} and new_slot["out"] is None, new_pending
         closed = A._out_cause(out, "")
         assert (closed.kind, closed.sub) == ("process_died", "closed"), closed
         assert closed.args.get("code") == 7 and closed.args.get("pid") == 101, closed.args
