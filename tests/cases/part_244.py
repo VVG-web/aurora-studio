@@ -1077,8 +1077,18 @@ def test_runtime_truth_archive_keeps_rotation_alarm_and_selfcheck(tmp: Path):
         assert "bot:x" in z.read("adapter-alarm.json").decode()
         summary = z.read("summary.md").decode()
         assert "adapter.1.log" in summary and "после проверки запуска" in summary, summary
+        readme = z.read("README.md").decode()
         data = J.loads(z.read("diagnostics.json"))
+        assert data["adapter_logs"]["adapter.log"]["size"] == len("current\n")
         assert data["adapter_logs"]["adapter.1.log"]["size"] == len("rotated\n")
         assert data["adapter_logs"]["adapter.log"]["mtime"], data["adapter_logs"]
+        current = data["adapter_logs"]["adapter.log"]
+        old = data["adapter_logs"]["adapter.1.log"]
+        # Хвост для сводки читается без завершающего перевода строки, размер файла — с ним.
+        assert (f"Журнал адаптера: {len('current')} символов, {current['size']} Б, "
+                f"mtime {current['mtime']}; adapter.1.log: {old['size']} Б, "
+                f"mtime {old['mtime']}") in summary, summary
+        assert "тревога с обёрткой stat" in summary, summary
+        assert "`adapter-alarm.json`" in readme and "обёрткой `stat`" in readme, readme
         assert data["alarm_file"]["stat"]["mtime"], data["alarm_file"]
         assert data["selfcheck_file"]["stat"]["mtime"], data["selfcheck_file"]

@@ -552,6 +552,7 @@ def _summary(data: dict) -> str:
     state = a.get("state") if isinstance(a.get("state"), dict) else {}
     run = data.get("run") or {}
     logs = data.get("adapter_logs") or {}
+    log0 = logs.get("adapter.log") or {}
     log1 = logs.get("adapter.1.log") or {}
     fail_stat = run.get("failures_file") or {}
     alarm_stat = (data.get("alarm_file") or {}).get("stat") or {}
@@ -578,7 +579,8 @@ def _summary(data: dict) -> str:
         f"Причина обхода: {a.get('gap') or state.get('fallback_why') or '—'}",
         "", "## Запуск", "",
         f"run_id: {run.get('run_id') or '—'}",
-        f"Журнал адаптера: {len(data.get('adapter_log') or '')} символов; "
+        f"Журнал адаптера: {len(data.get('adapter_log') or '')} символов, "
+        f"{log0.get('size', 0)} Б, mtime {log0.get('mtime') or '—'}; "
         f"adapter.1.log: {log1.get('size', 0)} Б, mtime {log1.get('mtime') or '—'}",
         f"Сбоев в хвосте: {len(run.get('failures') or [])}; failures.jsonl: "
         f"{fail_stat.get('size', 0)} Б, mtime {fail_stat.get('mtime') or '—'}",
@@ -587,7 +589,8 @@ def _summary(data: dict) -> str:
         "Журнал адаптера снят после проверки запуска: старт самой пробы может быть в конце.",
         "", "## Что внутри", "",
         "`diagnostics.json` — полные данные, `adapter.log` и `adapter.1.log` — "
-        "stderr/stdout адаптера (текущий и прежний), `adapter-alarm.json` — сырая тревога, "
+        "stderr/stdout адаптера (текущий и прежний), `adapter-alarm.json` — тревога "
+        "с обёрткой stat (`stat` + `rows`), "
         "`adapter-selfcheck.json` — последняя самопроверка, `run/console.log` — хвост "
         "консоли, `run/failures.jsonl` — сбои без тел ответов, `venv.json` — пакеты и "
         "импорт, `env.json` — только нужные переменные с маской.",
@@ -604,6 +607,8 @@ def _readme() -> str:
         "промптов и ответов модели из `failures.jsonl` не включены, оставлен только ход "
         "вызова; `console.log` — вывод команды и может содержать текст проекта. "
         "Домашний путь заменён на `~`, путь проекта — на `<project>`.\n\n"
+        "`adapter-alarm.json` в архиве — тревога с обёрткой `stat`, а не байтовая копия "
+        "файла: строки лежат в `rows`, сведения о файле — в `stat`.\n\n"
         "Приложите zip к сообщению об ошибке. Если в логах остались данные, которые нельзя "
         "передавать, удалите соответствующие строки перед отправкой.\n"
     )
