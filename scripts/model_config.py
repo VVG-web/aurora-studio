@@ -70,7 +70,11 @@ RENAMED = {"worker": ("Разбор и тезисы",), "planner": ("Плани�
 DEFAULT_ROLE = {"llm": "worker", "ocr": "document", "embeddings": "index"}
 SETTINGS_DEFAULT = {"adapter": "pydantic_ai", "max_steps": 15, "budget_min": 40,
                     "request_timeout": 600, "parallel": "auto", "debug": False,
-                    "rerank": False}
+                    "rerank": False,
+                    # Момус по направлениям. Живёт в настройке, а не только в окружении:
+                    # иначе флаг не доезжает до рабочего конфига (`to_config`), и весь
+                    # разбитый путь остаётся мёртвым при любом значении переменной.
+                    "momus_split": False}
 OCR_DEFAULT = {"dpi": 130, "max_pages": 60}
 
 
@@ -242,6 +246,7 @@ def normalize(data) -> tuple:
     s["parallel"] = "auto" if par in ("auto", "авто", "0", "", "all") else _int(par, 1, 1)
     s["debug"] = bool(st.get("debug"))
     s["rerank"] = bool(st.get("rerank"))
+    s["momus_split"] = bool(st.get("momus_split"))
     out["settings"] = s
     llm_used = {b["provider"] for r in out["capabilities"]["llm"]["roles"] for b in r["backends"] if b["enabled"]}
     _declare_widths(out["providers"], s["parallel"], llm_used)
@@ -518,7 +523,10 @@ def from_env(env: dict) -> dict:
                        "request_timeout": cfg["request_timeout"],
                        "parallel": "auto" if cfg.get("parallel") == AG.AUTO
                        else cfg.get("parallel", 1),
-                       "debug": cfg.get("debug", False)}
+                       "debug": cfg.get("debug", False),
+                       # Флаг разбитого Момуса переносится в настройку из окружения:
+                       # без этого `to_config` его не знает и путь остаётся выключенным.
+                       "momus_split": bool(cfg.get("momus_split"))}
     return normalize(out)[0]
 
 
@@ -617,6 +625,12 @@ def to_config(data: dict) -> dict:
         "request_timeout": s["request_timeout"],
         "parallel": AG.parallel_cap(s["parallel"]),
         "debug": s["debug"],
+        # Флаг разбитого Момуса: настройка модели плюс переопределение окружением —
+        # так его можно включить и в панели, и для одного прогона.
+        "momus_split": ((str(os.environ.get("AURORA_AGENT_MOMUS_SPLIT")).strip().lower()
+                         not in ("0", "", "false", "no", "off"))
+                        if "AURORA_AGENT_MOMUS_SPLIT" in os.environ
+                        else bool(s.get("momus_split"))),
         "fast": {"auto": next((r.get("auto", True) is not False
                                for r in data["capabilities"]["llm"]["roles"]
                                if r["id"] == "fast"), True)},

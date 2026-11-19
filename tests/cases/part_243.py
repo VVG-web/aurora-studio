@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 import threading
 import time
@@ -699,3 +700,55 @@ def test_report_ask_survives_split_clean_and_partial_zero(_t: Path):
     assert "проверка частичная, находок нет" in text2, text2[-600:]
     assert "без опоры — 0" not in text2 and "БЕЗ ОПОРЫ 0" not in text2, text2[-600:]
     assert "сверен частично" in text2, text2[-600:]
+
+
+@test
+def test_the_flag_reaches_the_working_config_through_the_model_settings(_t: Path):
+    """Флаг разбиения доезжает до рабочего конфига, а не только до `parse_config`.
+
+    `AG.config()` в обычном режиме собирает настройку через `model_config.to_config`.
+    Пока `momus_split` там не было, переменная окружения ни на что не влияла: путь
+    разбиения оставался мёртвым в любом рабочем прогоне, а тесты этого не видели, потому
+    что включали флаг через `parse_config`.
+    """
+    MC = importlib.import_module("model_config")
+    R = importlib.import_module("agent_runner")
+    env = {"AURORA_AGENT_BACKEND_1_URL": "http://x/v1",
+           "AURORA_AGENT_BACKEND_1_MODEL": "m",
+           "AURORA_AGENT_REQUEST_TIMEOUT": "600",
+           "AURORA_AGENT_MOMUS_SPLIT": "1"}
+    data = MC.from_env(env)
+    assert data["settings"]["momus_split"] is True, data["settings"]
+    saved = {k: os.environ.get(k) for k in ("AURORA_AGENT_MOMUS_SPLIT",)}
+    try:
+        for k, v in env.items():
+            os.environ[k] = v
+        cfg = MC.to_config(data)
+        assert cfg["momus_split"] is True, "флаг потерялся по дороге в рабочий конфиг"
+        calls = []
+
+        def call(cfg, role, msgs, **kw):
+            text = msgs[0]["content"]
+            calls.append(text)
+            aspect = next(s["id"] for s in R.MOMUS_ASPECTS if f'"aspect": "{s["id"]}"' in text)
+            return _answer(aspect, [])
+
+        out = R.run_momus(cfg, "ПАК", "Вопрос?", "Ответ.", call=call)
+        assert len(calls) == len(R.MOMUS_ASPECTS) == 4, \
+            f"через рабочую настройку ушло {len(calls)} вызовов вместо четырёх"
+        assert out.get("split") is True and out["ok"], out
+        # Выключенный флаг в самой настройке — прежний путь, даже если окружение молчит.
+        data["settings"]["momus_split"] = False
+        os.environ.pop("AURORA_AGENT_MOMUS_SPLIT", None)
+        cfg_off = MC.to_config(data)
+        calls.clear()
+        R.run_momus(cfg_off, "ПАК", "Вопрос?", "Ответ.", call=lambda *a, **k: (
+            calls.append(1) or {"ok": True, "model": "m", "backend": 1, "seconds": 0.1,
+                                "text": "ВЕРДИКТ: ЧИСТО"}))
+        assert len(calls) == 1, f"при выключенном флаге ушло {len(calls)} вызовов"
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
