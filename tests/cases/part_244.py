@@ -738,6 +738,121 @@ def test_runtime_truth_adapter_pipe_alarm_waits_for_third_failure(tmp: Path):
 
 
 @test
+def test_runtime_truth_stderr_generation_survives_parallel_restart(tmp: Path):
+    """Кольцо stderr старого процесса не смешивается с новым, а старый читатель не чистит новые слоты."""
+    A, _RC, _P, _D = _modules()
+    import threading
+    import time
+    from collections import deque
+
+    old_home = A.RT.HOME
+    old_hub = dict(A._HUB)
+    old_hub["stderr"] = deque(A._HUB.get("stderr") or [], maxlen=200)
+    old_hub["stderr_by_gen"] = dict(A._HUB.get("stderr_by_gen") or {})
+    old_hub["stderr_by_gen"][int(old_hub.get("stderr_gen") or 0)] = old_hub["stderr"]
+    old_hub["proc_gen_by_id"] = dict(A._HUB.get("proc_gen_by_id") or {})
+    A.RT.HOME = tmp / "home"
+    A.RT.HOME.mkdir()
+    try:
+        with A._HUB_LOCK:
+            old_gen = A._hub_stderr_new_generation_locked()
+
+        def add(tag: str, gen: int) -> None:
+            for i in range(20):
+                A._hub_stderr_add(f"{tag}:{i}", gen)
+                time.sleep(0.001)
+
+        old_writer = threading.Thread(target=add, args=("old", old_gen))
+        old_writer.start()
+        with A._HUB_LOCK:
+            new_gen = A._hub_stderr_new_generation_locked()
+        new_writer = threading.Thread(target=add, args=("new", new_gen))
+        new_writer.start()
+        old_writer.join()
+        new_writer.join()
+        old_tail, new_tail = A._hub_stderr_tail(gen=old_gen), A._hub_stderr_tail(gen=new_gen)
+        assert "old:19" in old_tail and "new:" not in old_tail, old_tail
+        assert "new:19" in new_tail and "old:" not in new_tail, new_tail
+
+        class OldProc:
+            pid = 101
+            stdout = []
+
+            def poll(self):
+                return 7
+
+        class NewProc:
+            pid = 202
+            stdout = []
+
+            def poll(self):
+                return None
+
+        old_slot = {"done": threading.Event(), "out": None}
+        new_slot = {"done": threading.Event(), "out": None}
+        old_pending, new_pending = {"old": old_slot}, {"new": new_slot}
+        new_proc = NewProc()
+        with A._HUB_LOCK:
+            A._HUB.update(proc=new_proc, pending=new_pending, proc_gen=new_gen, deaths=0)
+        # Старый читатель закрылся уже после замены процесса: он вправе отказать своим
+        # слотам, но не новым и не считать смерть нового процесса.
+        A._hub_reader(OldProc(), old_pending, old_gen)
+        assert new_pending == {"new": new_slot}, new_pending
+        assert old_pending == {}, old_pending
+        out = old_slot["out"] or {}
+        assert (out.get("code"), out.get("pid"), out.get("pending")) == (7, 101, 1), out
+        assert "old:19" in str(out.get("stderr") or ""), out
+        assert new_slot["out"] is None, new_slot
+        assert A._HUB["deaths"] == 0, A._HUB["deaths"]
+        closed = A._out_cause(out, "")
+        assert (closed.kind, closed.sub) == ("process_died", "closed"), closed
+        assert closed.args.get("code") == 7 and closed.args.get("pid") == 101, closed.args
+        assert closed.args.get("pending") == 1 and "old:19" in closed.args.get("stderr", ""), closed.args
+    finally:
+        A.RT.HOME = old_home
+        A._HUB.clear()
+        A._HUB.update(old_hub)
+
+
+@test
+def test_runtime_truth_faulthandler_stderr_survives_a_native_crash(tmp: Path):
+    """Нативное падение оставляет в кольце stderr строку faulthandler, а не пустоту."""
+    A, _RC, _P, _D = _modules()
+    from collections import deque
+
+    old_home = A.RT.HOME
+    old_hub = dict(A._HUB)
+    old_hub["stderr"] = deque(A._HUB.get("stderr") or [], maxlen=200)
+    old_hub["stderr_by_gen"] = dict(A._HUB.get("stderr_by_gen") or {})
+    old_hub["stderr_by_gen"][int(old_hub.get("stderr_gen") or 0)] = old_hub["stderr"]
+    old_hub["proc_gen_by_id"] = dict(A._HUB.get("proc_gen_by_id") or {})
+    A.RT.HOME = tmp / "home"
+    A.RT.HOME.mkdir()
+    proc = None
+    try:
+        with A._HUB_LOCK:
+            gen = A._hub_stderr_new_generation_locked()
+        crash = tmp / "crash.py"
+        crash.write_text("import faulthandler\nfaulthandler.enable()\nimport ctypes\n"
+                         "ctypes.string_at(0)\n", encoding="utf-8")
+        proc = A._spawn_adapter([sys.executable, str(crash)], record=True, stderr_gen=gen)
+        assert proc.wait(10) is not None, "процесс с нативным падением не завершился"
+        A._join_stderr(proc, 5)
+        tail = A._hub_stderr_tail(20, gen=gen)
+        assert "Fatal Python error" in tail or "fatal exception" in tail.lower(), tail
+    finally:
+        if proc is not None:
+            for pipe in ("stdin", "stdout", "stderr"):
+                try:
+                    getattr(proc, pipe).close()
+                except (OSError, ValueError):
+                    pass
+        A.RT.HOME = old_home
+        A._HUB.clear()
+        A._HUB.update(old_hub)
+
+
+@test
 def test_runtime_truth_process_death_is_not_an_install_problem(tmp: Path):
     """Смерть процесса ведёт к перезапуску, а не в «Установку»; faulthandler включён."""
     A, _RC, _P, _D = _modules()

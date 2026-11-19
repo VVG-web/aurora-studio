@@ -581,14 +581,17 @@ def http_json(url: str, payload: dict | None, key: str, timeout: float) -> tuple
 #
 # Ответ находит своего адресата по `id`, а не по порядку в трубе: чужой ответ поток
 # не заберёт, даже если модель ответила на второй запрос раньше первого.
+_HUB_STDERR = deque(maxlen=200)
 _HUB: dict = {"proc": None, "pending": {}, "seq": 0, "broken": "", "deaths": 0,
-              "version": "", "stderr": deque(maxlen=200)}
+              "version": "", "stderr": _HUB_STDERR, "stderr_gen": 0,
+              "stderr_by_gen": {0: _HUB_STDERR}, "proc_gen": 0, "proc_gen_by_id": {}}
 _HUB_LOCK = threading.Lock()        # запуск процесса и учёт ожидающих
 _HUB_WRITE = threading.Lock()       # строка задания уходит в трубу целиком
 ADAPTER_START = 60                  # секунд на запуск venv и импорт фреймворка
 ADAPTER_DEATHS = 3                  # столько падений за прогон — и адаптер больше не зовём
 ADAPTER_STDERR_LINES = 200          # кольцевой буфер stderr: причина переживает ротацию журнала
 ADAPTER_STDERR_TAIL = 5             # строк хвоста stderr в причине смерти
+ADAPTER_STDERR_JOIN = 0.5           # секунд дождаться читателя stderr перед снимком смерти
 ADAPTER_DEATH_POLL = 0.2            # секунд подождать код возврата умершего процесса
 # Последние строки stderr/stdout процесса адаптера: без них ошибка импорта на Windows
 # выглядит как «процесс умер», и причину приходится угадывать. Лежит в домашней папке
@@ -602,22 +605,80 @@ ADAPTER_FAIL = "адаптер Pydantic AI: "
 ADAPTER_NO_CONNECT = "нет соединения"
 
 
-def _hub_stderr_add(line: str) -> None:
-    """Положить строку stderr в кольцевой буфер смерти (журнал может уже ротироваться)."""
-    with _HUB_LOCK:
+def _hub_stderr_buf(gen=None) -> deque:
+    """Кольцо stderr своего поколения процесса; вызывать под `_HUB_LOCK`.
+
+    Новый процесс получает новое кольцо, а прежнее остаётся в `stderr_by_gen`: поток,
+    читавший stderr умершего процесса, не должен ни затирать хвост нового, ни терять свой.
+    """
+    current = int(_HUB.get("stderr_gen") or 0)
+    by = _HUB.get("stderr_by_gen")
+    if not isinstance(by, dict):
+        by = _HUB["stderr_by_gen"] = {}
+    if gen is None or int(gen) == current:
         buf = _HUB.get("stderr")
         if not isinstance(buf, deque):
-            buf = _HUB["stderr"] = deque(maxlen=ADAPTER_STDERR_LINES)
-        buf.append(str(line or "")[:1000])
+            buf = deque(maxlen=ADAPTER_STDERR_LINES)
+            _HUB["stderr"] = buf
+        by[current] = buf
+        return buf
+    buf = by.get(int(gen))
+    if not isinstance(buf, deque):
+        buf = deque(maxlen=ADAPTER_STDERR_LINES)
+        by[int(gen)] = buf
+    return buf
 
 
-def _hub_stderr_tail(lines: int = ADAPTER_STDERR_TAIL) -> str:
+def _hub_stderr_new_generation_locked() -> int:
+    """Начать кольцо stderr для нового процесса; вызывать под `_HUB_LOCK`."""
+    gen = int(_HUB.get("stderr_gen") or 0) + 1
+    buf = deque(maxlen=ADAPTER_STDERR_LINES)
+    _HUB["stderr_gen"] = gen
+    _HUB["stderr"] = buf
+    by = _HUB.get("stderr_by_gen")
+    if not isinstance(by, dict):
+        by = {}
+    by[gen] = buf
+    for old in sorted(by, key=lambda x: int(x))[:-4]:
+        del by[old]
+    _HUB["stderr_by_gen"] = by
+    return gen
+
+
+def _hub_stderr_add(line: str, gen=None) -> None:
+    """Положить строку stderr в кольцо своего поколения (журнал может уже ротироваться)."""
+    with _HUB_LOCK:
+        _hub_stderr_buf(gen).append(str(line or "")[:1000])
+
+
+def _hub_stderr_tail_locked(lines: int = ADAPTER_STDERR_TAIL, gen=None) -> str:
+    """Последние строки stderr для причины смерти; вызывать под `_HUB_LOCK`."""
+    buf = _hub_stderr_buf(gen)
+    return "\n".join(list(buf)[-max(1, int(lines)):])[:2000]
+
+
+def _hub_stderr_tail(lines: int = ADAPTER_STDERR_TAIL, gen=None) -> str:
     """Последние строки stderr для причины смерти."""
     with _HUB_LOCK:
-        buf = _HUB.get("stderr")
-        if not isinstance(buf, deque):
-            return ""
-        return "\n".join(list(buf)[-max(1, int(lines)):])[:2000]
+        return _hub_stderr_tail_locked(lines, gen)
+
+
+def _join_stderr(proc, timeout: float = ADAPTER_STDERR_JOIN) -> None:
+    """Дождаться читателя stderr перед снимком: последняя строка faulthandler ещё в трубе."""
+    reader = getattr(proc, "_aurora_stderr_thread", None)
+    if reader is not None:
+        try:
+            reader.join(timeout)
+        except RuntimeError:
+            pass
+
+
+def _hub_gen_of_locked(proc) -> int:
+    """Поколение stderr конкретного процесса; вызывать под `_HUB_LOCK`."""
+    by = _HUB.get("proc_gen_by_id")
+    if isinstance(by, dict) and id(proc) in by:
+        return int(by[id(proc)])
+    return int(_HUB.get("proc_gen") or 0)
 
 
 def _hub_count_death_locked(proc) -> int:
@@ -1517,7 +1578,7 @@ def adapter_selfcheck(version: str = "", force: bool = False) -> dict:
     return out
 
 
-def _hub_reader(proc, pending: dict) -> None:
+def _hub_reader(proc, pending: dict, generation=None) -> None:
     """Раздаёт ответы ожидающим по `id`. Процесс закрылся — всем честный отказ."""
     for line in proc.stdout:
         try:
@@ -1533,13 +1594,24 @@ def _hub_reader(proc, pending: dict) -> None:
         if slot is not None:
             slot["out"] = out
             slot["done"].set()
+    _join_stderr(proc)
+    code = _proc_death_code(proc)
     with _HUB_LOCK:
-        _hub_count_death_locked(proc)
+        gen = int(generation if generation is not None else _HUB.get("proc_gen") or 0)
+        # Считать смерть вправе только читатель живого процесса своего поколения: старый
+        # читатель, доживший до конца уже заменённого процесса, не трогает счётчик нового.
+        if _HUB.get("proc") is proc and int(_HUB.get("proc_gen") or 0) == gen:
+            _hub_count_death_locked(proc)
         left = list(pending.values())
+        # Чистим только своё ожидание; чужой (новый) процесс хранит свой словарь отдельно.
         pending.clear()
+        stderr_tail = _hub_stderr_tail_locked(gen=gen)
+    common = {"kind": "process_died", "sub": "closed",
+              "code": "?" if code is None else code, "pid": getattr(proc, "pid", ""),
+              "pending": len(left), "stderr": stderr_tail}
     for slot in left:
         slot["out"] = {"ok": False, "where": "adapter", "error": "процесс адаптера закрылся",
-                       "kind": "process_died", "sub": "closed"}
+                       **common}
         slot["done"].set()
 
 
@@ -1617,7 +1689,7 @@ def adapter_log_tail(limit: int = 400) -> str:
     return "\n".join(lines[-max(1, int(limit)):])
 
 
-def _adapter_stderr_reader(proc, record: bool = True) -> None:
+def _adapter_stderr_reader(proc, record: bool = True, generation=None) -> None:
     """Читать stderr адаптера, пока процесс жив: раньше он уходил в DEVNULL.
 
     Строки идут в журнал и (для рабочего процесса хаба) в кольцевой буфер: причина
@@ -1627,19 +1699,22 @@ def _adapter_stderr_reader(proc, record: bool = True) -> None:
             clean = _log_scrub(line)
             _adapter_log(f"stderr[{proc.pid}] {clean}")
             if record:
-                _hub_stderr_add(clean)
+                _hub_stderr_add(clean, generation)
     except (OSError, ValueError):
         pass
 
 
-def _spawn_adapter(argv: list, cwd=None, record: bool = True):
+def _spawn_adapter(argv: list, cwd=None, record: bool = True, stderr_gen=None):
     """Процесс адаптера так, как его запускает прогон: без `-I` и в окружении venv (`venv_env`) —
     PYTHONHOME и PYTHONPATH чужого Python сняты, кодировка трубы задана."""
     env = venv_env()
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, bufsize=1,
                             encoding="utf-8", errors="replace", env=env, cwd=cwd)
-    threading.Thread(target=_adapter_stderr_reader, args=(proc, record), daemon=True).start()
+    reader = threading.Thread(target=_adapter_stderr_reader, args=(proc, record, stderr_gen),
+                              daemon=True)
+    proc._aurora_stderr_thread = reader
+    reader.start()
     env_keys = ("PYTHONUTF8", "PYTHONIOENCODING", "PYTHONHOME", "PYTHONPATH",
                 "VIRTUAL_ENV", "AURORA_HOME")
     _adapter_log("start pid=%s argv=%s cwd=%s env=%s" % (
@@ -1782,12 +1857,10 @@ def adapter_hub():
         argv = _adapter_argv()
         if not argv:
             return None, _note_others(adapter_gap_why() or Why.raw("адаптер Pydantic AI не запускается"))
-        buf = _HUB.get("stderr")
-        if not isinstance(buf, deque):
-            buf = _HUB["stderr"] = deque(maxlen=ADAPTER_STDERR_LINES)
-        buf.clear()
+        gen = _hub_stderr_new_generation_locked()
+        _HUB["proc_gen"] = gen
         try:
-            proc = _spawn_adapter(argv)
+            proc = _spawn_adapter(argv, stderr_gen=gen)
         except OSError as e:
             _HUB["broken"] = _note_others(_start_cause(Why(
                 "process_start", exc=type(e).__name__,
@@ -1808,15 +1881,23 @@ def adapter_hub():
             _HUB["broken"] = Why("incompatible", version=version, first=first)
             return None, _HUB["broken"]
         pending: dict = {}
-        _HUB.update(proc=proc, pending=pending, version=version)
-        threading.Thread(target=_hub_reader, args=(proc, pending), daemon=True).start()
+        _HUB.update(proc=proc, pending=pending, version=version, proc_gen=gen)
+        by = _HUB.get("proc_gen_by_id")
+        if not isinstance(by, dict):
+            by = _HUB["proc_gen_by_id"] = {}
+        by[id(proc)] = gen
+        for old in list(by)[:-8]:
+            del by[old]
+        threading.Thread(target=_hub_reader, args=(proc, pending, gen), daemon=True).start()
         return proc, pending
 
 
 def _out_cause(out: dict, err: str) -> Why:
     """Поломка адаптера по его ответу `where=adapter` (не обрыв связи)."""
     if out.get("kind") == "process_died":
-        return Why("process_died", out.get("sub") or "closed")
+        facts = {k: out.get(k) for k in ("code", "pid", "pending", "stderr", "deaths")
+                 if out.get(k) not in (None, "")}
+        return Why("process_died", out.get("sub") or "closed", **facts)
     if not out.get("error"):
         return Why("reply_bad", detail="нет ни результата, ни описания ошибки")
     return Why("adapter_error", error=_scrub(err))
@@ -1861,11 +1942,14 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
             proc.stdin.write(json.dumps(task, ensure_ascii=False) + "\n")
             proc.stdin.flush()
     except (OSError, ValueError) as e:
+        _join_stderr(proc)
         with _HUB_LOCK:
             pending.pop(rid, None)
             deaths = _hub_count_death_locked(proc)
             left = len(pending)
-        stderr_tail = _hub_stderr_tail()      # до ожидания кода: новый процесс не должен затереть хвост
+            # Хвост снимаем под тем же замком, что и смерть: новый процесс не затрёт кольцо,
+            # а старый читатель не допишет в него чужую строку (своё поколение).
+            stderr_tail = _hub_stderr_tail_locked(gen=_hub_gen_of_locked(proc))
         code = _proc_death_code(proc)
         cause = Why("process_died", "pipe", exc=type(e).__name__,
                     code="?" if code is None else code,
