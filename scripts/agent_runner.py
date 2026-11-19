@@ -8879,8 +8879,15 @@ def parse_momus_aspect(text: str, spec: dict) -> dict:
             return {"ok": False, "why": f"находка №{pos} без строкового claim", "raw": raw[:400]}
         if why is not None and not isinstance(why, str):
             return {"ok": False, "why": f"находка №{pos}: why не строка", "raw": raw[:400]}
+        # Проверка ДО нормализации пропускала claim из одной пунктуации: `_short` срезал
+        # кавычки и тире, `_claim_key` получался пустым, находка молча выпадала из итога —
+        # и направление, назвавшее мусор, выдавало себя за «здесь чисто».
+        claim = _short(claim, 240)
+        if not any(ch.isalnum() for ch in claim):
+            return {"ok": False, "why": f"находка №{pos}: claim без слов (пунктуация)",
+                    "raw": raw[:400]}
         severity = str(item.get("severity") or "low").strip().lower()
-        findings.append({"claim": _short(claim, 240), "why": _short(why, 160),
+        findings.append({"claim": claim, "why": _short(why, 160),
                          "severity": severity if severity in ("high", "low") else "low"})
     try:
         checked = int(data.get("checked") or 0)
@@ -9008,20 +9015,25 @@ def merge_momus_aspects(results: list, answer: str) -> dict:
         if not r.get("ok"):
             bad_ids.append(spec["id"])
             continue
-        ok_ids.append(spec["id"])
-        # Каждое направление смотрит ОДИН И ТОТ ЖЕ ответ, поэтому сумма `checked` по
-        # направлениям — это одно и то же утверждение, посчитанное трижды. Наружу отдаём
-        # максимум: он честно отвечает «сколько утверждений ответа просмотрено».
-        checked = max(checked, int(r.get("checked") or 0))
         bucket = "gaps" if spec["id"] == "coverage" else "findings"
         target = gaps if bucket == "gaps" else findings
         # Сначала то, что уйдёт в постановку как факт (`high`), потом остальное. Сортировка
         # устойчивая, поэтому порядок модели внутри группы сохраняется.
         rows = sorted(r.get("findings") or [], key=lambda f: 0 if f.get("severity") == "high" else 1)
-        for item in rows:
+        keyed = [(item.get("claim"), item) for item in rows]
+        # Пустой ключ — не «нечего дедуплицировать», а находка без утверждения: если
+        # пропустить её молча, направление назовёт мусор и проверка станет «чистой».
+        broken = next((c for c, _ in keyed if not _claim_key(c)), None)
+        if broken is not None:
+            bad_ids.append(spec["id"])
+            continue
+        ok_ids.append(spec["id"])
+        # Каждое направление смотрит ОДИН И ТОТ ЖЕ ответ, поэтому сумма `checked` по
+        # направлениям — это одно и то же утверждение, посчитанное трижды. Наружу отдаём
+        # максимум: он честно отвечает «сколько утверждений ответа просмотрено».
+        checked = max(checked, int(r.get("checked") or 0))
+        for _claim, item in keyed:
             key = _claim_key(item.get("claim"))
-            if not key:
-                continue
             why = str(item.get("why") or "")
             if key in pos[bucket]:
                 idx = pos[bucket][key]

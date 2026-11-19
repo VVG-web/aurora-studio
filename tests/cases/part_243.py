@@ -1053,3 +1053,46 @@ def test_checked_counts_the_answer_once_not_once_per_aspect(_t: Path):
     out = R.run_momus(cfg, "ПАК", "Вопрос?", "Ответ.", call=call)
     assert out["checked"] == 7, out["checked"]
     assert all(a["checked"] == 7 for a in out["aspects"].values()), out["aspects"]
+
+
+@test
+def test_a_claim_of_pure_punctuation_is_not_a_clean_check(_t: Path):
+    """Claim из одной пунктуации — невалидная находка, а не «чисто».
+
+    Проверка схемы стояла ДО нормализации: `_short` срезал кавычки, тире и точки, ключ
+    дедупа получался пустым, находка молча выпадала — и направление, ответившее мусором,
+    выдавало себя за «здесь чисто». `merge` теперь тоже не пропускает пустой ключ молча.
+    """
+    R = importlib.import_module("agent_runner")
+    spec = R.MOMUS_ASPECTS[0]
+    for junk in ("...", "---", "!!!", "«»", "  ", "— …"):
+        payload = {"aspect": spec["id"], "checked": 5,
+                   "findings": [{"claim": junk, "why": "пусто", "severity": "high"}]}
+        parsed = R.parse_momus_aspect(json.dumps(payload, ensure_ascii=False), spec)
+        assert parsed["ok"] is False and "claim" in parsed["why"], (junk, parsed)
+
+    # Тот же мусор на уровне агрегатора: направление не состоялось, вердикта «чисто» нет.
+    cfg = _momus_cfg(split=True)
+
+    def call(cfg, role, msgs, **kw):
+        text = msgs[0]["content"]
+        aspect = next(s["id"] for s in R.MOMUS_ASPECTS if f'"aspect": "{s["id"]}"' in text)
+        if aspect == "support":
+            return {"ok": True, "model": "m", "backend": 1, "seconds": 0.1,
+                    "text": json.dumps({"aspect": aspect, "checked": 5,
+                                        "findings": [{"claim": "...", "why": "—"}]},
+                                       ensure_ascii=False)}
+        return _answer(aspect, [])
+
+    out = R.run_momus(cfg, "ПАК", "Вопрос?", "Ответ.", call=call)
+    assert out["clean"] is False and out["partial"] is True, out
+    assert out["degraded"] == ["support"], out["degraded"]
+    assert "ЧИСТО" not in out["text"], out["text"]
+
+    # Защита второго эшелона: мусорная находка, дошедшая до merge минуя разбор.
+    merged = R.merge_momus_aspects(
+        [{"id": "support", "ok": True, "checked": 3,
+          "findings": [{"claim": "!!!", "why": "", "severity": "low"}]},
+         {"id": "contradictions", "ok": True, "checked": 1, "findings": []}],
+        "Ответ.")
+    assert merged["clean"] is False and merged["degraded"] == ["support"], merged
