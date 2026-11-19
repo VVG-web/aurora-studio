@@ -895,51 +895,52 @@ def test_a_partial_momus_makes_the_whole_answer_partial(_t: Path):
 
 @test
 def test_split_has_a_common_deadline_and_cancels_the_tail(_t: Path):
-    """Направления не тянут этап дольше общего срока, а незавершённые названы.
+    """Направления не тянут этап дольше общего срока, и хвост не живёт после возврата.
 
     Четыре направления по 1800 с при ширине 3 давали до 3600 с: `ThreadPoolExecutor`
     ждал все задачи, отмены не было, и внешний таймаут бросал поток, который продолжал
-    держать слот шлюза. Теперь у проверки один общий срок, остаток передаётся каждому
-    направлению, а не успевшие попадают в `degraded`.
+    держать слот шлюза. Теперь остаток считается АБСОЛЮТНЫМ дедлайном в момент старта
+    направления: задача из очереди не получает полный срок заново.
     """
     R = importlib.import_module("agent_runner")
     cfg = _momus_cfg(split=True)
+    span = 1.2
     started = time.time()
-
-    def call(cfg, role, msgs, **kw):
-        time.sleep(0.4)
-        text = msgs[0]["content"]
-        aspect = next(s["id"] for s in R.MOMUS_ASPECTS if f'"aspect": "{s["id"]}"' in text)
-        return _answer(aspect, [])
-
-    out = R.run_momus(cfg, "ПАК", "Вопрос?", "Ответ.", call=call,
-                      deadline=time.time() + 0.5)
-    spent = time.time() - started
-    assert spent < 1.6, f"проверка вернулась через {spent:.1f} с при общем сроке 0.5 с"
-    assert out["partial"] is True and out["complete"] is False, out
-    assert out["degraded"], out["degraded"]
-    assert any("общий срок" in (out["aspects"][x].get("why") or "")
-               or out["aspects"][x]["ok"] is False for x in out["degraded"]), out["aspects"]
-    assert sum(1 for x in out["degraded"] if x) == len(out["degraded"])
-
-    # Ни один поток не должен остаться работать после возврата: считаем живые вызовы.
-    live = {"now": 0, "peak": 0}
+    deadline = started + span
+    calls = []
+    live = {"now": 0}
     lock = threading.Lock()
 
-    def slow(cfg, role, msgs, **kw):
+    def call(cfg, role, msgs, **kw):
+        text = msgs[0]["content"]
+        aspect = next(s["id"] for s in R.MOMUS_ASPECTS if f'"aspect": "{s["id"]}"' in text)
+        rt = float(kw.get("request_timeout") or 0)
         with lock:
             live["now"] += 1
-            live["peak"] = max(live["peak"], live["now"])
+            calls.append((aspect, time.time(), rt))
         try:
-            time.sleep(0.5)
-            return _answer("support", [])
+            # Вызов честно уважает свой срок — как настоящий `call_role`.
+            time.sleep(max(0.0, min(rt, 1.0)))
+            return _answer(aspect, [])
         finally:
             with lock:
                 live["now"] -= 1
 
-    R.run_momus(cfg, "ПАК", "Вопрос?", "Ответ.", call=slow, deadline=time.time() + 0.3)
-    time.sleep(0.7)
+    out = R.run_momus(cfg, "ПАК", "Вопрос?", "Ответ.", call=call, deadline=deadline)
+    spent = time.time() - started
+    assert spent <= span + 0.35, f"вернулась через {spent:.2f} с при сроке {span} с"
+    # Ни один вызов не имеет права работать после возврата: иначе слот шлюза занят.
     assert live["now"] == 0, f"после возврата осталось {live['now']} активных вызовов"
+    for aspect, at, rt in calls:
+        assert at + rt <= deadline + 0.25, (aspect, at - started, rt)
+    assert len(calls) == 3, calls        # четвёртое направление не влезло в остаток
+    assert out["partial"] is True and out["complete"] is False, out
+    assert out["degraded"], out["degraded"]
+    # Направление, не стартовавшее из очереди, названо причиной, а не пустым «упало».
+    assert any("общий срок" in (out["aspects"][x].get("why") or "")
+               for x in out["degraded"]), out["aspects"]
+    assert out["aspects"]["coverage"]["ok"] is False, out["aspects"]
+    assert "не стартовало" in out["aspects"]["coverage"]["why"], out["aspects"]
 
 
 @test

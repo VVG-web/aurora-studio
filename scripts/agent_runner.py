@@ -8903,15 +8903,29 @@ def parse_momus_aspect(text: str, spec: dict) -> dict:
 
 def run_momus_aspect(cfg: dict, spec: dict, pack: str, question: str, answer: str,
                      call=None, prefer: int = 0, answered_in: float = 0.0,
-                     input_limit: int = 0, timeout: float | None = None) -> dict:
+                     input_limit: int = 0, deadline: float | None = None) -> dict:
     """Одно направление: свой срок, свой вызов, свой разбор.
 
-    `timeout` — остаток ОБЩЕГО срока проверки: направление не имеет права жить дольше,
-    чем весь этап, даже если его собственный срок больше.
+    `deadline` — АБСОЛЮТНЫЙ момент, когда обязан закончиться весь этап проверки.
+    Остаток считается здесь, в момент фактического старта направления, а не при
+    постановке в очередь: задача, простоявшая в очереди, иначе получала полный срок
+    заново и держала слот шлюза уже после возврата этапа.
     """
     call = call or AG.call_role
     started = time.time()
-    rt = round(float(timeout), 1) if timeout else momus_timeout(cfg, answered_in)
+    rt = momus_timeout(cfg, answered_in)
+    if deadline is not None:
+        left = float(deadline) - started
+        if left <= 0.7:
+            # Стартовать уже нечем: пока направление ждало очередь, срок этапа вышел.
+            # Минимальный осмысленный вызов не влезает в остаток — лучше честно сказать
+            # «не проверено», чем начать и вернуться уже после этапа.
+            return {"id": spec["id"], "ok": False, "timed_out": True, "given": 0.0,
+                    "why": "не уложилось в общий срок проверки (не стартовало)",
+                    "seconds": 0.0}
+        # Небольшой зазор, чтобы вызов успел вернуться ДО общего дедлайна: слот шлюза
+        # держится до последнего байта ответа, а этап уже обязан быть готов.
+        rt = round(max(0.5, min(rt, left - 0.2)), 1)
     prompt = momus_aspect_prompt(spec, pack, question, answer)
     v = call(cfg, "qa", [{"role": "user", "content": prompt}],
              deadline=time.time() + rt, prefer=prefer, request_timeout=rt,
@@ -9081,7 +9095,10 @@ def merge_momus_aspects(results: list, answer: str) -> dict:
     timed = [r for r in results if isinstance(r, dict) and r.get("timed_out")]
     if timed:
         out["timed_out"] = True
-        out["given"] = timed[-1].get("given")
+        # `given` — предел, который ДЕЙСТВИТЕЛЬНО стоял: у не стартовавшего направления
+        # его нет, поэтому берём максимум по успевшим, а не последний ноль.
+        givens = [float(r.get("given") or 0) for r in timed if r.get("given")]
+        out["given"] = max(givens) if givens else 0.0
     if not ok_ids:
         out["why"] = "ни одно направление проверки не ответило: " + ", ".join(bad_ids)
         bad = next((by_id.get(i, {}) for i in bad_ids if by_id.get(i, {}).get("call")), {})
@@ -9133,10 +9150,10 @@ def run_momus_split(cfg: dict, pack: str, question: str, answer: str, call=None,
     results: list = []
     try:
         for spec in specs:
-            left = max(1.0, total_deadline - time.time())
+            # Передаётся абсолютный дедлайн: остаток считается внутри, при старте
+            # направления, иначе очередь «обнуляла» общий срок.
             jobs[pool.submit(run_momus_aspect, cfg, spec, pack, question, answer, call,
-                             prefer, answered_in, input_limit,
-                             min(momus_timeout(cfg, answered_in), left))] = spec["id"]
+                             prefer, answered_in, input_limit, total_deadline)] = spec["id"]
         try:
             for job in as_completed(jobs, timeout=max(0.1, total_deadline - time.time())):
                 spec_id = jobs[job]
@@ -9148,9 +9165,16 @@ def run_momus_split(cfg: dict, pack: str, question: str, answer: str, call=None,
         except FuturesTimeout:
             pass
     finally:
-        # Не ждём «хвост»: его срок уже ограничен остатком общего, а держать этап
-        # дольше общего предела нельзя.
+        # Не ждём «хвост» бесконечно: его срок уже ограничен остатком общего, а держать
+        # этап дольше общего предела нельзя. Но и возвращаться, пока вызов висит на
+        # шлюзе, нельзя — слот остаётся занятым. Поэтому короткий грейс: ждём уже
+        # запущенные вызовы, но не дольше 2 % срока и секунды.
         pool.shutdown(wait=False, cancel_futures=True)
+        grace_end = time.time() + min(1.0, 0.2 + 0.02 * max(0.0, total_deadline - started))
+        pending = [job for job in jobs if not job.done()]
+        while pending and time.time() < grace_end:
+            time.sleep(0.01)
+            pending = [job for job in pending if not job.done()]
     done = {r.get("id") for r in results}
     for spec in specs:
         if spec["id"] not in done:
