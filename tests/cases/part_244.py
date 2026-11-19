@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import ast
 import importlib
 import json
 import os
@@ -170,6 +171,71 @@ def _P_rows() -> list:
     """Строки опроса при подменённой настройке: отдельно, чтобы не тащить P через тест."""
     P = importlib.import_module("agent_probe")
     return P.plan()[0]
+
+
+@test
+def test_runtime_truth_every_runtime_import_is_shipped_with_the_engine(tmp: Path):
+    """Всё, что движок импортирует из scripts/, едет в проект по манифесту.
+
+    `runtime_catalog` родился в ките и не попал в `engine_manifest.txt`; на машине
+    разработчика всё зелено (файл лежит рядом), а обновлённый проект получил бы
+    `agent_probe` без его зависимости — падение на импорте. Тест читает импорты
+    каждого файла манифеста и требует, чтобы локальный модуль был либо в манифесте,
+    либо вёзся коннектором, либо был китовым установщиком.
+    """
+    manifest = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
+    pairs = []
+    for line in manifest.splitlines():
+        line = line.split("#")[0].strip()
+        if "=>" in line:
+            src, dst = (x.strip() for x in line.split("=>", 1))
+            pairs.append((src, dst))
+    listed = {Path(src).name for src, _dst in pairs if src.startswith("scripts/")}
+    assert "runtime_catalog.py" in listed, \
+        "runtime_catalog не едет в проекты: проверка связи упадёт на импорте"
+    dest = next(dst for src, dst in pairs if src == "scripts/runtime_catalog.py")
+    assert dest == ".aurora/scripts/runtime_catalog.py", dest
+
+    # Модули коннекторов раскладывает установка коннектора, а не манифест движка.
+    provided = set(listed)
+
+    def collect(value) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "script" and isinstance(item, str):
+                    provided.add(Path(item).name)
+                else:
+                    collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    for man in (KIT / "connectors").glob("*/connector.json"):
+        collect(json.loads(man.read_text(encoding="utf-8")))
+    # Установщик живёт только в ките: его зовёт `aurora.py new`, в проекте он не нужен,
+    # а `aurora_update` берёт из него правила gitignore, подставляя путь кита.
+    provided.add("install_aurora.py")
+
+    scripts = {p.stem: p for p in (KIT / "scripts").glob("*.py")}
+    missing = {}
+    for src, dst in pairs:
+        path = KIT / src
+        if not src.endswith(".py") or "(" in dst or not path.is_file():
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [a.name.split(".")[0] for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                names = [node.module.split(".")[0]]
+            for name in names:
+                if name in scripts and (name + ".py") not in provided:
+                    missing.setdefault(name + ".py", set()).add(src)
+    assert not missing, "импортируется, но не едет в проект: " + "; ".join(
+        f"{mod} <- {', '.join(sorted(users))}" for mod, users in sorted(missing.items()))
+
+    runner = (KIT / "tests" / "run_tests.py").read_text(encoding="utf-8")
+    assert "part_244" in runner, "часть 244 не подключена — её проверки не выполняются"
 
 
 @test

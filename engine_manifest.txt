@@ -95,6 +95,13 @@ scripts/kb_raptor.py     => .aurora/scripts/kb_raptor.py
 scripts/kb_raptor_eval.py => .aurora/scripts/kb_raptor_eval.py
 scripts/kb_gaps.py       => .aurora/scripts/kb_gaps.py
 scripts/agent_probe.py   => .aurora/scripts/agent_probe.py
+# Роли и файл адаптера: его импортируют проверка связи и архив диагностики. Без строки
+# в манифесте модуль не доезжает до обновлённого проекта — и проверка связи падает на
+# импорте, хотя для кита всё зелено. Модуль новый: установка его ещё не возила.
+scripts/runtime_catalog.py => .aurora/scripts/runtime_catalog.py
+# Каталог вызовов: из него runtime_catalog берёт полный список ролей (LLM_ROLES).
+# Без файла проверка связи в проекте падает на импорте каталога runtime.
+scripts/llm_calls.py    => .aurora/scripts/llm_calls.py
 scripts/make_kinds.py    => .aurora/scripts/make_kinds.py
 scripts/aurora_mcp.py    => .aurora/scripts/aurora_mcp.py
 scripts/kb_fix.py        => .aurora/scripts/kb_fix.py
