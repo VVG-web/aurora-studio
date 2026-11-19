@@ -857,3 +857,42 @@ def test_chunks_do_not_report_clean_over_a_partial_check(_t: Path):
     assert out2["unsupported"] == 0 and out2["clean"] is False, out2
     assert out2["gaps"], out2["gaps"]
     assert out2["text"].splitlines()[-1] == "ВЕРДИКТ: ЧАСТИЧНО — находок нет", out2["text"]
+
+
+@test
+def test_a_partial_momus_makes_the_whole_answer_partial(_t: Path):
+    """Частичная проверка Момуса — частичный ответ, а не `full`.
+
+    `answer_core.verify` смотрел только на `ok`, поэтому частичный результат
+    (`ok=True`, `degraded=["quotes"]`) оставлял ответ в статусе `full`: потребитель
+    ответа не знал, что половина не проверена, и `degraded_note` молчал.
+    """
+    C = importlib.import_module("answer_core")
+    cfg = _momus_cfg(split=False)
+
+    def call(cfg, role, messages, **kw):
+        return {"ok": True, "text": "Ответ по базе.", "model": "m", "backend": 1,
+                "seconds": 2.0, "tokens_in": 100, "tokens_out": 20,
+                "req": {"role": role, "request_timeout": 600}}
+
+    def verifier(answer, pack, question, answered_in=None):
+        return {"ok": True, "clean": False, "partial": True, "complete": False,
+                "degraded": ["quotes"], "unsupported": 0, "gaps": [],
+                "text": "ВЕРДИКТ: ЧАСТИЧНО — находок нет"}
+
+    out = C.answer("Вопрос?", cfg=cfg, cwd=str(_t), call=call, pack="ПАК",
+                   prompt="Ответь.", verifier=verifier)
+    assert out["ok"] is True, out
+    assert out["status"] == "partial", out["status"]
+    assert "momus_partial:quotes" in out["degraded"], out["degraded"]
+    assert out["degraded_note"] and "momus_partial" in out["degraded_note"], out.get("degraded_note")
+    assert out["checks"]["momus"]["partial"] is True, out["checks"]
+
+    # Полная проверка не делает ответ частичным.
+    def full(answer, pack, question, answered_in=None):
+        return {"ok": True, "clean": True, "partial": False, "complete": True,
+                "degraded": [], "unsupported": 0, "gaps": [], "text": "ВЕРДИКТ: ЧИСТО"}
+
+    out2 = C.answer("Вопрос?", cfg=cfg, cwd=str(_t), call=call, pack="ПАК",
+                    prompt="Ответь.", verifier=full)
+    assert out2["status"] == "full" and not out2["degraded"], (out2["status"], out2["degraded"])

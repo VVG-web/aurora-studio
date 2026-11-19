@@ -427,6 +427,15 @@ def verify(answer: str, *, pack: str, cards: list, cwd: str,
             checks["momus"] = mo
             if isinstance(mo, dict) and not mo.get("ok", True):
                 degraded.append("momus_timeout" if mo.get("timed_out") else "momus_failed")
+            elif isinstance(mo, dict):
+                # Проверка состоялась не полностью: ответ обязан стать частичным, а
+                # причина — названной. Иначе `status` остаётся `full`, и потребитель
+                # ответа (отчёт, боты, панель) не знает, что половина не проверена.
+                missed = [str(x) for x in (mo.get("degraded") or [])]
+                if mo.get("partial") or missed or mo.get("gaps"):
+                    mark = "momus_partial" + (":" + ",".join(missed) if missed else "")
+                    if mark not in degraded:
+                        degraded.append(mark)
     return {"links": links, "cites": cites, "momus": checks["momus"],
             "degraded": degraded}
 
