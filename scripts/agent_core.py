@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+from collections import deque
 import json
 import os
 import random
@@ -581,11 +582,14 @@ def http_json(url: str, payload: dict | None, key: str, timeout: float) -> tuple
 # Ответ находит своего адресата по `id`, а не по порядку в трубе: чужой ответ поток
 # не заберёт, даже если модель ответила на второй запрос раньше первого.
 _HUB: dict = {"proc": None, "pending": {}, "seq": 0, "broken": "", "deaths": 0,
-              "version": ""}
+              "version": "", "stderr": deque(maxlen=200)}
 _HUB_LOCK = threading.Lock()        # запуск процесса и учёт ожидающих
 _HUB_WRITE = threading.Lock()       # строка задания уходит в трубу целиком
 ADAPTER_START = 60                  # секунд на запуск venv и импорт фреймворка
 ADAPTER_DEATHS = 3                  # столько падений за прогон — и адаптер больше не зовём
+ADAPTER_STDERR_LINES = 200          # кольцевой буфер stderr: причина переживает ротацию журнала
+ADAPTER_STDERR_TAIL = 5             # строк хвоста stderr в причине смерти
+ADAPTER_DEATH_POLL = 0.2            # секунд подождать код возврата умершего процесса
 # Последние строки stderr/stdout процесса адаптера: без них ошибка импорта на Windows
 # выглядит как «процесс умер», и причину приходится угадывать. Лежит в домашней папке
 # Авроры, вне проекта: в git не попадает и с чужими правками не конфликтует.
@@ -596,6 +600,50 @@ ADAPTER_FAIL = "адаптер Pydantic AI: "
 # Начало причины, с которой адаптер сообщает «до сервера не дошли» (`where=adapter`); то же
 # слово пишет сам адаптер (scripts/agents/pydantic_ai_adapter.py) — тест сверяет оба.
 ADAPTER_NO_CONNECT = "нет соединения"
+
+
+def _hub_stderr_add(line: str) -> None:
+    """Положить строку stderr в кольцевой буфер смерти (журнал может уже ротироваться)."""
+    with _HUB_LOCK:
+        buf = _HUB.get("stderr")
+        if not isinstance(buf, deque):
+            buf = _HUB["stderr"] = deque(maxlen=ADAPTER_STDERR_LINES)
+        buf.append(str(line or "")[:1000])
+
+
+def _hub_stderr_tail(lines: int = ADAPTER_STDERR_TAIL) -> str:
+    """Последние строки stderr для причины смерти."""
+    with _HUB_LOCK:
+        buf = _HUB.get("stderr")
+        if not isinstance(buf, deque):
+            return ""
+        return "\n".join(list(buf)[-max(1, int(lines)):])[:2000]
+
+
+def _hub_count_death_locked(proc) -> int:
+    """Учесть смерть процесса ровно один раз; вызывается под `_HUB_LOCK`."""
+    if _HUB.get("proc") is not proc:
+        return int(_HUB.get("deaths") or 0)
+    _HUB["proc"] = None
+    _HUB["deaths"] = int(_HUB.get("deaths") or 0) + 1
+    if _HUB["deaths"] >= ADAPTER_DEATHS:
+        _HUB["broken"] = Why("process_died", "repeated", times=_HUB["deaths"])
+    return _HUB["deaths"]
+
+
+def _proc_death_code(proc):
+    """Код возврата умершего процесса: сразу или после короткого ожидания."""
+    try:
+        code = proc.poll()
+    except Exception:  # noqa: BLE001 — причина не должна ронять вызов
+        code = None
+    if code is None:
+        time.sleep(ADAPTER_DEATH_POLL)
+        try:
+            code = proc.poll()
+        except Exception:  # noqa: BLE001
+            code = None
+    return code
 
 
 # ------------------------------------------------------------------ причины сбоя вызова
@@ -673,19 +721,17 @@ CAUSES: dict = {
               "повреждён: «Установка» → Pydantic AI",
         "en": "the adapter process exited right at startup (code {code}) — the venv is "
               "damaged: Install → Pydantic AI"},
-    "process_died.closed": {"area": "adapter", "fix": "install",
-        "ru": "процесс адаптера закрылся посреди вызова — «Установка» → Pydantic AI",
-        "en": "the adapter process closed in the middle of a call — Install → Pydantic AI"},
-    "process_died.pipe": {"area": "adapter", "fix": "install",
-        "ru": "труба к процессу адаптера закрыта ({exc}) — процесс упал: «Установка» → "
-              "Pydantic AI",
-        "en": "the pipe to the adapter process is closed ({exc}) — the process died: "
-              "Install → Pydantic AI"},
-    "process_died.repeated": {"area": "adapter", "fix": "install",
-        "ru": "процесс адаптера падал {times} раза за прогон — больше его не зову: "
-              "«Установка» → Pydantic AI",
-        "en": "the adapter process died {times} times in this run — I no longer call it: "
-              "Install → Pydantic AI"},
+    "process_died.closed": {"area": "adapter", "fix": "",
+        "ru": "процесс адаптера закрылся посреди вызова; следующий вызов поднимет его заново",
+        "en": "the adapter process closed in the middle of a call; the next call will start it again"},
+    "process_died.pipe": {"area": "adapter", "fix": "",
+        "ru": "труба к процессу адаптера закрыта ({exc}, код {code}, pid {pid}) — процесс "
+              "упал; следующий вызов поднимет его заново",
+        "en": "the pipe to the adapter process is closed ({exc}, code {code}, pid {pid}) — "
+              "the process died; the next call will start it again"},
+    "process_died.repeated": {"area": "adapter", "fix": "",
+        "ru": "процесс адаптера падал {times} раза за прогон — больше его не зову до перезапуска",
+        "en": "the adapter process died {times} times in this run — I no longer call it until restart"},
     "process_hang.start": {"area": "adapter", "fix": "install",
         "ru": "процесс адаптера не ответил за {sec} с после запуска — «Установка» → "
               "Pydantic AI",
@@ -875,6 +921,9 @@ ALARM_AFTER = 3
 # Тревога связи, которую никто не снял (бэкенд убрали из настройки, прогонов больше нет), через столько
 # секунд панель уже не показывает: у живой тревоги `at` обновляется с каждой новой неудачей.
 LINK_ALARM_TTL = 12 * 3600
+# Тревога адаптера без успешного прохода через него тоже не должна висеть неделю:
+# через столько секунд панель её больше не показывает.
+ADAPTER_ALARM_TTL = 12 * 3600
 # Удалённый проект не должен держать красную полосу на всей машине. Час — запас
 # на отключённый диск или сетевую папку, которая сейчас не смонтирована.
 LINK_ALARM_DEAD_PROJECT = 3600
@@ -1011,6 +1060,11 @@ def alarm_age(row: dict) -> float:
     except (KeyError, TypeError, ValueError):
         return 0.0
     return max(0.0, time.time() - then.timestamp())
+
+
+def adapter_alarm_fresh(row: dict) -> bool:
+    """Тревога адаптера ещё в срок; старую разовый сбой не должен держать неделю."""
+    return alarm_age(row) <= ADAPTER_ALARM_TTL
 
 
 def alarm_cause(row: dict) -> Why:
@@ -1480,11 +1534,7 @@ def _hub_reader(proc, pending: dict) -> None:
             slot["out"] = out
             slot["done"].set()
     with _HUB_LOCK:
-        if _HUB["proc"] is proc:
-            _HUB["proc"] = None
-            _HUB["deaths"] += 1
-            if _HUB["deaths"] >= ADAPTER_DEATHS:
-                _HUB["broken"] = Why("process_died", "repeated", times=_HUB["deaths"])
+        _hub_count_death_locked(proc)
         left = list(pending.values())
         pending.clear()
     for slot in left:
@@ -1567,23 +1617,29 @@ def adapter_log_tail(limit: int = 400) -> str:
     return "\n".join(lines[-max(1, int(limit)):])
 
 
-def _adapter_stderr_reader(proc) -> None:
-    """Читать stderr адаптера, пока процесс жив: раньше он уходил в DEVNULL."""
+def _adapter_stderr_reader(proc, record: bool = True) -> None:
+    """Читать stderr адаптера, пока процесс жив: раньше он уходил в DEVNULL.
+
+    Строки идут в журнал и (для рабочего процесса хаба) в кольцевой буфер: причина
+    смерти должна нести хвост, даже если журнал успел ротироваться."""
     try:
         for line in proc.stderr:
-            _adapter_log(f"stderr[{proc.pid}] {line}")
+            clean = _log_scrub(line)
+            _adapter_log(f"stderr[{proc.pid}] {clean}")
+            if record:
+                _hub_stderr_add(clean)
     except (OSError, ValueError):
         pass
 
 
-def _spawn_adapter(argv: list, cwd=None):
+def _spawn_adapter(argv: list, cwd=None, record: bool = True):
     """Процесс адаптера так, как его запускает прогон: без `-I` и в окружении venv (`venv_env`) —
     PYTHONHOME и PYTHONPATH чужого Python сняты, кодировка трубы задана."""
     env = venv_env()
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, bufsize=1,
                             encoding="utf-8", errors="replace", env=env, cwd=cwd)
-    threading.Thread(target=_adapter_stderr_reader, args=(proc,), daemon=True).start()
+    threading.Thread(target=_adapter_stderr_reader, args=(proc, record), daemon=True).start()
     env_keys = ("PYTHONUTF8", "PYTHONIOENCODING", "PYTHONHOME", "PYTHONPATH",
                 "VIRTUAL_ENV", "AURORA_HOME")
     _adapter_log("start pid=%s argv=%s cwd=%s env=%s" % (
@@ -1682,7 +1738,7 @@ def adapter_probe(adapter=None, cwd=None, wait: float = ADAPTER_START) -> dict:
         why = adapter_gap_why(adapter) or Why.raw("адаптер Pydantic AI не запускается")
     else:
         try:
-            proc = _spawn_adapter(argv, cwd)
+            proc = _spawn_adapter(argv, cwd, record=False)
         except OSError as e:
             why = _start_cause(Why("process_start", exc=type(e).__name__,
                                    winerror=getattr(e, "winerror", ""),
@@ -1726,6 +1782,10 @@ def adapter_hub():
         argv = _adapter_argv()
         if not argv:
             return None, _note_others(adapter_gap_why() or Why.raw("адаптер Pydantic AI не запускается"))
+        buf = _HUB.get("stderr")
+        if not isinstance(buf, deque):
+            buf = _HUB["stderr"] = deque(maxlen=ADAPTER_STDERR_LINES)
+        buf.clear()
         try:
             proc = _spawn_adapter(argv)
         except OSError as e:
@@ -1803,7 +1863,13 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     except (OSError, ValueError) as e:
         with _HUB_LOCK:
             pending.pop(rid, None)
-        cause = Why("process_died", "pipe", exc=type(e).__name__)
+            deaths = _hub_count_death_locked(proc)
+            left = len(pending)
+        code = _proc_death_code(proc)
+        cause = Why("process_died", "pipe", exc=type(e).__name__,
+                    code="?" if code is None else code,
+                    pid=getattr(proc, "pid", ""), pending=left,
+                    stderr=_hub_stderr_tail(), deaths=deaths)
         return None, None, AdapterFail(ADAPTER_FAIL + str(cause), cause=cause), time.time() - t0
     # У вызова с инструментами несколько запросов к модели — и срок на каждый.
     wait = timeout * (1 + task["tool_calls"]) + 30
@@ -2461,6 +2527,7 @@ _RETRY_SAID: set = set()       # (№ бэкенда, вид) — о каких 
 # раз адаптер не дошёл при живой контрольной проверке движка без единого прохода через адаптер.
 LINK_RUN: dict = {}            # {№ бэкенда: {"fails": число, "kind": последний вид, "at": момент}}
 GAP_RUN: dict = {}             # {№ бэкенда: {"count": число, "at": момент}}
+_PIPE_RUN: dict = {}           # {путь: сколько смертей канала подряд без успешного прохода}
 _STREAK_LOCK = threading.Lock()
 
 
@@ -2535,6 +2602,12 @@ def _write_alarm_snooze(data: dict) -> None:
     _write_json(alarm_snooze_path(), data)
 
 
+def alarm_key_snoozable(key: str) -> bool:
+    """Какую тревогу человек вправе скрыть на сутки: связь `link:N`, бот `bot:*`, агент `agent:*`."""
+    key = str(key or "")
+    return bool(re.fullmatch(r"link:\d+", key) or key.startswith(("bot:", "agent:")))
+
+
 def snooze_alarm(key: str, seconds: int = LINK_ALARM_SNOOZE) -> None:
     """Скрыть тревогу `key` на `seconds` и снять её текущую запись.
 
@@ -2582,6 +2655,12 @@ def note_bypass(why, needs_tools: bool = False, answered: bool = True) -> None:
     cause = cause_of(why)
     text = str(cause)
     path = run_path()
+    pipe = cause_id(cause.kind, cause.sub) == "process_died.pipe"
+    pipe_calls = 0
+    if pipe:
+        with _STREAK_LOCK:
+            pipe_calls = int(_PIPE_RUN.get(path) or 0) + 1
+            _PIPE_RUN[path] = pipe_calls
     with _USAGE_LOCK:
         USAGE["bypass"] += 1
         USAGE["bypass_why"] = text
@@ -2601,8 +2680,14 @@ def note_bypass(why, needs_tools: bool = False, answered: bool = True) -> None:
     with _ALARM_LOCK:
         data = read_alarm()
         row = data.get(path) or {}
+        calls = pipe_calls if pipe else int(row.get("calls") or 0) + 1
+        # Одиночная смерть трубы самовосстанавливается: тревога — только с ALARM_AFTER-й подряд.
+        if pipe and calls < ALARM_AFTER:
+            return
+        if pipe:
+            calls = max(calls, int(row.get("calls") or 0))
         data[path] = {**cause.row(), "at": utc_stamp(), "project": os.getcwd(), "path": path,
-                      "calls": int(row.get("calls") or 0) + 1}
+                      "calls": calls}
         _write_alarm(data)
 
 
@@ -2610,6 +2695,8 @@ def clear_bypass() -> None:
     """Вызов этого пути прошёл через адаптер — его тревога снята. Чужие пути не трогаем:
     бот может обходить адаптер, пока разбор базы идёт через него, и наоборот."""
     path = run_path()
+    with _STREAK_LOCK:
+        _PIPE_RUN.pop(path, None)
     if not alarm_path().is_file():
         return
     with _ALARM_LOCK:

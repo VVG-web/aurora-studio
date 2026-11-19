@@ -38,6 +38,7 @@
 по которому движок правит базу знаний. Ошибка формата здесь дороже лишней секунды.
 """
 import errno
+import faulthandler
 import json
 import os
 import re
@@ -1411,6 +1412,9 @@ def selfcheck() -> dict:
 
 
 def main() -> int:
+    # Нативное падение (access violation на Windows) должно оставить Python-стек в stderr,
+    # иначе смерть процесса выглядит тихой и причину не восстановить.
+    faulthandler.enable()
     if "--selfcheck" in sys.argv:
         answer(selfcheck())
         return 0

@@ -2573,7 +2573,10 @@ function drawAdapterAlarm(rows){
     $("main").prepend(el("div",{id:"adapterbar", class:"stalebar alarm"},
       el("b",{}, t("alarm.adapter")),
       ...adapter.map(r => el("div",{}, t("alarm.adapter_row",
-        {path: r.path, project: r.project || "—", when: when(r), calls: r.calls, why: r.why}))),
+        {path: r.path, project: r.project || "—", when: when(r), calls: r.calls, why: r.why}),
+        el("button",{class:"btn", style:"margin-left:8px",
+          title:t("alarm.adapter_dismiss_title"), onclick:()=>forgetLinkAlarm(r.key)},
+          t("alarm.adapter_dismiss")))),
       // Беда venv — для кого: «Установка» проверяет и ставит для пользователя панели (имени в файле тревоги нет).
       ...[...new Set(adapter.map(r => r.user).filter(Boolean))].map(user =>
         el("div",{class:"muted"}, t("alarm.adapter_user", {user}))),

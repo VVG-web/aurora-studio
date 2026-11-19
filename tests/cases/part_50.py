@@ -1058,8 +1058,8 @@ def test_each_adapter_cause_has_its_own_text_and_cure(tmp: Path):
     want_fix = {"venv": "install", "adapter_file.project": "version", "adapter_file.kit": "version",
                 "import_failed.missing": "install", "import_failed.broken": "install",
                 "incompatible": "install", "process_start": "install", "process_died.start": "install",
-                "process_hang.start": "install", "process_died.closed": "install",
-                "process_died.repeated": "install", "process_died.pipe": "install",
+                "process_hang.start": "install", "process_died.closed": "",
+                "process_died.repeated": "", "process_died.pipe": "",
                 "process_hang.call": "install", "adapter_error": "install", "reply_bad": "install",
                 "not_enabled": "", "client_net.proxy": "", "client_net.tls": "", "client_net.dns": "",
                 "client_net.other": ""}
@@ -1081,6 +1081,7 @@ def test_each_adapter_cause_has_its_own_text_and_cure(tmp: Path):
     assert "(код 7)" in got["process_died.start"]
     assert "завис" in got["process_hang.call"] and "после запуска" in got["process_hang.start"]
     assert "посреди вызова" in got["process_died.closed"] and "BrokenPipeError" in got["process_died.pipe"]
+    assert "«Установка»" not in got["process_died.pipe"], got["process_died.pipe"]
     assert "падал 3 раза" in got["process_died.repeated"]
     assert "UnexpectedModelBehavior: пусто" in got["adapter_error"]
     assert "нет ни результата" in got["reply_bad"]

@@ -624,3 +624,146 @@ def test_runtime_truth_archive_survives_incomplete_project_answer(tmp: Path):
     assert facts["decision_source"] == "panel", facts
     project_facts = D._project_facts(str(project), {})
     assert "exists" in project_facts["adapter_file"], project_facts
+
+
+@test
+def test_runtime_truth_adapter_pipe_keeps_death_facts_and_counts_once(tmp: Path):
+    """BrokenPipe несёт код, pid, pending и stderr; девять вызовов — одна смерть."""
+    A, _RC, _P, _D = _modules()
+    import threading
+    from collections import deque
+
+    class Broken:
+        def write(self, line):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            pass
+
+    class Proc:
+        pid = 4321
+        stdin = Broken()
+
+        def poll(self):
+            return 3
+
+    proc = Proc()
+    pending: dict = {}
+    old_home, old_task = A.RT.HOME, dict(A.RUN_TASK)
+    old_hub = dict(A._HUB)
+    old_hub["stderr"] = deque(A._HUB.get("stderr") or [], maxlen=200)
+    old_pipe, old_hub_fn, old_record = dict(A._PIPE_RUN), A.adapter_hub, A.record_failure
+    A.RT.HOME = tmp / "home"
+    A.RT.HOME.mkdir()
+    A.RUN_TASK["name"] = "bot:pipe9"
+    A.record_failure = lambda *a, **k: None
+    A._HUB.update(proc=proc, pending=pending, broken="", deaths=0, version="")
+    A._HUB["stderr"] = deque(["boom: stack"], maxlen=200)
+    A._PIPE_RUN.clear()
+    A.adapter_hub = lambda: (proc, pending)
+    backend = {"url": "http://one/v1", "key": "k", "n": 1}
+    payload = {"model": "m", "messages": [{"role": "user", "content": "x"}]}
+    causes: list = []
+
+    def call() -> None:
+        _st, _body, err, _dt = A.pydantic_transport(backend, dict(payload), 2)
+        assert isinstance(err, A.AdapterFail), err
+        causes.append(err.cause)
+        A.note_bypass(err.cause, answered=False)
+
+    try:
+        threads = [threading.Thread(target=call) for _ in range(9)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        deaths = A._HUB["deaths"]
+        alarm = A.read_alarm()
+    finally:
+        A.adapter_hub, A.record_failure = old_hub_fn, old_record
+        A.RT.HOME, A.RUN_TASK = old_home, old_task
+        A._PIPE_RUN.clear()
+        A._PIPE_RUN.update(old_pipe)
+        A._HUB.clear()
+        A._HUB.update(old_hub)
+
+    assert len(causes) == 9, causes
+    assert deaths == 1, deaths
+    assert all(c.kind == "process_died" and c.sub == "pipe" for c in causes), causes
+    first = causes[0]
+    assert first.args.get("code") == 3 and first.args.get("pid") == 4321, first.args
+    assert isinstance(first.args.get("pending"), int), first.args
+    assert "boom" in (first.args.get("stderr") or ""), first.args
+    assert first.fix == "", first.fix
+    row = alarm["bot:pipe9"]
+    assert row["calls"] == 9 and row["fix"] == "", row
+    assert "boom" in (row["args"].get("stderr") or ""), row
+
+
+@test
+def test_runtime_truth_adapter_pipe_alarm_waits_for_third_failure(tmp: Path):
+    """Порог: одиночная смерть трубы не взводит тревогу, третья подряд — взводит."""
+    A, _RC, _P, _D = _modules()
+    old_home, old_task = A.RT.HOME, dict(A.RUN_TASK)
+    old_pipe, old_record = dict(A._PIPE_RUN), A.record_failure
+    A.RT.HOME = tmp / "home"
+    A.RT.HOME.mkdir()
+    A.RUN_TASK["name"] = "bot:threshold"
+    A.record_failure = lambda *a, **k: None
+    A._PIPE_RUN.clear()
+    why = A.Why("process_died", "pipe", exc="BrokenPipeError", code=3, pid=1, pending=0, stderr="boom")
+    try:
+        for _ in range(A.ALARM_AFTER - 1):
+            A.note_bypass(why, answered=False)
+            assert "bot:threshold" not in A.read_alarm(), A.read_alarm()
+        A.note_bypass(why, answered=False)
+        row = A.read_alarm()["bot:threshold"]
+        assert row["calls"] == A.ALARM_AFTER, row
+        A.note_bypass(why, answered=False)
+        assert A.read_alarm()["bot:threshold"]["calls"] == A.ALARM_AFTER + 1
+        A.clear_bypass()
+        A.note_bypass(why, answered=False)
+        assert "bot:threshold" not in A.read_alarm(), A.read_alarm()
+    finally:
+        A.RT.HOME, A.RUN_TASK, A.record_failure = old_home, old_task, old_record
+        A._PIPE_RUN.clear()
+        A._PIPE_RUN.update(old_pipe)
+
+
+@test
+def test_runtime_truth_process_death_is_not_an_install_problem(tmp: Path):
+    """Смерть процесса ведёт к перезапуску, а не в «Установку»; faulthandler включён."""
+    A, _RC, _P, _D = _modules()
+    for sub in ("pipe", "closed", "repeated"):
+        why = A.Why("process_died", sub, exc="BrokenPipeError", code=3, pid=1, times=3)
+        assert why.fix == "", (sub, why.fix)
+        assert "«Установка»" not in str(why), (sub, str(why))
+    for kind, sub in (("import_failed", "missing"), ("process_start", ""),
+                      ("process_died", "start"), ("incompatible", "")):
+        assert A.Why(kind, sub, module="m", exc="E", code=1, version="1", first="f").fix == "install", \
+            (kind, sub)
+    src = (KIT / "scripts" / "agents" / "pydantic_ai_adapter.py").read_text(encoding="utf-8")
+    assert "import faulthandler" in src and "faulthandler.enable()" in src, \
+        "адаптер не включает faulthandler"
+
+
+@test
+def test_runtime_truth_adapter_alarm_ttl_and_snooze_for_bot_and_agent(tmp: Path):
+    """Старая тревога адаптера гаснет по TTL; бот и агент скрываются на сутки."""
+    A, _RC, _P, _D = _modules()
+    old_home = A.RT.HOME
+    A.RT.HOME = tmp / "home"
+    A.RT.HOME.mkdir()
+    try:
+        assert A.adapter_alarm_fresh({"at": "2020-01-01T00:00:00Z"}) is False
+        assert A.adapter_alarm_fresh({"at": A.utc_stamp()}) is True
+        for key in ("link:1", "bot:analiz", "agent:test"):
+            assert A.alarm_key_snoozable(key), key
+        for key in ("", "project:x", "bot", "agent"):
+            assert not A.alarm_key_snoozable(key), key
+        A.snooze_alarm("bot:analiz", 60)
+        assert A.alarm_snoozed("bot:analiz") is True
+        A.clear_alarm_snooze("bot:analiz")
+        assert A.alarm_snoozed("bot:analiz") is False
+    finally:
+        A.RT.HOME = old_home

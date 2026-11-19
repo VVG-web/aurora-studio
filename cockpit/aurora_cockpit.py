@@ -7034,6 +7034,9 @@ def adapter_alarm() -> list:
                 continue                  # строку тревоги правили руками: панель из-за неё не падает
             if cause.area == "link" and AG.alarm_age(row) > AG.LINK_ALARM_TTL:
                 continue                  # забытая тревога связи (бэкенд убран из настройки) не висит вечно
+            if cause.area == "adapter" and hasattr(AG, "adapter_alarm_fresh") \
+                    and not AG.adapter_alarm_fresh(row):
+                AG.forget_alarm(key)      # разовый сбой адаптера не держит полосу неделю
             project_path = str(row.get("project") or "")
             if (cause.area == "link" and project_path and not os.path.isdir(project_path)
                     and AG.alarm_age(row) > AG.LINK_ALARM_DEAD_PROJECT):
@@ -7055,15 +7058,17 @@ def adapter_alarm() -> list:
 
 
 def forget_link_alarm(key: str) -> bool:
-    """Скрыть тревогу связи по ключу `link:N` на сутки; тревогу адаптера этим путём не снять.
+    """Скрыть тревогу связи `link:N`, бота `bot:*` или агента `agent:*` на сутки.
 
     Ждать ответа бэкенда некому: он убран из настройки или вызовы давно идут через основной.
     Тогда полоса висела бы до суток, хотя решение уже принято человеком. Новый отказ того же
     бэкенда снова запишет тревогу, но панель не покажет её до срока; ответ бэкенда снимает
     скрытие сразу — проверка не выключается."""
-    if not re.fullmatch(r"link:\d+", str(key or "")):
-        return False
     import agent_core as AG
+    check = getattr(AG, "alarm_key_snoozable", None)
+    allowed = check(key) if callable(check) else bool(re.fullmatch(r"link:\d+", str(key or "")))
+    if not allowed:
+        return False
     if hasattr(AG, "snooze_alarm"):
         AG.snooze_alarm(key)
     else:
@@ -8529,7 +8534,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/adapter/alarm/forget":
             # «Скрыть» на полосе связи: снимает одну запись, а не выключает проверку.
             if not forget_link_alarm(str(payload.get("key") or "")):
-                self.send_json({"error": "снять можно только тревогу связи link:N"}, 400)
+                self.send_json({"error": "снять можно тревогу связи link:N, бота bot:* или агента agent:*"}, 400)
                 return
             self.send_json({"alarm": adapter_alarm()})
             return

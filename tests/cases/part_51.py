@@ -167,14 +167,14 @@ const link = (kind, n) => ({path: "agent:build", area: "link", kind, fix: MODELS
   check(!!bars.adapterbar && !bars.linkbar, "adapter: есть полоса адаптера и нет полосы связи");
   const bar = bars.adapterbar;
   check(text(bar).includes("alarm.adapter") && text(bar).includes("bot:сеть"), "adapter: заголовок и строки");
-  check(JSON.stringify(names(bar)) === JSON.stringify(["alarm.adapter_engine", "alarm.adapter_open", "diag.btn"]),
-        "adapter: кнопки «Версия» и «Установка» по лекарствам, got " + JSON.stringify(names(bar)));
+  check(JSON.stringify(names(bar)) === JSON.stringify(["alarm.adapter_dismiss", "alarm.adapter_dismiss", "alarm.adapter_dismiss", "alarm.adapter_engine", "alarm.adapter_open", "diag.btn"]),
+        "adapter: кнопки «Версия», «Установка» и скрытие по лекарствам, got " + JSON.stringify(names(bar)));
   buttons(bar).forEach(b => b.attrs.onclick());
   check(JSON.stringify(shown) === JSON.stringify(["version", "install"]), "adapter: кнопки ведут куда сказано");
   check(diag.length === 1 && diag[0].source === "adapter_alarm", "adapter: кнопка лога");
   // расхождение клиента адаптера без лекарства из кнопок: кнопок нет вовсе
   drawAdapterAlarm([ADAPTER[2]]);
-  check(JSON.stringify(names(bars.adapterbar)) === JSON.stringify(["diag.btn"]),
+  check(JSON.stringify(names(bars.adapterbar)) === JSON.stringify(["alarm.adapter_dismiss", "diag.btn"]),
         "client_net: кнопки про Установку нет, лог есть");
   // обрыв связи, каждый вид: своя полоса, заголовок по виду, ни слова про Pydantic AI в кнопках
   for (const kind of KINDS){
