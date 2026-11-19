@@ -11,7 +11,6 @@
 """
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import locale
@@ -24,6 +23,8 @@ import sys
 import time
 import zipfile
 from pathlib import Path
+
+import runtime_catalog as RTC          # роли и файл адаптера: один владелец, без своей копии пути
 
 KIT = Path(__file__).resolve().parent.parent
 MAX_BUNDLE = 25 * 1024 * 1024
@@ -40,13 +41,6 @@ def _stamp() -> str:
 def _version(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-
-
-def _sha(path: str | Path) -> str:
-    try:
-        return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
     except OSError:
         return ""
 
@@ -249,9 +243,12 @@ def _adapter_facts(AG, project: str, deep: bool) -> dict:
         }
     if deep:
         try:
-            out["probe"] = _clean(AG.adapter_probe(
-                os.path.join(project, ".aurora", "scripts", "agents", "pydantic_ai_adapter.py")
-                if project else None, project or None, wait=15), project)
+            # Адаптер — только через каталог: у проекта со своей копией движка запуск идёт
+            # её файлом, без копии — файлом кита. Собранный руками `.aurora/scripts/agents/…`
+            # не знал ни кита, ни прежней папки `.opencode`.
+            found = RTC.adapter_info(project) if project else {"source": "kit"}
+            target = found.get("path") if found.get("source") == "project" else None
+            out["probe"] = _clean(AG.adapter_probe(target, project or None, wait=15), project)
         except Exception as e:  # noqa: BLE001
             out["probe"] = {"error": f"{type(e).__name__}: {e}"}
     return out
@@ -279,7 +276,7 @@ def _alarm_facts(AG, context: dict) -> dict:
 
 
 def _latest_run(project: str, run_id: str = "") -> str:
-    base = Path(project) / ".aurora" / "runs"
+    base = Path(project) / RTC.engine_dir(project) / "runs"
     if run_id and re.fullmatch(r"[\w-]{1,64}", run_id) and (base / run_id).is_dir():
         return run_id
     try:
@@ -306,7 +303,7 @@ def _run_facts(project: str, run_id: str, context: dict) -> dict:
     out = {"run_id": rid, "project_path": _path_shape(project), "console": "", "failures": []}
     if not rid:
         return out
-    base = Path(project) / ".aurora" / "runs" / rid
+    base = Path(project) / RTC.engine_dir(project) / "runs" / rid
     out["console"] = _text(_read_tail(base / "console.log", MAX_CONSOLE), project)
     try:
         lines = (base / "failures.jsonl").read_text(encoding="utf-8", errors="replace").splitlines()
@@ -335,13 +332,15 @@ def _project_facts(project: str) -> dict:
     if not project:
         return {}
     root = Path(project)
-    core = root / ".aurora" / "scripts" / "agent_core.py"
-    adapter = root / ".aurora" / "scripts" / "agents" / "pydantic_ai_adapter.py"
+    core = RTC.engine_info(project)
+    adapter = RTC.adapter_info(project)
     return {
         "path": "<project>", "path_shape": _path_shape(project),
-        "engine_version": _version(root / ".aurora" / "engine_version.txt"),
-        "engine_file": {"exists": core.is_file(), "sha": _sha(core)},
-        "adapter_file": {"exists": adapter.is_file(), "sha": _sha(adapter)},
+        "engine_dir": RTC.engine_dir(project),
+        "engine_version": _version(root / RTC.engine_dir(project) / "engine_version.txt"),
+        "engine_file": {"exists": core["exists"], "sha": core["sha"]},
+        "adapter_file": {"exists": adapter["exists"], "sha": adapter["sha"],
+                         "path": adapter["path"], "source": adapter["source"]},
         "kit_version": _version(KIT / "VERSION"),
     }
 
