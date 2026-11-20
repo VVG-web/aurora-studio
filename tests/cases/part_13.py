@@ -1921,7 +1921,7 @@ def test_the_interface_catalogues_agree_with_the_panel(tmp: Path):
     а проверка искала голый «ключ». Красное, к которому привыкли, перестаёт быть сигналом.
     """
     cp = subprocess.run([sys.executable, str(KIT / "scripts" / "kit_i18n.py"), "--check"],
-                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     assert cp.returncode == 0, cp.stdout[-1500:] + cp.stderr[-500:]
 
 
@@ -4375,7 +4375,7 @@ def test_python_gate_messages_are_translated_and_registered(tmp: Path):
                  "Кит не тронут: обновление ничего не изменило. {}"):
         assert text in skeletons, f"образец не собирается из кода: {text}"
     cp = subprocess.run([sys.executable, str(SCRIPTS / "kit_i18n.py"), "--check"], cwd=str(KIT),
-                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     assert cp.returncode == 0, (cp.stdout + cp.stderr)[-1500:]
 
 

@@ -271,7 +271,7 @@ set -u
 printf '%s\\n' "$*" >> "$GH_CALLS"
 if [ "${1:-}" = release ] && [ "${2:-}" = view ]; then
   case " $* " in
-    *" --json "*) echo "https://example.test/release"; exit 0 ;;
+    *" --json "*) echo "https://example.com/release"; exit 0 ;;
     *) exit 1 ;;
   esac
 fi
