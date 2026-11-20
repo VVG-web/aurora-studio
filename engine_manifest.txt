@@ -97,6 +97,8 @@ scripts/kb_gaps.py       => .aurora/scripts/kb_gaps.py
 # Каталог вызовов: из него runtime_catalog берёт полный список ролей (LLM_ROLES).
 # Без файла проверка связи в проекте падает на импорте каталога runtime.
 scripts/llm_calls.py    => .aurora/scripts/llm_calls.py
+# Сам каталог: без него llm_calls.py и панель не читают роли в проекте.
+scripts/llm_calls.json  => .aurora/scripts/llm_calls.json
 # Настройка моделей: agent_core жёстко импортирует из неё CONFIG_ROLES,
 # поэтому файл идёт раньше ядра.
 scripts/model_config.py  => .aurora/scripts/model_config.py

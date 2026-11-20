@@ -5236,3 +5236,18 @@ def test_engine_manifest_orders_runtime_modules_by_dependencies(_t):
     assert all(name in order for name in expected), (expected, order)
     positions = [order.index(name) for name in expected]
     assert positions == sorted(positions), dict(zip(expected, positions))
+
+
+@test
+def test_llm_calls_catalog_reaches_the_project(tmp: Path):
+    """`llm_calls.json` едет в проект вместе с кодом: без него каталог ролей и панель пусты."""
+    manifest = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
+    assert re.search(r"(?m)^scripts/llm_calls\.json\s*=>\s*\.aurora/scripts/llm_calls\.json$",
+                     manifest), "каталог вызовов не в манифесте движка"
+    root = _new_kit_project(tmp / "llm-calls")
+    dest = root / ".aurora" / "scripts" / "llm_calls.json"
+    dest.unlink(missing_ok=True)
+    cp = _update(root)
+    assert dest.is_file(), cp.stdout[-1000:] + cp.stderr[-1000:]
+    data = json.loads(dest.read_text(encoding="utf-8"))
+    assert data.get("calls") and data.get("about"), data
