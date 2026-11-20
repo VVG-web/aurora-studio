@@ -230,3 +230,8 @@ def test_release_tags_the_commit_that_passed_ci_and_skips_when_master_moved(_t):
         "раздел «После метки» вернулся"
     assert "--force-tag" not in text and "push --tags" not in text and "push origin" not in text, \
         "выпуск не должен переписывать метку или пушить теги вручную"
+    assert 'git fetch --no-tags origin "+refs/heads/master:refs/remotes/origin/master"' in text, \
+        "перед проверкой вершины master не обновляется свежий origin/master"
+    assert re.search(r'if gh release view "\$TAG" >/dev/null 2>&1; then(?:(?!\n\s*fi).)*?\n\s+exit 0',
+                     text, re.S), \
+        "существующий Release не останавливает выпуск до перезаписи"
