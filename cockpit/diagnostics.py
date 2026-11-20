@@ -360,7 +360,8 @@ def _adapter_facts(AG, project: str, deep: bool, decision: dict | None = None) -
             else:
                 # Панель без копии движка проекта: проверяем свой (китовый) адаптер.
                 target = found.get("path") if found.get("source") == "project" else None
-                out["probe"] = _clean(AG.adapter_probe(target, project or None, wait=15), project)
+                out["probe"] = _clean(AG.adapter_probe(
+                    target, project or None, wait=getattr(AG, "ADAPTER_START", 60)), project)
         except Exception as e:  # noqa: BLE001
             out["probe"] = {"error": f"{type(e).__name__}: {e}"}
     return out

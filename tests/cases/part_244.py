@@ -1101,3 +1101,27 @@ def test_runtime_truth_archive_keeps_rotation_alarm_and_selfcheck(tmp: Path):
         assert "`adapter-alarm.json`" in readme and "обёрткой `stat`" in readme, readme
         assert data["alarm_file"]["stat"]["mtime"], data["alarm_file"]
         assert data["selfcheck_file"]["stat"]["mtime"], data["selfcheck_file"]
+
+
+@test
+def test_runtime_truth_diagnostics_does_not_cut_a_slow_healthy_adapter_start(tmp: Path):
+    """Диагностика даёт адаптеру ADAPTER_START, а не 15 с: медленный исправный старт не режется."""
+    A, _RC, _P, D = _modules()
+    waits = []
+
+    def fake_probe(adapter=None, cwd=None, wait=0):
+        waits.append(wait)
+        # Исправный адаптер отвечает после 20 с. Старое окно 15 с объявило бы его мёртвым.
+        if wait < 20:
+            return {"ok": False, "why": "адаптер не ответил за короткое окно"}
+        return {"ok": True, "version": "9.9.9", "kind": "", "sub": "", "fix": "", "why": ""}
+
+    saved = A.adapter_probe
+    A.adapter_probe = fake_probe
+    try:
+        facts = D._adapter_facts(A, str(tmp / "no-project"), deep=True)
+        core = A.adapter_facts(deep=True)
+    finally:
+        A.adapter_probe = saved
+    assert waits and all(w >= A.ADAPTER_START for w in waits), waits
+    assert facts["probe"]["ok"] is True and core["probe"]["ok"] is True, (facts["probe"], core["probe"])
