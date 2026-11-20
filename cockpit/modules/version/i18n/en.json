@@ -25,7 +25,7 @@
   "version.engine_done_files": "For example: {files}.",
   "version.engine_not_ignored": "The .aurora/ folder is not covered by .gitignore — Apply below adds the rule.",
   "version.whats_new": "What's new",
-  "version.warn": "An update rewrites only the files from engine_manifest.txt: the skill, the scripts, the folder schema. Your templates and prompts in Templates/Prompts are not touched — the new version is placed next to them as .new. Common TemplatesCommon files are replaced by the kit version. After applying it, make a commit: that way it is visible what exactly the engine changed.",
+  "version.warn": "An update rewrites only the files from engine_manifest.txt: the skill, the scripts, the folder schema. Your templates and prompts in Templates/Prompts are not touched — the new version is placed next to them as .new. Common TemplatesCommon files are replaced by the kit version, and old .new files next to them are removed. After applying it, make a commit: that way it is visible what exactly the engine changed.",
   "version.migration": "Migrating a foreign project",
   "version.engine_only": "Show what would be completed in .aurora/ on this computer (no writing)",
   "version.structure_only": "Create the missing schema folders without touching the engine",

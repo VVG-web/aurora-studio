@@ -1439,7 +1439,7 @@ def test_update_delivers_the_templates_once(tmp: Path):
     _update(root)
     for f in kit_files:
         assert _same_text(folder / f.name, f), f"{f.name}: после обновления не тот файл"
-    assert not list(folder.glob("*.new")), f"новые файлы получили .new: {sorted(p.name for p in folder.glob('*.new'))}"
+    assert not list(folder.glob("*.new*")), f"новые файлы получили .new: {sorted(p.name for p in folder.glob('*.new*'))}"
     assert own.read_text(encoding="utf-8") == "# свой тип проекта\n", "обновление тронуло свой шаблон проекта"
     fresh = _new_kit_project(tmp / "fresh")
     assert sorted(p.name for p in folder.iterdir()) == sorted(p.name for p in (fresh / "TemplatesCommon").iterdir()), \
@@ -1457,7 +1457,7 @@ def test_update_delivers_the_templates_once(tmp: Path):
     _update(root)
     assert _same_text(glossary, KIT_DIR / "akdb_glossary_v1.0.md"), "общий шаблон не заменён версией кита"
     assert _same_text(folder / "README.md", KIT_DIR / "README.md"), "README общего набора не заменён"
-    assert not list(folder.glob("*.new")), f"в Common остались .new: {sorted(p.name for p in folder.glob('*.new'))}"
+    assert not list(folder.glob("*.new*")), f"в Common остались .new: {sorted(p.name for p in folder.glob('*.new*'))}"
     for f in kit_files:
         if f.name != glossary.name:
             assert _same_text(folder / f.name, f), f"{f.name}: тронут без причины"
@@ -1493,6 +1493,7 @@ def test_seed_new_variants_are_reused_and_common_is_replaced(tmp: Path):
     (tpl.parent / (tpl.name + ".new")).write_text(mine, encoding="utf-8")
     out = _update(root).stdout
     assert "Устаревшие .new" in out and tpl.name + ".new" in out, out[-700:]
+    assert "устаревший .new совпал с оригиналом" in out, out[-700:]
     assert names() == [tpl.name + ".new.1"], names()
 
     # Ни один вариант не совпал с поставкой: старый вариант сохраняется, новый получает своё имя.
@@ -1511,21 +1512,60 @@ def test_seed_new_variants_are_reused_and_common_is_replaced(tmp: Path):
     assert not (tpl.parent / (tpl.name + ".new")).exists(), "устаревший .new не удалён"
     assert names() == [], names()
 
+    # Освободившийся .new переиспользуется, а не превращается в .new.1.
+    tpl.write_text(mine, encoding="utf-8")
+    (tpl.parent / (tpl.name + ".new")).write_text(mine, encoding="utf-8")
+    _update(root)
+    assert (tpl.parent / (tpl.name + ".new")).read_text(encoding="utf-8") == fresh, "свободный .new не занят"
+    assert names() == [tpl.name + ".new"], names()
+
+    # Оригинала нет, но есть .new2 без точки: он не мешает создать файл и удаляется как совпавший.
+    tpl.unlink()
+    (tpl.parent / (tpl.name + ".new")).unlink()
+    (tpl.parent / (tpl.name + ".new2")).write_text(fresh, encoding="utf-8")
+    _update(root)
+    assert tpl.read_text(encoding="utf-8") == fresh, "оригинал не восстановлен"
+    assert names() == [], names()
+
+    # TemplatesCode: .new2 без точки распознан и не дублируется.
+    code = root / "TemplatesCode" / "cr-ac_v1.0.md"
+    code_fresh = (KIT / "scaffold" / "TemplatesCode" / code.name).read_text(encoding="utf-8")
+    code.write_text(mine, encoding="utf-8")
+    (code.parent / (code.name + ".new2")).write_text(code_fresh, encoding="utf-8")
+    _update(root)
+    assert code.read_text(encoding="utf-8") == mine, "TemplatesCode затёрт"
+    assert sorted(p.name for p in code.parent.glob(code.name + ".new*")) == [code.name + ".new2"]
+
+    # PromptCode: устаревший .new удаляется, повторной поставки нет.
+    prompt = root / "PromptCode" / "cr-ac.md"
+    prompt_fresh = (KIT / "scaffold" / "PromptCode" / prompt.name).read_text(encoding="utf-8")
+    prompt.write_text(prompt_fresh, encoding="utf-8")
+    (prompt.parent / (prompt.name + ".new")).write_text(prompt_fresh, encoding="utf-8")
+    out = _update(root).stdout
+    assert prompt.read_text(encoding="utf-8") == prompt_fresh, "PromptCode затёрт"
+    assert not list(prompt.parent.glob(prompt.name + ".new*")), "PromptCode оставил .new"
+    assert "устаревший .new совпал с оригиналом" in out, out[-700:]
+
     # Common: несовпадение заменяет оригинал; оба варианта .new убираются.
     common = root / "TemplatesCommon" / "README.md"
     kit_common = (KIT_DIR / "README.md").read_text(encoding="utf-8")
     common.write_text("мой Common\n", encoding="utf-8")
+    glossary = root / "TemplatesCommon" / "akdb_glossary_v1.0.md"
+    glossary.write_text("мой глоссарий\n", encoding="utf-8")
     (common.parent / "README.md.new").write_text("старый .new\n", encoding="utf-8")
     (common.parent / "README.md.new.1").write_text(kit_common, encoding="utf-8")
     out = _update(root).stdout
-    assert "Общие шаблоны" in out and "README.md" in out, out[-700:]
+    assert "TemplatesCommon ведёт кит" in out and "README.md" in out, out[-700:]
+    assert "правки в них потеряются" in out and "akdb_glossary_v1.0.md" in out, out[-700:]
+    assert "старый .new удалён: каталог TemplatesCommon ведёт кит" in out, out[-700:]
     assert common.read_text(encoding="utf-8") == kit_common, "Common не заменён версией кита"
     assert not list(common.parent.glob("README.md.new*")), "в Common остались .new"
 
     # Common уже равен киту, но рядом лежит устаревший .new: он тоже удаляется.
     (common.parent / "README.md.new").write_text("старый .new\n", encoding="utf-8")
-    _update(root)
+    out = _update(root).stdout
     assert common.read_text(encoding="utf-8") == kit_common
+    assert "старый .new удалён: каталог TemplatesCommon ведёт кит" in out, out[-700:]
     assert not list(common.parent.glob("README.md.new*")), "устаревший Common .new не удалён"
 
 
@@ -3634,7 +3674,7 @@ def test_guide_seeded_everywhere(tmp: Path):
     dry = _update(old, apply=False)
     assert "Ничего не записано" in dry.stdout and GUIDE_REL in dry.stdout and _tree(old) == before, dry.stdout[-500:]
     _update(old)
-    assert _same_text(old / GUIDE_REL, GUIDE_KIT) and not list((old / "Prompts").glob("*.new")), "файл не доставлен или получил .new"
+    assert _same_text(old / GUIDE_REL, GUIDE_KIT) and not list((old / "Prompts").glob("*.new*")), "файл не доставлен или получил .new"
     fresh = _new_kit_project(tmp / "fresh")
     assert sorted(p.name for p in (old / "Prompts").iterdir()) == sorted(p.name for p in (fresh / "Prompts").iterdir()), \
         "после обновления папка Prompts не такая, как у свежего проекта"
@@ -3647,7 +3687,7 @@ def test_guide_seeded_everywhere(tmp: Path):
     _update(old)
     assert (old / GUIDE_REL).read_bytes() == mine.encode("utf-8"), "правка проекта затёрта"
     assert _same_text(old / "Prompts" / "KB_classify.md.new", GUIDE_KIT), "рядом не лёг текст кита"
-    assert sorted(p.name for p in (old / "Prompts").glob("*.new")) == ["KB_classify.md.new"], "лишние .new"
+    assert sorted(p.name for p in (old / "Prompts").glob("*.new*")) == ["KB_classify.md.new"], "лишние .new"
     snap = _tree(old)
     _update(old)
     assert _tree(old) == snap, "повторный update изменил проект"

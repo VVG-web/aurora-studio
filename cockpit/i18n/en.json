@@ -242,7 +242,7 @@
   "overview.blockers_all_go": "Sorting them out — the «Health» section",
   "overview.blockers_all_ok": "All clean",
   "overview.preview_failed": "the preview failed",
-  "overview.update_ask": "Update the engine to {kit} in {n} project(s)?\n\n{list}\n\nTemplates and prompts in Templates/Prompts are not overwritten — they land next to them as .new. Common TemplatesCommon files are replaced by the kit version.\nThe git hook will be reinstalled, the mode is kept.",
+  "overview.update_ask": "Update the engine to {kit} in {n} project(s)?\n\n{list}\n\nTemplates and prompts in Templates/Prompts are not overwritten — they land next to them as .new. Common TemplatesCommon files are replaced by the kit version, and old .new files next to them are removed.\nThe git hook will be reinstalled, the mode is kept.",
   "overview.updating": "Updating the projects…",
   "overview.update_failed": "the update failed",
   "overview.updated": "Projects updated: {n}",

@@ -512,8 +512,10 @@ def plan(target: Path, f: dict):
         elif old is not None:
             stale = [p for p in variants if _seed_same(_seed_text(p) or "", old)]
         for path in stale:
+            note = ("старый .new удалён: каталог TemplatesCommon ведёт кит"
+                    if common else "устаревший .new совпал с оригиналом")
             changes.append(Change("drop", path.relative_to(target).as_posix(),
-                                  "устаревший .new совпал с оригиналом"))
+                                  note=note))
         freed = set(stale)
         if dst.is_file():
             # Файл, оборванный посреди записи (убитый процесс), может быть не UTF-8: он просто
@@ -545,7 +547,7 @@ def plan(target: Path, f: dict):
                     text = _seed_text(path)
                     if text is not None and _seed_same(text, new_text):
                         changes.append(Change("drop", path.relative_to(target).as_posix(),
-                                              "устаревший .new совпал с новой поставкой"))
+                                              note="устаревший .new совпал с новой поставкой"))
                 changes.append(Change("seed-new", rel_dst, new_text, "новый файл", ext))
             else:
                 changes.append(Change("write", rel_dst, new_text, "новый файл", ext))
@@ -1500,7 +1502,9 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
         tag = "  ⚠️shared" if c.external else ""
         print(f"  ~ {c.path}   [{c.note}]{tag}")
     if seed_writes:
-        print(f"\nОбщие шаблоны (заменяются версией кита): {len(seed_writes)}")
+        print("\n⚠️  ВНИМАНИЕ: TemplatesCommon ведёт кит. Эти файлы будут заменены,")
+        print("   правки в них потеряются. Свои правки держите в Templates/.")
+        print(f"   Заменяются версией кита: {len(seed_writes)}")
         for c in seed_writes:
             tag = "  ⚠️shared" if c.external else ""
             print(f"  ~ {c.path}   [{c.note}]{tag}")
