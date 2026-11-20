@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -207,15 +208,108 @@ def test_contributing_states_roles_and_anonymised_bug_notes_in_both_languages(tm
         "словарь ролей снова подан как не внедрённый"
 
 
+def _release_step() -> str:
+    """Shell-шаг выпуска из release.yml без отступа YAML."""
+    text = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    start = text.index("      - name: Выпустить версию из VERSION\n")
+    run = text.index("        run: |\n", start) + len("        run: |\n")
+    end = text.find("\n      - ", run)
+    block = text[run:] if end < 0 else text[run:end]
+    return "\n".join(line[10:] if line.startswith("          ") else line
+                     for line in block.splitlines()) + "\n"
+
+
+def _release_fixture(tmp: Path, ahead: str) -> tuple:
+    """Репозиторий, где origin/master на один коммит впереди проверенного TARGET."""
+    root = tmp / f"release-ahead-{ahead}"
+    origin, work = root / "origin.git", root / "work"
+    root.mkdir()
+    work.mkdir()
+
+    def git(*args, cwd=work):
+        cp = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+        assert cp.returncode == 0, f"git {' '.join(args)}: {cp.stderr}{cp.stdout}"
+        return cp.stdout.strip()
+
+    git("init", "-q", "--bare", str(origin), cwd=root)
+    git("init", "-q")
+    git("config", "user.name", "Аналитик")
+    git("config", "user.email", "analyst@example.com")
+    git("config", "commit.gpgsign", "false")
+    (work / "VERSION").write_text("1.231.13\n", encoding="utf-8")
+    (work / "CHANGELOG.md").write_text("## 1.231.13 — проверка\n\nТело выпуска.\n",
+                                       encoding="utf-8")
+    form = work / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml"
+    form.parent.mkdir(parents=True)
+    form.write_text("name: Баг\n", encoding="utf-8")
+    (work / "product.py").write_text("VALUE = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "проверенный коммит")
+    target = git("rev-parse", "HEAD")
+    git("branch", "-M", "master")
+    if ahead == "forms":
+        form.write_text("name: Баг\nlabels: [bug]\n", encoding="utf-8")
+    else:
+        (work / "product.py").write_text("VALUE = 2\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", f"впереди: {ahead}")
+    git("remote", "add", "origin", str(origin))
+    git("push", "-q", "origin", "master")
+    git("checkout", "-q", "--detach", target)
+    return root, work, target
+
+
+def _run_release_step(root: Path, work: Path, target: str, bash: str) -> tuple:
+    """Запустить настоящий шаг release.yml с заглушкой gh; вернуть вывод, summary и вызовы gh."""
+    bin_dir = root / "bin"
+    bin_dir.mkdir()
+    calls = root / "gh-calls.txt"
+    gh = bin_dir / "gh"
+    gh.write_text("""#!/usr/bin/env bash
+set -u
+printf '%s\\n' "$*" >> "$GH_CALLS"
+if [ "${1:-}" = release ] && [ "${2:-}" = view ]; then
+  case " $* " in
+    *" --json "*) echo "https://example.test/release"; exit 0 ;;
+    *) exit 1 ;;
+  esac
+fi
+if [ "${1:-}" = release ] && [ "${2:-}" = create ]; then
+  exit 0
+fi
+echo "unexpected gh: $*" >&2
+exit 99
+""", encoding="utf-8")
+    gh.chmod(0o755)
+    runner = root / "runner"
+    runner.mkdir()
+    summary = root / "summary.md"
+    script = root / "release-step.sh"
+    script.write_text(_release_step(), encoding="utf-8")
+    env = {**os.environ,
+           "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+           "GH_CALLS": str(calls),
+           "GITHUB_STEP_SUMMARY": str(summary),
+           "RUNNER_TEMP": str(runner),
+           "EVENT_NAME": "workflow_run",
+           "WORKFLOW_RUN_HEAD_SHA": target,
+           "DISPATCH_SHA": target}
+    cp = subprocess.run([bash, str(script)], cwd=work, env=env, capture_output=True,
+                        text=True, encoding="utf-8", errors="replace", timeout=60)
+    return cp, summary, calls
+
+
 @test
-def test_release_tags_the_commit_that_passed_ci_and_skips_when_master_moved(_t):
+def test_release_tags_the_commit_that_passed_ci_and_skips_when_product_moved(_t):
     """Метка выпуска ставится на коммит, который прошёл зелёный CI, а не на коммит VERSION.
 
     Случай 1.231.12: метка встала на коммит, поднявший VERSION, а три исправления после него
     (включая зелёный прогон Windows и macOS) оказались вне метки и попали в раздел «После
     метки». Теперь выпускается ровно проверенный `workflow_run.head_sha`; если `master` уже
-    ушёл вперёд, выпуск пропускается с сообщением. Существующий тег и Release не
-    перезаписываются, force-push нет.
+    ушёл вперёд, выпуск идёт, только когда все изменения после TARGET — формы issue
+    (.github/ISSUE_TEMPLATE/*.yml); продуктовый файл впереди — пропуск с сообщением.
+    Существующий тег и Release не перезаписываются, force-push нет.
     """
     text = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
     assert 'TARGET="$WORKFLOW_RUN_HEAD_SHA"' in text and 'TARGET="$DISPATCH_SHA"' in text, \
@@ -223,7 +317,7 @@ def test_release_tags_the_commit_that_passed_ci_and_skips_when_master_moved(_t):
     assert '--target "$TARGET"' in text, "тег ставится не на проверенный коммит"
     assert 'refs/remotes/origin/master' in text and \
            'git merge-base --is-ancestor "$TARGET" "$MASTER_SHA"' in text, \
-        "нет отказа, когда master ушёл вперёд"
+        "нет проверки, входит ли проверенный коммит в master"
     assert '"$TAG_COMMIT" != "$TARGET"' in text, \
         "существующий тег на другом коммите перезаписывается"
     assert "POST_TAG" not in text and "После метки" not in text, \
@@ -235,3 +329,39 @@ def test_release_tags_the_commit_that_passed_ci_and_skips_when_master_moved(_t):
     assert re.search(r'if gh release view "\$TAG" >/dev/null 2>&1; then(?:(?!\n\s*fi).)*?\n\s+exit 0',
                      text, re.S), \
         "существующий Release не останавливает выпуск до перезаписи"
+
+
+@test
+def test_release_runs_when_only_issue_forms_moved_master(tmp: Path):
+    """issue-form-versions успевает закоммитить формы после release-коммита: master впереди,
+    но продукт не менялся. Выпуск идёт, тег ставится на проверенный TARGET."""
+    bash = shutil.which("bash")
+    if not bash or os.name == "nt":
+        return              # release.yml исполняется на ubuntu; на Windows bash в PATH нет
+    root, work, target = _release_fixture(tmp, "forms")
+    cp, summary, calls = _run_release_step(root, work, target, bash)
+    assert cp.returncode == 0, f"выпуск остановлен:\n{cp.stdout}\n{cp.stderr}"
+    assert "только формами issue" in cp.stdout, cp.stdout
+    assert "Выпуск создан" in cp.stdout, cp.stdout
+    made = calls.read_text(encoding="utf-8")
+    create = next((line for line in made.splitlines() if line.startswith("release create")), "")
+    assert create, f"gh release create не вызван:\n{made}"
+    assert f"--target {target}" in create, f"тег поставлен не на проверенный коммит: {create}"
+    assert "Выпуск пропущен" not in summary.read_text(encoding="utf-8")
+
+
+@test
+def test_release_skips_when_a_product_file_moved_master(tmp: Path):
+    """Если впереди TARGET есть хоть один продуктовый файл, выпуска нет и тег не ставится."""
+    bash = shutil.which("bash")
+    if not bash or os.name == "nt":
+        return
+    root, work, target = _release_fixture(tmp, "product")
+    cp, summary, calls = _run_release_step(root, work, target, bash)
+    assert cp.returncode == 0, f"отказ должен быть штатным пропуском:\n{cp.stdout}\n{cp.stderr}"
+    assert "не только формами issue" in cp.stdout, cp.stdout
+    text = summary.read_text(encoding="utf-8")
+    assert "Выпуск пропущен: master ушёл вперёд" in text, text
+    assert "Тег v1.231.13 не ставился, Release не создавался." in text, text
+    assert "release create" not in calls.read_text(encoding="utf-8"), \
+        "при продуктовом файле впереди Release всё-таки создан"

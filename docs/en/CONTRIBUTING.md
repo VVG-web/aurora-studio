@@ -354,9 +354,11 @@ own in the project's `Templates/`. The passport, the check codes and the `kb:car
   3) raise `UI_VERSION` in `cockpit/ui/panel.js` (a test checks it); 4) merge to `master`. CI does the rest (see below).
 - **CI creates the tag and the GitHub Release** — `.github/workflows/release.yml`. After a green `engine-tests` on
   `master` it looks at `VERSION`: if that version has no Release yet, it puts the tag `vX.Y.Z` on the commit that
-  passed the checks (`workflow_run.head_sha`) and publishes the Release. If `master` has already moved ahead, the
-  release is skipped with a message: no tag, no Release. The title `vX.Y.Z — the gist` and the text come from that
-  version's entry in `CHANGELOG.md`; no entry — no release, and the workflow fails with a clear error. You do not
+  passed the checks (`workflow_run.head_sha`) and publishes the Release. If `master` has moved ahead only
+  by issue-form commits (`.github/ISSUE_TEMPLATE/*.yml`), the release still runs and the tag stays on the
+  verified commit. Any other file ahead: the release is skipped with a message, no tag, no Release. The
+  title `vX.Y.Z — the gist` and the text come from that version's entry in `CHANGELOG.md`; no entry — no
+  release, and the workflow fails with a clear error. You do not
   need to tag by hand; if you did and it points at the same verified commit, the Release lands on it, while a
   foreign tag is never overwritten. The workflow never overwrites an existing tag or Release, so running it again
   is safe. To repeat a release by hand — Actions → release → Run workflow on `master`; to switch it off — delete

@@ -9,8 +9,9 @@ name: release
 #
 # Безопасно запускать сколько угодно раз: готовый Release и существующий тег не
 # перезаписываются. Тег ставится на коммит, который прошёл зелёный engine-tests
-# (workflow_run.head_sha), а не на коммит, поднявший VERSION. Если master уже ушёл
-# вперёд, workflow ничего не выпускает и пишет об этом.
+# (workflow_run.head_sha), а не на коммит, поднявший VERSION. Если master ушёл вперёд
+# только формами issue (.github/ISSUE_TEMPLATE/*.yml), выпуск идёт; любой другой
+# файл впереди останавливает выпуск с сообщением.
 #
 # Отключить выпуск по версии: удалить этот файл или выключить workflow во вкладке Actions.
 on:
@@ -95,24 +96,45 @@ jobs:
             exit 1
           fi
 
-          # master ушёл вперёд — проверенный коммит больше не вершина: выпуск не делаем,
-          # иначе тег встал бы на коммит, которого нет в актуальной истории.
+          # master ушёл вперёд. Выпускаем, только если каждый коммит между ним и проверенным
+          # коммитом меняет лишь формы issue (.github/ISSUE_TEMPLATE/*.yml): их коммитит отдельный
+          # workflow после изменения CHANGELOG, продукт они не меняют, а тег всё равно
+          # останется на TARGET. Любой другой файл — выпуск не делаем, иначе тег встал бы
+          # на коммит, которого нет в актуальной истории.
           git fetch --no-tags origin "+refs/heads/master:refs/remotes/origin/master"
           MASTER_SHA="$(git rev-parse refs/remotes/origin/master)"
           if [ "$MASTER_SHA" != "$TARGET" ]; then
             if git merge-base --is-ancestor "$TARGET" "$MASTER_SHA"; then
-              echo "::notice::origin/master ушёл вперёд ($MASTER_SHA); $TARGET больше не вершина — выпуск не делаем."
-              {
-                echo "### Выпуск пропущен: master ушёл вперёд"
-                echo
-                echo "Проверенный коммит: $TARGET"
-                echo "Вершина origin/master: $MASTER_SHA"
-                echo "Тег $TAG не ставился, Release не создавался."
-              } >> "$GITHUB_STEP_SUMMARY"
-              exit 0
+              CHANGED="$(git log --format= --name-only --no-renames -m "$TARGET..$MASTER_SHA")" || {
+                echo "::error::Не удалось перечислить коммиты между $TARGET и origin/master ($MASTER_SHA)"
+                exit 1
+              }
+              ONLY_FORMS=1
+              while IFS= read -r path; do
+                [ -z "$path" ] && continue
+                case "$path" in
+                  .github/ISSUE_TEMPLATE/*/*) ONLY_FORMS=0; break ;;
+                  .github/ISSUE_TEMPLATE/*.yml) ;;
+                  *) ONLY_FORMS=0; break ;;
+                esac
+              done <<< "$CHANGED"
+              if [ "$ONLY_FORMS" = 1 ]; then
+                echo "::notice::origin/master ушёл вперёд ($MASTER_SHA) только формами issue — выпускаю проверенный $TARGET."
+              else
+                echo "::notice::origin/master ушёл вперёд ($MASTER_SHA) не только формами issue; $TARGET больше не вершина — выпуск не делаем."
+                {
+                  echo "### Выпуск пропущен: master ушёл вперёд"
+                  echo
+                  echo "Проверенный коммит: $TARGET"
+                  echo "Вершина origin/master: $MASTER_SHA"
+                  echo "Тег $TAG не ставился, Release не создавался."
+                } >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+            else
+              echo "::error::Проверенный $TARGET не входит в origin/master ($MASTER_SHA) — тег ставить не на что"
+              exit 1
             fi
-            echo "::error::Проверенный $TARGET не входит в origin/master ($MASTER_SHA) — тег ставить не на что"
-            exit 1
           fi
 
           # Тег поставили руками — Release ляжет на него, но только если он указывает на тот
