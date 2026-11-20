@@ -94,14 +94,21 @@ scripts/kb_twins.py      => .aurora/scripts/kb_twins.py
 scripts/kb_raptor.py     => .aurora/scripts/kb_raptor.py
 scripts/kb_raptor_eval.py => .aurora/scripts/kb_raptor_eval.py
 scripts/kb_gaps.py       => .aurora/scripts/kb_gaps.py
-scripts/agent_probe.py   => .aurora/scripts/agent_probe.py
-# Роли и файл адаптера: его импортируют проверка связи и архив диагностики. Без строки
-# в манифесте модуль не доезжает до обновлённого проекта — и проверка связи падает на
-# импорте, хотя для кита всё зелено. Модуль новый: установка его ещё не возила.
-scripts/runtime_catalog.py => .aurora/scripts/runtime_catalog.py
 # Каталог вызовов: из него runtime_catalog берёт полный список ролей (LLM_ROLES).
 # Без файла проверка связи в проекте падает на импорте каталога runtime.
 scripts/llm_calls.py    => .aurora/scripts/llm_calls.py
+# Настройка моделей: agent_core жёстко импортирует из неё CONFIG_ROLES,
+# поэтому файл идёт раньше ядра.
+scripts/model_config.py  => .aurora/scripts/model_config.py
+# формы ответа модели: общие для движка (проверка без Pydantic) и адаптера Pydantic AI
+scripts/agent_schemas.py => .aurora/scripts/agent_schemas.py
+# Ядро агента: импортирует model_config, поэтому стоит после настройки моделей.
+scripts/agent_core.py    => .aurora/scripts/agent_core.py
+# Роли и файл адаптера: его импортируют проверка связи и архив диагностики. Модуль
+# импортирует agent_core и llm_calls, поэтому идёт после них.
+scripts/runtime_catalog.py => .aurora/scripts/runtime_catalog.py
+# Живая проверка связи: импортирует agent_core и runtime_catalog.
+scripts/agent_probe.py   => .aurora/scripts/agent_probe.py
 scripts/make_kinds.py    => .aurora/scripts/make_kinds.py
 scripts/aurora_mcp.py    => .aurora/scripts/aurora_mcp.py
 scripts/kb_fix.py        => .aurora/scripts/kb_fix.py
@@ -127,10 +134,6 @@ scripts/kb_conform.py       => .aurora/scripts/kb_conform.py
 scripts/kb_record.py        => .aurora/scripts/kb_record.py
 scripts/kb_cited.py         => .aurora/scripts/kb_cited.py
 scripts/legal_slicer.py     => .aurora/scripts/legal_slicer.py
-scripts/agent_core.py    => .aurora/scripts/agent_core.py
-# формы ответа модели: общие для движка (проверка без Pydantic) и адаптера Pydantic AI
-scripts/agent_schemas.py => .aurora/scripts/agent_schemas.py
-scripts/model_config.py  => .aurora/scripts/model_config.py
 # управление контекстом: бюджет, хранилище и связка стадий (agent_runner)
 scripts/context_budget.py => .aurora/scripts/context_budget.py
 scripts/context_store.py  => .aurora/scripts/context_store.py

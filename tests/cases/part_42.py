@@ -5219,3 +5219,20 @@ def test_tests_that_check_nothing_fail_the_invariant(tmp: Path):
     miss = H.unconnected_parts(cases, runner)
     assert len(miss) == 1 and miss[0].startswith("part_02.py"), miss
     assert not H.unconnected_parts(cases, "for _part in ['part_01', 'part_02']:\n    pass\n")
+
+
+@test
+def test_engine_manifest_orders_runtime_modules_by_dependencies(_t):
+    """Манифест обновляет runtime-модули в порядке зависимостей, чтобы обрыв не оставил
+    проект с импортом, которого ещё нет: llm_calls → model_config → agent_core →
+    runtime_catalog → agent_probe."""
+    order = []
+    for line in (KIT / "engine_manifest.txt").read_text(encoding="utf-8").splitlines():
+        line = line.split("#")[0].strip()
+        if "=>" in line:
+            order.append(line.split("=>")[0].strip())
+    expected = ["scripts/llm_calls.py", "scripts/model_config.py", "scripts/agent_core.py",
+                "scripts/runtime_catalog.py", "scripts/agent_probe.py"]
+    assert all(name in order for name in expected), (expected, order)
+    positions = [order.index(name) for name in expected]
+    assert positions == sorted(positions), dict(zip(expected, positions))
