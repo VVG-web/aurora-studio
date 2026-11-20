@@ -1472,6 +1472,9 @@ def test_the_check_gets_as_long_as_the_answer_took(tmp: Path):
     assert R.momus_timeout(cfg, 280) == 720, "медленный ответ не поднял предел проверки по доле"
     assert R.momus_timeout({"request_timeout": 600}, 5000) == 1800, \
         "потолок 1800 с не держит: человек ждёт ответа"
+    assert R.MOMUS_ABS_CAP == 1800, R.MOMUS_ABS_CAP
+    doc = R.momus_timeout.__doc__ or ""
+    assert "1800" in doc and "900" not in doc, doc
 
     # и этот предел действительно доезжает до вызова
     seen = {}
