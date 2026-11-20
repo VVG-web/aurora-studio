@@ -155,7 +155,7 @@ Templates/ · Prompts/ · Settings/
                               Prompts/KB_classify.md — the instruction "How to determine the card type" (the seed
                               rule: your edit stays, the kit's version lands next to it as .new; text — `kb:cards --guide`)
 TemplatesCommon/              the kit's common templates (the seed rule); akdb_*_v1.0.md — 13 knowledge-card
-                              templates: they come from the kit, a copy the project changed stays, .new lands next to it
+                              templates: they come from the kit, a mismatching copy is replaced by the kit version without .new
 start-aurora.command · start-aurora.bat      launch files
 ```
 
@@ -765,8 +765,8 @@ git -C /path/to/your-project add -A && git -C /path/to/your-project commit -m "U
 ```
 
 Only files from `engine_manifest.txt` are touched; the config, knowledge, `Raw/`, `Sources/`, `Artifacts/`,
-`Workspaces/` — never. The project's templates stay as they are, and changed kit versions land next to them as
-`*.new` for comparison. `--structure-only` creates only the missing schema folders; `--engine-only` only completes
+`Workspaces/` — never. The project's templates in Templates/Prompts stay as they are, and changed kit versions land next to them as
+`*.new` for comparison. Common TemplatesCommon files are replaced by the kit version. `--structure-only` creates only the missing schema folders; `--engine-only` only completes
 the engine in this machine's `.aurora/` (project files and git are not touched; the panel runs it by itself when you
 pick a project without an engine). The project's engine version is
 in `AuroraKnowledgeDB/meta/aurora_version.txt`; the panel warns when a project has fallen behind.

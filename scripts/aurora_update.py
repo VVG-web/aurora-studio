@@ -15,8 +15,8 @@ Artifacts, Workspaces, Templates/, Prompts/) не трогается.
   (sync) <kind>           — обновить тело каждого .claude/skills/<kind>-<slug>/SKILL.md,
                             подставив имя/slug из конфига (slug в имени папки сохраняется)
   (agents) AGENTS.md      — регенерировать из шаблона с полями проекта из конфига
-  (seed) <dir>            — вариант (1): не перезаписывать; новые/изменённые файлы
-                            положить рядом как <файл>.new для ручного сравнения
+  (seed) <dir>            — Templates/Prompts: не перезаписывать, изменённое класть рядом
+                            как <файл>.new; TemplatesCommon: заменить файл версией кита
 
 Проект может отказаться от обновлений отдельных путей — `aurora.update_ignore.txt`
 (glob-шаблоны, по одному в строке). Полезно для шаблонов, локализованных под проект:
@@ -398,7 +398,7 @@ def print_relayout(rp: dict) -> None:
 
 class Change:
     def __init__(self, kind, path, new_text=None, note="", external=None):
-        self.kind = kind      # write | seed-new | skip
+        self.kind = kind      # write | seed-write | seed-new | drop | skip
         self.path = path      # относительный путь в проекте
         self.new_text = new_text
         self.note = note
@@ -447,6 +447,48 @@ def load_ignore(target: Path) -> list:
 SKIPPED_CONNECTORS: list = []
 
 
+def _seed_same(left: str, right: str) -> bool:
+    """Тот же текст поставки: точный или отличающийся только путями прежнего движка."""
+    return left == right or legacy_paths(left) == right or legacy_paths(right) == left
+
+
+def _seed_text(path: Path):
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _new_variants(dst: Path) -> list[Path]:
+    """Все варианты `<файл>.new`, включая `<файл>.new.1` и `<файл>.new2`."""
+    prefix = dst.name + ".new"
+    try:
+        entries = list(dst.parent.iterdir())
+    except OSError:
+        return []
+    out = []
+    for path in entries:
+        if not path.is_file() or not path.name.startswith(prefix):
+            continue
+        tail = path.name[len(prefix):]
+        if not tail or tail.isdigit() or (tail.startswith(".") and tail[1:].isdigit()):
+            out.append(path)
+    return sorted(out, key=lambda path: path.name)
+
+
+def _next_new_path(dst: Path, freed: set) -> Path:
+    """Свободное имя для нового `.new`: занятые варианты не перезаписываем."""
+    candidate = dst.with_name(dst.name + ".new")
+    if not candidate.exists() or candidate in freed:
+        return candidate
+    n = 1
+    while True:
+        candidate = dst.with_name(f"{dst.name}.new.{n}")
+        if not candidate.exists() or candidate in freed:
+            return candidate
+        n += 1
+
+
 def plan(target: Path, f: dict):
     changes = []
     SKIPPED_CONNECTORS.clear()
@@ -459,29 +501,54 @@ def plan(target: Path, f: dict):
             return
         dst = target / rel_dst
         ext = _external_target(target, dst) if dst.exists() or dst.parent.is_symlink() else None
+        common = seed and rel_dst.startswith("TemplatesCommon/")
+        variants = _new_variants(dst) if seed else []
+        old = _seed_text(dst) if dst.is_file() else None
+        if old is None and dst.is_file():
+            old = ""                       # файл есть, но не читается: считаем его отличающимся
+        stale = []
+        if common:
+            stale = variants
+        elif old is not None:
+            stale = [p for p in variants if _seed_same(_seed_text(p) or "", old)]
+        for path in stale:
+            changes.append(Change("drop", path.relative_to(target).as_posix(),
+                                  "устаревший .new совпал с оригиналом"))
+        freed = set(stale)
         if dst.is_file():
             # Файл, оборванный посреди записи (убитый процесс), может быть не UTF-8: он просто
             # «отличается» и перепишется, а не роняет каждое следующее обновление.
-            old = dst.read_text(encoding="utf-8", errors="replace")
-            if old == new_text:
+            if old == new_text or legacy_paths(new_text) == old:
                 return  # идентично — нечего делать
-            if legacy_paths(new_text) == old:
-                # Шаблон кита ещё помнит прежний путь (например, в ссылке на историю git), а
-                # копия в проекте уже переписана на новый. Это одно и то же: не плодить `.new`
-                # на свежем проекте при каждом обновлении.
-                return
-            if legacy_paths(old) == new_text:
+            if not common and legacy_paths(old) == new_text:
                 # Разница только в путях движка (`.opencode/` → `.aurora/`, 1.158.0): это
                 # не правка кита, а переезд — поправить на месте, без `.new` на разбор.
                 changes.append(Change("write", rel_dst, new_text, "пути движка → .aurora/", ext))
                 return
-            if seed:
-                changes.append(Change("seed-new", rel_dst + ".new", new_text,
+            if common:
+                changes.append(Change("seed-write", rel_dst, new_text,
+                                      "общий шаблон кита заменён", ext))
+            elif any(_seed_same(_seed_text(p) or "", new_text) for p in variants if p not in stale):
+                # Такой текст уже лежит в одном из вариантов — новый `.new` не плодим.
+                return
+            elif seed:
+                path = _next_new_path(dst, freed)
+                changes.append(Change("seed-new", path.relative_to(target).as_posix(), new_text,
                                       "изменён в kit — рядом положен .new (вариант 1)", ext))
             else:
                 changes.append(Change("write", rel_dst, new_text, _short_diff(old, new_text), ext))
         else:
-            changes.append(Change("seed-new" if seed else "write", rel_dst, new_text, "новый файл", ext))
+            if common:
+                changes.append(Change("seed-write", rel_dst, new_text, "новый общий шаблон", ext))
+            elif seed:
+                for path in variants:
+                    text = _seed_text(path)
+                    if text is not None and _seed_same(text, new_text):
+                        changes.append(Change("drop", path.relative_to(target).as_posix(),
+                                              "устаревший .new совпал с новой поставкой"))
+                changes.append(Change("seed-new", rel_dst, new_text, "новый файл", ext))
+            else:
+                changes.append(Change("write", rel_dst, new_text, "новый файл", ext))
 
     for src, dst in parse_manifest():
         sm = re.match(r"\((\w+)\)\s*(.*)", dst)   # у правила может не быть аргумента
@@ -1371,14 +1438,16 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
     for line in SKIPPED_CONNECTORS:
         print(f"⚠️  Модуль источников пропущен: {line}\n")
     writes = [c for c in changes if c.kind == "write"]
+    seed_writes = [c for c in changes if c.kind == "seed-write"]
     seeds = [c for c in changes if c.kind == "seed-new"]
+    drops = [c for c in changes if c.kind == "drop"]
     retired = [r for r in retired_paths() if (target / r).is_file()]
     cfg_text, cfg_done = config_defaults(target, ignored)
     rp = relayout_plan(target)
     # Файлы OpenCode и чужое остаются в `.opencode/` навсегда — это не переезд.
     moving = bool(rp["moves"] or rp["drop"] or rp["clash"])
     guides = FG.plan(target, KIT)
-    catalog = catalog_pending(target, ignored, seeds)
+    catalog = catalog_pending(target, ignored, seeds + seed_writes)
 
     if not changes and not new_dirs and not retired and not cfg_done and not moving and not guides and not catalog:
         print("✅ Движок и структура уже актуальны — изменений нет.")
@@ -1430,10 +1499,19 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
     for c in writes:
         tag = "  ⚠️shared" if c.external else ""
         print(f"  ~ {c.path}   [{c.note}]{tag}")
+    if seed_writes:
+        print(f"\nОбщие шаблоны (заменяются версией кита): {len(seed_writes)}")
+        for c in seed_writes:
+            tag = "  ⚠️shared" if c.external else ""
+            print(f"  ~ {c.path}   [{c.note}]{tag}")
     if seeds:
         print(f"\nШаблоны/промпты (вариант 1 — рядом как .new, руками сравнить): {len(seeds)}")
         for c in seeds:
             print(f"  + {c.path}   [{c.note}]")
+    if drops:
+        print(f"\nУстаревшие .new — будут удалены: {len(drops)}")
+        for c in drops:
+            print(f"  − {c.path}   [{c.note}]")
     if retired:
         print(f"\nВыведены из движка — будут удалены: {len(retired)}")
         for r in retired:
@@ -1476,7 +1554,7 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
         print(f"\n⚠️  Прошлое обновление движка ({ETX.clean(prev.get('from'))} → {ETX.clean(prev.get('to'))}) оборвалось на середине: "
               "достраиваю. Откатить к состоянию до него — `update --rollback`.")
     if engine_items or gone:
-        effects = [c.path for c in writes + seeds if not c.path.startswith(ENGINE + "/")] \
+        effects = [c.path for c in writes + seed_writes + seeds + drops if not c.path.startswith(ENGINE + "/")] \
             + [r_ for r_ in retired if not r_.startswith(ENGINE + "/")]
         effects += ["aurora.config.yaml, .gitignore, .gitattributes, хук git, описания папок, каталог типов карточек "
                     "(те из них, что обновление изменило)"]
@@ -1500,7 +1578,10 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
         p = target / d
         p.mkdir(parents=True, exist_ok=True)
         (p / ".gitkeep").touch()
-    for c in writes + seeds:
+    # Сначала убираем устаревшие .new: освободившееся имя может занять новая поставка.
+    for c in drops:
+        (target / c.path).unlink(missing_ok=True)
+    for c in writes + seed_writes + seeds:
         if c.path in engine_done:
             continue                 # уже лежит: записано и сверено `apply_engine`
         dst = target / c.path
@@ -1536,7 +1617,9 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
     seal_engine(target, kv)                # замок движка с хешами файлов; метка update.pending снимается
     stamp_version(target, kv)              # штамп проекта — последним: по нему видно, что обновление дошло до конца
     print(f"\n✅ Применено: {len(new_dirs)} папок, {len(writes)} перезаписей, "
+          f"{len(seed_writes)} общих шаблонов заменено, "
           f"{len(seeds)} .new-файлов, {len(retired)} удалено"
+          + (f", устаревших .new удалено: {len(drops)}" if drops else "")
           + (f", хук обновлён ({refreshed})" if refreshed else "")
           + (f", в .gitignore дописано правил: {len(ignored)}" if ignored else "")
           + (f", локальных файлов снято с учёта git: {len(untracked)} (на диске сохранены)"

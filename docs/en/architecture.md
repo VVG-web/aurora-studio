@@ -50,8 +50,9 @@ What follows from this:
 
 - **`update` overwrites only the paths in `engine_manifest.txt`.** The config, knowledge, `Raw/`, `Sources/`,
   `Deliverables/`, `Artifacts/`, `Workspaces/` are never touched.
-- Templates (`Templates/`, `Prompts/`, `TemplatesCommon/`) follow the **seed** rule: the project's file is not
-  overwritten, the new kit version lands next to it as `<file>.new` for manual comparison. The 13 knowledge-card
+- Templates `Templates/`, `Prompts/`, `TemplatesCode/`, `PromptCode/` follow the **seed** rule: the project's file is
+  not overwritten, the new kit version lands next to it as `<file>.new` for manual comparison. `TemplatesCommon/` is
+  kit-owned: a mismatching file is replaced and no `.new` is created there. The 13 knowledge-card
   templates `TemplatesCommon/akdb_<type>_v1.0.md` travel the same way: a card's type, section, kinds and statuses
   are described by their passports, and the type registry and the check against them are the `card_types.py`
   module (the `kb:cards` command; details — [card templates](card-templates.md)). The type-choosing instruction
@@ -79,7 +80,7 @@ What follows from this:
 | `src => dst` | overwrites the file 1:1 |
 | `(connectors)` | puts a module's manifest in `.aurora/connectors/`, its launch script in `.aurora/scripts/`, multiplies the sync skill's body across the project's skills; **does not overwrite the body** — the new version lands next to it as `.new` |
 | `(agents) AGENTS.md` | regenerates from the template, substituting the name, slug and keys from `aurora.config.yaml` |
-| `(seed) dir` | does not overwrite; puts the new and changed as `.new` |
+| `(seed) dir` | does not overwrite; puts the new and changed as `.new`, checking existing variants. `TemplatesCommon/` replaces the file with the kit version |
 | `(launcher)` | launch files in the project root |
 | `- path` | removed from the engine's composition: `update` deletes the file in the project |
 

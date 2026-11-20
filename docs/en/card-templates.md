@@ -13,8 +13,8 @@ This page describes what works in the kit today. What is not there yet is named 
 ## 1. What works now
 
 - Thirteen templates live in the kit's `scaffold/TemplatesCommon/`. A new project gets them on creation, an
-  existing one on `aurora.py update <project> --apply` (the **seed** rule: new files appear under their own
-  names; a copy the project has changed stays in place, and the kit's version lands next to it as `<file>.new`).
+  existing one on `aurora.py update <project> --apply`. `TemplatesCommon/` is kit-owned: a mismatching copy is
+  replaced by the kit version and no `.new` is created there. Keep your own edition in `Templates/`.
 - The type registry (`card_types.registry()`) reads the template passports. The "section → type" table is one:
   parsing, repair, the linter and the schema take it from the registry; with no templates it is the old one.
 - The **`kb:cards`** command shows the registry and checks cards against their types' templates (section 7).
@@ -370,8 +370,8 @@ The version is part of the file name (`_v1.0`). Old versions are not deleted: a 
 by `v1.0` until it is moved to a new one. Versions are compared as numbers (`1.10` is newer than `1.9`), and
 `kb:cards --stats` counts how many cards lag behind the highest version of the type (code V-18).
 
-**A released `akdb_*_v1.0.md` file is not edited.** The seed rule delivers an edit to old projects only as
-`.new`, so a fix or an extension is a new version (`v1.1`, `v2.0`) with the passport field
+**A released `akdb_*_v1.0.md` file is not edited.** An update replaces it in `TemplatesCommon/`, so a fix or an
+extension is a new version (`v1.1`, `v2.0`) with the passport field
 `migration: none|auto|llm` (`none` — old cards stay valid for good).
 
 ### Your own type or your own edition of a type

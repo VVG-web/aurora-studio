@@ -1423,7 +1423,7 @@ def test_new_project_gets_the_thirteen_templates(tmp: Path):
 @test
 def test_update_delivers_the_templates_once(tmp: Path):
     """Проект, поставленный до шаблонов карточек, получает их при `update --apply`; второй `update` ничего не меняет;
-    изменённая проектом копия остаётся, рядом ложится `.new`."""
+    несовпавшая копия в Common заменяется версией кита, `.new` не остаётся."""
     kit_files = sorted(KIT_DIR.glob("akdb_*_v1.0.md"))
     root = _new_kit_project(tmp / "old")
     folder = root / "TemplatesCommon"
@@ -1448,23 +1448,85 @@ def test_update_delivers_the_templates_once(tmp: Path):
     again = _update(root)
     assert "уже актуальны" in again.stdout and _tree(root) == after, f"второй update что-то изменил:\n{again.stdout[-500:]}"
 
-    # правка проекта: файл остаётся, версия кита ложится рядом
+    # правка проекта в Common: кит ведёт папку сам, поэтому оригинал заменяется, .new не остаётся
     glossary = folder / "akdb_glossary_v1.0.md"
     mine = glossary.read_text(encoding="utf-8") + "\n<!-- правка проекта -->\n"
     glossary.write_text(mine, encoding="utf-8")
     old_readme = "# TemplatesCommon\n\nREADME, как его оставил проект до этого выпуска.\n"
     (folder / "README.md").write_text(old_readme, encoding="utf-8")
     _update(root)
-    assert glossary.read_text(encoding="utf-8") == mine, "правка проекта затёрта"
-    assert _same_text(folder / "akdb_glossary_v1.0.md.new", KIT_DIR / "akdb_glossary_v1.0.md"), "рядом не лёг текст кита"
-    assert (folder / "README.md").read_text(encoding="utf-8") == old_readme and _same_text(folder / "README.md.new", KIT_DIR / "README.md")
-    assert sorted(p.name for p in folder.glob("*.new")) == ["README.md.new", "akdb_glossary_v1.0.md.new"], "лишние .new"
+    assert _same_text(glossary, KIT_DIR / "akdb_glossary_v1.0.md"), "общий шаблон не заменён версией кита"
+    assert _same_text(folder / "README.md", KIT_DIR / "README.md"), "README общего набора не заменён"
+    assert not list(folder.glob("*.new")), f"в Common остались .new: {sorted(p.name for p in folder.glob('*.new'))}"
     for f in kit_files:
         if f.name != glossary.name:
             assert _same_text(folder / f.name, f), f"{f.name}: тронут без причины"
     snap = _tree(root)
     _update(root)
-    assert _tree(root) == snap, "повторный update изменил проект (.new пишется тем же текстом)"
+    assert _tree(root) == snap, "повторный update изменил проект"
+
+
+@test
+def test_seed_new_variants_are_reused_and_common_is_replaced(tmp: Path):
+    """Проверяет каждый .new варианта: совпал с поставкой — нового нет; совпал с оригиналом — удалить.
+
+    В Common кит ведёт файлы сам: несовпадение заменяет оригинал, а не оставляет .new. В Templates
+    пользовательская правка остаётся, варианты .new не перезаписывают друг друга, а устаревший
+    вариант, равный оригиналу, удаляется.
+    """
+    root = _new_kit_project(tmp / "seed-new")
+    tpl = root / "Templates" / "decision_record_template.md"
+    mine = "мой вариант шаблона\n"
+    fresh = (KIT / "scaffold" / "Templates" / tpl.name).read_text(encoding="utf-8")
+
+    def names() -> list:
+        return sorted(p.name for p in tpl.parent.glob(tpl.name + ".new*"))
+
+    # Совпал любой вариант, не только P.new: второй .new не появляется.
+    tpl.write_text(mine, encoding="utf-8")
+    (tpl.parent / (tpl.name + ".new.1")).write_text(fresh, encoding="utf-8")
+    _update(root)
+    assert tpl.read_text(encoding="utf-8") == mine, "правка проекта затёрта"
+    assert names() == [tpl.name + ".new.1"], names()
+
+    # Два варианта: P.new равен оригиналу (устарел), P.new.1 равен поставке.
+    (tpl.parent / (tpl.name + ".new")).write_text(mine, encoding="utf-8")
+    out = _update(root).stdout
+    assert "Устаревшие .new" in out and tpl.name + ".new" in out, out[-700:]
+    assert names() == [tpl.name + ".new.1"], names()
+
+    # Ни один вариант не совпал с поставкой: старый вариант сохраняется, новый получает своё имя.
+    tpl.write_text(mine, encoding="utf-8")
+    (tpl.parent / (tpl.name + ".new")).write_text("другой вариант\n", encoding="utf-8")
+    (tpl.parent / (tpl.name + ".new.1")).unlink()
+    _update(root)
+    assert (tpl.parent / (tpl.name + ".new")).read_text(encoding="utf-8") == "другой вариант\n", "старый .new перезаписан"
+    assert (tpl.parent / (tpl.name + ".new.1")).read_text(encoding="utf-8") == fresh, "новый вариант не получил поставку"
+
+    # Новая поставка равна оригиналу, а .new равен оригиналу: файл .new удаляется.
+    (tpl.parent / (tpl.name + ".new.1")).unlink()
+    (tpl.parent / (tpl.name + ".new")).write_text(fresh, encoding="utf-8")
+    tpl.write_text(fresh, encoding="utf-8")
+    _update(root)
+    assert not (tpl.parent / (tpl.name + ".new")).exists(), "устаревший .new не удалён"
+    assert names() == [], names()
+
+    # Common: несовпадение заменяет оригинал; оба варианта .new убираются.
+    common = root / "TemplatesCommon" / "README.md"
+    kit_common = (KIT_DIR / "README.md").read_text(encoding="utf-8")
+    common.write_text("мой Common\n", encoding="utf-8")
+    (common.parent / "README.md.new").write_text("старый .new\n", encoding="utf-8")
+    (common.parent / "README.md.new.1").write_text(kit_common, encoding="utf-8")
+    out = _update(root).stdout
+    assert "Общие шаблоны" in out and "README.md" in out, out[-700:]
+    assert common.read_text(encoding="utf-8") == kit_common, "Common не заменён версией кита"
+    assert not list(common.parent.glob("README.md.new*")), "в Common остались .new"
+
+    # Common уже равен киту, но рядом лежит устаревший .new: он тоже удаляется.
+    (common.parent / "README.md.new").write_text("старый .new\n", encoding="utf-8")
+    _update(root)
+    assert common.read_text(encoding="utf-8") == kit_common
+    assert not list(common.parent.glob("README.md.new*")), "устаревший Common .new не удалён"
 
 
 # ------------------------------------------------------------------ CT-04: единый источник типов, линтер, доктор

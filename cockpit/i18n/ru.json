@@ -242,7 +242,7 @@
   "overview.blockers_all_go": "Разбор — раздел «Здоровье»",
   "overview.blockers_all_ok": "Всё чисто",
   "overview.preview_failed": "предпросмотр не удался",
-  "overview.update_ask": "Обновить движок до {kit} в {n} проект(ах)?\n\n{list}\n\nШаблоны и промпты не перезаписываются — они лягут рядом как .new.\nGit-хук будет переставлен, режим сохранится.",
+  "overview.update_ask": "Обновить движок до {kit} в {n} проект(ах)?\n\n{list}\n\nШаблоны и промпты в Templates/Prompts не перезаписываются — они лягут рядом как .new. Общие шаблоны TemplatesCommon заменяются версией кита.\nGit-хук будет переставлен, режим сохранится.",
   "overview.updating": "Обновляю проекты…",
   "overview.update_failed": "обновление не удалось",
   "overview.updated": "Обновлено проектов: {n}",

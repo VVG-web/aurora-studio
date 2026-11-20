@@ -336,8 +336,8 @@ own in the project's `Templates/`. The passport, the check codes and the `kb:car
   `local` (this machine: ignore + untrack), `shard` (shared data in per-user parts), `shared` (a common file with an
   ordinary merge). Without that answer `--check` fails. A template refusal is not a failure: the script writes the reason, goes
   on and ends with exit code 1 (`card_types.run_script`; `kb:scrub` ends with 2 on a refusal: personal data is left).
-- **A released template is not edited — a new version comes out.** The seed rule delivers an edit to old projects only as
-  `<file>.new`, so a fix or an extension of `akdb_*_v1.0.md` is a new file `v1.1` (or `v2.0`) with the passport field
+- **A released template is not edited — a new version comes out.** An update replaces the file in `TemplatesCommon/`,
+  so a fix or an extension of `akdb_*_v1.0.md` is a new file `v1.1` (or `v2.0`) with the passport field
   `migration: none|auto|llm`; `v1.0` stays beside it, and a card is checked by the version in its own `template:`.
 - The `AKDB:COMMON` block is the same text in all thirteen templates and in the `COMMON_RULES` constant
   (`card_types.py`); a test compares them byte for byte, so a change of the common rules is a new version of every
