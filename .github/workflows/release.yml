@@ -8,8 +8,9 @@ name: release
 #     тестов: повторить выпуск, если он не создался.
 #
 # Безопасно запускать сколько угодно раз: готовый Release и существующий тег не
-# перезаписываются. Тег ставится на коммит, который поднял VERSION, — как и прежние теги,
-# а не на то, что лежит в master сейчас.
+# перезаписываются. Тег ставится на коммит, который прошёл зелёный engine-tests
+# (workflow_run.head_sha), а не на коммит, поднявший VERSION. Если master уже ушёл
+# вперёд, workflow ничего не выпускает и пишет об этом.
 #
 # Отключить выпуск по версии: удалить этот файл или выключить workflow во вкладке Actions.
 on:
@@ -48,14 +49,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # Ровно тот коммит, что прошёл проверки. Полная история нужна, чтобы найти
-          # коммит, поднявший VERSION.
+          # Ровно тот коммит, что прошёл проверки (при ручном запуске — master).
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
       - name: Права токена
         run: gh api "repos/$GH_REPO" --jq '.permissions'
       - name: Выпустить версию из VERSION
         shell: bash
+        env:
+          # Автоматический запуск: выпускаем ровно тот коммит, который проверял engine-tests.
+          # Ручной: вершину master, на которой workflow запустили.
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_SHA: ${{ github.sha }}
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
 
@@ -73,27 +79,61 @@ jobs:
             exit 0
           fi
 
-          # Тег поставили руками — Release ляжет на него. Тега нет — его создаст сам Release
-          # на коммите, поднявшем VERSION. Код 2 у ls-remote значит «нет такого», всё
+          # Что выпускаем: автоматический запуск — ровно проверенный коммит, ручной — master.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TARGET="$DISPATCH_SHA"
+          else
+            TARGET="$WORKFLOW_RUN_HEAD_SHA"
+          fi
+          if ! [[ "$TARGET" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Не удалось определить проверенный коммит: «$TARGET»"
+            exit 1
+          fi
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [ "$HEAD_SHA" != "$TARGET" ]; then
+            echo "::error::Checkout дал $HEAD_SHA, а выпускать нужно $TARGET — выпуск остановлен"
+            exit 1
+          fi
+
+          # master ушёл вперёд — проверенный коммит больше не вершина: выпуск не делаем,
+          # иначе тег встал бы на коммит, которого нет в актуальной истории.
+          git fetch --no-tags origin "+refs/heads/master:refs/remotes/origin/master"
+          MASTER_SHA="$(git rev-parse refs/remotes/origin/master)"
+          if [ "$MASTER_SHA" != "$TARGET" ]; then
+            if git merge-base --is-ancestor "$TARGET" "$MASTER_SHA"; then
+              echo "::notice::origin/master ушёл вперёд ($MASTER_SHA); $TARGET больше не вершина — выпуск не делаем."
+              {
+                echo "### Выпуск пропущен: master ушёл вперёд"
+                echo
+                echo "Проверенный коммит: $TARGET"
+                echo "Вершина origin/master: $MASTER_SHA"
+                echo "Тег $TAG не ставился, Release не создавался."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "::error::Проверенный $TARGET не входит в origin/master ($MASTER_SHA) — тег ставить не на что"
+            exit 1
+          fi
+
+          # Тег поставили руками — Release ляжет на него, но только если он указывает на тот
+          # же проверенный коммит: чужой тег не перезаписываем. Тега нет — его создаст сам
+          # Release на проверенном коммите. Код 2 у ls-remote значит «нет такого», всё
           # остальное — сбой связи, и принимать его за «нет» нельзя.
           rc=0
           git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1 || rc=$?
           case "$rc" in
-            0) TAG_ARGS=(--verify-tag) ;;
-            2) TAG_ARGS=(--target "$(git log -1 --format=%H -- VERSION)") ;;
+            0)
+              git fetch --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG"
+              TAG_COMMIT="$(git rev-parse "$TAG^{commit}")"
+              if [ "$TAG_COMMIT" != "$TARGET" ]; then
+                echo "::error::Тег $TAG уже указывает на $TAG_COMMIT, а проверен $TARGET — тег не перезаписываю"
+                exit 1
+              fi
+              TAG_ARGS=(--verify-tag)
+              ;;
+            2) TAG_ARGS=(--target "$TARGET") ;;
             *) echo "::error::Не удалось спросить у GitHub про тег $TAG (код $rc)"; exit 1 ;;
           esac
-          if [ "${TAG_ARGS[0]}" = "--verify-tag" ]; then
-            TAG_COMMIT="$(git rev-parse "$TAG^{commit}")"
-          else
-            TAG_COMMIT="${TAG_ARGS[1]}"
-          fi
-          HEAD_SHA="$(git rev-parse HEAD)"
-          if ! git merge-base --is-ancestor "$TAG_COMMIT" "$HEAD_SHA"; then
-            echo "::error::Метка $TAG указывает на коммит, которого нет в проверенной истории"
-            exit 1
-          fi
-          POST_TAG="$(git log --no-merges --format='- %h %s' "$TAG_COMMIT..$HEAD_SHA")"
 
           # Заголовок и текст — запись этой версии из CHANGELOG.md, как у прежних выпусков.
           # Без записи выпуск не создаём: пустая страница хуже отсутствующей.
@@ -121,16 +161,6 @@ jobs:
           with open(os.path.join(tmp, "release_notes.md"), "w", encoding="utf-8") as f:
               f.write(body + "\n")
           PY
-          if [ -n "$POST_TAG" ]; then
-            {
-              echo
-              echo "### После метки"
-              echo
-              echo "Метка указывает на коммит выпуска. После него в master вошли:"
-              echo
-              printf '%s\n' "$POST_TAG"
-            } >> "$RUNNER_TEMP/release_notes.md"
-          fi
 
           gh release create "$TAG" "${TAG_ARGS[@]}" \
             --title "$(cat "$RUNNER_TEMP/release_title.txt")" \

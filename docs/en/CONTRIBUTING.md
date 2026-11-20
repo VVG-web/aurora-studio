@@ -354,11 +354,13 @@ own in the project's `Templates/`. The passport, the check codes and the `kb:car
   3) raise `UI_VERSION` in `cockpit/ui/panel.js` (a test checks it); 4) merge to `master`. CI does the rest (see below).
 - **CI creates the tag and the GitHub Release** — `.github/workflows/release.yml`. After a green `engine-tests` on
   `master` it looks at `VERSION`: if that version has no Release yet, it puts the tag `vX.Y.Z` on the commit that
-  raised `VERSION` (like the earlier tags) and publishes the Release. The title `vX.Y.Z — the gist` and the text come
-  from that version's entry in `CHANGELOG.md`; no entry — no release, and the workflow fails with a clear error. You
-  do not need to tag by hand; if you did, the Release still lands on your tag. The workflow never overwrites an
-  existing tag or Release, so running it again is safe. To repeat a release by hand — Actions → release → Run workflow
-  on `master`; to switch it off — delete the file or disable the workflow in the Actions tab.
+  passed the checks (`workflow_run.head_sha`) and publishes the Release. If `master` has already moved ahead, the
+  release is skipped with a message: no tag, no Release. The title `vX.Y.Z — the gist` and the text come from that
+  version's entry in `CHANGELOG.md`; no entry — no release, and the workflow fails with a clear error. You do not
+  need to tag by hand; if you did and it points at the same verified commit, the Release lands on it, while a
+  foreign tag is never overwritten. The workflow never overwrites an existing tag or Release, so running it again
+  is safe. To repeat a release by hand — Actions → release → Run workflow on `master`; to switch it off — delete
+  the file or disable the workflow in the Actions tab.
 - Before a release these are green: `tests/run_tests.py`, `kit_commands.py --check`, `kit_i18n.py --check`.
 - The `Development/` folder (the QA kitchen: cases, scenarios, run journals) does not ride in the kit's git; it is mounted as a
   worktree of the `development` branch: `git worktree add Development development`.

@@ -208,21 +208,25 @@ def test_contributing_states_roles_and_anonymised_bug_notes_in_both_languages(tm
 
 
 @test
-def test_release_tags_the_version_commit_and_lists_later_fixes(_t):
-    """Метка выпуска ставится на коммит, поднявший VERSION, а более поздние исправления
-    перечисляются в заметках, а не переписывают метку.
+def test_release_tags_the_commit_that_passed_ci_and_skips_when_master_moved(_t):
+    """Метка выпуска ставится на коммит, который прошёл зелёный CI, а не на коммит VERSION.
 
-    Случай 1.231.7: после релизного коммита понадобился диапазон numpy под Python 3.10…3.14.
-    Метка осталась на коммите версии, а `deps: …` попал в блок «После метки». Проверка держит
-    это правило: `--target` берётся из истории VERSION, `POST_TAG` считается до HEAD, force-push
-    и перезапись метки запрещены.
+    Случай 1.231.12: метка встала на коммит, поднявший VERSION, а три исправления после него
+    (включая зелёный прогон Windows и macOS) оказались вне метки и попали в раздел «После
+    метки». Теперь выпускается ровно проверенный `workflow_run.head_sha`; если `master` уже
+    ушёл вперёд, выпуск пропускается с сообщением. Существующий тег и Release не
+    перезаписываются, force-push нет.
     """
     text = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
-    assert '--target "$(git log -1 --format=%H -- VERSION)"' in text, \
-        "метка снова ставится на HEAD, а не на коммит версии"
-    assert "POST_TAG=" in text and "### После метки" in text, \
-        "коммиты после метки не попадают в заметки выпуска"
-    assert 'git merge-base --is-ancestor "$TAG_COMMIT" "$HEAD_SHA"' in text, \
-        "нет проверки, что метка лежит в проверенной истории"
-    assert "--force" not in text and "push --tags" not in text, \
+    assert 'TARGET="$WORKFLOW_RUN_HEAD_SHA"' in text and 'TARGET="$DISPATCH_SHA"' in text, \
+        "метка ставится не на проверенный коммит (или ручной запуск не выпускает master)"
+    assert '--target "$TARGET"' in text, "тег ставится не на проверенный коммит"
+    assert 'refs/remotes/origin/master' in text and \
+           'git merge-base --is-ancestor "$TARGET" "$MASTER_SHA"' in text, \
+        "нет отказа, когда master ушёл вперёд"
+    assert '"$TAG_COMMIT" != "$TARGET"' in text, \
+        "существующий тег на другом коммите перезаписывается"
+    assert "POST_TAG" not in text and "После метки" not in text, \
+        "раздел «После метки» вернулся"
+    assert "--force-tag" not in text and "push --tags" not in text and "push origin" not in text, \
         "выпуск не должен переписывать метку или пушить теги вручную"
