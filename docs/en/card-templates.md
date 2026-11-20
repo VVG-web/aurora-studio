@@ -14,7 +14,7 @@ This page describes what works in the kit today. What is not there yet is named 
 
 - Thirteen templates live in the kit's `scaffold/TemplatesCommon/`. A new project gets them on creation, an
   existing one on `aurora.py update <project> --apply`. `TemplatesCommon/` is kit-owned: a mismatching copy is
-  replaced by the kit version and no `.new` is created there. Keep your own edition in `Templates/`.
+  replaced by the kit version and old `.new` files next to it are removed. Keep your own edition in `Templates/`.
 - The type registry (`card_types.registry()`) reads the template passports. The "section → type" table is one:
   parsing, repair, the linter and the schema take it from the registry; with no templates it is the old one.
 - The **`kb:cards`** command shows the registry and checks cards against their types' templates (section 7).
