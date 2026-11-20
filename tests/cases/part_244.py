@@ -821,6 +821,18 @@ def test_runtime_truth_stderr_generation_survives_parallel_restart(tmp: Path):
         A._HUB.update(old_hub)
 
 
+def _crash_python() -> str:
+    """Интерпретатор для падающего ребёнка. На macOS sys.executable — это Python.app,
+    и каждый его SIGSEGV поднимает системный алерт «Python неожиданно завершил работу»
+    (по диалогу на каждый прогон, они копятся в очереди ReportCrash). Рядом лежит тот же
+    питон без бандла: падение остаётся нативным, faulthandler пишет в stderr, диалога нет."""
+    if sys.platform == "darwin":
+        cand = Path(sys.base_prefix) / "bin" / ("python%d.%d" % sys.version_info[:2])
+        if cand.is_file():
+            return str(cand)
+    return sys.executable
+
+
 @test
 def test_runtime_truth_faulthandler_stderr_survives_a_native_crash(tmp: Path):
     """Нативное падение оставляет в кольце stderr строку faulthandler, а не пустоту."""
@@ -842,7 +854,7 @@ def test_runtime_truth_faulthandler_stderr_survives_a_native_crash(tmp: Path):
         crash = tmp / "crash.py"
         crash.write_text("import faulthandler\nfaulthandler.enable()\nimport ctypes\n"
                          "ctypes.string_at(0)\n", encoding="utf-8")
-        proc = A._spawn_adapter([sys.executable, str(crash)], record=True, stderr_gen=gen)
+        proc = A._spawn_adapter([_crash_python(), str(crash)], record=True, stderr_gen=gen)
         assert proc.wait(10) is not None, "процесс с нативным падением не завершился"
         A._join_stderr(proc, 5)
         lines = int(getattr(A, "ADAPTER_STDERR_LINES", 200))
