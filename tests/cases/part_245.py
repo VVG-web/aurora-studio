@@ -130,13 +130,30 @@ def _wait(predicate, seconds=5.0, step=0.05) -> bool:
     return predicate()
 
 
+def _death_counted(AG, proc) -> bool:
+    with AG._HUB_LOCK:
+        return any(p is proc for p in (AG._HUB.get("dead") or {}).values())
+
+
 def _hub_reset(AG, proc=None) -> None:
     """Чистое состояние хаба: ноль смертей, новое кольцо stderr, пустое ожидание.
 
     Кит 1.231.12 держит кольца stderr по поколениям процессов (`stderr_gen`), а прежний —
     одно кольцо: новое поколение берём у самого движка, если он это умеет, иначе чистим
     единственное. Иначе хвост stderr из соседней проверки уехал бы в причину этой.
+
+    Читатель прежнего процесса — отдельный поток: он может досчитать смерть уже после
+    сброса счётчика. Ждём его stderr-поток и учёт смерти вне `_HUB_LOCK`, иначе замок
+    не даст читателю завершиться, а смерть из прошлой проверки попадёт в новую серию.
     """
+    with AG._HUB_LOCK:
+        old = AG._HUB.get("proc")
+    stderr_reader = getattr(old, "_aurora_stderr_thread", None)
+    if stderr_reader is not None:
+        stderr_reader.join(5)
+        assert not stderr_reader.is_alive(), "stderr-читатель прежнего процесса не завершился"
+        assert _wait(lambda: _death_counted(AG, old), 5), \
+            "читатель прежнего процесса не успел учесть смерть до сброса"
     new_gen = getattr(AG, "_hub_stderr_new_generation_locked", None)
     with AG._HUB_LOCK:
         gen = int(new_gen() if callable(new_gen) else AG._HUB.get("stderr_gen") or 0)
