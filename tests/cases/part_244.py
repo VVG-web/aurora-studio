@@ -845,8 +845,15 @@ def test_runtime_truth_faulthandler_stderr_survives_a_native_crash(tmp: Path):
         proc = A._spawn_adapter([sys.executable, str(crash)], record=True, stderr_gen=gen)
         assert proc.wait(10) is not None, "процесс с нативным падением не завершился"
         A._join_stderr(proc, 5)
-        tail = A._hub_stderr_tail(20, gen=gen)
+        lines = int(getattr(A, "ADAPTER_STDERR_LINES", 200))
+        tail = A._hub_stderr_tail(lines, gen=gen)
+        # faulthandler печатает весь стек: на CI macOS/arm64 его больше двадцати строк,
+        # и хвост из 20 терял заголовок «Fatal Python error», хотя кольцо хранит до
+        # ADAPTER_STDERR_LINES строк. Смотрим кольцо целиком и требуем, чтобы заголовок
+        # падения был именно первой строкой, а не где-то в глубине хвоста.
         assert "Fatal Python error" in tail or "fatal exception" in tail.lower(), tail
+        first = tail.splitlines()[0] if tail.strip() else ""
+        assert "Fatal Python error" in first or "fatal exception" in first.lower(), tail
     finally:
         if proc is not None:
             for pipe in ("stdin", "stdout", "stderr"):
