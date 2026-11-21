@@ -383,9 +383,12 @@ def service_metrics(spans: Iterable) -> dict:
                 value = _metrics(row, key)
                 if value is not None:
                     rec[key].append(value)
-        basis = _metrics(row, "tps_basis")
-        if basis and (kind == "call" or not rec["tps_basis"]):
-            rec["tps_basis"] = str(basis)
+        # Это строка, а не число: `_metrics` вернул бы для неё None и навсегда оставил
+        # `request`. Поток важнее: если хоть одна попытка реально стримила, сервис стримил.
+        basis = (row.get("metrics") or {}).get("tps_basis")
+        if isinstance(basis, str) and basis:
+            if basis == "stream" or not rec["tps_basis"]:
+                rec["tps_basis"] = basis
     for rec in out.values():
         ok_latencies = rec.pop("ok_latency_ms")
         rec["latency_ms"] = _stat(rec["latency_ms"])
@@ -474,7 +477,10 @@ def summarize(spans: Iterable, active_start=None, active_end=None, queue_start=N
         unknown = 0.0
     by_service = _group_ms(service, service_rows, "service", other_u)
     by_cause = _group_ms(service, service_rows, "cause", other_u)
-    other_by_kind = _group_ms(other_u, other_rows, "wait_class")
+    # Классы ожидания могут пересекаться (пауза темпа и ожидание ресурса идут
+    # одновременно). Объединение `other_u` теряло один из них; для разбивки берём
+    # собственные отрезки каждого класса.
+    other_by_kind = _group_ms(other, other_rows, "wait_class")
     call_rows = [r for r in rows if r.get("kind") == "call"]
     attempt_bounds = [b for r in rows if r.get("kind") == "attempt"
                       for b in _clip([_bounds(r)], lo, hi) if b]

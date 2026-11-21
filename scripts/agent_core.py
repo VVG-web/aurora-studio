@@ -4943,12 +4943,24 @@ def _call_role(*args, **kwargs):
                     value = metric.get(key)
                     if isinstance(value, (int, float)):
                         metrics[key] = max(float(metrics.get(key, 0.0)), float(value))
+                # Токены — расход всех физических попыток, а не только последней:
+                # отказ по сроку или пустой ответ тоже стоил запроса. `call` несёт сумму,
+                # иначе `service_metrics`, `timing.d` и блок качества видят ноль.
+                for key in ("tokens_in", "tokens_out"):
+                    value = metric.get(key)
+                    if isinstance(value, (int, float)):
+                        metrics[key] = int(metrics.get(key, 0)) + int(value)
                 basis = str(metric.get("tps_basis") or "")
                 if basis and (basis == "stream" or not metrics.get("tps_basis")):
                     metrics["tps_basis"] = basis
         attempts = sum(1 for row in rows
                        if getattr(row, "kind", "") == "attempt")
         metrics["attempts"] = attempts
+        # Старый транспорт или кэш мог не оставить токенов в спане: берём их из ответа,
+        # но не прибавляем к уже собранной сумме попыток.
+        for key in ("tokens_in", "tokens_out"):
+            if key not in metrics and isinstance(r.get(key), (int, float)):
+                metrics[key] = int(r[key])
         metrics.setdefault("tps_basis", "request")
         metrics.setdefault("ttft_ms", None)
         if r.get("ok") and isinstance(r.get("seconds"), (int, float)):
