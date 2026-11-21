@@ -867,24 +867,36 @@ def check_steps(cmds: list, project: str, svc=None, budget: float = CN.PRELAUNCH
     return out
 
 
-def wait_restored(check, stop=None, poll: float = 20.0, on_wait=None, sleep=None, clock=None, woken=None) -> bool:
+def wait_restored(check, stop=None, poll: float = 20.0, on_wait=None, sleep=None, clock=None,
+                  woken=None, result=None) -> bool:
     """Ждать восстановления связи: `check()` → вердикт; идём, как только он «можно». Предела нет (маршрут доводит
     дело до конца, 1.170): выход только по `stop` (человек остановил); `woken()` — «проверить сейчас»: перепроверить,
     не дожидаясь паузы. `on_wait(вердикт, ждём_секунд)` — для журнала."""
     import time
     sleep = sleep or time.sleep
     started = (clock or time.time)()
+    checks = 0
     while True:
         v = check()
+        checks += 1
         if v.get("ok", True):
+            if result is not None:
+                result.update(waited_s=round((clock or time.time)() - started, 3),
+                              checks=checks, reason="restored")
             return True
         if stop is not None and stop.is_set():
+            if result is not None:
+                result.update(waited_s=round((clock or time.time)() - started, 3),
+                              checks=checks, reason="stopped")
             return False
         if on_wait:
             on_wait(v, int((clock or time.time)() - started))
         step = 1.0 if poll >= 1 else max(0.01, float(poll))        # пауза дробится: «стоп» и «проверить сейчас» слышны за секунду
         for _ in range(max(1, int(poll / step))):
             if stop is not None and stop.is_set():
+                if result is not None:
+                    result.update(waited_s=round((clock or time.time)() - started, 3),
+                                  checks=checks, reason="stopped")
                 return False
             if woken is not None and woken():
                 break

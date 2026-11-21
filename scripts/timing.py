@@ -646,12 +646,15 @@ def _merge(intervals: Iterable[tuple[float, float]]) -> list[tuple[float, float]
     return [(a, b) for a, b in out]
 
 
-def legacy_timing(seconds, net_summary: dict | None) -> dict:
+def legacy_timing(seconds, net_summary: dict | None, queue_ms: int | float | None = None,
+                  service_ms: int | float | None = None) -> dict:
     """Сводка для записей без спанов: только существующий `blocked_s`.
 
     `seconds` и `blocked_s` не меняются. Без снимков `work_ms` и `service_wait_ms`
     остаются None: это честное «нет данных», а не ноль секунд простоя. Если
     `blocked_s` больше длительности, ожидание обрезается до неё и `clamped=true`.
+    `queue_ms` отделяет очередь запуска, а `service_ms` — точное ожидание сервиса
+    (например, из `wait_restored`); с ним сводка перестаёт быть оценкой.
     Без самого `seconds` неизвестна и длительность: `active_ms` и `total_ms` остаются
     None, чтобы отсутствие данных не превратилось в известный ноль.
     """
@@ -667,30 +670,42 @@ def legacy_timing(seconds, net_summary: dict | None) -> dict:
                         "queue_separated": False},
         }
     total = max(0, int(round(float(seconds or 0) * 1000)))
-    if not net_summary or int(net_summary.get("snapshots") or 0) <= 0:
+    queue = (0 if queue_ms is None else
+             max(0, min(total, int(round(float(queue_ms or 0))))))
+    active = max(0, total - queue)
+    has_snaps = bool(net_summary and int(net_summary.get("snapshots") or 0) > 0)
+    blocked = 0
+    if has_snaps:
+        blocked = max(0, int(round(float(net_summary.get("blocked_s") or 0) * 1000)))
+    exact = (None if service_ms is None else
+             max(0, min(active, int(round(float(service_ms or 0))))))
+    if exact is None and not has_snaps:
         return {
             "v": TIMING_V, "scope": "run",
-            "active_ms": total, "total_ms": total, "queue_ms": 0,
+            "active_ms": active, "total_ms": total, "queue_ms": queue,
             "work_ms": None, "service_wait_ms": None,
             "other_wait_ms": 0, "unknown_ms": None,
             "coverage": 0.0,
             "source": "legacy", "confidence": "unknown",
             "quality": {"wait_known": False, "approx": False, "legacy": True,
-                        "queue_separated": False},
+                        "queue_separated": queue_ms is not None},
         }
-    blocked = max(0, int(round(float(net_summary.get("blocked_s") or 0) * 1000)))
-    wait = min(blocked, total)
+    wait = min(max(exact or 0, blocked), active)
+    approx = exact is None or blocked > exact
     return {
         "v": TIMING_V, "scope": "run",
-        "active_ms": total, "total_ms": total, "queue_ms": 0,
-        "work_ms": total - wait, "service_wait_ms": wait,
+        "active_ms": active, "total_ms": total, "queue_ms": queue,
+        "work_ms": active - wait, "service_wait_ms": wait,
         "other_wait_ms": 0, "unknown_ms": 0,
         "coverage": 1.0,
-        "source": "net_snapshots", "confidence": "approx",
+        "source": ("net_snapshots" if exact is None else
+                   ("spans+net" if blocked else "spans")),
+        "confidence": "exact" if exact is not None and not approx else "approx",
         "wait_by_service": {"network": wait},
         "wait_by_cause": {"network": wait},
-        "quality": {"wait_known": True, "approx": True, "legacy": False,
-                    "clamped": blocked > total, "queue_separated": False},
+        "quality": {"wait_known": True, "approx": approx, "legacy": False,
+                    "clamped": max(exact or 0, blocked) > active,
+                    "queue_separated": queue_ms is not None},
     }
 
 

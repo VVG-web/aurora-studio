@@ -29,7 +29,27 @@ def _time(seconds) -> str:
             f"{minutes} мин {sec:02d} с" if minutes else f"{sec} с")
 
 
-def _show(data: dict) -> str:
+def _meta(project: str, run_id: str) -> dict:
+    """`meta.json` прогона рядом со снимками: в нём очередь и точная сводка."""
+    if not project or not run_id:
+        return {}
+    try:
+        from aurora_common import engine_dir
+        path = Path(project).expanduser().resolve() / engine_dir(project) / "runs" / run_id / "meta.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _timing_of(meta: dict, seconds, summary: dict) -> dict:
+    timing = meta.get("timing") if isinstance(meta.get("timing"), dict) else None
+    if timing:
+        return timing
+    return T.legacy_timing(seconds, summary, queue_ms=meta.get("queue_ms"))
+
+
+def _show(data: dict, project: str = "") -> str:
     summary = data.get("summary") or NO.summarize(data)
     # Пустой отчёт не получает `seconds` из `summarize`: там ноль, а не измеренная
     # длительность. Передаём None, чтобы строка сказала «нет данных», а не «0 с».
@@ -38,7 +58,8 @@ def _show(data: dict) -> str:
         seconds = data.get("seconds")
     if seconds is None and summary.get("snapshots"):
         seconds = summary.get("seconds")
-    timing = T.legacy_timing(seconds, summary)
+    meta = _meta(project, str(data.get("id") or ""))
+    timing = _timing_of(meta, seconds, summary)
     lines = [f"# Сеть прогона {data.get('id', '')}", "",
              f"- команда: {data.get('cmd') or '—'}",
              f"- длительность: {T.format_work_wait(timing)}",
@@ -47,6 +68,9 @@ def _show(data: dict) -> str:
                 if data.get("snapshots") else ""),
              f"- сеть нужна: {'да' if summary.get('network_required') else 'нет'}",
              f"- вывод: {summary.get('reason') or '—'}"]
+    queue = timing.get("queue_ms")
+    if isinstance(queue, (int, float)) and queue > 0:
+        lines.insert(3, f"- ожидание запуска: {T.format_duration(queue)}")
     profiles = summary.get("profiles") or {}
     if profiles:
         lines.append("- профили недоступны: " + ", ".join(f"{k} {_time(v)}" for k, v in profiles.items()))
@@ -99,7 +123,8 @@ def list_reports(projects, since: float = 0.0, limit: int = 200) -> list:
                 if not isinstance(data, dict):
                     continue
                 summary = data.get("summary") or NO.summarize(data)
-                timing = T.legacy_timing(summary.get("seconds"), summary)
+                meta = _meta(str(project), str(data.get("id") or path.stem))
+                timing = _timing_of(meta, summary.get("seconds"), summary)
                 snaps = [s for s in data.get("snapshots") or [] if isinstance(s, dict)]
                 vpn = sorted({str(s.get("name") or "")
                               for snap in snaps
@@ -139,7 +164,7 @@ def main(argv=None) -> int:
     if a.json:
         print(json.dumps(data, ensure_ascii=False, indent=1))
     else:
-        print(_show(data))
+        print(_show(data, project))
     return 0
 
 

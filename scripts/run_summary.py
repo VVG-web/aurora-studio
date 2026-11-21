@@ -278,7 +278,8 @@ def merge(items) -> dict:
     return s
 
 
-def route(cwd: str, since: str, seconds: float, steps: list, lang: str = "ru") -> dict:
+def route(cwd: str, since: str, seconds: float, steps: list, lang: str = "ru",
+          timing: dict | None = None) -> dict:
     """Итог маршрута: итоги шагов плюс изменения базы за весь маршрут по git."""
     items = []
     for st in steps or []:
@@ -286,6 +287,8 @@ def route(cwd: str, since: str, seconds: float, steps: list, lang: str = "ru") -
         items += got if isinstance(got, list) else [got]
     s = merge(items)
     s["seconds"] = round(seconds or 0, 1)
+    if isinstance(timing, dict):
+        s["timing"] = timing
     for st in steps or []:
         rc = int(st.get("rc") or 0)
         if rc == 3:
@@ -342,6 +345,10 @@ def render(s: dict, title: str = "Итог прогона", lang: str = "ru") ->
             import timing as T
             L.append(f"  {w('Работа и ожидание', 'Work and waiting')}: "
                      + T.format_work_wait(timing, lang="en" if en else "ru"))
+            queue = timing.get("queue_ms")
+            if isinstance(queue, (int, float)) and queue > 0:
+                L.append(f"  {w('Ожидание запуска', 'Waiting to start')}: "
+                         + T.format_duration(queue, lang="en" if en else "ru"))
         except Exception:  # noqa: BLE001 — старый кит без timing не должен ломать итог
             pass
     if s.get("link_failed"):

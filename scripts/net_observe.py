@@ -404,6 +404,17 @@ def finish(kind: str, project: str, run_id: str, run_dir: str, cmd: str = "",
         return data
 
 
+def peek(kind: str, project: str, run_id: str, run_dir: str) -> dict:
+    """Текущая сводка без снимка конца: нужна до печати итога, а `finish` уже закрыл бы окно."""
+    if not enabled():
+        return {}
+    data = _read(local_path(run_dir))
+    if not data:
+        return {}
+    summary = summarize(data)
+    return {"summary": summary, "timing": summary.get("timing") or {}}
+
+
 def _parse(stamp: str) -> datetime | None:
     try:
         return datetime.strptime(str(stamp), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
@@ -460,11 +471,18 @@ def summarize(data: dict) -> dict:
         reason = "unknown"
     else:
         reason = "ok"
-    return {"seconds": total, "snapshots": len(snaps),
-            "profiles": dict(sorted(profiles.items())),
-            "providers": dict(sorted(providers.items())),
-            "blocked_s": blocked_s, "network_required": network_required,
-            "states": sorted(states), "reason": reason}
+    out = {"seconds": total, "snapshots": len(snaps),
+           "profiles": dict(sorted(profiles.items())),
+           "providers": dict(sorted(providers.items())),
+           "blocked_s": blocked_s, "network_required": network_required,
+           "states": sorted(states), "reason": reason}
+    try:
+        import timing as T
+        # Снимки дают оценку, а не точные интервалы: `~` и `approx` обязательны.
+        out["timing"] = T.legacy_timing(total, out)
+    except Exception:  # noqa: BLE001 — старая копия кита без timing не ломает отчёт
+        pass
+    return out
 
 
 def load_run(project: str, run_id: str) -> dict:
