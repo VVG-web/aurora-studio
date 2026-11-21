@@ -1602,6 +1602,18 @@
    "reason": "замеры: расход токенов прогона в meta/usage.d по частям участника, не карточка",
    "calls": 1,
    "git": "shard"
+  },
+  "scripts/timing.py:Tracer.emit": {
+   "kind": "other",
+   "reason": "спаны времени прогона в timing.jsonl папки прогона; служебный файл, не карточка",
+   "calls": 1,
+   "git": "local"
+  },
+  "scripts/timing.py:record": {
+   "kind": "other",
+   "reason": "сводка времени прогона в meta/timing.d по частям участника; служебные замеры, не карточка",
+   "calls": 1,
+   "git": "shard"
   }
  },
  "git_classes_required": true
