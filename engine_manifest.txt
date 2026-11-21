@@ -156,6 +156,7 @@ scripts/connectivity.py  => .aurora/scripts/connectivity.py
 scripts/conn_gate.py      => .aurora/scripts/conn_gate.py
 scripts/net_observe.py    => .aurora/scripts/net_observe.py
 scripts/net_report.py     => .aurora/scripts/net_report.py
+scripts/timing.py         => .aurora/scripts/timing.py
 # расход токенов для раздела «Замеры»: agent_runner пишет итог по ролям и моделям
 scripts/usage_log.py      => .aurora/scripts/usage_log.py
 scripts/git_sync.py      => .aurora/scripts/git_sync.py
