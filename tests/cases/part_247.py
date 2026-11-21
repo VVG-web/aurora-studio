@@ -101,6 +101,24 @@ def test_tracer_writes_spans_and_summarizes(tmp: Path):
 
 
 @test
+def test_overlapping_other_waits_keep_each_kind(tmp: Path):
+    """Итоговое ожидание — объединение, а разбивка по классам не теряет второй."""
+    T = _timing()
+    run_dir = tmp / "run"
+    run_dir.mkdir()
+    run = T.Tracer(run_dir=str(run_dir), run_id="run-1")
+    base = time.time()
+    run.note_span("call", start=base, dur_ms=1000, service="llm", status="ok")
+    run.note_span("wait", start=base + 0.1, dur_ms=200, service="llm",
+                  wait_class="pacing", reason="backoff")
+    run.note_span("wait", start=base + 0.1, dur_ms=200, service="llm",
+                  wait_class="resource", reason="slot")
+    summary = run.summary(active_start=base, active_end=base + 1)
+    assert summary["other_wait_ms"] == 200, summary
+    assert summary["other_by_kind"] == {"pacing": 200, "resource": 200}, summary
+
+
+@test
 def test_call_role_records_slot_backoff_and_stream_ttft(tmp: Path):
     """Слот, пауза и TTFT попадают в call/attempt/wait, успешный ответ их не теряет."""
     AG = _agent()
@@ -147,11 +165,18 @@ def test_call_role_records_slot_backoff_and_stream_ttft(tmp: Path):
             assert r["timing"]["ttft_ms"] == 120, r["timing"]
             assert r["timing"]["tps_basis"] == "stream", r["timing"]
             assert r["timing"]["attempts"] == 2, r["timing"]
+            assert r["timing"]["tokens_in"] == 10, r["timing"]
+            assert r["timing"]["tokens_out"] == 4, r["timing"]
             assert r["timing"]["service_wait_ms"] >= 10, r["timing"]
             assert r["timing"]["work_ms"] >= 250, r["timing"]
             assert sleeps and sleeps[0] == AG.RING_PAUSE, sleeps
             assert AG.USAGE["slot_wait_ms"] >= 5 and AG.USAGE["backoff_ms"] >= 9000, AG.USAGE
             assert AG.USAGE["attempts"] == 2, AG.USAGE
+            # Токены попытки не теряются на пути attempt -> call -> service_metrics:
+            # иначе `timing.d` и блок качества показывают «нет данных» при живом usage.
+            llm = _timing().service_metrics(AG.TIMING.snapshot())["llm"]
+            assert llm["tokens_in"] == 10 and llm["tokens_out"] == 4, llm
+            assert llm["tps"] == 13.3 and llm["tps_basis"] == "stream", llm
             spans = [s for s in AG.TIMING.snapshot() if s.kind == "attempt"]
             assert len(spans) == 2 and spans[-1].metrics["ttft_ms"] == 120, spans
     finally:
