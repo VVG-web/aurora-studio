@@ -31,7 +31,14 @@ def _time(seconds) -> str:
 
 def _show(data: dict) -> str:
     summary = data.get("summary") or NO.summarize(data)
-    timing = T.legacy_timing(summary.get("seconds"), summary)
+    # Пустой отчёт не получает `seconds` из `summarize`: там ноль, а не измеренная
+    # длительность. Передаём None, чтобы строка сказала «нет данных», а не «0 с».
+    seconds = (data.get("summary") or {}).get("seconds")
+    if seconds is None:
+        seconds = data.get("seconds")
+    if seconds is None and summary.get("snapshots"):
+        seconds = summary.get("seconds")
+    timing = T.legacy_timing(seconds, summary)
     lines = [f"# Сеть прогона {data.get('id', '')}", "",
              f"- команда: {data.get('cmd') or '—'}",
              f"- длительность: {T.format_work_wait(timing)}",

@@ -74,7 +74,20 @@ def legacy_timing(seconds, net_summary: dict | None) -> dict:
     `seconds` и `blocked_s` не меняются. Без снимков `work_ms` и `service_wait_ms`
     остаются None: это честное «нет данных», а не ноль секунд простоя. Если
     `blocked_s` больше длительности, ожидание обрезается до неё и `clamped=true`.
+    Без самого `seconds` неизвестна и длительность: `active_ms` и `total_ms` остаются
+    None, чтобы отсутствие данных не превратилось в известный ноль.
     """
+    if seconds is None or seconds == "":
+        return {
+            "v": TIMING_V, "scope": "run",
+            "active_ms": None, "total_ms": None, "queue_ms": 0,
+            "work_ms": None, "service_wait_ms": None,
+            "other_wait_ms": 0, "unknown_ms": None,
+            "coverage": 0.0,
+            "source": "legacy", "confidence": "unknown",
+            "quality": {"wait_known": False, "approx": False, "legacy": True,
+                        "queue_separated": False},
+        }
     total = max(0, int(round(float(seconds or 0) * 1000)))
     if not net_summary or int(net_summary.get("snapshots") or 0) <= 0:
         return {
@@ -111,10 +124,15 @@ def timing_problems(timing: dict | None) -> list[str]:
     if timing.get("v") != TIMING_V:
         problems.append(f"timing.v: {timing.get('v')!r}, нужен {TIMING_V}")
     for key in ("active_ms", "total_ms", "queue_ms", "other_wait_ms"):
-        if not isinstance(timing.get(key), (int, float)):
+        value = timing.get(key)
+        if value is None and key in ("active_ms", "total_ms"):
+            continue
+        if not isinstance(value, (int, float)):
             problems.append(f"timing.{key}: не число")
     active, total = timing.get("active_ms"), timing.get("total_ms")
     queue = timing.get("queue_ms")
+    if (active is None) != (total is None):
+        problems.append("timing: active_ms и total_ms должны быть оба null или числами")
     if all(isinstance(x, (int, float)) for x in (active, total, queue)):
         if min(active, total, queue) < 0:
             problems.append("timing: отрицательная длительность")
