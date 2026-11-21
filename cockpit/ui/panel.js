@@ -5681,6 +5681,8 @@ function timingTip(timing, fallbackSec){
     lines.push(t("timing.wait") + ": " + fmtTiming(timing.service_wait_ms) + ".");
   else
     lines.push(t("timing.wait") + ": " + t("dur.wait_unknown") + ".");
+  if (timing && timing.queue_ms > 0)
+    lines.push(t("timing.queue") + ": " + fmtTiming(timing.queue_ms) + ".");
   if (q.approx || (timing && timing.confidence === "approx"))
     lines.push(t("timing.source") + ": " + t("timing.approx") + ".");
   else if (q.legacy)

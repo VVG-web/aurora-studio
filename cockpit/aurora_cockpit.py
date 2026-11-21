@@ -1685,8 +1685,11 @@ def net_wait_for(job: dict, project: str, cmd: str) -> bool:
         job_push(job, f"⏳ {cmd}: нужное недоступно — {why}. Стою в очереди и начну сам, когда связь вернётся.")
     job["waiting"] = True
     started = time.time()
-    ok = GATE.wait_restored(lambda: net_check_command(project, cmd, hold=True), stop=job["cancel"], poll=RR.NET_POLL_S)
+    wait: dict = {}
+    ok = GATE.wait_restored(lambda: net_check_command(project, cmd, hold=True),
+                            stop=job["cancel"], poll=RR.NET_POLL_S, result=wait)
     job["waiting"] = False
+    job["net_wait_ms"] = max(0, int(round(float(wait.get("waited_s") or 0) * 1000)))
     if job["cancel"].is_set():
         ok = False                           # «Прервать» пришло одновременно с возвращением связи: человек главнее
     with JOBS_LOCK:
@@ -5546,6 +5549,8 @@ def history(project: str, limit: int = RUNS_SHOW) -> list:
                      "started": _local_iso_utc(run.get("started", "")),
                      "finished": _local_iso_utc(run.get("finished", "")),
                      "status": run.get("status", ""), "trigger": run.get("trigger", ""),
+                     "timing": run.get("timing"), "queue_ms": run.get("queue_ms", 0),
+                     "wait_ms": run.get("wait_ms", 0),
                      "items": len(mine),
                      "passed": sum(1 for it in mine if it.get("status") == "passed")})
     rows.sort(key=lambda r: r.get("started") or _started_from_id(r["id"]), reverse=True)
@@ -5592,7 +5597,8 @@ def _timing_of(meta: dict) -> dict | None:
         return timing
     if meta.get("seconds") is None and not meta.get("net"):
         return None
-    return T.legacy_timing(meta.get("seconds"), meta.get("net"))
+    return T.legacy_timing(meta.get("seconds"), meta.get("net"),
+                           queue_ms=meta.get("queue_ms"))
 
 
 def _local_iso_utc(value: str) -> str:
@@ -7246,8 +7252,10 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
     job_id = secrets.token_hex(8)
     run_id = utc_slug() + "-" + job_id[:6]
     run_dir = os.path.join(runs_dir(project), run_id)
+    queued_at = time.time()
     job = {"id": job_id, "cmd": cmd, "args": args, "project": project, "rc": None,
-           "out": [], "started": time.time(), "done": False, "run_id": run_id,
+           "out": [], "started": queued_at, "queued_at": queued_at,
+           "active_started": None, "done": False, "run_id": run_id,
            "run_dir": run_dir, "net_long": 0,
            "parent": parent, "last_out": time.time(), "cancel": threading.Event(),
            "state": "queued", "resources": list(TS.resources_for(cmd, args)),
@@ -7255,7 +7263,7 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
            # снимет. Шаг маршрута/цепочки — всегда; одиночные агент, синк и карта — тоже.
            "pausable": bool(parent or net_policy or cmd.startswith(
                ("agent:", "sync:", "kb:map", "kb:embed", "kb:repair"))),
-           "queue_reason": "", "queued_at": time.time()}
+           "queue_reason": ""}
     with JOBS_LOCK:
         # Та же команда с теми же аргументами в том же проекте уже идёт — второй процесс рядом не
         # заводим, а отдаём идущее задание: двойной щелчок, вторая вкладка или повтор после
@@ -7275,6 +7283,7 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
             with JOBS_LOCK:
                 job["state"] = "running"
                 job["started"] = time.time()
+                job["active_started"] = job["started"]
                 job["queue_reason"] = ""
             # Архив прогона — до запуска, а не после. Раньше папка появлялась только у
             # запустившегося процесса, и шаг, упавший на самом запуске, не оставлял ничего:
@@ -7291,6 +7300,11 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
             RR.write_meta(run_cdir, {"kind": "step" if parent else "command", "id": run_id,
                                      "parent": parent, "title": (cmd + " " + " ".join(args)).strip(),
                                      "cmd": cmd, "args": args, "started": utc_stamp(),
+                                     "queued_at": RR._iso(job.get("queued_at")),
+                                     "active_started": RR._iso(job.get("active_started")),
+                                     "queue_ms": max(0, int(round((
+                                         float(job.get("active_started") or job["started"])
+                                         - float(job.get("queued_at") or job["started"])) * 1000))),
                                      "who": who(project), "kit": kit_version(),
                                      "status": "running"})
             try:
@@ -7381,11 +7395,20 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
                 pass
             meta = RR.read_meta(os.path.join(runs_dir(project), run_id))
             if meta:
+                active_started = float(job.get("active_started") or job.get("started") or
+                                       job.get("queued_at") or time.time())
+                queued = float(job.get("queued_at") or active_started)
+                queue_ms = max(0, int(round((active_started - queued) * 1000)))
+                wall_seconds = max(0, int(round(job["finished"] - queued)))
                 meta.update(status="done", rc=job["rc"], finished=utc_stamp(),
-                            seconds=int(job["finished"] - job["started"]))
+                            seconds=wall_seconds, active_started=RR._iso(active_started),
+                            queue_ms=queue_ms)
                 if net_summary:
                     meta["net"] = net_summary
-                meta["timing"] = T.legacy_timing(meta.get("seconds"), net_summary)
+                meta["timing"] = T.legacy_timing(
+                    max(0.0, job["finished"] - queued), net_summary,
+                                                 queue_ms=queue_ms,
+                                                 service_ms=(job.get("net_wait_ms") or None))
                 RR.write_meta(os.path.join(runs_dir(project), run_id), meta)
             if run_log is not None:
                 trim_runs(project)
@@ -8613,6 +8636,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(RS.route(project, payload.get("since", ""),
                                     float(payload.get("seconds") or 0),
                                     payload.get("steps") or [],
+                                    timing=payload.get("timing")
+                                    if isinstance(payload.get("timing"), dict) else None,
                                     lang=request_lang(parse_qs(urlparse(self.path).query))))
             return
         if u.path == "/api/config":

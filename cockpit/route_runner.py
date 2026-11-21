@@ -315,8 +315,15 @@ def run_job(ck, project: str, cmd: str, args: list, stop=None, on_job=None,
             lines = f.read().splitlines()
     except OSError:
         pass
+    timing = {}
+    try:
+        meta = read_meta(os.path.join(ck.runs_dir(where), run_id))
+        if isinstance(meta.get("timing"), dict):
+            timing = meta["timing"]
+    except Exception:  # noqa: BLE001 — мета шага не должна ломать маршрут
+        pass
     return {"rc": rc if rc is not None else 2, "lines": lines, "stopped": asked,
-            "job": job_id, "run_id": run_id, "hung": hung}
+            "job": job_id, "run_id": run_id, "hung": hung, "timing": timing}
 
 
 def sync_commands(project: str) -> set:
@@ -630,7 +637,9 @@ class RouteRun:
         self.run_id = f"{_slug()}-{secrets.token_hex(2)}-route"
         self.base = os.path.join(ck.runs_dir(project), self.run_id)
         self.journal = Journal(self.base)
-        self.started = time.time()
+        self.created_at = self.started = time.time()
+        self.active_started: float | None = None
+        self.tracer = T.Tracer(run_dir=self.base, run_id=self.run_id)
         self.meta = {"kind": "route", "id": self.run_id, "title": sc.get("title", ""),
                      "scId": sc.get("id", ""), "write": write, "trigger": trigger,
                      "parent": parent, "started": _iso(self.started),
@@ -753,6 +762,7 @@ class RouteRun:
         cmd = (st["cmd"] + " " + " ".join(st["args"])).strip()
         v = v or self._verdict(st["cmd"])
         started, said = time.time(), [0.0]
+        result: dict = {}
 
         def on_wait(verdict, _secs):
             now = time.time()
@@ -761,8 +771,18 @@ class RouteRun:
                 said[0] = now
                 self.say("warn", self.t("route.net_wait_line", cmd=cmd, why=self._why(verdict)))
         on_wait(v, 0)
-        ok = G.wait_restored(lambda: self._verdict(st["cmd"], hold=True), stop=self.stop, poll=NET_POLL_S, on_wait=on_wait,
-                             woken=self._woken)
+        ok = G.wait_restored(lambda: self._verdict(st["cmd"], hold=True), stop=self.stop,
+                             poll=NET_POLL_S, on_wait=on_wait, woken=self._woken,
+                             result=result)
+        try:
+            self.tracer.note_span(
+                "wait", start=started, end=time.time(), service="network",
+                wait_class="service", cause="network_down",
+                reason=str(result.get("reason") or "network_unavailable"),
+                metrics={"checks": int(result.get("checks") or 0),
+                         "waited_s": float(result.get("waited_s") or 0)})
+        except Exception:  # noqa: BLE001 — замер не должен ломать ожидание
+            pass
         self.wait = {}
         if ok:
             self.say("ok", self.t("route.net_restored", cmd=cmd, took=self._dur(time.time() - started)))
@@ -962,6 +982,11 @@ class RouteRun:
         iso = lambda ts: datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         ev = {"cmd": st["cmd"], "args": st["args"], "start": iso(start), "end": iso(end),
               "duration_s": round(end - start), "rc": res["rc"]}
+        child = res.get("timing") if isinstance(res.get("timing"), dict) else {}
+        if child:
+            ev["queue_ms"] = int(child.get("queue_ms") or 0)
+            ev["wait_ms"] = int(round(float(child.get("service_wait_ms") or 0)
+                                      + float(child.get("other_wait_ms") or 0)))
         if res.get("refused"):
             ev["note"] = res["refused"]
         self.events.append(ev)
@@ -1246,6 +1271,8 @@ class RouteRun:
                                     "note": why, "steps": 0, "lines": [],
                                     "run_id": self.run_id, "found": []})
             self.task_held = True
+        # Очередь закончилась: ресурс взят, дальше идёт активная работа.
+        self.active_started = time.time()
         G, svc = net_gate(), self._net_svc()
         # Политика нужна только включённой проверке: выключенная ничего не решает и в окружение шага не попадает.
         self.net_policy = G.policy_for(self.net, svc) if (G and svc and svc.enabled) else ""
@@ -1341,6 +1368,45 @@ class RouteRun:
                 self.say("warn", self.t("route.lite_tail_step_failed", cmd=st["cmd"], rc=res.get("rc")))
         self.failed = keep_failed
 
+    def _queue_ms(self) -> int:
+        if self.active_started is None:
+            return 0
+        return max(0, int(round((self.active_started - self.created_at) * 1000)))
+
+    def _timing_now(self) -> dict:
+        """Сводка маршрута: очередь отдельно, ожидание сети из снимков и точных спанов."""
+        net_summary: dict = {}
+        try:
+            import net_observe as NO
+            net_summary = NO.peek("route", self.project, self.run_id, self.base).get("summary") or {}
+        except Exception:  # noqa: BLE001 — старый кит или сбой снимка: остаются спаны
+            pass
+        now = time.time()
+        seconds = max(0.0, now - self.created_at)
+        timing = T.legacy_timing(seconds, net_summary, queue_ms=self._queue_ms())
+        active_start = self.active_started or self.created_at
+        try:
+            exact = T.summarize(self.tracer.snapshot(), active_start=active_start,
+                                active_end=now, queue_start=self.created_at)
+            wait = exact.get("service_wait_ms")
+            if isinstance(wait, (int, float)) and wait > 0:
+                active = timing.get("active_ms")
+                if isinstance(active, (int, float)):
+                    wait = min(float(wait), float(active))
+                    timing["service_wait_ms"] = wait
+                    timing["work_ms"] = max(0.0, float(active) - wait)
+                    timing["unknown_ms"] = 0.0
+                    timing["wait_by_service"] = exact.get("wait_by_service") or {
+                        "network": wait}
+                    timing["wait_by_cause"] = exact.get("wait_by_cause") or {
+                        "network_down": wait}
+                    timing["source"] = "spans+net"
+                    timing["confidence"] = "exact"
+                    timing.setdefault("quality", {})["approx"] = False
+        except Exception:  # noqa: BLE001 — сводка не имеет права ломать итог
+            pass
+        return timing
+
     def _cycle(self, steps: list, i: int, end: int) -> bool:
         """Блок цикла оборотами. → False, если маршрут дальше не идёт."""
         t = self.t
@@ -1408,6 +1474,8 @@ class RouteRun:
 
     def _finish(self, head: str, started: float) -> dict:
         ck, t = self.ck, self.t
+        elapsed = max(0.0, time.time() - self.created_at)
+        timing = self._timing_now()
         bad = self.failed or ("stall" if self.stalled else "")
         # gated — ворота качества ответили кодом 1: не сбой, а вердикт; «Продолжить» работает как
         # после failed. Старые записи с failed читаются как раньше.
@@ -1452,8 +1520,8 @@ class RouteRun:
                 self.say("note", t("route.saved", commit=saved["commit"]))
             elif "нечего фиксировать" not in (saved.get("error") or ""):      # данные движка
                 self.say("warn", t("route.not_saved", why=saved.get("error") or "?"))
-        totals = ck.RS.route(self.project, head, time.time() - started, self.summary,
-                             lang=self.lang)
+        totals = ck.RS.route(self.project, head, elapsed, self.summary,
+                             lang=self.lang, timing=timing)
         lines = totals.get("lines") or []
         for line in lines:
             self.say("sum", line)
@@ -1491,7 +1559,7 @@ class RouteRun:
                "progressed": bool(head and head != self.head0), "net_skipped": list(self.net_skipped),
                "net_deferred": list(self.net_deferred), "partial": partial, "redo": list(self.redo),
                "note": self.refused, "steps": self.done, "lines": lines,
-               "run_id": self.run_id,
+               "run_id": self.run_id, "timing": timing,
                "found": [{"cmd": x["cmd"], "lines": x["tail"]} for x in self.summary
                          if x["rc"] == 1 and x.get("tail")]}
         return self._close(res)
@@ -1538,11 +1606,16 @@ class RouteRun:
                 self.meta["net"] = net["summary"]
         except Exception:  # noqa: BLE001 — снимок сети не имеет права ломать закрытие
             pass
-        seconds = round(time.time() - self.started)
+        seconds = max(0, int(round(time.time() - self.created_at)))
+        queue_ms = self._queue_ms()
+        timing = self._timing_now()
         self.meta.update(status=res["reason"], ok=res["ok"], failed=res.get("failed", ""),
                          note=res.get("note", ""), finished=_iso(),
-                         seconds=seconds, steps=self.children)
-        self.meta["timing"] = T.legacy_timing(seconds, self.meta.get("net"))
+                         seconds=seconds, steps=self.children,
+                         created_at=_iso(self.created_at),
+                         active_started=_iso(self.active_started),
+                         queue_ms=queue_ms, timing=timing)
+        res["timing"] = timing
         write_meta(self.base, self.meta)
         self.journal.close()
         if self.registry_held:

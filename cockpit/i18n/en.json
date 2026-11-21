@@ -904,6 +904,7 @@
   "dur.wait_unknown": "downtime: no data",
   "timing.work": "Work",
   "timing.wait": "Downtime due to unavailable external services",
+  "timing.queue": "Waiting to start",
   "timing.source": "Source",
   "timing.approx": "Estimated from network snapshots, accurate to 12 min",
   "timing.legacy": "No breakdown: the record predates wait accounting",
