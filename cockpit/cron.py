@@ -988,7 +988,12 @@ class Scheduler:
                 status = "partial"
             it.update(status=status, failed=res.get("failed", ""), note=note,
                       finished=now_iso())
-            self._note_wait(it, service=(res.get("timing") or {}).get("service_wait_ms"))
+            child = res.get("timing") or {}
+            extra_other = (int(child.get("other_wait_ms") or 0)
+                           + int(child.get("queue_ms") or 0))
+            self._note_wait(it, service=child.get("service_wait_ms"), other=extra_other)
+            if extra_other:
+                it["wait_ms"] = int(it.get("wait_ms") or 0) + extra_other
             return
         gap = ck.version_gap(project)
         if gap:
@@ -1012,7 +1017,8 @@ class Scheduler:
             # Сюда доходим, только если цепочку остановили, пока шаг висел.
             res = dict(res, rc=2, refused=f"шаг завис, цепочку остановили: {res['hung']}")
         it["run_id"] = res.get("run_id", "")
-        self._note_wait(it, service=(res.get("timing") or {}).get("service_wait_ms"))
+        child = res.get("timing") or {}
+        self._note_wait(it, service=child.get("service_wait_ms"))
         for line in res["lines"][-LOG_KEEP:]:
             log(line)
         on_step((it["cmd"] + " " + " ".join(it["args"])).strip(), res["rc"])

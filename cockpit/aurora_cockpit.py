@@ -7380,39 +7380,46 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
                     run_log.close()
                 except OSError:
                     pass
-            job["done"] = True
             job["finished"] = time.time()
-            job["state"] = "done"
-            mark_running(job["id"], cmd, project, False)
-            write_runlog(project, cmd, job["rc"], (cmd + " " + " ".join(args)).strip(),
-                         int(job["finished"] - job["started"]))
-            net_summary = {}
             try:
-                net_data = NO.finish("job", project, run_id, run_dir, cmd, parent,
-                                     started=job["started"])
-                net_summary = net_data.get("summary") or {}
-            except Exception:  # noqa: BLE001
-                pass
-            meta = RR.read_meta(os.path.join(runs_dir(project), run_id))
-            if meta:
-                active_started = float(job.get("active_started") or job.get("started") or
-                                       job.get("queued_at") or time.time())
-                queued = float(job.get("queued_at") or active_started)
-                queue_ms = max(0, int(round((active_started - queued) * 1000)))
-                wall_seconds = max(0, int(round(job["finished"] - queued)))
-                meta.update(status="done", rc=job["rc"], finished=utc_stamp(),
-                            seconds=wall_seconds, active_started=RR._iso(active_started),
-                            queue_ms=queue_ms)
-                if net_summary:
-                    meta["net"] = net_summary
-                meta["timing"] = T.legacy_timing(
-                    max(0.0, job["finished"] - queued), net_summary,
-                                                 queue_ms=queue_ms,
-                                                 service_ms=(job.get("net_wait_ms") or None))
-                RR.write_meta(os.path.join(runs_dir(project), run_id), meta)
-            if run_log is not None:
-                trim_runs(project)
-            TASKS.release(job_id)
+                mark_running(job["id"], cmd, project, False)
+                write_runlog(project, cmd, job["rc"], (cmd + " " + " ".join(args)).strip(),
+                             int(job["finished"] - job["started"]))
+                net_summary = {}
+                try:
+                    net_data = NO.finish("job", project, run_id, run_dir, cmd, parent,
+                                         started=job["started"])
+                    net_summary = net_data.get("summary") or {}
+                except Exception:  # noqa: BLE001
+                    pass
+                meta = RR.read_meta(os.path.join(runs_dir(project), run_id))
+                if meta:
+                    active_started = float(job.get("active_started") or job.get("started") or
+                                           job.get("queued_at") or time.time())
+                    queued = float(job.get("queued_at") or active_started)
+                    queue_ms = max(0, int(round((active_started - queued) * 1000)))
+                    wall_seconds = max(0, int(round(job["finished"] - queued)))
+                    paused_ms = max(0, int(job.get("paused_ms") or 0))
+                    paused_service_ms = max(0, int(job.get("paused_service_ms") or paused_ms))
+                    meta.update(status="done", rc=job["rc"], finished=utc_stamp(),
+                                seconds=wall_seconds, active_started=RR._iso(active_started),
+                                queue_ms=queue_ms, paused_ms=paused_ms)
+                    if net_summary:
+                        meta["net"] = net_summary
+                    meta["timing"] = T.legacy_timing(
+                        max(0.0, job["finished"] - queued), net_summary,
+                                                     queue_ms=queue_ms,
+                                                     service_ms=(
+                                                         int(job.get("net_wait_ms") or 0)
+                                                         + paused_service_ms or None))
+                    RR.write_meta(os.path.join(runs_dir(project), run_id), meta)
+                if run_log is not None:
+                    trim_runs(project)
+            finally:
+                # `run_job` ждёт этот флаг и сразу читает meta: итог должен быть уже на диске.
+                job["done"] = True
+                job["state"] = "done"
+                TASKS.release(job_id)
 
     def launch():
         threading.Thread(target=worker, daemon=True).start()

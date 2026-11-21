@@ -985,8 +985,12 @@ class RouteRun:
         child = res.get("timing") if isinstance(res.get("timing"), dict) else {}
         if child:
             ev["queue_ms"] = int(child.get("queue_ms") or 0)
-            ev["wait_ms"] = int(round(float(child.get("service_wait_ms") or 0)
-                                      + float(child.get("other_wait_ms") or 0)))
+            if "service_wait_ms" in child:
+                ev["service_wait_ms"] = int(child.get("service_wait_ms") or 0)
+            if "other_wait_ms" in child:
+                ev["other_wait_ms"] = int(child.get("other_wait_ms") or 0)
+            ev["wait_ms"] = int(ev.get("service_wait_ms") or 0) + int(
+                ev.get("other_wait_ms") or 0)
         if res.get("refused"):
             ev["note"] = res["refused"]
         self.events.append(ev)
@@ -1373,8 +1377,31 @@ class RouteRun:
             return 0
         return max(0, int(round((self.active_started - self.created_at) * 1000)))
 
+    def _child_timing(self) -> tuple[int, int, int]:
+        """Очередь и ожидание дочерних команд из событий шагов.
+
+        `service_wait_ms` и `other_wait_ms` хранятся отдельно, чтобы не сложить
+        одно и то же дважды. Старые события без разбивки дают общий `wait_ms`
+        как сервисное ожидание: другой причины у них уже не восстановить.
+        """
+        queue = service = other = 0
+        for ev in self.events:
+            queue += max(0, int(ev.get("queue_ms") or 0))
+            if "service_wait_ms" in ev:
+                service += max(0, int(ev.get("service_wait_ms") or 0))
+            elif "other_wait_ms" not in ev:
+                service += max(0, int(ev.get("wait_ms") or 0))
+            other += max(0, int(ev.get("other_wait_ms") or 0))
+        return queue, service, other
+
     def _timing_now(self) -> dict:
-        """Сводка маршрута: очередь отдельно, ожидание сети из снимков и точных спанов."""
+        """Сводка маршрута: очередь, ожидание сети и ожидание дочерних команд.
+
+        Дочерняя очередь поднимается в верхний `queue_ms` маршрута, сервисное и
+        прочее ожидание — в свои поля. Снимки сети дают оценку, спаны и
+        `meta.json` шагов — точные значения; большее из них не складывается с
+        меньшим, иначе один обрыв был бы посчитан дважды.
+        """
         net_summary: dict = {}
         try:
             import net_observe as NO
@@ -1383,28 +1410,54 @@ class RouteRun:
             pass
         now = time.time()
         seconds = max(0.0, now - self.created_at)
-        timing = T.legacy_timing(seconds, net_summary, queue_ms=self._queue_ms())
+        route_queue = self._queue_ms()
+        timing = T.legacy_timing(seconds, net_summary, queue_ms=route_queue)
+        total = max(0, int(round(seconds * 1000)))
+        child_queue, child_service, child_other = self._child_timing()
+        queue = min(total, route_queue + child_queue)
+        active = max(0, total - queue)
+        net_wait = timing.get("service_wait_ms")
+        net_known = isinstance(net_wait, (int, float))
         active_start = self.active_started or self.created_at
+        own_service = 0
         try:
             exact = T.summarize(self.tracer.snapshot(), active_start=active_start,
                                 active_end=now, queue_start=self.created_at)
             wait = exact.get("service_wait_ms")
             if isinstance(wait, (int, float)) and wait > 0:
-                active = timing.get("active_ms")
-                if isinstance(active, (int, float)):
-                    wait = min(float(wait), float(active))
-                    timing["service_wait_ms"] = wait
-                    timing["work_ms"] = max(0.0, float(active) - wait)
-                    timing["unknown_ms"] = 0.0
-                    timing["wait_by_service"] = exact.get("wait_by_service") or {
-                        "network": wait}
-                    timing["wait_by_cause"] = exact.get("wait_by_cause") or {
-                        "network_down": wait}
-                    timing["source"] = "spans+net"
-                    timing["confidence"] = "exact"
-                    timing.setdefault("quality", {})["approx"] = False
+                own_service = float(wait)
         except Exception:  # noqa: BLE001 — сводка не имеет права ломать итог
             pass
+        known_service = net_known or own_service > 0 or child_service > 0
+        known_other = child_other > 0
+        if not known_service and not known_other:
+            # Известна только очередь (например, шаг ждал kb-write), а работа
+            # без данных об ожидании остаётся неизвестной, не нулевой.
+            timing.update(queue_ms=queue, active_ms=active, total_ms=total)
+            timing.setdefault("quality", {})["queue_separated"] = True
+            return timing
+        service = max(float(net_wait or 0), own_service + child_service)
+        service = min(service, float(active))
+        other = min(float(child_other), max(0.0, float(active) - service))
+        work = max(0.0, float(active) - service - other)
+        approx = (net_known and float(net_wait) > own_service + child_service)
+        source = ("spans+children" if own_service > 0 and child_service > 0
+                  else "children" if child_service > 0
+                  else "spans" if own_service > 0
+                  else str(timing.get("source") or "children"))
+        if net_known and float(net_wait) > own_service + child_service:
+            source += "+net"
+        timing.update(
+            queue_ms=queue, active_ms=active, total_ms=total,
+            work_ms=work, service_wait_ms=service, other_wait_ms=other,
+            unknown_ms=0.0, coverage=1.0, source=source,
+            confidence="approx" if approx else "exact",
+            quality={**(timing.get("quality") or {}), "wait_known": True,
+                     "approx": approx, "legacy": False,
+                     "queue_separated": True},
+            wait_by_service={"network": service} if service else {},
+            wait_by_cause={"network_down": service} if service else {},
+            other_by_kind={"child": other} if other else {})
         return timing
 
     def _cycle(self, steps: list, i: int, end: int) -> bool:
@@ -1607,8 +1660,8 @@ class RouteRun:
         except Exception:  # noqa: BLE001 — снимок сети не имеет права ломать закрытие
             pass
         seconds = max(0, int(round(time.time() - self.created_at)))
-        queue_ms = self._queue_ms()
         timing = self._timing_now()
+        queue_ms = int(timing.get("queue_ms") or self._queue_ms())
         self.meta.update(status=res["reason"], ok=res["ok"], failed=res.get("failed", ""),
                          note=res.get("note", ""), finished=_iso(),
                          seconds=seconds, steps=self.children,
