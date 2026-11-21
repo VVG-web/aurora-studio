@@ -267,8 +267,17 @@ The snapshot keeps three different things apart: probe-profile availability, con
 which LLM provider lost its link) and model-provider availability. System VPN names are part of the answer, not noise: a
 probe may answer through another tunnel while the expected system VPN is disconnected.
 
-`net:report --project <project> --run <id>` reads the snapshots and shows the duration, snapshots and seconds lost because
-of profiles or providers.
+`net:report --project <project> --run <id>` reads the snapshots and shows two numbers:
+the work and an estimate of downtime caused by profiles or providers, for example
+`3 h (+ ~2 h of waiting)`. The estimate is approximate: snapshots are taken at the start,
+at the end and every 12 minutes of a long operation, so accuracy is within 12 minutes.
+A record without snapshots shows `3 h (downtime: no data)`, not a made-up zero.
+
+The same `timing` summary is returned by `/api/history` and `/api/history/run`. The old
+`seconds` field stays in place and old run files are not rewritten: when the summary is
+missing, it is derived from `seconds` and `net.blocked_s` at read time. This stage does not
+separate LLM, Jira or Confluence waiting, the queue, human pauses or TTFT; `network` is an
+estimate of network downtime, not a breakdown by every service.
 
 ## Appendix: storage format
 
