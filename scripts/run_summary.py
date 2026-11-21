@@ -60,6 +60,7 @@ def empty() -> dict:
     """Пустой итог: все счётчики нулевые, ошибок нет, изменения базы не посчитаны."""
     s = {k: 0 for k in NUMBERS}
     s["gen_seconds"] = 0.0
+    s["timing"] = None
     s["errors"] = {}
     s["by_role"] = {}
     s["by_model"] = {}
@@ -79,10 +80,12 @@ def _short(text, n: int = 60) -> str:
     return t[:n].rstrip(" .,;:—") + ("…" if len(t) > n else "")
 
 
-def from_agent(steps, usage: dict | None, seconds: float, delta: dict | None) -> dict:
+def from_agent(steps, usage: dict | None, seconds: float, delta: dict | None,
+               timing: dict | None = None) -> dict:
     """Итог прогона агента: его шаги, счётчик обращений к модели, изменения базы."""
     s = empty()
     s["seconds"] = round(seconds or 0, 1)
+    s["timing"] = timing if isinstance(timing, dict) else None
     u = usage or {}
     s["model_calls"] = int(u.get("calls") or 0)
     s["model_failed"] = int(u.get("failed") or 0)
@@ -333,6 +336,14 @@ def render(s: dict, title: str = "Итог прогона", lang: str = "ru") ->
     def w(ru, eng):
         return eng if en else ru
     L = [f"■ {title}", f"  {w('Время', 'Time')}: {human_time(s.get('seconds'), lang)}"]
+    timing = s.get("timing") if isinstance(s.get("timing"), dict) else None
+    if timing:
+        try:
+            import timing as T
+            L.append(f"  {w('Работа и ожидание', 'Work and waiting')}: "
+                     + T.format_work_wait(timing, lang="en" if en else "ru"))
+        except Exception:  # noqa: BLE001 — старый кит без timing не должен ломать итог
+            pass
     if s.get("link_failed"):
         L.append("  ⛔ " + w(f"Обрыв связи: вызовов без ответа {_n(s['link_failed'])} — шлюз моделей "
                              "недоступен или отказывает. Это не поломка Pydantic AI; реальная причина — "
@@ -402,7 +413,38 @@ def render(s: dict, title: str = "Итог прогона", lang: str = "ru") ->
             L.append(f"    · … {w('и ещё видов', 'and more kinds')}: {len(kinds) - 12}")
     else:
         L.append(f"  {w('Ошибки: не было', 'Errors: none')}")
+    if timing:
+        L.extend(_quality_lines(timing, "en" if en else "ru"))
     return L
+
+
+def _quality_lines(timing: dict, lang: str = "ru") -> list:
+    """Блок качества доступа: средние по LLM, без выдуманного нуля."""
+    en = lang == "en"
+
+    def w(ru, eng):
+        return eng if en else ru
+
+    def num(value, unit=""):
+        if value is None or value == "":
+            return w("нет данных", "no data")
+        if isinstance(value, (int, float)):
+            text = f"{float(value):.1f}".rstrip("0").rstrip(".")
+            return text + (f" {unit}" if unit else "")
+        return str(value)
+
+    services = timing.get("services") if isinstance(timing.get("services"), dict) else {}
+    llm = services.get("llm") if isinstance(services.get("llm"), dict) else {}
+    parallel = timing.get("parallel") if isinstance(timing.get("parallel"), dict) else {}
+    slots = parallel.get("slots_available_avg")
+    tps = llm.get("tps")
+    latency = (llm.get("latency_ms") or {}).get("avg") if isinstance(llm.get("latency_ms"), dict) else None
+    ttft = (llm.get("ttft_ms") or {}).get("avg") if isinstance(llm.get("ttft_ms"), dict) else None
+    return ["  " + w("Качество доступа LLM", "LLM access quality") + ": "
+            + w("доступно потоков", "available threads") + " " + num(slots)
+            + " · " + w("скорость", "speed") + " " + num(tps, "ток/с" if not en else "tok/s")
+            + " · " + w("отклик", "latency") + " " + num(latency, "мс" if not en else "ms")
+            + " · TTFT " + num(ttft, "мс" if not en else "ms")]
 
 
 def emit(s: dict) -> str:

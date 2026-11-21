@@ -419,6 +419,39 @@ def _run_facts(project: str, run_id: str, context: dict) -> dict:
     base = Path(project) / RTC.engine_dir(project) / "runs" / rid
     out["failures_file"] = _file_stat(base / "failures.jsonl", project)
     out["console"] = _text(_read_tail(base / "console.log", MAX_CONSOLE), project)
+    timing_rows = []
+    try:
+        for line in (base / "timing.jsonl").read_text(
+                encoding="utf-8", errors="replace").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("type") == "span":
+                timing_rows.append(row)
+    except OSError:
+        timing_rows = []
+    if timing_rows:
+        try:
+            import timing as T
+            out["timing"] = _clean(T.summarize(timing_rows), project)
+            services = T.service_metrics(timing_rows)
+            llm = services.get("llm") if isinstance(services.get("llm"), dict) else {}
+            out["quality"] = _clean({
+                "llm": {
+                    "calls": llm.get("calls"),
+                    "ok": llm.get("ok"),
+                    "latency_ms": (llm.get("latency_ms") or {}).get("avg"),
+                    "ttft_ms": (llm.get("ttft_ms") or {}).get("avg"),
+                    "tps": llm.get("tps"),
+                    "tps_basis": llm.get("tps_basis"),
+                },
+                "slots_available_avg": (out["timing"].get("parallel") or {}).get(
+                    "slots_available_avg"),
+            }, project)
+            out["timing_spans"] = len(timing_rows)
+        except Exception:  # noqa: BLE001 — диагностика не имеет права падать на замере
+            pass
     try:
         lines = (base / "failures.jsonl").read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:

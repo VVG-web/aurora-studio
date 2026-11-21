@@ -104,17 +104,15 @@ def write_run_journal(project: str, runs: Path, stamp: str, task: str, text: str
     return path
 
 
-def log_usage(project: str, task: str, summary: dict, started: float, seconds: float) -> None:
+def log_usage(project: str, task: str, summary: dict, started: float, seconds: float,
+              run_id: str = "") -> None:
     """Отдать «Замерам» расход токенов по ролям и моделям. Сведение, а не результат:
     ошибка записи не должна ронять прогон."""
     try:
         import usage_log as UL
-        run_dir = os.environ.get("AURORA_RUN_DIR", "")
-        run_id = os.path.basename(os.path.normpath(run_dir)) if run_dir else (
-            utc_slug("%Y%m%d-%H%M%S") + "-" + re.sub(r"[^A-Za-z0-9_.-]+", "-", task)[:60])
+        run_id = run_id or run_id_for(task)
         UL.record(project, run_id, {
-            "kind": "agent", "task": task, "started": utc_stamp(started) if started else "",
-            "seconds": seconds,
+            "kind": "agent", "task": task,
             "calls": summary.get("model_calls") or 0,
             "tokens_in": summary.get("tokens_in") or 0,
             "tokens_out": summary.get("tokens_out") or 0,
@@ -125,6 +123,33 @@ def log_usage(project: str, task: str, summary: dict, started: float, seconds: f
         })
     except Exception:  # noqa: BLE001 — замер не имеет права ломать прогон
         pass
+
+
+def run_id_for(task: str) -> str:
+    """Имя прогона одно на `usage.d`, `timing.d` и папку прогона панели."""
+    run_dir = os.environ.get("AURORA_RUN_DIR", "")
+    if run_dir:
+        return os.path.basename(os.path.normpath(run_dir))
+    return utc_slug("%Y%m%d-%H%M%S") + "-" + re.sub(r"[^A-Za-z0-9_.-]+", "-", task)[:60]
+
+
+def log_timing(project: str, task: str, run_id: str, timing: dict,
+               services: dict | None = None) -> None:
+    """Положить нормализованную строку времени в `timing.d`; ошибка не роняет прогон."""
+    try:
+        import timing as T
+        T.record(project, run_id, timing, services, kind="agent", task=task)
+    except Exception:  # noqa: BLE001 — замер не имеет права ломать прогон
+        pass
+
+
+def timing_summary(started: float, ended: float) -> dict:
+    """Сводка времени прогона из спанов процесса плюс качество сервисов."""
+    import timing as T
+    summary = AG.TIMING.summary(active_start=started, active_end=ended,
+                                slots=AG.USAGE.get("slots"))
+    summary["services"] = T.service_metrics(AG.TIMING.snapshot())
+    return summary
 
 
 def note_empty_run(runs: Path, stamp: str, task: str, project: str = "") -> Path:
@@ -11361,6 +11386,7 @@ def main() -> int:
         return 0 if res["ok"] else 1
 
     t_start = time.time()
+    AG.TIMING.reset()
     if a.task == "build" and not a.partition and build_left(cwd)[0] == 0:
         # Пустой план — холостой шаг: ни чекпойнта, ни оракула (линтер всей базы до и
         # после), ни журнала с коммитом. Раньше такой разбор стоил ~100 с и два коммита
@@ -11458,11 +11484,16 @@ def main() -> int:
         print(text)
         # Итог — тем же составителем, что у остальных задач: без него сбои перепроверки
         # не доходили до итога маршрута, и «Починить» выглядела чистой.
-        summ = RS.from_agent(res["steps"], AG.USAGE, time.time() - t_start, None)
+        ended = time.time()
+        timing = timing_summary(t_start, ended)
+        summ = RS.from_agent(res["steps"], AG.USAGE, ended - t_start, None, timing=timing)
         print("\n" + "\n".join(RS.render(summ, "Итог прогона agent:distill --recheck")
                                + fails_line(cwd)))
         print(RS.emit(summ))
-        log_usage(cwd, "distill --recheck", summ, t_start, time.time() - t_start)
+        run_id = run_id_for("distill --recheck")
+        log_usage(cwd, "distill --recheck", summ, t_start, ended - t_start, run_id=run_id)
+        log_timing(cwd, "distill --recheck", run_id, timing,
+                   timing.get("services"))
         if a.apply:
             done = commit_result(cwd, "agent:distill",
                                  f"перепроверка без опоры: чисто {res['clean']}, "
@@ -11611,12 +11642,16 @@ def main() -> int:
 
     # Итог прогона — один составитель на движок (`run_summary`): тот же складывает итог
     # маршрута в панели. Машинную строку панель читает и человеку не показывает.
-    summ = RS.from_agent(steps_all or res.get("steps", []), AG.USAGE, time.time() - t_start,
-                         RS.kb_delta(cwd, head0) if a.apply else None)
+    ended = time.time()
+    timing = timing_summary(t_start, ended)
+    summ = RS.from_agent(steps_all or res.get("steps", []), AG.USAGE, ended - t_start,
+                         RS.kb_delta(cwd, head0) if a.apply else None, timing=timing)
     summary_lines = RS.render(summ, f"Итог прогона agent:{a.task}") + fails_line(cwd)
     print("\n" + "\n".join(summary_lines))
     print(RS.emit(summ))
-    log_usage(cwd, a.task, summ, t_start, time.time() - t_start)
+    run_id = run_id_for(a.task)
+    log_usage(cwd, a.task, summ, t_start, ended - t_start, run_id=run_id)
+    log_timing(cwd, a.task, run_id, timing, timing.get("services"))
     text += "\n\n" + "\n".join(summary_lines)
 
     runs = Path(cwd) / RUNS_DIR

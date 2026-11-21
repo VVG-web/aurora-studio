@@ -58,6 +58,7 @@ scripts/aurora_actor.py  => .aurora/scripts/aurora_actor.py
 # машинная строка вердикта ворот и общие помощники флага `--gate` (gate_argv, gate_mode, gate_exit); их жёстко
 # импортируют kb_lint, kb_trace, artifact_lint и spec_pack — поэтому тоже раньше них: обрыв обновления между
 # записями не должен оставить хуку pre-commit и шагам маршрута AttributeError на старом run_summary
+scripts/timing.py        => .aurora/scripts/timing.py
 scripts/run_summary.py   => .aurora/scripts/run_summary.py
 # реестр модулей источников: `aurora_common.service_dirs` (папки зеркал по роли сервиса, BL-DEC-06) спрашивает его на каждой
 # карточке, поэтому он стоит раньше всех, кто ищет зеркала (kb_lint, kb_trust, ctx_pack): обрыв обновления не оставит их без реестра
@@ -156,7 +157,6 @@ scripts/connectivity.py  => .aurora/scripts/connectivity.py
 scripts/conn_gate.py      => .aurora/scripts/conn_gate.py
 scripts/net_observe.py    => .aurora/scripts/net_observe.py
 scripts/net_report.py     => .aurora/scripts/net_report.py
-scripts/timing.py         => .aurora/scripts/timing.py
 # расход токенов для раздела «Замеры»: agent_runner пишет итог по ролям и моделям
 scripts/usage_log.py      => .aurora/scripts/usage_log.py
 scripts/git_sync.py      => .aurora/scripts/git_sync.py
