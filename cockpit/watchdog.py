@@ -405,10 +405,13 @@ class Watchdog:
         st.update(down_seen=True, up_since=now, resumed_at=now,
                   down=st.get("down") or [job.get("pause_why") or "связь"])
         started = float(job.get("pause_started") or 0)
+        paused_ms = 0
         if started:
+            paused_ms = max(0, int(round((now - started) * 1000)))
             self._wait_span(job, started, now, str(job.get("pause_why") or "связь"))
         job.update(paused=False, resumed_at=now, last_resume=now,
-                   paused_ms=max(0, int(round((now - started) * 1000))) if started else 0)
+                   paused_ms=int(job.get("paused_ms") or 0) + paused_ms,
+                   paused_service_ms=int(job.get("paused_service_ms") or 0) + paused_ms)
         self._say(job, "▶ сторож: связь вернулась — продолжаю шаг с места остановки.")
 
     def _waits_for_model(self, job: dict) -> bool:

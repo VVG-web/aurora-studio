@@ -121,15 +121,44 @@ class GitAuto:
 
     @staticmethod
     def _wait_span(run_dir: str, start: float, end: float, action: str) -> None:
-        """Отложенное действие — ожидание `other`, а не работа проекта."""
+        """Отложенное действие — ожидание `other`, а не работа проекта.
+
+        Спан остаётся в `timing.jsonl`, а итог закрытого прогона дополняется
+        тем же ожиданием: без этого `meta.timing` считал backoff работой.
+        Время backoff идёт после прогона, поэтому его длительность добавляется
+        к `active_ms` и `total_ms`, а `work_ms` не меняется.
+        """
+        span_ms = max(0, int(round((end - start) * 1000)))
         try:
             import timing as T
             T.Tracer(run_dir=run_dir, run_id=os.path.basename(
                 os.path.normpath(run_dir))).note_span(
                 "wait", start=start, end=end, service="git_remote",
                 wait_class="other", cause="backoff", reason=f"git_{action}_backoff",
-                dur_ms=max(0.0, end - start) * 1000)
+                dur_ms=span_ms)
         except Exception:  # noqa: BLE001 — замер не должен ломать автоматику
+            pass
+        try:
+            import route_runner as RR
+            meta = RR.read_meta(run_dir)
+            timing = meta.get("timing") if isinstance(meta.get("timing"), dict) else {}
+            active = timing.get("active_ms")
+            total = timing.get("total_ms")
+            if not isinstance(active, (int, float)) or not isinstance(total, (int, float)):
+                return
+            timing["active_ms"] = float(active) + span_ms
+            timing["total_ms"] = float(total) + span_ms
+            timing["other_wait_ms"] = float(timing.get("other_wait_ms") or 0) + span_ms
+            kinds = timing.get("other_by_kind")
+            timing["other_by_kind"] = dict(kinds or {})
+            timing["other_by_kind"]["backoff"] = (
+                float(timing["other_by_kind"].get("backoff") or 0) + span_ms)
+            timing["source"] = str(timing.get("source") or "other") + "+backoff"
+            timing.setdefault("quality", {})["wait_known"] = True
+            meta["timing"] = timing
+            meta["seconds"] = round(float(total + span_ms) / 1000, 1)
+            RR.write_meta(run_dir, meta)
+        except Exception:  # noqa: BLE001 — итог не должен ломать автоматику
             pass
 
     def tick(self, now: float | None = None) -> list:
