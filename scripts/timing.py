@@ -647,14 +647,17 @@ def _merge(intervals: Iterable[tuple[float, float]]) -> list[tuple[float, float]
 
 
 def legacy_timing(seconds, net_summary: dict | None, queue_ms: int | float | None = None,
-                  service_ms: int | float | None = None) -> dict:
+                  service_ms: int | float | None = None,
+                  other_ms: int | float | None = None) -> dict:
     """Сводка для записей без спанов: только существующий `blocked_s`.
 
     `seconds` и `blocked_s` не меняются. Без снимков `work_ms` и `service_wait_ms`
     остаются None: это честное «нет данных», а не ноль секунд простоя. Если
     `blocked_s` больше длительности, ожидание обрезается до неё и `clamped=true`.
     `queue_ms` отделяет очередь запуска, а `service_ms` — точное ожидание сервиса
-    (например, из `wait_restored`); с ним сводка перестаёт быть оценкой.
+    (например, из `wait_restored`); `other_ms` — измеренное ожидание, не связанное
+    с внешним сервисом (занятость, пауза человека, backoff). С ними сводка
+    перестаёт быть оценкой.
     Без самого `seconds` неизвестна и длительность: `active_ms` и `total_ms` остаются
     None, чтобы отсутствие данных не превратилось в известный ноль.
     """
@@ -679,7 +682,10 @@ def legacy_timing(seconds, net_summary: dict | None, queue_ms: int | float | Non
         blocked = max(0, int(round(float(net_summary.get("blocked_s") or 0) * 1000)))
     exact = (None if service_ms is None else
              max(0, min(active, int(round(float(service_ms or 0))))))
-    if exact is None and not has_snaps:
+    other_raw = (None if other_ms is None else
+                 max(0, int(round(float(other_ms or 0)))))
+    other = other_raw
+    if exact is None and other is None and not has_snaps:
         return {
             "v": TIMING_V, "scope": "run",
             "active_ms": active, "total_ms": total, "queue_ms": queue,
@@ -691,20 +697,24 @@ def legacy_timing(seconds, net_summary: dict | None, queue_ms: int | float | Non
                         "queue_separated": queue_ms is not None},
         }
     wait = min(max(exact or 0, blocked), active)
+    other = min(other or 0, max(0, active - wait))
     approx = exact is None or blocked > exact
     return {
         "v": TIMING_V, "scope": "run",
         "active_ms": active, "total_ms": total, "queue_ms": queue,
-        "work_ms": active - wait, "service_wait_ms": wait,
-        "other_wait_ms": 0, "unknown_ms": 0,
+        "work_ms": active - wait - other, "service_wait_ms": wait,
+        "other_wait_ms": other, "unknown_ms": 0,
         "coverage": 1.0,
-        "source": ("net_snapshots" if exact is None else
-                   ("spans+net" if blocked else "spans")),
+        "source": ("net_snapshots" if exact is None and other_raw is None else
+                   ("spans+net" if blocked else
+                    ("spans+other" if exact is not None and other_raw is not None else
+                     ("spans" if exact is not None else "other")))),
         "confidence": "exact" if exact is not None and not approx else "approx",
-        "wait_by_service": {"network": wait},
-        "wait_by_cause": {"network": wait},
+        "wait_by_service": {"network": wait} if wait else {},
+        "wait_by_cause": {"network": wait} if wait else {},
+        "other_by_kind": {"other": other} if other else {},
         "quality": {"wait_known": True, "approx": approx, "legacy": False,
-                    "clamped": max(exact or 0, blocked) > active,
+                    "clamped": max(exact or 0, blocked) + (other_raw or 0) > active,
                     "queue_separated": queue_ms is not None},
     }
 
@@ -827,4 +837,9 @@ def format_work_wait(timing: dict | None, style: str = "compact", lang: str = "r
     quality = timing.get("quality") or {}
     approx = bool(quality.get("approx") or timing.get("confidence") == "approx")
     work_text = format_duration(work, style, lang)
-    return f"{work_text} (+ {_wait_phrase(wait, style, lang, approx)})"
+    text = f"{work_text} (+ {_wait_phrase(wait, style, lang, approx)})"
+    other = timing.get("other_wait_ms")
+    if isinstance(other, (int, float)) and other > 0:
+        tail = "прочее ожидание" if lang == "ru" else "other waiting"
+        text += f" · {tail} {format_duration(other, style, lang)}"
+    return text
