@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import types
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -222,6 +223,111 @@ def test_cron_busy_project_is_other_wait_and_has_utc_fields(tmp: Path):
         restore()
 
 
+def _cron_case(project: Path):
+    class Ck:
+        DEFAULT_LANG = "ru"
+
+        @staticmethod
+        def project_activity(_project):
+            return {}
+
+        @staticmethod
+        def version_gap(_project):
+            return ""
+
+        @staticmethod
+        def mark_running(*_args):
+            return None
+
+    import cron
+    return cron, cron.Scheduler(Ck(), lambda: []), Ck()
+
+
+def _cron_run(cron, item: dict) -> dict:
+    return {"id": "run-1", "task": "t", "name": "Цепочка", "trigger": "manual",
+            "status": "running", "started": cron.now_iso(), "finished": "",
+            "started_utc": cron.utc_iso(datetime.now(timezone.utc) - timedelta(seconds=300)),
+            "finished_utc": "", "queue_ms": 0, "wait_ms": 0,
+            "on_fail": "next", "items": [item], "panel": os.getpid(), "beat": 0}
+
+
+@test
+def test_cron_command_child_queue_is_its_own_timing(tmp: Path):
+    """Очередь 120 с у команды внутри Cron остаётся очередью, а не работой."""
+    restore = set_home(tmp / "home")
+    try:
+        cron, sched, _ck = _cron_case(tmp)
+        it = {"kind": "command", "project": str(tmp), "cmd": "kb:links", "args": [],
+              "status": "pending", "write": True, "log": [], "jobs": [], "done": []}
+        run = _cron_run(cron, it)
+        task = {"id": "t", "name": "Цепочка", "net": "", "on_fail": "next", "lang": "ru"}
+        saved_job, saved_gate = cron.RR.run_job, cron.RR.net_gate
+        cron.RR.run_job = lambda *_a, **_k: {
+            "rc": 0, "lines": [], "run_id": "child",
+            "timing": {"queue_ms": 120_000, "service_wait_ms": 60_000,
+                       "other_wait_ms": 0}}
+        cron.RR.net_gate = lambda: None
+        try:
+            sched._item(task, run, it, "ru")
+            sched._pass = lambda *_a, **_k: ""
+            sched._run(task, run)
+        finally:
+            cron.RR.run_job, cron.RR.net_gate = saved_job, saved_gate
+        assert it["timing"]["queue_ms"] == 120_000, it
+        assert it["wait_ms"] == 0, it
+        assert run["queue_ms"] == 120_000, run
+        assert run["timing"]["queue_ms"] == 120_000, run["timing"]
+        assert run["timing"]["service_wait_ms"] == 60_000, run["timing"]
+        assert run["timing"]["work_ms"] == 120_000, run["timing"]
+    finally:
+        restore()
+
+
+@test
+def test_cron_route_child_queue_is_its_own_timing(tmp: Path):
+    """Очередь 120 с маршрута в Cron не становится other_wait."""
+    restore = set_home(tmp / "home")
+    try:
+        cron, sched, _ck = _cron_case(tmp)
+        sc = {"id": "fix", "title": "Починить", "steps": [{"cmd": "kb:links", "args": []}]}
+        it = {"kind": "route", "project": str(tmp), "route": "fix", "args": [],
+              "status": "pending", "write": True, "log": [], "jobs": [], "done": []}
+        run = _cron_run(cron, it)
+        task = {"id": "t", "name": "Цепочка", "net": "", "on_fail": "next", "lang": "ru"}
+
+        class Route:
+            def __init__(self, *_a, **_k):
+                pass
+
+            @staticmethod
+            def safe_run():
+                return {"ok": True, "reason": "passed", "run_id": "route-child",
+                        "timing": {"queue_ms": 120_000, "service_wait_ms": 60_000,
+                                   "other_wait_ms": 30_000}}
+
+        saved = cron.RR.scenario, cron.RR.route_resources, cron.RR.RouteRun, cron.RR.net_gate
+        cron.RR.scenario = lambda *_a, **_k: sc
+        cron.RR.route_resources = lambda *_a, **_k: ()
+        cron.RR.RouteRun = Route
+        cron.RR.net_gate = lambda: None
+        try:
+            sched._item(task, run, it, "ru")
+            sched._pass = lambda *_a, **_k: ""
+            sched._run(task, run)
+        finally:
+            (cron.RR.scenario, cron.RR.route_resources,
+             cron.RR.RouteRun, cron.RR.net_gate) = saved
+        assert it["timing"]["queue_ms"] == 120_000, it
+        assert it["timing"]["other_wait_ms"] == 30_000, it
+        assert it["wait_ms"] == 30_000, it
+        assert run["queue_ms"] == 120_000, run
+        assert run["timing"]["queue_ms"] == 120_000, run["timing"]
+        assert run["timing"]["other_wait_ms"] == 30_000, run["timing"]
+        assert run["timing"]["work_ms"] == 90_000, run["timing"]
+    finally:
+        restore()
+
+
 @test
 def test_task_scheduler_exposes_queue_wait_and_conflict(tmp: Path):
     """Очередь планировщика хранит queued_at, started_at, wait_ms и причину конфликта."""
@@ -387,6 +493,45 @@ def test_gate_wait_returns_waited_seconds_and_net_observe_returns_timing(tmp: Pa
 
 
 @test
+def test_legacy_other_zero_does_not_invent_service_zero(tmp: Path):
+    """Если сервис не измерялся, other=0 не превращает его в известный ноль."""
+    T = _timing()
+    zero = T.legacy_timing(1000, None, other_ms=0)
+    assert zero["service_wait_ms"] is None, zero
+    assert zero["work_ms"] is None, zero
+    assert zero["other_wait_ms"] == 0, zero
+    assert zero["quality"]["wait_known"] is False, zero
+    paused = T.legacy_timing(1000, None, other_ms=600_000)
+    assert paused["service_wait_ms"] is None, paused
+    assert paused["work_ms"] is None, paused
+    assert paused["other_wait_ms"] == 600_000, paused
+    assert paused["source"] == "other", paused
+
+
+@test
+def test_route_snapshot_zero_wait_stays_approximate(tmp: Path):
+    """blocked_s=0 из снимка остаётся оценкой, а не точным нулём."""
+    import net_observe as NO
+    import route_runner as RR
+
+    for CK, root in _panel(tmp):
+        run = RR.RouteRun(CK, str(root), {"id": "t", "title": "t", "steps": []}, False)
+        saved = NO.peek
+        NO.peek = lambda *_a, **_k: {
+            "summary": {"snapshots": 1, "blocked_s": 0, "network_required": False,
+                        "reason": "ok"}}
+        try:
+            timing = run._timing_now()
+        finally:
+            NO.peek = saved
+        assert timing["service_wait_ms"] == 0, timing
+        assert timing["confidence"] == "approx", timing
+        assert timing["quality"]["approx"] is True, timing
+        assert timing["source"] == "net_snapshots", timing
+        assert timing["work_ms"] == timing["active_ms"], timing
+
+
+@test
 def test_command_network_wait_is_recorded_in_job(tmp: Path):
     """Ожидание сети команды возвращается в job и попадёт в её timing."""
     import conn_gate as GATE
@@ -494,8 +639,8 @@ def test_production_human_pause_is_not_service_wait(tmp: Path):
         {}, status="done", elapsed=7200)
     timing = data["timing"]
     assert timing["other_wait_ms"] == 600_000, timing
-    assert timing["service_wait_ms"] == 0, timing
-    assert timing["work_ms"] == 6_600_000, timing
+    assert timing["service_wait_ms"] is None, timing
+    assert timing["work_ms"] is None, timing
     md = report_make({"sid": "make-1", "seconds": 7200,
                       "state": {"timing": timing, "stages": {}, "metrics": {}}})
     assert "Пауза человека: 10 мин" in md, md
