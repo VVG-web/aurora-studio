@@ -53,6 +53,7 @@ from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC,
 from aurora_common import engine_dir, utc_stamp  # noqa: E402
 import aurora_runtime as RT  # noqa: E402 — единый Python всех подсистем
 from model_config import CONFIG_ROLES  # noqa: E402 — полный набор ролей настройки, включая compressor
+import timing as T  # noqa: E402 — единый контракт работы и ожидания
 ROLES = ("worker", "planner", "critic", "qa", "fast")
 CONNECT_TIMEOUT = 3          # секунд на установку соединения: мёртвый бэкенд не держит кольцо
 
@@ -74,6 +75,9 @@ VENV = RT.DEFAULT_VENV
 # все вызовы остались без инструментов и MCP. Какой адаптер нужен вызову, `_call_role`
 # теперь берёт из самой настройки и проверяет, каким путём ответ пришёл на деле.
 ADAPTER: dict = {"name": "pydantic_ai", "fallback_why": ""}
+# Спаны процесса: папку `AURORA_RUN_DIR` трассер читает лениво, поэтому один объект
+# работает и в панели, и в CLI, и в тестах, которые выставляют переменную позже импорта.
+TIMING = T.Tracer()
 
 
 # ------------------------------------------------------------------ конфигурация
@@ -1952,7 +1956,8 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
             "role": payload.get("role") or "",
             # Папка, куда бот кладёт файлы результата: инструмент записи есть только у него.
             "outdir": payload.get("outdir") or "",
-            "tool_calls": (payload.get("tool_calls") or TOOL_CALLS) if tools else 0}
+            "tool_calls": (payload.get("tool_calls") or TOOL_CALLS) if tools else 0,
+            "stream": bool(payload.get("stream"))}
     if payload.get("output_model"):
         task["output_model"] = str(payload["output_model"])
     slot = {"done": threading.Event(), "out": None}
@@ -2012,14 +2017,17 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
             # Чем шёл вызов и что модель вызывала: бот без единого вызова инструмента при
             # своих MCP — не «отработал», а «ответил текстом» (6.10.2026).
             "aurora": {"via": "pydantic_ai", "structure": out.get("structured") or "",
-                       "tools_called": list(out.get("tools_called") or [])}}
+                       "tools_called": list(out.get("tools_called") or []),
+                       "latency_ms": out.get("latency_ms"),
+                       "ttft_ms": out.get("ttft_ms"),
+                       "tps_basis": out.get("tps_basis") or "request"}}
     return 200, body, "", dt
 
 
 # Поля payload, которые понимает только внутренний адаптер. В HTTP-запрос они не идут.
 ADAPTER_ONLY = frozenset({"guard", "role", "tools_root", "mcp", "mcp_active", "outdir",
                           "tool_calls", "adapter", "needs_adapter", "output_model",
-                          "context_store", "input_limit"})
+                          "context_store", "input_limit", "stream"})
 
 
 # Пульс прогона (1.170.0): какие запросы к моделям идут прямо сейчас. Ответ модели приходит
@@ -2032,7 +2040,7 @@ ADAPTER_ONLY = frozenset({"guard", "role", "tools_root", "mcp", "mcp_active", "o
 # Без панели (`AURORA_RUN_DIR` не задан) файл не пишется.
 PULSE_PREFIX = "pulse-"
 _PULSE = {"seq": 0, "calls": {}, "answered": 0, "failed": 0, "last_answer": 0.0,
-          "last_fail": 0.0, "why": "", "path": None, "rings": 0}
+          "last_fail": 0.0, "last_ttft_ms": None, "why": "", "path": None, "rings": 0}
 _PULSE_LOCK = threading.Lock()
 
 
@@ -2054,7 +2062,7 @@ def _pulse_save() -> None:
     data = {"pid": os.getpid(), "at": time.time(),
             "inflight": sorted(_PULSE["calls"].values(), key=lambda c: c["since"]),
             **{k: _PULSE[k] for k in ("answered", "failed", "last_answer", "last_fail", "why",
-                                      "rings")}}
+                                      "rings", "last_ttft_ms")}}
     if _PULSE.get("threads"):
         data["threads"] = threads_now(_PULSE["threads"])
     tmp = f"{path}.{threading.get_ident()}.tmp"
@@ -2075,6 +2083,8 @@ def _pulse_save() -> None:
 def pulse_threads(cfg: dict, slots: list) -> None:
     """Шаг начал работу на слотах `slots` (номер бэкенда на поток) — в пульс."""
     names = {b["n"]: b.get("name") or "" for b in cfg.get("backends") or []}
+    with _USAGE_LOCK:
+        USAGE["slots"] = max(int(USAGE.get("slots") or 0), len(slots))
     with _PULSE_LOCK:
         _PULSE["threads"] = {"slots": list(slots), "names": names}
         _pulse_save()
@@ -2151,7 +2161,8 @@ def say_live(mark: str, role: str, text: str) -> None:
     print(f"    {mark} {who}: {text}" if who else f"    {mark} {text}", flush=True)
 
 
-def pulse_begin(backend: dict, payload: dict | None, timeout: float) -> int:
+def pulse_begin(backend: dict, payload: dict | None, timeout: float,
+                span_id: str = "", slot_wait_ms: float = 0.0) -> int:
     """Запрос к модели ушёл — в пульс. → номер для `pulse_end`."""
     with _PULSE_LOCK:
         _PULSE["seq"] += 1
@@ -2160,7 +2171,8 @@ def pulse_begin(backend: dict, payload: dict | None, timeout: float) -> int:
                               "n": backend.get("n"), "name": backend.get("name") or "",
                               "model": (payload or {}).get("model") or backend.get("model") or "",
                               "role": (payload or {}).get("role") or "",
-                              "subject": _subject()}
+                              "subject": _subject(), "span_id": str(span_id or ""),
+                              "slot_wait_ms": round(float(slot_wait_ms or 0), 1)}
         _pulse_save()
     return n
 
@@ -2173,12 +2185,14 @@ def pulse_ring(delta: int) -> None:
         _pulse_save()
 
 
-def pulse_end(n: int, ok: bool, why: str = "") -> None:
+def pulse_end(n: int, ok: bool, why: str = "", ttft_ms=None) -> None:
     """Ответ пришёл (или не пришёл) — запрос уходит из пульса, счётчики растут."""
     with _PULSE_LOCK:
         if _PULSE["calls"].pop(n, None) is None:
             return
         now = time.time()
+        if isinstance(ttft_ms, (int, float)):
+            _PULSE["last_ttft_ms"] = round(float(ttft_ms), 1)
         if ok:
             _PULSE["answered"] += 1
             _PULSE["last_answer"] = now
@@ -2199,13 +2213,60 @@ def default_transport(kind: str, backend: dict, payload: dict | None, timeout: f
     limit = timeout
     if payload and payload.get("tools_root"):
         limit = timeout * (1 + (payload.get("tool_calls") or TOOL_CALLS))
-    n = pulse_begin(backend, payload, limit)
+    current = TIMING.current()
+    n = pulse_begin(backend, payload, limit, span_id=current.span_id if current else "")
     st, body, err = None, None, "прервано"
     try:
         st, body, err, dt = _transport(kind, backend, payload, timeout)
         return st, body, err, dt
     finally:
-        pulse_end(n, st == 200 and not err, err)
+        aurora = (body or {}).get("aurora") if isinstance(body, dict) else {}
+        ttft = aurora.get("ttft_ms") if isinstance(aurora, dict) else None
+        pulse_end(n, st == 200 and not err, err, ttft_ms=ttft)
+
+
+def _timed_transport(transport, backend: dict, payload: dict | None, timeout: float,
+                     attempt: int) -> tuple:
+    """Один физический запрос плюс спан `attempt`: латентность и TTFT без текста ошибки."""
+    model = str((payload or {}).get("model") or backend.get("model") or "")
+    role = str((payload or {}).get("role") or "")
+    with T.span(TIMING, "attempt", "llm.chat", service="llm",
+                provider=str(backend.get("name") or ""), model=model, role=role,
+                operation="chat", attempt=int(attempt or 0)) as span:
+        st, body, err, dt = transport("chat", backend, payload, timeout)
+        aurora = (body or {}).get("aurora") if isinstance(body, dict) else {}
+        aurora = aurora if isinstance(aurora, dict) else {}
+        latency = aurora.get("latency_ms")
+        if not isinstance(latency, (int, float)):
+            latency = max(0.0, float(dt or 0)) * 1000
+        span.dur_ms = round(float(latency), 3)
+        span.metrics["latency_ms"] = round(float(latency), 1)
+        ttft = aurora.get("ttft_ms")
+        if isinstance(ttft, (int, float)):
+            span.metrics["ttft_ms"] = round(float(ttft), 1)
+        span.metrics["tps_basis"] = str(aurora.get("tps_basis") or
+                                        ("stream" if "ttft_ms" in span.metrics else "request"))
+        usage = (body or {}).get("usage") if isinstance(body, dict) else {}
+        usage = usage if isinstance(usage, dict) else {}
+        span.metrics["tokens_in"] = int(usage.get("prompt_tokens") or 0)
+        span.metrics["tokens_out"] = int(usage.get("completion_tokens") or 0)
+        if st == 200 and not err:
+            span.status = "ok"
+        else:
+            span.status = "error"
+            if st == 429:
+                span.reason = "http_429"
+            elif st == 529:
+                span.reason = "http_529"
+            elif st is not None and 500 <= st < 600:
+                span.reason = "http_5xx"
+            elif st in (401, 403):
+                span.reason = "auth"
+            elif looks_like_timeout(err):
+                span.reason = "timeout"
+            else:
+                span.reason = "transport"
+        return st, body, err, dt
 
 
 _ADAPTER_LAST = threading.local()   # поломка пути Pydantic AI на последнем запросе ЭТОГО потока
@@ -2612,7 +2673,9 @@ def quota_spent(st, err, body) -> bool:
 USAGE: dict = {"calls": 0, "failed": 0, "tokens_in": 0, "tokens_out": 0, "gen_seconds": 0.0,
                "errors": {}, "cached": 0, "bypass": 0, "bypass_why": "",
                "by_role": {}, "by_model": {}, "by_pair": {},
-               "link_retried": 0, "link_retried_kind": "", "link_failed": 0, "link_why": ""}
+               "link_retried": 0, "link_retried_kind": "", "link_failed": 0, "link_why": "",
+               "waited": 0.0, "slot_wait_ms": 0.0, "backoff_ms": 0.0, "net_wait_ms": 0.0,
+               "attempts": 0, "by_service": {}, "slots": None}
 _USAGE_LOCK = threading.Lock()
 
 
@@ -4078,7 +4141,14 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                 USAGE["cached"] = USAGE.get("cached", 0) + 1
             return dict(hit, ok=True, cached=True, seconds=0.0, waited=0.0, seen=0, cut=0,
                         ring=0, log=["ответ из кэша: тот же вызов уже был"], tokens_in=0,
-                        tokens_out=0, tps=0.0, url="")
+                        tokens_out=0, tps=0.0, url="",
+                        timing={"v": 1, "scope": "call", "cached": True,
+                                "active_ms": 0, "total_ms": 0, "queue_ms": 0,
+                                "work_ms": 0, "service_wait_ms": 0,
+                                "other_wait_ms": 0, "unknown_ms": 0,
+                                "source": "cache", "confidence": "exact",
+                                "quality": {"wait_known": True, "approx": False,
+                                            "legacy": False, "queue_separated": True}})
     # Пока вызов ходит по кольцу — ждёт слот, паузу или карантин, — запроса в сети может не
     # быть, но вызов жив: пульс прогона это знает (`pulse_ring`).
     pulse_ring(+1)
@@ -4235,9 +4305,15 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                             last[0] = time.time()
                             say_live("⏳", role, f"всё ещё жду связи с провайдерами ({secs // 60} мин)")
                     began = time.time()
-                    gate.wait_restored(
-                        lambda mine=mine: {"ok": any(pid not in gate.providers_down(fresh=True, hold=True) for pid in mine)},
-                        poll=NET_POLL, on_wait=still_waiting)
+                    with T.span(TIMING, "wait", "llm.net", service="network",
+                                wait_class="service", cause="network", reason="net_wait",
+                                role=role) as net_wait:
+                        gate.wait_restored(
+                            lambda mine=mine: {"ok": any(pid not in gate.providers_down(fresh=True, hold=True) for pid in mine)},
+                            poll=NET_POLL, on_wait=still_waiting)
+                        net_ms = round((time.time() - began) * 1000, 1)
+                        net_wait.metrics["net_wait_ms"] = net_ms
+                        net_wait.dur_ms = max(0.0, net_ms)
                     waited += time.time() - began
                     refresh = True
                     continue
@@ -4337,6 +4413,10 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 continue
             payload = {"model": model, "messages": msgs,
                        "chat_template_kwargs": request_template(b, think), "adapter": want}
+            if not tools and not output_model and not needs_adapter:
+                # Простой вызов умеет поток: первый чанк даст TTFT. Провайдер без потока
+                # adapter сам откатится на `agent.run`, а `ttft_ms` останется null.
+                payload["stream"] = True
             if needs_adapter:
                 # Без адаптера такому вызову не поможет и прямой запрос: если путь Pydantic AI
                 # неисправен, транспорт откажет ему с причиной, а не отдаст ответ без инструментов.
@@ -4409,12 +4489,23 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             grant = max(0.5, min(FAIR_SHARE * req_timeout, left))
             # Тяжёлый запрос сначала ждёт своё место (`heavy_take`), и только потом слот ширины: иначе
             # ждущий тяжёлый держал бы слот, нужный коротким.
+            slot_started, slot_mono = time.time(), time.monotonic()
+
+            def slot_done():
+                ms = max(0.0, (time.monotonic() - slot_mono) * 1000)
+                TIMING.note_span("wait", start=slot_started, end=time.time(), dur_ms=ms,
+                                 name="llm.slot", service="llm", wait_class="resource",
+                                 reason="slot", provider=str(b.get("name") or ""),
+                                 model=model, role=role,
+                                 metrics={"slot_wait_ms": round(ms, 1)})
+
             size = rough_tokens(payload["messages"])
             if not heavy_take(b, size):
                 say_live("…", role, f"№{b['n']} {model}: тяжёлых запросов к шлюзу уже столько, сколько он "
                                     f"держит, — жду до {human_secs(grant)}")
                 began = time.monotonic()
                 if not heavy_take(b, size, grant):
+                    slot_done()
                     log.append(f"№{b['n']} {model}: предел тяжёлых запросов занят — дальше по кольцу")
                     can_recover = True
                     other += 1
@@ -4426,11 +4517,13 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                                     f"{human_secs(grant)}")
                 got = sem.acquire(timeout=grant, project=project_key)
             if not got:
+                slot_done()
                 heavy_give(b["n"], size)
                 log.append(f"№{b['n']} {model}: слот ширины занят — дальше по кольцу")
                 can_recover = True
                 other += 1
                 continue
+            slot_done()
             with _SEM_LOCK:
                 INFLIGHT[b["n"]] = INFLIGHT.get(b["n"], 0) + 1
             try:
@@ -4443,15 +4536,15 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 # Причина поломки адаптера — своя у каждой попытки: подставной транспорт (тесты,
                 # замеры) её не пишет, и прошлая не должна достаться этому вызову.
                 _ADAPTER_LAST.why = None
-                st, body, err, dt = transport("chat", b, payload,
-                                              max(5.0, min(left, limit)))
+                st, body, err, dt = _timed_transport(
+                    transport, b, payload, max(5.0, min(left, limit)), attempts)
                 if st == 400 and rejects_template(err, body):
                     payload.pop("chat_template_kwargs", None)
                     log.append(f"№{b['n']} {model}: шлюз не принял chat_template_kwargs — "
                                f"повтор без него; рассуждения теперь как у модели по "
                                f"умолчанию, включить их на этом шлюзе нечем")
-                    st, body, err, dt = transport("chat", b, payload,
-                                                  max(5.0, deadline - time.time()))
+                    st, body, err, dt = _timed_transport(
+                        transport, b, payload, max(5.0, deadline - time.time()), attempts)
                 # Сломка самого пути Pydantic AI на ЭТОМ запросе (venv не стоит, процесс упал,
                 # версия не прошла проверку). В кортеже её нет: если прямой резерв тоже не ответил,
                 # там остаётся отказ шлюза.
@@ -4772,7 +4865,11 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
         if persist and ring % 6 == 0:
             say_live("…", role, f"круг {ring}: ответа пока нет — иду по кольцу дальше, пока не будет")
         slept_from = time.time()
-        sleep(pause)
+        with T.span(TIMING, "wait", "llm.backoff", service="llm",
+                    wait_class="pacing", reason="backoff", role=role) as backoff:
+            sleep(pause)
+            backoff.metrics["backoff_ms"] = round(pause * 1000, 1)
+            backoff.dur_ms = round(pause * 1000, 3)
         waited += pause
         if (cool_keys and time.time() - slept_from < pause / 2
                 and all(COOL.get(k, 0) > time.time() for k in cool_keys)):
@@ -4810,6 +4907,90 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
         _note_failure("модель не уложилась в срок" if attempts and slow == attempts
                       else "модель не ответила осмысленно")
     return out
+
+
+_CALL_ROLE_IMPL = _call_role
+
+
+def _call_role(*args, **kwargs):
+    """Обёртка кольца: один `call` спан на логический вызов, `timing` в ответе."""
+    role = str(args[1] if len(args) > 1 else kwargs.get("role") or "")
+    started = time.time()
+    with T.span(TIMING, "call", "llm." + role, service="llm", role=role,
+                operation="call") as call:
+        r = _CALL_ROLE_IMPL(*args, **kwargs)
+        ended = time.time()
+        call.status = "ok" if r.get("ok") else (
+            "timeout" if r.get("timed_out") else "error")
+        if not r.get("ok"):
+            call.reason = str(r.get("status") or r.get("link", {}).get("kind")
+                              or "error")[:80]
+        if r.get("cached") and isinstance(r.get("timing"), dict):
+            # Кэш не ходил в сеть: его `source=cache` важнее пустой сводки вокруг спана.
+            r["timing"] = dict(r["timing"], metrics={"cached": True})
+            return r
+        # Корень ещё не записан в snapshot (контекст `call` открыт), поэтому добавляем
+        # его явно; `subtree` в этот момент отдаёт только потомков.
+        rows = [call] + T.subtree(TIMING.snapshot(), call.span_id)
+        metrics = {}
+        for row in rows:
+            if row is call:
+                continue
+            metric = getattr(row, "metrics", {}) or {}
+            if isinstance(metric, dict):
+                for key in ("latency_ms", "ttft_ms", "slot_wait_ms", "backoff_ms",
+                            "net_wait_ms"):
+                    value = metric.get(key)
+                    if isinstance(value, (int, float)):
+                        metrics[key] = max(float(metrics.get(key, 0.0)), float(value))
+                basis = str(metric.get("tps_basis") or "")
+                if basis and (basis == "stream" or not metrics.get("tps_basis")):
+                    metrics["tps_basis"] = basis
+        attempts = sum(1 for row in rows
+                       if getattr(row, "kind", "") == "attempt")
+        metrics["attempts"] = attempts
+        metrics.setdefault("tps_basis", "request")
+        metrics.setdefault("ttft_ms", None)
+        if r.get("ok") and isinstance(r.get("seconds"), (int, float)):
+            metrics["latency_ms"] = round(float(r["seconds"]) * 1000, 1)
+        measured = sum(float(metrics.get(k) or 0) for k in (
+            "latency_ms", "slot_wait_ms", "backoff_ms", "net_wait_ms"))
+        if measured:
+            call.dur_ms = max(float(call.dur_ms or 0), measured)
+            ended = max(ended, started + call.dur_ms / 1000)
+        call.metrics.update(metrics)
+        summary = T.summarize(rows, active_start=started, active_end=ended)
+        r["timing"] = {**summary, **metrics, "metrics": metrics}
+        with _USAGE_LOCK:
+            USAGE["attempts"] += attempts
+            USAGE["waited"] = round(USAGE.get("waited", 0.0) + float(
+                summary.get("slot_wait_ms") or 0) / 1000
+                + float(summary.get("net_wait_ms") or 0) / 1000
+                + float(summary.get("backoff_ms") or 0) / 1000, 3)
+            USAGE["slot_wait_ms"] = round(USAGE.get("slot_wait_ms", 0.0)
+                                          + float(summary.get("slot_wait_ms") or 0), 1)
+            USAGE["backoff_ms"] = round(USAGE.get("backoff_ms", 0.0)
+                                        + float(summary.get("backoff_ms") or 0), 1)
+            USAGE["net_wait_ms"] = round(USAGE.get("net_wait_ms", 0.0)
+                                          + float(summary.get("net_wait_ms") or 0), 1)
+            svc = USAGE.setdefault("by_service", {}).setdefault("llm", {
+                "calls": 0, "errors": {}, "latency_ms": [], "ttft_ms": [],
+                "slot_wait_ms": 0.0, "backoff_ms": 0.0, "tokens_in": 0, "tokens_out": 0})
+            svc["calls"] += 1 if r.get("ok") else 0
+            if not r.get("ok"):
+                reason = str(call.reason or "error")
+                svc["errors"][reason] = svc["errors"].get(reason, 0) + 1
+            for key in ("latency_ms", "ttft_ms", "slot_wait_ms", "backoff_ms"):
+                value = metrics.get(key)
+                if isinstance(value, (int, float)):
+                    if key in ("slot_wait_ms", "backoff_ms"):
+                        svc[key] = round(float(svc.get(key, 0.0)) + float(value), 1)
+                    else:
+                        svc.setdefault(key, []).append(float(value))
+            svc["tokens_in"] += int(r.get("tokens_in") or 0)
+            svc["tokens_out"] += int(r.get("tokens_out") or 0)
+            svc["tps_basis"] = metrics.get("tps_basis") or svc.get("tps_basis") or "request"
+        return r
 
 
 # ------------------------------------------------------------------ команды

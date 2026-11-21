@@ -45,6 +45,7 @@ import re
 import socket
 import ssl
 import sys
+import time
 
 # Pydantic AI 2.5x печатает приветствие про observability. В процессе адаптера stdout — это
 # линия с движком, и чужая строка там читалась бы вместо ответа. Выключаем до импорта.
@@ -1138,7 +1139,7 @@ def runtime():
         return {"ok": False, "where": "server", "status": e.status_code, "body": body,
                 "error": msg or f"HTTP {e.status_code}", "headers": rate_headers(e)}
 
-    async def run_task(task: dict) -> dict:
+    async def _run_task(task: dict) -> dict:
         agent, state = agent_for(task)
         output_model = str(task.get("output_model") or "")
         # Сразу подключены — только названные человеком или типом артефакта; остальные
@@ -1176,6 +1177,40 @@ def runtime():
             limits["tool_calls_limit"] = limit
         if input_limit:
             limits["per_request_input_tokens_limit"] = input_limit
+        async def streamed():
+            """Первый чанк даёт TTFT; провайдер без потока упадёт до него и уйдёт в `agent.run`."""
+            first = None
+            began = time.monotonic()
+            async with agent.run_stream(
+                    prompt, message_history=history or None,
+                    usage_limits=UsageLimits(**limits) if limits else None,
+                    model_settings=settings, **extra) as result:
+                async for _chunk in result.stream_text(delta=True, debounce_by=None):
+                    if first is None:
+                        first = time.monotonic()
+                out = await result.get_output()
+                last = last_response(result.all_messages())
+                text = (out.model_dump_json() if output_model and out is not None
+                        and hasattr(out, "model_dump_json") else str(out or "").strip())
+                return {
+                    "ok": True, "text": text,
+                    "reasoning": thinking_of(last),
+                    "structured": output_model if output_model and out is not None else "",
+                    "finish": (getattr(last, "finish_reason", None) if last is not None else None)
+                    or "stop",
+                    "usage": usage_of(result.usage()),
+                    "tools_called": tools_called(result.all_messages()),
+                    "ttft_ms": (round((first - began) * 1000, 1) if first is not None else None),
+                    "tps_basis": "stream" if first is not None else "request",
+                }
+
+        if task.get("stream") and not task.get("tools") and not output_model:
+            try:
+                return await streamed()
+            except HTTPError as e:
+                return http_error(e)
+            except Exception:  # noqa: BLE001 — провайдер без потока: обычный путь ниже
+                pass
         with capture_run_messages() as seen:
             try:
                 result = await agent.run(
@@ -1233,7 +1268,21 @@ def runtime():
                 "finish": (getattr(last, "finish_reason", None) if last is not None else None)
                 or "stop",
                 "usage": usage_of(result.usage),
-                "tools_called": tools_called(result.all_messages())}
+                "tools_called": tools_called(result.all_messages()),
+                "ttft_ms": None, "tps_basis": "request"}
+
+    async def run_task(task: dict) -> dict:
+        """Ответ плюс собственное время адаптера; TTFT остаётся null без потока."""
+        began = time.monotonic()
+        out = await _run_task(task)
+        if not isinstance(out, dict):
+            return out
+        out["latency_ms"] = round((time.monotonic() - began) * 1000, 1)
+        out.setdefault("ttft_ms", None)
+        out.setdefault("tps_basis", "request")
+        if not out.get("ttft_ms"):
+            out["tps_basis"] = "request"
+        return out
 
     return run_task, getattr(pydantic_ai, "__version__", "")
 
