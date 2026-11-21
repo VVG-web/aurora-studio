@@ -4,6 +4,14 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 
 **A role is a chain of models.** Which models stand behind a role is set in the panel's "Models" section (the kit's `local/models.json`, one setup for all projects). The first model of the chain answers, the next ones are spares: if a gateway did not answer or is overloaded, the call goes on. The role's reasoning is there too (the role's "reasoning" box on the LLM tab). Live chains for every call — "Models → Where they work".
 
+### What a call measures
+
+Every logical call (`agent_core.call_role`) leaves a span in `<run folder>/timing.jsonl`: work, slot waiting, pauses between ring rounds, network waiting and physical attempts (`attempt`) with latency, tokens and TTFT. From these spans `agent_runner` builds the run summary's two numbers — work and external-service waiting — and a normalized `AuroraKnowledgeDB/meta/timing.d/<participant>-<machine>/<run>.json` row (kept for 90 days). `usage.d` remains the token ledger; time is not duplicated there.
+
+- **TTFT exists only for a stream.** When the provider returns the whole answer, `ttft_ms` stays `null` and `tps_basis` is `request`: full request time must not be passed off as the first token. `tps_basis=stream` means the adapter really received the first stream chunk.
+- **A slow successful call is work, not waiting.** It lands in `work_ms` and `slow_calls`; only failed/refused attempts count as service time.
+- **No data is not zero.** Missing TTFT, speed or thread count is printed as "no data", not `0`.
+
 - [Breaking sources into cards](#build)
 - [Card theses](#distill)
 - [Extracting foreign definitions](#extract)

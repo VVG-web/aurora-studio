@@ -234,6 +234,16 @@ commands. It consists of two scripts and an adapter.
   process died, the answer was not parsed), the engine goes by direct HTTP and the reason is visible in the run
   report. A server's refusal is returned by the adapter as is.
 
+### Work and waiting
+
+Run time is accounted for by `scripts/timing.py`. `agent_core` writes `call`, `attempt` and `wait` spans to the
+run folder's `timing.jsonl`: work, slot waiting, pauses between ring rounds, network waiting and physical requests
+with latency, tokens and TTFT. `agent_runner` reduces them to two numbers (`work_ms` and `service_wait_ms`), writes
+a normalized row to `AuroraKnowledgeDB/meta/timing.d`, and passes the summary to the run report. Old records
+without spans do not get an invented zero: they are read through `legacy_timing` and marked as an estimate. TTFT
+without a stream stays `null`; missing data is printed in words, not as zero. Step queueing and route network
+pauses are a separate layer whose spans extend the same schema.
+
 ### Roles and the gateway ring
 
 Roles are what the model does; a separate model can be assigned to each.

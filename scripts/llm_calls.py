@@ -271,6 +271,21 @@ TEXT = {
                   "ответил или перегружен — вызов идёт дальше. Там же — рассуждения роли "
                   "(галочка «рассуждения» у роли на вкладке LLM). Живые цепочки по каждому вызову — «Модели → Где "
                   "работают»."),
+        "measure": (
+            "### Что измеряется у вызова\n\n"
+            "Каждый логический вызов (`agent_core.call_role`) оставляет спан в `<папка прогона>/timing.jsonl`: "
+            "время работы, ожидание слота, паузы между кругами, ожидание сети и физические попытки "
+            "(`attempt`) с латентностью, токенами и TTFT. Из этих спанов `agent_runner` собирает две "
+            "цифры итога — работу и ожидание внешних сервисов, — а также нормализованную строку "
+            "`AuroraKnowledgeDB/meta/timing.d/<участник>-<машина>/<прогон>.json` (хранится 90 дней). "
+            "`usage.d` остаётся расходом токенов; время в нём не дублируется.\n\n"
+            "- **TTFT есть только у потока.** Если провайдер отдал ответ целиком, `ttft_ms` остаётся "
+            "`null`, а `tps_basis` — `request`: полное время запроса нельзя выдавать за первый токен. "
+            "`tps_basis=stream` означает, что адаптер действительно получил первый чанк потока.\n"
+            "- **Медленный успешный вызов — работа, а не ожидание.** Он попадает в `work_ms` и в "
+            "`slow_calls`; временем сервиса считаются только неудачные/отказные попытки.\n"
+            "- **Нет данных не равно нулю.** В итоге и в панели отсутствующие TTFT, скорость или число "
+            "потоков печатаются как «нет данных», а не `0`."),
         "role_names": {"worker": "Писатель (worker)", "planner": "Планировщик (planner)",
                        "critic": "Критик (critic)", "qa": "Момус (qa)",
                        "fast": "Быстрая модель (fast)",
@@ -296,6 +311,20 @@ TEXT = {
                   "if a gateway did not answer or is overloaded, the call goes on. The role's "
                   "reasoning is there too (the role's \"reasoning\" box on the LLM tab). Live chains for every call — "
                   "\"Models → Where they work\"."),
+        "measure": (
+            "### What a call measures\n\n"
+            "Every logical call (`agent_core.call_role`) leaves a span in `<run folder>/timing.jsonl`: work, "
+            "slot waiting, pauses between ring rounds, network waiting and physical attempts (`attempt`) with "
+            "latency, tokens and TTFT. From these spans `agent_runner` builds the run summary's two numbers — "
+            "work and external-service waiting — and a normalized "
+            "`AuroraKnowledgeDB/meta/timing.d/<participant>-<machine>/<run>.json` row (kept for 90 days). "
+            "`usage.d` remains the token ledger; time is not duplicated there.\n\n"
+            "- **TTFT exists only for a stream.** When the provider returns the whole answer, `ttft_ms` stays "
+            "`null` and `tps_basis` is `request`: full request time must not be passed off as the first token. "
+            "`tps_basis=stream` means the adapter really received the first stream chunk.\n"
+            "- **A slow successful call is work, not waiting.** It lands in `work_ms` and `slow_calls`; only "
+            "failed/refused attempts count as service time.\n"
+            "- **No data is not zero.** Missing TTFT, speed or thread count is printed as \"no data\", not `0`."),
         "role_names": {"worker": "Writer (worker)", "planner": "Planner (planner)",
                        "critic": "Critic (critic)", "qa": "Momus (qa)",
                        "fast": "Fast model (fast)",
@@ -319,7 +348,7 @@ def render(lang: str, cat: dict | None = None) -> str:
     cat = load() if cat is None else cat
     T = TEXT[lang]
     rt = routes()
-    L = [f"# {T['title']}", "", T["intro"], "", T["roles"], ""]
+    L = [f"# {T['title']}", "", T["intro"], "", T["roles"], "", T["measure"], ""]
     L += [f"- [{c['title'][lang]}](#{c['id']})" for c in cat["calls"]]
     for c in cat["calls"]:
         L += ["", f'<a id="{c["id"]}"></a>', "", f"## {c['title'][lang]}", ""]
