@@ -164,6 +164,7 @@ def test_run_report_reads_local_and_shared_snapshots(tmp: Path):
                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         assert cp.returncode == 0, cp.stderr
         assert "Сеть прогона r1" in cp.stdout and "снимков" in cp.stdout, cp.stdout
+        assert "- длительность: 12 мин 05 с (+ 0 с ожидания)" in cp.stdout, cp.stdout
         # общий файл для верхнего уровня существует и читается тем же отчётом
         shared = NO.shared_path(str(project), "r1")
         assert shared and shared.is_file(), shared

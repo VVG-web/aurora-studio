@@ -32,6 +32,7 @@ import threading
 import time
 import traceback
 import task_scheduler as TS
+import timing as T
 
 from datetime import datetime, timezone
 
@@ -1537,9 +1538,11 @@ class RouteRun:
                 self.meta["net"] = net["summary"]
         except Exception:  # noqa: BLE001 — снимок сети не имеет права ломать закрытие
             pass
+        seconds = round(time.time() - self.started)
         self.meta.update(status=res["reason"], ok=res["ok"], failed=res.get("failed", ""),
                          note=res.get("note", ""), finished=_iso(),
-                         seconds=round(time.time() - self.started), steps=self.children)
+                         seconds=seconds, steps=self.children)
+        self.meta["timing"] = T.legacy_timing(seconds, self.meta.get("net"))
         write_meta(self.base, self.meta)
         self.journal.close()
         if self.registry_held:

@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import aurora_common  # noqa: F401,E402 — защита версии Python
 
 import net_observe as NO  # noqa: E402
+import timing as T  # noqa: E402
 
 
 def _time(seconds) -> str:
@@ -30,9 +31,10 @@ def _time(seconds) -> str:
 
 def _show(data: dict) -> str:
     summary = data.get("summary") or NO.summarize(data)
+    timing = T.legacy_timing(summary.get("seconds"), summary)
     lines = [f"# Сеть прогона {data.get('id', '')}", "",
              f"- команда: {data.get('cmd') or '—'}",
-             f"- длительность: {_time(summary.get('seconds'))}",
+             f"- длительность: {T.format_work_wait(timing)}",
              f"- снимков: {summary.get('snapshots', 0)}"
              + (f" · долгих: {sum(1 for s in data.get('snapshots') or [] if s.get('scope') == 'long')}"
                 if data.get("snapshots") else ""),
@@ -90,6 +92,7 @@ def list_reports(projects, since: float = 0.0, limit: int = 200) -> list:
                 if not isinstance(data, dict):
                     continue
                 summary = data.get("summary") or NO.summarize(data)
+                timing = T.legacy_timing(summary.get("seconds"), summary)
                 snaps = [s for s in data.get("snapshots") or [] if isinstance(s, dict)]
                 vpn = sorted({str(s.get("name") or "")
                               for snap in snaps
@@ -101,6 +104,7 @@ def list_reports(projects, since: float = 0.0, limit: int = 200) -> list:
                     "cmd": str(data.get("cmd") or ""),
                     "at": str((snaps[-1] if snaps else {}).get("at") or ""),
                     "seconds": int(summary.get("seconds") or 0),
+                    "timing": timing,
                     "snapshots": int(summary.get("snapshots") or 0),
                     "blocked_s": int(summary.get("blocked_s") or 0),
                     "reason": str(summary.get("reason") or ""),

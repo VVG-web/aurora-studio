@@ -74,6 +74,7 @@ import route_runner as RR                        # noqa: E402 — маршрут
 import task_scheduler as TS                      # noqa: E402 — ресурсы, очередь и параллельные задачи
 import watchdog as WD                             # noqa: E402 — сторож зависших после обрыва связи шагов
 import net_observe as NO                          # noqa: E402 — снимки сети и VPN вокруг прогонов
+import timing as T                               # noqa: E402 — работа и ожидание из снимков
 import kb_updated as KBU                          # noqa: E402 — дата обновления базы (1.168.0)
 import git_sync as GS                            # noqa: E402 — Git проекта: настройка, состояние
 import git_auto as GITA                          # noqa: E402 — автоматика Git: события и тик
@@ -4641,7 +4642,8 @@ def record_engine_run(project: str, lines: list, res: dict, started: str, second
                          "title": ("kit:update " + " ".join(args)).strip(), "cmd": "kit:update",
                          "args": args, "started": started, "who": who(project), "kit": kit_version(),
                          "status": "done", "rc": 0 if res["ok"] else 1, "finished": utc_stamp(),
-                         "seconds": int(seconds)})
+                         "seconds": int(seconds),
+                         "timing": T.legacy_timing(int(seconds), None)})
     trim_runs(project)
 
 
@@ -5522,13 +5524,14 @@ def history(project: str, limit: int = RUNS_SHOW) -> list:
         if not meta and _inside_legacy_route(rid, windows):
             continue                 # шаг маршрута прежнего вида — по времени его событий
         if meta:
+            timing = _timing_of(meta)
             rows.append({"id": rid, "kind": meta.get("kind") or "command",
                          "title": meta.get("title") or rid, "scId": meta.get("scId", ""),
                          "started": meta.get("started", ""), "finished": meta.get("finished", ""),
                          "seconds": meta.get("seconds"), "status": meta.get("status", ""),
                          "rc": meta.get("rc"), "who": meta.get("who", ""),
                          "kit": meta.get("kit", ""), "trigger": meta.get("trigger", ""),
-                         "write": meta.get("write")})
+                         "write": meta.get("write"), "timing": timing})
             continue
         # Папка прежнего вида, без `meta.json`: шаги маршрута тогда не помечались родителем,
         # и отличить их нельзя — показываем как были, со временем из имени.
@@ -5580,6 +5583,16 @@ def _inside_legacy_route(rid: str, windows: list) -> bool:
         return False
     at = f"{m[1]}-{m[2]}-{m[3]}T{m[4]}:{m[5]}:{m[6]}"
     return any(a <= at <= b for a, b in windows)
+
+
+def _timing_of(meta: dict) -> dict | None:
+    """Сводка из meta или производная из старых seconds/net: файл на диске не меняется."""
+    timing = meta.get("timing")
+    if isinstance(timing, dict):
+        return timing
+    if meta.get("seconds") is None and not meta.get("net"):
+        return None
+    return T.legacy_timing(meta.get("seconds"), meta.get("net"))
 
 
 def _local_iso_utc(value: str) -> str:
@@ -5643,6 +5656,10 @@ def history_run(project: str, rid: str) -> dict:
             return {"error": "архив прогона не найден"}
         entries = _entries_of(project, rid)
         meta = RR.read_meta(os.path.join(runs_dir(project), rid))
+        if meta and "timing" not in meta:
+            derived = _timing_of(meta)
+            if derived is not None:
+                meta["timing"] = derived
     cut = max(0, len(entries) - HISTORY_ENTRIES)
     if cut:
         entries = [{"k": "note", "s": f"… первые {cut} строк не показаны — полный журнал в "
@@ -7368,6 +7385,7 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
                             seconds=int(job["finished"] - job["started"]))
                 if net_summary:
                     meta["net"] = net_summary
+                meta["timing"] = T.legacy_timing(meta.get("seconds"), net_summary)
                 RR.write_meta(os.path.join(runs_dir(project), run_id), meta)
             if run_log is not None:
                 trim_runs(project)
