@@ -68,6 +68,21 @@ def test_legacy_timing_without_snapshots_is_unknown(tmp: Path):
 
 
 @test
+def test_legacy_timing_without_seconds_is_unknown(tmp: Path):
+    """Нет seconds: длительность и ожидание неизвестны, ноль не выдаётся за измерение."""
+    T = _timing()
+    timing = T.legacy_timing(None, {"snapshots": 1, "blocked_s": 30})
+    assert timing["active_ms"] is None and timing["total_ms"] is None
+    assert timing["work_ms"] is None and timing["service_wait_ms"] is None
+    assert timing["unknown_ms"] is None and timing["coverage"] == 0.0
+    assert timing["source"] == "legacy" and timing["confidence"] == "unknown"
+    assert timing["quality"]["wait_known"] is False
+    assert "clamped" not in timing["quality"]
+    assert T.format_work_wait(timing) == "нет данных"
+    assert T.timing_problems(timing) == []
+
+
+@test
 def test_legacy_timing_with_net_is_approx(tmp: Path):
     """Снимки дают две цифры: ожидание сети приблизительное и помечено approx."""
     T = _timing()
@@ -133,7 +148,6 @@ def test_history_row_has_timing(tmp: Path):
 @test
 def test_history_run_derives_without_rewriting(tmp: Path):
     """history_run добавляет производный timing в ответ, файл на диске не меняется."""
-    T = _timing()
     root = _project(tmp)
     rid = "20261121-101500-ab12cd-command"
     path = _put_meta(root, rid, kind="command", id=rid, title="Обновить", seconds=3600,
@@ -158,6 +172,9 @@ def test_net_report_two_digits(tmp: Path):
     unknown = net_report._show({"id": "r2", "summary": {"seconds": 10800, "snapshots": 0,
                                                         "blocked_s": 0}})
     assert "- длительность: 3 ч (простой: нет данных)" in unknown, unknown
+    empty = net_report._show({"id": "empty"})
+    assert "- длительность: нет данных" in empty, empty
+    assert "0 с (простой: нет данных)" not in empty, empty
     root = tmp / "net-project"
     shared = root / "AuroraKnowledgeDB/meta/net-runs.d/alice-m1"
     shared.mkdir(parents=True)
@@ -200,6 +217,51 @@ def test_format_work_wait_en(tmp: Path):
 
 
 @test
+def test_format_duration_edges(tmp: Path):
+    """Границы форматтера: нули не теряют старшую единицу, младшая не печатается зря."""
+    T = _timing()
+    # Вход форматтера в миллисекундах, поэтому границы заданы в секундах.
+    seconds = (0, 1, 59, 60, 3599, 3600, 3661)
+    assert [T.format_duration(n * 1000) for n in seconds] == [
+        "0 с", "1 с", "59 с", "1 мин", "59 мин 59 с", "1 ч", "1 ч 01 мин",
+    ]
+    assert T.format_duration(-1000) == "0 с"
+    assert T.format_duration(None) == "0 с"
+
+
+@test
+def test_panel_duration_omits_zero_units(tmp: Path):
+    """Панель печатает 3 ч, 30 мин и 0 с без нулевых младших единиц, как Python."""
+    node = shutil.which("node")
+    if not node:
+        return
+    js = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    start = js.index("function fmtTiming(ms){")
+    end = js.index("\n// Две цифры", start)
+    fn = js[start:end]
+    values = [0, 1000, 59000, 60000, 1800000, 3599000, 3600000, 3660000, 3900000, 65000]
+    expected = {
+        "ru": ["0 с", "1 с", "59 с", "1 мин", "30 мин", "59 мин 59 с",
+               "1 ч", "1 ч 01 мин", "1 ч 05 мин", "1 мин 05 с"],
+        "en": ["0 s", "1 s", "59 s", "1 min", "30 min", "59 min 59 s",
+               "1 h", "1 h 01 min", "1 h 05 min", "1 min 05 s"],
+    }
+    for lang in ("ru", "en"):
+        strings = json.loads((KIT / f"cockpit/i18n/{lang}.json").read_text(encoding="utf-8"))
+        code = (
+            "const S = " + json.dumps(strings, ensure_ascii=False) + ";\n"
+            "const t = (key, vars={}) => { const s = S[key]; if (s == null) throw new Error(key);\n"
+            "  return s.replace(/\\{(\\w+)\\}/g, (_, k) => String(vars[k] ?? '')); };\n"
+            + fn +
+            "\nconsole.log(JSON.stringify(" + json.dumps(values) + ".map(fmtTiming)));"
+        )
+        cp = subprocess.run([node, "-e", code], capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+        assert cp.returncode == 0, cp.stderr[:600]
+        assert json.loads(cp.stdout) == expected[lang], (lang, cp.stdout)
+
+
+@test
 def test_timing_tooltip_is_focusable(tmp: Path):
     """Чип времени доступен с клавиатуры: aria, role, focus-visible, Escape и stopPropagation."""
     js = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
@@ -230,5 +292,5 @@ def test_old_history_still_renders(tmp: Path):
     assert row["timing"]["quality"]["wait_known"] is False
     assert T.format_work_wait(row["timing"]) == "1 ч (простой: нет данных)"
     js = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
-    assert "if (!timing) return fmtDur(fallbackSec);" in js
+    assert "if (!timing) return fallbackSec != null ? fmtDur(fallbackSec) : t(\"timing.unknown\");" in js
     assert "(r.seconds != null || r.timing) ? timingChip(r) : null" in js

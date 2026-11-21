@@ -5647,17 +5647,23 @@ function fmtTiming(ms){
   const total = Math.max(0, Math.round(Number(ms || 0) / 1000));
   if (total < 60) return t("timing.dur_sec", {n: total});
   const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
-  if (h) return t("timing.dur_hour_min", {h, m: String(m).padStart(2, "0")});
-  return t("timing.dur_min_sec", {m, s: String(s).padStart(2, "0")});
+  if (h) return m
+    ? t("timing.dur_hour_min", {h, m: String(m).padStart(2, "0")})
+    : t("timing.dur_hour", {h});
+  return s
+    ? t("timing.dur_min_sec", {m, s: String(s).padStart(2, "0")})
+    : t("timing.dur_min", {m});
 }
 
 // Две цифры: работа и только простой внешних сервисов. Значение без timing
 // остаётся старым fmtDur: старые записи не должны исчезать из истории.
 function fmtWorkWait(timing, fallbackSec){
-  if (!timing) return fmtDur(fallbackSec);
+  if (!timing) return fallbackSec != null ? fmtDur(fallbackSec) : t("timing.unknown");
   const q = timing.quality || {};
   const work = timing.work_ms != null ? fmtTiming(timing.work_ms)
-    : fmtTiming(timing.active_ms != null ? timing.active_ms : (fallbackSec || 0) * 1000);
+    : timing.active_ms != null ? fmtTiming(timing.active_ms)
+    : fallbackSec != null ? fmtDur(fallbackSec) : null;
+  if (work == null) return t("timing.unknown");
   if (timing.service_wait_ms == null || q.wait_known === false)
     return t("dur.work_wait_unknown", {work});
   const wait = fmtTiming(timing.service_wait_ms);
