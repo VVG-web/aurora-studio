@@ -99,6 +99,55 @@ def test_route_network_wait_is_service_time_not_work(tmp: Path):
 
 
 @test
+def test_route_child_queue_and_wait_are_not_work(tmp: Path):
+    """Очередь и ожидание дочерней команды вычитаются из работы маршрута."""
+    import route_runner as RR
+
+    for CK, root in _panel(tmp):
+        sc = {"id": "child", "title": "Дочерний шаг", "when": "", "group": "база",
+              "steps": [{"cmd": "kb:links", "args": ["--apply"]}]}
+        run = RR.RouteRun(CK, str(root), sc, False)
+        run.created_at = time.time() - 300
+        run.active_started = run.created_at + 10
+        run._event(
+            {"cmd": "kb:links", "args": ["--apply"]},
+            run.active_started, run.active_started + 200,
+            {"rc": 0, "timing": {"queue_ms": 120_000, "service_wait_ms": 60_000,
+                                 "other_wait_ms": 30_000}})
+        timing = run._timing_now()
+        assert abs(timing["total_ms"] - 300_000) <= 5, timing
+        assert timing["queue_ms"] == 130_000, timing
+        assert timing["active_ms"] == timing["total_ms"] - timing["queue_ms"], timing
+        assert timing["service_wait_ms"] == 60_000, timing
+        assert timing["other_wait_ms"] == 30_000, timing
+        assert abs(timing["work_ms"] - 80_000) <= 5, timing
+        assert timing["queue_ms"] + timing["active_ms"] == timing["total_ms"], timing
+        result = run._close({"ok": True, "reason": "passed", "failed": "", "note": "",
+                             "steps": 1, "lines": [], "run_id": run.run_id})
+        meta = RR.read_meta(run.base)
+        assert meta["queue_ms"] == 130_000, meta
+        assert abs(meta["timing"]["work_ms"] - 80_000) <= 5, meta["timing"]
+        assert result["timing"]["service_wait_ms"] == 60_000, result["timing"]
+        summary = CK.RS.route(str(root), "", 300, [], timing=meta["timing"])
+        assert any("Ожидание запуска" in line for line in summary.get("lines") or []), \
+            summary.get("lines")
+        assert any("прочее ожидание" in line for line in summary.get("lines") or []), \
+            summary.get("lines")
+
+
+@test
+def test_route_run_job_returns_child_final_timing(tmp: Path):
+    """`run_job` читает timing после того, как задание записало итоговое meta."""
+    import route_runner as RR
+
+    for CK, root in _panel(tmp):
+        child = RR.run_job(CK, str(root), "kb:links", ["--apply"])
+        assert isinstance(child.get("timing"), dict), child
+        assert child["timing"].get("v") == 1, child["timing"]
+        assert "queue_ms" in child["timing"], child["timing"]
+
+
+@test
 def test_command_queue_lands_in_meta_and_timing(tmp: Path):
     """Команда, ждавшая ресурс, пишет queue_ms в meta и отдельной строкой в timing."""
     for CK, root in _panel(tmp):
@@ -230,12 +279,57 @@ def test_watchdog_pause_writes_wait_span_and_ms(tmp: Path):
 
 
 @test
+def test_watchdog_pause_lands_in_final_meta(tmp: Path):
+    """Пауза сторожа уменьшает работу в итоговом meta.json, а не только в спане."""
+    import route_runner as RR
+    import watchdog as WD
+
+    for CK, root in _panel(tmp):
+        (tmp / "slow.py").write_text(
+            "import time\nprint('start', flush=True)\ntime.sleep(2)\nprint('done', flush=True)\n",
+            encoding="utf-8")
+        job_id = CK.start_job(str(root), "kb:links", ["--apply"], parent="route-test")
+        job: dict = {}
+        for _ in range(100):
+            with CK.JOBS_LOCK:
+                job = CK.JOBS.get(job_id) or {}
+            if job.get("proc") is not None:
+                break
+            time.sleep(0.01)
+        assert job.get("proc") is not None, job
+        clock = {"t": time.time()}
+        dog = WD.Watchdog(CK, probe_fn=lambda _p: {"ok": False, "down": ["сеть"]},
+                          clock=lambda clock=clock: clock["t"])
+        with patch.object(WD, "suspend_tree", lambda _pid: True), \
+                patch.object(WD, "resume_tree", lambda _pid: True):
+            dog.pause(job)
+            clock["t"] += 600
+            dog.resume(job)
+        _wait(CK, [job_id])
+        with CK.JOBS_LOCK:
+            run_id = CK.JOBS[job_id]["run_id"]
+        meta: dict = {}
+        for _ in range(100):
+            meta = RR.read_meta(os.path.join(CK.runs_dir(str(root)), run_id))
+            if isinstance(meta.get("timing"), dict):
+                break
+            time.sleep(0.01)
+        assert meta["paused_ms"] >= 600_000, meta
+        assert meta["timing"]["service_wait_ms"] > 0, meta["timing"]
+        assert meta["timing"]["work_ms"] == 0, meta["timing"]
+
+
+@test
 def test_git_backoff_writes_other_wait(tmp: Path):
     """Повтор автоматики после отказа — ожидание other, а не работа проекта."""
     import git_auto as GA
 
     run_dir = tmp / "run"
     run_dir.mkdir()
+    T = _timing()
+    (run_dir / "meta.json").write_text(json.dumps({
+        "id": "r1", "seconds": 1000,
+        "timing": T.legacy_timing(1000, None, service_ms=0)}), encoding="utf-8")
     clock = {"t": 1000.0}
     auto = GA.GitAuto(types.SimpleNamespace(JOBS={}, JOBS_LOCK=threading.Lock()),
                       lambda: [], clock=lambda: clock["t"])
@@ -248,6 +342,12 @@ def test_git_backoff_writes_other_wait(tmp: Path):
     wait = next(r for r in rows if r["kind"] == "wait")
     assert wait["wait_class"] == "other" and wait["service"] == "git_remote", wait
     assert wait["dur_ms"] >= 899_000, wait
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    timing = meta["timing"]
+    assert timing["other_wait_ms"] >= 899_000, timing
+    assert timing["work_ms"] == 1_000_000, timing
+    assert timing["total_ms"] == timing["queue_ms"] + timing["active_ms"], timing
+    assert timing["other_by_kind"]["backoff"] >= 899_000, timing
 
 
 @test
@@ -387,3 +487,16 @@ def test_production_human_pause_is_not_service_wait(tmp: Path):
     deadline = run.deadline()
     started = MS.datetime.fromisoformat(state["active_started"].replace("Z", "+00:00")).timestamp()
     assert deadline >= started + 3600 + 600, (deadline, started)
+    assert run.paused_total_ms() == 600_000, run.paused_total_ms()
+    from agent_runner import make_report_data, report_make
+    data = make_report_data(
+        run, {"kind": "document", "spec": {"title": "Документ"}, "stages": {}},
+        {}, status="done", elapsed=7200)
+    timing = data["timing"]
+    assert timing["other_wait_ms"] == 600_000, timing
+    assert timing["service_wait_ms"] == 0, timing
+    assert timing["work_ms"] == 6_600_000, timing
+    md = report_make({"sid": "make-1", "seconds": 7200,
+                      "state": {"timing": timing, "stages": {}, "metrics": {}}})
+    assert "Пауза человека: 10 мин" in md, md
+    assert "Ожидание внешних сервисов" not in md, md
