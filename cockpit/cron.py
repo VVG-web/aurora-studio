@@ -152,7 +152,7 @@ def utc_iso(when: datetime | None = None) -> str:
 
 
 def run_timing(started_utc: str, finished_utc: str, wait_ms: int,
-               service_ms: int = 0) -> dict:
+               service_ms: int = 0, queue_ms: int = 0) -> dict:
     """Сводка цепочки: занятость проекта — `other`, недоступность сервиса — `service`."""
     try:
         started = datetime.strptime(started_utc or "", "%Y-%m-%dT%H:%M:%SZ").replace(
@@ -162,12 +162,14 @@ def run_timing(started_utc: str, finished_utc: str, wait_ms: int,
         active_ms = max(0, int((finished - started).total_seconds() * 1000))
     except (TypeError, ValueError):
         active_ms = 0
-    other = min(max(0, int(wait_ms or 0)), active_ms)
-    service = min(max(0, int(service_ms or 0)), max(0, active_ms - other))
-    work = max(0, active_ms - other - service)
+    queue = min(max(0, int(queue_ms or 0)), active_ms)
+    active = max(0, active_ms - queue)
+    other = min(max(0, int(wait_ms or 0)), active)
+    service = min(max(0, int(service_ms or 0)), max(0, active - other))
+    work = max(0, active - other - service)
     return {
-        "v": 1, "scope": "cron", "queue_ms": 0,
-        "active_ms": active_ms, "total_ms": active_ms,
+        "v": 1, "scope": "cron", "queue_ms": queue,
+        "active_ms": active, "total_ms": active_ms,
         "work_ms": work,
         "service_wait_ms": service, "other_wait_ms": other,
         "unknown_ms": 0, "coverage": 1.0,
@@ -757,14 +759,18 @@ class Scheduler:
         return False
 
     @staticmethod
-    def _note_wait(item: dict, service: int = 0, other: int = 0) -> None:
+    def _note_wait(item: dict, service: int = 0, other: int = 0, queue: int = 0) -> None:
         """Добавить ожидание к сводке пункта цепочки: сервис и занятость не смешиваются."""
-        service, other = max(0, int(service or 0)), max(0, int(other or 0))
-        if not service and not other:
+        service = max(0, int(service or 0))
+        other = max(0, int(other or 0))
+        queue = max(0, int(queue or 0))
+        if not service and not other and not queue:
             return
         timing = item.setdefault("timing", {})
         timing["v"] = 1
         timing.setdefault("queue_ms", 0)
+        if queue:
+            timing["queue_ms"] = int(timing.get("queue_ms") or 0) + queue
         if service:
             total = int(timing.get("service_wait_ms") or 0) + service
             timing["service_wait_ms"] = total
@@ -772,6 +778,7 @@ class Scheduler:
             timing["wait_by_cause"] = {"network_down": total}
         if other:
             timing["other_wait_ms"] = int(timing.get("other_wait_ms") or 0) + other
+            item["wait_ms"] = int(item.get("wait_ms") or 0) + other
 
     def _wait_free(self, project: str, log=None, kind: str = "command",
                    resources: tuple = (), result: dict | None = None,
@@ -842,12 +849,15 @@ class Scheduler:
                 run["finished_utc"] = utc_iso()
                 run["wait_ms"] = sum(int(it.get("wait_ms") or 0)
                                      for it in run.get("items") or [])
+                run["queue_ms"] = sum(
+                    int((it.get("timing") or {}).get("queue_ms") or 0)
+                    for it in run.get("items") or [])
                 run["service_wait_ms"] = sum(
                     int((it.get("timing") or {}).get("service_wait_ms") or 0)
                     for it in run.get("items") or [])
                 run["timing"] = run_timing(run.get("started_utc") or "",
                                            run["finished_utc"], run["wait_ms"],
-                                           run["service_wait_ms"])
+                                           run["service_wait_ms"], run["queue_ms"])
                 if not self._save(run):
                     time.sleep(FINAL_SAVE_PAUSE)          # занятость проходит за секунды
                     self._save(run)
@@ -989,11 +999,9 @@ class Scheduler:
             it.update(status=status, failed=res.get("failed", ""), note=note,
                       finished=now_iso())
             child = res.get("timing") or {}
-            extra_other = (int(child.get("other_wait_ms") or 0)
-                           + int(child.get("queue_ms") or 0))
-            self._note_wait(it, service=child.get("service_wait_ms"), other=extra_other)
-            if extra_other:
-                it["wait_ms"] = int(it.get("wait_ms") or 0) + extra_other
+            self._note_wait(it, service=child.get("service_wait_ms"),
+                            other=child.get("other_wait_ms"),
+                            queue=child.get("queue_ms"))
             return
         gap = ck.version_gap(project)
         if gap:
@@ -1018,7 +1026,9 @@ class Scheduler:
             res = dict(res, rc=2, refused=f"шаг завис, цепочку остановили: {res['hung']}")
         it["run_id"] = res.get("run_id", "")
         child = res.get("timing") or {}
-        self._note_wait(it, service=child.get("service_wait_ms"))
+        self._note_wait(it, service=child.get("service_wait_ms"),
+                        other=child.get("other_wait_ms"),
+                        queue=child.get("queue_ms"))
         for line in res["lines"][-LOG_KEEP:]:
             log(line)
         on_step((it["cmd"] + " " + " ".join(it["args"])).strip(), res["rc"])
@@ -1133,7 +1143,6 @@ class Scheduler:
                       note="" if self.stop_event.is_set() else "busy", finished=now_iso())
             return True
         if free_wait.get("wait_ms"):
-            it["wait_ms"] = int(it.get("wait_ms") or 0) + int(free_wait["wait_ms"])
             self._note_wait(it, other=int(free_wait["wait_ms"]))
         log(f"✓ {cmd}: связь вернулась (ждали {int(time.time() - started)} с) — продолжаю")
         return False
