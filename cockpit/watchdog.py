@@ -325,6 +325,23 @@ class Watchdog:
         with lock:
             job_push(job, line)
 
+    @staticmethod
+    def _wait_span(job: dict, start: float, end: float, why: str) -> None:
+        """Пауза сторожа — ожидание, а не работа: пишем её в `timing.jsonl` задания."""
+        run_dir = str(job.get("run_dir") or "")
+        if not run_dir:
+            return
+        try:
+            import timing as T
+            service = "llm" if "модел" in why.lower() else "network"
+            T.Tracer(run_dir=run_dir, run_id=str(job.get("run_id") or "")).note_span(
+                "wait", start=start, end=end, service=service, wait_class="service",
+                cause="provider_down" if service == "llm" else "network_down",
+                reason="watchdog_pause", dur_ms=max(0.0, end - start) * 1000,
+                metrics={"paused_ms": round(max(0.0, end - start) * 1000, 1)})
+        except Exception:  # noqa: BLE001 — замер не должен ломать паузу
+            pass
+
     def verdict(self, job: dict) -> str:
         """Пусто — шаг жив или может ожить; иначе — почему ответа уже не будет."""
         now = self.clock()
@@ -372,7 +389,8 @@ class Watchdog:
             return
         now = self.clock()
         why = ", ".join(self.track.get(job["id"], {}).get("down") or []) or "связь"
-        job.update(paused=True, pause_why=why, paused_at=now, paused_pid=proc.pid)
+        job.update(paused=True, pause_why=why, paused_at=now, paused_pid=proc.pid,
+                   pause_started=now)
         self._say(job, f"⏸ сторож: связи нет ({why}) — приостановил шаг; продолжу с этого же "
                        "места, когда связь вернётся. VPN можно подключить и не искать, что шло.")
 
@@ -386,7 +404,11 @@ class Watchdog:
                                                 "down": [], "resumed_at": 0.0})
         st.update(down_seen=True, up_since=now, resumed_at=now,
                   down=st.get("down") or [job.get("pause_why") or "связь"])
-        job.update(paused=False, resumed_at=now, last_resume=now)
+        started = float(job.get("pause_started") or 0)
+        if started:
+            self._wait_span(job, started, now, str(job.get("pause_why") or "связь"))
+        job.update(paused=False, resumed_at=now, last_resume=now,
+                   paused_ms=max(0, int(round((now - started) * 1000))) if started else 0)
         self._say(job, "▶ сторож: связь вернулась — продолжаю шаг с места остановки.")
 
     def _waits_for_model(self, job: dict) -> bool:

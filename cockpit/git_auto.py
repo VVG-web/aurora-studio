@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 
@@ -23,11 +24,13 @@ TICK_S = 60
 class GitAuto:
     """Живёт в процессе панели рядом с расписанием."""
 
-    def __init__(self, ck, projects_fn):
+    def __init__(self, ck, projects_fn, clock=None):
         self.ck = ck
         self.projects_fn = projects_fn         # → список проектов панели (find_projects)
+        self.clock = clock or time.time
         self.lock = threading.Lock()
         self.pending_open: set = set()         # «при открытии», отложенное занятостью
+        self.backoff_wait: dict = {}           # (проект, действие) → (начало, папка прогона)
         self.started = False
 
     def start(self) -> None:
@@ -57,7 +60,19 @@ class GitAuto:
         """Запустить действие заданием панели. → номер задания или пусто."""
         GS.write_state(project, **{f"auto_{action}_at": time.time()})
         try:
-            return self.ck.start_job(project, f"git:{action}", [f"--auto={trigger}"])
+            job_id = self.ck.start_job(project, f"git:{action}", [f"--auto={trigger}"])
+            if job_id:
+                lock = getattr(self.ck, "JOBS_LOCK", None)
+                jobs = getattr(self.ck, "JOBS", {})
+                if lock is not None:
+                    with lock:
+                        job = jobs.get(job_id) or {}
+                else:
+                    job = jobs.get(job_id) or {}
+                run_dir = str(job.get("run_dir") or "")
+                if run_dir:
+                    GS.write_state(project, **{f"auto_{action}_run_dir": run_dir})
+            return job_id
         except ValueError as e:
             GS.record(project, GS.result(action, False, prob=GS.problem("unknown", str(e))),
                       trigger)
@@ -86,9 +101,36 @@ class GitAuto:
     def _due(self, st: dict, key: str, every_min: int) -> bool:
         return time.time() - float(st.get(key) or 0) >= every_min * 60
 
-    def _backoff(self, st: dict, action: str) -> bool:
+    def _backoff(self, project: str, st: dict, action: str) -> bool:
         """Упавшая автоматика ждёт: иначе отказ входа повторялся бы каждую минуту."""
-        return time.time() - float(st.get(f"auto_{action}_fail_at") or 0) < GS.FAIL_BACKOFF_S
+        now = self.clock()
+        fail_at = float(st.get(f"auto_{action}_fail_at") or 0)
+        key = (project, action)
+        if now - fail_at < GS.FAIL_BACKOFF_S:
+            if key not in self.backoff_wait:
+                self.backoff_wait[key] = (
+                    fail_at, str(st.get(f"auto_{action}_run_dir") or ""))
+            return True
+        pending = self.backoff_wait.pop(key, None)
+        if pending and pending[1]:
+            start = max(0.0, float(pending[0]))
+            end = min(now, start + GS.FAIL_BACKOFF_S)
+            if end > start:
+                self._wait_span(pending[1], start, end, action)
+        return False
+
+    @staticmethod
+    def _wait_span(run_dir: str, start: float, end: float, action: str) -> None:
+        """Отложенное действие — ожидание `other`, а не работа проекта."""
+        try:
+            import timing as T
+            T.Tracer(run_dir=run_dir, run_id=os.path.basename(
+                os.path.normpath(run_dir))).note_span(
+                "wait", start=start, end=end, service="git_remote",
+                wait_class="other", cause="backoff", reason=f"git_{action}_backoff",
+                dur_ms=max(0.0, end - start) * 1000)
+        except Exception:  # noqa: BLE001 — замер не должен ломать автоматику
+            pass
 
     def tick(self, now: float | None = None) -> list:
         """Один проход по проектам. → [(проект, действие, событие)] — что запущено."""
@@ -121,12 +163,12 @@ class GitAuto:
             return [(path, "update", "open")]
         up = s["auto_update"]
         if self.wanted(s, "update", "interval") and self._due(st, "auto_update_at", up["every_min"]) \
-                and not self._backoff(st, "update"):
+                and not self._backoff(path, st, "update"):
             self.fire(path, "update", "interval")
             return [(path, "update", "interval")]
         ps = s["auto_push"]
         if self.wanted(s, "push", "interval") and self._due(st, "auto_push_at", ps["every_min"]) \
-                and not self._backoff(st, "push"):
+                and not self._backoff(path, st, "push"):
             self.fire(path, "push", "interval")
             return [(path, "push", "interval")]
         if self.wanted(s, "push", "after_commit"):

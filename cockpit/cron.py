@@ -47,7 +47,7 @@ import secrets
 import threading
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import route_runner as RR
 import task_scheduler as TS
@@ -143,6 +143,41 @@ def _write_json(path: str, data) -> None:
 
 def now_iso(when: datetime | None = None) -> str:
     return (when or datetime.now()).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def utc_iso(when: datetime | None = None) -> str:
+    """UTC-отметка для машинных полей: старые `started`/`finished` остаются местными."""
+    return (when or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
+def run_timing(started_utc: str, finished_utc: str, wait_ms: int,
+               service_ms: int = 0) -> dict:
+    """Сводка цепочки: занятость проекта — `other`, недоступность сервиса — `service`."""
+    try:
+        started = datetime.strptime(started_utc or "", "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)
+        finished = datetime.strptime(finished_utc or "", "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)
+        active_ms = max(0, int((finished - started).total_seconds() * 1000))
+    except (TypeError, ValueError):
+        active_ms = 0
+    other = min(max(0, int(wait_ms or 0)), active_ms)
+    service = min(max(0, int(service_ms or 0)), max(0, active_ms - other))
+    work = max(0, active_ms - other - service)
+    return {
+        "v": 1, "scope": "cron", "queue_ms": 0,
+        "active_ms": active_ms, "total_ms": active_ms,
+        "work_ms": work,
+        "service_wait_ms": service, "other_wait_ms": other,
+        "unknown_ms": 0, "coverage": 1.0,
+        "source": "cron", "confidence": "approx",
+        "wait_by_service": {"network": service} if service else {},
+        "wait_by_cause": {"network_down": service} if service else {},
+        "other_by_kind": {"lock": other} if other else {},
+        "quality": {"wait_known": True, "approx": True, "legacy": False,
+                    "queue_separated": True},
+    }
 
 
 def load_tasks() -> list:
@@ -663,6 +698,8 @@ class Scheduler:
         run = {"id": datetime.now().strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2),
                "task": task["id"], "name": task["name"], "trigger": trigger,
                "status": "running", "started": now_iso(), "finished": "",
+               "started_utc": utc_iso(), "finished_utc": "",
+               "queue_ms": 0, "wait_ms": 0,
                "on_fail": task.get("on_fail", "next"), "items": [], "panel": os.getpid()}
         prev = _read_json(run_path(resume), {}) if resume else {}
         if prev.get("items"):
@@ -719,21 +756,48 @@ class Scheduler:
                 return True
         return False
 
+    @staticmethod
+    def _note_wait(item: dict, service: int = 0, other: int = 0) -> None:
+        """Добавить ожидание к сводке пункта цепочки: сервис и занятость не смешиваются."""
+        service, other = max(0, int(service or 0)), max(0, int(other or 0))
+        if not service and not other:
+            return
+        timing = item.setdefault("timing", {})
+        timing["v"] = 1
+        timing.setdefault("queue_ms", 0)
+        if service:
+            total = int(timing.get("service_wait_ms") or 0) + service
+            timing["service_wait_ms"] = total
+            timing["wait_by_service"] = {"network": total}
+            timing["wait_by_cause"] = {"network_down": total}
+        if other:
+            timing["other_wait_ms"] = int(timing.get("other_wait_ms") or 0) + other
+
     def _wait_free(self, project: str, log=None, kind: str = "command",
-                   resources: tuple = ()) -> bool:
+                   resources: tuple = (), result: dict | None = None,
+                   clock=None, sleep=None) -> bool:
         """Дождаться, пока проект освободится. Ждать молча нельзя: после перезапуска панели
         шаг прежней цепочки (07.10.2026 — `agent:extract` в PRJ-A) продолжал работать
         сиротой, а пункт новой стоял «идёт» без единой строки, и человек не знал, кому
         верить — Cron или Консоли."""
-        end = time.time() + BUSY_WAIT_S
+        now = clock or time.time
+        pause = sleep or time.sleep
+        started = now()
+        end = started + BUSY_WAIT_S
         said = False
         while self._busy(project, kind, resources):
             if not said and log:
                 said = True
                 log(busy_line(self.ck.project_activity(project)))
-            if self.stop_event.is_set() or time.time() > end:
+            if self.stop_event.is_set() or now() > end:
+                if result is not None:
+                    result.update(wait_ms=max(0, int(round((now() - started) * 1000))),
+                                  reason="stopped" if self.stop_event.is_set() else "busy")
                 return False
-            time.sleep(BUSY_POLL_S)
+            pause(BUSY_POLL_S)
+        if result is not None:
+            waited = max(0, int(round((now() - started) * 1000)))
+            result.update(wait_ms=waited, reason="busy" if waited else "free")
         if said and log:
             log("▸ проект свободен — продолжаю")
         return True
@@ -775,6 +839,15 @@ class Scheduler:
             # чем ночь работы.
             try:
                 run["finished"] = now_iso()
+                run["finished_utc"] = utc_iso()
+                run["wait_ms"] = sum(int(it.get("wait_ms") or 0)
+                                     for it in run.get("items") or [])
+                run["service_wait_ms"] = sum(
+                    int((it.get("timing") or {}).get("service_wait_ms") or 0)
+                    for it in run.get("items") or [])
+                run["timing"] = run_timing(run.get("started_utc") or "",
+                                           run["finished_utc"], run["wait_ms"],
+                                           run["service_wait_ms"])
                 if not self._save(run):
                     time.sleep(FINAL_SAVE_PAUSE)          # занятость проходит за секунды
                     self._save(run)
@@ -872,10 +945,16 @@ class Scheduler:
                 it.update(status="failed", note="no_route", finished=now_iso())
                 return
             resources = RR.route_resources(ck, sc, it.get("write", True))
-        if not self._wait_free(project, log, it["kind"], resources):
+        wait: dict = {}
+        if not self._wait_free(project, log, it["kind"], resources, result=wait):
+            it["wait_ms"] = int(wait.get("wait_ms") or 0)
             it.update(status="stopped" if self.stop_event.is_set() else "skipped",
                       note="" if self.stop_event.is_set() else "busy", finished=now_iso())
             return
+        it["wait_ms"] = int(wait.get("wait_ms") or 0)
+        if it["wait_ms"]:
+            it["timing"] = {"v": 1, "queue_ms": 0, "other_wait_ms": it["wait_ms"],
+                            "reason": wait.get("reason") or "busy"}
         if it["kind"] == "route":
             resume = {"skipSigs": it["done"]} if it.get("done") else None
             net = task.get("net", "")
@@ -909,6 +988,7 @@ class Scheduler:
                 status = "partial"
             it.update(status=status, failed=res.get("failed", ""), note=note,
                       finished=now_iso())
+            self._note_wait(it, service=(res.get("timing") or {}).get("service_wait_ms"))
             return
         gap = ck.version_gap(project)
         if gap:
@@ -932,6 +1012,7 @@ class Scheduler:
             # Сюда доходим, только если цепочку остановили, пока шаг висел.
             res = dict(res, rc=2, refused=f"шаг завис, цепочку остановили: {res['hung']}")
         it["run_id"] = res.get("run_id", "")
+        self._note_wait(it, service=(res.get("timing") or {}).get("service_wait_ms"))
         for line in res["lines"][-LOG_KEEP:]:
             log(line)
         on_step((it["cmd"] + " " + " ".join(it["args"])).strip(), res["rc"])
@@ -1032,14 +1113,22 @@ class Scheduler:
                 return G.check_command(it["cmd"], it["project"], svc=svc, hold=True)
             except Exception:  # noqa: BLE001 — сбой самой проверки не рушит шаг: связи «хватает»
                 return {"ok": True, "blocked": []}
-        ok = G.wait_restored(verdict, stop=self.stop_event, poll=RR.NET_POLL_S, on_wait=on_wait)
+        net_wait: dict = {}
+        ok = G.wait_restored(verdict, stop=self.stop_event, poll=RR.NET_POLL_S,
+                             on_wait=on_wait, result=net_wait)
+        waited = max(0, int(round(float(net_wait.get("waited_s") or 0) * 1000)))
+        self._note_wait(it, service=waited)
         if not ok:
             it.update(status="stopped", finished=now_iso())
             return True
-        if not self._wait_free(it["project"], log, it["kind"]):  # за время ожидания проект мог занять маршрут
+        free_wait: dict = {}
+        if not self._wait_free(it["project"], log, it["kind"], result=free_wait):  # за время ожидания проект мог занять маршрут
             it.update(status="stopped" if self.stop_event.is_set() else "skipped",
                       note="" if self.stop_event.is_set() else "busy", finished=now_iso())
             return True
+        if free_wait.get("wait_ms"):
+            it["wait_ms"] = int(it.get("wait_ms") or 0) + int(free_wait["wait_ms"])
+            self._note_wait(it, other=int(free_wait["wait_ms"]))
         log(f"✓ {cmd}: связь вернулась (ждали {int(time.time() - started)} с) — продолжаю")
         return False
 

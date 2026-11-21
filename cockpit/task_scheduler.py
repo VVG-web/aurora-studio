@@ -194,7 +194,10 @@ class Task:
     state: str = "queued"
     conflict: str = ""
     created: float = field(default_factory=time.time)
+    queued_at: float = field(default_factory=time.time)
     started: float | None = None
+    started_at: float | None = None
+    wait_ms: int = 0
     finished: float | None = None
     spec: dict = field(default_factory=dict)
     start: Callable[[], None] | None = field(default=None, repr=False)
@@ -204,6 +207,8 @@ class Task:
                 "parent": self.parent, "state": self.state, "resources": list(self.resources),
                 "conflict": self.conflict, "queue_position": position,
                 "created": self.created, "started": self.started,
+                "queued_at": self.queued_at, "started_at": self.started_at,
+                "wait_ms": self.wait_ms,
                 "finished": self.finished, "spec": dict(self.spec)}
 
 
@@ -289,6 +294,7 @@ class TaskScheduler:
             if task.id in self._by_id:
                 return self._by_id[task.id].state
             self._by_id[task.id] = task
+            task.queued_at = task.queued_at or task.created
             conflict = self._conflict_locked(task)
             if not conflict:
                 self._activate_locked(task)
@@ -372,7 +378,8 @@ class TaskScheduler:
     def _activate_locked(self, task: Task) -> None:
         task.state = "running"
         task.conflict = ""
-        task.started = time.time()
+        task.started = task.started_at = time.time()
+        task.wait_ms = max(0, int(round((task.started_at - task.queued_at) * 1000)))
         self._active[task.id] = task
         self._cond.notify_all()
 
@@ -406,7 +413,8 @@ class TaskScheduler:
         def row(t):
             return {"id": t.id, "project": t.project, "resources": list(t.resources),
                     "kind": t.kind, "parent": t.parent, "created": t.created,
-                    "spec": dict(t.spec)}
+                    "queued_at": t.queued_at, "started_at": t.started_at,
+                    "wait_ms": t.wait_ms, "conflict": t.conflict, "spec": dict(t.spec)}
         queued = [row(t) for t in self._queued if not t.parent]
         active = [row(t) for t in self._active.values()
                   if t.kind == "job" and t.spec.get("run_id")]

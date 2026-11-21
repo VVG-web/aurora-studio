@@ -7156,10 +7156,17 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                 break
             if not paused_at:
                 paused_at = time.time()
-            run.update_state(status="paused", current=stage)
+                run.update_state(status="paused", current=stage,
+                                 paused_at=MS.utc_now())
+            else:
+                run.update_state(status="paused", current=stage)
             time.sleep(0.2)
         if paused_at:
-            deadline += time.time() - paused_at
+            pause_sec = max(0.0, time.time() - paused_at)
+            deadline += pause_sec
+            state = run.state()
+            run.update_state(paused_ms=int(state.get("paused_ms") or 0)
+                             + int(round(pause_sec * 1000)), paused_at="")
         if time.time() >= deadline:
             return abort("timeout", "общий предел 60 минут истёк",
                          reliability.human_error("timeout", "истёк общий предел",

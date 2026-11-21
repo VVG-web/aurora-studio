@@ -257,10 +257,19 @@ class MakeRun:
         seconds = int((state.get("settings") or {}).get("hard_timeout_seconds") or 3600)
         try:
             started = datetime.fromisoformat(
-                str(state.get("started") or "").replace("Z", "+00:00")).timestamp()
+                str(state.get("active_started") or state.get("started") or "").replace(
+                    "Z", "+00:00")).timestamp()
         except ValueError:
             started = time.time()
-        return started + max(0, seconds)
+        paused_ms = max(0, int(state.get("paused_ms") or 0))
+        paused_at = str(state.get("paused_at") or "")
+        if paused_at:
+            try:
+                paused_ms += max(0, int((time.time() - datetime.fromisoformat(
+                    paused_at.replace("Z", "+00:00")).timestamp()) * 1000))
+            except ValueError:
+                pass
+        return started + max(0, seconds) + paused_ms / 1000
 
     def set_control(self, *, pause: bool | None = None, cancel: bool | None = None,
                     continue_run: bool | None = None) -> dict:
@@ -271,7 +280,9 @@ class MakeRun:
         with self._lock:
             self.ensure()
             if not self.state():
-                self.update_state(status="planned", current="", started=utc_now(),
+                started = utc_now()
+                self.update_state(status="planned", current="", started=started,
+                                  active_started=started, paused_ms=0, paused_at="",
                                   **{k: v for k, v in (meta or {}).items()
                                      if k in ("kind", "title", "idea")})
             if not self.manifest_path.is_file():
