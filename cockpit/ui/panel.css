@@ -270,6 +270,12 @@ h2{font-size:var(--text-lg);font-weight:var(--h2-weight);margin:var(--sp-6) 0 va
 .help-tip{position:fixed;z-index:2000;max-width:380px;padding:10px 12px;border-radius:10px;background:var(--card-bg);color:var(--text);border:1px solid var(--card-border);box-shadow:0 10px 28px rgba(0,0,0,.22);font-size:var(--text-sm);line-height:1.45;pointer-events:none}
 .help-tip b{display:block;margin-bottom:2px}
 .help-tip .k{color:var(--text-muted);font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.04em;margin-top:8px}
+.timing-wrap{display:inline-flex;align-items:center}
+.timing-chip{appearance:none;border:0;background:transparent;color:var(--text-muted);
+  font:inherit;font-size:12px;padding:2px 4px;border-radius:4px;cursor:help}
+.timing-chip:hover{color:var(--text);background:var(--surface-2)}
+.timing-chip:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+.timing-tip{white-space:pre-line}
 .card{background:var(--card-bg);border:var(--card-border-w) solid var(--card-border);
   border-radius:var(--card-radius);box-shadow:var(--card-shadow)}
 .grid{display:grid;gap:var(--sp-3)}

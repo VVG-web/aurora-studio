@@ -5641,6 +5641,96 @@ function fmtDur(sec){
   return t("dur.min_sec", {m: Math.floor(sec / 60), s: sec % 60});
 }
 
+// Время в миллисекундах из timing v1. Часы не теряются: старый fmtDur показывал
+// 3600 секунд как «60м 0с», а в истории рядом стоят часы ожидания.
+function fmtTiming(ms){
+  const total = Math.max(0, Math.round(Number(ms || 0) / 1000));
+  if (total < 60) return t("timing.dur_sec", {n: total});
+  const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
+  if (h) return t("timing.dur_hour_min", {h, m: String(m).padStart(2, "0")});
+  return t("timing.dur_min_sec", {m, s: String(s).padStart(2, "0")});
+}
+
+// Две цифры: работа и только простой внешних сервисов. Значение без timing
+// остаётся старым fmtDur: старые записи не должны исчезать из истории.
+function fmtWorkWait(timing, fallbackSec){
+  if (!timing) return fmtDur(fallbackSec);
+  const q = timing.quality || {};
+  const work = timing.work_ms != null ? fmtTiming(timing.work_ms)
+    : fmtTiming(timing.active_ms != null ? timing.active_ms : (fallbackSec || 0) * 1000);
+  if (timing.service_wait_ms == null || q.wait_known === false)
+    return t("dur.work_wait_unknown", {work});
+  const wait = fmtTiming(timing.service_wait_ms);
+  if (timing.service_wait_ms === 0) return t("dur.work_wait_zero", {work});
+  if (q.approx || timing.confidence === "approx")
+    return t("dur.work_wait_approx", {work, wait});
+  return t("dur.work_wait", {work, wait});
+}
+
+function timingTip(timing, fallbackSec){
+  const q = (timing && timing.quality) || {};
+  const work = timing && timing.work_ms != null ? fmtTiming(timing.work_ms) : t("timing.unknown");
+  const lines = [t("timing.work") + ": " + work + "."];
+  if (timing && timing.service_wait_ms != null && q.wait_known !== false)
+    lines.push(t("timing.wait") + ": " + fmtTiming(timing.service_wait_ms) + ".");
+  else
+    lines.push(t("timing.wait") + ": " + t("dur.wait_unknown") + ".");
+  if (q.approx || (timing && timing.confidence === "approx"))
+    lines.push(t("timing.source") + ": " + t("timing.approx") + ".");
+  else if (q.legacy)
+    lines.push(t("timing.source") + ": " + t("timing.legacy") + ".");
+  if (q.clamped) lines.push(t("timing.clamped") + ".");
+  if (q.queue_separated === false) lines.push(t("timing.queue_inside_work") + ".");
+  return lines.join("\n");
+}
+
+let timingTipTimer = null, timingTipOpen = null;
+function hideTimingTip(){
+  clearTimeout(timingTipTimer); timingTipTimer = null;
+  if (timingTipOpen){ timingTipOpen.hidden = true; timingTipOpen = null; }
+}
+function placeTimingTip(node, box){
+  box.style.left = "0px"; box.style.top = "0px";
+  const r = node.getBoundingClientRect(), b = box.getBoundingClientRect();
+  const top = (r.bottom + 8 + b.height <= innerHeight) ? r.bottom + 8
+    : Math.max(8, r.top - 8 - b.height);
+  const left = Math.min(Math.max(8, r.left), innerWidth - b.width - 8);
+  box.style.top = top + "px"; box.style.left = left + "px";
+}
+function showTimingTip(node, box){
+  hideTimingTip();
+  box.hidden = false;
+  timingTipOpen = box;
+  placeTimingTip(node, box);
+}
+function timingChip(r){
+  const text = fmtWorkWait(r.timing, r.seconds);
+  const tip = timingTip(r.timing, r.seconds);
+  const id = "timing-tip-" + String(r.id || "run").replace(/[^\w-]/g, "_");
+  const box = el("span", {class:"help-tip timing-tip", id, role:"tooltip", hidden:""}, tip);
+  const chip = el("button", {type:"button", class:"timing-chip", tabindex:"0", role:"button",
+    "aria-describedby":id, "aria-label":tip.replace(/\n/g, " "), title:tip,
+    onclick:ev=>{ ev.stopPropagation(); showTimingTip(chip, box); }}, text);
+  const later = ()=> {
+    clearTimeout(timingTipTimer);
+    timingTipTimer = setTimeout(()=>showTimingTip(chip, box), 500);
+  };
+  chip.addEventListener("mouseenter", later);
+  chip.addEventListener("mouseleave", hideTimingTip);
+  chip.addEventListener("focus", later);
+  chip.addEventListener("blur", hideTimingTip);
+  chip.addEventListener("touchstart", later, {passive:true});
+  chip.addEventListener("touchend", hideTimingTip);
+  chip.addEventListener("touchcancel", hideTimingTip);
+  chip.addEventListener("keydown", ev=>{
+    if (ev.key === "Escape"){ hideTimingTip(); return; }
+    if (ev.key === "Enter" || ev.key === " "){
+      ev.preventDefault(); ev.stopPropagation(); showTimingTip(chip, box);
+    }
+  });
+  return el("span", {class:"timing-wrap"}, chip, box);
+}
+
 // «Когда» архивного прогона — по его имени: первый отрезок id это время старта
 function archiveWhen(runId){
   // С «Z» — UTC (так движок пишет имена прогонов теперь), без — прежнее имя по местному времени.
@@ -5724,7 +5814,7 @@ function renderHistory(){
       r.trigger === "cron" ? el("span",{class:"chip gold"}, t("hist.by_cron")) : null,
       r.who ? el("span",{class:"chip"}, r.who) : null,
       r.kit ? el("span",{class:"chip mono", title: t("history.kit_hint")}, "kit " + r.kit) : null,
-      r.seconds != null ? el("span",{class:"muted",style:"font-size:12px"}, fmtDur(r.seconds)) : null,
+      (r.seconds != null || r.timing) ? timingChip(r) : null,
       el("span",{class:"muted",style:"font-size:12px"}, when)), body);
   });
 }
@@ -7181,7 +7271,8 @@ function moduleCtx(id, root){
     // Все маршруты кита: скрытые профилем — с `hidden: true`, показывает раздел только остальные.
     scenarios: async () => S.scenarios || (S.scenarios = await api("/api/scenarios?all=1")),
     restartPanel,
-    fmt: {ago, kb, when: histWhen, esc, tick, md, mdLite, rtime, howLong},
+    fmt: {ago, kb, when: histWhen, esc, tick, md, mdLite, rtime, howLong,
+          workWait: fmtWorkWait, timingTip},
     // Общие детали панели: раздел не рисует свою плитку метрики и свою кнопку
     // перехода к маршруту — иначе в каждом разделе они разъедутся.
     ui: {metricCard, metric, goRoute, goCmd, kindChip, skillLine, copyButton, engineWord,

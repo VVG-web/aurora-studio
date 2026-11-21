@@ -837,7 +837,8 @@ def test_run_archive_keeps_the_full_console_history(tmp: Path):
     ui = panel_sources()
     # С 1.152.0 история — одна строка на запуск, раскрытие — весь журнал запуска.
     for token in ("function renderHistory(", "function archiveWhen(", "function rtime(",
-                  "function fmtDur(", 'id="exportMd"', "Продолжить маршрут",
+                  "function fmtDur(", "function fmtWorkWait(", "function timingTip(",
+                  'id="exportMd"', "Продолжить маршрут",
                   "const SILENCE_MS = 120000;", '"/api/history?project="',
                   '"/api/history/run?project="', "function drawEntries("):
         assert token in ui, f"консоль потеряла: {token}"

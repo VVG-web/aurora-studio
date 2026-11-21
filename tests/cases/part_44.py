@@ -449,7 +449,7 @@ const location = {hash: ""};
 const TOKEN = "t", location_ = location;
 const api = NOOP, openLink = NOOP, runStep = NOOP, runWatched = NOOP, busyElsewhere = NOOP, openRun = NOOP, openDoc = NOOP,
   reloadHealth = NOOP, runRoute = NOOP, poll = NOOP, restartPanel = NOOP, ago = NOOP, kb = NOOP, histWhen = NOOP, esc = NOOP,
-  tick = NOOP, md = NOOP, mdLite = NOOP, rtime = NOOP, howLong = NOOP, metricCard = NOOP, metric = NOOP, goRoute = NOOP,
+  tick = NOOP, md = NOOP, mdLite = NOOP, rtime = NOOP, howLong = NOOP, fmtWorkWait = NOOP, timingTip = NOOP, metricCard = NOOP, metric = NOOP, goRoute = NOOP,
   goCmd = NOOP, kindChip = NOOP, skillLine = NOOP, copyButton = NOOP, engineWord = NOOP, markdownEditor = NOOP, hasPart = NOOP,
   waitMark = NOOP, healthAt = NOOP, stampText = NOOP, kbInfo = NOOP, templatesHint = NOOP, templatesState = NOOP, rebuildHint = NOOP, openIssue = NOOP, issueUrl = NOOP, pickPath = NOOP, pathField = NOOP, pathMeta = NOOP, openPath = NOOP, taskBlock = NOOP,
   isEngineCmd = NOOP, hideDev = NOOP, openProject = NOOP, lastRun = NOOP, rcMark = NOOP, auraWhy = NOOP;
