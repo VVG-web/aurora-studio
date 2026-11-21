@@ -685,15 +685,29 @@ def legacy_timing(seconds, net_summary: dict | None, queue_ms: int | float | Non
     other_raw = (None if other_ms is None else
                  max(0, int(round(float(other_ms or 0)))))
     other = other_raw
-    if exact is None and other is None and not has_snaps:
+    service_known = exact is not None or has_snaps
+    if not service_known:
+        if not other:
+            return {
+                "v": TIMING_V, "scope": "run",
+                "active_ms": active, "total_ms": total, "queue_ms": queue,
+                "work_ms": None, "service_wait_ms": None,
+                "other_wait_ms": 0, "unknown_ms": None,
+                "coverage": 0.0,
+                "source": "legacy", "confidence": "unknown",
+                "quality": {"wait_known": False, "approx": False, "legacy": True,
+                            "queue_separated": queue_ms is not None},
+            }
+        # Прочее ожидание измерено, а сервисное — нет: ноль вместо него был бы выдумкой.
         return {
             "v": TIMING_V, "scope": "run",
             "active_ms": active, "total_ms": total, "queue_ms": queue,
             "work_ms": None, "service_wait_ms": None,
-            "other_wait_ms": 0, "unknown_ms": None,
+            "other_wait_ms": other, "unknown_ms": None,
             "coverage": 0.0,
-            "source": "legacy", "confidence": "unknown",
-            "quality": {"wait_known": False, "approx": False, "legacy": True,
+            "source": "other", "confidence": "unknown",
+            "other_by_kind": {"other": other},
+            "quality": {"wait_known": False, "approx": False, "legacy": False,
                         "queue_separated": queue_ms is not None},
         }
     wait = min(max(exact or 0, blocked), active)
@@ -826,7 +840,8 @@ def format_work_wait(timing: dict | None, style: str = "compact", lang: str = "r
                 tail = "downtime: no data"
             else:
                 tail = "время простоя: нет данных" if style == "full" else "простой: нет данных"
-            return f"{format_duration(active, style, lang)} ({tail})"
+            return (f"{format_duration(active, style, lang)} ({tail})"
+                    + _other_tail(timing, style, lang))
         return "нет данных" if lang == "ru" else "no data"
     if not isinstance(wait, (int, float)):
         if lang == "en":
@@ -838,8 +853,12 @@ def format_work_wait(timing: dict | None, style: str = "compact", lang: str = "r
     approx = bool(quality.get("approx") or timing.get("confidence") == "approx")
     work_text = format_duration(work, style, lang)
     text = f"{work_text} (+ {_wait_phrase(wait, style, lang, approx)})"
+    return text + _other_tail(timing, style, lang)
+
+
+def _other_tail(timing: dict, style: str, lang: str) -> str:
     other = timing.get("other_wait_ms")
-    if isinstance(other, (int, float)) and other > 0:
-        tail = "прочее ожидание" if lang == "ru" else "other waiting"
-        text += f" · {tail} {format_duration(other, style, lang)}"
-    return text
+    if not isinstance(other, (int, float)) or other <= 0:
+        return ""
+    tail = "прочее ожидание" if lang == "ru" else "other waiting"
+    return f" · {tail} {format_duration(other, style, lang)}"
