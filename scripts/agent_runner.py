@@ -6892,6 +6892,14 @@ def make_report_data(run, st: dict, settings: dict, *, status: str, reason: str 
     manifest = run.manifest()
     plan = run.plan()
     mo = st.get("momus") or {}
+    timing = None
+    try:
+        import timing as T
+        paused_ms = (run.paused_total_ms() if hasattr(run, "paused_total_ms")
+                     else int((run.state() or {}).get("paused_ms") or 0))
+        timing = T.legacy_timing(elapsed, None, other_ms=paused_ms)
+    except Exception:  # noqa: BLE001 — отчёт важнее разбивки времени
+        pass
     return {
         "schema": 1,
         "sid": run.sid,
@@ -6915,6 +6923,7 @@ def make_report_data(run, st: dict, settings: dict, *, status: str, reason: str 
         "best": manifest.get("best") or {},
         "metrics": (usage.summary() if usage is not None else {}),
         "elapsed_seconds": round(float(elapsed or 0), 2),
+        "timing": timing,
         "settings": {k: v for k, v in settings.items() if k != "report_dir"},
         "created": MS.utc_now(),
     }
@@ -6993,6 +7002,12 @@ def write_run_report(run, st: dict, settings: dict, *, status: str, reason: str 
     data["report_md"] = report.get("md", "")
     st["report"] = report
     st["metrics"] = data.get("metrics") or {}
+    st["timing"] = data.get("timing")
+    if data.get("timing"):
+        try:
+            run.update_state(timing=data["timing"])
+        except Exception:  # noqa: BLE001 — отчёт уже записан
+            pass
     return report
 
 
@@ -7201,6 +7216,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                 "status": "partial" if path else "error", "path": path,
                 "report": st.get("report") or {},
                 "why": str(why or "процедура не дала результата")[:700],
+                "timing": st.get("timing"),
                 "error": error or reliability.human_error(
                     "make_failed", why or "производство не завершилось",
                     "повторите шаг с той же сессией или проверьте настройки вида"),
@@ -7984,7 +8000,8 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                artifact=st.get("path") or "", report=(st.get("report") or {}).get("md", ""),
                seconds=round(time.time() - started, 1))
     return {"ok": True, "sid": sid, "stage": "done", "state": st,
-            "seconds": round(time.time() - started, 1)}
+            "seconds": round(time.time() - started, 1),
+            "timing": st.get("timing")}
 
 
 def report_make(res: dict) -> str:
@@ -8046,6 +8063,21 @@ def report_make(res: dict) -> str:
               + (" (оценка/нет данных)" if metrics.get("tokens_estimated") else ""),
               f"Модели: {', '.join(metrics.get('models') or []) or 'нет данных'} · "
               f"запасных: {metrics.get('fallbacks', 0)}"]
+    timing = st.get("timing") or {}
+    if timing and ((timing.get("other_wait_ms") or 0) or (timing.get("service_wait_ms") or 0)):
+        try:
+            import timing as T
+            work = timing.get("work_ms")
+            other = timing.get("other_wait_ms") or 0
+            service = timing.get("service_wait_ms") or 0
+            L += ["", "## Работа и ожидание", ""]
+            if isinstance(work, (int, float)):
+                L.append(f"- Работа: {T.format_duration(work)}")
+            L.append(f"- Пауза человека: {T.format_duration(other)}")
+            if service:
+                L.append(f"- Ожидание внешних сервисов: {T.format_duration(service)}")
+        except Exception:  # noqa: BLE001 — старая копия кита не ломает отчёт
+            pass
     return "\n".join(L)
 
 

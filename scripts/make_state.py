@@ -261,15 +261,20 @@ class MakeRun:
                     "Z", "+00:00")).timestamp()
         except ValueError:
             started = time.time()
-        paused_ms = max(0, int(state.get("paused_ms") or 0))
-        paused_at = str(state.get("paused_at") or "")
+        return started + max(0, seconds) + self.paused_total_ms(state) / 1000
+
+    def paused_total_ms(self, state: dict | None = None) -> int:
+        """Сколько человек продержал производство на паузе, включая текущую."""
+        data = state if state is not None else self.state()
+        paused_ms = max(0, int(data.get("paused_ms") or 0))
+        paused_at = str(data.get("paused_at") or "")
         if paused_at:
             try:
                 paused_ms += max(0, int((time.time() - datetime.fromisoformat(
                     paused_at.replace("Z", "+00:00")).timestamp()) * 1000))
             except ValueError:
                 pass
-        return started + max(0, seconds) + paused_ms / 1000
+        return paused_ms
 
     def set_control(self, *, pause: bool | None = None, cancel: bool | None = None,
                     continue_run: bool | None = None) -> dict:
