@@ -1139,6 +1139,13 @@ def runtime():
         return {"ok": False, "where": "server", "status": e.status_code, "body": body,
                 "error": msg or f"HTTP {e.status_code}", "headers": rate_headers(e)}
 
+    # Провайдер отказал именно потоку, а не вызову: без потока тот же запрос обычно
+    # проходит. 401/403/429 и 5xx сюда не входят — их повтор без потока был бы обманом.
+    STREAM_FALLBACK_STATUS = frozenset({400, 404, 405, 415, 422, 501})
+
+    def stream_unsupported(e) -> bool:
+        return getattr(e, "status_code", None) in STREAM_FALLBACK_STATUS
+
     async def _run_task(task: dict) -> dict:
         agent, state = agent_for(task)
         output_model = str(task.get("output_model") or "")
@@ -1208,7 +1215,10 @@ def runtime():
             try:
                 return await streamed()
             except HTTPError as e:
-                return http_error(e)
+                if not stream_unsupported(e):
+                    return http_error(e)
+                # Провайдер не умеет `stream=true`: ниже тот же запрос уйдёт без потока,
+                # и TTFT честно останется пустым.
             except Exception:  # noqa: BLE001 — провайдер без потока: обычный путь ниже
                 pass
         with capture_run_messages() as seen:
