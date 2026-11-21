@@ -1,0 +1,389 @@
+"""Проверки части 249: очередь, замки, паузы и сеть в учёте ожидания (этап 3).
+
+Маршрут и команда проверяются на каркасе панели из `part_236`: настоящий планировщик,
+но вместо скрипта — короткая пауза. Cron, сторож и git-автоматика получают подменные
+часы, поэтому «два часа» в проверке не занимают двух часов. Сеть и модель не нужны.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import threading
+import time
+import types
+from pathlib import Path
+from unittest.mock import patch
+
+from harness import KIT, SCRIPTS, set_home, test
+
+sys.path.insert(0, str(KIT / "cockpit"))
+sys.path.insert(0, str(SCRIPTS))
+
+from cases.part_236 import _panel, _wait  # noqa: E402
+
+
+def _timing():
+    import importlib
+    return importlib.import_module("timing")
+
+
+@test
+def test_route_queue_is_separate_and_is_not_work(tmp: Path):
+    """Очередь маршрута входит в общее время, но не в работу и не в ожидание сервиса."""
+    import route_runner as RR
+
+    for CK, root in _panel(tmp):
+        first = CK.start_job(str(root), "kb:links", ["--apply"])
+        time.sleep(0.2)
+        sc = {"id": "t", "title": "Проверочный", "when": "", "group": "база", "steps": []}
+        run = RR.RouteRun(CK, str(root), sc, False)
+        result: dict = {}
+
+        def go(run=run, result=result):
+            result.update(run.safe_run())
+
+        th = threading.Thread(target=go, daemon=True)
+        th.start()
+        time.sleep(0.25)
+        assert not run.done_flag, "маршрут начался поверх писателя"
+        CK.stop_job(first)
+        th.join(10)
+        _wait(CK, [first])
+        assert run.done_flag, "маршрут не закрылся"
+        timing = result.get("timing") or {}
+        assert timing.get("queue_ms", 0) >= 150, timing
+        assert timing.get("work_ms") is None, timing
+        assert timing.get("service_wait_ms") is None, timing
+        assert abs(timing["queue_ms"] + timing["active_ms"] - timing["total_ms"]) <= 1, timing
+        assert any("Ожидание запуска" in line for line in result.get("lines") or []), \
+            result.get("lines")
+        meta = RR.read_meta(run.base)
+        assert meta["queue_ms"] == timing["queue_ms"], meta
+        assert meta["active_started"] and meta["created_at"], meta
+
+
+@test
+def test_route_network_wait_is_service_time_not_work(tmp: Path):
+    """Ожидание сети маршрута становится service_wait и не съедает работу."""
+    import route_runner as RR
+
+    for CK, root in _panel(tmp):
+        sc = {"id": "t", "title": "Проверочный", "when": "", "group": "база", "steps": []}
+        run = RR.RouteRun(CK, str(root), sc, False)
+        run.active_started = time.time() - 1
+
+        class Gate:
+            @staticmethod
+            def check_command(_cmd, _project, svc=None, hold=False):
+                return {"ok": False, "blocked": []}
+
+            @staticmethod
+            def wait_restored(check, stop=None, poll=20, on_wait=None, sleep=None,
+                              clock=None, woken=None, result=None):
+                time.sleep(0.12)
+                if result is not None:
+                    result.update(waited_s=0.12, checks=2, reason="restored")
+                return True
+
+        saved = RR.net_gate
+        RR.net_gate = lambda: Gate()
+        try:
+            assert run._net_wait({"cmd": "kb:links", "args": ["--apply"]})
+        finally:
+            RR.net_gate = saved
+        timing = run._timing_now()
+        assert timing["service_wait_ms"] >= 100, timing
+        assert timing["wait_by_service"].get("network", 0) >= 100, timing
+        assert timing["work_ms"] == timing["active_ms"] - timing["service_wait_ms"], timing
+
+
+@test
+def test_command_queue_lands_in_meta_and_timing(tmp: Path):
+    """Команда, ждавшая ресурс, пишет queue_ms в meta и отдельной строкой в timing."""
+    for CK, root in _panel(tmp):
+        first = CK.start_job(str(root), "kb:links", ["--apply"])
+        time.sleep(0.15)
+        second = CK.start_job(str(root), "kb:links", ["--apply", "--cards"])
+        with CK.JOBS_LOCK:
+            assert CK.JOBS[second]["state"] == "queued", CK.JOBS[second]
+        CK.stop_job(first)
+        _wait(CK, [first, second])
+        with CK.JOBS_LOCK:
+            run_id = CK.JOBS[second]["run_id"]
+        import route_runner as RR
+        meta = RR.read_meta(os.path.join(CK.runs_dir(str(root)), run_id))
+        assert meta["queue_ms"] > 0, meta
+        assert meta["timing"]["queue_ms"] == meta["queue_ms"], meta["timing"]
+        assert meta["timing"]["queue_ms"] <= meta["seconds"] * 1000 + 1000, meta
+
+
+@test
+def test_cron_busy_project_is_other_wait_and_has_utc_fields(tmp: Path):
+    """Два часа ожидания занятого проекта — other_wait, а не работа и не service_wait."""
+    import cron
+
+    class Ck:
+        @staticmethod
+        def project_activity(_project):
+            return {}
+
+    restore = set_home(tmp / "home")
+    try:
+        s = cron.Scheduler(Ck(), lambda: [])
+        s.stop_event = threading.Event()
+        calls = {"n": 0}
+
+        def busy(*_args):
+            calls["n"] += 1
+            return calls["n"] <= 2
+
+        s._busy = busy
+        clock = {"t": 1000.0}
+
+        def sleep(sec):
+            clock["t"] += sec
+
+        with patch.object(cron, "BUSY_POLL_S", 3600):
+            result: dict = {}
+            assert s._wait_free("p", None, "route", (), result=result,
+                                clock=lambda: clock["t"], sleep=sleep)
+        assert result["wait_ms"] == 7_200_000, result
+        assert result["reason"] == "busy", result
+        run = s._new_run({"id": "t", "name": "Задание", "on_fail": "next",
+                          "steps": []}, "manual", "")
+        assert run["started_utc"].endswith("Z") and run["finished_utc"] == "", run
+        assert run["wait_ms"] == 0 and run["queue_ms"] == 0, run
+        timing = cron.run_timing("2026-11-21T10:00:00Z",
+                                 "2026-11-21T12:00:00Z", 7_200_000)
+        assert timing["other_wait_ms"] == 7_200_000, timing
+        assert timing["service_wait_ms"] == 0 and timing["work_ms"] == 0, timing
+        assert timing["other_by_kind"] == {"lock": 7_200_000}, timing
+        mixed = cron.run_timing("2026-11-21T10:00:00Z", "2026-11-21T13:00:00Z",
+                                7_200_000, 1_800_000)
+        assert mixed["other_wait_ms"] == 7_200_000, mixed
+        assert mixed["service_wait_ms"] == 1_800_000, mixed
+        assert mixed["work_ms"] == 1_800_000, mixed
+        item: dict = {}
+        s._note_wait(item, service=500)
+        s._note_wait(item, other=200)
+        assert item["timing"]["service_wait_ms"] == 500, item
+        assert item["timing"]["other_wait_ms"] == 200, item
+    finally:
+        restore()
+
+
+@test
+def test_task_scheduler_exposes_queue_wait_and_conflict(tmp: Path):
+    """Очередь планировщика хранит queued_at, started_at, wait_ms и причину конфликта."""
+    import task_scheduler as TS
+
+    s = TS.TaskScheduler(max_parallel=1, rules={})
+    blocker = TS.Task(id="a", project=os.path.realpath(tmp), resources=("kb-write",))
+    queued = TS.Task(id="b", project=os.path.realpath(tmp), resources=("kb-write",))
+    assert s.submit(blocker) == "running"
+    time.sleep(0.05)
+    assert s.submit(queued) == "queued"
+    row = s.snapshot()["queued"][0]
+    assert row["queued_at"] and row["conflict"] and row["wait_ms"] == 0, row
+    s.release("a")
+    active = s.snapshot()["active"]
+    assert active and active[0]["started_at"] and active[0]["wait_ms"] >= 40, active
+    s.release("b")
+
+
+@test
+def test_watchdog_pause_writes_wait_span_and_ms(tmp: Path):
+    """Пауза сторожа становится wait-спаном в timing.jsonl задания."""
+    import watchdog as WD
+
+    run_dir = tmp / "run"
+    run_dir.mkdir()
+    clock = {"t": 10_000.0}
+    job = {"id": "j", "project": str(tmp), "out": [], "run_dir": str(run_dir),
+           "run_id": "r1", "started": clock["t"] - 20, "last_out": clock["t"] - 20,
+           "parent": "route-1", "proc": types.SimpleNamespace(pid=4242,
+                                                              poll=lambda: None),
+           "pausable": True}
+
+    class Ck:
+        JOBS_LOCK = threading.Lock()
+        JOBS = {"j": job}
+
+        @staticmethod
+        def job_pulse(_job):
+            return {"state": "quiet"}
+
+    dog = WD.Watchdog(Ck, probe_fn=lambda _p: {"ok": False, "down": ["сеть"]},
+                      clock=lambda: clock["t"])
+    with patch.object(WD, "suspend_tree", lambda _pid: True), \
+            patch.object(WD, "resume_tree", lambda _pid: True):
+        dog.pause(job)
+        clock["t"] += 600
+        dog.resume(job)
+    assert job["paused_ms"] == 600_000, job
+    rows = [json.loads(line) for line in (run_dir / "timing.jsonl").read_text(
+        encoding="utf-8").splitlines()]
+    wait = next(r for r in rows if r["kind"] == "wait")
+    assert wait["wait_class"] == "service" and wait["service"] == "network", wait
+    assert wait["reason"] == "watchdog_pause" and wait["dur_ms"] >= 599_000, wait
+
+
+@test
+def test_git_backoff_writes_other_wait(tmp: Path):
+    """Повтор автоматики после отказа — ожидание other, а не работа проекта."""
+    import git_auto as GA
+
+    run_dir = tmp / "run"
+    run_dir.mkdir()
+    clock = {"t": 1000.0}
+    auto = GA.GitAuto(types.SimpleNamespace(JOBS={}, JOBS_LOCK=threading.Lock()),
+                      lambda: [], clock=lambda: clock["t"])
+    state = {"auto_update_fail_at": 1000.0, "auto_update_run_dir": str(run_dir)}
+    assert auto._backoff("p", state, "update") is True
+    clock["t"] = 1900.0
+    assert auto._backoff("p", state, "update") is False
+    rows = [json.loads(line) for line in (run_dir / "timing.jsonl").read_text(
+        encoding="utf-8").splitlines()]
+    wait = next(r for r in rows if r["kind"] == "wait")
+    assert wait["wait_class"] == "other" and wait["service"] == "git_remote", wait
+    assert wait["dur_ms"] >= 899_000, wait
+
+
+@test
+def test_gate_wait_returns_waited_seconds_and_net_observe_returns_timing(tmp: Path):
+    """Ожидание связи отдаёт длительность, снимки — приблизительную сводку timing."""
+    import conn_gate as G
+    import net_observe as NO
+
+    clock = {"t": 0.0}
+
+    def sleep(sec):
+        clock["t"] += sec
+
+    checks = {"n": 0}
+
+    def check():
+        checks["n"] += 1
+        return {"ok": clock["t"] >= 120, "reason": "network_down"}
+
+    result: dict = {}
+    assert G.wait_restored(check, poll=60, sleep=sleep, clock=lambda: clock["t"],
+                           result=result)
+    assert result["waited_s"] >= 120 and result["checks"] >= 3, result
+    assert result["reason"] == "restored", result
+
+    data = {"seconds": 300, "snapshots": [
+        {"at": "2026-11-21T10:00:00Z", "elapsed_s": 0, "blocked": [{"code": "llm_down"}],
+         "state": "offline", "requirements": {"llm": True}},
+        {"at": "2026-11-21T10:05:00Z", "elapsed_s": 300, "blocked": [], "state": "online",
+         "requirements": {"llm": True}},
+    ]}
+    summary = NO.summarize(data)
+    timing = summary["timing"]
+    assert timing["v"] == 1 and timing["service_wait_ms"] == 300_000, timing
+    assert timing["quality"]["approx"] is True, timing
+    assert timing["active_ms"] == 300_000, timing
+
+
+@test
+def test_command_network_wait_is_recorded_in_job(tmp: Path):
+    """Ожидание сети команды возвращается в job и попадёт в её timing."""
+    import conn_gate as GATE
+
+    for CK, root in _panel(tmp):
+        job = {"id": "net-1", "out": [], "cancel": threading.Event(),
+               "started": time.time(), "last_out": time.time()}
+        saved_check, saved_wait = CK.net_check_command, GATE.wait_restored
+
+        def wait(check, **kw):
+            time.sleep(0.12)
+            kw["result"].update(waited_s=0.12, checks=2, reason="restored")
+            return True
+
+        CK.net_check_command = lambda *_a, **_k: {"ok": False, "blocked": []}
+        GATE.wait_restored = wait
+        try:
+            assert CK.net_wait_for(job, str(root), "sync:confluence")
+        finally:
+            CK.net_check_command, GATE.wait_restored = saved_check, saved_wait
+        assert job["net_wait_ms"] >= 100, job
+
+
+@test
+def test_command_net_wait_lands_in_final_timing(tmp: Path):
+    """Точное ожидание сети команды остаётся в её meta после запуска."""
+    import conn_gate as GATE
+    import route_runner as RR
+
+    for CK, root in _panel(tmp):
+        saved_check, saved_wait = CK.net_check_command, GATE.wait_restored
+
+        def wait(check, **kw):
+            time.sleep(0.12)
+            kw["result"].update(waited_s=0.12, checks=2, reason="restored")
+            return True
+
+        CK.net_check_command = lambda *_a, **_k: {"ok": False, "blocked": []}
+        GATE.wait_restored = wait
+        try:
+            job_id = CK.start_job(str(root), "kb:links", ["--apply"], net_wait=True)
+            _wait(CK, [job_id])
+        finally:
+            CK.net_check_command, GATE.wait_restored = saved_check, saved_wait
+        with CK.JOBS_LOCK:
+            run_id = CK.JOBS[job_id]["run_id"]
+        meta: dict = {}
+        for _ in range(50):
+            meta = RR.read_meta(os.path.join(CK.runs_dir(str(root)), run_id))
+            if isinstance(meta.get("timing"), dict):
+                break
+            time.sleep(0.02)
+        assert meta["timing"]["service_wait_ms"] >= 100, meta["timing"]
+        assert meta["timing"]["quality"]["approx"] is False, meta["timing"]
+
+
+@test
+def test_net_report_reads_queue_from_meta_and_prints_it_separately(tmp: Path):
+    """net:report берёт очередь из meta и не кладёт её в скобки ожидания."""
+    import net_report
+
+    project = tmp / "p"
+    run_id = "20261121-101500-ab12cd-command"
+    run_dir = project / ".aurora" / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "net.json").write_text(json.dumps({
+        "id": run_id, "cmd": "agent:distill",
+        "summary": {"seconds": 600, "snapshots": 2, "blocked_s": 120,
+                    "network_required": True, "reason": "network"}}), encoding="utf-8")
+    T = _timing()
+    timing = T.legacy_timing(600, {"snapshots": 2, "blocked_s": 120}, queue_ms=180_000)
+    (run_dir / "meta.json").write_text(json.dumps({
+        "id": run_id, "seconds": 600, "queue_ms": 180_000, "timing": timing}),
+        encoding="utf-8")
+    data = json.loads((run_dir / "net.json").read_text(encoding="utf-8"))
+    out = net_report._show(data, str(project))
+    assert "- ожидание запуска: 3 мин" in out, out
+    assert "- длительность: 5 мин (+ ~2 мин ожидания)" in out, out
+    exact = T.legacy_timing(600, None, queue_ms=60_000, service_ms=120_000)
+    assert exact["active_ms"] == 540_000 and exact["total_ms"] == 600_000, exact
+    assert exact["service_wait_ms"] == 120_000, exact
+    assert exact["work_ms"] == 420_000, exact
+    assert exact["source"] == "spans" and exact["confidence"] == "exact", exact
+    assert exact["quality"]["queue_separated"] is True, exact
+
+
+@test
+def test_production_human_pause_is_not_service_wait(tmp: Path):
+    """Пауза человека в производстве видна отдельно и не становится service_wait."""
+    import make_state as MS
+
+    run = MS.make_run(tmp, "make-1", kind="document", title="Документ")
+    run.create()
+    run.update_state(paused_ms=600_000)
+    state = run.state()
+    assert state["paused_ms"] == 600_000 and state["active_started"], state
+    assert "service_wait" not in state, state
+    deadline = run.deadline()
+    started = MS.datetime.fromisoformat(state["active_started"].replace("Z", "+00:00")).timestamp()
+    assert deadline >= started + 3600 + 600, (deadline, started)
