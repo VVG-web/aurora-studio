@@ -6,6 +6,7 @@
 """
 import os
 import re
+import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,6 +15,46 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def read(rel):
     with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
         return f.read()
+
+
+def common_templates_problems():
+    """Все файлы `scaffold/TemplatesCommon` должны быть в индексе git.
+
+    GitHub Release собирает исходники из коммита. Файл, лежащий только на диске или
+    спрятанный в `.git/info/exclude`, в выпуск не попадает: шаблон есть у автора и
+    исчезает у пользователя. Проверяем диск против индекса, а не против HEAD: на пути
+    к выпуску индекс и есть будущий состав коммита. Сравнение с диском называет и
+    файл, спрятанный в `.git/info/exclude`: исключение не убирает его с диска.
+    """
+    rel = "scaffold/TemplatesCommon"
+    folder = os.path.join(ROOT, rel)
+    if not os.path.isdir(folder):
+        return []
+    try:
+        probe = subprocess.run(["git", "-C", ROOT, "rev-parse", "--git-dir"],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    if probe.returncode != 0:
+        return []                    # архив без .git: состав уже зафиксирован
+
+    def git_lines(*args):
+        cp = subprocess.run(["git", "-C", ROOT, *args], capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+        return set(cp.stdout.splitlines()) if cp.returncode == 0 else set()
+
+    tracked = {p for p in git_lines("ls-files", "--cached", "--", rel) if p}
+    on_disk = set()
+    for dirpath, _dirs, names in os.walk(folder):
+        for name in names:
+            on_disk.add(os.path.relpath(os.path.join(dirpath, name), ROOT).replace(os.sep, "/"))
+
+    problems = []
+    for path in sorted(on_disk - tracked):
+        problems.append(f"{path}: не в git — не попадёт в релиз")
+    for path in sorted(tracked - on_disk):
+        problems.append(f"{path}: в git, но нет на диске")
+    return problems
 
 
 def main():
@@ -39,6 +80,7 @@ def main():
     waits = re.search(r"workflows:\s*\[([^\]]*)\]", read(".github/workflows/release.yml"))
     if not wf or not waits or wf.group(1) not in [w.strip() for w in waits.group(1).split(",")]:
         problems.append("release.yml ждёт не тот workflow, что назван в test.yml (engine-tests)")
+    problems.extend(common_templates_problems())
     for p in problems:
         print("✗", p)
     if not problems:

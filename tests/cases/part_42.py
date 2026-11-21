@@ -1409,6 +1409,9 @@ def test_new_project_gets_the_thirteen_templates(tmp: Path):
     for root in (cli, panel):
         folder = root / "TemplatesCommon"
         assert sorted(p.name for p in folder.glob("akdb_*")) == [f.name for f in kit_files], f"{root.name}: набор шаблонов"
+        assert sorted(p.name for p in folder.iterdir() if p.name != ".gitkeep") == \
+            sorted(p.name for p in KIT_DIR.iterdir()), \
+            f"{root.name}: установщик доставил не все общие шаблоны"
         for f in kit_files:
             assert _same_text(folder / f.name, f), f"{root.name}: {f.name} отличается от файла кита"
         assert _same_text(folder / "README.md", KIT_DIR / "README.md"), f"{root.name}: README общих шаблонов"

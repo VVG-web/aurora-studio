@@ -836,3 +836,45 @@ def test_check_release_reports_each_mismatch(tmp: Path):
             ("ENGINE_API не число", dict(engine_api="много\n"), "ENGINE_API")):
         rc, out = check(tree(**kw))
         assert rc == 1 and needle in out, (label, rc, out)
+
+
+@test
+def test_check_release_requires_common_templates_in_git(tmp: Path):
+    """Релизная проверка ловит и untracked, и спрятанный в exclude шаблон Common.
+
+    GitHub Release собирает исходники из коммита: файл, которого нет в индексе, уедет
+    автору, но не пользователю. Проверка сравнивает диск с индексом, поэтому исключение
+    `.git/info/exclude` не делает черновик невидимым.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("check_release_common_guard", KIT / "tests/check_release.py")
+    CR = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(CR)
+
+    root = tmp / "release-common"
+    folder = root / "scaffold/TemplatesCommon"
+    folder.mkdir(parents=True)
+    tracked = folder / "tracked.md"
+    tracked.write_text("шаблон\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "scaffold/TemplatesCommon/tracked.md"], cwd=root, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "init"], cwd=root, check=True)
+    CR.ROOT = str(root)
+    assert CR.common_templates_problems() == []
+
+    draft = folder / "draft.md"
+    draft.write_text("черновик\n", encoding="utf-8")
+    problems = CR.common_templates_problems()
+    assert any("draft.md" in p and "не в git" in p for p in problems), problems
+
+    # Исключение не прячет файл: он по-прежнему на диске и не в индексе.
+    (root / ".git/info/exclude").write_text("scaffold/TemplatesCommon/draft.md\n", encoding="utf-8")
+    problems = CR.common_templates_problems()
+    assert any("draft.md" in p and "не в git" in p for p in problems), problems
+
+    # Удалённый, но не снятый с учёта файл тоже назван: в релизе он был бы старым.
+    draft.unlink()
+    tracked.unlink()
+    problems = CR.common_templates_problems()
+    assert any("tracked.md" in p and "нет на диске" in p for p in problems), problems
