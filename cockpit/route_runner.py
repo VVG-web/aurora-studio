@@ -1430,7 +1430,18 @@ class RouteRun:
             pass
         known_service = net_known or own_service > 0 or child_service > 0
         known_other = child_other > 0
-        if not known_service and not known_other:
+        if not known_service:
+            if known_other:
+                timing.update(
+                    queue_ms=queue, active_ms=active, total_ms=total,
+                    work_ms=None, service_wait_ms=None, other_wait_ms=child_other,
+                    unknown_ms=None, coverage=0.0, source="children",
+                    confidence="unknown",
+                    quality={**(timing.get("quality") or {}), "wait_known": False,
+                             "approx": False, "legacy": False,
+                             "queue_separated": True},
+                    other_by_kind={"child": child_other})
+                return timing
             # Известна только очередь (например, шаг ждал kb-write), а работа
             # без данных об ожидании остаётся неизвестной, не нулевой.
             timing.update(queue_ms=queue, active_ms=active, total_ms=total)
@@ -1440,7 +1451,8 @@ class RouteRun:
         service = min(service, float(active))
         other = min(float(child_other), max(0.0, float(active) - service))
         work = max(0.0, float(active) - service - other)
-        approx = (net_known and float(net_wait) > own_service + child_service)
+        approx = (net_known and (float(net_wait) > own_service + child_service
+                                 or not (own_service or child_service)))
         source = ("spans+children" if own_service > 0 and child_service > 0
                   else "children" if child_service > 0
                   else "spans" if own_service > 0
