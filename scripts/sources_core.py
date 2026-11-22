@@ -455,7 +455,6 @@ def _failure(exc) -> tuple:
     """Сбой → (`status`, `reason`, `http_status`) по разделу 4.1 контракта."""
     import errno
     import http.client
-    import socket
     import ssl
     import urllib.error
 
