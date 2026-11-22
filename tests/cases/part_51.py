@@ -58,9 +58,11 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
         auth = AG.link_why("auth", 3, "m-2", 401)
         dns = AG.link_why("dns", 1, "m-3")
         slow = AG.Why("model_timeout", "call", sec=390)
+        hang = AG.Why("adapter_hang", "call", sec=330)
         AG._write_alarm({
             "agent:build": _row(AG, net, path="agent:build"),
             "agent:slow": _row(AG, slow, path="agent:slow"),
+            "publish_llm.py": _row(AG, hang, path="publish_llm.py"),
             "bot:ревью": _row(AG, AG._adapter_gap(), path="bot:ревью"),
             "bot:старый": {"at": "2026-10-07T07:00:00Z", "why": "venv не установлен",
                            "project": "/x/PRJ", "calls": 1},
@@ -69,7 +71,8 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
             "agent:venv": _row(AG, AG._venv_gap(), path="agent:venv")})
         rows = {r["path"] + "|" + r["area"]: r for r in ck.adapter_alarm()}
         assert set(rows) == {"agent:build|adapter", "agent:slow|timeout", "bot:ревью|adapter",
-                             "bot:ревью|link", "agent:build|link", "agent:venv|adapter"}, set(rows)
+                             "publish_llm.py|timeout", "bot:ревью|link", "agent:build|link",
+                             "agent:venv|adapter"}, set(rows)
         assert "bot:старый" not in AG.read_alarm(), "просроченная тревога адаптера не удалена"
         # у строки есть ключ записи: по нему панель снимает именно эту тревогу, а не все сразу
         assert rows["bot:ревью|link"]["key"] == "link:3", rows["bot:ревью|link"]
@@ -81,6 +84,9 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
         slow_row = rows["agent:slow|timeout"]
         assert (slow_row["kind"], slow_row["fix"]) == ("model_timeout", "models"), slow_row
         assert slow_row["args"]["sec"] == 390, slow_row
+        hang_row = rows["publish_llm.py|timeout"]
+        assert (hang_row["kind"], hang_row["fix"]) == ("adapter_hang", ""), hang_row
+        assert "адаптер исправен" not in hang_row["why"], hang_row
         auth_row = rows["bot:ревью|link"]
         assert (auth_row["kind"], auth_row["fix"], auth_row["args"]["status"]) == ("auth", "models", 401), auth_row
         dns_row = rows["agent:build|link"]
@@ -135,6 +141,7 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
         assert "bot:скрыть" not in AG.read_alarm(), AG.read_alarm()
         assert "bot:скрыть" not in [r["key"] for r in ck.adapter_alarm()], ck.adapter_alarm()
         assert ck.forget_link_alarm("project:x") is False
+        assert ck.forget_link_alarm("publish_llm.py") is False, "скрытие пути скрипта принято"
         # Ответил — скрытие снято: следующая беда того же бэкенда снова видна.
         AG.link_ok(4, keep_probe=True)
         assert AG.alarm_snoozed("link:4") is False
@@ -178,6 +185,9 @@ const ADAPTER = [
 const TIMEOUT = [{path: "agent:slow", area: "timeout", kind: "model_timeout", sub: "call", fix: "models",
   why: "модель не ответила за 390 с через Pydantic AI", project: "PRJ-A", calls: 4,
   at: "2026-10-18T10:19:00Z", key: "agent:slow", args: {sec: 390}}];
+const TIMEOUT_SCRIPT = [{path: "publish_llm.py", area: "timeout", kind: "adapter_hang", sub: "call", fix: "",
+  why: "адаптер Pydantic AI не ответил за 330 с", project: "PRJ-A", calls: 1,
+  at: "2026-10-18T10:19:00Z", key: "publish_llm.py", args: {sec: 330}}];
 const KINDS = %KINDS%;
 const MODELS_FIX = %MODELS%;
 const link = (kind, n) => ({path: "agent:build", area: "link", kind, fix: MODELS_FIX.includes(kind) ? "models" : "",
@@ -217,6 +227,13 @@ const link = (kind, n) => ({path: "agent:build", area: "link", kind, fix: MODELS
   check(posted.length === 1 && posted[0].path === "/api/adapter/alarm/forget"
         && JSON.parse(posted[0].opts.body).key === "agent:slow", "timeout: «Скрыть» шлёт ключ");
   check(diag.length === 1 && diag[0].source === "timeout_alarm", "timeout: кнопка лога");
+  // путь скрипта сервер не принимает для скрытия: кнопки «Скрыть» нет, «Моделей» нет (fix пуст)
+  posted.length = 0;
+  diag.length = 0;
+  drawAdapterAlarm(TIMEOUT_SCRIPT);
+  check(JSON.stringify(names(bars.timeoutbar)) === JSON.stringify(["diag.btn"]),
+        "timeout script: только лог, got " + JSON.stringify(names(bars.timeoutbar)));
+  check(posted.length === 0, "timeout script: «Скрыть» не показана и не отправлена");
   // обрыв связи, каждый вид: своя полоса, заголовок по виду, ни слова про Pydantic AI в кнопках
   for (const kind of KINDS){
     shown.length = 0;
@@ -267,6 +284,9 @@ def test_the_panel_draws_the_right_bar_for_the_adapter_and_for_the_link(tmp: Pat
     assert "alarm.adapter" not in link_part, "в полосе связи надписи про адаптер"
     timeout_part = func[func.index("if (timeout.length)"):func.index("if (adapter.length)")]
     assert "alarm.timeout" in timeout_part and "alarm.timeout_models" in timeout_part
+    assert "canSnooze(r)" in timeout_part, "в полосе таймаута «Скрыть» без проверки ключа"
+    assert 'timeout.some(r => r.fix === "models")' in timeout_part, \
+        "кнопка «Модели» не привязана к доказанному таймауту модели"
     assert "alarm.adapter" not in timeout_part and "show(\"install\")" not in timeout_part, \
         "в полосе таймаута снова предлагают установку"
     assert "drawAdapterAlarm(d.alarm)" in panel and "drawAdapterAlarm(S.state.adapter_alarm)" in panel

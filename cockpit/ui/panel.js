@@ -2535,8 +2535,10 @@ function showReaped(r){
 // - `link`: нет связи с бэкендом (сеть, DNS, сертификат, прокси, сам шлюз). Pydantic AI тут ни при
 //   чём, поэтому про него в полосе ни слова и кнопок про него нет. Заголовок называет вид беды;
 //   уходит, когда бэкенд ответит. 18.10.2026 обрыв сети выдавали за поломку Pydantic AI.
-// - `timeout`: адаптер жив, но модель не ответила за срок. Это не обход и не повод ставить
-//   Pydantic AI: жёлтая плашка, «Модели» и подробности, без единого слова про установку.
+// - `timeout`: ответа за срок нет. Адаптер сам ответил `model_timeout` (тогда он исправен) или
+//   внешний сторож не дождался его (`adapter_hang`, причина не установлена). Это не обход и не
+//   повод ставить Pydantic AI: жёлтая плашка, «Модели» только для доказанного таймаута модели,
+//   подробности и скрытие только для ключей, которые принимает сервер.
 function drawAdapterAlarm(rows){
   for (const id of ["#adapterbar", "#linkbar", "#timeoutbar"]){
     const old = $(id);
@@ -2549,6 +2551,11 @@ function drawAdapterAlarm(rows){
       onclick:()=>downloadDiagnostics({...ctx, btn:b})}, t("diag.btn"));
     return b;
   };
+  // Кнопка «Скрыть» работает только для ключей, которые принимает сервер
+  // (`alarm_key_snoozable`): связь, бот, агент. Для имени скрипта endpoint ответит 400,
+  // поэтому кнопку не рисуем вовсе.
+  const canSnooze = (r) => /^link:\d+$/.test(String(r.key || ""))
+    || /^(?:agent|bot):/.test(String(r.key || r.path || ""));
   const adapter = rows.filter(r => r.area === "adapter");
   const link = rows.filter(r => r.area === "link");
   const timeout = rows.filter(r => r.area === "timeout");
@@ -2560,7 +2567,7 @@ function drawAdapterAlarm(rows){
       ...link.map(r => el("div",{},
         el("b",{}, t("alarm.link." + r.kind, Object.assign({n:"?", status:""}, r.args || {}))),
         " ", t("alarm.link_row", {path: r.path, project: r.project || "—", when: when(r), calls: r.calls}),
-        ...(r.key ? [el("button",{class:"btn sm", style:"margin-left:8px",
+        ...(canSnooze(r) ? [el("button",{class:"btn sm", style:"margin-left:8px",
           title:t("alarm.link_dismiss_title"), onclick:()=>forgetLinkAlarm(r.key)},
           t("alarm.link_dismiss"))] : []),
         el("div",{class:"muted"}, r.why))),
@@ -2577,12 +2584,13 @@ function drawAdapterAlarm(rows){
       el("b",{}, t("alarm.timeout")),
       ...timeout.map(r => el("div",{}, t("alarm.timeout_row",
         {path: r.path, project: r.project || "—", when: when(r), calls: r.calls, why: r.why}),
-        el("button",{class:"btn sm", style:"margin-left:8px",
+        ...(canSnooze(r) ? [el("button",{class:"btn sm", style:"margin-left:8px",
           title:t("alarm.timeout_dismiss_title"), onclick:()=>forgetLinkAlarm(r.key)},
-          t("alarm.timeout_dismiss")))),
+          t("alarm.timeout_dismiss"))] : []))),
       el("div",{}, t("alarm.timeout_tail"),
-        el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("models")},
-          t("alarm.timeout_models")),
+        ...(timeout.some(r => r.fix === "models")
+          ? [el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("models")},
+              t("alarm.timeout_models"))] : []),
         diagButton({source:"timeout_alarm", key: timeout[0].key, area:"timeout",
                     kind: timeout[0].kind, sub: timeout[0].sub, why: timeout[0].why,
                     path: timeout[0].path, message: timeout[0].why}))));
@@ -2592,9 +2600,9 @@ function drawAdapterAlarm(rows){
       el("b",{}, t("alarm.adapter")),
       ...adapter.map(r => el("div",{}, t("alarm.adapter_row",
         {path: r.path, project: r.project || "—", when: when(r), calls: r.calls, why: r.why}),
-        el("button",{class:"btn", style:"margin-left:8px",
+        ...(canSnooze(r) ? [el("button",{class:"btn", style:"margin-left:8px",
           title:t("alarm.adapter_dismiss_title"), onclick:()=>forgetLinkAlarm(r.key)},
-          t("alarm.adapter_dismiss")))),
+          t("alarm.adapter_dismiss"))] : []))),
       // Беда venv — для кого: «Установка» проверяет и ставит для пользователя панели (имени в файле тревоги нет).
       ...[...new Set(adapter.map(r => r.user).filter(Boolean))].map(user =>
         el("div",{class:"muted"}, t("alarm.adapter_user", {user}))),

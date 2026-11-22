@@ -832,12 +832,12 @@ def test_a_quarantined_backend_keeps_naming_the_real_cause(tmp: Path):
 
 
 @test
-def test_a_hung_adapter_call_is_a_model_timeout_not_a_bypass(tmp: Path):
-    """Процесс адаптера жив, но ответа за срок нет: это таймаут модели, а не обход Pydantic AI.
+def test_an_unanswered_adapter_is_not_claimed_healthy(tmp: Path):
+    """Внешний сторож не дождался адаптера: это не обход, но и не доказанный таймаут модели.
 
-    Панель не должна показывать «прямой HTTP, без инструментов/MCP» и предлагать установку:
-    адаптер исправен, вызов шёл через него, а модель не успела ответить. Тревога своя
-    (`area=timeout`), лечение — «Модели», а не «Установка».
+    Нельзя писать «адаптер исправен»: процесс мог зависнуть до входа в свой срок. Тревога
+    своя (`area=timeout`, `adapter_hang`), кнопки «Установка» нет, а текст честно говорит,
+    что причина не установлена.
     """
     import io
     import contextlib
@@ -852,14 +852,17 @@ def test_a_hung_adapter_call_is_a_model_timeout_not_a_bypass(tmp: Path):
         assert not r["ok"] and not r.get("link") and r.get("timed_out"), r
         row = AG.read_alarm()["agent:test"]
         assert (row["area"], row["kind"], row["sub"], row["fix"]) == \
-            ("timeout", "model_timeout", "call", "models"), row
+            ("timeout", "adapter_hang", "call", ""), row
         shown = out.getvalue()
         assert "Pydantic AI не ответил за отведённое время" in shown \
-            and "модель не ответила за 330 с" in shown, shown
+            and "адаптер Pydantic AI не ответил за 330 с" in shown, shown
+        assert "адаптер исправен" not in shown and "модель не успела" not in shown, shown
+        ring_log = "\n".join(r.get("log") or [])
+        assert "Причина не установлена" in ring_log and "Адаптер исправен" not in ring_log, ring_log
         assert "прямой HTTP" not in shown and "link:1" not in AG.read_alarm(), shown
-        assert not AG.USAGE["link_failed"], "таймаут модели записан обрывом связи"
-        assert not AG.USAGE["bypass"], "таймаут модели записан обходом адаптера"
-        assert AG.failure_kind(cause, answered=False) == "model_timeout", cause
+        assert not AG.USAGE["link_failed"], "молчание адаптера записано обрывом связи"
+        assert not AG.USAGE["bypass"], "молчание адаптера записано обходом адаптера"
+        assert AG.failure_kind(cause, answered=False) == "adapter_hang", cause
 
 
 @test
@@ -874,9 +877,45 @@ def test_a_real_adapter_bypass_keeps_the_install_area(tmp: Path):
                                answered=False) == "adapter_bypass"
     assert AG.failure_kind(AG.Why("adapter_error", error="x"), answered=True) == "adapter_bypass"
     assert AG.failure_kind(AG.Why("process_hang", "call", sec=60),
-                               answered=False) == "model_timeout"
+                               answered=False) == "adapter_hang"
     assert AG.failure_kind(AG.Why("model_timeout", "call", sec=60),
                                answered=False) == "model_timeout"
+    # C5: с ответом это уже не таймаут, даже если причина названа model_timeout.
+    assert AG.is_model_timeout(AG.Why("model_timeout", "call", sec=60), answered=True) is False
+    assert AG.is_model_timeout(AG.Why("model_timeout", "call", sec=60), answered=False) is True
+    assert AG.is_model_timeout(AG.Why("adapter_hang", "call", sec=60),
+                               answered=False) is False
+
+
+@test
+def test_a_model_timeout_keeps_a_real_adapter_alarm(tmp: Path):
+    """Таймаут того же пути не затирает настоящий обход адаптера: adapter важнее timeout."""
+    with _World(tmp) as w:
+        AG = w.AG
+        AG.note_bypass(AG.Why("venv", path="/x/project/.aurora/venv"), answered=False)
+        before = AG.read_alarm()["agent:test"]
+        assert (before["area"], before["kind"]) == ("adapter", "venv"), before
+        AG.note_model_timeout(AG.Why("model_timeout", "call", sec=60))
+        after = AG.read_alarm()["agent:test"]
+        assert (after["area"], after["kind"], after["fix"]) == \
+            ("adapter", "venv", "install"), after
+        # Симметрично: таймаут, затем настоящий обход, в строке остаётся adapter.
+        AG._write_alarm({})
+        AG.note_model_timeout(AG.Why("adapter_hang", "call", sec=60))
+        assert AG.read_alarm()["agent:test"]["area"] == "timeout", AG.read_alarm()
+        AG.note_bypass(AG.Why("adapter_file", "project", path="/x"), answered=False)
+        assert AG.read_alarm()["agent:test"]["area"] == "adapter", AG.read_alarm()
+
+
+@test
+def test_a_successful_call_clears_the_timeout_snooze(tmp: Path):
+    """«Скрыть на сутки» не переживает успешный вызов: скрытие снимается вместе с тревогой."""
+    with _World(tmp) as w:
+        AG = w.AG
+        AG.snooze_alarm("agent:test")
+        assert AG.alarm_snoozed("agent:test") is True
+        AG.clear_bypass()
+        assert AG.alarm_snoozed("agent:test") is False, AG.read_alarm_snooze()
 
 
 @test
@@ -1101,7 +1140,7 @@ def test_each_adapter_cause_has_its_own_text_and_cure(tmp: Path):
         proc.stdin = real_stdin
         st, body, err, _dt = AG.pydantic_transport(b, dict(msg), -29.8)        # ждёт 0,2 с
         assert st is None and "timed out" in err and AG.looks_like_timeout(err), err
-        got["model_timeout.call"] = err.cause
+        got["adapter_hang.call"] = err.cause
         proc.kill()
         # 7. адаптер вернул ошибку; ответ без описания
         hub = {"proc": object(), "pending": {}, "out": None}
@@ -1153,14 +1192,14 @@ def test_each_adapter_cause_has_its_own_text_and_cure(tmp: Path):
                 "process_hang.start": "install", "process_died.closed": "",
                 "process_died.repeated": "", "process_died.pipe": "",
                 "adapter_error": "install", "reply_bad": "install",
-                "model_timeout.call": "models",
+                "adapter_hang.call": "",
                 "not_enabled": "", "client_net.proxy": "", "client_net.tls": "", "client_net.dns": "",
                 "client_net.other": ""}
     assert set(got) == set(want_fix), set(want_fix) ^ set(got)
     for cid, why in got.items():
         assert isinstance(why, AG.Why), (cid, why)
         assert AG.cause_id(why.kind, why.sub) == cid, (cid, why.kind, why.sub)
-        assert why.area == ("timeout" if cid == "model_timeout.call" else "adapter"), \
+        assert why.area == ("timeout" if cid == "adapter_hang.call" else "adapter"), \
             (cid, why.kind, why.sub, why.area)
         assert why.fix == want_fix[cid], (cid, why.fix)
     assert len({str(w_) for w_ in got.values()}) == len(got), "две причины с одним текстом"
@@ -1174,9 +1213,9 @@ def test_each_adapter_cause_has_its_own_text_and_cure(tmp: Path):
     assert "Pydantic AI 9.9.9 не прошёл проверку совместимости" in got["incompatible"]
     assert "(PermissionError)" in got["process_start"]
     assert "(код 7)" in got["process_died.start"]
-    assert "модель не ответила" in got["model_timeout.call"] \
-        and "timed out" in got["model_timeout.call"] \
-        and "«Установка»" not in got["model_timeout.call"]
+    assert "адаптер Pydantic AI не ответил" in got["adapter_hang.call"] \
+        and "причина не установлена" in got["adapter_hang.call"] \
+        and "адаптер исправен" not in got["adapter_hang.call"]
     assert "после запуска" in got["process_hang.start"]
     assert "посреди вызова" in got["process_died.closed"] and "BrokenPipeError" in got["process_died.pipe"]
     assert "«Установка»" not in got["process_died.pipe"], got["process_died.pipe"]
@@ -1295,7 +1334,9 @@ def test_the_cause_table_is_complete_and_every_text_is_translated(tmp: Path):
     assert AG.CAUSES["model_timeout.call"]["area"] == "timeout" \
         and AG.CAUSES["model_timeout.call"]["fix"] == "models"
     assert AG.CAUSES["process_hang.call"]["area"] == "timeout" \
-        and AG.CAUSES["process_hang.call"]["fix"] == "models"
+        and AG.CAUSES["process_hang.call"]["fix"] == ""
+    assert AG.CAUSES["adapter_hang.call"]["area"] == "timeout" \
+        and AG.CAUSES["adapter_hang.call"]["fix"] == ""
     sys.path.insert(0, str(SCRIPTS))
     KI = importlib.import_module("kit_i18n")
     assert KI.cause_problems() == [], KI.cause_problems()                  # проверка полноты таблицы
@@ -1310,6 +1351,9 @@ def test_the_cause_table_is_complete_and_every_text_is_translated(tmp: Path):
                     "alarm.timeout_models", "alarm.timeout_dismiss",
                     "alarm.timeout_dismiss_title"):
             assert cat.get(key), (lang, key)
+        assert "скрытие" not in cat["alarm.timeout_dismiss_title"], (lang, cat["alarm.timeout_dismiss_title"])
+        assert "hiding" not in cat["alarm.timeout_dismiss_title"], (lang, cat["alarm.timeout_dismiss_title"])
+        assert "Momus" not in cat["alarm.timeout_tail"], (lang, cat["alarm.timeout_tail"])
         assert "Pydantic" not in "".join(cat["alarm.link." + k] for k in AG.LINK_KINDS), lang
 
 
