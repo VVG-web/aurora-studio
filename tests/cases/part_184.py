@@ -206,8 +206,8 @@ def test_two_git_users_merge_their_update_marks_without_a_conflict(tmp: Path):
     import kb_updated as KU
 
     bare = tmp / "shared.git"
-    subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True,
-                   capture_output=True)
+    subprocess.run(["git", "init", "--bare", "-q", "--initial-branch=master", str(bare)],
+                   check=True, capture_output=True)
     seed = tmp / "seed"
     subprocess.run(["git", "clone", "-q", str(bare), str(seed)], check=True,
                    capture_output=True)

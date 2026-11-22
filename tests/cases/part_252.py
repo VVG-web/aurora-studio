@@ -13,17 +13,22 @@ import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
+import tempfile
 import threading
-import tomllib
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from harness import KIT, SCRIPTS, set_home, test
+from harness import KIT, SCRIPTS, assert_private_mode, run_node, set_home, test
+
+# Python 3.10: tomli ставит CI-джоб legacy-310; на 3.11+ это stdlib tomllib.
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(KIT / "cockpit"))
@@ -210,10 +215,10 @@ def test_mcp_cockpit_set_remote_mode_preserves_file(tmp: Path):
         assert data["permissions"] == {"jira_write": True}, data
         assert data["custom"] == {"a": 1}, data
         assert data["auroraRemote"]["mode"] == "full", data
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600, oct(path.stat().st_mode)
+        assert_private_mode(path)
         bak = path.with_name(path.name + ".bak")
         assert bak.is_file() and '"auroraRemote"' not in bak.read_text(encoding="utf-8")
-        assert stat.S_IMODE(bak.stat().st_mode) == 0o600, oct(bak.stat().st_mode)
+        assert_private_mode(bak)
 
         project = ck.set_remote_mode({"mode": "safe", "project": "alpha"}, _session())
         assert project.get("ok") is True, project
@@ -639,13 +644,13 @@ def test_mcp_cockpit_harness_two_servers_all_formats(tmp: Path):
         codex = tomllib.loads((home / ".codex" / "config.toml").read_text(encoding="utf-8"))
         assert set(codex["mcp_servers"]) == set(HM.SERVERS), codex["mcp_servers"]
 
-        vscode = json.loads((home / "Library" / "Application Support" / "Code" / "User"
-                             / "mcp.json").read_text(encoding="utf-8"))
+        vscode = json.loads(Path(HM.config_path(HM.harness("vscode")))
+                            .read_text(encoding="utf-8"))
         assert vscode["servers"]["aurora"]["type"] == "stdio", vscode
         assert vscode["servers"]["aurora-remote"]["type"] == "stdio", vscode
 
-        chatbox = json.loads((home / "Library" / "Application Support"
-                              / "xyz.chatboxapp.app" / "config.json").read_text(encoding="utf-8"))
+        chatbox = json.loads(Path(HM.config_path(HM.harness("chatbox")))
+                             .read_text(encoding="utf-8"))
         names = {row.get("name") for row in chatbox["settings"]["mcp"]["servers"]}
         assert set(HM.SERVERS) <= names, names
 
@@ -798,8 +803,9 @@ def _node_json(code: str):
     node = shutil.which("node")
     if not node:
         return None
-    cp = subprocess.run([node, "-e", code], capture_output=True, text=True,
-                        encoding="utf-8", errors="replace")
+    with tempfile.TemporaryDirectory(prefix="aurora-node-") as tmp:
+        cp = run_node(tmp, code, name="panel.mjs")
+    assert cp is not None, "node not found"
     assert cp.returncode == 0, cp.stderr[:800]
     return json.loads(cp.stdout)
 
