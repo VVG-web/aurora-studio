@@ -282,7 +282,7 @@ def test_a_route_will_not_run_on_two_engine_versions(tmp: Path):
     """
     src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     assert "def version_gap(" in src, "нет сверки версий движка"
-    run_block = src.split('if u.path == "/api/run"')[1][:1200]
+    run_block = src.split('if u.path == "/api/run"')[1].split("elif u.path ==")[0]
     assert "version_gap(" in run_block and 'payload.get("route")' in run_block, \
         "проверка версии не стоит на запуске шага маршрута"
     # страница обязана помечать шаги маршрута — иначе серверу нечего проверять
@@ -588,10 +588,14 @@ def test_panel_asks_only_endpoints_the_server_has(tmp: Path):
     ui = panel_sources()
     srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     known = set(re.findall(r'u\.path == "([^"]+)"', srv))
+    for group in re.findall(r'u\.path in \(([^)]+)\)', srv):
+        known |= set(re.findall(r'"([^"]+)"', group))
+    prefixes = set(re.findall(r'u\.path\.startswith\("([^"]+)"\)', srv))
     assert "/api/state" in known, "разбор путей сервера сломался — тест перестал что-то проверять"
     asked = {m.group(1) for m in re.finditer(r'api\(\s*[`"\']([^`"\'?]+)', ui)
              if m.group(1).startswith("/api")}
-    missing = sorted(asked - known)
+    missing = sorted(p for p in asked - known
+                     if not any(p.startswith(prefix) for prefix in prefixes))
     assert not missing, f"страница просит пути, которых у сервера нет: {missing}"
 
 

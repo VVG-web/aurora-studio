@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.231.4**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.231.16**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .aurora/scripts/kit_commands.py --md`.
@@ -9,6 +9,20 @@
 «Исполнитель» показывает, где проходит граница: **скрипт** — детерминированная
 механика, её результат воспроизводим; **модель** — работа со смыслом;
 **скрипт+модель** — скрипт считает и готовит, решение принимает человек.
+
+## Время в выводе команд
+
+Работу и ожидание печатают:
+
+- задачи `agent:*`: итог прогона строкой `Работа и ожидание` и блок качества
+  доступа. Сводка также ложится в `AuroraKnowledgeDB/meta/timing.d` и хранится
+  90 дней.
+- `net:report`: длительность строкой работы и простоя, ожидание запуска отдельной
+  строкой и оценка по снимкам сети со знаком `~`.
+
+В панели те же цифры показывают история запусков, итог маршрута, цепочка
+расписания и «Замеры». Поле `seconds` остаётся, поэтому строка без `timing`
+показывает `простой: нет данных`, а не ноль.
 
 ## `kit: — движок и проект`
 
@@ -145,10 +159,10 @@
 | `agent:make` | произвести артефакт по типу из реестра проекта: обогащение базой, план с вопросами к аналитику (grill), воркер, критик, Момус. Файл рождается сразу после обогащения, ответы аналитика пишутся по ходу — обрыв не уносит сказанное. В шапке видно, на чём документ стоит (based_on — процитированное, а не весь пак), что предположили и чьё это допущение, зрелость по осям (coverage) и сколько утверждений без опоры. В задаче понимает @путь, /навык и @сервер MCP; --context — файлы и вложения из панели | скрипт+модель | `agent_runner.py --task make` | `--question --mode --kind --idea --session --answers --enough --context --task-field --source --topic --owner --affects --from --thread --threads --no-journal --backend --role --model --pipeline --resume --emit-events --keep-questions --no-semantic --rerank --no-rerank --raptor --defer-refresh --recheck --no-momus --apply --critic --critic-new --limit --partition --until-done --hours --no-checkpoint` | 1.95.0 |
 | `agent:decide` (`decide-from`) | черновик решения (Decision Record) из источника: протокол встречи, ответ на вопрос (`--source Q-007`) или файл проекта. Каждый вариант и само решение несут дословную цитату источника, цитаты проверяет код; непроверенное остаётся в карточке под маркером в разделе «Под вопросом», затронутые карточки берутся только существующие. Без `--apply` — предпросмотр, с ним — карточка `DR-NNNN` со статусом proposed (номер выдаёт `kb:next-id`); принимает решение человек (`kb:decide-accept`) | скрипт+модель | `agent_runner.py --task decide` | `--question --mode --kind --idea --session --answers --enough --context --task-field --source --topic --owner --affects --from --thread --threads --no-journal --backend --role --model --pipeline --resume --emit-events --keep-questions --no-semantic --rerank --no-rerank --raptor --defer-refresh --recheck --no-momus --apply --critic --critic-new --limit --partition --until-done --hours --no-checkpoint` | 1.185.0 |
 | `agent:ask` | спросить базу своими словами: движок собирает контекст, модель отвечает только по карточкам и ставит ссылку на каждое утверждение; ответ проверяет Момус (роль qa) и разбор ссылок по базе; `--backend N` спрашивает конкретную модель из списка; `--rerank`/`--no-rerank` выбирает качество или скорость на один вопрос (смешивание 70/30), `--raptor` добавляет к общему вопросу обзор базы; разговор пишется в `meta/ask/` и уходит в git с базой, `--thread` продолжает его уточняющим вопросом | скрипт+модель | `agent_runner.py --task ask` | `--question --mode --kind --idea --session --answers --enough --context --task-field --source --topic --owner --affects --from --thread --threads --no-journal --backend --role --model --pipeline --resume --emit-events --keep-questions --no-semantic --rerank --no-rerank --raptor --defer-refresh --recheck --no-momus --apply --critic --critic-new --limit --partition --until-done --hours --no-checkpoint` | 1.63.0 |
-| `agent:width` | замерить, сколько одновременных запросов держит каждый шлюз: наращиваем нагрузку, пока растёт пропускная способность. Перестала расти — дальше очередь на стороне шлюза, и потоки добавлять бессмысленно. Число знать неоткуда, поэтому не спрашиваем, а меряем | скрипт | `agent_core.py --probe-width` | `--ping --heavy --show --pydantic --fast --force --check --venv-status --venv-install --no-quarantine --mcp-probe --json` | 1.99.2 |
-| `agent:pydantic` | настройки Pydantic AI: что уходит в шлюз по каждой роли — модель, включены ли рассуждения, поля chat-шаблона (extra_body) и срок запроса, прошла ли установленная версия проверку совместимости с Авророй (`--check` — проверить заново). Ключей в выводе нет | скрипт | `agent_core.py --pydantic` | `--ping --probe-width --heavy --show --fast --force --check --venv-status --venv-install --no-quarantine --mcp-probe --json` | 1.139.0 |
-| `agent:ping` | встроенный агент: проверить цепочку моделей — каждый бэкенд живым запросом, пустой ответ считается отказом | скрипт | `agent_core.py --ping` | `--probe-width --heavy --show --pydantic --fast --force --check --venv-status --venv-install --no-quarantine --mcp-probe --json` | 1.56.0 |
-| `agent:fast` (`fast`) | быстрая модель для дешёвых задач: при «авто» замеряет доступные модели всех ролей, выбирает самую быструю и хранит выбор 20 минут; `--force` — замерить заново. Показывает время каждой и кто не ответил | скрипт | `agent_core.py --fast` | `--ping --probe-width --heavy --show --pydantic --force --check --venv-status --venv-install --no-quarantine --mcp-probe --json` | 1.223.0 |
+| `agent:width` | замерить, сколько одновременных запросов держит каждый шлюз: наращиваем нагрузку, пока растёт пропускная способность. Перестала расти — дальше очередь на стороне шлюза, и потоки добавлять бессмысленно. Число знать неоткуда, поэтому не спрашиваем, а меряем | скрипт | `agent_core.py --probe-width` | `--ping --heavy --show --pydantic --fast --force --check --venv-status --venv-install --no-quarantine --mcp-probe --adapter-facts --adapter-probe --json` | 1.99.2 |
+| `agent:pydantic` | настройки Pydantic AI: что уходит в шлюз по каждой роли — модель, включены ли рассуждения, поля chat-шаблона (extra_body) и срок запроса, прошла ли установленная версия проверку совместимости с Авророй (`--check` — проверить заново). Ключей в выводе нет | скрипт | `agent_core.py --pydantic` | `--ping --probe-width --heavy --show --fast --force --check --venv-status --venv-install --no-quarantine --mcp-probe --adapter-facts --adapter-probe --json` | 1.139.0 |
+| `agent:ping` | встроенный агент: проверить цепочку моделей — каждый бэкенд живым запросом, пустой ответ считается отказом | скрипт | `agent_core.py --ping` | `--probe-width --heavy --show --pydantic --fast --force --check --venv-status --venv-install --no-quarantine --mcp-probe --adapter-facts --adapter-probe --json` | 1.56.0 |
+| `agent:fast` (`fast`) | быстрая модель для дешёвых задач: при «авто» замеряет доступные модели всех ролей, выбирает самую быструю и хранит выбор 20 минут; `--force` — замерить заново. Показывает время каждой и кто не ответил | скрипт | `agent_core.py --fast` | `--ping --probe-width --heavy --show --pydantic --force --check --venv-status --venv-install --no-quarantine --mcp-probe --adapter-facts --adapter-probe --json` | 1.223.0 |
 | `agent:probe` (`probe`) | живая проверка связи: опрашивает каждый шлюз сейчас, карантин не читает; различает «нет связи», «ключ» и «нет такой модели» и показывает список моделей шлюза; `--why` проверяет запрос послойно — какой именно кусок шлюз не принимает | скрипт | `agent_probe.py` | `--timeout --models --why` | 1.100.27 |
 
 ## `git: — Git проекта: сервер, обновление, отправка`

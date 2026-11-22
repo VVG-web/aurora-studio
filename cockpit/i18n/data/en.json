@@ -738,7 +738,18 @@
     "старое окружение сохранено: {}": "the previous environment was preserved: {}",
     "нет валидного Python": "no valid Python",
     "Python подсистемы не выбран — «Установка» → Python; агент, MCP и инструменты используют текущий процесс": "The subsystem Python is not chosen — Install → Python; the agent, MCP and tools use the current process",
-    "Python подсистемы не проходит проверку: {} — «Установка» → Python": "The subsystem Python fails validation: {} — Install → Python"
+    "Python подсистемы не проходит проверку: {} — «Установка» → Python": "The subsystem Python fails validation: {} — Install → Python",
+    "неизвестное действие с токеном": "unknown token action",
+    "реестр токенов недоступен": "the token registry is unavailable",
+    "слишком часто — повторите позже": "too many requests — retry later",
+    "токен не подошёл: истёк, отозван или выдан другим китом": "the token did not match: it expired, was revoked, or belongs to another kit",
+    "токену не хватает права {}": "the token lacks the {} scope",
+    "управление токенами доступно только сессии панели": "token management is available only to the panel session",
+    "этот путь доступен только сессии панели": "this path is available only to the panel session",
+    "не найдено": "not found",
+    "шаг расписания в чужом проекте": "the schedule step belongs to another project",
+    "задание расписания принадлежит другому проекту": "the schedule job belongs to another project",
+    "идёт цепочка другого проекта": "another project's chain is running"
   },
   "connectors": {
     "confluence-dc": {

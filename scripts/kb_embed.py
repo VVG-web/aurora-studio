@@ -40,6 +40,7 @@ import re
 import struct
 import sys
 import threading
+import time
 from itertools import repeat
 from operator import add, mul, sub
 from pathlib import Path
@@ -53,6 +54,7 @@ VECTORS = os.path.join(META, "embeddings.bin")
 INDEX = os.path.join(META, "embeddings.json")
 from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
+from aurora_common import http_mapping as _http_mapping  # noqa: E402 — код HTTP в статус
 BATCH = 32                 # столько текстов за один запрос: шлюз отвечает ~секунду
 PIECE = 1500               # символов в одном куске карточки
 PIECE_OVERLAP = 200        # нахлёст: мысль, разрезанная границей, найдётся хотя бы раз
@@ -260,7 +262,100 @@ DEAD: set = set()
 DEAD_LOCK = threading.Lock()
 
 
-def embed(texts: list, cfg: dict, model: str, partial: bool = False) -> list:
+class _Span:
+    """Необязательный спан: без трассера — пустышка, сбой замера не доходит до работы."""
+
+    def __init__(self, tracer, kind: str, name: str, **kw):
+        self._cm = None
+        self._span = None
+        if tracer is None:
+            return
+        try:
+            self._cm = tracer.span(kind, name, **kw)
+            self._span = self._cm.__enter__()
+        except Exception:  # noqa: BLE001 — замер не имеет права ронять сборку
+            self._cm = self._span = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._cm is not None:
+            try:
+                self._cm.__exit__(exc_type, exc, tb)
+            except Exception:  # noqa: BLE001, S110
+                pass  # noqa: S110 — замер не имеет права ронять сборку
+        return False
+
+    def note(self, **metrics) -> None:
+        try:
+            if self._span is not None:
+                self._span.metrics.update({k: v for k, v in metrics.items() if v is not None})
+        except Exception:  # noqa: BLE001, S110
+            pass  # noqa: S110 — замер не имеет права ронять сборку
+
+    def finish(self, status: str = "", reason: str = "", dur_ms=None) -> None:
+        try:
+            if self._span is None:
+                return
+            if status:
+                self._span.status = status
+            self._span.reason = reason or ""
+            if dur_ms is not None:
+                self._span.dur_ms = round(max(0.0, float(dur_ms)), 3)
+        except Exception:  # noqa: BLE001, S110
+            pass  # noqa: S110 — замер не имеет права ронять сборку
+
+
+def _auto_tracer():
+    """Трассер индекса только при наличии папки или id прогона."""
+    if not (os.environ.get("AURORA_RUN_DIR") or os.environ.get("AURORA_RUN_ID")):
+        return None
+    try:
+        import timing as T
+        return T.Tracer()
+    except Exception:  # noqa: BLE001 — старая копия кита без timing не ломает индекс
+        return None
+
+
+def _transport_mapping(err) -> tuple:
+    kind = str(getattr(err, "kind", "") or "").lower()
+    text = str(err or "").lower()
+    if kind == "incomplete" or "incomplete" in text:
+        return "unavailable", "incomplete"
+    if kind in ("egress", "egress_refused") or "egress" in text:
+        return "error", "egress_refused"
+    if kind == "quota" or "quota" in text:
+        return "quota", "quota"
+    if kind == "dns" or "name or service" in text or "getaddrinfo" in text:
+        return "unavailable", "dns"
+    if kind == "tls" or "certificate" in text:
+        return "unavailable", "tls"
+    if kind == "proxy" or "proxy" in text:
+        return "unavailable", "proxy"
+    if kind == "reset" or "reset" in text or "disconnect" in text \
+            or "remote end closed" in text or "closed connection" in text:
+        return "unavailable", "reset"
+    if kind in ("connect_timeout", "silent") or "timeout" in text \
+            or "timed out" in text:
+        return "timeout", "timeout"
+    return "unknown", "unknown"
+
+
+def _request_bytes(payload: dict) -> int:
+    return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+
+def _tokens_in(body) -> int:
+    try:
+        value = ((body or {}).get("usage") or {}).get("prompt_tokens")
+        return int(value or 0)
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def embed(texts: list, cfg: dict, model: str, partial: bool = False, *,
+          tracer=None) -> list:
     """Вектора для списка текстов. Идём по кольцу, как остальной агент.
 
     `partial` — при обрыве вернуть посчитанное начало, а не пусто: сборке индекса оно
@@ -276,36 +371,83 @@ def embed(texts: list, cfg: dict, model: str, partial: bool = False) -> list:
     for i in range(0, len(texts), BATCH):
         chunk = texts[i:i + BATCH]
         got = None
-        for backend in endpoints(cfg):
-            if backend["url"] in DEAD:
-                continue
-            st, data, err, _dt = AG.http_json(backend["url"] + "/embeddings",
-                                              {"model": model, "input": chunk},
-                                              backend["key"], cfg["request_timeout"])
-            if st is None:
-                # Потоков много, и упавший шлюз они узнают разом: проверка «уже мёртв?» и
-                # запись — под одним замком, а строка — только у первого. Иначе шестнадцать
-                # потоков печатали шестнадцать одинаковых строк (PRJ-C 09.10.2026).
-                with DEAD_LOCK:
-                    first = backend["url"] not in DEAD
-                    DEAD.add(backend["url"])
-                if first:
-                    where = f"№{backend['n']}" if backend.get("n") else backend["url"]
-                    print(f"  бэкенд {where}: {err} — до конца прогона без него",
-                          file=sys.stderr)
-                continue
-            if st == 200 and (data.get("data") or []):
-                vecs = [normalize(d["embedding"]) for d in
-                        sorted(data["data"], key=lambda d: d.get("index", 0))]
-                dim = len(vecs[0]) if vecs else 0
-                if want_dim and dim != want_dim:
-                    print(f"  бэкенд {backend['url']}: размерность {dim} вместо {want_dim} — "
-                          "это другая модель векторов, в общий индекс её нельзя",
-                          file=sys.stderr)
+        started = time.monotonic()
+        with _Span(tracer, "call", "embeddings.embed", service="embeddings",
+                   operation="embed") as call:
+            attempts = 0
+            latency_total = 0.0
+            tokens_total = 0
+            last_status, last_reason = "unknown", "unknown"
+            for backend_index, backend in enumerate(endpoints(cfg)):
+                if backend["url"] in DEAD:
                     continue
-                got = vecs
-                break
-            print(f"  бэкенд {backend['url']}: {err or 'пустой ответ'}", file=sys.stderr)
+                payload = {"model": model, "input": chunk}
+                request_bytes = _request_bytes(payload)
+                st, data, err, _dt = AG.http_json(backend["url"] + "/embeddings",
+                                                  payload, backend["key"],
+                                                  cfg["request_timeout"])
+                attempts += 1
+                latency = round(max(0.0, float(_dt or 0.0) * 1000.0), 3)
+                latency_total += latency
+                vecs = None
+                if st is None:
+                    status, reason = _transport_mapping(err)
+                else:
+                    status, reason = _http_mapping(int(st))
+                    if st == 200:
+                        if isinstance(data, dict) and (data.get("data") or []):
+                            try:
+                                vecs = [normalize(d["embedding"]) for d in
+                                        sorted(data["data"],
+                                               key=lambda d: d.get("index", 0))]
+                                dim = len(vecs[0]) if vecs else 0
+                                if want_dim and dim != want_dim:
+                                    print(f"  бэкенд {backend['url']}: размерность {dim} "
+                                          f"вместо {want_dim} — это другая модель векторов, "
+                                          "в общий индекс её нельзя", file=sys.stderr)
+                                    status, reason = "error", "content"
+                                    vecs = None
+                            except (KeyError, TypeError, ValueError):
+                                status, reason = "error", "content"
+                                vecs = None
+                        else:
+                            status, reason = "error", "content"
+                with _Span(tracer, "attempt", "embeddings.attempt",
+                           service="embeddings", operation="embed",
+                           attempt=attempts) as span:
+                    span.note(http_status=int(st or 0), bytes=request_bytes,
+                              bytes_basis="request", latency_ms=latency,
+                              backend_index=backend_index)
+                    span.finish(status, reason, latency)
+                if st is None:
+                    # Потоков много, и упавший шлюз они узнают разом: проверка «уже мёртв?» и
+                    # запись — под одним замком, а строка — только у первого. Иначе шестнадцать
+                    # потоков печатали шестнадцать одинаковых строк (PRJ-C 09.10.2026).
+                    with DEAD_LOCK:
+                        first = backend["url"] not in DEAD
+                        DEAD.add(backend["url"])
+                    if first:
+                        where = f"№{backend['n']}" if backend.get("n") else backend["url"]
+                        print(f"  бэкенд {where}: {err} — до конца прогона без него",
+                              file=sys.stderr)
+                    last_status, last_reason = status, reason
+                    continue
+                if vecs is not None:
+                    got = vecs
+                    tokens_total = _tokens_in(data) if isinstance(data, dict) else 0
+                    last_status, last_reason = "ok", ""
+                    break
+                last_status, last_reason = status, reason
+                if not (st == 200 and isinstance(data, dict) and (data.get("data") or [])):
+                    print(f"  бэкенд {backend['url']}: {err or 'пустой ответ'}",
+                          file=sys.stderr)
+            call.note(vectors=len(got) if got else 0, tokens_in=tokens_total,
+                      model=model, retries=max(0, attempts - 1),
+                      latency_ms=round(latency_total, 3))
+            call.finish("ok" if got is not None else last_status,
+                        "" if got is not None else last_reason,
+                        max(latency_total,
+                            max(0.0, (time.monotonic() - started) * 1000.0)))
         if got is None or len(got) != len(chunk):
             return out if partial else []
         out += got
@@ -555,7 +697,8 @@ def rerank(query: str, docs: list, cfg: dict, limit: int = 20):
     return rows[:limit] or None
 
 
-def search(query: str, cfg: dict, model: str, limit: int = 40) -> list:
+def search(query: str, cfg: dict, model: str, limit: int = 40, *,
+           tracer=None) -> list:
     """[(имя карточки, близость)] по убыванию. Пустой список — индекса нет или он чужой.
 
     Полный перебор O(карточки × dim) заменён предфильтром: каждая карточка даёт
@@ -573,7 +716,7 @@ def search(query: str, cfg: dict, model: str, limit: int = 40) -> list:
         return []
     if limit < 1:
         return []
-    q = embed([query], cfg, model)
+    q = embed([query], cfg, model, tracer=tracer)
     if not q:
         return []
     qv = q[0]
@@ -671,6 +814,7 @@ def main() -> int:
     ap.add_argument("--all", action="store_true", help="пересчитать всё заново")
     ap.add_argument("--query", metavar="ТЕКСТ", help="проверить поиск по индексу")
     a = ap.parse_args()
+    tracer = _auto_tracer()
 
     if not os.path.isdir(KB_ROOT):
         print(f"kb_embed: нет {KB_ROOT}/ — запускайте из корня проекта", file=sys.stderr)
@@ -698,7 +842,7 @@ def main() -> int:
     print(f"Предфильтр: {pf[0]} осей" if pf else "Предфильтр: — (полный перебор)")
 
     if a.query:
-        hits = search(a.query, cfg, model)
+        hits = search(a.query, cfg, model, tracer=tracer)
         if not hits:
             print("\nИндекса нет или он собран другой моделью — соберите: `kb:embed --apply`")
             return 1
@@ -727,7 +871,8 @@ def main() -> int:
     # Посчитанное до обрыва не выбрасывается. Прогон PRJ-A 29.09.2026: шлюз отвечал
     # медленно, 192 куска из 543 были готовы, а один запрос не уложился в срок — всё
     # посчитанное пропадало, и каждый повтор маршрута начинал заново с тем же исходом.
-    fresh = embed([texts[n] for n in stale], cfg, model, partial=True) if stale else []
+    fresh = embed([texts[n] for n in stale], cfg, model, partial=True,
+                  tracer=tracer) if stale else []
     if stale and not fresh:
         # Код 1, а не 2: шлюз векторов не ответил — это не поломка шага, а связь. Индекс —
         # производная, прежний цел и работает, досчитает следующий `kb:embed`. Код 2

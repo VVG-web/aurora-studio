@@ -2701,7 +2701,8 @@ def personal_kit_file(path) -> bool:
         return False
     kit = os.path.realpath(_REAL_KIT)
     return p in (os.path.join(kit, ENV_FILE), os.path.join(kit, "local", "mcp.json"),
-                 os.path.join(kit, "local", "models.json"), os.path.join(kit, "local", "connectivity.json"))
+                 os.path.join(kit, "local", "models.json"), os.path.join(kit, "local", "connectivity.json"),
+                 os.path.join(kit, "local", "mcp-tokens.json"))
 
 
 def load_env(path) -> dict:
@@ -3486,6 +3487,129 @@ def kit_mcp_permission(name: str, kit=None) -> bool:
         return False
     perms = data.get("permissions") if isinstance(data, dict) else None
     return isinstance(perms, dict) and perms.get(name) is True
+
+
+# --------------------------------------------------------------- MCP remote mode
+#
+# Режим `aurora-remote` читается из `<кит>/local/mcp.json`, ключ `auroraRemote`. Это
+# ОФЛАЙН-запасной путь: сервер панели авторитетнее, а здесь значение нужно для stdio
+# на ноутбуке и для `--selftest`, когда панель недоступна. Файла нет, ключ битый или
+# значение не из двух допустимых — `safe` (fail-closed, решение 2.8).
+MCP_SAFE_DENY_COMMANDS = (
+    "kit:update", "kit:hooks", "kit:skills", "git:push", "git:update", "git:fix",
+    "ship:publish", "ship:task", "kb:reset",
+)
+
+# В `full` эти команды разрешены, но требуют `admin` и подтверждения человека. Множество
+# ровно из девяти опасных команд: остальные необратимые действия — это не команды, а
+# маршруты, `remote_restart` и `remote_cron save/delete`, их решает сервер инструментов.
+MCP_IRREVERSIBLE_COMMANDS = frozenset(MCP_SAFE_DENY_COMMANDS)
+
+
+def _mcp_mode_value(value):
+    return value if value in ("safe", "full") else ""
+
+
+def kit_mcp_mode(project="", kit=None) -> tuple:
+    """Режим `aurora-remote` из `<кит>/local/mcp.json` → `(mode, source)`.
+
+    `source`: `file` (ключ `auroraRemote.mode`), `project` (переопределение проекта),
+    `default` (ключа нет), `broken` (файл или JSON не прочитан), `isolated` (тест не
+    читает личный файл настоящего кита), `none` (кит не найден). Любая неизвестность —
+    `safe`: опасную команду нельзя разрешить по недописанному файлу.
+    """
+    import json
+    from pathlib import Path
+    root = Path(kit) if kit else kit_root()
+    if root is None:
+        return "safe", "none"
+    path = root / "local" / "mcp.json"
+    if personal_kit_file(path):
+        return "safe", "isolated"
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except OSError:
+        return "safe", "default"
+    except ValueError:
+        return "safe", "broken"
+    remote = data.get("auroraRemote") if isinstance(data, dict) else None
+    if not isinstance(remote, dict):
+        return "safe", "default"
+    projects = remote.get("projects")
+    if project and projects is not None:
+        if not isinstance(projects, dict):
+            return "safe", "broken"
+        # Проект приходит слагом; в конфиге ключ тоже слаг. Путь на всякий случай
+        # сверяем по имени последней папки — так один и тот же файл годится и панели.
+        wanted = [str(project).rstrip("/\\").replace("\\", "/").rsplit("/", 1)[-1], str(project)]
+        for key in wanted:
+            if key in projects:
+                mode = _mcp_mode_value(projects.get(key))
+                return (mode, "project") if mode else ("safe", "broken")
+    mode = _mcp_mode_value(remote.get("mode"))
+    return (mode, "file") if mode else ("safe", "default")
+
+
+def mcp_command_verdict(cmd, args=None, mode="safe", scope="remote:read") -> dict:
+    """Можно ли запускать команду реестра в этом режиме и с этими правами.
+
+    `safe` запрещает девять опасных команд независимо от прав. `full` разрешает их
+    только `admin`, и тогда `confirm=True`: запуск ждёт подтверждения человека.
+    Остальные команды — обычное `remote:write` без подтверждения. `args` оставлен в
+    подписи как часть будущего правила по аргументам; сейчас он ничего не разрешает.
+    """
+    cmd = str(cmd or "")
+    mode = mode if mode in ("safe", "full") else "safe"
+    scopes = {scope} if isinstance(scope, str) else set(scope or ())
+    irreversible = cmd in MCP_IRREVERSIBLE_COMMANDS
+    if irreversible and mode == "safe":
+        return {"allowed": False, "reason": "safe_mode", "scope": "admin", "confirm": False}
+    if irreversible:
+        if "admin" not in scopes:
+            return {"allowed": False, "reason": "scope", "scope": "admin", "confirm": True}
+        return {"allowed": True, "reason": "", "scope": "admin", "confirm": True}
+    return {"allowed": True, "reason": "", "scope": "remote:write", "confirm": False}
+
+
+def mcp_route_verdict(route, mode="safe") -> dict:
+    """Можно ли запускать маршрут: `safe` не пускает destructive и шаги из deny-списка.
+
+    `full` пускает их, но `admin` и подтверждение обязательны. `write` — не признак
+    опасности: маршруты `update`, `fix`, `write` в `safe` проходят (так и записано в
+    приёмке). Опасность задаёт `destructive: true` или шаг с командой из deny-списка.
+    """
+    item = route if isinstance(route, dict) else {}
+    steps = item.get("steps") if isinstance(item.get("steps"), list) else []
+    deny = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        name = str(step.get("cmd") or step.get("command") or "")
+        if name in MCP_SAFE_DENY_COMMANDS:
+            deny.append(name)
+    dangerous = bool(item.get("destructive")) or bool(deny)
+    mode = mode if mode in ("safe", "full") else "safe"
+    if dangerous and mode == "safe":
+        return {"allowed": False, "reason": "safe_mode", "scope": "admin",
+                "confirm": False, "dangerous": True, "deny_steps": deny}
+    if dangerous:
+        return {"allowed": True, "reason": "", "scope": "admin", "confirm": True,
+                "dangerous": True, "deny_steps": deny}
+    return {"allowed": True, "reason": "", "scope": "remote:write", "confirm": False,
+            "dangerous": False, "deny_steps": []}
+
+
+def confirmation_digest(tool, project, args) -> str:
+    """Канонический digest действия для подтверждения: sha256(tool, project, args).
+
+    `args` — аргументы действия без `confirm_id`; ключи сортируются, пробелов нет.
+    Один и тот же вызов даёт один digest на клиенте и на панели, поэтому подтверждение
+    нельзя переклеить на другую команду. Секрет токена сюда не входит.
+    """
+    payload = {"tool": str(tool or ""), "project": str(project or ""), "args": args}
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
 def sync_roots(text: str) -> list:
@@ -5302,3 +5426,20 @@ def scan_secret_files(root: str = ".", rels=None) -> list:
         for name, line, _shown in hits:
             out.append((rel, name, line))
     return out
+
+
+def http_mapping(code: int) -> tuple:
+    """Код HTTP → (status, reason) по CONTRACT.md 4.1: одно правило на все выгрузки."""
+    if 200 <= code < 300 or code == 304:
+        return "ok", ""
+    if code in (401, 403):
+        return "auth", f"http_{code}"
+    if code in (404, 410):
+        return "error", f"http_{code}"
+    if code == 429:
+        return "throttled", "http_429"
+    if 400 <= code < 500:
+        return "error", "http_4xx"
+    if 500 <= code < 600:
+        return "unavailable", "http_5xx"
+    return "unknown", "unknown"

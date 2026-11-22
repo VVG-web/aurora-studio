@@ -32,6 +32,8 @@ import http.client
 import json
 import os
 import re
+import socket
+import ssl
 import sys
 import time
 from datetime import date, timedelta
@@ -40,6 +42,7 @@ import urllib.error
 import urllib.request
 
 import aurora_common as _common
+from aurora_common import http_mapping as _http_mapping
 from aurora_common import body as body_of
 from aurora_common import (allow_cleartext, cleartext_secret_problem, config_hosts,
                            file_head, guarded_urlopen, head_scalar, head_trust, head_value,
@@ -109,6 +112,139 @@ FEED_WORDS = ("/news", "/novosti", "/press", "/pressa", "/blog", "/smi", "/anons
 # два разных адреса нередко дают одинаковый заголовок («Главная», «Документация»), и без
 # хвоста они молча писались бы в один файл.
 NAME_CHARS = 60
+
+
+# --------------------------------------------------------------- замеры прогона (timing)
+# Контракт v2: публичные сигнатуры не меняются, трассер живёт в приватном `_TRACER`,
+# который `run(a)` ставит на время прогона и снимает в `finally`.
+_TRACER = None
+_VERIFY = False
+_RUN_STATS: dict = {"calls_total": 0, "bytes_total": 0, "pages": 0, "attachments": 0}
+
+
+def _new_tracer():
+    try:
+        import timing as T
+        return T.Tracer()
+    except Exception:  # noqa: BLE001 — старая копия кита без timing не ломает выгрузку
+        return None
+
+
+class _Span:
+    """Необязательный спан: без трассера — пустышка, сбой замера не доходит до работы."""
+
+    def __init__(self, tracer, kind: str, name: str, **kw):
+        self._cm = None
+        self._span = None
+        if tracer is None:
+            return
+        try:
+            self._cm = tracer.span(kind, name, **kw)
+            self._span = self._cm.__enter__()
+        except Exception:  # noqa: BLE001 — замер не имеет права ронять выгрузку
+            self._cm = self._span = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._cm is not None:
+            try:
+                self._cm.__exit__(exc_type, exc, tb)
+            except Exception:  # noqa: BLE001, S110
+                pass  # noqa: S110 — замер не имеет права ронять выгрузку
+        return False
+
+    def note(self, **metrics) -> None:
+        try:
+            if self._span is not None:
+                self._span.metrics.update({k: v for k, v in metrics.items() if v is not None})
+        except Exception:  # noqa: BLE001, S110
+            pass  # noqa: S110 — замер не имеет права ронять выгрузку
+
+    def finish(self, status: str = "", reason: str = "", dur_ms=None) -> None:
+        try:
+            if self._span is None:
+                return
+            if status:
+                self._span.status = status
+            self._span.reason = reason or ""
+            if dur_ms is not None:
+                self._span.dur_ms = round(max(0.0, float(dur_ms)), 3)
+        except Exception:  # noqa: BLE001, S110
+            pass  # noqa: S110 — замер не имеет права ронять выгрузку
+
+
+def _transport_mapping(exc) -> tuple:
+    reason = getattr(exc, "reason", None)
+    text = str(reason or exc or "").lower()
+    name = type(exc).__name__
+    if isinstance(exc, http.client.IncompleteRead) or "incompleteread" in name.lower() \
+            or "incomplete read" in text:
+        return "unavailable", "incomplete"
+    if isinstance(exc, (TimeoutError, socket.timeout)) or name in ("timeout", "timedout") \
+            or "timed out" in text or "timeout" in text:
+        return "timeout", "timeout"
+    if isinstance(exc, socket.gaierror) or "name or service" in text \
+            or "nodename nor" in text or "getaddrinfo" in text:
+        return "unavailable", "dns"
+    if isinstance(exc, ssl.SSLError) or "certificate" in text or "ssl" in text:
+        return "unavailable", "tls"
+    if "proxy" in text:
+        return "unavailable", "proxy"
+    if "reset" in text or "disconnect" in text or "connection aborted" in text \
+            or "broken pipe" in text or "remote end closed" in text \
+            or "closed connection" in text:
+        return "unavailable", "reset"
+    return "unknown", "unknown"
+
+
+def _timed_info(info: dict, started: float) -> dict:
+    info["latency_ms"] = round(max(0.0, (_now() - started) * 1000.0), 3)
+    return info
+
+
+def _attempt(req, timeout: int, limit: int, meta: dict | None,
+             conditional: bool) -> tuple:
+    """Одна физическая попытка. → (байты, кодировка, ошибка, приватный замер)."""
+    started = _now()
+    info = {"http_status": 0, "bytes": None, "status": "unknown",
+            "reason": "unknown", "retry": False, "latency_ms": 0.0}
+    try:
+        with guarded_urlopen(req, timeout=timeout, allow_private=ALLOW_PRIVATE) as r:
+            code = getattr(r, "status", None)
+            if not code and hasattr(r, "getcode"):
+                code = r.getcode()
+            info["http_status"] = int(code or 0)
+            if meta is not None:
+                meta["etag"] = r.headers.get("ETag") or ""
+                meta["modified"] = r.headers.get("Last-Modified") or ""
+            data = _read_body(r, limit, started + TOTAL_TIMEOUT_FACTOR * timeout)
+            info.update(bytes=len(data), bytes_basis="response",
+                        status=_http_mapping(info["http_status"])[0],
+                        reason=_http_mapping(info["http_status"])[1])
+            return data, (r.headers.get_content_charset() or ""), "", _timed_info(info, started)
+    except urllib.error.HTTPError as e:
+        info["http_status"] = int(e.code)
+        if e.code == 304 and conditional:
+            info.update(bytes=0, bytes_basis="response", status="ok", reason="")
+            return b"", "", NOT_MODIFIED, _timed_info(info, started)
+        info["status"], info["reason"] = _http_mapping(int(e.code))
+        return b"", "", f"HTTP {e.code}", _timed_info(info, started)
+    except _common.EgressRefused as e:
+        info.update(status="error", reason="egress_refused")
+        return b"", "", f"запрещено границами коннектора: {e}", _timed_info(info, started)
+    except _BodyRefused as e:
+        text = str(e)
+        if text.startswith(BODY_REFUSED_PREFIXES[0]):
+            info.update(status="error", reason="body_too_large")
+        else:
+            info.update(status="timeout", reason="body_deadline")
+        return b"", "", text, _timed_info(info, started)
+    except Exception as e:  # noqa: BLE001 — причина уходит в отчёт словами
+        info["status"], info["reason"] = _transport_mapping(e)
+        info["retry"] = True
+        return b"", "", f"{type(e).__name__}: {e}", _timed_info(info, started)
 
 
 def settings_from_config(text: str) -> dict:
@@ -268,28 +404,39 @@ def _get(url: str, token: str, timeout: int, headers: dict | None = None,
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     last = ""
+    tracer = _TRACER
+    if tracer is not None:
+        _RUN_STATS["calls_total"] = int(_RUN_STATS.get("calls_total") or 0) + 1
     for attempt in range(1, RETRIES + 1):
-        deadline = _now() + TOTAL_TIMEOUT_FACTOR * timeout
-        try:
-            with guarded_urlopen(req, timeout=timeout, allow_private=ALLOW_PRIVATE) as r:
-                if meta is not None:
-                    meta["etag"] = r.headers.get("ETag") or ""
-                    meta["modified"] = r.headers.get("Last-Modified") or ""
-                # кодировку отдаём как заявлена (пусто, если не указана): решает `decode_page`
-                return (_read_body(r, limit, deadline),
-                        (r.headers.get_content_charset() or ""), "")
-        except urllib.error.HTTPError as e:
-            if e.code == 304 and headers:
-                return b"", "", NOT_MODIFIED        # не изменилась: это ответ, а не сбой
-            return b"", "", f"HTTP {e.code}"       # ответ сервера, повтор не поможет
-        except _common.EgressRefused as e:     # через модуль, а не копию имени: перезагрузка модуля не должна менять класс
-            return b"", "", f"запрещено границами коннектора: {e}"   # политика, повтор не поможет
-        except _BodyRefused as e:
-            return b"", "", str(e)                  # размер и срок: повтор не поможет
-        except Exception as e:  # noqa: BLE001 — причина уходит в отчёт словами
-            last = f"{type(e).__name__}: {e}"
-            if attempt < RETRIES:
-                time.sleep(RETRY_WAIT * attempt)
+        data, enc, err, info = _attempt(req, timeout, limit, meta, bool(headers))
+        planned = RETRY_WAIT * attempt * 1000 if info.get("retry") and attempt < RETRIES else 0
+        info["attempt"] = attempt
+        info["retry_wait_ms"] = planned
+        if meta is not None:
+            meta["_http_status"] = info.get("http_status", 0)
+            meta["_bytes"] = info.get("bytes") or 0
+            meta["_status"] = info.get("status", "unknown")
+            meta["_reason"] = info.get("reason", "unknown")
+            meta["_attempt"] = attempt
+            meta["_attempts"] = attempt
+            meta["_retry_wait_ms"] = planned
+        with _Span(tracer, "attempt", "http.get", service="web",
+                   operation="get", attempt=attempt) as span:
+            span.note(http_status=info.get("http_status"), attempt=attempt,
+                      retry_wait_ms=planned, latency_ms=info.get("latency_ms"))
+            if info.get("bytes") is not None:
+                span.note(bytes=info.get("bytes"), bytes_basis=info.get("bytes_basis"))
+            span.finish(info.get("status", "unknown"), info.get("reason", "unknown"),
+                        info.get("latency_ms"))
+        if tracer is not None and info.get("bytes") is not None:
+            _RUN_STATS["bytes_total"] = int(_RUN_STATS.get("bytes_total") or 0) + int(info["bytes"])
+        if not err:
+            return data, enc, err
+        last = err
+        if not info.get("retry"):
+            return b"", "", err
+        if attempt < RETRIES:
+            time.sleep(RETRY_WAIT * attempt)
     return b"", "", f"{last} (попыток: {RETRIES})"
 
 
@@ -508,7 +655,17 @@ def fetch(url: str, token: str = "", known: dict | None = None,
         cond["If-None-Match"] = known["etag"]
     if known and known.get("modified"):
         cond["If-Modified-Since"] = known["modified"]
-    raw, enc, err = _get(url, token, TIMEOUT, cond or None, meta)
+    probe = meta if meta is not None else {}
+    started = _now()
+    with _Span(_TRACER, "call", "http.fetch", service="web",
+               operation="fetch") as span:
+        raw, enc, err = _get(url, token, TIMEOUT, cond or None, probe)
+        latency = round(max(0.0, (_now() - started) * 1000.0), 3)
+        status = probe.get("_status") or ("unknown" if err else "ok")
+        reason = (probe.get("_reason") or "unknown") if err and err != NOT_MODIFIED \
+            else (probe.get("_reason") or "")
+        span.note(http_status=probe.get("_http_status", 0), latency_ms=latency)
+        span.finish(status, reason, latency)
     if err:
         return "", err
     text, known_enc = decode_page(raw, enc)
@@ -724,8 +881,19 @@ def fetch_asset(url: str, out_dir: str, apply: bool, label: str = "") -> tuple:
         lose_path(PATH_LOST, f"вложение {name}", path)
         return "", "путь слишком длинный"
     # `max_bytes` — ключевой аргумент: подменный `_get` в тестах, до которых доходят вложения,
-    # обязан его принимать (`max_bytes=None`).
-    data, _enc, err = _get(url, "", ASSET_TIMEOUT, max_bytes=ASSET_MAX_BYTES)
+    # обязан его принимать (`max_bytes=None`). `meta` уже принимают все старые заглушки.
+    probe: dict = {}
+    started = _now()
+    with _Span(_TRACER, "call", "http.fetch", service="web",
+               operation="fetch_asset") as span:
+        data, _enc, err = _get(url, "", ASSET_TIMEOUT, max_bytes=ASSET_MAX_BYTES,
+                               meta=probe)
+        latency = round(max(0.0, (_now() - started) * 1000.0), 3)
+        status = probe.get("_status") or ("unknown" if err else "ok")
+        reason = (probe.get("_reason") or "unknown") if err and err != NOT_MODIFIED \
+            else (probe.get("_reason") or "")
+        span.note(http_status=probe.get("_http_status", 0), latency_ms=latency)
+        span.finish(status, reason, latency)
     if err:
         return "", err
     try:
@@ -964,6 +1132,33 @@ class WebMirror(BoardMirror):
 
 
 def run(a) -> int:
+    """Выгрузка с фазой `web.export`; трассер приватный и снимается в `finally`."""
+    global _TRACER
+    tracer = None if (_VERIFY or getattr(a, "verify", False)) else _new_tracer()
+    old = _TRACER
+    _TRACER = tracer
+    _RUN_STATS.update(calls_total=0, bytes_total=0, pages=0, attachments=0)
+    started = _now()
+    try:
+        with _Span(tracer, "phase", "web.export", service="web",
+                   operation="export") as phase:
+            try:
+                rc = _run_impl(a)
+            except BaseException:
+                phase.finish("error", "unknown")
+                raise
+            phase.note(pages=_RUN_STATS.get("pages", 0),
+                       attachments=_RUN_STATS.get("attachments", 0),
+                       bytes_total=_RUN_STATS.get("bytes_total", 0),
+                       calls_total=_RUN_STATS.get("calls_total", 0))
+            phase.finish("ok" if rc == 0 else "partial", "",
+                         max(0.0, (_now() - started) * 1000.0))
+            return rc
+    finally:
+        _TRACER = old
+
+
+def _run_impl(a) -> int:
     cfg = config_text()
     pages = pages_from_config(cfg)
     if not pages:
@@ -1187,10 +1382,13 @@ def run(a) -> int:
           + (f" · не менялись (304): {unchanged}" if unchanged else ""))
     if not a.apply:
         print("Записать: `--apply`")
+    _RUN_STATS["pages"] = len(seen)
+    _RUN_STATS["attachments"] = files_total
     return 1 if failed else 0
 
 
 def main() -> int:
+    global _VERIFY
     ap = argparse.ArgumentParser(
         description="Веб-страницы в кеш проекта",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1210,8 +1408,12 @@ def main() -> int:
                     help="не спрашивать сервер «не менялась ли»: скачать и разобрать всё заново")
     a = ap.parse_args()
     if a.verify:
-        return verify(lambda out: run(argparse.Namespace(out=out, apply=True,
-                                                         prune=False)))
+        _VERIFY = True
+        try:
+            return verify(lambda out: run(argparse.Namespace(out=out, apply=True,
+                                                             prune=False)))
+        finally:
+            _VERIFY = False
     return run(a)
 
 

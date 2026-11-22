@@ -42,11 +42,30 @@ def _meta(project: str, run_id: str) -> dict:
         return {}
 
 
+def _net_summary(meta: dict, summary: dict | None) -> dict:
+    """Снимки сети: сводка отчёта, иначе `meta.net`; пусто без снимков."""
+    for candidate in (summary, meta.get("net")):
+        if not isinstance(candidate, dict):
+            continue
+        inner = candidate.get("summary")
+        row = inner if isinstance(inner, dict) else candidate
+        try:
+            snapshots = int(row.get("snapshots") or 0)
+        except (TypeError, ValueError):
+            snapshots = 0
+        if snapshots > 0:
+            return row
+    return {}
+
+
 def _timing_of(meta: dict, seconds, summary: dict) -> dict:
     timing = meta.get("timing") if isinstance(meta.get("timing"), dict) else None
     if timing:
         return timing
-    return T.legacy_timing(seconds, summary, queue_ms=meta.get("queue_ms"))
+    if seconds is None:
+        seconds = meta.get("seconds")
+    return T.legacy_timing(seconds, _net_summary(meta, summary) or None,
+                           queue_ms=meta.get("queue_ms"))
 
 
 def _show(data: dict, project: str = "") -> str:
@@ -68,6 +87,9 @@ def _show(data: dict, project: str = "") -> str:
                 if data.get("snapshots") else ""),
              f"- сеть нужна: {'да' if summary.get('network_required') else 'нет'}",
              f"- вывод: {summary.get('reason') or '—'}"]
+    if (timing.get("confidence") == "approx"
+            and str(timing.get("source") or "").startswith(("net_snapshots", "spans+net"))):
+        lines.insert(4, "- ожидание: оценка по снимкам сети, точность до 12 мин")
     queue = timing.get("queue_ms")
     if isinstance(queue, (int, float)) and queue > 0:
         lines.insert(3, f"- ожидание запуска: {T.format_duration(queue)}")

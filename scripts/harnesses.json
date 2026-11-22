@@ -63,6 +63,7 @@
      "detect": ["{home}/.jcode"],
      "config": "{home}/.jcode/mcp.json", "format": "json", "key": "mcpServers", "entry": "standard",
      "entry_extra": {"timeout_secs": 1800},
+     "entry_extra_server": {"aurora-remote": {"timeout_secs": 300}},
      "note": "По умолчанию jcode ждёт инструмент 30 с — запись ставит 1800 с: ревью идёт минуты."},
     {"id": "hermes", "name": "Hermes Agent", "bins": ["hermes"], "version_args": ["--version"],
      "detect": ["{home}/.hermes"],

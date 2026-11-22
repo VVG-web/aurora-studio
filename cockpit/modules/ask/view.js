@@ -70,12 +70,14 @@ function resetPipeline(ctx){
   setPipeButtons(ctx, "idle", false);
 }
 
-function workLine(ctx, text){
+function workLine(ctx, text, timing, seconds, chipId){
   const node = pipeEl(ctx, "askWork");
   if (!node) return;
   const line = document.createElement("div");
   line.textContent = new Date().toLocaleTimeString(ctx.lang === "en" ? "en-GB" : "ru-RU")
                      + " · " + text;
+  if (chipId && ctx.ui && typeof ctx.ui.timingChip === "function")
+    line.append(ctx.ui.timingChip({id: chipId, timing, seconds}));
   node.append(line);
   node.scrollTop = node.scrollHeight;
 }
@@ -108,7 +110,7 @@ function drawPipelineMetrics(ctx){
   const m = PIPE.metrics;
   if (!m){ box.textContent = ""; return; }
   const pool = m.pool || {};
-  box.textContent = ctx.t("ask.metrics", {
+  const text = ctx.t("ask.metrics", {
     seconds: Math.round(m.total_seconds || 0),
     ok: Math.round((m.success_rate || 0) * 100),
     errors: m.errors || 0,
@@ -117,6 +119,14 @@ function drawPipelineMetrics(ctx){
     pool: pool.width || 0,
     models: (m.models || []).join(", ") || "—",
   });
+  // Строка каталога остаётся прежней, две цифры показывает общий чип ядра.
+  if (ctx.ui && typeof ctx.ui.timingChip === "function"){
+    const chip = ctx.ui.timingChip({id: "ask-metrics-" + (PIPE.id || "last"),
+      timing: m.timing, seconds: m.total_seconds});
+    box.replaceChildren(document.createTextNode(text), chip);
+  } else {
+    box.textContent = text;
+  }
 }
 
 export function mount(ctx){
@@ -444,7 +454,8 @@ function handlePipeEvent(ctx, ev){
       ? ctx.t("ask.step_done", {role: event.role || "worker", model: event.model || "—",
                                  seconds: event.seconds ?? 0, tokens: event.tokens || 0})
       : ctx.t("ask.step_error", {step: event.step, error: event.message || event.error || ""});
-    workLine(ctx, head);
+    workLine(ctx, head, event.timing, event.seconds,
+             "ask-step-" + (event.step || event.role || "step"));
     if (event.preview) workLine(ctx, "… " + String(event.preview).slice(0, 300));
     return;
   }

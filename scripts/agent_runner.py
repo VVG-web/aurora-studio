@@ -138,6 +138,11 @@ def log_timing(project: str, task: str, run_id: str, timing: dict,
     """Положить нормализованную строку времени в `timing.d`; ошибка не роняет прогон."""
     try:
         import timing as T
+        run_dir = os.environ.get("AURORA_RUN_DIR", "")
+        if run_dir:
+            # Папка прогона знает все спаны, включая ранние после предела памяти.
+            if T.record_run(project, run_id, run_dir, kind="agent", task=task):
+                return
         T.record(project, run_id, timing, services, kind="agent", task=task)
     except Exception:  # noqa: BLE001 — замер не имеет права ломать прогон
         pass

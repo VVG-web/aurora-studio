@@ -1623,7 +1623,8 @@ def test_panel_admits_it_is_running_old_code(tmp: Path):
     ни разу: сервер клал признак рядом с `ui`, а панель читала его внутри `ui`.
     """
     src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
-    block = src[src.index('"ui": {'):src.index('"projects": projects,')]
+    state = src.split('elif u.path == "/api/state":', 1)[1].split("elif u.path ==", 1)[0]
+    block = state[state.index('"ui": {'):state.index('"projects": projects,')]
     assert "stale_process" in block, \
         "признак «процесс старее файлов» лежит не там, где его читает панель"
     ui = panel_sources()

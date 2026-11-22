@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.231.14";
+const UI_VERSION = "1.231.16";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 let LAST_ERROR = null;          // последняя показанная ошибка: кнопка «Лог» в шапке
 
@@ -5634,15 +5634,12 @@ function rtime(d){
     + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
 }
 
-// Секунды компактно, как в житейском таймере: до минуты «Xс», дальше «Mм Sс».
+// Секунды компактно, как в житейском таймере. Старый вход остаётся, формат общий.
 function fmtDur(sec){
-  sec = Math.max(0, Math.round(sec));
-  if (sec < 60) return t("dur.sec", {n: sec});
-  return t("dur.min_sec", {m: Math.floor(sec / 60), s: sec % 60});
+  return fmtTiming(Math.max(0, Number(sec || 0)) * 1000);
 }
 
-// Время в миллисекундах из timing v1. Часы не теряются: старый fmtDur показывал
-// 3600 секунд как «60м 0с», а в истории рядом стоят часы ожидания.
+// Время в миллисекундах из timing v1. Часы не теряются: формат общий для старых секунд.
 function fmtTiming(ms){
   const total = Math.max(0, Math.round(Number(ms || 0) / 1000));
   if (total < 60) return t("timing.dur_sec", {n: total});
@@ -5675,7 +5672,9 @@ function fmtWorkWait(timing, fallbackSec){
 
 function timingTip(timing, fallbackSec){
   const q = (timing && timing.quality) || {};
-  const work = timing && timing.work_ms != null ? fmtTiming(timing.work_ms) : t("timing.unknown");
+  const work = timing && timing.work_ms != null ? fmtTiming(timing.work_ms)
+    : timing && timing.active_ms != null ? fmtTiming(timing.active_ms)
+    : fallbackSec != null ? fmtDur(fallbackSec) : t("timing.unknown");
   const lines = [t("timing.work") + ": " + work + "."];
   if (timing && timing.service_wait_ms != null && q.wait_known !== false)
     lines.push(t("timing.wait") + ": " + fmtTiming(timing.service_wait_ms) + ".");
@@ -5692,12 +5691,13 @@ function timingTip(timing, fallbackSec){
   return lines.join("\n");
 }
 
-let timingTipTimer = null, timingTipOpen = null;
+let timingTipTimer = null, timingTipOpen = null, timingChipSeq = 0;
 function hideTimingTip(){
   clearTimeout(timingTipTimer); timingTipTimer = null;
   if (timingTipOpen){ timingTipOpen.hidden = true; timingTipOpen = null; }
 }
 function placeTimingTip(node, box){
+  box.style.maxWidth = Math.max(160, innerWidth - 16) + "px";
   box.style.left = "0px"; box.style.top = "0px";
   const r = node.getBoundingClientRect(), b = box.getBoundingClientRect();
   const top = (r.bottom + 8 + b.height <= innerHeight) ? r.bottom + 8
@@ -5712,9 +5712,14 @@ function showTimingTip(node, box){
   placeTimingTip(node, box);
 }
 function timingChip(r){
-  const text = fmtWorkWait(r.timing, r.seconds);
-  const tip = timingTip(r.timing, r.seconds);
-  const id = "timing-tip-" + String(r.id || "run").replace(/[^\w-]/g, "_");
+  // Старая запись без timing: секунды остаются запасным числом, простой честно неизвестен.
+  const timing = r.timing || (r.seconds != null
+    ? {v:1, work_ms:null, service_wait_ms:null,
+       quality:{wait_known:false, approx:false, legacy:true}} : null);
+  const text = fmtWorkWait(timing, r.seconds);
+  const tip = timingTip(timing, r.seconds);
+  const id = "timing-tip-" + String(r.id || "run").replace(/[^\w-]/g, "_")
+    + "-" + (++timingChipSeq);
   const box = el("span", {class:"help-tip timing-tip", id, role:"tooltip", hidden:""}, tip);
   const chip = el("button", {type:"button", class:"timing-chip", tabindex:"0", role:"button",
     "aria-describedby":id, "aria-label":tip.replace(/\n/g, " "), title:tip,
@@ -5902,6 +5907,8 @@ async function renderSetup(){
 
   // Модели — общая настройка машины и всех её проектов: раздел «Модели».
   await renderModelsCard(box, "kit");
+  MCPK.access.box = sgroup(box, "setup:mcp-access", t("mcpk.access_title"));
+  await renderMcpAccess();
   MCPK.kit.box = sgroup(box, "setup:mcp", t("mcpk.title"));
   await renderMcpKit();
   drawSetupJump(box);
@@ -6305,7 +6312,10 @@ function drawSetupJump(box){
    (`env`, `headers`, `auth`, значение секретного флага в `args`) сервер отдаёт маской; маска,
    пришедшая обратно, значит «не менять». Своей копии маски у страницы нет — её называет
    сервер (`mask`). Проверка серверов (`/api/mcp/probe`) запускает серверы кита из папки панели (прогон — из папки проекта). */
-const MCPK = {kit: {state: null, box: null, probe: null}, touched: false};
+const MCPK = {kit: {state: null, box: null, probe: null},
+  access: {box: null, data: null, model: null, busy: "", error: "",
+           confirmId: ""},
+  touched: false};
 
 function mcpHow(spec){
   const tr = String(spec.transport || spec.type || "").toLowerCase();
@@ -6315,6 +6325,318 @@ function mcpHow(spec){
 
 const mcpGet = () => api("/api/mcp/kit");
 const mcpPost = body => api("/api/mcp/kit", {method:"POST", quiet:true, body: JSON.stringify(body)});
+
+/* ---------------- доступ агента ----------------
+
+   Режим удалённого управления, токены и очередь подтверждений. Смотреть и менять их
+   может только локальная сессия панели: удалённый токен получает отказ `endpoint` на
+   `/api/mcp/tokens`, и раздел говорит об этом словами, а не пустым местом. */
+const mcpRemoteTokens = () => api("/api/mcp/tokens?kind=remote", {quiet:true});
+const mcpPending = () => api("/api/mcp/confirmations", {quiet:true});
+
+/* Стили раздела живут здесь: `cockpit/ui/panel.css` принадлежит другой дорожке.
+   Строки переносятся, а не вылезают за карточку: на 320 px одна колонка, на 768 px
+   и шире их две. */
+const MCP_ACCESS_CSS = `
+.mcp-access .mcp-access-head{display:flex;gap:var(--sp-2);align-items:center;flex-wrap:wrap}
+.mcp-access .mcp-access-head h3{min-width:0;overflow-wrap:anywhere}
+.mcp-access .mcp-access-grid{display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:var(--sp-3);
+  margin-top:var(--sp-4)}
+.mcp-access .mcp-access-col{min-width:0;border-top:1px solid var(--border);
+  padding-top:var(--sp-3)}
+.mcp-access .mcp-seg{flex-wrap:wrap;gap:var(--sp-2)}
+.mcp-access .mcp-seg .btn[aria-pressed="true"]{box-shadow:var(--glow)}
+.mcp-access .chip{max-width:100%;overflow-wrap:anywhere}
+.mcp-access .btn:focus-visible,.mcp-access button:focus-visible{
+  outline:2px solid var(--primary);outline-offset:2px}
+@media (max-width:768px){
+  .mcp-access .mcp-access-grid{grid-template-columns:minmax(0,1fr)}
+}
+`;
+function mcpAccessStyles(){
+  if ($("#mcpAccessStyles")) return;
+  const style = document.createElement("style");
+  style.id = "mcpAccessStyles";
+  style.textContent = MCP_ACCESS_CSS;
+  document.head.append(style);
+}
+
+/* MCPK_ACCESS_MODEL_START */
+function mcpAccessModel(kit, tokens, conf){
+  const remote = (kit && kit.remote) || {};
+  const known = ["file", "project", "default", "broken", "isolated", "none"];
+  const rows = (tokens && Array.isArray(tokens.tokens)) ? tokens.tokens : [];
+  const active = rows.filter(r => !r.status || r.status === "active");
+  const remoteCaller = !!((tokens && tokens.code === "endpoint")
+                       || (conf && conf.code === "endpoint"));
+  return {
+    mode: remote.mode === "full" ? "full" : "safe",
+    stored: remote.stored === "full" ? "full" : "safe",
+    source: known.includes(remote.source) ? remote.source : "default",
+    adminNetwork: !!remote.admin_network,
+    adminTokens: active.filter(r => (r.scopes || []).includes("admin")).length,
+    activeTokens: active.length,
+    pending: ((conf && conf.pending) || []).length,
+    canManage: !remoteCaller,
+    remoteCaller,
+    kitError: (kit && kit.error) || "",
+    tokenError: (tokens && tokens.error) || "",
+    confirmError: (conf && conf.error) || "",
+    reason: remote.reason || "",
+    projects: remote.projects || {},
+    deny: Array.isArray(remote.deny) ? remote.deny : [],
+  };
+}
+/* MCPK_ACCESS_MODEL_END */
+
+/* MCPK_ACCESS_RENDER_START */
+const mcpModeLabel = mode => mode === "full" ? t("mcpk.mode_full") : t("mcpk.mode_safe");
+
+function drawMcpAccess(){
+  const box = MCPK.access.box;
+  if (!box) return;
+  box.innerHTML = "";
+  if (!MCPK.access.model){
+    box.append(el("div", {class:"card", style:"padding:20px"},
+      el("div", {class:"row", role:"status"},
+        el("span", {class:"spin", "aria-hidden":"true"}), t("mcpk.loading"))));
+    return;
+  }
+  box.append(mcpAccessCard(MCPK.access.model));
+}
+
+async function renderMcpAccess(keepConfirm){
+  const box = MCPK.access.box;
+  if (!box) return;
+  if (!keepConfirm) MCPK.access.confirmId = "";
+  mcpAccessStyles();
+  MCPK.access.model = null;
+  drawMcpAccess();
+  let kit = {}, tokens = {}, conf = {};
+  try {
+    [kit, tokens, conf] = await Promise.all([mcpGet(), mcpRemoteTokens(), mcpPending()]);
+  } catch (e){
+    kit = {error: String((e && e.message) || e)};
+  }
+  MCPK.access.data = {kit, tokens, conf};
+  MCPK.access.model = mcpAccessModel(kit, tokens, conf);
+  drawMcpAccess();
+}
+
+function mcpModeToggle(model){
+  const busy = MCPK.access.busy;
+  const off = !model.canManage || !!busy;
+  const one = target => {
+    const on = model.mode === target;
+    const btn = el("button", {
+      class:"btn sm" + (on ? (target === "full" ? " danger" : " primary") : ""),
+      type:"button",
+      "aria-pressed": String(on),
+      "aria-disabled": model.canManage ? "false" : "true",
+      disabled: off ? "" : null,
+      onclick: () => mcpSetMode(target),
+    }, mcpModeLabel(target));
+    if (busy === target){
+      btn.textContent = "";
+      btn.append(el("span", {class:"spin", "aria-hidden":"true"}),
+        t("mcpk.mode_switching"));
+    }
+    return btn;
+  };
+  return el("div", {class:"row mcp-seg", role:"group",
+      "aria-label": t("mcpk.mode_group")}, one("safe"), one("full"));
+}
+
+async function mcpSetMode(target){
+  const model = MCPK.access.model;
+  if (!model || !model.canManage) return toast(t("mcpk.local_only"), "warn");
+  if (model.mode === target || MCPK.access.busy) return;
+  if (target === "full" && !confirm(t("mcpk.mode_full_ask"))) return;
+  MCPK.access.busy = target;
+  MCPK.access.error = "";
+  drawMcpAccess();
+  try {
+    const r = await mcpPost({action:"set_remote_mode", mode: target, project:""});
+    MCPK.access.busy = "";
+    if (r && r.ok){
+      toast(target === "full" ? t("mcpk.mode_full_done") : t("mcpk.mode_safe_done"),
+            "ok");
+      await renderMcpAccess();
+      return;
+    }
+    MCPK.access.error = (r && r.error) || t("mcpk.mode_failed");
+  } catch (e){
+    MCPK.access.busy = "";
+    MCPK.access.error = String((e && e.message) || e);
+  }
+  drawMcpAccess();
+  toast(MCPK.access.error, "err", {sticky:true});
+}
+
+function mcpTokensBlock(model){
+  const box = el("div", {class:"mcp-access-col"});
+  box.append(el("h4", {style:"margin:0 0 6px"}, t("mcpk.tokens_title")));
+  if (model.tokenError){
+    box.append(el("div", {class:"warnbox dangerbox"},
+      t("mcpk.tokens_error", {why: model.tokenError})));
+    return box;
+  }
+  const rows = ((MCPK.access.data && MCPK.access.data.tokens
+                 && MCPK.access.data.tokens.tokens) || [])
+    .filter(r => !r.status || r.status === "active");
+  box.append(el("div", {class:"muted", style:"font-size:12.5px;margin-bottom:6px"},
+    t("mcpk.tokens_active", {n: rows.length})));
+  if (!rows.length){
+    box.append(el("div", {class:"muted", style:"font-size:12.5px"},
+      t("mcpk.tokens_none")));
+    return box;
+  }
+  rows.forEach(row => box.append(el("div", {class:"list-item",
+      style:"align-items:flex-start;gap:8px;flex-wrap:wrap"},
+    el("span", {class:"chip " + ((row.scopes || []).includes("admin") ? "bad" : "ok")},
+      row.name || row.id || "?"),
+    el("span", {class:"muted mono",
+      style:"font-size:12px;min-width:0;overflow-wrap:anywhere"},
+      t("mcpk.token_scopes", {list: (row.scopes || []).join(", ")})))));
+  return box;
+}
+
+async function mcpConfirmAct(row, what){
+  if (MCPK.access.busy) return;
+  MCPK.access.busy = "confirm:" + row.request_id;
+  MCPK.access.error = "";
+  drawMcpAccess();
+  const path = what === "approve" ? "/api/mcp/confirm/approve"
+                                  : "/api/mcp/confirm/reject";
+  try {
+    const r = await api(path, {method:"POST", quiet:true,
+      body: JSON.stringify({request_id: row.request_id})});
+    MCPK.access.busy = "";
+    if (!r || r.error){
+      MCPK.access.error = (r && r.error) || t("mcpk.confirm_failed");
+      drawMcpAccess();
+      toast(MCPK.access.error, "err", {sticky:true});
+      return;
+    }
+    if (what === "approve" && r.confirm_id){
+      MCPK.access.confirmId = r.confirm_id;
+      toast(t("mcpk.confirm_approved"), "ok");
+    } else {
+      MCPK.access.confirmId = "";
+      toast(t("mcpk.confirm_rejected"), "ok");
+    }
+    await renderMcpAccess(true);
+  } catch (e){
+    MCPK.access.busy = "";
+    MCPK.access.error = String((e && e.message) || e);
+    drawMcpAccess();
+    toast(MCPK.access.error, "err", {sticky:true});
+  }
+}
+
+function mcpConfirmBlock(model){
+  const box = el("div", {class:"mcp-access-col"});
+  box.append(el("h4", {style:"margin:0 0 6px"}, t("mcpk.confirm_title")));
+  if (MCPK.access.confirmId){
+    box.append(el("div", {class:"warnbox", role:"status"},
+      el("div", {style:"overflow-wrap:anywhere"},
+        t("mcpk.confirm_once", {id: MCPK.access.confirmId})),
+      el("div", {style:"margin-top:6px"}, copyButton(MCPK.access.confirmId))));
+  }
+  if (model.confirmError){
+    box.append(el("div", {class:"warnbox dangerbox"},
+      t("mcpk.confirm_error", {why: model.confirmError})));
+    return box;
+  }
+  const rows = (MCPK.access.data && MCPK.access.data.conf
+                && MCPK.access.data.conf.pending) || [];
+  box.append(el("div", {class:"muted", style:"font-size:12.5px;margin-bottom:6px"},
+    t("mcpk.confirm_pending", {n: rows.length})));
+  if (!rows.length){
+    box.append(el("div", {class:"muted", style:"font-size:12.5px"},
+      t("mcpk.confirm_empty")));
+    return box;
+  }
+  rows.forEach(row => {
+    const busy = MCPK.access.busy === "confirm:" + row.request_id;
+    box.append(el("div", {class:"list-item",
+        style:"align-items:flex-start;gap:8px;flex-wrap:wrap"},
+      el("div", {style:"flex:1;min-width:0;overflow-wrap:anywhere"},
+        el("div", {style:"font-weight:600"}, row.summary || row.tool || "?"),
+        el("div", {class:"row", style:"gap:6px;flex-wrap:wrap;margin-top:4px"},
+          el("span", {class:"chip mono"}, row.tool || "?"),
+          row.project ? el("span", {class:"chip mono"}, row.project) : null,
+          el("span", {class:"muted", style:"font-size:12px"},
+            row.expires_at || ""))),
+      el("div", {class:"row", style:"gap:6px;flex-wrap:wrap"},
+        el("button", {class:"btn sm primary", disabled: busy ? "" : null,
+          onclick: () => mcpConfirmAct(row, "approve")},
+          busy ? t("mcpk.busy") : t("mcpk.confirm_approve")),
+        el("button", {class:"btn sm danger", disabled: busy ? "" : null,
+          onclick: () => mcpConfirmAct(row, "reject")},
+          t("mcpk.confirm_reject")))));
+  });
+  return box;
+}
+
+function mcpAccessCard(model){
+  const busy = MCPK.access.busy;
+  const card = el("div", {class:"card mcp-access", style:"padding:20px",
+    "aria-busy": busy ? "true" : "false"});
+  card.append(
+    el("div", {class:"row mcp-access-head"},
+      el("h3", {style:"margin:0"}, t("mcpk.access_title")),
+      el("span", {class:"chip " + (model.mode === "full" ? "bad" : "ok")},
+        mcpModeLabel(model.mode)),
+      el("span", {class:"chip"}, t("mcpk.badge_remote")),
+      model.adminNetwork ? el("span", {class:"chip warn"}, t("mcpk.badge_vpn")) : null,
+      model.adminTokens ? el("span", {class:"chip bad"},
+        t("mcpk.badge_admin", {n: model.adminTokens})) : null),
+    el("p", {class:"muted", style:"font-size:13px;margin:8px 0 10px"},
+      t("mcpk.access_about")),
+    el("div", {class:"muted", style:"font-size:12.5px"},
+      t("mcpk.mode_effective", {mode: mcpModeLabel(model.mode)})),
+    el("div", {class:"muted", style:"font-size:12.5px;margin-bottom:10px"},
+      t("mcpk.mode_stored", {mode: mcpModeLabel(model.stored)}) + " · "
+      + t("mcpk.mode_source", {source: t("mcpk.source." + model.source)})));
+  if (model.reason)
+    card.append(el("div", {class:"warnbox", style:"font-size:12.5px"},
+      t("mcpk.mode_reason", {why: model.reason})));
+  if (model.kitError)
+    card.append(el("div", {class:"warnbox dangerbox", role:"alert",
+      style:"font-size:12.5px"}, t("mcpk.kit_error", {why: model.kitError})));
+  if (model.mode === "full")
+    card.append(el("div", {class:"warnbox dangerbox", role:"alert"},
+      t("mcpk.mode_full_warn")));
+  else
+    card.append(el("div", {class:"muted", style:"font-size:12.5px;margin-bottom:10px"},
+      t("mcpk.mode_safe_about")));
+  card.append(mcpModeToggle(model));
+  if (model.remoteCaller)
+    card.append(el("div", {class:"warnbox", style:"margin-top:10px"},
+      t("mcpk.local_only")));
+  if (MCPK.access.error)
+    card.append(el("div", {class:"warnbox dangerbox", role:"alert",
+      style:"margin-top:10px;overflow-wrap:anywhere"}, MCPK.access.error));
+  const projects = Object.entries(model.projects || {});
+  if (projects.length)
+    card.append(el("div", {class:"row", style:"gap:6px;flex-wrap:wrap;margin-top:10px"},
+      el("span", {class:"muted", style:"font-size:12.5px"}, t("mcpk.mode_projects")),
+      ...projects.map(([name, value]) => el("span", {class:"chip mono"},
+        name + " · " + (value === "full" ? t("mcpk.mode_full") : t("mcpk.mode_safe"))))));
+  if (model.deny.length)
+    card.append(el("details", {style:"margin-top:8px"},
+      el("summary", {style:"font-size:12.5px;cursor:pointer"}, t("mcpk.mode_deny")),
+      el("div", {class:"muted mono",
+        style:"font-size:12px;margin-top:4px;overflow-wrap:anywhere"},
+        model.deny.join(", "))));
+  if (!model.remoteCaller)
+    card.append(el("div", {class:"mcp-access-grid"},
+      mcpTokensBlock(model), mcpConfirmBlock(model)));
+  return card;
+}
+/* MCPK_ACCESS_RENDER_END */
 
 // Поиск Авроры для других агентов: один сервер на все проекты машины, проект — аргумент
 // `project` каждого инструмента. Настройку отдаёт сам сервер (`aurora_mcp.py --all --configs`).
@@ -7284,6 +7606,7 @@ function moduleCtx(id, root){
     // Общие детали панели: раздел не рисует свою плитку метрики и свою кнопку
     // перехода к маршруту — иначе в каждом разделе они разъедутся.
     ui: {metricCard, metric, goRoute, goCmd, kindChip, skillLine, copyButton, engineWord,
+         timingChip,
          editor: markdownEditor,
          // Здоровье приходит частями: пришла ли часть и чем занять место под её число.
          has: hasPart, wait: waitMark, healthAt, stampText, kbInfo, templatesHint, templatesState, rebuildHint, openIssue, issueUrl,

@@ -312,7 +312,14 @@ def route(cwd: str, since: str, seconds: float, steps: list, lang: str = "ru",
     return {"lines": render(s, "Run summary" if lang == "en" else "Итог прогона", lang), "data": s}
 
 
-def human_time(sec, lang: str = "ru") -> str:
+def human_time(sec, lang: str = "ru", timing: dict | None = None) -> str:
+    """Длительность для старой строки итога. С `timing` делегирует общему форматтеру."""
+    if isinstance(timing, dict) and timing.get("total_ms") is not None:
+        try:
+            import timing as T
+            return T.format_duration(timing["total_ms"], lang=lang)
+        except Exception:  # noqa: BLE001, старый кит без timing не должен ломать итог
+            pass
     sec = int(round(sec or 0))
     h, rest = divmod(sec, 3600)
     m, s = divmod(rest, 60)
@@ -338,8 +345,9 @@ def render(s: dict, title: str = "Итог прогона", lang: str = "ru") ->
 
     def w(ru, eng):
         return eng if en else ru
-    L = [f"■ {title}", f"  {w('Время', 'Time')}: {human_time(s.get('seconds'), lang)}"]
+    L = [f"■ {title}"]
     timing = s.get("timing") if isinstance(s.get("timing"), dict) else None
+    L.append(f"  {w('Время', 'Time')}: {human_time(s.get('seconds'), lang, timing)}")
     if timing:
         try:
             import timing as T

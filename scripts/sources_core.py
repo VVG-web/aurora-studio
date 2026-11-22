@@ -20,16 +20,18 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import filecmp
 import json
 import os
 import re
 import sys
 import tempfile
+import time
 
 from aurora_common import (allow_cleartext, cleartext_secret_problem, head_scalar, root_link_escapes,
-                           is_loopback_host, safe_urlopen, same_origin, split_frontmatter, url_origin,
-                           yaml_scalar, yaml_word)
+                           EgressRefused, is_loopback_host, safe_urlopen, same_origin,
+                           split_frontmatter, url_origin, yaml_scalar, yaml_word)
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -354,6 +356,214 @@ class FileTooLarge(Exception):
     """Тело ответа больше заданного предела (`RestApi.fetch(max_bytes=…)`)."""
 
 
+class _NoSpan:
+    """Заглушка спана: замер выключен (нет сервиса или tracer), работа идёт как обычно."""
+
+    __slots__ = ("metrics", "status", "reason", "cause", "span_id")
+
+    def __init__(self):
+        self.metrics: dict = {}
+        self.status = "ok"
+        self.reason = ""
+        self.cause = ""
+        self.span_id = ""
+
+
+@contextlib.contextmanager
+def _safe_span(tracer, service: str, kind: str, name: str, **kw):
+    """Граница спана: сломанный замер не меняет результат работы.
+
+    `tracer=None` или пустой `service` — спана нет (старый вызов без инструментации).
+    Исключение самого замера при входе и выходе проглатывается; исключение работы
+    проходит наружу без изменений.
+    """
+    cm = span = None
+    if tracer is not None and service:
+        try:
+            cm = tracer.span(kind, name, service=service, **kw)
+            span = cm.__enter__()
+        except Exception:  # noqa: BLE001 — замер не имеет права ронять запрос
+            cm = span = None
+    if span is None:
+        span = _NoSpan()
+    try:
+        yield span
+    except BaseException:
+        info = sys.exc_info()
+        if cm is not None:
+            try:
+                cm.__exit__(*info)
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+    else:
+        if cm is not None:
+            try:
+                cm.__exit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _span_ok(span, http_status, size, started) -> None:
+    """Отметить успешный лист: код, байты (если лист владеет телом) и время ответа."""
+    try:
+        span.status = "ok"
+        span.reason = ""
+        span.metrics["http_status"] = _int_value(http_status)
+        if size is not None:
+            span.metrics["bytes"] = _int_value(size)
+        if started is not None:
+            span.metrics["latency_ms"] = round(max(0.0, (time.monotonic() - started) * 1000), 3)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _span_body(span, size) -> None:
+    """Размер прочитанного тела — до разбора: ошибка содержимого не должна терять байты."""
+    try:
+        span.metrics["bytes"] = _int_value(size)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _span_fail(span, exc, started, http_status=0, leaf_bytes=False) -> None:
+    """Отметить сбойный спан машинными токенами: ни адреса, ни текста исключения."""
+    try:
+        status, reason, code = _failure(exc)
+        span.status = status
+        span.reason = reason
+        span.metrics["http_status"] = _int_value(code or http_status)
+        if leaf_bytes:
+            span.metrics.setdefault("bytes", 0)
+        if started is not None:
+            span.metrics["latency_ms"] = round(max(0.0, (time.monotonic() - started) * 1000), 3)
+        span.cause = _cause_of(reason)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cause_of(reason: str) -> str:
+    """Причина ожидания из замороженного списка контракта; пусто — причину не назвать."""
+    return {
+        "http_401": "auth", "http_403": "auth", "http_429": "http_429",
+        "http_5xx": "http_5xx", "dns": "dns", "tls": "tls", "proxy": "proxy",
+        "reset": "network_down", "incomplete": "network_down", "quota": "quota",
+    }.get(reason, "")
+
+
+def _failure(exc) -> tuple:
+    """Сбой → (`status`, `reason`, `http_status`) по разделу 4.1 контракта."""
+    import errno
+    import http.client
+    import socket
+    import ssl
+    import urllib.error
+
+    if isinstance(exc, FileTooLarge):
+        return "error", "body_too_large", 0
+    if isinstance(exc, (UnsafeTarget, EgressRefused)):
+        return "error", "egress_refused", 0
+    if isinstance(exc, urllib.error.HTTPError):
+        code = _int_value(getattr(exc, "code", 0))
+        if code == 401:
+            return "auth", "http_401", code
+        if code == 403:
+            return "auth", "http_403", code
+        if code == 404:
+            return "error", "http_404", code
+        if code == 410:
+            return "error", "http_410", code
+        if code == 429:
+            return "throttled", "http_429", code
+        if 400 <= code < 500:
+            return "error", "http_4xx", code
+        if 500 <= code < 600:
+            return "unavailable", "http_5xx", code
+        return "error", "unknown", code
+    if isinstance(exc, urllib.error.URLError):
+        return _network_failure(getattr(exc, "reason", None))
+    if isinstance(exc, http.client.IncompleteRead):
+        return "unavailable", "incomplete", 0
+    if isinstance(exc, ConnectionResetError):
+        return "unavailable", "reset", 0
+    if isinstance(exc, TimeoutError):
+        return "timeout", "timeout", 0
+    if isinstance(exc, ssl.SSLError):
+        return "unavailable", "tls", 0
+    if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError)):
+        return "error", "content", 0
+    if isinstance(exc, OSError):
+        if getattr(exc, "errno", None) == errno.ECONNRESET:
+            return "unavailable", "reset", 0
+        return "unavailable", "unknown", 0
+    return "error", "unknown", 0
+
+
+def _network_failure(reason) -> tuple:
+    """Причина сетевого отказа (`URLError.reason`) → машинные токены без текста адреса."""
+    import socket
+    import ssl
+
+    if isinstance(reason, socket.gaierror):
+        return "unavailable", "dns", 0
+    if isinstance(reason, (ssl.SSLError, ssl.CertificateError)):
+        return "unavailable", "tls", 0
+    if isinstance(reason, ConnectionResetError):
+        return "unavailable", "reset", 0
+    if isinstance(reason, TimeoutError):
+        return "timeout", "timeout", 0
+    text = str(reason or "").lower()
+    if "proxy" in text or "tunnel" in text:
+        return "unavailable", "proxy", 0
+    if "certificate" in text or "ssl" in text:
+        return "unavailable", "tls", 0
+    return "unavailable", "unknown", 0
+
+
+def _response_status(r) -> int:
+    """HTTP-код ответа; у подставного ответа без `.status` — 0, а не `AttributeError`."""
+    value = 0
+    try:
+        value = getattr(r, "status", 0)
+    except Exception:  # noqa: BLE001
+        value = 0
+    if not value:
+        try:
+            value = r.getcode()
+        except Exception:  # noqa: BLE001
+            value = 0
+    return _int_value(value)
+
+
+def _int_value(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _new_tracer():
+    """`timing.Tracer()` или None: отсутствие модуля замера не роняет синк."""
+    try:
+        import timing
+        return timing.Tracer()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _phase_metrics(span, api, pages=None, issues=None) -> None:
+    """Итоги фазы: страницы/задачи и суммы по счётчикам клиента, не по листьям."""
+    try:
+        if pages is not None:
+            span.metrics["pages"] = _int_value(pages)
+        if issues is not None:
+            span.metrics["issues"] = _int_value(issues)
+        span.metrics["bytes_total"] = _int_value(getattr(api, "_bytes", 0))
+        span.metrics["calls_total"] = _int_value(getattr(api, "_calls", 0))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class RestApi:
     """Минимальный REST-клиент: токен в заголовке, JSON на выходе, свой User-Agent.
 
@@ -373,10 +583,26 @@ class RestApi:
     agent = "aurora-sync/1.0"
     secret_prefix = ""      # CONFLUENCE / JIRA: по нему ищется привязка и доверенный сервер
 
-    def __init__(self, base: str, auth: str, root: str = ""):
+    def __init__(self, base: str, auth: str, root: str = "", *,
+                 service: str = "", tracer=None):
         self.base, self.auth, self.root = base.rstrip("/"), auth, root
         self._env = None
         self._seen = False
+        self.service = service or self._infer_service()
+        self.tracer = tracer if tracer is not None else _new_tracer()
+        self._calls = 0
+        self._bytes = 0
+
+    def _infer_service(self) -> str:
+        """Сервис по привязке ключа; пусто — спаны не пишутся (старый вызов без инструментации)."""
+        prefix = str(getattr(self, "secret_prefix", "") or "")
+        return {"CONFLUENCE": "confluence", "JIRA": "jira"}.get(prefix, "")
+
+    def _count_call(self) -> None:
+        self._calls = _int_value(getattr(self, "_calls", 0)) + 1
+
+    def _count_bytes(self, size) -> None:
+        self._bytes = _int_value(getattr(self, "_bytes", 0)) + _int_value(size)
 
     def _url(self, path: str) -> str:
         """Полный адрес запроса — или `UnsafeTarget`, если ключ на него отправлять нельзя."""
@@ -394,12 +620,26 @@ class RestApi:
                 remember_origin(self.secret_prefix, self.base, self.root)
 
     def get(self, path: str) -> dict:
-        req = urllib.request.Request(self._url(path), headers={
-            "Authorization": self.auth, "Accept": "application/json",
-            "User-Agent": self.agent})
-        with safe_urlopen(req, timeout=60) as r:
-            self._ok()
-            return json.load(r)
+        self._count_call()
+        started = time.monotonic()
+        with _safe_span(getattr(self, "tracer", None), getattr(self, "service", ""),
+                        "call", "http.get", operation="get") as sp:
+            try:
+                req = urllib.request.Request(self._url(path), headers={
+                    "Authorization": self.auth, "Accept": "application/json",
+                    "User-Agent": self.agent})
+                with safe_urlopen(req, timeout=60) as r:
+                    status = _response_status(r)
+                    self._ok()
+                    raw = r.read()
+                    self._count_bytes(len(raw))
+                    _span_body(sp, len(raw))
+                    data = json.loads(raw)
+                    _span_ok(sp, status, len(raw), started)
+                    return data
+            except BaseException as e:
+                _span_fail(sp, e, started, leaf_bytes=True)
+                raise
 
     def fetch(self, url: str, max_bytes: int | None = None) -> bytes:
         """Сырое тело по адресу: вложения (схемы, диаграммы) — не JSON.
@@ -407,22 +647,37 @@ class RestApi:
         `max_bytes` — предел размера: сервер объявил больше — отказ до чтения тела, иначе
         читается на байт больше предела, и превышение даёт `FileTooLarge`. Без аргумента
         читается всё, как раньше."""
-        req = urllib.request.Request(self._url(url), headers={"Authorization": self.auth,
-                                                              "User-Agent": self.agent})
-        with safe_urlopen(req, timeout=120) as r:
-            self._ok()
-            if max_bytes is None:
-                return r.read()
+        self._count_call()
+        started = time.monotonic()
+        status = 0
+        with _safe_span(getattr(self, "tracer", None), getattr(self, "service", ""),
+                        "call", "http.fetch", operation="fetch") as sp:
             try:
-                declared = int(r.headers.get("Content-Length") or 0)
-            except (TypeError, ValueError, AttributeError):
-                declared = 0
-            if declared > max_bytes:
-                raise FileTooLarge("файл больше предела")
-            data = r.read(max_bytes + 1)
-            if len(data) > max_bytes:
-                raise FileTooLarge("файл больше предела")
-            return data
+                req = urllib.request.Request(self._url(url), headers={"Authorization": self.auth,
+                                                                      "User-Agent": self.agent})
+                with safe_urlopen(req, timeout=120) as r:
+                    status = _response_status(r)
+                    self._ok()
+                    if max_bytes is None:
+                        data = r.read()
+                    else:
+                        try:
+                            declared = int(r.headers.get("Content-Length") or 0)
+                        except (TypeError, ValueError, AttributeError):
+                            declared = 0
+                        if declared > max_bytes:
+                            raise FileTooLarge("файл больше предела")
+                        data = r.read(max_bytes + 1)
+                        if len(data) > max_bytes:
+                            self._count_bytes(len(data))
+                            raise FileTooLarge("файл больше предела")
+                    self._count_bytes(len(data))
+                    _span_body(sp, len(data))
+                    _span_ok(sp, status, len(data), started)
+                    return data
+            except BaseException as e:
+                _span_fail(sp, e, started, http_status=status, leaf_bytes=True)
+                raise
 
     def send(self, method: str, path: str, body=None, files: dict | None = None,
              timeout: float = 30, tries: int = 3):
@@ -432,44 +687,72 @@ class RestApi:
         растущей паузой. Внятный отказ сервера (400, 403, 404) повтором не лечится и
         уходит вызывающему как есть, с телом ответа: в нём причина.
         """
-        import time
         import urllib.error
-        url = self._url(path)
-        headers = {"Authorization": self.auth, "Accept": "application/json",
-                   "User-Agent": self.agent}
-        if files:
-            # Jira Server принимает вложение только с этим заголовком (защита от XSRF).
-            boundary = "aurora" + os.urandom(12).hex()
-            parts = []
-            for name, (filename, content) in files.items():
-                parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; "
-                             f"filename*=UTF-8''{urllib.parse.quote(filename)}\r\n"
-                             f"Content-Type: application/octet-stream\r\n\r\n".encode("utf-8")
-                             + content + b"\r\n")
-            data = b"".join(parts) + f"--{boundary}--\r\n".encode()
-            headers.update({"Content-Type": f"multipart/form-data; boundary={boundary}",
-                            "X-Atlassian-Token": "no-check"})
-        else:
-            data = json.dumps(body if body is not None else {}, ensure_ascii=False).encode("utf-8")
-            headers["Content-Type"] = "application/json"
-        last = None
-        for attempt in range(tries):
-            req = urllib.request.Request(url, data=data, method=method, headers=headers)
+        self._count_call()
+        started = time.monotonic()
+        attempts = 0
+        tracer, service = getattr(self, "tracer", None), getattr(self, "service", "")
+        with _safe_span(tracer, service, "call", "http.send", operation="send") as call:
             try:
-                with safe_urlopen(req, timeout=timeout) as r:
-                    self._ok()
-                    raw = r.read()
-                return json.loads(raw) if raw.strip() else {}
-            except urllib.error.HTTPError as e:
-                if e.code not in (429, 500, 502, 503, 504) or attempt == tries - 1:
-                    raise
-                last = e
-            except (urllib.error.URLError, TimeoutError, OSError) as e:
-                if attempt == tries - 1:
-                    raise
-                last = e
-            time.sleep(2 ** attempt)
-        raise last  # pragma: no cover — цикл выше всегда возвращает или бросает
+                url = self._url(path)
+                headers = {"Authorization": self.auth, "Accept": "application/json",
+                           "User-Agent": self.agent}
+                if files:
+                    # Jira Server принимает вложение только с этим заголовком (защита от XSRF).
+                    boundary = "aurora" + os.urandom(12).hex()
+                    parts = []
+                    for name, (filename, content) in files.items():
+                        parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; "
+                                     f"filename*=UTF-8''{urllib.parse.quote(filename)}\r\n"
+                                     f"Content-Type: application/octet-stream\r\n\r\n".encode("utf-8")
+                                     + content + b"\r\n")
+                    data = b"".join(parts) + f"--{boundary}--\r\n".encode()
+                    headers.update({"Content-Type": f"multipart/form-data; boundary={boundary}",
+                                    "X-Atlassian-Token": "no-check"})
+                else:
+                    data = json.dumps(body if body is not None else {},
+                                      ensure_ascii=False).encode("utf-8")
+                    headers["Content-Type"] = "application/json"
+                last = None
+                for attempt in range(tries):
+                    attempts += 1
+                    att_started = time.monotonic()
+                    att_status = 0
+                    try:
+                        with _safe_span(tracer, service, "attempt", "http.send",
+                                        operation="send", attempt=attempt + 1) as att:
+                            try:
+                                req = urllib.request.Request(url, data=data, method=method,
+                                                             headers=headers)
+                                with safe_urlopen(req, timeout=timeout) as r:
+                                    att_status = _response_status(r)
+                                    self._ok()
+                                    raw = r.read()
+                                    self._count_bytes(len(raw))
+                                    _span_body(att, len(raw))
+                                    result = json.loads(raw) if raw.strip() else {}
+                                _span_ok(att, att_status, len(raw), att_started)
+                                _span_ok(call, att_status, None, started)
+                                call.metrics["retries"] = max(0, attempts - 1)
+                                return result
+                            except BaseException as e:
+                                _span_fail(att, e, att_started, http_status=att_status,
+                                           leaf_bytes=True)
+                                raise
+                    except urllib.error.HTTPError as e:
+                        if e.code not in (429, 500, 502, 503, 504) or attempt == tries - 1:
+                            raise
+                        last = e
+                    except (urllib.error.URLError, TimeoutError, OSError) as e:
+                        if attempt == tries - 1:
+                            raise
+                        last = e
+                    time.sleep(2 ** attempt)
+                raise last  # pragma: no cover — цикл выше всегда возвращает или бросает
+            except BaseException as e:
+                _span_fail(call, e, started)
+                call.metrics["retries"] = max(0, attempts - 1)
+                raise
 
 
 # ------------------------------------------------------------------ зеркало

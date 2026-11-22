@@ -26,6 +26,11 @@ from pathlib import Path
 
 import runtime_catalog as RTC          # роли и файл адаптера: один владелец, без своей копии пути
 
+try:                                    # токен движка узнаётся по префиксу, без имени поля
+    from aurora_guard import _TOKEN_TEXT as _TOKEN_TEXT
+except Exception:                       # noqa: BLE001 — архив работает и без общего слоя
+    _TOKEN_TEXT = re.compile(r"aur_(?:kn|rm)_[A-Za-z0-9_-]+")
+
 KIT = Path(__file__).resolve().parent.parent
 MAX_BUNDLE = 25 * 1024 * 1024
 MAX_TEXT = 180_000
@@ -54,6 +59,7 @@ def _text(value, project: str = "", limit: int = MAX_TEXT) -> str:
     s = s.replace(str(Path.home()), "~")
     s = re.sub(r"(?i)([A-Z]:\\Users\\)[^\\\s]+", r"\1<user>", s)
     s = re.sub(r"(?i)(/Users/|/home/)[^/\s]+", r"\1<user>", s)
+    s = _TOKEN_TEXT.sub("[redacted]", s)
     s = re.sub(r"(?i)\b(api[_-]?key|authorization|bearer|token|secret|password|pat)\b"
                r"(\s*[:=]\s*|\s+)[^\s,;]+", r"\1\2***", s)
     s = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "sk-***", s)
@@ -577,6 +583,18 @@ def collect(project: str = "", context: dict | None = None, run_id: str = "",
     return _clean(data, project)
 
 
+def _timing_line(run: dict) -> str:
+    """Строка работы и простоя для сводки. Без timing или при сбое пустая."""
+    timing = run.get("timing") if isinstance(run.get("timing"), dict) else None
+    if not timing:
+        return ""
+    try:
+        import timing as T
+        return "Работа и ожидание: " + T.format_work_wait(timing)
+    except Exception:  # noqa: BLE001, диагностика не имеет права падать на замере
+        return ""
+
+
 def _summary(data: dict) -> str:
     a = data.get("adapter") or {}
     v = data.get("venv") or {}
@@ -629,6 +647,11 @@ def _summary(data: dict) -> str:
         "консоли, `run/failures.jsonl` — сбои без тел ответов, `venv.json` — пакеты и "
         "импорт, `env.json` — только нужные переменные с маской.",
     ]
+    timing_line = _timing_line(run)
+    if timing_line:
+        at = next((i for i, line in enumerate(lines) if line.startswith("Тревога адаптера:")),
+                  len(lines))
+        lines.insert(at, timing_line)
     return "\n".join(lines) + "\n"
 
 

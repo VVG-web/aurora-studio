@@ -16,6 +16,7 @@ PRJ-A», «проект заказчика»; решения по конкрет
 | Номер | Запись | Статус |
 |---|---|---|
 | ADR-026 | [Исполняемое содержимое проекта: доверие к ките, без подтверждений](ADR-026-executable-content-trust.md) | accepted |
+| ADR-028 | [Осознанный рост ext_footprint для MCP core](ADR-028-mcp-footprint.md) | accepted |
 | ADR-059 | [Профили развёртывания и baseline Python](ADR-059-deployment-profiles.md) | accepted |
 | ADR-060 | [Политика зависимостей](ADR-060-dependency-policy.md) | proposed |
 | ADR-066 | [Политика версий и выпусков](ADR-066-version-and-release-policy.md) | proposed |

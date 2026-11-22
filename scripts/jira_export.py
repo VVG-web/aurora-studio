@@ -43,7 +43,8 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
 import urllib.parse
 
 from sources_core import (CONFIG, BoardMirror, OpFailure, RestApi, block, cited_by_cards, config_text,
-                          loss_summary, lose_path, no_access, path_overflow, report_stale, scalar, verify)
+                          loss_summary, lose_path, no_access, path_overflow, report_stale, scalar, verify,
+                          _new_tracer, _phase_metrics, _safe_span, _span_fail)
 from sources_core import read_secret as core_secret
 
 DEFAULT_OUT = "Sources/JIRA"
@@ -56,6 +57,8 @@ PATH_MODEL = "issues"       # плоские файлы `<ключ>.md` — дл
 PATH_LOST: list = []
 FIELDS = ("summary,issuetype,status,priority,resolution,created,updated,resolutiondate,"
           "assignee,reporter,labels,components,fixVersions,parent,description")
+# `--verify` — гейт детерминизма: два прогона во временные папки не должны писать спаны.
+_VERIFY = False
 
 
 class Mirror(BoardMirror):
@@ -292,9 +295,9 @@ def cited(root: str, names: list) -> set:
     return cited_by_cards(root, names)
 
 
-def run_export(cfg: dict, auth: str, out_dir: str, jql: str, limit: int,
-               force: bool, with_comments: bool) -> tuple:
-    api = Api(cfg["base_url"], auth)
+def _run_export_body(api: Api, cfg: dict, out_dir: str, jql: str, limit: int,
+                     force: bool, with_comments: bool) -> tuple:
+    """Выгрузка задач без инструментации: фазу и счётчики добавляет `run_export`."""
     epic_field = api.epic_field()
     issues = api.search(jql, FIELDS + (f",{epic_field}" if epic_field else ""), limit)
     state = {} if force else load_state(out_dir)
@@ -333,6 +336,37 @@ def run_export(cfg: dict, auth: str, out_dir: str, jql: str, limit: int,
     return rows, written, skipped
 
 
+def run_export(cfg: dict, auth: str, out_dir: str, jql: str, limit: int,
+               force: bool, with_comments: bool) -> tuple:
+    """Выгрузка задач; замер — одна фаза `jira.export`, без записи `timing.d`."""
+    tracer = None if _VERIFY else _new_tracer()
+    api = Api(cfg["base_url"], auth)
+    try:
+        api.tracer = tracer
+        api.service = getattr(api, "service", "") or "jira"
+    except Exception:  # noqa: BLE001 — подставной клиент старой формы без атрибутов
+        pass
+    service = getattr(api, "service", "") or "jira"
+    with _safe_span(tracer, service, "phase", "jira.export", operation="export") as phase:
+        try:
+            result = _run_export_body(api, cfg, out_dir, jql, limit, force, with_comments)
+        except BaseException as e:
+            _span_fail(phase, e, None)
+            raise
+        _phase_metrics(phase, api, issues=len(result[0]))
+        return result
+
+
+def _verify_export(run) -> int:
+    """Гейт детерминизма без спанов; флаг снимается в `finally` даже при падении прогона."""
+    global _VERIFY
+    _VERIFY = True
+    try:
+        return verify(run, skip=(STATE,))
+    finally:
+        _VERIFY = False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Детерминированное зеркало Jira → Sources/JIRA/")
     ap.add_argument("--jql", help="JQL (по умолчанию default_jql из aurora.config.yaml)")
@@ -363,8 +397,7 @@ def main() -> int:
 
     if a.verify:
         limit = a.limit or 25
-        return verify(lambda into: run_export(cfg, auth, into, jql, limit, True, a.comments),
-                      skip=(STATE,))
+        return _verify_export(lambda into: run_export(cfg, auth, into, jql, limit, True, a.comments))
 
     rows, written, skipped = run_export(cfg, auth, out_dir, jql, a.limit, a.force, a.comments)
     state = write_state(out_dir, rows)

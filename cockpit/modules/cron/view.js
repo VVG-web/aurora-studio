@@ -89,9 +89,31 @@ function note(ctx, code){
   return s === "cron.note." + code ? code : s;
 }
 
-// Сколько шло — словами ядра (`fmt.howLong`): единицы времени переводит каталог.
-const took = (ctx, a, b) => a && b
-  ? ctx.fmt.howLong(Math.max(0, Math.round((new Date(b) - new Date(a)) / 1000))) : "";
+// Сколько шло: словами ядра (`fmt.howLong`), а при известном timing общим чипом.
+const elapsedSec = (a, b) => a && b
+  ? Math.max(0, Math.round((new Date(b) - new Date(a)) / 1000)) : null;
+const took = (ctx, a, b, timing) => {
+  const seconds = elapsedSec(a, b);
+  if (timing && ctx.ui && typeof ctx.ui.timingChip === "function")
+    return ctx.ui.timingChip({id: "cron", timing, seconds});
+  return seconds != null
+    ? ctx.el("span", {class: "muted"}, ctx.fmt.howLong(seconds)) : null;
+};
+
+// У шага цепочки бывают только ожидания: работу выводим из начала, конца и ожиданий
+// и помечаем оценкой. Без обеих отметок времени остаётся «нет данных».
+export function itemTiming(it){
+  const timing = it && it.timing;
+  if (!timing) return null;
+  if (timing.work_ms != null || !it.started || !it.finished) return timing;
+  const total = new Date(it.finished) - new Date(it.started);
+  if (!isFinite(total) || total < 0) return timing;
+  const service = Number(timing.service_wait_ms || 0);
+  const other = Number(timing.other_wait_ms || 0);
+  return {...timing, work_ms: Math.max(0, Math.round(total - service - other)),
+          source: "derived", confidence: "approx",
+          quality: {...(timing.quality || {}), approx: true}};
+}
 
 /* ------------------------------------------------------------ идёт сейчас */
 
@@ -141,7 +163,7 @@ function itemRow(ctx, it){
   const {el} = ctx;
   const what = it.kind === "route" ? "«" + (it.title || routeTitle(it.route)) + "»"
     : (it.cmd + " " + (it.args || []).join(" ")).trim();
-  return el("div", {class: "list-item", style: "padding:6px 0"},
+  return el("div", {class: "list-item", style: "padding:6px 0;flex-wrap:wrap"},
     chip(ctx, it.status),
     it.retry ? el("span", {class: "chip", title: it.first ? ctx.t("cron.first_try", {status:
       ctx.t("cron.status." + it.first.status)}) : ""}, ctx.t("cron.retry")) : null,
@@ -149,7 +171,7 @@ function itemRow(ctx, it){
     el("span", {class: it.kind === "route" ? "" : "mono"}, what),
     it.failed ? el("span", {class: "mono muted"}, it.failed) : null,
     el("span", {class: "muted", style: "flex:1"}, note(ctx, it.note)),
-    el("span", {class: "muted"}, took(ctx, it.started, it.finished)));
+    took(ctx, it.started, it.finished, itemTiming(it)));
 }
 
 /* ---------------------------------------------------------------- задания */
@@ -440,14 +462,14 @@ function runRow(ctx, run){
   const items = run.items || [];
   const ok = items.filter(it => it.status === "passed").length;
   const detail = el("div", {hidden: OPEN_RUN === run.id ? null : ""});
-  const row = el("div", {class: "list-item", style: "cursor:pointer"},
+  const row = el("div", {class: "list-item", style: "cursor:pointer;flex-wrap:wrap"},
     el("span", {class: "muted", style: "min-width:96px"}, ctx.fmt.when(run.started)),
     el("b", {}, run.name),
     chip(ctx, run.status),
     el("span", {class: "chip"}, t("cron.trigger." + (run.trigger || "manual"))),
     items.length ? el("span", {class: "muted"}, t("cron.items_ok", {ok, of: items.length})) : null,
     el("span", {style: "flex:1"}),
-    el("span", {class: "muted"}, took(ctx, run.started, run.finished)));
+    took(ctx, run.started, run.finished, run.timing));
   row.onclick = async () => {
     OPEN_RUN = OPEN_RUN === run.id ? "" : run.id;
     detail.hidden = OPEN_RUN !== run.id;

@@ -94,7 +94,10 @@ function row(ctx, r){
         mark ? el("span", {class:"chip " + mark.cls,
           title: t("commands.last_hint", {label: last.label, what: mark.what,
                                           rc: last.rc, kit: last.kit || "?"})},
-          mark.what + " · " + ctx.fmt.when(last.at)) : null),
+          mark.what + " · " + ctx.fmt.when(last.at)) : null,
+        last && ctx.ui && typeof ctx.ui.timingChip === "function"
+          ? ctx.ui.timingChip({id: "cmd-" + r.cmd, timing: last.timing,
+                               seconds: last.secs || null}) : null),
       netChips(ctx, NET[r.cmd]),
       el("div", {class:"muted", style:"font-size:13px;margin-top:5px", html: ctx.fmt.tick(r.what)}),
       r.flags.length ? el("div", {class:"mono",

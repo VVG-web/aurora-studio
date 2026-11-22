@@ -37,6 +37,7 @@
 """
 from __future__ import annotations
 import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
+from aurora_common import http_mapping as _http_mapping
 
 import argparse
 import hashlib
@@ -780,6 +781,109 @@ def classify_error(exc) -> tuple:
     return code, "" if code != "other" else type(exc).__name__
 
 
+class _Span:
+    """Необязательный спан: без трассера — пустышка, сбой замера не доходит до проверки."""
+
+    def __init__(self, tracer, kind: str, name: str, **kw):
+        self._cm = None
+        self._span = None
+        if tracer is None:
+            return
+        try:
+            self._cm = tracer.span(kind, name, **kw)
+            self._span = self._cm.__enter__()
+        except Exception:  # noqa: BLE001 — замер не имеет права ронять проверку
+            self._cm = self._span = None
+
+    @property
+    def span_id(self) -> str:
+        try:
+            return str(self._span.span_id) if self._span is not None else ""
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._cm is not None:
+            try:
+                self._cm.__exit__(exc_type, exc, tb)
+            except Exception:  # noqa: BLE001, S110
+                pass  # noqa: S110 — замер не имеет права ронять проверку
+        return False
+
+    def note(self, **metrics) -> None:
+        try:
+            if self._span is not None:
+                self._span.metrics.update({k: v for k, v in metrics.items() if v is not None})
+        except Exception:  # noqa: BLE001, S110
+            pass  # noqa: S110 — замер не имеет права ронять проверку
+
+    def finish(self, status: str = "", reason: str = "", dur_ms=None) -> None:
+        try:
+            if self._span is None:
+                return
+            if status:
+                self._span.status = status
+            self._span.reason = reason or ""
+            if dur_ms is not None:
+                self._span.dur_ms = round(max(0.0, float(dur_ms)), 3)
+        except Exception:  # noqa: BLE001, S110
+            pass  # noqa: S110 — замер не имеет права ронять проверку
+
+
+def _new_tracer():
+    """Трассер сервиса только при наличии папки или id прогона."""
+    if not (os.environ.get("AURORA_RUN_DIR") or os.environ.get("AURORA_RUN_ID")):
+        return None
+    try:
+        import timing as T
+        return T.Tracer()
+    except Exception:  # noqa: BLE001 — старая копия кита без timing не ломает проверку
+        return None
+
+
+def _probe_mapping(res: dict) -> tuple:
+    """Код проверки → (status, reason) по CONTRACT.md 4.1."""
+    if res.get("ok"):
+        return "ok", ""
+    code = str(res.get("code") or "unknown")
+    if code == "timeout":
+        return "timeout", "timeout"
+    if code == "late":
+        return "timeout", "late"
+    if code in ("status", "body"):
+        try:
+            http_status = int(res.get("http_status") or 0)
+        except (TypeError, ValueError):
+            http_status = 0
+        if code == "body" and http_status and 200 <= http_status < 300:
+            return "error", "content"
+        return _http_mapping(http_status)
+    if code == "dns":
+        return "unavailable", "dns"
+    if code == "tls":
+        return "unavailable", "tls"
+    if code == "reset":
+        return "unavailable", "reset"
+    if code == "incomplete":
+        return "unavailable", "incomplete"
+    return "unknown", "unknown"
+
+
+def _probe_metrics(res: dict) -> dict:
+    metrics = {"probe_ms": res.get("ms"), "latency_ms": res.get("ms"),
+               "code": str(res.get("code") or "unknown")}
+    try:
+        http_status = int(res.get("http_status"))
+    except (TypeError, ValueError):
+        http_status = 0
+    if http_status:
+        metrics["http_status"] = http_status
+    return metrics
+
+
 def _result(ok: bool, started: float, code: str, detail: str = "") -> dict:
     return {"ok": ok, "code": code, "ms": int((time.monotonic() - started) * 1000), "detail": detail}
 
@@ -844,6 +948,7 @@ def _check_http(p: dict, timeout: float) -> dict:
     req = urllib.request.Request(p["url"], headers=headers, method="GET")
     want = p.get("expect_status") or STATUS_DEFAULT
     body = b""
+    status = 0
     unverified = False
     try:
         try:
@@ -869,14 +974,20 @@ def _check_http(p: dict, timeout: float) -> dict:
             if secret and len(str(secret)) > 3:
                 detail = detail.replace(str(secret), "***")        # ключ в тексте чужой ошибки не остаётся нигде
         res = _result(False, started, code, detail)
+        res["http_status"] = status
         if unverified:
             res["tls_unverified"] = True
         return res
     if not status_matches(status, want):
-        return _result(False, started, "status", f"HTTP {status}")
+        res = _result(False, started, "status", f"HTTP {status}")
+        res["http_status"] = status
+        return res
     if p.get("expect_body") and p["expect_body"] not in body.decode("utf-8", "replace"):
-        return _result(False, started, "body", f"HTTP {status}")
+        res = _result(False, started, "body", f"HTTP {status}")
+        res["http_status"] = status
+        return res
     res = _result(True, started, "ok", f"HTTP {status}")
+    res["http_status"] = status
     if unverified:
         res["tls_unverified"] = True
         res["detail"] = f"HTTP {status} · TLS certificate not trusted"
@@ -935,24 +1046,33 @@ def probe_target(p: dict) -> str:
     return f"{host}:{p['port']}" if p.get("type") == "tcp" and p.get("port") else host
 
 
-def run_probe(p: dict, timeout: float, checkers=None) -> dict:
+def run_probe(p: dict, timeout: float, checkers=None, *, tracer=None,
+              parent_id: str = "") -> dict:
     fn = (checkers or CHECKERS).get(p.get("type"))
     if fn is None:
-        return {"ok": False, "code": "other", "ms": 0, "detail": "unknown probe type"}
-    try:
-        res = fn(p, timeout)
-    except Exception as e:  # noqa: BLE001 — проверка не должна ронять вызывающего
-        # Сама проверка сломалась — это не свидетельство против адреса: раунд по ней не засчитывается (`inconclusive`).
-        detail = type(e).__name__ + ": " + str(e)
-        for secret in (p.get("_headers") or {}).values():
-            if secret and len(str(secret)) > 3:
-                detail = detail.replace(str(secret), "***").replace(str(secret).removeprefix("Bearer "), "***")
-        res = {"ok": False, "code": "other", "ms": 0, "detail": detail[:120], "inconclusive": True}
+        res = {"ok": False, "code": "other", "ms": 0, "detail": "unknown probe type"}
+    else:
+        try:
+            res = fn(p, timeout)
+        except Exception as e:  # noqa: BLE001 — проверка не должна ронять вызывающего
+            # Сама проверка сломалась — это не свидетельство против адреса: раунд по ней не засчитывается (`inconclusive`).
+            detail = type(e).__name__ + ": " + str(e)
+            for secret in (p.get("_headers") or {}).values():
+                if secret and len(str(secret)) > 3:
+                    detail = detail.replace(str(secret), "***").replace(str(secret).removeprefix("Bearer "), "***")
+            res = {"ok": False, "code": "other", "ms": 0, "detail": detail[:120],
+                   "inconclusive": True}
     res.update({k: v for k, v in _origin().items() if k not in res})
+    if tracer is not None:
+        with _Span(tracer, "call", "probe", service="network", operation="probe",
+                   attempt=1, parent_id=parent_id or "") as span:
+            span.note(**_probe_metrics(res))
+            status, reason = _probe_mapping(res)
+            span.finish(status, reason, res.get("ms"))
     return res
 
 
-def try_probe(probe, settings=None, checkers=None) -> dict:
+def try_probe(probe, settings=None, checkers=None, *, tracer=None) -> dict:
     """Одна проверка без записи в состояние — кнопка «Проверить» у probe, который ещё не сохранён.
 
     → {ok, code, ms, detail, target} либо {ok: False, problems: [...]}, если probe не годится. Профиль не нужен.
@@ -963,7 +1083,7 @@ def try_probe(probe, settings=None, checkers=None) -> dict:
     if not cfg["probes"]:
         return {"ok": False, "problems": [x for x in problems if x["where"].startswith("probes")]}
     p = cfg["probes"][0]
-    res = run_probe(p, probe_timeout(cfg, p), checkers)
+    res = run_probe(p, probe_timeout(cfg, p), checkers, tracer=tracer)
     res["target"] = probe_target(p)
     return res
 
@@ -972,7 +1092,8 @@ _PROBE_THREADS: dict = {}          # id probe → поток её последн
 _PROBE_LOCK = threading.Lock()
 
 
-def run_probes(probes: list, cfg: dict, budget: float | None = None, checkers=None) -> dict:
+def run_probes(probes: list, cfg: dict, budget: float | None = None, checkers=None,
+               *, tracer=None) -> dict:
     """Все probe разом, каждая в своём потоке → {id: результат}.
 
     С `budget` срок каждой probe урезается до 80 % бюджета: молчащий адрес успевает честно ответить «нет ответа» до конца
@@ -982,31 +1103,48 @@ def run_probes(probes: list, cfg: dict, budget: float | None = None, checkers=No
     results: dict = {}
     lock = threading.Lock()
     cap = None if budget is None else max(0.5, budget * 0.8)
+    started = time.monotonic()
+    with _Span(tracer, "phase", "probe.batch", service="network",
+               operation="probe") as phase:
+        parent = phase.span_id
 
-    def one(p: dict) -> None:
-        timeout = probe_timeout(cfg, p)
-        res = run_probe(p, timeout if cap is None else min(timeout, cap), checkers)
+        def one(p: dict) -> None:
+            timeout = probe_timeout(cfg, p)
+            res = run_probe(p, timeout if cap is None else min(timeout, cap), checkers,
+                            tracer=tracer, parent_id=parent)
+            with lock:
+                results.setdefault(p["id"], res)
+
+        threads = []
+        for p in probes:
+            with _PROBE_LOCK:
+                busy = _PROBE_THREADS.get(p["id"])
+                if busy is not None and busy.is_alive():
+                    continue            # прошлая проверка этого адреса ещё висит: вторую не копим, раунд по нему — `late`
+                t = threading.Thread(target=one, args=(p,), daemon=True)
+                _PROBE_THREADS[p["id"]] = t
+            t.start()
+            threads.append(t)
+        end = None if budget is None else time.monotonic() + budget
+        for t in threads:
+            t.join(None if end is None else max(0.0, end - time.monotonic()))
         with lock:
-            results.setdefault(p["id"], res)
-
-    threads = []
-    for p in probes:
-        with _PROBE_LOCK:
-            busy = _PROBE_THREADS.get(p["id"])
-            if busy is not None and busy.is_alive():
-                continue            # прошлая проверка этого адреса ещё висит: вторую не копим, раунд по нему — `late`
-            t = threading.Thread(target=one, args=(p,), daemon=True)
-            _PROBE_THREADS[p["id"]] = t
-        t.start()
-        threads.append(t)
-    end = None if budget is None else time.monotonic() + budget
-    for t in threads:
-        t.join(None if end is None else max(0.0, end - time.monotonic()))
-    with lock:
-        out = dict(results)
-    for p in probes:
-        out.setdefault(p["id"], {"ok": False, "code": "late", "ms": int((budget or 0) * 1000),
-                                 "detail": "", "late": True})
+            out = dict(results)
+        late_count = 0
+        for p in probes:
+            if p["id"] in out:
+                continue
+            late_count += 1
+            res = {"ok": False, "code": "late", "ms": int((budget or 0) * 1000),
+                   "detail": "", "late": True}
+            out[p["id"]] = res
+            with _Span(tracer, "call", "probe", service="network", operation="probe",
+                       attempt=1, parent_id=parent) as span:
+                span.note(probe_ms=res["ms"], latency_ms=res["ms"], code="late")
+                span.finish("timeout", "late", res["ms"])
+        phase.note(probes=len(probes), budget_ms=int((budget or 0) * 1000))
+        phase.finish("partial" if late_count else "ok", "",
+                     max(0.0, (time.monotonic() - started) * 1000.0))
     return out
 
 
@@ -1243,12 +1381,15 @@ class AvailabilityService:
     процесс, проверивший связь перед запуском, видят одно и то же и не проверяют лишний раз.
     """
 
-    def __init__(self, kit=None, *, clock=time.time, checkers=None, providers_fn=None, state_file=None):
+    def __init__(self, kit=None, *, clock=time.time, checkers=None, providers_fn=None,
+                 state_file=None, tracer=None):
         self.kit = kit
         self.clock = clock
         self.checkers = checkers
         self.providers_fn = providers_fn
         self.state_file = state_file
+        self.tracer = tracer if tracer is not None else _new_tracer()
+        self._last_timing: dict | None = None
         self._cfg = None
         self._cfg_key = None
         self._subs: list = []
@@ -1363,12 +1504,13 @@ class AvailabilityService:
         return self.snapshot()
 
     def _run(self, units: dict, cfg: dict, budget: float | None) -> None:
+        self._last_timing = None
         if not units:
             return
         flat = [p for probes in units.values() for p in probes]
         if budget is None:                      # без общего срока зависшее разрешение имени держало бы вызов бесконечно
             budget = max([probe_timeout(cfg, p) for p in flat] or [DEFAULTS["timeout"]]) + 2
-        results = run_probes(flat, cfg, budget, self.checkers)
+        results = run_probes(flat, cfg, budget, self.checkers, tracer=self.tracer)
         now = self.clock()
         events: list = []
 
@@ -1379,6 +1521,7 @@ class AvailabilityService:
 
         update_state(write, self.state_file)
         self._emit(events)
+        self._last_timing = self.tracer.summary() if self.tracer is not None else None
 
     def due_now(self) -> list:
         """Профили, которым пора на очередную проверку по их интервалу (фоновая проверка панели)."""
@@ -1421,6 +1564,9 @@ class AvailabilityService:
         cfg = self.config()
         now = self.clock()
         state = read_state(self.state_file)
+        with self._lock:
+            timing = self._last_timing
+            self._last_timing = None
         out = {"enabled": bool(cfg.get("enabled")), "at": utc_stamp(now), "error": cfg.get("error", ""),
                "policy": (cfg.get("policy") or {}).get("auto", POLICY_DEFAULT)}
         provs = self.providers()
@@ -1504,6 +1650,8 @@ class AvailabilityService:
         out["required"] = {"profiles": req_profiles, "providers": req_providers, "internet": monitored}
         out["reasons"] = reasons_of(out)
         out["events"] = state["events"][-20:]
+        if timing is not None:
+            out["timing"] = timing
         return out
 
     # ---- фоновая проверка

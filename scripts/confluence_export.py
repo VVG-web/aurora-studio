@@ -48,7 +48,8 @@ from datetime import date, timedelta
 
 from sources_core import (ASSET_DIR_RE, CONFIG, FileTooLarge, OpFailure, RestApi, UnsafeTarget, WikiMirror, block,
                           config_text, loss_summary, lose_path, nfc, no_access, drop_empty_dirs,
-                          path_overflow, path_probe, report_stale, scalar, verify, word)
+                          path_overflow, path_probe, report_stale, scalar, verify, word,
+                          _new_tracer, _phase_metrics, _safe_span, _span_fail)
 from sources_core import read_secret as core_secret
 from kb_remap import follow_moves, moves_report, page_moves  # noqa: E402
 from aurora_common import (ATTACH_MAX_MB, ATTACH_MODES, PATH_CHARS, TODAY,  # noqa: E402,F401
@@ -66,6 +67,8 @@ STATE = WikiMirror.state_name
 CONVERTER = 2
 PAGE_CACHE = os.path.join(".aurora", "cache", "confluence_pages.json")
 CACHE_FRESH_SINCE = (date.fromisoformat(TODAY) - timedelta(days=7)).isoformat()
+# `--verify` — гейт детерминизма: два прогона во временные папки не должны писать спаны.
+_VERIFY = False
 
 
 def load_page_cache() -> dict:
@@ -1674,8 +1677,8 @@ def drop_nested_roots(api: Api, roots: list) -> tuple:
     return keep, dropped
 
 
-def run_export(cfg: dict, roots: list, out: str, auth: str, force: bool) -> Exporter:
-    api = Api(cfg["base_url"], auth)
+def _run_export_body(api: Api, cfg: dict, roots: list, out: str, force: bool) -> Exporter:
+    """Обход корней без инструментации: фазу и счётчики добавляет `run_export`."""
     api._url("/")       # ключ на этот сервер нельзя — отказ один, а не по строке на корень
     # Один корень, записанный в настройке дважды, обходился дважды: на PRJ-C с 10.08
     # «Страниц: 1202» вместо 1058 и ~12 % лишних запросов на каждом синке.
@@ -1699,6 +1702,37 @@ def run_export(cfg: dict, roots: list, out: str, auth: str, force: bool) -> Expo
               + f": страниц {st['pages']} · максимальная глубина {st['depth']} · "
                 f"страниц с детьми {st['parents']}")
     return exp
+
+
+def run_export(cfg: dict, roots: list, out: str, auth: str, force: bool) -> Exporter:
+    """Выгрузка дерева страниц; замер — одна фаза `confluence.export`, без записи `timing.d`."""
+    tracer = None if _VERIFY else _new_tracer()
+    api = Api(cfg["base_url"], auth)
+    try:
+        api.tracer = tracer
+        api.service = getattr(api, "service", "") or "confluence"
+    except Exception:  # noqa: BLE001 — подставной клиент старой формы без атрибутов
+        pass
+    service = getattr(api, "service", "") or "confluence"
+    with _safe_span(tracer, service, "phase", "confluence.export",
+                    operation="export") as phase:
+        try:
+            exp = _run_export_body(api, cfg, roots, out, force)
+        except BaseException as e:
+            _span_fail(phase, e, None)
+            raise
+        _phase_metrics(phase, api, pages=len(getattr(exp, "records", []) or []))
+        return exp
+
+
+def _verify_export(run) -> int:
+    """Гейт детерминизма без спанов; флаг снимается в `finally` даже при падении прогона."""
+    global _VERIFY
+    _VERIFY = True
+    try:
+        return verify(run, skip=(STATE,))
+    finally:
+        _VERIFY = False
 
 
 def print_tree(api, root: str, title: str = "") -> dict:
@@ -1812,7 +1846,7 @@ def main() -> int:
     print(f"Confluence → {out}  ({cfg['base_url']}, доступ: {kind}, корней: {len(roots)})\n")
 
     if a.verify:
-        return verify(lambda into: run_export(cfg, roots, into, auth, True), skip=(STATE,))
+        return _verify_export(lambda into: run_export(cfg, roots, into, auth, True))
 
     exp = run_export(cfg, roots, out, auth, a.force)
     exp.save_cache()

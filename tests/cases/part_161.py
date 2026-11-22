@@ -222,8 +222,8 @@ def test_install_page_answer_has_who_rights_run_and_other_users(tmp: Path):
     src = (KIT / "cockpit" / "aurora_cockpit.py").read_text(encoding="utf-8")
     view = (KIT / "cockpit" / "modules" / "install" / "view.js").read_text(encoding="utf-8")
     assert '"/api/install/access"' in src and '"/api/install/access"' in view and "function accessCard" in view
-    assert "confirm(" not in view.split("function accessCard")[1].split("function harnessCard")[0], \
-        "«Установка: кому доступно» без диалогов согласия"
+    access = view.split("function accessCard", 1)[1].split("\nfunction ", 1)[0]
+    assert "confirm(" not in access, "«Установка: кому доступно» без диалогов согласия"
 
 
 @test

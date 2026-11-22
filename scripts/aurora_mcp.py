@@ -361,7 +361,11 @@ class ToolError(Exception):
 
 def run(project: str, script: str, args: list, timeout: int = 120, fail_from: int = 2,
         stdin: str | None = None) -> str:
-    """Команда движка проекта. Ни один инструмент не пишет — только читает.
+    """Команда движка проекта. Сервер не только читает: `jira_publish` пишет в Jira,
+    `review_page` и `review_file` кладут отчёт файлом, память бота меняется через
+    `state_put`. Запись в Jira разрешает только кит (`jira_write`), а `jira_publish` без
+    `dry_run` ещё и требует режима `full` (`auroraRemote.mode`); пробный прогон работает
+    всегда.
 
     Код движка: 0 — готово, 1 — «отработала и нашла, что сказать» (например, по теме ничего не
     найдено: это ответ базы, а не сбой), 2 и выше — не отработала. Отказом (`ToolError`)
@@ -671,6 +675,16 @@ def t_atlassian(op: str):
             "confluence_find": ("query", "space", "limit"), "confluence_page": ("page",)}[op]
 
     def call(project: str, args: dict) -> str:
+        # Пробный прогон публикации ничего не пишет и работает в любом режиме. Настоящая
+        # публикация в безопасном режиме запрещена: это необратимое действие, и режим
+        # панели главнее локальной записи.
+        if op == "jira_publish" and not args.get("dry_run"):
+            mode, source = aurora_common.kit_mcp_mode(project)
+            if mode != "full":
+                raise ToolError(
+                    "jira_publish запрещён: действует безопасный режим "
+                    f"(источник {source or 'default'}). Включите полный доступ в панели; "
+                    "dry_run: true работает всегда.")
         req = {"op": "check" if op == "atlassian_check" else op}
         req.update({k: args[k] for k in keys if k in args})
         out = run(project, "atlassian_ops.py", [], timeout=300,
@@ -1030,14 +1044,20 @@ def known_projects(here: str) -> list:
 def client_configs() -> dict:
     """Готовая настройка сервера «все проекты» для других агентов: запуск из кита, тем же
     Python, что панель. OpenCode — ключ `mcp` (type local, command массивом); Claude Code и
-    Cursor — `mcpServers`."""
+    Cursor — `mcpServers`. Серверов два: знания (`aurora`) и управление панелью
+    (`aurora-remote`); второй запускается без `--all` и работает через локальную сессию."""
     script = str(SCRIPTS / "aurora_mcp.py")
+    remote = str(SCRIPTS / "aurora_remote_mcp.py")
     python = aurora_common.python_executable()
     return {
         "opencode": {"mcp": {"aurora": {"type": "local", "enabled": True,
-                                        "command": [python, script, "--all"]}}},
+                                        "command": [python, script, "--all"]},
+                             "aurora-remote": {"type": "local", "enabled": True,
+                                               "command": [python, remote]}}},
         "mcpServers": {"mcpServers": {"aurora": {"command": python,
-                                                 "args": [script, "--all"]}}},
+                                                 "args": [script, "--all"]},
+                                     "aurora-remote": {"command": python,
+                                                       "args": [remote]}}},
         "projects": sorted(project_map()),
     }
 

@@ -31,6 +31,12 @@
    "calls": 1,
    "git": "shared"
   },
+  "cockpit/aurora_cockpit.py:_mcp_write_data": {
+   "kind": "other",
+   "reason": "запись local/mcp.json кита из панели: настройки MCP, не карточка",
+   "calls": 3,
+   "git": "local"
+  },
   "cockpit/aurora_cockpit.py:drop_project_home": {
    "kind": "other",
    "reason": "кнопка «Убрать AURORA_HOME из проекта»: правит .env.aurora.local проекта по команде человека, не карточка",
@@ -100,7 +106,7 @@
   "cockpit/aurora_cockpit.py:mark_interrupted_jobs": {
    "kind": "other",
    "reason": "история прерванной задачи: meta.json и console.log в архиве прогона",
-   "calls": 2,
+   "calls": 1,
    "git": "local"
   },
   "cockpit/aurora_cockpit.py:open_in_browser": {
@@ -529,6 +535,12 @@
    "calls": 1,
    "git": "none"
   },
+  "scripts/aurora_guard.py:audit_write": {
+   "kind": "other",
+   "reason": "журнал доступа MCP: дописывает JSONL в local/audit, не карточка",
+   "calls": 1,
+   "git": "local"
+  },
   "scripts/aurora_hooks.py:_install_push_hook": {
    "kind": "other",
    "reason": "хуки git проекта: файлы вне базы знаний",
@@ -546,6 +558,18 @@
    "reason": "состояние MCP-сервера: служебный файл",
    "calls": 2,
    "git": "local"
+  },
+  "scripts/aurora_remote_mcp.py:RemoteServer._save_diagnostics": {
+   "kind": "other",
+   "reason": "диагностический архив для удалённого MCP: zip в ~/.jcode/scratch, не карточка",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/aurora_remote_mcp.py:run_selftest": {
+   "kind": "other",
+   "reason": "самопроверка удалённого MCP: временный кит и mcp.json в tempfile, не карточка",
+   "calls": 1,
+   "git": "none"
   },
   "scripts/aurora_runtime.py:_backup_venv": {
    "kind": "other",
@@ -964,7 +988,7 @@
   "scripts/harness_mcp.py:restore": {
    "kind": "other",
    "reason": "настройки внешних ассистентов: вне базы знаний",
-   "calls": 1,
+   "calls": 2,
    "git": "none"
   },
   "scripts/id_registry.py:_ledger_write": {
@@ -1009,7 +1033,7 @@
    "calls": 1,
    "git": "none"
   },
-  "scripts/jira_export.py:run_export": {
+  "scripts/jira_export.py:_run_export_body": {
    "kind": "other",
    "reason": "зеркало задач Jira в Sources/",
    "calls": 1,
@@ -1351,6 +1375,18 @@
    "reason": "состояние «Продуктивности»: план, манифест, попытки и отчёт в Workspaces, не карточка",
    "calls": 2
   },
+  "scripts/mcp_tokens.py:_write": {
+   "kind": "other",
+   "reason": "реестр токенов MCP: приватный JSON с правами 600 и резервной копией, не карточка",
+   "calls": 2,
+   "git": "local"
+  },
+  "scripts/mcp_tokens.py:_write_private": {
+   "kind": "other",
+   "reason": "реестр токенов MCP: атомарная запись файла с правами 600, не карточка",
+   "calls": 1,
+   "git": "local"
+  },
   "scripts/merge_common.py:write_json": {
    "kind": "other",
    "reason": "общая атомарная запись JSON для merge-драйверов, не карточка",
@@ -1561,7 +1597,7 @@
    "calls": 1,
    "git": "none"
   },
-  "scripts/web_export.py:run.store": {
+  "scripts/web_export.py:_run_impl.store": {
    "kind": "other",
    "reason": "веб-зеркало в Sources/: источник, не карточка",
    "calls": 1,

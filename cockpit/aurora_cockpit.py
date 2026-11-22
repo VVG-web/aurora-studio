@@ -27,6 +27,7 @@ import codecs
 import functools
 import getpass
 import hashlib
+import hmac
 import importlib.util
 import json
 import os
@@ -65,7 +66,9 @@ from aurora_common import (CODE_DIR, ENGINE_DIRS, attachment_answers_problem, ch
                            personal_kit_file, python_executable, real_inside, real_rel, replace_file, same_origin, utc_slug, utc_stamp,
                            write_text_atomic, yaml_scalar, yaml_word)
 from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
-                           mcp_check, mcp_mask_args, mcp_masked)
+                           MCP_SAFE_DENY_COMMANDS, confirmation_digest, kit_mcp_mode,
+                           mcp_check, mcp_command_verdict, mcp_mask_args, mcp_masked,
+                           mcp_route_verdict)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
 import request_context as RC                     # noqa: E402 — граница секретов и служебного, одна на движок
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -80,6 +83,8 @@ import git_sync as GS                            # noqa: E402 — Git проек
 import git_auto as GITA                          # noqa: E402 — автоматика Git: события и тик
 import bots as BOTS                              # noqa: E402 — боты проектов: раздел «Боты»
 import path_budget as PB                         # noqa: E402 — длина путей на Windows, macOS и Linux
+import mcp_tokens as MT                          # noqa: E402 — реестр токенов MCP
+import aurora_guard as G                         # noqa: E402 — вход, права, пределы частоты, аудит
 
 # Токен сессии. Страница его не получает «просто так»: он выдаётся в обмен на одноразовый
 # код (`issue_launch_code`), а дальше идёт заголовком `X-Aurora-Token`. Переданный новому
@@ -3878,14 +3883,496 @@ def _mcp_brief(name: str, spec: dict, old: dict) -> dict:
                               if isinstance(spec.get("headers"), dict) else [])}
 
 
-def mcp_kit_state() -> dict:
+def _mcp_file_data() -> tuple:
+    """Весь `local/mcp.json` и причина, если он не прочитан. Секреты наружу не уходят."""
+    path = kit_mcp_file()
+    if not os.path.isfile(path) or personal_kit_file(path):
+        return {}, ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except ValueError as e:
+        return {}, f"local/mcp.json не разобран: {getattr(e, 'msg', str(e))}"
+    except OSError as e:
+        return {}, f"local/mcp.json не прочитан: {e}"
+    if not isinstance(data, dict):
+        return {}, "local/mcp.json — не объект"
+    return data, ""
+
+
+def _mcp_write_data(data: dict) -> dict:
+    """Записать `local/mcp.json` целиком: прежний файл рядом `.bak`, оба только владельцу.
+
+    Пишется весь объект, а не только `mcpServers`: серверы, `permissions`, `auroraRemote` и
+    незнакомые ключи человека переживают правку. Запись без изменений ничего не пишет.
+    """
+    path = kit_mcp_file()
+    root = os.path.dirname(os.path.dirname(path))
+    if (os.path.isfile(os.path.join(root, "aurora.config.yaml"))
+            and not os.path.isfile(os.path.join(root, "scripts", "model_config.py"))):
+        return _mcp_error("bad_request",
+                          f"{root} — папка проекта, а не кита: local/mcp.json пишется только в кит",
+                          400)
+    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as f:
+            was = f.read()
+        if was == text:
+            return {"ok": True, "path": path, "count": len(data.get("mcpServers") or {}),
+                    "unchanged": True}
+        bak = path + ".bak"
+        with open(bak, "w", encoding="utf-8") as f:
+            f.write(was)
+        os.chmod(bak, 0o600)
+    tmp = path + ".aurora-new"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.chmod(tmp, 0o600)
+    replace_file(tmp, path)
+    return {"ok": True, "path": path, "count": len(data.get("mcpServers") or {})}
+
+
+def remote_mode_state(ctx=None) -> dict:
+    """Режим `aurora-remote` для раздела: действующий, записанный, проекты и причина.
+
+    Действующий режим читает движок (`kit_mcp_mode`): нет ключа или файл битый — `safe`.
+    `stored` — только то, что записано в `auroraRemote.mode`, без переопределений проекта.
+    `admin_network` — пришёл ли заголовок админ-сети от петлевого прокси.
+    """
+    data, why = _mcp_file_data()
+    remote = data.get("auroraRemote") if isinstance(data, dict) else None
+    stored = "safe"
+    projects = {}
+    reason = why
+    if isinstance(remote, dict):
+        value = str(remote.get("mode") or "").strip().lower()
+        if value in ("safe", "full"):
+            stored = value
+        elif value:
+            reason = reason or "в auroraRemote.mode неизвестное значение — действует safe"
+        raw_projects = remote.get("projects")
+        if isinstance(raw_projects, dict):
+            for name, mode in raw_projects.items():
+                key = str(name or "").strip()
+                value = str(mode or "").strip().lower()
+                if key and value in ("safe", "full"):
+                    projects[key] = value
+                elif key:
+                    reason = reason or f"в auroraRemote.projects у «{key[:40]}» неизвестный режим"
+        elif raw_projects is not None:
+            reason = reason or "auroraRemote.projects — не объект, действует safe"
+    mode, source = kit_mcp_mode("", kit=KIT)
+    out = {"mode": mode, "stored": stored, "projects": projects, "source": source,
+           "deny": list(MCP_SAFE_DENY_COMMANDS),
+           "admin_network": bool(getattr(ctx, "vpn", False)) if ctx is not None else False}
+    if reason:
+        out["reason"] = reason
+    return out
+
+
+def _mcp_error(code: str, message: str, status: int) -> dict:
+    return {"error": message, "code": code, "_status": int(status)}
+
+
+def set_remote_mode(payload: dict, ctx=None) -> dict:
+    """Переключить `auroraRemote`: только сессия панели, только `safe` или `full`.
+
+    Без `project` меняется режим машины, с `project` — переопределение одного слага.
+    `mcpServers`, `permissions` и незнакомые ключи сохраняются; прежний файл — в `.bak`.
+    """
+    if ctx is None or ctx.kind != "session":
+        return _mcp_error("endpoint", "режим меняет только сессия панели", 403)
+    mode = str(payload.get("mode") or "").strip().lower()
+    if mode not in ("safe", "full"):
+        return _mcp_error("bad_request", "режим — safe или full", 400)
+    project = str(payload.get("project") or "").strip()
+    if project and not re.fullmatch(r"[A-Za-z0-9._-]+", project):
+        return _mcp_error("invalid_project", "проект задаётся слагом: латиница, цифры, точка, дефис", 400)
+    data, why = _mcp_file_data()
+    if why:
+        return _mcp_error("bad_request", why + " — сначала поправьте файл", 400)
+    remote = data.get("auroraRemote")
+    remote = dict(remote) if isinstance(remote, dict) else {}
+    if project:
+        projects = remote.get("projects")
+        projects = dict(projects) if isinstance(projects, dict) else {}
+        projects[project] = mode
+        remote["projects"] = projects
+    else:
+        remote["mode"] = mode
+    remote["updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    data["auroraRemote"] = remote
+    result = _mcp_write_data(data)
+    if result.get("error"):
+        return result
+    _mcp_audit("mcp_kit", "set_remote_mode", ctx, project=project, mode=mode,
+               result_ok=bool(result.get("ok")))
+    result["remote"] = remote_mode_state(ctx)
+    return result
+
+
+# --------------------------------------------------------------- подтверждения
+#
+# Заявку создаёт удалённый токен, подтверждает только человек в сессии панели. Подтверждение
+# одноразовое и привязано к токену, инструменту, проекту и digest аргументов. TTL 300 секунд.
+MCP_CONFIRM_TTL = 300
+MCP_CONFIRM_TOOLS = ("remote_run_command", "remote_run_route", "remote_cron", "remote_restart")
+MCP_CONFIRM_SCOPES = {
+    "remote_run_command": "remote:write",
+    "remote_run_route": "remote:write",
+    "remote_cron": "admin",
+    "remote_restart": "admin",
+}
+MCP_CONFIRM_LOCK = threading.Lock()
+MCP_CONFIRM_REQUESTS: dict = {}
+MCP_CONFIRMATIONS: dict = {}
+MCP_CONFIRM_LIMITER = G.RateLimiter({
+    "confirm:request:token": (5, 60),
+    "confirm:request:ip": (10, 60),
+    "confirm:decision:session": (5, 60),
+})
+
+
+def _mcp_iso(epoch: float) -> str:
+    return datetime.fromtimestamp(float(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _mcp_audit(event: str, result: str, ctx=None, **fields) -> None:
+    """Строка доступа панели: кто, что, проект и digest; без тела, секрета и строки запроса."""
+    row = {"tool": event, "event": event, "result": result}
+    if ctx is not None:
+        row.update(actor=ctx.kind, client=ctx.client_ip, token_id=ctx.token_id,
+                   scope=",".join(sorted(ctx.scopes or ())), vpn=ctx.vpn)
+    row.update({k: v for k, v in fields.items() if v not in (None, "")})
+    try:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m")
+        G.audit_write(os.path.join(KIT, "local", "audit", f"access-{stamp}.jsonl"), row)
+    except OSError:
+        pass
+
+
+def _mcp_confirm_cleanup(now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    with MCP_CONFIRM_LOCK:
+        for store in (MCP_CONFIRM_REQUESTS, MCP_CONFIRMATIONS):
+            for key, row in list(store.items()):
+                if float(row.get("expires_at") or 0) <= now:
+                    store.pop(key, None)
+
+
+def _mcp_confirm_rate_ok(ctx, action: str) -> int:
+    if action == "request":
+        pairs = (("confirm:request:token", ctx.token_id or ctx.user or "?"),
+                 ("confirm:request:ip", ctx.client_ip or ""))
+    else:
+        pairs = (("confirm:decision:session", ctx.user or "session"),)
+    for scope, subject in pairs:
+        allowed, retry = MCP_CONFIRM_LIMITER.allow(
+            (scope, getattr(ctx, "token_id", ""), subject, action))
+        if not allowed:
+            return int(retry)
+    return 0
+
+
+def _mcp_slug_candidates(project: str) -> list:
+    raw = str(project or "").strip()
+    out = []
+    if raw:
+        out.append(raw)
+        base = os.path.basename(raw.rstrip("/\\"))
+        if base:
+            out.append(base)
+        try:
+            if os.path.isdir(raw):
+                card = project_card(raw)
+                for key in ("name", "slug"):
+                    value = str(card.get(key) or "")
+                    if value:
+                        out.append(value)
+        except Exception:                       # noqa: BLE001 — карточка не должна мешать отказу
+            pass
+    return list(dict.fromkeys(out))
+
+
+def mcp_confirmations() -> dict:
+    """Очередь заявок для сессии панели: только неистёкшие, старые сверху."""
+    _mcp_confirm_cleanup()
+    with MCP_CONFIRM_LOCK:
+        rows = [dict(row) for row in MCP_CONFIRM_REQUESTS.values()]
+    rows.sort(key=lambda row: (float(row.get("created_at") or 0), row.get("request_id", "")))
+    pending = []
+    for row in rows:
+        pending.append({"request_id": row["request_id"], "tool": row["tool"],
+                        "project": row["project"], "args_digest": row["args_digest"],
+                        "summary": row["summary"], "token_id": row["token_id"],
+                        "user": row["user"], "created_at": _mcp_iso(row["created_at"]),
+                        "expires_at": _mcp_iso(row["expires_at"])})
+    return {"pending": pending}
+
+
+def mcp_confirm_request(payload: dict, ctx=None) -> dict:
+    """Создать заявку на подтверждение. Удалённый токен, только для своих проектов."""
+    if ctx is None:
+        return _mcp_error("token", "нужен токен доступа", 401)
+    if ctx.kind != "remote":
+        return _mcp_error("endpoint", "заявку создаёт удалённый токен", 403)
+    tool = str(payload.get("tool") or "")
+    if tool not in MCP_CONFIRM_TOOLS:
+        return _mcp_error("bad_request", "неизвестный инструмент подтверждения", 400)
+    project = str(payload.get("project") or "").strip()
+    if tool == "remote_restart":
+        if project:
+            return _mcp_error("bad_request", "перезапуск панели не привязан к проекту", 400)
+    else:
+        try:
+            G.require_project(ctx, project)
+        except G.AuthError as error:
+            return _mcp_error(error.code, error.message, error.status)
+    digest = str(payload.get("args_digest") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return _mcp_error("bad_request", "digest аргументов — 64 шестнадцатеричных знака", 400)
+    summary = str(payload.get("summary") or "")[:300]
+    try:
+        G.require_scope(ctx, MCP_CONFIRM_SCOPES[tool])
+    except G.AuthError as error:
+        return _mcp_error(error.code, error.message, error.status)
+    if tool in ("remote_restart", "remote_cron"):
+        mode = _remote_mode(ctx, "" if tool == "remote_restart" else project)
+        if mode != "full":
+            return _mcp_error("safe_mode", "в безопасном режиме это действие запрещено",
+                              403)
+    retry = _mcp_confirm_rate_ok(ctx, "request")
+    if retry:
+        row = _mcp_error("rate_limited", "слишком часто — повторите позже", 429)
+        row["_retry"] = retry
+        return row
+    _mcp_confirm_cleanup()
+    now = time.time()
+    with MCP_CONFIRM_LOCK:
+        for row in MCP_CONFIRM_REQUESTS.values():
+            if (row.get("token_id") == ctx.token_id and row.get("tool") == tool
+                    and row.get("project") == project and row.get("args_digest") == digest):
+                # Повтор того же вызова агентом не плодит заявки: человек видит одну.
+                return {"request_id": row["request_id"],
+                        "expires_at": _mcp_iso(row["expires_at"]),
+                        "args_digest": digest}
+        if sum(1 for row in MCP_CONFIRM_REQUESTS.values()
+               if row.get("token_id") == ctx.token_id) >= 20:
+            return _mcp_error("conflict", "слишком много заявок этого токена", 409)
+        request_id = secrets.token_urlsafe(18)
+        MCP_CONFIRM_REQUESTS[request_id] = {
+            "request_id": request_id, "tool": tool, "project": project,
+            "args_digest": digest, "summary": summary, "token_id": ctx.token_id,
+            "user": ctx.user, "created_at": now, "expires_at": now + MCP_CONFIRM_TTL,
+        }
+    _mcp_audit("mcp_confirm", "request", ctx, project=project, tool=tool,
+               args_digest=digest, request_id=request_id)
+    return {"request_id": request_id,
+            "expires_at": _mcp_iso(now + MCP_CONFIRM_TTL),
+            "args_digest": digest}
+
+
+def mcp_confirm_action(payload: dict, ctx=None) -> dict:
+    """Подтвердить или отклонить заявку. Только сессия панели, не удалённый токен."""
+    if ctx is None:
+        return _mcp_error("session", "нужна сессия панели", 401)
+    if ctx.kind != "session":
+        return _mcp_error("endpoint", "подтверждает только человек в сессии панели", 403)
+    action = str(payload.get("action") or "approve").strip().lower()
+    if action not in ("approve", "reject"):
+        return _mcp_error("bad_request", "действие — approve или reject", 400)
+    request_id = str(payload.get("request_id") or "").strip()
+    if not request_id:
+        return _mcp_error("bad_request", "не указана заявка", 400)
+    retry = _mcp_confirm_rate_ok(ctx, "decision")
+    if retry:
+        row = _mcp_error("rate_limited", "слишком часто — повторите позже", 429)
+        row["_retry"] = retry
+        return row
+    now = time.time()
+    with MCP_CONFIRM_LOCK:
+        row = MCP_CONFIRM_REQUESTS.get(request_id)
+        if row is None:
+            return _mcp_error("not_found", "заявка не найдена или уже обработана", 404)
+        if float(row.get("expires_at") or 0) <= now:
+            MCP_CONFIRM_REQUESTS.pop(request_id, None)
+            return _mcp_error("confirmation_expired", "заявка истекла", 409)
+        MCP_CONFIRM_REQUESTS.pop(request_id, None)
+        if action == "reject":
+            confirm_id = ""
+        else:
+            confirm_id = secrets.token_urlsafe(24)
+            MCP_CONFIRMATIONS[confirm_id] = {
+                "confirm_id": confirm_id, "request_id": request_id,
+                "tool": row["tool"], "project": row["project"],
+                "args_digest": row["args_digest"], "token_id": row["token_id"],
+                "user": row["user"], "created_at": now,
+                "expires_at": now + MCP_CONFIRM_TTL,
+            }
+    _mcp_audit("mcp_confirm", action, ctx, project=row["project"], tool=row["tool"],
+               args_digest=row["args_digest"], request_id=request_id,
+               confirm_id=confirm_id)
+    if action == "reject":
+        return {"ok": True}
+    return {"confirm_id": confirm_id,
+            "expires_at": _mcp_iso(now + MCP_CONFIRM_TTL),
+            "args_digest": row["args_digest"]}
+
+
+def _mcp_confirm_consume(confirm_id: str, ctx, tool: str, project: str,
+                         args: dict) -> tuple:
+    """Проверить и погасить `confirm_id`. → (запись, None) или (None, отказ).
+
+    Проверка и удаление идут под одним замком: два одновременных запроса не могут
+    предъявить одно подтверждение дважды. Несовпадение digest, проекта или токена не
+    гасит подтверждение: человек мог ошибиться командой, правильная попытка остаётся.
+    """
+    _mcp_confirm_cleanup()
+    now = time.time()
+    with MCP_CONFIRM_LOCK:
+        row = MCP_CONFIRMATIONS.get(str(confirm_id or ""))
+        if row is None:
+            return None, _mcp_error("confirmation_expired",
+                                    "подтверждение истекло или уже использовано", 409)
+        if float(row.get("expires_at") or 0) <= now:
+            MCP_CONFIRMATIONS.pop(str(confirm_id), None)
+            return None, _mcp_error("confirmation_expired", "подтверждение истекло", 409)
+        if ctx is None or ctx.kind != "remote" or ctx.token_id != row.get("token_id"):
+            return None, _mcp_error("confirmation_mismatch",
+                                    "подтверждение выдано другому токену", 409)
+        if row.get("tool") != tool:
+            return None, _mcp_error("confirmation_mismatch",
+                                    "подтверждение выдано другому инструменту", 409)
+        if row.get("project") and row.get("project") not in _mcp_slug_candidates(project):
+            return None, _mcp_error("confirmation_mismatch",
+                                    "подтверждение выдано другому проекту", 409)
+        digest = confirmation_digest(tool, row.get("project", ""), args)
+        if not hmac.compare_digest(digest, str(row.get("args_digest") or "")):
+            return None, _mcp_error("confirmation_mismatch",
+                                    "аргументы не совпадают с подтверждёнными", 409)
+        MCP_CONFIRMATIONS.pop(str(confirm_id), None)
+    _mcp_audit("mcp_confirm", "consume", ctx, project=row.get("project", ""), tool=tool,
+               args_digest=row.get("args_digest", ""), confirm_id=str(confirm_id))
+    return dict(row), None
+
+
+def _remote_mode(ctx, project: str = "") -> str:
+    """Действующий режим HTTP-границы с учётом проекта, а не только общий.
+
+    `full` в общем файле не отменяет `safe` для проекта: панель и `aurora-remote`
+    обязаны читать переопределение одинаково. Неизвестность — `safe`.
+    """
+    if ctx is None or getattr(ctx, "kind", "") != "remote":
+        return "safe"
+    try:
+        return G.effective_mode(project, kit=_tokens_kit())
+    except Exception:                           # noqa: BLE001 — отказ безопаснее разрешения
+        return "safe"
+
+
+def _mcp_run_guard(ctx, payload: dict, project: str) -> dict | None:
+    """Режим и подтверждение для `/api/run`. Сессия панели не ограничена."""
+    if ctx is None or ctx.kind != "remote":
+        return None
+    cmd = str(payload.get("cmd") or "")
+    verdict = mcp_command_verdict(cmd, payload.get("args") or [],
+                                  _remote_mode(ctx, project), ctx.scopes)
+    if not verdict.get("allowed"):
+        return _mcp_error(verdict.get("reason") or "scope", "команда запрещена в этом режиме", 403)
+    if not verdict.get("confirm"):
+        return None
+    confirm_id = str(payload.get("confirm_id") or "")
+    if not confirm_id:
+        return _mcp_error("confirmation_required", "нужно подтверждение человека", 409)
+    args = {"cmd": cmd, "args": [str(x) for x in payload.get("args") or []],
+            "resume": bool(payload.get("resume"))}
+    _row, error = _mcp_confirm_consume(confirm_id, ctx, "remote_run_command", project, args)
+    return error
+
+
+def _mcp_route_guard(ctx, payload: dict, project: str) -> dict | None:
+    """Режим и подтверждение для `/api/route/run`."""
+    if ctx is None or ctx.kind != "remote":
+        return None
+    route_id = str(payload.get("scId") or "")
+    route = next((r for r in all_scenarios()
+                  if str(r.get("id") or "") == route_id), None)
+    if route is None:
+        return None                                 # пусть обработчик скажет «нет маршрута»
+    verdict = mcp_route_verdict(route, _remote_mode(ctx, project))
+    if not verdict.get("allowed"):
+        return _mcp_error(verdict.get("reason") or "safe_mode",
+                          "маршрут запрещён в этом режиме", 403)
+    if not verdict.get("confirm"):
+        return None
+    try:
+        G.require_scope(ctx, verdict.get("scope") or "admin")
+    except G.AuthError as error:
+        return _mcp_error(error.code, error.message, error.status)
+    confirm_id = str(payload.get("confirm_id") or "")
+    if not confirm_id:
+        return _mcp_error("confirmation_required", "нужно подтверждение человека", 409)
+    args = {"scId": route_id, "write": bool(payload.get("write", True)),
+            "net": str(payload.get("net") or ""),
+            "resume": bool(payload.get("resume"))}
+    for key, value in payload.items():
+        if key not in ("project", "confirm_id", "scId", "write", "net", "resume"):
+            args[key] = value
+    _row, error = _mcp_confirm_consume(confirm_id, ctx, "remote_run_route", project, args)
+    return error
+
+
+def _mcp_cron_guard(ctx, payload: dict) -> dict | None:
+    """Режим и подтверждение для `cron save|delete`. Прочие действия идут как раньше."""
+    if ctx is None or ctx.kind != "remote":
+        return None
+    action = str(payload.get("action") or "")
+    if action not in ("save", "delete"):
+        return None
+    if _remote_mode(ctx, str(payload.get("project") or "")) != "full":
+        return _mcp_error("safe_mode", "правка расписания запрещена в safe", 403)
+    try:
+        G.require_scope(ctx, "admin")
+    except G.AuthError as error:
+        return _mcp_error(error.code, error.message, error.status)
+    confirm_id = str(payload.get("confirm_id") or "")
+    if not confirm_id:
+        return _mcp_error("confirmation_required", "нужно подтверждение человека", 409)
+    if action == "save":
+        args = {"action": "save", "task": payload.get("task") or {}}
+    else:
+        args = {"action": "delete", "id": str(payload.get("id") or "")}
+    _row, error = _mcp_confirm_consume(confirm_id, ctx, "remote_cron",
+                                       str(payload.get("project") or ""), args)
+    return error
+
+
+def _mcp_restart_guard(ctx, payload: dict) -> dict | None:
+    """Режим и подтверждение для `/api/restart`: только `full`, `admin`, одноразово."""
+    if ctx is None or ctx.kind != "remote":
+        return None
+    if _remote_mode(ctx) != "full":
+        return _mcp_error("safe_mode", "перезапуск панели запрещён в safe", 403)
+    try:
+        G.require_scope(ctx, "admin")
+    except G.AuthError as error:
+        return _mcp_error(error.code, error.message, error.status)
+    confirm_id = str(payload.get("confirm_id") or "")
+    if not confirm_id:
+        return _mcp_error("confirmation_required", "нужно подтверждение человека", 409)
+    _row, error = _mcp_confirm_consume(confirm_id, ctx, "remote_restart", "", {})
+    return error
+
+
+def mcp_kit_state(ctx=None) -> dict:
     """Что показать в разделе: серверы и весь файл — с масками вместо секретов, права."""
     servers, err = mcp_servers_of()
     masked = mcp_mask(servers)
     out = {"path": kit_mcp_file(), "mask": MCP_MASK, "servers": masked,
            "text": json.dumps({"mcpServers": masked}, ensure_ascii=False, indent=2) + "\n",
            "roles": list(MCP_ROLES), "permissions": mcp_permissions(),
-           "aurora": aurora_mcp_configs()}
+           "aurora": aurora_mcp_configs(), "remote": remote_mode_state(ctx)}
     if err:
         out["error"] = err
     return out
@@ -3907,10 +4394,12 @@ def aurora_mcp_configs() -> dict:
     return out
 
 
-def mcp_kit_action(payload: dict) -> dict:
+def mcp_kit_action(payload: dict, ctx=None) -> dict:
     """Правка серверов машины (`<кит>/local/mcp.json`) и её прав. Определения серверов —
     один раз на кит (BL-SEC-12): проекта у этого раздела нет."""
     action = payload.get("action", "")
+    if action == "set_remote_mode":
+        return set_remote_mode(payload, ctx)
     old, err = mcp_servers_of()
     if err and action != "save_raw":
         return {"error": err + " — поправьте файл целиком («Весь конфиг»)"}
@@ -4727,8 +5216,18 @@ def _project_paths(projects) -> list:
     return list(dict.fromkeys(out))
 
 
+def _empty_timing(days: int = 7) -> dict:
+    """Пустая форма окна: `timing.d` ещё нет — это не ошибка, а честный ноль записей."""
+    return {
+        "window": {"days": max(0, int(days or 0)), "since": "", "records": 0},
+        "runs": [], "services": {},
+        "quality": {"approx": False, "records": 0, "truncated": False,
+                    "services": ["timing.d"]},
+    }
+
+
 def metrics_state(projects, days: int = 7) -> dict:
-    """«Замеры»: сеть/ VPN по прогонам и токены по проектам, ролям и моделям.
+    """«Замеры»: сеть/VPN, сервисные метрики прогонов и токены по проектам и моделям.
 
     Это не «Отчёты» (те — дашборды Jira/Confluence проекта): здесь эксплуатационные
     замеры всего кита, без выбранного проекта."""
@@ -4736,23 +5235,34 @@ def metrics_state(projects, days: int = 7) -> dict:
         import net_report as NR
         import usage_log as UL
     except ImportError as e:  # noqa: BLE001 — старый движок: раздел скажет, чего не хватает
-        return {"error": f"модули замеров не установлены: {e}", "net": [], "tokens": {}}
+        return {"error": f"модули замеров не установлены: {e}",
+                "net_error": f"модули замеров не установлены: {e}",
+                "timing_error": f"модули замеров не установлены: {e}",
+                "net": [], "tokens": {}, "timing": _empty_timing(days),
+                "days": max(0, int(days or 0)), "since": 0.0}
     projects = _project_paths(projects)
     days = max(0, int(days or 0))
     since = (time.time() - days * 86400) if days else 0.0
+    timing_error = ""
+    try:
+        timing = T.window_metrics(projects, days=days, limit=200)
+    except Exception as e:  # noqa: BLE001 — замеры прогонов не прячут сеть и токены
+        timing = _empty_timing(days)
+        timing_error = f"замеры прогонов не прочитаны: {type(e).__name__}"
     try:
         net = NR.list_reports(projects, since=since, limit=200)
     except Exception as e:  # noqa: BLE001 — один битый снимок не прячет остальные
         net = []
-        err = f"отчёты сети не прочитаны: {type(e).__name__}: {e}"
+        net_error = f"отчёты сети не прочитаны: {type(e).__name__}: {e}"
     else:
-        err = ""
+        net_error = ""
     try:
         tokens = UL.summary(projects, days=days)
     except Exception as e:  # noqa: BLE001
         tokens = {"error": f"учёт токенов не прочитан: {type(e).__name__}: {e}"}
     return {"days": days, "since": since, "net": net, "tokens": tokens,
-            "error": err}
+            "timing": timing, "error": net_error, "net_error": net_error,
+            "timing_error": timing_error}
 
 
 def report_state(project: str) -> dict:
@@ -5388,9 +5898,30 @@ RUNLOG_HEAD = """# Журнал запусков
 команды. Код возврата: 0 — сделано, 1 — команда отработала и нашла, что чинить,
 2 и выше — не отработала.
 
-| Команда | Когда (UTC) | Код | Ядро | Кто | Строка запуска | Секунд |
-|---|---|---|---|---|---|---|
+| Команда | Когда (UTC) | Код | Ядро | Кто | Строка запуска | Секунд | Работа (мс) | Простой (мс) |
+|---|---|---|---|---|---|---|---|---|
 """
+
+
+def _runlog_ms(value, approx: bool = False) -> str:
+    """Миллисекунды для журнала. Пусто: «нет данных», `~`: приблизительная оценка."""
+    if value is None or value == "":
+        return ""
+    try:
+        return ("~" if approx else "") + str(max(0, int(round(float(value)))))
+    except (TypeError, ValueError):
+        return ""
+
+
+def _runlog_value(text: str):
+    """Число из колонки журнала. Пустая ячейка означает «нет данных», а не ноль."""
+    value = str(text or "").strip().lstrip("~").strip()
+    if not value:
+        return None
+    try:
+        return max(0, int(round(float(value))))
+    except ValueError:
+        return None
 
 
 def read_runlog(project: str) -> dict:
@@ -5398,12 +5929,26 @@ def read_runlog(project: str) -> dict:
     runs = {}
     for line in read_text(runlog_path(project), limit=200_000).splitlines():
         c = [x.strip() for x in line.strip().strip("|").split("|")] if line.startswith("|") else []
-        # Колонка «Секунд» появилась в 1.71.0: строки старого журнала читаются как были.
-        if len(c) not in (6, 7) or not c[0] or c[0] in ("Команда", "---") or set(c[0]) == {"-"}:
+        # Колонка «Секунд» появилась в 1.71.0, работа и простой позже: строки прежних
+        # журналов читаются как были, без выдуманных чисел.
+        if len(c) not in (6, 7, 9) or not c[0] or c[0] in ("Команда", "---") or set(c[0]) == {"-"}:
             continue
-        runs[c[0]] = {"at": c[1], "rc": int(c[2]) if c[2].lstrip("-").isdigit() else None,
-                      "kit": c[3], "who": c[4], "line": c[5],
-                      "secs": int(c[6]) if len(c) == 7 and c[6].isdigit() else 0}
+        row = {"at": c[1], "rc": int(c[2]) if c[2].lstrip("-").isdigit() else None,
+               "kit": c[3], "who": c[4], "line": c[5],
+               "secs": int(c[6]) if len(c) in (7, 9) and c[6].isdigit() else 0}
+        if len(c) == 9:
+            approx = c[8].startswith("~")
+            work, wait = _runlog_value(c[7]), _runlog_value(c[8])
+            row["timing"] = {
+                "v": 1, "work_ms": work, "service_wait_ms": wait,
+                "queue_ms": None, "active_ms": None, "total_ms": None,
+                "source": "runlog",
+                "confidence": ("unknown" if work is None and wait is None
+                               else "approx" if approx else "exact"),
+                "quality": {"wait_known": wait is not None, "approx": approx,
+                            "legacy": False, "queue_separated": False},
+            }
+        runs[c[0]] = row
     return runs
 
 
@@ -5419,22 +5964,35 @@ def who(project: str) -> str:
     return getpass.getuser()
 
 
-def write_runlog(project: str, cmd: str, rc: int, line: str, secs: int = 0) -> None:
-    """Обновить строку команды. Порядок — по имени команды: так дифф остаётся коротким.
+def write_runlog(project: str, cmd: str, rc: int, line: str, secs: int = 0,
+                 timing: dict | None = None) -> None:
+    """Обновить строку команды. Порядок по имени команды: так дифф остаётся коротким.
 
     Пишем последний запуск, а не всю хронологию: файл должен оставаться коротким, чтобы
-    панель читала его мгновенно. С 1.168.0 он вне git.
+    панель читала его мгновенно. С 1.168.0 он вне git. Когда у прогона есть `timing`,
+    рядом с секундами пишутся работа и простой. Старые строки остаются семиколоночными.
     """
     runs = read_runlog(project)
-    runs[cmd] = {"at": utc_stamp(), "rc": rc,
-                 "kit": kit_version(), "who": who(project), "line": line,
-                 # Сколько заняло в прошлый раз — единственный честный ответ на вопрос
-                 # «это повисло или так и надо»: у команд разброс от секунды до часа.
-                 "secs": int(secs) or (runs.get(cmd, {}).get("secs") or 0)}
-    body = "".join(
-        f"| {c} | {r['at']} | {r['rc']} | {r['kit']} | {r['who']} | {r['line']} "
-        f"| {r.get('secs') or ''} |\n"
-        for c, r in sorted(runs.items()))
+    row = {"at": utc_stamp(), "rc": rc,
+           "kit": kit_version(), "who": who(project), "line": line,
+           # Сколько заняло в прошлый раз: единственный честный ответ на вопрос
+           # «это повисло или так и надо», у команд разброс от секунды до часа.
+           "secs": int(secs) or (runs.get(cmd, {}).get("secs") or 0)}
+    if isinstance(timing, dict):
+        row["timing"] = timing
+    runs[cmd] = row
+
+    def cells(c, r):
+        out = [c, r["at"], r["rc"], r["kit"], r["who"], r["line"], r.get("secs") or ""]
+        t = r.get("timing")
+        if isinstance(t, dict):
+            q = t.get("quality") or {}
+            approx = bool(q.get("approx") or t.get("confidence") == "approx")
+            out += [_runlog_ms(t.get("work_ms")), _runlog_ms(t.get("service_wait_ms"), approx)]
+        return out
+
+    body = "".join("| " + " | ".join(str(x) for x in cells(c, r)) + " |\n"
+                   for c, r in sorted(runs.items()))
     path = runlog_path(project)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -5474,6 +6032,85 @@ def run_archive(project: str, limit: int = 0) -> list:
     if limit > 0:
         names = names[:limit]
     return [{"id": d, "path": os.path.join(base, d, "console.log")} for d in names]
+
+
+ERROR_TEXT_LIMIT = 500
+ERROR_SECRET_FIELDS = frozenset({"prompt", "messages", "request", "response",
+                                 "headers", "body"})
+
+
+def _without_secret_fields(value):
+    """Убрать из вложенного detail поля, которых нет в ответе (промпты, тела)."""
+    if isinstance(value, dict):
+        return {key: _without_secret_fields(item) for key, item in value.items()
+                if str(key).strip().lower() not in ERROR_SECRET_FIELDS}
+    if isinstance(value, list):
+        return [_without_secret_fields(item) for item in value]
+    return value
+
+
+def _scrub_error_text(value) -> str:
+    """Текст ошибки без адресов, путей и секретов: наружу уходит только суть."""
+    value = _without_secret_fields(value)
+    if not isinstance(value, str):
+        try:
+            value = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            value = str(value)
+    text = re.sub(r"https?://\S+", "[url]", value)
+    # Токен движка узнаётся по префиксу, даже без имени поля: `aur_rm_…` в тексте
+    # ошибки — это предъявленный ключ, а не часть сообщения.
+    text = G._TOKEN_TEXT.sub("[redacted]", text)
+    text = re.sub(r"(?<![\w.-])/(?:Users|home|root|var|tmp|private/(?:var|tmp))/[^\s\"']*",
+                  "[path]", text)
+    text = re.sub(r"(?i)\b[A-Za-z]:\\+(?:Users|Documents and Settings|Windows\\Temp|Temp)\\"
+                  r"[^\s\"']*", "[path]", text)
+    text = re.sub(r"(?i)%(?:USERPROFILE|TEMP|TMP)%\\[^\s\"']*", "[path]", text)
+    text = re.sub(r"(?i)\b(authorization|cookie|(?:access_|refresh_|id_)?token)\b"
+                  r"\s*[:=]\s*(?:bearer\s+)?[^\n]+", r"\1 [redacted]", text)
+    text = re.sub(r"(?i)\bbearer\s+[^\s\"']+", "Bearer [redacted]", text)
+    return text[:ERROR_TEXT_LIMIT]
+
+
+def read_run_errors(project: str, run_id: str, limit: int = 50) -> dict:
+    """Последние ошибки прогона из `failures.jsonl`; без промптов и полных логов.
+
+    Панель читает файл на сервере, поэтому удалённый клиент не получает доступ к
+    локальному архиву. Наружу уходят только `at`, `kind` и очищенный `message`.
+    """
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(100, limit))
+    archived = {row["id"]: row for row in run_archive(project)}
+    if not run_id or run_id not in archived:
+        return {"error": "прогон не найден", "code": "not_found"}
+    path = os.path.join(os.path.dirname(archived[run_id]["path"]), "failures.jsonl")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = [line.strip() for line in f if line.strip()]
+    except OSError:
+        return {"errors": [], "count": 0}
+    errors = []
+    for line in lines[-limit:]:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        raw = ""
+        for key in ("error", "message", "text", "detail"):
+            if record.get(key) not in (None, ""):
+                raw = record[key]
+                break
+        errors.append({
+            "at": _scrub_error_text(record.get("at") or record.get("ts") or ""),
+            "kind": _scrub_error_text(record.get("kind") or record.get("stage") or "failure"),
+            "message": _scrub_error_text(raw),
+        })
+    return {"errors": errors, "count": len(errors)}
 
 
 def trim_runs(project: str) -> None:
@@ -5590,15 +6227,29 @@ def _inside_legacy_route(rid: str, windows: list) -> bool:
     return any(a <= at <= b for a, b in windows)
 
 
+def _meta_net_summary(meta: dict) -> dict:
+    """Снимки сети старой записи: `meta.net` или вложенный `meta.net.summary`."""
+    net = meta.get("net")
+    if not isinstance(net, dict):
+        return {}
+    inner = net.get("summary")
+    return inner if isinstance(inner, dict) else net
+
+
+def _legacy_summary(meta: dict) -> dict:
+    """Сводка старой записи: derived только при снимках сети, иначе unknown."""
+    return T.legacy_timing(meta.get("seconds"), _meta_net_summary(meta) or None,
+                           queue_ms=meta.get("queue_ms"))
+
+
 def _timing_of(meta: dict) -> dict | None:
     """Сводка из meta или производная из старых seconds/net: файл на диске не меняется."""
+    if not isinstance(meta, dict) or not meta:
+        return None
     timing = meta.get("timing")
     if isinstance(timing, dict):
         return timing
-    if meta.get("seconds") is None and not meta.get("net"):
-        return None
-    return T.legacy_timing(meta.get("seconds"), meta.get("net"),
-                           queue_ms=meta.get("queue_ms"))
+    return _legacy_summary(meta)
 
 
 def _local_iso_utc(value: str) -> str:
@@ -5662,7 +6313,7 @@ def history_run(project: str, rid: str) -> dict:
             return {"error": "архив прогона не найден"}
         entries = _entries_of(project, rid)
         meta = RR.read_meta(os.path.join(runs_dir(project), rid))
-        if meta and "timing" not in meta:
+        if meta and not isinstance(meta.get("timing"), dict):
             derived = _timing_of(meta)
             if derived is not None:
                 meta["timing"] = derived
@@ -7174,9 +7825,13 @@ def coach_action(project: str, payload: dict, lang: str) -> dict:
 
 
 def harness_state(versions: bool = False) -> dict:
-    """Ассистенты из каталога кита (`scripts/harnesses.json`) и Аврора в каждом из них.
+    """Ассистенты из каталога кита (`scripts/harnesses.json`) и два сервера в каждом.
+
+    Строк вдвое больше, чем ассистентов: у каждой своё поле `server` (`aurora` — знания,
+    `aurora-remote` — управление), своя запись, свой сниппет и свои копии файла.
     Пояснения к ассистентам — в каталоге строк раздела, а не в ответе: так они на языке
-    интерфейса."""
+    интерфейса.
+    """
     import harness_mcp as HM
     try:
         rows = HM.detect(versions=versions)
@@ -7185,17 +7840,23 @@ def harness_state(versions: bool = False) -> dict:
     for r in rows:
         r.pop("note", None)
     command, args = HM.server_command(KIT)
-    return {"harnesses": rows, "command": command, "args": args}
+    remote_command, remote_args = HM.server_command(KIT, "aurora-remote")
+    return {"harnesses": rows, "command": command, "args": args,
+            "servers": {"aurora": {"command": command, "args": args},
+                        "aurora-remote": {"command": remote_command,
+                                          "args": remote_args}}}
 
 
 def harness_action(action: str, payload: dict) -> dict:
     """Подключить MCP Авроры к ассистенту или вернуть его файл из копии."""
     import harness_mcp as HM
     hid = str(payload.get("id") or "")
+    server = str(payload.get("server") or HM.NAME)
+    mode = str(payload.get("mode") or "local")
     try:
         if action == "add":
-            return HM.add(hid)
-        return HM.restore(hid, str(payload.get("stamp") or ""))
+            return HM.add(hid, server=server, mode=mode)
+        return HM.restore(hid, str(payload.get("stamp") or ""), server=server)
     except HM.HarnessError as e:
         return {"ok": False, "error": str(e)}
 
@@ -7383,8 +8044,6 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
             job["finished"] = time.time()
             try:
                 mark_running(job["id"], cmd, project, False)
-                write_runlog(project, cmd, job["rc"], (cmd + " " + " ".join(args)).strip(),
-                             int(job["finished"] - job["started"]))
                 net_summary = {}
                 try:
                     net_data = NO.finish("job", project, run_id, run_dir, cmd, parent,
@@ -7413,6 +8072,15 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
                                                          int(job.get("net_wait_ms") or 0)
                                                          + paused_service_ms or None))
                     RR.write_meta(os.path.join(runs_dir(project), run_id), meta)
+                    # Полный `timing.jsonl` задания читает владелец прогона: сводка из
+                    # памяти теряет ранние спаны после 5000. Ошибка замера не меняет итог.
+                    try:
+                        T.record_run(project, run_id, run_dir, kind="job", task=cmd)
+                    except Exception:  # noqa: BLE001
+                        pass
+                write_runlog(project, cmd, job["rc"], (cmd + " " + " ".join(args)).strip(),
+                             int(job["finished"] - job["started"]),
+                             timing=meta.get("timing") if meta else None)
                 if run_log is not None:
                     trim_runs(project)
             finally:
@@ -7592,6 +8260,50 @@ _AUTH_LOCK = threading.Lock()
 _LAUNCH_CODES: dict = {}            # код -> когда истекает (monotonic)
 _LINK_TICKETS: dict = {}            # билет -> (когда истекает, адрес, на который выдан)
 
+# Пределы выпуска и вращения токенов: 5/мин на пользователя и 10/мин на адрес. Счёт
+# ведёт панель, поэтому прямой запрос к API не обходит предел (контракт 10.6).
+TOKEN_RATE_SCOPES = {
+    "create": ("tokens:create:user", "tokens:create:ip"),
+    "rotate": ("tokens:rotate:user", "tokens:rotate:ip"),
+}
+TOKEN_LIMITER = G.RateLimiter({
+    "tokens:create:user": (5, 60),
+    "tokens:create:ip": (10, 60),
+    "tokens:rotate:user": (5, 60),
+    "tokens:rotate:ip": (10, 60),
+})
+
+
+def _tokens_env_path() -> str:
+    return (os.environ.get("AURORA_MCP_TOKENS_FILE") or "").strip()
+
+
+def _tokens_kit():
+    """Кит для реестра: тестовый env главнее настоящего кита, путь к нему даёт env."""
+    return None if _tokens_env_path() else KIT
+
+
+def _token_audit_path() -> str:
+    env = _tokens_env_path()
+    if env:
+        return os.path.join(os.path.dirname(os.path.abspath(env)), "audit", "mcp-tokens.jsonl")
+    return os.path.join(KIT, "local", "audit", "mcp-tokens.jsonl")
+
+
+def _token_audit(action: str, *, ctx=None, record=None, error: str = "") -> None:
+    """Строка аудита токенов: только событие и идентификаторы, без секрета и хэша."""
+    row = {"tool": "mcp_tokens", "result": action, "error": str(error)[:300]}
+    if ctx is not None:
+        row.update(actor=ctx.kind, client=ctx.client_ip, token_id=ctx.token_id,
+                   scope=",".join(sorted(ctx.scopes or ())), vpn=ctx.vpn)
+    if isinstance(record, dict):
+        row.update(token_id=record.get("id", ""), kind=record.get("kind", ""),
+                   user=record.get("user", ""), project=list(record.get("projects") or []))
+    try:
+        G.audit_write(_token_audit_path(), row)
+    except OSError:
+        pass                        # аудит не имеет права сорвать выпуск токена
+
 
 def _auth_prune(store: dict) -> None:
     now = time.monotonic()
@@ -7690,7 +8402,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"error": "панель отвечает только на 127.0.0.1"}, 403)
         return False
 
+    def need_project(self, project: str) -> bool:
+        """Проект входит в права токена и существует. Отказ уже отправлен клиенту."""
+        try:
+            G.require_project(getattr(self, "auth", None), project)
+        except G.AuthError as e:
+            self.send_json({"error": e.message, "code": e.code}, e.status)
+            return False
+        return self._known(project)
+
+    def visible(self, names) -> list:
+        """Имена проектов, видимые текущему токену."""
+        return G.visible_projects(getattr(self, "auth", None), names)
+
     def guarded(self, query: dict) -> bool:
+        self.auth = None
         if not self.host_ok():
             return False
         # Вендоренная статика — без токена. Не послабление: браузер грузит `<script src>`
@@ -7707,17 +8433,42 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if not self.fetch_ok():
             return False
+        peer = self.client_address[0] if getattr(self, "client_address", None) else ""
         tok = self.headers.get("X-Aurora-Token", "")
-        # Сравнение по байтам: со строкой не из ASCII `compare_digest` падает TypeError, и
-        # вместо отказа клиент получал оборванное соединение.
-        if tok and secrets.compare_digest(tok.encode("utf-8"), TOKEN.encode("utf-8")):
-            return True
+        authz = self.headers.get("Authorization", "")
+        bearer = authz[7:].strip() if authz.lower().startswith("bearer ") else ""
+        if tok or bearer:
+            ctx = G.authenticate(self.headers, peer, session_token=TOKEN, kit=_tokens_kit())
+            if ctx is not None:
+                self.auth = ctx
+                if ctx.kind != "session":
+                    if not G.remote_allowed(ctx, self.command, self.path):
+                        _token_audit("denied", ctx=ctx, error="endpoint")
+                        self.send_json({"error": "этот путь доступен только сессии панели",
+                                        "code": "endpoint"}, 403)
+                        return False
+                    scope = G.endpoint_scope(self.command, self.path)
+                    if scope and not G.scope_ok(ctx, scope):
+                        _token_audit("denied", ctx=ctx, error="scope")
+                        self.send_json({"error": f"токену не хватает права {scope}",
+                                        "code": "scope"}, 403)
+                        return False
+                return True
+            # Значение вида `aur_*` — это предъявленный, но негодный токен: 401, а не
+            # «сессия закончилась» (контракт 10.7, правило 6). Старые значения без
+            # префикса сохраняют прежний текст панели, чтобы открытая вкладка понимала,
+            # что делать.
+            if bearer or str(tok).startswith(("aur_kn_", "aur_rm_")):
+                self.send_json({"error": "токен не подошёл: истёк, отозван или выдан другим китом",
+                                "code": "token"}, 401)
+                return False
         # Ссылка, которую браузер открывает сам (отчёт в новой вкладке): заголовок ей
         # приложить нечем, у неё билет на этот адрес и одно открытие.
         u = urlparse(self.path)
         ticket = (query.get("c") or [""])[0]
         if (ticket and self.command == "GET" and u.path in LINK_PATHS
                 and take_link(self.path, ticket)):
+            self.auth = G.session_context(self.headers, peer, kit=_tokens_kit())
             return True
         # Прежняя страница после «Обновить кит» опрашивает `/api/ping?t=<токен>`, пока панель
         # не поднимется. Токен при перезапуске из панели тот же; отвечаем только версией и
@@ -7726,6 +8477,7 @@ class Handler(BaseHTTPRequestHandler):
         old_t = (query.get("t") or [""])[0]
         if (old_t and self.command == "GET" and u.path == "/api/ping"
                 and secrets.compare_digest(old_t.encode("utf-8"), TOKEN.encode("utf-8"))):
+            self.auth = G.session_context(self.headers, peer, kit=_tokens_kit())
             return True
         # Вкладка отчёта: билет расходуется первым открытием, и F5, «Назад» или восстановление
         # вкладок повторяют адрес с уже потраченным `c=`. Совет «откройте отчёт ещё раз» — только
@@ -7775,7 +8527,7 @@ class Handler(BaseHTTPRequestHandler):
         if csp:
             self.send_header("Content-Security-Policy", csp)
 
-    def send_json(self, payload, code: int = 200):
+    def send_json(self, payload, code: int = 200, headers: dict | None = None):
         # Язык просит страница (`?lang=en`, в том числе у POST): сообщения об ошибках и отказах
         # переводятся здесь, в одной точке, а не в каждом из сотни мест, где они рождаются.
         lang = request_lang(parse_qs(urlparse(self.path).query))
@@ -7786,9 +8538,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for key, value in (headers or {}).items():
+            self.send_header(str(key), str(value))
         self.send_safety_headers()
         self.end_headers()
         self.wfile.write(body)
+
+    def send_mcp(self, payload):
+        """Ответ MCP-обработчика: служебные `_status` и `_retry` в JSON не уходят."""
+        if not isinstance(payload, dict):
+            return self.send_json(payload)
+        status = int(payload.pop("_status", 200) or 200)
+        retry = int(payload.pop("_retry", 0) or 0)
+        self.send_json(payload, status, {"Retry-After": str(retry)} if retry else None)
 
     def send_bytes(self, body: bytes, content_type: str, filename: str) -> None:
         """Файл для скачивания: архив диагностики не JSON и не проходит через перевод."""
@@ -7850,6 +8612,76 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # --- токены MCP: только локальная сессия панели, без удалённого администратора
+    def _token_session_only(self) -> bool:
+        ctx = getattr(self, "auth", None)
+        if ctx is None or ctx.kind != "session":
+            _token_audit("denied", ctx=ctx, error="endpoint")
+            self.send_json({"error": "управление токенами доступно только сессии панели",
+                            "code": "endpoint"}, 403)
+            return False
+        return True
+
+    def _token_rate_ok(self, action: str) -> bool:
+        ctx = getattr(self, "auth", None)
+        pair = TOKEN_RATE_SCOPES[action]
+        who = (ctx.user or "session", ctx.client_ip or "")
+        for scope, subject in ((pair[0], who[0]), (pair[1], who[1])):
+            allowed, retry = TOKEN_LIMITER.allow((scope, ctx.token_id, subject, action))
+            if not allowed:
+                self.send_json({"error": "слишком часто — повторите позже",
+                                "code": "rate_limited"}, 429,
+                               {"Retry-After": str(retry)})
+                return False
+        return True
+
+    def _token_fail(self, error: Exception) -> None:
+        if isinstance(error, MT.TokenError):
+            self.send_json({"error": error.message, "code": error.code}, error.status)
+        elif isinstance(error, RuntimeError):
+            self.send_json({"error": str(error), "code": "internal"}, 500)
+        else:
+            self.send_json({"error": "реестр токенов недоступен", "code": "internal"}, 500)
+
+    def _tokens_get(self, query: dict) -> None:
+        if not self._token_session_only():
+            return
+        kind = (query.get("kind") or [""])[0]
+        try:
+            self.send_json({"tokens": MT.list_tokens(kind or None, kit=_tokens_kit())})
+        except Exception as e:                  # noqa: BLE001 — отказ уходит кодом контракта
+            self._token_fail(e)
+
+    def _tokens_post(self, action: str, payload: dict) -> None:
+        if not self._token_session_only():
+            return
+        if action in ("create", "rotate") and not self._token_rate_ok(action):
+            return
+        try:
+            if action == "create":
+                result = MT.new_token(payload.get("kind"), payload.get("name"),
+                                      payload.get("user", ""), payload.get("scopes"),
+                                      payload.get("projects"), payload.get("expires_days"),
+                                      kit=_tokens_kit())
+                _token_audit("created", ctx=self.auth, record=result.get("record"))
+            elif action == "rotate":
+                result = MT.rotate(str(payload.get("id") or ""), kit=_tokens_kit())
+                _token_audit("rotated", ctx=self.auth, record=result.get("record"))
+            elif action == "revoke":
+                result = MT.revoke(str(payload.get("id") or ""), kit=_tokens_kit())
+                _token_audit("revoked", ctx=self.auth, record=result.get("record"))
+            elif action == "rename":
+                result = MT.rename(str(payload.get("id") or ""), payload.get("name"),
+                                   kit=_tokens_kit())
+                _token_audit("renamed", ctx=self.auth, record=result.get("record"))
+            else:
+                self.send_json({"error": "неизвестное действие с токеном",
+                                "code": "bad_request"}, 400)
+                return
+            self.send_json(result)
+        except Exception as e:                  # noqa: BLE001 — отказ уходит кодом контракта
+            self._token_fail(e)
+
     def do_GET(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
@@ -7900,6 +8732,9 @@ class Handler(BaseHTTPRequestHandler):
                             "commands_total": registry_total()})
         elif u.path == "/api/state":
             projects = find_projects(self.server.roots)
+            if getattr(self, "auth", None) is not None and self.auth.kind != "session":
+                allowed = set(self.visible([p["path"] for p in projects]))
+                projects = [p for p in projects if p["path"] in allowed]
             # Опрос отметок Мостика идёт по этому списку: обход папок стоит полсекунды,
             # а отметки спрашивают каждые пять.
             self.server.seen_projects = [p["path"] for p in projects]
@@ -7940,7 +8775,7 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif u.path == "/api/health":
             project = q.get("project", [""])[0]
-            if not self._known(project):
+            if not self.need_project(project):
                 return
             self.send_json(health(project, request_lang(q), (q.get("part") or [""])[0],
                                   fresh=bool((q.get("fresh") or [""])[0])))
@@ -8045,9 +8880,22 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(runtime_state(include_candidates=bool(q.get("fresh")),
                                          force=bool(q.get("fresh")),
                                          project=project if project and self._known(project) else ""))
+        elif u.path == "/api/mcp/tokens":
+            self._tokens_get(q)
+        elif u.path == "/api/mcp/tokens/last-used":
+            if not self._token_session_only():
+                return
+            token_id = (q.get("id") or [""])[0]
+            try:
+                self.send_json(MT.last_used(token_id, kit=_tokens_kit()))
+            except Exception as e:              # noqa: BLE001 — отказ уходит кодом контракта
+                self._token_fail(e)
         elif u.path == "/api/mcp/kit":
             # Серверы машины: значения секретов заменены маской — см. `mcp_mask`.
-            self.send_json(mcp_kit_state())
+            self.send_json(mcp_kit_state(self.auth))
+        elif u.path == "/api/mcp/confirmations":
+            # Очередь подтверждений: только сессия панели, удалённый токен сюда не ходит.
+            self.send_json(mcp_confirmations())
         elif u.path == "/api/mcp/probe":
             # Работают ли серверы кита: каждый запускается как в прогоне и называет свои
             # инструменты. Запуск — только POST (см. `do_POST`): GET ничего не исполняет.
@@ -8064,7 +8912,7 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/run/logs":
             # Хронология архивов прогонов (каждый прогон — папка в `.aurora/runs`).
             project = q.get("project", [""])[0]
-            if not self._known(project):
+            if not self.need_project(project):
                 return
             self.send_json({"archive": run_archive(project, limit=RUNS_SHOW)}
                          if project else {"archive": []})
@@ -8075,9 +8923,26 @@ class Handler(BaseHTTPRequestHandler):
             # буфером, архив — этим, и раскрытие старого не трогает текущий вывод.
             project = q.get("project", [""])[0]
             run_id = (q.get("run") or [""])[0]
-            if not self._known(project):
+            if not self.need_project(project):
                 return
             self.send_json(read_run_console(project, run_id))
+        elif u.path == "/api/run/errors":
+            # Ошибки прогона для удалённого MCP: только тексты ошибок, без промптов,
+            # тел запросов и полных логов. Файл читает панель на сервере.
+            project = (q.get("project") or [""])[0]
+            run_id = (q.get("run") or [""])[0]
+            if not project:
+                self.send_json({"error": "проект не выбран", "code": "invalid_project"}, 400)
+                return
+            check = getattr(self, "need_project", None) or self._known
+            if not check(project):
+                return
+            try:
+                limit = max(1, min(100, int((q.get("limit") or ["50"])[0] or 50)))
+            except ValueError:
+                limit = 50
+            payload = read_run_errors(project, run_id, limit)
+            self.send_json(payload, 404 if payload.get("code") == "not_found" else 200)
         elif u.path == "/api/run/steps":
             # События шагов маршрута из архивного events.jsonl — то, что маршрут POST`ил по
             # ходу. Кнопка «Продолжить маршрут» читает их, чтобы не повторять нецикличные
@@ -8085,7 +8950,7 @@ class Handler(BaseHTTPRequestHandler):
             # возвращаем пустой список: продолжение тогда равно честному полному повтору.
             project = q.get("project", [""])[0]
             run_id = (q.get("run") or [""])[0]
-            if not self._known(project):
+            if not self.need_project(project):
                 return
             # id рождается на клиенте и держит путь до файла — пропускаем только безопасное.
             if not run_id or "/" in run_id or run_id.startswith(".."):
@@ -8123,7 +8988,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(metrics_state(find_projects(self.server.roots), days))
         elif u.path == "/api/report":
             project = q.get("project", [""])[0]
-            if not self._known(project):
+            if not self.need_project(project):
                 return
             self.send_json(report_state(project))
         elif u.path == "/api/report/file":
@@ -8195,7 +9060,7 @@ class Handler(BaseHTTPRequestHandler):
             # из готового, а не набирают путь руками — иначе первая же опечатка уходит
             # в Confluence чужой страницей.
             project = q.get("project", [""])[0]
-            if not self._known(project):
+            if not self.need_project(project):
                 return
             self.send_json({"files": artifact_files(project, q.get("kind", [""])[0])})
         elif u.path == "/api/kinds/example":
@@ -8212,7 +9077,7 @@ class Handler(BaseHTTPRequestHandler):
             if not project:
                 self.send_json({"error": "проект не выбран"}, 400)
                 return
-            if not self._known(project):
+            if not self.need_project(project):
                 return
             # `mcp` — серверы, из которых форма вида выбирает поле `mcp` (окно «Выбрать MCP…»).
             self.send_json(dict(localized_kinds(kinds_read(project), request_lang(q)), mcp=kinds_mcp(project)))
@@ -8257,12 +9122,23 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(make_pipeline_state(project, (q.get("sid") or [""])[0]))
         elif u.path == "/api/agent":
-            self.send_json(agent_state(q.get("project", [""])[0]))
+            # Настройка агента одна на кит, но `project` приносит имена MCP-серверов
+            # проекта: чужой проект через этот параметр не читается.
+            project = q.get("project", [""])[0]
+            if project and not self.need_project(project):
+                return
+            self.send_json(agent_state(project))
         elif u.path == "/api/models":
             self.send_json(models_state(find_projects(self.server.roots)))
         elif u.path == "/api/net/state":
             project = (q.get("project") or [""])[0]
-            self.send_json(net_state(self._quiet_project(project)))
+            if project and getattr(self, "auth", None) is not None \
+                    and self.auth.kind != "session":
+                if not self.need_project(project):
+                    return
+                self.send_json(net_state(project))
+            else:
+                self.send_json(net_state(self._quiet_project(project)))
         elif u.path == "/api/net/access":
             project = (q.get("project") or [""])[0]
             if not self._known(project):
@@ -8313,16 +9189,22 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/scenarios":
             self.send_json({"scenarios": scenarios_payload(request_lang(q), q.get("all", [""])[0] == "1")})
         elif u.path == "/api/route/live":
+            rid = q.get("id", [""])[0]
+            with ROUTES_LOCK:
+                route = ROUTES.get(rid)
+                route_project = str(route.get("project") or "") if route else ""
+            if route_project and not self.need_project(route_project):
+                return
             self.send_json(route_live(q.get("id", [""])[0],
                                       int((q.get("since") or ["0"])[0] or 0)))
         elif u.path == "/api/history":
             project = q.get("project", [""])[0]
-            if not self._known(project):
+            if not self.need_project(project):
                 return
             self.send_json({"runs": history(project)})
         elif u.path == "/api/history/run":
             project = q.get("project", [""])[0]
-            if not self._known(project):
+            if not self.need_project(project):
                 return
             self.send_json(history_run(project, q.get("id", [""])[0]))
         elif u.path == "/api/routes":
@@ -8334,8 +9216,25 @@ class Handler(BaseHTTPRequestHandler):
             # Расписание — свойство машины: проекты все, а не выбранный на Мостике.
             projects = [{"name": p["name"], "path": p["path"]}
                         for p in find_projects(self.server.roots)]
+            if getattr(self, "auth", None) is not None and self.auth.kind != "session":
+                allowed = set(self.visible([p["path"] for p in projects]))
+                projects = [p for p in projects if p["path"] in allowed]
             st = scheduler().state(projects)
             st["projects"] = projects
+            if getattr(self, "auth", None) is not None and self.auth.kind != "session":
+                # Задание принадлежит проектам своих шагов; прогон и очередь — своим
+                # заданиям. Задание без владельца проектному токену не показывается.
+                tasks = [row for row in st.get("tasks") or []
+                         if G.schedule_visible(self.auth, row)]
+                visible_ids = {str(row.get("id") or "") for row in tasks}
+                st["tasks"] = tasks
+                st["runs"] = [row for row in st.get("runs") or []
+                              if self._cron_run_visible(row)]
+                st["current"] = (st.get("current")
+                                 if self._cron_run_visible(st.get("current"))
+                                 else None)
+                st["queue"] = [tid for tid in st.get("queue") or []
+                               if str(tid) in visible_ids]
             # Боты проектов — для шага «бот» цепочки: проект → его боты (1.163.0).
             st["bots"] = {p["path"]: bots_brief(p["path"]) for p in st["projects"]}
             # Cron запускает, а не показывает: ему нужны все маршруты, профиль их лишь прячет.
@@ -8349,10 +9248,28 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(got)
         elif u.path == "/api/live":
             # Всё, что идёт на машине: маршруты, команды, цепочка — по всем проектам.
-            self.send_json(live_now())
+            live = live_now()
+            if getattr(self, "auth", None) is not None and self.auth.kind != "session":
+                live["routes"] = [r for r in live.get("routes") or []
+                                  if G.project_ok(self.auth, r.get("project", ""))]
+                live["jobs"] = [j for j in live.get("jobs") or []
+                                if G.project_ok(self.auth, j.get("project", ""))]
+                for key in ("active", "queued"):
+                    live.setdefault("tasks", {})[key] = [
+                        t for t in (live.get("tasks") or {}).get(key) or []
+                        if G.project_ok(self.auth, t.get("project", ""))]
+                current = getattr(scheduler(), "current", None)
+                if not G.schedule_run_visible(self.auth, current):
+                    live["cron"] = None
+            self.send_json(live)
         elif u.path == "/api/threads":
             # Сколько потоков параллельной работы идёт и сколько выпало — кнопка в шапке.
-            self.send_json(threads_all(request_lang(q)))
+            projects = None
+            if getattr(self, "auth", None) is not None and self.auth.kind != "session":
+                with JOBS_LOCK:
+                    names = [j["project"] for j in JOBS.values() if not j.get("done")]
+                projects = self.visible(names)
+            self.send_json(threads_all(request_lang(q), projects=projects))
         elif u.path == "/api/cron/run":
             run_id = q.get("id", [""])[0]
             if not re.match(r"^[\w-]{1,64}$", run_id):
@@ -8442,14 +9359,24 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"alarm": adapter_alarm()})
         elif u.path == "/api/activity":
             # Отметки на карточках Мостика: что идёт и что встало в каждом проекте.
-            self.send_json({"projects": {path: project_activity(path) for path
-                                         in getattr(self.server, "seen_projects", [])}})
+            names = list(getattr(self.server, "seen_projects", []) or [])
+            if getattr(self, "auth", None) is not None and self.auth.kind != "session":
+                names = self.visible(names)
+            self.send_json({"projects": {path: project_activity(path) for path in names}})
         elif u.path == "/api/jobs":
             # Что сейчас выполняется в этом проекте. Задание живёт в процессе панели, а
             # консоль — в открытой странице: перезагрузили её, и работающая команда
             # становится невидимой. Человек видит пустую консоль, решает, что всё
             # оборвалось, и запускает второй маршрут поверх первого.
             project = (q.get("project") or [""])[0]
+            if project and not self.need_project(project):
+                return
+            allowed = None
+            if not project and getattr(self, "auth", None) is not None \
+                    and self.auth.kind != "session":
+                with JOBS_LOCK:
+                    running = [j["project"] for j in JOBS.values() if not j["done"]]
+                allowed = set(self.visible(running))
             with JOBS_LOCK:
                 live = [{"id": j["id"], "cmd": j["cmd"], "args": j["args"],
                          "started": j["started"], "lines": j.get("base", 0) + len(j["out"]),
@@ -8459,15 +9386,33 @@ class Handler(BaseHTTPRequestHandler):
                          "paused_at": j.get("paused_at") or 0,
                          "resources": j.get("resources") or []}
                         for j in JOBS.values()
-                        if not j["done"] and (not project or j["project"] == project)]
+                        if not j["done"] and (not project or j["project"] == project)
+                        and (allowed is None or j["project"] in allowed)]
             self.send_json({"jobs": sorted(live, key=lambda j: j["started"])})
         elif u.path == "/api/tasks":
             project = (q.get("project") or [""])[0]
-            self.send_json(TASKS.snapshot(project if project and self._known(project) else ""))
+            if project and not self.need_project(project):
+                return
+            snap = TASKS.snapshot(project or "")
+            if not project and getattr(self, "auth", None) is not None \
+                    and self.auth.kind != "session":
+                for key in ("active", "queued"):
+                    snap[key] = [t for t in snap.get(key) or []
+                                 if G.project_ok(self.auth, t.get("project", ""))]
+            self.send_json(snap)
         elif u.path == "/api/job":
             since = int(q.get("since", ["0"])[0])
+            job_id = q.get("id", [""])[0]
             with JOBS_LOCK:
-                job = JOBS.get(q.get("id", [""])[0])
+                job = JOBS.get(job_id)
+                project = str(job.get("project") or "") if job else ""
+            if not job:
+                self.send_json({"error": "задание не найдено"}, 404)
+                return
+            if not self.need_project(project):
+                return
+            with JOBS_LOCK:
+                job = JOBS.get(job_id)
                 if not job:
                     self.send_json({"error": "задание не найдено"}, 404)
                     return
@@ -8493,19 +9438,19 @@ class Handler(BaseHTTPRequestHandler):
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype != "application/json":
             self.send_json({"error": "тело запроса должно быть JSON (Content-Type: "
-                            "application/json)"}, 415)
+                            "application/json)", "code": "bad_content_type"}, 415)
             return None
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = -1
         if length < 0 or length > MAX_BODY:
-            self.send_json({"error": "слишком большой запрос"}, 413)
+            self.send_json({"error": "слишком большой запрос", "code": "too_large"}, 413)
             return None
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")
         except Exception:
-            self.send_json({"error": "тело запроса не разобрано"}, 400)
+            self.send_json({"error": "тело запроса не разобрано", "code": "bad_request"}, 400)
             return None
         return payload
 
@@ -8532,7 +9477,7 @@ class Handler(BaseHTTPRequestHandler):
         if payload is None:
             return
         if not isinstance(payload, dict):
-            self.send_json({"error": "тело запроса не разобрано"}, 400)
+            self.send_json({"error": "тело запроса не разобрано", "code": "bad_request"}, 400)
             return
         if u.path == "/api/launch":
             # Новый код для второго запуска `aurora.py cockpit`: панель уже работает, а
@@ -8547,15 +9492,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/diagnostics":
             project = str(payload.get("project") or "")
-            if project and not self._known(project):
-                self.send_json({"error": "проект не выбран"}, 400)
-                return
+            if project or (getattr(self, "auth", None) is not None
+                           and self.auth.kind != "session"):
+                if not self.need_project(project):
+                    return
             job_id = str(payload.get("job_id") or "")
             run_id = str(payload.get("run_id") or "")
             with JOBS_LOCK:
                 job = JOBS.get(job_id) if job_id else None
             if job:
-                project = str(job.get("project") or project)
+                job_project = str(job.get("project") or "")
+                # Номер задания приносит свой проект: он тоже проверяется, иначе
+                # заявленный свой проект скрывал бы чтение чужого архива.
+                if job_project and getattr(self, "auth", None) is not None \
+                        and self.auth.kind != "session":
+                    if not self.need_project(job_project):
+                        return
+                project = job_project or project
                 run_id = run_id or str(job.get("run_id") or "")
             context = {
                 "source": str(payload.get("source") or "panel"),
@@ -8600,7 +9553,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/route/run":
             project = payload.get("project", "")
-            if not self._known(project):
+            if not self.need_project(project):
+                return
+            if (denied := _mcp_route_guard(self.auth, payload, project)):
+                self.send_mcp(denied)
                 return
             # Маршрут по проекту со старым движком не начинаем — тот же отказ, что у шага.
             if (gap := version_gap(project)):
@@ -8623,7 +9579,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(res, 200 if res.get("route") and not res.get("error") else 409)
             return
         if u.path == "/api/route/stop":
-            self.send_json(route_action(str(payload.get("id") or ""), "stop"))
+            route_id = str(payload.get("id") or "")
+            if not self._id_acl("route", route_id):
+                return
+            self.send_json(route_action(route_id, "stop"))
             return
         if u.path == "/api/route/wake":
             self.send_json(route_action(str(payload.get("id") or ""), "wake"))
@@ -8631,8 +9590,14 @@ class Handler(BaseHTTPRequestHandler):
         if (u.path == "/api/cron/save" or u.path == "/api/cron/delete"
                 or u.path == "/api/cron/toggle" or u.path == "/api/cron/start"
                 or u.path == "/api/cron/stop"):
-            self.send_json(cron_action(u.path[len("/api/cron/"):], payload,
-                                       find_projects(self.server.roots)))
+            if (denied := _mcp_cron_guard(self.auth, payload)):
+                self.send_mcp(denied)
+                return
+            action = u.path[len("/api/cron/"):]
+            projects = find_projects(self.server.roots)
+            if not self.cron_acl(action, payload, projects):
+                return
+            self.send_json(cron_action(action, payload, projects))
             return
         if u.path == "/api/run/summary":
             # Итог маршрута складывает движок (`run_summary`) — тот же составитель, что у
@@ -8668,7 +9633,10 @@ class Handler(BaseHTTPRequestHandler):
                                       payload.get("text", ""), payload.get("expect", "")))
             return
         if u.path == "/api/job/stop":
-            self.send_json(stop_job(payload.get("id", ""), request_lang(parse_qs(u.query))))
+            job_id = str(payload.get("id") or "")
+            if not self._id_acl("job", job_id):
+                return
+            self.send_json(stop_job(job_id, request_lang(parse_qs(u.query))))
             return
         if u.path == "/api/run/steps":
             # Шаги маршрута сохраняем на диск для позднего разбора: прогон идёт часами, и
@@ -8713,6 +9681,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(write_route_state(project, payload["state"]))
             return
         if u.path == "/api/restart":
+            if (denied := _mcp_restart_guard(self.auth, payload)):
+                self.send_mcp(denied)
+                return
             res = restart_self(self.server.server_address[1])
             self.send_json(res)
             # Отказ (проба не прошла, нет aurora.py, не запустилось) — старая панель остаётся
@@ -8788,8 +9759,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(self._write_tokens(project, payload))
             return
+        if u.path.startswith("/api/mcp/tokens/"):
+            self._tokens_post(u.path.rsplit("/", 1)[-1], payload)
+            return
         if u.path == "/api/mcp/kit":
-            self.send_json(mcp_kit_action(payload))
+            self.send_mcp(mcp_kit_action(payload, self.auth))
+            return
+        if u.path == "/api/mcp/confirm/request":
+            self.send_mcp(mcp_confirm_request(payload, self.auth))
+            return
+        if u.path in ("/api/mcp/confirm/approve", "/api/mcp/confirm/reject"):
+            action = u.path.rsplit("/", 1)[-1]
+            self.send_mcp(mcp_confirm_action({**payload, "action": action}, self.auth))
             return
         if u.path == "/api/context/upload":
             # Вложение к задаче: только текст, в `.aurora/context/<день>/` проекта — папку
@@ -9130,21 +10111,21 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/ask/control":
             project = str(payload.get("project") or "")
-            if not self._known(project):
+            if not self.need_project(project):
                 return
             res = ask_pipeline_control(project, payload)
             self.send_json(res, 400 if res.get("error") else 200)
             return
         if u.path == "/api/make/control":
             project = str(payload.get("project") or "")
-            if not self._known(project):
+            if not self.need_project(project):
                 return
             res = make_pipeline_control(project, payload)
             self.send_json(res, 400 if res.get("error") else 200)
             return
         if u.path == "/api/task/check":
             project = str(payload.get("project") or "")
-            if not self._known(project):
+            if not self.need_project(project):
                 return
             cmd = str(payload.get("cmd") or "")
             args = [str(x) for x in payload.get("args", [])]
@@ -9157,7 +10138,10 @@ class Handler(BaseHTTPRequestHandler):
                             "can_start": not conflict})
             return
         if u.path == "/api/task/stop":
-            self.send_json(stop_job(str(payload.get("id") or ""), request_lang(q)))
+            task_id = str(payload.get("id") or "")
+            if not self._id_acl("task", task_id):
+                return
+            self.send_json(stop_job(task_id, request_lang(q)))
             return
         if u.path == "/api/run":
             project = payload.get("project", "")
@@ -9172,7 +10156,19 @@ class Handler(BaseHTTPRequestHandler):
                                              "разрабатывать движок отсюда нечем"}, 400)
                     return
                 project = KIT
-            elif not self._known(project):
+                # Удалённый токен и здесь ограничен своими проектами: кит — такой же
+                # путь, и без ACL он стал бы обходом проектного списка.
+                if getattr(self, "auth", None) is not None and self.auth.kind != "session":
+                    try:
+                        G.require_project(self.auth, project)
+                    except G.AuthError as error:
+                        self.send_json({"error": error.message, "code": error.code},
+                                       error.status)
+                        return
+            elif not self.need_project(project):
+                return
+            if (denied := _mcp_run_guard(self.auth, payload, project)):
+                self.send_mcp(denied)
                 return
             # Маршрут по проекту со старым движком не начинаем: он пройдёт половину
             # шагов, объявит их успешными и встанет на первой команде, которой в старом
@@ -9500,6 +10496,236 @@ class Handler(BaseHTTPRequestHandler):
             return project
         return project if project in {p["path"] for p in find_projects(self.server.roots)} else ""
 
+    def _project_by_id(self, kind: str, item_id: str) -> str:
+        """Проект задания, задачи или маршрута по id — для id-only endpoint'ов (10.7, п. 5)."""
+        if not item_id:
+            return ""
+        if kind == "job":
+            with JOBS_LOCK:
+                return str((JOBS.get(item_id) or {}).get("project") or "")
+        if kind == "task":
+            snap = TASKS.snapshot()
+            for bucket in ("active", "queued"):
+                for row in snap.get(bucket) or []:
+                    if str(row.get("id") or "") == item_id:
+                        return str(row.get("project") or "")
+            return ""
+        with ROUTES_LOCK:
+            return str((ROUTES.get(item_id) or {}).get("project") or "")
+
+    def _id_acl(self, kind: str, item_id: str) -> bool:
+        """Проверить проект по id до действия; отказ уже отправлен. Сессия не ограничена."""
+        if getattr(self, "auth", None) is None or self.auth.kind == "session":
+            return True
+        owner = self._project_by_id(kind, item_id)
+        if not owner:
+            self.send_json({"error": "не найдено", "code": "not_found"}, 404)
+            return False
+        # Проект уже взят из живого задания/задачи/маршрута: повторный обход корней
+        # не нужен и сравнивал бы realpath с путём из списка. Права проверяет тот же
+        # `require_project`, что и у проектных endpoint'ов.
+        try:
+            G.require_project(self.auth, owner)
+        except G.AuthError as error:
+            self.send_json({"error": error.message, "code": error.code}, error.status)
+            return False
+        return True
+
+    def _cron_rows(self, projects) -> list:
+        """Задания расписания и боты проектов — для проверки владельца по шагам."""
+        rows = list(CRON.load_tasks())
+        try:
+            rows.extend(CRON.bot_tasks(projects))
+        except Exception:                       # noqa: BLE001 — битый бот не отменяет ACL
+            pass
+        return rows
+
+    @staticmethod
+    def _project_base(value: str) -> str:
+        """Имя последней папки проекта: путь и слаг сравниваются одинаково."""
+        return os.path.basename(str(value or "").strip().rstrip("/\\").replace("\\", "/"))
+
+    def _cron_target(self, project, projects) -> str:
+        """Полный путь проекта из значения запроса по списку панели; пусто — не найден.
+
+        Путь сверяется только целиком: две папки с одинаковым именем в разных корнях
+        не должны подменять друг друга. Слаг и имя проекта — отдельный, безопасный
+        случай: они не содержат разделителя пути.
+        """
+        wanted = str(project or "").strip()
+        if not wanted:
+            return ""
+        exact = os.path.normpath(wanted)
+        for row in projects or []:
+            path = str(row.get("path") or "")
+            if path and os.path.normpath(path) == exact:
+                return path
+        if os.path.isabs(wanted) or "/" in wanted or "\\" in wanted:
+            return ""
+        for row in projects or []:
+            path = str(row.get("path") or "")
+            if not path:
+                continue
+            names = {self._project_base(path), str(row.get("name") or ""),
+                     str(row.get("slug") or "")}
+            if wanted in names:
+                return path
+        return ""
+
+    def _cron_full(self, project_path: str, projects) -> bool:
+        """Действующий режим проекта шага: правка расписания разрешена только в full.
+
+        Проверяются и путь, и слаг/имя из списка панели: папка проекта может называться
+        иначе, чем его слаг, а переопределение режима в `mcp.json` живёт под слагом.
+        Достаточно одного `safe` у любого написания — правка запрещена.
+        """
+        keys = [project_path]
+        for row in projects or []:
+            path = str(row.get("path") or "")
+            if path and os.path.normpath(path) == os.path.normpath(project_path):
+                keys.extend(value for value in (row.get("name"), row.get("slug")) if value)
+                break
+        try:
+            return all(G.effective_mode(key, kit=_tokens_kit()) == "full" for key in keys)
+        except Exception:                       # noqa: BLE001 — неизвестность не разрешает
+            return False
+
+    def _cron_owners(self, task, projects) -> list:
+        """Полные пути проектов задания; пусто — владелец не определён."""
+        owners = []
+        for owner in G.schedule_projects(task):
+            path = self._cron_target(owner, projects)
+            if not path:
+                return []
+            owners.append(path)
+        return owners
+
+    def _cron_run_visible(self, run) -> bool:
+        """Прогон виден, только если все проекты его пунктов входят в права.
+
+        Видимый id задания не заменяет проверку пунктов: цепочка могла уйти в чужой
+        проект, и тогда её `runs`/`current` не показываются.
+        """
+        if not isinstance(run, dict):
+            return False
+        return G.schedule_run_visible(self.auth, run)
+
+    def cron_acl(self, action: str, payload: dict, projects) -> bool:
+        """Расписание удалённого токена: чужой проект не читается и не меняется.
+
+        Задание не хранит проект в верхнем поле — владельца дают его шаги. Задание без
+        владельца (старая запись, битый шаг) проектному токену не принадлежит. Все шаги
+        обязаны совпадать с проектом запроса: `project=other` не правит задачу `alpha`,
+        даже если токену разрешены оба. Правка (`save`/`delete`) дополнительно требует
+        `full` у каждого затронутого проекта, а не только у названного в запросе. Сессия
+        панели не ограничена.
+        """
+        if getattr(self, "auth", None) is None or self.auth.kind == "session":
+            return True
+        target = self._cron_target(payload.get("project"), projects)
+        if not target:
+            self.send_json({"error": "проект не найден среди обнаруженных",
+                            "code": "project"}, 403)
+            return False
+        try:
+            G.require_project(self.auth, target)
+        except G.AuthError as error:
+            self.send_json({"error": error.message, "code": error.code}, error.status)
+            return False
+        rows = self._cron_rows(projects)
+
+        def deny_safe():
+            self.send_mcp(_mcp_error("safe_mode", "команда запрещена в этом режиме", 403))
+            return False
+
+        def same_project(task):
+            owners = self._cron_owners(task, projects)
+            return bool(owners) and all(owner == target for owner in owners), owners
+
+        if action == "save":
+            task = payload.get("task") if isinstance(payload.get("task"), dict) else {}
+            step_paths = []
+            for step in task.get("steps") or []:
+                if not isinstance(step, dict):
+                    continue
+                step_value = str(step.get("project") or "").strip()
+                if not step_value:
+                    continue                        # пустой шаг отклонит `clean_task`
+                step_path = self._cron_target(step_value, projects)
+                if not step_path or step_path != target:
+                    self.send_json({"error": "шаг расписания в чужом проекте",
+                                    "code": "project"}, 403)
+                    return False
+                step_paths.append(step_path)
+            task_id = str(task.get("id") or "")
+            if task_id:
+                existing = next((row for row in rows
+                                 if str(row.get("id") or "") == task_id), None)
+                if existing is not None:
+                    same, owners = same_project(existing)
+                    if not same:
+                        self.send_json({"error": "задание расписания принадлежит другому проекту",
+                                        "code": "project"}, 403)
+                        return False
+                    step_paths.extend(owners)
+            if any(not self._cron_full(path, projects) for path in {target, *step_paths}):
+                return deny_safe()
+            return True
+
+        if action == "delete":
+            item_id = str(payload.get("id") or "")
+            row = next((item for item in rows
+                        if str(item.get("id") or "") == item_id), None)
+            if row is not None:
+                same, owners = same_project(row)
+                if not same:
+                    self.send_json({"error": "задание расписания принадлежит другому проекту",
+                                    "code": "project"}, 403)
+                    return False
+                if any(not self._cron_full(path, projects) for path in owners):
+                    return deny_safe()
+            return True
+
+        if action == "stop":
+            current = scheduler().current
+            if not current:
+                return True
+            items = current.get("items")
+            if items:
+                if not isinstance(items, (list, tuple)):
+                    self.send_json({"error": "идёт цепочка другого проекта",
+                                    "code": "project"}, 403)
+                    return False
+                for item in items:
+                    if not isinstance(item, dict):
+                        self.send_json({"error": "идёт цепочка другого проекта",
+                                        "code": "project"}, 403)
+                        return False
+                    item_path = self._cron_target(item.get("project"), projects)
+                    if not item_path or item_path != target:
+                        self.send_json({"error": "идёт цепочка другого проекта",
+                                        "code": "project"}, 403)
+                        return False
+            else:
+                top = self._cron_target(current.get("project"), projects)
+                if not top or top != target:
+                    self.send_json({"error": "идёт цепочка другого проекта",
+                                    "code": "project"}, 403)
+                    return False
+            return True
+
+        item_id = str(payload.get("id") or "")
+        if not item_id:
+            return True
+        row = next((item for item in rows if str(item.get("id") or "") == item_id), None)
+        if row is not None:
+            same, _owners = same_project(row)
+            if not same:
+                self.send_json({"error": "задание расписания принадлежит другому проекту",
+                                "code": "project"}, 403)
+                return False
+        return True
+
     def _known(self, project: str) -> bool:
         """Путь — только из списка обнаруженных проектов, не произвольная строка."""
         known = {p["path"] for p in find_projects(self.server.roots)}
@@ -9719,7 +10945,7 @@ def pulse_of(job_id: str) -> dict | None:
     return job_pulse(job)
 
 
-def threads_all(lang: str = "", now: float = 0.0) -> dict:
+def threads_all(lang: str = "", now: float = 0.0, *, projects=None) -> dict:
     """Потоки параллельной работы всех живых шагов — для кнопки в шапке: {slots, now, inflight, rows}.
 
     Каждый процесс шага кладёт в свой пульс слоты шага и выпавшие потоки с причиной
@@ -9731,6 +10957,9 @@ def threads_all(lang: str = "", now: float = 0.0) -> dict:
     now = now or time.time()
     with JOBS_LOCK:
         jobs = [j for j in JOBS.values() if not j.get("done")]
+    if projects is not None:
+        allowed = set(projects)
+        jobs = [j for j in jobs if j.get("project") in allowed]
     out = {"slots": 0, "now": 0, "inflight": 0, "rows": []}
     # Разбор бота идёт в самом процессе панели, без папки прогона и пульса: его
     # активная реплика тоже запрос к модели, и её видно в шапке.

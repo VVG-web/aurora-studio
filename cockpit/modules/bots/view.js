@@ -66,6 +66,15 @@ function lastChip(ctx, last){
             : t("bots.last_bad", {when: ctx.fmt.when(last.at)}));
 }
 
+// Длительность прогона: общий чип при новом timing, старые секунды рядом с честным
+// «простой: нет данных», если разбивки у записи нет.
+function tookChip(ctx, id, timing, seconds){
+  if (ctx.ui && typeof ctx.ui.timingChip === "function")
+    return ctx.ui.timingChip({id, timing, seconds});
+  return seconds != null
+    ? ctx.el("span", {class: "muted"}, ctx.fmt.howLong(Math.round(seconds))) : null;
+}
+
 function drawList(ctx){
   const {t, el} = ctx;
   const box = ctx.$("#botsList");
@@ -587,8 +596,8 @@ function drawLast(ctx){
   box.append(el("div", {class: p ? "warnbox dangerbox" : "card", style: "padding:14px 16px;margin-top:12px"},
     el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center"},
       el("b", {}, last.ok ? t("bots.last_title_ok") : t("bots.last_title_bad")),
-      el("span", {class: "muted"}, ctx.fmt.when(last.at) + " · " + t("bots.trigger." + (last.trigger || "manual"))
-        + (last.seconds ? " · " + ctx.fmt.howLong(Math.round(last.seconds)) : ""))),
+      el("span", {class: "muted"}, ctx.fmt.when(last.at) + " · " + t("bots.trigger." + (last.trigger || "manual"))),
+      last.timing || last.seconds ? tookChip(ctx, "bot-last", last.timing, last.seconds) : null),
     p ? el("div", {style: "margin-top:6px"},
       el("div", {}, tr(ctx, "bots.p." + p.code, p.code) + detailOf(ctx, p)),
       el("div", {class: "muted", style: "font-size:12.5px;margin-top:2px"}, tr(ctx, "bots.fix." + p.code, "")),
@@ -723,8 +732,9 @@ function drawCoach(ctx){
         m.prompt ? el("button", {class: "btn sm", title: t("bots.coach.reapply_hint"),
           onclick: () => { coachApply(ctx, m.prompt); drawCoach(ctx); }}, t("bots.coach.reapply")) : null) : null,
       el("div", {class: "muted", style: "font-size:11.5px;margin-top:4px"},
-        [m.model, m.seconds != null ? ctx.fmt.howLong(m.seconds) : "", m.at ? ctx.fmt.when(m.at) : ""]
-          .filter(Boolean).join(" · "))));
+        [m.model, m.at ? ctx.fmt.when(m.at) : ""].filter(Boolean).join(" · ")
+          + (m.seconds != null || m.timing ? " " : ""),
+        m.seconds != null || m.timing ? tookChip(ctx, "bot-coach", m.timing, m.seconds) : null)));
   });
   if (COACH.busy) list.append(el("div", {class: "muted", style: "margin:8px 0"},
     el("span", {class: "spin"}), " ",

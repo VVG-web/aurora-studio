@@ -346,7 +346,7 @@ def test_the_watchdog_leaves_a_step_that_waits_for_a_model(tmp: Path):
 
 @test
 def test_the_install_blocks_do_not_blink_on_every_redraw(tmp: Path):
-    """«Установка»: надстройки, модули Git и MCP в ассистентах строятся один раз, а перерисовка
+    """«Установка»: надстройки, модули Git, MCP и токены в ассистентах строятся один раз, а перерисовка
     раздела переставляет их как есть — без нового запроса и колеса. Ядро перерисовывает
     разделы проекта только по частям здоровья выбранного проекта: на старте части всех
     проектов шли десятками, и блоки мигали (1.170.1)."""
@@ -354,7 +354,8 @@ def test_the_install_blocks_do_not_blink_on_every_redraw(tmp: Path):
     body = view[view.index("export async function refresh(ctx){"):view.index("/* Надстройки движка")]
     for card in ("extrasCard(ctx)", "gitModsCard(ctx)", "harnessCard(ctx)"):
         assert card not in body, f"перерисовка раздела строит заново {card} — блок снова мигает"
-    assert "const keep = cards(ctx);" in body and "box.append(keep.extras, keep.gitmods, keep.harness);" in body
+    assert "const keep = cards(ctx);" in body \
+        and "box.append(keep.extras, keep.gitmods, keep.mcp, keep.harness);" in body
     assert "CARDS.lang !== ctx.lang" in view, "смена языка не перестроит блоки"
     ui = ui_source()
     frame = ui[ui.index("function healthChanged(p){"):ui.index("async function prefetchHealth(")]
@@ -621,6 +622,7 @@ def test_decision_records_follow_the_madr_format(tmp: Path):
     sections = ["Контекст и проблема", "Факторы решения", "Рассмотренные варианты", "Решение",
                 "Последствия", "Проверка", "Дополнительно"]
     expected = {"ADR-026": "ADR-026-executable-content-trust.md",
+                "ADR-028": "ADR-028-mcp-footprint.md",
                 "ADR-059": "ADR-059-deployment-profiles.md",
                 "ADR-060": "ADR-060-dependency-policy.md",
                 "ADR-066": "ADR-066-version-and-release-policy.md"}
@@ -640,6 +642,11 @@ def test_decision_records_follow_the_madr_format(tmp: Path):
         # ссылки между записями ведут на существующие файлы
         for link in re.findall(r"\]\((ADR-[^)#]+\.md)\)", text):
             assert (base / link).is_file(), (name, link)
+    baseline = json.loads(
+        (KIT / "tests" / "ext_footprint_baseline.json").read_text(encoding="utf-8"))
+    assert baseline.get("decision") == "docs/decisions/ADR-028-mcp-footprint.md", baseline
+    counts = baseline.get("counts", {})
+    assert counts.get("panel_module") == 4 and counts.get("assistant") == 5, counts
     # публичная папка: ни имён моделей как авторов, ни клиентских проектов
     for path in base.glob("*.md"):
         low = path.read_text(encoding="utf-8").lower()
