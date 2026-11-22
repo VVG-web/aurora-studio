@@ -1,10 +1,11 @@
 """Проверки движка Aurora, часть 51: панель различает неисправный Pydantic AI и обрыв связи.
 
-Каркас и помощники — tests/harness.py. Движок пишет в `~/.aurora/adapter-alarm.json` тревоги двух
+Каркас и помощники — tests/harness.py. Движок пишет в `~/.aurora/adapter-alarm.json` тревоги трёх
 областей; сервер панели отдаёт их строками с областью и видом, страница рисует для каждой своё:
 красную полосу «мимо Pydantic AI» с кнопками «Установка» или «Версия» — только для неисправного пути
-Pydantic AI, а для обрыва связи — отдельную полосу с точным заголовком по виду и без единого слова
-про Pydantic AI в кнопках. Сети и настоящего домашнего каталога проверки не касаются.
+Pydantic AI, для обрыва связи — отдельную полосу с точным заголовком по виду и без единого слова
+про Pydantic AI в кнопках, для таймаута модели — жёлтую плашку с «Моделями» и подробностями.
+Сети и настоящего домашнего каталога проверки не касаются.
 """
 from __future__ import annotations
 
@@ -56,8 +57,10 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
         net = AG.Why("client_net", "tls", n=2, model="m-1", detail="")
         auth = AG.link_why("auth", 3, "m-2", 401)
         dns = AG.link_why("dns", 1, "m-3")
+        slow = AG.Why("model_timeout", "call", sec=390)
         AG._write_alarm({
             "agent:build": _row(AG, net, path="agent:build"),
+            "agent:slow": _row(AG, slow, path="agent:slow"),
             "bot:ревью": _row(AG, AG._adapter_gap(), path="bot:ревью"),
             "bot:старый": {"at": "2026-10-07T07:00:00Z", "why": "venv не установлен",
                            "project": "/x/PRJ", "calls": 1},
@@ -65,7 +68,7 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
             "link:1": _row(AG, dns, path="agent:build"),
             "agent:venv": _row(AG, AG._venv_gap(), path="agent:venv")})
         rows = {r["path"] + "|" + r["area"]: r for r in ck.adapter_alarm()}
-        assert set(rows) == {"agent:build|adapter", "bot:ревью|adapter",
+        assert set(rows) == {"agent:build|adapter", "agent:slow|timeout", "bot:ревью|adapter",
                              "bot:ревью|link", "agent:build|link", "agent:venv|adapter"}, set(rows)
         assert "bot:старый" not in AG.read_alarm(), "просроченная тревога адаптера не удалена"
         # у строки есть ключ записи: по нему панель снимает именно эту тревогу, а не все сразу
@@ -75,6 +78,9 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
         assert (a["kind"], a["sub"], a["fix"]) == ("client_net", "tls", ""), a
         assert a["args"]["n"] == 2 and a["project"] == "PRJ-A" and a["calls"] == 3, a
         assert rows["bot:ревью|adapter"]["fix"] == "version" and rows["agent:venv|adapter"]["fix"] == "install"
+        slow_row = rows["agent:slow|timeout"]
+        assert (slow_row["kind"], slow_row["fix"]) == ("model_timeout", "models"), slow_row
+        assert slow_row["args"]["sec"] == 390, slow_row
         auth_row = rows["bot:ревью|link"]
         assert (auth_row["kind"], auth_row["fix"], auth_row["args"]["status"]) == ("auth", "models", 401), auth_row
         dns_row = rows["agent:build|link"]
@@ -93,6 +99,12 @@ def test_the_panel_api_gives_the_area_and_kind_of_each_alarm(tmp: Path):
                          "agent:плохой": {"at": "x", "why": 5, "kind": "dns", "args": "не словарь"}})
         paths = sorted(r["path"] for r in ck.adapter_alarm())
         assert "bot:давний" not in paths and "bot:живой" in paths, paths
+        # Просроченный таймаут модели тоже снимается, как и тревога адаптера: разовый сбой
+        # не должен висеть неделю.
+        AG._write_alarm({"agent:slow-old": _row(
+            AG, AG.Why("model_timeout", "call", sec=390), path="agent:slow-old", at=old_at)})
+        paths = sorted(r["path"] for r in ck.adapter_alarm())
+        assert "agent:slow-old" not in paths and "agent:slow-old" not in AG.read_alarm(), paths
         # Проект удалён, а тревога моложе суток: час на отключённый диск уже прошёл,
         # значит ответа не будет, и полоса снимается вместе с записью.
         AG._write_alarm({"link:7": _row(
@@ -163,6 +175,9 @@ const ADAPTER = [
   {path: "agent:build", area: "adapter", kind: "venv", fix: "install", why: "venv python: ~/.aurora/venv/bin/python не найден", project: "PRJ-A", calls: 2, at: "2026-10-18T10:19:00Z", args: {}},
   {path: "bot:ревью", area: "adapter", kind: "adapter_file", sub: "project", fix: "version", why: "адаптер: .aurora/x не найден", project: "PRJ-A", calls: 1, at: "2026-10-18T10:19:00Z", args: {}},
   {path: "bot:сеть", area: "adapter", kind: "client_net", sub: "dns", fix: "", why: "HTTP-клиент адаптера не доходит", project: "PRJ-B", calls: 3, at: "2026-10-18T10:19:00Z", args: {n: 2, model: "m"}}];
+const TIMEOUT = [{path: "agent:slow", area: "timeout", kind: "model_timeout", sub: "call", fix: "models",
+  why: "модель не ответила за 390 с через Pydantic AI", project: "PRJ-A", calls: 4,
+  at: "2026-10-18T10:19:00Z", key: "agent:slow", args: {sec: 390}}];
 const KINDS = %KINDS%;
 const MODELS_FIX = %MODELS%;
 const link = (kind, n) => ({path: "agent:build", area: "link", kind, fix: MODELS_FIX.includes(kind) ? "models" : "",
@@ -184,6 +199,24 @@ const link = (kind, n) => ({path: "agent:build", area: "link", kind, fix: MODELS
   drawAdapterAlarm([ADAPTER[2]]);
   check(JSON.stringify(names(bars.adapterbar)) === JSON.stringify(["alarm.adapter_dismiss", "diag.btn"]),
         "client_net: кнопки про Установку нет, лог есть");
+  // Таймаут модели: жёлтая плашка, «Модели» и лог; ни установки, ни слов про обход.
+  shown.length = 0;
+  posted.length = 0;
+  diag.length = 0;
+  drawAdapterAlarm(TIMEOUT);
+  check(!!bars.timeoutbar && !bars.adapterbar && !bars.linkbar, "timeout: своя полоса, без адаптера и связи");
+  const tbar = bars.timeoutbar, ttext = text(tbar);
+  check(ttext.includes("alarm.timeout") && ttext.includes("agent:slow"), "timeout: заголовок и строка");
+  check(!ttext.includes("alarm.adapter") && !ttext.includes("alarm.adapter_open"),
+        "timeout: нет ни слова про установку адаптера");
+  check(ttext.includes("alarm.timeout_tail"), "timeout: подсказка про срок и шлюз");
+  check(JSON.stringify(names(tbar)) === JSON.stringify(["alarm.timeout_dismiss", "alarm.timeout_models", "diag.btn"]),
+        "timeout: кнопки скрытия, «Моделей» и лога, got " + JSON.stringify(names(tbar)));
+  buttons(tbar).forEach(b => b.attrs.onclick());
+  check(JSON.stringify(shown) === JSON.stringify(["models"]), "timeout: кнопка ведёт в «Модели»");
+  check(posted.length === 1 && posted[0].path === "/api/adapter/alarm/forget"
+        && JSON.parse(posted[0].opts.body).key === "agent:slow", "timeout: «Скрыть» шлёт ключ");
+  check(diag.length === 1 && diag[0].source === "timeout_alarm", "timeout: кнопка лога");
   // обрыв связи, каждый вид: своя полоса, заголовок по виду, ни слова про Pydantic AI в кнопках
   for (const kind of KINDS){
     shown.length = 0;
@@ -205,14 +238,15 @@ const link = (kind, n) => ({path: "agent:build", area: "link", kind, fix: MODELS
           && JSON.parse(posted[0].opts.body).key === "link:4", kind + ": «Скрыть» шлёт ключ тревоги");
   }
   // обе беды сразу: две полосы, у каждой своё
-  drawAdapterAlarm([ADAPTER[0], link("dns", 1), link("auth", 2)]);
-  check(!!bars.adapterbar && !!bars.linkbar, "обе: две полосы");
-  check(!text(bars.linkbar).includes("alarm.adapter") && !text(bars.adapterbar).includes("alarm.link"), "обе: тексты не смешаны");
+  drawAdapterAlarm([ADAPTER[0], TIMEOUT[0], link("dns", 1), link("auth", 2)]);
+  check(!!bars.adapterbar && !!bars.linkbar && !!bars.timeoutbar, "обе: три полосы");
+  check(!text(bars.linkbar).includes("alarm.adapter") && !text(bars.adapterbar).includes("alarm.link")
+        && !text(bars.timeoutbar).includes("alarm.adapter"), "обе: тексты не смешаны");
   // тревог нет — полос нет; прежние убраны
   drawAdapterAlarm([]);
-  check(!bars.adapterbar && !bars.linkbar, "пусто: обе полосы убраны");
+  check(!bars.adapterbar && !bars.linkbar && !bars.timeoutbar, "пусто: все полосы убраны");
   drawAdapterAlarm(null);
-  check(!bars.adapterbar && !bars.linkbar, "null: полос нет");
+  check(!bars.adapterbar && !bars.linkbar && !bars.timeoutbar, "null: полос нет");
   console.log(JSON.stringify({fails}));
 })();
 """
@@ -228,9 +262,13 @@ def test_the_panel_draws_the_right_bar_for_the_adapter_and_for_the_link(tmp: Pat
     panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
     a = panel.index("function drawAdapterAlarm(rows){")
     func = panel[a:panel.index("async function refreshAdapterAlarm(){")]
-    assert '"#linkbar"' in func and 't("alarm.link." + r.kind' in func
-    link_part = func[func.index("if (link.length)"):func.index("if (adapter.length)")]
+    assert '"#linkbar"' in func and '"#timeoutbar"' in func and 't("alarm.link." + r.kind' in func
+    link_part = func[func.index("if (link.length)"):func.index("if (timeout.length)")]
     assert "alarm.adapter" not in link_part, "в полосе связи надписи про адаптер"
+    timeout_part = func[func.index("if (timeout.length)"):func.index("if (adapter.length)")]
+    assert "alarm.timeout" in timeout_part and "alarm.timeout_models" in timeout_part
+    assert "alarm.adapter" not in timeout_part and "show(\"install\")" not in timeout_part, \
+        "в полосе таймаута снова предлагают установку"
     assert "drawAdapterAlarm(d.alarm)" in panel and "drawAdapterAlarm(S.state.adapter_alarm)" in panel
     kinds = sorted(AG.LINK_KINDS)
     models_fix = sorted(k for k in kinds if AG.CAUSES[k]["fix"] == "models")

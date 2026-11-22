@@ -82,14 +82,16 @@ class _World:
         self.env.__enter__()
         self.saved = {n: getattr(AG, n) for n in ("pydantic_transport", "http_json")}
         self.dicts = {n: dict(getattr(AG, n)) for n in ("ADAPTER", "USAGE", "RUN_TASK", "FAILS")}
-        self.sets = {n: set(getattr(AG, n)) for n in ("_BYPASS_SAID", "_LINK_SAID", "_RETRY_SAID")}
+        self.sets = {n: set(getattr(AG, n))
+                     for n in ("_BYPASS_SAID", "_LINK_SAID", "_RETRY_SAID", "_TIMEOUT_SAID")}
         self.reset()
         return self
 
     def reset(self):
         AG = self.AG
         for d in (AG.DOWN, AG.DOWN_WHY, AG.SLOW, AG.LAST_OK, AG.COOL, AG.COOL_HITS, AG.ERR_HITS,
-                  AG.LINK_RUN, AG.GAP_RUN, AG._PROBE, AG._BYPASS_SAID, AG._LINK_SAID, AG._RETRY_SAID):
+                  AG.LINK_RUN, AG.GAP_RUN, AG._PROBE, AG._BYPASS_SAID, AG._LINK_SAID,
+                  AG._RETRY_SAID, AG._TIMEOUT_SAID):
             d.clear()
         AG.USAGE.update(bypass=0, bypass_why="", link_retried=0, link_retried_kind="", link_failed=0,
                         link_why="", calls=0, failed=0, errors={})
@@ -830,9 +832,13 @@ def test_a_quarantined_backend_keeps_naming_the_real_cause(tmp: Path):
 
 
 @test
-def test_a_hung_adapter_process_raises_the_pydantic_ai_alarm_without_claiming_a_direct_call(tmp: Path):
-    """Завис сам процесс адаптера — это неисправность пути Pydantic AI, и тревога про него нужна. Но вызов
-    остался без ответа, и строка в консоли не говорит про «прямой HTTP», которого не было."""
+def test_a_hung_adapter_call_is_a_model_timeout_not_a_bypass(tmp: Path):
+    """Процесс адаптера жив, но ответа за срок нет: это таймаут модели, а не обход Pydantic AI.
+
+    Панель не должна показывать «прямой HTTP, без инструментов/MCP» и предлагать установку:
+    адаптер исправен, вызов шёл через него, а модель не успела ответить. Тревога своя
+    (`area=timeout`), лечение — «Модели», а не «Установка».
+    """
     import io
     import contextlib
     with _World(tmp) as w:
@@ -843,13 +849,98 @@ def test_a_hung_adapter_process_raises_the_pydantic_ai_alarm_without_claiming_a_
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             r = w.ask()
-        assert not r["ok"] and not r.get("link"), r
+        assert not r["ok"] and not r.get("link") and r.get("timed_out"), r
         row = AG.read_alarm()["agent:test"]
-        assert (row["area"], row["kind"], row["sub"]) == ("adapter", "process_hang", "call"), row
+        assert (row["area"], row["kind"], row["sub"], row["fix"]) == \
+            ("timeout", "model_timeout", "call", "models"), row
         shown = out.getvalue()
-        assert "через него не прошёл" in shown and "процесс адаптера не дал ответа за 330 с" in shown, shown
+        assert "Pydantic AI не ответил за отведённое время" in shown \
+            and "модель не ответила за 330 с" in shown, shown
         assert "прямой HTTP" not in shown and "link:1" not in AG.read_alarm(), shown
-        assert not AG.USAGE["link_failed"], "зависший адаптер записан обрывом связи"
+        assert not AG.USAGE["link_failed"], "таймаут модели записан обрывом связи"
+        assert not AG.USAGE["bypass"], "таймаут модели записан обходом адаптера"
+        assert AG.failure_kind(cause, answered=False) == "model_timeout", cause
+
+
+@test
+def test_a_real_adapter_bypass_keeps_the_install_area(tmp: Path):
+    """Настоящий обход адаптера не перекрашивается в таймаут: нет venv, нет файла движка,
+    процесс не стартовал, ответ пришёл прямым HTTP. Все они остаются `adapter_bypass`."""
+    AG = _ag()
+    assert AG.failure_kind(AG.Why("venv", path="/x"), answered=False) == "adapter_bypass"
+    assert AG.failure_kind(AG.Why("adapter_file", "project", path="/x"),
+                               answered=False) == "adapter_bypass"
+    assert AG.failure_kind(AG.Why("process_hang", "start", sec=60),
+                               answered=False) == "adapter_bypass"
+    assert AG.failure_kind(AG.Why("adapter_error", error="x"), answered=True) == "adapter_bypass"
+    assert AG.failure_kind(AG.Why("process_hang", "call", sec=60),
+                               answered=False) == "model_timeout"
+    assert AG.failure_kind(AG.Why("model_timeout", "call", sec=60),
+                               answered=False) == "model_timeout"
+
+
+@test
+def test_the_adapter_has_a_total_request_deadline_and_names_its_timeout(tmp: Path):
+    """Адаптер сам прекращает зависшее задание по общему сроку и отвечает `where=timeout`.
+
+    Внешний движок ждёт `timeout × (1 + tool_calls) + 30`; адаптер отвечает на пять секунд
+    раньше, чтобы причина была его, а не `process_hang` с ложной установкой.
+    """
+    import asyncio
+    AD = _adapter()
+    assert AD.request_limit({"timeout": 10}) == 15.0
+    assert AD.request_limit({"request_timeout": 10, "tool_calls": 2}) == 35.0
+    assert AD.request_limit({}) == 0.0
+    saved = AD.REQUEST_GRACE
+    AD.REQUEST_GRACE = 0.05
+    try:
+        async def hang(_task):
+            await asyncio.sleep(30)
+
+        out = asyncio.run(AD.run_with_deadline({"timeout": 0.05}, hang))
+    finally:
+        AD.REQUEST_GRACE = saved
+    assert out["where"] == "timeout" and out["timed_out"] is True, out
+    assert "общий срок запроса" in out["error"], out["error"]
+
+
+@test
+def test_an_adapter_timeout_becomes_model_timeout_without_direct_http(tmp: Path):
+    """Ответ адаптера `where=timeout` несёт причину `model_timeout`, а не `adapter_error`:
+    движок не идёт прямым HTTP и не предлагает установку."""
+    with _World(tmp) as w:
+        AG = w.AG
+        seen = {}
+
+        class Pipe:
+            def write(self, line):
+                task = json.loads(line)
+                seen.update(task)
+                with AG._HUB_LOCK:
+                    slot = AG._HUB["pending"][task["id"]]
+                slot["out"] = {"ok": False, "where": "timeout", "timed_out": True,
+                               "timeout": 390, "error": "Pydantic AI не ответил за 390 с"}
+                slot["done"].set()
+
+            def flush(self):
+                pass
+
+        fake = type("P", (), {"stdin": Pipe(), "pid": 9911})()
+        saved = AG.adapter_hub
+        with AG._HUB_LOCK:
+            AG._HUB.update(proc=fake, pending={}, broken="", seq=0)
+        AG.adapter_hub = lambda: (fake, AG._HUB["pending"])
+        try:
+            st, _body, err, _dt = AG.pydantic_transport(
+                {"n": 1, "url": "http://gw.example.com/v1", "key": ""},
+                {"model": "m", "messages": [{"role": "user", "content": "?"}]}, 5)
+        finally:
+            AG.adapter_hub = saved
+        assert st is None and err is not None and err.cause is not None, err
+        assert seen.get("request_timeout") == 5 and seen.get("timeout") == 5, seen
+        assert (err.cause.kind, err.cause.area, err.cause.fix) == \
+            ("model_timeout", "timeout", "models"), err.cause
+        assert AG.failure_kind(err.cause, answered=False) == "model_timeout"
 
 
 @test
@@ -900,8 +991,9 @@ def _fake_adapter(tmp: Path, body: str) -> Path:
 def test_each_adapter_cause_has_its_own_text_and_cure(tmp: Path):
     """Каждая неисправность самого пути Pydantic AI называется своим текстом и ведёт к своему лекарству:
     нет venv — «Установка», нет файла адаптера — «Версия», пакет не стоит или не импортируется,
-    версия не прошла проверку, процесс не запускается, умер при запуске, завис, закрылся, труба
-    закрыта, адаптер вернул ошибку, ответ не разобран, адаптер не включён."""
+    версия не прошла проверку, процесс не запускается, умер при запуске, завис при запуске,
+    закрылся, труба закрыта, адаптер вернул ошибку, ответ не разобран, адаптер не включён.
+    Таймаут живой модели (`model_timeout.call`) сюда не входит: это не путь Pydantic AI."""
     AG = _ag()
     restore = set_home(tmp / "home")
     saved = (AG.VENV, AG._adapter_file, AG._adapter_argv, AG.adapter_selfcheck, AG.ADAPTER_START,
@@ -1009,7 +1101,7 @@ def test_each_adapter_cause_has_its_own_text_and_cure(tmp: Path):
         proc.stdin = real_stdin
         st, body, err, _dt = AG.pydantic_transport(b, dict(msg), -29.8)        # ждёт 0,2 с
         assert st is None and "timed out" in err and AG.looks_like_timeout(err), err
-        got["process_hang.call"] = err.cause
+        got["model_timeout.call"] = err.cause
         proc.kill()
         # 7. адаптер вернул ошибку; ответ без описания
         hub = {"proc": object(), "pending": {}, "out": None}
@@ -1060,13 +1152,16 @@ def test_each_adapter_cause_has_its_own_text_and_cure(tmp: Path):
                 "incompatible": "install", "process_start": "install", "process_died.start": "install",
                 "process_hang.start": "install", "process_died.closed": "",
                 "process_died.repeated": "", "process_died.pipe": "",
-                "process_hang.call": "install", "adapter_error": "install", "reply_bad": "install",
+                "adapter_error": "install", "reply_bad": "install",
+                "model_timeout.call": "models",
                 "not_enabled": "", "client_net.proxy": "", "client_net.tls": "", "client_net.dns": "",
                 "client_net.other": ""}
     assert set(got) == set(want_fix), set(want_fix) ^ set(got)
     for cid, why in got.items():
         assert isinstance(why, AG.Why), (cid, why)
-        assert AG.cause_id(why.kind, why.sub) == cid and why.area == "adapter", (cid, why.kind, why.sub)
+        assert AG.cause_id(why.kind, why.sub) == cid, (cid, why.kind, why.sub)
+        assert why.area == ("timeout" if cid == "model_timeout.call" else "adapter"), \
+            (cid, why.kind, why.sub, why.area)
         assert why.fix == want_fix[cid], (cid, why.fix)
     assert len({str(w_) for w_ in got.values()}) == len(got), "две причины с одним текстом"
     # тексты называют своё: файл, пакет, версию, код выхода, сроки, подвид
@@ -1079,7 +1174,10 @@ def test_each_adapter_cause_has_its_own_text_and_cure(tmp: Path):
     assert "Pydantic AI 9.9.9 не прошёл проверку совместимости" in got["incompatible"]
     assert "(PermissionError)" in got["process_start"]
     assert "(код 7)" in got["process_died.start"]
-    assert "завис" in got["process_hang.call"] and "после запуска" in got["process_hang.start"]
+    assert "модель не ответила" in got["model_timeout.call"] \
+        and "timed out" in got["model_timeout.call"] \
+        and "«Установка»" not in got["model_timeout.call"]
+    assert "после запуска" in got["process_hang.start"]
     assert "посреди вызова" in got["process_died.closed"] and "BrokenPipeError" in got["process_died.pipe"]
     assert "«Установка»" not in got["process_died.pipe"], got["process_died.pipe"]
     assert "падал 3 раза" in got["process_died.repeated"]
@@ -1176,7 +1274,8 @@ def test_the_cause_table_is_complete_and_every_text_is_translated(tmp: Path):
              "deaths", "times", "sec", "error", "detail", "n",
              "model", "status", "label", "count", "why"}
     for cid, row in AG.CAUSES.items():
-        assert row["area"] in ("adapter", "link") and row["fix"] in ("", "install", "version", "models"), cid
+        assert row["area"] in ("adapter", "link", "timeout") \
+            and row["fix"] in ("", "install", "version", "models"), cid
         assert set(re.findall(r"\{(\w+)\}", row["ru"])) <= known, (cid, row["ru"])
         assert sorted(re.findall(r"\{(\w+)\}", row["ru"])) == sorted(re.findall(r"\{(\w+)\}", row["en"])), cid
         if row["area"] == "link":
@@ -1193,6 +1292,10 @@ def test_the_cause_table_is_complete_and_every_text_is_translated(tmp: Path):
     # области: тревогу про Pydantic AI поднимают только adapter; связь — своя
     assert {k for k, r in AG.CAUSES.items() if r["area"] == "adapter"} >= {"venv", "client_net.dns"}
     assert not any(AG.CAUSES[k]["area"] == "adapter" for k in AG.LINK_KINDS | {"retried"})
+    assert AG.CAUSES["model_timeout.call"]["area"] == "timeout" \
+        and AG.CAUSES["model_timeout.call"]["fix"] == "models"
+    assert AG.CAUSES["process_hang.call"]["area"] == "timeout" \
+        and AG.CAUSES["process_hang.call"]["fix"] == "models"
     sys.path.insert(0, str(SCRIPTS))
     KI = importlib.import_module("kit_i18n")
     assert KI.cause_problems() == [], KI.cause_problems()                  # проверка полноты таблицы
@@ -1202,6 +1305,10 @@ def test_the_cause_table_is_complete_and_every_text_is_translated(tmp: Path):
         for kind in AG.LINK_KINDS:
             assert cat.get("alarm.link." + kind), (lang, kind)
         for key in ("alarm.link_row", "alarm.link_tail", "alarm.link_tail_cfg", "alarm.link_models"):
+            assert cat.get(key), (lang, key)
+        for key in ("alarm.timeout", "alarm.timeout_row", "alarm.timeout_tail",
+                    "alarm.timeout_models", "alarm.timeout_dismiss",
+                    "alarm.timeout_dismiss_title"):
             assert cat.get(key), (lang, key)
         assert "Pydantic" not in "".join(cat["alarm.link." + k] for k in AG.LINK_KINDS), lang
 

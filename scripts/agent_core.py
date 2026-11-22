@@ -821,11 +821,19 @@ CAUSES: dict = {
               "Pydantic AI",
         "en": "the adapter process did not answer within {sec} s after start — Install → "
               "Pydantic AI"},
-    "process_hang.call": {"area": "adapter", "fix": "install",
-        "ru": "процесс адаптера не дал ответа за {sec} с — завис (timed out): «Установка» "
-              "→ Pydantic AI",
-        "en": "the adapter process gave no answer within {sec} s — it hung (timed out): "
-              "Install → Pydantic AI"},
+    # Процесс адаптера жив, но ответа за срок нет: это не обход адаптера и не его поломка,
+    # а модель не успела ответить. `process_hang.call` остаётся старым ключом для строк,
+    # записанных прежними выпусками; новые вызовы пишут `model_timeout.call`.
+    "process_hang.call": {"area": "timeout", "fix": "models",
+        "ru": "модель не ответила за {sec} с через Pydantic AI (timed out) — адаптер "
+              "исправен: проверьте шлюз или поднимите срок запроса в разделе «Модели»",
+        "en": "the model did not answer within {sec} s through Pydantic AI (timed out) — the "
+              "adapter is fine: check the gateway or raise the request timeout in the Models section"},
+    "model_timeout.call": {"area": "timeout", "fix": "models",
+        "ru": "модель не ответила за {sec} с через Pydantic AI (timed out) — адаптер "
+              "исправен: проверьте шлюз или поднимите срок запроса в разделе «Модели»",
+        "en": "the model did not answer within {sec} s through Pydantic AI (timed out) — the "
+              "adapter is fine: check the gateway or raise the request timeout in the Models section"},
     "adapter_error": {"area": "adapter", "fix": "install",
         "ru": "адаптер вернул ошибку: {error} — «Установка» → Pydantic AI",
         "en": "the adapter returned an error: {error} — Install → Pydantic AI"},
@@ -1134,6 +1142,43 @@ def cause_of(why) -> Why:
     if text.startswith("адаптер не включён"):
         return Why.raw(text, "not_enabled")
     return Why.raw(text)
+
+
+def is_model_timeout(why, answered: bool = True) -> bool:
+    """Истёк срок модели, а не сломался путь Pydantic AI.
+
+    `process_hang.call` — старый ключ для того же события: процесс адаптера жив, но ответа
+    за отведённое время нет. Вызов с ответом (`answered=True`) сюда не попадает: это уже
+    не таймаут, а другой отказ.
+    """
+    cause = cause_of(why)
+    if cause.kind == "model_timeout":
+        return True
+    return not answered and cause.kind == "process_hang" and cause.sub == "call"
+
+
+def model_timeout_cause(why) -> Why:
+    """Причина таймаута в одном виде: `model_timeout.call`, даже если пришёл старый ключ."""
+    cause = cause_of(why)
+    if cause.kind == "model_timeout":
+        return cause
+    sec = cause.args.get("sec")
+    return Why("model_timeout", "call", **({"sec": sec} if sec not in (None, "") else {}))
+
+
+def failure_kind(why, answered: bool = True) -> str:
+    """Что случилось с вызовом по его причине: `model_timeout`, `adapter_bypass` или область
+    причины (`link`, `adapter`). Таймаут модели не считается обходом адаптера."""
+    cause = cause_of(why)
+    if is_model_timeout(cause, answered):
+        return "model_timeout"
+    if cause.area == "adapter":
+        return "adapter_bypass"
+    return cause.area or "unknown"
+
+
+# Прежнее имя не занято: `classify_failure` ниже — классификатор обрыва связи по исключению
+# или тексту, у него другой контракт (`Why` либо None).
 
 
 def alarm_age(row: dict) -> float:
@@ -1947,7 +1992,7 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     tools = bool(payload.get("tools_root"))
     task = {"url": backend["url"], "key": backend["key"], "model": payload["model"],
             # Разговор целиком: адаптер сам разложит его на инструкции, историю и запрос.
-            "messages": payload["messages"], "timeout": timeout,
+            "messages": payload["messages"], "timeout": timeout, "request_timeout": timeout,
             "template": payload.get("chat_template_kwargs"),
             "max_tokens": payload.get("max_tokens"),
             "tools": ([payload["tools_root"]] if tools else []),
@@ -1989,14 +2034,27 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     if not slot["done"].wait(wait):
         with _HUB_LOCK:
             pending.pop(rid, None)
-        # Свой срок клиента адаптера короче этого: если и он не сработал, завис процесс. Текст
-        # хранит «timed out» — по нему кольцо читает это как молчание по сроку, а не как отказ.
-        cause = Why("process_hang", "call", sec=int(wait))
+        # Свой срок клиента адаптера короче этого: если и он не сработал, ответа за срок нет.
+        # Это таймаут модели через живой адаптер, а не обход Pydantic AI и не повод для
+        # «Установки». Старый ключ `process_hang.call` остаётся лекарством от старых строк.
+        cause = Why("model_timeout", "call",
+                    sec=int(wait) if wait >= 1 else round(wait, 1))
         return None, None, Refusal(str(cause), cause=cause), time.time() - t0
     out = slot["out"] or {}
     dt = time.time() - t0
     if not out.get("ok"):
         err = str(out.get("error") or "ошибка без описания")
+        if out.get("where") == "timeout":
+            # Сам адаптер остановил вызов по общему сроку: ответа модели нет, путь Pydantic AI
+            # исправен. Не `adapter_error`: иначе панель снова предложила бы установку.
+            sec = out.get("timeout") or out.get("given") or 0
+            try:
+                sec = float(sec)
+            except (TypeError, ValueError):
+                sec = 0.0
+            sec = int(sec) if sec >= 1 else round(sec, 1)
+            cause = Why("model_timeout", "call", **({"sec": sec} if sec else {}))
+            return None, None, Refusal(str(cause), cause=cause), dt
         if out.get("where") == "server":
             # Заголовки лимита адаптер присылает как есть: разбирает их тот же `retry_hint`,
             # что и на прямом пути. Вид обрыва (срок, сброс) едет с отказом.
@@ -2694,6 +2752,7 @@ RUN_TASK: dict = {"name": ""}
 _BYPASS_SAID: set = set()      # о чём уже кричали в этом процессе: одна строка на причину
 _LINK_SAID: set = set()        # (№ бэкенда, вид) — о чём тревога связи уже сказала; бэкенд ответил — забыто
 _RETRY_SAID: set = set()       # (№ бэкенда, вид) — о каких повторённых обрывах уже написано в консоль
+_TIMEOUT_SAID: set = set()     # (путь, текст) — о каком таймауте модели уже сказано в консоли
 # Счёт подряд, на процесс: сколько неудач связи на бэкенде без единого ответа между ними и сколько
 # раз адаптер не дошёл при живой контрольной проверке движка без единого прохода через адаптер.
 LINK_RUN: dict = {}            # {№ бэкенда: {"fails": число, "kind": последний вид, "at": момент}}
@@ -2809,6 +2868,37 @@ def _write_alarm(data: dict) -> None:
 _ALARM_LOCK = threading.Lock()
 
 
+def note_model_timeout(why, needs_tools: bool = False) -> None:
+    """Модель не ответила за срок через живой Pydantic AI — предупреждение, а не «обход».
+
+    Таймаут модели приходит как `process_hang.call` (старый ключ) или `model_timeout.call`
+    (новый). Раньше он попадал в `note_bypass`, панель показывала красную полосу про прямой
+    HTTP и предлагала установить адаптер, хотя адаптер был исправен. Здесь своя строка
+    тревоги (`area=timeout`), своя запись в журнал сбоев и никакого счётчика обхода.
+    """
+    cause = model_timeout_cause(why)
+    text = str(cause)
+    path = run_path()
+    with _USAGE_LOCK:
+        USAGE["model_timeout"] = int(USAGE.get("model_timeout") or 0) + 1
+        USAGE["model_timeout_why"] = text
+    key = (path, text)
+    if key not in _TIMEOUT_SAID:
+        _TIMEOUT_SAID.add(key)
+        print((f"⚠ Pydantic AI не ответил за отведённое время: {text}. "
+               "Это не обход адаптера: вызов шёл через Pydantic AI, но модель не успела "
+               "ответить. Увеличьте таймаут Momus/qa или проверьте шлюз."), flush=True)
+        record_failure("модель", text, stage="таймаут модели", kind=cause.kind,
+                       needs_tools=needs_tools)
+    with _ALARM_LOCK:
+        data = read_alarm()
+        row = data.get(path) or {}
+        calls = int(row.get("calls") or 0) + 1
+        data[path] = {**cause.row(), "at": utc_stamp(), "project": os.getcwd(), "path": path,
+                      "calls": calls}
+        _write_alarm(data)
+
+
 def note_bypass(why, needs_tools: bool = False, answered: bool = True) -> None:
     """Вызов прошёл мимо Pydantic AI, хотя адаптер выбран, — громко и сразу.
 
@@ -2824,6 +2914,11 @@ def note_bypass(why, needs_tools: bool = False, answered: bool = True) -> None:
     не было вовсе (процесс адаптера завис, адаптер не дошёл до шлюза и вызов отказан).
     """
     cause = cause_of(why)
+    if is_model_timeout(cause, answered):
+        # Живой адаптер не дал ответа за срок: это беда модели и шлюза, а не обход
+        # Pydantic AI. Отдельная полоса и отдельный журнал, без счётчика `bypass`.
+        note_model_timeout(model_timeout_cause(cause), needs_tools)
+        return
     text = str(cause)
     path = run_path()
     death = cause.kind == "process_died" and cause.sub in ("pipe", "closed")
@@ -4243,6 +4338,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
            "tools": bool(tools), "mcp_active": list(mcp_active or []), "adapter": want}
     log, waited, ring = [], 0.0, 0
     slow = 0                    # сколько попыток кончилось молчанием по сроку
+    timeouts = 0                # сколько попыток кончилось таймаутом модели через адаптер
     why_seen: list = []         # беды этого вызова по порядку: обрывы связи и шлюза (`link_note`), поломки адаптера
     fresh_link_fail: list = []    # виды настоящих неудач связи этого вызова (без пропусков на карантине)
     attempts = 0
@@ -4572,6 +4668,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         fresh_link_fail.append(lw.kind)
                     elif cause is not None:
                         why_seen.append(cause)
+                    if is_model_timeout(cause, answered=False):
+                        timeouts += 1
                     if (live and cause is not None
                             and (cause.kind != "client_net" or cause.armed)):
                         # HTTP-клиент адаптера не доходит туда, куда доходит прямой запрос, и это
@@ -4880,7 +4978,11 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                        "круг не изменит ничего")
             break
     final = why_seen[-1] if why_seen else None
-    if attempts and slow == attempts:
+    if attempts and timeouts == attempts:
+        log.append(f"Pydantic AI не ответил за {int(req_timeout)} с на запрос. Адаптер исправен: "
+                   "модель не успела ответить. Лечится сроком запроса (раздел «Модели») "
+                   "или состоянием шлюза, а не установкой адаптера")
+    elif attempts and slow == attempts:
         log.append(f"никто не уложился в срок: {int(req_timeout)} с на запрос. "
                    "Это медленно, а не мёртво — модель отвечает, но дольше отпущенного. "
                    "Лечится сроком запроса (раздел «Модели», общие настройки), а не "
@@ -4895,7 +4997,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
         log.append(f"дедлайн исчерпан{mark}: {final.body}")
     else:
         log.append("дедлайн исчерпан: ни один бэкенд не ответил осмысленно")
-    out = {"ok": False, "log": log, "timed_out": bool(attempts and slow == attempts),
+    out = {"ok": False, "log": log,
+           "timed_out": bool(attempts and (slow == attempts or timeouts == attempts)),
            "req": dict(req, attempts=attempts, rings=ring, waited=round(waited, 1))}
     if final is not None and final.area == "link" and not out["timed_out"]:
         out["link"] = link_summary(why_seen)
@@ -4904,7 +5007,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             USAGE["link_failed"] += 1
             USAGE["link_why"] = str(final)
     else:
-        _note_failure("модель не уложилась в срок" if attempts and slow == attempts
+        _note_failure("модель не уложилась в срок"
+                      if attempts and (slow == attempts or timeouts == attempts)
                       else "модель не ответила осмысленно")
     return out
 

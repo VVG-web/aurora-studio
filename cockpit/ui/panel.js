@@ -2524,7 +2524,7 @@ function showReaped(r){
   try { localStorage.setItem("aurora-reaped-seen", String(r.at)); } catch (e) {}
   toast(t("boot.reaped", {n: r.items.length, list: r.items.map(x => x.what).join("; ")}), "warn");
 }
-// Тревоги вызова модели — полосой поверх любого раздела. Это две разные беды, и полосы у них
+// Тревоги вызова модели — полосой поверх любого раздела. Это три разные беды, и полосы у них
 // разные (область `area` приходит от движка):
 // - `adapter`: Pydantic AI выбран, а вызовы идут мимо него — без инструментов и MCP бот «не видит»
 //   свои серверы, план собирается без поиска. С 1.139 по 1.160 это случалось четырежды и каждый раз
@@ -2535,8 +2535,10 @@ function showReaped(r){
 // - `link`: нет связи с бэкендом (сеть, DNS, сертификат, прокси, сам шлюз). Pydantic AI тут ни при
 //   чём, поэтому про него в полосе ни слова и кнопок про него нет. Заголовок называет вид беды;
 //   уходит, когда бэкенд ответит. 18.10.2026 обрыв сети выдавали за поломку Pydantic AI.
+// - `timeout`: адаптер жив, но модель не ответила за срок. Это не обход и не повод ставить
+//   Pydantic AI: жёлтая плашка, «Модели» и подробности, без единого слова про установку.
 function drawAdapterAlarm(rows){
-  for (const id of ["#adapterbar", "#linkbar"]){
+  for (const id of ["#adapterbar", "#linkbar", "#timeoutbar"]){
     const old = $(id);
     if (old) old.remove();
   }
@@ -2547,8 +2549,9 @@ function drawAdapterAlarm(rows){
       onclick:()=>downloadDiagnostics({...ctx, btn:b})}, t("diag.btn"));
     return b;
   };
-  const adapter = rows.filter(r => r.area !== "link");
+  const adapter = rows.filter(r => r.area === "adapter");
   const link = rows.filter(r => r.area === "link");
+  const timeout = rows.filter(r => r.area === "timeout");
   const when = r => r.at ? histWhen(r.at) : "—";
   if (link.length){
     const wait = link.some(r => r.fix !== "models");     // ожидание лечит: сеть, VPN, шлюз
@@ -2568,6 +2571,21 @@ function drawAdapterAlarm(rows){
         diagButton({source:"link_alarm", key: link[0].key, area:"link",
                     kind: link[0].kind, sub: link[0].sub, why: link[0].why,
                     path: link[0].path, message: link[0].why}))));
+  }
+  if (timeout.length){
+    $("main").prepend(el("div",{id:"timeoutbar", class:"stalebar"},
+      el("b",{}, t("alarm.timeout")),
+      ...timeout.map(r => el("div",{}, t("alarm.timeout_row",
+        {path: r.path, project: r.project || "—", when: when(r), calls: r.calls, why: r.why}),
+        el("button",{class:"btn sm", style:"margin-left:8px",
+          title:t("alarm.timeout_dismiss_title"), onclick:()=>forgetLinkAlarm(r.key)},
+          t("alarm.timeout_dismiss")))),
+      el("div",{}, t("alarm.timeout_tail"),
+        el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("models")},
+          t("alarm.timeout_models")),
+        diagButton({source:"timeout_alarm", key: timeout[0].key, area:"timeout",
+                    kind: timeout[0].kind, sub: timeout[0].sub, why: timeout[0].why,
+                    path: timeout[0].path, message: timeout[0].why}))));
   }
   if (adapter.length){
     $("main").prepend(el("div",{id:"adapterbar", class:"stalebar alarm"},
