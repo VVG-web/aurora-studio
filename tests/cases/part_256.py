@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from harness import KIT, SCRIPTS, make_project, test
+from harness import KIT, SCRIPTS, make_project, run_node, test
 
 
 def _module(path, name):
@@ -173,8 +173,8 @@ def test_s5_surfaces_panel_chip_is_focusable_and_ids_are_unique(tmp: Path):
         " tabindex: ca.attrs.tabindex, label: ca.attrs['aria-label'],"
         " title: ca.attrs.title, text: ca.kids[0], legacy: cb.kids[0]}));"
     )
-    cp = subprocess.run([node, "-e", harness], capture_output=True, text=True,
-                        encoding="utf-8", errors="replace")
+    cp = run_node(tmp, harness, name="panel_chip.mjs")
+    assert cp is not None, "node not found"
     assert cp.returncode == 0, cp.stderr[:800]
     got = json.loads(cp.stdout)
     assert got["dur"] == "1 ч" and got["durMs"] == "1 ч", got

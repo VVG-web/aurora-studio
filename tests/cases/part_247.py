@@ -54,7 +54,9 @@ class _SlowSem:
     def acquire(self, blocking=False, timeout=None, project=None):
         if blocking:
             return True
-        time.sleep(0.01)
+        # 50 мс: 10 мс на Windows не гарантируют slot_wait_ms >= 5 из-за гранулярности
+        # таймера; проверка меряет ожидание, продуктовый порог не ослабляется.
+        time.sleep(0.05)
         return True
 
     def release(self):

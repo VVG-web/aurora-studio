@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import textwrap
 import sys
@@ -721,17 +722,45 @@ def kit_with_mcp(tmp: Path, servers: dict | None = None, permissions: dict | Non
     return kit
 
 
+def assert_private_mode(path):
+    """Проверить POSIX-режим 0600. На Windows `st_mode` не выражает ACL: `chmod(0600)`
+    лишь снимает/ставит read-only, поэтому проверка режима там была бы ложной. Файл и
+    отсутствие секрета в нём проверяются отдельно на всех платформах."""
+    if os.name == "nt":
+        return
+    mode = Path(path).stat().st_mode
+    assert stat.S_IMODE(mode) == 0o600, oct(mode)
+
+
+def run_node(tmp, script, name="harness.mjs"):
+    """Запустить JS из файла: длинный `node -e` упирается в лимит командной строки
+    Windows и в ARG_MAX на Linux. → CompletedProcess или None, если node нет."""
+    node = shutil.which("node")
+    if not node:
+        return None
+    path = Path(tmp) / name
+    path.write_text(script, encoding="utf-8")
+    return subprocess.run([node, str(path)], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+
+
 def set_home(path):
     """Подменить домашнюю папку на время проверки. → функция, возвращающая прежнюю.
 
     `os.path.expanduser("~")` читает `HOME` на POSIX и `USERPROFILE` на Windows: проверка,
     выставившая одну `HOME`, на Windows писала в настоящий профиль того, кто её запустил,
-    и не находила файлов, положенных в подменённый.
+    и не находила файлов, положенных в подменённый. `APPDATA`/`XDG_CONFIG_HOME` подменяются
+    так же, иначе конфиги ассистентов через `harness_mcp.appdata()` уходили бы в профиль.
     """
-    names = ("HOME", "USERPROFILE")
-    saved = {k: os.environ.get(k) for k in names}
-    for k in names:
-        os.environ[k] = str(path)
+    values = {
+        "HOME": str(path),
+        "USERPROFILE": str(path),
+        "APPDATA": str(Path(path) / "AppData" / "Roaming"),
+        "XDG_CONFIG_HOME": str(Path(path) / ".config"),
+    }
+    saved = {k: os.environ.get(k) for k in values}
+    for k, v in values.items():
+        os.environ[k] = v
 
     def restore():
         for k, v in saved.items():

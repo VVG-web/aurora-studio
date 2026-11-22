@@ -168,6 +168,8 @@ jobs:
         run: python3 -m compileall -q scripts cockpit reports aurora.py tests
       - name: Engine dependencies
         run: python3 -m pip install --quiet -r requirements.txt -c .github/requirements-ci.txt
+      - name: Tomli backport for Python 3.10 test imports
+        run: python3 -m pip install --quiet -c .github/requirements-ci.txt "tomli>=2.0,<3"
       - name: Smoke (source-scan invariants)
         run: python3 tests/run_tests.py --smoke
   adapter-live:

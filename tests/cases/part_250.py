@@ -10,13 +10,12 @@ import http.client
 import importlib
 import json
 import os
-import stat
 import sys
 import threading
 from pathlib import Path
 from unittest.mock import patch
 
-from harness import KIT, SCRIPTS, test
+from harness import KIT, SCRIPTS, assert_private_mode, test
 
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(KIT / "cockpit"))
@@ -96,7 +95,7 @@ def test_mcp_tokens_lifecycle_keeps_only_a_hash_and_lists_no_secret(tmp: Path):
     assert record["prefix"] == MT.TOKEN_PREFIX_KN + record["id"] + "_", record
     assert record["kind"] == "knowledge" and record["scopes"] == ["knowledge:read"], record
     assert "hash" not in record, "хэш не отдаётся наружу"
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600, oct(path.stat().st_mode)
+    assert_private_mode(path)
 
     stored = path.read_text(encoding="utf-8")
     secret = token.split("_", 3)[3]
@@ -289,7 +288,7 @@ def test_mcp_tokens_guard_rate_limits_proxy_and_audit(tmp: Path):
     assert "aur_kn_" not in line and "shh" not in line and "prompt" not in line, line
     assert "?token=" not in line and '"body"' not in line, line
     assert '"project": "alpha"' in line and '"result": "created"' in line, line
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600, oct(path.stat().st_mode)
+    assert_private_mode(path)
 
 
 @test

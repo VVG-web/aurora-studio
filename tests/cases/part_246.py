@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from harness import KIT, SCRIPTS, test  # noqa: F401
+from harness import KIT, SCRIPTS, run_node, test  # noqa: F401
 
 sys.path.insert(0, str(SCRIPTS))
 
@@ -255,8 +255,8 @@ def test_panel_duration_omits_zero_units(tmp: Path):
             + fn +
             "\nconsole.log(JSON.stringify(" + json.dumps(values) + ".map(fmtTiming)));"
         )
-        cp = subprocess.run([node, "-e", code], capture_output=True, text=True,
-                            encoding="utf-8", errors="replace")
+        cp = run_node(tmp, code, name=f"panel_duration_{lang}.mjs")
+        assert cp is not None, "node not found"
         assert cp.returncode == 0, cp.stderr[:600]
         assert json.loads(cp.stdout) == expected[lang], (lang, cp.stdout)
 
