@@ -1130,7 +1130,7 @@ def test_result_folder_is_a_folder_not_a_file_path(tmp: Path):
 
     root = make_project(tmp)
     (root / "Templates").mkdir(exist_ok=True)
-    (root / "Templates" / "b.md").write_text("шаблон", encoding="utf-8")
+    (root / "Templates" / "b.md").write_text("# Б\n\n## Раздел\n", encoding="utf-8")
     bad = ck.kinds_write(str(root), {"backlog": {"title": "Бэклог", "template": "Templates/b.md",
                                                   "out": "Artifacts/Activity_Epic_US.md"}})
     assert "error" in bad and not (root / "Artifacts" / "Activity_Epic_US.md").exists(), \
