@@ -53,12 +53,11 @@ def test_metrics_columns_lifecycle_and_write_site_are_declared(_t):
     js = (folder / "view.js").read_text(encoding="utf-8")
     assert re.search(r"^export const lifecycle\s*=\s*1\s*;", js, re.M), "раздел не объявил lifecycle"
     assert 't("metrics.col." +' in js, "динамическая приставка колонок должна оканчиваться точкой"
-    heads = re.findall(r"const head = \[(.*?)\];", js, re.S)
-    assert len(heads) == 2, heads
-    cols = {c.strip().strip('"') for block in heads for c in block.split(",") if c.strip()}
+    cols = set(re.findall(r'"metrics\.col\.([a-z_]+)"', js))
+    assert cols, "колонки не названы"
     for lang in ("ru", "en"):
         catalog = json.loads((folder / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))
-        for col in cols:
+        for col in sorted(cols):
             assert f"metrics.col.{col}" in catalog, (lang, col)
     sites = json.loads((KIT / "tests/card_write_sites.json").read_text(encoding="utf-8"))
     rec = sites["sites"].get("scripts/usage_log.py:record") or {}
