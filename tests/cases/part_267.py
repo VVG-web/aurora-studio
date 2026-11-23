@@ -259,3 +259,17 @@ console.log(JSON.stringify({{
     en = json.loads(EN.read_text(encoding="utf-8"))
     assert ru["metrics.filter_service"] == "Сервис", ru.get("metrics.filter_service")
     assert en["metrics.filter_service"] == "Service", en.get("metrics.filter_service")
+
+
+@test
+def test_metrics_log_helpers_are_exported_for_the_panel_tests(_tmp: Path):
+    """Чистые помощники логов остаются доступными тестам панели."""
+    script = f"""
+import * as view from {json.dumps(VIEW.as_uri())};
+const names = ["statCells", "serviceKeys", "filterRuns", "runNote"];
+console.log(JSON.stringify(Object.fromEntries(
+  names.map(name => [name, typeof view[name]]))));
+"""
+    got = _node(script)
+    assert got == {"statCells": "function", "serviceKeys": "function",
+                   "filterRuns": "function", "runNote": "function"}, got
