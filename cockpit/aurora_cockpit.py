@@ -4323,15 +4323,29 @@ def _mcp_route_guard(ctx, payload: dict, project: str) -> dict | None:
     return error
 
 
-def _mcp_cron_guard(ctx, payload: dict) -> dict | None:
-    """Режим и подтверждение для `cron save|delete`. Прочие действия идут как раньше."""
+def _mcp_cron_guard(ctx, payload: dict, action: str = "") -> dict | None:
+    """Режим и подтверждение для правки расписания и для запуска задания с `ship:release`.
+
+    `action` берётся из маршрута запроса: тело не источник истины, его можно не прислать.
+    `save|delete` идут как раньше; `start|toggle` ограничены, только если в задании есть
+    `ship:release` прямо или шагом маршрута. Сессия панели не ограничена.
+    """
     if ctx is None or ctx.kind != "remote":
         return None
-    action = str(payload.get("action") or "")
-    if action not in ("save", "delete"):
+    action = str(action or payload.get("action") or "")
+    if action in ("start", "toggle"):
+        task_id = str(payload.get("id") or "")
+        task = next((t for t in CRON.load_tasks()
+                     if str(t.get("id") or "") == task_id), None)
+        if task is None or not CRON.task_has_release(task, sys.modules[__name__]):
+            return None
+    elif action not in ("save", "delete"):
         return None
-    if _remote_mode(ctx, str(payload.get("project") or "")) != "full":
-        return _mcp_error("safe_mode", "правка расписания запрещена в safe", 403)
+    project = str(payload.get("project") or "")
+    if _remote_mode(ctx, project) != "full":
+        message = ("правка расписания запрещена в safe" if action in ("save", "delete")
+                   else "запуск задания с ship:release запрещён в safe")
+        return _mcp_error("safe_mode", message, 403)
     try:
         G.require_scope(ctx, "admin")
     except G.AuthError as error:
@@ -4341,10 +4355,13 @@ def _mcp_cron_guard(ctx, payload: dict) -> dict | None:
         return _mcp_error("confirmation_required", "нужно подтверждение человека", 409)
     if action == "save":
         args = {"action": "save", "task": payload.get("task") or {}}
-    else:
+    elif action == "delete":
         args = {"action": "delete", "id": str(payload.get("id") or "")}
-    _row, error = _mcp_confirm_consume(confirm_id, ctx, "remote_cron",
-                                       str(payload.get("project") or ""), args)
+    else:
+        args = {"action": action, "id": str(payload.get("id") or "")}
+        if action == "toggle":
+            args["enabled"] = bool(payload.get("enabled"))
+    _row, error = _mcp_confirm_consume(confirm_id, ctx, "remote_cron", project, args)
     return error
 
 
@@ -9590,10 +9607,10 @@ class Handler(BaseHTTPRequestHandler):
         if (u.path == "/api/cron/save" or u.path == "/api/cron/delete"
                 or u.path == "/api/cron/toggle" or u.path == "/api/cron/start"
                 or u.path == "/api/cron/stop"):
-            if (denied := _mcp_cron_guard(self.auth, payload)):
+            action = u.path[len("/api/cron/"):]
+            if (denied := _mcp_cron_guard(self.auth, payload, action)):
                 self.send_mcp(denied)
                 return
-            action = u.path[len("/api/cron/"):]
             projects = find_projects(self.server.roots)
             if not self.cron_acl(action, payload, projects):
                 return
