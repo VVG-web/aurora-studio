@@ -628,7 +628,8 @@ def template_scan(template: str) -> list:
     Разбор один на реестр (`check`), изготовление (`agent:make`) и панель: две копии
     разошлись бы на первой же правке, и шаблон проверялся бы по разным правилам.
     """
-    text = template.lstrip("\ufeff")
+    text = template.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.lstrip("\ufeff")
     text = re.sub(r"\A---[ \t]*\n.*?\n---[ \t]*(?:\n|\Z)", "", text, count=1, flags=re.S)
     text = re.sub(r"<!--(\s*ОПЦИОНАЛЬНО:)?.*?-->",
                   lambda m: f"\n{_OPT_MARK}\n" if m.group(1) else "\n", text, flags=re.S)
