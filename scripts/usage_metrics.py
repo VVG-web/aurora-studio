@@ -48,6 +48,8 @@ DEFAULT_LIMIT = 200
 API_LIMIT = 100
 API_DAYS = (0, 1, 7, 30, 90)
 API_KEEP_DAYS = 90
+DAY_MIN = date(1970, 1, 1)
+DAY_MAX = date(2100, 1, 1)
 _COUNT_KEYS = ("calls", "calls_failed", "requests", "tokens_in", "tokens_out",
                "tokens_failed_in", "tokens_failed_out", "cache_hits", "gen_seconds")
 _NULL_KEYS = ("cached_in", "reasoning_out")
@@ -86,19 +88,55 @@ def _clean(value) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:160]
 
 
+_KEYLIKE_RE = re.compile(
+    r"(?i)(?:"
+    r"sk-[A-Za-z0-9_-]{8,}|"
+    r"aur_(?:kn|rm)_[A-Za-z0-9_-]{8,}|"
+    r"gh[pousr]_[A-Za-z0-9]{20,}|"
+    r"xox[baprs]-[A-Za-z0-9-]{10,}|"
+    r"AKIA[0-9A-Z]{16}|"
+    r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|"
+    r"[A-Fa-f0-9]{32,}"
+    r")"
+)
+_TASK_RE = re.compile(r"[a-z][a-z0-9_.-]{0,63}(?::[a-z][a-z0-9_.-]{0,63})?",
+                      re.IGNORECASE)
+
+
+def _unsafe_text(text: str) -> bool:
+    """URL, абсолютный путь или строка, похожая на ключ, наружу не идут."""
+    if "://" in text:
+        return True
+    if re.match(r"^(?:/|\\|[A-Za-z]:[\\/]|~[\\/])", text):
+        return True
+    if re.search(r"(?:^|[\\/])\.\.(?:[\\/]|$)", text):
+        return True
+    return bool(_KEYLIKE_RE.search(text))
+
+
 def _safe_label(value, fallback: str = "") -> str:
     """Имя для показа без пути и URL: наружу не должна уйти папка или адрес."""
     text = _clean(value)
-    if not text or "://" in text:
+    if not text or _unsafe_text(text):
         return _clean(fallback)
     text = text.replace("\\", "/").rsplit("/", 1)[-1].strip()
     return text or _clean(fallback)
 
 
 def _safe_task(value) -> str:
-    """Задача без URL: в `usage.d` она приходит командой, но старые записи могли хранить больше."""
+    """Только имя команды. Свободный текст задачи, путь, URL и ключ не отдаются."""
     text = _clean(value)
-    return "" if "://" in text else text
+    if not text or _unsafe_text(text) or not _TASK_RE.fullmatch(text):
+        return ""
+    return text.lower()
+
+
+def _safe_filter(value) -> str:
+    """Значение фильтра без URL, абсолютного пути и ключа; иначе пустая строка."""
+    text = _clean(value)
+    if not text or len(text) > 120 or _unsafe_text(text):
+        return ""
+    return text
 
 
 def _epoch(value):
@@ -151,9 +189,12 @@ def _zone(name: str):
 
 def _parse_day(value: str, field: str) -> date:
     try:
-        return date.fromisoformat(str(value or "").strip())
+        parsed = date.fromisoformat(str(value or "").strip())
     except ValueError:
         raise ValueError(f"{field}: нужен формат YYYY-MM-DD") from None
+    if parsed < DAY_MIN or parsed > DAY_MAX:
+        raise ValueError(f"{field}: дата вне допустимого диапазона")
+    return parsed
 
 
 def _one(query: dict, key: str, default: str = "") -> str:
@@ -222,8 +263,15 @@ def parse_query(query: dict, now: float | None = None) -> dict:
         if window_days:
             window_days = (to_date - from_date).days + 1
 
-    filters = {name: _many(query, name)
-               for name in ("project", "model", "provider", "role", "task", "kind")}
+    filters = {}
+    for name in ("project", "model", "provider", "role", "task", "kind"):
+        values = []
+        for item in _many(query, name):
+            value = _safe_filter(item)
+            if not value:
+                raise ValueError(f"{name}: недопустимое значение")
+            values.append(value)
+        filters[name] = values
     compare_requested = _one(query, "compare") == "1"
     compare_reason = ""
     if compare_requested and days == 0:
@@ -514,6 +562,7 @@ def _aggregate_exact(rows: list[dict], tz=timezone.utc, grain: str = "day") -> d
     by_provider: dict = {}
     by_role: dict = {}
     series: dict = {}
+    spark: dict = {}
     for row in rows:
         totals["runs"] += 1
         _add_counts(totals, row)
@@ -521,25 +570,36 @@ def _aggregate_exact(rows: list[dict], tz=timezone.utc, grain: str = "day") -> d
         project = by_project.setdefault(project_key, {
             "source": SOURCE_EXACT, "approximate": False,
             "project": row["project"], "project_id": row["project_id"],
-            "runs": 0, **_blank_counts(), "cached_in": None, "reasoning_out": None})
+            "runs": 0, **_blank_counts(), "cached_in": None, "reasoning_out": None,
+            "last_at": "", "delta_pct": None, "spark": []})
         project["runs"] += 1
         _add_counts(project, row)
+        at = str(row.get("at") or row.get("started") or "")
+        project["last_at"] = max(str(project.get("last_at") or ""), at)
         task = row["task"] or "-"
         task_row = by_task.setdefault(task, {
             "source": SOURCE_EXACT, "approximate": False, "task": task,
             "runs": 0, **_blank_counts(), "cached_in": None, "reasoning_out": None})
         task_row["runs"] += 1
         _add_counts(task_row, row)
+        day_bucket = _bucket(row["started"] or row["at"], tz, "day")
+        if day_bucket:
+            days = spark.setdefault(project_key, {})
+            days[day_bucket] = days.get(day_bucket, 0) + _int(row.get("tokens_total"))
         for cell in _cells(row):
             model = cell["model"] or "-"
             model_row = by_model.setdefault(model, _blank_cell_row(
-                SOURCE_EXACT, "model", model))
+                SOURCE_EXACT, "model", model, {"last_at": ""}))
             _add_cell(model_row, cell)
+            model_row["last_at"] = max(str(model_row.get("last_at") or ""), at)
             provider = cell["provider"] or ""
             provider_row = by_provider.setdefault(provider, _blank_cell_row(
                 SOURCE_EXACT, "provider", cell["provider"],
-                {"provider_name": cell["provider_name"]}))
+                {"provider_name": cell["provider_name"], "projects": set(),
+                 "last_at": ""}))
             _add_cell(provider_row, cell)
+            provider_row["last_at"] = max(str(provider_row.get("last_at") or ""), at)
+            provider_row["projects"].add(row["project"] or row["project_id"])
             role = cell["role"] or "-"
             role_row = by_role.setdefault(role, _blank_cell_row(
                 SOURCE_EXACT, "role", role))
@@ -556,14 +616,21 @@ def _aggregate_exact(rows: list[dict], tz=timezone.utc, grain: str = "day") -> d
     _finish_counts(totals)
     projects = [_finish_counts(row) for row in by_project.values()]
     tasks = [_finish_counts(row) for row in by_task.values()]
+    for row in projects:
+        buckets = spark.get(row["project_id"], {})
+        row["spark"] = [buckets[key] for key in sorted(buckets)][-14:]
     projects.sort(key=lambda r: (-_int(r.get("tokens_total")),
                                  str(r.get("project_id") or "")))
     tasks.sort(key=lambda r: (-_int(r.get("tokens_total")), str(r.get("task") or "")))
+    models = _finish_cell_table(list(by_model.values()), totals["tokens_total"])
+    providers = _finish_cell_table(list(by_provider.values()), totals["tokens_total"])
+    for row in providers:
+        row["projects"] = sorted(str(name) for name in row.get("projects") or [])
     return {
         "totals": totals,
         "by_project": projects,
-        "by_model": _finish_cell_table(list(by_model.values()), totals["tokens_total"]),
-        "by_provider": _finish_cell_table(list(by_provider.values()), totals["tokens_total"]),
+        "by_model": models,
+        "by_provider": providers,
         "by_role": _finish_cell_table(list(by_role.values()), totals["tokens_total"]),
         "by_task": tasks,
         "series": [series[key] for key in sorted(series)],
@@ -952,6 +1019,12 @@ def query(projects, params: dict, now: float | None = None,
                                 opts["previous"]["end"], opts["filters"])
         prev_exact = _aggregate_exact(prev["exact"], tz=opts["tz"], grain=opts["grain"])
         prev_approx = _aggregate_approx(prev["approx"], tz=opts["tz"], grain=opts["grain"])
+        previous_projects = {row["project_id"]: _int(row.get("tokens_total"))
+                             for row in prev_exact["by_project"]}
+        for row in tables["by_project"]:
+            before = previous_projects.get(row["project_id"], 0)
+            row["delta_pct"] = (round((_int(row.get("tokens_total")) - before)
+                                      / before * 100, 1) if before else None)
         previous = {
             "window": {"from": opts["previous"]["from"], "to": opts["previous"]["to"],
                        "days": opts["days"], "tz": opts["tz_name"],
