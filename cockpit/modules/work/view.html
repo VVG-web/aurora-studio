@@ -16,8 +16,10 @@
       <select class="btn" id="makeKind" data-help="work.help.kind" style="font-weight:400;min-width:220px"></select>
     </label>
     <div class="spacer"></div>
-    <button class="btn primary" id="makeGo" data-help="work.help.go" data-llm="make" data-i18n="work.make">Создать артефакт</button>
-    <button class="btn" id="makePublish" data-help="work.help.publish" data-i18n="work.publish">Опубликовать…</button>
+    <button class="btn primary" id="makeGo" data-help="work.help.go" data-llm="make"
+            data-i18n-title="work.make_hint" data-i18n="work.make">Создать артефакт</button>
+    <button class="btn" id="makePublish" data-help="work.help.publish"
+            data-i18n-title="work.publish_hint" data-i18n="work.publish">Опубликовать…</button>
   </div>
   <div class="muted" id="makeSpec" style="font-size:12px;margin:8px 0 10px"></div>
   <!-- Свойства задачи будущего документа: лягут в его шапку (блок task:); задачу заводят у готового документа. -->
@@ -32,7 +34,8 @@
          style="position:absolute;left:0;right:0;z-index:20;max-height:260px;overflow:auto;padding:4px"></div>
   </div>
   <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
-    <button class="btn sm" id="makeAttach" data-help="work.help.attach" data-i18n="work.attach">Приложить файл</button>
+    <button class="btn sm" id="makeAttach" data-help="work.help.attach"
+            data-i18n-title="work.attach_hint" data-i18n="work.attach">Приложить файл</button>
     <button class="btn sm" id="makePick" data-i18n="work.pick" data-i18n-title="work.pick_hint"
             title="Выбрать файл или папку проекта в окне — путь печатать не нужно">Файл или папка проекта…</button>
     <input type="file" id="makeFile" multiple hidden>
@@ -41,7 +44,8 @@
   </div>
   <div id="makeRefs" class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px"></div>
   <div id="makeRuns" class="row" style="gap:8px;flex-wrap:wrap;margin-top:12px" hidden></div>
-  <div id="makeDialog" style="margin-top:12px"></div>
+  <div id="makeDialog" role="region" aria-label="Выбранный запуск"
+       data-i18n-aria="work.run_region" style="margin-top:12px"></div>
 </div>
 <div class="card" id="reqCard" style="padding:18px;margin-bottom:16px">
   <b data-i18n="work.req.title">Проверка реализованности требований</b>
