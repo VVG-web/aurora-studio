@@ -22,13 +22,18 @@ EN = KIT / "cockpit/modules/metrics/i18n/en.json"
 
 def _node(script: str) -> dict:
     node = shutil.which("node")
-    if not node:
-        return {}
+    assert node, ("part_267 требует Node.js: исполняемый файл node не найден в PATH. "
+                  "Установите Node.js и повторите тест.")
     cp = subprocess.run([node, "--input-type=module", "-e", script],
                         capture_output=True, text=True, encoding="utf-8",
                         errors="replace", timeout=30, check=False)
     assert cp.returncode == 0, cp.stderr
-    return json.loads(cp.stdout.strip().splitlines()[-1])
+    output = cp.stdout.strip().splitlines()
+    assert output, "part_267: node не вернул JSON в stdout"
+    try:
+        return json.loads(output[-1])
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"part_267: node вернул не JSON: {output[-1]!r}") from exc
 
 
 def _usage() -> dict:
@@ -68,8 +73,8 @@ def _usage() -> dict:
              "share": 0, "key_present": False},
         ],
         "by_role": [{"role": "worker", "calls": 5, "tokens_total": 100, "share": 1}],
-        "quality": {"records": 2, "empty": False, "truncated": False,
-                    "cached_known": False},
+        "quality": {"records": 2, "approx_records": 2, "empty": False,
+                    "truncated": False, "cached_known": False},
         "options": {"projects": ["A", "B"], "models": ["m"],
                     "providers": ["go", "local"], "roles": ["worker"]},
     }
@@ -84,7 +89,13 @@ import {{exactCards, approxValues, previousValue, seriesPoints,
 const usage = {json.dumps(_usage(), ensure_ascii=False)};
 const cards = exactCards(usage);
 const empty = {{schema: 2, totals: {{tokens_total: 0, tokens_in: 0, tokens_out: 0,
-  runs: 0, cached_in: null, tokens_per_run: null}}}};
+  runs: 0, cached_in: null, tokens_per_run: null}}, quality: {{empty: true}}}};
+const approxZero = {{approx: {{runs: 0, calls: 0, tokens_in: 0, tokens_out: 0,
+  tokens_total: 0}}, quality: {{approx_records: 1}}}};
+const approxNoRecords = {{approx: {{runs: 9, calls: 99, tokens_in: 900,
+  tokens_out: 100, tokens_total: 1000}}, quality: {{approx_records: 0}}}};
+const approxPresent = {{approx: {{runs: 1, calls: 2, tokens_in: 3, tokens_out: 4,
+  tokens_total: 7}}, quality: {{approx_records: 1}}}};
 console.log(JSON.stringify({{
   ids: cards.map(card => card.id),
   values: cards.map(card => card.value),
@@ -96,11 +107,12 @@ console.log(JSON.stringify({{
   old: [isOldServer(null), isOldServer({{schema: 1}}), isOldServer({{schema: 2}})],
   sorted: sortRows(usage.by_project, "tokens_total", -1).map(row => row.project),
   empty_cards: exactCards(empty).map(card => card.value),
+  approx_empty: approxValues(approxZero),
+  approx_no_records: approxValues(approxNoRecords),
+  approx_present: approxValues(approxPresent),
 }}));
 """
     got = _node(script)
-    if not got:
-        return
     assert got["ids"] == ["total", "in", "out", "cache", "runs", "per_run"], got
     assert got["values"] == [100, 60, 40, None, 2, 50], got
     assert got["exact_total"] == 100, "приблизительный блок попал в точный итог"
@@ -111,7 +123,10 @@ console.log(JSON.stringify({{
     assert got["keys"] == ["present", "absent", "unknown"], got
     assert got["old"] == [True, True, False], got
     assert got["sorted"] == ["A", "B"], got
-    assert got["empty_cards"] == [0, 0, 0, None, 0, None], got
+    assert got["empty_cards"] == [None, None, None, None, None, None], got
+    assert got["approx_empty"] is None, "нулевая оценка должна показывать пустой блок"
+    assert got["approx_no_records"] is None, "approx_records=0 должен опустошать блок"
+    assert got["approx_present"]["tokens_total"] == 7, got
 
 
 @test
@@ -132,8 +147,6 @@ console.log(JSON.stringify({{
 }}));
 """
     got = _node(script)
-    if not got:
-        return
     assert got["saved"]["days"] == 30 and got["saved"]["compare"] is True, got
     assert got["saved"]["filters"]["role"] == ["worker", "qa"], got
     assert got["query"].startswith("/api/usage?days=30&compare=1"), got["query"]
@@ -168,7 +181,9 @@ def test_metrics_markup_is_accessible_and_keeps_logs_on_old_server(_tmp: Path):
                   'caption', 'scope: "col"', 'details', 'data-approx', "aria-busy",
                   "host.hidden = STATE.oldServer", "metrics.old_server"):
         assert token in source, token
-    assert source.count('class: "scroll-x"') >= 4, "таблицы должны прокручиваться внутри себя"
+    assert 'class: "scroll-x", tabindex: "0", role: "region"' in source, \
+        "прокручиваемая таблица должна быть доступна с клавиатуры"
+    assert source.count("scrollBox(ctx") >= 5, "таблицы должны прокручиваться внутри себя"
     assert 'class: "grid metrics"' in source
     assert ".metrics{grid-template-columns:repeat(auto-fill,minmax(178px,1fr))}" in css, \
         "карточки должны сами перестраиваться на узкой ширине"
