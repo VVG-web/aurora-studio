@@ -790,4 +790,4 @@ wall-clock в `part_249`. B3 lifecycle, CARD, ROUTES, ASSEMBLE-MODE и тест�
 переведены на `1.231.17`. Описание: `CHANGELOG.md`; проверки: `part_251`,
 `part_252`, `part_259`, `part_261`, `part_257`, `part_255`, `part_50`, `part_51`,
 `part_232`, `part_184`, `part_239`, `part_249`, `check_release`, `kit_commands`,
-`kit_i18n`, `quality_eval`, полный suite и CI.
+`kit_i18n`, `quality_eval`, полный suite; CI 10 job, статус в Release.
