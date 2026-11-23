@@ -627,10 +627,11 @@ def test_s4_metrics_ui_hides_p95_for_small_samples_and_keeps_token_card_clean(tm
     assert got["notes"] == ["no_data", "estimate", "wait", "work"], got["notes"]
 
     source = view.read_text(encoding="utf-8")
-    token_source = source[source.index("function tokenCard"):source.index("function draw(")]
+    token_source = source[source.index("function tokenLinesTable"):
+                           source.index("function logDetails")]
     assert "wait_ms" not in token_source and "tps" not in token_source, token_source
-    for needle in ("function runsCard", "function servicesCard", "filter_project",
-                   "filter_service", "overflow-x:auto", "flex-wrap:wrap",
+    for needle in ("function runsTable", "function servicesTable", "metrics.filter.",
+                   "metrics.filter_service", "scrollBox(ctx", "flex-wrap:wrap",
                    "ctx.ui.timingChip", "metrics.col.", "basis"):
         assert needle in source, needle
     assert "outage_s" not in source, "второе число сети не входит в stage 4"
@@ -641,9 +642,9 @@ def test_s4_metrics_ui_hides_p95_for_small_samples_and_keeps_token_card_clean(tm
         encoding="utf-8"))
     assert set(ru) == set(en), (set(ru) ^ set(en))
     for key in ("metrics.runs_title", "metrics.services_title", "metrics.timing_empty",
-                "metrics.low_n", "metrics.approx", "metrics.filter_project",
-                "metrics.filter_service", "metrics.col.basis", "metrics.no_data",
-                "metrics.detail.slot", "metrics.detail.ttft", "metrics.detail.tps"):
+                "metrics.note.work", "metrics.note.wait", "metrics.approx",
+                "metrics.filter.project", "metrics.filter_service", "metrics.col.basis",
+                "metrics.no_data"):
         assert ru.get(key, "").strip() and en.get(key, "").strip(), key
         assert "—" not in ru[key] and "–" not in ru[key], key
         assert "—" not in en[key] and "–" not in en[key], key
