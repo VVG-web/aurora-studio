@@ -82,6 +82,10 @@ export function keyStatus(value){
 }
 
 export function exactCards(usage){
+  if (usage && usage.quality && usage.quality.empty === true){
+    return ["total", "in", "out", "cache", "runs", "per_run"]
+      .map(id => ({id, value: null}));
+  }
   const totals = (usage && usage.totals) || {};
   const total = numberOrNull(totals.tokens_total) ?? sumKnown(totals.tokens_in, totals.tokens_out);
   const runs = numberOrNull(totals.runs);
@@ -136,7 +140,9 @@ export function seriesPoints(usage){
 export function approxValues(usage){
   const approx = usage && usage.approx;
   if (!approx || typeof approx !== "object") return null;
-  return {
+  const records = numberOrNull(usage.quality && usage.quality.approx_records);
+  if (records === 0) return null;
+  const values = {
     runs: numberOrNull(approx.runs),
     calls: numberOrNull(approx.calls),
     tokens_in: numberOrNull(approx.tokens_in),
@@ -146,6 +152,9 @@ export function approxValues(usage){
     source: String(approx.source || "timing.d"),
     approximate: approx.approximate !== false,
   };
+  if ([values.runs, values.calls, values.tokens_in, values.tokens_out,
+    values.tokens_total].every(value => value === null || value === 0)) return null;
+  return values;
 }
 
 export function parsePrefs(raw){
@@ -278,6 +287,14 @@ function warn(ctx, message){
 
 function empty(ctx, key){
   return ctx.el("div", {class: "muted", style: "font-size:13px;padding:6px 0"}, ctx.t(key));
+}
+
+function scrollBox(ctx, content, label){
+  // Таблица шире экрана: даём ей собственный фокус, иначе с клавиатуры
+  // до правых колонок не добраться, а диктор не знает, что тут прокрутка.
+  return ctx.el("div", {
+    class: "scroll-x", tabindex: "0", role: "region", "aria-label": label,
+  }, content);
 }
 
 function spinner(ctx){
@@ -538,10 +555,11 @@ function cardsGrid(ctx, usage){
   const cards = exactCards(usage);
   const totals = usage.totals || {};
   const quality = usage.quality || {};
+  const empty = quality.empty === true;
   const specs = {
     total: {
       label: ctx.t("metrics.card.total"),
-      sub: ctx.t("metrics.card.total_sub", {calls: numCell(ctx, totals.calls)}),
+      sub: empty ? "" : ctx.t("metrics.card.total_sub", {calls: numCell(ctx, totals.calls)}),
       hint: ctx.t("metrics.card.total_hint"),
     },
     in: {
@@ -582,7 +600,10 @@ function cardsGrid(ctx, usage){
       title: spec.hint,
     },
       ctx.el("div", {class: "muted", style: "font-size:12px"}, spec.label),
-      ctx.el("div", {class: "val" + (card.value === null ? " muted" : "")}, value),
+      ctx.el("div", {
+        class: "val" + (card.value === null ? " muted" : ""),
+        style: card.value === null ? "font-size:16px;font-weight:600;line-height:1.2" : null,
+      }, value),
       ctx.el("div", {class: "muted", style: "font-size:12px;line-height:1.35"}, spec.sub),
       ctx.el("div", {class: "muted", style: "font-size:11.5px;margin-top:3px"},
         deltaFor(ctx, usage, card.id))));
@@ -684,7 +705,7 @@ function chartCard(ctx, usage){
       ctx.el("td", {}, numCell(ctx, point.failed))));
   });
   table.append(body);
-  details.append(ctx.el("div", {class: "scroll-x"}, table));
+  details.append(scrollBox(ctx, table, ctx.t("metrics.chart.caption")));
   card.append(details);
   return card;
 }
@@ -742,14 +763,18 @@ function tableCard(ctx, spec){
   sorted.forEach(row => {
     const tr = ctx.el("tr");
     spec.columns.forEach(column => {
-      const td = ctx.el("td", column.mono ? {class: "mono"} : {});
+      const td = ctx.el("td", {
+        class: column.mono ? "mono" : null,
+        style: column.key !== "name" && column.key !== "trend" && column.key !== "projects"
+          ? "white-space:nowrap" : null,
+      });
       td.append(column.cell(row));
       tr.append(td);
     });
     body.append(tr);
   });
   table.append(body);
-  card.append(ctx.el("div", {class: "scroll-x"}, table));
+  card.append(scrollBox(ctx, table, spec.title));
   return card;
 }
 
@@ -954,7 +979,7 @@ function approxCard(ctx, usage){
         ctx.el("td", {}, numCell(ctx, rowTotal(row)))));
     });
     table.append(body);
-    card.append(ctx.el("div", {class: "scroll-x"}, table));
+    card.append(scrollBox(ctx, table, ctx.t("metrics.approx_caption")));
   }
   return card;
 }
@@ -1030,7 +1055,7 @@ function statCell(ctx, ms, approx){
   return value === null ? "" : (approx ? "~" : "") + durCell(ctx, value);
 }
 
-function logTable(ctx, columns, rows, cells){
+function logTable(ctx, columns, rows, cells, label){
   const table = ctx.el("table", {style: "font-size:12.5px"});
   table.append(ctx.el("thead", {}, ctx.el("tr", {}, columns.map(column =>
     ctx.el("th", {scope: "col"}, colLabel(ctx, column))))));
@@ -1041,7 +1066,7 @@ function logTable(ctx, columns, rows, cells){
     return td;
   }))));
   table.append(body);
-  return ctx.el("div", {class: "scroll-x"}, table);
+  return scrollBox(ctx, table, label);
 }
 
 function colLabel(ctx, key){
@@ -1081,7 +1106,7 @@ function runsTable(ctx, timing){
         durCell(ctx, row.queue_ms),
         note,
       ];
-    });
+    }, ctx.t("metrics.runs_title"));
 }
 
 function servicesTable(ctx, timing){
@@ -1113,7 +1138,7 @@ function servicesTable(ctx, timing){
         numCell(ctx, service.issues),
         basisLabel(ctx, service.bytes_basis),
       ];
-    });
+    }, ctx.t("metrics.services_title"));
 }
 
 function netTable(ctx, net){
@@ -1131,7 +1156,7 @@ function netTable(ctx, net){
       ctx.t("metrics.reason." + (row.reason || "unknown")),
       (Array.isArray(row.vpn) ? row.vpn.join(", ") : String(row.vpn || ""))
         || ctx.t("metrics.no_data"),
-    ]);
+    ], ctx.t("metrics.net_title"));
 }
 
 function tokenLinesTable(ctx, tokens){
@@ -1157,7 +1182,7 @@ function tokenLinesTable(ctx, tokens){
         numCell(ctx, total),
         text(ctx, share),
       ];
-    });
+    }, ctx.t("metrics.tokens_title"));
 }
 
 function logDetails(ctx, key, title, count, content){
