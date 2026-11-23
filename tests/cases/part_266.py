@@ -17,6 +17,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
+from zoneinfo import ZoneInfoNotFoundError
 
 from harness import KIT, SCRIPTS, make_project, test
 
@@ -125,6 +126,35 @@ def test_usage_api_bad_parameters_are_400(tmp: Path):
             assert data["code"] == "bad_request", (query, data)
     finally:
         server.close()
+
+
+@test
+def test_usage_api_utc_zone_does_not_need_tzdata(tmp: Path):
+    """tz=UTC/GMT/Etc/UTC работает без пакета tzdata; неизвестный пояс остаётся 400."""
+    root = make_project(tmp)
+    _exact(root, "run-zone")
+    with mock.patch.object(UM, "ZoneInfo", side_effect=ZoneInfoNotFoundError("UTC")):
+        for name in ("UTC", "GMT", "Etc/UTC"):
+            zone, label = UM._zone(name)
+            assert zone is timezone.utc, (name, zone)
+            assert label == name, (name, label)
+
+    server = _Server([str(tmp)])
+    try:
+        status, data, body = _json_get(server, "/api/usage?days=7&tz=UTC")
+        assert status == 200, (status, body[:300])
+        assert data["window"]["tz"] == "UTC", data["window"]
+        status, data, body = _json_get(server, "/api/usage?days=7&tz=No/Such_Zone")
+        assert status == 400, (status, body[:300])
+        assert data["code"] == "bad_request", data
+    finally:
+        server.close()
+    try:
+        UM._zone("No/Such_Zone")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("неизвестный пояс принят")
 
 
 @test
