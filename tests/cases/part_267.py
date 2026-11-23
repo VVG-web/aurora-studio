@@ -220,3 +220,42 @@ def test_metrics_i18n_has_both_catalogs_and_no_key_or_cost_words(_tmp: Path):
         text = " ".join(catalog.values()).lower()
         for word in ("cost", "стоимост", "валюта", "currency", "price"):
             assert word not in text, word
+
+
+@test
+def test_metrics_services_filter_is_keyboard_ready_and_persisted(_tmp: Path):
+    """Фильтр сервисов: чистка строк, подпись из каталога и сохранение выбора."""
+    script = f"""
+import {{filterServices, parsePrefs, serializePrefs, resetPrefs}}
+  from {json.dumps(VIEW.as_uri())};
+const services = {{llm: {{calls: 3}}, web: {{calls: 2}}, custom: {{calls: 1}}}};
+const saved = parsePrefs({{service: "web"}});
+const legacy = parsePrefs({{serviceFilter: "llm"}});
+console.log(JSON.stringify({{
+  all: Object.keys(filterServices(services, "")),
+  one: Object.keys(filterServices(services, "web")),
+  none: Object.keys(filterServices(services, "missing")),
+  saved: saved.serviceFilter,
+  serialized: JSON.parse(serializePrefs(saved)).service,
+  legacy: legacy.serviceFilter,
+  reset: resetPrefs().serviceFilter,
+}}));
+"""
+    got = _node(script)
+    assert got["all"] == ["llm", "web", "custom"], got
+    assert got["one"] == ["web"], got
+    assert got["none"] == [], got
+    assert got["saved"] == "web", got
+    assert got["serialized"] == "web", got
+    assert got["legacy"] == "llm", got
+    assert got["reset"] == "", got
+
+    source = VIEW.read_text(encoding="utf-8")
+    for token in ("export function filterServices", 'id: "metricsServiceFilter"',
+                  '"aria-label": label', "STATE.serviceFilter = select.value",
+                  'ctx.t("metrics.filter_service")', "filterServices(all, selected)"):
+        assert token in source, token
+    ru = json.loads(RU.read_text(encoding="utf-8"))
+    en = json.loads(EN.read_text(encoding="utf-8"))
+    assert ru["metrics.filter_service"] == "Сервис", ru.get("metrics.filter_service")
+    assert en["metrics.filter_service"] == "Service", en.get("metrics.filter_service")

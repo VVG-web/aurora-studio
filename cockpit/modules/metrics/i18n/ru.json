@@ -46,6 +46,7 @@
   "metrics.filter.model": "Модель",
   "metrics.filter.provider": "Провайдер",
   "metrics.filter.role": "Роль",
+  "metrics.filter_service": "Сервис",
   "metrics.filter.all": "Все",
   "metrics.filter.reset": "Сбросить",
   "metrics.filter.reset_hint": "Вернуть 7 дней и пустые фильтры.",
