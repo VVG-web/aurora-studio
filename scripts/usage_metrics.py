@@ -85,7 +85,8 @@ def _nullable_int(value):
 
 
 def _clean(value) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()[:160]
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value or ""))
+    return re.sub(r"\s+", " ", text).strip()[:160]
 
 
 _KEYLIKE_RE = re.compile(
@@ -107,6 +108,8 @@ def _unsafe_text(text: str) -> bool:
     """URL, абсолютный путь или строка, похожая на ключ, наружу не идут."""
     if "://" in text:
         return True
+    if re.search(r"\bbearer\b", text, re.IGNORECASE):
+        return True
     if re.match(r"^(?:/|\\|[A-Za-z]:[\\/]|~[\\/])", text):
         return True
     if re.search(r"(?:^|[\\/])\.\.(?:[\\/]|$)", text):
@@ -114,11 +117,13 @@ def _unsafe_text(text: str) -> bool:
     return bool(_KEYLIKE_RE.search(text))
 
 
-def _safe_label(value, fallback: str = "") -> str:
+def _safe_label(value, fallback: str = "", keep_relative: bool = False) -> str:
     """Имя для показа без пути и URL: наружу не должна уйти папка или адрес."""
     text = _clean(value)
     if not text or _unsafe_text(text):
         return _clean(fallback)
+    if keep_relative:
+        return text
     text = text.replace("\\", "/").rsplit("/", 1)[-1].strip()
     return text or _clean(fallback)
 
@@ -134,7 +139,7 @@ def _safe_task(value) -> str:
 def _safe_filter(value) -> str:
     """Значение фильтра без URL, абсолютного пути и ключа; иначе пустая строка."""
     text = _clean(value)
-    if not text or len(text) > 120 or _unsafe_text(text):
+    if not text or not re.fullmatch(r"[A-Za-z0-9._:@+-]{1,64}", text) or _unsafe_text(text):
         return ""
     return text
 
@@ -268,9 +273,8 @@ def parse_query(query: dict, now: float | None = None) -> dict:
         values = []
         for item in _many(query, name):
             value = _safe_filter(item)
-            if not value:
-                raise ValueError(f"{name}: недопустимое значение")
-            values.append(value)
+            if value:
+                values.append(value)
         filters[name] = values
     compare_requested = _one(query, "compare") == "1"
     compare_reason = ""
@@ -467,10 +471,10 @@ def _cell(provider=None, provider_name=None, role=None, model=None, calls=0,
           calls_failed=0, requests=0, tokens_in=0, tokens_out=0, cached_in=None,
           reasoning_out=None, gen_seconds=0.0) -> dict:
     row = {
-        "provider": _safe_label(provider) or None,
-        "provider_name": _safe_label(provider_name) or None,
-        "role": _clean(role) or None,
-        "model": _clean(model) or None,
+        "provider": _safe_label(provider, keep_relative=True) or None,
+        "provider_name": _safe_label(provider_name, keep_relative=True) or None,
+        "role": _safe_label(role, keep_relative=True) or None,
+        "model": _safe_label(model, keep_relative=True) or None,
         "calls": _int(calls), "calls_failed": _int(calls_failed),
         "requests": _int(requests),
         "tokens_in": _int(tokens_in), "tokens_out": _int(tokens_out),
