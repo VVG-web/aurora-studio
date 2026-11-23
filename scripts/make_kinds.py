@@ -663,9 +663,16 @@ def template_headings(template: str) -> list:
 
 
 def template_sha(root: str, rel: str) -> str:
-    """Отпечаток файла шаблона: по нему видно, что шаблон не менялся с начала сессии."""
-    with open(os.path.join(root, rel), "rb") as handle:
-        return hashlib.sha256(handle.read()).hexdigest()
+    """Отпечаток файла шаблона: по нему видно, что шаблон не менялся с начала сессии.
+
+    Пустая строка — отпечаток снять не удалось (файла нет, он не читается или это каталог).
+    Вызывающий решает, что это значит: молча подставлять пустой хеш нельзя, иначе проверка
+    «шаблон изменился» пропустит всё."""
+    try:
+        with open(os.path.join(root, rel), "rb") as handle:
+            return hashlib.sha256(handle.read()).hexdigest()
+    except OSError:
+        return ""
 
 
 def template_problem(root: str, rec: dict) -> str:

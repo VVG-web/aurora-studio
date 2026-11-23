@@ -6667,6 +6667,12 @@ def final_form_problems(cwd: str, spec: dict, text: str, draft: str = "") -> lis
     def add(code: str, detail: str) -> None:
         problems.append({"code": code, "detail": " ".join(str(detail).split())[:300]})
 
+    # Шаблон проверяем до текста: удалённый или опустевший файл иначе молча даст
+    # `template_scan("") == []`, и форма «примет» документ без единого раздела.
+    why = MK.template_problem(cwd, spec)
+    if why:
+        add("template-problem", why)
+        return problems
     raw = str(text or "").lstrip("\ufeff")
     if MADE_MARK in raw:
         add("made-mark", MADE_MARK)
@@ -6717,6 +6723,34 @@ def final_form_problems(cwd: str, spec: dict, text: str, draft: str = "") -> lis
     if todo:
         add("todo", todo.group(0))
     return problems
+
+
+def legacy_ready_state(cwd: str, st: dict, *, synthetic_final: bool = False) -> bool:
+    """Действительно ли старый артефакт готов без финальной сборки.
+
+    До B2 `checked` значил «Момус прошёл», но старый движок ставил его и при замечаниях
+    критика: `ready` там зависел ещё и от `issues`. Поэтому одного `checked` без
+    `finalizing` мало: старый `critic_rejected` или файл со `status: draft` готовыми не
+    были и не должны становиться ими задним числом."""
+    stages = st.get("stages") or {}
+    if not stages.get("checked"):
+        return False
+    # Старый путь `run_make` дописывает `finalizing` из `checked` для совместимости шапки.
+    # Это не финальная сборка, поэтому явное решение `legacy_ready` его не отменяет.
+    if stages.get("finalizing") and not synthetic_final:
+        return False
+    if st.get("issues") or st.get("final_check") == "critic_rejected":
+        return False
+    path = str(st.get("path") or "")
+    if path:
+        head = read_text_file(os.path.join(cwd, path), 3000)
+        status = re.search(r"^status:\s*[\"']?([A-Za-z_-]+)", head, re.M)
+        if status and status.group(1).strip().lower() != "ready":
+            return False
+        review = re.search(r"^review_issues:\s*(\d+)", head, re.M)
+        if review and int(review.group(1)) > 0:
+            return False
+    return True
 
 
 def pack_budget_args(cfg: dict, template: str, extra: str, idea: str, name: str) -> tuple:
@@ -7157,24 +7191,31 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             return {"ok": False, "stage": "error", "status": "error", "why": why,
                     "error": reliability.human_error("make_spec", why,
                                                      "исправьте настройки вида артефакта")}
-        d = make_session_dir(cwd, kind)
-        sid = d.name
         # Свойства задачи вида без эпика: эпик выбирают у документа (прежнее значение вида в конфиге не действует).
         spec["task"] = {k: v for k, v in (spec.get("task") or {}).items() if k != "epic"}
-        st = {"sid": sid, "kind": kind, "idea": idea, "spec": spec,
-              "stages": {}, "rounds": [], "plan": "", "started": utc_stamp()}
         # Отпечаток формы: сессия, у которой шаблон изменился посреди работы, не должна
         # продолжать по другой форме. Новая сессия запоминает его до первого вызова модели.
-        st["template_sha256"] = MK.template_sha(cwd, spec["template"])
+        sha = MK.template_sha(cwd, spec["template"])
+        if not sha:
+            why = (f"шаблон «{spec['template']}» не читается: "
+                   "не удалось снять отпечаток формы")
+            return {"ok": False, "stage": "error", "status": "error", "why": why,
+                    "error": reliability.human_error(
+                        "template_problem", why,
+                        "исправьте шаблон вида и повторите запуск")}
+        d = make_session_dir(cwd, kind)
+        sid = d.name
+        st = {"sid": sid, "kind": kind, "idea": idea, "spec": spec,
+              "stages": {}, "rounds": [], "plan": "", "started": utc_stamp()}
+        st["template_sha256"] = sha
+        spec["template_sha256"] = sha
     # Версия конвейера: старые сессии писали документ без финальной сборки. `checked` без
     # `finalizing` — это готовая работа прежнего движка, а не новая, брошенная на середине.
     legacy = not st.get("pipeline_version")
     st["pipeline_version"] = 2
     if legacy:
-        st["legacy_ready"] = (
-            bool((st.get("stages") or {}).get("checked"))
-            and not (st.get("stages") or {}).get("finalizing")
-        )
+        st["legacy_ready"] = legacy_ready_state(
+            cwd, st, synthetic_final=bool(st.get("legacy_ready")))
     # Свойства задачи из окна создания (`--task-field`): сильнее свойств вида, ложатся в блок `task:` шапки документа.
     for field, value in (task or {}).items():
         st["spec"].setdefault("task", {})[field] = value
@@ -7319,10 +7360,15 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                     "повторите шаг с той же сессией или проверьте настройки вида"),
                 "state": st}
 
-    def persist(stage: str) -> dict | None:
+    def persist(stage: str, *, final: bool = False) -> dict | None:
         """Записать артефакт; ошибку записи вернуть, а не выпустить исключением."""
         try:
             st["path"] = write_artifact(cwd, st)
+            if final and st.get("form_problems"):
+                why = "форма финального текста не принята: " + "; ".join(
+                    f"{p.get('code', '?')}: {p.get('detail', '')}"
+                    for p in st["form_problems"][:5])
+                return abort(stage, why)
             run.set_stage(stage)
             run.set_artifact(st["path"], status=(
                 "ready" if "status: ready" in read_text_file(
@@ -7418,7 +7464,14 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         return abort("enrichment", why, reliability.human_error(
             "template_problem", why, "исправьте шаблон вида и повторите запуск"))
     if not st.get("template_sha256"):
-        st["template_sha256"] = MK.template_sha(cwd, spec["template"])
+        sha = MK.template_sha(cwd, spec["template"])
+        if not sha:
+            why = (f"шаблон «{spec['template']}» не читается: "
+                   "не удалось снять отпечаток формы")
+            return abort("enrichment", why, reliability.human_error(
+                "template_problem", why, "исправьте шаблон вида и повторите запуск"))
+        st["template_sha256"] = sha
+    spec["template_sha256"] = st["template_sha256"]
     say(f"Артефакт: {spec.get('title') or st['kind']} · сессия {sid}")
     req = request_asks(cwd, st, spec)
     template = read_text_file(os.path.join(cwd, spec["template"]), MK.TEMPLATE_LIMIT + 1)
@@ -8144,6 +8197,9 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         # Две попытки — не на каждое нарушение: даже пять находок в первом тексте дают
         # вторую попытку, и только второй провал закрывает работу частичным результатом.
         for attempt in (1, 2):
+            # Вторая попытка собирает документ поверх лучшего черновика, а не поверх
+            # первого финального кандидата, который уже забраковала форма.
+            st["draft"] = best_draft
             final_version = best_version + attempt
             fw = writer_version(final_version, mode="final", parent=best_version,
                                 issues=issues, momus_text=momus_text,
@@ -8186,6 +8242,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             if attempt == 2:
                 st["draft"] = best_draft
                 st["best_version"] = best_version
+                st["form_problems"] = list(problems)
                 return abort("finalizing", "финальный текст не прошёл проверку формы: "
                              + "; ".join(f"{p['code']}: {p['detail']}" for p in problems))
 
@@ -8194,7 +8251,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         # Замечания критика закрыл финальный писатель: они остаются в служебном блоке и
         # отчёте, но на `ready` больше не влияют. Число до сборки — для отчёта.
         st["issues_before_final"] = list(issues)
-        if (err := persist("checked" if momus else "finalizing")):
+        if (err := persist("checked" if momus else "finalizing", final=True)):
             return err
         save_session(cwd, sid, st)
         emit_event("check", stage="form",
@@ -8259,6 +8316,11 @@ def report_make(res: dict) -> str:
     if "issues_before_final" in st:
         L += ["", f"Финальная сборка: замечаний до неё — "
                   f"{len(st.get('issues_before_final') or [])}."]
+    problems = st.get("form_problems") or []
+    if problems:
+        L += ["", "Форма не принята: " + "; ".join(
+            f"{p.get('code', '?')}: {str(p.get('detail') or '')[:160]}"
+            for p in problems[:5])]
     mo = st.get("momus") or {}
     if mo.get("ok"):
         L += ["", (f"Момус: {momus_summary(mo)}" if not mo.get("unsupported")
@@ -8459,12 +8521,47 @@ def write_artifact(cwd: str, st: dict) -> str:
     # документ не по форме. Найдено на живом прогоне: `status: ready` при `unsupported: 6`.
     unsupported = int(((st.get("momus") or {}).get("unsupported") or 0))
     pipeline = st.get("pipeline") or {}
-    form_ok = bool(pipeline.get("form_ok"))
     # Старая сессия (в ней нет `pipeline_version`) читается по прежним правилам: `checked`
     # без `finalizing` — готовая работа прежнего движка, а не новая, брошенная на середине.
-    legacy_ready = bool(st.get("legacy_ready")) or bool(
-        stages.get("checked") and not stages.get("finalizing")
-        and not st.get("pipeline_version"))
+    # Но только если она действительно была готова: старый `critic_rejected` или файл со
+    # `status: draft` готовыми не были и задним числом ими не становятся.
+    explicit_legacy = bool(st.get("legacy_ready"))
+    if explicit_legacy:
+        legacy_ready = legacy_ready_state(cwd, st, synthetic_final=True)
+    elif not st.get("pipeline_version"):
+        legacy_ready = legacy_ready_state(cwd, st)
+    else:
+        legacy_ready = False
+    form_ok = bool(pipeline.get("form_ok")) or legacy_ready
+    if explicit_legacy and not legacy_ready:
+        # Заявка «это готовая старая работа» не подтвердилась. Синтетические
+        # `finalizing`/`checked` не должны превратить `critic_rejected` или draft в ready.
+        form_ok = False
+        st["legacy_ready"] = False
+        st.setdefault("pipeline", {})["form_ok"] = False
+    if legacy_ready and not stages.get("finalizing"):
+        # У старой готовой работы финальной сборки не было; в шапке она обозначает
+        # ту же точку, что `checked`, иначе панель сочтёт готовый файл брошенным.
+        stages["finalizing"] = stages.get("checked")
+    # `form_ok` — заявление сессии, а не доказательство. Для нового артефакта шаблон и форма
+    # перепроверяются здесь, у единственной точки записи: шаблон могли удалить или заменить
+    # после стартовой проверки, а `pipeline.form_ok` мог остаться от прошлой попытки.
+    new_artifact = bool(st.get("pipeline_version")) or bool(stages.get("finalizing"))
+    if new_artifact and not legacy_ready:
+        check_spec = dict(spec)
+        if st.get("template_sha256"):
+            check_spec.setdefault("template_sha256", st["template_sha256"])
+        why_tpl = MK.template_problem(cwd, check_spec)
+        problems = ([{"code": "template-problem", "detail": why_tpl}] if why_tpl
+                    else final_form_problems(cwd, check_spec, st.get("draft") or ""))
+        if problems:
+            form_ok = False
+            st.setdefault("pipeline", {})["form_ok"] = False
+            st["form_problems"] = problems
+        else:
+            st.pop("form_problems", None)
+    else:
+        st.pop("form_problems", None)
     mom = st.get("momus") or {}
     mom_ok = bool(mom.get("clean")) or legacy_ready
     # Документ, который сослался на непроверенную карточку (режим bootstrap пускает draft в
@@ -8476,9 +8573,9 @@ def write_artifact(cwd: str, st: dict) -> str:
     unver = set(CP.unverified_names(st.get("pack") or ""))
     lean = [c for c in dict.fromkeys(
         card_stem(x) for x in link_refs(st.get("draft") or "") if x.strip()) if c in unver]
-    # `ready` — документ прошёл финального писателя, повторного Момуса и проверку формы.
-    # Замечания критика закрывает финальная сборка, поэтому `issues` больше не условие:
-    # иначе старые замечания навсегда запрещали бы готовый документ.
+    # `ready` — документ прошёл финального писателя, повторного Момуса и проверку формы,
+    # причём форму проверила сама запись, а не только флаг в сессии. Старый артефакт
+    # проходит по `legacy_ready`, который тоже проверяет замечания и статус файла.
     done = (
         (legacy_ready or (bool(stages.get("finalizing")) and bool(stages.get("checked"))
                           and form_ok))
