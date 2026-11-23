@@ -2,7 +2,7 @@
 
 Настоящая панель не поднимается и реальные конфиги не читаются: HTTP-панель подставная,
 токен — строка в тесте, `local/mcp.json` лежит во временном ките. Проверяются 17 схем,
-ACL до вызова панели, девять запрещённых команд, destructive-маршруты, подтверждение
+ACL до вызова панели, десять запрещённых команд, destructive-маршруты, подтверждение
 человека на fake panel, `remote_results`, `resume`, границы журнала и утечка токена.
 """
 from __future__ import annotations
@@ -569,11 +569,12 @@ def test_mcp_remote_rejects_unknown_tool_and_field(tmp: Path):
 
 # --------------------------------------------------------------------- safe/full
 @test
-def test_mcp_remote_safe_denies_all_nine_commands(tmp: Path):
+def test_mcp_remote_safe_denies_all_ten_commands(tmp: Path):
     env = _run(tmp)
     try:
         assert set(AC.MCP_SAFE_DENY_COMMANDS) == DENY
-        assert len(DENY) == 9
+        assert len(DENY) == 10
+        assert "ship:release" in DENY
         for cmd in sorted(DENY):
             got = _err(env, "remote_run_command", "safe_mode", project="alpha", cmd=cmd)
             assert "details" not in got["error"], got
@@ -639,6 +640,52 @@ def test_mcp_remote_full_irreversible_requires_admin(tmp: Path):
     try:
         _err(env, "remote_run_command", "scope", project="alpha", cmd="git:push")
         _err(env, "remote_run_route", "scope", project="alpha", route="rebuild")
+    finally:
+        env.close()
+
+
+@test
+def test_mcp_remote_full_ship_release_needs_confirmation(tmp: Path):
+    env = _run(tmp, panel_mode="full", local_mode="full")
+    try:
+        args = ["Artifacts/ac/x.md", "--export", "docx"]
+        got = _err(env, "remote_run_command", "confirmation_required",
+                   project="alpha", cmd="ship:release", args=args)
+        details = got["error"]["details"]
+        assert details["request_id"] and details["args_digest"], details
+        assert not env.panel.calls("/api/run")
+
+        confirm_id = env.panel.approve(details["request_id"])
+        got = _ok(env, "remote_run_command", project="alpha",
+                  cmd="ship:release", args=args, confirm_id=confirm_id)
+        assert got["data"]["job"] == "job-1", got
+        body = env.panel.calls("/api/run")[-1]["body"]
+        assert body["cmd"] == "ship:release" and body["args"] == args, body
+        assert body["confirm_id"] == confirm_id, body
+    finally:
+        env.close()
+
+
+@test
+def test_mcp_remote_full_ship_release_requires_admin(tmp: Path):
+    env = _run(tmp, panel_mode="full", local_mode="full",
+               scopes=frozenset({"remote:read", "remote:write"}))
+    try:
+        _err(env, "remote_run_command", "scope", project="alpha",
+             cmd="ship:release", args=["Artifacts/ac/x.md", "--export", "docx"])
+        assert not env.panel.calls("/api/run")
+    finally:
+        env.close()
+
+
+@test
+def test_mcp_remote_safe_ship_release_denied_even_with_admin(tmp: Path):
+    env = _run(tmp, panel_mode="safe", local_mode="safe")
+    try:
+        _err(env, "remote_run_command", "safe_mode", project="alpha",
+             cmd="ship:release", args=["Artifacts/ac/x.md", "--export", "docx"])
+        assert not env.panel.calls("/api/run")
+        assert not env.panel.calls("/api/task/check")
     finally:
         env.close()
 
