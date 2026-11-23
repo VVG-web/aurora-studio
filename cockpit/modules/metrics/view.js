@@ -350,11 +350,14 @@ function projectMatches(name){
     || PROJECT_ALIASES.get(String(value)) === String(name || ""));
 }
 
-function filterRuns(runs){
+export function filterRuns(runs, project){
+  if (project !== undefined){
+    return (runs || []).filter(row => !project || row.project === project);
+  }
   return (runs || []).filter(row => projectMatches(row.project));
 }
 
-function serviceKeys(services){
+export function serviceKeys(services){
   const order = ["llm", "web", "confluence", "jira", "network", "embeddings"];
   const all = services || {};
   return order.filter(name => all[name])
@@ -1015,7 +1018,7 @@ function elValue(ctx, labelKey, value){
 
 // ---------------------------------------------------------------- нижние логи
 
-function statCells(stat){
+export function statCells(stat){
   const n = numberOrNull(stat && stat.n) || 0;
   if (!n) return {n: 0, avg: null, p50: null, p95: null, max: null,
     approx: false, low: false, notes: [], note: ""};
@@ -1031,7 +1034,7 @@ function statCells(stat){
     approx, low, notes, note: notes[0] || ""};
 }
 
-function runNote(row){
+export function runNote(row){
   if (!row || row.confidence === "unknown" || row.work_ms == null) return "no_data";
   if (row.source === "legacy") return "estimate";
   if ((Number(row.service_wait_ms) || 0) > 0) return "wait";
