@@ -280,6 +280,30 @@ missing, it is derived from `seconds` and `net.blocked_s` at read time. This sta
 separate LLM, Jira or Confluence waiting, the queue, human pauses or TTFT; `network` is an
 estimate of network downtime, not a breakdown by every service.
 
+### Migrating network snapshots
+
+Before this version `net-runs.d` lived in git and travelled between actors. It is now local
+telemetry on this machine: the folder is covered by `.gitignore`, and the first `kit:update`
+removes the old files from the index. The removal goes out with the next commit, so keep a
+copy before the first update:
+
+```
+cp -R AuroraKnowledgeDB/meta/net-runs.d ~/net-runs-backup
+python3 <kit>/aurora.py update <project> --apply
+git add .gitignore
+git commit -m "net-runs: stop tracking snapshots"
+```
+
+Old clones lose the tracked files after `git pull`: the commit removes them from the index
+and from working trees. They remain in history; fetch a snapshot with:
+
+```
+git show <old-sha>:AuroraKnowledgeDB/meta/net-runs.d/<actor>-<machine>/<id>.json > snapshot.json
+```
+
+Without a copy this is the only way to get a snapshot back. After the update the panel reads
+the files from disk at the same path, so the metrics section and `net:report` keep working.
+
 ## Appendix: storage format
 
 An example of `local/connectivity.json` (the addresses and names are made up):
