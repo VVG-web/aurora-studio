@@ -184,12 +184,14 @@ def test_final_writer_missing_section_retries_once(tmp: Path):
     import agent_runner as R
     workers = []
     finals = [0]
+    prompts = []
 
     def fake(cfg, role, messages, **kw):
         if role == "planner":
             return _planner()
         if role == "worker":
             workers.append(1)
+            prompts.append(messages[0]["content"])
             if len(workers) == 2:                     # первый финальный текст — без «Проверки»
                 finals[0] += 1
                 return _base(_written(2, check_head=False))
@@ -206,6 +208,8 @@ def test_final_writer_missing_section_retries_once(tmp: Path):
     assert len(workers) == 3, workers
     st = res["state"]
     assert st["best_version"] == 3, st["best_version"]
+    assert "Версия 1" in prompts[-1] and "Версия 2" not in prompts[-1], \
+        "вторая финальная попытка собрана поверх первого плохого кандидата"
     doc = (root / st["path"]).read_text(encoding="utf-8")
     assert "status: ready" in doc, doc[:400]
     assert "## Проверка" in doc, doc
@@ -243,6 +247,8 @@ def test_two_form_failures_leave_partial_and_no_ready(tmp: Path):
     assert st["pipeline"].get("form_ok") is not True, st["pipeline"]
     assert st["best_version"] == 1, st["best_version"]
     assert "finalizing" not in st["stages"] and "checked" not in st["stages"], st["stages"]
+    report = R.report_make(res)
+    assert "Форма не принята" in report and "missing-heading" in report, report
 
 
 @test
@@ -449,6 +455,95 @@ def test_final_gate_blocks_ready_without_finalizing(tmp: Path):
 
 
 @test
+def test_write_artifact_rechecks_template_and_form(tmp: Path):
+    """`form_ok=True` в сессии не заменяет проверку формы у единственной точки записи."""
+    root = _project(tmp)
+    import agent_runner as R
+    st = {"kind": "ac", "idea": "срок заявки", "sid": "s-write-gate",
+          "spec": {"title": "AC", "out": "Artifacts/ac", "template": "Templates/AC.md"},
+          "stages": {k: "2026-11-23T00:00:00Z" for k in R.MAKE_STAGES},
+          "issues": [], "pipeline": {"form_ok": True}, "pipeline_version": 2,
+          "legacy_ready": False,
+          "momus": {"ok": True, "clean": True, "unsupported": 0},
+          "draft": "# AC\n\nСлишком коротко.", "path": None}
+    text = (root / R.write_artifact(str(root), st)).read_text(encoding="utf-8")
+    assert "status: draft" in text and "status: ready" not in text, text[:400]
+    codes = {p["code"] for p in st.get("form_problems") or []}
+    assert {"missing-heading", "empty-body"} <= codes, codes
+
+    missing = {**st, "sid": "s-write-gate-missing", "path": None,
+               "spec": {**st["spec"], "template": "Templates/Missing.md"},
+               "pipeline": {"form_ok": True}, "draft": _written()}
+    missing.pop("form_problems", None)
+    text2 = (root / R.write_artifact(str(root), missing)).read_text(encoding="utf-8")
+    assert "status: draft" in text2, text2[:400]
+    assert [p["code"] for p in missing.get("form_problems") or []] == ["template-problem"], \
+        missing.get("form_problems")
+
+    empty = root / "Templates/Empty.md"
+    empty.write_text("   \n", encoding="utf-8")
+    empty_state = {**st, "sid": "s-write-gate-empty", "path": None,
+                   "spec": {**st["spec"], "template": "Templates/Empty.md"},
+                   "pipeline": {"form_ok": True}, "draft": _written()}
+    empty_state.pop("form_problems", None)
+    text3 = (root / R.write_artifact(str(root), empty_state)).read_text(encoding="utf-8")
+    assert "status: draft" in text3, text3[:400]
+    assert "пуст" in empty_state["form_problems"][0]["detail"], empty_state["form_problems"]
+
+    original = (root / "Templates/AC.md").read_text(encoding="utf-8")
+    sha = R.MK.template_sha(str(root), "Templates/AC.md")
+    changed = {**st, "sid": "s-write-gate-changed", "path": None,
+               "spec": {**st["spec"], "template_sha256": sha},
+               "pipeline": {"form_ok": True}, "draft": _written()}
+    changed.pop("form_problems", None)
+    (root / "Templates/AC.md").write_text(original + "\n## Новый раздел\n", encoding="utf-8")
+    text4 = (root / R.write_artifact(str(root), changed)).read_text(encoding="utf-8")
+    assert "status: draft" in text4, text4[:400]
+    assert "изменился" in changed["form_problems"][0]["detail"], changed["form_problems"]
+    (root / "Templates/AC.md").write_text(original, encoding="utf-8")
+
+
+@test
+def test_template_changed_between_start_and_final_writer_blocks_ready(tmp: Path):
+    """Удалённый, опустевший или заменённый шаблон не пропускает финальный текст."""
+    import agent_runner as R
+    for mode in ("delete", "empty", "changed"):
+        case = tmp / mode
+        case.mkdir()
+        root = _project(case)
+        tpl = root / "Templates/AC.md"
+        workers = []
+
+        def fake(cfg, role, messages, **kw):
+            if role == "planner":
+                return _planner()
+            if role == "worker":
+                workers.append(1)
+                if len(workers) == 2:                 # финальный писатель
+                    if mode == "delete":
+                        tpl.unlink()
+                    elif mode == "empty":
+                        tpl.write_text("", encoding="utf-8")
+                    else:
+                        tpl.write_text(TEMPLATE + "\n## Новый раздел\n", encoding="utf-8")
+                return _base(_written(len(workers)))
+            if role == "critic":
+                return _critic(True)
+            if role == "qa":
+                return _base(CLEAN)
+            raise AssertionError(role)
+
+        res = R.run_make(_cfg(), str(root), "ac", "срок заявки", "", "", True,
+                         call=fake, momus=False)
+        assert not res["ok"] and res["status"] == "partial", (mode, res)
+        assert "template-problem" in res.get("why", ""), (mode, res.get("why"))
+        assert len(workers) == 3, (mode, workers)
+        doc = (root / res["path"]).read_text(encoding="utf-8")
+        assert "status: draft" in doc and "status: ready" not in doc, (mode, doc[:400])
+        assert (res["state"].get("pipeline") or {}).get("form_ok") is not True, mode
+
+
+@test
 def test_legacy_checked_without_finalizing_is_ready(tmp: Path):
     """Старый артефакт с `checked` без `finalizing` читается как готовый и не числится незавершённым."""
     root = _project(tmp)
@@ -465,6 +560,18 @@ def test_legacy_checked_without_finalizing_is_ready(tmp: Path):
         "  checked: 2026-01-01T00:00:00Z\n---\n\n# AC\n\nТекст.\n",
         encoding="utf-8")
     assert AC.unfinished(str(root))["count"] == 0, AC.unfinished(str(root))
+    # Старый `checked` без `finalizing`, но со `status: draft`, готовым не считается:
+    # это брошенный черновик, и панель должна его показать.
+    abandoned = root / "Artifacts/ac/Брошенный.md"
+    abandoned.write_text(
+        "---\ntitle: \"Брошенный\"\ntype: ac\nstatus: draft\ncreated: 2026-01-01\n"
+        "updated: 2026-01-01\nbuilt: machine\nsession: s-abandoned\npipeline:\n"
+        "  enriched: 2026-01-01T00:00:00Z\n  planned: 2026-01-01T00:00:00Z\n"
+        "  drafted: 2026-01-01T00:00:00Z\n  reviewed: 2026-01-01T00:00:00Z\n"
+        "  checked: 2026-01-01T00:00:00Z\n---\n\n# AC\n\nТекст.\n",
+        encoding="utf-8")
+    left = AC.unfinished(str(root))
+    assert left["count"] == 1 and left["items"][0]["stopped"] == "status", left
     # Новый артефакт с незаполненной финальной сборкой и новый с проваленной формой
     # числятся незавершёнными: это работа, которую видно.
     fresh = root / "Artifacts/ac/Новый.md"
@@ -488,8 +595,9 @@ def test_legacy_checked_without_finalizing_is_ready(tmp: Path):
     stopped = {Path(item["path"]).name: item["stopped"] for item in seen["items"]}
     assert stopped.get("Новый.md") == "finalizing", seen
     assert stopped.get("Без формы.md") == "form", seen
+    assert stopped.get("Брошенный.md") == "status", seen
     assert "Старый.md" not in stopped, seen
-    stages = {k: "2026-11-23T00:00:00Z" for k in R.MAKE_STAGES}
+    stages = {k: "2026-11-23T00:00:00Z" for k in R.MAKE_STAGES if k != "finalizing"}
     st = {"kind": "ac", "idea": "срок заявки", "sid": "s-legacy",
           "spec": {"title": "AC", "out": "Artifacts/ac", "template": "Templates/AC.md"},
           "stages": stages, "issues": [], "pipeline": {"form_ok": True},
@@ -498,6 +606,66 @@ def test_legacy_checked_without_finalizing_is_ready(tmp: Path):
           "draft": _written(), "path": None}
     doc = (root / R.write_artifact(str(root), st)).read_text(encoding="utf-8")
     assert "status: ready" in doc and "finished:" in doc, doc[:500]
+    names = {Path(item["path"]).name for item in AC.unfinished(str(root))["items"]}
+    assert "срок-заявки.md" not in names, names
+    synthetic = dict(st, sid="s-legacy-synthetic", path=None,
+                     stages={**stages, "finalizing": stages["checked"]})
+    doc2 = (root / R.write_artifact(str(root), synthetic)).read_text(encoding="utf-8")
+    assert "status: ready" in doc2 and "finished:" in doc2, doc2[:500]
+
+
+@test
+def test_legacy_rejected_or_draft_does_not_become_ready(tmp: Path):
+    """Старый `checked` не поднимает `critic_rejected` и файл со `status: draft`."""
+    root = _project(tmp)
+    import agent_runner as R
+    stages = {k: "2026-11-23T00:00:00Z" for k in R.MAKE_STAGES if k != "finalizing"}
+    base = {"kind": "ac", "idea": "старый документ",
+            "spec": {"title": "AC", "out": "Artifacts/ac",
+                                   "template": "Templates/AC.md"},
+            "stages": stages, "issues": [],
+            "momus": {"ok": True, "clean": True, "unsupported": 0},
+            "draft": _written(), "path": None}
+    rejected = {**base, "sid": "s-old-rejected", "issues": ["критик не принял"],
+                "final_check": "critic_rejected"}
+    text = (root / R.write_artifact(str(root), rejected)).read_text(encoding="utf-8")
+    assert "status: draft" in text and "status: ready" not in text, text[:400]
+
+    old = root / "Artifacts/ac/Старый-черновик.md"
+    old.write_text(
+        "---\ntitle: \"Старый черновик\"\ntype: ac\nstatus: draft\ncreated: 2026-01-01\n"
+        "updated: 2026-01-01\nbuilt: machine\nsession: s-old-draft\npipeline:\n"
+        "  enriched: 2026-01-01T00:00:00Z\n  planned: 2026-01-01T00:00:00Z\n"
+        "  drafted: 2026-01-01T00:00:00Z\n  reviewed: 2026-01-01T00:00:00Z\n"
+        "  checked: 2026-01-01T00:00:00Z\n---\n\n# AC\n\nТекст.\n",
+        encoding="utf-8")
+    draft = {**base, "sid": "s-old-draft", "path": str(old.relative_to(root))}
+    text2 = (root / R.write_artifact(str(root), draft)).read_text(encoding="utf-8")
+    assert "status: draft" in text2 and "status: ready" not in text2, text2[:400]
+
+
+@test
+def test_final_form_problems_reports_each_gate(tmp: Path):
+    """Прямые коды формы: граница чистовика, YAML, порядок, пустое тело и шаблон."""
+    root = _project(tmp)
+    import agent_runner as R
+    from aurora_common import MADE_MARK
+    spec = {"template": "Templates/AC.md"}
+    valid = _written()
+    cases = {
+        "made-mark": MADE_MARK + "\n" + valid,
+        "frontmatter": "---\ntitle: x\n---\n" + valid,
+        "heading-order": ("# AC\n\n## Проверка\n\nСмотрим отчёт и журнал операций, "
+                          "затем закрываем заявку.\n\n## Критерии приёмки\n\n"
+                          "Срок заявки десять дней, проверяется отчётом."),
+        "empty-body": "# AC\n\n## Критерии приёмки\n\n## Проверка\n",
+    }
+    for code, text in cases.items():
+        got = [p["code"] for p in R.final_form_problems(str(root), spec, text)]
+        assert code in got, (code, got)
+    assert R.MK.template_sha(str(root), "Templates/Missing.md") == ""
+    assert [p["code"] for p in R.final_form_problems(
+        str(root), {"template": "Templates/Missing.md"}, valid)] == ["template-problem"]
 
 
 @test
