@@ -1182,10 +1182,14 @@ def refresh_gitignore(target: Path) -> list:
 
 
 RUNLOG_REL = "AuroraKnowledgeDB/meta/run_log.md"
+NET_RUNS_REL = "AuroraKnowledgeDB/meta/net-runs.d"
 RECENT_FILES_REL = "AuroraKnowledgeDB/meta/recent-files.json"
+# Каталоги, которые снимаются с учёта целиком: у каждого свои файлы, но все они локальные.
+LOCAL_STATE_DIRS = (NET_RUNS_REL,)
 LOCAL_STATE_RELS = (
     RUNLOG_REL,
     RECENT_FILES_REL,
+    NET_RUNS_REL,
     "AuroraKnowledgeDB/meta/retrieval-last.json",
     "AuroraKnowledgeDB/meta/graph.json",
     "AuroraKnowledgeDB/.obsidian/workspace.json",
@@ -1204,19 +1208,21 @@ LOCAL_STATE_RELS = (
 
 
 def untrack_runlog(target: Path, rel: str = RUNLOG_REL) -> bool:
-    """Снять локальный файл с учёта git, оставив его на диске.
+    """Снять локальный файл или каталог с учёта git, оставив его на диске.
 
     По умолчанию это журнал запусков (1.168.0); тот же безопасный шаг нужен личной истории
-    открытий панели. Правило .gitignore не снимает с учёта то, что уже в истории: файл продолжал
-    бы меняться в каждом коммите. Кит снимает только явно переданный им файл. Удаление из
-    индекса уйдёт со следующим коммитом проекта."""
+    открытий панели и снимкам сети (`AuroraKnowledgeDB/meta/net-runs.d`). Правило .gitignore
+    не снимает с учёта то, что уже в истории: файл продолжал бы меняться в каждом коммите.
+    Кит снимает только явно переданный им путь. Каталог снимается рекурсивно
+    (`git rm -r --cached`), файлы на диске остаются. Удаление из индекса уйдёт со следующим
+    коммитом проекта."""
     try:
-        tracked = subprocess.run(["git", "-C", str(target), "ls-files", "--error-unmatch", "--",
-                                  rel], capture_output=True, timeout=30).returncode == 0
-        if not tracked:
+        listed = subprocess.run(["git", "-C", str(target), "ls-files", "-z", "--", rel],
+                                capture_output=True, check=False, timeout=30)
+        if listed.returncode != 0 or not listed.stdout.strip():
             return False
-        return subprocess.run(["git", "-C", str(target), "rm", "--cached", "-q", "--", rel],
-                              capture_output=True, timeout=30).returncode == 0
+        return subprocess.run(["git", "-C", str(target), "rm", "-r", "--cached", "-q", "--", rel],
+                              capture_output=True, check=False, timeout=30).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
