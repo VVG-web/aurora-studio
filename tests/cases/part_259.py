@@ -362,6 +362,91 @@ def test_security_fix_project_safe_wins_over_global_full_on_http(tmp: Path):
         restore_home()
 
 
+# --------------------------------------------------------- B4: ship:release
+@test
+def test_security_fix_ship_release_requires_admin_and_confirmation(tmp: Path):
+    """`/api/run` не начинает `ship:release` без `admin` и подтверждения человека."""
+    home, restore_home = _home(tmp)
+    kit = _kit(tmp)
+    root = tmp / "root"
+    sample_workspace_alpha = _project(root, "sample_workspace_alpha")
+    _write_mode(kit, "full")
+    old_env = _tokens_env(kit)
+    started = []
+    args = ["Artifacts/ac/x.md", "--export", "docx"]
+    srv_ck, srv, close = _panel(tmp, kit, root)
+    call = _call(srv)
+    row = {"cmd": "ship:release", "runnable": True, "ns": "ship",
+           "flags": [], "fixed_flags": [], "script": "ship_doc.py"}
+    try:
+        with patch.object(srv_ck, "command_by_name", lambda cmd: row):
+            token = _token(kit, scopes=["remote:read", "remote:write"],
+                           projects=["sample_workspace_alpha"])
+            status, _h, raw = call("POST", "/api/run", _headers(token), json.dumps({
+                "project": str(sample_workspace_alpha), "cmd": "ship:release", "args": args,
+                "resume": False, "confirm_id": ""}))
+            assert status == 403 and _body(raw).get("code") == "scope", (status, raw)
+
+            token = _token(kit, scopes=["remote:read", "remote:write", "admin"],
+                           projects=["sample_workspace_alpha"])
+            status, _h, raw = call("POST", "/api/run", _headers(token), json.dumps({
+                "project": str(sample_workspace_alpha), "cmd": "ship:release", "args": args,
+                "resume": False, "confirm_id": ""}))
+            assert status == 409 and _body(raw).get("code") == "confirmation_required", (status, raw)
+            assert started == []
+
+            confirm = _request_confirmation(
+                srv_ck, call, token, "remote_run_command", "sample_workspace_alpha",
+                {"cmd": "ship:release", "args": args, "resume": False})
+        with patch.object(srv_ck, "command_by_name", lambda cmd: row), \
+                patch.object(srv_ck, "start_job",
+                             lambda project, cmd, cmd_args, **kw:
+                             started.append((project, cmd, cmd_args)) or "job-1"), \
+                patch.object(srv_ck, "version_gap", lambda *_a, **_k: ""), \
+                patch.object(srv_ck, "net_enabled", lambda: False):
+            status, _h, raw = call("POST", "/api/run", _headers(token), json.dumps({
+                "project": str(sample_workspace_alpha), "cmd": "ship:release", "args": args,
+                "resume": False, "confirm_id": confirm}))
+            assert status == 200, (status, raw)
+            assert started == [(str(sample_workspace_alpha), "ship:release", args)], started
+    finally:
+        close()
+        _restore_env(old_env)
+        restore_home()
+
+
+@test
+def test_security_fix_ship_release_safe_mode_blocks_admin(tmp: Path):
+    """`safe` сильнее `admin`: `ship:release` не начинается и с полными правами."""
+    home, restore_home = _home(tmp)
+    kit = _kit(tmp)
+    root = tmp / "root"
+    sample_workspace_alpha = _project(root, "sample_workspace_alpha")
+    _write_mode(kit, "safe")
+    old_env = _tokens_env(kit)
+    srv_ck, srv, close = _panel(tmp, kit, root)
+    call = _call(srv)
+    started = []
+    try:
+        token = _token(kit, scopes=["remote:read", "remote:write", "admin"],
+                       projects=["sample_workspace_alpha"])
+        with patch.object(srv_ck, "command_by_name",
+                          lambda cmd: {"cmd": cmd, "runnable": True, "ns": "ship",
+                                       "flags": [], "fixed_flags": [], "script": "ship_doc.py"}), \
+                patch.object(srv_ck, "start_job",
+                             lambda *a, **k: started.append(a) or "job-1"):
+            status, _h, raw = call("POST", "/api/run", _headers(token), json.dumps({
+                "project": str(sample_workspace_alpha), "cmd": "ship:release",
+                "args": ["Artifacts/ac/x.md", "--export", "docx"],
+                "resume": False, "confirm_id": ""}))
+            assert status == 403 and _body(raw).get("code") == "safe_mode", (status, raw)
+            assert started == [], started
+    finally:
+        close()
+        _restore_env(old_env)
+        restore_home()
+
+
 # -------------------------------------------------------------- P1-2: Cron
 @test
 def test_security_fix_cron_acl_filters_and_blocks_foreign_tasks(tmp: Path):
