@@ -11,8 +11,10 @@
 Снимок делается на старте и конце каждой операции, а для операции дольше 12 минут —
 ещё и каждые 12 минут. Подробный журнал лежит в архиве прогона и в git не едет.
 Краткий итог прогона пишется в проект отдельным файлом участника и машины:
-`AuroraKnowledgeDB/meta/net-runs.d/<actor>-<machine>/<run_id>.json`. Два участника
-никогда не пишут в один файл, поэтому merge не конфликтует.
+`AuroraKnowledgeDB/meta/net-runs.d/<actor>-<machine>/<run_id>.json`. Это локальная
+телеметрия машины: в git она не едет, панель читает файл с диска. У каждого
+участника и машины свой путь, поэтому чужие записи не пересекаются. На шард
+хранится не больше 200 записей и не дольше 90 дней.
 
 Снимок не содержит адресов probe, ключей, URL и путей. Имена системных VPN пишутся
 намеренно: по ним видно, какой именно провайдер моделей остался без связи.
@@ -49,6 +51,8 @@ LONG_AFTER = 12 * 60                  # первая отметка долгой
 LONG_EVERY = 12 * 60                  # дальше — с этим шагом
 MAX_LONG = 48                         # больше суток долгих отметок не копим
 MAX_SNAPSHOTS = MAX_LONG + 4
+KEEP_RECORDS = 200                    # снимков на свой шард: больше не копим
+KEEP_DAYS = 90                        # старше этого срока снимок не нужен
 SYSTEM_TIMEOUT = 5
 RUN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 _LOCK = threading.RLock()
@@ -104,7 +108,7 @@ def local_path(run_dir: str | os.PathLike) -> Path:
 
 
 def shared_path(project: str, run_id: str) -> Path | None:
-    """Файл участника и машины. Уникальный путь — вместо общего журнала с merge-конфликтами."""
+    """Файл участника и машины. У каждого свой путь, поэтому записи не пересекаются."""
     if not project or not RUN_RE.fullmatch(str(run_id or "")):
         return None
     try:
@@ -137,7 +141,7 @@ def _clean_name(value, limit: int = 120) -> str:
 
 
 def _project_name(project: str) -> str:
-    """В снимке — имя проекта, а не путь: общий файл не должен выдавать домашний каталог."""
+    """В снимке — имя проекта, а не путь: файл шарда не должен выдавать домашний каталог."""
     return os.path.basename(os.path.normpath(str(project or ""))) or ""
 
 
@@ -332,6 +336,44 @@ def _append_snapshot(path: Path, snap: dict) -> dict:
     return data
 
 
+def prune_shared(folder: str | os.PathLike, keep: int = KEEP_RECORDS,
+                 days: int = KEEP_DAYS, now: float | None = None,
+                 active: str | os.PathLike | None = None) -> list[str]:
+    """Убрать старые снимки своего шарда: не больше `keep` записей и не старше `days`.
+
+    Чужой шард не трогаем: вызывающий передаёт каталог `<actor>-<machine>`. Файл,
+    который только что записан (`active`), не удаляется. Ошибки чтения и удаления
+    не поднимаются: уборка не имеет права ломать прогон.
+    """
+    folder = Path(folder)
+    keep = max(0, int(keep))
+    cutoff = (time.time() if now is None else float(now)) - max(0, int(days)) * 86400
+    rows: list[tuple[float, str, Path]] = []
+    try:
+        for path in folder.glob("*.json"):
+            try:
+                rows.append((path.stat().st_mtime, path.name, path))
+            except OSError:
+                continue
+    except OSError:
+        return []
+    rows.sort()
+    doomed = {path for _mtime, _name, path in (rows if not keep else rows[:-keep])}
+    doomed |= {path for mtime, _name, path in rows if mtime < cutoff}
+    if active is not None:
+        active_key = os.path.normcase(os.path.abspath(str(active)))
+        doomed = {path for path in doomed
+                  if os.path.normcase(os.path.abspath(str(path))) != active_key}
+    gone: list[str] = []
+    for path in sorted(doomed):
+        try:
+            path.unlink(missing_ok=True)
+            gone.append(path.name)
+        except OSError:
+            continue
+    return gone
+
+
 def start(kind: str, project: str, run_id: str, run_dir: str, cmd: str = "",
           parent: str = "", steps: list | None = None) -> dict:
     """Снимок старта; локальный файл создаётся сразу."""
@@ -373,7 +415,7 @@ def long_snapshot(kind: str, project: str, run_id: str, run_dir: str, cmd: str =
 def finish(kind: str, project: str, run_id: str, run_dir: str, cmd: str = "",
            parent: str = "", started: float | None = None, steps: list | None = None,
            share: bool | None = None) -> dict:
-    """Снимок конца, итог и (для верхнего уровня или долгой операции) общий файл."""
+    """Снимок конца, итог и (для верхнего уровня или долгой операции) файл шарда."""
     if not enabled():
         return {}
     path = local_path(run_dir)
@@ -401,6 +443,8 @@ def finish(kind: str, project: str, run_id: str, run_dir: str, cmd: str = "",
                     _write(sp, data)
                 except OSError:
                     pass
+                else:
+                    prune_shared(sp.parent, active=sp)
         return data
 
 
@@ -486,7 +530,7 @@ def summarize(data: dict) -> dict:
 
 
 def load_run(project: str, run_id: str) -> dict:
-    """Локальный файл прогона, иначе общий файл любого участника."""
+    """Локальный файл прогона, иначе файл шарда любого участника."""
     local = local_path(Path(project) / ".aurora" / "runs" / run_id)
     data = _read(local)
     if data:
