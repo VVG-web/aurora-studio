@@ -382,7 +382,7 @@ def test_final_writer_keeps_links_and_numbers(tmp: Path):
 
 @test
 def test_make_blocks_missing_empty_headingless_template(tmp: Path):
-    """Шаблона нет, он пуст или без заголовков — отказ до вызова модели."""
+    """Шаблона нет, он пуст, без заголовков или сверх лимита — отказ до вызова модели."""
     root = _project(tmp)
     import agent_runner as R
     called = []
@@ -396,6 +396,7 @@ def test_make_blocks_missing_empty_headingless_template(tmp: Path):
         (None, "шаблона нет на диске"),
         ("   \n\n", "пуст"),
         ("---\ntitle: x\n# комментарий\n---\n<!-- ИНСТРУКЦИЯ: удалить -->\n", "нет заголовков"),
+        ("x" * (R.MK.TEMPLATE_LIMIT + 1), "длиннее"),
     ]
     for content, why in cases:
         if content is None:
@@ -404,7 +405,7 @@ def test_make_blocks_missing_empty_headingless_template(tmp: Path):
             tpl.write_text(content, encoding="utf-8")
         res = R.run_make(_cfg(), str(root), "ac", "срок заявки", "", "", True,
                          call=fake, momus=False)
-        assert not res["ok"] and why in res["why"], (content, res)
+        assert not res["ok"] and why in res["why"], (why, res)
     assert not called, called
 
 
