@@ -7025,6 +7025,7 @@ def make_report_data(run, st: dict, settings: dict, *, status: str, reason: str 
         "artifact": st.get("path") or (manifest.get("artifact") or {}).get("path", ""),
         "report_md": (manifest.get("report") or {}).get("md", ""),
         "plan": plan,
+        "questions": MS.current_questions(st),
         "stages": st.get("stages") or {},
         "issues": list(st.get("issues") or []),
         "momus": {"ok": bool(mo.get("ok")), "clean": bool(mo.get("clean")),
@@ -7060,8 +7061,22 @@ def manager_report_markdown(data: dict) -> str:
     if status == "done":
         lines.append("Документ собран и прошёл проверки. Можно открывать и передавать.")
     elif status == "planning":
-        lines.append("Планировщик ждёт ответы аналитика. Работа сохранена, вопросов "
-                     f"{len(data.get('plan', {}).get('steps') or [])} пунктов плана.")
+        questions = data.get("questions") or []
+        lines.append("Планировщик ждёт ответы аналитика. Работа сохранена.")
+        if questions:
+            lines += ["", "## Вопросы планировщика", ""]
+            for i, q in enumerate(questions, 1):
+                if isinstance(q, dict):
+                    lines.append(f"{i}. **{q.get('q') or ''}**")
+                    if q.get("why"):
+                        lines.append(f"   _{q['why']}_")
+                    if q.get("rec"):
+                        lines.append(f"   → рекомендую: {q['rec']}")
+                else:
+                    lines.append(f"{i}. {q}")
+                lines.append("")
+        else:
+            lines += ["", "Вопросы не попали в отчёт; они сохранены в журнале сессии."]
     elif data.get("artifact"):
         lines.append("Сохранён лучший полученный черновик. Документ имеет статус draft "
                      "и требует проверки перед передачей.")
@@ -7897,7 +7912,10 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             st["rounds"].append({"questions": questions})
             save_session(cwd, sid, st)
             say(f"  планировщик спрашивает: {len(questions)}")
-            run.update_state(status="planning", current="planning", questions=len(questions))
+            # В состоянии — сами вопросы, а не только их число: панель рисует
+            # карточку вопросов и поле ответа, а не гадает по счётчику.
+            run.update_state(status="planning", current="planning",
+                             questions=questions, question_count=len(questions))
             try:
                 write_run_report(run, st, settings, status="planning",
                                  reason="планировщик ждёт ответы аналитика",

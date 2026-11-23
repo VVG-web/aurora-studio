@@ -579,6 +579,23 @@ class MakeRun:
             return result
 
 
+def current_questions(data: dict) -> list:
+    """Вопросы последнего раунда, который их задал.
+
+    Старые сессии хранили в `run/state.json` только число вопросов, а сами
+    вопросы — в `session.json`. Панель ждёт список: число превращало карточку
+    вопросов в пустоту. Поэтому читаем оба места, список важнее счётчика.
+    """
+    for rd in reversed((data or {}).get("rounds") or []):
+        if not isinstance(rd, dict):
+            continue
+        qs = rd.get("questions")
+        if isinstance(qs, list) and qs:
+            return list(qs)
+    qs = (data or {}).get("questions")
+    return list(qs) if isinstance(qs, list) else []
+
+
 def read_run(cwd: str | Path, sid: str, *, limit: int = 80) -> dict:
     """Read one run for the panel without creating files."""
     if not _sid_ok(sid):
@@ -591,9 +608,14 @@ def read_run(cwd: str | Path, sid: str, *, limit: int = 80) -> dict:
     plan["steps"] = [{k: v for k, v in step.items() if k != "pack"}
                      for step in plan.get("steps") or []]
     manifest = run.manifest()
+    state = run.state()
+    # Старый state.json знает только счётчик; сами вопросы лежат в сессии рядом.
+    questions = current_questions(state) or current_questions(
+        read_json(run.dir.parent / "session.json", {}) or {})
     return {
         "sid": sid,
-        "state": run.state(),
+        "state": state,
+        "questions": questions,
         "plan": plan,
         "manifest": manifest,
         "report": read_json(run.report_json, {}) or {},
