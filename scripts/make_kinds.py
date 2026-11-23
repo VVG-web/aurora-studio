@@ -612,16 +612,96 @@ def _mask_problem(mask: str) -> str:
     return id_registry.mask_problem(mask)
 
 
+TEMPLATE_LIMIT = 200_000       # шаблон длиннее не читаем: молча резать форму нельзя
+
+_OPT_MARK = "\x00OPT"
+
+
+def template_scan(template: str) -> list:
+    """[(заголовок, необязательный ли)] реальных разделов шаблона, по порядку.
+
+    Заголовком считается только то, что попало бы в готовый документ. Не считаются: BOM,
+    YAML-шапка шаблона (её `#` — комментарии), HTML-комментарии (в них инструкции и
+    блоки-примеры, которые шапка велит удалять) и ограждённые блоки кода. «Необязательный» —
+    если прямо перед заголовком стоит комментарий «ОПЦИОНАЛЬНО: …».
+
+    Разбор один на реестр (`check`), изготовление (`agent:make`) и панель: две копии
+    разошлись бы на первой же правке, и шаблон проверялся бы по разным правилам.
+    """
+    text = template.lstrip("\ufeff")
+    text = re.sub(r"\A---[ \t]*\n.*?\n---[ \t]*(?:\n|\Z)", "", text, count=1, flags=re.S)
+    text = re.sub(r"<!--(\s*ОПЦИОНАЛЬНО:)?.*?-->",
+                  lambda m: f"\n{_OPT_MARK}\n" if m.group(1) else "\n", text, flags=re.S)
+    text = re.sub(r"<!--.*\Z", "\n", text, flags=re.S)       # незакрытый комментарий
+    out, fence, opt = [], "", False
+    for line in text.splitlines():
+        m = re.match(r"[ \t]{0,3}(`{3,}|~{3,})", line)
+        if m:
+            mark = m.group(1)
+            if not fence:
+                fence = mark
+            elif mark[0] == fence[0] and len(mark) >= len(fence):
+                fence = ""
+            continue
+        if fence:
+            continue
+        if line.strip() == _OPT_MARK:
+            opt = True
+            continue
+        h = re.match(r"#{1,6}[ \t]+\S.*$", line)
+        if h:
+            out.append((h.group(0).strip(), opt))
+            opt = False
+        elif line.strip():
+            opt = False
+    return out
+
+
+def template_headings(template: str) -> list:
+    """Заголовки шаблона (`#`…`######`) по порядку — его скелет."""
+    return [head for head, _opt in template_scan(template)]
+
+
+def template_sha(root: str, rel: str) -> str:
+    """Отпечаток файла шаблона: по нему видно, что шаблон не менялся с начала сессии."""
+    with open(os.path.join(root, rel), "rb") as handle:
+        return hashlib.sha256(handle.read()).hexdigest()
+
+
+def template_problem(root: str, rec: dict) -> str:
+    """Почему шаблон не годится. Пусто: годится."""
+    rel = str((rec or {}).get("template") or "").strip()
+    if not rel:
+        return "не указан шаблон"
+    path = os.path.join(root, rel)
+    if not os.path.isfile(path):
+        return f"шаблона нет на диске: {rel}"
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError as exc:
+        return f"шаблон не читается: {rel}: {exc}"
+    text = raw.decode("utf-8", "replace")
+    if len(text) > TEMPLATE_LIMIT:
+        return f"шаблон «{rel}» длиннее {TEMPLATE_LIMIT:,} знаков".replace(",", " ")
+    if not text.strip():
+        return f"шаблон «{rel}» пуст"
+    if not template_headings(text):
+        return f"в шаблоне «{rel}» нет заголовков"
+    expected = str((rec or {}).get("template_sha256") or "")
+    if expected and hashlib.sha256(raw).hexdigest() != expected:
+        return f"шаблон «{rel}» изменился с начала сессии"
+    return ""
+
+
 def check(root: str, kinds: dict) -> list:
     """[(тип, что не так)] — объявленное, но не существующее на диске."""
     bad = []
     for kind, rec in sorted(kinds.items()):
-        tpl = rec.get("template") or ""
         out = rec.get("out") or ""
-        if not tpl:
-            bad.append((kind, "не указан шаблон"))
-        elif not os.path.isfile(os.path.join(root, tpl)):
-            bad.append((kind, f"шаблона нет на диске: {tpl}"))
+        why = template_problem(root, rec)
+        if why:
+            bad.append((kind, why))
         if not out:
             bad.append((kind, "не указана папка результата"))
         elif out_problem(out):
