@@ -5762,16 +5762,29 @@ def unfinished(project: str) -> dict:
             # Старый артефакт без `finalizing:` — готовая работа прежнего движка, если у
             # него прошли `reviewed` и `checked`. Новый обязан пройти и финальную сборку:
             # незаполненный `finalizing` или `form_ok: false` значат, что чистовик не собран.
-            if ("checked: \u2014" not in head and "finalizing: \u2014" not in head
-                    and "drafted: \u2014" not in head and "reviewed: \u2014" not in head
-                    and "form_ok: false" not in head):
-                continue          # цепочка пройдена
+            chain_ok = ("checked: \u2014" not in head and "finalizing: \u2014" not in head
+                        and "drafted: \u2014" not in head and "reviewed: \u2014" not in head
+                        and "form_ok: false" not in head)
+            has_final = "finalizing:" in head
+            if chain_ok:
+                if has_final:
+                    continue      # новый артефакт прошёл всю цепочку
+                # Старый артефакт без `finalizing` готов, только если сам файл это
+                # подтверждает: `status: ready` и без замечаний критика. Иначе это
+                # брошенный черновик, и панель должна его показать.
+                status = re.search(r"^status:\s*[\"']?([A-Za-z_-]+)", head, re.M)
+                review = re.search(r"^review_issues:\s*(\d+)", head, re.M)
+                if (status and status.group(1).lower() == "ready"
+                        and not (review and int(review.group(1)) > 0)):
+                    continue
             days = int((time.time() - os.path.getmtime(path)) // 86400)
             stage = next((s for s in ("enriched", "planned", "drafted", "reviewed",
                                       "finalizing", "checked")
                           if f"{s}: —" in head), "?")
             if stage == "?" and "form_ok: false" in head:
                 stage = "form"
+            elif stage == "?" and not has_final:
+                stage = "status"
             out.append({"path": os.path.relpath(path, project), "days": days,
                         "stopped": stage, "kind": kind})
             oldest = max(oldest or 0, days)
