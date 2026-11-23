@@ -139,10 +139,15 @@ def test_the_create_window_puts_the_task_fields_into_the_new_document(tmp: Path)
     assert got == {"type": "Task", "epic": "PRJA-2", "labels": ["a", "b"]} and not bad, (got, bad)
     assert R.parse_task_fields(["sprint=5"])[1] and R.parse_task_fields(["type"])[1]
     root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/T.md").write_text("# История\n\n## Описание\n", encoding="utf-8")
     st = {"kind": "us", "idea": "приём заявки", "sid": "s-t", "stages": {k: "2026-10-01" for k in R.MAKE_STAGES},
-          "spec": {"title": "История", "out": "Artifacts/us", "template": "t",
+          "spec": {"title": "История", "out": "Artifacts/us", "template": "Templates/T.md",
                    "task": {"type": "Story", "labels": ["kind"]}},
-          "plan": "1. Раздел", "draft": "# История\n\nТекст.", "issues": [],
+          "plan": "1. Раздел",
+          "draft": "# История\n\n## Описание\n\nИстория приёмки заявки с достаточной длиной строки.",
+          "issues": [],
+          "pipeline": {"form_ok": True},
           "momus": {"ok": True, "clean": True, "unsupported": 0, "text": "ВЕРДИКТ: ОПОРА ЕСТЬ"}}
     for field, value in got.items():                      # то же, что делает run_make с `--task-field`
         st["spec"]["task"][field] = value

@@ -1046,10 +1046,12 @@ def test_artifact_shows_what_was_asked_assumed_and_grounded(tmp: Path):
              f"Заявка проходит статусы. Срок десять дней. см. [[Заявка-{(i + 1) % 6}]]",
              status="knowledge", kind="knowledge")
 
-    seen, rounds = {}, {"n": 0}
+    seen, worker_prompts, rounds = {}, [], {"n": 0}
 
     def fake(cfg_, role, messages, **kw):
         seen[role] = stub_messages(messages, kw)[0]["content"]
+        if role == "worker":
+            worker_prompts.append(seen[role])
         if role == "planner":
             rounds["n"] += 1
             if rounds["n"] == 1:
@@ -1072,7 +1074,8 @@ def test_artifact_shows_what_was_asked_assumed_and_grounded(tmp: Path):
             return {"ok": True, "backend": 1, "model": "q", "tps": 9, "log": [],
                     "text": "ВЕРДИКТ: чисто"}
         return {"ok": True, "backend": 1, "model": "w", "tps": 9, "log": [],
-                "text": "# AC\n\nСрок ([[Заявка-1]]), проверяется отчётом. См. [[Выдуманная]]."}
+                "text": "# AC\n\n## Критерии приёмки\n\nСрок ([[Заявка-1]]) десять дней, "
+                        "проверяется отчётом. См. [[Выдуманная]]."}
 
     cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
 
@@ -1093,10 +1096,11 @@ def test_artifact_shows_what_was_asked_assumed_and_grounded(tmp: Path):
     assert "## Уточнения" in doc and "10 дней" in doc, "ответ человека не дошёл до документа"
 
     # 3) правило «без технологий» включено ТИПОМ и дошло до обоих
-    assert "без технологий" in seen["worker"], "tech_agnostic не дошёл до воркера"
+    assert worker_prompts and all("без технологий" in text for text in worker_prompts), \
+        "tech_agnostic не дошёл до черновика или финального писателя"
     assert "просочилось решение об архитектуре" in seen["critic"], \
         "tech_agnostic не дошёл до критика"
-    assert "как проверить" in seen["worker"], "проверяемость критериев не потребована"
+    assert "как проверить" in worker_prompts[0], "проверяемость критериев не потребована"
 
     # 4) основания — из цитат, а не из всего пака; выдумка названа выдумкой
     assert 'based_on: ["[[Заявка-1]]"]' in doc, \
@@ -1123,7 +1127,9 @@ def test_artifact_shows_what_was_asked_assumed_and_grounded(tmp: Path):
     #    «[[Заявка-1#Статусы]]» не сходилась с «Заявка-1» — настоящее основание
     #    объявлялось выдумкой, а документ выглядел стоящим ни на чём.
     st_anchor = dict(R.load_session(str(root), r1["sid"]))
-    st_anchor["draft"] = "См. [[Заявка-1#Статусы]], [[Заявка-2|заявку]], [[дом/Заявка-3.md]]."
+    st_anchor["draft"] = ("См. [[Заявка-1#Статусы]], [[Заявка-2|заявку]], [[дом/Заявка-3.md]].\n\n"
+                          "# AC\n\n## Критерии приёмки\n\n"
+                          "Срок заявки десять дней, проверяется отчётом.")
     st_anchor["pack"] = "## Заявка-1 — Заявка\n\n## Заявка-2 — Ещё\n\n## Заявка-3 — И три\n"
     st_anchor["path"] = None
     anchored = (root / R.write_artifact(str(root), st_anchor)).read_text(encoding="utf-8")
@@ -1250,7 +1256,9 @@ def test_making_an_artifact_survives_an_interruption(tmp: Path):
                             "2. **НЕТ ОПОРЫ** срок возврата — пять дней\n\n"
                             "ВЕРДИКТ: БЕЗ ОПОРЫ 1"}
         return {"ok": True, "backend": 1, "model": "w", "tps": 9, "log": [],
-                "text": "# AC\n\n## Предусловия\n\nЗаявка создана."}
+                "text": "# AC\n\n## Предусловия\n\nЗаявка создана и ожидает согласования "
+                        "ответственным сотрудником.\n\n## Сценарии\n\nЗаявка проходит "
+                        "статусы по регламенту и закрывается после проверки.\n"}
 
     cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
 
@@ -1266,8 +1274,10 @@ def test_making_an_artifact_survives_an_interruption(tmp: Path):
     r2 = R.run_make(cfg, str(root), "", "", sid, "10 дней", False, call=fake)
     assert r2["ok"] and r2["stage"] == "done", f"цепочка не завершилась: {r2}"
     st = R.load_session(str(root), sid)
-    for stage in R.MAKE_STAGES:
-        assert st["stages"].get(stage), f"этап {stage} не отмечен"
+    passed = [stage for stage in R.MAKE_STAGES if st["stages"].get(stage)]
+    assert passed == ["enriched", "planned", "drafted", "reviewed", "checked"], st["stages"]
+    assert st.get("final_check") == "critic_rejected" and not st["stages"].get("finalizing"), \
+        "финальный писатель запущен, хотя критик не принял документ после исправлений"
     doc = (root / st["path"]).read_text(encoding="utf-8")
     assert "pipeline:" in doc and "checked:" in doc, "в шапке нет контрольных точек"
     assert "status: draft" in doc, \
@@ -1285,11 +1295,18 @@ def test_making_an_artifact_survives_an_interruption(tmp: Path):
 
     # 3) обрыв: снимаем две последние точки и продолжаем — ранние этапы не повторяются
     st["stages"].pop("checked"); st["stages"].pop("reviewed")
+    st["stages"].pop("finalizing", None)
+    st.pop("momus_pre_final", None)
+    (st.get("pipeline") or {}).pop("form_ok", None)
     R.save_session(str(root), sid, st)
     seen.clear()
     R.run_make(cfg, str(root), "", "", sid, "", False, call=fake)
-    assert seen == ["critic", "qa"], \
+    assert seen == ["critic", "qa", "worker", "qa"], \
         f"после обрыва переделано лишнее: {seen} — обогащение и план должны быть пропущены"
+    resumed = R.load_session(str(root), sid)
+    assert resumed["stages"].get("finalizing") and resumed["stages"].get("checked"), \
+        resumed["stages"]
+    assert resumed["pipeline"].get("form_ok") is True, resumed["pipeline"]
 
     # 3.5) Живой прогон показал два дефекта, которых на подставных вызовах не было.
     # Момус нашёл шесть утверждений без опоры, а документ был помечен `status: ready` —
@@ -1298,12 +1315,15 @@ def test_making_an_artifact_survives_an_interruption(tmp: Path):
     # свою поверх: в файле оказались две шапки, вторую разборщик читает как текст.
     st2 = {"kind": "ac", "idea": "передача квитанций", "sid": "s-live",
            "stages": {k: "2026-08-22" for k in R.MAKE_STAGES},
-           "spec": {"title": "AC", "out": "Artifacts/ac", "template": "t"},
+           "spec": {"title": "AC", "out": "Artifacts/ac", "template": "Templates/AC.md"},
            "plan": "1. Раздел",
            "draft": '---\ntitle: "Критерии приёмки для передачи квитанций"\n'
-                    'aliases: []\n---\n\n# Документ\n\nТекст.',
+                    'aliases: []\n---\n\n# AC\n\n## Предусловия\n\n'
+                    'Заявка создана и ожидает согласования ответственным сотрудником.\n\n'
+                    '## Сценарии\n\nСценарий передачи квитанций описан.',
            "issues": [], "momus": {"ok": True, "clean": False, "unsupported": 6,
-                                   "text": "НЕТ ОПОРЫ срок\nВЕРДИКТ: БЕЗ ОПОРЫ 6"}}
+                                   "text": "НЕТ ОПОРЫ срок\nВЕРДИКТ: БЕЗ ОПОРЫ 6"},
+           "pipeline": {"form_ok": True}, "pipeline_version": 2, "legacy_ready": False}
     live = root / R.write_artifact(str(root), st2)
     text2 = live.read_text(encoding="utf-8")
     sys.path.insert(0, str(KIT / "scripts"))
@@ -1316,6 +1336,14 @@ def test_making_an_artifact_survives_an_interruption(tmp: Path):
         "в файле две шапки: вторую разборщик прочитает как текст, а Obsidian покажет мусором"
     assert 'title: "Критерии приёмки для передачи квитанций"' in head2, \
         "заголовок, который написала модель про этот документ, потерян"
+
+    # `finalizing` без `form_ok` — тоже черновик: форма не принята, файл готовым не станет.
+    st2["pipeline"] = {"form_ok": False}
+    st2["momus"] = {"ok": True, "clean": True, "unsupported": 0, "text": "ВЕРДИКТ: ОПОРА ЕСТЬ"}
+    st2["sid"] = "s-live-form"
+    noform = root / R.write_artifact(str(root), st2)
+    assert "status: draft" in noform.read_text(encoding="utf-8"), \
+        "документ без проверенной формы назван готовым"
 
     # 4) чужой файл с тем же именем не затирается: человек мог писать его руками, и в
     # git он мог не попасть — тогда потеря безвозвратна. Найдено на живом прогоне.

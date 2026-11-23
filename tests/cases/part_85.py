@@ -193,7 +193,8 @@ def test_make_writes_the_artifact_passport_and_stage_times(tmp: Path):
     calls: list = []
     cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
     fake = _fake_model("# История\n\n## Описание\n\nСрок заявки — десять дней, см. [[REQ-042-Срок-заявки]] "
-                       "и [[REQ-999-Выдумка]].\n", calls)
+                       "и [[REQ-999-Выдумка]].\n\n## Сценарии\n\nЗаявка создаётся и проходит "
+                       "статусы по регламенту.\n", calls)
     links, bad = R.parse_from(["REQ-007", "SPEC-012,AC-3.1"])
     assert not bad and links == {"implements": ["REQ-007"], "parent": ["SPEC-012"], "covers": ["AC-3.1"]}, (links, bad)
     r = R.run_make(cfg, str(root), "us", "срок заявки десять дней", "", "", True, call=fake, links=links)
@@ -230,10 +231,13 @@ def test_two_artifacts_get_two_numbers_and_the_header_survives_hostile_values(tm
 
     def doc(sid: str, **extra) -> str:
         st = {"sid": sid, "kind": "us", "idea": "Идея " + sid,
-              "spec": {"out": "Artifacts/us", "template": "t.md", "title": "US"},
-              "stages": {"checked": "2026-10-19T01:02:03Z"}, "issues": [],
+              "spec": {"out": "Artifacts/us", "template": "Templates/T.md", "title": "US"},
+              "stages": {k: "2026-10-19T01:02:03Z" for k in R.MAKE_STAGES}, "issues": [],
               "momus": {"ok": True, "unsupported": 0, "clean": True},
-              "draft": "Текст.", "pack": "# Context pack\n", "path": None, **extra}
+              "pipeline": {"form_ok": True}, "pipeline_version": 2, "legacy_ready": False,
+              "draft": "# История\n\n## Описание\n\nДокумент описывает заявку и её статусы "
+                       "достаточно подробно.\n\n## Сценарии\n\nСценарий описан.",
+              "pack": "# Context pack\n", "path": None, **extra}
         return (root / R.write_artifact(str(root), st)).read_text(encoding="utf-8")
 
     one = doc("s1")
@@ -1179,10 +1183,15 @@ def test_make_puts_the_found_key_into_the_passport_and_never_asks_the_model_to_i
         assert r["ok"], r
         return (root / R.load_session(str(root), r["sid"])["path"]).read_text(encoding="utf-8")
 
-    with_key = run_with("| Код | RU.PRJ.US-1.1.1 |\n| Реализует | RU.PRJ.US-9.9.9 |\n\nТекст заявки.")
+    with_key = run_with("| Код | RU.PRJ.US-1.1.1 |\n| Реализует | RU.PRJ.US-9.9.9 |\n\n"
+                        "# История\n\n## Описание\n\nТекст заявки с ключом RU.PRJ.US-1.1.1 "
+                        "и достаточной длиной строки.\n\n## Сценарии\n\n"
+                        "Заявка создаётся и проходит статусы по регламенту.\n")
     head = with_key.split("---", 2)[1]
     assert "ref_key: RU.PRJ.US-1.1.1" in head and "ref_scheme: ry" in head, head
-    no_key = run_with("| Код | ключ присвоит реестр |\n\nТекст заявки.")
+    no_key = run_with("| Код | ключ присвоит реестр |\n\n# История\n\n## Описание\n\n"
+                      "Текст заявки без ключа, но с достаточной длиной строки.\n\n"
+                      "## Сценарии\n\nЗаявка создаётся и проходит статусы по регламенту.\n")
     assert "ref_key" not in no_key.split("---", 2)[1]
     worker = next(m for role, m, _kw in seen if role == "worker")
     assert "заводит реестр" in worker[0]["content"] and MASK in worker[0]["content"], "модели не запрещено придумывать ключ"

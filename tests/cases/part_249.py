@@ -116,18 +116,21 @@ def test_route_child_queue_and_wait_are_not_work(tmp: Path):
             {"rc": 0, "timing": {"queue_ms": 120_000, "service_wait_ms": 60_000,
                                  "other_wait_ms": 30_000}})
         timing = run._timing_now()
-        assert abs(timing["total_ms"] - 300_000) <= 5, timing
+        # total_ms и work_ms — wall-clock: они считаются от time.time() и к 300_000 добавляется
+        # время самого теста (macOS CI дал 300007 при допуске 5). Точные queue_ms,
+        # service_wait_ms, other_wait_ms и равенства ниже проверяются как раньше.
+        assert abs(timing["total_ms"] - 300_000) <= 100, timing
         assert timing["queue_ms"] == 130_000, timing
         assert timing["active_ms"] == timing["total_ms"] - timing["queue_ms"], timing
         assert timing["service_wait_ms"] == 60_000, timing
         assert timing["other_wait_ms"] == 30_000, timing
-        assert abs(timing["work_ms"] - 80_000) <= 5, timing
+        assert abs(timing["work_ms"] - 80_000) <= 100, timing
         assert timing["queue_ms"] + timing["active_ms"] == timing["total_ms"], timing
         result = run._close({"ok": True, "reason": "passed", "failed": "", "note": "",
                              "steps": 1, "lines": [], "run_id": run.run_id})
         meta = RR.read_meta(run.base)
         assert meta["queue_ms"] == 130_000, meta
-        assert abs(meta["timing"]["work_ms"] - 80_000) <= 5, meta["timing"]
+        assert abs(meta["timing"]["work_ms"] - 80_000) <= 100, meta["timing"]
         assert result["timing"]["service_wait_ms"] == 60_000, result["timing"]
         summary = CK.RS.route(str(root), "", 300, [], timing=meta["timing"])
         assert any("Ожидание запуска" in line for line in summary.get("lines") or []), \
