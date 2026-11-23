@@ -212,6 +212,40 @@ def test_final_writer_missing_section_retries_once(tmp: Path):
 
 
 @test
+def test_two_form_failures_leave_partial_and_no_ready(tmp: Path):
+    """Оба финальных текста мимо формы: работа остаётся partial, `ready` не появляется."""
+    root = _project(tmp)
+    import agent_runner as R
+    workers = []
+
+    def fake(cfg, role, messages, **kw):
+        if role == "planner":
+            return _planner()
+        if role == "worker":
+            workers.append(1)
+            if len(workers) == 1:
+                return _base(_written(1))
+            return _base(_written(len(workers), check_head=False))
+        if role == "critic":
+            return _critic(True)
+        if role == "qa":
+            return _base(CLEAN)
+        raise AssertionError(role)
+
+    res = R.run_make(_cfg(), str(root), "ac", "срок заявки", "", "", True,
+                     call=fake, momus=True)
+    assert not res["ok"] and res["status"] == "partial", res
+    assert "финальный текст не прошёл проверку формы" in res.get("why", ""), res
+    assert res.get("path") and (root / res["path"]).is_file(), res
+    doc = (root / res["path"]).read_text(encoding="utf-8")
+    assert "status: ready" not in doc and "status: draft" in doc, doc[:400]
+    st = res["state"]
+    assert st["pipeline"].get("form_ok") is not True, st["pipeline"]
+    assert st["best_version"] == 1, st["best_version"]
+    assert "finalizing" not in st["stages"] and "checked" not in st["stages"], st["stages"]
+
+
+@test
 def test_final_writer_residue_and_service_heads_block_ready(tmp: Path):
     """Остатки шаблона и служебные разделы не проходят форму; чистый повтор даёт ready."""
     root = _project(tmp)
@@ -430,6 +464,30 @@ def test_legacy_checked_without_finalizing_is_ready(tmp: Path):
         "  checked: 2026-01-01T00:00:00Z\n---\n\n# AC\n\nТекст.\n",
         encoding="utf-8")
     assert AC.unfinished(str(root))["count"] == 0, AC.unfinished(str(root))
+    # Новый артефакт с незаполненной финальной сборкой и новый с проваленной формой
+    # числятся незавершёнными: это работа, которую видно.
+    fresh = root / "Artifacts/ac/Новый.md"
+    fresh.write_text(
+        "---\ntitle: \"Новый\"\ntype: ac\nstatus: draft\ncreated: 2026-01-01\n"
+        "updated: 2026-01-01\nbuilt: machine\nsession: s-new\npipeline:\n"
+        "  enriched: 2026-01-01T00:00:00Z\n  planned: 2026-01-01T00:00:00Z\n"
+        "  drafted: 2026-01-01T00:00:00Z\n  reviewed: 2026-01-01T00:00:00Z\n"
+        "  finalizing: \u2014\n  checked: \u2014\n  form_ok: false\n---\n\n# AC\n",
+        encoding="utf-8")
+    noform = root / "Artifacts/ac/Без формы.md"
+    noform.write_text(
+        "---\ntitle: \"Без формы\"\ntype: ac\nstatus: draft\ncreated: 2026-01-01\n"
+        "updated: 2026-01-01\nbuilt: machine\nsession: s-noform\npipeline:\n"
+        "  enriched: 2026-01-01T00:00:00Z\n  planned: 2026-01-01T00:00:00Z\n"
+        "  drafted: 2026-01-01T00:00:00Z\n  reviewed: 2026-01-01T00:00:00Z\n"
+        "  finalizing: 2026-01-01T00:00:00Z\n  checked: 2026-01-01T00:00:00Z\n"
+        "  form_ok: false\n---\n\n# AC\n",
+        encoding="utf-8")
+    seen = AC.unfinished(str(root))
+    stopped = {Path(item["path"]).name: item["stopped"] for item in seen["items"]}
+    assert stopped.get("Новый.md") == "finalizing", seen
+    assert stopped.get("Без формы.md") == "form", seen
+    assert "Старый.md" not in stopped, seen
     stages = {k: "2026-11-23T00:00:00Z" for k in R.MAKE_STAGES}
     st = {"kind": "ac", "idea": "срок заявки", "sid": "s-legacy",
           "spec": {"title": "AC", "out": "Artifacts/ac", "template": "Templates/AC.md"},
