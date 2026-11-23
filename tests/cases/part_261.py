@@ -630,6 +630,12 @@ def test_legacy_rejected_or_draft_does_not_become_ready(tmp: Path):
                 "final_check": "critic_rejected"}
     text = (root / R.write_artifact(str(root), rejected)).read_text(encoding="utf-8")
     assert "status: draft" in text and "status: ready" not in text, text[:400]
+    refused = {**rejected, "sid": "s-old-rejected-finalizing", "legacy_ready": True,
+               "pipeline_version": 2,
+               "stages": {**stages, "finalizing": stages["checked"]}}
+    refused.pop("form_problems", None)
+    text1 = (root / R.write_artifact(str(root), refused)).read_text(encoding="utf-8")
+    assert "status: draft" in text1 and "status: ready" not in text1, text1[:400]
 
     old = root / "Artifacts/ac/Старый-черновик.md"
     old.write_text(

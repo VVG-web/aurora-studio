@@ -8533,6 +8533,12 @@ def write_artifact(cwd: str, st: dict) -> str:
     else:
         legacy_ready = False
     form_ok = bool(pipeline.get("form_ok")) or legacy_ready
+    if explicit_legacy and not legacy_ready:
+        # Заявка «это готовая старая работа» не подтвердилась. Синтетические
+        # `finalizing`/`checked` не должны превратить `critic_rejected` или draft в ready.
+        form_ok = False
+        st["legacy_ready"] = False
+        st.setdefault("pipeline", {})["form_ok"] = False
     if legacy_ready and not stages.get("finalizing"):
         # У старой готовой работы финальной сборки не было; в шапке она обозначает
         # ту же точку, что `checked`, иначе панель сочтёт готовый файл брошенным.
