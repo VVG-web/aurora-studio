@@ -184,3 +184,50 @@ def test_connectivity_event_journal_keeps_transitions(tmp: Path):
                            "name": "kit", "from": "no_vpn", "to": "online"}])
     lines = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines()]
     assert len(lines) == 2 and lines[0]["name"] == "VPN-1" and lines[1]["to"] == "online", lines
+
+
+@test
+def test_shared_net_runs_keep_two_hundred_and_ninety_days(tmp: Path):
+    """3A: шард хранит 200 последних записей и не дольше 90 дней; чужой шард и активный файл целы."""
+    NO = _no()
+    root = tmp / "AuroraKnowledgeDB" / "meta" / "net-runs.d"
+    own = root / "alice-m1"
+    other = root / "bob-m1"
+    own.mkdir(parents=True)
+    other.mkdir(parents=True)
+    now = 1_800_000_000.0
+
+    def put(folder: Path, name: str, at: float) -> Path:
+        path = folder / name
+        path.write_text("{}", encoding="utf-8")
+        os.utime(path, (at, at))
+        return path
+
+    oldest = newest = None
+    for num in range(201):
+        path = put(own, f"run-{num:03d}.json", now - 201 + num)
+        oldest = oldest or path
+        newest = path
+    gone = NO.prune_shared(own, now=now)
+    left = sorted(p.name for p in own.glob("*.json"))
+    assert len(left) == 200, len(left)
+    assert oldest.name in gone and not oldest.exists(), "самая старая запись осталась"
+    assert newest.name in left, "самая свежая запись удалена"
+
+    stale = put(own, "stale.json", now - 91 * 86400)
+    fresh = put(own, "fresh.json", now)
+    NO.prune_shared(own, now=now)
+    assert not stale.exists(), "запись старше 90 дней осталась"
+    assert fresh.is_file(), "свежая запись удалена"
+
+    stranger = put(other, "stranger.json", now - 200 * 86400)
+    NO.prune_shared(own, now=now)
+    assert stranger.is_file(), "чужой шард тронут"
+
+    active_shard = root / "carol-m1"
+    active_shard.mkdir()
+    active = put(active_shard, "active.json", now - 500 * 86400)
+    put(active_shard, "newer.json", now)
+    NO.prune_shared(active_shard, keep=1, now=now, active=active)
+    assert active.is_file(), "активный файл удалён"
+    assert NO.prune_shared(tmp / "missing", now=now) == [], "нет каталога — не падаем"
