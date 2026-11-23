@@ -6,10 +6,12 @@
 """
 from __future__ import annotations
 
+import importlib
 import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from harness import KIT, test
@@ -273,3 +275,34 @@ console.log(JSON.stringify(Object.fromEntries(
     got = _node(script)
     assert got == {"statCells": "function", "serviceKeys": "function",
                    "filterRuns": "function", "runNote": "function"}, got
+
+
+@test
+def test_metrics_module_is_registered_once_and_opens(_tmp: Path):
+    """Раздел «Замеры» зарегистрирован один раз и открывается штатно.
+
+    Манифест уже лежит в папке `cockpit/modules/metrics`: второй такой же
+    раздел или второй id в реестре сделал бы две кнопки «Замеры». Проверяем
+    ровно одну запись, её версию по VERSION и обязательные файлы входа и i18n.
+    """
+    if str(KIT / "cockpit") not in sys.path:
+        sys.path.insert(0, str(KIT / "cockpit"))
+    ck = importlib.import_module("aurora_cockpit")
+    mods = ck.modules()
+    found = [m for m in mods if m.get("id") == "metrics"]
+    assert len(found) == 1, [m.get("id") for m in mods]
+    m = found[0]
+    assert not m.get("error") and not m.get("warn"), m
+    assert m["group"] == "machine" and m["order"] == 36, m
+    assert m["needs"] == [] and m["commands"] == ["net:report"], m
+    assert m["name"]["ru"] == "Замеры" and m["name"]["en"] == "Measurements", m
+    kit_version = (KIT / "VERSION").read_text(encoding="utf-8").strip()
+    assert m["for"] == kit_version and not m["behind"], m
+    assert m["icon"] is True, m
+    folder = KIT / "cockpit" / "modules" / "metrics"
+    for rel in ("module.json", "view.html", "view.js", "icon.svg",
+                "i18n/ru.json", "i18n/en.json"):
+        assert (folder / rel).is_file(), rel
+    for lang in ("ru", "en"):
+        catalog = json.loads((folder / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))
+        assert catalog["metrics.title"].strip() and catalog["metrics.about"].strip(), lang
