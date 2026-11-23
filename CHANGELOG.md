@@ -41,9 +41,10 @@ Semver. Обновление движка в работающем проекте
   (`openCreateArtifact`, `READONLY`), замена `write`/`deliver`, режим
   `agent:make --deliverable` и PMI. Они уходят в `1.231.20`;
   `part_260`, `part_262`, `part_263` и `part_264` в этом релизе нет.
-- **Проверки.** Полный suite, `engine-tests` на всех 11 job, `authors` и `secrets`
-  зелёные; `adapter-live` и `macos` проверены отдельно. `check_release`,
-  `kit_commands`, `kit_i18n` и `quality_eval` проходят.
+- **Проверки.** Локально перед тегом: полный suite, `check_release`, `kit_commands`,
+  `kit_i18n`, `quality_eval`. CI на итоговом коммите: 10 job (`tests`, `authors`,
+  `secrets`, `floor`, `newer-python`, `legacy-310`, `adapter-live`, `windows`,
+  `windows-314`, `macos`), статус и номер прогона в Release.
 
 ## 1.231.16 — MCP core, безопасность и панель доступа
 
