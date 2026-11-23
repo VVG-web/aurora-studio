@@ -4607,7 +4607,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             # ждущий тяжёлый держал бы слот, нужный коротким.
             slot_started, slot_mono = time.time(), time.monotonic()
 
-            def slot_done():
+            def slot_done(slot_started=slot_started, slot_mono=slot_mono,
+                          b=b, model=model):
                 ms = max(0.0, (time.monotonic() - slot_mono) * 1000)
                 TIMING.note_span("wait", start=slot_started, end=time.time(), dur_ms=ms,
                                  name="llm.slot", service="llm", wait_class="resource",
