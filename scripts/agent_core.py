@@ -2733,20 +2733,138 @@ def quota_spent(st, err, body) -> bool:
 # обрыв связи помешал, но после повтора они прошли (не поломка); `link_failed` — вызовы, не
 # получившие ответа из-за связи или шлюза (`link_why` — последняя причина). Итог прогона называет
 # каждое отдельно.
-USAGE: dict = {"calls": 0, "failed": 0, "tokens_in": 0, "tokens_out": 0, "gen_seconds": 0.0,
+USAGE: dict = {"calls": 0, "calls_failed": 0, "failed": 0, "requests": 0,
+               "tokens_in": 0, "tokens_out": 0, "tokens_failed_in": 0,
+               "tokens_failed_out": 0, "cached_in": None, "reasoning_out": None,
+               "usage_missing_calls": 0, "gen_seconds": 0.0,
                "errors": {}, "cached": 0, "bypass": 0, "bypass_why": "",
-               "by_role": {}, "by_model": {}, "by_pair": {},
+               "by_role": {}, "by_model": {}, "by_pair": {}, "by_cell": {},
                "link_retried": 0, "link_retried_kind": "", "link_failed": 0, "link_why": "",
                "waited": 0.0, "slot_wait_ms": 0.0, "backoff_ms": 0.0, "net_wait_ms": 0.0,
                "attempts": 0, "by_service": {}, "slots": None}
 _USAGE_LOCK = threading.Lock()
 
 
-def _note_failure(kind: str) -> None:
+def _usage_int(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _usage_nullable(value):
+    if value in (None, ""):
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _usage_numbers(usage) -> tuple:
+    """Нормализовать usage провайдера: OpenAI, DeepSeek, Pydantic AI и llama.cpp."""
+    usage = usage if isinstance(usage, dict) else {}
+    prompt = _usage_int(usage.get("prompt_tokens", usage.get("input_tokens")))
+    completion = _usage_int(usage.get("completion_tokens", usage.get("output_tokens")))
+    present = any(usage.get(k) is not None for k in ("prompt_tokens", "completion_tokens",
+                                                     "input_tokens", "output_tokens"))
+    details = usage.get("prompt_tokens_details")
+    details = details if isinstance(details, dict) else {}
+    cached = _usage_nullable(usage.get("cached_in"))
+    if cached is None:
+        cached = _usage_nullable(usage.get("cache_read_input_tokens"))
+    if cached is None:
+        cached = _usage_nullable(usage.get("prompt_cache_hit_tokens"))
+    if cached is None:
+        cached = _usage_nullable(details.get("cached_tokens"))
+    out_details = usage.get("completion_tokens_details")
+    out_details = out_details if isinstance(out_details, dict) else {}
+    reasoning = _usage_nullable(usage.get("reasoning_out"))
+    if reasoning is None:
+        reasoning = _usage_nullable(usage.get("reasoning_tokens"))
+    if reasoning is None:
+        reasoning = _usage_nullable(out_details.get("reasoning_tokens"))
+    return prompt, completion, cached, reasoning, present
+
+
+def _usage_cell(provider, provider_name, role, model) -> tuple:
+    key = (provider or None, str(role or "") or None, str(model or "") or None)
+    row = USAGE["by_cell"].get(key)
+    if row is None:
+        row = {"provider": key[0], "provider_name": provider_name or None,
+               "role": key[1], "model": key[2],
+               "calls": 0, "calls_failed": 0, "requests": 0,
+               "tokens_in": 0, "tokens_out": 0,
+               "cached_in": None, "reasoning_out": None, "gen_seconds": 0.0}
+        USAGE["by_cell"][key] = row
+    elif provider_name:
+        row["provider_name"] = provider_name
+    return key, row
+
+
+def _add_nullable(dst: dict, key: str, value) -> None:
+    value = _usage_nullable(value)
+    if value is not None:
+        dst[key] = _usage_int(dst.get(key)) + value
+    else:
+        dst.setdefault(key, None)
+
+
+def _note_request(backend: dict, role: str, model: str) -> None:
+    with _USAGE_LOCK:
+        USAGE["requests"] += 1
+        _key, cell = _usage_cell(backend.get("provider"), backend.get("name"), role, model)
+        cell["requests"] += 1
+
+
+def _note_failed_usage(usage) -> None:
+    prompt, completion, _cached, _reasoning, present = _usage_numbers(usage)
+    with _USAGE_LOCK:
+        if present:
+            USAGE["tokens_failed_in"] += prompt
+            USAGE["tokens_failed_out"] += completion
+        else:
+            USAGE["usage_missing_calls"] += 1
+
+
+def _note_success(usage, backend: dict, role: str, model: str, dt: float) -> None:
+    prompt, completion, cached, reasoning, present = _usage_numbers(usage)
     with _USAGE_LOCK:
         USAGE["calls"] += 1
+        USAGE["tokens_in"] += prompt
+        USAGE["tokens_out"] += completion
+        if completion:
+            USAGE["gen_seconds"] += dt
+        if not present:
+            USAGE["usage_missing_calls"] += 1
+        _add_nullable(USAGE, "cached_in", cached)
+        _add_nullable(USAGE, "reasoning_out", reasoning)
+        for bucket, key in ((USAGE["by_role"], role), (USAGE["by_model"], model),
+                            (USAGE["by_pair"], f"{role or '—'}|{model or '—'}")):
+            row = bucket.setdefault(str(key or "—"), {"calls": 0, "tokens_in": 0,
+                                                       "tokens_out": 0,
+                                                       "seconds": 0.0})
+            row["calls"] += 1
+            row["tokens_in"] += prompt
+            row["tokens_out"] += completion
+            row["seconds"] = round(row["seconds"] + (dt if completion else 0.0), 2)
+        _key, cell = _usage_cell(backend.get("provider"), backend.get("name"), role, model)
+        cell["calls"] += 1
+        cell["tokens_in"] += prompt
+        cell["tokens_out"] += completion
+        cell["gen_seconds"] = round(cell["gen_seconds"] + (dt if completion else 0.0), 2)
+        _add_nullable(cell, "cached_in", cached)
+        _add_nullable(cell, "reasoning_out", reasoning)
+
+
+def _note_failure(kind: str, cell: tuple | None = None) -> None:
+    with _USAGE_LOCK:
+        USAGE["calls_failed"] += 1
         USAGE["failed"] += 1
         USAGE["errors"][kind] = USAGE["errors"].get(kind, 0) + 1
+        if cell:
+            _key, row = _usage_cell(cell[0], None, cell[1], cell[2])
+            row["calls_failed"] += 1
 
 
 # ------------------------------------------------------------------ тревоги: мимо Pydantic AI и связь
@@ -4369,12 +4487,13 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     why_seen: list = []         # беды этого вызова по порядку: обрывы связи и шлюза (`link_note`), поломки адаптера
     fresh_link_fail: list = []    # виды настоящих неудач связи этого вызова (без пропусков на карантине)
     attempts = 0
+    last_cell = (None, role, None)
     tried: set = set()          # кому уже давали честный шанс в этом вызове
     if retry_primary_asked():
         log.append("человек попросил вернуться на основного — отметки сняты")
 
     if not cfg["backends"] or (cfg.get("chains") is not None and not role_chain(cfg, role)):
-        _note_failure("бэкенды модели не настроены")
+        _note_failure("бэкенды модели не настроены", (None, role, None))
         return {"ok": False, "req": req,
                 "log": [f"у роли {role} нет бэкендов: раздел «Модели» панели → LLM"
                         if cfg.get("chains") is not None else
@@ -4443,7 +4562,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 # Метка LINK_FAILURE — та же, что в итоговой строке обрыва связи: прогон агента (`looks_offline`) узнаёт по
                 # ней, что партия встала из-за связи, а итог прогона считает вызов без ответа из-за связи.
                 log.append(f"вызов не начат, {LINK_FAILURE}: все провайдеры роли недоступны ({names}) — это не поломка провайдеров")
-                _note_failure(LINK_FAILURE)
+                _note_failure(LINK_FAILURE, last_cell)
                 with _USAGE_LOCK:
                     USAGE["link_failed"] += 1
                     USAGE["link_why"] = f"все провайдеры роли недоступны ({names})"
@@ -4660,6 +4779,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 # Причина поломки адаптера — своя у каждой попытки: подставной транспорт (тесты,
                 # замеры) её не пишет, и прошлая не должна достаться этому вызову.
                 _ADAPTER_LAST.why = None
+                last_cell = (b.get("provider"), role, model)
+                _note_request(b, role, model)
                 st, body, err, dt = _timed_transport(
                     transport, b, payload, max(5.0, min(left, limit)), attempts)
                 if st == 400 and rejects_template(err, body):
@@ -4667,6 +4788,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     log.append(f"№{b['n']} {model}: шлюз не принял chat_template_kwargs — "
                                f"повтор без него; рассуждения теперь как у модели по "
                                f"умолчанию, включить их на этом шлюзе нечем")
+                    _note_request(b, role, model)
                     st, body, err, dt = _timed_transport(
                         transport, b, payload, max(5.0, deadline - time.time()), attempts)
                 # Сломка самого пути Pydantic AI на ЭТОМ запросе (venv не стоит, процесс упал,
@@ -4674,6 +4796,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 # там остаётся отказ шлюза.
                 hard = adapter_last()
                 if st != 200 or not isinstance(body, dict):
+                    if isinstance(body, dict) and body.get("usage"):
+                        _note_failed_usage(body.get("usage"))
                     # Выбранная авто-модель ошиблась — выбор больше не годится: следующий
                     # вызов замерит доступные заново, а не будет 20 минут ходить в мёртвую.
                     fast_forget(b)
@@ -4882,8 +5006,11 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 if live:
                     link_ok(b["n"])      # бэкенд ответил: серия неудач связи обнулена, тревога снята
                 text, reasoning = answer_of(body)
+                usage = body.get("usage") or {}
+                prompt, out_tokens, _cached, _reasoning, _present = _usage_numbers(usage)
                 finish = (body.get("choices") or [{}])[0].get("finish_reason")
                 if not text:
+                    _note_failed_usage(usage)
                     why = ("рассуждения съели лимит токенов (finish_reason=length)"
                            if finish == "length" and reasoning else
                            f"модель исчерпала вызовы инструментов ({TOOL_CALLS}) и не ответила"
@@ -4921,7 +5048,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         # бот «не видит MCP», план собран без поиска. Честнее отказать.
                         log.append(f"№{b['n']} {model}: ⛔ Pydantic AI не сработал ({bypass}) — "
                                    "вызов с инструментами и MCP прямым HTTP не принимаю")
-                        _note_failure("мимо Pydantic AI")
+                        _note_failure("мимо Pydantic AI", last_cell)
                         return {"ok": False, "log": log, "req": req, "bypass": bypass}
                 elif watch:
                     clear_bypass()
@@ -4935,30 +5062,17 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         if fresh_link_fail:
                             USAGE["link_retried_kind"] = fresh_link_fail[-1]
                 usage = body.get("usage") or {}
-                out_tokens = int(usage.get("completion_tokens") or 0)
+                out_tokens = _usage_numbers(usage)[1]
                 say_live("✓", role, f"ответ №{b['n']} {model} за {human_secs(dt)}"
                                     + (f" · {out_tokens} ток. · {out_tokens / dt:.1f} ток/с"
                                        if out_tokens and dt > 0 else ""))
                 NET_BLOCKED["row"] = None
-                with _USAGE_LOCK:
-                    USAGE["calls"] += 1
-                    USAGE["tokens_in"] += int(usage.get("prompt_tokens") or 0)
-                    USAGE["tokens_out"] += out_tokens
-                    USAGE["gen_seconds"] += dt if out_tokens else 0.0
-                    for bucket, key in ((USAGE["by_role"], role), (USAGE["by_model"], model),
-                                        (USAGE["by_pair"], f"{role or '—'}|{model or '—'}")):
-                        row = bucket.setdefault(str(key or "—"), {"calls": 0, "tokens_in": 0,
-                                                                  "tokens_out": 0,
-                                                                  "seconds": 0.0})
-                        row["calls"] += 1
-                        row["tokens_in"] += int(usage.get("prompt_tokens") or 0)
-                        row["tokens_out"] += out_tokens
-                        row["seconds"] = round(row["seconds"] + (dt if out_tokens else 0.0), 2)
+                _note_success(usage, b, role, model, dt)
                 return {"ok": True, "text": text, "reasoning": reasoning, "backend": b["n"],
                         "seen": seen_chars, "cut": cut_chars,
                         "model": model, "seconds": round(dt, 2), "waited": round(waited, 1),
                         "ring": ring, "log": log, "url": b["url"],
-                        "tokens_in": int(usage.get("prompt_tokens") or 0),
+                        "tokens_in": prompt,
                         "tokens_out": out_tokens,
                         "tps": round(out_tokens / dt, 1) if out_tokens and dt > 0 else 0.0,
                         "via": via, "bypass": bypass, "finish": finish,
@@ -5036,14 +5150,14 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
            "req": dict(req, attempts=attempts, rings=ring, waited=round(waited, 1))}
     if final is not None and final.area == "link" and not out["timed_out"]:
         out["link"] = link_summary(why_seen)
-        _note_failure(LINK_FAILURE)
+        _note_failure(LINK_FAILURE, last_cell)
         with _USAGE_LOCK:
             USAGE["link_failed"] += 1
             USAGE["link_why"] = str(final)
     else:
         _note_failure("модель не уложилась в срок"
                       if attempts and (slow == attempts or timeouts == attempts)
-                      else "модель не ответила осмысленно")
+                      else "модель не ответила осмысленно", last_cell)
     return out
 
 
