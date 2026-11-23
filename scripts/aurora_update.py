@@ -1186,6 +1186,11 @@ NET_RUNS_REL = "AuroraKnowledgeDB/meta/net-runs.d"
 RECENT_FILES_REL = "AuroraKnowledgeDB/meta/recent-files.json"
 # Каталоги, которые снимаются с учёта целиком: у каждого свои файлы, но все они локальные.
 LOCAL_STATE_DIRS = (NET_RUNS_REL,)
+UNTRACK_NET_RUNS_WARNING = (
+    "   ⚠️ Снятие снимков сети с учёта уйдёт следующим коммитом: старые клоны после pull\n"
+    "      потеряют отслеживаемые файлы net-runs.d. Они остаются в истории: git show <old-sha>:<путь>.\n"
+    "      Перед коммитом сохраните копию AuroraKnowledgeDB/meta/net-runs.d."
+)
 LOCAL_STATE_RELS = (
     RUNLOG_REL,
     RECENT_FILES_REL,
@@ -1230,6 +1235,11 @@ def untrack_runlog(target: Path, rel: str = RUNLOG_REL) -> bool:
 def untrack_local_state(target: Path) -> list[str]:
     """Снять с index только объявленные китом локальные файлы, сохранив их на диске."""
     return [rel for rel in LOCAL_STATE_RELS if untrack_runlog(target, rel)]
+
+
+def untrack_warning(rels) -> str:
+    """Что сказать в отчёте после снятия снимков сети с индекса. Пусто для прочих файлов."""
+    return UNTRACK_NET_RUNS_WARNING if NET_RUNS_REL in (rels or ()) else ""
 
 
 def backfill_kb_updated(target: Path) -> str:
@@ -1481,6 +1491,9 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
                 local_untracked = untrack_local_state(target)
                 if local_untracked:
                     print(f"   Локальные файлы сняты с учёта git ({len(local_untracked)}; на диске сохранены)")
+                    warning = untrack_warning(local_untracked)
+                    if warning:
+                        print(warning)
                 kb_date = backfill_kb_updated(target)
                 if kb_date:
                     print(f"   Дата обновления базы из истории прогонов: {kb_date}")
@@ -1643,6 +1656,9 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
           + (f", переезд в .aurora/: перенесено {len(rp['moves'])}, "
              f"убрано копий кита {len(rp['drop'])}" if moving else "")
           + f". Версия → {kv}")
+    warning = untrack_warning(untracked)
+    if warning:
+        print(warning)
     for line in failed:
         print(f"   ⚠️ не вышло: {line}")
     print("   Проверьте: в панели `kit:doctor`, затем git diff")

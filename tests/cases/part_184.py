@@ -236,6 +236,9 @@ def test_net_runs_directory_leaves_the_index_but_stays_on_disk(tmp: Path):
     added = IA.merge_gitignore(repo / ".gitignore")
     assert rule in added, added
     assert AU.NET_RUNS_REL in AU.untrack_local_state(repo), "каталог не снят с индекса"
+    warning = AU.untrack_warning([AU.NET_RUNS_REL])
+    assert "следующим коммитом" in warning and "git show" in warning and "net-runs.d" in warning
+    assert AU.untrack_warning(["AuroraKnowledgeDB/meta/run_log.md"]) == ""
     assert not _git(repo, "ls-files", "--", AU.NET_RUNS_REL).stdout.strip(), "каталог в индексе"
     assert first.is_file() and second.is_file(), "файлы удалены с диска"
     assert first.read_text(encoding="utf-8") == '{"id": "run-1"}\n'
