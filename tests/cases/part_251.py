@@ -1004,10 +1004,16 @@ def test_mcp_remote_cron_and_restart_need_full_and_confirmation(tmp: Path):
 
 @test
 def test_mcp_remote_cron_and_restart_safe(tmp: Path):
+    """Fake panel: start/toggle обычного задания в safe доходят до панели.
+
+    Проверка панельной границы для задания с `ship:release` живёт в `part_259`: fake panel
+    не исполняет `_mcp_cron_guard` настоящей панели, а `c1` — обычное задание без шагов.
+    """
     env = _run(tmp, panel_mode="safe", local_mode="safe")
     try:
         _err(env, "remote_cron", "safe_mode", project="alpha", action="save", job="c1")
         _err(env, "remote_restart", "safe_mode")
+        # `c1` — не `ship:release`: в safe панель разрешает start/toggle обычных заданий.
         _ok(env, "remote_cron", project="alpha", action="toggle", job="c1",
             spec={"enabled": False})
         assert env.panel.calls("/api/cron/toggle")[-1]["body"]["enabled"] is False
