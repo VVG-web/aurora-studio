@@ -11,8 +11,10 @@
 Снимок делается на старте и конце каждой операции, а для операции дольше 12 минут —
 ещё и каждые 12 минут. Подробный журнал лежит в архиве прогона и в git не едет.
 Краткий итог прогона пишется в проект отдельным файлом участника и машины:
-`AuroraKnowledgeDB/meta/net-runs.d/<actor>-<machine>/<run_id>.json`. Два участника
-никогда не пишут в один файл, поэтому merge не конфликтует.
+`AuroraKnowledgeDB/meta/net-runs.d/<actor>-<machine>/<run_id>.json`. Это локальная
+телеметрия машины: в git она не едет, панель читает файл с диска. У каждого
+участника и машины свой путь, поэтому чужие записи не пересекаются. На шард
+хранится не больше 200 записей и не дольше 90 дней.
 
 Снимок не содержит адресов probe, ключей, URL и путей. Имена системных VPN пишутся
 намеренно: по ним видно, какой именно провайдер моделей остался без связи.
@@ -106,7 +108,7 @@ def local_path(run_dir: str | os.PathLike) -> Path:
 
 
 def shared_path(project: str, run_id: str) -> Path | None:
-    """Файл участника и машины. Уникальный путь — вместо общего журнала с merge-конфликтами."""
+    """Файл участника и машины. У каждого свой путь, поэтому записи не пересекаются."""
     if not project or not RUN_RE.fullmatch(str(run_id or "")):
         return None
     try:
@@ -139,7 +141,7 @@ def _clean_name(value, limit: int = 120) -> str:
 
 
 def _project_name(project: str) -> str:
-    """В снимке — имя проекта, а не путь: общий файл не должен выдавать домашний каталог."""
+    """В снимке — имя проекта, а не путь: файл шарда не должен выдавать домашний каталог."""
     return os.path.basename(os.path.normpath(str(project or ""))) or ""
 
 
@@ -413,7 +415,7 @@ def long_snapshot(kind: str, project: str, run_id: str, run_dir: str, cmd: str =
 def finish(kind: str, project: str, run_id: str, run_dir: str, cmd: str = "",
            parent: str = "", started: float | None = None, steps: list | None = None,
            share: bool | None = None) -> dict:
-    """Снимок конца, итог и (для верхнего уровня или долгой операции) общий файл."""
+    """Снимок конца, итог и (для верхнего уровня или долгой операции) файл шарда."""
     if not enabled():
         return {}
     path = local_path(run_dir)
@@ -528,7 +530,7 @@ def summarize(data: dict) -> dict:
 
 
 def load_run(project: str, run_id: str) -> dict:
-    """Локальный файл прогона, иначе общий файл любого участника."""
+    """Локальный файл прогона, иначе файл шарда любого участника."""
     local = local_path(Path(project) / ".aurora" / "runs" / run_id)
     data = _read(local)
     if data:

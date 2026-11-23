@@ -231,3 +231,25 @@ def test_shared_net_runs_keep_two_hundred_and_ninety_days(tmp: Path):
     NO.prune_shared(active_shard, keep=1, now=now, active=active)
     assert active.is_file(), "активный файл удалён"
     assert NO.prune_shared(tmp / "missing", now=now) == [], "нет каталога — не падаем"
+
+
+@test
+def test_net_runs_migration_is_documented(_t):
+    """Миграция описана: копия net-runs.d до kit:update и старый снимок через git show."""
+    root = Path(__file__).resolve().parents[2]
+    ru = (root / "docs/connectivity.md").read_text(encoding="utf-8")
+    en = (root / "docs/en/connectivity.md").read_text(encoding="utf-8")
+    for text, heading, keep, days in (
+            (ru, "### Миграция снимков сети", "200 записей", "90 дней"),
+            (en, "### Migrating network snapshots", "200 records", "90 days")):
+        assert heading in text, heading
+        assert "cp -R AuroraKnowledgeDB/meta/net-runs.d" in text, heading
+        assert "git show <old-sha>:" in text, heading
+        assert "kit:update" in text and "git pull" in text, heading
+        assert keep in text and days in text, heading
+    observe = (root / "scripts/net_observe.py").read_text(encoding="utf-8")
+    assert "локальная" in observe and "телеметрия" in observe
+    assert "merge не конфликтует" not in observe, "docstring всё ещё обещает git-обмен"
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "Обмен через git без конфликтов" not in changelog, "CHANGELOG обещает git-обмен"
+    assert "net-runs.d` теперь локальная телеметрия" in changelog
