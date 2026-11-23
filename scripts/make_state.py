@@ -396,6 +396,7 @@ class MakeRun:
 
     def write_draft(self, version: int, text: str, *, role: str = "worker",
                     model: str = "", provider: str = "", seconds: float = 0,
+                    answer_seconds: float = 0,
                     status: str = "candidate", parent: int = 0,
                     reason: str = "") -> dict:
         with self._lock:
@@ -411,6 +412,9 @@ class MakeRun:
                 "model": str(model or ""),
                 "provider": str(provider or ""),
                 "seconds": round(float(seconds or 0), 2),
+                # Время самого ответа модели, без поиска и подготовки: по нему Момус
+                # получает срок проверки. `seconds` выше — весь шаг писателя.
+                "answer_seconds": round(float(answer_seconds or 0), 2),
                 "status": status,
                 "parent": int(parent or 0),
                 "reason": str(reason or "")[:500],
