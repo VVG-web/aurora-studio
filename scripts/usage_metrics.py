@@ -187,6 +187,8 @@ def _zone(name: str):
     if not text:
         local = AC.local_now().tzinfo
         return local or timezone.utc, (getattr(local, "key", None) or str(local or timezone.utc))
+    if text.upper() in ("UTC", "GMT", "ETC/UTC"):
+        return timezone.utc, text
     try:
         zone = ZoneInfo(text)
     except (ZoneInfoNotFoundError, ValueError):
