@@ -259,8 +259,9 @@ A network snapshot is taken at the start and the end of every operation, and eve
 12 minutes. It answers “was the step waiting for the network or for local work” with evidence:
 
 - `net.json` in the run archive (`<project>/.aurora/runs/<id>/`) is the detailed snapshot and never goes to git;
-- `AuroraKnowledgeDB/meta/net-runs.d/<actor>-<machine>/<id>.json` is the result shared through git. Every actor and machine
-  has its own folder, so two people never write one file and a merge does not conflict;
+- `AuroraKnowledgeDB/meta/net-runs.d/<actor>-<machine>/<id>.json` is the local result on this machine and does not go
+  to git: the panel reads it from disk. Every actor and machine has its own folder, so two people never write one file;
+  each shard keeps at most 200 records and nothing older than 90 days;
 - `~/.aurora/connectivity-events.jsonl` keeps profile and global transitions beyond the last 200 events in the state file.
 
 The snapshot keeps three different things apart: probe-profile availability, connected system VPNs (with names — they show
