@@ -28,6 +28,8 @@
 """
 from __future__ import annotations
 
+import aurora_common as AC
+
 import argparse
 import json
 import os
@@ -158,14 +160,14 @@ def _epoch(value):
 def _iso(epoch) -> str:
     if epoch in (None, ""):
         return ""
-    return datetime.fromtimestamp(float(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return AC.utc_stamp(float(epoch))
 
 
 def _day(value) -> str:
     stamp = _epoch(value)
     if stamp is None:
         return ""
-    return datetime.fromtimestamp(stamp, timezone.utc).strftime("%Y-%m-%d")
+    return AC.utc_stamp(stamp)[:10]
 
 
 def _bucket(value, tz, grain: str) -> str:
@@ -183,7 +185,7 @@ def _zone(name: str):
     """IANA-пояс из запроса; пусто — пояс машины. Неизвестный пояс — 400."""
     text = str(name or "").strip()
     if not text:
-        local = datetime.now().astimezone().tzinfo
+        local = AC.local_now().tzinfo
         return local or timezone.utc, (getattr(local, "key", None) or str(local or timezone.utc))
     try:
         zone = ZoneInfo(text)
