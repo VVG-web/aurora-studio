@@ -177,7 +177,9 @@ def test_mcp_cockpit_remote_mode_safe_broken_full_and_projects(tmp: Path):
         assert state["mode"] == "safe" and state["stored"] == "safe", state
         assert state["source"] == "default", state
         assert state["deny"] == list(AC.MCP_SAFE_DENY_COMMANDS), state["deny"]
-        assert len(state["deny"]) == 9, state["deny"]
+        assert len(state["deny"]) == 10, state["deny"]
+        assert "ship:release" in state["deny"]
+        assert set(AC.MCP_SAFE_DENY_COMMANDS) == set(AC.MCP_IRREVERSIBLE_COMMANDS)
 
         (kit / "local" / "mcp.json").write_text("{это не json", encoding="utf-8")
         broken = ck.remote_mode_state()
@@ -257,7 +259,9 @@ def test_mcp_cockpit_remote_token_cannot_set_mode_http(tmp: Path):
         state = _json(raw)
         assert status == 200 and state.get("remote"), (status, raw)
         assert state["remote"]["mode"] == "safe", state["remote"]
-        assert len(state["remote"]["deny"]) == 9, state["remote"]
+        assert len(state["remote"]["deny"]) == 10, state["remote"]
+        assert "ship:release" in state["remote"]["deny"]
+        assert set(AC.MCP_SAFE_DENY_COMMANDS) == set(AC.MCP_IRREVERSIBLE_COMMANDS)
 
         status, _h, raw = call("POST", "/api/mcp/kit", _headers(token),
                                json.dumps({"action": "set_remote_mode", "mode": "full",
