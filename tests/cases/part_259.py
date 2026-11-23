@@ -14,6 +14,10 @@
 * P1-3 — `safe` проекта сильнее общего `full` на HTTP-границе;
 * P1-4 — `aur_rm_…`/`aur_kn_…` вырезаются из ошибок прогона и диагностики без
   имени поля.
+
+Отдельно закрывается P1 аудита M1: расписание не запускает `ship:release` ни
+прямым шагом, ни шагом маршрута, а удалённые `start`/`toggle` такого задания
+требуют `full`, `admin` и подтверждения.
 """
 from __future__ import annotations
 
@@ -362,6 +366,91 @@ def test_security_fix_project_safe_wins_over_global_full_on_http(tmp: Path):
         restore_home()
 
 
+# --------------------------------------------------------- B4: ship:release
+@test
+def test_security_fix_ship_release_requires_admin_and_confirmation(tmp: Path):
+    """`/api/run` не начинает `ship:release` без `admin` и подтверждения человека."""
+    home, restore_home = _home(tmp)
+    kit = _kit(tmp)
+    root = tmp / "root"
+    sample_workspace_alpha = _project(root, "sample_workspace_alpha")
+    _write_mode(kit, "full")
+    old_env = _tokens_env(kit)
+    started = []
+    args = ["Artifacts/ac/x.md", "--export", "docx"]
+    srv_ck, srv, close = _panel(tmp, kit, root)
+    call = _call(srv)
+    row = {"cmd": "ship:release", "runnable": True, "ns": "ship",
+           "flags": [], "fixed_flags": [], "script": "ship_doc.py"}
+    try:
+        with patch.object(srv_ck, "command_by_name", lambda cmd: row):
+            token = _token(kit, scopes=["remote:read", "remote:write"],
+                           projects=["sample_workspace_alpha"])
+            status, _h, raw = call("POST", "/api/run", _headers(token), json.dumps({
+                "project": str(sample_workspace_alpha), "cmd": "ship:release", "args": args,
+                "resume": False, "confirm_id": ""}))
+            assert status == 403 and _body(raw).get("code") == "scope", (status, raw)
+
+            token = _token(kit, scopes=["remote:read", "remote:write", "admin"],
+                           projects=["sample_workspace_alpha"])
+            status, _h, raw = call("POST", "/api/run", _headers(token), json.dumps({
+                "project": str(sample_workspace_alpha), "cmd": "ship:release", "args": args,
+                "resume": False, "confirm_id": ""}))
+            assert status == 409 and _body(raw).get("code") == "confirmation_required", (status, raw)
+            assert started == []
+
+            confirm = _request_confirmation(
+                srv_ck, call, token, "remote_run_command", "sample_workspace_alpha",
+                {"cmd": "ship:release", "args": args, "resume": False})
+        with patch.object(srv_ck, "command_by_name", lambda cmd: row), \
+                patch.object(srv_ck, "start_job",
+                             lambda project, cmd, cmd_args, **kw:
+                             started.append((project, cmd, cmd_args)) or "job-1"), \
+                patch.object(srv_ck, "version_gap", lambda *_a, **_k: ""), \
+                patch.object(srv_ck, "net_enabled", lambda: False):
+            status, _h, raw = call("POST", "/api/run", _headers(token), json.dumps({
+                "project": str(sample_workspace_alpha), "cmd": "ship:release", "args": args,
+                "resume": False, "confirm_id": confirm}))
+            assert status == 200, (status, raw)
+            assert started == [(str(sample_workspace_alpha), "ship:release", args)], started
+    finally:
+        close()
+        _restore_env(old_env)
+        restore_home()
+
+
+@test
+def test_security_fix_ship_release_safe_mode_blocks_admin(tmp: Path):
+    """`safe` сильнее `admin`: `ship:release` не начинается и с полными правами."""
+    home, restore_home = _home(tmp)
+    kit = _kit(tmp)
+    root = tmp / "root"
+    sample_workspace_alpha = _project(root, "sample_workspace_alpha")
+    _write_mode(kit, "safe")
+    old_env = _tokens_env(kit)
+    srv_ck, srv, close = _panel(tmp, kit, root)
+    call = _call(srv)
+    started = []
+    try:
+        token = _token(kit, scopes=["remote:read", "remote:write", "admin"],
+                       projects=["sample_workspace_alpha"])
+        with patch.object(srv_ck, "command_by_name",
+                          lambda cmd: {"cmd": cmd, "runnable": True, "ns": "ship",
+                                       "flags": [], "fixed_flags": [], "script": "ship_doc.py"}), \
+                patch.object(srv_ck, "start_job",
+                             lambda *a, **k: started.append(a) or "job-1"):
+            status, _h, raw = call("POST", "/api/run", _headers(token), json.dumps({
+                "project": str(sample_workspace_alpha), "cmd": "ship:release",
+                "args": ["Artifacts/ac/x.md", "--export", "docx"],
+                "resume": False, "confirm_id": ""}))
+            assert status == 403 and _body(raw).get("code") == "safe_mode", (status, raw)
+            assert started == [], started
+    finally:
+        close()
+        _restore_env(old_env)
+        restore_home()
+
+
 # -------------------------------------------------------------- P1-2: Cron
 @test
 def test_security_fix_cron_acl_filters_and_blocks_foreign_tasks(tmp: Path):
@@ -614,7 +703,7 @@ def test_security_fix_cron_cross_project_safe_bypass_rejected(tmp: Path):
 
         # Второй слой: даже если guard пропустил, cron_acl сам видит safe шага.
         new_alpha = _cron_task("eeee5555", alpha)
-        with patch.object(srv_ck, "_mcp_cron_guard", lambda ctx, payload: None):
+        with patch.object(srv_ck, "_mcp_cron_guard", lambda ctx, payload, action="": None):
             status, _h, raw = call("POST", "/api/cron/save", _headers(token), json.dumps({
                 "project": str(alpha), "action": "save", "task": new_alpha}))
             assert status == 403 and _body(raw).get("code") == "safe_mode", (status, raw)
@@ -627,6 +716,140 @@ def test_security_fix_cron_cross_project_safe_bypass_rejected(tmp: Path):
         srv_ck.SCHED = old_sched
         close()
         _restore_env(old_env)
+        restore_home()
+
+
+# --------------------------------------------- P1: Cron не запускает ship:release
+@test
+def test_security_fix_cron_release_start_requires_admin_and_confirmation(tmp: Path):
+    """`/api/cron/start|toggle` не запускают задание с `ship:release` без admin и подтверждения."""
+    home, restore_home = _home(tmp)
+    kit = _kit(tmp)
+    root = tmp / "root"
+    sample_workspace_alpha = _project(root, "sample_workspace_alpha")
+    tid = "deadbeef"
+    _write_mode(kit, "full")
+    old_env = _tokens_env(kit)
+    CRON.save_tasks([_cron_task(tid, sample_workspace_alpha, command="ship:release")])
+    srv_ck, srv, close = _panel(tmp, kit, root)
+    call = _call(srv)
+    enqueued = []
+    old_sched = srv_ck.SCHED
+    srv_ck.SCHED = None
+    scheck = srv_ck.scheduler()
+    scheck.enqueue = lambda task_id, trigger="manual", resume="": \
+        enqueued.append((task_id, trigger)) or {"ok": True}
+    try:
+        token = _token(kit, scopes=["remote:read", "remote:write"], projects=["sample_workspace_alpha"])
+        for action in ("start", "toggle"):
+            status, _h, raw = call("POST", "/api/cron/" + action, _headers(token), json.dumps({
+                "project": str(sample_workspace_alpha), "id": tid, "enabled": False, "confirm_id": ""}))
+            assert status == 403 and _body(raw).get("code") == "scope", (action, status, raw)
+
+        token = _token(kit, scopes=["remote:read", "remote:write", "admin"],
+                       projects=["sample_workspace_alpha"])
+        for action in ("start", "toggle"):
+            status, _h, raw = call("POST", "/api/cron/" + action, _headers(token), json.dumps({
+                "project": str(sample_workspace_alpha), "id": tid, "enabled": False, "confirm_id": ""}))
+            assert status == 409 and _body(raw).get("code") == "confirmation_required", \
+                (action, status, raw)
+        assert enqueued == [], enqueued
+        assert next(t for t in CRON.load_tasks() if t["id"] == tid)["enabled"] is True
+
+        confirm = _request_confirmation(srv_ck, call, token, "remote_cron", "sample_workspace_alpha",
+                                        {"action": "start", "id": tid})
+        status, _h, raw = call("POST", "/api/cron/start", _headers(token), json.dumps({
+            "project": str(sample_workspace_alpha), "id": tid, "confirm_id": confirm}))
+        assert status == 200 and _body(raw).get("ok") is True, (status, raw)
+        assert enqueued == [(tid, "manual")], enqueued
+
+        _write_mode(kit, "safe")
+        for action in ("start", "toggle"):
+            status, _h, raw = call("POST", "/api/cron/" + action, _headers(token), json.dumps({
+                "project": str(sample_workspace_alpha), "id": tid, "enabled": False, "confirm_id": ""}))
+            assert status == 403 and _body(raw).get("code") == "safe_mode", (action, status, raw)
+        assert enqueued == [(tid, "manual")], enqueued
+    finally:
+        srv_ck.SCHED = old_sched
+        close()
+        _restore_env(old_env)
+        restore_home()
+
+
+@test
+def test_security_fix_cron_scheduler_skips_release_steps(tmp: Path):
+    """`Scheduler._item` не доводит до `start_job` задание с `ship:release` и маршрут с ним."""
+    home, restore_home = _home(tmp)
+    kit = _kit(tmp)
+    root = tmp / "root"
+    sample_workspace_alpha = _project(root, "sample_workspace_alpha")
+    srv_ck, srv, close = _panel(tmp, kit, root)
+    started = []
+    old_sched = srv_ck.SCHED
+    srv_ck.SCHED = None
+    scheck = srv_ck.scheduler()
+    try:
+        task = _cron_task("feed1234", sample_workspace_alpha, command="ship:release")
+        item = {"kind": "command", "project": str(sample_workspace_alpha), "project_name": "sample_workspace_alpha",
+                "cmd": "ship:release", "args": ["Artifacts/ac/x.md"],
+                "status": "pending", "note": "", "started": "", "finished": "",
+                "jobs": [], "done": [], "log": []}
+        run = {"id": "run-cron-release", "items": [item], "beat": 0}
+        with patch.object(srv_ck, "start_job",
+                          lambda *a, **k: started.append(a) or "job-x"):
+            scheck._item(task, run, item, "ru")
+        assert item["status"] == "failed" and item["note"] == "bad_command", item
+        assert started == [], started
+
+        scenario = {"id": "release-route", "title": "Выпуск",
+                    "steps": [{"cmd": "ship:release", "flags": ["--apply"]}]}
+        route_item = {"kind": "route", "project": str(sample_workspace_alpha), "project_name": "sample_workspace_alpha",
+                      "route": "release-route", "write": True,
+                      "status": "pending", "note": "", "started": "", "finished": "",
+                      "jobs": [], "done": [], "log": []}
+        route_run = {"id": "run-cron-route", "items": [route_item], "beat": 0}
+        with patch.object(srv_ck, "all_scenarios", lambda: [scenario]), \
+                patch.object(srv_ck, "start_job",
+                             lambda *a, **k: started.append(a) or "job-x"):
+            scheck._item(task, route_run, route_item, "ru")
+        assert route_item["status"] == "failed" and route_item["note"] == "bad_route", \
+            route_item
+        assert started == [], started
+    finally:
+        srv_ck.SCHED = old_sched
+        close()
+        restore_home()
+
+
+@test
+def test_security_fix_cron_save_rejects_release_steps(tmp: Path):
+    """`clean_task` не принимает задание с `ship:release` и маршрут с таким шагом."""
+    _home_dir, restore_home = _home(tmp)
+    kit = _kit(tmp)
+    root = tmp / "root"
+    sample_workspace_alpha = _project(root, "sample_workspace_alpha")
+    srv_ck, srv, close = _panel(tmp, kit, root)
+    projects = [{"name": "sample_workspace_alpha", "path": str(sample_workspace_alpha)}]
+    row = {"cmd": "ship:release", "runnable": True, "ns": "ship",
+           "flags": [], "fixed_flags": [], "script": "ship_doc.py"}
+    try:
+        task = _cron_task("11112222", sample_workspace_alpha, command="ship:release")
+        with patch.object(srv_ck, "command_by_name", lambda cmd: row):
+            got = srv_ck.cron_action("save", {"task": task}, projects)
+        assert got == {"ok": False, "error": "bad_command"}, got
+        assert "11112222" not in {t["id"] for t in CRON.load_tasks()}
+
+        scenario = {"id": "release-route", "title": "Выпуск",
+                    "steps": [{"cmd": "ship:release"}]}
+        route_task = {"id": "33334444", "name": "маршрут", "time": "10:00",
+                      "days": [1], "steps": [{"kind": "route", "project": str(sample_workspace_alpha),
+                                              "route": "release-route", "write": True}]}
+        with patch.object(srv_ck, "all_scenarios", lambda: [scenario]):
+            got = srv_ck.cron_action("save", {"task": route_task}, projects)
+        assert got == {"ok": False, "error": "bad_route"}, got
+        assert "33334444" not in {t["id"] for t in CRON.load_tasks()}
+    finally:
+        close()
         restore_home()
 
 

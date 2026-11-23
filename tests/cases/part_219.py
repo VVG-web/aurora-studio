@@ -128,7 +128,8 @@ def test_run_make_uses_the_answer_core_for_the_document(tmp: Path):
         if role == "critic":
             return dict(base, ok=True, text=json.dumps({"ok": True, "issues": []},
                                                         ensure_ascii=False))
-        return dict(base, ok=True, text="# AC\n\nСрок десять дней [[Заявка-0]].")
+        return dict(base, ok=True, text="# AC\n\n## Критерии приёмки\n\nСрок десять дней "
+                                        "[[Заявка-0]], проверяется отчётом.")
 
     cfg = __import__("agent_core").parse_config({
         "AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})

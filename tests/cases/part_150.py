@@ -81,10 +81,15 @@ def test_creation_no_longer_writes_the_parent_into_the_header(tmp: Path):
     R = _mod("agent_runner")
     AC = _mod("aurora_common")
     root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/T.md").write_text("# История\n\n## Описание\n", encoding="utf-8")
     st = {"kind": "us", "idea": "приём заявки", "sid": "s-b", "stages": {k: "2026-10-01" for k in R.MAKE_STAGES},
-          "spec": {"title": "История", "out": "Artifacts/us", "template": "t",
+          "spec": {"title": "История", "out": "Artifacts/us", "template": "Templates/T.md",
                    "publish_url": "https://wiki.example.com/pages/viewpage.action?pageId=7"},
-          "plan": "1. Раздел", "draft": "# История\n\nТекст.", "issues": [],
+          "plan": "1. Раздел",
+          "draft": "# История\n\n## Описание\n\nИстория приёмки заявки с достаточной длиной строки.",
+          "issues": [],
+          "pipeline": {"form_ok": True},
           "momus": {"ok": True, "clean": True, "unsupported": 0, "text": "ВЕРДИКТ: ОПОРА ЕСТЬ"}}
     text = (root / R.write_artifact(str(root), st)).read_text(encoding="utf-8")
     assert "publish_parent" not in AC.frontmatter(text) and "publish_parent" not in text, text[:500]

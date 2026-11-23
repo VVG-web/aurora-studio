@@ -919,6 +919,11 @@ _MADE_PHRASE = "в чистовик не идёт"
 _PROD_KEYS = tuple(h.casefold() for h in PRODUCTION_HEADS)
 
 
+def form_residue(text: str) -> list[str]:
+    """Остатки шаблона и служебных комментариев в чистовой части."""
+    return [match.group(0) for match in _LEFTOVER.finditer(clean_copy(text))]
+
+
 def _head_title(line: str):
     """Название раздела из строки-заголовка Markdown (`## Допущения ##`, `# **Допущения:**`) без разметки; иначе None."""
     m = re.match(r"^ {0,3}(#{1,6})[ \t\u00a0]+(.*)$", line)
@@ -3497,11 +3502,11 @@ def kit_mcp_permission(name: str, kit=None) -> bool:
 # значение не из двух допустимых — `safe` (fail-closed, решение 2.8).
 MCP_SAFE_DENY_COMMANDS = (
     "kit:update", "kit:hooks", "kit:skills", "git:push", "git:update", "git:fix",
-    "ship:publish", "ship:task", "kb:reset",
+    "ship:release", "ship:publish", "ship:task", "kb:reset",
 )
 
 # В `full` эти команды разрешены, но требуют `admin` и подтверждения человека. Множество
-# ровно из девяти опасных команд: остальные необратимые действия — это не команды, а
+# ровно из десяти опасных команд: остальные необратимые действия — это не команды, а
 # маршруты, `remote_restart` и `remote_cron save/delete`, их решает сервер инструментов.
 MCP_IRREVERSIBLE_COMMANDS = frozenset(MCP_SAFE_DENY_COMMANDS)
 
@@ -3554,7 +3559,7 @@ def kit_mcp_mode(project="", kit=None) -> tuple:
 def mcp_command_verdict(cmd, args=None, mode="safe", scope="remote:read") -> dict:
     """Можно ли запускать команду реестра в этом режиме и с этими правами.
 
-    `safe` запрещает девять опасных команд независимо от прав. `full` разрешает их
+    `safe` запрещает десять опасных команд независимо от прав. `full` разрешает их
     только `admin`, и тогда `confirm=True`: запуск ждёт подтверждения человека.
     Остальные команды — обычное `remote:write` без подтверждения. `args` оставлен в
     подписи как часть будущего правила по аргументам; сейчас он ничего не разрешает.

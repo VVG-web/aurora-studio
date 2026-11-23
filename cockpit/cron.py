@@ -192,6 +192,30 @@ def save_tasks(tasks: list) -> None:
 
 # ------------------------------------------------------------------ задание
 
+# `ship:release` пишет выпуск и docx. Расписание и ночной прогон — это запуск без человека,
+# поэтому такая команда и маршруты с ней в задании запрещены: подтверждение некому дать.
+SHIP_RELEASE = "ship:release"
+
+
+def route_has_release(sc: dict | None) -> bool:
+    """В маршруте есть шаг `ship:release`: расписание такой маршрут не запускает."""
+    return any(str(step.get("cmd") or "") == SHIP_RELEASE
+               for step in (sc or {}).get("steps") or [])
+
+
+def task_has_release(task: dict, ck) -> bool:
+    """В задании есть прямой `ship:release` или маршрут с таким шагом."""
+    for step in (task or {}).get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        if step.get("kind") == "command" and str(step.get("cmd") or "") == SHIP_RELEASE:
+            return True
+        if step.get("kind") == "route" and route_has_release(
+                RR.scenario(ck, str(step.get("route") or ""))):
+            return True
+    return False
+
+
 def clean_task(ck, raw: dict, projects: list) -> tuple:
     """Проверить задание из формы. → (задание, ошибка). Ошибка — код для каталога строк.
 
@@ -222,11 +246,15 @@ def clean_task(ck, raw: dict, projects: list) -> tuple:
         if st.get("kind") == "route":
             if st.get("route") not in routes:
                 return None, "bad_route"
+            if route_has_release(RR.scenario(ck, st["route"])):
+                return None, "bad_route"
             steps.append({"kind": "route", "project": project, "route": st["route"],
                           "write": bool(st.get("write", True))})
         elif st.get("kind") == "command":
             row = ck.command_by_name(str(st.get("cmd") or ""))
             if not row or not row.get("runnable"):
+                return None, "bad_command"
+            if row["cmd"] == SHIP_RELEASE:
                 return None, "bad_command"
             args = [str(a) for a in (st.get("args") or []) if str(a).strip()]
             allowed = set(row["flags"]) | {"--apply", "--allow-dirty", "--force", "--json"}
@@ -947,12 +975,20 @@ class Scheduler:
         self.say("")
         self.say(f"━━ {self.item_label(it)} ━━")
         project = it["project"]
+        if str(it.get("cmd") or "") == SHIP_RELEASE:
+            log("⛔ ship:release не запускается расписанием: нужно подтверждение человека")
+            it.update(status="failed", note="bad_command", finished=now_iso())
+            return
         sc = None
         resources = ()
         if it["kind"] == "route":
             sc = RR.scenario(ck, it["route"])
             if not sc:
                 it.update(status="failed", note="no_route", finished=now_iso())
+                return
+            if route_has_release(sc):
+                log("⛔ маршрут содержит ship:release: расписание его не запускает")
+                it.update(status="failed", note="bad_route", finished=now_iso())
                 return
             resources = RR.route_resources(ck, sc, it.get("write", True))
         wait: dict = {}

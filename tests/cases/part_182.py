@@ -112,7 +112,8 @@ def test_run_make_with_a_large_pack_compacts_it_and_continues_without_recompacti
         if role == "critic":
             return {"ok": True, "text": json.dumps({"ok": True, "issues": [], "coverage": {}}, ensure_ascii=False),
                     "log": []}
-        return {"ok": True, "text": "# AC\n\nСрок ([[Заявка-1]]).", "log": []}
+        return {"ok": True, "text": "# AC\n\n## Критерии приёмки\n\nСрок заявки десять "
+                                   "дней, проверяется отчётом. См. [[Заявка-1]].", "log": []}
 
     cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
                           "AURORA_AGENT_BACKEND_1_CONTEXT": "15000"})
@@ -127,7 +128,9 @@ def test_run_make_with_a_large_pack_compacts_it_and_continues_without_recompacti
     before = len(calls)
     r2 = R.run_make(cfg, str(root), "", "", d.name, "", False, call=fake, momus=False)
     assert r2.get("ok"), f"возобновление упало: {r2.get('why')}"
-    assert len(calls) == before, "возобновлённая сессия конспектировалась повторно"
+    # Финальная сборка на возобновлении — работа, а не повторная нарезка: считаем только конспекты.
+    assert not [c for c in calls[before:] if "ЧАСТЬ пака знаний" in c[1]], \
+        "возобновлённая сессия конспектировалась повторно"
 
 
 @test
@@ -319,7 +322,8 @@ def test_compaction_time_does_not_eat_the_deadline_of_the_next_step(tmp: Path):
         if role == "critic":
             return {"ok": True, "text": json.dumps({"ok": True, "issues": [], "coverage": {}}, ensure_ascii=False),
                     "log": []}
-        return {"ok": True, "text": "# AC\n\nСрок.", "log": []}
+        return {"ok": True, "text": "# AC\n\n## Критерии приёмки\n\nСрок заявки десять "
+                                   "дней, проверяется отчётом.", "log": []}
 
     cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
                           "AURORA_AGENT_BACKEND_1_CONTEXT": "15000", "AURORA_AGENT_REQUEST_TIMEOUT": "1"})
@@ -362,7 +366,8 @@ def test_every_make_stage_has_its_own_deadline_not_the_remainder_of_the_run(tmp:
         if role == "critic":
             return {"ok": True, "text": json.dumps({"ok": True, "issues": [], "coverage": {}}, ensure_ascii=False),
                     "log": []}
-        return {"ok": True, "text": "# AC\n\nСрок.", "log": []}
+        return {"ok": True, "text": "# AC\n\n## Критерии приёмки\n\nСрок заявки десять "
+                                   "дней, проверяется отчётом.", "log": []}
 
     cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
                           "AURORA_AGENT_BACKEND_1_CONTEXT": "15000", "AURORA_AGENT_REQUEST_TIMEOUT": "1"})

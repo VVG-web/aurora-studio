@@ -40,7 +40,7 @@ def _ck():
 def _project(tmp: Path, config: str, bom: bool = False, crlf: bool = False) -> Path:
     root = make_project(tmp)
     (root / "Templates").mkdir(exist_ok=True)
-    (root / "Templates" / "AC.md").write_text("шаблон", encoding="utf-8")
+    (root / "Templates" / "AC.md").write_text("# AC\n\n## Раздел\n", encoding="utf-8")
     text = config.replace("\n", "\r\n") if crlf else config
     (root / "aurora.config.yaml").write_bytes(((BOM if bom else "") + text).encode("utf-8"))
     return root
