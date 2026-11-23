@@ -56,8 +56,9 @@ function drawReqPaths(ctx){
   box.innerHTML = "";
   REQ_PATHS.forEach(path => box.append(el("span", {class: "chip mono", style: "gap:5px"},
     path,
-    el("button", {class: "btn sm", style: "padding:0 5px;min-height:0", title: t("work.req.remove"),
-      onclick: () => { REQ_PATHS = REQ_PATHS.filter(x => x !== path); drawReqPaths(ctx); }}, "×"))));
+    actionButton(ctx, {class: "btn sm", style: "padding:0 5px;min-height:0",
+      onclick: () => { REQ_PATHS = REQ_PATHS.filter(x => x !== path); drawReqPaths(ctx); }},
+      "×", t("work.req.remove"), "work.help.req_remove"))));
   if (!REQ_PATHS.length){
     box.append(el("span", {class: "muted", style: "font-size:12.5px"}, t("work.req.empty")));
   }
@@ -169,9 +170,9 @@ function drawRefs(ctx){
   REFS.forEach(r => box.append(el("span", {class: "chip", title: r.path,
       style: "gap:6px;align-items:center;display:inline-flex"},
     t(REF_KEY[r.kind]) + " " + r.label,
-    el("button", {class: "btn sm", style: "padding:0 6px;min-height:0", title: t("work.ref_remove"),
-      "data-help": "work.help.ref_remove",
-      onclick: () => { REFS = REFS.filter(x => x !== r); drawRefs(ctx); }}, "×"))));
+    actionButton(ctx, {class: "btn sm", style: "padding:0 6px;min-height:0",
+      onclick: () => { REFS = REFS.filter(x => x !== r); drawRefs(ctx); }},
+      "×", t("work.ref_remove"), "work.help.ref_remove"))));
 }
 
 async function pickRefs(ctx){
@@ -411,6 +412,12 @@ function kindLabel(ctx, kind){
   return rec.title || kind || ctx.t("work.artifact");
 }
 
+export function runHeading(run, kindTitle = ""){
+  // Свободный run.title — данные, а не статус: в нём мог оказаться этап с
+  // опечаткой. Видимая шапка всегда называется по виду артефакта.
+  return String(kindTitle || "").trim() || String((run && run.kind) || "");
+}
+
 export function runStatus(ctx, status){
   const key = canonStatus(status);
   const label = ctx.t("work.status." + key);
@@ -497,15 +504,13 @@ export function routeCard(ctx, run){
 
 export function answerControls(ctx, run, answers, onSubmit, onEnough){
   const {t, el} = ctx;
-  const answer = el("button", {class: "btn primary", type: "button",
-    title: t("work.answer_hint"), "aria-label": t("work.answer_hint"),
-    "data-help": "work.help.answer",
-    onclick: () => onSubmit(answers.value.trim())}, t("work.answer"));
-  const enough = el("button", {class: "btn", type: "button",
-    title: t("work.enough_hint"), "aria-label": t("work.enough_hint"),
-    "data-help": "work.help.enough",
+  const answer = actionButton(ctx, {class: "btn primary",
+    onclick: () => onSubmit(answers.value.trim())},
+    t("work.answer"), t("work.answer_hint"), "work.help.answer");
+  const enough = actionButton(ctx, {class: "btn",
     style: "white-space:normal;text-align:left",
-    onclick: () => onEnough()}, t("work.enough"));
+    onclick: () => onEnough()},
+    t("work.enough"), t("work.enough_hint"), "work.help.enough");
   // Ответ — главное действие, поэтому primary справа; остановка опроса —
   // вторичная слева. Порядок в DOM совпадает с порядком слева направо и Tab.
   return el("div", {class: "row", style: "gap:8px;margin-top:8px;align-items:center"},
@@ -556,6 +561,18 @@ export function questionCard(ctx, run, questions = [], value, onSubmit, onEnough
     el("div", {class: "muted", style: "font-size:11.5px;margin-top:4px"},
       t("work.answers_footer")));
   return card;
+}
+
+export function actionButton(ctx, attrs, label, hint, help = ""){
+  // Одна точка создания кнопок: подсказка и aria-label не могут забыться на
+  // отдельном вызове. Если текст подсказки не передан, остаётся подпись.
+  const a = {...attrs};
+  a.type = a.type || "button";
+  const fallback = String(label == null ? "" : label);
+  if (!a.title) a.title = hint || fallback;
+  if (!a["aria-label"]) a["aria-label"] = hint || fallback;
+  if (help && !a["data-help"]) a["data-help"] = help;
+  return ctx.el("button", a, label);
 }
 
 export function runElapsed(run){
@@ -741,11 +758,10 @@ function renderRuns(ctx){
     const label = labels.filter(x => x === base).length > 1
       ? base + " · #" + sid.slice(-4) : base;
     const hint = ctx.t("work.run_open_hint", {label});
-    const b = ctx.el("button", {class: "btn sm" + (run.key === ACTIVE ? " primary" : ""),
-      type: "button", title: hint, "aria-label": hint,
+    const b = actionButton(ctx, {class: "btn sm" + (run.key === ACTIVE ? " primary" : ""),
       "aria-pressed": run.key === ACTIVE ? "true" : "false",
       "aria-controls": "makeDialog",
-      onclick: () => { ACTIVE = run.key; renderRuns(ctx); drawRun(ctx); }}, label);
+      onclick: () => { ACTIVE = run.key; renderRuns(ctx); drawRun(ctx); }}, label, hint);
     box.append(b);
   });
   if (rows.length && !rows.some(run => run.key === ACTIVE)){
@@ -765,11 +781,8 @@ function drawRun(ctx){
     || ((run.reportText || "").match(/Документ: `([^`]+)`/) || [])[1] || "";
   box.innerHTML = "";
   const kind = kindLabel(ctx, run.kind);
-  const rawTitle = String(run.title || "").trim();
   const head = el("div", {class: "row", style: "gap:10px;align-items:center;flex-wrap:wrap"},
-    // Имя вида — надёжный заголовок запуска. Свободный state.title мог
-    // содержать статус с опечаткой; он остаётся только в подсказке.
-    el("b", {title: rawTitle && rawTitle !== kind ? rawTitle : null}, kind),
+    el("b", {}, runHeading(run, kind)),
     el("span", {class: "chip"}, runStatus(ctx, run.status)),
     el("span", {class: "muted", style: "font-size:12px"}, t("work.elapsed", {time: runElapsed(run)})),
     el("span", {class: "muted", style: "font-size:12px"}, runTimeLabel(ctx, run)));
@@ -842,27 +855,25 @@ function drawRun(ctx){
   }
   const on = makePipelineButtons(run.status, Boolean(run.sid), Boolean(run.report));
   const row = el("div", {class: "row", style: "gap:8px;margin-top:10px;flex-wrap:wrap"});
-  if (on.cancel) row.append(el("button", {class: "btn", type: "button",
-    title: t("work.cancel_hint"), "aria-label": t("work.cancel_hint"),
-    onclick: () => controlRun(ctx, run, "cancel")}, t("work.cancel")));
+  if (on.cancel) row.append(actionButton(ctx, {class: "btn",
+    onclick: () => controlRun(ctx, run, "cancel")},
+    t("work.cancel"), t("work.cancel_hint")));
   if (on.pause){
     const paused = run.status === "paused";
-    row.append(el("button", {class: "btn", type: "button",
-      title: t(paused ? "work.resume_hint" : "work.pause_hint"),
-      "aria-label": t(paused ? "work.resume_hint" : "work.pause_hint"),
+    row.append(actionButton(ctx, {class: "btn",
       onclick: () => controlRun(ctx, run, paused ? "resume" : "pause")},
-      t(paused ? "work.resume" : "work.pause")));
+      t(paused ? "work.resume" : "work.pause"),
+      t(paused ? "work.resume_hint" : "work.pause_hint")));
   }
-  if (on.continue) row.append(el("button", {class: "btn primary", type: "button",
-    title: t("work.continue_hint"), "aria-label": t("work.continue_hint"),
-    onclick: () => continueRun(ctx, run)}, t("work.continue")));
-  if (done) row.append(el("button", {class: "btn", type: "button",
-    title: t("work.open_in_editor"), "aria-label": t("work.open_in_editor"),
-    "data-help": "work.help.open_done",
-    onclick: () => ctx.openPath(done)}, t("work.open_in_editor")));
-  if (on.report) row.append(el("button", {class: "btn", type: "button",
-    title: t("work.open_report"), "aria-label": t("work.open_report"),
-    onclick: () => ctx.openPath(run.report)}, t("work.open_report")));
+  if (on.continue) row.append(actionButton(ctx, {class: "btn primary",
+    onclick: () => continueRun(ctx, run)},
+    t("work.continue"), t("work.continue_hint")));
+  if (done) row.append(actionButton(ctx, {class: "btn",
+    onclick: () => ctx.openPath(done)},
+    t("work.open_in_editor"), t("work.open_in_editor"), "work.help.open_done"));
+  if (on.report) row.append(actionButton(ctx, {class: "btn",
+    onclick: () => ctx.openPath(run.report)},
+    t("work.open_report"), t("work.open_report")));
   box.append(row);
   run.rendered = true;
 }
@@ -1029,10 +1040,10 @@ async function publish(ctx){
     const tb = await ctx.ui.taskBlock({path: rel});
     if (sel.value === rel) taskHost.replaceChildren(tb);
   };
-  const go = el("button", {class: "btn primary", "data-help": "work.help.publish_go", onclick: () => {
+  const go = actionButton(ctx, {class: "btn primary", onclick: () => {
     const f = files.find(x => x.rel === sel.value) || {};
     if (f.rel) ctx.ui.publishFile(f.rel);
-  }}, t("work.publish_go"));
+  }}, t("work.publish_go"), t("work.publish_go_hint"), "work.help.publish_go");
   const draw = () => {
     const f = files.find(x => x.rel === sel.value) || {};
     const pub = f.publish || {};
@@ -1045,8 +1056,10 @@ async function publish(ctx){
       hint.textContent = pub.why || "";
       if (pub.fix){
         fix.hidden = false;
-        fix.append(el("button", {class: "btn sm", onclick: () => ctx.ui.openSettings(pub.fix)},
-          t(pub.fix === "kinds" ? "work.publish_fix_kinds" : "work.publish_fix_project")));
+        fix.append(actionButton(ctx, {class: "btn sm",
+          onclick: () => ctx.ui.openSettings(pub.fix)},
+          t(pub.fix === "kinds" ? "work.publish_fix_kinds" : "work.publish_fix_project"),
+          t("work.publish_fix_hint"), "work.help.publish_fix"));
       }
     } else if (pub.state !== "ready"){
       hint.textContent = t("work.publish_none");
@@ -1067,7 +1080,7 @@ async function publish(ctx){
     sel, hint, fix, taskHost, note,
     el("div", {class: "row", style: "gap:10px;margin-top:10px"},
       go,
-      el("button", {class: "btn", "data-help": "work.help.copy_task", onclick: () => {
+      actionButton(ctx, {class: "btn", onclick: () => {
         const f = files.find(x => x.rel === sel.value) || {};
         const task = t("work.publish_task", {rel: f.rel})
           + (note.value.trim() ? "\n" + t("work.publish_task_note", {note: note.value.trim()}) : "")
@@ -1075,7 +1088,7 @@ async function publish(ctx){
         navigator.clipboard.writeText(task)
           .then(() => ctx.toast(t("work.task_copied"), "ok"))
           .catch(() => ctx.toast(t("work.task_clipboard_off"), "warn"));
-      }}, t("work.copy_task")))));
+      }}, t("work.copy_task"), t("work.copy_task_hint"), "work.help.copy_task"))));
 }
 
 // Подсказки по `@` и `/` нужны только на виду. Опрос задания (`makeCall`) и ответ планировщика

@@ -499,13 +499,36 @@ def test_make_questions_ui_puts_answer_below_questions_and_cleans_labels(tmp: Pa
     if not node:
         return
     view = KIT / "cockpit/modules/work/view.js"
+    html = (KIT / "cockpit/modules/work/view.html").read_text(encoding="utf-8")
     source = view.read_text(encoding="utf-8")
     assert not re.search(r"(?:color|background|border-color)\s*:\s*(?:#|rgba?\(|hsla?\()",
                          source), "цвет в work/view.js должен идти из токенов скина"
+    # Каждая статическая кнопка раздела: title, aria-label и rich help.
+    buttons = re.findall(r"<button\b[^>]*>", html, re.S)
+    assert len(buttons) == 7, buttons
+    for tag in buttons:
+        assert re.search(r'(?:^|\s)title="', tag), tag
+        assert re.search(r'(?:^|\s)aria-label="', tag), tag
+        assert re.search(r'(?:^|\s)data-help="', tag), tag
+    # Все динамические кнопки идут через один помощник, иначе подсказка
+    # забывается на отдельном вызове.
+    assert source.count('el("button"') == 1, "кнопки раздела должны идти через actionButton"
+    assert "rawTitle" not in source, "сырой run.title не должен попадать в разметку"
+    assert not re.search(r'title\s*:\s*[^,\n]*(?:run\.title|rawTitle)', source), \
+        "run.title не должен становиться title-подсказкой"
+    for lang in ("ru", "en"):
+        data = json.loads((KIT / "cockpit/modules/work/i18n" / f"{lang}.json")
+                          .read_text(encoding="utf-8"))
+        for attr in ("data-i18n-title", "data-i18n-aria"):
+            for key in re.findall(attr + r'="([\w.]+)"', html):
+                assert key in data, (lang, attr, key)
+        for key in sorted(set(re.findall(r"work\.help\.[a-z_]+", html + source))):
+            for suffix in (".what", ".how", ".result"):
+                assert key + suffix in data, (lang, key, suffix)
     script = """
 import {runQuestions, questionsFromPayload, runSelectorLabel,
         runRoute, adoptStateStatus, routeCard, questionCard, runTimeLabel,
-        canonStatus} from __VIEW__;
+        runHeading, actionButton, canonStatus} from __VIEW__;
 const T = {
   "work.status.planning": "планирование", "work.status.done": "готово",
   "work.waiting_answer": "ждёт ответа",
@@ -540,6 +563,12 @@ report.adopt = [adoptStateStatus("running", "planning", true),
                 adoptStateStatus("done", "partial", false),
                 adoptStateStatus("running", "running", false)];
 report.waiting = runTimeLabel(ctx, {status: "planning"});
+report.heading = runHeading({kind: "us", title: "us-Пользовательская история-Планироение"},
+                            "Пользовательская история");
+const action = actionButton(ctx, {class: "btn", onclick: () => {}},
+                            "Подпись", "Подсказка", "work.help.example");
+report.action = {title: action.attrs.title, aria: action.attrs["aria-label"],
+                 help: action.attrs["data-help"], type: action.attrs.type};
 const route = routeCard(ctx, {status: "planning"});
 const chips = route.kids.find(k => k.tag === "div" && k.attrs.role === "list").kids;
 report.route = {count: chips.length,
@@ -574,6 +603,9 @@ console.log(JSON.stringify(report));
     assert got["routes"] == [0, 2, 3, 4], got["routes"]
     assert got["adopt"] == ["running", "planning", "partial", "running"], got["adopt"]
     assert got["waiting"] == "ждёт ответа", got["waiting"]
+    assert got["heading"] == "Пользовательская история", got["heading"]
+    assert got["action"] == {"title": "Подсказка", "aria": "Подсказка",
+                             "help": "work.help.example", "type": "button"}, got["action"]
     assert got["route"]["count"] == 5 and got["route"]["current"], got["route"]
     assert "Вопросы" in "".join(got["route"]["current"]), got["route"]
     assert all(got["route"]["titles"]), got["route"]
