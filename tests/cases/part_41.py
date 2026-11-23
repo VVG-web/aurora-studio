@@ -2099,7 +2099,8 @@ def test_make_idea_is_not_refused_by_abstain_but_question_is(tmp: Path):
         text = {"planner": json.dumps({"questions": [], "assumptions": [], "plan": "1. Описание"},
                                       ensure_ascii=False),
                 "critic": json.dumps({"ok": True, "issues": [], "coverage": {}}),
-                "qa": "ВЕРДИКТ: чисто"}.get(role, "# US\n\nтекст")
+                "qa": "ВЕРДИКТ: чисто"}.get(
+            role, "# US\n\n## Описание\n\nИстория курьера с достаточной длиной строки.")
         return {"ok": True, "backend": 1, "model": "m", "tps": 9, "log": [], "text": text}
 
     cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
@@ -2396,7 +2397,8 @@ def test_abstain_off_works_with_engine_released_before_it(tmp: Path):
         text = {"planner": json.dumps({"questions": [], "assumptions": [], "plan": "1. Описание"},
                                       ensure_ascii=False),
                 "critic": json.dumps({"ok": True, "issues": [], "coverage": {}}),
-                "qa": "ВЕРДИКТ: чисто"}.get(role, "# US\n\nтекст")
+                "qa": "ВЕРДИКТ: чисто"}.get(
+            role, "# US\n\n## Описание\n\nИстория курьера с достаточной длиной строки.")
         return {"ok": True, "backend": 1, "model": "m", "tps": 9, "log": [], "text": text}
 
     cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})

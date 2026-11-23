@@ -3942,7 +3942,8 @@ def test_a_failed_critic_or_momus_does_not_make_the_document_ready(tmp: Path):
         if role == "qa":
             return dict(base, ok=True, text="разбор без вердикта" if mode["qa"] == "none"
                         else "ВЕРДИКТ: ЧИСТО")
-        return dict(base, ok=True, text="# AC\n\n## Предусловия\n\nЗаявка создана.")
+        return dict(base, ok=True, text="# AC\n\n## Предусловия\n\nЗаявка создана и "
+                                        "ожидает согласования ответственным сотрудником.")
 
     cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
     r = R.run_make(cfg, str(root), "ac", "статусы заявки", "", "", True, call=fake)

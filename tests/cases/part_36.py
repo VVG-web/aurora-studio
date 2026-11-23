@@ -372,6 +372,7 @@ def _make_with_template(tmp: Path, rel_src: Path, env: dict, fail: dict | None =
     изобразить отказ по размеру."""
     _path()
     import agent_core as A, agent_runner as R
+    import make_kinds as MK
     from harness import stub_messages
 
     tmp.mkdir(parents=True, exist_ok=True)
@@ -388,6 +389,16 @@ def _make_with_template(tmp: Path, rel_src: Path, env: dict, fail: dict | None =
              f"Заявка проходит статусы. Срок десять дней. см. [[Заявка-{(i + 1) % 6}]]",
              status="knowledge", kind="knowledge")
     seen, packs = {}, []
+    template_text = (root / "Templates/T.md").read_text(encoding="utf-8")
+
+    def filled() -> str:
+        """Документ по форме: каждый раздел шаблона на месте, тело непустое."""
+        lines = []
+        for head in MK.template_headings(template_text):
+            lines += [re.sub(r"\{\{[^{}\n]*\}\}", "Название", head), "",
+                      "Содержание раздела с опорой на пак знаний и достаточной длиной.",
+                      ""]
+        return "\n".join(lines)
 
     def fake(cfg_, role, messages, **kw):
         seen[role] = stub_messages(messages, kw)[0]["content"]
@@ -399,7 +410,7 @@ def _make_with_template(tmp: Path, rel_src: Path, env: dict, fail: dict | None =
                                                        ensure_ascii=False))
         if role == "critic":
             return dict(base, ok=True, text=json.dumps({"ok": True, "issues": []}))
-        return dict(base, ok=True, text="# Док\n\nЗаявка создана.")
+        return dict(base, ok=True, text=filled())
 
     real = R.run_command
 
@@ -427,19 +438,20 @@ def test_the_template_skeleton_is_only_real_sections(tmp: Path):
     блоки-примеры») и ограждённые блоки заголовками не являются; BOM не прячет первый."""
     _path()
     import agent_runner as R
+    import make_kinds as MK
 
-    assert R.template_headings("\ufeff# A\n## B") == ["# A", "## B"]
-    assert R.template_headings("---\n# комментарий\ntitle: x\n---\n# A\n") == ["# A"]
-    assert R.template_headings("# A\n<!--\n## в комментарии\n-->\n## B <!-- x -->\n") == \
+    assert MK.template_headings("\ufeff# A\n## B") == ["# A", "## B"]
+    assert MK.template_headings("---\n# комментарий\ntitle: x\n---\n# A\n") == ["# A"]
+    assert MK.template_headings("# A\n<!--\n## в комментарии\n-->\n## B <!-- x -->\n") == \
         ["# A", "## B"]
-    assert R.template_headings("# A\n```md\n## в коде\n```\n~~~\n## и тут\n~~~\n## B") == \
+    assert MK.template_headings("# A\n```md\n## в коде\n```\n~~~\n## и тут\n~~~\n## B") == \
         ["# A", "## B"]
-    assert R.template_headings("# A\n<!-- не закрыт\n## B") == ["# A"]
-    assert R.template_headings("# A\n<!--\nОПЦИОНАЛЬНО: не заголовок\n-->\n") == ["# A"]
-    assert R.template_headings("#не заголовок\n####### семь\n") == []
+    assert MK.template_headings("# A\n<!-- не закрыт\n## B") == ["# A"]
+    assert MK.template_headings("# A\n<!--\nОПЦИОНАЛЬНО: не заголовок\n-->\n") == ["# A"]
+    assert MK.template_headings("#не заголовок\n####### семь\n") == []
 
     text = (KIT / "scaffold/TemplatesCommon/us_v1.0.md").read_text(encoding="utf-8")
-    heads = R.template_headings(text)
+    heads = MK.template_headings(text)
     assert len(heads) >= 20, heads
     for must in ("## Acceptance criteria", "## How to demo", "## Пользовательские сценарии",
                  "### Что сознательно не демонстрируем", "#### ✅ Готово"):
@@ -453,7 +465,7 @@ def test_the_template_skeleton_is_only_real_sections(tmp: Path):
         "заголовок обязательного раздела помечен необязательным"
     assert "название по смыслу" in block, "про `{{…}}` в заголовках скелет молчит"
     for f in sorted((KIT / "scaffold").glob("Templates*/*.md")):
-        assert len(R.template_headings(f.read_text(encoding="utf-8"))) >= 3, f.name
+        assert len(MK.template_headings(f.read_text(encoding="utf-8"))) >= 3, f.name
 
 
 @test
@@ -468,6 +480,7 @@ def test_agent_make_gives_every_template_section_to_every_role(tmp: Path):
     собирается с вычетом шаблона из бюджета."""
     _path()
     import agent_core as A, agent_runner as R
+    import make_kinds as MK
 
     templates = sorted(p for d in sorted((KIT / "scaffold").glob("Templates*"))
                        for p in d.glob("*.md"))
@@ -475,7 +488,7 @@ def test_agent_make_gives_every_template_section_to_every_role(tmp: Path):
     big = 0
     for n, src in enumerate(templates):
         text = src.read_text(encoding="utf-8")
-        heads = R.template_headings(text)
+        heads = MK.template_headings(text)
         assert len(heads) >= 3, f"{src.name}: заголовков {heads}"
         big += len(text) > 8000
         (tmp / f"w{n}").mkdir()
@@ -493,7 +506,7 @@ def test_agent_make_gives_every_template_section_to_every_role(tmp: Path):
     # узкое окно: планировщик и критик получают скелет, воркер — шаблон целиком
     src = KIT / "scaffold/TemplatesCommon/us_v1.0.md"
     text = src.read_text(encoding="utf-8")
-    heads = R.template_headings(text)
+    heads = MK.template_headings(text)
     (tmp / "narrow").mkdir()
     seen, res, packs = _make_with_template(tmp / "narrow", src,
                                            {"AURORA_AGENT_BACKEND_1_CONTEXT": "20000"})
@@ -523,10 +536,11 @@ def test_the_form_fuse_checks_the_message_that_goes_to_the_model(tmp: Path):
     модели — теперь останавливают производство до вызова модели и называют роль."""
     _path()
     import agent_runner as R
+    import make_kinds as MK
 
     src = KIT / "scaffold/TemplatesCommon/us_v1.0.md"
     text = src.read_text(encoding="utf-8")
-    heads = R.template_headings(text)
+    heads = MK.template_headings(text)
     # узкая проверка самой сверки
     assert R.form_lost("до\nX\nпосле", "X", ["# H"]) == ["# H"]
     assert R.form_lost("до\n# H\nпосле", "X", ["# H"]) == ["# H"], \
@@ -566,6 +580,37 @@ def test_the_form_fuse_checks_the_message_that_goes_to_the_model(tmp: Path):
     assert not res.get("ok") and "«planner»" in res["why"] and lost[0] in res["why"] \
         and f"и ещё {len(lost) - 5}" in res["why"], (lost, res)
     assert "planner" not in seen, "модель вызвана, хотя шаблон в промпт не попал"
+
+
+@test
+def test_the_final_writer_gets_the_whole_template_not_a_skeleton(tmp: Path):
+    """Финальный писатель собирает документ заново по полному шаблону, а не по скелету.
+
+    Скелет (одни заголовки) годится планировщику и критику: им нужен состав разделов.
+    Писателю нужны инструкции разделов, поэтому `form("final_writer", False)` обязан
+    отдать шаблон целиком, даже при узком окне. Проверка идёт по готовому сообщению, и
+    подмена шаблона скелетом ловится `form_lost`."""
+    _path()
+    import agent_runner as R
+    import make_kinds as MK
+
+    src = KIT / "scaffold/TemplatesCommon/us_v1.0.md"
+    text = src.read_text(encoding="utf-8")
+    heads = MK.template_headings(text)
+    (tmp / "final").mkdir()
+    seen, res, _ = _make_with_template(tmp / "final", src,
+                                       {"AURORA_AGENT_BACKEND_1_CONTEXT": "20000"})
+    assert res.get("ok"), res.get("why")
+    prompt = seen["worker"]                       # последний вызов worker — финальный писатель
+    for head in heads:
+        assert head in prompt, f"в финальном промпте нет раздела {head}"
+    assert text[8000:8400] in prompt, "финальный писатель получил скелет вместо шаблона"
+    assert "Лучший черновик" in prompt and "Уточнения" in prompt and "Допущения" in prompt, \
+        "финальный промпт не несёт входы сборки"
+    skeleton = "\n".join(heads)
+    assert R.form_lost(prompt, skeleton, heads), \
+        "скелет прошёл сверку формы — предохранитель пропустит пустую форму"
+    assert not R.form_lost(prompt, text, heads), "полный шаблон не прошёл сверку формы"
 
 
 @test
