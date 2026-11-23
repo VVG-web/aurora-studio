@@ -259,8 +259,9 @@ A network snapshot is taken at the start and the end of every operation, and eve
 12 minutes. It answers “was the step waiting for the network or for local work” with evidence:
 
 - `net.json` in the run archive (`<project>/.aurora/runs/<id>/`) is the detailed snapshot and never goes to git;
-- `AuroraKnowledgeDB/meta/net-runs.d/<actor>-<machine>/<id>.json` is the result shared through git. Every actor and machine
-  has its own folder, so two people never write one file and a merge does not conflict;
+- `AuroraKnowledgeDB/meta/net-runs.d/<actor>-<machine>/<id>.json` is the local result on this machine and does not go
+  to git: the panel reads it from disk. Every actor and machine has its own folder, so two people never write one file;
+  each shard keeps at most 200 records and nothing older than 90 days;
 - `~/.aurora/connectivity-events.jsonl` keeps profile and global transitions beyond the last 200 events in the state file.
 
 The snapshot keeps three different things apart: probe-profile availability, connected system VPNs (with names — they show
@@ -278,6 +279,30 @@ The same `timing` summary is returned by `/api/history` and `/api/history/run`. 
 missing, it is derived from `seconds` and `net.blocked_s` at read time. This stage does not
 separate LLM, Jira or Confluence waiting, the queue, human pauses or TTFT; `network` is an
 estimate of network downtime, not a breakdown by every service.
+
+### Migrating network snapshots
+
+Before this version `net-runs.d` lived in git and travelled between actors. It is now local
+telemetry on this machine: the folder is covered by `.gitignore`, and the first `kit:update`
+removes the old files from the index. The removal goes out with the next commit, so keep a
+copy before the first update:
+
+```
+cp -R AuroraKnowledgeDB/meta/net-runs.d ~/net-runs-backup
+python3 <kit>/aurora.py update <project> --apply
+git add .gitignore
+git commit -m "net-runs: stop tracking snapshots"
+```
+
+Old clones lose the tracked files after `git pull`: the commit removes them from the index
+and from working trees. They remain in history; fetch a snapshot with:
+
+```
+git show <old-sha>:AuroraKnowledgeDB/meta/net-runs.d/<actor>-<machine>/<id>.json > snapshot.json
+```
+
+Without a copy this is the only way to get a snapshot back. After the update the panel reads
+the files from disk at the same path, so the metrics section and `net:report` keep working.
 
 ## Appendix: storage format
 

@@ -1182,10 +1182,19 @@ def refresh_gitignore(target: Path) -> list:
 
 
 RUNLOG_REL = "AuroraKnowledgeDB/meta/run_log.md"
+NET_RUNS_REL = "AuroraKnowledgeDB/meta/net-runs.d"
 RECENT_FILES_REL = "AuroraKnowledgeDB/meta/recent-files.json"
+# Каталоги, которые снимаются с учёта целиком: у каждого свои файлы, но все они локальные.
+LOCAL_STATE_DIRS = (NET_RUNS_REL,)
+UNTRACK_NET_RUNS_WARNING = (
+    "   ⚠️ Снятие снимков сети с учёта уйдёт следующим коммитом: старые клоны после pull\n"
+    "      потеряют отслеживаемые файлы net-runs.d. Они остаются в истории: git show <old-sha>:<путь>.\n"
+    "      Перед коммитом сохраните копию AuroraKnowledgeDB/meta/net-runs.d."
+)
 LOCAL_STATE_RELS = (
     RUNLOG_REL,
     RECENT_FILES_REL,
+    NET_RUNS_REL,
     "AuroraKnowledgeDB/meta/retrieval-last.json",
     "AuroraKnowledgeDB/meta/graph.json",
     "AuroraKnowledgeDB/.obsidian/workspace.json",
@@ -1204,19 +1213,21 @@ LOCAL_STATE_RELS = (
 
 
 def untrack_runlog(target: Path, rel: str = RUNLOG_REL) -> bool:
-    """Снять локальный файл с учёта git, оставив его на диске.
+    """Снять локальный файл или каталог с учёта git, оставив его на диске.
 
     По умолчанию это журнал запусков (1.168.0); тот же безопасный шаг нужен личной истории
-    открытий панели. Правило .gitignore не снимает с учёта то, что уже в истории: файл продолжал
-    бы меняться в каждом коммите. Кит снимает только явно переданный им файл. Удаление из
-    индекса уйдёт со следующим коммитом проекта."""
+    открытий панели и снимкам сети (`AuroraKnowledgeDB/meta/net-runs.d`). Правило .gitignore
+    не снимает с учёта то, что уже в истории: файл продолжал бы меняться в каждом коммите.
+    Кит снимает только явно переданный им путь. Каталог снимается рекурсивно
+    (`git rm -r --cached`), файлы на диске остаются. Удаление из индекса уйдёт со следующим
+    коммитом проекта."""
     try:
-        tracked = subprocess.run(["git", "-C", str(target), "ls-files", "--error-unmatch", "--",
-                                  rel], capture_output=True, timeout=30).returncode == 0
-        if not tracked:
+        listed = subprocess.run(["git", "-C", str(target), "ls-files", "-z", "--", rel],
+                                capture_output=True, check=False, timeout=30)
+        if listed.returncode != 0 or not listed.stdout.strip():
             return False
-        return subprocess.run(["git", "-C", str(target), "rm", "--cached", "-q", "--", rel],
-                              capture_output=True, timeout=30).returncode == 0
+        return subprocess.run(["git", "-C", str(target), "rm", "-r", "--cached", "-q", "--", rel],
+                              capture_output=True, check=False, timeout=30).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -1224,6 +1235,11 @@ def untrack_runlog(target: Path, rel: str = RUNLOG_REL) -> bool:
 def untrack_local_state(target: Path) -> list[str]:
     """Снять с index только объявленные китом локальные файлы, сохранив их на диске."""
     return [rel for rel in LOCAL_STATE_RELS if untrack_runlog(target, rel)]
+
+
+def untrack_warning(rels) -> str:
+    """Что сказать в отчёте после снятия снимков сети с индекса. Пусто для прочих файлов."""
+    return UNTRACK_NET_RUNS_WARNING if NET_RUNS_REL in (rels or ()) else ""
 
 
 def backfill_kb_updated(target: Path) -> str:
@@ -1475,6 +1491,9 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
                 local_untracked = untrack_local_state(target)
                 if local_untracked:
                     print(f"   Локальные файлы сняты с учёта git ({len(local_untracked)}; на диске сохранены)")
+                    warning = untrack_warning(local_untracked)
+                    if warning:
+                        print(warning)
                 kb_date = backfill_kb_updated(target)
                 if kb_date:
                     print(f"   Дата обновления базы из истории прогонов: {kb_date}")
@@ -1637,6 +1656,9 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
           + (f", переезд в .aurora/: перенесено {len(rp['moves'])}, "
              f"убрано копий кита {len(rp['drop'])}" if moving else "")
           + f". Версия → {kv}")
+    warning = untrack_warning(untracked)
+    if warning:
+        print(warning)
     for line in failed:
         print(f"   ⚠️ не вышло: {line}")
     print("   Проверьте: в панели `kit:doctor`, затем git diff")
