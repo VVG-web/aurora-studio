@@ -231,11 +231,13 @@ def test_two_artifacts_get_two_numbers_and_the_header_survives_hostile_values(tm
 
     def doc(sid: str, **extra) -> str:
         st = {"sid": sid, "kind": "us", "idea": "Идея " + sid,
-              "spec": {"out": "Artifacts/us", "template": "t.md", "title": "US"},
+              "spec": {"out": "Artifacts/us", "template": "Templates/T.md", "title": "US"},
               "stages": {k: "2026-10-19T01:02:03Z" for k in R.MAKE_STAGES}, "issues": [],
               "momus": {"ok": True, "unsupported": 0, "clean": True},
               "pipeline": {"form_ok": True}, "pipeline_version": 2, "legacy_ready": False,
-              "draft": "Текст.", "pack": "# Context pack\n", "path": None, **extra}
+              "draft": "# История\n\n## Описание\n\nДокумент описывает заявку и её статусы "
+                       "достаточно подробно.\n\n## Сценарии\n\nСценарий описан.",
+              "pack": "# Context pack\n", "path": None, **extra}
         return (root / R.write_artifact(str(root), st)).read_text(encoding="utf-8")
 
     one = doc("s1")
