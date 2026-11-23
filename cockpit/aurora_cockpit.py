@@ -5280,8 +5280,8 @@ def usage_state(projects, query: dict) -> dict:
     """
     try:
         import usage_metrics as UM
-    except ImportError as e:  # noqa: BLE001 — старый движок: причина в quality
-        return _empty_usage("module_missing", f"модуль учёта не установлен: {e}")
+    except ImportError:  # noqa: BLE001 — старый движок: причина в quality
+        return _empty_usage("module_missing", "usage_metrics_unavailable")
     presence = {}
     try:
         for provider in models_data().get("providers") or []:
