@@ -53,6 +53,14 @@ def _planner() -> dict:
     }, ensure_ascii=False))
 
 
+def _written(version: int = 1, link: str = "") -> str:
+    """Документ по форме шаблона `_project`: финальный писатель обязан её соблюсти."""
+    tail = f" См. {link}." if link else ""
+    return ("# AC\n\n## Критерии приёмки\n\n"
+            f"Версия {version}: заявка принимается по сроку и проверяется отчётом.{tail}\n\n"
+            "## Проверка\n\nСмотрим отчёт и журнал операций, затем закрываем заявку.\n")
+
+
 @test
 def test_make_plan_is_written_before_the_writer(tmp: Path):
     root = _project(tmp)
@@ -65,7 +73,7 @@ def test_make_plan_is_written_before_the_writer(tmp: Path):
         if role == "worker":
             plans = sorted((root / "Workspaces").glob("*/run/plan.json"))
             seen.append(bool(plans))
-            return _base("worker", "# AC\n\nСрок десять дней [[Заявка-0]].")
+            return _base("worker", _written(link="[[Заявка-0]]"))
         if role == "critic":
             return _base("critic", json.dumps({"ok": True, "issues": []}))
         raise AssertionError(role)
@@ -73,7 +81,7 @@ def test_make_plan_is_written_before_the_writer(tmp: Path):
     res = R.run_make(_cfg(), str(root), "ac", "срок заявки", "", "", True,
                      call=fake, momus=False)
     assert res["ok"], res
-    assert seen == [True], "писатель вызван до появления plan.json"
+    assert seen == [True, True], "финальный писатель вызван до появления plan.json"
     run_dir = root / "Workspaces" / res["sid"] / "run"
     plan = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -93,7 +101,7 @@ def test_make_repairs_until_critic_is_happy_and_runs_final_momus(tmp: Path):
             return _planner()
         if role == "worker":
             workers.append(1)
-            return _base("worker", f"# AC\n\n## Критерии приёмки\n\nВерсия {len(workers)}.")
+            return _base("worker", _written(len(workers)))
         if role == "critic":
             critics.append(1)
             if len(critics) == 1:
@@ -117,14 +125,18 @@ def test_make_repairs_until_critic_is_happy_and_runs_final_momus(tmp: Path):
     res = R.run_make(_cfg(), str(root), "ac", "срок заявки", "", "", True,
                      call=fake, momus=True)
     assert res["ok"], res
-    assert roles == ["planner", "worker", "qa", "critic", "worker", "critic", "qa"], roles
-    assert len(workers) == 2 and len(critics) == 2 and len(qas) == 2, roles
+    assert roles == ["planner", "worker", "qa", "critic", "worker", "critic",
+                     "qa", "worker", "qa"], roles
+    assert len(workers) == 3 and len(critics) == 2 and len(qas) == 3, roles
     st = res["state"]
     assert st["stages"].get("checked"), st["stages"]
-    assert st["best_version"] == 2 and st["momus"].get("clean"), st
+    assert st["stages"].get("finalizing"), st["stages"]
+    assert st["pipeline"].get("form_ok") is True, st["pipeline"]
+    assert st["best_version"] == 3 and st["momus"].get("clean"), st
     assert st["momus_initial"].get("clean"), st.get("momus_initial")
     doc = (root / st["path"]).read_text(encoding="utf-8")
     assert "status: ready" in doc, doc[:300]
+    assert "finalizing:" in doc and "form_ok: true" in doc, doc[:600]
     report = st.get("report") or {}
     assert report.get("md"), report
     assert (root / report["md"]).is_file(), report
@@ -241,7 +253,7 @@ def test_make_falls_back_without_tools_when_the_adapter_refuses(tmp: Path):
                         "log": ["Pydantic AI не сработал — вызов с инструментами не принят"]}
             return _planner()
         if role == "worker":
-            return _base("worker", "# AC\n\nСрок десять дней [[Заявка-0]].")
+            return _base("worker", _written(link="[[Заявка-0]]"))
         if role == "critic":
             return _base("critic", json.dumps({"ok": True, "issues": []}))
         raise AssertionError(role)
