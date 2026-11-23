@@ -67,6 +67,7 @@ import agent_core as AG  # noqa: E402
 import answer_core as answer_core  # noqa: E402 — переиспользуемое ядро обоснованного ответа
 import card_types as CT  # noqa: E402 — единый вход записи карточки: шаблон обязателен
 import fidelity as FID  # noqa: E402 — механический слой под Момусом: числа, цитаты, вердикт (BL-KBA-05)
+import make_kinds as MK  # noqa: E402 — шаблон вида: разбор и проверка одни на движок
 import make_state as MS  # noqa: E402 — состояние, попытки и отчёты «Продуктивности»
 import production_core as PC  # noqa: E402 — надстройка «Продуктивности» над ядром
 import reliable_core as reliability  # noqa: E402 — сроки и понятные ошибки процедур
@@ -6244,7 +6245,10 @@ def threads(cwd: str) -> list:
 # живёт в файле: панель может закрыться, браузер — упасть, ночь — кончиться. Каждый этап
 # отмечается и в сессии, и в шапке готового документа: по ней видно, докуда дошли.
 
-MAKE_STAGES = ("enriched", "planned", "drafted", "reviewed", "checked")
+# `finalizing` идёт перед `checked`: финальный писатель собирает документ заново, и только
+# после него повторный Момус ставит последнюю точку. `form_ok` — не стадия, а поле
+# `pipeline:`: детерминированная проверка формы не имеет своего времени, у неё есть итог.
+MAKE_STAGES = ("enriched", "planned", "drafted", "reviewed", "finalizing", "checked")
 
 PROMPT_EXTRACT = """Ты читаешь карточку знания и ищешь в ней ЧУЖИЕ определения.
 
@@ -6435,6 +6439,50 @@ PROMPT_MAKE_REVISE = """Исправь документ «{title}» по зам�
 Верни только текст документа, без пояснений."""
 
 
+PROMPT_MAKE_FINAL = """Собери документ «{title}» заново по шаблону.
+
+План:
+{plan}
+
+Шаблон:
+{template}
+
+Лучший черновик:
+{draft}
+
+Замечания критика:
+{issues}
+
+Разбор Момуса:
+{momus}
+
+Уточнения:
+{clarifications}
+
+Допущения:
+{assumptions}
+
+Нарушения формы:
+{violations}
+
+{agnostic}Правила:
+1. Верни только тело документа. Без YAML-шапки, без комментариев, без `{{...}}`,
+   без `[ПРИМЕР]`, без `TODO`, `TBD`, `???`.
+2. Сохрани все обязательные разделы шаблона и их порядок. Необязательные разделы
+   можно опустить.
+3. Устрани каждое замечание критика и Момуса. Где опоры нет, удали утверждение
+   или напиши «не определено: вопрос к заказчику». Не выдумывай факты, числа,
+   сроки, коды и имена.
+4. Внеси ответы человека и принятые допущения в соответствующие разделы, а не
+   оставляй их отдельным служебным списком.
+5. Сохрани ссылки [[...]], числа, сроки, коды и технические имена дословно.
+6. Не добавляй разделы «Уточнения», «Допущения», «Замечания критика»,
+   «Под вопросом», «План, по которому собран»: их пишет движок ниже границы
+   чистовика.
+
+Верни только готовый текст документа."""
+
+
 def make_session_dir(cwd: str, kind: str) -> Path:
     """Папка сессии производства. Живёт в Workspaces: это работа, а не знание."""
     stamp = utc_slug("%Y-%m-%d_%H%M%S")
@@ -6514,16 +6562,12 @@ def parse_task_fields(items) -> tuple:
 
 def make_spec(cwd: str, kind: str) -> dict:
     """Настройки типа артефакта из конфига проекта — с проверкой обязательного."""
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import make_kinds as MK
     rec = (MK.read_kinds(cwd) or {}).get(kind)
     if not rec:
         return {"error": f"типа артефакта «{kind}» нет в aurora.config.yaml"}
-    if not rec.get("template"):
-        return {"error": f"у типа «{kind}» не указан шаблон: документ выйдет не по форме, "
-                         f"и ревью этого не поймает"}
-    if not os.path.isfile(os.path.join(cwd, rec["template"])):
-        return {"error": f"шаблона нет на диске: {rec['template']}"}
+    why = MK.template_problem(cwd, rec)
+    if why:
+        return {"error": f"у типа «{kind}» {why}"}
     if not rec.get("out"):
         return {"error": f"у типа «{kind}» не указана папка результата — некуда класть"}
     why = MK.out_problem(rec["out"])
@@ -6560,50 +6604,6 @@ def request_asks(cwd: str, st: dict, spec: dict) -> dict:
     return {"extra": block + RC.skills_block(skills), "mcp": mcp}
 
 
-_OPT_MARK = "\x00OPT"
-
-
-def _template_scan(template: str) -> list:
-    """[(заголовок, необязательный ли)] реальных разделов шаблона, по порядку.
-
-    Заголовком считается только то, что попало бы в готовый документ. Не считаются: BOM,
-    YAML-шапка шаблона (её `#` — комментарии), HTML-комментарии (в них инструкции и
-    блоки-примеры, которые шапка велит удалять) и ограждённые блоки кода. «Необязательный» —
-    если прямо перед заголовком стоит комментарий «ОПЦИОНАЛЬНО: …»."""
-    text = template.lstrip("\ufeff")
-    text = re.sub(r"\A---[ \t]*\n.*?\n---[ \t]*(?:\n|\Z)", "", text, count=1, flags=re.S)
-    text = re.sub(r"<!--(\s*ОПЦИОНАЛЬНО:)?.*?-->",
-                  lambda m: f"\n{_OPT_MARK}\n" if m.group(1) else "\n", text, flags=re.S)
-    text = re.sub(r"<!--.*\Z", "\n", text, flags=re.S)       # незакрытый комментарий
-    out, fence, opt = [], "", False
-    for line in text.splitlines():
-        m = re.match(r"[ \t]{0,3}(`{3,}|~{3,})", line)
-        if m:
-            mark = m.group(1)
-            if not fence:
-                fence = mark
-            elif mark[0] == fence[0] and len(mark) >= len(fence):
-                fence = ""
-            continue
-        if fence:
-            continue
-        if line.strip() == _OPT_MARK:
-            opt = True
-            continue
-        h = re.match(r"#{1,6}[ \t]+\S.*$", line)
-        if h:
-            out.append((h.group(0).strip(), opt))
-            opt = False
-        elif line.strip():
-            opt = False
-    return out
-
-
-def template_headings(template: str) -> list:
-    """Заголовки шаблона (`#`…`######`) по порядку — его скелет."""
-    return [h for h, _ in _template_scan(template)]
-
-
 def template_block(template: str, budget: int, skeleton_ok: bool) -> tuple:
     """→ (текст шаблона для промпта, заголовки шаблона).
 
@@ -6616,7 +6616,7 @@ def template_block(template: str, budget: int, skeleton_ok: bool) -> tuple:
     шаблон целиком, а если тот не влезает — `fits` откажет вслух, а не обрежет молча.
     Что ушло в модель на самом деле, проверяет `form_lost` — по готовому сообщению.
     """
-    scan = _template_scan(template)
+    scan = MK.template_scan(template)
     heads = [h for h, _ in scan]
     text = template
     if skeleton_ok and budget and len(template) > budget // 3 and heads:
@@ -6640,7 +6640,83 @@ def form_lost(content: str, text: str, heads: list) -> list:
     return lost
 
 
-TEMPLATE_LIMIT = 200_000       # шаблон длиннее не читаем: молча резать форму нельзя
+def heading_matcher(heading: str) -> re.Pattern:
+    """Заголовок шаблона как образец: «{{…}}» — место под название по смыслу.
+
+    Шаблоны пишут разделы с подстановкой («### Основной сценарий{{. Название исхода}}»),
+    и модель заполняет её своим названием. Требовать дословный `{{…}}` в готовом
+    документе значило бы требовать остаток шаблона — его же запрещает `form_residue`."""
+    parts = []
+    for i, part in enumerate(re.split(r"\{\{[^{}\n]*\}\}", heading)):
+        if i:
+            parts.append(".+")
+        parts.append("".join(r"\s+" if ch.isspace() else re.escape(ch) for ch in part))
+    return re.compile("".join(parts).strip() + r"\s*\Z", re.IGNORECASE)
+
+
+def final_form_problems(cwd: str, spec: dict, text: str, draft: str = "") -> list[dict]:
+    """Нарушения формы финального текста. Пусто: форма принята.
+
+    Это последний предохранитель перед записью: финальный писатель мог вернуть текст без
+    обязательного раздела, с остатками шаблона или со служебными разделами, которые пишет
+    движок. Проверка детерминированная и смотрит ровно то, что уйдёт в файл."""
+    from aurora_common import (MADE_MARK, clean_copy, form_residue, link_refs,
+                               production_headings)
+    problems: list[dict] = []
+
+    def add(code: str, detail: str) -> None:
+        problems.append({"code": code, "detail": " ".join(str(detail).split())[:300]})
+
+    raw = str(text or "").lstrip("\ufeff")
+    if MADE_MARK in raw:
+        add("made-mark", MADE_MARK)
+    if re.match(r"\A---[ \t]*\r?\n(?s:.*?\n)---[ \t]*(?:\r?\n|\Z)", raw):
+        add("frontmatter", "ответ модели начинается с YAML-шапки")
+    clean = clean_copy(raw)
+    if not clean.strip():
+        add("empty-body", "выше границы чистовика нет текста")
+        return problems
+    template = read_text_file(os.path.join(cwd, spec["template"]), MK.TEMPLATE_LIMIT + 1)
+    scan = MK.template_scan(template)
+    # Служебные заголовки запрещены, кроме тех, что объявил сам шаблон: у карточки
+    # требования есть настоящий раздел «Уточнения», и форма важнее общего правила.
+    allowed = {re.sub(r"\s+", " ", re.sub(r"^#{1,6}[ \t\u00a0]+", "", head)).strip().casefold()
+               for head, _opt in scan}
+    for line in production_headings(raw, loose=False):
+        title = re.sub(r"\s+", " ", re.sub(r"^#{1,6}[ \t\u00a0]+", "", line)).strip().casefold()
+        if title in allowed:
+            continue
+        add("service-head", line)
+    left = form_residue(clean)
+    if left:
+        add("template-residue", ", ".join(left[:5]))
+    doc_heads = [line.strip() for line in clean.splitlines()
+                 if re.match(r"^#{1,6}[ \t]+\S", line.strip())]
+    pos = 0
+    for head, optional in scan:
+        if optional:
+            continue
+        matcher = heading_matcher(head)
+        found = next((i for i in range(pos, len(doc_heads)) if matcher.match(doc_heads[i])), None)
+        if found is not None:
+            pos = found + 1
+            continue
+        earlier = next((i for i in range(0, pos) if matcher.match(doc_heads[i])), None)
+        add("heading-order" if earlier is not None else "missing-heading", head)
+    body_lines = [line.strip() for line in clean.splitlines()
+                  if line.strip() and not re.match(r"^#{1,6}[ \t]", line.strip())]
+    if not any(len(line) >= 40 for line in body_lines):
+        add("empty-body", "нет содержательной строки длиннее 40 знаков")
+    if draft:
+        lost = [ref for ref in dict.fromkeys(link_refs(draft))
+                if not re.search(r"\[\[" + re.escape(ref) + r"(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]",
+                                 clean)]
+        if lost:
+            add("lost-link", ", ".join(f"[[{ref}]]" for ref in lost[:5]))
+    todo = re.search(r"\b(TODO|TBD)\b", clean)
+    if todo:
+        add("todo", todo.group(0))
+    return problems
 
 
 def pack_budget_args(cfg: dict, template: str, extra: str, idea: str, name: str) -> tuple:
@@ -6777,7 +6853,7 @@ def pack_refusal(out: str) -> str:
 
 def make_plan_steps(template: str, plan_text: str = "", limit: int = 12) -> list[dict]:
     """Разделы шаблона как пункты плана. Нужны до первого вызова писателя."""
-    heads = template_headings(template)
+    heads = MK.template_headings(template)
     sections = [h for h in heads if h.startswith("##")]
     if not sections:
         sections = heads
@@ -7087,6 +7163,18 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         spec["task"] = {k: v for k, v in (spec.get("task") or {}).items() if k != "epic"}
         st = {"sid": sid, "kind": kind, "idea": idea, "spec": spec,
               "stages": {}, "rounds": [], "plan": "", "started": utc_stamp()}
+        # Отпечаток формы: сессия, у которой шаблон изменился посреди работы, не должна
+        # продолжать по другой форме. Новая сессия запоминает его до первого вызова модели.
+        st["template_sha256"] = MK.template_sha(cwd, spec["template"])
+    # Версия конвейера: старые сессии писали документ без финальной сборки. `checked` без
+    # `finalizing` — это готовая работа прежнего движка, а не новая, брошенная на середине.
+    legacy = not st.get("pipeline_version")
+    st["pipeline_version"] = 2
+    if legacy:
+        st["legacy_ready"] = (
+            bool((st.get("stages") or {}).get("checked"))
+            and not (st.get("stages") or {}).get("finalizing")
+        )
     # Свойства задачи из окна создания (`--task-field`): сильнее свойств вида, ложатся в блок `task:` шапки документа.
     for field, value in (task or {}).items():
         st["spec"].setdefault("task", {})[field] = value
@@ -7142,9 +7230,13 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             pipeline.pop(key, None)
         st.pop("critic_verdict", None)
         run.event("continue", "работа продолжена после остановки")
-    elif pipeline.get("completed_once") and not (st.get("stages") or {}).get("checked"):
+    elif pipeline.get("completed_once") and not (
+            (st.get("stages") or {}).get("finalizing")
+            and (st.get("stages") or {}).get("checked")):
         # Повтор после ошибки или частичного результата: старые счётчики не должны
-        # запрещать новую попытку, но готовый документ повторно не проверяем.
+        # запрещать новую попытку. Готовым считается только документ, прошедший финального
+        # писателя и повторного Момуса: `checked` без `finalizing` — работа прежнего движка,
+        # и её отдельно закрывает `legacy_ready`.
         pipeline["repairs_done"] = 0
         for key in [k for k in pipeline if str(k).startswith(("attempts_", "last_"))]:
             pipeline.pop(key, None)
@@ -7317,13 +7409,23 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         ctx_cfg = CR.config(cwd)
     except Exception:
         ctx_cfg = {}
+    # Продолжение сессии: форма должна быть на месте и той же, что в начале работы.
+    # Проверка идёт до первого вызова модели — иначе документ начнёт собираться по
+    # другому шаблону, а человек узнает об этом из готового файла.
+    why = MK.template_problem(
+        cwd, dict(spec, template_sha256=st.get("template_sha256") or ""))
+    if why:
+        return abort("enrichment", why, reliability.human_error(
+            "template_problem", why, "исправьте шаблон вида и повторите запуск"))
+    if not st.get("template_sha256"):
+        st["template_sha256"] = MK.template_sha(cwd, spec["template"])
     say(f"Артефакт: {spec.get('title') or st['kind']} · сессия {sid}")
     req = request_asks(cwd, st, spec)
-    template = read_text_file(os.path.join(cwd, spec["template"]), TEMPLATE_LIMIT + 1)
-    if len(template) > TEMPLATE_LIMIT:
+    template = read_text_file(os.path.join(cwd, spec["template"]), MK.TEMPLATE_LIMIT + 1)
+    if len(template) > MK.TEMPLATE_LIMIT:
         # Молчаливый срез — то самое, от чего ушли: форма без хвоста проверяется никем.
         return abort("enrichment", (
-            f"шаблон «{spec['template']}» длиннее {TEMPLATE_LIMIT:,} знаков".replace(",", " ")
+            f"шаблон «{spec['template']}» длиннее {MK.TEMPLATE_LIMIT:,} знаков".replace(",", " ")
             + " — сократите его или разбейте на версии, документ по огрызку формы не пишу"))
     # План появляется до первого вызова писателя и переживает падение планировщика.
     # Это разметка progress: разделы шаблона, которые критик потом проверит.
@@ -7504,18 +7606,37 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                         error="" if mo.get("ok") else str(mo.get("why") or ""))
         return mo
 
-    def writer_version(version: int, *, parent: int = 0, issues: list | None = None,
-                       momus_text: str = "") -> dict:
-        """Одна версия документа. Writer всегда один, поэтому шаблон и голос не расходятся."""
-        if version == 1:
-            form_work, check = form("worker", False)
-            content = PROMPT_MAKE_WRITE.format(
-                title=spec.get("title") or st["kind"], plan=st["plan"], template=form_work,
-                extra=prompt_extra, pack=worker_context,
-                agnostic=AGNOSTIC_WRITE if bool(str(spec.get("tech_agnostic") or "").strip().lower()
-                                                 in ("1", "true", "да", "yes")) else "")
-            stage = "drafting"
-        else:
+    def writer_version(version: int, *, mode: str = "draft", parent: int = 0,
+                       issues: list | None = None, momus_text: str = "",
+                       violations: tuple = ()) -> dict:
+        """Одна версия документа. Writer всегда один, поэтому шаблон и голос не расходятся.
+
+        `draft` — первый черновик; `revise` — ремонт внутри цикла критика; `final` —
+        финальная сборка: после предфинального Момуса и до повторного. Финальный писатель
+        получает полный шаблон, а не скелет: он собирает документ заново, а не латает
+        черновик, и без формы разделов ему нечего соблюдать."""
+        agnostic = (AGNOSTIC_WRITE if bool(str(spec.get("tech_agnostic") or "").strip().lower()
+                                           in ("1", "true", "да", "yes")) else "")
+        if mode == "final":
+            form_work, check = form("final_writer", False)
+            clarifications = "\n".join(
+                f"- {item.get('q', '')}: {item.get('a', '')}"
+                for item in (st.get("clarifications") or [])) or "нет"
+            assumptions = "\n".join(
+                f"- {item.get('text', '')} ({item.get('by', '')})"
+                for item in (st.get("assumptions") or [])) or "нет"
+            violations_text = "\n".join(
+                f"- {item.get('code', '')}: {item.get('detail', '')}"
+                for item in violations) or "нет"
+            issues_text = "\n".join(f"- {x}" for x in (issues or [])) or "нет"
+            content = PROMPT_MAKE_FINAL.format(
+                title=spec.get("title") or st["kind"], plan=st["plan"],
+                template=form_work, draft=st.get("draft") or "",
+                issues=issues_text, momus=momus_text or "нет",
+                clarifications=clarifications, assumptions=assumptions,
+                violations=violations_text, agnostic=agnostic)
+            stage = "finalizing"
+        elif mode == "revise":
             form_work, check = form("worker", False)
             content = PROMPT_MAKE_REVISE.format(
                 title=spec.get("title") or st["kind"], plan=st["plan"],
@@ -7523,6 +7644,12 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                 issues="\n".join(f"- {x}" for x in (issues or [])) or "- нет",
                 momus=momus_text or "нет")
             stage = f"revision_{version}"
+        else:
+            form_work, check = form("worker", False)
+            content = PROMPT_MAKE_WRITE.format(
+                title=spec.get("title") or st["kind"], plan=st["plan"], template=form_work,
+                extra=prompt_extra, pack=worker_context, agnostic=agnostic)
+            stage = "drafting"
         fail = check(content)
         if fail:
             return {"ok": False, "why": fail.get("why") or "форма не дошла до писателя",
@@ -7560,6 +7687,9 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             if not value.get("ok") and "не отправляю" in str(value.get("why") or ""):
                 value["why"] = str(value.get("why") or "") + size_note(
                     {"log": [str(value.get("why") or "")]}, content)
+                if mode == "final":
+                    value["why"] += (f" [финальная сборка: шаблон {len(form_work)} знаков, "
+                                     f"черновик {len(st.get('draft') or '')} знаков]")
             sig = " ".join(str(x) for x in (value.get("log") or [value.get("why") or ""]))[:800]
             count = count + 1 if sig and sig == same else (1 if sig else 0)
             same = sig or same
@@ -7784,7 +7914,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     if stages.get("drafted") and not str(st.get("draft") or "").strip():
         stages.pop("drafted", None)
     if not stages.get("drafted"):
-        w = writer_version(1)
+        w = writer_version(1, mode="draft")
         if not w.get("ok"):
             if (err := persist("drafted")):
                 return err
@@ -7856,8 +7986,10 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     best_version = int(st.get("best_version") or 1)
     best_score = st.get("best_score")
     repairs_done = int((st.get("pipeline") or {}).get("repairs_done") or 0)
-    completed_before = bool((st.get("pipeline") or {}).get("completed_once")
-                            or stages.get("checked"))
+    completed_before = bool(
+        (st.get("pipeline") or {}).get("completed_once")
+        or st.get("legacy_ready")
+        or (stages.get("finalizing") and stages.get("checked")))
     verdict = st.get("critic_verdict") if isinstance(st.get("critic_verdict"), dict) else {}
     issues = list(st.get("issues") or [])
     if not stages.get("reviewed") or not verdict:
@@ -7881,7 +8013,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     force_final = bool(completed_before and st.get("draft") and not satisfied)
     while not satisfied and not force_final and repairs_done < int(settings["max_repairs"]):
         version = best_version + 1
-        w = writer_version(version, parent=best_version, issues=issues,
+        w = writer_version(version, mode="revise", parent=best_version, issues=issues,
                            momus_text=momus_text)
         if not w.get("ok"):
             if (err := persist("reviewed")):
@@ -7964,31 +8096,110 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         return {"ok": True, "sid": sid, "stage": "done", "state": st,
                 "seconds": round(time.time() - started, 1)}
 
-    # --- 5. финальный Момус только после того, как критик доволен
+    # --- 5. предфинальный Момус → финальный писатель → повторный Момус → форма
+    #
+    # Финальная сборка — отдельный вызов роли `worker` с полным шаблоном: она идёт после
+    # предфинального Момуса и до повторного. Повторный Момус смотрит уже финальный текст,
+    # а детерминированная проверка формы решает, можно ли писать файл. Порядок стадий:
+    # `finalizing` — ответ финального писателя, `checked` — повторный Момус, `form_ok` —
+    # итог формы (поле `pipeline:`, не стадия).
     if momus:
-        mo2 = momus_check(st.get("draft") or "", best_version, "momus_final")
-        if mo2.get("sid"):
-            if (err := persist("momus_final")):
+        mo_pre = momus_check(st.get("draft") or "", best_version, "momus_pre_final")
+        if mo_pre.get("sid"):
+            if (err := persist("finalizing")):
                 return err
-            return mo2
-        st["momus"] = mo2
-        if not mo2.get("ok"):
-            if (err := persist("momus_final")):
+            return mo_pre
+        st["momus_pre_final"] = mo_pre
+        if not mo_pre.get("ok"):
+            if (err := persist("finalizing")):
                 return err
-            return abort("checked", "Момус не проверил документ: "
-                         + str(mo2.get("why") or "нет вердикта"))
-        stages["checked"] = utc_stamp()
-        run.set_stage("checked")
-        if (err := persist("checked")):
-            return err
-        save_session(cwd, sid, st)
-        emit_event("check", stage="momus_final",
-                   status="clean" if mo2.get("clean") else "issues",
-                   unsupported=int(mo2.get("unsupported") or 0))
-        say(f"  Момус: {momus_summary(mo2)}")
+            return abort("finalizing", "предфинальный Момус не проверил документ: "
+                         + str(mo_pre.get("why") or "нет вердикта"))
+        emit_event("check", stage="momus_pre_final",
+                   status="clean" if mo_pre.get("clean") else "issues",
+                   unsupported=int(mo_pre.get("unsupported") or 0))
+        say(f"  Момус до финальной сборки: {momus_summary(mo_pre)}")
     else:
         st.setdefault("momus", {"ok": False, "skipped": True, "why": "Момус отключён"})
         save_session(cwd, sid, st)
+    momus_text = "\n\n".join(
+        text for text in ((momus_report_text(mo1) if momus else ""),
+                          (momus_report_text(st.get("momus_pre_final") or {})
+                           if momus else ""))
+        if str(text or "").strip()) or "нет"
+
+    if st.get("legacy_ready"):
+        # Старая сессия уже прошла `checked` до появления финальной сборки. Требовать от неё
+        # финального писателя задним числом нельзя: документ читается как готовый.
+        stages["finalizing"] = stages.get("checked")
+        st.setdefault("pipeline", {})["form_ok"] = True
+        if (err := persist("checked")):
+            return err
+        save_session(cwd, sid, st)
+    else:
+        best_draft = st.get("draft") or ""
+        best_version = int(st.get("best_version") or 1)
+        violations: tuple = ()
+        final_version = best_version
+        # Две попытки — не на каждое нарушение: даже пять находок в первом тексте дают
+        # вторую попытку, и только второй провал закрывает работу частичным результатом.
+        for attempt in (1, 2):
+            final_version = best_version + attempt
+            fw = writer_version(final_version, mode="final", parent=best_version,
+                                issues=issues, momus_text=momus_text,
+                                violations=violations)
+            if not fw.get("ok"):
+                st["draft"] = best_draft
+                st["best_version"] = best_version
+                return abort("finalizing", "финальный писатель не дал документа: "
+                             + str(fw.get("why") or "нет ответа"))
+            candidate = str(fw.get("answer") or "").strip()
+            st["draft"] = candidate
+            run.write_draft(final_version, candidate, parent=best_version,
+                            reason="финальная сборка")
+            stages["finalizing"] = utc_stamp()
+            save_session(cwd, sid, st)
+
+            if momus:
+                mo = momus_check(candidate, final_version, "momus_repeat")
+                if mo.get("sid"):
+                    if (err := persist("finalizing")):
+                        return err
+                    return mo
+                st["momus"] = mo
+                if not mo.get("ok"):
+                    return abort("finalizing", "повторный Момус не ответил: "
+                                 + str(mo.get("why") or "нет ответа"))
+                stages["checked"] = utc_stamp()
+                run.set_stage("checked")
+                save_session(cwd, sid, st)
+
+            problems = final_form_problems(cwd, spec, candidate, draft=best_draft)
+            if not problems:
+                pipeline["form_ok"] = True
+                break
+            violations = tuple(problems)
+            stages.pop("finalizing", None)
+            stages.pop("checked", None)
+            pipeline.pop("form_ok", None)
+            save_session(cwd, sid, st)
+            if attempt == 2:
+                st["draft"] = best_draft
+                st["best_version"] = best_version
+                return abort("finalizing", "финальный текст не прошёл проверку формы: "
+                             + "; ".join(f"{p['code']}: {p['detail']}" for p in problems))
+
+        run.set_best(final_version)
+        st["best_version"] = final_version
+        # Замечания критика закрыл финальный писатель: они остаются в служебном блоке и
+        # отчёте, но на `ready` больше не влияют. Число до сборки — для отчёта.
+        st["issues_before_final"] = list(issues)
+        if (err := persist("checked" if momus else "finalizing")):
+            return err
+        save_session(cwd, sid, st)
+        emit_event("check", stage="form",
+                   status="ok" if pipeline.get("form_ok") else "issues")
+        say("  форма финального текста: принята")
 
     st.setdefault("pipeline", {})["completed_once"] = True
     run.update_manifest(completed_once=True)
@@ -8037,7 +8248,7 @@ def report_make(res: dict) -> str:
     stages = st.get("stages") or {}
     L += ["| Этап | Когда |", "|---|---|"]
     names = {"enriched": "обогащение базой", "planned": "план", "drafted": "черновик",
-             "reviewed": "критик", "checked": "Момус"}
+             "reviewed": "критик", "finalizing": "финальный писатель", "checked": "Момус"}
     for stage in MAKE_STAGES:
         L.append(f"| {names[stage]} | {stages.get(stage) or '— не пройден'} |")
     L += ["", f"Документ: `{st.get('path', '—')}`"]
@@ -8045,12 +8256,16 @@ def report_make(res: dict) -> str:
         L.append(f"Номер: `{st['artifact_id']}`")
     if st.get("issues"):
         L += ["", f"Критик нашёл замечаний: {len(st['issues'])} — они в самом документе."]
+    if "issues_before_final" in st:
+        L += ["", f"Финальная сборка: замечаний до неё — "
+                  f"{len(st.get('issues_before_final') or [])}."]
     mo = st.get("momus") or {}
     if mo.get("ok"):
         L += ["", (f"Момус: {momus_summary(mo)}" if not mo.get("unsupported")
                    else f"⛔ Момус: {momus_summary(mo)} — раздел «Под "
                         f"вопросом» в документе. В чистовик это не переносится.")]
-    if not stages.get("checked"):
+    if (not stages.get("finalizing") or not stages.get("checked")
+            or not (st.get("pipeline") or {}).get("form_ok")):
         L += ["", "Цепочка не пройдена до конца: документ лежит со `status: draft`. "
                   "Продолжить — тем же `--session`."]
     if st.get("final_check") == "critic_rejected":
@@ -8243,7 +8458,15 @@ def write_artifact(cwd: str, st: dict) -> str:
     # весит не меньше критика: документ с домыслами уходит заказчику так же легко, как
     # документ не по форме. Найдено на живом прогоне: `status: ready` при `unsupported: 6`.
     unsupported = int(((st.get("momus") or {}).get("unsupported") or 0))
-    done = bool(stages.get("checked")) and not st.get("issues") and not unsupported
+    pipeline = st.get("pipeline") or {}
+    form_ok = bool(pipeline.get("form_ok"))
+    # Старая сессия (в ней нет `pipeline_version`) читается по прежним правилам: `checked`
+    # без `finalizing` — готовая работа прежнего движка, а не новая, брошенная на середине.
+    legacy_ready = bool(st.get("legacy_ready")) or bool(
+        stages.get("checked") and not stages.get("finalizing")
+        and not st.get("pipeline_version"))
+    mom = st.get("momus") or {}
+    mom_ok = bool(mom.get("clean")) or legacy_ready
     # Документ, который сослался на непроверенную карточку (режим bootstrap пускает draft в
     # пак), по статусу неотличим от построенного на знании — поэтому `ready` ему закрыт, а
     # опора названа в шапке и в «Допущениях». Выход — довести карточки до доверия или
@@ -8253,8 +8476,16 @@ def write_artifact(cwd: str, st: dict) -> str:
     unver = set(CP.unverified_names(st.get("pack") or ""))
     lean = [c for c in dict.fromkeys(
         card_stem(x) for x in link_refs(st.get("draft") or "") if x.strip()) if c in unver]
-    if lean:
-        done = False
+    # `ready` — документ прошёл финального писателя, повторного Момуса и проверку формы.
+    # Замечания критика закрывает финальная сборка, поэтому `issues` больше не условие:
+    # иначе старые замечания навсегда запрещали бы готовый документ.
+    done = (
+        (legacy_ready or (bool(stages.get("finalizing")) and bool(stages.get("checked"))
+                          and form_ok))
+        and mom_ok
+        and not unsupported
+        and not lean
+    )
     # `based_on` — карточки, на которые документ СОСЛАЛСЯ, а не весь пак: сорок карточек
     # в контексте и три ссылки в тексте значат, что документ стоит на трёх. Пак — это
     # «что мы дали», основания — «на чём стоит».
@@ -8281,16 +8512,21 @@ def write_artifact(cwd: str, st: dict) -> str:
     if ref:
         head += ref
     head.append(f"session: {st['sid']}")
-    started, finished = passport_token(st.get("started")), passport_token(stages.get("checked"))
+    if st.get("pipeline_version"):
+        head.append(f"pipeline_version: {int(st['pipeline_version'])}")
+    started = passport_token(st.get("started"))
+    finished_stage = (passport_token(stages.get("checked"))
+                      if (stages.get("finalizing") or legacy_ready) else "")
     if started:
         head.append(f"started: {started}")
-    if started and finished:
-        head.append(f"finished: {finished}")
+    if started and finished_stage:
+        head.append(f"finished: {finished_stage}")
     if st.get("model_calls"):
         head.append(f"model_calls: {int(st['model_calls'])}")
     head.append("pipeline:")
     for stage in MAKE_STAGES:
         head.append(f"  {stage}: {stages.get(stage) or '—'}")
+    head.append(f"  form_ok: {'true' if form_ok else 'false'}")
     if st.get("issues"):
         head.append(f"review_issues: {len(st['issues'])}")
     mo = st.get("momus") or {}
