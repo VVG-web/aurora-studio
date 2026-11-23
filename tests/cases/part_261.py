@@ -402,6 +402,8 @@ def test_make_blocks_missing_empty_headingless_template(tmp: Path):
         (None, "шаблона нет на диске"),
         ("   \n\n", "пуст"),
         ("---\ntitle: x\n# комментарий\n---\n<!-- ИНСТРУКЦИЯ: удалить -->\n", "нет заголовков"),
+        ("---\r\ntitle: x\r\n# комментарий\r\n---\r\n"
+         "<!-- ИНСТРУКЦИЯ: удалить -->\r\n", "нет заголовков"),
         ("x" * (R.MK.TEMPLATE_LIMIT + 1), "длиннее"),
     ]
     for content, why in cases:
