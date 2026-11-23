@@ -908,6 +908,27 @@ def test_a_model_timeout_keeps_a_real_adapter_alarm(tmp: Path):
 
 
 @test
+def test_a_model_timeout_does_not_overwrite_a_fresh_adapter_hang(tmp: Path):
+    """Свежий `adapter_hang` честнее таймаута модели: панель не должна снова обещать исправный адаптер."""
+    with _World(tmp) as w:
+        AG = w.AG
+        AG.note_model_timeout(AG.Why("adapter_hang", "call", sec=7))
+        before = AG.read_alarm()["agent:test"]
+        assert (before["area"], before["kind"], before["calls"]) == \
+            ("timeout", "adapter_hang", 1), before
+        AG.note_model_timeout(AG.Why("model_timeout", "call", sec=600))
+        after = AG.read_alarm()["agent:test"]
+        assert (after["area"], after["kind"], after["calls"]) == \
+            ("timeout", "adapter_hang", 1), after
+        assert "причина не установлена" in after["why"] and "адаптер исправен" not in after["why"]
+        # Без свежей тревоги таймаут модели пишется как обычно.
+        AG._write_alarm({})
+        AG.note_model_timeout(AG.Why("model_timeout", "call", sec=600))
+        written = AG.read_alarm()["agent:test"]
+        assert (written["area"], written["kind"]) == ("timeout", "model_timeout"), written
+
+
+@test
 def test_a_successful_call_clears_the_timeout_snooze(tmp: Path):
     """«Скрыть на сутки» не переживает успешный вызов: скрытие снимается вместе с тревогой."""
     with _World(tmp) as w:

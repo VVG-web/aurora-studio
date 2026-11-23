@@ -2904,10 +2904,17 @@ def note_model_timeout(why, needs_tools: bool = False) -> None:
             current = alarm_cause(row)
         except (TypeError, ValueError, KeyError):
             current = None
+        current = model_timeout_cause(current) if current is not None else None
         # Настоящий обход адаптера важнее таймаута: панель не должна потерять признак
         # `adapter_bypass` и кнопку «Установка» из-за того, что следом модель не ответила.
-        if row and current is not None and current.area == "adapter" and adapter_alarm_fresh(row):
-            return
+        # Свежий `adapter_hang` тоже важнее: он честно говорит «причина не установлена»,
+        # а `model_timeout` объявил бы адаптер исправным без доказательства.
+        if row and current is not None and adapter_alarm_fresh(row):
+            if current.area == "adapter":
+                return
+            if (current.area == "timeout" and current.kind == "adapter_hang"
+                    and cause.kind != "adapter_hang"):
+                return
         calls = int(row.get("calls") or 0) + 1
         data[path] = {**cause.row(), "at": utc_stamp(), "project": os.getcwd(), "path": path,
                       "calls": calls}
