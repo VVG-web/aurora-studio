@@ -112,12 +112,29 @@ def log_usage(project: str, task: str, summary: dict, started: float, seconds: f
     try:
         import usage_log as UL
         run_id = run_id or run_id_for(task)
+        failed = int(summary.get("calls_failed") or summary.get("model_failed") or 0)
+        calls = summary.get("calls")
+        if calls is None or (not calls and not failed and summary.get("model_calls")):
+            calls = max(0, int(summary.get("model_calls") or 0) - failed)
         UL.record(project, run_id, {
             "kind": "agent", "task": task,
-            "calls": summary.get("model_calls") or 0,
+            "started": started,
+            "seconds": seconds,
+            "estimated": bool(summary.get("estimated")),
+            "calls": int(calls or 0),
+            "calls_failed": failed,
+            "requests": int(summary.get("requests") or 0),
             "tokens_in": summary.get("tokens_in") or 0,
             "tokens_out": summary.get("tokens_out") or 0,
+            "tokens_failed_in": summary.get("tokens_failed_in") or 0,
+            "tokens_failed_out": summary.get("tokens_failed_out") or 0,
+            "cached_in": summary.get("cached_in"),
+            "reasoning_out": summary.get("reasoning_out"),
+            "cache_hits": summary.get("cache_hits") or summary.get("model_cached") or 0,
+            "usage_missing_calls": summary.get("usage_missing_calls") or 0,
+            "gen_seconds": summary.get("gen_seconds") or 0,
             "errors": sum((summary.get("errors") or {}).values()),
+            "by_cell": summary.get("by_cell") or [],
             "by_role": summary.get("by_role") or {},
             "by_model": summary.get("by_model") or {},
             "by_pair": summary.get("by_pair") or {},
