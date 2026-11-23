@@ -57,8 +57,9 @@ function drawReqPaths(ctx){
   REQ_PATHS.forEach(path => box.append(el("span", {class: "chip mono", style: "gap:5px"},
     path,
     actionButton(ctx, {class: "btn sm", style: "padding:0 5px;min-height:0",
+      "data-help": "work.help.req_remove",
       onclick: () => { REQ_PATHS = REQ_PATHS.filter(x => x !== path); drawReqPaths(ctx); }},
-      "×", t("work.req.remove"), "work.help.req_remove"))));
+      "×", t("work.req.remove")))));
   if (!REQ_PATHS.length){
     box.append(el("span", {class: "muted", style: "font-size:12.5px"}, t("work.req.empty")));
   }
@@ -171,8 +172,9 @@ function drawRefs(ctx){
       style: "gap:6px;align-items:center;display:inline-flex"},
     t(REF_KEY[r.kind]) + " " + r.label,
     actionButton(ctx, {class: "btn sm", style: "padding:0 6px;min-height:0",
+      "data-help": "work.help.ref_remove",
       onclick: () => { REFS = REFS.filter(x => x !== r); drawRefs(ctx); }},
-      "×", t("work.ref_remove"), "work.help.ref_remove"))));
+      "×", t("work.ref_remove")))));
 }
 
 async function pickRefs(ctx){
@@ -505,12 +507,14 @@ export function routeCard(ctx, run){
 export function answerControls(ctx, run, answers, onSubmit, onEnough){
   const {t, el} = ctx;
   const answer = actionButton(ctx, {class: "btn primary",
+    "data-help": "work.help.answer",
     onclick: () => onSubmit(answers.value.trim())},
-    t("work.answer"), t("work.answer_hint"), "work.help.answer");
+    t("work.answer"), t("work.answer_hint"));
   const enough = actionButton(ctx, {class: "btn",
     style: "white-space:normal;text-align:left",
+    "data-help": "work.help.enough",
     onclick: () => onEnough()},
-    t("work.enough"), t("work.enough_hint"), "work.help.enough");
+    t("work.enough"), t("work.enough_hint"));
   // Ответ — главное действие, поэтому primary справа; остановка опроса —
   // вторичная слева. Порядок в DOM совпадает с порядком слева направо и Tab.
   return el("div", {class: "row", style: "gap:8px;margin-top:8px;align-items:center"},
@@ -563,7 +567,7 @@ export function questionCard(ctx, run, questions = [], value, onSubmit, onEnough
   return card;
 }
 
-export function actionButton(ctx, attrs, label, hint, help = ""){
+export function actionButton(ctx, attrs, label, hint){
   // Одна точка создания кнопок: подсказка и aria-label не могут забыться на
   // отдельном вызове. Если текст подсказки не передан, остаётся подпись.
   const a = {...attrs};
@@ -571,7 +575,6 @@ export function actionButton(ctx, attrs, label, hint, help = ""){
   const fallback = String(label == null ? "" : label);
   if (!a.title) a.title = hint || fallback;
   if (!a["aria-label"]) a["aria-label"] = hint || fallback;
-  if (help && !a["data-help"]) a["data-help"] = help;
   return ctx.el("button", a, label);
 }
 
@@ -869,8 +872,9 @@ function drawRun(ctx){
     onclick: () => continueRun(ctx, run)},
     t("work.continue"), t("work.continue_hint")));
   if (done) row.append(actionButton(ctx, {class: "btn",
+    "data-help": "work.help.open_done",
     onclick: () => ctx.openPath(done)},
-    t("work.open_in_editor"), t("work.open_in_editor"), "work.help.open_done"));
+    t("work.open_in_editor"), t("work.open_in_editor")));
   if (on.report) row.append(actionButton(ctx, {class: "btn",
     onclick: () => ctx.openPath(run.report)},
     t("work.open_report"), t("work.open_report")));
@@ -1040,10 +1044,11 @@ async function publish(ctx){
     const tb = await ctx.ui.taskBlock({path: rel});
     if (sel.value === rel) taskHost.replaceChildren(tb);
   };
-  const go = actionButton(ctx, {class: "btn primary", onclick: () => {
+  const go = actionButton(ctx, {class: "btn primary",
+    "data-help": "work.help.publish_go", onclick: () => {
     const f = files.find(x => x.rel === sel.value) || {};
     if (f.rel) ctx.ui.publishFile(f.rel);
-  }}, t("work.publish_go"), t("work.publish_go_hint"), "work.help.publish_go");
+  }}, t("work.publish_go"), t("work.publish_go_hint"));
   const draw = () => {
     const f = files.find(x => x.rel === sel.value) || {};
     const pub = f.publish || {};
@@ -1057,9 +1062,10 @@ async function publish(ctx){
       if (pub.fix){
         fix.hidden = false;
         fix.append(actionButton(ctx, {class: "btn sm",
+          "data-help": "work.help.publish_fix",
           onclick: () => ctx.ui.openSettings(pub.fix)},
           t(pub.fix === "kinds" ? "work.publish_fix_kinds" : "work.publish_fix_project"),
-          t("work.publish_fix_hint"), "work.help.publish_fix"));
+          t("work.publish_fix_hint")));
       }
     } else if (pub.state !== "ready"){
       hint.textContent = t("work.publish_none");
@@ -1080,7 +1086,7 @@ async function publish(ctx){
     sel, hint, fix, taskHost, note,
     el("div", {class: "row", style: "gap:10px;margin-top:10px"},
       go,
-      actionButton(ctx, {class: "btn", onclick: () => {
+      actionButton(ctx, {class: "btn", "data-help": "work.help.copy_task", onclick: () => {
         const f = files.find(x => x.rel === sel.value) || {};
         const task = t("work.publish_task", {rel: f.rel})
           + (note.value.trim() ? "\n" + t("work.publish_task_note", {note: note.value.trim()}) : "")
@@ -1088,7 +1094,9 @@ async function publish(ctx){
         navigator.clipboard.writeText(task)
           .then(() => ctx.toast(t("work.task_copied"), "ok"))
           .catch(() => ctx.toast(t("work.task_clipboard_off"), "warn"));
-      }}, t("work.copy_task"), t("work.copy_task_hint"), "work.help.copy_task"))));
+      }}, t("work.copy_task"), t("work.copy_task_hint"))
+    )
+  ));
 }
 
 // Подсказки по `@` и `/` нужны только на виду. Опрос задания (`makeCall`) и ответ планировщика

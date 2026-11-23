@@ -599,8 +599,8 @@ report.adopt = [adoptStateStatus("running", "planning", true),
 report.waiting = runTimeLabel(ctx, {status: "planning"});
 report.heading = runHeading({kind: "us", title: "us-Пользовательская история-Планироение"},
                             "Пользовательская история");
-const action = actionButton(ctx, {class: "btn", onclick: () => {}},
-                            "Подпись", "Подсказка", "work.help.example");
+const action = actionButton(ctx, {class: "btn", "data-help": "work.help.example",
+                                  onclick: () => {}}, "Подпись", "Подсказка");
 report.action = {title: action.attrs.title, aria: action.attrs["aria-label"],
                  help: action.attrs["data-help"], type: action.attrs.type};
 const route = routeCard(ctx, {status: "planning"});
