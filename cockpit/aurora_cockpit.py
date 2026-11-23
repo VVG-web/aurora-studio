@@ -5243,6 +5243,54 @@ def _empty_timing(days: int = 7) -> dict:
     }
 
 
+def _empty_usage(reason: str, error: str = "") -> dict:
+    """Пустой `/api/usage`, когда модуль учёта не установлен: форма есть, причина названа."""
+    return {
+        "schema": 2,
+        "window": {"from": "", "to": "", "days": 0, "tz": "UTC",
+                   "grain": "day", "compare": False},
+        "totals": {"source": "usage.d", "approximate": False, "runs": 0, "calls": 0,
+                   "calls_failed": 0, "requests": 0, "tokens_in": 0, "tokens_out": 0,
+                   "tokens_total": 0, "tokens_failed_in": 0, "tokens_failed_out": 0,
+                   "tokens_failed": 0, "tokens_all": 0, "cached_in": None,
+                   "reasoning_out": None, "cache_hits": 0, "gen_seconds": 0,
+                   "tokens_per_call": None, "tokens_per_run": None},
+        "approx": {"source": "timing.d", "approximate": True, "runs": 0, "calls": 0,
+                   "tokens_in": 0, "tokens_out": 0, "tokens_total": 0},
+        "previous": None, "series": [], "approx_series": [], "by_project": [],
+        "by_model": [], "by_provider": [], "by_role": [], "by_task": [],
+        "approx_by_project": [],
+        "quality": {"records": 0, "records_bad": 0, "records_no_calls": 0,
+                    "records_no_breakdown": 0, "records_unknown_provider": 0,
+                    "records_unknown_usage": 0, "records_old_schema": 0,
+                    "approx_records": 0, "approx_tokens": 0,
+                    "approx_suppressed_by_exact": 0, "sources": [],
+                    "cached_known": False, "reasoning_known": False,
+                    "empty": True, "empty_reason": reason,
+                    "truncated": False, "error": error},
+        "filters": {}, "options": {},
+    }
+
+
+def usage_state(projects, query: dict) -> dict:
+    """`/api/usage`: точные и приблизительные токены, окно и фильтры.
+
+    `key_present` считается здесь, по `local/models.json`, и наружу уходит только
+    да/нет/неизвестно. Сам ключ не попадает ни в форму, ни в ответ.
+    """
+    try:
+        import usage_metrics as UM
+    except ImportError as e:  # noqa: BLE001 — старый движок: причина в quality
+        return _empty_usage("module_missing", f"модуль учёта не установлен: {e}")
+    presence = {}
+    try:
+        for provider in models_data().get("providers") or []:
+            presence[str(provider.get("id") or "")] = bool(str(provider.get("key") or ""))
+    except Exception:  # noqa: BLE001 — настройка моделей не должна ронять чтение токенов
+        presence = {}
+    return UM.query(projects, query, key_present=presence)
+
+
 def metrics_state(projects, days: int = 7) -> dict:
     """«Замеры»: сеть/VPN, сервисные метрики прогонов и токены по проектам и моделям.
 
@@ -9026,6 +9074,11 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 days = 7
             self.send_json(metrics_state(find_projects(self.server.roots), days))
+        elif u.path == "/api/usage":
+            try:
+                self.send_json(usage_state(find_projects(self.server.roots), q))
+            except ValueError as e:
+                self.send_json({"error": str(e), "code": "bad_request"}, 400)
         elif u.path == "/api/report":
             project = q.get("project", [""])[0]
             if not self.need_project(project):

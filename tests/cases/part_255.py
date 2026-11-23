@@ -558,10 +558,10 @@ def test_s4_metrics_api_returns_200_with_and_without_timing_d(tmp: Path):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    def get():
+    def get(path="/api/metrics?days=7&lang=ru"):
         conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1],
                                           timeout=60)
-        conn.request("GET", "/api/metrics?days=7&lang=ru",
+        conn.request("GET", path,
                      headers={"X-Aurora-Token": ck.TOKEN})
         response = conn.getresponse()
         body = response.read().decode("utf-8", "replace")
@@ -574,6 +574,11 @@ def test_s4_metrics_api_returns_200_with_and_without_timing_d(tmp: Path):
         data = json.loads(body)
         assert data["timing"]["runs"] == [] and data["timing"]["services"] == {}, data
         assert "net" in data and "tokens" in data and data["error"] == "", data
+        status, body = get("/api/usage?days=7&tz=UTC")
+        assert status == 200, (status, body[:400])
+        usage = json.loads(body)
+        assert usage["schema"] == 2, usage
+        assert usage["quality"]["empty_reason"] == "no_records", usage["quality"]
 
         T.record(str(root), "run-api", _timing_summary(),
                  {"llm": _service(2, [100, 200])}, actor_id="u", machine="m",
