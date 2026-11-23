@@ -117,7 +117,8 @@ def test_usage_api_bad_parameters_are_400(tmp: Path):
     server = _Server([str(tmp)])
     try:
         cases = ("days=2", "grain=week", "limit=0", "tz=No/Such_Zone",
-                 "from=2026-11-03&to=2026-11-01", "limit=101")
+                 "from=2026-11-03&to=2026-11-01", "limit=101",
+                 "to=9999-12-31", "to=0001-01-01", "task=sk-live-secret")
         for query in cases:
             status, data, body = _json_get(server, f"/api/usage?{query}")
             assert status == 400, (query, status, body[:300])
@@ -144,6 +145,12 @@ def test_usage_api_filters_window_grain_and_limit(tmp: Path):
     assert len(got["by_project"]) == 1, got["by_project"]
     assert got["quality"]["truncated"] is True, got["quality"]
     assert got["series"][0]["bucket"] == str(today), got["series"]
+    for key in ("last_at", "delta_pct", "spark"):
+        assert key in got["by_project"][0], got["by_project"][0]
+    assert got["by_project"][0]["spark"], got["by_project"][0]
+    assert "last_at" in got["by_model"][0], got["by_model"][0]
+    assert "projects" in got["by_provider"][0], got["by_provider"][0]
+    assert "last_at" in got["by_provider"][0], got["by_provider"][0]
 
     filtered = UM.query([str(root)], {**base, "project": "alpha", "model": "m1"},
                         now=NOW)
@@ -171,6 +178,7 @@ def test_usage_api_days_zero_and_compare_rules(tmp: Path):
     assert got["previous"] is not None, got
     assert got["previous"]["totals"]["runs"] == 1, got["previous"]
     assert got["previous"]["totals"]["tokens_total"] == 10, got["previous"]
+    assert got["by_project"][0]["delta_pct"] == 50.0, got["by_project"][0]
 
     zero = UM.query([str(root)], {"days": "0", "tz": "UTC", "compare": "1"}, now=NOW)
     assert zero["window"]["days"] == 0, zero["window"]
@@ -241,6 +249,23 @@ def test_usage_api_all_old_and_no_calls_reasons(tmp: Path):
     _exact(empty_calls, "run-no-calls", tokens_in=0, tokens_out=0, calls=0)
     no_calls = UM.query([str(empty_calls)], {"days": "7", "tz": "UTC"}, now=NOW)
     assert no_calls["quality"]["empty_reason"] == "no_calls", no_calls["quality"]
+
+
+@test
+def test_usage_api_task_text_is_not_echoed(tmp: Path):
+    """Свободный текст задачи, путь и ключ не попадают в by_task и фильтры."""
+    root = make_project(tmp)
+    _exact(root, "run-raw", task="Разобрать секретный документ")
+    got = UM.query([str(root)], {"days": "7", "tz": "UTC"}, now=NOW)
+    body = json.dumps(got, ensure_ascii=False)
+    assert "секретный" not in body and "Разобрать" not in body, body
+    assert all(row["task"] in ("-", "build") for row in got["by_task"]), got["by_task"]
+    try:
+        UM.query([str(root)], {"days": "7", "task": "sk-live-secret"}, now=NOW)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("небезопасный фильтр принят")
 
 
 @test
