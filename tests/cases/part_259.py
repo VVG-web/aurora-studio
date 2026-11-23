@@ -373,7 +373,7 @@ def test_security_fix_ship_release_requires_admin_and_confirmation(tmp: Path):
     home, restore_home = _home(tmp)
     kit = _kit(tmp)
     root = tmp / "root"
-    spot = _project(root, "spot")
+    alpha = _project(root, "alpha")
     _write_mode(kit, "full")
     old_env = _tokens_env(kit)
     started = []
@@ -385,22 +385,22 @@ def test_security_fix_ship_release_requires_admin_and_confirmation(tmp: Path):
     try:
         with patch.object(srv_ck, "command_by_name", lambda cmd: row):
             token = _token(kit, scopes=["remote:read", "remote:write"],
-                           projects=["spot"])
+                           projects=["alpha"])
             status, _h, raw = call("POST", "/api/run", _headers(token), json.dumps({
-                "project": str(spot), "cmd": "ship:release", "args": args,
+                "project": str(alpha), "cmd": "ship:release", "args": args,
                 "resume": False, "confirm_id": ""}))
             assert status == 403 and _body(raw).get("code") == "scope", (status, raw)
 
             token = _token(kit, scopes=["remote:read", "remote:write", "admin"],
-                           projects=["spot"])
+                           projects=["alpha"])
             status, _h, raw = call("POST", "/api/run", _headers(token), json.dumps({
-                "project": str(spot), "cmd": "ship:release", "args": args,
+                "project": str(alpha), "cmd": "ship:release", "args": args,
                 "resume": False, "confirm_id": ""}))
             assert status == 409 and _body(raw).get("code") == "confirmation_required", (status, raw)
             assert started == []
 
             confirm = _request_confirmation(
-                srv_ck, call, token, "remote_run_command", "spot",
+                srv_ck, call, token, "remote_run_command", "alpha",
                 {"cmd": "ship:release", "args": args, "resume": False})
         with patch.object(srv_ck, "command_by_name", lambda cmd: row), \
                 patch.object(srv_ck, "start_job",
@@ -409,10 +409,10 @@ def test_security_fix_ship_release_requires_admin_and_confirmation(tmp: Path):
                 patch.object(srv_ck, "version_gap", lambda *_a, **_k: ""), \
                 patch.object(srv_ck, "net_enabled", lambda: False):
             status, _h, raw = call("POST", "/api/run", _headers(token), json.dumps({
-                "project": str(spot), "cmd": "ship:release", "args": args,
+                "project": str(alpha), "cmd": "ship:release", "args": args,
                 "resume": False, "confirm_id": confirm}))
             assert status == 200, (status, raw)
-            assert started == [(str(spot), "ship:release", args)], started
+            assert started == [(str(alpha), "ship:release", args)], started
     finally:
         close()
         _restore_env(old_env)
@@ -425,7 +425,7 @@ def test_security_fix_ship_release_safe_mode_blocks_admin(tmp: Path):
     home, restore_home = _home(tmp)
     kit = _kit(tmp)
     root = tmp / "root"
-    spot = _project(root, "spot")
+    alpha = _project(root, "alpha")
     _write_mode(kit, "safe")
     old_env = _tokens_env(kit)
     srv_ck, srv, close = _panel(tmp, kit, root)
@@ -433,14 +433,14 @@ def test_security_fix_ship_release_safe_mode_blocks_admin(tmp: Path):
     started = []
     try:
         token = _token(kit, scopes=["remote:read", "remote:write", "admin"],
-                       projects=["spot"])
+                       projects=["alpha"])
         with patch.object(srv_ck, "command_by_name",
                           lambda cmd: {"cmd": cmd, "runnable": True, "ns": "ship",
                                        "flags": [], "fixed_flags": [], "script": "ship_doc.py"}), \
                 patch.object(srv_ck, "start_job",
                              lambda *a, **k: started.append(a) or "job-1"):
             status, _h, raw = call("POST", "/api/run", _headers(token), json.dumps({
-                "project": str(spot), "cmd": "ship:release",
+                "project": str(alpha), "cmd": "ship:release",
                 "args": ["Artifacts/ac/x.md", "--export", "docx"],
                 "resume": False, "confirm_id": ""}))
             assert status == 403 and _body(raw).get("code") == "safe_mode", (status, raw)
@@ -726,11 +726,11 @@ def test_security_fix_cron_release_start_requires_admin_and_confirmation(tmp: Pa
     home, restore_home = _home(tmp)
     kit = _kit(tmp)
     root = tmp / "root"
-    spot = _project(root, "spot")
+    alpha = _project(root, "alpha")
     tid = "deadbeef"
     _write_mode(kit, "full")
     old_env = _tokens_env(kit)
-    CRON.save_tasks([_cron_task(tid, spot, command="ship:release")])
+    CRON.save_tasks([_cron_task(tid, alpha, command="ship:release")])
     srv_ck, srv, close = _panel(tmp, kit, root)
     call = _call(srv)
     enqueued = []
@@ -740,33 +740,33 @@ def test_security_fix_cron_release_start_requires_admin_and_confirmation(tmp: Pa
     scheck.enqueue = lambda task_id, trigger="manual", resume="": \
         enqueued.append((task_id, trigger)) or {"ok": True}
     try:
-        token = _token(kit, scopes=["remote:read", "remote:write"], projects=["spot"])
+        token = _token(kit, scopes=["remote:read", "remote:write"], projects=["alpha"])
         for action in ("start", "toggle"):
             status, _h, raw = call("POST", "/api/cron/" + action, _headers(token), json.dumps({
-                "project": str(spot), "id": tid, "enabled": False, "confirm_id": ""}))
+                "project": str(alpha), "id": tid, "enabled": False, "confirm_id": ""}))
             assert status == 403 and _body(raw).get("code") == "scope", (action, status, raw)
 
         token = _token(kit, scopes=["remote:read", "remote:write", "admin"],
-                       projects=["spot"])
+                       projects=["alpha"])
         for action in ("start", "toggle"):
             status, _h, raw = call("POST", "/api/cron/" + action, _headers(token), json.dumps({
-                "project": str(spot), "id": tid, "enabled": False, "confirm_id": ""}))
+                "project": str(alpha), "id": tid, "enabled": False, "confirm_id": ""}))
             assert status == 409 and _body(raw).get("code") == "confirmation_required", \
                 (action, status, raw)
         assert enqueued == [], enqueued
         assert next(t for t in CRON.load_tasks() if t["id"] == tid)["enabled"] is True
 
-        confirm = _request_confirmation(srv_ck, call, token, "remote_cron", "spot",
+        confirm = _request_confirmation(srv_ck, call, token, "remote_cron", "alpha",
                                         {"action": "start", "id": tid})
         status, _h, raw = call("POST", "/api/cron/start", _headers(token), json.dumps({
-            "project": str(spot), "id": tid, "confirm_id": confirm}))
+            "project": str(alpha), "id": tid, "confirm_id": confirm}))
         assert status == 200 and _body(raw).get("ok") is True, (status, raw)
         assert enqueued == [(tid, "manual")], enqueued
 
         _write_mode(kit, "safe")
         for action in ("start", "toggle"):
             status, _h, raw = call("POST", "/api/cron/" + action, _headers(token), json.dumps({
-                "project": str(spot), "id": tid, "enabled": False, "confirm_id": ""}))
+                "project": str(alpha), "id": tid, "enabled": False, "confirm_id": ""}))
             assert status == 403 and _body(raw).get("code") == "safe_mode", (action, status, raw)
         assert enqueued == [(tid, "manual")], enqueued
     finally:
@@ -782,15 +782,15 @@ def test_security_fix_cron_scheduler_skips_release_steps(tmp: Path):
     home, restore_home = _home(tmp)
     kit = _kit(tmp)
     root = tmp / "root"
-    spot = _project(root, "spot")
+    alpha = _project(root, "alpha")
     srv_ck, srv, close = _panel(tmp, kit, root)
     started = []
     old_sched = srv_ck.SCHED
     srv_ck.SCHED = None
     scheck = srv_ck.scheduler()
     try:
-        task = _cron_task("feed1234", spot, command="ship:release")
-        item = {"kind": "command", "project": str(spot), "project_name": "spot",
+        task = _cron_task("feed1234", alpha, command="ship:release")
+        item = {"kind": "command", "project": str(alpha), "project_name": "alpha",
                 "cmd": "ship:release", "args": ["Artifacts/ac/x.md"],
                 "status": "pending", "note": "", "started": "", "finished": "",
                 "jobs": [], "done": [], "log": []}
@@ -803,7 +803,7 @@ def test_security_fix_cron_scheduler_skips_release_steps(tmp: Path):
 
         scenario = {"id": "release-route", "title": "Выпуск",
                     "steps": [{"cmd": "ship:release", "flags": ["--apply"]}]}
-        route_item = {"kind": "route", "project": str(spot), "project_name": "spot",
+        route_item = {"kind": "route", "project": str(alpha), "project_name": "alpha",
                       "route": "release-route", "write": True,
                       "status": "pending", "note": "", "started": "", "finished": "",
                       "jobs": [], "done": [], "log": []}
@@ -827,13 +827,13 @@ def test_security_fix_cron_save_rejects_release_steps(tmp: Path):
     _home_dir, restore_home = _home(tmp)
     kit = _kit(tmp)
     root = tmp / "root"
-    spot = _project(root, "spot")
+    alpha = _project(root, "alpha")
     srv_ck, srv, close = _panel(tmp, kit, root)
-    projects = [{"name": "spot", "path": str(spot)}]
+    projects = [{"name": "alpha", "path": str(alpha)}]
     row = {"cmd": "ship:release", "runnable": True, "ns": "ship",
            "flags": [], "fixed_flags": [], "script": "ship_doc.py"}
     try:
-        task = _cron_task("11112222", spot, command="ship:release")
+        task = _cron_task("11112222", alpha, command="ship:release")
         with patch.object(srv_ck, "command_by_name", lambda cmd: row):
             got = srv_ck.cron_action("save", {"task": task}, projects)
         assert got == {"ok": False, "error": "bad_command"}, got
@@ -842,7 +842,7 @@ def test_security_fix_cron_save_rejects_release_steps(tmp: Path):
         scenario = {"id": "release-route", "title": "Выпуск",
                     "steps": [{"cmd": "ship:release"}]}
         route_task = {"id": "33334444", "name": "маршрут", "time": "10:00",
-                      "days": [1], "steps": [{"kind": "route", "project": str(spot),
+                      "days": [1], "steps": [{"kind": "route", "project": str(alpha),
                                               "route": "release-route", "write": True}]}
         with patch.object(srv_ck, "all_scenarios", lambda: [scenario]):
             got = srv_ck.cron_action("save", {"task": route_task}, projects)
