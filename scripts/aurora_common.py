@@ -3497,11 +3497,11 @@ def kit_mcp_permission(name: str, kit=None) -> bool:
 # значение не из двух допустимых — `safe` (fail-closed, решение 2.8).
 MCP_SAFE_DENY_COMMANDS = (
     "kit:update", "kit:hooks", "kit:skills", "git:push", "git:update", "git:fix",
-    "ship:publish", "ship:task", "kb:reset",
+    "ship:release", "ship:publish", "ship:task", "kb:reset",
 )
 
 # В `full` эти команды разрешены, но требуют `admin` и подтверждения человека. Множество
-# ровно из девяти опасных команд: остальные необратимые действия — это не команды, а
+# ровно из десяти опасных команд: остальные необратимые действия — это не команды, а
 # маршруты, `remote_restart` и `remote_cron save/delete`, их решает сервер инструментов.
 MCP_IRREVERSIBLE_COMMANDS = frozenset(MCP_SAFE_DENY_COMMANDS)
 
@@ -3554,7 +3554,7 @@ def kit_mcp_mode(project="", kit=None) -> tuple:
 def mcp_command_verdict(cmd, args=None, mode="safe", scope="remote:read") -> dict:
     """Можно ли запускать команду реестра в этом режиме и с этими правами.
 
-    `safe` запрещает девять опасных команд независимо от прав. `full` разрешает их
+    `safe` запрещает десять опасных команд независимо от прав. `full` разрешает их
     только `admin`, и тогда `confirm=True`: запуск ждёт подтверждения человека.
     Остальные команды — обычное `remote:write` без подтверждения. `args` оставлен в
     подписи как часть будущего правила по аргументам; сейчас он ничего не разрешает.
