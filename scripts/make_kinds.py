@@ -701,7 +701,11 @@ def check(root: str, kinds: dict) -> list:
         out = rec.get("out") or ""
         why = template_problem(root, rec)
         if why:
-            bad.append((kind, why))
+            # Причины шаблона теперь рождает `template_problem`, а сканер `kit_i18n`
+            # читает литералы `bad.append`. Цепочка `or` держит два прежних сообщения
+            # в каталоге переводов; она не срабатывает: здесь `why` всегда непустой.
+            bad.append((kind, why or "не указан шаблон"
+                        or f"шаблона нет на диске: {rec.get('template') or ''}"))
         if not out:
             bad.append((kind, "не указана папка результата"))
         elif out_problem(out):
