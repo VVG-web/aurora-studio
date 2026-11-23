@@ -171,7 +171,10 @@ def test_code_index_40_files_under_two_seconds(_t):
 
 @test
 def test_every_local_state_rule_untracks_but_preserves_the_file(tmp: Path):
-    """Канонический ignore и update работают одним списком; повтор и содержимое безопасны."""
+    """Канонический ignore и update работают одним списком; повтор и содержимое безопасны.
+
+    Каталог (снимки сети) снимается целиком, файлы внутри остаются на диске.
+    """
     _path()
     import aurora_update as AU
     import install_aurora as IA
@@ -180,9 +183,15 @@ def test_every_local_state_rule_untracks_but_preserves_the_file(tmp: Path):
     repo.mkdir()
     for num, rel in enumerate(AU.LOCAL_STATE_RELS):
         target = repo / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(f"local-{num}\n", encoding="utf-8")
-        assert rel in IA.GITIGNORE_BLOCK.splitlines(), f"нет канонического ignore: {rel}"
+        if rel in AU.LOCAL_STATE_DIRS:
+            target.mkdir(parents=True, exist_ok=True)
+            target.joinpath("record.json").write_text(f"local-{num}\n", encoding="utf-8")
+            rule = rel + "/"
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"local-{num}\n", encoding="utf-8")
+            rule = rel
+        assert rule in IA.GITIGNORE_BLOCK.splitlines(), f"нет канонического ignore: {rule}"
     _git(repo, "init", "-q")
     _git(repo, "config", "user.name", "Test")
     _git(repo, "config", "user.email", "test@example.com")
@@ -192,11 +201,54 @@ def test_every_local_state_rule_untracks_but_preserves_the_file(tmp: Path):
     assert removed == list(AU.LOCAL_STATE_RELS), removed
     for num, rel in enumerate(AU.LOCAL_STATE_RELS):
         target = repo / rel
-        assert target.read_text(encoding="utf-8") == f"local-{num}\n", rel
+        if rel in AU.LOCAL_STATE_DIRS:
+            assert target.joinpath("record.json").read_text(encoding="utf-8") == f"local-{num}\n", rel
+        else:
+            assert target.read_text(encoding="utf-8") == f"local-{num}\n", rel
         assert not _git(repo, "ls-files", "--", rel).stdout.strip(), rel
     assert AU.untrack_local_state(repo) == [], "повторный update снова меняет index"
     assert (repo / "AuroraKnowledgeDB/meta/aurora_version.txt").read_text(
         encoding="utf-8").startswith("local-"), "штамп версии потерялся с диска"
+
+
+@test
+def test_net_runs_directory_leaves_the_index_but_stays_on_disk(tmp: Path):
+    """2A: снимки сети уходят из индекса, файлы остаются на диске, коммит только удаляет."""
+    _path()
+    import aurora_update as AU
+    import install_aurora as IA
+
+    rule = AU.NET_RUNS_REL + "/"
+    assert rule in IA.GITIGNORE_BLOCK.splitlines(), "правила net-runs нет в блоке кита"
+    repo = tmp / "repo"
+    shard = repo / AU.NET_RUNS_REL / "alice-m1"
+    shard.mkdir(parents=True)
+    first = shard / "run-1.json"
+    second = shard / "run-2.json"
+    first.write_text('{"id": "run-1"}\n', encoding="utf-8")
+    second.write_text('{"id": "run-2"}\n', encoding="utf-8")
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "user.email", "test@example.com")
+    _commit(repo, "snapshots used to be tracked")
+    assert len(_git(repo, "ls-files", "--", AU.NET_RUNS_REL).stdout.splitlines()) == 2
+
+    added = IA.merge_gitignore(repo / ".gitignore")
+    assert rule in added, added
+    assert AU.NET_RUNS_REL in AU.untrack_local_state(repo), "каталог не снят с индекса"
+    warning = AU.untrack_warning([AU.NET_RUNS_REL])
+    assert "следующим коммитом" in warning and "git show" in warning and "net-runs.d" in warning
+    assert AU.untrack_warning(["AuroraKnowledgeDB/meta/run_log.md"]) == ""
+    assert not _git(repo, "ls-files", "--", AU.NET_RUNS_REL).stdout.strip(), "каталог в индексе"
+    assert first.is_file() and second.is_file(), "файлы удалены с диска"
+    assert first.read_text(encoding="utf-8") == '{"id": "run-1"}\n'
+    staged = _git(repo, "diff", "--cached", "--name-status").stdout
+    assert staged.count(f"D\t{AU.NET_RUNS_REL}/") == 2, staged
+    assert AU.untrack_runlog(repo, AU.NET_RUNS_REL) is False, "повторное снятие меняет index"
+
+    _commit(repo, "snapshots leave git")
+    assert AU.NET_RUNS_REL not in _git(repo, "ls-tree", "-r", "--name-only", "HEAD").stdout
+    assert first.is_file() and second.is_file(), "коммит удалил файлы с диска"
 
 
 @test

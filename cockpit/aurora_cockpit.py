@@ -7727,10 +7727,13 @@ def adapter_alarm() -> list:
 
     `area`: `adapter` — Pydantic AI выбран, а вызовы идут мимо него (`note_bypass`), снимает первый
     же вызов того же пути, прошедший через адаптер; `link` — нет связи с бэкендом
-    (`link_note`), снимает первый же ответ этого бэкенда. `kind` — вид по таблице причин движка,
-    `fix` — куда ведёт кнопка: `install`, `version`, `models` или ничего. `key` — ключ записи в
-    файле тревог: по нему панель снимает одну полосу, не трогая соседние. Строка без вида
-    (написана до 1.176.0) читается как неисправность адаптера, вид — по тексту."""
+    (`link_note`), снимает первый же ответ этого бэкенда; `timeout` — ответа за срок нет:
+    `model_timeout` (адаптер исправен) или `adapter_hang` (причина не установлена), тоже
+    снимается успешным вызовом пути.
+    `kind` — вид по таблице причин движка, `fix` — куда ведёт кнопка: `install`, `version`,
+    `models` или ничего. `key` — ключ записи в файле тревог: по нему панель снимает одну
+    полосу, не трогая соседние. Строка без вида (написана до 1.176.0) читается как
+    неисправность адаптера, вид — по тексту."""
     import agent_core as AG
     # Кит могли обновить наполовину: старый agent_core не знает скрытия — полоса просто останется видимой.
     snoozed = AG.read_alarm_snooze() if hasattr(AG, "read_alarm_snooze") else {}
@@ -7745,9 +7748,9 @@ def adapter_alarm() -> list:
                 continue                  # строку тревоги правили руками: панель из-за неё не падает
             if cause.area == "link" and AG.alarm_age(row) > AG.LINK_ALARM_TTL:
                 continue                  # забытая тревога связи (бэкенд убран из настройки) не висит вечно
-            if cause.area == "adapter" and hasattr(AG, "adapter_alarm_fresh") \
+            if cause.area in ("adapter", "timeout") and hasattr(AG, "adapter_alarm_fresh") \
                     and not AG.adapter_alarm_fresh(row):
-                AG.forget_alarm(key)      # разовый сбой адаптера не держит полосу неделю
+                AG.forget_alarm(key)      # разовый сбой или таймаут не держит полосу неделю
                 continue
             project_path = str(row.get("project") or "")
             if (cause.area == "link" and project_path and not os.path.isdir(project_path)
