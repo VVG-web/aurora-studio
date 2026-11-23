@@ -146,6 +146,40 @@ def test_make_repairs_until_critic_is_happy_and_runs_final_momus(tmp: Path):
 
 
 @test
+def test_make_gives_momus_the_writer_answer_time(tmp: Path):
+    """Момус получает срок от фактического времени ответа писателя, а не от нуля.
+
+    Ответ шёл 200 с: проверка получает 1.5 × 200 + 300 = 600 с на запрос. С жёстким нулём
+    она снова считалась бы по полу 360 с и на медленном шлюзе уходила в таймаут.
+    """
+    root = _project(tmp)
+    import agent_runner as R
+    qa_timeouts = []
+
+    def fake(cfg, role, messages, **kw):
+        if role == "planner":
+            return _planner()
+        if role == "worker":
+            return _base("worker", _written(), seconds=200)
+        if role == "critic":
+            return _base("critic", json.dumps({
+                "ok": True, "issues": [],
+                "steps": [{"id": "section-1", "status": "done"},
+                          {"id": "section-2", "status": "done"}],
+            }, ensure_ascii=False))
+        if role == "qa":
+            qa_timeouts.append(kw.get("request_timeout"))
+            return _base("qa", "1. ОПОРА «срок»\n\nВЕРДИКТ: ЧИСТО")
+        raise AssertionError(role)
+
+    res = R.run_make(_cfg(), str(root), "ac", "срок заявки", "", "", True,
+                     call=fake, momus=True)
+    assert res["ok"], res
+    # Третий Момус — повторная проверка после финальной сборки B2; срок у неё тот же.
+    assert qa_timeouts == [600, 600, 600], qa_timeouts
+
+
+@test
 def test_make_without_cards_keeps_a_skeleton_and_says_what_is_missing(tmp: Path):
     root = _project(tmp)
     import agent_runner as R

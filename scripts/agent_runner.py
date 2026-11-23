@@ -7663,7 +7663,8 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                 pack_for_check = st.get("pack") or ""
         mo = limited(stage, lambda: run_momus(
             cfg, pack_for_check, f"Документ «{spec.get('title') or st.get('kind')}»",
-            draft, call, input_limit=momus_limit), remaining(), role="qa")
+            draft, call, input_limit=momus_limit,
+            answered_in=draft_answer_seconds(run, version)), remaining(), role="qa")
         if not isinstance(mo, dict):
             mo = {"ok": False, "why": "Момус вернул не объект"}
         run.write_check(version, "momus" if stage == "momus_final" else stage,
@@ -7998,7 +7999,9 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                       "degraded": w.get("degraded") or []}
         run.write_draft(1, st["draft"], model=str(w.get("model") or ""),
                         provider=str(w.get("backend") or w.get("provider") or ""),
-                        seconds=float(w.get("seconds") or 0), status="candidate",
+                        seconds=float(w.get("seconds") or 0),
+                        answer_seconds=float((w.get("phases") or {}).get("answer") or 0),
+                        status="candidate",
                         reason="первый черновик")
         run.set_best(1, reason="первый черновик")
         st["best_version"] = 1
@@ -8094,7 +8097,9 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         st["draft"] = str(w.get("answer") or "").strip()
         run.write_draft(version, st["draft"], model=str(w.get("model") or ""),
                         provider=str(w.get("backend") or w.get("provider") or ""),
-                        seconds=float(w.get("seconds") or 0), parent=best_version,
+                        seconds=float(w.get("seconds") or 0),
+                        answer_seconds=float((w.get("phases") or {}).get("answer") or 0),
+                        parent=best_version,
                         reason=f"исправление после критика, версия {version}")
         run.set_stage(f"revision_{version}")
         save_session(cwd, sid, st)
@@ -8229,8 +8234,12 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                              + str(fw.get("why") or "нет ответа"))
             candidate = str(fw.get("answer") or "").strip()
             st["draft"] = candidate
-            run.write_draft(final_version, candidate, parent=best_version,
-                            reason="финальная сборка")
+            run.write_draft(final_version, candidate,
+                            model=str(fw.get("model") or ""),
+                            provider=str(fw.get("backend") or fw.get("provider") or ""),
+                            seconds=float(fw.get("seconds") or 0),
+                            answer_seconds=float((fw.get("phases") or {}).get("answer") or 0),
+                            parent=best_version, reason="финальная сборка")
             stages["finalizing"] = utc_stamp()
             save_session(cwd, sid, st)
 
@@ -9129,6 +9138,30 @@ def momus_timeout(cfg: dict, answered_in: float) -> float:
     # предел запроса, ниже пола не опускаемся.
     need = answered_in * MOMUS_SHARE + MOMUS_BUFFER
     return round(min(MOMUS_ABS_CAP, base * MOMUS_CAP, max(floor, need)), 1)
+
+
+def draft_answer_seconds(run, version: int) -> float:
+    """Сколько шёл писатель этой версии по манифесту прогона.
+
+    Момус получает срок от фактического ответа, а не от жёсткого нуля: иначе проверка
+    часовой генерации считалась по тому же полу, что и десятисекундная. Манифест хранит
+    `answer_seconds` каждой версии, поэтому значение переживает продолжение сессии.
+    """
+    try:
+        drafts = run.manifest().get("drafts") or []
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
+    for row in drafts:
+        if not isinstance(row, dict):
+            continue
+        try:
+            if int(row.get("version") or 0) != int(version or 0):
+                continue
+            return max(0.0, float(row.get("answer_seconds")
+                                  or row.get("seconds") or 0))
+        except (TypeError, ValueError):
+            continue
+    return 0.0
 
 
 # Проверка тезиса идёт с основного шлюза кольца, а не со слота, который тезис писал. Раньше

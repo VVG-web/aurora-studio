@@ -22,9 +22,9 @@
 Первая строка процесса — {"ready": true, "version"} либо {"ready": false, "error", "kind":
 "import_failed", "sub": "missing"|"broken", "exc", "module"}.
 Задание: {"id", "url", "key", "model", "messages", "template", "max_tokens", "timeout",
-          "tools", "mcp", "mcp_active", "guard", "role", "tool_calls"}
+          "request_timeout", "tools", "mcp", "mcp_active", "guard", "role", "tool_calls"}
 Ответ:   {"id", "ok": true, "text", "reasoning", "finish", "usage"}
-         либо {"id", "ok": false, "where": "server"|"adapter", "status", "error", "body",
+         либо {"id", "ok": false, "where": "server"|"adapter"|"timeout", "status", "error", "body",
                "headers", "kind", "proxy_fell"}
 `kind` — вид обрыва связи (DNS, отказ порта, сертификат, сброс, срок…): по нему движок отличает
 обрыв сети от поломки самого Pydantic AI. `where` отделяет отказ сервера (движок решает по нему,
@@ -50,6 +50,43 @@ import time
 # Pydantic AI 2.5x печатает приветствие про observability. В процессе адаптера stdout — это
 # линия с движком, и чужая строка там читалась бы вместо ответа. Выключаем до импорта.
 os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
+
+
+# Общий срок одного задания: клиент Pydantic AI режет каждый запрос своим `timeout`, но
+# цикл инструментов и зависший поток могут не дойти до этого срока. Внешний движок ждёт
+# `timeout × (1 + tool_calls) + 30`; адаптер обязан ответить чуть раньше и назвать причину,
+# иначе панель видит `process_hang` и раньше считала его обходом Pydantic AI.
+REQUEST_GRACE = 5.0
+
+
+def request_limit(task: dict) -> float:
+    """Сколько секунд адаптер ждёт задание целиком. 0 — без общего срока."""
+    try:
+        base = float(task.get("request_timeout") or task.get("timeout") or 0)
+    except (TypeError, ValueError):
+        base = 0.0
+    if base <= 0:
+        return 0.0
+    try:
+        calls = max(0, int(task.get("tool_calls") or 0))
+    except (TypeError, ValueError):
+        calls = 0
+    return base * (1 + calls) + REQUEST_GRACE
+
+
+async def run_with_deadline(task: dict, run):
+    """Выполнить задание не дольше общего срока; истёк — понятный ответ `where=timeout`."""
+    limit = request_limit(task)
+    if limit <= 0:
+        return await run(task)
+    import asyncio
+    try:
+        return await asyncio.wait_for(run(task), timeout=limit)
+    except asyncio.TimeoutError:
+        return {"ok": False, "where": "timeout", "timed_out": True,
+                "timeout": round(limit, 1),
+                "error": f"Pydantic AI не ответил за {limit:.1f} с (общий срок запроса) — "
+                         "вызов прекращён, чтобы не ждать внешнего сторожа"}
 
 
 def leaks(query: str, guard: dict) -> str:
@@ -1284,7 +1321,7 @@ def runtime():
     async def run_task(task: dict) -> dict:
         """Ответ плюс собственное время адаптера; TTFT остаётся null без потока."""
         began = time.monotonic()
-        out = await _run_task(task)
+        out = await run_with_deadline(task, _run_task)
         if not isinstance(out, dict):
             return out
         out["latency_ms"] = round((time.monotonic() - began) * 1000, 1)
