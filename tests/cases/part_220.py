@@ -117,6 +117,54 @@ def test_run_make_missing_template_names_the_template_and_stops(tmp: Path):
 
 
 @test
+def test_run_make_resume_blocks_a_missing_or_changed_template(tmp: Path):
+    """Продолжение сессии требует тот же шаблон: удалённый или изменённый блокирует до модели.
+
+    Смена формы посреди работы — это другой документ: продолжать по ней значит молча
+    собрать не то, что человек начал. Хеш шаблона пишется в новую сессию, а старая сессия
+    без хеша получает его при первом продолжении и работает дальше."""
+    root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    tpl = root / "Templates/AC.md"
+    tpl.write_text("# AC\n\n## Критерии приёмки\n", encoding="utf-8")
+    cfg_path = root / "aurora.config.yaml"
+    cfg_path.write_text(cfg_path.read_text(encoding="utf-8").rstrip()
+                        + '\nartifacts:\n  ac:\n    title: "AC"\n'
+                          '    template: "Templates/AC.md"\n    out: "Artifacts/ac"\n',
+                        encoding="utf-8")
+    for i in range(3):
+        card(root, f"Concepts/Заявка-{i}.md", "Срок заявки десять дней.", status="knowledge")
+    import agent_runner as R
+    called = []
+
+    def fake(cfg, role, messages, **kw):
+        called.append(role)
+        return {"ok": True, "text": json.dumps(
+            {"questions": [{"q": "Срок?", "why": "меняет критерий", "rec": "10 дней"}],
+             "plan": ""}, ensure_ascii=False), "backend": 1, "model": "m", "log": []}
+
+    res = R.run_make(_cfg(), str(root), "ac", "срок заявки", "", "", False,
+                     call=fake, momus=False)
+    assert res["ok"] and res["stage"] == "planning", res
+    sid = res["sid"]
+    assert "template_sha256" in R.load_session(str(root), sid), "сессия не запомнила шаблон"
+
+    called.clear()
+    tpl.write_text("# AC\n\n## Критерии приёмки\n\n## Другой раздел\n", encoding="utf-8")
+    changed = R.run_make(_cfg(), str(root), "", "", sid, "10 дней", False,
+                         call=fake, momus=False)
+    assert not changed["ok"] and "изменился с начала сессии" in changed["why"], changed
+    assert not called, f"модель вызвана, хотя шаблон изменён: {called}"
+
+    called.clear()
+    tpl.unlink()
+    missing = R.run_make(_cfg(), str(root), "", "", sid, "10 дней", False,
+                         call=fake, momus=False)
+    assert not missing["ok"] and "шаблона нет на диске" in missing["why"], missing
+    assert not called, f"модель вызвана, хотя шаблона нет: {called}"
+
+
+@test
 def test_run_make_keeps_an_early_partial_artifact_when_the_writer_fails(tmp: Path):
     root = make_project(tmp)
     (root / "Templates").mkdir(exist_ok=True)

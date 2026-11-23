@@ -135,7 +135,9 @@ def test_context_aware_worker_uses_stage_pack(_t):
             return {"ok": True, "backend": 1, "model": "m", "tps": 9, "log": [],
                     "text": json.dumps({"ok": True, "issues": []})}
         return {"ok": True, "backend": 1, "model": "m", "tps": 9, "log": [],
-                "text": "# Док\n\n[[Заявка-0]]"}
+                "text": "# AC\n\n## Критерии приёмки\n\nКритерии по [[Заявка-0]] с "
+                        "достаточной длиной строки.\n\n## История изменений\n\nПервая "
+                        "версия, изменения перечислены отчётом."}
 
     res = R.run_make(cfg, str(root), "ac", "Сделай критерии приёмки по заявке", "", "", True,
                      call=fake, momus=False)

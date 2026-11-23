@@ -1004,7 +1004,7 @@ def test_artifact_kinds_are_declared_and_editable(tmp: Path):
 
     root = make_project(tmp)
     (root / "Templates").mkdir(exist_ok=True)
-    (root / "Templates" / "pr.md").write_text("шаблон", encoding="utf-8")
+    (root / "Templates" / "pr.md").write_text("# ПР\n\n## Раздел\n", encoding="utf-8")
 
     r = ck.kinds_write(str(root), {
         "pr": {"title": "Проектное решение", "template": "Templates/pr.md",

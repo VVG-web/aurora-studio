@@ -919,6 +919,11 @@ _MADE_PHRASE = "в чистовик не идёт"
 _PROD_KEYS = tuple(h.casefold() for h in PRODUCTION_HEADS)
 
 
+def form_residue(text: str) -> list[str]:
+    """Остатки шаблона и служебных комментариев в чистовой части."""
+    return [match.group(0) for match in _LEFTOVER.finditer(clean_copy(text))]
+
+
 def _head_title(line: str):
     """Название раздела из строки-заголовка Markdown (`## Допущения ##`, `# **Допущения:**`) без разметки; иначе None."""
     m = re.match(r"^ {0,3}(#{1,6})[ \t\u00a0]+(.*)$", line)

@@ -5759,12 +5759,19 @@ def unfinished(project: str) -> dict:
             head = read_text(path, limit=3000)
             if "pipeline:" not in head or "session:" not in head:
                 continue          # не наш артефакт: писали руками
-            if "checked: —" not in head and "drafted: —" not in head \
-                    and "reviewed: —" not in head:
+            # Старый артефакт без `finalizing:` — готовая работа прежнего движка, если у
+            # него прошли `reviewed` и `checked`. Новый обязан пройти и финальную сборку:
+            # незаполненный `finalizing` или `form_ok: false` значат, что чистовик не собран.
+            if ("checked: \u2014" not in head and "finalizing: \u2014" not in head
+                    and "drafted: \u2014" not in head and "reviewed: \u2014" not in head
+                    and "form_ok: false" not in head):
                 continue          # цепочка пройдена
             days = int((time.time() - os.path.getmtime(path)) // 86400)
-            stage = next((s for s in ("enriched", "planned", "drafted", "reviewed", "checked")
+            stage = next((s for s in ("enriched", "planned", "drafted", "reviewed",
+                                      "finalizing", "checked")
                           if f"{s}: —" in head), "?")
+            if stage == "?" and "form_ok: false" in head:
+                stage = "form"
             out.append({"path": os.path.relpath(path, project), "days": days,
                         "stopped": stage, "kind": kind})
             oldest = max(oldest or 0, days)

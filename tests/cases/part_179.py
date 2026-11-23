@@ -143,6 +143,7 @@ def test_the_create_window_puts_the_task_fields_into_the_new_document(tmp: Path)
           "spec": {"title": "История", "out": "Artifacts/us", "template": "t",
                    "task": {"type": "Story", "labels": ["kind"]}},
           "plan": "1. Раздел", "draft": "# История\n\nТекст.", "issues": [],
+          "pipeline": {"form_ok": True},
           "momus": {"ok": True, "clean": True, "unsupported": 0, "text": "ВЕРДИКТ: ОПОРА ЕСТЬ"}}
     for field, value in got.items():                      # то же, что делает run_make с `--task-field`
         st["spec"]["task"][field] = value
