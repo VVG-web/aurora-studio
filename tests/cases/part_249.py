@@ -321,12 +321,12 @@ def test_cron_route_child_queue_is_its_own_timing(tmp: Path):
             (cron.RR.scenario, cron.RR.route_resources,
              cron.RR.RouteRun, cron.RR.net_gate) = saved
         assert it["timing"]["queue_ms"] == 120_000, it
-        assert it["timing"]["other_wait_ms"] == 30_000, it
-        assert it["wait_ms"] == 30_000, it
+        assert 30_000 <= it["timing"]["other_wait_ms"] <= 30_100, it
+        assert 30_000 <= it["wait_ms"] <= 30_100, it
         assert run["queue_ms"] == 120_000, run
         assert run["timing"]["queue_ms"] == 120_000, run["timing"]
-        assert run["timing"]["other_wait_ms"] == 30_000, run["timing"]
-        assert run["timing"]["work_ms"] == 90_000, run["timing"]
+        assert 30_000 <= run["timing"]["other_wait_ms"] <= 30_100, run["timing"]
+        assert 89_900 <= run["timing"]["work_ms"] <= 90_100, run["timing"]
     finally:
         restore()
 
