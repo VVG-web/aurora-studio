@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -458,3 +459,195 @@ def test_make_api_returns_runs_without_pack_and_controls_state(tmp: Path):
     assert AC.make_pipeline_control(str(root), {"sid": "ac-api", "action": "pause"})["ok"]
     assert run.control()["pause"]
     assert AC.make_pipeline_control(str(root), {"sid": "../x", "action": "cancel"})["error"]
+
+
+@test
+def test_make_questions_survive_state_and_report(tmp: Path):
+    """Панель получает сами вопросы, а не число; старые сессии читаются из session.json."""
+    root = _project(tmp)
+    import agent_runner as R
+    import make_state as MS
+
+    sid = "ac-questions"
+    run = MS.MakeRun(root, sid, kind="ac", title="AC")
+    run.create(meta={"kind": "ac", "title": "AC"})
+    questions = [
+        {"q": "Какой срок?", "why": "меняет критерий", "rec": "10 дней"},
+        {"q": "Кто проверяет?", "why": "нужен владелец", "rec": "аналитик"},
+    ]
+    run.update_state(status="planning", current="planning",
+                     questions=questions, question_count=len(questions))
+    got = MS.read_run(root, sid)
+    assert got["questions"] == questions, got["questions"]
+    assert got["state"]["questions"] == questions, got["state"]
+    assert got["state"]["question_count"] == 2, got["state"]
+
+    # Старый формат: в state.json только счётчик, сами вопросы — в session.json рядом.
+    legacy = MS.MakeRun(root, "ac-legacy", kind="ac", title="AC")
+    legacy.create(meta={"kind": "ac", "title": "AC"})
+    legacy.update_state(status="planning", current="planning", questions=1)
+    (root / "Workspaces/ac-legacy/session.json").write_text(json.dumps({
+        "sid": "ac-legacy",
+        "rounds": [{"questions": [{"q": "Старый?", "rec": "да"}]}],
+    }, ensure_ascii=False), encoding="utf-8")
+    old = MS.read_run(root, "ac-legacy")
+    assert [q["q"] for q in old["questions"]] == ["Старый?"], old["questions"]
+
+    # Отчёт планирования печатает вопросы, а не «число пунктов плана».
+    md = R.manager_report_markdown({"status": "planning", "title": "AC", "sid": sid,
+                                    "questions": questions})
+    assert "Какой срок?" in md and "Кто проверяет?" in md, md
+    assert "пунктов плана" not in md, md
+
+
+@test
+def test_make_planning_persists_question_objects(tmp: Path):
+    """run_make кладёт в state.json сами вопросы, а не только их число."""
+    root = _project(tmp)
+    import agent_runner as R
+    import make_state as MS
+
+    questions = [{"q": "Какой срок?", "why": "меняет критерий", "rec": "10 дней"}]
+    seen = []
+
+    def fake(cfg, role, messages, **kw):
+        seen.append(role)
+        if role == "planner":
+            return _base("planner", json.dumps(
+                {"questions": questions, "plan": ""}, ensure_ascii=False))
+        raise AssertionError(role)
+
+    res = R.run_make(_cfg(), str(root), "ac", "срок заявки", "", "", False,
+                     call=fake, momus=False)
+    assert res["ok"] and res["stage"] == "planning", res
+    state = MS.MakeRun(root, res["sid"]).state()
+    assert state["questions"] == questions, state
+    assert state["question_count"] == 1, state
+    assert "worker" not in seen, seen
+
+
+@test
+def test_make_questions_ui_puts_answer_below_questions_and_cleans_labels(tmp: Path):
+    """Поле ответа — под вопросами; подписи запусков без us-us и опечаток; маршрут виден."""
+    node = shutil.which("node")
+    if not node:
+        return
+    view = KIT / "cockpit/modules/work/view.js"
+    html = (KIT / "cockpit/modules/work/view.html").read_text(encoding="utf-8")
+    source = view.read_text(encoding="utf-8")
+    assert not re.search(r"(?:color|background|border-color)\s*:\s*(?:#|rgba?\(|hsla?\()",
+                         source), "цвет в work/view.js должен идти из токенов скина"
+    # Каждая статическая кнопка раздела: title, aria-label и rich help.
+    buttons = re.findall(r"<button\b[^>]*>", html, re.S)
+    assert len(buttons) == 7, buttons
+    for tag in buttons:
+        assert re.search(r'(?:^|\s)title="', tag), tag
+        assert re.search(r'(?:^|\s)aria-label="', tag), tag
+        assert re.search(r'(?:^|\s)data-help="', tag), tag
+    # Все динамические кнопки идут через один помощник, иначе подсказка
+    # забывается на отдельном вызове.
+    assert source.count('el("button"') == 1, "кнопки раздела должны идти через actionButton"
+    assert "rawTitle" not in source, "сырой run.title не должен попадать в разметку"
+    assert not re.search(r'title\s*:\s*[^,\n]*(?:run\.title|rawTitle)', source), \
+        "run.title не должен становиться title-подсказкой"
+    for lang in ("ru", "en"):
+        data = json.loads((KIT / "cockpit/modules/work/i18n" / f"{lang}.json")
+                          .read_text(encoding="utf-8"))
+        for attr in ("data-i18n-title", "data-i18n-aria"):
+            for key in re.findall(attr + r'="([\w.]+)"', html):
+                assert key in data, (lang, attr, key)
+        for key in sorted(set(re.findall(r"work\.help\.[a-z_]+", html + source))):
+            for suffix in (".what", ".how", ".result"):
+                assert key + suffix in data, (lang, key, suffix)
+    script = """
+import {runQuestions, questionsFromPayload, runSelectorLabel,
+        runRoute, adoptStateStatus, routeCard, questionCard, runTimeLabel,
+        runHeading, actionButton, canonStatus} from __VIEW__;
+const T = {
+  "work.status.planning": "планирование", "work.status.done": "готово",
+  "work.waiting_answer": "ждёт ответа",
+  "work.answer": "Ответить",
+  "work.enough": "Перестать опрашивать и приступить к написанию",
+  "work.route.questions": "Вопросы", "work.route.plan": "План",
+  "work.route.draft": "Написание", "work.route.review": "Проверка",
+  "work.route.done": "Готово",
+};
+const t = (key, vars = {}) => T[key] || key;
+const el = (tag, attrs = {}, ...kids) => {
+  const n = {tag, attrs, kids: kids.flat()};
+  n.append = (...ks) => { n.kids.push(...ks.flat()); };
+  return n;
+};
+const ctx = {t, el};
+const legacy = {questions: 2, rounds: [{questions: [{q: "old"}]},
+                                        {questions: [{q: "A"}, {q: "B"}]}]};
+const report = {};
+report.legacy = runQuestions(legacy);
+report.top = questionsFromPayload({questions: [{q: "top"}], state: legacy});
+report.label = runSelectorLabel(ctx, {
+  kind: "us", title: "us-Пользовательская история-Планироение", status: "planning",
+}, "Пользовательская история");
+report.label2 = runSelectorLabel(ctx, {kind: "us", title: "us", status: "done"},
+                                 "Пользовательская история");
+report.routes = [{status: "planning"}, {status: "running", current: "drafting"},
+                 {status: "running", current: "momus_initial"}, {status: "done"}]
+  .map(r => runRoute(r));
+report.adopt = [adoptStateStatus("running", "planning", true),
+                adoptStateStatus("running", "planning", false),
+                adoptStateStatus("done", "partial", false),
+                adoptStateStatus("running", "running", false)];
+report.waiting = runTimeLabel(ctx, {status: "planning"});
+report.heading = runHeading({kind: "us", title: "us-Пользовательская история-Планироение"},
+                            "Пользовательская история");
+const action = actionButton(ctx, {class: "btn", "data-help": "work.help.example",
+                                  onclick: () => {}}, "Подпись", "Подсказка");
+report.action = {title: action.attrs.title, aria: action.attrs["aria-label"],
+                 help: action.attrs["data-help"], type: action.attrs.type};
+const route = routeCard(ctx, {status: "planning"});
+const chips = route.kids.find(k => k.tag === "div" && k.attrs.role === "list").kids;
+report.route = {count: chips.length,
+  current: (chips.find(c => c.attrs["aria-current"] === "step") || {}).kids,
+  titles: chips.map(c => c.attrs.title)};
+const card = questionCard(ctx, {kind: "us"},
+  [{q: "Срок?", why: "меняет", rec: "10 дней"}, {q: "Кто?"}], "черновик",
+  () => {}, () => {});
+const ta = card.kids.find(k => k.tag === "textarea");
+const ti = card.kids.indexOf(ta);
+const actions = card.kids.slice(ti + 1).find(k => k.tag === "div" && k.attrs.class === "row");
+const ai = card.kids.indexOf(actions);
+report.order = {ta: ti, actions: ai,
+  questions: card.kids.slice(0, ti).filter(k => k.tag === "div" && !k.attrs.class).length,
+  id: ta.attrs.id, value: ta.value, before: ti < ai};
+const buttons = actions.kids.map(k => k.tag === "button" ? k
+  : (k.kids || []).find(x => x.tag === "button"));
+report.buttons = buttons.map(b => ({text: b.kids.join(""), title: b.attrs.title,
+  aria: b.attrs["aria-label"], cls: b.attrs.class}));
+report.typ = canonStatus("Planning");
+console.log(JSON.stringify(report));
+""".replace("__VIEW__", json.dumps(view.as_uri()))
+    cp = subprocess.run([node, "--input-type=module", "-e", script], capture_output=True,
+                        text=True, encoding="utf-8", errors="replace", timeout=30)
+    assert cp.returncode == 0, cp.stderr
+    got = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert [q["q"] for q in got["legacy"]] == ["A", "B"], got["legacy"]
+    assert [q["q"] for q in got["top"]] == ["top"], got["top"]
+    assert got["label"] == "Пользовательская история · планирование", got["label"]
+    assert got["label2"] == "Пользовательская история · готово", got["label2"]
+    assert "us · us" not in got["label2"] and "Планироение" not in got["label"], got
+    assert got["routes"] == [0, 2, 3, 4], got["routes"]
+    assert got["adopt"] == ["running", "planning", "partial", "running"], got["adopt"]
+    assert got["waiting"] == "ждёт ответа", got["waiting"]
+    assert got["heading"] == "Пользовательская история", got["heading"]
+    assert got["action"] == {"title": "Подсказка", "aria": "Подсказка",
+                             "help": "work.help.example", "type": "button"}, got["action"]
+    assert got["route"]["count"] == 5 and got["route"]["current"], got["route"]
+    assert "Вопросы" in "".join(got["route"]["current"]), got["route"]
+    assert all(got["route"]["titles"]), got["route"]
+    assert got["order"] == {"ta": 5, "actions": 6, "questions": 2,
+                            "id": "makeAnswers", "value": "черновик", "before": True}, got["order"]
+    assert got["buttons"][0]["text"] == "Перестать опрашивать и приступить к написанию", got
+    assert got["buttons"][0]["cls"] == "btn", got["buttons"]
+    assert got["buttons"][1]["text"] == "Ответить", got["buttons"]
+    assert "primary" in got["buttons"][1]["cls"], got["buttons"]
+    assert all(b["title"] and b["aria"] for b in got["buttons"]), got["buttons"]
+    assert got["typ"] == "planning", got["typ"]

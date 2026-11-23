@@ -17,6 +17,8 @@ let REFS = [];
 let SUGGEST_STOP = null;       // гасит отложенный запрос подсказки и закрывает список (onHide)
 // Блок «Задача» будущего документа (окно создания): его значения уходят движку `--task-field` и ложатся в шапку документа.
 let MAKE_TASK = null;
+let KINDS = {};                // реестр видов проекта: человеческие подписи запусков
+let ANSWER_DRAFTS = new Map(); // run.key -> набранный, но ещё не отправленный ответ
 let REQ_PATHS = [];            // документы/папки проверки реализованности требований
 const ACCEPT = [".md", ".markdown", ".txt", ".rst", ".log", ".json", ".jsonl", ".yaml", ".yml",
   ".toml", ".ini", ".cfg", ".csv", ".tsv", ".xml", ".html", ".htm", ".svg", ".bpmn", ".puml",
@@ -54,8 +56,10 @@ function drawReqPaths(ctx){
   box.innerHTML = "";
   REQ_PATHS.forEach(path => box.append(el("span", {class: "chip mono", style: "gap:5px"},
     path,
-    el("button", {class: "btn sm", style: "padding:0 5px;min-height:0", title: t("work.req.remove"),
-      onclick: () => { REQ_PATHS = REQ_PATHS.filter(x => x !== path); drawReqPaths(ctx); }}, "×"))));
+    actionButton(ctx, {class: "btn sm", style: "padding:0 5px;min-height:0",
+      "data-help": "work.help.req_remove",
+      onclick: () => { REQ_PATHS = REQ_PATHS.filter(x => x !== path); drawReqPaths(ctx); }},
+      "×", t("work.req.remove")))));
   if (!REQ_PATHS.length){
     box.append(el("span", {class: "muted", style: "font-size:12.5px"}, t("work.req.empty")));
   }
@@ -167,9 +171,10 @@ function drawRefs(ctx){
   REFS.forEach(r => box.append(el("span", {class: "chip", title: r.path,
       style: "gap:6px;align-items:center;display:inline-flex"},
     t(REF_KEY[r.kind]) + " " + r.label,
-    el("button", {class: "btn sm", style: "padding:0 6px;min-height:0", title: t("work.ref_remove"),
+    actionButton(ctx, {class: "btn sm", style: "padding:0 6px;min-height:0",
       "data-help": "work.help.ref_remove",
-      onclick: () => { REFS = REFS.filter(x => x !== r); drawRefs(ctx); }}, "×"))));
+      onclick: () => { REFS = REFS.filter(x => x !== r); drawRefs(ctx); }},
+      "×", t("work.ref_remove")))));
 }
 
 async function pickRefs(ctx){
@@ -266,7 +271,7 @@ export async function refresh(ctx){
   }
   await fillKinds(ctx);
   await loadRuns(ctx);
-  if ([...RUNS.values()].some(r => RUN_BUSY.has(r.status))) ensureTicker(ctx);
+  if ([...RUNS.values()].some(r => r.live)) ensureTicker(ctx);
   await renderRoutes(ctx, "продуктивность", ctx.$("#workBody"));   // данные движка
 }
 
@@ -282,6 +287,7 @@ async function fillKinds(ctx){
   const d = await ctx.api("/api/kinds?project=" + encodeURIComponent(ctx.project.path),
                           {quiet: true});
   const kinds = d.kinds || {};
+  KINDS = kinds;
   // Список чистим, только когда есть чем наполнить. Иначе один сорвавшийся запрос
   // стирал настроенные виды артефактов, и это выглядело как «настройки пропали».
   if (!Object.keys(kinds).length){
@@ -327,9 +333,13 @@ async function fillKinds(ctx){
   draw();
 }
 
+const RUN_LIVE = new Set(["starting", "running", "paused"]);  // задание ещё живёт
+const RUN_TIMED = new Set(["starting", "running"]);           // время работы растёт
 const RUN_BUSY = new Set(["starting", "planning", "running", "paused"]);
+const RUN_TERMINAL = new Set(["done", "partial", "error", "cancelled"]);
 const RUN_CONTINUE = new Set(["partial", "error", "cancelled"]);
 const MAX_PARALLEL_RUNS = 3;
+const ROUTE = ["questions", "plan", "draft", "review", "done"];
 
 export function makePipelineButtons(status, hasState = true, hasReport = false){
   const busy = RUN_BUSY.has(status);
@@ -395,38 +405,227 @@ export function applyMakeEvent(run, event){
   return run;
 }
 
-function runStatus(ctx, status){
-  return ctx.t("work.status." + status);
+export function canonStatus(status){
+  return String(status || "").trim().toLowerCase() || "unknown";
+}
+
+function kindLabel(ctx, kind){
+  const rec = KINDS[kind] || {};
+  return rec.title || kind || ctx.t("work.artifact");
+}
+
+export function runHeading(run, kindTitle = ""){
+  // Свободный run.title — данные, а не статус: в нём мог оказаться этап с
+  // опечаткой. Видимая шапка всегда называется по виду артефакта.
+  return String(kindTitle || "").trim() || String((run && run.kind) || "");
+}
+
+export function runStatus(ctx, status){
+  const key = canonStatus(status);
+  const label = ctx.t("work.status." + key);
+  // Незнакомый статус не должен протекать на экран сырой строкой (и уж тем
+  // более опечаткой из данных): показываем «неизвестно», причину ищем в state.
+  return label === "work.status." + key ? ctx.t("work.status.unknown") : label;
+}
+
+export function runSelectorLabel(ctx, run, kindTitle = ""){
+  // Код вида, свободный заголовок и статус, склеенные через «·», давали
+  // «us · us · готово» и протаскивали опечатки из заголовка на кнопку.
+  const kind = String(kindTitle || kindLabel(ctx, (run && run.kind) || ""));
+  return kind + " · " + runStatus(ctx, run && run.status);
+}
+
+export function runQuestions(state, current = []){
+  // state.questions раньше был числом, а вопросы лежали в state.rounds или в
+  // session.json. Число не должно притворяться массивом: у него нет length.
+  const direct = state && state.questions;
+  if (Array.isArray(direct) && direct.length) return direct;
+  if (Array.isArray(current) && current.length) return current;
+  const rounds = state && Array.isArray(state.rounds) ? state.rounds : [];
+  for (let i = rounds.length - 1; i >= 0; i--){
+    const qs = rounds[i] && rounds[i].questions;
+    if (Array.isArray(qs) && qs.length) return qs;
+  }
+  return [];
+}
+
+export function questionsFromPayload(d){
+  const top = d && d.questions;
+  if (Array.isArray(top) && top.length) return top;
+  return runQuestions(d && d.state);
+}
+
+export function runRoute(run){
+  const r = run || {};
+  const stages = r.stages || {};
+  const current = String(r.current || "");
+  const status = canonStatus(r.status);
+  if (status === "done" || stages.checked) return 4;
+  if (status === "partial" || stages.reviewed || stages.finalizing
+      || /^(reviewed|critic|momus|form|check)/.test(current)) return 3;
+  if (stages.drafted || /^(draft|writer|revision)/.test(current)) return 2;
+  if ((Array.isArray(r.plan) && r.plan.length) || stages.planned) return 1;
+  return 0;
+}
+
+export function adoptStateStatus(status, state, live = false){
+  // Живой запуск держит статус из событий, завершившийся — из state.json.
+  // Планирование завершает процесс, не присылая "done": без этого правила
+  // запуск навсегда оставался "running", и поле ответа не появлялось.
+  if (live || !state || state === "running") return status;
+  return state;
+}
+
+export function routeCard(ctx, run){
+  const {t, el} = ctx;
+  const idx = runRoute(run);
+  const steps = ROUTE.map((key, i) => ({
+    key,
+    label: t("work.route." + key),
+    state: i < idx ? "done" : i === idx ? "current" : "next",
+  }));
+  const row = el("div", {class: "row", style: "gap:6px;flex-wrap:wrap",
+    role: "list", "aria-label": t("work.route.label")});
+  steps.forEach((step, i) => row.append(el("span", {
+    class: "chip" + (step.state === "current" ? " ok" : ""),
+    role: "listitem",
+    title: t("work.route.hint." + step.key),
+    "aria-current": step.state === "current" ? "step" : null,
+  }, (step.state === "done" ? "✓ " : step.state === "current" ? "● " : "○ ")
+     + (i + 1) + ". " + step.label)));
+  return el("div", {class: "card", style: "padding:12px;margin-top:8px"},
+    el("div", {class: "row", style: "gap:8px;align-items:center;margin-bottom:6px"},
+      el("b", {style: "font-size:12.5px"}, t("work.route.title")),
+      el("span", {class: "muted", style: "font-size:12px"},
+        t("work.route.step", {n: idx + 1, total: steps.length}))),
+    row,
+    el("div", {class: "muted", style: "font-size:12px;margin-top:6px"},
+      t("work.route.now", {step: steps[idx].label,
+        next: steps[idx + 1] ? steps[idx + 1].label : t("work.route.finish")})));
+}
+
+export function answerControls(ctx, run, answers, onSubmit, onEnough){
+  const {t, el} = ctx;
+  const answer = actionButton(ctx, {class: "btn primary",
+    "data-help": "work.help.answer",
+    onclick: () => onSubmit(answers.value.trim())},
+    t("work.answer"), t("work.answer_hint"));
+  const enough = actionButton(ctx, {class: "btn",
+    style: "white-space:normal;text-align:left",
+    "data-help": "work.help.enough",
+    onclick: () => onEnough()},
+    t("work.enough"), t("work.enough_hint"));
+  // Ответ — главное действие, поэтому primary справа; остановка опроса —
+  // вторичная слева. Порядок в DOM совпадает с порядком слева направо и Tab.
+  return el("div", {class: "row", style: "gap:8px;margin-top:8px;align-items:center"},
+    enough, el("div", {class: "row-right"}, answer));
+}
+
+export function questionCard(ctx, run, questions = [], value, onSubmit, onEnough, onDraft){
+  const {t, el} = ctx;
+  const card = el("div", {class: "card", style: "padding:12px;margin-top:8px"});
+  const head = el("div", {class: "row", style: "gap:8px;align-items:center"},
+    el("b", {}, t("work.questions_title")));
+  if (questions.length){
+    head.append(el("span", {class: "chip"},
+      t("work.questions_count", {n: questions.length})));
+  }
+  card.append(head,
+    el("div", {class: "muted", style: "font-size:12px;margin-top:4px"},
+      t("work.questions_hint")));
+  if (!questions.length){
+    card.append(el("div", {class: "warnbox", style: "margin-top:8px"},
+      t("work.questions_missing")));
+  }
+  questions.forEach((item, i) => {
+    const text = item && typeof item === "object" ? (item.q || "") : String(item || "");
+    const why = item && typeof item === "object" ? (item.why || "") : "";
+    const rec = item && typeof item === "object" ? (item.rec || "") : "";
+    const q = el("div", {style: "font-size:12.5px;margin-top:10px"},
+      el("div", {}, el("b", {}, (i + 1) + ". "), text));
+    if (why){
+      q.append(el("div", {class: "muted", style: "font-size:12px;margin-top:2px"}, why));
+    }
+    if (rec){
+      q.append(el("div", {class: "muted", style: "font-size:12px;margin-top:2px"},
+        t("work.question_rec", {rec})));
+    }
+    card.append(q);
+  });
+  const ans = el("textarea", {class: "btn", id: "makeAnswers", rows: 4,
+    "aria-label": t("work.answers_label"), placeholder: t("work.answers_ph"),
+    style: "width:100%;font-weight:400;margin-top:6px;resize:vertical",
+    oninput: e => onDraft && onDraft(e.target.value)});
+  ans.value = value || "";
+  card.append(
+    el("label", {class: "muted", style: "display:block;font-size:12px;margin-top:12px",
+      for: "makeAnswers"}, t("work.answers_label")),
+    ans,
+    answerControls(ctx, run, ans, onSubmit, onEnough),
+    el("div", {class: "muted", style: "font-size:11.5px;margin-top:4px"},
+      t("work.answers_footer")));
+  return card;
+}
+
+export function actionButton(ctx, attrs, label, hint){
+  // Одна точка создания кнопок: подсказка и aria-label не могут забыться на
+  // отдельном вызове. Если текст подсказки не передан, остаётся подпись.
+  const a = {...attrs};
+  a.type = a.type || "button";
+  const fallback = String(label == null ? "" : label);
+  if (!a.title) a.title = hint || fallback;
+  if (!a["aria-label"]) a["aria-label"] = hint || fallback;
+  return ctx.el("button", a, label);
 }
 
 export function runElapsed(run){
   // У завершённого запуска время считается до последнего обновления, а не до сейчас:
   // иначе после F5 «прошло» растёт вместе с возрастом вкладки.
-  const end = run.finishedAt || (RUN_BUSY.has(run.status) ? Date.now() : run.lastAt || Date.now());
+  const end = run.finishedAt || (RUN_TIMED.has(run.status) ? Date.now() : run.lastAt || Date.now());
   const sec = Math.max(0, Math.round((end - (run.startedAt || end)) / 1000));
   return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
 }
 
 export function runTimeLabel(ctx, run){
-  const finished = Boolean(run.finishedAt) && !RUN_BUSY.has(run.status);
+  if (canonStatus(run.status) === "planning") return ctx.t("work.waiting_answer");
+  // «Завершено» — только для терминальных статусов: у планирования finishedAt
+  // есть (чтобы таймер не рос), но выше уже сказано «ждёт ответа».
+  const finished = Boolean(run.finishedAt) && RUN_TERMINAL.has(canonStatus(run.status));
   return finished
     ? ctx.t("work.finished_at", {time: ctx.ui.stampText(run.finishedAt)})
     : ctx.t("work.last_event", {when: Math.max(0, Math.round((Date.now() - run.lastAt) / 1000))});
 }
 
+function hasLiveRuns(){
+  // Тикер нужен только там, где панель сама опрашивает задание. Запуск,
+  // поднятый другой вкладкой, обновится следующим refresh, а не раз в секунду.
+  return [...RUNS.values()].some(r => r.live);
+}
+
 function ensureTicker(ctx){
   if (MAKE_TICKER) return;
   MAKE_TICKER = setInterval(() => {
-    if (!RUNS.size) return;
-    renderRuns(ctx);
-    if (ACTIVE) drawRun(ctx);
+    if (!RUNS.size || !hasLiveRuns()){
+      clearInterval(MAKE_TICKER); MAKE_TICKER = null; return;
+    }
+    const nav = ctx.$("#makeRuns");
+    const doc = nav && nav.ownerDocument;
+    if (!(nav && doc && nav.contains(doc.activeElement))) renderRuns(ctx);
+    if (!ACTIVE) return;
+    // Пока человек печатает ответ, диалог не перерисовываем: innerHTML="" съел
+    // бы и текст, и фокус. Пустое поле можно перерисовать, только если оно не
+    // в фокусе.
+    const ans = ctx.$("#makeAnswers");
+    if (ans && (ans.value.trim() || ans === ans.ownerDocument.activeElement)) return;
+    drawRun(ctx);
   }, 1000);
 }
 
 function makeNewRun(ctx, kind, title){
   RUN_SEQ += 1;
   return {key: "local-" + RUN_SEQ, sid: "", job: "", kind, title,
-          status: "starting", plan: [], current: "", log: [], questions: [],
+          status: "starting", state: "", stages: {}, live: false,
+          plan: [], current: "", log: [], questions: [],
           metrics: null, warnings: [], reportText: "", report: "", artifact: "",
           startedAt: Date.now(), lastAt: Date.now(), finishedAt: 0, hydrated: true,
           updated: "",
@@ -437,6 +636,8 @@ function makeNewRun(ctx, kind, title){
 // запускать движок. Запуск идёт фоном, поэтому со страницы можно начать второй артефакт.
 async function makeCall(ctx, args, run){
   run.status = "starting";
+  run.state = "starting";
+  run.live = false;
   run.finishedAt = 0;
   run.reportLines = [];
   run.reportText = "";
@@ -448,11 +649,13 @@ async function makeCall(ctx, args, run){
     {project: ctx.project.path, cmd: "agent:make", args: args.concat(["--emit-events"])})});
   if (!res || !res.job){
     run.status = "error";
+    run.live = false;
     run.error = ctx.t("work.job_lost");
     renderRuns(ctx); if (ACTIVE === run.key) drawRun(ctx);
     return null;
   }
   run.job = res.job;
+  run.live = true;
   ensureTicker(ctx);
   pollRun(ctx, run);
   return res.job;
@@ -464,6 +667,7 @@ async function pollRun(ctx, run){
     const d = await ctx.api(`/api/job?id=${run.job}&since=${since}`, {quiet: true});
     if (!d || d.error){
       run.status = "error";
+      run.live = false;
       run.error = ctx.t("work.job_lost");
       renderRuns(ctx); if (ACTIVE === run.key) drawRun(ctx);
       return;
@@ -485,6 +689,9 @@ async function pollRun(ctx, run){
     }
     since = d.next || since + (d.lines || []).length;
     if (d.done){
+      // Задание закончилось. Дальше правду о статусе говорит state.json:
+      // планирование завершает процесс, не присылая событие "done".
+      run.live = false;
       run.reportText = run.reportLines.join("\n").trim();
       if (!run.status || run.status === "starting") run.status = "done";
       await hydrateRun(ctx, run);
@@ -503,12 +710,15 @@ async function hydrateRun(ctx, run){
   if (!d || d.error) return;
   run.plan = (d.plan && d.plan.steps) || run.plan || [];
   run.state = (d.state && d.state.status) || run.state;
-  run.questions = (d.state && d.state.questions) || run.questions || [];
+  run.stages = (d.state && d.state.stages) || run.stages || {};
+  const gotQuestions = questionsFromPayload(d);
+  if (gotQuestions.length) run.questions = gotQuestions;
   run.artifact = (d.artifact && d.artifact.path) || run.artifact;
   run.report = d.report_md || run.report;
   run.metrics = (d.report && d.report.metrics) || run.metrics;
   run.warnings = (d.state && d.state.warnings) || run.warnings;
-  if (run.state && run.state !== "running" && run.status === "done") run.status = run.state;
+  if (run.state && run.state !== "planning") ANSWER_DRAFTS.delete(run.key);
+  run.status = adoptStateStatus(run.status, run.state, run.live);
   // Журнал после F5 собирается из сохранённых событий. Гоняем их на копии, чтобы
   // восстановление не переписывало статус и время завершения живыми часами.
   const replay = {plan: [], log: []};
@@ -527,7 +737,7 @@ async function hydrateRun(ctx, run){
   const updated = Date.parse((d.state && d.state.updated) || "") || 0;
   if (updated){
     run.lastAt = updated;
-    if (!RUN_BUSY.has(run.state)) run.finishedAt = updated;
+    if (!RUN_LIVE.has(run.state)) run.finishedAt = updated;
   }
   run.updated = (d.state && d.state.updated) || run.updated;
   run.hydrated = true;
@@ -539,15 +749,29 @@ function renderRuns(ctx){
   box.innerHTML = "";
   if (!RUNS.size){ box.hidden = true; return; }
   box.hidden = false;
+  box.setAttribute("role", "group");
+  box.setAttribute("aria-label", ctx.t("work.runs_label"));
   const rows = [...RUNS.values()].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
-  rows.forEach(run => {
-    const label = (run.kind || ctx.t("work.artifact")) + " · " + (run.title || run.sid || ctx.t("work.new_run"))
-      + " · " + runStatus(ctx, run.status);
-    const b = ctx.el("button", {class: "btn sm" + (run.key === ACTIVE ? " primary" : ""),
-      title: label, onclick: () => { ACTIVE = run.key; drawRun(ctx); }}, label);
+  const labels = rows.map(run => runSelectorLabel(ctx, run, kindLabel(ctx, run.kind)));
+  rows.forEach((run, i) => {
+    const base = labels[i];
+    const sid = String(run.sid || run.key || "");
+    // Одинаковые вид и статус у двух запусков различаем коротким id, а не
+    // свободным заголовком: он и давал «us · us» и опечатки из данных.
+    const label = labels.filter(x => x === base).length > 1
+      ? base + " · #" + sid.slice(-4) : base;
+    const hint = ctx.t("work.run_open_hint", {label});
+    const b = actionButton(ctx, {class: "btn sm" + (run.key === ACTIVE ? " primary" : ""),
+      "aria-pressed": run.key === ACTIVE ? "true" : "false",
+      "aria-controls": "makeDialog",
+      onclick: () => { ACTIVE = run.key; renderRuns(ctx); drawRun(ctx); }}, label, hint);
     box.append(b);
   });
-  if (!ACTIVE && rows.length){ ACTIVE = rows[0].key; drawRun(ctx); }
+  if (rows.length && !rows.some(run => run.key === ACTIVE)){
+    const was = ACTIVE;
+    ACTIVE = rows[0].key;
+    if (was !== ACTIVE) drawRun(ctx);
+  }
 }
 
 function drawRun(ctx){
@@ -559,17 +783,37 @@ function drawRun(ctx){
   const done = run.artifact
     || ((run.reportText || "").match(/Документ: `([^`]+)`/) || [])[1] || "";
   box.innerHTML = "";
+  const kind = kindLabel(ctx, run.kind);
   const head = el("div", {class: "row", style: "gap:10px;align-items:center;flex-wrap:wrap"},
-    el("b", {}, run.title || run.kind || t("work.artifact")),
+    el("b", {}, runHeading(run, kind)),
     el("span", {class: "chip"}, runStatus(ctx, run.status)),
     el("span", {class: "muted", style: "font-size:12px"}, t("work.elapsed", {time: runElapsed(run)})),
     el("span", {class: "muted", style: "font-size:12px"}, runTimeLabel(ctx, run)));
   box.append(el("div", {class: "card", style: "padding:16px"}, head));
+  box.append(routeCard(ctx, run));
+
+  // Вопросы — главное на шаге планирования, поэтому они идут до плана,
+  // журнала и отчёта. Поле ответа — внизу карточки, под последним вопросом.
+  const questions = runQuestions(run.state, run.questions);
+  const awaiting = (run.status === "planning" || run.state === "planning")
+    && !RUN_TERMINAL.has(canonStatus(run.status));
+  if (awaiting){
+    const draft = ANSWER_DRAFTS.get(run.key) || "";
+    box.append(questionCard(ctx, run, questions, draft,
+      answers => { ANSWER_DRAFTS.delete(run.key); answerRun(ctx, run, answers); },
+      () => { ANSWER_DRAFTS.delete(run.key); enoughRun(ctx, run); },
+      value => ANSWER_DRAFTS.set(run.key, value)));
+  }
+
+  if (run.status === "starting"){
+    box.append(el("div", {class: "muted", style: "font-size:12px;margin-top:8px"},
+      t("work.making")));
+  }
   if (run.plan && run.plan.length){
-    const done = run.plan.filter(s => s.status === "done" || s.status === "partial").length;
+    const checked = run.plan.filter(s => s.status === "done" || s.status === "partial").length;
     const plan = el("div", {class: "card", style: "padding:12px;margin-top:8px"},
       el("div", {class: "muted", style: "font-size:12px;margin-bottom:5px"},
-        t("work.plan_summary", {done, total: run.plan.length})));
+        t("work.plan_summary", {done: checked, total: run.plan.length})));
     run.plan.forEach((step, i) => {
       const mark = step.status === "done" ? "✅" : step.status === "partial" ? "◐"
         : step.status === "failed" ? "✗" : step.status === "running" ? "▶" : "☐";
@@ -596,31 +840,17 @@ function drawRun(ctx){
   if (run.error){
     box.append(el("div", {class: "warnbox"}, run.error));
   }
-  if (run.status === "starting"){
-    box.append(el("div", {class: "muted", style: "font-size:12px;margin-top:8px"},
-      t("work.making")));
-  }
-  if (run.status === "planning"){
-    if (run.questions && run.questions.length){
-      const q = el("div", {class: "card", style: "padding:12px;margin-top:8px"});
-      run.questions.forEach((item, i) => q.append(el("div", {style: "font-size:12.5px"},
-        (i + 1) + ". " + (item.q || item) + (item.rec ? " → " + item.rec : ""))));
-      box.append(q);
-    }
-    const ans = el("textarea", {class: "btn", rows: 3, placeholder: t("work.answers_ph"),
-      style: "width:100%;font-weight:400;margin-top:8px;resize:vertical"});
-    box.append(ans, el("div", {class: "row", style: "gap:8px;margin-top:8px"},
-      el("button", {class: "btn primary", "data-help": "work.help.answer",
-        onclick: () => answerRun(ctx, run, ans.value.trim())},
-        t("work.answer")),
-      el("button", {class: "btn", title: t("work.enough_hint"),
-        "data-help": "work.help.enough",
-        onclick: () => enoughRun(ctx, run)}, t("work.enough"))));
-  }
-  if (run.reportText && !RUN_BUSY.has(run.status)){
+  if (run.reportText){
     const body = run.reportText.split("\n").filter(l => !/^MAKE_EVENT /.test(l)).join("\n");
-    box.append(el("div", {class: "card", style: "padding:16px;margin-top:8px"},
-      el("div", {class: "ansbody", style: "white-space:pre-wrap", html: ctx.fmt.mdLite(body)})));
+    const details = el("details", {class: "card", style: "padding:12px;margin-top:8px"},
+      el("summary", {class: "muted", style: "font-size:12px;cursor:pointer"},
+        t("work.report_details")),
+      el("div", {class: "ansbody", style: "white-space:pre-wrap;margin-top:8px",
+        html: ctx.fmt.mdLite(body)}));
+    // На шаге вопросов отчёт свёрнут: те же вопросы уже выше, а место нужно
+    // ответу. В остальных состояниях он открыт, как раньше.
+    details.open = !awaiting;
+    box.append(details);
   }
   if (run.status === "done" && done && !run.opened){
     run.opened = true;
@@ -628,17 +858,26 @@ function drawRun(ctx){
   }
   const on = makePipelineButtons(run.status, Boolean(run.sid), Boolean(run.report));
   const row = el("div", {class: "row", style: "gap:8px;margin-top:10px;flex-wrap:wrap"});
-  if (on.cancel) row.append(el("button", {class: "btn", onclick: () => controlRun(ctx, run, "cancel")},
-    t("work.cancel")));
-  if (on.pause) row.append(el("button", {class: "btn", onclick: () => controlRun(ctx, run, run.status === "paused" ? "resume" : "pause")},
-    t(run.status === "paused" ? "work.resume" : "work.pause")));
-  if (on.continue) row.append(el("button", {class: "btn primary", onclick: () => continueRun(ctx, run)},
-    t("work.continue")));
-  if (done) row.append(el("button", {class: "btn", "data-help": "work.help.open_done",
+  if (on.cancel) row.append(actionButton(ctx, {class: "btn",
+    onclick: () => controlRun(ctx, run, "cancel")},
+    t("work.cancel"), t("work.cancel_hint")));
+  if (on.pause){
+    const paused = run.status === "paused";
+    row.append(actionButton(ctx, {class: "btn",
+      onclick: () => controlRun(ctx, run, paused ? "resume" : "pause")},
+      t(paused ? "work.resume" : "work.pause"),
+      t(paused ? "work.resume_hint" : "work.pause_hint")));
+  }
+  if (on.continue) row.append(actionButton(ctx, {class: "btn primary",
+    onclick: () => continueRun(ctx, run)},
+    t("work.continue"), t("work.continue_hint")));
+  if (done) row.append(actionButton(ctx, {class: "btn",
+    "data-help": "work.help.open_done",
     onclick: () => ctx.openPath(done)},
-    t("work.open_in_editor")));
-  if (on.report) row.append(el("button", {class: "btn", onclick: () => ctx.openPath(run.report)},
-    t("work.open_report")));
+    t("work.open_in_editor"), t("work.open_in_editor")));
+  if (on.report) row.append(actionButton(ctx, {class: "btn",
+    onclick: () => ctx.openPath(run.report)},
+    t("work.open_report"), t("work.open_report")));
   box.append(row);
   run.rendered = true;
 }
@@ -680,7 +919,7 @@ async function controlRun(ctx, run, action){
     if (action === "cancel" && run.job)
       await ctx.api("/api/job/stop", {method: "POST", body: JSON.stringify({id: run.job})});
     run.status = action === "cancel" ? "cancelled" : run.status;
-    if (action === "cancel") run.finishedAt = Date.now();
+    if (action === "cancel"){ run.finishedAt = Date.now(); run.live = false; }
     renderRuns(ctx); if (ACTIVE === run.key) drawRun(ctx);
     return;
   }
@@ -714,7 +953,7 @@ async function enoughRun(ctx, run){
 export async function loadRuns(ctx){
   const project = ctx.project ? ctx.project.path : "";
   if (project !== SHOWN_PROJECT){
-    RUNS.clear(); ACTIVE = ""; SHOWN_PROJECT = project;
+    RUNS.clear(); ACTIVE = ""; ANSWER_DRAFTS.clear(); SHOWN_PROJECT = project;
   }
   if (!project){ renderRuns(ctx); return; }
   const d = await ctx.api(`/api/make/runs?project=${encodeURIComponent(project)}`, {quiet: true});
@@ -724,11 +963,12 @@ export async function loadRuns(ctx){
     if (!run){
       RUN_SEQ += 1;
       run = {key, sid: key, job: "", kind: row.kind || "", title: row.title || key,
-             status: row.status || "unknown", plan: [], current: row.stage || "", log: [],
+             status: row.status || "unknown", state: row.status || "unknown",
+             stages: {}, live: false, plan: [], current: row.stage || "", log: [],
              questions: [], metrics: null, warnings: [], reportText: "", report: row.report || "",
              artifact: row.artifact || "", startedAt: Date.parse(row.started || "") || Date.now(),
              lastAt: Date.parse(row.updated || "") || Date.now(),
-             finishedAt: RUN_BUSY.has(row.status) ? 0 : Date.parse(row.updated || "") || 0,
+             finishedAt: RUN_LIVE.has(row.status) ? 0 : Date.parse(row.updated || "") || 0,
              updated: row.updated || "",
              hydrated: false,
              rendered: false, reportLines: []};
@@ -738,9 +978,10 @@ export async function loadRuns(ctx){
       run.kind = row.kind || run.kind;
       run.title = row.title || run.title;
       run.status = row.status || run.status;
+      run.state = row.status || run.state;
       run.artifact = row.artifact || run.artifact;
       run.report = row.report || run.report;
-      if (!RUN_BUSY.has(run.status)) run.finishedAt = run.finishedAt || Date.parse(row.updated || "") || 0;
+      if (!RUN_LIVE.has(run.status)) run.finishedAt = run.finishedAt || Date.parse(row.updated || "") || 0;
       // Запуск мог измениться в другой вкладке. Перечитываем состояние, когда
       // сервер говорит, что оно новее, а не один раз за всю жизнь карточки.
       if (changed){
@@ -803,10 +1044,11 @@ async function publish(ctx){
     const tb = await ctx.ui.taskBlock({path: rel});
     if (sel.value === rel) taskHost.replaceChildren(tb);
   };
-  const go = el("button", {class: "btn primary", "data-help": "work.help.publish_go", onclick: () => {
+  const go = actionButton(ctx, {class: "btn primary",
+    "data-help": "work.help.publish_go", onclick: () => {
     const f = files.find(x => x.rel === sel.value) || {};
     if (f.rel) ctx.ui.publishFile(f.rel);
-  }}, t("work.publish_go"));
+  }}, t("work.publish_go"), t("work.publish_go_hint"));
   const draw = () => {
     const f = files.find(x => x.rel === sel.value) || {};
     const pub = f.publish || {};
@@ -819,8 +1061,11 @@ async function publish(ctx){
       hint.textContent = pub.why || "";
       if (pub.fix){
         fix.hidden = false;
-        fix.append(el("button", {class: "btn sm", onclick: () => ctx.ui.openSettings(pub.fix)},
-          t(pub.fix === "kinds" ? "work.publish_fix_kinds" : "work.publish_fix_project")));
+        fix.append(actionButton(ctx, {class: "btn sm",
+          "data-help": "work.help.publish_fix",
+          onclick: () => ctx.ui.openSettings(pub.fix)},
+          t(pub.fix === "kinds" ? "work.publish_fix_kinds" : "work.publish_fix_project"),
+          t("work.publish_fix_hint")));
       }
     } else if (pub.state !== "ready"){
       hint.textContent = t("work.publish_none");
@@ -841,7 +1086,7 @@ async function publish(ctx){
     sel, hint, fix, taskHost, note,
     el("div", {class: "row", style: "gap:10px;margin-top:10px"},
       go,
-      el("button", {class: "btn", "data-help": "work.help.copy_task", onclick: () => {
+      actionButton(ctx, {class: "btn", "data-help": "work.help.copy_task", onclick: () => {
         const f = files.find(x => x.rel === sel.value) || {};
         const task = t("work.publish_task", {rel: f.rel})
           + (note.value.trim() ? "\n" + t("work.publish_task_note", {note: note.value.trim()}) : "")
@@ -849,7 +1094,9 @@ async function publish(ctx){
         navigator.clipboard.writeText(task)
           .then(() => ctx.toast(t("work.task_copied"), "ok"))
           .catch(() => ctx.toast(t("work.task_clipboard_off"), "warn"));
-      }}, t("work.copy_task")))));
+      }}, t("work.copy_task"), t("work.copy_task_hint"))
+    )
+  ));
 }
 
 // Подсказки по `@` и `/` нужны только на виду. Опрос задания (`makeCall`) и ответ планировщика
