@@ -118,7 +118,7 @@ def test_usage_api_bad_parameters_are_400(tmp: Path):
     try:
         cases = ("days=2", "grain=week", "limit=0", "tz=No/Such_Zone",
                  "from=2026-11-03&to=2026-11-01", "limit=101",
-                 "to=9999-12-31", "to=0001-01-01", "task=sk-live-secret")
+                 "to=9999-12-31", "to=0001-01-01")
         for query in cases:
             status, data, body = _json_get(server, f"/api/usage?{query}")
             assert status == 400, (query, status, body[:300])
@@ -260,12 +260,42 @@ def test_usage_api_task_text_is_not_echoed(tmp: Path):
     body = json.dumps(got, ensure_ascii=False)
     assert "секретный" not in body and "Разобрать" not in body, body
     assert all(row["task"] in ("-", "build") for row in got["by_task"]), got["by_task"]
-    try:
-        UM.query([str(root)], {"days": "7", "task": "sk-live-secret"}, now=NOW)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("небезопасный фильтр принят")
+
+    filtered = UM.query([str(root)], {
+        "days": "7", "model": "foo/bar", "task": "secret prompt text",
+        "provider": "sk-live-secret", "role": "Bearer abc",
+        "kind": "agent", "project": "/Users/example/project",
+    }, now=NOW)
+    for name in ("model", "task", "provider", "role", "project"):
+        assert filtered["filters"][name] == [], (name, filtered["filters"])
+    assert filtered["filters"]["kind"] == ["agent"], filtered["filters"]
+    echoed = json.dumps(filtered, ensure_ascii=False)
+    for raw in ("foo/bar", "secret prompt text", "sk-live-secret",
+                "Bearer abc", "/Users/example/project"):
+        assert raw not in echoed, (raw, echoed)
+
+
+@test
+def test_usage_api_model_and_role_are_sanitized(tmp: Path):
+    """Абсолютные пути и ключи из model/role не выходят наружу, относительные имена остаются."""
+    root = make_project(tmp)
+    _exact(root, "run-bad", model="/Users/example/model",
+           role="C:\\secret\\role", provider="ghp_abcdefghijklmnopqrstuvwxyz")
+    got = UM.query([str(root)], {"days": "7", "tz": "UTC"}, now=NOW)
+    body = json.dumps(got, ensure_ascii=False)
+    for raw in ("/Users/example/model", "C:\\\\secret\\\\role",
+                "ghp_abcdefghijklmnopqrstuvwxyz"):
+        assert raw not in body, (raw, body)
+    assert all(row["model"] in ("-", "m1") for row in got["by_model"]), got["by_model"]
+    assert all(row["role"] in ("-", "worker") for row in got["by_role"]), got["by_role"]
+
+    (tmp / "relative").mkdir()
+    relative = make_project(tmp / "relative")
+    _exact(relative, "run-relative", model="org/model", role="worker",
+           provider="org/gateway")
+    rel = UM.query([str(relative)], {"days": "7", "tz": "UTC"}, now=NOW)
+    assert any(row["model"] == "org/model" for row in rel["by_model"]), rel["by_model"]
+    assert any(row["provider"] == "org/gateway" for row in rel["by_provider"]), rel["by_provider"]
 
 
 @test
