@@ -85,6 +85,7 @@ def test_creation_no_longer_writes_the_parent_into_the_header(tmp: Path):
           "spec": {"title": "История", "out": "Artifacts/us", "template": "t",
                    "publish_url": "https://wiki.example.com/pages/viewpage.action?pageId=7"},
           "plan": "1. Раздел", "draft": "# История\n\nТекст.", "issues": [],
+          "pipeline": {"form_ok": True},
           "momus": {"ok": True, "clean": True, "unsupported": 0, "text": "ВЕРДИКТ: ОПОРА ЕСТЬ"}}
     text = (root / R.write_artifact(str(root), st)).read_text(encoding="utf-8")
     assert "publish_parent" not in AC.frontmatter(text) and "publish_parent" not in text, text[:500]
