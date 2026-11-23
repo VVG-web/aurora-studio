@@ -159,6 +159,7 @@ scripts/net_observe.py    => .aurora/scripts/net_observe.py
 scripts/net_report.py     => .aurora/scripts/net_report.py
 # расход токенов для раздела «Замеры»: agent_runner пишет итог по ролям и моделям
 scripts/usage_log.py      => .aurora/scripts/usage_log.py
+scripts/usage_metrics.py  => .aurora/scripts/usage_metrics.py
 scripts/git_sync.py      => .aurora/scripts/git_sync.py
 # код проекта (раздел «Код»): реестр репозиториев `code_repos:` и клоны в Code/ — `code:sync`, `code:status`
 scripts/code_repos.py    => .aurora/scripts/code_repos.py
