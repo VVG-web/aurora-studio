@@ -2040,6 +2040,8 @@ def test_make_not_ready_on_unverified_basis(tmp: Path):
     C = importlib.import_module("ctx_pack")
     root = make_project(tmp)
     (root / "Artifacts" / "us").mkdir(parents=True, exist_ok=True)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/T.md").write_text("# История\n\n## Описание\n", encoding="utf-8")
 
     pack = ("# Context pack\n\n## Заявка-1 — Заявка\n\n## Черновик-2 — Черновик\n"
             f"\n---\n\n> {C.UNVERIFIED_MARK}Черновик-2\n")
@@ -2047,9 +2049,13 @@ def test_make_not_ready_on_unverified_basis(tmp: Path):
 
     def doc(draft: str, sid: str) -> str:
         st = {"sid": sid, "kind": "us", "idea": "Идея " + sid,
-              "spec": {"out": "Artifacts/us", "template": "t.md", "title": "US"},
-              "stages": {"checked": "2026-10-12"}, "issues": [], "momus": {"ok": True,
-              "unsupported": 0, "clean": True}, "draft": draft, "pack": pack, "path": None}
+              "spec": {"out": "Artifacts/us", "template": "Templates/T.md", "title": "US"},
+              "stages": {k: "2026-10-12" for k in R.MAKE_STAGES}, "issues": [],
+              "momus": {"ok": True, "unsupported": 0, "clean": True},
+              "pipeline": {"form_ok": True}, "pipeline_version": 2, "legacy_ready": False,
+              "draft": "# История\n\n## Описание\n\n" + draft
+                       + " Документ описывает заявку и её статусы.",
+              "pack": pack, "path": None}
         return (root / R.write_artifact(str(root), st)).read_text(encoding="utf-8")
 
     trusted = doc("Опирается на [[Заявка-1]].", "s1")

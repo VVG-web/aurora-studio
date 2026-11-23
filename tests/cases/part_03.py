@@ -1127,7 +1127,9 @@ def test_artifact_shows_what_was_asked_assumed_and_grounded(tmp: Path):
     #    «[[Заявка-1#Статусы]]» не сходилась с «Заявка-1» — настоящее основание
     #    объявлялось выдумкой, а документ выглядел стоящим ни на чём.
     st_anchor = dict(R.load_session(str(root), r1["sid"]))
-    st_anchor["draft"] = "См. [[Заявка-1#Статусы]], [[Заявка-2|заявку]], [[дом/Заявка-3.md]]."
+    st_anchor["draft"] = ("См. [[Заявка-1#Статусы]], [[Заявка-2|заявку]], [[дом/Заявка-3.md]].\n\n"
+                          "# AC\n\n## Критерии приёмки\n\n"
+                          "Срок заявки десять дней, проверяется отчётом.")
     st_anchor["pack"] = "## Заявка-1 — Заявка\n\n## Заявка-2 — Ещё\n\n## Заявка-3 — И три\n"
     st_anchor["path"] = None
     anchored = (root / R.write_artifact(str(root), st_anchor)).read_text(encoding="utf-8")
@@ -1313,10 +1315,12 @@ def test_making_an_artifact_survives_an_interruption(tmp: Path):
     # свою поверх: в файле оказались две шапки, вторую разборщик читает как текст.
     st2 = {"kind": "ac", "idea": "передача квитанций", "sid": "s-live",
            "stages": {k: "2026-08-22" for k in R.MAKE_STAGES},
-           "spec": {"title": "AC", "out": "Artifacts/ac", "template": "t"},
+           "spec": {"title": "AC", "out": "Artifacts/ac", "template": "Templates/AC.md"},
            "plan": "1. Раздел",
            "draft": '---\ntitle: "Критерии приёмки для передачи квитанций"\n'
-                    'aliases: []\n---\n\n# Документ\n\nТекст.',
+                    'aliases: []\n---\n\n# AC\n\n## Предусловия\n\n'
+                    'Заявка создана и ожидает согласования ответственным сотрудником.\n\n'
+                    '## Сценарии\n\nСценарий передачи квитанций описан.',
            "issues": [], "momus": {"ok": True, "clean": False, "unsupported": 6,
                                    "text": "НЕТ ОПОРЫ срок\nВЕРДИКТ: БЕЗ ОПОРЫ 6"},
            "pipeline": {"form_ok": True}, "pipeline_version": 2, "legacy_ready": False}
