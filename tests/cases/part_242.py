@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import time
+import unittest.mock
 from pathlib import Path
 
 from harness import KIT, SCRIPTS, make_project, panel_sources, test  # noqa: F401
