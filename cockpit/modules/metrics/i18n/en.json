@@ -46,6 +46,7 @@
   "metrics.filter.model": "Model",
   "metrics.filter.provider": "Provider",
   "metrics.filter.role": "Role",
+  "metrics.filter_service": "Service",
   "metrics.filter.all": "All",
   "metrics.filter.reset": "Reset",
   "metrics.filter.reset_hint": "Return to 7 days and clear the filters.",

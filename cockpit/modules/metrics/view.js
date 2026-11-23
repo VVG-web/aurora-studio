@@ -21,6 +21,7 @@ function freshState(){
     days: 7,
     compare: true,
     filters: {project: [], model: [], provider: [], role: []},
+    serviceFilter: "",
     sort: {
       projects: {key: "tokens_total", dir: -1},
       models: {key: "tokens_total", dir: -1},
@@ -67,6 +68,7 @@ export function resetPrefs(){
     days: 7,
     compare: true,
     filters: {project: [], model: [], provider: [], role: []},
+    serviceFilter: "",
     open: {runs: false, services: false, network: false, rows: false},
   };
 }
@@ -175,7 +177,10 @@ export function parsePrefs(raw){
   });
   const open = {};
   LOG_KEYS.forEach(key => { open[key] = Boolean(source.open && source.open[key]); });
-  return {days, compare: source.compare !== false && compareAllowed(days), filters, open};
+  const rawService = source.service !== undefined ? source.service : source.serviceFilter;
+  const serviceFilter = typeof rawService === "string" ? rawService.trim() : "";
+  return {days, compare: source.compare !== false && compareAllowed(days), filters, open,
+    serviceFilter};
 }
 
 export function serializePrefs(prefs){
@@ -183,6 +188,7 @@ export function serializePrefs(prefs){
     days: prefs.days,
     compare: prefs.compare,
     filters: prefs.filters,
+    service: prefs.serviceFilter || "",
     open: prefs.open,
   });
 }
@@ -318,6 +324,7 @@ function loadPrefs(){
     STATE.days = prefs.days;
     STATE.compare = prefs.compare;
     STATE.filters = prefs.filters;
+    STATE.serviceFilter = prefs.serviceFilter;
     STATE.open = prefs.open;
   } catch (e) { /* испорченное значение не должно ломать раздел */ }
 }
@@ -352,6 +359,19 @@ function serviceKeys(services){
   const all = services || {};
   return order.filter(name => all[name])
     .concat(Object.keys(all).filter(name => !order.includes(name)));
+}
+
+export function filterServices(services, name){
+  const out = {};
+  serviceKeys(services).forEach(key => {
+    if (!name || key === name) out[key] = (services || {})[key] || {};
+  });
+  return out;
+}
+
+function currentServiceFilter(services){
+  const names = serviceKeys(services);
+  return names.includes(STATE.serviceFilter) ? STATE.serviceFilter : "";
 }
 
 // ---------------------------------------------------------------- панель управления
@@ -537,6 +557,7 @@ function resetFilters(ctx){
   STATE.days = fresh.days;
   STATE.compare = fresh.compare;
   STATE.filters = fresh.filters;
+  STATE.serviceFilter = fresh.serviceFilter;
   savePrefs();
   syncControls(ctx);
   renderActive(ctx);
@@ -1110,14 +1131,44 @@ function runsTable(ctx, timing){
 }
 
 function servicesTable(ctx, timing){
-  const services = timing.services || {};
-  const names = serviceKeys(services);
+  const all = timing.services || {};
+  const names = serviceKeys(all);
   if (!names.length){
     return empty(ctx, (timing.runs || []).length
       ? "metrics.services_empty" : "metrics.timing_empty");
   }
-  const rows = names.map(name => ({name, service: services[name] || {}}));
-  return logTable(ctx,
+  const selected = currentServiceFilter(all);
+  if (selected !== STATE.serviceFilter){
+    STATE.serviceFilter = selected;
+    savePrefs();
+  }
+  const services = filterServices(all, selected);
+  const visible = serviceKeys(services);
+  const wrap = ctx.el("div", {});
+  const label = ctx.t("metrics.filter_service");
+  const select = ctx.el("select", {
+    class: "btn sm", id: "metricsServiceFilter",
+    "aria-label": label, title: label,
+  },
+    ctx.el("option", {value: ""}, ctx.t("metrics.filter.all")),
+    ...names.map(name => ctx.el("option", {value: name}, serviceLabel(ctx, name))));
+  select.value = selected;
+  select.onchange = () => {
+    STATE.serviceFilter = select.value;
+    savePrefs();
+    renderLogs(ctx, STATE.logs, STATE.logsError);
+    const next = ctx.$("#metricsServiceFilter");
+    if (next) next.focus();
+  };
+  wrap.append(ctx.el("label", {
+    class: "row", style: "gap:6px;align-items:center;font-size:12px;margin:0 0 8px",
+  }, ctx.el("span", {class: "muted"}, label), select));
+  if (!visible.length){
+    wrap.append(empty(ctx, "metrics.empty.filter"));
+    return wrap;
+  }
+  const rows = visible.map(name => ({name, service: services[name] || {}}));
+  wrap.append(logTable(ctx,
     ["service", "n", "calls", "errors", "avg", "p50", "p95", "max",
       "bytes", "pages", "issues", "basis"],
     rows,
@@ -1138,7 +1189,8 @@ function servicesTable(ctx, timing){
         numCell(ctx, service.issues),
         basisLabel(ctx, service.bytes_basis),
       ];
-    }, ctx.t("metrics.services_title"));
+    }, ctx.t("metrics.services_title")));
+  return wrap;
 }
 
 function netTable(ctx, net){
@@ -1214,7 +1266,7 @@ function renderLogs(ctx, logs, error){
     (timing.runs || []).length,
     ctx.el("div", {}, timingWarn(), runsTable(ctx, timing))));
   host.append(logDetails(ctx, "services", ctx.t("metrics.services_title"),
-    serviceKeys(timing.services).length,
+    serviceKeys(filterServices(timing.services, currentServiceFilter(timing.services))).length,
     ctx.el("div", {}, timingWarn(), servicesTable(ctx, timing))));
   host.append(logDetails(ctx, "network", ctx.t("metrics.net_title"),
     net.length, ctx.el("div", {}, netWarn(), netTable(ctx, net))));
