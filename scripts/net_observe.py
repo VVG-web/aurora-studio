@@ -49,6 +49,8 @@ LONG_AFTER = 12 * 60                  # первая отметка долгой
 LONG_EVERY = 12 * 60                  # дальше — с этим шагом
 MAX_LONG = 48                         # больше суток долгих отметок не копим
 MAX_SNAPSHOTS = MAX_LONG + 4
+KEEP_RECORDS = 200                    # снимков на свой шард: больше не копим
+KEEP_DAYS = 90                        # старше этого срока снимок не нужен
 SYSTEM_TIMEOUT = 5
 RUN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 _LOCK = threading.RLock()
@@ -332,6 +334,44 @@ def _append_snapshot(path: Path, snap: dict) -> dict:
     return data
 
 
+def prune_shared(folder: str | os.PathLike, keep: int = KEEP_RECORDS,
+                 days: int = KEEP_DAYS, now: float | None = None,
+                 active: str | os.PathLike | None = None) -> list[str]:
+    """Убрать старые снимки своего шарда: не больше `keep` записей и не старше `days`.
+
+    Чужой шард не трогаем: вызывающий передаёт каталог `<actor>-<machine>`. Файл,
+    который только что записан (`active`), не удаляется. Ошибки чтения и удаления
+    не поднимаются: уборка не имеет права ломать прогон.
+    """
+    folder = Path(folder)
+    keep = max(0, int(keep))
+    cutoff = (time.time() if now is None else float(now)) - max(0, int(days)) * 86400
+    rows: list[tuple[float, str, Path]] = []
+    try:
+        for path in folder.glob("*.json"):
+            try:
+                rows.append((path.stat().st_mtime, path.name, path))
+            except OSError:
+                continue
+    except OSError:
+        return []
+    rows.sort()
+    doomed = {path for _mtime, _name, path in (rows if not keep else rows[:-keep])}
+    doomed |= {path for mtime, _name, path in rows if mtime < cutoff}
+    if active is not None:
+        active_key = os.path.normcase(os.path.abspath(str(active)))
+        doomed = {path for path in doomed
+                  if os.path.normcase(os.path.abspath(str(path))) != active_key}
+    gone: list[str] = []
+    for path in sorted(doomed):
+        try:
+            path.unlink(missing_ok=True)
+            gone.append(path.name)
+        except OSError:
+            continue
+    return gone
+
+
 def start(kind: str, project: str, run_id: str, run_dir: str, cmd: str = "",
           parent: str = "", steps: list | None = None) -> dict:
     """Снимок старта; локальный файл создаётся сразу."""
@@ -401,6 +441,8 @@ def finish(kind: str, project: str, run_id: str, run_dir: str, cmd: str = "",
                     _write(sp, data)
                 except OSError:
                     pass
+                else:
+                    prune_shared(sp.parent, active=sp)
         return data
 
 
