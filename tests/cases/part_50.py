@@ -988,6 +988,7 @@ def test_an_adapter_timeout_becomes_model_timeout_without_direct_http(tmp: Path)
         fake = type("P", (), {"stdin": Pipe(), "pid": 9911})()
         saved = AG.adapter_hub
         with AG._HUB_LOCK:
+            saved_hub = dict(AG._HUB)
             AG._HUB.update(proc=fake, pending={}, broken="", seq=0)
         AG.adapter_hub = lambda: (fake, AG._HUB["pending"])
         try:
@@ -996,6 +997,10 @@ def test_an_adapter_timeout_becomes_model_timeout_without_direct_http(tmp: Path)
                 {"model": "m", "messages": [{"role": "user", "content": "?"}]}, 5)
         finally:
             AG.adapter_hub = saved
+            with AG._HUB_LOCK:
+                AG._HUB.clear()
+                AG._HUB.update(saved_hub)
+        assert AG._HUB.get("proc") is saved_hub.get("proc"), "тест оставил чужой процесс в _HUB"
         assert st is None and err is not None and err.cause is not None, err
         assert seen.get("request_timeout") == 5 and seen.get("timeout") == 5, seen
         assert (err.cause.kind, err.cause.area, err.cause.fix) == \
