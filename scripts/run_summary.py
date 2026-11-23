@@ -40,6 +40,8 @@ DOC_SKIP = {"пропущена", "человеку", "без секций — �
 DOC_FAIL = {"сбой", "отклонено критиком", "отклонено проверкой", "отброшен"}
 
 NUMBERS = ("seconds", "model_calls", "model_failed", "tokens_in", "tokens_out", "gen_seconds",
+           "calls", "calls_failed", "requests", "tokens_failed_in", "tokens_failed_out",
+           "cache_hits", "usage_missing_calls", "model_cached",
            "docs_done", "docs_skipped", "docs_failed",
            "cards_created", "cards_updated", "cards_marked", "cards_deleted", "cards_failed",
            "adapter_bypass", "link_retried", "link_failed",
@@ -65,6 +67,10 @@ def empty() -> dict:
     s["by_role"] = {}
     s["by_model"] = {}
     s["by_pair"] = {}
+    s["by_cell"] = []
+    s["cached_in"] = None
+    s["reasoning_out"] = None
+    s["estimated"] = False
     s["cards_known"] = False
     s["link_kind"] = ""
     return s
@@ -73,6 +79,73 @@ def empty() -> dict:
 def _err(s: dict, kind: str, n: int = 1) -> None:
     if n:
         s["errors"][kind] = s["errors"].get(kind, 0) + n
+
+
+def _int(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _nullable(value):
+    if value in (None, ""):
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _cell_rows(raw) -> list:
+    """Внутренний `USAGE["by_cell"]` (dict по tuple) или готовый список → список schema 2."""
+    out = []
+    rows = []
+    if isinstance(raw, dict):
+        for key, row in raw.items():
+            if not isinstance(row, dict):
+                continue
+            provider, role, model = (key if isinstance(key, tuple) and len(key) == 3
+                                     else (None, None, None))
+            rows.append(dict(row,
+                             provider=row.get("provider") if row.get("provider") is not None
+                             else provider,
+                             role=row.get("role") if row.get("role") is not None else role,
+                             model=row.get("model") if row.get("model") is not None
+                             else model))
+    elif isinstance(raw, list):
+        rows = [row for row in raw if isinstance(row, dict)]
+    for row in rows:
+        out.append({
+            "provider": row.get("provider"),
+            "provider_name": row.get("provider_name"),
+            "role": row.get("role"),
+            "model": row.get("model"),
+            "calls": _int(row.get("calls")),
+            "calls_failed": _int(row.get("calls_failed")),
+            "requests": _int(row.get("requests")),
+            "tokens_in": _int(row.get("tokens_in")),
+            "tokens_out": _int(row.get("tokens_out")),
+            "cached_in": _nullable(row.get("cached_in")),
+            "reasoning_out": _nullable(row.get("reasoning_out")),
+            "gen_seconds": round(float(row.get("gen_seconds") or 0), 2),
+        })
+    return out
+
+
+def _sum_row(dst: dict, row: dict) -> None:
+    for key in ("calls", "calls_failed", "requests", "tokens_in", "tokens_out",
+                "tokens_failed_in", "tokens_failed_out", "gen_seconds"):
+        if key == "gen_seconds":
+            dst[key] = round(float(dst.get(key) or 0) + float(row.get(key) or 0), 2)
+        else:
+            dst[key] = _int(dst.get(key)) + _int(row.get(key))
+    for key in ("cached_in", "reasoning_out"):
+        value = _nullable(row.get(key))
+        if value is not None:
+            dst[key] = _int(dst.get(key)) + value
+        else:
+            dst.setdefault(key, None)
 
 
 def _short(text, n: int = 60) -> str:
@@ -87,12 +160,27 @@ def from_agent(steps, usage: dict | None, seconds: float, delta: dict | None,
     s["seconds"] = round(seconds or 0, 1)
     s["timing"] = timing if isinstance(timing, dict) else None
     u = usage or {}
-    s["model_calls"] = int(u.get("calls") or 0)
-    s["model_failed"] = int(u.get("failed") or 0)
+    ok_calls = int(u.get("calls") or 0)
+    has_failed = "calls_failed" in u
+    failed_calls = int(u.get("calls_failed") if has_failed else (u.get("failed") or 0))
+    s["calls"] = ok_calls if has_failed else max(0, ok_calls - failed_calls)
+    s["calls_failed"] = failed_calls
+    s["model_calls"] = ok_calls + (failed_calls if has_failed else 0)
+    s["model_failed"] = int(u.get("failed") or failed_calls or 0)
     s["tokens_in"] = int(u.get("tokens_in") or 0)
     s["tokens_out"] = int(u.get("tokens_out") or 0)
     s["model_cached"] = int(u.get("cached") or 0)
     s["gen_seconds"] = round(float(u.get("gen_seconds") or 0.0), 2)
+    s["requests"] = int(u.get("requests") or 0)
+    s["tokens_failed_in"] = int(u.get("tokens_failed_in") or 0)
+    s["tokens_failed_out"] = int(u.get("tokens_failed_out") or 0)
+    s["cache_hits"] = (int(u["cache_hits"]) if "cache_hits" in u
+                        else int(u.get("cached") or 0))
+    s["usage_missing_calls"] = int(u.get("usage_missing_calls") or 0)
+    s["cached_in"] = _nullable(u.get("cached_in"))
+    s["reasoning_out"] = _nullable(u.get("reasoning_out"))
+    s["estimated"] = bool(u.get("estimated")) or bool(s["usage_missing_calls"])
+    s["by_cell"] = _cell_rows(u.get("by_cell"))
     s["by_role"] = {str(k): dict(v) for k, v in (u.get("by_role") or {}).items()
                      if isinstance(v, dict)}
     s["by_model"] = {str(k): dict(v) for k, v in (u.get("by_model") or {}).items()
@@ -257,6 +345,7 @@ def _bodies_at(cwd: str, rev: str, paths: list) -> dict:
 def merge(items) -> dict:
     """Сумма итогов шагов."""
     s = empty()
+    cells_merged: dict = {}
     for it in items or []:
         if not isinstance(it, dict):
             continue
@@ -264,8 +353,30 @@ def merge(items) -> dict:
             s[k] += it.get(k) or 0
         for kind, n in (it.get("errors") or {}).items():
             _err(s, kind, int(n or 0))
+        for key in ("cached_in", "reasoning_out"):
+            value = _nullable(it.get(key))
+            if value is not None:
+                s[key] = _int(s.get(key)) + value
+            else:
+                s.setdefault(key, None)
+        s["estimated"] = s["estimated"] or bool(it.get("estimated"))
         s["cards_known"] = s["cards_known"] or bool(it.get("cards_known"))
         s["link_kind"] = it.get("link_kind") or s["link_kind"]
+        for row in it.get("by_cell") or []:
+            if not isinstance(row, dict):
+                continue
+            key = (row.get("provider"), row.get("role"), row.get("model"))
+            dst = cells_merged.setdefault(key, {
+                "provider": row.get("provider"),
+                "provider_name": row.get("provider_name"),
+                "role": row.get("role"), "model": row.get("model"),
+                "calls": 0, "calls_failed": 0, "requests": 0,
+                "tokens_in": 0, "tokens_out": 0,
+                "cached_in": None, "reasoning_out": None, "gen_seconds": 0.0,
+            })
+            if not dst.get("provider_name") and row.get("provider_name"):
+                dst["provider_name"] = row.get("provider_name")
+            _sum_row(dst, row)
         for field in ("by_role", "by_model", "by_pair"):
             for name, row in (it.get(field) or {}).items():
                 if not isinstance(row, dict):
@@ -275,6 +386,13 @@ def merge(items) -> dict:
                 for k in ("calls", "tokens_in", "tokens_out"):
                     dst[k] = dst.get(k, 0) + int(row.get(k) or 0)
                 dst["seconds"] = round(dst.get("seconds", 0.0) + float(row.get("seconds") or 0), 2)
+    by_cell = list(cells_merged.values())
+    s["by_cell"] = sorted(by_cell,
+                          key=lambda row: (-(_int(row.get("tokens_in"))
+                                              + _int(row.get("tokens_out"))),
+                                           str(row.get("provider") or ""),
+                                           str(row.get("role") or ""),
+                                           str(row.get("model") or "")))
     return s
 
 
