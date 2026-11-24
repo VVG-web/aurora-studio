@@ -87,6 +87,11 @@ def read_registry(with_dev: "bool | None" = None) -> list:
 
 
 _HELP: dict = {}
+_ARGS: dict = {}
+# Справка — best-effort: запускать ее через `python_executable()` слишком дорого, он
+# проверяет runtime фактическим запуском и на macOS может ждать pydantic-пробу.
+# Панель и тесты уже работают на нужном интерпретаторе, поэтому берем текущий процесс.
+_PYTHON = ""
 
 
 def help_text(impl: str) -> str:
@@ -101,10 +106,14 @@ def help_text(impl: str) -> str:
         return _HELP[script]
     path = os.path.join(HERE, script)
     out = ""
+    global _PYTHON
     if script.endswith(".py") and os.path.isfile(path):
         try:
-            out = subprocess.run([aurora_common.python_executable(), path, "--help"], capture_output=True,
-                                 text=True, encoding="utf-8", errors="replace", timeout=30).stdout
+            if not _PYTHON:
+                _PYTHON = os.environ.get("AURORA_PYTHON") or sys.executable
+            out = subprocess.run([_PYTHON, path, "--help"], capture_output=True,
+                                 text=True, encoding="utf-8", errors="replace", timeout=5,
+                                 stdin=subprocess.DEVNULL).stdout
         except Exception:  # noqa: BLE001
             out = ""
     _HELP[script] = out
@@ -312,20 +321,27 @@ def strip_option_groups(usage: str) -> str:
 
 def args_of(impl: str) -> str:
     """Позиционные аргументы из строки usage — что команда просит обязательно."""
+    if impl in _ARGS:
+        return _ARGS[impl]
     script = impl.split()[0]
     path = os.path.join(HERE, script)
     if not script.endswith(".py") or not os.path.isfile(path):
+        _ARGS[impl] = ""
         return ""
     try:
-        out = subprocess.run([aurora_common.python_executable(), path, "--help"], capture_output=True,
-                             text=True, encoding="utf-8", errors="replace", timeout=30).stdout
+        out = subprocess.run([_PYTHON or os.environ.get("AURORA_PYTHON") or sys.executable, path, "--help"],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             timeout=5, stdin=subprocess.DEVNULL).stdout
     except Exception:
+        _ARGS[impl] = ""
         return ""
     if "usage:" not in out:      # скрипт без argparse — позиционных аргументов не знаем
+        _ARGS[impl] = ""
         return ""
     usage = re.split(r"\n(?:\S|$)", out.split("usage:", 1)[-1])[0]
     parts = strip_option_groups(usage).split()[1:]     # первое слово — имя скрипта
-    return " ".join(p for p in parts if not p.startswith("-"))
+    _ARGS[impl] = " ".join(p for p in parts if not p.startswith("-"))
+    return _ARGS[impl]
 
 
 def where(row: dict) -> str:
