@@ -964,7 +964,10 @@ def preview_docx(source: str, reference: str = "", out: str = "", keep_links: bo
         except (OSError, IndexError, subprocess.SubprocessError):
             pver = ""
         toc = expected.get("toc") or {}
-        plan_rel = os.path.relpath(plan_path, root).replace(os.sep, "/") if plan_path else ""
+        # root на Windows может прийти относительным, а _inside_file отдаёт
+        # realpath: relpath(absolute, relative) даёт "../../runneradmin/...".
+        plan_rel = (os.path.relpath(plan_path, os.path.realpath(root)).replace(os.sep, "/")
+                    if plan_path else "")
         meta = dict(source=source, kind=kind, engine=mode, reference=ref,
                     title=expected.get("title") or "", date=date_iso,
                     source_date_epoch=epoch, docx_checks=checks_rel,
