@@ -1307,10 +1307,11 @@ function lifecycleStageProblems(model, stage){
 
 function lifecycleChecklist(model, stage){
   if (!model) return [];
-  const deps = ((model.dependencies || {})[stage] || (model.required_for || {})[stage] || []).slice();
-  if (stage !== "created" && !deps.includes(stage)) deps.push(stage);
-  if (stage === "published" && !deps.includes("created")) deps.unshift("created");
-  return [...new Set(deps)].map(name => ({stage: name, done: lifecycleStageDone(model, name)}));
+  // Пустой узел показывает всю линию, а не только свои предпосылки: человек видит,
+  // что ещё впереди, а не гадает, почему после «Заморожен» чек-лист кончился.
+  const stages = ["created", "frozen", "released"];
+  if (stage === "published") stages.push("published");
+  return stages.map(name => ({stage: name, done: lifecycleStageDone(model, name)}));
 }
 
 function lifecycleDate(rec){
@@ -1339,10 +1340,9 @@ function lifecycleEditable(model){
 /* Подсказка узла повторяет приём `timingChip`: 500 мс на наведение, мгновенное скрытие,
    долгое нажатие на тач-экране, Escape и `aria-describedby`. Общий `data-help` ждёт две
    секунды и здесь был бы слишком медленным для линии из трёх узлов. */
-let lifecycleTipTimer = null, lifecycleTipOpen = null, lifecycleTipSeq = 0;
 function hideLifecycleTip(){
-  clearTimeout(lifecycleTipTimer); lifecycleTipTimer = null;
-  if (lifecycleTipOpen){ lifecycleTipOpen.hidden = true; lifecycleTipOpen = null; }
+  clearTimeout(hideLifecycleTip.timer); hideLifecycleTip.timer = null;
+  if (hideLifecycleTip.open){ hideLifecycleTip.open.hidden = true; hideLifecycleTip.open = null; }
 }
 function placeLifecycleTip(node, box){
   box.style.maxWidth = Math.max(160, innerWidth - 16) + "px";
@@ -1356,19 +1356,20 @@ function placeLifecycleTip(node, box){
 function showLifecycleTip(node, box){
   hideLifecycleTip();
   box.hidden = false;
-  lifecycleTipOpen = box;
+  hideLifecycleTip.open = box;
   placeLifecycleTip(node, box);
 }
 function lifecycleTipAttach(node, text){
-  const id = "lifecycle-tip-" + (++lifecycleTipSeq);
+  lifecycleTipAttach.seq = (lifecycleTipAttach.seq || 0) + 1;
+  const id = "lifecycle-tip-" + lifecycleTipAttach.seq;
   const box = el("span", {class:"help-tip timing-tip", id, role:"tooltip", hidden:""}, text);
   if (node.setAttribute){
     node.setAttribute("aria-describedby", id);
     node.setAttribute("title", text);
   }
   const later = ()=>{
-    clearTimeout(lifecycleTipTimer);
-    lifecycleTipTimer = setTimeout(()=>showLifecycleTip(node, box), 500);
+    clearTimeout(hideLifecycleTip.timer);
+    hideLifecycleTip.timer = setTimeout(()=>showLifecycleTip(node, box), 500);
   };
   if (node.addEventListener){
     node.addEventListener("mouseenter", later);
@@ -1391,7 +1392,10 @@ function lifecycleTooltip(model, stage){
   if (!model) return "";
   const lines = [String(model.title || model.name || lifecycleBase(model.path))];
   const done = lifecycleStageDone(model, stage);
-  lines.push(t("files.lifecycle." + (stage === "published" ? "published" : stage)) + ": "
+  const stageKey = stage === "created" ? "files.lifecycle.created"
+    : stage === "frozen" ? "files.lifecycle.frozen"
+    : stage === "released" ? "files.lifecycle.released" : "files.lifecycle.published";
+  lines.push(t(stageKey) + ": "
     + (done ? t("files.lifecycle.done") : t("files.lifecycle.empty")));
   if (stage === "created"){
     const c = model.created || {};
@@ -1482,7 +1486,9 @@ function lifecycleVersions(model){
 function drawLifecycleDetail(host, model, stage){
   if (!host) return;
   host.innerHTML = "";
-  const label = t("files.lifecycle." + (stage === "published" ? "published" : stage));
+  const label = stage === "created" ? t("files.lifecycle.created")
+    : stage === "frozen" ? t("files.lifecycle.frozen")
+    : stage === "released" ? t("files.lifecycle.released") : t("files.lifecycle.published");
   host.append(el("b", {}, label));
   if (stage === "published"){
     const pub = model.publication || {};
@@ -1518,7 +1524,10 @@ function drawLifecycleDetail(host, model, stage){
     return;
   }
   host.append(el("ul", {}, ...list.map(item => el("li", {},
-    t("files.lifecycle." + item.stage) + ": "
+    (item.stage === "created" ? t("files.lifecycle.created")
+      : item.stage === "frozen" ? t("files.lifecycle.frozen")
+      : item.stage === "released" ? t("files.lifecycle.released")
+      : t("files.lifecycle.published")) + ": "
     + (item.done ? t("files.lifecycle.done") : t("files.lifecycle.empty"))))));
 }
 
@@ -1571,7 +1580,8 @@ function drawLifecycle(model, pick){
     const unavailable = !done && !current && !bad && model.freezeable === false;
     const state = bad ? "error" : current ? "current" : done ? "done"
       : unavailable ? "unavailable" : "empty";
-    const label = t("files.lifecycle." + stage);
+    const label = stage === "created" ? t("files.lifecycle.created")
+      : stage === "frozen" ? t("files.lifecycle.frozen") : t("files.lifecycle.released");
     const stateText = done ? t("files.lifecycle.done") : t("files.lifecycle.empty");
     const action = !done && stage === "frozen" ? t("ship.freeze")
       : !done && stage === "released" ? t("ship.release") : "";
@@ -1738,7 +1748,7 @@ async function openLifecycle(f){
   show("files");
   $("#fileNone").hidden = true;
   $("#fileEditor").hidden = true;
-  $("#fileCreate").hidden = true;
+  if ($("#fileCreate")) $("#fileCreate").hidden = true;
   $("#fileLifecycle").hidden = false;
   if ($("#filePubCard") && $("#filePubCard").dataset.rel !== f.path) $("#filePubCard").remove();
   destroyEditor();
@@ -1777,19 +1787,22 @@ async function runShip(rel, action, version, reference){
   const planAction = action === "both" ? "both" : action === "freeze" ? "freeze" : "release";
   F.lifecycleBusy = true;
   let plan = null;
-  try {
-    plan = await api("/api/ship/plan", {method:"POST", quiet:true, body: JSON.stringify(Object.assign(
-      {project: S.project.path, path: rel, action: planAction},
-      version ? {version} : {}, reference ? {reference} : {}))});
-  } catch (e){ plan = null; }
-  F.lifecycleBusy = false;
-  if (plan && plan.error){ toast(plan.error, "err"); return; }
-  if (plan && plan.ok === false){
-    drawLifecyclePlan(plan);
-    toast(t("ship.failed"), "err");
-    return;
+  // План нужен многошаговому выпуску; одиночная заморозка не требует показа плана.
+  if (action !== "freeze"){
+    try {
+      plan = await api("/api/ship/plan", {method:"POST", quiet:true, body: JSON.stringify(Object.assign(
+        {project: S.project.path, path: rel, action: planAction},
+        version ? {version} : {}, reference ? {reference} : {}))});
+    } catch (e){ plan = null; }
+    if (plan && plan.error){ F.lifecycleBusy = false; toast(plan.error, "err"); return; }
+    if (plan && plan.ok === false){
+      F.lifecycleBusy = false;
+      drawLifecyclePlan(plan);
+      toast(t("ship.failed"), "err");
+      return;
+    }
+    if (plan) drawLifecyclePlan(plan);
   }
-  if (plan) drawLifecyclePlan(plan);
   const args = action === "freeze" ? [rel, "--apply"]
     : [rel, "--export", "docx", "--apply"];
   if (version) args.push("--version", version);
@@ -1859,7 +1872,7 @@ async function openCreateArtifact(){
     note.hidden = !rec.deliverable;
     note.textContent = rec.deliverable ? t("files.lifecycle.deliverable_later") : "";
   };
-  select.onchange = ()=>{ F.createKind = select.value; saveNote(); };
+  select.addEventListener("change", ()=>{ F.createKind = select.value; saveNote(); });
   const go = el("button", {class:"btn primary", type:"button", onclick: async ()=>{
     const kind = select.value;
     const text = String(idea.value || "").trim();
