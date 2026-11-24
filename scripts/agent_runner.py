@@ -6660,14 +6660,15 @@ def deliverable_args(a, cwd: str) -> tuple:
     return doc, version or "1.0", ""
 
 
-PMI_STATUSES = ("agreed",)
+PMI_STATUSES = ("agreed", "implemented")
 
 
 def pmi_requirements(cwd: str) -> list[dict]:
-    """Согласованные требования: [{"id": "REQ-001", "title": "...", "names": [...]}].
+    """Принятые в работу требования: [{"id": "REQ-001", "title": "...", "names": [...]}].
 
     Читает карточки `AuroraKnowledgeDB/Requirements/**/*.md` и берёт те, у кого `req_status` из
-    `PMI_STATUSES`. Нет каталога — пустой список, а не падение: у проекта может быть другое имя базы.
+    `PMI_STATUSES` (согласовано или уже реализуется). Нет каталога — пустой список, а не падение:
+    у проекта может быть другое имя базы.
     `names` — id и имя файла: документ может сослаться на требование любым из них.
     """
     from aurora_common import frontmatter
@@ -6716,7 +6717,7 @@ def requirement_mentioned(text: str, req: dict) -> bool:
 
 
 def pmi_coverage(cwd: str, text: str) -> dict:
-    """Детерминированное покрытие ПМИ: сколько согласованных требований названо в тексте.
+    """Детерминированное покрытие ПМИ: сколько принятых в работу требований названо в тексте.
 
     → {"required": n, "covered": k, "missing": ["REQ-002"]}. Это не замена критику, а страховка:
     критик может пропустить пункт, а счёт по тексту один и тот же при любом ответе модели.
@@ -6735,8 +6736,9 @@ def pmi_block(cwd: str, kind: str, deliverable: bool) -> str:
     if not (deliverable and str(kind or "").strip() == "pmi"):
         return ""
     reqs = pmi_requirements(cwd)
-    head = ("Согласованные требования (req_status: agreed). У каждого должен быть хотя бы один\n"
-            "пункт проверки в ПМИ. Если пункта нет, верни issue с id требования.")
+    head = ("Согласованные требования в работе (req_status: agreed или implemented).\n"
+            "У каждого должен быть хотя бы один пункт проверки в ПМИ. Если пункта нет,\n"
+            "верни issue с id требования.")
     if not reqs:
         return head + "\n\nкарточки требований не найдены — проверять покрытие не по чему, сборку не блокируй."
     return head + "\n\n" + "\n".join(f"- {req['id']}: {req['title']}" for req in reqs)

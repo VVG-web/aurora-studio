@@ -77,7 +77,7 @@ def _project(tmp: Path, deliverable: bool = True) -> Path:
 
 def _requirements(root: Path) -> None:
     for req_id, status in (("REQ-001", "agreed"), ("REQ-002", "agreed"),
-                           ("REQ-003", "rejected")):
+                           ("REQ-003", "rejected"), ("REQ-004", "implemented")):
         card(root, f"Requirements/{req_id}-Требование.md", "Текст требования.",
              req_status=status, req_id=req_id)
 
@@ -214,16 +214,17 @@ def test_deliverable_mode_resume_keeps_doc(tmp: Path):
 
 @test
 def test_pmi_block_lists_agreed_requirements(tmp: Path):
-    """В промпте критика названы все `req_status: agreed` и нет отклонённых."""
+    """В промпте критика названы все требования в работе (`agreed`, `implemented`) и нет отклонённых."""
     root = _project(tmp)
     _requirements(root)
     import agent_runner as R
-    assert [req["id"] for req in R.pmi_requirements(str(root))] == ["REQ-001", "REQ-002"]
+    assert [req["id"] for req in R.pmi_requirements(str(root))] == ["REQ-001", "REQ-002", "REQ-004"]
     fake = _Fake()
     res = _run(root, fake, doc="ПМИ", version="1.0")
     assert res["ok"], res
     critic_prompt = fake.prompts("critic")[0]
     assert "REQ-001" in critic_prompt and "REQ-002" in critic_prompt, critic_prompt
+    assert "REQ-004" in critic_prompt, critic_prompt
     assert "REQ-003" not in critic_prompt and "rejected" not in critic_prompt, critic_prompt
 
 
@@ -296,19 +297,20 @@ def test_pmi_coverage_counts_requirements_in_text(tmp: Path):
     text = ("# ПМИ\n\n## Проверки\n\n"
             "Проверка REQ-001: отчёт приёмки подтверждает срок.")
     cov = R.pmi_coverage(str(root), text)
-    assert cov == {"required": 2, "covered": 1, "missing": ["REQ-002"]}, cov
+    assert cov == {"required": 3, "covered": 1,
+                   "missing": ["REQ-002", "REQ-004"]}, cov
     fake = _Fake(draft=text)
     res = _run(root, fake, doc="ПМИ", version="1.0")
     assert res["ok"], res
     path = root / res["state"]["path"]
     doc = path.read_text(encoding="utf-8")
-    assert 'pmi_coverage: "1/2"' in doc, doc[:1200]
-    assert 'pmi_missing: ["REQ-002"]' in doc, doc[:1200]
-    assert "## Покрытие ПМИ" in doc and "REQ-002" in doc, doc
+    assert 'pmi_coverage: "1/3"' in doc, doc[:1200]
+    assert 'pmi_missing: ["REQ-002", "REQ-004"]' in doc, doc[:1200]
+    assert "## Покрытие ПМИ" in doc and "REQ-002" in doc and "REQ-004" in doc, doc
     assert "status: draft" in doc, "поставляемый документ получил ready без приёмки"
     assert res["state"]["pmi_coverage"] == cov, res["state"].get("pmi_coverage")
     report = R.report_make(res)
-    assert "Покрытие ПМИ: 1/2" in report and "REQ-002" in report, report
+    assert "Покрытие ПМИ: 1/3" in report and "REQ-002" in report, report
 
 
 @test
