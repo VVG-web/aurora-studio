@@ -13,9 +13,11 @@ import json
 import os
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 from harness import KIT, SCRIPTS, make_project, run, test  # noqa: F401
+from docfix import run as ooxml_run
 
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
@@ -48,7 +50,9 @@ def _project(tmp: Path, body: str = BODY) -> tuple:
 
 @contextlib.contextmanager
 def _pandoc():
-    """pandoc пишет то, что получил на вход, — тогда видно, из какого файла собран docx."""
+    """pandoc пишет настоящий OOXML с текстом входа, — тогда видно, из какого файла собран docx."""
+    import docfix
+
     real_find, real_run = S.find_bin, S.subprocess.run
 
     def fake_run(cmd, *a, **kw):
@@ -58,7 +62,9 @@ def _pandoc():
                 return subprocess.CompletedProcess(cmd, 0, "pandoc 3.13\n", "")
             target = Path(cmd[cmd.index("-o") + 1])
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(kw.get("input") or "docx", encoding="utf-8")
+            lines = [line for line in (kw.get("input") or "docx").splitlines() if line.strip()]
+            body = "".join("<w:p>%s</w:p>" % ooxml_run(line) for line in lines) or "<w:p/>"
+            docfix.docx(target, body)
             return subprocess.CompletedProcess(cmd, 0, "", "")
         return real_run(cmd, *a, **kw)
 
@@ -79,6 +85,11 @@ def _tree_digest(root: Path) -> str:
             h.update(str(p.relative_to(root)).encode("utf-8"))
             h.update(p.read_bytes())
     return h.hexdigest()
+
+
+def _docx_text(path: Path) -> str:
+    with zipfile.ZipFile(path) as z:
+        return z.read("word/document.xml").decode("utf-8")
 
 
 def _git_status(root: Path) -> str:
@@ -154,7 +165,7 @@ def test_release_reads_snapshot_not_source(tmp: Path):
         _git(root, "commit", "-qm", "source changed")
         rel = S.release(str(root), doc, "1.0", "2026-10-19", "", True)
     assert rel["ok"], rel
-    docx = (root / rel["release"]["path"]).read_text(encoding="utf-8")
+    docx = _docx_text(root / rel["release"]["path"])
     assert "пять дней" in docx and "сто дней" not in docx, docx
     assert rel["release"]["frozen_path"].startswith("Deliverables/us/"), rel["release"]
 
@@ -166,12 +177,12 @@ def test_release_order_and_partial_success(tmp: Path):
         assert S.freeze(str(root), doc, "1.0", "2026-10-19", True)["ok"]
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "freeze")
-    real_export = S.export
-    S.export = lambda *a, **kw: 1
+    real_preview = S.preview_docx
+    S.preview_docx = lambda *a, **kw: 2
     try:
         bad = S.release(str(root), doc, "1.0", "2026-10-19", "", True)
     finally:
-        S.export = real_export
+        S.preview_docx = real_preview
     assert not bad["ok"], bad
     st = S.lifecycle_model(str(root), doc)
     assert len(st["frozen"]) == 1 and st["released_versions"] == [] and st["stage"] == "frozen", st
