@@ -518,7 +518,7 @@ def _select(only: str, smoke: bool, no_invariants: bool):
             if is_inv:
                 chosen.append((name, fn, True))
         elif only:
-            if only.lower() in name.lower():
+            if only.lower() in name.lower() or fn.__module__ == f"cases.{only}":
                 chosen.append((name, fn, is_inv))
             elif is_inv and not no_invariants:
                 chosen.append((name, fn, True))
