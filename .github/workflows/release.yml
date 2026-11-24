@@ -4,6 +4,8 @@ name: release
 #
 # Срабатывает:
 #   • после зелёного engine-tests на master — если у текущей VERSION ещё нет Release;
+#   • после зелёного engine-tests на release/* — Fast-forward master до проверенного
+#     коммита и выпуск. Это убирает второй полный прогон матрицы на master;
 #   • вручную (Actions → release → Run workflow на master) — тот же прогон без ожидания
 #     тестов: повторить выпуск, если он не создался.
 #
@@ -19,7 +21,7 @@ on:
     # Имя — из test.yml. Переименуете там — поправьте и здесь, иначе выпуск молча замолчит.
     workflows: [engine-tests]
     types: [completed]
-    branches: [master]
+    branches: [master, 'release/**']
   workflow_dispatch:
 
 # Верхний уровень — потолок для всех заданий. Здесь он обязан быть write: задание ниже
@@ -33,12 +35,13 @@ concurrency:
 
 jobs:
   release:
-    # Только master и только то, что прошло проверки: PR и чужие ветки выпуска не создают.
+    # Master и release/*, и только то, что прошло проверки: PR и чужие ветки выпуска не создают.
     if: >-
-      github.ref == 'refs/heads/master' &&
-      (github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.conclusion == 'success'))
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.head_branch == 'master' ||
+      startsWith(github.event.workflow_run.head_branch, 'release/')))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -63,6 +66,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           DISPATCH_SHA: ${{ github.sha }}
           WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
 
@@ -94,6 +98,23 @@ jobs:
           if [ "$HEAD_SHA" != "$TARGET" ]; then
             echo "::error::Checkout дал $HEAD_SHA, а выпускать нужно $TARGET — выпуск остановлен"
             exit 1
+          fi
+
+          # Зелёный release/* выпускает без второго полного прогона: сначала
+          # fast-forward master до проверенного коммита. Только если master —
+          # предок TARGET, иначе ветка разошлась и выпуск остановлен.
+          if [ "$EVENT_NAME" != "workflow_dispatch" ] &&
+             [[ "$WORKFLOW_RUN_HEAD_BRANCH" == release/* ]]; then
+            git fetch --no-tags origin "+refs/heads/master:refs/remotes/origin/master"
+            MASTER_BEFORE="$(git rev-parse refs/remotes/origin/master)"
+            if [ "$MASTER_BEFORE" != "$TARGET" ]; then
+              if ! git merge-base --is-ancestor "$MASTER_BEFORE" "$TARGET"; then
+                echo "::error::release-ветка разошлась с master: $MASTER_BEFORE не предок $TARGET"
+                exit 1
+              fi
+              echo "Fast-forward master: $MASTER_BEFORE -> $TARGET"
+              git push origin "$TARGET:refs/heads/master"
+            fi
           fi
 
           # master ушёл вперёд. Выпускаем, только если каждый коммит между ним и проверенным
