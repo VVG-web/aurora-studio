@@ -101,7 +101,7 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 | `make:spec` (`spec`) | A feature specification from REQ and `knowledge` cards (SDD). | model | 1.0.0 |
 | `make:spec-pack` (`spec-pack`) | A spec bundle: grounds, DRs, abbreviations, DoR risks — one self-contained file. | script | 1.9.4 |
 | `make:validate` (`validate`) | Compare a contractor's implementation and tests with the spec's scenarios. | model | 1.0.0 |
-| `make:assemble` (`assemble`) | Assemble a deliverable (OPZ/PMI/user guide) from the base by a template. | model | 1.0.0 |
+| `make:assemble` (`assemble`) | Deprecated since 1.231.17: build a deliverable with `agent:make --deliverable --doc ... --version ...`; this procedure stays for one release. | model | 1.1.0 |
 
 ## `ship:` — Outward
 
