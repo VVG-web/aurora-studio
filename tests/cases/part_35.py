@@ -144,7 +144,8 @@ def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Pa
             jobs[cur] = []
         elif cur is not None:
             jobs[cur].append(ln)
-    assert list(jobs) == ["tests", "authors", "secrets", "floor", "newer-python", "legacy-310", "adapter-live", "windows", "windows-314", "macos"], list(jobs)
+    assert list(jobs) == ["preflight", "tests", "authors", "secrets", "floor", "newer-python",
+                          "legacy-310", "adapter-live", "windows", "windows-314", "macos"], list(jobs)
     body = {k: "\n".join(v) for k, v in jobs.items()}
     for name, py in (("tests", "3.14"), ("floor", "3.11"), ("legacy-310", "3.10"),
                      ("windows", "3.12"), ("windows-314", "3.14"), ("macos", "3.14")):
@@ -158,10 +159,12 @@ def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Pa
         assert re.search(r"^    continue-on-error: true$", body[name], re.M), f"{name}: должен быть неблокирующим"
     for name in ("tests", "authors", "secrets", "floor", "windows"):
         assert not re.search(r"^\s*continue-on-error:", body[name], re.M), f"{name}: блокирует выпуск, его нельзя ослаблять"
-    assert "tests/check_release.py" in body["tests"] and "tests/run_tests.py --smoke" in body["tests"]
-    assert "ruff check --select F401,F841,B023" in body["tests"]
+    assert "tests/check_release.py" in body["preflight"]
+    assert "ruff check --select F401,F841,B023" in body["preflight"]
+    assert "check_portability.py" in body["preflight"]
+    assert "tests/run_tests.py --smoke" in body["tests"]
     assert "tests/run_tests.py" in body["floor"] and "compileall" in body["floor"]
-    for name in ("windows", "windows-314"):
+    for name in ("tests", "floor", "windows", "windows-314"):
         assert "--shard=${{ matrix.shard }}/3" in body[name], name
         assert re.search(r"^        shard: \[1, 2, 3\]$", body[name], re.M), f"{name}: три доли"
     for wf in sorted(WORKFLOWS.glob("*.yml")):
