@@ -6409,6 +6409,8 @@ PROMPT_MAKE_CRITIC = """Проверь документ «{title}» на соо�
 Отчёт Момуса о утверждениях без опоры:
 {momus}
 
+{pmi}
+
 Верни JSON:
 {{"ok": true|false,
   "issues": ["что не так, по одному пункту"],
@@ -6577,11 +6579,21 @@ def parse_task_fields(items) -> tuple:
     return out, ""
 
 
-def make_spec(cwd: str, kind: str) -> dict:
-    """Настройки типа артефакта из конфига проекта — с проверкой обязательного."""
+def make_spec(cwd: str, kind: str, deliverable: bool = False) -> dict:
+    """Настройки типа артефакта из конфига проекта — с проверкой обязательного.
+
+    `deliverable` — режим поставляемого документа: его разрешает сам вид (`deliverable: true`), а результат
+    всегда ложится в `Deliverables/work`, а не в папку вида. Шаблон и его файл проверяются как обычно.
+    """
     rec = (MK.read_kinds(cwd) or {}).get(kind)
     if not rec:
         return {"error": f"типа артефакта «{kind}» нет в aurora.config.yaml"}
+    if deliverable:
+        if not MK.is_deliverable(rec):
+            return {"error": f"вид «{kind}» не объявлен как поставляемый: deliverable: true"}
+        rec = dict(rec)
+        rec["out"] = "Deliverables/work"
+        rec["deliverable"] = "true"
     why = MK.template_problem(cwd, rec)
     if why:
         return {"error": f"у типа «{kind}» {why}"}
@@ -6591,6 +6603,145 @@ def make_spec(cwd: str, kind: str) -> dict:
     if why:
         return {"error": f"у типа «{kind}» папка результата не годится: {why}"}
     return rec
+
+
+DELIVERABLE_VERSION = re.compile(r"[0-9][\w.\-]*\Z")
+
+
+def deliverable_problem(doc: str, version: str) -> str:
+    r"""Почему имя или версия поставляемого документа не годятся. Пусто — годятся.
+
+    Имя становится частью пути `Deliverables/work/<doc>_v<version>.md`, поэтому `..`, `/`, `\` и всё, что
+    `safe_part` молча переписал бы, — отказ: имя не должно меняться при записи.
+    """
+    from aurora_common import safe_part
+    if not doc:
+        return "`--deliverable` требует `--doc`: имя поставляемого документа"
+    if any(mark in doc for mark in ("..", "/", "\\")):
+        return "имя документа не должно содержать `..`, `/` или `\\`"
+    if version:
+        if not DELIVERABLE_VERSION.match(version) or any(mark in version for mark in ("..", "/", "\\")):
+            return "версия должна начинаться с цифры и не содержать путь: `^[0-9][\\w.\\-]*$`"
+    for value, label in ((doc, "имя документа"), (version, "версия")):
+        if value and safe_part(value) != value:
+            return f"{label} «{value}» нельзя записать без изменений"
+    return ""
+
+
+def deliverable_args(a, cwd: str) -> tuple:
+    """→ (doc, version, ошибка) для `agent:make`: правила `--deliverable` до `run_make`.
+
+    Продолжение сессии берёт имя и версию из неё: CLI-значения могут быть пустыми, но если названы —
+    должны совпасть с сессией, иначе документ сменил бы имя посреди работы.
+    """
+    doc = str(getattr(a, "doc", "") or "").strip()
+    version = str(getattr(a, "version", "") or "").strip()
+    deliverable = bool(getattr(a, "deliverable", False))
+    sid = str(getattr(a, "session", "") or "").strip()
+    if (doc or version) and not deliverable:
+        return "", "", "--doc и --version работают только с --deliverable"
+    if not deliverable:
+        return "", "", ""
+    session = load_session(cwd, sid) if sid else {}
+    if session:
+        sdoc = str(session.get("doc") or "")
+        sver = str(session.get("version") or "")
+        if not bool((session.get("spec") or {}).get("deliverable")):
+            return "", "", (f"сессия {sid} собрана без --deliverable: "
+                             "продолжать её поставляемым документом нельзя")
+        if doc and doc != sdoc:
+            return "", "", f"сессия уже собрана как {sdoc}_v{sver}"
+        if version and version != sver:
+            return "", "", f"сессия уже собрана как {sdoc}_v{sver}"
+        return sdoc, sver, ""
+    why = deliverable_problem(doc, version)
+    if why:
+        return "", "", why
+    return doc, version or "1.0", ""
+
+
+PMI_STATUSES = ("agreed", "implemented")
+
+
+def pmi_requirements(cwd: str) -> list[dict]:
+    """Принятые в работу требования: [{"id": "REQ-001", "title": "...", "names": [...]}].
+
+    Читает карточки `AuroraKnowledgeDB/Requirements/**/*.md` и берёт те, у кого `req_status` из
+    `PMI_STATUSES` (согласовано или уже реализуется). Нет каталога — пустой список, а не падение:
+    у проекта может быть другое имя базы.
+    `names` — id и имя файла: документ может сослаться на требование любым из них.
+    """
+    from aurora_common import frontmatter
+    base = os.path.join(cwd, "AuroraKnowledgeDB", "Requirements")
+    if not os.path.isdir(base):
+        return []
+    out = []
+    for dirpath, _dirs, files in os.walk(base):
+        for name in sorted(files):
+            if not name.endswith(".md"):
+                continue
+            full = os.path.join(dirpath, name)
+            if link_escapes(full):          # ссылка на файл вне проекта — не требование проекта
+                continue
+            try:
+                text = open(full, encoding="utf-8", errors="ignore").read()
+            except OSError:
+                continue
+            fm = frontmatter(text)
+            if str(fm.get("req_status") or "").strip().lower() not in PMI_STATUSES:
+                continue
+            stem = Path(name).stem
+            req_id = str(fm.get("req_id") or "").strip()
+            if not req_id:
+                m = re.search(r"REQ[-_ ]?(\d+)", stem, re.I)
+                req_id = f"REQ-{m.group(1)}" if m else stem
+            title = str(fm.get("title") or "").strip() or stem
+            out.append({"id": req_id, "title": title,
+                        "names": list(dict.fromkeys([req_id, stem]))})
+    return sorted(out, key=lambda req: req["id"])
+
+
+def requirement_mentioned(text: str, req: dict) -> bool:
+    """Назван ли пункт проверки в тексте: id (`REQ-001`) или имя карточки, целым словом.
+
+    Совпадение по подстроке считало бы `REQ-001` покрытым в `REQ-0010`: у ПМИ это разные пункты.
+    """
+    hay = str(text or "")
+    for token in req.get("names") or [req.get("id") or ""]:
+        token = str(token or "").strip()
+        if len(token) < 3:
+            continue
+        if re.search(r"(?<![\w-])" + re.escape(token) + r"(?![\w-])", hay, re.I):
+            return True
+    return False
+
+
+def pmi_coverage(cwd: str, text: str) -> dict:
+    """Детерминированное покрытие ПМИ: сколько принятых в работу требований названо в тексте.
+
+    → {"required": n, "covered": k, "missing": ["REQ-002"]}. Это не замена критику, а страховка:
+    критик может пропустить пункт, а счёт по тексту один и тот же при любом ответе модели.
+    """
+    reqs = pmi_requirements(cwd)
+    missing = [req["id"] for req in reqs if not requirement_mentioned(text, req)]
+    return {"required": len(reqs), "covered": len(reqs) - len(missing), "missing": missing}
+
+
+def pmi_block(cwd: str, kind: str, deliverable: bool) -> str:
+    """Блок для критика; пусто для не-ПМИ, текст без требований для ПМИ.
+
+    Покрытие проверяют двое: критик теми же ремонтами, что и остальные замечания, и счёт по тексту
+    (`pmi_coverage`) на записи. Критик видит список требований, счёт не зависит от его ответа.
+    """
+    if not (deliverable and str(kind or "").strip() == "pmi"):
+        return ""
+    reqs = pmi_requirements(cwd)
+    head = ("Согласованные требования (req_status: agreed). Требования в работе\n"
+            "(req_status: implemented) проверяются так же. У каждого должен быть хотя бы\n"
+            "один пункт проверки в ПМИ. Если пункта нет, верни issue с id требования.")
+    if not reqs:
+        return head + "\n\nкарточки требований не найдены — проверять покрытие не по чему, сборку не блокируй."
+    return head + "\n\n" + "\n".join(f"- {req['id']}: {req['title']}" for req in reqs)
 
 
 def request_asks(cwd: str, st: dict, spec: dict) -> dict:
@@ -7048,6 +7199,9 @@ def make_report_data(run, st: dict, settings: dict, *, status: str, reason: str 
         "momus": {"ok": bool(mo.get("ok")), "clean": bool(mo.get("clean")),
                   "unsupported": int(mo.get("unsupported") or 0),
                   "why": str(mo.get("why") or "")},
+        "deliverable": ({"doc": st.get("doc") or "", "version": st.get("version") or ""}
+                        if (st.get("spec") or {}).get("deliverable") else {}),
+        "pmi_coverage": st.get("pmi_coverage") or {},
         "gaps": list(st.get("gaps") or []),
         "assumptions": list(st.get("assumptions") or []),
         "attempts": manifest.get("attempts") or [],
@@ -7074,6 +7228,21 @@ def manager_report_markdown(data: dict) -> str:
              f"- Отчёт создан: {data.get('created')}", ""]
     if data.get("reason"):
         lines += ["## Почему работа остановлена", "", str(data["reason"]), ""]
+    deliv = data.get("deliverable") or {}
+    if deliv:
+        lines += ["## Поставляемый документ", "",
+                  f"- Имя: `{deliv.get('doc')}_v{deliv.get('version')}.md`",
+                  "- Статус: `draft` до человеческой приёмки и `ship:release`; "
+                  "автоматическая сборка `ready` не ставит.", ""]
+    cov = data.get("pmi_coverage") or {}
+    if cov.get("required"):
+        lines += ["## Покрытие ПМИ", "",
+                  f"- Требований: {cov.get('required')}",
+                  f"- Названо в документе: {cov.get('covered')}", ""]
+        if cov.get("missing"):
+            lines += ["Без пункта проверки: "
+                      + ", ".join(f"`{req}`" for req in cov["missing"])
+                      + ".", ""]
     lines += ["## Итог", ""]
     if status == "done":
         lines.append("Документ собран и прошёл проверки. Можно открывать и передавать.")
@@ -7191,7 +7360,8 @@ def adapter_tool_note(result: dict) -> str:
 
 def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
              force_plan: bool, call=None, momus: bool = True, context=None, links=None,
-             task=None, emit=None) -> dict:
+             task=None, emit=None, doc: str = "", version: str = "",
+             deliverable: bool = False) -> dict:
     """Производство артефакта: обогащение → план с вопросами → воркер → критик → Момус.
 
     Разбито на вызовы, потому что посередине стоит человек: планировщик задаёт вопросы и
@@ -7217,7 +7387,14 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                     "error": reliability.human_error("session_missing", why,
                                                      "создайте документ заново")}
     else:
-        spec = make_spec(cwd, kind)
+        if deliverable:
+            why = deliverable_problem(doc, version)
+            if why:
+                return {"ok": False, "stage": "error", "status": "error", "why": why,
+                        "error": reliability.human_error(
+                            "make_spec", why,
+                            "назовите документ через --doc и повторите запуск")}
+        spec = make_spec(cwd, kind, deliverable=deliverable)
         if spec.get("error"):
             why = spec["error"]
             return {"ok": False, "stage": "error", "status": "error", "why": why,
@@ -7239,6 +7416,9 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         sid = d.name
         st = {"sid": sid, "kind": kind, "idea": idea, "spec": spec,
               "stages": {}, "rounds": [], "plan": "", "started": utc_stamp()}
+        st["doc"] = doc
+        st["version"] = version or "1.0"
+        st["spec"]["deliverable"] = bool(spec.get("deliverable"))
         st["template_sha256"] = sha
         spec["template_sha256"] = sha
     # Версия конвейера: старые сессии писали документ без финальной сборки. `checked` без
@@ -7395,7 +7575,13 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     def persist(stage: str, *, final: bool = False) -> dict | None:
         """Записать артефакт; ошибку записи вернуть, а не выпустить исключением."""
         try:
-            st["path"] = write_artifact(cwd, st)
+            written = write_artifact(cwd, st)
+            if isinstance(written, dict):
+                why = str(written.get("why") or "документ не записан")
+                return abort(stage, why, reliability.human_error(
+                    "artifact_write", why,
+                    "выберите другое имя документа или версию и повторите запуск"))
+            st["path"] = written
             if final and st.get("form_problems"):
                 why = "форма финального текста не принята: " + "; ".join(
                     f"{p.get('code', '?')}: {p.get('detail', '')}"
@@ -7790,10 +7976,11 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         agnostic = bool(str(spec.get("tech_agnostic") or "").strip().lower()
                         in ("1", "true", "да", "yes"))
         form_crit, check = form("critic", True)
+        pmi_text = pmi_block(cwd, str(st.get("kind") or kind), bool(spec.get("deliverable")))
         content = PROMPT_MAKE_CRITIC.format(
             title=spec.get("title") or st["kind"], template=form_crit,
             plan=st["plan"], draft=st.get("draft") or "",
-            momus=momus_text or "нет",
+            momus=momus_text or "нет", pmi=pmi_text,
             agnostic_check=AGNOSTIC_CHECK if agnostic else "")
         fail = check(content)
         if fail:
@@ -8355,6 +8542,14 @@ def report_make(res: dict) -> str:
     L += ["", f"Документ: `{st.get('path', '—')}`"]
     if st.get("artifact_id"):
         L.append(f"Номер: `{st['artifact_id']}`")
+    if (st.get("spec") or {}).get("deliverable"):
+        L.append(f"Поставляемый документ: `{st.get('doc', '')}_v{st.get('version', '')}.md` · "
+                 "статус `draft` до приёмки")
+    cov = st.get("pmi_coverage") or {}
+    if cov.get("required"):
+        L.append(f"Покрытие ПМИ: {cov.get('covered')}/{cov.get('required')}")
+        if cov.get("missing"):
+            L.append("Без пункта проверки: " + ", ".join(cov["missing"]))
     if st.get("issues"):
         L += ["", f"Критик нашёл замечаний: {len(st['issues'])} — они в самом документе."]
     if "issues_before_final" in st:
@@ -8520,8 +8715,8 @@ def artifact_number(cwd: str, st: dict) -> str:
     return st["artifact_id"]
 
 
-def write_artifact(cwd: str, st: dict) -> str:
-    """Положить документ в объявленную папку с шапкой этапов. → путь.
+def write_artifact(cwd: str, st: dict):
+    """Положить документ в объявленную папку с шапкой этапов. → путь или {ok: false, why}.
 
     Файл пишет движок, а не модель: так путь всегда внутри объявленной папки, шапка
     всегда собрана кодом, а не текстом из ответа, и точка записи одна — значит откат
@@ -8535,9 +8730,13 @@ def write_artifact(cwd: str, st: dict) -> str:
     Пока цепочка не пройдена, он лежит со `status: draft` и незакрытыми точками в шапке.
     Прятать сделанную работу нельзя — человек хочет её видеть; выдавать непроверенное за
     готовое тоже нельзя — оно уедет заказчику.
+
+    Поставляемый документ (`spec["deliverable"]`) пишется под именем `<doc>_v<version>.md`: имя выбрано
+    человеком, и суффикс `-2` у него был бы другим документом. Чужое имя — отказ, а не переименование.
     """
     spec, stages = st["spec"], st["stages"]
     import make_kinds as MK
+    from aurora_common import safe_part
     why = MK.out_problem(spec["out"])
     if why:
         # Сессия могла начаться до проверки в make_spec — каталог с именем файла не создаём.
@@ -8545,7 +8744,13 @@ def write_artifact(cwd: str, st: dict) -> str:
     out_dir = os.path.join(cwd, spec["out"])
     os.makedirs(out_dir, exist_ok=True)
     title = (st["idea"].strip().splitlines() or ["документ"])[0][:80]
-    name = artifact_stem(st["idea"], st["kind"])
+    deliverable = bool(spec.get("deliverable"))
+    if deliverable:
+        if st.get("renamed_from"):
+            return {"ok": False, "why": "документ с таким именем уже есть"}
+        name = f"{safe_part(st.get('doc'))}_v{safe_part(st.get('version'))}"
+    else:
+        name = artifact_stem(st["idea"], st["kind"])
     # Своя сессия пишет в свой же файл — критик и Момус дописывают шапку того, что уже
     # положил воркер. Чужой файл не трогаем: молча затереть документ, который человек
     # писал руками, значит потерять его без следа — в git он мог и не попасть.
@@ -8555,6 +8760,8 @@ def write_artifact(cwd: str, st: dict) -> str:
     else:
         path = os.path.join(out_dir, f"{name}.md")
         if os.path.exists(path) and f"session: {st['sid']}" not in read_text_file(path, 2000):
+            if deliverable:
+                return {"ok": False, "why": "документ с таким именем уже есть"}
             n = 2
             while os.path.exists(os.path.join(out_dir, f"{name}-{n}.md")):
                 n += 1
@@ -8627,6 +8834,18 @@ def write_artifact(cwd: str, st: dict) -> str:
         and not unsupported
         and not lean
     )
+    # Поставляемый документ уходит заказчику только после human review и `ship:release`.
+    # Автоматическая цепочка может быть безупречной, но `ready` здесь означал бы «можно
+    # сдавать» без человека — поэтому режим всегда оставляет `draft`.
+    pmi_cov = {}
+    if deliverable and str(st.get("kind") or "").strip() == "pmi":
+        pmi_cov = pmi_coverage(cwd, st.get("draft") or "")
+        if pmi_cov.get("required"):
+            st["pmi_coverage"] = pmi_cov
+        else:
+            st.pop("pmi_coverage", None)
+    if deliverable:
+        done = False
     # `based_on` — карточки, на которые документ СОСЛАЛСЯ, а не весь пак: сорок карточек
     # в контексте и три ссылки в тексте значат, что документ стоит на трёх. Пак — это
     # «что мы дали», основания — «на чём стоит».
@@ -8639,8 +8858,23 @@ def write_artifact(cwd: str, st: dict) -> str:
                for h in re.findall(r"^## (.+)$", st.get("pack") or "", re.M)}
     grounded = [c for c in cited if c in in_pack]
     head = ["---", f'title: "{title.replace(chr(34), "")}"',
-            f"type: {st['kind']}", f"status: {'ready' if done else 'draft'}",
-            f"created: {TODAY_STR}", f"updated: {TODAY_STR}", "built: machine"]
+            f"type: {st['kind']}"]
+    if deliverable:
+        # Контракт поставляемого документа: имя выбрано человеком, версия дублируется в `version` для
+        # старых читателей, шаблон назван явно — по нему видно, по какой форме собрано.
+        doc_token = str(st.get("doc") or "").replace(chr(34), "")
+        version_token = str(st.get("version") or "").replace(chr(34), "")
+        template_token = str(spec.get("template") or "").replace(chr(34), "")
+        head += ["deliverable: true",
+                 f'doc: "{doc_token}"',
+                 f'doc_version: "{version_token}"',
+                 f'version: "{version_token}"',
+                 f'template: "{template_token}"']
+        if pmi_cov.get("required"):
+            head += [f'pmi_coverage: "{pmi_cov["covered"]}/{pmi_cov["required"]}"',
+                     "pmi_missing: " + json.dumps(pmi_cov["missing"], ensure_ascii=False)]
+    head += [f"status: {'ready' if done else 'draft'}",
+             f"created: {TODAY_STR}", f"updated: {TODAY_STR}", "built: machine"]
     # Паспорт артефакта v1 (BL-TEAM-07): номер выдаёт код под замком, связи берутся из `--from` и из
     # карточек REQ, на которые документ сослался; время этапов и число обращений к модели — для
     # метрик цикла. Поля паспорта не уходят наружу: публикация режет шапку, а не только производство.
@@ -8730,6 +8964,14 @@ def write_artifact(cwd: str, st: dict) -> str:
             made.append("- опора на непроверенное: " + ", ".join(f"`[[{c}]]`" for c in lean)
                         + " · _карточки не прошли доверие, документ не может быть `ready`_")
         made.append("")
+    if pmi_cov.get("required"):
+        made += ["## Покрытие ПМИ", "",
+                 f"Согласованных требований: {pmi_cov['required']}; названо в документе: "
+                 f"{pmi_cov['covered']}.", ""]
+        if pmi_cov["missing"]:
+            made += ["Без пункта проверки: "
+                     + ", ".join(f"`{req}`" for req in pmi_cov["missing"])
+                     + ". Документ остаётся `draft`, пока пункты не появятся.", ""]
     if st.get("issues"):
         made += ["## Замечания критика", ""] + [f"- {x}" for x in st["issues"]] + [""]
     if (mo.get("ok") and not mo.get("clean")) or invented:
@@ -11600,6 +11842,12 @@ def main() -> int:
     ap.add_argument("--task-field", dest="task_fields", metavar="ПОЛЕ=ЗНАЧЕНИЕ", action="append", default=[],
                     help="свойство задачи нового документа (для --task make), в блок task: шапки: project, type, "
                          "assignee, labels, components, epic; повторяется")
+    ap.add_argument("--doc", metavar="ИМЯ", default="",
+                    help="имя поставляемого документа (для --deliverable)")
+    ap.add_argument("--version", metavar="ВЕРСИЯ", default="",
+                    help="версия поставляемого документа (для --deliverable)")
+    ap.add_argument("--deliverable", action="store_true",
+                    help="собрать поставляемый документ в Deliverables/work/<doc>_v<version>.md")
     ap.add_argument("--source", metavar="ФАЙЛ|Q-NNN", default="",
                     help="источник решения (для --task decide): файл проекта или вопрос Q-NNN")
     ap.add_argument("--topic", metavar="ТЕКСТ", default="",
@@ -11688,6 +11936,14 @@ def main() -> int:
         print("agent_runner: нет AuroraKnowledgeDB/ — запускайте из корня проекта",
               file=sys.stderr)
         return 1
+    # Имя и версия поставляемого документа проверяются до любого вызова модели: ошибка в них — отказ
+    # вызова, а не половина сессии в Workspaces. Продолжение берёт их из сессии.
+    make_doc, make_version = "", ""
+    if a.task == "make":
+        make_doc, make_version, why = deliverable_args(a, cwd)
+        if why:
+            print(f"agent_runner: {why}", file=sys.stderr)
+            return 1
     # Два пишущих прогона в одну базу — это потерянные отметки «разобрано» и двойники
     # карточек. Замок только на запись: читающие задачи (`ask`, списки) не мешают никому.
     if a.apply:
@@ -11740,7 +11996,8 @@ def main() -> int:
                        momus=not a.no_momus, context=a.context, links=links,
                        emit=(lambda ev: print("MAKE_EVENT " + json.dumps(
                            ev, ensure_ascii=False), flush=True)) if a.emit_events else None,
-                       task=task)
+                       task=task, doc=make_doc, version=make_version,
+                       deliverable=bool(a.deliverable))
         if not res["ok"]:
             if res.get("path") or res.get("state"):
                 print(report_make(res))

@@ -85,7 +85,8 @@ KNOWN = {
 # форме (и ревью этого не поймает), без второй его некуда класть. Остальное
 # необязательно — промпта у типа может не быть, публиковать можно не всё.
 FIELDS = ("title", "template", "prompt", "out", "publish_url", "publish_path", "publish_title", "publish_prompt",
-          "publish_engine", "publish_script", "publish_template", "mcp", "tech_agnostic", "review", "ref_mask")
+          "publish_engine", "publish_script", "publish_template", "mcp", "tech_agnostic", "review", "ref_mask",
+          "deliverable")
 # `prompt` — промпт СОЗДАНИЯ: его читает изготовление документа (`agent:make`) и ассистенты через `artifact_spec`.
 # `publish_prompt` — промпт ПУБЛИКАЦИИ: как оформить готовый документ в страницу (оглавление, панели, макросы,
 # вёрстка); текст автора он не переписывает. Путь к файлу `Prompts/…`, как у `prompt`.
@@ -135,14 +136,23 @@ def review_profile(rec: dict) -> str:
     """Профиль ревью вида, как его записал человек: без комментария в конце строки, любым регистром. Пусто — нет или негоден."""
     value = re.sub(r"\s+#.*$", "", str((rec or {}).get("review") or "")).strip().lower()
     return value if value in REVIEW_PROFILES else ""
+
 # `ref_mask` — маска ключа Requirement Yogi для этого вида: `<СТРАНА>.<ПРОЕКТ>.US-x.x.x` (`<имя>` — любой сегмент, `x` —
 # число). Аврора ключ не выдаёт — его заводит реестр Requirement Yogi; она кладёт найденный по маске ключ в паспорт
 # артефакта непрозрачным значением (`ref_key`) и называет ключи, похожие на ключи вида, но не по маске (`kb:lint`).
+# `deliverable` — вид разрешает режим поставляемого документа (`agent:make --deliverable`): результат пишется в
+# `Deliverables/work/<doc>_v<version>.md`, а не в папку вида. Это данные проекта, не движок: без `deliverable: true`
+# режим закрыт. Включается настройкой вида, а не каждым документом.
 # Свойства задачи, которую заводит кнопка «Создать задачу» у документа вида (`ship:task`, активный трекер проекта):
 # умолчания вида — рамка «Трекер задач» в форме видов. Сами они задачу не заводят. Эпик у вида больше не задаётся — его
 # выбирают у документа; прежнее `epic` вида читается и пишется обратно как было (запись не теряет значение), но не
 # действует ни в `ship:task`, ни в шапке нового документа.
 TASK_FIELDS = ("project", "type", "assignee", "labels", "components", "epic")
+
+
+def is_deliverable(rec: dict) -> bool:
+    """Вид разрешает режим поставляемого документа."""
+    return str((rec or {}).get("deliverable") or "").strip().lower() in ("1", "true", "да", "yes")
 
 
 def read_kinds(root: str = ".") -> dict:
@@ -433,7 +443,10 @@ def kinds_lines(kinds: dict) -> list:
         # Поля описывает движок, а не панель: список один на всех — `FIELDS`. Иначе форма научится сохранять поле,
         # которого чтение не знает, и настройка будет молча пропадать при следующем разборе конфига.
         for field in FIELDS:
-            value = str(rec.get(field) or "").strip().strip('"')
+            if field == "deliverable":
+                value = "true" if str(rec.get(field) or "").strip().lower() in ("1", "true", "да", "yes") else ""
+            else:
+                value = str(rec.get(field) or "").strip().strip('"')
             lines.append(f'    {field}: "{value}"')
         task = rec.get("task") or {}
         if any(str(v).strip() for v in task.values()):
@@ -909,6 +922,9 @@ def check(root: str, kinds: dict) -> list:
                 bad.append((kind, f"{field}: пустая подстановка {{}} в «{value}» — назовите поле шапки: {{epic}}"))
         for why in _docx_problems(root, kind, rec):
             bad.append((kind, why))
+        value = str(rec.get("deliverable") or "").strip().lower()
+        if value and value not in ("true", "false", "1", "0", "да", "нет", "yes", "no"):
+            bad.append((kind, "deliverable: ожидается true или false"))
     return bad
 
 

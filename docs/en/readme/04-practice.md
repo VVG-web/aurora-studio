@@ -73,7 +73,7 @@ flowchart TD
 | Assemble a spec from requirements | `make:spec <topic>` | `SPEC-NNN` with status `draft` and a full `based_on` |
 | The spec is due to go to a contractor | `make:spec-pack <SPEC-NNN>` | a self-contained bundle: grounds, decisions, abbreviations, handoff risks |
 | Check the contractor's implementation | `make:validate <SPEC> <object>` | covered / contradicts / not implemented, per scenario |
-| Assemble an OPZ, PMI or user guide | `make:assemble <document>` | a document from the base by a template, `based_on` filled in |
+| Assemble an OPZ, PMI or user guide | `agent:make --deliverable --doc <name> --version <version>` | a document in `Deliverables/work/<doc>_v<version>.md`, `based_on` filled in; stays `draft` until review |
 
 ### Outward
 

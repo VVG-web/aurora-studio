@@ -62,7 +62,7 @@
     "make:spec": "A feature specification from REQ and `knowledge` cards (SDD).",
     "make:spec-pack": "A spec bundle: grounds, DRs, abbreviations, DoR risks — one self-contained file.",
     "make:validate": "Compare a contractor's implementation and tests with the spec's scenarios.",
-    "make:assemble": "Assemble a deliverable (OPZ/PMI/user guide) from the base by a template.",
+    "make:assemble": "Deprecated since 1.231.17: build a deliverable with `agent:make --deliverable --doc ... --version ...`; this procedure stays for one release.",
     "ship:publish": "An artifact → a generated Confluence page along the kind's path: the root page (`publish_url`) → sections (`publish_path`, missing ones are created only with `--apply`) → a page titled by a template (`publish_title`); the space comes from the root; knowledge cards do not go out. The body is cut at the marker line: \"Clarifications\", \"Assumptions\", \"In question\" stay in the analyst's draft. For an artifact kind with a declared review (`review: us or alg` in `artifacts:`) only an artifact with a fresh review \"ready to hand over\" goes out (`make:review-auto --file … --apply`): no review, a text changed after it, or a lower verdict — code 2 and a list of reasons; the bypass is `--allow review` (recorded in the head as `review_bypass`). A repeat without changes does not touch the page; a page edited after publishing stops it until `--force`; someone else's page with the same title — only `--adopt`; your own page off the path — `--move`.",
     "ship:export": "A deliverable → docx/pdf (pandoc, a corporate template). Word preview: reference, title, checks v1, TOC, logo and a W5 plan into Artifacts/word-preview, with a report in Artifacts/word-checks and an XML allowlist. Release is separate.",
     "ship:release": "Freeze the delivered version: a snapshot, a base commit, a date.",
@@ -765,7 +765,8 @@
     "папка результата вида не найдена": "the kind's result folder was not found",
     "у вида нет папки результата": "the kind has no result folder",
     "не удалось собрать эталон Word": "the Word reference could not be built",
-    "план Word не прошёл проверку": "the Word plan failed validation"
+    "план Word не прошёл проверку": "the Word plan failed validation",
+    "deliverable: ожидается true или false": "deliverable: expected true or false"
   },
   "connectors": {
     "confluence-dc": {
@@ -1283,7 +1284,10 @@
     "синтез cr-module/cr-algorithm/cr-rules моделью по фактам индекса": "model synthesis of cr-module/cr-algorithm/cr-rules from index facts",
     "факты запуска адаптера JSON (для архива диагностики)": "adapter launch facts as JSON (for the diagnostics archive)",
     "с --adapter-facts: ещё и запустить адаптер": "with --adapter-facts: also start the adapter",
-    "W5-план preview .docx.json внутри проекта": "W5 preview plan .docx.json inside the project"
+    "W5-план preview .docx.json внутри проекта": "W5 preview plan .docx.json inside the project",
+    "собрать поставляемый документ в Deliverables/work/<doc>_v<version>.md": "build a deliverable into Deliverables/work/<doc>_v<version>.md",
+    "имя поставляемого документа (для --deliverable)": "deliverable document name (with --deliverable)",
+    "версия поставляемого документа (для --deliverable)": "deliverable document version (with --deliverable)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",
@@ -1313,7 +1317,8 @@
     "ЧИСЛО": "N",
     "СТАТУС": "STATUS",
     "[СУТЬ]": "[GIST]",
-    "ПОЛЕ=ЗНАЧЕНИЕ": "FIELD=VALUE"
+    "ПОЛЕ=ЗНАЧЕНИЕ": "FIELD=VALUE",
+    "ВЕРСИЯ": "VERSION"
   },
   "connector_texts": {
     "персональный токен Confluence (CONFLUENCE_PAT) либо CONFLUENCE_USER + CONFLUENCE_PASSWORD": "a Confluence personal token (CONFLUENCE_PAT) or CONFLUENCE_USER + CONFLUENCE_PASSWORD",

@@ -152,13 +152,25 @@ python3 .aurora/scripts/spec_pack.py SPEC-012 --apply   # записать ба�
 
 ## assemble <ОПЗ|ПМИ|РП|...> — сборка поставляемого документа
 
+**Устарело с 1.231.17.** Новый путь:
+`agent:make --kind <вид> --idea "<задача>" --doc "<имя>" --version "<версия>" --deliverable`.
+Процедура ниже остаётся на один релиз для старых ссылок.
+
 1. Template from `Templates/`; knowledge context per `retrieval.md`
    (generate mode: только `knowledge`, с учётом релиза документа).
-2. Для ПМИ: секция проверок строится от трассировки — каждый REQ с `req_status: agreed`
-   должен получить хотя бы один тест; недостающие — в отчёт сборки.
+2. Для ПМИ: секция проверок строится от трассировки — каждый REQ с `req_status:
+   agreed` или `implemented` должен получить хотя бы один тест; недостающие — в отчёт
+   сборки. В `agent:make` правило
+   проверяют двое: критик получает блок согласованных требований в промпт и возвращает
+   пропуск как issue в обычный ремонт, а после записи движок детерминированно считает id
+   требований в тексте (`pmi_coverage`, `pmi_missing`) и кладёт счёт в шапку, раздел
+   «Покрытие ПМИ» и отчёт.
 3. Output: `Deliverables/work/<doc>_v<version>.md`, frontmatter per `frontmatter.md`
-   (type: deliverable, based_on — полный список использованных карточек).
+   (`type: <вид>`, `deliverable: true`, `doc`, `doc_version`, `version`, `template`;
+   `based_on` — полный список использованных карточек).
 4. Документ ревьюит и дорабатывает человек; сборка — это черновик.
+   `agent:make --deliverable` всегда оставляет `status: draft`: `ready` ставит только
+   приёмка и `ship:release`, а не автоматическая цепочка.
 
 ## publish <артефакт> — наружу, в Confluence/Jira
 
