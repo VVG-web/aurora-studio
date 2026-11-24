@@ -327,3 +327,72 @@ def test_deliverable_round_trip_and_the_written_header(tmp: Path):
     again = R.write_artifact(str(root), dict(delivered, sid="s-other", path=""))
     assert isinstance(again, dict) and again.get("ok") is False and "уже есть" in again["why"], again
     assert not list((root / "Deliverables/work").glob("ОПЗ_v2.1-*.md"))
+
+
+@test
+def test_lifecycle_rides_with_file_read_and_snapshot_publishing_is_closed(tmp: Path):
+    """Карточка не угадывает стадию: `file_read` приносит `lifecycle` и для текста, и для docx.
+
+    Снимок, выпуск и docx не публикуются (`state == "none"`), `Deliverables/work` остаётся
+    публикуемым; `Deliverables/<вид>`, `released` и `_archive` закрыты для правки, а ссылка
+    с обычным именем на снимок — не обход (`why_readonly_real`).
+    """
+    ck = _ck()
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    text = cfg.read_text(encoding="utf-8").replace(
+        '    space: "T"\n', '    space: "T"\n    base_url: "https://wiki.example.com"\n')
+    cfg.write_text(text + '\nartifacts:\n  us:\n    title: "История"\n    out: Artifacts/us\n'
+                          '    publish_url: "https://wiki.example.com/pages/viewpage.action?pageId=777"\n',
+                   encoding="utf-8")
+
+    def put(rel: str, data) -> Path:
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(data, bytes):
+            path.write_bytes(data)
+        else:
+            path.write_text(data, encoding="utf-8")
+        return path
+
+    src = "Artifacts/us/US-1.md"
+    put(src, '---\ntitle: "US-1"\ndoc: US-1\nversion: "1.0"\ntype: us\nstatus: ready\n---\n\n# История\n')
+    snap = "Deliverables/us/US-1_v1.0_2026-10-19.md"
+    put(snap, '---\nsource: Artifacts/us/US-1.md\n---\n\n# История\n')
+    docx = "Deliverables/us/US-1_v1.0_2026-10-19.docx"
+    put(docx, b"PK\x03\x04 docx")
+    put("Deliverables/work/ОПЗ_v1.md", '---\ntitle: "ОПЗ"\ntype: deliverable\n---\n\n# ОПЗ\n')
+
+    got = ck.file_read(str(root), src)
+    assert got["lifecycle"]["applicable"] is True and got["lifecycle"]["stage"] == "created", got["lifecycle"]
+    for key in ("path", "text", "digest", "readonly", "publish", "git"):
+        assert key in got, f"старое поле {key} пропало из file_read"
+    assert got["publish"]["state"] == "ready", got["publish"]
+
+    # docx не читается как текст, но карточка уже получила модель: открывать его в редакторе нечем.
+    binary = ck.file_read(str(root), docx)
+    assert binary.get("binary") is True and "text" not in binary, binary
+    assert binary["lifecycle"]["applicable"] is True and binary["lifecycle"]["path"] == docx, binary["lifecycle"]
+    assert "publish" not in binary, "у docx появилась кнопка публикации"
+
+    assert ck.file_read(str(root), snap)["publish"]["state"] == "none", "снимок публикуется как исходник"
+    assert ck.file_read(str(root), "Deliverables/work/ОПЗ_v1.md")["publish"]["state"] in ("ready", "blocked"), \
+        "Deliverables/work перестал публиковаться"
+
+    for rel in ("Deliverables/us/ОПЗ_v1.md", "Deliverables/us/sub/ОПЗ_v1.md",
+                "Deliverables/released/ОПЗ_v1.md", "Deliverables/_archive/ОПЗ_v1.md"):
+        why = ck.why_readonly(rel)
+        assert "доказательство" in why and "снимок" in why, f"нет причины запрета: {rel}: {why!r}"
+    assert ck.why_readonly("Deliverables/work/ОПЗ_v1.md") == "", "Deliverables/work закрыт для правки"
+
+    import os
+    if hasattr(os, "symlink"):
+        link = root / "Artifacts" / "us" / "ссылка.md"
+        try:
+            os.symlink(root / snap, link)
+        except (OSError, NotImplementedError):
+            return
+        assert ck.why_readonly_real(str(root), "Artifacts/us/ссылка.md", str(link)) != "", \
+            "why_readonly_real не видит ссылку на снимок"
+        assert ck.file_write(str(root), "Artifacts/us/ссылка.md", "# правка\n").get("error"), \
+            "запись по ссылке на снимок прошла"

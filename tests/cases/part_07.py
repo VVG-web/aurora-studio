@@ -298,9 +298,13 @@ def test_finished_artifact_lands_in_the_editor_with_a_publish_button(tmp: Path):
     assert "function publishFromEditor" in ui and "/api/files/clean" in ui, \
         "публикация из редактора не показывает чистовик"
     # Поток публикации: план и чистовик → карточка «что и куда уйдёт» → отправка только кнопкой карточки.
-    pub = ui[ui.index("async function publishFromEditor("):ui.index("function publishDone(")]
+    # Тело переехало в `publishFor`: карточка жизненного цикла зовёт его без редактора, а обёртка
+    # редактора остаётся входом.
+    pub = ui[ui.index("async function publishFor("):ui.index("function publishDone(")]
     assert pub.index("api(\"/api/files/clean") < pub.index('cmd:"ship:publish"'), \
         "публикация уходит раньше, чем человек увидел, что именно уйдёт"
+    wrap = ui[ui.index("async function publishFromEditor("):ui.index("async function publishFor(")]
+    assert "publishFor(" in wrap, "редактор публикует мимо общей карточки"
     # 1.202.0: «черновик» и «нет маркера» — свойства документа, а не повод для сообщений; снимаются молча.
     assert "editor.publish_nomark" not in ui and "editor.publish_cut" not in ui, \
         "лишние сообщения о маркере/черновике вернулись в карточку"
@@ -315,6 +319,11 @@ def test_finished_artifact_lands_in_the_editor_with_a_publish_button(tmp: Path):
     assert ('onclick:()=>openPath(x.path)' in ui
             or 'onclick: () => ctx.openPath(x.path)' in ui), \
         "список незаконченных не ведёт в документ — станет счётчиком, на который не смотрят"
+    # Вход в карточку: дерево и `openPath` зовут `openEntry`; обычный файл идёт в редактор.
+    for head in ("async function openPath(", "async function afterPublish("):
+        at = ui.index(head)
+        body = ui[at:ui.index("\n}\n", at)]
+        assert "openEntry(f)" in body, f"{head.strip()} не открывает карточку у файлов вида"
 
     sys.path.insert(0, str(KIT / "cockpit"))
     import importlib
