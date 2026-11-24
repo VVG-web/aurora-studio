@@ -281,7 +281,7 @@ HTTP — только если не смог сам адаптер (venv не с
 | `make:spec <тема>` (`spec`) | собрать спецификацию фичи из REQ и карточек со статусом `knowledge` (SDD) | `references/workflows.md` |
 | `make:spec-pack <SPEC-NNN>` (`spec-pack`) | бандл спеки: основания, DR, аббревиатуры, DoR-риски — сборка скриптом (`spec_pack.py`) | `references/workflows.md` |
 | `make:validate <SPEC> <объект>` (`validate`) | сверить реализацию/тесты подрядчика со сценариями спеки | `references/workflows.md` |
-| `make:assemble <документ>` (`assemble`) | собрать поставляемый документ (ОПЗ/ПМИ/РП) из базы по шаблону | `references/workflows.md` |
+| `make:assemble <документ>` (`assemble`) | собрать поставляемый документ (ОПЗ/ПМИ/РП) из базы по шаблону. Устарело, используйте `agent:make --deliverable` | `references/workflows.md` |
 
 ### `ship:` — наружу
 
