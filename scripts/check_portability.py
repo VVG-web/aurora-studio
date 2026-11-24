@@ -26,6 +26,8 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
+import aurora_common as AC  # noqa: F401 — точка входа движка: защита версии Python
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DIRS = ("scripts", "cockpit", "tests")
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"

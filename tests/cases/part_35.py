@@ -248,19 +248,58 @@ def _release_fixture(tmp: Path, ahead: str) -> tuple:
     git("commit", "-qm", "проверенный коммит")
     target = git("rev-parse", "HEAD")
     git("branch", "-M", "master")
-    if ahead == "forms":
+    if ahead == "none":
+        pass
+    elif ahead == "forms":
         form.write_text("name: Баг\nlabels: [bug]\n", encoding="utf-8")
     else:
         (work / "product.py").write_text("VALUE = 2\n", encoding="utf-8")
-    git("add", "-A")
-    git("commit", "-qm", f"впереди: {ahead}")
+    if ahead != "none":
+        git("add", "-A")
+        git("commit", "-qm", f"впереди: {ahead}")
     git("remote", "add", "origin", str(origin))
     git("push", "-q", "origin", "master")
     git("checkout", "-q", "--detach", target)
     return root, work, target
 
 
-def _run_release_step(root: Path, work: Path, target: str, bash: str) -> tuple:
+def _release_ff_fixture(tmp: Path) -> tuple:
+    """origin/master на базовом коммите, проверенный TARGET на один коммит впереди."""
+    root = tmp / "release-ff"
+    origin, work = root / "origin.git", root / "work"
+    root.mkdir()
+    work.mkdir()
+
+    def git(*args, cwd=work):
+        cp = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+        assert cp.returncode == 0, f"git {' '.join(args)}: {cp.stderr}{cp.stdout}"
+        return cp.stdout.strip()
+
+    git("init", "-q", "--bare", str(origin), cwd=root)
+    git("init", "-q")
+    git("config", "user.name", "Аналитик")
+    git("config", "user.email", "analyst@example.com")
+    git("config", "commit.gpgsign", "false")
+    (work / "VERSION").write_text("1.231.13\n", encoding="utf-8")
+    (work / "CHANGELOG.md").write_text("## 1.231.13 — проверка\n\nТело выпуска.\n",
+                                       encoding="utf-8")
+    (work / "product.py").write_text("VALUE = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "база")
+    git("branch", "-M", "master")
+    git("remote", "add", "origin", str(origin))
+    git("push", "-q", "origin", "master")
+    (work / "product.py").write_text("VALUE = 2\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "release candidate")
+    target = git("rev-parse", "HEAD")
+    git("checkout", "-q", "--detach", target)
+    return root, work, target
+
+
+def _run_release_step(root: Path, work: Path, target: str, bash: str,
+                      branch: str = "master") -> tuple:
     """Запустить настоящий шаг release.yml с заглушкой gh; вернуть вывод, summary и вызовы gh."""
     bin_dir = root / "bin"
     bin_dir.mkdir()
@@ -294,6 +333,7 @@ exit 99
            "RUNNER_TEMP": str(runner),
            "EVENT_NAME": "workflow_run",
            "WORKFLOW_RUN_HEAD_SHA": target,
+           "WORKFLOW_RUN_HEAD_BRANCH": branch,
            "DISPATCH_SHA": target}
     cp = subprocess.run([bash, str(script)], cwd=work, env=env, capture_output=True,
                         text=True, encoding="utf-8", errors="replace", timeout=60)
@@ -322,8 +362,11 @@ def test_release_tags_the_commit_that_passed_ci_and_skips_when_product_moved(_t)
         "существующий тег на другом коммите перезаписывается"
     assert "POST_TAG" not in text and "После метки" not in text, \
         "раздел «После метки» вернулся"
-    assert "--force-tag" not in text and "push --tags" not in text and "push origin" not in text, \
+    assert "--force-tag" not in text and "push --tags" not in text and "--force" not in text, \
         "выпуск не должен переписывать метку или пушить теги вручную"
+    assert text.count("push origin") == 1 and \
+           'git push origin "$TARGET:refs/heads/master"' in text, \
+        "release-ветка должна делать только fast-forward master, без ручных тегов"
     assert 'git fetch --no-tags origin "+refs/heads/master:refs/remotes/origin/master"' in text, \
         "перед проверкой вершины master не обновляется свежий origin/master"
     assert re.search(r'if gh release view "\$TAG" >/dev/null 2>&1; then(?:(?!\n\s*fi).)*?\n\s+exit 0',
@@ -365,3 +408,21 @@ def test_release_skips_when_a_product_file_moved_master(tmp: Path):
     assert "Тег v1.231.13 не ставился, Release не создавался." in text, text
     assert "release create" not in calls.read_text(encoding="utf-8"), \
         "при продуктовом файле впереди Release всё-таки создан"
+
+
+@test
+def test_release_fast_forwards_master_from_a_release_branch(tmp: Path):
+    """Зелёный release/* сам делает fast-forward master, без второго прогона матрицы."""
+    bash = shutil.which("bash")
+    if not bash or os.name == "nt":
+        return
+    root, work, target = _release_ff_fixture(tmp)
+    cp, _summary, calls = _run_release_step(root, work, target, bash,
+                                            branch="release/1.231.13")
+    assert cp.returncode == 0, f"выпуск остановлен:\n{cp.stdout}\n{cp.stderr}"
+    assert "Fast-forward master" in cp.stdout, cp.stdout
+    origin_master = subprocess.run(
+        ["git", "--git-dir", str(root / "origin.git"), "rev-parse", "refs/heads/master"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
+    assert origin_master == target, (origin_master, target)
+    assert "release create" in calls.read_text(encoding="utf-8")
