@@ -2,14 +2,64 @@ name: engine-tests
 on: [push, pull_request]
 permissions:
   contents: read
+# Новый прогон той же ветки отменяет предыдущий: старый уже не про тот коммит,
+# а полный suite занимает десятки минут. Для master это безопасно: выпуск ждёт
+# зелёный итог последнего прогона, отменённый ничего не выпускает.
+concurrency:
+  group: engine-tests-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
+  preflight:
+    # Дешёвые проверки идут первыми и валят прогон до полного suite. Раньше lint
+    # стоял последним: ошибка импорта пряталась за 40 минутами тестов и стоила
+    # ещё одного полного прогона.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Engine dependencies
+        run: python3 -m pip install --quiet -r requirements.txt -c .github/requirements-ci.txt
+      - name: Version, CHANGELOG and panel agree
+        run: python3 tests/check_release.py
+      - name: Quality golden gate
+        run: python3 scripts/quality_eval.py --gate --baseline scripts/quality_baseline.json
+      - name: Engine compiles
+        run: python3 -m compileall -q scripts cockpit reports aurora.py tests
+      # Неиспользуемые импорты и переменные и замыкания в цикле: мёртвый код не копится. F821 —
+      # имя без определения: пропавший `import` иначе виден только тесту, который дойдёт до этой строки.
+      - name: Lint (ruff)
+        run: |
+          python3 -m pip install --quiet -c .github/requirements-ci.txt ruff
+          ruff check --select F401,F841,B023,F821 --output-format github scripts cockpit reports aurora.py
+      # Правила, которые ловят платформенные грабли до полного suite. Проверяются
+      # только добавленные строки: старые исключения не мешают и не требуют baseline.
+      - name: Portability rules for changed lines
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE_SHA" ] || [[ "$BASE_SHA" =~ ^0+$ ]]; then
+            echo "::warning::новая ветка без базового коммита: portability-проверка пропущена"
+          else
+            python3 scripts/check_portability.py --changed "$BASE_SHA"
+          fi
   tests:
     # Основная проверка — на актуальной версии Python, которую кит рекомендует аналитикам
     # (docs/CONTRIBUTING.md): 3.14. Нижняя поддерживаемая (3.11) проверяется заданием floor.
+    needs: preflight
     runs-on: ubuntu-24.04
     # Полный набор идёт ~30 минут: предел в 30 отменял задание на lint, хотя тесты уже
     # были зелёными. Запас нужен и линтеру, и медленному раннеру.
     timeout-minutes: 45
+    # Те же три доли, что у Windows: каждая третья проверка на своей машине.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     env:
       # Обновление с прежних выпусков (tests/cases/part_40.py) берёт их из git-тегов: без тегов
       # сценарий молча пропускался бы, а с этой переменной — падает.
@@ -33,10 +83,6 @@ jobs:
         run: python3 -m pip install --quiet -r requirements.txt -c .github/requirements-ci.txt
       - name: Install pandoc
         run: sudo apt-get update && sudo apt-get install -y pandoc
-      - name: Version, CHANGELOG and panel agree
-        run: python3 tests/check_release.py
-      - name: Quality golden gate
-        run: python3 scripts/quality_eval.py --gate --baseline scripts/quality_baseline.json
       - name: Smoke (source-scan invariants)
         run: python3 tests/run_tests.py --smoke
       # Проверки «внутренних названий нет в отслеживаемых файлах и в сообщениях коммитов» (part_01) без
@@ -52,14 +98,8 @@ jobs:
           else
             echo "::warning::PRIVATE_TERMS не задан: проверки внутренних названий по всему дереву и истории пропущены"
           fi
-      - name: Full suite
-        run: python3 tests/run_tests.py
-      # Неиспользуемые импорты и переменные и замыкания в цикле: мёртвый код не копится. F821 —
-      # имя без определения: пропавший `import` иначе виден только тесту, который дойдёт до этой строки.
-      - name: Lint (ruff)
-        run: |
-          python3 -m pip install --quiet -c .github/requirements-ci.txt ruff
-          ruff check --select F401,F841,B023,F821 --output-format github scripts cockpit reports aurora.py
+      - name: Full suite (shard ${{ matrix.shard }} of 3)
+        run: python3 tests/run_tests.py --shard=${{ matrix.shard }}/3
   authors:
     # Автор коммита — только человек (docs/CONTRIBUTING.md): ни имени модели, ни бота, ни
     # трейлера Co-Authored-By с ними. Ассистент в облачной сессии подписывает коммиты своим
@@ -106,11 +146,16 @@ jobs:
     # только 3.12+ (кавычки того же вида внутри f-строки), роняла kb_lint на старом Python целиком
     # с 1.112.0 по 1.143.0, и проверка на новой версии этого не видела. Задание блокирующее:
     # выпуск ждёт его вместе с основным.
+    needs: preflight
     runs-on: ubuntu-24.04
     # Полный набор идёт около 30 минут: предел в 30 отменял задание на самой границе, а отмена
     # job по таймауту отменяет весь run (continue-on-error не спасает), и release не запускается.
     # Берём 60, как у newer-python: запас должен быть больше самого долгого прогона.
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -125,13 +170,14 @@ jobs:
         run: python3 -m pip install --quiet -r requirements.txt -c .github/requirements-ci.txt
       - name: Install pandoc
         run: sudo apt-get update && sudo apt-get install -y pandoc
-      - name: Full suite on the lowest supported Python
-        run: python3 tests/run_tests.py
+      - name: Full suite on the lowest supported Python (shard ${{ matrix.shard }} of 3)
+        run: python3 tests/run_tests.py --shard=${{ matrix.shard }}/3
   newer-python:
     # Промежуточные версии между нижней (3.11) и основной (3.14): системная на Ubuntu 24.04 — 3.12,
     # у аналитиков с Homebrew чаще всего 3.13. Политика версий (BL-DEC-01) обещает «3.11+ тестируем»,
     # регрессия, видная только на одной из них, иначе CI не заметит. Пока неблокирующее, как и
     # остальные новые задания матрицы ОС × Python (BL-DEC-02); блокирующим — после зелёных прогонов.
+    needs: preflight
     runs-on: ubuntu-24.04
     # 60, а не 30: полный набор на 3.14 занимает 30:28, на 3.13 — 28:41, а на 3.12 медленнее.
     # Отмена job по таймауту отменяет весь run (continue-on-error не спасает), и релизный
@@ -142,6 +188,7 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.12", "3.13"]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -156,12 +203,13 @@ jobs:
         run: python3 -m pip install --quiet -r requirements.txt -c .github/requirements-ci.txt
       - name: Install pandoc
         run: sudo apt-get update && sudo apt-get install -y pandoc
-      - name: Full suite on Python ${{ matrix.python }}
-        run: python3 tests/run_tests.py
+      - name: Full suite on Python ${{ matrix.python }} (shard ${{ matrix.shard }} of 3)
+        run: python3 tests/run_tests.py --shard=${{ matrix.shard }}/3
   legacy-310:
     # Поддержка Python 3.10 заканчивается в октябре 2026 (PEP 619): движок на нём работает, но с предупреждением.
     # Задание не блокирует выпуск (continue-on-error); убрать после 2027-04, когда 3.10 перестанет
     # быть «работает с предупреждением» (календарь пересмотра — в политике версий).
+    needs: preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     continue-on-error: true
@@ -190,6 +238,7 @@ jobs:
     # останавливать выпуск; блокирующим его делают после стабильных зелёных прогонов. Свежие
     # версии — canary.yml. PYTHONUTF8=1 только для читаемого вывода шагов: сами проверки от
     # кодовой страницы не зависят (труба Windows в cp1252 моделируется в тесте).
+    needs: preflight
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     continue-on-error: true
@@ -249,6 +298,7 @@ jobs:
     # continue-on-error на этот итог не влияет — выпуск ушёл бы при красных тестах на Windows.
     # Версия — 3.12, как у проверенного прогона; 3.14 на Windows идёт отдельным неблокирующим
     # заданием windows-314 (BL-DEC-02), блокирующим его делают после стабильных зелёных прогонов.
+    needs: preflight
     runs-on: windows-latest
     # Шард 3 на медленном раннере подходит к 30 минутам вплотную: с новыми тестами runtime
     # (venv, PEP 668) запас нужен, иначе задание отменяется по времени, а не по падению.
@@ -282,6 +332,7 @@ jobs:
     # Windows на основной версии Python (3.14; бинарная сборка с патчами, тогда как для 3.12
     # setup-python на Windows берёт старую 3.12.10). Не блокирует выпуск (continue-on-error):
     # блокирующим остаётся windows на 3.12; перевести сюда после стабильных зелёных прогонов.
+    needs: preflight
     runs-on: windows-latest
     timeout-minutes: 45
     continue-on-error: true
@@ -320,11 +371,16 @@ jobs:
     # Кит ставят и на macOS (start-aurora.command, install_aurora.py): системный Python там старый,
     # пути и оболочка другие, а CI до сих пор macOS не покрывал. Пока неблокирующее
     # (continue-on-error): сделать блокирующим, когда задание станет стабильно зелёным.
+    needs: preflight
     runs-on: macos-latest
     # Полный набор на macOS идёт дольше 30 минут; отмена по таймауту делает итог workflow
     # cancelled, и release.yml, который ждёт только success, молча не выпускает версию.
     timeout-minutes: 90
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -340,6 +396,6 @@ jobs:
       - name: Smoke (source-scan invariants)
         run: python3 tests/run_tests.py --smoke
       # Полный набор идёт и после красной проверки инвариантов: за один прогон нужен весь список падений.
-      - name: Full suite
+      - name: Full suite (shard ${{ matrix.shard }} of 3)
         if: success() || failure()
-        run: python3 tests/run_tests.py
+        run: python3 tests/run_tests.py --shard=${{ matrix.shard }}/3
