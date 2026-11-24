@@ -659,14 +659,15 @@ def test_resume_does_not_skip_a_tail_step_that_shares_a_signature_with_the_cycle
 
 @test
 def test_route_step_keys_are_unique_in_every_shipped_route(tmp: Path):
-    """Ключи «сделано» шагов каждого маршрута из scenarios.txt уникальны: добавили в
-    маршрут второй такой же шаг — ключ получит позицию, а не склеится с первым."""
+    """Ключи «сделано» шагов каждого из трёх оставшихся маршрутов из scenarios.txt уникальны:
+    добавили в маршрут второй такой же шаг — ключ получит позицию, а не склеится с первым."""
     import importlib
     from types import SimpleNamespace
     rr, _ = _modules()
     ck_mod = importlib.import_module("aurora_cockpit")
     routes = ck_mod.scenarios()
-    assert routes, "scenarios.txt не прочитан"
+    assert [r["id"] for r in routes] == ["update", "fix", "rebuild"], \
+        f"маршруты write и deliver удалены, остались три: {[r['id'] for r in routes]}"
     ck = FakePanel(tmp, {}, routes)
     ck.command_by_name = lambda name: {"cmd": name, "runnable": True}
     for sc in routes:

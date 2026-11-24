@@ -1480,6 +1480,30 @@ def test_profile_choice_that_is_broken_falls_back_to_all(tmp: Path):
 
 
 @test
+def test_profile_with_removed_write_warns_not_raises(tmp: Path):
+    """Пресет, оставшийся с `scenarios: ["write"]`, не роняет панель: причина в `warn`, а список видимых маршрутов пуст.
+
+    Удалённый маршрут — не повод бросать исключение при чтении профиля: выбор роли не должен
+    ронять панель. Профиль честно говорит, что `write` больше не маршрут, и показывает только
+    те, что остались, — ни одного.
+    """
+    ck = _ck()
+    undo, _ = _with_profiles(ck, tmp, {
+        "legacy.json": {"id": "legacy", "name": "Legacy", "scenarios": ["write"]}},
+        choice={"id": "legacy"})
+    try:
+        act = ck.active_profile()
+        assert act["id"] == "legacy", act
+        assert any("write" in w and "не маршрут" in w for w in act["warn"]), act["warn"]
+        assert ck.scenarios() == [], "профиль показал маршрут, которого больше нет"
+        assert [r["id"] for r in ck.scenarios(all_routes=True)] == ["update", "fix", "rebuild"]
+        state = ck.profiles_state("en")
+        assert any("write" in w for w in state["warn"]), state["warn"]
+    finally:
+        undo()
+
+
+@test
 def test_profile_manifest_is_checked_by_the_common_loader(tmp: Path):
     """Вид `profile` проверяет общий загрузчик: нет name — отказ; кривой тип списка отброшен с отчётом;
     лишнее в списках не попадает в профиль; `all.json` имя «all» не перебивает; битый пресет не прячет соседей."""

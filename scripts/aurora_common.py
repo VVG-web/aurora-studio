@@ -3597,7 +3597,7 @@ def mcp_route_verdict(route, mode="safe") -> dict:
     """Можно ли запускать маршрут: `safe` не пускает destructive и шаги из deny-списка.
 
     `full` пускает их, но `admin` и подтверждение обязательны. `write` — не признак
-    опасности: маршруты `update`, `fix`, `write` в `safe` проходят (так и записано в
+    опасности: маршруты `update` и `fix` в `safe` проходят (так и записано в
     приёмке). Опасность задаёт `destructive: true` или шаг с командой из deny-списка.
     """
     item = route if isinstance(route, dict) else {}

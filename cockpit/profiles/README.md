@@ -24,16 +24,16 @@
 
 Шесть ролей, как в стандартной команде. Названия — **английские в обоих языках** (`name` — строка), описания
 переведены. Состав — по фактическим разделам (`cockpit/modules/*/module.json`) и маршрутам
-(`cockpit/scenarios.txt`: `update` обновить, `fix` починить, `rebuild` пересобрать, `write` написать артефакт,
-`deliver` сдать документы). Мостик, «Настройка», «Проект», «Файлы» и «Консоль» встроены в ядро и видны всем ролям.
+(`cockpit/scenarios.txt`: `update` обновить, `fix` починить, `rebuild` пересобрать). Мостик, «Настройка»,
+«Проект», «Файлы» и «Консоль» встроены в ядро и видны всем ролям.
 
 | Роль (`id`) | Разделы (`modules`) | Маршруты (`scenarios`) | Зачем |
 |---|---|---|---|
-| **Analyst** (`analyst`) | health, quickstart, work, ask, mirrors, reference | update, fix, write | требования и знание: состояние базы, источники, артефакты, «Спросить» |
+| **Analyst** (`analyst`) | health, quickstart, work, ask, mirrors, reference | update, fix | требования и знание: состояние базы, источники, артефакты, «Спросить» |
 | **Developer** (`developer`) | gitsync, graph, commands, ask, quickstart, version, install, reference | update, fix | репозиторий и движок: Git, команды, связи карточек, версия кита, установка |
 | **Tester** (`tester`) | health, quickstart, reports, ask, mirrors, commands, reference | fix | проверка: метрики и находки базы, отчёты, зеркала источников, команды проверок |
-| **Product Owner** (`product-owner`) | health, quickstart, work, ask, reports, reference | write, deliver | продукт: требования, артефакты и их выдача, отчёты |
-| **Project Manager** (`project-manager`) | health, quickstart, work, cron, reports, mirrors, ask, reference | update, deliver | ход проекта: здоровье базы, продуктивность, расписание, отчёты |
+| **Product Owner** (`product-owner`) | health, quickstart, work, ask, reports, reference | update | продукт: требования, артефакты и их выпуск из «Файлов», отчёты |
+| **Project Manager** (`project-manager`) | health, quickstart, work, cron, reports, mirrors, ask, reference | update | ход проекта: здоровье базы, продуктивность, расписание, отчёты |
 | **Team Lead** (`team-lead`) | всё из Developer и Project Manager плюс bots и models | все (поля нет) | руководитель видит всё рабочее и настройки машины: боты, модели, Cron, Git |
 
 Тестировщику отдельных маршрутов проверки в ките нет: ему достаётся `fix` (проверка и ремонт базы) и
