@@ -12,6 +12,7 @@ import hashlib
 import importlib
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -136,6 +137,41 @@ def _run(root: Path, *args: str) -> subprocess.CompletedProcess:
 
 def _report(root: Path) -> dict:
     return json.loads((root / WORD_CHECKS / "check.json").read_text(encoding="utf-8"))
+
+
+@test
+def test_preview_falls_back_when_distro_pandoc_has_no_embedded_data(tmp: Path):
+    """Дистрибутивный pandoc без embed_data_files не умеет docx в песочнице:
+    preview повторяет сборку без `--sandbox` и вырезает картинки."""
+    if os.name == "nt":
+        return  # на Windows kит ставит официальный pandoc со встроенными данными
+    real = shutil.which("pandoc")
+    if not real:
+        return
+    root = _project(tmp)
+    _doc(root)
+    fake = tmp / "fakebin"
+    fake.mkdir()
+    wrapper = fake / "pandoc"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do\n'
+        '  if [ "$a" = "--sandbox" ]; then\n'
+        '    echo "Could not find data file data/data/docx/[Content_Types].xml" >&2\n'
+        "    exit 97\n"
+        "  fi\n"
+        "done\n"
+        f'exec "{real}" "$@"\n', encoding="utf-8")
+    wrapper.chmod(0o755)
+    old = os.environ["PATH"]
+    os.environ["PATH"] = f"{fake}{os.pathsep}{old}"
+    try:
+        cp = _run(root, "--date", "2026-01-02")
+    finally:
+        os.environ["PATH"] = old
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert _report(root)["engine"] == "auto", _report(root)
+    assert (root / WORD_PREVIEW / "opz_v1.docx").is_file()
 
 
 @test
