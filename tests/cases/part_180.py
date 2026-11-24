@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 
 from harness import KIT, panel_sources, test
 
@@ -57,7 +56,7 @@ def test_kinds_form_has_a_task_tracker_frame_instead_of_the_folded_task_block(_t
     assert 'tfield("labels"' in form and 'tfield("assignee"' in form and 'tfield("epic"' not in form
     assert "taskOptions(" in form and "taskFill(true)" in form and 't("tracker.refresh")' in form
     assert 't("tracker.default", {v: base.project_key})' in form and "who.display || who.name" in form
-    assert "el(\"div\",{class:\"kframes\"}, create, publish, tracker)" in form
+    assert "el(\"div\",{class:\"kframes\"}, create, publish, tracker, word)" in form
     for gone in ("kinds.task_open", "kinds.task_close", "kinds.task_about", "taskBox", "delete rec.task.epic"):
         assert gone not in form, gone
     ru, en = _cats()

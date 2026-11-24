@@ -1725,6 +1725,7 @@ def test_only_neutral_hosts_in_tracked_files(tmp: Path):
              "pypi.org",   # надстройки движка сверяют версию, которую поставит pip (1.138.0)
              "pythonhosted.org",   # файлы пакетов PyPI: установка надстроек различает их и частный индекс (BL-SEC-21)
              "bitbucket.org",   # облачный Bitbucket — сервер модуля провайдера Git (1.154.0)
+             "purl.org", "schemas.microsoft.com",   # OPC/Office XML namespaces: стандартные пространства имён, не контур заказчика
              "www.omg.org",   # пространства имён стандартов BPMN и DMN: по ним узнаётся схема (1.187.5)
              "www.w3.org"}   # пространство имён SVG в фикстурах чтения svg-вложений (1.187.5)
     def ok(host: str) -> bool:

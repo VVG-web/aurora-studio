@@ -157,6 +157,12 @@
    "calls": 1,
    "git": "local"
   },
+  "cockpit/aurora_cockpit.py:word_script_create": {
+   "kind": "other",
+   "reason": "декларативный план Word W5 и его отпечатки в Scripts/Generated: не карточка, код не исполняется",
+   "calls": 2,
+   "git": "none"
+  },
   "cockpit/aurora_cockpit.py:write_route_state": {
    "kind": "other",
    "reason": "панель: состояние, настройки, журналы и файлы проекта по команде человека",
@@ -877,6 +883,24 @@
    "calls": 1,
    "git": "local"
   },
+  "scripts/docx_plan.py:_write_json": {
+   "kind": "other",
+   "reason": "план W5 и meta Word в Scripts/Generated: декларативный артефакт, не карточка",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/docx_reference.py:build": {
+   "kind": "other",
+   "reason": "эталон Word и meta в Scripts/Generated: производный артефакт, не карточка",
+   "calls": 3,
+   "git": "none"
+  },
+  "scripts/docx_title.py:save": {
+   "kind": "other",
+   "reason": "шаблон титула Word в Templates: общий файл проекта, не карточка",
+   "calls": 1,
+   "git": "shared"
+  },
   "scripts/engine_txn.py:_record": {
    "kind": "other",
    "reason": "копия файла движка в снимок (~/.aurora/engine-backups/); карточек не касается",
@@ -1541,6 +1565,18 @@
    "kind": "other",
    "reason": "экспорт документа в html: очистка готового файла от опасных адресов, не карточка",
    "calls": 1,
+   "git": "none"
+  },
+  "scripts/ship_doc.py:_write_report": {
+   "kind": "other",
+   "reason": "preview Word: check.json в Artifacts/word-checks, паспорт проверок, не карточка",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/ship_doc.py:preview_docx": {
+   "kind": "other",
+   "reason": "preview Word: docx в Artifacts/word-preview, производный файл, не карточка",
+   "calls": 2,
    "git": "none"
   },
   "scripts/ship_doc.py:main": {

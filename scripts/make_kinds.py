@@ -58,6 +58,7 @@ import os
 import re
 import sys
 import unicodedata
+import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import MADE_MARK           # noqa: E402  — граница чистовика, одна на движок
@@ -96,6 +97,19 @@ FIELDS = ("title", "template", "prompt", "out", "publish_url", "publish_path", "
 CREATE_FIELDS = ("title", "template", "prompt", "out", "mcp", "tech_agnostic", "ref_mask")
 PUBLISH_FIELDS = ("publish_url", "publish_path", "publish_title", "publish_prompt", "publish_engine", "publish_script",
                   "publish_template", "review")
+
+# Word-предпросмотр 1.231.19 (R5). Это поля вида, но не поля публикации: у них своя
+# рамка в форме и свой набор проверок. `docx_plan` и `docx_script` сюда не входят:
+# план W5 живёт в Scripts/Generated, а готовых скриптов в preview нет.
+DOCX_FIELDS = ("docx_template", "docx_example", "docx_title", "docx_logo",
+               "docx_prompt", "docx_engine", "docx_checks", "docx_map")
+DOCX_CREATE_FIELDS = ("docx_template", "docx_example", "docx_title", "docx_logo")
+DOCX_ENGINES = ("auto", "reference", "plan")
+DOCX_LIMIT = 5 * 1024 * 1024
+DOCX_EXAMPLE_LIMIT = 200 * 1024 * 1024
+CHECKS_LIMIT = 256 * 1024
+FIELDS = FIELDS + DOCX_FIELDS
+CREATE_FIELDS = CREATE_FIELDS + DOCX_CREATE_FIELDS
 # `publish_path` — цепочка разделов под корневой страницей вида (`publish_url`): уровни через `>`, пробелы по краям
 # уровня обрезаются; пусто — документ ложится прямо под корень. `publish_title` — шаблон заголовка страницы, пусто —
 # `{title}`. Подстановки и правила — `publish_target` ниже; путь разрешает `ship:publish` (`publish_doc`).
@@ -702,6 +716,167 @@ def template_problem(root: str, rec: dict) -> str:
     return ""
 
 
+def _docx_inside(root: str, rel: str) -> str:
+    """Путь поля Word: только внутри проекта, без абсолютных путей и `..`; иначе причина."""
+    text = str(rel or "").strip()
+    if not text:
+        return ""
+    if os.path.isabs(text) or text.startswith(("/", "\\")) or ".." in text.replace("\\", "/").split("/"):
+        return "путь вне проекта"
+    full = os.path.realpath(os.path.join(root, text))
+    base = os.path.realpath(root)
+    try:
+        if os.path.commonpath([base, full]) != base:
+            return "путь вне проекта"
+    except ValueError:
+        return "путь вне проекта"
+    return ""
+
+
+def _docx_zip_parts(path: str) -> tuple:
+    try:
+        with zipfile.ZipFile(path) as z:
+            return set(z.namelist()), ""
+    except (OSError, zipfile.BadZipFile) as e:
+        return set(), "не открывается как zip: %s" % str(e)[:120]
+
+
+def _docx_checks_problem(root: str, kind: str, value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("{") or text.startswith("["):
+        return "docx_checks: нужен путь к JSON-файлу, inline-строка не принимается"
+    why = _docx_inside(root, text)
+    if why:
+        return "docx_checks: " + why
+    path = os.path.join(root, text)
+    if not os.path.isfile(path):
+        return "docx_checks: файла нет на диске: %s" % text
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        return "docx_checks: не читается: %s" % e
+    if size > CHECKS_LIMIT:
+        return "docx_checks: больше %d КБ" % (CHECKS_LIMIT // 1024)
+    try:
+        raw = open(path, encoding="utf-8-sig").read()
+
+        def no_dups(pairs):
+            seen = set()
+            for key, _value in pairs:
+                if key in seen:
+                    raise ValueError("дубль ключа %s" % key)
+                seen.add(key)
+            return dict(pairs)
+
+        data = json.loads(raw, object_pairs_hook=no_dups)
+    except (OSError, ValueError) as e:
+        return "docx_checks: не разбирается как JSON: %s" % str(e)[:120]
+    if not isinstance(data, dict):
+        return "docx_checks: ожидался JSON-объект"
+    if data.get("version") != 1:
+        return "docx_checks: version должен быть 1"
+    if str(data.get("kind") or "") != kind:
+        return "docx_checks: kind «%s» не совпадает с видом «%s»" % (data.get("kind"), kind)
+    return ""
+
+
+def _docx_map_problem(root: str, rec: dict) -> str:
+    text = str(rec.get("docx_map") or "").strip()
+    if not text:
+        return ""
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        return "docx_map: не JSON: %s" % str(e)[:80]
+    if not isinstance(data, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in data.items()):
+        return "docx_map: ожидается объект «канонический стиль → styleId»"
+    source = str(rec.get("docx_example") or rec.get("docx_template") or "").strip()
+    if not source:
+        return "docx_map: нужен docx_example или docx_template"
+    why = _docx_inside(root, source)
+    if why:
+        return "docx_map: источник стилей: " + why
+    path = os.path.join(root, source)
+    names, why = _docx_zip_parts(path)
+    if why or "word/styles.xml" not in names:
+        return "docx_map: стили источника не читаются"
+    try:
+        with zipfile.ZipFile(path) as z:
+            styles = z.read("word/styles.xml").decode("utf-8", "replace")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return "docx_map: стили источника не читаются"
+    ids = set(re.findall(r'w:styleId="([^"]+)"', styles))
+    missing = sorted(v for v in data.values() if v not in ids)
+    if missing:
+        return "docx_map: в источнике нет стилей " + ", ".join(missing[:5])
+    return ""
+
+
+def _docx_problems(root: str, kind: str, rec: dict) -> list:
+    bad = []
+    engine = str(rec.get("docx_engine") or "").strip().lower()
+    if engine and engine not in DOCX_ENGINES:
+        bad.append("docx_engine: «%s» — допустимо %s или пусто" % (engine, ", ".join(DOCX_ENGINES)))
+    for field, suffixes in (("docx_template", (".docx", ".dotx")),
+                            ("docx_example", (".docx",)),
+                            ("docx_title", (".docx", ".xml")),
+                            ("docx_logo", (".png", ".jpg", ".jpeg")),
+                            ("docx_prompt", (".md",))):
+        value = str(rec.get(field) or "").strip()
+        if not value:
+            continue
+        why = _docx_inside(root, value)
+        if why:
+            bad.append("%s: %s" % (field, why))
+            continue
+        path = os.path.join(root, value)
+        if not os.path.isfile(path):
+            bad.append("%s: файла нет на диске: %s" % (field, value))
+            continue
+        if not value.casefold().endswith(suffixes):
+            bad.append("%s: недопустимое расширение: %s" % (field, value))
+            continue
+        limit = DOCX_EXAMPLE_LIMIT if field == "docx_example" else DOCX_LIMIT
+        if field in ("docx_template", "docx_example", "docx_title") and os.path.getsize(path) > limit:
+            bad.append("%s: больше %d МБ" % (field, limit // (1024 * 1024)))
+            continue
+        if field == "docx_logo":
+            size = os.path.getsize(path)
+            if not (1024 <= size <= DOCX_LIMIT):
+                bad.append("docx_logo: размер %d байт, нужен 1 КБ..5 МБ" % size)
+            try:
+                head = open(path, "rb").read(8)
+            except OSError:
+                head = b""
+            if not (head.startswith(b"\x89PNG\r\n\x1a\n") or head.startswith(b"\xff\xd8\xff")):
+                bad.append("docx_logo: только PNG или JPEG")
+            continue
+        if field in ("docx_template", "docx_example"):
+            names, why = _docx_zip_parts(path)
+            if why:
+                bad.append("%s: %s" % (field, why))
+            elif "word/styles.xml" not in names:
+                bad.append("%s: нет word/styles.xml" % field)
+        elif field == "docx_title" and value.casefold().endswith(".docx"):
+            names, why = _docx_zip_parts(path)
+            if why:
+                bad.append("%s: %s" % (field, why))
+        elif field == "docx_title" and value.casefold().endswith(".xml"):
+            try:
+                open(path, encoding="utf-8-sig").read(1000)
+            except OSError:
+                bad.append("%s: не читается" % field)
+    why = _docx_checks_problem(root, kind, rec.get("docx_checks") or "")
+    if why:
+        bad.append(why)
+    why = _docx_map_problem(root, rec)
+    if why:
+        bad.append(why)
+    return bad
+
+
 def check(root: str, kinds: dict) -> list:
     """[(тип, что не так)] — объявленное, но не существующее на диске."""
     bad = []
@@ -732,6 +907,8 @@ def check(root: str, kinds: dict) -> list:
                 bad.append((kind, f"{field}: незакрытая фигурная скобка в «{value}»"))
             elif any(not m.strip().rstrip("?").strip() for m in _SLOT.findall(value)):
                 bad.append((kind, f"{field}: пустая подстановка {{}} в «{value}» — назовите поле шапки: {{epic}}"))
+        for why in _docx_problems(root, kind, rec):
+            bad.append((kind, why))
     return bad
 
 

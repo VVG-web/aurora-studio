@@ -29,7 +29,7 @@ class XmlRefused(Exception):
 
 
 def safe_parse(data: bytes, limit: int, max_elements: int = 400_000, max_depth: int = 100,
-               error=XmlRefused):
+               error=XmlRefused, namespaces=None):
     """Корень XML-дерева; отказ — исключение `error` с причиной."""
     if len(data) > limit:
         raise error("файл больше предела (%d МБ)" % (limit // 1_000_000))
@@ -41,8 +41,13 @@ def safe_parse(data: bytes, limit: int, max_elements: int = 400_000, max_depth: 
         raise error("в XML объявлены DOCTYPE или ENTITY — такой файл не читается")
     depth = count = 0
     root = None
+    events = ("start", "end", "start-ns") if namespaces is not None else ("start", "end")
     try:
-        for event, el in ET.iterparse(io.BytesIO(data), events=("start", "end")):
+        for event, el in ET.iterparse(io.BytesIO(data), events=events):
+            if event == "start-ns":
+                prefix, uri = el
+                namespaces.setdefault(prefix, uri)
+                continue
             if event == "start":
                 if root is None:
                     root = el

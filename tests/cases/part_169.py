@@ -43,6 +43,11 @@ TIPS = {"title": "kinds.tip_title", "template": "kinds.tip_template", "prompt": 
         "publish_engine": "kinds.tip_publish_engine",
         "publish_script": "kinds.tip_publish_script",
         "publish_template": "kinds.tip_publish_template",
+        # четвёртая рамка «Выпуск в Word» (1.231.19): те же правила — пример и обязательно ли
+        "docx_template": "kinds.tip_docx_template", "docx_example": "kinds.tip_docx_example",
+        "docx_title": "kinds.tip_docx_title", "docx_logo": "kinds.tip_docx_logo",
+        "docx_prompt": "kinds.tip_docx_prompt", "docx_checks": "kinds.tip_docx_checks",
+        "docx_engine": "kinds.tip_docx_engine", "docx_map": "kinds.tip_docx_map",
         # рамка «Трекер задач» (1.200.0): те же правила подсказки — пример и обязательно ли, в обоих языках
         "task_project": "kinds.tip_task_project", "task_type": "kinds.tip_task_type",
         "task_assignee": "kinds.tip_task_assignee", "task_labels": "kinds.tip_task_labels",

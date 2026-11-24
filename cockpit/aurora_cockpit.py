@@ -2283,7 +2283,55 @@ def localized_kinds(data: dict, lang: str) -> dict:
                   "no-script-sha": "the fingerprints have no script hash"}
         scripts = {k: ({**st, "why": "; ".join(why_en.get(c, c) for c in st.get("why_codes") or [])}
                        if st.get("why_codes") else st) for k, st in scripts.items()}
-    return {**data, "known": {k: tr.get(k) or v for k, v in known.items()}, "kinds": kinds, "scripts": scripts}
+    docx = data.get("docx") or {}
+    if lang != "ru" and docx:
+        why_en = {
+            "missing": "not built yet",
+            "example-missing": "the example file is missing",
+            "template-missing": "the template file is missing",
+            "example-changed": "the example changed after the reference was built",
+            "template-changed": "the template changed after the reference was built",
+            "reference-changed": "the reference file changed after it was built",
+            "meta-invalid": "the reference metadata cannot be read",
+            "meta-missing": "there are no fingerprints: the script was added by hand",
+            "plan-invalid": "the plan does not match the W5 schema",
+            "plan-changed": "the plan changed after it was built",
+            "plan-missing": "the plan file cannot be read",
+            "checks-missing": "the docx_checks file is missing",
+            "checks-invalid": "the docx_checks file cannot be read",
+            "checks-changed": "docx_checks changed after the script was built",
+            "source-missing": "the plan source is missing",
+            "source-changed": "the plan source changed after it was built",
+            "required-missing": "the document lacks required sections",
+            "no-source": "there is no source document",
+            "no-checks": "docx_checks is not set",
+            "no-sections": "the document has no headings",
+            "invalid": "the Word files did not pass validation",
+            "stale": "the inputs changed",
+        }
+        translated = {}
+        for kind, pair in docx.items():
+            row = {}
+            for which in ("reference", "script"):
+                state = (pair or {}).get(which) or {}
+                row[which] = ({**state, "why": "; ".join(why_en.get(c, c) for c in state.get("why_codes") or [])}
+                              if state.get("why_codes") else state)
+            translated[kind] = row
+        docx = translated
+    return {**data, "known": {k: tr.get(k) or v for k, v in known.items()}, "kinds": kinds,
+            "scripts": scripts, "docx": docx}
+
+
+def kinds_for_client(data: dict, auth=None) -> dict:
+    """`/api/kinds` для удалённого токена без локальных Word-статусов.
+
+    Сам реестр видов удалённому MCP нужен (`/api/kinds` входит в REMOTE_READ_PATHS),
+    а `docx` — состояние файлов на этой машине: эталон, план и их отпечатки. Оно
+    остаётся только сессии панели; локальный запрос без токена (`auth is None`) его видит.
+    """
+    if auth is not None and getattr(auth, "kind", "") != "session" and "docx" in data:
+        return {k: v for k, v in data.items() if k != "docx"}
+    return data
 
 
 def localized_skins(rows: list, lang: str) -> list:
@@ -7117,6 +7165,364 @@ def make_pipeline_control(project: str, payload: dict) -> dict:
                                                    continue_run=True)}
 
 
+WORD_DIR = "Scripts/Generated"
+WORD_PLAN_SUFFIX = ".docx.json"
+WORD_PLAN_META_SUFFIX = ".docx.script.json"
+WORD_PLAN_META_VERSION = 1
+WORD_KIND_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
+
+
+class WordRefused(Exception):
+    """Отказ Word-действия: странице нужен код причины, а не traceback."""
+
+    def __init__(self, code: str, message: str, detail: str = ""):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.detail = str(detail or "")[:500]
+
+
+def _word_modules():
+    """Модули W1/W5 подключаются по требованию: без Word-полей форма их не грузит."""
+    if os.path.join(KIT, "scripts") not in sys.path:
+        sys.path.insert(0, os.path.join(KIT, "scripts"))
+    import docx_plan as DP
+    import docx_reference as DR
+    return DR, DP
+
+
+def _word_kind(kind: str) -> str:
+    kind = str(kind or "").strip()
+    if not WORD_KIND_RE.fullmatch(kind):
+        raise WordRefused("kind", "вид не найден")
+    return kind
+
+
+def _word_path(project: str, rel, what: str, suffixes=(), must_exist: bool = False) -> str:
+    """Путь поля Word внутри проекта. Возвращает пусто для пустого поля; иначе полный путь.
+
+    `real_rel` — граница, а не косметика: `..`, абсолютный путь и симлинк наружу отсекаются
+    до чтения. Расширение проверяется по реальному пути, чтобы `X.DOCX` и ссылка не обходили правило.
+    """
+    text = str(rel or "").strip().strip('"')
+    if not text:
+        return ""
+    if os.path.isabs(text):
+        raise WordRefused("absolute-path", f"{what}: абсолютный путь запрещён")
+    full = os.path.realpath(os.path.join(project, text))
+    inside = real_rel(project, full)
+    if not inside:
+        raise WordRefused("outside", f"{what}: путь вне проекта")
+    if suffixes and not inside.casefold().endswith(tuple(suffixes)):
+        raise WordRefused("extension", f"{what}: ожидается {' или '.join(suffixes)}")
+    if must_exist and not os.path.isfile(full):
+        raise WordRefused("missing", f"{what}: файла нет на диске")
+    return full
+
+
+def _word_meta(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _word_reference_state(project: str, kind: str, rec: dict) -> dict:
+    """Состояние эталона W1: missing|ready|stale и код причины, без русского текста в ответе."""
+    kind = _word_kind(kind)
+    DR, _DP = _word_modules()
+    out_dir = os.path.join(project, WORD_DIR)
+    docx_path = os.path.join(out_dir, kind + ".docx")
+    meta_path = os.path.join(out_dir, kind + ".meta.json")
+    example = template = ""
+    code = ""
+    try:
+        example = _word_path(project, rec.get("docx_example"), "docx_example", (".docx",))
+        template = _word_path(project, rec.get("docx_template"), "docx_template", (".docx", ".dotx"))
+        for field, value in (("docx_example", example), ("docx_template", template)):
+            if value and not os.path.isfile(value):
+                code = "example-missing" if field == "docx_example" else "template-missing"
+        if code:
+            got = {"status": "stale", "reason": ""}
+        else:
+            got = DR.status(out_dir, kind, example or None, template or None)
+    except (WordRefused, OSError, ValueError) as exc:
+        got = {"status": "stale", "reason": str(exc)}
+        code = getattr(exc, "code", "invalid")
+    reason = str(got.get("reason") or "")
+    if not code:
+        if got.get("status") == "missing":
+            code = "missing"
+        elif "пример изменился" in reason:
+            code = "example-changed"
+        elif "шаблон изменился" in reason:
+            code = "template-changed"
+        elif "файл эталона изменён" in reason:
+            code = "reference-changed"
+        elif "метаданные не читаются" in reason:
+            code = "meta-invalid"
+        elif "проверки:" in reason:
+            code = "invalid"
+        elif reason:
+            code = "stale"
+    meta = _word_meta(meta_path)
+    return {
+        "state": got.get("status") if got.get("status") in ("missing", "ready", "stale") else "stale",
+        "why_codes": [] if got.get("status") == "ready" else ([code] if code else []),
+        "path": real_rel(project, docx_path),
+        "meta_path": real_rel(project, meta_path),
+        "example": real_rel(project, example) if example else "",
+        "template": real_rel(project, template) if template else "",
+        "generated_at": str(meta.get("generated_at") or ""),
+    }
+
+
+def _word_checks(project: str, kind: str, rec: dict):
+    """Проверенный `docx_checks` и его путь; пусто — проверок нет (не ошибка формы)."""
+    _DR, DP = _word_modules()
+    rel = str(rec.get("docx_checks") or "").strip().strip('"')
+    if not rel:
+        return {}, "", ""
+    try:
+        path = _word_path(project, rel, "docx_checks", (".json",), must_exist=True)
+        return DP.load_checks(path, kind=kind), real_rel(project, path), ""
+    except (WordRefused, OSError, ValueError) as exc:
+        return {}, real_rel(project, os.path.join(project, rel)) if not os.path.isabs(rel) else "", \
+            getattr(exc, "code", "invalid")
+
+
+def _word_script_paths(project: str, kind: str) -> tuple:
+    return (os.path.join(project, WORD_DIR, kind + WORD_PLAN_SUFFIX),
+            os.path.join(project, WORD_DIR, kind + WORD_PLAN_META_SUFFIX))
+
+
+def _word_script_state(project: str, kind: str, rec: dict) -> dict:
+    """Состояние скрипта-плана W5: missing|ready|stale.
+
+    «Скрипт» здесь — декларативный план `Scripts/Generated/<вид>.docx.json` из W5, не
+    исполняемый Python. Поэтому статус не ищет `.py` и ничего не запускает.
+    """
+    kind = _word_kind(kind)
+    _DR, DP = _word_modules()
+    plan_path, meta_path = _word_script_paths(project, kind)
+    out = {"state": "missing", "why_codes": ["missing"], "path": real_rel(project, plan_path),
+           "meta_path": real_rel(project, meta_path), "source": "", "generated_at": ""}
+    if not os.path.isfile(plan_path):
+        return out
+    meta = _word_meta(meta_path)
+    if not meta:
+        return {**out, "state": "stale", "why_codes": ["meta-missing"]}
+    out = {**out, "source": str(meta.get("source") or ""),
+           "generated_at": str(meta.get("generated_at") or "")}
+    checks, checks_rel, checks_code = _word_checks(project, kind, rec)
+    if checks_code:
+        return {**out, "state": "stale", "why_codes": ["checks-missing" if checks_code == "missing" else "checks-invalid"]}
+    toc = (checks.get("toc") or {})
+    try:
+        DP.load_plan(plan_path, kind=kind,
+                     toc_enabled=bool(toc.get("enabled", True)),
+                     toc_depth=(toc.get("depth") if toc.get("enabled", True) else None))
+    except Exception as exc:  # noqa: BLE001 — PlanError и чтение файла одинаково значат «план негоден»
+        return {**out, "state": "stale", "why_codes": ["plan-invalid"], "detail": str(exc)[:300]}
+    try:
+        with open(plan_path, "rb") as fh:
+            plan_sha = hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return {**out, "state": "stale", "why_codes": ["plan-missing"]}
+    if str(meta.get("plan_sha256") or "") != plan_sha:
+        return {**out, "state": "stale", "why_codes": ["plan-changed"],
+                "source": str(meta.get("source") or "")}
+    source_rel = str(meta.get("source") or "")
+    source_path = ""
+    if source_rel:
+        try:
+            source_path = _word_path(project, source_rel, "source", (".md",), must_exist=True)
+        except WordRefused:
+            return {**out, "state": "stale", "why_codes": ["source-missing"], "source": source_rel}
+        with open(source_path, "rb") as fh:
+            source_sha = hashlib.sha256(fh.read()).hexdigest()
+        if source_sha != str(meta.get("source_sha256") or ""):
+            return {**out, "state": "stale", "why_codes": ["source-changed"], "source": source_rel}
+    if checks_rel:
+        try:
+            checks_path = _word_path(project, checks_rel, "docx_checks", (".json",), must_exist=True)
+        except WordRefused:
+            return {**out, "state": "stale", "why_codes": ["checks-missing"], "source": source_rel}
+        with open(checks_path, "rb") as fh:
+            checks_sha = hashlib.sha256(fh.read()).hexdigest()
+        if checks_sha != str(meta.get("checks_sha256") or ""):
+            return {**out, "state": "stale", "why_codes": ["checks-changed"], "source": source_rel}
+    return {**out, "state": "ready", "why_codes": [], "source": source_rel,
+            "generated_at": str(meta.get("generated_at") or "")}
+
+
+def _word_source(project: str, kind: str, rec: dict) -> str:
+    """Последний markdown вида — вход для сборки декларативного плана."""
+    kind = _word_kind(kind)
+    out = str(rec.get("out") or "").strip().strip("/")
+    if not out:
+        raise WordRefused("no-source", "у вида нет папки результата")
+    folder = _word_path(project, out, "out")
+    if not os.path.isdir(folder):
+        raise WordRefused("no-source", "папка результата вида не найдена")
+    kinds = AG_KINDS.read_kinds(project) or {}
+    other = {os.path.normcase(os.path.realpath(os.path.join(project, str((r or {}).get("out") or ""))))
+             for k, r in kinds.items()
+             if k != kind and str((r or {}).get("out") or "").strip()}
+    found = []
+    for root, dirs, names in os.walk(folder):
+        dirs[:] = sorted(d for d in dirs
+                         if not d.startswith(".")
+                         and not os.path.islink(os.path.join(root, d))
+                         and os.path.normcase(os.path.realpath(os.path.join(root, d))) not in other)
+        for name in sorted(names):
+            if name.casefold().endswith(".md") and not is_folder_guide(name):
+                path = os.path.join(root, name)
+                # Ссылка наружу — не источник: real_rel считает границу по реальному пути.
+                if real_rel(project, path) and os.path.isfile(path):
+                    found.append((os.path.getmtime(path), path))
+    if not found:
+        raise WordRefused("no-source", "в папке вида нет markdown-документа")
+    return max(found, key=lambda row: row[0])[1]
+
+
+def _word_sections(text: str) -> list:
+    """Заголовки markdown → разделы плана W5; блоки кода не считаются структурой."""
+    body = strip_frontmatter(str(text or ""))
+    out = []
+    fenced = False
+    for line in body.splitlines():
+        if re.match(r"^\s*(```|~~~)", line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        m = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        if m:
+            heading = m.group(2).strip()
+            if heading:
+                out.append({"heading": heading, "level": len(m.group(1)),
+                            "page_break_before": False})
+    return out[:500]
+
+
+def _word_required_missing(checks: dict, sections: list) -> list:
+    have = {(s["level"], s["heading"].strip().casefold()) for s in sections}
+    return [row["text"] for row in (checks.get("required_sections") or [])
+            if (int(row.get("level") or 0), str(row.get("text") or "").strip().casefold()) not in have]
+
+
+def word_reference_create(project: str, kind: str) -> dict:
+    """Собрать эталон W1 из `docx_example`; страница получает только относительные пути."""
+    kind = _word_kind(kind)
+    rec = (AG_KINDS.read_kinds(project) or {}).get(kind) or {}
+    if not rec:
+        raise WordRefused("kind", "вид не найден")
+    example = _word_path(project, rec.get("docx_example"), "docx_example", (".docx",), must_exist=True)
+    if not example:
+        raise WordRefused("no-example", "не задан docx_example")
+    template = _word_path(project, rec.get("docx_template"), "docx_template", (".docx", ".dotx"),
+                          must_exist=True)
+    DR, _DP = _word_modules()
+    try:
+        got = DR.build(example, os.path.join(project, WORD_DIR), kind, template or None)
+    except Exception as exc:  # noqa: BLE001 — DocxRefused, OSError и zipfile одинаково объясняются странице
+        # Причина W1 бывает динамической и русской; странице отдаём стабильную строку
+        # (её перевод есть в каталоге), а техническую подробность — только в `detail`.
+        raise WordRefused("build", "не удалось собрать эталон Word", str(exc)) from exc
+    return {"ok": True, "reference": _word_reference_state(project, kind, rec),
+            "built": str(got.get("status") or "")}
+
+
+def word_script_create(project: str, kind: str) -> dict:
+    """Собрать декларативный скрипт-план W5 из последнего документа вида.
+
+    Кода здесь нет: план — JSON «разделы, разрывы, оглавление», который W5 проверит и
+    использует при preview. Источник и checks хешируются, чтобы страница видела stale.
+    """
+    kind = _word_kind(kind)
+    rec = (AG_KINDS.read_kinds(project) or {}).get(kind) or {}
+    if not rec:
+        raise WordRefused("kind", "вид не найден")
+    checks, checks_rel, checks_code = _word_checks(project, kind, rec)
+    if checks_code:
+        raise WordRefused("no-checks", "docx_checks не читается")
+    source_path = _word_source(project, kind, rec)
+    with open(source_path, "rb") as fh:
+        source_bytes = fh.read()
+    sections = _word_sections(source_bytes.decode("utf-8", "replace"))
+    if not sections:
+        raise WordRefused("no-sections", "в документе нет заголовков для плана")
+    missing = _word_required_missing(checks, sections)
+    if missing:
+        raise WordRefused("required-missing", "в документе нет обязательных разделов: " + ", ".join(missing[:5]))
+    _DR, DP = _word_modules()
+    plan = {"version": 1, "kind": kind,
+            "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+            "sections": sections}
+    toc = checks.get("toc") or {}
+    if toc.get("enabled", True) and toc.get("depth"):
+        plan["toc_depth"] = int(toc["depth"])
+    try:
+        plan = DP.validate_plan(plan, kind=kind,
+                                toc_enabled=bool(toc.get("enabled", True)),
+                                toc_depth=(toc.get("depth") if toc.get("enabled", True) else None))
+    except Exception as exc:  # noqa: BLE001
+        raise WordRefused("plan-invalid", "план Word не прошёл проверку", str(exc)) from exc
+    plan_path, meta_path = _word_script_paths(project, kind)
+    os.makedirs(os.path.dirname(plan_path), exist_ok=True)
+    text = DP.dump_plan(plan)
+    write_text_atomic(plan_path, text)
+    checks_path = _word_path(project, checks_rel, "docx_checks", (".json",), must_exist=True) if checks_rel else ""
+    checks_sha = ""
+    if checks_path:
+        with open(checks_path, "rb") as fh:
+            checks_sha = hashlib.sha256(fh.read()).hexdigest()
+    meta = {
+        "version": WORD_PLAN_META_VERSION,
+        "kind": kind,
+        "plan_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "source": real_rel(project, source_path),
+        "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "docx_checks": checks_rel,
+        "checks_sha256": checks_sha,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    write_text_atomic(meta_path, json.dumps(meta, ensure_ascii=False, indent=1, sort_keys=True) + "\n")
+    return {"ok": True, "script": _word_script_state(project, kind, rec)}
+
+
+def word_statuses(project: str, kinds: dict) -> dict:
+    """Word-статусы каждого вида: эталон W1 и скрипт-план W5. Ошибка одного вида не роняет форму."""
+    out = {}
+    for kind, rec in sorted((kinds or {}).items()):
+        rec = rec or {}
+        if not WORD_KIND_RE.fullmatch(str(kind or "")):
+            continue
+        plan_path, _meta = _word_script_paths(project, kind)
+        # Пустые docx-поля появляются в `read_kinds` у любого вида (это умолчания формы).
+        # Статусы показывает только вид, у которого Word действительно настроен или собран.
+        if not (any(k.startswith("docx_") and str(v or "").strip() for k, v in rec.items())
+                or os.path.isfile(os.path.join(project, WORD_DIR, kind + ".docx"))
+                or os.path.isfile(plan_path)):
+            continue
+        try:
+            reference = _word_reference_state(project, kind, rec)
+        except Exception as exc:  # noqa: BLE001 — кривой вид не должен ломать чтение остальных
+            reference = {"state": "stale", "why_codes": ["invalid"], "detail": str(exc)[:300],
+                         "path": real_rel(project, os.path.join(project, WORD_DIR, kind + ".docx")),
+                         "meta_path": "", "example": "", "template": "", "generated_at": ""}
+        try:
+            script = _word_script_state(project, kind, rec)
+        except Exception as exc:  # noqa: BLE001
+            script = {"state": "stale", "why_codes": ["invalid"], "detail": str(exc)[:300],
+                      "path": real_rel(project, plan_path), "meta_path": "", "source": "", "generated_at": ""}
+        out[kind] = {"reference": reference, "script": script}
+    return out
+
+
 def kinds_read(project: str) -> dict:
     """Реестр артефактов проекта + что из объявленного не существует на диске."""
     sys.path.insert(0, os.path.join(KIT, "scripts"))
@@ -7140,11 +7546,13 @@ def kinds_read(project: str) -> dict:
     return {"kinds": kinds, "known": MK.KNOWN, "review_profiles": list(MK.REVIEW_PROFILES),
             "slots": list(MK.BUILTIN_SLOTS),          # встроенные подстановки пути и заголовка — для справки формы
             "scripts": scripts,
+            "docx": word_statuses(project, kinds),
             "digest": MK.registry_digest(kinds),
             "problems": [{"kind": k, "why": w} for k, w in MK.check(project, kinds)],
             "templates": sorted(
                 f for f in os.listdir(os.path.join(project, "Templates"))
-                if f.endswith(".md") and not is_folder_guide(f)) if os.path.isdir(os.path.join(project, "Templates")) else []}
+                if (f.endswith(".md") or f.casefold().endswith((".docx", ".dotx", ".xml")))
+                and not is_folder_guide(f)) if os.path.isdir(os.path.join(project, "Templates")) else []}
 
 
 def kinds_mcp(project: str) -> list:
@@ -9173,7 +9581,30 @@ class Handler(BaseHTTPRequestHandler):
             if not self.need_project(project):
                 return
             # `mcp` — серверы, из которых форма вида выбирает поле `mcp` (окно «Выбрать MCP…»).
-            self.send_json(dict(localized_kinds(kinds_read(project), request_lang(q)), mcp=kinds_mcp(project)))
+            payload = dict(localized_kinds(kinds_read(project), request_lang(q)), mcp=kinds_mcp(project))
+            # Word-статусы — локальное состояние файлов; удалённому MCP их не отдаём.
+            self.send_json(kinds_for_client(payload, getattr(self, "auth", None)))
+        elif u.path in ("/api/docx/reference", "/api/docx/reference/status",
+                        "/api/docx/script", "/api/docx/script/status"):
+            # Word-статусы только для страницы панели: remote_allowed не знает этих путей.
+            project = (q.get("project") or [""])[0]
+            kind = (q.get("kind") or [""])[0].strip()
+            if not project:
+                self.send_json({"error": "проект не выбран"}, 400)
+                return
+            if not self.need_project(project):
+                return
+            rec = (AG_KINDS.read_kinds(project) or {}).get(kind)
+            if not rec:
+                self.send_json({"error": "вид не найден"}, 404)
+                return
+            try:
+                if u.path.startswith("/api/docx/reference"):
+                    self.send_json({"ok": True, "reference": _word_reference_state(project, kind, rec)})
+                else:
+                    self.send_json({"ok": True, "script": _word_script_state(project, kind, rec)})
+            except Exception as exc:  # noqa: BLE001 — страница получает причину, а не оборванный ответ
+                self.send_json({"error": f"Word-состояние не прочитано: {type(exc).__name__}", "failed": True}, 500)
         elif u.path == "/api/cards":
             # Типы карточек проекта: реестр, инструкция выбора типа, каталог. Сводка по базе (`stats=1`) читает все
             # карточки, поэтому приходит отдельным запросом — страница настроек не ждёт её.
@@ -9942,6 +10373,30 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001 — страница получает отказ с причиной, а не оборванное соединение
                 res = {"error": f"виды артефактов не записаны: {type(e).__name__}", "failed": True}
             return self.send_json(res, cards_status(res))
+        if u.path in ("/api/docx/reference", "/api/docx/reference/create",
+                      "/api/docx/script", "/api/docx/script/create"):
+            # Только локальная сессия: `guarded` отклоняет remote-токен до чтения тела, потому
+            # что этих путей нет в REMOTE_READ_PATHS/REMOTE_WRITE_PATHS.
+            project = str(payload.get("project") or "")
+            kind = str(payload.get("kind") or "").strip()
+            if not project:
+                self.send_json({"error": "проект не выбран"}, 400)
+                return
+            if not self.need_project(project):
+                return
+            if not (AG_KINDS.read_kinds(project) or {}).get(kind):
+                self.send_json({"error": "вид не найден"}, 404)
+                return
+            try:
+                res = (word_reference_create(project, kind)
+                       if u.path.startswith("/api/docx/reference") else word_script_create(project, kind))
+                self.send_json(res, 200)
+            except WordRefused as exc:
+                self.send_json({"error": exc.message, "code": exc.code,
+                                **({"detail": exc.detail} if exc.detail else {})}, 400)
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"error": f"Word-сборка не выполнена: {type(exc).__name__}", "failed": True}, 500)
+            return
         if u.path == "/api/models/save":
             # Слепок обязателен для существующего файла: запрос без него (или с null, числом) не вправе молча
             # заменить чужую правку, он считается «страница видела пустое».

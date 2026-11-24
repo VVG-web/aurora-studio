@@ -232,6 +232,14 @@ Activity A1 Core › Epic 1.2 Intake › страница. Пространст�
 экспортируется заново; правка docx «на месте» разрывает связь с базой. Факт передачи
 фиксируется командой `release`.
 
+Word-preview 1.231.19: для `--export docx` доступны `--docx-engine auto|reference|plan`,
+`--docx-title` (docx или XML), `--checks` (`docx_checks` v1), `--docx-logo` и
+`--docx-plan` (план W5). Preview пишется только в `Artifacts/word-preview/`, отчёт
+проверок в `Artifacts/word-checks/`; XML allowlist проверяет документ до и после вставки,
+а `checks` и allowlist блокируют неизвестный XML. `plan` без свежего плана не собирается,
+`auto` без эталона идёт в preview-fallback с предупреждением. Это не выпуск: release-поля
+и `ship:release` не меняются, документ остаётся предпросмотром.
+
 ## sync:jira-status — статусы задач обратно в требования
 
 Механика вынесена в скрипт (`jira_status.py`), процедура — `references/maintenance.md`.

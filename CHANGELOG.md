@@ -4,6 +4,46 @@ Semver. Обновление движка в работающем проекте
 (сначала dry-run, затем `--apply`). Обновляются только пути из `engine_manifest.txt`;
 контент проекта не трогается. Ломающие изменения схемы помечены **BREAKING** с шагом миграции.
 
+## 1.231.19 - Word: детерминированный предпросмотр и панель
+
+- **Детерминированный эталон Word.** `scripts/docx_reference.py` собирает R5-пакет
+  из примера: применённые стили и замыкание `basedOn`/`link`/`next`, карта styleId,
+  `sectPr` A4, `docProps/core.xml`, части styles/numbering/theme/fontTable и
+  стабильные sentinel-строки. Заголовки сохраняют `w:outlineLvl`, нумерацию
+  `w:numPr`/`w:ilvl`/`w:numId`, `w:pStyle` пересчитывается через карту стилей.
+  Колонтитулы, картинки и текст примера не копируются. Тест `part_270`.
+- **Титул Word.** `scripts/docx_title.py` берёт первую секцию титула, оставляет
+  только разрешённый XML, подставляет поля из `docx_checks`, экранирует текст и
+  блокирует images, tables, висячие стили и внешние связи. Повторное применение
+  идемпотентно. Тест `part_271`.
+- **Preview и проверки.** `scripts/docx_check.py` и `scripts/ship_doc.py` собирают
+  детерминированный pandoc-docx с `SOURCE_DATE_EPOCH` из `--date` или `date`
+  шапки, проверяют `docx_checks` v1, allowlist XML до и после вставки, TOC,
+  ориентацию, поля, логотип и `docx_plan`. Preview пишется только в
+  `Artifacts/word-preview/`, отчёт в `Artifacts/word-checks/`, release-механики
+  нет. Закрыт обход allowlist через чужие пространства имён. Тесты `part_272`,
+  `part_275`.
+- **Схема видов и панель.** `make_kinds.py` проверяет Word-поля, `docx_checks`,
+  `docx_map`, `docx_engine` и `docx_logo`; `docx_plan` и release-полей в виде
+  нет. Панель получает рамку «Выпуск в Word», статусы эталона и скрипта, кнопки
+  предпросмотра, локальные `/api/docx/*`, фильтры и двуязычные подписи; статусы
+  не уходят удалённым токенам. Тесты `part_145`, `part_169`, `part_273`.
+- **Декларативный план.** `scripts/docx_plan.py` проверяет JSON-план v1 без
+  eval/exec, сверяет `source_sha256`, `docx_checks`, TOC, логотип и хеши, пишет
+  план и `meta.json` по R5 3.10. Stale срабатывает по всем входам, `real_rel`
+  держит пути внутри проекта. Тест `part_274`.
+- **Регистрация и обновление.** `docx_reference`, `docx_title`, `docx_check` и
+  `docx_plan` есть в `engine_manifest.txt`; `part_270`-`part_275`
+  зарегистрированы; `part_276` в этот релиз не входит. `docs/commands.md`,
+  `docs/en/commands.md`, навыки и i18n описывают preview. Все 20 module.json и
+  `UI_VERSION` равны `1.231.19`.
+- **Границы выпуска.** Только preview scope A. B3, CARD, ROUTES,
+  ASSEMBLE-MODE, `--frozen`, `released_versions` и `DOCX_RELEASE_FIELDS`
+  уходят в `1.231.20`. W6 визуальная проверка не блокирует выпуск.
+- **Проверки.** Локально: `--only=word`, `--only=docx`, `--only=kinds`,
+  `card_write_sites.py --check`, `kit_i18n.py --check`, `compileall`,
+  `check_release`, полный suite и CI после итогового коммита.
+
 ## 1.231.18 - Замеры: точный usage.d и оценка timing.d
 
 - **Точный писатель `usage.d`.** Итог прогона пишется в схему 2: UTC-время,

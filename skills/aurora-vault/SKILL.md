@@ -289,7 +289,7 @@ HTTP — только если не смог сам адаптер (venv не с
 |---|---|---|
 | `ship:publish <артефакт>` | артефакт → generated-страница Confluence (`publish_doc.py`); карточки знаний наружу не идут | `references/workflows.md` |
 | `ship:task <артефакт>` | задача в трекере для документа (активный коннектор роли `tasks`): свойства из блока `task:` и вида, в шапку — `task_key`/`task_url`; повтор вторую не заводит | `references/workflows.md` |
-| `ship:export <документ>` | поставляемый документ → docx/pdf (pandoc, фирменный шаблон) | `references/workflows.md` |
+| `ship:export <документ>` | поставляемый документ → docx/pdf (pandoc, фирменный шаблон). Word-preview: эталон, титул, checks v1, TOC, логотип и план W5, отчёт проверок; выпуск отдельно | `references/workflows.md` |
 | `ship:acceptance <объект>` | зафиксировать результаты приёмки/испытаний и разобрать замечания заказчика | `references/workflows.md` |
 | `ship:release <документ>` (`release`) | заморозить переданную версию: снапшот + коммит базы + дата (`ship_doc.py --release`) | `references/maintenance.md` |
 
