@@ -975,8 +975,9 @@ def preview_docx(source: str, reference: str = "", out: str = "", keep_links: bo
                     plan_sha256=(plan_sha or None),
                     plan_sections=(len(plan.get("sections") or []) if plan else None),
                     codes=sorted({item.get("code") for item in findings if item.get("code")}),
-                    paths={"source": source, "docx": target,
-                           "check": os.path.join(WORD_CHECKS, "check.json")})
+                    paths={"source": source.replace(os.sep, "/"),
+                           "docx": target.replace(os.sep, "/"),
+                           "check": os.path.join(WORD_CHECKS, "check.json").replace(os.sep, "/")})
         report = DC.report(tmp_docx, findings, allow, **meta)
         for item in findings:
             mark = "⛔" if item.get("level") == "block" and item.get("code") not in allow else "⚠️"
