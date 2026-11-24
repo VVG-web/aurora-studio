@@ -165,7 +165,8 @@ python3 .aurora/scripts/spec_pack.py SPEC-012 --apply   # записать ба�
    требований в тексте (`pmi_coverage`, `pmi_missing`) и кладёт счёт в шапку, раздел
    «Покрытие ПМИ» и отчёт.
 3. Output: `Deliverables/work/<doc>_v<version>.md`, frontmatter per `frontmatter.md`
-   (type: deliverable, based_on — полный список использованных карточек).
+   (`type: <вид>`, `deliverable: true`, `doc`, `doc_version`, `version`, `template`;
+   `based_on` — полный список использованных карточек).
 4. Документ ревьюит и дорабатывает человек; сборка — это черновик.
    `agent:make --deliverable` всегда оставляет `status: draft`: `ready` ставит только
    приёмка и `ship:release`, а не автоматическая цепочка.
