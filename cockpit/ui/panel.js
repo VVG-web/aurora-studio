@@ -2254,11 +2254,7 @@ async function afterPublish(rel, dirtyNote){
       (`--force`), «Взять под управление» (`--adopt`); `blocked` — причина и кнопка в нужную группу настроек.
    3) После отправки исход приходит машинной строкой `AURORA-PUBLISH` (`publishDone`) и рисуется той же карточкой. */
 async function publishFromEditor(){
-  if (!F.path || !F.publishable) return;
-  // Несохранённое уходит тем же кликом: надпись кнопки говорит «Сохранить и опубликовать». Сохранение не удалось
-  // (расхождение с диском, отказ) — публикации нет: причину показал `saveFile`.
-  if (F.dirty){ await saveFile(); if (F.dirty || !F.publishable) return; }
-  return publishFor(F.path);
+  return publishFor(F.path, {save: true});
 }
 
 async function publishFor(rel, opts = {}){
