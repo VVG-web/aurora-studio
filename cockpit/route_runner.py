@@ -1377,6 +1377,10 @@ class RouteRun:
             return 0
         return max(0, int(round((self.active_started - self.created_at) * 1000)))
 
+    def _now(self) -> float:
+        """Текущее время; тесты подменяют его, чтобы не зависеть от скорости раннера."""
+        return time.time()
+
     def _child_timing(self) -> tuple[int, int, int]:
         """Очередь и ожидание дочерних команд из событий шагов.
 
@@ -1408,7 +1412,7 @@ class RouteRun:
             net_summary = NO.peek("route", self.project, self.run_id, self.base).get("summary") or {}
         except Exception:  # noqa: BLE001 — старый кит или сбой снимка: остаются спаны
             pass
-        now = time.time()
+        now = self._now()
         seconds = max(0.0, now - self.created_at)
         route_queue = self._queue_ms()
         timing = T.legacy_timing(seconds, net_summary, queue_ms=route_queue)
