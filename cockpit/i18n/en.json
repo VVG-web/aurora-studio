@@ -72,7 +72,7 @@
   "palette.update_kit": "Update the kit",
   "nav.files": "Files",
   "files.title": "Project files",
-  "files.about": "The project tree as it is. A text file opens in the editor; anything else opens in a system app.",
+  "files.about": "Select an artifact to see its versions and release status. Other text files open in the editor.",
   "files.pick_project": "Pick a project first",
   "files.empty": "This project has no files that can be shown.",
   "files.truncated": "Showing the first {n} of {total} files: the tree is over the list limit.",
