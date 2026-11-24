@@ -318,8 +318,13 @@ def _plan_path(root: str, cli: str, kind: str, mode: str) -> str:
 
 
 def _docx_plan(root: str, cli: str, kind: str, mode: str, source: str,
-               expected: dict) -> tuple:
-    """Прочитать W5-план, сверить источник и глубину TOC; вернуть (plan, path, digest)."""
+               expected: dict, source_sha: str = "") -> tuple:
+    """Прочитать W5-план, сверить источник и глубину TOC; вернуть (plan, path, digest).
+
+    `source_sha` — отпечаток, к которому привязан план. У выпуска из снимка это
+    `source_sha256` из шапки снимка: план писали до заморозки, и текущий файл
+    источника для сверки не читается.
+    """
     if mode == "reference" and not cli:
         return None, "", ""
     path = _plan_path(root, cli, kind, mode)
@@ -332,7 +337,7 @@ def _docx_plan(root: str, cli: str, kind: str, mode: str, source: str,
         plan = DP.load_plan(
             path, kind=kind, toc_enabled=bool(toc.get("enabled")),
             toc_depth=(int(toc.get("depth")) if toc.get("enabled") else None),
-            source_sha256=_file_sha(source),
+            source_sha256=(source_sha or _file_sha(source)),
         )
     except DP.PlanError as e:
         code = "docx-plan-stale" if e.code == "docx-plan-source" else e.code
@@ -841,13 +846,91 @@ def _normalize_package(path: str, title: str, epoch: int, page=None, fonts=None,
             z.writestr(info, data[name])
 
 
-def _write_report(root: str, report: dict) -> str:
-    folder = os.path.join(root, WORD_CHECKS)
-    os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, "check.json")
+def _report_root(root: str) -> str:
+    """Настоящая папка отчётов; символьная ссылка наружу `Artifacts/word-checks/` не проходит."""
+    root_real = os.path.realpath(root)
+    folder = os.path.realpath(os.path.join(root_real, WORD_CHECKS))
+    if os.path.relpath(folder, root_real).replace(os.sep, "/") != WORD_CHECKS:
+        raise ShipError("docx-report: папка отчётов должна быть %s/, а не ссылкой" % WORD_CHECKS)
+    return folder
+
+
+def _seal_report(report: dict, release: bool) -> str:
+    """Вписать путь отчёта и вернуть его относительно корня.
+
+    Паспорт preview — общий `check.json`. У выпуска имя content-addressed: sha256
+    от канонического отчёта без самого поля `paths.check`. Одинаковые проверки дают
+    тот же файл, разные (вид, подпапка, упавшие проверки, другая версия pandoc) —
+    разные, поэтому доказательство одного выпуска не затирается следующим.
+    """
+    paths = dict(report.get("paths") or {})
+    paths.pop("check", None)
+    if not release:
+        rel = WORD_CHECKS + "/check.json"
+    else:
+        payload = {key: value for key, value in report.items() if key != "paths"}
+        payload["paths"] = paths
+        digest = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        rel = WORD_CHECKS + "/check-" + digest + ".json"
+    paths["check"] = rel
+    report["paths"] = paths
+    return rel
+
+
+def _write_report(root: str, report: dict, release: bool = False) -> str:
+    folder = _report_root(root)
+    name = posixpath.basename(str((report.get("paths") or {}).get("check") or "").replace("\\", "/"))
+    if release:
+        if not re.fullmatch(r"check-[0-9a-f]{64}\.json", name):
+            raise ShipError("docx-report: отчёт выпуска должен быть content-addressed")
+    else:
+        name = "check.json"
+    path = os.path.join(folder, name)
     text = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
+    os.makedirs(folder, exist_ok=True)
+    if release:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    have = f.read()
+            except OSError as e:
+                raise ShipError("docx-report: %s" % e)
+            if have != text:
+                raise ShipError("docx-report: %s уже занят другим отчётом" % name)
+            return path
+        except OSError as e:
+            raise ShipError("docx-report: %s" % e)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+        except OSError as e:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise ShipError("docx-report: %s" % e)
+        return path
+    try:
+        with open(path, encoding="utf-8") as f:
+            if f.read() == text:
+                return path
+    except OSError:
+        pass
+    fd, tmp = tempfile.mkstemp(prefix=".check-", suffix=".json", dir=folder)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except OSError as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise ShipError("docx-report: %s" % e)
     return path
 
 
@@ -859,7 +942,30 @@ def _file_sha(path: str) -> str:
         return ""
 
 
-def _preview_target(root: str, source: str, out: str) -> str:
+def _preview_target(root: str, source: str, out: str, release: bool = False) -> str:
+    if release:
+        base = os.path.join(root, "Deliverables")
+        raw = str(out or "").strip()
+        source_full = source if os.path.isabs(source) else os.path.join(root, source)
+        target = raw if os.path.isabs(raw) else (
+            os.path.join(root, raw) if raw else os.path.splitext(source_full)[0] + ".docx")
+        target = os.path.realpath(target)
+        if not path_inside(target, base):
+            raise ShipError("--out: выпуск пишется только в Deliverables/<вид>/")
+        for legacy in (LEGACY, WORK, ARCHIVE):
+            if path_inside(target, os.path.join(root, legacy)):
+                raise ShipError("--out: выпуск пишется только в Deliverables/<вид>/")
+        source_rel = _model_rel(root, source).split("/")
+        if (len(source_rel) < 3 or source_rel[0].casefold() != "deliverables"
+                or source_rel[1].casefold() in ("work", "released", "_archive")):
+            raise ShipError("release: источник должен быть снимком Deliverables/<вид>/")
+        target_rel = _model_rel(root, target).split("/")
+        if (len(target_rel) < 3 or target_rel[0].casefold() != "deliverables"
+                or target_rel[1].casefold() != source_rel[1].casefold()):
+            raise ShipError("--out: выпуск пишется рядом со снимком в Deliverables/<вид>/")
+        if not target.casefold().endswith(".docx"):
+            raise ShipError("--out: выпуск должен оканчиваться на .docx")
+        return target
     base = os.path.join(root, DOCX_PREVIEW)
     if out:
         raw = str(out)
@@ -876,34 +982,135 @@ def _preview_target(root: str, source: str, out: str) -> str:
     return target
 
 
+def _ship_code(message: str) -> str:
+    """Машинный код ошибки preview для записи выпуска."""
+    text = str(message or "").strip()
+    if text.startswith("нужен pandoc"):
+        return "docx-tool-missing"
+    if text.startswith("pandoc вернул"):
+        return "docx-pandoc"
+    if text.startswith("source:"):
+        return "docx-source"
+    for prefix, code in (("--reference", "docx-reference"), ("--out", "docx-target"),
+                         ("--docx-plan", "docx-plan"), ("--docx-title", "docx-title"),
+                         ("--docx-logo", "docx-logo")):
+        if text.startswith(prefix):
+            return code
+    match = re.match(r"([a-z][a-z0-9_.-]{1,60}):", text)
+    return match.group(1) if match else "release-failed"
+
+
+def _snapshot_kind(root: str, source: str, fm: dict) -> tuple:
+    """Вид снимка: `kind` шапки сильнее `type: deliverable`, затем путь `Deliverables/<вид>/`."""
+    kinds = MK.read_kinds(root)
+    for hint in (fm.get("kind"), fm.get("type"), fm.get("doc")):
+        kind, rec = MK.kind_of(kinds, str(hint or "").strip(), "", root)
+        if kind:
+            return kind, rec
+    kind, rec = _docx_kind(root, source, fm)
+    return kind, rec or {}
+
+
+def _release_options(fm: dict, rec: dict) -> dict:
+    """Опции Word выпуска: шапка снимка сильнее конфига вида, пустые поля не затирают конфиг."""
+    options = dict(rec or {})
+    fields = tuple(getattr(MK, "DOCX_RELEASE_FIELDS", ()) or ())
+    if not fields:
+        fields = tuple(MK.DOCX_FIELDS) + ("docx_plan",)
+    for field in fields:
+        value = str(fm.get(field) or "").strip()
+        if value:
+            options[field] = value
+    return options
+
+
 def preview_docx(source: str, reference: str = "", out: str = "", keep_links: bool = False,
                  allow=(), engine=None, docx_title=None, checks=None, docx_logo=None,
-                 date=None, docx_plan=None, root: str = ".") -> int:
-    """Preview Word 1.231.19: детерминированный pandoc-docx, allowlist и check.json."""
+                 date=None, docx_plan=None, root: str = ".", release: bool = False,
+                 result: dict | None = None) -> int:
+    """Preview Word: детерминированный pandoc-docx, allowlist и check.json.
+
+    `release=True` — узкий режим выпуска из снимка: docx разрешён рядом со снимком
+    в `Deliverables/<вид>/`, отчёт проверок остаётся в `Artifacts/word-checks/`,
+    готовый чужой docx не перезаписывается. `result` заполняется машинными
+    ключами `checks`, `checks_status`, `reference`, `plan`, `plan_sha256`,
+    `code` (на ошибке).
+    """
+    try:
+        return _preview_docx(source, reference=reference, out=out, keep_links=keep_links,
+                             allow=allow, engine=engine, docx_title=docx_title, checks=checks,
+                             docx_logo=docx_logo, date=date, docx_plan=docx_plan, root=root,
+                             release=release, result=result)
+    except ShipError as e:
+        if not release:
+            raise
+        data = result if result is not None else {}
+        data.setdefault("checks", "")
+        data["checks_status"] = "failed"
+        data["code"] = _ship_code(str(e))
+        print("⛔ [%s] %s" % (data["code"], e), file=sys.stderr)
+        return 2
+
+
+def _preview_docx(source: str, reference: str = "", out: str = "", keep_links: bool = False,
+                  allow=(), engine=None, docx_title=None, checks=None, docx_logo=None,
+                  date=None, docx_plan=None, root: str = ".", release: bool = False,
+                  result: dict | None = None) -> int:
+    """Тело preview; wrapper ловит ShipError только в режиме выпуска."""
+    result = result if result is not None else {}
+    if release:
+        result.update(checks="", checks_status="failed", checks_sha256="", reference="")
+        result.pop("plan", None)
+        result.pop("plan_sha256", None)
+        result.pop("code", None)
     allow = set(allow or ()) - set(DC.NON_ALLOWABLE)
     if not path_inside(source, root):
         raise ShipError("source: путь вне проекта: %s" % source)
     raw = open(source, encoding="utf-8-sig").read()
     fm = frontmatter(raw)
-    kind, rec = _docx_kind(root, source, fm)
+    if release:
+        kind, rec = _snapshot_kind(root, source, fm)
+        rec = _release_options(fm, rec)
+    else:
+        kind, rec = _docx_kind(root, source, fm)
     mode = str(engine or rec.get("docx_engine") or "auto").strip().lower()
     if mode not in DOCX_ENGINES:
         raise ShipError("docx_engine: %s (допустимо %s)" % (mode, ", ".join(DOCX_ENGINES)))
     epoch, date_iso = _preview_epoch(date, fm)
-    target = _preview_target(root, source, out)
+    target = _preview_target(root, source, out, release=release)
     expected, load_findings = _checks(root, checks, rec, kind)
     if load_findings:
         for item in load_findings:
             print("⛔ [%s] %s" % (item["code"], item["message"]), file=sys.stderr)
+        if release:
+            result.update(code=(load_findings[0].get("code") or "docx-checks"),
+                          checks_status="failed")
         return 2
-    plan, plan_path, plan_sha = _docx_plan(root, docx_plan or "", kind, mode,
-                                          source, expected)
+    checks_rel = checks or str(rec.get("docx_checks") or "")
+    checks_sha = _file_sha(os.path.join(root, checks_rel)) if checks_rel else ""
+    pinned = _clean_value(fm.get("source_sha256")) if release else ""
+    plan_arg = docx_plan or (str(rec.get("docx_plan") or "") if release else "")
+    plan, plan_path, plan_sha = _docx_plan(root, plan_arg, kind, mode,
+                                          source, expected, source_sha=pinned)
+    # root на Windows может прийти относительным, а _inside_file отдаёт
+    # realpath: relpath(absolute, relative) даёт "../../runneradmin/...".
+    plan_rel = (os.path.relpath(plan_path, os.path.realpath(root)).replace(os.sep, "/")
+                if plan_path else "")
+    if release and plan_rel:
+        result["plan"] = plan_rel
+        result["plan_sha256"] = plan_sha or ""
     ref, warn = _reference(root, reference, rec, mode)
+    if release:
+        result["reference"] = ref
     if warn.startswith("docx-plan-missing"):
         print("⛔ [docx-plan-missing] %s" % warn, file=sys.stderr)
+        if release:
+            result.update(code="docx-plan-missing", checks_status="failed")
         return 2
     gate_code = gate(raw, allow, True, "preview")
     if gate_code:
+        if release:
+            result.update(code="docx-gate", checks_status="failed")
         return gate_code
     text = clean_copy(md_body(raw))
     if not keep_links:
@@ -969,8 +1176,6 @@ def preview_docx(source: str, reference: str = "", out: str = "", keep_links: bo
                            expected.get("fonts"), logo, plan)
         findings = DC.check(tmp_docx, expected, markdown=text, source_date_epoch=epoch)
         stuck = DC.blocked(findings, allow)
-        checks_rel = checks or rec.get("docx_checks") or ""
-        checks_sha = _file_sha(os.path.join(root, checks_rel)) if checks_rel else ""
         try:
             pver = subprocess.run([pandoc, "--version"], capture_output=True, text=True,
                                   encoding="utf-8", errors="replace", timeout=30).stdout.splitlines()[0]
@@ -978,10 +1183,6 @@ def preview_docx(source: str, reference: str = "", out: str = "", keep_links: bo
         except (OSError, IndexError, subprocess.SubprocessError):
             pver = ""
         toc = expected.get("toc") or {}
-        # root на Windows может прийти относительным, а _inside_file отдаёт
-        # realpath: relpath(absolute, relative) даёт "../../runneradmin/...".
-        plan_rel = (os.path.relpath(plan_path, os.path.realpath(root)).replace(os.sep, "/")
-                    if plan_path else "")
         meta = dict(source=source, kind=kind, engine=mode, reference=ref,
                     title=expected.get("title") or "", date=date_iso,
                     source_date_epoch=epoch, docx_checks=checks_rel,
@@ -993,20 +1194,40 @@ def preview_docx(source: str, reference: str = "", out: str = "", keep_links: bo
                     plan_sections=(len(plan.get("sections") or []) if plan else None),
                     codes=sorted({item.get("code") for item in findings if item.get("code")}),
                     paths={"source": source.replace(os.sep, "/"),
-                           "docx": target.replace(os.sep, "/"),
-                           "check": os.path.join(WORD_CHECKS, "check.json").replace(os.sep, "/")})
+                           "docx": target.replace(os.sep, "/")})
         report = DC.report(tmp_docx, findings, allow, **meta)
+        if release:
+            report["docx"] = target.replace(os.sep, "/")
         for item in findings:
             mark = "⛔" if item.get("level") == "block" and item.get("code") not in allow else "⚠️"
             print("%s [%s] %s" % (mark, item["code"], item["message"]))
         if stuck:
-            _write_report(root, report)
+            report_rel = _seal_report(report, release)
+            report_path = _write_report(root, report, release=release)
+            if release:
+                result.update(checks=report_rel, checks_sha256=_file_sha(report_path),
+                              checks_status="failed", code="docx-checks-failed")
             print("ship_doc: preview остановлен; %s не перезаписан" % target, file=sys.stderr)
             return 2
+        unchanged = False
+        if release and os.path.isfile(target):
+            if _file_sha(target) != _file_sha(tmp_docx):
+                result.update(code="docx-conflict", checks_status="failed")
+                print("⛔ [docx-conflict] %s уже существует и отличается; выпуск не перезаписан" % target,
+                      file=sys.stderr)
+                return 2
+            unchanged = True
         os.makedirs(os.path.dirname(target), exist_ok=True)
-        os.replace(tmp_docx, target)
+        if not unchanged:
+            os.replace(tmp_docx, target)
         report = DC.report(target, findings, allow, **meta)
-        report_path = _write_report(root, report)
+        report_rel = _seal_report(report, release)
+        report_path = _write_report(root, report, release=release)
+        if release:
+            result.update(checks=report_rel, checks_sha256=_file_sha(report_path),
+                          checks_status="passed", reference=ref)
+            if unchanged:
+                result["unchanged"] = True
         if warn:
             print("⚠️  %s" % warn)
         print("✅ %s  (%s КБ, из %s)" % (target, os.path.getsize(target) / 1024, source))
@@ -1017,17 +1238,25 @@ def preview_docx(source: str, reference: str = "", out: str = "", keep_links: bo
 
 
 def _use_preview(source: str, fmt: str, out: str, *, engine=None, docx_title=None, checks=None,
-                 docx_logo=None, date=None, docx_plan=None, root: str = ".") -> bool:
+                 docx_logo=None, date=None, docx_plan=None, root: str = ".",
+                 release: bool = False) -> bool:
     if fmt != "docx":
         return False
+    if release:
+        # Узкий флаг выпуска: docx из снимка всегда собирает preview-конвейер,
+        # а не plain pandoc; обычный preview правило Deliverables не ослабляет.
+        return True
+    # Явные опции preview сильнее проверки папки: иначе `--out Deliverables/...`
+    # молча уходил бы в plain pandoc и обходил границу `Artifacts/word-preview/`
+    # (в том числе через символьную ссылку). Отказ даёт `_preview_target`.
+    if engine or docx_title or checks or docx_logo or date or docx_plan:
+        return True
     if out:
         target = out if os.path.isabs(out) else os.path.join(root, out)
         # Снимок и выпуск живут в `Deliverables/`; Word-preview пишет только в
         # `Artifacts/word-preview/` и не должен подменять выпуск из снимка.
         if path_inside(target, os.path.join(root, "Deliverables")):
             return False
-    if engine or docx_title or checks or docx_logo or date or docx_plan:
-        return True
     if out:
         target = out if os.path.isabs(out) else os.path.join(root, out)
         if path_inside(target, os.path.join(root, DOCX_PREVIEW)):
@@ -1264,7 +1493,7 @@ def _clean_value(value) -> str:
 
 
 def _snapshot_text(text: str, source_rel: str, source_id: str, source_sha: str,
-                   kind: str, doc: str, version: str, dirty: bool) -> str:
+                   kind: str, doc: str, version: str, dirty: bool, rec: dict, date: str) -> str:
     """Снимок: чистовик с движковой шапкой и хешем тела.
 
     Шапка не копируется как есть: поля выпуска и публикации (`frozen`, `released*`,
@@ -1288,6 +1517,9 @@ def _snapshot_text(text: str, source_rel: str, source_id: str, source_sha: str,
     add("version", version)
     add("type", "deliverable")
     add("kind", kind)
+    add("date", fm.get("date") or date)
+    for field in MK.DOCX_RELEASE_FIELDS:
+        lines.append(f"{field}: {_clean_value(fm.get(field, rec.get(field)))}")
     add("based_on", fm.get("based_on"))
     add("artifact_id", fm.get("artifact_id"))
     add("task", fm.get("task"))
@@ -1645,7 +1877,7 @@ def freeze(root: str, rel: str, version: str, date: str, apply: bool, allow=(),
         print(f"⚠️ в документе есть незакоммиченные правки: коммит {commit or '—'} не содержит того, что замораживается")
     source_sha = _sha_bytes(raw)
     snapshot = _snapshot_text(text, source_rel, _clean_value(fm.get("artifact_id")), source_sha,
-                              kind, doc, version, dirty)
+                              kind, doc, version, dirty, rec, release_date)
     want_hash = release_hash(snapshot)
     if os.path.isfile(target_full):
         have = _read_text(target_full)
@@ -1715,34 +1947,73 @@ def freeze(root: str, rel: str, version: str, date: str, apply: bool, allow=(),
             lock_release(lock_path)
 
 
+def _find_frozen(root: str, source_rel: str, selector: str) -> dict:
+    """Locate an independently addressable snapshot using only its own header."""
+    matches = []
+    for folder in AC.lifecycle_evidence_dirs(root):
+        base = _full(root, folder)
+        if (folder in (LEGACY, ARCHIVE) or _under(folder, WORK) or os.path.islink(base)
+                or not path_inside(base, _full(root, "Deliverables")) or not path_inside(base, root)):
+            continue
+        for path in walk_md(base):
+            if not path_inside(path, base) or os.path.islink(path):
+                continue
+            fm = frontmatter(_read_text(path))
+            if fm.get("source") == source_rel and selector in (fm.get("version"), fm.get("sha256")):
+                matches.append(dict(path=_model_rel(root, path), sha256=fm.get("sha256")))
+    if len(matches) > 1:
+        raise ShipError("frozen-ambiguous: specify snapshot sha256")
+    return matches[0] if matches else {}
+
+
 def export_frozen(root: str, rel: str, frozen: str, reference: str = "", out: str = "",
-                  quiet: bool = False) -> dict:
+                  quiet: bool = False, *, record=None, dry_run=False, **options) -> dict:
     """Собрать docx из снимка; без записи в жизненный цикл. Исходник не читается."""
     source_rel = _model_rel(root, rel)
-    model = lifecycle_model(root, source_rel)
-    match = None
-    for rec in model.get("frozen", []):
-        if str(rec.get("version") or "") == str(frozen) or str(rec.get("sha256") or "") == str(frozen):
-            match = rec
-            break
+    try:
+        match = record or _find_frozen(root, source_rel, frozen)
+    except ShipError as exc:
+        return _fail("export", "frozen-ambiguous", str(exc), quiet)
     if not match:
         return _fail("export", "frozen-not-found", f"версия или sha256 {frozen}", quiet)
     snap_rel = _clean_value(match.get("path"))
     snap_full = _full(root, snap_rel) if snap_rel else ""
-    if not snap_rel or not os.path.isfile(snap_full):
+    if not snap_rel or not MK.snapshot_kind(snap_full, root) or not os.path.isfile(snap_full):
         return _fail("export", "snapshot-missing", snap_rel, quiet)
+    if release_hash(_read_text(snap_full)) != match.get("sha256"):
+        return _fail("export", "hash-mismatch", snap_rel, quiet)
     target_rel = out or (os.path.splitext(snap_rel)[0] + ".docx")
     target_full = target_rel if os.path.isabs(target_rel) else _full(root, target_rel)
-    rc = export(snap_full, "docx", reference, target_full, False, root=root)
-    if rc != 0:
-        return _fail("export", "export-failed", f"код {rc}", quiet)
     got_rel = _model_rel(root, target_full) or target_rel
+    if dry_run:
+        return {"ok": True, "dry_run": True, "path": got_rel}
+    evidence = {}
+    try:
+        rc = preview_docx(snap_full, reference, target_full, root=root, release=True,
+                          result=evidence, **options)
+    except (ShipError, OSError, subprocess.SubprocessError, zipfile.BadZipFile) as exc:
+        code = str(exc).partition(":")[0]
+        evidence.update(code=code if re.fullmatch(r"docx-[a-z-]+", code) else "export-failed", why=str(exc))
+        rc = 1
+    if not rc:
+        report = _full(root, evidence.get("checks") or "")
+        digest = _file_sha(report) if path_inside(report, _full(root, WORD_CHECKS)) else ""
+        if not digest or evidence.get("checks_status") == "failed":
+            evidence.update(code="docx-checks-missing", why="validated checks report required")
+            rc = 1
+        else:
+            evidence["checks_sha256"] = digest
+    result = dict(evidence, ok=not rc, path=got_rel, snapshot=snap_rel,
+                  frozen_sha256=match.get("sha256"))
+    if rc:
+        result.setdefault("code", "export-failed")
+        result.setdefault("checks_status", "failed")
+    else:
+        result.update(sha256=_file_sha(target_full), size=os.path.getsize(target_full))
     if not quiet:
-        print("AURORA-SHIP " + json.dumps({"action": "export", "path": got_rel, "ok": True, "checks": ""},
+        print("AURORA-SHIP " + json.dumps(dict(result, action="export"),
                                           ensure_ascii=False, separators=(",", ":")))
-    return {"ok": True, "path": got_rel, "snapshot": snap_rel, "sha256": _sha_bytes(_read_bytes(target_full)),
-            "size": os.path.getsize(target_full) if os.path.isfile(target_full) else 0,
-            "frozen_sha256": _clean_value(match.get("sha256"))}
+    return result
 
 
 def _docx_version(path: str) -> str:
@@ -1775,12 +2046,10 @@ def release(root: str, rel: str, version: str, date: str, reference: str,
             apply: bool, allow=(), allow_dirty: bool = False) -> dict:
     """Заморозка, экспорт из снимка, запись `released_versions` — строго в этом порядке."""
     source_rel = _model_rel(root, rel)
-    fm = frontmatter(_read_text(_full(root, source_rel))) if source_rel else {}
-    want_version = str(version or _name_parts(fm, source_rel)[1])
-    model = lifecycle_model(root, source_rel) if source_rel else {}
-    existing = next((r for r in reversed(model.get("frozen") or [])
-                     if str(r.get("version") or "") == want_version
-                     and r.get("path") and os.path.isfile(_full(root, _clean_value(r.get("path"))))), None)
+    ledger = _read_text(_full(root, source_rel)) if source_rel else ""
+    want_version = str(version or _name_parts(frontmatter(ledger), source_rel)[1])
+    existing = next((r for r in reversed(list_records(ledger, "frozen"))
+                     if str(r.get("version") or "") == want_version), None)
     if not apply:
         if existing:
             snap = _clean_value(existing.get("path"))
@@ -1806,18 +2075,22 @@ def release(root: str, rel: str, version: str, date: str, reference: str,
         if not fr.get("ok"):
             return fr
         snap_rel = fr["path"]
-        ex = export_frozen(root, source_rel, fr["version"], reference, quiet=True)
-        if not ex.get("ok"):
-            return dict(ex, snapshot=snap_rel)
         text = _read_text(_full(root, source_rel))
         records = list_records(text, "released_versions")
-        same = [r for r in records if str(r.get("version") or "") == str(fr["version"])]
-        if same:
-            if any(_clean_value(r.get("frozen_sha256")) == fr["sha256"] for r in same):
-                rec = next(r for r in same if _clean_value(r.get("frozen_sha256")) == fr["sha256"])
-                return {"ok": True, "unchanged": True, "snapshot": snap_rel, "release": rec}
+        same = next((r for r in records if str(r.get("version")) == fr["version"]), None)
+        if same and same.get("frozen_sha256") != fr["sha256"]:
             return _fail("release", "version-taken", f"версия {fr['version']} уже выпущена другим снимком")
-        ref_full = reference if os.path.isabs(reference) else _full(root, reference) if reference else ""
+        ex = export_frozen(root, source_rel, fr["version"], reference, quiet=True,
+                           record=fr, allow=allow)
+        if not ex.get("ok"):
+            _lifecycle_line("release", False, code=ex["code"], checks=ex.get("checks"),
+                            checks_status=ex.get("checks_status"))
+            return dict(ex, snapshot=snap_rel)
+        if same:
+            if same.get("sha256") != ex["sha256"]:
+                return _fail("release", "hash-mismatch", ex["path"])
+            return {"ok": True, "unchanged": True, "snapshot": snap_rel, "release": same}
+        ref_full = ex.get("reference") or ""
         ref_rel = _model_rel(root, ref_full) if ref_full else ""
         record = {"version": fr["version"], "at": utc_stamp(), "path": ex["path"],
                   "sha256": ex["sha256"], "format": "docx",
@@ -1826,8 +2099,13 @@ def release(root: str, rel: str, version: str, date: str, reference: str,
                   "frozen_sha256": fr["sha256"], "frozen_path": snap_rel,
                   "size": ex["size"], "tool": "pandoc", "tool_version": _pandoc_version(),
                   "legacy": False}
+        record.update(checks=ex["checks"], checks_sha256=ex["checks_sha256"])
+        if ex.get("plan"):
+            record.update(plan=ex["plan"], plan_sha256=ex["plan_sha256"])
         records.append(record)
         try:
+            if _read_text(_full(root, source_rel)) != text:
+                return _fail("release", "source-changed", source_rel)
             out = with_records(text, "released_versions", records)
             with open(_full(root, source_rel), "w", encoding="utf-8", newline="") as f:
                 f.write(out)
@@ -2079,7 +2357,7 @@ def main() -> int:
 
     if not a.document:
         ap.error("нужен документ (или --verify/--migrate)")
-    if not os.path.isfile(a.document):
+    if not a.frozen and not os.path.isfile(a.document):
         print(f"ship_doc: нет файла {a.document}", file=sys.stderr)
         return 1
     if a.status:
@@ -2146,11 +2424,14 @@ def main() -> int:
             print(f"✅ Снимок: {got['path']} (sha256 {got['sha256'][:12]}…)")
         return 0
     if a.frozen:
-        got = export_frozen(".", a.document, a.frozen, a.reference or "", a.out or "")
+        got = export_frozen(".", a.document, a.frozen, a.reference or "", a.out or "",
+                            dry_run=not a.apply, date=a.date, engine=a.docx_engine,
+                            docx_title=a.docx_title, checks=a.checks, docx_logo=a.docx_logo,
+                            docx_plan=a.docx_plan, allow=a.allow, keep_links=a.keep_links)
         if not got.get("ok"):
             print(f"ship_doc: {got.get('code')}: {got.get('why') or ''}", file=sys.stderr)
             return 1
-        print(f"✅ docx из снимка: {got['path']}")
+        print(f"{'(dry-run)' if got.get('dry_run') else '✅'} docx из снимка: {got['path']}")
         return 0
     if a.export:
         return export(a.document, a.export, a.reference or "", a.out or "", a.keep_links, a.allow,
