@@ -220,7 +220,8 @@ established first, not guessed from the symptom.
 A test without `@test` and an `assert` with `or True` / a degenerate `or` fail the invariant; in parts ≥14 write new `assert`s with a message.
 
 CI (`.github/workflows/test.yml`; do not rename the `engine-tests` workflow: `release.yml` depends on it):
-`tests` runs the release check, `--smoke`, the full suite and ruff on Python 3.14; `floor` compiles and runs the full suite
+`preflight` runs the release check, quality gate, `compileall`, ruff and the platform rules; `tests` runs three shards of
+the full suite on Python 3.14; `floor` compiles and runs the full suite
 on the lowest supported 3.11 (blocks the release); `newer-python` compiles and runs the full suite on 3.12 and 3.13 (non-blocking for now); `legacy-310` compiles and runs `--smoke` on 3.10, does not block and goes
 away after 2027-04; `windows` (3.12, three shards) blocks the release as before: `release.yml` takes only the `success`
 result, and a job with `continue-on-error` does not affect it; `windows-314` (3.14, three shards) and `macos` (3.14) are
@@ -351,9 +352,10 @@ own in the project's `Templates/`. The passport, the check codes and the `kb:car
   schema change is marked **BREAKING** with a migration step.
 - A commit message starts with the version: `vX.Y.Z: the gist`.
 - **How to release, in short:** 1) raise `VERSION`; 2) add a `## X.Y.Z — the gist` entry to `CHANGELOG.md`;
-  3) raise `UI_VERSION` in `cockpit/ui/panel.js` (a test checks it); 4) merge to `master`. CI does the rest (see below).
+  3) raise `UI_VERSION` in `cockpit/ui/panel.js` (a test checks it); 4) open `release/*` and wait for green
+  `engine-tests`: it fast-forwards `master` itself. CI does the rest (see below).
 - **CI creates the tag and the GitHub Release** — `.github/workflows/release.yml`. After a green `engine-tests` on
-  `master` it looks at `VERSION`: if that version has no Release yet, it puts the tag `vX.Y.Z` on the commit that
+  `master` or `release/*` it looks at `VERSION`: if that version has no Release yet, it puts the tag `vX.Y.Z` on the commit that
   passed the checks (`workflow_run.head_sha`) and publishes the Release. If `master` has moved ahead only
   by issue-form commits (`.github/ISSUE_TEMPLATE/*.yml`), the release still runs and the tag stays on the
   verified commit. Any other file ahead: the release is skipped with a message, no tag, no Release. The
@@ -363,6 +365,9 @@ own in the project's `Templates/`. The passport, the check codes and the `kb:car
   foreign tag is never overwritten. The workflow never overwrites an existing tag or Release, so running it again
   is safe. To repeat a release by hand — Actions → release → Run workflow on `master`; to switch it off — delete
   the file or disable the workflow in the Actions tab.
+- **Fast release loop** is described in [RELEASE_PROCESS.md](RELEASE_PROCESS.md): `preflight` before the heavy
+  jobs, three Ubuntu shards, cancellation of superseded runs, and a green `release/*` branch that fast-forwards
+  `master` and creates the tag without a second full run on `master`.
 - Before a release these are green: `tests/run_tests.py`, `kit_commands.py --check`, `kit_i18n.py --check`.
 - The `Development/` folder (the QA kitchen: cases, scenarios, run journals) does not ride in the kit's git; it is mounted as a
   worktree of the `development` branch: `git worktree add Development development`.
