@@ -694,7 +694,7 @@ def _out_dir(project: Path, rel: str) -> Path:
 def _write_json(path: Path, data: Any) -> None:
     text = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     try:
-        write_text_atomic(str(path), text)
+        write_text_atomic(str(path), text, newline="")
     except OSError as exc:
         _fail("docx-plan-write", f"не записан {path}: {exc}")
 
