@@ -199,8 +199,8 @@ def test_docx_plan_runner_writes_plan_and_meta(tmp: Path):
                logo_source="docx_logo")
     plan_file = Path(got["plan"])
     meta_file = Path(got["meta"])
-    assert plan_file == root / "Scripts" / "Generated" / "opz.docx.json", plan_file
-    assert meta_file == root / "Scripts" / "Generated" / "opz.docx.meta.json", meta_file
+    assert plan_file.resolve() == (root / "Scripts" / "Generated" / "opz.docx.json").resolve(), plan_file
+    assert meta_file.resolve() == (root / "Scripts" / "Generated" / "opz.docx.meta.json").resolve(), meta_file
     assert plan_file.is_file() and meta_file.is_file()
     written = DP.load_plan(plan_file)
     assert written == plan, (written, plan)

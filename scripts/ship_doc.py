@@ -960,6 +960,7 @@ def preview_docx(source: str, reference: str = "", out: str = "", keep_links: bo
         try:
             pver = subprocess.run([pandoc, "--version"], capture_output=True, text=True,
                                   encoding="utf-8", errors="replace", timeout=30).stdout.splitlines()[0]
+            pver = pver.replace("pandoc.exe ", "pandoc ", 1)
         except (OSError, IndexError, subprocess.SubprocessError):
             pver = ""
         toc = expected.get("toc") or {}
