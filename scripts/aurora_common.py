@@ -2834,7 +2834,7 @@ def keep_private_copy(path, tag: str = "broken", keep: int = 3) -> bool:
         return False
 
 
-def write_text_atomic(path, text: str) -> None:
+def write_text_atomic(path, text: str, newline=None) -> None:
     """Записать текстовый файл целиком или не трогать его: через временный файл рядом и подмену.
 
     Прямая запись обрывается посреди файла вместе с процессом (убитый `update`, закрытая крышка, диск полон) —
@@ -2843,9 +2843,10 @@ def write_text_atomic(path, text: str) -> None:
     новый. Имя временного файла — своё у процесса, потока и записи: два обновления разом не делят его.
     Ссылка (общий файл вне проекта) не заменяется — пишется файл, на который она ведёт. Права прежнего файла
     переходят к новому: исполняемый скрипт человека (`Scripts/run.sh`, 0755) после переписывания путей
-    переставал бы запускаться. Перевод строки — платформы (как у `Path.write_text`).
+    переставал бы запускаться. Перевод строки по умолчанию — платформы (как у `Path.write_text`),
+    `newline=""` оставляет ровно те `\n`, что пришли в тексте: так JSON-план совпадает с хешем на всех ОС.
     """
-    _fs().write_atomic(path, text, newline=None, strict=True, makedirs=False)
+    _fs().write_atomic(path, text, newline=newline, strict=True, makedirs=False)
 
 
 def _win_pid_alive(pid: int, kernel32=None, last_error=None) -> bool:

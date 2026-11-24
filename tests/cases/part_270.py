@@ -410,7 +410,8 @@ def test_w1_reference_is_hashseed_independent(tmp: Path):
         cmd = [sys.executable, str(SCRIPTS / "docx_reference.py"), "--example", ex,
                "--base", base, "--out", str(out), "--kind", "opz", "--date",
                "2026-11-24", "--json"]
-        cp = subprocess.run(cmd, capture_output=True, text=True, cwd=str(KIT),
+        cp = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", cwd=str(KIT),
                             env={**os.environ, "PYTHONHASHSEED": seed})
         assert cp.returncode == 0, cp.stderr
         hashes.append(json.loads(cp.stdout)["reference_sha"])
@@ -517,18 +518,18 @@ def test_w1_reference_cli_json_status_and_missing(tmp: Path):
     cmd = [sys.executable, str(SCRIPTS / "docx_reference.py"),
            "--example", ex, "--base", base, "--out", str(out), "--kind", "opz",
            "--version", "1.231.19", "--date", "2026-11-24", "--json"]
-    cp = subprocess.run(cmd, capture_output=True, text=True, cwd=str(KIT))
+    cp = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(KIT))
     assert cp.returncode == 0, cp.stderr
     data = json.loads(cp.stdout)
     assert data["status"] == "ready", data
     status_cmd = [sys.executable, str(SCRIPTS / "docx_reference.py"), "--status",
                   "--out", str(out), "--kind", "opz", "--version", "1.231.19",
                   "--date", "2026-11-24", "--json"]
-    cp = subprocess.run(status_cmd, capture_output=True, text=True, cwd=str(KIT))
+    cp = subprocess.run(status_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(KIT))
     assert cp.returncode == 0 and json.loads(cp.stdout)["status"] == "ready", cp.stdout
     missing_cmd = [sys.executable, str(SCRIPTS / "docx_reference.py"), "--status",
                    "--out", str(tmp / "missing"), "--kind", "opz", "--json"]
-    cp = subprocess.run(missing_cmd, capture_output=True, text=True, cwd=str(KIT))
+    cp = subprocess.run(missing_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(KIT))
     assert cp.returncode == 0 and json.loads(cp.stdout)["status"] == "missing", cp.stdout
 
 
