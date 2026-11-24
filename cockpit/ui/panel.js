@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.231.18";
+const UI_VERSION = "1.231.19";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 let LAST_ERROR = null;          // последняя показанная ошибка: кнопка «Лог» в шапке
 
@@ -454,6 +454,12 @@ function pathField(input, opts){
     el("span", {class:"pick-ico", "aria-hidden":"true", html: PICK_DIR}), t("pick.button"));
   return el("div", {class:"pickrow"}, input, btn);
 }
+
+// Фильтр окна выбора для Word-полей: папки видны всегда, файлы — только с нужным
+// расширением. Скрытые файлы не показываем: `.DS_Store` и временные копии не выбор.
+const extPicker = list => e => e.kind === "dir" ||
+  (!String(e.name || "").startsWith(".") &&
+   list.some(ext => String(e.name || "").toLowerCase().endsWith(ext)));
 
 const tick = s => esc(s).replace(/`([^`]+)`/g, '<code class="tick">$1</code>');
 const esc = s => String(s??"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -3833,7 +3839,8 @@ async function renderKinds(box){
         style:`width:${width};font-size:12px`, value:rec[key]||"", placeholder:ph,
         oninput:e=>{ rec[key] = e.target.value; dirty(); }});
       // Путь внутри проекта не печатают: «Выбрать…» открывает окно на папке поля (шаблоны, промпты, артефакты).
-      const pfield = (key, ph, width, want, start) => pathField(field(key, ph, width), {want, start});
+      const pfield = (key, ph, width, want, start) => pathField(field(key, ph, width),
+        want && typeof want === "object" ? want : {want, start});
       // Имена MCP-серверов — плашками из списка доступных (`d.mcp`); записанное имя, которого среди них нет, —
       // с пометкой «нет такого сервера». В конфиг уходит та же строка через запятую, что и раньше.
       const mcpBox = el("div",{class:"row", style:"gap:4px;flex-wrap:wrap;align-items:center;min-height:30px",
@@ -4033,13 +4040,96 @@ async function renderKinds(box){
               ...["", ...(d.review_profiles||[])].map(v=>el("option",{value:v, selected:(rec.review||"")===v?"":null},
                 v ? t("kinds.review_" + v) : t("kinds.review_off")))))),
         );
+      // Четвёртая рамка — Word. Это предпросмотр и подготовка входов, а не выпуск:
+      // эталон W1 и декларативный план W5 можно пересобрать, но наружу документ
+      // отсюда не уходит. `docx_script` в конфиге нет: «скрипт» — это план W5,
+      // JSON с разделами, а не исполняемый Python.
+      const docx = () => (d.docx || {})[kind] || {};
+      const docxState = which => (docx()[which] || {state:"missing", why_codes:["missing"]});
+      const docxWhy = st => (st.why_codes || []).map(c => t("kinds.docx_why_" + String(c).replace(/-/g, "_")))
+        .filter(Boolean).join("; ") || st.why || "";
+      const docxStatusText = (st, extra) => [
+        t("kinds.docx_state_" + (["missing","ready","stale"].includes(st.state) ? st.state : "stale")),
+        docxWhy(st),
+        extra
+      ].filter(Boolean).join(" · ");
+      const docxEngine = el("select",{class:"btn sm", style:"font-weight:400",
+        onchange:e=>{ rec.docx_engine = e.target.value; dirty(); }},
+        ...["auto","reference","plan"].map(v=>el("option",{value:v,
+          selected:(rec.docx_engine || "auto") === v ? "" : null}, t("kinds.docx_engine_" + v))));
+      const docxRefState = el("span",{class:"muted", style:"font-size:12px;max-width:340px"});
+      const docxScriptState = el("span",{class:"muted", style:"font-size:12px;max-width:340px"});
+      const docxRefBtn = el("button",{class:"btn sm", title:t("kinds.docx_reference_hint")},
+        t("kinds.docx_reference_create"));
+      const docxScriptBtn = el("button",{class:"btn sm", title:t("kinds.docx_script_hint")},
+        t("kinds.docx_script_create"));
+      const drawDocx = () => {
+        const ref = docxState("reference"), script = docxState("script");
+        docxRefState.textContent = docxStatusText(ref, ref.generated_at ? ref.generated_at.slice(0,10) : "");
+        docxRefState.className = ref.state === "ready" ? "muted" : "warn";
+        docxScriptState.textContent = docxStatusText(script, script.source || "");
+        docxScriptState.className = script.state === "ready" ? "muted" : "warn";
+      };
+      drawDocx();
+      const docxBuild = async (which, btn, state) => {
+        if (DIRTY.has("kinds")) return toast(t("kinds.docx_save_first"), "warn");
+        btn.disabled = true;
+        state.className = "muted";
+        state.textContent = t("kinds.docx_building");
+        try {
+          // Два явных адреса, а не шаблон: проверка панели сверяет каждый путь с сервером.
+          const target = which === "reference" ? "/api/docx/reference/create" : "/api/docx/script/create";
+          const r = await api(target,{method:"POST", quiet:true,
+            body:JSON.stringify({project:S.project.path, kind})});
+          if (!r || r.error || !r.ok){
+            drawDocx();
+            return toast((r && r.error) || t("kinds.docx_build_failed"), "err");
+          }
+          d.docx = d.docx || {};
+          d.docx[kind] = Object.assign({}, d.docx[kind] || {}, {[which]: r[which] || {state:"ready"}});
+          drawDocx();
+          toast(t("kinds.docx_built", {kind}));
+        } finally {
+          btn.disabled = false;
+        }
+      };
+      docxRefBtn.onclick = () => docxBuild("reference", docxRefBtn, docxRefState);
+      docxScriptBtn.onclick = () => docxBuild("script", docxScriptBtn, docxScriptState);
+      const word = el("fieldset",{class:"kframe", "data-frame":"docx"},
+        el("legend",{}, t("kinds.frame_docx")),
+        el("div",{class:"muted kf-about"}, t("kinds.frame_docx_about")),
+        el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;align-items:flex-end"},
+          lab("docx_template", pfield("docx_template", t("kinds.f_docx_template"), "220px",
+            {want:"file", start:"Templates", filter:extPicker([".docx",".dotx"])})),
+          lab("docx_example", pfield("docx_example", t("kinds.f_docx_example"), "220px",
+            {want:"file", start:"Templates", filter:extPicker([".docx"])})),
+          lab("docx_title", pfield("docx_title", t("kinds.f_docx_title"), "220px",
+            {want:"file", start:"Templates", filter:extPicker([".docx",".xml"])})),
+          lab("docx_logo", pfield("docx_logo", t("kinds.f_docx_logo"), "200px",
+            {want:"file", start:"Templates", filter:extPicker([".png",".jpg",".jpeg"])})),
+          lab("docx_prompt", pfield("docx_prompt", t("kinds.f_docx_prompt"), "220px",
+            {want:"file", start:"Prompts", filter:extPicker([".md"])})),
+          lab("docx_checks", pfield("docx_checks", t("kinds.f_docx_checks"), "220px",
+            {want:"file", start:"Prompts", filter:extPicker([".json"])})),
+          lab("docx_engine", docxEngine, t("kinds.docx_engine_hint")),
+          lab("docx_map", field("docx_map", '{"Heading1":"Firm_Title_1"}', "260px"),
+            t("kinds.docx_map_hint"))),
+        el("div",{class:"row",style:"gap:18px;flex-wrap:wrap;margin-top:8px"},
+          el("div",{class:"kfield", "data-field":"docx_reference_status"},
+            el("span",{class:"kf-l"}, t("kinds.docx_reference_title"), " ", kindTip(t("kinds.docx_reference_hint"))),
+            el("div",{class:"row",style:"gap:8px;align-items:center;flex-wrap:wrap"},
+              docxRefBtn, docxRefState)),
+          el("div",{class:"kfield", "data-field":"docx_script_status"},
+            el("span",{class:"kf-l"}, t("kinds.docx_script_title"), " ", kindTip(t("kinds.docx_script_hint"))),
+            el("div",{class:"row",style:"gap:8px;align-items:center;flex-wrap:wrap"},
+              docxScriptBtn, docxScriptState))));
       rows.append(el("div",{class:"list-item", "data-kind-row": kind, style:"gap:8px;flex-wrap:wrap"},
         el("span",{class:"chip mono",style:"flex:none"}, kind),
         lab("title", field("title", t("kinds.f_title"), "240px")),
         el("span",{style:"flex:1"}),
         el("button",{class:"btn sm", title: t("kinds.drop"),
           onclick:()=>{ delete KINDS[kind]; dirty(); draw(); }},"×"),
-        el("div",{class:"kframes"}, create, publish, tracker)));
+        el("div",{class:"kframes"}, create, publish, tracker, word)));
     });
     card.append(rows);
     const name = el("input",{class:"btn mono",style:"width:150px",

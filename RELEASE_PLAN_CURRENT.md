@@ -822,3 +822,27 @@ reasoning и временем генерации. Повторная запис�
 `CHANGELOG.md`. Проверки: `part_242`, `part_255`, `part_265`, `part_266`,
 `part_267`, `--only=usage` 40/40, `--only=metrics` 48/48, `kit_i18n`,
 `kit_commands`, `compileall`, `check_release`, полный suite и CI.
+
+## 84. Релиз 1.231.19
+
+`1.231.19` добавляет Word по R5 scope A: только детерминированный предпросмотр,
+без механики выпуска. W1 собирает эталон из примера: применённые стили и
+замыкание `basedOn`/`link`/`next`, карту styleId, `sectPr`, `core.xml` и части
+styles/numbering/theme/fontTable; колонтитулы и картинки примера не копируются,
+`w:pStyle` пересчитывается через карту, нумерованные заголовки сохраняют
+`w:numPr`/`w:ilvl`/`w:numId`. W2 добавляет титул, `docx_checks` v1 и проверки
+XML; W3 собирает preview через pandoc с allowlist до и после вставки, отчётом в
+`Artifacts/word-checks/` и закрытием обхода через чужие пространства имён. W4
+добавляет рамку «Выпуск в Word», локальные `/api/docx/*`, статусы эталона и
+скрипта, фильтры и двуязычные подписи. W5 добавляет декларативный план и
+`meta.json` по R5 3.10 со stale по всем входам.
+
+`VERSION` и `UI_VERSION` равны `1.231.19`, все 20 module.json переведены на
+`1.231.19`. `docx_reference.py`, `docx_title.py`, `docx_check.py` и
+`docx_plan.py` есть в `engine_manifest.txt`, проверки `part_270`-`part_275`
+зарегистрированы. `part_276` в этот релиз не входит. Только preview: B3, CARD,
+ROUTES, ASSEMBLE-MODE, `--frozen`, `released_versions` и
+`DOCX_RELEASE_FIELDS` уходят в `1.231.20`; W6 визуальная проверка не блокирует
+выпуск. Описание: `CHANGELOG.md`. Проверки: `part_270`-`part_275`,
+`--only=word`, `--only=docx`, `--only=kinds`, `card_write_sites --check`,
+`kit_i18n`, `kit_commands`, `compileall`, `check_release`, полный suite и CI.
