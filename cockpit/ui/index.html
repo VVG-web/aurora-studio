@@ -240,6 +240,7 @@
 
       <div class="row" style="gap:14px;align-items:flex-start">
         <div class="card" id="filesPanel" style="padding:10px;flex:0 0 320px;max-height:70vh;overflow:auto">
+          <button type="button" class="btn" id="fileCreateButton" data-i18n="files.lifecycle.create">Создать артефакт</button>
           <input id="fileSearch" data-i18n-ph="files.search" placeholder="Поиск по имени и пути"
             style="width:100%;font:inherit;padding:8px;border-radius:8px;margin-bottom:6px">
           <div id="fileFilters" class="row" style="gap:4px;flex-wrap:wrap;margin-bottom:8px"></div>
@@ -249,6 +250,8 @@
           title="Потяните, чтобы изменить ширину списка"></div>
         <div class="card" style="padding:12px;flex:1;min-width:0" id="filePane">
           <div class="sub" id="fileNone" data-i18n="files.pick_file">Выберите файл слева.</div>
+          <div id="fileLifecycle" hidden></div>
+          <div id="fileCreate" hidden></div>
           <div id="fileEditor" hidden>
             <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
               <b id="fileName" class="mono"></b>
