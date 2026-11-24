@@ -949,6 +949,15 @@ def preview_docx(source: str, reference: str = "", out: str = "", keep_links: bo
         env.update({"SOURCE_DATE_EPOCH": str(epoch), "TZ": "UTC", "PYTHONHASHSEED": "0"})
         proc = subprocess.run(cmd, input=text, text=True, encoding="utf-8", errors="replace",
                               capture_output=True, timeout=300, env=env)
+        if (proc.returncode != 0 and "--sandbox" in cmd
+                and "Could not find data file data/data/docx/" in (proc.stderr or "")):
+            # Дистрибутивный pandoc собран без embed_data_files: в песочнице он
+            # не видит свои же data/docx и падает на data/data/docx. Картинки
+            # убираем, иначе без песочницы адрес из текста стал бы чтением файла.
+            cmd = [part for part in cmd if part != "--sandbox"]
+            text = strip_images(text)
+            proc = subprocess.run(cmd, input=text, text=True, encoding="utf-8", errors="replace",
+                                  capture_output=True, timeout=300, env=env)
         if proc.returncode != 0:
             raise ShipError("pandoc вернул %s: %s" % (proc.returncode, (proc.stderr or "")[:600]))
         _normalize_package(tmp_docx, doc_title, epoch, expected.get("page"),
