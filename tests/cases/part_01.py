@@ -1159,7 +1159,7 @@ def test_cockpit_scenarios_skins_and_about(tmp: Path):
     # «Запустить» ведёт в никуда, а человек идёт по сценарию вслепую
     known = {r["cmd"] for r in ck.registry()}
     scen = ck.scenarios()
-    assert len(scen) >= 4, "сценариев подозрительно мало"
+    assert len(scen) >= 3, "сценариев подозрительно мало"
     for s in scen:
         assert s["title"] and s["steps"], f"пустой сценарий {s['id']}"
         seen_cycle = 0

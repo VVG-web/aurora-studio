@@ -790,6 +790,7 @@ def _routes() -> dict:
 def test_routes_cut_cited_documents_before_the_build(_t):
     """Шаг `kb:cite` стоит в «Обновить», «Починить» и «Пересобрать» после зеркал записей и до первого `agent:build`; в «Обновить» — после перевода документов в текст, в «Пересобрать» — после сброса; шаги переведены."""
     routes = _routes()
+    assert list(routes) == ["update", "fix", "rebuild"], sorted(routes)
     flags = ["--apply", "--allow-dirty"]
     for rid in ("update", "fix", "rebuild"):
         steps = routes[rid]

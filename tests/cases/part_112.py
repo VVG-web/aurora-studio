@@ -168,8 +168,7 @@ def test_only_the_rebuild_route_is_marked_destructive(tmp: Path):
     """В `scenarios.txt` пометку «опасный» несёт только «Пересобрать базу с нуля»; остальные маршруты — обычные."""
     ck = _ck()
     flags = {s["id"]: s["destructive"] for s in ck.all_scenarios()}
-    assert flags.get("rebuild") is True, flags
-    assert [k for k, v in flags.items() if v] == ["rebuild"], flags
+    assert flags == {"update": False, "fix": False, "rebuild": True}, flags
     head = [ln for ln in (COCKPIT / "scenarios.txt").read_text(encoding="utf-8").splitlines() if ln.startswith("[rebuild]")][0]
     assert head.rstrip().endswith("| опасный"), head[-60:]
 
