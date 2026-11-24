@@ -2903,6 +2903,21 @@ def find_bin(name: str) -> str:
     return ""
 
 
+def pandoc_data_dir() -> str:
+    """Каталог данных pandoc рядом с его `data/docx`, если упаковка положила их не туда.
+
+    Ubuntu ставит `pandoc-data` в `/usr/share/pandoc/data`, а сам pandoc ищет
+    `data/docx` от `/usr/share/pandoc`: без явного `--data-dir` вывод docx и
+    `--print-default-data-file reference.docx` падают с «Could not find data file
+    data/data/docx/[Content_Types].xml». На macOS и Windows такой каталог тоже
+    находится, но совпадает с умолчанием и ничего не меняет.
+    """
+    for root in ("/usr/share/pandoc", "/usr/local/share/pandoc", "/opt/homebrew/share/pandoc"):
+        if os.path.isdir(os.path.join(root, "data", "docx")):
+            return root
+    return ""
+
+
 def pid_alive(pid: int) -> bool:
     """Жив ли процесс. Отказ в правах — ЖИВ.
 
