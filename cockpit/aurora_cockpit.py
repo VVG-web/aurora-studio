@@ -54,7 +54,7 @@ import traceback
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, parse_qsl, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, urlparse
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UI = os.path.join(KIT, "cockpit", "ui", "index.html")
@@ -442,6 +442,15 @@ def why_readonly(rel: str, text: str = "") -> str:
     """
     rel = norm_rel(rel)
     low = rel.lower()          # macOS и Windows различают регистр не всегда: `sources/` — тоже источники
+    # Снимок, выпуск и архив — доказательство, а не исходник: правится исходник, а версия
+    # замораживается заново. Виды артефактов динамические, поэтому проверяется папка, а не
+    # перечень видов: `Deliverables/work` — рабочая папка и остаётся правимой.
+    if low.startswith("deliverables/"):
+        if low == "deliverables/work" or low.startswith("deliverables/work/"):
+            pass
+        else:
+            return ("снимок или выпуск: это доказательство, а не исходник. "
+                    "Правьте исходник и замораживайте новую версию")
     for prefix, why in READONLY:
         if low == prefix.lower() or low.startswith(prefix.lower() + "/"):
             return why
@@ -520,6 +529,35 @@ def why_readonly_real(project: str, rel: str, full: str, text: str = "") -> str:
 FILES_LIMIT = 20000     # строк дерева в ответе: на живых проектах 2–4,5 тыс. файлов
 
 
+def lifecycle_applicable(rel: str, kinds: dict) -> bool:
+    """Открывается ли у файла карточка жизненного цикла: только путь и виды, без чтения файла.
+
+    Карточка — у исходников (`Artifacts/<вид>/*.md`, `Deliverables/work/**`) и у доказательств
+    (`Deliverables/<вид|released|_archive>/*.md|*.docx`). `README.md` любой папки — проводник,
+    а не документ; `Deliverables/work2/...` — не вид. Список видов динамический (`read_kinds`),
+    поэтому `deliverable` остаётся legacy-видом для старого `Deliverables/work` без вида.
+    """
+    nr = norm_rel(rel).replace("\\", "/")
+    parts = nr.split("/")
+    if not nr or parts[0].casefold() not in ("artifacts", "deliverables"):
+        return False
+    if parts[-1].casefold() == "readme.md":
+        return False
+    known = {str(k).casefold() for k in kinds}
+    kind = parts[1].casefold() if len(parts) > 1 else ""
+    if parts[0].casefold() == "artifacts":
+        return (len(parts) >= 3 and kind in known
+                and parts[-1].casefold().endswith(".md"))
+    if len(parts) < 3:
+        return False
+    suffix = parts[-1].casefold().rsplit(".", 1)[-1]
+    if suffix not in ("md", "docx"):
+        return False
+    if kind in ("work", "released", "_archive"):
+        return True
+    return kind in known or kind == "deliverable"
+
+
 def file_tree(project: str, limit: int = FILES_LIMIT) -> dict:
     """Дерево проекта как есть, с пометками. Скрывать нечего: проводник, который что-то
     прячет, заставляет лезть в системный — а мы ровно от этого и уходим.
@@ -529,6 +567,11 @@ def file_tree(project: str, limit: int = FILES_LIMIT) -> dict:
     проектов на 4 014 и 4 449 файлов счётчик стоял на 4000, а хвост дерева не было видно.
     """
     root = os.path.realpath(project)
+    # Виды читаются один раз на дерево: от них зависит, открывается ли карточка жизненного цикла.
+    try:
+        kinds = AG_KINDS.read_kinds(project) or {}
+    except OSError:
+        kinds = {}
     # Папки инструментов в дереве проекта не нужны: `.claude`, `.ruff_cache`,
     # `.playwright-mcp` — чужой кэш, он и в git не едет. Отсеивали только файлы с точки
     # и `.git*`, и в живом проекте набралось 22 файла чужого мусора среди двух тысяч
@@ -565,7 +608,9 @@ def file_tree(project: str, limit: int = FILES_LIMIT) -> dict:
                     and rel.lower().startswith(tuple(m.lower() + "/" for m in MIRROR_FOLDERS)) else "")
             rows.append({"path": rel, "dir": rel_dir, "name": name, "size": size,
                          "text": is_text_file(name) and size <= MAX_EDIT and not svc,
-                         "readonly": why_readonly(rel, head)})
+                         # ссылка из `Artifacts/` на снимок закрыта так же, как снимок: сверяем реальный путь
+                         "readonly": why_readonly_real(project, rel, path, head),
+                         "applicable": lifecycle_applicable(rel, kinds)})
     return {"root": root, "files": rows, "truncated": cut, "count": len(rows), "total": total,
             "recent": recent(project), "create_dirs": create_dirs(project)}
 
@@ -968,9 +1013,13 @@ def file_read(project: str, rel: str) -> dict:
         return {"error": svc, "service": True}
     size = os.path.getsize(full)
     ext = os.path.splitext(full)[1].lower()
+    # Карточка жизненного цикла приходит вместе с файлом — и для текста, и для docx: страница
+    # не угадывает стадию. Импорт ленивый: pandoc при старте панели не нужен.
+    import ship_doc as SD
+    life = SD.lifecycle_model(project, rel)
     if not is_text_file(full) or size > MAX_EDIT:
         return {"error": "не текстовый файл или слишком большой — откройте системным "
-                         "приложением", "binary": True, "size": size}
+                         "приложением", "binary": True, "size": size, "lifecycle": life}
     try:
         with open(full, "rb") as f:
             sn = sniff_text(f.read(MAX_EDIT + 1))
@@ -989,7 +1038,7 @@ def file_read(project: str, rel: str) -> dict:
     return {"path": rel, "text": text, "size": size,
             "digest": sn["digest"], "encoding": sn["encoding"], "eol": sn["eol"],
             "eol_mixed": sn["mixed"], "lossy": lossy, "readonly_lossy": only_lossy,
-            "readonly": ro,
+            "readonly": ro, "lifecycle": life,
             "git": git_file_state(project, rel),
             **publish_fields(project, rel, full, fm, text)}
 
@@ -1117,6 +1166,13 @@ def publish_info(project: str, rel: str, full: str, fm: dict, text: str) -> dict
     `gate` — коды, по которым ворота ревью не пустят наружу (кнопку не гасит: причину назовёт и команда; слова к кодам
     у страницы в каталоге); `prompt` — промпт публикации вида (сохраняется, модель по нему пока не вызывается)."""
     nr = norm_rel(rel)
+    low = nr.casefold()
+    # Снимок и docx — доказательство, а не исходник: публиковать их нельзя, кнопки нет.
+    # `Deliverables/work` остаётся публикуемым, а `released`, `_archive` и папки видов — нет.
+    if os.path.splitext(nr)[1].lower() == ".docx":
+        return {"state": "none"}
+    if low.startswith("deliverables/") and not low.startswith("deliverables/work/"):
+        return {"state": "none"}
     if os.path.splitext(nr)[1].lower() != ".md" or nr.split("/")[0].casefold() in PUBLISH_CLOSED:
         return {"state": "none"}
     try:
@@ -1226,6 +1282,95 @@ def publish_plan(project: str, rel: str) -> dict:
         return {"error": "план публикации не посчитан: " + (tail[-1].strip()[:300] if tail else f"код {p.returncode}")}
     plan["log"] = [ln for ln in (p.stderr or "").splitlines() if ln.strip()][-40:]
     return {"plan": plan}
+
+
+# --------------------------------------------------------------- карточка жизненного цикла
+#
+# Карточка «Файлов» только читает модель и запускает существующие `ship:release` /
+# `ship:export` через `/api/run`. Второго пути выпуска нет: у `/api/ship/*` есть только
+# чтение плана, сама запись идёт через `/api/run` с `ship:release`.
+
+LIFECYCLE_REFUSE = {"outside": 404, "service": 403}
+SHIP_REFUSE = {"outside": 404, "bad-action": 400}
+DOWNLOAD_LIMIT = 50 * 1024 * 1024        # 50 МБ: больше — не документ для копии
+
+
+def lifecycle_read(project: str, rel: str) -> dict:
+    """Модель карточки для `Artifacts/**` и `Deliverables/**`: стадии, версии, проблемы.
+
+    Только локальная сессия (проверяет маршрут), только путь внутри проекта и не служебный
+    файл: карточка называет пути и версии проекта, а ссылка с обычным именем на секрет —
+    не обход. Сам расчёт — у `ship_doc.lifecycle_model`, чтобы схема не разошлась с `--verify`.
+    """
+    full = inside(project, rel)
+    if not full or not os.path.isfile(full):
+        return {"error": "файл не найден в этом проекте", "code": "outside"}
+    svc = why_service_real(project, rel, full)
+    if svc:
+        return {"error": svc, "code": "service", "service": True}
+    import ship_doc as SD                  # лениво: pandoc при старте панели не нужен
+    return SD.lifecycle_model(project, rel)
+
+
+SHIP_ACTIONS = ("freeze", "release", "both")
+
+
+def ship_plan(project: str, payload: dict) -> dict:
+    """Сухой прогон выпуска: что будет заморожено, что выйдет docx, что запишется.
+
+    `apply=False` у `ship_doc.freeze`/`ship_doc.release` только считает имена и назначение:
+    ни снимка, ни docx, ни записи в жизненном цикле, ни замка. Запускает выпуск отдельно
+    `/api/run` с `ship:release` — второго пути нет.
+    """
+    rel = str(payload.get("path") or "")
+    action = str(payload.get("action") or "both")
+    if action not in SHIP_ACTIONS:
+        return {"ok": False, "action": action, "steps": [], "code": "bad-action",
+                "error": "действие выпуска — freeze, release или both",
+                "problems": [{"code": "bad-action", "detail": action}]}
+    full = inside(project, rel)
+    if not full or not os.path.isfile(full):
+        return {"ok": False, "action": action, "steps": [], "code": "outside",
+                "error": "файл не найден в этом проекте",
+                "problems": [{"code": "outside", "detail": rel}]}
+    version = str(payload.get("version") or "")
+    date = str(payload.get("date") or "")
+    reference = str(payload.get("reference") or "")
+    import ship_doc as SD                  # лениво: pandoc при старте панели не нужен
+    try:
+        if action == "freeze":
+            res = SD.freeze(project, rel, version, date, False, quiet=True)
+        else:
+            # `release` без `apply` сам считает заморозку, если её ещё нет: шаг `both`
+            # поэтому — это тот же план, что и `release`, а не второй путь выпуска.
+            res = SD.release(project, rel, version, date, reference, False)
+    except Exception as e:      # noqa: BLE001 — план не должен ронять панель
+        return {"ok": False, "action": action, "steps": [], "code": "plan",
+                "error": f"план не посчитан: {type(e).__name__}",
+                "problems": [{"code": "plan", "detail": f"{type(e).__name__}: {e}"[:300]}]}
+    if not res.get("ok"):
+        code = str(res.get("code") or "plan")
+        why = str(res.get("why") or "")
+        return {"ok": False, "action": action, "steps": [], "code": code, "error": why,
+                "problems": [{"code": code, "detail": why}]}
+    plan = res.get("plan") or {}
+    got_version = str(plan.get("version") or "")
+    snap = str(plan.get("path") or "")
+    if action == "freeze":
+        steps = [{"action": "freeze", "path": snap, "version": got_version}]
+    else:
+        paths = [str(x) for x in (res.get("steps") or [])]
+        snap = snap or (paths[0] if paths else "")
+        docx = paths[1] if len(paths) > 1 else os.path.splitext(snap)[0] + ".docx"
+        steps = [{"action": "freeze", "path": snap, "version": got_version},
+                 {"action": "export", "path": docx},
+                 {"action": "release", "version": got_version}]
+    out = {"ok": True, "action": action, "steps": steps, "problems": []}
+    if got_version:
+        out["version"] = got_version
+    if plan.get("kind"):
+        out["kind"] = str(plan.get("kind"))
+    return out
 
 
 def publish_script_create(project: str, kind: str, apply: bool = True) -> dict:
@@ -9050,17 +9195,63 @@ class Handler(BaseHTTPRequestHandler):
         retry = int(payload.pop("_retry", 0) or 0)
         self.send_json(payload, status, {"Retry-After": str(retry)} if retry else None)
 
-    def send_bytes(self, body: bytes, content_type: str, filename: str) -> None:
-        """Файл для скачивания: архив диагностики не JSON и не проходит через перевод."""
+    def send_bytes(self, body: bytes, content_type: str, filename: str, disposition: str = "") -> None:
+        """Файл для скачивания: архив диагностики не JSON и не проходит через перевод.
+
+        `disposition` — готовая строка `Content-Disposition`, когда имя не влезает в latin-1
+        (кириллица в имени документа): заголовок HTTP разрешает только эту кодировку.
+        """
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Disposition", disposition or f'attachment; filename="{filename}"')
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_safety_headers()
         self.end_headers()
         self.wfile.write(body)
+
+    # Копия файла проекта для карточки: `.docx` и `.md` — своими типами, остальное — байтами.
+    DOWNLOAD_TYPES = {".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                      ".md": "text/markdown; charset=utf-8"}
+
+    def send_file_download(self, project: str, rel: str) -> None:
+        """«Сохранить копию…» из карточки: только локальная сессия, только внутри проекта.
+
+        Служебные файлы и секреты не отдаются даже по ссылке с обычным именем
+        (`why_service_real`). Имя в `Content-Disposition` очищено от кавычек и переводов
+        строк: это чужой текст, а заголовок — не место для перевода строки.
+        """
+        if getattr(self, "auth", None) is not None and self.auth.kind != "session":
+            self.send_json({"error": "файл доступен только панели", "code": "session"}, 403)
+            return
+        full = inside(project, rel)
+        if not full or not os.path.isfile(full):
+            self.send_json({"error": "файл не найден в этом проекте"}, 404)
+            return
+        svc = why_service_real(project, rel, full)
+        if svc:
+            self.send_json({"error": svc, "service": True}, 403)
+            return
+        size = os.path.getsize(full)
+        if size > DOWNLOAD_LIMIT:
+            self.send_json({"error": "файл больше 50 МБ — сохраните его системным приложением"}, 413)
+            return
+        try:
+            with open(full, "rb") as f:
+                body = f.read()
+        except OSError:
+            self.send_json({"error": "файл не читается"}, 500)
+            return
+        name = re.sub(r'["\r\n\\\x00-\x1f]', "", os.path.basename(norm_rel(rel))).strip() or "file"
+        # Заголовок HTTP кодируется latin-1: кириллическое имя едет в `filename*` (RFC 6266),
+        # а в `filename` остаётся безопасная замена — иначе ответ падает на отправке.
+        plain = name.encode("latin-1", "replace").decode("latin-1")
+        disposition = f'attachment; filename="{plain}"'
+        if plain != name:
+            disposition += "; filename*=UTF-8''" + quote(name, safe="")
+        kind = self.DOWNLOAD_TYPES.get(os.path.splitext(full)[1].lower(), "application/octet-stream")
+        self.send_bytes(body, kind, name, disposition)
 
     # Типы известны заранее: раздаём только то, из чего состоит собранная библиотека.
     # Списком, а не через mimetypes: угадывание типа по расширению на чужом дереве —
@@ -9833,6 +10024,32 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(file_read(project, (q.get("path") or [""])[0])
                            if project and self._known(project)
                            else {"error": "проект не выбран"})
+        elif u.path == "/api/files/lifecycle":
+            # Карточка жизненного цикла — только локальной панели: удалённый токен получает 403
+            # на границе HTTP (в `REMOTE_READ_PATHS` этого пути нет).
+            if getattr(self, "auth", None) is not None and self.auth.kind != "session":
+                self.send_json({"error": "карточка доступна только панели", "code": "session"}, 403)
+                return
+            project = (q.get("project") or [""])[0]
+            if not project:
+                self.send_json({"error": "проект не выбран"})
+                return
+            if not self._known(project):
+                return
+            res = lifecycle_read(project, (q.get("path") or [""])[0])
+            self.send_json(res, LIFECYCLE_REFUSE.get(res.get("code", ""), 200) if res.get("error") else 200)
+        elif u.path == "/api/files/download":
+            # «Сохранить копию…» из карточки: двоичный файл проекта, тоже только локальной панели.
+            if getattr(self, "auth", None) is not None and self.auth.kind != "session":
+                self.send_json({"error": "файл доступен только панели", "code": "session"}, 403)
+                return
+            project = (q.get("project") or [""])[0]
+            if not project:
+                self.send_json({"error": "проект не выбран"})
+                return
+            if not self._known(project):
+                return
+            self.send_file_download(project, (q.get("path") or [""])[0])
         elif u.path == "/api/fs/list":
             # Окно выбора пути: один уровень папки проекта или машины, только имена (`fs_list`).
             scope = (q.get("scope") or ["project"])[0]
@@ -10351,6 +10568,18 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001 — страница получает отказ с причиной, а не оборванное соединение
                 res = {"error": f"запрос к типам карточек не выполнен: {type(e).__name__}", "failed": True}
             return self.send_json(res, cards_status(res))
+        if u.path == "/api/ship/plan":
+            # План выпуска: сухой прогон `ship:release` (заморозка → экспорт → запись) без записи.
+            # Только локальная сессия: в `REMOTE_*` этого пути нет, второй путь выпуска — `/api/run`.
+            project = str(payload.get("project") or "")
+            if not self.need_project(project):
+                return
+            if self.auth is not None and self.auth.kind != "session":
+                self.send_json({"error": "план доступен только панели", "code": "session"}, 403)
+                return
+            res = ship_plan(project, payload)
+            self.send_json(res, SHIP_REFUSE.get(res.get("code", ""), 400 if not res.get("ok") else 200))
+            return
         if u.path == "/api/publish/plan":
             # План публикации: сухой прогон `ship:publish --json` — что и куда уйдёт. Ничего не пишет.
             project = payload.get("project", "")
