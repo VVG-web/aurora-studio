@@ -19,13 +19,17 @@ import agent_core as AG  # noqa: E402
 def test_slots_are_shared_between_processes(tmp: Path):
     """Два процесса не могут занять больше мест шлюза, чем объявлено."""
     slots = tmp / "llm-slots"
+    ready = tmp / "ready"
+    go = tmp / "go"
     code_a = f"""
-import sys, time
+import os, sys, time
 sys.path.insert(0, {str(SCRIPTS)!r})
 import agent_core as A
 s = A._SharedSlots(1, {str(slots)!r})
 print('got', s.acquire(timeout=2, project='project-a'), flush=True)
-time.sleep(1.5)
+open({str(ready)!r}, 'w').write('1')
+while not os.path.exists({str(go)!r}):
+    time.sleep(0.02)
 s.release()
 """
     code_b = f"""
@@ -34,15 +38,20 @@ sys.path.insert(0, {str(SCRIPTS)!r})
 import agent_core as A
 s = A._SharedSlots(1, {str(slots)!r})
 print('short', s.acquire(timeout=0.3, project='project-b'), flush=True)
-print('long', s.acquire(timeout=3, project='project-b'), flush=True)
+open({str(go)!r}, 'w').write('1')
+print('long', s.acquire(timeout=5, project='project-b'), flush=True)
 s.release()
 """
     a = subprocess.Popen([sys.executable, "-c", code_a], stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, text=True, encoding="utf-8")
     try:
         assert a.stdout.readline().strip().startswith("got True"), "первый процесс не взял место"
+        deadline = time.time() + 5
+        while not ready.exists() and time.time() < deadline:
+            time.sleep(0.02)
+        assert ready.exists(), "первый процесс не удержал место"
         b = subprocess.run([sys.executable, "-c", code_b], capture_output=True,
-                           text=True, encoding="utf-8", timeout=10, check=False)
+                           text=True, encoding="utf-8", timeout=15, check=False)
         assert "short False" in b.stdout and "long True" in b.stdout, (b.stdout, b.stderr)
     finally:
         try:
