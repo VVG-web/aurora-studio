@@ -17,7 +17,6 @@ import re
 import sys
 import zipfile
 from datetime import datetime, timezone
-from xml.etree import ElementTree as ET
 
 import aurora_common as AC  # noqa: F401  — точка входа движка: защита версии Python
 
