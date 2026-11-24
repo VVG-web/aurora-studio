@@ -634,3 +634,41 @@ def test_record_command_is_registered_everywhere(_t):
     assert "kb:record" in en["commands"] and "Raw/decisions" in en["commands"]["kb:record"]
     src = (SCRIPTS / "kb_record.py").read_text(encoding="utf-8")
     assert "Панель: `kb:record`" in src
+
+
+@test
+def test_deliverables_snapshots_are_read_only_evidence(tmp: Path):
+    """Снимок и выпуск `Deliverables/**` — доказательство: причина названа словами, а `work` остаётся правимым.
+
+    Ссылка из `Artifacts/` на снимок закрыта так же, как сам снимок: запрет смотрит на реальный
+    путь (`why_readonly_real`), иначе обычное имя обходило бы его.
+    """
+    ck = _cockpit()
+    for rel in ("Deliverables/us/ОПЗ_v1.0_2026-10-19.md",
+                "Deliverables/us/вложенная/ОПЗ_v1.0_2026-10-19.md",
+                "Deliverables/released/ОПЗ_v1.0_2026-10-19.md",
+                "Deliverables/released/ОПЗ_v1.0_2026-10-19.docx",
+                "Deliverables/_archive/старый.md",
+                "deliverables/US/ОПЗ_v1.md"):
+        why = ck.why_readonly(rel)
+        assert "доказательство" in why and "Правьте исходник" in why, f"{rel}: {why!r}"
+    for rel in ("Deliverables/work/ОПЗ_v1.md", "Deliverables/work/подпапка/ОПЗ_v1.md"):
+        assert ck.why_readonly(rel) == "", f"{rel} закрыт для правки"
+
+    root = _base(tmp)
+    snap = _put(root, "Deliverables/us/ОПЗ_v1.0_2026-10-19.md",
+                "---\nsource: Deliverables/work/ОПЗ_v1.md\n---\n\n# снимок\n")
+    link = root / "Artifacts" / "us" / "ссылка.md"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if not hasattr(os, "symlink"):
+        return
+    try:
+        os.symlink(snap, link)
+    except (OSError, NotImplementedError):
+        return
+    assert ck.why_readonly_real(str(root), "Artifacts/us/ссылка.md", str(link)) != "", \
+        "why_readonly_real не видит ссылку на снимок"
+    assert ck.file_write(str(root), "Artifacts/us/ссылка.md", "# правка\n").get("error"), \
+        "запись по ссылке на снимок прошла"
+    row = next((r for r in ck.file_tree(str(root))["files"] if r["path"] == "Artifacts/us/ссылка.md"), None)
+    assert row and row["readonly"], "file_tree показывает ссылку на снимок правимой"

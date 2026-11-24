@@ -693,3 +693,28 @@ tr:last-child td{border-bottom:0}
   .drawer{padding:var(--sp-4)}
   #toasts{right:10px;left:10px;bottom:10px}
 }
+
+#fileCreateButton,.lifecycle-badge{min-height:44px;margin-bottom:8px}
+.lifecycle-head,.lifecycle-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.lifecycle-title{margin:0;color:var(--text);overflow-wrap:anywhere}
+.lifecycle-meta{color:var(--text-muted);overflow-wrap:anywhere}
+.lifecycle-line{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));position:relative;isolation:isolate;list-style:none;padding:0;margin:16px 0;gap:8px}
+.lifecycle-line::before{content:"";position:absolute;z-index:-1;inset:50% 12% auto;border-top:2px solid var(--text-muted)}
+.lifecycle-line li{text-align:center;min-width:0}
+.lifecycle-node{min-height:44px;min-width:44px;max-width:100%;padding:8px;border:2px solid var(--text-muted);border-radius:var(--radius-pill);background:var(--surface-1);color:var(--text);cursor:pointer;overflow-wrap:anywhere}
+.lifecycle-node.done{border-style:double;border-width:4px}
+.lifecycle-node.empty{border-style:dashed}
+.lifecycle-node.current{border-color:var(--primary);font-weight:bold}
+.lifecycle-node.warning::before{content:"⚠ "}
+.lifecycle-node.error::before{content:"! "}
+.lifecycle-node.loading{cursor:progress}
+.lifecycle-node.unavailable{border-style:dotted}
+#fileLifecycle :is(button,a,summary):focus-visible,#fileCreate :focus-visible,#fileCreateButton:focus-visible,.lifecycle-node:focus-visible{outline:2px solid var(--text);outline-offset:2px}
+.lifecycle-node:hover{border-color:var(--text)}
+.lifecycle-node:active{transform:translateY(1px)}
+.lifecycle-detail{margin:16px 0;padding:8px;border-inline-start:2px solid var(--border);overflow-wrap:anywhere}
+#fileLifecycle details{overflow-x:auto}
+.lifecycle-actions :is(button,a),#fileLifecycle summary,#fileCreate :is(button,select){min-height:44px}
+@media(max-width:900px){.lifecycle-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.lifecycle-line,.lifecycle-actions{grid-template-columns:1fr}.lifecycle-line::before{inset:8px auto 8px 50%;border-top:0;border-inline-start:2px solid var(--text-muted)}.lifecycle-node,.lifecycle-actions>*{width:100%}}
+@media(prefers-reduced-motion:reduce){#fileLifecycle *,#fileCreate *{animation:none!important;transition:none!important}.lifecycle-node:active{transform:none}}

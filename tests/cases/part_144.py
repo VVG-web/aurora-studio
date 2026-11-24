@@ -415,8 +415,10 @@ def test_open_file_is_reread_after_a_successful_publication(tmp: Path):
     out = _node("""
 const calls = [], toasts = [];
 let S = {view: "console"};
-let F = {path: "Artifacts/us/US-1.md", dirty: false, files: [{path: "Artifacts/us/US-1.md", name: "US-1.md", text: true}], reopen: ""};
-const openFile = async f => { calls.push(f.path); };
+let F = {path: "Artifacts/us/US-1.md", dirty: false, files: [{path: "Artifacts/us/US-1.md", name: "US-1.md",
+          text: true, applicable: true}], reopen: ""};
+const openFile = async f => { calls.push(["file", f.path]); };
+const openEntry = async f => { calls.push(["entry", f.path]); };
 const toast = (m, k) => toasts.push([m, k]);
 const t = k => k;
 """ + after + """
@@ -425,8 +427,11 @@ const log = {};
 await afterPublish(rel);                                   // «Файлы» скрыты: ждём возвращения
 log.hidden = {calls: calls.length, reopen: F.reopen};
 S.view = "files";
-await afterPublish(F.reopen);                              // вернулись: перечитываем
-log.visible = {calls: calls.length, reopen: F.reopen};
+await afterPublish(F.reopen);                              // вернулись: перечитываем карточкой
+log.visible = {calls: calls.slice(), reopen: F.reopen};
+F.files[0].applicable = false;                             // обычный файл идёт в редактор
+await afterPublish(rel);
+log.plain = calls.slice();
 await afterPublish("Artifacts/us/другой.md");              // открыт не тот файл
 log.other = calls.length;
 F.dirty = true;
@@ -435,8 +440,16 @@ log.dirty = {calls: calls.length, toasts: toasts.length};
 console.log(JSON.stringify(log));
 """, tmp)
     assert out["hidden"] == {"calls": 0, "reopen": "Artifacts/us/US-1.md"}, out
-    assert out["visible"] == {"calls": 1, "reopen": ""}, out
-    assert out["other"] == 1 and out["dirty"] == {"calls": 1, "toasts": 1}, out
+    assert out["visible"] == {"calls": [["entry", "Artifacts/us/US-1.md"]], "reopen": ""}, out
+    assert out["plain"] == [["entry", "Artifacts/us/US-1.md"], ["file", "Artifacts/us/US-1.md"]], out
+    assert out["other"] == 2 and out["dirty"] == {"calls": 2, "toasts": 1}, out
+    # Вход: дерево и `openPath` зовут `openEntry`; обычный файл — `openFile`; карточка публикует без редактора.
+    assert "openEntry(f)" in _js_function(ui, "function fileRow("), "дерево больше не открывает карточку"
+    assert "openEntry(f)" in _js_function(ui, "async function openPath("), "openPath не открывает карточку"
+    assert "await openEntry(f);" in ui and "await publishFor(rel, {save: !F.lifecycle});" in ui, \
+        "«Продуктивность» публикует мимо карточки"
+    assert "publishFor(model.path)" in _js_function(ui, "function drawLifecycle("), \
+        "кнопка публикации в карточке не ведёт в общую карточку публикации"
     poll = _js_function(ui, "async function poll(")
     assert 'String(label).startsWith("ship:publish ")' in poll and "publishDone(" in poll, \
         "завершение публикации не перечитывает открытый файл"

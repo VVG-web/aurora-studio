@@ -924,7 +924,8 @@ async function drawRolePicker(){
 /* ---------------- файлы проекта ---------------- */
 const F = { files:[], path:null, digest:"", ed:null, ro:"", loaded:false, orig:"", fm:"",
             filter:"all", open:new Set(), recent:[], changed:new Set(), createDirs:[], reopen:"",
-            publishedUrl:"" };
+            publishedUrl:"", lifecycle: null, lifecyclePath: "", lifecycleBusy: false,
+            lifecyclePick: "", createKind: "" };
 // Порог живого предпросмотра в знаках. Не выдумка: на карточке в 11 КБ редактор сам
 // написал «требует 20901мс», а `_index.md` живой базы весит 171 КБ.
 const PREVIEW_LIMIT = 40000;
@@ -984,7 +985,7 @@ const FILTERS = {
 
 function fileRow(f){
   const b = el("button", {class:"btn", style:"width:100%;text-align:left;margin:1px 0",
-    title:f.path, onclick:()=>openFile(f)}, f.name);
+    title:f.path, onclick:()=>openEntry(f)}, f.name);
   if (f.path === F.path) b.setAttribute("aria-current", "true");
   if (F.changed.has(f.path)) b.append(el("span",{class:"pill"}, t("files.changed")));
   if (f.readonly) b.append(el("span",{class:"pill"}, "🔒"));
@@ -1117,13 +1118,30 @@ async function deleteFile(){
     {project:S.project.path, path:F.path})});
   if (d.error) return toast(d.error, "err");
   F.path = null; destroyEditor();
-  $("#fileEditor").hidden = true; $("#fileNone").hidden = false;
+  F.lifecycle = null; F.lifecyclePath = "";
+  $("#fileEditor").hidden = true; $("#fileLifecycle").hidden = true;
+  $("#fileCreate").hidden = true; $("#fileNone").hidden = false;
   await renderFiles();
   toast(t("files.deleted"));
 }
 
+/* Карточка жизненного цикла — не второй редактор, а отдельный вход: дерево отдаёт
+   `applicable`, сервер решает, у какого файла есть стадии. Строкой пути это не угадывается. */
+async function openEntry(f){
+  if (f && f.applicable) return openLifecycle(f);
+  return openFile(f);
+}
+
 async function openFile(f){
   if (F.ed && F.dirty && !confirm(t("files.leave_dirty"))) return;
+  // Карточка и «Создать артефакт» — режимы того же окна: редактор их не перекрывает.
+  if ($("#fileLifecycle") && !$("#fileLifecycle").hidden){
+    $("#fileLifecycle").hidden = true;
+    F.lifecycle = null;
+    F.lifecyclePath = "";
+    F.lifecyclePick = "";
+  }
+  if ($("#fileCreate")) $("#fileCreate").hidden = true;
   if ($("#filePubCard") && $("#filePubCard").dataset.rel !== f.path) $("#filePubCard").remove();   // карточка публикации — другого файла
   $("#fileNone").hidden = true; $("#fileEditor").hidden = false;
   if ($("#fileTask")) $("#fileTask").innerHTML = "";                   // блок «Задача» — прежнего файла
@@ -1226,6 +1244,659 @@ async function openFile(f){
   drawTree();
   const mark = $('#fileTree button[aria-current="true"]');
   if (mark) mark.scrollIntoView({block:"nearest"});
+}
+
+/* ---------------- карточка жизненного цикла ---------------- */
+/* Карточка не хранит собственных стадий: сервер (`ship_doc.lifecycle_model`) считает
+   `created`/`frozen`/`released`, записи версий и проблемы, а страница только рисует
+   ответ. Линия строго из трёх шагов, публикация — отдельный необязательный бейдж. */
+function lifecycleBase(path){
+  return String(path || "").replace(/\\/g, "/").split("/").pop() || "";
+}
+
+function lifecycleVisible(row){
+  return !!(row && row.applicable);
+}
+
+function lifecycleModel(d){
+  return d && d.applicable ? d : null;
+}
+
+function lifecycleStageDone(model, stage){
+  if (!model) return false;
+  if (stage === "created") return !!(model.created && model.created.exists);
+  if (stage === "frozen") return !!(model.frozen || []).length;
+  if (stage === "released") return !!(model.released_versions || []).length;
+  if (stage === "published") return !!(model.publication && model.publication.done);
+  return false;
+}
+
+function lifecycleNode(stage, model){
+  if (!model) return null;
+  if (stage === "created") return model.created || null;
+  if (stage === "frozen") return (model.frozen || []).length ? model.frozen : null;
+  if (stage === "released"){
+    return (model.released_versions || []).length ? model.released_versions : null;
+  }
+  return null;
+}
+
+function lifecyclePrimaryAction(model){
+  if (!model) return null;
+  if (model.current === "frozen") return {action: "freeze", label: t("ship.freeze")};
+  if (model.current === "released") return {action: "release", label: t("ship.release")};
+  return null;
+}
+
+function lifecycleStageProblems(model, stage){
+  const all = (model && model.problems) || [];
+  const text = p => String((p && p.detail) || "") + " " + String((p && p.code) || "");
+  if (stage === "created")
+    return all.filter(p => ["source-missing", "source-dirty"].includes(String(p.code || "")))
+      .map(p => String(p.detail || p.code || ""));
+  if (stage === "frozen")
+    return all.filter(p => ["snapshot-missing", "record-invalid"].includes(String(p.code || ""))
+      || (String(p.code || "") === "hash-mismatch" && text(p).toLowerCase().includes(".md")))
+      .map(p => String(p.detail || p.code || ""));
+  if (stage === "released")
+    return all.filter(p => String(p.code || "") === "release-missing"
+      || (String(p.code || "") === "hash-mismatch" && text(p).toLowerCase().includes(".docx")))
+      .map(p => String(p.detail || p.code || ""));
+  return [];
+}
+
+function lifecycleChecklist(model, stage){
+  if (!model) return [];
+  // Пустой узел показывает всю линию, а не только свои предпосылки: человек видит,
+  // что ещё впереди, а не гадает, почему после «Заморожен» чек-лист кончился.
+  const stages = ["created", "frozen", "released"];
+  if (stage === "published") stages.push("published");
+  return stages.map(name => ({stage: name, done: lifecycleStageDone(model, name)}));
+}
+
+function lifecycleDate(rec){
+  return String((rec && (rec.at || rec.date || rec.when)) || "");
+}
+
+function lifecycleVersion(model){
+  if (!model) return "";
+  if (model.version) return String(model.version);
+  const recs = (model.frozen || []).concat(model.released_versions || []);
+  const last = recs[recs.length - 1];
+  return String((last && last.version) || model.next_version || "");
+}
+
+function lifecycleShortSha(sha){
+  const s = String(sha || "");
+  return s.length > 12 ? s.slice(0, 12) : s;
+}
+
+function lifecycleEditable(model){
+  const p = String((model && model.path) || "").replace(/\\/g, "/");
+  if (!/\.md$/i.test(p)) return false;
+  return /^Artifacts\//i.test(p) || /^Deliverables\/work\//i.test(p);
+}
+
+/* Подсказка узла повторяет приём `timingChip`: 500 мс на наведение, мгновенное скрытие,
+   долгое нажатие на тач-экране, Escape и `aria-describedby`. Общий `data-help` ждёт две
+   секунды и здесь был бы слишком медленным для линии из трёх узлов. */
+function hideLifecycleTip(){
+  clearTimeout(hideLifecycleTip.timer); hideLifecycleTip.timer = null;
+  if (hideLifecycleTip.open){ hideLifecycleTip.open.hidden = true; hideLifecycleTip.open = null; }
+}
+function placeLifecycleTip(node, box){
+  box.style.maxWidth = Math.max(160, innerWidth - 16) + "px";
+  box.style.left = "0px"; box.style.top = "0px";
+  const r = node.getBoundingClientRect(), b = box.getBoundingClientRect();
+  const top = (r.bottom + 8 + b.height <= innerHeight) ? r.bottom + 8
+    : Math.max(8, r.top - 8 - b.height);
+  const left = Math.min(Math.max(8, r.left), innerWidth - b.width - 8);
+  box.style.top = top + "px"; box.style.left = left + "px";
+}
+function showLifecycleTip(node, box){
+  hideLifecycleTip();
+  box.hidden = false;
+  hideLifecycleTip.open = box;
+  placeLifecycleTip(node, box);
+}
+function lifecycleTipAttach(node, text){
+  lifecycleTipAttach.seq = (lifecycleTipAttach.seq || 0) + 1;
+  const id = "lifecycle-tip-" + lifecycleTipAttach.seq;
+  const box = el("span", {class:"help-tip timing-tip", id, role:"tooltip", hidden:""}, text);
+  if (node.setAttribute){
+    node.setAttribute("aria-describedby", id);
+    node.setAttribute("title", text);
+  }
+  const later = ()=>{
+    clearTimeout(hideLifecycleTip.timer);
+    hideLifecycleTip.timer = setTimeout(()=>showLifecycleTip(node, box), 500);
+  };
+  if (node.addEventListener){
+    node.addEventListener("mouseenter", later);
+    node.addEventListener("mouseleave", hideLifecycleTip);
+    node.addEventListener("focus", later);
+    node.addEventListener("blur", hideLifecycleTip);
+    node.addEventListener("touchstart", later, {passive:true});
+    node.addEventListener("touchend", hideLifecycleTip);
+    node.addEventListener("touchcancel", hideLifecycleTip);
+    node.addEventListener("keydown", ev=>{
+      if (ev.key === "Escape"){ hideLifecycleTip(); return; }
+      // Enter и пробел остаются действием кнопки: подсказка не должна съедать клик.
+      if (ev.key === "Enter" || ev.key === " ") showLifecycleTip(node, box);
+    });
+  }
+  return box;
+}
+
+function lifecycleTooltip(model, stage){
+  if (!model) return "";
+  const lines = [String(model.title || model.name || lifecycleBase(model.path))];
+  const done = lifecycleStageDone(model, stage);
+  const stageKey = stage === "created" ? "files.lifecycle.created"
+    : stage === "frozen" ? "files.lifecycle.frozen"
+    : stage === "released" ? "files.lifecycle.released" : "files.lifecycle.published";
+  lines.push(t(stageKey) + ": "
+    + (done ? t("files.lifecycle.done") : t("files.lifecycle.empty")));
+  if (stage === "created"){
+    const c = model.created || {};
+    if (c.at) lines.push(String(c.at));
+    if (c.source) lines.push(String(c.source));
+    if (model.path) lines.push(String(model.path));
+  } else if (stage === "published"){
+    const pub = model.publication || {};
+    if (pub.at) lines.push(String(pub.at));
+    if (pub.url) lines.push(String(pub.url));
+    if (pub.stale) lines.push(t("editor.stale", {date: pub.at || ""}));
+  } else {
+    const recs = lifecycleNode(stage, model) || [];
+    const last = recs[recs.length - 1];
+    if (last){
+      if (last.version) lines.push(t("files.lifecycle.version") + " " + last.version
+        + (recs.length > 1 ? " / " + recs.length : ""));
+      if (lifecycleDate(last)) lines.push(lifecycleDate(last));
+      if (last.path) lines.push(String(last.path));
+      if (last.by || last.author) lines.push(String(last.by || last.author));
+    }
+    if (stage === "frozen" && model.changes_after_freeze)
+      lines.push(t("files.lifecycle.changes_after_freeze"));
+  }
+  const problems = lifecycleStageProblems(model, stage);
+  if (problems.length) lines.push(t("files.lifecycle.problems") + ": " + problems.join("; "));
+  return lines.filter(Boolean).join(" · ");
+}
+
+function lifecycleAction(text, onclick, cls){
+  return el("button", {type:"button", class:"btn" + (cls ? " " + cls : ""), onclick}, text);
+}
+
+// Ссылка на копию файла: адрес без токена сервер отвергнет, а заголовок браузеру из
+// `<a href>` не приложить. Ссылка остаётся ссылкой, но скачивание идёт тем же токеном,
+// что и остальные запросы панели; без JS адрес открывается как есть.
+function lifecycleDownload(rel){
+  const href = "/api/files/download?project=" + encodeURIComponent(S.project.path)
+    + "&path=" + encodeURIComponent(rel);
+  return el("a", {class:"btn", href, download:"", rel:"noreferrer",
+    onclick: async ev => {
+      ev.preventDefault();
+      try {
+        const r = await fetch(href, {headers:{"X-Aurora-Token": TOKEN}});
+        if (!r.ok){ toast(t("ship.failed"), "err"); return; }
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = lifecycleBase(rel) || "file";
+        document.body.append(a); a.click(); a.remove();
+        setTimeout(()=>URL.revokeObjectURL(url), 1000);
+      } catch (e){ toast(t("ship.failed"), "err"); }
+    }}, t("files.lifecycle.download"));
+}
+
+function lifecycleVersions(model){
+  const rows = [];
+  (model.frozen || []).forEach(r => rows.push(Object.assign({}, r, {_stage:"frozen"})));
+  (model.released_versions || []).forEach(r => rows.push(Object.assign({}, r, {_stage:"released"})));
+  const box = el("details", {class:"lifecycle-versions"},
+    el("summary", {}, t("files.lifecycle.all_versions") + " (" + rows.length + ")"));
+  if (!rows.length){
+    box.append(el("div", {class:"sub"}, t("files.lifecycle.empty")));
+    return {box, count: 0};
+  }
+  const table = el("table", {class:"lifecycle-table"});
+  table.append(el("thead", {}, el("tr", {},
+    el("th", {}, t("files.lifecycle.version")),
+    el("th", {}, t("files.lifecycle.frozen")),
+    el("th", {}, t("files.lifecycle.sha")),
+    el("th", {}, t("files.lifecycle.reveal")),
+    el("th", {}, t("files.lifecycle.done")))));
+  const body = el("tbody");
+  rows.forEach(r => {
+    body.append(el("tr", {},
+      el("td", {class:"mono"}, String(r.version || "")),
+      el("td", {}, lifecycleDate(r)),
+      el("td", {class:"mono", title: String(r.sha256 || "")}, lifecycleShortSha(r.sha256)),
+      el("td", {class:"mono"}, String(r.path || r.frozen_path || "")),
+      el("td", {class: r.ok === false ? "warn" : ""},
+        r.ok === false ? t("files.lifecycle.error") : t("files.lifecycle.done"))));
+  });
+  table.append(body);
+  box.append(table);
+  return {box, count: rows.length};
+}
+
+function drawLifecycleDetail(host, model, stage){
+  if (!host) return;
+  host.innerHTML = "";
+  const label = stage === "created" ? t("files.lifecycle.created")
+    : stage === "frozen" ? t("files.lifecycle.frozen")
+    : stage === "released" ? t("files.lifecycle.released") : t("files.lifecycle.published");
+  host.append(el("b", {}, label));
+  if (stage === "published"){
+    const pub = model.publication || {};
+    host.append(el("div", {class:"sub"}, pub.done ? t("files.lifecycle.done") : t("files.lifecycle.empty")));
+    if (pub.at) host.append(el("div", {}, String(pub.at)));
+    if (pub.url) host.append(el("div", {}, el("a", {href:String(pub.url), target:"_blank",
+      rel:"noopener noreferrer"}, String(pub.url))));
+    host.append(el("div", {class:"sub"}, t("files.lifecycle.optional")));
+    return;
+  }
+  if (lifecycleStageDone(model, stage)){
+    if (stage === "created"){
+      const c = model.created || {};
+      if (c.at) host.append(el("div", {}, String(c.at)));
+      if (c.source) host.append(el("div", {class:"sub"}, String(c.source)));
+      host.append(el("div", {class:"mono"}, String(model.path || "")));
+      return;
+    }
+    const recs = stage === "frozen" ? (model.frozen || []) : (model.released_versions || []);
+    recs.forEach(rec => {
+      host.append(el("div", {class:"mono"},
+        t("files.lifecycle.version") + " " + String(rec.version || "")
+        + " · " + lifecycleDate(rec) + " · " + String(rec.path || "")));
+      if (rec.sha256)
+        host.append(el("div", {class:"sub mono"}, t("files.lifecycle.sha") + " " + String(rec.sha256)));
+    });
+    return;
+  }
+  host.append(el("div", {class:"sub"}, t("files.lifecycle.checklist")));
+  const list = lifecycleChecklist(model, stage);
+  if (!list.length){
+    host.append(el("div", {class:"sub"}, t("files.lifecycle.empty")));
+    return;
+  }
+  host.append(el("ul", {}, ...list.map(item => el("li", {},
+    (item.stage === "created" ? t("files.lifecycle.created")
+      : item.stage === "frozen" ? t("files.lifecycle.frozen")
+      : item.stage === "released" ? t("files.lifecycle.released")
+      : t("files.lifecycle.published")) + ": "
+    + (item.done ? t("files.lifecycle.done") : t("files.lifecycle.empty"))))));
+}
+
+function drawLifecycle(model, pick){
+  const host = $("#fileLifecycle");
+  if (!host) return;
+  host.hidden = false;
+  host.innerHTML = "";
+  if (!model || !model.applicable){
+    F.lifecycle = null;
+    host.append(el("div", {class:"note warn", role:"status", "aria-live":"polite"},
+      t("files.lifecycle.unavailable")));
+    return;
+  }
+  F.lifecycle = model;
+  F.lifecyclePath = String(model.path || F.path || "");
+  F.path = F.lifecyclePath;
+  F.lifecyclePick = pick || F.lifecyclePick || model.current || model.stage || "created";
+
+  const head = el("div", {class:"lifecycle-head"});
+  head.append(el("h2", {class:"lifecycle-title", tabindex:"-1"},
+    String(model.title || model.name || lifecycleBase(model.path))));
+  if (model.artifact_id) head.append(el("span", {class:"pill mono"}, String(model.artifact_id)));
+  if (model.kind_title || model.kind)
+    head.append(el("span", {class:"pill"}, String(model.kind_title || model.kind)));
+  if (lifecycleVersion(model)) head.append(el("span", {class:"pill"}, t("files.lifecycle.version") + " "
+    + lifecycleVersion(model)));
+
+  const pub = model.publication || {};
+  const badge = el("button", {type:"button",
+    class:"pill lifecycle-badge" + (pub.stale ? " warn" : ""),
+    "aria-label": t("files.lifecycle." + (pub.done ? "published" : "optional")),
+    onclick:()=>{ F.lifecyclePick = "published"; drawLifecycle(model, "published"); }},
+    t(pub.done ? "files.lifecycle.published" : "files.lifecycle.optional"));
+  // Бейдж публикации — отдельно над заголовком и вне линии: публикация не стадия.
+  host.append(badge, lifecycleTipAttach(badge, lifecycleTooltip(model, "published")));
+  head.append(el("span", {style:"flex:1"}));
+  head.append(lifecycleAction(t("files.lifecycle.reveal"), ()=>revealFile("folder")));
+  if (lifecycleEditable(model))
+    head.append(lifecycleAction(t("files.lifecycle.edit"),
+      ()=>openFile({path: model.path, name: lifecycleBase(model.path), text:true, readonly:""})));
+  host.append(head);
+
+  const line = el("ol", {class:"lifecycle-line", role:"list"});
+  const nodes = [];
+  ["created", "frozen", "released"].forEach(stage => {
+    const done = lifecycleStageDone(model, stage);
+    const current = model.current === stage;
+    const bad = lifecycleStageProblems(model, stage).length > 0;
+    const unavailable = !done && !current && !bad && model.freezeable === false;
+    const state = bad ? "error" : current ? "current" : done ? "done"
+      : unavailable ? "unavailable" : "empty";
+    const label = stage === "created" ? t("files.lifecycle.created")
+      : stage === "frozen" ? t("files.lifecycle.frozen") : t("files.lifecycle.released");
+    const stateText = done ? t("files.lifecycle.done") : t("files.lifecycle.empty");
+    const action = !done && stage === "frozen" ? t("ship.freeze")
+      : !done && stage === "released" ? t("ship.release") : "";
+    const btn = el("button", {type:"button", class:"lifecycle-node " + state, "data-stage":stage,
+      "aria-expanded": String(F.lifecyclePick === stage), "aria-controls":"fileLifecycleDetail",
+      onclick:()=>{
+        F.lifecyclePick = stage;
+        drawLifecycle(model, stage);
+        const again = $(`#fileLifecycle .lifecycle-node[data-stage="${stage}"]`);
+        if (again && again.focus) again.focus();
+      }},
+      el("span", {class:"lifecycle-node-label"}, label),
+      el("span", {class:"lifecycle-state"},
+        stateText + (current ? " · " + t("files.lifecycle.current") : "")));
+    btn.setAttribute("aria-label", label + ". " + stateText
+      + (action ? ". " + action : "")
+      + (current ? ". " + t("files.lifecycle.current") : ""));
+    if (current) btn.setAttribute("aria-current", "step");
+    if (model.changes_after_freeze && stage === "frozen" && btn.classList) btn.classList.add("warning");
+    if (F.lifecycleBusy && btn.classList) btn.classList.add("loading");
+    line.append(el("li", {}, btn, lifecycleTipAttach(btn, lifecycleTooltip(model, stage))));
+    nodes.push(btn);
+  });
+  if (line.addEventListener){
+    line.addEventListener("keydown", ev => {
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(ev.key)) return;
+      const i = nodes.indexOf(document.activeElement);
+      const dir = (ev.key === "ArrowLeft" || ev.key === "ArrowUp") ? -1 : 1;
+      const next = nodes[(i + dir + nodes.length) % nodes.length];
+      if (next){ ev.preventDefault(); next.focus(); }
+    });
+  }
+  host.append(line);
+
+  const meta = el("div", {class:"lifecycle-meta"});
+  meta.append(t("files.lifecycle.optional"));
+  const lastFreeze = (model.frozen || [])[(model.frozen || []).length - 1];
+  if (lastFreeze)
+    meta.append(" · " + t("files.lifecycle.frozen") + " "
+      + [lastFreeze.version, lifecycleDate(lastFreeze)].filter(Boolean).join(" · "));
+  host.append(meta);
+  if (model.changes_after_freeze)
+    host.append(el("div", {class:"note warn", role:"status"},
+      t("files.lifecycle.changes_after_freeze")));
+
+  const detail = el("div", {class:"lifecycle-detail", id:"fileLifecycleDetail", role:"region",
+    "aria-label": t("files.lifecycle.checklist")});
+  drawLifecycleDetail(detail, model, F.lifecyclePick);
+  host.append(detail);
+
+  const versions = lifecycleVersions(model);
+  const actions = el("div", {class:"lifecycle-actions"});
+  const primary = lifecyclePrimaryAction(model);
+  if (primary){
+    const main = lifecycleAction(primary.label, ()=>runShip(model.path, primary.action), "primary");
+    if (primary.action === "release"){
+      main.setAttribute("title", t("ship.confirm_release"));
+      main.setAttribute("aria-label", t("ship.confirm_release"));
+    }
+    actions.append(main);
+  }
+  // Из «Создан» выпуск сам делает заморозку: один клик — снимок, экспорт из снимка, запись.
+  if (model.current === "frozen" && lifecycleEditable(model))
+    actions.append(lifecycleAction(t("ship.both"), ()=>runShip(model.path, "both"), "primary"));
+  // Выпущенный документ продолжает жить: следующая версия начинается с новой заморозки.
+  if (!primary && model.stage === "released" && lifecycleEditable(model))
+    actions.append(lifecycleAction(t("ship.freeze"),
+      ()=>runShip(model.path, "freeze", model.next_version)));
+  if (lifecycleEditable(model))
+    actions.append(lifecycleAction(t("editor.publish"), ()=>publishFor(model.path)));
+  actions.append(lifecycleAction(t("files.lifecycle.all_versions") + " (" + versions.count + ")",
+    ()=>{ versions.box.open = !versions.box.open; }));
+  const lower = String(model.path || "").toLowerCase();
+  const lastRelease = (model.released_versions || [])[(model.released_versions || []).length - 1];
+  const docxRel = (lastRelease && lastRelease.path) || (lower.endsWith(".docx") ? model.path : "");
+  if (docxRel){
+    actions.append(lifecycleAction(t("files.lifecycle.open_docx"),
+      ()=>revealFile("open", docxRel)));
+    if (docxRel !== model.path)
+      actions.append(lifecycleAction(t("files.lifecycle.reveal"),
+        ()=>revealFile("folder", docxRel)));
+    actions.append(lifecycleDownload(docxRel));
+    if (lastRelease && lastRelease.frozen_path)
+      actions.append(lifecycleAction(t("files.lifecycle.open_snapshot"),
+        ()=>openLifecycle({path:lastRelease.frozen_path,
+          name:lifecycleBase(lastRelease.frozen_path), text:true, applicable:true})));
+  }
+  host.append(actions);
+
+  if ((model.problems || []).length){
+    const box = el("div", {class:"note warn", role:"status", "aria-live":"polite"},
+      el("b", {}, t("files.lifecycle.problems")));
+    box.append(el("ul", {}, ...(model.problems || []).map(p => el("li", {},
+      String(p.detail || p.code || "")
+      + (p.code && p.detail ? " (" + p.code + ")" : "")))));
+    host.append(box);
+  }
+  host.append(versions.box);
+  if ((model.warnings || []).length){
+    const box = el("div", {class:"note", role:"status"},
+      el("b", {}, t("files.lifecycle.warning")));
+    box.append(el("ul", {}, ...(model.warnings || []).map(w => el("li", {},
+      String(w) === "source-changed-after-freeze" ? t("files.lifecycle.changes_after_freeze")
+        : String(w) === "publication-stale"
+          ? t("editor.stale", {date: (model.publication || {}).at || ""})
+          : String(w)))));
+    host.append(box);
+  }
+}
+
+function lifecyclePlanSteps(plan){
+  return ((plan && plan.steps) || []).map(step => typeof step === "string" ? step
+    : String(step.title || step.text || step.path || step.cmd || step.action || ""));
+}
+
+function drawLifecyclePlan(plan){
+  const host = $("#fileLifecycle");
+  if (!host) return;
+  if (host.querySelector) host.querySelector(".lifecycle-plan")?.remove();
+  const box = el("div", {class:"lifecycle-plan note", role:"status", "aria-live":"polite"},
+    el("b", {}, t("ship.plan")));
+  const steps = lifecyclePlanSteps(plan).filter(Boolean);
+  if (steps.length) box.append(el("ol", {}, ...steps.map(s => el("li", {}, s))));
+  else box.append(el("div", {class:"sub"}, t("ship.plan_empty")));
+  ((plan && plan.problems) || []).forEach(p => box.append(el("div", {class:"warn"},
+    String(p.detail || p.code || p))));
+  host.append(box);
+}
+
+function renderLifecycleLoading(f){
+  const host = $("#fileLifecycle");
+  if (!host) return;
+  host.hidden = false;
+  host.innerHTML = "";
+  host.append(
+    el("div", {class:"lifecycle-head"},
+      el("h2", {class:"lifecycle-title", tabindex:"-1"},
+        String((f && (f.title || f.name)) || lifecycleBase(f && f.path)))),
+    el("div", {class:"row", style:"gap:8px", role:"status", "aria-live":"polite"},
+      el("span", {class:"spin"}), t("overview.counting")));
+}
+
+function renderLifecycleError(f, why){
+  const host = $("#fileLifecycle");
+  if (!host) return;
+  host.hidden = false;
+  host.innerHTML = "";
+  const edit = lifecycleEditable({path: f && f.path})
+    ? lifecycleAction(t("files.lifecycle.edit"),
+      ()=>openFile({path:f.path, name:lifecycleBase(f.path), text:true, readonly:""})) : null;
+  host.append(
+    el("div", {class:"lifecycle-head"},
+      el("h2", {class:"lifecycle-title", tabindex:"-1"},
+        String((f && (f.title || f.name)) || lifecycleBase(f && f.path)))),
+    el("div", {class:"note warn", role:"status", "aria-live":"polite"}, String(why || "")),
+    el("div", {class:"lifecycle-actions"},
+      ...[lifecycleAction(t("poll.retry"), ()=>openLifecycle(f)), edit,
+        lifecycleAction(t("files.lifecycle.reveal"), ()=>revealFile("folder"))].filter(Boolean)));
+}
+
+async function openLifecycle(f){
+  if (!f || !f.path) return;
+  if (F.ed && F.dirty && !confirm(t("files.leave_dirty"))) return;
+  show("files");
+  $("#fileNone").hidden = true;
+  $("#fileEditor").hidden = true;
+  if ($("#fileCreate")) $("#fileCreate").hidden = true;
+  $("#fileLifecycle").hidden = false;
+  if ($("#filePubCard") && $("#filePubCard").dataset.rel !== f.path) $("#filePubCard").remove();
+  destroyEditor();
+  F.dirty = false;
+  F.path = f.path;
+  F.lifecyclePath = f.path;
+  F.lifecycle = null;
+  F.lifecyclePick = "";
+  F.lifecycleBusy = false;
+  if (F.files.length && $("#fileSearch")) drawTree();
+  renderLifecycleLoading(f);
+  const d = await api("/api/files/lifecycle?project=" + encodeURIComponent(S.project.path)
+                      + "&path=" + encodeURIComponent(f.path), {quiet:true});
+  if (F.lifecyclePath !== f.path) return;
+  if (d && d.error) return renderLifecycleError(f, d.error);
+  if (!d || !d.applicable) return renderLifecycleError(f, t("files.lifecycle.unavailable"));
+  F.lifecycle = d;
+  drawLifecycle(d);
+}
+
+async function lifecycleRefresh(rel){
+  if (!rel || !S.project) return;
+  const d = await api("/api/files/lifecycle?project=" + encodeURIComponent(S.project.path)
+                      + "&path=" + encodeURIComponent(rel), {quiet:true});
+  if (F.lifecyclePath !== rel) return;
+  F.lifecycleBusy = false;
+  if (d && d.error) return renderLifecycleError({path:rel, name:lifecycleBase(rel)}, d.error);
+  if (!d || !d.applicable)
+    return renderLifecycleError({path:rel, name:lifecycleBase(rel)}, t("files.lifecycle.unavailable"));
+  F.lifecycle = d;
+  drawLifecycle(d, F.lifecyclePick);
+}
+
+async function runShip(rel, action, version, reference){
+  if (!rel || !S.project || F.lifecycleBusy) return;
+  const planAction = action === "both" ? "both" : action === "freeze" ? "freeze" : "release";
+  F.lifecycleBusy = true;
+  let plan = null;
+  // План нужен многошаговому выпуску; одиночная заморозка не требует показа плана.
+  if (action !== "freeze"){
+    try {
+      plan = await api("/api/ship/plan", {method:"POST", quiet:true, body: JSON.stringify(Object.assign(
+        {project: S.project.path, path: rel, action: planAction},
+        version ? {version} : {}, reference ? {reference} : {}))});
+    } catch (e){ plan = null; }
+    if (plan && plan.error){ F.lifecycleBusy = false; toast(plan.error, "err"); return; }
+    if (plan && plan.ok === false){
+      F.lifecycleBusy = false;
+      drawLifecyclePlan(plan);
+      toast(t("ship.failed"), "err");
+      return;
+    }
+    if (plan) drawLifecyclePlan(plan);
+  }
+  const args = action === "freeze" ? [rel, "--apply"]
+    : [rel, "--export", "docx", "--apply"];
+  if (version) args.push("--version", version);
+  if (reference) args.push("--reference", reference);
+  const res = await api("/api/run", {method:"POST", body: JSON.stringify(
+    {project:S.project.path, cmd:"ship:release", args})});
+  if (res && res.job){
+    F.lifecycleBusy = true;
+    poll(res.job, 0, "ship:release " + rel);
+  } else {
+    F.lifecycleBusy = false;
+    toast((res && res.error) || t("ship.failed"), "err");
+  }
+}
+
+// Задание выпуска кончилось: карточка того же документа перечитывает модель,
+// иначе дерево обновляет признак `applicable`. Машинная строка в консоль не идёт.
+function lifecycleDone(rel, res, rc){
+  F.lifecycleBusy = false;
+  if (F.lifecycle && F.lifecyclePath === rel) lifecycleRefresh(rel);
+  else renderFiles();
+  const msg = rc === 0 ? t("ship.done") : rc === 1 ? t("ship.problems") : t("ship.failed");
+  const why = res && res.why ? ": " + String(res.why) : "";
+  toast(rel + ": " + msg + why, rc === 0 ? "ok" : rc === 1 ? "warn" : "err");
+}
+
+/* «Создать артефакт» — вход в производство после удаления `write`. Это та же карточка
+   «Файлов»: вид из реестра и задача своими словами. Поля `doc`/`version`/`deliverable`
+   добавит режим сборки; пока вид с `deliverable: true` честно говорит, что режима нет,
+   но кнопку не гасит. */
+async function openCreateArtifact(){
+  if (!S.project) return toast(t("files.pick_project"), "warn");
+  if (F.ed && F.dirty && !confirm(t("files.leave_dirty"))) return;
+  show("files");
+  $("#fileNone").hidden = true;
+  $("#fileEditor").hidden = true;
+  $("#fileLifecycle").hidden = true;
+  $("#fileCreate").hidden = false;
+  $("#filePubCard")?.remove();
+  destroyEditor();
+  F.dirty = false; F.path = null; F.digest = ""; F.lifecycle = null; F.lifecyclePath = "";
+  if (F.files.length && $("#fileSearch")) drawTree();
+  const host = $("#fileCreate");
+  host.innerHTML = "";
+  host.append(el("div", {class:"row", style:"gap:8px", role:"status"},
+    el("span", {class:"spin"}), t("overview.counting")));
+  const d = await api("/api/kinds?project=" + encodeURIComponent(S.project.path), {quiet:true});
+  if (host.hidden || F.path) return;
+  if (d && d.error){ host.innerHTML = ""; host.append(el("div", {class:"note warn"}, d.error)); return; }
+  const kinds = (d && d.kinds) || {};
+  const ids = Object.keys(kinds).sort((a, b) =>
+    String(kinds[a].title || a).localeCompare(String(kinds[b].title || b), S.lang === "en" ? "en" : "ru"));
+  host.innerHTML = "";
+  const title = el("h2", {class:"lifecycle-title", tabindex:"-1"}, t("files.lifecycle.create"));
+  const note = el("div", {class:"note", role:"status", "aria-live":"polite", hidden:""});
+  const select = el("select", {class:"btn", "aria-label": t("files.lifecycle.create"),
+    style:"font-weight:400;min-width:220px"},
+    ...ids.map(id => el("option", {value:id, selected: id === F.createKind ? "" : null},
+      String(kinds[id].title || id))));
+  F.createKind = ids.includes(F.createKind) ? F.createKind : (ids[0] || "");
+  select.value = F.createKind;
+  const idea = el("textarea", {rows:"6", "aria-label": t("files.lifecycle.create"),
+    placeholder: t("files.lifecycle.create"),
+    style:"width:100%;font:inherit;padding:8px;border-radius:8px;resize:vertical"});
+  const saveNote = ()=>{
+    const rec = kinds[select.value] || {};
+    note.hidden = !rec.deliverable;
+    note.textContent = rec.deliverable ? t("files.lifecycle.deliverable_later") : "";
+  };
+  select.addEventListener("change", ()=>{ F.createKind = select.value; saveNote(); });
+  const go = el("button", {class:"btn primary", type:"button", onclick: async ()=>{
+    const kind = select.value;
+    const text = String(idea.value || "").trim();
+    if (!kind){ select.focus(); return; }
+    if (!text){ idea.focus(); return; }
+    const res = await api("/api/run", {method:"POST", body: JSON.stringify(
+      {project:S.project.path, cmd:"agent:make", args:["--kind", kind, "--idea", text]})});
+    if (!res || res.error){ note.hidden = false; note.textContent = (res && res.error) || t("ship.failed"); return; }
+    if (res.job){
+      show("work");
+      poll(res.job, 0, "agent:make " + kind);
+    }
+  }}, t("files.lifecycle.create"));
+  const cancel = el("button", {class:"btn", type:"button", onclick: ()=>{
+    host.hidden = true;
+    $("#fileNone").hidden = false;
+  }}, t("common.cancel"));
+  host.append(...[title,
+    ids.length ? el("div", {class:"row", style:"gap:8px;flex-wrap:wrap;margin:10px 0"}, select) : null,
+    ids.length ? idea : el("div", {class:"sub"}, t("files.lifecycle.unavailable")),
+    note,
+    el("div", {class:"lifecycle-actions"}, ...[ids.length ? go : null, cancel].filter(Boolean))].filter(Boolean));
+  saveNote();
+  setTimeout(()=>{ if (ids.length) select.focus(); }, 50);
 }
 
 // Блок «Задача» у документа вида в «Файлах»: пока в редакторе несохранённое, блок не пишет (шапка и текст разошлись бы);
@@ -1567,8 +2238,11 @@ async function afterPublish(rel, dirtyNote){
   if (S.view !== "files"){ F.reopen = rel; return; }
   F.reopen = "";
   if (F.dirty) return toast(dirtyNote || t("editor.published_dirty"), "warn");
-  const f = F.files.find(x => x.path === rel) || {path: rel, name: rel.split("/").pop(), text: true, readonly: ""};
-  await openFile(f);
+  const f = F.files.find(x => x.path === rel)
+    || {path: rel, name: rel.split("/").pop(), text: true, readonly: "", applicable: false};
+  // Карточка — только у файлов с признаком сервера; обычный файл идёт прямо в редактор.
+  if (f.applicable) await openEntry(f);
+  else await openFile(f);
 }
 
 /* Публикация из «Файлов» — каждое исходящее действие явным кликом кнопки с понятной надписью, без окон подтверждения.
@@ -1580,11 +2254,17 @@ async function afterPublish(rel, dirtyNote){
       (`--force`), «Взять под управление» (`--adopt`); `blocked` — причина и кнопка в нужную группу настроек.
    3) После отправки исход приходит машинной строкой `AURORA-PUBLISH` (`publishDone`) и рисуется той же карточкой. */
 async function publishFromEditor(){
-  if (!F.path || !F.publishable) return;
-  // Несохранённое уходит тем же кликом: надпись кнопки говорит «Сохранить и опубликовать». Сохранение не удалось
-  // (расхождение с диском, отказ) — публикации нет: причину показал `saveFile`.
-  if (F.dirty){ await saveFile(); if (F.dirty || !F.publishable) return; }
-  const rel = F.path;
+  return publishFor(F.path, {save: true});
+}
+
+async function publishFor(rel, opts = {}){
+  if (!rel) return;
+  // Вызов из карточки не имеет редактора: сохранять нечего, а несохранённое в редакторе
+  // остаётся заботой `publishFromEditor`.
+  if (opts.save){
+    if (F.path !== rel || !F.publishable) return;
+    if (F.dirty){ await saveFile(); if (F.dirty || !F.publishable) return; }
+  }
   const box = publishCard(rel);
   box.append(el("div",{class:"row", style:"gap:8px"}, el("span",{class:"spin"}), t("pub.planning")));
   const q = "?project=" + encodeURIComponent(S.project.path) + "&path=" + encodeURIComponent(rel);
@@ -1922,8 +2602,8 @@ async function openPath(rel){
   show("files");
   if (!F.files.length) await renderFiles();
   const f = F.files.find(x => x.path === rel)
-        || {path: rel, name: rel.split("/").pop(), text: true, readonly: ""};
-  await openFile(f);
+        || {path: rel, name: rel.split("/").pop(), text: true, readonly: "", applicable: false};
+  await openEntry(f);
   $("#filePane").scrollIntoView({behavior:"smooth", block:"start"});
 }
 
@@ -2069,10 +2749,11 @@ async function doPush(){
   drawGit();
 }
 
-async function revealFile(mode){
-  if (!F.path) return;
+async function revealFile(mode, path){
+  const rel = path || F.path;
+  if (!rel) return;
   await api("/api/files/reveal", {method:"POST", body: JSON.stringify(
-    {project:S.project.path, path:F.path, mode})});
+    {project:S.project.path, path:rel, mode})});
 }
 
 /* ---------------- несохранённые правки ---------------- */
@@ -5563,6 +6244,7 @@ async function poll(id, since, label, me){
   // про исчезнувшее задание и «выполняется…» стояло вечно — команда при этом могла давно
   // отработать. Тишина здесь дороже ошибки: человек ждёт того, чего уже не случится.
   if (!d || d.error){
+    if (String(label).startsWith("ship:release ")) F.lifecycleBusy = false;
     out.append(el("div",{class:"err"}, t("poll.job_lost")));
     $("#consoleRc").textContent = t("poll.job_lost_short");
     $("#consoleRc").className = "chip bad";
@@ -5580,12 +6262,23 @@ async function poll(id, since, label, me){
     return;
   }
   let outLines = d.lines||[];
-  if (!since){ CONSOLE_LINES = []; POLL_LAST_OUT = Date.now(); POLL_SILENT = false; }
+  if (!since){
+    CONSOLE_LINES = []; POLL_LAST_OUT = Date.now(); POLL_SILENT = false;
+    delete LIFECYCLE_RESULT[id]; delete SHIP_RESULT[id];
+  }
   (d.lines||[]).forEach(l=>{
     if (String(l).startsWith(SUMMARY_MARK)) return;   // машинная строка итога — для панели
     if (String(l).startsWith(GATE_MARK)) return;      // машинная строка вердикта ворот — тоже
     if (String(l).startsWith(PUBLISH_MARK)){          // исход публикации: по нему рисуются кнопки «Перезаписать» и др.
       try { PUBLISH_RESULT[id] = JSON.parse(String(l).slice(PUBLISH_MARK.length)); } catch (e) { /* строка оборвана */ }
+      return;
+    }
+    if (String(l).startsWith(LIFECYCLE_MARK)){        // стадия выпуска: её обновляет карточка
+      try { LIFECYCLE_RESULT[id] = JSON.parse(String(l).slice(LIFECYCLE_MARK.length)); } catch (e) { /* строка оборвана */ }
+      return;
+    }
+    if (String(l).startsWith(SHIP_MARK)){             // готовый docx: обновляет только действия, не стадию
+      try { SHIP_RESULT[id] = JSON.parse(String(l).slice(SHIP_MARK.length)); } catch (e) { /* строка оборвана */ }
       return;
     }
     CONSOLE_LINES.push(l);
@@ -5614,6 +6307,20 @@ async function poll(id, since, label, me){
     const res = PUBLISH_RESULT[id] || null;
     delete PUBLISH_RESULT[id];
     publishDone(String(label).slice("ship:publish ".length), res, rc);
+  }
+  // Выпуск: снимок и запись версии переписывают исходник, поэтому открытая карточка
+  // перечитывает модель, а дерево — признак `applicable`.
+  if (String(label).startsWith("ship:export ")){
+    const rel = String(label).slice("ship:export ".length);
+    delete SHIP_RESULT[id];
+    if (F.lifecycle && F.lifecyclePath === rel) lifecycleRefresh(rel);
+  }
+  if (String(label).startsWith("ship:release ")){
+    const rel = String(label).slice("ship:release ".length);
+    const res = LIFECYCLE_RESULT[id] || SHIP_RESULT[id] || null;
+    delete LIFECYCLE_RESULT[id];
+    delete SHIP_RESULT[id];
+    lifecycleDone(rel, res, rc);
   }
   // Задание ассистенту команда печатает сама; из прокручиваемой консоли его неудобно
   // выделять мышью — даём кнопку, которая кладёт блок целиком в буфер.
@@ -5723,9 +6430,15 @@ function lastRun(cmd){ return runs()[cmd]; }
 const SUMMARY_MARK = "AURORA-SUMMARY ";
 const GATE_MARK = "AURORA-GATE ";       // вердикт ворот качества — тоже машинная строка
 const PUBLISH_MARK = "AURORA-PUBLISH "; // исход публикации в Confluence (`ship:publish`) — тоже
+const LIFECYCLE_MARK = "AURORA-LIFECYCLE "; // стадия выпуска (`ship:release`) — тоже
+const SHIP_MARK = "AURORA-SHIP ";      // готовый docx (`ship:export`) — тоже
 const PUBLISH_RESULT = {};              // задание → исход публикации, пока опрос не дошёл до конца
+let LIFECYCLE_RESULT = {};              // задание → исход жизненного цикла
+let SHIP_RESULT = {};                   // задание → исход экспорта
 function consoleLine(out, l){
-  if (!String(l).startsWith(GATE_MARK) && !String(l).startsWith(SUMMARY_MARK) && !String(l).startsWith(PUBLISH_MARK))
+  if (!String(l).startsWith(GATE_MARK) && !String(l).startsWith(SUMMARY_MARK)
+      && !String(l).startsWith(PUBLISH_MARK) && !String(l).startsWith(LIFECYCLE_MARK)
+      && !String(l).startsWith(SHIP_MARK))
     out.append(el("div",{class:lineClass(l)}, l));
 }
 
@@ -7729,7 +8442,15 @@ function moduleCtx(id, root){
          // «Выбор вместо ввода»: окно выбора пути, поле пути с кнопкой «Выбрать…», путь ли значение флага по подсказке.
          pickPath, pathField, pathMeta,
          // Публикация документа тем же путём, что в «Файлах»: редактор, карточка «что и куда уйдёт», кнопки по исходу.
-         publishFile: async rel => { await openPath(rel); if (F.path === rel) await publishFromEditor(); },
+         publishFile: async rel => {
+           if (!S.project) return toast(t("files.pick_project"), "warn");
+           show("files");
+           if (!F.files.length) await renderFiles();
+           const f = F.files.find(x => x.path === rel)
+             || {path: rel, name: rel.split("/").pop(), text: true, applicable: false};
+           await openEntry(f);
+           if (F.path === rel) await publishFor(rel, {save: !F.lifecycle});
+         },
          // Серая кнопка ведёт туда, где её чинят: `kinds` — «Настройки проекта → Артефакты», иначе «Настройки проекта».
          openSettings: fix => { SGROUPS.focus = fix === "kinds" ? "project:kinds" : "project:form"; show("project"); },
          // Блок «Задача» документа (или будущего документа вида): поля, списки трекера, «Сохранить», «Создать задачу».
@@ -8069,6 +8790,7 @@ $("#pickOverlay").onclick = e => { if (e.target.id==="pickOverlay" && PICK.close
 
 /* ---------------- обработчики раздела «Файлы» ---------------- */
 $("#fileSearch")?.addEventListener("input", drawTree);
+$("#fileCreateButton")?.addEventListener("click", openCreateArtifact);
 $("#fileSave")?.addEventListener("click", saveFile);
 $("#fileFolder")?.addEventListener("click", ()=>revealFile("folder"));
 $("#fileOpen")?.addEventListener("click", ()=>revealFile("open"));
