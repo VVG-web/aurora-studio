@@ -6736,9 +6736,9 @@ def pmi_block(cwd: str, kind: str, deliverable: bool) -> str:
     if not (deliverable and str(kind or "").strip() == "pmi"):
         return ""
     reqs = pmi_requirements(cwd)
-    head = ("Согласованные требования в работе (req_status: agreed или implemented).\n"
-            "У каждого должен быть хотя бы один пункт проверки в ПМИ. Если пункта нет,\n"
-            "верни issue с id требования.")
+    head = ("Согласованные требования (req_status: agreed). Требования в работе\n"
+            "(req_status: implemented) проверяются так же. У каждого должен быть хотя бы\n"
+            "один пункт проверки в ПМИ. Если пункта нет, верни issue с id требования.")
     if not reqs:
         return head + "\n\nкарточки требований не найдены — проверять покрытие не по чему, сборку не блокируй."
     return head + "\n\n" + "\n".join(f"- {req['id']}: {req['title']}" for req in reqs)
