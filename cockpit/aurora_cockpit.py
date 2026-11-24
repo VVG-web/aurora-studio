@@ -7474,7 +7474,9 @@ def word_script_create(project: str, kind: str) -> dict:
     plan_path, meta_path = _word_script_paths(project, kind)
     os.makedirs(os.path.dirname(plan_path), exist_ok=True)
     text = DP.dump_plan(plan)
-    write_text_atomic(plan_path, text)
+    # plan_sha256 считается по text в UTF-8 с LF: на Windows текстовый режим
+    # превратил бы файл в CRLF и статус сразу стал бы plan-changed.
+    write_text_atomic(plan_path, text, newline="")
     checks_path = _word_path(project, checks_rel, "docx_checks", (".json",), must_exist=True) if checks_rel else ""
     checks_sha = ""
     if checks_path:
