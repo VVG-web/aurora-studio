@@ -95,7 +95,7 @@ FIELDS = ("title", "template", "prompt", "out", "publish_url", "publish_path", "
 # `publish_script` — путь к готовому скрипту, который модель сделала по промпту один раз; пусто — `Scripts/Generated/<вид>.py`.
 # `publish_template` — заготовка страницы (скелет), по которой проверяют и правят скрипт; пусто — скелет из промпта.
 # Поля создания и поля публикации; форма настроек рисует их двумя рамками, `--kind` — двумя разделами.
-CREATE_FIELDS = ("title", "template", "prompt", "out", "mcp", "tech_agnostic", "ref_mask")
+CREATE_FIELDS = ("title", "template", "prompt", "out", "mcp", "tech_agnostic", "ref_mask", "deliverable")
 PUBLISH_FIELDS = ("publish_url", "publish_path", "publish_title", "publish_prompt", "publish_engine", "publish_script",
                   "publish_template", "review")
 

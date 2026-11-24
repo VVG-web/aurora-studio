@@ -81,10 +81,10 @@ def test_publish_prompt_is_a_field_of_the_kind_and_creation_stays_apart(tmp: Pat
     запись и чтение возвращают оба промпта порознь; изготовление документа читает только промпт создания."""
     MK, ck = _mod("make_kinds"), _ck()
     assert "publish_prompt" in MK.FIELDS and "prompt" in MK.FIELDS
-    assert set(MK.CREATE_FIELDS) | set(MK.PUBLISH_FIELDS) | set(MK.DOCX_FIELDS) == set(MK.FIELDS), \
+    assert set(MK.CREATE_FIELDS) | set(MK.PUBLISH_FIELDS) | set(MK.DOCX_RELEASE_FIELDS) == set(MK.FIELDS), \
         "поле вида не отнесено ни к созданию, ни к публикации, ни к Word — форма его не нарисует"
     assert not set(MK.CREATE_FIELDS) & set(MK.PUBLISH_FIELDS), "поле вида попало и в создание, и в публикацию"
-    assert not set(MK.PUBLISH_FIELDS) & set(MK.DOCX_FIELDS), "Word-поле попало в публикацию"
+    assert not set(MK.PUBLISH_FIELDS) & set(MK.DOCX_RELEASE_FIELDS), "Word-поле попало в публикацию"
     assert set(MK.DOCX_CREATE_FIELDS) <= set(MK.CREATE_FIELDS), "Word-поле создания не нарисовано в форме"
     assert {"template", "prompt", "out"} <= set(MK.CREATE_FIELDS) and \
         {"publish_url", "publish_path", "publish_title", "publish_prompt", "publish_engine", "publish_script",
