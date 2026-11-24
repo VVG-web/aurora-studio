@@ -16,8 +16,8 @@ flowchart TD
   Q -->|"take the new<br>from the sources"| A["Update the base"]
   Q -->|"put the base<br>in order"| B["Fix the base"]
   Q -->|"find something<br>out from the base"| C["Ask · agent:ask<br>ctx:context"]
-  Q -->|"write a document"| D["Production · agent:make"]
-  Q -->|"hand it outward"| E["Hand over documents<br>ship:*"]
+  Q -->|"write a document"| D["Files · Create an artifact<br>agent:make"]
+  Q -->|"hand it outward"| E["Files · Release<br>ship:release · ship:publish separately"]
   Q -->|"record knowledge<br>by hand"| F["kb:decide · kb:question<br>kb:correct"]
   Q -->|"something broke"| G["kit:doctor · kb:lint<br>ops:todo"]
 ```

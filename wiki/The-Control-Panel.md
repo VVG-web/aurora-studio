@@ -28,7 +28,7 @@ are switched in the header.
 | **The project** | The project's settings | access (tokens: "filled / empty"), config, artifact kinds, the agent's gateways and roles |
 | | Health | composition of the base, trust, links, errors, mirror freshness, what is left for a human; every tile leads to the command that fixes it |
 | | Routines | the base's routes: **Update**, **Fix**, **Rebuild** — with a "Preview" that writes nothing |
-| | Production | **Write an artifact** and **Hand over documents** |
+| | Production | the Files card: **Create an artifact** and **Release**; publication is separate |
 | | Files | the project tree, a Markdown editor (tables, mermaid, formulas), "Commit" and "Push" |
 | | Ask | questions to the base; conversations are kept for everyone |
 | | Commands | the whole registry: executor, modifiers, version, last run |

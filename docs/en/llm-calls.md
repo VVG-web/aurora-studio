@@ -224,7 +224,6 @@ Every logical call (`agent_core.call_role`) leaves a span in `<run folder>/timin
 
 - **When.** The "Ask" section, the agent:ask command. The model is chosen in the section: a role ("Writer" by default) or exactly a provider model.
 - **Commands:** `agent:ask`.
-- **Routes:** «Write an artifact».
 
 | Role | What it does | Prompt |
 |---|---|---|
@@ -241,7 +240,7 @@ Every logical call (`agent_core.call_role`) leaves a span in `<run folder>/timin
 
 - **When.** The agent:ask, agent:distill and agent:make commands — when the `momus_split` setting is on (off by default).
 - **Commands:** `agent:ask`, `agent:distill`, `agent:make`.
-- **Routes:** «Update the base», «Repair the base», «Rebuild the base from scratch», «Write an artifact».
+- **Routes:** «Update the base», «Repair the base», «Rebuild the base from scratch».
 
 | Role | What it does | Prompt |
 |---|---|---|
@@ -257,7 +256,6 @@ Every logical call (`agent_core.call_role`) leaves a span in `<run folder>/timin
 
 - **When.** The compression threshold in agent:make or agent:ask; only when the compressor role has its own chain.
 - **Commands:** `agent:make`, `agent:ask`.
-- **Routes:** «Write an artifact».
 
 | Role | What it does | Prompt |
 |---|---|---|
@@ -409,7 +407,6 @@ Every logical call (`agent_core.call_role`) leaves a span in `<run folder>/timin
 
 - **When.** The ship:publish command with publish_engine: prompt — the model builds the page from the publishing prompt; the "Create script" button and ship:publish with publish_engine: script — a one-time build of the page script from the same prompt. By default auto uses a ready script and does not call the model.
 - **Commands:** `ship:publish`.
-- **Routes:** «Hand over documents».
 
 | Role | What it does | Prompt |
 |---|---|---|
