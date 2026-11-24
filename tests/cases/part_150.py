@@ -262,3 +262,68 @@ def test_the_server_counts_the_example_path_and_the_publish_plan(tmp: Path):
     finally:
         wiki.close()
         panel.close()
+
+
+# ------------------------------------------------------------------ поставляемый документ: поле вида и шапка
+
+@test
+def test_deliverable_round_trip_and_the_written_header(tmp: Path):
+    """`deliverable` переживает круг «kinds_lines → read_kinds», мусор ловится проверкой; `write_artifact` пишет
+    `deliverable`, `doc`, `doc_version`, `version`, `template` только поставляемому документу, а обычный вид их не получает."""
+    MK, R, AC = _mod("make_kinds"), _mod("agent_runner"), _mod("aurora_common")
+    root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/US.md").write_text("шаблон", encoding="utf-8")
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").rstrip()
+                   + '\nartifacts:\n  us:\n    title: "История"\n    template: Templates/US.md\n'
+                     '    out: Artifacts/us\n    deliverable: "true"\n'
+                     '  ac:\n    title: "Критерии"\n    template: Templates/US.md\n    out: Artifacts/ac\n',
+                   encoding="utf-8")
+    kinds = MK.read_kinds(str(root))
+    assert kinds["us"]["deliverable"] == "true" and kinds["ac"]["deliverable"] == "", kinds
+    # круг: запись вида → разбор
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace(
+        '    deliverable: "true"\n', "").replace(
+        '    out: Artifacts/us\n',
+        '    out: Artifacts/us\n    deliverable: "true"\n'),
+        encoding="utf-8")
+    back = MK.read_kinds(str(root))
+    assert back["us"]["deliverable"] == "true", back["us"]
+    lines = MK.kinds_lines(back)
+    assert '    deliverable: "true"' in lines, lines
+    # мусор в поле — находка проверки; пустое и false — нет
+    kinds["ac"]["deliverable"] = "banana"
+    bad = MK.check(str(root), {"ac": kinds["ac"]})
+    assert any("deliverable" in why for _kind, why in bad), bad
+    kinds["ac"]["deliverable"] = "false"
+    assert not [why for _kind, why in MK.check(str(root), {"ac": kinds["ac"]}) if "deliverable" in why]
+    # поле стоит в конце списка: порядок прежних полей не сдвинулся
+    assert MK.FIELDS.index("deliverable") > MK.FIELDS.index("ref_mask"), MK.FIELDS
+    assert MK.read_kinds(str(root))["us"]["title"] == "История"
+
+    stages = {k: "2026-10-01" for k in R.MAKE_STAGES}
+    common = {"kind": "us", "idea": "поставляемый документ", "stages": stages,
+              "plan": "1. Раздел", "issues": [],
+              "draft": "# История\n\n## Описание\n\nИстория приёмки заявки с достаточной длиной строки.",
+              "pipeline": {"form_ok": True},
+              "momus": {"ok": True, "clean": True, "unsupported": 0, "text": "ВЕРДИКТ: ОПОРА ЕСТЬ"}}
+    plain = dict(common, sid="s-plain",
+                 spec={"title": "История", "out": "Artifacts/us", "template": "Templates/US.md"})
+    plain_text = (root / R.write_artifact(str(root), plain)).read_text(encoding="utf-8")
+    plain_fm = AC.frontmatter(plain_text)
+    for key in ("deliverable", "doc", "doc_version", "version"):
+        assert key not in plain_fm, f"обычный вид получил поле {key}: {plain_fm}"
+    delivered = dict(common, sid="s-del", doc="ОПЗ", version="2.1",
+                     spec={"title": "История", "out": "Deliverables/work",
+                           "template": "Templates/US.md", "deliverable": "true"})
+    path = root / R.write_artifact(str(root), delivered)
+    assert path.name == "ОПЗ_v2.1.md", path
+    fm = AC.frontmatter(path.read_text(encoding="utf-8"))
+    assert fm["deliverable"] == "true" and fm["doc"] == "ОПЗ", fm
+    assert fm["doc_version"] == "2.1" and fm["version"] == "2.1", fm
+    assert fm["template"] == "Templates/US.md", fm
+    # чужое имя поставляемого документа не переименовывается суффиксом
+    again = R.write_artifact(str(root), dict(delivered, sid="s-other", path=""))
+    assert isinstance(again, dict) and again.get("ok") is False and "уже есть" in again["why"], again
+    assert not list((root / "Deliverables/work").glob("ОПЗ_v2.1-*.md"))
