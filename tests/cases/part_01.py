@@ -421,15 +421,15 @@ def test_release_freezes_snapshot_once(tmp: Path):
 
     cp = run("ship_doc.py", "--release", "Deliverables/work/ОПЗ_v2.1.md", "--date", "2026-05-05",
              "--apply", cwd=root)
-    snap = root / "Deliverables/released/ОПЗ_v2.1_2026-05-05.md"
+    snap = root / "Deliverables/deliverable/ОПЗ_v2.1_2026-05-05.md"
     assert snap.is_file(), f"снапшот не создан:\n{cp.stdout}"
-    assert "released: 2026-05-05" in snap.read_text(encoding="utf-8"), "нет даты передачи"
-    assert "released: 2026-05-05" in work.read_text(encoding="utf-8"), "рабочая копия не помечена"
+    assert "frozen_at:" in snap.read_text(encoding="utf-8"), "нет даты заморозки"
+    assert "frozen:" in work.read_text(encoding="utf-8"), "рабочая копия не помечена"
     assert "Ниже verified: 1" in cp.stdout, "риск непроверенного основания не назван"
 
     cp2 = run("ship_doc.py", "--release", "Deliverables/work/ОПЗ_v2.1.md", "--date", "2026-05-05",
-              cwd=root, expect_rc=1)
-    assert "уже существует" in cp2.stderr, "перезапись сданного должна блокироваться"
+              cwd=root, expect_rc=0)
+    assert "уже есть" in cp2.stdout and "та же версия" in cp2.stdout, cp2.stdout + cp2.stderr
 
 
 @test

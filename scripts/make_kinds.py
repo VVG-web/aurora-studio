@@ -209,6 +209,18 @@ def kind_of(kinds: dict, type_hint: str = "", path: str = "", root: str = ".") -
             return key, kinds[key]
     if not path:
         return "", {}
+    # Снимок лежит в `Deliverables/<kind>/…`, а не в папке результата вида: вид берётся
+    # из второй части пути. `work`, `released` и `_archive` — не виды.
+    rel = os.path.relpath(os.path.realpath(path), os.path.realpath(root)).replace("\\", "/")
+    parts = rel.split("/")
+    if (parts[0].casefold() == "deliverables" and len(parts) >= 3
+            and parts[1].casefold() not in ("work", "released", "_archive")):
+        known = {str(k).casefold(): k for k in kinds}
+        kind = known.get(parts[1].casefold())
+        if kind:
+            return kind, kinds[kind]
+        if parts[1].casefold() == "deliverable":
+            return "deliverable", {}
     here = os.path.normcase(os.path.realpath(path))
     best = ("", "", {})
     for kid, rec in kinds.items():
@@ -217,6 +229,29 @@ def kind_of(kinds: dict, type_hint: str = "", path: str = "", root: str = ".") -
         if base and here.startswith(base) and len(base) > len(best[0]):
             best = (base, kid, rec)
     return best[1], best[2]
+
+
+def snapshot_kind(path: str, root: str = ".") -> str:
+    """Вид из пути `Deliverables/<kind>/…`; пусто для work/released/_archive и неизвестного вида.
+
+    Имя папки сравнивается без учёта регистра: `deliverables/US/…` на macOS и Windows —
+    та же папка, что `Deliverables/us/…`. Legacy-вид `deliverable` входит всегда: иначе
+    старый поставляемый документ нельзя было бы заморозить без выдуманного вида.
+    """
+    try:
+        rel = os.path.relpath(os.path.realpath(path), os.path.realpath(root)).replace("\\", "/")
+    except ValueError:              # другой диск (Windows)
+        return ""
+    parts = rel.split("/")
+    if len(parts) < 3 or parts[0].casefold() != "deliverables":
+        return ""
+    kind = parts[1]
+    if kind.casefold() in ("work", "released", "_archive"):
+        return ""
+    if kind.casefold() == "deliverable":
+        return "deliverable"
+    known = {str(k).casefold(): k for k in (read_kinds(root) or {})}
+    return known.get(kind.casefold(), "")
 
 
 # ------------------------------------------------------------------ путь и заголовок страницы в Confluence

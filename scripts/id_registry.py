@@ -76,6 +76,24 @@ ARCHIVE = f"{KB_ROOT}/_archive"      # архив всей базы: в нём �
 SNAPSHOT_DIRS = ("Deliverables/released/", "Deliverables/_archive/")
 
 
+def snapshot_path(rel: str, kinds: dict) -> bool:
+    """Путь `Deliverables/<kind>/…` — снимок вида. Папка и вид без учёта регистра.
+
+    Это явный эквивалент `SNAPSHOT_DIRS` для новой раскладки, а не молчаливая замена:
+    legacy `released/` и `_archive/` остаются за `SNAPSHOT_DIRS`. `work` — рабочая папка,
+    `work2` и неизвестный вид снимком не считаются. Legacy-вид `deliverable` входит.
+    """
+    parts = str(rel or "").replace("\\", "/").split("/")
+    if len(parts) < 3:
+        return False
+    folder = parts[0].casefold()
+    kind = parts[1].casefold()
+    known = {str(k).casefold() for k in (kinds or {})}
+    return (folder == "deliverables"
+            and kind not in ("work", "released", "_archive")
+            and (kind in known or kind == "deliverable"))
+
+
 class IdBusy(RuntimeError):
     """Замок выдачи занят дольше `LOCK_WAIT_S`: чужая выдача не закончилась."""
 
@@ -178,6 +196,11 @@ def occupied(root: str, ns: str, sessions: bool = True) -> dict:
         key = spec["header"]
         id_re = re.compile(rf"^{re.escape(spec['prefix'])}-(\d{{1,9}})$", re.I)
         folders = list(spec["dirs"]) + [d for d in _kind_dirs(root) if d not in spec["dirs"]]
+        try:
+            import make_kinds as MK
+            kinds = MK.read_kinds(root) or {}
+        except Exception:  # noqa: BLE001 — без реестра видов остаётся legacy-проверка
+            kinds = {}
         seen = set()
         for rel in folders:
             for path in _md_files(root, rel):
@@ -194,7 +217,7 @@ def occupied(root: str, ns: str, sessions: bool = True) -> dict:
                 if m:
                     shown = os.path.relpath(path, root).replace("\\", "/")
                     found.setdefault(int(m.group(1)), [])
-                    if not shown.startswith(SNAPSHOT_DIRS):
+                    if not shown.startswith(SNAPSHOT_DIRS) and not snapshot_path(shown, kinds):
                         found[int(m.group(1))].append(shown)
         for value, rel in (_session_ids(root, key) if sessions else []):
             m = id_re.match(value.strip())
