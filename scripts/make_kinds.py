@@ -104,12 +104,13 @@ PUBLISH_FIELDS = ("publish_url", "publish_path", "publish_title", "publish_promp
 # план W5 живёт в Scripts/Generated, а готовых скриптов в preview нет.
 DOCX_FIELDS = ("docx_template", "docx_example", "docx_title", "docx_logo",
                "docx_prompt", "docx_engine", "docx_checks", "docx_map")
+DOCX_RELEASE_FIELDS = (*DOCX_FIELDS, "docx_plan")
 DOCX_CREATE_FIELDS = ("docx_template", "docx_example", "docx_title", "docx_logo")
 DOCX_ENGINES = ("auto", "reference", "plan")
 DOCX_LIMIT = 5 * 1024 * 1024
 DOCX_EXAMPLE_LIMIT = 200 * 1024 * 1024
 CHECKS_LIMIT = 256 * 1024
-FIELDS = FIELDS + DOCX_FIELDS
+FIELDS = FIELDS + DOCX_RELEASE_FIELDS
 CREATE_FIELDS = CREATE_FIELDS + DOCX_CREATE_FIELDS
 # `publish_path` — цепочка разделов под корневой страницей вида (`publish_url`): уровни через `>`, пробелы по краям
 # уровня обрезаются; пусто — документ ложится прямо под корень. `publish_title` — шаблон заголовка страницы, пусто —
