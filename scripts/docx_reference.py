@@ -1478,8 +1478,11 @@ def _base_package(base_path, pandoc: str) -> bytes:
             raise DocxRefused("эталон %s больше 5 МБ" % p.name)
         return p.read_bytes()
     try:
-        cp = subprocess.run([pandoc, "--print-default-data-file", "reference.docx"],
-                            capture_output=True, timeout=30)
+        cmd = [pandoc, "--print-default-data-file", "reference.docx"]
+        data_dir = aurora_common.pandoc_data_dir()
+        if data_dir:
+            cmd += ["--data-dir", data_dir]
+        cp = subprocess.run(cmd, capture_output=True, timeout=30)
     except FileNotFoundError:
         raise DocxRefused("pandoc не найден: нужен эталон reference.docx или --base")
     except (OSError, subprocess.SubprocessError) as e:

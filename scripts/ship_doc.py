@@ -699,7 +699,7 @@ def _attach_logo(data: dict, logo: bytes, suffix: str) -> None:
     ET.SubElement(nv, "{%s}cNvPr" % _PIC, {"id": str(drawing_id), "name": "Логотип"})
     ET.SubElement(nv, "{%s}cNvPicPr" % _PIC)
     fill = ET.SubElement(pic, "{%s}blipFill" % _PIC)
-    blip = ET.SubElement(fill, "{%s}blip" % _A, {"{%s}embed" % _R: rid})
+    ET.SubElement(fill, "{%s}blip" % _A, {"{%s}embed" % _R: rid})
     stretch = ET.SubElement(fill, "{%s}stretch" % _A)
     ET.SubElement(stretch, "{%s}fillRect" % _A)
     sp = ET.SubElement(pic, "{%s}spPr" % _PIC)
@@ -934,6 +934,9 @@ def preview_docx(source: str, reference: str = "", out: str = "", keep_links: bo
             raise ShipError("docx-raw-ooxml: в титуле или markdown сырой OOXML")
         cmd = [pandoc, "-f", "gfm+raw_attribute+implicit_figures", "-t", "docx",
                "--standalone", "--sandbox", "-o", tmp_docx]
+        data_dir = AC.pandoc_data_dir()
+        if data_dir:
+            cmd += ["--data-dir", data_dir]
         if ref:
             cmd += ["--reference-doc", ref]
         toc = expected.get("toc") or {}
@@ -1063,6 +1066,9 @@ def export(source: str, fmt: str, reference: str, out: str, keep_links: bool, al
     # которому доверяют, картинки возвращает `--embed-images`.
     sandbox = not embed_images and _pandoc_sandbox(pandoc)
     cmd = [pandoc, "-f", "gfm", "-o", target, "--from", "gfm", "--standalone"] + (["--sandbox"] if sandbox else [])
+    data_dir = AC.pandoc_data_dir()
+    if data_dir:
+        cmd += ["--data-dir", data_dir]
     if not embed_images and not sandbox:
         text = strip_images(text)
         warnings.append("pandoc старше 2.15 не знает --sandbox: картинки заменены подписью, чтобы текст не читал файлы и "
