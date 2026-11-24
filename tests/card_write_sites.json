@@ -37,12 +37,6 @@
    "calls": 3,
    "git": "local"
   },
-  "cockpit/aurora_cockpit.py:drop_project_home": {
-   "kind": "other",
-   "reason": "кнопка «Убрать AURORA_HOME из проекта»: правит .env.aurora.local проекта по команде человека, не карточка",
-   "calls": 2,
-   "git": "none"
-  },
   "cockpit/aurora_cockpit.py:_registry": {
    "kind": "other",
    "reason": "панель: кэш реестра команд кита (временный файл и подмена целиком), не карточка",
@@ -66,6 +60,12 @@
    "reason": "панель: список «что идёт» (cockpit/.running.json) под замком; не карточка",
    "calls": 1,
    "git": "local"
+  },
+  "cockpit/aurora_cockpit.py:drop_project_home": {
+   "kind": "other",
+   "reason": "кнопка «Убрать AURORA_HOME из проекта»: правит .env.aurora.local проекта по команде человека, не карточка",
+   "calls": 2,
+   "git": "none"
   },
   "cockpit/aurora_cockpit.py:feature_set": {
    "kind": "other",
@@ -199,15 +199,15 @@
    "calls": 1,
    "git": "local"
   },
-  "cockpit/route_runner.py:write_meta": {
-   "kind": "other",
-   "reason": "журнал и состояние маршрута: служебные файлы",
-   "calls": 1,
-   "git": "local"
-  },
   "cockpit/route_runner.py:_route_write_rows": {
    "kind": "other",
    "reason": "реестр живых маршрутов: служебный JSON состояния проекта",
+   "calls": 1,
+   "git": "local"
+  },
+  "cockpit/route_runner.py:write_meta": {
+   "kind": "other",
+   "reason": "журнал и состояние маршрута: служебные файлы",
    "calls": 1,
    "git": "local"
   },
@@ -283,16 +283,16 @@
    "calls": 2,
    "git": "none"
   },
+  "scripts/agent_core.py:_adapter_log": {
+   "kind": "other",
+   "reason": "журнал stderr/stdout адаптера Pydantic AI в домашней папке Авроры, вне проекта",
+   "calls": 2,
+   "git": "local"
+  },
   "scripts/agent_core.py:_cache_put": {
    "kind": "other",
    "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP",
    "calls": 2,
-   "git": "local"
-  },
-  "scripts/agent_core.py:fast_choice": {
-   "kind": "other",
-   "reason": "служебное состояние агента: кеш выбора быстрой модели (20 минут)",
-   "calls": 1,
    "git": "local"
   },
   "scripts/agent_core.py:_pulse_save": {
@@ -307,16 +307,16 @@
    "calls": 2,
    "git": "local"
   },
-  "scripts/agent_core.py:_adapter_log": {
-   "kind": "other",
-   "reason": "журнал stderr/stdout адаптера Pydantic AI в домашней папке Авроры, вне проекта",
-   "calls": 2,
-   "git": "local"
-  },
   "scripts/agent_core.py:adapter_selfcheck": {
    "kind": "other",
    "reason": "служебное состояние агента: кэш, пульс, сигналы, файл MCP",
    "calls": 2,
+   "git": "local"
+  },
+  "scripts/agent_core.py:fast_choice": {
+   "kind": "other",
+   "reason": "служебное состояние агента: кеш выбора быстрой модели (20 минут)",
+   "calls": 1,
    "git": "local"
   },
   "scripts/agent_core.py:record_failure": {
@@ -817,17 +817,17 @@
    "calls": 1,
    "git": "local"
   },
-  "scripts/connectivity.py:append_events": {
-   "kind": "other",
-   "reason": "журнал переходов связи в `~/.aurora/connectivity-events.jsonl` с ротацией: событие машины, не карточка",
-   "calls": 2,
-   "git": "none"
-  },
   "scripts/connectivity.py:_write_state": {
    "kind": "other",
    "reason": "состояние проверок соединений (`~/.aurora/connectivity-state.json`), не карточка",
    "calls": 2,
    "git": "local"
+  },
+  "scripts/connectivity.py:append_events": {
+   "kind": "other",
+   "reason": "журнал переходов связи в `~/.aurora/connectivity-events.jsonl` с ротацией: событие машины, не карточка",
+   "calls": 2,
+   "git": "none"
   },
   "scripts/connectivity.py:save": {
    "kind": "other",
@@ -1171,6 +1171,18 @@
    "calls": 3,
    "git": "none"
   },
+  "scripts/kb_raptor.py:build": {
+   "kind": "other",
+   "reason": "производный индекс meta/raptor.json, не карточка",
+   "calls": 2,
+   "git": "none"
+  },
+  "scripts/kb_raptor_eval.py:save": {
+   "kind": "other",
+   "reason": "производный замер meta/raptor_metrics.json, не карточка",
+   "calls": 2,
+   "git": "local"
+  },
   "scripts/kb_record.py:archive_mirror": {
    "kind": "other",
    "reason": "перенос зеркала записи, мастер которой исчез, в _archive (shutil.move); текст зеркала пишет вход записи (put_text)",
@@ -1447,6 +1459,12 @@
    "calls": 1,
    "git": "none"
   },
+  "scripts/net_observe.py:_write": {
+   "kind": "other",
+   "reason": "снимок сети и VPN за прогон: `meta/net.json` проекта (машина) и общий файл `AuroraKnowledgeDB/meta/net-runs.d/<участник>-<машина>/` — по частям участника, не карточка",
+   "calls": 1,
+   "git": "shard"
+  },
   "scripts/office_ingest.py:save_skipped": {
    "kind": "other",
    "reason": "память о вложениях без текста (логотип, пустая схема): служебный файл, не карточка",
@@ -1561,29 +1579,41 @@
    "calls": 2,
    "git": "none"
   },
+  "scripts/ship_doc.py:_preview_docx": {
+   "kind": "other",
+   "reason": "preview Word: docx в Artifacts/word-preview, производный файл, не карточка",
+   "git": "none",
+   "calls": 1
+  },
+  "scripts/ship_doc.py:_write_report": {
+   "kind": "other",
+   "reason": "preview Word: check.json в Artifacts/word-checks, паспорт проверок, не карточка",
+   "calls": 2,
+   "git": "none"
+  },
   "scripts/ship_doc.py:export": {
    "kind": "other",
    "reason": "экспорт документа в html: очистка готового файла от опасных адресов, не карточка",
    "calls": 1,
    "git": "none"
   },
-  "scripts/ship_doc.py:_write_report": {
+  "scripts/ship_doc.py:freeze": {
    "kind": "other",
-   "reason": "preview Word: check.json в Artifacts/word-checks, паспорт проверок, не карточка",
-   "calls": 1,
-   "git": "none"
+   "reason": "снимок выпуска в Deliverables/released, не карточка",
+   "git": "none",
+   "calls": 2
   },
-  "scripts/ship_doc.py:preview_docx": {
+  "scripts/ship_doc.py:migrate": {
    "kind": "other",
-   "reason": "preview Word: docx в Artifacts/word-preview, производный файл, не карточка",
-   "calls": 2,
-   "git": "none"
+   "reason": "перенос прежнего выпуска в Deliverables/released, не карточка",
+   "git": "none",
+   "calls": 1
   },
-  "scripts/ship_doc.py:main": {
+  "scripts/ship_doc.py:release": {
    "kind": "other",
-   "reason": "выпуск документа в Deliverables/: не карточка",
-   "calls": 3,
-   "git": "none"
+   "reason": "выпуск документа в Deliverables/released, не карточка",
+   "git": "none",
+   "calls": 1
   },
   "scripts/sources_core.py:Mirror.write_state": {
    "kind": "other",
@@ -1615,6 +1645,30 @@
    "calls": 2,
    "git": "none"
   },
+  "scripts/timing.py:Tracer.emit": {
+   "kind": "other",
+   "reason": "спаны времени прогона в timing.jsonl папки прогона; служебный файл, не карточка",
+   "calls": 1,
+   "git": "local"
+  },
+  "scripts/timing.py:record": {
+   "kind": "other",
+   "reason": "сводка времени прогона в meta/timing.d по частям участника; служебные замеры, не карточка",
+   "calls": 1,
+   "git": "shard"
+  },
+  "scripts/usage_log.py:record": {
+   "kind": "other",
+   "reason": "замеры: расход токенов прогона в meta/usage.d по частям участника, не карточка",
+   "calls": 1,
+   "git": "shard"
+  },
+  "scripts/web_export.py:_run_impl.store": {
+   "kind": "other",
+   "reason": "веб-зеркало в Sources/: источник, не карточка",
+   "calls": 1,
+   "git": "none"
+  },
   "scripts/web_export.py:convert_documents": {
    "kind": "other",
    "reason": "веб-зеркало в Sources/: источник, не карточка",
@@ -1633,59 +1687,17 @@
    "calls": 1,
    "git": "none"
   },
-  "scripts/web_export.py:_run_impl.store": {
-   "kind": "other",
-   "reason": "веб-зеркало в Sources/: источник, не карточка",
-   "calls": 1,
-   "git": "none"
-  },
   "scripts/web_export.py:save_page_cache": {
    "kind": "other",
    "reason": "веб-зеркало в Sources/: источник, не карточка",
    "calls": 1,
    "git": "none"
   },
-  "scripts/kb_raptor.py:build": {
-   "kind": "other",
-   "reason": "производный индекс meta/raptor.json, не карточка",
-   "calls": 2,
-   "git": "none"
-  },
-  "scripts/kb_raptor_eval.py:save": {
-   "kind": "other",
-   "reason": "производный замер meta/raptor_metrics.json, не карточка",
-   "calls": 2,
-   "git": "local"
-  },
-  "scripts/net_observe.py:_write": {
-   "kind": "other",
-   "reason": "снимок сети и VPN за прогон: `meta/net.json` проекта (машина) и общий файл `AuroraKnowledgeDB/meta/net-runs.d/<участник>-<машина>/` — по частям участника, не карточка",
-   "calls": 1,
-   "git": "shard"
-  },
   "scripts/wiki_build.py:_write": {
    "kind": "other",
    "reason": "страницы вики кита (документы)",
    "calls": 1,
    "git": "none"
-  },
-  "scripts/usage_log.py:record": {
-   "kind": "other",
-   "reason": "замеры: расход токенов прогона в meta/usage.d по частям участника, не карточка",
-   "calls": 1,
-   "git": "shard"
-  },
-  "scripts/timing.py:Tracer.emit": {
-   "kind": "other",
-   "reason": "спаны времени прогона в timing.jsonl папки прогона; служебный файл, не карточка",
-   "calls": 1,
-   "git": "local"
-  },
-  "scripts/timing.py:record": {
-   "kind": "other",
-   "reason": "сводка времени прогона в meta/timing.d по частям участника; служебные замеры, не карточка",
-   "calls": 1,
-   "git": "shard"
   }
  },
  "git_classes_required": true
