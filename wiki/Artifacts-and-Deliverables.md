@@ -26,7 +26,7 @@ flowchart LR
 | Assemble a spec from requirements | `make:spec <topic>` | `SPEC-NNN`, status `draft`, a full `based_on` |
 | Hand a spec to a contractor | `make:spec-pack <SPEC-NNN>` | a self-contained bundle: grounds, decisions, abbreviations, handoff risks |
 | Check the contractor's implementation | `make:validate <SPEC> <object>` | covered / contradicts / not implemented, per scenario |
-| Assemble an OPZ, PMI or user guide | `make:assemble <document>` | a document from the base by a template |
+| Assemble an OPZ, PMI or user guide | `agent:make --deliverable --doc <name> --version <version>` | a document in `Deliverables/work/`; stays `draft` until review |
 
 Write the task in your own words; it understands `@path`, `/skill`, `@server` and attachments (kept for two weeks).
 Every artifact carries **`based_on`** — the cards it stands on — so you can see what to revisit when knowledge changes
