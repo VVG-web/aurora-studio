@@ -6504,10 +6504,16 @@ PROMPT_MAKE_FINAL = """Собери документ «{title}» заново п
 
 def make_session_dir(cwd: str, kind: str) -> Path:
     """Папка сессии производства. Живёт в Workspaces: это работа, а не знание."""
+    root = Path(cwd) / "Workspaces"
     stamp = utc_slug("%Y-%m-%d_%H%M%S")
-    d = Path(cwd) / "Workspaces" / f"{kind}-{stamp}"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    for n in range(1, 100):
+        d = root / (f"{kind}-{stamp}" if n == 1 else f"{kind}-{stamp}-{n}")
+        try:
+            d.mkdir(parents=True)
+        except FileExistsError:
+            continue
+        return d
+    raise RuntimeError("не удалось создать папку сессии: %s-%s" % (kind, stamp))
 
 
 SID_RE = re.compile(r"[\w][\w.-]*\Z")

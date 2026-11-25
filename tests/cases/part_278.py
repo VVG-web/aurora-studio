@@ -185,6 +185,17 @@ def test_deliverable_mode_existing_name(tmp: Path):
 
 
 @test
+def test_two_sessions_started_in_one_second_get_their_own_folder(tmp: Path):
+    """Две сессии одного вида в одну секунду не делят папку: вторая получает суффикс."""
+    root = _project(tmp)
+    import agent_runner as R
+    first = R.make_session_dir(str(root), "pmi")
+    second = R.make_session_dir(str(root), "pmi")
+    assert first != second, (first, second)
+    assert second.name.startswith(first.name + "-"), (first.name, second.name)
+
+
+@test
 def test_deliverable_mode_resume_keeps_doc(tmp: Path):
     """Продолжение берёт имя и версию из сессии и не даёт сменить их по дороге."""
     root = _project(tmp)
