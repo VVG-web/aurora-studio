@@ -16,8 +16,8 @@ flowchart TD
   Q -->|"take the new<br>from the sources"| A["Update the base"]
   Q -->|"put the base<br>in order"| B["Fix the base"]
   Q -->|"find something<br>out from the base"| C["Ask · agent:ask<br>ctx:context"]
-  Q -->|"write a document"| D["Production · agent:make"]
-  Q -->|"hand it outward"| E["Hand over documents<br>ship:*"]
+  Q -->|"write a document"| D["Files · Create an artifact<br>agent:make"]
+  Q -->|"hand it outward"| E["Files · Release<br>ship:release · ship:publish separately"]
   Q -->|"record knowledge<br>by hand"| F["kb:decide · kb:question<br>kb:correct"]
   Q -->|"something broke"| G["kit:doctor · kb:lint<br>ops:todo"]
 ```
@@ -73,7 +73,7 @@ flowchart TD
 | Assemble a spec from requirements | `make:spec <topic>` | `SPEC-NNN` with status `draft` and a full `based_on` |
 | The spec is due to go to a contractor | `make:spec-pack <SPEC-NNN>` | a self-contained bundle: grounds, decisions, abbreviations, handoff risks |
 | Check the contractor's implementation | `make:validate <SPEC> <object>` | covered / contradicts / not implemented, per scenario |
-| Assemble an OPZ, PMI or user guide | `make:assemble <document>` | a document from the base by a template, `based_on` filled in |
+| Assemble an OPZ, PMI or user guide | `agent:make --deliverable --doc <name> --version <version>` | a document in `Deliverables/work/<doc>_v<version>.md`, `based_on` filled in; stays `draft` until review |
 
 ### Outward
 

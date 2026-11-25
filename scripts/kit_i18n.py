@@ -485,8 +485,14 @@ def cause_problems() -> list:
     return out
 
 
+_EXPECTED = None
+
+
 def data_expected() -> dict:
     """{раздел: набор ключей, которые обязан покрыть перевод} — по самим реестрам."""
+    global _EXPECTED
+    if _EXPECTED is not None:
+        return _EXPECTED
     helps, metas = flag_texts()
     out = {"scenarios": scenario_texts(), "skins": skin_ids(), "messages": message_skeletons(),
            "profiles": {"all"}, "connectors": connector_ids(), "connector_texts": connector_texts(), "kinds": kind_ids(),
@@ -499,6 +505,7 @@ def data_expected() -> dict:
             if line.strip() and not line.startswith("#") and len(parts) == 7:
                 names.add(parts[1])
         out["commands"] = names
+    _EXPECTED = out
     return out
 
 

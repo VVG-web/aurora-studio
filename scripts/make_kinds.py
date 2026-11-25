@@ -85,7 +85,8 @@ KNOWN = {
 # форме (и ревью этого не поймает), без второй его некуда класть. Остальное
 # необязательно — промпта у типа может не быть, публиковать можно не всё.
 FIELDS = ("title", "template", "prompt", "out", "publish_url", "publish_path", "publish_title", "publish_prompt",
-          "publish_engine", "publish_script", "publish_template", "mcp", "tech_agnostic", "review", "ref_mask")
+          "publish_engine", "publish_script", "publish_template", "mcp", "tech_agnostic", "review", "ref_mask",
+          "deliverable")
 # `prompt` — промпт СОЗДАНИЯ: его читает изготовление документа (`agent:make`) и ассистенты через `artifact_spec`.
 # `publish_prompt` — промпт ПУБЛИКАЦИИ: как оформить готовый документ в страницу (оглавление, панели, макросы,
 # вёрстка); текст автора он не переписывает. Путь к файлу `Prompts/…`, как у `prompt`.
@@ -94,7 +95,7 @@ FIELDS = ("title", "template", "prompt", "out", "publish_url", "publish_path", "
 # `publish_script` — путь к готовому скрипту, который модель сделала по промпту один раз; пусто — `Scripts/Generated/<вид>.py`.
 # `publish_template` — заготовка страницы (скелет), по которой проверяют и правят скрипт; пусто — скелет из промпта.
 # Поля создания и поля публикации; форма настроек рисует их двумя рамками, `--kind` — двумя разделами.
-CREATE_FIELDS = ("title", "template", "prompt", "out", "mcp", "tech_agnostic", "ref_mask")
+CREATE_FIELDS = ("title", "template", "prompt", "out", "mcp", "tech_agnostic", "ref_mask", "deliverable")
 PUBLISH_FIELDS = ("publish_url", "publish_path", "publish_title", "publish_prompt", "publish_engine", "publish_script",
                   "publish_template", "review")
 
@@ -103,12 +104,13 @@ PUBLISH_FIELDS = ("publish_url", "publish_path", "publish_title", "publish_promp
 # план W5 живёт в Scripts/Generated, а готовых скриптов в preview нет.
 DOCX_FIELDS = ("docx_template", "docx_example", "docx_title", "docx_logo",
                "docx_prompt", "docx_engine", "docx_checks", "docx_map")
+DOCX_RELEASE_FIELDS = (*DOCX_FIELDS, "docx_plan")
 DOCX_CREATE_FIELDS = ("docx_template", "docx_example", "docx_title", "docx_logo")
 DOCX_ENGINES = ("auto", "reference", "plan")
 DOCX_LIMIT = 5 * 1024 * 1024
 DOCX_EXAMPLE_LIMIT = 200 * 1024 * 1024
 CHECKS_LIMIT = 256 * 1024
-FIELDS = FIELDS + DOCX_FIELDS
+FIELDS = FIELDS + DOCX_RELEASE_FIELDS
 CREATE_FIELDS = CREATE_FIELDS + DOCX_CREATE_FIELDS
 # `publish_path` — цепочка разделов под корневой страницей вида (`publish_url`): уровни через `>`, пробелы по краям
 # уровня обрезаются; пусто — документ ложится прямо под корень. `publish_title` — шаблон заголовка страницы, пусто —
@@ -135,14 +137,23 @@ def review_profile(rec: dict) -> str:
     """Профиль ревью вида, как его записал человек: без комментария в конце строки, любым регистром. Пусто — нет или негоден."""
     value = re.sub(r"\s+#.*$", "", str((rec or {}).get("review") or "")).strip().lower()
     return value if value in REVIEW_PROFILES else ""
+
 # `ref_mask` — маска ключа Requirement Yogi для этого вида: `<СТРАНА>.<ПРОЕКТ>.US-x.x.x` (`<имя>` — любой сегмент, `x` —
 # число). Аврора ключ не выдаёт — его заводит реестр Requirement Yogi; она кладёт найденный по маске ключ в паспорт
 # артефакта непрозрачным значением (`ref_key`) и называет ключи, похожие на ключи вида, но не по маске (`kb:lint`).
+# `deliverable` — вид разрешает режим поставляемого документа (`agent:make --deliverable`): результат пишется в
+# `Deliverables/work/<doc>_v<version>.md`, а не в папку вида. Это данные проекта, не движок: без `deliverable: true`
+# режим закрыт. Включается настройкой вида, а не каждым документом.
 # Свойства задачи, которую заводит кнопка «Создать задачу» у документа вида (`ship:task`, активный трекер проекта):
 # умолчания вида — рамка «Трекер задач» в форме видов. Сами они задачу не заводят. Эпик у вида больше не задаётся — его
 # выбирают у документа; прежнее `epic` вида читается и пишется обратно как было (запись не теряет значение), но не
 # действует ни в `ship:task`, ни в шапке нового документа.
 TASK_FIELDS = ("project", "type", "assignee", "labels", "components", "epic")
+
+
+def is_deliverable(rec: dict) -> bool:
+    """Вид разрешает режим поставляемого документа."""
+    return str((rec or {}).get("deliverable") or "").strip().lower() in ("1", "true", "да", "yes")
 
 
 def read_kinds(root: str = ".") -> dict:
@@ -199,6 +210,18 @@ def kind_of(kinds: dict, type_hint: str = "", path: str = "", root: str = ".") -
             return key, kinds[key]
     if not path:
         return "", {}
+    # Снимок лежит в `Deliverables/<kind>/…`, а не в папке результата вида: вид берётся
+    # из второй части пути. `work`, `released` и `_archive` — не виды.
+    rel = os.path.relpath(os.path.realpath(path), os.path.realpath(root)).replace("\\", "/")
+    parts = rel.split("/")
+    if (parts[0].casefold() == "deliverables" and len(parts) >= 3
+            and parts[1].casefold() not in ("work", "released", "_archive")):
+        known = {str(k).casefold(): k for k in kinds}
+        kind = known.get(parts[1].casefold())
+        if kind:
+            return kind, kinds[kind]
+        if parts[1].casefold() == "deliverable":
+            return "deliverable", {}
     here = os.path.normcase(os.path.realpath(path))
     best = ("", "", {})
     for kid, rec in kinds.items():
@@ -207,6 +230,29 @@ def kind_of(kinds: dict, type_hint: str = "", path: str = "", root: str = ".") -
         if base and here.startswith(base) and len(base) > len(best[0]):
             best = (base, kid, rec)
     return best[1], best[2]
+
+
+def snapshot_kind(path: str, root: str = ".") -> str:
+    """Вид из пути `Deliverables/<kind>/…`; пусто для work/released/_archive и неизвестного вида.
+
+    Имя папки сравнивается без учёта регистра: `deliverables/US/…` на macOS и Windows —
+    та же папка, что `Deliverables/us/…`. Legacy-вид `deliverable` входит всегда: иначе
+    старый поставляемый документ нельзя было бы заморозить без выдуманного вида.
+    """
+    try:
+        rel = os.path.relpath(os.path.realpath(path), os.path.realpath(root)).replace("\\", "/")
+    except ValueError:              # другой диск (Windows)
+        return ""
+    parts = rel.split("/")
+    if len(parts) < 3 or parts[0].casefold() != "deliverables":
+        return ""
+    kind = parts[1]
+    if kind.casefold() in ("work", "released", "_archive"):
+        return ""
+    if kind.casefold() == "deliverable":
+        return "deliverable"
+    known = {str(k).casefold(): k for k in (read_kinds(root) or {})}
+    return known.get(kind.casefold(), "")
 
 
 # ------------------------------------------------------------------ путь и заголовок страницы в Confluence
@@ -433,7 +479,10 @@ def kinds_lines(kinds: dict) -> list:
         # Поля описывает движок, а не панель: список один на всех — `FIELDS`. Иначе форма научится сохранять поле,
         # которого чтение не знает, и настройка будет молча пропадать при следующем разборе конфига.
         for field in FIELDS:
-            value = str(rec.get(field) or "").strip().strip('"')
+            if field == "deliverable":
+                value = "true" if str(rec.get(field) or "").strip().lower() in ("1", "true", "да", "yes") else ""
+            else:
+                value = str(rec.get(field) or "").strip().strip('"')
             lines.append(f'    {field}: "{value}"')
         task = rec.get("task") or {}
         if any(str(v).strip() for v in task.values()):
@@ -909,6 +958,9 @@ def check(root: str, kinds: dict) -> list:
                 bad.append((kind, f"{field}: пустая подстановка {{}} в «{value}» — назовите поле шапки: {{epic}}"))
         for why in _docx_problems(root, kind, rec):
             bad.append((kind, why))
+        value = str(rec.get("deliverable") or "").strip().lower()
+        if value and value not in ("true", "false", "1", "0", "да", "нет", "yes", "no"):
+            bad.append((kind, "deliverable: ожидается true или false"))
     return bad
 
 

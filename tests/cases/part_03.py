@@ -1733,23 +1733,25 @@ def test_a_changed_source_reaches_the_base(tmp: Path):
 
 
 @test
-def test_five_buttons_instead_of_eleven_routes(tmp: Path):
-    """Одиннадцать маршрутов свелись в пять, и каждый отвечает на свой вопрос.
+def test_three_buttons_instead_of_eleven_routes(tmp: Path):
+    """Одиннадцать маршрутов свелись в три, и каждый отвечает на свой вопрос.
 
     «Привести базу в порядок», «Обновить базу», «Утренний обход», «Пересчитать доверие»,
     «Прополка», «Разобрать всё» — шесть кнопок, делающих пересекающиеся вещи, и человек
     каждый раз выбирал между ними, не зная разницы. Осталось два вопроса: **взять новое
     из источников** («Обновить») и **привести в порядок то, что есть** («Починить»).
-    Граница между ними проверяемая: «Починить» в источники не ходит.
+    Граница между ними проверяемая: «Починить» в источники не ходит. Производство
+    артефактов и выпуск живут в карточке «Файлов», а не отдельными маршрутами.
     """
     sys.path.insert(0, str(KIT / "cockpit"))
     import importlib
     ck = importlib.import_module("aurora_cockpit")
 
     ids = [s["id"] for s in ck.scenarios()]
-    assert set(ids) == {"update", "fix", "rebuild", "write", "deliver"}, \
+    assert set(ids) == {"update", "fix", "rebuild"}, \
         f"набор маршрутов не тот, что решили: {ids}"
-    for gone in ("all", "morning", "trust", "garden", "bulk", "trace", "outward", "assemble"):
+    for gone in ("all", "morning", "trust", "garden", "bulk", "trace", "outward", "assemble",
+                 "write", "deliver"):
         assert gone not in ids, f"старый маршрут {gone} остался: сложность просто спрятана"
 
     fix = next(s for s in ck.scenarios() if s["id"] == "fix")

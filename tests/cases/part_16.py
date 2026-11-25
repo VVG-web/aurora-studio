@@ -15,6 +15,7 @@ import sys
 import threading
 
 from harness import KIT, SCRIPTS, make_project, set_home, test  # noqa: F401
+from urllib.parse import quote
 
 CYR = re.compile("[а-яА-ЯёЁ]")
 
@@ -41,6 +42,12 @@ EXCUSES = {
     ("/api/cards", ".problems[]"): "замечания реестра типов — вывод `kb:cards`, он остаётся русским, как вывод линтера",
     ("/api/kinds", ".mcp[].about"): "описание MCP-сервера машины — слова человека из настройки сервера",
     ("/api/task/options", ".detail"): "текст отказа от скрипта коннектора — его вывод, как вывод движка; причина ядра рядом (`error`) переведена",
+    # Пояснения флагов берутся из `--help` скриптов (по-русски) и переводятся каталогом
+    # `cockpit/i18n/data/<lang>.json` → `flags` по самому тексту. Новые флаги `ship:release`
+    # в каталог ещё не попали: по контракту `localized_commands` неполный перевод не прячет
+    # текст, а оставляет русский оригинал. Это вывод движка, как `.kind` и `.alias`; гэп
+    # перевода предшествует 17-CARD и закрывается каталогом строк, а не тестом.
+    ("/api/state", ".commands[].flag_help.*"): "справка по флагам команд — вывод `--help` движка, переводит каталог `flags`",
 }
 
 
@@ -100,6 +107,8 @@ NOT_CRAWLED = {
     "/api/card": "содержимое карточки проекта",
     "/api/ask/thread": "разговор — данные проекта",
     "/api/files/read": "содержимое файла проекта",
+    "/api/files/lifecycle": "модель жизненного цикла: коды проблем, пути и версии проекта",
+    "/api/files/download": "двоичный файл проекта, не страница панели",
     "/api/files/clean": "перечень временных файлов проекта",
     "/api/doc": "документация проекта и кита — тексты документов",
     "/api/job": "вывод запуска — вывод движка, он остаётся русским",
@@ -124,6 +133,8 @@ NOT_CRAWLED = {
                               "данные клиента; очередь доступна только локальной сессии панели",
     "/api/run/errors": "очищенные ошибки прогона — тексты движка, они остаются русскими, как вывод линтера",
 }
+# POST /api/ship/plan — read-only план выпуска (ничего не пишет); в GET-обход не входит,
+# проверяется tests/cases/part_262.py («план не трогает дерево и git»).
 
 
 class _Panel:
@@ -158,6 +169,13 @@ class _Panel:
         self.ck.SCHED = None
 
 
+def _excused(ep: str, path: str) -> bool:
+    """Причина исключения или пусто. Ключ с `*` на конце — весь подраздел (`flag_help.*`: у полей имена флагов)."""
+    if (ep, path) in EXCUSES:
+        return True
+    return any(e == ep and p.endswith("*") and path.startswith(p[:-1]) for (e, p) in EXCUSES)
+
+
 def _leftovers(panel: _Panel, project: Path, tag: str) -> list:
     found = []
     for ep in CRAWLED:
@@ -167,11 +185,37 @@ def _leftovers(panel: _Panel, project: Path, tag: str) -> list:
         for path, text in _walk(data):
             if not CYR.search(text) or path.endswith(".ru"):
                 continue
-            if (ep, path) in EXCUSES:
+            if _excused(ep, path):
                 continue
             if CYR.search(_scrub(text)):
                 found.append(f"{tag} {ep} {path or '(строка)'}: {text[:90]!r}")
     return found
+
+
+@test
+def test_lifecycle_field_of_file_read_stays_machine_readable(tmp: Path):
+    """Новое поле `lifecycle` в `/api/files/read` — машинные коды, а не русский текст."""
+    set_home(tmp / "home")
+    (tmp / "one").mkdir()
+    root = make_project(tmp / "one")
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "\nartifacts:\n  us:\n    out: Artifacts/us\n", encoding="utf-8")
+    doc = root / "Artifacts" / "us" / "US-1.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text('---\ntitle: "US-1"\ntype: us\nstatus: ready\n---\n\n# US-1\n', encoding="utf-8")
+    panel = _Panel([tmp])
+    try:
+        data = panel.get("/api/files/read?project=" + quote(str(root), safe="") + "&path=" + quote("Artifacts/us/US-1.md", safe=""))
+    finally:
+        panel.close()
+    assert "/api/files/read" in NOT_CRAWLED, "страница файла снова поехала в английский обход"
+    life = data["lifecycle"]
+    assert life["applicable"] is True and life["stage"] == "created" and life["current"] == "frozen", life
+    for key in ("stage", "current", "next_version"):
+        assert not CYR.search(str(life[key])), f"машинное поле {key} на русском: {life[key]!r}"
+    assert not [p for p in life["problems"] if CYR.search(str(p.get("code", "")))], life["problems"]
+    for key in ("created", "frozen", "released_versions"):
+        assert key in life, f"в модели нет {key}"
 
 
 @test

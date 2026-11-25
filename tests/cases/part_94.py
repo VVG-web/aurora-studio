@@ -158,15 +158,20 @@ def test_release_freezes_what_was_handed_over_and_proves_it(tmp: Path):
     root = _released_project(tmp)
     cp = run("ship_doc.py", "Deliverables/work/Spec_v1.0.md", "--release", "--apply", "--date", "2026-10-19", cwd=root)
     assert cp.returncode == 0, cp.stdout + cp.stderr
-    snap = root / "Deliverables" / "released" / "Spec_v1.0_2026-10-19.md"
+    snap = root / "Deliverables" / "deliverable" / "Spec_v1.0_2026-10-19.md"
     text = snap.read_text(encoding="utf-8")
     assert "Платёж проводится за пять дней." in text, text
     assert "Допущения" not in text and MARK not in text, "в снимок уехала кухня производства"
     import aurora_common as C
     sha = C.frontmatter(text).get("sha256")
-    assert sha and sha == C.release_hash(text) and C.frontmatter(text).get("released_commit"), text
+    assert sha and sha == C.release_hash(text) and C.frontmatter(text).get("frozen_at"), text
+    frozen = C.list_records((root / "Deliverables" / "work" / "Spec_v1.0.md").read_text(encoding="utf-8"),
+                            "frozen")
+    assert frozen and frozen[0]["commit"] and frozen[0]["path"].startswith("Deliverables/deliverable/"), frozen
     assert "Допущения" in (root / "Deliverables" / "work" / "Spec_v1.0.md").read_text(encoding="utf-8"), \
         "рабочая копия должна остаться целой"
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "freeze")
     ok = run("ship_doc.py", "--verify", cwd=root)
     assert ok.returncode == 0 and "не менялись" in ok.stdout, ok.stdout + ok.stderr
     # правка сданного из терминала: хеш расходится (на старом коде этого не видел никто)
@@ -175,8 +180,6 @@ def test_release_freezes_what_was_handed_over_and_proves_it(tmp: Path):
     assert bad.returncode == 1 and "Spec_v1.0_2026-10-19.md" in bad.stdout and "хеш" in bad.stdout, bad.stdout
     snap.write_text(text, encoding="utf-8")
     # удаление после коммита
-    _git(root, "add", "-A")
-    _git(root, "commit", "-qm", "released")
     assert run("ship_doc.py", "--verify", cwd=root).returncode == 0
     snap.unlink()
     gone = run("ship_doc.py", "--verify", cwd=root)
@@ -194,36 +197,39 @@ def test_release_refuses_a_document_that_is_not_in_the_commit(tmp: Path):
     doc.write_text(doc.read_text(encoding="utf-8").replace("пять дней", "шесть дней"), encoding="utf-8")
     cp = run("ship_doc.py", "Deliverables/work/Spec_v1.0.md", "--release", "--apply", "--date", "2026-10-19", cwd=root)
     assert cp.returncode == 2 and "незакоммиченные" in cp.stdout and "--allow-dirty" in cp.stderr, cp.stdout + cp.stderr
-    assert not list((root / "Deliverables" / "released").glob("*.md")), "снимок записан несмотря на отказ"
+    assert not list((root / "Deliverables" / "deliverable").glob("*.md")), "снимок записан несмотря на отказ"
     cp = run("ship_doc.py", "Deliverables/work/Spec_v1.0.md", "--release", "--apply", "--date", "2026-10-19",
              "--allow-dirty", cwd=root)
     assert cp.returncode == 0, cp.stdout + cp.stderr
-    snap = next((root / "Deliverables" / "released").glob("*.md")).read_text(encoding="utf-8")
+    snap = next((root / "Deliverables" / "deliverable").glob("*.md")).read_text(encoding="utf-8")
     assert "released_dirty: true" in snap and "шесть дней" in snap, snap
 
 
 @test
 def test_release_names_and_paths_are_safe(tmp: Path):
-    """`doc` и `version` из шапки не выводят снимок за released/; соседняя папка `work2` не считается `work`."""
+    """`doc` и `version` из шапки не выводят снимок за пределы проекта; `work2` не считается `work`."""
     root = make_project(tmp, git=True)
     work = root / "Deliverables" / "work"
     work.mkdir(parents=True, exist_ok=True)
     (work / "Evil_v1.md").write_text(_doc(head="type: deliverable\ndoc: ../../outside\nversion: \"../x\"\n"),
                                      encoding="utf-8")
+    (work / "Good_v1.md").write_text(_doc(), encoding="utf-8")
     other = root / "Deliverables" / "work2"
     other.mkdir(parents=True, exist_ok=True)
     (other / "X_v1.md").write_text(_doc(), encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "docs")
     cp = run("ship_doc.py", "Deliverables/work/Evil_v1.md", "--release", "--apply", "--date", "2026-10-19", cwd=root)
-    assert cp.returncode == 0, cp.stdout + cp.stderr
-    made = [p for p in (root / "Deliverables" / "released").iterdir()]
-    assert len(made) == 1 and made[0].parent == root / "Deliverables" / "released", made
-    assert "/" not in made[0].name and ".." not in made[0].name, made[0].name
+    assert cp.returncode == 1 and "bad-name" in cp.stderr, cp.stdout + cp.stderr
     assert not (root / "outside").exists() and not list((root / "Deliverables").glob("*outside*")), \
-        "снимок вышел за Deliverables/released/"
+        "снимок вышел за Deliverables/"
+    ok = run("ship_doc.py", "Deliverables/work/Good_v1.md", "--release", "--apply", "--date", "2026-10-19", cwd=root)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    made = [p for p in (root / "Deliverables" / "deliverable").iterdir()]
+    assert len(made) == 1 and made[0].parent == root / "Deliverables" / "deliverable", made
+    assert "/" not in made[0].name and ".." not in made[0].name, made[0].name
     bad = run("ship_doc.py", "Deliverables/work2/X_v1.md", "--release", "--apply", cwd=root)
-    assert bad.returncode == 1 and "замораживать можно только" in bad.stderr, bad.stderr
+    assert bad.returncode == 1 and "source-outside" in bad.stderr, bad.stderr
 
 
 @test
@@ -311,7 +317,7 @@ def test_outward_gate_sees_heading_variants_a_broken_boundary_and_crlf(_t):
 
 @test
 def test_released_check_ignores_the_folder_guide_and_reads_non_ascii_names(tmp: Path):
-    """README.md папки (его обновляет кит) — не сданное; кириллическое имя называется читаемо; бинарник сверяется по хешу."""
+    """README.md папки — не сданное; кириллическое имя называется читаемо; old binary читается, --binary отвергнут."""
     import aurora_common as C
     root = make_project(tmp, git=True)
     work = root / "Deliverables" / "work"
@@ -324,18 +330,26 @@ def test_released_check_ignores_the_folder_guide_and_reads_non_ascii_names(tmp: 
     (rel / "built.docx").write_bytes(b"docx-bytes-v1")
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "docs")
-    cp = run("ship_doc.py", "Deliverables/work/Спека_v1.0.md", "--release", "--apply", "--date", "2026-10-19",
-             "--binary", "Deliverables/released/built.docx", cwd=root)
+    cp = run("ship_doc.py", "Deliverables/work/Спека_v1.0.md", "--release", "--apply", "--date", "2026-10-19", cwd=root)
     assert cp.returncode == 0, cp.stdout + cp.stderr
-    snap = rel / "Спека_v1.0_2026-10-19.md"
-    assert "binary_sha256:" in snap.read_text(encoding="utf-8")
+    snap = root / "Deliverables" / "deliverable" / "Спека_v1.0_2026-10-19.md"
+    assert snap.is_file()
+    # новый --binary не пишет: связь выпуска идёт через frozen_sha256
+    bad = run("ship_doc.py", "Deliverables/work/Спека_v1.0.md", "--release", "--apply", "--date", "2026-10-19",
+              "--binary", "Deliverables/released/built.docx", cwd=root)
+    assert bad.returncode == 2 and "frozen_sha256" in bad.stderr, bad.stdout + bad.stderr
+    # старый снимок с binary читается
+    legacy = rel / "Old_v1.0_2026-05-05.md"
+    legacy.write_text("---\ntype: deliverable\ndoc: Old\nversion: \"1.0\"\nreleased: 2026-05-05\n"
+                      "binary: built.docx\nbinary_sha256: " + __import__("hashlib").sha256(
+                          (rel / "built.docx").read_bytes()).hexdigest() + "\n---\n\n# Old\n", encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "released")
     (rel / "README.md").write_text("guide v2 (обновил кит)\n", encoding="utf-8")
     assert C.released_problems(str(root)) == [], "обновление описания папки названо правкой сданного"
     snap.write_text(snap.read_text(encoding="utf-8").replace("пять дней", "три дня"), encoding="utf-8")
     problems = C.released_problems(str(root))
-    assert any(p.startswith("Спека_v1.0_2026-10-19.md: ") for p in problems) and not any("\\3" in p for p in problems), problems
+    assert any(p.startswith("Спека_v1.0_2026-10-19.md: ") for p in problems), problems
     (rel / "built.docx").write_bytes(b"docx-bytes-OTHER")
     assert any("built.docx" in p and "заменили после передачи" in p for p in C.released_problems(str(root)))
     # второй релиз с тем же именем бинарника и другим содержимым не затирает сданный
@@ -345,9 +359,9 @@ def test_released_check_ignores_the_folder_guide_and_reads_non_ascii_names(tmp: 
                                        encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "v1.1")
-    bad = run("ship_doc.py", "Deliverables/work/Спека_v1.1.md", "--release", "--apply", "--date", "2026-10-20",
-              "--binary", str(other), cwd=root)
-    assert bad.returncode == 1 and "уже сдан с другим содержимым" in bad.stderr, bad.stdout + bad.stderr
+    bad2 = run("ship_doc.py", "Deliverables/work/Спека_v1.1.md", "--release", "--apply", "--date", "2026-10-20",
+               "--binary", str(other), cwd=root)
+    assert bad2.returncode == 2 and "frozen_sha256" in bad2.stderr, bad2.stdout + bad2.stderr
 
 
 @test
@@ -396,7 +410,7 @@ def test_doctor_reports_released_versions_that_were_touched(tmp: Path):
     root = _released_project(tmp)
     run("ship_doc.py", "Deliverables/work/Spec_v1.0.md", "--release", "--apply", "--date", "2026-10-19", cwd=root)
     assert C.released_problems(str(root)) == []
-    snap = root / "Deliverables" / "released" / "Spec_v1.0_2026-10-19.md"
+    snap = root / "Deliverables" / "deliverable" / "Spec_v1.0_2026-10-19.md"
     snap.write_text(snap.read_text(encoding="utf-8").replace("пять дней", "три дня"), encoding="utf-8")
     problems = C.released_problems(str(root))
     assert len(problems) == 1 and "правили после передачи" in problems[0], problems

@@ -37,6 +37,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import config_value, git_guard, walk_md
 from card_types import is_card_path, try_write_card
+import id_registry as IR
+import make_kinds as MK
 
 # Слои по режиму обращения: что правим, что только показываем.
 WRITABLE = ("AuroraKnowledgeDB", "Artifacts", "Workspaces", os.path.join("Deliverables", "work"))
@@ -167,8 +169,56 @@ def veil(frag: str) -> str:
     return f"…{digits[-2:]}" if len(digits) > 2 else "***"
 
 
-def targets(include_raw: bool) -> list:
-    roots = list(WRITABLE) + (list(EVIDENCE) if include_raw else [])
+def _rel_path(path: str) -> str:
+    p = os.path.normpath(str(path or "")).replace("\\", "/")
+    if os.path.isabs(p):
+        try:
+            p = os.path.relpath(p).replace("\\", "/")
+        except ValueError:                       # другой диск (Windows)
+            return p
+    return "" if p == "." else p
+
+
+def snapshot_dirs(kinds: dict = None) -> list:
+    """Папки снимков `Deliverables/<kind>` (известные виды, legacy `deliverable` и `_archive`)."""
+    kinds = MK.read_kinds(".") if kinds is None else kinds
+    names = [str(k) for k in (kinds or {})] + ["deliverable", "_archive"]
+    out, seen = [], set()
+    for kind in names:
+        rel = os.path.join("Deliverables", kind).replace("\\", "/")
+        key = rel.casefold()
+        if key in seen or not os.path.isdir(rel):
+            continue
+        seen.add(key)
+        out.append(rel)
+    return out
+
+
+def evidence_path(path: str, kinds: dict = None) -> bool:
+    """Raw, Sources, released, _archive, известный `Deliverables/<kind>` и legacy `deliverable`.
+
+    Папка и вид сравниваются без учёта регистра: на macOS и Windows `deliverables/us`
+    и `Deliverables/us` — одна папка. `work`, `work2` и неизвестный вид доказательством
+    не считаются.
+    """
+    p = _rel_path(path)
+    if not p:
+        return False
+    low = p.casefold()
+    for root in EVIDENCE:
+        root = root.replace("\\", "/").casefold()
+        if low == root or low.startswith(root + "/"):
+            return True
+    if low == "deliverables/_archive" or low.startswith("deliverables/_archive/"):
+        return True
+    # Снимок вида — тот же предикат, что у реестра идентификаторов: второй такой же
+    # разбор здесь разошёлся бы с `SNAPSHOT_DIRS` на первом же новом виде.
+    kinds = MK.read_kinds(".") if kinds is None else kinds
+    return IR.snapshot_path(p, kinds)
+
+
+def targets(include_raw: bool, kinds: dict = None) -> list:
+    roots = list(WRITABLE) + (list(EVIDENCE) + snapshot_dirs(kinds) if include_raw else [])
     out = []
     for root in roots:
         if os.path.isdir(root):
@@ -176,19 +226,16 @@ def targets(include_raw: bool) -> list:
     return sorted(set(out))
 
 
-def layer_of(path: str) -> str:
-    norm = os.path.normpath(path)
-    for root in EVIDENCE:
-        if norm == root or norm.startswith(root + os.sep):
-            return "evidence"
-    return "writable"
+def layer_of(path: str, kinds: dict = None) -> str:
+    return "evidence" if evidence_path(path, kinds) else "writable"
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Найти и закрыть персональные данные")
     ap.add_argument("path", nargs="?", help="ограничить одной папкой или файлом")
     ap.add_argument("--include-raw", action="store_true",
-                    help="смотреть и править Raw/ и released/ (правка ломает неизменяемость)")
+                    help="смотреть и править Raw/, Sources/, released/ и Deliverables/<kind>/ "
+                         "(правка ломает неизменяемость)")
     ap.add_argument("--force", action="store_true",
                     help="прогнать, даже если privacy.scrub: off")
     ap.add_argument("--mask-contacts", action="store_true",
@@ -212,10 +259,11 @@ def main() -> int:
         a.mask_contacts = True
     if not a.include_raw and config_value("include_raw", "false").lower() == "true":
         a.include_raw = True
+    kinds = MK.read_kinds(".")
 
     files = ([a.path] if a.path and os.path.isfile(a.path)
              else sorted(walk_md(a.path, skip_service=True)) if a.path
-             else targets(a.include_raw))
+             else targets(a.include_raw, kinds))
     if not files:
         print("kb_scrub: нечего смотреть — запускайте из корня проекта")
         return 0
@@ -242,7 +290,7 @@ def main() -> int:
     print(f"kb_scrub: файлов {len(files)}, находок {total} в {len(found)} файлах")
     print("  " + " · ".join(f"{k}: {n}" for k, n in sorted(by_kind.items(), key=lambda x: -x[1])))
     print()
-    evidence_files = [p for p in found if layer_of(p) == "evidence"]
+    evidence_files = [p for p in found if layer_of(p, kinds) == "evidence"]
     # рабочие контакты — одной строкой: иначе сорок строк атрибуции прячут пять реальных ПДн
     if not a.mask_contacts and by_kind.get("рабочий контакт"):
         n = by_kind["рабочий контакт"]
@@ -254,7 +302,7 @@ def main() -> int:
         shown = [h for h in found[path] if a.mask_contacts or h[0] != "рабочий контакт"]
         if not shown:
             continue
-        mark = " (доказательство, правка запрещена)" if layer_of(path) == "evidence" else ""
+        mark = " (доказательство, правка запрещена)" if layer_of(path, kinds) == "evidence" else ""
         print(f"{path}{mark}")
         for kind, start, _end, frag in shown[:6]:
             line = text.count("\n", 0, start) + 1
@@ -263,14 +311,14 @@ def main() -> int:
             print(f"    … ещё {len(shown) - 6}")
 
     if not a.include_raw:
-        print("\nRaw/, Sources/ и released/ не смотрели: --include-raw покажет и их.")
+        print("\nRaw/, Sources/, released/ и Deliverables/<kind>/ не смотрели: --include-raw покажет и их.")
 
     # рабочие контакты не маскируем: это атрибуция, а не утечка
     found = {p: [h for h in hits if h[0] != "рабочий контакт" or a.mask_contacts]
              for p, hits in found.items()}
     found = {p: h for p, h in found.items() if h}
     fixable = {p: h for p, h in found.items()
-               if layer_of(p) == "writable" or a.include_raw}
+               if layer_of(p, kinds) == "writable" or a.include_raw}
     if not a.apply:
         print(f"\n(dry-run) Ничего не изменено. Закрыть маркерами: --apply "
               f"(под правку попадёт файлов: {len(fixable)}).")

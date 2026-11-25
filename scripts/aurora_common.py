@@ -1092,8 +1092,38 @@ def release_hash(text: str) -> str:
     return hashlib.sha256(norm.encode("utf-8")).hexdigest()
 
 
-def released_findings(root: str = ".") -> list:
-    """Сданные версии `Deliverables/released/`, которые перестали быть сданными. → [(вид, имя, второе имя)].
+def lifecycle_evidence_dirs(root: str = ".") -> list:
+    """Папки доказательств жизненного цикла: известные `Deliverables/<kind>`, `deliverable`, `released`, `_archive`.
+
+    Снимок живёт в `Deliverables/<kind>/…`; старые — в `released/` и `_archive/`. Все три
+    формы читаются одним кодом, иначе новая папка молча выпадала бы из проверки.
+    """
+    dirs = [os.path.join("Deliverables", "released"), os.path.join("Deliverables", "_archive"),
+            os.path.join("Deliverables", "deliverable")]
+    try:
+        import make_kinds as _mk
+        for kind in (_mk.read_kinds(root) or {}):
+            dirs.append(os.path.join("Deliverables", str(kind)))
+    except Exception:                                       # noqa: BLE001 — реестр видов необязателен
+        pass
+    out, seen = [], set()
+    for rel in dirs:
+        full = os.path.join(root, rel)
+        real = os.path.normcase(os.path.realpath(full))
+        if real in seen or not os.path.isdir(full):
+            continue
+        seen.add(real)
+        out.append(rel.replace("\\", "/"))
+    return out
+
+
+def released_findings(root: str = ".", with_dir: bool = False) -> list:
+    """Сданные версии в `Deliverables/…`, которые перестали быть сданными. → [(вид, имя, второе имя)].
+
+    Обходятся legacy `Deliverables/released/` и `_archive/`, известные `Deliverables/<kind>/`
+    из реестра видов и legacy `Deliverables/deliverable/`. `with_dir=True` добавляет
+    четвёртым элементом папку находки: доктор по ней различает одинаковые имена в разных
+    видах, не меняя привычные тексты.
 
     Виды: `hash` (текст не совпал с хешем), `blob-missing` и `blob-changed` (бинарник рядом со снимком),
     `modified` и `deleted` (после коммита, по git).
@@ -1102,42 +1132,48 @@ def released_findings(root: str = ".") -> list:
     хеширования без них не проверяется. Файл, изменённый или удалённый после коммита, назван по git: правка из
     терминала или чужим ассистентом иначе незаметна, а «сданное неизменяемо» держалось только режимом «только
     чтение» в редакторе панели. Описание папки (`README.md`, его обновляет кит) и точечные файлы не сданное."""
-    folder = os.path.join(root, "Deliverables", "released")
     out = []
-    if os.path.isdir(folder):
-        for name in sorted(os.listdir(folder)):
-            if not name.endswith(".md") or name == FOLDER_GUIDE:
-                continue
-            try:
-                text = open(os.path.join(folder, name), encoding="utf-8-sig", errors="replace").read()   # BOM шапку не прячет
-            except OSError:
-                continue
-            fm = frontmatter(text)
-            want = (fm.get("sha256") or "").strip().strip("\"'")
-            if want and release_hash(text) != want:
-                out.append(("hash", name, ""))
-            blob = os.path.basename((fm.get("binary") or "").strip().strip("\"'"))
-            blob_want = (fm.get("binary_sha256") or "").strip().strip("\"'")
-            if blob and blob_want:
+    for rel in lifecycle_evidence_dirs(root):
+        folder = os.path.join(root, rel)
+        for dirpath, _dirs, files in os.walk(folder):
+            for name in sorted(files):
+                if not name.endswith(".md") or name == FOLDER_GUIDE:
+                    continue
                 try:
-                    with open(os.path.join(folder, blob), "rb") as f:
-                        have = hashlib.sha256(f.read()).hexdigest()
+                    text = open(os.path.join(dirpath, name), encoding="utf-8-sig", errors="replace").read()   # BOM шапку не прячет
                 except OSError:
-                    out.append(("blob-missing", blob, name))
-                else:
-                    if have != blob_want:
-                        out.append(("blob-changed", blob, name))
+                    continue
+                fm = frontmatter(text)
+                want = (fm.get("sha256") or "").strip().strip("\"'")
+                shown_dir = os.path.relpath(dirpath, root).replace("\\", "/")
+                if want and release_hash(text) != want:
+                    out.append(("hash", name, "", shown_dir) if with_dir else ("hash", name, ""))
+                blob = os.path.basename((fm.get("binary") or "").strip().strip("\"'"))
+                blob_want = (fm.get("binary_sha256") or "").strip().strip("\"'")
+                if blob and blob_want:
+                    try:
+                        with open(os.path.join(dirpath, blob), "rb") as f:
+                            have = hashlib.sha256(f.read()).hexdigest()
+                    except OSError:
+                        out.append(("blob-missing", blob, name, shown_dir) if with_dir else ("blob-missing", blob, name))
+                    else:
+                        if have != blob_want:
+                            out.append(("blob-changed", blob, name, shown_dir) if with_dir else ("blob-changed", blob, name))
     try:
         cp = subprocess.run(["git", "-c", "core.quotepath=off", "diff", "HEAD", "--name-status", "-z",
-                             "--diff-filter=MD", "--", "Deliverables/released"], cwd=root, capture_output=True,
+                             "--diff-filter=MD", "--", "Deliverables"], cwd=root, capture_output=True,
                             timeout=60)
         if cp.returncode == 0:
             parts = cp.stdout.decode("utf-8", "replace").split("\0")
             for flag, path in zip(parts[0::2], parts[1::2]):
+                rel = os.path.dirname(path.replace("\\", "/"))
+                if not any(rel == d or rel.startswith(d + "/") for d in lifecycle_evidence_dirs(root)):
+                    continue
                 base = os.path.basename(path)
                 if base == FOLDER_GUIDE or base.startswith("."):
                     continue
-                out.append(("modified" if flag.startswith("M") else "deleted", base, ""))
+                out.append(("modified" if flag.startswith("M") else "deleted", base, "",
+                            rel) if with_dir else ("modified" if flag.startswith("M") else "deleted", base, ""))
     except Exception:                                       # noqa: BLE001 — нет git: остаются хеши
         pass
     return out
@@ -1532,6 +1568,70 @@ def list_field(text: str, field: str) -> list:
             inline = [a.strip('"').strip("'") for a in split_inline_items(m.group(1))]
             return list(dict.fromkeys(inline))
     return list(dict.fromkeys(head_blocks(head).get(field, [])))
+
+
+FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _record_field(field: str) -> str:
+    """Имя поля для записи списка: только латиница, цифры и `_` (иначе — ValueError)."""
+    name = str(field or "").strip()
+    if not FIELD_NAME_RE.match(name):
+        raise ValueError(f"поле списка записей: недопустимое имя {field!r}")
+    return name
+
+
+def list_records(text: str, field: str) -> list:
+    """Записи списка: каждая строка пункта разбирается как JSON-объект.
+
+    `frozen` и `released_versions` хранят по объекту на строку. Пункт, который не
+    разбирается как объект (опечатка, старое значение списка), пропускается: писать
+    его в модель как запись нельзя, а падать из-за чужой строки — тем более. Модель
+    жизненного цикла называет такие пункты `record-invalid` (`ship_doc.lifecycle_model`).
+    """
+    name = _record_field(field)
+    head, _ = split_frontmatter(text)
+    if head is None:
+        return []
+    out = []
+    for item in head_blocks(head).get(name, []):
+        try:
+            value = json.loads(item)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, dict):
+            out.append(value)
+    return out
+
+
+def records_block(field: str, records: list) -> str:
+    """Блок `field:` с пунктами `  - {json}` в одну строку. Пустой список — `field: []`."""
+    name = _record_field(field)
+    items = [json.dumps(r, ensure_ascii=False, separators=(",", ":")) for r in (records or [])]
+    if not items:
+        return f"{name}: []\n"
+    return f"{name}:\n" + "".join(f"  - {item}\n" for item in items)
+
+
+def with_records(text: str, field: str, records: list) -> str:
+    """Заменить поле-список записей целиком, тело не менять, проверить обратный разбор.
+
+    `set_field` пишет одну строку и оставил бы пункты прежнего блока висеть ниже;
+    поэтому прежнее поле снимается вместе с пунктами (`HEAD_BLOCK_TAIL`). После записи
+    тело обязано остаться прежним, а `list_records` — вернуть ровно то, что записали.
+    Не сошлось: `AssertionError`, испорченный текст не отдаётся никому.
+    """
+    name = _record_field(field)
+    head, rest = split_frontmatter(text)
+    if head is None:
+        raise ValueError("карточка без шапки: список записей писать некуда")
+    clean = re.sub(rf"(?m)^{re.escape(name)}:[^\n]*" + HEAD_BLOCK_TAIL + r"\n?", "", head + "\n")
+    out = "---" + clean.rstrip("\n") + "\n" + records_block(name, records) + rest
+    if body(out) != body(text):
+        raise AssertionError("запись списка тронула тело карточки")
+    if list_records(out, name) != list(records or []):
+        raise AssertionError(f"список {name} не лёг в шапку")
+    return out
 
 
 def aliases(text: str) -> list:
@@ -3597,7 +3697,7 @@ def mcp_route_verdict(route, mode="safe") -> dict:
     """Можно ли запускать маршрут: `safe` не пускает destructive и шаги из deny-списка.
 
     `full` пускает их, но `admin` и подтверждение обязательны. `write` — не признак
-    опасности: маршруты `update`, `fix`, `write` в `safe` проходят (так и записано в
+    опасности: маршруты `update` и `fix` в `safe` проходят (так и записано в
     приёмке). Опасность задаёт `destructive: true` или шаг с командой из deny-списка.
     """
     item = route if isinstance(route, dict) else {}

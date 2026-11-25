@@ -489,6 +489,7 @@ def test_routes_order_mirror_before_build(_t):
     """AC-CT-14.8: шаг зеркал стоит после `sync:*` и до первого `agent:build` в «Обновить» и «Пересобрать»; в «Починить» — сразу после перевода документов в текст (он первый);
     в «Пересобрать» — сразу после `kb:reset`; шаг переведён на английский."""
     routes = _routes()
+    assert list(routes) == ["update", "fix", "rebuild"], sorted(routes)
     for rid in ("update", "fix", "rebuild"):
         steps = routes[rid]
         at = [i for i, (cmd, _t2, fl) in enumerate(steps) if cmd == STEP and fl == STEP_FLAGS]

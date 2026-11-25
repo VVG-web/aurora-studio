@@ -16,7 +16,6 @@
     "reference"
   ],
   "scenarios": [
-    "update",
-    "deliver"
+    "update"
   ]
 }

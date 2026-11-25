@@ -954,25 +954,30 @@ def check_released() -> list:
     out = []
     try:
         from aurora_common import released_findings
-        found = released_findings(str(ROOT))
+        found = released_findings(str(ROOT), with_dir=True)
     except Exception:                                  # noqa: BLE001 — проверка не должна ронять doctor
         return []
+    from collections import Counter
+    repeats = Counter(a for _k, a, _b, _d in found)
     # Каждая находка — своя литеральная строка: так её видит перевод панели (`kit_i18n`).
-    for kind, a, b in found:
+    for kind, a, b, folder in found:
+        # Одинаковое имя в разных видах иначе не различить: папка называется только тогда,
+        # когда имя повторяется. Привычный текст для одиночной находки не меняется.
+        where = f" ({folder}/)" if repeats[a] > 1 else ""
         if kind == "hash":
-            out.append(f"сданная версия {a}: текст не совпадает с хешем сданной версии — файл правили после передачи → "
+            out.append(f"сданная версия {a}{where}: текст не совпадает с хешем сданной версии — файл правили после передачи → "
                        "верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо")
         elif kind == "blob-missing":
-            out.append(f"сданная версия {a}: сданного файла нет рядом со снимком {b} → "
+            out.append(f"сданная версия {a}{where}: сданного файла нет рядом со снимком {b} → "
                        "верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо")
         elif kind == "blob-changed":
-            out.append(f"сданная версия {a}: файл не совпадает с хешем из снимка {b} — его заменили после передачи → "
+            out.append(f"сданная версия {a}{where}: файл не совпадает с хешем из снимка {b} — его заменили после передачи → "
                        "верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо")
         elif kind == "modified":
-            out.append(f"сданная версия {a}: изменён после коммита → "
+            out.append(f"сданная версия {a}{where}: изменён после коммита → "
                        "верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо")
         else:
-            out.append(f"сданная версия {a}: удалён после коммита → "
+            out.append(f"сданная версия {a}{where}: удалён после коммита → "
                        "верните из git (`git checkout -- Deliverables/released/`) или выпустите новую версию: сданное неизменяемо")
     return out
 

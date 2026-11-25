@@ -72,8 +72,6 @@ button strips `--apply` from every step and shows the same route without writing
 | `update` — **Update the base** | routines | take the new from sources and bring it to knowledge | outward |
 | `fix` — **Fix the base** | routines | put in order what exists: links, duplicates, maps, schema | inward, does not go to sources |
 | `rebuild` — **Rebuild the base from scratch** | routines | wipe what will be rebuilt and build by the current rules; dangerous and rare | inward |
-| `write` — **Write an artifact** | production | a story, AC or spec — from a question to the base to a finished file | forward |
-| `deliver` — **Hand over documents** | production | assemble deliverables, check, export, freeze the delivered version | outward |
 
 ### The "Update the base" route
 

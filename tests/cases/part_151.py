@@ -128,10 +128,13 @@ def test_no_confirmation_window_in_the_publish_flow(tmp: Path):
     опубликовать»; черновик в «Продуктивности» — причина и кнопка с явной надписью; «Продуктивность» публикует тем же
     путём, что «Файлы». Остальные окна подтверждения панели (удаление файла, уход со страницы) — вне этой правки."""
     ui = panel_sources()
-    flow = ui[ui.index("async function publishFromEditor("):ui.index("async function openPath(")]
+    flow = ui[ui.index("async function publishFor("):ui.index("async function openPath(")]
     assert "confirm(" not in flow, "в потоке публикации окно подтверждения"
-    head = _fn(ui, "async function publishFromEditor(")
+    head = _fn(ui, "async function publishFor(")
     assert "await saveFile()" in head and "F.dirty" in head, "несохранённое не сохраняется тем же кликом"
+    # Редактор рисует ту же карточку: его обёртка не второй поток публикации.
+    wrap = _fn(ui, "async function publishFromEditor(")
+    assert "publishFor(" in wrap and "confirm(" not in wrap, "редактор публикует мимо общей карточки"
     assert '"editor.publish_save"' in _fn(ui, "function markDirty(") and '"editor.publish_save"' in _fn(ui, "function drawPublish(")
     view = (KIT / "cockpit/modules/work/view.js").read_text(encoding="utf-8")
     assert "confirm(" not in view and "publish_draft_ask" not in view, "в «Продуктивности» осталось окно подтверждения"
