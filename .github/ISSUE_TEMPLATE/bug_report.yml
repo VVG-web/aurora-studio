@@ -61,11 +61,11 @@ body:
       description: В нижней строке панели («cockpit … · kit X.Y.Z») или в файле `VERSION`. Нет в списке — выберите «old».
       options:
         # versions:begin — список обновляет workflow issue-form-versions, руками не правят
+        - "1.231.20"
         - "1.231.19"
         - "1.231.18"
         - "1.231.17"
         - "1.231.16"
-        - "1.231.15"
         - "old (старше перечисленных / older)"
         # versions:end
     validations:
