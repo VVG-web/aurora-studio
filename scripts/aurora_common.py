@@ -1145,7 +1145,7 @@ def released_findings(root: str = ".", with_dir: bool = False) -> list:
                     continue
                 fm = frontmatter(text)
                 want = (fm.get("sha256") or "").strip().strip("\"'")
-                shown_dir = os.path.relpath(dirpath, root).replace("\\", "/")
+                shown_dir = os.path.relpath(os.path.realpath(dirpath), os.path.realpath(root)).replace("\\", "/")
                 if want and release_hash(text) != want:
                     out.append(("hash", name, "", shown_dir) if with_dir else ("hash", name, ""))
                 blob = os.path.basename((fm.get("binary") or "").strip().strip("\"'"))

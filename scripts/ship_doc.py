@@ -850,7 +850,7 @@ def _report_root(root: str) -> str:
     """Настоящая папка отчётов; символьная ссылка наружу `Artifacts/word-checks/` не проходит."""
     root_real = os.path.realpath(root)
     folder = os.path.realpath(os.path.join(root_real, WORD_CHECKS))
-    if os.path.relpath(folder, root_real).replace(os.sep, "/") != WORD_CHECKS:
+    if os.path.relpath(folder, os.path.realpath(root)).replace(os.sep, "/") != WORD_CHECKS:
         raise ShipError("docx-report: папка отчётов должна быть %s/, а не ссылкой" % WORD_CHECKS)
     return folder
 
