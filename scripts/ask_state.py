@@ -22,6 +22,7 @@ is still written to the journal by the caller.
 """
 from __future__ import annotations
 
+import json
 import shutil
 import threading
 from datetime import datetime, timezone
@@ -43,6 +44,9 @@ SCHEMA_VERSION = 1
 ROOT = Path(".aurora") / "cache" / "ask"
 DEFAULT_KEEP = 50
 QUARANTINE = "quarantine"
+QA_DIAGNOSTICS = ("budget", "source", "transport", "requested", "actual", "model_source",
+                  "timed_out", "skip_reason", "attempt_id", "outer_guard", "ttft_ms",
+                  "latency_ms", "slot_wait_ms")
 
 
 def root_for(cwd: str | Path) -> Path:
@@ -59,6 +63,16 @@ def plan_markdown(plan: dict) -> str:
         note=("_Обновляется пайплайном «Спросить». Пункт с `x` завершён, `~` частичный, "
               "`!` ошибка, `>` выполняется._"),
     )
+
+
+def _step_record(item: str, title: str, **fields) -> dict:
+    return {
+        "plan_item_id": item, "title": title,
+        "status": "pending", "role": "", "model": "", "provider": "",
+        "started": "", "finished": "", "seconds": 0,
+        "sha256": "", "file": "", "attempts": 0, "error": "",
+        "checks": [], **fields,
+    }
 
 
 class AskState:
@@ -136,17 +150,12 @@ class AskState:
                 "steps": [],
                 "answer": {"status": "pending", "sha256": "", "file": ""},
             }
-            for step in plan.get("steps") or []:
-                manifest["steps"].append({
-                    "plan_item_id": step["id"], "title": step.get("title", ""),
-                    "status": "pending", "role": "", "model": "", "provider": "",
-                    "started": "", "finished": "", "seconds": 0,
-                    "sha256": "", "file": "", "attempts": 0, "error": "",
-                    "checks": [],
-                })
+            manifest["steps"] = [_step_record(step["id"], step["title"])
+                                 for step in plan.get("steps") or []]
             write_json(self.manifest_path, manifest)
             self.update_state(status="planned", current="", total=len(plan.get("steps") or []),
-                              question=question, keep=self.keep)
+                              question=question, keep=self.keep, planner_fallback=False,
+                              degraded=[], notices=[], completion={})
             self.event("plan", "План создан до первого ответа модели",
                        steps=len(plan.get("steps") or []))
             self.prune()
@@ -190,15 +199,10 @@ class AskState:
                 manifest["mode"] = mode
             for step in plan.get("steps") or []:
                 prior = old_steps.get(step["id"]) or {}
-                manifest["steps"].append({
-                    "plan_item_id": step["id"], "title": step.get("title", ""),
-                    "status": prior.get("status") or "pending", "role": prior.get("role", ""),
-                    "model": prior.get("model", ""), "provider": prior.get("provider", ""),
-                    "started": prior.get("started", ""), "finished": prior.get("finished", ""),
-                    "seconds": prior.get("seconds", 0), "sha256": prior.get("sha256", ""),
-                    "file": prior.get("file", ""), "attempts": prior.get("attempts", 0),
-                    "error": prior.get("error", ""), "checks": prior.get("checks") or [],
-                })
+                record = _step_record(step["id"], step["title"])
+                record.update(prior, title=step["title"], status=prior.get("status") or "pending")
+                step["status"] = record["status"]
+                manifest["steps"].append(record)
             write_json(self.plan_json, plan)
             atomic_write(self.plan_path, plan_markdown(plan))
             write_json(self.manifest_path, manifest)
@@ -210,44 +214,56 @@ class AskState:
     def event(self, kind: str, message: str, **fields) -> None:
         self.store.event(kind, message, **fields)
 
+    def record_late_qa(self, item: str, attempt_id: str, transport: dict) -> None:
+        """Append only. Never change a manifest verdict or recreate a pruned run."""
+        try:
+            with self.store._lock, self.events_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"at": utc_now(), "kind": "qa_late_done",
+                                         "message": "Вызов Момуса завершился после возврата управления",
+                                         "step": item, "attempt_id": attempt_id,
+                                         "late_done": True, "transport": transport},
+                                        ensure_ascii=False) + "\n")
+        except OSError:
+            pass  # The outcome was already saved independently.
+
     # ------------------------------------------------------------ steps
     def write_step(self, item_id: str, text: str, *, role: str = "worker",
                    model: str = "", provider: str = "", status: str = "done",
                    seconds: float = 0, error: str = "", attempts: int = 0,
-                   check: bool = False) -> dict:
+                   check: bool = False, verdict: str = "", unsupported: int = 0,
+                   required: bool = True, answer_chars: int | None = None,
+                   check_diagnostics: dict | None = None) -> dict:
         """Write one step result and update its manifest record atomically."""
         with self._lock:
             path = self.check_path(item_id, role) if check else self.step_path(item_id)
             atomic_write(path, str(text or ""))
             digest = sha256(str(text or ""))
             manifest = self.manifest()
-            found = False
-            for step in manifest.get("steps") or []:
-                if step.get("plan_item_id") != item_id:
-                    continue
-                found = True
-                record = {
-                    "role": role, "model": model, "provider": provider,
-                    "status": status, "seconds": round(float(seconds or 0), 2),
-                    "sha256": digest, "file": str(path.relative_to(self.dir)),
-                    "finished": utc_now(), "error": str(error or "")[:1000],
-                    "attempts": int(attempts or 0),
-                }
-                if check:
-                    step.setdefault("checks", []).append(record)
+            steps = manifest.setdefault("steps", [])
+            step = next((s for s in steps if s.get("plan_item_id") == item_id), None)
+            if step is None:
+                step = _step_record(item_id, item_id)
+                steps.append(step)
+            record = {
+                "role": role, "model": model, "provider": provider,
+                "status": status, "seconds": round(float(seconds or 0), 2),
+                "sha256": digest, "file": str(path.relative_to(self.dir)),
+                "finished": utc_now(), "error": str(error or "")[:1000],
+                "attempts": int(attempts or 0),
+            }
+            if check:
+                record.update(verdict=verdict, unsupported=unsupported, required=required)
+                if role == "qa" and check_diagnostics:
+                    record.update({k: check_diagnostics[k] for k in QA_DIAGNOSTICS
+                                   if k in check_diagnostics})
+                step["checks"] = [c for c in step.get("checks") or []
+                                  if not isinstance(c, dict) or c.get("role") != role] + [record]
+            else:
+                step.update(record)
+                if answer_chars is not None:
+                    step["answer_chars"] = answer_chars
                 else:
-                    step.update(record)
-                    step["plan_item_id"] = item_id
-            if not found:
-                manifest.setdefault("steps", []).append({
-                    "plan_item_id": item_id, "title": item_id, "status": status,
-                    "role": role, "model": model, "provider": provider,
-                    "finished": utc_now(), "seconds": round(float(seconds or 0), 2),
-                    "sha256": digest, "file": str(path.relative_to(self.dir)),
-                    "attempts": int(attempts or 0), "error": str(error or ""),
-                    "checks": [{"role": role, "model": model, "provider": provider,
-                                 "sha256": digest}] if check else [],
-                })
+                    step.pop("answer_chars", None)
             write_json(self.manifest_path, manifest)
             if not check:
                 self.mark_plan_item(item_id, status)
@@ -262,7 +278,23 @@ class AskState:
             for step in manifest.get("steps") or []:
                 if step.get("plan_item_id") == item_id:
                     step.update(fields)
+                    write_json(self.manifest_path, manifest)
+                    if "status" in fields:
+                        self.mark_plan_item(item_id, fields["status"])
+                    break
+
+    def ensure_step(self, item_id: str, title: str, *, error: dict) -> None:
+        """Record an expected plan item that never produced a manifest entry."""
+        with self._lock:
+            manifest = self.manifest()
+            steps = manifest.setdefault("steps", [])
+            if any(step.get("plan_item_id") == item_id for step in steps):
+                return
+            steps.append(_step_record(item_id, title, status="failed", answer_chars=0, error=error))
+            order = {step["id"]: i for i, step in enumerate(self.plan().get("steps") or [])}
+            steps.sort(key=lambda step: order.get(step.get("plan_item_id"), len(order)))
             write_json(self.manifest_path, manifest)
+            self.mark_plan_item(item_id, "failed")
 
     def mark_plan_item(self, item_id: str, status: str) -> None:
         """Keep plan.json and plan.md in step with the manifest."""
@@ -270,14 +302,14 @@ class AskState:
             plan = self.plan()
             changed = False
             for step in plan.get("steps") or []:
-                if str(step.get("id")) == str(item_id):
+                if str(step.get("id")) == str(item_id) and step.get("status") != status:
                     step["status"] = str(status)
                     changed = True
             if changed:
                 write_json(self.plan_json, plan)
                 atomic_write(self.plan_path, plan_markdown(plan))
 
-    def write_answer(self, text: str, *, status: str = "done") -> dict:
+    def write_answer(self, text: str, *, status: str = "done", completion: dict | None = None) -> dict:
         with self._lock:
             atomic_write(self.answer_path, str(text or ""))
             digest = sha256(str(text or ""))
@@ -285,6 +317,8 @@ class AskState:
             manifest["answer"] = {"status": status, "sha256": digest,
                                   "file": str(self.answer_path.relative_to(self.dir)),
                                   "finished": utc_now()}
+            if completion is not None:
+                manifest["answer"]["completion"] = completion
             write_json(self.manifest_path, manifest)
             return {"sha256": digest, "file": str(self.answer_path)}
 

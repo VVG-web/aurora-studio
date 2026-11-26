@@ -407,6 +407,8 @@ function changesCard(ctx, st){
 function entryText(ctx, e){
   const {t} = ctx;
   if (e.skipped) return t("gitsync.skipped." + e.skipped);
+  if (e.index_warning) return e.commit ? t("gitsync.warn.index_not_published", {commit: e.commit})
+    : t("gitsync.warn.index_outcome_unknown");
   if (!e.ok) return tr(ctx, "gitsync.p." + e.code, e.summary || e.code, {});
   if (e.action === "update") return e.nothing ? t("gitsync.ok.update_none")
     : t("gitsync.ok.update", {n: e.behind || 0, files: e.files || 0});
@@ -446,13 +448,26 @@ async function act(ctx, cmd, args = []){
   let res = null;
   try { res = await ctx.run(cmd, args); } finally { BUSY = ""; }
   await load(ctx, true);
+  if (!res || res.skipped) return;
+  if (res.refused) return ctx.toast(res.refused, "err");
   const what = ACTION_OF[cmd];
+  // Отказ до записи в журнал оставляет в last чужой или просто предыдущий результат.
+  // У push целиком берём итог из текущей job. Для остальных действий её ошибка тоже важнее last.
+  if (what === "push" || res.rc){
+    const lines = res.lines || [];
+    const mark = res.rc ? "✗ " : "✓ ";
+    const line = lines.find(l => l.startsWith(mark));
+    if (line) return ctx.toast(line.slice(mark.length), res.rc ? "err" : "ok");
+    const warning = what !== "fetch" && lines.find(l => l.startsWith("! "));
+    if (warning) return ctx.toast(warning.slice(2), "warn");
+    if (res.rc) return ctx.toast(ctx.t("gitsync.failed_console"), "err");
+    return;
+  }
   const e = (D.last || {})[what];
-  if (res && res.refused) ctx.toast(res.refused, "err");
+  if (e && e.index_warning) ctx.toast(entryText(ctx, e), "warn");
   else if (e && e.ok) ctx.toast(entryText(ctx, e), "ok");
   else if (e && e.problem) ctx.toast((e.problem.remote ? e.problem.remote + ": " : "")
     + tr(ctx, "gitsync.p." + e.problem.code, e.problem.title, e.problem), "err");
-  else if (res && res.rc) ctx.toast(ctx.t("gitsync.failed_console"), "err");
 }
 
 function doAction(ctx, id, p, action){
@@ -475,6 +490,7 @@ function doAction(ctx, id, p, action){
     commit_then_update: () => run("git:update", ["--commit-first"]),
     commit_anyway: () => run(action === "push" ? "git:push" : "git:commit", ["--skip-ratchet"]),
     trust_cert: () => action === "quick" ? quickCertShow(ctx) : tab("setup", () => certShow(ctx, p && p.remote)),
+    doctor: () => ctx.runWatched("kit:doctor"),
     init: () => run("git:fix", ["--what=init"]),
     checkout_branch: () => run("git:fix", ["--what=checkout"]),
     use_current_branch: () => run("git:fix", ["--what=use-branch"]),

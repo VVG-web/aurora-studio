@@ -862,6 +862,20 @@ def test_distill_drains_the_queue_in_one_pass_and_keeps_paid_answers(tmp: Path):
                for p in (root / "AuroraKnowledgeDB/Concepts").glob("*.md"))
     assert R.distill_queue(cfg, str(root)) == [], "очередь не опустела после записи тезисов"
 
+    # Отказ периодического коммита важнее даже уже готовых ответов: не пишем новые тезисы.
+    root = base("index-failed", 12)
+    attempts = []
+
+    def refused(n):
+        attempts.append(n)
+        return False
+
+    res = R.run_distill(cfg, str(root), apply=True, limit=0, momus=False, call=fine,
+                        window_s=60, commit=refused, commit_every=2)
+    assert attempts == [2] and res["left"] == 10 and res["stopped"] == "commit_result", (attempts, res)
+    assert sum("distilled:" in p.read_text(encoding="utf-8")
+               for p in (root / "AuroraKnowledgeDB/Concepts").glob("*.md")) == 2
+
     # 2. Остановка: новых не берём, начатые дописываем
     asked = []
 
@@ -1620,6 +1634,37 @@ def test_until_done_names_the_real_remainder(tmp: Path):
                      lambda r: "", lambda r: "", lambda r: 0, remaining=lambda: 478)
     said = err.getvalue()
     assert "остаток 478" in said and "379" not in said, f"назван остаток захода, а не очереди:\n{said}"
+
+
+@test
+def test_until_done_stops_on_result_commit_warning_or_refusal_but_not_when_disabled(tmp: Path):
+    from types import SimpleNamespace
+    from unittest.mock import Mock, patch
+
+    import agent_runner as ar
+
+    sha = "b" * 40
+    outcomes = []
+    for first_left, disabled, done in (
+        (2, False, {"ok": True, "sha": sha, "index_warning": "fixture: index not published"}),
+        (0, False, {"ok": False, "why": "fixture: Git refused result"}),
+        (2, True, {"ok": False, "why": "disabled"}),
+    ):
+        a = SimpleNamespace(hours=1, no_checkpoint=disabled)
+        run_batch = Mock(side_effect=[{"left": first_left}, {"left": 0}])
+        with (patch.object(ar, "commit_result", return_value=done) as publication,
+              patch.object(ar, "checkpoint", return_value={"ok": True}) as checkpoint,
+              patch.object(ar, "say") as say):
+            got = ar.until_done(str(tmp), a, "relink", run_batch, lambda _: "", lambda _: "headline", lambda _: 1)
+        output = "\n".join(call.args[0] for call in say.call_args_list)
+        if disabled:
+            assert got["batches"] == 2 and not got["stopped"], got
+        elif not (got["stopped"] == "commit_result" and run_batch.call_count == publication.call_count == 1
+                  and not checkpoint.called and "очередь пройдена" not in output
+                  and (sha in output and done["index_warning"] in output if "index_warning" in done
+                       else done["why"] in output)):
+            outcomes.append((got, run_batch.call_count, output))
+    assert not outcomes, outcomes
 
 
 @test

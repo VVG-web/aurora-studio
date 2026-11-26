@@ -1010,7 +1010,8 @@ const scriptEl = (tag, attrs, ...kids) => tag === "script"
   ? {set onload(f){ Promise.resolve().then(f); }, set onerror(f){}}
   : el(tag, attrs, ...kids);
 const baseCtx = (id, impl, extra) => mkctx(id, impl, {$: $q, el: scriptEl, scenarios: async () => ({scenarios: []}),
-  ui: {kbInfo: () => ({at: 0, stale: false, title: ""}), stampText: (x) => x}, on: (e, f) => moduleOn(id, e, f), ...(extra || {})});
+  ui: {kbInfo: () => ({at: 0, stale: false, title: ""}), stampText: (x) => x, copyButton: () => node()},
+  on: (e, f) => moduleOn(id, e, f), ...(extra || {})});
 async function loadView(id){ return import(pathToFileURL(@DIR@ + "/modules/" + id + "/view.js").href); }
 function gate(){ let release; const p = new Promise(r => { release = r; }); return {p, release}; }
 
@@ -1197,7 +1198,10 @@ function gate(){ let release; const p = new Promise(r => { release = r; }); retu
     let jobGate = gate();
     const c = baseCtx("ask", (p) => {
       if (p.startsWith("/api/run")) return {job: "j1"};
-      if (p.startsWith("/api/job")) return jobGate.p.then(() => ({lines: ["# Ответ базы", "ответ из карточек", "Разговор: `x/t1.md`"], next: 1, done: true}));
+      if (p.startsWith("/api/job")) return jobGate.p.then(() => ({lines: [
+        "# Ответ базы", "", "**Вопрос:** что в базе?", "", "## Ответ из [[карточек]]", "", "```text",
+        "Разговор: пример внутри кода", "```", "", "---", "", "_Карточек в контексте: 1 · модель: fixture_",
+        "", "Разговор: `x/t1.md`"], next: 1, done: true}));
       if (p.startsWith("/api/ask/threads")) return {threads: []};
       if (p.startsWith("/api/agent")) return {error: "нет"};
       return {};
@@ -1213,7 +1217,8 @@ function gate(){ let release; const p = new Promise(r => { release = r; }); retu
     await dispatchModules("data");
     check(apiCount(c, "/api/ask/threads") === h0, "ask скрыт: «data» не читает историю");
     jobGate.release(); await tick();
-    check(body.items[0].a === "ответ из карточек", "ask: ответ дошёл, пока раздел скрыт, и лёг на свою карточку: " + body.items[0].a);
+    check(body.items[0].a === "## Ответ из [[карточек]]\n\n```text\nРазговор: пример внутри кода\n```",
+          "ask: скрытый раздел сохранил оригинал без служебной шапки и хвоста: " + body.items[0].a);
     const resets = body.resets;
     S.view = "ask"; await ns.ask.refresh(c);
     check(body.resets === resets && body.items.length === 1, "ask: возвращение не стирает ответ");

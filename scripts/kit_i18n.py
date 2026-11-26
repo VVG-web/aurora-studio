@@ -305,6 +305,12 @@ def message_skeletons() -> set:
                             for t in node.targets)):
                 for v in node.value.values:
                     add(v)
+            # Запасная причина непроверенных правил: реестр не назвал свою, и доктор
+            # говорит этой строкой. Она видна в английской панели так же, как находки.
+            elif (isinstance(node, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == "UNKNOWN_REASON"
+                            for t in node.targets)):
+                add(node.value)
     # Текст о версии Python (предупреждение и ошибка доктора, подсказка установки) собирает
     # `aurora_common` через `%s`, а не f-строкой: в доктор он попадает уже готовой строкой,
     # и панель переводит её по тем же образцам, где каждая подстановка — `{}`.
@@ -359,6 +365,17 @@ def message_skeletons() -> set:
                 for sub in ast.walk(node):
                     if isinstance(sub, ast.Return) and sub.value is not None:
                         add(sub.value)
+    # Причины, по которым реестр локальных путей не выполнил проверку (0003): доктор
+    # подставляет их в предупреждение, и английская панель переводит вложенную причину
+    # по каталогу. Таблица — единственный источник текста, поэтому образцы берём из неё,
+    # а не повторяем строки здесь.
+    registry = os.path.join(KIT, "scripts", "local_paths.py")
+    if os.path.isfile(registry):
+        for node in ast.walk(ast.parse(open(registry, encoding="utf-8").read())):
+            if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict)
+                    and any(isinstance(t, ast.Name) and t.id == "REASONS" for t in node.targets)):
+                for v in node.value.values:
+                    add(v)
     return out
 
 

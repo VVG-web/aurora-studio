@@ -120,7 +120,7 @@ def test_doctor_names_a_clone_tracked_by_the_project_index_and_accepts_the_new_f
     cp = subprocess.run([sys.executable, str(root / ".aurora/scripts/aurora_doctor.py")], cwd=str(root),
                         capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert "клоны кода лежат в индексе git проекта: Code/app" in cp.stdout, cp.stdout[-1500:]
-    assert "git rm -r --cached Code/app" in cp.stdout, cp.stdout[-1500:]
+    assert "git rm -r --cached -f ':(literal)Code/app'" in cp.stdout, cp.stdout[-1500:]
     assert cp.returncode == 1, "клон в индексе git проекта — блокер, а doctor вернул успех"
 
 

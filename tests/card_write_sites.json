@@ -1045,11 +1045,11 @@
    "calls": 1,
    "git": "none"
   },
-  "scripts/install_aurora.py:merge_gitignore": {
+  "scripts/install_aurora.py:_append_rules": {
    "kind": "other",
-   "reason": "установка проекта: файлы вне базы знаний",
-   "calls": 2,
-   "git": "none"
+   "reason": "правила .gitignore и .gitattributes проекта: общий файл с обычным merge, запись атомарная через aurora_fs (запасной путь для прежнего ядра)",
+   "calls": 3,
+   "git": "shared"
   },
   "scripts/install_skills.py:replace_skill": {
    "kind": "other",
@@ -1330,6 +1330,36 @@
   "scripts/llm_calls.py:main": {
    "kind": "other",
    "reason": "справочник вызовов моделей (документ)",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/local_paths.py:IndexTransaction._publish": {
+   "kind": "other",
+   "reason": "публикация подготовленного git-индекса через собственный index.lock после проверки неизменности оригинала; не карточка",
+   "calls": 2,
+   "git": "none"
+  },
+  "scripts/local_paths.py:_take_index_lock": {
+   "kind": "other",
+   "reason": "захват штатного index.lock для защиты индекса от конкурентных git-писателей; не карточка",
+   "calls": 1,
+   "git": "none"
+  },
+  "scripts/local_paths.py:_write_atomic": {
+   "kind": "other",
+   "reason": "запасная атомарная запись правил .gitignore, когда в aurora_common нет общего хелпера",
+   "calls": 3,
+   "git": "shared"
+  },
+  "scripts/local_paths.py:_write_rules": {
+   "kind": "other",
+   "reason": "правила .gitignore проекта: общий файл, пишется через atomic-write движка (запасной вызов для прежней подписи без follow_links)",
+   "calls": 2,
+   "git": "shared"
+  },
+  "scripts/local_paths.py:index_transaction": {
+   "kind": "other",
+   "reason": "подготовка частной копии git-индекса для безвредной отмены до git commit; не карточка",
    "calls": 1,
    "git": "none"
   },

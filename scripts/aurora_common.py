@@ -120,6 +120,36 @@ def python_executable() -> str:
         return sys.executable
 
 
+_LOCAL_PATHS_WARNED = False
+
+
+def load_local_paths(warn: bool = True):
+    """Модуль реестра локальных путей рядом с движком; нет его — None и одно предупреждение.
+
+    Импорт внутри функции и без верхнего уровня: проект, переживший оборванное обновление
+    или откат, может прийти без `local_paths.py`. Установщик и обновление имеют собственные
+    литералы блока правил, а коммит панели, чекпойнт агента и `commit_result` без реестра
+    отказывают: без него неоткуда взять список локальных путей. Doctor говорит «правила не
+    проверены» и продолжает остальные проверки.
+
+    `warn=False` — предупреждение печатает вызывающий: doctor сам говорит «правила не
+    проверены», и второе сообщение из загрузчика было бы повтором о том же.
+    """
+    global _LOCAL_PATHS_WARNED
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    try:
+        import local_paths
+    except ImportError:
+        if warn and not _LOCAL_PATHS_WARNED:
+            _LOCAL_PATHS_WARNED = True
+            print("⚠️  нет local_paths.py рядом с движком — реестр локальных путей недоступен",
+                  file=sys.stderr)
+        return None
+    return local_paths
+
+
 def configure_merge_driver(target, python: str = "") -> bool:
     """Настроить git merge drivers проекта на один интерпретатор подсистемы.
 

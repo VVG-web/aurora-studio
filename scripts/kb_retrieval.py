@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 for _s in (sys.stdin, sys.stdout, sys.stderr):
     # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
     # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
@@ -47,19 +48,12 @@ def queries(root: str, limit: int) -> list:
             own = [l.strip() for l in f if l.strip() and not l.startswith("#")]
         if own:
             return own[:limit]
+    from agent_runner import read_thread
+
     out = []
-    folder = os.path.join(root, ASK)
-    for name in sorted(os.listdir(folder), reverse=True) if os.path.isdir(folder) else []:
-        if not name.endswith(".md"):
-            continue
-        text = open(os.path.join(folder, name), encoding="utf-8", errors="ignore").read()
-        # Вопрос идёт следующей непустой строкой после заголовка «### Вопрос · дата» —
-        # так его пишет `agent:ask`. Формат прочитан из живого журнала, а не угадан.
-        lines = text.splitlines()
-        for i, line in enumerate(lines):
-            if not line.startswith("### Вопрос"):
-                continue
-            q = next((x.strip() for x in lines[i + 1:i + 4] if x.strip()), "")
+    for journal in sorted((Path(root) / ASK).glob("*.md"), reverse=True):
+        for turn in read_thread(journal):
+            q = next((line.strip() for line in turn["q"].splitlines() if line.strip()), "")
             if q and q not in out:
                 out.append(q)
         if len(out) >= limit:

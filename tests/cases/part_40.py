@@ -136,6 +136,46 @@ def _stamp(root: Path) -> str:
     return f.read_text(encoding="utf-8").strip() if f.is_file() else ""
 
 
+def _assert_project_ask_imports(root: Path) -> None:
+    _own_home()
+    scripts = root / ".aurora/scripts"
+    budget = scripts / "ask_budget.py"
+    assert budget.is_file(), f"в установленном движке нет {budget}"
+    assert budget.read_text(encoding="utf-8") == (SCRIPTS / budget.name).read_text(encoding="utf-8"), \
+        f"{budget} не совпадает с файлом кита"
+    probe = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "scripts = Path(sys.argv[1]).resolve()\n"
+        "sys.path.insert(0, str(scripts))\n"
+        "import ask_pipeline\n"
+        "import ask_budget\n"
+        "for mod in (ask_pipeline, ask_budget):\n"
+        "    assert Path(mod.__file__).resolve().parent == scripts, mod.__file__\n"
+    )
+    cp = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", probe, str(scripts)], cwd=root,
+                        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace")
+    assert cp.returncode == 0, f"Ask не импортируется из .aurora/scripts: {cp.stderr[-1200:]}"
+
+
+@test
+def test_lifecycle_fresh_install_ships_ask_budget(tmp: Path):
+    _assert_project_ask_imports(_new_project(KIT, tmp / "fresh"))
+
+
+@test
+def test_lifecycle_update_installs_missing_ask_budget(tmp: Path):
+    # Минимальное состояние старой установки, без зависимости от наличия git-тегов.
+    root = _new_project(KIT, tmp / "before-update")
+    (root / ".aurora/scripts/ask_budget.py").unlink(missing_ok=True)
+    for rel in (".aurora/engine_version.txt", "AuroraKnowledgeDB/meta/aurora_version.txt"):
+        (root / rel).write_text("1.231.20\n", encoding="utf-8")
+
+    _update(KIT, root)
+    _assert_project_ask_imports(root)
+
+
 def _plain_manifest_rows() -> list:
     """Строки манифеста без спецправил: файл проекта обязан совпасть с файлом кита 1:1."""
     rows = []

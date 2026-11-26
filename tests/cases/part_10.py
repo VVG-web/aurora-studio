@@ -120,8 +120,18 @@ def test_relinking_runs_pass_after_pass_without_burning_a_pass_to_count(tmp: Pat
     assert 'until_done(cwd, a, "relink"' in loop, "связывание идёт мимо общего цикла заходов"
     # Петля заходов одна на движок (`until_done`): её правила проверяются там.
     shared = src.split("def until_done(")[1].split("\ndef ")[0]
-    assert 'commit_result(cwd, f"agent:{task}"' in shared, \
-        "заходы не коммитятся по отдельности — откатить можно будет только всё сразу"
+    from types import SimpleNamespace
+    from unittest.mock import Mock, patch
+
+    import agent_runner as runner
+
+    batch = Mock(side_effect=[{"left": 1, "steps": []}, {"left": 0, "steps": []}])
+    args = SimpleNamespace(hours=1, no_checkpoint=False)
+    with (patch.object(runner, "commit_result", return_value={"ok": True}) as publication,
+          patch.object(runner, "checkpoint", return_value={"ok": True}) as checkpoint,
+          patch.object(runner, "say")):
+        done = runner.until_done(str(tmp), args, "relink", batch, lambda _: "", lambda _: "links", lambda _: 1)
+    assert done["batches"] == publication.call_count == 2 and checkpoint.call_count == 1, done
     # После петли остаётся закоммитить журнал. Живой прогон дал ему заголовок последнего
     # захода — «связей поставлено: 10» на коммите, где нет ни одной из этих связей.
     tail = src.split("Журнал прогона")[1].split("if a.task == \"clashes\"")[0]

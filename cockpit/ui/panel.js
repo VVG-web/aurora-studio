@@ -9,7 +9,7 @@ const SESSION_KEY = "aurora-session";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.231.20";
+const UI_VERSION = "1.231.21";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 let LAST_ERROR = null;          // последняя показанная ошибка: кнопка «Лог» в шапке
 
@@ -8601,11 +8601,11 @@ function skillLine(text){
     el("span",{class:"muted",style:"font-size:12px"}, t("skill.to_chat")),
     el("code",{class:"tick",style:"font-size:12.5px"}, text));
 }
-function copyButton(text){
+function copyButton(text, format = ""){
   const b = el("button",{class:"btn sm",onclick:async()=>{
-    try { await navigator.clipboard.writeText(text); toast(t("copy.done", {text}), "ok"); }
+    try { await navigator.clipboard.writeText(text); toast(t("copy.done", {text: format || text}), "ok"); }
     catch(e){ toast(t("copy.manual", {text}), "warn"); }
-  }}, t("copy.btn"));
+  }}, format ? t("copy.btn") + " " + format : t("copy.btn"));
   return b;
 }
 

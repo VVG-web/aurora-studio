@@ -691,7 +691,7 @@ def test_decision_records_follow_the_madr_format(tmp: Path):
         (KIT / "tests" / "ext_footprint_baseline.json").read_text(encoding="utf-8"))
     assert baseline.get("decision") == "docs/decisions/ADR-028-mcp-footprint.md", baseline
     counts = baseline.get("counts", {})
-    assert counts.get("panel_module") == 4 and counts.get("assistant") == 5, counts
+    assert counts.get("panel_module") == 4 and counts.get("assistant") == 6, counts
     # публичная папка: ни имён моделей как авторов, ни клиентских проектов
     for path in base.glob("*.md"):
         low = path.read_text(encoding="utf-8").lower()

@@ -73,7 +73,10 @@ ENGINE_DIRS = [
 TRUST_DIRS = _schema_dirs() + ENGINE_DIRS
 
 
-GITIGNORE_BLOCK = """
+# Запасной блок: дословно тот же текст, что в `local_paths.py`, и остаётся здесь только
+# на случай оборванного обновления или отката, когда модуля реестра рядом нет. Рабочий
+# источник — `local_paths.gitignore_block()` (атрибут модуля ниже, PEP 562).
+_LITERAL_GITIGNORE_BLOCK = """
 # Aurora / local
 .DS_Store
 .env
@@ -162,6 +165,27 @@ Code/*
 """
 
 
+def _lp():
+    """Реестр локальных путей; на старом `aurora_common` его нет — None."""
+    try:
+        from aurora_common import load_local_paths
+    except ImportError:
+        return None
+    return load_local_paths()
+
+
+def __getattr__(name: str):
+    """PEP 562: `GITIGNORE_BLOCK` — из реестра; встроенный литерал запасной.
+
+    Установка и обновление должны видеть тот же блок, по которому `untrack_local`
+    снимает индекс: два источника одного списка разъезжались бы молча.
+    """
+    if name == "GITIGNORE_BLOCK":
+        lp = _lp()
+        return lp.gitignore_block() if lp is not None else _LITERAL_GITIGNORE_BLOCK
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 # Правила .gitattributes, которые движок держит в проекте. Пусковой файл Windows кит пишет
 # с CRLF, но без правила git с core.autocrlf=input (обычная настройка Mac) сохраняет его в
 # истории с одними LF — и на Windows из клона проекта cmd.exe промахивается мимо меток goto.
@@ -195,12 +219,78 @@ def merge_gitignore(path, block: str = "") -> list:
     Сравниваем построчно и дописываем только недостающее. Чужие строки не трогаем и не
     переставляем: файл правил человек, и порядок в нём — его дело.
     """
-    from pathlib import Path
-    path = Path(path)
-    cur = path.read_text(encoding="utf-8") if path.exists() else ""
+    if not block:
+        lp = _lp()
+        if lp is not None:
+            # Один реестр на движок: блок и построчный merge живут в `local_paths.py`.
+            return lp.ensure_gitignore(path)
+        block = _LITERAL_GITIGNORE_BLOCK
+    return _merge_block(Path(path), block)
+
+
+def merge_gitignore_report(path, block: str = "") -> dict:
+    """Установить правила и сказать, установились ли. → `{added, ok, detail}`.
+
+    `merge_gitignore` возвращает `[]` и для готового файла, и для симлинка, и для
+    нечитаемого пути. Установщику нужно различать «уже стоит» и «поставить нельзя»:
+    во втором случае он обязан остановиться до `ensure_dirs`, иначе проект выглядит
+    установленным, а локальные файлы машины ничем не закрыты.
+    """
+    if not block:
+        lp = _lp()
+        if lp is not None:
+            report = getattr(lp, "ensure_gitignore_report", None)
+            if report is not None:
+                return report(path)
+        block = _LITERAL_GITIGNORE_BLOCK
+    return _merge_block_report(Path(path), block)
+
+
+def _merge_block_report(path: Path, block: str) -> dict:
+    if path.is_symlink():
+        return {"added": [], "ok": False, "detail": "на месте .gitignore симлинк"}
+    try:
+        cur = path.read_bytes().decode("utf-8", "surrogateescape")
+    except FileNotFoundError:
+        cur = ""
+    except OSError as e:
+        return {"added": [], "ok": False, "detail": f"не читается: {e}"}
+    add = _missing_lines(block, cur)
+    if add:
+        try:
+            _append_rules(path, cur, add)
+        except OSError as e:
+            return {"added": [], "ok": False, "detail": f"правила не записаны: {e}"}
+    return {"added": [ln for ln in add if not ln.strip().startswith("#")], "ok": True,
+            "detail": ""}
+
+
+def _merge_block(path: Path, block: str) -> list:
+    """Построчный merge произвольного блока: так же пишется `.gitattributes`.
+
+    Читается и пишется байтами (`surrogateescape`): `.gitignore` бывает в cp1251, и строгое
+    чтение utf-8 принимало его за пустой, затирая чужие правила. Симлинк не трогаем: за ним
+    файл вне проекта. Нечитаемый файл не переписываем — в нём может быть чужая работа.
+    """
+    if path.is_symlink():
+        return []
+    try:
+        cur = path.read_bytes().decode("utf-8", "surrogateescape")
+    except FileNotFoundError:
+        cur = ""
+    except OSError:
+        return []
+    add = _missing_lines(block, cur)
+    if add:
+        _append_rules(path, cur, add)
+    return [ln for ln in add if not ln.strip().startswith("#")]
+
+
+def _missing_lines(block: str, cur: str) -> list:
+    """Строки блока, которых нет в файле; комментарий едет вместе со своим правилом."""
     have = {ln.strip() for ln in cur.splitlines() if ln.strip()}
     add, notes = [], []
-    for ln in (block or GITIGNORE_BLOCK).splitlines():
+    for ln in block.splitlines():
         t = ln.strip()
         if not t:
             notes = []
@@ -211,19 +301,29 @@ def merge_gitignore(path, block: str = "") -> list:
             notes = []
         else:
             notes = []
-    if add:
-        head = "" if not cur else cur.rstrip() + "\n\n"
-        text = head + "# Aurora — правила движка\n" + "\n".join(add) + "\n"
+    return add
+
+
+def _append_rules(path: Path, cur: str, add: list) -> None:
+    """Записать недостающие правила одной записью — атомарно и не через симлинк."""
+    # Исходные байты сохраняются целиком: `rstrip()` съедал значимый экранированный пробел
+    # последнего правила. Добавляется только разделитель.
+    head = "" if not cur else cur + ("" if cur.endswith("\n") else "\n") + "\n"
+    text = head + "# Aurora — правила движка\n" + "\n".join(add) + "\n"
+    data = text.encode("utf-8", "surrogateescape")
+    try:
+        from aurora_fs import write_atomic
+    except ImportError:
+        # Совсем старый движок без ядра надёжности: пишем через общий хелпер `aurora_common`
+        # (он тоже атомарный). Прямая неатомарная перезапись запрещена: обрыв оставит обрезок.
+        from aurora_common import write_text_atomic
+        write_text_atomic(path, text)
+    else:
         try:
-            from aurora_common import write_text_atomic
-        except ImportError:
-            # Обновление запущено копией `update` из проекта: `aurora_common` в этом процессе —
-            # проектный, прежний, и новых имён в нём нет. Верхний импорт ронял бы здесь весь
-            # модуль, а `update` глотает сбой и не дописывает правил вовсе.
-            path.write_text(text, encoding="utf-8")
-        else:
-            write_text_atomic(path, text)
-    return [ln for ln in add if not ln.strip().startswith("#")]
+            write_atomic(path, data, follow_links=False)
+        except TypeError:
+            # Прежний `write_atomic` без параметра: симлинк отсечён в `_merge_block`.
+            write_atomic(path, data)
 
 
 def configure_merge_driver(target) -> bool:
@@ -683,13 +783,19 @@ _Мета-вопросы:_
                             "entrypoint": "SKILL.md"}, indent=2, ensure_ascii=False) + "\n",
             )
 
-    def install_gitignore(self):
+    def install_gitignore(self) -> bool:
         self.log("== .gitignore ==")
         gi = self.target / ".gitignore"
         if self.dry_run:
             self.log("  would update: .gitignore")
-            return
-        added = merge_gitignore(gi)
+            return True
+        report = merge_gitignore_report(gi)
+        if not report["ok"]:
+            # Чужой файл или ссылку не трогаем и служебных файлов не создаём: проект без
+            # правил выглядел бы установленным, а локальные пути уехали бы первым `add -A`.
+            self.log(f"  ⛔ .gitignore: {report['detail']} — установка остановлена")
+            return False
+        added = report["added"]
         self.log(f"  appended: .gitignore ({len(added)} правил)" if added
                  else "  skip (exists): .gitignore")
         # ".gitattributes", GITATTRIBUTES_BLOCK — правило launcher; оба блока пишутся одной записью.
@@ -699,6 +805,7 @@ _Мета-вопросы:_
                  else "  skip (exists): .gitattributes")
         if configure_merge_driver(self.target):
             self.log("  configured: merge driver for manifest.json")
+        return True
 
     def write_report(self):
         report = f"""---
@@ -740,6 +847,12 @@ created: {TODAY}
         print(f"Aurora install → {self.target}")
         print(f"  name={self.name!r} slug={self.slug} jira={self.jira} confluence={self.confluence}")
         print(f"  force={self.force} dry_run={self.dry_run}\n")
+        # Правила — до первой служебной записи: прерванная установка не оставит `.aurora/`
+        # и локальные файлы машины без `.gitignore`, откуда они уехали бы первым `git add -A`.
+        if not self.install_gitignore():
+            print("\n⛔ Установка остановлена: правила .gitignore не записаны. "
+                  "Служебные файлы и каталоги проекта не создавались.", file=sys.stderr)
+            return 2
         self.ensure_dirs()
         self.install_skill()
         self.install_project_config()
@@ -751,7 +864,6 @@ created: {TODAY}
         self.install_check_script()
         self.install_docs()
         self.install_connectors()
-        self.install_gitignore()
         self.write_report()
         print("\nDone." + (" (dry-run — no files written)" if self.dry_run else ""))
         return 0

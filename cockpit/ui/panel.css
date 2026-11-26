@@ -594,6 +594,28 @@ tr:last-child td{border-bottom:0}
 .doc blockquote{border-left:3px solid var(--primary);margin:12px 0;padding:2px 14px;
   color:var(--text-muted)}
 
+/* Ответы «Спросить»: обычный поток Markdown, без растягивания панели длинной строкой. */
+#askBody{overflow-wrap:anywhere}
+.ask-answer-head{display:flex;align-items:flex-start;justify-content:space-between;
+  flex-wrap:wrap;gap:var(--sp-2)}
+.ask-answer-head strong{flex:1 1 22ch;min-width:0}
+.ask-answer-date{font-size:var(--text-sm);margin-top:var(--sp-1)}
+.doc.ansbody{margin-top:var(--sp-3);font-size:var(--text-lg);line-height:1.55}
+.ansbody :is(h1,h2,h3,h4,h5,h6){margin:var(--sp-4) 0 var(--sp-2);line-height:1.25}
+.ansbody :is(h1,h2){font-size:var(--text-xl)}
+.ansbody :is(h3,h4,h5,h6){font-size:var(--text-lg)}
+.ansbody :is(p,ul,ol,pre){margin:var(--sp-3) 0}
+.ansbody :is(ul,ol){padding-inline-start:var(--sp-6)}
+.ansbody li > :is(p,ul,ol){margin-block:var(--sp-1)}
+.ansbody > :first-child{margin-top:0}
+.ansbody > :last-child{margin-bottom:0}
+.ansbody pre{padding:var(--sp-3);white-space:pre-wrap}
+.ansbody hr{border:0;border-top:1px solid var(--border);margin:var(--sp-4) 0}
+.ansbody a{color:var(--text);text-decoration-color:var(--primary);text-underline-offset:.18em}
+.ansbody a:focus-visible{outline:2px solid var(--primary);outline-offset:var(--sp-1)}
+.ansbody .chip{display:inline-block;max-width:100%;white-space:normal}
+.ansbody-plain{white-space:pre-wrap}
+
 .skel{background:linear-gradient(90deg,var(--surface-1),var(--surface-2),var(--surface-1));
   background-size:200% 100%;animation:sh 1.2s infinite;border-radius:var(--radius-sm);height:74px}
 @keyframes sh{to{background-position:-200% 0}}

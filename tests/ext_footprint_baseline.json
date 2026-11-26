@@ -1,13 +1,13 @@
 {
   "about": "Планка метрики «файлов ядра на расширение» (tests/ext_footprint.py). Число не должно расти (рост — красный тест); уменьшили — обновите: python3 tests/ext_footprint.py --write",
   "decision": "docs/decisions/ADR-028-mcp-footprint.md",
-  "decision_note": "MCP core adds two panel modules and one assistant; the 4/5 baseline is accepted in ADR-028",
+  "decision_note": "MCP core adds two panel modules and one assistant; ADR-028 accepts the 4/5 baseline. The local paths registry (0003) names harness folders, so it adds a sixth assistant file",
   "counts": {
     "connector": 23,
     "panel_module": 4,
     "git_provider": 2,
     "llm_provider": 4,
     "artifact_kind": 9,
-    "assistant": 5
+    "assistant": 6
   }
 }

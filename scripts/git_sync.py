@@ -183,6 +183,22 @@ PROBLEMS = {
                "Подождите и повторите; если никто не работает — закройте редактор или "
                "терминал с git.", ["retry"]),
     "busy": ("Git-действие в проекте уже идёт", "Дождитесь его конца.", ["retry"]),
+    "no_local_paths": ("Не найден реестр локальных путей — фиксация остановлена",
+                       "Обновите движок (kit:update): без реестра неоткуда взять список служебных "
+                       "файлов этой машины, и один из них мог бы уехать в коммит.",
+                       ["open_install"]),
+    "local_paths_index": ("Индекс не очищен от служебных файлов",
+                          "Фиксация остановлена, чтобы служебный файл не уехал в историю. "
+                          "Повторите; если повторяется — обновите движок (kit:update).",
+                          ["retry"]),
+    "local_paths_scope": ("Проект вложен в чужой git-репозиторий",
+                          "Автоматический коммит из вложенного проекта затронул бы пути "
+                          "родителя. Перенесите .git в корень проекта или коммитьте вручную.",
+                          ["doctor"]),
+    "index_guard": ("Не удалось доказать сохранность индекса",
+                    "Проверьте git status и проиндексированные изменения. Повторите фиксацию "
+                    "после завершения другой Git-операции или зафиксируйте изменения вручную.",
+                    ["retry"]),
     "ratchet": ("Фиксацию остановил храповик: в изменениях новые ошибки базы",
                 "Почините ошибки (kb:lint) или зафиксируйте всё равно — решение ваше.",
                 ["commit_anyway"]),
@@ -659,7 +675,7 @@ def hostport(url: str) -> str:
 
 def _env(localized: bool = False) -> dict:
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "Malloc"))}
+           if not k.startswith(("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "Malloc"))}
     for k in ("GIT_ASKPASS", "SSH_ASKPASS", "AURORA_GIT_USER", "AURORA_GIT_PASS", "AURORA_GIT_HOST"):
         env.pop(k, None)
     env.update(GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never", GIT_EDITOR="true",
@@ -774,6 +790,8 @@ def run_git(project, args: list, s: dict | None = None, c: dict | None = None,
                            env=env, stdin=subprocess.DEVNULL)
     except FileNotFoundError:
         return 127, "", "git: command not found"
+    except OSError as e:
+        return 126, "", f"git: {e}"
     except subprocess.TimeoutExpired:
         return 124, "", f"timeout after {timeout}s"
     return r.returncode, redact((r.stdout or "").strip()), redact((r.stderr or "").strip())
@@ -791,6 +809,15 @@ def git_dir(project) -> Path | None:
 
 def has_git() -> bool:
     return bool(shutil.which("git"))
+
+
+def _lp():
+    """Реестр локальных путей; на старом `aurora_common` его нет — None."""
+    try:
+        from aurora_common import load_local_paths
+    except ImportError:
+        return None
+    return load_local_paths()
 
 
 # ---------------------------------------------------------------- настройка
@@ -969,10 +996,14 @@ def load(project) -> dict:
     return derived(project)
 
 
-def load_saved(project) -> dict | None:
-    """Только сохранённая: автоматика без явной настройки человека не работает."""
+def load_saved(project, *, own_repo: bool = False) -> dict | None:
+    """Только сохранённая настройка. Планировщик не наследует её у чужого проекта."""
     f = settings_file(project)
-    return normalize(_read_json(f, {}))[0] if f and f.is_file() else None
+    if not f or not f.is_file():
+        return None
+    if own_repo and isinstance(_write_root(project, "auto"), dict):
+        return None
+    return normalize(_read_json(f, {}))[0]
 
 
 # ---------------------------------------------------------------- секреты
@@ -1223,7 +1254,8 @@ def record(project, res: dict, trigger: str = "manual") -> None:
              "ok": bool(res.get("ok")), "skipped": res.get("skipped", ""),
              "summary": res.get("summary", ""), "code": prob.get("code", "")}
     # Числа итога — отдельно от фразы: панель пишет итог на языке интерфейса по ним.
-    for k in ("behind", "ahead", "files", "pushed", "commit", "nothing", "fix", "targets"):
+    for k in ("behind", "ahead", "files", "pushed", "commit", "nothing", "fix", "targets",
+              "index_warning", "commit_sha", "outcome"):
         if k in res:
             entry[k] = res[k]
     try:
@@ -1484,10 +1516,46 @@ def status(project, fetch: bool = False) -> dict:
 
 
 def has_changes(project) -> bool:
-    return bool(git_ok(project, "status", "--porcelain"))
+    rc, out, _ = run_git(project, ["--no-optional-locks", "status", "--porcelain"])
+    return rc == 0 and bool(out)
 
 
 # ---------------------------------------------------------------- действия
+
+def _write_root(project, action: str, *, allow_init: bool = False) -> str | dict:
+    """Определить владельца ветки до создания замка или журнала в его .git."""
+    project = str(Path(project).resolve())
+    rc, gd, err = run_git(project, ["rev-parse", "--absolute-git-dir"])
+    if rc or not gd:
+        # Только отсутствие репозитория разрешает init, не ошибка его обнаружения.
+        if (allow_init and rc == 128 and err.startswith("fatal: not a git repository (or any ")
+                and not os.path.lexists(Path(project) / ".git")):
+            return project
+        return result(action, False, prob=problem("no_repo", err if allow_init else ""))
+    lp = _lp()
+    if lp is None:
+        return result(action, False, prob=problem("no_local_paths"))
+    try:
+        scope = lp.boundary(project)
+    except lp.GIT_ERRORS as exc:
+        return result(action, False, prob=problem("local_paths_scope", str(exc)))
+    if not scope["ok"] or scope["nested"]:
+        return result(action, False, prob=problem("local_paths_scope", scope["detail"]))
+    return scope["project"]
+
+
+def _run_own_write(project, action: str, trigger: str, run) -> dict:
+    project = _write_root(project, action)
+    if isinstance(project, dict):
+        return project
+    with OpLock(project, action) as lk:
+        if not lk.ok:
+            return _done(project, result(action, False, prob=problem("busy")), trigger)
+        res = run(project)
+        if trigger != "manual" and action in ("push", "update"):
+            write_state(project, **{f"auto_{action}_fail_at": 0 if res["ok"] else time.time()})
+        return _done(project, res, trigger)
+
 
 def _context(project, action: str, need_remote: bool = True):
     """Общие проверки перед действием → (s, c, branch, remote) или результат с причиной.
@@ -1546,43 +1614,70 @@ def commit_code(tail: str) -> str:
 
 def _commit(project, s: dict, message: str | None, skip_ratchet: bool, trigger: str,
             action: str = "commit") -> dict:
-    rc, raw, _ = run_git(project, ["status", "--porcelain=v2", "-z", "--untracked-files=all"])
+    lp = _lp()
+    if lp is None:
+        # Без реестра неоткуда взять список служебных файлов: `add -A` мог бы утащить
+        # изменённый журнал в коммит. Отказ — до `add`, индекс не тронут.
+        return result(action, False, prob=problem("no_local_paths"))
+    try:
+        with lp.index_transaction(project) as tx:
+            return _commit_prepared(lp, tx, s, message, skip_ratchet, trigger, action)
+    except lp.IndexRefusal as exc:
+        code = ("locked" if exc.lock else "local_paths_index" if exc.step == "policy" else
+                "index_guard" if exc.step == "index" else classify(str(exc)))
+        return result(action, False, prob=problem(code, str(exc)))
+    except lp.GIT_ERRORS as exc:
+        return result(action, False, prob=problem("index_guard", str(exc)))
+
+
+def _commit_prepared(lp, tx, s, message, skip_ratchet, trigger, action):
+    root = tx.root
+
+    def run(args, env):
+        return run_git(root, args, extra_env=env)
+
+    raw = lp.run_index_step(run, ["status", "--porcelain=v2", "-z", "--untracked-files=all"], tx.env())
     st = parse_status(raw)
-    files = sorted(set(st["staged"] + st["unstaged"] + st["untracked"]))
-    if not files:
+    if not (st["staged"] or st["unstaged"] or st["untracked"] or st["conflicts"]):
         return result(action, True, "нечего фиксировать: изменений нет", nothing=True)
-    msg = render_message(message or s["message"], project, s["branch"] or
-                         git_ok(project, "branch", "--show-current"), files, trigger)
-    rc, o, e = run_git(project, ["add", "-A"])
-    if rc:
-        return result(action, False, prob=problem(classify(o + e), o + "\n" + e))
+    local = lp.prepare_stage(tx, run)
+    raw = lp.run_index_step(run, ["diff", "--cached", "--name-only", "--no-renames", "-z"], tx.env())
+    files = lp.exclude_local_deletions(tx, run, sorted({p for p in raw.split("\0") if p}), local)
+    if not files:
+        return result(action, True, "нечего фиксировать: только локальные пути", nothing=True)
+    msg = render_message(message or s["message"], root, s["branch"] or
+                         git_ok(root, "branch", "--show-current"), files, trigger)
     cfg = []
     if s.get("author_name"):
         cfg += ["-c", f"user.name={s['author_name']}"]
     if s.get("author_email"):
         cfg += ["-c", f"user.email={s['author_email']}"]
     # Хуки (храповик, внутренние названия) — Python и по-русски: локаль не трогаем.
-    extra = {"AURORA_SKIP_RATCHET": "1"} if skip_ratchet else None
-    rc, o, e = run_git(project, [*cfg, "commit", "-m", msg], timeout=600, localized=True,
-                       extra_env=extra)
-    tail = (o + "\n" + e).strip()
-    if rc:
-        return result(action, False, prob=problem(commit_code(tail), tail))
-    short = git_ok(project, "rev-parse", "--short", "HEAD")
-    return result(action, True, f"зафиксировано {short}: «{msg}» (файлов: {len(files)})",
+    extra = tx.env()
+    if skip_ratchet:
+        extra["AURORA_SKIP_RATCHET"] = "1"
+    attempt = tx.commit(lambda: run_git(root, [*cfg, "commit", "-m", msg], timeout=600,
+                                        localized=True, extra_env=extra),
+                        lambda: lp.finished_index(tx, local))
+    if attempt.error:
+        return result(action, False, prob=problem(commit_code(attempt.error), attempt.error))
+    if attempt.warning:
+        warning = redact(attempt.warning)
+        pending = {"push": "отправка не выполнена", "update": "обновление не выполнено"}.get(action)
+        summary = f"{pending}: {warning}" if pending else warning
+        return result(action, action == "commit" and bool(attempt.sha), summary,
+                      commit=attempt.sha[:7], commit_sha=attempt.sha, index_warning=warning,
+                      outcome="inspect_index")
+    short = attempt.sha[:7]
+    return result(action, True, f"зафиксировано {short}: «{msg}» (файлов: {len(files)})"
+                  + (f", локальных снято: {len(local)}" if local else ""),
                   commit=short, message=msg, files=len(files))
 
 
 def commit(project, message: str | None = None, skip_ratchet: bool = False,
            trigger: str = "manual") -> dict:
-    project = str(Path(project).resolve())
-    if not git_dir(project):
-        return _done(project, result("commit", False, prob=problem("no_repo")), trigger)
-    with OpLock(project, "commit") as lk:
-        if not lk.ok:
-            return _done(project, result("commit", False, prob=problem("busy")), trigger)
-        return _done(project, _commit(project, load(project), message, skip_ratchet, trigger),
-                     trigger)
+    return _run_own_write(project, "commit", trigger,
+                          lambda root: _commit(root, load(root), message, skip_ratchet, trigger))
 
 
 def _done(project, res: dict, trigger: str) -> dict:
@@ -1615,7 +1710,7 @@ def _update(project, strategy: str | None, trigger: str, commit_first: bool,
                                                   operation=operation(gd)))
     if commit_first and has_changes(project):
         r = _commit(project, s, None, False, trigger, action)
-        if not r["ok"]:
+        if not r["ok"] or r.get("index_warning"):
             return r
     rc, tail = _fetch(project, s, c, remote, branch)
     if rc:
@@ -1671,17 +1766,8 @@ def _update(project, strategy: str | None, trigger: str, commit_first: bool,
 
 def update(project, strategy: str | None = None, trigger: str = "manual",
            commit_first: bool = False) -> dict:
-    project = str(Path(project).resolve())
-    if not git_dir(project):
-        return _done(project, result("update", False, prob=problem("no_repo")), trigger)
-    with OpLock(project, "update") as lk:
-        if not lk.ok:
-            return _done(project, result("update", False, prob=problem("busy")), trigger)
-        res = _update(project, strategy, trigger, commit_first)
-        if trigger != "manual":
-            write_state(project, **({"auto_update_fail_at": time.time()} if not res["ok"]
-                                    else {"auto_update_fail_at": 0}))
-        return _done(project, res, trigger)
+    return _run_own_write(project, "update", trigger,
+                          lambda root: _update(root, strategy, trigger, commit_first))
 
 
 def _push_one(project, s: dict, c: dict, remote: str, branch: str, primary: bool) -> dict:
@@ -1734,7 +1820,7 @@ def _push(project, message, do_commit, trigger, update_first, skip_ratchet,
         notes.append(r["summary"])
     if do_commit and s.get("commit_on_push", True) and has_changes(project):
         r = _commit(project, s, message, skip_ratchet, trigger, action="push")
-        if not r["ok"]:
+        if not r["ok"] or r.get("index_warning"):
             return r
         notes.append(r["summary"])
     if not git_ok(project, "rev-parse", "--verify", "--quiet", "HEAD"):
@@ -1759,26 +1845,20 @@ def _push(project, message, do_commit, trigger, update_first, skip_ratchet,
 
 def push(project, message: str | None = None, do_commit: bool = True, trigger: str = "manual",
          update_first: bool = False, skip_ratchet: bool = False, only: str | None = None) -> dict:
-    project = str(Path(project).resolve())
-    if not git_dir(project):
-        return _done(project, result("push", False, prob=problem("no_repo")), trigger)
-    with OpLock(project, "push") as lk:
-        if not lk.ok:
-            return _done(project, result("push", False, prob=problem("busy")), trigger)
-        res = _push(project, message, do_commit, trigger, update_first, skip_ratchet, only)
-        if trigger != "manual":
-            write_state(project, **({"auto_push_fail_at": time.time()} if not res["ok"]
-                                    else {"auto_push_fail_at": 0}))
-        return _done(project, res, trigger)
+    return _run_own_write(project, "push", trigger,
+                          lambda root: _push(root, message, do_commit, trigger, update_first, skip_ratchet, only))
 
 
 def fix(project, what: str, file: str = "", trigger: str = "manual", name: str = "") -> dict:
     """Починка одним действием — то, что панель предлагает рядом с причиной."""
-    project = str(Path(project).resolve())
     if what not in FIXES:
         return result("fix", False, prob=problem("unknown", f"нет такого действия: {what}"))
+    project = _write_root(project, "fix", allow_init=what == "init")
+    if isinstance(project, dict):
+        return project
     if what == "init":
-        return _done(project, _fix_init(project), trigger)
+        res = _fix_init(project)
+        return _done(project, res, trigger) if res["ok"] else res
     gd = git_dir(project)
     if not gd:
         return _done(project, result("fix", False, prob=problem("no_repo")), trigger)
@@ -2266,10 +2346,14 @@ def clone_project(target, settings: dict, creds: dict | None = None) -> dict:
 # ---------------------------------------------------------------- командная строка
 
 def _print_result(res: dict) -> None:
-    prob = res.get("problem")
+    if warning := res.get("index_warning"):
+        sha = f" ({res['commit_sha']})" if res.get("commit_sha") else ""
+        print(f"! {res.get('summary') or warning}{sha}")
+        return
     if res.get("ok"):
         print(f"✓ {res.get('summary') or 'готово'}")
         return
+    prob = res.get("problem") or problem("unknown")
     if res.get("summary"):
         print(f"· {res['summary']}")
     print(f"✗ {(prob.get('remote') + ': ') if prob.get('remote') else ''}{prob['title']}")
@@ -2378,6 +2462,15 @@ def main(argv=None) -> int:
                 _print_result(result("check", False, prob=res["problem"]))
         return 0 if res["ok"] else 1
 
+    if a.auto and (a.update or a.push):
+        root = _write_root(project, "update" if a.update else "push")
+        if isinstance(root, dict):
+            if a.json:
+                print(json.dumps(root, ensure_ascii=False))
+            else:
+                _print_result(root)
+            return 1
+        project = root
     if a.auto:
         s = load_saved(project)
         group = "auto_update" if a.update else "auto_push" if a.push else ""
@@ -2385,7 +2478,8 @@ def main(argv=None) -> int:
             print(f"Автоматика «{TRIGGER_WORDS.get(a.auto, a.auto)}» для этого действия "
                   "выключена — ничего не делаю.")
             return 0
-        print(f"Автоматика: {TRIGGER_WORDS.get(a.auto, a.auto)}")
+        if not a.json:
+            print(f"Автоматика: {TRIGGER_WORDS.get(a.auto, a.auto)}")
     if a.update:
         res = update(project, a.strategy, trigger, a.commit_first)
     elif a.push:

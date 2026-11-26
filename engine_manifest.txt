@@ -143,9 +143,9 @@ scripts/context_store.py  => .aurora/scripts/context_store.py
 scripts/context_runtime.py => .aurora/scripts/context_runtime.py
 scripts/reliable_core.py  => .aurora/scripts/reliable_core.py
 scripts/answer_core.py    => .aurora/scripts/answer_core.py
-# «Спросить» с планом и ролями: состояние вопроса и сам оркестратор; оба нужны
-# agent_runner в проекте, иначе ветка --pipeline падает на ImportError
+# «Спросить» с планом и ролями: состояние, бюджет и оркестратор для --pipeline в проекте
 scripts/ask_state.py      => .aurora/scripts/ask_state.py
+scripts/ask_budget.py     => .aurora/scripts/ask_budget.py
 scripts/ask_pipeline.py   => .aurora/scripts/ask_pipeline.py
 # общий durable-слой и состояние «Продуктивности»: без них agent:make не
 # импортируется в проекте, а панель не читает /api/make/*
@@ -160,6 +160,10 @@ scripts/net_report.py     => .aurora/scripts/net_report.py
 # расход токенов для раздела «Замеры»: agent_runner пишет итог по ролям и моделям
 scripts/usage_log.py      => .aurora/scripts/usage_log.py
 scripts/usage_metrics.py  => .aurora/scripts/usage_metrics.py
+# один реестр локальных путей машины (0003): его лениво подключают install_aurora,
+# aurora_update, git_sync, agent_runner и doctor — без него они работают по встроенному
+# списку, поэтому файл приезжает раньше всех, кто им пользуется
+scripts/local_paths.py   => .aurora/scripts/local_paths.py
 scripts/git_sync.py      => .aurora/scripts/git_sync.py
 # код проекта (раздел «Код»): реестр репозиториев `code_repos:` и клоны в Code/ — `code:sync`, `code:status`
 scripts/code_repos.py    => .aurora/scripts/code_repos.py

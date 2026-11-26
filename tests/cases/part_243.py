@@ -13,12 +13,16 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import queue
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from harness import SCRIPTS, test  # noqa: F401
+from harness import SCRIPTS, make_project, test  # noqa: F401
 
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
@@ -1195,3 +1199,852 @@ def test_a_claim_of_pure_punctuation_is_not_a_clean_check(_t: Path):
          {"id": "contradictions", "ok": True, "checked": 1, "findings": []}],
         "Ответ.")
     assert merged["clean"] is False and merged["degraded"] == ["support"], merged
+
+
+_QA_PACK = "# Пак\n\n## Карточка\n\nТестовый факт."
+_QA_TEXT = {
+    "planner": '{"title":"План","steps":[{"id":"s1","title":"Шаг"}]}',
+    "worker": "Готовый факт [[Карточка]].",
+    "critic": '{"ok":true,"issues":[]}',
+    "qa": "ВЕРДИКТ: ЧИСТО",
+    "synth": "Синтез: факт [[Карточка]].",
+}
+
+
+class _QAClock:
+    now = 1_000_000.0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+def _qa_cfg(total=1200, step=300):
+    cfg = _cfg(520)
+    cfg["ask_pipeline"] = {"total_seconds": total, "step_seconds": step, "max_workers": 1}
+    cfg["backends"][0].update(provider="test-provider", fallback=False)
+    return cfg
+
+
+def _qa_run(tmp, *, total=1200, step=300, durations=None, outcomes=None, hook=None,
+            outer_timeout=False, cfg=None, momus=True, pack=_QA_PACK, state=None, event_hook=None):
+    import ask_pipeline as P
+
+    resume = state is not None
+    if not resume:
+        tmp.mkdir(parents=True, exist_ok=True)
+    root = state.cwd if resume else make_project(tmp)
+    state = state or P.ask_state.AskState(root, "qa-deadline", "Тест")
+    clock = _QAClock()
+    elapsed = time.perf_counter()
+    calls, stages, events = {}, {}, []
+    durations = {"planner": 26, "worker": 11, "critic": 13, "qa": 34, "synth": 10,
+                 **(durations or {})}
+
+    def invoke(cfg, role, messages, **kw):
+        kind = "synth" if "Синтезируй" in messages[0]["content"] else role
+        calls[kind] = {**kw, "at": clock()}
+        clock.advance(durations[kind])
+        if hook:
+            hook(kind, clock, state)
+        return {"ok": True, "text": _QA_TEXT[kind], "backend": 1, "model": "m",
+                "seconds": durations[kind], **(outcomes or {}).get(kind, {})}
+
+    def stage(name, fn, **kw):
+        stages[name.removeprefix("ask:")] = kw
+        at = clock()
+        if name == "ask:qa" and outer_timeout:
+            clock.advance(kw["timeout"])
+            return P.RC.StageResult(False, timed_out=True, seconds=clock() - at,
+                                    error=P.RC.human_error("timeout", "synthetic watchdog"))
+        value = fn()
+        return P.RC.StageResult(True, value=value, seconds=clock() - at)
+
+    def emit(event):
+        events.append(event)
+        if event_hook:
+            event_hook(event, state)
+
+    with (patch.object(P, "time", SimpleNamespace(time=clock, sleep=time.sleep)),
+          patch.object(P.RC, "run_stage", side_effect=stage),
+          patch.object(A, "pulse_threads")):
+        res = P.run(cfg or _qa_cfg(total, step), root, "Тест", pack=pack, call=invoke,
+                    state=state, emit=emit, momus=momus, resume=resume)
+    assert time.perf_counter() - elapsed < 2
+    return SimpleNamespace(res=res, state=state, calls=calls, stages=stages, events=events)
+
+
+def _qa_record(run):
+    return next(c for c in run.state.manifest()["steps"][0]["checks"] if c["role"] == "qa")
+
+
+def _qa_events(state, kind):
+    return [row for line in state.events_path.read_text().splitlines()
+            if (row := json.loads(line))["kind"] == kind]
+
+
+@test
+def test_qa_budget_keeps_the_synthesis_reserve_and_minimum(_tmp: Path):
+    import ask_budget as QB
+
+    assert [QB.synthesis_reserve(total, step) for total, step in ((1200, 300), (97, 60), (8, 8))] == [36, 10, 8]
+    assert QB.synthesis_reserve(1200, 20) == 20
+    for want, left, end, cap, given, outer in (
+        (540, 826, 862, 1800, 540, 545), (540, 400, 436, 1800, 400, 400),
+        (360, 37, 47, 1800, 37, 37), (360, 7, 17, 1800, 7, 7),
+        (360, 0, 10, 1800, 0, 0), (1800, 10, 20, 1800, 10, 10),
+        (1800, 2000, 2000, 1800, 1800, 1800), (360, 37, 15, 1800, 37, 15),
+    ):
+        budget = QB.qa_budget(want, left, end, cap)
+        assert (budget.given_s, budget.outer_s) == (given, outer), budget
+        assert budget.evidence(0, 360)["capped"] is (given < want), budget
+
+
+@test
+def test_qa_deadline_short_wall_uses_role_budget(tmp: Path):
+    run = _qa_run(tmp)
+    assert run.stages["qa"]["timeout"] == 365, run.stages
+    call = run.calls["qa"]
+    assert call["request_timeout"] == call["deadline"] - call["at"] == 360, call
+    assert "request_timeout" not in run.calls["worker"] and "request_timeout" not in run.calls["critic"]
+    check = _qa_record(run)
+    assert check["budget"] == {"want_s": 360, "given_s": 360, "used_s": 34, "capped": False,
+                               "role_floor_s": 360, "deadline_left_s": 1114}, check
+    assert check["requested"] == {"model": "m", "provider": "test-provider", "source": "prefer"}, check
+    assert check["model_source"] == "actual" and check["actual"]["provider"] == "test-provider", check
+    fragment = run.state.plan()["steps"][0]["pack"]
+    assert fragment == "# Пак\n\n---\n\n" + _QA_PACK.removeprefix("# Пак\n\n"), fragment
+    assert check["source"] == {"sha256": importlib.import_module("ask_state").sha256(fragment), "cards": 1}, check
+    timing = run.state.state()["timing"]
+    assert timing == {"answer_seconds": 94, "deadline_left_s": 1106, "answer_deadline_s": 1164,
+                      "synthesis_reserve_s": 36, "synthesis_seconds": 10}, timing
+    answer = _qa_events(run.state, "answer")[0]
+    assert all(answer[key] == value for key, value in timing.items()) and answer["seconds"] == 94, answer
+    assert run.state.state()["status"] == "done" and run.res["completion"]["checks"]["passed"] == 2
+    assert run.res["status"] == "full", run.res
+
+
+@test
+def test_qa_deadline_slow_writer_outer_timeout_keeps_evidence(tmp: Path):
+    run = _qa_run(tmp, durations={"worker": 160, "critic": 99}, outer_timeout=True)
+    check = _qa_record(run)
+    assert check["verdict"] == "failed" and check["timed_out"] is True, check
+    assert check["model_source"] == "requested" and check["model"] and check["provider"], check
+    assert check["budget"]["given_s"] == check["budget"]["want_s"] == 540, check
+    assert check["budget"]["used_s"] == run.stages["qa"]["timeout"] == 545, check
+    assert check["transport"]["control_returned"] and not check["transport"]["abandoned"], check
+    assert check["transport"]["request_stopped"] is None and check["transport"]["slot_released"] is None
+    assert check["ttft_ms"] is None and check["latency_ms"] is None and check["slot_wait_ms"] is None
+    assert run.res["degraded"] == ["check_failed:qa:s1"] and "synth" in run.calls
+    assert run.res["status"] == "partial" and run.res["answer"].startswith("Синтез:"), run.res
+    assert "Момус: не выполнен (лимит 540 с)" in run.res["answer"], run.res
+    assert run.state.state()["timing"]["answer_seconds"] == 840
+
+
+@test
+def test_qa_deadline_configured_97_clamps_both_guards_and_reserves_synthesis(tmp: Path):
+    for outer in (False, True):
+        run = _qa_run(tmp / str(outer), total=97, step=60, outer_timeout=outer,
+                      durations={"qa": 40 if outer else 34})
+        check = _qa_record(run)
+        assert run.stages["qa"]["timeout"] == 37, run.stages
+        assert check["budget"]["want_s"] == 360 and check["budget"]["given_s"] == 37, check
+        assert check["budget"]["used_s"] == (37 if outer else 34) and check["budget"]["capped"], check
+        assert run.res["status"] == ("partial" if outer else "full"), run.res
+        assert check["verdict"] == ("failed" if outer else "pass"), check
+        if not outer:
+            call = run.calls["qa"]
+            assert call["request_timeout"] == call["deadline"] - call["at"] == 37, call
+        timing = run.state.state()["timing"]
+        assert timing["answer_seconds"] == (97 if outer else 94), timing
+        assert timing["answer_deadline_s"] == 87 and timing["synthesis_reserve_s"] == 10, timing
+        assert timing["synthesis_seconds"] == 10 and run.res["answer"].startswith("Синтез:"), run.res
+
+
+@test
+def test_qa_deadline_skips_at_seven_but_runs_at_exactly_ten(tmp: Path):
+    for left in (7, 10):
+        run = _qa_run(tmp / str(left), total=60 + left, step=60, durations={"qa": 1})
+        check = _qa_record(run)
+        assert check["status"] == "done" and check["budget"]["given_s"] == left, check
+        if left == 7:
+            assert "qa" not in run.calls and "qa" not in run.stages, run.calls
+            assert check["verdict"] == "missing" and check["skip_reason"] == "remaining_below_min", check
+            assert check["budget"]["used_s"] == 0 and check["timed_out"] is False, check
+            assert "check_missing:qa:s1" in run.res["degraded"], run.res
+            assert "Момус: пропущено, остаток 7 с" in run.res["answer"], run.res
+        else:
+            assert run.calls["qa"]["request_timeout"] == left and check["verdict"] == "pass", check
+            assert run.res["status"] == "full", run.res
+
+
+@test
+def test_qa_deadline_transport_timeout_is_not_an_outer_timeout_or_error_text(tmp: Path):
+    for code in ("timeout", "deadline", "unavailable"):
+        run = _qa_run(tmp / code, outcomes={"qa": {"ok": False, "error": {
+            "code": code, "message": "timeout deadline"}, "model": "other", "provider": "actual"}})
+        check = _qa_record(run)
+        assert check["status"] == "failed" and check["verdict"] == "failed", check
+        assert check["timed_out"] is (code != "unavailable"), check
+        assert not check["transport"]["control_returned"] and not check["transport"]["abandoned"], check
+        assert check["model_source"] == ("actual" if code == "unavailable" else "requested"), check
+        assert check["model"] == ("other" if code == "unavailable" else "m"), check
+
+
+@test
+def test_qa_deadline_mechanically_keeps_answer_when_end_expires(tmp: Path):
+    def expire_after_check(kind, clock, state):
+        if kind == "qa":
+            clock.advance(1200 - (clock() - _QAClock.now))
+
+    run = _qa_run(tmp, hook=expire_after_check)
+    assert run.res["ok"] and run.res["status"] == "partial", run.res
+    assert "Готовый факт" in run.res["answer"] and "Проверки по шагам" in run.res["answer"]
+    assert "synth_fallback" in run.res["degraded"] and "synth" not in run.calls
+
+
+@test
+def test_qa_deadline_synthesis_cannot_deliver_a_late_model_result(tmp: Path):
+    run = _qa_run(tmp, total=97, step=60, outer_timeout=True, durations={"synth": 11})
+    assert run.calls["synth"]["deadline"] - run.calls["synth"]["at"] == 10, run.calls
+    assert run.res["status"] == "partial" and not run.res["answer"].startswith("Синтез:"), run.res
+    assert "Готовый факт" in run.res["answer"] and "synth_fallback" in run.res["degraded"], run.res
+
+
+@test
+def test_qa_deadline_no_sources_or_answer_does_not_produce_partial(tmp: Path):
+    import ask_pipeline as P
+
+    with patch.object(P.AC, "search_context", return_value={"ok": True, "pack": "# Пак\n\n"}):
+        no_sources = _qa_run(tmp / "no-sources", pack="")
+    assert no_sources.res["error"]["code"] == "search_empty" and not no_sources.calls, no_sources.res
+    empty = _qa_run(tmp / "empty", outcomes={"worker": {"text": " "}})
+    assert empty.res["error"]["code"] == "no_answer" and "synth" not in empty.calls, empty.res
+    assert any("Ответ: пустой" in w for w in empty.res["steps"][0]["warnings"]), empty.res
+    tiny = _qa_run(tmp / "tiny", total=8)
+    assert tiny.res["error"]["code"] == "deadline" and not tiny.calls, tiny.res
+    assert tiny.state.state()["timing"]["synthesis_reserve_s"] == 8
+    for run in (no_sources, empty, tiny):
+        assert not run.res["ok"] and run.res["status"] == "error" and run.res["answer"] == "", run.res
+        assert not run.state.answer_path.exists() and not any(e["kind"] == "done" for e in run.events)
+
+
+@test
+def test_qa_deadline_empty_step_with_ready_step_uses_p1_partial(tmp: Path):
+    import ask_pipeline as P
+
+    root = make_project(tmp)
+    state = P.ask_state.AskState(root, "resume-empty-step", "Тест")
+    state.create("Тест", {"steps": [{"id": "ready", "pack": _QA_PACK}, {"id": "empty", "pack": ""}]})
+    state.write_step("ready", "# Шаг\n\n## Ответ\n\nГотовый факт.\n", answer_chars=len("Готовый факт."))
+    state.write_step("ready", "Критик: опора", role="critic", check=True, verdict="pass")
+    state.write_step("ready", "ВЕРДИКТ: ЧИСТО", role="qa", check=True, verdict="pass")
+    run = _qa_run(tmp, state=state)
+    assert run.res["status"] == "partial" and list(run.calls) == ["synth"], run.res
+    assert run.res["degraded"] == ["step_failed:empty"], run.res
+    assert run.res["steps"][1]["error"]["code"] == "no_sources", run.res
+
+
+@test
+def test_qa_deadline_resume_preserves_diagnostics_and_the_p1_verdict(tmp: Path):
+    first = _qa_run(tmp, total=67, step=60)
+    check = _qa_record(first)
+    resumed = _qa_run(tmp, state=first.state)
+    assert _qa_record(resumed) == check and list(resumed.calls) == ["synth"], resumed.res
+    assert resumed.res["status"] == "partial" and resumed.res["degraded"] == ["check_missing:qa:s1"], resumed.res
+    done = next(e for e in resumed.events if e["kind"] == "done")
+    assert done["status"] == "partial" and "timing" not in done, done
+    assert "Момус: пропущено, остаток 7 с" in done["answer"], done
+
+
+@test
+def test_qa_deadline_p1_still_owns_missing_remarks_unsupported_and_off(tmp: Path):
+    unsupported = _qa_run(tmp / "unsupported", outcomes={
+        "qa": {"text": "ВЕРДИКТ: БЕЗ ОПОРЫ 3"}, "critic": {"text": '{"ok":true,"issues":["замечание"]}'}})
+    assert _qa_record(unsupported)["verdict"] == "unsupported" and _qa_record(unsupported)["unsupported"] == 3
+    assert unsupported.res["degraded"] == ["critic_remarks:s1", "momus_unsupported:s1:3"], unsupported.res
+    assert "Момус: без опоры 3" in unsupported.res["answer"] and unsupported.res["status"] == "partial"
+    missing = _qa_run(tmp / "missing", outcomes={"qa": {"text": "без вердикта"}})
+    assert missing.res["degraded"] == ["check_missing:qa:s1"] and _qa_record(missing)["status"] == "done"
+    assert _qa_record(missing)["skip_reason"] == "" and not _qa_record(missing)["timed_out"]
+    off = _qa_run(tmp / "off", momus=False)
+    assert off.res["status"] == "full" and "qa" not in off.calls
+    assert off.res["completion"]["checks"]["required"] == 1, off.res
+
+
+@test
+def test_qa_deadline_empty_ring_is_configuration_failure_not_timeout(tmp: Path):
+    cfg = _qa_cfg()
+    cfg["backends"] = []
+    run = _qa_run(tmp, cfg=cfg)
+    check = _qa_record(run)
+    assert "qa" not in run.calls and check["verdict"] == "failed" and not check["timed_out"], check
+    assert "qa_config" in check["error"] and check["budget"]["used_s"] == 0, check
+    assert run.res["degraded"] == ["check_failed:qa:s1"], run.res
+
+
+@test
+def test_qa_deadline_source_counts_card_boundaries_not_inner_headings(tmp: Path):
+    pack = "# Пак\n\n---\n\n## Первая\n\n## Описание\n\nФакт.\n\n---\n\n## Вторая\n\nДругой факт."
+    run = _qa_run(tmp, pack=pack)
+    assert _qa_record(run)["source"]["cards"] == 2, _qa_record(run)
+    assert "## Описание" in run.state.plan()["steps"][0]["pack"]
+
+
+@test
+def test_qa_deadline_cancel_vetoes_each_following_call_and_delivery(tmp: Path):
+    for stop_at, before, calls in (
+        ("planner", "worker", ["planner"]),
+        ("worker", "critic", ["planner", "worker"]),
+        ("critic", "qa", ["planner", "worker", "critic"]),
+        ("synth", "delivery", ["planner", "worker", "critic", "qa", "synth"]),
+    ):
+        def stop(kind, clock, state):
+            if kind == stop_at:
+                state.set_control(cancel=True)
+
+        run = _qa_run(tmp / stop_at, hook=stop)
+        assert list(run.calls) == calls and run.res["status"] == "cancelled", (run.calls, run.res)
+        assert not run.res["ok"] and run.res["answer"] == "" and not run.state.answer_path.exists(), run.res
+        assert not any(e["kind"] == "done" for e in run.events), run.events
+        if stop_at != "planner":
+            assert "Готовый факт" in run.state.step_path("s1").read_text()
+        assert any(event.get("cancelled_before") == before for kind in ("cancel", "cancel_checkpoint")
+                   for event in _qa_events(run.state, kind)), run.res
+
+    def cancel_after_check(event, state):
+        if event["kind"] == "check" and event["role"] == "qa":
+            state.set_control(cancel=True)
+
+    before_synth = _qa_run(tmp / "before-synthesis", event_hook=cancel_after_check)
+    assert "synth" not in before_synth.calls and before_synth.res["status"] == "cancelled", before_synth.res
+    assert _qa_record(before_synth)["verdict"] == "pass" and not before_synth.state.answer_path.exists()
+
+
+@test
+def test_qa_deadline_pause_holds_the_next_call_with_a_usable_budget(tmp: Path):
+    import ask_pipeline as P
+
+    state = P.ask_state.AskState(make_project(tmp), "pause-with-reserve", "Тест")
+    state.create("Тест", {"steps": [{"id": "s1", "pack": _QA_PACK}]})
+    state.set_control(pause=True)
+    paused = []
+
+    def resume_at_pause(event, state):
+        if event["kind"] == "paused":
+            assert state.control()["pause"] and not state.step_path("s1").exists()
+            paused.append(event["step"])
+            state.set_control(pause=False)
+
+    run = _qa_run(tmp, state=state, cfg=_qa_cfg(97, 60), event_hook=resume_at_pause)
+    assert paused == ["s1"] and run.res["status"] == "full", run.res
+    assert list(run.calls) == ["worker", "critic", "qa", "synth"], run.calls
+
+
+def _qa_short_watchdog(P, entered):
+    real_stage = P.RC.run_stage
+
+    class AfterTransportEntered(queue.Queue):
+        def get(self, block=True, timeout=None):
+            # Start the real, short queue timeout after the fake transport is
+            # known to own the slot. A loaded machine cannot race the fixture.
+            assert entered.wait(1), "QA не дошёл до офлайн-транспорта"
+            return super().get(block=block, timeout=timeout)
+
+    def stage(name, fn, **kw):
+        if name != "ask:qa":
+            return real_stage(name, fn, **kw)
+        kw["timeout"] = 0.02  # reliable_core applies its real 0.1-second floor.
+        with patch.object(P.RC, "queue", SimpleNamespace(Queue=AfterTransportEntered, Empty=queue.Empty)):
+            return real_stage(name, fn, **kw)
+
+    return stage
+
+
+def _qa_stub_model(role, messages):
+    kind = "synth" if "Синтезируй" in messages[0]["content"] else role
+    return {"ok": True, "model": "m", "provider": "test-provider", "seconds": 0.01,
+            "text": _QA_TEXT[kind]}
+
+
+class _QASlots:
+    def __init__(self):
+        self.acquires = 0
+        self.releases = 0
+
+    def acquire(self, **_kw):
+        assert self.acquires == self.releases, "повторная выдача живого слота"
+        self.acquires += 1
+        return True
+
+    def release(self):
+        assert self.acquires - self.releases == 1, "двойное освобождение слота"
+        self.releases += 1
+
+
+@test
+def test_ask_rc_qa_does_not_admit_new_requests_at_the_deadline(tmp: Path):
+    import ask_pipeline as P
+
+    root = make_project(tmp)
+    observed = {}
+    for case, persist in (("fallback", False), ("fallback", True), ("template", True),
+                          ("ring", True), ("slot", False), ("probe", False)):
+        cfg = _qa_cfg()
+        first, = cfg["backends"]
+        second = {**first, "n": 2, "provider": "second-provider", "model": "m2",
+                  "models": {**first["models"], "qa": "m2"}}
+        if case == "fallback":
+            cfg["backends"].append(second)
+        cfg["chains"] = {"llm": {"qa": cfg["backends"]}}
+        cfg["persist"] = persist
+        clock = _QAClock()
+        cutoff = clock() + 360
+        physical = []
+        messages = [{"role": "user", "content": "Проверка"}]
+
+        class Slots(_QASlots):
+            def acquire(self, **kw):
+                if case == "slot" and not self.acquires:
+                    clock.advance(360)
+                return super().acquire(**kw)
+
+        slots = Slots()
+
+        def transport(op, backend, payload, timeout):
+            if op == "slots":
+                if case == "probe" and clock() < cutoff:
+                    clock.advance(360)
+                return 404, {}, None, 0.0
+            physical.append((backend["n"], clock() - cutoff))
+            if clock() >= cutoff:
+                return 200, {"choices": [{"message": {"content": _QA_TEXT["qa"]}}]}, None, 0.01
+            clock.advance(360)
+            if case == "template":
+                return 400, {}, "unknown argument: chat_template_kwargs", 360
+            if case == "ring":
+                return 200, {}, None, 360
+            return 401, {}, "denied", 360
+
+        def call(cfg, role, messages, **kw):
+            return A.call_role(cfg, role, messages, transport=transport, sleep=clock.advance, **kw)
+
+        def stage(_name, fn, **_kw):
+            return P.RC.StageResult(True, value=fn())
+
+        fake_time = SimpleNamespace(time=clock, monotonic=clock, sleep=clock.advance)
+        state = P.ask_state.AskState(root, f"qa-limit-{case}-{persist}")
+        with (patch.object(P, "time", fake_time), patch.object(A, "time", fake_time),
+              patch.object(P.RC, "run_stage", side_effect=stage), patch.object(A, "_net_gate", return_value=None),
+              patch.object(A, "_slot_semaphore", return_value=slots), patch.object(A, "persist_mode", return_value=False),
+              patch.dict(A.DOWN, clear=True), patch.dict(A.COOL, clear=True)):
+            result = P._run_qa(state, cfg, {"id": "s1", "pack": _QA_PACK}, messages, call, 1,
+                               P._RunWindow(clock(), clock() + 550, 50), lambda: False, 0)
+        observed[(case, persist)] = (physical, slots.acquires, slots.releases, result["_qa"]["timed_out"])
+    assert observed == {
+        ("fallback", False): ([(1, -360.0)], 1, 1, True),
+        ("fallback", True): ([(1, -360.0)], 1, 1, True),
+        ("template", True): ([(1, -360.0)], 1, 1, True),
+        ("ring", True): ([(1, -360.0)], 1, 1, True),
+        ("slot", False): ([], 1, 1, True),
+        ("probe", False): ([], 0, 0, True),
+    }, observed
+
+
+@test
+def test_ask_qa_native_transport_starts_no_new_request_after_budget(_tmp: Path):
+    for case in ("direct_fallback", "adapter_retry", "hub_send"):
+        clock = _QAClock()
+        fake_time = SimpleNamespace(time=clock, monotonic=clock, sleep=clock.advance)
+        deadline, requests, pending = clock() + 10, [], {}
+
+        def reply(_backend, _payload, _timeout):
+            requests.append("adapter")
+            if case == "direct_fallback":
+                clock.advance(10)
+                return None, None, A.ADAPTER_FAIL + "ответ не разобран", 10
+            failure = A.AdapterFail(A.ADAPTER_FAIL + "обрыв", link={"kind": "dns"})
+            return None, None, failure, 0
+
+        def probe(_backend):
+            clock.advance(10)
+            return True, ""
+
+        def http(url, payload, _key, _timeout):
+            if payload:
+                requests.append(url)
+            return 404, {}, None, 0
+
+        def send(_line):
+            requests.append("hub")
+            raise AssertionError("attempted to submit an expired request")
+
+        def hub():
+            clock.advance(10)
+            return SimpleNamespace(stdin=SimpleNamespace(write=send)), pending
+
+        cfg = {**_qa_cfg(), "adapter": "pydantic_ai", "persist": True}
+        slots = _QASlots()
+        native = A.pydantic_transport if case == "hub_send" else reply
+        with (patch.object(A, "time", fake_time), patch.object(A, "http_json", side_effect=http),
+              patch.object(A, "_cache_on", return_value=False), patch.object(A, "probe_gateway", side_effect=probe),
+              patch.object(A, "adapter_hub", side_effect=hub), patch.object(A, "pydantic_transport", side_effect=native),
+              patch.object(A, "_slot_semaphore", return_value=slots), patch.dict(A.ADAPTER),
+              patch.dict(A.DOWN, clear=True), patch.dict(A.COOL, clear=True)):
+            res = A.call_role(cfg, "qa", [{"role": "user", "content": "Проверка"}],
+                              deadline=deadline, hard_deadline=deadline, sleep=A.NO_WAIT)
+        assert requests == ([] if case == "hub_send" else ["adapter"]), (case, requests)
+        assert not res["ok"] and res["timed_out"] and not pending, (case, res, pending)
+        assert slots.acquires == slots.releases == 1
+
+
+@test
+def test_ask_d_hub_carries_the_deadline_to_first_and_fallback_requests(tmp: Path):
+    # Run the actual JSONL adapter in a child. The fake SDK records each model
+    # dispatch independently of the parent clock and never opens a connection.
+    child = tmp / "offline_adapter.py"
+    child.write_text(r'''
+import json
+import sys
+import time
+from contextlib import asynccontextmanager, nullcontext
+from pathlib import Path
+from types import SimpleNamespace as Box
+
+directory, case, trace, start = sys.argv[1:]
+sys.path.insert(0, directory)
+import pydantic_ai_adapter as adapter
+
+now = float(start) + (10 if case == "first" else 0)
+adapter.time = Box(time=lambda: now, monotonic=time.monotonic)
+adapter.http_client = object
+
+def request(kind, settings):
+    with Path(trace).open("a", encoding="utf-8") as log:
+        log.write(json.dumps([kind, now - float(start), settings["timeout"]]) + "\n")
+
+class Agent:
+    def __init__(self, *_args, **_kw):
+        pass
+
+    @asynccontextmanager
+    async def run_stream(self, prompt, *, model_settings, **_kw):
+        global now
+        request("stream", model_settings)
+        now += 10 if case == "expired_fallback" else 3
+        raise TimeoutError("fake stream read timed out")
+        yield
+
+    async def run(self, prompt, *, model_settings, **_kw):
+        request("plain", model_settings)
+        return Box(output="ВЕРДИКТ: ЧИСТО", usage=None, all_messages=list)
+
+def stub(**_kw):
+    return None
+
+sys.modules.update({
+    "pydantic_ai": Box(Agent=Agent, __version__="offline", capture_run_messages=lambda: nullcontext([]),
+                       exceptions=Box(ModelHTTPError=type("HTTPError", (Exception,), {}),
+                                      UnexpectedModelBehavior=type("Unexpected", (Exception,), {}))),
+    "openai": Box(AsyncOpenAI=stub),
+    "pydantic_ai.models.openai": Box(OpenAIChatModel=lambda *_a, **_kw: None),
+    "pydantic_ai.providers.openai": Box(OpenAIProvider=stub),
+    "pydantic_ai.messages": Box(**dict.fromkeys(("ModelRequest", "ModelResponse", "SystemPromptPart",
+                                                "TextPart", "ThinkingPart", "UserPromptPart"), Box)),
+    "pydantic_ai.usage": Box(UsageLimits=Box),
+})
+sys.exit(adapter.main())
+''', encoding="utf-8")
+
+    def no_direct(_url, payload, _key, _timeout):
+        assert not payload, "QA bypassed the fake SDK transport"
+        return 404, {}, None, 0
+
+    observed = {}
+    for case in ("first", "expired_fallback", "bounded_fallback", "no_hard_deadline"):
+        clock = _QAClock()
+        fake_time = SimpleNamespace(time=clock, monotonic=clock, sleep=clock.advance)
+        trace = tmp / f"{case}.jsonl"
+        argv = [sys.executable, str(child), str(SCRIPTS / "agents"), case, str(trace), str(clock())]
+        deadline = clock() + 10
+        cfg = {**_qa_cfg(), "adapter": "pydantic_ai", "persist": True}
+        slots = _QASlots()
+        hub = dict(proc=None, broken="", seq=0)
+        with (patch.object(A, "_HUB", hub), patch.object(A, "_adapter_argv", return_value=argv),
+              patch.object(A, "adapter_selfcheck", return_value={"ok": True}),
+              patch.object(A, "time", fake_time), patch.object(A, "_cache_on", return_value=False),
+              patch.object(A, "_net_gate", return_value=None), patch.object(A, "http_json", side_effect=no_direct),
+              patch.object(A, "_slot_semaphore", return_value=slots), patch.dict(A.ADAPTER)):
+            try:
+                result = A.call_role(cfg, "qa", [{"role": "user", "content": "Проверка"}],
+                                     deadline=deadline, request_timeout=10, sleep=A.NO_WAIT,
+                                     hard_deadline=None if case == "no_hard_deadline" else deadline)
+                assert hub["seq"] == 1 and not hub["pending"], (case, hub, result)
+                assert slots.acquires == slots.releases == 1, (case, result)
+            finally:
+                proc = hub["proc"]
+                if proc is not None:
+                    proc.stdin.close()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait(timeout=5)
+                    until = time.monotonic() + 5
+                    while hub["proc"] is proc and time.monotonic() < until:
+                        time.sleep(0.01)
+                    assert hub["proc"] is None, "hub reader did not finish"
+        requests = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()] if trace.exists() else []
+        observed[case] = (result["ok"], bool(result.get("timed_out")), result.get("via"), requests)
+
+    assert observed == {
+        "first": (False, True, None, []),
+        "expired_fallback": (False, True, None, [["stream", 0, 10]]),
+        "bounded_fallback": (True, False, "pydantic_ai", [["stream", 0, 10], ["plain", 3, 7]]),
+        "no_hard_deadline": (True, False, "pydantic_ai", [["stream", 0, 10], ["plain", 3, 10]]),
+    }, observed
+
+
+@test
+def test_qa_deadline_late_real_call_keeps_the_verdict_and_releases_only_in_finally(tmp: Path):
+    import ask_pipeline as P
+
+    started = time.perf_counter()
+    root = make_project(tmp)
+    entered, let_finish = threading.Event(), threading.Event()
+    slots = _QASlots()
+    physical = []
+    attempt = None
+
+    def transport(op, backend, payload, timeout):
+        if op != "chat":
+            return 404, {}, None, 0.0
+        physical.append((backend["n"], timeout))
+        entered.set()
+        assert let_finish.wait(2), "тест не выпустил офлайн-транспорт"
+        answer = {"choices": [{"message": {"content": _QA_TEXT["qa"]}}]}
+        return 200, answer, None, 0.01
+
+    def call(cfg, role, messages, **kw):
+        if role == "qa":
+            return A.call_role(cfg, role, messages, **kw, transport=transport, sleep=A.NO_WAIT)
+        return _qa_stub_model(role, messages)
+
+    def run(ident):
+        state = P.ask_state.AskState(root, ident, "Тест")
+        result = P.run(_qa_cfg(), root, "Тест", pack=_QA_PACK, call=call, state=state)
+        return SimpleNamespace(res=result, state=state)
+
+    with (patch.object(P.RC, "run_stage", side_effect=_qa_short_watchdog(P, entered)),
+          patch.object(P, "CANCEL_GRACE", 0), patch.object(A, "pulse_threads"),
+          patch.object(A, "_slot_semaphore", return_value=slots),
+          patch.dict(A.DOWN, clear=True), patch.dict(A.COOL, clear=True), patch.dict(A.INFLIGHT, clear=True)):
+        try:
+            first = run("late-first")
+            saved = first.state.manifest_path.read_bytes()
+            failed = _qa_record(first)
+            assert first.res["status"] == "partial" and failed["verdict"] == "failed" and failed["timed_out"], failed
+            assert failed["transport"] == {"control_returned": True, "cancel_sent": False,
+                                            "request_stopped": False, "slot_released": False,
+                                            "abandoned": True, "stuck_previous": False}, failed
+            attempt, = P._QA_ACTIVE.values()
+            assert attempt.id == failed["attempt_id"] and not attempt.done.is_set() and attempt.thread.is_alive()
+            assert slots.acquires == A.INFLIGHT[1] == 1 and slots.releases == 0, physical
+            for i in range(4):
+                retry = run(f"blocked-{i}")
+                check = _qa_record(retry)
+                assert check["verdict"] == "missing" and check["status"] == "done", check
+                assert check["skip_reason"] == "stuck_previous" and check["transport"]["stuck_previous"], check
+                assert list(P._QA_ACTIVE) == [attempt.id] and slots.acquires == len(physical) == 1
+            let_finish.set()
+            attempt.thread.join(1)
+            assert attempt.done.is_set() and not attempt.thread.is_alive() and not P._QA_ACTIVE
+            assert slots.acquires == slots.releases == 1 and A.INFLIGHT[1] == 0
+            assert first.state.manifest_path.read_bytes() == saved
+            late, = _qa_events(first.state, "qa_late_done")
+            assert late["late_done"] and late["attempt_id"] == attempt.id and late["transport"]["slot_released"], late
+            assert "verdict" not in late and late["transport"]["request_stopped"] is None, late
+            permit = run("after-release")
+            assert permit.res["status"] == "full" and _qa_record(permit)["verdict"] == "pass", permit.res
+            assert slots.acquires == slots.releases == len(physical) == 2 and A.INFLIGHT[1] == 0
+        finally:
+            let_finish.set()
+            for live in tuple(P._QA_ACTIVE.values()):
+                if live.thread:
+                    live.thread.join(1)
+    assert time.perf_counter() - started < 2
+
+
+@test
+def test_qa_deadline_during_request_cancel_reports_ack_and_slot_independently(tmp: Path):
+    import ask_pipeline as P
+
+    root = make_project(tmp)
+    for acknowledge in (True, False):
+        state = P.ask_state.AskState(root, f"cancel-{acknowledge}", "Тест")
+        let_finish = threading.Event()
+        qas, signals = [], []
+        slots = _QASlots()
+
+        def call(cfg, role, messages, **kw):
+            if role != "qa":
+                return _qa_stub_model(role, messages)
+            qas.append((kw["attempt_id"], threading.current_thread()))
+            slots.acquire()
+            try:
+                state.set_control(cancel=True)
+                assert let_finish.wait(2), "тест не выпустил отменённый транспорт"
+            finally:
+                slots.release()
+            return {**_qa_stub_model(role, messages), "transport": {"slot_released": True}}
+
+        def cancel(attempt_id):
+            signals.append(attempt_id)
+            if acknowledge:
+                let_finish.set()
+            return acknowledge
+
+        call.cancel = cancel
+        with patch.object(P, "CANCEL_GRACE", 0.5 if acknowledge else 0), patch.object(A, "pulse_threads"):
+            try:
+                started = time.perf_counter()
+                result = P.run(_qa_cfg(), root, "Тест", pack=_QA_PACK, call=call, state=state)
+                assert time.perf_counter() - started < 1.5  # Not the 365-second watchdog.
+                cancelled, = _qa_events(state, "qa_cancelled")
+                facts = cancelled["transport"]
+                assert result["status"] == "cancelled" and not result["ok"] and not state.answer_path.exists(), result
+                assert not cancelled["timed_out"] and not facts["control_returned"] and facts["cancel_sent"], facts
+                assert facts["request_stopped"] is acknowledge and facts["slot_released"] is acknowledge, facts
+                assert signals == [qas[0][0]] == [cancelled["attempt_id"]], (qas, signals)
+                assert slots.acquires == 1 and slots.releases == int(acknowledge)
+                assert not state.check_path("s1", "qa").exists()
+                if not acknowledge:
+                    attempt, skip = P._reserve_qa(frozenset({1}), time.time() + 20, lambda: False, None, None)
+                    assert attempt is None and skip == "stuck_previous", (attempt, skip)
+            finally:
+                let_finish.set()
+                for _, thread in qas:
+                    thread.join(1)
+        assert not P._QA_ACTIVE and slots.acquires == slots.releases == 1
+
+
+@test
+def test_qa_deadline_global_cap_blocks_a_third_distinct_ring(_tmp: Path):
+    import ask_pipeline as P
+
+    entered = [threading.Event(), threading.Event()]
+    let_finish = threading.Event()
+    threads = []
+    attempts = []
+
+    def reserve(*backends):
+        return P._reserve_qa(frozenset(backends), time.time() + 20, lambda: False, lambda *_: None, None)
+
+    def block(event):
+        event.set()
+        assert let_finish.wait(2), "тест не выпустил слот"
+
+    try:
+        for event, backend in zip(entered, (1, 2)):
+            attempt, skip = reserve(backend)
+            assert attempt and not skip
+            attempts.append(attempt)
+            thread = threading.Thread(target=attempt.invoke, args=(lambda event=event: block(event),))
+            threads.append(thread)
+            thread.start()
+            assert event.wait(1)
+            assert attempt.detach(returned=True, deadline=time.time())["abandoned"]
+        assert len(P._QA_ACTIVE) == 2 and all(a.abandoned for a in attempts)
+        assert reserve(3) == (None, "stuck_previous")
+        assert reserve(1, 3) == (None, "stuck_previous")
+    finally:
+        let_finish.set()
+        for thread in threads:
+            thread.join(1)
+    assert not P._QA_ACTIVE and all(a.done.is_set() for a in attempts)
+
+
+@test
+def test_qa_deadline_a_blocked_cancel_hook_cannot_wait_past_grace_or_repeat(_tmp: Path):
+    import ask_pipeline as P
+
+    request_in, request_out, signal_in, signal_out = (threading.Event() for _ in range(4))
+    late_logged = threading.Event()
+    cancel_threads = []
+    key = frozenset({1})
+    deadline = time.time() + 20
+
+    def cancel(_attempt_id):
+        cancel_threads.append(threading.current_thread())
+        signal_in.set()
+        assert signal_out.wait(2)
+        return True
+
+    def request():
+        request_in.set()
+        assert request_out.wait(2)
+        return {"transport": {"slot_released": True}}
+
+    attempt, skip = P._reserve_qa(key, deadline, lambda: False, lambda *_: late_logged.set(), cancel)
+    assert attempt and not skip
+    thread = threading.Thread(target=attempt.invoke, args=(request,))
+    thread.start()
+    try:
+        assert request_in.wait(1)
+        started = time.perf_counter()
+        with patch.object(P, "CANCEL_GRACE", 0.02):
+            facts = attempt.detach(returned=True, deadline=deadline)
+        assert time.perf_counter() - started < 1 and signal_in.wait(1)
+        assert facts["cancel_sent"] and facts["abandoned"] and not facts["request_stopped"], facts
+        request_out.set()
+        thread.join(1)
+        assert attempt.done.is_set() and not late_logged.is_set()
+        assert P._reserve_qa(key, deadline, lambda: False, None, None) == (None, "stuck_previous")
+    finally:
+        request_out.set()
+        signal_out.set()
+        thread.join(1)
+        for cancel_thread in cancel_threads:
+            cancel_thread.join(1)
+    assert late_logged.is_set() and not P._QA_ACTIVE
+
+
+@test
+def test_qa_deadline_actual_fallback_keeps_p1_notice_and_full(tmp: Path):
+    import ask_pipeline as P
+
+    cfg = _qa_cfg()
+    first, = cfg["backends"]
+    second = {**first, "n": 2, "provider": "second-provider", "model": "m2",
+              "models": {**first["models"], "qa": "m2"}}
+    cfg["backends"].append(second)
+    cfg["chains"] = {"llm": {"worker": [first], "critic": [first], "planner": [first], "qa": [first, second]}}
+    physical = []
+
+    def transport(op, backend, payload, timeout):
+        if op != "chat":
+            return 404, {}, None, 0.0
+        physical.append((backend["n"], payload["model"]))
+        if backend["n"] == 1:
+            return 401, {}, "denied", 0.01
+        return 200, {"choices": [{"message": {"content": _QA_TEXT["qa"]}}]}, None, 0.01
+
+    def call(cfg, role, messages, **kw):
+        if role == "qa":
+            return A.call_role(cfg, role, messages, **kw, transport=transport, sleep=A.NO_WAIT)
+        return _qa_stub_model(role, messages)
+
+    root = make_project(tmp)
+    state = P.ask_state.AskState(root, "qa-route", "Тест")
+    with (patch.object(A, "pulse_threads"), patch.dict(A.DOWN, clear=True),
+          patch.dict(A.DOWN_WHY, clear=True), patch.dict(A.COOL, clear=True)):
+        result = P.run(cfg, root, "Тест", pack=_QA_PACK, call=call, state=state)
+    check = _qa_record(SimpleNamespace(state=state))
+    assert physical == [(1, "m"), (2, "m2")], physical
+    assert check["requested"] == {"model": "m", "provider": "test-provider", "source": "prefer"}, check
+    assert check["actual"] == {"model": "m2", "provider": "second-provider"}, check
+    assert check["model_source"] == "actual" and check["transport"]["slot_released"] is True, check
+    assert result["status"] == "full" and result["degraded"] == [], result
+    assert "routing_fallback:qa:1->2" in result["notices"], result

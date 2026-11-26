@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest import SkipTest
 
 import harness
 from harness import KIT, SCRIPTS, test
@@ -822,10 +823,7 @@ def test_runtime_truth_stderr_generation_survives_parallel_restart(tmp: Path):
 
 
 def _crash_python() -> str:
-    """Интерпретатор для падающего ребёнка. На macOS sys.executable — это Python.app,
-    и каждый его SIGSEGV поднимает системный алерт «Python неожиданно завершил работу»
-    (по диалогу на каждый прогон, они копятся в очереди ReportCrash). Рядом лежит тот же
-    питон без бандла: падение остаётся нативным, faulthandler пишет в stderr, диалога нет."""
+    """На macOS предпочитаем CLI-интерпретатор, но он тоже может вызвать ReportCrash."""
     if sys.platform == "darwin":
         cand = Path(sys.base_prefix) / "bin" / ("python%d.%d" % sys.version_info[:2])
         if cand.is_file():
@@ -836,6 +834,8 @@ def _crash_python() -> str:
 @test
 def test_runtime_truth_faulthandler_stderr_survives_a_native_crash(tmp: Path):
     """Нативное падение оставляет в кольце stderr строку faulthandler, а не пустоту."""
+    if sys.platform == "darwin" and os.environ.get("AURORA_TEST_MACOS_NATIVE_CRASH") != "1":
+        raise SkipTest("нативный SIGSEGV на macOS требует AURORA_TEST_MACOS_NATIVE_CRASH=1")
     A, _RC, _P, _D = _modules()
     from collections import deque
 
@@ -876,6 +876,54 @@ def test_runtime_truth_faulthandler_stderr_survives_a_native_crash(tmp: Path):
         A.RT.HOME = old_home
         A._HUB.clear()
         A._HUB.update(old_hub)
+
+
+@test
+def test_runtime_truth_native_crash_requires_macos_opt_in(tmp: Path):
+    """Без разрешения нет даже crash.py; разрешённый путь доходит только до fake spawn."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from unittest.mock import Mock, patch
+
+    class SpawnIntercepted(Exception):
+        pass
+
+    opt_in = "AURORA_TEST_MACOS_NATIVE_CRASH"
+    routes = (
+        ("darwin", {}, False),
+        ("darwin", {"CI": "true", "GITHUB_ACTIONS": "true"}, False),
+        ("darwin", {opt_in: "0"}, False),
+        ("darwin", {opt_in: "1"}, True),
+        ("linux", {"CI": "true"}, True),
+    )
+    for i, (platform, env, allowed) in enumerate(routes):
+        case = tmp / f"route-{i}"
+        case.mkdir()
+        spawn = Mock(side_effect=SpawnIntercepted)
+        fake_agent = SimpleNamespace(
+            RT=SimpleNamespace(HOME=tmp), _HUB={}, _HUB_LOCK=nullcontext(),
+            _hub_stderr_new_generation_locked=lambda: 1, _spawn_adapter=spawn,
+        )
+        fake_sys = SimpleNamespace(platform=platform, executable=sys.executable,
+                                   base_prefix=sys.base_prefix, version_info=sys.version_info)
+        modules = Mock(return_value=(fake_agent, None, None, None))
+        with patch.multiple(__name__, _modules=modules, sys=fake_sys,
+                            os=SimpleNamespace(environ=env)):
+            try:
+                test_runtime_truth_faulthandler_stderr_survives_a_native_crash(case)
+            except SkipTest as e:
+                assert not allowed and opt_in in str(e), (platform, env, e)
+                modules.assert_not_called()
+                spawn.assert_not_called()
+                assert not any(case.iterdir()), case
+            except SpawnIntercepted:
+                assert allowed, f"{platform}: нативный запуск без opt-in {env}"
+                argv, = spawn.call_args.args
+                assert argv[1:] == [str(case / "crash.py")], argv
+                assert spawn.call_args.kwargs == {"record": True, "stderr_gen": 1}
+                assert (case / "crash.py").is_file()
+            else:
+                raise AssertionError("не было ни skip, ни подставного запуска")
 
 
 @test

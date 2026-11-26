@@ -21,6 +21,7 @@ import argparse
 
 import os
 import re
+import shlex
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -305,6 +306,33 @@ def nearest_standard(rel: str, schema) -> str:
     return by_name[close[0]] if close else ""
 
 
+def _top_candidates(known: set | None = None) -> list:
+    """Каталоги верхнего уровня вне папок движка и вне объявленной схемы.
+
+    Один список на две проверки: схему (`check_structure`) и локальные пути машины
+    (`check_local_paths`). Считается только чтением.
+    """
+    if known is None:
+        known = (set(read_structure()) | set(mirror_owners())
+                 | set(artifact_dirs()) | set(project_dirs()))
+    known_tops = {p.split("/")[0] for p in known}
+    try:
+        return sorted(p.name for p in ROOT.iterdir()
+                      if p.is_dir() and p.name not in ENGINE_DIRS_TOP
+                      and p.name not in known_tops)
+    except OSError:
+        return []
+
+
+def _ignored_and_stale(candidates: list) -> tuple:
+    """(что закрыто .gitignore, что закрыто правилом, но всё ещё лежит в индексе)."""
+    probes = [f"{n}/" for n in candidates] + list(candidates)
+    ignored = git_ignored(probes)
+    # правило есть, но путь всё ещё в индексе: .gitignore не действует задним числом
+    stale = sorted(set(git_ignored(probes, rules_only=True)) - set(ignored))
+    return ignored, stale
+
+
 def check_structure(verbose: bool = False):
     """Сверить фактические папки с фиксированной схемой движка.
 
@@ -331,7 +359,6 @@ def check_structure(verbose: bool = False):
     artifacts = artifact_dirs()
     declared = project_dirs()
     known = set(schema) | set(mirrors) | set(artifacts) | set(declared)
-    known_tops = {p.split("/")[0] for p in known}
     missing = [d for d in schema if not (ROOT / d).is_dir()]
     for path, module in sorted(mirrors.items()):
         if not (ROOT / path).is_dir():
@@ -348,13 +375,8 @@ def check_structure(verbose: bool = False):
 
     # Кандидаты верхнего уровня: всё, кроме папок самого движка. Скрытые папки больше
     # не пропускаем скопом — их отсеет .gitignore, если они действительно служебные.
-    candidates = sorted(p.name for p in ROOT.iterdir()
-                        if p.is_dir() and p.name not in ENGINE_DIRS_TOP
-                        and p.name not in known_tops)
-    probes = [f"{n}/" for n in candidates] + [n for n in candidates]
-    ignored = git_ignored(probes)
-    # правило есть, но путь всё ещё в индексе: .gitignore не действует задним числом
-    stale = sorted(set(git_ignored(probes, rules_only=True)) - set(ignored))
+    candidates = _top_candidates(known)
+    ignored, stale = _ignored_and_stale(candidates)
     extra_top = [n for n in candidates if n not in ignored and n not in stale]
     allowed_by_ignore = [n for n in candidates if n in ignored]
     extra_sub, unclaimed, case_sub = [], [], []
@@ -459,20 +481,160 @@ def check_code_dirs() -> tuple:
         lost = sorted(n for n in repos if not (CREPO.clone_path(str(ROOT), n) / ".git").exists())
         if lost:
             warns.append(f"репозитории кода в реестре без клона в Code/: {', '.join(lost)} → выполните code:sync --apply")
-    import subprocess
-    try:
-        out = subprocess.run(["git", "-C", str(ROOT), "-c", "core.quotepath=false", "ls-files", "-z", "--", "Code"],
-                             capture_output=True, timeout=60)
-        tracked = [r for r in out.stdout.decode("utf-8", "replace").split("\0") if r] if out.returncode == 0 else []
-    except Exception:  # noqa: BLE001 — нет git: индекса нет
-        tracked = []
-    # Клон, добавленный `git add -A`, ложится в индекс одной записью-ссылкой (`Code/<имя>`), скопированный без `.git` —
-    # файлами: и то и другое — содержимое клона в истории проекта. Описание папки и её пометка — законные.
-    clones = sorted({r.split("/")[1] for r in tracked if "/" in r and r.split("/")[1] not in ("README.md", ".gitkeep")})
+    # Клон — gitlink (160000), дерево (040000) или каталог с потомками; обычный файл
+    # `Code/notes.md` — работа человека, а не клон. Классификатор общий с реестром,
+    # иначе doctor и снятие с индекса расходятся на одном и том же пути.
+    lp = _lp()
+    if lp is not None:
+        clones = lp.code_clones(ROOT)
+    else:
+        # Реестра нет (обрыв обновления): режим записи читаем сами, без «Code/<имя> = клон».
+        import subprocess
+        try:
+            out = subprocess.run(["git", "-C", str(ROOT), "-c", "core.quotepath=off",
+                                  "ls-files", "-s", "-z", "--", "Code"],
+                                 capture_output=True, timeout=60)
+        except OSError:
+            out = None
+        names = set()
+        for rec in (out.stdout.split(b"\0") if out is not None and out.returncode == 0 else []):
+            meta, _, raw = rec.partition(b"\t")
+            parts = raw.decode("utf-8", "surrogateescape").split("/")
+            if len(parts) < 2 or not parts[1] or parts[1] in ("README.md", ".gitkeep"):
+                continue
+            mode = meta.split()[0].decode("ascii", "replace") if meta.split() else ""
+            if len(parts) > 2 or mode in ("160000", "040000"):
+                names.add("Code/" + parts[1])
+        clones = sorted(names)
     if clones:
-        errors.append(f"клоны кода лежат в индексе git проекта: {', '.join('Code/' + c for c in clones)} → "
+        # `:(literal)` не даёт `*` и `[` в имени клона стать шаблоном git; кавычки
+        # защищают пробел от оболочки.
+        quoted = " ".join(shlex.quote(f":(literal){c}") for c in clones)
+        errors.append(f"клоны кода лежат в индексе git проекта: {', '.join(clones)} → "
                       f"правило .gitignore не действует задним числом, уберите из индекса: "
-                      f"git rm -r --cached {' '.join('Code/' + c for c in clones)}")
+                      f"git rm -r --cached -f {quoted}")
+    return errors, warns
+
+
+def _lp():
+    """Реестр локальных путей; на старом `aurora_common` его нет — None.
+
+    Импорт внутри функции: доктор из проекта, где обновление оборвалось до появления
+    `local_paths.py` (или откатилось), обязан работать и говорить «правила не проверены»,
+    а не падать на импорте. Предупреждение загрузчика выключено: сообщение о недоступном
+    реестре — дело доктора, и оно должно быть одно, а не два об одном и том же.
+    """
+    try:
+        from aurora_common import load_local_paths
+    except ImportError:
+        return None
+    return load_local_paths(warn=False)
+
+
+# Запасная причина, когда реестр сказал `checked=False`, но причины не назвал. Держим её
+# здесь, а не в реестре: доктор обязан работать и со старой копией `local_paths.py`, где
+# таблицы `REASONS` ещё нет. Текст русский, как у всех сообщений доктора; английский —
+# в каталоге `messages`, и `kit_i18n.message_skeletons` собирает его из этого имени.
+UNKNOWN_REASON = "причина неизвестна"
+
+
+def check_local_paths() -> tuple:
+    """Локальные пути машины в индексе git (0003). → (ошибки, предупреждения).
+
+    Реестр один (`scripts/local_paths.py`): по нему же снимают индекс установка,
+    обновление, авто-коммит панели и чекпойнт агента. Доктор ничего не меняет — называет
+    пути и печатает безопасную команду, файлы на диске остаются.
+
+    Верхние каталоги, которые уже назвала проверка схемы (`stale`), и клоны `Code/*`
+    (их называет `check_code_dirs`) здесь вычитаются: один файл не должен звучать
+    блокером дважды.
+
+    Тексты — в самих `append`: реестр переводов `kit_i18n` собирает сообщения доктора
+    именно по вызовам append, иначе английская панель покажет русскую строку.
+    """
+    lp = _lp()
+    errors, warns = [], []
+    if lp is None:
+        # Текст — аргументом append, а не константой: `kit_i18n` собирает сообщения доктора
+        # по вызовам append и имя переменной не разворачивает — строка осталась бы без
+        # английского перевода и показалась бы в панели по-русски.
+        warns.append("правила не проверены, обновите kit:update: реестр локальных путей "
+                     "(scripts/local_paths.py) недоступен доктору")
+        return errors, warns
+    # `findings` сам различает отказ проверки: она возвращает `checked=False`, а не пустой
+    # список. Ловить здесь `Exception` нельзя — ошибка уже загруженного реестра выдавалась
+    # бы за «реестра нет» с советом kit:update, хотя обновлять нечего.
+    found = lp.findings(ROOT)
+    # Без `.aurora/structure_dirs.txt` проверка схемы выходит раньше и `stale` не печатает:
+    # вычитать нечего, иначе путь потеряется молча — ни схема, ни эта проверка его не назовут.
+    named = set(_ignored_and_stale(_top_candidates())[1]) if read_structure() else set()
+    # `problems` сводит все доказанные причины одного пути (tracked / missing_rule /
+    # overridden). Печатать путь отдельными строками значило бы потерять вторую причину:
+    # человек снял бы файл с учёта и оставил отрицание `!`, возвращающее его обратно.
+    problems = {rel: list(causes) for rel, causes in (found.get("problems") or {}).items()}
+    if not problems:
+        # Старая копия реестра без `problems`: сводим причины здесь, чтобы путь не потерялся.
+        for rel in found.get("tracked") or []:
+            problems.setdefault(rel, []).append("tracked")
+        for rel in found.get("missing_rules") or []:
+            problems.setdefault(rel, []).append("missing_rule")
+        for rel in found.get("overridden") or []:
+            problems.setdefault(rel, []).append("overridden")
+    groups: dict = {}
+    for rel, causes in problems.items():
+        got = set(causes)
+        hidden = (rel in named or rel.split("/")[0] in named
+                  or rel.split("/")[0] == "Code")
+        if hidden and "tracked" in got:
+            # Верхний каталог уже назван проверкой схемы или Code: локальность пути
+            # называет она, а не эта проверка (один файл — одна строка в отчёте).
+            continue
+        key = tuple(sorted(got))
+        if key:
+            groups.setdefault(key, []).append(rel)
+    for key, paths in sorted(groups.items()):
+        paths = sorted(paths)
+        shown = ", ".join(paths[:3]) + (" …" if len(paths) > 3 else "")
+        # Литеральные, экранированные пути: имя с пробелом не должно стать двумя аргументами,
+        # а `*` и `[` — шаблоном самого git.
+        remove = " ".join(shlex.quote(f":(literal){p}") for p in paths[:5])
+        if "tracked" in key and "overridden" in key and "missing_rule" in key:
+            errors.append(f"локальные пути машины лежат в индексе git, правила нет и она перекрыта: "
+                          f"{len(paths)} ({shown}) → снимите с учёта, файлы на диске останутся: "
+                          f"git rm -r --cached -f -q {remove}; выполните kit:update и уберите "
+                          "отрицания `!` после блока кита")
+        elif "tracked" in key and "overridden" in key:
+            errors.append(f"локальные пути машины лежат в индексе git, а правило перекрыто: "
+                          f"{len(paths)} ({shown}) → снимите с учёта, файлы на диске останутся: "
+                          f"git rm -r --cached -f -q {remove}; уберите отрицание `!` после блока "
+                          "кита, иначе следующий `git add` вернёт файл")
+        elif "tracked" in key and "missing_rule" in key:
+            errors.append(f"локальные пути машины лежат в индексе git, а правила нет: "
+                          f"{len(paths)} ({shown}) → снимите с учёта, файлы на диске останутся: "
+                          f"git rm -r --cached -f -q {remove}; выполните kit:update")
+        elif "tracked" in key:
+            errors.append(f"локальные пути машины лежат в индексе git: {len(paths)} ({shown}) → "
+                          "правило .gitignore не действует задним числом, снимите с учёта, файлы "
+                          f"на диске останутся: git rm -r --cached -f -q {remove}")
+        elif "missing_rule" in key and "overridden" in key:
+            warns.append(f"правил локальных путей нет, а часть перекрыта: {len(paths)} ({shown}) → "
+                         "выполните kit:update и уберите отрицания `!` после блока кита в .gitignore")
+        elif "missing_rule" in key:
+            warns.append(f"в .gitignore проекта нет {len(paths)} правил локальных путей ({shown}) → "
+                         "выполните kit:update")
+        elif "overridden" in key:
+            warns.append(f"правила локальных путей перекрыты: {len(paths)} правил не действуют "
+                         f"({shown}) → уберите отрицания `!` после блока кита в .gitignore")
+        else:
+            errors.append(f"локальные пути машины требуют внимания: {len(paths)} ({shown}) → "
+                          "выполните kit:update и проверьте .gitignore")
+    if not found.get("checked", True):
+        # Причина приходит от реестра по-русски и остаётся вложенным сообщением: английская
+        # панель переводит её по каталогу (`translate_message`), а не второй таблицей здесь.
+        # Уже вычисленные `missing_rules` напечатаны выше: отказ проверки правил их не отменяет.
+        reason = found.get("detail") or UNKNOWN_REASON
+        warns.append(f"локальные пути не проверены: проверка не выполнена ({reason}) "
+                     "→ повторите doctor; если повторяется — проверьте git и .gitignore")
     return errors, warns
 
 
@@ -1135,6 +1297,9 @@ def main() -> int:
     c_err, c_warn = check_code_dirs()
     errors += c_err
     warns += c_warn
+    lp_err, lp_warn = check_local_paths()
+    errors += lp_err
+    warns += lp_warn
 
     print("Aurora doctor —", ROOT)
     if engine_ver:

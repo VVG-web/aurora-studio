@@ -82,7 +82,7 @@ class GitAuto:
         """Событие страницы. Сейчас одно: проект открыли."""
         if event != "open":
             return {"ok": False, "error": "unknown_event"}
-        s = GS.load_saved(project)
+        s = GS.load_saved(project, own_repo=True)
         if not self.wanted(s, "update", "open"):
             return {"ok": True, "fired": False}
         st = GS.read_state(project)
@@ -173,7 +173,7 @@ class GitAuto:
         return fired
 
     def _project(self, path: str) -> list:
-        s = GS.load_saved(path)
+        s = GS.load_saved(path, own_repo=True)
         if not s or not (s["auto_update"]["enabled"] or s["auto_push"]["enabled"]):
             return []
         st = GS.read_state(path)

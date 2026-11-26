@@ -310,9 +310,21 @@ SAME_FAIL_LIMIT = 3      # одна и та же команда с теми же
 
 # ------------------------------------------------------------------ git-чекпойнт
 
+# Переменные, уводящие git в другой репозиторий/индекс. Коммит агента обязан работать с
+# индексом проекта, как и панель; временный индекс `_commit_db` передаёт явно через `env`.
+GIT_CONTEXT_VARS = ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+
+
+def _git_env(extra: dict | None = None) -> dict:
+    env = {k: v for k, v in os.environ.items() if k not in GIT_CONTEXT_VARS}
+    if extra:
+        env.update(extra)
+    return env
+
+
 def git(*args: str, cwd: str = ".", env: dict | None = None) -> tuple:
-    p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       env={**os.environ, **env} if env else None)
+    p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", env=_git_env(env))
     return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
 
 
@@ -347,171 +359,176 @@ def git_retry(*args: str, cwd: str = ".", env: dict | None = None) -> tuple:
     return rc, out, err  # недостижимо; для читателя
 
 
-def _git_root(cwd: str) -> str:
-    """Корень репозитория: `add -A` берёт всё дерево, поэтому и флаги читаем и возвращаем от корня, не от подпапки."""
-    rc, out, _e = git("rev-parse", "--show-toplevel", cwd=cwd)
-    return out if rc == 0 and out else cwd
-
-
-def _index_flags(cwd: str) -> dict:
-    """Флаги индекса человека, которые `read-tree` не переносит: skip-worktree, assume-unchanged, intent-to-add.
-
-    `git ls-files -v`: «S» — skip-worktree, «h» — assume-unchanged, «s» — оба; intent-to-add (`git add -N`)
-    виден как «добавлен» в `git diff` дерева против индекса — без поиска переименований, иначе `mv a b` +
-    `add -N b` показан как R и в фильтр A не попадает. Оба чтения идут от корня репозитория: из подпапки
-    `ls-files` отдал бы только её файлы и пути от неё, а `diff` — весь репозиторий от корня.
-    Сбой чтения — пустые списки: откат пойдёт без флагов."""
-    root = _git_root(cwd)
-    rc, out, _e = git("ls-files", "-v", "-z", cwd=root)
-    skip, assume = [], []
-    for rec in (out.split("\0") if rc == 0 else []):
-        tag, path = rec[:1], rec[2:]
-        if path and tag in "Ss":
-            skip.append(path)
-        if path and tag in "hs":
-            assume.append(path)
-    rc, out, _e = git("diff", "--no-renames", "--name-only", "--diff-filter=A", "-z", cwd=root)
-    return {"root": root, "skip": skip, "assume": assume, "ita": [p for p in out.split("\0") if p] if rc == 0 else []}
-
-
-def _restore_index_flags(cwd: str, flags: dict) -> list:
-    """Вернуть флаги после `read-tree`; результат — пути, у которых флаг не вернулся (пусто — всё на месте)."""
-    lost: list = []
-    root = flags.get("root") or cwd
-    # `add -N` разбирает пути как pathspec: имя со «*» или «[» без литерального режима не нашло бы файл.
-    for opts, key in ((["update-index", "--skip-worktree"], "skip"), (["update-index", "--assume-unchanged"], "assume"),
-                      (["--literal-pathspecs", "add", "-N"], "ita")):
-        paths = flags.get(key) or []
-        for i in range(0, len(paths), 100):
-            chunk = paths[i:i + 100]
-            if git_retry(*opts, "--", *chunk, cwd=root)[0] != 0:
-                lost.extend(p for p in chunk if p not in lost)
-    return lost
-
-
 # Журнал запусков пишет панель; до 1.158.0 он лежал в папке движка.
 ENGINE_JOURNALS = {"AuroraKnowledgeDB/meta/run_log.md", ".opencode/run_log.md"}
+GIT_READ_ONLY = {"GIT_OPTIONAL_LOCKS": "0"}
+
+
+def _lp():
+    """Реестр локальных путей; на старом aurora_common его нет."""
+    try:
+        from aurora_common import load_local_paths
+    except ImportError:
+        return None
+    return load_local_paths()
+
+
+def _agent_index_run(root):
+    def run(args, env):
+        execute = git_retry if args[0] in ("add", "commit", "restore", "read-tree", "write-tree") else git
+        return execute(*args, cwd=root, env=env)
+
+    return run
+
+
+def _checkpoint_refused(detail: str, *, step: str = "индекс", lock: bool = False) -> dict:
+    return {"ok": False, "kind": "lock" if lock else "refused", "sha": "", "detail": detail[:2000],
+            "why": f"чекпойнт не создан: {step}: {_git_why(detail, lock)}"}
 
 
 def checkpoint(cwd: str, task: str, enabled: bool) -> dict:
-    """Зафиксировать работу человека до прогона агента.
+    """Зафиксировать работу человека отдельно, не меняя настоящий stage при отказе."""
+    try:
+        rc, _out, _err = git("rev-parse", "--is-inside-work-tree", cwd=cwd)
+        if rc != 0:
+            return {"ok": False, "why": "проект не под git — отката не будет", "sha": ""}
+        rc, dirty, err = git("status", "--porcelain", "-uall", cwd=cwd, env=GIT_READ_ONLY)
+        if rc != 0:
+            return _checkpoint_refused(err, step="status не прошёл", lock="index.lock" in err)
+        # Журнал панели меняется после каждого запуска, сам по себе не повод для коммита.
+        if dirty and all(line[3:].strip().strip('"') in ENGINE_JOURNALS for line in dirty.splitlines()):
+            dirty = ""
+        if not enabled or not dirty:
+            why = "дерево было чистым" if enabled else (
+                "чекпойнт выключен" + (" — дерево грязное, откат будет ручным" if dirty else ""))
+            return {"ok": True, "sha": git("rev-parse", "HEAD", cwd=cwd)[1], "committed": 0, "why": why}
+        return _checkpoint_write(cwd, task)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _checkpoint_refused(str(exc))
 
-    `git_guard` в командах движка просто отказывается писать по грязному дереву — для
-    аналитика, который правит базу весь день, это значит «сначала закоммить сотню файлов».
-    Здесь иначе: коммитим его работу как есть, отдельным коммитом, и дальше всё, что
-    сделает агент, лежит поверх и снимается одной строкой.
-    """
-    rc, _out, _err = git("rev-parse", "--is-inside-work-tree", cwd=cwd)
-    if rc != 0:
-        return {"ok": False, "why": "проект не под git — отката не будет", "sha": ""}
-    # `-uall` — файлы поштучно: новая папка иначе видна одной строкой, и журнал в ней не узнать.
-    dirty = git("status", "--porcelain", "-uall", cwd=cwd)[1]
-    # Журнал запусков панели — не работа человека: он меняется после каждого шага, и
-    # чекпойнт перед каждым agent:* коммитил только его («работа человека
-    # зафиксирована» — на PRJ-A 22.09.2026 четверть коммитов прогона). Он уйдёт со
-    # следующим настоящим коммитом.
-    if dirty and all(l[3:].strip().strip('"') in ENGINE_JOURNALS for l in dirty.splitlines()):
-        dirty = ""
-    if not enabled:
-        sha = git("rev-parse", "HEAD", cwd=cwd)[1]
-        return {"ok": True, "sha": sha, "committed": 0,
-                "why": "чекпойнт выключен" + (" — дерево грязное, откат будет ручным"
-                                              if dirty else "")}
-    if dirty:
-        # Индекс человека — его: запоминаем до `add -A`, чтобы при отказе вернуть именно его, а не пустой.
-        flags = _index_flags(cwd)
-        rc, saved, err = git_retry("write-tree", cwd=cwd)
-        if rc != 0:
-            lock = "index.lock" in err
-            return {"ok": False, "kind": "lock" if lock else "refused", "sha": "", "detail": err[:2000],
-                    "why": ("замок индекса занят: " if lock else
-                            "индекс не читается (конфликт слияния?), чекпойнт не создан: ") + _git_why(err, lock)}
 
-        rc, _o, err = git_retry("add", "-A", cwd=cwd)
-        if rc != 0:
-            # `add` атомарен: при отказе индекс не записан, возвращать нечего (откат лишь ждал бы замок ещё ~10 с).
-            lock = "index.lock" in err
-            return {"ok": False, "kind": "lock" if lock else "refused", "sha": "", "detail": err[:2000],
-                    "why": f"чекпойнт не создан: add не прошёл: {_git_why(err, lock)}"}
-        stamp = utc_label()
-        # Без `--no-verify`: он снял бы и проверку секретов pre-commit, а её храповик не отключает.
-        # Храповик (ошибки базы — долг человека, агенту он не помеха) снимаем его же переменной.
-        rc, _o, err = git_retry("commit", "-m", f"checkpoint: перед агентом {task} · {stamp}", cwd=cwd,
-                                env={"AURORA_SKIP_RATCHET": "1"})
-        if rc != 0:
-            # Хук отказал (секрет, храповик): `add -A` уже положил в индекс всё дерево. Оставить его там значит
-            # отдать чужой файл следующему коммиту — индекс возвращаем, файлы на диске не трогаем. Не вернулся
-            # (замок держится и тут) — об этом говорит `index_restored`: строка остановки не должна обещать
-            # «работа человека не тронута», когда в индексе осталось всё дерево.
-            rc2, _o2, err2 = git_retry("read-tree", saved, cwd=cwd)
-            # `read-tree` сбрасывает флаги skip-worktree / assume-unchanged / intent-to-add — возвращаем их по записи.
-            lost = [] if rc2 != 0 else _restore_index_flags(cwd, flags)
-            flags_ok = not lost
-            lock = "index.lock" in err
-            return {"ok": False, "kind": "lock" if lock else "refused", "sha": "", "index_restored": rc2 == 0, "saved_tree": saved,
-                    "flags_restored": flags_ok, "flags_lost": lost[:20], "flags_lost_n": len(lost),
-                    "detail": err[:2000] + ("" if rc2 == 0 else "\n[read-tree] " + err2[:500])
-                    + ("" if flags_ok else f"\n[флаги индекса не возвращены: {len(lost)}] " + "; ".join(lost[:20])),
-                    "why": f"чекпойнт не создан: {_git_why(err, lock)}"}
-    sha = git("rev-parse", "HEAD", cwd=cwd)[1]
-    return {"ok": True, "sha": sha, "committed": len(dirty.splitlines()),
-            "why": "работа человека зафиксирована" if dirty else "дерево было чистым"}
+def _checkpoint_write(cwd, task):
+    lp = _lp()
+    if lp is None:
+        return _checkpoint_refused("реестр локальных путей (local_paths.py) недоступен — выполните kit:update")
+    try:
+        scope = lp.boundary(cwd)
+        if not scope["ok"] or scope["nested"]:
+            return _checkpoint_refused(scope["detail"] or "граница проекта и git не определена")
+        with lp.index_transaction(scope["project"], pause=_lock_pause, retries=LOCK_RETRIES) as tx:
+            return _checkpoint_prepared(lp, tx, task)
+    except lp.IndexRefusal as exc:
+        return _checkpoint_refused(str(exc), step=exc.step, lock=exc.lock)
+
+
+def _checkpoint_prepared(lp, tx, task):
+    run = _agent_index_run(tx.root)
+    local = lp.prepare_stage(tx, run)
+    staged = lp.run_index_step(run, ["diff", "--cached", "--name-only", "--no-renames", "-z"], tx.env())
+    paths = lp.exclude_local_deletions(tx, run, [p for p in staged.split("\0") if p], local)
+    if not paths:
+        return {"ok": True, "sha": tx.head, "committed": 0,
+                "why": "нечего фиксировать: только локальные пути"}
+    args = ["commit", "-m", f"checkpoint: перед агентом {task} · {utc_label()}"]
+    # Снимаем только проверку храповика, штатный хук проверки секретов остаётся.
+    attempt = tx.commit(lambda: run(args, {**tx.env(), "AURORA_SKIP_RATCHET": "1"}),
+                        lambda: lp.finished_index(tx, local))
+    if attempt.error:
+        return _checkpoint_refused(attempt.error, step="commit не прошёл", lock="index.lock" in attempt.error)
+    if attempt.warning:
+        return {"ok": bool(attempt.sha), "kind": "inspect_index", "sha": attempt.sha,
+                "why": attempt.warning, "detail": attempt.warning, "index_warning": attempt.warning}
+    return {"ok": True, "sha": attempt.sha, "committed": len(paths),
+            "why": "работа человека зафиксирована" + (f"; локальных снято: {len(local)}" if local else "")}
 
 
 def checkpoint_stop_line(cwd: str, cp: dict) -> str:
-    """Строка остановки цикла по отказу чекпойнта; сбой пишется в журнал прогона — виден в итоге.
-
-    Замок индекса (kind=lock) и отказ хука (секрет, храповик) — разные причины: первая проходит
-    сама, вторая требует человека, и строка не должна звать разбирать замок.
-    """
+    """Отказ не предлагает восстанавливать индекс, который чекпойнт не перезаписывал."""
     AG.record_failure("checkpoint", cp.get("why", ""), stage="чекпойнт", cwd=cwd, kind=cp.get("kind", ""),
                       detail=cp.get("detail", ""))
-    if cp.get("index_restored") is False:
-        # Замок (или хук) не дал вернуть индекс: в нём всё дерево, включая то, что человек не индексировал.
-        # Обещать «работа не тронута» нельзя — файлы на диске целы, но индекс не прежний.
-        return f"{cp['why']}: индекс не возвращён — в нём осталось всё дерево (файлы на диске целы); " \
-               f"`git read-tree {cp.get('saved_tree', '')}` вернёт ваш индекс. Останавливаюсь"
-    if cp.get("flags_restored") is False:
-        shown = "; ".join(cp.get("flags_lost") or [])
-        more = max(0, cp.get("flags_lost_n", 0) - len(cp.get("flags_lost") or []))
-        return f"{cp['why']}: индекс возвращён, но флаги skip-worktree/assume-unchanged/intent-to-add не вернулись " \
-               f"(замок не отпустили){': ' + shown if shown else ''}{f' и ещё {more}' if more else ''}; " \
-               "верните их вручную `git update-index --skip-worktree|--assume-unchanged` или `git add -N`. Останавливаюсь"
     if cp.get("kind") == "lock":
-        return f"{cp['why']}: замок не отпустили за ~{int(LOCK_PAUSE * LOCK_RETRIES * (LOCK_RETRIES + 1) / 2)} с, " \
-               "останавливаюсь; повторите запуск — работа человека не тронута " \
-               "(если git не запущен, удалите .git/index.lock)"
+        return f"{cp['why']}: останавливаюсь; повторите запуск после окончания Git-операции. " \
+               "Чекпойнт не менял индекс человека"
     return f"{cp['why']}: останавливаюсь, разбираться человеку"
 
 
-def commit_result(cwd: str, task: str, headline: str, enabled: bool) -> dict:
-    """Зафиксировать работу агента отдельным коммитом — иначе откат остаётся обещанием.
+def _commit_db(root: str, message: str, env: dict) -> tuple:
+    """Сохранить прежний режим проверок только для коммита результата агента."""
+    rc, out, err = git_retry("commit", "--no-verify", "-m", message, cwd=root, env=env)
+    return rc, (out + "\n" + err).strip()
 
-    `git reset --hard <чекпойнт>` не трогает файлы, которых git ещё не видел, а сборка
-    карточек создаёт именно новые файлы. На живом прогоне это вышло боком дважды: откат
-    оставил карточки в базе, а следующий чекпойнт закоммитил их как работу человека.
-    Работа агента, лежащая отдельным коммитом поверх чекпойнта, снимается честно и целиком.
-    """
+
+def _result_refused(detail: str) -> dict:
+    return {"ok": False, "why": "коммит результата не сделан: " + detail}
+
+
+def commit_result(cwd: str, task: str, headline: str, enabled: bool) -> dict:
+    """Зафиксировать только базу знаний, не присваивая stage за её пределами."""
     if not enabled:
         return {"ok": False, "why": "коммит результата выключен вместе с чекпойнтом"}
-    # Только база знаний: `add -A` присвоил бы агенту и правки человека, сделанные пока
-    # он работал. Чекпойнт фиксирует всё дерево — это работа человека; коммит результата
-    # обязан содержать ровно то, что менял агент.
-    if not git("status", "--porcelain", "--", "AuroraKnowledgeDB", cwd=cwd)[1]:
+    lp = _lp()
+    if lp is None:
+        return _result_refused("реестр локальных путей (local_paths.py) недоступен — выполните kit:update")
+    try:
+        scope = lp.boundary(cwd)
+        if not scope["ok"] or scope["nested"]:
+            return _result_refused(scope["detail"] or "граница проекта и git не определена")
+        with lp.index_transaction(scope["project"], pause=_lock_pause, retries=LOCK_RETRIES) as tx:
+            return _commit_result_prepared(lp, tx, task, headline)
+    except lp.IndexRefusal as exc:
+        return {**_result_refused(f"{exc.step} не прошёл: {_git_why(str(exc), exc.lock)}"),
+                "kind": "lock" if exc.lock else "refused"}
+    except lp.GIT_ERRORS as exc:
+        return _result_refused(str(exc))
+
+
+def _commit_result_prepared(lp, tx, task, headline):
+    kb = "AuroraKnowledgeDB"
+    run = _agent_index_run(tx.root)
+    env = tx.env()
+    if not lp.run_index_step(run, ["status", "--porcelain", "--", kb], env):
         return {"ok": True, "sha": "", "why": "агент ничего не изменил"}
-    # Замок индекса мигает от параллельного `git status` (панель, редактор): повтор с паузой, как у чекпойнта, —
-    # иначе остановленный прогон оставит сделанное без коммита агента, и следующий чекпойнт запишет это на человека.
-    rc, _o, err = git_retry("add", "--", "AuroraKnowledgeDB", cwd=cwd)
-    if rc != 0:
-        # Без этой проверки новые карточки не попадали в коммит, а ответ был ok=True по старым, уже в индексе.
-        return {"ok": False, "why": f"коммит результата не сделан: add не прошёл: {_git_why(err, 'index.lock' in err)}"}
-    # Путь в конце обязателен: без него в коммит агента (а он идёт с `--no-verify`) уехало бы всё, что лежит в
-    # индексе, — в том числе файл с секретом, который хук pre-commit как раз не пустил в чекпойнт.
-    rc, _o, err = git_retry("commit", "--no-verify", "-m", f"agent: {task} — {headline}", "--",
-                            "AuroraKnowledgeDB", cwd=cwd)
-    if rc != 0:
-        return {"ok": False, "why": f"коммит результата не сделан: {err[:200]}"}
-    return {"ok": True, "sha": git("rev-parse", "HEAD", cwd=cwd)[1], "why": "работа агента зафиксирована"}
+    local = lp.prepare_stage(tx, run, within=kb)
+    rc, _o, err = run(["diff", "--cached", "--quiet", "--", kb], env)
+    if rc not in (0, 1):
+        return _result_refused("diff индекса не прошёл: " + _git_why(err, False))
+    if rc == 0:
+        return {"ok": True, "sha": "", "why": "изменены только локальные пути базы"}
+    # Второй индекс для Git commit: HEAD плюс ровно та версия базы, что будет в
+    # настоящем индексе. Один add, без повторного чтения изменчивых рабочих файлов.
+    tree = lp.run_index_step(run, ["write-tree"], env)
+    commit_env = tx.env("commit-db-index")
+    lp.run_index_step(run, ["read-tree", tx.head or "--empty"], commit_env)
+    lp.run_index_step(run, ["restore", "--staged", f"--source={tree}", "--", kb], commit_env)
+
+    def invoke():
+        rc2, err2 = _commit_db(tx.root, f"agent: {task} — {headline}", commit_env)
+        return rc2, "", err2
+
+    attempt = tx.commit(invoke, lambda: tx.temp / "index")
+    if attempt.error:
+        return _result_refused(attempt.error[:200])
+    if attempt.warning:
+        return {"ok": bool(attempt.sha), "sha": attempt.sha, "why": attempt.warning,
+                "index_warning": attempt.warning, "outcome": "inspect_index"}
+    return {"ok": True, "sha": attempt.sha, "why": "работа агента зафиксирована"
+            + (f"; локальных снято: {len(local)}" if local else "")}
+
+
+def _publish_result(cwd: str, task: str, headline: str, enabled: bool, *, report: bool = False) -> bool:
+    done = commit_result(cwd, task, headline, enabled)
+    failed = enabled and (not done["ok"] or bool(done.get("index_warning")))
+    reason = done.get("index_warning") or done.get("why") or "коммит результата не подтверждён"
+    sha = done.get("sha")
+    if failed:
+        AG.record_failure("commit_result", reason, stage="коммит результата", cwd=cwd, sha=sha or "")
+        next_step = ("повторите запуск после окончания Git-операции" if done.get("kind") == "lock"
+                     else "проверьте HEAD и индекс перед повтором")
+        say(f"\n=== Результат агента: {reason}" + (f" ({sha})" if sha else "")
+            + f". Здесь останавливаюсь, {next_step}.")
+    elif report:
+        print(f"Результат агента: {reason}" + (f" ({sha[:8]})" if sha else ""))
+    return not failed
 
 
 # ------------------------------------------------------------------ вызов команд
@@ -4051,16 +4068,20 @@ def until_done(cwd: str, a, task: str, run_batch, report, headline, passed,
 
     deadline = time.time() + a.hours * 3600
     batch, texts, waits, results = 0, [], 0, []
-    stopped = ""          # "checkpoint" — цикл остановил отказ чекпойнта: код возврата ненулевой
+    stopped = ""          # "checkpoint" или "commit_result" — Git не дал продолжить
     while True:
         batch += 1
         say(f"\n=== заход {batch} · до конца окна "
             f"{human_time(max(0, deadline - time.time()))}")
         res = run_batch()
         results.append(res)
+        if res.get("stopped") == "commit_result":
+            stopped = "commit_result"  # периодическая публикация внутри захода уже остановилась
+            break
         texts.append(report(res))
-        commit_result(cwd, f"agent:{task}", f"заход {batch}: {headline(res)}",
-                      not a.no_checkpoint)
+        if not _publish_result(cwd, f"agent:{task}", f"заход {batch}: {headline(res)}", not a.no_checkpoint):
+            stopped = "commit_result"
+            break
         if not res["left"]:
             say(f"\n=== очередь пройдена: заходов {batch}")
             break
@@ -4092,12 +4113,13 @@ def until_done(cwd: str, a, task: str, run_batch, report, headline, passed,
             say(f"\n=== окно {a.hours} ч закрылось: заходов {batch}, "
                 f"осталось карточек {left_now(res)}")
             break
-        cp = checkpoint(cwd, f"agent:{task}", not a.no_checkpoint)
-        if not cp["ok"]:
-            # Без чекпойнта следующий заход писал бы по несохранённой работе человека: откат её бы снёс.
-            say("\n=== " + checkpoint_stop_line(cwd, cp))
-            stopped = "checkpoint"
-            break
+        if not a.no_checkpoint:
+            cp = checkpoint(cwd, f"agent:{task}", True)
+            if not cp["ok"] or cp.get("index_warning"):
+                # Без чекпойнта следующий заход писал бы по несохранённой работе человека.
+                say("\n=== " + checkpoint_stop_line(cwd, cp))
+                stopped = "checkpoint"
+                break
     return {"res": res, "results": results, "batches": batch, "texts": texts, "stopped": stopped}
 
 
@@ -6171,45 +6193,122 @@ def thread_path(cwd: str, tid: str) -> Path:
     return Path(cwd) / ASK_DIR / (name + ".md")
 
 
-def read_thread(path: Path) -> list:
-    """[{'q','a','at'}] — пары вопрос-ответ разговора по порядку.
+def _ask_thread_body(lines: list[str]) -> str:
+    # append_turn добавляет ровно по одной пустой строке до и после текста.
+    # Все остальные переносы (в том числе последняя строка ответа) принадлежат автору.
+    start = int(lines[:1] == [""])
+    end = len(lines) - int(lines[-1:] == [""])
+    return "\n".join(lines[start:end])
 
-    Формат файла — обычный markdown с заголовками третьего уровня, потому что этот файл
-    читают трое: панель, модель и человек в Obsidian. JSON прочитали бы двое.
-    """
-    # разговор-ссылка на файл вне проекта модели не отдаём: история уходит в её запрос
+
+def _ask_thread_fence(fence: str, line: str) -> str:
+    marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+    if not marker:
+        return fence
+    run, rest = marker.groups()
+    if fence:
+        return "" if run.startswith(fence) and not rest.strip() else fence
+    return "" if run[0] == "`" and "`" in rest else run
+
+
+_ASK_TURN_FRAME = re.compile(r"<!-- aurora-ask-turn:v1 ([0-9]{1,12}) ([0-9]{1,12}) ([0-9]{1,12}) -->")
+_ASK_QUESTION_HEAD = re.compile(r"\n### Вопрос · ([^\n]+)\n\n")
+
+
+def _read_framed_ask_turns(text: str) -> tuple[str, list]:
+    # Читаем новые записи с конца: проверяем только настоящий хвост каждой записи,
+    # не ищем служебные заголовки или комментарии в телах вопроса и ответа.
+    end, turns = len(text), []
+    while end:
+        line_end = end
+        while line_end and text[line_end - 1] == "\n":
+            line_end -= 1
+        line_start = text.rfind("\n", 0, line_end) + 1
+        frame = _ASK_TURN_FRAME.fullmatch(text, line_start, line_end)
+        if not frame or text[line_start - 2:line_start] != "\n\n":
+            break
+        size, q_size, a_size = map(int, frame.groups())
+        body_end = line_start - 2
+        start, a_start = body_end - size, body_end - a_size
+        if not 0 <= start < a_start <= body_end:
+            break
+        head = _ASK_QUESTION_HEAD.match(text, start, a_start)
+        if not head:
+            break
+        q_end = head.end() + q_size
+        if q_end >= a_start or not re.fullmatch(r"\n\n### Ответ · [^\n]*\n\n", text[q_end:a_start]):
+            break
+        question = text[head.end():q_end]
+        if question.strip():
+            turns.append({"q": question, "a": text[a_start:body_end], "at": head[1]})
+        end = start
+    return text[:end], turns[::-1]
+
+
+def _closed_ask_fences(lines: list[str]) -> set[int]:
+    closed, fence, start = set(), "", 0
+    for i, line in enumerate(lines):
+        next_fence = _ask_thread_fence(fence, line)
+        if not fence and next_fence:
+            start = i + 1
+        elif fence and not next_fence:
+            closed.update(range(start, i))
+        fence = next_fence
+    return closed
+
+
+def _read_legacy_ask_turns(text: str) -> list:
+    turns = []
+    parts, where, at, fence = {"q": [], "a": []}, "", "", ""
+
+    def finish():
+        q = _ask_thread_body(parts["q"])
+        if q.strip():
+            turns.append({"q": q, "a": _ask_thread_body(parts["a"]), "at": at})
+
+    lines = text.split("\n")
+    closed = _closed_ask_fences(lines)
+    for i, line in enumerate(lines):
+        m = re.fullmatch(r"### (Вопрос|Ответ)(?:[ \t]*·[ \t]*(.*))?[ \t]*", line)
+        kind, note = (m[1], (m[2] or "").strip()) if m else ("", "")
+        if kind == "Вопрос" and i not in closed:
+            dated = re.fullmatch(r"\d{4}-\d\d-\d\d(?: \d\d:\d\d(?: UTC)?)?", note)
+            # Старые оборванные ответы могли закончиться незакрытым fence.
+            if not where or (not at and not fence) or (
+                dated and lines[i - 1:i] == [""] and lines[i + 1:i + 2] == [""]
+            ):
+                finish()
+                parts, where, at, fence = {"q": [], "a": []}, "q", note, ""
+                continue
+        if kind == "Ответ" and where == "q" and i not in closed and (not fence or note):
+            where, fence = "a", ""
+        elif where:
+            parts[where].append(line)
+            fence = _ask_thread_fence(fence, line)
+    finish()
+    return turns
+
+
+def read_thread(path: Path) -> list:
+    """Read a Markdown journal: legacy prefix, then length-framed question/answer pairs."""
+    # История уходит в запрос модели, поэтому ссылки за пределы проекта не читаем.
     if not path.is_file() or link_escapes(str(path)):
         return []
-    turns, cur, where = [], {}, None
-    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        m = re.match(r"^### (Вопрос|Ответ)\b(?:\s*·\s*(.*))?$", line.strip())
-        if m:
-            if m.group(1) == "Вопрос":
-                if cur.get("q"):
-                    turns.append(cur)
-                cur, where = {"q": "", "a": "", "at": (m.group(2) or "").strip()}, "q"
-            else:
-                where = "a"
-            continue
-        if where:
-            cur[where] = (cur.get(where, "") + "\n" + line).strip()
-    if cur.get("q"):
-        turns.append(cur)
-    return turns
+    legacy, framed = _read_framed_ask_turns(path.read_text(encoding="utf-8", errors="ignore"))
+    return _read_legacy_ask_turns(legacy) + framed
 
 
 def turns_as_messages(turns) -> list:
     """Пары разговора → сообщения для модели.
 
     Пар берём последние `ASK_TAIL`, а ответы **не режем**: обрезание до 700 знаков было
-    ценой текстового пересказа в промпте, а механизму истории оно не нужно. Служебный
-    хвост ответа (подпись, ссылки, вердикт Момуса) в разговор не входит: это оформление
-    панели, а не то, что модель говорила.
+    ценой текстового пересказа в промпте, а механизму истории оно не нужно. В журнал
+    уже записан ответ без служебного хвоста отчёта. `---` здесь может быть частью ответа.
     """
     out = []
     for t in list(turns)[-ASK_TAIL:]:
-        answer = (t.get("a") or "").split("\n---")[0].strip()
-        if not (t.get("q") and answer):
+        answer = t.get("a") or ""
+        if not (t.get("q") and answer.strip()):
             continue
         out.append({"role": "user", "content": t["q"]})
         out.append({"role": "assistant", "content": answer})
@@ -6226,6 +6325,10 @@ def append_turn(path: Path, question: str, answer: str, note: str, mode: str) ->
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     now = utc_label()
+    # Длины в символах после нормализации переводов строк, как при чтении на любой ОС.
+    question = question.replace("\r\n", "\n").replace("\r", "\n")
+    answer = answer.replace("\r\n", "\n").replace("\r", "\n")
+    note = " ".join(note.splitlines())
     if not path.is_file():
         # Заголовок — одна строка: перевод строки в вопросе рвал кавычки в шапке (заголовок
         # обрезался до первой строки), а обратная косая — YAML-экранирование.
@@ -6236,10 +6339,10 @@ def append_turn(path: Path, question: str, answer: str, note: str, mode: str) ->
                 "_Журнал диалога: вопросы аналитика и ответы модели по карточкам базы. "
                 "Файл ведёт панель (`agent:ask`), править его руками незачем — но читать "
                 "можно и в Obsidian._", ""]
-        path.write_text("\n".join(head), encoding="utf-8")
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(f"\n### Вопрос · {now}\n\n{question}\n"
-                f"\n### Ответ · {note}\n\n{answer}\n")
+        path.write_text("\n".join(head), encoding="utf-8", newline="\n")
+    body = f"\n### Вопрос · {now}\n\n{question}\n\n### Ответ · {note}\n\n{answer}"
+    with path.open("a", encoding="utf-8", newline="\n") as f:
+        f.write(f"{body}\n\n<!-- aurora-ask-turn:v1 {len(body)} {len(question)} {len(answer)} -->\n")
     return path
 
 
@@ -10293,8 +10396,10 @@ def report_pipeline(res: dict, question: str) -> str:
     lines = [f"# Ответ базы — {utc_label()}", "", f"**Вопрос:** {question}", ""]
     if not res.get("ok"):
         err = res.get("error") or {}
-        lines += [f"✗ Ответа нет: {err.get('message') or res.get('why') or 'причина неизвестна'}",
-                  "", "План и состояние сохранены: " + str(res.get("state_id") or "—")]
+        lines.append(f"✗ Ответа нет: {err.get('message') or res.get('why') or 'причина неизвестна'}")
+        if res.get("state_id"):
+            label = "План и состояние сохранены" if res.get("plan_created_before_answer") else "Состояние сохранено"
+            lines += ["", f"{label}: {res['state_id']}"]
         return "\n".join(lines)
     lines += [str(res.get("answer") or ""), "", "---", ""]
     steps = res.get("steps") or []
@@ -11035,7 +11140,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
 
     `window_s` — окно вместо бюджета шага: вся очередь за один проход (`--until-done`).
     `commit(n)` зовётся каждые `commit_every` записанных карточек — проход на часы не
-    держит сделанное незафиксированным.
+    держит сделанное незафиксированным. Явный `False` от callback останавливает записи.
     """
     started = time.time()
     budget = started + (window_s or cfg["budget_min"] * 60)
@@ -11093,6 +11198,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
         step["note"] += f"; разрезана на {len(made)}"
 
     written = [0]
+    commit_failed = False
 
     def changed_step(step, path, why=None):
         """Карточку изменили, пока шла модель (или замок карточек занят): запись не сделана, правка человека цела. Карточка
@@ -11106,7 +11212,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
         return step
 
     def finish(path, step):
-        nonlocal unsupported
+        nonlocal unsupported, commit_failed
         steps.append(step)
         tried.append(path)
         if apply and step["status"] in PARKED_STATUSES:
@@ -11208,7 +11314,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             if checked:
                 record_unsupported(cwd, path, step.get("claims"), step.get("unsupported", 0))
             if commit and commit_every and written[0] % commit_every == 0:
-                commit(written[0])
+                commit_failed = commit(written[0]) is False
 
     def keep_going(step) -> bool:
         """Сбой за сбоем — признак мёртвого шлюза, а не плохих карточек."""
@@ -11230,7 +11336,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             path, step = one(job)
             done += 1
             finish(path, step)
-            if not keep_going(step):
+            if commit_failed or not keep_going(step):
                 break
     else:
         # В работе столько карточек, сколько слотов; ответ пишется, как только пришёл.
@@ -11250,13 +11356,20 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
                     path, step = fut.result()
                     done += 1
                     finish(path, step)
+                    if commit_failed:
+                        break
                     if not stop and not keep_going(step):
                         stop = True
+                if commit_failed:
+                    for fut in flying:
+                        fut.cancel()
+                    break
                 if not stop:
                     flying |= {ex.submit(one, job)
                                for job in itertools.islice(queue, width - len(flying))}
     return {"steps": steps, "left": len(todo) - sum(1 for s_ in steps if s_["status"] != CHANGED), "unsupported": unsupported,
             "seconds": round(time.time() - started, 1), "tried": tried,
+            "stopped": "commit_result" if commit_failed else "",
             # Предохранитель сработал — заходы до конца очереди встают, как у связывания:
             # следующий заход упёрся бы в тот же лежащий шлюз.
             "gateways_down": in_a_row >= FAILS_IN_A_ROW}
@@ -11883,7 +11996,7 @@ def main() -> int:
                     help="Спросить через план, делегирование, роли и манифест (для --task ask)")
     ap.add_argument("--resume", action="store_true",
                     help="продолжить прерванный пайплайн по plan.json и manifest.json "
-                         "(для --task ask --pipeline; нужен --thread или сохранённый id)")
+                         "(для --task ask --pipeline; передайте сохранённый id в --thread)")
     ap.add_argument("--emit-events", action="store_true",
                     help="печатать ASK_EVENT/MAKE_EVENT JSON-строки для панели "
                          "(для --task ask --pipeline и --task make)")
@@ -12026,9 +12139,13 @@ def main() -> int:
         if not a.question:
             print("agent_runner: нужен --question «текст вопроса»", file=sys.stderr)
             return 1
+        if a.resume and not (a.pipeline and a.thread):
+            print("agent_runner: для --resume нужны --pipeline и --thread с id сохранённого вопроса",
+                  file=sys.stderr)
+            return 1
         path = thread_path(cwd, a.thread or f"{utc_slug('%Y-%m-%d_%H%M')}-{slug(a.question)}")
         history = read_thread(path) if a.thread else []
-        if a.thread and not history:
+        if a.thread and not history and not a.resume:
             print(f"agent_runner: разговора «{a.thread}» нет — уточнять нечего. "
                   "Список: --task ask --threads", file=sys.stderr)
             return 1
@@ -12050,6 +12167,10 @@ def main() -> int:
             state_id = a.thread or path.stem
             state = AS.AskState(cwd, state_id, a.question,
                                 keep=a.keep_questions or 0)
+            if a.resume and a.thread != state.id:
+                print("agent_runner: --thread должен точно совпадать с id сохранённого вопроса",
+                      file=sys.stderr)
+                return 1
             journal = thread_path(cwd, state.id)
             pipeline_history = read_thread(journal) if a.thread else []
 
@@ -12059,7 +12180,7 @@ def main() -> int:
 
             res = AP.run(cfg, cwd, a.question, call=AG.call_role,
                          mode=a.mode, max_cards=a.limit or 40,
-                         history=pipeline_history, thread_id=state.id,
+                         history=turns_as_messages(pipeline_history), thread_id=state.id,
                          keep=a.keep_questions or 0, momus=not a.no_momus,
                          emit=emit, resume=a.resume, state=state,
                          enrich=not a.no_semantic, raptor=a.raptor)
@@ -12069,7 +12190,7 @@ def main() -> int:
                 note = (f"пайплайн · шагов {len(res.get('steps') or [])} · "
                         f"{metrics.get('total_seconds', res.get('seconds', 0))} с")
                 p = append_turn(journal, a.question, res.get("answer") or "",
-                                note, a.mode)
+                                note, res.get("mode", a.mode))
                 print(f"\nРазговор: `{p.relative_to(cwd)}` "
                       f"(вопросов в нём: {len(pipeline_history) + 1})")
             return 0 if res.get("ok") else 1
@@ -12114,7 +12235,7 @@ def main() -> int:
     import run_summary as RS
     head0 = RS.git_head(cwd)       # изменения базы за прогон считаются от этой точки
     steps_all: list = []           # шаги всех партий: у петель res — только последняя
-    if a.apply and not cp["ok"]:
+    if a.apply and not a.no_checkpoint and (not cp["ok"] or cp.get("index_warning")):
         # Отказ git (замок, хук) — той же строкой и записью в журнал сбоев, что в циклах: подсказки про индекс и флаги
         # иначе не доходят до первой остановки.
         why = checkpoint_stop_line(cwd, cp) if cp.get("kind") else cp["why"]
@@ -12144,10 +12265,10 @@ def main() -> int:
                             a.partition, critic_new=a.critic_new)
             steps_all += res.get("steps", [])
             texts.append(report_build(res, cp, a.apply, a.critic or a.critic_new, cfg))
-            if a.apply:
-                commit_result(cwd, "agent:build",
-                              f"партия {batch}: " + verdict_build(res, True)[1][:100],
-                              not a.no_checkpoint)
+            if a.apply and not _publish_result(cwd, "agent:build",
+                                               f"партия {batch}: " + verdict_build(res, True)[1][:100],
+                                               not a.no_checkpoint):
+                return 1
             left_after, done_after = build_left(cwd)
             if not left_after:
                 say(f"\n=== план разобран целиком: партий {batch}")
@@ -12180,11 +12301,12 @@ def main() -> int:
                 say(f"\n=== окно {a.hours} ч закрылось: партий {batch}, "
                     f"осталось источников {left_after}")
                 break
-            cp = checkpoint(cwd, "agent:build", a.apply and not a.no_checkpoint)
-            if not cp["ok"]:
-                say("\n=== " + checkpoint_stop_line(cwd, cp))
-                cp_stopped = True
-                break
+            if a.apply and not a.no_checkpoint:
+                cp = checkpoint(cwd, "agent:build", True)
+                if not cp["ok"] or cp.get("index_warning"):
+                    say("\n=== " + checkpoint_stop_line(cwd, cp))
+                    cp_stopped = True
+                    break
         text = "\n\n---\n\n".join(texts[-3:])      # в журнал — последние партии
     elif a.task == "distill" and a.recheck:
         res = recheck_unsupported(cfg, cwd, a.apply, a.limit)
@@ -12202,11 +12324,9 @@ def main() -> int:
         log_usage(cwd, "distill --recheck", summ, t_start, ended - t_start, run_id=run_id)
         log_timing(cwd, "distill --recheck", run_id, timing,
                    timing.get("services"))
-        if a.apply:
-            done = commit_result(cwd, "agent:distill",
-                                 f"перепроверка без опоры: чисто {res['clean']}, "
-                                 f"без опоры {res['flagged']}", not a.no_checkpoint)
-            print(f"Результат агента: {done.get('why')}")
+        if a.apply and not _publish_result(cwd, "agent:distill", f"перепроверка без опоры: чисто {res['clean']}, "
+                                           f"без опоры {res['flagged']}", not a.no_checkpoint, report=True):
+            return 1
         return 1 if res["failed"] else 0
     elif a.task == "distill" and a.until_done and a.apply:
         # Очередь тезисов — заходами до конца, а не по пятнадцать карточек за оборот
@@ -12222,7 +12342,7 @@ def main() -> int:
             r = run_distill(cfg, cwd, True, a.limit, momus=not a.no_momus, skip=tried,
                             defer_refresh=a.defer_refresh,
                             window_s=max(60.0, end - time.time()),
-                            commit=lambda n: commit_result(
+                            commit=lambda n: _publish_result(
                                 cwd, "agent:distill", f"тезисов по ходу прохода: {n}",
                                 not a.no_checkpoint),
                             commit_every=every)
@@ -12242,6 +12362,8 @@ def main() -> int:
                                     if k),
                           lambda r: sum(1 for s in r["steps"] if s["status"] != "сбой"),
                           remaining=lambda: len(distill_queue(cfg, cwd, a.defer_refresh)))
+        if loop["stopped"] == "commit_result":
+            return 1
         steps_all += [s for r in loop["results"] for s in r["steps"]]
         # Отчёт — за весь прогон, остаток — настоящий: не вышедшие карточки остались
         # в очереди, и маршрут должен о них знать.
@@ -12301,6 +12423,8 @@ def main() -> int:
                           lambda r: report_relink(r, True),
                           lambda r: f"связей поставлено: {r['added']}",
                           lambda r: r["cards"] - r["left"])
+        if loop["stopped"] == "commit_result":
+            return 1
         res = loop["res"]
         steps_all += [s for r in loop["results"] for s in r.get("steps", [])]
         relink_loop = (loop["batches"], sum(r["added"] for r in loop["results"]))
@@ -12328,6 +12452,8 @@ def main() -> int:
                           lambda r: f"карточек разложено: {r['made']}",
                           lambda r: r["cards"] - r["left"],
                           remaining=lambda: len(conform_queue(cwd)))
+        if loop["stopped"] == "commit_result":
+            return 1
         res = loop["res"]
         steps_all += [s for r in loop["results"] for s in r.get("steps", [])]
         conform_loop = (loop["batches"], sum(r["made"] for r in loop["results"]))
@@ -12383,9 +12509,9 @@ def main() -> int:
         head = (f"журнал прогона: заходов {relink_loop[0]}, "
                 f"связей поставлено: {relink_loop[1]}" if relink_loop[0]
                 else f"связей поставлено: {res['added']}")
-        if a.apply and (relink_loop[0] or res["added"]):
-            done = commit_result(cwd, "agent:relink", head, not a.no_checkpoint)
-            print(f"Результат агента: {done.get('why')}")
+        if (a.apply and (relink_loop[0] or res["added"])
+                and not _publish_result(cwd, "agent:relink", head, not a.no_checkpoint, report=True)):
+            return 1
         return 1 if cp_stopped else 0
     if a.task == "conform":
         # Отброшенные карточки — не провал прогона: они в остатке `kb:conform`. Код 1 — только если остановил чекпойнт
@@ -12393,51 +12519,45 @@ def main() -> int:
         made = conform_loop[1] if conform_loop[0] else res["made"]
         head = (f"журнал прогона: заходов {conform_loop[0]}, карточек разложено: {made}" if conform_loop[0]
                 else f"карточек разложено: {made}")
-        if a.apply and made:
-            done = commit_result(cwd, "agent:conform", head, not a.no_checkpoint)
-            print(f"Результат агента: {done.get('why')}")
+        if a.apply and made and not _publish_result(cwd, "agent:conform", head, not a.no_checkpoint, report=True):
+            return 1
         return 1 if cp_stopped or res.get("gateways_down") else 0
     if a.task == "clashes":
         return 0          # находки — не провал: их разбирает человек
     if a.task == "tasks":
-        if a.apply and (res["moved"] or res["renamed"]):
-            done = commit_result(cwd, "agent:tasks",
-                                 f"знание задач возвращено предмету: {res['moved']}, "
-                                 f"переименовано: {res['renamed']}",
-                                 not a.no_checkpoint)
-            print(f"Результат агента: {done.get('why')}")
+        if (a.apply and (res["moved"] or res["renamed"])
+                and not _publish_result(cwd, "agent:tasks", f"знание задач возвращено предмету: {res['moved']}, "
+                                        f"переименовано: {res['renamed']}", not a.no_checkpoint, report=True)):
+            return 1
         return 0
     if a.task == "golden":
-        if a.apply and (res["moved"] or res["remapped"]):
-            done = commit_result(cwd, "agent:golden",
-                                 f"эталон: по имени {res['moved']}, моделью {res['remapped']}",
-                                 not a.no_checkpoint)
-            print(f"Результат агента: {done.get('why')}")
+        if (a.apply and (res["moved"] or res["remapped"])
+                and not _publish_result(cwd, "agent:golden", f"эталон: по имени {res['moved']}, моделью {res['remapped']}",
+                                        not a.no_checkpoint, report=True)):
+            return 1
         return 0 if not res.get("failed") else 2
     if a.task == "twins":
-        if a.apply and res["merged"]:
-            done = commit_result(cwd, "agent:twins", f"слито групп: {res['merged']}",
-                                 not a.no_checkpoint)
-            print(f"Результат агента: {done.get('why')}")
+        if (a.apply and res["merged"]
+                and not _publish_result(cwd, "agent:twins", f"слито групп: {res['merged']}",
+                                        not a.no_checkpoint, report=True)):
+            return 1
         return 0
     if a.task == "extract":
         # Ничего не вынести — не провал: большинство карточек говорят ровно о своём
         # объекте, и пустой прогон здесь нормален.
-        if a.apply and res["made"]:
-            done = commit_result(cwd, "agent:extract",
-                                 f"вынесено определений: {res['made']}",
-                                 not a.no_checkpoint)
-            print(f"Результат агента: {done.get('why')}")
+        if (a.apply and res["made"]
+                and not _publish_result(cwd, "agent:extract", f"вынесено определений: {res['made']}",
+                                        not a.no_checkpoint, report=True)):
+            return 1
         return 0
     if a.task == "translit":
         # Свой вердикт: общий оракул считает разобранные КОНФЛИКТЫ, а здесь работа —
         # переводы имён. Ноль переводов не провал: латинских имён может не остаться или
         # все они окажутся английскими словами, которые переводить нечего.
-        if a.apply and res["translated"]:
-            done = commit_result(cwd, "agent:translit",
-                                 f"имён переведено: {res['translated']}",
-                                 not a.no_checkpoint)
-            print(f"Результат агента: {done.get('why')}")
+        if (a.apply and res["translated"]
+                and not _publish_result(cwd, "agent:translit", f"имён переведено: {res['translated']}",
+                                        not a.no_checkpoint, report=True)):
+            return 1
         broken = sum(1 for s in res["steps"] if s["status"] == "сбой")
         return 1 if broken else 0
     if a.task == "distill":
@@ -12447,8 +12567,8 @@ def main() -> int:
             head = (f"журнал прогона: заходов {distill_loop}, тезисов: {made}, "
                     f"без опоры: {res['unsupported']}" if distill_loop
                     else f"тезисов: {made}, без опоры: {res['unsupported']}")
-            done = commit_result(cwd, "agent:distill", head, not a.no_checkpoint)
-            print(f"Результат агента: {done.get('why')}")
+            if not _publish_result(cwd, "agent:distill", head, not a.no_checkpoint, report=True):
+                return 1
         # Код 1 — только сбой. «Работы не нашлось» — успех, а утверждения без опоры записаны
         # в `meta/unsupported.md` и перепроверяются `--recheck`: до 1.146.0 и то и другое
         # давало код 1, и каждый оборот маршрута PRJ-C красил шаг упавшим (4 из 4).
@@ -12458,9 +12578,8 @@ def main() -> int:
     self_looped = a.until_done and a.task == "build"
     if a.apply and not self_looped:
         ok, why = (verdict_build if a.task == "build" else verdict)(res, True)
-        done = commit_result(cwd, f"agent:{a.task}", why[:120], not a.no_checkpoint)
-        print(f"Результат агента: {done.get('why')}"
-              + (f" ({done['sha'][:8]})" if done.get("sha") else ""))
+        if not _publish_result(cwd, f"agent:{a.task}", why[:120], not a.no_checkpoint, report=True):
+            return 1
     ok = (verdict_build if a.task == "build" else verdict)(res, a.apply)[0]
     return 0 if ok and not cp_stopped else 1
 

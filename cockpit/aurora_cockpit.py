@@ -2692,7 +2692,7 @@ def git_auto():
 def git_auto_wanted(project: str, action: str, trigger: str) -> bool:
     """Маршруту: обновлять ли проект перед ним и отправлять ли после."""
     try:
-        return GITA.GitAuto.wanted(GS.load_saved(project), action, trigger)
+        return GITA.GitAuto.wanted(GS.load_saved(project, own_repo=True), action, trigger)
     except Exception:  # noqa: BLE001 — сломанная настройка Git не роняет маршрут
         return False
 
@@ -8648,13 +8648,15 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
                         run_log.flush()
                     except OSError:
                         pass
-            if job["cancel"].is_set():          # «Прервать» пришло, пока процесса ещё не было: команда не стартует
-                job["rc"] = -15
-                return
-            p = subprocess.Popen([python_executable(), path, *args], cwd=project, env=env,
-                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                 text=True, encoding="utf-8", errors="replace", bufsize=1)
-            job["proc"] = p     # чтобы человек мог прервать прогон, а не ждать часами
+            argv = [python_executable(), path, *args]
+            with JOBS_LOCK:
+                if job["cancel"].is_set():   # Не запускать процесс после принятой остановки.
+                    job["rc"] = -15
+                    return
+                p = subprocess.Popen(argv, cwd=project, env=env,
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     text=True, encoding="utf-8", errors="replace", bufsize=1)
+                job["proc"] = p
             for line in p.stdout:
                 with JOBS_LOCK:
                     job_push(job, line.rstrip("\n"))
@@ -8728,8 +8730,9 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "", net_policy:
                     trim_runs(project)
             finally:
                 # `run_job` ждёт этот флаг и сразу читает meta: итог должен быть уже на диске.
-                job["done"] = True
-                job["state"] = "done"
+                with JOBS_LOCK:
+                    job["state"] = "stopped" if job["cancel"].is_set() else "done"
+                    job["done"] = True
                 TASKS.release(job_id)
 
     def launch():
@@ -12029,14 +12032,14 @@ def stop_job(job_id: str, lang: str = "") -> dict:
             job["finished"] = time.time()
             job_push(job, t("job.stopped"))
         return {"ok": True, "queued": True}
-    proc = job.get("proc")
-    if not proc and not job.get("done") and job.get("cancel") is not None:
-        # Процесса ещё нет: задание стоит в очереди за связью или как раз стартует. Остановка запоминается, и команда
-        # не запустится (ожидание прервётся, а рождение процесса остановку увидит).
-        job["cancel"].set()
-        return {"ok": True}
-    if job.get("done") or not proc:
-        return {"error": "задание уже закончилось"}
+    with JOBS_LOCK:
+        proc, cancel = job.get("proc"), job.get("cancel")
+        if job.get("done") or (not proc and cancel is None):
+            return {"error": "задание уже закончилось"}
+        if not proc:
+            # В ожидании запуска остановка отменяет и появление процесса.
+            cancel.set()
+            return {"ok": True}
     if job.get("paused"):
         # Приостановленному SIGTERM не дойдёт, пока его не разбудить. Снимаем паузу — и
         # только потом просим уйти, чтобы раннер успел зафиксировать сделанное.
@@ -12046,7 +12049,14 @@ def stop_job(job_id: str, lang: str = "") -> dict:
             pass
         job["paused"] = False
     try:
-        proc.terminate()
+        with JOBS_LOCK:
+            if job.get("done") or proc.poll() is not None:
+                return {"error": "задание уже закончилось"}
+            proc.terminate()
+            # Опрос может получить итог до ответа POST. Сигнал и отметка
+            # остановки предшествуют публикации done под тем же замком.
+            if cancel is not None:
+                cancel.set()
         for _ in range(int(STOP_GRACE / 0.05)):
             if proc.poll() is not None:
                 break

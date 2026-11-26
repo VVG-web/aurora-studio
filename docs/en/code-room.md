@@ -26,7 +26,7 @@ licence, and two sources of truth would drift apart. The registry gives reproduc
 address, the branch and the pinned revision are written in `aurora.config.yaml`, and every member
 gets the same clones with their own `code:sync`. A clone that did get into the project's git index
 (before the rule or through `git add -f`) is a `kit:doctor` error with the fix
-`git rm -r --cached Code/<name>`. A folder in `Code/` with no registry entry and a registry entry
+`git rm -r --cached -f Code/<name>`. A folder in `Code/` with no registry entry and a registry entry
 with no clone are `kit:doctor` warnings.
 
 "Files" does not unfold clones (one clone is tens of thousands of files): the folder guide is shown,

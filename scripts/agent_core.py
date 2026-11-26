@@ -1980,6 +1980,20 @@ def _out_cause(out: dict, err: str) -> Why:
     return Why("adapter_error", error=_scrub(err))
 
 
+class _AttemptDeadlineExpired(Exception):
+    """The request has not started: the caller's hard admission deadline passed."""
+
+
+def _transport_timeout(timeout: float, payload: dict | None) -> float:
+    deadline = (payload or {}).get("_hard_deadline")
+    if deadline is None:
+        return timeout
+    left = deadline - time.time()
+    if left <= 0:
+        raise _AttemptDeadlineExpired
+    return min(timeout, left)
+
+
 def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     """Тот же контракт, что у прямого вызова, но через Pydantic AI в отдельном venv.
 
@@ -2008,6 +2022,8 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
             "outdir": payload.get("outdir") or "",
             "tool_calls": (payload.get("tool_calls") or TOOL_CALLS) if tools else 0,
             "stream": bool(payload.get("stream"))}
+    if (hard_deadline := payload.get("_hard_deadline")) is not None:
+        task["hard_deadline"] = hard_deadline
     if payload.get("output_model"):
         task["output_model"] = str(payload["output_model"])
     slot = {"done": threading.Event(), "out": None}
@@ -2017,8 +2033,14 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
         pending[rid] = slot
     try:
         with _HUB_WRITE:
+            timeout = _transport_timeout(timeout, payload)
+            task["timeout"] = task["request_timeout"] = timeout
             proc.stdin.write(json.dumps(task, ensure_ascii=False) + "\n")
             proc.stdin.flush()
+    except _AttemptDeadlineExpired:
+        with _HUB_LOCK:
+            pending.pop(rid, None)
+        raise
     except (OSError, ValueError) as e:
         _join_stderr(proc)
         with _HUB_LOCK:
@@ -2048,6 +2070,8 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     out = slot["out"] or {}
     dt = time.time() - t0
     if not out.get("ok"):
+        if out.get("where") == "deadline":
+            raise _AttemptDeadlineExpired
         err = str(out.get("error") or "ошибка без описания")
         if out.get("where") == "timeout":
             # Сам адаптер остановил вызов по общему сроку: ответа модели нет, путь Pydantic AI
@@ -2090,7 +2114,7 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
 # Поля payload, которые понимает только внутренний адаптер. В HTTP-запрос они не идут.
 ADAPTER_ONLY = frozenset({"guard", "role", "tools_root", "mcp", "mcp_active", "outdir",
                           "tool_calls", "adapter", "needs_adapter", "output_model",
-                          "context_store", "input_limit", "stream"})
+                          "context_store", "input_limit", "stream", "_hard_deadline"})
 
 
 # Пульс прогона (1.170.0): какие запросы к моделям идут прямо сейчас. Ответ модели приходит
@@ -2296,7 +2320,7 @@ def _timed_transport(transport, backend: dict, payload: dict | None, timeout: fl
     with T.span(TIMING, "attempt", "llm.chat", service="llm",
                 provider=str(backend.get("name") or ""), model=model, role=role,
                 operation="chat", attempt=int(attempt or 0)) as span:
-        st, body, err, dt = transport("chat", backend, payload, timeout)
+        st, body, err, dt = transport("chat", backend, payload, _transport_timeout(timeout, payload))
         aurora = (body or {}).get("aurora") if isinstance(body, dict) else {}
         aurora = aurora if isinstance(aurora, dict) else {}
         latency = aurora.get("latency_ms")
@@ -2367,7 +2391,7 @@ def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -
     dt = 0.0
     entered = time.monotonic()        # когда вызов начался: обрыв, задевший сразу много вызовов, — одно событие
     if want == "pydantic_ai" and payload:
-        st, body, err, dt = pydantic_transport(backend, payload, timeout)
+        st, body, err, dt = pydantic_transport(backend, payload, _transport_timeout(timeout, payload))
         if not str(err or "").startswith(ADAPTER_FAIL):
             if st is not None:
                 # Адаптер сам довёл вызов до сервера (ответом или отказом): обхода нет, и
@@ -2395,7 +2419,7 @@ def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -
     # которым другие клиенты пользовались без помех.
     res = http_json(backend["url"] + "/chat/completions",
                     {k: v for k, v in (payload or {}).items() if k not in ADAPTER_ONLY},
-                    backend["key"], timeout)
+                    backend["key"], _transport_timeout(timeout, payload))
     if hard is not None and res[0] is not None:
         # Причину обхода несёт сам ответ: общее поле перетирает любой параллельный вызов,
         # дошедший через адаптер, а прямой запрос идёт минуты — к чтению оно уже пустое.
@@ -2472,11 +2496,12 @@ def _adapter_drop(backend: dict, payload: dict, timeout: float, link: dict, dt: 
       неисправен: вызов с инструментами отказывает с этой причиной, а вызов без них получает
       явный резерв — прямой HTTP без инструментов и MCP (вторая половина кортежа)."""
     model = payload.get("model") or ""
+    _transport_timeout(timeout, payload)  # Don't probe for a retry that can no longer start.
     reached, perr = probe_gateway(backend)
     if not reached:
         return (None, None, Refusal(perr, kind=_best_kind(link, perr)), dt), None
     link_ok(backend.get("n"), keep_probe=True)          # шлюз достижим: серия обрывов связи не растёт
-    st, body, err, dt2 = pydantic_transport(backend, payload, timeout)
+    st, body, err, dt2 = pydantic_transport(backend, payload, _transport_timeout(timeout, payload))
     if not str(err or "").startswith(ADAPTER_FAIL):
         if st is not None:
             ADAPTER["fallback_why"] = ""
@@ -4362,13 +4387,15 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
               mcp_active: list | None = None, mcp_only: list | None = None,
               outdir: str = "", tool_calls: int = 0, kb_root: str = "",
               context_store: str = "", input_limit: int = 0,
-              project: str = "", output_model: str = "") -> dict:
+              project: str = "", output_model: str = "", *, hard_deadline: float | None = None) -> dict:
     """Один вызов модели — сначала из кэша ответов, если такой вызов уже был.
 
     В кэш идут только одиночные вызовы настоящим транспортом: без истории разговора,
     инструментов, MCP и подрезки под окно — у них ответ зависит не только от задания.
     Ключ — роль, кольцо модели роли (модель, провайдер или цепочку поменяли — ответ спросят
     заново), режим рассуждений и задание целиком. `AURORA_AGENT_CACHE=0` выключает кэш.
+
+    `hard_deadline` is an absolute limit on starting new transport attempts, even in persist.
     """
     think = role_thinks(cfg, role) if thinking is None else thinking
     key = ""
@@ -4398,6 +4425,8 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
         # подменённые вызовы в тестах не знают этого поля.
         if output_model:
             kwargs["output_model"] = output_model
+        if hard_deadline is not None:
+            kwargs["hard_deadline"] = hard_deadline
         r = _call_role(cfg, role, messages, transport, deadline, sleep, thinking, max_tokens,
                        prefer, history, tools, guard_text, trim, request_timeout, mcp_active,
                        mcp_only, outdir, tool_calls, kb_root, context_store, input_limit,
@@ -4409,6 +4438,14 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
     return r
 
 
+def _ring_label(value) -> str:
+    """Allow a short name, never a URL or a credential, in the public trace."""
+    label = "".join(c for c in str(value or "") if c.isprintable())
+    if re.search(r"://|(?:key|token|secret)=", label, re.IGNORECASE):
+        return ""
+    return label[:120]
+
+
 def _call_role(cfg: dict, role: str, messages: list, transport=None,
               deadline: float | None = None, sleep=time.sleep,
               thinking: bool | None = None, max_tokens: int | None = None,
@@ -4418,7 +4455,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
               mcp_active: list | None = None, mcp_only: list | None = None,
               outdir: str = "", tool_calls: int = 0, kb_root: str = "",
               context_store: str = "", input_limit: int = 0,
-              project: str = "", output_model: str = "") -> dict:
+              project: str = "", output_model: str = "", *, hard_deadline: float | None = None) -> dict:
     """Один вызов модели через кольцо бэкендов.
 
     `mcp_active` — MCP-серверы, которые подключаются сразу (человек назвал их в запросе или
@@ -4465,6 +4502,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
         # Маршрут доводит до конца: срок вызова — бесконечность, срок запроса — страж
         # зависшего соединения, растущий на медленном шлюзе (`grow`).
         deadline = float("inf")
+    if hard_deadline is not None:
+        deadline = min(deadline, hard_deadline)
     grow: dict = {}             # № шлюза → множитель срока запроса после его обрыва по сроку
     empty_rings = 0
     # Каким адаптером идти — из настройки этого вызова, а не из переключателя процесса.
@@ -4477,7 +4516,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     # Что за вызов — для журнала сбоев: размер запроса, срок, режим. Ключей и адресов нет.
     req = {"role": role, "thinking": bool(think), "max_tokens": max_tokens,
            "request_timeout": int(req_timeout),
-           "deadline_s": None if persist else int(deadline - time.time()),
+           "deadline_s": None if persist and hard_deadline is None else int(deadline - time.time()),
            "prompt_chars": sum(len(str(m.get("content") or "")) for m in messages),
            "prompt_tokens_est": rough_tokens(messages), "history": len(history or []),
            "tools": bool(tools), "mcp_active": list(mcp_active or []), "adapter": want}
@@ -4500,6 +4539,28 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         "бэкенды не настроены: нет AURORA_AGENT_BACKEND_1_URL"]}
 
     order = ring_order(cfg, prefer, role)
+    # persist may reorder candidates later. Capture the original assignment.
+    initial_order = [b["n"] for b in order]
+    ring_attempts: list[dict] = []
+
+    def traced(result: dict) -> dict:
+        if ring_attempts:
+            result["ring_trace"] = {
+                "prefer": prefer or 0, "assigned": initial_order[0], "order": initial_order,
+                "first_attempt": ring_attempts[0]["n"], "attempts": ring_attempts,
+                "winner": result.get("backend") if result["ok"] else None,
+            }
+            result["req"].setdefault("attempts", attempts)
+        return result
+
+    def start_left() -> float:
+        return float("inf") if hard_deadline is None else hard_deadline - time.time()
+
+    def admission_expired() -> dict:
+        log.append("жёсткий срок вызова истёк: новые запросы не начаты")
+        return traced({"ok": False, "log": log, "timed_out": True,
+                       "req": dict(req, attempts=attempts, rings=ring, waited=round(waited, 1))})
+
     # Проверка соединений (включена владельцем): провайдера, чей профиль или интернет недоступен либо чья ручка не отвечает,
     # не трогаем и в карантин не сажаем — это не его беда. Падать «наугад» на другой адаптер незачем: запасные — только те,
     # что явно стоят в цепочке роли, и они идут своим чередом. Если недоступны все — LLM-функция блокируется, а не крутит
@@ -4507,7 +4568,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     # Диагностика (`NO_WAIT`: `agent:ping`, `agent:probe`, `agent:width`) спрашивает провайдеров живьём: она и нужна, чтобы
     # увидеть, что с ними, — проверка соединений её не останавливает.
     gate = _net_gate() if patient else None
-    net_waits = bool(persist and gate is not None and gate.policy_for() in ("queue", "partial_queue"))
+    net_waits = bool(persist and hard_deadline is None and gate is not None
+                     and gate.policy_for() in ("queue", "partial_queue"))
     refresh = False
     while time.time() < deadline:
         ring += 1
@@ -4567,10 +4629,10 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     USAGE["link_failed"] += 1
                     USAGE["link_why"] = f"все провайдеры роли недоступны ({names})"
                 _note_net_blocked(skipped, [b.get("provider") for b in order])
-                return {"ok": False, "log": log, "req": req,
+                return traced({"ok": False, "log": log, "req": req,
                         "net_blocked": {"providers": [b.get("provider") for b in order], "why": names},
                         # то же, что у обрыва связи: `bots` и итог прогона называют причину связью, а не «модель не ответила»
-                        "link": {"kind": "other", "n": None, "why": f"все провайдеры роли недоступны ({names})", "count": 0}}
+                        "link": {"kind": "other", "n": None, "why": f"все провайдеры роли недоступны ({names})", "count": 0}})
         if persist:
             # Медленный шлюз — в конец кольца, порядок остальных прежний. Журнал бесконечного
             # вызова не растёт без конца: начало и свежий хвост.
@@ -4592,6 +4654,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
         # выйдет из карантина раньше, чем кончится этот вызов.
         can_recover = False
         for b in order:
+            if start_left() <= 0:
+                return admission_expired()
             model = role_model(b, role)
             if not model:
                 log.append(f"№{b['n']}: нет модели для роли {role} — пропущен")
@@ -4655,6 +4719,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 continue
             payload = {"model": model, "messages": msgs,
                        "chat_template_kwargs": request_template(b, think), "adapter": want}
+            if hard_deadline is not None:
+                payload["_hard_deadline"] = hard_deadline
             if not tools and not output_model and not needs_adapter:
                 # Простой вызов умеет поток: первый чанк даст TTFT. Провайдер без потока
                 # adapter сам откатится на `agent.run`, а `ttft_ms` останется null.
@@ -4715,7 +4781,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             # На кольце из одного бэкенда другого пути нет: продление здесь просто
             # растягивает вызов за дедлайн, который назвал вызывающий, — и вместо
             # «одна попытка и итог» получается тридцать кругов ожидания карантина.
-            if len(order) > 1 and left < fair and b["n"] not in tried:
+            if hard_deadline is None and len(order) > 1 and left < fair and b["n"] not in tried:
                 deadline += fair
                 left = deadline - time.time()
                 log.append(f"№{b['n']}: даю запасному свой срок ({int(fair)} с)")
@@ -4726,9 +4792,11 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             # Отмечаем попытку ДО семафора: «честный шанс» — это то, что бэкенду дали,
             # а не то, чем он воспользовался. Иначе занятый слот выдаст ему свой срок
             # второй раз, и вызов растянется сверх request_timeout.
+            grant = min(max(0.5, min(fair, left)), start_left())
+            if grant <= 0:
+                return admission_expired()
             tried.add(b["n"])
             sem = _slot_semaphore(b, cfg)
-            grant = max(0.5, min(FAIR_SHARE * req_timeout, left))
             # Тяжёлый запрос сначала ждёт своё место (`heavy_take`), и только потом слот ширины: иначе
             # ждущий тяжёлый держал бы слот, нужный коротким.
             slot_started, slot_mono = time.time(), time.monotonic()
@@ -4743,22 +4811,27 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                                  metrics={"slot_wait_ms": round(ms, 1)})
 
             size = rough_tokens(payload["messages"])
+            if start_left() <= 0:
+                return admission_expired()
             if not heavy_take(b, size):
                 say_live("…", role, f"№{b['n']} {model}: тяжёлых запросов к шлюзу уже столько, сколько он "
                                     f"держит, — жду до {human_secs(grant)}")
                 began = time.monotonic()
-                if not heavy_take(b, size, grant):
+                heavy_wait = min(grant, start_left())
+                if heavy_wait <= 0 or not heavy_take(b, size, heavy_wait):
                     slot_done()
                     log.append(f"№{b['n']} {model}: предел тяжёлых запросов занят — дальше по кольцу")
                     can_recover = True
                     other += 1
                     continue
                 grant = max(0.5, grant - (time.monotonic() - began))
-            got = sem.acquire(blocking=False, project=project_key)
-            if not got:
+            room = start_left()
+            got = room > 0 and sem.acquire(blocking=False, project=project_key)
+            if not got and room > 0:
                 say_live("…", role, f"№{b['n']} {model}: все слоты шлюза заняты — жду до "
                                     f"{human_secs(grant)}")
-                got = sem.acquire(timeout=grant, project=project_key)
+                grant = min(grant, start_left())
+                got = grant > 0 and sem.acquire(timeout=grant, project=project_key)
             if not got:
                 slot_done()
                 heavy_give(b["n"], size)
@@ -4770,7 +4843,13 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             with _SEM_LOCK:
                 INFLIGHT[b["n"]] = INFLIGHT.get(b["n"], 0) + 1
             try:
+                if start_left() <= 0:
+                    return admission_expired()
                 attempts += 1
+                ring_attempts.append({
+                    "n": b["n"], "provider": _ring_label(b.get("provider") or b.get("name")),
+                    "model": _ring_label(model),
+                })
                 limit = req_timeout * grow.get(b["n"], 1.0)
                 say_live("↗", role, f"запрос → №{b['n']} {model} · "
                                     f"оценка входа ≈{rough_tokens(payload['messages'])} ток. · "
@@ -4784,6 +4863,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 st, body, err, dt = _timed_transport(
                     transport, b, payload, max(5.0, min(left, limit)), attempts)
                 if st == 400 and rejects_template(err, body):
+                    if start_left() <= 0:
+                        return admission_expired()
                     payload.pop("chat_template_kwargs", None)
                     log.append(f"№{b['n']} {model}: шлюз не принял chat_template_kwargs — "
                                f"повтор без него; рассуждения теперь как у модели по "
@@ -5049,7 +5130,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         log.append(f"№{b['n']} {model}: ⛔ Pydantic AI не сработал ({bypass}) — "
                                    "вызов с инструментами и MCP прямым HTTP не принимаю")
                         _note_failure("мимо Pydantic AI", last_cell)
-                        return {"ok": False, "log": log, "req": req, "bypass": bypass}
+                        return traced({"ok": False, "log": log, "req": req, "bypass": bypass})
                 elif watch:
                     clear_bypass()
                 retried = isinstance(body.get("aurora"), dict) and bool(body["aurora"].get("link_retried"))
@@ -5068,7 +5149,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                                        if out_tokens and dt > 0 else ""))
                 NET_BLOCKED["row"] = None
                 _note_success(usage, b, role, model, dt)
-                return {"ok": True, "text": text, "reasoning": reasoning, "backend": b["n"],
+                return traced({"ok": True, "text": text, "reasoning": reasoning, "backend": b["n"],
                         "seen": seen_chars, "cut": cut_chars,
                         "model": model, "seconds": round(dt, 2), "waited": round(waited, 1),
                         "ring": ring, "log": log, "url": b["url"],
@@ -5078,7 +5159,9 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         "via": via, "bypass": bypass, "finish": finish,
                         "structured": str((body.get("aurora") or {}).get("structure") or ""),
                         "req": dict(req, attempts=attempts, rings=ring),
-                        "tools_called": list((body.get("aurora") or {}).get("tools_called") or [])}
+                        "tools_called": list((body.get("aurora") or {}).get("tools_called") or [])})
+            except _AttemptDeadlineExpired:
+                return admission_expired()
             finally:
                 with _SEM_LOCK:
                     INFLIGHT[b["n"]] = INFLIGHT.get(b["n"], 1) - 1
@@ -5120,6 +5203,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             log.append("ожидание не продвинуло время, а пары всё ещё на паузе — "
                        "круг не изменит ничего")
             break
+    if start_left() <= 0:
+        return admission_expired()
     final = why_seen[-1] if why_seen else None
     adapter_hang = any(c.kind == "adapter_hang" for c in why_seen)
     if attempts and timeouts == attempts and adapter_hang:
@@ -5158,7 +5243,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
         _note_failure("модель не уложилась в срок"
                       if attempts and (slow == attempts or timeouts == attempts)
                       else "модель не ответила осмысленно", last_cell)
-    return out
+    return traced(out)
 
 
 _CALL_ROLE_IMPL = _call_role

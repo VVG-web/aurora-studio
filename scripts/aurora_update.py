@@ -33,7 +33,7 @@ Artifacts, Workspaces, Templates/, Prompts/) не трогается.
 и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
-import argparse, difflib, os, re, shutil, subprocess, sys
+import argparse, difflib, os, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -81,6 +81,24 @@ KIT = find_kit()
 MANIFEST = KIT / "engine_manifest.txt"
 STRUCTURE = KIT / "structure_dirs.txt"
 VERSION_FILE = KIT / "VERSION"
+
+
+def _lp():
+    """Реестр локальных путей; на старом `aurora_common` его нет — None."""
+    try:
+        from aurora_common import load_local_paths
+    except ImportError:
+        return None
+    return load_local_paths()
+
+
+# Те же переменные, что выбрасывает коммит панели и реестр: иначе очистка вложенного
+# проекта смотрела бы чужой индекс. Здесь — запасной путь, когда реестра рядом нет.
+GIT_CONTEXT_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+
+
+def _git_env() -> dict:
+    return {k: v for k, v in os.environ.items() if k not in GIT_CONTEXT_VARS}
 
 
 def _config_mirror_paths(target: Path):
@@ -1129,10 +1147,15 @@ def tracked_but_ignored(target: Path) -> list:
     Подсказка «снять с учёта» для его рабочих папок (у одного проекта — сотня файлов
     `Workspaces/…`) звала бы убрать из истории его же работу.
     """
+    lp = _lp()
+    if lp is not None:
+        # Решение принимает git, шаблоны — единый реестр (`local_paths.tracked_local`).
+        return lp.tracked_local(target)
     try:
         p = subprocess.run(["git", "-C", str(target), "-c", "core.quotepath=off", "ls-files", "-ci",
                             "--exclude-standard"],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=30, env=_git_env())
         paths = [l for l in p.stdout.splitlines() if l.strip()] if p.returncode == 0 else []
         if not paths:
             return []
@@ -1141,7 +1164,7 @@ def tracked_but_ignored(target: Path) -> list:
         v = subprocess.run(["git", "-C", str(target), "-c", "core.quotepath=off", "check-ignore",
                             "-v", "--no-index", "--stdin"],
                            input=("\n".join(paths) + "\n").encode("utf-8"),
-                           capture_output=True, timeout=30)
+                           capture_output=True, timeout=30, env=_git_env())
         v_out = v.stdout.decode("utf-8", "replace")
     except (OSError, subprocess.SubprocessError):
         return []
@@ -1155,7 +1178,20 @@ def tracked_but_ignored(target: Path) -> list:
     out = []
     for line in v_out.splitlines():
         where, _, path = line.partition("\t")
-        pattern = where.split(":", 2)[-1] if where.count(":") >= 2 else ""
+        parts = where.rsplit(":", 2)
+        if len(parts) != 3:
+            continue
+        source, _line, pattern = parts
+        # Источник правила — `.gitignore` самого проекта: чужое `Code/*` во вложенном
+        # файле закрывает чужие данные и не даёт права советовать снятие с учёта.
+        src = Path(source)
+        if not src.is_absolute():
+            src = Path(target) / src
+        try:
+            if src.resolve() != (Path(target) / ".gitignore").resolve():
+                continue
+        except OSError:
+            continue
         if pattern.strip() in kit_rules and path.strip():
             out.append(path.strip())
     return out
@@ -1184,14 +1220,15 @@ def refresh_gitignore(target: Path) -> list:
 RUNLOG_REL = "AuroraKnowledgeDB/meta/run_log.md"
 NET_RUNS_REL = "AuroraKnowledgeDB/meta/net-runs.d"
 RECENT_FILES_REL = "AuroraKnowledgeDB/meta/recent-files.json"
-# Каталоги, которые снимаются с учёта целиком: у каждого свои файлы, но все они локальные.
-LOCAL_STATE_DIRS = (NET_RUNS_REL,)
+# Встроенная копия реестра — только на случай, когда `local_paths.py` рядом нет
+# (оборванное обновление, откат). Рабочий источник — `local_paths.RULES`.
+_LOCAL_STATE_DIRS_LITERAL = (NET_RUNS_REL, "AuroraKnowledgeDB/meta/graphify")
 UNTRACK_NET_RUNS_WARNING = (
     "   ⚠️ Снятие снимков сети с учёта уйдёт следующим коммитом: старые клоны после pull\n"
     "      потеряют отслеживаемые файлы net-runs.d. Они остаются в истории: git show <old-sha>:<путь>.\n"
     "      Перед коммитом сохраните копию AuroraKnowledgeDB/meta/net-runs.d."
 )
-LOCAL_STATE_RELS = (
+_LOCAL_STATE_RELS_LITERAL = (
     RUNLOG_REL,
     RECENT_FILES_REL,
     NET_RUNS_REL,
@@ -1209,32 +1246,127 @@ LOCAL_STATE_RELS = (
     "AuroraKnowledgeDB/meta/aurora_version.txt",
     "start-aurora.bat",
     "start-aurora.command",
+    "AuroraKnowledgeDB/meta/embeddings.bin",
+    "AuroraKnowledgeDB/meta/embeddings.json",
+    "AuroraKnowledgeDB/meta/graphify",
 )
 
 
-def untrack_runlog(target: Path, rel: str = RUNLOG_REL) -> bool:
-    """Снять локальный файл или каталог с учёта git, оставив его на диске.
+def __getattr__(name: str):
+    """PEP 562: `LOCAL_STATE_RELS`/`LOCAL_STATE_DIRS` — из реестра; литерал запасной.
 
-    По умолчанию это журнал запусков (1.168.0); тот же безопасный шаг нужен личной истории
-    открытий панели и снимкам сети (`AuroraKnowledgeDB/meta/net-runs.d`). Правило .gitignore
-    не снимает с учёта то, что уже в истории: файл продолжал бы меняться в каждом коммите.
-    Кит снимает только явно переданный им путь. Каталог снимается рекурсивно
-    (`git rm -r --cached`), файлы на диске остаются. Удаление из индекса уйдёт со следующим
-    коммитом проекта."""
+    Имена и порядок те же, что были объявлены здесь: part_184 создаёт каждый путь
+    буквально и сверяет снятие с индексом. Новые производные пути (семантический
+    индекс, граф, клоны `Code/*`) приходят из реестра и снимаются тем же шагом.
+    """
+    if name == "LOCAL_STATE_RELS":
+        lp = _lp()
+        return tuple(lp.LOCAL_STATE_RELS) if lp is not None else _LOCAL_STATE_RELS_LITERAL
+    if name == "LOCAL_STATE_DIRS":
+        lp = _lp()
+        return tuple(lp.LOCAL_STATE_DIRS) if lp is not None else _LOCAL_STATE_DIRS_LITERAL
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def untrack_runlog(target: Path, rel: str = RUNLOG_REL) -> bool:
+    """Снять один путь политики, только если реестр может сохранить stage человека."""
+    lp = _lp()
+    return bool(lp and lp.enforce_index(target, within=rel)["removed"])
+
+
+def clean_local_state(target: Path) -> dict:
+    """Снять локальные пути и проверить, что индекс чист. → `{removed, remaining, checked, detail}`.
+
+    `untrack_local` возвращает `[]` и когда снимать нечего, и когда индекс не читается.
+    Обновлению нужно различать эти состояния: иначе «локальных файлов снято: 0» звучит
+    как успех, а doctor остаётся красным. Причина отказа — текст реестра, если он есть.
+    """
+    state = _git_repo_state(target)
+    if state["state"] == "none":
+        # Без git индекса нет: снимать нечего, и это не отказ проверки.
+        return {"removed": [], "remaining": [], "checked": True, "detail": ""}
+    if state["state"] != "repo":
+        # «git не ответил» — это не «нечего снимать»: успех по непроверенному индексу
+        # объявлять нельзя, иначе обновление скажет «готово» при неубранном журнале.
+        return {"removed": [], "remaining": [], "checked": False,
+                "detail": state["detail"] or "состояние git не определено"}
+    lp = _lp()
+    if lp is not None:
+        return lp.enforce_index(target)
+    # Литералы позволяют показать известные пути, но без реестра нет защиты от
+    # потери единственной staged-версии. В этом режиме индекс только читаем.
+    remaining: list = []
+    detail = ""
     try:
-        listed = subprocess.run(["git", "-C", str(target), "ls-files", "-z", "--", rel],
-                                capture_output=True, check=False, timeout=30)
-        if listed.returncode != 0 or not listed.stdout.strip():
-            return False
-        return subprocess.run(["git", "-C", str(target), "rm", "-r", "--cached", "-q", "--", rel],
-                              capture_output=True, check=False, timeout=30).returncode == 0
+        p = subprocess.run(["git", "-C", str(target), "-c", "core.quotepath=off",
+                            "ls-files", "-z", "--", *_LOCAL_STATE_RELS_LITERAL],
+                           capture_output=True, timeout=30, env=_git_env())
+        if p.returncode != 0:
+            detail = "индекс git не читается"
+        else:
+            listed = [x for x in p.stdout.decode("utf-8", "surrogateescape").split("\0") if x]
+            remaining = [rel for rel in _LOCAL_STATE_RELS_LITERAL
+                         if any(x == rel or x.startswith(rel + "/") for x in listed)]
     except (OSError, subprocess.SubprocessError):
-        return False
+        detail = "индекс git не читается"
+    if remaining:
+        detail = "реестр локальных путей (local_paths.py) недоступен; stage сохранён"
+    return {"removed": [], "remaining": remaining, "checked": not detail, "detail": detail}
+
+
+def _git_repo_state(target: Path) -> dict:
+    """Состояние git проекта: `repo`, `none` или `unknown`. → `{state, detail}`.
+
+    «Нет репозитория» и «git не ответил» — разные вещи: в первом случае индекса нет и
+    снимать нечего, во втором проверка не выполнена, и успех по ней объявлять нельзя.
+    Раньше оба состояния превращались в `checked=True` без проверки индекса.
+    """
+    try:
+        p = subprocess.run(["git", "-C", str(target), "rev-parse", "--is-inside-work-tree"],
+                           capture_output=True, timeout=30, env=_git_env())
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"state": "unknown",
+                "detail": f"git не отработал: {type(e).__name__}: {e}"[:300]}
+    err = p.stderr.decode("utf-8", "replace").strip()
+    if p.returncode == 0 and p.stdout.strip() == b"true":
+        return {"state": "repo", "detail": ""}
+    if p.returncode == 0 or "not a git repository" in err:
+        # bare-репозиторий (work tree нет) или каталог вне git: индекса проекта нет.
+        return {"state": "none", "detail": err}
+    return {"state": "unknown", "detail": err[:300] or f"rc={p.returncode}"}
+
+
+def _clean_ok(report: dict) -> bool:
+    """Очистка индекса действительно проверена и чиста. → можно ли считать обновление успешным."""
+    return bool(report.get("checked", True)) and not report.get("remaining")
 
 
 def untrack_local_state(target: Path) -> list[str]:
     """Снять с index только объявленные китом локальные файлы, сохранив их на диске."""
-    return [rel for rel in LOCAL_STATE_RELS if untrack_runlog(target, rel)]
+    # Явные пути в порядке LOCAL_STATE_RELS, затем каталоги-клоны `Code/*`.
+    return list(clean_local_state(target)["removed"])
+
+
+def _print_clean_report(report: dict) -> None:
+    """Сказать об очистке правду: успех — только когда индекс проверен и чист."""
+    removed = report.get("removed") or []
+    if report.get("checked", True) and not report.get("remaining"):
+        if removed:
+            print(f"   Локальные файлы сняты с учёта git ({len(removed)}; на диске сохранены)")
+            warning = untrack_warning(removed)
+            if warning:
+                print(warning)
+        return
+    if not report.get("checked", True):
+        print(f"   ⚠️ локальные пути не проверены: {report.get('detail') or 'причина неизвестна'}; "
+              "doctor останется красным — повторите обновление")
+    else:
+        left = report.get("remaining") or []
+        shown = ", ".join(left[:3]) + (f" и ещё {len(left) - 3}" if len(left) > 3 else "")
+        print(f"   ⚠️ локальные пути остались в индексе: {shown}; снимите их вручную "
+              "(git rm -r --cached -f) — doctor останется красным")
+    if removed:
+        print(f"   Частично снято с учёта git: {len(removed)} (на диске сохранены)")
 
 
 def untrack_warning(rels) -> str:
@@ -1469,6 +1601,7 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
 
     if not changes and not new_dirs and not retired and not cfg_done and not moving and not guides and not catalog:
         print("✅ Движок и структура уже актуальны — изменений нет.")
+        clean = {"removed": [], "remaining": [], "checked": True, "detail": ""}
         if apply:
             # Правила .gitignore/.gitattributes кит дописывает в конце прогона «по возможности»
             # (отказ записи обновление не останавливает). Оборванный прогон успел поставить
@@ -1477,7 +1610,9 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
             # проверить и здесь.
             #
             # Прогон, не дошедший до штампа (`pv != kv`), не сделал и остальных хвостовых шагов:
-            # хук, снятие журнала с учёта git, дата обновления базы. Все они идемпотентны.
+            # хук, дата обновления базы. Все они идемпотентны. Снятие локальных путей с индекса
+            # не зависит от версии: файл мог вернуться в индекс после обновления (руками или
+            # старым движком), и doctor остался бы красным на актуальном проекте.
             # refresh_gitattributes(target) — правило launcher; оба правила пишет
             # refresh_all_gitattributes одной атомарной записью.
             late = refresh_gitignore(target) + refresh_all_gitattributes(target)
@@ -1488,12 +1623,9 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
                 hook = refresh_hooks(target)
                 if hook:
                     print(f"   Хук обновлён ({hook})")
-                local_untracked = untrack_local_state(target)
-                if local_untracked:
-                    print(f"   Локальные файлы сняты с учёта git ({len(local_untracked)}; на диске сохранены)")
-                    warning = untrack_warning(local_untracked)
-                    if warning:
-                        print(warning)
+            clean = clean_local_state(target)
+            _print_clean_report(clean)
+            if pv != kv:
                 kb_date = backfill_kb_updated(target)
                 if kb_date:
                     print(f"   Дата обновления базы из истории прогонов: {kb_date}")
@@ -1504,7 +1636,9 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
         if apply and pv != kv:
             stamp_version(target, kv)      # штамп проекта — последним: он говорит «обновление дошло до конца»
             print(f"   Проставлен штамп версии: {kv}")
-        return 0
+        # Индекс не проверен или в нём остались локальные пути — это отдельный неуспех
+        # обновления: doctor останется красным, и говорить «готово» нельзя.
+        return 0 if _clean_ok(clean) else 7
 
     ext_writes = [c for c in changes if c.external]
     if ext_writes:
@@ -1632,7 +1766,7 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
     catalog_done = rebuild_catalog(target, ignored)        # после шаблонов и конфига: каталог собирается по ним
     refreshed = refresh_hooks(target)
     ignored = refresh_gitignore(target)
-    untracked = untrack_local_state(target)
+    clean = clean_local_state(target)
     kb_date = backfill_kb_updated(target)
     attrs = refresh_all_gitattributes(target)
     refresh_merge_driver(target)
@@ -1645,8 +1779,6 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
           + (f", устаревших .new удалено: {len(drops)}" if drops else "")
           + (f", хук обновлён ({refreshed})" if refreshed else "")
           + (f", в .gitignore дописано правил: {len(ignored)}" if ignored else "")
-          + (f", локальных файлов снято с учёта git: {len(untracked)} (на диске сохранены)"
-             if untracked else "")
           + (f", дата обновления базы из истории прогонов: {kb_date}" if kb_date else "")
           + (f", в .gitattributes дописано правил: {len(attrs)}" if attrs else "")
           + (f", конфиг: {', '.join(cfg_done)}" if cfg_done else "")
@@ -1656,9 +1788,7 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
           + (f", переезд в .aurora/: перенесено {len(rp['moves'])}, "
              f"убрано копий кита {len(rp['drop'])}" if moving else "")
           + f". Версия → {kv}")
-    warning = untrack_warning(untracked)
-    if warning:
-        print(warning)
+    _print_clean_report(clean)
     for line in failed:
         print(f"   ⚠️ не вышло: {line}")
     print("   Проверьте: в панели `kit:doctor`, затем git diff")
@@ -1666,18 +1796,20 @@ def _run(target: Path, apply: bool, structure_only: bool = False, allow_downgrad
     if stuck:
         # Правило .gitignore не снимает с учёта то, что уже попало в историю: такие файлы
         # продолжают меняться в каждом коммите. Снять — решение о git проекта, не движка.
-        def top(p: str) -> str:
-            parts = p.split("/")
-            # `.claude/skills/` остаётся в git — снимаем только соседей, а не всю `.claude`.
-            n = 2 if parts[0] == ".claude" else 1 if parts[0].startswith(".") else 3
-            return "/".join(parts[:n])
-        tops = sorted({top(p) for p in stuck})
+        # Только сами найденные пути: `top()` расширял совет до непроверенного родителя
+        # (например, до всей папки плагина Obsidian). `:(literal)` не даёт `*` и `[` стать
+        # шаблоном git, `shlex.quote` защищает пробел от оболочки.
+        commands = [f"     git rm -r --cached -f -q {shlex.quote(f':(literal){p}')}"
+                    for p in sorted(stuck)[:5]]
         print(f"   В git уже лежат файлы, которые теперь закрыты .gitignore: {len(stuck)}. "
               "Снять с учёта, не трогая диск:\n"
-              + "\n".join(f"     git rm -r --cached -q \"{t}\"" for t in tops[:5]))
+              + "\n".join(commands)
+              + (f"\n     … и ещё {len(stuck) - 5}" if len(stuck) > 5 else ""))
     if seeds:
         print("   Не забудьте сравнить *.new с вашими Templates/Prompts и удалить .new.")
-    return 0
+    # Остаток в индексе или непроверенный индекс — не успех: код 7 говорит вызывающему,
+    # что обновление записало файлы, но git-часть требует решения человека.
+    return 0 if _clean_ok(clean) else 7
 
 
 def kit_is_reachable() -> bool:

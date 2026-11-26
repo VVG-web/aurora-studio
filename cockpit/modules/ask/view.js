@@ -7,6 +7,8 @@
    Функции `fillBackends` и `renderHistory` экспортированы отдельно: их поведение
    проверяется прогоном в node на заглушках DOM и сервера (`tests/run_tests.py`). */
 
+import {answerBody} from "./markdown.js";
+
 let ASKING = false;
 let THREAD = null;          // открытый разговор: id и число вопросов в нём
 let SHOWN = "";             // проект, для которого нарисован разговор
@@ -266,6 +268,49 @@ async function refreshRaptor(ctx, btn){
   }
 }
 
+// Stdout старых и обычных запусков содержит отчёт вокруг ответа. Снимаем шапку и
+// хвост по позиции: похожие строки внутри Markdown (например, в коде) не служебные.
+function askReport(lines, question){
+  const head = lines.findIndex(line => /^# Ответ базы(?:\s|$)/.test(line));
+  const questionAt = head + 2;
+  const questionEnd = questionAt + question.split("\n").length;
+  const framed = head >= 0 && lines[questionAt]?.startsWith("**Вопрос:**") && lines[questionEnd] === "";
+  const start = framed ? questionEnd + 1 : head + 1;
+  let end = lines.length;
+  const tail = end - (/^Уточнить, не теряя контекст: `agent:ask --thread /.test(lines[end - 1] || "") ? 2 : 1);
+  const file = lines[tail]?.match(/^Разговор: `([^`]+\.md)`(?: \(вопросов в нём: \d+\))?$/)?.[1];
+  if (file) end = tail - (lines[tail - 1] === "" ? 1 : 0);
+  const details = lines.findLastIndex((line, i) => i > start && i + 2 < end && line === "---"
+    && lines[i - 1] === "" && lines[i + 1] === ""
+    && /^(?:_Карточек в контексте: \d+ · модель: |План: `)/.test(lines[i + 2]));
+  return {
+    source: lines.slice(start, details < 0 ? end : details - 1).join("\n"),
+    details: details < 0 ? "" : lines.slice(details, end).join("\n"),
+    id: file?.split(/[\\/]/).pop().replace(/\.md$/, ""),
+  };
+}
+
+async function fillAnswer(ctx, card, question, source, details = "", when = ""){
+  const {el, t} = ctx;
+  const body = await answerBody(ctx, source || t("ask.no_answer"), details);
+  // Источник не берётся из DOM ответа. Копия и .md содержат исходный Markdown, включая [[ссылки]].
+  card.dataset.q = question;
+  card.dataset.a = source;
+  card.dataset.at = when || new Date().toLocaleString(ctx.lang === "en" ? "en-GB" : "ru-RU");
+  card.innerHTML = "";
+  card.append(el("div", {class: "ask-answer-head"}, el("strong", {}, question),
+    source ? ctx.ui.copyButton(source, "Markdown") : null));
+  if (when) card.append(el("div", {class: "muted ask-answer-date"}, when));
+  card.append(body);
+}
+
+function showPipelineFailure(ctx, card, question, why){
+  const {el} = ctx;
+  card.dataset.a = "";
+  card.replaceChildren(el("div", {class: "ask-answer-head"}, el("strong", {}, question)),
+                       el("div", {class: "muted"}, why));
+}
+
 async function askBase(ctx){
   const {t, el} = ctx;
   if (ASKING) return;
@@ -307,27 +352,14 @@ async function askBase(ctx){
     if (d.done) break;
     await new Promise(ok => setTimeout(ok, 500));
   }
+  const report = askReport(lines, q);
+  if (report.id) THREAD = {id: report.id};
+  await fillAnswer(ctx, item, q, report.source, report.details);
   ASKING = false;
-  // Первые строки — служебная шапка отчёта; человеку нужен сам ответ и подпись под ним.
-  // Строки про файл разговора — тоже служебные: сам файл панель показывает иначе.
-  const body = lines.filter(l => !/^# Ответ базы|^\*\*Вопрос:|^Разговор: |^Уточнить, не/
-                                  .test(l)).join("\n").trim();   // данные движка
-  // Куда лёг разговор, движок печатает сам: панель не угадывает имя файла, а читает его.
-  const said = (lines.find(l => /^Разговор: /.test(l)) || "").match(/`([^`]+)`/);  // данные движка
-  if (said) THREAD = {id: said[1].split("/").pop().replace(/\.md$/, "")};
-  item.innerHTML = "";
-  // Исходный markdown держим на самой карточке: на экране он уже разобран в HTML, а
-  // выгружать надо то, что писала модель, — со ссылками `[[…]]`, живыми в Obsidian.
-  item.dataset.q = q;
-  item.dataset.a = body;
-  item.dataset.at = new Date().toLocaleString(ctx.lang === "en" ? "en-GB" : "ru-RU");
-  item.append(el("div", {style: "font-weight:700"}, q),
-    el("div", {class: "ansbody", style: "margin-top:10px;white-space:pre-wrap",
-               html: ctx.fmt.mdLite(body)}));
   // Подпись ответа печатает сам движок: «модель: X (бэкенд №N) · N с». Берём оттуда, а не
   // из выбора в форме: по кольцу мог ответить не тот, кого просили, и человек должен это
   // видеть — иначе медленный запасной ответ выглядит как ответ основной модели.
-  const who = (lines.find(l => /модель:/.test(l)) || "")                      // данные движка
+  const who = (report.details.split("\n").find(l => /^_Карточек в контексте: /.test(l)) || "")
     .match(/модель:\s*([^\s(·]+)[^)]*\(бэкенд №(\d+)\)/);                     // данные движка
   if (who){
     drawWho(ctx, {kind: "answer", model: who[1], n: who[2]});
@@ -365,68 +397,80 @@ async function askPipeline(ctx, question, args, item, box){
   if (!res || res.error || !res.job){
     clearInterval(PIPE.timer); PIPE.timer = 0;
     ASKING = false;
-    PIPE.status = "error";
-    const why = (res && (res.error || res.net_blocked?.blocked)) || ctx.t("ask.no_answer");
-    pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_error")});
-    if (ctx.$("#askWarn")) ctx.$("#askWarn").textContent = String(why);
-    setPipeButtons(ctx, "error", true);
-    item.append(ctx.el("div", {class:"muted", style:"margin-top:8px"}, String(why)));
+    const why = String((res && (res.error || res.net_blocked?.blocked)) || t("ask.no_answer"));
+    setPipelineFailure(ctx, "error", why);
+    showPipelineFailure(ctx, item, question, why);
     return;
   }
   PIPE.job = res.job;
-  let since = 0;
+  let since = 0, reportStarted = false, job;
   for (;;){
     let d;
     try { d = await ctx.api(`/api/job?id=${encodeURIComponent(res.job)}&since=${since}`,
-                             {quiet: true}); }
+                             {quiet: true}) || {done: true}; }
     catch (e) { d = {lines: [], done: true, error: String(e && e.message || e)}; }
     for (const line of (d.lines || [])){
-      if (line.startsWith("ASK_EVENT ")){
+      if (/^# Ответ базы(?:\s|$)/.test(line)) reportStarted = true;
+      if (!reportStarted && line.startsWith("ASK_EVENT ")){
         try { handlePipeEvent(ctx, JSON.parse(line.slice(10))); } catch (e) { /* не тот формат */ }
       } else {
         PIPE.lines.push(line);
       }
     }
     since = d.next || since;
-    if (d.done) break;
+    if (d.done || d.error){ job = d; break; }
     await new Promise(ok => setTimeout(ok, 500));
   }
-  ASKING = false;
   clearInterval(PIPE.timer); PIPE.timer = 0;
-  if (!PIPE.answer && PIPE.status !== "done" && PIPE.status !== "partial"){
-    PIPE.status = "error";
-    pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_error")});
-    if (ctx.$("#askWarn") && !ctx.$("#askWarn").textContent)
-      ctx.$("#askWarn").textContent = ctx.t("ask.no_answer");
+  const report = askReport(PIPE.lines, question);
+  const stopped = PIPE.status === "cancelled" || job.state === "stopped";
+  // Stdout is only an answer when an older runner finished successfully.
+  const source = PIPE.answer || (job.rc === 0 && reportStarted ? report.source : "");
+  if (stopped || PIPE.status === "error" || !source.trim()){
+    const status = stopped ? "cancelled" : "error";
+    const message = PIPE.status === status ? ctx.$("#askWarn")?.textContent : "";
+    const why = String(message || job.error || report.source ||
+      (stopped ? t("ask.pipeline_cancelled") : t("ask.no_answer")));
+    setPipelineFailure(ctx, status, why);
+    showPipelineFailure(ctx, item, question, why);
+  } else {
+    const details = PIPE.answer ? "" : report.details;
+    PIPE.answer = source;
+    PIPE.id ||= report.id || "";
+    if (PIPE.status !== "partial" && PIPE.status !== "done"){
+      PIPE.status = "done";
+      pipeEl(ctx, "askPipelineState", {textContent: t("ask.pipeline_done")});
+    }
+    if (PIPE.id) THREAD = {id: PIPE.id};
+    await fillAnswer(ctx, item, question, source, details);
+    ctx.$("#askText").value = "";
   }
-  if (!PIPE.answer){
-    PIPE.answer = PIPE.lines.filter(l => !/^# Ответ базы|^\*\*Вопрос:|^Разговор: |^Уточнить, не/.test(l))
-      .join("\n").trim();   // данные движка: служебная шапка отчёта
-  }
-  const said = (PIPE.lines.find(l => /^Разговор: /.test(l)) || "").match(/`([^`]+)`/);
-  if (!PIPE.id && said) PIPE.id = said[1].split("/").pop().replace(/\.md$/, "");
-  if (PIPE.lines.length && PIPE.status === "planning") PIPE.status = "done";
-  if (PIPE.id) THREAD = {id: PIPE.id};
-  item.dataset.q = question;
-  item.dataset.a = PIPE.answer || (ctx.$("#askWarn")?.textContent || "");
-  item.dataset.at = new Date().toLocaleString(ctx.lang === "en" ? "en-GB" : "ru-RU");
-  item.innerHTML = "";
-  item.append(ctx.el("div", {style:"font-weight:700"}, question),
-    ctx.el("div", {class:"ansbody", style:"margin-top:10px;white-space:pre-wrap",
-                   html: ctx.fmt.mdLite(PIPE.answer || ctx.t("ask.no_answer"))}));
-  if (PIPE.answer) ctx.$("#askText").value = "";
+  ASKING = false;
   drawThreadHint(ctx);
   drawExport(ctx);
   setPipeButtons(ctx, PIPE.status, Boolean(PIPE.id));
   await renderHistory(ctx);
 }
 
+function setPipelineFailure(ctx, status, message){
+  PIPE.status = status;
+  PIPE.answer = "";
+  pipeEl(ctx, "askPipelineState", {textContent: status === "cancelled"
+    ? ctx.t("ask.pipeline_cancelled") : ctx.t("ask.pipeline_error")});
+  pipeEl(ctx, "askWarn", {textContent: message});
+  setPipeButtons(ctx, status, Boolean(PIPE.id));
+}
+
 function handlePipeEvent(ctx, ev){
   if (!ev || !PIPE) return;
   const event = ev;
   const kind = event.kind;
+  if (kind === "state_ready"){
+    if (event.state_id) PIPE.id = String(event.state_id);
+    return;
+  }
   if (kind === "plan"){
-    PIPE.id = String(event.id || "");
+    if (event.id) PIPE.id = String(event.id);
     PIPE.plan = (event.steps || []).map(s => ({...s, status: "pending"}));
     PIPE.warnings = event.warnings || [];
     PIPE.status = "running";
@@ -469,11 +513,9 @@ function handlePipeEvent(ctx, ev){
     setPipeButtons(ctx, "paused", Boolean(PIPE.id));
     return;
   }
-  if (kind === "cancelled"){
-    PIPE.status = "cancelled";
-    pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_cancelled")});
-    if (ctx.$("#askWarn")) ctx.$("#askWarn").textContent = event.message || "";
-    setPipeButtons(ctx, "cancelled", Boolean(PIPE.id));
+  if (kind === "cancelled" || kind === "error"){
+    if (event.resumable && event.state_id) PIPE.id = String(event.state_id);
+    setPipelineFailure(ctx, kind, event.message || event.error || "");
     return;
   }
   if (kind === "synth"){
@@ -481,6 +523,7 @@ function handlePipeEvent(ctx, ev){
     return;
   }
   if (kind === "done"){
+    if (event.state_id) PIPE.id = String(event.state_id);
     PIPE.answer = String(event.answer || PIPE.answer || "");
     PIPE.metrics = event.metrics || null;
     PIPE.warnings = event.warnings || [];
@@ -500,12 +543,6 @@ function handlePipeEvent(ctx, ev){
     setPipeButtons(ctx, PIPE.status, Boolean(PIPE.id));
     return;
   }
-  if (kind === "error"){
-    PIPE.status = "error";
-    pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_error")});
-    if (ctx.$("#askWarn")) ctx.$("#askWarn").textContent = event.message || event.error || "";
-    setPipeButtons(ctx, "error", Boolean(PIPE.id));
-  }
 }
 
 function nodeHidden(node, hidden){ if (node) node.hidden = Boolean(hidden); }
@@ -513,23 +550,18 @@ function nodeHidden(node, hidden){ if (node) node.hidden = Boolean(hidden); }
 function metricsLong(m){ return Boolean(m && (m.long || Number(m.total_seconds || 0) > 600)); }
 
 async function controlPipe(ctx, action){
-  if (!PIPE.id && !PIPE.job){
-    if (action === "cancel" && PIPE.job)
-      return ctx.api("/api/job/stop", {method:"POST", body: JSON.stringify({id: PIPE.job})});
-    return;
-  }
-  if (!PIPE.id && PIPE.job && action === "cancel")
-    return ctx.api("/api/job/stop", {method:"POST", body: JSON.stringify({id: PIPE.job})});
-  if (!PIPE.id) return;
-  const r = await ctx.api("/api/ask/control", {method:"POST", body: JSON.stringify(
-    {project: ctx.project.path, id: PIPE.id, action})});
+  const run = PIPE;
+  const stopJob = !run.id && run.job && action === "cancel";
+  if (!run.id && !stopJob) return;
+  const r = await ctx.api(stopJob ? "/api/job/stop" : "/api/ask/control", {method:"POST",
+    body: JSON.stringify(stopJob ? {id: run.job} : {project: ctx.project.path, id: run.id, action})});
+  if (run !== PIPE || !pipeBusyState(PIPE.status)) return;
   if (r && r.ok){
     if (action === "pause"){ PIPE.status = "paused"; setPipeButtons(ctx, "paused", true);
       pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_paused")}); }
     if (action === "resume"){ PIPE.status = "running"; setPipeButtons(ctx, "running", true);
       pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_running")}); }
-    if (action === "cancel"){ PIPE.status = "cancelled"; setPipeButtons(ctx, "cancelled", true);
-      pipeEl(ctx, "askPipelineState", {textContent: ctx.t("ask.pipeline_cancelled")}); }
+    if (action === "cancel") setPipelineFailure(ctx, "cancelled", ctx.t("ask.pipeline_cancelled"));
   } else {
     ctx.toast((r && r.error) || ctx.t("ask.no_answer"), "warn");
   }
@@ -572,7 +604,7 @@ function drawThreadHint(ctx){
   const hint = ctx.$("#askThreadHint"), btn = ctx.$("#askNew");
   if (!THREAD){
     hint.hidden = true;
-    btn.hidden = true;
+    btn.hidden = !PIPE.id || !PIPE_RETRY.has(PIPE.status);
     ctx.$("#askGo").textContent = t("ask.go");
     ctx.$("#askText").placeholder = t("ask.placeholder");
     return;
@@ -591,7 +623,7 @@ function drawThreadHint(ctx){
 // перенос выделением теряет ссылки `[[…]]` и переносы строк. Выгружаем тот markdown,
 // который написала модель, целиком: вопрос, ответ и подпись, откуда он взялся.
 function cards(ctx){
-  return Array.from(ctx.$("#askBody").querySelectorAll("[data-a]"));
+  return Array.from(ctx.$("#askBody").querySelectorAll("[data-a]")).filter(card => card.dataset.a);
 }
 
 function drawExport(ctx){
@@ -614,7 +646,7 @@ export function markdown(ctx){
   const body = rows.map(c => ["## " + c.dataset.q,
                               c.dataset.at ? "_" + c.dataset.at + "_" : "",
                               "", c.dataset.a, ""].join("\n"));
-  return head.concat(body).join("\n").replace(/\n{3,}/g, "\n\n");
+  return head.concat(body).join("\n");
 }
 
 function exportMd(ctx){
@@ -744,21 +776,14 @@ async function openThread(ctx, id){
   const d = await ctx.api(`/api/ask/thread?project=${encodeURIComponent(ctx.project.path)}`
                           + `&id=${encodeURIComponent(id)}`);
   if (!d || d.error) return ctx.toast(d && d.error || t("ask.thread_failed"), "warn");
-  THREAD = {id: d.id};
-  const box = ctx.$("#askBody");
-  box.replaceChildren();
   // Свежий вопрос сверху — как в самой вкладке: последнее сказанное читают первым.
-  d.turns.slice().reverse().forEach(turn => {
-    const card = el("div", {class: "card", style: "padding:18px;margin-top:14px"},
-      el("div", {style: "font-weight:700"}, turn.q),
-      el("div", {class: "muted", style: "font-size:12px;margin-top:2px"}, ctx.fmt.when(turn.at)),
-      el("div", {class: "ansbody", style: "margin-top:10px;white-space:pre-wrap",
-                 html: ctx.fmt.mdLite(turn.a)}));
-    card.dataset.q = turn.q;
-    card.dataset.a = turn.a;
-    card.dataset.at = ctx.fmt.when(turn.at);
-    box.append(card);
-  });
+  const cards = await Promise.all(d.turns.slice().reverse().map(async turn => {
+    const card = el("div", {class: "card", style: "padding:18px;margin-top:14px"});
+    await fillAnswer(ctx, card, turn.q, turn.a, "", ctx.fmt.when(turn.at));
+    return card;
+  }));
+  THREAD = {id: d.id};
+  ctx.$("#askBody").replaceChildren(...cards);
   drawThreadHint(ctx);
   drawExport(ctx);
   await renderHistory(ctx);

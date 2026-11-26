@@ -11,18 +11,21 @@ decision-makers: владелец продукта, координатор Auror
 
 Метрика `tests/ext_footprint.py` считает, сколько файлов ядра знают расширения по имени. До MCP
 ядро имело `panel_module = 2` и `assistant = 4`. После MCP core те же точки дают
-`panel_module = 4` и `assistant = 5`. Планка в `tests/ext_footprint_baseline.json` была поднята
+`panel_module = 4` и `assistant = 6`. Планка в `tests/ext_footprint_baseline.json` была поднята
 в `e99cf0bc` без отдельной записи о причине. Храповик при этом остался зелёным, а решение
 выглядело молчаливым.
 
 Новые файлы в планке:
 
 - `panel_module`: `scripts/aurora_cockpit_client.py`, `scripts/aurora_guard.py`;
-- `assistant`: `scripts/aurora_remote_mcp.py`.
+- `assistant`: `scripts/aurora_remote_mcp.py`, `scripts/local_paths.py`.
 
 `scripts/aurora_cockpit_client.py` ходит в HTTP API панели, `scripts/aurora_guard.py` проверяет
 права проекта и режим `safe`, `scripts/aurora_remote_mcp.py` даёт удалённому агенту управление
-панелью. Это части ядра MCP, а не коннекторы и не внешние расширения.
+панелью. Это части ядра MCP, а не коннекторы и не внешние расширения. `scripts/local_paths.py`
+называет папки харнессов агентов и редакторов, поэтому метрика видит в нём шестой файл
+`assistant`: реестр обязан знать эти имена, чтобы правила `.gitignore` и снятие с индекса
+не разъезжались.
 
 ## Факторы решения
 
@@ -40,14 +43,15 @@ decision-makers: владелец продукта, координатор Auror
    коннектор. Вынос создал бы второй экземпляр проверок ACL.
 2. **Убрать литералы endpoint'ов и режимов из ядра через реестр.** Отклонено: проверки `safe` и
    прав проекта должны читать явные имена, иначе аудит безопасности снова станет косвенным.
-3. **Принять рост 2 → 4 и 4 → 5 с этой записью.** Выбрано: MCP core осознанно расширяет ядро,
-   baseline фиксирует новое состояние, следующее расширение снова требует отдельного решения.
+3. **Принять рост 2 → 4 и 4 → 6 с этой записью.** Выбрано: MCP core осознанно расширяет ядро,
+   а реестр локальных путей (0003) осознанно называет папки харнессов; baseline фиксирует новое
+   состояние, следующее расширение снова требует отдельного решения.
 
 ## Решение
 
-`tests/ext_footprint_baseline.json` фиксирует `panel_module = 4` и `assistant = 5`. Рост
-обоснован тремя файлами MCP core из раздела «Контекст и проблема». Запись ADR-028 является
-решением о росте, а не побочным эффектом `--write`.
+`tests/ext_footprint_baseline.json` фиксирует `panel_module = 4` и `assistant = 6`. Рост
+обоснован тремя файлами MCP core и реестром локальных путей из раздела «Контекст и проблема».
+Запись ADR-028 является решением о росте, а не побочным эффектом `--write`.
 
 Границы решения:
 
@@ -65,7 +69,7 @@ decision-makers: владелец продукта, координатор Auror
 
 ## Проверка
 
-- `python3 tests/ext_footprint.py --json` даёт `panel_module = 4`, `assistant = 5`.
+- `python3 tests/ext_footprint.py --json` даёт `panel_module = 4`, `assistant = 6`.
 - `tests/cases/part_44.py` проверяет, что храповик не краснеет на текущем baseline.
 - `tests/cases/part_36.py` проверяет формат этой записи и ссылку из `docs/decisions/README.md`.
 - `tests/ext_footprint_baseline.json` ссылается на `docs/decisions/ADR-028-mcp-footprint.md`.

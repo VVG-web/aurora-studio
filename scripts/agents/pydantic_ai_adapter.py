@@ -22,10 +22,12 @@
 Первая строка процесса — {"ready": true, "version"} либо {"ready": false, "error", "kind":
 "import_failed", "sub": "missing"|"broken", "exc", "module"}.
 Задание: {"id", "url", "key", "model", "messages", "template", "max_tokens", "timeout",
-          "request_timeout", "tools", "mcp", "mcp_active", "guard", "role", "tool_calls"}
+          "request_timeout", "tools", "mcp", "mcp_active", "guard", "role", "tool_calls",
+          "hard_deadline" (необязательный Unix timestamp в секундах)}
 Ответ:   {"id", "ok": true, "text", "reasoning", "finish", "usage"}
          либо {"id", "ok": false, "where": "server"|"adapter"|"timeout", "status", "error", "body",
                "headers", "kind", "proxy_fell"}
+         либо {"id", "ok": false, "where": "deadline", "timed_out": true} при запрете новой попытки.
 `kind` — вид обрыва связи (DNS, отказ порта, сертификат, сброс, срок…): по нему движок отличает
 обрыв сети от поломки самого Pydantic AI. `where` отделяет отказ сервера (движок решает по нему,
 как по HTTP) от поломки адаптера (движок повторяет вызов прямым HTTP и пишет причину в отчёт).
@@ -59,6 +61,20 @@ os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
 REQUEST_GRACE = 5.0
 
 
+class _AttemptDeadlineExpired(Exception):
+    """The task's absolute deadline forbids starting another request."""
+
+
+def attempt_settings(task: dict, settings: dict) -> dict:
+    deadline = task.get("hard_deadline")
+    if deadline is None:
+        return settings
+    left = deadline - time.time()
+    if left <= 0:
+        raise _AttemptDeadlineExpired
+    return {**settings, "timeout": min(settings.get("timeout", left), left)}
+
+
 def request_limit(task: dict) -> float:
     """Сколько секунд адаптер ждёт задание целиком. 0 — без общего срока."""
     try:
@@ -77,12 +93,16 @@ def request_limit(task: dict) -> float:
 async def run_with_deadline(task: dict, run):
     """Выполнить задание не дольше общего срока; истёк — понятный ответ `where=timeout`."""
     limit = request_limit(task)
-    if limit <= 0:
-        return await run(task)
     import asyncio
     try:
+        if limit <= 0:
+            return await run(task)
         return await asyncio.wait_for(run(task), timeout=limit)
+    except _AttemptDeadlineExpired:
+        return {"ok": False, "where": "deadline", "timed_out": True}
     except asyncio.TimeoutError:
+        if limit <= 0:
+            raise
         return {"ok": False, "where": "timeout", "timed_out": True,
                 "timeout": round(limit, 1),
                 "error": f"Pydantic AI не ответил за {limit:.1f} с (общий срок запроса) — "
@@ -1221,14 +1241,14 @@ def runtime():
             limits["tool_calls_limit"] = limit
         if input_limit:
             limits["per_request_input_tokens_limit"] = input_limit
-        async def streamed():
+        async def streamed(model_settings):
             """Первый чанк даёт TTFT; провайдер без потока упадёт до него и уйдёт в `agent.run`."""
             first = None
             began = time.monotonic()
             async with agent.run_stream(
                     prompt, message_history=history or None,
                     usage_limits=UsageLimits(**limits) if limits else None,
-                    model_settings=settings, **extra) as result:
+                    model_settings=model_settings, **extra) as result:
                 async for _chunk in result.stream_text(delta=True, debounce_by=None):
                     if first is None:
                         first = time.monotonic()
@@ -1249,8 +1269,9 @@ def runtime():
                 }
 
         if task.get("stream") and not task.get("tools") and not output_model:
+            bounded = attempt_settings(task, settings)
             try:
-                return await streamed()
+                return await streamed(bounded)
             except HTTPError as e:
                 if not stream_unsupported(e):
                     return http_error(e)
@@ -1259,11 +1280,12 @@ def runtime():
             except Exception:  # noqa: BLE001 — провайдер без потока: обычный путь ниже
                 pass
         with capture_run_messages() as seen:
+            bounded = attempt_settings(task, settings)
             try:
                 result = await agent.run(
                     prompt, message_history=history or None,
                     usage_limits=UsageLimits(**limits) if limits else None,
-                    model_settings=settings, **extra)
+                    model_settings=bounded, **extra)
             except HTTPError as e:
                 return http_error(e)
             except LimitHit as e:

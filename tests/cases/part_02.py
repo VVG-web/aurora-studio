@@ -267,8 +267,6 @@ def test_build_can_run_the_whole_plan_overnight(tmp: Path):
     assert "done_after <= done_before" in src, \
         "цикл снова меряет прогресс по «осталось» — пачка отложенных его остановит"
     assert "left_after >= left_before" not in src, "старая метрика прогресса вернулась"
-    assert 'commit_result(cwd, "agent:build",\n                              f"партия' in src, \
-        "партии не коммитятся по отдельности — откатить можно будет только всё сразу"
     assert "if a.apply and not self_looped:" in src, \
         "результат коммитится дважды: и в цикле, и в конце"
     guard = src.split("self_looped = ")[1][:200]
@@ -287,6 +285,52 @@ def test_build_can_run_the_whole_plan_overnight(tmp: Path):
         assert need in cyc, f"в цикле нет шага {need} — оборот даёт не готовое знание"
     assert "на ночь" in rebuild, "шаг не предупреждает, что это часы работы"
     assert hasattr(R, "build_left"), "счётчик плана переименован — цикл сломается молча"
+
+
+@test
+def test_build_exit_reports_the_result_commit_failure_before_the_next_write(tmp: Path):
+    import io
+    from contextlib import ExitStack, redirect_stderr, redirect_stdout
+    from unittest.mock import patch
+
+    import agent_runner as ar
+
+    (tmp / "AuroraKnowledgeDB").mkdir()
+    sha = "a" * 40
+    failures = []
+    for variant in ("queue-left", "finished-queue", "single", "disabled"):
+        disabled = variant == "disabled"
+        flags = ["--until-done"] if variant != "single" else []
+        if disabled:
+            flags.append("--no-checkpoint")
+        positions = ([(2, 0), (2, 0), (1, 1), (1, 1), (0, 2)] if variant == "queue-left"
+                     else [(1, 0), (1, 0), (0, 1)])
+        done = ({"ok": True, "sha": sha, "index_warning": "fixture: index not published"}
+                if not disabled else {"ok": False, "why": "disabled"})
+        out = io.StringIO()
+        with (ExitStack() as stack,
+              patch.object(sys, "argv", ["agent_runner.py", "--task", "build", "--apply", *flags]),
+              patch.object(ar.AG, "config", return_value={"backends": [{}]}),
+              patch.object(ar, "writing_lock", return_value=(True, "")),
+              patch.object(ar, "registry_gate", return_value=""), patch.object(ar, "arm_stop"),
+              patch.object(ar, "checkpoint", return_value={"ok": True}),
+              patch.object(ar, "build_left", side_effect=positions),
+              patch.object(ar, "run_build", return_value={"steps": []}) as batch,
+              patch.object(ar, "report_build", return_value="report"),
+              patch.object(ar, "verdict_build", return_value=(True, "build OK")),
+              patch.object(ar, "commit_result", return_value=done) as publication,
+              patch.object(ar, "log_usage"), patch.object(ar, "log_timing"),
+              redirect_stdout(out), redirect_stderr(out)):
+            stack.callback(os.chdir, os.getcwd())
+            os.chdir(tmp)
+            rc = ar.main()
+        text = out.getvalue()
+        if disabled:
+            assert rc == 0 and "план разобран целиком" in text, (rc, text)
+        elif not (rc == 1 and batch.call_count == publication.call_count == 1
+                  and sha in text and "index not published" in text and "план разобран целиком" not in text):
+            failures.append((variant, rc, batch.call_count, publication.call_count, text[:500]))
+    assert not failures, failures
 
 
 @test
@@ -1911,7 +1955,7 @@ def test_retrieval_is_watched_not_guessed(tmp: Path):
 
     # отчёт по живому проекту: берёт настоящие запросы и умеет сравнивать
     src = (KIT / "scripts/kb_retrieval.py").read_text(encoding="utf-8")
-    assert 'line.startswith("### Вопрос")' in src, \
+    assert "read_thread(journal)" in src, \
         "запросы читаются не тем форматом, которым их пишет agent:ask"
     assert "retrieval-last.json" in src, "не с чем сравнивать: точка отсчёта не хранится"
     # Молчание про неизмеренное — не подтверждение: отчёт писал «порядок не менялся» про

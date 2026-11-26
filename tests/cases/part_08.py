@@ -23,6 +23,45 @@ from harness import (  # noqa: F401
 
 
 @test
+def test_ask_journal_preserves_markdown_for_refinement(tmp: Path):
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_runner as ask
+    from kb_retrieval import queries
+
+    answer = ("\n## Ответ\n\nПервый абзац.  \n\n\nВторой с [[Карта#Часть|именем]].\n\n---\n\n"
+              "### Вопрос\n\nЭто заголовок в ответе.\n\n### Ответ\n\n"
+              "~~~md\n  код с пробелами  \n\n### Вопрос · 2025-01-15 12:34 UTC\n\n"
+              "Пример вопроса\n\n### Ответ · заметка\n\nПример ответа\n"
+              "<!-- aurora-ask-turn:v1 20 10 10 -->\n~~~\n")
+    partial = "## Частично\n\n```txt\n  буквальный код  "
+    journal = ask.thread_path(str(tmp), "точный-markdown")
+    question = "Первый 🚀\nвопрос\n\n````md\n```\n\n### Ответ · пример\n\n````"
+    inputs = [(question, answer), ("Частичный", partial), ("Уточнение", "Продолжение")]
+    for question, source in inputs:
+        ask.append_turn(journal, question, source, "fixture", "ask")
+    turns = ask.read_thread(journal)
+    assert [(t["q"], t["a"]) for t in turns] == inputs, turns
+    assert [m["content"] for m in ask.turns_as_messages(turns) if m["role"] == "assistant"] == [
+        source for _, source in inputs]
+
+    legacy = journal.with_name("legacy.md")
+    legacy_text = (f"### Вопрос · 2025-01-15 12:00\n\nВопрос\n\n### Ответ\n\n{answer}\n\n"
+                   f"### Вопрос · 2025-01-15 12:01\n\nВторой\n\n### Ответ\n\n{partial}\n\n"
+                   "### Вопрос · 2025-01-15 12:02\n\nТретий\n\n### Ответ\n\nСтарый ответ\n")
+    legacy.write_bytes(legacy_text.replace("\n", "\r\n").encode("utf-8"))
+    prefix = legacy.read_bytes()
+    legacy_turns = [{"q": "Вопрос", "a": answer, "at": "2025-01-15 12:00"},
+                    {"q": "Второй", "a": partial, "at": "2025-01-15 12:01"},
+                    {"q": "Третий", "a": "Старый ответ", "at": "2025-01-15 12:02"}]
+    assert ask.read_thread(legacy) == legacy_turns
+    for q, a in inputs:
+        ask.append_turn(legacy, q, a, "fixture", "ask")
+    assert legacy.read_bytes().startswith(prefix)
+    assert ask.read_thread(legacy) == legacy_turns + turns
+    assert queries(str(tmp), 10) == ["Первый 🚀", "Частичный", "Уточнение", "Вопрос", "Второй", "Третий"]
+
+
+@test
 def test_ask_keeps_the_conversation_in_the_base(tmp: Path):
     """Разговор с базой хранится в базе, читается и продолжается уточнением.
 
